@@ -1,6 +1,8 @@
+/// <reference path="./migrations.d.ts" />
+
 import { DurableObject } from 'cloudflare:workers'
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator'
-import migrations from '../../drizzle/migrations'
+import migrations from '../../drizzle/migrations.js'
 import { createApi } from '../core/api'
 import { getStore } from '../core/store'
 import { VectorizeVectorStore } from '../core/vector'
@@ -15,7 +17,7 @@ export class MemoryObject extends DurableObject<Env> {
 		ctx.blockConcurrencyWhile(async () => {
 			migrate(db, migrations)
 		})
-		const vectorStore = new VectorizeVectorStore(env.VECTORIZE_MEMORY, this.ctx.id.toString())
+		const vectorStore = new VectorizeVectorStore(env.VECTORIZE, this.ctx.id.toString())
 		this.app = createApi(getStore(db, undefined, vectorStore))
 	}
 

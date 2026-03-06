@@ -1,4 +1,10 @@
-export type VectorMetadataValue = string | number | boolean | string[]
+export type VectorMetadataValue =
+	| string
+	| number
+	| boolean
+	| string[]
+	| Record<string, string | number | boolean | string[]>
+
 export type VectorMetadata = Record<string, VectorMetadataValue>
 
 export type VectorRecord = {

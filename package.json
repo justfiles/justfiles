@@ -47,9 +47,8 @@
 		"cf-typegen": "wrangler types",
 		"deploy": "wrangler deploy",
 		"dev": "vite",
-		"lint": "biome lint src",
-		"format": "biome format --write src",
-		"check": "biome check --write src",
+		"check": "tsc -b && vite build && wrangler deploy --dry-run",
+		"format": "biome check --write src",
 		"preview": "npm run build && vite preview"
 	},
 	"type": "module"

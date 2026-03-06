@@ -1,23 +1,8 @@
 import type { VectorMatch, VectorQueryInput, VectorRecord, VectorStore } from './index'
 
-type VectorizeLike = {
-	upsert(vectors: VectorRecord[]): Promise<{ mutationId?: string } | void>
-	query(
-		vector: number[] | Float32Array | Float64Array,
-		options?: {
-			topK?: number
-			namespace?: string
-			filter?: Record<string, unknown>
-			returnValues?: boolean
-			returnMetadata?: 'none' | 'indexed' | 'all' | boolean
-		}
-	): Promise<{ matches: VectorMatch[]; count: number }>
-	deleteByIds(ids: string[]): Promise<{ mutationId?: string } | void>
-}
-
 export class VectorizeVectorStore implements VectorStore {
 	constructor(
-		private readonly index: VectorizeLike,
+		private readonly index: VectorizeIndex,
 		private readonly defaultNamespace = 'default'
 	) {}
 
@@ -26,7 +11,7 @@ export class VectorizeVectorStore implements VectorStore {
 		await this.index.upsert(vectors)
 	}
 
-	private memoryFilter(memoryIds?: string[]): Record<string, unknown> | undefined {
+	private memoryFilter(memoryIds?: string[]): VectorizeVectorMetadataFilter | undefined {
 		if (!memoryIds || memoryIds.length === 0) return undefined
 		if (memoryIds.length === 1) return { memory_id: { $eq: memoryIds[0] } }
 		return { memory_id: { $in: memoryIds } }
