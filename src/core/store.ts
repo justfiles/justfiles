@@ -1,0 +1,108 @@
+import { z } from 'zod'
+import { DBClient } from '../db'
+
+export const CaptureInputSchema = z.object({
+	text: z.string(),
+	title: z.string().optional(), // if not given, potentially can generate one using lightweight LLM
+	scope: z.string().optional(), // for permission, e.g. personal, team
+	path: z.string().optional(), // if not provided, we will have a default one, e.g. inbox/<timestamp>
+	occurred_at: z.string().optional(), // if not given, set to now
+	tags: z.array(z.string()).optional(), // user defined
+	source: z.string().optional() // user defined, e.g. agent, human, system
+})
+
+export const SearchInputSchema = z.object({
+	query: z.string(),
+	mode: z.enum(['hybrid', 'semantic', 'exact']).optional(),
+	scope: z.string().optional(),
+	limit: z.number().optional(),
+	min_score: z.number().optional(),
+	filter: z
+		.object({
+			occurred_after: z.string().optional(),
+			occurred_before: z.string().optional(),
+			fields: z
+				.object({
+					tags: z.union([z.string(), z.array(z.string())]).optional(),
+					path_prefix: z.string().optional()
+				})
+				.optional()
+		})
+		.optional(),
+	options: z
+		.object({
+			temporal_decay: z.boolean().optional(),
+			decay_half_life_days: z.number().optional()
+		})
+		.optional()
+})
+
+type CaptureInput = z.infer<typeof CaptureInputSchema>
+type SearchInput = z.infer<typeof SearchInputSchema>
+
+export interface Store {
+	/**
+	 * capture memory, return memory id
+	 */
+	capture(input: CaptureInput): Promise<string>
+
+	/**
+	 * search for memory
+	 */
+	search(input: SearchInput): Promise<SearchResult[]>
+
+	/**
+	 * get a memory by id
+	 */
+	get(id: string): Promise<Memory>
+}
+
+// TODO: implement store
+export function getStore(db: DBClient): Store {
+	return {
+		capture(input) {
+			throw new Error('')
+		},
+		search(input) {
+			throw new Error('')
+		},
+		get(id) {
+			throw new Error('')
+		}
+	}
+}
+
+type SearchResult = {
+	memory_id: string
+	// chunk_id: string // the SearchResult maps to a chunk, but currently chunk is not useful for user
+	path: string
+	// TODO: might be useful for a memory editor/viewer?
+	// start_line: number | null
+	// end_line: number | null
+	score: number
+	snippet: string | null
+	occurred_at: string | null
+	source?: string
+}
+
+type Memory = {
+	id: string
+	scope: string
+	title: string | null
+	raw_text: string
+	path: string // path always have value
+	occurred_at: string | null
+	source: string | null
+	created_at: string
+	updated_at: string
+	links: LinkInfo[]
+	tags: string[]
+}
+
+type LinkInfo = {
+	from_id?: string
+	to_id?: string
+	rel_type: string
+	reason: string | null
+	created_at: string
+}
