@@ -3,6 +3,7 @@ import { migrate } from 'drizzle-orm/durable-sqlite/migrator'
 import migrations from '../../drizzle/migrations'
 import { createApi } from '../core/api'
 import { getStore } from '../core/store'
+import { VectorizeVectorStore } from '../core/vector'
 import { fromDO } from '../db/do'
 
 export class MemoryObject extends DurableObject<Env> {
@@ -14,7 +15,8 @@ export class MemoryObject extends DurableObject<Env> {
 		ctx.blockConcurrencyWhile(async () => {
 			migrate(db, migrations)
 		})
-		this.app = createApi(getStore(db))
+		const vectorStore = new VectorizeVectorStore(env.VECTORIZE_MEMORY, this.ctx.id.toString())
+		this.app = createApi(getStore(db, undefined, vectorStore))
 	}
 
 	async fetch(request: Request) {

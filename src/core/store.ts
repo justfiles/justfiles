@@ -2,6 +2,7 @@ import { and, eq, gte, inArray, like, lte, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import type { DBClient } from '../db'
 import * as schema from '../db/schema'
+import type { VectorStore } from './vector'
 
 export const CaptureInputSchema = z.object({
 	text: z.string(),
@@ -207,30 +208,6 @@ function chunkText(text: string, targetTokens = 400): TextChunk[] {
 	return chunks
 }
 
-function packEmbedding(v: number[]): ArrayBuffer {
-	return new Float32Array(v).buffer
-}
-
-function unpackEmbedding(raw: unknown): number[] {
-	if (raw instanceof ArrayBuffer) return Array.from(new Float32Array(raw))
-	if (raw instanceof Uint8Array) return Array.from(new Float32Array(raw.buffer))
-	if (Array.isArray(raw)) return raw as number[]
-	return []
-}
-
-function cosineSim(a: number[], b: number[]): number {
-	let dot = 0
-	let na = 0
-	let nb = 0
-	for (let i = 0; i < a.length; i++) {
-		dot += a[i] * b[i]
-		na += a[i] * a[i]
-		nb += b[i] * b[i]
-	}
-	const denom = Math.sqrt(na) * Math.sqrt(nb)
-	return denom === 0 ? 0 : dot / denom
-}
-
 function generateSnippet(text: string, query: string, maxLen = 200): string {
 	const firstTerm = query.split(/\s+/)[0].toLowerCase()
 	const idx = text.toLowerCase().indexOf(firstTerm)
@@ -260,7 +237,11 @@ interface CandidateChunk {
 
 // ---- Store Implementation ----
 
-export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
+export function getStore(
+	db: DBClient,
+	embProvider?: EmbeddingProvider,
+	vectorStore?: VectorStore
+): Store {
 	const embModelKey = embProvider ? `${embProvider.provider}:${embProvider.model}` : 'none'
 
 	async function getValidMemoryIds(
@@ -341,7 +322,14 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 		validIds: string[],
 		candidateLimit: number
 	): Promise<CandidateChunk[]> {
-		if (validIds.length === 0 || !embProvider) return []
+		if (validIds.length === 0 || !embProvider || !vectorStore) return []
+
+		const matches = await vectorStore.query({
+			vector: queryEmbedding,
+			topK: Math.min(100, candidateLimit),
+			memoryIds: validIds
+		})
+		if (matches.length === 0) return []
 
 		const chunkRows = await db
 			.select({
@@ -351,40 +339,39 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 				hash: schema.chunks.hash
 			})
 			.from(schema.chunks)
-			.where(inArray(schema.chunks.memory_id, validIds))
-
-		if (chunkRows.length === 0) return []
-
-		const hashes = [...new Set(chunkRows.map((c) => c.hash))]
-		const cachedRows = await db
-			.select({ hash: schema.embeddingsCache.hash, embedding: schema.embeddingsCache.embedding })
-			.from(schema.embeddingsCache)
 			.where(
 				and(
-					inArray(schema.embeddingsCache.hash, hashes),
-					eq(schema.embeddingsCache.provider, embProvider.provider),
-					eq(schema.embeddingsCache.model, embProvider.model)
+					inArray(
+						schema.chunks.id,
+						matches.map((c) => c.id)
+					),
+					inArray(schema.chunks.memory_id, validIds)
 				)
 			)
 
-		const embMap = new Map<string, number[]>()
-		for (const r of cachedRows) {
-			embMap.set(r.hash, unpackEmbedding(r.embedding))
+		if (chunkRows.length === 0) return []
+
+		const chunkMap = new Map<string, (typeof chunkRows)[number]>()
+		for (const row of chunkRows) {
+			chunkMap.set(row.id, row)
 		}
 
-		const scored = chunkRows
-			.filter((c) => embMap.has(c.hash))
-			.map((c) => ({
-				chunkId: c.id,
-				memoryId: c.memory_id,
-				text: c.text,
-				hash: c.hash,
-				similarity: cosineSim(queryEmbedding, embMap.get(c.hash)!)
-			}))
-			.sort((a, b) => b.similarity - a.similarity)
-			.slice(0, candidateLimit)
+		const scored = matches
+			.map((match, rank) => {
+				const row = chunkMap.get(match.id)
+				if (!row) return null
+				return {
+					chunkId: row.id,
+					memoryId: row.memory_id,
+					text: row.text,
+					hash: row.hash,
+					similarity: match.score,
+					rank
+				}
+			})
+			.filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
 
-		return scored.map((c, rank) => ({ ...c, rank }))
+		return scored.slice(0, candidateLimit)
 	}
 
 	function rrf(lists: CandidateChunk[][], k = 60): CandidateChunk[] {
@@ -507,46 +494,19 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 			const textChunks = chunkText(normalized)
 			const chunkHashes = await Promise.all(textChunks.map((c) => sha256hex(c.text)))
 
-			// Compute/cache embeddings if provider is configured
-			const embeddingMap = new Map<string, number[]>()
-			if (embProvider && chunkHashes.length > 0) {
-				const cachedRows = await db
-					.select({
-						hash: schema.embeddingsCache.hash,
-						embedding: schema.embeddingsCache.embedding
-					})
-					.from(schema.embeddingsCache)
-					.where(
-						and(
-							inArray(schema.embeddingsCache.hash, chunkHashes),
-							eq(schema.embeddingsCache.provider, embProvider.provider),
-							eq(schema.embeddingsCache.model, embProvider.model)
-						)
-					)
-				for (const r of cachedRows) {
-					embeddingMap.set(r.hash, unpackEmbedding(r.embedding))
-				}
-
-				const missingHashes = chunkHashes.filter((h) => !embeddingMap.has(h))
-				if (missingHashes.length > 0) {
-					const missingTexts = missingHashes.map((h) => textChunks[chunkHashes.indexOf(h)].text)
-					const newEmbs = await embProvider.embed(missingTexts)
-					for (let i = 0; i < missingHashes.length; i++) {
-						embeddingMap.set(missingHashes[i], newEmbs[i])
-						await db
-							.insert(schema.embeddingsCache)
-							.values({
-								hash: missingHashes[i],
-								provider: embProvider.provider,
-								model: embProvider.model,
-								dims: embProvider.dims,
-								embedding: packEmbedding(newEmbs[i]),
-								updated_at: now
-							})
-							.onConflictDoNothing()
-					}
-				}
+			// Compute embeddings for this capture when provider + vector store are configured
+			let embeddings: number[][] = []
+			if (embProvider && vectorStore && chunkHashes.length > 0) {
+				embeddings = await embProvider.embed(textChunks.map((c) => c.text))
 			}
+			const vectorsToIndex: Array<{
+				id: string
+				values: number[]
+				metadata: {
+					memory_id: string
+					embedding_model: string
+				}
+			}> = []
 
 			// Insert memory record
 			const memoryId = genId('mem')
@@ -573,8 +533,9 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 			// Insert chunks
 			for (let i = 0; i < textChunks.length; i++) {
 				const chunk = textChunks[i]
+				const chunkId = genId('chk')
 				await db.insert(schema.chunks).values({
-					id: genId('chk'),
+					id: chunkId,
 					memory_id: memoryId,
 					seq: chunk.seq,
 					start_line: chunk.startLine,
@@ -585,6 +546,20 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 					embedding_model: embModelKey,
 					updated_at: now
 				})
+				if (embeddings[i] !== undefined) {
+					vectorsToIndex.push({
+						id: chunkId,
+						values: embeddings[i],
+						metadata: {
+							memory_id: memoryId,
+							embedding_model: embModelKey
+						}
+					})
+				}
+			}
+
+			if (vectorsToIndex.length > 0 && vectorStore) {
+				await vectorStore.upsert(vectorsToIndex)
 			}
 
 			// Write audit event
@@ -616,14 +591,14 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 			if (mode === 'exact') {
 				candidates = exactSearch(input.query, validIds, candidateLimit)
 			} else if (mode === 'semantic') {
-				if (!embProvider) return []
+				if (!embProvider || !vectorStore) return []
 				const [queryEmb] = await embProvider.embed([input.query])
 				candidates = await semanticSearch(queryEmb, validIds, candidateLimit)
 			} else {
 				// hybrid: run exact and semantic in parallel, merge via RRF
 				const [exactCands, semanticCands] = await Promise.all([
 					exactSearch(input.query, validIds, candidateLimit),
-					embProvider
+					embProvider && vectorStore
 						? embProvider
 								.embed([input.query])
 								.then(([emb]) => semanticSearch(emb, validIds, candidateLimit))

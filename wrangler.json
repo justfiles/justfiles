@@ -29,14 +29,24 @@
 	"migrations": [
 		{
 			"tag": "v1",
-			"new_sqlite_classes": ["MemoryObject"]
+			"new_sqlite_classes": [
+				"MemoryObject"
+			]
 		}
 	],
 	"rules": [
 		{
 			"type": "Text",
-			"globs": ["**/*.sql"],
+			"globs": [
+				"**/*.sql"
+			],
 			"fallthrough": true
+		}
+	],
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "ghostore-memory-openai3small-512"
 		}
 	]
 	/**
