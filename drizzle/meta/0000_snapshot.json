@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e30ae75d-49e9-4837-bf5e-582075dff12d",
+  "id": "9026a520-1a3c-4577-9a5e-e18f62be4f7f",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "chunks": {
@@ -254,13 +254,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false,
-          "autoincrement": false
-        },
-        "raw_text": {
-          "name": "raw_text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
           "autoincrement": false
         },
         "content_hash": {

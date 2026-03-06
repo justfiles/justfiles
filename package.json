@@ -42,6 +42,7 @@
 	},
 	"private": true,
 	"scripts": {
+		"db:generate": "drizzle-kit generate",
 		"build": "tsc -b && vite build",
 		"cf-typegen": "wrangler types",
 		"deploy": "wrangler deploy",

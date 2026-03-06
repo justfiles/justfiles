@@ -1,0 +1,49 @@
+* Ghostore
+
+A focused memory service for humans and AI agents. See [[file:plan.org][plan.org]] for full design.
+
+* Development
+
+#+begin_src sh
+npm install
+npm run dev
+#+end_src
+
+The dev server starts a local Cloudflare Worker with a Durable Object backed by a persisted SQLite file at =.wrangler/state/v3/do/=.
+
+** Database (dev)
+
+Migrations run automatically on the *first request* after startup. The Durable Object constructor calls =migrate(db, migrations)= inside =blockConcurrencyWhile=, blocking all requests until pending migrations complete.
+
+The local SQLite state persists across restarts. If you need a clean slate:
+
+#+begin_src sh
+rm -rf .wrangler/state
+#+end_src
+
+** Schema changes
+
+1. Edit =src/db/schema.ts=
+2. Run:
+   #+begin_src sh
+   npm run db:generate
+   #+end_src
+   This runs =drizzle-kit generate=, which diffs the schema against =drizzle/meta/=, creates a new =drizzle/NNNN_<name>.sql= file, and updates =drizzle/migrations.js= with the new import automatically.
+3. Commit everything together: =src/db/schema.ts=, =drizzle/*.sql=, =drizzle/meta/=, =drizzle/migrations.js=.
+
+Do not edit =drizzle/meta/= or =drizzle/migrations.js= by hand — both are managed by drizzle-kit.
+
+* Production
+
+#+begin_src sh
+npm run build
+npm run deploy
+#+end_src
+
+** Database (prod)
+
+Each Durable Object instance has its own embedded SQLite database managed by Cloudflare. There is no separate provisioning step.
+
+Migrations run automatically on the first request to each Durable Object instance. For a brand-new deployment all migrations run in sequence on first request; for an existing deployment only new migrations run.
+
+To export data from a live instance, use the =Download DB= button in the UI, which downloads the =memories= table as JSON via =GET /api/v1/export=.

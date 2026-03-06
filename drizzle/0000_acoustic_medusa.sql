@@ -37,7 +37,6 @@ CREATE TABLE `memories` (
 	`id` text PRIMARY KEY NOT NULL,
 	`scope` text NOT NULL,
 	`title` text,
-	`raw_text` text NOT NULL,
 	`content_hash` text NOT NULL,
 	`path` text NOT NULL,
 	`occurred_at` text,

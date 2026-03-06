@@ -554,7 +554,6 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 				id: memoryId,
 				scope,
 				title: input.title ?? null,
-				raw_text: normalized,
 				content_hash: hash,
 				path,
 				occurred_at: input.occurred_at ?? null,
@@ -646,13 +645,18 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 			if (!rows.length) throw new Error(`Memory not found: ${id}`)
 			const m = rows[0]
 
-			const [tagRows, outgoing, incoming] = await Promise.all([
+			const [tagRows, outgoing, incoming, chunkRows] = await Promise.all([
 				db
 					.select({ tag: schema.memoryTags.tag })
 					.from(schema.memoryTags)
 					.where(eq(schema.memoryTags.memory_id, id)),
 				db.select().from(schema.memoryLinks).where(eq(schema.memoryLinks.from_id, id)),
-				db.select().from(schema.memoryLinks).where(eq(schema.memoryLinks.to_id, id))
+				db.select().from(schema.memoryLinks).where(eq(schema.memoryLinks.to_id, id)),
+				db
+					.select({ text: schema.chunks.text })
+					.from(schema.chunks)
+					.where(eq(schema.chunks.memory_id, id))
+					.orderBy(schema.chunks.seq)
 			])
 
 			// Update retrieval stats
@@ -669,7 +673,7 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 				id: m.id,
 				scope: m.scope,
 				title: m.title,
-				raw_text: m.raw_text,
+				raw_text: chunkRows.map((c) => c.text).join('\n'),
 				path: m.path,
 				occurred_at: m.occurred_at,
 				source: m.source,

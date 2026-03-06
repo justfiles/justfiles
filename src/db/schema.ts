@@ -9,7 +9,6 @@ export const memories = sqliteTable('memories', {
 	id: text('id').primaryKey(),
 	scope: text('scope').notNull(),
 	title: text('title'),
-	raw_text: text('raw_text').notNull(),
 	content_hash: text('content_hash').notNull(),
 	path: text('path').notNull(),
 	occurred_at: text('occurred_at'),

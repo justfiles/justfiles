@@ -17,7 +17,17 @@ export class MemoryObject extends DurableObject<Env> {
 		this.app = createApi(getStore(db))
 	}
 
-	fetch(request: Request) {
+	async fetch(request: Request) {
+		const url = new URL(request.url)
+		if (request.method === 'GET' && url.pathname.endsWith('/v1/export')) {
+			const rows = this.ctx.storage.sql.exec('SELECT * FROM chunks').toArray()
+			return new Response(JSON.stringify(rows, null, 2), {
+				headers: {
+					'Content-Type': 'application/json',
+					'Content-Disposition': 'attachment; filename="memories.json"'
+				}
+			})
+		}
 		return this.app.fetch(request)
 	}
 }
