@@ -4,6 +4,7 @@ import { DurableObject } from 'cloudflare:workers'
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator'
 import migrations from '../../drizzle/migrations.js'
 import { createApi } from '../core/api'
+import { openAI } from '../core/embedding.openai'
 import { getStore } from '../core/store'
 import { VectorizeVectorStore } from '../core/vector.vectorize'
 import { fromDO } from '../db/do'
@@ -18,7 +19,7 @@ export class MemoryObject extends DurableObject<Env> {
 			migrate(db, migrations)
 		})
 		const vectorStore = new VectorizeVectorStore(env.VECTORIZE, this.ctx.id.toString())
-		this.app = createApi(getStore(db, undefined, vectorStore))
+		this.app = createApi(getStore(db, openAI(env.OPENAI_KEY), vectorStore))
 	}
 
 	async fetch(request: Request) {

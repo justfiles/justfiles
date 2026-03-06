@@ -2,8 +2,8 @@ import { and, eq, gte, inArray, like, lte, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import type { DBClient } from '../db'
 import * as schema from '../db/schema'
-import type { VectorStore } from './vector'
 import type { EmbeddingProvider } from './embedding'
+import type { VectorStore } from './vector'
 
 export const CaptureInputSchema = z.object({
 	text: z.string(),

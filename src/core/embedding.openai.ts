@@ -1,4 +1,4 @@
-import { EmbeddingProvider } from './embedding'
+import type { EmbeddingProvider } from './embedding'
 
 type OpenAIEmbeddingResponse = {
 	data: Array<{
