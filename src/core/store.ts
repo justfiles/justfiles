@@ -305,27 +305,27 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 		return ids
 	}
 
-	async function exactSearch(
+	function exactSearch(
 		query: string,
 		validIds: string[],
 		candidateLimit: number
-	): Promise<CandidateChunk[]> {
+	): CandidateChunk[] {
 		if (validIds.length === 0) return []
 
-		// TODO: upgrade to FTS5 BM25 via raw SQL once the chunks_fts virtual table
-		// is confirmed available in the target environment (requires a DDL migration).
-		// For now, match the first query term with LIKE.
-		const term = query.split(/\s+/)[0]
-		const rows = await db
-			.select({
-				id: schema.chunks.id,
-				memory_id: schema.chunks.memory_id,
-				text: schema.chunks.text,
-				hash: schema.chunks.hash
-			})
-			.from(schema.chunks)
-			.where(and(inArray(schema.chunks.memory_id, validIds), like(schema.chunks.text, `%${term}%`)))
-			.limit(candidateLimit)
+		const rows = db.all<{ id: string; memory_id: string; text: string; hash: string }>(
+			sql`
+				SELECT c.id, c.memory_id, c.text, c.hash
+				FROM chunks_fts f
+				JOIN chunks c ON c.id = f.chunk_id
+				WHERE chunks_fts MATCH ${query}
+				AND c.memory_id IN (${sql.join(
+					validIds.map((id) => sql`${id}`),
+					sql`, `
+				)})
+				ORDER BY f.rank
+				LIMIT ${candidateLimit}
+			`
+		)
 
 		return rows.map((r, rank) => ({
 			chunkId: r.id,
@@ -615,7 +615,7 @@ export function getStore(db: DBClient, embProvider?: EmbeddingProvider): Store {
 			let candidates: CandidateChunk[]
 
 			if (mode === 'exact') {
-				candidates = await exactSearch(input.query, validIds, candidateLimit)
+				candidates = exactSearch(input.query, validIds, candidateLimit)
 			} else if (mode === 'semantic') {
 				if (!embProvider) return []
 				const [queryEmb] = await embProvider.embed([input.query])

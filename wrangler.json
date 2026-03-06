@@ -18,11 +18,25 @@
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"
 	},
-	"d1_databases": [
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "STORE",
+				"class_name": "MemoryObject"
+			}
+		]
+	},
+	"migrations": [
 		{
-			"binding": "db",
-			"database_name": "ghostore",
-			"database_id": "5d9a6fc0-8983-4fff-b710-b7a76f7ba1ee"
+			"tag": "v1",
+			"new_sqlite_classes": ["MemoryObject"]
+		}
+	],
+	"rules": [
+		{
+			"type": "Text",
+			"globs": ["**/*.sql"],
+			"fallthrough": true
 		}
 	]
 	/**

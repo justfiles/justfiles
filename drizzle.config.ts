@@ -4,7 +4,5 @@ export default defineConfig({
   out: './drizzle',
   schema: './src/db/schema.ts',
   dialect: 'sqlite',
-  dbCredentials: {
-    url: process.env['DB_PATH'] ?? 'ghost.db',
-  },
+  driver: 'durable-sqlite',
 });

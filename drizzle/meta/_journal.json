@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1772781796909,
+      "tag": "0000_mean_romulus",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1741219200000,
+      "tag": "0001_chunks_fts5",
+      "breakpoints": true
+    }
+  ]
+}

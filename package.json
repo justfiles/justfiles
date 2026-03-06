@@ -13,6 +13,7 @@
 	},
 	"dependencies": {
 		"@hono/zod-validator": "^0.7.6",
+		"better-sqlite3": "^12.6.2",
 		"dotenv": "^17.3.1",
 		"drizzle-orm": "^0.45.1",
 		"hono": "4.11.1",
@@ -23,6 +24,7 @@
 		"@biomejs/biome": "^2.4.6",
 		"@cloudflare/vite-plugin": "1.15.3",
 		"@eslint/js": "9.39.1",
+		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^25.3.4",
 		"@types/react": "19.2.7",
 		"@types/react-dom": "19.2.3",
@@ -44,9 +46,9 @@
 		"cf-typegen": "wrangler types",
 		"deploy": "wrangler deploy",
 		"dev": "vite",
-    "lint": "biome lint src",
-    "format": "biome format --write src",
-    "check": "biome check --write src",
+		"lint": "biome lint src",
+		"format": "biome format --write src",
+		"check": "biome check --write src",
 		"preview": "npm run build && vite preview"
 	},
 	"type": "module"
