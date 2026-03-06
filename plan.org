@@ -1,0 +1,796 @@
+* Ghost Memory System
+
+A focused memory service for humans and AI agents.
+
+Philosophy: store anything, find anything, with AI that helps you capture well but never decides for you. How memories are organized and used is entirely up to the caller — human or LLM. The system provides the primitives; patterns emerge from usage.
+
+Closest analogies:
+- *Obsidian*: flexible, user-controlled organization with no imposed workflow
+- *QMD*: powerful local search pipeline (BM25 + vector + reranking)
+
+What this system is *not*: a workflow engine, an automation platform, or an opinionated second-brain app. It is infrastructure.
+
+The Obsidian analogy is about *philosophy*, not identity model. Obsidian is file-path-first: every note has a path, links use paths, navigation is path-based. This system is ID-first: every memory gets a stable ~memory_id~. Every memory also has a ~path~, auto-assigned as ~inbox/<timestamp>~ when the caller does not specify one. The reason is that many memories — captured observations, log entries, facts, agent outputs — are records, not documents. They have no natural path. Callers who want Obsidian-style addressing supply a path explicitly (e.g. ~meetings/2026-03-04~) and get deterministic, path-addressable memories with upsert semantics. Callers who don't get a stable ID and find memories through search. The path hierarchy replaces named collections: the first segment is the collection by convention (~inbox~, ~meetings~, ~projects/ghost~), discoverable via path-prefix queries. The analogy is borrowed for its spirit: no imposed workflow, powerful search over explicit hierarchy, the system provides primitives and stays out of the way.
+
+** Design Principles
+
+- *Search is the primary interface.* Retrieval quality matters more than elaborate organization schemes. Powerful search reduces the need for rigid folder hierarchies.
+- *AI suggests, caller decides.* AI assistance on capture (tags, title) is offered as recommendations. No automatic writes without caller approval.
+- *Dumb store, smart retrieval.* The storage model is simple and flat. The retrieval pipeline is where sophistication lives.
+- *MCP first.* Primary integration surface is MCP tools. REST API is the backing implementation.
+- *Local first, service-ready.* SQLite for MVP. Architecture stays clean for multi-tenant later without rewrites.
+- *Provenance from day one.* Every write records who (human/agent/integration) wrote what and when. Non-negotiable.
+- *Agents as maintenance workers.* Agents are first-class writers and editors, not read-only consumers. A maintenance agent that searches for stale facts and corrects them is a primary use case, not an edge case. Edit primitives are designed with agent callers in mind first, human UI second.
+
+-----
+
+* Section 1: Features
+
+Priority tiers:
+- *P0* — must ship before anything is usable
+- *P1* — needed for real, sustained usage
+- *P2* — quality and robustness improvements
+- *P3* — V2 enhancements, add when P0–P2 are stable
+
+** P0: Capture
+
+Accept raw text and store it as a searchable memory. The minimum useful action.
+
+Input: text (required), everything else optional. Path defaults to ~inbox/<timestamp>~, scope to ~personal~.
+
+Behavior on write:
+1. Normalize text (whitespace, encoding)
+2. Hash content for exact-dedupe check
+3. Chunk text into retrieval-sized pieces
+4. Generate embeddings per chunk
+5. Store memory + chunks + vectors + ingest event atomically
+
+AI assistance is a separate call (see P1: Capture Suggestions). This endpoint is deliberately dumb: what you send is what gets stored.
+
+Key decisions baked in:
+- ~source~ freeform string on every write for attribution (e.g. ~agent:planner~, ~https://example.com~). Opaque to the system; stored and returned as-is.
+- Dedupe is always on: content_hash comparison, no option to disable. Identical content from any source returns the existing memory.
+- ~path~ enables deterministic upsert: capturing to an existing path archives the old memory and creates a new one, preserving the event chain. Auto-assigned as ~inbox/<timestamp>~ when not provided.
+
+** P0: Hybrid Search
+
+Find memories by meaning, by exact terms, or both. This is the core value proposition.
+
+Three modes exposed via a single endpoint. ~mode~ is optional, defaults to ~hybrid~:
+- ~exact~ — BM25/FTS full-text, best for IDs, names, code symbols, quoted phrases
+- ~semantic~ — vector similarity, best for intent and paraphrased queries
+- ~hybrid~ — default, combines both via Reciprocal Rank Fusion (RRF)
+
+Hybrid pipeline (committed implementation):
+1. Evaluate filters → produce the set of valid chunk rowids via an indexed SQL query on ~memories~ and ~chunks~. All filter criteria (scope, fields bag, date ranges, active flag) are applied here, before any retrieval.
+2. Run BM25 and vector search in parallel, both constrained to the valid rowid set, each returning a candidate pool of ~limit × 4~
+3. Merge via RRF: ~score = Σ(1 / (60 + rank))~ across both lists
+4. Return top ~limit~ with snippet, score, and provenance
+
+Pre-filtering is required, not optional. Post-filtering would silently drop valid results whenever relevant memories rank outside the unfiltered candidate pool — a silent correctness failure under narrow filters.
+
+Score detail (bm25 contribution, vector contribution, final) included when requested, off by default.
+
+** P0: Get Memory
+
+Fetch the full content of a memory by ID. Used after a search hit when the snippet is not enough.
+
+Returns: raw_text, tags, links, source, occurred_at, created_at.
+
+Also supports batch fetch: POST a list of memory_ids and get all back in one round trip. Agents routinely need 3–5 full memories after a search; N sequential GETs is unacceptable latency.
+
+** P0: Archive (Soft Delete)
+
+Mark a memory inactive. Preserves the full audit trail. Archived memories are excluded from search and from get. The full audit trail is preserved in the events table.
+
+The archive event records who archived it and when, using the same source field as writes.
+
+** P0: Status
+
+Health endpoint. Returns: total memories, total chunks, embedding backlog size, index freshness timestamp. Used by agents to orient themselves and by operators to monitor the system.
+
+** P0: MCP Interface
+
+Thin MCP wrapper over the REST API. This is the primary integration surface — not an afterthought.
+
+Tools exposed:
+- ~memory_capture~ → POST /v1/capture
+- ~memory_suggest~ → POST /v1/suggest (see P1)
+- ~memory_search~ → POST /v1/search
+- ~memory_get~ → GET /v1/{memory_id}
+- ~memory_batch~ → POST /v1/memories/batch
+- ~memory_status~ → GET /v1/status
+
+Tool descriptions are written for LLM comprehension, not just human readers. Input schemas are strict (no freeform fields) so agents learn reliable usage patterns quickly.
+
+Transport: stdio for local MVP, HTTP daemon mode for shared/persistent use (avoids model reload overhead when running locally).
+
+** P1: Path Browsing and Tags
+
+Organizational primitives, both first-class.
+
+Path hierarchy replaces named collections. The first segment of a path is the collection by convention (~inbox~, ~meetings~, ~projects/ghost~). No registration or schema required — the hierarchy emerges from the paths callers use. Browse by prefix to navigate it.
+
+Tags: free-form labels, many-to-many. No enforced vocabulary at MVP. Used for filtering in search and for browsing.
+
+Endpoints:
+- ~GET /v1/paths~ — list distinct path prefixes (up to depth N) with memory counts
+- ~GET /v1/paths/{prefix}~ — memories under this path prefix, paginated
+- ~GET /v1/tags~ — all tags with counts
+- ~GET /v1/tags/{tag}~ — memories with this tag, paginated
+
+** P1: AI-Assisted Capture Suggestions
+
+The friction-reduction feature. Before capturing, or as part of capture flow, the system analyzes the text and returns suggestions. The caller (human UI or LLM) decides what to apply.
+
+Separate endpoint: ~POST /v1/suggest~
+
+Input: text (required), optionally hint at context.
+
+Output:
+#+begin_src json
+{
+  "tags": [
+    { "name": "javascript", "confidence": 0.91 },
+    { "name": "architecture", "confidence": 0.74 }
+  ],
+  "title": "Switch to RRF for hybrid search fusion",
+  "similar": [
+    { "memory_id": "mem_...", "score": 0.91, "snippet": "..." }
+  ]
+}
+#+end_src
+
+The ~similar~ field surfaces near-duplicates before write so the caller can decide to update an existing memory via its path instead of creating a new one. This is the semantic-dedupe solution: suggest rather than automate.
+
+The suggestion call does not write anything. It is purely advisory.
+
+Implementation: small prompt to a configured LLM for tag/title inference, plus a fast vector search for the similar field. If no LLM is configured, returns empty suggestions (graceful degradation — capture still works).
+
+** P1: Edit and Maintenance
+
+Two editing primitives with different cost profiles. Both are agent-first — the human UI benefits from the same endpoints.
+
+The distinction from capture's path upsert:
+| Primitive                   | memory_id                  | Use case                                       |
+|-----------------------------+----------------------------+------------------------------------------------|
+| ~POST /v1/capture~ with ~path~ | Changes (archive + create) | Agent replacing a canonical note entirely      |
+| ~PATCH /v1/{memory_id}~            | Stable                     | Metadata correction, tag update, status change |
+| ~PUT /v1/{memory_id}~              | Stable                     | Text correction or rewrite, keeps identity     |
+
+*PATCH — metadata only*
+
+Updates title, tags, occurred_at. Does not re-chunk or re-embed. Cheap.
+
+#+begin_src json
+PATCH /v1/{memory_id}
+{
+  "title": "updated title",
+  "tags": ["add-this"],
+  "occurred_at": "ISO-8601",
+  "source": "agent:maintenance-agent",
+  "reason": "Correcting title based on content review"
+}
+#+end_src
+
+~reason~ is stored in ~events.payload_json~. Required when source indicates an agent caller, optional for human edits. Without reason, agent edits are unauditable.
+
+Writes a ~patch~ event to the events table. Returns the updated memory.
+
+*PUT — text replacement*
+
+Replaces ~raw_text~ in place. Re-chunks and re-embeds. Keeps the same ~memory_id~. Writes an ~update~ event with the previous content hash in ~payload_json~ so diffs are reconstructable.
+
+#+begin_src json
+PUT /v1/{memory_id}
+{
+  "text": "corrected full text",
+  "source": "agent:maintenance-agent",
+  "reason": "API endpoint changed from /v1/users to /v2/users per mem_xyz"
+}
+#+end_src
+
+Re-uses the embeddings cache for unchanged chunks. In practice a small correction to a large memory only re-embeds the affected chunks.
+
+An agent that wants to record a relationship between two memories — whether that is a correction, a contradiction, a derivation, or anything else — creates a link with a caller-defined ~rel_type~ and a ~reason~. What those relationships mean and what to do with them is entirely the caller's concern.
+
+** P1: Memory Links
+
+Explicit relationships between memories, as a first-class concept. Agents use these during maintenance and to connect artifacts they derive from source material. The human UI uses them for navigation and graph views.
+
+~rel_type~ is a *free-form string*. The system stores and indexes it but does not interpret it. Callers define their own taxonomy:
+
+#+begin_example
+summary-of, action-item-from, reminder-for, source     -- artifact workflows
+cites, refutes, expands-on                              -- research workflows
+blocks, depends-on, spawned-from                        -- project workflows
+supersedes, derived-from, related                       -- general purpose
+#+end_example
+
+The system makes no assumption about what any rel_type means. Common conventions can be documented but are never enforced. Multiple links between the same two memories are valid as long as ~rel_type~ differs — a memory can be both a ~summary-of~ and an ~action-item-from~ the same source.
+
+The system does not hold a concept of conflict. Whether two memories contradict each other is domain knowledge — only the caller has the context to make that determination. An agent that wants to track contradictions uses ~rel_type: "contradicts"~ (or any string it chooses) and queries links by that type. The system treats it identically to any other rel_type.
+
+#+begin_src sql
+memory_links (
+  from_id     TEXT NOT NULL REFERENCES memories(id),
+  to_id       TEXT NOT NULL REFERENCES memories(id),
+  rel_type    TEXT NOT NULL,       -- free-form, caller-defined
+  actor_type  TEXT,
+  actor_name  TEXT,
+  reason      TEXT,
+  created_at  DATETIME NOT NULL,
+  PRIMARY KEY (from_id, to_id, rel_type)
+)
+#+end_src
+
+API:
+- ~POST /v1/{memory_id}/links~ — create a link. Body: ~{ "to_id", "rel_type", "reason", "source" }~
+- ~GET /v1/{memory_id}/links~ — list all outgoing and incoming links, optionally filtered by ~rel_type~
+- ~DELETE /v1/{memory_id}/links/{to_id}/{rel_type}~ — remove a specific link
+- ~GET /v1/link-types~ — list distinct ~rel_type~ values in use across the store, with counts. Same pattern as ~GET /v1/tags~. Helps agents and humans discover the taxonomy in use without it being enforced.
+
+Links are included in the GET /v1/{memory_id} full memory response. They are not used in search ranking at this stage — that is a P3 consideration.
+
+** P1: Embedding Model Lifecycle
+
+Changing the embedding provider or model silently corrupts the search index — every stored vector becomes incompatible. This must be handled explicitly.
+
+Behavior:
+- Store provider + model + endpoint + dims fingerprint in the ~meta~ table at index creation
+- On startup, compare current config fingerprint against stored fingerprint
+- On mismatch: log a clear error, block semantic and hybrid search, expose reindex status in /v1/status
+- ~POST /v1/admin/reindex~ triggers a background reindex of all chunks against the new model
+
+Chunk records store their own ~embedding_model~ field so partial reindexes and model transitions are traceable.
+
+** P2: Boundary-Aware Chunking
+
+Fixed-size chunking at 400 tokens cuts mid-sentence and mid-paragraph. For Markdown-heavy content (notes, docs, meeting transcripts) this meaningfully degrades retrieval quality because context is lost at chunk edges.
+
+Implement a scored boundary algorithm with Markdown structure awareness:
+- H1–H6 headings: highest break score
+- Code block fences: high break score (keep code together)
+- Horizontal rules, blank lines: medium break score
+- List items, line breaks: low break score
+
+When approaching the token target, search a window before the cutoff and cut at the highest-scoring break point. Code blocks that exceed chunk size stay whole when possible.
+
+Config: ~chunk_strategy: boundary_aware|fixed~, default ~boundary_aware~.
+
+** P2: Lifecycle Fields
+
+Reserve schema columns now even though enforcement logic is V2. Adding columns to a table with significant data later requires migrations that break deployments.
+
+Add to ~memories~ table at schema creation:
+#+begin_src sql
+expires_at        DATETIME DEFAULT NULL,
+last_retrieved_at DATETIME DEFAULT NULL,
+retrieval_count   INTEGER  DEFAULT 0
+#+end_src
+
+Update ~last_retrieved_at~ and increment ~retrieval_count~ on every GET and every search hit. These are cheap writes that enable TTL enforcement, freshness scoring, and temporal decay in retrieval later.
+
+** P2: Temporal Decay in Search
+
+Recent memories should rank higher than older ones for the same semantic query, all else equal. Especially important when daily notes accumulate over months.
+
+Apply an exponential decay multiplier to scores before final ranking:
+~decayed_score = score × e^(-λ × age_in_days)~
+where ~λ = ln(2) / half_life_days~.
+
+Default half-life: 30 days. Configurable. Undated canonical memories (ones without ~occurred_at~) are exempt from decay.
+
+Off by default, opt-in via search request: ~"options": { "temporal_decay": true }~.
+
+** P2: Score Detail in Search Response
+
+For debugging and agent self-correction ("why did I retrieve this?"). Include BM25 score, vector score, and final fused score as an optional field in each search result.
+
+Returned only when ~include.score_detail: true~ in the search request. Default off to keep response size lean.
+
+** P3: Query Expansion
+
+Before searching, generate 1–2 alternative phrasings of the query using a small LLM. Run all variants through the search pipeline and fuse results with RRF, giving the original query 2× weight.
+
+This significantly improves recall for short or ambiguous queries ("authentication flow" → also searches "login process", "auth mechanism").
+
+Requires a configured LLM. Off by default, opt-in via search request: ~"options": { "query_expansion": true }~. No-op if LLM is not configured.
+
+** P3: LLM Reranking
+
+After RRF fusion, run the top 20–30 candidates through a cross-encoder reranker (a small local model like Qwen3-Reranker-0.6B). The reranker scores each (query, chunk) pair directly rather than comparing embeddings, and tends to catch relevance that vector similarity misses.
+
+Position-aware blending: trust RRF more for top-ranked candidates, trust reranker more for lower-ranked ones.
+
+Requires node-llama-cpp or equivalent. Off by default, opt-in. Adds 200–800ms latency depending on hardware. Worth it for high-stakes retrieval tasks.
+
+** P3: Session/Conversation Memory
+
+Index conversation transcripts as a searchable memory source alongside written notes. Enables retrieval of "what was discussed in past sessions" without the agent manually writing summaries.
+
+Stored under a separate path prefix (e.g. ~sessions/~) with automatic TTL (raw transcripts expire after N days, summaries persist). Privacy model: session memories are only visible within the same scope, never cross-scope.
+
+Distinct from the capture API: sessions are ingested automatically by the runtime (Claude Code, OpenClaw, etc.) rather than via explicit capture calls.
+
+** Out of Scope
+
+These are explicitly not part of this system. Callers can implement them on top of the API.
+
+- *Triggered ingestion connectors* (email, calendar, CRM, Slack): integration work that belongs in a separate layer. The capture API is stable; connectors call it. Not the system's responsibility.
+- *Reflection and consolidation loops*: LLM callers can implement this by searching for related memories, synthesizing, and re-capturing to a path. The system doesn't schedule or automate it.
+- *Automatic canonical note synthesis*: same. Callers decide when to synthesize; the system stores the result.
+- *Complex policy DSL*: scope + path + tag filtering is enough. Advanced ABAC/RBAC is a service-tier concern.
+- *Quality evaluation harness* (recall@k, citation rate): requires a golden dataset and production traffic. Latency and error rate are observable from day one; quality metrics require real users first.
+- *Graph visualization*: the ~memory_links~ table provides the data; rendering it as an interactive graph is a UI concern, not a memory system concern.
+
+-----
+
+* Section 2: Implementation
+
+Ordered by dependency. Each phase produces something usable before the next phase starts.
+
+** Phase 1: Working Foundation
+
+Goal: end-to-end capture → store → search → retrieve. Nothing else. Every subsequent phase builds on this.
+
+*** 1.1 Schema (SQLite)
+
+Create all tables in a single migration. Reserve lifecycle columns now (expires_at, last_retrieved_at, retrieval_count) even though they are not enforced yet.
+
+Tables:
+#+begin_src sql
+-- System metadata
+meta (key TEXT PRIMARY KEY, value TEXT)
+-- Stores: schema_version, embedding_provider, embedding_model,
+--         embedding_dims, embedding_endpoint, chunk_strategy,
+--         chunk_size_tokens, chunk_overlap_tokens
+
+-- Primary memory records
+memories (
+  id TEXT PRIMARY KEY,               -- mem_<ulid>
+  scope TEXT NOT NULL,               -- personal | <scope_name>
+  title TEXT,
+  raw_text TEXT NOT NULL,
+  content_hash TEXT NOT NULL,        -- SHA-256 of normalized text
+  path TEXT NOT NULL,                -- hierarchical address; first segment = collection by convention
+                                     -- auto-assigned as inbox/<timestamp> when caller omits
+  occurred_at DATETIME,              -- when the thing happened
+  source TEXT,                       -- freeform attribution string, opaque to the system
+  active INTEGER NOT NULL DEFAULT 1,
+  expires_at DATETIME,               -- reserved, not enforced in P0
+  last_retrieved_at DATETIME,        -- updated on GET and search hits
+  retrieval_count INTEGER DEFAULT 0, -- updated on GET and search hits
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL
+)
+
+-- Tags (many-to-many)
+memory_tags (
+  memory_id TEXT NOT NULL REFERENCES memories(id),
+  tag TEXT NOT NULL,
+  PRIMARY KEY (memory_id, tag)
+)
+
+-- Text chunks for retrieval
+chunks (
+  id TEXT PRIMARY KEY,               -- chk_<ulid>
+  memory_id TEXT NOT NULL REFERENCES memories(id),
+  seq INTEGER NOT NULL,              -- chunk order within memory
+  start_line INTEGER,
+  end_line INTEGER,
+  text TEXT NOT NULL,
+  token_count INTEGER,
+  hash TEXT NOT NULL,                -- SHA-256 of chunk text
+  embedding_model TEXT NOT NULL,     -- provider:model fingerprint
+  updated_at DATETIME NOT NULL
+)
+
+-- Embedding cache (avoid recomputing unchanged chunks)
+embeddings_cache (
+  hash TEXT NOT NULL,                -- chunk text hash
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  embedding BLOB NOT NULL,           -- raw float32 array
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (hash, provider, model)
+)
+
+-- Audit event log
+events (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT REFERENCES memories(id),
+  event_type TEXT NOT NULL,          -- capture|archive|patch|update|link|propose|resolve
+  actor_type TEXT,                   -- agent|human|system
+  actor_name TEXT,
+  at DATETIME NOT NULL,
+  payload_json TEXT                  -- diff, reason, or context
+)
+
+-- Explicit relationships between memories
+memory_links (
+  from_id    TEXT NOT NULL REFERENCES memories(id),
+  to_id      TEXT NOT NULL REFERENCES memories(id),
+  rel_type   TEXT NOT NULL,          -- free-form, caller-defined taxonomy
+  actor_type TEXT,
+  actor_name TEXT,
+  reason     TEXT,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (from_id, to_id, rel_type)
+)
+
+-- Agent-proposed edits pending human (or higher-trust agent) review
+proposals (
+  id           TEXT PRIMARY KEY,     -- prp_<ulid>
+  memory_id    TEXT NOT NULL REFERENCES memories(id),
+  proposal_type TEXT NOT NULL,       -- patch|update|archive|link
+  payload_json TEXT NOT NULL,        -- the proposed change, same shape as the edit request
+  reason       TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending', -- pending|accepted|rejected
+  actor_type   TEXT,
+  actor_name   TEXT,
+  created_at   DATETIME NOT NULL,
+  resolved_at  DATETIME,
+  resolved_by  TEXT
+)
+
+#+end_src
+
+Indexes and virtual tables:
+#+begin_src sql
+-- FTS for exact mode
+CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content=chunks, content_rowid=rowid)
+
+-- Vector index (sqlite-vec)
+-- chunk_rowid is the integer rowid of the corresponding row in chunks,
+-- captured via last_insert_rowid() immediately after each chunk insert.
+-- KNN results return chunk_rowid values; join to chunks on chunks.rowid.
+CREATE VIRTUAL TABLE chunks_vec USING vec0(
+  chunk_rowid INTEGER PRIMARY KEY,
+  embedding   float[<dims>]
+)
+
+-- Secondary indexes
+CREATE INDEX idx_memories_scope_active ON memories(scope, active)
+CREATE INDEX idx_memories_path ON memories(scope, path)
+CREATE INDEX idx_memories_hash ON memories(content_hash)
+CREATE INDEX idx_chunks_memory ON chunks(memory_id)
+CREATE INDEX idx_memory_tags_tag ON memory_tags(tag)
+
+CREATE INDEX idx_memory_links_from ON memory_links(from_id)
+CREATE INDEX idx_memory_links_to ON memory_links(to_id)
+CREATE INDEX idx_proposals_memory ON proposals(memory_id, status)
+CREATE INDEX idx_proposals_pending ON proposals(status) WHERE status = 'pending'
+#+end_src
+
+*** 1.2 Embedding Provider Abstraction
+
+Before any capture works, embedding generation must be abstracted so the provider is swappable. Interface:
+
+#+begin_src
+embed(texts: string[]) → float32[][]
+#+end_src
+
+Implement at minimum:
+- Gemini (~gemini-embedding-001~) via REST API
+- Ollama (~nomic-embed-text~ or similar) via local REST API for fully local runs
+
+Provider + model + endpoint is stored in ~meta~ at startup. On any mismatch with stored fingerprint: log error, set index status to ~stale~, expose in /v1/status. Semantic and hybrid search return 503 with message while index is stale.
+
+Config:
+#+begin_src yaml
+embedding:
+  provider: ollama           # ollama | gemini | openai
+  model: nomic-embed-text
+  base_url: http://localhost:11434   # only for ollama
+  batch_size: 32
+#+end_src
+
+*** 1.3 Chunking
+
+Implement boundary-aware chunking from the start. Fixed-size is marginally simpler but produces measurably worse retrieval — not worth the savings.
+
+Break point scoring for Markdown:
+| Pattern             | Score |
+|---------------------+-------|
+| # H1                |   100 |
+| ## H2               |    90 |
+| ### H3              |    80 |
+| #### H4–H6          |  50-70|
+| ``` code fence      |    80 |
+| --- horizontal rule |    60 |
+| blank line          |    20 |
+| list item           |     5 |
+| any line break      |     1 |
+
+When within 200 tokens of the target size, find the highest-scoring break point in the look-back window. Code blocks stay whole when possible.
+
+Chunk fields: seq, start_line, end_line, text, token_count, hash, embedding_model.
+
+*** 1.4 Capture Endpoint
+
+~POST /v1/capture~
+
+#+begin_src json
+{
+  "text": "required",
+  "scope": "optional, defaults to config default_scope (personal)",
+  "title": "optional",
+  "occurred_at": "ISO-8601, optional",
+  "path": "optional, defaults to inbox/<timestamp>",
+  "tags": ["optional"],
+  "source": "optional freeform attribution string"
+}
+#+end_src
+
+Processing sequence:
+1. Normalize text
+2. Hash content → check against active memories; if match found, return existing record with ~deduped: true~ (always, no option)
+3. If ~path~ provided and exists in scope: archive old memory, record replacement in events. If not provided, assign ~inbox/<timestamp>~.
+4. Chunk text
+5. For each chunk: check embeddings_cache by hash; compute only on cache miss
+6. Insert memory + chunks atomically; for each chunk capture last_insert_rowid() and insert (chunk_rowid, embedding) into chunks_vec within the same transaction
+7. Assign default path ~inbox/<timestamp>~ if not provided
+
+Response:
+#+begin_src json
+{
+  "memory_id": "mem_...",
+  "path": "inbox/2026-03-04T120000Z",
+  "scope": "personal",
+  "deduped": false,
+  "replaced_id": null,
+  "chunks": 4,
+  "created_at": "2026-03-04T...Z"
+}
+#+end_src
+
+*** 1.5 Search Endpoint
+
+~POST /v1/search~
+
+#+begin_src json
+{
+  "query": "required",
+  "mode": "hybrid|semantic|exact, optional, default=hybrid",
+  "scope": "optional, defaults to config default_scope",
+  "limit": 10,
+  "min_score": 0.0,
+  "filter": {
+    "occurred_after": "ISO-8601, optional",
+    "occurred_before": "ISO-8601, optional",
+    "fields": {
+      "tags": ["javascript"],
+      "path_prefix": "meetings/"
+    }
+  },
+  "options": {
+    "temporal_decay": false,
+    "score_detail": false
+  }
+}
+#+end_src
+
+Filter design:
+- Structural filters (~occurred_after~, ~occurred_before~) are stable system concepts with fixed semantics.
+- ~fields~ is an extensible bag: keys are indexed memory fields, arrays mean "match any of", scalars mean exact match. Unknown keys are ignored rather than rejected — new indexed fields become filterable without an API change.
+- All filters are applied as *pre-filters* before retrieval, not post-retrieval. Post-filtering is a correctness failure: relevant memories that rank outside the unfiltered candidate pool are silently dropped.
+
+Mode implementations (all modes pre-filter):
+
+Step 0 (all modes): evaluate the filter object → produce ~valid_rowids~:
+#+begin_src sql
+WITH valid AS (
+  SELECT c.rowid FROM chunks c
+  JOIN memories m ON c.memory_id = m.id
+  WHERE m.scope = ?
+    AND m.active = 1
+    AND (:occurred_after IS NULL OR m.occurred_at >= :occurred_after)
+    AND (:occurred_before IS NULL OR m.occurred_at <= :occurred_before)
+    -- fields bag entries (tags, path_prefix) become additional AND clauses here
+)
+#+end_src
+
+- ~exact~: FTS5 BM25 over ~chunks_fts~ joined to ~valid~ rowids; returns ranked chunk rowids → join ~chunks~ → join ~memories~
+- ~semantic~: embed query → KNN on ~chunks_vec~ with ~chunk_rowid IN (SELECT rowid FROM valid)~; returns (chunk_rowid, distance) → join ~chunks~ on ~chunks.rowid~
+- ~hybrid~ (default): run ~exact~ and ~semantic~ in parallel over the same ~valid~ set with candidate pool = limit×4 each; merge via RRF (k=60); return top ~limit~
+
+Response per result:
+#+begin_src json
+{
+  "memory_id": "mem_...",
+  "path": "project-x/notes/roadmap.md",
+  "score": 0.82,
+  "score_detail": { "bm25": 0.71, "vector": 0.88, "final": 0.82 },
+  "snippet": "...",
+  "source": "agent:planner",
+  "occurred_at": "..."
+}
+#+end_src
+
+Meta block in response: ~{ "mode": "hybrid", "limit": 10, "latency_ms": 42, "rrf_k": 60 }~
+
+*** 1.6 Get, Batch Get, Archive
+
+~GET /v1/{memory_id}~: return full memory with all chunks and provenance. Update ~last_retrieved_at~ and increment ~retrieval_count~.
+
+~POST /v1/memories/batch~: body is ~{ "ids": ["mem_...", ...] }~, returns array of full memory objects. Same retrieval stat updates.
+
+~POST /v1/{memory_id}/archive~: set ~active = 0~, write archive event with actor provenance. Accept optional ~{ "source": { ... } }~ body for actor tracking.
+
+*** 1.7 Status Endpoint
+
+~GET /v1/status~
+
+#+begin_src json
+{
+  "status": "ok|degraded",
+  "index": {
+    "embedding_model": "ollama:nomic-embed-text",
+    "embedding_status": "current|stale|reindexing",
+    "embedding_backlog": 0,
+    "last_indexed_at": "..."
+  },
+  "counts": {
+    "memories": 1240,
+    "active": 1210,
+    "chunks": 4832
+  }
+}
+#+end_src
+
+*** 1.8 MCP Server
+
+Implement MCP server in stdio mode using the official MCP SDK. Wrap the REST API or call service layer directly.
+
+Tool definitions:
+- ~memory_capture~: description = "Store a new memory. Returns memory_id for future reference."
+- ~memory_search~: description = "Search memories by meaning (hybrid), keywords (exact), or intent (semantic). Use hybrid by default."
+- ~memory_get~: description = "Retrieve the full content of a memory by ID, including links to related memories."
+- ~memory_batch~: description = "Retrieve multiple memories by ID in one call. Prefer this over multiple memory_get calls."
+- ~memory_patch~: description = "Update metadata of an existing memory (title, tags, type, occurred_at). Does not change content. Always provide a reason when called by an agent."
+- ~memory_update~: description = "Replace the text of an existing memory. Re-indexes content. Always provide a reason when called by an agent."
+- ~memory_link~: description = "Create an explicit relationship between two memories with a caller-defined rel_type and reason."
+- ~memory_propose~: description = "Propose a change for human review instead of applying it immediately. Use when confidence is low or the change is high-stakes."
+- ~memory_status~: description = "Check index health and pending proposal counts."
+
+All tool input/output schemas match the REST API exactly. No divergence.
+
+** Phase 2: Organization and Suggestions
+
+Goal: make the system useful for sustained, organized usage. Callers can now browse, discover, and capture with AI assistance.
+
+*** 2.1 Path Browsing Endpoints
+
+~GET /v1/paths~: list distinct path prefixes at depth 1 in scope with memory count. Optional ~depth~ param to go deeper.
+
+~GET /v1/paths/{prefix}~: paginated list of memories under this path prefix. Params: ~scope~, ~page~, ~per_page~ (default 20), ~sort~ (created_at|occurred_at).
+
+*** 2.2 Tag Endpoints
+
+~GET /v1/tags~: all tags with counts.
+
+~GET /v1/tags/{tag}~: memories with this tag, paginated.
+
+*** 2.3 AI Capture Suggestions
+
+~POST /v1/suggest~
+
+Input: ~{ "text": "...", "scope": "personal" }~
+
+Processing:
+1. Embed the input text
+2. Run a fast semantic search (top 5, no filters) to find similar existing memories → ~similar~ field
+3. If LLM configured: prompt for tags and title
+4. Return suggestions without writing anything
+
+If no LLM configured: return ~similar~ field only (from vector search), leave other suggestions empty. Capture still works; suggestions are just less rich.
+
+Add ~memory_suggest~ MCP tool.
+
+*** 2.4 Tags on Memories
+
+Support adding/removing tags after capture:
+- ~POST /v1/{memory_id}/tags~: body ~{ "tags": ["new-tag"] }~
+- ~DELETE /v1/{memory_id}/tags/{tag}~
+
+Write tag-change events to the events table.
+
+*** 2.5 Edit Endpoints
+
+PATCH and PUT as described in P1: Edit and Maintenance.
+
+~PATCH /v1/{memory_id}~: update metadata fields. Write ~patch~ event with reason in payload.
+
+~PUT /v1/{memory_id}~: replace raw_text, re-chunk, re-embed. Write ~update~ event with previous content_hash in payload. Return updated memory with new chunk count.
+
+Both endpoints require a ~source~ string and ~reason~ as capture does. ~reason~ is enforced as non-empty when source indicates an agent — the server returns 422 if an agent omits it.
+
+*** 2.6 Memory Links
+
+~POST /v1/{memory_id}/links~: create a directed link. Body:
+#+begin_src json
+{
+  "to_id": "mem_...",
+  "rel_type": "summary-of",
+  "reason": "why this relationship exists",
+  "source": "agent:maintenance-agent"
+}
+#+end_src
+
+~GET /v1/{memory_id}/links~: return all links from and to this memory:
+#+begin_src json
+{
+  "outgoing": [{ "to_id": "mem_...", "rel_type": "summary-of", "reason": "...", "created_at": "..." }],
+  "incoming": [{ "from_id": "mem_...", "rel_type": "action-item-from", "reason": "...", "created_at": "..." }]
+}
+#+end_src
+
+~DELETE /v1/{memory_id}/links/{to_id}/{rel_type}~: remove a specific link.
+
+Links are included in the GET /v1/{memory_id} full memory response.
+
+*** 2.7 Proposal Queue
+
+For agent edits that should not be applied immediately. An untrusted agent — or a trusted agent operating in cautious mode — submits a proposal instead of applying a change directly.
+
+~POST /v1/{memory_id}/proposals~: body is the proposed change in the same shape as the corresponding edit request, plus a mandatory ~reason~. Sets ~has_pending_proposal = 1~ on the memory.
+
+~GET /v1/proposals?status=pending~: returns the review queue. Filterable by ~actor_name~, ~proposal_type~, ~scope~.
+
+~POST /v1/proposals/{id}/accept~: apply the proposed change, clear ~has_pending_proposal~, write ~resolve~ event.
+
+~POST /v1/proposals/{id}/reject~: discard proposal, clear ~has_pending_proposal~, write ~resolve~ event with rejection reason.
+
+~GET /v1/status~ includes ~proposals_pending~ count so operators and agents can monitor the review backlog without polling the full queue.
+
+Agent trust level is a config concern at this stage: a simple ~trusted_agents: ["maintenance-agent"]~ list in config that bypasses the proposal queue for listed source values. Untrusted agents always go through proposals. Full RBAC is a service-tier feature.
+
+** Phase 3: Robustness and Retrieval Quality
+
+Goal: make the system reliable under real usage conditions and improve retrieval quality.
+
+*** 3.1 Temporal Decay
+
+Add ~options.temporal_decay: boolean~ to search request (default false). When enabled, apply exponential decay to scores based on ~occurred_at~ (falling back to ~created_at~). Half-life configurable in request (~options.decay_half_life_days~, default 30). Undated canonical memories exempt.
+
+Config option to set as a global default: ~search.temporal_decay: true/false~.
+
+*** 3.2 Admin: Reindex
+
+~POST /v1/admin/reindex~: triggers background job to re-embed all chunks against current embedding model. Updates ~meta~ fingerprint on completion. Exposes progress in ~GET /v1/status~.
+
+Needed when embedding provider or model is changed in config.
+
+*** 3.3 Expiry Enforcement
+
+~expires_at~ field is now usable. Background job (or on-read check) marks memories as inactive when ~expires_at~ passes, writing an archive event. Configurable: ~memory.expiry_check_interval~.
+
+*** 3.4 Score Detail
+
+Expose bm25, vector, and final scores per result when ~include.score_detail: true~. Implemented in Phase 1 pipeline but surfaced here as an official supported field.
+
+** Phase 4: V2 Search Enhancements
+
+Goal: bring search quality to QMD/OpenClaw parity for the hardest retrieval cases.
+
+*** 4.1 Query Expansion
+
+When a configured LLM is available and ~options.query_expansion: true~: generate 2 alternative phrasings before searching. Run all 3 queries through Phase 1 pipeline. Fuse via RRF giving original query 2× weight. Top-rank bonus (+0.05 for any list's #1 result) to preserve exact matches.
+
+Adds ~50–200ms latency (LLM call). Worth it for ambiguous natural-language queries.
+
+*** 4.2 LLM Reranking
+
+When a local reranker model is configured (e.g., Qwen3-Reranker-0.6B via node-llama-cpp) and ~options.rerank: true~: take top 20–30 candidates from RRF fusion and run cross-encoder scoring. Apply position-aware blend: top 1–3 results trust RRF more (75/25), lower results trust reranker more (40/60).
+
+Requires separate model download (~640MB). Adds 200–800ms. Off by default.
+
+*** 4.3 MMR Diversity Pass
+
+After final scoring, if ~options.mmr: true~: apply Maximal Marginal Relevance to reduce near-duplicate snippets in results. Uses Jaccard text similarity. Lambda parameter: 0.7 (slight relevance bias). Useful when many daily notes contain similar content about the same topic.
+
+*** 4.4 Session/Conversation Memory
+
+Index conversation transcripts from supported runtimes (Claude Code sessions, etc.) as a separate, privacy-sensitive source. Auto-expire raw transcripts after configurable retention window. Searchable within same scope only. Ingested automatically by runtime hooks, not via capture API.
