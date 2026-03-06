@@ -34,5 +34,3 @@ export interface VectorStore {
 
 	delete(ids: string[]): Promise<void>
 }
-
-export { VectorizeVectorStore } from './vectorize'

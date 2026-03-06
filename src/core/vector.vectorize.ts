@@ -1,4 +1,4 @@
-import type { VectorMatch, VectorQueryInput, VectorRecord, VectorStore } from './index'
+import type { VectorMatch, VectorQueryInput, VectorRecord, VectorStore } from './vector'
 
 export class VectorizeVectorStore implements VectorStore {
 	constructor(
@@ -22,7 +22,7 @@ export class VectorizeVectorStore implements VectorStore {
 			topK: input.topK,
 			namespace: input.namespace ?? this.defaultNamespace,
 			filter: this.memoryFilter(input.memoryIds),
-			returnMetadata: false
+			returnMetadata: 'none'
 		})
 
 		return result.matches
