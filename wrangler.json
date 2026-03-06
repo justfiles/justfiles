@@ -46,7 +46,8 @@
 	"vectorize": [
 		{
 			"binding": "VECTORIZE",
-			"index_name": "ghostore-memory-openai3small-512"
+			"index_name": "ghostore-memory-openai3small-512",
+			"remote": true
 		}
 	]
 	/**

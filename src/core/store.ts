@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { DBClient } from '../db'
 import * as schema from '../db/schema'
 import type { VectorStore } from './vector'
+import type { EmbeddingProvider } from './embedding'
 
 export const CaptureInputSchema = z.object({
 	text: z.string(),
@@ -42,13 +43,6 @@ export const SearchInputSchema = z.object({
 
 type CaptureInput = z.infer<typeof CaptureInputSchema>
 type SearchInput = z.infer<typeof SearchInputSchema>
-
-export interface EmbeddingProvider {
-	embed(texts: string[]): Promise<number[][]>
-	readonly model: string
-	readonly provider: string
-	readonly dims: number
-}
 
 export interface Store {
 	/**
