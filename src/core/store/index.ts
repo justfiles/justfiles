@@ -3,7 +3,7 @@ import type { DBClient } from '../../db'
 import * as schema from '../../db/schema'
 import type { EmbeddingProvider } from '../embedding'
 import type { VectorStore } from '../vector'
-import { Store, SearchInput, SearchResult, CaptureInput, Memory } from './types'
+import type { CaptureInput, Memory, SearchInput, SearchResult, Store } from './types'
 
 // ---- Helpers ----
 

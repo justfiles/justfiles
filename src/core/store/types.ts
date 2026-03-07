@@ -64,6 +64,8 @@ export type SearchResult = {
 	// start_line: number | null
 	// end_line: number | null
 	score: number
+	semanticScore?: number
+	ftsScore?: number
 	snippet: string | null
 	occurred_at: string | null
 	source?: string
