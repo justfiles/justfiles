@@ -1,6 +1,6 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
-import { CaptureInputSchema, SearchInputSchema, type Store } from './store'
+import { CaptureInputSchema, SearchInputSchema, type Store } from './store/types'
 
 /**
  * Creates the Hono app.
