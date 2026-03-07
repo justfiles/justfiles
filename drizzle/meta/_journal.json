@@ -8,6 +8,13 @@
       "when": 1772787599051,
       "tag": "0000_acoustic_medusa",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1773160000000,
+      "tag": "0001_chunks_fts",
+      "breakpoints": true
     }
   ]
 }

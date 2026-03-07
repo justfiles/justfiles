@@ -50,7 +50,10 @@
 			"remote": true
 		}
 	],
-	"vars": {  "OPENAI_KEY": "" }
+	"vars": {
+		"OPENAI_KEY": "",
+		"CLERK_SECRET_KEY": "",
+	}
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
