@@ -15,7 +15,12 @@ export interface DbAdapter {
 
 // ---- bun:sqlite adapter (Bun/Node only, tree-shaken from CF Workers bundle) ----
 
-export function createSqliteAdapter(db: import('bun:sqlite').Database): DbAdapter {
+interface BunDatabase {
+	prepare(sql: string): { all(...args: SqlValue[]): unknown[]; run(...args: SqlValue[]): void }
+	exec(sql: string): void
+}
+
+export function createSqliteAdapter(db: BunDatabase): DbAdapter {
 	const adapter: DbAdapter = {
 		async query<T extends Record<string, unknown>>(sql: string, args: SqlValue[] = []): Promise<T[]> {
 			return db.prepare(sql).all(...args) as T[]

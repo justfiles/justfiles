@@ -1,6 +1,6 @@
 import type { CandidateChunk } from './scoring'
 
-export type RawEmbedding = Buffer | Uint8Array | ArrayBuffer
+export type RawEmbedding = Uint8Array | ArrayBuffer
 
 export interface TextChunk {
 	seq: number

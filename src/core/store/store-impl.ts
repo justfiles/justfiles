@@ -1,6 +1,3 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import { sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { EmbeddingProvider } from '../embedding'
 import type { QueryExpander } from '../llm'
 import { applyTemporalDecay, cosineSimilarity, normalizeBm25, rrf, type CandidateChunk } from './scoring'
@@ -21,9 +18,8 @@ import {
 import type { DbAdapter, SqlValue } from './db-adapter'
 
 // ---- Migration ----
-// Note: uses Node.js fs APIs — call only from Bun/Node environments, not CF Workers.
 
-function parseSqlStatements(sql: string): string[] {
+export function parseSqlStatements(sql: string): string[] {
 	const statements: string[] = []
 	let depth = 0
 	let start = 0
@@ -47,7 +43,11 @@ function parseSqlStatements(sql: string): string[] {
 	return statements.filter(Boolean)
 }
 
-export async function migrate(adapter: DbAdapter): Promise<void> {
+// Accepts pre-loaded migration entries — works in any environment (including CF Workers).
+export async function migrateFromEntries(
+	adapter: DbAdapter,
+	entries: Array<{ version: number; sql: string }>
+): Promise<void> {
 	await adapter.run(
 		`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`
 	)
@@ -55,22 +55,14 @@ export async function migrate(adapter: DbAdapter): Promise<void> {
 	const [row] = await adapter.query<{ max_version: number }>('SELECT MAX(version) AS max_version FROM schema_migrations')
 	const currentVersion = Number(row?.max_version ?? 0)
 
-	const migrationDir = fileURLToPath(new URL('./migrations', import.meta.url).toString())
-	const migrationFiles = readdirSync(migrationDir)
-		.filter((name) => /^\d{4}_.*\.sql$/.test(name))
-		.sort()
-
-	for (const file of migrationFiles) {
-		const version = parseInt(file.slice(0, 4), 10)
-		if (version <= currentVersion) continue
-
-		const sql = readFileSync(`${migrationDir}${sep}${file}`, 'utf8')
-		for (const stmt of parseSqlStatements(sql)) {
+	for (const entry of entries) {
+		if (entry.version <= currentVersion) continue
+		for (const stmt of parseSqlStatements(entry.sql)) {
 			await adapter.run(stmt)
 		}
 		await adapter.run(
 			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))`,
-			[version]
+			[entry.version]
 		)
 	}
 }
