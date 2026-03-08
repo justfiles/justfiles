@@ -6,6 +6,8 @@ type SearchResult = {
 	memory_id: string
 	path: string
 	score: number
+	semanticScore?: number
+	ftsScore?: number
 	snippet: string | null
 	occurred_at: string | null
 	source?: string
@@ -157,6 +159,11 @@ function App() {
 										disabled={loadingMemory && selectedMemory?.memory_id === r.memory_id}
 									>
 										<div style={{ fontSize: '0.75rem', color: '#64748b' }}>{r.path}</div>
+										<div style={{ fontSize: '0.7rem', color: '#475569', marginTop: '0.2rem', whiteSpace: 'pre-wrap' }}>
+											{`score: ${r.score.toFixed(3)}`}
+											{r.semanticScore !== undefined ? ` · semantic: ${r.semanticScore.toFixed(3)}` : ''}
+											{r.ftsScore !== undefined ? ` · fts: ${r.ftsScore.toFixed(3)}` : ''}
+										</div>
 										<div style={{ marginTop: '0.35rem', color: '#0f172a', whiteSpace: 'pre-wrap' }}>
 											{r.snippet || <i>No snippet</i>}
 										</div>
