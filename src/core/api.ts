@@ -1,5 +1,6 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
+import { z } from 'zod'
 import { CaptureInputSchema, SearchInputSchema, type Store } from './store/types'
 
 /**
@@ -28,6 +29,12 @@ export function createApi(store: Store) {
 		const input = c.req.valid('json')
 		const results = await store.search(input)
 		return c.json({ results })
+	})
+
+	app.get('/v1/memory/:id', zValidator('param', z.object({ id: z.string().min(1) })), async (c) => {
+		const { id } = c.req.param()
+		const memory = await store.get(id)
+		return c.json(memory)
 	})
 
 	return app
