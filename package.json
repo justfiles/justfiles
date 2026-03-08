@@ -15,7 +15,8 @@
 		"@clerk/clerk-react": "^5.0.0",
 		"@hono/clerk-auth": "^3.1.0",
 		"@hono/zod-validator": "^0.7.6",
-		"better-sqlite3": "^12.6.2",
+		"@libsql/client": "^0.17.0",
+		"@tursodatabase/database": "^0.4.0",
 		"dotenv": "^17.3.1",
 		"drizzle-orm": "^0.45.1",
 		"hono": "4.11.1",
@@ -26,7 +27,6 @@
 		"@biomejs/biome": "^2.4.6",
 		"@cloudflare/vite-plugin": "1.15.3",
 		"@eslint/js": "9.39.1",
-		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^25.3.4",
 		"@types/react": "19.2.7",
 		"@types/react-dom": "19.2.3",
@@ -43,7 +43,11 @@
 		"wrangler": "^4.71.0"
 	},
 	"private": true,
+	"bin": {
+		"ghostore": "./src/cli/index.ts"
+	},
 	"scripts": {
+		"dev:local": "bun run --hot src/local/index.tsx",
 		"db:generate": "drizzle-kit generate",
 		"build": "tsc -b && vite build",
 		"cf-typegen": "wrangler types",

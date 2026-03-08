@@ -3,15 +3,29 @@
 import { createInterface } from 'readline/promises'
 import { sqliteStore } from '../core/store/sqlite'
 import { openAI } from '../core/embedding.openai'
+import { tursoStore } from '../core/store/turso'
 
 const command = process.argv[2]
+
+const BACKEND: 'local' | 'turso' | 'do' = 'local'
+
+async function getStore() {
+	switch (BACKEND) {
+		case 'local':
+			return await sqliteStore('ghostore.db', openAI(process.env.OPENAI_KEY))
+		case 'turso':
+			return await tursoStore('default', openAI(process.env.OPENAI_KEY))
+		case 'do':
+			throw new Error('not implemented')
+	}
+}
 
 if (command === 'capture') {
 	const rl = createInterface({ input: process.stdin, output: process.stdout })
 	const text = await rl.question('Capture text: ')
 	rl.close()
 
-	const store = sqliteStore('ghostore.db', openAI(process.env.OPENAI_KEY))
+	const store = await getStore()
 	const id = await store.capture({ text })
 	console.log(`captured: ${id}`)
 } else if (command === 'search') {
@@ -19,8 +33,8 @@ if (command === 'capture') {
 	const query = await rl.question('Search: ')
 	rl.close()
 
-	const store = sqliteStore('ghostore.db', openAI(process.env.OPENAI_KEY!))
-	const results = await store.search({ query, mode: 'hybrid' })
+	const store = await getStore()
+	const results = await store.search({ query })
 	if (results.length === 0) {
 		console.log('No results found.')
 	} else {
