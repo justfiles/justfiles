@@ -9,6 +9,83 @@ npm install
 npm run dev
 #+end_src
 
+** Environment and secrets
+
+Required variables used by the app:
+
+- =VITE_CLERK_PUBLISHABLE_KEY=: Clerk publishable key for the React frontend.
+- =OPENAI_KEY=: OpenAI API key used by the memory capture/search pipeline.
+- =CLERK_SECRET_KEY=: Clerk secret key used by the API worker auth flow.
+- =TURSO_ORG= and =TURSO_AUTH_TOKEN=: optional for CLI local/Turso storage mode.
+
+*** Local development
+
+Use one of the local flows:
+
+- Frontend-only development (Vite server):
+
+  #+begin_src sh
+  # create .env.local with:
+  #   VITE_CLERK_PUBLISHABLE_KEY=pk_live_...
+  # then run:
+  npm run dev
+  #+end_src
+
+  or set it inline:
+
+  #+begin_src sh
+  VITE_CLERK_PUBLISHABLE_KEY=pk_test_... npm run dev
+  #+end_src
+
+- Worker-backed development with Wrangler:
+
+  #+begin_src sh
+  cat > .dev.vars <<'EOF'
+  OPENAI_KEY=sk-...
+  CLERK_SECRET_KEY=sk_live_...
+  # Optional if you use Turso:
+  # TURSO_ORG=...
+  # TURSO_AUTH_TOKEN=...
+  EOF
+  npx wrangler dev
+  #+end_src
+
+  For local API smoke tests that bypass Wrangler, export the needed env vars in your shell or =.env=.
+
+*** Production release
+
+- Set runtime secrets in Cloudflare (values are injected from environment during deployment):
+
+  #+begin_src sh
+  npx wrangler secret put OPENAI_KEY
+  npx wrangler secret put CLERK_SECRET_KEY
+  # Optional if you use Turso:
+  npx wrangler secret put TURSO_ORG
+  npx wrangler secret put TURSO_AUTH_TOKEN
+  #+end_src
+
+- Build and deploy with the Clerk publishable key available at build time:
+
+  #+begin_src sh
+  VITE_CLERK_PUBLISHABLE_KEY=pk_live_... npm run build
+  npm run deploy
+  #+end_src
+
+  If your platform runs commands in separate steps, run:
+
+  #+begin_src sh
+  export VITE_CLERK_PUBLISHABLE_KEY=pk_live_...
+  npm run build
+  npm run deploy
+  #+end_src
+
+- To verify:
+
+  #+begin_src sh
+  npx wrangler secret list
+  npx wrangler deploy --dry-run
+  #+end_src
+
 The dev server starts a local Cloudflare Worker with a Durable Object backed by a persisted SQLite file at =.wrangler/state/v3/do/=.
 
 ** Database (dev)
@@ -39,6 +116,8 @@ Do not edit =drizzle/meta/= or =drizzle/migrations.js= by hand — both are mana
 npm run build
 npm run deploy
 #+end_src
+
+The production settings above assume the release environment has the variables from the "Production release" section configured.
 
 ** Database (prod)
 

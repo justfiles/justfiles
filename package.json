@@ -14,12 +14,15 @@
 	"dependencies": {
 		"@clerk/clerk-react": "^5.0.0",
 		"@hono/clerk-auth": "^3.1.0",
+		"@hono/mcp": "^0.2.4",
 		"@hono/zod-validator": "^0.7.6",
 		"@libsql/client": "^0.17.0",
+		"@modelcontextprotocol/sdk": "^1.27.1",
 		"@tursodatabase/database": "^0.4.0",
 		"dotenv": "^17.3.1",
 		"drizzle-orm": "^0.45.1",
 		"hono": "4.11.1",
+		"hono-rate-limiter": "^0.5.3",
 		"react": "19.2.1",
 		"react-dom": "19.2.1"
 	},

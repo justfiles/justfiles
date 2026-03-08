@@ -47,8 +47,11 @@ const getUserIdFromApiKey = (apiKey: {
 	return apiKey.createdBy ?? null
 }
 
-app.use('/api/*', async (c, next) => {
-	const authorization = c.req.header('authorization')?.trim() ?? ''
+const applyApiKeyAuth = async (
+	c: { req: { header: (h: string) => string | undefined }; set: (k: string, v: string) => void; env: Env },
+	next: () => Promise<void>
+) => {
+	const authorization = (c.req.header('authorization') ?? '').trim()
 	const [scheme, token = ''] = authorization.split(' ')
 
 	if (!scheme || !token || scheme.toLowerCase() !== 'bearer' || !isApiKeyToken(token)) {
@@ -73,27 +76,30 @@ app.use('/api/*', async (c, next) => {
 
 	c.set('apiKeyUserId', userId)
 	await next()
-})
+}
 
 let clerkMw: ReturnType<typeof clerkMiddleware> | null = null
-app.use('/api/*', async (c, next) => {
-	if (!clerkMw) {
-		clerkMw = clerkMiddleware()
-	}
-	return clerkMw(c, next)
-})
-app.use('/api/*', async (c) => {
-	const auth = getAuth(c)
-	const apiUserId = c.get('apiKeyUserId')
-	const userId = apiUserId ?? auth?.userId
-	if (!userId) {
-		return new Response('Unauthorized', { status: 401 })
-	}
 
-	const id = c.env.STORE.idFromName(userId)
-	const stub = c.env.STORE.get(id)
-	return stub.fetch(c.req.raw)
-})
+// Apply auth + routing to /api/* and /mcp
+for (const path of ['/api/*', '/mcp'] as const) {
+	app.use(path, async (c, next) => applyApiKeyAuth(c as never, next))
+	app.use(path, async (c, next) => {
+		if (!clerkMw) clerkMw = clerkMiddleware()
+		return clerkMw(c, next)
+	})
+	app.use(path, async (c) => {
+		const auth = getAuth(c)
+		const apiUserId = c.get('apiKeyUserId')
+		const userId = apiUserId ?? auth?.userId
+		if (!userId) {
+			return new Response('Unauthorized', { status: 401 })
+		}
+
+		const id = c.env.STORE.idFromName(userId)
+		const stub = c.env.STORE.get(id)
+		return stub.fetch(c.req.raw)
+	})
+}
 
 export { MemoryObject }
 export default app
