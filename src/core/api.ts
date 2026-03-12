@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { CaptureInputSchema, SearchInputSchema, type Store } from './store/types'
+import { CaptureInputSchema, ListInputSchema, SearchInputSchema, type Store } from './store/types'
 
 /**
  * Creates the Hono app.
@@ -28,6 +28,12 @@ export function createApi(store: Store) {
 	app.post('/v1/search', zValidator('json', SearchInputSchema), async (c) => {
 		const input = c.req.valid('json')
 		const results = await store.search(input)
+		return c.json({ results })
+	})
+
+	app.post('/v1/list', zValidator('json', ListInputSchema), async (c) => {
+		const input = c.req.valid('json')
+		const results = await store.list(input)
 		return c.json({ results })
 	})
 

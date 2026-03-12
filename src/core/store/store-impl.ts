@@ -1,7 +1,7 @@
 import type { EmbeddingProvider } from '../embedding'
 import type { QueryExpander } from '../llm'
 import { applyTemporalDecay, cosineSimilarity, normalizeBm25, rrf, type CandidateChunk } from './scoring'
-import type { CaptureInput, Memory, SearchInput, SearchResult, Store } from './types'
+import type { CaptureInput, ListInput, ListResult, Memory, SearchInput, SearchResult, Store } from './types'
 import {
 	type RawEmbedding,
 	chunkText,
@@ -12,6 +12,7 @@ import {
 	normalizeText,
 	normalizeTags,
 	placeholders,
+	sanitizeFtsQuery,
 	sha256hex,
 	toFloat32Array
 } from './utils'
@@ -113,6 +114,9 @@ export function createStore(
 	async function exactSearch(query: string, validIds: string[], candidateLimit: number): Promise<CandidateChunk[]> {
 		if (validIds.length === 0) return []
 
+		const safeQuery = sanitizeFtsQuery(query)
+		if (!safeQuery) return []
+
 		const rows = await adapter.query<{ id: unknown; memory_id: unknown; text: unknown; hash: unknown; fts_rank: unknown }>(
 			`SELECT c.id, c.memory_id, c.text, c.hash, f.rank as fts_rank
 			 FROM chunks_fts f
@@ -121,7 +125,7 @@ export function createStore(
 			 AND c.memory_id IN (${placeholders(validIds.length)})
 			 ORDER BY f.rank
 			 LIMIT ?`,
-			[query, ...validIds, candidateLimit]
+			[safeQuery, ...validIds, candidateLimit]
 		)
 
 		return rows.map((row, rank) => ({
@@ -371,6 +375,62 @@ export function createStore(
 			return (await chunksToResults(candidates, input.query, limit, input.options)).filter(
 				(r) => r.score >= minScore
 			)
+		},
+
+		async list(input: ListInput): Promise<ListResult[]> {
+			const limit = input.limit ?? 50
+			const tags = normalizeTags(input.tags)
+			const conditions: string[] = ['m.active = 1']
+			const params: SqlValue[] = []
+
+			if (input.path_prefix) {
+				conditions.push('m.path LIKE ?')
+				params.push(`${input.path_prefix}%`)
+			}
+			if (input.occurred_after) {
+				conditions.push('m.occurred_at >= ?')
+				params.push(input.occurred_after)
+			}
+			if (input.occurred_before) {
+				conditions.push('m.occurred_at <= ?')
+				params.push(input.occurred_before)
+			}
+
+			let sql = 'SELECT DISTINCT m.id, m.path, m.title, m.occurred_at, m.source FROM memories m'
+			if (tags.length > 0) {
+				sql += ' JOIN memory_tags mt ON mt.memory_id = m.id'
+				conditions.push(`mt.tag IN (${placeholders(tags.length)})`)
+				params.push(...tags)
+			}
+			sql += ` WHERE ${conditions.join(' AND ')} ORDER BY m.occurred_at DESC NULLS LAST LIMIT ?`
+			params.push(limit)
+
+			const rows = await adapter.query<{
+				id: unknown; path: unknown; title: unknown; occurred_at: unknown; source: unknown
+			}>(sql, params)
+
+			if (rows.length === 0) return []
+
+			const ids = rows.map((r) => String(r.id))
+			const tagRows = await adapter.query<{ memory_id: unknown; tag: unknown }>(
+				`SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (${placeholders(ids.length)})`,
+				ids
+			)
+			const tagMap = new Map<string, string[]>()
+			for (const t of tagRows) {
+				const mid = String(t.memory_id)
+				if (!tagMap.has(mid)) tagMap.set(mid, [])
+				tagMap.get(mid)!.push(String(t.tag))
+			}
+
+			return rows.map((r) => ({
+				id: String(r.id),
+				path: String(r.path),
+				title: r.title != null ? String(r.title) : null,
+				tags: tagMap.get(String(r.id)) ?? [],
+				occurred_at: r.occurred_at != null ? String(r.occurred_at) : null,
+				source: r.source != null ? String(r.source) : null
+			}))
 		},
 
 		async get(id: string): Promise<Memory> {

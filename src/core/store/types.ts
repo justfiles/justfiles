@@ -39,6 +39,25 @@ export const SearchInputSchema = z.object({
 export type CaptureInput = z.infer<typeof CaptureInputSchema>
 export type SearchInput = z.infer<typeof SearchInputSchema>
 
+export const ListInputSchema = z.object({
+	path_prefix: z.string().optional(),
+	tags: z.union([z.string(), z.array(z.string())]).optional(),
+	occurred_after: z.string().optional(),
+	occurred_before: z.string().optional(),
+	limit: z.number().optional()
+})
+
+export type ListInput = z.infer<typeof ListInputSchema>
+
+export type ListResult = {
+	id: string
+	path: string
+	title: string | null
+	tags: string[]
+	occurred_at: string | null
+	source: string | null
+}
+
 export interface Store {
 	/**
 	 * capture memory, return memory id
@@ -49,6 +68,11 @@ export interface Store {
 	 * search for memory
 	 */
 	search(input: SearchInput): Promise<SearchResult[]>
+
+	/**
+	 * list memories by path/tags without a search query, ordered by occurred_at desc
+	 */
+	list(input: ListInput): Promise<ListResult[]>
 
 	/**
 	 * get a memory by id

@@ -164,6 +164,59 @@ function registerMcpTools(server: McpServer, store: Store) {
 	)
 
 	server.registerTool(
+		'list_memories',
+		{
+			description:
+				'List memories by path prefix and/or tags without a search query. Use this to browse or enumerate memories at a known location (e.g. all inbox notes, all notes tagged "todo"). Results are ordered by occurred_at descending.',
+			inputSchema: {
+				path_prefix: z
+					.string()
+					.optional()
+					.describe('Return only memories whose path starts with this prefix (e.g. "inbox", "work/meetings")'),
+				tags: z
+					.union([z.string(), z.array(z.string())])
+					.optional()
+					.describe('Filter by one or more tags'),
+				occurred_after: z
+					.string()
+					.optional()
+					.describe('ISO 8601 date — only return memories after this date'),
+				occurred_before: z
+					.string()
+					.optional()
+					.describe('ISO 8601 date — only return memories before this date'),
+				limit: z
+					.number()
+					.min(1)
+					.max(200)
+					.optional()
+					.describe('Maximum number of results to return (default: 50)')
+			}
+		},
+		async (args) => {
+			try {
+				const results = await store.list(args)
+				if (results.length === 0) {
+					return { content: [{ type: 'text', text: 'No memories found.' }] }
+				}
+				const text = results
+					.map((r) => {
+						const tags = r.tags.length > 0 ? ` [${r.tags.join(', ')}]` : ''
+						const date = r.occurred_at ? ` (${r.occurred_at.slice(0, 10)})` : ''
+						return `[${r.id}] ${r.path}${tags}${date}${r.title ? ` — ${r.title}` : ''}`
+					})
+					.join('\n')
+				return { content: [{ type: 'text', text }] }
+			} catch (err) {
+				return {
+					content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+					isError: true
+				}
+			}
+		}
+	)
+
+	server.registerTool(
 		'get_memory',
 		{
 			description:

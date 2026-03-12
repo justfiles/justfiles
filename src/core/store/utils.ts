@@ -134,6 +134,14 @@ export function normalizeTags(tags?: string | string[]): string[] {
 	return Array.isArray(tags) ? tags.filter(Boolean) : [tags]
 }
 
+export function sanitizeFtsQuery(query: string): string {
+	return query
+		.split(/\s+/)
+		.map((w) => w.replace(/[^\w]/g, ' ').trim())
+		.filter(Boolean)
+		.join(' ')
+}
+
 export const STRONG_SIGNAL_MIN_SCORE = 0.85
 export const STRONG_SIGNAL_MIN_GAP = 0.15
 
