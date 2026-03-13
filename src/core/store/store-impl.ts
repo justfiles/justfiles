@@ -433,7 +433,8 @@ export function createStore(
 						}
 					}
 
-					// delete old chunks (FTS triggers handle cleanup)
+					// delete chunk_vectors first (FK → chunks), then chunks (FTS triggers handle FTS cleanup)
+					await tx.run('DELETE FROM chunk_vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE memory_id = ?)', [input.id])
 					await tx.run('DELETE FROM chunks WHERE memory_id = ?', [input.id])
 
 					// insert new chunks
