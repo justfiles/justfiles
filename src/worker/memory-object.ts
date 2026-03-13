@@ -164,6 +164,35 @@ function registerMcpTools(server: McpServer, store: Store) {
 	)
 
 	server.registerTool(
+		'update_memory',
+		{
+			description:
+				'Update an existing memory. Supports updating metadata (path, title, tags) and/or content (text) independently. At least one field must be provided. Updating text rechunks and re-embeds the content.',
+			inputSchema: {
+				id: z.string().describe('The memory ID to update'),
+				path: z.string().optional().describe('New path for the memory (e.g. "work/meetings/2026-03")'),
+				title: z.string().optional().describe('New title for the memory'),
+				tags: z.array(z.string()).optional().describe('Replacement tag list — fully replaces existing tags'),
+				text: z.string().optional().describe('New content — replaces existing text, rechunks and re-embeds')
+			}
+		},
+		async (args) => {
+			if (!args.path && !args.title && !args.tags && !args.text) {
+				return { content: [{ type: 'text', text: 'Error: at least one field (path, title, tags, text) must be provided' }], isError: true }
+			}
+			try {
+				await store.update(args)
+				return { content: [{ type: 'text', text: `Memory ${args.id} updated.` }] }
+			} catch (err) {
+				return {
+					content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+					isError: true
+				}
+			}
+		}
+	)
+
+	server.registerTool(
 		'list_memories',
 		{
 			description:

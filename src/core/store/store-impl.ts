@@ -1,7 +1,7 @@
 import type { EmbeddingProvider } from '../embedding'
 import type { QueryExpander } from '../llm'
 import { applyTemporalDecay, cosineSimilarity, normalizeBm25, rrf, type CandidateChunk } from './scoring'
-import type { CaptureInput, ListInput, ListResult, Memory, SearchInput, SearchResult, Store } from './types'
+import type { CaptureInput, ListInput, ListResult, Memory, SearchInput, SearchResult, Store, UpdateInput } from './types'
 import {
 	type RawEmbedding,
 	chunkText,
@@ -375,6 +375,92 @@ export function createStore(
 			return (await chunksToResults(candidates, input.query, limit, input.options)).filter(
 				(r) => r.score >= minScore
 			)
+		},
+
+		async update(input: UpdateInput): Promise<void> {
+			const now = new Date().toISOString()
+
+			const [mem] = await adapter.query<{ id: unknown; scope: unknown; content_hash: unknown }>(
+				'SELECT id, scope, content_hash FROM memories WHERE id = ? AND active = 1 LIMIT 1',
+				[input.id]
+			)
+			if (!mem) throw new Error(`Memory not found: ${input.id}`)
+
+			await adapter.transaction(async (tx) => {
+				// metadata fields
+				if (input.path !== undefined) {
+					await tx.run('UPDATE memories SET path = ?, updated_at = ? WHERE id = ?', [input.path, now, input.id])
+				}
+				if (input.title !== undefined) {
+					await tx.run('UPDATE memories SET title = ?, updated_at = ? WHERE id = ?', [input.title, now, input.id])
+				}
+
+				// tags: full replacement
+				if (input.tags !== undefined) {
+					await tx.run('DELETE FROM memory_tags WHERE memory_id = ?', [input.id])
+					for (const tag of input.tags) {
+						await tx.run('INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)', [input.id, tag])
+					}
+				}
+
+				// content: rechunk and re-embed
+				if (input.text !== undefined) {
+					const normalized = normalizeText(input.text)
+					const hash = await sha256hex(normalized)
+					const chunks = chunkText(normalized)
+					const chunkHashes = await Promise.all(chunks.map((c) => sha256hex(c.text)))
+
+					const chunkEmbeddings: Array<Float32Array | null> = chunks.map(() => null)
+					if (embProvider) {
+						const cached = await getCachedEmbeddings(chunkHashes)
+						const missingIndexes: number[] = []
+						for (let i = 0; i < chunks.length; i++) {
+							const cachedVec = cached.get(chunkHashes[i])
+							if (cachedVec) chunkEmbeddings[i] = cachedVec
+							else missingIndexes.push(i)
+						}
+						if (missingIndexes.length > 0) {
+							const fresh = await embProvider.embed(missingIndexes.map((i) => chunks[i].text))
+							for (let i = 0; i < missingIndexes.length; i++) {
+								const chunkIndex = missingIndexes[i]
+								const vector = new Float32Array(fresh[i])
+								chunkEmbeddings[chunkIndex] = vector
+								await adapter.run(
+									'INSERT OR REPLACE INTO embeddings_cache(hash, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+									[chunkHashes[chunkIndex], embProvider.provider, embProvider.model, vector.length, encodeEmbedding(Array.from(vector)), now]
+								)
+							}
+						}
+					}
+
+					// delete old chunks (FTS triggers handle cleanup)
+					await tx.run('DELETE FROM chunks WHERE memory_id = ?', [input.id])
+
+					// insert new chunks
+					for (let i = 0; i < chunks.length; i++) {
+						const chunk = chunks[i]
+						const chunkId = genId('chk')
+						await tx.run(
+							'INSERT INTO chunks(id, memory_id, seq, start_line, end_line, text, token_count, hash, embedding_model, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+							[chunkId, input.id, chunk.seq, chunk.startLine, chunk.endLine, chunk.text, chunk.tokenCount, chunkHashes[i], embModelKey, now]
+						)
+						const embedding = chunkEmbeddings[i]
+						if (embedding) {
+							await tx.run(
+								'INSERT INTO chunk_vectors(chunk_id, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+								[chunkId, embProvider?.provider ?? 'none', embProvider?.model ?? 'none', embedding.length, encodeEmbedding(Array.from(embedding)), now]
+							)
+						}
+					}
+
+					await tx.run('UPDATE memories SET content_hash = ?, updated_at = ? WHERE id = ?', [hash, now, input.id])
+				}
+
+				await tx.run(
+					'INSERT INTO events(id, memory_id, event_type, actor_type, actor_name, at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+					[genId('evt'), input.id, 'update', 'agent', null, now, null]
+				)
+			})
 		},
 
 		async list(input: ListInput): Promise<ListResult[]> {
