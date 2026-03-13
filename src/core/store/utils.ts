@@ -112,13 +112,46 @@ export function chunkText(text: string, targetTokens = 400): TextChunk[] {
 	return chunks
 }
 
-export function generateSnippet(text: string, query: string, maxLen = 200): string {
-	const firstTerm = query.split(/\s+/)[0]?.toLowerCase() ?? ''
-	const idx = firstTerm ? text.toLowerCase().indexOf(firstTerm) : -1
-	const start = Math.max(0, idx === -1 ? 0 : idx - 60)
-	const end = Math.min(text.length, start + maxLen)
-	const snippet = text.slice(start, end)
-	return `${start > 0 ? '…' : ''}${snippet}${end < text.length ? '…' : ''}`
+export function generateSnippet(text: string, query: string, maxLen = 300): string {
+	const lower = text.toLowerCase()
+	const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+
+	if (terms.length === 0) {
+		return text.slice(0, maxLen) + (text.length > maxLen ? '…' : '')
+	}
+
+	// Collect positions of every term match
+	const positions: number[] = []
+	for (const term of terms) {
+		let idx = lower.indexOf(term)
+		while (idx !== -1) {
+			positions.push(idx)
+			idx = lower.indexOf(term, idx + 1)
+		}
+	}
+
+	// Fall back to the beginning if no terms matched
+	if (positions.length === 0) {
+		return text.slice(0, maxLen) + (text.length > maxLen ? '…' : '')
+	}
+
+	// Find the window that covers the most distinct terms
+	let bestStart = 0
+	let bestScore = -1
+	for (const pos of positions) {
+		const start = Math.max(0, pos - 60)
+		const end = Math.min(text.length, start + maxLen)
+		const window = lower.slice(start, end)
+		const score = terms.filter((t) => window.includes(t)).length
+		if (score > bestScore) {
+			bestScore = score
+			bestStart = start
+		}
+	}
+
+	const end = Math.min(text.length, bestStart + maxLen)
+	const snippet = text.slice(bestStart, end)
+	return `${bestStart > 0 ? '…' : ''}${snippet}${end < text.length ? '…' : ''}`
 }
 
 export function encodeEmbedding(values: number[]): Uint8Array {
