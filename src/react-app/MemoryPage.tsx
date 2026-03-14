@@ -81,7 +81,7 @@ export function MemoryPage() {
 	if (!isLoaded) return <p className="m-8">Loading…</p>
 	if (!isSignedIn) return <AuthWall />
 	if (loadingMemory) return <p className="m-8">Loading memory…</p>
-	if (error) return <p className="m-8 text-red-600">{error}</p>
+	if (error) return <p className="m-8 text-error">{error}</p>
 
 	const saveLabel =
 		autoSaveStatus === 'pending' ? 'Unsaved changes…' :
@@ -96,7 +96,7 @@ export function MemoryPage() {
 				<button
 					type="button"
 					onClick={() => navigate({ to: '/' })}
-					className="w-20 py-1.5 border border-slate-900 rounded-md bg-slate-900 text-white cursor-pointer text-xs font-mono hover:bg-slate-700 transition-colors"
+					className="btn btn-neutral btn-sm font-mono"
 				>
 					New
 				</button>
@@ -105,7 +105,7 @@ export function MemoryPage() {
 			onChange={setEditorText}
 			minibufferLeft={memory?.path}
 			minibufferRight={
-				<span className={autoSaveStatus === 'saved' ? 'text-green-600' : autoSaveStatus === 'error' ? 'text-red-600' : ''}>
+				<span className={autoSaveStatus === 'saved' ? 'text-success' : autoSaveStatus === 'error' ? 'text-error' : ''}>
 					{saveLabel}
 				</span>
 			}

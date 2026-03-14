@@ -33,8 +33,8 @@ function TrashIcon() {
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
 	return (
 		<div className="mb-8">
-			<p className="text-xs uppercase tracking-wider text-slate-500 px-1 mb-2 font-semibold">{label}</p>
-			<div className="bg-white rounded-xl overflow-hidden shadow-sm border border-slate-200/60">
+			<p className="text-xs uppercase tracking-wider text-base-content/50 px-1 mb-2 font-semibold">{label}</p>
+			<div className="bg-base-100 rounded-xl overflow-hidden shadow-sm border border-base-200">
 				{children}
 			</div>
 		</div>
@@ -80,13 +80,13 @@ function DestinationRow({
 					value={dest.name}
 					onChange={(e) => onChange({ ...dest, name: e.target.value })}
 					placeholder="Name"
-					className="flex-1 text-sm font-medium text-slate-900 bg-transparent outline-none placeholder:text-slate-300"
+					className="flex-1 text-sm font-medium bg-transparent outline-none placeholder:text-base-content/30"
 				/>
 				{canDelete && (
 					<button
 						type="button"
 						onClick={onDelete}
-						className="text-red-400 hover:text-red-600 transition-colors shrink-0"
+						className="btn btn-ghost btn-xs text-error shrink-0"
 						title="Delete"
 					>
 						<TrashIcon />
@@ -95,7 +95,7 @@ function DestinationRow({
 			</div>
 
 			{/* Template + preview */}
-			<div className="bg-slate-50 rounded-lg px-3 py-2.5">
+			<div className="bg-base-200 rounded-lg px-3 py-2.5">
 				<input
 					ref={templateInputRef}
 					type="text"
@@ -103,9 +103,9 @@ function DestinationRow({
 					onChange={(e) => onChange({ ...dest, pathTemplate: e.target.value })}
 					placeholder="inbox/{timestamp}"
 					spellCheck={false}
-					className="w-full text-xs font-mono text-slate-700 bg-transparent outline-none placeholder:text-slate-300"
+					className="w-full text-xs font-mono text-base-content/70 bg-transparent outline-none placeholder:text-base-content/30"
 				/>
-				<p className="mt-1.5 text-xs font-mono text-slate-400 truncate" title={preview}>
+				<p className="mt-1.5 text-xs font-mono text-base-content/40 truncate" title={preview}>
 					→ {preview}
 				</p>
 			</div>
@@ -118,7 +118,7 @@ function DestinationRow({
 						type="button"
 						onClick={() => insertToken(t.token)}
 						title={t.description}
-						className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-slate-500 font-mono transition-colors cursor-pointer"
+						className="kbd kbd-sm font-mono cursor-pointer hover:bg-base-300 transition-colors"
 					>
 						{t.token}
 					</button>
@@ -164,17 +164,17 @@ export function SettingsPage() {
 	}
 
 	return (
-		<div className="w-screen min-h-screen bg-[#f2f2f7] text-slate-900 font-sans">
+		<div className="w-screen min-h-screen bg-base-200 text-base-content font-sans">
 			{/* Nav bar */}
-			<div className="sticky top-0 z-10 bg-[#f2f2f7]/90 backdrop-blur border-b border-slate-200/60">
-				<div className="max-w-lg mx-auto px-4 h-14 flex items-center gap-2">
+			<div className="navbar sticky top-0 z-10 bg-base-200/90 backdrop-blur border-b border-base-200 min-h-14">
+				<div className="max-w-lg mx-auto w-full px-4 flex items-center gap-2">
 					<button
 						type="button"
 						onClick={() => navigate({ to: '/' })}
-						className="flex items-center gap-0.5 text-blue-500 hover:text-blue-600 transition-colors -ml-1"
+						className="btn btn-ghost btn-sm text-primary gap-0.5 -ml-1"
 					>
 						<ChevronLeft />
-						<span className="text-sm">Back</span>
+						Back
 					</button>
 					<h1 className="flex-1 text-center text-base font-semibold -ml-12 pointer-events-none">
 						Settings
@@ -185,7 +185,7 @@ export function SettingsPage() {
 			<div className="max-w-lg mx-auto px-4 pt-8 pb-16">
 				<Section label="Destinations">
 					{destinations.map((dest, i) => (
-						<div key={dest.id} className={i < destinations.length - 1 ? 'border-b border-slate-100' : ''}>
+						<div key={dest.id} className={i < destinations.length - 1 ? 'border-b border-base-200' : ''}>
 							<DestinationRow
 								dest={dest}
 								canDelete={destinations.length > 1}
@@ -199,27 +199,24 @@ export function SettingsPage() {
 				<button
 					type="button"
 					onClick={addDestination}
-					className="w-full bg-white rounded-xl border border-slate-200/60 shadow-sm py-3 text-sm text-blue-500 hover:text-blue-600 font-medium transition-colors"
+					className="btn btn-outline btn-primary w-full rounded-xl"
 				>
 					+ Add Destination
 				</button>
 
 				{/* Token reference */}
 				<div className="mt-8">
-					<p className="text-xs uppercase tracking-wider text-slate-500 px-1 mb-2 font-semibold">
+					<p className="text-xs uppercase tracking-wider text-base-content/50 px-1 mb-2 font-semibold">
 						Template tokens
 					</p>
-					<div className="bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden">
-						<table className="w-full text-xs">
+					<div className="bg-base-100 rounded-xl border border-base-200 shadow-sm overflow-hidden">
+						<table className="table table-xs w-full">
 							<tbody>
-								{TEMPLATE_TOKENS.map((t, i) => (
-									<tr
-										key={t.token}
-										className={`align-top ${i < TEMPLATE_TOKENS.length - 1 ? 'border-b border-slate-100' : ''}`}
-									>
-										<td className="font-mono text-slate-700 px-4 py-3 whitespace-nowrap">{t.token}</td>
-										<td className="text-slate-400 py-3 pr-4">{t.description}</td>
-										<td className="font-mono text-slate-400 py-3 pr-4 text-right whitespace-nowrap">
+								{TEMPLATE_TOKENS.map((t) => (
+									<tr key={t.token} className="align-top">
+										<td className="font-mono text-base-content/80 whitespace-nowrap">{t.token}</td>
+										<td className="text-base-content/50">{t.description}</td>
+										<td className="font-mono text-base-content/50 text-right whitespace-nowrap">
 											{t.example()}
 										</td>
 									</tr>

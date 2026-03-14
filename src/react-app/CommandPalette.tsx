@@ -95,11 +95,11 @@ export function CommandPalette() {
 
 	return (
 		<div
-			className="fixed inset-0 bg-slate-900/40 flex items-start justify-center pt-[12vh] z-50"
+			className="fixed inset-0 bg-base-content/40 flex items-start justify-center pt-[12vh] z-50"
 			onClick={() => setOpen(false)}
 		>
 			<div
-				className="w-[min(600px,90vw)] bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden font-mono"
+				className="w-[min(600px,90vw)] bg-base-100 border border-base-200 rounded-xl shadow-2xl overflow-hidden font-mono"
 				onClick={(e) => e.stopPropagation()}
 			>
 				<input
@@ -107,13 +107,13 @@ export function CommandPalette() {
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 					placeholder="Search memories…"
-					className="w-full px-4 py-3.5 border-b border-slate-200 outline-none text-base bg-transparent font-mono"
+					className="input w-full border-b border-base-200 rounded-none px-4 py-3.5 text-base bg-transparent font-mono outline-none"
 				/>
 				{searching && (
-					<p className="m-0 px-4 py-2.5 text-slate-500 text-sm">Searching…</p>
+					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">Searching…</p>
 				)}
 				{!searching && query && results.length === 0 && (
-					<p className="m-0 px-4 py-2.5 text-slate-500 text-sm">No results</p>
+					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">No results</p>
 				)}
 				{results.length > 0 && (
 					<ul className="m-0 py-1.5 list-none max-h-[50vh] overflow-y-auto">
@@ -122,11 +122,11 @@ export function CommandPalette() {
 								<Link
 									to="/memory/$id"
 									params={{ id: r.memory_id }}
-									className="block px-4 py-2.5 no-underline text-inherit hover:bg-slate-50 cursor-pointer"
+									className="block px-4 py-2.5 no-underline text-inherit hover:bg-base-200 cursor-pointer"
 									onClick={() => setOpen(false)}
 								>
-									<div className="text-xs text-slate-500">{r.path}</div>
-									<div className="mt-0.5 text-slate-900 whitespace-pre-wrap">{r.snippet || <i>No snippet</i>}</div>
+									<div className="text-xs text-base-content/50">{r.path}</div>
+									<div className="mt-0.5 text-base-content whitespace-pre-wrap">{r.snippet || <i>No snippet</i>}</div>
 								</Link>
 							</li>
 						))}

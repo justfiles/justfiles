@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @plugin "@tailwindcss/typography";
+@plugin "daisyui";
 
 /* ── Milkdown editor ─────────────────────────────────────────────────── */
 .ghostore-editor .milkdown {
@@ -12,7 +13,7 @@
 
 .ghostore-editor .milkdown .editor .is-placeholder::before {
 	content: 'Start writing…';
-	@apply text-slate-400 pointer-events-none float-left h-0;
+	@apply text-base-content/30 pointer-events-none float-left h-0;
 }
 
 /* ── Global ──────────────────────────────────────────────────────────── */
@@ -21,13 +22,10 @@
 		'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas,
 		'Liberation Mono', 'Courier New', monospace;
 	line-height: 1.5;
-	font-weight: 400;
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
-	color: #0f172a;
-	background-color: #f8fafc;
 }
 
 * {
@@ -38,14 +36,4 @@ body {
 	margin: 0;
 	min-width: 320px;
 	min-height: 100vh;
-	background: #f8fafc;
-	color: #0f172a;
-}
-
-@layer base {
-	button,
-	input,
-	textarea {
-		color: #0f172a;
-	}
 }

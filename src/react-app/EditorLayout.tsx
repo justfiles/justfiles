@@ -27,7 +27,7 @@ export function EditorLayout({ header, value, onChange, minibufferLeft, minibuff
 	}, [navigate])
 
 	return (
-		<div className="w-screen h-screen flex flex-col bg-slate-50 text-slate-900">
+		<div className="w-screen h-screen flex flex-col bg-base-100 text-base-content">
 			<CommandPalette />
 			<div className="flex flex-col items-center px-4 pt-10 flex-1 min-h-0 overflow-hidden">
 				{header && (
@@ -39,7 +39,7 @@ export function EditorLayout({ header, value, onChange, minibufferLeft, minibuff
 					<MarkdownEditor value={value} onChange={onChange} className="border-0 bg-transparent rounded-none h-full" />
 				</div>
 			</div>
-			<div className="w-full shrink-0 flex items-center gap-3 px-4 py-1.5 border-t border-slate-200 bg-slate-100 text-xs text-slate-500 font-mono">
+			<div className="w-full shrink-0 flex items-center gap-3 px-4 py-1.5 border-t border-base-200 bg-base-200 text-xs text-base-content/60 font-mono">
 				<UserButton appearance={{ elements: { avatarBox: 'w-4 h-4' } }} />
 				<span className="truncate flex-1">{minibufferLeft}</span>
 				<span className="shrink-0 flex items-center gap-3">{minibufferRight}</span>

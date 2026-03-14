@@ -44,7 +44,7 @@ export function ModeSelector({ destinations, active, onSelect }: Props) {
 				ref={triggerRef}
 				type="button"
 				onClick={() => setOpen((o) => !o)}
-				className="flex items-center gap-1 hover:text-slate-700 transition-colors cursor-pointer"
+				className="flex items-center gap-1 hover:text-base-content transition-colors cursor-pointer"
 			>
 				<span>{active.name.toLowerCase()}</span>
 				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 opacity-50">
@@ -56,28 +56,29 @@ export function ModeSelector({ destinations, active, onSelect }: Props) {
 				<div
 					ref={menuRef}
 					style={{ position: 'fixed', bottom: menuPos.bottom, left: menuPos.left }}
-					className="min-w-[140px] bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50 text-xs font-mono"
+					className="min-w-[140px] bg-base-100 border border-base-200 rounded-lg shadow-lg overflow-hidden z-50 text-xs font-mono"
 				>
-					{destinations.map((dest) => (
-						<button
-							key={dest.id}
-							type="button"
-							onClick={() => {
-								onSelect(dest)
-								setOpen(false)
-							}}
-							className="w-full flex items-center justify-between gap-4 px-3 py-2 text-left hover:bg-slate-50 transition-colors cursor-pointer"
-						>
-							<span className={dest.id === active.id ? 'text-slate-900 font-semibold' : 'text-slate-600'}>
-								{dest.name}
-							</span>
-							{dest.id === active.id && (
-								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 text-blue-500 shrink-0">
-									<path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" />
-								</svg>
-							)}
-						</button>
-					))}
+					<ul className="menu menu-xs p-1">
+						{destinations.map((dest) => (
+							<li key={dest.id}>
+								<button
+									type="button"
+									onClick={() => {
+										onSelect(dest)
+										setOpen(false)
+									}}
+									className={`flex items-center justify-between gap-4 ${dest.id === active.id ? 'font-semibold active' : ''}`}
+								>
+									<span>{dest.name}</span>
+									{dest.id === active.id && (
+										<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 text-primary shrink-0">
+											<path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" />
+										</svg>
+									)}
+								</button>
+							</li>
+						))}
+					</ul>
 				</div>,
 				document.body,
 			)}

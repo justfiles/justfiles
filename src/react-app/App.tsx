@@ -84,11 +84,7 @@ function App() {
 	}
 
 	const header = (
-		<button
-			type="button"
-			onClick={handleSubmit}
-			className="w-20 py-1.5 border border-slate-900 rounded-md bg-slate-900 text-white cursor-pointer text-xs font-mono hover:bg-slate-700 transition-colors"
-		>
+		<button type="button" onClick={handleSubmit} className="btn btn-neutral btn-sm font-mono">
 			Submit
 		</button>
 	)
@@ -106,7 +102,7 @@ function App() {
 				/>
 			}
 			minibufferRight={
-				<span className={errorMessage ? 'text-red-600' : ''}>{errorMessage ?? submitStatus}</span>
+				<span className={errorMessage ? 'text-error' : ''}>{errorMessage ?? submitStatus}</span>
 			}
 		/>
 	)

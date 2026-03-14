@@ -7,7 +7,7 @@ import { tursoStore } from '../core/store/turso'
 
 const command = process.argv[2]
 
-const BACKEND: 'local' | 'turso' | 'do' = 'local'
+const BACKEND: 'local' | 'turso' | 'do' = 'turso'
 
 async function getStore() {
 	switch (BACKEND) {
