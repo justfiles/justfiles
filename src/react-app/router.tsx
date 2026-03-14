@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter, Outlet } from '@tanstack/react-router'
 import App from './App'
 import { MemoryPage } from './MemoryPage'
+import { SettingsPage } from './SettingsPage'
 
 export const rootRoute = createRootRoute({
 	component: () => <Outlet />,
@@ -18,7 +19,13 @@ const memoryRoute = createRoute({
 	component: MemoryPage,
 })
 
-const routeTree = rootRoute.addChildren([indexRoute, memoryRoute])
+const settingsRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: '/settings',
+	component: SettingsPage,
+})
+
+const routeTree = rootRoute.addChildren([indexRoute, memoryRoute, settingsRoute])
 
 export const router = createRouter({ routeTree })
 
