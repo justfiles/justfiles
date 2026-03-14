@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { FiCheck, FiChevronUp } from 'react-icons/fi'
 import type { Destination } from './settings'
 
 type Props = {
@@ -47,9 +48,7 @@ export function ModeSelector({ destinations, active, onSelect }: Props) {
 				className="flex items-center gap-1 hover:text-base-content transition-colors cursor-pointer"
 			>
 				<span>{active.name.toLowerCase()}</span>
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 opacity-50">
-					<path fillRule="evenodd" d="M11.78 9.78a.75.75 0 0 1-1.06 0L8 7.06 5.28 9.78a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
-				</svg>
+				<FiChevronUp className="w-3 h-3 opacity-50" />
 			</button>
 
 			{open && createPortal(
@@ -71,9 +70,7 @@ export function ModeSelector({ destinations, active, onSelect }: Props) {
 								>
 									<span>{dest.name}</span>
 									{dest.id === active.id && (
-										<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 text-primary shrink-0">
-											<path fillRule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.207Z" clipRule="evenodd" />
-										</svg>
+									<FiCheck className="w-3.5 h-3.5 text-primary shrink-0" />
 									)}
 								</button>
 							</li>

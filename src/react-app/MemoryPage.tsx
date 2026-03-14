@@ -1,6 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
+import { FiSearch } from 'react-icons/fi'
 import { AuthWall } from './AuthWall'
 import { EditorLayout } from './EditorLayout'
 
@@ -93,13 +94,24 @@ export function MemoryPage() {
 	return (
 		<EditorLayout
 			header={
-				<button
-					type="button"
-					onClick={() => navigate({ to: '/' })}
-					className="btn btn-neutral btn-sm font-mono"
-				>
-					New
-				</button>
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
+						className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer"
+					>
+						<FiSearch className="w-3.5 h-3.5 shrink-0" />
+						<span>Search</span>
+						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
+					</button>
+					<button
+						type="button"
+						onClick={() => navigate({ to: '/' })}
+						className="btn btn-neutral btn-sm font-mono"
+					>
+						New
+					</button>
+				</div>
 			}
 			value={editorText}
 			onChange={setEditorText}

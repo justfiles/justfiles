@@ -1,5 +1,5 @@
-import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
+import { FiChevronLeft, FiTrash2 } from 'react-icons/fi'
 import {
 	DEFAULT_DESTINATIONS,
 	TEMPLATE_TOKENS,
@@ -9,24 +9,6 @@ import {
 	loadSettings,
 	saveSettings,
 } from './settings'
-
-// ── icons ──────────────────────────────────────────────────────────────────
-
-function ChevronLeft() {
-	return (
-		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-			<path fillRule="evenodd" d="M11.78 5.22a.75.75 0 0 1 0 1.06L8.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06l-4.25-4.25a.75.75 0 0 1 0-1.06l4.25-4.25a.75.75 0 0 1 1.06 0Z" clipRule="evenodd" />
-		</svg>
-	)
-}
-
-function TrashIcon() {
-	return (
-		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-			<path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 0 0 6 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 1 0 .23 1.482l.149-.022.841 10.518A2.75 2.75 0 0 0 7.596 19h4.807a2.75 2.75 0 0 0 2.742-2.53l.841-10.52.149.023a.75.75 0 0 0 .23-1.482A41.03 41.03 0 0 0 14 3.193V3.75A2.75 2.75 0 0 0 11.25 1h-2.5ZM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4ZM8.58 7.72a.75.75 0 0 0-1.5.06l.3 7.5a.75.75 0 1 0 1.5-.06l-.3-7.5Zm4.34.06a.75.75 0 1 0-1.5-.06l-.3 7.5a.75.75 0 1 0 1.5.06l.3-7.5Z" clipRule="evenodd" />
-		</svg>
-	)
-}
 
 // ── layout primitives ──────────────────────────────────────────────────────
 
@@ -89,7 +71,7 @@ function DestinationRow({
 						className="btn btn-ghost btn-xs text-error shrink-0"
 						title="Delete"
 					>
-						<TrashIcon />
+						<FiTrash2 className="w-4 h-4" />
 					</button>
 				)}
 			</div>
@@ -131,7 +113,6 @@ function DestinationRow({
 // ── main page ──────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-	const navigate = useNavigate()
 	const [destinations, setDestinations] = useState(() => loadSettings().destinations)
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -170,10 +151,10 @@ export function SettingsPage() {
 				<div className="max-w-lg mx-auto w-full px-4 flex items-center gap-2">
 					<button
 						type="button"
-						onClick={() => navigate({ to: '/' })}
+						onClick={() => window.history.back()}
 						className="btn btn-ghost btn-sm text-primary gap-0.5 -ml-1"
 					>
-						<ChevronLeft />
+						<FiChevronLeft className="w-5 h-5" />
 						Back
 					</button>
 					<h1 className="flex-1 text-center text-base font-semibold -ml-12 pointer-events-none">
