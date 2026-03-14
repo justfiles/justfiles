@@ -1,8 +1,9 @@
 import { ClerkProvider } from '@clerk/clerk-react'
+import { RouterProvider } from '@tanstack/react-router'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import App from './App.tsx'
+import { router } from './router'
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 if (!publishableKey) {
@@ -12,7 +13,7 @@ if (!publishableKey) {
 createRoot(document.getElementById('root')!).render(
 	<StrictMode>
 		<ClerkProvider publishableKey={publishableKey}>
-			<App />
+			<RouterProvider router={router} />
 		</ClerkProvider>
 	</StrictMode>
 )

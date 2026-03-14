@@ -1,5 +1,25 @@
+@import 'tailwindcss';
+@plugin "@tailwindcss/typography";
+
+/* ── Milkdown editor ─────────────────────────────────────────────────── */
+.ghostore-editor .milkdown {
+	@apply flex flex-1 flex-col;
+}
+
+.ghostore-editor .milkdown .editor {
+	@apply prose prose-slate max-w-none flex-1 outline-none p-3;
+}
+
+.ghostore-editor .milkdown .editor .is-placeholder::before {
+	content: 'Start writing…';
+	@apply text-slate-400 pointer-events-none float-left h-0;
+}
+
+/* ── Global ──────────────────────────────────────────────────────────── */
 :root {
-	font-family: "ui-monospace", "SFMono-Regular", Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+	font-family:
+		'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas,
+		'Liberation Mono', 'Courier New', monospace;
 	line-height: 1.5;
 	font-weight: 400;
 	font-synthesis: none;
@@ -22,9 +42,10 @@ body {
 	color: #0f172a;
 }
 
-button,
-input,
-textarea {
-	color: #0f172a;
+@layer base {
+	button,
+	input,
+	textarea {
+		color: #0f172a;
+	}
 }
-

@@ -17,19 +17,25 @@
 		"@hono/mcp": "^0.2.4",
 		"@hono/zod-validator": "^0.7.6",
 		"@libsql/client": "^0.17.0",
+		"@milkdown/kit": "^7.19.0",
+		"@milkdown/react": "^7.19.0",
 		"@modelcontextprotocol/sdk": "^1.27.1",
+		"@tailwindcss/vite": "^4.2.1",
+		"@tanstack/react-router": "^1.166.7",
 		"@tursodatabase/database": "^0.4.0",
 		"dotenv": "^17.3.1",
 		"drizzle-orm": "^0.45.1",
 		"hono": "4.11.1",
 		"hono-rate-limiter": "^0.5.3",
 		"react": "19.2.1",
-		"react-dom": "19.2.1"
+		"react-dom": "19.2.1",
+		"tailwindcss": "^4.2.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.6",
 		"@cloudflare/vite-plugin": "1.15.3",
 		"@eslint/js": "9.39.1",
+		"@tailwindcss/typography": "^0.5.19",
 		"@types/node": "^25.3.4",
 		"@types/react": "19.2.7",
 		"@types/react-dom": "19.2.3",
@@ -58,7 +64,8 @@
 		"dev": "vite",
 		"check": "tsc -b && vite build && wrangler deploy --dry-run",
 		"format": "biome check --write src",
-		"preview": "npm run build && vite preview"
+		"preview": "npm run build && vite preview",
+		"mcp:inspect": "bunx @modelcontextprotocol/inspector https://ghostore.net/mcp"
 	},
 	"type": "module"
 }
