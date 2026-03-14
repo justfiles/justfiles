@@ -91,19 +91,16 @@ function MilkdownInner({ value, onChange, initialValue }: InnerProps) {
 type Props = {
 	value: string
 	onChange: (v: string) => void
-	className?: string
 }
 
-export function MarkdownEditor({ value, onChange, className = '' }: Props) {
+export function MarkdownEditor({ value, onChange }: Props) {
 	const initialValue = useRef(value)
 
 	return (
-		<div className={`flex flex-1 flex-col min-h-0 overflow-hidden border border-slate-200 rounded-lg ${className}`}>
-			<div className="ghostore-editor flex flex-1 flex-col overflow-auto">
-				<MilkdownProvider>
-					<MilkdownInner value={value} onChange={onChange} initialValue={initialValue.current} />
-				</MilkdownProvider>
-			</div>
+		<div className="ghostore-editor h-full overflow-y-auto">
+			<MilkdownProvider>
+				<MilkdownInner value={value} onChange={onChange} initialValue={initialValue.current} />
+			</MilkdownProvider>
 		</div>
 	)
 }

@@ -3,12 +3,21 @@
 @plugin "daisyui";
 
 /* ── Milkdown editor ─────────────────────────────────────────────────── */
+.ghostore-editor > div {
+	min-height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
 .ghostore-editor .milkdown {
-	@apply flex flex-1 flex-col;
+	flex: 1;
+	display: flex;
+	flex-direction: column;
 }
 
 .ghostore-editor .milkdown .editor {
-	@apply prose prose-slate max-w-none flex-1 outline-none p-3;
+	@apply prose prose-slate max-w-none outline-none p-3;
+	flex: 1;
 }
 
 .ghostore-editor .milkdown .editor .is-placeholder::before {
