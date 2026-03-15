@@ -21,6 +21,8 @@ jobs:
 
       - name: Build
         run: bun run build
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3.14.1
