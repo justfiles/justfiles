@@ -27,7 +27,9 @@ export function MemoryPage() {
 	const [editorText, setEditorText] = useState('')
 	const [loadingMemory, setLoadingMemory] = useState(true)
 	const [error, setError] = useState<string | null>(null)
-	const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle')
+	const [autoSaveStatus, setAutoSaveStatus] = useState<
+		'idle' | 'pending' | 'saving' | 'saved' | 'error'
+	>('idle')
 	const loadedTextRef = useRef<string | null>(null)
 	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const getTokenRef = useRef(getToken)
@@ -85,38 +87,42 @@ export function MemoryPage() {
 	if (error) return <p className="m-8 text-error">{error}</p>
 
 	const saveLabel =
-		autoSaveStatus === 'pending' ? 'Unsaved changes…' :
-		autoSaveStatus === 'saving'  ? 'Saving…' :
-		autoSaveStatus === 'saved'   ? 'Saved' :
-		autoSaveStatus === 'error'   ? 'Save failed' :
-		null
+		autoSaveStatus === 'pending'
+			? 'Unsaved changes…'
+			: autoSaveStatus === 'saving'
+				? 'Saving…'
+				: autoSaveStatus === 'saved'
+					? 'Saved'
+					: autoSaveStatus === 'error'
+						? 'Save failed'
+						: null
 
 	return (
 		<EditorLayout
 			header={
 				<div className="flex items-center justify-between w-full gap-2">
 					{memory?.title ? (
-						<span className="text-sm font-medium text-base-content/70 truncate">{memory.title}</span>
+						<span className="text-sm font-bold text-base-content/70 truncate">{memory.title}</span>
 					) : (
 						<span />
 					)}
 					<div className="flex items-center gap-2 shrink-0">
-					<button
-						type="button"
-						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
-						className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer"
-					>
-						<FiSearch className="w-3.5 h-3.5 shrink-0" />
-						<span>Search</span>
-						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
-					</button>
-					<button
-						type="button"
-						onClick={() => navigate({ to: '/' })}
-						className="btn btn-neutral btn-sm font-mono"
-					>
-						New
-					</button>
+						<button
+							type="button"
+							onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
+							className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer"
+						>
+							<FiSearch className="w-3.5 h-3.5 shrink-0" />
+							<span>Search</span>
+							<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
+						</button>
+						<button
+							type="button"
+							onClick={() => navigate({ to: '/' })}
+							className="btn btn-neutral btn-sm font-mono"
+						>
+							New
+						</button>
 					</div>
 				</div>
 			}
@@ -124,7 +130,15 @@ export function MemoryPage() {
 			onChange={setEditorText}
 			minibufferLeft={memory?.path}
 			minibufferRight={
-				<span className={autoSaveStatus === 'saved' ? 'text-success' : autoSaveStatus === 'error' ? 'text-error' : ''}>
+				<span
+					className={
+						autoSaveStatus === 'saved'
+							? 'text-success'
+							: autoSaveStatus === 'error'
+								? 'text-error'
+								: ''
+					}
+				>
 					{saveLabel}
 				</span>
 			}

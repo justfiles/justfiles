@@ -20,7 +20,10 @@ export function CommandPalette() {
 	const [query, setQuery] = useState('')
 	const [results, setResults] = useState<SearchResult[]>([])
 	const [searching, setSearching] = useState(false)
+	const [selectedIndex, setSelectedIndex] = useState(-1)
+	const dialogRef = useRef<HTMLDialogElement>(null)
 	const inputRef = useRef<HTMLInputElement>(null)
+	const selectedRef = useRef<HTMLAnchorElement>(null)
 	const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
@@ -31,7 +34,6 @@ export function CommandPalette() {
 				e.preventDefault()
 				setOpen((o) => !o)
 			}
-			if (e.key === 'Escape') setOpen(false)
 		}
 		function onOpen() { setOpen(true) }
 		window.addEventListener('keydown', onKeyDown)
@@ -42,14 +44,31 @@ export function CommandPalette() {
 		}
 	}, [])
 
+	// sync state when dialog is closed natively (ESC key)
+	useEffect(() => {
+		const dialog = dialogRef.current
+		function onClose() {
+			setOpen(false)
+		}
+		dialog?.addEventListener('close', onClose)
+		return () => dialog?.removeEventListener('close', onClose)
+	}, [])
+
 	useEffect(() => {
 		if (open) {
+			dialogRef.current?.showModal()
 			setTimeout(() => inputRef.current?.focus(), 0)
 		} else {
+			dialogRef.current?.close()
 			setQuery('')
 			setResults([])
+			setSelectedIndex(-1)
 		}
 	}, [open])
+
+	useEffect(() => {
+		setSelectedIndex(-1)
+	}, [results])
 
 	useEffect(() => {
 		if (!query.trim()) {
@@ -95,26 +114,30 @@ export function CommandPalette() {
 			} finally {
 				setSearching(false)
 			}
-		}, 1000)
+		}, 300)
 	}, [query])
 
-	if (!open) return null
-
 	return (
-		<div
-			className="fixed inset-0 bg-base-content/40 flex items-start justify-center pt-[12vh] z-50"
-			onClick={() => setOpen(false)}
-		>
-			<div
-				className="w-[min(600px,90vw)] bg-base-100 border border-base-200 rounded-xl shadow-2xl overflow-hidden font-mono"
-				onClick={(e) => e.stopPropagation()}
-			>
+		<dialog ref={dialogRef} className="modal items-start pt-[12vh]">
+			<div className="modal-box w-[min(600px,90vw)] max-w-none p-0 rounded-xl font-mono overflow-hidden">
 				<input
 					ref={inputRef}
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 					placeholder="Search memories…"
 					className="input w-full border-b border-base-200 rounded-none px-4 py-3.5 text-base bg-transparent font-mono outline-none"
+					onKeyDown={(e) => {
+						if (e.key === 'ArrowDown') {
+							e.preventDefault()
+							setSelectedIndex((i) => Math.min(i + 1, results.length - 1))
+						} else if (e.key === 'ArrowUp') {
+							e.preventDefault()
+							setSelectedIndex((i) => Math.max(i - 1, -1))
+						} else if (e.key === 'Enter') {
+							e.preventDefault()
+							selectedRef.current?.click()
+						}
+					}}
 				/>
 				{searching && (
 					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">Searching…</p>
@@ -124,12 +147,13 @@ export function CommandPalette() {
 				)}
 				{results.length > 0 && (
 					<ul className="m-0 py-1.5 list-none max-h-[50vh] overflow-y-auto">
-						{results.map((r) => (
+						{results.map((r, i) => (
 							<li key={r.memory_id}>
 								<Link
+									ref={i === selectedIndex ? selectedRef : undefined}
 									to="/memory/$id"
 									params={{ id: r.memory_id }}
-									className="block px-4 py-2.5 no-underline text-inherit hover:bg-base-200 cursor-pointer"
+									className={`block px-4 py-2.5 no-underline text-inherit cursor-pointer ${i === selectedIndex ? 'bg-base-200' : 'hover:bg-base-200'}`}
 									onClick={() => setOpen(false)}
 								>
 									<div className="flex items-baseline justify-between gap-3">
@@ -142,7 +166,15 @@ export function CommandPalette() {
 						))}
 					</ul>
 				)}
+				<div className="px-4 py-2 border-t border-base-200 flex gap-3 text-xs text-base-content/40 items-center">
+					<span><kbd className="kbd kbd-xs">↑</kbd><kbd className="kbd kbd-xs">↓</kbd> navigate</span>
+					<span><kbd className="kbd kbd-xs">↵</kbd> open</span>
+					<span><kbd className="kbd kbd-xs">esc</kbd> close</span>
+				</div>
 			</div>
-		</div>
+			<form method="dialog" className="modal-backdrop">
+				<button>close</button>
+			</form>
+		</dialog>
 	)
 }
