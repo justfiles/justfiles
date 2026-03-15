@@ -11,7 +11,10 @@
 		"nodejs_compat"
 	],
 	"observability": {
-		"enabled": true
+		"logs": {
+			"enabled": true,
+			"invocation_logs": true
+		}
 	},
 	"upload_source_maps": true,
 	"assets": {
@@ -43,13 +46,6 @@
 			"fallthrough": true
 		}
 	],
-	"vectorize": [
-		{
-			"binding": "VECTORIZE",
-			"index_name": "ghostore-memory-openai3small-512",
-			"remote": true
-		}
-	],
 	"vars": {
 	},
 	/**
@@ -73,5 +69,39 @@
 			"pattern": "ghostore.net",
 			"custom_domain": true
 		}
-	]
+	],
+	"env": {
+		"staging": {
+			"name": "ghostore-staging",
+			"vars": {},
+			"observability": {
+				"logs": {
+					"enabled": true,
+					"invocation_logs": true
+				}
+			},
+			"routes": [
+				{
+					"pattern": "staging.ghostore.net",
+					"custom_domain": true
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "STORE",
+						"class_name": "MemoryObject"
+					}
+				]
+			},
+			"migrations": [
+				{
+					"tag": "v1",
+					"new_sqlite_classes": [
+						"MemoryObject"
+					]
+				}
+			]
+		}
+	}
 }
