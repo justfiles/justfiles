@@ -31,8 +31,8 @@ export function EditorLayout({ header, value, onChange, minibufferLeft, minibuff
 		<div className="w-screen h-screen flex flex-col bg-base-100 text-base-content">
 			<CommandPalette />
 			{header && (
-				<header className="shrink-0 flex justify-center px-4 pt-8 pb-4">
-					<div className="w-full max-w-[680px] flex items-center">
+				<header className="shrink-0 flex justify-center">
+					<div className="w-full max-w-[680px] flex items-center border-b border-neutral-content/50 p-4">
 						{header}
 					</div>
 				</header>

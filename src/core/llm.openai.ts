@@ -62,7 +62,9 @@ Respond with JSON in this exact format:
 ${text}
 
 Respond with JSON in this exact format:
-{"title":"short descriptive title","tags":["tag1","tag2"],"category":"path/category"}`
+{"title":"short descriptive title","tags":["tag1","tag2"],"category":"path/category"}
+
+IMPORTANT: Write the title in the same language that the note is mostly written in.`
 					}
 				],
 				true
