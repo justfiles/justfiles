@@ -5,7 +5,6 @@ export const CaptureInputSchema = z.object({
 	title: z.string().optional(), // if not given, potentially can generate one using lightweight LLM
 	scope: z.string().optional(), // for permission, e.g. personal, team
 	path: z.string().optional(), // if not provided, we will have a default one, e.g. inbox/<timestamp>
-	occurred_at: z.string().optional(), // if not given, set to now
 	tags: z.array(z.string()).optional(), // user defined
 	source: z.string().optional() // user defined, e.g. agent, human, system
 })
@@ -18,8 +17,6 @@ export const SearchInputSchema = z.object({
 	min_score: z.number().optional(),
 	filter: z
 		.object({
-			occurred_after: z.string().optional(),
-			occurred_before: z.string().optional(),
 			fields: z
 				.object({
 					tags: z.union([z.string(), z.array(z.string())]).optional(),
@@ -52,8 +49,6 @@ export type UpdateInput = z.infer<typeof UpdateInputSchema>
 export const ListInputSchema = z.object({
 	path_prefix: z.string().optional(),
 	tags: z.union([z.string(), z.array(z.string())]).optional(),
-	occurred_after: z.string().optional(),
-	occurred_before: z.string().optional(),
 	limit: z.number().optional()
 })
 
@@ -64,7 +59,6 @@ export type ListResult = {
 	path: string
 	title: string | null
 	tags: string[]
-	occurred_at: string | null
 	source: string | null
 }
 
@@ -85,7 +79,7 @@ export interface Store {
 	update(input: UpdateInput): Promise<void>
 
 	/**
-	 * list memories by path/tags without a search query, ordered by occurred_at desc
+	 * list memories by path/tags without a search query, ordered by created_at desc
 	 */
 	list(input: ListInput): Promise<ListResult[]>
 
@@ -107,7 +101,6 @@ export type SearchResult = {
 	semanticScore?: number
 	ftsScore?: number
 	snippet: string | null
-	occurred_at: string | null
 	source?: string
 }
 
@@ -117,7 +110,6 @@ export type Memory = {
 	title: string | null
 	raw_text: string
 	path: string // path always have value
-	occurred_at: string | null
 	source: string | null
 	created_at: string
 	updated_at: string

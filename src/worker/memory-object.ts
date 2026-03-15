@@ -53,10 +53,6 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.describe(
 						'Optional path to organize the memory hierarchically (e.g. "work/meetings", "personal/ideas"). Defaults to inbox/<timestamp>'
 					),
-				occurred_at: z
-					.string()
-					.optional()
-					.describe('ISO 8601 timestamp of when the event occurred. Defaults to now'),
 				tags: z
 					.array(z.string())
 					.optional()
@@ -109,14 +105,6 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.describe('Minimum relevance score threshold between 0 and 1'),
 				filter: z
 					.object({
-						occurred_after: z
-							.string()
-							.optional()
-							.describe('ISO 8601 date — only return memories after this date'),
-						occurred_before: z
-							.string()
-							.optional()
-							.describe('ISO 8601 date — only return memories before this date'),
 						fields: z
 							.object({
 								tags: z
@@ -223,7 +211,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 		'list_memories',
 		{
 			description:
-				'List memories by path prefix and/or tags without a search query. Use this to browse or enumerate memories at a known location (e.g. all inbox notes, all notes tagged "todo"). Results are ordered by occurred_at descending.',
+				'List memories by path prefix and/or tags without a search query. Use this to browse or enumerate memories at a known location (e.g. all inbox notes, all notes tagged "todo"). Results are ordered by created_at descending.',
 			inputSchema: {
 				path_prefix: z
 					.string()
@@ -235,14 +223,6 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.union([z.string(), z.array(z.string())])
 					.optional()
 					.describe('Filter by one or more tags'),
-				occurred_after: z
-					.string()
-					.optional()
-					.describe('ISO 8601 date — only return memories after this date'),
-				occurred_before: z
-					.string()
-					.optional()
-					.describe('ISO 8601 date — only return memories before this date'),
 				limit: z
 					.number()
 					.min(1)
@@ -260,8 +240,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 				const text = results
 					.map((r) => {
 						const tags = r.tags.length > 0 ? ` [${r.tags.join(', ')}]` : ''
-						const date = r.occurred_at ? ` (${r.occurred_at.slice(0, 10)})` : ''
-						return `[${r.id}] ${r.path}${tags}${date}${r.title ? ` — ${r.title}` : ''}`
+						return `[${r.id}] ${r.path}${tags}${r.title ? ` — ${r.title}` : ''}`
 					})
 					.join('\n')
 				return { content: [{ type: 'text', text }] }
@@ -296,7 +275,6 @@ function registerMcpTools(server: McpServer, store: Store) {
 					`ID: ${memory.id}`,
 					`Title: ${memory.title ?? '(none)'}`,
 					`Path: ${memory.path}`,
-					`Occurred: ${memory.occurred_at ?? 'unknown'}`,
 					`Source: ${memory.source ?? 'unknown'}`,
 					`Tags: ${memory.tags.join(', ') || '(none)'}`,
 					`Created: ${memory.created_at}`,

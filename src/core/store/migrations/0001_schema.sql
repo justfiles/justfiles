@@ -9,7 +9,6 @@ CREATE TABLE IF NOT EXISTS memories (
 	title TEXT,
 	content_hash TEXT NOT NULL,
 	path TEXT NOT NULL,
-	occurred_at TEXT,
 	source TEXT,
 	active INTEGER NOT NULL DEFAULT 1,
 	expires_at TEXT,

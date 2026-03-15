@@ -98,16 +98,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 		const conditions = ['m.scope = ?', 'm.active = 1']
 		const params: SqlValue[] = [scope]
 
-		if (filter?.occurred_after) {
-			conditions.push('m.occurred_at >= ?')
-			params.push(filter.occurred_after)
-		}
-
-		if (filter?.occurred_before) {
-			conditions.push('m.occurred_at <= ?')
-			params.push(filter.occurred_before)
-		}
-
 		if (filter?.fields?.path_prefix) {
 			conditions.push('m.path LIKE ?')
 			params.push(`${filter.fields.path_prefix}%`)
@@ -222,10 +212,10 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 			id: unknown
 			path: unknown
 			title: unknown
-			occurred_at: unknown
+			created_at: unknown
 			source: unknown
 		}>(
-			`SELECT id, path, title, occurred_at, source FROM memories WHERE id IN (${placeholders(memoryIds.length)})`,
+			`SELECT id, path, title, created_at, source FROM memories WHERE id IN (${placeholders(memoryIds.length)})`,
 			memoryIds
 		)
 
@@ -240,10 +230,10 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 			const mem = memMap.get(chunk.memoryId)
 			if (!mem) continue
 
-			const occurredAt = mem.occurred_at != null ? String(mem.occurred_at) : null
 			let score = chunk.score
 			if (options?.temporal_decay) {
-				score = applyTemporalDecay(score, occurredAt, options.decay_half_life_days ?? 30)
+				const createdAt = mem.created_at != null ? String(mem.created_at) : null
+				score = applyTemporalDecay(score, createdAt, options.decay_half_life_days ?? 30)
 			}
 
 			results.push({
@@ -254,7 +244,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				semanticScore: chunk.semanticScore,
 				ftsScore: chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : undefined,
 				snippet: generateSnippet(chunk.text, query),
-				occurred_at: occurredAt,
 				source: mem.source != null ? String(mem.source) : undefined
 			})
 
@@ -367,14 +356,13 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				}
 
 				await tx.run(
-					'INSERT INTO memories(id, scope, title, content_hash, path, occurred_at, source, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
+					'INSERT INTO memories(id, scope, title, content_hash, path, source, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
 					[
 						memoryId,
 						scope,
 						input.title ?? meta?.title ?? null,
 						hash,
 						path,
-						input.occurred_at ?? null,
 						input.source ?? null,
 						now,
 						now
@@ -622,29 +610,20 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				conditions.push('m.path LIKE ?')
 				params.push(`${input.path_prefix}%`)
 			}
-			if (input.occurred_after) {
-				conditions.push('m.occurred_at >= ?')
-				params.push(input.occurred_after)
-			}
-			if (input.occurred_before) {
-				conditions.push('m.occurred_at <= ?')
-				params.push(input.occurred_before)
-			}
 
-			let sql = 'SELECT DISTINCT m.id, m.path, m.title, m.occurred_at, m.source FROM memories m'
+			let sql = 'SELECT DISTINCT m.id, m.path, m.title, m.source FROM memories m'
 			if (tags.length > 0) {
 				sql += ' JOIN memory_tags mt ON mt.memory_id = m.id'
 				conditions.push(`mt.tag IN (${placeholders(tags.length)})`)
 				params.push(...tags)
 			}
-			sql += ` WHERE ${conditions.join(' AND ')} ORDER BY m.occurred_at DESC NULLS LAST LIMIT ?`
+			sql += ` WHERE ${conditions.join(' AND ')} ORDER BY m.created_at DESC LIMIT ?`
 			params.push(limit)
 
 			const rows = await adapter.query<{
 				id: unknown
 				path: unknown
 				title: unknown
-				occurred_at: unknown
 				source: unknown
 			}>(sql, params)
 
@@ -667,7 +646,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				path: String(r.path),
 				title: r.title != null ? String(r.title) : null,
 				tags: tagMap.get(String(r.id)) ?? [],
-				occurred_at: r.occurred_at != null ? String(r.occurred_at) : null,
 				source: r.source != null ? String(r.source) : null
 			}))
 		},
@@ -678,7 +656,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				scope: unknown
 				title: unknown
 				path: unknown
-				occurred_at: unknown
 				source: unknown
 				created_at: unknown
 				updated_at: unknown
@@ -715,7 +692,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				title: memory.title != null ? String(memory.title) : null,
 				raw_text: chunkRows.map((c) => String(c.text)).join('\n'),
 				path: String(memory.path),
-				occurred_at: memory.occurred_at != null ? String(memory.occurred_at) : null,
 				source: memory.source != null ? String(memory.source) : null,
 				created_at: String(memory.created_at),
 				updated_at: String(memory.updated_at),
