@@ -1,5 +1,5 @@
 import type { EmbeddingProvider } from '../core/embedding'
-import type { QueryExpander } from '../core/llm'
+import type { LLM } from '../core/llm'
 import type { DbAdapter, SqlValue } from '../core/store/db-adapter'
 import { migrateFromEntries, createStore } from '../core/store/store-impl'
 import type { Store } from '../core/store/types'
@@ -53,7 +53,7 @@ export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 export function cfStore(
 	storage: DurableObjectStorage,
 	embProvider?: EmbeddingProvider,
-	queryExpander?: QueryExpander
+	llm?: LLM
 ): Store {
-	return createStore(createDOSqliteAdapter(storage), embProvider, queryExpander)
+	return createStore(createDOSqliteAdapter(storage), embProvider, llm)
 }

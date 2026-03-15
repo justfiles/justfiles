@@ -94,7 +94,13 @@ export function MemoryPage() {
 	return (
 		<EditorLayout
 			header={
-				<div className="flex items-center gap-2">
+				<div className="flex items-center justify-between w-full gap-2">
+					{memory?.title ? (
+						<span className="text-sm font-medium text-base-content/70 truncate">{memory.title}</span>
+					) : (
+						<span />
+					)}
+					<div className="flex items-center gap-2 shrink-0">
 					<button
 						type="button"
 						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
@@ -111,6 +117,7 @@ export function MemoryPage() {
 					>
 						New
 					</button>
+					</div>
 				</div>
 			}
 			value={editorText}

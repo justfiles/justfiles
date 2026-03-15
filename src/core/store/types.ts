@@ -99,6 +99,7 @@ export type SearchResult = {
 	memory_id: string
 	// chunk_id: string // the SearchResult maps to a chunk, but currently chunk is not useful for user
 	path: string
+	title: string | null
 	// TODO: might be useful for a memory editor/viewer?
 	// start_line: number | null
 	// end_line: number | null

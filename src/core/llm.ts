@@ -1,38 +1,15 @@
-export interface QueryExpander {
-	expand(query: string): Promise<string[]>
+type ExpandedQuery = {
+	semantic: string[] // 3 variants, for semantic (vector) search
+	keywordSets: string[][] // 3 sets, 3-5 keywords each, for lexical/FTS match
 }
 
-export function openAIExpander(apiKey: string): QueryExpander {
-	return {
-		async expand(query: string): Promise<string[]> {
-			const response = await fetch('https://api.openai.com/v1/chat/completions', {
-				method: 'POST',
-				headers: {
-					Authorization: `Bearer ${apiKey}`,
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					model: 'gpt-4o-mini',
-					temperature: 0.3,
-					messages: [
-						{
-							role: 'user',
-							content: `Generate 2 alternative search query phrasings for: "${query}"\nReturn only the queries, one per line, no numbering or explanation.`
-						}
-					]
-				})
-			})
+type Metadata = {
+	title: string
+	tags: string[]
+	category: string // hint for the path
+}
 
-			if (!response.ok) throw new Error(`OpenAI chat request failed (${response.status})`)
-
-			const body = (await response.json()) as {
-				choices: Array<{ message: { content: string } }>
-			}
-			return (body.choices[0]?.message.content ?? '')
-				.split('\n')
-				.map((l) => l.trim())
-				.filter(Boolean)
-				.slice(0, 2)
-		}
-	}
+export interface LLM {
+	expand(query: string): Promise<ExpandedQuery>
+	generateMetadata(content: string): Promise<Metadata>
 }

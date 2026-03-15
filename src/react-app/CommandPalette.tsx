@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 type SearchResult = {
 	memory_id: string
 	path: string
+	title?: string | null
 	score: number
 	semanticScore?: number
 	ftsScore?: number
@@ -73,8 +74,9 @@ export function CommandPalette() {
 					results = data.results.map((r) => ({
 						memory_id: r.id,
 						path: r.path,
+						title: r.title,
 						score: 0,
-						snippet: r.title,
+						snippet: null,
 						occurred_at: r.occurred_at,
 						source: r.source ?? undefined
 					}))
@@ -130,8 +132,11 @@ export function CommandPalette() {
 									className="block px-4 py-2.5 no-underline text-inherit hover:bg-base-200 cursor-pointer"
 									onClick={() => setOpen(false)}
 								>
-									<div className="text-xs text-base-content/50">{r.path}</div>
-									<div className="mt-0.5 text-base-content whitespace-pre-wrap">{r.snippet || <i>No snippet</i>}</div>
+									<div className="flex items-baseline justify-between gap-3">
+										<span className="text-sm text-base-content truncate">{r.title}</span>
+										<span className="text-xs text-base-content/40 shrink-0 truncate max-w-[40%]">{r.path}</span>
+									</div>
+									{r.snippet && <div className="mt-0.5 text-xs text-base-content/60 whitespace-pre-wrap">{r.snippet}</div>}
 								</Link>
 							</li>
 						))}

@@ -5,6 +5,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { createApi } from '../core/api'
 import { openAI } from '../core/embedding.openai'
+import { openAI as llm } from '../core/llm.openai'
 import type { Store } from '../core/store/types'
 import { cfStore, migrateCF } from './store'
 
@@ -14,7 +15,7 @@ export class MemoryObject extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
 		ctx.blockConcurrencyWhile(() => migrateCF(ctx.storage))
-		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY))
+		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY))
 		const app = new Hono()
 		app.route('/api', createApi(store))
 
@@ -56,7 +57,10 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.string()
 					.optional()
 					.describe('ISO 8601 timestamp of when the event occurred. Defaults to now'),
-				tags: z.array(z.string()).optional().describe('Optional tags to categorize and filter the memory'),
+				tags: z
+					.array(z.string())
+					.optional()
+					.describe('Optional tags to categorize and filter the memory'),
 				source: z
 					.string()
 					.optional()
@@ -69,7 +73,9 @@ function registerMcpTools(server: McpServer, store: Store) {
 				return { content: [{ type: 'text', text: `Memory captured with id: ${id}` }] }
 			} catch (err) {
 				return {
-					content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+					content: [
+						{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }
+					],
 					isError: true
 				}
 			}
@@ -156,7 +162,9 @@ function registerMcpTools(server: McpServer, store: Store) {
 				return { content: [{ type: 'text', text }] }
 			} catch (err) {
 				return {
-					content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+					content: [
+						{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }
+					],
 					isError: true
 				}
 			}
@@ -170,22 +178,41 @@ function registerMcpTools(server: McpServer, store: Store) {
 				'Update an existing memory. Supports updating metadata (path, title, tags) and/or content (text) independently. At least one field must be provided. Updating text rechunks and re-embeds the content.',
 			inputSchema: {
 				id: z.string().describe('The memory ID to update'),
-				path: z.string().optional().describe('New path for the memory (e.g. "work/meetings/2026-03")'),
+				path: z
+					.string()
+					.optional()
+					.describe('New path for the memory (e.g. "work/meetings/2026-03")'),
 				title: z.string().optional().describe('New title for the memory'),
-				tags: z.array(z.string()).optional().describe('Replacement tag list — fully replaces existing tags'),
-				text: z.string().optional().describe('New content — replaces existing text, rechunks and re-embeds')
+				tags: z
+					.array(z.string())
+					.optional()
+					.describe('Replacement tag list — fully replaces existing tags'),
+				text: z
+					.string()
+					.optional()
+					.describe('New content — replaces existing text, rechunks and re-embeds')
 			}
 		},
 		async (args) => {
 			if (!args.path && !args.title && !args.tags && !args.text) {
-				return { content: [{ type: 'text', text: 'Error: at least one field (path, title, tags, text) must be provided' }], isError: true }
+				return {
+					content: [
+						{
+							type: 'text',
+							text: 'Error: at least one field (path, title, tags, text) must be provided'
+						}
+					],
+					isError: true
+				}
 			}
 			try {
 				await store.update(args)
 				return { content: [{ type: 'text', text: `Memory ${args.id} updated.` }] }
 			} catch (err) {
 				return {
-					content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+					content: [
+						{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }
+					],
 					isError: true
 				}
 			}
@@ -201,7 +228,9 @@ function registerMcpTools(server: McpServer, store: Store) {
 				path_prefix: z
 					.string()
 					.optional()
-					.describe('Return only memories whose path starts with this prefix (e.g. "inbox", "work/meetings")'),
+					.describe(
+						'Return only memories whose path starts with this prefix (e.g. "inbox", "work/meetings")'
+					),
 				tags: z
 					.union([z.string(), z.array(z.string())])
 					.optional()
@@ -238,7 +267,9 @@ function registerMcpTools(server: McpServer, store: Store) {
 				return { content: [{ type: 'text', text }] }
 			} catch (err) {
 				return {
-					content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+					content: [
+						{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }
+					],
 					isError: true
 				}
 			}
@@ -253,7 +284,9 @@ function registerMcpTools(server: McpServer, store: Store) {
 			inputSchema: {
 				id: z
 					.string()
-					.describe('The memory ID to retrieve (obtained from capture_memory or search_memory results)')
+					.describe(
+						'The memory ID to retrieve (obtained from capture_memory or search_memory results)'
+					)
 			}
 		},
 		async ({ id }) => {
@@ -273,7 +306,9 @@ function registerMcpTools(server: McpServer, store: Store) {
 				return { content: [{ type: 'text', text: lines.join('\n') }] }
 			} catch (err) {
 				return {
-					content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+					content: [
+						{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }
+					],
 					isError: true
 				}
 			}

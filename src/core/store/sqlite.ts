@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { Database } from 'bun:sqlite'
 import { resolve } from 'node:path'
 import type { EmbeddingProvider } from '../embedding'
-import type { QueryExpander } from '../llm'
+import type { LLM } from '../llm'
 import type { Store } from './types'
 import { createSqliteAdapter } from './db-adapter'
 import { migrateFromEntries, createStore } from './store-impl'
@@ -24,12 +24,12 @@ async function migrate(adapter: ReturnType<typeof createSqliteAdapter>): Promise
 export async function sqliteStore(
 	dbPath: string,
 	embProvider?: EmbeddingProvider,
-	queryExpander?: QueryExpander
+	llm?: LLM
 ): Promise<Store> {
 	const db = new Database(resolve(dbPath))
 	db.exec('PRAGMA foreign_keys = ON')
 	db.exec('PRAGMA journal_mode = WAL')
 	const adapter = createSqliteAdapter(db)
 	await migrate(adapter)
-	return createStore(adapter, embProvider, queryExpander)
+	return createStore(adapter, embProvider, llm)
 }
