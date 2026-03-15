@@ -85,7 +85,7 @@ function App() {
 	}
 
 	const header = (
-		<div className="flex items-center gap-2">
+		<div className="flex items-center gap-2 ml-auto">
 			<button type="button" onClick={() => window.dispatchEvent(new Event('open-command-palette'))} className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer">
 				<FiSearch className="w-3.5 h-3.5 shrink-0" />
 				<span>Search</span>
