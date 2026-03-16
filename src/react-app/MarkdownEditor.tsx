@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Milkdown, MilkdownProvider, useEditor, useInstance } from '@milkdown/react'
 import { Editor, rootCtx, defaultValueCtx, editorViewCtx } from '@milkdown/kit/core'
-import { commonmark } from '@milkdown/kit/preset/commonmark'
+import { commonmark, linkSchema } from '@milkdown/kit/preset/commonmark'
 import { listener, listenerCtx } from '@milkdown/kit/plugin/listener'
 import { replaceAll, $prose } from '@milkdown/kit/utils'
 import { keymap } from '@milkdown/kit/prose/keymap'
@@ -20,6 +20,51 @@ const exitCodeBlock = $prose(() =>
 			tr.setSelection(TextSelection.near(tr.doc.resolve(after + 1)))
 			dispatch?.(tr.scrollIntoView())
 			return true
+		}
+	})
+)
+
+function isUrl(text: string): boolean {
+	try {
+		const url = new URL(text.trim())
+		return url.protocol === 'http:' || url.protocol === 'https:'
+	} catch {
+		return false
+	}
+}
+
+// Cmd/Ctrl+Click opens links in a new tab
+const clickLink = $prose(() =>
+	new Plugin({
+		props: {
+			handleClick(view, pos, event) {
+				if (!event.metaKey && !event.ctrlKey) return false
+				const marks = view.state.doc.resolve(pos).marks()
+				const link = marks.find((m) => m.type.name === 'link')
+				if (!link) return false
+				window.open(link.attrs.href, '_blank', 'noopener,noreferrer')
+				return true
+			}
+		}
+	})
+)
+
+// When text is selected and clipboard contains a URL, paste wraps selection as a link
+const pasteLink = $prose((ctx) =>
+	new Plugin({
+		props: {
+			handlePaste(view, event) {
+				const { state, dispatch } = view
+				const { selection } = state
+				if (selection.empty) return false
+				const text = event.clipboardData?.getData('text/plain') ?? ''
+				if (!isUrl(text)) return false
+				event.preventDefault()
+				const { from, to } = selection
+				const mark = linkSchema.type(ctx).create({ href: text.trim() })
+				dispatch(state.tr.addMark(from, to, mark))
+				return true
+			}
 		}
 	})
 )
@@ -68,6 +113,8 @@ function MilkdownInner({ value, onChange, initialValue }: InnerProps) {
 			})
 			.use(commonmark)
 			.use(listener)
+			.use(pasteLink)
+			.use(clickLink)
 			.use(exitCodeBlock)
 			.use(placeholder)
 	)
