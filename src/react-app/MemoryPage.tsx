@@ -43,7 +43,13 @@ export function MemoryPage() {
 		enabled: isLoaded && !!isSignedIn,
 	})
 
-	// Sync editor text on initial load only
+	// Reset editor when navigating to a different memory
+	useEffect(() => {
+		loadedTextRef.current = null
+		setEditorText('')
+	}, [id])
+
+	// Sync editor text on load
 	useEffect(() => {
 		if (memoryQuery.data && loadedTextRef.current === null) {
 			setEditorText(memoryQuery.data.raw_text)
