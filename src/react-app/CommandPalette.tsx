@@ -1,4 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 
@@ -26,16 +27,17 @@ export function CommandPalette() {
 	const { getToken } = useAuth()
 	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState('')
-	const [results, setResults] = useState<SearchResult[]>([])
-	const [recentResults, setRecentResults] = useState<RecentResult[]>([])
-	const [searching, setSearching] = useState(false)
+	const [debouncedQuery, setDebouncedQuery] = useState('')
 	const [selectedIndex, setSelectedIndex] = useState(-1)
 	const dialogRef = useRef<HTMLDialogElement>(null)
 	const inputRef = useRef<HTMLInputElement>(null)
 	const selectedRef = useRef<HTMLAnchorElement>(null)
-	const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-	const getTokenRef = useRef(getToken)
-	getTokenRef.current = getToken
+
+	// Debounce query input
+	useEffect(() => {
+		const t = setTimeout(() => setDebouncedQuery(query), 300)
+		return () => clearTimeout(t)
+	}, [query])
 
 	useEffect(() => {
 		function onKeyDown(e: KeyboardEvent) {
@@ -56,9 +58,7 @@ export function CommandPalette() {
 	// sync state when dialog is closed natively (ESC key)
 	useEffect(() => {
 		const dialog = dialogRef.current
-		function onClose() {
-			setOpen(false)
-		}
+		function onClose() { setOpen(false) }
 		dialog?.addEventListener('close', onClose)
 		return () => dialog?.removeEventListener('close', onClose)
 	}, [])
@@ -67,74 +67,71 @@ export function CommandPalette() {
 		if (open) {
 			dialogRef.current?.showModal()
 			setTimeout(() => inputRef.current?.focus(), 0)
-			getTokenRef.current().then((token) => {
-				if (!token) return
-				fetch('/api/v1/recent?n=5', {
-					headers: { Authorization: `Bearer ${token}` }
-				})
-					.then((r) => r.json())
-					.then((data: { results: RecentResult[] }) => setRecentResults(data.results))
-					.catch(() => {})
-			})
 		} else {
 			dialogRef.current?.close()
 			setQuery('')
-			setResults([])
-			setRecentResults([])
+			setDebouncedQuery('')
 			setSelectedIndex(-1)
 		}
 	}, [open])
 
 	useEffect(() => {
 		setSelectedIndex(-1)
-	}, [results])
+	}, [debouncedQuery])
 
-	useEffect(() => {
-		if (!query.trim()) {
-			setResults([])
-			return
-		}
-		if (debounceTimer.current) clearTimeout(debounceTimer.current)
-		debounceTimer.current = setTimeout(async () => {
-			setSearching(true)
-			try {
-				const token = await getTokenRef.current()
-				if (!token) return
-				const isPath = query.startsWith('/') && !query.includes(' ')
-				let results: SearchResult[]
-				if (isPath) {
-					const res = await fetch('/api/v1/list', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-						body: JSON.stringify({ path_prefix: query.replace(/^\//, '') })
-					})
-					const data = (await res.json()) as { results: { id: string; path: string; title: string | null; occurred_at: string | null; source: string | null }[] }
-					results = data.results.map((r) => ({
-						memory_id: r.id,
-						path: r.path,
-						title: r.title,
-						score: 0,
-						snippet: null,
-						occurred_at: r.occurred_at,
-						source: r.source ?? undefined
-					}))
-				} else {
-					const res = await fetch('/api/v1/search', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-						body: JSON.stringify({ query })
-					})
-					const data = (await res.json()) as { results: SearchResult[] }
-					results = data.results
-				}
-				setResults(results)
-			} catch {
-				setResults([])
-			} finally {
-				setSearching(false)
+	const recentQuery = useQuery({
+		queryKey: ['recent'],
+		queryFn: async () => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing token')
+			const r = await fetch('/api/v1/recent?n=5', {
+				headers: { Authorization: `Bearer ${token}` },
+			})
+			const data = (await r.json()) as { results: RecentResult[] }
+			return data.results
+		},
+		enabled: open,
+		staleTime: 30_000,
+	})
+
+	const searchQuery = useQuery({
+		queryKey: ['search', debouncedQuery],
+		queryFn: async () => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing token')
+			const isPath = debouncedQuery.startsWith('/') && !debouncedQuery.includes(' ')
+			if (isPath) {
+				const res = await fetch('/api/v1/list', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+					body: JSON.stringify({ path_prefix: debouncedQuery.replace(/^\//, '') }),
+				})
+				const data = (await res.json()) as { results: { id: string; path: string; title: string | null; occurred_at: string | null; source: string | null }[] }
+				return data.results.map((r) => ({
+					memory_id: r.id,
+					path: r.path,
+					title: r.title,
+					score: 0,
+					snippet: null,
+					occurred_at: r.occurred_at,
+					source: r.source ?? undefined,
+				})) as SearchResult[]
 			}
-		}, 300)
-	}, [query])
+			const res = await fetch('/api/v1/search', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+				body: JSON.stringify({ query: debouncedQuery }),
+			})
+			const data = (await res.json()) as { results: SearchResult[] }
+			return data.results
+		},
+		enabled: !!debouncedQuery.trim(),
+		staleTime: 30_000,
+	})
+
+	const results = searchQuery.data ?? []
+	const recentResults = recentQuery.data ?? []
+	const searching = searchQuery.isFetching
 
 	return (
 		<dialog ref={dialogRef} className="modal items-start pt-[12vh]">

@@ -1,4 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
@@ -23,68 +24,74 @@ export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
 	const { getToken, isLoaded, isSignedIn } = useAuth()
-	const [memory, setMemory] = useState<Memory | null>(null)
 	const [editorText, setEditorText] = useState('')
-	const [loadingMemory, setLoadingMemory] = useState(true)
-	const [error, setError] = useState<string | null>(null)
-	const [autoSaveStatus, setAutoSaveStatus] = useState<
-		'idle' | 'pending' | 'saving' | 'saved' | 'error'
-	>('idle')
+	const [hasPendingTimer, setHasPendingTimer] = useState(false)
 	const loadedTextRef = useRef<string | null>(null)
 	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-	const getTokenRef = useRef(getToken)
-	getTokenRef.current = getToken
 
+	const memoryQuery = useQuery({
+		queryKey: ['memory', id],
+		queryFn: async () => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing auth token')
+			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}`, {
+				headers: { Authorization: `Bearer ${token}` },
+			})
+			if (!res.ok) throw new Error(`Failed: ${res.status}`)
+			return res.json() as Promise<Memory>
+		},
+		enabled: isLoaded && !!isSignedIn,
+	})
+
+	// Sync editor text on initial load only
 	useEffect(() => {
-		if (!isLoaded || !isSignedIn) return
-		async function load() {
-			try {
-				const token = await getToken()
-				if (!token) throw new Error('Missing auth token')
-				const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}`, {
-					headers: { Authorization: `Bearer ${token}` }
-				})
-				if (!res.ok) throw new Error(`Failed: ${res.status}`)
-				const data = (await res.json()) as Memory
-				setMemory(data)
-				setEditorText(data.raw_text)
-				loadedTextRef.current = data.raw_text
-			} catch {
-				setError('Failed to load memory')
-			} finally {
-				setLoadingMemory(false)
-			}
+		if (memoryQuery.data && loadedTextRef.current === null) {
+			setEditorText(memoryQuery.data.raw_text)
+			loadedTextRef.current = memoryQuery.data.raw_text
 		}
-		load()
-	}, [isLoaded, isSignedIn, id])
+	}, [memoryQuery.data])
+
+	const saveMutation = useMutation({
+		mutationFn: async (text: string) => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing auth token')
+			const res = await fetch('/api/v1/update', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+				body: JSON.stringify({ id: memoryQuery.data!.id, text }),
+			})
+			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
+			return text
+		},
+		onSuccess: (text) => {
+			loadedTextRef.current = text
+		},
+	})
 
 	useEffect(() => {
-		if (!memory || editorText === loadedTextRef.current) return
-		setAutoSaveStatus('pending')
+		if (!memoryQuery.data || editorText === loadedTextRef.current) return
+		setHasPendingTimer(true)
 		if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-		autoSaveTimer.current = setTimeout(async () => {
-			setAutoSaveStatus('saving')
-			try {
-				const token = await getTokenRef.current()
-				if (!token) throw new Error('Missing auth token')
-				const res = await fetch('/api/v1/update', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-					body: JSON.stringify({ id: memory.id, text: editorText })
-				})
-				if (!res.ok) throw new Error(`Save failed: ${res.status}`)
-				loadedTextRef.current = editorText
-				setAutoSaveStatus('saved')
-			} catch {
-				setAutoSaveStatus('error')
-			}
+		autoSaveTimer.current = setTimeout(() => {
+			setHasPendingTimer(false)
+			saveMutation.mutate(editorText)
 		}, 3000)
 	}, [editorText])
 
 	if (!isLoaded) return <p className="m-8">Loading…</p>
 	if (!isSignedIn) return <AuthWall />
-	if (loadingMemory) return <p className="m-8">Loading memory…</p>
-	if (error) return <p className="m-8 text-error">{error}</p>
+	if (memoryQuery.isPending) return <p className="m-8">Loading memory…</p>
+	if (memoryQuery.isError) return <p className="m-8 text-error">Failed to load memory</p>
+
+	const autoSaveStatus = hasPendingTimer
+		? 'pending'
+		: saveMutation.isPending
+			? 'saving'
+			: saveMutation.isSuccess
+				? 'saved'
+				: saveMutation.isError
+					? 'error'
+					: 'idle'
 
 	const saveLabel =
 		autoSaveStatus === 'pending'
@@ -101,8 +108,8 @@ export function MemoryPage() {
 		<EditorLayout
 			header={
 				<div className="flex items-center w-full gap-2">
-					{memory?.title && (
-						<span className="text-sm font-bold text-base-content/70 truncate">{memory.title}</span>
+					{memoryQuery.data?.title && (
+						<span className="text-sm font-bold text-base-content/70 truncate">{memoryQuery.data.title}</span>
 					)}
 					<div className="flex items-center gap-2 shrink-0 ml-auto">
 						<button
@@ -126,7 +133,7 @@ export function MemoryPage() {
 			}
 			value={editorText}
 			onChange={setEditorText}
-			minibufferLeft={memory?.path}
+			minibufferLeft={memoryQuery.data?.path}
 			minibufferRight={
 				<span
 					className={

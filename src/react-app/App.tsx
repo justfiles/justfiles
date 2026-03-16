@@ -1,4 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
+import { useMutation } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
 import './App.css'
@@ -18,9 +19,6 @@ const LS_KEY = 'ghostore:draft'
 function App() {
 	const { getToken, isLoaded, isSignedIn } = useAuth()
 	const [editorText, setEditorText] = useState(() => localStorage.getItem(LS_KEY) ?? '')
-	const [submitStatus, setSubmitStatus] = useState<string | null>(null)
-	const [errorMessage, setErrorMessage] = useState<string | null>(null)
-
 	const [settings] = useState(() => loadSettings())
 	const [activeDestination, setActiveDestination] = useState<Destination>(() => getActiveDestination(settings))
 
@@ -29,36 +27,27 @@ function App() {
 		localStorage.setItem(LS_KEY, editorText)
 	}, [editorText])
 
-	const getTokenRef = useRef(getToken)
-	getTokenRef.current = getToken
-	const editorTextRef = useRef(editorText)
-	editorTextRef.current = editorText
-	const activeDestinationRef = useRef(activeDestination)
-	activeDestinationRef.current = activeDestination
-	const setEditorTextRef = useRef(setEditorText)
-	const setSubmitStatusRef = useRef(setSubmitStatus)
-	const setErrorMessageRef = useRef(setErrorMessage)
-
-	async function handleSubmit() {
-		const text = editorTextRef.current
-		if (!text.trim()) return
-		setSubmitStatus(null)
-		setErrorMessage(null)
-		try {
-			const token = await getTokenRef.current()
+	const captureMutation = useMutation({
+		mutationFn: async ({ text, path }: { text: string; path: string }) => {
+			const token = await getToken()
 			if (!token) throw new Error('Missing auth token')
 			const res = await fetch('/api/v1/capture', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ text, path: expandTemplate(activeDestinationRef.current.pathTemplate) }),
+				body: JSON.stringify({ text, path }),
 			})
-			const data = (await res.json()) as { id: string }
-			setEditorTextRef.current('')
+			return res.json() as Promise<{ id: string }>
+		},
+		onSuccess: () => {
+			setEditorText('')
 			localStorage.removeItem(LS_KEY)
-			setSubmitStatusRef.current(`Saved as ${data.id}`)
-		} catch {
-			setErrorMessageRef.current('Error saving memory')
-		}
+		},
+	})
+
+	function handleSubmit() {
+		const text = editorText
+		if (!text.trim()) return
+		captureMutation.mutate({ text, path: expandTemplate(activeDestination.pathTemplate) })
 	}
 
 	const handleSubmitRef = useRef(handleSubmit)
@@ -83,6 +72,9 @@ function App() {
 		setActiveDestination(dest)
 		saveSettings({ lastUsedDestinationId: dest.id })
 	}
+
+	const submitStatus = captureMutation.isSuccess ? `Saved as ${captureMutation.data?.id}` : null
+	const errorMessage = captureMutation.isError ? 'Error saving memory' : null
 
 	const header = (
 		<div className="flex items-center gap-2 ml-auto">
