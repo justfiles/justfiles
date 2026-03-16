@@ -194,7 +194,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 				}
 			}
 			try {
-				await store.update(args)
+				await store.update({ ...args, source: 'agent' })
 				return { content: [{ type: 'text', text: `Memory ${args.id} updated.` }] }
 			} catch (err) {
 				return {

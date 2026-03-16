@@ -1,8 +1,3 @@
-CREATE TABLE IF NOT EXISTS meta (
-	key TEXT PRIMARY KEY,
-	value TEXT
-);
-
 CREATE TABLE IF NOT EXISTS memories (
 	id TEXT PRIMARY KEY NOT NULL,
 	scope TEXT NOT NULL,
@@ -39,7 +34,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 	token_count INTEGER,
 	hash TEXT NOT NULL,
 	embedding_model TEXT NOT NULL,
-	updated_at TEXT NOT NULL
+	created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS chunk_vectors (
@@ -51,24 +46,12 @@ CREATE TABLE IF NOT EXISTS chunk_vectors (
 	updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS embeddings_cache (
-	hash TEXT NOT NULL,
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	dims INTEGER NOT NULL,
-	embedding BLOB NOT NULL,
-	updated_at TEXT NOT NULL,
-	PRIMARY KEY(hash, provider, model)
-);
-
 CREATE TABLE IF NOT EXISTS events (
 	id TEXT PRIMARY KEY,
 	memory_id TEXT REFERENCES memories(id),
-	event_type TEXT NOT NULL,
-	actor_type TEXT,
-	actor_name TEXT,
-	at TEXT NOT NULL,
-	payload_json TEXT
+	type TEXT NOT NULL,
+	actor TEXT,
+	at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS memory_links (

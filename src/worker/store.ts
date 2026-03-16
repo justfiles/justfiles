@@ -7,9 +7,24 @@ import type { Store } from '../core/store/types'
 // Wrangler's Text rule (globs: ["**/*.sql"]) bundles .sql files as plain strings.
 // @ts-ignore
 import MIGRATION_0001 from '../core/store/migrations/0001_schema.sql'
+// @ts-ignore
+import MIGRATION_0002 from '../core/store/migrations/0002_drop_events_payload_json.sql'
+// @ts-ignore
+import MIGRATION_0003 from '../core/store/migrations/0003_events_column_rename.sql'
+// @ts-ignore
+import MIGRATION_0004 from '../core/store/migrations/0004_drop_meta_table.sql'
+// @ts-ignore
+import MIGRATION_0005 from '../core/store/migrations/0005_chunks_updated_at_to_created_at.sql'
+// @ts-ignore
+import MIGRATION_0006 from '../core/store/migrations/0006_drop_embeddings_cache.sql'
 
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
-	{ version: 1, sql: MIGRATION_0001 as string }
+	{ version: 1, sql: MIGRATION_0001 as string },
+	{ version: 2, sql: MIGRATION_0002 as string },
+	{ version: 3, sql: MIGRATION_0003 as string },
+	{ version: 4, sql: MIGRATION_0004 as string },
+	{ version: 5, sql: MIGRATION_0005 as string },
+	{ version: 6, sql: MIGRATION_0006 as string }
 ]
 
 // CF DO prohibits SQL BEGIN/COMMIT; use storage.transactionSync() instead.

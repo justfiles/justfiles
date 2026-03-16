@@ -41,7 +41,8 @@ export const UpdateInputSchema = z.object({
 	path: z.string().optional(),
 	title: z.string().optional(),
 	tags: z.array(z.string()).optional(),
-	text: z.string().optional()
+	text: z.string().optional(),
+	source: z.string().optional()
 })
 
 export type UpdateInput = z.infer<typeof UpdateInputSchema>

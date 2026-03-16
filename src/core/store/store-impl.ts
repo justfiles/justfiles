@@ -259,8 +259,9 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 		if (!embProvider || chunkHashes.length === 0) return new Map()
 
 		const rows = await adapter.query<{ hash: unknown; embedding: unknown }>(
-			`SELECT hash, embedding FROM embeddings_cache
-			 WHERE provider = ? AND model = ? AND hash IN (${placeholders(chunkHashes.length)})`,
+			`SELECT c.hash, cv.embedding FROM chunk_vectors cv
+			 JOIN chunks c ON c.id = cv.chunk_id
+			 WHERE cv.provider = ? AND cv.model = ? AND c.hash IN (${placeholders(chunkHashes.length)})`,
 			[embProvider.provider, embProvider.model, ...chunkHashes]
 		)
 
@@ -326,17 +327,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						const vector = new Float32Array(fresh[i])
 						chunkEmbeddings[chunkIndex] = vector
 
-						await adapter.run(
-							'INSERT OR REPLACE INTO embeddings_cache(hash, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-							[
-								chunkHashes[chunkIndex],
-								embProvider.provider,
-								embProvider.model,
-								vector.length,
-								encodeEmbedding(Array.from(vector)),
-								now
-							]
-						)
 					}
 				}
 			}
@@ -350,15 +340,13 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						oldPathMemoryId
 					])
 					await tx.run(
-						'INSERT INTO events(id, memory_id, event_type, actor_type, actor_name, at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+						'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
 						[
 							genId('evt'),
 							oldPathMemoryId,
 							'archive',
 							input.source ? 'agent' : 'system',
-							input.source ?? null,
-							now,
-							JSON.stringify({ reason: 'replaced by path upsert' })
+							now
 						]
 					)
 				}
@@ -389,7 +377,7 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					const chunkId = genId('chk')
 
 					await tx.run(
-						'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+						'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 						[
 							chunkId,
 							memoryId,
@@ -420,15 +408,13 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				}
 
 				await tx.run(
-					'INSERT INTO events(id, memory_id, event_type, actor_type, actor_name, at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+					'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
 					[
 						genId('evt'),
 						memoryId,
 						'capture',
 						input.source ? 'agent' : 'human',
-						input.source ?? null,
-						now,
-						null
+						now
 					]
 				)
 			})
@@ -536,17 +522,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 								const chunkIndex = missingIndexes[i]
 								const vector = new Float32Array(fresh[i])
 								chunkEmbeddings[chunkIndex] = vector
-								await adapter.run(
-									'INSERT OR REPLACE INTO embeddings_cache(hash, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-									[
-										chunkHashes[chunkIndex],
-										embProvider.provider,
-										embProvider.model,
-										vector.length,
-										encodeEmbedding(Array.from(vector)),
-										now
-									]
-								)
 							}
 						}
 					}
@@ -569,7 +544,7 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						const chunk = chunks[i]
 						const chunkId = genId('chk')
 						await tx.run(
-							'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+							'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 							[
 								chunkId,
 								input.id,
@@ -613,8 +588,8 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				}
 
 				await tx.run(
-					'INSERT INTO events(id, memory_id, event_type, actor_type, actor_name, at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
-					[genId('evt'), input.id, 'update', 'agent', null, now, null]
+					'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
+					[genId('evt'), input.id, 'update', input.source ? 'agent' : 'human', now]
 				)
 			})
 		},
