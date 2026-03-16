@@ -12,6 +12,7 @@ import type {
 	ListInput,
 	ListResult,
 	Memory,
+	RecentResult,
 	SearchInput,
 	SearchResult,
 	Store,
@@ -89,6 +90,7 @@ export async function migrateFromEntries(
 
 export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider, llm?: LLM): Store {
 	const embModelKey = embProvider ? `${embProvider.provider}:${embProvider.model}` : 'none'
+	let recentCache: RecentResult[] | null = null
 
 	async function getValidMemoryIds(
 		scope: string,
@@ -304,10 +306,11 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 
 			const chunkEmbeddings: Array<Float32Array | null> = chunks.map(() => null)
 
-			await adapter.run(
-				'INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)',
-				[hash, normalized, now]
-			)
+			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [
+				hash,
+				normalized,
+				now
+			])
 
 			if (embProvider) {
 				const cached = await getCachedEmbeddings(chunkHashes)
@@ -326,7 +329,6 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						const chunkIndex = missingIndexes[i]
 						const vector = new Float32Array(fresh[i])
 						chunkEmbeddings[chunkIndex] = vector
-
 					}
 				}
 			}
@@ -341,13 +343,7 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					])
 					await tx.run(
 						'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
-						[
-							genId('evt'),
-							oldPathMemoryId,
-							'archive',
-							input.source ? 'agent' : 'system',
-							now
-						]
+						[genId('evt'), oldPathMemoryId, 'archive', input.source ? 'agent' : 'system', now]
 					)
 				}
 
@@ -407,18 +403,16 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					}
 				}
 
-				await tx.run(
-					'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
-					[
-						genId('evt'),
-						memoryId,
-						'capture',
-						input.source ? 'agent' : 'human',
-						now
-					]
-				)
+				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
+					genId('evt'),
+					memoryId,
+					'capture',
+					input.source ? 'agent' : 'human',
+					now
+				])
 			})
 
+			recentCache = null
 			return memoryId
 		},
 
@@ -527,10 +521,11 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					}
 
 					// insert new content (must come before UPDATE memories SET content_hash to satisfy FTS trigger)
-					await tx.run(
-						'INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)',
-						[hash, normalized, now]
-					)
+					await tx.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [
+						hash,
+						normalized,
+						now
+					])
 
 					// delete chunk_vectors first (FK → chunks), then chunks (FTS triggers handle FTS cleanup)
 					await tx.run(
@@ -587,11 +582,15 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					)
 				}
 
-				await tx.run(
-					'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
-					[genId('evt'), input.id, 'update', input.source ? 'agent' : 'human', now]
-				)
+				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
+					genId('evt'),
+					input.id,
+					'update',
+					input.source ? 'agent' : 'human',
+					now
+				])
 			})
+			recentCache = null
 		},
 
 		async list(input: ListInput): Promise<ListResult[]> {
@@ -644,7 +643,7 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 			}))
 		},
 
-		async get(id: string): Promise<Memory> {
+		async get(id: string): Promise<Memory | null> {
 			const [memory] = await adapter.query<{
 				id: unknown
 				scope: unknown
@@ -656,7 +655,7 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				updated_at: unknown
 			}>('SELECT * FROM memories WHERE id = ? AND active = 1 LIMIT 1', [id])
 
-			if (!memory) throw new Error(`Memory not found: ${id}`)
+			if (!memory) return null
 
 			const [tags, outgoing, incoming, contentRows] = await Promise.all([
 				adapter.query<{ tag: unknown }>('SELECT tag FROM memory_tags WHERE memory_id = ?', [id]),
@@ -670,10 +669,9 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					reason: unknown
 					created_at: unknown
 				}>('SELECT from_id, rel_type, reason, created_at FROM memory_links WHERE to_id = ?', [id]),
-				adapter.query<{ text: unknown }>(
-					'SELECT text FROM content WHERE hash = ?',
-					[String(memory.content_hash)]
-				)
+				adapter.query<{ text: unknown }>('SELECT text FROM content WHERE hash = ?', [
+					String(memory.content_hash)
+				])
 			])
 
 			await adapter.run(
@@ -706,6 +704,44 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					}))
 				]
 			}
+		},
+
+		async recent(n: number): Promise<RecentResult[]> {
+			const MAX_CACHE = 20
+			if (!recentCache) {
+				const rows = await adapter.query<{
+					id: unknown
+					path: unknown
+					title: unknown
+					updated_at: unknown
+				}>(
+					`SELECT id, path, title, updated_at FROM memories WHERE active = 1 ORDER BY updated_at DESC LIMIT ?`,
+					[MAX_CACHE]
+				)
+				if (rows.length === 0) {
+					recentCache = []
+				} else {
+					const ids = rows.map((r) => String(r.id))
+					const tagRows = await adapter.query<{ memory_id: unknown; tag: unknown }>(
+						`SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (${placeholders(ids.length)})`,
+						ids
+					)
+					const tagMap = new Map<string, string[]>()
+					for (const t of tagRows) {
+						const mid = String(t.memory_id)
+						if (!tagMap.has(mid)) tagMap.set(mid, [])
+						tagMap.get(mid)!.push(String(t.tag))
+					}
+					recentCache = rows.map((r) => ({
+						id: String(r.id),
+						path: String(r.path),
+						title: r.title != null ? String(r.title) : null,
+						tags: tagMap.get(String(r.id)) ?? [],
+						updated_at: String(r.updated_at)
+					}))
+				}
+			}
+			return recentCache.slice(0, n)
 		}
 	}
 }

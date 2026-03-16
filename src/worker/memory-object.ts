@@ -271,6 +271,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 		async ({ id }) => {
 			try {
 				const memory = await store.get(id)
+				if (!memory) return { content: [{ type: 'text', text: `Memory not found: ${id}` }], isError: true }
 				const lines = [
 					`ID: ${memory.id}`,
 					`Title: ${memory.title ?? '(none)'}`,

@@ -46,7 +46,15 @@ export function createApi(store: Store) {
 	app.get('/v1/memory/:id', zValidator('param', z.object({ id: z.string().min(1) })), async (c) => {
 		const { id } = c.req.param()
 		const memory = await store.get(id)
+		if (!memory) return c.json({ error: 'Memory not found' }, 404)
 		return c.json(memory)
+	})
+
+	app.get('/v1/recent', async (c) => {
+		const raw = c.req.query('n')
+		const n = Math.min(raw ? Math.max(1, parseInt(raw, 10) || 5) : 5, 20)
+		const results = await store.recent(n)
+		return c.json({ results })
 	})
 
 	return app

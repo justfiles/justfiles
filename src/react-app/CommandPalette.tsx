@@ -14,11 +14,20 @@ type SearchResult = {
 	source?: string
 }
 
+type RecentResult = {
+	id: string
+	path: string
+	title: string | null
+	tags: string[]
+	updated_at: string
+}
+
 export function CommandPalette() {
 	const { getToken } = useAuth()
 	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState('')
 	const [results, setResults] = useState<SearchResult[]>([])
+	const [recentResults, setRecentResults] = useState<RecentResult[]>([])
 	const [searching, setSearching] = useState(false)
 	const [selectedIndex, setSelectedIndex] = useState(-1)
 	const dialogRef = useRef<HTMLDialogElement>(null)
@@ -58,10 +67,20 @@ export function CommandPalette() {
 		if (open) {
 			dialogRef.current?.showModal()
 			setTimeout(() => inputRef.current?.focus(), 0)
+			getTokenRef.current().then((token) => {
+				if (!token) return
+				fetch('/api/v1/recent?n=5', {
+					headers: { Authorization: `Bearer ${token}` }
+				})
+					.then((r) => r.json())
+					.then((data: { results: RecentResult[] }) => setRecentResults(data.results))
+					.catch(() => {})
+			})
 		} else {
 			dialogRef.current?.close()
 			setQuery('')
 			setResults([])
+			setRecentResults([])
 			setSelectedIndex(-1)
 		}
 	}, [open])
@@ -129,7 +148,8 @@ export function CommandPalette() {
 					onKeyDown={(e) => {
 						if (e.key === 'ArrowDown') {
 							e.preventDefault()
-							setSelectedIndex((i) => Math.min(i + 1, results.length - 1))
+							const len = query ? results.length : recentResults.length
+							setSelectedIndex((i) => Math.min(i + 1, len - 1))
 						} else if (e.key === 'ArrowUp') {
 							e.preventDefault()
 							setSelectedIndex((i) => Math.max(i - 1, -1))
@@ -145,7 +165,30 @@ export function CommandPalette() {
 				{!searching && query && results.length === 0 && (
 					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">No results</p>
 				)}
-				{results.length > 0 && (
+				{!query && recentResults.length > 0 && (
+					<>
+						<p className="m-0 px-4 pt-2.5 pb-1 text-xs text-base-content/40 uppercase tracking-wide">Recent</p>
+						<ul className="m-0 py-1 list-none max-h-[50vh] overflow-y-auto">
+							{recentResults.map((r, i) => (
+								<li key={r.id}>
+									<Link
+										ref={i === selectedIndex ? selectedRef : undefined}
+										to="/memory/$id"
+										params={{ id: r.id }}
+										className={`block px-4 py-2.5 no-underline text-inherit cursor-pointer ${i === selectedIndex ? 'bg-base-200' : 'hover:bg-base-200'}`}
+										onClick={() => setOpen(false)}
+									>
+										<div className="flex items-baseline justify-between gap-3">
+											<span className="text-sm text-base-content truncate">{r.title}</span>
+											<span className="text-xs text-base-content/40 shrink-0 truncate max-w-[40%]">{r.path}</span>
+										</div>
+									</Link>
+								</li>
+							))}
+						</ul>
+					</>
+				)}
+				{query && results.length > 0 && (
 					<ul className="m-0 py-1.5 list-none max-h-[50vh] overflow-y-auto">
 						{results.map((r, i) => (
 							<li key={r.memory_id}>

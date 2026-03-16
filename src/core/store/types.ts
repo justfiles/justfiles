@@ -63,6 +63,14 @@ export type ListResult = {
 	source: string | null
 }
 
+export type RecentResult = {
+	id: string
+	path: string
+	title: string | null
+	tags: string[]
+	updated_at: string
+}
+
 export interface Store {
 	/**
 	 * capture memory, return memory id
@@ -85,9 +93,14 @@ export interface Store {
 	list(input: ListInput): Promise<ListResult[]>
 
 	/**
-	 * get a memory by id
+	 * get a memory by id, returns null if not found
 	 */
-	get(id: string): Promise<Memory>
+	get(id: string): Promise<Memory | null>
+
+	/**
+	 * get N most recently updated active memories, cached in-memory and invalidated on capture/update
+	 */
+	recent(n: number): Promise<RecentResult[]>
 }
 
 export type SearchResult = {
