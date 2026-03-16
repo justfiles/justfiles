@@ -56,15 +56,17 @@ Respond with JSON in this exact format:
 				apiKey,
 				[
 					{
+						role: 'system',
+						content: 'You are a note metadata generator. Always write the title in the same language as the note content. Never translate the title into another language.'
+					},
+					{
 						role: 'user',
 						content: `Generate metadata for this note:
 
 ${text}
 
 Respond with JSON in this exact format:
-{"title":"short descriptive title","tags":["tag1","tag2"],"category":"path/category"}
-
-IMPORTANT: Write the title in the same language that the note is mostly written in.`
+{"title":"short descriptive title","tags":["tag1","tag2"],"category":"path/category"}`
 					}
 				],
 				true

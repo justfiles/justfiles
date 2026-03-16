@@ -5,8 +5,8 @@ export type RawEmbedding = Uint8Array | ArrayBuffer
 export interface TextChunk {
 	seq: number
 	text: string
-	startLine: number
-	endLine: number
+	pos: number
+	len: number
 	tokenCount: number
 }
 
@@ -63,9 +63,9 @@ export function chunkText(text: string, targetTokens = 400): TextChunk[] {
 	const chunks: TextChunk[] = []
 	let seq = 0
 	let i = 0
+	let pos = 0
 
 	while (i < lines.length) {
-		const startLine = i
 		const chunkLines: string[] = []
 		let tokens = 0
 
@@ -102,10 +102,12 @@ export function chunkText(text: string, targetTokens = 400): TextChunk[] {
 			chunks.push({
 				seq: seq++,
 				text: chunkTextContent,
-				startLine,
-				endLine: startLine + chunkLines.length - 1,
+				pos,
+				len: chunkTextContent.length,
 				tokenCount: approxTokens(chunkTextContent)
 			})
+			// +1 for the '\n' that was between this chunk and the next
+			pos += chunkTextContent.length + 1
 		}
 	}
 

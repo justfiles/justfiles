@@ -128,24 +128,24 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 		if (!safeQuery) return []
 
 		const rows = await adapter.query<{
-			id: unknown
 			memory_id: unknown
 			text: unknown
 			hash: unknown
 			fts_rank: unknown
 		}>(
-			`SELECT c.id, c.memory_id, c.text, c.hash, f.rank as fts_rank
-			 FROM chunks_fts f
-			 JOIN chunks c ON c.id = f.chunk_id
+			`SELECT m.id as memory_id, co.text, m.content_hash as hash, f.rank as fts_rank
+			 FROM memory_fts f
+			 JOIN memories m ON m.id = f.memory_id
+			 JOIN content co ON co.hash = m.content_hash
 			 WHERE f.text MATCH ?
-			 AND c.memory_id IN (${placeholders(validIds.length)})
+			 AND m.id IN (${placeholders(validIds.length)})
 			 ORDER BY f.rank
 			 LIMIT ?`,
 			[safeQuery, ...validIds, candidateLimit]
 		)
 
 		return rows.map((row, rank) => ({
-			chunkId: String(row.id),
+			chunkId: String(row.memory_id),
 			memoryId: String(row.memory_id),
 			text: String(row.text),
 			hash: String(row.hash),
@@ -169,9 +169,11 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 			hash: unknown
 			embedding: unknown
 		}>(
-			`SELECT c.id, c.memory_id, c.text, c.hash, cv.embedding
+			`SELECT c.id, c.memory_id, co.text, c.hash, cv.embedding
 			 FROM chunks c
 			 JOIN chunk_vectors cv ON cv.chunk_id = c.id
+			 JOIN memories m ON m.id = c.memory_id
+			 JOIN content co ON co.hash = m.content_hash
 			 WHERE cv.provider = ?
 			 AND cv.model = ?
 			 AND c.memory_id IN (${placeholders(validIds.length)})`,
@@ -300,6 +302,12 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 			const chunkHashes = await Promise.all(chunks.map((c) => sha256hex(c.text)))
 
 			const chunkEmbeddings: Array<Float32Array | null> = chunks.map(() => null)
+
+			await adapter.run(
+				'INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)',
+				[hash, normalized, now]
+			)
+
 			if (embProvider) {
 				const cached = await getCachedEmbeddings(chunkHashes)
 				const missingIndexes: number[] = []
@@ -381,14 +389,13 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					const chunkId = genId('chk')
 
 					await tx.run(
-						'INSERT INTO chunks(id, memory_id, seq, start_line, end_line, text, token_count, hash, embedding_model, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+						'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 						[
 							chunkId,
 							memoryId,
 							chunk.seq,
-							chunk.startLine,
-							chunk.endLine,
-							chunk.text,
+							chunk.pos,
+							chunk.len,
 							chunk.tokenCount,
 							chunkHashes[i],
 							embModelKey,
@@ -544,6 +551,12 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						}
 					}
 
+					// insert new content (must come before UPDATE memories SET content_hash to satisfy FTS trigger)
+					await tx.run(
+						'INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)',
+						[hash, normalized, now]
+					)
+
 					// delete chunk_vectors first (FK → chunks), then chunks (FTS triggers handle FTS cleanup)
 					await tx.run(
 						'DELETE FROM chunk_vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE memory_id = ?)',
@@ -556,14 +569,13 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						const chunk = chunks[i]
 						const chunkId = genId('chk')
 						await tx.run(
-							'INSERT INTO chunks(id, memory_id, seq, start_line, end_line, text, token_count, hash, embedding_model, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+							'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
 							[
 								chunkId,
 								input.id,
 								chunk.seq,
-								chunk.startLine,
-								chunk.endLine,
-								chunk.text,
+								chunk.pos,
+								chunk.len,
 								chunk.tokenCount,
 								chunkHashes[i],
 								embModelKey,
@@ -657,13 +669,14 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				title: unknown
 				path: unknown
 				source: unknown
+				content_hash: unknown
 				created_at: unknown
 				updated_at: unknown
 			}>('SELECT * FROM memories WHERE id = ? AND active = 1 LIMIT 1', [id])
 
 			if (!memory) throw new Error(`Memory not found: ${id}`)
 
-			const [tags, outgoing, incoming, chunkRows] = await Promise.all([
+			const [tags, outgoing, incoming, contentRows] = await Promise.all([
 				adapter.query<{ tag: unknown }>('SELECT tag FROM memory_tags WHERE memory_id = ?', [id]),
 				adapter.query<{ to_id: unknown; rel_type: unknown; reason: unknown; created_at: unknown }>(
 					'SELECT to_id, rel_type, reason, created_at FROM memory_links WHERE from_id = ?',
@@ -676,8 +689,8 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 					created_at: unknown
 				}>('SELECT from_id, rel_type, reason, created_at FROM memory_links WHERE to_id = ?', [id]),
 				adapter.query<{ text: unknown }>(
-					'SELECT text FROM chunks WHERE memory_id = ? ORDER BY seq',
-					[id]
+					'SELECT text FROM content WHERE hash = ?',
+					[String(memory.content_hash)]
 				)
 			])
 
@@ -690,7 +703,7 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				id: String(memory.id),
 				scope: String(memory.scope),
 				title: memory.title != null ? String(memory.title) : null,
-				raw_text: chunkRows.map((c) => String(c.text)).join('\n'),
+				raw_text: String(contentRows[0]?.text ?? ''),
 				path: String(memory.path),
 				source: memory.source != null ? String(memory.source) : null,
 				created_at: String(memory.created_at),

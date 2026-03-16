@@ -95,8 +95,8 @@ export type SearchResult = {
 	path: string
 	title: string | null
 	// TODO: might be useful for a memory editor/viewer?
-	// start_line: number | null
-	// end_line: number | null
+	// pos: number | null
+	// len: number | null
 	score: number
 	semanticScore?: number
 	ftsScore?: number

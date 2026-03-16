@@ -24,13 +24,18 @@ CREATE TABLE IF NOT EXISTS memory_tags (
 	PRIMARY KEY (memory_id, tag)
 );
 
+CREATE TABLE IF NOT EXISTS content (
+	hash TEXT PRIMARY KEY,
+	text TEXT NOT NULL,
+	created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chunks (
 	id TEXT PRIMARY KEY NOT NULL,
 	memory_id TEXT NOT NULL REFERENCES memories(id),
 	seq INTEGER NOT NULL,
-	start_line INTEGER,
-	end_line INTEGER,
-	text TEXT NOT NULL,
+	pos INTEGER,
+	len INTEGER,
 	token_count INTEGER,
 	hash TEXT NOT NULL,
 	embedding_model TEXT NOT NULL,
@@ -104,24 +109,32 @@ CREATE INDEX IF NOT EXISTS idx_proposals_pending ON proposals(status) WHERE stat
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_active_memories_scope_path ON memories(scope, path) WHERE active = 1;
 
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-	chunk_id UNINDEXED,
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 	memory_id UNINDEXED,
 	text
 );
 
-CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks
+CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories
+WHEN NEW.active = 1
 BEGIN
-	INSERT INTO chunks_fts (chunk_id, memory_id, text) VALUES (NEW.id, NEW.memory_id, NEW.text);
+	INSERT INTO memory_fts (memory_id, text)
+	SELECT NEW.id, text FROM content WHERE hash = NEW.content_hash;
 END;
 
-CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks
+CREATE TRIGGER IF NOT EXISTS memories_fts_au_content AFTER UPDATE OF content_hash ON memories
 BEGIN
-	DELETE FROM chunks_fts WHERE chunk_id = OLD.id;
+	DELETE FROM memory_fts WHERE memory_id = OLD.id;
+	INSERT INTO memory_fts (memory_id, text)
+	SELECT NEW.id, text FROM content WHERE hash = NEW.content_hash;
 END;
 
-CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON chunks
+CREATE TRIGGER IF NOT EXISTS memories_fts_au_active AFTER UPDATE OF active ON memories
+WHEN NEW.active = 0
 BEGIN
-	DELETE FROM chunks_fts WHERE chunk_id = OLD.id;
-	INSERT INTO chunks_fts (chunk_id, memory_id, text) VALUES (NEW.id, NEW.memory_id, NEW.text);
+	DELETE FROM memory_fts WHERE memory_id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories
+BEGIN
+	DELETE FROM memory_fts WHERE memory_id = OLD.id;
 END;
