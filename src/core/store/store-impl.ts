@@ -603,6 +603,13 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						now,
 						input.id
 					])
+
+					// clean up orphaned content row
+					const oldHash = String(mem.content_hash)
+					await tx.run(
+						'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
+						[oldHash, oldHash]
+					)
 				}
 
 				await tx.run(
