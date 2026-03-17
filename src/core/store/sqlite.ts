@@ -5,6 +5,7 @@ import { Database } from 'bun:sqlite'
 import { resolve } from 'node:path'
 import type { EmbeddingProvider } from '../embedding'
 import type { LLM } from '../llm'
+import type { Reranker } from '../reranker'
 import type { Store } from './types'
 import { createSqliteAdapter } from './db-adapter'
 import { migrateFromEntries, createStore } from './store-impl'
@@ -24,12 +25,13 @@ async function migrate(adapter: ReturnType<typeof createSqliteAdapter>): Promise
 export async function sqliteStore(
 	dbPath: string,
 	embProvider?: EmbeddingProvider,
-	llm?: LLM
+	llm?: LLM,
+	reranker?: Reranker
 ): Promise<Store> {
 	const db = new Database(resolve(dbPath))
 	db.exec('PRAGMA foreign_keys = ON')
 	db.exec('PRAGMA journal_mode = WAL')
 	const adapter = createSqliteAdapter(db)
 	await migrate(adapter)
-	return createStore(adapter, embProvider, llm)
+	return createStore(adapter, embProvider, llm, reranker)
 }

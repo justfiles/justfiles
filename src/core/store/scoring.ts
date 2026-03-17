@@ -7,6 +7,7 @@ export interface CandidateChunk {
 	score: number
 	semanticScore?: number
 	ftsRank?: number
+	rerankerScore?: number
 }
 
 export function normalizeBm25(ftsRank: number): number {
@@ -38,6 +39,17 @@ export function applyTemporalDecay(score: number, occurredAt: string | null, hal
 	if (!occurredAt) return score
 	const ageDays = (Date.now() - new Date(occurredAt).getTime()) / 86_400_000
 	return score * Math.exp((-Math.LN2 / halfLifeDays) * ageDays)
+}
+
+// Position-aware blend: ranks 0–2 favour retrieval (75/25), ranks 10+ favour reranker (40/60).
+export function blendWithReranker(
+	retrievalScore: number,
+	rerankerScore: number,
+	rank: number
+): number {
+	const t = rank <= 2 ? 0 : rank >= 10 ? 1 : (rank - 2) / 8
+	const retrievalWeight = 0.75 - 0.35 * t
+	return Math.min(1, retrievalScore * retrievalWeight + rerankerScore * (1 - retrievalWeight))
 }
 
 export function rrf(lists: CandidateChunk[][], k = 60): CandidateChunk[] {

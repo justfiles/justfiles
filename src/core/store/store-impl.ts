@@ -1,7 +1,9 @@
 import type { EmbeddingProvider } from '../embedding'
 import type { LLM } from '../llm'
+import type { Reranker } from '../reranker'
 import {
 	applyTemporalDecay,
+	blendWithReranker,
 	cosineSimilarity,
 	normalizeBm25,
 	rrf,
@@ -88,7 +90,14 @@ export async function migrateFromEntries(
 
 // ---- Store Implementation ----
 
-export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider, llm?: LLM): Store {
+const RERANK_LIMIT = 40
+
+export function createStore(
+	adapter: DbAdapter,
+	embProvider?: EmbeddingProvider,
+	llm?: LLM,
+	reranker?: Reranker
+): Store {
 	const embModelKey = embProvider ? `${embProvider.provider}:${embProvider.model}` : 'none'
 	let recentCache: RecentResult[] | null = null
 
@@ -247,6 +256,7 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 				score,
 				semanticScore: chunk.semanticScore,
 				ftsScore: chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : undefined,
+				rerankerScore: chunk.rerankerScore,
 				snippet: generateSnippet(chunk.text, query),
 				source: mem.source != null ? String(mem.source) : undefined
 			})
@@ -453,6 +463,30 @@ export function createStore(adapter: DbAdapter, embProvider?: EmbeddingProvider,
 						)
 					: []
 				candidates = rrf([exact, ...semanticLists])
+
+			if (reranker && candidates.length >= 2) {
+				const top = candidates.slice(0, RERANK_LIMIT)
+				try {
+					const results = await reranker.rerank(
+						input.query,
+						top.map((c) => ({ id: c.chunkId, text: c.text }))
+					)
+					const scoreMap = new Map(results.map((r) => [r.id, r.score]))
+					candidates = top
+						.map((c, rank) => {
+							const rerankerScore = scoreMap.get(c.chunkId)
+							if (rerankerScore == null) return c
+							return {
+								...c,
+								rerankerScore,
+								score: blendWithReranker(c.score, rerankerScore, rank)
+							}
+						})
+						.sort((a, b) => b.score - a.score)
+				} catch {
+					// reranker failed — keep pre-rerank order
+				}
+			}
 			}
 
 			return (await chunksToResults(candidates, input.query, limit, input.options)).filter(

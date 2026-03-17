@@ -114,6 +114,7 @@ export type SearchResult = {
 	score: number
 	semanticScore?: number
 	ftsScore?: number
+	rerankerScore?: number
 	snippet: string | null
 	source?: string
 }

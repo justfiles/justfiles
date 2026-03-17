@@ -1,5 +1,6 @@
 import type { EmbeddingProvider } from '../core/embedding'
 import type { LLM } from '../core/llm'
+import type { Reranker } from '../core/reranker'
 import type { DbAdapter, SqlValue } from '../core/store/db-adapter'
 import { migrateFromEntries, createStore } from '../core/store/store-impl'
 import type { Store } from '../core/store/types'
@@ -53,7 +54,8 @@ export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 export function cfStore(
 	storage: DurableObjectStorage,
 	embProvider?: EmbeddingProvider,
-	llm?: LLM
+	llm?: LLM,
+	reranker?: Reranker
 ): Store {
-	return createStore(createDOSqliteAdapter(storage), embProvider, llm)
+	return createStore(createDOSqliteAdapter(storage), embProvider, llm, reranker)
 }

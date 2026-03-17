@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { createApi } from '../core/api'
 import { openAI } from '../core/embedding.openai'
 import { openAI as llm } from '../core/llm.openai'
+import { googleReranker } from '../core/reranker.google'
 import type { Store } from '../core/store/types'
 import { cfStore, migrateCF } from './store'
 
@@ -15,7 +16,15 @@ export class MemoryObject extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
 		ctx.blockConcurrencyWhile(() => migrateCF(ctx.storage))
-		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY))
+		const env_ = env as typeof env & { GOOGLE_PROJECT_ID?: string; GOOGLE_SA_KEY?: string }
+		const reranker =
+			env_.GOOGLE_PROJECT_ID && env_.GOOGLE_SA_KEY
+				? googleReranker(
+						env_.GOOGLE_PROJECT_ID,
+						JSON.parse(env_.GOOGLE_SA_KEY) as { client_email: string; private_key: string }
+					)
+				: undefined
+		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY), reranker)
 		const app = new Hono()
 		app.route('/api', createApi(store))
 
