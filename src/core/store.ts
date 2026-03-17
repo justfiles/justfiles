@@ -1,40 +1,419 @@
-import type { EmbeddingProvider } from '../embedding'
-import type { LLM } from '../llm'
-import type { Reranker } from '../reranker'
-import {
-	applyTemporalDecay,
-	blendWithReranker,
-	cosineSimilarity,
-	normalizeBm25,
-	rrf,
-	type CandidateChunk
-} from './scoring'
-import type {
-	CaptureInput,
-	ListInput,
-	ListResult,
-	Memory,
-	RecentResult,
-	SearchInput,
-	SearchResult,
-	Store,
-	UpdateInput
-} from './types'
-import {
-	type RawEmbedding,
-	chunkText,
-	encodeEmbedding,
-	generateSnippet,
-	genId,
-	hasStrongExactSignal,
-	normalizeText,
-	normalizeTags,
-	placeholders,
-	sanitizeFtsQuery,
-	sha256hex,
-	toFloat32Array
-} from './utils'
-import type { DbAdapter, SqlValue } from './db-adapter'
+import { z } from 'zod'
+import type { EmbeddingProvider } from './embedding'
+import type { LLM } from './llm'
+import type { Reranker } from './reranker'
+import type { DbAdapter, SqlValue } from './db'
+
+// ---- Scoring ----
+
+interface CandidateChunk {
+	chunkId: string
+	memoryId: string
+	text: string
+	hash: string
+	rank: number
+	score: number
+	semanticScore?: number
+	ftsRank?: number
+	rerankerScore?: number
+}
+
+function normalizeBm25(ftsRank: number): number {
+	const abs = Math.abs(ftsRank)
+	return abs / (1 + abs)
+}
+
+function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+	const len = Math.min(a.length, b.length)
+	if (len === 0) return 0
+
+	let dot = 0
+	let aNorm = 0
+	let bNorm = 0
+
+	for (let i = 0; i < len; i++) {
+		const av = a[i]
+		const bv = b[i]
+		dot += av * bv
+		aNorm += av * av
+		bNorm += bv * bv
+	}
+
+	if (!aNorm || !bNorm) return 0
+	return dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm))
+}
+
+function applyTemporalDecay(score: number, occurredAt: string | null, halfLifeDays: number): number {
+	if (!occurredAt) return score
+	const ageDays = (Date.now() - new Date(occurredAt).getTime()) / 86_400_000
+	return score * Math.exp((-Math.LN2 / halfLifeDays) * ageDays)
+}
+
+// Position-aware blend: ranks 0–2 favour retrieval (75/25), ranks 10+ favour reranker (40/60).
+function blendWithReranker(retrievalScore: number, rerankerScore: number, rank: number): number {
+	const t = rank <= 2 ? 0 : rank >= 10 ? 1 : (rank - 2) / 8
+	const retrievalWeight = 0.75 - 0.35 * t
+	return Math.min(1, retrievalScore * retrievalWeight + rerankerScore * (1 - retrievalWeight))
+}
+
+function rrf(lists: CandidateChunk[][], k = 60): CandidateChunk[] {
+	const scores = new Map<string, { chunk: CandidateChunk; rrfScore: number }>()
+	for (const list of lists) {
+		for (let rank = 0; rank < list.length; rank++) {
+			const chunk = list[rank]
+			const add = 1 / (k + rank + 1)
+			const prev = scores.get(chunk.chunkId)
+			const merged: CandidateChunk = {
+				...(prev?.chunk ?? chunk),
+				semanticScore: chunk.semanticScore ?? prev?.chunk.semanticScore,
+				ftsRank: chunk.ftsRank ?? prev?.chunk.ftsRank
+			}
+			scores.set(chunk.chunkId, { chunk: merged, rrfScore: (prev?.rrfScore ?? 0) + add })
+		}
+	}
+	const TOP_RANK_BONUS = [0.05, 0.02, 0.02]
+	return Array.from(scores.values())
+		.sort((a, b) => b.rrfScore - a.rrfScore)
+		.map((v, i) => {
+			const { chunk } = v
+			const ftsScore = chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : 0
+			const base = Math.max(chunk.semanticScore ?? 0, ftsScore)
+			const score = Math.min(1, base + (TOP_RANK_BONUS[i] ?? 0))
+			return { ...chunk, score }
+		})
+}
+
+// ---- Utils ----
+
+type RawEmbedding = Uint8Array | ArrayBuffer
+
+interface TextChunk {
+	seq: number
+	text: string
+	pos: number
+	len: number
+	tokenCount: number
+}
+
+function toFloat32Array(value: RawEmbedding | null): Float32Array {
+	if (!value) return new Float32Array(0)
+	if (value instanceof Float32Array) return value
+	if (value instanceof ArrayBuffer) return new Float32Array(value)
+	return new Float32Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
+}
+
+function genId(prefix: string): string {
+	const ts = Date.now().toString(36)
+	const rand = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('')
+	return `${prefix}_${ts}${rand}`
+}
+
+async function sha256hex(text: string): Promise<string> {
+	const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+	return Array.from(new Uint8Array(buf))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('')
+}
+
+function normalizeText(text: string): string {
+	return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+}
+
+function approxTokens(text: string): number {
+	return Math.ceil(text.length / 4)
+}
+
+const BREAK_PATTERNS: Array<[RegExp, number]> = [
+	[/^# /, 100],
+	[/^## /, 90],
+	[/^### /, 80],
+	[/^#{4,}/, 60],
+	[/^```/, 80],
+	[/^-{3,}$/, 60],
+	[/^\s*$/, 20],
+	[/^[-*+] /, 5]
+]
+
+function lineBreakScore(line: string): number {
+	for (const [re, score] of BREAK_PATTERNS) {
+		if (re.test(line)) return score
+	}
+	return 1
+}
+
+function chunkText(text: string, targetTokens = 400): TextChunk[] {
+	const lines = text.split('\n')
+	const chunks: TextChunk[] = []
+	let seq = 0
+	let i = 0
+	let pos = 0
+
+	while (i < lines.length) {
+		const chunkLines: string[] = []
+		let tokens = 0
+
+		while (i < lines.length) {
+			const line = lines[i]
+			tokens += approxTokens(`${line}\n`)
+			chunkLines.push(line)
+			i++
+
+			if (tokens >= targetTokens) {
+				const window = Math.min(20, chunkLines.length - 1)
+				let bestScore = 0
+				let bestJ = -1
+
+				for (let j = chunkLines.length - 1; j >= chunkLines.length - window; j--) {
+					const score = lineBreakScore(chunkLines[j])
+					if (score > bestScore) {
+						bestScore = score
+						bestJ = j
+					}
+				}
+
+				if (bestScore > 1 && bestJ > 0) {
+					const toReturn = chunkLines.splice(bestJ)
+					i -= toReturn.length
+				}
+
+				break
+			}
+		}
+
+		if (chunkLines.length > 0) {
+			const chunkTextContent = chunkLines.join('\n')
+			chunks.push({
+				seq: seq++,
+				text: chunkTextContent,
+				pos,
+				len: chunkTextContent.length,
+				tokenCount: approxTokens(chunkTextContent)
+			})
+			// +1 for the '\n' that was between this chunk and the next
+			pos += chunkTextContent.length + 1
+		}
+	}
+
+	return chunks
+}
+
+function generateSnippet(text: string, query: string, maxLen = 300): string {
+	const lower = text.toLowerCase()
+	const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+
+	if (terms.length === 0) {
+		return text.slice(0, maxLen) + (text.length > maxLen ? '…' : '')
+	}
+
+	// Collect positions of every term match
+	const positions: number[] = []
+	for (const term of terms) {
+		let idx = lower.indexOf(term)
+		while (idx !== -1) {
+			positions.push(idx)
+			idx = lower.indexOf(term, idx + 1)
+		}
+	}
+
+	// Fall back to the beginning if no terms matched
+	if (positions.length === 0) {
+		return text.slice(0, maxLen) + (text.length > maxLen ? '…' : '')
+	}
+
+	// Find the window that covers the most distinct terms
+	let bestStart = 0
+	let bestScore = -1
+	for (const pos of positions) {
+		const start = Math.max(0, pos - 60)
+		const end = Math.min(text.length, start + maxLen)
+		const window = lower.slice(start, end)
+		const score = terms.filter((t) => window.includes(t)).length
+		if (score > bestScore) {
+			bestScore = score
+			bestStart = start
+		}
+	}
+
+	const end = Math.min(text.length, bestStart + maxLen)
+	const snippet = text.slice(bestStart, end)
+	return `${bestStart > 0 ? '…' : ''}${snippet}${end < text.length ? '…' : ''}`
+}
+
+function encodeEmbedding(values: number[]): Uint8Array {
+	return new Uint8Array(new Float32Array(values).buffer)
+}
+
+function placeholders(count: number): string {
+	return Array.from({ length: count }, () => '?').join(',')
+}
+
+function normalizeTags(tags?: string | string[]): string[] {
+	if (!tags) return []
+	return Array.isArray(tags) ? tags.filter(Boolean) : [tags]
+}
+
+function sanitizeFtsQuery(query: string): string {
+	return query
+		.split(/\s+/)
+		.map((w) => w.replace(/[^\w]/g, ' ').trim())
+		.filter(Boolean)
+		.join(' ')
+}
+
+const STRONG_SIGNAL_MIN_SCORE = 0.85
+const STRONG_SIGNAL_MIN_GAP = 0.15
+
+function hasStrongExactSignal(exact: CandidateChunk[]): boolean {
+	if (exact.length === 0) return false
+	const top = exact[0].score
+	if (top < STRONG_SIGNAL_MIN_SCORE) return false
+	const second = exact[1]?.score ?? 0
+	return top - second >= STRONG_SIGNAL_MIN_GAP
+}
+
+// ---- Types ----
+
+export const CaptureInputSchema = z.object({
+	text: z.string(),
+	title: z.string().optional(), // if not given, potentially can generate one using lightweight LLM
+	scope: z.string().optional(), // for permission, e.g. personal, team
+	path: z.string().optional(), // if not provided, we will have a default one, e.g. inbox/<timestamp>
+	tags: z.array(z.string()).optional(), // user defined
+	source: z.string().optional() // user defined, e.g. agent, human, system
+})
+
+export const SearchInputSchema = z.object({
+	query: z.string(),
+	mode: z.enum(['hybrid', 'semantic', 'exact']).optional(),
+	scope: z.string().optional(),
+	limit: z.number().optional(),
+	min_score: z.number().optional(),
+	filter: z
+		.object({
+			fields: z
+				.object({
+					tags: z.union([z.string(), z.array(z.string())]).optional(),
+					path_prefix: z.string().optional()
+				})
+				.optional()
+		})
+		.optional(),
+	options: z
+		.object({
+			temporal_decay: z.boolean().optional(),
+			decay_half_life_days: z.number().optional()
+		})
+		.optional()
+})
+
+export type CaptureInput = z.infer<typeof CaptureInputSchema>
+export type SearchInput = z.infer<typeof SearchInputSchema>
+
+export const UpdateInputSchema = z.object({
+	id: z.string(),
+	path: z.string().optional(),
+	title: z.string().optional(),
+	tags: z.array(z.string()).optional(),
+	text: z.string().optional(),
+	source: z.string().optional()
+})
+
+export type UpdateInput = z.infer<typeof UpdateInputSchema>
+
+export const ListInputSchema = z.object({
+	path_prefix: z.string().optional(),
+	tags: z.union([z.string(), z.array(z.string())]).optional(),
+	limit: z.number().optional()
+})
+
+export type ListInput = z.infer<typeof ListInputSchema>
+
+export type ListResult = {
+	id: string
+	path: string
+	title: string | null
+	tags: string[]
+	source: string | null
+}
+
+export type RecentResult = {
+	id: string
+	path: string
+	title: string | null
+	tags: string[]
+	updated_at: string
+}
+
+export interface Store {
+	/**
+	 * capture memory, return memory id
+	 */
+	capture(input: CaptureInput): Promise<string>
+
+	/**
+	 * search for memory
+	 */
+	search(input: SearchInput): Promise<SearchResult[]>
+
+	/**
+	 * update metadata and/or content of an existing memory
+	 */
+	update(input: UpdateInput): Promise<void>
+
+	/**
+	 * list memories by path/tags without a search query, ordered by created_at desc
+	 */
+	list(input: ListInput): Promise<ListResult[]>
+
+	/**
+	 * get a memory by id, returns null if not found
+	 */
+	get(id: string): Promise<Memory | null>
+
+	/**
+	 * get N most recently updated active memories, cached in-memory and invalidated on capture/update
+	 */
+	recent(n: number): Promise<RecentResult[]>
+}
+
+export type SearchResult = {
+	memory_id: string
+	// chunk_id: string // the SearchResult maps to a chunk, but currently chunk is not useful for user
+	path: string
+	title: string | null
+	// TODO: might be useful for a memory editor/viewer?
+	// pos: number | null
+	// len: number | null
+	score: number
+	semanticScore?: number
+	ftsScore?: number
+	rerankerScore?: number
+	snippet: string | null
+	source?: string
+}
+
+export type Memory = {
+	id: string
+	scope: string
+	title: string | null
+	raw_text: string
+	path: string // path always have value
+	source: string | null
+	created_at: string
+	updated_at: string
+	links: LinkInfo[]
+	tags: string[]
+}
+
+type LinkInfo = {
+	from_id?: string
+	to_id?: string
+	rel_type: string
+	reason: string | null
+	created_at: string
+}
 
 // ---- Migration ----
 

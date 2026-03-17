@@ -3,12 +3,12 @@ import { sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Database } from 'bun:sqlite'
 import { resolve } from 'node:path'
-import type { EmbeddingProvider } from '../embedding'
-import type { LLM } from '../llm'
-import type { Reranker } from '../reranker'
-import type { Store } from './types'
-import { createSqliteAdapter } from './db-adapter'
-import { migrateFromEntries, createStore } from './store-impl'
+import type { EmbeddingProvider } from './embedding'
+import type { LLM } from './llm'
+import type { Reranker } from './reranker'
+import type { Store } from './store'
+import { createSqliteAdapter } from './db.sqlite'
+import { migrateFromEntries, createStore } from './store'
 
 async function migrate(adapter: ReturnType<typeof createSqliteAdapter>): Promise<void> {
 	const migrationDir = fileURLToPath(new URL('./migrations', import.meta.url).toString())

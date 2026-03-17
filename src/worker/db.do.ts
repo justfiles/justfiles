@@ -1,13 +1,13 @@
 import type { EmbeddingProvider } from '../core/embedding'
 import type { LLM } from '../core/llm'
 import type { Reranker } from '../core/reranker'
-import type { DbAdapter, SqlValue } from '../core/store/db-adapter'
-import { migrateFromEntries, createStore } from '../core/store/store-impl'
-import type { Store } from '../core/store/types'
+import type { DbAdapter, SqlValue } from '../core/db'
+import { migrateFromEntries, createStore } from '../core/store'
+import type { Store } from '../core/store'
 
 // Wrangler's Text rule (globs: ["**/*.sql"]) bundles .sql files as plain strings.
 // @ts-ignore
-import MIGRATION_0001 from '../core/store/migrations/0001_schema.sql'
+import MIGRATION_0001 from '../core/migrations/0001_schema.sql'
 
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
 	{ version: 1, sql: MIGRATION_0001 as string },

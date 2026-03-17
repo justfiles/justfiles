@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 import { createInterface } from 'readline/promises'
-import { sqliteStore } from '../core/store/sqlite'
+import { sqliteStore } from '../core/store.sqlite'
 import { openAI } from '../core/embedding.openai'
-import { tursoStore } from '../core/store/turso'
+import { tursoStore } from '../core/store.turso'
 
 const command = process.argv[2]
 

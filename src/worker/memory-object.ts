@@ -7,8 +7,8 @@ import { createApi } from '../core/api'
 import { openAI } from '../core/embedding.openai'
 import { openAI as llm } from '../core/llm.openai'
 import { googleReranker } from '../core/reranker.google'
-import type { Store } from '../core/store/types'
-import { cfStore, migrateCF } from './store'
+import type { Store } from '../core/store'
+import { cfStore, migrateCF } from './db.do'
 
 export class MemoryObject extends DurableObject<Env> {
 	private readonly app: Hono
