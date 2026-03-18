@@ -9,7 +9,7 @@ import { useSidebar } from './useSidebar'
 const LS_KEY = 'ghostore:sidebar-open'
 
 function loadSidebarOpen(): boolean {
-	try { return localStorage.getItem(LS_KEY) !== 'false' } catch { return true }
+	try { return localStorage.getItem(LS_KEY) === 'true' } catch { return false }
 }
 
 export function AppShell() {
@@ -42,7 +42,7 @@ export function AppShell() {
 				</div>
 				<div className="drawer-side z-20">
 					<label className="drawer-overlay" onClick={toggle} />
-					<aside className="w-56 bg-base-100 border-r border-base-200 h-full overflow-hidden flex flex-col">
+					<aside className="w-56 bg-base-200 border-r border-base-300 h-full overflow-hidden flex flex-col">
 						<Sidebar entries={entries} />
 					</aside>
 				</div>
