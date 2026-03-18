@@ -3,7 +3,6 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
-import { AuthWall } from './AuthWall'
 import { EditorLayout } from './EditorLayout'
 import { useSidebarActions } from './SidebarContext'
 
@@ -24,7 +23,7 @@ type Memory = {
 export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
-	const { getToken, isLoaded, isSignedIn } = useAuth()
+	const { getToken } = useAuth()
 	const [editorText, setEditorText] = useState('')
 	const [hasPendingTimer, setHasPendingTimer] = useState(false)
 	const loadedTextRef = useRef<string | null>(null)
@@ -43,7 +42,7 @@ export function MemoryPage() {
 			if (!res.ok) throw new Error(`Failed: ${res.status}`)
 			return res.json() as Promise<Memory>
 		},
-		enabled: isLoaded && !!isSignedIn,
+		enabled: true,
 	})
 
 	// Reset editor when navigating to a different memory
@@ -101,77 +100,53 @@ export function MemoryPage() {
 		}, 3000)
 	}, [editorText])
 
-	if (!isLoaded) return <p className="m-8">Loading…</p>
-	if (!isSignedIn) return <AuthWall />
 	if (memoryQuery.isError) return <p className="m-8 text-error">Failed to load memory</p>
 
-	const autoSaveStatus = hasPendingTimer
-		? 'pending'
+	const saveStatus = hasPendingTimer
+		? { label: 'Unsaved changes…', cls: 'text-base-content/50' }
 		: saveMutation.isPending
-			? 'saving'
+			? { label: 'Saving…', cls: 'text-base-content/50' }
 			: saveMutation.isSuccess
-				? 'saved'
+				? { label: 'Saved', cls: 'text-success' }
 				: saveMutation.isError
-					? 'error'
-					: 'idle'
-
-	const saveLabel =
-		autoSaveStatus === 'pending'
-			? 'Unsaved changes…'
-			: autoSaveStatus === 'saving'
-				? 'Saving…'
-				: autoSaveStatus === 'saved'
-					? 'Saved'
-					: autoSaveStatus === 'error'
-						? 'Save failed'
-						: null
+					? { label: 'Save failed', cls: 'text-error' }
+					: null
 
 	const isLoading = memoryQuery.isPending
 
 	return (
 		<EditorLayout
-			header={
-				<div className="flex items-center w-full gap-2">
-					{memoryQuery.data?.title && (
-						<span className="text-sm font-bold text-base-content/70 truncate">{memoryQuery.data.title}</span>
+			headerLeft={
+				memoryQuery.data?.title
+					? <span className="text-sm font-medium text-base-content/70 truncate">{memoryQuery.data.title}</span>
+					: undefined
+			}
+			headerRight={
+				<>
+					{saveStatus && (
+						<span className={`text-xs font-mono ${saveStatus.cls}`}>{saveStatus.label}</span>
 					)}
-					<div className="flex items-center gap-2 shrink-0 ml-auto">
-						<button
-							type="button"
-							onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
-							className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer"
-						>
-							<FiSearch className="w-3.5 h-3.5 shrink-0" />
-							<span>Search</span>
-							<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
-						</button>
-						<button
-							type="button"
-							onClick={() => navigate({ to: '/' })}
-							className="btn btn-neutral btn-sm font-mono"
-						>
-							New
-						</button>
-					</div>
-				</div>
+					<button
+						type="button"
+						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
+						className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer"
+					>
+						<FiSearch className="w-3.5 h-3.5 shrink-0" />
+						<span>Search</span>
+						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
+					</button>
+					<button
+						type="button"
+						onClick={() => navigate({ to: '/' })}
+						className="btn btn-neutral btn-sm font-mono"
+					>
+						New
+					</button>
+				</>
 			}
 			value={isLoading ? staleTextRef.current : editorText}
 			onChange={isLoading ? () => {} : setEditorText}
 			isLoading={isLoading}
-			minibufferLeft={memoryQuery.data?.path}
-			minibufferRight={
-				<span
-					className={
-						autoSaveStatus === 'saved'
-							? 'text-success'
-							: autoSaveStatus === 'error'
-								? 'text-error'
-								: ''
-					}
-				>
-					{saveLabel}
-				</span>
-			}
 		/>
 	)
 }
