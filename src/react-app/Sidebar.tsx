@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useState } from 'react'
-import { FiChevronDown, FiChevronRight, FiFile } from 'react-icons/fi'
+import { FiChevronDown, FiChevronRight, FiFile, FiX } from 'react-icons/fi'
 import type { MemoryMeta } from './useSidebar'
 
 type TreeNode = {
@@ -76,7 +76,7 @@ function FolderNode({ node, depth, activeId }: FolderNodeProps) {
 						>
 							<FiFile className="w-3 h-3 shrink-0 opacity-50 mt-0.5" />
 							<span className="flex flex-col min-w-0">
-								<span className="truncate text-[10px] opacity-40 leading-tight text-left">{entry.path}</span>
+								<span className="truncate text-[10px] opacity-40 leading-tight text-left">{entry.path.split('/').slice(-1)[0]}</span>
 								<span className="truncate text-xs leading-snug">{entry.title ?? entry.path.split('/').slice(-1)[0] ?? entry.id}</span>
 							</span>
 						</button>
@@ -89,19 +89,33 @@ function FolderNode({ node, depth, activeId }: FolderNodeProps) {
 
 type Props = {
 	entries: MemoryMeta[]
+	onClose: () => void
 }
 
-export function Sidebar({ entries }: Props) {
+export function Sidebar({ entries, onClose }: Props) {
 	const params = useParams({ strict: false }) as { id?: string }
 	const tree = buildTree(entries)
 
 	return (
-		<div className="flex flex-col h-full overflow-y-auto py-2 select-none">
-			{entries.length === 0 ? (
-				<p className="px-3 py-2 text-xs text-base-content/30 font-mono">No memories yet</p>
-			) : (
-				<FolderNode node={tree} depth={0} activeId={params.id} />
-			)}
+		<div className="flex flex-col h-full select-none">
+			<div className="flex items-center justify-between px-3 py-2 shrink-0 border-b border-base-300">
+				<span className="text-xs font-semibold font-mono text-base-content/50 uppercase tracking-wider">Memories</span>
+				<button
+					type="button"
+					onClick={onClose}
+					title="Close sidebar"
+					className="p-1 rounded hover:bg-base-300 text-base-content/40 hover:text-base-content/80 transition-colors cursor-pointer"
+				>
+					<FiX className="w-3.5 h-3.5" />
+				</button>
+			</div>
+			<div className="flex-1 overflow-y-auto py-2">
+				{entries.length === 0 ? (
+					<p className="px-3 py-2 text-xs text-base-content/30 font-mono">No memories yet</p>
+				) : (
+					<FolderNode node={tree} depth={0} activeId={params.id} />
+				)}
+			</div>
 		</div>
 	)
 }
