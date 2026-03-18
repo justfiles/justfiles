@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { CaptureInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, type Store } from './store'
+import { CaptureInputSchema, LinkInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, type Store } from './store'
 
 const ChangesQuerySchema = z.object({ since: z.string().default('') })
 
@@ -75,6 +75,18 @@ export function createApi(store: Store) {
 		const { since } = c.req.valid('query')
 		const result = await store.changes(since)
 		return c.json(result)
+	})
+
+	app.post('/v1/links', zValidator('json', LinkInputSchema), async (c) => {
+		const input = c.req.valid('json')
+		try {
+			await store.link(input)
+			return c.json({ ok: true })
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err)
+			if (msg.includes('not found')) return c.json({ error: msg }, 404)
+			throw err
+		}
 	})
 
 	return app

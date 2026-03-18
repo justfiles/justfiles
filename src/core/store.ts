@@ -336,6 +336,16 @@ export const ListInputSchema = z.object({
 
 export type ListInput = z.infer<typeof ListInputSchema>
 
+export const LinkInputSchema = z.object({
+	from_id: z.string(),
+	to_id: z.string(),
+	rel_type: z.string(),
+	reason: z.string().optional(),
+	source: z.string().optional()
+})
+
+export type LinkInput = z.infer<typeof LinkInputSchema>
+
 export type ListResult = {
 	id: string
 	path: string
@@ -407,6 +417,11 @@ export interface Store {
 	 * returns upserted entries (active=1) and removed ids (active=0).
 	 */
 	changes(since: string): Promise<ChangesResult>
+
+	/**
+	 * create a directed link between two memories
+	 */
+	link(input: LinkInput): Promise<void>
 }
 
 export type SearchResult = {
@@ -1258,6 +1273,40 @@ export function createStore(
 				upserted,
 				removed: removedRows.map((r) => String(r.id))
 			}
+		},
+
+		async link(input: LinkInput): Promise<void> {
+			const now = new Date().toISOString()
+			const [from] = await adapter.query<{ id: unknown }>(
+				'SELECT id FROM memories WHERE id = ? AND active = 1 LIMIT 1',
+				[input.from_id]
+			)
+			if (!from) throw new Error(`Memory not found: ${input.from_id}`)
+			const [to] = await adapter.query<{ id: unknown }>(
+				'SELECT id FROM memories WHERE id = ? AND active = 1 LIMIT 1',
+				[input.to_id]
+			)
+			if (!to) throw new Error(`Memory not found: ${input.to_id}`)
+			await adapter.transaction(async (tx) => {
+				await tx.run(
+					`INSERT INTO memory_links(from_id, to_id, rel_type, actor_type, actor_name, reason, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(from_id, to_id, rel_type) DO NOTHING`,
+					[
+						input.from_id,
+						input.to_id,
+						input.rel_type,
+						input.source ? 'agent' : 'human',
+						input.source ?? null,
+						input.reason ?? null,
+						now
+					]
+				)
+				await tx.run(
+					'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
+					[genId('evt'), input.from_id, 'link', input.source ? 'agent' : 'human', now]
+				)
+			})
 		}
 	}
 }

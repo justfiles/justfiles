@@ -293,6 +293,45 @@ function registerMcpTools(server: McpServer, store: Store) {
 	)
 
 	server.registerTool(
+		'link_memories',
+		{
+			description:
+				'Create a directed relationship link between two memories. Use this when two memories are related, one supersedes another, one is derived from another, etc.',
+			inputSchema: {
+				from_id: z.string().describe('The source memory ID'),
+				to_id: z.string().describe('The target memory ID'),
+				rel_type: z
+					.string()
+					.describe(
+						'Relationship type, e.g. "related", "supersedes", "contradicts", "summary-of", "derived-from"'
+					),
+				reason: z.string().optional().describe('Why this link is being created'),
+				source: z.string().optional().describe('Agent name or identifier creating this link')
+			}
+		},
+		async ({ from_id, to_id, rel_type, reason, source }) => {
+			try {
+				await store.link({ from_id, to_id, rel_type, reason, source })
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Linked ${from_id} → ${to_id} (${rel_type})`
+						}
+					]
+				}
+			} catch (err) {
+				return {
+					content: [
+						{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }
+					],
+					isError: true
+				}
+			}
+		}
+	)
+
+	server.registerTool(
 		'get_memory',
 		{
 			description:
