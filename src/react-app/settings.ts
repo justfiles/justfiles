@@ -18,11 +18,13 @@ export const DEFAULT_SETTINGS: Settings = {
 	lastUsedDestinationId: 'default-inbox',
 }
 
-const LS_KEY = 'ghostore:settings'
+function lsSettingsKey(userId: string) {
+	return `ghostore:${userId}:settings`
+}
 
-export function loadSettings(): Settings {
+export function loadSettings(userId: string): Settings {
 	try {
-		const raw = localStorage.getItem(LS_KEY)
+		const raw = localStorage.getItem(lsSettingsKey(userId))
 		if (!raw) return { destinations: [...DEFAULT_DESTINATIONS], lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId }
 		const parsed = JSON.parse(raw) as Partial<Settings>
 		return {
@@ -34,9 +36,9 @@ export function loadSettings(): Settings {
 	}
 }
 
-export function saveSettings(patch: Partial<Settings>): void {
-	const current = loadSettings()
-	localStorage.setItem(LS_KEY, JSON.stringify({ ...current, ...patch }))
+export function saveSettings(patch: Partial<Settings>, userId: string): void {
+	const current = loadSettings(userId)
+	localStorage.setItem(lsSettingsKey(userId), JSON.stringify({ ...current, ...patch }))
 }
 
 export function getActiveDestination(settings: Settings): Destination {

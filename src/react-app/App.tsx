@@ -3,7 +3,6 @@ import { useMutation } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
 import './App.css'
-import { AuthWall } from './AuthWall'
 import { EditorLayout } from './EditorLayout'
 import { ModeSelector } from './ModeSelector'
 import { useSidebarActions } from './SidebarContext'
@@ -15,19 +14,18 @@ import {
 	saveSettings,
 } from './settings'
 
-const LS_KEY = 'ghostore:draft'
-
 function App() {
-	const { getToken, isLoaded, isSignedIn } = useAuth()
-	const [editorText, setEditorText] = useState(() => localStorage.getItem(LS_KEY) ?? '')
-	const [settings] = useState(() => loadSettings())
+	const { getToken, userId } = useAuth()
+	const lsDraftKey = `ghostore:${userId}:draft`
+	const [editorText, setEditorText] = useState(() => localStorage.getItem(lsDraftKey) ?? '')
+	const [settings] = useState(() => loadSettings(userId!))
 	const [activeDestination, setActiveDestination] = useState<Destination>(() => getActiveDestination(settings))
 	const { upsertEntry, refresh } = useSidebarActions()
 
 	// Persist draft to localStorage
 	useEffect(() => {
-		localStorage.setItem(LS_KEY, editorText)
-	}, [editorText])
+		localStorage.setItem(lsDraftKey, editorText)
+	}, [editorText, lsDraftKey])
 
 	const captureMutation = useMutation({
 		mutationFn: async ({ text, path }: { text: string; path: string }) => {
@@ -42,7 +40,7 @@ function App() {
 		},
 		onSuccess: (data: { id: string }, { path }: { text: string; path: string }) => {
 			setEditorText('')
-			localStorage.removeItem(LS_KEY)
+			localStorage.removeItem(lsDraftKey)
 			// Optimistic placeholder so the entry appears immediately
 			upsertEntry({ id: data.id, title: null, path, updated_at: '', tags: [] })
 			// Full refresh to replace the placeholder with real server data (title, updated_at)
@@ -71,12 +69,9 @@ function App() {
 		return () => window.removeEventListener('keydown', onKeyDown)
 	}, [])
 
-	if (!isLoaded) return <p className="m-8">Loading…</p>
-	if (!isSignedIn) return <AuthWall />
-
 	function handleSelectDestination(dest: Destination) {
 		setActiveDestination(dest)
-		saveSettings({ lastUsedDestinationId: dest.id })
+		saveSettings({ lastUsedDestinationId: dest.id }, userId!)
 	}
 
 	const submitStatus = captureMutation.isSuccess ? `Saved as ${captureMutation.data?.id}` : null

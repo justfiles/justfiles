@@ -1,25 +1,29 @@
+import { useAuth } from '@clerk/clerk-react'
 import { Outlet } from '@tanstack/react-router'
 import { useState } from 'react'
 import { FiMenu } from 'react-icons/fi'
+import { AuthWall } from './AuthWall'
 import { CommandPalette } from './CommandPalette'
 import { Sidebar } from './Sidebar'
 import { SidebarContext } from './SidebarContext'
 import { useSidebar } from './useSidebar'
 
-const LS_KEY = 'ghostore:sidebar-open'
-
-function loadSidebarOpen(): boolean {
-	try { return localStorage.getItem(LS_KEY) === 'true' } catch { return false }
+function lsSidebarOpenKey(userId: string) {
+	return `ghostore:${userId}:sidebar-open`
 }
 
-export function AppShell() {
+function loadSidebarOpen(userId: string): boolean {
+	try { return localStorage.getItem(lsSidebarOpenKey(userId)) === 'true' } catch { return false }
+}
+
+function AppShellInner({ userId }: { userId: string }) {
 	const { entries, upsertEntry, removeEntry, refresh } = useSidebar()
-	const [sidebarOpen, setSidebarOpen] = useState(loadSidebarOpen)
+	const [sidebarOpen, setSidebarOpen] = useState(() => loadSidebarOpen(userId))
 
 	function toggle() {
 		setSidebarOpen((o: boolean) => {
 			const next = !o
-			try { localStorage.setItem(LS_KEY, String(next)) } catch {}
+			try { localStorage.setItem(lsSidebarOpenKey(userId), String(next)) } catch {}
 			return next
 		})
 	}
@@ -49,4 +53,13 @@ export function AppShell() {
 			</div>
 		</SidebarContext.Provider>
 	)
+}
+
+export function AppShell() {
+	const { isLoaded, isSignedIn, userId } = useAuth()
+
+	if (!isLoaded) return <p className="m-8">Loading…</p>
+	if (!isSignedIn || !userId) return <AuthWall />
+
+	return <AppShellInner userId={userId} />
 }

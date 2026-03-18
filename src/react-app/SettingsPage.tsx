@@ -1,3 +1,4 @@
+import { useAuth } from '@clerk/clerk-react'
 import { useEffect, useRef, useState } from 'react'
 import { FiChevronLeft, FiTrash2 } from 'react-icons/fi'
 import {
@@ -113,19 +114,20 @@ function DestinationRow({
 // ── main page ──────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-	const [destinations, setDestinations] = useState(() => loadSettings().destinations)
+	const { userId } = useAuth()
+	const [destinations, setDestinations] = useState(() => loadSettings(userId!).destinations)
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
 	// Debounced persist whenever destinations change
 	useEffect(() => {
 		if (saveTimer.current) clearTimeout(saveTimer.current)
 		saveTimer.current = setTimeout(() => {
-			saveSettings({ destinations })
+			saveSettings({ destinations }, userId!)
 		}, 300)
 		return () => {
 			if (saveTimer.current) clearTimeout(saveTimer.current)
 		}
-	}, [destinations])
+	}, [destinations, userId])
 
 	function updateDestination(updated: Destination) {
 		setDestinations((prev) => prev.map((d) => (d.id === updated.id ? updated : d)))

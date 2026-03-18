@@ -14,18 +14,20 @@ type ChangesResult = {
 	removed: string[]
 }
 
-const LS_KEY = 'ghostore:sidebar'
+function lsCacheKey(userId: string) {
+	return `ghostore:${userId}:sidebar`
+}
 
-function loadCache(): MemoryMeta[] {
+function loadCache(userId: string): MemoryMeta[] {
 	try {
-		return JSON.parse(localStorage.getItem(LS_KEY) ?? '[]')
+		return JSON.parse(localStorage.getItem(lsCacheKey(userId)) ?? '[]')
 	} catch {
 		return []
 	}
 }
 
-function saveCache(entries: MemoryMeta[]) {
-	localStorage.setItem(LS_KEY, JSON.stringify(entries))
+function saveCache(userId: string, entries: MemoryMeta[]) {
+	localStorage.setItem(lsCacheKey(userId), JSON.stringify(entries))
 }
 
 function applyDelta(cache: MemoryMeta[], delta: ChangesResult): MemoryMeta[] {
@@ -40,16 +42,16 @@ function maxUpdatedAt(entries: MemoryMeta[]): string {
 }
 
 export function useSidebar() {
-	const { getToken, isSignedIn } = useAuth()
-	const [entries, setEntries] = useState<MemoryMeta[]>(loadCache)
+	const { getToken, isSignedIn, userId } = useAuth()
+	const [entries, setEntries] = useState<MemoryMeta[]>(() => userId ? loadCache(userId) : [])
 
 	const fetchChanges = useCallback(async (since?: string) => {
-		if (!isSignedIn) return
+		if (!isSignedIn || !userId) return
 		const token = await getToken()
 		if (!token) return
 
 		// Read current cache directly from localStorage to avoid stale closure
-		const effectiveSince = since ?? maxUpdatedAt(loadCache())
+		const effectiveSince = since ?? maxUpdatedAt(loadCache(userId))
 
 		try {
 			const res = await fetch(`/api/v1/changes?since=${encodeURIComponent(effectiveSince)}`, {
@@ -60,13 +62,13 @@ export function useSidebar() {
 			if (delta.upserted.length === 0 && delta.removed.length === 0) return
 			setEntries((prev: MemoryMeta[]) => {
 				const next = applyDelta(prev, delta)
-				saveCache(next)
+				saveCache(userId, next)
 				return next
 			})
 		} catch {
 			// network error — keep serving from cache silently
 		}
-	}, [getToken, isSignedIn])
+	}, [getToken, isSignedIn, userId])
 
 	// Force a full re-sync from the server, ignoring the local cursor
 	const refresh = useCallback(() => fetchChanges(''), [fetchChanges])
@@ -83,19 +85,19 @@ export function useSidebar() {
 	const upsertEntry = useCallback((entry: MemoryMeta) => {
 		setEntries((prev: MemoryMeta[]) => {
 			const next = applyDelta(prev, { upserted: [entry], removed: [] })
-			saveCache(next)
+			if (userId) saveCache(userId, next)
 			return next
 		})
-	}, [])
+	}, [userId])
 
 	// Optimistically remove an entry (call after archive/delete)
 	const removeEntry = useCallback((id: string) => {
 		setEntries((prev: MemoryMeta[]) => {
 			const next = applyDelta(prev, { upserted: [], removed: [id] })
-			saveCache(next)
+			if (userId) saveCache(userId, next)
 			return next
 		})
-	}, [])
+	}, [userId])
 
 	return { entries, fetchChanges, refresh, upsertEntry, removeEntry }
 }
