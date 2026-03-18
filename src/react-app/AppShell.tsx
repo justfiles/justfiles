@@ -26,9 +26,13 @@ export function AppShell() {
 
 	return (
 		<SidebarContext.Provider value={{ upsertEntry, removeEntry, refresh }}>
-			<div className={`drawer h-screen ${sidebarOpen ? 'drawer-open' : ''}`}>
-				<input type="checkbox" className="drawer-toggle" readOnly checked={sidebarOpen} />
-				<div className="drawer-content flex flex-col relative min-w-0">
+			<div className="flex h-screen overflow-hidden">
+				{sidebarOpen && (
+					<aside className="w-56 shrink-0 bg-base-200 border-r border-base-300 h-full overflow-hidden flex flex-col">
+						<Sidebar entries={entries} />
+					</aside>
+				)}
+				<div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden relative">
 					<CommandPalette />
 					<button
 						type="button"
@@ -39,12 +43,6 @@ export function AppShell() {
 						<FiMenu className="w-4 h-4" />
 					</button>
 					<Outlet />
-				</div>
-				<div className="drawer-side z-20">
-					<label className="drawer-overlay" onClick={toggle} />
-					<aside className="w-56 bg-base-200 border-r border-base-300 h-full overflow-hidden flex flex-col">
-						<Sidebar entries={entries} />
-					</aside>
 				</div>
 			</div>
 		</SidebarContext.Provider>
