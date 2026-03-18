@@ -346,6 +346,19 @@ export type RecentResult = {
 	updated_at: string
 }
 
+export type MemoryMeta = {
+	id: string
+	title: string | null
+	path: string
+	updated_at: string
+	tags: string[]
+}
+
+export type ChangesResult = {
+	upserted: MemoryMeta[]
+	removed: string[]
+}
+
 export interface Store {
 	/**
 	 * capture memory, return memory id
@@ -376,6 +389,13 @@ export interface Store {
 	 * get N most recently updated active memories, cached in-memory and invalidated on capture/update
 	 */
 	recent(n: number): Promise<RecentResult[]>
+
+	/**
+	 * get all memories changed since a given updated_at timestamp (ISO string).
+	 * pass empty string to get all active memories.
+	 * returns upserted entries (active=1) and removed ids (active=0).
+	 */
+	changes(since: string): Promise<ChangesResult>
 }
 
 export type SearchResult = {
@@ -1155,6 +1175,50 @@ export function createStore(
 				}
 			}
 			return recentCache.slice(0, n)
+		},
+
+		async changes(since: string): Promise<ChangesResult> {
+			const upsertedRows = await adapter.query<{
+				id: unknown
+				title: unknown
+				path: unknown
+				updated_at: unknown
+			}>(
+				`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1`,
+				[since]
+			)
+
+			const removedRows = await adapter.query<{ id: unknown }>(
+				`SELECT id FROM memories WHERE updated_at > ? AND active = 0`,
+				[since]
+			)
+
+			let upserted: MemoryMeta[] = []
+			if (upsertedRows.length > 0) {
+				const ids = upsertedRows.map((r) => String(r.id))
+				const tagRows = await adapter.query<{ memory_id: unknown; tag: unknown }>(
+					`SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (${placeholders(ids.length)})`,
+					ids
+				)
+				const tagMap = new Map<string, string[]>()
+				for (const t of tagRows) {
+					const mid = String(t.memory_id)
+					if (!tagMap.has(mid)) tagMap.set(mid, [])
+					tagMap.get(mid)!.push(String(t.tag))
+				}
+				upserted = upsertedRows.map((r) => ({
+					id: String(r.id),
+					title: r.title != null ? String(r.title) : null,
+					path: String(r.path),
+					updated_at: String(r.updated_at),
+					tags: tagMap.get(String(r.id)) ?? []
+				}))
+			}
+
+			return {
+				upserted,
+				removed: removedRows.map((r) => String(r.id))
+			}
 		}
 	}
 }

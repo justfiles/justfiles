@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
 import { AuthWall } from './AuthWall'
 import { EditorLayout } from './EditorLayout'
+import { useSidebarActions } from './SidebarContext'
 
 type Memory = {
 	id: string
@@ -28,6 +29,7 @@ export function MemoryPage() {
 	const [hasPendingTimer, setHasPendingTimer] = useState(false)
 	const loadedTextRef = useRef<string | null>(null)
 	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const { upsertEntry } = useSidebarActions()
 
 	const memoryQuery = useQuery({
 		queryKey: ['memory', id],
@@ -71,6 +73,15 @@ export function MemoryPage() {
 		},
 		onSuccess: (text) => {
 			loadedTextRef.current = text
+			if (memoryQuery.data) {
+				upsertEntry({
+					id: memoryQuery.data.id,
+					title: memoryQuery.data.title,
+					path: memoryQuery.data.path,
+					updated_at: new Date().toISOString(),
+					tags: memoryQuery.data.tags,
+				})
+			}
 		},
 	})
 

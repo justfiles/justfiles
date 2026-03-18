@@ -1,10 +1,11 @@
-import { createRootRoute, createRoute, createRouter, Outlet } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import App from './App'
+import { AppShell } from './AppShell'
 import { MemoryPage } from './MemoryPage'
 import { SettingsPage } from './SettingsPage'
 
 export const rootRoute = createRootRoute({
-	component: () => <Outlet />,
+	component: AppShell,
 })
 
 const indexRoute = createRoute({

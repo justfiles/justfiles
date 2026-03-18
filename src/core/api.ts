@@ -3,6 +3,8 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { CaptureInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, type Store } from './store'
 
+const ChangesQuerySchema = z.object({ since: z.string().default('') })
+
 /**
  * Creates the Hono app.
  *
@@ -55,6 +57,12 @@ export function createApi(store: Store) {
 		const n = Math.min(raw ? Math.max(1, parseInt(raw, 10) || 5) : 5, 20)
 		const results = await store.recent(n)
 		return c.json({ results })
+	})
+
+	app.get('/v1/changes', zValidator('query', ChangesQuerySchema), async (c) => {
+		const { since } = c.req.valid('query')
+		const result = await store.changes(since)
+		return c.json(result)
 	})
 
 	return app

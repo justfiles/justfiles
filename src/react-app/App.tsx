@@ -6,6 +6,7 @@ import './App.css'
 import { AuthWall } from './AuthWall'
 import { EditorLayout } from './EditorLayout'
 import { ModeSelector } from './ModeSelector'
+import { useSidebarActions } from './SidebarContext'
 import {
 	type Destination,
 	expandTemplate,
@@ -21,6 +22,7 @@ function App() {
 	const [editorText, setEditorText] = useState(() => localStorage.getItem(LS_KEY) ?? '')
 	const [settings] = useState(() => loadSettings())
 	const [activeDestination, setActiveDestination] = useState<Destination>(() => getActiveDestination(settings))
+	const { upsertEntry, refresh } = useSidebarActions()
 
 	// Persist draft to localStorage
 	useEffect(() => {
@@ -38,9 +40,13 @@ function App() {
 			})
 			return res.json() as Promise<{ id: string }>
 		},
-		onSuccess: () => {
+		onSuccess: (data: { id: string }, { path }: { text: string; path: string }) => {
 			setEditorText('')
 			localStorage.removeItem(LS_KEY)
+			// Optimistic placeholder so the entry appears immediately
+			upsertEntry({ id: data.id, title: null, path, updated_at: '', tags: [] })
+			// Full refresh to replace the placeholder with real server data (title, updated_at)
+			refresh()
 		},
 	})
 

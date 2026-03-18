@@ -2,7 +2,6 @@ import { UserButton } from '@clerk/clerk-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { FiSettings } from 'react-icons/fi'
-import { CommandPalette } from './CommandPalette'
 import { MarkdownEditor } from './MarkdownEditor'
 
 type Props = {
@@ -28,8 +27,7 @@ export function EditorLayout({ header, value, onChange, minibufferLeft, minibuff
 	}, [navigate])
 
 	return (
-		<div className="w-screen h-screen flex flex-col bg-base-100 text-base-content">
-			<CommandPalette />
+		<div className="flex-1 min-h-0 flex flex-col">
 			{header && (
 				<header className="shrink-0 flex justify-center">
 					<div className="w-full max-w-[680px] flex items-center border-b border-neutral-content/50 p-4">
