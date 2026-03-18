@@ -56,12 +56,19 @@ function blendWithReranker(retrievalScore: number, rerankerScore: number, rank: 
 	return Math.min(1, retrievalScore * retrievalWeight + rerankerScore * (1 - retrievalWeight))
 }
 
-function rrf(lists: CandidateChunk[][], k = 60): CandidateChunk[] {
+// Per-list rank bonus: rewards results that dominated at least one retrieval signal.
+// Added to rrfScore (affects ranking only, not the display score).
+const TOP_RANK_BONUS = [0.05, 0.02, 0.02]
+
+function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateChunk[] {
 	const scores = new Map<string, { chunk: CandidateChunk; rrfScore: number }>()
-	for (const list of lists) {
+	for (let li = 0; li < lists.length; li++) {
+		const list = lists[li]
+		const w = weights?.[li] ?? 1.0
 		for (let rank = 0; rank < list.length; rank++) {
 			const chunk = list[rank]
-			const add = 1 / (k + rank + 1)
+			// RRF term + per-list top-rank bonus (both weighted by list weight)
+			const add = w * (1 / (k + rank + 1) + (TOP_RANK_BONUS[rank] ?? 0))
 			const prev = scores.get(chunk.chunkId)
 			const merged: CandidateChunk = {
 				...(prev?.chunk ?? chunk),
@@ -71,14 +78,13 @@ function rrf(lists: CandidateChunk[][], k = 60): CandidateChunk[] {
 			scores.set(chunk.chunkId, { chunk: merged, rrfScore: (prev?.rrfScore ?? 0) + add })
 		}
 	}
-	const TOP_RANK_BONUS = [0.05, 0.02, 0.02]
+	// Sort by RRF score; display score is the best raw signal (independent of RRF ordering).
 	return Array.from(scores.values())
 		.sort((a, b) => b.rrfScore - a.rrfScore)
-		.map((v, i) => {
+		.map((v) => {
 			const { chunk } = v
 			const ftsScore = chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : 0
-			const base = Math.max(chunk.semanticScore ?? 0, ftsScore)
-			const score = Math.min(1, base + (TOP_RANK_BONUS[i] ?? 0))
+			const score = Math.max(chunk.semanticScore ?? 0, ftsScore)
 			return { ...chunk, score }
 		})
 }
@@ -829,7 +835,7 @@ export function createStore(
 			const scope = input.scope ?? 'personal'
 			const mode = input.mode ?? 'hybrid'
 			const limit = input.limit ?? 10
-			const minScore = input.min_score ?? (mode !== 'exact' ? 0.3 : 0)
+			let minScore = input.min_score ?? (mode !== 'exact' ? 0.3 : 0)
 			const candidateLimit = limit * 4
 
 			const validIds = await getValidMemoryIds(scope, input.filter)
@@ -847,45 +853,56 @@ export function createStore(
 					candidateLimit
 				)
 			} else {
+				const tokens = input.query.trim().split(/\s+/).filter(Boolean).length
 				const exact = await exactSearch(input.query, validIds, candidateLimit)
-				const queries =
-					embProvider && llm && !hasStrongExactSignal(exact)
-						? [input.query, ...(await llm.expand(input.query)).semantic]
-						: [input.query]
-				const semanticLists = embProvider
-					? await Promise.all(
-							queries.map((q) =>
-								embProvider
-									.embed([q])
-									.then(([emb]) => semanticSearch(new Float32Array(emb), validIds, candidateLimit))
-							)
-						)
-					: []
-				candidates = rrf([exact, ...semanticLists])
 
-			if (reranker && candidates.length >= 2) {
-				const top = candidates.slice(0, RERANK_LIMIT)
-				try {
-					const results = await reranker.rerank(
-						input.query,
-						top.map((c) => ({ id: c.chunkId, text: c.text }))
-					)
-					const scoreMap = new Map(results.map((r) => [r.id, r.score]))
-					candidates = top
-						.map((c, rank) => {
-							const rerankerScore = scoreMap.get(c.chunkId)
-							if (rerankerScore == null) return c
-							return {
-								...c,
-								rerankerScore,
-								score: blendWithReranker(c.score, rerankerScore, rank)
-							}
-						})
-						.sort((a, b) => b.score - a.score)
-				} catch {
-					// reranker failed — keep pre-rerank order
+				if (tokens <= 1 || hasStrongExactSignal(exact)) {
+					candidates = exact
+					// FTS-only routing: BM25 scores on small corpora rarely exceed 0.3,
+					// so use the same threshold as exact mode unless caller overrode it
+					if (!input.min_score) minScore = 0
+				} else {
+					const queries =
+						embProvider && llm
+							? [input.query, ...(await llm.expand(input.query)).semantic]
+							: [input.query]
+					const semanticLists = embProvider
+						? await Promise.all(
+								queries.map((q) =>
+									embProvider
+										.embed([q])
+										.then(([emb]) => semanticSearch(new Float32Array(emb), validIds, candidateLimit))
+								)
+							)
+						: []
+					const ftsWeight = tokens <= 2 ? 2.0 : 1.0
+					const rrfWeights = [ftsWeight, ...semanticLists.map(() => 1.0)]
+					candidates = rrf([exact, ...semanticLists], 60, rrfWeights)
 				}
-			}
+
+				if (reranker && candidates.length >= 2) {
+					const top = candidates.slice(0, RERANK_LIMIT)
+					try {
+						const results = await reranker.rerank(
+							input.query,
+							top.map((c) => ({ id: c.chunkId, text: c.text }))
+						)
+						const scoreMap = new Map(results.map((r) => [r.id, r.score]))
+						candidates = top
+							.map((c, rank) => {
+								const rerankerScore = scoreMap.get(c.chunkId)
+								if (rerankerScore == null) return c
+								return {
+									...c,
+									rerankerScore,
+									score: blendWithReranker(c.score, rerankerScore, rank)
+								}
+							})
+							.sort((a, b) => b.score - a.score)
+					} catch {
+						// reranker failed — keep pre-rerank order
+					}
+				}
 			}
 
 			return (await chunksToResults(candidates, input.query, limit, input.options)).filter(
