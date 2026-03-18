@@ -10,9 +10,10 @@ type Props = {
 	onChange: (v: string) => void
 	minibufferLeft?: ReactNode
 	minibufferRight?: ReactNode
+	isLoading?: boolean
 }
 
-export function EditorLayout({ header, value, onChange, minibufferLeft, minibufferRight }: Props) {
+export function EditorLayout({ header, value, onChange, minibufferLeft, minibufferRight, isLoading }: Props) {
 	const navigate = useNavigate()
 
 	useEffect(() => {
@@ -35,7 +36,7 @@ export function EditorLayout({ header, value, onChange, minibufferLeft, minibuff
 					</div>
 				</header>
 			)}
-			<main className="flex-1 min-h-0 overflow-hidden flex justify-center px-4 pb-4">
+			<main className={`flex-1 min-h-0 overflow-hidden flex justify-center px-4 pb-4 transition-[filter] duration-150${isLoading ? ' blur-sm pointer-events-none' : ''}`}>
 				<div className="w-full max-w-[680px] h-full">
 					<MarkdownEditor value={value} onChange={onChange} />
 				</div>

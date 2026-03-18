@@ -28,6 +28,7 @@ export function MemoryPage() {
 	const [editorText, setEditorText] = useState('')
 	const [hasPendingTimer, setHasPendingTimer] = useState(false)
 	const loadedTextRef = useRef<string | null>(null)
+	const staleTextRef = useRef<string>('')
 	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const { upsertEntry } = useSidebarActions()
 
@@ -50,6 +51,11 @@ export function MemoryPage() {
 		loadedTextRef.current = null
 		setEditorText('')
 	}, [id])
+
+	// Keep stale text for blur-while-loading effect
+	useEffect(() => {
+		if (editorText) staleTextRef.current = editorText
+	}, [editorText])
 
 	// Sync editor text on load
 	useEffect(() => {
@@ -97,7 +103,6 @@ export function MemoryPage() {
 
 	if (!isLoaded) return <p className="m-8">Loading…</p>
 	if (!isSignedIn) return <AuthWall />
-	if (memoryQuery.isPending) return <p className="m-8">Loading memory…</p>
 	if (memoryQuery.isError) return <p className="m-8 text-error">Failed to load memory</p>
 
 	const autoSaveStatus = hasPendingTimer
@@ -120,6 +125,8 @@ export function MemoryPage() {
 					: autoSaveStatus === 'error'
 						? 'Save failed'
 						: null
+
+	const isLoading = memoryQuery.isPending
 
 	return (
 		<EditorLayout
@@ -148,8 +155,9 @@ export function MemoryPage() {
 					</div>
 				</div>
 			}
-			value={editorText}
-			onChange={setEditorText}
+			value={isLoading ? staleTextRef.current : editorText}
+			onChange={isLoading ? () => {} : setEditorText}
+			isLoading={isLoading}
 			minibufferLeft={memoryQuery.data?.path}
 			minibufferRight={
 				<span
