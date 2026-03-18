@@ -52,6 +52,18 @@ export function createApi(store: Store) {
 		return c.json(memory)
 	})
 
+	app.post('/v1/memory/:id/archive', zValidator('param', z.object({ id: z.string().min(1) })), async (c) => {
+		const { id } = c.req.param()
+		try {
+			await store.archive(id)
+			return c.json({ archived: true, id })
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err)
+			if (msg.includes('not found')) return c.json({ error: msg }, 404)
+			throw err
+		}
+	})
+
 	app.get('/v1/recent', async (c) => {
 		const raw = c.req.query('n')
 		const n = Math.min(raw ? Math.max(1, parseInt(raw, 10) || 5) : 5, 20)

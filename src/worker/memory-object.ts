@@ -265,6 +265,34 @@ function registerMcpTools(server: McpServer, store: Store) {
 	)
 
 	server.registerTool(
+		'archive_memory',
+		{
+			description:
+				'Soft-delete a memory by ID. The memory is marked inactive and removed from search results. Use this when a memory is outdated, superseded, or should no longer be retrievable.',
+			inputSchema: {
+				id: z.string().describe('The memory ID to archive'),
+				source: z
+					.string()
+					.optional()
+					.describe('Origin of the archive action, e.g. "agent", "system"')
+			}
+		},
+		async ({ id, source }) => {
+			try {
+				await store.archive(id, source)
+				return { content: [{ type: 'text', text: `Memory ${id} archived.` }] }
+			} catch (err) {
+				return {
+					content: [
+						{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }
+					],
+					isError: true
+				}
+			}
+		}
+	)
+
+	server.registerTool(
 		'get_memory',
 		{
 			description:

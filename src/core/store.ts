@@ -382,6 +382,11 @@ export interface Store {
 	update(input: UpdateInput): Promise<void>
 
 	/**
+	 * soft-delete a memory (sets active = 0)
+	 */
+	archive(id: string, source?: string): Promise<void>
+
+	/**
 	 * list memories by path/tags without a search query, ordered by created_at desc
 	 */
 	list(input: ListInput): Promise<ListResult[]>
@@ -1039,6 +1044,23 @@ export function createStore(
 					input.source ? 'agent' : 'human',
 					now
 				])
+			})
+			recentCache = null
+		},
+
+		async archive(id: string, source?: string): Promise<void> {
+			const now = new Date().toISOString()
+			const [mem] = await adapter.query<{ id: unknown }>(
+				'SELECT id FROM memories WHERE id = ? AND active = 1 LIMIT 1',
+				[id]
+			)
+			if (!mem) throw new Error(`Memory not found: ${id}`)
+			await adapter.transaction(async (tx) => {
+				await tx.run('UPDATE memories SET active = 0, updated_at = ? WHERE id = ?', [now, id])
+				await tx.run(
+					'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
+					[genId('evt'), id, 'archive', source ? 'agent' : 'human', now]
+				)
 			})
 			recentCache = null
 		},
