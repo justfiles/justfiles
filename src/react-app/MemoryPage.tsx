@@ -45,16 +45,8 @@ export function MemoryPage() {
 		enabled: true,
 	})
 
-	// Reset editor when navigating to a different memory
-	useEffect(() => {
-		loadedTextRef.current = null
-		setEditorText('')
-	}, [id])
-
 	// Keep stale text for blur-while-loading effect
-	useEffect(() => {
-		if (editorText) staleTextRef.current = editorText
-	}, [editorText])
+	if (editorText) staleTextRef.current = editorText
 
 	// Sync editor text on load
 	useEffect(() => {

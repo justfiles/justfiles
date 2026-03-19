@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, useParams } from '@tanstack/react-router'
 import App from './App'
 import { AppShell } from './AppShell'
 import { MemoryPage } from './MemoryPage'
@@ -14,10 +14,15 @@ const indexRoute = createRoute({
 	component: App,
 })
 
+function MemoryPageRoute() {
+	const { id } = useParams({ strict: false }) as { id: string }
+	return <MemoryPage key={id} />
+}
+
 const memoryRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/memory/$id',
-	component: MemoryPage,
+	component: MemoryPageRoute,
 })
 
 const settingsRoute = createRoute({

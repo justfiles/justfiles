@@ -33,9 +33,12 @@ export function CommandPalette() {
 	const inputRef = useRef<HTMLInputElement>(null)
 	const selectedRef = useRef<HTMLAnchorElement>(null)
 
-	// Debounce query input
+	// Debounce query input and reset selection
 	useEffect(() => {
-		const t = setTimeout(() => setDebouncedQuery(query), 300)
+		const t = setTimeout(() => {
+			setDebouncedQuery(query)
+			setSelectedIndex(-1)
+		}, 300)
 		return () => clearTimeout(t)
 	}, [query])
 
@@ -74,10 +77,6 @@ export function CommandPalette() {
 			setSelectedIndex(-1)
 		}
 	}, [open])
-
-	useEffect(() => {
-		setSelectedIndex(-1)
-	}, [debouncedQuery])
 
 	const recentQuery = useQuery({
 		queryKey: ['recent'],
