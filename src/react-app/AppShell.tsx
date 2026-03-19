@@ -1,5 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
-import { Outlet } from '@tanstack/react-router'
+import { Outlet, useRouterState } from '@tanstack/react-router'
 import { useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { CommandPalette } from './CommandPalette'
@@ -18,6 +18,8 @@ function loadSidebarOpen(userId: string): boolean {
 function AppShellInner({ userId }: { userId: string }) {
 	const { entries, upsertEntry, removeEntry, refresh } = useSidebar()
 	const [sidebarOpen, setSidebarOpen] = useState(() => loadSidebarOpen(userId))
+	const pathname = useRouterState({ select: (s) => s.location.pathname })
+	const showSidebar = sidebarOpen && pathname !== '/settings'
 
 	function toggle() {
 		setSidebarOpen((o: boolean) => {
@@ -30,10 +32,13 @@ function AppShellInner({ userId }: { userId: string }) {
 	return (
 		<SidebarContext.Provider value={{ upsertEntry, removeEntry, refresh, toggleSidebar: toggle, sidebarOpen }}>
 			<div className="flex h-dvh">
-				{sidebarOpen && (
-					<aside className="w-64 shrink-0 flex flex-col border-r border-base-300">
-						<Sidebar entries={entries} onClose={toggle} />
-					</aside>
+				{showSidebar && (
+					<>
+						<div className="sm:hidden fixed inset-0 z-20 bg-black/30" onClick={toggle} />
+						<aside className="fixed inset-y-0 left-0 z-30 sm:static sm:z-auto w-64 shrink-0 flex flex-col border-r border-base-300 bg-base-100">
+							<Sidebar entries={entries} onClose={toggle} />
+						</aside>
+					</>
 				)}
 				<div className="flex-1 min-w-0 flex flex-col">
 					<CommandPalette />

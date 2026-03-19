@@ -129,7 +129,7 @@ export function MemoryPage() {
 		<EditorLayout
 			headerLeft={
 				memoryQuery.data?.title
-					? <span className="text-sm font-medium text-base-content/70 truncate">{memoryQuery.data.title}</span>
+					? <span className="block w-full text-sm font-medium text-base-content/70 truncate">{memoryQuery.data.title}</span>
 					: undefined
 			}
 			headerRight={

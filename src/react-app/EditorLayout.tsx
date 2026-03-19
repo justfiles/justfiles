@@ -41,22 +41,23 @@ export function EditorLayout({ headerLeft, headerRight, value, onChange, isLoadi
 						<FiMenu className="w-4 h-4" />
 					</button>
 				)}
-				<div className="flex-1 min-w-0">{headerLeft}</div>
-				<div className="shrink-0 flex items-center gap-2">
+				<div className="flex-1 min-w-0 hidden sm:block">{headerLeft}</div>
+				<div className="ml-auto shrink-0 flex items-center gap-2">
 					{headerRight}
-					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
-					<button
-						type="button"
-						title="Settings (⌘,)"
-						onClick={() => navigate({ to: '/settings' })}
-						className="flex items-center justify-center w-6 h-6 opacity-50 hover:opacity-100 transition-opacity cursor-pointer"
-					>
-						<FiSettings className="w-4 h-4" />
-					</button>
+					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }}>
+						<UserButton.MenuItems>
+							<UserButton.Action
+								label="Settings"
+								labelIcon={<FiSettings />}
+								onClick={() => navigate({ to: '/settings' })}
+							/>
+						</UserButton.MenuItems>
+					</UserButton>
 				</div>
 			</header>
 			<main className={`flex-1 overflow-y-auto transition-[filter] duration-150${isLoading ? ' blur-sm pointer-events-none' : ''}`}>
 				<div className="max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
+					{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
 					<MarkdownEditor value={value} onChange={onChange} />
 				</div>
 			</main>
