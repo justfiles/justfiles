@@ -37,6 +37,9 @@
 			]
 		}
 	],
+	"r2_buckets": [
+		{ "binding": "ASSETS", "bucket_name": "ghostore-assets" }
+	],
 	"rules": [
 		{
 			"type": "Text",
@@ -101,6 +104,9 @@
 						"MemoryObject"
 					]
 				}
+			],
+			"r2_buckets": [
+				{ "binding": "ASSETS", "bucket_name": "ghostore-assets-staging" }
 			]
 		}
 	}

@@ -25,7 +25,40 @@ export class MemoryObject extends DurableObject<Env> {
 					)
 				: undefined
 		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY), reranker)
+		const userId = ctx.id.name ?? ''
+		const bucket = env.ASSETS
 		const app = new Hono()
+
+		app.post('/api/v1/memory/:memoryId/assets', async (c) => {
+			const { memoryId } = c.req.param()
+			const formData = await c.req.formData()
+			const file = formData.get('file') as File | null
+			if (!file) return c.json({ error: 'No file provided' }, 400)
+
+			const ext = file.name.split('.').pop()?.toLowerCase() ?? 'bin'
+			const uuid = crypto.randomUUID()
+			const key = `${userId}/assets/${memoryId}/${uuid}.${ext}`
+
+			await bucket.put(key, file, {
+				httpMetadata: { contentType: file.type || 'application/octet-stream' },
+				customMetadata: { filename: file.name, memoryId },
+			})
+
+			return c.json({ key: `${uuid}.${ext}` })
+		})
+
+		app.get('/api/v1/memory/:memoryId/assets/:filename', async (c) => {
+			const { memoryId, filename } = c.req.param()
+			const key = `${userId}/assets/${memoryId}/${filename}`
+			const object = await bucket.get(key)
+			if (!object) return c.json({ error: 'Not found' }, 404)
+
+			const headers = new Headers()
+			object.writeHttpMetadata(headers)
+			headers.set('etag', object.httpEtag)
+			return new Response(object.body, { headers })
+		})
+
 		app.route('/api', createApi(store))
 
 		const mcpServer = new McpServer({ name: 'ghostore', version: '1.0.0' })
