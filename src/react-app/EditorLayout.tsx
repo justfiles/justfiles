@@ -2,7 +2,7 @@ import { UserButton } from '@clerk/clerk-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { FiMenu, FiSettings } from 'react-icons/fi'
-import { MarkdownEditor } from './MarkdownEditor'
+import { Editor as MarkdownEditor } from './Editor'
 import { useSidebarActions } from './SidebarContext'
 
 type Props = {

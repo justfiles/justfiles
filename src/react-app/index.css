@@ -27,6 +27,23 @@
 	@apply text-base-content/30 pointer-events-none float-left h-0;
 }
 
+/* ── ProseMirror editor ──────────────────────────────────────────────── */
+.ghostore-pm-editor {
+	min-height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
+.ghostore-pm-editor .ProseMirror {
+	@apply prose prose-slate max-w-none outline-none p-3;
+	flex: 1;
+}
+
+.ghostore-pm-editor .ProseMirror .is-placeholder::before {
+	content: 'Start writing…';
+	@apply text-base-content/30 pointer-events-none float-left h-0;
+}
+
 /* ── Global ──────────────────────────────────────────────────────────── */
 :root {
 	font-family:
