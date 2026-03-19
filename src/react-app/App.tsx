@@ -97,11 +97,12 @@ function App() {
 						<span>Search</span>
 						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
 					</button>
-					<button type="button" onClick={handleSubmit} className="btn btn-neutral btn-sm font-mono">
-						Submit
+					<button type="button" onClick={handleSubmit} disabled={captureMutation.isPending} className="btn btn-neutral btn-sm font-mono">
+						{captureMutation.isPending ? 'Saving…' : 'Submit'}
 					</button>
 				</>
 			}
+			isLoading={captureMutation.isPending}
 			value={editorText}
 			onChange={setEditorText}
 		/>
