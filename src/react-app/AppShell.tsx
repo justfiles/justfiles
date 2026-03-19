@@ -1,10 +1,11 @@
 import { useAuth } from '@clerk/clerk-react'
 import { Outlet, useRouterState } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { CommandPalette } from './CommandPalette'
 import { Sidebar } from './Sidebar'
 import { SidebarContext } from './SidebarContext'
+import { loadSettings } from './settings'
 import { useSidebar } from './useSidebar'
 
 function lsSidebarOpenKey(userId: string) {
@@ -18,7 +19,26 @@ function loadSidebarOpen(userId: string): boolean {
 function AppShellInner({ userId }: { userId: string }) {
 	const { entries, upsertEntry, removeEntry, refresh } = useSidebar()
 	const [sidebarOpen, setSidebarOpen] = useState(() => loadSidebarOpen(userId))
+	const [theme, setTheme] = useState(() => loadSettings(userId).theme)
 	const pathname = useRouterState({ select: (s) => s.location.pathname })
+
+	useEffect(() => {
+		document.documentElement.setAttribute('data-theme', theme)
+	}, [theme])
+
+	// Listen for theme changes saved by SettingsPage
+	useEffect(() => {
+		function onStorage(e: StorageEvent) {
+			if (e.key?.includes(':settings') && e.newValue) {
+				try {
+					const parsed = JSON.parse(e.newValue) as { theme?: string }
+					if (parsed.theme) setTheme(parsed.theme)
+				} catch {}
+			}
+		}
+		window.addEventListener('storage', onStorage)
+		return () => window.removeEventListener('storage', onStorage)
+	}, [])
 	const showSidebar = sidebarOpen && pathname !== '/settings'
 
 	function toggle() {

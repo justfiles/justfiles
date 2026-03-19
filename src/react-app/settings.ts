@@ -7,6 +7,7 @@ export type Destination = {
 export type Settings = {
 	destinations: Destination[]
 	lastUsedDestinationId: string | null
+	theme: string
 }
 
 export const DEFAULT_DESTINATIONS: Destination[] = [
@@ -16,7 +17,16 @@ export const DEFAULT_DESTINATIONS: Destination[] = [
 export const DEFAULT_SETTINGS: Settings = {
 	destinations: DEFAULT_DESTINATIONS,
 	lastUsedDestinationId: 'default-inbox',
+	theme: 'light',
 }
+
+export const DAISYUI_THEMES = [
+	'light', 'dark', 'cupcake', 'bumblebee', 'emerald', 'corporate',
+	'synthwave', 'retro', 'cyberpunk', 'valentine', 'halloween', 'garden',
+	'forest', 'aqua', 'lofi', 'pastel', 'fantasy', 'wireframe', 'black',
+	'luxury', 'dracula', 'cmyk', 'autumn', 'business', 'acid', 'lemonade',
+	'night', 'coffee', 'winter', 'dim', 'nord', 'sunset',
+] as const
 
 function lsSettingsKey(userId: string) {
 	return `ghostore:${userId}:settings`
@@ -25,14 +35,15 @@ function lsSettingsKey(userId: string) {
 export function loadSettings(userId: string): Settings {
 	try {
 		const raw = localStorage.getItem(lsSettingsKey(userId))
-		if (!raw) return { destinations: [...DEFAULT_DESTINATIONS], lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId }
+		if (!raw) return { destinations: [...DEFAULT_DESTINATIONS], lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId, theme: DEFAULT_SETTINGS.theme }
 		const parsed = JSON.parse(raw) as Partial<Settings>
 		return {
 			destinations: parsed.destinations?.length ? parsed.destinations : [...DEFAULT_DESTINATIONS],
 			lastUsedDestinationId: parsed.lastUsedDestinationId ?? DEFAULT_SETTINGS.lastUsedDestinationId,
+			theme: parsed.theme ?? DEFAULT_SETTINGS.theme,
 		}
 	} catch {
-		return { destinations: [...DEFAULT_DESTINATIONS], lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId }
+		return { destinations: [...DEFAULT_DESTINATIONS], lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId, theme: DEFAULT_SETTINGS.theme }
 	}
 }
 
