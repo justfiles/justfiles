@@ -2,7 +2,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-import { FiSearch } from 'react-icons/fi'
+import { FiArchive, FiSearch } from 'react-icons/fi'
 import { EditorLayout } from './EditorLayout'
 import { useSidebarActions } from './SidebarContext'
 
@@ -29,7 +29,7 @@ export function MemoryPage() {
 	const loadedTextRef = useRef<string | null>(null)
 	const staleTextRef = useRef<string>('')
 	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-	const { upsertEntry } = useSidebarActions()
+	const { upsertEntry, removeEntry } = useSidebarActions()
 
 	const memoryQuery = useQuery({
 		queryKey: ['memory', id],
@@ -90,10 +90,29 @@ export function MemoryPage() {
 		},
 	})
 
+	const archiveMutation = useMutation({
+		mutationFn: async () => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing auth token')
+			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}/archive`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${token}` },
+			})
+			if (!res.ok) throw new Error(`Archive failed: ${res.status}`)
+		},
+		onSuccess: () => {
+			removeEntry(id)
+			navigate({ to: '/' })
+		},
+	})
+
 	useEffect(() => {
-		if (!memoryQuery.data || editorText === loadedTextRef.current) return
-		setHasPendingTimer(true)
 		if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+		if (!memoryQuery.data || editorText === loadedTextRef.current) {
+			setHasPendingTimer(false)
+			return
+		}
+		setHasPendingTimer(true)
 		autoSaveTimer.current = setTimeout(() => {
 			setHasPendingTimer(false)
 			saveMutation.mutate(editorText)
@@ -134,6 +153,15 @@ export function MemoryPage() {
 						<FiSearch className="w-3.5 h-3.5 shrink-0" />
 						<span>Search</span>
 						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
+					</button>
+					<button
+						type="button"
+						onClick={() => archiveMutation.mutate()}
+						disabled={archiveMutation.isPending}
+						className="btn btn-ghost btn-sm text-error font-mono"
+						title="Archive"
+					>
+						<FiArchive className="w-4 h-4" />
 					</button>
 					<button
 						type="button"

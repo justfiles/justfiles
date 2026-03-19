@@ -190,6 +190,10 @@ function chunkText(text: string, targetTokens = 400): TextChunk[] {
 
 		if (chunkLines.length > 0) {
 			const chunkTextContent = chunkLines.join('\n')
+			if (!chunkTextContent.trim()) {
+				pos += chunkTextContent.length + 1
+				continue
+			}
 			chunks.push({
 				seq: seq++,
 				text: chunkTextContent,
