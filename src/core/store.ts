@@ -381,7 +381,8 @@ export type ChangesResult = {
 
 export interface Store {
 	/**
-	 * capture memory, return memory id
+	 * capture memory, return memory id.
+	 * AI processing (embedding, title gen) is deferred — sets dirty=1 and returns immediately.
 	 */
 	capture(input: CaptureInput): Promise<string>
 
@@ -391,7 +392,8 @@ export interface Store {
 	search(input: SearchInput): Promise<SearchResult[]>
 
 	/**
-	 * update metadata and/or content of an existing memory
+	 * update metadata and/or content of an existing memory.
+	 * text changes set dirty=1 and defer re-embedding to processEmbedding().
 	 */
 	update(input: UpdateInput): Promise<void>
 
@@ -426,6 +428,13 @@ export interface Store {
 	 * create a directed link between two memories
 	 */
 	link(input: LinkInput): Promise<void>
+
+	/**
+	 * background worker: find dirty memories, re-embed and generate missing titles.
+	 * processes up to 10 memories per call.
+	 * returns true if more dirty memories remain (caller should reschedule).
+	 */
+	processEmbedding(): Promise<boolean>
 }
 
 export type SearchResult = {
@@ -525,7 +534,8 @@ export function createStore(
 	adapter: DbAdapter,
 	embProvider?: EmbeddingProvider,
 	llm?: LLM,
-	reranker?: Reranker
+	reranker?: Reranker,
+	onDirty?: () => Promise<void>
 ): Store {
 	const embModelKey = embProvider ? `${embProvider.provider}:${embProvider.model}` : 'none'
 	let recentCache: RecentResult[] | null = null
@@ -724,11 +734,6 @@ export function createStore(
 			)
 			if (existing) return String(existing.id)
 
-			const meta =
-				llm && input.title === undefined
-					? await llm.generateMetadata(normalized).catch(() => null)
-					: null
-
 			const path = input.path ?? `inbox/${now.slice(0, 19).replace(/[:.]/g, '')}`
 			let oldPathMemoryId: string | null = null
 
@@ -740,37 +745,11 @@ export function createStore(
 				if (old) oldPathMemoryId = String(old.id)
 			}
 
-			const chunks = chunkText(normalized)
-			const chunkHashes = await Promise.all(chunks.map((c) => sha256hex(c.text)))
-
-			const chunkEmbeddings: Array<Float32Array | null> = chunks.map(() => null)
-
 			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [
 				hash,
 				normalized,
 				now
 			])
-
-			if (embProvider) {
-				const cached = await getCachedEmbeddings(chunkHashes)
-				const missingIndexes: number[] = []
-				for (let i = 0; i < chunks.length; i++) {
-					const cachedVec = cached.get(chunkHashes[i])
-					if (cachedVec) chunkEmbeddings[i] = cachedVec
-					else missingIndexes.push(i)
-				}
-
-				if (missingIndexes.length > 0) {
-					const missingTexts = missingIndexes.map((i) => chunks[i].text)
-					const fresh = await embProvider.embed(missingTexts)
-
-					for (let i = 0; i < missingIndexes.length; i++) {
-						const chunkIndex = missingIndexes[i]
-						const vector = new Float32Array(fresh[i])
-						chunkEmbeddings[chunkIndex] = vector
-					}
-				}
-			}
 
 			const memoryId = genId('mem')
 
@@ -787,11 +766,11 @@ export function createStore(
 				}
 
 				await tx.run(
-					'INSERT INTO memories(id, scope, title, content_hash, path, source, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
+					'INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?)',
 					[
 						memoryId,
 						scope,
-						input.title ?? meta?.title ?? null,
+						input.title ?? null,
 						hash,
 						path,
 						input.source ?? null,
@@ -800,45 +779,9 @@ export function createStore(
 					]
 				)
 
-				const effectiveTags = input.tags?.length ? input.tags : (meta?.tags ?? [])
-				if (effectiveTags.length) {
-					for (const tag of effectiveTags) {
+				if (input.tags?.length) {
+					for (const tag of input.tags) {
 						await tx.run('INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)', [memoryId, tag])
-					}
-				}
-
-				for (let i = 0; i < chunks.length; i++) {
-					const chunk = chunks[i]
-					const chunkId = genId('chk')
-
-					await tx.run(
-						'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-						[
-							chunkId,
-							memoryId,
-							chunk.seq,
-							chunk.pos,
-							chunk.len,
-							chunk.tokenCount,
-							chunkHashes[i],
-							embModelKey,
-							now
-						]
-					)
-
-					const embedding = chunkEmbeddings[i]
-					if (embedding) {
-						await tx.run(
-							'INSERT INTO chunk_vectors(chunk_id, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-							[
-								chunkId,
-								embProvider?.provider ?? 'none',
-								embProvider?.model ?? 'none',
-								embedding.length,
-								encodeEmbedding(Array.from(embedding)),
-								now
-							]
-						)
 					}
 				}
 
@@ -852,6 +795,7 @@ export function createStore(
 			})
 
 			recentCache = null
+			await onDirty?.()
 			return memoryId
 		},
 
@@ -968,31 +912,10 @@ export function createStore(
 					}
 				}
 
-				// content: rechunk and re-embed
+				// content: write text, defer re-chunking and re-embedding to processEmbedding()
 				if (input.text !== undefined) {
 					const normalized = normalizeText(input.text)
 					const hash = await sha256hex(normalized)
-					const chunks = chunkText(normalized)
-					const chunkHashes = await Promise.all(chunks.map((c) => sha256hex(c.text)))
-
-					const chunkEmbeddings: Array<Float32Array | null> = chunks.map(() => null)
-					if (embProvider) {
-						const cached = await getCachedEmbeddings(chunkHashes)
-						const missingIndexes: number[] = []
-						for (let i = 0; i < chunks.length; i++) {
-							const cachedVec = cached.get(chunkHashes[i])
-							if (cachedVec) chunkEmbeddings[i] = cachedVec
-							else missingIndexes.push(i)
-						}
-						if (missingIndexes.length > 0) {
-							const fresh = await embProvider.embed(missingIndexes.map((i) => chunks[i].text))
-							for (let i = 0; i < missingIndexes.length; i++) {
-								const chunkIndex = missingIndexes[i]
-								const vector = new Float32Array(fresh[i])
-								chunkEmbeddings[chunkIndex] = vector
-							}
-						}
-					}
 
 					// insert new content (must come before UPDATE memories SET content_hash to satisfy FTS trigger)
 					await tx.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [
@@ -1001,52 +924,10 @@ export function createStore(
 						now
 					])
 
-					// delete chunk_vectors first (FK → chunks), then chunks (FTS triggers handle FTS cleanup)
 					await tx.run(
-						'DELETE FROM chunk_vectors WHERE chunk_id IN (SELECT id FROM chunks WHERE memory_id = ?)',
-						[input.id]
+						'UPDATE memories SET content_hash = ?, dirty = 1, updated_at = ? WHERE id = ?',
+						[hash, now, input.id]
 					)
-					await tx.run('DELETE FROM chunks WHERE memory_id = ?', [input.id])
-
-					// insert new chunks
-					for (let i = 0; i < chunks.length; i++) {
-						const chunk = chunks[i]
-						const chunkId = genId('chk')
-						await tx.run(
-							'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-							[
-								chunkId,
-								input.id,
-								chunk.seq,
-								chunk.pos,
-								chunk.len,
-								chunk.tokenCount,
-								chunkHashes[i],
-								embModelKey,
-								now
-							]
-						)
-						const embedding = chunkEmbeddings[i]
-						if (embedding) {
-							await tx.run(
-								'INSERT INTO chunk_vectors(chunk_id, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-								[
-									chunkId,
-									embProvider?.provider ?? 'none',
-									embProvider?.model ?? 'none',
-									embedding.length,
-									encodeEmbedding(Array.from(embedding)),
-									now
-								]
-							)
-						}
-					}
-
-					await tx.run('UPDATE memories SET content_hash = ?, updated_at = ? WHERE id = ?', [
-						hash,
-						now,
-						input.id
-					])
 
 					// clean up orphaned content row
 					const oldHash = String(mem.content_hash)
@@ -1065,6 +946,7 @@ export function createStore(
 				])
 			})
 			recentCache = null
+			if (input.text !== undefined) await onDirty?.()
 		},
 
 		async archive(id: string, source?: string): Promise<void> {
@@ -1311,6 +1193,146 @@ export function createStore(
 					[genId('evt'), input.from_id, 'link', input.source ? 'agent' : 'human', now]
 				)
 			})
+		},
+
+		async processEmbedding(): Promise<boolean> {
+			const BATCH = 10
+			const dirtyMems = await adapter.query<{
+				id: unknown
+				content_hash: unknown
+				title: unknown
+			}>(
+				`SELECT id, content_hash, title FROM memories WHERE dirty = 1 AND active = 1 ORDER BY updated_at ASC LIMIT ${BATCH + 1}`
+			)
+			if (dirtyMems.length === 0) return false
+			const hasMore = dirtyMems.length > BATCH
+			const batch = dirtyMems.slice(0, BATCH)
+
+			for (const mem of batch) {
+				const memId = String(mem.id)
+				const contentHash = String(mem.content_hash)
+				const existingTitle = mem.title != null ? String(mem.title) : null
+
+				const [contentRow] = await adapter.query<{ text: unknown }>(
+					'SELECT text FROM content WHERE hash = ?',
+					[contentHash]
+				)
+				if (!contentRow) {
+					await adapter.run('UPDATE memories SET dirty = 0 WHERE id = ?', [memId])
+					continue
+				}
+				const text = String(contentRow.text)
+
+				let newTitle: string | null = null
+				if (!existingTitle && llm) {
+					newTitle = await llm.generateMetadata(text).then((m) => m.title ?? null).catch(() => null)
+				}
+
+				if (embProvider) {
+					const newChunks = chunkText(text)
+					const newHashes = await Promise.all(newChunks.map((c) => sha256hex(c.text)))
+
+					// Load existing chunks for this memory
+					const oldRows = await adapter.query<{
+						id: unknown; seq: unknown; pos: unknown; len: unknown
+						token_count: unknown; hash: unknown
+					}>('SELECT id, seq, pos, len, token_count, hash FROM chunks WHERE memory_id = ?', [memId])
+
+					// Build a pool per hash to handle duplicate chunks within one document
+					const oldPool = new Map<string, typeof oldRows>()
+					for (const row of oldRows) {
+						const h = String(row.hash)
+						if (!oldPool.has(h)) oldPool.set(h, [])
+						oldPool.get(h)!.push(row)
+					}
+
+					// Greedily claim one old chunk per new chunk with the same hash
+					const reused = new Map<number, typeof oldRows[0]>() // newChunk index → old row
+					const claimedIds = new Set<string>()
+					for (let i = 0; i < newChunks.length; i++) {
+						const pool = oldPool.get(newHashes[i])
+						if (pool?.length) {
+							const row = pool.shift()!
+							reused.set(i, row)
+							claimedIds.add(String(row.id))
+						}
+					}
+
+					const toDelete = oldRows.filter(r => !claimedIds.has(String(r.id)))
+					const toAdd = newChunks.map((_, i) => i).filter(i => !reused.has(i))
+
+					// Embed only the added chunks (check global cache first)
+					const embeddings = new Map<string, Float32Array>()
+					if (toAdd.length > 0) {
+						const addHashes = toAdd.map(i => newHashes[i])
+						const cached = await getCachedEmbeddings(addHashes)
+						const uncached = toAdd.filter(i => !cached.has(newHashes[i]))
+						for (const [h, v] of cached) embeddings.set(h, v)
+						if (uncached.length > 0) {
+							const fresh = await embProvider.embed(uncached.map(i => newChunks[i].text))
+							for (let j = 0; j < uncached.length; j++) {
+								embeddings.set(newHashes[uncached[j]], new Float32Array(fresh[j]))
+							}
+						}
+					}
+
+					const now = new Date().toISOString()
+					await adapter.transaction(async (tx) => {
+						// Delete removed chunks and their vectors
+						for (const row of toDelete) {
+							await tx.run('DELETE FROM chunk_vectors WHERE chunk_id = ?', [String(row.id)])
+							await tx.run('DELETE FROM chunks WHERE id = ?', [String(row.id)])
+						}
+
+						// Update position metadata for reused chunks if it shifted
+						for (const [i, row] of reused) {
+							const c = newChunks[i]
+							if (Number(row.seq) !== c.seq || Number(row.pos) !== c.pos || Number(row.len) !== c.len) {
+								await tx.run(
+									'UPDATE chunks SET seq = ?, pos = ?, len = ?, token_count = ? WHERE id = ?',
+									[c.seq, c.pos, c.len, c.tokenCount, String(row.id)]
+								)
+							}
+						}
+
+						// Insert new chunks + vectors
+						for (const i of toAdd) {
+							const c = newChunks[i]
+							const chunkId = genId('chk')
+							await tx.run(
+								'INSERT INTO chunks(id, memory_id, seq, pos, len, token_count, hash, embedding_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+								[chunkId, memId, c.seq, c.pos, c.len, c.tokenCount, newHashes[i], embModelKey, now]
+							)
+							const emb = embeddings.get(newHashes[i])
+							if (emb) {
+								await tx.run(
+									'INSERT INTO chunk_vectors(chunk_id, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+									[chunkId, embProvider.provider, embProvider.model, emb.length, encodeEmbedding(Array.from(emb)), now]
+								)
+							}
+						}
+
+						if (newTitle) {
+							await tx.run(
+								'UPDATE memories SET dirty = 0, title = ?, updated_at = ? WHERE id = ?',
+								[newTitle, now, memId]
+							)
+						} else {
+							await tx.run('UPDATE memories SET dirty = 0 WHERE id = ?', [memId])
+						}
+					})
+				} else if (newTitle) {
+					const now = new Date().toISOString()
+					await adapter.run(
+						'UPDATE memories SET dirty = 0, title = ?, updated_at = ? WHERE id = ?',
+						[newTitle, now, memId]
+					)
+				} else {
+					await adapter.run('UPDATE memories SET dirty = 0 WHERE id = ?', [memId])
+				}
+			}
+
+			return hasMore
 		}
 	}
 }

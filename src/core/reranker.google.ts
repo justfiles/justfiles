@@ -94,7 +94,6 @@ export function googleReranker(
 		model,
 
 		async rerank(query: string, candidates: RerankCandidate[]): Promise<RerankResult[]> {
-			console.log(`!! reranking is happening !!`)
 			if (candidates.length === 0) return []
 
 			const token = await getToken()
@@ -121,7 +120,6 @@ export function googleReranker(
 				records: Array<{ id: string; score: number }>
 			}
 			const result = data.records.map((r) => ({ id: r.id, score: r.score }))
-			console.log({ query, candidates, result })
 			return result
 		}
 	}

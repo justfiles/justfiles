@@ -1,5 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { FiArchive, FiSearch } from 'react-icons/fi'
@@ -30,6 +30,7 @@ export function MemoryPage() {
 	const staleTextRef = useRef<string>('')
 	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const { upsertEntry, removeEntry } = useSidebarActions()
+	const queryClient = useQueryClient()
 
 	const memoryQuery = useQuery({
 		queryKey: ['memory', id],
@@ -70,12 +71,16 @@ export function MemoryPage() {
 		},
 		onSuccess: (text) => {
 			loadedTextRef.current = text
+			const now = new Date().toISOString()
+			queryClient.setQueryData<Memory>(['memory', id], (old) =>
+				old ? { ...old, raw_text: text, updated_at: now } : old
+			)
 			if (memoryQuery.data) {
 				upsertEntry({
 					id: memoryQuery.data.id,
 					title: memoryQuery.data.title,
 					path: memoryQuery.data.path,
-					updated_at: new Date().toISOString(),
+					updated_at: now,
 					tags: memoryQuery.data.tags,
 				})
 			}

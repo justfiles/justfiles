@@ -227,6 +227,8 @@ export function Editor({ value, onChange, memoryId, getToken }: Props) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
 	const prevValueRef = useRef(value)
+	const onChangeRef = useRef(onChange)
+	onChangeRef.current = onChange
 	const memoryIdRef = useRef(memoryId)
 	memoryIdRef.current = memoryId
 	const getTokenRef = useRef(getToken)
@@ -243,7 +245,7 @@ export function Editor({ value, onChange, memoryId, getToken }: Props) {
 				if (tr.docChanged) {
 					const md = defaultMarkdownSerializer.serialize(newState.doc)
 					prevValueRef.current = md
-					onChange(md)
+					onChangeRef.current(md)
 				}
 			},
 			handleDrop(view, event) {

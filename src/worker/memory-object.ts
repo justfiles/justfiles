@@ -12,6 +12,7 @@ import { cfStore, migrateCF } from './db.do'
 
 export class MemoryObject extends DurableObject<Env> {
 	private readonly app: Hono
+	private readonly store: Store
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -24,7 +25,18 @@ export class MemoryObject extends DurableObject<Env> {
 						JSON.parse(env_.GOOGLE_SA_KEY) as { client_email: string; private_key: string }
 					)
 				: undefined
-		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY), reranker)
+		const onDirty = async () => {
+			const existing = await ctx.storage.getAlarm()
+			if (existing == null) await ctx.storage.setAlarm(Date.now() + 60_000)
+		}
+		const store = cfStore(
+			ctx.storage,
+			openAI(env.OPENAI_KEY),
+			llm(env.OPENAI_KEY),
+			reranker,
+			onDirty
+		)
+		this.store = store
 		const userId = ctx.id.name ?? ''
 		const bucket = env.ASSETS
 		const app = new Hono()
@@ -41,7 +53,7 @@ export class MemoryObject extends DurableObject<Env> {
 
 			await bucket.put(key, file, {
 				httpMetadata: { contentType: file.type || 'application/octet-stream' },
-				customMetadata: { filename: file.name, memoryId },
+				customMetadata: { filename: file.name, memoryId }
 			})
 
 			return c.json({ key: `${uuid}.${ext}` })
@@ -77,6 +89,14 @@ export class MemoryObject extends DurableObject<Env> {
 
 	async fetch(request: Request): Promise<Response> {
 		return this.app.fetch(request)
+	}
+
+	async alarm(): Promise<void> {
+		console.log(`⏰ process embedding ⏰`)
+		const hasMore = await this.store.processEmbedding()
+		if (hasMore) {
+			await this.ctx.storage.setAlarm(Date.now() + 5_000)
+		}
 	}
 }
 
@@ -380,7 +400,8 @@ function registerMcpTools(server: McpServer, store: Store) {
 		async ({ id }) => {
 			try {
 				const memory = await store.get(id)
-				if (!memory) return { content: [{ type: 'text', text: `Memory not found: ${id}` }], isError: true }
+				if (!memory)
+					return { content: [{ type: 'text', text: `Memory not found: ${id}` }], isError: true }
 				const lines = [
 					`ID: ${memory.id}`,
 					`Title: ${memory.title ?? '(none)'}`,

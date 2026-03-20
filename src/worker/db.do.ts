@@ -8,9 +8,12 @@ import type { Store } from '../core/store'
 // Wrangler's Text rule (globs: ["**/*.sql"]) bundles .sql files as plain strings.
 // @ts-ignore
 import MIGRATION_0001 from '../core/migrations/0001_schema.sql'
+// @ts-ignore
+import MIGRATION_0002 from '../core/migrations/0002_dirty_flag.sql'
 
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
 	{ version: 1, sql: MIGRATION_0001 as string },
+	{ version: 2, sql: MIGRATION_0002 as string },
 ]
 
 // CF DO prohibits SQL BEGIN/COMMIT; use storage.transactionSync() instead.
@@ -55,7 +58,8 @@ export function cfStore(
 	storage: DurableObjectStorage,
 	embProvider?: EmbeddingProvider,
 	llm?: LLM,
-	reranker?: Reranker
+	reranker?: Reranker,
+	onDirty?: () => void
 ): Store {
-	return createStore(createDOSqliteAdapter(storage), embProvider, llm, reranker)
+	return createStore(createDOSqliteAdapter(storage), embProvider, llm, reranker, onDirty)
 }
