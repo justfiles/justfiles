@@ -81,7 +81,7 @@ export function useSidebar() {
 		return () => window.removeEventListener('focus', onFocus)
 	}, [fetchChanges])
 
-	// Optimistically add/update a single entry (call after capture/update)
+	// Optimistically add/update a single entry (call after write/update)
 	const upsertEntry = useCallback((entry: MemoryMeta) => {
 		setEntries((prev: MemoryMeta[]) => {
 			const next = applyDelta(prev, { upserted: [entry], removed: [] })

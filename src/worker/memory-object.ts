@@ -97,19 +97,19 @@ export class MemoryObject extends DurableObject<Env> {
 
 function registerMcpTools(server: McpServer, store: Store) {
 	server.registerTool(
-		'capture_memory',
+		'write_memory',
 		{
 			description:
-				'Store a new memory or piece of information. Use this to save text content, notes, events, or any information that should be remembered for future retrieval.',
+				'Write a memory at a path — creates or overwrites. Use this to save text content, notes, events, or any information that should be remembered for future retrieval.',
 			inputSchema: {
 				text: z.string().describe('The text content to store as a memory'),
-				title: z.string().optional().describe('Optional title for the memory'),
 				path: z
 					.string()
 					.optional()
 					.describe(
-						'Optional path to organize the memory hierarchically (e.g. "work/meetings", "personal/ideas"). Defaults to inbox/<timestamp>'
+						'Path to organize the memory hierarchically (e.g. "work/meetings", "personal/ideas"). Defaults to inbox/<timestamp>. If a memory already exists at this path, it will be overwritten.'
 					),
+				title: z.string().optional().describe('Optional title for the memory'),
 				tags: z
 					.array(z.string())
 					.optional()
@@ -122,8 +122,8 @@ function registerMcpTools(server: McpServer, store: Store) {
 		},
 		async (args) => {
 			try {
-				const id = await store.capture(args)
-				return { content: [{ type: 'text', text: `Memory captured with id: ${id}` }] }
+				const id = await store.write(args)
+				return { content: [{ type: 'text', text: `Memory written with id: ${id}` }] }
 			} catch (err) {
 				return {
 					content: [
@@ -388,7 +388,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 				id: z
 					.string()
 					.describe(
-						'The memory ID to retrieve (obtained from capture_memory or search_memory results)'
+						'The memory ID to retrieve (obtained from write_memory or search_memory results)'
 					)
 			}
 		},

@@ -6,10 +6,11 @@ import type { DbAdapter, SqlValue } from './db'
 
 export interface Store {
 	/**
-	 * capture memory, return memory id.
+	 * write memory at a path — creates or overwrites in place. returns the memory id.
+	 * if the existing memory at that path already has the same hash, returns immediately (noop).
 	 * AI processing (embedding, title gen) is deferred — sets dirty=1 and returns immediately.
 	 */
-	capture(input: CaptureInput): Promise<string>
+	write(input: WriteInput): Promise<string>
 
 	/**
 	 * search for memory
@@ -38,7 +39,12 @@ export interface Store {
 	get(id: string): Promise<Memory | null>
 
 	/**
-	 * get N most recently updated active memories, cached in-memory and invalidated on capture/update
+	 * find a memory by exact path match, returns { id, raw_text } or null
+	 */
+	findByPath(path: string): Promise<{ id: string; raw_text: string } | null>
+
+	/**
+	 * get N most recently updated active memories, cached in-memory and invalidated on write/update
 	 */
 	recent(n: number): Promise<RecentResult[]>
 
@@ -62,23 +68,6 @@ export interface Store {
 	processEmbedding(): Promise<boolean>
 
 	onUpdate(action: () => void | Promise<void>): void
-
-	/**
-	 * get the current draft (create a blank one if none exists).
-	 * the draft is identified by the reserved path '$draft' and is excluded from all normal APIs.
-	 */
-	getOrCreateDraft(): Promise<{ id: string; raw_text: string }>
-
-	/**
-	 * auto-save draft text, mark dirty=1.
-	 */
-	saveDraft(id: string, text: string): Promise<void>
-
-	/**
-	 * promote the draft to a real memory (clears '$draft' path, sets dirty=1, creates new blank draft).
-	 * returns the promoted memory id and the new draft id.
-	 */
-	submitDraft(id: string, text: string, path?: string): Promise<{ submittedId: string; newDraftId: string }>
 }
 
 // ---- Scoring ----
@@ -366,13 +355,13 @@ function hasStrongExactSignal(exact: CandidateChunk[]): boolean {
 
 // ---- Types ----
 
-export const CaptureInputSchema = z.object({
+export const WriteInputSchema = z.object({
 	text: z.string(),
-	title: z.string().optional(), // if not given, potentially can generate one using lightweight LLM
-	scope: z.string().optional(), // for permission, e.g. personal, team
-	path: z.string().optional(), // if not provided, we will have a default one, e.g. inbox/<timestamp>
-	tags: z.array(z.string()).optional(), // user defined
-	source: z.string().optional() // user defined, e.g. agent, human, system
+	path: z.string().optional(), // if not provided, defaults to inbox/<timestamp> (always creates)
+	title: z.string().optional(),
+	scope: z.string().optional(),
+	tags: z.array(z.string()).optional(),
+	source: z.string().optional()
 })
 
 export const SearchInputSchema = z.object({
@@ -399,7 +388,7 @@ export const SearchInputSchema = z.object({
 		.optional()
 })
 
-export type CaptureInput = z.infer<typeof CaptureInputSchema>
+export type WriteInput = z.infer<typeof WriteInputSchema>
 export type SearchInput = z.infer<typeof SearchInputSchema>
 
 export const UpdateInputSchema = z.object({
@@ -572,7 +561,7 @@ export function createStore(
 		filter?: SearchInput['filter']
 	): Promise<string[]> {
 		const tags = normalizeTags(filter?.fields?.tags)
-		const conditions = ['m.scope = ?', 'm.active = 1', "m.path != '$draft'"]
+		const conditions = ['m.scope = ?', 'm.active = 1', "m.path NOT LIKE '*%'"]
 		const params: SqlValue[] = [scope]
 
 		if (filter?.fields?.path_prefix) {
@@ -749,69 +738,58 @@ export function createStore(
 	}
 
 	return {
-		async capture(input: CaptureInput): Promise<string> {
+		async write(input: WriteInput): Promise<string> {
 			const normalized = normalizeText(input.text)
 			const hash = await sha256hex(normalized)
 			const now = new Date().toISOString()
 			const scope = input.scope ?? 'personal'
-
-			const [existing] = await adapter.query<{ id: unknown }>(
-				'SELECT id FROM memories WHERE content_hash = ? AND active = 1 LIMIT 1',
-				[hash]
-			)
-			if (existing) return String(existing.id)
-
 			const path = input.path ?? `inbox/${now.slice(0, 19).replace(/[:.]/g, '')}`
-			let oldPathMemoryId: string | null = null
+			const special = path.startsWith('*')
 
-			if (input.path) {
-				const [old] = await adapter.query<{ id: unknown }>(
-					'SELECT id FROM memories WHERE scope = ? AND path = ? AND active = 1 LIMIT 1',
-					[scope, input.path]
-				)
-				if (old) oldPathMemoryId = String(old.id)
+			const [existing] = await adapter.query<{ id: unknown; content_hash: unknown }>(
+				'SELECT id, content_hash FROM memories WHERE scope = ? AND path = ? AND active = 1 LIMIT 1',
+				[scope, path]
+			)
+
+			if (existing) {
+				const id = String(existing.id)
+				if (String(existing.content_hash) === hash) return id
+
+				const oldHash = String(existing.content_hash)
+				await adapter.transaction(async (tx) => {
+					await tx.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
+					await tx.run(`UPDATE memories SET content_hash = ?, dirty = ${special ? 0 : 1}, updated_at = ? WHERE id = ?`, [hash, now, id])
+					if (input.title !== undefined) {
+						await tx.run('UPDATE memories SET title = ?, updated_at = ? WHERE id = ?', [input.title, now, id])
+					}
+					if (input.tags !== undefined) {
+						await tx.run('DELETE FROM memory_tags WHERE memory_id = ?', [id])
+						for (const tag of input.tags) {
+							await tx.run('INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)', [id, tag])
+						}
+					}
+					await tx.run('DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)', [oldHash, oldHash])
+					await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [genId('evt'), id, 'write', input.source ? 'agent' : 'human', now])
+				})
+				recentCache = null
+				await notifyUpdate()
+				return id
 			}
 
-			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [
-				hash,
-				normalized,
-				now
-			])
-
+			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
 			const memoryId = genId('mem')
-
 			await adapter.transaction(async (tx) => {
-				if (oldPathMemoryId) {
-					await tx.run('UPDATE memories SET active = 0, updated_at = ? WHERE id = ?', [
-						now,
-						oldPathMemoryId
-					])
-					await tx.run(
-						'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
-						[genId('evt'), oldPathMemoryId, 'archive', input.source ? 'agent' : 'system', now]
-					)
-				}
-
 				await tx.run(
-					'INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?)',
+					`INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ${special ? 0 : 1}, ?, ?)`,
 					[memoryId, scope, input.title ?? null, hash, path, input.source ?? null, now, now]
 				)
-
 				if (input.tags?.length) {
 					for (const tag of input.tags) {
 						await tx.run('INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)', [memoryId, tag])
 					}
 				}
-
-				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
-					genId('evt'),
-					memoryId,
-					'capture',
-					input.source ? 'agent' : 'human',
-					now
-				])
+				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [genId('evt'), memoryId, 'write', input.source ? 'agent' : 'human', now])
 			})
-
 			recentCache = null
 			await notifyUpdate()
 			return memoryId
@@ -992,7 +970,7 @@ export function createStore(
 		async list(input: ListInput): Promise<ListResult[]> {
 			const limit = input.limit ?? 50
 			const tags = normalizeTags(input.tags)
-			const conditions: string[] = ['m.active = 1', "m.path != '$draft'"]
+			const conditions: string[] = ['m.active = 1', "m.path NOT LIKE '*%'"]
 			const params: SqlValue[] = []
 
 			if (input.path_prefix) {
@@ -1102,6 +1080,14 @@ export function createStore(
 			}
 		},
 
+		async findByPath(path: string): Promise<{ id: string; raw_text: string } | null> {
+			const [row] = await adapter.query<{ id: unknown; text: unknown }>(
+				`SELECT m.id, c.text FROM memories m JOIN content c ON c.hash = m.content_hash WHERE m.path = ? AND m.active = 1 LIMIT 1`,
+				[path]
+			)
+			return row ? { id: String(row.id), raw_text: String(row.text) } : null
+		},
+
 		async recent(n: number): Promise<RecentResult[]> {
 			const MAX_CACHE = 20
 			if (!recentCache) {
@@ -1111,7 +1097,7 @@ export function createStore(
 					title: unknown
 					updated_at: unknown
 				}>(
-					`SELECT id, path, title, updated_at FROM memories WHERE active = 1 AND path != '$draft' ORDER BY updated_at DESC LIMIT ?`,
+					`SELECT id, path, title, updated_at FROM memories WHERE active = 1 AND path NOT LIKE '*%' ORDER BY updated_at DESC LIMIT ?`,
 					[MAX_CACHE]
 				)
 				if (rows.length === 0) {
@@ -1146,12 +1132,12 @@ export function createStore(
 				title: unknown
 				path: unknown
 				updated_at: unknown
-			}>(`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1 AND path != '$draft'`, [
+			}>(`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1 AND path NOT LIKE '*%'`, [
 				since
 			])
 
 			const removedRows = await adapter.query<{ id: unknown }>(
-				`SELECT id FROM memories WHERE updated_at > ? AND active = 0 AND path != '$draft'`,
+				`SELECT id FROM memories WHERE updated_at > ? AND active = 0 AND path NOT LIKE '*%'`,
 				[since]
 			)
 
@@ -1231,7 +1217,7 @@ export function createStore(
 				content_hash: unknown
 				title: unknown
 			}>(
-				`SELECT id, content_hash, title FROM memories WHERE dirty = 1 AND active = 1 ORDER BY updated_at ASC LIMIT ${BATCH + 1}`
+				`SELECT id, content_hash, title FROM memories WHERE dirty = 1 AND active = 1 AND path NOT LIKE '*%' ORDER BY updated_at ASC LIMIT ${BATCH + 1}`
 			)
 			if (dirtyMems.length === 0) return false
 			const hasMore = dirtyMems.length > BATCH
@@ -1382,81 +1368,5 @@ export function createStore(
 			return hasMore
 		},
 
-		async getOrCreateDraft(): Promise<{ id: string; raw_text: string }> {
-			const [existing] = await adapter.query<{ id: unknown; text: unknown }>(
-				`SELECT m.id, c.text FROM memories m JOIN content c ON c.hash = m.content_hash WHERE m.path = '$draft' AND m.active = 1 LIMIT 1`,
-				[]
-			)
-			if (existing) return { id: String(existing.id), raw_text: String(existing.text) }
-
-			const now = new Date().toISOString()
-			const normalized = normalizeText('')
-			const hash = await sha256hex(normalized)
-			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
-			const draftId = genId('mem')
-			await adapter.run(
-				`INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, 'personal', ?, ?, '$draft', ?, 1, 0, ?, ?)`,
-				[draftId, null, hash, null, now, now]
-			)
-			return { id: draftId, raw_text: '' }
-		},
-
-		async saveDraft(id: string, text: string): Promise<void> {
-			const now = new Date().toISOString()
-			const normalized = normalizeText(text)
-			const hash = await sha256hex(normalized)
-			const [mem] = await adapter.query<{ content_hash: unknown }>(
-				`SELECT content_hash FROM memories WHERE id = ? AND path = '$draft' AND active = 1 LIMIT 1`,
-				[id]
-			)
-			if (!mem) throw new Error(`Draft not found: ${id}`)
-			const oldHash = String(mem.content_hash)
-			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
-			await adapter.run('UPDATE memories SET content_hash = ?, dirty = 1, updated_at = ? WHERE id = ?', [hash, now, id])
-			await adapter.run(
-				'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
-				[oldHash, oldHash]
-			)
-		},
-
-		async submitDraft(id: string, text: string, path?: string): Promise<{ submittedId: string; newDraftId: string }> {
-			const now = new Date().toISOString()
-			const [draft] = await adapter.query<{ id: unknown; content_hash: unknown }>(
-				`SELECT id, content_hash FROM memories WHERE id = ? AND path = '$draft' AND active = 1 LIMIT 1`,
-				[id]
-			)
-			if (!draft) throw new Error(`Draft not found: ${id}`)
-
-			// Save final text
-			const normalized = normalizeText(text)
-			const hash = await sha256hex(normalized)
-			const oldHash = String(draft.content_hash)
-			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
-
-			// Promote draft to real memory
-			const realPath = path ?? `inbox/${now.slice(0, 19).replace(/[:.]/g, '')}`
-			await adapter.run(
-				'UPDATE memories SET content_hash = ?, path = ?, dirty = 1, updated_at = ? WHERE id = ?',
-				[hash, realPath, now, id]
-			)
-			await adapter.run(
-				'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
-				[oldHash, oldHash]
-			)
-
-			// Create new blank draft
-			const emptyNormalized = normalizeText('')
-			const emptyHash = await sha256hex(emptyNormalized)
-			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [emptyHash, emptyNormalized, now])
-			const newDraftId = genId('mem')
-			await adapter.run(
-				`INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, 'personal', ?, ?, '$draft', ?, 1, 0, ?, ?)`,
-				[newDraftId, null, emptyHash, null, now, now]
-			)
-
-			recentCache = null
-			await notifyUpdate()
-			return { submittedId: id, newDraftId }
-		},
 	}
 }

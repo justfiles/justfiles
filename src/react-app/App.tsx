@@ -35,8 +35,8 @@ function App() {
 			if (!id) throw new Error('No draft id')
 			const token = await getToken()
 			if (!token) throw new Error('Missing auth token')
-			const res = await fetch('/api/v1/draft', {
-				method: 'PATCH',
+			const res = await fetch('/api/v1/update', {
+				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
 				body: JSON.stringify({ id, text }),
 			})
@@ -101,16 +101,25 @@ function App() {
 		mutationFn: async ({ text, path }: { text: string; path: string }) => {
 			const token = await getToken()
 			if (!token) throw new Error('Missing auth token')
-			const id = draftIdRef.current
-			if (!id) throw new Error('No draft id')
+			const submittedId = draftIdRef.current
+			if (!submittedId) throw new Error('No draft id')
 			if (syncTimer.current) clearTimeout(syncTimer.current)
-			const res = await fetch('/api/v1/draft/submit', {
+			// Promote draft to real memory (keeps same id, so asset refs remain valid)
+			const promoteRes = await fetch('/api/v1/update', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id, text, path }),
+				body: JSON.stringify({ id: submittedId, text, path }),
 			})
-			if (!res.ok) throw new Error(`Submit failed: ${res.status}`)
-			return res.json() as Promise<{ submittedId: string; newDraftId: string }>
+			if (!promoteRes.ok) throw new Error(`Submit failed: ${promoteRes.status}`)
+			// Create new blank draft
+			const newDraftRes = await fetch('/api/v1/write', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+				body: JSON.stringify({ path: '*draft*', text: '' }),
+			})
+			if (!newDraftRes.ok) throw new Error(`Draft reset failed: ${newDraftRes.status}`)
+			const { id: newDraftId } = (await newDraftRes.json()) as { id: string }
+			return { submittedId, newDraftId }
 		},
 		onSuccess: (data, { path }) => {
 			draftIdRef.current = data.newDraftId
@@ -162,11 +171,14 @@ function App() {
 	return (
 		<EditorLayout
 			headerLeft={
-				<ModeSelector
-					destinations={settings.destinations}
-					active={activeDestination}
-					onSelect={handleSelectDestination}
-				/>
+				<div className="flex items-center gap-2 min-w-0">
+					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">*draft*</span>
+					<ModeSelector
+						destinations={settings.destinations}
+						active={activeDestination}
+						onSelect={handleSelectDestination}
+					/>
+				</div>
 			}
 			headerRight={
 				<>

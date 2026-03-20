@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { CaptureInputSchema, LinkInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, type Store } from './store'
+import { WriteInputSchema, LinkInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, type Store } from './store'
 
 const ChangesQuerySchema = z.object({ since: z.string().default('') })
 
@@ -21,9 +21,9 @@ export function createApi(store: Store) {
 		return c.json({})
 	})
 
-	app.post('/v1/capture', zValidator('json', CaptureInputSchema), async (c) => {
+	app.post('/v1/write', zValidator('json', WriteInputSchema), async (c) => {
 		const input = c.req.valid('json')
-		const id = await store.capture(input)
+		const id = await store.write(input)
 		return c.json({ id })
 	})
 
@@ -77,24 +77,11 @@ export function createApi(store: Store) {
 		return c.json(result)
 	})
 
-	const DraftSaveSchema = z.object({ id: z.string(), text: z.string() })
-	const DraftSubmitSchema = z.object({ id: z.string(), text: z.string(), path: z.string().optional() })
-
 	app.get('/v1/draft', async (c) => {
-		const draft = await store.getOrCreateDraft()
-		return c.json(draft)
-	})
-
-	app.patch('/v1/draft', zValidator('json', DraftSaveSchema), async (c) => {
-		const { id, text } = c.req.valid('json')
-		await store.saveDraft(id, text)
-		return c.json({ ok: true })
-	})
-
-	app.post('/v1/draft/submit', zValidator('json', DraftSubmitSchema), async (c) => {
-		const { id, text, path } = c.req.valid('json')
-		const result = await store.submitDraft(id, text, path)
-		return c.json(result)
+		const existing = await store.findByPath('*draft*')
+		if (existing) return c.json(existing)
+		const id = await store.write({ path: '*draft*', text: '' })
+		return c.json({ id, raw_text: '' })
 	})
 
 	app.post('/v1/links', zValidator('json', LinkInputSchema), async (c) => {

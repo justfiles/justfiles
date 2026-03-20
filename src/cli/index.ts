@@ -20,14 +20,14 @@ async function getStore() {
 	}
 }
 
-if (command === 'capture') {
+if (command === 'write') {
 	const rl = createInterface({ input: process.stdin, output: process.stdout })
-	const text = await rl.question('Capture text: ')
+	const text = await rl.question('Text: ')
 	rl.close()
 
 	const store = await getStore()
-	const id = await store.capture({ text })
-	console.log(`captured: ${id}`)
+	const id = await store.write({ text })
+	console.log(`written: ${id}`)
 } else if (command === 'search') {
 	const rl = createInterface({ input: process.stdin, output: process.stdout })
 	const query = await rl.question('Search: ')
@@ -49,6 +49,6 @@ if (command === 'capture') {
 } else {
 	console.log('Usage: ghostore <command>')
 	console.log('Commands:')
-	console.log('  capture  Capture text input')
-	console.log('  search   Search captured text')
+	console.log('  write    Write text to memory')
+	console.log('  search   Search memories')
 }
