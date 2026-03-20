@@ -58,8 +58,7 @@ export function cfStore(
 	storage: DurableObjectStorage,
 	embProvider?: EmbeddingProvider,
 	llm?: LLM,
-	reranker?: Reranker,
-	onDirty?: () => void
+	reranker?: Reranker
 ): Store {
-	return createStore(createDOSqliteAdapter(storage), embProvider, llm, reranker, onDirty)
+	return createStore(createDOSqliteAdapter(storage), embProvider, llm, reranker)
 }

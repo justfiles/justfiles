@@ -25,17 +25,12 @@ export class MemoryObject extends DurableObject<Env> {
 						JSON.parse(env_.GOOGLE_SA_KEY) as { client_email: string; private_key: string }
 					)
 				: undefined
-		const onDirty = async () => {
+		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY), reranker)
+		store.onUpdate(async () => {
 			const existing = await ctx.storage.getAlarm()
-			if (existing == null) await ctx.storage.setAlarm(Date.now() + 60_000)
-		}
-		const store = cfStore(
-			ctx.storage,
-			openAI(env.OPENAI_KEY),
-			llm(env.OPENAI_KEY),
-			reranker,
-			onDirty
-		)
+			if (existing == null || existing <= Date.now())
+				await ctx.storage.setAlarm(Date.now() + 10_000)
+		})
 		this.store = store
 		const userId = ctx.id.name ?? ''
 		const bucket = env.ASSETS
