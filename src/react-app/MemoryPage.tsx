@@ -167,6 +167,8 @@ export function MemoryPage() {
 			value={isLoading ? staleTextRef.current : editorText}
 			onChange={isLoading ? () => {} : setEditorText}
 			isLoading={isLoading}
+			memoryId={id}
+			getToken={getToken}
 		/>
 	)
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { EditorState, Plugin, TextSelection } from 'prosemirror-state'
-import { EditorView, Decoration, DecorationSet } from 'prosemirror-view'
+import { EditorState, Plugin, PluginKey, Selection, TextSelection } from 'prosemirror-state'
+import { EditorView, Decoration, DecorationSet, type NodeView } from 'prosemirror-view'
+import { type Node } from 'prosemirror-model'
 import { schema } from 'prosemirror-markdown'
 import { defaultMarkdownParser, defaultMarkdownSerializer } from 'prosemirror-markdown'
 import { keymap } from 'prosemirror-keymap'
@@ -87,6 +88,90 @@ const placeholder = new Plugin({
 	},
 })
 
+// ── Image upload ────────────────────────────────────────────────────────────
+
+const uploadKey = new PluginKey<DecorationSet>('upload')
+
+const uploadPlugin = new Plugin({
+	key: uploadKey,
+	state: {
+		init() { return DecorationSet.empty },
+		apply(tr, set) {
+			set = set.map(tr.mapping, tr.doc)
+			const action = tr.getMeta(uploadKey)
+			if (action?.add) {
+				const widget = document.createElement('upload-placeholder')
+				const deco = Decoration.widget(action.add.pos, widget, { id: action.add.id })
+				set = set.add(tr.doc, [deco])
+			} else if (action?.remove) {
+				set = set.remove(set.find(undefined, undefined, (spec) => spec.id === action.remove.id))
+			}
+			return set
+		},
+	},
+	props: {
+		decorations(state) { return this.getState(state) },
+	},
+})
+
+function findPlaceholder(state: EditorState, id: object): number | null {
+	const decos = uploadKey.getState(state)
+	const found = decos?.find(undefined, undefined, (spec) => spec.id === id)
+	return found?.length ? found[0].from : null
+}
+
+async function startImageUpload(
+	view: EditorView,
+	file: File,
+	memoryId: string,
+	getToken: () => Promise<string | null>,
+) {
+	const id = {}
+	let tr = view.state.tr
+	if (!tr.selection.empty) tr.deleteSelection()
+	tr.setMeta(uploadPlugin, { add: { id, pos: tr.selection.from } })
+	view.dispatch(tr)
+
+	try {
+		const token = await getToken()
+		if (!token) throw new Error('Missing auth token')
+		const formData = new FormData()
+		formData.append('file', file)
+		const res = await fetch(`/api/v1/memory/${memoryId}/assets`, {
+			method: 'POST',
+			headers: { Authorization: `Bearer ${token}` },
+			body: formData,
+		})
+		if (!res.ok) throw new Error('Upload failed')
+		const { key } = await res.json() as { key: string }
+		const pos = findPlaceholder(view.state, id)
+		if (pos == null) return
+		view.dispatch(
+			view.state.tr
+				.replaceWith(pos, pos, schema.nodes.image.create({ src: `asset:${key}`, alt: file.name }))
+				.setMeta(uploadPlugin, { remove: { id } })
+		)
+	} catch {
+		view.dispatch(view.state.tr.setMeta(uploadPlugin, { remove: { id } }))
+	}
+}
+
+// Renders asset: URIs via the proxy endpoint
+function makeImageNodeView(memoryId: string) {
+	return (node: Node): NodeView => {
+		const img = document.createElement('img')
+		const src = node.attrs.src as string
+		img.src = src.startsWith('asset:')
+			? `/api/v1/memory/${memoryId}/assets/${src.slice(6)}`
+			: src
+		img.alt = node.attrs.alt ?? ''
+		if (node.attrs.title) img.title = node.attrs.title
+		return { dom: img }
+	}
+}
+
+// ── Markdown input rules ─────────────────────────────────────────────────────
+
 // Basic markdown input rules (heading, blockquote, code block, hr, lists)
 function buildInputRules() {
 	const { nodes } = schema
@@ -122,6 +207,7 @@ function buildState(markdown: string): EditorState {
 			clickLink,
 			pasteLink,
 			placeholder,
+			uploadPlugin,
 			dropCursor(),
 			gapCursor(),
 		],
@@ -133,17 +219,24 @@ function buildState(markdown: string): EditorState {
 type Props = {
 	value: string
 	onChange: (v: string) => void
+	memoryId?: string
+	getToken?: () => Promise<string | null>
 }
 
-export function Editor({ value, onChange }: Props) {
+export function Editor({ value, onChange, memoryId, getToken }: Props) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
 	const prevValueRef = useRef(value)
+	const memoryIdRef = useRef(memoryId)
+	memoryIdRef.current = memoryId
+	const getTokenRef = useRef(getToken)
+	getTokenRef.current = getToken
 
 	// Mount editor once
 	useEffect(() => {
 		const view = new EditorView(containerRef.current!, {
 			state: buildState(prevValueRef.current),
+			nodeViews: memoryId ? { image: makeImageNodeView(memoryId) } : {},
 			dispatchTransaction(tr) {
 				const newState = view.state.apply(tr)
 				view.updateState(newState)
@@ -152,6 +245,32 @@ export function Editor({ value, onChange }: Props) {
 					prevValueRef.current = md
 					onChange(md)
 				}
+			},
+			handleDrop(view, event) {
+				const files = event.dataTransfer?.files
+				if (!files?.length) return false
+				// Always prevent default for file drops — otherwise the browser navigates to the file URL
+				event.preventDefault()
+				const mid = memoryIdRef.current
+				if (!mid) return true
+				const file = files[0]
+				if (!file.type.startsWith('image/')) return true
+				const coords = view.posAtCoords({ left: event.clientX, top: event.clientY })
+				if (coords) {
+					const $pos = view.state.doc.resolve(coords.pos)
+					view.dispatch(view.state.tr.setSelection(Selection.near($pos)))
+				}
+				startImageUpload(view, file, mid, getTokenRef.current ?? (() => Promise.resolve(null)))
+				return true
+			},
+			handlePaste(view, event) {
+				const mid = memoryIdRef.current
+				if (!mid) return false
+				const file = event.clipboardData?.files[0]
+				if (!file?.type.startsWith('image/')) return false
+				event.preventDefault()
+				startImageUpload(view, file, mid, getTokenRef.current ?? (() => Promise.resolve(null)))
+				return true
 			},
 		})
 		viewRef.current = view

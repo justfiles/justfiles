@@ -11,9 +11,11 @@ type Props = {
 	value: string
 	onChange: (v: string) => void
 	isLoading?: boolean
+	memoryId?: string
+	getToken?: () => Promise<string | null>
 }
 
-export function EditorLayout({ headerLeft, headerRight, value, onChange, isLoading }: Props) {
+export function EditorLayout({ headerLeft, headerRight, value, onChange, isLoading, memoryId, getToken }: Props) {
 	const navigate = useNavigate()
 	const { toggleSidebar, sidebarOpen } = useSidebarActions()
 
@@ -58,7 +60,7 @@ export function EditorLayout({ headerLeft, headerRight, value, onChange, isLoadi
 			<main className={`flex-1 overflow-y-auto transition-[filter] duration-150${isLoading ? ' blur-sm pointer-events-none' : ''}`}>
 				<div className="max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
 					{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
-					<MarkdownEditor value={value} onChange={onChange} />
+					<MarkdownEditor value={value} onChange={onChange} memoryId={memoryId} getToken={getToken} />
 				</div>
 			</main>
 		</div>

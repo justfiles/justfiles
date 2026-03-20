@@ -44,6 +44,21 @@
 	@apply text-base-content/30 pointer-events-none float-left h-0;
 }
 
+upload-placeholder {
+	display: inline-block;
+	width: 100px;
+	height: 60px;
+	background: oklch(var(--b2));
+	border-radius: 4px;
+	vertical-align: middle;
+	animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.4; }
+}
+
 /* ── Global ──────────────────────────────────────────────────────────── */
 :root {
 	font-family:
