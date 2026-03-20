@@ -15,34 +15,111 @@ import {
 
 function App() {
 	const { getToken, userId } = useAuth()
-	const lsDraftKey = `ghostore:${userId}:draft`
-	const [editorText, setEditorText] = useState(() => localStorage.getItem(lsDraftKey) ?? '')
 	const [settings] = useState(() => loadSettings(userId!))
 	const [activeDestination, setActiveDestination] = useState<Destination>(() => getActiveDestination(settings))
 	const { upsertEntry, refresh } = useSidebarActions()
 
-	// Persist draft to localStorage
-	useEffect(() => {
-		localStorage.setItem(lsDraftKey, editorText)
-	}, [editorText, lsDraftKey])
+	const lsText = `ghostore:${userId}:draft:text`
+	const lsDirty = `ghostore:${userId}:draft:dirty`
+	const lsId = `ghostore:${userId}:draft:id`
 
-	const captureMutation = useMutation({
+	// Editor is bound to localStorage — instant, no loading state
+	const [editorText, setEditorText] = useState(() => localStorage.getItem(lsText) ?? '')
+	const [hasPendingTimer, setHasPendingTimer] = useState(() => !!localStorage.getItem(lsDirty))
+	const draftIdRef = useRef<string | null>(localStorage.getItem(lsId))
+	const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+	const syncMutation = useMutation({
+		mutationFn: async (text: string) => {
+			const id = draftIdRef.current
+			if (!id) throw new Error('No draft id')
+			const token = await getToken()
+			if (!token) throw new Error('Missing auth token')
+			const res = await fetch('/api/v1/draft', {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+				body: JSON.stringify({ id, text }),
+			})
+			if (!res.ok) throw new Error(`Sync failed: ${res.status}`)
+		},
+		onSuccess: () => {
+			localStorage.removeItem(lsDirty)
+		},
+	})
+
+	// On mount: fetch/create server draft for ID and cross-device sync
+	useEffect(() => {
+		let cancelled = false
+		async function init() {
+			try {
+				const token = await getToken()
+				if (!token || cancelled) return
+				const res = await fetch('/api/v1/draft', { headers: { Authorization: `Bearer ${token}` } })
+				if (!res.ok || cancelled) return
+				const data = (await res.json()) as { id: string; raw_text: string }
+
+				draftIdRef.current = data.id
+				localStorage.setItem(lsId, data.id)
+
+				if (!localStorage.getItem(lsDirty)) {
+					// No local changes — sync text from server (cross-device)
+					setEditorText(data.raw_text)
+					localStorage.setItem(lsText, data.raw_text)
+				} else {
+					// Local changes exist — push them to server now
+					syncMutation.mutate(localStorage.getItem(lsText) ?? '')
+				}
+			} catch {}
+		}
+		init()
+		return () => {
+			cancelled = true
+		}
+	}, [])
+
+	function handleChange(value: string) {
+		setEditorText(value)
+		localStorage.setItem(lsText, value)
+		localStorage.setItem(lsDirty, '1')
+	}
+
+	// Debounced background sync on every change
+	useEffect(() => {
+		if (syncTimer.current) clearTimeout(syncTimer.current)
+		if (!localStorage.getItem(lsDirty)) {
+			setHasPendingTimer(false)
+			return
+		}
+		setHasPendingTimer(true)
+		syncTimer.current = setTimeout(() => {
+			setHasPendingTimer(false)
+			syncMutation.mutate(editorText)
+		}, 3000)
+	}, [editorText])
+
+	const submitMutation = useMutation({
 		mutationFn: async ({ text, path }: { text: string; path: string }) => {
 			const token = await getToken()
 			if (!token) throw new Error('Missing auth token')
-			const res = await fetch('/api/v1/capture', {
+			const id = draftIdRef.current
+			if (!id) throw new Error('No draft id')
+			if (syncTimer.current) clearTimeout(syncTimer.current)
+			const res = await fetch('/api/v1/draft/submit', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ text, path }),
+				body: JSON.stringify({ id, text, path }),
 			})
-			return res.json() as Promise<{ id: string }>
+			if (!res.ok) throw new Error(`Submit failed: ${res.status}`)
+			return res.json() as Promise<{ submittedId: string; newDraftId: string }>
 		},
-		onSuccess: (data: { id: string }, { path }: { text: string; path: string }) => {
+		onSuccess: (data, { path }) => {
+			draftIdRef.current = data.newDraftId
 			setEditorText('')
-			localStorage.removeItem(lsDraftKey)
-			// Optimistic placeholder so the entry appears immediately
-			upsertEntry({ id: data.id, title: null, path, updated_at: '', tags: [] })
-			// Full refresh to replace the placeholder with real server data (title, updated_at)
+			setHasPendingTimer(false)
+			localStorage.setItem(lsText, '')
+			localStorage.removeItem(lsDirty)
+			localStorage.setItem(lsId, data.newDraftId)
+			upsertEntry({ id: data.submittedId, title: null, path, updated_at: '', tags: [] })
 			refresh()
 		},
 	})
@@ -50,13 +127,12 @@ function App() {
 	function handleSubmit() {
 		const text = editorText
 		if (!text.trim()) return
-		captureMutation.mutate({ text, path: expandTemplate(activeDestination.pathTemplate) })
+		submitMutation.mutate({ text, path: expandTemplate(activeDestination.pathTemplate) })
 	}
 
 	const handleSubmitRef = useRef(handleSubmit)
 	handleSubmitRef.current = handleSubmit
 
-	// cmd+enter = submit
 	useEffect(() => {
 		function onKeyDown(e: KeyboardEvent) {
 			if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -73,8 +149,15 @@ function App() {
 		saveSettings({ lastUsedDestinationId: dest.id }, userId!)
 	}
 
-	const submitStatus = captureMutation.isSuccess ? `Saved as ${captureMutation.data?.id}` : null
-	const errorMessage = captureMutation.isError ? 'Error saving memory' : null
+	const saveStatus = hasPendingTimer
+		? { label: 'Unsaved changes…', cls: 'text-base-content/50' }
+		: syncMutation.isPending
+			? { label: 'Saving…', cls: 'text-base-content/50' }
+			: submitMutation.isSuccess
+				? { label: `Saved as ${submitMutation.data?.submittedId}`, cls: 'text-base-content/50' }
+				: submitMutation.isError || syncMutation.isError
+					? { label: 'Error saving', cls: 'text-error' }
+					: null
 
 	return (
 		<EditorLayout
@@ -87,24 +170,23 @@ function App() {
 			}
 			headerRight={
 				<>
-					{(errorMessage ?? submitStatus) && (
-						<span className={`text-xs font-mono ${errorMessage ? 'text-error' : 'text-base-content/50'}`}>
-							{errorMessage ?? submitStatus}
-						</span>
+					{saveStatus && (
+						<span className={`text-xs font-mono ${saveStatus.cls}`}>{saveStatus.label}</span>
 					)}
 					<button type="button" onClick={() => window.dispatchEvent(new Event('open-command-palette'))} className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer">
 						<FiSearch className="w-3.5 h-3.5 shrink-0" />
 						<span>Search</span>
 						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
 					</button>
-					<button type="button" onClick={handleSubmit} disabled={captureMutation.isPending} className="btn btn-neutral btn-sm font-mono">
-						{captureMutation.isPending ? 'Saving…' : 'Submit'}
+					<button type="button" onClick={handleSubmit} disabled={submitMutation.isPending} className="btn btn-neutral btn-sm font-mono">
+						{submitMutation.isPending ? 'Saving…' : 'Submit'}
 					</button>
 				</>
 			}
-			isLoading={captureMutation.isPending}
 			value={editorText}
-			onChange={setEditorText}
+			onChange={handleChange}
+			memoryId={draftIdRef.current ?? undefined}
+			getToken={getToken}
 		/>
 	)
 }

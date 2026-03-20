@@ -62,6 +62,23 @@ export interface Store {
 	processEmbedding(): Promise<boolean>
 
 	onUpdate(action: () => void | Promise<void>): void
+
+	/**
+	 * get the current draft (create a blank one if none exists).
+	 * the draft is identified by the reserved path '$draft' and is excluded from all normal APIs.
+	 */
+	getOrCreateDraft(): Promise<{ id: string; raw_text: string }>
+
+	/**
+	 * auto-save draft text, mark dirty=1.
+	 */
+	saveDraft(id: string, text: string): Promise<void>
+
+	/**
+	 * promote the draft to a real memory (clears '$draft' path, sets dirty=1, creates new blank draft).
+	 * returns the promoted memory id and the new draft id.
+	 */
+	submitDraft(id: string, text: string, path?: string): Promise<{ submittedId: string; newDraftId: string }>
 }
 
 // ---- Scoring ----
@@ -555,7 +572,7 @@ export function createStore(
 		filter?: SearchInput['filter']
 	): Promise<string[]> {
 		const tags = normalizeTags(filter?.fields?.tags)
-		const conditions = ['m.scope = ?', 'm.active = 1']
+		const conditions = ['m.scope = ?', 'm.active = 1', "m.path != '$draft'"]
 		const params: SqlValue[] = [scope]
 
 		if (filter?.fields?.path_prefix) {
@@ -975,7 +992,7 @@ export function createStore(
 		async list(input: ListInput): Promise<ListResult[]> {
 			const limit = input.limit ?? 50
 			const tags = normalizeTags(input.tags)
-			const conditions: string[] = ['m.active = 1']
+			const conditions: string[] = ['m.active = 1', "m.path != '$draft'"]
 			const params: SqlValue[] = []
 
 			if (input.path_prefix) {
@@ -1094,7 +1111,7 @@ export function createStore(
 					title: unknown
 					updated_at: unknown
 				}>(
-					`SELECT id, path, title, updated_at FROM memories WHERE active = 1 ORDER BY updated_at DESC LIMIT ?`,
+					`SELECT id, path, title, updated_at FROM memories WHERE active = 1 AND path != '$draft' ORDER BY updated_at DESC LIMIT ?`,
 					[MAX_CACHE]
 				)
 				if (rows.length === 0) {
@@ -1129,12 +1146,12 @@ export function createStore(
 				title: unknown
 				path: unknown
 				updated_at: unknown
-			}>(`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1`, [
+			}>(`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1 AND path != '$draft'`, [
 				since
 			])
 
 			const removedRows = await adapter.query<{ id: unknown }>(
-				`SELECT id FROM memories WHERE updated_at > ? AND active = 0`,
+				`SELECT id FROM memories WHERE updated_at > ? AND active = 0 AND path != '$draft'`,
 				[since]
 			)
 
@@ -1363,6 +1380,83 @@ export function createStore(
 			}
 
 			return hasMore
-		}
+		},
+
+		async getOrCreateDraft(): Promise<{ id: string; raw_text: string }> {
+			const [existing] = await adapter.query<{ id: unknown; text: unknown }>(
+				`SELECT m.id, c.text FROM memories m JOIN content c ON c.hash = m.content_hash WHERE m.path = '$draft' AND m.active = 1 LIMIT 1`,
+				[]
+			)
+			if (existing) return { id: String(existing.id), raw_text: String(existing.text) }
+
+			const now = new Date().toISOString()
+			const normalized = normalizeText('')
+			const hash = await sha256hex(normalized)
+			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
+			const draftId = genId('mem')
+			await adapter.run(
+				`INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, 'personal', ?, ?, '$draft', ?, 1, 0, ?, ?)`,
+				[draftId, null, hash, null, now, now]
+			)
+			return { id: draftId, raw_text: '' }
+		},
+
+		async saveDraft(id: string, text: string): Promise<void> {
+			const now = new Date().toISOString()
+			const normalized = normalizeText(text)
+			const hash = await sha256hex(normalized)
+			const [mem] = await adapter.query<{ content_hash: unknown }>(
+				`SELECT content_hash FROM memories WHERE id = ? AND path = '$draft' AND active = 1 LIMIT 1`,
+				[id]
+			)
+			if (!mem) throw new Error(`Draft not found: ${id}`)
+			const oldHash = String(mem.content_hash)
+			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
+			await adapter.run('UPDATE memories SET content_hash = ?, dirty = 1, updated_at = ? WHERE id = ?', [hash, now, id])
+			await adapter.run(
+				'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
+				[oldHash, oldHash]
+			)
+		},
+
+		async submitDraft(id: string, text: string, path?: string): Promise<{ submittedId: string; newDraftId: string }> {
+			const now = new Date().toISOString()
+			const [draft] = await adapter.query<{ id: unknown; content_hash: unknown }>(
+				`SELECT id, content_hash FROM memories WHERE id = ? AND path = '$draft' AND active = 1 LIMIT 1`,
+				[id]
+			)
+			if (!draft) throw new Error(`Draft not found: ${id}`)
+
+			// Save final text
+			const normalized = normalizeText(text)
+			const hash = await sha256hex(normalized)
+			const oldHash = String(draft.content_hash)
+			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
+
+			// Promote draft to real memory
+			const realPath = path ?? `inbox/${now.slice(0, 19).replace(/[:.]/g, '')}`
+			await adapter.run(
+				'UPDATE memories SET content_hash = ?, path = ?, dirty = 1, updated_at = ? WHERE id = ?',
+				[hash, realPath, now, id]
+			)
+			await adapter.run(
+				'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
+				[oldHash, oldHash]
+			)
+
+			// Create new blank draft
+			const emptyNormalized = normalizeText('')
+			const emptyHash = await sha256hex(emptyNormalized)
+			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [emptyHash, emptyNormalized, now])
+			const newDraftId = genId('mem')
+			await adapter.run(
+				`INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, 'personal', ?, ?, '$draft', ?, 1, 0, ?, ?)`,
+				[newDraftId, null, emptyHash, null, now, now]
+			)
+
+			recentCache = null
+			await notifyUpdate()
+			return { submittedId: id, newDraftId }
+		},
 	}
 }

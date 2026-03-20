@@ -77,6 +77,26 @@ export function createApi(store: Store) {
 		return c.json(result)
 	})
 
+	const DraftSaveSchema = z.object({ id: z.string(), text: z.string() })
+	const DraftSubmitSchema = z.object({ id: z.string(), text: z.string(), path: z.string().optional() })
+
+	app.get('/v1/draft', async (c) => {
+		const draft = await store.getOrCreateDraft()
+		return c.json(draft)
+	})
+
+	app.patch('/v1/draft', zValidator('json', DraftSaveSchema), async (c) => {
+		const { id, text } = c.req.valid('json')
+		await store.saveDraft(id, text)
+		return c.json({ ok: true })
+	})
+
+	app.post('/v1/draft/submit', zValidator('json', DraftSubmitSchema), async (c) => {
+		const { id, text, path } = c.req.valid('json')
+		const result = await store.submitDraft(id, text, path)
+		return c.json(result)
+	})
+
 	app.post('/v1/links', zValidator('json', LinkInputSchema), async (c) => {
 		const input = c.req.valid('json')
 		try {
