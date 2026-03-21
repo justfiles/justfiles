@@ -182,6 +182,7 @@ function App() {
 			}
 			headerRight={
 				<>
+					<span className="text-xs font-mono text-base-content/30">{editorText.length}</span>
 					{saveStatus && (
 						<span className={`text-xs font-mono ${saveStatus.cls}`}>{saveStatus.label}</span>
 					)}

@@ -3,6 +3,8 @@ use bun for package management.
 
 use ghostore (via mcp) as memory source. anything about memory, it means in ghostore.
 
+use tab for indentation.
+
 # Cloudflare Workers
 
 STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.

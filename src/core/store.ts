@@ -746,8 +746,14 @@ export function createStore(
 			const path = input.path ?? `inbox/${now.slice(0, 19).replace(/[:.]/g, '')}`
 			const special = path.startsWith('*')
 
-			const [existing] = await adapter.query<{ id: unknown; content_hash: unknown }>(
-				'SELECT id, content_hash FROM memories WHERE scope = ? AND path = ? AND active = 1 LIMIT 1',
+			let title = input.title ?? null
+
+			const [existing] = await adapter.query<{
+				id: unknown
+				content_hash: unknown
+				title: unknown
+			}>(
+				'SELECT id, content_hash, title FROM memories WHERE scope = ? AND path = ? AND active = 1 LIMIT 1',
 				[scope, path]
 			)
 
@@ -755,12 +761,27 @@ export function createStore(
 				const id = String(existing.id)
 				if (String(existing.content_hash) === hash) return id
 
+				if (!title && !special && !existing.title && llm) {
+					title = (await llm.generateMetadata(normalized)).title
+				}
+
 				const oldHash = String(existing.content_hash)
 				await adapter.transaction(async (tx) => {
-					await tx.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
-					await tx.run(`UPDATE memories SET content_hash = ?, dirty = ${special ? 0 : 1}, updated_at = ? WHERE id = ?`, [hash, now, id])
-					if (input.title !== undefined) {
-						await tx.run('UPDATE memories SET title = ?, updated_at = ? WHERE id = ?', [input.title, now, id])
+					await tx.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [
+						hash,
+						normalized,
+						now
+					])
+					await tx.run(
+						`UPDATE memories SET content_hash = ?, dirty = ${special ? 0 : 1}, updated_at = ? WHERE id = ?`,
+						[hash, now, id]
+					)
+					if (title !== null) {
+						await tx.run('UPDATE memories SET title = ?, updated_at = ? WHERE id = ?', [
+							title,
+							now,
+							id
+						])
 					}
 					if (input.tags !== undefined) {
 						await tx.run('DELETE FROM memory_tags WHERE memory_id = ?', [id])
@@ -768,27 +789,46 @@ export function createStore(
 							await tx.run('INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)', [id, tag])
 						}
 					}
-					await tx.run('DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)', [oldHash, oldHash])
-					await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [genId('evt'), id, 'write', input.source ? 'agent' : 'human', now])
+					await tx.run(
+						'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
+						[oldHash, oldHash]
+					)
+					await tx.run(
+						'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
+						[genId('evt'), id, 'write', input.source ? 'agent' : 'human', now]
+					)
 				})
 				recentCache = null
 				await notifyUpdate()
 				return id
 			}
 
-			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [hash, normalized, now])
+			await adapter.run('INSERT OR IGNORE INTO content(hash, text, created_at) VALUES (?, ?, ?)', [
+				hash,
+				normalized,
+				now
+			])
 			const memoryId = genId('mem')
+			if (!title && !special && llm) {
+				title = (await llm.generateMetadata(normalized)).title
+			}
 			await adapter.transaction(async (tx) => {
 				await tx.run(
 					`INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ${special ? 0 : 1}, ?, ?)`,
-					[memoryId, scope, input.title ?? null, hash, path, input.source ?? null, now, now]
+					[memoryId, scope, title, hash, path, input.source ?? null, now, now]
 				)
 				if (input.tags?.length) {
 					for (const tag of input.tags) {
 						await tx.run('INSERT INTO memory_tags(memory_id, tag) VALUES (?, ?)', [memoryId, tag])
 					}
 				}
-				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [genId('evt'), memoryId, 'write', input.source ? 'agent' : 'human', now])
+				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
+					genId('evt'),
+					memoryId,
+					'write',
+					input.source ? 'agent' : 'human',
+					now
+				])
 			})
 			recentCache = null
 			await notifyUpdate()
@@ -879,11 +919,19 @@ export function createStore(
 		async update(input: UpdateInput): Promise<void> {
 			const now = new Date().toISOString()
 
-			const [mem] = await adapter.query<{ id: unknown; scope: unknown; content_hash: unknown }>(
-				'SELECT id, scope, content_hash FROM memories WHERE id = ? AND active = 1 LIMIT 1',
+			const [mem] = await adapter.query<{ id: unknown; scope: unknown; content_hash: unknown; title: unknown }>(
+				'SELECT id, scope, content_hash, title FROM memories WHERE id = ? AND active = 1 LIMIT 1',
 				[input.id]
 			)
 			if (!mem) throw new Error(`Memory not found: ${input.id}`)
+
+			let generatedTitle: string | null = null
+			if (input.text !== undefined && input.title === undefined && !mem.title && llm) {
+				const normalized = normalizeText(input.text)
+				if (normalized.length >= 150) {
+					generatedTitle = (await llm.generateMetadata(normalized)).title ?? null
+				}
+			}
 
 			await adapter.transaction(async (tx) => {
 				// metadata fields
@@ -894,9 +942,10 @@ export function createStore(
 						input.id
 					])
 				}
-				if (input.title !== undefined) {
+				const titleToSet = input.title !== undefined ? input.title : generatedTitle
+				if (titleToSet !== null) {
 					await tx.run('UPDATE memories SET title = ?, updated_at = ? WHERE id = ?', [
-						input.title,
+						titleToSet,
 						now,
 						input.id
 					])
@@ -1132,9 +1181,10 @@ export function createStore(
 				title: unknown
 				path: unknown
 				updated_at: unknown
-			}>(`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1 AND path NOT LIKE '*%'`, [
-				since
-			])
+			}>(
+				`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1 AND path NOT LIKE '*%'`,
+				[since]
+			)
 
 			const removedRows = await adapter.query<{ id: unknown }>(
 				`SELECT id FROM memories WHERE updated_at > ? AND active = 0 AND path NOT LIKE '*%'`,
@@ -1237,14 +1287,10 @@ export function createStore(
 					continue
 				}
 				const text = String(contentRow.text)
-
 				let newTitle: string | null = null
-				if (!existingTitle && llm) {
-					newTitle = await llm
-						.generateMetadata(text)
-						.then((m) => m.title ?? null)
-						.catch(() => null)
-				}
+			if (!existingTitle && llm) {
+				newTitle = (await llm.generateMetadata(text)).title ?? null
+			}
 
 				if (embProvider) {
 					const newChunks = chunkText(text)
@@ -1366,7 +1412,6 @@ export function createStore(
 			}
 
 			return hasMore
-		},
-
+		}
 	}
 }
