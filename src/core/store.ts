@@ -4,6 +4,12 @@ import type { LLM } from './llm'
 import type { Reranker } from './reranker'
 import type { DbAdapter, SqlValue } from './db'
 
+/**
+ * Interface of the Store - core of the service
+ * Make sure the interface here is minimal and dry. It serves as a infrastructure for all behaviours of the system.
+ * make sure each function is single purpose, and composable
+ * It should feel like a file system
+ */
 export interface Store {
 	/**
 	 * write memory at a path — creates or overwrites in place. returns the memory id.
@@ -198,7 +204,12 @@ function normalizeText(text: string): string {
 }
 
 function approxTokens(text: string): number {
-	return Math.ceil(text.length / 4)
+	// CJK characters (Chinese, Japanese, Korean) each map to ~1 BPE token because
+	// LLM vocabularies have very few multi-character CJK entries. Latin/other text
+	// averages ~4 chars per token, so we keep the /4 heuristic for the non-CJK portion.
+	const cjk = (text.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length
+	const rest = text.length - cjk
+	return Math.ceil(cjk + rest / 4)
 }
 
 const BREAK_PATTERNS: Array<[RegExp, number]> = [
@@ -857,7 +868,12 @@ export function createStore(
 					candidateLimit
 				)
 			} else {
-				const tokens = input.query.trim().split(/\s+/).filter(Boolean).length
+				// For CJK languages (Chinese, Japanese, Korean) words aren't space-separated,
+				// so whitespace splitting always yields 1 "token" regardless of query length.
+				// Instead count characters, which approximates semantic complexity well enough
+				// for routing purposes (character count ≈ token count for CJK in LLM tokenizers).
+				const cjk = (input.query.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length
+				const tokens = cjk > 0 ? cjk : input.query.trim().split(/\s+/).filter(Boolean).length
 				const exact = await exactSearch(input.query, validIds, candidateLimit)
 
 				if (tokens <= 1 || hasStrongExactSignal(exact)) {
@@ -919,7 +935,12 @@ export function createStore(
 		async update(input: UpdateInput): Promise<void> {
 			const now = new Date().toISOString()
 
-			const [mem] = await adapter.query<{ id: unknown; scope: unknown; content_hash: unknown; title: unknown }>(
+			const [mem] = await adapter.query<{
+				id: unknown
+				scope: unknown
+				content_hash: unknown
+				title: unknown
+			}>(
 				'SELECT id, scope, content_hash, title FROM memories WHERE id = ? AND active = 1 LIMIT 1',
 				[input.id]
 			)
@@ -1288,9 +1309,9 @@ export function createStore(
 				}
 				const text = String(contentRow.text)
 				let newTitle: string | null = null
-			if (!existingTitle && llm) {
-				newTitle = (await llm.generateMetadata(text)).title ?? null
-			}
+				if (!existingTitle && llm) {
+					newTitle = (await llm.generateMetadata(text)).title ?? null
+				}
 
 				if (embProvider) {
 					const newChunks = chunkText(text)
