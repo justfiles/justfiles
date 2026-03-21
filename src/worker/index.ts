@@ -97,7 +97,9 @@ for (const path of ['/api/*', '/mcp'] as const) {
 
 		const id = c.env.STORE.idFromName(userId)
 		const stub = c.env.STORE.get(id)
-		return stub.fetch(c.req.raw)
+		const headers = new Headers(c.req.raw.headers)
+		headers.set('x-user-id', userId)
+		return stub.fetch(new Request(c.req.raw, { headers }))
 	})
 }
 

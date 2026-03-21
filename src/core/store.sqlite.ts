@@ -33,5 +33,5 @@ export async function sqliteStore(
 	db.exec('PRAGMA journal_mode = WAL')
 	const adapter = createSqliteAdapter(db)
 	await migrate(adapter)
-	return createStore(adapter, embProvider, llm, reranker)
+	return createStore(adapter, 'default', embProvider, llm, reranker)
 }

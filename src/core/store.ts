@@ -3,6 +3,7 @@ import type { EmbeddingProvider } from './embedding'
 import type { LLM } from './llm'
 import type { Reranker } from './reranker'
 import type { DbAdapter, SqlValue } from './db'
+import type { VectorStore } from './vector'
 
 /**
  * Interface of the Store - core of the service
@@ -95,25 +96,6 @@ function normalizeBm25(ftsRank: number): number {
 	return abs / (1 + abs)
 }
 
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-	const len = Math.min(a.length, b.length)
-	if (len === 0) return 0
-
-	let dot = 0
-	let aNorm = 0
-	let bNorm = 0
-
-	for (let i = 0; i < len; i++) {
-		const av = a[i]
-		const bv = b[i]
-		dot += av * bv
-		aNorm += av * av
-		bNorm += bv * bv
-	}
-
-	if (!aNorm || !bNorm) return 0
-	return dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm))
-}
 
 function applyTemporalDecay(
 	score: number,
@@ -167,8 +149,6 @@ function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateCh
 
 // ---- Utils ----
 
-type RawEmbedding = Uint8Array | ArrayBuffer
-
 interface TextChunk {
 	seq: number
 	text: string
@@ -177,12 +157,6 @@ interface TextChunk {
 	tokenCount: number
 }
 
-function toFloat32Array(value: RawEmbedding | null): Float32Array {
-	if (!value) return new Float32Array(0)
-	if (value instanceof Float32Array) return value
-	if (value instanceof ArrayBuffer) return new Float32Array(value)
-	return new Float32Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
-}
 
 function genId(prefix: string): string {
 	const ts = Date.now().toString(36)
@@ -332,9 +306,6 @@ function generateSnippet(text: string, query: string, maxLen = 300): string {
 	return `${bestStart > 0 ? '…' : ''}${snippet}${end < text.length ? '…' : ''}`
 }
 
-function encodeEmbedding(values: number[]): Uint8Array {
-	return new Uint8Array(new Float32Array(values).buffer)
-}
 
 function placeholders(count: number): string {
 	return Array.from({ length: count }, () => '?').join(',')
@@ -555,9 +526,11 @@ const RERANK_LIMIT = 40
 
 export function createStore(
 	adapter: DbAdapter,
+	namespace: string,
 	embProvider?: EmbeddingProvider,
 	llm?: LLM,
-	reranker?: Reranker
+	reranker?: Reranker,
+	vectorStore?: VectorStore
 ): Store {
 	const embModelKey = embProvider ? `${embProvider.provider}:${embProvider.model}` : 'none'
 	let recentCache: RecentResult[] | null = null
@@ -637,41 +610,44 @@ export function createStore(
 		validIds: string[],
 		candidateLimit: number
 	): Promise<CandidateChunk[]> {
-		if (validIds.length === 0 || !embProvider) return []
+		if (validIds.length === 0 || !vectorStore) return []
 
+		// Query Vectorize — max topK is 100 without returning values/metadata.
+		// Request more than candidateLimit to absorb scope/tag post-filtering.
+		const topK = Math.min(100, candidateLimit * 3)
+		const matches = await vectorStore.query({ vector: queryEmbedding, topK, namespace })
+		if (matches.length === 0) return []
+
+		const matchIds = matches.map((m) => m.id)
+		const scoreMap = new Map(matches.map((m) => [m.id, m.score]))
+		const validSet = new Set(validIds)
+
+		// Resolve chunk IDs → memory + text via SQLite
 		const rows = await adapter.query<{
 			id: unknown
 			memory_id: unknown
 			text: unknown
 			hash: unknown
-			embedding: unknown
 		}>(
-			`SELECT c.id, c.memory_id, co.text, c.hash, cv.embedding
+			`SELECT c.id, c.memory_id, co.text, c.hash
 			 FROM chunks c
-			 JOIN chunk_vectors cv ON cv.chunk_id = c.id
 			 JOIN memories m ON m.id = c.memory_id
 			 JOIN content co ON co.hash = m.content_hash
-			 WHERE cv.provider = ?
-			 AND cv.model = ?
-			 AND c.memory_id IN (${placeholders(validIds.length)})`,
-			[embProvider.provider, embProvider.model, ...validIds]
+			 WHERE c.id IN (${placeholders(matchIds.length)})`,
+			matchIds
 		)
 
-		const scored = rows
+		// Filter to valid memory IDs (scope/tag/path_prefix constraints) then sort by Vectorize score
+		return rows
+			.filter((row) => validSet.has(String(row.memory_id)))
 			.map((row) => ({
 				chunkId: String(row.id),
 				memoryId: String(row.memory_id),
 				text: String(row.text),
 				hash: String(row.hash),
-				score: cosineSimilarity(
-					queryEmbedding,
-					toFloat32Array(row.embedding as RawEmbedding | null)
-				)
+				score: scoreMap.get(String(row.id)) ?? 0
 			}))
 			.sort((a, b) => b.score - a.score)
-
-		return scored
-			.filter((row) => Number.isFinite(row.score))
 			.slice(0, candidateLimit)
 			.map((row, rank) => ({ ...row, rank, semanticScore: row.score }))
 	}
@@ -731,21 +707,6 @@ export function createStore(
 		}
 
 		return results
-	}
-
-	async function getCachedEmbeddings(chunkHashes: string[]): Promise<Map<string, Float32Array>> {
-		if (!embProvider || chunkHashes.length === 0) return new Map()
-
-		const rows = await adapter.query<{ hash: unknown; embedding: unknown }>(
-			`SELECT c.hash, cv.embedding FROM chunk_vectors cv
-			 JOIN chunks c ON c.id = cv.chunk_id
-			 WHERE cv.provider = ? AND cv.model = ? AND c.hash IN (${placeholders(chunkHashes.length)})`,
-			[embProvider.provider, embProvider.model, ...chunkHashes]
-		)
-
-		return new Map(
-			rows.map((row) => [String(row.hash), toFloat32Array(row.embedding as RawEmbedding | null)])
-		)
 	}
 
 	return {
@@ -850,7 +811,7 @@ export function createStore(
 			const scope = input.scope ?? 'personal'
 			const mode = input.mode ?? 'hybrid'
 			const limit = input.limit ?? 10
-			let minScore = input.min_score ?? (mode !== 'exact' ? 0.3 : 0)
+			let minScore = input.min_score ?? (mode !== 'exact' ? 0.1 : 0)
 			const candidateLimit = limit * 4
 
 			const validIds = await getValidMemoryIds(scope, input.filter)
@@ -1024,6 +985,10 @@ export function createStore(
 				[id]
 			)
 			if (!mem) throw new Error(`Memory not found: ${id}`)
+			const chunkRows = await adapter.query<{ id: unknown }>(
+				'SELECT id FROM chunks WHERE memory_id = ?',
+				[id]
+			)
 			await adapter.transaction(async (tx) => {
 				await tx.run('UPDATE memories SET active = 0, updated_at = ? WHERE id = ?', [now, id])
 				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
@@ -1035,6 +1000,9 @@ export function createStore(
 				])
 			})
 			recentCache = null
+			if (vectorStore && chunkRows.length > 0) {
+				await vectorStore.delete(chunkRows.map((r) => String(r.id)))
+			}
 		},
 
 		async list(input: ListInput): Promise<ListResult[]> {
@@ -1350,26 +1318,24 @@ export function createStore(
 					const toDelete = oldRows.filter((r) => !claimedIds.has(String(r.id)))
 					const toAdd = newChunks.map((_, i) => i).filter((i) => !reused.has(i))
 
-					// Embed only the added chunks (check global cache first)
+					// Embed all added chunks, deduplicated by hash within this batch
 					const embeddings = new Map<string, Float32Array>()
 					if (toAdd.length > 0) {
-						const addHashes = toAdd.map((i) => newHashes[i])
-						const cached = await getCachedEmbeddings(addHashes)
-						const uncached = toAdd.filter((i) => !cached.has(newHashes[i]))
-						for (const [h, v] of cached) embeddings.set(h, v)
-						if (uncached.length > 0) {
-							const fresh = await embProvider.embed(uncached.map((i) => newChunks[i].text))
-							for (let j = 0; j < uncached.length; j++) {
-								embeddings.set(newHashes[uncached[j]], new Float32Array(fresh[j]))
-							}
-						}
+						const hashToText = new Map<string, string>()
+						for (const i of toAdd) hashToText.set(newHashes[i], newChunks[i].text)
+						const hashes = [...hashToText.keys()]
+						const fresh = await embProvider.embed(hashes.map((h) => hashToText.get(h)!))
+						hashes.forEach((h, j) => embeddings.set(h, new Float32Array(fresh[j])))
 					}
+
+					// Collect Vectorize operations; apply after SQLite transaction succeeds
+					const idsToDelete = toDelete.map((r) => String(r.id))
+					const vectorsToUpsert: Array<{ id: string; values: Float32Array }> = []
 
 					const now = new Date().toISOString()
 					await adapter.transaction(async (tx) => {
-						// Delete removed chunks and their vectors
+						// Delete removed chunks
 						for (const row of toDelete) {
-							await tx.run('DELETE FROM chunk_vectors WHERE chunk_id = ?', [String(row.id)])
 							await tx.run('DELETE FROM chunks WHERE id = ?', [String(row.id)])
 						}
 
@@ -1388,7 +1354,7 @@ export function createStore(
 							}
 						}
 
-						// Insert new chunks + vectors
+						// Insert new chunks
 						for (const i of toAdd) {
 							const c = newChunks[i]
 							const chunkId = genId('chk')
@@ -1397,19 +1363,7 @@ export function createStore(
 								[chunkId, memId, c.seq, c.pos, c.len, c.tokenCount, newHashes[i], embModelKey, now]
 							)
 							const emb = embeddings.get(newHashes[i])
-							if (emb) {
-								await tx.run(
-									'INSERT INTO chunk_vectors(chunk_id, provider, model, dims, embedding, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-									[
-										chunkId,
-										embProvider.provider,
-										embProvider.model,
-										emb.length,
-										encodeEmbedding(Array.from(emb)),
-										now
-									]
-								)
-							}
+							if (emb) vectorsToUpsert.push({ id: chunkId, values: emb })
 						}
 
 						if (newTitle) {
@@ -1421,6 +1375,16 @@ export function createStore(
 							await tx.run('UPDATE memories SET dirty = 0 WHERE id = ?', [memId])
 						}
 					})
+
+					// Sync with Vectorize after SQLite transaction succeeds
+					if (vectorStore) {
+						if (idsToDelete.length > 0) await vectorStore.delete(idsToDelete)
+						if (vectorsToUpsert.length > 0) {
+								await vectorStore.upsert(
+								vectorsToUpsert.map((v) => ({ id: v.id, values: v.values, namespace }))
+							)
+						}
+					}
 				} else if (newTitle) {
 					const now = new Date().toISOString()
 					await adapter.run(

@@ -13,7 +13,8 @@ export async function tursoStore(
 	reranker?: Reranker
 ): Promise<Store> {
 	const url = `libsql://${user.id}-xiaoxinghu.aws-ap-northeast-1.turso.io`
-	const client = createClient({ url, authToken: user.token })
+	const authToken = user.token
+	const client = createClient({ url, authToken })
 	// await migrate(client)
-	return createStore(createLibsqlAdapter(client), embProvider, llm, reranker)
+	return createStore(createLibsqlAdapter(client), user.id, embProvider, llm, reranker)
 }

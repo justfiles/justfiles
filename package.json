@@ -63,7 +63,7 @@
 		"build": "tsc -b && vite build",
 		"cf-typegen": "wrangler types",
 		"deploy": "wrangler deploy",
-		"dev": "vite",
+		"dev": "CLOUDFLARE_ENV=dev vite",
 		"check": "tsc -b && vite build && wrangler deploy --dry-run",
 		"format": "biome check --write src",
 		"preview": "npm run build && vite preview",

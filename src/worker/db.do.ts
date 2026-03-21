@@ -1,6 +1,7 @@
 import type { EmbeddingProvider } from '../core/embedding'
 import type { LLM } from '../core/llm'
 import type { Reranker } from '../core/reranker'
+import type { VectorStore } from '../core/vector'
 import type { DbAdapter, SqlValue } from '../core/db'
 import { migrateFromEntries, createStore } from '../core/store'
 import type { Store } from '../core/store'
@@ -10,10 +11,16 @@ import type { Store } from '../core/store'
 import MIGRATION_0001 from '../core/migrations/0001_schema.sql'
 // @ts-ignore
 import MIGRATION_0002 from '../core/migrations/0002_dirty_flag.sql'
+// @ts-ignore
+import MIGRATION_0003 from '../core/migrations/0003_drop_chunk_vectors.sql'
+// @ts-ignore
+import MIGRATION_0004 from '../core/migrations/0004_reset_dirty.sql'
 
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
 	{ version: 1, sql: MIGRATION_0001 as string },
 	{ version: 2, sql: MIGRATION_0002 as string },
+	{ version: 3, sql: MIGRATION_0003 as string },
+	{ version: 4, sql: MIGRATION_0004 as string },
 ]
 
 // CF DO prohibits SQL BEGIN/COMMIT; use storage.transactionSync() instead.
@@ -56,9 +63,11 @@ export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 
 export function cfStore(
 	storage: DurableObjectStorage,
+	namespace: string,
 	embProvider?: EmbeddingProvider,
 	llm?: LLM,
-	reranker?: Reranker
+	reranker?: Reranker,
+	vectorStore?: VectorStore
 ): Store {
-	return createStore(createDOSqliteAdapter(storage), embProvider, llm, reranker)
+	return createStore(createDOSqliteAdapter(storage), namespace, embProvider, llm, reranker, vectorStore)
 }

@@ -8,6 +8,7 @@ import { openAI } from '../core/embedding.openai'
 import { openAI as llm } from '../core/llm.openai'
 import { googleReranker } from '../core/reranker.google'
 import type { Store } from '../core/store'
+import { VectorizeVectorStore } from '../core/vector.vectorize'
 import { cfStore, migrateCF } from './db.do'
 
 export class MemoryObject extends DurableObject<Env> {
@@ -25,19 +26,22 @@ export class MemoryObject extends DurableObject<Env> {
 						JSON.parse(env_.GOOGLE_SA_KEY) as { client_email: string; private_key: string }
 					)
 				: undefined
-		const store = cfStore(ctx.storage, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY), reranker)
+		// ctx.id.name is unreliable in local dev (Miniflare) — ctx.id.toString() is always stable and unique
+		const namespace = ctx.id.toString()
+		const vectorStore = new VectorizeVectorStore(env.VECTORIZE)
+		const store = cfStore(ctx.storage, namespace, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY), reranker, vectorStore)
 		store.onUpdate(async () => {
 			const existing = await ctx.storage.getAlarm()
 			if (existing == null || existing <= Date.now())
 				await ctx.storage.setAlarm(Date.now() + 10_000)
 		})
 		this.store = store
-		const userId = ctx.id.name ?? ''
 		const bucket = env.ASSETS
 		const app = new Hono()
 
 		app.post('/api/v1/memory/:memoryId/assets', async (c) => {
 			const { memoryId } = c.req.param()
+			const userId = c.req.header('x-user-id') ?? 'unknown'
 			const formData = await c.req.formData()
 			const file = formData.get('file') as File | null
 			if (!file) return c.json({ error: 'No file provided' }, 400)
@@ -56,6 +60,7 @@ export class MemoryObject extends DurableObject<Env> {
 
 		app.get('/api/v1/memory/:memoryId/assets/:filename', async (c) => {
 			const { memoryId, filename } = c.req.param()
+			const userId = c.req.header('x-user-id') ?? 'unknown'
 			const key = `${userId}/assets/${memoryId}/${filename}`
 			const object = await bucket.get(key)
 			if (!object) return c.json({ error: 'Not found' }, 404)

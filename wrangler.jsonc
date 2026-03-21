@@ -38,7 +38,10 @@
 		}
 	],
 	"r2_buckets": [
-		{ "binding": "ASSETS", "bucket_name": "ghostore-assets" }
+		{
+			"binding": "ASSETS",
+			"bucket_name": "ghostore-assets"
+		}
 	],
 	"rules": [
 		{
@@ -49,8 +52,7 @@
 			"fallthrough": true
 		}
 	],
-	"vars": {
-	},
+	"vars": {},
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
@@ -74,6 +76,24 @@
 		}
 	],
 	"env": {
+		"dev": {
+			"name": "ghostore-dev",
+			"durable_objects": {
+				"bindings": [
+					{ "name": "STORE", "class_name": "MemoryObject" }
+				]
+			},
+			"migrations": [
+				{ "tag": "v1", "new_sqlite_classes": ["MemoryObject"] }
+			],
+			"vectorize": [
+				{
+					"binding": "VECTORIZE",
+					"index_name": "ghostore-512-dev",
+					"remote": true
+				}
+			]
+		},
 		"staging": {
 			"name": "ghostore-staging",
 			"vars": {},
@@ -106,8 +126,25 @@
 				}
 			],
 			"r2_buckets": [
-				{ "binding": "ASSETS", "bucket_name": "ghostore-assets-staging" }
+				{
+					"binding": "ASSETS",
+					"bucket_name": "ghostore-assets-staging"
+				}
+			],
+			"vectorize": [
+				{
+					"binding": "VECTORIZE",
+					"index_name": "ghostore-512-staging",
+					"experimental_remote": true
+				}
 			]
 		}
-	}
+	},
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "ghostore-512",
+			"remote": true
+		}
+	]
 }
