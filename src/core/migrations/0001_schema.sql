@@ -37,15 +37,6 @@ CREATE TABLE IF NOT EXISTS chunks (
 	created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS chunk_vectors (
-	chunk_id TEXT NOT NULL PRIMARY KEY REFERENCES chunks(id),
-	provider TEXT NOT NULL,
-	model TEXT NOT NULL,
-	dims INTEGER NOT NULL,
-	embedding BLOB NOT NULL,
-	updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS events (
 	id TEXT PRIMARY KEY,
 	memory_id TEXT REFERENCES memories(id),
