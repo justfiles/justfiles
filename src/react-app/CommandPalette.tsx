@@ -27,19 +27,30 @@ export function CommandPalette() {
 	const { getToken } = useAuth()
 	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState('')
-	const [debouncedQuery, setDebouncedQuery] = useState('')
+	const [submittedQuery, setSubmittedQuery] = useState('')
 	const [selectedIndex, setSelectedIndex] = useState(-1)
 	const dialogRef = useRef<HTMLDialogElement>(null)
 	const inputRef = useRef<HTMLInputElement>(null)
 	const selectedRef = useRef<HTMLAnchorElement>(null)
 
-	// Debounce query input and reset selection
+	const isPathQuery = (q: string) => q.startsWith('/') && !q.includes(' ')
+
+	// Live search only for path queries (cheap SQLite list)
 	useEffect(() => {
+		if (!isPathQuery(query)) return
 		const t = setTimeout(() => {
-			setDebouncedQuery(query)
+			setSubmittedQuery(query)
 			setSelectedIndex(-1)
-		}, 300)
+		}, 200)
 		return () => clearTimeout(t)
+	}, [query])
+
+	// Clear submitted query when input is cleared
+	useEffect(() => {
+		if (!query) {
+			setSubmittedQuery('')
+			setSelectedIndex(-1)
+		}
 	}, [query])
 
 	useEffect(() => {
@@ -73,7 +84,7 @@ export function CommandPalette() {
 		} else {
 			dialogRef.current?.close()
 			setQuery('')
-			setDebouncedQuery('')
+			setSubmittedQuery('')
 			setSelectedIndex(-1)
 		}
 	}, [open])
@@ -94,16 +105,15 @@ export function CommandPalette() {
 	})
 
 	const searchQuery = useQuery({
-		queryKey: ['search', debouncedQuery],
+		queryKey: ['search', submittedQuery],
 		queryFn: async () => {
 			const token = await getToken()
 			if (!token) throw new Error('Missing token')
-			const isPath = debouncedQuery.startsWith('/') && !debouncedQuery.includes(' ')
-			if (isPath) {
+			if (isPathQuery(submittedQuery)) {
 				const res = await fetch('/api/v1/list', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-					body: JSON.stringify({ path_prefix: debouncedQuery.replace(/^\//, '') }),
+					body: JSON.stringify({ path_prefix: submittedQuery.replace(/^\//, '') }),
 				})
 				const data = (await res.json()) as { results: { id: string; path: string; title: string | null; occurred_at: string | null; source: string | null }[] }
 				return data.results.map((r) => ({
@@ -119,18 +129,20 @@ export function CommandPalette() {
 			const res = await fetch('/api/v1/search', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ query: debouncedQuery }),
+				body: JSON.stringify({ query: submittedQuery }),
 			})
 			const data = (await res.json()) as { results: SearchResult[] }
 			return data.results
 		},
-		enabled: !!debouncedQuery.trim(),
+		enabled: !!submittedQuery.trim(),
 		staleTime: 30_000,
 	})
 
 	const results = searchQuery.data ?? []
 	const recentResults = recentQuery.data ?? []
 	const searching = searchQuery.isFetching
+	const hasSubmitted = !!submittedQuery.trim()
+	const hasSelection = selectedIndex >= 0
 
 	return (
 		<dialog ref={dialogRef} className="modal items-start pt-[12vh]">
@@ -151,14 +163,19 @@ export function CommandPalette() {
 							setSelectedIndex((i) => Math.max(i - 1, -1))
 						} else if (e.key === 'Enter') {
 							e.preventDefault()
-							selectedRef.current?.click()
+							if (hasSelection) {
+								selectedRef.current?.click()
+							} else if (query.trim() && !isPathQuery(query)) {
+								setSubmittedQuery(query.trim())
+								setSelectedIndex(-1)
+							}
 						}
 					}}
 				/>
 				{searching && (
 					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">Searching…</p>
 				)}
-				{!searching && query && results.length === 0 && (
+				{!searching && hasSubmitted && results.length === 0 && (
 					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">No results</p>
 				)}
 				{!query && recentResults.length > 0 && (
@@ -207,7 +224,7 @@ export function CommandPalette() {
 				)}
 				<div className="px-4 py-2 border-t border-base-200 flex gap-3 text-xs text-base-content/40 items-center">
 					<span><kbd className="kbd kbd-xs">↑</kbd><kbd className="kbd kbd-xs">↓</kbd> navigate</span>
-					<span><kbd className="kbd kbd-xs">↵</kbd> open</span>
+					<span><kbd className="kbd kbd-xs">↵</kbd> {hasSelection ? 'open' : 'search'}</span>
 					<span><kbd className="kbd kbd-xs">esc</kbd> close</span>
 				</div>
 			</div>
