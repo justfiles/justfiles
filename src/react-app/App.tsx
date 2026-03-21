@@ -10,13 +10,15 @@ import {
 	expandTemplate,
 	getActiveDestination,
 	loadSettings,
-	saveSettings,
+	saveSettings
 } from './settings'
 
 function App() {
 	const { getToken, userId } = useAuth()
 	const [settings] = useState(() => loadSettings(userId!))
-	const [activeDestination, setActiveDestination] = useState<Destination>(() => getActiveDestination(settings))
+	const [activeDestination, setActiveDestination] = useState<Destination>(() =>
+		getActiveDestination(settings)
+	)
 	const { upsertEntry, refresh } = useSidebarActions()
 
 	const lsText = `ghostore:${userId}:draft:text`
@@ -38,13 +40,13 @@ function App() {
 			const res = await fetch('/api/v1/update', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id, text }),
+				body: JSON.stringify({ id, text })
 			})
 			if (!res.ok) throw new Error(`Sync failed: ${res.status}`)
 		},
 		onSuccess: () => {
 			localStorage.removeItem(lsDirty)
-		},
+		}
 	})
 
 	// On mount: fetch/create server draft for ID and cross-device sync
@@ -108,14 +110,14 @@ function App() {
 			const promoteRes = await fetch('/api/v1/update', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id: submittedId, text, path }),
+				body: JSON.stringify({ id: submittedId, text, path })
 			})
 			if (!promoteRes.ok) throw new Error(`Submit failed: ${promoteRes.status}`)
 			// Create new blank draft
 			const newDraftRes = await fetch('/api/v1/write', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ path: '*draft*', text: '' }),
+				body: JSON.stringify({ path: '*draft*', text: '' })
 			})
 			if (!newDraftRes.ok) throw new Error(`Draft reset failed: ${newDraftRes.status}`)
 			const { id: newDraftId } = (await newDraftRes.json()) as { id: string }
@@ -130,7 +132,7 @@ function App() {
 			localStorage.setItem(lsId, data.newDraftId)
 			upsertEntry({ id: data.submittedId, title: null, path, updated_at: '', tags: [] })
 			refresh()
-		},
+		}
 	})
 
 	function handleSubmit() {
@@ -172,7 +174,9 @@ function App() {
 		<EditorLayout
 			headerLeft={
 				<div className="flex items-center gap-2 min-w-0">
-					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">*draft*</span>
+					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">
+						*draft*
+					</span>
 					<ModeSelector
 						destinations={settings.destinations}
 						active={activeDestination}
@@ -186,12 +190,21 @@ function App() {
 					{saveStatus && (
 						<span className={`text-xs font-mono ${saveStatus.cls}`}>{saveStatus.label}</span>
 					)}
-					<button type="button" onClick={() => window.dispatchEvent(new Event('open-command-palette'))} className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer">
+					<button
+						type="button"
+						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
+						className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono"
+					>
 						<FiSearch className="w-3.5 h-3.5 shrink-0" />
-						<span>Search</span>
-						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
+						<span className="hidden sm:inline">Search</span>
+						<kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>
 					</button>
-					<button type="button" onClick={handleSubmit} disabled={submitMutation.isPending} className="btn btn-neutral btn-sm font-mono">
+					<button
+						type="button"
+						onClick={handleSubmit}
+						disabled={submitMutation.isPending || !editorText.trim()}
+						className="btn btn-primary btn-sm font-mono"
+					>
 						{submitMutation.isPending ? 'Saving…' : 'Submit'}
 					</button>
 				</>

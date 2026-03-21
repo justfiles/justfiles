@@ -23,7 +23,8 @@ type Memory = {
 export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
-	const { getToken } = useAuth()
+	const { getToken, userId } = useAuth()
+	const hasDraft = !!(userId && localStorage.getItem(`ghostore:${userId}:draft:text`)?.trim())
 	const [editorText, setEditorText] = useState('')
 	const [hasPendingTimer, setHasPendingTimer] = useState(false)
 	const loadedTextRef = useRef<string | null>(null)
@@ -38,12 +39,12 @@ export function MemoryPage() {
 			const token = await getToken()
 			if (!token) throw new Error('Missing auth token')
 			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}`, {
-				headers: { Authorization: `Bearer ${token}` },
+				headers: { Authorization: `Bearer ${token}` }
 			})
 			if (!res.ok) throw new Error(`Failed: ${res.status}`)
 			return res.json() as Promise<Memory>
 		},
-		enabled: true,
+		enabled: true
 	})
 
 	// Keep stale text for blur-while-loading effect
@@ -64,7 +65,7 @@ export function MemoryPage() {
 			const res = await fetch('/api/v1/update', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id: memoryQuery.data!.id, text }),
+				body: JSON.stringify({ id: memoryQuery.data!.id, text })
 			})
 			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
 			return text
@@ -81,10 +82,10 @@ export function MemoryPage() {
 					title: memoryQuery.data.title,
 					path: memoryQuery.data.path,
 					updated_at: now,
-					tags: memoryQuery.data.tags,
+					tags: memoryQuery.data.tags
 				})
 			}
-		},
+		}
 	})
 
 	const archiveMutation = useMutation({
@@ -93,14 +94,14 @@ export function MemoryPage() {
 			if (!token) throw new Error('Missing auth token')
 			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}/archive`, {
 				method: 'POST',
-				headers: { Authorization: `Bearer ${token}` },
+				headers: { Authorization: `Bearer ${token}` }
 			})
 			if (!res.ok) throw new Error(`Archive failed: ${res.status}`)
 		},
 		onSuccess: () => {
 			removeEntry(id)
 			navigate({ to: '/' })
-		},
+		}
 	})
 
 	useEffect(() => {
@@ -133,9 +134,11 @@ export function MemoryPage() {
 	return (
 		<EditorLayout
 			headerLeft={
-				memoryQuery.data?.title
-					? <span className="block w-full text-sm font-medium text-base-content/70 truncate">{memoryQuery.data.title}</span>
-					: undefined
+				memoryQuery.data?.title ? (
+					<span className="block w-full text-sm font-medium text-base-content/70 truncate">
+						{memoryQuery.data.title}
+					</span>
+				) : undefined
 			}
 			headerRight={
 				<>
@@ -145,27 +148,27 @@ export function MemoryPage() {
 					<button
 						type="button"
 						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
-						className="flex items-center gap-2 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono transition-colors cursor-pointer"
+						className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono"
 					>
 						<FiSearch className="w-3.5 h-3.5 shrink-0" />
-						<span>Search</span>
-						<kbd className="kbd kbd-xs ml-1">⌘K</kbd>
+						<span className="hidden sm:inline">Search</span>
+						<kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>
 					</button>
 					<button
 						type="button"
 						onClick={() => archiveMutation.mutate()}
 						disabled={archiveMutation.isPending}
 						className="btn btn-ghost btn-sm text-error font-mono"
-						title="Archive"
 					>
 						<FiArchive className="w-4 h-4" />
+						<span className="hidden sm:inline">Delete</span>
 					</button>
 					<button
 						type="button"
 						onClick={() => navigate({ to: '/' })}
-						className="btn btn-neutral btn-sm font-mono"
+						className="btn btn-primary btn-sm font-mono"
 					>
-						New
+						{hasDraft ? 'Draft' : 'Create'}
 					</button>
 				</>
 			}
