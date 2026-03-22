@@ -1,7 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { FiArchive, FiSearch } from 'react-icons/fi'
 import { EditorLayout } from './EditorLayout'
 import { useSidebarActions } from './SidebarContext'
@@ -27,6 +27,9 @@ export function MemoryPage() {
 	const hasDraft = !!(userId && localStorage.getItem(`ghostore:${userId}:draft:text`)?.trim())
 	const [editorText, setEditorText] = useState('')
 	const [hasPendingTimer, setHasPendingTimer] = useState(false)
+	const [editingTitle, setEditingTitle] = useState(false)
+	const [titleDraft, setTitleDraft] = useState('')
+	const titleInputRef = useRef<HTMLInputElement>(null)
 	const loadedTextRef = useRef<string | null>(null)
 	const staleTextRef = useRef<string>('')
 	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -88,6 +91,58 @@ export function MemoryPage() {
 		}
 	})
 
+	const saveTitleMutation = useMutation({
+		mutationFn: async (title: string) => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing auth token')
+			const res = await fetch('/api/v1/update', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+				body: JSON.stringify({ id: memoryQuery.data!.id, title: title || null })
+			})
+			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
+			return title
+		},
+		onSuccess: (title) => {
+			const now = new Date().toISOString()
+			queryClient.setQueryData<Memory>(['memory', id], (old) =>
+				old ? { ...old, title: title || null, updated_at: now } : old
+			)
+			if (memoryQuery.data) {
+				upsertEntry({
+					id: memoryQuery.data.id,
+					title: title || null,
+					path: memoryQuery.data.path,
+					updated_at: now,
+					tags: memoryQuery.data.tags
+				})
+			}
+		}
+	})
+
+	function startEditingTitle() {
+		setTitleDraft(memoryQuery.data?.title ?? '')
+		setEditingTitle(true)
+		setTimeout(() => titleInputRef.current?.select(), 0)
+	}
+
+	function commitTitle() {
+		setEditingTitle(false)
+		const trimmed = titleDraft.trim()
+		if (trimmed !== (memoryQuery.data?.title ?? '')) {
+			saveTitleMutation.mutate(trimmed)
+		}
+	}
+
+	function onTitleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+		if (e.key === 'Enter') {
+			e.preventDefault()
+			commitTitle()
+		} else if (e.key === 'Escape') {
+			setEditingTitle(false)
+		}
+	}
+
 	const archiveMutation = useMutation({
 		mutationFn: async () => {
 			const token = await getToken()
@@ -134,10 +189,27 @@ export function MemoryPage() {
 	return (
 		<EditorLayout
 			headerLeft={
-				memoryQuery.data?.title ? (
-					<span className="block w-full text-sm font-medium text-base-content/70 truncate">
-						{memoryQuery.data.title}
-					</span>
+				memoryQuery.data ? (
+					editingTitle ? (
+						<input
+							ref={titleInputRef}
+							type="text"
+							value={titleDraft}
+							onChange={(e) => setTitleDraft(e.target.value)}
+							onBlur={commitTitle}
+							onKeyDown={onTitleKeyDown}
+							placeholder="Untitled"
+							className="block w-full text-sm font-medium bg-transparent border-b border-base-content/30 outline-none text-base-content/70 placeholder:text-base-content/30"
+						/>
+					) : (
+						<button
+							type="button"
+							onClick={startEditingTitle}
+							className="block w-full text-left text-sm font-medium text-base-content/70 truncate hover:text-base-content transition-colors cursor-text"
+						>
+							{memoryQuery.data.title ?? <span className="text-base-content/30 italic">Untitled</span>}
+						</button>
+					)
 				) : undefined
 			}
 			headerRight={
