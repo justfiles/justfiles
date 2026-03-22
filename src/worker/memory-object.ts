@@ -97,6 +97,7 @@ export class MemoryObject extends DurableObject<Env> {
 		if (hasMore) {
 			await this.ctx.storage.setAlarm(Date.now() + 5_000)
 		}
+		await this.store.purgeExpired()
 	}
 }
 

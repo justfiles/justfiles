@@ -31,9 +31,28 @@ export interface Store {
 	update(input: UpdateInput): Promise<void>
 
 	/**
-	 * soft-delete a memory (sets active = 0)
+	 * soft-delete a memory (sets active = 0, expires_at = 30 days from now).
+	 * embeddings are kept for the 30-day recovery window.
 	 */
 	archive(id: string, source?: string): Promise<void>
+
+	/**
+	 * restore an archived memory (sets active = 1, clears expires_at).
+	 * only works within the 30-day recovery window.
+	 */
+	revive(id: string, source?: string): Promise<void>
+
+	/**
+	 * hard-delete a memory — removes all data including chunks and embeddings.
+	 * works on both active and archived memories.
+	 */
+	purge(id: string): Promise<void>
+
+	/**
+	 * purge all archived memories whose expires_at <= now.
+	 * called from background jobs to clean up expired archives.
+	 */
+	purgeExpired(): Promise<void>
 
 	/**
 	 * list memories by path/tags without a search query, ordered by created_at desc
@@ -988,17 +1007,14 @@ export function createStore(
 
 		async archive(id: string, source?: string): Promise<void> {
 			const now = new Date().toISOString()
+			const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
 			const [mem] = await adapter.query<{ id: unknown }>(
 				'SELECT id FROM memories WHERE id = ? AND active = 1 LIMIT 1',
 				[id]
 			)
 			if (!mem) throw new Error(`Memory not found: ${id}`)
-			const chunkRows = await adapter.query<{ id: unknown }>(
-				'SELECT id FROM chunks WHERE memory_id = ?',
-				[id]
-			)
 			await adapter.transaction(async (tx) => {
-				await tx.run('UPDATE memories SET active = 0, updated_at = ? WHERE id = ?', [now, id])
+				await tx.run('UPDATE memories SET active = 0, expires_at = ?, updated_at = ? WHERE id = ?', [expiresAt, now, id])
 				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
 					genId('evt'),
 					id,
@@ -1008,9 +1024,102 @@ export function createStore(
 				])
 			})
 			recentCache = null
+			// embeddings are kept for the 30-day recovery window — purgeExpired handles cleanup
+		},
+
+		async revive(id: string, source?: string): Promise<void> {
+			const now = new Date().toISOString()
+			const [mem] = await adapter.query<{ id: unknown; content_hash: unknown }>(
+				'SELECT id, content_hash FROM memories WHERE id = ? AND active = 0 LIMIT 1',
+				[id]
+			)
+			if (!mem) throw new Error(`Archived memory not found: ${id}`)
+			const contentHash = String(mem.content_hash)
+			await adapter.transaction(async (tx) => {
+				await tx.run('UPDATE memories SET active = 1, expires_at = NULL, updated_at = ? WHERE id = ?', [now, id])
+				// FTS trigger only fires on active=0; re-insert manually on restore
+				await tx.run('DELETE FROM memory_fts WHERE memory_id = ?', [id])
+				await tx.run(
+					'INSERT INTO memory_fts (memory_id, text) SELECT ?, text FROM content WHERE hash = ?',
+					[id, contentHash]
+				)
+				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
+					genId('evt'),
+					id,
+					'revive',
+					source ? 'agent' : 'human',
+					now
+				])
+			})
+			recentCache = null
+		},
+
+		async purge(id: string): Promise<void> {
+			const [mem] = await adapter.query<{ id: unknown; content_hash: unknown }>(
+				'SELECT id, content_hash FROM memories WHERE id = ? LIMIT 1',
+				[id]
+			)
+			if (!mem) throw new Error(`Memory not found: ${id}`)
+			const contentHash = String(mem.content_hash)
+			const chunkRows = await adapter.query<{ id: unknown }>(
+				'SELECT id FROM chunks WHERE memory_id = ?',
+				[id]
+			)
+			await adapter.transaction(async (tx) => {
+				await tx.run('DELETE FROM memory_tags WHERE memory_id = ?', [id])
+				await tx.run('DELETE FROM memory_links WHERE from_id = ? OR to_id = ?', [id, id])
+				await tx.run('DELETE FROM chunks WHERE memory_id = ?', [id])
+				await tx.run('DELETE FROM events WHERE memory_id = ?', [id])
+				await tx.run('DELETE FROM memories WHERE id = ?', [id])
+				await tx.run(
+					'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
+					[contentHash, contentHash]
+				)
+			})
 			if (vectorStore && chunkRows.length > 0) {
 				await vectorStore.delete(chunkRows.map((r) => String(r.id)))
 			}
+			recentCache = null
+		},
+
+		async purgeExpired(): Promise<void> {
+			const now = new Date().toISOString()
+			const expired = await adapter.query<{ id: unknown }>(
+				"SELECT id FROM memories WHERE active = 0 AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 50",
+				[now]
+			)
+			for (const row of expired) {
+				const id = String(row.id)
+				try {
+					const [mem] = await adapter.query<{ id: unknown; content_hash: unknown }>(
+						'SELECT id, content_hash FROM memories WHERE id = ? LIMIT 1',
+						[id]
+					)
+					if (!mem) continue
+					const contentHash = String(mem.content_hash)
+					const chunkRows = await adapter.query<{ id: unknown }>(
+						'SELECT id FROM chunks WHERE memory_id = ?',
+						[id]
+					)
+					await adapter.transaction(async (tx) => {
+						await tx.run('DELETE FROM memory_tags WHERE memory_id = ?', [id])
+						await tx.run('DELETE FROM memory_links WHERE from_id = ? OR to_id = ?', [id, id])
+						await tx.run('DELETE FROM chunks WHERE memory_id = ?', [id])
+						await tx.run('DELETE FROM events WHERE memory_id = ?', [id])
+						await tx.run('DELETE FROM memories WHERE id = ?', [id])
+						await tx.run(
+							'DELETE FROM content WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM memories WHERE content_hash = ?)',
+							[contentHash, contentHash]
+						)
+					})
+					if (vectorStore && chunkRows.length > 0) {
+						await vectorStore.delete(chunkRows.map((r) => String(r.id)))
+					}
+				} catch (e) {
+					console.error(`purgeExpired: failed to purge ${id}:`, e)
+				}
+			}
+			recentCache = null
 		},
 
 		async list(input: ListInput): Promise<ListResult[]> {

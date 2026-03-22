@@ -64,6 +64,30 @@ export function createApi(store: Store) {
 		}
 	})
 
+	app.post('/v1/memory/:id/revive', zValidator('param', z.object({ id: z.string().min(1) })), async (c) => {
+		const { id } = c.req.param()
+		try {
+			await store.revive(id)
+			return c.json({ revived: true, id })
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err)
+			if (msg.includes('not found')) return c.json({ error: msg }, 404)
+			throw err
+		}
+	})
+
+	app.delete('/v1/memory/:id', zValidator('param', z.object({ id: z.string().min(1) })), async (c) => {
+		const { id } = c.req.param()
+		try {
+			await store.purge(id)
+			return c.json({ deleted: true, id })
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err)
+			if (msg.includes('not found')) return c.json({ error: msg }, 404)
+			throw err
+		}
+	})
+
 	app.get('/v1/recent', async (c) => {
 		const raw = c.req.query('n')
 		const n = Math.min(raw ? Math.max(1, parseInt(raw, 10) || 5) : 5, 20)
