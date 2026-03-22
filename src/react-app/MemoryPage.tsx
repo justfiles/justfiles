@@ -211,15 +211,6 @@ export function MemoryPage() {
 
 	if (memoryQuery.isError) return <p className="m-8 text-error">Failed to load memory</p>
 
-	const saveStatus = hasPendingTimer
-		? { label: 'Unsaved changes…', cls: 'text-base-content/50' }
-		: saveMutation.isPending
-			? { label: 'Saving…', cls: 'text-base-content/50' }
-			: saveMutation.isSuccess
-				? { label: 'Saved', cls: 'text-success' }
-				: saveMutation.isError
-					? { label: 'Save failed', cls: 'text-error' }
-					: null
 
 	const isLoading = memoryQuery.isPending
 
@@ -244,16 +235,13 @@ export function MemoryPage() {
 							onClick={startEditingTitle}
 							className="block w-full text-left text-sm font-medium text-base-content/70 truncate hover:text-base-content transition-colors cursor-text"
 						>
-							{memoryQuery.data.title ?? <span className="text-base-content/30 italic">Untitled</span>}
+							{memoryQuery.data.title ?? <span className="text-base-content/30 italic">Untitled</span>}{hasPendingTimer || saveMutation.isPending ? '*' : ''}
 						</button>
 					)
 				) : undefined
 			}
 			headerRight={
 				<>
-					{saveStatus && (
-						<span className={`text-xs font-mono ${saveStatus.cls}`}>{saveStatus.label}</span>
-					)}
 					<button
 						type="button"
 						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
@@ -295,6 +283,7 @@ export function MemoryPage() {
 			isLoading={isLoading}
 			memoryId={id}
 			getToken={getToken}
+			updatedAt={memoryQuery.data?.updated_at}
 		/>
 	)
 }

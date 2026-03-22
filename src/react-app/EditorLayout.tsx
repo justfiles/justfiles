@@ -13,9 +13,19 @@ type Props = {
 	isLoading?: boolean
 	memoryId?: string
 	getToken?: () => Promise<string | null>
+	updatedAt?: string
 }
 
-export function EditorLayout({ headerLeft, headerRight, value, onChange, isLoading, memoryId, getToken }: Props) {
+export function EditorLayout({
+	headerLeft,
+	headerRight,
+	value,
+	onChange,
+	isLoading,
+	memoryId,
+	getToken,
+	updatedAt
+}: Props) {
 	const navigate = useNavigate()
 	const { toggleSidebar, sidebarOpen } = useSidebarActions()
 
@@ -57,10 +67,33 @@ export function EditorLayout({ headerLeft, headerRight, value, onChange, isLoadi
 					</UserButton>
 				</div>
 			</header>
-			<main className={`flex-1 overflow-y-auto transition-[filter] duration-150${isLoading ? ' blur-sm pointer-events-none' : ''}`}>
+			<main
+				className={`flex-1 overflow-y-auto transition-[filter] duration-150${isLoading ? ' blur-sm pointer-events-none' : ''}`}
+			>
 				<div className="max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
 					{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
-					<MarkdownEditor value={value} onChange={onChange} memoryId={memoryId} getToken={getToken} />
+					<div className="flex justify-between mb-2">
+						<span className="text-[11px] text-base-content/30 font-mono">
+							{updatedAt ? `updated: ${new Date(updatedAt).toLocaleString()}` : ''}
+						</span>
+						<span className="text-[11px] text-base-content/30 font-mono">
+							{(() => {
+								const cjk = (value.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g) ?? []).length
+								const latin = value
+									.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g, ' ')
+									.trim()
+									.split(/\s+/)
+									.filter(Boolean).length
+								return (cjk + latin).toLocaleString() + ' words'
+							})()}
+						</span>
+					</div>
+					<MarkdownEditor
+						value={value}
+						onChange={onChange}
+						memoryId={memoryId}
+						getToken={getToken}
+					/>
 				</div>
 			</main>
 		</div>

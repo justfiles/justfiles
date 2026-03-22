@@ -160,23 +160,12 @@ function App() {
 		saveSettings({ lastUsedDestinationId: dest.id }, userId!)
 	}
 
-	const saveStatus = hasPendingTimer
-		? { label: 'Unsaved changes…', cls: 'text-base-content/50' }
-		: syncMutation.isPending
-			? { label: 'Saving…', cls: 'text-base-content/50' }
-			: submitMutation.isSuccess
-				? { label: `Saved as ${submitMutation.data?.submittedId}`, cls: 'text-base-content/50' }
-				: submitMutation.isError || syncMutation.isError
-					? { label: 'Error saving', cls: 'text-error' }
-					: null
 
 	return (
 		<EditorLayout
 			headerLeft={
 				<div className="flex items-center gap-2 min-w-0">
-					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">
-						*draft*
-					</span>
+					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">draft{hasPendingTimer || syncMutation.isPending ? '*' : ''}</span>
 					<ModeSelector
 						destinations={settings.destinations}
 						active={activeDestination}
@@ -186,11 +175,7 @@ function App() {
 			}
 			headerRight={
 				<>
-					<span className="text-xs font-mono text-base-content/30">{editorText.length}</span>
-					{saveStatus && (
-						<span className={`text-xs font-mono ${saveStatus.cls}`}>{saveStatus.label}</span>
-					)}
-					<button
+<button
 						type="button"
 						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
 						className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono"
