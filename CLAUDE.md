@@ -42,3 +42,9 @@ https://developers.cloudflare.com/workers/runtime-apis/nodejs/
 
 Retrieve API references and limits from:
 `/kv/` · `/r2/` · `/d1/` · `/durable-objects/` · `/queues/` · `/vectorize/` · `/workers-ai/` · `/agents/`
+
+
+# Testing
+
+If the change is a api/mcp change, test it before call it done. Test the api directly against http://localhost:5173
+use the API_KEY from .agent file to get access
