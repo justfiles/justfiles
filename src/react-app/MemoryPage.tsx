@@ -2,7 +2,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import React, { useEffect, useRef, useState } from 'react'
-import { FiArchive, FiSearch } from 'react-icons/fi'
+import { FiArchive, FiFolder, FiSearch } from 'react-icons/fi'
 import { EditorLayout } from './EditorLayout'
 import { useSidebarActions } from './SidebarContext'
 
@@ -159,6 +159,43 @@ export function MemoryPage() {
 		}
 	})
 
+	const movePathMutation = useMutation({
+		mutationFn: async (path: string) => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing auth token')
+			const res = await fetch('/api/v1/update', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+				body: JSON.stringify({ id: memoryQuery.data!.id, path })
+			})
+			if (!res.ok) throw new Error(`Move failed: ${res.status}`)
+			return path
+		},
+		onSuccess: (path) => {
+			const now = new Date().toISOString()
+			queryClient.setQueryData<Memory>(['memory', id], (old) =>
+				old ? { ...old, path, updated_at: now } : old
+			)
+			if (memoryQuery.data) {
+				upsertEntry({
+					id: memoryQuery.data.id,
+					title: memoryQuery.data.title,
+					path,
+					updated_at: now,
+					tags: memoryQuery.data.tags
+				})
+			}
+		}
+	})
+
+	function handleMove() {
+		const currentPath = memoryQuery.data?.path ?? ''
+		const newPath = window.prompt('Enter new path:', currentPath)
+		if (newPath !== null && newPath.trim() !== '' && newPath.trim() !== currentPath) {
+			movePathMutation.mutate(newPath.trim())
+		}
+	}
+
 	useEffect(() => {
 		if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
 		if (!memoryQuery.data || editorText === loadedTextRef.current) {
@@ -225,6 +262,15 @@ export function MemoryPage() {
 						<FiSearch className="w-3.5 h-3.5 shrink-0" />
 						<span className="hidden sm:inline">Search</span>
 						<kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>
+					</button>
+					<button
+						type="button"
+						onClick={handleMove}
+						disabled={movePathMutation.isPending || !memoryQuery.data}
+						className="btn btn-ghost btn-sm font-mono"
+					>
+						<FiFolder className="w-4 h-4" />
+						<span className="hidden sm:inline">Move</span>
 					</button>
 					<button
 						type="button"
