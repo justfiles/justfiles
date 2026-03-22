@@ -1,9 +1,12 @@
 # Tools
 use bun for package management.
 
-use ghostore (via mcp) as memory source. anything about memory, it means in ghostore.
-
 use tab for indentation.
+
+# Memory
+
+use ghostore (via mcp) as memory source. anything about memory, it means in ghostore.
+Read memory /readme from ghostore before any memory related action happening. Do not need to read if memory is never involved. The project name is "ghostore" for this project.
 
 # Cloudflare Workers
 
