@@ -384,11 +384,18 @@ export const UpdateInputSchema = z.object({
 
 export type UpdateInput = z.infer<typeof UpdateInputSchema>
 
+const DateRangeSchema = z.object({
+	after: z.string().optional(),
+	before: z.string().optional()
+})
+
 export const ListInputSchema = z.object({
 	path_prefix: z.string().optional(),
 	path_pattern: z.string().optional(),
 	tags: z.union([z.string(), z.array(z.string())]).optional(),
-	limit: z.number().optional()
+	limit: z.number().optional(),
+	created: DateRangeSchema.optional(),
+	updated: DateRangeSchema.optional()
 })
 
 export type ListInput = z.infer<typeof ListInputSchema>
@@ -1011,6 +1018,23 @@ export function createStore(
 			const tags = normalizeTags(input.tags)
 			const conditions: string[] = ['m.active = 1', "m.path NOT LIKE '*%'"]
 			const params: SqlValue[] = []
+
+			if (input.created?.after) {
+				conditions.push('m.created_at >= ?')
+				params.push(input.created.after)
+			}
+			if (input.created?.before) {
+				conditions.push('m.created_at <= ?')
+				params.push(input.created.before)
+			}
+			if (input.updated?.after) {
+				conditions.push('m.updated_at >= ?')
+				params.push(input.updated.after)
+			}
+			if (input.updated?.before) {
+				conditions.push('m.updated_at <= ?')
+				params.push(input.updated.before)
+			}
 
 			if (input.path_prefix) {
 				conditions.push('m.path LIKE ?')

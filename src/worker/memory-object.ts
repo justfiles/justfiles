@@ -296,7 +296,33 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.min(1)
 					.max(200)
 					.optional()
-					.describe('Maximum number of results to return (default: 50)')
+					.describe('Maximum number of results to return (default: 50)'),
+				created: z
+					.object({
+						after: z
+							.string()
+							.optional()
+							.describe('Return only memories created at or after this ISO 8601 timestamp (e.g. "2026-03-01T00:00:00Z")'),
+						before: z
+							.string()
+							.optional()
+							.describe('Return only memories created at or before this ISO 8601 timestamp (e.g. "2026-03-31T23:59:59Z")')
+					})
+					.optional()
+					.describe('Filter by creation date range'),
+				updated: z
+					.object({
+						after: z
+							.string()
+							.optional()
+							.describe('Return only memories updated at or after this ISO 8601 timestamp (e.g. "2026-03-01T00:00:00Z")'),
+						before: z
+							.string()
+							.optional()
+							.describe('Return only memories updated at or before this ISO 8601 timestamp (e.g. "2026-03-31T23:59:59Z")')
+					})
+					.optional()
+					.describe('Filter by last-updated date range')
 			}
 		},
 		async (args) => {
