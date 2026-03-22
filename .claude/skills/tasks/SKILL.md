@@ -1,16 +1,18 @@
 ---
 name: tasks
-description: Read all ghostore todos, pick the top 3 by priority, and let the user choose which to work on first.
-argument-hint: (no arguments needed)
+description: Read todos for a given project, pick the top 3 by priority, and let the user choose which to work on first.
+argument-hint: <project name>
 allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__get_memory
 ---
 
-Surface the top 3 priority ghostore tasks and help the user pick one.
+Surface the top 3 priority tasks for the given project and help the user pick one.
 
 ## Step 1 — Fetch all todos
 
+The argument is the project name. Todos live at `/<project>/todo/` per the KB convention.
+
 Call `mcp__ghostore__list_memories` with:
-- `path_prefix`: `"ghostore/todo"`
+- `path_prefix`: `"<project>/todo"`
 - `limit`: 30
 
 ## Step 2 — Read each todo

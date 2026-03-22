@@ -2,33 +2,39 @@
 name: summarize-logs
 description: Group session/log notes by time window, extract durable learnings into a summary note, and archive the originals.
 argument-hint: [today | this-week | YYYY-MM-DD (default: today)]
-allowed-tools: mcp__ghostore__search_memory, mcp__ghostore__get_memory, mcp__ghostore__capture_memory
+allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__search_memory, mcp__ghostore__get_memory, mcp__ghostore__write_memory, mcp__ghostore__archive_memory
 ---
 
-Summarize session and log notes into a compact, durable knowledge note.
+Summarize unprocessed log notes into compact, durable knowledge notes, then archive the originals.
 
 ## Input
 
 `$ARGUMENTS` specifies the time window:
-- `today` — notes from today (default)
-- `this-week` — notes from the past 7 days
-- `YYYY-MM-DD` — notes from that specific date
+- `today` — logs created today (default)
+- `this-week` — logs created in the past 7 days
+- `YYYY-MM-DD` — logs created on that specific date
 
-Compute the `occurred_after` / `occurred_before` ISO timestamps from the window.
+## Step 1 — Find unprocessed logs
 
-## Step 1 — Find log notes
+Call `mcp__ghostore__list_memories` with:
+- `tags`: `["log", "to-process"]`
+- `limit`: 200
 
-Call `mcp__ghostore__search_memory` with:
-- `query`: `"session log"`
-- `filter.fields.tags`: `"log"`
-- `filter.occurred_after` / `filter.occurred_before`: derived from the time window
-- `limit`: 100
+Then filter the results client-side:
+- Path must contain `/logs/` (e.g. `ghostore/logs/session-1`)
+- Creation date must fall within the requested time window
 
-If no notes found, report "no session notes found for <window>" and stop.
+If no results remain, report "no unprocessed logs found for <window>" and stop.
 
 ## Step 2 — Read and group
 
-Call `mcp__ghostore__get_memory` for each result. Group by session or topic cluster; fall back to chronological order.
+Call `mcp__ghostore__get_memory` for each result.
+
+Group the logs in two dimensions:
+1. **Project** — derived from the path prefix (e.g. `ghostore` from `ghostore/logs/session-1`)
+2. **Date** — derived from each node's creation date
+
+Process one project-date group at a time.
 
 ## Step 3 — Extract durable learnings
 
@@ -40,19 +46,23 @@ For each group synthesize:
 
 Target 20–30% of original length. Discard ephemeral status updates and low-signal chatter.
 
-## Step 4 — Capture the summary
+## Step 4 — Write the summary
 
-Call `mcp__ghostore__capture_memory` with:
+For each project-date group, call `mcp__ghostore__write_memory` with:
 - `text`: the formatted summary
-- `path`: `sessions/summary/<YYYY-MM-DD>`
-- `tags`: `["summary", "session"]`
+- `path`: `<project>/summary/<YYYY-MM-DD>` (or `notes/summary/<YYYY-MM-DD>` if logs span multiple projects)
+- `tags`: `["summary", "log"]`
 - `source`: `"agent"`
 
-## Step 5 — Report
+## Step 5 — Archive originals
+
+For each log node that was summarized, call `mcp__ghostore__archive_memory` to remove it from the active set.
+
+## Step 6 — Report
 
 ```
-Summarized <n> session notes → sessions/summary/<date>
+Summarized <n> log notes across <m> project(s) for <window>
 
-Summary preview:
-<first 5 lines>
+  ghostore  → ghostore/summary/<date>  (<n> logs)
+  <project> → <project>/summary/<date> (<n> logs)
 ```

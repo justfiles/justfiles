@@ -2,7 +2,7 @@
 name: enrich
 description: Run the enrichment pipeline on all inbox notes — categorize each note (assign path + tags), find related notes, and decide ADD/UPDATE/SKIP/LINK/CONFLICT.
 argument-hint: (no arguments needed)
-allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__search_memory, mcp__ghostore__get_memory, mcp__ghostore__capture_memory, mcp__ghostore__update_memory
+allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__search_memory, mcp__ghostore__get_memory, mcp__ghostore__write_memory, mcp__ghostore__update_memory, mcp__ghostore__archive_memory
 ---
 
 Process all inbox notes through the enrichment pipeline.
@@ -23,13 +23,13 @@ Call `mcp__ghostore__get_memory` with the note's ID to fetch full content. Proce
 
 Read the note content and assign:
 
-**Path** — slash-delimited topic hierarchy:
-- Lowercase, hyphen-separated (e.g. `work/architecture/decisions`)
-- First segment: `work`, `personal`, `learning`, `reference`, `meta`
-- Depth: 2–4 segments
+**Path** — slash-delimited, lowercase, hyphen-separated:
+- If the note is specific to a project: `<project>/<optional-subtopic>` (e.g. `ghostore/auth`)
+- If it's general knowledge not tied to a project: `notes/<topic>` (e.g. `notes/react`)
+- Depth: 1–3 segments
 
 **Tags** — 1–4 lowercase cross-cutting labels:
-- Choose from: `decision`, `pattern`, `reference`, `idea`, `todo`, `question`, `insight`, `summary`, `log`, `resource`
+- Choose from: `decision`, `context`, `reference`, `idea`, `question`, `insight`, `summary`, `log`, `to-process`, `resource`, `pattern`
 
 ### 2b. Connect
 
@@ -51,13 +51,13 @@ Make exactly one decision:
 
 - **ADD**: Call `mcp__ghostore__update_memory` on the inbox note with the assigned `path` and `tags`. This relocates it in place without hitting the dedup gate.
 
-- **UPDATE**: Merge the inbox note's content into the candidate's. Call `mcp__ghostore__update_memory` on the *candidate* note with the merged `text`. Then call `mcp__ghostore__update_memory` on the inbox note with `path: "archived/<timestamp>"` to move it out of inbox.
+- **UPDATE**: Merge the inbox note's content into the candidate's. Call `mcp__ghostore__update_memory` on the *candidate* note with the merged `text`. Then call `mcp__ghostore__archive_memory` on the inbox note to remove it from the active set.
 
-- **SKIP**: Call `mcp__ghostore__update_memory` on the inbox note with `path: "archived/<timestamp>"` to move it out of inbox.
+- **SKIP**: Call `mcp__ghostore__archive_memory` on the inbox note — it's redundant, no filing needed.
 
 - **LINK**: Call `mcp__ghostore__update_memory` on the inbox note with the assigned `path` and `tags`. Note the relationship in the final summary (linking will be handled once `link_memories` is available).
 
-- **CONFLICT**: Call `mcp__ghostore__update_memory` on the inbox note with the assigned `path` and `tags`. Then call `mcp__ghostore__capture_memory` to create a new conflict proposal at `proposals/<timestamp>`:
+- **CONFLICT**: Call `mcp__ghostore__update_memory` on the inbox note with the assigned `path` and `tags`. Then call `mcp__ghostore__write_memory` to create a new conflict proposal at `proposals/<timestamp>`:
   ```
   CONFLICT PROPOSAL
   new_note_id: <id>
