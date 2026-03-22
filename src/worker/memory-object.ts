@@ -281,6 +281,12 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.describe(
 						'Return only memories whose path starts with this prefix (e.g. "inbox", "work/meetings")'
 					),
+				path_pattern: z
+					.string()
+					.optional()
+					.describe(
+						'Glob-style path pattern — mutually exclusive with path_prefix. Use * to match any single segment, ** to match multiple segments (e.g. "*/todo" matches "ghostore/todo", "myapp/todo"; "*/logs/**" matches any path under a logs folder)'
+					),
 				tags: z
 					.union([z.string(), z.array(z.string())])
 					.optional()

@@ -386,6 +386,7 @@ export type UpdateInput = z.infer<typeof UpdateInputSchema>
 
 export const ListInputSchema = z.object({
 	path_prefix: z.string().optional(),
+	path_pattern: z.string().optional(),
 	tags: z.union([z.string(), z.array(z.string())]).optional(),
 	limit: z.number().optional()
 })
@@ -1014,6 +1015,14 @@ export function createStore(
 			if (input.path_prefix) {
 				conditions.push('m.path LIKE ?')
 				params.push(`${input.path_prefix}%`)
+			} else if (input.path_pattern) {
+				// Translate glob pattern to SQL LIKE: ** → %, * → %
+				const likePattern = input.path_pattern
+					.replace(/\*\*/g, '\x00')
+					.replace(/\*/g, '%')
+					.replace(/\x00/g, '%')
+				conditions.push('m.path LIKE ?')
+				params.push(likePattern)
 			}
 
 			let sql = 'SELECT DISTINCT m.id, m.path, m.title, m.source FROM memories m'
