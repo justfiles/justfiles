@@ -365,19 +365,20 @@ function registerMcpTools(server: McpServer, store: Store) {
 		'archive_memory',
 		{
 			description:
-				'Soft-delete a memory by ID. The memory is marked inactive and removed from search results. Use this when a memory is outdated, superseded, or should no longer be retrievable.',
+				'Soft-delete one or more memories by ID. Memories are marked inactive and removed from search results. Pass a single string or an array of strings. Use this when memories are outdated, superseded, or should no longer be retrievable.',
 			inputSchema: {
-				id: z.string().describe('The memory ID to archive'),
-				source: z
-					.string()
-					.optional()
-					.describe('Origin of the archive action, e.g. "agent", "system"')
+				id: z
+					.union([z.string(), z.array(z.string())])
+					.describe('Memory ID or array of memory IDs to archive')
 			}
 		},
-		async ({ id, source }) => {
+		async ({ id }) => {
 			try {
-				await store.archive(id, source)
-				return { content: [{ type: 'text', text: `Memory ${id} archived.` }] }
+				const ids = Array.isArray(id) ? id : [id]
+				const { archived, not_found } = await store.archive(id)
+				const parts: string[] = [`Archived ${archived} of ${ids.length} memories.`]
+				if (not_found.length > 0) parts.push(`Not found or already archived: ${not_found.join(', ')}`)
+				return { content: [{ type: 'text', text: parts.join(' ') }] }
 			} catch (err) {
 				return {
 					content: [

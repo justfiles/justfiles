@@ -56,14 +56,9 @@ export function createApi(store: Store) {
 		})
 		.post('/v1/memory/:id/archive', zValidator('param', IdParamSchema), async (c) => {
 			const { id } = c.req.param()
-			try {
-				await store.archive(id)
-				return c.json({ archived: true, id })
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err)
-				if (msg.includes('not found')) return c.json({ error: msg }, 404)
-				throw err
-			}
+			const { not_found } = await store.archive(id)
+			if (not_found.length > 0) return c.json({ error: `Memory not found: ${id}` }, 404)
+			return c.json({ archived: true, id })
 		})
 		.post('/v1/memory/:id/revive', zValidator('param', IdParamSchema), async (c) => {
 			const { id } = c.req.param()

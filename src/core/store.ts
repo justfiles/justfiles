@@ -6,7 +6,11 @@ import type { DbAdapter, SqlValue } from './db'
 import type { VectorStore } from './vector'
 
 export class StoreError extends Error {
-	constructor(public code: 'CONFLICT', message: string, public data?: Record<string, unknown>) {
+	constructor(
+		public code: 'CONFLICT',
+		message: string,
+		public data?: Record<string, unknown>
+	) {
 		super(message)
 		this.name = 'StoreError'
 	}
@@ -38,10 +42,11 @@ export interface Store {
 	update(input: UpdateInput): Promise<void>
 
 	/**
-	 * soft-delete a memory (sets active = 0, expires_at = 30 days from now).
+	 * soft-delete one or more memories (sets active = 0, expires_at = 30 days from now).
+	 * pass a single id or an array of ids. IDs that don't exist or are already archived are skipped.
 	 * embeddings are kept for the 30-day recovery window.
 	 */
-	archive(id: string, source?: string): Promise<void>
+	archive(id: string | string[]): Promise<{ archived: number; not_found: string[] }>
 
 	/**
 	 * restore an archived memory (sets active = 1, clears expires_at).
@@ -122,7 +127,6 @@ function normalizeBm25(ftsRank: number): number {
 	return abs / (1 + abs)
 }
 
-
 function applyTemporalDecay(
 	score: number,
 	occurredAt: string | null,
@@ -182,7 +186,6 @@ interface TextChunk {
 	len: number
 	tokenCount: number
 }
-
 
 function genId(prefix: string): string {
 	const ts = Date.now().toString(36)
@@ -331,7 +334,6 @@ function generateSnippet(text: string, query: string, maxLen = 300): string {
 	const snippet = text.slice(bestStart, end)
 	return `${bestStart > 0 ? '…' : ''}${snippet}${end < text.length ? '…' : ''}`
 }
-
 
 function placeholders(count: number): string {
 	return Array.from({ length: count }, () => '?').join(',')
@@ -1033,25 +1035,34 @@ export function createStore(
 			if (input.content !== undefined) await notifyUpdate()
 		},
 
-		async archive(id: string, source?: string): Promise<void> {
+		async archive(id: string | string[]): Promise<{ archived: number; not_found: string[] }> {
+			const ids = Array.isArray(id) ? id : [id]
+			if (ids.length === 0) return { archived: 0, not_found: [] }
 			const now = new Date().toISOString()
 			const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-			const [mem] = await adapter.query<{ id: unknown }>(
-				'SELECT id FROM memories WHERE id = ? AND active = 1 LIMIT 1',
-				[id]
+			const placeholders = ids.map(() => '?').join(', ')
+			const found = await adapter.query<{ id: string }>(
+				`SELECT id FROM memories WHERE id IN (${placeholders}) AND active = 1`,
+				ids
 			)
-			if (!mem) throw new Error(`Memory not found: ${id}`)
-			await adapter.transaction(async (tx) => {
-				await tx.run('UPDATE memories SET active = 0, expires_at = ?, updated_at = ? WHERE id = ?', [expiresAt, now, id])
-				await tx.run('INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)', [
-					genId('evt'),
-					id,
-					'archive',
-					source ? 'agent' : 'human',
-					now
-				])
-			})
-			recentCache = null
+			const foundIds = found.map((r) => r.id)
+			const not_found = ids.filter((i) => !foundIds.includes(i))
+			if (foundIds.length > 0) {
+				await adapter.transaction(async (tx) => {
+					for (const i of foundIds) {
+						await tx.run(
+							'UPDATE memories SET active = 0, expires_at = ?, updated_at = ? WHERE id = ?',
+							[expiresAt, now, i]
+						)
+						await tx.run(
+							'INSERT INTO events(id, memory_id, type, actor, at) VALUES (?, ?, ?, ?, ?)',
+							[genId('evt'), i, 'archive', 'human', now]
+						)
+					}
+				})
+				recentCache = null
+			}
+			return { archived: foundIds.length, not_found }
 			// embeddings are kept for the 30-day recovery window — purgeExpired handles cleanup
 		},
 
@@ -1064,7 +1075,10 @@ export function createStore(
 			if (!mem) throw new Error(`Archived memory not found: ${id}`)
 			const contentHash = String(mem.content_hash)
 			await adapter.transaction(async (tx) => {
-				await tx.run('UPDATE memories SET active = 1, expires_at = NULL, updated_at = ? WHERE id = ?', [now, id])
+				await tx.run(
+					'UPDATE memories SET active = 1, expires_at = NULL, updated_at = ? WHERE id = ?',
+					[now, id]
+				)
 				// FTS trigger only fires on active=0; re-insert manually on restore
 				await tx.run('DELETE FROM memory_fts WHERE memory_id = ?', [id])
 				await tx.run(
@@ -1113,7 +1127,7 @@ export function createStore(
 		async purgeExpired(): Promise<void> {
 			const now = new Date().toISOString()
 			const expired = await adapter.query<{ id: unknown }>(
-				"SELECT id FROM memories WHERE active = 0 AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 50",
+				'SELECT id FROM memories WHERE active = 0 AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 50',
 				[now]
 			)
 			for (const row of expired) {
@@ -1153,7 +1167,10 @@ export function createStore(
 		async list(input: ListInput): Promise<ListResponse> {
 			const limit = input.limit ?? 50
 			const tags = normalizeTags(input.tags)
-			const conditions: string[] = [input.archived ? 'm.active = 0' : 'm.active = 1', "m.path NOT LIKE '*%'"]
+			const conditions: string[] = [
+				input.archived ? 'm.active = 0' : 'm.active = 1',
+				"m.path NOT LIKE '*%'"
+			]
 			const params: SqlValue[] = []
 
 			// Decode cursor: { updated_at: string, id: string }
@@ -1251,7 +1268,9 @@ export function createStore(
 			let next_cursor: string | null = null
 			if (hasMore) {
 				const last = pageRows[pageRows.length - 1]
-				next_cursor = btoa(JSON.stringify({ updated_at: String(last.updated_at), id: String(last.id) }))
+				next_cursor = btoa(
+					JSON.stringify({ updated_at: String(last.updated_at), id: String(last.id) })
+				)
 			}
 
 			return { results, next_cursor }
@@ -1369,7 +1388,13 @@ export function createStore(
 		},
 
 		async changes(since: string): Promise<ChangesResult> {
-			const rows = await adapter.query<{ id: unknown; title: unknown; path: unknown; updated_at: unknown; active: unknown }>(
+			const rows = await adapter.query<{
+				id: unknown
+				title: unknown
+				path: unknown
+				updated_at: unknown
+				active: unknown
+			}>(
 				`SELECT id, title, path, updated_at, active FROM memories WHERE updated_at > ? AND path NOT LIKE '*%'`,
 				[since]
 			)
@@ -1395,8 +1420,8 @@ export function createStore(
 					path: String(r.path),
 					updated_at: String(r.updated_at),
 					active: Number(r.active),
-					tags: tagMap.get(String(r.id)) ?? [],
-				})),
+					tags: tagMap.get(String(r.id)) ?? []
+				}))
 			}
 		},
 
@@ -1572,7 +1597,7 @@ export function createStore(
 					if (vectorStore) {
 						if (idsToDelete.length > 0) await vectorStore.delete(idsToDelete)
 						if (vectorsToUpsert.length > 0) {
-								await vectorStore.upsert(
+							await vectorStore.upsert(
 								vectorsToUpsert.map((v) => ({ id: v.id, values: v.values, namespace }))
 							)
 						}
