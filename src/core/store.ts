@@ -372,7 +372,9 @@ export const WriteInputSchema = z.object({
 	scope: z.string().optional(),
 	tags: z.array(z.string()).optional(),
 	source: z.string().optional(),
-	mode: z.enum(['w', 'a', 'x']).optional() // w=overwrite (default), a=append, x=exclusive (error if exists)
+	mode: z.enum(['w', 'a', 'x']).optional(), // w=overwrite (default), a=append, x=exclusive (error if exists)
+	created_at: z.iso.datetime().optional(), // override creation timestamp (ISO 8601)
+	updated_at: z.iso.datetime().optional() // override update timestamp (ISO 8601)
 })
 
 export const SearchInputSchema = z.object({
@@ -408,7 +410,9 @@ export const UpdateInputSchema = z.object({
 	title: z.string().optional(),
 	tags: z.array(z.string()).optional(),
 	content: z.string().optional(),
-	source: z.string().optional()
+	source: z.string().optional(),
+	created_at: z.iso.datetime().optional(), // override creation timestamp (ISO 8601)
+	updated_at: z.iso.datetime().optional() // override update timestamp (ISO 8601)
 })
 
 export type UpdateInput = z.infer<typeof UpdateInputSchema>
@@ -759,6 +763,8 @@ export function createStore(
 			let normalized = normalizeText(input.content)
 			let hash = await sha256hex(normalized)
 			const now = new Date().toISOString()
+			const createdAt = input.created_at ?? now
+			const updatedAt = input.updated_at ?? now
 			const scope = input.scope ?? 'personal'
 			const path = input.path ?? `inbox/${now.slice(0, 19).replace(/[:.]/g, '')}`
 			const special = path.startsWith('*')
@@ -803,12 +809,12 @@ export function createStore(
 					])
 					await tx.run(
 						`UPDATE memories SET content_hash = ?, dirty = ${special ? 0 : 1}, updated_at = ? WHERE id = ?`,
-						[hash, now, id]
+						[hash, updatedAt, id]
 					)
 					if (title !== null) {
 						await tx.run('UPDATE memories SET title = ?, updated_at = ? WHERE id = ?', [
 							title,
-							now,
+							updatedAt,
 							id
 						])
 					}
@@ -844,7 +850,7 @@ export function createStore(
 			await adapter.transaction(async (tx) => {
 				await tx.run(
 					`INSERT INTO memories(id, scope, title, content_hash, path, source, active, dirty, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ${special ? 0 : 1}, ?, ?)`,
-					[memoryId, scope, title, hash, path, input.source ?? null, now, now]
+					[memoryId, scope, title, hash, path, input.source ?? null, createdAt, updatedAt]
 				)
 				if (input.tags?.length) {
 					for (const tag of input.tags) {
@@ -952,6 +958,8 @@ export function createStore(
 
 		async update(input: UpdateInput): Promise<void> {
 			const now = new Date().toISOString()
+			const updatedAt = input.updated_at ?? now
+			const createdAt = input.created_at
 
 			const [mem] = await adapter.query<{
 				id: unknown
@@ -977,7 +985,7 @@ export function createStore(
 				if (input.path !== undefined) {
 					await tx.run('UPDATE memories SET path = ?, updated_at = ? WHERE id = ?', [
 						input.path,
-						now,
+						updatedAt,
 						input.id
 					])
 				}
@@ -985,9 +993,12 @@ export function createStore(
 				if (titleToSet !== null) {
 					await tx.run('UPDATE memories SET title = ?, updated_at = ? WHERE id = ?', [
 						titleToSet,
-						now,
+						updatedAt,
 						input.id
 					])
+				}
+				if (createdAt !== undefined) {
+					await tx.run('UPDATE memories SET created_at = ? WHERE id = ?', [createdAt, input.id])
 				}
 
 				// tags: full replacement
@@ -1012,7 +1023,7 @@ export function createStore(
 
 					await tx.run(
 						'UPDATE memories SET content_hash = ?, dirty = 1, updated_at = ? WHERE id = ?',
-						[hash, now, input.id]
+						[hash, updatedAt, input.id]
 					)
 
 					// clean up orphaned content row

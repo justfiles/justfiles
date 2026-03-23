@@ -129,7 +129,15 @@ function registerMcpTools(server: McpServer, store: Store) {
 				source: z
 					.string()
 					.optional()
-					.describe('Origin of the memory, e.g. "agent", "human", "system"')
+					.describe('Origin of the memory, e.g. "agent", "human", "system"'),
+				created_at: z
+					.iso.datetime()
+					.optional()
+					.describe('Override the creation timestamp (ISO 8601). Use when importing from external sources.'),
+				updated_at: z
+					.iso.datetime()
+					.optional()
+					.describe('Override the last-updated timestamp (ISO 8601). Use when importing from external sources.')
 			}
 		},
 		async (args) => {
@@ -247,7 +255,15 @@ function registerMcpTools(server: McpServer, store: Store) {
 				content: z
 					.string()
 					.optional()
-					.describe('New content — replaces existing text, rechunks and re-embeds')
+					.describe('New content — replaces existing text, rechunks and re-embeds'),
+				created_at: z
+					.iso.datetime()
+					.optional()
+					.describe('Override the creation timestamp (ISO 8601). Use when importing from external sources.'),
+				updated_at: z
+					.iso.datetime()
+					.optional()
+					.describe('Override the last-updated timestamp (ISO 8601). Use when importing from external sources.')
 			}
 		},
 		async (args) => {
