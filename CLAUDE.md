@@ -46,6 +46,11 @@ Retrieve API references and limits from:
 
 # Testing
 
+Make sure the following tests pass after making file changes:
+```sh
+bun run typecheck
+```
+
 If the change is a api/mcp change, test it before call it done. Test the api directly against http://localhost:5173
 use the API_KEY from .agent file to get access
 

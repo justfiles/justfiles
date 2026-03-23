@@ -3,6 +3,7 @@ import { Outlet, useRouterState } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { CommandPalette } from './CommandPalette'
+import { PWAToast } from './PWAToast'
 import { Sidebar } from './Sidebar'
 import { SidebarContext } from './SidebarContext'
 import { loadSettings } from './settings'
@@ -51,6 +52,7 @@ function AppShellInner({ userId }: { userId: string }) {
 
 	return (
 		<SidebarContext.Provider value={{ upsertEntry, removeEntry, refresh, toggleSidebar: toggle, sidebarOpen }}>
+			<PWAToast />
 			<div className="flex h-dvh">
 				{showSidebar && (
 					<>
