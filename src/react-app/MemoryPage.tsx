@@ -2,7 +2,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import React, { useEffect, useRef, useState } from 'react'
-import { FiArchive, FiFolder, FiSearch } from 'react-icons/fi'
+import { FiArchive, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
 import { EditorLayout } from './EditorLayout'
 import { useSidebarActions } from './SidebarContext'
 
@@ -16,6 +16,7 @@ type Memory = {
 	source: string | null
 	created_at: string
 	updated_at: string
+	active: number
 	tags: string[]
 	links: unknown[]
 }
@@ -85,7 +86,8 @@ export function MemoryPage() {
 					title: memoryQuery.data.title,
 					path: memoryQuery.data.path,
 					updated_at: now,
-					tags: memoryQuery.data.tags
+					tags: memoryQuery.data.tags,
+					active: memoryQuery.data.active
 				})
 			}
 		}
@@ -159,6 +161,31 @@ export function MemoryPage() {
 		}
 	})
 
+	const reviveMutation = useMutation({
+		mutationFn: async () => {
+			const token = await getToken()
+			if (!token) throw new Error('Missing auth token')
+			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}/revive`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${token}` }
+			})
+			if (!res.ok) throw new Error(`Revive failed: ${res.status}`)
+		},
+		onSuccess: () => {
+			queryClient.setQueryData<Memory>(['memory', id], (old) => old ? { ...old, active: 1 } : old)
+			if (memoryQuery.data) {
+				upsertEntry({
+					id: memoryQuery.data.id,
+					title: memoryQuery.data.title,
+					path: memoryQuery.data.path,
+					updated_at: memoryQuery.data.updated_at,
+					tags: memoryQuery.data.tags,
+					active: 1
+				})
+			}
+		}
+	})
+
 	const movePathMutation = useMutation({
 		mutationFn: async (path: string) => {
 			const token = await getToken()
@@ -182,7 +209,8 @@ export function MemoryPage() {
 					title: memoryQuery.data.title,
 					path,
 					updated_at: now,
-					tags: memoryQuery.data.tags
+					tags: memoryQuery.data.tags,
+					active: 1
 				})
 			}
 		}
@@ -233,9 +261,9 @@ export function MemoryPage() {
 						<button
 							type="button"
 							onClick={startEditingTitle}
-							className="block w-full text-left text-sm font-medium text-base-content/70 truncate hover:text-base-content transition-colors cursor-text"
+							className={`block w-full text-left text-sm font-medium truncate transition-colors cursor-text ${memoryQuery.data.active === 0 ? 'text-base-content/30 line-through hover:text-base-content/50' : 'text-base-content/70 hover:text-base-content'}`}
 						>
-							{memoryQuery.data.title ?? <span className="text-base-content/30 italic">Untitled</span>}{hasPendingTimer || saveMutation.isPending ? '*' : ''}
+							{memoryQuery.data.title ?? <span className="italic">Untitled</span>}{hasPendingTimer || saveMutation.isPending ? '*' : ''}
 						</button>
 					)
 				) : undefined
@@ -260,15 +288,27 @@ export function MemoryPage() {
 						<FiFolder className="w-4 h-4" />
 						<span className="hidden sm:inline">Move</span>
 					</button>
-					<button
-						type="button"
-						onClick={() => archiveMutation.mutate()}
-						disabled={archiveMutation.isPending}
-						className="btn btn-ghost btn-sm text-error font-mono"
-					>
-						<FiArchive className="w-4 h-4" />
-						<span className="hidden sm:inline">Delete</span>
-					</button>
+					{memoryQuery.data?.active === 0 ? (
+						<button
+							type="button"
+							onClick={() => reviveMutation.mutate()}
+							disabled={reviveMutation.isPending}
+							className="btn btn-ghost btn-sm text-success font-mono"
+						>
+							<FiRefreshCw className="w-4 h-4" />
+							<span className="hidden sm:inline">Revive</span>
+						</button>
+					) : (
+						<button
+							type="button"
+							onClick={() => archiveMutation.mutate()}
+							disabled={archiveMutation.isPending}
+							className="btn btn-ghost btn-sm text-error font-mono"
+						>
+							<FiArchive className="w-4 h-4" />
+							<span className="hidden sm:inline">Delete</span>
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={() => navigate({ to: '/' })}
@@ -281,6 +321,7 @@ export function MemoryPage() {
 			value={isLoading ? staleTextRef.current : editorText}
 			onChange={isLoading ? () => {} : setEditorText}
 			isLoading={isLoading}
+			readOnly={memoryQuery.data?.active === 0}
 			memoryId={id}
 			getToken={getToken}
 			updatedAt={memoryQuery.data?.updated_at}

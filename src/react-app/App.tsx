@@ -130,7 +130,7 @@ function App() {
 			localStorage.setItem(lsText, '')
 			localStorage.removeItem(lsDirty)
 			localStorage.setItem(lsId, data.newDraftId)
-			upsertEntry({ id: data.submittedId, title: null, path, updated_at: '', tags: [] })
+			upsertEntry({ id: data.submittedId, title: null, path, updated_at: '', tags: [], active: 1 })
 			refresh()
 		}
 	})

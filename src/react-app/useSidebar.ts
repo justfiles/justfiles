@@ -7,11 +7,11 @@ export type MemoryMeta = {
 	path: string
 	updated_at: string
 	tags: string[]
+	active: number
 }
 
 type ChangesResult = {
 	upserted: MemoryMeta[]
-	removed: string[]
 }
 
 function lsCacheKey(userId: string) {
@@ -20,7 +20,8 @@ function lsCacheKey(userId: string) {
 
 function loadCache(userId: string): MemoryMeta[] {
 	try {
-		return JSON.parse(localStorage.getItem(lsCacheKey(userId)) ?? '[]')
+		const raw = JSON.parse(localStorage.getItem(lsCacheKey(userId)) ?? '[]') as Array<Partial<MemoryMeta>>
+		return raw.map((e) => ({ ...e, active: e.active ?? 1 }) as MemoryMeta)
 	} catch {
 		return []
 	}
@@ -33,7 +34,6 @@ function saveCache(userId: string, entries: MemoryMeta[]) {
 function applyDelta(cache: MemoryMeta[], delta: ChangesResult): MemoryMeta[] {
 	const map = new Map(cache.map((e) => [e.id, e]))
 	for (const entry of delta.upserted) map.set(entry.id, entry)
-	for (const id of delta.removed) map.delete(id)
 	return [...map.values()].sort((a, b) => a.path.localeCompare(b.path))
 }
 
@@ -50,7 +50,6 @@ export function useSidebar() {
 		const token = await getToken()
 		if (!token) return
 
-		// Read current cache directly from localStorage to avoid stale closure
 		const effectiveSince = since ?? maxUpdatedAt(loadCache(userId))
 
 		try {
@@ -59,8 +58,8 @@ export function useSidebar() {
 			})
 			if (!res.ok) return
 			const delta = (await res.json()) as ChangesResult
-			if (delta.upserted.length === 0 && delta.removed.length === 0) return
-			setEntries((prev: MemoryMeta[]) => {
+			if (delta.upserted.length === 0) return
+			setEntries((prev) => {
 				const next = applyDelta(prev, delta)
 				saveCache(userId, next)
 				return next
@@ -70,10 +69,8 @@ export function useSidebar() {
 		}
 	}, [getToken, isSignedIn, userId])
 
-	// Force a full re-sync from the server, ignoring the local cursor
 	const refresh = useCallback(() => fetchChanges(''), [fetchChanges])
 
-	// Fetch on mount and on window focus
 	useEffect(() => {
 		fetchChanges()
 		const onFocus = () => fetchChanges()
@@ -81,19 +78,18 @@ export function useSidebar() {
 		return () => window.removeEventListener('focus', onFocus)
 	}, [fetchChanges])
 
-	// Optimistically add/update a single entry (call after write/update)
 	const upsertEntry = useCallback((entry: MemoryMeta) => {
-		setEntries((prev: MemoryMeta[]) => {
-			const next = applyDelta(prev, { upserted: [entry], removed: [] })
+		setEntries((prev) => {
+			const next = applyDelta(prev, { upserted: [entry] })
 			if (userId) saveCache(userId, next)
 			return next
 		})
 	}, [userId])
 
-	// Optimistically remove an entry (call after archive/delete)
+	// Optimistically mark as archived (active=0) without removing from the list
 	const removeEntry = useCallback((id: string) => {
-		setEntries((prev: MemoryMeta[]) => {
-			const next = applyDelta(prev, { upserted: [], removed: [id] })
+		setEntries((prev) => {
+			const next = prev.map((e) => e.id === id ? { ...e, active: 0 } : e)
 			if (userId) saveCache(userId, next)
 			return next
 		})

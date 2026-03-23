@@ -11,6 +11,7 @@ type Props = {
 	value: string
 	onChange: (v: string) => void
 	isLoading?: boolean
+	readOnly?: boolean
 	memoryId?: string
 	getToken?: () => Promise<string | null>
 	updatedAt?: string
@@ -22,6 +23,7 @@ export function EditorLayout({
 	value,
 	onChange,
 	isLoading,
+	readOnly,
 	memoryId,
 	getToken,
 	updatedAt
@@ -93,6 +95,7 @@ export function EditorLayout({
 						onChange={onChange}
 						memoryId={memoryId}
 						getToken={getToken}
+						readOnly={readOnly}
 					/>
 				</div>
 			</main>

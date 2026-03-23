@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useState } from 'react'
-import { FiChevronDown, FiChevronRight, FiFile, FiX } from 'react-icons/fi'
+import { FiChevronDown, FiChevronRight, FiFile, FiTrash2, FiX } from 'react-icons/fi'
 import type { MemoryMeta } from './useSidebar'
 
 type TreeNode = {
@@ -94,24 +94,41 @@ type Props = {
 
 export function Sidebar({ entries, onClose }: Props) {
 	const params = useParams({ strict: false }) as { id?: string }
-	const tree = buildTree(entries)
+	const [showArchived, setShowArchived] = useState(false)
+
+	const displayEntries = entries.filter((e) => showArchived ? e.active === 0 : e.active !== 0)
+	const tree = buildTree(displayEntries)
 
 	return (
 		<div className="flex flex-col h-full select-none">
 			<div className="flex items-center justify-between px-3 py-2 shrink-0 border-b border-base-300">
-				<span className="text-xs font-semibold font-mono text-base-content/50 uppercase tracking-wider">Memories</span>
-				<button
-					type="button"
-					onClick={onClose}
-					title="Close sidebar"
-					className="p-1 rounded hover:bg-base-300 text-base-content/40 hover:text-base-content/80 transition-colors cursor-pointer"
-				>
-					<FiX className="w-3.5 h-3.5" />
-				</button>
+				<span className="text-xs font-semibold font-mono text-base-content/50 uppercase tracking-wider">
+					{showArchived ? 'Recently Deleted' : 'Memories'}
+				</span>
+				<div className="flex items-center gap-1">
+					<button
+						type="button"
+						onClick={() => setShowArchived((v) => !v)}
+						title={showArchived ? 'Back to memories' : 'Recently deleted'}
+						className={`p-1 rounded transition-colors cursor-pointer ${showArchived ? 'text-error/70 bg-error/10 hover:bg-error/20' : 'text-base-content/40 hover:bg-base-300 hover:text-base-content/80'}`}
+					>
+						<FiTrash2 className="w-3.5 h-3.5" />
+					</button>
+					<button
+						type="button"
+						onClick={onClose}
+						title="Close sidebar"
+						className="p-1 rounded hover:bg-base-300 text-base-content/40 hover:text-base-content/80 transition-colors cursor-pointer"
+					>
+						<FiX className="w-3.5 h-3.5" />
+					</button>
+				</div>
 			</div>
 			<div className="flex-1 overflow-y-auto py-2">
-				{entries.length === 0 ? (
-					<p className="px-3 py-2 text-xs text-base-content/30 font-mono">No memories yet</p>
+				{displayEntries.length === 0 ? (
+					<p className="px-3 py-2 text-xs text-base-content/30 font-mono">
+						{showArchived ? 'No recently deleted items' : 'No memories yet'}
+					</p>
 				) : (
 					<FolderNode node={tree} depth={0} activeId={params.id} />
 				)}

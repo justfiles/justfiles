@@ -414,7 +414,8 @@ export const ListInputSchema = z.object({
 	tags: z.union([z.string(), z.array(z.string())]).optional(),
 	limit: z.number().optional(),
 	created: DateRangeSchema.optional(),
-	updated: DateRangeSchema.optional()
+	updated: DateRangeSchema.optional(),
+	archived: z.boolean().optional()
 })
 
 export type ListInput = z.infer<typeof ListInputSchema>
@@ -451,11 +452,11 @@ export type MemoryMeta = {
 	path: string
 	updated_at: string
 	tags: string[]
+	active: number
 }
 
 export type ChangesResult = {
 	upserted: MemoryMeta[]
-	removed: string[]
 }
 
 export type SearchResult = {
@@ -483,6 +484,7 @@ export type Memory = {
 	source: string | null
 	created_at: string
 	updated_at: string
+	active: number
 	links: LinkInfo[]
 	tags: string[]
 }
@@ -1125,7 +1127,7 @@ export function createStore(
 		async list(input: ListInput): Promise<ListResult[]> {
 			const limit = input.limit ?? 50
 			const tags = normalizeTags(input.tags)
-			const conditions: string[] = ['m.active = 1', "m.path NOT LIKE '*%'"]
+			const conditions: string[] = [input.archived ? 'm.active = 0' : 'm.active = 1', "m.path NOT LIKE '*%'"]
 			const params: SqlValue[] = []
 
 			if (input.created?.after) {
@@ -1207,7 +1209,8 @@ export function createStore(
 				content_hash: unknown
 				created_at: unknown
 				updated_at: unknown
-			}>('SELECT * FROM memories WHERE id = ? AND active = 1 LIMIT 1', [id])
+				active: unknown
+			}>('SELECT * FROM memories WHERE id = ? LIMIT 1', [id])
 
 			if (!memory) return null
 
@@ -1242,6 +1245,7 @@ export function createStore(
 				source: memory.source != null ? String(memory.source) : null,
 				created_at: String(memory.created_at),
 				updated_at: String(memory.updated_at),
+				active: Number(memory.active),
 				tags: tags.map((t) => String(t.tag)),
 				links: [
 					...outgoing.map((l) => ({
@@ -1307,46 +1311,34 @@ export function createStore(
 		},
 
 		async changes(since: string): Promise<ChangesResult> {
-			const upsertedRows = await adapter.query<{
-				id: unknown
-				title: unknown
-				path: unknown
-				updated_at: unknown
-			}>(
-				`SELECT id, title, path, updated_at FROM memories WHERE updated_at > ? AND active = 1 AND path NOT LIKE '*%'`,
+			const rows = await adapter.query<{ id: unknown; title: unknown; path: unknown; updated_at: unknown; active: unknown }>(
+				`SELECT id, title, path, updated_at, active FROM memories WHERE updated_at > ? AND path NOT LIKE '*%'`,
 				[since]
 			)
 
-			const removedRows = await adapter.query<{ id: unknown }>(
-				`SELECT id FROM memories WHERE updated_at > ? AND active = 0 AND path NOT LIKE '*%'`,
-				[since]
-			)
+			if (rows.length === 0) return { upserted: [] }
 
-			let upserted: MemoryMeta[] = []
-			if (upsertedRows.length > 0) {
-				const ids = upsertedRows.map((r) => String(r.id))
-				const tagRows = await adapter.query<{ memory_id: unknown; tag: unknown }>(
-					`SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (${placeholders(ids.length)})`,
-					ids
-				)
-				const tagMap = new Map<string, string[]>()
-				for (const t of tagRows) {
-					const mid = String(t.memory_id)
-					if (!tagMap.has(mid)) tagMap.set(mid, [])
-					tagMap.get(mid)!.push(String(t.tag))
-				}
-				upserted = upsertedRows.map((r) => ({
+			const ids = rows.map((r) => String(r.id))
+			const tagRows = await adapter.query<{ memory_id: unknown; tag: unknown }>(
+				`SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (${placeholders(ids.length)})`,
+				ids
+			)
+			const tagMap = new Map<string, string[]>()
+			for (const t of tagRows) {
+				const mid = String(t.memory_id)
+				if (!tagMap.has(mid)) tagMap.set(mid, [])
+				tagMap.get(mid)!.push(String(t.tag))
+			}
+
+			return {
+				upserted: rows.map((r) => ({
 					id: String(r.id),
 					title: r.title != null ? String(r.title) : null,
 					path: String(r.path),
 					updated_at: String(r.updated_at),
-					tags: tagMap.get(String(r.id)) ?? []
-				}))
-			}
-
-			return {
-				upserted,
-				removed: removedRows.map((r) => String(r.id))
+					active: Number(r.active),
+					tags: tagMap.get(String(r.id)) ?? [],
+				})),
 			}
 		},
 

@@ -353,23 +353,34 @@ type Props = {
 	onChange: (v: string) => void
 	memoryId?: string
 	getToken?: () => Promise<string | null>
+	readOnly?: boolean
 }
 
-export function Editor({ value, onChange, memoryId, getToken }: Props) {
+export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
 	const prevValueRef = useRef(value)
 	const onChangeRef = useRef(onChange)
 	onChangeRef.current = onChange
+	const readOnlyRef = useRef(readOnly)
+	readOnlyRef.current = readOnly
 	const memoryIdRef = useRef(memoryId)
 	memoryIdRef.current = memoryId
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 
 	// Mount editor once
+	// Sync readOnly changes — dispatch a no-op transaction so ProseMirror re-evaluates editable()
+	useEffect(() => {
+		const view = viewRef.current
+		if (!view) return
+		view.dispatch(view.state.tr)
+	}, [readOnly])
+
 	useEffect(() => {
 		const view = new EditorView(containerRef.current!, {
 			state: buildState(prevValueRef.current),
+			editable: () => !readOnlyRef.current,
 			nodeViews: memoryId ? { image: makeImageNodeView(memoryId) } : {},
 			dispatchTransaction(tr) {
 				const newState = view.state.apply(tr)
@@ -409,7 +420,7 @@ export function Editor({ value, onChange, memoryId, getToken }: Props) {
 		})
 		viewRef.current = view
 		view.focus()
-		return () => view.destroy()
+		return () => { view.destroy(); viewRef.current = null }
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
 
