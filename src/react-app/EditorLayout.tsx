@@ -8,6 +8,7 @@ import { useSidebarActions } from './SidebarContext'
 type Props = {
 	headerLeft?: ReactNode
 	headerRight?: ReactNode
+	footer?: ReactNode
 	value: string
 	onChange: (v: string) => void
 	isLoading?: boolean
@@ -20,6 +21,7 @@ type Props = {
 export function EditorLayout({
 	headerLeft,
 	headerRight,
+	footer,
 	value,
 	onChange,
 	isLoading,
@@ -97,6 +99,7 @@ export function EditorLayout({
 						getToken={getToken}
 						readOnly={readOnly}
 					/>
+					{footer}
 				</div>
 			</main>
 		</div>

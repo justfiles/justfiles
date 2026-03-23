@@ -3,10 +3,56 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import React, { useEffect, useRef, useState } from 'react'
 import { FiArchive, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
-import type { Memory } from '../core/store'
+import type { LinkInfo, Memory } from '../core/store'
 import { EditorLayout } from './EditorLayout'
 import { useSidebarActions } from './SidebarContext'
 import { useApiClient } from './useApiClient'
+
+function LinkedMemories({ links }: { links: LinkInfo[] }) {
+	const navigate = useNavigate()
+	const [open, setOpen] = useState(false)
+
+	if (links.length === 0) return null
+
+	return (
+		<div className="mt-6 border-t border-base-200 pt-4">
+			<button
+				type="button"
+				onClick={() => setOpen((v) => !v)}
+				className="flex items-center gap-2 text-xs text-base-content/40 hover:text-base-content/70 font-mono transition-colors"
+			>
+				<span>{open ? '▾' : '▸'}</span>
+				<span>{links.length} linked {links.length === 1 ? 'memory' : 'memories'}</span>
+			</button>
+			{open && (
+				<ul className="mt-2 flex flex-col gap-1">
+					{links.map((link, i) => {
+						const linkedId = link.to_id ?? link.from_id!
+						const direction = link.to_id ? '→' : '←'
+						return (
+							<li key={i}>
+								<button
+									type="button"
+									onClick={() => navigate({ to: '/memory/$id', params: { id: linkedId } })}
+									className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded hover:bg-base-200 transition-colors group"
+								>
+									<span className="text-base-content/30 font-mono text-xs shrink-0">{direction}</span>
+									<span className="text-sm text-base-content/70 group-hover:text-base-content truncate">
+										{link.title ?? <span className="italic text-base-content/40">Untitled</span>}
+									</span>
+									<span className="text-xs text-base-content/30 font-mono shrink-0 ml-auto">{link.rel_type}</span>
+								</button>
+								{link.reason && (
+									<p className="ml-6 text-xs text-base-content/30 font-mono px-2">{link.reason}</p>
+								)}
+							</li>
+						)
+					})}
+				</ul>
+			)}
+		</div>
+	)
+}
 
 export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
@@ -284,6 +330,7 @@ export function MemoryPage() {
 			memoryId={id}
 			getToken={getToken}
 			updatedAt={memoryQuery.data?.updated_at}
+		footer={memoryQuery.data ? <LinkedMemories links={memoryQuery.data.links} /> : undefined}
 		/>
 	)
 }

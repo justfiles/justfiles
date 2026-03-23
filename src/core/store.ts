@@ -509,12 +509,14 @@ export type Memory = {
 	tags: string[]
 }
 
-type LinkInfo = {
+export type LinkInfo = {
 	from_id?: string
 	to_id?: string
 	rel_type: string
 	reason: string | null
 	created_at: string
+	title: string | null
+	path: string
 }
 
 // ---- Migration ----
@@ -1304,8 +1306,8 @@ export function createStore(
 
 			const [tags, outgoing, incoming, contentRows] = await Promise.all([
 				adapter.query<{ tag: unknown }>('SELECT tag FROM memory_tags WHERE memory_id = ?', [id]),
-				adapter.query<{ to_id: unknown; rel_type: unknown; reason: unknown; created_at: unknown }>(
-					'SELECT to_id, rel_type, reason, created_at FROM memory_links WHERE from_id = ?',
+				adapter.query<{ to_id: unknown; rel_type: unknown; reason: unknown; created_at: unknown; title: unknown; path: unknown }>(
+					'SELECT ml.to_id, ml.rel_type, ml.reason, ml.created_at, m.title, m.path FROM memory_links ml JOIN memories m ON m.id = ml.to_id WHERE ml.from_id = ?',
 					[id]
 				),
 				adapter.query<{
@@ -1313,7 +1315,9 @@ export function createStore(
 					rel_type: unknown
 					reason: unknown
 					created_at: unknown
-				}>('SELECT from_id, rel_type, reason, created_at FROM memory_links WHERE to_id = ?', [id]),
+					title: unknown
+					path: unknown
+				}>('SELECT ml.from_id, ml.rel_type, ml.reason, ml.created_at, m.title, m.path FROM memory_links ml JOIN memories m ON m.id = ml.from_id WHERE ml.to_id = ?', [id]),
 				adapter.query<{ text: unknown }>('SELECT text FROM content WHERE hash = ?', [
 					String(memory.content_hash)
 				])
@@ -1340,13 +1344,17 @@ export function createStore(
 						to_id: String(l.to_id),
 						rel_type: String(l.rel_type),
 						reason: l.reason != null ? String(l.reason) : null,
-						created_at: String(l.created_at)
+						created_at: String(l.created_at),
+						title: l.title != null ? String(l.title) : null,
+						path: String(l.path)
 					})),
 					...incoming.map((l) => ({
 						from_id: String(l.from_id),
 						rel_type: String(l.rel_type),
 						reason: l.reason != null ? String(l.reason) : null,
-						created_at: String(l.created_at)
+						created_at: String(l.created_at),
+						title: l.title != null ? String(l.title) : null,
+						path: String(l.path)
 					}))
 				]
 			}
