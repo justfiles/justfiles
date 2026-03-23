@@ -421,20 +421,31 @@ function registerMcpTools(server: McpServer, store: Store) {
 		'get_memory',
 		{
 			description:
-				'Retrieve the full content of a specific memory by its ID. Use this after a search to read the complete text, metadata, and tags of a memory.',
+				'Retrieve the full content of a specific memory by its ID or path. Provide either id (from search results) or path (e.g. /readme).',
 			inputSchema: {
 				id: z
 					.string()
-					.describe(
-						'The memory ID to retrieve (obtained from write_memory or search_memory results)'
-					)
+					.optional()
+					.describe('The memory ID to retrieve (obtained from write_memory or search_memory results)'),
+				path: z
+					.string()
+					.optional()
+					.describe('The memory path to retrieve (e.g. /readme, /projects/foo)')
 			}
 		},
-		async ({ id }) => {
+		async ({ id, path }) => {
 			try {
-				const memory = await store.get(id)
+				let memory = null
+				if (id) {
+					memory = await store.get(id)
+				} else if (path) {
+					const found = await store.findByPath(path)
+					if (found) memory = await store.get(found.id)
+				} else {
+					return { content: [{ type: 'text', text: 'Provide either id or path' }], isError: true }
+				}
 				if (!memory)
-					return { content: [{ type: 'text', text: `Memory not found: ${id}` }], isError: true }
+					return { content: [{ type: 'text', text: `Memory not found` }], isError: true }
 				const lines = [
 					`ID: ${memory.id}`,
 					`Title: ${memory.title ?? '(none)'}`,
