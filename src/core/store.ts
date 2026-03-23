@@ -57,7 +57,7 @@ export interface Store {
 	/**
 	 * list memories by path/tags without a search query, ordered by created_at desc
 	 */
-	list(input: ListInput): Promise<ListResult[]>
+	list(input: ListInput): Promise<ListResponse>
 
 	/**
 	 * get a memory by id, returns null if not found
@@ -413,6 +413,7 @@ export const ListInputSchema = z.object({
 	path_pattern: z.string().optional(),
 	tags: z.union([z.string(), z.array(z.string())]).optional(),
 	limit: z.number().optional(),
+	cursor: z.string().optional(),
 	created: DateRangeSchema.optional(),
 	updated: DateRangeSchema.optional(),
 	archived: z.boolean().optional()
@@ -436,6 +437,11 @@ export type ListResult = {
 	title: string | null
 	tags: string[]
 	source: string | null
+}
+
+export type ListResponse = {
+	results: ListResult[]
+	next_cursor: string | null
 }
 
 export type RecentResult = {
@@ -1124,11 +1130,24 @@ export function createStore(
 			recentCache = null
 		},
 
-		async list(input: ListInput): Promise<ListResult[]> {
+		async list(input: ListInput): Promise<ListResponse> {
 			const limit = input.limit ?? 50
 			const tags = normalizeTags(input.tags)
 			const conditions: string[] = [input.archived ? 'm.active = 0' : 'm.active = 1', "m.path NOT LIKE '*%'"]
 			const params: SqlValue[] = []
+
+			// Decode cursor: { updated_at: string, id: string }
+			let cursorTs: string | null = null
+			let cursorId: string | null = null
+			if (input.cursor) {
+				try {
+					const decoded = JSON.parse(atob(input.cursor)) as { updated_at: string; id: string }
+					cursorTs = decoded.updated_at
+					cursorId = decoded.id
+				} catch {
+					// ignore malformed cursor, treat as first page
+				}
+			}
 
 			if (input.created?.after) {
 				conditions.push('m.created_at >= ?')
@@ -1160,25 +1179,36 @@ export function createStore(
 				params.push(likePattern)
 			}
 
-			let sql = 'SELECT DISTINCT m.id, m.path, m.title, m.source FROM memories m'
+			// Keyset cursor condition: items updated before the cursor position
+			if (cursorTs !== null && cursorId !== null) {
+				conditions.push('(m.updated_at < ? OR (m.updated_at = ? AND m.id < ?))')
+				params.push(cursorTs, cursorTs, cursorId)
+			}
+
+			let sql = 'SELECT DISTINCT m.id, m.path, m.title, m.source, m.updated_at FROM memories m'
 			if (tags.length > 0) {
 				sql += ' JOIN memory_tags mt ON mt.memory_id = m.id'
 				conditions.push(`mt.tag IN (${placeholders(tags.length)})`)
 				params.push(...tags)
 			}
-			sql += ` WHERE ${conditions.join(' AND ')} ORDER BY m.created_at DESC LIMIT ?`
-			params.push(limit)
+			// Fetch limit+1 to detect if there's a next page
+			sql += ` WHERE ${conditions.join(' AND ')} ORDER BY m.updated_at DESC, m.id DESC LIMIT ?`
+			params.push(limit + 1)
 
 			const rows = await adapter.query<{
 				id: unknown
 				path: unknown
 				title: unknown
 				source: unknown
+				updated_at: unknown
 			}>(sql, params)
 
-			if (rows.length === 0) return []
+			if (rows.length === 0) return { results: [], next_cursor: null }
 
-			const ids = rows.map((r) => String(r.id))
+			const hasMore = rows.length > limit
+			const pageRows = hasMore ? rows.slice(0, limit) : rows
+
+			const ids = pageRows.map((r) => String(r.id))
 			const tagRows = await adapter.query<{ memory_id: unknown; tag: unknown }>(
 				`SELECT memory_id, tag FROM memory_tags WHERE memory_id IN (${placeholders(ids.length)})`,
 				ids
@@ -1190,13 +1220,21 @@ export function createStore(
 				tagMap.get(mid)!.push(String(t.tag))
 			}
 
-			return rows.map((r) => ({
+			const results = pageRows.map((r) => ({
 				id: String(r.id),
 				path: String(r.path),
 				title: r.title != null ? String(r.title) : null,
 				tags: tagMap.get(String(r.id)) ?? [],
 				source: r.source != null ? String(r.source) : null
 			}))
+
+			let next_cursor: string | null = null
+			if (hasMore) {
+				const last = pageRows[pageRows.length - 1]
+				next_cursor = btoa(JSON.stringify({ updated_at: String(last.updated_at), id: String(last.id) }))
+			}
+
+			return { results, next_cursor }
 		},
 
 		async get(id: string): Promise<Memory | null> {

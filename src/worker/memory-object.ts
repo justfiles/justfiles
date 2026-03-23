@@ -274,7 +274,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 		'list_memories',
 		{
 			description:
-				'List memories by path prefix and/or tags without a search query. Use this to browse or enumerate memories at a known location (e.g. all inbox notes, all notes tagged "todo"). Results are ordered by created_at descending.',
+				'List memories by path prefix and/or tags without a search query. Use this to browse or enumerate memories at a known location (e.g. all inbox notes, all notes tagged "todo"). Results are ordered by updated_at descending. Use next_cursor from the response to fetch the next page.',
 			inputSchema: {
 				path_prefix: z
 					.string()
@@ -298,6 +298,10 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.max(200)
 					.optional()
 					.describe('Maximum number of results to return (default: 50)'),
+				cursor: z
+					.string()
+					.optional()
+					.describe('Pagination cursor from a previous response next_cursor field. Omit for the first page.'),
 				created: z
 					.object({
 						after: z
@@ -328,17 +332,18 @@ function registerMcpTools(server: McpServer, store: Store) {
 		},
 		async (args) => {
 			try {
-				const results = await store.list(args)
+				const { results, next_cursor } = await store.list(args)
 				if (results.length === 0) {
 					return { content: [{ type: 'text', text: 'No memories found.' }] }
 				}
-				const text = results
-					.map((r) => {
-						const tags = r.tags.length > 0 ? ` [${r.tags.join(', ')}]` : ''
-						return `[${r.id}] ${r.path}${tags}${r.title ? ` — ${r.title}` : ''}`
-					})
-					.join('\n')
-				return { content: [{ type: 'text', text }] }
+				const lines = results.map((r) => {
+					const tags = r.tags.length > 0 ? ` [${r.tags.join(', ')}]` : ''
+					return `[${r.id}] ${r.path}${tags}${r.title ? ` — ${r.title}` : ''}`
+				})
+				if (next_cursor) {
+					lines.push(`\nnext_cursor: ${next_cursor}`)
+				}
+				return { content: [{ type: 'text', text: lines.join('\n') }] }
 			} catch (err) {
 				return {
 					content: [

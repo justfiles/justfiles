@@ -38,8 +38,8 @@ export function createApi(store: Store) {
 		})
 		.post('/v1/list', zValidator('json', ListInputSchema), async (c) => {
 			const input = c.req.valid('json')
-			const results = await store.list(input)
-			return c.json({ results })
+			const response = await store.list(input)
+			return c.json(response)
 		})
 		.get('/v1/memory/:id', zValidator('param', IdParamSchema), async (c) => {
 			const { id } = c.req.param()
