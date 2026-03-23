@@ -26,7 +26,7 @@ if (command === 'write') {
 	rl.close()
 
 	const store = await getStore()
-	const id = await store.write({ text })
+	const id = await store.write({ content: text })
 	console.log(`written: ${id}`)
 } else if (command === 'search') {
 	const rl = createInterface({ input: process.stdin, output: process.stdout })

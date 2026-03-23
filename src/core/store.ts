@@ -357,7 +357,7 @@ function hasStrongExactSignal(exact: CandidateChunk[]): boolean {
 // ---- Types ----
 
 export const WriteInputSchema = z.object({
-	text: z.string(),
+	content: z.string(),
 	path: z.string().optional(), // if not provided, defaults to inbox/<timestamp> (always creates)
 	title: z.string().optional(),
 	scope: z.string().optional(),
@@ -397,7 +397,7 @@ export const UpdateInputSchema = z.object({
 	path: z.string().optional(),
 	title: z.string().optional(),
 	tags: z.array(z.string()).optional(),
-	text: z.string().optional(),
+	content: z.string().optional(),
 	source: z.string().optional()
 })
 
@@ -746,7 +746,7 @@ export function createStore(
 
 	return {
 		async write(input: WriteInput): Promise<string> {
-			const normalized = normalizeText(input.text)
+			const normalized = normalizeText(input.content)
 			const hash = await sha256hex(normalized)
 			const now = new Date().toISOString()
 			const scope = input.scope ?? 'personal'
@@ -943,8 +943,8 @@ export function createStore(
 			if (!mem) throw new Error(`Memory not found: ${input.id}`)
 
 			let generatedTitle: string | null = null
-			if (input.text !== undefined && input.title === undefined && !mem.title && llm) {
-				const normalized = normalizeText(input.text)
+			if (input.content !== undefined && input.title === undefined && !mem.title && llm) {
+				const normalized = normalizeText(input.content)
 				if (normalized.length >= 150) {
 					generatedTitle = (await llm.generateMetadata(normalized)).title ?? null
 				}
@@ -977,8 +977,8 @@ export function createStore(
 				}
 
 				// content: write text, defer re-chunking and re-embedding to processEmbedding()
-				if (input.text !== undefined) {
-					const normalized = normalizeText(input.text)
+				if (input.content !== undefined) {
+					const normalized = normalizeText(input.content)
 					const hash = await sha256hex(normalized)
 
 					// insert new content (must come before UPDATE memories SET content_hash to satisfy FTS trigger)
@@ -1010,7 +1010,7 @@ export function createStore(
 				])
 			})
 			recentCache = null
-			if (input.text !== undefined) await notifyUpdate()
+			if (input.content !== undefined) await notifyUpdate()
 		},
 
 		async archive(id: string, source?: string): Promise<void> {

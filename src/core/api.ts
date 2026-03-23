@@ -94,7 +94,7 @@ export function createApi(store: Store) {
 		.get('/v1/draft', async (c) => {
 			const existing = await store.findByPath('*draft*')
 			if (existing) return c.json(existing)
-			const id = await store.write({ path: '*draft*', text: '' })
+			const id = await store.write({ path: '*draft*', content: '' })
 			return c.json({ id, raw_text: '' })
 		})
 		.post('/v1/links', zValidator('json', LinkInputSchema), async (c) => {

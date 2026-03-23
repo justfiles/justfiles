@@ -108,7 +108,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 			description:
 				'Write a memory at a path — creates or overwrites. Use this to save text content, notes, events, or any information that should be remembered for future retrieval.',
 			inputSchema: {
-				text: z.string().describe('The text content to store as a memory'),
+				content: z.string().describe('The text content to store as a memory'),
 				path: z
 					.string()
 					.optional()
@@ -226,7 +226,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 		'update_memory',
 		{
 			description:
-				'Update an existing memory. Supports updating metadata (path, title, tags) and/or content (text) independently. At least one field must be provided. Updating text rechunks and re-embeds the content.',
+				'Update an existing memory. Supports updating metadata (path, title, tags) and/or content independently. At least one field must be provided. Updating content rechunks and re-embeds.',
 			inputSchema: {
 				id: z.string().describe('The memory ID to update'),
 				path: z
@@ -238,19 +238,19 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.array(z.string())
 					.optional()
 					.describe('Replacement tag list — fully replaces existing tags'),
-				text: z
+				content: z
 					.string()
 					.optional()
 					.describe('New content — replaces existing text, rechunks and re-embeds')
 			}
 		},
 		async (args) => {
-			if (!args.path && !args.title && !args.tags && !args.text) {
+			if (!args.path && !args.title && !args.tags && !args.content) {
 				return {
 					content: [
 						{
 							type: 'text',
-							text: 'Error: at least one field (path, title, tags, text) must be provided'
+							text: 'Error: at least one field (path, title, tags, content) must be provided'
 						}
 					],
 					isError: true
