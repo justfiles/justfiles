@@ -7,11 +7,11 @@ allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__get_memory
 
 Surface the top 3 priority tasks for the given project and help the user pick one.
 
+Before starting, call `mcp__ghostore__get_memory` with `path: "readme"` to load the KB conventions (folder structure — todos live at `/<project>/todo/`).
+
 ## Step 1 — Fetch all todos
 
-The argument is the project name. Todos live at `/<project>/todo/` per the KB convention.
-
-Call `mcp__ghostore__list_memories` with:
+The argument is the project name. Call `mcp__ghostore__list_memories` with:
 - `path_prefix`: `"<project>/todo"`
 - `limit`: 30
 

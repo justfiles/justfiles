@@ -1,0 +1,12 @@
+{
+	"name": "ghostore-local",
+	"owner": {
+		"name": "xiaoxing"
+	},
+	"plugins": [
+		{
+			"name": "ghostore",
+			"source": "./"
+		}
+	]
+}

@@ -7,6 +7,8 @@ allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__search_memory, mcp__
 
 Summarize unprocessed log notes into compact, durable knowledge notes, then archive the originals.
 
+Before starting, call `mcp__ghostore__get_memory` with `path: "readme"` to load the KB conventions (path conventions and tag meanings).
+
 ## Input
 
 `$ARGUMENTS` specifies the time window:

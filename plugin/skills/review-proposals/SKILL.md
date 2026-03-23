@@ -7,6 +7,8 @@ allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__get_memory, mcp__gho
 
 Guide the user through reviewing and resolving conflict proposals.
 
+Conflict proposals are created by `/enrich` when a new note contradicts an existing one. Run `/enrich` first if the inbox has unprocessed notes.
+
 ## Step 1 — Find pending proposals
 
 Call `mcp__ghostore__list_memories` with:

@@ -1,0 +1,9 @@
+{
+	"name": "ghostore",
+	"description": "Ghostore knowledge base skills — capture, enrich, review, summarize, and surface tasks from the ghostore memory store.",
+	"version": "1.0.0",
+	"author": {
+		"name": "xiaoxing"
+	},
+	"repository": "https://github.com/xiaoxing/ghostore"
+}

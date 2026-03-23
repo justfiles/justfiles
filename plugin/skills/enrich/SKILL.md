@@ -7,6 +7,8 @@ allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__search_memory, mcp__
 
 Process all inbox notes through the enrichment pipeline.
 
+Before starting, call `mcp__ghostore__get_memory` with `path: "readme"` to load the KB conventions (folder structure, path rules, and tag vocabulary).
+
 ## Step 1 — Find inbox notes
 
 Call `mcp__ghostore__list_memories` with:
@@ -74,7 +76,6 @@ Enrichment complete: <n> notes processed
   added:     <n>
   updated:   <n>
   skipped:   <n>
-  linked:    <n>
   linked:    <n>  ← links pending link_memories tool
   conflicts: <n>  ← run /review-proposals to resolve
 ```
