@@ -5,6 +5,7 @@ import { FiSearch } from 'react-icons/fi'
 import { EditorLayout } from './EditorLayout'
 import { ModeSelector } from './ModeSelector'
 import { useSidebarActions } from './SidebarContext'
+import { useApiClient } from './useApiClient'
 import {
 	type Destination,
 	expandTemplate,
@@ -15,6 +16,7 @@ import {
 
 function App() {
 	const { getToken, userId } = useAuth()
+	const api = useApiClient()
 	const [settings] = useState(() => loadSettings(userId!))
 	const [activeDestination, setActiveDestination] = useState<Destination>(() =>
 		getActiveDestination(settings)
@@ -35,13 +37,7 @@ function App() {
 		mutationFn: async (text: string) => {
 			const id = draftIdRef.current
 			if (!id) throw new Error('No draft id')
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
-			const res = await fetch('/api/v1/update', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id, text })
-			})
+			const res = await api.v1.update.$post({ json: { id, text } })
 			if (!res.ok) throw new Error(`Sync failed: ${res.status}`)
 		},
 		onSuccess: () => {
@@ -54,11 +50,10 @@ function App() {
 		let cancelled = false
 		async function init() {
 			try {
-				const token = await getToken()
-				if (!token || cancelled) return
-				const res = await fetch('/api/v1/draft', { headers: { Authorization: `Bearer ${token}` } })
+				if (cancelled) return
+				const res = await api.v1.draft.$get()
 				if (!res.ok || cancelled) return
-				const data = (await res.json()) as { id: string; raw_text: string }
+				const data = await res.json()
 
 				draftIdRef.current = data.id
 				localStorage.setItem(lsId, data.id)
@@ -101,26 +96,16 @@ function App() {
 
 	const submitMutation = useMutation({
 		mutationFn: async ({ text, path }: { text: string; path: string }) => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
 			const submittedId = draftIdRef.current
 			if (!submittedId) throw new Error('No draft id')
 			if (syncTimer.current) clearTimeout(syncTimer.current)
 			// Promote draft to real memory (keeps same id, so asset refs remain valid)
-			const promoteRes = await fetch('/api/v1/update', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id: submittedId, text, path })
-			})
+			const promoteRes = await api.v1.update.$post({ json: { id: submittedId, text, path } })
 			if (!promoteRes.ok) throw new Error(`Submit failed: ${promoteRes.status}`)
 			// Create new blank draft
-			const newDraftRes = await fetch('/api/v1/write', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ path: '*draft*', text: '' })
-			})
+			const newDraftRes = await api.v1.write.$post({ json: { path: '*draft*', text: '' } })
 			if (!newDraftRes.ok) throw new Error(`Draft reset failed: ${newDraftRes.status}`)
-			const { id: newDraftId } = (await newDraftRes.json()) as { id: string }
+			const { id: newDraftId } = await newDraftRes.json()
 			return { submittedId, newDraftId }
 		},
 		onSuccess: (data, { path }) => {

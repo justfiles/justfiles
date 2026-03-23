@@ -1,18 +1,10 @@
 import { useAuth } from '@clerk/clerk-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { hc } from 'hono/client'
+import type { ApiType } from '../core/api'
+import type { MemoryMeta } from '../core/store'
 
-export type MemoryMeta = {
-	id: string
-	title: string | null
-	path: string
-	updated_at: string
-	tags: string[]
-	active: number
-}
-
-type ChangesResult = {
-	upserted: MemoryMeta[]
-}
+export type { MemoryMeta }
 
 function lsCacheKey(userId: string) {
 	return `ghostore:${userId}:sidebar`
@@ -31,9 +23,9 @@ function saveCache(userId: string, entries: MemoryMeta[]) {
 	localStorage.setItem(lsCacheKey(userId), JSON.stringify(entries))
 }
 
-function applyDelta(cache: MemoryMeta[], delta: ChangesResult): MemoryMeta[] {
+function applyDelta(cache: MemoryMeta[], upserted: MemoryMeta[]): MemoryMeta[] {
 	const map = new Map(cache.map((e) => [e.id, e]))
-	for (const entry of delta.upserted) map.set(entry.id, entry)
+	for (const entry of upserted) map.set(entry.id, entry)
 	return [...map.values()].sort((a, b) => a.path.localeCompare(b.path))
 }
 
@@ -45,29 +37,36 @@ export function useSidebar() {
 	const { getToken, isSignedIn, userId } = useAuth()
 	const [entries, setEntries] = useState<MemoryMeta[]>(() => userId ? loadCache(userId) : [])
 
+	const api = useMemo(
+		() =>
+			hc<ApiType>('/api', {
+				headers: async () => {
+					const token = await getToken()
+					return { Authorization: `Bearer ${token ?? ''}` }
+				},
+			}),
+		[getToken],
+	)
+
 	const fetchChanges = useCallback(async (since?: string) => {
 		if (!isSignedIn || !userId) return
-		const token = await getToken()
-		if (!token) return
 
 		const effectiveSince = since ?? maxUpdatedAt(loadCache(userId))
 
 		try {
-			const res = await fetch(`/api/v1/changes?since=${encodeURIComponent(effectiveSince)}`, {
-				headers: { Authorization: `Bearer ${token}` },
-			})
+			const res = await api.v1.changes.$get({ query: { since: effectiveSince } })
 			if (!res.ok) return
-			const delta = (await res.json()) as ChangesResult
+			const delta = await res.json()
 			if (delta.upserted.length === 0) return
 			setEntries((prev) => {
-				const next = applyDelta(prev, delta)
+				const next = applyDelta(prev, delta.upserted)
 				saveCache(userId, next)
 				return next
 			})
 		} catch {
 			// network error — keep serving from cache silently
 		}
-	}, [getToken, isSignedIn, userId])
+	}, [api, isSignedIn, userId])
 
 	const refresh = useCallback(() => fetchChanges(''), [fetchChanges])
 
@@ -80,7 +79,7 @@ export function useSidebar() {
 
 	const upsertEntry = useCallback((entry: MemoryMeta) => {
 		setEntries((prev) => {
-			const next = applyDelta(prev, { upserted: [entry] })
+			const next = applyDelta(prev, [entry])
 			if (userId) saveCache(userId, next)
 			return next
 		})

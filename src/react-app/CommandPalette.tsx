@@ -1,30 +1,11 @@
-import { useAuth } from '@clerk/clerk-react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-
-type SearchResult = {
-	memory_id: string
-	path: string
-	title?: string | null
-	score: number
-	semanticScore?: number
-	ftsScore?: number
-	snippet: string | null
-	occurred_at: string | null
-	source?: string
-}
-
-type RecentResult = {
-	id: string
-	path: string
-	title: string | null
-	tags: string[]
-	updated_at: string
-}
+import type { RecentResult, SearchResult } from '../core/store'
+import { useApiClient } from './useApiClient'
 
 export function CommandPalette() {
-	const { getToken } = useAuth()
+	const api = useApiClient()
 	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState('')
 	const [submittedQuery, setSubmittedQuery] = useState('')
@@ -92,13 +73,9 @@ export function CommandPalette() {
 	const recentQuery = useQuery({
 		queryKey: ['recent'],
 		queryFn: async () => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing token')
-			const r = await fetch('/api/v1/recent?n=5', {
-				headers: { Authorization: `Bearer ${token}` },
-			})
-			const data = (await r.json()) as { results: RecentResult[] }
-			return data.results
+			const r = await api.v1.recent.$get({ query: { n: '5' } })
+			const data = await r.json()
+			return data.results as RecentResult[]
 		},
 		enabled: open,
 		staleTime: 30_000,
@@ -107,32 +84,23 @@ export function CommandPalette() {
 	const searchQuery = useQuery({
 		queryKey: ['search', submittedQuery],
 		queryFn: async () => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing token')
 			if (isPathQuery(submittedQuery)) {
-				const res = await fetch('/api/v1/list', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-					body: JSON.stringify({ path_prefix: submittedQuery.replace(/^\//, '') }),
+				const res = await api.v1.list.$post({
+					json: { path_prefix: submittedQuery.replace(/^\//, '') },
 				})
-				const data = (await res.json()) as { results: { id: string; path: string; title: string | null; occurred_at: string | null; source: string | null }[] }
+				const data = await res.json()
 				return data.results.map((r) => ({
 					memory_id: r.id,
 					path: r.path,
 					title: r.title,
 					score: 0,
 					snippet: null,
-					occurred_at: r.occurred_at,
 					source: r.source ?? undefined,
 				})) as SearchResult[]
 			}
-			const res = await fetch('/api/v1/search', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ query: submittedQuery }),
-			})
-			const data = (await res.json()) as { results: SearchResult[] }
-			return data.results
+			const res = await api.v1.search.$post({ json: { query: submittedQuery } })
+			const data = await res.json()
+			return data.results as SearchResult[]
 		},
 		enabled: !!submittedQuery.trim(),
 		staleTime: 30_000,

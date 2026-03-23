@@ -3,28 +3,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import React, { useEffect, useRef, useState } from 'react'
 import { FiArchive, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
+import type { Memory } from '../core/store'
 import { EditorLayout } from './EditorLayout'
 import { useSidebarActions } from './SidebarContext'
-
-type Memory = {
-	id: string
-	scope: string
-	title: string | null
-	raw_text: string
-	path: string
-	occurred_at: string | null
-	source: string | null
-	created_at: string
-	updated_at: string
-	active: number
-	tags: string[]
-	links: unknown[]
-}
+import { useApiClient } from './useApiClient'
 
 export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
 	const { getToken, userId } = useAuth()
+	const api = useApiClient()
 	const hasDraft = !!(userId && localStorage.getItem(`ghostore:${userId}:draft:text`)?.trim())
 	const [editorText, setEditorText] = useState('')
 	const [hasPendingTimer, setHasPendingTimer] = useState(false)
@@ -40,11 +28,7 @@ export function MemoryPage() {
 	const memoryQuery = useQuery({
 		queryKey: ['memory', id],
 		queryFn: async () => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
-			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}`, {
-				headers: { Authorization: `Bearer ${token}` }
-			})
+			const res = await api.v1.memory[':id'].$get({ param: { id } })
 			if (!res.ok) throw new Error(`Failed: ${res.status}`)
 			return res.json() as Promise<Memory>
 		},
@@ -64,13 +48,7 @@ export function MemoryPage() {
 
 	const saveMutation = useMutation({
 		mutationFn: async (text: string) => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
-			const res = await fetch('/api/v1/update', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id: memoryQuery.data!.id, text })
-			})
+			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, text } })
 			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
 			return text
 		},
@@ -95,13 +73,7 @@ export function MemoryPage() {
 
 	const saveTitleMutation = useMutation({
 		mutationFn: async (title: string) => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
-			const res = await fetch('/api/v1/update', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id: memoryQuery.data!.id, title: title || null })
-			})
+			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, title: title || undefined } })
 			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
 			return title
 		},
@@ -116,7 +88,8 @@ export function MemoryPage() {
 					title: title || null,
 					path: memoryQuery.data.path,
 					updated_at: now,
-					tags: memoryQuery.data.tags
+					tags: memoryQuery.data.tags,
+					active: memoryQuery.data.active
 				})
 			}
 		}
@@ -147,12 +120,7 @@ export function MemoryPage() {
 
 	const archiveMutation = useMutation({
 		mutationFn: async () => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
-			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}/archive`, {
-				method: 'POST',
-				headers: { Authorization: `Bearer ${token}` }
-			})
+			const res = await api.v1.memory[':id'].archive.$post({ param: { id } })
 			if (!res.ok) throw new Error(`Archive failed: ${res.status}`)
 		},
 		onSuccess: () => {
@@ -163,12 +131,7 @@ export function MemoryPage() {
 
 	const reviveMutation = useMutation({
 		mutationFn: async () => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
-			const res = await fetch(`/api/v1/memory/${encodeURIComponent(id)}/revive`, {
-				method: 'POST',
-				headers: { Authorization: `Bearer ${token}` }
-			})
+			const res = await api.v1.memory[':id'].revive.$post({ param: { id } })
 			if (!res.ok) throw new Error(`Revive failed: ${res.status}`)
 		},
 		onSuccess: () => {
@@ -188,13 +151,7 @@ export function MemoryPage() {
 
 	const movePathMutation = useMutation({
 		mutationFn: async (path: string) => {
-			const token = await getToken()
-			if (!token) throw new Error('Missing auth token')
-			const res = await fetch('/api/v1/update', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-				body: JSON.stringify({ id: memoryQuery.data!.id, path })
-			})
+			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, path } })
 			if (!res.ok) throw new Error(`Move failed: ${res.status}`)
 			return path
 		},
