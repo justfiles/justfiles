@@ -236,15 +236,17 @@ export function MemoryPage() {
 						<span className="hidden sm:inline">Search</span>
 						<kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>
 					</button>
-					<button
-						type="button"
-						onClick={handleMove}
-						disabled={movePathMutation.isPending || !memoryQuery.data}
-						className="btn btn-ghost btn-sm font-mono"
-					>
-						<FiFolder className="w-4 h-4" />
-						<span className="hidden sm:inline">Move</span>
-					</button>
+					{memoryQuery.data?.active !== 0 && (
+						<button
+							type="button"
+							onClick={handleMove}
+							disabled={movePathMutation.isPending || !memoryQuery.data}
+							className="btn btn-ghost btn-sm font-mono"
+						>
+							<FiFolder className="w-4 h-4" />
+							<span className="hidden sm:inline">Move</span>
+						</button>
+					)}
 					{memoryQuery.data?.active === 0 ? (
 						<button
 							type="button"
