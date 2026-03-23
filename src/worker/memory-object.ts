@@ -106,14 +106,20 @@ function registerMcpTools(server: McpServer, store: Store) {
 		'write_memory',
 		{
 			description:
-				'Write a memory at a path — creates or overwrites. Use this to save text content, notes, events, or any information that should be remembered for future retrieval.',
+				'Write a memory at a path. Supports three file-system-style modes: w (overwrite, default), a (append to existing), x (exclusive — fail if path exists). Use this to save text content, notes, events, or any information that should be remembered for future retrieval.',
 			inputSchema: {
 				content: z.string().describe('The text content to store as a memory'),
 				path: z
 					.string()
 					.optional()
 					.describe(
-						'Path to organize the memory hierarchically (e.g. "work/meetings", "personal/ideas"). Defaults to inbox/<timestamp>. If a memory already exists at this path, it will be overwritten.'
+						'Path to organize the memory hierarchically (e.g. "work/meetings", "personal/ideas"). Defaults to inbox/<timestamp>.'
+					),
+				mode: z
+					.enum(['w', 'a', 'x'])
+					.optional()
+					.describe(
+						'Write mode (default: "w"). w=overwrite existing content; a=append to existing content separated by a horizontal rule; x=exclusive create, returns error if path already exists.'
 					),
 				title: z.string().optional().describe('Optional title for the memory'),
 				tags: z

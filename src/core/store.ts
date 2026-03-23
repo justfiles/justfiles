@@ -5,6 +5,13 @@ import type { Reranker } from './reranker'
 import type { DbAdapter, SqlValue } from './db'
 import type { VectorStore } from './vector'
 
+export class StoreError extends Error {
+	constructor(public code: 'CONFLICT', message: string, public data?: Record<string, unknown>) {
+		super(message)
+		this.name = 'StoreError'
+	}
+}
+
 /**
  * Interface of the Store - core of the service
  * Make sure the interface here is minimal and dry. It serves as a infrastructure for all behaviours of the system.
@@ -362,7 +369,8 @@ export const WriteInputSchema = z.object({
 	title: z.string().optional(),
 	scope: z.string().optional(),
 	tags: z.array(z.string()).optional(),
-	source: z.string().optional()
+	source: z.string().optional(),
+	mode: z.enum(['w', 'a', 'x']).optional() // w=overwrite (default), a=append, x=exclusive (error if exists)
 })
 
 export const SearchInputSchema = z.object({
@@ -746,12 +754,13 @@ export function createStore(
 
 	return {
 		async write(input: WriteInput): Promise<string> {
-			const normalized = normalizeText(input.content)
-			const hash = await sha256hex(normalized)
+			let normalized = normalizeText(input.content)
+			let hash = await sha256hex(normalized)
 			const now = new Date().toISOString()
 			const scope = input.scope ?? 'personal'
 			const path = input.path ?? `inbox/${now.slice(0, 19).replace(/[:.]/g, '')}`
 			const special = path.startsWith('*')
+			const mode = input.mode ?? 'w'
 
 			let title = input.title ?? null
 
@@ -759,13 +768,24 @@ export function createStore(
 				id: unknown
 				content_hash: unknown
 				title: unknown
+				text: unknown
 			}>(
-				'SELECT id, content_hash, title FROM memories WHERE scope = ? AND path = ? AND active = 1 LIMIT 1',
+				'SELECT m.id, m.content_hash, m.title, c.text FROM memories m JOIN content c ON m.content_hash = c.hash WHERE m.scope = ? AND m.path = ? AND m.active = 1 LIMIT 1',
 				[scope, path]
 			)
 
 			if (existing) {
 				const id = String(existing.id)
+
+				if (mode === 'x') {
+					throw new StoreError('CONFLICT', `Path already exists: ${path}`, { existing_id: id })
+				}
+
+				if (mode === 'a') {
+					normalized = String(existing.text) + '\n\n---\n\n' + normalized
+					hash = await sha256hex(normalized)
+				}
+
 				if (String(existing.content_hash) === hash) return id
 
 				if (!title && !special && !existing.title && llm) {

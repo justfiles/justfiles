@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { WriteInputSchema, LinkInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, type Store } from './store'
+import { WriteInputSchema, LinkInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, StoreError, type Store } from './store'
 
 const ChangesQuerySchema = z.object({ since: z.string().default('') })
 const RecentQuerySchema = z.object({ n: z.string().optional() })
@@ -22,9 +22,16 @@ export function createApi(store: Store) {
 			return c.json({})
 		})
 		.post('/v1/write', zValidator('json', WriteInputSchema), async (c) => {
-			const input = c.req.valid('json')
-			const id = await store.write(input)
-			return c.json({ id })
+			try {
+				const input = c.req.valid('json')
+				const id = await store.write(input)
+				return c.json({ id })
+			} catch (err) {
+				if (err instanceof StoreError && err.code === 'CONFLICT') {
+					return c.json({ error: err.message, ...err.data }, 409)
+				}
+				throw err
+			}
 		})
 		.post('/v1/search', zValidator('json', SearchInputSchema), async (c) => {
 			const input = c.req.valid('json')
