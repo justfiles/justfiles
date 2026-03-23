@@ -36,12 +36,20 @@ type FolderNodeProps = {
 	showArchived: boolean
 }
 
+function hasVisibleItems(node: TreeNode, showArchived: boolean): boolean {
+	const visibleEntries = node.entries.filter((e) => showArchived || e.active !== 0)
+	if (visibleEntries.length > 0) return true
+	return [...node.children.values()].some((child) => hasVisibleItems(child, showArchived))
+}
+
 function FolderNode({ node, depth, activeId, showArchived }: FolderNodeProps) {
 	const [open, setOpen] = useState(true)
 	const navigate = useNavigate()
 
 	const visibleEntries = node.entries.filter((e) => showArchived || e.active !== 0)
-	const hasChildren = node.children.size > 0 || visibleEntries.length > 0
+	const hasChildren = visibleEntries.length > 0 || [...node.children.values()].some((child) => hasVisibleItems(child, showArchived))
+
+	if (node.name && !hasChildren) return null
 
 	return (
 		<div>

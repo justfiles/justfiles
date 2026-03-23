@@ -48,7 +48,7 @@ export function MemoryPage() {
 
 	const saveMutation = useMutation({
 		mutationFn: async (text: string) => {
-			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, text } })
+			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, content: text } })
 			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
 			return text
 		},

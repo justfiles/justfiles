@@ -37,7 +37,7 @@ function App() {
 		mutationFn: async (text: string) => {
 			const id = draftIdRef.current
 			if (!id) throw new Error('No draft id')
-			const res = await api.v1.update.$post({ json: { id, text } })
+			const res = await api.v1.update.$post({ json: { id, content: text } })
 			if (!res.ok) throw new Error(`Sync failed: ${res.status}`)
 		},
 		onSuccess: () => {
@@ -100,10 +100,12 @@ function App() {
 			if (!submittedId) throw new Error('No draft id')
 			if (syncTimer.current) clearTimeout(syncTimer.current)
 			// Promote draft to real memory (keeps same id, so asset refs remain valid)
-			const promoteRes = await api.v1.update.$post({ json: { id: submittedId, text, path } })
+			const promoteRes = await api.v1.update.$post({
+				json: { id: submittedId, content: text, path }
+			})
 			if (!promoteRes.ok) throw new Error(`Submit failed: ${promoteRes.status}`)
 			// Create new blank draft
-			const newDraftRes = await api.v1.write.$post({ json: { path: '*draft*', text: '' } })
+			const newDraftRes = await api.v1.write.$post({ json: { path: '*draft*', content: '' } })
 			if (!newDraftRes.ok) throw new Error(`Draft reset failed: ${newDraftRes.status}`)
 			const { id: newDraftId } = await newDraftRes.json()
 			return { submittedId, newDraftId }
@@ -145,12 +147,13 @@ function App() {
 		saveSettings({ lastUsedDestinationId: dest.id }, userId!)
 	}
 
-
 	return (
 		<EditorLayout
 			headerLeft={
 				<div className="flex items-center gap-2 min-w-0">
-					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">draft{hasPendingTimer || syncMutation.isPending ? '*' : ''}</span>
+					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">
+						draft{hasPendingTimer || syncMutation.isPending ? '*' : ''}
+					</span>
 					<ModeSelector
 						destinations={settings.destinations}
 						active={activeDestination}
@@ -160,7 +163,7 @@ function App() {
 			}
 			headerRight={
 				<>
-<button
+					<button
 						type="button"
 						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
 						className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono"

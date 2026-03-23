@@ -60,6 +60,7 @@
 	"scripts": {
 		"dev:local": "bun run --hot src/local/index.tsx",
 		"db:generate": "drizzle-kit generate",
+		"typecheck": "tsc -b --noEmit",
 		"build": "tsc -b && vite build",
 		"cf-typegen": "wrangler types",
 		"deploy": "wrangler deploy",
