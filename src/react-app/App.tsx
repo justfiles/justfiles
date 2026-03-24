@@ -2,10 +2,11 @@ import { useAuth } from '@clerk/clerk-react'
 import { useMutation } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
-import { EditorLayout } from './EditorLayout'
+import { useDraft } from './draft'
+import { MemoryEditor } from './MemoryEditor'
 import { ModeSelector } from './ModeSelector'
 import { useSidebarActions } from './SidebarContext'
-import { useApiClient } from './useApiClient'
+import { useSyncRuntimeStatus } from './sync'
 import {
 	type Destination,
 	expandTemplate,
@@ -16,116 +17,30 @@ import {
 
 function App() {
 	const { getToken, userId } = useAuth()
-	const api = useApiClient()
 	const [settings] = useState(() => loadSettings(userId!))
 	const [activeDestination, setActiveDestination] = useState<Destination>(() =>
 		getActiveDestination(settings)
 	)
-	const { upsertEntry, refresh } = useSidebarActions()
-
-	const lsText = `ghostore:${userId}:draft:text`
-	const lsDirty = `ghostore:${userId}:draft:dirty`
-	const lsId = `ghostore:${userId}:draft:id`
-
-	// Editor is bound to localStorage — instant, no loading state
-	const [editorText, setEditorText] = useState(() => localStorage.getItem(lsText) ?? '')
-	const [hasPendingTimer, setHasPendingTimer] = useState(() => !!localStorage.getItem(lsDirty))
-	const draftIdRef = useRef<string | null>(localStorage.getItem(lsId))
-	const syncTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-	const syncMutation = useMutation({
-		mutationFn: async (text: string) => {
-			const id = draftIdRef.current
-			if (!id) throw new Error('No draft id')
-			const res = await api.v1.update.$post({ json: { id, content: text } })
-			if (!res.ok) throw new Error(`Sync failed: ${res.status}`)
-		},
-		onSuccess: () => {
-			localStorage.removeItem(lsDirty)
-		}
-	})
-
-	// On mount: fetch/create server draft for ID and cross-device sync
-	useEffect(() => {
-		let cancelled = false
-		async function init() {
-			try {
-				if (cancelled) return
-				const res = await api.v1.draft.$get()
-				if (!res.ok || cancelled) return
-				const data = await res.json()
-
-				draftIdRef.current = data.id
-				localStorage.setItem(lsId, data.id)
-
-				if (!localStorage.getItem(lsDirty)) {
-					// No local changes — sync text from server (cross-device)
-					setEditorText(data.raw_text)
-					localStorage.setItem(lsText, data.raw_text)
-				} else {
-					// Local changes exist — push them to server now
-					syncMutation.mutate(localStorage.getItem(lsText) ?? '')
-				}
-			} catch {}
-		}
-		init()
-		return () => {
-			cancelled = true
-		}
-	}, [])
-
-	function handleChange(value: string) {
-		setEditorText(value)
-		localStorage.setItem(lsText, value)
-		localStorage.setItem(lsDirty, '1')
-	}
-
-	// Debounced background sync on every change
-	useEffect(() => {
-		if (syncTimer.current) clearTimeout(syncTimer.current)
-		if (!localStorage.getItem(lsDirty)) {
-			setHasPendingTimer(false)
-			return
-		}
-		setHasPendingTimer(true)
-		syncTimer.current = setTimeout(() => {
-			setHasPendingTimer(false)
-			syncMutation.mutate(editorText)
-		}, 3000)
-	}, [editorText])
+	const { refresh } = useSidebarActions()
+	const [draftEditorVersion, setDraftEditorVersion] = useState(0)
+	const { id, isLoading, submit } = useDraft()
+	const { isOnline } = useSyncRuntimeStatus()
 
 	const submitMutation = useMutation({
-		mutationFn: async ({ text, path }: { text: string; path: string }) => {
-			const submittedId = draftIdRef.current
-			if (!submittedId) throw new Error('No draft id')
-			if (syncTimer.current) clearTimeout(syncTimer.current)
-			// Promote draft to real memory (keeps same id, so asset refs remain valid)
-			const promoteRes = await api.v1.update.$post({
-				json: { id: submittedId, content: text, path }
-			})
-			if (!promoteRes.ok) throw new Error(`Submit failed: ${promoteRes.status}`)
-			// Create new blank draft
-			const newDraftRes = await api.v1.write.$post({ json: { path: '*draft*', content: '' } })
-			if (!newDraftRes.ok) throw new Error(`Draft reset failed: ${newDraftRes.status}`)
-			const { id: newDraftId } = await newDraftRes.json()
-			return { submittedId, newDraftId }
+		mutationFn: async ({ path }: { path: string }) => {
+			await submit(path)
+			return { path }
 		},
-		onSuccess: (data, { path }) => {
-			draftIdRef.current = data.newDraftId
-			setEditorText('')
-			setHasPendingTimer(false)
-			localStorage.setItem(lsText, '')
-			localStorage.removeItem(lsDirty)
-			localStorage.setItem(lsId, data.newDraftId)
-			upsertEntry({ id: data.submittedId, title: null, path, updated_at: '', tags: [], active: 1 })
+		onSuccess: () => {
+			setDraftEditorVersion((v) => v + 1)
 			refresh()
 		}
 	})
 
 	function handleSubmit() {
-		const text = editorText
-		if (!text.trim()) return
-		submitMutation.mutate({ text, path: expandTemplate(activeDestination.pathTemplate) })
+		submitMutation.mutate({
+			path: expandTemplate(activeDestination.pathTemplate)
+		})
 	}
 
 	const handleSubmitRef = useRef(handleSubmit)
@@ -148,11 +63,15 @@ function App() {
 	}
 
 	return (
-		<EditorLayout
+		<MemoryEditor
+			key={draftEditorVersion}
+			id={id}
+			isLoading={isLoading}
+			getToken={getToken}
 			headerLeft={
 				<div className="flex items-center gap-2 min-w-0">
 					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">
-						draft{hasPendingTimer || syncMutation.isPending ? '*' : ''}
+						draft{submitMutation.isPending ? '*' : ''}
 					</span>
 					<ModeSelector
 						destinations={settings.destinations}
@@ -175,17 +94,13 @@ function App() {
 					<button
 						type="button"
 						onClick={handleSubmit}
-						disabled={submitMutation.isPending || !editorText.trim()}
+						disabled={submitMutation.isPending || !isOnline}
 						className="btn btn-primary btn-sm font-mono"
 					>
 						{submitMutation.isPending ? 'Saving…' : 'Submit'}
 					</button>
 				</>
 			}
-			value={editorText}
-			onChange={handleChange}
-			memoryId={draftIdRef.current ?? undefined}
-			getToken={getToken}
 		/>
 	)
 }

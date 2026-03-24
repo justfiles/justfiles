@@ -2,36 +2,35 @@ import { UserButton } from '@clerk/clerk-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { FiMenu, FiSettings } from 'react-icons/fi'
-import { Editor as MarkdownEditor } from './Editor'
+import { Editor } from './Editor'
 import { useSidebarActions } from './SidebarContext'
+import { useMemory } from './useMemory'
 
 type Props = {
+	id: string | null
 	headerLeft?: ReactNode
 	headerRight?: ReactNode
 	footer?: ReactNode
-	value: string
-	onChange: (v: string) => void
 	isLoading?: boolean
 	readOnly?: boolean
-	memoryId?: string
 	getToken?: () => Promise<string | null>
 	updatedAt?: string
 }
 
-export function EditorLayout({
+export function MemoryEditor({
+	id,
 	headerLeft,
 	headerRight,
 	footer,
-	value,
-	onChange,
 	isLoading,
 	readOnly,
-	memoryId,
 	getToken,
 	updatedAt
 }: Props) {
 	const navigate = useNavigate()
 	const { toggleSidebar, sidebarOpen } = useSidebarActions()
+	const { content, save, isLoading: isMemoryLoading } = useMemory(id)
+	const showLoading = isLoading || isMemoryLoading
 
 	useEffect(() => {
 		function onKeyDown(e: KeyboardEvent) {
@@ -71,34 +70,26 @@ export function EditorLayout({
 					</UserButton>
 				</div>
 			</header>
-			<main
-				className={`flex-1 overflow-y-auto transition-[filter] duration-150${isLoading ? ' blur-sm pointer-events-none' : ''}`}
-			>
+			<main className={`flex-1 overflow-y-auto transition-[filter] duration-150${showLoading ? ' blur-sm pointer-events-none' : ''}`}>
 				<div className="max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
 					{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
 					<div className="flex justify-between mb-2">
 						<span className="text-[11px] text-base-content/30 font-mono">
 							{updatedAt ? `updated: ${new Date(updatedAt).toLocaleString()}` : ''}
 						</span>
-						<span className="text-[11px] text-base-content/30 font-mono">
-							{(() => {
-								const cjk = (value.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g) ?? []).length
-								const latin = value
-									.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g, ' ')
-									.trim()
-									.split(/\s+/)
-									.filter(Boolean).length
-								return (cjk + latin).toLocaleString() + ' words'
-							})()}
-						</span>
 					</div>
-					<MarkdownEditor
-						value={value}
-						onChange={onChange}
-						memoryId={memoryId}
-						getToken={getToken}
-						readOnly={readOnly}
-					/>
+					{id && content ? (
+						<Editor
+							key={id}
+							value={content}
+							onChange={save}
+							memoryId={id}
+							readOnly={readOnly}
+							getToken={getToken}
+						/>
+					) : (
+						<p className="text-sm text-base-content/50 font-mono">{showLoading ? 'Loading…' : 'Empty'}</p>
+					)}
 					{footer}
 				</div>
 			</main>

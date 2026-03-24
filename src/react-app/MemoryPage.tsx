@@ -1,11 +1,12 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import React, { useEffect, useRef, useState } from 'react'
-import { FiArchive, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
+import React, { useState } from 'react'
+import { FiArchive, FiEdit3, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
 import type { LinkInfo, Memory } from '../core/store'
-import { EditorLayout } from './EditorLayout'
+import { MemoryEditor } from './MemoryEditor'
 import { useSidebarActions } from './SidebarContext'
+import { useSync } from './sync'
 import { useApiClient } from './useApiClient'
 
 function LinkedMemories({ links }: { links: LinkInfo[] }) {
@@ -22,7 +23,9 @@ function LinkedMemories({ links }: { links: LinkInfo[] }) {
 				className="flex items-center gap-2 text-xs text-base-content/40 hover:text-base-content/70 font-mono transition-colors"
 			>
 				<span>{open ? '▾' : '▸'}</span>
-				<span>{links.length} linked {links.length === 1 ? 'memory' : 'memories'}</span>
+				<span>
+					{links.length} linked {links.length === 1 ? 'memory' : 'memories'}
+				</span>
 			</button>
 			{open && (
 				<ul className="mt-2 flex flex-col gap-1">
@@ -36,11 +39,15 @@ function LinkedMemories({ links }: { links: LinkInfo[] }) {
 									onClick={() => navigate({ to: '/memory/$id', params: { id: linkedId } })}
 									className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded hover:bg-base-200 transition-colors group"
 								>
-									<span className="text-base-content/30 font-mono text-xs shrink-0">{direction}</span>
+									<span className="text-base-content/30 font-mono text-xs shrink-0">
+										{direction}
+									</span>
 									<span className="text-sm text-base-content/70 group-hover:text-base-content truncate">
 										{link.title ?? <span className="italic text-base-content/40">Untitled</span>}
 									</span>
-									<span className="text-xs text-base-content/30 font-mono shrink-0 ml-auto">{link.rel_type}</span>
+									<span className="text-xs text-base-content/30 font-mono shrink-0 ml-auto">
+										{link.rel_type}
+									</span>
 								</button>
 								{link.reason && (
 									<p className="ml-6 text-xs text-base-content/30 font-mono px-2">{link.reason}</p>
@@ -57,19 +64,14 @@ function LinkedMemories({ links }: { links: LinkInfo[] }) {
 export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
-	const { getToken, userId } = useAuth()
+	const { getToken } = useAuth()
 	const api = useApiClient()
-	const hasDraft = !!(userId && localStorage.getItem(`ghostore:${userId}:draft:text`)?.trim())
-	const [editorText, setEditorText] = useState('')
-	const [hasPendingTimer, setHasPendingTimer] = useState(false)
-	const [editingTitle, setEditingTitle] = useState(false)
-	const [titleDraft, setTitleDraft] = useState('')
-	const titleInputRef = useRef<HTMLInputElement>(null)
-	const loadedTextRef = useRef<string | null>(null)
-	const staleTextRef = useRef<string>('')
-	const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+	const sync = useSync()
 	const { upsertEntry, removeEntry } = useSidebarActions()
 	const queryClient = useQueryClient()
+
+	const [editingTitle, setEditingTitle] = useState(false)
+	const [titleDraft, setTitleDraft] = useState('')
 
 	const memoryQuery = useQuery({
 		queryKey: ['memory', id],
@@ -77,50 +79,12 @@ export function MemoryPage() {
 			const res = await api.v1.memory[':id'].$get({ param: { id } })
 			if (!res.ok) throw new Error(`Failed: ${res.status}`)
 			return res.json() as Promise<Memory>
-		},
-		enabled: true
-	})
-
-	// Keep stale text for blur-while-loading effect
-	if (editorText) staleTextRef.current = editorText
-
-	// Sync editor text on load
-	useEffect(() => {
-		if (memoryQuery.data && loadedTextRef.current === null) {
-			setEditorText(memoryQuery.data.raw_text)
-			loadedTextRef.current = memoryQuery.data.raw_text
-		}
-	}, [memoryQuery.data])
-
-	const saveMutation = useMutation({
-		mutationFn: async (text: string) => {
-			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, content: text } })
-			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
-			return text
-		},
-		onSuccess: (text) => {
-			loadedTextRef.current = text
-			const now = new Date().toISOString()
-			queryClient.setQueryData<Memory>(['memory', id], (old) =>
-				old ? { ...old, raw_text: text, updated_at: now } : old
-			)
-			if (memoryQuery.data) {
-				upsertEntry({
-					id: memoryQuery.data.id,
-					title: memoryQuery.data.title,
-					path: memoryQuery.data.path,
-					updated_at: now,
-					tags: memoryQuery.data.tags,
-					active: memoryQuery.data.active
-				})
-			}
 		}
 	})
 
 	const saveTitleMutation = useMutation({
 		mutationFn: async (title: string) => {
-			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, title: title || undefined } })
-			if (!res.ok) throw new Error(`Save failed: ${res.status}`)
+			await sync.push(id, { title: title || null }, true)
 			return title
 		},
 		onSuccess: (title) => {
@@ -141,29 +105,6 @@ export function MemoryPage() {
 		}
 	})
 
-	function startEditingTitle() {
-		setTitleDraft(memoryQuery.data?.title ?? '')
-		setEditingTitle(true)
-		setTimeout(() => titleInputRef.current?.select(), 0)
-	}
-
-	function commitTitle() {
-		setEditingTitle(false)
-		const trimmed = titleDraft.trim()
-		if (trimmed !== (memoryQuery.data?.title ?? '')) {
-			saveTitleMutation.mutate(trimmed)
-		}
-	}
-
-	function onTitleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-		if (e.key === 'Enter') {
-			e.preventDefault()
-			commitTitle()
-		} else if (e.key === 'Escape') {
-			setEditingTitle(false)
-		}
-	}
-
 	const archiveMutation = useMutation({
 		mutationFn: async () => {
 			const res = await api.v1.memory[':id'].archive.$post({ param: { id } })
@@ -181,7 +122,7 @@ export function MemoryPage() {
 			if (!res.ok) throw new Error(`Revive failed: ${res.status}`)
 		},
 		onSuccess: () => {
-			queryClient.setQueryData<Memory>(['memory', id], (old) => old ? { ...old, active: 1 } : old)
+			queryClient.setQueryData<Memory>(['memory', id], (old) => (old ? { ...old, active: 1 } : old))
 			if (memoryQuery.data) {
 				upsertEntry({
 					id: memoryQuery.data.id,
@@ -197,8 +138,7 @@ export function MemoryPage() {
 
 	const movePathMutation = useMutation({
 		mutationFn: async (path: string) => {
-			const res = await api.v1.update.$post({ json: { id: memoryQuery.data!.id, path } })
-			if (!res.ok) throw new Error(`Move failed: ${res.status}`)
+			await sync.push(id, { path }, true)
 			return path
 		},
 		onSuccess: (path) => {
@@ -219,6 +159,28 @@ export function MemoryPage() {
 		}
 	})
 
+	function startEditingTitle() {
+		setTitleDraft(memoryQuery.data?.title ?? '')
+		setEditingTitle(true)
+	}
+
+	function commitTitle() {
+		setEditingTitle(false)
+		const trimmed = titleDraft.trim()
+		if (trimmed !== (memoryQuery.data?.title ?? '')) {
+			saveTitleMutation.mutate(trimmed)
+		}
+	}
+
+	function onTitleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+		if (e.key === 'Enter') {
+			e.preventDefault()
+			commitTitle()
+		} else if (e.key === 'Escape') {
+			setEditingTitle(false)
+		}
+	}
+
 	function handleMove() {
 		const currentPath = memoryQuery.data?.path ?? ''
 		const newPath = window.prompt('Enter new path:', currentPath)
@@ -227,31 +189,19 @@ export function MemoryPage() {
 		}
 	}
 
-	useEffect(() => {
-		if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-		if (!memoryQuery.data || editorText === loadedTextRef.current) {
-			setHasPendingTimer(false)
-			return
-		}
-		setHasPendingTimer(true)
-		autoSaveTimer.current = setTimeout(() => {
-			setHasPendingTimer(false)
-			saveMutation.mutate(editorText)
-		}, 3000)
-	}, [editorText])
-
 	if (memoryQuery.isError) return <p className="m-8 text-error">Failed to load memory</p>
 
-
-	const isLoading = memoryQuery.isPending
-
 	return (
-		<EditorLayout
+		<MemoryEditor
+			id={id}
+			isLoading={memoryQuery.isPending}
+			readOnly={memoryQuery.data?.active === 0}
+			getToken={getToken}
+			updatedAt={memoryQuery.data?.updated_at}
 			headerLeft={
 				memoryQuery.data ? (
 					editingTitle ? (
 						<input
-							ref={titleInputRef}
 							type="text"
 							value={titleDraft}
 							onChange={(e) => setTitleDraft(e.target.value)}
@@ -266,10 +216,12 @@ export function MemoryPage() {
 							onClick={startEditingTitle}
 							className={`block w-full text-left text-sm font-medium truncate transition-colors cursor-text ${memoryQuery.data.active === 0 ? 'text-base-content/30 line-through hover:text-base-content/50' : 'text-base-content/70 hover:text-base-content'}`}
 						>
-							{memoryQuery.data.title ?? <span className="italic">Untitled</span>}{hasPendingTimer || saveMutation.isPending ? '*' : ''}
+							{memoryQuery.data.title ?? <span className="italic">Untitled</span>}
 						</button>
 					)
-				) : undefined
+				) : (
+					<p className="text-sm text-base-content/40 font-mono">Loading…</p>
+				)
 			}
 			headerRight={
 				<>
@@ -314,23 +266,18 @@ export function MemoryPage() {
 							<span className="hidden sm:inline">Delete</span>
 						</button>
 					)}
+
 					<button
 						type="button"
 						onClick={() => navigate({ to: '/' })}
 						className="btn btn-primary btn-sm font-mono"
 					>
-						{hasDraft ? 'Draft' : 'Create'}
+						<FiEdit3 className="w-4 h-4" />
+						<span className="hidden sm:inline">Create</span>
 					</button>
 				</>
 			}
-			value={isLoading ? staleTextRef.current : editorText}
-			onChange={isLoading ? () => {} : setEditorText}
-			isLoading={isLoading}
-			readOnly={memoryQuery.data?.active === 0}
-			memoryId={id}
-			getToken={getToken}
-			updatedAt={memoryQuery.data?.updated_at}
-		footer={memoryQuery.data ? <LinkedMemories links={memoryQuery.data.links} /> : undefined}
+			footer={memoryQuery.data ? <LinkedMemories links={memoryQuery.data.links} /> : undefined}
 		/>
 	)
 }

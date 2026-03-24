@@ -3,13 +3,18 @@ import { EditorState, Plugin, PluginKey, Selection, TextSelection } from 'prosem
 import { EditorView, Decoration, DecorationSet, type NodeView } from 'prosemirror-view'
 import { type Node, type MarkType, type NodeType } from 'prosemirror-model'
 import { schema } from 'prosemirror-markdown'
-import { defaultMarkdownParser, defaultMarkdownSerializer } from 'prosemirror-markdown'
 import { keymap } from 'prosemirror-keymap'
 import { baseKeymap, toggleMark, setBlockType, wrapIn } from 'prosemirror-commands'
 import { history, undo, redo } from 'prosemirror-history'
 import { dropCursor } from 'prosemirror-dropcursor'
 import { gapCursor } from 'prosemirror-gapcursor'
-import { inputRules, wrappingInputRule, textblockTypeInputRule, InputRule } from 'prosemirror-inputrules'
+import {
+	inputRules,
+	wrappingInputRule,
+	textblockTypeInputRule,
+	InputRule
+} from 'prosemirror-inputrules'
+import { ProseMirrorJsonDocument } from './sync'
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -34,7 +39,7 @@ const exitCodeBlock = keymap({
 		tr.setSelection(TextSelection.near(tr.doc.resolve(after + 1)))
 		dispatch?.(tr.scrollIntoView())
 		return true
-	},
+	}
 })
 
 // Cmd/Ctrl+Click opens links in a new tab
@@ -47,8 +52,8 @@ const clickLink = new Plugin({
 			if (!link) return false
 			window.open(link.attrs.href, '_blank', 'noopener,noreferrer')
 			return true
-		},
-	},
+		}
+	}
 })
 
 // When text is selected and clipboard contains a URL, paste wraps selection as a link
@@ -65,8 +70,8 @@ const pasteLink = new Plugin({
 			const mark = state.schema.marks.link.create({ href: text.trim() })
 			dispatch(state.tr.addMark(from, to, mark))
 			return true
-		},
-	},
+		}
+	}
 })
 
 // Shows a placeholder on the first paragraph when the doc is empty
@@ -80,12 +85,12 @@ const placeholder = new Plugin({
 				doc.firstChild.content.size === 0
 			) {
 				return DecorationSet.create(doc, [
-					Decoration.node(0, doc.firstChild.nodeSize, { class: 'is-placeholder' }),
+					Decoration.node(0, doc.firstChild.nodeSize, { class: 'is-placeholder' })
 				])
 			}
 			return DecorationSet.empty
-		},
-	},
+		}
+	}
 })
 
 // ── Image upload ────────────────────────────────────────────────────────────
@@ -95,7 +100,9 @@ const uploadKey = new PluginKey<DecorationSet>('upload')
 const uploadPlugin = new Plugin({
 	key: uploadKey,
 	state: {
-		init() { return DecorationSet.empty },
+		init() {
+			return DecorationSet.empty
+		},
 		apply(tr, set) {
 			set = set.map(tr.mapping, tr.doc)
 			const action = tr.getMeta(uploadKey)
@@ -107,11 +114,13 @@ const uploadPlugin = new Plugin({
 				set = set.remove(set.find(undefined, undefined, (spec) => spec.id === action.remove.id))
 			}
 			return set
-		},
+		}
 	},
 	props: {
-		decorations(state) { return this.getState(state) },
-	},
+		decorations(state) {
+			return this.getState(state)
+		}
+	}
 })
 
 function findPlaceholder(state: EditorState, id: object): number | null {
@@ -124,7 +133,7 @@ async function startImageUpload(
 	view: EditorView,
 	file: File,
 	memoryId: string,
-	getToken: () => Promise<string | null>,
+	getToken: () => Promise<string | null>
 ) {
 	const id = {}
 	let tr = view.state.tr
@@ -140,10 +149,10 @@ async function startImageUpload(
 		const res = await fetch(`/api/v1/memory/${memoryId}/assets`, {
 			method: 'POST',
 			headers: { Authorization: `Bearer ${token}` },
-			body: formData,
+			body: formData
 		})
 		if (!res.ok) throw new Error('Upload failed')
-		const { key } = await res.json() as { key: string }
+		const { key } = (await res.json()) as { key: string }
 		const pos = findPlaceholder(view.state, id)
 		if (pos == null) return
 		view.dispatch(
@@ -161,9 +170,7 @@ function makeImageNodeView(memoryId: string) {
 	return (node: Node): NodeView => {
 		const img = document.createElement('img')
 		const src = node.attrs.src as string
-		img.src = src.startsWith('asset:')
-			? `/api/v1/memory/${memoryId}/assets/${src.slice(6)}`
-			: src
+		img.src = src.startsWith('asset:') ? `/api/v1/memory/${memoryId}/assets/${src.slice(6)}` : src
 		img.alt = node.attrs.alt ?? ''
 		if (node.attrs.title) img.title = node.attrs.title
 		return { dom: img }
@@ -186,7 +193,11 @@ function markActive(state: EditorState, markType: MarkType): boolean {
 	return state.doc.rangeHasMark(from, to, markType)
 }
 
-function blockActive(state: EditorState, nodeType: NodeType, attrs: Record<string, unknown> = {}): boolean {
+function blockActive(
+	state: EditorState,
+	nodeType: NodeType,
+	attrs: Record<string, unknown> = {}
+): boolean {
 	const { $from, to } = state.selection
 	return to <= $from.end() && $from.parent.hasMarkup(nodeType, attrs)
 }
@@ -203,7 +214,7 @@ function makeMenuItem(
 	label: string,
 	title: string,
 	command: Command,
-	active?: (state: EditorState) => boolean,
+	active?: (state: EditorState) => boolean
 ): MenuItem {
 	const dom = document.createElement('button')
 	dom.type = 'button'
@@ -223,7 +234,8 @@ class MenuView {
 		this.editorView = editorView
 
 		this.dom = document.createElement('div')
-		this.dom.className = 'flex flex-wrap gap-1 p-1 rounded-lg shadow-lg border border-base-300 bg-base-100'
+		this.dom.className =
+			'flex flex-wrap gap-1 p-1 rounded-lg shadow-lg border border-base-300 bg-base-100'
 		this.dom.style.cssText = 'position:fixed;display:none;z-index:50;'
 		items.forEach(({ dom }) => this.dom.appendChild(dom))
 		document.body.appendChild(this.dom)
@@ -277,7 +289,9 @@ class MenuView {
 		this.dom.style.top = top + 'px'
 	}
 
-	destroy() { this.dom.remove() }
+	destroy() {
+		this.dom.remove()
+	}
 }
 
 function buildMenuPlugin(): Plugin {
@@ -286,18 +300,30 @@ function buildMenuPlugin(): Plugin {
 		makeMenuItem('B', 'Bold', toggleMark(marks.strong), (s) => markActive(s, marks.strong)),
 		makeMenuItem('I', 'Italic', toggleMark(marks.em), (s) => markActive(s, marks.em)),
 		makeMenuItem('`', 'Code', toggleMark(marks.code), (s) => markActive(s, marks.code)),
-		makeMenuItem('¶', 'Paragraph', setBlockType(nodes.paragraph), (s) => blockActive(s, nodes.paragraph)),
-		makeMenuItem('H1', 'Heading 1', setBlockType(nodes.heading, { level: 1 }), (s) => blockActive(s, nodes.heading, { level: 1 })),
-		makeMenuItem('H2', 'Heading 2', setBlockType(nodes.heading, { level: 2 }), (s) => blockActive(s, nodes.heading, { level: 2 })),
-		makeMenuItem('H3', 'Heading 3', setBlockType(nodes.heading, { level: 3 }), (s) => blockActive(s, nodes.heading, { level: 3 })),
-		makeMenuItem('❝', 'Blockquote', wrapIn(nodes.blockquote), (s) => wrapActive(s, nodes.blockquote)),
-		makeMenuItem('{ }', 'Code block', setBlockType(nodes.code_block), (s) => blockActive(s, nodes.code_block)),
+		makeMenuItem('¶', 'Paragraph', setBlockType(nodes.paragraph), (s) =>
+			blockActive(s, nodes.paragraph)
+		),
+		makeMenuItem('H1', 'Heading 1', setBlockType(nodes.heading, { level: 1 }), (s) =>
+			blockActive(s, nodes.heading, { level: 1 })
+		),
+		makeMenuItem('H2', 'Heading 2', setBlockType(nodes.heading, { level: 2 }), (s) =>
+			blockActive(s, nodes.heading, { level: 2 })
+		),
+		makeMenuItem('H3', 'Heading 3', setBlockType(nodes.heading, { level: 3 }), (s) =>
+			blockActive(s, nodes.heading, { level: 3 })
+		),
+		makeMenuItem('❝', 'Blockquote', wrapIn(nodes.blockquote), (s) =>
+			wrapActive(s, nodes.blockquote)
+		),
+		makeMenuItem('{ }', 'Code block', setBlockType(nodes.code_block), (s) =>
+			blockActive(s, nodes.code_block)
+		)
 	]
 
 	return new Plugin({
 		view(editorView) {
 			return new MenuView(items, editorView)
-		},
+		}
 	})
 }
 
@@ -310,7 +336,7 @@ function buildInputRules() {
 		rules: [
 			// # Heading
 			textblockTypeInputRule(/^(#{1,6})\s$/, nodes.heading, (match) => ({
-				level: match[1].length,
+				level: match[1].length
 			})),
 			// > Blockquote
 			wrappingInputRule(/^\s*>\s$/, nodes.blockquote),
@@ -320,15 +346,15 @@ function buildInputRules() {
 			new InputRule(/^---$/, (state, _match, start, end) => {
 				const tr = state.tr.replaceWith(start - 1, end, nodes.horizontal_rule.create())
 				return tr
-			}),
-		],
+			})
+		]
 	})
 }
 
-function buildState(markdown: string): EditorState {
+function buildState(doc: ProseMirrorJsonDocument): EditorState {
 	return EditorState.create({
 		schema,
-		doc: defaultMarkdownParser.parse(markdown) ?? undefined,
+		doc: schema.nodeFromJSON(doc),
 		plugins: [
 			history(),
 			buildMenuPlugin(),
@@ -341,16 +367,16 @@ function buildState(markdown: string): EditorState {
 			placeholder,
 			uploadPlugin,
 			dropCursor(),
-			gapCursor(),
-		],
+			gapCursor()
+		]
 	})
 }
 
 // ── React component ────────────────────────────────────────────────────────
 
 type Props = {
-	value: string
-	onChange: (v: string) => void
+	value: ProseMirrorJsonDocument
+	onChange: (v: ProseMirrorJsonDocument) => void
 	memoryId?: string
 	getToken?: () => Promise<string | null>
 	readOnly?: boolean
@@ -359,7 +385,6 @@ type Props = {
 export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
-	const prevValueRef = useRef(value)
 	const onChangeRef = useRef(onChange)
 	onChangeRef.current = onChange
 	const readOnlyRef = useRef(readOnly)
@@ -379,16 +404,17 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 
 	useEffect(() => {
 		const view = new EditorView(containerRef.current!, {
-			state: buildState(prevValueRef.current),
+			// The editor owns its live state after mount. `value` is only used
+			// as the initial ProseMirror document for this editor instance.
+			state: buildState(value),
 			editable: () => !readOnlyRef.current,
 			nodeViews: memoryId ? { image: makeImageNodeView(memoryId) } : {},
 			dispatchTransaction(tr) {
 				const newState = view.state.apply(tr)
 				view.updateState(newState)
 				if (tr.docChanged) {
-					const md = defaultMarkdownSerializer.serialize(newState.doc)
-					prevValueRef.current = md
-					onChangeRef.current(md)
+					const d = newState.doc.toJSON() as ProseMirrorJsonDocument
+					onChangeRef.current(d)
 				}
 			},
 			handleDrop(view, event) {
@@ -416,22 +442,16 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 				event.preventDefault()
 				startImageUpload(view, file, mid, getTokenRef.current ?? (() => Promise.resolve(null)))
 				return true
-			},
+			}
 		})
 		viewRef.current = view
 		view.focus()
-		return () => { view.destroy(); viewRef.current = null }
+		return () => {
+			view.destroy()
+			viewRef.current = null
+		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
-
-	// Sync external value changes (e.g. switching notes)
-	useEffect(() => {
-		const view = viewRef.current
-		if (!view) return
-		if (value === prevValueRef.current) return
-		prevValueRef.current = value
-		view.updateState(buildState(value))
-	}, [value])
 
 	return (
 		<div className="ghostore-editor h-full overflow-y-auto">
