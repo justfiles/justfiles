@@ -1,19 +1,21 @@
 import { useAuth } from '@clerk/clerk-react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import React, { useState } from 'react'
 import { FiArchive, FiEdit3, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
-import type { LinkInfo, Memory } from '../core/store'
+import type { LinkInfo } from '../core/store'
 import { MemoryEditor } from './MemoryEditor'
 import { useSidebarActions } from './SidebarContext'
 import { useSync } from './sync'
 import { useApiClient } from './useApiClient'
+import { useMemory } from './useMemory'
 
-function LinkedMemories({ links }: { links: LinkInfo[] }) {
+function LinkedMemories({ links }: { links?: LinkInfo[] }) {
 	const navigate = useNavigate()
 	const [open, setOpen] = useState(false)
+	const items = links ?? []
 
-	if (links.length === 0) return null
+	if (items.length === 0) return null
 
 	return (
 		<div className="mt-6 border-t border-base-200 pt-4">
@@ -24,12 +26,12 @@ function LinkedMemories({ links }: { links: LinkInfo[] }) {
 			>
 				<span>{open ? '▾' : '▸'}</span>
 				<span>
-					{links.length} linked {links.length === 1 ? 'memory' : 'memories'}
+					{items.length} linked {items.length === 1 ? 'memory' : 'memories'}
 				</span>
 			</button>
 			{open && (
 				<ul className="mt-2 flex flex-col gap-1">
-					{links.map((link, i) => {
+					{items.map((link, i) => {
 						const linkedId = link.to_id ?? link.from_id!
 						const direction = link.to_id ? '→' : '←'
 						return (
@@ -67,20 +69,11 @@ export function MemoryPage() {
 	const { getToken } = useAuth()
 	const api = useApiClient()
 	const sync = useSync()
+	const { memory, isLoading } = useMemory(id)
 	const { upsertEntry, removeEntry } = useSidebarActions()
-	const queryClient = useQueryClient()
 
 	const [editingTitle, setEditingTitle] = useState(false)
 	const [titleDraft, setTitleDraft] = useState('')
-
-	const memoryQuery = useQuery({
-		queryKey: ['memory', id],
-		queryFn: async () => {
-			const res = await api.v1.memory[':id'].$get({ param: { id } })
-			if (!res.ok) throw new Error(`Failed: ${res.status}`)
-			return res.json() as Promise<Memory>
-		}
-	})
 
 	const saveTitleMutation = useMutation({
 		mutationFn: async (title: string) => {
@@ -89,17 +82,14 @@ export function MemoryPage() {
 		},
 		onSuccess: (title) => {
 			const now = new Date().toISOString()
-			queryClient.setQueryData<Memory>(['memory', id], (old) =>
-				old ? { ...old, title: title || null, updated_at: now } : old
-			)
-			if (memoryQuery.data) {
+			if (memory) {
 				upsertEntry({
-					id: memoryQuery.data.id,
+					id: id,
 					title: title || null,
-					path: memoryQuery.data.path,
+					path: memory.path ?? '',
 					updated_at: now,
-					tags: memoryQuery.data.tags,
-					active: memoryQuery.data.active
+					tags: memory.tags ?? [],
+					active: memory.active ?? 1
 				})
 			}
 		}
@@ -122,14 +112,13 @@ export function MemoryPage() {
 			if (!res.ok) throw new Error(`Revive failed: ${res.status}`)
 		},
 		onSuccess: () => {
-			queryClient.setQueryData<Memory>(['memory', id], (old) => (old ? { ...old, active: 1 } : old))
-			if (memoryQuery.data) {
+			if (memory) {
 				upsertEntry({
-					id: memoryQuery.data.id,
-					title: memoryQuery.data.title,
-					path: memoryQuery.data.path,
-					updated_at: memoryQuery.data.updated_at,
-					tags: memoryQuery.data.tags,
+					id,
+					title: memory.title ?? null,
+					path: memory.path ?? '',
+					updated_at: memory.updated_at ?? new Date().toISOString(),
+					tags: memory.tags ?? [],
 					active: 1
 				})
 			}
@@ -143,16 +132,13 @@ export function MemoryPage() {
 		},
 		onSuccess: (path) => {
 			const now = new Date().toISOString()
-			queryClient.setQueryData<Memory>(['memory', id], (old) =>
-				old ? { ...old, path, updated_at: now } : old
-			)
-			if (memoryQuery.data) {
+			if (memory) {
 				upsertEntry({
-					id: memoryQuery.data.id,
-					title: memoryQuery.data.title,
+					id,
+					title: memory.title ?? null,
 					path,
 					updated_at: now,
-					tags: memoryQuery.data.tags,
+					tags: memory.tags ?? [],
 					active: 1
 				})
 			}
@@ -160,14 +146,14 @@ export function MemoryPage() {
 	})
 
 	function startEditingTitle() {
-		setTitleDraft(memoryQuery.data?.title ?? '')
+		setTitleDraft(memory?.title ?? '')
 		setEditingTitle(true)
 	}
 
 	function commitTitle() {
 		setEditingTitle(false)
 		const trimmed = titleDraft.trim()
-		if (trimmed !== (memoryQuery.data?.title ?? '')) {
+		if (trimmed !== (memory?.title ?? '')) {
 			saveTitleMutation.mutate(trimmed)
 		}
 	}
@@ -182,24 +168,22 @@ export function MemoryPage() {
 	}
 
 	function handleMove() {
-		const currentPath = memoryQuery.data?.path ?? ''
+		const currentPath = memory?.path ?? ''
 		const newPath = window.prompt('Enter new path:', currentPath)
 		if (newPath !== null && newPath.trim() !== '' && newPath.trim() !== currentPath) {
 			movePathMutation.mutate(newPath.trim())
 		}
 	}
 
-	if (memoryQuery.isError) return <p className="m-8 text-error">Failed to load memory</p>
-
 	return (
 		<MemoryEditor
 			id={id}
-			isLoading={memoryQuery.isPending}
-			readOnly={memoryQuery.data?.active === 0}
+			isLoading={isLoading}
+			readOnly={memory?.active === 0}
 			getToken={getToken}
-			updatedAt={memoryQuery.data?.updated_at}
+			updatedAt={memory?.updated_at}
 			headerLeft={
-				memoryQuery.data ? (
+				memory ? (
 					editingTitle ? (
 						<input
 							type="text"
@@ -214,9 +198,9 @@ export function MemoryPage() {
 						<button
 							type="button"
 							onClick={startEditingTitle}
-							className={`block w-full text-left text-sm font-medium truncate transition-colors cursor-text ${memoryQuery.data.active === 0 ? 'text-base-content/30 line-through hover:text-base-content/50' : 'text-base-content/70 hover:text-base-content'}`}
+							className={`block w-full text-left text-sm font-medium truncate transition-colors cursor-text ${memory.active === 0 ? 'text-base-content/30 line-through hover:text-base-content/50' : 'text-base-content/70 hover:text-base-content'}`}
 						>
-							{memoryQuery.data.title ?? <span className="italic">Untitled</span>}
+							{memory.title ?? <span className="italic">Untitled</span>}
 						</button>
 					)
 				) : (
@@ -234,18 +218,18 @@ export function MemoryPage() {
 						<span className="hidden sm:inline">Search</span>
 						<kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>
 					</button>
-					{memoryQuery.data?.active !== 0 && (
+					{memory?.active !== 0 && (
 						<button
 							type="button"
 							onClick={handleMove}
-							disabled={movePathMutation.isPending || !memoryQuery.data}
+							disabled={movePathMutation.isPending || !memory}
 							className="btn btn-ghost btn-sm font-mono"
 						>
 							<FiFolder className="w-4 h-4" />
 							<span className="hidden sm:inline">Move</span>
 						</button>
 					)}
-					{memoryQuery.data?.active === 0 ? (
+					{memory?.active === 0 ? (
 						<button
 							type="button"
 							onClick={() => reviveMutation.mutate()}
@@ -277,7 +261,7 @@ export function MemoryPage() {
 					</button>
 				</>
 			}
-			footer={memoryQuery.data ? <LinkedMemories links={memoryQuery.data.links} /> : undefined}
+			footer={memory ? <LinkedMemories links={memory.links} /> : undefined}
 		/>
 	)
 }

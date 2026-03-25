@@ -1,7 +1,15 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { WriteInputSchema, LinkInputSchema, ListInputSchema, SearchInputSchema, UpdateInputSchema, StoreError, type Store } from './store'
+import {
+	WriteInputSchema,
+	LinkInputSchema,
+	ListInputSchema,
+	SearchInputSchema,
+	UpdateInputSchema,
+	StoreError,
+	type Store
+} from './store'
 
 const ChangesQuerySchema = z.object({ since: z.string().default('') })
 const RecentQuerySchema = z.object({ n: z.string().optional() })
@@ -50,6 +58,7 @@ export function createApi(store: Store) {
 		})
 		.get('/v1/memory/:id', zValidator('param', IdParamSchema), async (c) => {
 			const { id } = c.req.param()
+			console.log(`fetching ${id}`)
 			const memory = await store.get(id)
 			if (!memory) return c.json({ error: 'Memory not found' }, 404)
 			return c.json(memory)

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { type ProseMirrorJsonDocument, useSync } from './sync'
+import { type ProseMirrorJsonDocument, type SyncDocumentData, useSync } from './sync'
 
 export function useMemory(id: string | null) {
 	const sync = useSync()
 	const [isLoading, setIsLoading] = useState(false)
-	const [content, setContent] = useState<ProseMirrorJsonDocument | null>(null)
+	const [memory, setMemory] = useState<SyncDocumentData<ProseMirrorJsonDocument> | null>(null)
 
 	useEffect(() => {
 		if (!id) {
-			setContent(null)
+			setMemory(null)
 			setIsLoading(false)
 			return
 		}
@@ -21,7 +21,7 @@ export function useMemory(id: string | null) {
 			try {
 				const doc = await sync.load(currentId)
 				if (cancelled) return
-				setContent(doc?.data.content ?? null)
+				setMemory(doc?.data ?? null)
 			} finally {
 				if (!cancelled) setIsLoading(false)
 			}
@@ -40,7 +40,8 @@ export function useMemory(id: string | null) {
 	}, [id])
 
 	return {
-		content,
+		memory,
+		content: memory?.content ?? null,
 		save,
 		isLoading
 	}

@@ -1,19 +1,10 @@
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { createTanstackRemoteMemoryService } from './remote'
 import { useSync } from './sync'
 import { useApiClient } from './useApiClient'
 
 const DRAFT_ID_KEY = 'ghostore:draft-id'
-
-/**
- * Owns the app-level concept of "the current draft".
- *
- * The draft is a normal memory with a real memory ID. This hook is responsible
- * for resolving which memory currently plays that role.
- */
-export interface DraftService {
-	getCurrentDraftId(): Promise<string>
-	submitCurrentDraft(path: string): Promise<void>
-}
 
 type DraftHook = {
 	readonly id: string | null
@@ -37,6 +28,8 @@ function saveStoredDraftId(id: string): void {
 
 export function useDraft(): DraftHook {
 	const api = useApiClient()
+	const queryClient = useQueryClient()
+	const remote = createTanstackRemoteMemoryService(queryClient, api)
 	const sync = useSync()
 	const [id, setId] = useState<string | null>(() => loadStoredDraftId())
 	const [isLoading, setIsLoading] = useState(true)
@@ -47,9 +40,7 @@ export function useDraft(): DraftHook {
 		async function load(): Promise<void> {
 			setIsLoading(true)
 			try {
-				const res = await api.v1.draft.$get()
-				if (!res.ok) throw new Error(`Failed to load draft: ${res.status}`)
-				const data = (await res.json()) as { id: string }
+				const data = await remote.getDraft()
 				if (cancelled) return
 				setId(data.id)
 				saveStoredDraftId(data.id)
@@ -68,9 +59,8 @@ export function useDraft(): DraftHook {
 	async function submit(path: string): Promise<void> {
 		if (!id) throw new Error('Draft is not ready')
 		await sync.push(id, { path }, true)
-		const res = await api.v1.draft.$get()
-		if (!res.ok) throw new Error(`Failed to refresh draft: ${res.status}`)
-		const data = (await res.json()) as { id: string }
+		await queryClient.removeQueries({ queryKey: ['draft-memory'] })
+		const data = await remote.getDraft()
 		setId(data.id)
 		saveStoredDraftId(data.id)
 	}

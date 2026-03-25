@@ -1,7 +1,8 @@
 import { defaultMarkdownParser, defaultMarkdownSerializer } from 'prosemirror-markdown'
 import type { Node as ProseMirrorNode } from 'prosemirror-model'
-import type { UpdateInput } from '../core/store'
+import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import type { LinkInfo } from '../core/store'
 import {
 	appendPendingPatch,
 	deletePendingPatches,
@@ -9,12 +10,20 @@ import {
 	getPendingPatches,
 	type PendingPatch
 } from './db'
-import { useApiClient, type ApiClient } from './useApiClient'
+import { createTanstackRemoteMemoryService, type RemoteMemoryService } from './remote'
+import { useApiClient } from './useApiClient'
 
 export interface SyncDocumentData<TContent = unknown> {
 	content: TContent
+	id?: string
 	title?: string | null
 	path?: string | null
+	source?: string | null
+	created_at?: string
+	updated_at?: string
+	active?: number
+	links?: LinkInfo[]
+	tags?: string[]
 }
 
 export interface SyncDocument<TContent = unknown> {
@@ -51,8 +60,6 @@ export interface CachedSyncService<TContent = unknown> {
 
 export type ProseMirrorJsonDocument = ReturnType<ProseMirrorNode['toJSON']>
 
-type ApiClientResolver = () => Promise<ApiClient>
-
 type LocalPatch<TContent> = {
 	id: string
 	documentId: string
@@ -78,7 +85,6 @@ interface DocSyncState {
 	revision?: string | null
 }
 
-const DRAFT_DOCUMENT_ID = 'draft'
 const DEFAULT_DEBOUNCE_MS = 3_000
 const RETRY_DELAYS_MS = [5_000, 15_000, 60_000] as const
 
@@ -93,10 +99,6 @@ function getDefaultState(): DocSyncState {
 		lastErrorAt: null,
 		revision: null
 	}
-}
-
-function isDraftDocumentId(documentId: string): boolean {
-	return documentId === DRAFT_DOCUMENT_ID
 }
 
 function markdownToJson(markdown: string): ProseMirrorJsonDocument {
@@ -200,73 +202,41 @@ function latestPatchAt<TContent>(patches: Array<LocalPatch<TContent>>): number |
 	return patches.length > 0 ? patches[patches.length - 1].savedAt : null
 }
 
-async function getDraftRemoteDocument(
-	getApiClient: ApiClientResolver
-): Promise<RemoteDocument<ProseMirrorJsonDocument>> {
-	const res = await (await getApiClient()).v1.draft.$get()
-	if (!res.ok) throw new Error(`Failed to load draft: ${res.status}`)
-	const data = (await res.json()) as {
-		id: string
-		raw_text: string
-		updated_at?: string
-	}
-	return {
-		documentId: DRAFT_DOCUMENT_ID,
-		data: {
-			content: markdownToJson(data.raw_text),
-			path: '*draft*',
-			title: null
-		},
-		updatedAt: data.updated_at ? Date.parse(data.updated_at) || Date.now() : Date.now()
-	}
-}
-
 async function getRemoteDocument(
-	getApiClient: ApiClientResolver,
+	remote: RemoteMemoryService,
 	documentId: string
 ): Promise<RemoteDocument<ProseMirrorJsonDocument> | null> {
-	if (isDraftDocumentId(documentId)) return getDraftRemoteDocument(getApiClient)
-	const res = await (await getApiClient()).v1.memory[':id'].$get({ param: { id: documentId } })
-	if (res.status === 404) return null
-	if (!res.ok) throw new Error(`Failed to load memory: ${res.status}`)
-	const data = (await res.json()) as {
-		raw_text: string
-		title: string | null
-		path: string
-		updated_at: string
-	}
+	const data = await remote.pull(documentId)
+	if (!data) return null
 	return {
 		documentId,
 		data: {
+			id: data.id,
 			content: markdownToJson(data.raw_text),
 			title: data.title,
-			path: data.path
+			path: data.path,
+			source: data.source,
+			created_at: data.created_at,
+			updated_at: data.updated_at,
+			active: data.active,
+			links: data.links,
+			tags: data.tags
 		},
 		updatedAt: Date.parse(data.updated_at) || Date.now()
 	}
 }
 
-async function resolveDraftTargetId(getApiClient: ApiClientResolver): Promise<string> {
-	const res = await (await getApiClient()).v1.draft.$get()
-	if (!res.ok) throw new Error(`Failed to resolve draft: ${res.status}`)
-	const data = (await res.json()) as { id: string }
-	return data.id
-}
-
 async function pushRemoteDocument(
-	getApiClient: ApiClientResolver,
+	remote: RemoteMemoryService,
 	documentId: string,
 	patch: SyncPatch<ProseMirrorJsonDocument>
 ): Promise<{ updatedAt: number; revision?: string | null }> {
-	const targetId = isDraftDocumentId(documentId)
-		? await resolveDraftTargetId(getApiClient)
-		: documentId
-	const json: UpdateInput = { id: targetId }
-	if (patch.content !== undefined) json.content = jsonToMarkdown(patch.content)
-	if (patch.title !== undefined) json.title = patch.title ?? undefined
-	if (patch.path !== undefined) json.path = patch.path ?? undefined
-	const res = await (await getApiClient()).v1.update.$post({ json })
-	if (!res.ok) throw new Error(`Failed to sync memory: ${res.status}`)
+	await remote.push({
+		id: documentId,
+		content: patch.content !== undefined ? jsonToMarkdown(patch.content) : undefined,
+		title: patch.title ?? undefined,
+		path: patch.path ?? undefined
+	})
 	return {
 		updatedAt: Date.now(),
 		revision: null
@@ -276,18 +246,12 @@ async function pushRemoteDocument(
 let syncSingleton: CachedSyncService<ProseMirrorJsonDocument> | null = null
 
 export function createSyncSystem(
-	getApiClient: () => Promise<ApiClient>
+	remote: RemoteMemoryService
 ): CachedSyncService<ProseMirrorJsonDocument> {
 	const states = new Map<string, DocSyncState>()
 	const runtimeListeners = new Set<(status: SyncRuntimeStatus) => void>()
 	let runtimeStatus: SyncRuntimeStatus = {
 		isOnline: typeof navigator === 'undefined' ? true : navigator.onLine
-	}
-	let apiClientPromise: Promise<ApiClient> | null = null
-
-	function resolveApiClient(): Promise<ApiClient> {
-		if (!apiClientPromise) apiClientPromise = getApiClient()
-		return apiClientPromise
 	}
 
 	function getState(documentId: string): DocSyncState {
@@ -326,7 +290,7 @@ export function createSyncSystem(
 		state.inFlight = true
 
 		try {
-			const result = await pushRemoteDocument(resolveApiClient, documentId, coalescedPatch)
+			const result = await pushRemoteDocument(remote, documentId, coalescedPatch)
 			state.revision = result.revision ?? null
 			state.lastRemoteSyncAt = result.updatedAt
 			state.retryCount = 0
@@ -405,9 +369,9 @@ export function createSyncSystem(
 			}
 
 			try {
-				const remote = await getRemoteDocument(resolveApiClient, documentId)
-				if (!remote && !local.data) return null
-				if (!remote && local.data) {
+				const remoteDoc = await getRemoteDocument(remote, documentId)
+				if (!remoteDoc && !local.data) return null
+				if (!remoteDoc && local.data) {
 					state.lastLocalUpdateAt = local.updatedAt
 					return {
 						documentId,
@@ -418,12 +382,12 @@ export function createSyncSystem(
 						revision: state.revision ?? null
 					}
 				}
-				if (!remote) return null
+				if (!remoteDoc) return null
 
-				state.lastRemoteSyncAt = remote.updatedAt
-				state.revision = remote.revision ?? null
+				state.lastRemoteSyncAt = remoteDoc.updatedAt
+				state.revision = remoteDoc.revision ?? null
 
-				const merged = mergeDocumentData(remote.data, local.patches.map((patch) => patch.patch))
+				const merged = mergeDocumentData(remoteDoc.data, local.patches.map((patch) => patch.patch))
 				const hasLocal = local.data !== null && local.updatedAt !== null
 
 				if (hasLocal && merged) {
@@ -434,18 +398,18 @@ export function createSyncSystem(
 						data: merged,
 						source: 'local',
 						localUpdatedAt: local.updatedAt,
-						remoteUpdatedAt: remote.updatedAt,
+						remoteUpdatedAt: remoteDoc.updatedAt,
 						revision: state.revision ?? null
 					}
 				}
 
 				return {
 					documentId,
-					data: remote.data,
+					data: remoteDoc.data,
 					source: 'remote',
 					localUpdatedAt: null,
-					remoteUpdatedAt: remote.updatedAt,
-					revision: remote.revision ?? null
+					remoteUpdatedAt: remoteDoc.updatedAt,
+					revision: remoteDoc.revision ?? null
 				}
 			} catch {
 				state.lastErrorAt = Date.now()
@@ -508,9 +472,10 @@ export function createSyncSystem(
 
 export function useSync(): CachedSyncService<ProseMirrorJsonDocument> {
 	const api = useApiClient()
+	const queryClient = useQueryClient()
 
 	if (!syncSingleton) {
-		syncSingleton = createSyncSystem(async () => api)
+		syncSingleton = createSyncSystem(createTanstackRemoteMemoryService(queryClient, api))
 	}
 
 	return syncSingleton
