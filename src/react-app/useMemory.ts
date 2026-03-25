@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { type ProseMirrorJsonDocument, type SyncDocumentData, useSync } from './sync'
 
 export function useMemory(id: string | null) {
 	const sync = useSync()
 	const [isLoading, setIsLoading] = useState(false)
 	const [memory, setMemory] = useState<SyncDocumentData<ProseMirrorJsonDocument> | null>(null)
+	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
 	useEffect(() => {
 		if (!id) {
@@ -35,9 +36,13 @@ export function useMemory(id: string | null) {
 	}, [id])
 
 	const save = useCallback((v: ProseMirrorJsonDocument) => {
-		if (!id) return Promise.resolve({ localUpdatedAt: Date.now(), queuedRemoteSync: false })
-		return sync.push(id, { content: v })
-	}, [id])
+		if (!id) return
+		if (debounceRef.current) clearTimeout(debounceRef.current)
+		debounceRef.current = setTimeout(() => {
+			debounceRef.current = null
+			void sync.push(id, { content: v })
+		}, 500)
+	}, [id, sync])
 
 	return {
 		memory,
