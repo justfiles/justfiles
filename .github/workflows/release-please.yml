@@ -46,13 +46,18 @@ jobs:
     if: needs.release-please.outputs.cli_released == 'true'
     runs-on: ubuntu-latest
     name: Publish CLI to npm
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
       - run: bun install
       - run: bun run build
         working-directory: apps/cli
-      - run: bun publish
+      - run: npm publish --access public
         working-directory: apps/cli
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
