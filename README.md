@@ -1,6 +1,6 @@
 # Ghostore
 
-A focused memory service for humans and AI agents. See [plan.org](plan.org) for full design.
+A focused memory service for humans and AI agents.
 
 ## MCP
 
@@ -19,6 +19,18 @@ Ghostore exposes an MCP server at `/mcp`. To connect an AI agent, add it to your
   }
 }
 ```
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `write_memory` | Write a memory at a path. `mode`: `w` overwrite (default), `a` append, `x` exclusive create |
+| `search_memory` | Hybrid/semantic/exact search with optional tag and path filters |
+| `update_memory` | Update content, path, title, or tags of an existing memory by ID |
+| `list_memories` | List memories by `path_prefix`, glob `path_pattern`, tags, or date range |
+| `get_memory` | Fetch a memory by ID or path |
+| `archive_memory` | Soft-delete one or more memories by ID |
+| `link_memories` | Create a directed relationship between two memories |
 
 ## Development
 
