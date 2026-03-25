@@ -17,8 +17,6 @@
 		"@hono/mcp": "^0.2.4",
 		"@hono/zod-validator": "^0.7.6",
 		"@libsql/client": "^0.17.0",
-		"@milkdown/kit": "^7.19.0",
-		"@milkdown/react": "^7.19.0",
 		"@modelcontextprotocol/sdk": "^1.27.1",
 		"@tailwindcss/vite": "^4.2.1",
 		"@tanstack/react-query": "^5.90.21",
@@ -28,11 +26,15 @@
 		"hono": "4.11.1",
 		"hono-rate-limiter": "^0.5.3",
 		"idb": "^8.0.3",
-		"prosemirror-markdown": "^1.13.4",
+		"prosemirror-tables": "^1.8.5",
 		"react": "19.2.1",
 		"react-dom": "19.2.1",
 		"react-icons": "^5.6.0",
-		"tailwindcss": "^4.2.1"
+		"remark-gfm": "^4.0.1",
+		"remark-parse": "^11.0.0",
+		"remark-stringify": "^11.0.0",
+		"tailwindcss": "^4.2.1",
+		"unified": "^11.0.5"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.6",

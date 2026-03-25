@@ -1,4 +1,4 @@
-import { defaultMarkdownParser, defaultMarkdownSerializer } from 'prosemirror-markdown'
+import { markdownToDoc, docToMarkdown, schema as remarkSchema } from '../prosemirror-remark'
 import type { Node as ProseMirrorNode } from 'prosemirror-model'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
@@ -130,19 +130,21 @@ function createDocActor(args: {
 	async function performFlush(
 		dispatchTransition: (event: DocEvent) => Promise<void>
 	): Promise<void> {
-		const patches = await listPatches()
-		if (patches.length === 0) {
-			await dispatchTransition({ type: 'FLUSH_SKIPPED', hasRemaining: false })
-			return
-		}
-
-		const coalescedPatch = mergePatch<ProseMirrorJsonDocument>(patches.map((patch) => patch.patch))
-		if (!coalescedPatch) {
-			await dispatchTransition({ type: 'FLUSH_SKIPPED', hasRemaining: false })
-			return
-		}
-
 		try {
+			const patches = await listPatches()
+			if (patches.length === 0) {
+				await dispatchTransition({ type: 'FLUSH_SKIPPED', hasRemaining: false })
+				return
+			}
+
+			const coalescedPatch = mergePatch<ProseMirrorJsonDocument>(
+				patches.map((patch) => patch.patch)
+			)
+			if (!coalescedPatch) {
+				await dispatchTransition({ type: 'FLUSH_SKIPPED', hasRemaining: false })
+				return
+			}
+
 			const result = await pushRemote(coalescedPatch)
 			await deletePendingPatches(patches.map((patch) => patch.id))
 			const remaining = await listPatches()
@@ -152,7 +154,8 @@ function createDocActor(args: {
 				revision: result.revision ?? null,
 				hasRemaining: remaining.length > 0
 			})
-		} catch {
+		} catch (err) {
+			console.error('[sync] performFlush failed:', err)
 			await dispatchTransition({ type: 'FLUSH_FAILED', at: Date.now() })
 		}
 	}
@@ -208,11 +211,11 @@ function createDocActor(args: {
 }
 
 function markdownToJson(markdown: string): ProseMirrorJsonDocument {
-	return defaultMarkdownParser.parse(markdown).toJSON() as ProseMirrorJsonDocument
+	return markdownToDoc(markdown, remarkSchema).toJSON() as ProseMirrorJsonDocument
 }
 
 function jsonToMarkdown(content: ProseMirrorJsonDocument): string {
-	return defaultMarkdownSerializer.serialize(defaultMarkdownParser.schema.nodeFromJSON(content))
+	return docToMarkdown(remarkSchema.nodeFromJSON(content))
 }
 
 function serializePatchValue<TContent>(patch: SyncPatch<TContent>): string {
@@ -416,6 +419,8 @@ export function createSyncSystem(
 			emitRuntimeStatus()
 			for (const actor of actors.values()) void actor.dispatch({ type: 'OFFLINE' })
 		})
+		// Drain any patches left over from a previous session on startup
+		void drainPendingPatches()
 	}
 
 	return {

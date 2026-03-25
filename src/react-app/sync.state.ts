@@ -122,6 +122,7 @@ export function transition(state: DocState, event: DocEvent): TransitionResult {
 			}
 
 		case 'FLUSH_NOW':
+			console.log(`FLUSH_NOW: ${state.phase}`)
 			if (state.phase === 'offline' || state.phase === 'flushing') {
 				return { state, effects: [] }
 			}
@@ -130,11 +131,7 @@ export function transition(state: DocState, event: DocEvent): TransitionResult {
 					...state,
 					phase: 'flushing'
 				},
-				effects: [
-					{ type: 'CANCEL_DEBOUNCE' },
-					{ type: 'CANCEL_RETRY' },
-					{ type: 'RUN_FLUSH' }
-				]
+				effects: [{ type: 'CANCEL_DEBOUNCE' }, { type: 'CANCEL_RETRY' }, { type: 'RUN_FLUSH' }]
 			}
 
 		case 'DEBOUNCE_FIRED':

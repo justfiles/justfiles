@@ -44,6 +44,39 @@
 	@apply text-base-content/30 pointer-events-none float-left h-0;
 }
 
+/* ── prosemirror-tables ─────────────────────────────────────────────────── */
+.ghostore-pm-editor .ProseMirror table {
+	@apply border-collapse w-full my-4 text-sm;
+}
+
+.ghostore-pm-editor .ProseMirror th,
+.ghostore-pm-editor .ProseMirror td {
+	@apply border border-base-300 px-3 py-1.5 align-top;
+}
+
+.ghostore-pm-editor .ProseMirror th {
+	@apply bg-base-200 font-semibold text-left;
+}
+
+/* Selected cell highlight (prosemirror-tables) */
+.ghostore-pm-editor .ProseMirror .selectedCell::after {
+	content: '';
+	@apply absolute inset-0 pointer-events-none bg-primary/15 z-10;
+}
+
+.ghostore-pm-editor .ProseMirror .selectedCell {
+	position: relative;
+}
+
+/* Column resize handle */
+.ghostore-pm-editor .ProseMirror .column-resize-handle {
+	@apply absolute top-0 bottom-0 right-0 w-1 bg-primary/50 pointer-events-none;
+}
+
+.ghostore-pm-editor .ProseMirror.resize-cursor {
+	cursor: col-resize;
+}
+
 upload-placeholder {
 	display: inline-block;
 	width: 100px;

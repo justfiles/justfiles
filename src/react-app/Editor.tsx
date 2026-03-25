@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 import { EditorState, Plugin, PluginKey, Selection, TextSelection } from 'prosemirror-state'
 import { EditorView, Decoration, DecorationSet, type NodeView } from 'prosemirror-view'
 import { type Node, type MarkType, type NodeType } from 'prosemirror-model'
-import { schema } from 'prosemirror-markdown'
+import { schema } from '../prosemirror-remark'
+import { tableEditing, goToNextCell, columnResizing } from 'prosemirror-tables'
 import { keymap } from 'prosemirror-keymap'
 import { baseKeymap, toggleMark, setBlockType, wrapIn } from 'prosemirror-commands'
 import { history, undo, redo } from 'prosemirror-history'
@@ -367,7 +368,10 @@ function buildState(doc: ProseMirrorJsonDocument): EditorState {
 			placeholder,
 			uploadPlugin,
 			dropCursor(),
-			gapCursor()
+			gapCursor(),
+			columnResizing(),
+			tableEditing(),
+			keymap({ Tab: goToNextCell(1), 'Shift-Tab': goToNextCell(-1) })
 		]
 	})
 }
