@@ -1,15 +1,16 @@
 {
 	"name": "@ghostore/cli",
 	"version": "0.1.0",
-	"private": true,
 	"type": "module",
 	"bin": {
-		"ghostore": "./src/index.ts"
+		"ghostore": "./dist/index.mjs"
 	},
 	"scripts": {
+		"build": "tsdown",
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
+		"tsdown": "^0.21.5",
 		"typescript": "5.8.3"
 	}
 }
