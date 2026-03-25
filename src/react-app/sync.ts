@@ -11,6 +11,14 @@ import {
 	type PendingPatch
 } from './db'
 import { createTanstackRemoteMemoryService, type RemoteMemoryService } from './remote'
+import { createMachineRuntime } from './sync.runtime'
+import {
+	createInitialDocState,
+	transition,
+	type DocEffect,
+	type DocEvent,
+	type DocState
+} from './sync.state'
 import { useApiClient } from './useApiClient'
 
 export interface SyncDocumentData<TContent = unknown> {
@@ -74,59 +82,9 @@ type RemoteDocument<TContent> = {
 	revision?: string | null
 }
 
-interface DocSyncState {
-	phase: 'idle' | 'debouncing' | 'flushing' | 'retry_wait' | 'offline'
-	retryCount: number
-	retryTimer: ReturnType<typeof setTimeout> | null
-	debounceTimer: ReturnType<typeof setTimeout> | null
-	lastLocalUpdateAt: number | null
-	lastRemoteSyncAt: number | null
-	lastErrorAt: number | null
-	revision?: string | null
-}
-
-const DEFAULT_DEBOUNCE_MS = 3_000
-const RETRY_DELAYS_MS = [5_000, 15_000, 60_000] as const
-
-type DocEvent =
-	| { type: 'SCHEDULE_FLUSH' }
-	| { type: 'FLUSH_NOW' }
-	| { type: 'DEBOUNCE_FIRED' }
-	| { type: 'RETRY_FIRED' }
-	| { type: 'ONLINE' }
-	| { type: 'OFFLINE' }
-
-function getDefaultState(): DocSyncState {
-	return {
-		phase: 'idle',
-		retryCount: 0,
-		retryTimer: null,
-		debounceTimer: null,
-		lastLocalUpdateAt: null,
-		lastRemoteSyncAt: null,
-		lastErrorAt: null,
-		revision: null
-	}
-}
-
-type SerialQueue = {
-	run<T>(fn: () => Promise<T>): Promise<T>
-}
-
-function createSerialQueue(): SerialQueue {
-	let chain: Promise<void> = Promise.resolve()
-	return {
-		run<T>(fn: () => Promise<T>): Promise<T> {
-			const next = chain.then(fn, fn) as Promise<T>
-			chain = next.then(() => {}, () => {})
-			return next
-		}
-	}
-}
-
 type DocActor = {
 	documentId: string
-	state: DocSyncState
+	readonly state: DocState
 	dispatch(event: DocEvent): Promise<void>
 	destroy(): void
 }
@@ -142,145 +100,110 @@ function createDocActor(args: {
 }): DocActor {
 	const { documentId, getIsOnline, listPatches, pushRemote, deletePendingPatches } = args
 
-	const queue = createSerialQueue()
-	const state = getDefaultState()
-	state.phase = getIsOnline() ? 'idle' : 'offline'
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null
+	let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 	function destroy(): void {
-		if (state.debounceTimer) clearTimeout(state.debounceTimer)
-		if (state.retryTimer) clearTimeout(state.retryTimer)
-		state.debounceTimer = null
-		state.retryTimer = null
+		cancelDebounce()
+		cancelRetry()
 	}
 
 	function cancelDebounce(): void {
-		if (state.debounceTimer) clearTimeout(state.debounceTimer)
-		state.debounceTimer = null
+		if (debounceTimer) clearTimeout(debounceTimer)
+		debounceTimer = null
 	}
 
 	function cancelRetry(): void {
-		if (state.retryTimer) clearTimeout(state.retryTimer)
-		state.retryTimer = null
+		if (retryTimer) clearTimeout(retryTimer)
+		retryTimer = null
 	}
 
-	async function dispatch(event: DocEvent): Promise<void> {
-		return queue.run(async () => {
-			await step(event)
-		})
+	function requiresOnline(event: DocEvent): boolean {
+		return (
+			event.type === 'SCHEDULE_FLUSH' ||
+			event.type === 'FLUSH_NOW' ||
+			event.type === 'DEBOUNCE_FIRED' ||
+			event.type === 'RETRY_FIRED'
+		)
 	}
 
-	function setDebounce(): void {
-		cancelDebounce()
-		state.debounceTimer = setTimeout(() => {
-			state.debounceTimer = null
-			void dispatch({ type: 'DEBOUNCE_FIRED' })
-		}, DEFAULT_DEBOUNCE_MS)
-		state.phase = 'debouncing'
-	}
-
-	function setRetry(): void {
-		if (state.retryTimer) return
-		const delay = RETRY_DELAYS_MS[Math.min(state.retryCount, RETRY_DELAYS_MS.length - 1)]
-		state.retryCount++
-		state.phase = 'retry_wait'
-		state.retryTimer = setTimeout(() => {
-			state.retryTimer = null
-			void dispatch({ type: 'RETRY_FIRED' })
-		}, delay)
-	}
-
-	async function performFlush(): Promise<void> {
-		if (!getIsOnline()) return
-
-		// Enter flushing phase before any awaits so we don't allow concurrent flushes.
-		cancelDebounce()
-		cancelRetry()
-		state.phase = 'flushing'
-
+	async function performFlush(
+		dispatchTransition: (event: DocEvent) => Promise<void>
+	): Promise<void> {
 		const patches = await listPatches()
 		if (patches.length === 0) {
-			state.phase = 'idle'
+			await dispatchTransition({ type: 'FLUSH_SKIPPED', hasRemaining: false })
 			return
 		}
 
 		const coalescedPatch = mergePatch<ProseMirrorJsonDocument>(patches.map((patch) => patch.patch))
 		if (!coalescedPatch) {
-			state.phase = 'idle'
+			await dispatchTransition({ type: 'FLUSH_SKIPPED', hasRemaining: false })
 			return
 		}
 
 		try {
 			const result = await pushRemote(coalescedPatch)
-			state.revision = result.revision ?? null
-			state.lastRemoteSyncAt = result.updatedAt
-			state.retryCount = 0
 			await deletePendingPatches(patches.map((patch) => patch.id))
+			const remaining = await listPatches()
+			await dispatchTransition({
+				type: 'FLUSH_SUCCEEDED',
+				updatedAt: result.updatedAt,
+				revision: result.revision ?? null,
+				hasRemaining: remaining.length > 0
+			})
 		} catch {
-			state.lastErrorAt = Date.now()
-			setRetry()
-			return
-		} finally {
-			// If setRetry() ran, phase is already retry_wait.
-			if (state.phase === 'flushing') state.phase = 'idle'
+			await dispatchTransition({ type: 'FLUSH_FAILED', at: Date.now() })
 		}
-
-		const remaining = await listPatches()
-		if (remaining.length > 0) setDebounce()
 	}
 
-	async function step(event: DocEvent): Promise<void> {
-		switch (event.type) {
-			case 'OFFLINE': {
-				cancelDebounce()
-				cancelRetry()
-				state.phase = 'offline'
-				return
-			}
-			case 'ONLINE': {
-				if (state.phase === 'offline') state.phase = 'idle'
-				return
+	const runtime = createMachineRuntime<DocState, DocEvent, DocEffect>({
+		initialState: createInitialDocState(getIsOnline()),
+		transition,
+		onDestroy: destroy,
+		runEffect: async (effect, context) => {
+			switch (effect.type) {
+				case 'CANCEL_DEBOUNCE':
+					cancelDebounce()
+					break
+				case 'CANCEL_RETRY':
+					cancelRetry()
+					break
+				case 'START_DEBOUNCE':
+					cancelDebounce()
+					debounceTimer = setTimeout(() => {
+						debounceTimer = null
+						void runtime.dispatch({ type: 'DEBOUNCE_FIRED' })
+					}, effect.delayMs)
+					break
+				case 'START_RETRY':
+					cancelRetry()
+					retryTimer = setTimeout(() => {
+						retryTimer = null
+						void runtime.dispatch({ type: 'RETRY_FIRED' })
+					}, effect.delayMs)
+					break
+				case 'RUN_FLUSH':
+					await performFlush(context.transition)
+					break
 			}
 		}
+	})
 
-		if (!getIsOnline()) {
-			// Keep state consistent even if we missed OFFLINE.
-			cancelDebounce()
-			cancelRetry()
-			state.phase = 'offline'
-			return
+	async function dispatch(event: DocEvent): Promise<void> {
+		if (requiresOnline(event) && !getIsOnline()) {
+			return runtime.dispatch({ type: 'OFFLINE' })
 		}
-
-		switch (event.type) {
-			case 'SCHEDULE_FLUSH': {
-				if (state.phase === 'flushing') return
-				if (state.phase === 'retry_wait') return
-				setDebounce()
-				return
-			}
-			case 'FLUSH_NOW': {
-				if (state.phase === 'flushing') return
-				if (state.phase === 'retry_wait') cancelRetry()
-				await performFlush()
-				return
-			}
-			case 'DEBOUNCE_FIRED': {
-				if (state.phase !== 'debouncing') return
-				await performFlush()
-				return
-			}
-			case 'RETRY_FIRED': {
-				if (state.phase !== 'retry_wait') return
-				await performFlush()
-				return
-			}
-		}
+		return runtime.dispatch(event)
 	}
 
 	return {
 		documentId,
-		state,
+		get state() {
+			return runtime.state
+		},
 		dispatch,
-		destroy
+		destroy: () => runtime.destroy()
 	}
 }
 
@@ -459,7 +382,10 @@ export function createSyncSystem(
 	}> {
 		const patches = await listPatches<ProseMirrorJsonDocument>(documentId)
 		return {
-			data: mergeDocumentData<ProseMirrorJsonDocument>(null, patches.map((patch) => patch.patch)),
+			data: mergeDocumentData<ProseMirrorJsonDocument>(
+				null,
+				patches.map((patch) => patch.patch)
+			),
 			updatedAt: latestPatchAt(patches),
 			patches
 		}
@@ -469,7 +395,9 @@ export function createSyncSystem(
 		if (!runtimeStatus.isOnline) return
 		const all = await getAllPendingPatches()
 		const ids = new Set(all.map((patch) => patch.documentId))
-		await Promise.allSettled(Array.from(ids).map((documentId) => getActor(documentId).dispatch({ type: 'FLUSH_NOW' })))
+		await Promise.allSettled(
+			Array.from(ids).map((documentId) => getActor(documentId).dispatch({ type: 'FLUSH_NOW' }))
+		)
 	}
 
 	function emitRuntimeStatus(): void {
@@ -493,12 +421,14 @@ export function createSyncSystem(
 	return {
 		async load(documentId) {
 			const actor = getActor(documentId)
-			const state = actor.state
 			const local = await buildLocalSnapshot(documentId)
 
 			if (!runtimeStatus.isOnline) {
 				if (!local.data) return null
-				state.lastLocalUpdateAt = local.updatedAt
+				if (local.updatedAt !== null) {
+					await actor.dispatch({ type: 'LOCAL_UPDATED', at: local.updatedAt })
+				}
+				const state = actor.state
 				return {
 					documentId,
 					data: local.data,
@@ -513,7 +443,10 @@ export function createSyncSystem(
 				const remoteDoc = await getRemoteDocument(remote, documentId)
 				if (!remoteDoc && !local.data) return null
 				if (!remoteDoc && local.data) {
-					state.lastLocalUpdateAt = local.updatedAt
+					if (local.updatedAt !== null) {
+						await actor.dispatch({ type: 'LOCAL_UPDATED', at: local.updatedAt })
+					}
+					const state = actor.state
 					return {
 						documentId,
 						data: local.data,
@@ -525,37 +458,49 @@ export function createSyncSystem(
 				}
 				if (!remoteDoc) return null
 
-				state.lastRemoteSyncAt = remoteDoc.updatedAt
-				state.revision = remoteDoc.revision ?? null
+				await actor.dispatch({
+					type: 'REMOTE_LOADED',
+					at: remoteDoc.updatedAt,
+					revision: remoteDoc.revision ?? null
+				})
 
-				const merged = mergeDocumentData(remoteDoc.data, local.patches.map((patch) => patch.patch))
-				const hasLocal = local.data !== null && local.updatedAt !== null
+				const merged = mergeDocumentData(
+					remoteDoc.data,
+					local.patches.map((patch) => patch.patch)
+				)
+				const localUpdatedAt = local.updatedAt
+				const hasLocal = local.data !== null && localUpdatedAt !== null
 
 				if (hasLocal && merged) {
-					state.lastLocalUpdateAt = local.updatedAt
+					await actor.dispatch({ type: 'LOCAL_UPDATED', at: localUpdatedAt })
 					void actor.dispatch({ type: 'SCHEDULE_FLUSH' })
+					const state = actor.state
 					return {
 						documentId,
 						data: merged,
 						source: 'local',
-						localUpdatedAt: local.updatedAt,
+						localUpdatedAt,
 						remoteUpdatedAt: remoteDoc.updatedAt,
 						revision: state.revision ?? null
 					}
 				}
 
+				const state = actor.state
 				return {
 					documentId,
 					data: remoteDoc.data,
 					source: 'remote',
 					localUpdatedAt: null,
-					remoteUpdatedAt: remoteDoc.updatedAt,
-					revision: remoteDoc.revision ?? null
+					remoteUpdatedAt: state.lastRemoteSyncAt,
+					revision: state.revision ?? null
 				}
 			} catch {
-				state.lastErrorAt = Date.now()
+				await actor.dispatch({ type: 'LOAD_ERROR', at: Date.now() })
 				if (!local.data) return null
-				state.lastLocalUpdateAt = local.updatedAt
+				if (local.updatedAt !== null) {
+					await actor.dispatch({ type: 'LOCAL_UPDATED', at: local.updatedAt })
+				}
+				const state = actor.state
 				return {
 					documentId,
 					data: local.data,
@@ -570,10 +515,9 @@ export function createSyncSystem(
 		async push(documentId, patch, flush = false) {
 			const updatedAt = Date.now()
 			const actor = getActor(documentId)
-			const state = actor.state
 			if (patchKind(patch).length > 0) {
 				await appendPatch(documentId, updatedAt, patch)
-				state.lastLocalUpdateAt = updatedAt
+				await actor.dispatch({ type: 'LOCAL_UPDATED', at: updatedAt })
 			}
 
 			if (flush) {
