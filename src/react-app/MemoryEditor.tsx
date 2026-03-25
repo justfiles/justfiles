@@ -45,7 +45,7 @@ export function MemoryEditor({
 
 	return (
 		<div className="flex-1 min-h-0 flex flex-col">
-			<header className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-base-200">
+			<header className="safe-area-header shrink-0 flex items-center gap-2 px-3 py-2 border-b border-base-200">
 				{!sidebarOpen && (
 					<button
 						type="button"
@@ -70,10 +70,10 @@ export function MemoryEditor({
 					</UserButton>
 				</div>
 			</header>
-			<main className={`flex-1 overflow-y-auto transition-[filter] duration-150${showLoading ? ' blur-sm pointer-events-none' : ''}`}>
-				<div className="max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
-					{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
-					<div className="flex justify-between mb-2">
+				<main className={`no-overscroll flex-1 overflow-y-auto transition-[filter] duration-150${showLoading ? ' blur-sm pointer-events-none' : ''}`}>
+					<div className="safe-area-content max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
+						{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
+						<div className="flex justify-between mb-2">
 						<span className="text-[11px] text-base-content/30 font-mono">
 							{updatedAt ? `updated: ${new Date(updatedAt).toLocaleString()}` : ''}
 						</span>

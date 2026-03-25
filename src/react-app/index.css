@@ -61,6 +61,10 @@ upload-placeholder {
 
 /* ── Global ──────────────────────────────────────────────────────────── */
 :root {
+	--safe-area-top: env(safe-area-inset-top, 0px);
+	--safe-area-right: env(safe-area-inset-right, 0px);
+	--safe-area-bottom: env(safe-area-inset-bottom, 0px);
+	--safe-area-left: env(safe-area-inset-left, 0px);
 	font-family:
 		'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas,
 		'Liberation Mono', 'Courier New', monospace;
@@ -81,4 +85,50 @@ body {
 	min-width: 320px;
 	height: 100dvh;
 	overflow: hidden;
+	overscroll-behavior-y: none;
+}
+
+#root {
+	width: 100%;
+	height: 100dvh;
+	overscroll-behavior-y: none;
+}
+
+.no-overscroll {
+	overscroll-behavior: none;
+}
+
+.safe-area-x {
+	padding-left: var(--safe-area-left);
+	padding-right: var(--safe-area-right);
+}
+
+.safe-area-page {
+	padding:
+		var(--safe-area-top)
+		var(--safe-area-right)
+		var(--safe-area-bottom)
+		var(--safe-area-left);
+}
+
+.safe-area-header {
+	padding-top: calc(0.5rem + var(--safe-area-top));
+}
+
+.safe-area-content {
+	padding-bottom: calc(1rem + var(--safe-area-bottom));
+}
+
+.safe-area-sidebar {
+	padding-top: var(--safe-area-top);
+	padding-bottom: var(--safe-area-bottom);
+}
+
+.safe-area-toast {
+	left: calc(1rem + var(--safe-area-left));
+	right: calc(1rem + var(--safe-area-right));
+	bottom: calc(1rem + var(--safe-area-bottom));
+	width: fit-content;
+	max-width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 2rem);
+	margin-inline: auto;
 }

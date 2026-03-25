@@ -2,7 +2,7 @@ import { SignInButton, SignUpButton } from '@clerk/clerk-react'
 
 export function AuthWall() {
 	return (
-		<div className="h-screen grid place-items-center bg-base-200 p-4">
+		<div className="safe-area-page min-h-dvh grid place-items-center bg-base-200 p-4">
 			<div className="card bg-base-100 border border-base-200 shadow-md w-[min(560px,100%)]">
 				<div className="card-body text-center">
 					<h1 className="card-title justify-center text-2xl">Ghostore</h1>

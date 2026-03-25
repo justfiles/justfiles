@@ -59,7 +59,7 @@ function AppShellInner({ userId }: { userId: string }) {
 	return (
 		<SidebarContext.Provider value={{ upsertEntry, removeEntry, refresh, toggleSidebar: toggle, sidebarOpen }}>
 			<PWAToast />
-			<div className="flex h-dvh">
+			<div className="safe-area-x flex h-dvh">
 				{showSidebar && (
 					<>
 						<div className="sm:hidden fixed inset-0 z-20 bg-black/30" onClick={toggle} />

@@ -245,7 +245,7 @@ export function SettingsPage() {
 	}
 
 	return (
-		<div className="w-screen h-dvh overflow-y-auto bg-base-200 text-base-content font-sans">
+			<div className="safe-area-page no-overscroll w-full h-dvh overflow-y-auto bg-base-200 text-base-content font-sans">
 			{/* Nav bar */}
 			<div className="navbar sticky top-0 z-10 bg-base-200/90 backdrop-blur border-b border-base-200 min-h-14">
 				<div className="max-w-lg mx-auto w-full px-4 flex items-center gap-2">

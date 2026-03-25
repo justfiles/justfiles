@@ -116,7 +116,7 @@ export function Sidebar({ entries, onClose }: Props) {
 	const tree = buildTree(entries)
 
 	return (
-		<div className="flex flex-col h-full select-none">
+		<div className="safe-area-sidebar flex flex-col h-full select-none">
 			<div className="flex items-center justify-between px-3 py-2 shrink-0 border-b border-base-300">
 				<span className="text-xs font-semibold font-mono text-base-content/50 uppercase tracking-wider">
 					Memories
@@ -141,7 +141,7 @@ export function Sidebar({ entries, onClose }: Props) {
 					<span className="text-[10px] font-mono text-base-content/40 uppercase tracking-wider">Show deleted</span>
 				</label>
 			</div>
-			<div className="flex-1 overflow-y-auto py-2">
+			<div className="no-overscroll flex-1 overflow-y-auto py-2">
 				{displayEntries.length === 0 ? (
 					<p className="px-3 py-2 text-xs text-base-content/30 font-mono">No memories yet</p>
 				) : (
