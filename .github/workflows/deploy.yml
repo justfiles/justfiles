@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
-      - run: bun run build
+      - run: bun run --filter "@ghostore/worker" build
         env:
           CLOUDFLARE_ENV: staging
           VITE_CLERK_PUBLISHABLE_KEY: pk_test_cmF0aW9uYWwtcHJpbWF0ZS05Ni5jbGVyay5hY2NvdW50cy5kZXYk
@@ -25,6 +25,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
+          workingDirectory: apps/worker
 
   deploy-production:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -34,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
-      - run: bun run build
+      - run: bun run --filter "@ghostore/worker" build
         env:
           VITE_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuZ2hvc3RvcmUubmV0JA
       - uses: cloudflare/wrangler-action@v3.14.1
@@ -42,3 +43,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: bun
+          workingDirectory: apps/worker
