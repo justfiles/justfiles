@@ -29,7 +29,14 @@ export class MemoryObject extends DurableObject<Env> {
 		// ctx.id.name is unreliable in local dev (Miniflare) — ctx.id.toString() is always stable and unique
 		const namespace = ctx.id.toString()
 		const vectorStore = new VectorizeVectorStore(env.VECTORIZE)
-		const store = cfStore(ctx.storage, namespace, openAI(env.OPENAI_KEY), llm(env.OPENAI_KEY), reranker, vectorStore)
+		const store = cfStore(
+			ctx.storage,
+			namespace,
+			openAI(env.OPENAI_KEY),
+			llm(env.OPENAI_KEY),
+			reranker,
+			vectorStore
+		)
 		store.onUpdate(async () => {
 			const existing = await ctx.storage.getAlarm()
 			if (existing == null || existing <= Date.now())
@@ -92,7 +99,6 @@ export class MemoryObject extends DurableObject<Env> {
 	}
 
 	async alarm(): Promise<void> {
-		console.log(`⏰ process embedding ⏰`)
 		const hasMore = await this.store.processEmbedding()
 		if (hasMore) {
 			await this.ctx.storage.setAlarm(Date.now() + 5_000)
@@ -130,14 +136,18 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.string()
 					.optional()
 					.describe('Origin of the memory, e.g. "agent", "human", "system"'),
-				created_at: z
-					.iso.datetime()
+				created_at: z.iso
+					.datetime()
 					.optional()
-					.describe('Override the creation timestamp (ISO 8601). Use when importing from external sources.'),
-				updated_at: z
-					.iso.datetime()
+					.describe(
+						'Override the creation timestamp (ISO 8601). Use when importing from external sources.'
+					),
+				updated_at: z.iso
+					.datetime()
 					.optional()
-					.describe('Override the last-updated timestamp (ISO 8601). Use when importing from external sources.')
+					.describe(
+						'Override the last-updated timestamp (ISO 8601). Use when importing from external sources.'
+					)
 			}
 		},
 		async (args) => {
@@ -256,14 +266,18 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.string()
 					.optional()
 					.describe('New content — replaces existing text, rechunks and re-embeds'),
-				created_at: z
-					.iso.datetime()
+				created_at: z.iso
+					.datetime()
 					.optional()
-					.describe('Override the creation timestamp (ISO 8601). Use when importing from external sources.'),
-				updated_at: z
-					.iso.datetime()
+					.describe(
+						'Override the creation timestamp (ISO 8601). Use when importing from external sources.'
+					),
+				updated_at: z.iso
+					.datetime()
 					.optional()
-					.describe('Override the last-updated timestamp (ISO 8601). Use when importing from external sources.')
+					.describe(
+						'Override the last-updated timestamp (ISO 8601). Use when importing from external sources.'
+					)
 			}
 		},
 		async (args) => {
@@ -323,17 +337,23 @@ function registerMcpTools(server: McpServer, store: Store) {
 				cursor: z
 					.string()
 					.optional()
-					.describe('Pagination cursor from a previous response next_cursor field. Omit for the first page.'),
+					.describe(
+						'Pagination cursor from a previous response next_cursor field. Omit for the first page.'
+					),
 				created: z
 					.object({
 						after: z
 							.string()
 							.optional()
-							.describe('Return only memories created at or after this ISO 8601 timestamp (e.g. "2026-03-01T00:00:00Z")'),
+							.describe(
+								'Return only memories created at or after this ISO 8601 timestamp (e.g. "2026-03-01T00:00:00Z")'
+							),
 						before: z
 							.string()
 							.optional()
-							.describe('Return only memories created at or before this ISO 8601 timestamp (e.g. "2026-03-31T23:59:59Z")')
+							.describe(
+								'Return only memories created at or before this ISO 8601 timestamp (e.g. "2026-03-31T23:59:59Z")'
+							)
 					})
 					.optional()
 					.describe('Filter by creation date range'),
@@ -342,11 +362,15 @@ function registerMcpTools(server: McpServer, store: Store) {
 						after: z
 							.string()
 							.optional()
-							.describe('Return only memories updated at or after this ISO 8601 timestamp (e.g. "2026-03-01T00:00:00Z")'),
+							.describe(
+								'Return only memories updated at or after this ISO 8601 timestamp (e.g. "2026-03-01T00:00:00Z")'
+							),
 						before: z
 							.string()
 							.optional()
-							.describe('Return only memories updated at or before this ISO 8601 timestamp (e.g. "2026-03-31T23:59:59Z")')
+							.describe(
+								'Return only memories updated at or before this ISO 8601 timestamp (e.g. "2026-03-31T23:59:59Z")'
+							)
 					})
 					.optional()
 					.describe('Filter by last-updated date range')
@@ -393,7 +417,8 @@ function registerMcpTools(server: McpServer, store: Store) {
 				const ids = Array.isArray(id) ? id : [id]
 				const { archived, not_found } = await store.archive(id)
 				const parts: string[] = [`Archived ${archived} of ${ids.length} memories.`]
-				if (not_found.length > 0) parts.push(`Not found or already archived: ${not_found.join(', ')}`)
+				if (not_found.length > 0)
+					parts.push(`Not found or already archived: ${not_found.join(', ')}`)
 				return { content: [{ type: 'text', text: parts.join(' ') }] }
 			} catch (err) {
 				return {
@@ -454,7 +479,9 @@ function registerMcpTools(server: McpServer, store: Store) {
 				id: z
 					.string()
 					.optional()
-					.describe('The memory ID to retrieve (obtained from write_memory or search_memory results)'),
+					.describe(
+						'The memory ID to retrieve (obtained from write_memory or search_memory results)'
+					),
 				path: z
 					.string()
 					.optional()
@@ -472,8 +499,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 				} else {
 					return { content: [{ type: 'text', text: 'Provide either id or path' }], isError: true }
 				}
-				if (!memory)
-					return { content: [{ type: 'text', text: `Memory not found` }], isError: true }
+				if (!memory) return { content: [{ type: 'text', text: `Memory not found` }], isError: true }
 				const lines = [
 					`ID: ${memory.id}`,
 					`Title: ${memory.title ?? '(none)'}`,
