@@ -2,6 +2,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { useMutation } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { FiSearch } from 'react-icons/fi'
+import { HeaderActionMenu } from './HeaderActionMenu'
 import { useDraft } from './draft'
 import { MemoryEditor } from './MemoryEditor'
 import { ModeSelector } from './ModeSelector'
@@ -81,25 +82,25 @@ function App() {
 				</div>
 			}
 			headerRight={
-				<>
-					<button
-						type="button"
-						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
-						className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono"
-					>
-						<FiSearch className="w-3.5 h-3.5 shrink-0" />
-						<span className="hidden sm:inline">Search</span>
-						<kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>
-					</button>
-					<button
-						type="button"
-						onClick={handleSubmit}
-						disabled={submitMutation.isPending || !isOnline}
-						className="btn btn-primary btn-sm font-mono"
-					>
-						{submitMutation.isPending ? 'Saving…' : 'Submit'}
-					</button>
-				</>
+				<HeaderActionMenu
+					items={[
+						{
+							key: 'search',
+							label: 'Search',
+							onClick: () => window.dispatchEvent(new Event('open-command-palette')),
+							icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
+							shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
+							hideLabelOnMobile: true
+						},
+						{
+							key: 'submit',
+							label: submitMutation.isPending ? 'Saving…' : 'Submit',
+							onClick: handleSubmit,
+							disabled: submitMutation.isPending || !isOnline,
+							tone: 'primary'
+						}
+					]}
+				/>
 			}
 		/>
 	)

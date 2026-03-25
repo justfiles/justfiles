@@ -4,6 +4,7 @@ import { useNavigate, useParams } from '@tanstack/react-router'
 import React, { useState } from 'react'
 import { FiArchive, FiEdit3, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
 import type { LinkInfo } from '../core/store'
+import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { MemoryEditor } from './MemoryEditor'
 import { useSidebarActions } from './SidebarContext'
 import { useSync } from './sync'
@@ -175,6 +176,54 @@ export function MemoryPage() {
 		}
 	}
 
+	const headerActions: HeaderActionMenuItem[] = [
+		{
+			key: 'search',
+			label: 'Search',
+			onClick: () => window.dispatchEvent(new Event('open-command-palette')),
+			icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
+			shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
+			hideLabelOnMobile: true
+		},
+		...(memory?.active !== 0
+			? [{
+				key: 'move',
+				label: 'Move',
+				onClick: handleMove,
+				disabled: movePathMutation.isPending || !memory,
+				icon: <FiFolder className="w-4 h-4" />,
+				hideLabelOnMobile: true
+			} satisfies HeaderActionMenuItem]
+			: []),
+		(memory?.active === 0
+			? {
+				key: 'revive',
+				label: 'Revive',
+				onClick: () => reviveMutation.mutate(),
+				disabled: reviveMutation.isPending,
+				icon: <FiRefreshCw className="w-4 h-4" />,
+				hideLabelOnMobile: true,
+				tone: 'success'
+			}
+			: {
+				key: 'delete',
+				label: 'Delete',
+				onClick: () => archiveMutation.mutate(),
+				disabled: archiveMutation.isPending,
+				icon: <FiArchive className="w-4 h-4" />,
+				hideLabelOnMobile: true,
+				tone: 'danger'
+			}) satisfies HeaderActionMenuItem,
+		{
+			key: 'create',
+			label: 'Create',
+			onClick: () => navigate({ to: '/' }),
+			icon: <FiEdit3 className="w-4 h-4" />,
+			hideLabelOnMobile: true,
+			tone: 'primary'
+		}
+	]
+
 	return (
 		<MemoryEditor
 			id={id}
@@ -208,58 +257,7 @@ export function MemoryPage() {
 				)
 			}
 			headerRight={
-				<>
-					<button
-						type="button"
-						onClick={() => window.dispatchEvent(new Event('open-command-palette'))}
-						className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-base-300 bg-base-200 hover:bg-base-300 text-base-content/50 text-sm font-mono"
-					>
-						<FiSearch className="w-3.5 h-3.5 shrink-0" />
-						<span className="hidden sm:inline">Search</span>
-						<kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>
-					</button>
-					{memory?.active !== 0 && (
-						<button
-							type="button"
-							onClick={handleMove}
-							disabled={movePathMutation.isPending || !memory}
-							className="btn btn-ghost btn-sm font-mono"
-						>
-							<FiFolder className="w-4 h-4" />
-							<span className="hidden sm:inline">Move</span>
-						</button>
-					)}
-					{memory?.active === 0 ? (
-						<button
-							type="button"
-							onClick={() => reviveMutation.mutate()}
-							disabled={reviveMutation.isPending}
-							className="btn btn-ghost btn-sm text-success font-mono"
-						>
-							<FiRefreshCw className="w-4 h-4" />
-							<span className="hidden sm:inline">Revive</span>
-						</button>
-					) : (
-						<button
-							type="button"
-							onClick={() => archiveMutation.mutate()}
-							disabled={archiveMutation.isPending}
-							className="btn btn-ghost btn-sm text-error font-mono"
-						>
-							<FiArchive className="w-4 h-4" />
-							<span className="hidden sm:inline">Delete</span>
-						</button>
-					)}
-
-					<button
-						type="button"
-						onClick={() => navigate({ to: '/' })}
-						className="btn btn-primary btn-sm font-mono"
-					>
-						<FiEdit3 className="w-4 h-4" />
-						<span className="hidden sm:inline">Create</span>
-					</button>
-				</>
+				<HeaderActionMenu items={headerActions} />
 			}
 			footer={memory ? <LinkedMemories links={memory.links} /> : undefined}
 		/>
