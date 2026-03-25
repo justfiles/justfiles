@@ -2,7 +2,7 @@ import { markdownToDoc, docToMarkdown, schema as remarkSchema } from '../prosemi
 import type { Node as ProseMirrorNode } from 'prosemirror-model'
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import type { LinkInfo } from '../core/store'
+import type { LinkInfo } from '@ghostore/core'
 import {
 	appendPendingPatch,
 	deletePendingPatches,

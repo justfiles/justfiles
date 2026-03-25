@@ -138,8 +138,8 @@ rm -rf .wrangler/state
 
 ### Schema changes
 
-1. Add a new SQL file at `src/core/migrations/NNNN_<name>.sql` with your DDL changes.
-2. Import and register it in `src/worker/db.do.ts` by appending an entry to the `MIGRATIONS` array with the next version number.
+1. Add a new SQL file at `packages/core/src/migrations/NNNN_<name>.sql` with your DDL changes.
+2. Import and register it in `packages/core/src/migrations/index.ts` by appending an entry to the `coreMigrations` array with the next version number.
 3. Commit both files together.
 
 ## Production

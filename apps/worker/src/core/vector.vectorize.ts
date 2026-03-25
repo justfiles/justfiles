@@ -1,4 +1,4 @@
-import type { VectorMatch, VectorQueryInput, VectorRecord, VectorStore } from './vector'
+import type { VectorMatch, VectorQueryInput, VectorRecord, VectorStore } from '@ghostore/core'
 
 export class VectorizeVectorStore implements VectorStore {
 	constructor(private readonly index: VectorizeIndex) {}

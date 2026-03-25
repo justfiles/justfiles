@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-import type { RecentResult, SearchResult } from '../core/store'
+import type { RecentResult, SearchResult } from '@ghostore/core'
 import { useApiClient } from './useApiClient'
 
 export function CommandPalette() {

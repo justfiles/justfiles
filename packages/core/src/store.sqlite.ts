@@ -1,8 +1,7 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import { sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+// @ts-ignore Bun resolves this at runtime; TypeScript in this workspace does not.
 import { Database } from 'bun:sqlite'
 import { resolve } from 'node:path'
+import { coreMigrations } from './migrations'
 import type { EmbeddingProvider } from './embedding'
 import type { LLM } from './llm'
 import type { Reranker } from './reranker'
@@ -11,15 +10,7 @@ import { createSqliteAdapter } from './db.sqlite'
 import { migrateFromEntries, createStore } from './store'
 
 async function migrate(adapter: ReturnType<typeof createSqliteAdapter>): Promise<void> {
-	const migrationDir = fileURLToPath(new URL('./migrations', import.meta.url).toString())
-	const entries = readdirSync(migrationDir)
-		.filter((name: string) => /^\d{4}_.*\.sql$/.test(name))
-		.sort()
-		.map((file: string) => ({
-			version: parseInt(file.slice(0, 4), 10),
-			sql: readFileSync(`${migrationDir}${sep}${file}`, 'utf8')
-		}))
-	await migrateFromEntries(adapter, entries)
+	await migrateFromEntries(adapter, coreMigrations)
 }
 
 export async function sqliteStore(

@@ -1,6 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import type { Memory } from '../core/store'
-import type { UpdateInput } from '../core/store'
+import type { Memory, UpdateInput } from '@ghostore/core'
 import type { ApiClient } from './useApiClient'
 
 export type RemoteMemory = Memory

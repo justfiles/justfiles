@@ -120,5 +120,3 @@ export function createApi(store: Store) {
 			}
 		})
 }
-
-export type ApiType = ReturnType<typeof createApi>

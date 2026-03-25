@@ -1,8 +1,8 @@
 import { useAuth } from '@clerk/clerk-react'
+import type { MemoryMeta } from '@ghostore/core'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { hc } from 'hono/client'
-import type { ApiType } from '../core/api'
-import type { MemoryMeta } from '../core/store'
+import type { WorkerApiType } from '../worker/app'
 
 export type { MemoryMeta }
 
@@ -39,12 +39,12 @@ export function useSidebar() {
 
 	const api = useMemo(
 		() =>
-			hc<ApiType>('/api', {
+			hc<WorkerApiType>('', {
 				headers: async () => {
 					const token = await getToken()
 					return { Authorization: `Bearer ${token ?? ''}` }
 				},
-			}),
+			}).api,
 		[getToken],
 	)
 

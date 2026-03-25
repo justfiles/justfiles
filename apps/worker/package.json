@@ -10,6 +10,7 @@
 		"publish": true
 	},
 	"dependencies": {
+		"@ghostore/core": "workspace:*",
 		"@clerk/clerk-react": "^5.0.0",
 		"@hono/clerk-auth": "^3.1.0",
 		"@hono/mcp": "^0.2.4",
@@ -46,6 +47,9 @@
 		"xstate": "^5.0.0",
 		"zod": "^4.3.6"
 	},
+	"exports": {
+		"./api-types": "./src/worker/app.ts"
+	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.6",
 		"@cloudflare/vite-plugin": "1.15.3",
@@ -69,7 +73,6 @@
 		"wrangler": "^4.71.0"
 	},
 	"scripts": {
-		"dev:local": "bun run --hot src/local/index.tsx",
 		"db:generate": "drizzle-kit generate",
 		"typecheck": "tsc -b --noEmit",
 		"build": "tsc -b && vite build",
