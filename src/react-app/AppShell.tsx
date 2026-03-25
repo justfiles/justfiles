@@ -7,8 +7,6 @@ import { PWAToast } from './PWAToast'
 import { Sidebar } from './Sidebar'
 import { SidebarContext } from './SidebarContext'
 import { loadSettings } from './settings'
-import { drainPendingEdits, registerTokenGetter } from './syncEngine'
-import { useApiClient } from './useApiClient'
 import { useSidebar } from './useSidebar'
 
 function lsSidebarOpenKey(userId: string) {
@@ -20,22 +18,14 @@ function loadSidebarOpen(userId: string): boolean {
 }
 
 function AppShellInner({ userId }: { userId: string }) {
-	const { getToken } = useAuth()
-	const api = useApiClient()
 	const { entries, upsertEntry, removeEntry, refresh } = useSidebar()
 	const [sidebarOpen, setSidebarOpen] = useState(() => loadSidebarOpen(userId))
 
 	useEffect(() => {
-		registerTokenGetter(getToken)
 		if (navigator.storage?.persist) {
 			navigator.storage.persist()
 		}
-		window.addEventListener('online', drainPendingEdits)
-		drainPendingEdits()
-		return () => {
-			window.removeEventListener('online', drainPendingEdits)
-		}
-	}, [api, getToken])
+	}, [])
 	const [theme, setTheme] = useState(() => loadSettings(userId).theme)
 	const pathname = useRouterState({ select: (s) => s.location.pathname })
 
