@@ -1,0 +1,58 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      worker_released: ${{ steps.release.outputs['apps/worker--release_created'] }}
+      cli_released: ${{ steps.release.outputs['apps/cli--release_created'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  deploy-production:
+    needs: release-please
+    if: needs.release-please.outputs.worker_released == 'true'
+    runs-on: ubuntu-latest
+    name: Deploy Production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run --filter "@ghostore/worker" build
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuZ2hvc3RvcmUubmV0JA
+      - uses: cloudflare/wrangler-action@v3.14.1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: bun
+          workingDirectory: apps/worker
+
+  publish-cli:
+    needs: release-please
+    if: needs.release-please.outputs.cli_released == 'true'
+    runs-on: ubuntu-latest
+    name: Publish CLI to npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run build
+        working-directory: apps/cli
+      - run: bun publish
+        working-directory: apps/cli
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}

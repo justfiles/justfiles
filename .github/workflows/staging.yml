@@ -1,0 +1,25 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    name: Deploy Staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run --filter "@ghostore/worker" build
+        env:
+          CLOUDFLARE_ENV: staging
+          VITE_CLERK_PUBLISHABLE_KEY: pk_test_cmF0aW9uYWwtcHJpbWF0ZS05Ni5jbGVyay5hY2NvdW50cy5kZXYk
+      - uses: cloudflare/wrangler-action@v3.14.1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: bun
+          workingDirectory: apps/worker

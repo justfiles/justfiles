@@ -1,0 +1,12 @@
+{
+	"packages": {
+		"apps/cli": {
+			"release-type": "node",
+			"package-name": "@ghostore/cli"
+		},
+		"apps/worker": {
+			"release-type": "node"
+		}
+	},
+	"plugins": ["node-workspace"]
+}
