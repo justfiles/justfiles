@@ -1,4 +1,4 @@
-import { parseArgs } from 'util'
+import { parseCommandArgs } from '../args.ts'
 import type { Config } from '../config.ts'
 import { makeClient } from '../client.ts'
 import { out, printError, printJson } from '../output.ts'
@@ -46,7 +46,7 @@ Examples:
   ghostore list --path ghostore/todo --json | jq '.results[].id'`
 
 export async function run(args: string[], cfg: Config): Promise<void> {
-	const { values } = parseArgs({
+	const { values } = parseCommandArgs({
 		args,
 		options: {
 			path: { type: 'string' },
@@ -64,8 +64,7 @@ export async function run(args: string[], cfg: Config): Promise<void> {
 			help: { type: 'boolean', short: 'h' },
 		},
 		allowPositionals: true,
-		strict: false,
-	})
+	}, help)
 
 	if (values.help) {
 		out(help)

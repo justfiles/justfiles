@@ -1,4 +1,4 @@
-import { parseArgs } from 'util'
+import { parseCommandArgs } from '../args.ts'
 import type { Config } from '../config.ts'
 import { makeClient } from '../client.ts'
 import { out, info, printError, printJson, readStdin } from '../output.ts'
@@ -41,7 +41,7 @@ Examples:
   ID=\$(ghostore write --path inbox/idea "great idea")`
 
 export async function run(args: string[], cfg: Config): Promise<void> {
-	const { values, positionals } = parseArgs({
+	const { values, positionals } = parseCommandArgs({
 		args,
 		options: {
 			path: { type: 'string', short: 'p' },
@@ -56,8 +56,7 @@ export async function run(args: string[], cfg: Config): Promise<void> {
 			help: { type: 'boolean', short: 'h' },
 		},
 		allowPositionals: true,
-		strict: false,
-	})
+	}, help)
 
 	if (values.help) {
 		out(help)

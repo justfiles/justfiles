@@ -1,4 +1,4 @@
-import { parseArgs } from 'util'
+import { parseCommandArgs } from '../args.ts'
 import type { Config } from '../config.ts'
 import { makeClient } from '../client.ts'
 import { out, printError, printJson } from '../output.ts'
@@ -33,7 +33,7 @@ function isMemoryId(arg: string): boolean {
 }
 
 export async function run(args: string[], cfg: Config): Promise<void> {
-	const { values, positionals } = parseArgs({
+	const { values, positionals } = parseCommandArgs({
 		args,
 		options: {
 			json: { type: 'boolean' },
@@ -41,8 +41,7 @@ export async function run(args: string[], cfg: Config): Promise<void> {
 			help: { type: 'boolean', short: 'h' },
 		},
 		allowPositionals: true,
-		strict: false,
-	})
+	}, help)
 
 	if (values.help) {
 		out(help)

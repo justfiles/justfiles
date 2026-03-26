@@ -1,4 +1,4 @@
-import { parseArgs } from 'util'
+import { parseCommandArgs } from '../args.ts'
 import type { Config } from '../config.ts'
 import { makeClient } from '../client.ts'
 import { out, printError, printJson } from '../output.ts'
@@ -19,6 +19,7 @@ Options:
   --tags <tag,...>          Filter by comma-separated tags
   --decay                   Apply time-based decay to boost recent memories
   --decay-half-life <days>  Half-life in days for temporal decay [default: 30]
+  --debug                   Include internal scoring details in JSON output
   --json                    Output as JSON: {"results":[...]}
   -q, --quiet               Only print memory IDs, one per line
   -h, --help                Show this help
@@ -31,12 +32,12 @@ Exit codes:
 Examples:
   ghostore search "meeting notes from Q2"
   ghostore search "ideas" --path inbox --limit 5
-  ghostore search "todo" --tags work,urgent --json
+  ghostore search "todo" --tags work,urgent --json --debug
   ghostore search "architecture" --mode semantic --min-score 0.7
   ghostore search "recent notes" --decay --decay-half-life 7`
 
 export async function run(args: string[], cfg: Config): Promise<void> {
-	const { values, positionals } = parseArgs({
+	const { values, positionals } = parseCommandArgs({
 		args,
 		options: {
 			mode: { type: 'string' },
@@ -46,13 +47,13 @@ export async function run(args: string[], cfg: Config): Promise<void> {
 			tags: { type: 'string' },
 			decay: { type: 'boolean' },
 			'decay-half-life': { type: 'string' },
+			debug: { type: 'boolean' },
 			json: { type: 'boolean' },
 			quiet: { type: 'boolean', short: 'q' },
 			help: { type: 'boolean', short: 'h' },
 		},
 		allowPositionals: true,
-		strict: false,
-	})
+	}, help)
 
 	if (values.help) {
 		out(help)
@@ -87,9 +88,10 @@ export async function run(args: string[], cfg: Config): Promise<void> {
 	const decay = values.decay as boolean | undefined
 	const decayHalfLife = values['decay-half-life'] ? parseFloat(values['decay-half-life'] as string) : undefined
 	const options = decay ? { temporal_decay: true, decay_half_life_days: decayHalfLife } : undefined
+	const debug = values.debug as boolean | undefined
 
 	const res = await makeClient(cfg).api.v1.search.$post({
-		json: { query, mode, limit, min_score: minScore, filter, options },
+		json: { query, mode, limit, min_score: minScore, debug, filter, options },
 	})
 	const result = await res.json()
 	if ('error' in result) {

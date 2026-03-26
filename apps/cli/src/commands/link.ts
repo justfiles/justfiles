@@ -1,4 +1,4 @@
-import { parseArgs } from 'util'
+import { parseCommandArgs } from '../args.ts'
 import type { Config } from '../config.ts'
 import { makeClient } from '../client.ts'
 import { out, info, printError, printJson } from '../output.ts'
@@ -31,7 +31,7 @@ Examples:
   ghostore link mem_abc123 mem_def456 related`
 
 export async function run(args: string[], cfg: Config): Promise<void> {
-	const { values, positionals } = parseArgs({
+	const { values, positionals } = parseCommandArgs({
 		args,
 		options: {
 			reason: { type: 'string' },
@@ -40,8 +40,7 @@ export async function run(args: string[], cfg: Config): Promise<void> {
 			help: { type: 'boolean', short: 'h' },
 		},
 		allowPositionals: true,
-		strict: false,
-	})
+	}, help)
 
 	if (values.help) {
 		out(help)

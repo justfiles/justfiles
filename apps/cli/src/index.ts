@@ -52,6 +52,25 @@ const commands: Record<string, { help: string; run: (args: string[], cfg: Return
 	archive,
 }
 
+const GLOBAL_VALUED_FLAGS = new Set(['--url', '--key'])
+const GLOBAL_BOOLEAN_FLAGS = new Set(['--json', '--quiet', '-q'])
+
+function stripGlobalArgs(args: string[]): string[] {
+	const result: string[] = []
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (GLOBAL_VALUED_FLAGS.has(arg)) {
+			i++
+			continue
+		}
+		if (GLOBAL_BOOLEAN_FLAGS.has(arg)) continue
+		result.push(arg)
+	}
+
+	return result
+}
+
 async function main() {
 	const argv = process.argv.slice(2)
 
@@ -88,15 +107,21 @@ async function main() {
 	})
 
 	// Find the command: first non-flag arg, skipping values of known valued flags
-	const valuedFlags = new Set(['--url', '--key'])
 	let cmdIndex = -1
 	let i = 0
 	while (i < argv.length) {
 		const arg = argv[i]
-		if (valuedFlags.has(arg)) {
+		if (GLOBAL_VALUED_FLAGS.has(arg)) {
+			if (i + 1 >= argv.length) {
+				printError(`option requires a value: ${arg}`, MAIN_HELP)
+				process.exit(4)
+			}
 			i += 2
-		} else if (arg.startsWith('-')) {
+		} else if (GLOBAL_BOOLEAN_FLAGS.has(arg) || arg === '--help' || arg === '-h' || arg === '--version' || arg === '-v') {
 			i++
+		} else if (arg.startsWith('-')) {
+			printError(`unknown global option: ${arg}`, MAIN_HELP)
+			process.exit(4)
 		} else {
 			cmdIndex = i
 			break
@@ -109,7 +134,7 @@ async function main() {
 	}
 
 	const commandName = argv[cmdIndex]
-	const commandArgs = argv.slice(cmdIndex + 1)
+	const commandArgs = stripGlobalArgs(argv.slice(cmdIndex + 1))
 	const command = commands[commandName]
 
 	if (!command) {
