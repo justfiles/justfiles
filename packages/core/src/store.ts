@@ -908,10 +908,15 @@ export function createStore(
 					// so use the same threshold as exact mode unless caller overrode it
 					if (!input.min_score) minScore = 0
 				} else {
-					const queries =
-						embProvider && llm
-							? [input.query, ...(await llm.expand(input.query)).semantic]
-							: [input.query]
+					let queries = [input.query]
+					if (embProvider && llm) {
+						try {
+							const expanded = await llm.expand(input.query)
+							queries = [input.query, ...expanded.semantic]
+						} catch (e) {
+							console.error('[ghostore] llm.expand failed, degraded to single-query search:', e)
+						}
+					}
 					const semanticLists = embProvider
 						? await Promise.all(
 								queries.map((q) =>
@@ -920,6 +925,7 @@ export function createStore(
 										.then(([emb]) =>
 											semanticSearch(new Float32Array(emb), validIds, candidateLimit)
 										)
+										.catch((e) => { console.error('[ghostore] embed failed for query:', q, e); return [] as CandidateChunk[] })
 								)
 							)
 						: []
