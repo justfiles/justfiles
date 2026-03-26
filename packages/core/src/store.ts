@@ -117,7 +117,11 @@ interface CandidateChunk {
 	hash: string
 	rank: number
 	score: number
+	retrievalScore?: number
 	semanticScore?: number
+	semanticScoreOriginalQuery?: number
+	semanticScoreMax?: number
+	semanticBestQuery?: string
 	ftsRank?: number
 	rerankerScore?: number
 }
@@ -158,10 +162,29 @@ function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateCh
 			// RRF term + per-list top-rank bonus (both weighted by list weight)
 			const add = w * (1 / (k + rank + 1) + (TOP_RANK_BONUS[rank] ?? 0))
 			const prev = scores.get(chunk.chunkId)
+			const prevChunk = prev?.chunk
+			const prevSemanticMax = prevChunk?.semanticScoreMax ?? prevChunk?.semanticScore
+			const chunkSemanticMax = chunk.semanticScoreMax ?? chunk.semanticScore
+			const useChunkBestQuery =
+				chunkSemanticMax != null &&
+				(prevSemanticMax == null || chunkSemanticMax >= prevSemanticMax)
+			const semanticScoreMax =
+				prevSemanticMax == null
+					? chunkSemanticMax
+					: chunkSemanticMax == null
+						? prevSemanticMax
+						: Math.max(prevSemanticMax, chunkSemanticMax)
 			const merged: CandidateChunk = {
-				...(prev?.chunk ?? chunk),
-				semanticScore: chunk.semanticScore ?? prev?.chunk.semanticScore,
-				ftsRank: chunk.ftsRank ?? prev?.chunk.ftsRank
+				...(prevChunk ?? chunk),
+				retrievalScore: Math.max(prevChunk?.retrievalScore ?? 0, chunk.retrievalScore ?? 0),
+				semanticScore: chunk.semanticScore ?? prevChunk?.semanticScore,
+				semanticScoreOriginalQuery:
+					chunk.semanticScoreOriginalQuery ?? prevChunk?.semanticScoreOriginalQuery,
+				semanticScoreMax,
+				semanticBestQuery: useChunkBestQuery
+					? chunk.semanticBestQuery
+					: prevChunk?.semanticBestQuery,
+				ftsRank: chunk.ftsRank ?? prevChunk?.ftsRank
 			}
 			scores.set(chunk.chunkId, { chunk: merged, rrfScore: (prev?.rrfScore ?? 0) + add })
 		}
@@ -172,8 +195,9 @@ function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateCh
 		.map((v) => {
 			const { chunk } = v
 			const ftsScore = chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : 0
-			const score = Math.max(chunk.semanticScore ?? 0, ftsScore)
-			return { ...chunk, score }
+			const semanticScore = chunk.semanticScoreMax ?? chunk.semanticScore ?? 0
+			const retrievalScore = Math.max(semanticScore, ftsScore)
+			return { ...chunk, score: retrievalScore, retrievalScore }
 		})
 }
 
@@ -354,6 +378,16 @@ function sanitizeFtsQuery(query: string): string {
 
 const STRONG_SIGNAL_MIN_SCORE = 0.85
 const STRONG_SIGNAL_MIN_GAP = 0.15
+const HYBRID_EXPANSION_MIN_TOKENS = 3
+
+function chunkSlice(text: string, pos: unknown, len: unknown): string {
+	const start = typeof pos === 'number' ? pos : Number(pos ?? 0)
+	const length = typeof len === 'number' ? len : Number(len ?? text.length)
+	if (!Number.isFinite(start) || !Number.isFinite(length)) return text
+	const safeStart = Math.max(0, start)
+	const safeEnd = Math.min(text.length, safeStart + Math.max(0, length))
+	return text.slice(safeStart, safeEnd)
+}
 
 function hasStrongExactSignal(exact: CandidateChunk[]): boolean {
 	if (exact.length === 0) return false
@@ -383,6 +417,7 @@ export const SearchInputSchema = z.object({
 	scope: z.string().optional(),
 	limit: z.number().optional(),
 	min_score: z.number().optional(),
+	debug: z.boolean().optional(),
 	filter: z
 		.object({
 			fields: z
@@ -488,11 +523,22 @@ export type SearchResult = {
 	// pos: number | null
 	// len: number | null
 	score: number
-	semanticScore?: number
-	ftsScore?: number
-	rerankerScore?: number
 	snippet: string | null
 	source?: string
+	debug?: {
+		retrievalScore?: number
+		exact?: {
+			ftsScore?: number
+		}
+		semantic?: {
+			originalQueryScore?: number
+			maxScore?: number
+			bestQuery?: string
+		}
+		reranker?: {
+			score?: number
+		}
+	}
 }
 
 export type Memory = {
@@ -652,14 +698,17 @@ export function createStore(
 			hash: String(row.hash),
 			rank,
 			ftsRank: Number(row.fts_rank),
-			score: normalizeBm25(Number(row.fts_rank))
+			score: normalizeBm25(Number(row.fts_rank)),
+			retrievalScore: normalizeBm25(Number(row.fts_rank))
 		}))
 	}
 
 	async function semanticSearch(
+		query: string,
 		queryEmbedding: Float32Array,
 		validIds: string[],
-		candidateLimit: number
+		candidateLimit: number,
+		isOriginalQuery = false
 	): Promise<CandidateChunk[]> {
 		if (validIds.length === 0 || !vectorStore) return []
 
@@ -677,10 +726,12 @@ export function createStore(
 		const rows = await adapter.query<{
 			id: unknown
 			memory_id: unknown
+			pos: unknown
+			len: unknown
 			text: unknown
 			hash: unknown
 		}>(
-			`SELECT c.id, c.memory_id, co.text, c.hash
+			`SELECT c.id, c.memory_id, c.pos, c.len, co.text, c.hash
 			 FROM chunks c
 			 JOIN memories m ON m.id = c.memory_id
 			 JOIN content co ON co.hash = m.content_hash
@@ -694,20 +745,28 @@ export function createStore(
 			.map((row) => ({
 				chunkId: String(row.id),
 				memoryId: String(row.memory_id),
-				text: String(row.text),
+				text: chunkSlice(String(row.text), row.pos, row.len),
 				hash: String(row.hash),
-				score: scoreMap.get(String(row.id)) ?? 0
+				score: scoreMap.get(String(row.id)) ?? 0,
+				retrievalScore: scoreMap.get(String(row.id)) ?? 0,
+				semanticScore: scoreMap.get(String(row.id)) ?? 0,
+				semanticScoreOriginalQuery: isOriginalQuery
+					? (scoreMap.get(String(row.id)) ?? 0)
+					: undefined,
+				semanticScoreMax: scoreMap.get(String(row.id)) ?? 0,
+				semanticBestQuery: query
 			}))
 			.sort((a, b) => b.score - a.score)
 			.slice(0, candidateLimit)
-			.map((row, rank) => ({ ...row, rank, semanticScore: row.score }))
+			.map((row, rank) => ({ ...row, rank }))
 	}
 
 	async function chunksToResults(
 		candidates: CandidateChunk[],
 		query: string,
 		limit: number,
-		options?: SearchInput['options']
+		options?: SearchInput['options'],
+		includeDebug = false
 	): Promise<SearchResult[]> {
 		if (candidates.length === 0) return []
 
@@ -747,11 +806,24 @@ export function createStore(
 				path: String(mem.path),
 				title: mem.title != null ? String(mem.title) : null,
 				score,
-				semanticScore: chunk.semanticScore,
-				ftsScore: chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : undefined,
-				rerankerScore: chunk.rerankerScore,
 				snippet: generateSnippet(chunk.text, query),
-				source: mem.source != null ? String(mem.source) : undefined
+				source: mem.source != null ? String(mem.source) : undefined,
+				debug: includeDebug
+					? {
+							retrievalScore: chunk.retrievalScore,
+							exact: {
+								ftsScore: chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : undefined
+							},
+							semantic: {
+								originalQueryScore: chunk.semanticScoreOriginalQuery,
+								maxScore: chunk.semanticScoreMax,
+								bestQuery: chunk.semanticBestQuery
+							},
+							reranker: {
+								score: chunk.rerankerScore
+							}
+						}
+					: undefined
 			})
 
 			if (results.length >= limit) break
@@ -889,9 +961,11 @@ export function createStore(
 				if (!embProvider) return []
 				const [queryEmbedding] = await embProvider.embed([input.query])
 				candidates = await semanticSearch(
+					input.query,
 					new Float32Array(queryEmbedding),
 					validIds,
-					candidateLimit
+					candidateLimit,
+					true
 				)
 			} else {
 				// For CJK languages (Chinese, Japanese, Korean) words aren't space-separated,
@@ -910,23 +984,41 @@ export function createStore(
 				} else {
 					let queries = [input.query]
 					if (embProvider && llm) {
-						try {
-							const expanded = await llm.expand(input.query)
-							queries = [input.query, ...expanded.semantic]
-						} catch (e) {
-							console.error('[ghostore] llm.expand failed, degraded to single-query search:', e)
+						const allowExpansion = tokens >= HYBRID_EXPANSION_MIN_TOKENS
+						if (allowExpansion) {
+							try {
+								const expanded = await llm.expand(input.query)
+								queries = [
+									input.query,
+									...expanded.semantic
+										.map((q) => q.trim())
+										.filter(Boolean)
+										.filter((q) => q.toLowerCase() !== input.query.toLowerCase())
+								]
+							} catch (e) {
+								console.error(
+									'[ghostore] llm.expand failed, degraded to single-query search:',
+									e
+								)
+							}
 						}
 					}
 					const semanticLists = embProvider
 						? await Promise.all(
-								queries.map((q) =>
-									embProvider
-										.embed([q])
-										.then(([emb]) =>
-											semanticSearch(new Float32Array(emb), validIds, candidateLimit)
-										)
-										.catch((e) => { console.error('[ghostore] embed failed for query:', q, e); return [] as CandidateChunk[] })
-								)
+									queries.map((q) =>
+										embProvider
+											.embed([q])
+											.then(([emb]) =>
+												semanticSearch(
+													q,
+													new Float32Array(emb),
+													validIds,
+													candidateLimit,
+													q === input.query
+												)
+											)
+											.catch((e) => { console.error('[ghostore] embed failed for query:', q, e); return [] as CandidateChunk[] })
+									)
 							)
 						: []
 					const ftsWeight = tokens <= 2 ? 2.0 : 1.0
@@ -959,7 +1051,7 @@ export function createStore(
 				}
 			}
 
-			return (await chunksToResults(candidates, input.query, limit, input.options)).filter(
+			return (await chunksToResults(candidates, input.query, limit, input.options, input.debug === true)).filter(
 				(r) => r.score >= minScore
 			)
 		},

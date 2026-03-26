@@ -153,6 +153,10 @@ function registerMcpTools(server: McpServer, store: Store) {
 					.max(1)
 					.optional()
 					.describe('Minimum relevance score threshold between 0 and 1'),
+				debug: z
+					.boolean()
+					.optional()
+					.describe('Include internal scoring details in structured search responses'),
 				filter: z
 					.object({
 						fields: z

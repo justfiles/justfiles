@@ -3,11 +3,12 @@ import type { LLM } from './llm'
 async function chatComplete(
 	apiKey: string,
 	messages: Array<{ role: string; content: string }>,
-	jsonMode = false
+	jsonMode = false,
+	temperature = 0.3
 ): Promise<string> {
 	const body: Record<string, unknown> = {
 		model: 'gpt-4o-mini',
-		temperature: 0.3,
+		temperature,
 		messages
 	}
 	if (jsonMode) body.response_format = { type: 'json_object' }
@@ -41,7 +42,8 @@ Respond with JSON in this exact format:
 {"semantic":["variant1","variant2","variant3"],"keywordSets":[["kw1","kw2","kw3"],["kw1","kw2","kw3"],["kw1","kw2","kw3"]]}`
 					}
 				],
-				true
+				true,
+				0
 			)
 			const parsed = JSON.parse(content) as { semantic: string[]; keywordSets: string[][] }
 			return {
