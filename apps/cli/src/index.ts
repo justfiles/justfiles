@@ -26,12 +26,24 @@ Commands:
   archive  Archive a memory (soft-delete, recoverable for 30 days)
 
 Global options:
-  --url <url>    Backend URL [env: GHOSTORE_URL] [default: http://localhost:5173]
+  --url <url>    Backend URL [env: GHOSTORE_URL] [default: https://ghostore.net]
   --key <key>    API key  [env: GHOSTORE_API_KEY]
   --json         Output all results as JSON
   -q, --quiet    Suppress informational output
   -h, --help     Show this help
   -v, --version  Show version
+
+Configuration:
+  API key and URL can be set in a config file (JSON). Locations checked in order:
+    ~/.config/ghostore/config.json
+    ~/.ghostore.json
+
+  Example config file:
+    {
+      "key": "your-api-key"
+    }
+
+  Priority: --key flag > GHOSTORE_API_KEY env > config file > default
 
 Exit codes:
   0  Success
