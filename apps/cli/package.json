@@ -1,6 +1,6 @@
 {
 	"name": "@ghostore/cli",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"devDependencies": {
 		"@ghostore/core": "workspace:*",
 		"@ghostore/worker": "workspace:*",
@@ -11,7 +11,9 @@
 	"bin": {
 		"ghostore": "./dist/index.mjs"
 	},
-	"files": ["dist"],
+	"files": [
+		"dist"
+	],
 	"scripts": {
 		"build": "tsdown",
 		"typecheck": "tsc --noEmit"

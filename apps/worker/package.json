@@ -3,7 +3,9 @@
 	"private": true,
 	"cloudflare": {
 		"label": "Vite React Template",
-		"products": ["Workers"],
+		"products": [
+			"Workers"
+		],
 		"categories": [],
 		"preview_icon_url": "https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/532a5378-9717-4964-385b-5fafd2160200/public",
 		"preview_image_url": "https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/ec7f4be5-d1d6-4e94-0851-126341745400/preview",
@@ -84,5 +86,6 @@
 		"preview": "bun run build && vite preview",
 		"mcp:inspect": "bunx @modelcontextprotocol/inspector https://ghostore.net/mcp"
 	},
-	"type": "module"
+	"type": "module",
+	"version": "0.1.1"
 }
