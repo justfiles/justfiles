@@ -14,7 +14,6 @@ export class VectorizeVectorStore implements VectorStore {
 			namespace: input.namespace,
 			returnMetadata: 'none'
 		})
-
 		return result.matches
 	}
 

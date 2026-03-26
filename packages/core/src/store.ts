@@ -371,7 +371,7 @@ function normalizeTags(tags?: string | string[]): string[] {
 function sanitizeFtsQuery(query: string): string {
 	return query
 		.split(/\s+/)
-		.map((w) => w.replace(/[^\w]/g, ' ').trim())
+		.map((w) => w.replace(/'/g, '').replace(/\W/g, ' ').trim())
 		.filter(Boolean)
 		.join(' ')
 }
@@ -974,7 +974,30 @@ export function createStore(
 				// for routing purposes (character count ≈ token count for CJK in LLM tokenizers).
 				const cjk = (input.query.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) ?? []).length
 				const tokens = cjk > 0 ? cjk : input.query.trim().split(/\s+/).filter(Boolean).length
-				const exact = await exactSearch(input.query, validIds, candidateLimit)
+
+				// Run LLM expansion before FTS so we can use the lex variant for BM25.
+				// lex: keyword-only form (stop words stripped) → better BM25 precision
+				// hyde: hypothetical document → better semantic recall for question-style queries
+				let ftsQuery = input.query
+				let vecQueries: string[] = [input.query]
+				if (llm && tokens >= HYBRID_EXPANSION_MIN_TOKENS) {
+					try {
+						const expanded = await llm.expand(input.query)
+						if (expanded.lex) ftsQuery = expanded.lex
+						vecQueries = [
+							input.query,
+							...expanded.semantic
+								.map((q) => q.trim())
+								.filter(Boolean)
+								.filter((q) => q.toLowerCase() !== input.query.toLowerCase()),
+							...(expanded.hyde ? [expanded.hyde] : [])
+						]
+					} catch (e) {
+						console.error('[ghostore] llm.expand failed, degraded to single-query search:', e)
+					}
+				}
+
+				const exact = await exactSearch(ftsQuery, validIds, candidateLimit)
 
 				if (tokens <= 1 || hasStrongExactSignal(exact)) {
 					candidates = exact
@@ -982,30 +1005,9 @@ export function createStore(
 					// so use the same threshold as exact mode unless caller overrode it
 					if (!input.min_score) minScore = 0
 				} else {
-					let queries = [input.query]
-					if (embProvider && llm) {
-						const allowExpansion = tokens >= HYBRID_EXPANSION_MIN_TOKENS
-						if (allowExpansion) {
-							try {
-								const expanded = await llm.expand(input.query)
-								queries = [
-									input.query,
-									...expanded.semantic
-										.map((q) => q.trim())
-										.filter(Boolean)
-										.filter((q) => q.toLowerCase() !== input.query.toLowerCase())
-								]
-							} catch (e) {
-								console.error(
-									'[ghostore] llm.expand failed, degraded to single-query search:',
-									e
-								)
-							}
-						}
-					}
 					const semanticLists = embProvider
 						? await Promise.all(
-									queries.map((q) =>
+									vecQueries.map((q) =>
 										embProvider
 											.embed([q])
 											.then(([emb]) =>
@@ -1658,8 +1660,13 @@ export function createStore(
 						const hashToText = new Map<string, string>()
 						for (const i of toAdd) hashToText.set(newHashes[i], newChunks[i].text)
 						const hashes = [...hashToText.keys()]
-						const fresh = await embProvider.embed(hashes.map((h) => hashToText.get(h)!))
-						hashes.forEach((h, j) => embeddings.set(h, new Float32Array(fresh[j])))
+						try {
+							const fresh = await embProvider.embed(hashes.map((h) => hashToText.get(h)!))
+							hashes.forEach((h, j) => embeddings.set(h, new Float32Array(fresh[j])))
+						} catch (e) {
+							console.error(`[ghostore] processEmbedding: embed failed for ${memId}:`, e)
+							continue
+						}
 					}
 
 					// Collect Vectorize operations; apply after SQLite transaction succeeds
@@ -1712,11 +1719,15 @@ export function createStore(
 
 					// Sync with Vectorize after SQLite transaction succeeds
 					if (vectorStore) {
-						if (idsToDelete.length > 0) await vectorStore.delete(idsToDelete)
-						if (vectorsToUpsert.length > 0) {
-							await vectorStore.upsert(
-								vectorsToUpsert.map((v) => ({ id: v.id, values: v.values, namespace }))
-							)
+						try {
+							if (idsToDelete.length > 0) await vectorStore.delete(idsToDelete)
+							if (vectorsToUpsert.length > 0) {
+								await vectorStore.upsert(
+									vectorsToUpsert.map((v) => ({ id: v.id, values: v.values, namespace }))
+								)
+							}
+						} catch (e) {
+							console.error(`[ghostore] processEmbedding: vectorize sync failed for ${memId}:`, e)
 						}
 					}
 				} else if (newTitle) {

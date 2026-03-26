@@ -36,19 +36,24 @@ export function openAI(apiKey: string): LLM {
 				[
 					{
 						role: 'user',
-						content: `Generate alternative search queries for: "${query}"
+						content: `Generate search variants for: "${query}"
+
+- lex: keyword-only form for BM25 full-text search — strip ALL stop words, keep only 3-6 meaningful content words
+- semantic: array of 2-3 rephrased variants for embedding similarity search
+- hyde: one short paragraph (2-4 sentences) that would directly contain the answer to this query — used for hypothetical document embedding
 
 Respond with JSON in this exact format:
-{"semantic":["variant1","variant2","variant3"],"keywordSets":[["kw1","kw2","kw3"],["kw1","kw2","kw3"],["kw1","kw2","kw3"]]}`
+{"lex":"keyword1 keyword2 keyword3","semantic":["variant1","variant2"],"hyde":"A short paragraph that answers the query..."}`
 					}
 				],
 				true,
 				0
 			)
-			const parsed = JSON.parse(content) as { semantic: string[]; keywordSets: string[][] }
+			const parsed = JSON.parse(content) as { lex: string; semantic: string[]; hyde: string }
 			return {
+				lex: (parsed.lex ?? '').trim(),
 				semantic: (parsed.semantic ?? []).slice(0, 3),
-				keywordSets: (parsed.keywordSets ?? []).slice(0, 3)
+				hyde: (parsed.hyde ?? '').trim()
 			}
 		},
 

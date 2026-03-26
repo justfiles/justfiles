@@ -1,6 +1,7 @@
 type ExpandedQuery = {
-	semantic: string[] // 3 variants, for semantic (vector) search
-	keywordSets: string[][] // 3 sets, 3-5 keywords each, for lexical/FTS match
+	lex: string // keyword query for FTS — stop words stripped, optimised for BM25
+	semantic: string[] // 2-3 variants for vector search
+	hyde: string // hypothetical document embedding — short paragraph answering the query
 }
 
 type Metadata = {
