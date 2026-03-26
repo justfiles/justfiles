@@ -2,6 +2,34 @@
 
 A focused memory service for humans and AI agents.
 
+This is a monorepo with three packages:
+
+| Package         | Description                                                |
+|-----------------|------------------------------------------------------------|
+| `apps/worker`   | Cloudflare Worker — REST API, MCP server, and React web UI |
+| `apps/cli`      | Agent-friendly CLI for interacting with the backend        |
+| `packages/core` | Shared memory store logic (DB, embeddings, search)         |
+
+## CLI
+
+The `ghostore` CLI is designed for scripting and AI agent use. It has good help/error message that helps agents discover the usage in a "progressive disclosure" way. (Saves token, only read when needs them)
+
+```sh
+# Configure once
+echo '{"key":"ak_YOUR_API_KEY"}' > ~/.config/ghostore/config.json
+
+# Commands
+ghostore write --path notes/foo "Hello world"
+ghostore get notes/foo
+ghostore search "something I remember"
+ghostore list --path notes/
+ghostore update <id> --title "New title"
+ghostore link <from-id> <to-id> rel-type
+ghostore archive <id>
+```
+
+Global flags: `--url`, `--key` (or env `GHOSTORE_URL` / `GHOSTORE_API_KEY`), `--json`, `--quiet`.
+
 ## MCP
 
 Ghostore exposes an MCP server at `/mcp`. To connect an AI agent, add it to your `mcp.json` with a Clerk API key (generate one from the Ghostore web UI):
@@ -22,15 +50,15 @@ Ghostore exposes an MCP server at `/mcp`. To connect an AI agent, add it to your
 
 ### Tools
 
-| Tool | Description |
-|------|-------------|
-| `write_memory` | Write a memory at a path. `mode`: `w` overwrite (default), `a` append, `x` exclusive create |
-| `search_memory` | Hybrid/semantic/exact search with optional tag and path filters |
-| `update_memory` | Update content, path, title, or tags of an existing memory by ID |
-| `list_memories` | List memories by `path_prefix`, glob `path_pattern`, tags, or date range |
-| `get_memory` | Fetch a memory by ID or path |
-| `archive_memory` | Soft-delete one or more memories by ID |
-| `link_memories` | Create a directed relationship between two memories |
+| Tool             | Description                                                                                 |
+|------------------|---------------------------------------------------------------------------------------------|
+| `write_memory`   | Write a memory at a path. `mode`: `w` overwrite (default), `a` append, `x` exclusive create |
+| `search_memory`  | Hybrid/semantic/exact search with optional tag and path filters                             |
+| `update_memory`  | Update content, path, title, or tags of an existing memory by ID                            |
+| `list_memories`  | List memories by `path_prefix`, glob `path_pattern`, tags, or date range                    |
+| `get_memory`     | Fetch a memory by ID or path                                                                |
+| `archive_memory` | Soft-delete one or more memories by ID                                                      |
+| `link_memories`  | Create a directed relationship between two memories                                         |
 
 ## Development
 
@@ -66,12 +94,6 @@ Use one of the local flows:
   bun dev
   ```
 
-  or set it inline:
-
-  ```sh
-  VITE_CLERK_PUBLISHABLE_KEY=pk_test_... bun dev
-  ```
-
 - Worker-backed development with Wrangler:
 
   ```sh
@@ -87,48 +109,11 @@ Use one of the local flows:
   bunx wrangler dev
   ```
 
-  For local API smoke tests that bypass Wrangler, export the needed env vars in your shell or `.env`.
-
-#### Production release
-
-- Set runtime secrets in Cloudflare (values are injected from environment during deployment):
-
-  ```sh
-  bunx wrangler secret put OPENAI_KEY
-  bunx wrangler secret put CLERK_SECRET_KEY
-  bunx wrangler secret put CLERK_PUBLISHABLE_KEY
-  # Optional: enable Google Vertex AI reranker
-  bunx wrangler secret put GOOGLE_PROJECT_ID
-  bunx wrangler secret put GOOGLE_SA_KEY
-  ```
-
-- Build and deploy with the Clerk publishable key available at build time:
-
-  ```sh
-  VITE_CLERK_PUBLISHABLE_KEY=pk_live_... bun run build
-  bun run deploy
-  ```
-
-  If your platform runs commands in separate steps, run:
-
-  ```sh
-  export VITE_CLERK_PUBLISHABLE_KEY=pk_live_...
-  bun run build
-  bun run deploy
-  ```
-
-- To verify:
-
-  ```sh
-  bunx wrangler secret list
-  bunx wrangler deploy --dry-run
-  ```
-
 The dev server starts a local Cloudflare Worker with a Durable Object backed by a persisted SQLite file at `.wrangler/state/v3/do/`.
 
 ### Database (dev)
 
-Migrations run automatically on the **first request** after startup. The Durable Object constructor calls `migrateCF(storage)` inside `blockConcurrencyWhile`, blocking all requests until pending migrations complete.
+Migrations run automatically on the **first request** after startup.
 
 The local SQLite state persists across restarts. If you need a clean slate:
 
@@ -149,12 +134,14 @@ bun run build
 bun run deploy
 ```
 
-The production settings above assume the release environment has the variables from the "Production release" section configured.
+Set runtime secrets in Cloudflare before deploying:
 
-### Database (prod)
+```sh
+bunx wrangler secret put OPENAI_KEY
+bunx wrangler secret put CLERK_SECRET_KEY
+bunx wrangler secret put CLERK_PUBLISHABLE_KEY
+```
 
-Each Durable Object instance has its own embedded SQLite database managed by Cloudflare. There is no separate provisioning step.
-
-Migrations run automatically on the first request to each Durable Object instance. For a brand-new deployment all migrations run in sequence on first request; for an existing deployment only new migrations run.
+Each Durable Object instance has its own embedded SQLite database managed by Cloudflare — no separate provisioning needed. Migrations run automatically on the first request.
 
 To export data from a live instance, use the **Download DB** button in the UI, which downloads the `memories` table as JSON via `GET /api/v1/export`.

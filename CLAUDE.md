@@ -3,6 +3,14 @@ use bun for package management.
 
 use tab for indentation.
 
+# Monorepo Structure
+
+| Package         | Description                                                |
+|-----------------|------------------------------------------------------------|
+| `apps/worker`   | Cloudflare Worker — REST API, MCP server, and React web UI |
+| `apps/cli`      | Agent-friendly CLI for interacting with the backend        |
+| `packages/core` | Shared memory store logic (DB, embeddings, search)         |
+
 # Memory
 
 use ghostore (via mcp) as memory source. anything about memory, it means in ghostore.
@@ -21,11 +29,11 @@ For all limits and quotas, retrieve from the product's `/platform/limits/` page.
 
 ## Commands
 
-| Command               | Purpose                   |
-|-----------------------|---------------------------|
-| `npx wrangler dev`    | Local development         |
-| `npx wrangler deploy` | Deploy to Cloudflare      |
-| `npx wrangler types`  | Generate TypeScript types |
+| Command                | Purpose                   |
+|------------------------|---------------------------|
+| `bunx wrangler dev`    | Local development         |
+| `bunx wrangler deploy` | Deploy to Cloudflare      |
+| `bunx wrangler types`  | Generate TypeScript types |
 
 Run `wrangler types` after changing bindings in wrangler.jsonc.
 
