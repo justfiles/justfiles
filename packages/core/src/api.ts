@@ -43,8 +43,8 @@ export function createApi(store: Store) {
 		})
 		.post('/v1/search', zValidator('json', SearchInputSchema), async (c) => {
 			const input = c.req.valid('json')
-			const results = await store.search(input)
-			return c.json({ results })
+			const output = await store.search(input)
+			return c.json(output)
 		})
 		.post('/v1/update', zValidator('json', UpdateInputSchema), async (c) => {
 			const input = c.req.valid('json')

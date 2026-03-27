@@ -33,7 +33,7 @@ export interface Store {
 	/**
 	 * search for memory
 	 */
-	search(input: SearchInput): Promise<SearchResult[]>
+	search(input: SearchInput): Promise<SearchOutput>
 
 	/**
 	 * update metadata and/or content of an existing memory.
@@ -124,6 +124,8 @@ interface CandidateChunk {
 	semanticBestQuery?: string
 	ftsRank?: number
 	rerankerScore?: number
+	sources?: string[]
+	rrfRank?: number
 }
 
 function normalizeBm25(ftsRank: number): number {
@@ -152,11 +154,12 @@ function blendWithReranker(retrievalScore: number, rerankerScore: number, rank: 
 // Added to rrfScore (affects ranking only, not the display score).
 const TOP_RANK_BONUS = [0.05, 0.02, 0.02]
 
-function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateChunk[] {
+function rrf(lists: CandidateChunk[][], k = 60, weights?: number[], listNames?: string[]): CandidateChunk[] {
 	const scores = new Map<string, { chunk: CandidateChunk; rrfScore: number }>()
 	for (let li = 0; li < lists.length; li++) {
 		const list = lists[li]
 		const w = weights?.[li] ?? 1.0
+		const listName = listNames?.[li]
 		for (let rank = 0; rank < list.length; rank++) {
 			const chunk = list[rank]
 			// RRF term + per-list top-rank bonus (both weighted by list weight)
@@ -174,6 +177,8 @@ function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateCh
 					: chunkSemanticMax == null
 						? prevSemanticMax
 						: Math.max(prevSemanticMax, chunkSemanticMax)
+			const sourcesSet = new Set(prevChunk?.sources ?? [])
+			if (listName) sourcesSet.add(listName)
 			const merged: CandidateChunk = {
 				...(prevChunk ?? chunk),
 				retrievalScore: Math.max(prevChunk?.retrievalScore ?? 0, chunk.retrievalScore ?? 0),
@@ -184,7 +189,8 @@ function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateCh
 				semanticBestQuery: useChunkBestQuery
 					? chunk.semanticBestQuery
 					: prevChunk?.semanticBestQuery,
-				ftsRank: chunk.ftsRank ?? prevChunk?.ftsRank
+				ftsRank: chunk.ftsRank ?? prevChunk?.ftsRank,
+				sources: Array.from(sourcesSet)
 			}
 			scores.set(chunk.chunkId, { chunk: merged, rrfScore: (prev?.rrfScore ?? 0) + add })
 		}
@@ -192,12 +198,12 @@ function rrf(lists: CandidateChunk[][], k = 60, weights?: number[]): CandidateCh
 	// Sort by RRF score; display score is the best raw signal (independent of RRF ordering).
 	return Array.from(scores.values())
 		.sort((a, b) => b.rrfScore - a.rrfScore)
-		.map((v) => {
+		.map((v, rrfRank) => {
 			const { chunk } = v
 			const ftsScore = chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : 0
 			const semanticScore = chunk.semanticScoreMax ?? chunk.semanticScore ?? 0
 			const retrievalScore = Math.max(semanticScore, ftsScore)
-			return { ...chunk, score: retrievalScore, retrievalScore }
+			return { ...chunk, score: retrievalScore, retrievalScore, rrfRank }
 		})
 }
 
@@ -527,6 +533,8 @@ export type SearchResult = {
 	source?: string
 	debug?: {
 		retrievalScore?: number
+		sources?: string[]
+		rrfRank?: number
 		exact?: {
 			ftsScore?: number
 		}
@@ -538,6 +546,15 @@ export type SearchResult = {
 		reranker?: {
 			score?: number
 		}
+	}
+}
+
+export type SearchOutput = {
+	results: SearchResult[]
+	debug?: {
+		expansion?: { lex: string; semantic: string[]; hyde: string }
+		routing: 'fts-only' | 'hybrid' | 'exact' | 'semantic'
+		candidateCount: number
 	}
 }
 
@@ -811,6 +828,8 @@ export function createStore(
 				debug: includeDebug
 					? {
 							retrievalScore: chunk.retrievalScore,
+							sources: chunk.sources,
+							rrfRank: chunk.rrfRank,
 							exact: {
 								ftsScore: chunk.ftsRank != null ? normalizeBm25(chunk.ftsRank) : undefined
 							},
@@ -944,21 +963,26 @@ export function createStore(
 			return memoryId
 		},
 
-		async search(input: SearchInput): Promise<SearchResult[]> {
+		async search(input: SearchInput): Promise<SearchOutput> {
 			const scope = input.scope ?? 'personal'
 			const mode = input.mode ?? 'hybrid'
 			const limit = input.limit ?? 10
 			let minScore = input.min_score ?? (mode !== 'exact' ? 0.1 : 0)
 			const candidateLimit = limit * 4
+			const includeDebug = input.debug === true
 
 			const validIds = await getValidMemoryIds(scope, input.filter)
-			if (!validIds.length) return []
+			if (!validIds.length) return { results: [], debug: includeDebug ? { routing: mode as 'exact' | 'semantic', candidateCount: 0 } : undefined }
 
 			let candidates: CandidateChunk[]
+			let routing: 'fts-only' | 'hybrid' | 'exact' | 'semantic' = 'hybrid'
+
 			if (mode === 'exact') {
+				routing = 'exact'
 				candidates = await exactSearch(input.query, validIds, candidateLimit)
 			} else if (mode === 'semantic') {
-				if (!embProvider) return []
+				routing = 'semantic'
+				if (!embProvider) return { results: [] }
 				const [queryEmbedding] = await embProvider.embed([input.query])
 				candidates = await semanticSearch(
 					input.query,
@@ -980,18 +1004,21 @@ export function createStore(
 				// hyde: hypothetical document → better semantic recall for question-style queries
 				let ftsQuery = input.query
 				let vecQueries: string[] = [input.query]
+				let expansionDebug: NonNullable<NonNullable<SearchOutput['debug']>['expansion']> | undefined
 				if (llm && tokens >= HYBRID_EXPANSION_MIN_TOKENS) {
 					try {
 						const expanded = await llm.expand(input.query)
 						if (expanded.lex) ftsQuery = expanded.lex
+						const semanticVariants = expanded.semantic
+							.map((q) => q.trim())
+							.filter(Boolean)
+							.filter((q) => q.toLowerCase() !== input.query.toLowerCase())
 						vecQueries = [
 							input.query,
-							...expanded.semantic
-								.map((q) => q.trim())
-								.filter(Boolean)
-								.filter((q) => q.toLowerCase() !== input.query.toLowerCase()),
+							...semanticVariants,
 							...(expanded.hyde ? [expanded.hyde] : [])
 						]
+						expansionDebug = { lex: expanded.lex, semantic: semanticVariants, hyde: expanded.hyde }
 					} catch (e) {
 						console.error('[ghostore] llm.expand failed, degraded to single-query search:', e)
 					}
@@ -1000,11 +1027,18 @@ export function createStore(
 				const exact = await exactSearch(ftsQuery, validIds, candidateLimit)
 
 				if (tokens <= 1 || hasStrongExactSignal(exact)) {
+					routing = 'fts-only'
 					candidates = exact
 					// FTS-only routing: BM25 scores on small corpora rarely exceed 0.3,
 					// so use the same threshold as exact mode unless caller overrode it
 					if (!input.min_score) minScore = 0
 				} else {
+					routing = 'hybrid'
+					// Build source names for each vec query: original, semantic variants, then hyde (if present)
+					const hydeOffset = vecQueries.length - (expansionDebug?.hyde ? 1 : 0)
+					const vecListNames = vecQueries.map((_, i) =>
+						i === 0 ? 'semantic:original' : i >= hydeOffset ? 'semantic:hyde' : 'semantic:variant'
+					)
 					const semanticLists = embProvider
 						? await Promise.all(
 									vecQueries.map((q) =>
@@ -1025,7 +1059,8 @@ export function createStore(
 						: []
 					const ftsWeight = tokens <= 2 ? 2.0 : 1.0
 					const rrfWeights = [ftsWeight, ...semanticLists.map(() => 1.0)]
-					candidates = rrf([exact, ...semanticLists], 60, rrfWeights)
+					const listNames = ['fts', ...vecListNames]
+					candidates = rrf([exact, ...semanticLists], 60, rrfWeights, listNames)
 				}
 
 				if (reranker && candidates.length >= 2) {
@@ -1051,11 +1086,25 @@ export function createStore(
 						// reranker failed — keep pre-rerank order
 					}
 				}
+
+				const results = (await chunksToResults(candidates, input.query, limit, input.options, includeDebug)).filter(
+					(r) => r.score >= minScore
+				)
+				return {
+					results,
+					debug: includeDebug
+						? { expansion: expansionDebug, routing, candidateCount: candidates.length }
+						: undefined
+				}
 			}
 
-			return (await chunksToResults(candidates, input.query, limit, input.options, input.debug === true)).filter(
+			const results = (await chunksToResults(candidates, input.query, limit, input.options, includeDebug)).filter(
 				(r) => r.score >= minScore
 			)
+			return {
+				results,
+				debug: includeDebug ? { routing, candidateCount: candidates.length } : undefined
+			}
 		},
 
 		async update(input: UpdateInput): Promise<void> {

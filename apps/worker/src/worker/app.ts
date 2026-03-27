@@ -191,7 +191,7 @@ function registerMcpTools(server: McpServer, store: Store) {
 		},
 		async (args) => {
 			try {
-				const results = await store.search(args)
+				const { results } = await store.search(args)
 				if (results.length === 0) {
 					return { content: [{ type: 'text', text: 'No memories found matching your query.' }] }
 				}

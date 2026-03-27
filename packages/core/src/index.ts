@@ -9,6 +9,7 @@ export type {
 	MemoryMeta,
 	RecentResult,
 	SearchInput,
+	SearchOutput,
 	SearchResult,
 	Store,
 	UpdateInput,

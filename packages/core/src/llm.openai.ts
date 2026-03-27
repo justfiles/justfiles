@@ -38,7 +38,7 @@ export function openAI(apiKey: string): LLM {
 						role: 'user',
 						content: `Generate search variants for: "${query}"
 
-- lex: keyword-only form for BM25 full-text search — strip ALL stop words, keep only 3-6 meaningful content words
+- lex: keyword-only form for BM25 full-text search — strip ALL function/stop words (do, not, use, in, the, a, is, are, can, should, when, why, how, what, to, for, of, with, it, this, that, be, have, will, and, or, at, by, an, as, on, if, no, any, all, from, about, into). Keep only 2-5 high-specificity nouns, identifiers, or technical terms
 - semantic: array of 2-3 rephrased variants for embedding similarity search
 - hyde: one short paragraph (2-4 sentences) that would directly contain the answer to this query — used for hypothetical document embedding
 
