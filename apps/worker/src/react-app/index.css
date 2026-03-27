@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 @plugin "@tailwindcss/typography";
 @plugin "daisyui" {
-  themes: all;
+	themes: all;
 }
 
 /* ── Milkdown editor ─────────────────────────────────────────────────── */
@@ -94,8 +94,13 @@ upload-placeholder {
 }
 
 @keyframes pulse {
-	0%, 100% { opacity: 1; }
-	50% { opacity: 0.4; }
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.4;
+	}
 }
 
 /* ── Global ──────────────────────────────────────────────────────────── */
@@ -122,11 +127,6 @@ html,
 body {
 	margin: 0;
 	min-width: 320px;
-	/* Prevent WebKit/iOS from scrolling the body when ProseMirror's
-	   scrollRectIntoView walks the DOM and mutates scrollTop on ancestors.
-	   overflow:hidden alone is not reliable on iOS — height:100% is required. */
-	height: 100%;
-	overflow: hidden;
 }
 
 /* Pin the app shell to the viewport corners so the keyboard toolbar can't
@@ -148,10 +148,7 @@ body {
 }
 
 .safe-area-page {
-	padding:
-		var(--safe-area-top)
-		var(--safe-area-right)
-		var(--safe-area-bottom)
+	padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom)
 		var(--safe-area-left);
 }
 
@@ -175,6 +172,8 @@ body {
 	right: calc(1rem + var(--safe-area-right));
 	bottom: calc(1rem + var(--safe-area-bottom));
 	width: fit-content;
-	max-width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 2rem);
+	max-width: calc(
+		100vw - var(--safe-area-left) - var(--safe-area-right) - 2rem
+	);
 	margin-inline: auto;
 }
