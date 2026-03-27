@@ -1,6 +1,6 @@
 {
 	"name": "@ghostore/cli",
-	"version": "0.3.1",
+	"version": "0.3.2",
 	"devDependencies": {
 		"@ghostore/core": "workspace:*",
 		"@ghostore/worker": "workspace:*",
