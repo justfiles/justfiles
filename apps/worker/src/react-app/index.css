@@ -122,13 +122,13 @@ html,
 body {
 	margin: 0;
 	min-width: 320px;
-	height: 100svh;
-	overflow: hidden;
 }
 
-#root {
+/* Scoped to the authenticated app shell — keeps the editor fixed-height with no scroll */
+.app-shell {
 	width: 100%;
-	height: 100%;
+	height: 100svh;
+	overflow: hidden;
 }
 
 .no-overscroll {
