@@ -1,8 +1,8 @@
 ---
 name: review-proposals
-description: Surface pending conflict proposals and guide the user through resolving each one — accept new, keep old, merge, or flag.
+description: Surface pending ghostore conflict proposals and guide the user through resolving each one — accept new, keep old, merge, or flag.
 argument-hint: (no arguments needed)
-allowed-tools: mcp__ghostore__list_memories, mcp__ghostore__get_memory, mcp__ghostore__update_memory, mcp__ghostore__capture_memory
+allowed-tools: Bash(ghostore *)
 ---
 
 Guide the user through reviewing and resolving conflict proposals.
@@ -11,15 +11,13 @@ Conflict proposals are created by `/enrich` when a new note contradicts an exist
 
 ## Step 1 — Find pending proposals
 
-Call `mcp__ghostore__list_memories` with:
-- `tags`: `"proposal"`
-- `limit`: 50
+Use `ghostore list` to find notes tagged `proposal`. If unsure of flags, run `ghostore list --help`.
 
 If none found, report "no pending proposals — knowledge base is clean" and stop.
 
 ## Step 2 — Present each proposal
 
-For each proposal, call `mcp__ghostore__get_memory` on the proposal ID, then on both `new_note_id` and `existing_note_id` from its content.
+Use `ghostore get` on the proposal and on both referenced notes (`new_note_id` and `existing_note_id` from the proposal content).
 
 Display:
 
@@ -27,10 +25,10 @@ Display:
 ─── Proposal <n> of <total> ──────────────────────────────
 Conflict: <conflict_summary>
 
-EXISTING NOTE  (<existing_note_id> at <path>)
+EXISTING NOTE  (<id> at <path>)
 <full content>
 
-NEW NOTE  (<new_note_id> at <path>)
+NEW NOTE  (<id> at <path>)
 <full content>
 
 Resolve:
@@ -45,10 +43,12 @@ Ask: "How would you like to resolve this? (A/K/M/F)"
 
 ## Step 3 — Execute
 
-- **A**: Call `mcp__ghostore__update_memory` on the existing note with the new note's `text`. Then call `mcp__ghostore__update_memory` on both the new note and the proposal with `path: "archived/<timestamp>"`.
-- **K**: Call `mcp__ghostore__update_memory` on the new note and the proposal with `path: "archived/<timestamp>"`.
-- **M**: Ask the user what to keep from each. Draft merged content, show for confirmation, then call `mcp__ghostore__update_memory` on the existing note with the merged `text`. Archive the new note and proposal with `path: "archived/<timestamp>"`.
-- **F**: Call `mcp__ghostore__update_memory` on the proposal with `tags: ["proposal", "conflict", "flagged"]`.
+Use `ghostore update` and `ghostore archive` as needed:
+
+- **A**: Update the existing note with the new note's text. Archive both the new note and the proposal.
+- **K**: Archive the new note and the proposal.
+- **M**: Ask what to keep from each. Draft merged content, confirm with user, then update the existing note. Archive the new note and proposal.
+- **F**: Update the proposal's tags to add `flagged`.
 
 ## Step 4 — Report
 
