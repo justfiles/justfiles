@@ -122,12 +122,19 @@ html,
 body {
 	margin: 0;
 	min-width: 320px;
+	/* Prevent WebKit/iOS from scrolling the body when ProseMirror's
+	   scrollRectIntoView walks the DOM and mutates scrollTop on ancestors.
+	   overflow:hidden alone is not reliable on iOS — height:100% is required. */
+	height: 100%;
+	overflow: hidden;
 }
 
-/* Scoped to the authenticated app shell — keeps the editor fixed-height with no scroll */
+/* Pin the app shell to the viewport corners so the keyboard toolbar can't
+   shift it. position:fixed with inset:0 is immune to body scroll, which iOS
+   can trigger when the keyboard toolbar reduces visualViewport.height. */
 .app-shell {
-	width: 100%;
-	height: 100svh;
+	position: fixed;
+	inset: 0;
 	overflow: hidden;
 }
 
@@ -153,7 +160,8 @@ body {
 }
 
 .safe-area-content {
-	padding-bottom: calc(1rem + var(--safe-area-bottom));
+	/* Extra 4rem gives enough clearance for the iOS keyboard toolbar at the bottom */
+	padding-bottom: calc(5rem + var(--safe-area-bottom));
 }
 
 .safe-area-sidebar {

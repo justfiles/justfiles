@@ -413,6 +413,28 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 			state: buildState(value),
 			editable: () => !readOnlyRef.current,
 			nodeViews: memoryId ? { image: makeImageNodeView(memoryId) } : {},
+			// Intercept ProseMirror's default scroll-into-view behavior, which
+			// walks every DOM ancestor and sets scrollTop — on iPadOS PWA with a
+			// physical keyboard this causes the entire layout to jump. Instead we
+			// scroll only within the intended overflow-y-auto scroll container.
+			handleScrollToSelection(view) {
+				const scrollEl = containerRef.current?.closest(
+					'.overflow-y-auto'
+				) as HTMLElement | null
+				if (!scrollEl) return false
+				const { from } = view.state.selection
+				const coords = view.coordsAtPos(from)
+				const box = scrollEl.getBoundingClientRect()
+				const padding = 32
+				const relTop = coords.top - box.top
+				const relBottom = coords.bottom - box.top
+				if (relBottom > box.height - padding) {
+					scrollEl.scrollTop += relBottom - box.height + padding
+				} else if (relTop < padding) {
+					scrollEl.scrollTop += relTop - padding
+				}
+				return true
+			},
 			dispatchTransaction(tr) {
 				const newState = view.state.apply(tr)
 				view.updateState(newState)
