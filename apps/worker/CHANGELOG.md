@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.2.0...worker-v0.3.0) (2026-03-27)
+
+
+### Features
+
+* **pwa:** add landing page for unauthenticated users ([2d2763a](https://github.com/xiaoxinghu/ghostore/commit/2d2763ae23ae7d97f126d162507b7e860831ae64))
+* **search:** enrich debug output with expansion, routing, sources, and rrf rank ([dd7dbf7](https://github.com/xiaoxinghu/ghostore/commit/dd7dbf7d6821524c45df4636b86a53312daed449))
+
+
+### Bug Fixes
+
+* **pwa:** improve mobile layout stability and editor fill behaviour ([150909d](https://github.com/xiaoxinghu/ghostore/commit/150909de90404e24f6ee3584fd881fb939eb3e16))
+
 ## [0.2.0](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.1.1...worker-v0.2.0) (2026-03-26)
 
 
