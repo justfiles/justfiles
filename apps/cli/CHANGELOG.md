@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1](https://github.com/xiaoxinghu/ghostore/compare/cli-v0.3.0...cli-v0.3.1) (2026-03-27)
+
+
+### Bug Fixes
+
+* **pwa:** improve mobile layout stability and editor fill behaviour ([150909d](https://github.com/xiaoxinghu/ghostore/commit/150909de90404e24f6ee3584fd881fb939eb3e16))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @ghostore/worker bumped to 0.3.0
+
 ## [0.3.0](https://github.com/xiaoxinghu/ghostore/compare/cli-v0.2.0...cli-v0.3.0) (2026-03-26)
 
 
