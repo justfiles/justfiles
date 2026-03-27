@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.3.0...worker-v0.3.1) (2026-03-27)
+
+
+### Bug Fixes
+
+* **pwa:** prevent iOS keyboard toolbar from scrolling app shell layout ([b326127](https://github.com/xiaoxinghu/ghostore/commit/b326127de9de31b1e59199a360e68b971fc70dbf))
+
 ## [0.3.0](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.2.0...worker-v0.3.0) (2026-03-27)
 
 
