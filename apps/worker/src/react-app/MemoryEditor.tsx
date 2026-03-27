@@ -79,14 +79,16 @@ export function MemoryEditor({
 						</span>
 					</div>
 					{id && content ? (
-						<Editor
-							key={id}
-							value={content}
-							onChange={save}
-							memoryId={id}
-							readOnly={readOnly}
-							getToken={getToken}
-						/>
+						<div className="flex-1 flex flex-col min-h-0">
+							<Editor
+								key={id}
+								value={content}
+								onChange={save}
+								memoryId={id}
+								readOnly={readOnly}
+								getToken={getToken}
+							/>
+						</div>
 					) : (
 						<p className="text-sm text-base-content/50 font-mono">{showLoading ? 'Loading…' : 'Empty'}</p>
 					)}

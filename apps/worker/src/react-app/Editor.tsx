@@ -458,7 +458,7 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 	}, [])
 
 	return (
-		<div className="ghostore-editor h-full overflow-y-auto">
+		<div className="ghostore-editor">
 			<div ref={containerRef} className="ghostore-pm-editor" />
 		</div>
 	)
