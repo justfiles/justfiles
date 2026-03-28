@@ -6,6 +6,7 @@ import { schema } from '../prosemirror-remark'
 import { tableEditing, goToNextCell, columnResizing } from 'prosemirror-tables'
 import { keymap } from 'prosemirror-keymap'
 import { baseKeymap, toggleMark, setBlockType, wrapIn } from 'prosemirror-commands'
+import { splitListItem, liftListItem } from 'prosemirror-schema-list'
 import { history, undo, redo } from 'prosemirror-history'
 import { dropCursor } from 'prosemirror-dropcursor'
 import { gapCursor } from 'prosemirror-gapcursor'
@@ -339,6 +340,8 @@ function buildInputRules() {
 			textblockTypeInputRule(/^(#{1,6})\s$/, nodes.heading, (match) => ({
 				level: match[1].length
 			})),
+			// - Bullet list
+			wrappingInputRule(/^\s*-\s$/, nodes.bullet_list),
 			// > Blockquote
 			wrappingInputRule(/^\s*>\s$/, nodes.blockquote),
 			// ``` Code block
@@ -361,6 +364,10 @@ function buildState(doc: ProseMirrorJsonDocument): EditorState {
 			buildMenuPlugin(),
 			buildInputRules(),
 			keymap({ 'Mod-z': undo, 'Mod-y': redo, 'Mod-Shift-z': redo }),
+			keymap({
+				Enter: splitListItem(schema.nodes.list_item),
+				'Shift-Tab': liftListItem(schema.nodes.list_item)
+			}),
 			keymap(baseKeymap),
 			exitCodeBlock,
 			clickLink,
