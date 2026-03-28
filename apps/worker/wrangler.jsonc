@@ -86,6 +86,12 @@
 			"migrations": [
 				{ "tag": "v1", "new_sqlite_classes": ["MemoryObject"] }
 			],
+			"r2_buckets": [
+				{
+					"binding": "ASSETS",
+					"bucket_name": "ghostore-assets-dev"
+				}
+			],
 			"vectorize": [
 				{
 					"binding": "VECTORIZE",
