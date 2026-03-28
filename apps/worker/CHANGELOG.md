@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.3.1...worker-v0.3.2) (2026-03-28)
+
+
+### Bug Fixes
+
+* **pwa:** fix landing page style ([79630b2](https://github.com/xiaoxinghu/ghostore/commit/79630b2b4433257a4e756f5f77deba61b1427b3f))
+* **pwa:** prevent iOS keyboard toolbar from scrolling fixed UI elements ([0951dbe](https://github.com/xiaoxinghu/ghostore/commit/0951dbe3387dba2174f7e8e93cb3b490f034e998))
+
 ## [0.3.1](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.3.0...worker-v0.3.1) (2026-03-27)
 
 
