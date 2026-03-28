@@ -129,9 +129,9 @@ body {
 	min-width: 320px;
 }
 
-/* Pin the app shell to the viewport corners so the keyboard toolbar can't
-   shift it. position:fixed with inset:0 is immune to body scroll, which iOS
-   can trigger when the keyboard toolbar reduces visualViewport.height. */
+/* position:fixed + inset:0 pins the shell to the viewport. Combined with
+   overflow:hidden on html/body (which prevents iOS keyboard-compensation
+   scroll entirely), fixed elements can never be scrolled off-screen. */
 .app-shell {
 	position: fixed;
 	inset: 0;

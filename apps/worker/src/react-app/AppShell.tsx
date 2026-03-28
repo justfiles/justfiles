@@ -26,6 +26,20 @@ function AppShellInner({ userId }: { userId: string }) {
 			navigator.storage.persist()
 		}
 	}, [])
+
+	// Prevent iOS from using non-scrollable areas as a handle to scroll the
+	// viewport when the keyboard toolbar appears. Touches inside any
+	// overflow-y-auto container are allowed through for normal scroll.
+	useEffect(() => {
+		function onTouchMove(e: TouchEvent) {
+			if (!(e.target as Element | null)?.closest('.overflow-y-auto')) {
+				e.preventDefault()
+			}
+		}
+		document.addEventListener('touchmove', onTouchMove, { passive: false })
+		return () => document.removeEventListener('touchmove', onTouchMove)
+	}, [])
+
 	const [theme, setTheme] = useState(() => loadSettings(userId).theme)
 	const pathname = useRouterState({ select: (s) => s.location.pathname })
 
