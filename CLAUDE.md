@@ -13,7 +13,12 @@ use tab for indentation.
 
 # Memory
 
-IMPORTANT: use `ghostore` (cli) to as the memory manager. anything about memory, it means in ghostore.
+IMPORTANT: ghostore IS the memory system. The built-in Claude Code auto-memory is DISABLED for this project.
+
+- NEVER write to `~/.claude/projects/*/memory/` or any built-in memory directory
+- ALL memory operations MUST use the `ghostore` CLI
+- When the user says "remember", "capture", "save this", "write to memory", etc. — use ghostore, not the built-in system
+
 Read memory `readme` from ghostore before any memory related action happening, if haven't read it already.
 ```sh
 ghostore get "readme"
