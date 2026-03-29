@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { EditorState, Plugin, PluginKey, Selection, TextSelection } from 'prosemirror-state'
 import { EditorView, Decoration, DecorationSet, type NodeView } from 'prosemirror-view'
 import { type Node, type MarkType, type NodeType } from 'prosemirror-model'
@@ -17,7 +17,7 @@ import {
 	InputRule
 } from 'prosemirror-inputrules'
 import { ProseMirrorJsonDocument } from './sync'
-import { makeDrawingNodeView } from './DrawingNodeView'
+import { DrawingEditorModal, makeDrawingNodeView } from './DrawingNodeView'
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -404,9 +404,15 @@ type Props = {
 	readOnly?: boolean
 }
 
+type DrawingEditorState = {
+	id: string | null
+	onSave: (id: string, previewUrl: string) => void
+} | null
+
 export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
+	const [drawingEditor, setDrawingEditor] = useState<DrawingEditorState>(null)
 	const onChangeRef = useRef(onChange)
 	onChangeRef.current = onChange
 	const readOnlyRef = useRef(readOnly)
@@ -435,7 +441,10 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 						image: makeImageNodeView(memoryId),
 						drawing: makeDrawingNodeView(
 							memoryId,
-							getTokenRef.current ?? (() => Promise.resolve(null)),
+							({ id, onSave }) => {
+								setDrawingEditor({ id, onSave })
+							},
+							() => !!readOnlyRef.current,
 							(node, attrs) => {
 								const view = viewRef.current
 								if (!view) return
@@ -519,6 +528,18 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 	return (
 		<div className="ghostore-editor">
 			<div ref={containerRef} className="ghostore-pm-editor" />
+			{memoryId && drawingEditor ? (
+				<DrawingEditorModal
+					memoryId={memoryId}
+					drawingId={drawingEditor.id}
+					getToken={getTokenRef.current ?? (() => Promise.resolve(null))}
+					onSave={(id, previewUrl) => {
+						drawingEditor.onSave(id, previewUrl)
+						setDrawingEditor(null)
+					}}
+					onClose={() => setDrawingEditor(null)}
+				/>
+			) : null}
 		</div>
 	)
 }
