@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.3.2...worker-v0.4.0) (2026-03-29)
+
+
+### Features
+
+* **pwa:** add bullet list input rule and Enter key handling in editor ([eb74afe](https://github.com/xiaoxinghu/ghostore/commit/eb74afe6ee6b40edc8de568842f75f2afa997115))
+* **pwa:** add excalidraw drawing canvas node to editor ([740b387](https://github.com/xiaoxinghu/ghostore/commit/740b387d57167e5b5f0d953989c34d972fd9b8fd))
+
+
+### Bug Fixes
+
+* **editor:** move drawing modal out of node view ([761084c](https://github.com/xiaoxinghu/ghostore/commit/761084c1ca8d7e348eebfeac8be905f4e0dc5f01))
+* **worker:** add ASSETS R2 bucket binding to dev environment ([01af8ac](https://github.com/xiaoxinghu/ghostore/commit/01af8ac569edd60948bb3f7f29753812614469f9))
+
 ## [0.3.2](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.3.1...worker-v0.3.2) (2026-03-28)
 
 

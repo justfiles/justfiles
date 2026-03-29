@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.4](https://github.com/xiaoxinghu/ghostore/compare/cli-v0.3.3...cli-v0.3.4) (2026-03-29)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @ghostore/worker bumped to 0.4.0
+
 ## [0.3.3](https://github.com/xiaoxinghu/ghostore/compare/cli-v0.3.2...cli-v0.3.3) (2026-03-28)
 
 
