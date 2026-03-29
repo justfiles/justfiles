@@ -2,7 +2,7 @@ import { UserButton } from '@clerk/clerk-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { FiMenu, FiSettings } from 'react-icons/fi'
-import { Editor } from './Editor'
+import { Editor } from './editor'
 import { useSidebarActions } from './SidebarContext'
 import { useMemory } from './useMemory'
 
