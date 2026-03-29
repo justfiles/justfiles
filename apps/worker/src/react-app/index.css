@@ -41,7 +41,7 @@
 }
 
 .ghostore-pm-editor .ProseMirror {
-	@apply prose prose-slate max-w-none outline-none p-3;
+	@apply prose prose-slate max-w-none outline-none py-3 pr-3 pl-10;
 	flex: 1;
 }
 
