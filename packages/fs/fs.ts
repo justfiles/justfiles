@@ -50,16 +50,31 @@ export interface FileSystem {
    *
    * Why combined: creating an orphan inode is almost never useful,
    * and splitting create + link invites race conditions.
+   *
+   * For regular files and directories only. Use symlink() for symlinks.
    */
   mknod(dirIno: Ino, name: string, type: FileType, mode: number): Promise<Ino>;
 
   /**
-   * Remove a name from a directory and reclaim the inode.
+   * Create a symbolic link.
+   * Separated from mknod because the symlink target is a required argument
+   * that has no meaning for any other file type.
+   */
+  symlink(dirIno: Ino, name: string, target: string, mode?: number): Promise<Ino>;
+
+  /**
+   * Add a hard link: make name in dirIno point to an existing inode.
+   * The VFS increments nlink on the target inode via setMeta.
+   * Directories cannot be hard-linked (would create cycles).
+   */
+  link(dirIno: Ino, name: string, targetIno: Ino): Promise<void>;
+
+  /**
+   * Remove a name from a directory. The VFS decrements nlink on the target
+   * inode and calls backend.free() only when nlink reaches 0.
+   * The metadata cache makes the nlink check typically free (0 RTTs),
+   * so common-case unlink (nlink == 1) stays at 2 backend round trips.
    * For directories: must be empty first.
-   *
-   * Hard links are not supported — every inode has exactly one name.
-   * This simplifies unlink to a two-step backend operation (dirUnset +
-   * free) with no link-count tracking.
    */
   unlink(dirIno: Ino, name: string): Promise<void>;
 
@@ -101,6 +116,15 @@ export interface FileSystem {
   close(fd: Fd): Promise<void>;
 
   // --- symlinks ---
+
+  /**
+   * Move or rename a file or directory.
+   * The VFS uses backend.rename?() if available (atomic), otherwise
+   * synthesizes it as dirLookup + dirSet + dirUnset (non-atomic).
+   * If newName already exists in newDirIno, it is atomically replaced
+   * (POSIX rename semantics).
+   */
+  rename(oldDirIno: Ino, oldName: string, newDirIno: Ino, newName: string): Promise<void>;
 
   /** Read the target of a symlink inode. */
   readlink(ino: Ino): Promise<string>;

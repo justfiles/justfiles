@@ -53,10 +53,9 @@ see ./fs.ts
 
 **Why `lookup` exists separately from `readdir`:** Path resolution calls `lookup` on each component (`/foo/bar/baz` → lookup "foo", lookup "bar", lookup "baz"). You don't want to dump an entire directory listing to find one name. An FS implementation can back `lookup` with a hash table or B-tree for O(1)/O(log n), while `readdir` iterates sequentially.
 
-**Why hard links are not supported:** Hard links require tracking a reference count (`nlink`) per inode. Every `unlink` then becomes: dirLookup + dirUnset + getMeta + setMeta (+ possibly free) — 4–5 round trips. Without hard links, every inode has exactly one name, and `unlink` collapses to 2 round trips: dirUnset (which returns the ino) + free. For an agent filesystem that never needs hard links, this is a significant performance win and a meaningful simplification of both the VFS and every backend implementation.
+**Hard links are implemented in the VFS, not the backend:** `nlink` lives in `InodeMeta` as a plain number the backend stores without any special logic. The VFS owns all counting: `link()` increments via `setMeta`, `unlink()` decrements and calls `free()` only when it hits 0. The metadata cache makes the nlink check on unlink typically free (0 RTTs), so common-case unlink (nlink == 1) stays at 2 backend round trips: `dirUnset` + `free`. Hard-linked files cost one extra `setMeta` instead of `free` — also 2 RTTs. The backend is completely unaware that hard links exist.
 
 **What's deliberately omitted:**
-- Hard links — dropped (see above).
 - `rename` at the VFS level — synthesized from `dirSet` + `dirUnset`. Backends that support atomic rename implement the optional `rename?()` method on `StorageBackend`.
 - `chmod`/`chown` — folded into `setattr`.
 - Any path-based API — built on top via `resolve(root, path)` using `lookup`.
@@ -141,13 +140,15 @@ VFS: mknod(dirIno, name, type, mode)
 
 ```
 VFS: unlink(dirIno, name)
-  → backend.dirUnset(dirIno, name)   // remove name, returns ino   [RTT 1]
-  → backend.free(ino)                // reclaim storage             [RTT 2]
+  → backend.dirUnset(dirIno, name)          // remove name, returns ino   [RTT 1]
+  → check nlink from metadata cache         // 0 RTTs (usually cached)
+  → if nlink == 1: backend.free(ino)        // reclaim storage             [RTT 2]
+  → if nlink > 1:  backend.setMeta(ino, { nlink: n-1 })                   [RTT 2]
   → evict ino from metadata + content caches
   → evict (dirIno, name) from directory cache
 ```
 
-Down from 4–5 RTTs to 2. Hard link count tracking is gone entirely.
+2 RTTs in both cases. The metadata cache absorbs the nlink check — no extra round trip to read it.
 
 ### `rename` (synthesized, or native if backend supports it)
 
@@ -190,13 +191,13 @@ Maps `ino → InodeMeta` with a configurable TTL (default: 30s). Also caches dir
 
 **Invalidation:**
 
-| Event | Evicts |
-|---|---|
-| `pwrite` or `truncate` on ino | ino metadata (size + mtime changed) |
-| `setattr` on ino | ino metadata |
-| `dirSet` or `dirUnset` on dirIno | all `(dirIno, *)` directory entries |
-| `mknod` in dirIno | `(dirIno, name)` directory entry |
-| TTL expiry | entry evicted, next access re-fetches |
+| Event                            | Evicts                                |
+|----------------------------------|---------------------------------------|
+| `pwrite` or `truncate` on ino    | ino metadata (size + mtime changed)   |
+| `setattr` on ino                 | ino metadata                          |
+| `dirSet` or `dirUnset` on dirIno | all `(dirIno, *)` directory entries   |
+| `mknod` in dirIno                | `(dirIno, name)` directory entry      |
+| TTL expiry                       | entry evicted, next access re-fetches |
 
 **Sizing:** Metadata entries are small (< 256 bytes). A count-based limit (e.g., 4096 entries) is sufficient — no byte accounting needed.
 
@@ -245,6 +246,7 @@ These are all handled by the VFS layer:
 | `open` / `close` semantics | VFS            | `getMeta` (cached) + Fd table bookkeeping                       |
 | Permission checks          | VFS            | Reads `mode` from `getMeta`, decides                            |
 | Symlink traversal          | VFS            | Reads `symlinkTarget` from `getMeta`, recurses                  |
+| Hard link count (`nlink`)  | VFS            | Increments/decrements via `setMeta`; `free` only when hits 0    |
 | `rename` (non-atomic)      | VFS            | `dirLookup` + `dirSet` + `dirUnset` (or native `rename?`)       |
 | `chmod` / `chown`          | VFS            | `setattr`                                                       |
 | `fsync`                    | VFS / optional | Many backends are durable on write                              |

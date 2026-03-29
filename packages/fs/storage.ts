@@ -4,6 +4,14 @@ interface InodeMeta {
   type: FileType;
   size: Off;
   mode: number;
+  /**
+   * Hard link count. Managed entirely by the VFS — the backend stores this
+   * number but has no logic around it. The VFS increments on link(), decrements
+   * on unlink(), and calls free() only when it reaches 0.
+   * Always 1 for newly allocated inodes. Directories are always 1 (no hard links
+   * to directories — they create cycles).
+   */
+  nlink: number;
   mtimeNs: bigint;
   ctimeNs: bigint;
   /**
