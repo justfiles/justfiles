@@ -11,7 +11,7 @@ import type { Ino, Stat, Off, Dirent, FileType, OpenFlags, Fd } from './types';
  *   hidden cursor state and enable safe concurrency.
  * - Batch readdir via cursor for performance (avoids 1 syscall per entry).
  */
-interface FileSystem {
+export interface FileSystem {
 
   // --- inode operations ---
 
@@ -54,16 +54,12 @@ interface FileSystem {
   mknod(dirIno: Ino, name: string, type: FileType, mode: number): Promise<Ino>;
 
   /**
-   * Add a hard link: make name in dirIno point to ino.
-   * The FS must validate that ino exists and isn't a directory
-   * (hardlinking dirs creates cycles — even Linux forbids it).
-   */
-  link(dirIno: Ino, name: string, ino: Ino): Promise<void>;
-
-  /**
-   * Remove a name from a directory. If the target inode's link count
-   * drops to 0 and no open Fds reference it, the FS reclaims it.
-   * For directories: must be empty.
+   * Remove a name from a directory and reclaim the inode.
+   * For directories: must be empty first.
+   *
+   * Hard links are not supported — every inode has exactly one name.
+   * This simplifies unlink to a two-step backend operation (dirUnset +
+   * free) with no link-count tracking.
    */
   unlink(dirIno: Ino, name: string): Promise<void>;
 
@@ -71,6 +67,8 @@ interface FileSystem {
 
   /**
    * Open an inode, returning a file descriptor.
+   * The VFS checks its metadata cache before hitting the backend —
+   * if stat(ino) was recently called, open() costs 0 backend round trips.
    * The Fd is the unit of I/O and the thing higher layers manage.
    */
   open(ino: Ino, flags: OpenFlags): Promise<Fd>;

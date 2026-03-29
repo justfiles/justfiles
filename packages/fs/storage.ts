@@ -4,10 +4,17 @@ interface InodeMeta {
   type: FileType;
   size: Off;
   mode: number;
-  /** hardlink count — VFS uses this to decide when to call free() */
-  nlink: number;
   mtimeNs: bigint;
   ctimeNs: bigint;
+  /**
+   * Hash of the file's current content (e.g. SHA-256, hex-encoded).
+   * Set by the backend on every write. Absent for directories and symlinks.
+   *
+   * The primary consumers are:
+   *   - Sync layer: compare hashes to decide what to upload, without reading content.
+   *   - Embedding pipeline: if hash unchanged since last embedding, skip re-embedding.
+   */
+  contentHash?: string;
   /** For symlinks: the target path. Stored inline in metadata
    *  because symlink targets are small and always read atomically.
    *  This avoids a separate data read for every symlink traversal. */
@@ -20,7 +27,7 @@ interface InodeMeta {
  * 10 methods. That's it. A filesystem is fundamentally:
  * "a pool of numbered blobs with metadata, plus a naming layer."
  */
-interface StorageBackend {
+export interface StorageBackend {
 
   // ==========================================
   // 1. INODE LIFECYCLE — allocate and free
@@ -35,6 +42,15 @@ interface StorageBackend {
    * mapped to bigint — whatever). The VFS doesn't care.
    */
   alloc(meta: InodeMeta): Promise<Ino>;
+
+  /**
+   * Atomically allocate a new inode AND add its directory entry.
+   * Optional — if implemented, the VFS uses this for mknod instead
+   * of the two-step alloc() + dirSet(). Backends that support
+   * atomic conditional writes (DynamoDB, SQLite transactions) should
+   * implement this to eliminate the orphaned-inode failure window.
+   */
+  create?(dirIno: Ino, name: string, meta: InodeMeta): Promise<Ino>;
 
   /**
    * Permanently destroy an inode and its data.
@@ -142,9 +158,42 @@ interface StorageBackend {
   dirSet(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<void>;
 
   /**
-   * Remove an entry from a directory.
-   * The backend doesn't touch the target inode — the VFS handles
-   * decrementing nlink and possibly calling free().
+   * Remove an entry from a directory. Returns the ino that was removed,
+   * or null if the name didn't exist.
+   *
+   * Returning the ino saves the VFS a separate dirLookup() call before
+   * removal — critical when every call is a potential network round trip.
+   * The VFS uses the returned ino to call free() after removal.
    */
-  dirUnset(dirIno: Ino, name: string): Promise<void>;
+  dirUnset(dirIno: Ino, name: string): Promise<Ino | null>;
+
+  /**
+   * Atomically move a name from one directory to another (or rename
+   * within the same directory). Optional — if absent, the VFS synthesizes
+   * rename as dirSet + dirUnset, which is not atomic.
+   *
+   * Backends that support atomic rename (POSIX, SQLite, DynamoDB
+   * transactions) should implement this to avoid a failure window
+   * where the new name exists but the old name hasn't been removed yet.
+   *
+   * The backend overwrites newName in newDir if it already exists,
+   * matching POSIX rename(2) semantics. The displaced inode (if any)
+   * is returned so the VFS can call free() if needed.
+   */
+  rename?(oldDir: Ino, oldName: string, newDir: Ino, newName: string): Promise<Ino | null>;
+
+  /**
+   * Replace the entire content of a file atomically.
+   * Optional — if absent, the VFS falls back to write().
+   *
+   * Object stores (S3, R2, GCS) don't support partial writes — every
+   * mutation is a full object put. For those backends, write() would
+   * require a read-modify-write cycle for every partial update, which
+   * is expensive. putBlob() lets the VFS signal "I have the full
+   * content" so the backend can issue a single PUT without a prior GET.
+   *
+   * The VFS uses this when writing an entire file from offset 0
+   * (e.g., the result of a full document edit).
+   */
+  putBlob?(ino: Ino, data: Uint8Array): Promise<void>;
 }

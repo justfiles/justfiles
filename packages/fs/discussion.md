@@ -2,6 +2,8 @@
 
 A two-layer architecture inspired by the Linux kernel's VFS (Virtual File System) design. The goal: a minimal set of interfaces that let you build any filesystem tooling on top, while keeping the implementation surface as small as possible.
 
+The primary use case is an AI agent filesystem: files synced to a cloud backend, shared across agent instances, accessed via shell-like tools. Backend calls may be cloud API round trips — **minimising call count is a first-class concern.**
+
 ---
 
 ## Architecture Overview
@@ -12,10 +14,11 @@ A two-layer architecture inspired by the Linux kernel's VFS (Virtual File System
 ├─────────────────────────────────────────────┤
 │  VFS Layer (FileSystem interface)           │
 │  Fd table, path resolution, permissions,    │
-│  symlink traversal, open/close semantics    │
+│  symlink traversal, open/close semantics,   │
+│  metadata cache, content cache              │
 ├─────────────────────────────────────────────┤
-│  Storage Backend (StorageBackend interface)  │
-│  Raw inode CRUD, byte I/O, directory entries │
+│  Storage Backend (StorageBackend interface) │
+│  Raw inode CRUD, byte I/O, directory entries│
 ├─────────────────────────────────────────────┤
 │  Actual Storage (local disk, S3+DynamoDB,   │
 │  IndexedDB, SQLite, in-memory, etc.)        │
@@ -28,7 +31,7 @@ There are two distinct interfaces:
 
 2. **`StorageBackend`** — the implementor-facing layer. This is what you actually write when building a new filesystem. It's pure storage: allocate inodes, read/write bytes, manage name→inode mappings. No Fds, no paths, no permissions logic.
 
-The VFS sits between them, translating consumer calls into backend primitives.
+The VFS sits between them, translating consumer calls into backend primitives — and caching aggressively to avoid redundant round trips.
 
 ---
 
@@ -50,8 +53,11 @@ see ./fs.ts
 
 **Why `lookup` exists separately from `readdir`:** Path resolution calls `lookup` on each component (`/foo/bar/baz` → lookup "foo", lookup "bar", lookup "baz"). You don't want to dump an entire directory listing to find one name. An FS implementation can back `lookup` with a hash table or B-tree for O(1)/O(log n), while `readdir` iterates sequentially.
 
+**Why hard links are not supported:** Hard links require tracking a reference count (`nlink`) per inode. Every `unlink` then becomes: dirLookup + dirUnset + getMeta + setMeta (+ possibly free) — 4–5 round trips. Without hard links, every inode has exactly one name, and `unlink` collapses to 2 round trips: dirUnset (which returns the ino) + free. For an agent filesystem that never needs hard links, this is a significant performance win and a meaningful simplification of both the VFS and every backend implementation.
+
 **What's deliberately omitted:**
-- `rename` — it's `link` + `unlink` at this level, or a higher layer adds it as an atomic operation if the FS supports it.
+- Hard links — dropped (see above).
+- `rename` at the VFS level — synthesized from `dirSet` + `dirUnset`. Backends that support atomic rename implement the optional `rename?()` method on `StorageBackend`.
 - `chmod`/`chown` — folded into `setattr`.
 - Any path-based API — built on top via `resolve(root, path)` using `lookup`.
 - `dup`/`dup2` — Fd table management is an OS concern, not a FS concern.
@@ -68,96 +74,183 @@ A filesystem is fundamentally: **"a pool of numbered blobs with metadata, plus a
 
 see ./storage.ts
 
+### Key Design Decisions in the Backend
+
+**`contentHash` in `InodeMeta`:** The backend sets this on every write (SHA-256 of the full content). Two higher-layer concerns consume it without reading file content:
+- **Sync**: compare `contentHash` between local and remote to decide what to upload.
+- **Embedding pipeline**: a semantic search layer above the VFS chunks files into paragraph-sized pieces and embeds them. Before re-embedding a file, it checks whether `contentHash` changed since the last embedding run. If not, it skips the file entirely. The pipeline itself lives above the VFS — it reads files via the normal interface and manages its own vector store — but it relies on `contentHash` as a stable change signal.
+
+CDC-style chunk-level diffing was considered but rejected: the files this filesystem targets (markdown notes, configs, agent context) are typically small enough to fit in a single CDC chunk, so the diff machinery would add complexity with no bandwidth saving. `contentHash` provides the change signal at a fraction of the complexity.
+
+**`dirUnset` returns `Ino | null`:** When unlinking, the VFS needs the target ino to call `free()`. Making `dirUnset` return the removed ino eliminates the `dirLookup` call that would otherwise be required before the removal — saving one network round trip.
+
+**Optional `create?(dirIno, name, meta) → Ino`:** Backends that support conditional/transactional writes (DynamoDB, SQLite, Postgres) can implement this to make `mknod` atomic — a single operation that allocates the inode and inserts the directory entry together. Without it, the VFS falls back to `alloc()` + `dirSet()`, which has a failure window between the two calls (orphaned inode). The optional pattern keeps the minimum implementation surface at 10 methods while letting capable backends opt into atomicity.
+
+**Optional `rename?(oldDir, oldName, newDir, newName) → Ino | null`:** Atomic rename is available in almost every real storage system (POSIX, SQLite, DynamoDB transactions). Without this, the VFS synthesizes rename as `dirSet` + `dirUnset`, which is not atomic — there's a window where both names exist, and a crash leaves a dangling entry. The optional method lets backends expose native atomicity; the VFS falls back to the two-step sequence when absent. Returns the displaced ino (if newName already existed) so the VFS can call `free()`.
+
+**Optional `putBlob?(ino, data)`:** Object stores (S3, R2, GCS) don't support partial writes — every mutation is a full object PUT. If the VFS called `write(ino, offset, data)` for a partial update, the backend would have to GET the current content, splice in the new bytes, then PUT the whole thing — an expensive read-modify-write cycle. `putBlob` lets the VFS signal "here is the complete new content" when it has a full document in hand, enabling a single PUT with no prior GET. Backends that support efficient partial writes (local disk, databases) ignore this method.
+
 ---
 
 ## How the VFS Composes Backend Primitives
 
-The VFS translates every consumer-facing operation into a sequence of backend calls. Here's the mapping:
+The VFS translates every consumer-facing operation into a sequence of backend calls. RTT counts assume no cache hits; see the Caching section for how the VFS amortizes these costs.
 
 ### `open(ino, flags) → Fd`
 
 ```
 VFS: open(ino, flags)
-  → backend.getMeta(ino)          // check existence + permissions
-  → VFS allocates Fd in its own table, done.
-     No backend call — Fds are a VFS-level concept.
+  → VFS checks metadata cache for ino
+  → if miss: backend.getMeta(ino)    // 1 RTT — or 0 if recently stat'd
+  → cache meta, allocate Fd in VFS table
 ```
+
+A `stat(ino)` immediately before `open(ino)` costs 0 extra RTTs — the metadata cache absorbs it.
 
 ### `pread(fd, buf, offset) → number`
 
 ```
 VFS: pread(fd, buf, offset)
   → VFS looks up ino from its Fd table
-  → backend.read(ino, offset, buf.length)
+  → VFS checks content cache for (ino, range)
+  → if hit: copy from cache, 0 RTTs
+  → if miss: backend.read(ino, offset, buf.length)    // 1 RTT
+  → populate content cache
 ```
 
 ### `close(fd)`
 
 ```
 VFS: close(fd)
-  → VFS removes Fd from table
-  → if nlink == 0 and last Fd: backend.free(ino)
-     Otherwise: no backend call at all.
+  → VFS removes Fd from table. No backend call.
 ```
 
 ### `mknod(dirIno, name, type, mode) → Ino`
 
 ```
 VFS: mknod(dirIno, name, type, mode)
-  → backend.alloc({ type, mode, size: 0n, nlink: 1, ... })
-  → backend.dirSet(dirIno, name, newIno, type)
+  → if backend.create?:
+      backend.create(dirIno, name, { type, mode, size: 0n, ... })  // 1 RTT, atomic
+  → else:
+      backend.alloc({ type, mode, size: 0n, ... })   // RTT 1
+      backend.dirSet(dirIno, name, newIno, type)      // RTT 2 (non-atomic)
+  → evict directory cache for dirIno
 ```
 
 ### `unlink(dirIno, name)`
 
 ```
 VFS: unlink(dirIno, name)
-  → backend.dirLookup(dirIno, name)       // get target ino
-  → backend.dirUnset(dirIno, name)         // remove name
-  → backend.getMeta(ino)                   // get nlink
-  → backend.setMeta(ino, { nlink: n-1 })   // decrement
-  → if nlink == 0: backend.free(ino)
+  → backend.dirUnset(dirIno, name)   // remove name, returns ino   [RTT 1]
+  → backend.free(ino)                // reclaim storage             [RTT 2]
+  → evict ino from metadata + content caches
+  → evict (dirIno, name) from directory cache
 ```
 
-### `rename` (synthesized from link + unlink)
+Down from 4–5 RTTs to 2. Hard link count tracking is gone entirely.
+
+### `rename` (synthesized, or native if backend supports it)
 
 ```
 VFS: rename(oldDir, oldName, newDir, newName)
-  → backend.dirLookup(oldDir, oldName)
-  → backend.dirSet(newDir, newName, ino, type)
-  → backend.dirUnset(oldDir, oldName)
-     nlink unchanged for regular rename.
+  → if backend.rename?:
+      backend.rename(oldDir, oldName, newDir, newName)  // 1 RTT, atomic
+  → else:
+      backend.dirLookup(oldDir, oldName)                // RTT 1
+      backend.dirSet(newDir, newName, ino, type)        // RTT 2
+      backend.dirUnset(oldDir, oldName)                 // RTT 3 (non-atomic)
+  → update directory caches accordingly
 ```
 
 ### `fsync(fd)`
 
 ```
 VFS: fsync(fd)
-  → This is interesting. The backend might not need it.
-     An S3 backend is durable on write(). A local-file
-     backend delegates to the OS. The VFS can add an
-     optional flush?(ino): Promise<void> if needed,
-     but it's not in the core 10 because not every
-     backend has a concept of buffering.
+  → backend might not need it. An S3 backend is durable on write().
+     A local-file backend delegates to the OS.
+     The VFS flushes any pending writes and refreshes the content cache entry.
 ```
+
+---
+
+## VFS Caching Layer
+
+The VFS maintains two in-memory caches to amortize backend round trips. For a cloud-backed filesystem where each backend call is a network request, caching is not optional — it's what makes the interface usable.
+
+### Metadata Cache
+
+Maps `ino → InodeMeta` with a configurable TTL (default: 30s). Also caches directory lookups: `(dirIno, name) → Ino | null`, including **negative entries** (null = "this name does not exist in this directory").
+
+**How it helps:**
+
+- `stat(ino)` followed by `open(ino)` costs 1 RTT total, not 2. The `open` reads from cache.
+- Path resolution of `/a/b/c` makes 3 `dirLookup` calls on the first traversal. Subsequent traversals of the same path cost 0 RTTs.
+- Symlink traversal reads `symlinkTarget` from `getMeta`. Symlink chains are cached after the first traversal.
+- A tool that calls `stat` in a loop (e.g., `ls` checking each entry's type) costs 1 RTT for the directory listing plus 0 RTTs for stats of already-seen inodes.
+
+**Invalidation:**
+
+| Event | Evicts |
+|---|---|
+| `pwrite` or `truncate` on ino | ino metadata (size + mtime changed) |
+| `setattr` on ino | ino metadata |
+| `dirSet` or `dirUnset` on dirIno | all `(dirIno, *)` directory entries |
+| `mknod` in dirIno | `(dirIno, name)` directory entry |
+| TTL expiry | entry evicted, next access re-fetches |
+
+**Sizing:** Metadata entries are small (< 256 bytes). A count-based limit (e.g., 4096 entries) is sufficient — no byte accounting needed.
+
+### Content Cache
+
+Maps `ino → Uint8Array` for recently-read file content. Backed by an **LRU eviction policy** with a configurable total byte cap (default: 32 MB).
+
+Only files up to a per-entry size threshold (default: 4 MB) are eligible for caching. Files larger than the threshold are read directly without caching — they'd evict many small cached files for a single read, destroying cache utility.
+
+**How it helps:**
+
+- An agent reading the same config file, prompt template, or document on every turn pays for 1 backend read across all turns.
+- `cat` becomes: `open` (0 RTTs if meta cached) + `pread` (0 RTTs if content cached). Zero backend calls for a file read repeatedly.
+- Tools that scan a directory and read each file pay full cost on the first pass, then serve from cache on any repeated access.
+
+**How `pread` uses the cache:**
+
+The content cache stores the full file content. On `pread(fd, buf, offset)`:
+1. Check content cache for the ino.
+2. If present and the cached content covers `[offset, offset+len)`: copy from cache, no backend call.
+3. If absent or stale: call `backend.read(ino, 0, size)` to load the full file, populate cache, then serve the requested slice.
+
+Reading the full file on a cache miss (rather than just the requested slice) means subsequent `pread` calls at any offset are served from cache. This is optimal for the agent use case, where files are small documents read in their entirety.
+
+**Invalidation:**
+
+| Event             | Action                                                     |
+|-------------------|------------------------------------------------------------|
+| `pwrite` to ino   | evict ino from content cache immediately                   |
+| `truncate` on ino | evict ino from content cache immediately                   |
+| `putBlob` on ino  | replace content cache entry with new content               |
+| LRU eviction      | least-recently-accessed entry removed when cap is exceeded |
+
+**Sizing example:** A 32 MB cap with a 4 MB per-file threshold means the cache holds at minimum 8 files, typically many more for small agent context files (prompts, configs, notes tend to be < 64 KB each, so the same cap holds ~500 of them).
 
 ---
 
 ## What the Backend Does NOT Handle
 
-These are all synthesized by the VFS from the 10 backend methods:
+These are all handled by the VFS layer:
 
-| Concept                    | Where it lives | How                                              |
-|----------------------------|----------------|--------------------------------------------------|
-| File descriptors (`Fd`)    | VFS            | In-memory table mapping Fd → ino + flags         |
-| Path resolution            | VFS            | Loop calling `backend.dirLookup()` per component |
-| `open` / `close` semantics | VFS            | `getMeta` + Fd table bookkeeping                 |
-| Permission checks          | VFS            | Reads `mode` from `getMeta`, decides             |
-| Symlink traversal          | VFS            | Reads `symlinkTarget` from `getMeta`, recurses   |
-| Hard link count management | VFS            | Increments/decrements via `setMeta`              |
-| `rename`                   | VFS            | `dirLookup` + `dirSet` + `dirUnset`              |
-| `chmod` / `chown`          | VFS            | `setMeta`                                        |
-| `fsync`                    | VFS / optional | Many backends are durable on write               |
+| Concept                    | Where it lives | How                                                             |
+|----------------------------|----------------|-----------------------------------------------------------------|
+| File descriptors (`Fd`)    | VFS            | In-memory table mapping Fd → ino + flags                        |
+| Path resolution            | VFS            | Loop calling `dirLookup()` per component, served from dir cache |
+| `open` / `close` semantics | VFS            | `getMeta` (cached) + Fd table bookkeeping                       |
+| Permission checks          | VFS            | Reads `mode` from `getMeta`, decides                            |
+| Symlink traversal          | VFS            | Reads `symlinkTarget` from `getMeta`, recurses                  |
+| `rename` (non-atomic)      | VFS            | `dirLookup` + `dirSet` + `dirUnset` (or native `rename?`)       |
+| `chmod` / `chown`          | VFS            | `setattr`                                                       |
+| `fsync`                    | VFS / optional | Many backends are durable on write                              |
+| Metadata caching           | VFS            | `ino → InodeMeta` map with TTL + invalidation                   |
+| Directory entry caching    | VFS            | `(dirIno, name) → Ino` map with invalidation                    |
+| Content caching            | VFS            | LRU `ino → Uint8Array` map with byte cap                        |
 
 ---
 
@@ -213,11 +306,12 @@ async function ls(fs: FileSystem, path: string): Promise<Dirent[]> {
 ```typescript
 async function cat(fs: FileSystem, path: string): Promise<Uint8Array> {
   const ino = await resolve(fs, path);
+  // stat + open share the same metadata cache hit — only 1 backend call total
+  const info = await fs.stat(ino);
   const fd = await fs.open(ino, OpenFlags.Read);
   try {
-    const info = await fs.stat(ino);
     const buf = new Uint8Array(Number(info.size));
-    await fs.pread(fd, buf, 0n);
+    await fs.pread(fd, buf, 0n);  // served from content cache on repeat calls
     return buf;
   } finally {
     await fs.close(fd);
@@ -270,35 +364,36 @@ async function cp(fs: FileSystem, src: string, dst: string) {
 
 ## Example Backend Implementations
 
-The 10-method backend interface can be implemented against wildly different storage media:
+The backend interface can be implemented against wildly different storage media:
 
 ### In-Memory
 
-`alloc` → push to a `Map<Ino, { meta, data, dir }>`. `read`/`write` → slice/copy `Uint8Array`. `dirLookup` → `Map.get`. Useful for testing and ephemeral workloads.
+`alloc` → push to a `Map<Ino, { meta, data, dir }>`. `read`/`write` → slice/copy `Uint8Array`. `dirLookup` → `Map.get`. `dirUnset` → `Map.delete`, returns the removed ino. Useful for testing and ephemeral workloads.
 
 ### Local Filesystem
 
-`alloc` → create a file in a flat directory named by ino. `read`/`write` → `fs.read`/`fs.write` with position. `dirLookup`/`dirSet`/`dirUnset` → maintain a JSON or SQLite index per directory inode.
+`alloc` → create a file in a flat directory named by ino. `read`/`write` → `fs.read`/`fs.write` with position. `dirLookup`/`dirSet`/`dirUnset` → maintain a JSON or SQLite index per directory inode. Implements `rename?` natively via `fs.rename`.
 
 ### S3 + DynamoDB
 
-`alloc` → insert a row in DynamoDB (partition key = ino). `read`/`write` → S3 `GetObject`/`PutObject` with `Range` header. `dirLookup` → DynamoDB query on `(parent_ino, name)` GSI. `truncate` → S3 copy-to-self with truncated range or delete + re-put.
+`alloc` → `INSERT` into DynamoDB (partition key = ino). `read`/`write` → S3 `GetObject`/`PutObject` with `Range` header for reads. `putBlob?` → direct S3 `PutObject` (no read needed). `create?` → DynamoDB transaction: insert inode row + insert dirent row atomically. `dirLookup` → DynamoDB query on `(parent_ino, name)` GSI. `dirUnset` → DynamoDB `DeleteItem` with return values to get the removed ino.
 
 ### SQLite
 
-`alloc` → `INSERT INTO inodes`. `read`/`write` → blob I/O or chunked rows. `dirLookup` → `SELECT ino FROM dirents WHERE parent = ? AND name = ?`. Compact, single-file, good for embedded use.
+`alloc` → `INSERT INTO inodes`. `read`/`write` → blob I/O or chunked rows. `dirLookup` → `SELECT ino FROM dirents WHERE parent = ? AND name = ?`. `create?` → single transaction inserting both inode and dirent. `rename?` → single transaction updating the dirent row. `dirUnset` → `DELETE ... RETURNING ino`. Compact, single-file, good for embedded use.
 
 ### IndexedDB (Browser)
 
-`alloc` → put into an `inodes` object store. `read`/`write` → get/put `ArrayBuffer` in a `data` store keyed by `(ino, chunkIndex)`. `dirLookup` → index on `[parentIno, name]`. Enables a full filesystem in the browser.
+`alloc` → put into an `inodes` object store. `read`/`write` → get/put `ArrayBuffer` in a `data` store keyed by `(ino, chunkIndex)`. `putBlob?` → single put of the entire content. `dirLookup` → index on `[parentIno, name]`. Enables a full filesystem in the browser.
 
 ---
 
 ## Summary
 
-The entire design is two interfaces:
+The entire design is two interfaces plus a caching layer:
 
-- **`StorageBackend`** (10 methods) — what you implement per storage medium.
-- **`FileSystem`** (14 methods) — what tools consume, provided by the VFS.
+- **`StorageBackend`** (10 required methods + 3 optional) — what you implement per storage medium. Optional methods (`create?`, `rename?`, `putBlob?`) let capable backends expose native atomicity and efficiency.
+- **`FileSystem`** (13 methods) — what tools consume, provided by the VFS.
+- **VFS Caching** (metadata cache + content cache) — amortizes cloud round trips so the interface stays practical at network latency.
 
-The VFS layer between them handles Fd management, path resolution, permission checks, symlink traversal, link counting, and operation composition. Every shell command is a thin wrapper over the VFS. Every storage medium is a thin implementation of the backend.
+The VFS layer handles Fd management, path resolution, permission checks, symlink traversal, operation composition, and caching. Every shell command is a thin wrapper over the VFS. Every storage medium is a thin implementation of the backend.
