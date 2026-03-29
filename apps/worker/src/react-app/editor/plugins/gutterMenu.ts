@@ -75,7 +75,11 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 		if (!currentView) return null
 		const { $from } = currentView.state.selection
 		const { nodes } = currentView.state.schema
-		if ($from.depth === 1 && $from.parent.type === nodes.paragraph && $from.parent.childCount === 0) {
+		if (
+			$from.depth === 1 &&
+			$from.parent.type === nodes.paragraph &&
+			$from.parent.childCount === 0
+		) {
 			return { from: $from.before(1), to: $from.after(1) }
 		}
 		return null
@@ -144,27 +148,28 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 	)
 
 	// Table
-	menu.appendChild(
-		makeItem('Table', () => {
-			if (!currentView) return
-			const v = currentView
-			const { nodes } = v.state.schema
-			const makeCell = (isHeader: boolean) =>
-				(isHeader ? nodes.table_header : nodes.table_cell).createAndFill()!
-			const makeRow = (isHeader: boolean) =>
-				nodes.table_row.create(null, [makeCell(isHeader), makeCell(isHeader)])
-			const table = nodes.table.create(null, [makeRow(true), makeRow(false)])
-			const range = emptyParaRange()
-			const tr = v.state.tr
-			if (range) {
-				tr.replaceWith(range.from, range.to, table)
-			} else {
-				tr.insert(afterCurrentBlock(), table)
-			}
-			v.dispatch(tr.scrollIntoView())
-			v.focus()
-		})
-	)
+	// TODO: table is not that simple, remove it for now
+	// menu.appendChild(
+	// 	makeItem('Table', () => {
+	// 		if (!currentView) return
+	// 		const v = currentView
+	// 		const { nodes } = v.state.schema
+	// 		const makeCell = (isHeader: boolean) =>
+	// 			(isHeader ? nodes.table_header : nodes.table_cell).createAndFill()!
+	// 		const makeRow = (isHeader: boolean) =>
+	// 			nodes.table_row.create(null, [makeCell(isHeader), makeCell(isHeader)])
+	// 		const table = nodes.table.create(null, [makeRow(true), makeRow(false)])
+	// 		const range = emptyParaRange()
+	// 		const tr = v.state.tr
+	// 		if (range) {
+	// 			tr.replaceWith(range.from, range.to, table)
+	// 		} else {
+	// 			tr.insert(afterCurrentBlock(), table)
+	// 		}
+	// 		v.dispatch(tr.scrollIntoView())
+	// 		v.focus()
+	// 	})
+	// )
 
 	// ── Event listeners ──────────────────────────────────────────────────────
 
@@ -184,10 +189,7 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 	})
 
 	const onOutsideClick = (e: MouseEvent) => {
-		if (
-			!menu.contains(e.target as globalThis.Node) &&
-			!btn.contains(e.target as globalThis.Node)
-		) {
+		if (!menu.contains(e.target as globalThis.Node) && !btn.contains(e.target as globalThis.Node)) {
 			closeMenu()
 		}
 	}
