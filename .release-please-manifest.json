@@ -1,4 +1,4 @@
 {
-	"apps/cli": "0.3.3",
-	"apps/worker": "0.3.2"
+	"apps/cli": "0.3.4",
+	"apps/worker": "0.4.0"
 }
