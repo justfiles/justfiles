@@ -47,11 +47,21 @@ function convertBlock(
 	schema: Schema
 ): PMNode | PMNode[] | null {
 	switch (node.type) {
-		case 'paragraph':
+		case 'paragraph': {
+			// A paragraph containing a single image with alt="drawing" is a drawing node
+			if (
+				node.children.length === 1 &&
+				node.children[0].type === 'image' &&
+				node.children[0].alt === 'drawing'
+			) {
+				const img = node.children[0]
+				return schema.nodes.drawing.create({ id: img.url, previewUrl: img.url })
+			}
 			return schema.nodes.paragraph.create(
 				null,
 				convertInlines(node.children, schema, [])
 			)
+		}
 
 		case 'heading':
 			return schema.nodes.heading.create(

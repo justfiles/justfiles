@@ -189,6 +189,36 @@ export const schema = new Schema({
 			toDOM() {
 				return ['br'] as const
 			}
+		},
+
+		drawing: {
+			attrs: {
+				id: {},
+				previewUrl: { default: null }
+			},
+			group: 'block',
+			atom: true,
+			parseDOM: [
+				{
+					tag: 'div[data-drawing]',
+					getAttrs(dom) {
+						const el = dom as HTMLElement
+						return {
+							id: el.getAttribute('data-drawing'),
+							previewUrl: el.getAttribute('data-preview-url') ?? null
+						}
+					}
+				}
+			],
+			toDOM(node) {
+				return [
+					'div',
+					{
+						'data-drawing': node.attrs.id as string,
+						'data-preview-url': node.attrs.previewUrl ?? ''
+					}
+				] as const
+			}
 		}
 	},
 

@@ -17,6 +17,7 @@ import {
 	InputRule
 } from 'prosemirror-inputrules'
 import { ProseMirrorJsonDocument } from './sync'
+import { makeDrawingNodeView } from './DrawingNodeView'
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -319,7 +320,17 @@ function buildMenuPlugin(): Plugin {
 		),
 		makeMenuItem('{ }', 'Code block', setBlockType(nodes.code_block), (s) =>
 			blockActive(s, nodes.code_block)
-		)
+		),
+		makeMenuItem('✏', 'Drawing', (state, dispatch) => {
+			const { $from } = state.selection
+			// Insert after the top-level block containing the cursor
+			const insertPos = $from.depth >= 1 ? $from.after(1) : $from.pos
+			if (!dispatch) return true
+			dispatch(
+				state.tr.insert(insertPos, nodes.drawing.create({ id: null, previewUrl: null }))
+			)
+			return true
+		})
 	]
 
 	return new Plugin({
@@ -419,7 +430,26 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 			// as the initial ProseMirror document for this editor instance.
 			state: buildState(value),
 			editable: () => !readOnlyRef.current,
-			nodeViews: memoryId ? { image: makeImageNodeView(memoryId) } : {},
+			nodeViews: memoryId
+				? {
+						image: makeImageNodeView(memoryId),
+						drawing: makeDrawingNodeView(
+							memoryId,
+							getTokenRef.current ?? (() => Promise.resolve(null)),
+							(node, attrs) => {
+								const view = viewRef.current
+								if (!view) return
+								view.state.doc.descendants((n, pos) => {
+									if (n === node) {
+										view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...n.attrs, ...attrs }))
+										return false
+									}
+									return true
+								})
+							}
+						)
+					}
+				: {},
 			// Intercept ProseMirror's default scroll-into-view behavior, which
 			// walks every DOM ancestor and sets scrollTop — on iPadOS PWA with a
 			// physical keyboard this causes the entire layout to jump. Instead we

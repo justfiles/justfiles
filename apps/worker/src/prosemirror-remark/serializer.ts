@@ -85,6 +85,19 @@ function serializeBlock(node: PMNode): BlockContent | null {
 		case 'table':
 			return serializeTable(node)
 
+		case 'drawing':
+			return {
+				type: 'paragraph',
+				children: [
+					{
+						type: 'image',
+						url: node.attrs.id as string,
+						alt: 'drawing',
+						title: null
+					}
+				]
+			}
+
 		default:
 			// Unknown block node — preserve text content as a plain paragraph
 			// rather than silently dropping it.
