@@ -1,3 +1,4 @@
+import type { StorageBackend } from './storage';
 import type { Ino, Stat, Off, DirCursor, Dirent, FileType, OpenFlags, Fd } from './types';
 
 /**
@@ -155,4 +156,8 @@ export interface FileSystem {
 
   /** Get root inode. Typically 1n or 2n. Entry point for all path resolution. */
   root(): Ino;
+}
+
+export function fs(storage: StorageBackend): FileSystem {
+	throw new Error('not implemented')
 }
