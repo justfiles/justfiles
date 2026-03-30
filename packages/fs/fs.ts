@@ -159,5 +159,271 @@ export interface FileSystem {
 }
 
 export function fs(storage: StorageBackend): FileSystem {
-	throw new Error('not implemented')
+	type InodeMeta = NonNullable<Awaited<ReturnType<StorageBackend['getMeta']>>>
+	type FdEntry = {
+		ino: Ino
+		flags: OpenFlags
+	}
+
+	const metaCache = new Map<Ino, InodeMeta>()
+	const dirCache = new Map<string, Ino | null>()
+	const contentCache = new Map<Ino, Uint8Array>()
+	const fdTable = new Map<Fd, FdEntry>()
+	let nextFd = 1
+
+	function nowNs(): bigint {
+		return BigInt(Date.now()) * 1_000_000n
+	}
+
+	function dirCacheKey(dirIno: Ino, name: string): string {
+		return `${dirIno}:${name}`
+	}
+
+	function invalidateDirCache(dirIno: Ino): void {
+		const prefix = `${dirIno}:`
+		for (const key of dirCache.keys()) {
+			if (key.startsWith(prefix)) {
+				dirCache.delete(key)
+			}
+		}
+	}
+
+	function invalidateIno(ino: Ino): void {
+		metaCache.delete(ino)
+		contentCache.delete(ino)
+	}
+
+	function makeStat(ino: Ino, meta: InodeMeta): Stat {
+		return {
+			ino,
+			type: meta.type,
+			size: meta.size,
+			mode: meta.mode,
+			nlink: meta.nlink,
+			mtimeNs: meta.mtimeNs,
+			ctimeNs: meta.ctimeNs,
+			contentHash: meta.contentHash,
+		}
+	}
+
+	async function getMetaOrThrow(ino: Ino): Promise<InodeMeta> {
+		const cached = metaCache.get(ino)
+		if (cached) return cached
+
+		const meta = await storage.getMeta(ino)
+		if (meta === null) {
+			throw new Error(`ENOENT: inode ${ino}`)
+		}
+
+		metaCache.set(ino, meta)
+		return meta
+	}
+
+	function getFdOrThrow(fd: Fd): FdEntry {
+		const entry = fdTable.get(fd)
+		if (!entry) {
+			throw new Error(`EBADF: fd ${fd}`)
+		}
+		return entry
+	}
+
+	async function createNode(dirIno: Ino, name: string, meta: Omit<InodeMeta, 'nlink'>): Promise<Ino> {
+		if (storage.create) {
+			const ino = await storage.create(dirIno, name, meta)
+			invalidateDirCache(dirIno)
+			return ino
+		}
+
+		const ino = await storage.alloc(meta)
+		const added = await storage.dirAdd(dirIno, name, ino, meta.type)
+		if (!added) {
+			throw new Error(`EEXIST: ${name}`)
+		}
+
+		invalidateDirCache(dirIno)
+		return ino
+	}
+
+	return {
+		async stat(ino: Ino): Promise<Stat> {
+			return makeStat(ino, await getMetaOrThrow(ino))
+		},
+
+		async setattr(ino: Ino, attrs: Partial<Pick<Stat, 'mode' | 'mtimeNs'>>): Promise<void> {
+			await storage.setMeta(ino, attrs)
+			metaCache.delete(ino)
+		},
+
+		async lookup(dirIno: Ino, name: string): Promise<Ino | null> {
+			const key = dirCacheKey(dirIno, name)
+			if (dirCache.has(key)) {
+				return dirCache.get(key) ?? null
+			}
+
+			const entry = await storage.dirLookup(dirIno, name)
+			const ino = entry?.ino ?? null
+			dirCache.set(key, ino)
+			return ino
+		},
+
+		async readdir(dirIno: Ino, cursor: DirCursor): Promise<{ entries: Dirent[]; next: DirCursor }> {
+			const batch = await storage.dirList(dirIno, cursor)
+			return {
+				entries: batch.entries.map((entry) => ({
+					ino: entry.ino,
+					name: entry.name,
+					type: entry.type,
+				})),
+				next: batch.next,
+			}
+		},
+
+		async mknod(dirIno: Ino, name: string, type: FileType, mode: number): Promise<Ino> {
+			return createNode(dirIno, name, {
+				type,
+				size: 0n,
+				mode,
+				mtimeNs: nowNs(),
+				ctimeNs: nowNs(),
+			})
+		},
+
+		async symlink(dirIno: Ino, name: string, target: string, mode = 0o777): Promise<Ino> {
+			return createNode(dirIno, name, {
+				type: 2,
+				size: BigInt(target.length),
+				mode,
+				mtimeNs: nowNs(),
+				ctimeNs: nowNs(),
+				symlinkTarget: target,
+			})
+		},
+
+		async link(dirIno: Ino, name: string, targetIno: Ino): Promise<void> {
+			const target = await getMetaOrThrow(targetIno)
+			if (target.type === 1) {
+				throw new Error('EPERM: cannot hard-link a directory')
+			}
+
+			const added = await storage.dirAdd(dirIno, name, targetIno, target.type)
+			if (!added) {
+				throw new Error(`EEXIST: ${name}`)
+			}
+
+			invalidateDirCache(dirIno)
+		},
+
+		async unlink(dirIno: Ino, name: string): Promise<void> {
+			const removed = await storage.dirUnset(dirIno, name)
+			if (removed === null) {
+				throw new Error(`ENOENT: ${name}`)
+			}
+
+			invalidateDirCache(dirIno)
+			invalidateIno(removed.ino)
+		},
+
+		async open(ino: Ino, flags: OpenFlags): Promise<Fd> {
+			await getMetaOrThrow(ino)
+
+			if ((flags & 2) !== 0 && (flags & 4) !== 0) {
+				await storage.truncate(ino, 0n)
+				contentCache.delete(ino)
+
+				const meta = metaCache.get(ino)
+				if (meta) {
+					metaCache.set(ino, { ...meta, size: 0n })
+				}
+			}
+
+			const fd = nextFd
+			nextFd += 1
+			fdTable.set(fd, { ino, flags })
+			return fd
+		},
+
+		async pread(fd: Fd, buf: Uint8Array, offset: Off): Promise<number> {
+			const { ino } = getFdOrThrow(fd)
+			const meta = await getMetaOrThrow(ino)
+
+			let content = contentCache.get(ino)
+			if (!content) {
+				if (meta.size === 0n) {
+					content = new Uint8Array()
+				} else {
+					content = await storage.read(ino, 0n, Number(meta.size))
+				}
+				contentCache.set(ino, content)
+			}
+
+			const start = Number(offset)
+			if (start >= content.length) {
+				return 0
+			}
+
+			const end = Math.min(start + buf.length, content.length)
+			const chunk = content.subarray(start, end)
+			buf.set(chunk, 0)
+			return chunk.length
+		},
+
+		async pwrite(fd: Fd, buf: Uint8Array, offset: Off): Promise<number> {
+			const { ino } = getFdOrThrow(fd)
+			const written = await storage.write(ino, offset, buf)
+			invalidateIno(ino)
+			return written
+		},
+
+		async fsync(fd: Fd): Promise<void> {
+			getFdOrThrow(fd)
+		},
+
+		async truncate(fd: Fd, size: Off): Promise<void> {
+			const { ino } = getFdOrThrow(fd)
+			await storage.truncate(ino, size)
+			invalidateIno(ino)
+		},
+
+		async close(fd: Fd): Promise<void> {
+			fdTable.delete(fd)
+		},
+
+		async rename(oldDirIno: Ino, oldName: string, newDirIno: Ino, newName: string): Promise<void> {
+			if (storage.rename) {
+				const displaced = await storage.rename(oldDirIno, oldName, newDirIno, newName)
+				invalidateDirCache(oldDirIno)
+				invalidateDirCache(newDirIno)
+				if (displaced !== null) {
+					invalidateIno(displaced)
+				}
+				return
+			}
+
+			const source = await storage.dirLookup(oldDirIno, oldName)
+			if (source === null) {
+				throw new Error(`ENOENT: ${oldName}`)
+			}
+
+			const displaced = await storage.dirSet(newDirIno, newName, source.ino, source.type)
+			await storage.dirUnset(oldDirIno, oldName)
+
+			invalidateDirCache(oldDirIno)
+			invalidateDirCache(newDirIno)
+			if (displaced !== null) {
+				invalidateIno(displaced.ino)
+			}
+		},
+
+		async readlink(ino: Ino): Promise<string> {
+			const meta = await getMetaOrThrow(ino)
+			if (meta.type !== 2 || meta.symlinkTarget === undefined) {
+				throw new Error(`EINVAL: inode ${ino} is not a symlink`)
+			}
+			return meta.symlinkTarget
+		},
+
+		root(): Ino {
+			return 1n
+		},
+	}
 }

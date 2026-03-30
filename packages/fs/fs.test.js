@@ -176,9 +176,7 @@ describe('fs', () => {
 		delete storage.create
 		const vfs = fs(storage)
 
-		await expect(async () => {
-			await vfs.mknod(2n, 'dupe', FileType.Regular, 0o644)
-		}).rejects.toThrow()
+		await expect(vfs.mknod(2n, 'dupe', FileType.Regular, 0o644)).rejects.toThrow()
 
 		expect(storage.alloc).toHaveBeenCalledTimes(1)
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
@@ -210,9 +208,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(async () => {
-			await vfs.link(1n, 'dir-link', 4n)
-		}).rejects.toThrow()
+		await expect(vfs.link(1n, 'dir-link', 4n)).rejects.toThrow()
 
 		expect(storage.dirAdd).not.toHaveBeenCalled()
 	})
@@ -313,9 +309,7 @@ describe('fs', () => {
 		await expect(vfs.stat(50n)).resolves.toEqual(expect.objectContaining({ ino: 50n }))
 		await expect(vfs.unlink(2n, 'gone.txt')).resolves.toBeUndefined()
 		await expect(vfs.lookup(2n, 'gone.txt')).resolves.toBeNull()
-		await expect(async () => {
-			await vfs.stat(50n)
-		}).rejects.toThrow()
+		await expect(vfs.stat(50n)).rejects.toThrow()
 
 		expect(storage.dirLookup).toHaveBeenCalledTimes(2)
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
@@ -397,8 +391,6 @@ describe('fs', () => {
 
 		await vfs.close(fd)
 
-		await expect(async () => {
-			await vfs.pread(fd, new Uint8Array(1), 0n)
-		}).rejects.toThrow()
+		await expect(vfs.pread(fd, new Uint8Array(1), 0n)).rejects.toThrow()
 	})
 })
