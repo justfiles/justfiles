@@ -1,15 +1,18 @@
-import type { FileType, Ino, Off } from './types';
+import type { FileType, Ino, Off, DirCursor, DirentMin } from './types';
 
 interface InodeMeta {
   type: FileType;
   size: Off;
   mode: number;
   /**
-   * Hard link count. Managed entirely by the VFS — the backend stores this
-   * number but has no logic around it. The VFS increments on link(), decrements
-   * on unlink(), and calls free() only when it reaches 0.
-   * Always 1 for newly allocated inodes. Directories are always 1 (no hard links
-   * to directories — they create cycles).
+   * Hard link count. Entirely owned by the backend — the VFS never reads
+   * or writes this field directly. The backend increments it inside dirAdd
+   * and dirSet (when adding an entry) and decrements it inside dirUnset
+   * (freeing the inode when it hits 0). Exposed in Stat so consumers above
+   * the VFS can read it.
+   *
+   * New inodes start at nlink = 0. The first dirAdd call (from mknod or
+   * create?) brings it to 1.
    */
   nlink: number;
   mtimeNs: bigint;
@@ -19,53 +22,65 @@ interface InodeMeta {
    * Set by the backend on every write. Absent for directories and symlinks.
    *
    * The primary consumers are:
-   *   - Sync layer: compare hashes to decide what to upload, without reading content.
-   *   - Embedding pipeline: if hash unchanged since last embedding, skip re-embedding.
+   *   - Sync layer: compare hashes to decide what to upload.
+   *   - Embedding pipeline: skip re-embedding when hash is unchanged.
    */
   contentHash?: string;
-  /** For symlinks: the target path. Stored inline in metadata
-   *  because symlink targets are small and always read atomically.
-   *  This avoids a separate data read for every symlink traversal. */
+  /** For symlinks: the target path. Stored inline to avoid a separate
+   *  data read on every symlink traversal. */
   symlinkTarget?: string;
 }
 
 /**
+ * Fields the VFS may update via setMeta. nlink is excluded — it is
+ * managed entirely inside dirSet / dirUnset and is never written by the VFS.
+ */
+type InodeMetaUpdate = Partial<Pick<InodeMeta, 'mode' | 'mtimeNs' | 'ctimeNs' | 'symlinkTarget'>>;
+
+/**
  * Minimal backend interface.
  *
- * 10 methods. That's it. A filesystem is fundamentally:
+ * 11 required methods + 3 optional. A filesystem is fundamentally:
  * "a pool of numbered blobs with metadata, plus a naming layer."
+ *
+ * Hard link reference counting (nlink) is backend-internal. The VFS
+ * never calls free(), linkInc(), or linkDec() — it simply adds and
+ * removes directory entries via dirAdd / dirSet / dirUnset, and the
+ * backend atomically maintains nlink as a side effect.
+ *
+ * dirAdd and dirSet are intentionally distinct:
+ *   dirAdd  — no-clobber insert (mknod, link). TOCTOU-safe.
+ *   dirSet  — unconditional replace (rename overwrite path only).
  */
 export interface StorageBackend {
 
   // ==========================================
-  // 1. INODE LIFECYCLE — allocate and free
+  // 1. INODE LIFECYCLE — allocate
   // ==========================================
 
   /**
-   * Allocate a new inode with initial metadata.
-   * Returns the assigned ino.
+   * Allocate a new inode with initial metadata. Returns the assigned ino.
+   * nlink is not supplied by the caller — the backend initialises it to 0.
+   * The first dirAdd call on this inode (from mknod or create?) brings
+   * nlink to 1.
    *
-   * Why the backend assigns inos: it knows its own numbering
-   * strategy (sequential, random, reuse-from-freelist, UUIDs
-   * mapped to bigint — whatever). The VFS doesn't care.
+   * Why the backend assigns inos: it knows its own numbering strategy
+   * (sequential, random, UUID-mapped, etc.). The VFS does not care.
    */
-  alloc(meta: InodeMeta): Promise<Ino>;
+  alloc(meta: Omit<InodeMeta, 'nlink'>): Promise<Ino>;
 
   /**
-   * Atomically allocate a new inode AND add its directory entry.
-   * Optional — if implemented, the VFS uses this for mknod instead
-   * of the two-step alloc() + dirSet(). Backends that support
-   * atomic conditional writes (DynamoDB, SQLite transactions) should
+   * Atomically allocate a new inode AND add its directory entry,
+   * no-clobber. Optional — if implemented, the VFS uses this for mknod
+   * instead of the two-step alloc() + dirAdd(). Backends with
+   * conditional/transactional writes (DynamoDB, SQLite, Postgres) should
    * implement this to eliminate the orphaned-inode failure window.
+   *
+   * Fails (rejects) if name already exists in dirIno — matching the
+   * no-clobber semantics of dirAdd().
+   * The backend sets nlink = 1 inside this operation.
    */
-  create?(dirIno: Ino, name: string, meta: InodeMeta): Promise<Ino>;
-
-  /**
-   * Permanently destroy an inode and its data.
-   * The VFS calls this when nlink hits 0 and no Fds are open.
-   * The backend reclaims all storage.
-   */
-  free(ino: Ino): Promise<void>;
+  create?(dirIno: Ino, name: string, meta: Omit<InodeMeta, 'nlink'>): Promise<Ino>;
 
   // ==========================================
   // 2. INODE METADATA — the "stat" of a node
@@ -73,18 +88,18 @@ export interface StorageBackend {
 
   /**
    * Read all metadata for an inode.
-   * Returns null if ino doesn't exist (not an error — the VFS
-   * needs to distinguish "gone" from "I/O failure").
+   * Returns null if ino doesn't exist (not an error — the VFS needs to
+   * distinguish "gone" from "I/O failure").
    */
   getMeta(ino: Ino): Promise<InodeMeta | null>;
 
   /**
-   * Partial update of metadata fields.
-   * The VFS calls this for chmod, utimes, and to bump nlink
-   * on link/unlink. Size is updated implicitly by write/truncate,
-   * but the VFS may also call setMeta to update size after truncate.
+   * Partial update of metadata fields. nlink is excluded from the update
+   * type — nlink is backend-owned and only modified by dirAdd / dirSet /
+   * dirUnset. The VFS calls setMeta for chmod, utimes, and similar attribute
+   * changes.
    */
-  setMeta(ino: Ino, partial: Partial<InodeMeta>): Promise<void>;
+  setMeta(ino: Ino, partial: InodeMetaUpdate): Promise<void>;
 
   // ==========================================
   // 3. DATA I/O — raw byte storage per inode
@@ -94,37 +109,26 @@ export interface StorageBackend {
    * Read up to `length` bytes starting at `offset`.
    * Returns the bytes read. May be shorter than requested (short read)
    * or empty (offset >= size, i.e. EOF).
-   *
-   * Why this is on the backend: the storage medium knows how its
-   * data is chunked (4K blocks, S3 range requests, DB blobs).
-   * The VFS just sees a byte stream.
    */
   read(ino: Ino, offset: Off, length: number): Promise<Uint8Array>;
 
   /**
    * Write bytes at offset. Grows the file if offset + data.length > size.
    * Returns bytes written (always data.length unless the medium is full).
-   *
    * The backend must update size in its metadata if the file grew.
-   * This is the ONE place where the backend implicitly mutates metadata
-   * as a side effect — keeping size consistent with actual data is a
-   * storage-level invariant, not a VFS concern.
    */
   write(ino: Ino, offset: Off, data: Uint8Array): Promise<number>;
 
   /**
-	 * TODO: evaluate the necessity for our purpose
    * Resize the data to exactly `size` bytes.
    * If shrinking: discard trailing data.
    * If growing: the new bytes read as zeroes.
    *
-   * Could this be built from write()? Technically yes — but
-   * it's a separate primitive because the implementation is
-   * fundamentally different. Truncating a 10GB file to 0 should
-   * be O(1) (drop all blocks), not O(n) (write zeroes). Every
-   * real filesystem treats it as a distinct operation.
+   * A required primitive rather than a write()-based emulation: truncating
+   * a large file to 0 must be O(1), not O(n). Object-store backends without
+   * native truncate implement it as putBlob(ino, emptyOrSlicedData).
    */
-  // truncate(ino: Ino, size: Off): Promise<void>;
+  truncate(ino: Ino, size: Off): Promise<void>;
 
   // ==========================================
   // 4. DIRECTORY ENTRIES — the naming layer
@@ -132,61 +136,85 @@ export interface StorageBackend {
 
   /**
    * Look up a single name in a directory inode.
-   * Returns the ino it points to, or null.
-   *
-   * Why this is a backend primitive and not "just read the
-   * directory data and parse it": the backend chooses the
-   * directory format (linear list, hash table, B-tree).
-   * A good implementation makes this O(1) or O(log n).
-   * If the VFS had to read raw bytes and scan, it'd be O(n)
-   * and the VFS would need to know the on-disk format.
+   * Returns { ino, type } or null. Returns type alongside ino so the VFS
+   * can use the result in a subsequent dirSet (e.g. in synthesised rename)
+   * without an extra getMeta round trip.
    */
-  dirLookup(dirIno: Ino, name: string): Promise<Ino | null>;
+  dirLookup(dirIno: Ino, name: string): Promise<DirentMin | null>;
 
   /**
-   * List entries in batches. cursor=0n starts from beginning.
-   * Returns entries and a next cursor (0n = done).
-   *
-   * The cursor is opaque to the VFS — it could be a byte offset,
-   * a B-tree key, a DynamoDB pagination token, whatever.
+   * List entries in batches. An empty-string cursor starts from the
+   * beginning; the backend returns empty string to signal end-of-directory.
+   * The cursor is opaque — a stringified offset, a DynamoDB token, a B-tree
+   * key, whatever the backend needs. DirCursor is typed as string to
+   * accommodate all of these without artificial encoding.
    */
-  dirList(dirIno: Ino, cursor: Off): Promise<{
+  dirList(dirIno: Ino, cursor: DirCursor): Promise<{
     entries: { name: string; ino: Ino; type: FileType }[];
-    next: Off;
+    next: DirCursor;
   }>;
 
   /**
-   * Add or overwrite an entry in a directory.
-   * This is the atomic "name → ino" binding.
+   * Insert a new directory entry if and only if the name does not already
+   * exist. Atomically increments nlink on ino when the entry is added.
+   * Returns true if the entry was added, false if the name already existed
+   * (nlink is NOT modified in that case).
    *
-   * The VFS calls this for: mknod (after alloc), link, rename.
-   * The backend doesn't validate anything — it just stores the mapping.
-   * Validation (target exists, no duplicate names, etc.) is VFS work.
+   * This is the primitive for mknod (after alloc) and hard-link creation
+   * (link()). It is explicitly no-clobber: the VFS maps a false return to
+   * EEXIST. Using a separate no-clobber primitive (rather than a pre-lookup
+   * + dirSet) eliminates the TOCTOU race where two concurrent callers both
+   * see "name is free" and both proceed to overwrite each other.
+   *
+   * Crash safety: a crash after alloc() but before dirAdd() leaves an
+   * orphaned inode (nlink = 0, no directory entry). Use create?() to
+   * close this window for mknod.
    */
-  dirSet(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<void>;
+  dirAdd(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<boolean>;
 
   /**
-   * Remove an entry from a directory. Returns the ino that was removed,
-   * or null if the name didn't exist.
+   * Unconditionally replace (or insert) a directory entry AND atomically
+   * manage nlink on both the incoming and any displaced inode.
+   * If an existing entry is displaced, the backend atomically decrements
+   * nlink on the displaced inode (freeing it if nlink hits 0) and returns
+   * the displaced entry so the VFS can invalidate its cache.
+   * Returns null if no entry previously existed at name.
    *
-   * Returning the ino saves the VFS a separate dirLookup() call before
-   * removal — critical when every call is a potential network round trip.
-   * The VFS uses the returned ino to call free() after removal.
+   * This is the primitive for the rename overwrite path — the one operation
+   * that legitimately replaces an existing name. It is NOT used for mknod
+   * or link(); those use dirAdd() to get no-clobber semantics.
    */
-  dirUnset(dirIno: Ino, name: string): Promise<Ino | null>;
+  dirSet(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<DirentMin | null>;
 
   /**
-   * Atomically move a name from one directory to another (or rename
-   * within the same directory). Optional — if absent, the VFS synthesizes
-   * rename as dirSet + dirUnset, which is not atomic.
+   * Remove a directory entry AND atomically decrement nlink on the inode,
+   * freeing the inode entirely if nlink reaches 0.
+   * Returns the removed entry, or null if name was not present.
    *
-   * Backends that support atomic rename (POSIX, SQLite, DynamoDB
-   * transactions) should implement this to avoid a failure window
-   * where the new name exists but the old name hasn't been removed yet.
+   * This is the single operation the VFS uses for unlink(). Because nlink
+   * is managed atomically inside this call, the VFS never needs a separate
+   * decrement or free step.
    *
-   * The backend overwrites newName in newDir if it already exists,
-   * matching POSIX rename(2) semantics. The displaced inode (if any)
-   * is returned so the VFS can call free() if needed.
+   * Note: rename() uses dirSet + dirUnset but with a temporary nlink
+   * increment followed by a decrement — net zero, so the inode is never
+   * freed prematurely. See rename?() for the atomic alternative.
+   */
+  dirUnset(dirIno: Ino, name: string): Promise<DirentMin | null>;
+
+  /**
+   * Atomically move a name from one directory to another (or rename within
+   * the same directory). Optional — if absent, the VFS synthesises rename
+   * as dirLookup + dirSet + dirUnset.
+   *
+   * Why synthesised rename is safe but not ideal:
+   *   dirSet(newDir, newName, ino, type)  → nlink temporarily +1
+   *   dirUnset(oldDir, oldName)           → nlink back to original
+   *   Net nlink change: 0. The inode is never freed prematurely.
+   *   Downside: there is a window where both names exist simultaneously.
+   *
+   * rename?() closes that consistency window. If newName already existed,
+   * the backend atomically displaces it (decrement its nlink, free if 0)
+   * and returns its ino so the VFS can invalidate the cache entry.
    */
   rename?(oldDir: Ino, oldName: string, newDir: Ino, newName: string): Promise<Ino | null>;
 
@@ -194,14 +222,11 @@ export interface StorageBackend {
    * Replace the entire content of a file atomically.
    * Optional — if absent, the VFS falls back to write().
    *
-   * Object stores (S3, R2, GCS) don't support partial writes — every
-   * mutation is a full object put. For those backends, write() would
-   * require a read-modify-write cycle for every partial update, which
-   * is expensive. putBlob() lets the VFS signal "I have the full
-   * content" so the backend can issue a single PUT without a prior GET.
-   *
-   * The VFS uses this when writing an entire file from offset 0
-   * (e.g., the result of a full document edit).
+   * Object stores (S3, R2, GCS) do not support partial writes — every
+   * mutation is a full object PUT. putBlob() lets the VFS signal "here is
+   * the complete new content" so the backend can issue a single PUT with
+   * no prior GET. Backends that support efficient partial writes ignore
+   * this method.
    */
   putBlob?(ino: Ino, data: Uint8Array): Promise<void>;
 }

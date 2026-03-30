@@ -1,4 +1,4 @@
-import type { Ino, Stat, Off, Dirent, FileType, OpenFlags, Fd } from './types';
+import type { Ino, Stat, Off, DirCursor, Dirent, FileType, OpenFlags, Fd } from './types';
 
 /**
  * The consumer-facing filesystem interface.
@@ -6,10 +6,14 @@ import type { Ino, Stat, Off, Dirent, FileType, OpenFlags, Fd } from './types';
  * Design principles:
  * - Operates on inodes, not paths. Path resolution is a higher layer.
  * - Directory is just a mapping of name → ino, not a special concept.
- * - No convenience methods. rename = link + unlink. ls = open + readdir.
+ * - No convenience methods. rename = dirLookup + dirSet + dirUnset.
+ *   ls = open + readdir.
  * - Fd-based I/O with explicit offsets (pread/pwrite style) to avoid
  *   hidden cursor state and enable safe concurrency.
  * - Batch readdir via cursor for performance (avoids 1 syscall per entry).
+ * - Hard link reference counting (nlink) is entirely backend-internal.
+ *   The VFS only adds and removes directory entries; the backend manages
+ *   nlink as a side effect and frees inodes automatically.
  */
 export interface FileSystem {
 
@@ -33,15 +37,15 @@ export interface FileSystem {
 
   /**
    * Read directory entries in batches.
-   * cursor=0n starts from the beginning. Returns next cursor
-   * position (0n means end). Batch size is up to the implementation.
+   * An empty-string cursor starts from the beginning. Returns next cursor
+   * position (empty string means end). Batch size is up to the implementation.
    *
-   * Why cursor-based: avoids loading entire directory into memory,
-   * and lets the FS impl use whatever internal ordering it wants.
+   * DirCursor is opaque — it is not a byte offset but a backend-defined
+   * continuation token (stringified offset, B-tree key, DynamoDB token, etc.).
    */
-  readdir(dirIno: Ino, cursor: Off): Promise<{
+  readdir(dirIno: Ino, cursor: DirCursor): Promise<{
     entries: Dirent[];
-    next: Off;
+    next: DirCursor;
   }>;
 
   /**
@@ -64,16 +68,20 @@ export interface FileSystem {
 
   /**
    * Add a hard link: make name in dirIno point to an existing inode.
-   * The VFS increments nlink on the target inode via setMeta.
+   * The VFS calls backend.dirAdd(dirIno, name, targetIno, type), which
+   * atomically increments nlink inside the backend. dirAdd is no-clobber:
+   * if name already exists the backend returns false and the VFS throws
+   * EEXIST. One backend call, no crash window.
    * Directories cannot be hard-linked (would create cycles).
    */
   link(dirIno: Ino, name: string, targetIno: Ino): Promise<void>;
 
   /**
-   * Remove a name from a directory. The VFS decrements nlink on the target
-   * inode and calls backend.free() only when nlink reaches 0.
-   * The metadata cache makes the nlink check typically free (0 RTTs),
-   * so common-case unlink (nlink == 1) stays at 2 backend round trips.
+   * Remove a name from a directory.
+   * The VFS calls backend.dirUnset(dirIno, name), which atomically
+   * decrements nlink and frees the inode if it hits 0 — all inside the
+   * backend. No separate free step is needed — one backend call, no crash
+   * window, safe across concurrent VFS instances.
    * For directories: must be empty first.
    */
   unlink(dirIno: Ino, name: string): Promise<void>;
@@ -115,14 +123,28 @@ export interface FileSystem {
   /** Release the file descriptor and associated resources. */
   close(fd: Fd): Promise<void>;
 
-  // --- symlinks ---
+  // --- symlinks and rename ---
 
   /**
    * Move or rename a file or directory.
-   * The VFS uses backend.rename?() if available (atomic), otherwise
-   * synthesizes it as dirLookup + dirSet + dirUnset (non-atomic).
-   * If newName already exists in newDirIno, it is atomically replaced
-   * (POSIX rename semantics).
+   *
+   * If backend.rename?() is available the VFS delegates to it (atomic,
+   * no consistency window).
+   *
+   * Otherwise the VFS synthesises rename as:
+   *   dirLookup(oldDir, oldName)          → { ino, type }    [RTT 1]
+   *   dirSet(newDir, newName, ino, type)  → displaced | null  [RTT 2]
+   *   dirUnset(oldDir, oldName)                               [RTT 3]
+   *
+   * Because dirSet (overwrite) increments nlink on the incoming ino and
+   * dirUnset decrements it, the net nlink change on the moved inode is
+   * zero and the inode is never freed prematurely — even without rename?().
+   * The only downside of the fallback is a window where both names exist
+   * simultaneously. rename?() closes that window.
+   *
+   * If newName existed and was displaced, dirSet returns the displaced
+   * entry; the backend already freed it if nlink hit 0. The VFS evicts
+   * the displaced ino from its cache. No separate linkDec call is needed.
    */
   rename(oldDirIno: Ino, oldName: string, newDirIno: Ino, newName: string): Promise<void>;
 

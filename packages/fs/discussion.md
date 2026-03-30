@@ -53,10 +53,11 @@ see ./fs.ts
 
 **Why `lookup` exists separately from `readdir`:** Path resolution calls `lookup` on each component (`/foo/bar/baz` → lookup "foo", lookup "bar", lookup "baz"). You don't want to dump an entire directory listing to find one name. An FS implementation can back `lookup` with a hash table or B-tree for O(1)/O(log n), while `readdir` iterates sequentially.
 
-**Hard links are implemented in the VFS, not the backend:** `nlink` lives in `InodeMeta` as a plain number the backend stores without any special logic. The VFS owns all counting: `link()` increments via `setMeta`, `unlink()` decrements and calls `free()` only when it hits 0. The metadata cache makes the nlink check on unlink typically free (0 RTTs), so common-case unlink (nlink == 1) stays at 2 backend round trips: `dirUnset` + `free`. Hard-linked files cost one extra `setMeta` instead of `free` — also 2 RTTs. The backend is completely unaware that hard links exist.
+**Hard link reference counting is backend-internal:** `nlink` is managed entirely inside `dirAdd`, `dirSet`, and `dirUnset`. The VFS never calls a separate increment, decrement, or free operation. When `dirAdd` or `dirSet` adds a directory entry it atomically increments nlink on the target inode; when `dirUnset` removes an entry it atomically decrements nlink and frees the inode if the count reaches 0. This makes `link()` and `unlink()` single-call operations with no crash window and no concurrency race — the VFS simply adds or removes a directory entry and the backend handles the rest.
+
+New inodes start at `nlink = 0` (not 1). The first `dirAdd` call (from `mknod` or `create?`) brings nlink to 1. This keeps the semantics consistent: every directory entry is one nlink unit, and `alloc` without a subsequent `dirAdd` is the only orphan case — which `create?` closes atomically.
 
 **What's deliberately omitted:**
-- `rename` at the VFS level — synthesized from `dirSet` + `dirUnset`. Backends that support atomic rename implement the optional `rename?()` method on `StorageBackend`.
 - `chmod`/`chown` — folded into `setattr`.
 - Any path-based API — built on top via `resolve(root, path)` using `lookup`.
 - `dup`/`dup2` — Fd table management is an OS concern, not a FS concern.
@@ -81,11 +82,16 @@ see ./storage.ts
 
 CDC-style chunk-level diffing was considered but rejected: the files this filesystem targets (markdown notes, configs, agent context) are typically small enough to fit in a single CDC chunk, so the diff machinery would add complexity with no bandwidth saving. `contentHash` provides the change signal at a fraction of the complexity.
 
-**`dirUnset` returns `Ino | null`:** When unlinking, the VFS needs the target ino to call `free()`. Making `dirUnset` return the removed ino eliminates the `dirLookup` call that would otherwise be required before the removal — saving one network round trip.
+**`dirAdd` vs `dirSet` — two distinct insert semantics:** These are intentionally separate primitives, not one method with a flag.
 
-**Optional `create?(dirIno, name, meta) → Ino`:** Backends that support conditional/transactional writes (DynamoDB, SQLite, Postgres) can implement this to make `mknod` atomic — a single operation that allocates the inode and inserts the directory entry together. Without it, the VFS falls back to `alloc()` + `dirSet()`, which has a failure window between the two calls (orphaned inode). The optional pattern keeps the minimum implementation surface at 10 methods while letting capable backends opt into atomicity.
+- **`dirAdd(dirIno, name, ino, type) → boolean`** is no-clobber: it adds the entry and increments nlink atomically, returning `false` (without modifying anything) if the name already exists. This is the primitive for `mknod` (after `alloc`) and `link()`. A single atomic check-and-insert eliminates the TOCTOU race where a pre-lookup + insert pair would let two concurrent callers both see "name is free" and both proceed.
+- **`dirSet(dirIno, name, ino, type) → DirentMin | null`** is unconditional: it always inserts or replaces, atomically managing nlink on both the incoming ino and any displaced entry. This is the primitive for the rename overwrite path — the one place that legitimately replaces an existing name.
 
-**Optional `rename?(oldDir, oldName, newDir, newName) → Ino | null`:** Atomic rename is available in almost every real storage system (POSIX, SQLite, DynamoDB transactions). Without this, the VFS synthesizes rename as `dirSet` + `dirUnset`, which is not atomic — there's a window where both names exist, and a crash leaves a dangling entry. The optional method lets backends expose native atomicity; the VFS falls back to the two-step sequence when absent. Returns the displaced ino (if newName already existed) so the VFS can call `free()`.
+**`dirLookup` and `dirUnset` return `DirentMin | null`:** Both return `{ ino, type }` rather than just `Ino`. The synthesised rename calls `dirLookup(oldDir, oldName)` and then immediately calls `dirSet(newDir, newName, ino, type)` — it needs `type` for that second call. Without `type` in the lookup result, an extra `getMeta` would be required. `dirSet` and `dirUnset` return the displaced/removed entry so the VFS can invalidate its cache without any additional lookups.
+
+**Optional `create?(dirIno, name, meta) → Ino`:** Backends with transactional writes (DynamoDB, SQLite, Postgres) implement this to make `mknod` atomic — a single operation that allocates the inode and inserts the directory entry together. Without it, the VFS falls back to `alloc()` + `dirAdd()`, which has a failure window (orphaned inode with nlink = 0). Like `dirAdd`, `create?` is no-clobber: it rejects if the name already exists.
+
+**Optional `rename?(oldDir, oldName, newDir, newName) → Ino | null`:** Atomic rename is available in almost every real storage system (POSIX, SQLite, DynamoDB transactions). Without this, the VFS synthesises rename as `dirLookup + dirSet + dirUnset`. Because `dirSet` increments nlink and `dirUnset` decrements it, the synthesised path is safe with respect to inode lifetime — nlink is temporarily 2 during the operation but the inode is never freed prematurely. The only downside of the fallback is a window where both names exist simultaneously. `rename?()` closes that window. Returns the displaced ino (if newName already existed) for cache invalidation; the displaced inode's lifetime is handled atomically inside the backend implementation.
 
 **Optional `putBlob?(ino, data)`:** Object stores (S3, R2, GCS) don't support partial writes — every mutation is a full object PUT. If the VFS called `write(ino, offset, data)` for a partial update, the backend would have to GET the current content, splice in the new bytes, then PUT the whole thing — an expensive read-modify-write cycle. `putBlob` lets the VFS signal "here is the complete new content" when it has a full document in hand, enabling a single PUT with no prior GET. Backends that support efficient partial writes (local disk, databases) ignore this method.
 
@@ -129,10 +135,10 @@ VFS: close(fd)
 ```
 VFS: mknod(dirIno, name, type, mode)
   → if backend.create?:
-      backend.create(dirIno, name, { type, mode, size: 0n, ... })  // 1 RTT, atomic
+      backend.create(dirIno, name, { type, mode, size: 0n, ... })  // 1 RTT, atomic, no-clobber
   → else:
-      backend.alloc({ type, mode, size: 0n, ... })   // RTT 1
-      backend.dirSet(dirIno, name, newIno, type)      // RTT 2 (non-atomic)
+      backend.alloc({ type, mode, size: 0n, ... })    // RTT 1
+      backend.dirAdd(dirIno, name, newIno, type)       // RTT 2, no-clobber (false → EEXIST)
   → evict directory cache for dirIno
 ```
 
@@ -140,28 +146,43 @@ VFS: mknod(dirIno, name, type, mode)
 
 ```
 VFS: unlink(dirIno, name)
-  → backend.dirUnset(dirIno, name)          // remove name, returns ino   [RTT 1]
-  → check nlink from metadata cache         // 0 RTTs (usually cached)
-  → if nlink == 1: backend.free(ino)        // reclaim storage             [RTT 2]
-  → if nlink > 1:  backend.setMeta(ino, { nlink: n-1 })                   [RTT 2]
+  → backend.dirUnset(dirIno, name)   // remove entry; backend atomically
+                                     // decrements nlink and frees if hits 0  [RTT 1]
   → evict ino from metadata + content caches
   → evict (dirIno, name) from directory cache
 ```
 
-2 RTTs in both cases. The metadata cache absorbs the nlink check — no extra round trip to read it.
+1 RTT. No separate free step. No crash window. Safe across concurrent VFS instances.
 
-### `rename` (synthesized, or native if backend supports it)
+### `link(dirIno, name, targetIno)`
+
+```
+VFS: link(dirIno, name, targetIno)
+  → VFS fetches type from metadata cache (0 RTTs if recently stat'd)
+  → backend.dirAdd(dirIno, name, targetIno, type)   // no-clobber insert; backend atomically
+                                                     // increments nlink             [RTT 1]
+                                                     // returns false → VFS throws EEXIST
+```
+
+1 RTT. No separate linkInc step. No crash window. TOCTOU-safe.
+
+### `rename` (synthesised, or native if backend supports it)
 
 ```
 VFS: rename(oldDir, oldName, newDir, newName)
   → if backend.rename?:
       backend.rename(oldDir, oldName, newDir, newName)  // 1 RTT, atomic
   → else:
-      backend.dirLookup(oldDir, oldName)                // RTT 1
-      backend.dirSet(newDir, newName, ino, type)        // RTT 2
-      backend.dirUnset(oldDir, oldName)                 // RTT 3 (non-atomic)
-  → update directory caches accordingly
+      backend.dirLookup(oldDir, oldName)                // RTT 1 → {ino, type}
+      backend.dirSet(newDir, newName, ino, type)        // RTT 2 → displaced | null
+        // ↑ nlink(ino) temporarily +1; displaced inode freed inside backend if needed
+      backend.dirUnset(oldDir, oldName)                 // RTT 3 → nlink(ino) back to original
+  → update directory caches; evict displaced ino if any
 ```
+
+The synthesised path is safe with respect to inode lifetime: nlink goes +1 then -1, net zero.
+The inode is never freed prematurely even without `rename?()`. The only downside is a window
+where both names exist simultaneously. `rename?()` closes that window.
 
 ### `fsync(fd)`
 
@@ -246,7 +267,7 @@ These are all handled by the VFS layer:
 | `open` / `close` semantics | VFS            | `getMeta` (cached) + Fd table bookkeeping                       |
 | Permission checks          | VFS            | Reads `mode` from `getMeta`, decides                            |
 | Symlink traversal          | VFS            | Reads `symlinkTarget` from `getMeta`, recurses                  |
-| Hard link count (`nlink`)  | VFS            | Increments/decrements via `setMeta`; `free` only when hits 0    |
+| Hard link count (`nlink`)  | Backend        | Managed inside `dirAdd` / `dirSet` / `dirUnset`; frees at 0     |
 | `rename` (non-atomic)      | VFS            | `dirLookup` + `dirSet` + `dirUnset` (or native `rename?`)       |
 | `chmod` / `chown`          | VFS            | `setattr`                                                       |
 | `fsync`                    | VFS / optional | Many backends are durable on write                              |
@@ -293,12 +314,12 @@ async function mkdir(fs: FileSystem, path: string, mode = 0o755) {
 async function ls(fs: FileSystem, path: string): Promise<Dirent[]> {
   const ino = await resolve(fs, path);
   const entries: Dirent[] = [];
-  let cursor = 0n;
+  let cursor = '';
   do {
     const batch = await fs.readdir(ino, cursor);
     entries.push(...batch.entries);
     cursor = batch.next;
-  } while (cursor !== 0n);
+  } while (cursor !== '');
   return entries;
 }
 ```
@@ -370,19 +391,19 @@ The backend interface can be implemented against wildly different storage media:
 
 ### In-Memory
 
-`alloc` → push to a `Map<Ino, { meta, data, dir }>`. `read`/`write` → slice/copy `Uint8Array`. `dirLookup` → `Map.get`. `dirUnset` → `Map.delete`, returns the removed ino. Useful for testing and ephemeral workloads.
+`alloc` → push to a `Map<Ino, { meta, data, dir }>`. `read`/`write` → slice/copy `Uint8Array`. `dirLookup` → `Map.get`, returns `{ ino, type } | null`. `dirAdd` → insert-if-absent + nlink increment, returns `false` on conflict. `dirUnset` → `Map.delete`, returns `{ ino, type } | null`. Useful for testing and ephemeral workloads.
 
 ### Local Filesystem
 
-`alloc` → create a file in a flat directory named by ino. `read`/`write` → `fs.read`/`fs.write` with position. `dirLookup`/`dirSet`/`dirUnset` → maintain a JSON or SQLite index per directory inode. Implements `rename?` natively via `fs.rename`.
+`alloc` → create a file in a flat directory named by ino. `read`/`write` → `fs.read`/`fs.write` with position. `dirLookup`/`dirAdd`/`dirSet`/`dirUnset` → maintain a JSON or SQLite index per directory inode; `dirAdd` and `dirUnset` update the nlink counter atomically. Implements `rename?` natively via `fs.rename`.
 
 ### S3 + DynamoDB
 
-`alloc` → `INSERT` into DynamoDB (partition key = ino). `read`/`write` → S3 `GetObject`/`PutObject` with `Range` header for reads. `putBlob?` → direct S3 `PutObject` (no read needed). `create?` → DynamoDB transaction: insert inode row + insert dirent row atomically. `dirLookup` → DynamoDB query on `(parent_ino, name)` GSI. `dirUnset` → DynamoDB `DeleteItem` with return values to get the removed ino.
+`alloc` → `INSERT` into DynamoDB (partition key = ino, nlink = 0). `read`/`write` → S3 `GetObject`/`PutObject` with `Range` header for reads. `putBlob?` → direct S3 `PutObject` (no read needed). `create?` → DynamoDB transaction: insert inode row + insert dirent row + set nlink = 1, atomically. `dirLookup` → DynamoDB query on `(parent_ino, name)` GSI, returns `{ ino, type } | null`. `dirAdd` → DynamoDB conditional `PutItem` (fails if exists) + atomic nlink increment. `dirUnset` → DynamoDB `DeleteItem` with return values to get `{ ino, type }` + atomic nlink decrement + conditional inode delete if nlink = 0.
 
 ### SQLite
 
-`alloc` → `INSERT INTO inodes`. `read`/`write` → blob I/O or chunked rows. `dirLookup` → `SELECT ino FROM dirents WHERE parent = ? AND name = ?`. `create?` → single transaction inserting both inode and dirent. `rename?` → single transaction updating the dirent row. `dirUnset` → `DELETE ... RETURNING ino`. Compact, single-file, good for embedded use.
+`alloc` → `INSERT INTO inodes` (nlink = 0). `read`/`write` → blob I/O or chunked rows. `dirLookup` → `SELECT ino, type FROM dirents WHERE parent = ? AND name = ?`. `dirAdd` → transaction: `INSERT INTO dirents` (fail if exists) + `UPDATE inodes SET nlink = nlink + 1`; returns false on conflict without modifying anything. `dirSet` → transaction: `INSERT OR REPLACE INTO dirents` + `UPDATE inodes SET nlink = nlink + 1` on new ino + `UPDATE/DELETE` displaced ino nlink if applicable. `dirUnset` → transaction: `DELETE FROM dirents RETURNING ino, type` + `UPDATE inodes SET nlink = nlink - 1` + `DELETE` inode if nlink = 0. `create?` → single transaction: insert inode + `dirAdd` semantics atomically. `rename?` → single transaction updating the dirent row, handling displaced inode nlink atomically. Compact, single-file, good for embedded use.
 
 ### IndexedDB (Browser)
 
@@ -394,7 +415,7 @@ The backend interface can be implemented against wildly different storage media:
 
 The entire design is two interfaces plus a caching layer:
 
-- **`StorageBackend`** (10 required methods + 3 optional) — what you implement per storage medium. Optional methods (`create?`, `rename?`, `putBlob?`) let capable backends expose native atomicity and efficiency.
+- **`StorageBackend`** (11 required methods + 3 optional) — what you implement per storage medium. Optional methods (`create?`, `rename?`, `putBlob?`) let capable backends upgrade to atomic operations where the required primitives have multi-step fallbacks.
 - **`FileSystem`** (13 methods) — what tools consume, provided by the VFS.
 - **VFS Caching** (metadata cache + content cache) — amortizes cloud round trips so the interface stays practical at network latency.
 
