@@ -1,5 +1,6 @@
 import type { StorageBackend } from './storage';
-import type { Ino, Stat, Off, DirCursor, Dirent, FileType, OpenFlags, Fd } from './types';
+import { FileType, OpenFlags } from './types';
+import type { Ino, Stat, Off, DirCursor, Dirent, Fd } from './types';
 
 /**
  * The consumer-facing filesystem interface.
@@ -227,6 +228,18 @@ export function fs(storage: StorageBackend): FileSystem {
 		return entry
 	}
 
+	function ensureReadable(fd: FdEntry): void {
+		if ((fd.flags & OpenFlags.Read) === 0) {
+			throw new Error('EBADF: fd is not open for reading')
+		}
+	}
+
+	function ensureWritable(fd: FdEntry): void {
+		if ((fd.flags & OpenFlags.Write) === 0) {
+			throw new Error('EBADF: fd is not open for writing')
+		}
+	}
+
 	async function createNode(dirIno: Ino, name: string, meta: Omit<InodeMeta, 'nlink'>): Promise<Ino> {
 		if (storage.create) {
 			const ino = await storage.create(dirIno, name, meta)
@@ -237,6 +250,9 @@ export function fs(storage: StorageBackend): FileSystem {
 		const ino = await storage.alloc(meta)
 		const added = await storage.dirAdd(dirIno, name, ino, meta.type)
 		if (!added) {
+			// The backend interface has no reclaim primitive, so alloc()+dirAdd()
+			// can still orphan an inode here. Backends should implement create()
+			// to make this path atomic.
 			throw new Error(`EEXIST: ${name}`)
 		}
 
@@ -290,8 +306,8 @@ export function fs(storage: StorageBackend): FileSystem {
 
 		async symlink(dirIno: Ino, name: string, target: string, mode = 0o777): Promise<Ino> {
 			return createNode(dirIno, name, {
-				type: 2,
-				size: BigInt(target.length),
+				type: FileType.Symlink,
+				size: BigInt(new TextEncoder().encode(target).length),
 				mode,
 				mtimeNs: nowNs(),
 				ctimeNs: nowNs(),
@@ -301,7 +317,7 @@ export function fs(storage: StorageBackend): FileSystem {
 
 		async link(dirIno: Ino, name: string, targetIno: Ino): Promise<void> {
 			const target = await getMetaOrThrow(targetIno)
-			if (target.type === 1) {
+			if (target.type === FileType.Directory) {
 				throw new Error('EPERM: cannot hard-link a directory')
 			}
 
@@ -311,6 +327,7 @@ export function fs(storage: StorageBackend): FileSystem {
 			}
 
 			invalidateDirCache(dirIno)
+			invalidateIno(targetIno)
 		},
 
 		async unlink(dirIno: Ino, name: string): Promise<void> {
@@ -326,7 +343,7 @@ export function fs(storage: StorageBackend): FileSystem {
 		async open(ino: Ino, flags: OpenFlags): Promise<Fd> {
 			await getMetaOrThrow(ino)
 
-			if ((flags & 2) !== 0 && (flags & 4) !== 0) {
+			if ((flags & OpenFlags.Write) !== 0 && (flags & OpenFlags.Trunc) !== 0) {
 				await storage.truncate(ino, 0n)
 				contentCache.delete(ino)
 
@@ -343,7 +360,9 @@ export function fs(storage: StorageBackend): FileSystem {
 		},
 
 		async pread(fd: Fd, buf: Uint8Array, offset: Off): Promise<number> {
-			const { ino } = getFdOrThrow(fd)
+			const entry = getFdOrThrow(fd)
+			ensureReadable(entry)
+			const { ino } = entry
 			const meta = await getMetaOrThrow(ino)
 
 			let content = contentCache.get(ino)
@@ -368,7 +387,9 @@ export function fs(storage: StorageBackend): FileSystem {
 		},
 
 		async pwrite(fd: Fd, buf: Uint8Array, offset: Off): Promise<number> {
-			const { ino } = getFdOrThrow(fd)
+			const entry = getFdOrThrow(fd)
+			ensureWritable(entry)
+			const { ino } = entry
 			const written = await storage.write(ino, offset, buf)
 			invalidateIno(ino)
 			return written
@@ -379,7 +400,9 @@ export function fs(storage: StorageBackend): FileSystem {
 		},
 
 		async truncate(fd: Fd, size: Off): Promise<void> {
-			const { ino } = getFdOrThrow(fd)
+			const entry = getFdOrThrow(fd)
+			ensureWritable(entry)
+			const { ino } = entry
 			await storage.truncate(ino, size)
 			invalidateIno(ino)
 		},
@@ -416,7 +439,7 @@ export function fs(storage: StorageBackend): FileSystem {
 
 		async readlink(ino: Ino): Promise<string> {
 			const meta = await getMetaOrThrow(ino)
-			if (meta.type !== 2 || meta.symlinkTarget === undefined) {
+			if (meta.type !== FileType.Symlink || meta.symlinkTarget === undefined) {
 				throw new Error(`EINVAL: inode ${ino} is not a symlink`)
 			}
 			return meta.symlinkTarget

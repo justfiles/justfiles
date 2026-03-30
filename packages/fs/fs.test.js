@@ -202,6 +202,24 @@ describe('fs', () => {
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
 	})
 
+	test('invalidates cached target metadata after link updates nlink', async () => {
+		let nlink = 1
+		const storage = backend({
+			getMeta: mock(async () => meta({ type: FileType.Regular, nlink })),
+			dirAdd: mock(async () => {
+				nlink = 2
+				return true
+			}),
+		})
+		const vfs = fs(storage)
+
+		await expect(vfs.stat(8n)).resolves.toEqual(expect.objectContaining({ nlink: 1 }))
+		await expect(vfs.link(1n, 'copy.md', 8n)).resolves.toBeUndefined()
+		await expect(vfs.stat(8n)).resolves.toEqual(expect.objectContaining({ nlink: 2 }))
+
+		expect(storage.getMeta).toHaveBeenCalledTimes(2)
+	})
+
 	test('rejects hard links to directories before touching dirAdd', async () => {
 		const storage = backend({
 			getMeta: mock(async () => meta({ type: FileType.Directory })),
@@ -224,6 +242,31 @@ describe('fs', () => {
 		expect(storage.getMeta).toHaveBeenCalledTimes(1)
 		expect(storage.truncate).toHaveBeenCalledTimes(1)
 		expect(storage.truncate).toHaveBeenCalledWith(6n, 0n)
+	})
+
+	test('rejects reading from a write-only fd', async () => {
+		const storage = backend({
+			getMeta: mock(async () => meta({ type: FileType.Regular, size: 3n })),
+		})
+		const vfs = fs(storage)
+		const fd = await vfs.open(90n, OpenFlags.Write)
+
+		await expect(vfs.pread(fd, new Uint8Array(1), 0n)).rejects.toThrow()
+		expect(storage.read).not.toHaveBeenCalled()
+	})
+
+	test('rejects writing and truncating through a read-only fd', async () => {
+		const storage = backend({
+			getMeta: mock(async () => meta({ type: FileType.Regular, size: 3n })),
+		})
+		const vfs = fs(storage)
+		const fd = await vfs.open(91n, OpenFlags.Read)
+
+		await expect(vfs.pwrite(fd, bytes('x'), 0n)).rejects.toThrow()
+		await expect(vfs.truncate(fd, 0n)).rejects.toThrow()
+
+		expect(storage.write).not.toHaveBeenCalled()
+		expect(storage.truncate).not.toHaveBeenCalled()
 	})
 
 	test('reads the full file into the content cache on the first pread', async () => {
@@ -261,7 +304,7 @@ describe('fs', () => {
 			write: mock(async (_ino, _offset, data) => data.length),
 		})
 		const vfs = fs(storage)
-		const fd = await vfs.open(31n, OpenFlags.Write)
+		const fd = await vfs.open(31n, OpenFlags.Read | OpenFlags.Write)
 		const buf = new Uint8Array(2)
 
 		await vfs.pread(fd, buf, 0n)
@@ -272,6 +315,26 @@ describe('fs', () => {
 		expect(storage.write).toHaveBeenCalledTimes(1)
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
 		expect(storage.read).toHaveBeenCalledTimes(2)
+	})
+
+	test('uses byte length, not string length, for symlink size', async () => {
+		const target = '/workspace/猫-notes'
+		const storage = backend({
+			create: mock(async (_dirIno, _name, initialMeta) => {
+				expect(initialMeta).toEqual({
+					type: FileType.Symlink,
+					size: BigInt(bytes(target).length),
+					mode: 0o777,
+					mtimeNs: expect.anything(),
+					ctimeNs: expect.anything(),
+					symlinkTarget: target,
+				})
+				return 92n
+			}),
+		})
+		const vfs = fs(storage)
+
+		await expect(vfs.symlink(1n, 'note-link', target)).resolves.toBe(92n)
 	})
 
 	test('invalidates cached metadata after setattr', async () => {
