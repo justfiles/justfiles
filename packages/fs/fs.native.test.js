@@ -25,6 +25,21 @@ function bytes(text) {
 	return new TextEncoder().encode(text)
 }
 
+async function expectRejects(action, message) {
+	let error
+	try {
+		await action()
+	} catch (caught) {
+		error = caught
+	}
+	if (error === undefined) {
+		throw new Error('Expected promise to reject')
+	}
+	if (message !== undefined) {
+		expect(error instanceof Error ? error.message : String(error)).toContain(message)
+	}
+}
+
 describe('nativeFs', () => {
 	test('stats the root inode and resolves existing and missing children', async () => {
 		const root = fixture((dir) => {
@@ -32,15 +47,15 @@ describe('nativeFs', () => {
 		})
 		const fs = await nativeFs(root)
 
-		await expect(fs.stat(fs.root())).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(fs.root())).toEqual(expect.objectContaining({
 			ino: fs.root(),
 			type: FileType.Directory,
 		}))
 
 		const noteIno = await fs.lookup(fs.root(), 'note.txt')
 		expect(noteIno).not.toBeNull()
-		await expect(fs.lookup(fs.root(), 'missing.txt')).resolves.toBeNull()
-		await expect(fs.stat(noteIno)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.lookup(fs.root(), 'missing.txt')).toBeNull()
+		expect(await fs.stat(noteIno)).toEqual(expect.objectContaining({
 			ino: noteIno,
 			type: FileType.Regular,
 			size: 5n,
@@ -55,7 +70,7 @@ describe('nativeFs', () => {
 		})
 		const fs = await nativeFs(root)
 
-		await expect(fs.readdir(fs.root(), '')).resolves.toEqual({
+		expect(await fs.readdir(fs.root(), '')).toEqual({
 			entries: [
 				expect.objectContaining({ name: 'a-first.txt', type: FileType.Regular }),
 				expect.objectContaining({ name: 'docs', type: FileType.Directory }),
@@ -64,7 +79,7 @@ describe('nativeFs', () => {
 			next: '',
 		})
 
-		await expect(fs.readdir(fs.root(), 'a-first.txt')).resolves.toEqual({
+		expect(await fs.readdir(fs.root(), 'a-first.txt')).toEqual({
 			entries: [
 				expect.objectContaining({ name: 'docs' }),
 				expect.objectContaining({ name: 'z-last.txt' }),
@@ -80,11 +95,11 @@ describe('nativeFs', () => {
 		const fileIno = await fs.mknod(fs.root(), 'draft.md', FileType.Regular, 0o640)
 		const dirIno = await fs.mknod(fs.root(), 'workspace', FileType.Directory, 0o750)
 
-		await expect(fs.stat(fileIno)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(fileIno)).toEqual(expect.objectContaining({
 			type: FileType.Regular,
 			mode: expect.any(Number),
 		}))
-		await expect(fs.stat(dirIno)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(dirIno)).toEqual(expect.objectContaining({
 			type: FileType.Directory,
 		}))
 		expect(readFileSync(join(root, 'draft.md'), 'utf8')).toBe('')
@@ -94,7 +109,7 @@ describe('nativeFs', () => {
 		const root = fixture(() => {})
 		const fs = await nativeFs(root)
 
-		await expect(fs.mknod(fs.root(), 'link', FileType.Symlink, 0o777)).rejects.toThrow('EINVAL')
+		await expectRejects(() => fs.mknod(fs.root(), 'link', FileType.Symlink, 0o777), 'EINVAL')
 	})
 
 	test('creates symlinks and reads the target', async () => {
@@ -103,10 +118,10 @@ describe('nativeFs', () => {
 
 		const linkIno = await fs.symlink(fs.root(), 'notes-link', '../notes/today.md')
 
-		await expect(fs.stat(linkIno)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(linkIno)).toEqual(expect.objectContaining({
 			type: FileType.Symlink,
 		}))
-		await expect(fs.readlink(linkIno)).resolves.toBe('../notes/today.md')
+		expect(await fs.readlink(linkIno)).toBe('../notes/today.md')
 	})
 
 	test('updates mode and mtime via setattr', async () => {
@@ -121,7 +136,7 @@ describe('nativeFs', () => {
 			mtimeNs: 1_700_000_000_123_000_000n,
 		})
 
-		await expect(fs.stat(noteIno)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(noteIno)).toEqual(expect.objectContaining({
 			mode: expect.any(Number),
 			mtimeNs: 1_700_000_000_123_000_000n,
 		}))
@@ -136,16 +151,16 @@ describe('nativeFs', () => {
 		const fd = await fs.open(noteIno, OpenFlags.Read | OpenFlags.Write)
 
 		const readBuf = new Uint8Array(2)
-		await expect(fs.pread(fd, readBuf, 1n)).resolves.toBe(2)
+		expect(await fs.pread(fd, readBuf, 1n)).toBe(2)
 		expect(Array.from(readBuf)).toEqual(Array.from(bytes('el')))
 
-		await expect(fs.pwrite(fd, bytes('!!'), 5n)).resolves.toBe(2)
+		expect(await fs.pwrite(fd, bytes('!!'), 5n)).toBe(2)
 		await fs.fsync(fd)
 		await fs.truncate(fd, 4n)
 		await fs.close(fd)
 
 		expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('hell')
-		await expect(fs.pread(fd, new Uint8Array(1), 0n)).rejects.toThrow('EBADF')
+		await expectRejects(() => fs.pread(fd, new Uint8Array(1), 0n), 'EBADF')
 	})
 
 	test('updates cached descendants after renaming a directory', async () => {
@@ -159,12 +174,12 @@ describe('nativeFs', () => {
 
 		await fs.rename(fs.root(), 'a', fs.root(), 'b')
 
-		await expect(fs.stat(fileIno)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(fileIno)).toEqual(expect.objectContaining({
 			ino: fileIno,
 			type: FileType.Regular,
 			size: 5n,
 		}))
-		await expect(fs.lookup(fs.root(), 'a')).resolves.toBeNull()
+		expect(await fs.lookup(fs.root(), 'a')).toBeNull()
 		expect(readFileSync(join(root, 'b', 'file.txt'), 'utf8')).toBe('hello')
 	})
 
@@ -175,7 +190,7 @@ describe('nativeFs', () => {
 		const fs = await nativeFs(root)
 
 		for (const name of ['.', '..', 'dir/file.txt', '']) {
-			await expect(fs.lookup(fs.root(), name)).rejects.toThrow('EINVAL')
+			await expectRejects(() => fs.lookup(fs.root(), name), 'EINVAL')
 		}
 	})
 
@@ -187,7 +202,7 @@ describe('nativeFs', () => {
 		const noteIno = await fs.lookup(fs.root(), 'note.txt')
 		const fd = await fs.open(noteIno, OpenFlags.Write)
 
-		await expect(fs.pread(fd, new Uint8Array(1), 0n)).rejects.toThrow()
+		await expectRejects(() => fs.pread(fd, new Uint8Array(1), 0n))
 		await fs.close(fd)
 	})
 
@@ -202,8 +217,8 @@ describe('nativeFs', () => {
 
 		const fd = await fs.open(ino, OpenFlags.Write)
 
-		await expect(fs.pwrite(fd, bytes('!'), 0n)).resolves.toBe(1)
-		await expect(fs.pread(fd, new Uint8Array(1), 0n)).rejects.toThrow('EBADF')
+		expect(await fs.pwrite(fd, bytes('!'), 0n)).toBe(1)
+		await expectRejects(() => fs.pread(fd, new Uint8Array(1), 0n), 'EBADF')
 		await fs.close(fd)
 		chmodSync(join(root, 'write-only.txt'), 0o644)
 		expect(readFileSync(join(root, 'write-only.txt'), 'utf8')).toBe('!')
@@ -219,7 +234,7 @@ describe('nativeFs', () => {
 		await fs.link(fs.root(), 'y.txt', ino)
 		await fs.unlink(fs.root(), 'x.txt')
 
-		await expect(fs.stat(ino)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(ino)).toEqual(expect.objectContaining({
 			ino,
 			type: FileType.Regular,
 			nlink: 1,
@@ -235,7 +250,7 @@ describe('nativeFs', () => {
 
 		await fs.rename(fs.root(), 'x.txt', fs.root(), 'x.txt')
 
-		await expect(fs.stat(ino)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(ino)).toEqual(expect.objectContaining({
 			ino,
 			type: FileType.Regular,
 		}))
@@ -254,7 +269,7 @@ describe('nativeFs', () => {
 		// POSIX: rename(a, b) where both names are hard links to the same inode is a
 		// no-op — both names survive, nlink stays at 2. The point of this test is that
 		// stat(ino) does not throw ESTALE, not that nlink reaches 1.
-		await expect(fs.stat(ino)).resolves.toEqual(expect.objectContaining({
+		expect(await fs.stat(ino)).toEqual(expect.objectContaining({
 			ino,
 			type: FileType.Regular,
 		}))

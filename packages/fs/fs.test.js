@@ -36,6 +36,21 @@ function bytes(text) {
 	return new TextEncoder().encode(text)
 }
 
+async function expectRejects(action, message) {
+	let error
+	try {
+		await action()
+	} catch (caught) {
+		error = caught
+	}
+	if (error === undefined) {
+		throw new Error('Expected promise to reject')
+	}
+	if (message !== undefined) {
+		expect(error instanceof Error ? error.message : String(error)).toContain(message)
+	}
+}
+
 describe('fs', () => {
 	test('maps backend metadata to stat and reuses the metadata cache for open', async () => {
 		const storage = backend({
@@ -54,7 +69,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.stat(7n)).resolves.toEqual({
+		expect(await vfs.stat(7n)).toEqual({
 			ino: 7n,
 			type: FileType.Regular,
 			size: 5n,
@@ -80,10 +95,10 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.lookup(1n, 'alpha')).resolves.toBe(9n)
-		await expect(vfs.lookup(1n, 'alpha')).resolves.toBe(9n)
-		await expect(vfs.lookup(1n, 'missing')).resolves.toBeNull()
-		await expect(vfs.lookup(1n, 'missing')).resolves.toBeNull()
+		expect(await vfs.lookup(1n, 'alpha')).toBe(9n)
+		expect(await vfs.lookup(1n, 'alpha')).toBe(9n)
+		expect(await vfs.lookup(1n, 'missing')).toBeNull()
+		expect(await vfs.lookup(1n, 'missing')).toBeNull()
 
 		expect(storage.dirLookup).toHaveBeenCalledTimes(2)
 		expect(storage.dirLookup).toHaveBeenNthCalledWith(1, 1n, 'alpha')
@@ -106,7 +121,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.readdir(3n, 'page-1')).resolves.toEqual({
+		expect(await vfs.readdir(3n, 'page-1')).toEqual({
 			entries: [
 				{ ino: 4n, name: 'notes.md', type: FileType.Regular },
 				{ ino: 5n, name: 'docs', type: FileType.Directory },
@@ -132,7 +147,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.mknod(1n, 'draft.md', FileType.Regular, 0o644)).resolves.toBe(12n)
+		expect(await vfs.mknod(1n, 'draft.md', FileType.Regular, 0o644)).toBe(12n)
 
 		expect(storage.create).toHaveBeenCalledTimes(1)
 		expect(storage.alloc).not.toHaveBeenCalled()
@@ -162,7 +177,7 @@ describe('fs', () => {
 		delete storage.create
 		const vfs = fs(storage)
 
-		await expect(vfs.mknod(2n, 'workspace', FileType.Directory, 0o755)).resolves.toBe(15n)
+		expect(await vfs.mknod(2n, 'workspace', FileType.Directory, 0o755)).toBe(15n)
 
 		expect(storage.alloc).toHaveBeenCalledTimes(1)
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
@@ -176,7 +191,7 @@ describe('fs', () => {
 		delete storage.create
 		const vfs = fs(storage)
 
-		await expect(vfs.mknod(2n, 'dupe', FileType.Regular, 0o644)).rejects.toThrow()
+		await expectRejects(() => vfs.mknod(2n, 'dupe', FileType.Regular, 0o644))
 
 		expect(storage.alloc).toHaveBeenCalledTimes(1)
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
@@ -196,7 +211,7 @@ describe('fs', () => {
 		const vfs = fs(storage)
 
 		await vfs.stat(8n)
-		await expect(vfs.link(1n, 'copy.md', 8n)).resolves.toBeUndefined()
+		expect(await vfs.link(1n, 'copy.md', 8n)).toBeUndefined()
 
 		expect(storage.getMeta).toHaveBeenCalledTimes(1)
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
@@ -213,9 +228,9 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.stat(8n)).resolves.toEqual(expect.objectContaining({ nlink: 1 }))
-		await expect(vfs.link(1n, 'copy.md', 8n)).resolves.toBeUndefined()
-		await expect(vfs.stat(8n)).resolves.toEqual(expect.objectContaining({ nlink: 2 }))
+		expect(await vfs.stat(8n)).toEqual(expect.objectContaining({ nlink: 1 }))
+		expect(await vfs.link(1n, 'copy.md', 8n)).toBeUndefined()
+		expect(await vfs.stat(8n)).toEqual(expect.objectContaining({ nlink: 2 }))
 
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
 	})
@@ -226,7 +241,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.link(1n, 'dir-link', 4n)).rejects.toThrow()
+		await expectRejects(() => vfs.link(1n, 'dir-link', 4n))
 
 		expect(storage.dirAdd).not.toHaveBeenCalled()
 	})
@@ -251,7 +266,7 @@ describe('fs', () => {
 		const vfs = fs(storage)
 		const fd = await vfs.open(90n, OpenFlags.Write)
 
-		await expect(vfs.pread(fd, new Uint8Array(1), 0n)).rejects.toThrow()
+		await expectRejects(() => vfs.pread(fd, new Uint8Array(1), 0n))
 		expect(storage.read).not.toHaveBeenCalled()
 	})
 
@@ -262,8 +277,8 @@ describe('fs', () => {
 		const vfs = fs(storage)
 		const fd = await vfs.open(91n, OpenFlags.Read)
 
-		await expect(vfs.pwrite(fd, bytes('x'), 0n)).rejects.toThrow()
-		await expect(vfs.truncate(fd, 0n)).rejects.toThrow()
+		await expectRejects(() => vfs.pwrite(fd, bytes('x'), 0n))
+		await expectRejects(() => vfs.truncate(fd, 0n))
 
 		expect(storage.write).not.toHaveBeenCalled()
 		expect(storage.truncate).not.toHaveBeenCalled()
@@ -285,8 +300,8 @@ describe('fs', () => {
 		const first = new Uint8Array(2)
 		const second = new Uint8Array(3)
 
-		await expect(vfs.pread(fd, first, 3n)).resolves.toBe(2)
-		await expect(vfs.pread(fd, second, 1n)).resolves.toBe(3)
+		expect(await vfs.pread(fd, first, 3n)).toBe(2)
+		expect(await vfs.pread(fd, second, 1n)).toBe(3)
 
 		expect(Array.from(first)).toEqual(Array.from(bytes('lo')))
 		expect(Array.from(second)).toEqual(Array.from(bytes('ell')))
@@ -308,7 +323,7 @@ describe('fs', () => {
 		const buf = new Uint8Array(2)
 
 		await vfs.pread(fd, buf, 0n)
-		await expect(vfs.pwrite(fd, bytes('!!'), 5n)).resolves.toBe(2)
+		expect(await vfs.pwrite(fd, bytes('!!'), 5n)).toBe(2)
 		await vfs.stat(31n)
 		await vfs.pread(fd, buf, 0n)
 
@@ -334,7 +349,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.symlink(1n, 'note-link', target)).resolves.toBe(92n)
+		expect(await vfs.symlink(1n, 'note-link', target)).toBe(92n)
 	})
 
 	test('invalidates cached metadata after setattr', async () => {
@@ -348,9 +363,9 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.stat(40n)).resolves.toEqual(expect.objectContaining({ mode: 0o644 }))
-		await expect(vfs.setattr(40n, { mode: 0o600 })).resolves.toBeUndefined()
-		await expect(vfs.stat(40n)).resolves.toEqual(expect.objectContaining({ mode: 0o600 }))
+		expect(await vfs.stat(40n)).toEqual(expect.objectContaining({ mode: 0o644 }))
+		expect(await vfs.setattr(40n, { mode: 0o600 })).toBeUndefined()
+		expect(await vfs.stat(40n)).toEqual(expect.objectContaining({ mode: 0o600 }))
 
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
 		expect(storage.setMeta).toHaveBeenCalledTimes(1)
@@ -368,11 +383,11 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.lookup(2n, 'gone.txt')).resolves.toBe(50n)
-		await expect(vfs.stat(50n)).resolves.toEqual(expect.objectContaining({ ino: 50n }))
-		await expect(vfs.unlink(2n, 'gone.txt')).resolves.toBeUndefined()
-		await expect(vfs.lookup(2n, 'gone.txt')).resolves.toBeNull()
-		await expect(vfs.stat(50n)).rejects.toThrow()
+		expect(await vfs.lookup(2n, 'gone.txt')).toBe(50n)
+		expect(await vfs.stat(50n)).toEqual(expect.objectContaining({ ino: 50n }))
+		expect(await vfs.unlink(2n, 'gone.txt')).toBeUndefined()
+		expect(await vfs.lookup(2n, 'gone.txt')).toBeNull()
+		await expectRejects(() => vfs.stat(50n))
 
 		expect(storage.dirLookup).toHaveBeenCalledTimes(2)
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
@@ -391,7 +406,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.rename(1n, 'old.txt', 2n, 'new.txt')).resolves.toBeUndefined()
+		expect(await vfs.rename(1n, 'old.txt', 2n, 'new.txt')).toBeUndefined()
 
 		expect(storage.rename).toHaveBeenCalledTimes(1)
 		expect(storage.dirLookup).not.toHaveBeenCalled()
@@ -421,7 +436,7 @@ describe('fs', () => {
 		delete storage.rename
 		const vfs = fs(storage)
 
-		await expect(vfs.rename(3n, 'before.md', 4n, 'after.md')).resolves.toBeUndefined()
+		expect(await vfs.rename(3n, 'before.md', 4n, 'after.md')).toBeUndefined()
 
 		expect(calls).toEqual(['lookup', 'set', 'unset'])
 		expect(storage.getMeta).not.toHaveBeenCalled()
@@ -441,7 +456,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expect(vfs.readlink(70n)).resolves.toBe('/workspace/notes/today.md')
+		expect(await vfs.readlink(70n)).toBe('/workspace/notes/today.md')
 	})
 
 	test('rejects I/O on a closed file descriptor', async () => {
@@ -454,6 +469,6 @@ describe('fs', () => {
 
 		await vfs.close(fd)
 
-		await expect(vfs.pread(fd, new Uint8Array(1), 0n)).rejects.toThrow()
+		await expectRejects(() => vfs.pread(fd, new Uint8Array(1), 0n))
 	})
 })
