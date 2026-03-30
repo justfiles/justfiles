@@ -1,6 +1,6 @@
 import type { FileType, Ino, Off, DirCursor, DirentMin } from './types';
 
-interface InodeMeta {
+export interface InodeMeta {
   type: FileType;
   size: Off;
   mode: number;
@@ -217,6 +217,21 @@ export interface StorageBackend {
    * and returns its ino so the VFS can invalidate the cache entry.
    */
   rename?(oldDir: Ino, oldName: string, newDir: Ino, newName: string): Promise<Ino | null>;
+
+  /**
+   * Enumerate every inode in the filesystem in a single paginated scan.
+   * Optional — cloud backends (DynamoDB, S3) should implement this to avoid
+   * O(directories) round trips during sync tree walks.
+   *
+   * Entries MUST be returned in parent-before-child order so callers can
+   * build an ino→path map incrementally without backtracking.
+   *
+   * The cursor is opaque, same semantics as DirCursor.
+   */
+  scan?(cursor: string): Promise<{
+    entries: { ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }[]
+    next: string
+  }>
 
   /**
    * Replace the entire content of a file atomically.

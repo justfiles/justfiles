@@ -157,6 +157,17 @@ export interface FileSystem {
 
   /** Get root inode. Typically 1n or 2n. Entry point for all path resolution. */
   root(): Ino;
+
+  /**
+   * Walk the entire filesystem tree, calling visitor once per node.
+   *
+   * Uses storage.scan() when available — O(pages) round trips for cloud
+   * backends. Falls back to recursive readdir — O(directories) round trips.
+   *
+   * Visitor receives a VFS-rooted path ("/foo/bar"), the inode number, and
+   * its stat. Directories are visited before their contents.
+   */
+  scan(visitor: (path: string, ino: Ino, stat: Stat) => Promise<void>): Promise<void>;
 }
 
 export function fs(storage: StorageBackend): FileSystem {
@@ -447,6 +458,39 @@ export function fs(storage: StorageBackend): FileSystem {
 
 		root(): Ino {
 			return 1n
+		},
+
+		async scan(visitor: (path: string, ino: Ino, stat: Stat) => Promise<void>): Promise<void> {
+			if (storage.scan) {
+				const inoToPath = new Map<Ino, string>([[1n, '/']])
+				let cursor = ''
+				do {
+					const { entries, next } = await storage.scan(cursor)
+					for (const e of entries) {
+						const dir = inoToPath.get(e.dirIno) ?? '/'
+						const path = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
+						inoToPath.set(e.ino, path)
+						await visitor(path, e.ino, makeStat(e.ino, e.meta))
+					}
+					cursor = next
+				} while (cursor !== '')
+			} else {
+				async function walk(dirIno: Ino, dirPath: string): Promise<void> {
+					let cursor = ''
+					do {
+						const { entries, next } = await storage.dirList(dirIno, cursor)
+						for (const e of entries) {
+							const path = dirPath === '/' ? `/${e.name}` : `${dirPath}/${e.name}`
+							const meta = await storage.getMeta(e.ino)
+							if (meta === null) continue
+							await visitor(path, e.ino, makeStat(e.ino, meta))
+							if (e.type === FileType.Directory) await walk(e.ino, path)
+						}
+						cursor = next
+					} while (cursor !== '')
+				}
+				await walk(1n, '/')
+			}
 		},
 	}
 }

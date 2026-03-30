@@ -243,5 +243,21 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 		async readlink(ino: Ino): Promise<string> {
 			return readlink(getPath(ino))
 		},
+
+		async scan(visitor: (path: string, ino: Ino, stat: Stat) => Promise<void>): Promise<void> {
+			async function walk(osDir: string, vfsDir: string): Promise<void> {
+				const names = (await readdir(osDir)).sort()
+				for (const name of names) {
+					const osPath = join(osDir, name)
+					const s = await lstat(osPath)
+					const ino = BigInt(s.ino)
+					pathMap.set(ino, osPath)
+					const vfsPath = vfsDir === '/' ? `/${name}` : `${vfsDir}/${name}`
+					await visitor(vfsPath, ino, toStat(ino, s))
+					if (s.isDirectory()) await walk(osPath, vfsPath)
+				}
+			}
+			await walk(root, '/')
+		},
 	}
 }
