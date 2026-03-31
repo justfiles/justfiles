@@ -12,6 +12,7 @@ export function memStorage(): StorageBackend {
 	const metas = new Map<Ino, InodeMeta>()
 	const blobs = new Map<Ino, Uint8Array>()
 	const dirs = new Map<Ino, Map<string, Entry>>()
+	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	let nextIno = 2
 
 	metas.set('1', { type: FileType.Directory, size: 0n, mode: 0o755, nlink: 1, mtimeNs: 0n, ctimeNs: 0n })
@@ -27,6 +28,7 @@ export function memStorage(): StorageBackend {
 		metas.delete(ino)
 		blobs.delete(ino)
 		dirs.delete(ino)
+		xattrs.delete(ino)
 	}
 
 	function adjustNlink(ino: Ino, delta: number): void {
@@ -60,6 +62,33 @@ export function memStorage(): StorageBackend {
 		async setMeta(ino, partial) {
 			const m = metas.get(ino)
 			if (m) metas.set(ino, { ...m, ...partial })
+		},
+
+		async getXattr(ino, name) {
+			const value = xattrs.get(ino)?.get(name)
+			return value ? value.slice() : null
+		},
+
+		async setXattr(ino, name, value) {
+			let attrs = xattrs.get(ino)
+			if (!attrs) {
+				attrs = new Map()
+				xattrs.set(ino, attrs)
+			}
+			attrs.set(name, value.slice())
+		},
+
+		async listXattr(ino) {
+			return [...(xattrs.get(ino)?.keys() ?? [])]
+		},
+
+		async removeXattr(ino, name) {
+			const attrs = xattrs.get(ino)
+			if (!attrs) return
+			attrs.delete(name)
+			if (attrs.size === 0) {
+				xattrs.delete(ino)
+			}
 		},
 
 		async read(ino, offset: Off, length) {

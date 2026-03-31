@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'bun:test'
 
 import { fs } from './fs.ts'
 import { FileType, OpenFlags } from './types.ts'
+import { decodeXattr, encodeXattr } from './xattr.ts'
 
 function meta(overrides = {}) {
 	return {
@@ -128,6 +129,54 @@ describe('fs', () => {
 			],
 			next: 'page-2',
 		})
+	})
+
+	test('delegates xattr operations to the backend when supported', async () => {
+		const storage = backend({
+			getXattr: mock(async (ino, name) => {
+				expect(ino).toBe('7')
+				expect(name).toBe('ghostore.tags')
+				return encodeXattr(['context'])
+			}),
+			setXattr: mock(async (ino, name, value) => {
+				expect(ino).toBe('7')
+				expect(name).toBe('ghostore.tags')
+				expect(decodeXattr(value)).toEqual(['context', 'task'])
+			}),
+			listXattr: mock(async (ino) => {
+				expect(ino).toBe('7')
+				return ['ghostore.tags', 'ghostore.title']
+			}),
+			removeXattr: mock(async (ino, name) => {
+				expect(ino).toBe('7')
+				expect(name).toBe('ghostore.title')
+			}),
+		})
+		const vfs = fs(storage)
+
+		expect(decodeXattr(await vfs.getXattr('7', 'ghostore.tags'))).toEqual(['context'])
+		await vfs.setXattr('7', 'ghostore.tags', encodeXattr(['context', 'task']))
+		expect(await vfs.listXattr('7')).toEqual(['ghostore.tags', 'ghostore.title'])
+		await vfs.removeXattr('7', 'ghostore.title')
+
+		expect(storage.getXattr).toHaveBeenCalledTimes(1)
+		expect(storage.setXattr).toHaveBeenCalledTimes(1)
+		expect(storage.listXattr).toHaveBeenCalledTimes(1)
+		expect(storage.removeXattr).toHaveBeenCalledTimes(1)
+	})
+
+	test('treats missing backend xattr support as empty and silent', async () => {
+		const storage = backend()
+		delete storage.getXattr
+		delete storage.setXattr
+		delete storage.listXattr
+		delete storage.removeXattr
+		const vfs = fs(storage)
+
+		expect(await vfs.getXattr('7', 'ghostore.tags')).toBeNull()
+		expect(await vfs.listXattr('7')).toEqual([])
+		await expect(vfs.setXattr('7', 'ghostore.tags', encodeXattr(['context']))).resolves.toBeUndefined()
+		await expect(vfs.removeXattr('7', 'ghostore.tags')).resolves.toBeUndefined()
 	})
 
 	test('uses backend.create when available for mknod', async () => {

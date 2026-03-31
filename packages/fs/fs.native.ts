@@ -96,6 +96,18 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 			}
 		},
 
+		async getXattr(_ino: Ino, _name: string): Promise<Uint8Array | null> {
+			return null
+		},
+
+		async setXattr(_ino: Ino, _name: string, _value: Uint8Array): Promise<void> {},
+
+		async listXattr(_ino: Ino): Promise<string[]> {
+			return []
+		},
+
+		async removeXattr(_ino: Ino, _name: string): Promise<void> {},
+
 		async lookup(dirIno: Ino, name: string): Promise<Ino | null> {
 			validateName(name)
 			const childPath = join(getPath(dirIno), name)

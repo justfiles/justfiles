@@ -35,6 +35,18 @@ export interface Volume {
 	/** Returns true if the path exists (any file type). Never throws. */
 	exists(path: string): Promise<boolean>
 
+	/** Read a single xattr from a path, following the final symlink. */
+	getXattr(path: string, name: string): Promise<Uint8Array | null>
+
+	/** Write or replace a single xattr on a path, following the final symlink. */
+	setXattr(path: string, name: string, value: Uint8Array): Promise<void>
+
+	/** List all xattr names currently set on a path. */
+	listXattr(path: string): Promise<string[]>
+
+	/** Remove a single xattr from a path. */
+	removeXattr(path: string, name: string): Promise<void>
+
 	// --- file I/O ---
 
 	/**
@@ -263,6 +275,26 @@ export function volume(fs: FileSystem): Volume {
 			} catch {
 				return false
 			}
+		},
+
+		async getXattr(path, name) {
+			const ino = await resolvePath(path, true)
+			return fs.getXattr(ino, name)
+		},
+
+		async setXattr(path, name, value) {
+			const ino = await resolvePath(path, true)
+			await fs.setXattr(ino, name, value)
+		},
+
+		async listXattr(path) {
+			const ino = await resolvePath(path, true)
+			return fs.listXattr(ino)
+		},
+
+		async removeXattr(path, name) {
+			const ino = await resolvePath(path, true)
+			await fs.removeXattr(ino, name)
 		},
 
 		async readFile(path) {

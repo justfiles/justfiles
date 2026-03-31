@@ -3,6 +3,7 @@ import { fs } from './fs.ts'
 import { memStorage } from './storage.mem.ts'
 import { volume } from './volume.ts'
 import { FileType } from './types.ts'
+import { GHOSTORE_XATTR, decodeXattr, encodeXattr } from './xattr.ts'
 
 function makeVol() {
 	return volume(fs(memStorage()))
@@ -224,6 +225,57 @@ describe('volume', () => {
 		test('exists never throws', async () => {
 			const vol = makeVol()
 			await expect(vol.exists('/a/b/c/d')).resolves.toBe(false)
+		})
+	})
+
+	describe('xattr', () => {
+		test('round-trips ghostore xattrs through the path API', async () => {
+			const vol = makeVol()
+			await vol.writeFile('/note.md', bytes('body'))
+
+			await vol.setXattr('/note.md', GHOSTORE_XATTR.title, encodeXattr('My Note'))
+			await vol.setXattr('/note.md', GHOSTORE_XATTR.tags, encodeXattr(['fs', 'xattr']))
+			await vol.setXattr('/note.md', GHOSTORE_XATTR.links, encodeXattr([{ rel: 'related', path: '/other.md' }]))
+			await vol.setXattr('/note.md', GHOSTORE_XATTR.source, encodeXattr('agent'))
+
+			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.title))).toBe('My Note')
+			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.tags))).toEqual(['fs', 'xattr'])
+			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.links))).toEqual([{ rel: 'related', path: '/other.md' }])
+			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.source))).toBe('agent')
+		})
+
+		test('lists only xattrs that are set', async () => {
+			const vol = makeVol()
+			await vol.writeFile('/note.md', bytes('body'))
+			await vol.setXattr('/note.md', GHOSTORE_XATTR.title, encodeXattr('My Note'))
+			await vol.setXattr('/note.md', GHOSTORE_XATTR.tags, encodeXattr(['fs']))
+
+			expect((await vol.listXattr('/note.md')).sort()).toEqual([
+				GHOSTORE_XATTR.tags,
+				GHOSTORE_XATTR.title,
+			])
+		})
+
+		test('removes an xattr and returns null afterwards', async () => {
+			const vol = makeVol()
+			await vol.writeFile('/note.md', bytes('body'))
+			await vol.setXattr('/note.md', GHOSTORE_XATTR.title, encodeXattr('My Note'))
+
+			await vol.removeXattr('/note.md', GHOSTORE_XATTR.title)
+
+			expect(await vol.getXattr('/note.md', GHOSTORE_XATTR.title)).toBeNull()
+			expect(await vol.listXattr('/note.md')).toEqual([])
+		})
+
+		test('follows the final symlink for xattr operations', async () => {
+			const vol = makeVol()
+			await vol.writeFile('/target.md', bytes('body'))
+			await vol.symlink('/target.md', '/link.md')
+
+			await vol.setXattr('/link.md', GHOSTORE_XATTR.tags, encodeXattr(['linked']))
+
+			expect(decodeXattr(await vol.getXattr('/target.md', GHOSTORE_XATTR.tags))).toEqual(['linked'])
+			expect(await vol.listXattr('/link.md')).toEqual([GHOSTORE_XATTR.tags])
 		})
 	})
 

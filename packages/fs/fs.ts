@@ -27,6 +27,18 @@ export interface FileSystem {
   /** Update mtime, mode, etc. Only set fields are applied. */
   setattr(ino: Ino, attrs: Partial<Pick<Stat, 'mode' | 'mtimeNs'>>): Promise<void>;
 
+  /** Read a single extended attribute from an inode. */
+  getXattr(ino: Ino, name: string): Promise<Uint8Array | null>;
+
+  /** Write or replace a single extended attribute on an inode. */
+  setXattr(ino: Ino, name: string, value: Uint8Array): Promise<void>;
+
+  /** List all extended attribute names currently set on an inode. */
+  listXattr(ino: Ino): Promise<string[]>;
+
+  /** Remove a single extended attribute from an inode. */
+  removeXattr(ino: Ino, name: string): Promise<void>;
+
   // --- directory operations ---
 
   /**
@@ -279,6 +291,28 @@ export function fs(storage: StorageBackend): FileSystem {
 		async setattr(ino: Ino, attrs: Partial<Pick<Stat, 'mode' | 'mtimeNs'>>): Promise<void> {
 			await storage.setMeta(ino, attrs)
 			metaCache.delete(ino)
+		},
+
+		async getXattr(ino: Ino, name: string): Promise<Uint8Array | null> {
+			if (!storage.getXattr) {
+				return null
+			}
+			return storage.getXattr(ino, name)
+		},
+
+		async setXattr(ino: Ino, name: string, value: Uint8Array): Promise<void> {
+			await storage.setXattr?.(ino, name, value)
+		},
+
+		async listXattr(ino: Ino): Promise<string[]> {
+			if (!storage.listXattr) {
+				return []
+			}
+			return storage.listXattr(ino)
+		},
+
+		async removeXattr(ino: Ino, name: string): Promise<void> {
+			await storage.removeXattr?.(ino, name)
 		},
 
 		async lookup(dirIno: Ino, name: string): Promise<Ino | null> {

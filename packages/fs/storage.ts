@@ -102,6 +102,34 @@ export interface StorageBackend {
   setMeta(ino: Ino, partial: InodeMetaUpdate): Promise<void>;
 
   // ==========================================
+  // 2b. EXTENDED ATTRIBUTES — small inode metadata blobs
+  // ==========================================
+
+  /**
+   * Read a single extended attribute value.
+   * Optional — backends without xattr support should simply omit it.
+   */
+  getXattr?(ino: Ino, name: string): Promise<Uint8Array | null>;
+
+  /**
+   * Write or replace a single extended attribute value.
+   * Optional — omitted means "xattrs unsupported", not an error.
+   */
+  setXattr?(ino: Ino, name: string, value: Uint8Array): Promise<void>;
+
+  /**
+   * List all xattr names currently set on an inode.
+   * Optional — omitted means no xattrs are available.
+   */
+  listXattr?(ino: Ino): Promise<string[]>;
+
+  /**
+   * Remove a single extended attribute.
+   * Optional — omitted means "unsupported", so callers treat it as a no-op.
+   */
+  removeXattr?(ino: Ino, name: string): Promise<void>;
+
+  // ==========================================
   // 3. DATA I/O — raw byte storage per inode
   // ==========================================
 
