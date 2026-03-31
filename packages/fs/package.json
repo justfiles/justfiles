@@ -2,6 +2,9 @@
   "name": "ghost-fs",
   "module": "index.ts",
   "type": "module",
+  "dependencies": {
+    "idb": "^8.0.3"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

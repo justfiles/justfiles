@@ -99,6 +99,9 @@
     },
     "packages/fs": {
       "name": "ghost-fs",
+      "dependencies": {
+        "idb": "^8.0.3",
+      },
       "devDependencies": {
         "@types/bun": "latest",
       },
