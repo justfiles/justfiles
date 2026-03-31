@@ -81,6 +81,12 @@ describe('volume', () => {
 			const vol = makeVol()
 			await expect(vol.appendFile('/no/such/dir/f.txt', bytes('x'))).rejects.toThrow('ENOENT')
 		})
+
+		test('throws EISDIR when the path is a directory', async () => {
+			const vol = makeVol()
+			await vol.mkdir('/dir')
+			await expect(vol.appendFile('/dir', bytes('x'))).rejects.toThrow('EISDIR')
+		})
 	})
 
 	describe('mkdir', () => {
@@ -492,6 +498,90 @@ describe('volume', () => {
 		test('throws ENOENT for a missing path', async () => {
 			const vol = makeVol()
 			await expect(vol.scan('/missing', async () => {})).rejects.toThrow('ENOENT')
+		})
+
+		test('scoped scan through a symlinked directory visits children under the symlink path', async () => {
+			const vol = makeVol()
+			await vol.mkdir('/real')
+			await vol.writeFile('/real/child.txt', bytes(''))
+			await vol.symlink('/real', '/link')
+
+			const visited = []
+			await vol.scan('/link', async (path) => { visited.push(path) })
+			expect(visited.sort()).toEqual(['/link', '/link/child.txt'])
+		})
+
+		test('scoped scan through a symlink to root visits all root children remapped under the symlink path', async () => {
+			const vol = makeVol()
+			await vol.writeFile('/top.txt', bytes(''))
+			await vol.symlink('/', '/root-link')
+
+			const visited = []
+			await vol.scan('/root-link', async (path) => { visited.push(path) })
+			// root has two children: top.txt and root-link itself
+			expect(visited.sort()).toEqual(['/root-link', '/root-link/root-link', '/root-link/top.txt'])
+		})
+	})
+
+	describe('writeFile / appendFile follow symlinks', () => {
+		test('writeFile follows a symlink and writes to the target inode', async () => {
+			const vol = makeVol()
+			await vol.writeFile('/target.txt', bytes('original'))
+			await vol.symlink('/target.txt', '/link.txt')
+			await vol.writeFile('/link.txt', bytes('updated'))
+			// target inode must hold the new content
+			expect(str(await vol.readFile('/target.txt'))).toBe('updated')
+			// the symlink itself must still point to the same target
+			expect(await vol.readlink('/link.txt')).toBe('/target.txt')
+		})
+
+		test('appendFile follows a symlink and appends to the target inode', async () => {
+			const vol = makeVol()
+			await vol.writeFile('/target.txt', bytes('hello'))
+			await vol.symlink('/target.txt', '/link.txt')
+			await vol.appendFile('/link.txt', bytes(' world'))
+			expect(str(await vol.readFile('/target.txt'))).toBe('hello world')
+			expect(await vol.readlink('/link.txt')).toBe('/target.txt')
+		})
+	})
+
+	describe('relative symlinks with ..', () => {
+		test('readFile resolves a relative symlink containing ..', async () => {
+			const vol = makeVol()
+			await vol.mkdir('/a')
+			await vol.mkdir('/b')
+			await vol.writeFile('/b/file.txt', bytes('content'))
+			// /a/link -> ../b/file.txt
+			await vol.symlink('../b/file.txt', '/a/link')
+			expect(str(await vol.readFile('/a/link'))).toBe('content')
+		})
+
+		test('stat follows a relative symlink containing ..', async () => {
+			const vol = makeVol()
+			await vol.mkdir('/a')
+			await vol.mkdir('/b')
+			await vol.writeFile('/b/file.txt', bytes('data'))
+			await vol.symlink('../b/file.txt', '/a/link')
+			expect((await vol.stat('/a/link')).type).toBe(FileType.Regular)
+		})
+
+		test('writeFile follows a relative symlink containing ..', async () => {
+			const vol = makeVol()
+			await vol.mkdir('/a')
+			await vol.mkdir('/b')
+			await vol.writeFile('/b/file.txt', bytes('old'))
+			await vol.symlink('../b/file.txt', '/a/link')
+			await vol.writeFile('/a/link', bytes('new'))
+			expect(str(await vol.readFile('/b/file.txt'))).toBe('new')
+		})
+
+		test('lstat does not follow a relative symlink', async () => {
+			const vol = makeVol()
+			await vol.mkdir('/a')
+			await vol.mkdir('/b')
+			await vol.writeFile('/b/file.txt', bytes(''))
+			await vol.symlink('../b/file.txt', '/a/link')
+			expect((await vol.lstat('/a/link')).type).toBe(FileType.Symlink)
 		})
 	})
 })
