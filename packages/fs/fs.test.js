@@ -17,7 +17,7 @@ function meta(overrides = {}) {
 
 function backend(overrides = {}) {
 	return {
-		alloc: mock(async () => 100n),
+		alloc: mock(async () => '100'),
 		getMeta: mock(async () => null),
 		setMeta: mock(async () => {}),
 		read: mock(async () => new Uint8Array()),
@@ -55,7 +55,7 @@ describe('fs', () => {
 	test('maps backend metadata to stat and reuses the metadata cache for open', async () => {
 		const storage = backend({
 			getMeta: mock(async (ino) => {
-				expect(ino).toBe(7n)
+				expect(ino).toBe('7')
 				return meta({
 					type: FileType.Regular,
 					size: 5n,
@@ -69,8 +69,8 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.stat(7n)).toEqual({
-			ino: 7n,
+		expect(await vfs.stat('7')).toEqual({
+			ino: '7',
 			type: FileType.Regular,
 			size: 5n,
 			mode: 0o600,
@@ -80,7 +80,7 @@ describe('fs', () => {
 			contentHash: 'abc123',
 		})
 
-		const fd = await vfs.open(7n, OpenFlags.Read)
+		const fd = await vfs.open('7', OpenFlags.Read)
 
 		expect(typeof fd).toBe('number')
 		expect(storage.getMeta).toHaveBeenCalledTimes(1)
@@ -89,31 +89,31 @@ describe('fs', () => {
 	test('caches both positive and negative directory lookups', async () => {
 		const storage = backend({
 			dirLookup: mock(async (_dirIno, name) => {
-				if (name === 'alpha') return { ino: 9n, type: FileType.Regular }
+				if (name === 'alpha') return { ino: '9', type: FileType.Regular }
 				return null
 			}),
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.lookup(1n, 'alpha')).toBe(9n)
-		expect(await vfs.lookup(1n, 'alpha')).toBe(9n)
-		expect(await vfs.lookup(1n, 'missing')).toBeNull()
-		expect(await vfs.lookup(1n, 'missing')).toBeNull()
+		expect(await vfs.lookup('1', 'alpha')).toBe('9')
+		expect(await vfs.lookup('1', 'alpha')).toBe('9')
+		expect(await vfs.lookup('1', 'missing')).toBeNull()
+		expect(await vfs.lookup('1', 'missing')).toBeNull()
 
 		expect(storage.dirLookup).toHaveBeenCalledTimes(2)
-		expect(storage.dirLookup).toHaveBeenNthCalledWith(1, 1n, 'alpha')
-		expect(storage.dirLookup).toHaveBeenNthCalledWith(2, 1n, 'missing')
+		expect(storage.dirLookup).toHaveBeenNthCalledWith(1, '1', 'alpha')
+		expect(storage.dirLookup).toHaveBeenNthCalledWith(2, '1', 'missing')
 	})
 
 	test('passes readdir through to the backend cursor API', async () => {
 		const storage = backend({
 			dirList: mock(async (dirIno, cursor) => {
-				expect(dirIno).toBe(3n)
+				expect(dirIno).toBe('3')
 				expect(cursor).toBe('page-1')
 				return {
 					entries: [
-						{ ino: 4n, name: 'notes.md', type: FileType.Regular },
-						{ ino: 5n, name: 'docs', type: FileType.Directory },
+						{ ino: '4', name: 'notes.md', type: FileType.Regular },
+						{ ino: '5', name: 'docs', type: FileType.Directory },
 					],
 					next: 'page-2',
 				}
@@ -121,10 +121,10 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.readdir(3n, 'page-1')).toEqual({
+		expect(await vfs.readdir('3', 'page-1')).toEqual({
 			entries: [
-				{ ino: 4n, name: 'notes.md', type: FileType.Regular },
-				{ ino: 5n, name: 'docs', type: FileType.Directory },
+				{ ino: '4', name: 'notes.md', type: FileType.Regular },
+				{ ino: '5', name: 'docs', type: FileType.Directory },
 			],
 			next: 'page-2',
 		})
@@ -133,7 +133,7 @@ describe('fs', () => {
 	test('uses backend.create when available for mknod', async () => {
 		const storage = backend({
 			create: mock(async (dirIno, name, initialMeta) => {
-				expect(dirIno).toBe(1n)
+				expect(dirIno).toBe('1')
 				expect(name).toBe('draft.md')
 				expect(initialMeta).toEqual({
 					type: FileType.Regular,
@@ -142,12 +142,12 @@ describe('fs', () => {
 					mtimeNs: expect.anything(),
 					ctimeNs: expect.anything(),
 				})
-				return 12n
+				return '12'
 			}),
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.mknod(1n, 'draft.md', FileType.Regular, 0o644)).toBe(12n)
+		expect(await vfs.mknod('1', 'draft.md', FileType.Regular, 0o644)).toBe('12')
 
 		expect(storage.create).toHaveBeenCalledTimes(1)
 		expect(storage.alloc).not.toHaveBeenCalled()
@@ -164,12 +164,12 @@ describe('fs', () => {
 					mtimeNs: expect.anything(),
 					ctimeNs: expect.anything(),
 				})
-				return 15n
+				return '15'
 			}),
 			dirAdd: mock(async (dirIno, name, ino, type) => {
-				expect(dirIno).toBe(2n)
+				expect(dirIno).toBe('2')
 				expect(name).toBe('workspace')
-				expect(ino).toBe(15n)
+				expect(ino).toBe('15')
 				expect(type).toBe(FileType.Directory)
 				return true
 			}),
@@ -177,7 +177,7 @@ describe('fs', () => {
 		delete storage.create
 		const vfs = fs(storage)
 
-		expect(await vfs.mknod(2n, 'workspace', FileType.Directory, 0o755)).toBe(15n)
+		expect(await vfs.mknod('2', 'workspace', FileType.Directory, 0o755)).toBe('15')
 
 		expect(storage.alloc).toHaveBeenCalledTimes(1)
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
@@ -185,13 +185,13 @@ describe('fs', () => {
 
 	test('maps dirAdd conflicts to an error for mknod', async () => {
 		const storage = backend({
-			alloc: mock(async () => 21n),
+			alloc: mock(async () => '21'),
 			dirAdd: mock(async () => false),
 		})
 		delete storage.create
 		const vfs = fs(storage)
 
-		await expectRejects(() => vfs.mknod(2n, 'dupe', FileType.Regular, 0o644))
+		await expectRejects(() => vfs.mknod('2', 'dupe', FileType.Regular, 0o644))
 
 		expect(storage.alloc).toHaveBeenCalledTimes(1)
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
@@ -201,17 +201,17 @@ describe('fs', () => {
 		const storage = backend({
 			getMeta: mock(async () => meta({ type: FileType.Regular, size: 99n })),
 			dirAdd: mock(async (dirIno, name, ino, type) => {
-				expect(dirIno).toBe(1n)
+				expect(dirIno).toBe('1')
 				expect(name).toBe('copy.md')
-				expect(ino).toBe(8n)
+				expect(ino).toBe('8')
 				expect(type).toBe(FileType.Regular)
 				return true
 			}),
 		})
 		const vfs = fs(storage)
 
-		await vfs.stat(8n)
-		expect(await vfs.link(1n, 'copy.md', 8n)).toBeUndefined()
+		await vfs.stat('8')
+		expect(await vfs.link('1', 'copy.md', '8')).toBeUndefined()
 
 		expect(storage.getMeta).toHaveBeenCalledTimes(1)
 		expect(storage.dirAdd).toHaveBeenCalledTimes(1)
@@ -228,9 +228,9 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.stat(8n)).toEqual(expect.objectContaining({ nlink: 1 }))
-		expect(await vfs.link(1n, 'copy.md', 8n)).toBeUndefined()
-		expect(await vfs.stat(8n)).toEqual(expect.objectContaining({ nlink: 2 }))
+		expect(await vfs.stat('8')).toEqual(expect.objectContaining({ nlink: 1 }))
+		expect(await vfs.link('1', 'copy.md', '8')).toBeUndefined()
+		expect(await vfs.stat('8')).toEqual(expect.objectContaining({ nlink: 2 }))
 
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
 	})
@@ -241,7 +241,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await expectRejects(() => vfs.link(1n, 'dir-link', 4n))
+		await expectRejects(() => vfs.link('1', 'dir-link', '4'))
 
 		expect(storage.dirAdd).not.toHaveBeenCalled()
 	})
@@ -252,11 +252,11 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		await vfs.open(6n, OpenFlags.Write | OpenFlags.Trunc)
+		await vfs.open('6', OpenFlags.Write | OpenFlags.Trunc)
 
 		expect(storage.getMeta).toHaveBeenCalledTimes(1)
 		expect(storage.truncate).toHaveBeenCalledTimes(1)
-		expect(storage.truncate).toHaveBeenCalledWith(6n, 0n)
+		expect(storage.truncate).toHaveBeenCalledWith('6', 0n)
 	})
 
 	test('rejects reading from a write-only fd', async () => {
@@ -264,7 +264,7 @@ describe('fs', () => {
 			getMeta: mock(async () => meta({ type: FileType.Regular, size: 3n })),
 		})
 		const vfs = fs(storage)
-		const fd = await vfs.open(90n, OpenFlags.Write)
+		const fd = await vfs.open('90', OpenFlags.Write)
 
 		await expectRejects(() => vfs.pread(fd, new Uint8Array(1), 0n))
 		expect(storage.read).not.toHaveBeenCalled()
@@ -275,7 +275,7 @@ describe('fs', () => {
 			getMeta: mock(async () => meta({ type: FileType.Regular, size: 3n })),
 		})
 		const vfs = fs(storage)
-		const fd = await vfs.open(91n, OpenFlags.Read)
+		const fd = await vfs.open('91', OpenFlags.Read)
 
 		await expectRejects(() => vfs.pwrite(fd, bytes('x'), 0n))
 		await expectRejects(() => vfs.truncate(fd, 0n))
@@ -288,14 +288,14 @@ describe('fs', () => {
 		const storage = backend({
 			getMeta: mock(async () => meta({ type: FileType.Regular, size: 5n })),
 			read: mock(async (ino, offset, length) => {
-				expect(ino).toBe(30n)
+				expect(ino).toBe('30')
 				expect(offset).toBe(0n)
 				expect(length).toBe(5)
 				return bytes('hello')
 			}),
 		})
 		const vfs = fs(storage)
-		const fd = await vfs.open(30n, OpenFlags.Read)
+		const fd = await vfs.open('30', OpenFlags.Read)
 
 		const first = new Uint8Array(2)
 		const second = new Uint8Array(3)
@@ -319,12 +319,12 @@ describe('fs', () => {
 			write: mock(async (_ino, _offset, data) => data.length),
 		})
 		const vfs = fs(storage)
-		const fd = await vfs.open(31n, OpenFlags.Read | OpenFlags.Write)
+		const fd = await vfs.open('31', OpenFlags.Read | OpenFlags.Write)
 		const buf = new Uint8Array(2)
 
 		await vfs.pread(fd, buf, 0n)
 		expect(await vfs.pwrite(fd, bytes('!!'), 5n)).toBe(2)
-		await vfs.stat(31n)
+		await vfs.stat('31')
 		await vfs.pread(fd, buf, 0n)
 
 		expect(storage.write).toHaveBeenCalledTimes(1)
@@ -344,12 +344,12 @@ describe('fs', () => {
 					ctimeNs: expect.anything(),
 					symlinkTarget: target,
 				})
-				return 92n
+				return '92'
 			}),
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.symlink(1n, 'note-link', target)).toBe(92n)
+		expect(await vfs.symlink('1', 'note-link', target)).toBe('92')
 	})
 
 	test('invalidates cached metadata after setattr', async () => {
@@ -363,9 +363,9 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.stat(40n)).toEqual(expect.objectContaining({ mode: 0o644 }))
-		expect(await vfs.setattr(40n, { mode: 0o600 })).toBeUndefined()
-		expect(await vfs.stat(40n)).toEqual(expect.objectContaining({ mode: 0o600 }))
+		expect(await vfs.stat('40')).toEqual(expect.objectContaining({ mode: 0o644 }))
+		expect(await vfs.setattr('40', { mode: 0o600 })).toBeUndefined()
+		expect(await vfs.stat('40')).toEqual(expect.objectContaining({ mode: 0o600 }))
 
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
 		expect(storage.setMeta).toHaveBeenCalledTimes(1)
@@ -375,19 +375,19 @@ describe('fs', () => {
 		let removed = false
 		const storage = backend({
 			getMeta: mock(async () => (removed ? null : meta({ type: FileType.Regular, size: 3n }))),
-			dirLookup: mock(async () => (removed ? null : { ino: 50n, type: FileType.Regular })),
+			dirLookup: mock(async () => (removed ? null : { ino: '50', type: FileType.Regular })),
 			dirUnset: mock(async () => {
 				removed = true
-				return { ino: 50n, type: FileType.Regular }
+				return { ino: '50', type: FileType.Regular }
 			}),
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.lookup(2n, 'gone.txt')).toBe(50n)
-		expect(await vfs.stat(50n)).toEqual(expect.objectContaining({ ino: 50n }))
-		expect(await vfs.unlink(2n, 'gone.txt')).toBeUndefined()
-		expect(await vfs.lookup(2n, 'gone.txt')).toBeNull()
-		await expectRejects(() => vfs.stat(50n))
+		expect(await vfs.lookup('2', 'gone.txt')).toBe('50')
+		expect(await vfs.stat('50')).toEqual(expect.objectContaining({ ino: '50' }))
+		expect(await vfs.unlink('2', 'gone.txt')).toBeUndefined()
+		expect(await vfs.lookup('2', 'gone.txt')).toBeNull()
+		await expectRejects(() => vfs.stat('50'))
 
 		expect(storage.dirLookup).toHaveBeenCalledTimes(2)
 		expect(storage.getMeta).toHaveBeenCalledTimes(2)
@@ -397,16 +397,16 @@ describe('fs', () => {
 	test('uses backend.rename when the backend provides an atomic rename primitive', async () => {
 		const storage = backend({
 			rename: mock(async (oldDir, oldName, newDir, newName) => {
-				expect(oldDir).toBe(1n)
+				expect(oldDir).toBe('1')
 				expect(oldName).toBe('old.txt')
-				expect(newDir).toBe(2n)
+				expect(newDir).toBe('2')
 				expect(newName).toBe('new.txt')
 				return null
 			}),
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.rename(1n, 'old.txt', 2n, 'new.txt')).toBeUndefined()
+		expect(await vfs.rename('1', 'old.txt', '2', 'new.txt')).toBeUndefined()
 
 		expect(storage.rename).toHaveBeenCalledTimes(1)
 		expect(storage.dirLookup).not.toHaveBeenCalled()
@@ -422,27 +422,27 @@ describe('fs', () => {
 			}),
 			dirLookup: mock(async () => {
 				calls.push('lookup')
-				return { ino: 60n, type: FileType.Regular }
+				return { ino: '60', type: FileType.Regular }
 			}),
 			dirSet: mock(async () => {
 				calls.push('set')
-				return { ino: 61n, type: FileType.Regular }
+				return { ino: '61', type: FileType.Regular }
 			}),
 			dirUnset: mock(async () => {
 				calls.push('unset')
-				return { ino: 60n, type: FileType.Regular }
+				return { ino: '60', type: FileType.Regular }
 			}),
 		})
 		delete storage.rename
 		const vfs = fs(storage)
 
-		expect(await vfs.rename(3n, 'before.md', 4n, 'after.md')).toBeUndefined()
+		expect(await vfs.rename('3', 'before.md', '4', 'after.md')).toBeUndefined()
 
 		expect(calls).toEqual(['lookup', 'set', 'unset'])
 		expect(storage.getMeta).not.toHaveBeenCalled()
-		expect(storage.dirLookup).toHaveBeenCalledWith(3n, 'before.md')
-		expect(storage.dirSet).toHaveBeenCalledWith(4n, 'after.md', 60n, FileType.Regular)
-		expect(storage.dirUnset).toHaveBeenCalledWith(3n, 'before.md')
+		expect(storage.dirLookup).toHaveBeenCalledWith('3', 'before.md')
+		expect(storage.dirSet).toHaveBeenCalledWith('4', 'after.md', '60', FileType.Regular)
+		expect(storage.dirUnset).toHaveBeenCalledWith('3', 'before.md')
 	})
 
 	test('reads symlink targets from inode metadata', async () => {
@@ -456,7 +456,7 @@ describe('fs', () => {
 		})
 		const vfs = fs(storage)
 
-		expect(await vfs.readlink(70n)).toBe('/workspace/notes/today.md')
+		expect(await vfs.readlink('70')).toBe('/workspace/notes/today.md')
 	})
 
 	test('rejects I/O on a closed file descriptor', async () => {
@@ -465,7 +465,7 @@ describe('fs', () => {
 			read: mock(async () => bytes('hey')),
 		})
 		const vfs = fs(storage)
-		const fd = await vfs.open(80n, OpenFlags.Read)
+		const fd = await vfs.open('80', OpenFlags.Read)
 
 		await vfs.close(fd)
 

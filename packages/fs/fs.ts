@@ -271,7 +271,7 @@ export function fs(storage: StorageBackend): FileSystem {
 		return ino
 	}
 
-	return {
+	const vfs: FileSystem = {
 		async stat(ino: Ino): Promise<Stat> {
 			return makeStat(ino, await getMetaOrThrow(ino))
 		},
@@ -457,12 +457,12 @@ export function fs(storage: StorageBackend): FileSystem {
 		},
 
 		root(): Ino {
-			return 1n
+			return '1'
 		},
 
 		async scan(visitor: (path: string, ino: Ino, stat: Stat) => Promise<void>): Promise<void> {
 			if (storage.scan) {
-				const inoToPath = new Map<Ino, string>([[1n, '/']])
+				const inoToPath = new Map<Ino, string>([[vfs.root(), '/']])
 				let cursor = ''
 				do {
 					const { entries, next } = await storage.scan(cursor)
@@ -489,8 +489,9 @@ export function fs(storage: StorageBackend): FileSystem {
 						cursor = next
 					} while (cursor !== '')
 				}
-				await walk(1n, '/')
+				await walk(vfs.root(), '/')
 			}
 		},
 	}
+	return vfs
 }

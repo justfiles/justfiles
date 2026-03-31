@@ -24,7 +24,7 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 	const handles = new Map<Fd, { fh: FileHandle; flags: OpenFlags }>()
 
 	const rootStat = await lstat(root)
-	const rootIno = BigInt(rootStat.ino)
+	const rootIno = String(rootStat.ino)
 	pathMap.set(rootIno, root)
 
 	function getPath(ino: Ino): string {
@@ -101,7 +101,7 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 			const childPath = join(getPath(dirIno), name)
 			try {
 				const s = await lstat(childPath)
-				const ino = BigInt(s.ino)
+				const ino = String(s.ino)
 				pathMap.set(ino, childPath)
 				return ino
 			} catch (e: any) {
@@ -120,7 +120,7 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 			for (const name of slice) {
 				const childPath = join(dirPath, name)
 				const s = await lstat(childPath)
-				const ino = BigInt(s.ino)
+				const ino = String(s.ino)
 				pathMap.set(ino, childPath)
 				entries.push({ ino, name, type: toFileType(s) })
 			}
@@ -140,7 +140,7 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 				await fh.close()
 			}
 			const s = await lstat(childPath)
-			const ino = BigInt(s.ino)
+			const ino = String(s.ino)
 			pathMap.set(ino, childPath)
 			return ino
 		},
@@ -150,7 +150,7 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 			const childPath = join(getPath(dirIno), name)
 			await symlink(target, childPath)
 			const s = await lstat(childPath)
-			const ino = BigInt(s.ino)
+			const ino = String(s.ino)
 			pathMap.set(ino, childPath)
 			return ino
 		},
@@ -167,7 +167,7 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 			validateName(name)
 			const childPath = join(getPath(dirIno), name)
 			const s = await lstat(childPath)
-			const childIno = BigInt(s.ino)
+			const childIno = String(s.ino)
 			if (s.isDirectory()) {
 				await rmdir(childPath)
 			} else {
@@ -217,10 +217,10 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 			const newPath = join(getPath(newDirIno), newName)
 
 			// Capture srcIno and displaced ino before the rename changes the filesystem.
-			const srcIno = BigInt((await lstat(oldPath)).ino)
+			const srcIno = String((await lstat(oldPath)).ino)
 			let displacedIno: Ino | null = null
 			try {
-				const d = BigInt((await lstat(newPath)).ino)
+				const d = String((await lstat(newPath)).ino)
 				// Don't treat as displaced if it's the same inode (rename onto own hard link / no-op).
 				if (d !== srcIno) displacedIno = d
 			} catch {}
@@ -250,7 +250,7 @@ export async function nativeFs(root: string): Promise<FileSystem> {
 				for (const name of names) {
 					const osPath = join(osDir, name)
 					const s = await lstat(osPath)
-					const ino = BigInt(s.ino)
+					const ino = String(s.ino)
 					pathMap.set(ino, osPath)
 					const vfsPath = vfsDir === '/' ? `/${name}` : `${vfsDir}/${name}`
 					await visitor(vfsPath, ino, toStat(ino, s))

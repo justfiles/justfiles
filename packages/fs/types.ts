@@ -2,7 +2,7 @@
 export type Fd = number;
 
 /** Inode identifier — unique within a filesystem */
-export type Ino = bigint;
+export type Ino = string;
 
 /** Byte-level offset */
 export type Off = bigint;
