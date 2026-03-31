@@ -40,6 +40,7 @@
         "@tursodatabase/database": "^0.4.0",
         "@types/mdast": "^4.0.4",
         "dotenv": "^17.3.1",
+        "ghost-fs": "workspace:*",
         "hono": "4.11.1",
         "hono-rate-limiter": "^0.5.3",
         "idb": "^8.0.3",
