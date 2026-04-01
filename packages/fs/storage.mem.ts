@@ -13,10 +13,11 @@ export function memStorage(): StorageBackend {
 	const blobs = new Map<Ino, Uint8Array>()
 	const dirs = new Map<Ino, Map<string, Entry>>()
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
+	const rootIno = '1'
 	let nextIno = 2
 
-	metas.set('1', { type: FileType.Directory, size: 0n, mode: 0o755, nlink: 1, mtimeNs: 0n, ctimeNs: 0n })
-	dirs.set('1', new Map())
+	metas.set(rootIno, { type: FileType.Directory, size: 0n, mode: 0o755, nlink: 1, mtimeNs: 0n, ctimeNs: 0n })
+	dirs.set(rootIno, new Map())
 
 	function addIno(ino: Ino, m: InodeMeta): void {
 		metas.set(ino, m)
@@ -40,6 +41,8 @@ export function memStorage(): StorageBackend {
 	}
 
 	return {
+		rootIno,
+
 		async alloc(m) {
 			const ino = String(nextIno++)
 			addIno(ino, { ...m, nlink: 0 })

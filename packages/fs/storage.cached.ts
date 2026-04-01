@@ -1,5 +1,6 @@
 import type { StorageBackend, InodeMeta } from './storage'
 import type { Ino, Off, DirCursor, DirentMin } from './types'
+import { FileType } from './types'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -15,6 +16,16 @@ const RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000]
  * explicit guards in flush and delta sync apply to it automatically.
  */
 const STATE_SYNCSTATE_INO: Ino = '/.state/syncstate'
+const STATE_DIRTY_INOS_INO: Ino = '/.state/dirty'
+const STATE_DIR_INO: Ino = '/.state'
+const SYNTHETIC_STATE_DIR_META: InodeMeta = {
+	type: FileType.Directory,
+	size: 0n,
+	mode: 0o700,
+	nlink: 1,
+	mtimeNs: 0n,
+	ctimeNs: 0n,
+}
 
 /**
  * Returns true for any inode that belongs to the reserved `/.state/`
@@ -23,6 +34,10 @@ const STATE_SYNCSTATE_INO: Ino = '/.state/syncstate'
  */
 function isStatePath(ino: Ino): boolean {
 	return ino.startsWith('/.state/')
+}
+
+function isStateDir(ino: Ino): boolean {
+	return ino === STATE_DIR_INO
 }
 
 /** Maximum bytes to read in one shot when pulling full content from remote. */
@@ -93,6 +108,7 @@ export function cachedStorage(
 	options?: { flushDebounceMs?: number },
 ): CachedStorageBackend {
 	const flushDebounceMs = options?.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS
+	const rootIno = remote.rootIno
 
 	// ---- Shared state -------------------------------------------------------
 
@@ -131,6 +147,30 @@ export function cachedStorage(
 		return `${dirIno}\x00${name}`
 	}
 
+	function lookupStateEntry(dirIno: Ino, name: string): DirentMin | null {
+		if (dirIno === rootIno && name === '.state') {
+			return { ino: STATE_DIR_INO, type: FileType.Directory }
+		}
+		if (dirIno === STATE_DIR_INO) {
+			if (name === 'syncstate') return { ino: STATE_SYNCSTATE_INO, type: FileType.Regular }
+			if (name === 'dirty') return { ino: STATE_DIRTY_INOS_INO, type: FileType.Regular }
+		}
+		return null
+	}
+
+	function listStateEntries(dirIno: Ino): Array<{ name: string; ino: Ino; type: FileType }> {
+		if (dirIno === rootIno) {
+			return [{ name: '.state', ino: STATE_DIR_INO, type: FileType.Directory }]
+		}
+		if (dirIno === STATE_DIR_INO) {
+			return [
+				{ name: 'dirty', ino: STATE_DIRTY_INOS_INO, type: FileType.Regular },
+				{ name: 'syncstate', ino: STATE_SYNCSTATE_INO, type: FileType.Regular },
+			]
+		}
+		return []
+	}
+
 	// ---- Syncstate persistence ----------------------------------------------
 
 	async function loadSyncState(): Promise<void> {
@@ -147,7 +187,48 @@ export function cachedStorage(
 	async function saveSyncState(): Promise<void> {
 		try {
 			const raw = new TextEncoder().encode(JSON.stringify({ cursor: syncCursor }))
-			await local.write(STATE_SYNCSTATE_INO, 0n, raw)
+			if (local.putBlob) {
+				await local.putBlob(STATE_SYNCSTATE_INO, raw)
+				return
+			}
+			await local.truncate(STATE_SYNCSTATE_INO, 0n)
+			if (raw.length > 0) await local.write(STATE_SYNCSTATE_INO, 0n, raw)
+		} catch {
+			// Best-effort; not fatal
+		}
+	}
+
+	async function loadDirtyState(): Promise<void> {
+		try {
+			const raw = await local.read(STATE_DIRTY_INOS_INO, 0n, MAX_READ_BYTES)
+			if (raw.length === 0) return
+
+			const text = new TextDecoder().decode(raw)
+			for (const line of text.split('\n')) {
+				const ino = line.trim()
+				if (!ino || isStatePath(ino) || dirty.has(ino)) continue
+				dirty.set(ino, { retryCount: 0, nextRetryAt: 0 })
+			}
+		} catch {
+			// Corrupted or absent — start empty
+		}
+	}
+
+	async function saveDirtyState(): Promise<void> {
+		try {
+			const raw = new TextEncoder().encode(
+				[...dirty.keys()]
+					.filter((ino) => !isStatePath(ino))
+					.join('\n'),
+			)
+
+			if (local.putBlob) {
+				await local.putBlob(STATE_DIRTY_INOS_INO, raw)
+				return
+			}
+
+			await local.truncate(STATE_DIRTY_INOS_INO, 0n)
+			if (raw.length > 0) await local.write(STATE_DIRTY_INOS_INO, 0n, raw)
 		} catch {
 			// Best-effort; not fatal
 		}
@@ -155,9 +236,11 @@ export function cachedStorage(
 
 	// ---- Dirty tracking + debounce ------------------------------------------
 
-	function markDirty(ino: Ino): void {
-		if (!dirty.has(ino)) {
+	async function markDirty(ino: Ino): Promise<void> {
+		const isNew = !dirty.has(ino)
+		if (isNew) {
 			dirty.set(ino, { retryCount: 0, nextRetryAt: 0 })
+			await saveDirtyState()
 		}
 		// Reset the debounce timer
 		const existing = flushTimers.get(ino)
@@ -217,6 +300,7 @@ export function cachedStorage(
 			}
 
 			dirty.delete(ino)
+			await saveDirtyState()
 			deletedXattrs.delete(ino)
 			events.dispatchEvent(Object.assign(new Event('synced'), { ino }))
 		} catch {
@@ -279,9 +363,10 @@ export function cachedStorage(
 		deltaSyncTimer = null
 	}
 
-	// Bootstrap: load persisted syncstate then kick off an initial delta sync
-	void loadSyncState().then(() => {
+	// Bootstrap: hydrate all local-only state before the first delta sync.
+	void Promise.all([loadSyncState(), loadDirtyState()]).then(() => {
 		startDeltaSync()
+		void flushAll()
 		void runDeltaSync()
 	})
 
@@ -289,6 +374,7 @@ export function cachedStorage(
 
 	const backend: CachedStorageBackend = {
 		events,
+		rootIno,
 
 		// --- Inode lifecycle (remote-authoritative) ---------------------------
 
@@ -301,6 +387,18 @@ export function cachedStorage(
 		// --- Inode metadata ---------------------------------------------------
 
 		async getMeta(ino) {
+			if (isStateDir(ino)) return { ...SYNTHETIC_STATE_DIR_META }
+			if (isStatePath(ino)) {
+				const raw = await local.read(ino, 0n, MAX_READ_BYTES)
+				return {
+					type: FileType.Regular,
+					size: BigInt(raw.length),
+					mode: 0o600,
+					nlink: 1,
+					mtimeNs: 0n,
+					ctimeNs: 0n,
+				}
+			}
 			const cached = metaCache.get(ino)
 			if (cached !== undefined) return { ...cached }
 			const remoteMeta = await remote.getMeta(ino)
@@ -331,7 +429,7 @@ export function cachedStorage(
 			if (local.setXattr) await local.setXattr(ino, name, value)
 			// Un-tombstone if this name was previously removed in this session
 			deletedXattrs.get(ino)?.delete(name)
-			markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
 		},
 
 		async listXattr(ino) {
@@ -347,7 +445,7 @@ export function cachedStorage(
 			// Track deletion so flush can propagate it to remote
 			if (!deletedXattrs.has(ino)) deletedXattrs.set(ino, new Set())
 			deletedXattrs.get(ino)!.add(name)
-			markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
 		},
 
 		// --- Data I/O --------------------------------------------------------
@@ -398,7 +496,7 @@ export function cachedStorage(
 			const end = offset + BigInt(data.length)
 			const m = metaCache.get(ino)
 			if (m !== undefined && end > m.size) metaCache.set(ino, { ...m, size: end })
-			markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
 			return n
 		},
 
@@ -406,7 +504,7 @@ export function cachedStorage(
 			await local.truncate(ino, size)
 			const m = metaCache.get(ino)
 			if (m !== undefined) metaCache.set(ino, { ...m, size })
-			markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
 		},
 
 		async putBlob(ino, data) {
@@ -418,7 +516,7 @@ export function cachedStorage(
 			}
 			const m = metaCache.get(ino)
 			if (m !== undefined) metaCache.set(ino, { ...m, size: BigInt(data.length) })
-			markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
 		},
 
 		// --- Directory operations --------------------------------------------
@@ -426,6 +524,8 @@ export function cachedStorage(
 		// compatible directory structure, so dir entries are cached in-memory.
 
 		async dirLookup(dirIno, name) {
+			const stateEntry = lookupStateEntry(dirIno, name)
+			if (stateEntry) return stateEntry
 			const key = dirCacheKey(dirIno, name)
 			if (dirCache.has(key)) return dirCache.get(key) ?? null
 			const result = await remote.dirLookup(dirIno, name)
@@ -434,8 +534,24 @@ export function cachedStorage(
 		},
 
 		async dirList(dirIno, cursor: DirCursor) {
+			if (dirIno === STATE_DIR_INO) {
+				return {
+					entries: cursor === '' ? listStateEntries(dirIno) : [],
+					next: '' as DirCursor,
+				}
+			}
+
 			// Cursor-based pagination is too complex to cache reliably; go direct.
-			return remote.dirList(dirIno, cursor)
+			const result = await remote.dirList(dirIno, cursor)
+			if (dirIno !== rootIno || cursor !== '') return result
+
+			return {
+				entries: [
+					...result.entries.filter((entry) => entry.name !== '.state'),
+					...listStateEntries(dirIno),
+				],
+				next: result.next,
+			}
 		},
 
 		async dirAdd(dirIno, name, ino, type) {

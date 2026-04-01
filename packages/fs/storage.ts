@@ -54,6 +54,9 @@ type InodeMetaUpdate = Partial<Pick<InodeMeta, 'mode' | 'mtimeNs' | 'ctimeNs' | 
  */
 export interface StorageBackend {
 
+  /** Backend-defined root inode used as the entry point for path resolution. */
+  readonly rootIno: Ino;
+
   // ==========================================
   // 1. INODE LIFECYCLE — allocate
   // ==========================================

@@ -491,7 +491,7 @@ export function fs(storage: StorageBackend): FileSystem {
 		},
 
 		root(): Ino {
-			return '1'
+			return storage.rootIno
 		},
 
 		async scan(visitor: (path: string, ino: Ino, stat: Stat) => Promise<void>): Promise<void> {
