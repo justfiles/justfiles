@@ -31,6 +31,28 @@ export interface InodeMeta {
   symlinkTarget?: string;
 }
 
+export type FsOp =
+	| {
+			kind: 'upsert-inode'
+			ino: Ino
+			meta?: InodeMeta
+			xattrs?: Record<string, Uint8Array | null>
+			contentChanged?: boolean
+		}
+	| {
+			kind: 'set-dirent'
+			dirIno: Ino
+			name: string
+			ino: Ino
+			type: FileType
+		}
+	| {
+			kind: 'unset-dirent'
+			dirIno: Ino
+			name: string
+			ino?: Ino
+		};
+
 /**
  * Fields the VFS may update via setMeta. nlink is excluded — it is
  * managed entirely inside dirSet / dirUnset and is never written by the VFS.
@@ -277,7 +299,7 @@ export interface StorageBackend {
   putBlob?(ino: Ino, data: Uint8Array): Promise<void>;
 
   /**
-   * Return the set of inodes changed since the position encoded in `cursor`.
+   * Return filesystem updates since the position encoded in `cursor`.
    * Optional — if absent, delta sync is disabled in `CachedStorageBackend`.
    *
    * `cursor` is an opaque string issued by the backend. The client stores it
@@ -287,5 +309,5 @@ export interface StorageBackend {
    * it. This eliminates client/server clock-skew bugs that arise when the
    * client supplies a wall-clock time.
    */
-  changes?(cursor: string): Promise<{ inos: Ino[]; cursor: string }>;
+  updates?(cursor: string): Promise<{ ops: FsOp[]; cursor: string }>;
 }

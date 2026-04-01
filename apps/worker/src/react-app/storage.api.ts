@@ -1,4 +1,4 @@
-import type { StorageBackend, InodeMeta } from 'ghost-fs/storage'
+import type { StorageBackend, InodeMeta, FsOp } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { Ino, Off, DirCursor } from 'ghost-fs/types'
 import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'ghost-fs/xattr'
@@ -15,6 +15,15 @@ interface MemoryResponse {
 	links: unknown[]
 	created_at: string
 	updated_at: string
+}
+
+interface ChangeRow {
+	id: string
+	title: string | null
+	path: string
+	updated_at: string
+	active: number
+	tags: string[]
 }
 
 export const ROOT_INO = '__root__'
@@ -116,6 +125,63 @@ async function listAll(
 	return results
 }
 
+function pathToUpdateOps(memory: ChangeRow): FsOp[] {
+	const ops: FsOp[] = []
+	const parts = memory.path.split('/').filter(Boolean)
+	let parentIno: Ino = ROOT_INO
+	let currentDirPath = ''
+
+	for (const part of parts.slice(0, -1)) {
+		currentDirPath = currentDirPath ? `${currentDirPath}/${part}` : part
+		const dirIno = pathToDirIno(currentDirPath)
+		ops.push({
+			kind: 'upsert-inode',
+			ino: dirIno,
+			meta: { ...SYNTHETIC_DIR_META },
+		})
+		ops.push({
+			kind: 'set-dirent',
+			dirIno: parentIno,
+			name: part,
+			ino: dirIno,
+			type: FileType.Directory,
+		})
+		parentIno = dirIno
+	}
+
+	ops.push({
+		kind: 'upsert-inode',
+		ino: memory.id,
+		xattrs: {
+			[GHOSTORE_XATTR.title]: memory.title != null ? encodeXattr(memory.title) : null,
+			[GHOSTORE_XATTR.tags]: memory.tags.length > 0 ? encodeXattr(memory.tags) : null,
+		},
+		contentChanged: true,
+	})
+
+	const leafName = parts[parts.length - 1]
+	if (!leafName) return ops
+
+	if (memory.active === 0) {
+		ops.push({
+			kind: 'unset-dirent',
+			dirIno: parentIno,
+			name: leafName,
+			ino: memory.id,
+		})
+		return ops
+	}
+
+	ops.push({
+		kind: 'set-dirent',
+		dirIno: parentIno,
+		name: leafName,
+		ino: memory.id,
+		type: FileType.Regular,
+	})
+	return ops
+}
+
 // ---- exported factory -------------------------------------------------------
 
 export interface ApiStorageBackend extends StorageBackend {
@@ -124,6 +190,44 @@ export interface ApiStorageBackend extends StorageBackend {
 
 export function apiStorage(client: ApiClient): ApiStorageBackend {
 	const api = client
+	const memoryFetches = new Map<string, Promise<MemoryResponse | null>>()
+	const listFetches = new Map<string, Promise<Array<{ id: string; path: string }>>>()
+
+	async function fetchMemory(ino: Ino): Promise<MemoryResponse | null> {
+		if (ino === ROOT_INO || ino.startsWith(DIR_PREFIX)) return null
+
+		const key = String(ino)
+		const existing = memoryFetches.get(key)
+		if (existing) return existing
+
+		const fetch = (async () => {
+			const res = await api.v1.memory[':id'].$get({ param: { id: ino } })
+			if (res.status === 404) return null
+			if (!res.ok) throw new Error(`get memory failed: ${res.status}`)
+			return await res.json() as MemoryResponse
+		})()
+
+		memoryFetches.set(key, fetch)
+		try {
+			return await fetch
+		} finally {
+			memoryFetches.delete(key)
+		}
+	}
+
+	async function listAllDeduped(pathPrefix: string | undefined): Promise<Array<{ id: string; path: string }>> {
+		const key = pathPrefix ?? ''
+		const existing = listFetches.get(key)
+		if (existing) return existing
+
+		const fetch = listAll(api, pathPrefix)
+		listFetches.set(key, fetch)
+		try {
+			return await fetch
+		} finally {
+			listFetches.delete(key)
+		}
+	}
 
 	return {
 		rootIno: ROOT_INO,
@@ -152,11 +256,8 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			if (ino === ROOT_INO || ino.startsWith(DIR_PREFIX)) {
 				return { ...SYNTHETIC_DIR_META }
 			}
-			const res = await api.v1.memory[':id'].$get({ param: { id: ino } })
-			if (res.status === 404) return null
-			if (!res.ok) throw new Error(`getMeta failed: ${res.status}`)
-			const memory = await res.json()
-			return metaFromMemory(memory as MemoryResponse)
+			const memory = await fetchMemory(ino)
+			return memory ? metaFromMemory(memory) : null
 		},
 
 		async setMeta(_ino, _partial) {
@@ -168,10 +269,8 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		// ------------------------------------------------------------------
 
 		async getXattr(ino, name) {
-			if (ino === ROOT_INO || ino.startsWith(DIR_PREFIX)) return null
-			const res = await api.v1.memory[':id'].$get({ param: { id: ino } })
-			if (!res.ok) return null
-			const memory = (await res.json()) as MemoryResponse
+			const memory = await fetchMemory(ino)
+			if (!memory) return null
 
 			switch (name) {
 				case GHOSTORE_XATTR.title:
@@ -213,10 +312,8 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		},
 
 		async listXattr(ino) {
-			if (ino === ROOT_INO || ino.startsWith(DIR_PREFIX)) return []
-			const res = await api.v1.memory[':id'].$get({ param: { id: ino } })
-			if (!res.ok) return []
-			const memory = (await res.json()) as MemoryResponse
+			const memory = await fetchMemory(ino)
+			if (!memory) return []
 			const names: string[] = []
 			if (memory.title != null) names.push(GHOSTORE_XATTR.title)
 			if (memory.tags.length > 0) names.push(GHOSTORE_XATTR.tags)
@@ -230,9 +327,8 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		// ------------------------------------------------------------------
 
 		async read(ino, offset: Off, length) {
-			const res = await api.v1.memory[':id'].$get({ param: { id: ino } })
-			if (!res.ok) return new Uint8Array(0)
-			const memory = (await res.json()) as MemoryResponse
+			const memory = await fetchMemory(ino)
+			if (!memory) return new Uint8Array(0)
 			const bytes = enc.encode(memory.raw_text)
 			const start = Number(offset)
 			return bytes.subarray(start, start + length)
@@ -262,7 +358,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 
 		async dirLookup(dirIno, name) {
 			const dirPath = dirInoToPath(dirIno)
-			const all = await listAll(api, dirPath === '' ? undefined : dirPath)
+			const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			const children = immediateChildren(all, dirPath)
 			const child = children.get(name)
 			return child ?? null
@@ -273,7 +369,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			if (cursor !== '') return { entries: [], next: '' as DirCursor }
 
 			const dirPath = dirInoToPath(dirIno)
-			const all = await listAll(api, dirPath === '' ? undefined : dirPath)
+			const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			const children = immediateChildren(all, dirPath)
 
 			const entries = [...children.entries()].map(([name, { ino, type }]) => ({
@@ -292,7 +388,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			const newPath = dirPath === '' ? name : `${dirPath}/${name}`
 
 			// Check for an existing memory at the target path (no-clobber contract).
-			const existing = await listAll(api, dirPath === '' ? undefined : dirPath)
+			const existing = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			if (existing.some((m) => m.path === newPath)) return false
 
 			const res = await api.v1.update.$post({ json: { id: ino, path: newPath } })
@@ -307,7 +403,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			const newPath = dirPath === '' ? name : `${dirPath}/${name}`
 
 			// Detect displaced entry (a different memory already at newPath).
-			const existing = await listAll(api, dirPath === '' ? undefined : dirPath)
+			const existing = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			const displaced = existing.find((m) => m.path === newPath && m.id !== ino) ?? null
 
 			if (displaced) {
@@ -328,7 +424,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			const oldPath = oldDirPath === '' ? oldName : `${oldDirPath}/${oldName}`
 			const newPath = newDirPath === '' ? newName : `${newDirPath}/${newName}`
 
-			const all = await listAll(api, undefined)
+				const all = await listAllDeduped(undefined)
 			const src = all.find((m) => m.path === oldPath)
 			if (!src) throw new Error(`ENOENT: ${oldName}`)
 
@@ -354,7 +450,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			// First look it up to get its ino.
 			const dirPath = dirInoToPath(dirIno)
 			const targetPath = dirPath === '' ? name : `${dirPath}/${name}`
-			const all = await listAll(api, dirPath === '' ? undefined : dirPath)
+				const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			const match = all.find((m) => m.path === targetPath)
 			if (!match) return null
 			const archiveRes = await api.v1.memory[':id'].archive.$post({ param: { id: match.id } })
@@ -363,25 +459,25 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		},
 
 		// ------------------------------------------------------------------
-		// Optional: changes — delta sync support
+		// Optional: updates — delta sync support
 		// ------------------------------------------------------------------
 
-		async changes(cursor: string) {
+		async updates(cursor: string) {
 			const res = await api.v1.changes.$get({ query: { since: cursor } })
 			// On error keep the cursor unchanged — next attempt re-fetches the
 			// same window so no changes are lost.
-			if (!res.ok) return { inos: [], cursor }
+			if (!res.ok) return { ops: [], cursor }
 			const data = await res.json()
-			const inos = data.upserted.map((m: { id: string }) => m.id)
+			const ops = data.upserted.flatMap((memory: ChangeRow) => pathToUpdateOps(memory))
 			// Derive the next cursor from the server's own updated_at values,
 			// never from the client clock. If no results came back, keep the
 			// current cursor so the next poll re-checks the same window.
 			const nextCursor: string = data.upserted.reduce(
-				(max: string, m: { updated_at: string }) =>
-					m.updated_at > max ? m.updated_at : max,
+				(max: string, memory: ChangeRow) =>
+					memory.updated_at > max ? memory.updated_at : max,
 				cursor,
 			)
-			return { inos, cursor: nextCursor }
+			return { ops, cursor: nextCursor }
 		},
 
 		// ------------------------------------------------------------------
@@ -389,7 +485,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		// ------------------------------------------------------------------
 
 		async scan(_cursor: string) {
-			const all = await listAll(api, undefined)
+				const all = await listAllDeduped(undefined)
 			// Build full list — directories first, then files, in path order
 			const dirsSeen = new Set<string>()
 			const entries: Array<{ ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }> = []

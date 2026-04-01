@@ -1,4 +1,4 @@
-import type { StorageBackend, InodeMeta } from './storage'
+import type { StorageBackend, InodeMeta, FsOp } from './storage'
 import type { Ino, Off, DirCursor, DirentMin } from './types'
 import { FileType } from './types'
 
@@ -99,7 +99,7 @@ export type CachedStorageBackend = StorageBackend & {
  *   - Directory lookups are cached in-memory; every mutation updates the cache.
  *   - Inode metadata is cached in an in-memory map; on a miss the cache is
  *     populated from `remote`.
- *   - If `remote.changes` is implemented, a background delta sync runs every
+ *   - If `remote.updates` is implemented, a background delta sync runs every
  *     30 s to pick up remote changes, invalidate stale local content, and
  *     emit `'change'` events.
  *   - Inodes under `/.state/` are never flushed to remote and never emitted
@@ -116,6 +116,7 @@ export function cachedStorage(
 ): CachedStorageBackend {
 	const flushDebounceMs = options?.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS
 	const rootIno = remote.rootIno
+	const localUpdates = local.updates?.bind(local)
 
 	// ---- Shared state -------------------------------------------------------
 
@@ -138,7 +139,8 @@ export function cachedStorage(
 	 */
 	const dirCache = new Map<string, DirentMin | null>()
 
-	let syncCursor = ''
+	let remoteSyncCursor = ''
+	let localSyncCursor = ''
 	let paused = false
 	let destroyed = false
 	let deltaSyncTimer: ReturnType<typeof setInterval> | null = null
@@ -179,8 +181,12 @@ export function cachedStorage(
 		try {
 			const raw = await local.read(STATE_SYNCSTATE_INO, 0n, 512)
 			if (raw.length === 0) return
-			const obj = JSON.parse(new TextDecoder().decode(raw)) as { cursor?: unknown }
-			if (typeof obj.cursor === 'string') syncCursor = obj.cursor
+			const obj = JSON.parse(new TextDecoder().decode(raw)) as {
+				remoteCursor?: unknown
+				localCursor?: unknown
+			}
+			if (typeof obj.remoteCursor === 'string') remoteSyncCursor = obj.remoteCursor
+			if (typeof obj.localCursor === 'string') localSyncCursor = obj.localCursor
 		} catch {
 			// Corrupted or absent — start from beginning
 		}
@@ -188,7 +194,10 @@ export function cachedStorage(
 
 	async function saveSyncState(): Promise<void> {
 		try {
-			const raw = new TextEncoder().encode(JSON.stringify({ cursor: syncCursor }))
+			const raw = new TextEncoder().encode(JSON.stringify({
+				remoteCursor: remoteSyncCursor,
+				localCursor: localSyncCursor,
+			}))
 			if (local.putBlob) {
 				await local.putBlob(STATE_SYNCSTATE_INO, raw)
 				return
@@ -270,6 +279,100 @@ export function cachedStorage(
 
 	// ---- Flush loop ---------------------------------------------------------
 
+	function touchedInosFromOps(ops: FsOp[]): Set<Ino> {
+		const inos = new Set<Ino>()
+		for (const op of ops) {
+			switch (op.kind) {
+				case 'upsert-inode':
+					inos.add(op.ino)
+					break
+				case 'set-dirent':
+					inos.add(op.ino)
+					break
+				case 'unset-dirent':
+					if (op.ino) inos.add(op.ino)
+					break
+			}
+		}
+		return inos
+	}
+
+	async function applyRemoteOp(op: FsOp): Promise<void> {
+		switch (op.kind) {
+			case 'upsert-inode': {
+				if (isStatePath(op.ino) || isStateDir(op.ino)) return
+
+				if (op.contentChanged) {
+					const cachedMeta = metaCache.get(op.ino)
+					const readLen =
+						cachedMeta !== undefined && cachedMeta.size > 0n
+							? Number(cachedMeta.size)
+							: MAX_READ_BYTES
+					const data = await local.read(op.ino, 0n, readLen)
+
+					if (remote.putBlob) {
+						await remote.putBlob(op.ino, data)
+					} else {
+						await remote.truncate(op.ino, 0n)
+						if (data.length > 0) await remote.write(op.ino, 0n, data)
+					}
+				}
+
+				if (op.xattrs !== undefined) {
+					const localNames = local.listXattr ? await local.listXattr(op.ino) : []
+					const localNameSet = new Set(localNames)
+
+					if (remote.removeXattr && remote.listXattr) {
+						const remoteNames = await remote.listXattr(op.ino)
+						for (const name of remoteNames) {
+							if (!localNameSet.has(name)) await remote.removeXattr(op.ino, name)
+						}
+					}
+
+					if (local.getXattr && remote.setXattr) {
+						for (const name of localNames) {
+							const val = await local.getXattr(op.ino, name)
+							if (val) await remote.setXattr(op.ino, name, val)
+						}
+					}
+				}
+
+				if (op.meta && remote.setMeta) {
+					await remote.setMeta(op.ino, {
+						mode: op.meta.mode,
+						mtimeNs: op.meta.mtimeNs,
+						ctimeNs: op.meta.ctimeNs,
+						symlinkTarget: op.meta.symlinkTarget,
+					})
+				}
+				return
+			}
+			case 'set-dirent':
+				if (isStateDir(op.dirIno) || isStatePath(op.dirIno)) return
+				await remote.dirSet(op.dirIno, op.name, op.ino, op.type)
+				return
+			case 'unset-dirent':
+				if (isStateDir(op.dirIno) || isStatePath(op.dirIno)) return
+				await remote.dirUnset(op.dirIno, op.name)
+				return
+		}
+	}
+
+	async function flushPendingUpdates(): Promise<{ hadOps: boolean; touchedInos: Set<Ino> }> {
+		if (!localUpdates) return { hadOps: false, touchedInos: new Set() }
+
+		const { ops, cursor } = await localUpdates(localSyncCursor)
+		if (ops.length === 0) return { hadOps: false, touchedInos: new Set() }
+
+		for (const op of ops) {
+			await applyRemoteOp(op)
+		}
+
+		localSyncCursor = cursor
+		await saveSyncState()
+		return { hadOps: true, touchedInos: touchedInosFromOps(ops) }
+	}
+
 	async function flushIno(ino: Ino, force = false): Promise<void> {
 		// Never sync reserved state inodes to remote.
 		if (isStatePath(ino)) return
@@ -281,49 +384,16 @@ export function cachedStorage(
 			if (!force && state.nextRetryAt > Date.now()) return
 
 		try {
-			if ((state.mask & DIRTY_CONTENT) !== 0) {
-				// Read full content from local.
-				// Use the cached size if available so we don't over-read.
-				const cachedMeta = metaCache.get(ino)
-				const readLen =
-					cachedMeta !== undefined && cachedMeta.size > 0n
-						? Number(cachedMeta.size)
-						: MAX_READ_BYTES
-				const data = await local.read(ino, 0n, readLen)
-
-				// Push content to remote
-				if (remote.putBlob) {
-					await remote.putBlob(ino, data)
-				} else {
-					await remote.truncate(ino, 0n)
-					if (data.length > 0) await remote.write(ino, 0n, data)
-				}
-			}
-
-			if ((state.mask & DIRTY_META) !== 0) {
-				const localNames = local.listXattr ? await local.listXattr(ino) : []
-				const localNameSet = new Set(localNames)
-
-				if (remote.removeXattr && remote.listXattr) {
-					const remoteNames = await remote.listXattr(ino)
-					for (const name of remoteNames) {
-						if (!localNameSet.has(name)) await remote.removeXattr(ino, name)
+			const { hadOps, touchedInos } = await flushPendingUpdates()
+			if (hadOps) {
+				for (const touchedIno of touchedInos) {
+					if (dirty.delete(touchedIno)) {
+						events.dispatchEvent(Object.assign(new Event('synced'), { ino: touchedIno }))
 					}
 				}
-
-				if (local.getXattr && remote.setXattr) {
-					for (const name of localNames) {
-						const val = await local.getXattr(ino, name)
-						if (val) await remote.setXattr(ino, name, val)
-					}
-				}
+				if (touchedInos.size > 0) await saveDirtyState()
+				return
 			}
-			// DIRTY_PATH is reserved for future write-behind path sync. Current
-			// directory operations still go straight to remote.
-
-			dirty.delete(ino)
-			await saveDirtyState()
-			events.dispatchEvent(Object.assign(new Event('synced'), { ino }))
 		} catch {
 			// Exponential back-off — retry state lives in the dirty map entry
 			const stateNow = dirty.get(ino)
@@ -348,32 +418,61 @@ export function cachedStorage(
 
 	// ---- Delta sync ---------------------------------------------------------
 
+	function changedInosFromOps(ops: FsOp[]): Set<Ino> {
+		const inos = new Set<Ino>()
+		for (const op of ops) {
+			switch (op.kind) {
+				case 'upsert-inode':
+					inos.add(op.ino)
+					break
+				case 'set-dirent':
+					inos.add(op.ino)
+					break
+				case 'unset-dirent':
+					if (op.ino) inos.add(op.ino)
+					break
+			}
+		}
+		return inos
+	}
+
 	async function runDeltaSync(): Promise<void> {
-		if (paused || destroyed || !remote.changes) return
+		if (paused || destroyed || !remote.updates) return
 		try {
-			const { inos, cursor } = await remote.changes(syncCursor)
-			syncCursor = cursor
+			const { ops, cursor } = await remote.updates(remoteSyncCursor)
+			remoteSyncCursor = cursor
 			await saveSyncState()
 
-			let anyChange = false
-			for (const ino of inos) {
-				if (isStatePath(ino)) continue       // never process state paths
-				if (dirty.has(ino)) continue         // local wins; do NOT overwrite
-				metaCache.delete(ino)
-				invalidated.add(ino)                 // force next read to bypass local
-				anyChange = true
+			if (ops.length === 0) return
+
+			for (const op of ops) {
+				if (op.kind !== 'upsert-inode') continue
+				if (isStatePath(op.ino) || isStateDir(op.ino)) continue
+				if (dirty.has(op.ino)) continue
+				if (op.meta) {
+					metaCache.set(op.ino, op.meta)
+				} else {
+					metaCache.delete(op.ino)
+				}
+				if (op.contentChanged) invalidated.add(op.ino)
+			}
+
+			const changedInos = changedInosFromOps(ops)
+			for (const ino of changedInos) {
+				if (isStatePath(ino) || isStateDir(ino)) continue // never process state paths
+				if (dirty.has(ino)) continue // local wins; do NOT overwrite
 				events.dispatchEvent(Object.assign(new Event('change'), { ino }))
 			}
-			// Any remote change may have affected directory contents — clear the
-			// entire dir cache conservatively (we don't know which dirs changed).
-			if (anyChange) dirCache.clear()
+			if (ops.some((op) => op.kind === 'set-dirent' || op.kind === 'unset-dirent')) {
+				dirCache.clear()
+			}
 		} catch {
 			// Network error — keep last known cursor, retry on next interval
 		}
 	}
 
 	function startDeltaSync(): void {
-		if (deltaSyncTimer !== null || !remote.changes) return
+		if (deltaSyncTimer !== null || !remote.updates) return
 		deltaSyncTimer = setInterval(() => {
 			void runDeltaSync()
 		}, DELTA_SYNC_INTERVAL_MS)

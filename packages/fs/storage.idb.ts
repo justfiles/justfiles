@@ -1,6 +1,6 @@
 import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
-import type { StorageBackend, InodeMeta } from './storage'
+import type { StorageBackend, InodeMeta, FsOp } from './storage'
 import { FileType } from './types'
 import type { Ino, Off, DirCursor } from './types'
 
@@ -38,6 +38,11 @@ interface DirtyRecord {
 	markedAt: number
 }
 
+interface UpdateRecord {
+	seq?: number
+	op: FsOp
+}
+
 interface GhostoreFsSchema extends DBSchema {
 	inodes: { key: string; value: InodeRecord }
 	content: {
@@ -56,18 +61,22 @@ interface GhostoreFsSchema extends DBSchema {
 		indexes: { 'by-ino': string }
 	}
 	dirty: { key: string; value: DirtyRecord }
+	updates: {
+		key: number
+		value: UpdateRecord
+	}
 	meta: { key: string; value: unknown }
 }
 
 type Db = IDBPDatabase<GhostoreFsSchema>
-type AllStores = ('inodes' | 'content' | 'dirs' | 'xattrs' | 'dirty' | 'meta')[]
+type AllStores = ('inodes' | 'content' | 'dirs' | 'xattrs' | 'dirty' | 'updates' | 'meta')[]
 type FullTx = IDBPTransaction<GhostoreFsSchema, AllStores, 'readwrite'>
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const DB_VERSION = 1
+const DB_VERSION = 2
 const DEFAULT_CONTENT_CAP = 50 * 1024 * 1024 // 50 MB
 const ROOT_INO: Ino = '1'
 const DIR_PAGE = 100
@@ -86,12 +95,13 @@ export type IdbStorageBackend = StorageBackend & {
 /**
  * IndexedDB-backed StorageBackend with LRU content eviction.
  *
- * Uses six object stores:
+ * Uses seven object stores:
  *   inodes   — inode metadata
  *   content  — file data (subject to LRU eviction up to contentCapBytes)
  *   dirs     — directory entries keyed by [dirIno, name]
  *   xattrs   — extended attributes keyed by [ino, name]
  *   dirty    — inodes with unflushed writes (for the sync layer)
+ *   updates  — append-only local operation log for outbound sync
  *   meta     — key-value bootstrap state (rootIno, totalContentBytes, etc.)
  *
  * The root inode is always '1' (matching the memStorage convention and
@@ -111,20 +121,25 @@ export function idbStorage(
 	function getDb(): Promise<Db> {
 		if (!dbPromise) {
 			dbPromise = openDB<GhostoreFsSchema>(dbName, DB_VERSION, {
-				upgrade(db) {
-					db.createObjectStore('inodes', { keyPath: 'ino' })
+				upgrade(db, oldVersion) {
+					if (oldVersion < 1) {
+						db.createObjectStore('inodes', { keyPath: 'ino' })
 
-					const contentStore = db.createObjectStore('content', { keyPath: 'ino' })
-					contentStore.createIndex('by-lru', 'lastAccessedAt')
+						const contentStore = db.createObjectStore('content', { keyPath: 'ino' })
+						contentStore.createIndex('by-lru', 'lastAccessedAt')
 
-					const dirStore = db.createObjectStore('dirs', { keyPath: ['dirIno', 'name'] })
-					dirStore.createIndex('by-dir', 'dirIno')
+						const dirStore = db.createObjectStore('dirs', { keyPath: ['dirIno', 'name'] })
+						dirStore.createIndex('by-dir', 'dirIno')
 
-					const xattrStore = db.createObjectStore('xattrs', { keyPath: ['ino', 'name'] })
-					xattrStore.createIndex('by-ino', 'ino')
+						const xattrStore = db.createObjectStore('xattrs', { keyPath: ['ino', 'name'] })
+						xattrStore.createIndex('by-ino', 'ino')
 
-					db.createObjectStore('dirty', { keyPath: 'ino' })
-					db.createObjectStore('meta')
+						db.createObjectStore('dirty', { keyPath: 'ino' })
+						db.createObjectStore('meta')
+					}
+					if (oldVersion < 2 && !db.objectStoreNames.contains('updates')) {
+						db.createObjectStore('updates', { keyPath: 'seq', autoIncrement: true })
+					}
 				},
 				blocked() {
 					console.warn(`[idbStorage] DB "${dbName}" is blocked — another tab may be open`)
@@ -210,7 +225,7 @@ export function idbStorage(
 	): Promise<void> {
 		const now = Date.now()
 		const newSize = data.length
-		const tx = db.transaction(['content', 'inodes', 'dirty', 'meta'], 'readwrite')
+		const tx = db.transaction(['content', 'inodes', 'dirty', 'updates', 'meta'], 'readwrite')
 
 		await tx.objectStore('content').put({ ino, data, sizeBytes: newSize, lastAccessedAt: now })
 
@@ -220,6 +235,13 @@ export function idbStorage(
 		}
 
 		await tx.objectStore('dirty').put({ ino, markedAt: now })
+		await tx.objectStore('updates').add({
+			op: {
+				kind: 'upsert-inode',
+				ino,
+				contentChanged: true,
+			},
+		})
 
 		const total = (await tx.objectStore('meta').get('totalContentBytes') as number | undefined) ?? 0
 		await tx.objectStore('meta').put(total - oldSize + newSize, 'totalContentBytes')
@@ -334,7 +356,16 @@ export function idbStorage(
 
 		async setXattr(ino, name, value) {
 			const db = await getDb()
-			await db.put('xattrs', { ino, name, value: value.slice() })
+			const tx = db.transaction(['xattrs', 'updates'], 'readwrite')
+			await tx.objectStore('xattrs').put({ ino, name, value: value.slice() })
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'upsert-inode',
+					ino,
+					xattrs: {},
+				},
+			})
+			await tx.done
 		},
 
 		async listXattr(ino) {
@@ -345,7 +376,16 @@ export function idbStorage(
 
 		async removeXattr(ino, name) {
 			const db = await getDb()
-			await db.delete('xattrs', [ino, name])
+			const tx = db.transaction(['xattrs', 'updates'], 'readwrite')
+			await tx.objectStore('xattrs').delete([ino, name])
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'upsert-inode',
+					ino,
+					xattrs: {},
+				},
+			})
+			await tx.done
 		},
 
 		// --- data I/O ---
@@ -427,7 +467,7 @@ export function idbStorage(
 
 		async dirAdd(dirIno, name, ino, type) {
 			const db = await getDb()
-			const tx = db.transaction(['dirs', 'inodes'], 'readwrite')
+			const tx = db.transaction(['dirs', 'inodes', 'updates'], 'readwrite')
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
 			if (existing) {
 				await tx.done
@@ -438,13 +478,22 @@ export function idbStorage(
 			if (inode) {
 				await tx.objectStore('inodes').put({ ...inode, nlink: inode.nlink + 1 })
 			}
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'set-dirent',
+					dirIno,
+					name,
+					ino,
+					type,
+				},
+			})
 			await tx.done
 			return true
 		},
 
 		async dirSet(dirIno, name, ino, type) {
 			const db = await getDb()
-			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'meta'], 'readwrite')
+			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
 			const displaced = await tx.objectStore('dirs').get([dirIno, name]) ?? null
 
 			await tx.objectStore('dirs').put({ dirIno, name, ino, type })
@@ -472,13 +521,22 @@ export function idbStorage(
 				}
 			}
 
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'set-dirent',
+					dirIno,
+					name,
+					ino,
+					type,
+				},
+			})
 			await tx.done
 			return displaced ? { ino: displaced.ino, type: displaced.type } : null
 		},
 
 		async dirUnset(dirIno, name) {
 			const db = await getDb()
-			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'meta'], 'readwrite')
+			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
 			const entry = await tx.objectStore('dirs').get([dirIno, name]) ?? null
 			if (!entry) {
 				await tx.done
@@ -497,6 +555,14 @@ export function idbStorage(
 				}
 			}
 
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'unset-dirent',
+					dirIno,
+					name,
+					ino: entry.ino,
+				},
+			})
 			await tx.done
 			return { ino: entry.ino, type: entry.type }
 		},
@@ -510,6 +576,19 @@ export function idbStorage(
 			const delta = data.length - oldSize
 			if (delta > 0) await evictContent(db, delta, ino)
 			await writeContent(db, ino, data.slice(), oldSize)
+		},
+
+		async updates(cursor: string) {
+			const db = await getDb()
+			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
+			const lowerBound = Number.isFinite(since) && since > 0 ? since + 1 : 1
+			const records = await db.getAll('updates', IDBKeyRange.lowerBound(lowerBound))
+			const keys = await db.getAllKeys('updates', IDBKeyRange.lowerBound(lowerBound))
+			const nextCursor = keys.length > 0 ? String(keys[keys.length - 1]) : cursor
+			return {
+				ops: records.map((record) => record.op),
+				cursor: nextCursor,
+			}
 		},
 	}
 }

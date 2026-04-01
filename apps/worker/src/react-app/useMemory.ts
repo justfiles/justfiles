@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { LinkInfo } from '@ghostore/core'
-import { GHOSTORE_XATTR, decodeXattr, encodeXattr } from 'ghost-fs/xattr'
+import { GHOSTORE_XATTR, encodeXattr } from 'ghost-fs/xattr'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { openEditCache, type EditCache } from './editCache'
 import { type ProseMirrorJsonDocument } from './sync'
@@ -47,17 +47,6 @@ function toVolumePath(path: string): string {
 	return path.startsWith('/') ? path : `/${path}`
 }
 
-function nsToIso(ns: bigint): string {
-	return new Date(Number(ns / 1_000_000n)).toISOString()
-}
-
-async function decodeOptionalXattr<T>(
-	read: Promise<Uint8Array | null>,
-): Promise<T | null> {
-	const value = await read
-	return value ? decodeXattr<T>(value) : null
-}
-
 export function useMemory(id: string | null) {
 	const { volume, resolveMemory } = useVolume()
 	const [isLoading, setIsLoading] = useState(false)
@@ -80,39 +69,26 @@ export function useMemory(id: string | null) {
 				const cache = await getEditCache()
 				const cachedContent = await cache.get(currentId)
 				const resolved = await resolveMemory(currentId)
-				let path = resolved.entry?.path ?? null
+				const entry = resolved.entry
+				let path = entry?.path ?? null
 
 				let nextMemory: MemoryData | null = null
-				if (path) {
+				if (entry && path) {
 					const volumePath = toVolumePath(path)
 					try {
-						const [
-							markdown,
-							stat,
-							title,
-							tags,
-							links,
-							source,
-						] = await Promise.all([
-							volume.readFile(volumePath),
-							volume.stat(volumePath),
-							decodeOptionalXattr<string>(volume.getXattr(volumePath, GHOSTORE_XATTR.title)),
-							decodeOptionalXattr<string[]>(volume.getXattr(volumePath, GHOSTORE_XATTR.tags)),
-							decodeOptionalXattr<LinkInfo[]>(volume.getXattr(volumePath, GHOSTORE_XATTR.links)),
-							decodeOptionalXattr<string>(volume.getXattr(volumePath, GHOSTORE_XATTR.source)),
-						])
+						const markdown = await volume.readFile(volumePath)
 
 						nextMemory = {
 							id: currentId,
 							content: markdownToJson(new TextDecoder().decode(markdown)),
-							title,
+							title: entry.title,
 							path,
-							source,
-							created_at: nsToIso(stat.ctimeNs),
-							updated_at: nsToIso(stat.mtimeNs),
-							active: 1,
-							links: links ?? [],
-							tags: tags ?? [],
+							source: null,
+							created_at: undefined,
+							updated_at: entry.updated_at,
+							active: entry.active,
+							links: [],
+							tags: entry.tags,
 						}
 					} catch {
 						path = null
