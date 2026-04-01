@@ -24,7 +24,7 @@ function App() {
 	)
 	const { refresh } = useSidebarActions()
 	const [draftEditorVersion, setDraftEditorVersion] = useState(0)
-	const { id, isLoading, submit } = useDraft()
+	const { id, isLoading, content, save, submit } = useDraft()
 	const { isOnline } = useSyncRuntimeStatus()
 
 	const submitMutation = useMutation({
@@ -67,6 +67,8 @@ function App() {
 		<MemoryEditor
 			key={draftEditorVersion}
 			id={id}
+			content={content}
+			onSave={save}
 			isLoading={isLoading}
 			getToken={getToken}
 			headerLeft={

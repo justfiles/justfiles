@@ -4,10 +4,12 @@ import { useEffect, type ReactNode } from 'react'
 import { FiMenu, FiSettings } from 'react-icons/fi'
 import { Editor } from './editor'
 import { useSidebarActions } from './SidebarContext'
-import { useMemory } from './useMemory'
+import type { ProseMirrorJsonDocument } from './sync'
 
 type Props = {
 	id: string | null
+	content: ProseMirrorJsonDocument | null
+	onSave: (content: ProseMirrorJsonDocument) => void
 	headerLeft?: ReactNode
 	headerRight?: ReactNode
 	footer?: ReactNode
@@ -19,6 +21,8 @@ type Props = {
 
 export function MemoryEditor({
 	id,
+	content,
+	onSave,
 	headerLeft,
 	headerRight,
 	footer,
@@ -29,8 +33,7 @@ export function MemoryEditor({
 }: Props) {
 	const navigate = useNavigate()
 	const { toggleSidebar, sidebarOpen } = useSidebarActions()
-	const { content, save, isLoading: isMemoryLoading } = useMemory(id)
-	const showLoading = isLoading || isMemoryLoading
+	const showLoading = Boolean(isLoading)
 
 	useEffect(() => {
 		function onKeyDown(e: KeyboardEvent) {
@@ -79,14 +82,14 @@ export function MemoryEditor({
 						</span>
 					</div>
 					{id && content ? (
-						<div className="flex-1 flex flex-col min-h-0">
-							<Editor
-								key={id}
-								value={content}
-								onChange={save}
-								memoryId={id}
-								readOnly={readOnly}
-								getToken={getToken}
+							<div className="flex-1 flex flex-col min-h-0">
+								<Editor
+									key={id}
+									value={content}
+									onChange={onSave}
+									memoryId={id}
+									readOnly={readOnly}
+									getToken={getToken}
 							/>
 						</div>
 					) : (

@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { createTanstackRemoteMemoryService } from './remote'
-import { useSync } from './sync'
 import { useApiClient } from './useApiClient'
+import { useMemory } from './useMemory'
+import type { ProseMirrorJsonDocument } from './sync'
 
 const DRAFT_ID_KEY = 'ghostore:draft-id'
 
 type DraftHook = {
 	readonly id: string | null
 	readonly isLoading: boolean
+	readonly content: ProseMirrorJsonDocument | null
+	save(content: ProseMirrorJsonDocument): void
 	submit(path: string): Promise<void>
 }
 
@@ -30,9 +33,9 @@ export function useDraft(): DraftHook {
 	const api = useApiClient()
 	const queryClient = useQueryClient()
 	const remote = createTanstackRemoteMemoryService(queryClient, api)
-	const sync = useSync()
 	const [id, setId] = useState<string | null>(() => loadStoredDraftId())
 	const [isLoading, setIsLoading] = useState(true)
+	const memory = useMemory(id)
 
 	useEffect(() => {
 		let cancelled = false
@@ -58,7 +61,7 @@ export function useDraft(): DraftHook {
 
 	async function submit(path: string): Promise<void> {
 		if (!id) throw new Error('Draft is not ready')
-		await sync.push(id, { path }, true)
+		await memory.movePath(path)
 		await queryClient.removeQueries({ queryKey: ['draft-memory'] })
 		const data = await remote.getDraft()
 		setId(data.id)
@@ -67,7 +70,9 @@ export function useDraft(): DraftHook {
 
 	return {
 		id,
-		isLoading,
+		isLoading: isLoading || memory.isLoading,
+		content: memory.content,
+		save: memory.saveContent,
 		submit
 	}
 }

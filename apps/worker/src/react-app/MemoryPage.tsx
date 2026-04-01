@@ -7,7 +7,6 @@ import type { LinkInfo } from '@ghostore/core'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { MemoryEditor } from './MemoryEditor'
 import { useSidebarActions } from './SidebarContext'
-import { useSync } from './sync'
 import { useApiClient } from './useApiClient'
 import { useMemory } from './useMemory'
 
@@ -69,8 +68,7 @@ export function MemoryPage() {
 	const navigate = useNavigate()
 	const { getToken } = useAuth()
 	const api = useApiClient()
-	const sync = useSync()
-	const { memory, isLoading } = useMemory(id)
+	const { memory, content, saveContent, saveTitle, movePath, isLoading } = useMemory(id)
 	const { upsertEntry, removeEntry } = useSidebarActions()
 
 	const [editingTitle, setEditingTitle] = useState(false)
@@ -78,7 +76,7 @@ export function MemoryPage() {
 
 	const saveTitleMutation = useMutation({
 		mutationFn: async (title: string) => {
-			await sync.push(id, { title: title || null }, true)
+			await saveTitle(title || null)
 			return title
 		},
 		onSuccess: (title) => {
@@ -128,7 +126,7 @@ export function MemoryPage() {
 
 	const movePathMutation = useMutation({
 		mutationFn: async (path: string) => {
-			await sync.push(id, { path }, true)
+			await movePath(path)
 			return path
 		},
 		onSuccess: (path) => {
@@ -227,6 +225,8 @@ export function MemoryPage() {
 	return (
 		<MemoryEditor
 			id={id}
+			content={content}
+			onSave={saveContent}
 			isLoading={isLoading}
 			readOnly={memory?.active === 0}
 			getToken={getToken}
