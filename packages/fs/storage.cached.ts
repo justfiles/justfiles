@@ -48,10 +48,17 @@ const MAX_READ_BYTES = 64 * 1024 * 1024 // 64 MB
 // ---------------------------------------------------------------------------
 
 interface DirtyState {
+	mask: number
 	retryCount: number
 	/** Earliest ms timestamp at which the next retry may run. */
 	nextRetryAt: number
 }
+
+const DIRTY_CONTENT = 1 << 0
+const DIRTY_META = 1 << 1
+const DIRTY_PATH = 1 << 2
+const KNOWN_DIRTY_MASK = DIRTY_CONTENT | DIRTY_META | DIRTY_PATH
+const LEGACY_DIRTY_MASK = DIRTY_CONTENT | DIRTY_META
 
 /**
  * Extended interface returned by `cachedStorage()`. Callers may:
@@ -124,11 +131,6 @@ export function cachedStorage(
 	 * local and go straight to remote until a fresh fetch repopulates local.
 	 */
 	const invalidated = new Set<Ino>()
-	/**
-	 * Xattr names removed locally that must be propagated to remote on flush.
-	 * Cleared per-inode after a successful flush.
-	 */
-	const deletedXattrs = new Map<Ino, Set<string>>()
 	/**
 	 * In-memory dir-lookup cache. Populated on read miss; invalidated on
 	 * every directory mutation and cleared on delta sync.
@@ -205,9 +207,19 @@ export function cachedStorage(
 
 			const text = new TextDecoder().decode(raw)
 			for (const line of text.split('\n')) {
-				const ino = line.trim()
+				const trimmed = line.trim()
+				if (!trimmed) continue
+
+				const idx = trimmed.lastIndexOf(':')
+				const ino = idx === -1 ? trimmed : trimmed.slice(0, idx)
 				if (!ino || isStatePath(ino) || dirty.has(ino)) continue
-				dirty.set(ino, { retryCount: 0, nextRetryAt: 0 })
+
+				const parsedMask = idx === -1 ? LEGACY_DIRTY_MASK : Number.parseInt(trimmed.slice(idx + 1), 10)
+				const mask =
+					Number.isFinite(parsedMask) && parsedMask > 0
+						? (parsedMask & KNOWN_DIRTY_MASK)
+						: LEGACY_DIRTY_MASK
+				dirty.set(ino, { mask, retryCount: 0, nextRetryAt: 0 })
 			}
 		} catch {
 			// Corrupted or absent — start empty
@@ -217,8 +229,9 @@ export function cachedStorage(
 	async function saveDirtyState(): Promise<void> {
 		try {
 			const raw = new TextEncoder().encode(
-				[...dirty.keys()]
-					.filter((ino) => !isStatePath(ino))
+				[...dirty.entries()]
+					.filter(([ino]) => !isStatePath(ino))
+					.map(([ino, state]) => `${ino}:${state.mask}`)
 					.join('\n'),
 			)
 
@@ -236,10 +249,13 @@ export function cachedStorage(
 
 	// ---- Dirty tracking + debounce ------------------------------------------
 
-	async function markDirty(ino: Ino): Promise<void> {
-		const isNew = !dirty.has(ino)
-		if (isNew) {
-			dirty.set(ino, { retryCount: 0, nextRetryAt: 0 })
+	async function markDirty(ino: Ino, mask: number): Promise<void> {
+		const current = dirty.get(ino)
+		if (!current) {
+			dirty.set(ino, { mask, retryCount: 0, nextRetryAt: 0 })
+			await saveDirtyState()
+		} else if ((current.mask & mask) !== mask) {
+			dirty.set(ino, { ...current, mask: current.mask | mask })
 			await saveDirtyState()
 		}
 		// Reset the debounce timer
@@ -262,46 +278,51 @@ export function cachedStorage(
 		if (!state) return
 		// Honour backoff unless the caller explicitly forces a final attempt
 		// (e.g. destroy() wants one last try regardless of retry schedule).
-		if (!force && state.nextRetryAt > Date.now()) return
+			if (!force && state.nextRetryAt > Date.now()) return
 
 		try {
-			// Read full content from local.
-			// Use the cached size if available so we don't over-read.
-			const cachedMeta = metaCache.get(ino)
-			const readLen =
-				cachedMeta !== undefined && cachedMeta.size > 0n
-					? Number(cachedMeta.size)
-					: MAX_READ_BYTES
-			const data = await local.read(ino, 0n, readLen)
+			if ((state.mask & DIRTY_CONTENT) !== 0) {
+				// Read full content from local.
+				// Use the cached size if available so we don't over-read.
+				const cachedMeta = metaCache.get(ino)
+				const readLen =
+					cachedMeta !== undefined && cachedMeta.size > 0n
+						? Number(cachedMeta.size)
+						: MAX_READ_BYTES
+				const data = await local.read(ino, 0n, readLen)
 
-			// Push content to remote
-			if (remote.putBlob) {
-				await remote.putBlob(ino, data)
-			} else {
-				await remote.truncate(ino, 0n)
-				if (data.length > 0) await remote.write(ino, 0n, data)
-			}
-
-			// Flush xattr deletions first so a remove-then-set sequence is safe.
-			if (remote.removeXattr) {
-				const deleted = deletedXattrs.get(ino)
-				if (deleted) {
-					for (const name of deleted) await remote.removeXattr!(ino, name)
+				// Push content to remote
+				if (remote.putBlob) {
+					await remote.putBlob(ino, data)
+				} else {
+					await remote.truncate(ino, 0n)
+					if (data.length > 0) await remote.write(ino, 0n, data)
 				}
 			}
 
-			// Flush xattr additions/updates
-			if (local.listXattr && local.getXattr && remote.setXattr) {
-				const names = await local.listXattr(ino)
-				for (const name of names) {
-					const val = await local.getXattr!(ino, name)
-					if (val) await remote.setXattr!(ino, name, val)
+			if ((state.mask & DIRTY_META) !== 0) {
+				const localNames = local.listXattr ? await local.listXattr(ino) : []
+				const localNameSet = new Set(localNames)
+
+				if (remote.removeXattr && remote.listXattr) {
+					const remoteNames = await remote.listXattr(ino)
+					for (const name of remoteNames) {
+						if (!localNameSet.has(name)) await remote.removeXattr(ino, name)
+					}
+				}
+
+				if (local.getXattr && remote.setXattr) {
+					for (const name of localNames) {
+						const val = await local.getXattr(ino, name)
+						if (val) await remote.setXattr(ino, name, val)
+					}
 				}
 			}
+			// DIRTY_PATH is reserved for future write-behind path sync. Current
+			// directory operations still go straight to remote.
 
 			dirty.delete(ino)
 			await saveDirtyState()
-			deletedXattrs.delete(ino)
 			events.dispatchEvent(Object.assign(new Event('synced'), { ino }))
 		} catch {
 			// Exponential back-off — retry state lives in the dirty map entry
@@ -310,6 +331,7 @@ export function cachedStorage(
 			const idx = Math.min(stateNow.retryCount, RETRY_DELAYS_MS.length - 1)
 			const delay = RETRY_DELAYS_MS[idx]!
 			dirty.set(ino, {
+				mask: stateNow.mask,
 				retryCount: stateNow.retryCount + 1,
 				nextRetryAt: Date.now() + delay,
 			})
@@ -427,9 +449,7 @@ export function cachedStorage(
 
 		async setXattr(ino, name, value) {
 			if (local.setXattr) await local.setXattr(ino, name, value)
-			// Un-tombstone if this name was previously removed in this session
-			deletedXattrs.get(ino)?.delete(name)
-			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino, DIRTY_META)
 		},
 
 		async listXattr(ino) {
@@ -442,10 +462,7 @@ export function cachedStorage(
 
 		async removeXattr(ino, name) {
 			if (local.removeXattr) await local.removeXattr(ino, name)
-			// Track deletion so flush can propagate it to remote
-			if (!deletedXattrs.has(ino)) deletedXattrs.set(ino, new Set())
-			deletedXattrs.get(ino)!.add(name)
-			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino, DIRTY_META)
 		},
 
 		// --- Data I/O --------------------------------------------------------
@@ -496,7 +513,7 @@ export function cachedStorage(
 			const end = offset + BigInt(data.length)
 			const m = metaCache.get(ino)
 			if (m !== undefined && end > m.size) metaCache.set(ino, { ...m, size: end })
-			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino, DIRTY_CONTENT)
 			return n
 		},
 
@@ -504,7 +521,7 @@ export function cachedStorage(
 			await local.truncate(ino, size)
 			const m = metaCache.get(ino)
 			if (m !== undefined) metaCache.set(ino, { ...m, size })
-			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino, DIRTY_CONTENT)
 		},
 
 		async putBlob(ino, data) {
@@ -516,7 +533,7 @@ export function cachedStorage(
 			}
 			const m = metaCache.get(ino)
 			if (m !== undefined) metaCache.set(ino, { ...m, size: BigInt(data.length) })
-			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino)
+			if (!isStatePath(ino) && !isStateDir(ino)) await markDirty(ino, DIRTY_CONTENT)
 		},
 
 		// --- Directory operations --------------------------------------------

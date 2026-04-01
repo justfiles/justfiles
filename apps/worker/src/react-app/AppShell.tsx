@@ -8,6 +8,7 @@ import { Sidebar } from './Sidebar'
 import { SidebarContext } from './SidebarContext'
 import { loadSettings } from './settings'
 import { useSidebar } from './useSidebar'
+import { useVolume } from './useVolume'
 
 function lsSidebarOpenKey(userId: string) {
 	return `ghostore:${userId}:sidebar-open`
@@ -19,6 +20,7 @@ function loadSidebarOpen(userId: string): boolean {
 
 function AppShellInner({ userId }: { userId: string }) {
 	const { entries, upsertEntry, removeEntry, refresh } = useSidebar()
+	const { index } = useVolume()
 	const [sidebarOpen, setSidebarOpen] = useState(() => loadSidebarOpen(userId))
 
 	useEffect(() => {
@@ -26,6 +28,10 @@ function AppShellInner({ userId }: { userId: string }) {
 			navigator.storage.persist()
 		}
 	}, [])
+
+	useEffect(() => {
+		index.hydrate(entries)
+	}, [entries, index])
 
 	// Prevent iOS from using non-scrollable areas as a handle to scroll the
 	// viewport when the keyboard toolbar appears. Touches inside any
