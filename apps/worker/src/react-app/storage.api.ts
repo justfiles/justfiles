@@ -363,6 +363,28 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		},
 
 		// ------------------------------------------------------------------
+		// Optional: changes — delta sync support
+		// ------------------------------------------------------------------
+
+		async changes(cursor: string) {
+			const res = await api.v1.changes.$get({ query: { since: cursor } })
+			// On error keep the cursor unchanged — next attempt re-fetches the
+			// same window so no changes are lost.
+			if (!res.ok) return { inos: [], cursor }
+			const data = await res.json()
+			const inos = data.upserted.map((m: { id: string }) => m.id)
+			// Derive the next cursor from the server's own updated_at values,
+			// never from the client clock. If no results came back, keep the
+			// current cursor so the next poll re-checks the same window.
+			const nextCursor: string = data.upserted.reduce(
+				(max: string, m: { updated_at: string }) =>
+					m.updated_at > max ? m.updated_at : max,
+				cursor,
+			)
+			return { inos, cursor: nextCursor }
+		},
+
+		// ------------------------------------------------------------------
 		// Optional: scan (parent-before-child order)
 		// ------------------------------------------------------------------
 

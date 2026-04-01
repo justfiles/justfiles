@@ -272,4 +272,17 @@ export interface StorageBackend {
    * this method.
    */
   putBlob?(ino: Ino, data: Uint8Array): Promise<void>;
+
+  /**
+   * Return the set of inodes changed since the position encoded in `cursor`.
+   * Optional — if absent, delta sync is disabled in `CachedStorageBackend`.
+   *
+   * `cursor` is an opaque string issued by the backend. The client stores it
+   * verbatim and passes it back on the next call. Empty string means
+   * "from the beginning". The backend encodes whatever it needs (ISO
+   * timestamp, sequence number, …); the client never interprets or generates
+   * it. This eliminates client/server clock-skew bugs that arise when the
+   * client supplies a wall-clock time.
+   */
+  changes?(cursor: string): Promise<{ inos: Ino[]; cursor: string }>;
 }
