@@ -44,6 +44,20 @@ function pathToDirIno(path: string): Ino {
 	return `${DIR_PREFIX}${path}`
 }
 
+function joinPath(dirPath: string, name: string): string {
+	return dirPath === '' ? name : `${dirPath}/${name}`
+}
+
+function isSameOrDescendant(path: string, prefix: string): boolean {
+	return path === prefix || path.startsWith(`${prefix}/`)
+}
+
+function rewritePathPrefix(path: string, from: string, to: string): string {
+	if (path === from) return to
+	if (!path.startsWith(`${from}/`)) return path
+	return `${to}${path.slice(from.length)}`
+}
+
 function metaFromMemory(memory: MemoryResponse): InodeMeta {
 	return {
 		type: FileType.Regular,
@@ -229,6 +243,49 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		}
 	}
 
+	async function updatePath(id: string, path: string): Promise<void> {
+		const res = await api.v1.update.$post({ json: { id, path } })
+		if (!res.ok) throw new Error(`update path failed: ${res.status}`)
+	}
+
+	async function archiveMemory(id: string): Promise<void> {
+		const res = await api.v1.memory[':id'].archive.$post({ param: { id } })
+		if (!res.ok) throw new Error(`archive failed: ${res.status}`)
+	}
+
+	async function renameTree(oldPath: string, newPath: string): Promise<void> {
+		if (newPath === oldPath || newPath.startsWith(`${oldPath}/`)) {
+			throw new Error(`EINVAL: ${newPath}`)
+		}
+
+		const all = await listAllDeduped(undefined)
+		const matches = all.filter((memory) => isSameOrDescendant(memory.path, oldPath))
+		if (matches.length === 0) throw new Error(`ENOENT: ${oldPath}`)
+
+		const matchIds = new Set(matches.map((memory) => memory.id))
+		for (const memory of all) {
+			if (matchIds.has(memory.id)) continue
+			const rewritten = rewritePathPrefix(memory.path, oldPath, newPath)
+			if (rewritten !== memory.path) {
+				throw new Error(`EEXIST: ${newPath}`)
+			}
+		}
+
+		for (const memory of matches) {
+			await updatePath(memory.id, rewritePathPrefix(memory.path, oldPath, newPath))
+		}
+	}
+
+	async function archiveTree(path: string): Promise<Array<{ ino: Ino; type: FileType }>> {
+		const all = await listAllDeduped(undefined)
+		const matches = all.filter((memory) => isSameOrDescendant(memory.path, path))
+		if (matches.length === 0) return []
+		for (const memory of matches) {
+			await archiveMemory(memory.id)
+		}
+		return matches.map((memory) => ({ ino: memory.id, type: FileType.Regular }))
+	}
+
 	return {
 		rootIno: ROOT_INO,
 
@@ -385,7 +442,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			// No-clobber insert: update the memory's path only if nothing already lives there.
 			const dirPath = dirInoToPath(dirIno)
 			if (type !== FileType.Regular) return true // virtual dirs need no storage
-			const newPath = dirPath === '' ? name : `${dirPath}/${name}`
+			const newPath = joinPath(dirPath, name)
 
 			// Check for an existing memory at the target path (no-clobber contract).
 			const existing = await listAllDeduped(dirPath === '' ? undefined : dirPath)
@@ -400,7 +457,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			// Unconditional replace: archive any displaced entry, then move ino to the new path.
 			const dirPath = dirInoToPath(dirIno)
 			if (type !== FileType.Regular) return null
-			const newPath = dirPath === '' ? name : `${dirPath}/${name}`
+			const newPath = joinPath(dirPath, name)
 
 			// Detect displaced entry (a different memory already at newPath).
 			const existing = await listAllDeduped(dirPath === '' ? undefined : dirPath)
@@ -421,12 +478,15 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		async rename(oldDirIno, oldName, newDirIno, newName) {
 			const oldDirPath = dirInoToPath(oldDirIno)
 			const newDirPath = dirInoToPath(newDirIno)
-			const oldPath = oldDirPath === '' ? oldName : `${oldDirPath}/${oldName}`
-			const newPath = newDirPath === '' ? newName : `${newDirPath}/${newName}`
+			const oldPath = joinPath(oldDirPath, oldName)
+			const newPath = joinPath(newDirPath, newName)
 
-				const all = await listAllDeduped(undefined)
+			const all = await listAllDeduped(undefined)
 			const src = all.find((m) => m.path === oldPath)
-			if (!src) throw new Error(`ENOENT: ${oldName}`)
+			if (!src) {
+				await renameTree(oldPath, newPath)
+				return null
+			}
 
 			const displaced = all.find((m) => m.path === newPath && m.id !== src.id) ?? null
 
@@ -436,12 +496,10 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			// transaction. This is still strictly better than the VFS two-step fallback,
 			// which could leave two memories at the destination path.
 			if (displaced) {
-				const ar = await api.v1.memory[':id'].archive.$post({ param: { id: displaced.id } })
-				if (!ar.ok) throw new Error(`rename archive displaced failed: ${ar.status}`)
+				await archiveMemory(displaced.id)
 			}
 
-			const res = await api.v1.update.$post({ json: { id: src.id, path: newPath } })
-			if (!res.ok) throw new Error(`rename failed: ${res.status}`)
+			await updatePath(src.id, newPath)
 			return displaced ? displaced.id : null
 		},
 
@@ -449,13 +507,16 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			// To "remove" a file from a directory means archiving the memory.
 			// First look it up to get its ino.
 			const dirPath = dirInoToPath(dirIno)
-			const targetPath = dirPath === '' ? name : `${dirPath}/${name}`
-				const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
+			const targetPath = joinPath(dirPath, name)
+			const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			const match = all.find((m) => m.path === targetPath)
-			if (!match) return null
-			const archiveRes = await api.v1.memory[':id'].archive.$post({ param: { id: match.id } })
-			if (!archiveRes.ok) throw new Error(`dirUnset archive failed: ${archiveRes.status}`)
-			return { ino: match.id, type: FileType.Regular }
+			if (match) {
+				await archiveMemory(match.id)
+				return { ino: match.id, type: FileType.Regular }
+			}
+
+			const removed = await archiveTree(targetPath)
+			return removed[0] ?? null
 		},
 
 		// ------------------------------------------------------------------
