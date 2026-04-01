@@ -4,7 +4,6 @@ import { GHOSTORE_XATTR, decodeXattr, encodeXattr } from 'ghost-fs/xattr'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { openEditCache, type EditCache } from './editCache'
 import { type ProseMirrorJsonDocument } from './sync'
-import { useApiClient } from './useApiClient'
 import { useVolume } from './useVolume'
 
 export interface MemoryData {
@@ -18,19 +17,6 @@ export interface MemoryData {
 	active?: number
 	links?: LinkInfo[]
 	tags?: string[]
-}
-
-interface MemoryResponse {
-	id: string
-	raw_text: string
-	path: string
-	title: string | null
-	source: string | null
-	tags: string[]
-	links: LinkInfo[]
-	created_at: string
-	updated_at: string
-	active: number
 }
 
 let editCachePromise: Promise<EditCache> | null = null
@@ -73,8 +59,7 @@ async function decodeOptionalXattr<T>(
 }
 
 export function useMemory(id: string | null) {
-	const api = useApiClient()
-	const { volume, index } = useVolume()
+	const { volume, resolveMemory } = useVolume()
 	const [isLoading, setIsLoading] = useState(false)
 	const [memory, setMemory] = useState<MemoryData | null>(null)
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -94,28 +79,8 @@ export function useMemory(id: string | null) {
 			try {
 				const cache = await getEditCache()
 				const cachedContent = await cache.get(currentId)
-				let path = index.getPath(currentId)
-				let archivedFallback: MemoryResponse | null = null
-
-				if (!path) {
-					const res = await api.v1.memory[':id'].$get({ param: { id: currentId } })
-					if (res.ok) {
-						const data = await res.json() as MemoryResponse
-						if (data.active !== 0) {
-							path = data.path
-							index.upsert({
-								id: data.id,
-								title: data.title,
-								path: data.path,
-								updated_at: data.updated_at,
-								tags: data.tags,
-								active: data.active,
-							})
-						} else {
-							archivedFallback = data
-						}
-					}
-				}
+				const resolved = await resolveMemory(currentId)
+				let path = resolved.entry?.path ?? null
 
 				let nextMemory: MemoryData | null = null
 				if (path) {
@@ -154,18 +119,18 @@ export function useMemory(id: string | null) {
 					}
 				}
 
-				if (!nextMemory && archivedFallback) {
+				if (!nextMemory && resolved.archived) {
 					nextMemory = {
-						id: archivedFallback.id,
-						content: markdownToJson(archivedFallback.raw_text),
-						title: archivedFallback.title,
-						path: archivedFallback.path,
-						source: archivedFallback.source,
-						created_at: archivedFallback.created_at,
-						updated_at: archivedFallback.updated_at,
-						active: archivedFallback.active,
-						links: archivedFallback.links,
-						tags: archivedFallback.tags,
+						id: resolved.archived.id,
+						content: markdownToJson(resolved.archived.raw_text),
+						title: resolved.archived.title,
+						path: resolved.archived.path,
+						source: resolved.archived.source,
+						created_at: resolved.archived.created_at,
+						updated_at: resolved.archived.updated_at,
+						active: resolved.archived.active,
+						links: resolved.archived.links,
+						tags: resolved.archived.tags,
 					}
 				}
 
@@ -199,7 +164,7 @@ export function useMemory(id: string | null) {
 			if (debounceRef.current) clearTimeout(debounceRef.current)
 			debounceRef.current = null
 		}
-	}, [api, id, index, volume])
+	}, [id, resolveMemory, volume])
 
 	useEffect(() => {
 		return () => {
@@ -256,12 +221,8 @@ export function useMemory(id: string | null) {
 		const oldPath = memory.path
 		await volume.rename(toVolumePath(oldPath), toVolumePath(path))
 		const now = new Date().toISOString()
-		const existing = index.get(id)
-		if (existing) {
-			index.upsert({ ...existing, path, updated_at: now })
-		}
 		setMemory((current) => (current ? { ...current, path, updated_at: now } : current))
-	}, [id, index, memory?.active, memory?.path, volume])
+	}, [id, memory?.active, memory?.path, volume])
 
 	return {
 		memory,

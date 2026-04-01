@@ -1,4 +1,4 @@
-import type { MemoryMeta } from './useSidebar'
+import type { MemoryMeta } from '@ghostore/core'
 
 export interface MemoryIndex {
 	hydrate(entries: MemoryMeta[]): void

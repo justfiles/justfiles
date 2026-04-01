@@ -1,7 +1,7 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useState } from 'react'
+import type { MemoryMeta } from '@ghostore/core'
 import { FiChevronDown, FiChevronRight, FiFile, FiX } from 'react-icons/fi'
-import type { MemoryMeta } from './useSidebar'
 
 type TreeNode = {
 	name: string
