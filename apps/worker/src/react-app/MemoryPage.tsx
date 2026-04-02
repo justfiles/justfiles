@@ -7,8 +7,8 @@ import type { LinkInfo } from '@ghostore/core'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { MemoryEditor } from './MemoryEditor'
 import { useSidebarActions } from './SidebarContext'
-import { useApiClient } from './useApiClient'
 import { useMemory } from './useMemory'
+import { useVolume } from './useVolume'
 
 function LinkedMemories({ links }: { links?: LinkInfo[] }) {
 	const navigate = useNavigate()
@@ -67,9 +67,9 @@ export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
 	const { getToken } = useAuth()
-	const api = useApiClient()
-	const { memory, content, saveContent, saveTitle, movePath, isLoading } = useMemory(id)
-	const { upsertEntry, removeEntry } = useSidebarActions()
+	const { archiveMemory, reviveMemory } = useVolume()
+	const { memory, content, saveContent, saveTitle, movePath, reload, isLoading } = useMemory(id)
+	const { upsertEntry } = useSidebarActions()
 
 	const [editingTitle, setEditingTitle] = useState(false)
 	const [titleDraft, setTitleDraft] = useState('')
@@ -95,32 +95,16 @@ export function MemoryPage() {
 	})
 
 	const archiveMutation = useMutation({
-		mutationFn: async () => {
-			const res = await api.v1.memory[':id'].archive.$post({ param: { id } })
-			if (!res.ok) throw new Error(`Archive failed: ${res.status}`)
-		},
+		mutationFn: async () => archiveMemory(id),
 		onSuccess: () => {
-			removeEntry(id)
 			navigate({ to: '/' })
 		}
 	})
 
 	const reviveMutation = useMutation({
-		mutationFn: async () => {
-			const res = await api.v1.memory[':id'].revive.$post({ param: { id } })
-			if (!res.ok) throw new Error(`Revive failed: ${res.status}`)
-		},
+		mutationFn: async () => reviveMemory(id),
 		onSuccess: () => {
-			if (memory) {
-				upsertEntry({
-					id,
-					title: memory.title ?? null,
-					path: memory.path ?? '',
-					updated_at: memory.updated_at ?? new Date().toISOString(),
-					tags: memory.tags ?? [],
-					active: 1
-				})
-			}
+			void reload()
 		}
 	})
 

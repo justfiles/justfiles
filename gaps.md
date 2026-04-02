@@ -17,6 +17,7 @@ This milestone landed the first end-to-end filesystem-backed note flow:
 - Added the worker FS API in [`packages/core/src/fs.ts`](./packages/core/src/fs.ts) and mounted it through the worker app.
 - Moved the landing-page draft flow off the legacy draft API and onto the filesystem in [`apps/worker/src/react-app/draft.ts`](./apps/worker/src/react-app/draft.ts).
 - Moved sidebar bootstrap and note resolution off `/api/v1/changes` and `/api/v1/memory/:id` and onto FS scan/read in [`apps/worker/src/react-app/useVolume.ts`](./apps/worker/src/react-app/useVolume.ts).
+- Moved note archive/revive off the legacy memory endpoints and into the React app's FS runtime in [`apps/worker/src/react-app/useVolume.ts`](./apps/worker/src/react-app/useVolume.ts), using a hidden `/.trash` namespace plus restore metadata sidecars.
 - Reduced startup/open request fanout by:
 	- removing eager per-file xattr fetches during sidebar bootstrap
 	- making inode metadata local-first in [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts)
@@ -30,7 +31,6 @@ This milestone landed the first end-to-end filesystem-backed note flow:
 
 # Remaining Gaps
 
-- High: note archive/revive is still wired to legacy memory endpoints with an FS inode ID. [`apps/worker/src/react-app/MemoryPage.tsx`](./apps/worker/src/react-app/MemoryPage.tsx) still calls `/api/v1/memory/:id/archive` and `/api/v1/memory/:id/revive`, but route `id` is now the filesystem inode, not a legacy memory ID.
 - High: asset upload and preview is still legacy-memory based. [`apps/worker/src/react-app/MemoryEditor.tsx`](./apps/worker/src/react-app/MemoryEditor.tsx) forwards `assetOwnerId` into the editor, and image/drawing code still posts to `/api/v1/memory/:id/assets`. For FS notes, that `id` is an inode, so assets are not yet part of the new filesystem flow.
 - Medium: remote xattr sync is incomplete. The new FS backend emits xattrs in `/updates`, but delta sync in [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts) only applies `op.meta` and `contentChanged`. Title/tags/source/links are therefore not reliably hydrated across devices.
 - Medium: the namespace is still remote-authoritative. [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts) still delegates `dirList`, `dirAdd`, `dirSet`, `dirUnset`, and `rename` to remote immediately. This is acceptable for the current milestone, but it is not yet a fully local-first tree model.
@@ -40,7 +40,7 @@ This milestone landed the first end-to-end filesystem-backed note flow:
 
 Focus the next round on finishing the FS boundary instead of broadening scope:
 
-1. Move archive/revive onto FS operations so note lifecycle no longer depends on legacy memory IDs.
-2. Decide whether assets move into the FS backend now or are explicitly disabled for FS-backed notes until that work is done.
-3. Finish xattr sync application on the local side so cross-device title/tags/source/links behave correctly.
-4. Only after that, revisit whether local-first namespace operations are worth doing now or can wait for a later milestone.
+1. Decide whether assets move into the FS backend now or are explicitly disabled for FS-backed notes until that work is done.
+2. Finish xattr sync application on the local side so cross-device title/tags/source/links behave correctly.
+3. Only after that, revisit whether local-first namespace operations are worth doing now or can wait for a later milestone.
+4. Add retention and purge policy for `/.trash` once the lifecycle semantics are stable.

@@ -53,6 +53,8 @@ interface VolumeRuntime {
 	refresh(): Promise<void>
 	upsertEntry(entry: MemoryMeta): void
 	removeEntry(id: string): void
+	archiveMemory(id: string): Promise<void>
+	reviveMemory(id: string): Promise<void>
 	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
 }
 
@@ -64,6 +66,8 @@ export interface VolumeService {
 	refresh(): Promise<void>
 	upsertEntry(entry: MemoryMeta): void
 	removeEntry(id: string): void
+	archiveMemory(id: string): Promise<void>
+	reviveMemory(id: string): Promise<void>
 	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
 }
 
@@ -75,7 +79,17 @@ function lsCacheKey(userId: string) {
 }
 
 const DRAFT_PATH = '/*draft*'
+const TRASH_ROOT = '/.trash'
+const TRASH_FILES_PATH = `${TRASH_ROOT}/files`
+const TRASH_INFO_PATH = `${TRASH_ROOT}/info`
 const textDecoder = new TextDecoder()
+const textEncoder = new TextEncoder()
+
+type ArchiveInfo = {
+	id: string
+	originalPath: string
+	archivedAt: string
+}
 
 function normalizeCachedEntry(value: unknown): MemoryMeta | null {
 	if (typeof value !== 'object' || value === null) return null
@@ -133,6 +147,16 @@ function toVolumePath(path: string): string {
 	return path.startsWith('/') ? path : `/${path}`
 }
 
+function parentVolumePath(path: string): string {
+	const volumePath = toVolumePath(path)
+	const lastSlash = volumePath.lastIndexOf('/')
+	return lastSlash <= 0 ? '/' : volumePath.slice(0, lastSlash)
+}
+
+function fromVolumePath(path: string): string {
+	return path.startsWith('/') ? path.slice(1) : path
+}
+
 function entryPath(path: string): string {
 	return path.startsWith('/') ? path.slice(1) : path
 }
@@ -150,7 +174,56 @@ async function decodeOptionalXattr<T>(volume: Volume, path: string, name: string
 	return raw ? decodeXattr<T>(raw) : null
 }
 
-async function readMemoryRecord(volume: Volume, path: string, id?: string): Promise<MemoryRecord> {
+function trashFilePath(id: string): string {
+	return `${TRASH_FILES_PATH}/${id}`
+}
+
+function trashInfoPath(id: string): string {
+	return `${TRASH_INFO_PATH}/${id}.json`
+}
+
+function isTrashPath(path: string): boolean {
+	return path === TRASH_ROOT || path.startsWith(`${TRASH_ROOT}/`)
+}
+
+async function ensureTrashDirs(volume: Volume): Promise<void> {
+	await volume.mkdir(TRASH_FILES_PATH, { recursive: true })
+	await volume.mkdir(TRASH_INFO_PATH, { recursive: true })
+}
+
+function parseArchiveInfo(value: unknown): ArchiveInfo | null {
+	if (typeof value !== 'object' || value === null) return null
+	const info = value as Partial<ArchiveInfo>
+	if (typeof info.id !== 'string') return null
+	if (typeof info.originalPath !== 'string') return null
+	if (typeof info.archivedAt !== 'string') return null
+	return {
+		id: info.id,
+		originalPath: info.originalPath,
+		archivedAt: info.archivedAt,
+	}
+}
+
+async function readArchiveInfo(volume: Volume, id: string): Promise<ArchiveInfo | null> {
+	try {
+		const raw = await volume.readFile(trashInfoPath(id))
+		return parseArchiveInfo(JSON.parse(textDecoder.decode(raw)))
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error)
+		if (message.startsWith('ENOENT:')) return null
+		throw error
+	}
+}
+
+async function writeArchiveInfo(volume: Volume, info: ArchiveInfo): Promise<void> {
+	await volume.writeFile(trashInfoPath(info.id), textEncoder.encode(JSON.stringify(info)))
+}
+
+async function readMemoryRecord(
+	volume: Volume,
+	path: string,
+	options?: { id?: string; logicalPath?: string; active?: number; updatedAt?: string }
+): Promise<MemoryRecord> {
 	const [stat, rawText, title, tags, links, source] = await Promise.all([
 		volume.stat(path),
 		volume.readFile(path),
@@ -161,27 +234,29 @@ async function readMemoryRecord(volume: Volume, path: string, id?: string): Prom
 	])
 
 	return {
-		id: id ?? stat.ino,
+		id: options?.id ?? stat.ino,
 		raw_text: textDecoder.decode(rawText),
-		path: entryPath(path),
+		path: options?.logicalPath ?? entryPath(path),
 		title,
 		source,
 		tags: tags ?? [],
 		links: links ?? [],
 		created_at: isoFromNs(stat.ctimeNs),
-		updated_at: isoFromNs(stat.mtimeNs),
-		active: 1,
+		updated_at: options?.updatedAt ?? isoFromNs(stat.mtimeNs),
+		active: options?.active ?? 1,
 	}
 }
 
-async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promise<MemoryMeta[]> {
+async function listLiveMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promise<MemoryMeta[]> {
 	const entries: MemoryMeta[] = []
-	const previousById = new Map(previous.map((entry) => [entry.id, entry]))
-	const previousByPath = new Map(previous.map((entry) => [entry.path, entry]))
+	const previousLive = previous.filter((entry) => entry.active !== 0)
+	const previousById = new Map(previousLive.map((entry) => [entry.id, entry]))
+	const previousByPath = new Map(previousLive.map((entry) => [entry.path, entry]))
 
 	await volume.scan('/', async (path, stat) => {
 		if (stat.type !== FileType.Regular) return
 		if (path === DRAFT_PATH) return
+		if (isTrashPath(path)) return
 
 		const currentPath = entryIdentity(path)
 		const cached = previousById.get(stat.ino) ?? previousByPath.get(currentPath)
@@ -197,6 +272,47 @@ async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promis
 	})
 
 	return entries.sort((left, right) => left.path.localeCompare(right.path))
+}
+
+async function listArchivedMemoryEntries(volume: Volume): Promise<MemoryMeta[]> {
+	if (!(await volume.exists(TRASH_FILES_PATH))) return []
+
+	const entries: MemoryMeta[] = []
+
+	await volume.scan(TRASH_FILES_PATH, async (path, stat) => {
+		if (path === TRASH_FILES_PATH) return
+		if (stat.type !== FileType.Regular) return
+
+		const id = fromVolumePath(path).split('/').pop()
+		if (!id) return
+
+		const info = await readArchiveInfo(volume, id)
+		if (!info) return
+
+		const [title, tags] = await Promise.all([
+			decodeOptionalXattr<string>(volume, path, GHOSTORE_XATTR.title),
+			decodeOptionalXattr<string[]>(volume, path, GHOSTORE_XATTR.tags),
+		])
+
+		entries.push({
+			id,
+			title,
+			path: info.originalPath,
+			updated_at: info.archivedAt,
+			tags: tags ?? [],
+			active: 0,
+		})
+	})
+
+	return entries.sort((left, right) => left.path.localeCompare(right.path))
+}
+
+async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promise<MemoryMeta[]> {
+	const [liveEntries, archivedEntries] = await Promise.all([
+		listLiveMemoryEntries(volume, previous),
+		listArchivedMemoryEntries(volume),
+	])
+	return [...liveEntries, ...archivedEntries].sort((left, right) => left.path.localeCompare(right.path))
 }
 
 async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
@@ -256,6 +372,69 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		setEntries(entries.map((entry) => entry.id === id ? { ...entry, active: 0 } : entry))
 	}
 
+	async function archiveMemory(id: string): Promise<void> {
+		let entry = index.get(id)
+		if (!entry) {
+			await refresh()
+			entry = index.get(id)
+		}
+		if (!entry) throw new Error(`ENOENT: ${id}`)
+		if (entry.active === 0) return
+
+		const archivedAt = new Date().toISOString()
+		const sourcePath = toVolumePath(entry.path)
+		const destinationPath = trashFilePath(id)
+		const info: ArchiveInfo = {
+			id,
+			originalPath: entry.path,
+			archivedAt,
+		}
+
+		await ensureTrashDirs(volume)
+		if (await volume.exists(destinationPath)) {
+			throw new Error(`EEXIST: ${destinationPath}`)
+		}
+
+		await writeArchiveInfo(volume, info)
+		try {
+			await volume.rename(sourcePath, destinationPath)
+		} catch (error) {
+			await volume.rm(trashInfoPath(id), { force: true })
+			throw error
+		}
+
+		upsertEntry({
+			...entry,
+			updated_at: archivedAt,
+			active: 0,
+		})
+	}
+
+	async function reviveMemory(id: string): Promise<void> {
+		const info = await readArchiveInfo(volume, id)
+		if (!info) throw new Error(`ENOENT: ${id}`)
+
+		const sourcePath = trashFilePath(id)
+		const destinationPath = toVolumePath(info.originalPath)
+		if (!(await volume.exists(sourcePath))) {
+			throw new Error(`ENOENT: ${id}`)
+		}
+		if (await volume.exists(destinationPath)) {
+			throw new Error(`EEXIST: ${info.originalPath}`)
+		}
+
+		await volume.mkdir(parentVolumePath(info.originalPath), { recursive: true })
+		await volume.rename(sourcePath, destinationPath)
+		await volume.rm(trashInfoPath(id), { force: true })
+
+		const record = await readMemoryRecord(volume, destinationPath, {
+			id,
+			logicalPath: info.originalPath,
+			active: 1,
+		})
+		upsertEntry(toMemoryMeta(record))
+	}
+
 	async function resolveMemory(id: string): Promise<{
 		entry: MemoryMeta | null
 		record: MemoryRecord | null
@@ -266,9 +445,26 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 				await refresh()
 				entry = index.get(id)
 			}
-			if (!entry) return { entry: null, record: null }
+			if (!entry) {
+				const info = await readArchiveInfo(volume, id)
+				if (!info) return { entry: null, record: null }
+				entry = {
+					id,
+					title: null,
+					path: info.originalPath,
+					updated_at: info.archivedAt,
+					tags: [],
+					active: 0,
+				}
+			}
 
-			const record = await readMemoryRecord(volume, toVolumePath(entry.path), entry.id)
+			const physicalPath = entry.active === 0 ? trashFilePath(entry.id) : toVolumePath(entry.path)
+			const record = await readMemoryRecord(volume, physicalPath, {
+				id: entry.id,
+				logicalPath: entry.path,
+				active: entry.active,
+				updatedAt: entry.active === 0 ? entry.updated_at : undefined,
+			})
 			const nextEntry = toMemoryMeta(record)
 			upsertEntry(nextEntry)
 			return { entry: nextEntry, record }
@@ -316,6 +512,8 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 
 		upsertEntry,
 		removeEntry,
+		archiveMemory,
+		reviveMemory,
 		resolveMemory,
 	}
 }
@@ -374,6 +572,8 @@ export function useVolume(): VolumeService {
 		refresh: runtime.refresh,
 		upsertEntry: runtime.upsertEntry,
 		removeEntry: runtime.removeEntry,
+		archiveMemory: runtime.archiveMemory,
+		reviveMemory: runtime.reviveMemory,
 		resolveMemory: runtime.resolveMemory,
 	}), [runtime, snapshot.entries])
 }

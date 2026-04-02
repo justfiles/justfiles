@@ -57,6 +57,7 @@ export function useMemory(id: string | null) {
 	const { volume, resolveMemory } = useVolume()
 	const [isLoading, setIsLoading] = useState(false)
 	const [memory, setMemory] = useState<MemoryData | null>(null)
+	const [reloadVersion, setReloadVersion] = useState(0)
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
 	useEffect(() => {
@@ -96,7 +97,7 @@ export function useMemory(id: string | null) {
 
 				setMemory(cachedContent && nextMemory ? { ...nextMemory, content: cachedContent } : nextMemory)
 
-				if (cachedContent && nextMemory?.path) {
+					if (cachedContent && nextMemory?.path && nextMemory.active !== 0) {
 					void (async () => {
 						try {
 							await volume.writeFile(
@@ -122,7 +123,7 @@ export function useMemory(id: string | null) {
 			if (debounceRef.current) clearTimeout(debounceRef.current)
 			debounceRef.current = null
 		}
-	}, [id, resolveMemory, volume])
+	}, [id, reloadVersion, resolveMemory, volume])
 
 	useEffect(() => {
 		return () => {
@@ -183,12 +184,17 @@ export function useMemory(id: string | null) {
 		setMemory((current) => (current ? { ...current, path, updated_at: now } : current))
 	}, [id, memory?.active, memory?.path, volume])
 
+	const reload = useCallback(() => {
+		setReloadVersion((version) => version + 1)
+	}, [])
+
 	return {
 		memory,
 		content: memory?.content ?? null,
 		saveContent,
 		saveTitle,
 		movePath,
+		reload,
 		isLoading
 	}
 }
