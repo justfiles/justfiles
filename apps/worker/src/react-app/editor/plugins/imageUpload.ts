@@ -1,6 +1,6 @@
-import { Plugin, PluginKey, type EditorState } from 'prosemirror-state'
-import { type EditorView, Decoration, DecorationSet, type NodeView } from 'prosemirror-view'
 import { type Node } from 'prosemirror-model'
+import { Plugin, PluginKey, type EditorState } from 'prosemirror-state'
+import { Decoration, DecorationSet, type EditorView, type NodeView } from 'prosemirror-view'
 
 const uploadKey = new PluginKey<DecorationSet>('upload')
 
@@ -39,8 +39,7 @@ function findPlaceholder(state: EditorState, id: object): number | null {
 export async function startImageUpload(
 	view: EditorView,
 	file: File,
-	memoryId: string,
-	getToken: () => Promise<string | null>
+	uploadAsset: (file: File) => Promise<string>
 ) {
 	const id = {}
 	let tr = view.state.tr
@@ -49,37 +48,45 @@ export async function startImageUpload(
 	view.dispatch(tr)
 
 	try {
-		const token = await getToken()
-		if (!token) throw new Error('Missing auth token')
-		const formData = new FormData()
-		formData.append('file', file)
-		const res = await fetch(`/api/v1/memory/${memoryId}/assets`, {
-			method: 'POST',
-			headers: { Authorization: `Bearer ${token}` },
-			body: formData
-		})
-		if (!res.ok) throw new Error('Upload failed')
-		const { key } = (await res.json()) as { key: string }
+		const src = await uploadAsset(file)
 		const pos = findPlaceholder(view.state, id)
 		if (pos == null) return
 		view.dispatch(
 			view.state.tr
-				.replaceWith(pos, pos, view.state.schema.nodes.image.create({ src: `asset:${key}`, alt: file.name }))
-				.setMeta(uploadPlugin, { remove: { id } })
+				.replaceWith(pos, pos, view.state.schema.nodes.image.create({ src, alt: file.name }))
+				.setMeta(uploadKey, { remove: { id } })
 		)
 	} catch {
-		view.dispatch(view.state.tr.setMeta(uploadPlugin, { remove: { id } }))
+		view.dispatch(view.state.tr.setMeta(uploadKey, { remove: { id } }))
 	}
 }
 
-// Renders asset: URIs via the proxy endpoint
-export function makeImageNodeView(memoryId: string) {
+export function makeImageNodeView(
+	resolveAssetUrl: (src: string) => Promise<string | null>,
+	readAssetBlob: (src: string) => Promise<Blob | null>
+) {
 	return (node: Node): NodeView => {
 		const img = document.createElement('img')
+		let objectUrl: string | null = null
+		let renderToken = 0
 		const src = node.attrs.src as string
-		img.src = src.startsWith('asset:') ? `/api/v1/memory/${memoryId}/assets/${src.slice(6)}` : src
 		img.alt = node.attrs.alt ?? ''
 		if (node.attrs.title) img.title = node.attrs.title
-		return { dom: img }
+		void resolveAssetUrl(src).then((url) => {
+			if (!url) return null
+			const token = ++renderToken
+			return readAssetBlob(src).then((blob) => ({ blob, token }))
+		}).then(async (result) => {
+			if (!result || result.token !== renderToken || !result.blob) return
+			if (objectUrl) URL.revokeObjectURL(objectUrl)
+			objectUrl = URL.createObjectURL(result.blob)
+			img.src = objectUrl
+		}).catch(() => {})
+		return {
+			dom: img,
+			destroy() {
+				if (objectUrl) URL.revokeObjectURL(objectUrl)
+			}
+		}
 	}
 }

@@ -10,6 +10,7 @@ import { createExclusiveRunner, createKeyedExclusiveRunner } from './exclusive'
 const DEFAULT_FLUSH_DEBOUNCE_MS = 3_000
 const DELTA_SYNC_INTERVAL_MS = 30_000
 const RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000]
+const MAX_LOCAL_CACHE_ENTRY_BYTES = 4 * 1024 * 1024
 
 /**
  * Reserved inode key used to persist the last delta-sync cursor in the local
@@ -133,6 +134,8 @@ export function cachedStorage(
 	 * local and go straight to remote until a fresh fetch repopulates local.
 	 */
 	const invalidated = new Set<Ino>()
+	/** Inodes too large to persist in the local content cache. */
+	const uncached = new Set<Ino>()
 	/**
 	 * In-memory dir-lookup cache. Populated on read miss; invalidated on
 	 * every directory mutation and cleared on delta sync.
@@ -624,7 +627,7 @@ export function cachedStorage(
 
 		async read(ino, offset: Off, length) {
 			// Fast path: local hit (skip if this ino was invalidated by delta sync)
-			if (!invalidated.has(ino)) {
+			if (!invalidated.has(ino) && !uncached.has(ino)) {
 				const localData = await local.read(ino, offset, length)
 				if (localData.length > 0) return localData
 
@@ -638,7 +641,10 @@ export function cachedStorage(
 			// Always clear the invalidation flag after a successful remote fetch,
 			// regardless of content length.
 			invalidated.delete(ino)
-			if (fullContent.length > 0) {
+			if (fullContent.length > MAX_LOCAL_CACHE_ENTRY_BYTES) {
+				uncached.add(ino)
+			} else if (fullContent.length > 0) {
+				uncached.delete(ino)
 				// Populate local with the fresh content
 				if (local.putBlob) {
 					await local.putBlob(ino, fullContent)
@@ -650,6 +656,7 @@ export function cachedStorage(
 					metaCache.set(ino, { ...m, size: BigInt(fullContent.length) })
 				}
 			} else {
+				uncached.delete(ino)
 				// Remote file is empty — explicitly evict any stale bytes in local
 				// so the next read finds nothing there and returns empty correctly.
 				await local.truncate(ino, 0n)
@@ -664,6 +671,7 @@ export function cachedStorage(
 		},
 
 		async write(ino, offset: Off, data) {
+			uncached.delete(ino)
 			const n = await local.write(ino, offset, data)
 			const end = offset + BigInt(data.length)
 			const m = metaCache.get(ino)
@@ -673,6 +681,7 @@ export function cachedStorage(
 		},
 
 		async truncate(ino, size: Off) {
+			if (size === 0n) uncached.delete(ino)
 			await local.truncate(ino, size)
 			const m = metaCache.get(ino)
 			if (m !== undefined) metaCache.set(ino, { ...m, size })
@@ -680,6 +689,7 @@ export function cachedStorage(
 		},
 
 		async putBlob(ino, data) {
+			uncached.delete(ino)
 			if (local.putBlob) {
 				await local.putBlob(ino, data)
 			} else {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
+import { normalizeVolumePath, parentVolumePath } from './assets'
 import type { ProseMirrorJsonDocument } from './sync'
 import { useVolume } from './useVolume'
 
@@ -11,6 +12,9 @@ type DraftHook = {
 	readonly content: ProseMirrorJsonDocument | null
 	save(content: ProseMirrorJsonDocument): void
 	submit(path: string): Promise<void>
+	uploadAsset(file: File): Promise<string>
+	getAssetUrl(src: string): Promise<string | null>
+	loadAssetBlob(src: string): Promise<Blob | null>
 }
 
 function markdownToJson(markdown: string): ProseMirrorJsonDocument {
@@ -21,16 +25,6 @@ function jsonToMarkdown(content: ProseMirrorJsonDocument): string {
 	return docToMarkdown(remarkSchema.nodeFromJSON(content))
 }
 
-function toVolumePath(path: string): string {
-	return path.startsWith('/') ? path : `/${path}`
-}
-
-function parentVolumePath(path: string): string {
-	const volumePath = toVolumePath(path)
-	const lastSlash = volumePath.lastIndexOf('/')
-	return lastSlash <= 0 ? '/' : volumePath.slice(0, lastSlash)
-}
-
 function entryPath(path: string): string {
 	return path.startsWith('/') ? path.slice(1) : path
 }
@@ -38,7 +32,7 @@ function entryPath(path: string): string {
 const EMPTY_DRAFT_DOC = markdownToJson('')
 
 export function useDraft(): DraftHook {
-	const { volume, upsertEntry } = useVolume()
+	const { volume, upsertEntry, writeAssetFile, resolveAssetUrl, readAssetBlob } = useVolume()
 	const [id, setId] = useState<string | null>(null)
 	const [content, setContent] = useState<ProseMirrorJsonDocument | null>(null)
 	const [isLoading, setIsLoading] = useState(true)
@@ -107,9 +101,10 @@ export function useDraft(): DraftHook {
 	}, [flushDraft])
 
 	const submit = useCallback(async (path: string) => {
+		if (!id) throw new Error('Draft inode is not ready')
 		await flushDraft()
 
-		const targetPath = toVolumePath(path)
+		const targetPath = normalizeVolumePath(path)
 		await volume.mkdir(parentVolumePath(targetPath), { recursive: true })
 		await volume.rename(DRAFT_PATH, targetPath)
 
@@ -128,7 +123,20 @@ export function useDraft(): DraftHook {
 		setId(nextDraftStat.ino)
 		setContent(EMPTY_DRAFT_DOC)
 		contentRef.current = EMPTY_DRAFT_DOC
-	}, [flushDraft, upsertEntry, volume])
+	}, [flushDraft, id, upsertEntry, volume])
+
+	const uploadAsset = useCallback(async (file: File) => {
+		if (!id) throw new Error('Draft inode is not ready')
+		return writeAssetFile(file)
+	}, [id, writeAssetFile])
+
+	const getAssetUrl = useCallback(async (src: string) => {
+		return resolveAssetUrl(DRAFT_PATH, src)
+	}, [resolveAssetUrl])
+
+	const loadAssetBlob = useCallback(async (src: string) => {
+		return readAssetBlob(DRAFT_PATH, src)
+	}, [readAssetBlob])
 
 	return {
 		id,
@@ -136,5 +144,8 @@ export function useDraft(): DraftHook {
 		content,
 		save,
 		submit,
+		uploadAsset,
+		getAssetUrl,
+		loadAssetBlob,
 	}
 }

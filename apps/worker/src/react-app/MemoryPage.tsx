@@ -1,4 +1,3 @@
-import { useAuth } from '@clerk/clerk-react'
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import React, { useState } from 'react'
@@ -66,9 +65,8 @@ function LinkedMemories({ links }: { links?: LinkInfo[] }) {
 export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
-	const { getToken } = useAuth()
 	const { archiveMemory, reviveMemory } = useVolume()
-	const { memory, content, saveContent, saveTitle, movePath, reload, isLoading } = useMemory(id)
+	const { memory, content, saveContent, saveTitle, movePath, uploadAsset, getAssetUrl, loadAssetBlob, reload, isLoading } = useMemory(id)
 	const { upsertEntry } = useSidebarActions()
 
 	const [editingTitle, setEditingTitle] = useState(false)
@@ -209,12 +207,13 @@ export function MemoryPage() {
 	return (
 		<MemoryEditor
 			id={id}
-			assetOwnerId={id}
 			content={content}
 			onSave={saveContent}
+			onUploadAsset={uploadAsset}
+			resolveAssetUrl={getAssetUrl}
+			readAssetBlob={loadAssetBlob}
 			isLoading={isLoading}
 			readOnly={memory?.active === 0}
-			getToken={getToken}
 			updatedAt={memory?.updated_at}
 			headerLeft={
 				memory ? (

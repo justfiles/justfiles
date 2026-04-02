@@ -56,9 +56,23 @@ function encodeOp(op: FsOp) {
 	}
 }
 
+function inferContentType(filename: string): string {
+	const lower = filename.toLowerCase()
+	if (lower.endsWith('.png')) return 'image/png'
+	if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+	if (lower.endsWith('.gif')) return 'image/gif'
+	if (lower.endsWith('.webp')) return 'image/webp'
+	if (lower.endsWith('.svg')) return 'image/svg+xml'
+	if (lower.endsWith('.pdf')) return 'application/pdf'
+	if (lower.endsWith('.json')) return 'application/json; charset=utf-8'
+	if (lower.endsWith('.txt') || lower.endsWith('.md')) return 'text/plain; charset=utf-8'
+	return 'application/octet-stream'
+}
+
 // ── Param / query schemas ────────────────────────────────────────────────────
 
 const InoParam = z.object({ ino: z.string() })
+const InoFilenameParam = z.object({ ino: z.string(), filename: z.string() })
 const DirInoParam = z.object({ dirIno: z.string() })
 const DirInoNameParam = z.object({ dirIno: z.string(), name: z.string() })
 const CursorQuery = z.object({ cursor: z.string().default('') })
@@ -151,6 +165,34 @@ export function createFsApi(backend: StorageBackend) {
 			return new Response(data.buffer as ArrayBuffer, {
 				headers: { 'Content-Type': 'application/octet-stream' },
 			})
+		})
+
+		.get('/inodes/:ino/content/:filename', zValidator('param', InoFilenameParam), async (c) => {
+			const { ino, filename } = c.req.valid('param')
+			const meta = await backend.getMeta(ino)
+			if (!meta) return c.json({ error: 'not found' }, 404)
+
+			const etag = meta.contentHash ? `"${meta.contentHash}"` : null
+			if (etag && c.req.header('if-none-match') === etag) {
+				return new Response(null, {
+					status: 304,
+					headers: {
+						etag,
+						'cache-control': 'private, max-age=31536000, immutable',
+					},
+				})
+			}
+
+			const data = await backend.read(ino, 0n, Number(meta.size))
+			const headers = new Headers({
+				'content-type': inferContentType(filename),
+				'cache-control': etag
+					? 'private, max-age=31536000, immutable'
+					: 'private, no-cache',
+				'x-content-type-options': 'nosniff',
+			})
+			if (etag) headers.set('etag', etag)
+			return new Response(data.buffer as ArrayBuffer, { headers })
 		})
 
 		.put('/inodes/:ino/blob', zValidator('param', InoParam), async (c) => {

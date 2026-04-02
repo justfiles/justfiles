@@ -24,6 +24,15 @@ import { FileType } from 'ghost-fs/types'
 import { apiStorage } from './storage.api'
 import { createMemoryIndex, type MemoryIndex } from './memoryIndex'
 import { type FsClient, useFsClient } from './useApiClient'
+import {
+	assetDirPath,
+	assetUrlForIno,
+	displayFilenameFromSrc,
+	isAssetPath,
+	nextAssetPath,
+	parentVolumePath,
+	resolveRelativeFsPath,
+} from './assets'
 
 type MemoryRecord = {
 	id: string
@@ -56,6 +65,9 @@ interface VolumeRuntime {
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
 	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
+	writeAssetFile(file: File): Promise<string>
+	resolveAssetUrl(notePath: string, src: string): Promise<string | null>
+	readAssetBlob(notePath: string, src: string): Promise<Blob | null>
 }
 
 export interface VolumeService {
@@ -69,6 +81,9 @@ export interface VolumeService {
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
 	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
+	writeAssetFile(file: File): Promise<string>
+	resolveAssetUrl(notePath: string, src: string): Promise<string | null>
+	readAssetBlob(notePath: string, src: string): Promise<Blob | null>
 }
 
 const VolumeContext = createContext<VolumeRuntime | null>(null)
@@ -145,12 +160,6 @@ function toMemoryMeta(record: MemoryRecord): MemoryMeta {
 
 function toVolumePath(path: string): string {
 	return path.startsWith('/') ? path : `/${path}`
-}
-
-function parentVolumePath(path: string): string {
-	const volumePath = toVolumePath(path)
-	const lastSlash = volumePath.lastIndexOf('/')
-	return lastSlash <= 0 ? '/' : volumePath.slice(0, lastSlash)
 }
 
 function fromVolumePath(path: string): string {
@@ -257,6 +266,7 @@ async function listLiveMemoryEntries(volume: Volume, previous: MemoryMeta[]): Pr
 		if (stat.type !== FileType.Regular) return
 		if (path === DRAFT_PATH) return
 		if (isTrashPath(path)) return
+		if (isAssetPath(path)) return
 
 		const currentPath = entryIdentity(path)
 		const cached = previousById.get(stat.ino) ?? previousByPath.get(currentPath)
@@ -320,6 +330,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 	const remote = await apiStorage(fsClient)
 	const storage = cachedStorage(local, remote)
 	const volume = createVolume(createFs(storage))
+	const remoteVolume = createVolume(createFs(remote))
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()
 	let entries = loadCache(userId)
@@ -473,6 +484,54 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		}
 	}
 
+	async function writeAssetFile(file: File): Promise<string> {
+		const assetPath = nextAssetPath(file.name || 'asset.bin')
+		const assetDir = assetDirPath()
+		const bytes = new Uint8Array(await file.arrayBuffer())
+
+		// Editor-inserted assets must be readable immediately by the preview
+		// renderer, which fetches through the authenticated remote /fs route.
+		// Write them to remote synchronously instead of relying on local
+		// write-behind flush timing.
+		await remoteVolume.mkdir(assetDir, { recursive: true })
+		await remoteVolume.writeFile(assetPath, bytes)
+
+		return assetPath
+	}
+
+	async function resolveAssetUrl(notePath: string, src: string): Promise<string | null> {
+		const resolvedPath = resolveRelativeFsPath(notePath, src)
+		if (!resolvedPath) return src
+
+		const stat = await volume.stat(resolvedPath)
+		if (stat.type !== FileType.Regular) return null
+
+		return assetUrlForIno(
+			stat.ino,
+			displayFilenameFromSrc(src),
+			stat.contentHash ?? stat.mtimeNs.toString()
+		)
+	}
+
+	async function readAssetBlob(notePath: string, src: string): Promise<Blob | null> {
+		const resolvedPath = resolveRelativeFsPath(notePath, src)
+		if (!resolvedPath) {
+			const res = await fetch(src)
+			if (!res.ok) return null
+			return await res.blob()
+		}
+
+		const stat = await volume.stat(resolvedPath)
+		if (stat.type !== FileType.Regular) return null
+
+		const filename = displayFilenameFromSrc(src)
+		const res = await fsClient.inodes[':ino'].content[':filename'].$get({
+			param: { ino: stat.ino, filename }
+		})
+		if (!res.ok) return null
+		return await res.blob()
+	}
+
 	return {
 		volume,
 		index,
@@ -515,6 +574,9 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		archiveMemory,
 		reviveMemory,
 		resolveMemory,
+		writeAssetFile,
+		resolveAssetUrl,
+		readAssetBlob,
 	}
 }
 
@@ -575,5 +637,8 @@ export function useVolume(): VolumeService {
 		archiveMemory: runtime.archiveMemory,
 		reviveMemory: runtime.reviveMemory,
 		resolveMemory: runtime.resolveMemory,
+		writeAssetFile: runtime.writeAssetFile,
+		resolveAssetUrl: runtime.resolveAssetUrl,
+		readAssetBlob: runtime.readAssetBlob,
 	}), [runtime, snapshot.entries])
 }

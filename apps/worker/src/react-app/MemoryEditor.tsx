@@ -8,29 +8,31 @@ import type { ProseMirrorJsonDocument } from './sync'
 
 type Props = {
 	id: string | null
-	assetOwnerId?: string
 	content: ProseMirrorJsonDocument | null
 	onSave: (content: ProseMirrorJsonDocument) => void
+	onUploadAsset?: (file: File) => Promise<string>
+	resolveAssetUrl?: (src: string) => Promise<string | null>
+	readAssetBlob?: (src: string) => Promise<Blob | null>
 	headerLeft?: ReactNode
 	headerRight?: ReactNode
 	footer?: ReactNode
 	isLoading?: boolean
 	readOnly?: boolean
-	getToken?: () => Promise<string | null>
 	updatedAt?: string
 }
 
 export function MemoryEditor({
 	id,
-	assetOwnerId,
 	content,
 	onSave,
+	onUploadAsset,
+	resolveAssetUrl,
+	readAssetBlob,
 	headerLeft,
 	headerRight,
 	footer,
 	isLoading,
 	readOnly,
-	getToken,
 	updatedAt
 }: Props) {
 	const navigate = useNavigate()
@@ -89,9 +91,10 @@ export function MemoryEditor({
 									key={id}
 									value={content}
 									onChange={onSave}
-									memoryId={assetOwnerId}
+									uploadAsset={onUploadAsset}
+									resolveAssetUrl={resolveAssetUrl}
+									readAssetBlob={readAssetBlob}
 									readOnly={readOnly}
-									getToken={getToken}
 							/>
 						</div>
 					) : (

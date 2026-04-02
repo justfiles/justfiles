@@ -3,8 +3,7 @@ import { type EditorView } from 'prosemirror-view'
 import { startImageUpload } from './imageUpload'
 
 export interface GutterPluginOptions {
-	getMemoryId: () => string | undefined
-	getToken: () => Promise<string | null>
+	getUploadAsset: () => ((file: File) => Promise<string>) | undefined
 }
 
 export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
@@ -42,7 +41,6 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 		menu.style.display = 'flex'
 		menuOpen = true
 		const btnRect = btn.getBoundingClientRect()
-		// Compute position after paint so menu dimensions are available
 		requestAnimationFrame(() => {
 			const mw = menu.offsetWidth
 			const mh = menu.offsetHeight
@@ -70,7 +68,6 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 		return b
 	}
 
-	// Returns {from, to} of the current empty top-level paragraph, or null
 	const emptyParaRange = (): { from: number; to: number } | null => {
 		if (!currentView) return null
 		const { $from } = currentView.state.selection
@@ -91,13 +88,8 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 		return $from.depth >= 1 ? $from.after(1) : $from.pos
 	}
 
-	// ── Menu items ───────────────────────────────────────────────────────────
-	// To add a new item: append a makeItem() call below with its insert logic.
-
-	// Image
 	menu.appendChild(makeItem('Image', () => fileInput.click()))
 
-	// Drawing
 	menu.appendChild(
 		makeItem('Drawing', () => {
 			if (!currentView) return
@@ -115,7 +107,6 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 		})
 	)
 
-	// Divider
 	menu.appendChild(
 		makeItem('Divider', () => {
 			if (!currentView) return
@@ -130,56 +121,26 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 				])
 				try {
 					tr.setSelection(TextSelection.near(tr.doc.resolve(range.from + 2)))
-				} catch {
-					// position may not exist if at end of doc
-				}
+				} catch {}
 			} else {
 				const pos = afterCurrentBlock()
 				tr.insert(pos, [nodes.horizontal_rule.create(), nodes.paragraph.create()])
 				try {
 					tr.setSelection(TextSelection.near(tr.doc.resolve(pos + 2)))
-				} catch {
-					// ignore
-				}
+				} catch {}
 			}
 			v.dispatch(tr.scrollIntoView())
 			v.focus()
 		})
 	)
 
-	// Table
-	// TODO: table is not that simple, remove it for now
-	// menu.appendChild(
-	// 	makeItem('Table', () => {
-	// 		if (!currentView) return
-	// 		const v = currentView
-	// 		const { nodes } = v.state.schema
-	// 		const makeCell = (isHeader: boolean) =>
-	// 			(isHeader ? nodes.table_header : nodes.table_cell).createAndFill()!
-	// 		const makeRow = (isHeader: boolean) =>
-	// 			nodes.table_row.create(null, [makeCell(isHeader), makeCell(isHeader)])
-	// 		const table = nodes.table.create(null, [makeRow(true), makeRow(false)])
-	// 		const range = emptyParaRange()
-	// 		const tr = v.state.tr
-	// 		if (range) {
-	// 			tr.replaceWith(range.from, range.to, table)
-	// 		} else {
-	// 			tr.insert(afterCurrentBlock(), table)
-	// 		}
-	// 		v.dispatch(tr.scrollIntoView())
-	// 		v.focus()
-	// 	})
-	// )
-
-	// ── Event listeners ──────────────────────────────────────────────────────
-
 	fileInput.addEventListener('change', () => {
 		const file = fileInput.files?.[0]
 		fileInput.value = ''
 		if (!file || !currentView) return
-		const mid = opts.getMemoryId()
-		if (!mid) return
-		startImageUpload(currentView, file, mid, opts.getToken)
+		const uploadAsset = opts.getUploadAsset()
+		if (!uploadAsset) return
+		startImageUpload(currentView, file, uploadAsset)
 		currentView.focus()
 	})
 
@@ -194,8 +155,6 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 		}
 	}
 	document.addEventListener('mousedown', onOutsideClick)
-
-	// ── Plugin ───────────────────────────────────────────────────────────────
 
 	return new Plugin({
 		view(editorView) {
@@ -218,34 +177,22 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 					}
 
 					const { $from } = selection
-					// Show only on empty top-level text blocks
-					const isEmptyTopLevel =
-						$from.depth === 1 && $from.parent.isTextblock && $from.parent.childCount === 0
-
-					if (!isEmptyTopLevel) {
+					if ($from.depth !== 1) {
 						btn.style.display = 'none'
 						if (menuOpen) closeMenu()
 						return
 					}
 
-					const coords = v.coordsAtPos($from.pos)
-					const editorRect = v.dom.getBoundingClientRect()
-					const btnH = 20
-					const btnTop = Math.round((coords.top + coords.bottom) / 2 - btnH / 2)
-
-					// .ProseMirror has pl-10 (40px) left gutter. Center the 20px button: offset = (40-20)/2 = 10
-					btn.style.left = editorRect.left + 10 + 'px'
-					btn.style.top = btnTop + 'px'
-					btn.style.display = 'flex'
-					btn.style.alignItems = 'center'
-					btn.style.justifyContent = 'center'
+					const coords = v.coordsAtPos(selection.from)
+					btn.style.left = `${Math.max(8, coords.left - 30)}px`
+					btn.style.top = `${coords.top - 2}px`
+					btn.style.display = 'block'
 				},
 				destroy() {
-					document.removeEventListener('mousedown', onOutsideClick)
 					btn.remove()
 					menu.remove()
 					fileInput.remove()
-					currentView = null
+					document.removeEventListener('mousedown', onOutsideClick)
 				}
 			}
 		}

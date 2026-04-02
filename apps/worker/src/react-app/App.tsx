@@ -16,13 +16,13 @@ import {
 } from './settings'
 
 function App() {
-	const { getToken, userId } = useAuth()
+	const { userId } = useAuth()
 	const [settings] = useState(() => loadSettings(userId!))
 	const [activeDestination, setActiveDestination] = useState<Destination>(() =>
 		getActiveDestination(settings)
 	)
 	const [draftEditorVersion, setDraftEditorVersion] = useState(0)
-	const { id, isLoading, content, save, submit } = useDraft()
+	const { id, isLoading, content, save, submit, uploadAsset, getAssetUrl, loadAssetBlob } = useDraft()
 	const { isOnline } = useSyncRuntimeStatus()
 
 	const submitMutation = useMutation({
@@ -66,8 +66,10 @@ function App() {
 			id={id}
 			content={content}
 			onSave={save}
+			onUploadAsset={uploadAsset}
+			resolveAssetUrl={getAssetUrl}
+			readAssetBlob={loadAssetBlob}
 			isLoading={isLoading}
-			getToken={getToken}
 			headerLeft={
 				<div className="flex items-center gap-2 min-w-0">
 					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">

@@ -5,6 +5,7 @@ import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemi
 import { openEditCache, type EditCache } from './editCache'
 import { type ProseMirrorJsonDocument } from './sync'
 import { useVolume } from './useVolume'
+import { normalizeVolumePath, parentVolumePath } from './assets'
 
 export interface MemoryData {
 	content: ProseMirrorJsonDocument
@@ -43,18 +44,8 @@ function jsonToMarkdown(content: ProseMirrorJsonDocument): string {
 	return docToMarkdown(remarkSchema.nodeFromJSON(content))
 }
 
-function toVolumePath(path: string): string {
-	return path.startsWith('/') ? path : `/${path}`
-}
-
-function parentVolumePath(path: string): string {
-	const volumePath = toVolumePath(path)
-	const lastSlash = volumePath.lastIndexOf('/')
-	return lastSlash <= 0 ? '/' : volumePath.slice(0, lastSlash)
-}
-
 export function useMemory(id: string | null) {
-	const { volume, resolveMemory } = useVolume()
+	const { volume, resolveMemory, writeAssetFile, resolveAssetUrl, readAssetBlob } = useVolume()
 	const [isLoading, setIsLoading] = useState(false)
 	const [memory, setMemory] = useState<MemoryData | null>(null)
 	const [reloadVersion, setReloadVersion] = useState(0)
@@ -97,11 +88,12 @@ export function useMemory(id: string | null) {
 
 				setMemory(cachedContent && nextMemory ? { ...nextMemory, content: cachedContent } : nextMemory)
 
-					if (cachedContent && nextMemory?.path && nextMemory.active !== 0) {
+				if (cachedContent && nextMemory?.path && nextMemory.active !== 0) {
+					const nextPath = nextMemory.path
 					void (async () => {
 						try {
 							await volume.writeFile(
-								toVolumePath(nextMemory.path!),
+								normalizeVolumePath(nextPath),
 								new TextEncoder().encode(jsonToMarkdown(cachedContent))
 							)
 							const latest = await cache.get(currentId)
@@ -133,11 +125,11 @@ export function useMemory(id: string | null) {
 
 	const saveContent = useCallback((content: ProseMirrorJsonDocument) => {
 		if (!id || !memory?.path || memory.active === 0) return
+		const notePath = memory.path
 		setMemory((current) => (current ? { ...current, content } : current))
 		void getEditCache()
 			.then((cache) => cache.put(id, content))
 			.catch(() => {})
-		const volumePath = toVolumePath(memory.path)
 		if (debounceRef.current) clearTimeout(debounceRef.current)
 		debounceRef.current = setTimeout(() => {
 			debounceRef.current = null
@@ -149,7 +141,7 @@ export function useMemory(id: string | null) {
 
 				try {
 					await volume.writeFile(
-						volumePath,
+						normalizeVolumePath(notePath),
 						new TextEncoder().encode(jsonToMarkdown(content))
 					)
 					if (cache) {
@@ -165,7 +157,7 @@ export function useMemory(id: string | null) {
 
 	const saveTitle = useCallback(async (title: string | null) => {
 		if (!id || !memory?.path || memory.active === 0) return
-		const volumePath = toVolumePath(memory.path)
+		const volumePath = normalizeVolumePath(memory.path)
 		if (title === null) {
 			await volume.removeXattr(volumePath, GHOSTORE_XATTR.title)
 		} else {
@@ -178,11 +170,30 @@ export function useMemory(id: string | null) {
 	const movePath = useCallback(async (path: string) => {
 		if (!id || !memory?.path || memory.active === 0) return
 		const oldPath = memory.path
-		await volume.mkdir(parentVolumePath(path), { recursive: true })
-		await volume.rename(toVolumePath(oldPath), toVolumePath(path))
+		const normalizedOldPath = normalizeVolumePath(oldPath)
+		const normalizedNewPath = normalizeVolumePath(path)
+		await volume.mkdir(parentVolumePath(normalizedNewPath), { recursive: true })
+		await volume.rename(normalizedOldPath, normalizedNewPath)
 		const now = new Date().toISOString()
 		setMemory((current) => (current ? { ...current, path, updated_at: now } : current))
 	}, [id, memory?.active, memory?.path, volume])
+
+	const uploadAsset = useCallback(async (file: File) => {
+		if (!id || !memory?.path || memory.active === 0) {
+			throw new Error('Cannot upload asset for an archived or missing note')
+		}
+		return writeAssetFile(file)
+	}, [id, memory?.active, memory?.path, writeAssetFile])
+
+	const getAssetUrl = useCallback(async (src: string) => {
+		if (!memory?.path) return src
+		return resolveAssetUrl(memory.path, src)
+	}, [memory?.path, resolveAssetUrl])
+
+	const loadAssetBlob = useCallback(async (src: string) => {
+		if (!memory?.path) return null
+		return readAssetBlob(memory.path, src)
+	}, [memory?.path, readAssetBlob])
 
 	const reload = useCallback(() => {
 		setReloadVersion((version) => version + 1)
@@ -194,6 +205,9 @@ export function useMemory(id: string | null) {
 		saveContent,
 		saveTitle,
 		movePath,
+		uploadAsset,
+		getAssetUrl,
+		loadAssetBlob,
 		reload,
 		isLoading
 	}

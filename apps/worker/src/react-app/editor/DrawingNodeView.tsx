@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import type { Node as PMNode } from 'prosemirror-model'
 import type { NodeView } from 'prosemirror-view'
+import { createPortal } from 'react-dom'
 
 const Excalidraw = lazy(async () => {
 	const [m] = await Promise.all([
@@ -18,9 +18,10 @@ interface ExcalidrawAPI {
 }
 
 interface DrawingEditorModalProps {
-	memoryId: string
 	drawingId: string | null
-	getToken: () => Promise<string | null>
+	resolveAssetUrl: (src: string | null) => Promise<string | null>
+	readAssetBlob: (src: string | null) => Promise<Blob | null>
+	uploadAsset: (file: File) => Promise<string>
 	onSave: (id: string, previewUrl: string) => void
 	onClose: () => void
 }
@@ -28,11 +29,6 @@ interface DrawingEditorModalProps {
 interface OpenDrawingEditorArgs {
 	id: string | null
 	onSave: (id: string, previewUrl: string) => void
-}
-
-function getDrawingPreviewUrl(memoryId: string, src: string | null): string | null {
-	if (!src) return null
-	return src.startsWith('asset:') ? `/api/v1/memory/${memoryId}/assets/${src.slice(6)}` : src
 }
 
 function parseEmbeddedScene(svgText: string): Record<string, unknown> | null {
@@ -54,9 +50,10 @@ function parseEmbeddedScene(svgText: string): Record<string, unknown> | null {
 }
 
 export function DrawingEditorModal({
-	memoryId,
 	drawingId,
-	getToken,
+	resolveAssetUrl,
+	readAssetBlob,
+	uploadAsset,
 	onSave,
 	onClose
 }: DrawingEditorModalProps) {
@@ -77,20 +74,17 @@ export function DrawingEditorModal({
 			}
 
 			try {
-				const token = await getToken()
-				const headers: Record<string, string> = {}
-				if (token) headers.Authorization = `Bearer ${token}`
-				const src = getDrawingPreviewUrl(memoryId, drawingId)
+				const src = await resolveAssetUrl(drawingId)
 				if (!src) {
 					if (!cancelled) setLoading(false)
 					return
 				}
-				const res = await fetch(src, { headers })
-				if (!res.ok) {
+				const blob = await readAssetBlob(drawingId)
+				if (!blob) {
 					if (!cancelled) setLoading(false)
 					return
 				}
-				const svgText = await res.text()
+				const svgText = await blob.text()
 				if (!cancelled) setInitialData(parseEmbeddedScene(svgText))
 			} catch {
 				if (!cancelled) setInitialData(null)
@@ -103,15 +97,12 @@ export function DrawingEditorModal({
 		return () => {
 			cancelled = true
 		}
-	}, [drawingId, getToken, memoryId])
+	}, [drawingId, readAssetBlob, resolveAssetUrl])
 
 	const handleSave = useCallback(async () => {
 		if (!apiRef.current) return
 
 		try {
-			const token = await getToken()
-			if (!token) return
-
 			const { exportToSvg } = await import('@excalidraw/excalidraw')
 			const elements = apiRef.current.getSceneElements()
 			const appState = apiRef.current.getAppState()
@@ -137,23 +128,12 @@ export function DrawingEditorModal({
 			const svgWithScene = `<!-- excalidraw-scene: ${sceneJson} -->\n${svgString}`
 			const blob = new Blob([svgWithScene], { type: 'image/svg+xml' })
 			const file = new File([blob], 'drawing.svg', { type: 'image/svg+xml' })
-			const formData = new FormData()
-			formData.append('file', file)
-
-			const res = await fetch(`/api/v1/memory/${memoryId}/assets`, {
-				method: 'POST',
-				headers: { Authorization: `Bearer ${token}` },
-				body: formData
-			})
-			if (!res.ok) return
-
-			const { key } = (await res.json()) as { key: string }
-			const assetId = `asset:${key}`
-			onSave(assetId, assetId)
+			const assetPath = await uploadAsset(file)
+			onSave(assetPath, assetPath)
 		} catch {
 			// ignore upload/export errors
 		}
-	}, [getToken, memoryId, onSave])
+	}, [onSave, uploadAsset])
 
 	return createPortal(
 		<div
@@ -204,7 +184,8 @@ export function DrawingEditorModal({
 }
 
 export function makeDrawingNodeView(
-	memoryId: string,
+	resolveAssetUrl: (src: string | null) => Promise<string | null>,
+	readAssetBlob: (src: string | null) => Promise<Blob | null>,
 	openDrawingEditor: (args: OpenDrawingEditorArgs) => void,
 	isReadOnly: () => boolean,
 	updateNodeAttrs: (node: PMNode, attrs: Record<string, unknown>) => void
@@ -217,6 +198,8 @@ export function makeDrawingNodeView(
 		const button = document.createElement('button')
 
 		let currentNode = pmNode
+		let renderToken = 0
+		let objectUrl: string | null = null
 
 		dom.className =
 			'relative group my-2 overflow-hidden rounded-lg border border-base-300 bg-base-200'
@@ -257,17 +240,37 @@ export function makeDrawingNodeView(
 		}
 
 		const syncDom = () => {
-			const previewUrl = getDrawingPreviewUrl(
-				memoryId,
-				(currentNode.attrs.previewUrl as string | null) ?? null
-			)
+			const previewSrc = (currentNode.attrs.previewUrl as string | null) ?? null
 			const readOnly = isReadOnly()
 
-			if (previewUrl) {
-				img.src = previewUrl
-				img.hidden = false
-				empty.hidden = true
+			if (previewSrc) {
+				const token = ++renderToken
+				void resolveAssetUrl(previewSrc).then((url) => {
+					if (token !== renderToken) return
+					if (!url) {
+						img.hidden = true
+						empty.hidden = false
+						return
+					}
+					return readAssetBlob(previewSrc).then((blob) => ({ blob }))
+				}).then(async (result) => {
+					if (!result || token !== renderToken || !result.blob) {
+						img.hidden = true
+						empty.hidden = false
+						return
+					}
+					if (objectUrl) URL.revokeObjectURL(objectUrl)
+					objectUrl = URL.createObjectURL(result.blob)
+					img.src = objectUrl
+					img.hidden = false
+					empty.hidden = true
+				}).catch(() => {
+					if (token !== renderToken) return
+					img.hidden = true
+					empty.hidden = false
+				})
 			} else {
+				renderToken++
 				img.hidden = true
 				empty.hidden = false
 			}
@@ -291,6 +294,7 @@ export function makeDrawingNodeView(
 				return true
 			},
 			destroy() {
+				if (objectUrl) URL.revokeObjectURL(objectUrl)
 				dom.removeEventListener('click', openEditor)
 				dom.removeEventListener('keydown', handleKeyDown)
 			},

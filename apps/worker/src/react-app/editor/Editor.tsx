@@ -2,16 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { Selection } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
 import { type ProseMirrorJsonDocument } from '../sync'
-import { buildState } from './state'
+import { DrawingEditorModal, makeDrawingNodeView } from './DrawingNodeView'
 import { buildGutterPlugin } from './plugins/gutterMenu'
 import { startImageUpload, makeImageNodeView } from './plugins/imageUpload'
-import { DrawingEditorModal, makeDrawingNodeView } from './DrawingNodeView'
+import { buildState } from './state'
 
 type Props = {
 	value: ProseMirrorJsonDocument
 	onChange: (v: ProseMirrorJsonDocument) => void
-	memoryId?: string
-	getToken?: () => Promise<string | null>
+	uploadAsset?: (file: File) => Promise<string>
+	resolveAssetUrl?: (src: string) => Promise<string | null>
+	readAssetBlob?: (src: string) => Promise<Blob | null>
 	readOnly?: boolean
 }
 
@@ -20,7 +21,7 @@ type DrawingEditorState = {
 	onSave: (id: string, previewUrl: string) => void
 } | null
 
-export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props) {
+export function Editor({ value, onChange, uploadAsset, resolveAssetUrl, readAssetBlob, readOnly }: Props) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
 	const [drawingEditor, setDrawingEditor] = useState<DrawingEditorState>(null)
@@ -28,46 +29,47 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 	onChangeRef.current = onChange
 	const readOnlyRef = useRef(readOnly)
 	readOnlyRef.current = readOnly
-	const memoryIdRef = useRef(memoryId)
-	memoryIdRef.current = memoryId
-	const getTokenRef = useRef(getToken)
-	getTokenRef.current = getToken
+	const uploadAssetRef = useRef(uploadAsset)
+	uploadAssetRef.current = uploadAsset
+	const resolveAssetUrlRef = useRef(resolveAssetUrl)
+	resolveAssetUrlRef.current = resolveAssetUrl
+	const readAssetBlobRef = useRef(readAssetBlob)
+	readAssetBlobRef.current = readAssetBlob
 
-	// Sync readOnly changes — dispatch a no-op transaction so ProseMirror re-evaluates editable()
 	useEffect(() => {
 		const view = viewRef.current
 		if (!view) return
 		view.dispatch(view.state.tr)
 	}, [readOnly])
 
-	// Mount editor once
 	useEffect(() => {
 		const gutterPlugin = buildGutterPlugin({
-			getMemoryId: () => memoryIdRef.current,
-			getToken: () => getTokenRef.current?.() ?? Promise.resolve(null)
+			getUploadAsset: () => uploadAssetRef.current
 		})
 
 		const view = new EditorView(containerRef.current!, {
-			// The editor owns its live state after mount. `value` is only used
-			// as the initial ProseMirror document for this editor instance.
 			state: buildState(value, [gutterPlugin]),
 			editable: () => !readOnlyRef.current,
-			nodeViews: memoryId
+			nodeViews: resolveAssetUrl
 				? {
-						image: makeImageNodeView(memoryId),
+						image: makeImageNodeView(
+							(src) => resolveAssetUrlRef.current?.(src) ?? Promise.resolve(src),
+							(src) => readAssetBlobRef.current?.(src) ?? Promise.resolve(null)
+						),
 						drawing: makeDrawingNodeView(
-							memoryId,
+							(src) => resolveAssetUrlRef.current?.(src ?? '') ?? Promise.resolve(src),
+							(src) => readAssetBlobRef.current?.(src ?? '') ?? Promise.resolve(null),
 							({ id, onSave }) => {
 								setDrawingEditor({ id, onSave })
 							},
-							() => !!readOnlyRef.current,
+							() => !!readOnlyRef.current || !uploadAssetRef.current || !resolveAssetUrlRef.current,
 							(node, attrs) => {
-								const view = viewRef.current
-								if (!view) return
-								view.state.doc.descendants((n, pos) => {
+								const activeView = viewRef.current
+								if (!activeView) return
+								activeView.state.doc.descendants((n, pos) => {
 									if (n === node) {
-										view.dispatch(
-											view.state.tr.setNodeMarkup(pos, undefined, { ...n.attrs, ...attrs })
+										activeView.dispatch(
+											activeView.state.tr.setNodeMarkup(pos, undefined, { ...n.attrs, ...attrs })
 										)
 										return false
 									}
@@ -77,15 +79,11 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 						)
 					}
 				: {},
-			// Intercept ProseMirror's default scroll-into-view behavior, which
-			// walks every DOM ancestor and sets scrollTop — on iPadOS PWA with a
-			// physical keyboard this causes the entire layout to jump. Instead we
-			// scroll only within the intended overflow-y-auto scroll container.
-			handleScrollToSelection(view) {
+			handleScrollToSelection(activeView) {
 				const scrollEl = containerRef.current?.closest('.overflow-y-auto') as HTMLElement | null
 				if (!scrollEl) return false
-				const { from } = view.state.selection
-				const coords = view.coordsAtPos(from)
+				const { from } = activeView.state.selection
+				const coords = activeView.coordsAtPos(from)
 				const box = scrollEl.getBoundingClientRect()
 				const padding = 32
 				const relTop = coords.top - box.top
@@ -101,34 +99,33 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 				const newState = view.state.apply(tr)
 				view.updateState(newState)
 				if (tr.docChanged) {
-					const d = newState.doc.toJSON() as ProseMirrorJsonDocument
-					onChangeRef.current(d)
+					const nextDoc = newState.doc.toJSON() as ProseMirrorJsonDocument
+					onChangeRef.current(nextDoc)
 				}
 			},
-			handleDrop(view, event) {
+			handleDrop(activeView, event) {
 				const files = event.dataTransfer?.files
 				if (!files?.length) return false
-				// Always prevent default for file drops — otherwise the browser navigates to the file URL
 				event.preventDefault()
-				const mid = memoryIdRef.current
-				if (!mid) return true
+				const handleUpload = uploadAssetRef.current
+				if (!handleUpload) return true
 				const file = files[0]
 				if (!file.type.startsWith('image/')) return true
-				const coords = view.posAtCoords({ left: event.clientX, top: event.clientY })
+				const coords = activeView.posAtCoords({ left: event.clientX, top: event.clientY })
 				if (coords) {
-					const $pos = view.state.doc.resolve(coords.pos)
-					view.dispatch(view.state.tr.setSelection(Selection.near($pos)))
+					const $pos = activeView.state.doc.resolve(coords.pos)
+					activeView.dispatch(activeView.state.tr.setSelection(Selection.near($pos)))
 				}
-				startImageUpload(view, file, mid, getTokenRef.current ?? (() => Promise.resolve(null)))
+				startImageUpload(activeView, file, handleUpload)
 				return true
 			},
-			handlePaste(view, event) {
-				const mid = memoryIdRef.current
-				if (!mid) return false
+			handlePaste(activeView, event) {
+				const handleUpload = uploadAssetRef.current
+				if (!handleUpload) return false
 				const file = event.clipboardData?.files[0]
 				if (!file?.type.startsWith('image/')) return false
 				event.preventDefault()
-				startImageUpload(view, file, mid, getTokenRef.current ?? (() => Promise.resolve(null)))
+				startImageUpload(activeView, file, handleUpload)
 				return true
 			}
 		})
@@ -144,11 +141,12 @@ export function Editor({ value, onChange, memoryId, getToken, readOnly }: Props)
 	return (
 		<div className="ghostore-editor">
 			<div ref={containerRef} className="ghostore-pm-editor" />
-			{memoryId && drawingEditor ? (
+			{drawingEditor ? (
 				<DrawingEditorModal
-					memoryId={memoryId}
 					drawingId={drawingEditor.id}
-					getToken={getTokenRef.current ?? (() => Promise.resolve(null))}
+					resolveAssetUrl={(src) => resolveAssetUrlRef.current?.(src ?? '') ?? Promise.resolve(src)}
+					readAssetBlob={(src) => readAssetBlobRef.current?.(src ?? '') ?? Promise.resolve(null)}
+					uploadAsset={(file) => uploadAssetRef.current?.(file) ?? Promise.reject(new Error('Asset uploads are unavailable'))}
 					onSave={(id, previewUrl) => {
 						drawingEditor.onSave(id, previewUrl)
 						setDrawingEditor(null)
