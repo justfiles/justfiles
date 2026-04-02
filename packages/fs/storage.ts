@@ -31,9 +31,22 @@ export interface InodeMeta {
   symlinkTarget?: string;
 }
 
+export type MutationOptions = {
+	/** Identifies the client or actor that originated the mutation. */
+	source?: string;
+}
+
+export type UpdateQueryOptions = {
+	/** Match against FsOp.source. */
+	source?: string;
+	/** `only` includes matching source, `exclude` removes it. */
+	sourceMode?: 'only' | 'exclude';
+}
+
 export type FsOp =
 	| {
 			kind: 'upsert-inode'
+			source?: string
 			ino: Ino
 			meta?: InodeMeta
 			xattrs?: Record<string, Uint8Array | null>
@@ -41,6 +54,7 @@ export type FsOp =
 		}
 	| {
 			kind: 'set-dirent'
+			source?: string
 			dirIno: Ino
 			name: string
 			ino: Ino
@@ -48,6 +62,7 @@ export type FsOp =
 		}
 	| {
 			kind: 'unset-dirent'
+			source?: string
 			dirIno: Ino
 			name: string
 			ino?: Ino
@@ -92,7 +107,7 @@ export interface StorageBackend {
    * Why the backend assigns inos: it knows its own numbering strategy
    * (sequential, random, UUID-mapped, etc.). The VFS does not care.
    */
-  alloc(meta: Omit<InodeMeta, 'nlink'>): Promise<Ino>;
+  alloc(meta: Omit<InodeMeta, 'nlink'>, options?: MutationOptions): Promise<Ino>;
 
   /**
    * Atomically allocate a new inode AND add its directory entry,
@@ -105,7 +120,7 @@ export interface StorageBackend {
    * no-clobber semantics of dirAdd().
    * The backend sets nlink = 1 inside this operation.
    */
-  create?(dirIno: Ino, name: string, meta: Omit<InodeMeta, 'nlink'>): Promise<Ino>;
+  create?(dirIno: Ino, name: string, meta: Omit<InodeMeta, 'nlink'>, options?: MutationOptions): Promise<Ino>;
 
   // ==========================================
   // 2. INODE METADATA — the "stat" of a node
@@ -124,7 +139,7 @@ export interface StorageBackend {
    * dirUnset. The VFS calls setMeta for chmod, utimes, and similar attribute
    * changes.
    */
-  setMeta(ino: Ino, partial: InodeMetaUpdate): Promise<void>;
+  setMeta(ino: Ino, partial: InodeMetaUpdate, options?: MutationOptions): Promise<void>;
 
   // ==========================================
   // 2b. EXTENDED ATTRIBUTES — small inode metadata blobs
@@ -140,7 +155,7 @@ export interface StorageBackend {
    * Write or replace a single extended attribute value.
    * Optional — omitted means "xattrs unsupported", not an error.
    */
-  setXattr?(ino: Ino, name: string, value: Uint8Array): Promise<void>;
+  setXattr?(ino: Ino, name: string, value: Uint8Array, options?: MutationOptions): Promise<void>;
 
   /**
    * List all xattr names currently set on an inode.
@@ -152,7 +167,7 @@ export interface StorageBackend {
    * Remove a single extended attribute.
    * Optional — omitted means "unsupported", so callers treat it as a no-op.
    */
-  removeXattr?(ino: Ino, name: string): Promise<void>;
+  removeXattr?(ino: Ino, name: string, options?: MutationOptions): Promise<void>;
 
   // ==========================================
   // 3. DATA I/O — raw byte storage per inode
@@ -170,7 +185,7 @@ export interface StorageBackend {
    * Returns bytes written (always data.length unless the medium is full).
    * The backend must update size in its metadata if the file grew.
    */
-  write(ino: Ino, offset: Off, data: Uint8Array): Promise<number>;
+  write(ino: Ino, offset: Off, data: Uint8Array, options?: MutationOptions): Promise<number>;
 
   /**
    * Resize the data to exactly `size` bytes.
@@ -181,7 +196,7 @@ export interface StorageBackend {
    * a large file to 0 must be O(1), not O(n). Object-store backends without
    * native truncate implement it as putBlob(ino, emptyOrSlicedData).
    */
-  truncate(ino: Ino, size: Off): Promise<void>;
+  truncate(ino: Ino, size: Off, options?: MutationOptions): Promise<void>;
 
   // ==========================================
   // 4. DIRECTORY ENTRIES — the naming layer
@@ -223,7 +238,7 @@ export interface StorageBackend {
    * orphaned inode (nlink = 0, no directory entry). Use create?() to
    * close this window for mknod.
    */
-  dirAdd(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<boolean>;
+  dirAdd(dirIno: Ino, name: string, ino: Ino, type: FileType, options?: MutationOptions): Promise<boolean>;
 
   /**
    * Unconditionally replace (or insert) a directory entry AND atomically
@@ -237,7 +252,7 @@ export interface StorageBackend {
    * that legitimately replaces an existing name. It is NOT used for mknod
    * or link(); those use dirAdd() to get no-clobber semantics.
    */
-  dirSet(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<DirentMin | null>;
+  dirSet(dirIno: Ino, name: string, ino: Ino, type: FileType, options?: MutationOptions): Promise<DirentMin | null>;
 
   /**
    * Remove a directory entry AND atomically decrement nlink on the inode,
@@ -252,7 +267,7 @@ export interface StorageBackend {
    * increment followed by a decrement — net zero, so the inode is never
    * freed prematurely. See rename?() for the atomic alternative.
    */
-  dirUnset(dirIno: Ino, name: string): Promise<DirentMin | null>;
+  dirUnset(dirIno: Ino, name: string, options?: MutationOptions): Promise<DirentMin | null>;
 
   /**
    * Atomically move a name from one directory to another (or rename within
@@ -269,7 +284,7 @@ export interface StorageBackend {
    * the backend atomically displaces it (decrement its nlink, free if 0)
    * and returns its ino so the VFS can invalidate the cache entry.
    */
-  rename?(oldDir: Ino, oldName: string, newDir: Ino, newName: string): Promise<Ino | null>;
+  rename?(oldDir: Ino, oldName: string, newDir: Ino, newName: string, options?: MutationOptions): Promise<Ino | null>;
 
   /**
    * Enumerate every inode in the filesystem in a single paginated scan.
@@ -296,7 +311,7 @@ export interface StorageBackend {
    * no prior GET. Backends that support efficient partial writes ignore
    * this method.
    */
-  putBlob?(ino: Ino, data: Uint8Array): Promise<void>;
+  putBlob?(ino: Ino, data: Uint8Array, options?: MutationOptions): Promise<void>;
 
   /**
    * Return filesystem updates since the position encoded in `cursor`.
@@ -308,6 +323,9 @@ export interface StorageBackend {
    * timestamp, sequence number, …); the client never interprets or generates
    * it. This eliminates client/server clock-skew bugs that arise when the
    * client supplies a wall-clock time.
+   *
+   * `options.source` and `options.sourceMode` allow journals to include or
+   * exclude updates from a given client without changing cursor semantics.
    */
-  updates?(cursor: string): Promise<{ ops: FsOp[]; cursor: string }>;
+  updates?(cursor: string, options?: UpdateQueryOptions): Promise<{ ops: FsOp[]; cursor: string }>;
 }

@@ -1,6 +1,6 @@
 import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
-import type { StorageBackend, InodeMeta, FsOp } from './storage'
+import type { StorageBackend, InodeMeta, FsOp, MutationOptions, UpdateQueryOptions } from './storage'
 import { FileType } from './types'
 import type { Ino, Off, DirCursor } from './types'
 
@@ -234,6 +234,7 @@ export function idbStorage(
 		ino: Ino,
 		data: Uint8Array,
 		oldSize: number,
+		options?: MutationOptions,
 	): Promise<void> {
 		const now = Date.now()
 		const newSize = data.length
@@ -250,6 +251,7 @@ export function idbStorage(
 		await tx.objectStore('updates').add({
 			op: {
 				kind: 'upsert-inode',
+				source: options?.source,
 				ino,
 				contentChanged: true,
 			},
@@ -269,6 +271,13 @@ export function idbStorage(
 			partial.mtimeNs !== undefined &&
 			partial.ctimeNs !== undefined
 		)
+	}
+
+	function filterOpsBySource(ops: FsOp[], options?: UpdateQueryOptions): FsOp[] {
+		const source = options?.source
+		const mode = options?.sourceMode ?? 'only'
+		if (!source) return ops
+		return ops.filter((op) => mode === 'exclude' ? op.source !== source : op.source === source)
 	}
 
 	/**
@@ -322,7 +331,7 @@ export function idbStorage(
 
 		// --- alloc / create ---
 
-		async alloc(meta) {
+		async alloc(meta, _options) {
 			const db = await getDb()
 			const ino = crypto.randomUUID()
 			const now = Date.now()
@@ -335,7 +344,7 @@ export function idbStorage(
 			return ino
 		},
 
-		async create(dirIno, name, meta) {
+		async create(dirIno, name, meta, _options) {
 			const db = await getDb()
 			const tx = db.transaction(['inodes', 'content', 'dirs'], 'readwrite')
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
@@ -362,7 +371,7 @@ export function idbStorage(
 			return meta
 		},
 
-		async setMeta(ino, partial) {
+		async setMeta(ino, partial, _options) {
 			const db = await getDb()
 			const rec = await db.get('inodes', ino)
 			if (!rec) {
@@ -381,13 +390,14 @@ export function idbStorage(
 			return rec ? rec.value.slice() : null
 		},
 
-		async setXattr(ino, name, value) {
+		async setXattr(ino, name, value, options) {
 			const db = await getDb()
 			const tx = db.transaction(['xattrs', 'updates'], 'readwrite')
 			await tx.objectStore('xattrs').put({ ino, name, value: value.slice() })
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'upsert-inode',
+					source: options?.source,
 					ino,
 					xattrs: {},
 				},
@@ -401,13 +411,14 @@ export function idbStorage(
 			return keys.map((k) => k[1])
 		},
 
-		async removeXattr(ino, name) {
+		async removeXattr(ino, name, options) {
 			const db = await getDb()
 			const tx = db.transaction(['xattrs', 'updates'], 'readwrite')
 			await tx.objectStore('xattrs').delete([ino, name])
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'upsert-inode',
+					source: options?.source,
 					ino,
 					xattrs: {},
 				},
@@ -429,7 +440,7 @@ export function idbStorage(
 			return rec.data.slice(start, start + length)
 		},
 
-		async write(ino, offset: Off, chunk) {
+		async write(ino, offset: Off, chunk, options) {
 			const db = await getDb()
 			const existing = await db.get('content', ino)
 			const start = Number(offset)
@@ -448,11 +459,11 @@ export function idbStorage(
 			const oldSize = existing?.sizeBytes ?? 0
 			const delta = buf.length - oldSize
 			if (delta > 0) await evictContent(db, delta, ino)
-			await writeContent(db, ino, buf, oldSize)
+			await writeContent(db, ino, buf, oldSize, options)
 			return chunk.length
 		},
 
-		async truncate(ino, size: Off) {
+		async truncate(ino, size: Off, options) {
 			const db = await getDb()
 			const n = Number(size)
 			const existing = await db.get('content', ino)
@@ -464,7 +475,7 @@ export function idbStorage(
 
 			const delta = n - oldSize
 			if (delta > 0) await evictContent(db, delta, ino)
-			await writeContent(db, ino, next, oldSize)
+			await writeContent(db, ino, next, oldSize, options)
 		},
 
 		// --- directory operations ---
@@ -492,7 +503,7 @@ export function idbStorage(
 			}
 		},
 
-		async dirAdd(dirIno, name, ino, type) {
+		async dirAdd(dirIno, name, ino, type, options) {
 			const db = await getDb()
 			const tx = db.transaction(['dirs', 'inodes', 'updates'], 'readwrite')
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
@@ -508,6 +519,7 @@ export function idbStorage(
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'set-dirent',
+					source: options?.source,
 					dirIno,
 					name,
 					ino,
@@ -518,7 +530,7 @@ export function idbStorage(
 			return true
 		},
 
-		async dirSet(dirIno, name, ino, type) {
+		async dirSet(dirIno, name, ino, type, options) {
 			const db = await getDb()
 			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
 			const displaced = await tx.objectStore('dirs').get([dirIno, name]) ?? null
@@ -551,6 +563,7 @@ export function idbStorage(
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'set-dirent',
+					source: options?.source,
 					dirIno,
 					name,
 					ino,
@@ -561,7 +574,8 @@ export function idbStorage(
 			return displaced ? { ino: displaced.ino, type: displaced.type } : null
 		},
 
-		async dirUnset(dirIno, name) {
+
+		async dirUnset(dirIno, name, options) {
 			const db = await getDb()
 			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
 			const entry = await tx.objectStore('dirs').get([dirIno, name]) ?? null
@@ -585,6 +599,7 @@ export function idbStorage(
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'unset-dirent',
+					source: options?.source,
 					dirIno,
 					name,
 					ino: entry.ino,
@@ -596,16 +611,16 @@ export function idbStorage(
 
 		// --- putBlob ---
 
-		async putBlob(ino, data) {
+		async putBlob(ino, data, options) {
 			const db = await getDb()
 			const existing = await db.get('content', ino)
 			const oldSize = existing?.sizeBytes ?? 0
 			const delta = data.length - oldSize
 			if (delta > 0) await evictContent(db, delta, ino)
-			await writeContent(db, ino, data.slice(), oldSize)
+			await writeContent(db, ino, data.slice(), oldSize, options)
 		},
 
-		async updates(cursor: string) {
+		async updates(cursor: string, options) {
 			const db = await getDb()
 			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
 			const lowerBound = Number.isFinite(since) && since > 0 ? since + 1 : 1
@@ -614,7 +629,7 @@ export function idbStorage(
 			const keys = await db.getAllKeys('updates', range)
 			const nextCursor = keys.length > 0 ? String(keys[keys.length - 1]) : cursor
 			return {
-				ops: records.map((record) => record.op),
+				ops: filterOpsBySource(records.map((record) => record.op), options),
 				cursor: nextCursor,
 			}
 		},

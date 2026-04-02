@@ -1,4 +1,4 @@
-import type { StorageBackend, InodeMeta, FsOp } from 'ghost-fs/storage'
+import type { StorageBackend, InodeMeta, FsOp, MutationOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { Ino, Off, DirCursor } from 'ghost-fs/types'
 import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'ghost-fs/xattr'
@@ -29,6 +29,7 @@ interface ChangeRow {
 
 export const ROOT_INO = '__root__'
 const DIR_PREFIX = '__dir__'
+const FS_SOURCE_HEADER = 'x-fs-source'
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -57,6 +58,10 @@ function rewritePathPrefix(path: string, from: string, to: string): string {
 	if (path === from) return to
 	if (!path.startsWith(`${from}/`)) return path
 	return `${to}${path.slice(from.length)}`
+}
+
+function mutationInit(options?: MutationOptions): { headers: Record<string, string> } | undefined {
+	return options?.source ? { headers: { [FS_SOURCE_HEADER]: options.source } } : undefined
 }
 
 function metaFromMemory(memory: MemoryResponse): InodeMeta {
@@ -656,14 +661,14 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 
 		// ── Inode lifecycle ────────────────────────────────────────────────
 
-		async alloc(_meta) {
+		async alloc(_meta, _options) {
 			// VFS prefers create() over alloc()+dirAdd() — this path is unreachable
 			// when create() is implemented. Kept to satisfy the interface.
 			throw new Error('apiStorage: alloc() not supported — use create()')
 		},
 
-		async create(dirIno, name, meta) {
-			const res = await c.inodes.$post({ json: { dirIno, name, meta: wireFromMeta(meta) } })
+		async create(dirIno, name, meta, options) {
+			const res = await c.inodes.$post({ json: { dirIno, name, meta: wireFromMeta(meta) } }, mutationInit(options))
 			if (res.status === 409) throw new Error(`EEXIST: ${name}`)
 			if (!res.ok) throw new Error(`create failed: ${res.status}`)
 			const data = await res.json()
@@ -679,11 +684,11 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 			return parseMeta(await res.json())
 		},
 
-		async setMeta(ino, partial) {
+		async setMeta(ino, partial, options) {
 			const wire: Record<string, unknown> = { ...partial }
 			if (partial.mtimeNs !== undefined) wire.mtimeNs = partial.mtimeNs.toString()
 			if (partial.ctimeNs !== undefined) wire.ctimeNs = partial.ctimeNs.toString()
-			const res = await c.inodes[':ino'].$patch({ param: { ino }, json: wire })
+			const res = await c.inodes[':ino'].$patch({ param: { ino }, json: wire }, mutationInit(options))
 			if (!res.ok) throw new Error(`setMeta failed: ${res.status}`)
 		},
 
@@ -697,7 +702,7 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 			return full.subarray(start, start + length)
 		},
 
-		async write(ino, offset, data) {
+		async write(ino, offset, data, options) {
 			// Read-modify-write fallback. Sync layer should call putBlob() instead.
 			const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
 			if (!res.ok) throw new Error(`write failed: ${res.status}`)
@@ -707,26 +712,29 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 			const buf = new Uint8Array(newSize)
 			buf.set(full)
 			buf.set(data, start)
-			await backend.putBlob!(ino, buf)
+			await backend.putBlob!(ino, buf, options)
 			return data.length
 		},
 
-		async truncate(ino, size) {
+		async truncate(ino, size, options) {
 			if (size === 0n) {
-				await backend.putBlob!(ino, new Uint8Array(0))
+				await backend.putBlob!(ino, new Uint8Array(0), options)
 			} else {
 				const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
 				if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
 				const full = new Uint8Array(await res.arrayBuffer())
-				await backend.putBlob!(ino, full.subarray(0, Number(size)))
+				await backend.putBlob!(ino, full.subarray(0, Number(size)), options)
 			}
 		},
 
-		async putBlob(ino, data) {
+		async putBlob(ino, data, options) {
 			const res = await c.inodes[':ino'].blob.$put(
 				{ param: { ino } },
 				{
-					headers: { 'Content-Type': 'application/octet-stream' },
+					headers: {
+						'Content-Type': 'application/octet-stream',
+						...(options?.source ? { [FS_SOURCE_HEADER]: options.source } : {})
+					},
 					init: { body: toArrayBuffer(data) }
 				}
 			)
@@ -750,38 +758,38 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 			return data
 		},
 
-		async dirAdd(dirIno, name, ino, type) {
+		async dirAdd(dirIno, name, ino, type, options) {
 			// No-clobber: check first (not atomic, acceptable for remote backend).
 			const existing = await backend.dirLookup(dirIno, name)
 			if (existing !== null) return false
 			const res = await c.inodes[':dirIno'].entries[':name'].$put({
 				param: { dirIno, name },
 				json: { ino, type }
-			})
+			}, mutationInit(options))
 			if (!res.ok) throw new Error(`dirAdd failed: ${res.status}`)
 			return true
 		},
 
-		async dirSet(dirIno, name, ino, type) {
+		async dirSet(dirIno, name, ino, type, options) {
 			const res = await c.inodes[':dirIno'].entries[':name'].$put({
 				param: { dirIno, name },
 				json: { ino, type }
-			})
+			}, mutationInit(options))
 			if (!res.ok) throw new Error(`dirSet failed: ${res.status}`)
 			const data = await res.json()
 			return data.displaced
 		},
 
-		async dirUnset(dirIno, name) {
-			const res = await c.inodes[':dirIno'].entries[':name'].$delete({ param: { dirIno, name } })
+		async dirUnset(dirIno, name, options) {
+			const res = await c.inodes[':dirIno'].entries[':name'].$delete({ param: { dirIno, name } }, mutationInit(options))
 			if (res.status === 404) return null
 			if (!res.ok) throw new Error(`dirUnset failed: ${res.status}`)
 			const data = await res.json()
 			return data.removed
 		},
 
-		async rename(oldDirIno, oldName, newDirIno, newName) {
-			const res = await c.rename.$post({ json: { oldDirIno, oldName, newDirIno, newName } })
+		async rename(oldDirIno, oldName, newDirIno, newName, options) {
+			const res = await c.rename.$post({ json: { oldDirIno, oldName, newDirIno, newName } }, mutationInit(options))
 			if (res.status === 404) return null
 			if (!res.ok) throw new Error(`rename failed: ${res.status}`)
 			const data = await res.json()
@@ -803,8 +811,8 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 			}
 		},
 
-		async updates(cursor) {
-			const res = await c.updates.$get({ query: { cursor } })
+		async updates(cursor, options) {
+			const res = await c.updates.$get({ query: { cursor } }, mutationInit(options))
 			if (res.status === 501) return { ops: [], cursor }
 			if (!res.ok) throw new Error(`updates failed: ${res.status}`)
 			const data = await res.json()

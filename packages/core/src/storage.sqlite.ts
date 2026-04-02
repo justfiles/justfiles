@@ -1,5 +1,5 @@
 import type { DbAdapter } from './db'
-import type { StorageBackend, FsOp, InodeMeta } from 'ghost-fs/storage'
+import type { StorageBackend, FsOp, InodeMeta, MutationOptions, UpdateQueryOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { DirCursor, Ino } from 'ghost-fs/types'
 
@@ -61,6 +61,7 @@ type ContentRow = {
 type UpdateRow = {
 	seq: unknown
 	op_kind: unknown
+	source: unknown
 	ino: unknown
 	dir_ino: unknown
 	name: unknown
@@ -184,6 +185,18 @@ function parseMetaJson(raw: string): InodeMeta {
 		contentHash: parsed.contentHash ?? undefined,
 		symlinkTarget: parsed.symlinkTarget ?? undefined
 	}
+}
+
+function withSource(ops: FsOp[], options?: MutationOptions): FsOp[] {
+	if (!options?.source) return ops
+	return ops.map((op) => ({ ...op, source: options.source }))
+}
+
+function filterOpsBySource(ops: FsOp[], options?: UpdateQueryOptions): FsOp[] {
+	const source = options?.source
+	const mode = options?.sourceMode ?? 'only'
+	if (!source) return ops
+	return ops.filter((op) => mode === 'exclude' ? op.source !== source : op.source === source)
 }
 
 function serializeXattrs(xattrs: Record<string, Uint8Array | null>): string {
@@ -425,13 +438,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				case 'upsert-inode':
 					await tx.run(
 						`INSERT INTO fs_updates(
-							tx_id, op_index, at_ns, op_kind, ino, meta_json, xattrs_json, content_changed
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+							tx_id, op_index, at_ns, op_kind, source, ino, meta_json, xattrs_json, content_changed
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 						[
 							txId,
 							i,
 							atNs,
 							op.kind,
+							op.source ?? null,
 							op.ino,
 							op.meta ? serializeMeta(op.meta) : null,
 							op.xattrs ? serializeXattrs(op.xattrs) : null,
@@ -442,17 +456,17 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				case 'set-dirent':
 					await tx.run(
 						`INSERT INTO fs_updates(
-							tx_id, op_index, at_ns, op_kind, dir_ino, name, entry_ino, entry_type
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-						[txId, i, atNs, op.kind, op.dirIno, op.name, op.ino, op.type]
+							tx_id, op_index, at_ns, op_kind, source, dir_ino, name, entry_ino, entry_type
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+						[txId, i, atNs, op.kind, op.source ?? null, op.dirIno, op.name, op.ino, op.type]
 					)
 					break
 				case 'unset-dirent':
 					await tx.run(
 						`INSERT INTO fs_updates(
-							tx_id, op_index, at_ns, op_kind, dir_ino, name, entry_ino
-						) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-						[txId, i, atNs, op.kind, op.dirIno, op.name, op.ino ?? null]
+							tx_id, op_index, at_ns, op_kind, source, dir_ino, name, entry_ino
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						[txId, i, atNs, op.kind, op.source ?? null, op.dirIno, op.name, op.ino ?? null]
 					)
 					break
 			}
@@ -490,7 +504,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 
 	async function updateInodeContent(
 		ino: Ino,
-		data: Uint8Array
+		data: Uint8Array,
+		options?: MutationOptions
 	): Promise<void> {
 		await ensureBootstrapped()
 		const orphanedR2Keys: string[] = []
@@ -518,14 +533,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				ctimeNs: stamp,
 				contentHash
 			}
-			await appendOps(tx, [
+			await appendOps(tx, withSource([
 				{
 					kind: 'upsert-inode',
 					ino,
 					meta: nextMeta,
 					contentChanged: true
 				}
-			])
+			], options))
 		})
 
 		if (blobStore?.delete) {
@@ -538,7 +553,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 	return {
 		rootIno: ROOT_INO,
 
-		async alloc(meta) {
+		async alloc(meta, options) {
 			await ensureBootstrapped()
 			const ino = randomId()
 			const stamp = nowNs()
@@ -566,13 +581,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						STORAGE_NONE
 					]
 				)
-				await appendOps(tx, [{ kind: 'upsert-inode', ino, meta: nextMeta }])
+				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: nextMeta }], options))
 			})
 
 			return ino
 		},
 
-		async create(dirIno, name, meta) {
+		async create(dirIno, name, meta, options) {
 			await ensureBootstrapped()
 			const ino = randomId()
 			const stamp = nowNs()
@@ -610,10 +625,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					ino,
 					meta.type
 				])
-				await appendOps(tx, [
+				await appendOps(tx, withSource([
 					{ kind: 'upsert-inode', ino, meta: nextMeta },
 					{ kind: 'set-dirent', dirIno, name, ino, type: meta.type }
-				])
+				], options))
 			})
 
 			return ino
@@ -625,7 +640,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return row ? metaFromRow(row) : null
 		},
 
-		async setMeta(ino, partial) {
+		async setMeta(ino, partial, options) {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const row = await getInode(tx, ino)
@@ -641,7 +656,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					 WHERE ino = ?`,
 					[next.mode, next.mtimeNs, next.ctimeNs, next.symlinkTarget ?? null, ino]
 				)
-				await appendOps(tx, [{ kind: 'upsert-inode', ino, meta: next }])
+				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: next }], options))
 			})
 		},
 
@@ -655,7 +670,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return toUint8Array(rows[0].value)
 		},
 
-		async setXattr(ino, name, value) {
+		async setXattr(ino, name, value, options) {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
@@ -665,13 +680,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					 ON CONFLICT(ino, name) DO UPDATE SET value = excluded.value`,
 					[ino, name, value]
 				)
-				await appendOps(tx, [
+				await appendOps(tx, withSource([
 					{
 						kind: 'upsert-inode',
 						ino,
 						xattrs: { [name]: value.slice() }
 					}
-				])
+				], options))
 			})
 		},
 
@@ -684,17 +699,17 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return rows.map((row) => String(row.name))
 		},
 
-		async removeXattr(ino, name) {
+		async removeXattr(ino, name, options) {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ? AND name = ?', [ino, name])
-				await appendOps(tx, [
+				await appendOps(tx, withSource([
 					{
 						kind: 'upsert-inode',
 						ino,
 						xattrs: { [name]: null }
 					}
-				])
+				], options))
 			})
 		},
 
@@ -705,23 +720,23 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return full.slice(start, start + length)
 		},
 
-		async write(ino, offset, data) {
+		async write(ino, offset, data, options) {
 			await ensureBootstrapped()
 			const full = await readFullContent(db, ino)
 			const start = Number(offset)
 			const next = new Uint8Array(Math.max(full.length, start + data.length))
 			next.set(full)
 			next.set(data, start)
-			await updateInodeContent(ino, next)
+			await updateInodeContent(ino, next, options)
 			return data.length
 		},
 
-		async truncate(ino, size) {
+		async truncate(ino, size, options) {
 			await ensureBootstrapped()
 			const full = await readFullContent(db, ino)
 			const next = new Uint8Array(Number(size))
 			next.set(full.subarray(0, Number(size)))
-			await updateInodeContent(ino, next)
+			await updateInodeContent(ino, next, options)
 		},
 
 		async dirLookup(dirIno, name) {
@@ -765,7 +780,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			}
 		},
 
-		async dirAdd(dirIno, name, ino, type) {
+		async dirAdd(dirIno, name, ino, type, options) {
 			await ensureBootstrapped()
 			let added = false
 			await db.transaction(async (tx) => {
@@ -782,13 +797,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					type
 				])
 				await tx.run('UPDATE fs_inodes SET nlink = nlink + 1 WHERE ino = ?', [ino])
-				await appendOps(tx, [{ kind: 'set-dirent', dirIno, name, ino, type }])
+				await appendOps(tx, withSource([{ kind: 'set-dirent', dirIno, name, ino, type }], options))
 				added = true
 			})
 			return added
 		},
 
-		async dirSet(dirIno, name, ino, type) {
+		async dirSet(dirIno, name, ino, type, options) {
 			await ensureBootstrapped()
 			let displaced: { ino: Ino; type: FileType } | null = null
 			const orphanedR2Keys: string[] = []
@@ -828,7 +843,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					await freeIfUnlinked(tx, String(existing.ino), orphanedR2Keys)
 				}
 
-				await appendOps(tx, [{ kind: 'set-dirent', dirIno, name, ino, type }])
+				await appendOps(tx, withSource([{ kind: 'set-dirent', dirIno, name, ino, type }], options))
 			})
 
 			if (blobStore?.delete) {
@@ -840,7 +855,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return displaced
 		},
 
-		async dirUnset(dirIno, name) {
+		async dirUnset(dirIno, name, options) {
 			await ensureBootstrapped()
 			let removed: { ino: Ino; type: FileType } | null = null
 			const orphanedR2Keys: string[] = []
@@ -852,7 +867,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				removed = { ino: String(entry.ino), type: toNumber(entry.type) as FileType }
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
 				await freeIfUnlinked(tx, String(entry.ino), orphanedR2Keys)
-				await appendOps(tx, [{ kind: 'unset-dirent', dirIno, name, ino: String(entry.ino) }])
+				await appendOps(tx, withSource([{ kind: 'unset-dirent', dirIno, name, ino: String(entry.ino) }], options))
 			})
 
 			if (blobStore?.delete) {
@@ -864,7 +879,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return removed
 		},
 
-		async rename(oldDirIno, oldName, newDirIno, newName) {
+		async rename(oldDirIno, oldName, newDirIno, newName, options) {
 			await ensureBootstrapped()
 			let displaced: Ino | null = null
 			const orphanedR2Keys: string[] = []
@@ -894,7 +909,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					oldName
 				])
 
-				await appendOps(tx, [
+				await appendOps(tx, withSource([
 					{
 						kind: 'set-dirent',
 						dirIno: newDirIno,
@@ -908,7 +923,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						name: oldName,
 						ino: String(source.ino)
 					}
-				])
+				], options))
 			})
 
 			if (blobStore?.delete) {
@@ -1033,17 +1048,18 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			}
 		},
 
-		async putBlob(ino, data) {
-			await updateInodeContent(ino, data)
+		async putBlob(ino, data, options) {
+			await updateInodeContent(ino, data, options)
 		},
 
-		async updates(cursor) {
+		async updates(cursor, options) {
 			await ensureBootstrapped()
 			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
 			const rows = await db.query<UpdateRow>(
 				`SELECT
 					seq,
 					op_kind,
+					source,
 					ino,
 					dir_ino,
 					name,
@@ -1058,12 +1074,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				[Number.isFinite(since) ? since : 0]
 			)
 
-			const ops: FsOp[] = rows.map((row) => {
+			const ops = filterOpsBySource(rows.map((row) => {
 				const opKind = String(row.op_kind)
 				switch (opKind) {
 					case 'upsert-inode':
 						return {
 							kind: 'upsert-inode',
+							source: toStringOrNull(row.source) ?? undefined,
 							ino: String(row.ino),
 							meta: row.meta_json ? parseMetaJson(String(row.meta_json)) : undefined,
 							xattrs: row.xattrs_json ? parseXattrsJson(String(row.xattrs_json)) : undefined,
@@ -1072,6 +1089,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					case 'set-dirent':
 						return {
 							kind: 'set-dirent',
+							source: toStringOrNull(row.source) ?? undefined,
 							dirIno: String(row.dir_ino),
 							name: String(row.name),
 							ino: String(row.entry_ino),
@@ -1080,6 +1098,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					case 'unset-dirent':
 						return {
 							kind: 'unset-dirent',
+							source: toStringOrNull(row.source) ?? undefined,
 							dirIno: String(row.dir_ino),
 							name: String(row.name),
 							ino: toStringOrNull(row.entry_ino) ?? undefined
@@ -1087,7 +1106,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					default:
 						throw new Error(`Unknown fs update op: ${opKind}`)
 				}
-			})
+			}), options)
 
 			return {
 				ops,

@@ -76,12 +76,17 @@ const InoFilenameParam = z.object({ ino: z.string(), filename: z.string() })
 const DirInoParam = z.object({ dirIno: z.string() })
 const DirInoNameParam = z.object({ dirIno: z.string(), name: z.string() })
 const CursorQuery = z.object({ cursor: z.string().default('') })
+const SOURCE_HEADER = 'x-fs-source'
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
 export function createFsApi(backend: StorageBackend) {
 	const errorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : String(error)
+	const mutationOptions = (request: Request): { source?: string } => {
+		const source = request.headers.get(SOURCE_HEADER) ?? undefined
+		return source ? { source } : {}
+	}
 
 	return new Hono()
 
@@ -96,7 +101,11 @@ export function createFsApi(backend: StorageBackend) {
 		.get('/updates', zValidator('query', CursorQuery), async (c) => {
 			if (!backend.updates) return c.json({ error: 'not supported' }, 501)
 			const { cursor } = c.req.valid('query')
-			const result = await backend.updates(cursor)
+			const source = c.req.header(SOURCE_HEADER) ?? undefined
+			const result = await backend.updates(
+				cursor,
+				source ? { source, sourceMode: 'exclude' } : undefined
+			)
 			return c.json({ ops: result.ops.map(encodeOp), cursor: result.cursor })
 		})
 
@@ -122,10 +131,10 @@ export function createFsApi(backend: StorageBackend) {
 			let ino: string
 			try {
 				if (backend.create) {
-					ino = await backend.create(dirIno, name, meta)
+					ino = await backend.create(dirIno, name, meta, mutationOptions(c.req.raw))
 				} else {
-					ino = await backend.alloc(meta)
-					const added = await backend.dirAdd(dirIno, name, ino, meta.type)
+					ino = await backend.alloc(meta, mutationOptions(c.req.raw))
+					const added = await backend.dirAdd(dirIno, name, ino, meta.type, mutationOptions(c.req.raw))
 					if (!added) return c.json({ error: `EEXIST: ${name}` }, 409)
 				}
 			} catch (error) {
@@ -149,7 +158,7 @@ export function createFsApi(backend: StorageBackend) {
 		.patch('/inodes/:ino', zValidator('param', InoParam), zValidator('json', WireMetaPartialSchema), async (c) => {
 			const { ino } = c.req.valid('param')
 			const partial = c.req.valid('json')
-			await backend.setMeta(ino, partial)
+			await backend.setMeta(ino, partial, mutationOptions(c.req.raw))
 			return c.json({ ok: true })
 		})
 
@@ -199,10 +208,10 @@ export function createFsApi(backend: StorageBackend) {
 			const { ino } = c.req.valid('param')
 			const data = new Uint8Array(await c.req.arrayBuffer())
 			if (backend.putBlob) {
-				await backend.putBlob(ino, data)
+				await backend.putBlob(ino, data, mutationOptions(c.req.raw))
 			} else {
-				await backend.truncate(ino, 0n)
-				if (data.length > 0) await backend.write(ino, 0n, data)
+				await backend.truncate(ino, 0n, mutationOptions(c.req.raw))
+				if (data.length > 0) await backend.write(ino, 0n, data, mutationOptions(c.req.raw))
 			}
 			return c.json({ ok: true })
 		})
@@ -231,14 +240,14 @@ export function createFsApi(backend: StorageBackend) {
 		})), async (c) => {
 			const { dirIno, name } = c.req.valid('param')
 			const { ino, type } = c.req.valid('json')
-			const displaced = await backend.dirSet(dirIno, name, ino, type)
+			const displaced = await backend.dirSet(dirIno, name, ino, type, mutationOptions(c.req.raw))
 			return c.json({ displaced })
 		})
 
 		// dirUnset: remove entry and decrement nlink (backend frees inode if 0).
 		.delete('/inodes/:dirIno/entries/:name', zValidator('param', DirInoNameParam), async (c) => {
 			const { dirIno, name } = c.req.valid('param')
-			const removed = await backend.dirUnset(dirIno, name)
+			const removed = await backend.dirUnset(dirIno, name, mutationOptions(c.req.raw))
 			if (!removed) return c.json({ error: 'not found' }, 404)
 			return c.json({ removed })
 		})
@@ -256,12 +265,12 @@ export function createFsApi(backend: StorageBackend) {
 			let displaced: string | null = null
 			try {
 				if (backend.rename) {
-					displaced = await backend.rename(oldDirIno, oldName, newDirIno, newName)
+					displaced = await backend.rename(oldDirIno, oldName, newDirIno, newName, mutationOptions(c.req.raw))
 				} else {
 					const source = await backend.dirLookup(oldDirIno, oldName)
 					if (!source) return c.json({ error: `ENOENT: ${oldName}` }, 404)
-					const d = await backend.dirSet(newDirIno, newName, source.ino, source.type)
-					await backend.dirUnset(oldDirIno, oldName)
+					const d = await backend.dirSet(newDirIno, newName, source.ino, source.type, mutationOptions(c.req.raw))
+					await backend.dirUnset(oldDirIno, oldName, mutationOptions(c.req.raw))
 					displaced = d?.ino ?? null
 				}
 			} catch (error) {
