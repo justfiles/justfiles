@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers'
 import { googleReranker, openAIEmbedding, openAILlm, type Store } from '@ghostore/core'
 import { VectorizeVectorStore } from '../core/vector.vectorize'
 import { createWorkerApiApp, type WorkerApiType } from './app'
-import { cfStore, migrateCF } from './db.do'
+import { cfFsStorage, cfStore, migrateCF } from './db.do'
 
 export class MemoryObject extends DurableObject<Env> {
 	private readonly app: WorkerApiType
@@ -36,8 +36,9 @@ export class MemoryObject extends DurableObject<Env> {
 				await ctx.storage.setAlarm(Date.now() + 10_000)
 			}
 		})
+		const fs = cfFsStorage(ctx.storage, namespace, env.ASSETS)
 		this.store = store
-		this.app = createWorkerApiApp({ bucket: env.ASSETS, store })
+		this.app = createWorkerApiApp({ bucket: env.ASSETS, store, fs })
 	}
 
 	async fetch(request: Request): Promise<Response> {

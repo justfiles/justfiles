@@ -7,38 +7,43 @@ import type {
 	Store,
 	VectorStore
 } from '@ghostore/core'
-import { createStore, migrateFromEntries } from '@ghostore/core'
+import { createStore, migrateFromEntries, sqliteStorage } from '@ghostore/core'
 import { coreMigrations } from '@ghostore/core/migrations'
+import type { StorageBackend } from 'ghost-fs/storage'
 
-// CF DO prohibits SQL BEGIN/COMMIT; use storage.transactionSync() instead.
-// Since our transactions contain only writes (no reads-inside-transaction),
-// we collect write ops during the async fn, then replay them in transactionSync.
-function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
+type BlobObject = {
+	arrayBuffer(): Promise<ArrayBuffer>
+}
+
+type BlobStore = {
+	put(
+		key: string,
+		value: ArrayBuffer | ArrayBufferView | string | Blob,
+		options?: {
+			httpMetadata?: { contentType?: string }
+			customMetadata?: Record<string, string>
+		}
+	): Promise<unknown>
+	get(key: string): Promise<BlobObject | null>
+	delete?(key: string): Promise<void>
+}
+
+// SQLite-backed Durable Objects already provide atomic read/write isolation for
+// storage operations with no intervening non-storage I/O. We keep the adapter
+// thin so higher layers can perform transactional read-modify-write flows.
+export function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	const { sql } = storage
+	const normalizeArgs = (args: SqlValue[]): Array<null | string | number | Uint8Array | ArrayBuffer> =>
+		args.map((arg) => (typeof arg === 'bigint' ? arg.toString() : arg))
 	const adapter: DbAdapter = {
 		async query<T extends Record<string, unknown>>(query: string, args: SqlValue[] = []): Promise<T[]> {
-			return sql.exec(query, ...args).toArray() as unknown as T[]
+			return sql.exec(query, ...normalizeArgs(args)).toArray() as unknown as T[]
 		},
 		async run(query: string, args: SqlValue[] = []): Promise<void> {
-			sql.exec(query, ...args)
+			sql.exec(query, ...normalizeArgs(args))
 		},
 		async transaction(fn: (tx: DbAdapter) => Promise<void>): Promise<void> {
-			const ops: Array<{ q: string; args: SqlValue[] }> = []
-			const txAdapter: DbAdapter = {
-				async query<T extends Record<string, unknown>>(query: string, args: SqlValue[] = []): Promise<T[]> {
-					return sql.exec(query, ...args).toArray() as unknown as T[]
-				},
-				async run(query: string, args: SqlValue[] = []): Promise<void> {
-					ops.push({ q: query, args })
-				},
-				async transaction(innerFn) {
-					await innerFn(txAdapter)
-				}
-			}
-			await fn(txAdapter)
-			storage.transactionSync(() => {
-				for (const op of ops) sql.exec(op.q, ...op.args)
-			})
+			await fn(adapter)
 		}
 	}
 	return adapter
@@ -57,4 +62,12 @@ export function cfStore(
 	vectorStore?: VectorStore
 ): Store {
 	return createStore(createDOSqliteAdapter(storage), namespace, embProvider, llm, reranker, vectorStore)
+}
+
+export function cfFsStorage(
+	storage: DurableObjectStorage,
+	namespace: string,
+	blobStore?: BlobStore
+): StorageBackend {
+	return sqliteStorage(createDOSqliteAdapter(storage), { namespace, blobStore })
 }

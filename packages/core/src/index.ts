@@ -1,4 +1,5 @@
 export { createApi } from './api'
+export { createFsApi } from './fs'
 export type {
 	ChangesResult,
 	LinkInfo,
@@ -38,3 +39,5 @@ export type { Reranker, RerankCandidate, RerankResult } from './reranker'
 export { googleReranker } from './reranker.google'
 export { tursoStore } from './store.turso'
 export type { VectorMatch, VectorQueryInput, VectorRecord, VectorStore } from './vector'
+
+export {storage as sqliteStorage} from './storage.sqlite'

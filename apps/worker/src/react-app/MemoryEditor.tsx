@@ -8,6 +8,7 @@ import type { ProseMirrorJsonDocument } from './sync'
 
 type Props = {
 	id: string | null
+	assetOwnerId?: string
 	content: ProseMirrorJsonDocument | null
 	onSave: (content: ProseMirrorJsonDocument) => void
 	headerLeft?: ReactNode
@@ -21,6 +22,7 @@ type Props = {
 
 export function MemoryEditor({
 	id,
+	assetOwnerId,
 	content,
 	onSave,
 	headerLeft,
@@ -87,7 +89,7 @@ export function MemoryEditor({
 									key={id}
 									value={content}
 									onChange={onSave}
-									memoryId={id}
+									memoryId={assetOwnerId}
 									readOnly={readOnly}
 									getToken={getToken}
 							/>

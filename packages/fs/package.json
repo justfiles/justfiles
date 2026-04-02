@@ -2,6 +2,12 @@
   "name": "ghost-fs",
   "module": "index.ts",
   "type": "module",
+	"exports": {
+		".": "./index.ts",
+		"./storage": "./storage.ts",
+		"./types": "./types.ts",
+		"./xattr": "./xattr.ts"
+	},
   "dependencies": {
     "idb": "^8.0.3"
   },

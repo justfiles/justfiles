@@ -71,6 +71,18 @@ interface GhostoreFsSchema extends DBSchema {
 type Db = IDBPDatabase<GhostoreFsSchema>
 type AllStores = ('inodes' | 'content' | 'dirs' | 'xattrs' | 'dirty' | 'updates' | 'meta')[]
 type FullTx = IDBPTransaction<GhostoreFsSchema, AllStores, 'readwrite'>
+type KeyRangeLike = NonNullable<Parameters<Db['getAll']>[1]>
+const KeyRange = (globalThis as unknown as {
+	IDBKeyRange: {
+		bound(
+			lower: [string, string],
+			upper: [string, string],
+			lowerOpen?: boolean,
+			upperOpen?: boolean
+		): KeyRangeLike
+		lowerBound(lower: number): KeyRangeLike
+	}
+}).IDBKeyRange
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -248,6 +260,17 @@ export function idbStorage(
 		await tx.done
 	}
 
+	function isFullMeta(partial: Partial<InodeMeta>): partial is InodeMeta {
+		return (
+			partial.type !== undefined &&
+			partial.size !== undefined &&
+			partial.mode !== undefined &&
+			partial.nlink !== undefined &&
+			partial.mtimeNs !== undefined &&
+			partial.ctimeNs !== undefined
+		)
+	}
+
 	/**
 	 * Free an inode and all associated data (content, xattrs, dir children).
 	 * Used when nlink reaches 0.
@@ -342,7 +365,11 @@ export function idbStorage(
 		async setMeta(ino, partial) {
 			const db = await getDb()
 			const rec = await db.get('inodes', ino)
-			if (!rec) return
+			if (!rec) {
+				if (!isFullMeta(partial)) return
+				await db.put('inodes', { ino, ...partial, lastAccessedAt: Date.now() })
+				return
+			}
 			await db.put('inodes', { ...rec, ...partial })
 		},
 
@@ -453,7 +480,7 @@ export function idbStorage(
 			// Use compound key range on the primary key [dirIno, name]
 			const lower: [string, string] = [dirIno, cursor]
 			const upper: [string, string] = [dirIno, '\uffff']
-			const range = IDBKeyRange.bound(lower, upper, cursor !== '', false)
+			const range = KeyRange.bound(lower, upper, cursor !== '', false) as never
 
 			const records = await db.getAll('dirs', range, DIR_PAGE + 1)
 			const hasMore = records.length > DIR_PAGE
@@ -514,7 +541,7 @@ export function idbStorage(
 				if (disp) {
 					const newNlink = disp.nlink - 1
 					if (newNlink <= 0) {
-						await freeIno(tx, displaced.ino, displaced.type)
+						await freeIno(tx as FullTx, displaced.ino, displaced.type)
 					} else {
 						await tx.objectStore('inodes').put({ ...disp, nlink: newNlink })
 					}
@@ -549,7 +576,7 @@ export function idbStorage(
 			if (inode) {
 				const newNlink = inode.nlink - 1
 				if (newNlink <= 0) {
-					await freeIno(tx, entry.ino, entry.type)
+						await freeIno(tx as FullTx, entry.ino, entry.type)
 				} else {
 					await tx.objectStore('inodes').put({ ...inode, nlink: newNlink })
 				}
@@ -582,8 +609,9 @@ export function idbStorage(
 			const db = await getDb()
 			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
 			const lowerBound = Number.isFinite(since) && since > 0 ? since + 1 : 1
-			const records = await db.getAll('updates', IDBKeyRange.lowerBound(lowerBound))
-			const keys = await db.getAllKeys('updates', IDBKeyRange.lowerBound(lowerBound))
+			const range = KeyRange.lowerBound(lowerBound) as never
+			const records = await db.getAll('updates', range)
+			const keys = await db.getAllKeys('updates', range)
 			const nextCursor = keys.length > 0 ? String(keys[keys.length - 1]) : cursor
 			return {
 				ops: records.map((record) => record.op),

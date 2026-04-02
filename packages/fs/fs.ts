@@ -1,4 +1,5 @@
 import type { StorageBackend } from './storage';
+import { createSingleFlight } from './singleFlight';
 import { FileType, OpenFlags } from './types';
 import type { Ino, Stat, Off, DirCursor, Dirent, Fd } from './types';
 
@@ -192,6 +193,8 @@ export function fs(storage: StorageBackend): FileSystem {
 	const metaCache = new Map<Ino, InodeMeta>()
 	const dirCache = new Map<string, Ino | null>()
 	const contentCache = new Map<Ino, Uint8Array>()
+	const metaRequests = createSingleFlight<Ino, InodeMeta>()
+	const dirLookupRequests = createSingleFlight<string, Ino | null>()
 	const fdTable = new Map<Fd, FdEntry>()
 	let nextFd = 1
 
@@ -210,11 +213,13 @@ export function fs(storage: StorageBackend): FileSystem {
 				dirCache.delete(key)
 			}
 		}
+		dirLookupRequests.deleteWhere((key) => key.startsWith(prefix))
 	}
 
 	function invalidateIno(ino: Ino): void {
 		metaCache.delete(ino)
 		contentCache.delete(ino)
+		metaRequests.delete(ino)
 	}
 
 	function makeStat(ino: Ino, meta: InodeMeta): Stat {
@@ -234,13 +239,15 @@ export function fs(storage: StorageBackend): FileSystem {
 		const cached = metaCache.get(ino)
 		if (cached) return cached
 
-		const meta = await storage.getMeta(ino)
-		if (meta === null) {
-			throw new Error(`ENOENT: inode ${ino}`)
-		}
+		return metaRequests.run(ino, async () => {
+			const meta = await storage.getMeta(ino)
+			if (meta === null) {
+				throw new Error(`ENOENT: inode ${ino}`)
+			}
 
-		metaCache.set(ino, meta)
-		return meta
+			metaCache.set(ino, meta)
+			return meta
+		})
 	}
 
 	function getFdOrThrow(fd: Fd): FdEntry {
@@ -291,6 +298,7 @@ export function fs(storage: StorageBackend): FileSystem {
 		async setattr(ino: Ino, attrs: Partial<Pick<Stat, 'mode' | 'mtimeNs'>>): Promise<void> {
 			await storage.setMeta(ino, attrs)
 			metaCache.delete(ino)
+			metaRequests.delete(ino)
 		},
 
 		async getXattr(ino: Ino, name: string): Promise<Uint8Array | null> {
@@ -321,10 +329,12 @@ export function fs(storage: StorageBackend): FileSystem {
 				return dirCache.get(key) ?? null
 			}
 
-			const entry = await storage.dirLookup(dirIno, name)
-			const ino = entry?.ino ?? null
-			dirCache.set(key, ino)
-			return ino
+			return dirLookupRequests.run(key, async () => {
+				const entry = await storage.dirLookup(dirIno, name)
+				const ino = entry?.ino ?? null
+				dirCache.set(key, ino)
+				return ino
+			})
 		},
 
 		async readdir(dirIno: Ino, cursor: DirCursor): Promise<{ entries: Dirent[]; next: DirCursor }> {
@@ -504,6 +514,8 @@ export function fs(storage: StorageBackend): FileSystem {
 						const dir = inoToPath.get(e.dirIno) ?? '/'
 						const path = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
 						inoToPath.set(e.ino, path)
+						metaCache.set(e.ino, e.meta)
+						dirCache.set(dirCacheKey(e.dirIno, e.name), e.ino)
 						await visitor(path, e.ino, makeStat(e.ino, e.meta))
 					}
 					cursor = next

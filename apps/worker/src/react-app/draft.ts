@@ -1,11 +1,9 @@
-import { useEffect, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import { createTanstackRemoteMemoryService } from './remote'
-import { useApiClient } from './useApiClient'
-import { useMemory } from './useMemory'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import type { ProseMirrorJsonDocument } from './sync'
+import { useVolume } from './useVolume'
 
-const DRAFT_ID_KEY = 'ghostore:draft-id'
+const DRAFT_PATH = '/*draft*'
 
 type DraftHook = {
 	readonly id: string | null
@@ -15,64 +13,128 @@ type DraftHook = {
 	submit(path: string): Promise<void>
 }
 
-function loadStoredDraftId(): string | null {
-	try {
-		return localStorage.getItem(DRAFT_ID_KEY)
-	} catch {
-		return null
-	}
+function markdownToJson(markdown: string): ProseMirrorJsonDocument {
+	return markdownToDoc(markdown, remarkSchema).toJSON() as ProseMirrorJsonDocument
 }
 
-function saveStoredDraftId(id: string): void {
-	try {
-		localStorage.setItem(DRAFT_ID_KEY, id)
-	} catch {}
+function jsonToMarkdown(content: ProseMirrorJsonDocument): string {
+	return docToMarkdown(remarkSchema.nodeFromJSON(content))
 }
+
+function toVolumePath(path: string): string {
+	return path.startsWith('/') ? path : `/${path}`
+}
+
+function parentVolumePath(path: string): string {
+	const volumePath = toVolumePath(path)
+	const lastSlash = volumePath.lastIndexOf('/')
+	return lastSlash <= 0 ? '/' : volumePath.slice(0, lastSlash)
+}
+
+function entryPath(path: string): string {
+	return path.startsWith('/') ? path.slice(1) : path
+}
+
+const EMPTY_DRAFT_DOC = markdownToJson('')
 
 export function useDraft(): DraftHook {
-	const api = useApiClient()
-	const queryClient = useQueryClient()
-	const remote = createTanstackRemoteMemoryService(queryClient, api)
-	const [id, setId] = useState<string | null>(() => loadStoredDraftId())
+	const { volume, upsertEntry } = useVolume()
+	const [id, setId] = useState<string | null>(null)
+	const [content, setContent] = useState<ProseMirrorJsonDocument | null>(null)
 	const [isLoading, setIsLoading] = useState(true)
-	const memory = useMemory(id)
+	const contentRef = useRef<ProseMirrorJsonDocument | null>(null)
+	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+	contentRef.current = content
+
+	const loadDraft = useCallback(async () => {
+		if (!(await volume.exists(DRAFT_PATH))) {
+			await volume.writeFile(DRAFT_PATH, new Uint8Array())
+		}
+
+		const stat = await volume.stat(DRAFT_PATH)
+		const raw = await volume.readFile(DRAFT_PATH)
+		const nextContent = markdownToJson(new TextDecoder().decode(raw))
+
+		setId(stat.ino)
+		setContent(nextContent)
+		contentRef.current = nextContent
+	}, [volume])
+
+	const flushDraft = useCallback(async (nextContent?: ProseMirrorJsonDocument | null) => {
+		if (debounceRef.current) {
+			clearTimeout(debounceRef.current)
+			debounceRef.current = null
+		}
+
+		const current = nextContent ?? contentRef.current
+		if (!current) return
+
+		await volume.writeFile(
+			DRAFT_PATH,
+			new TextEncoder().encode(jsonToMarkdown(current)),
+		)
+	}, [volume])
 
 	useEffect(() => {
 		let cancelled = false
 
-		async function load(): Promise<void> {
+		void (async () => {
 			setIsLoading(true)
 			try {
-				const data = await remote.getDraft()
-				if (cancelled) return
-				setId(data.id)
-				saveStoredDraftId(data.id)
+				await loadDraft()
 			} finally {
 				if (!cancelled) setIsLoading(false)
 			}
-		}
-
-		void load()
+		})()
 
 		return () => {
 			cancelled = true
+			if (debounceRef.current) clearTimeout(debounceRef.current)
+			debounceRef.current = null
 		}
-	}, [api])
+	}, [loadDraft])
 
-	async function submit(path: string): Promise<void> {
-		if (!id) throw new Error('Draft is not ready')
-		await memory.movePath(path)
-		await queryClient.removeQueries({ queryKey: ['draft-memory'] })
-		const data = await remote.getDraft()
-		setId(data.id)
-		saveStoredDraftId(data.id)
-	}
+	const save = useCallback((nextContent: ProseMirrorJsonDocument) => {
+		setContent(nextContent)
+		contentRef.current = nextContent
+
+		if (debounceRef.current) clearTimeout(debounceRef.current)
+		debounceRef.current = setTimeout(() => {
+			debounceRef.current = null
+			void flushDraft(nextContent)
+		}, 500)
+	}, [flushDraft])
+
+	const submit = useCallback(async (path: string) => {
+		await flushDraft()
+
+		const targetPath = toVolumePath(path)
+		await volume.mkdir(parentVolumePath(targetPath), { recursive: true })
+		await volume.rename(DRAFT_PATH, targetPath)
+
+		const submittedStat = await volume.stat(targetPath)
+		upsertEntry({
+			id: submittedStat.ino,
+			title: null,
+			path: entryPath(targetPath),
+			updated_at: new Date().toISOString(),
+			tags: [],
+			active: 1,
+		})
+
+		await volume.writeFile(DRAFT_PATH, new Uint8Array())
+		const nextDraftStat = await volume.stat(DRAFT_PATH)
+		setId(nextDraftStat.ino)
+		setContent(EMPTY_DRAFT_DOC)
+		contentRef.current = EMPTY_DRAFT_DOC
+	}, [flushDraft, upsertEntry, volume])
 
 	return {
 		id,
-		isLoading: isLoading || memory.isLoading,
-		content: memory.content,
-		save: memory.saveContent,
-		submit
+		isLoading,
+		content,
+		save,
+		submit,
 	}
 }

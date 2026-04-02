@@ -6,7 +6,6 @@ import { HeaderActionMenu } from './HeaderActionMenu'
 import { useDraft } from './draft'
 import { MemoryEditor } from './MemoryEditor'
 import { ModeSelector } from './ModeSelector'
-import { useSidebarActions } from './SidebarContext'
 import { useSyncRuntimeStatus } from './sync'
 import {
 	type Destination,
@@ -22,7 +21,6 @@ function App() {
 	const [activeDestination, setActiveDestination] = useState<Destination>(() =>
 		getActiveDestination(settings)
 	)
-	const { refresh } = useSidebarActions()
 	const [draftEditorVersion, setDraftEditorVersion] = useState(0)
 	const { id, isLoading, content, save, submit } = useDraft()
 	const { isOnline } = useSyncRuntimeStatus()
@@ -34,7 +32,6 @@ function App() {
 		},
 		onSuccess: () => {
 			setDraftEditorVersion((v) => v + 1)
-			refresh()
 		}
 	})
 

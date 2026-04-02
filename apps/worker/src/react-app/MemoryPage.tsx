@@ -225,6 +225,7 @@ export function MemoryPage() {
 	return (
 		<MemoryEditor
 			id={id}
+			assetOwnerId={id}
 			content={content}
 			onSave={saveContent}
 			isLoading={isLoading}

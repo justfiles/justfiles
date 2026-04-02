@@ -47,6 +47,12 @@ function toVolumePath(path: string): string {
 	return path.startsWith('/') ? path : `/${path}`
 }
 
+function parentVolumePath(path: string): string {
+	const volumePath = toVolumePath(path)
+	const lastSlash = volumePath.lastIndexOf('/')
+	return lastSlash <= 0 ? '/' : volumePath.slice(0, lastSlash)
+}
+
 export function useMemory(id: string | null) {
 	const { volume, resolveMemory } = useVolume()
 	const [isLoading, setIsLoading] = useState(false)
@@ -69,46 +75,22 @@ export function useMemory(id: string | null) {
 				const cache = await getEditCache()
 				const cachedContent = await cache.get(currentId)
 				const resolved = await resolveMemory(currentId)
-				const entry = resolved.entry
-				let path = entry?.path ?? null
+				const record = resolved.record
 
-				let nextMemory: MemoryData | null = null
-				if (entry && path) {
-					const volumePath = toVolumePath(path)
-					try {
-						const markdown = await volume.readFile(volumePath)
-
-						nextMemory = {
-							id: currentId,
-							content: markdownToJson(new TextDecoder().decode(markdown)),
-							title: entry.title,
-							path,
-							source: null,
-							created_at: undefined,
-							updated_at: entry.updated_at,
-							active: entry.active,
-							links: [],
-							tags: entry.tags,
-						}
-					} catch {
-						path = null
+				const nextMemory: MemoryData | null = record
+					? {
+						id: record.id,
+						content: markdownToJson(record.raw_text),
+						title: record.title,
+						path: record.path,
+						source: record.source,
+						created_at: record.created_at,
+						updated_at: record.updated_at,
+						active: record.active,
+						links: record.links,
+						tags: record.tags,
 					}
-				}
-
-				if (!nextMemory && resolved.archived) {
-					nextMemory = {
-						id: resolved.archived.id,
-						content: markdownToJson(resolved.archived.raw_text),
-						title: resolved.archived.title,
-						path: resolved.archived.path,
-						source: resolved.archived.source,
-						created_at: resolved.archived.created_at,
-						updated_at: resolved.archived.updated_at,
-						active: resolved.archived.active,
-						links: resolved.archived.links,
-						tags: resolved.archived.tags,
-					}
-				}
+					: null
 
 				if (cancelled) return
 
@@ -195,6 +177,7 @@ export function useMemory(id: string | null) {
 	const movePath = useCallback(async (path: string) => {
 		if (!id || !memory?.path || memory.active === 0) return
 		const oldPath = memory.path
+		await volume.mkdir(parentVolumePath(path), { recursive: true })
 		await volume.rename(toVolumePath(oldPath), toVolumePath(path))
 		const now = new Date().toISOString()
 		setMemory((current) => (current ? { ...current, path, updated_at: now } : current))

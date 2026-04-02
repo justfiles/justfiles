@@ -1,7 +1,9 @@
 import { StreamableHTTPTransport } from '@hono/mcp'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { createApi, type Store } from '@ghostore/core'
+
+import { createApi, createFsApi, type Store } from '@ghostore/core'
 import { Hono } from 'hono'
+import type { StorageBackend } from 'ghost-fs'
 import { z } from 'zod'
 
 type AssetObject = {
@@ -22,8 +24,8 @@ type AssetBucket = {
 	get(key: string): Promise<AssetObject | null>
 }
 
-export function createWorkerApiApp(args: { bucket: AssetBucket; store: Store }) {
-	const { bucket, store } = args
+export function createWorkerApiApp(args: { bucket: AssetBucket; store: Store; fs: StorageBackend }) {
+	const { bucket, store, fs } = args
 	const mcpServer = new McpServer({ name: 'ghostore', version: '1.0.0' })
 	const transport = new StreamableHTTPTransport()
 	registerMcpTools(mcpServer, store)
@@ -60,6 +62,7 @@ export function createWorkerApiApp(args: { bucket: AssetBucket; store: Store }) 
 			return new Response(object.body, { headers })
 		})
 		.route('/api', createApi(store))
+		.route('/fs', createFsApi(fs))
 		.all('/mcp', async (c) => {
 			if (!mcpServer.isConnected()) {
 				await mcpServer.connect(transport)

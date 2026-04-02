@@ -2,7 +2,8 @@ import type { StorageBackend, InodeMeta, FsOp } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { Ino, Off, DirCursor } from 'ghost-fs/types'
 import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'ghost-fs/xattr'
-import type { ApiClient } from './useApiClient'
+import type { InferResponseType } from 'hono/client'
+import type { ApiClient, FsClient } from './useApiClient'
 
 // Minimal shape of a Memory object returned by the ghostore REST API
 interface MemoryResponse {
@@ -66,7 +67,7 @@ function metaFromMemory(memory: MemoryResponse): InodeMeta {
 		nlink: 1,
 		mtimeNs: BigInt(Date.parse(memory.updated_at)) * 1_000_000n,
 		ctimeNs: BigInt(Date.parse(memory.created_at)) * 1_000_000n,
-		contentHash: undefined,
+		contentHash: undefined
 	}
 }
 
@@ -76,7 +77,7 @@ const SYNTHETIC_DIR_META: InodeMeta = {
 	mode: 0o755,
 	nlink: 2,
 	mtimeNs: 0n,
-	ctimeNs: 0n,
+	ctimeNs: 0n
 }
 
 // Derive immediate children names from a flat list of memory paths, given a dirPath prefix.
@@ -124,8 +125,8 @@ async function listAll(
 			json: {
 				path_prefix: pathPrefix,
 				limit: 200,
-				cursor,
-			},
+				cursor
+			}
 		})
 		if (!res.ok) throw new Error(`list failed: ${res.status}`)
 		const data = await res.json()
@@ -151,14 +152,14 @@ function pathToUpdateOps(memory: ChangeRow): FsOp[] {
 		ops.push({
 			kind: 'upsert-inode',
 			ino: dirIno,
-			meta: { ...SYNTHETIC_DIR_META },
+			meta: { ...SYNTHETIC_DIR_META }
 		})
 		ops.push({
 			kind: 'set-dirent',
 			dirIno: parentIno,
 			name: part,
 			ino: dirIno,
-			type: FileType.Directory,
+			type: FileType.Directory
 		})
 		parentIno = dirIno
 	}
@@ -168,9 +169,9 @@ function pathToUpdateOps(memory: ChangeRow): FsOp[] {
 		ino: memory.id,
 		xattrs: {
 			[GHOSTORE_XATTR.title]: memory.title != null ? encodeXattr(memory.title) : null,
-			[GHOSTORE_XATTR.tags]: memory.tags.length > 0 ? encodeXattr(memory.tags) : null,
+			[GHOSTORE_XATTR.tags]: memory.tags.length > 0 ? encodeXattr(memory.tags) : null
 		},
-		contentChanged: true,
+		contentChanged: true
 	})
 
 	const leafName = parts[parts.length - 1]
@@ -181,7 +182,7 @@ function pathToUpdateOps(memory: ChangeRow): FsOp[] {
 			kind: 'unset-dirent',
 			dirIno: parentIno,
 			name: leafName,
-			ino: memory.id,
+			ino: memory.id
 		})
 		return ops
 	}
@@ -191,7 +192,7 @@ function pathToUpdateOps(memory: ChangeRow): FsOp[] {
 		dirIno: parentIno,
 		name: leafName,
 		ino: memory.id,
-		type: FileType.Regular,
+		type: FileType.Regular
 	})
 	return ops
 }
@@ -202,7 +203,9 @@ export interface ApiStorageBackend extends StorageBackend {
 	rootIno: string
 }
 
-export function apiStorage(client: ApiClient): ApiStorageBackend {
+type FsMetaResponse = InferResponseType<FsClient['inodes'][':ino']['$get'], 200>
+
+export function _apiStorage(client: ApiClient): ApiStorageBackend {
 	const api = client
 	const memoryFetches = new Map<string, Promise<MemoryResponse | null>>()
 	const listFetches = new Map<string, Promise<Array<{ id: string; path: string }>>>()
@@ -218,7 +221,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			const res = await api.v1.memory[':id'].$get({ param: { id: ino } })
 			if (res.status === 404) return null
 			if (!res.ok) throw new Error(`get memory failed: ${res.status}`)
-			return await res.json() as MemoryResponse
+			return (await res.json()) as MemoryResponse
 		})()
 
 		memoryFetches.set(key, fetch)
@@ -229,7 +232,9 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		}
 	}
 
-	async function listAllDeduped(pathPrefix: string | undefined): Promise<Array<{ id: string; path: string }>> {
+	async function listAllDeduped(
+		pathPrefix: string | undefined
+	): Promise<Array<{ id: string; path: string }>> {
 		const key = pathPrefix ?? ''
 		const existing = listFetches.get(key)
 		if (existing) return existing
@@ -298,7 +303,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 				throw new Error('ApiStorageBackend: only Regular files can be alloc-ed via the API')
 			}
 			const res = await api.v1.write.$post({
-				json: { content: '' },
+				json: { content: '' }
 			})
 			if (!res.ok) throw new Error(`alloc failed: ${res.status}`)
 			const data = await res.json()
@@ -432,7 +437,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			const entries = [...children.entries()].map(([name, { ino, type }]) => ({
 				name,
 				ino,
-				type,
+				type
 			}))
 
 			return { entries, next: '' as DirCursor }
@@ -534,9 +539,8 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 			// never from the client clock. If no results came back, keep the
 			// current cursor so the next poll re-checks the same window.
 			const nextCursor: string = data.upserted.reduce(
-				(max: string, memory: ChangeRow) =>
-					memory.updated_at > max ? memory.updated_at : max,
-				cursor,
+				(max: string, memory: ChangeRow) => (memory.updated_at > max ? memory.updated_at : max),
+				cursor
 			)
 			return { ops, cursor: nextCursor }
 		},
@@ -546,7 +550,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 		// ------------------------------------------------------------------
 
 		async scan(_cursor: string) {
-				const all = await listAllDeduped(undefined)
+			const all = await listAllDeduped(undefined)
 			// Build full list — directories first, then files, in path order
 			const dirsSeen = new Set<string>()
 			const entries: Array<{ ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }> = []
@@ -566,7 +570,7 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 							ino: pathToDirIno(dirPath),
 							dirIno: parentPath === '' ? ROOT_INO : pathToDirIno(parentPath),
 							name: dName,
-							meta: { ...SYNTHETIC_DIR_META },
+							meta: { ...SYNTHETIC_DIR_META }
 						})
 					}
 				}
@@ -587,12 +591,243 @@ export function apiStorage(client: ApiClient): ApiStorageBackend {
 						mode: 0o644,
 						nlink: 1,
 						mtimeNs: 0n,
-						ctimeNs: 0n,
-					},
+						ctimeNs: 0n
+					}
 				})
 			}
 
 			return { entries, next: '' }
-		},
+		}
 	}
+}
+
+// ── Wire-format helpers (inverse of createFsApi's encoders) ──────────────────
+
+function parseMeta(wire: FsMetaResponse): InodeMeta {
+	return {
+		type: wire.type,
+		size: BigInt(wire.size),
+		mode: wire.mode,
+		nlink: wire.nlink,
+		mtimeNs: BigInt(wire.mtimeNs),
+		ctimeNs: BigInt(wire.ctimeNs),
+		contentHash: wire.contentHash,
+		symlinkTarget: wire.symlinkTarget
+	}
+}
+
+function wireFromMeta(meta: Omit<InodeMeta, 'nlink'>) {
+	return {
+		...meta,
+		size: meta.size.toString(),
+		mtimeNs: meta.mtimeNs.toString(),
+		ctimeNs: meta.ctimeNs.toString()
+	}
+}
+
+function decodeBase64(b64: string): Uint8Array {
+	const binary = atob(b64)
+	const arr = new Uint8Array(binary.length)
+	for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
+	return arr
+}
+
+function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+	const body = new ArrayBuffer(data.byteLength)
+	new Uint8Array(body).set(data)
+	return body
+}
+
+/**
+ * StorageBackend backed by the remote /fs REST API (createFsApi).
+ *
+ * Async factory: pre-fetches rootIno via GET / so the sync rootIno property
+ * is available immediately on the returned backend.
+ */
+export async function apiStorage(client: FsClient): Promise<StorageBackend> {
+	const c = client
+
+	const rootRes = await c.$get()
+	if (!rootRes.ok) throw new Error(`apiStorage: failed to fetch root: ${rootRes.status}`)
+	const { rootIno } = await rootRes.json()
+
+	const backend: StorageBackend = {
+		rootIno,
+
+		// ── Inode lifecycle ────────────────────────────────────────────────
+
+		async alloc(_meta) {
+			// VFS prefers create() over alloc()+dirAdd() — this path is unreachable
+			// when create() is implemented. Kept to satisfy the interface.
+			throw new Error('apiStorage: alloc() not supported — use create()')
+		},
+
+		async create(dirIno, name, meta) {
+			const res = await c.inodes.$post({ json: { dirIno, name, meta: wireFromMeta(meta) } })
+			if (res.status === 409) throw new Error(`EEXIST: ${name}`)
+			if (!res.ok) throw new Error(`create failed: ${res.status}`)
+			const data = await res.json()
+			return data.ino
+		},
+
+		// ── Inode metadata ─────────────────────────────────────────────────
+
+		async getMeta(ino) {
+			const res = await c.inodes[':ino'].$get({ param: { ino } })
+			if (res.status === 404) return null
+			if (!res.ok) throw new Error(`getMeta failed: ${res.status}`)
+			return parseMeta(await res.json())
+		},
+
+		async setMeta(ino, partial) {
+			const wire: Record<string, unknown> = { ...partial }
+			if (partial.mtimeNs !== undefined) wire.mtimeNs = partial.mtimeNs.toString()
+			if (partial.ctimeNs !== undefined) wire.ctimeNs = partial.ctimeNs.toString()
+			const res = await c.inodes[':ino'].$patch({ param: { ino }, json: wire })
+			if (!res.ok) throw new Error(`setMeta failed: ${res.status}`)
+		},
+
+		// ── Data I/O ───────────────────────────────────────────────────────
+
+		async read(ino, offset, length) {
+			const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
+			if (!res.ok) throw new Error(`read failed: ${res.status}`)
+			const full = new Uint8Array(await res.arrayBuffer())
+			const start = Number(offset)
+			return full.subarray(start, start + length)
+		},
+
+		async write(ino, offset, data) {
+			// Read-modify-write fallback. Sync layer should call putBlob() instead.
+			const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
+			if (!res.ok) throw new Error(`write failed: ${res.status}`)
+			const full = new Uint8Array(await res.arrayBuffer())
+			const start = Number(offset)
+			const newSize = Math.max(full.length, start + data.length)
+			const buf = new Uint8Array(newSize)
+			buf.set(full)
+			buf.set(data, start)
+			await backend.putBlob!(ino, buf)
+			return data.length
+		},
+
+		async truncate(ino, size) {
+			if (size === 0n) {
+				await backend.putBlob!(ino, new Uint8Array(0))
+			} else {
+				const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
+				if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
+				const full = new Uint8Array(await res.arrayBuffer())
+				await backend.putBlob!(ino, full.subarray(0, Number(size)))
+			}
+		},
+
+		async putBlob(ino, data) {
+			const res = await c.inodes[':ino'].blob.$put(
+				{ param: { ino } },
+				{
+					headers: { 'Content-Type': 'application/octet-stream' },
+					init: { body: toArrayBuffer(data) }
+				}
+			)
+			if (!res.ok) throw new Error(`putBlob failed: ${res.status}`)
+		},
+
+		// ── Directory entries ──────────────────────────────────────────────
+
+		async dirLookup(dirIno, name) {
+			const res = await c.inodes[':dirIno'].entries[':name'].$get({ param: { dirIno, name } })
+			if (res.status === 404) return null
+			if (!res.ok) throw new Error(`dirLookup failed: ${res.status}`)
+			const data = await res.json()
+			return data
+		},
+
+		async dirList(dirIno, cursor) {
+			const res = await c.inodes[':dirIno'].entries.$get({ param: { dirIno }, query: { cursor } })
+			if (!res.ok) throw new Error(`dirList failed: ${res.status}`)
+			const data = await res.json()
+			return data
+		},
+
+		async dirAdd(dirIno, name, ino, type) {
+			// No-clobber: check first (not atomic, acceptable for remote backend).
+			const existing = await backend.dirLookup(dirIno, name)
+			if (existing !== null) return false
+			const res = await c.inodes[':dirIno'].entries[':name'].$put({
+				param: { dirIno, name },
+				json: { ino, type }
+			})
+			if (!res.ok) throw new Error(`dirAdd failed: ${res.status}`)
+			return true
+		},
+
+		async dirSet(dirIno, name, ino, type) {
+			const res = await c.inodes[':dirIno'].entries[':name'].$put({
+				param: { dirIno, name },
+				json: { ino, type }
+			})
+			if (!res.ok) throw new Error(`dirSet failed: ${res.status}`)
+			const data = await res.json()
+			return data.displaced
+		},
+
+		async dirUnset(dirIno, name) {
+			const res = await c.inodes[':dirIno'].entries[':name'].$delete({ param: { dirIno, name } })
+			if (res.status === 404) return null
+			if (!res.ok) throw new Error(`dirUnset failed: ${res.status}`)
+			const data = await res.json()
+			return data.removed
+		},
+
+		async rename(oldDirIno, oldName, newDirIno, newName) {
+			const res = await c.rename.$post({ json: { oldDirIno, oldName, newDirIno, newName } })
+			if (res.status === 404) return null
+			if (!res.ok) throw new Error(`rename failed: ${res.status}`)
+			const data = await res.json()
+			return data.displaced
+		},
+
+		// ── Optional: scan & updates ───────────────────────────────────────
+
+		async scan(cursor) {
+			const res = await c.scan.$get({ query: { cursor } })
+			if (!res.ok) throw new Error(`scan failed: ${res.status}`)
+			const data = await res.json()
+			return {
+				entries: data.entries.map((entry) => ({
+					...entry,
+					meta: parseMeta(entry.meta)
+				})),
+				next: data.next
+			}
+		},
+
+		async updates(cursor) {
+			const res = await c.updates.$get({ query: { cursor } })
+			if (res.status === 501) return { ops: [], cursor }
+			if (!res.ok) throw new Error(`updates failed: ${res.status}`)
+			const data = await res.json()
+			return {
+				ops: data.ops.map((op) => {
+					if (op.kind !== 'upsert-inode') return op
+					return {
+						...op,
+						meta: op.meta ? parseMeta(op.meta) : undefined,
+						xattrs: op.xattrs
+							? Object.fromEntries(
+									Object.entries(op.xattrs as Record<string, string | null>).map(([k, v]) => [
+										k,
+										v !== null ? decodeBase64(v) : null
+									])
+								)
+							: undefined
+					}
+				}),
+				cursor: data.cursor
+			}
+		}
+	}
+
+	return backend
 }

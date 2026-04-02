@@ -1,25 +1,31 @@
-import type { MemoryMeta, LinkInfo } from '@ghostore/core'
+import type { MemoryMeta } from '@ghostore/core'
+import type { LinkInfo } from '@ghostore/core'
 import {
 	createContext,
 	createElement,
+	Fragment,
 	useContext,
 	useEffect,
 	useMemo,
+	useState,
 	useSyncExternalStore,
 	type ReactNode,
 } from 'react'
 import {
 	cachedStorage,
+	decodeXattr,
 	fs as createFs,
+	GHOSTORE_XATTR,
 	idbStorage,
 	type Volume,
 	volume as createVolume,
 } from 'ghost-fs'
+import { FileType } from 'ghost-fs/types'
 import { apiStorage } from './storage.api'
 import { createMemoryIndex, type MemoryIndex } from './memoryIndex'
-import { type ApiClient, useApiClient } from './useApiClient'
+import { type FsClient, useFsClient } from './useApiClient'
 
-export interface ArchivedMemoryData {
+type MemoryRecord = {
 	id: string
 	raw_text: string
 	path: string
@@ -47,7 +53,7 @@ interface VolumeRuntime {
 	refresh(): Promise<void>
 	upsertEntry(entry: MemoryMeta): void
 	removeEntry(id: string): void
-	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, archived: ArchivedMemoryData | null }>
+	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
 }
 
 export interface VolumeService {
@@ -58,20 +64,45 @@ export interface VolumeService {
 	refresh(): Promise<void>
 	upsertEntry(entry: MemoryMeta): void
 	removeEntry(id: string): void
-	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, archived: ArchivedMemoryData | null }>
+	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
 }
 
 const VolumeContext = createContext<VolumeRuntime | null>(null)
-const runtimeSingletons = new Map<string, VolumeRuntime>()
+const runtimeSingletons = new Map<string, Promise<VolumeRuntime>>()
 
 function lsCacheKey(userId: string) {
 	return `ghostore:${userId}:sidebar`
 }
 
+const DRAFT_PATH = '/*draft*'
+const textDecoder = new TextDecoder()
+
+function normalizeCachedEntry(value: unknown): MemoryMeta | null {
+	if (typeof value !== 'object' || value === null) return null
+
+	const entry = value as Partial<MemoryMeta>
+	if (typeof entry.id !== 'string') return null
+	if (typeof entry.path !== 'string') return null
+	if (typeof entry.updated_at !== 'string') return null
+	if (!Array.isArray(entry.tags) || !entry.tags.every((tag) => typeof tag === 'string')) return null
+
+	return {
+		id: entry.id,
+		title: entry.title ?? null,
+		path: entry.path,
+		updated_at: entry.updated_at,
+		tags: entry.tags,
+		active: entry.active ?? 1,
+	}
+}
+
 function loadCache(userId: string): MemoryMeta[] {
 	try {
-		const raw = JSON.parse(localStorage.getItem(lsCacheKey(userId)) ?? '[]') as Array<Partial<MemoryMeta>>
-		return raw.map((e) => ({ ...e, active: e.active ?? 1 }) as MemoryMeta)
+		const raw = JSON.parse(localStorage.getItem(lsCacheKey(userId)) ?? '[]')
+		if (!Array.isArray(raw)) return []
+		return raw
+			.map((entry) => normalizeCachedEntry(entry))
+			.filter((entry): entry is MemoryMeta => entry !== null)
 	} catch {
 		return []
 	}
@@ -87,11 +118,7 @@ function applyDelta(cache: MemoryMeta[], upserted: MemoryMeta[]): MemoryMeta[] {
 	return [...map.values()].sort((left, right) => left.path.localeCompare(right.path))
 }
 
-function maxUpdatedAt(entries: MemoryMeta[]): string {
-	return entries.reduce((max, entry) => (entry.updated_at > max ? entry.updated_at : max), '')
-}
-
-function toMemoryMeta(record: ArchivedMemoryData): MemoryMeta {
+function toMemoryMeta(record: MemoryRecord): MemoryMeta {
 	return {
 		id: record.id,
 		title: record.title,
@@ -102,17 +129,89 @@ function toMemoryMeta(record: ArchivedMemoryData): MemoryMeta {
 	}
 }
 
-function createVolumeRuntime(userId: string, api: ApiClient): VolumeRuntime {
+function toVolumePath(path: string): string {
+	return path.startsWith('/') ? path : `/${path}`
+}
+
+function entryPath(path: string): string {
+	return path.startsWith('/') ? path.slice(1) : path
+}
+
+function isoFromNs(ns: bigint): string {
+	return new Date(Number(ns / 1_000_000n)).toISOString()
+}
+
+function entryIdentity(path: string): string {
+	return entryPath(path)
+}
+
+async function decodeOptionalXattr<T>(volume: Volume, path: string, name: string): Promise<T | null> {
+	const raw = await volume.getXattr(path, name)
+	return raw ? decodeXattr<T>(raw) : null
+}
+
+async function readMemoryRecord(volume: Volume, path: string, id?: string): Promise<MemoryRecord> {
+	const [stat, rawText, title, tags, links, source] = await Promise.all([
+		volume.stat(path),
+		volume.readFile(path),
+		decodeOptionalXattr<string>(volume, path, GHOSTORE_XATTR.title),
+		decodeOptionalXattr<string[]>(volume, path, GHOSTORE_XATTR.tags),
+		decodeOptionalXattr<LinkInfo[]>(volume, path, GHOSTORE_XATTR.links),
+		decodeOptionalXattr<string>(volume, path, GHOSTORE_XATTR.source),
+	])
+
+	return {
+		id: id ?? stat.ino,
+		raw_text: textDecoder.decode(rawText),
+		path: entryPath(path),
+		title,
+		source,
+		tags: tags ?? [],
+		links: links ?? [],
+		created_at: isoFromNs(stat.ctimeNs),
+		updated_at: isoFromNs(stat.mtimeNs),
+		active: 1,
+	}
+}
+
+async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promise<MemoryMeta[]> {
+	const entries: MemoryMeta[] = []
+	const previousById = new Map(previous.map((entry) => [entry.id, entry]))
+	const previousByPath = new Map(previous.map((entry) => [entry.path, entry]))
+
+	await volume.scan('/', async (path, stat) => {
+		if (stat.type !== FileType.Regular) return
+		if (path === DRAFT_PATH) return
+
+		const currentPath = entryIdentity(path)
+		const cached = previousById.get(stat.ino) ?? previousByPath.get(currentPath)
+
+		entries.push({
+			id: stat.ino,
+			title: cached?.title ?? null,
+			path: currentPath,
+			updated_at: isoFromNs(stat.mtimeNs),
+			tags: cached?.tags ?? [],
+			active: 1,
+		})
+	})
+
+	return entries.sort((left, right) => left.path.localeCompare(right.path))
+}
+
+async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
 	const local = idbStorage('ghostore-fs')
-	const remote = apiStorage(api)
+	const remote = await apiStorage(fsClient)
 	const storage = cachedStorage(local, remote)
-	const vfs = createFs(storage)
+	const volume = createVolume(createFs(storage))
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()
 	let entries = loadCache(userId)
 	let snapshot: VolumeSnapshot = { entries }
 	let started = false
 	let onFocus: (() => void) | null = null
+	let hasInitialRefresh = false
+	let refreshPromise: Promise<void> | null = null
 
 	index.hydrate(entries)
 
@@ -128,18 +227,25 @@ function createVolumeRuntime(userId: string, api: ApiClient): VolumeRuntime {
 		notify()
 	}
 
-	async function fetchChanges(since?: string): Promise<void> {
-		const effectiveSince = since ?? maxUpdatedAt(entries)
+	async function refresh(): Promise<void> {
+		if (refreshPromise) return refreshPromise
 
-		try {
-			const res = await api.v1.changes.$get({ query: { since: effectiveSince } })
-			if (!res.ok) return
-			const delta = await res.json()
-			if (delta.upserted.length === 0) return
-			setEntries(applyDelta(entries, delta.upserted))
-		} catch {
-			// network error — keep serving from cache silently
-		}
+		refreshPromise = (async () => {
+			try {
+				setEntries(await listMemoryEntries(volume, entries))
+				hasInitialRefresh = true
+			} catch {
+				// keep serving from cache silently
+			} finally {
+				refreshPromise = null
+			}
+		})()
+
+		return refreshPromise
+	}
+
+	async function fetchChanges(_since?: string): Promise<void> {
+		await refresh()
 	}
 
 	function upsertEntry(entry: MemoryMeta) {
@@ -152,30 +258,27 @@ function createVolumeRuntime(userId: string, api: ApiClient): VolumeRuntime {
 
 	async function resolveMemory(id: string): Promise<{
 		entry: MemoryMeta | null
-		archived: ArchivedMemoryData | null
+		record: MemoryRecord | null
 	}> {
-		const existing = index.get(id)
-		if (existing && existing.active !== 0) {
-			return { entry: existing, archived: null }
-		}
-
 		try {
-			const res = await api.v1.memory[':id'].$get({ param: { id } })
-			if (!res.ok) return { entry: existing, archived: null }
-			const record = await res.json() as ArchivedMemoryData
-			if (record.active !== 0) {
-				const entry = toMemoryMeta(record)
-				upsertEntry(entry)
-				return { entry, archived: null }
+			let entry = index.get(id)
+			if (!entry) {
+				await refresh()
+				entry = index.get(id)
 			}
-			return { entry: null, archived: record }
+			if (!entry) return { entry: null, record: null }
+
+			const record = await readMemoryRecord(volume, toVolumePath(entry.path), entry.id)
+			const nextEntry = toMemoryMeta(record)
+			upsertEntry(nextEntry)
+			return { entry: nextEntry, record }
 		} catch {
-			return { entry: existing, archived: null }
+			return { entry: index.get(id), record: null }
 		}
 	}
 
 	return {
-		volume: createVolume(vfs),
+		volume,
 		index,
 
 		subscribe(listener) {
@@ -190,9 +293,11 @@ function createVolumeRuntime(userId: string, api: ApiClient): VolumeRuntime {
 		start() {
 			if (started) return
 			started = true
-			void fetchChanges()
+			if (!hasInitialRefresh) {
+				void refresh()
+			}
 			onFocus = () => {
-				void fetchChanges()
+				void refresh()
 			}
 			window.addEventListener('focus', onFocus)
 		},
@@ -207,10 +312,7 @@ function createVolumeRuntime(userId: string, api: ApiClient): VolumeRuntime {
 		},
 
 		fetchChanges,
-
-		refresh() {
-			return fetchChanges('')
-		},
+		refresh,
 
 		upsertEntry,
 		removeEntry,
@@ -218,29 +320,42 @@ function createVolumeRuntime(userId: string, api: ApiClient): VolumeRuntime {
 	}
 }
 
-function getOrCreateVolumeRuntime(userId: string, api: ApiClient): VolumeRuntime {
+function getOrCreateVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
 	const existing = runtimeSingletons.get(userId)
 	if (existing) return existing
 
-	const runtime = createVolumeRuntime(userId, api)
-	runtimeSingletons.set(userId, runtime)
-	return runtime
+	const promise = createVolumeRuntime(userId, fsClient)
+	runtimeSingletons.set(userId, promise)
+	return promise
 }
 
 export function VolumeProvider({
 	children,
 	userId,
+	fallback = null,
 }: {
 	children: ReactNode
 	userId: string
+	fallback?: ReactNode
 }) {
-	const api = useApiClient()
-	const runtime = useMemo(() => getOrCreateVolumeRuntime(userId, api), [api, userId])
+	const fsClient = useFsClient()
+	const [runtime, setRuntime] = useState<VolumeRuntime | null>(null)
 
 	useEffect(() => {
+		let active = true
+		getOrCreateVolumeRuntime(userId, fsClient).then((r) => {
+			if (active) setRuntime(r)
+		})
+		return () => { active = false }
+	}, [userId, fsClient])
+
+	useEffect(() => {
+		if (!runtime) return
 		runtime.start()
 		return () => runtime.stop()
 	}, [runtime])
+
+	if (!runtime) return createElement(Fragment, null, fallback)
 
 	return createElement(VolumeContext.Provider, { value: runtime }, children)
 }

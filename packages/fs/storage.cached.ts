@@ -1,6 +1,7 @@
 import type { StorageBackend, InodeMeta, FsOp } from './storage'
 import type { Ino, Off, DirCursor, DirentMin } from './types'
 import { FileType } from './types'
+import { createExclusiveRunner, createKeyedExclusiveRunner } from './exclusive'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -144,6 +145,9 @@ export function cachedStorage(
 	let paused = false
 	let destroyed = false
 	let deltaSyncTimer: ReturnType<typeof setInterval> | null = null
+	const runFlushExclusive = createExclusiveRunner()
+	const runDeltaSyncExclusive = createExclusiveRunner()
+	const runFlushInoExclusive = createKeyedExclusiveRunner<Ino>()
 
 	// ---- Dir cache helpers --------------------------------------------------
 
@@ -297,6 +301,42 @@ export function cachedStorage(
 		return inos
 	}
 
+	function coalesceFlushOps(ops: FsOp[]): FsOp[] {
+		const coalesced: FsOp[] = []
+		const pendingUpserts = new Map<Ino, FsOp & { kind: 'upsert-inode' }>()
+
+		function flushPendingUpserts(): void {
+			if (pendingUpserts.size === 0) return
+			for (const op of pendingUpserts.values()) {
+				coalesced.push(op)
+			}
+			pendingUpserts.clear()
+		}
+
+		for (const op of ops) {
+			if (op.kind !== 'upsert-inode') {
+				flushPendingUpserts()
+				coalesced.push(op)
+				continue
+			}
+
+			const existing = pendingUpserts.get(op.ino)
+			pendingUpserts.set(op.ino, {
+				kind: 'upsert-inode',
+				ino: op.ino,
+				meta: op.meta ?? existing?.meta,
+				xattrs:
+					op.xattrs !== undefined || existing?.xattrs !== undefined
+						? ({} as Record<string, Uint8Array | null>)
+						: undefined,
+				contentChanged: Boolean(existing?.contentChanged || op.contentChanged),
+			})
+		}
+
+		flushPendingUpserts()
+		return coalesced
+	}
+
 	async function applyRemoteOp(op: FsOp): Promise<void> {
 		switch (op.kind) {
 			case 'upsert-inode': {
@@ -359,56 +399,61 @@ export function cachedStorage(
 	}
 
 	async function flushPendingUpdates(): Promise<{ hadOps: boolean; touchedInos: Set<Ino> }> {
-		if (!localUpdates) return { hadOps: false, touchedInos: new Set() }
+		return runFlushExclusive(async () => {
+			if (!localUpdates) return { hadOps: false, touchedInos: new Set() }
 
-		const { ops, cursor } = await localUpdates(localSyncCursor)
-		if (ops.length === 0) return { hadOps: false, touchedInos: new Set() }
+			const { ops, cursor } = await localUpdates(localSyncCursor)
+			if (ops.length === 0) return { hadOps: false, touchedInos: new Set() }
 
-		for (const op of ops) {
-			await applyRemoteOp(op)
-		}
+			const coalescedOps = coalesceFlushOps(ops)
+			for (const op of coalescedOps) {
+				await applyRemoteOp(op)
+			}
 
-		localSyncCursor = cursor
-		await saveSyncState()
-		return { hadOps: true, touchedInos: touchedInosFromOps(ops) }
+			localSyncCursor = cursor
+			await saveSyncState()
+			return { hadOps: true, touchedInos: touchedInosFromOps(coalescedOps) }
+		})
 	}
 
 	async function flushIno(ino: Ino, force = false): Promise<void> {
-		// Never sync reserved state inodes to remote.
-		if (isStatePath(ino)) return
+		return runFlushInoExclusive(ino, async () => {
+			// Never sync reserved state inodes to remote.
+			if (isStatePath(ino)) return
 
-		const state = dirty.get(ino)
-		if (!state) return
-		// Honour backoff unless the caller explicitly forces a final attempt
-		// (e.g. destroy() wants one last try regardless of retry schedule).
+			const state = dirty.get(ino)
+			if (!state) return
+			// Honour backoff unless the caller explicitly forces a final attempt
+			// (e.g. destroy() wants one last try regardless of retry schedule).
 			if (!force && state.nextRetryAt > Date.now()) return
 
-		try {
-			const { hadOps, touchedInos } = await flushPendingUpdates()
-			if (hadOps) {
-				for (const touchedIno of touchedInos) {
-					if (dirty.delete(touchedIno)) {
-						events.dispatchEvent(Object.assign(new Event('synced'), { ino: touchedIno }))
+			try {
+				const { hadOps, touchedInos } = await flushPendingUpdates()
+				if (hadOps) {
+					for (const touchedIno of touchedInos) {
+						if (dirty.delete(touchedIno)) {
+							events.dispatchEvent(Object.assign(new Event('synced'), { ino: touchedIno }))
+						}
 					}
+					if (touchedInos.size > 0) await saveDirtyState()
+					return
 				}
-				if (touchedInos.size > 0) await saveDirtyState()
-				return
+			} catch {
+				// Exponential back-off — retry state lives in the dirty map entry
+				const stateNow = dirty.get(ino)
+				if (!stateNow) return // concurrently removed
+				const idx = Math.min(stateNow.retryCount, RETRY_DELAYS_MS.length - 1)
+				const delay = RETRY_DELAYS_MS[idx]!
+				dirty.set(ino, {
+					mask: stateNow.mask,
+					retryCount: stateNow.retryCount + 1,
+					nextRetryAt: Date.now() + delay,
+				})
+				setTimeout(() => {
+					if (!paused && !destroyed) void flushIno(ino)
+				}, delay)
 			}
-		} catch {
-			// Exponential back-off — retry state lives in the dirty map entry
-			const stateNow = dirty.get(ino)
-			if (!stateNow) return // concurrently removed
-			const idx = Math.min(stateNow.retryCount, RETRY_DELAYS_MS.length - 1)
-			const delay = RETRY_DELAYS_MS[idx]!
-			dirty.set(ino, {
-				mask: stateNow.mask,
-				retryCount: stateNow.retryCount + 1,
-				nextRetryAt: Date.now() + delay,
-			})
-			setTimeout(() => {
-				if (!paused && !destroyed) void flushIno(ino)
-			}, delay)
-		}
+		})
 	}
 
 	async function flushAll(force = false): Promise<void> {
@@ -437,38 +482,41 @@ export function cachedStorage(
 	}
 
 	async function runDeltaSync(): Promise<void> {
-		if (paused || destroyed || !remote.updates) return
-		try {
-			const { ops, cursor } = await remote.updates(remoteSyncCursor)
-			remoteSyncCursor = cursor
-			await saveSyncState()
+		return runDeltaSyncExclusive(async () => {
+			if (paused || destroyed || !remote.updates) return
+			try {
+				const { ops, cursor } = await remote.updates(remoteSyncCursor)
+				remoteSyncCursor = cursor
+				await saveSyncState()
 
-			if (ops.length === 0) return
+				if (ops.length === 0) return
 
-			for (const op of ops) {
-				if (op.kind !== 'upsert-inode') continue
-				if (isStatePath(op.ino) || isStateDir(op.ino)) continue
-				if (dirty.has(op.ino)) continue
-				if (op.meta) {
-					metaCache.set(op.ino, op.meta)
-				} else {
-					metaCache.delete(op.ino)
+				for (const op of ops) {
+					if (op.kind !== 'upsert-inode') continue
+					if (isStatePath(op.ino) || isStateDir(op.ino)) continue
+					if (dirty.has(op.ino)) continue
+					if (op.meta) {
+						metaCache.set(op.ino, op.meta)
+						await local.setMeta(op.ino, op.meta)
+					} else {
+						metaCache.delete(op.ino)
+					}
+					if (op.contentChanged) invalidated.add(op.ino)
 				}
-				if (op.contentChanged) invalidated.add(op.ino)
-			}
 
-			const changedInos = changedInosFromOps(ops)
-			for (const ino of changedInos) {
-				if (isStatePath(ino) || isStateDir(ino)) continue // never process state paths
-				if (dirty.has(ino)) continue // local wins; do NOT overwrite
-				events.dispatchEvent(Object.assign(new Event('change'), { ino }))
+				const changedInos = changedInosFromOps(ops)
+				for (const ino of changedInos) {
+					if (isStatePath(ino) || isStateDir(ino)) continue // never process state paths
+					if (dirty.has(ino)) continue // local wins; do NOT overwrite
+					events.dispatchEvent(Object.assign(new Event('change'), { ino }))
+				}
+				if (ops.some((op) => op.kind === 'set-dirent' || op.kind === 'unset-dirent')) {
+					dirCache.clear()
+				}
+			} catch {
+				// Network error — keep last known cursor, retry on next interval
 			}
-			if (ops.some((op) => op.kind === 'set-dirent' || op.kind === 'unset-dirent')) {
-				dirCache.clear()
-			}
-		} catch {
-			// Network error — keep last known cursor, retry on next interval
-		}
+		})
 	}
 
 	function startDeltaSync(): void {
@@ -522,8 +570,16 @@ export function cachedStorage(
 			}
 			const cached = metaCache.get(ino)
 			if (cached !== undefined) return { ...cached }
+			const localMeta = await local.getMeta(ino)
+			if (localMeta !== null) {
+				metaCache.set(ino, localMeta)
+				return { ...localMeta }
+			}
 			const remoteMeta = await remote.getMeta(ino)
-			if (remoteMeta) metaCache.set(ino, remoteMeta)
+			if (remoteMeta) {
+				metaCache.set(ino, remoteMeta)
+				await local.setMeta(ino, remoteMeta)
+			}
 			return remoteMeta
 		},
 
