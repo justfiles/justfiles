@@ -94,6 +94,7 @@ function lsCacheKey(userId: string) {
 }
 
 const DRAFT_PATH = '/*draft*'
+const STATE_ROOT = '/.state'
 const TRASH_ROOT = '/.trash'
 const TRASH_FILES_PATH = `${TRASH_ROOT}/files`
 const TRASH_INFO_PATH = `${TRASH_ROOT}/info`
@@ -195,6 +196,10 @@ function isTrashPath(path: string): boolean {
 	return path === TRASH_ROOT || path.startsWith(`${TRASH_ROOT}/`)
 }
 
+function isStatePath(path: string): boolean {
+	return path === STATE_ROOT || path.startsWith(`${STATE_ROOT}/`)
+}
+
 async function ensureTrashDirs(volume: Volume): Promise<void> {
 	await volume.mkdir(TRASH_FILES_PATH, { recursive: true })
 	await volume.mkdir(TRASH_INFO_PATH, { recursive: true })
@@ -265,6 +270,7 @@ async function listLiveMemoryEntries(volume: Volume, previous: MemoryMeta[]): Pr
 	await volume.scan('/', async (path, stat) => {
 		if (stat.type !== FileType.Regular) return
 		if (path === DRAFT_PATH) return
+		if (isStatePath(path)) return
 		if (isTrashPath(path)) return
 		if (isAssetPath(path)) return
 

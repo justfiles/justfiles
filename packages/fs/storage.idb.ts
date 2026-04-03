@@ -81,6 +81,7 @@ const KeyRange = (globalThis as unknown as {
 			upperOpen?: boolean
 		): KeyRangeLike
 		lowerBound(lower: number): KeyRangeLike
+		upperBound(upper: number): KeyRangeLike
 	}
 }).IDBKeyRange
 
@@ -244,40 +245,69 @@ export function idbStorage(
 
 		const inode = await tx.objectStore('inodes').get(ino)
 		if (inode) {
-			await tx.objectStore('inodes').put({ ...inode, size: BigInt(newSize) })
+			const nextInode = { ...inode, size: BigInt(newSize) }
+			await tx.objectStore('inodes').put(nextInode)
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'upsert-inode',
+					source: options?.source,
+					ino,
+					meta: metaFromRecord(nextInode),
+				},
+			})
 		}
 
 		await tx.objectStore('dirty').put({ ino, markedAt: now })
-		await tx.objectStore('updates').add({
-			op: {
-				kind: 'upsert-inode',
-				source: options?.source,
-				ino,
-				contentChanged: true,
-			},
-		})
 
 		const total = (await tx.objectStore('meta').get('totalContentBytes') as number | undefined) ?? 0
 		await tx.objectStore('meta').put(total - oldSize + newSize, 'totalContentBytes')
 		await tx.done
 	}
 
-	function isFullMeta(partial: Partial<InodeMeta>): partial is InodeMeta {
-		return (
-			partial.type !== undefined &&
-			partial.size !== undefined &&
-			partial.mode !== undefined &&
-			partial.nlink !== undefined &&
-			partial.mtimeNs !== undefined &&
-			partial.ctimeNs !== undefined
-		)
+function defaultModeForType(type: FileType): number {
+	switch (type) {
+		case FileType.Directory:
+			return 0o755
+		case FileType.Symlink:
+			return 0o777
+		case FileType.Regular:
+		default:
+			return 0o644
 	}
+}
+
+function buildMissingInodeRecord(ino: Ino, partial: Partial<InodeMeta>, now = Date.now()): InodeRecord | null {
+	if (partial.type === undefined) return null
+	const stamp = BigInt(now) * 1_000_000n
+	return {
+		ino,
+		type: partial.type,
+		size: partial.size ?? 0n,
+		mode: partial.mode ?? defaultModeForType(partial.type),
+		nlink: partial.nlink ?? 0,
+		mtimeNs: partial.mtimeNs ?? stamp,
+		ctimeNs: partial.ctimeNs ?? stamp,
+		contentHash: partial.contentHash,
+		symlinkTarget: partial.symlinkTarget,
+		lastAccessedAt: now,
+	}
+}
+
+function metaFromRecord(record: InodeRecord): InodeMeta {
+	const { ino: _ino, lastAccessedAt: _lastAccessedAt, ...meta } = record
+	return meta
+}
 
 	function filterOpsBySource(ops: FsOp[], options?: UpdateQueryOptions): FsOp[] {
 		const source = options?.source
 		const mode = options?.sourceMode ?? 'only'
 		if (!source) return ops
 		return ops.filter((op) => mode === 'exclude' ? op.source !== source : op.source === source)
+	}
+
+	async function listAllXattrsInTx(tx: FullTx, ino: Ino): Promise<Record<string, Uint8Array>> {
+		const records = await tx.objectStore('xattrs').index('by-ino').getAll(ino)
+		return Object.fromEntries(records.map((record) => [record.name, record.value.slice()]))
 	}
 
 	/**
@@ -331,22 +361,30 @@ export function idbStorage(
 
 		// --- alloc / create ---
 
-		async alloc(meta, _options) {
+		async alloc(meta, options) {
 			const db = await getDb()
 			const ino = crypto.randomUUID()
 			const now = Date.now()
-			const tx = db.transaction(['inodes', 'content'], 'readwrite')
+			const tx = db.transaction(['inodes', 'content', 'updates'], 'readwrite')
 			await tx.objectStore('inodes').put({ ino, ...meta, nlink: 0, lastAccessedAt: now })
 			if (meta.type === FileType.Regular) {
 				await tx.objectStore('content').put({ ino, data: new Uint8Array(), sizeBytes: 0, lastAccessedAt: now })
 			}
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'upsert-inode',
+					source: options?.source,
+					ino,
+					meta: { ...meta, nlink: 0 },
+				},
+			})
 			await tx.done
 			return ino
 		},
 
-		async create(dirIno, name, meta, _options) {
+		async create(dirIno, name, meta, options) {
 			const db = await getDb()
-			const tx = db.transaction(['inodes', 'content', 'dirs'], 'readwrite')
+			const tx = db.transaction(['inodes', 'content', 'dirs', 'updates'], 'readwrite')
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
 			if (existing) throw new Error(`EEXIST: ${name}`)
 
@@ -357,6 +395,24 @@ export function idbStorage(
 				await tx.objectStore('content').put({ ino, data: new Uint8Array(), sizeBytes: 0, lastAccessedAt: now })
 			}
 			await tx.objectStore('dirs').put({ dirIno, name, ino, type: meta.type })
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'upsert-inode',
+					source: options?.source,
+					ino,
+					meta: { ...meta, nlink: 0 },
+				},
+			})
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'set-dirent',
+					source: options?.source,
+					dirIno,
+					name,
+					ino,
+					type: meta.type,
+				},
+			})
 			await tx.done
 			return ino
 		},
@@ -371,15 +427,47 @@ export function idbStorage(
 			return meta
 		},
 
-		async setMeta(ino, partial, _options) {
+		async setMeta(ino, partial, options) {
 			const db = await getDb()
-			const rec = await db.get('inodes', ino)
+			const tx = db.transaction(['inodes', 'updates', 'content'], 'readwrite')
+			const rec = await tx.objectStore('inodes').get(ino)
 			if (!rec) {
-				if (!isFullMeta(partial)) return
-				await db.put('inodes', { ino, ...partial, lastAccessedAt: Date.now() })
+				const next = buildMissingInodeRecord(ino, partial)
+				if (!next) {
+					await tx.done
+					return
+				}
+				await tx.objectStore('inodes').put(next)
+				if (next.type === FileType.Regular) {
+					await tx.objectStore('content').put({
+						ino,
+						data: new Uint8Array(),
+						sizeBytes: 0,
+						lastAccessedAt: next.lastAccessedAt,
+					})
+				}
+				await tx.objectStore('updates').add({
+					op: {
+						kind: 'upsert-inode',
+						source: options?.source,
+						ino,
+						meta: { ...partial },
+					},
+				})
+				await tx.done
 				return
 			}
-			await db.put('inodes', { ...rec, ...partial })
+			const next = { ...rec, ...partial }
+			await tx.objectStore('inodes').put(next)
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'upsert-inode',
+					source: options?.source,
+					ino,
+					meta: { ...partial },
+				},
+			})
+			await tx.done
 		},
 
 		// --- xattrs ---
@@ -392,14 +480,17 @@ export function idbStorage(
 
 		async setXattr(ino, name, value, options) {
 			const db = await getDb()
-			const tx = db.transaction(['xattrs', 'updates'], 'readwrite')
+			const tx = db.transaction(['xattrs', 'updates', 'inodes'], 'readwrite')
 			await tx.objectStore('xattrs').put({ ino, name, value: value.slice() })
+			const inode = await tx.objectStore('inodes').get(ino)
+			const xattrs = await listAllXattrsInTx(tx as FullTx, ino)
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'upsert-inode',
 					source: options?.source,
 					ino,
-					xattrs: {},
+					meta: inode ? metaFromRecord(inode) : undefined,
+					xattrs,
 				},
 			})
 			await tx.done
@@ -413,14 +504,17 @@ export function idbStorage(
 
 		async removeXattr(ino, name, options) {
 			const db = await getDb()
-			const tx = db.transaction(['xattrs', 'updates'], 'readwrite')
+			const tx = db.transaction(['xattrs', 'updates', 'inodes'], 'readwrite')
 			await tx.objectStore('xattrs').delete([ino, name])
+			const inode = await tx.objectStore('inodes').get(ino)
+			const xattrs = await listAllXattrsInTx(tx as FullTx, ino)
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'upsert-inode',
 					source: options?.source,
 					ino,
-					xattrs: {},
+					meta: inode ? metaFromRecord(inode) : undefined,
+					xattrs,
 				},
 			})
 			await tx.done
@@ -623,6 +717,17 @@ export function idbStorage(
 		async updates(cursor: string, options) {
 			const db = await getDb()
 			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
+			if (Number.isFinite(since) && since > 0) {
+				const compactTx = db.transaction(['updates'], 'readwrite')
+				const compactStore = compactTx.objectStore('updates')
+				let record = await compactStore.openCursor(KeyRange.upperBound(since) as never)
+				while (record) {
+					await record.delete()
+					record = await record.continue()
+				}
+				await compactTx.done
+			}
+
 			const lowerBound = Number.isFinite(since) && since > 0 ? since + 1 : 1
 			const range = KeyRange.lowerBound(lowerBound) as never
 			const records = await db.getAll('updates', range)

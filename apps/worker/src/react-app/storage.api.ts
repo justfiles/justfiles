@@ -1,4 +1,4 @@
-import type { StorageBackend, InodeMeta, FsOp, MutationOptions } from 'ghost-fs/storage'
+import { FsCursorExpiredError, type StorageBackend, type InodeMeta, type FsOp, type MutationOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { Ino, Off, DirCursor } from 'ghost-fs/types'
 import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'ghost-fs/xattr'
@@ -172,11 +172,18 @@ function pathToUpdateOps(memory: ChangeRow): FsOp[] {
 	ops.push({
 		kind: 'upsert-inode',
 		ino: memory.id,
+		meta: {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: BigInt(Date.parse(memory.updated_at)) * 1_000_000n,
+			ctimeNs: BigInt(Date.parse(memory.updated_at)) * 1_000_000n,
+		},
 		xattrs: {
 			[GHOSTORE_XATTR.title]: memory.title != null ? encodeXattr(memory.title) : null,
 			[GHOSTORE_XATTR.tags]: memory.tags.length > 0 ? encodeXattr(memory.tags) : null
 		},
-		contentChanged: true
 	})
 
 	const leafName = parts[parts.length - 1]
@@ -609,15 +616,16 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 // ── Wire-format helpers (inverse of createFsApi's encoders) ──────────────────
 
 function parseMeta(wire: FsMetaResponse): InodeMeta {
+	const meta = wire as Record<string, unknown>
 	return {
-		type: wire.type,
-		size: BigInt(wire.size),
-		mode: wire.mode,
-		nlink: wire.nlink,
-		mtimeNs: BigInt(wire.mtimeNs),
-		ctimeNs: BigInt(wire.ctimeNs),
-		contentHash: wire.contentHash,
-		symlinkTarget: wire.symlinkTarget
+		type: Number(meta.type) as FileType,
+		size: BigInt(String(meta.size)),
+		mode: Number(meta.mode),
+		nlink: Number(meta.nlink),
+		mtimeNs: BigInt(String(meta.mtimeNs)),
+		ctimeNs: BigInt(String(meta.ctimeNs)),
+		contentHash: typeof meta.contentHash === 'string' ? meta.contentHash : undefined,
+		symlinkTarget: typeof meta.symlinkTarget === 'string' ? meta.symlinkTarget : undefined,
 	}
 }
 
@@ -686,6 +694,8 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 
 		async setMeta(ino, partial, options) {
 			const wire: Record<string, unknown> = { ...partial }
+			if (partial.size !== undefined) wire.size = partial.size.toString()
+			if (partial.nlink !== undefined) wire.nlink = partial.nlink
 			if (partial.mtimeNs !== undefined) wire.mtimeNs = partial.mtimeNs.toString()
 			if (partial.ctimeNs !== undefined) wire.ctimeNs = partial.ctimeNs.toString()
 			const res = await c.inodes[':ino'].$patch({ param: { ino }, json: wire }, mutationInit(options))
@@ -814,6 +824,13 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 		async updates(cursor, options) {
 			const res = await c.updates.$get({ query: { cursor } }, mutationInit(options))
 			if (res.status === 501) return { ops: [], cursor }
+			if (res.status === 409) {
+				const data = await res.json().catch(() => null)
+				if (data && typeof data === 'object' && 'code' in data && data.code === 'cursor_expired') {
+					const message = typeof data.error === 'string' ? data.error : 'FS sync cursor expired'
+					throw new FsCursorExpiredError(message)
+				}
+			}
 			if (!res.ok) throw new Error(`updates failed: ${res.status}`)
 			const data = await res.json()
 			return {

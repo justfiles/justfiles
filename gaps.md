@@ -43,8 +43,9 @@ This milestone landed the first end-to-end filesystem-backed note flow:
 
 # Remaining Gaps
 
-- Medium: the local outbound op log still has no compaction/ack cleanup path. [`packages/fs/storage.idb.ts`](./packages/fs/storage.idb.ts) can read `updates`, but old local ops will accumulate indefinitely.
 - Low: xattrs are still lazily hydrated rather than included in the namespace bootstrap. [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts) now fully mirrors dirents and inode metadata locally, but xattr reads can still fall back to remote until touched by a delta or explicit read.
+- Low: expired-cursor full resync currently invalidates all regular-file content after namespace reconciliation. That is safe, but it is more conservative than necessary; the bootstrap path could preserve local blobs whose cached inode `contentHash` already matches the remote metadata and only evict mismatches.
+- Low: startup trust in the bootstrapped local namespace is still guarded by a root-level consistency check in [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts). That is a reasonable stopgap, but it is still heuristic; a stronger integrity mechanism such as a persisted namespace summary/hash or subtree anti-entropy would be a better long-term way to validate the local replica before resuming incremental sync. See [`fs-integrity-notes.md`](./fs-integrity-notes.md).
 - Low: revisit the local journal representation. The current browser backend keeps its outbound op log in an IndexedDB `updates` store, which is pragmatic for now, but the original design intent was to model sync state as filesystem data under `/.state/`. If we want the local backend to be more purely filesystem-shaped, consider moving the local journal to `/.state` log files and keeping the DB-backed `fs_updates` table only on the authoritative worker side.
 - Low: asset serving is correct but not fully simplified yet. The editor currently loads authenticated blobs through the FS client instead of rendering directly from the cacheable `/fs/inodes/:ino/content/:filename` URL, and the legacy `/api/v1/memory/:memoryId/assets` worker routes are still mounted as dead code.
 
@@ -53,5 +54,4 @@ This milestone landed the first end-to-end filesystem-backed note flow:
 Focus the next round on finishing the FS boundary instead of broadening scope:
 
 1. Decide whether to remove the legacy memory asset routes now and whether preview rendering should switch to cacheable FS content URLs directly.
-2. Add compaction / ack cleanup for the local outbound op log.
-3. Add retention and purge policy for `/.trash` once the lifecycle semantics are stable.
+2. Add retention and purge policy for `/.trash` once the lifecycle semantics are stable.

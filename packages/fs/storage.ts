@@ -45,12 +45,23 @@ export type UpdateQueryOptions = {
 
 export type FsOp =
 	| {
+			/**
+			 * Reconcile this inode to the sender's current snapshot.
+			 *
+			 * `meta` is a metadata patch. When the target inode is missing and
+			 * `meta.type` is present, recipients may create it with sensible
+			 * defaults and then apply the provided fields.
+			 *
+			 * `xattrs`, when present, is the complete desired xattr set for this
+			 * inode. Recipients should replace their current xattrs with it.
+			 * If `xattrs` is omitted, xattrs are unchanged. `xattrs: {}` means
+			 * "clear all xattrs".
+			 */
 			kind: 'upsert-inode'
 			source?: string
 			ino: Ino
-			meta?: InodeMeta
+			meta?: Partial<InodeMeta>
 			xattrs?: Record<string, Uint8Array | null>
-			contentChanged?: boolean
 		}
 	| {
 			kind: 'set-dirent'
@@ -68,11 +79,26 @@ export type FsOp =
 			ino?: Ino
 		};
 
+export class FsCursorExpiredError extends Error {
+	constructor(message = 'FS sync cursor expired') {
+		super(message)
+		this.name = 'FsCursorExpiredError'
+	}
+}
+
+export function isFsCursorExpiredError(error: unknown): error is FsCursorExpiredError {
+	return error instanceof FsCursorExpiredError ||
+		(error instanceof Error && error.name === 'FsCursorExpiredError')
+}
+
 /**
- * Fields the VFS may update via setMeta. nlink is excluded — it is
- * managed entirely inside dirSet / dirUnset and is never written by the VFS.
+ * Metadata fields that may be applied via setMeta.
+ *
+ * The VFS typically uses this for partial attribute updates, but the sync
+ * layer may also send a full inode snapshot to materialize a missing inode on
+ * a remote backend during local-first replay.
  */
-type InodeMetaUpdate = Partial<Pick<InodeMeta, 'mode' | 'mtimeNs' | 'ctimeNs' | 'symlinkTarget'>>;
+type InodeMetaUpdate = Partial<InodeMeta>;
 
 /**
  * Minimal backend interface.

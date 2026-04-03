@@ -1,5 +1,5 @@
 import type { DbAdapter } from './db'
-import type { StorageBackend, FsOp, InodeMeta, MutationOptions, UpdateQueryOptions } from 'ghost-fs/storage'
+import { FsCursorExpiredError, type StorageBackend, type FsOp, type InodeMeta, type MutationOptions, type UpdateQueryOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { DirCursor, Ino } from 'ghost-fs/types'
 
@@ -24,6 +24,7 @@ type StorageOptions = {
 	blobStore?: BlobStore
 	namespace?: string
 	inlineTextLimitBytes?: number
+	maxRetainedUpdates?: number
 }
 
 type InodeRow = {
@@ -76,6 +77,8 @@ const ROOT_INO: Ino = '1'
 const DIR_PAGE_SIZE = 200
 const SCAN_PAGE_SIZE = 200
 const INLINE_TEXT_LIMIT_BYTES = 256 * 1024
+const DEFAULT_MAX_RETAINED_UPDATES = 20_000
+const FS_STATE_UPDATES_PRUNED_THROUGH_SEQ = 'updates_pruned_through_seq'
 const STORAGE_NONE = 0
 const STORAGE_INLINE = 1
 const STORAGE_R2 = 2
@@ -138,6 +141,33 @@ function toArrayBuffer(value: Uint8Array): ArrayBuffer {
 	return buffer
 }
 
+function defaultModeForType(type: FileType): number {
+	switch (type) {
+		case FileType.Directory:
+			return 0o755
+		case FileType.Symlink:
+			return 0o777
+		case FileType.Regular:
+		default:
+			return 0o644
+	}
+}
+
+function buildMissingInodeMeta(partial: Partial<InodeMeta>): InodeMeta | null {
+	if (partial.type === undefined) return null
+	const stamp = nowNs()
+	return {
+		type: partial.type,
+		size: partial.size ?? 0n,
+		mode: partial.mode ?? defaultModeForType(partial.type),
+		nlink: partial.nlink ?? 0,
+		mtimeNs: partial.mtimeNs ?? stamp,
+		ctimeNs: partial.ctimeNs ?? stamp,
+		contentHash: partial.contentHash,
+		symlinkTarget: partial.symlinkTarget,
+	}
+}
+
 function metaFromRow(row: InodeRow): InodeMeta {
 	return {
 		type: toNumber(row.type) as FileType,
@@ -151,40 +181,31 @@ function metaFromRow(row: InodeRow): InodeMeta {
 	}
 }
 
-function serializeMeta(meta: InodeMeta): string {
-	return JSON.stringify({
-		type: meta.type,
-		size: meta.size.toString(),
-		mode: meta.mode,
-		nlink: meta.nlink,
-		mtimeNs: meta.mtimeNs.toString(),
-		ctimeNs: meta.ctimeNs.toString(),
-		contentHash: meta.contentHash ?? null,
-		symlinkTarget: meta.symlinkTarget ?? null
-	})
+function serializeMeta(meta: Partial<InodeMeta>): string {
+	const encoded: Record<string, unknown> = {}
+	if (meta.type !== undefined) encoded.type = meta.type
+	if (meta.size !== undefined) encoded.size = meta.size.toString()
+	if (meta.mode !== undefined) encoded.mode = meta.mode
+	if (meta.nlink !== undefined) encoded.nlink = meta.nlink
+	if (meta.mtimeNs !== undefined) encoded.mtimeNs = meta.mtimeNs.toString()
+	if (meta.ctimeNs !== undefined) encoded.ctimeNs = meta.ctimeNs.toString()
+	if ('contentHash' in meta) encoded.contentHash = meta.contentHash ?? null
+	if ('symlinkTarget' in meta) encoded.symlinkTarget = meta.symlinkTarget ?? null
+	return JSON.stringify(encoded)
 }
 
-function parseMetaJson(raw: string): InodeMeta {
-	const parsed = JSON.parse(raw) as {
-		type: number
-		size: string
-		mode: number
-		nlink: number
-		mtimeNs: string
-		ctimeNs: string
-		contentHash?: string | null
-		symlinkTarget?: string | null
-	}
-	return {
-		type: parsed.type as FileType,
-		size: BigInt(parsed.size),
-		mode: parsed.mode,
-		nlink: parsed.nlink,
-		mtimeNs: BigInt(parsed.mtimeNs),
-		ctimeNs: BigInt(parsed.ctimeNs),
-		contentHash: parsed.contentHash ?? undefined,
-		symlinkTarget: parsed.symlinkTarget ?? undefined
-	}
+function parseMetaJson(raw: string): Partial<InodeMeta> {
+	const parsed = JSON.parse(raw) as Record<string, unknown>
+	const meta: Partial<InodeMeta> = {}
+	if (parsed.type !== undefined) meta.type = Number(parsed.type) as FileType
+	if (parsed.size !== undefined) meta.size = BigInt(String(parsed.size))
+	if (parsed.mode !== undefined) meta.mode = Number(parsed.mode)
+	if (parsed.nlink !== undefined) meta.nlink = Number(parsed.nlink)
+	if (parsed.mtimeNs !== undefined) meta.mtimeNs = BigInt(String(parsed.mtimeNs))
+	if (parsed.ctimeNs !== undefined) meta.ctimeNs = BigInt(String(parsed.ctimeNs))
+	if ('contentHash' in parsed) meta.contentHash = parsed.contentHash == null ? undefined : String(parsed.contentHash)
+	if ('symlinkTarget' in parsed) meta.symlinkTarget = parsed.symlinkTarget == null ? undefined : String(parsed.symlinkTarget)
+	return meta
 }
 
 function withSource(ops: FsOp[], options?: MutationOptions): FsOp[] {
@@ -212,6 +233,14 @@ function parseXattrsJson(raw: string): Record<string, Uint8Array | null> {
 	return Object.fromEntries(
 		Object.entries(parsed).map(([name, value]) => [name, value === null ? null : decodeBytes(value)])
 	)
+}
+
+async function listAllXattrs(tx: DbAdapter, ino: Ino): Promise<Record<string, Uint8Array>> {
+	const rows = await tx.query<{ name: unknown; value: unknown }>(
+		'SELECT name, value FROM fs_xattrs WHERE ino = ? ORDER BY name',
+		[ino]
+	)
+	return Object.fromEntries(rows.map((row) => [String(row.name), toUint8Array(row.value)]))
 }
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
@@ -247,6 +276,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 	const blobStore = options.blobStore
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
+	const maxRetainedUpdates = options.maxRetainedUpdates ?? DEFAULT_MAX_RETAINED_UPDATES
 
 	let bootstrapPromise: Promise<void> | null = null
 
@@ -283,6 +313,20 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			bootstrapPromise = null
 			throw error
 		}
+	}
+
+	async function getStateNumber(tx: DbAdapter, key: string): Promise<number> {
+		const [row] = await tx.query<{ value: unknown }>('SELECT value FROM fs_state WHERE key = ? LIMIT 1', [key])
+		const parsed = row?.value == null ? 0 : Number.parseInt(String(row.value), 10)
+		return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+	}
+
+	async function setStateNumber(tx: DbAdapter, key: string, value: number): Promise<void> {
+		await tx.run(
+			`INSERT INTO fs_state(key, value) VALUES(?, ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			[key, String(value)]
+		)
 	}
 
 	async function getInode(tx: DbAdapter, ino: Ino): Promise<InodeRow | null> {
@@ -449,7 +493,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 							op.ino,
 							op.meta ? serializeMeta(op.meta) : null,
 							op.xattrs ? serializeXattrs(op.xattrs) : null,
-							op.contentChanged ? 1 : 0
+							0
 						]
 					)
 					break
@@ -469,7 +513,29 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						[txId, i, atNs, op.kind, op.source ?? null, op.dirIno, op.name, op.ino ?? null]
 					)
 					break
-			}
+				}
+		}
+		await pruneUpdates(tx)
+	}
+
+	async function pruneUpdates(tx: DbAdapter): Promise<void> {
+		if (maxRetainedUpdates <= 0) return
+
+		const [cutoff] = await tx.query<{ seq: unknown }>(
+			'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1 OFFSET ?',
+			[maxRetainedUpdates - 1]
+		)
+		if (!cutoff?.seq) return
+
+		const keepFromSeq = toNumber(cutoff.seq)
+		if (!Number.isFinite(keepFromSeq) || keepFromSeq <= 1) return
+
+		const prunedThrough = keepFromSeq - 1
+		await tx.run('DELETE FROM fs_updates WHERE seq < ?', [keepFromSeq])
+
+		const previous = await getStateNumber(tx, FS_STATE_UPDATES_PRUNED_THROUGH_SEQ)
+		if (prunedThrough > previous) {
+			await setStateNumber(tx, FS_STATE_UPDATES_PRUNED_THROUGH_SEQ, prunedThrough)
 		}
 	}
 
@@ -538,7 +604,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					kind: 'upsert-inode',
 					ino,
 					meta: nextMeta,
-					contentChanged: true
 				}
 			], options))
 		})
@@ -644,7 +709,29 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const row = await getInode(tx, ino)
-				if (!row) return
+				if (!row) {
+					const created = buildMissingInodeMeta(partial)
+					if (!created) return
+					await tx.run(
+						`INSERT INTO fs_inodes(
+							ino, type, mode, nlink, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+						[
+							ino,
+							created.type,
+							created.mode,
+							created.nlink,
+							Number(created.size),
+							created.mtimeNs,
+							created.ctimeNs,
+							created.contentHash ?? null,
+							created.symlinkTarget ?? null,
+							STORAGE_NONE
+						]
+					)
+					await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial }], options))
+					return
+				}
 				const current = metaFromRow(row)
 				const next: InodeMeta = {
 					...current,
@@ -652,11 +739,21 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				}
 				await tx.run(
 					`UPDATE fs_inodes
-					 SET mode = ?, mtime_ns = ?, ctime_ns = ?, symlink_target = ?
+					 SET type = ?, mode = ?, nlink = ?, size = ?, mtime_ns = ?, ctime_ns = ?, content_hash = ?, symlink_target = ?
 					 WHERE ino = ?`,
-					[next.mode, next.mtimeNs, next.ctimeNs, next.symlinkTarget ?? null, ino]
+					[
+						next.type,
+						next.mode,
+						next.nlink,
+						Number(next.size),
+						next.mtimeNs,
+						next.ctimeNs,
+						next.contentHash ?? null,
+						next.symlinkTarget ?? null,
+						ino
+					]
 				)
-				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: next }], options))
+				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial }], options))
 			})
 		},
 
@@ -680,11 +777,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					 ON CONFLICT(ino, name) DO UPDATE SET value = excluded.value`,
 					[ino, name, value]
 				)
+				const xattrs = await listAllXattrs(tx, ino)
 				await appendOps(tx, withSource([
 					{
 						kind: 'upsert-inode',
 						ino,
-						xattrs: { [name]: value.slice() }
+						meta: metaFromRow(inode),
+						xattrs,
 					}
 				], options))
 			})
@@ -702,12 +801,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 		async removeXattr(ino, name, options) {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
+				const inode = await getInode(tx, ino)
+				if (!inode) throw new Error(`ENOENT: ${ino}`)
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ? AND name = ?', [ino, name])
+				const xattrs = await listAllXattrs(tx, ino)
 				await appendOps(tx, withSource([
 					{
 						kind: 'upsert-inode',
 						ino,
-						xattrs: { [name]: null }
+						meta: metaFromRow(inode),
+						xattrs,
 					}
 				], options))
 			})
@@ -1054,7 +1157,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 
 		async updates(cursor, options) {
 			await ensureBootstrapped()
-			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
+			const parsedCursor = cursor === '' ? 0 : Number.parseInt(cursor, 10)
+			const since = Number.isFinite(parsedCursor) && parsedCursor > 0 ? parsedCursor : 0
+			const prunedThroughSeq = await getStateNumber(db, FS_STATE_UPDATES_PRUNED_THROUGH_SEQ)
+			if (since > 0 && since < prunedThroughSeq) {
+				throw new FsCursorExpiredError(`FS sync cursor expired: ${cursor}`)
+			}
+
 			const rows = await db.query<UpdateRow>(
 				`SELECT
 					seq,
@@ -1071,21 +1180,20 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				FROM fs_updates
 				WHERE seq > ?
 				ORDER BY seq ASC`,
-				[Number.isFinite(since) ? since : 0]
+				[since]
 			)
 
 			const ops = filterOpsBySource(rows.map((row) => {
 				const opKind = String(row.op_kind)
 				switch (opKind) {
 					case 'upsert-inode':
-						return {
-							kind: 'upsert-inode',
-							source: toStringOrNull(row.source) ?? undefined,
-							ino: String(row.ino),
-							meta: row.meta_json ? parseMetaJson(String(row.meta_json)) : undefined,
-							xattrs: row.xattrs_json ? parseXattrsJson(String(row.xattrs_json)) : undefined,
-							contentChanged: toNumber(row.content_changed) === 1
-						}
+					return {
+						kind: 'upsert-inode',
+						source: toStringOrNull(row.source) ?? undefined,
+						ino: String(row.ino),
+						meta: row.meta_json ? parseMetaJson(String(row.meta_json)) : undefined,
+						xattrs: row.xattrs_json ? parseXattrsJson(String(row.xattrs_json)) : undefined,
+					}
 					case 'set-dirent':
 						return {
 							kind: 'set-dirent',

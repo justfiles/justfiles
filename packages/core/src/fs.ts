@@ -1,9 +1,10 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { type StorageBackend, type FsOp } from 'ghost-fs'
+import { FsCursorExpiredError, type StorageBackend, type FsOp } from 'ghost-fs'
 
 type InodeMeta = NonNullable<Awaited<ReturnType<StorageBackend['getMeta']>>>
+type InodeMetaPatch = Partial<InodeMeta>
 
 // ── Wire-format helpers ──────────────────────────────────────────────────────
 // JSON cannot represent bigint natively; transmit them as decimal strings.
@@ -22,19 +23,22 @@ const WireMetaSchema = z.object({
 })
 
 const WireMetaPartialSchema = z.object({
+	type: FileTypeNum.optional(),
+	size: BigIntStr.optional(),
 	mode: z.number().int().optional(),
+	nlink: z.number().int().optional(),
 	mtimeNs: BigIntStr.optional(),
 	ctimeNs: BigIntStr.optional(),
+	contentHash: z.string().optional(),
 	symlinkTarget: z.string().optional(),
 })
 
-function encodeMeta(meta: InodeMeta) {
-	return {
-		...meta,
-		size: meta.size.toString(),
-		mtimeNs: meta.mtimeNs.toString(),
-		ctimeNs: meta.ctimeNs.toString(),
-	}
+function encodeMeta(meta: InodeMetaPatch) {
+	const encoded: Record<string, unknown> = { ...meta }
+	if (meta.size !== undefined) encoded.size = meta.size.toString()
+	if (meta.mtimeNs !== undefined) encoded.mtimeNs = meta.mtimeNs.toString()
+	if (meta.ctimeNs !== undefined) encoded.ctimeNs = meta.ctimeNs.toString()
+	return encoded
 }
 
 function encodeBytes(arr: Uint8Array): string {
@@ -102,10 +106,18 @@ export function createFsApi(backend: StorageBackend) {
 			if (!backend.updates) return c.json({ error: 'not supported' }, 501)
 			const { cursor } = c.req.valid('query')
 			const source = c.req.header(SOURCE_HEADER) ?? undefined
-			const result = await backend.updates(
-				cursor,
-				source ? { source, sourceMode: 'exclude' } : undefined
-			)
+			let result: Awaited<ReturnType<NonNullable<StorageBackend['updates']>>>
+			try {
+				result = await backend.updates(
+					cursor,
+					source ? { source, sourceMode: 'exclude' } : undefined
+				)
+			} catch (error) {
+				if (error instanceof FsCursorExpiredError) {
+					return c.json({ error: error.message, code: 'cursor_expired' }, 409)
+				}
+				throw error
+			}
 			return c.json({ ops: result.ops.map(encodeOp), cursor: result.cursor })
 		})
 

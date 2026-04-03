@@ -40,6 +40,32 @@ export function memStorage(): StorageBackend {
 		else metas.set(ino, { ...m, nlink })
 	}
 
+	function defaultModeForType(type: FileType): number {
+		switch (type) {
+			case FileType.Directory:
+				return 0o755
+			case FileType.Symlink:
+				return 0o777
+			case FileType.Regular:
+			default:
+				return 0o644
+		}
+	}
+
+	function buildMissingInodeMeta(partial: Partial<InodeMeta>): InodeMeta | null {
+		if (partial.type === undefined) return null
+		return {
+			type: partial.type,
+			size: partial.size ?? 0n,
+			mode: partial.mode ?? defaultModeForType(partial.type),
+			nlink: partial.nlink ?? 0,
+			mtimeNs: partial.mtimeNs ?? 0n,
+			ctimeNs: partial.ctimeNs ?? 0n,
+			contentHash: partial.contentHash,
+			symlinkTarget: partial.symlinkTarget,
+		}
+	}
+
 	return {
 		rootIno,
 
@@ -64,7 +90,12 @@ export function memStorage(): StorageBackend {
 
 		async setMeta(ino, partial) {
 			const m = metas.get(ino)
-			if (m) metas.set(ino, { ...m, ...partial })
+			if (m) {
+				metas.set(ino, { ...m, ...partial })
+				return
+			}
+			const next = buildMissingInodeMeta(partial)
+			if (next) addIno(ino, next)
 		},
 
 		async getXattr(ino, name) {

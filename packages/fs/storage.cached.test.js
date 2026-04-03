@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 
 import { cachedStorage } from './storage.cached.ts'
 import { memStorage } from './storage.mem.ts'
+import { FsCursorExpiredError } from './storage.ts'
 import { FileType } from './types.ts'
 import { GHOSTORE_XATTR, decodeXattr, encodeXattr } from './xattr.ts'
 
@@ -43,25 +44,35 @@ function buildRemoteWithUpdates(ops) {
 function attachXattrOpLog(storage) {
 	const pendingOps = []
 
+	async function snapshotXattrs(ino) {
+		const names = await storage.listXattr(ino)
+		const entries = await Promise.all(names.map(async (name) => [name, await storage.getXattr(ino, name)]))
+		return Object.fromEntries(entries.filter(([, value]) => value !== null))
+	}
+
 	const originalSetXattr = storage.setXattr.bind(storage)
 	storage.setXattr = mock(async (ino, name, value, options) => {
 		await originalSetXattr(ino, name, value)
+		const meta = await storage.getMeta(ino)
 		pendingOps.push({
 			kind: 'upsert-inode',
 			source: options?.source,
 			ino,
-			xattrs: {},
+			meta: meta ?? undefined,
+			xattrs: await snapshotXattrs(ino),
 		})
 	})
 
 	const originalRemoveXattr = storage.removeXattr.bind(storage)
 	storage.removeXattr = mock(async (ino, name, options) => {
 		await originalRemoveXattr(ino, name)
+		const meta = await storage.getMeta(ino)
 		pendingOps.push({
 			kind: 'upsert-inode',
 			source: options?.source,
 			ino,
-			xattrs: {},
+			meta: meta ?? undefined,
+			xattrs: await snapshotXattrs(ino),
 		})
 	})
 
@@ -88,11 +99,12 @@ function attachContentOpLog(storage) {
 	const originalWrite = storage.write.bind(storage)
 	storage.write = mock(async (ino, offset, chunk, options) => {
 		const written = await originalWrite(ino, offset, chunk)
+		const meta = await storage.getMeta(ino)
 		pendingOps.push({
 			kind: 'upsert-inode',
 			source: options?.source,
 			ino,
-			contentChanged: true,
+			meta: meta ?? undefined,
 		})
 		return written
 	})
@@ -100,11 +112,12 @@ function attachContentOpLog(storage) {
 	const originalTruncate = storage.truncate.bind(storage)
 	storage.truncate = mock(async (ino, size, options) => {
 		await originalTruncate(ino, size)
+		const meta = await storage.getMeta(ino)
 		pendingOps.push({
 			kind: 'upsert-inode',
 			source: options?.source,
 			ino,
-			contentChanged: true,
+			meta: meta ?? undefined,
 		})
 	})
 
@@ -190,7 +203,118 @@ function attachDirOpLog(storage) {
 	return pendingOps
 }
 
+function attachCreateOpLog(storage) {
+	const pendingOps = []
+
+	const originalCreate = storage.create.bind(storage)
+	storage.create = mock(async (dirIno, name, meta, options) => {
+		const ino = await originalCreate(dirIno, name, meta)
+		pendingOps.push({
+			kind: 'upsert-inode',
+			source: options?.source,
+			ino,
+			meta: { ...meta, nlink: 0 },
+		})
+		pendingOps.push({
+			kind: 'set-dirent',
+			source: options?.source,
+			dirIno,
+			name,
+			ino,
+			type: meta.type,
+		})
+		return ino
+	})
+
+	const originalWrite = storage.write.bind(storage)
+	storage.write = mock(async (ino, offset, chunk, options) => {
+		const written = await originalWrite(ino, offset, chunk)
+		const meta = await storage.getMeta(ino)
+		pendingOps.push({
+			kind: 'upsert-inode',
+			source: options?.source,
+			ino,
+			meta: meta ?? undefined,
+		})
+		return written
+	})
+
+	const originalTruncate = storage.truncate.bind(storage)
+	storage.truncate = mock(async (ino, size, options) => {
+		await originalTruncate(ino, size)
+		const meta = await storage.getMeta(ino)
+		pendingOps.push({
+			kind: 'upsert-inode',
+			source: options?.source,
+			ino,
+			meta: meta ?? undefined,
+		})
+	})
+
+	storage.updates = mock(async (cursor, options) => {
+		const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
+		const ops = pendingOps
+			.slice(Number.isFinite(since) ? since : 0)
+			.filter((op) => {
+				if (!options?.source) return true
+				return options.sourceMode === 'exclude' ? op.source !== options.source : op.source === options.source
+			})
+		return {
+			ops,
+			cursor: String(pendingOps.length),
+		}
+	})
+
+	return pendingOps
+}
+
 describe('cachedStorage', () => {
+	test('creates files locally first and only materializes them on remote flush', async () => {
+		const local = memStorage()
+		attachCreateOpLog(local)
+
+		const remote = memStorage()
+		const originalRemoteCreate = remote.create?.bind(remote)
+		if (!originalRemoteCreate) throw new Error('remote.create must exist for this test')
+		remote.create = mock(async (...args) => originalRemoteCreate(...args))
+
+		const storage = cachedStorage(local, remote, {
+			clientId: 'client-a',
+			flushDebounceMs: 60_000,
+		})
+		storages.push(storage)
+		if (!storage.create) throw new Error('storage.create must exist for this test')
+
+		const ino = await storage.create(remote.rootIno, 'draft.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await storage.write(ino, 0n, new TextEncoder().encode('draft body'))
+
+		expect(await storage.dirLookup(remote.rootIno, 'draft.txt')).toEqual({
+			ino,
+			type: FileType.Regular,
+		})
+		expect(await remote.dirLookup(remote.rootIno, 'draft.txt')).toBeNull()
+		expect(remote.create).toHaveBeenCalledTimes(0)
+
+		await storage.flush()
+
+		expect(await remote.dirLookup(remote.rootIno, 'draft.txt')).toEqual({
+			ino,
+			type: FileType.Regular,
+		})
+		expect(await remote.getMeta(ino)).toEqual(expect.objectContaining({
+			type: FileType.Regular,
+			nlink: 1,
+		}))
+		expect(new TextDecoder().decode(await remote.read(ino, 0n, 32))).toBe('draft body')
+		expect(remote.create).toHaveBeenCalledTimes(0)
+	})
+
 	test('flushes pending local namespace ops before the first bootstrap', async () => {
 		const local = memStorage()
 		attachDirOpLog(local)
@@ -297,9 +421,17 @@ describe('cachedStorage', () => {
 		})))
 
 		const remote = memStorage()
-		remote.dirList = mock(async () => {
-			throw new Error('full bootstrap should not run after namespaceBootstrapped=true')
+		await remote.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
 		})
+		await remote.dirAdd(remote.rootIno, 'existing.txt', '2', FileType.Regular)
+		const originalRemoteDirList = remote.dirList.bind(remote)
+		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
 		remote.updates = mock(async (cursor) => {
 			if (cursor === '1') {
 				return {
@@ -345,8 +477,143 @@ describe('cachedStorage', () => {
 			ino: '3',
 			type: FileType.Regular,
 		})
-		expect(remote.dirList).toHaveBeenCalledTimes(0)
+		expect(remote.dirList).toHaveBeenCalledTimes(1)
 		expect(remote.updates).toHaveBeenCalled()
+	})
+
+	test('re-runs bootstrap when persisted bootstrap state exists but the local namespace is empty', async () => {
+		const local = memStorage()
+		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
+			remoteCursor: '7',
+			localCursor: '',
+			namespaceBootstrapped: true,
+		})))
+
+		const remote = memStorage()
+		const ino = await remote.create(remote.rootIno, 'note.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		const originalRemoteDirList = remote.dirList.bind(remote)
+		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
+		remote.updates = mock(async (cursor) => {
+			if (cursor !== '') {
+				throw new Error('stale cursor should be discarded before incremental sync')
+			}
+			return { ops: [], cursor }
+		})
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		expect(await storage.dirLookup(remote.rootIno, 'note.txt')).toEqual({
+			ino,
+			type: FileType.Regular,
+		})
+		expect(remote.dirList).toHaveBeenCalledTimes(2)
+		expect(remote.updates).toHaveBeenCalledWith('', expect.anything())
+	})
+
+	test('re-runs bootstrap when local root entries no longer match the remote root namespace', async () => {
+		const local = memStorage()
+		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
+			remoteCursor: '7',
+			localCursor: '',
+			namespaceBootstrapped: true,
+		})))
+		await local.setMeta('stale-draft', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, '*draft*', 'stale-draft', FileType.Regular)
+
+		const remote = memStorage()
+		const ino = await remote.create(remote.rootIno, '*draft*', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		const originalRemoteDirList = remote.dirList.bind(remote)
+		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
+		remote.updates = mock(async (cursor) => {
+			if (cursor !== '') {
+				throw new Error('stale cursor should be discarded before incremental sync')
+			}
+			return { ops: [], cursor }
+		})
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		expect(await storage.dirLookup(remote.rootIno, '*draft*')).toEqual({
+			ino,
+			type: FileType.Regular,
+		})
+		expect(remote.dirList).toHaveBeenCalledTimes(2)
+		expect(remote.updates).toHaveBeenCalledWith('', expect.anything())
+	})
+
+	test('re-runs bootstrap when the remote root has entries missing from local root', async () => {
+		const local = memStorage()
+		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
+			remoteCursor: '7',
+			localCursor: '',
+			namespaceBootstrapped: true,
+		})))
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, 'existing.txt', '2', FileType.Regular)
+
+		const remote = memStorage()
+		await remote.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await remote.dirAdd(remote.rootIno, 'existing.txt', '2', FileType.Regular)
+		const freshIno = await remote.create(remote.rootIno, 'missing.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		const originalRemoteDirList = remote.dirList.bind(remote)
+		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
+		remote.updates = mock(async (cursor) => {
+			if (cursor !== '') {
+				throw new Error('stale cursor should be discarded before incremental sync')
+			}
+			return { ops: [], cursor }
+		})
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		expect(await storage.dirLookup(remote.rootIno, 'missing.txt')).toEqual({
+			ino: freshIno,
+			type: FileType.Regular,
+		})
+		expect(remote.dirList).toHaveBeenCalledTimes(2)
+		expect(remote.updates).toHaveBeenCalledWith('', expect.anything())
 	})
 
 	test('does not resurrect a locally deleted entry before flush', async () => {
@@ -436,6 +703,61 @@ describe('cachedStorage', () => {
 		expect(remote.dirSet).toHaveBeenCalledTimes(0)
 	})
 
+	test('does not replay source-less remote dir unsets on flush', async () => {
+		const local = memStorage()
+		attachDirOpLog(local)
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, 'note.txt', '2', FileType.Regular)
+		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
+			remoteCursor: '',
+			localCursor: '',
+			namespaceBootstrapped: true,
+		})))
+
+		const remote = memStorage()
+		await remote.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await remote.dirAdd(remote.rootIno, 'note.txt', '2', FileType.Regular)
+		remote.updates = mock(async (cursor) => {
+			if (cursor !== '') return { ops: [], cursor }
+			return {
+				ops: [
+					{
+						kind: 'unset-dirent',
+						dirIno: remote.rootIno,
+						name: 'note.txt',
+						ino: '2',
+					},
+				],
+				cursor: '1',
+			}
+		})
+		const originalRemoteDirUnset = remote.dirUnset.bind(remote)
+		remote.dirUnset = mock(async (...args) => originalRemoteDirUnset(...args))
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		await waitFor(async () => (await storage.dirLookup(remote.rootIno, 'note.txt')) === null)
+		await storage.flush()
+
+		expect(await storage.dirLookup(remote.rootIno, 'note.txt')).toBeNull()
+		expect(remote.dirUnset).toHaveBeenCalledTimes(0)
+	})
+
 	test('flushes legacy source-less local xattr ops', async () => {
 		const local = memStorage()
 		attachXattrOpLog(local)
@@ -456,6 +778,52 @@ describe('cachedStorage', () => {
 		expect(remote.setXattr.mock.calls[0][1]).toBe(GHOSTORE_XATTR.title)
 		expect(remote.setXattr.mock.calls[0][2]).toEqual(encodeXattr('Legacy Local'))
 		expect(remote.setXattr.mock.calls[0][3]).toBeUndefined()
+	})
+
+	test('falls back to a full bootstrap when the remote cursor expires', async () => {
+		const local = memStorage()
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, 'stale.txt', '2', FileType.Regular)
+		await local.write('2', 0n, new TextEncoder().encode('stale body'))
+		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
+			remoteCursor: '1',
+			localCursor: '',
+			namespaceBootstrapped: true,
+		})))
+
+		const remote = memStorage()
+		const ino = await remote.alloc({
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await remote.dirAdd(remote.rootIno, 'fresh.txt', ino, FileType.Regular)
+		await remote.write(ino, 0n, new TextEncoder().encode('fresh body'))
+		remote.updates = mock(async () => {
+			throw new FsCursorExpiredError()
+		})
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		await waitFor(async () => (await storage.dirLookup(remote.rootIno, 'fresh.txt')) !== null)
+
+		expect(await storage.dirLookup(remote.rootIno, 'stale.txt')).toBeNull()
+		expect(await storage.dirLookup(remote.rootIno, 'fresh.txt')).toEqual({
+			ino,
+			type: FileType.Regular,
+		})
+		expect(new TextDecoder().decode(await storage.read(ino, 0n, 32))).toBe('fresh body')
+		expect(remote.updates).toHaveBeenCalled()
 	})
 
 	test('applies remote xattr deltas locally without replaying them on the next flush', async () => {
@@ -498,6 +866,86 @@ describe('cachedStorage', () => {
 		}))
 	})
 
+	test('flushes xattr snapshots and removes omitted remote xattrs', async () => {
+		const local = memStorage()
+		attachXattrOpLog(local)
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+
+		const remote = memStorage()
+		await remote.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await remote.setXattr('2', GHOSTORE_XATTR.tags, encodeXattr(['keep-me']))
+
+		const storage = cachedStorage(local, remote, {
+			clientId: 'client-a',
+			flushDebounceMs: 60_000,
+		})
+		storages.push(storage)
+
+		await storage.setXattr('2', GHOSTORE_XATTR.title, encodeXattr('Local Title'))
+		await storage.flush()
+
+		const title = await remote.getXattr('2', GHOSTORE_XATTR.title)
+		const tags = await remote.getXattr('2', GHOSTORE_XATTR.tags)
+		expect(title).not.toBeNull()
+		expect(decodeXattr(title)).toBe('Local Title')
+		expect(tags).toBeNull()
+	})
+
+	test('leaves xattrs unchanged when a remote upsert omits xattrs', async () => {
+		const local = memStorage()
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.setXattr('2', GHOSTORE_XATTR.tags, encodeXattr(['keep-me']))
+		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
+			remoteCursor: '',
+			localCursor: '',
+			namespaceBootstrapped: true,
+		})))
+
+		const remote = memStorage()
+		remote.updates = mock(async (cursor) => {
+			if (cursor !== '') return { ops: [], cursor }
+			return {
+				ops: [{
+					kind: 'upsert-inode',
+					source: 'remote-peer',
+					ino: '2',
+					meta: { mode: 0o600 },
+				}],
+				cursor: '1',
+			}
+		})
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		await waitFor(async () => (await storage.getMeta('2'))?.mode === 0o600)
+
+		const tags = await storage.getXattr('2', GHOSTORE_XATTR.tags)
+		expect(tags).not.toBeNull()
+		expect(decodeXattr(tags)).toEqual(['keep-me'])
+	})
+
 	test('applies remote xattr removals to local cache', async () => {
 		const local = memStorage()
 		const originalSetXattr = local.setXattr.bind(local)
@@ -526,12 +974,21 @@ describe('cachedStorage', () => {
 	test('hydrates remote content locally without replaying it on the next flush', async () => {
 		const local = memStorage()
 		attachContentOpLog(local)
+		const remoteMeta = {
+			type: FileType.Regular,
+			size: 11n,
+			mode: 0o644,
+			nlink: 0,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+			contentHash: 'remote-hash',
+		}
 
 		const remote = buildRemoteWithUpdates([{
 			kind: 'upsert-inode',
 			source: 'remote-peer',
 			ino: '2',
-			contentChanged: true,
+			meta: remoteMeta,
 		}])
 		await remote.alloc({
 			type: FileType.Regular,
@@ -542,6 +999,7 @@ describe('cachedStorage', () => {
 			ctimeNs: 0n,
 		})
 		await remote.write('2', 0n, new TextEncoder().encode('remote body'))
+		await remote.setMeta('2', remoteMeta)
 		const originalRemoteWrite = remote.write.bind(remote)
 		remote.write = mock(async (...args) => originalRemoteWrite(...args))
 		const originalRemoteTruncate = remote.truncate.bind(remote)

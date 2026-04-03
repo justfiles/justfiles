@@ -1,4 +1,4 @@
-import type { StorageBackend, InodeMeta, FsOp } from './storage'
+import { isFsCursorExpiredError, type StorageBackend, type InodeMeta, type FsOp } from './storage'
 import type { Ino, Off, DirCursor, DirentMin } from './types'
 import { FileType } from './types'
 import { createExclusiveRunner, createKeyedExclusiveRunner } from './exclusive'
@@ -161,6 +161,24 @@ export function cachedStorage(
 	const runSyncCycleExclusive = createExclusiveRunner()
 	const runFlushInoExclusive = createKeyedExclusiveRunner<Ino>()
 
+	function mergeMeta(base: InodeMeta | undefined, patch: Partial<InodeMeta> | undefined): InodeMeta | undefined {
+		if (patch === undefined) return base
+		if (base === undefined) {
+			if (
+				patch.type === undefined ||
+				patch.size === undefined ||
+				patch.mode === undefined ||
+				patch.nlink === undefined ||
+				patch.mtimeNs === undefined ||
+				patch.ctimeNs === undefined
+			) {
+				return undefined
+			}
+			return patch as InodeMeta
+		}
+		return { ...base, ...patch }
+	}
+
 	// ---- Dir cache helpers --------------------------------------------------
 
 	function dirCacheKey(dirIno: Ino, name: string): string {
@@ -191,20 +209,86 @@ export function cachedStorage(
 		return []
 	}
 
+	async function listAllDirEntries(storage: StorageBackend, dirIno: Ino): Promise<Array<{ name: string; ino: Ino; type: FileType }>> {
+		const entries: Array<{ name: string; ino: Ino; type: FileType }> = []
+		let cursor = '' as DirCursor
+		do {
+			const batch = await storage.dirList(dirIno, cursor)
+			entries.push(...batch.entries)
+			cursor = batch.next
+		} while (cursor !== '')
+		return entries
+	}
+
 	async function applyRemoteXattrToLocal(
 		ino: Ino,
 		name: string,
 		value: Uint8Array | null,
 		source?: string,
 	): Promise<void> {
+		const options = { source: source ?? remoteHydrationSource }
 		if (value === null) {
 			if (!local.removeXattr) return
-			await local.removeXattr(ino, name, source ? { source } : undefined)
+			await local.removeXattr(ino, name, options)
 			return
 		}
 
 		if (!local.setXattr) return
-		await local.setXattr(ino, name, value, source ? { source } : undefined)
+		await local.setXattr(ino, name, value, options)
+	}
+
+	async function applyXattrSnapshotToLocal(
+		ino: Ino,
+		xattrs: Record<string, Uint8Array | null>,
+		source?: string,
+	): Promise<void> {
+		const options = { source: source ?? remoteHydrationSource }
+		const desiredNames = new Set(Object.keys(xattrs))
+
+		// `upsert-inode.xattrs` is a full snapshot when present; if the field is
+		// omitted entirely we leave xattrs unchanged. An empty snapshot means
+		// "remove every xattr". Drop any local names omitted from the provided
+		// snapshot before writing it.
+		if (local.listXattr && local.removeXattr) {
+			const currentNames = await local.listXattr(ino)
+			for (const name of currentNames) {
+				if (!desiredNames.has(name)) {
+					await local.removeXattr(ino, name, options)
+				}
+			}
+		}
+
+		for (const [name, value] of Object.entries(xattrs)) {
+			await applyRemoteXattrToLocal(ino, name, value, source)
+		}
+	}
+
+	async function applyXattrSnapshotToRemote(
+		ino: Ino,
+		xattrs: Record<string, Uint8Array | null>,
+		source?: string,
+	): Promise<void> {
+		const options = source ? { source } : undefined
+		const desiredNames = new Set(Object.keys(xattrs))
+
+		// Mirror the local rule on flush: an xattr snapshot replaces the whole
+		// set, but an omitted `xattrs` field means "do not touch xattrs".
+		if (remote.listXattr && remote.removeXattr) {
+			const remoteNames = await remote.listXattr(ino)
+			for (const name of remoteNames) {
+				if (!desiredNames.has(name)) {
+					await remote.removeXattr(ino, name, options)
+				}
+			}
+		}
+
+		if (remote.setXattr) {
+			for (const [name, value] of Object.entries(xattrs)) {
+				if (value !== null) {
+					await remote.setXattr(ino, name, value, options)
+				}
+			}
+		}
 	}
 
 	// ---- Syncstate persistence ----------------------------------------------
@@ -293,6 +377,26 @@ export function cachedStorage(
 		}
 	}
 
+	async function hasConsistentRootNamespace(): Promise<boolean> {
+		const [localEntries, remoteEntries] = await Promise.all([
+			listAllDirEntries(local, rootIno),
+			listAllDirEntries(remote, rootIno),
+		])
+		const localRootEntries = localEntries.filter((entry) => entry.name !== '.state')
+		if (localRootEntries.length === 0) return false
+		if (localRootEntries.length !== remoteEntries.length) return false
+
+		const remoteByName = new Map(remoteEntries.map((entry) => [entry.name, entry]))
+
+		for (const entry of localRootEntries) {
+			const remoteEntry = remoteByName.get(entry.name) ?? null
+			if (remoteEntry === null) return false
+			if (remoteEntry.ino !== entry.ino || remoteEntry.type !== entry.type) return false
+		}
+
+		return true
+	}
+
 	// ---- Dirty tracking + debounce ------------------------------------------
 
 	async function markDirty(ino: Ino, mask: number): Promise<void> {
@@ -360,12 +464,11 @@ export function cachedStorage(
 				kind: 'upsert-inode',
 				source: op.source ?? existing?.source,
 				ino: op.ino,
-				meta: op.meta ?? existing?.meta,
-				xattrs:
-					op.xattrs !== undefined || existing?.xattrs !== undefined
-						? ({} as Record<string, Uint8Array | null>)
+				meta:
+					existing?.meta !== undefined || op.meta !== undefined
+						? { ...(existing?.meta ?? {}), ...(op.meta ?? {}) }
 						: undefined,
-				contentChanged: Boolean(existing?.contentChanged || op.contentChanged),
+				xattrs: op.xattrs ?? existing?.xattrs,
 			})
 		}
 
@@ -450,7 +553,8 @@ export function cachedStorage(
 		return entries
 	}
 
-	async function bootstrapNamespace(): Promise<void> {
+	async function bootstrapNamespace(options?: { invalidateAllContent?: boolean }): Promise<void> {
+		const invalidateAllContent = options?.invalidateAllContent ?? false
 		const [rootMeta, remoteEntries, localEntries] = await Promise.all([
 			remote.getMeta(rootIno),
 			collectSnapshot(remote, { requireMeta: true }),
@@ -481,6 +585,10 @@ export function cachedStorage(
 			await local.setMeta(entry.ino, entry.meta, remoteHydrationMutationOptions)
 			await local.dirSet(entry.dirIno, entry.name, entry.ino, entry.type, remoteHydrationMutationOptions)
 			dirCache.set(dirCacheKey(entry.dirIno, entry.name), { ino: entry.ino, type: entry.type })
+			if (invalidateAllContent && entry.type === FileType.Regular) {
+				invalidated.add(entry.ino)
+				uncached.delete(entry.ino)
+			}
 		}
 
 		for (const ino of [...metaCache.keys()]) {
@@ -497,7 +605,25 @@ export function cachedStorage(
 			case 'upsert-inode': {
 				if (isStatePath(op.ino) || isStateDir(op.ino)) return
 
-				if (op.contentChanged) {
+				const remoteMetaBefore = await remote.getMeta(op.ino)
+				const desiredType = op.meta?.type ?? remoteMetaBefore?.type
+				const desiredHash = op.meta?.contentHash
+				const shouldSyncContent = desiredType === FileType.Regular && (
+					desiredHash === undefined ||
+					remoteMetaBefore?.contentHash !== desiredHash
+				)
+				const remoteMetaPatch =
+					op.meta === undefined
+						? undefined
+						: shouldSyncContent && desiredType === FileType.Regular
+							? (({ contentHash: _contentHash, size: _size, ...rest }) => rest)(op.meta)
+							: op.meta
+
+				if (remoteMetaPatch && remote.setMeta) {
+					await remote.setMeta(op.ino, remoteMetaPatch, op.source ? { source: op.source } : undefined)
+				}
+
+				if (shouldSyncContent) {
 					const cachedMeta = metaCache.get(op.ino)
 					const readLen =
 						cachedMeta !== undefined && cachedMeta.size > 0n
@@ -514,31 +640,7 @@ export function cachedStorage(
 				}
 
 				if (op.xattrs !== undefined) {
-					const localNames = local.listXattr ? await local.listXattr(op.ino) : []
-					const localNameSet = new Set(localNames)
-
-					if (remote.removeXattr && remote.listXattr) {
-						const remoteNames = await remote.listXattr(op.ino)
-						for (const name of remoteNames) {
-							if (!localNameSet.has(name)) await remote.removeXattr(op.ino, name, op.source ? { source: op.source } : undefined)
-						}
-					}
-
-					if (local.getXattr && remote.setXattr) {
-						for (const name of localNames) {
-							const val = await local.getXattr(op.ino, name)
-							if (val) await remote.setXattr(op.ino, name, val, op.source ? { source: op.source } : undefined)
-						}
-					}
-				}
-
-				if (op.meta && remote.setMeta) {
-					await remote.setMeta(op.ino, {
-						mode: op.meta.mode,
-						mtimeNs: op.meta.mtimeNs,
-						ctimeNs: op.meta.ctimeNs,
-						symlinkTarget: op.meta.symlinkTarget,
-					}, op.source ? { source: op.source } : undefined)
+					await applyXattrSnapshotToRemote(op.ino, op.xattrs, op.source)
 				}
 				return
 			}
@@ -658,18 +760,27 @@ export function cachedStorage(
 						case 'upsert-inode':
 							if (isStatePath(op.ino) || isStateDir(op.ino)) continue
 							if (dirty.has(op.ino)) continue
+							const currentLocalMeta = metaCache.get(op.ino) ?? await local.getMeta(op.ino) ?? undefined
 							if (op.xattrs !== undefined) {
-								for (const [name, value] of Object.entries(op.xattrs)) {
-									await applyRemoteXattrToLocal(op.ino, name, value, op.source)
-								}
+								await applyXattrSnapshotToLocal(op.ino, op.xattrs, op.source ?? remoteHydrationSource)
 							}
 							if (op.meta) {
-								metaCache.set(op.ino, op.meta)
-								await local.setMeta(op.ino, op.meta, op.source ? { source: op.source } : undefined)
-							} else {
-								metaCache.delete(op.ino)
+								await local.setMeta(op.ino, op.meta, { source: op.source ?? remoteHydrationSource })
+								const nextLocalMeta = await local.getMeta(op.ino)
+								if (nextLocalMeta !== null) {
+									metaCache.set(op.ino, nextLocalMeta)
+								} else {
+									const mergedMeta = mergeMeta(currentLocalMeta, op.meta)
+									if (mergedMeta !== undefined) metaCache.set(op.ino, mergedMeta)
+								}
 							}
-							if (op.contentChanged) invalidated.add(op.ino)
+							const nextMeta = mergeMeta(currentLocalMeta, op.meta) ?? currentLocalMeta
+							if ((nextMeta?.type ?? currentLocalMeta?.type) === FileType.Regular) {
+								const nextHash = nextMeta?.contentHash
+								if (nextHash === undefined || currentLocalMeta?.contentHash !== nextHash) {
+									invalidated.add(op.ino)
+								}
+							}
 							break
 						case 'set-dirent':
 							if (isStateDir(op.dirIno) || isStatePath(op.dirIno)) continue
@@ -679,7 +790,7 @@ export function cachedStorage(
 						case 'unset-dirent':
 							if (isStateDir(op.dirIno) || isStatePath(op.dirIno)) continue
 							if (shouldSkipRemoteDirOp(op)) continue
-							await local.dirUnset(op.dirIno, op.name, op.source ? { source: op.source } : undefined)
+							await local.dirUnset(op.dirIno, op.name, { source: op.source ?? remoteHydrationSource })
 							dirCache.delete(dirCacheKey(op.dirIno, op.name))
 							break
 					}
@@ -691,7 +802,18 @@ export function cachedStorage(
 					if (dirty.has(ino)) continue // local wins; do NOT overwrite
 					events.dispatchEvent(Object.assign(new Event('change'), { ino }))
 				}
-			} catch {
+			} catch (error) {
+				if (isFsCursorExpiredError(error)) {
+					remoteSyncCursor = ''
+					namespaceBootstrapped = false
+					await saveSyncState()
+					try {
+						await bootstrapNamespace({ invalidateAllContent: true })
+					} catch {
+						// Retry the full bootstrap on the next sync cycle.
+					}
+					return
+				}
 				// Network error — keep last known cursor, retry on next interval
 			}
 		})
@@ -728,6 +850,11 @@ export function cachedStorage(
 
 	const startupPromise = Promise.all([loadSyncState(), loadDirtyState()])
 		.then(async () => {
+			if (namespaceBootstrapped && !(await hasConsistentRootNamespace())) {
+				namespaceBootstrapped = false
+				remoteSyncCursor = ''
+				await saveSyncState()
+			}
 			await runSyncCycle()
 			startDeltaSync()
 		})
@@ -749,10 +876,11 @@ export function cachedStorage(
 
 		async alloc(meta) {
 			await waitForStartup()
-			const ino = await remote.alloc(meta, localMutationOptions)
+			const ino = await local.alloc(meta, localMutationOptions)
 			const localMeta: InodeMeta = { ...meta, nlink: 0 }
 			metaCache.set(ino, localMeta)
 			await local.setMeta(ino, localMeta, remoteHydrationMutationOptions)
+			await markDirty(ino, DIRTY_META)
 			return ino
 		},
 
@@ -1009,7 +1137,20 @@ export function cachedStorage(
 
 	// Optional methods: wire from remote if present
 
-	if (remote.create) {
+	if (local.create) {
+		backend.create = async (dirIno, name, meta) => {
+			await waitForStartup()
+			const ino = await local.create!(dirIno, name, meta, localMutationOptions)
+			const localMeta: InodeMeta = { ...meta, nlink: 1 }
+			metaCache.set(ino, localMeta)
+			dirCache.set(dirCacheKey(dirIno, name), { ino, type: meta.type })
+			await Promise.all([
+				markDirty(dirIno, DIRTY_PATH),
+				markDirty(ino, DIRTY_PATH),
+			])
+			return ino
+		}
+	} else if (remote.create) {
 		backend.create = async (dirIno, name, meta) => {
 			await waitForStartup()
 			const ino = await remote.create!(dirIno, name, meta, localMutationOptions)

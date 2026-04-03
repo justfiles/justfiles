@@ -3,8 +3,10 @@ import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemi
 import { normalizeVolumePath, parentVolumePath } from './assets'
 import type { ProseMirrorJsonDocument } from './sync'
 import { useVolume } from './useVolume'
+import type { Volume } from 'ghost-fs'
 
 const DRAFT_PATH = '/*draft*'
+let ensureDraftPromise: Promise<void> | null = null
 
 type DraftHook = {
 	readonly id: string | null
@@ -31,6 +33,48 @@ function entryPath(path: string): string {
 
 const EMPTY_DRAFT_DOC = markdownToJson('')
 
+function isFsError(error: unknown, code: string): boolean {
+	return error instanceof Error && error.message.startsWith(`${code}:`)
+}
+
+function waitTick(): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, 0)
+	})
+}
+
+async function ensureDraftFile(volume: Volume): Promise<void> {
+	if (ensureDraftPromise === null) {
+		ensureDraftPromise = (async () => {
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				try {
+					await volume.stat(DRAFT_PATH)
+					return
+				} catch (error) {
+					if (!isFsError(error, 'ENOENT')) throw error
+				}
+
+				try {
+					await volume.writeFile(DRAFT_PATH, new Uint8Array())
+					return
+				} catch (error) {
+					if (!isFsError(error, 'EEXIST')) throw error
+				}
+
+				await waitTick()
+			}
+
+			await volume.stat(DRAFT_PATH)
+		})()
+	}
+
+	try {
+		await ensureDraftPromise
+	} finally {
+		ensureDraftPromise = null
+	}
+}
+
 export function useDraft(): DraftHook {
 	const { volume, upsertEntry, writeAssetFile, resolveAssetUrl, readAssetBlob } = useVolume()
 	const [id, setId] = useState<string | null>(null)
@@ -42,10 +86,7 @@ export function useDraft(): DraftHook {
 	contentRef.current = content
 
 	const loadDraft = useCallback(async () => {
-		if (!(await volume.exists(DRAFT_PATH))) {
-			await volume.writeFile(DRAFT_PATH, new Uint8Array())
-		}
-
+		await ensureDraftFile(volume)
 		const stat = await volume.stat(DRAFT_PATH)
 		const raw = await volume.readFile(DRAFT_PATH)
 		const nextContent = markdownToJson(new TextDecoder().decode(raw))
