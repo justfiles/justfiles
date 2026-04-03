@@ -125,7 +125,317 @@ function attachContentOpLog(storage) {
 	return pendingOps
 }
 
+function attachDirOpLog(storage) {
+	const pendingOps = []
+
+	const originalDirAdd = storage.dirAdd.bind(storage)
+	storage.dirAdd = mock(async (dirIno, name, ino, type, options) => {
+		const added = await originalDirAdd(dirIno, name, ino, type)
+		if (added) {
+			pendingOps.push({
+				kind: 'set-dirent',
+				source: options?.source,
+				dirIno,
+				name,
+				ino,
+				type,
+			})
+		}
+		return added
+	})
+
+	const originalDirSet = storage.dirSet.bind(storage)
+	storage.dirSet = mock(async (dirIno, name, ino, type, options) => {
+		const displaced = await originalDirSet(dirIno, name, ino, type)
+		pendingOps.push({
+			kind: 'set-dirent',
+			source: options?.source,
+			dirIno,
+			name,
+			ino,
+			type,
+		})
+		return displaced
+	})
+
+	const originalDirUnset = storage.dirUnset.bind(storage)
+	storage.dirUnset = mock(async (dirIno, name, options) => {
+		const removed = await originalDirUnset(dirIno, name)
+		if (removed !== null) {
+			pendingOps.push({
+				kind: 'unset-dirent',
+				source: options?.source,
+				dirIno,
+				name,
+				ino: removed.ino,
+			})
+		}
+		return removed
+	})
+
+	storage.updates = mock(async (cursor, options) => {
+		const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
+		const ops = pendingOps
+			.slice(Number.isFinite(since) ? since : 0)
+			.filter((op) => {
+				if (!options?.source) return true
+				return options.sourceMode === 'exclude' ? op.source !== options.source : op.source === options.source
+			})
+		return {
+			ops,
+			cursor: String(pendingOps.length),
+		}
+	})
+
+	return pendingOps
+}
+
 describe('cachedStorage', () => {
+	test('flushes pending local namespace ops before the first bootstrap', async () => {
+		const local = memStorage()
+		attachDirOpLog(local)
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, 'note.txt', '2', FileType.Regular)
+		await local.dirUnset(local.rootIno, 'note.txt')
+		await local.write('/.state/dirty', 0n, new TextEncoder().encode('1:4\n2:4'))
+
+		const remote = memStorage()
+		await remote.create(remote.rootIno, 'note.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		expect(await storage.dirLookup(remote.rootIno, 'note.txt')).toBeNull()
+		expect(await local.dirLookup(remote.rootIno, 'note.txt')).toBeNull()
+		expect(await remote.dirLookup(remote.rootIno, 'note.txt')).toBeNull()
+	})
+
+	test('bootstraps and reconciles the local namespace on first sync', async () => {
+		const local = memStorage()
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, 'a.txt', '2', FileType.Regular)
+		await local.setMeta('99', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, 'stale.txt', '99', FileType.Regular)
+
+		const remote = memStorage()
+		const aIno = await remote.create(remote.rootIno, 'a.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		const bIno = await remote.create(remote.rootIno, 'b.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		const originalRemoteDirList = remote.dirList.bind(remote)
+		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		const entries = await storage.dirList(remote.rootIno, '')
+
+		expect(entries.entries).toEqual(expect.arrayContaining([
+			{ name: 'a.txt', ino: aIno, type: FileType.Regular },
+			{ name: 'b.txt', ino: bIno, type: FileType.Regular },
+			{ name: '.state', ino: '/.state', type: FileType.Directory },
+		]))
+		expect(entries.entries.some((entry) => entry.name === 'stale.txt')).toBeFalse()
+		expect(await local.dirLookup(remote.rootIno, 'a.txt')).toEqual({ ino: aIno, type: FileType.Regular })
+		expect(await local.dirLookup(remote.rootIno, 'b.txt')).toEqual({ ino: bIno, type: FileType.Regular })
+		expect(await local.dirLookup(remote.rootIno, 'stale.txt')).toBeNull()
+		expect(remote.dirList).toHaveBeenCalledTimes(1)
+	})
+
+	test('uses incremental updates on subsequent startups without a full bootstrap', async () => {
+		const local = memStorage()
+		await local.setMeta('2', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			nlink: 1,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await local.dirAdd(local.rootIno, 'existing.txt', '2', FileType.Regular)
+		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
+			remoteCursor: '1',
+			localCursor: '',
+			namespaceBootstrapped: true,
+		})))
+
+		const remote = memStorage()
+		remote.dirList = mock(async () => {
+			throw new Error('full bootstrap should not run after namespaceBootstrapped=true')
+		})
+		remote.updates = mock(async (cursor) => {
+			if (cursor === '1') {
+				return {
+					ops: [
+						{
+							kind: 'upsert-inode',
+							source: 'remote-peer',
+							ino: '3',
+							meta: {
+								type: FileType.Regular,
+								size: 0n,
+								mode: 0o644,
+								nlink: 1,
+								mtimeNs: 0n,
+								ctimeNs: 0n,
+							},
+						},
+						{
+							kind: 'set-dirent',
+							source: 'remote-peer',
+							dirIno: '1',
+							name: 'new.txt',
+							ino: '3',
+							type: FileType.Regular,
+						},
+					],
+					cursor: '2',
+				}
+			}
+			return { ops: [], cursor }
+		})
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		expect(await storage.dirLookup(remote.rootIno, 'existing.txt')).toEqual({
+			ino: '2',
+			type: FileType.Regular,
+		})
+		await waitFor(async () => (await storage.dirLookup(remote.rootIno, 'new.txt')) !== null)
+
+		expect(await storage.dirLookup(remote.rootIno, 'new.txt')).toEqual({
+			ino: '3',
+			type: FileType.Regular,
+		})
+		expect(remote.dirList).toHaveBeenCalledTimes(0)
+		expect(remote.updates).toHaveBeenCalled()
+	})
+
+	test('does not resurrect a locally deleted entry before flush', async () => {
+		const local = memStorage()
+		attachDirOpLog(local)
+
+		const remote = memStorage()
+		const ino = await remote.create(remote.rootIno, 'note.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		const originalRemoteDirSet = remote.dirSet.bind(remote)
+		remote.dirSet = mock(async (...args) => originalRemoteDirSet(...args))
+		const originalRemoteDirUnset = remote.dirUnset.bind(remote)
+		remote.dirUnset = mock(async (...args) => originalRemoteDirUnset(...args))
+		remote.rename = mock(async () => {
+			throw new Error('cachedStorage should flush local rename via dirSet/dirUnset, not remote.rename')
+		})
+
+		const storage = cachedStorage(local, remote, {
+			clientId: 'client-a',
+			flushDebounceMs: 60_000,
+		})
+		storages.push(storage)
+
+		expect(await storage.dirLookup(remote.rootIno, 'note.txt')).toEqual({ ino, type: FileType.Regular })
+
+		await storage.dirUnset(remote.rootIno, 'note.txt')
+
+		expect(await local.dirLookup(remote.rootIno, 'note.txt')).toBeNull()
+		expect(await storage.dirLookup(remote.rootIno, 'note.txt')).toBeNull()
+		expect(await remote.dirLookup(remote.rootIno, 'note.txt')).toEqual({ ino, type: FileType.Regular })
+		expect(remote.rename).toHaveBeenCalledTimes(0)
+	})
+
+	test('applies remote directory deltas locally without replaying them on flush', async () => {
+		const local = memStorage()
+		attachDirOpLog(local)
+
+		const remote = buildRemoteWithUpdates([
+			{
+				kind: 'upsert-inode',
+				source: 'remote-peer',
+				ino: '2',
+				meta: {
+					type: FileType.Regular,
+					size: 0n,
+					mode: 0o644,
+					nlink: 1,
+					mtimeNs: 0n,
+					ctimeNs: 0n,
+				},
+			},
+			{
+				kind: 'set-dirent',
+				source: 'remote-peer',
+				dirIno: '1',
+				name: 'remote.txt',
+				ino: '2',
+				type: FileType.Regular,
+			},
+		])
+		remote.dirLookup = mock(async () => {
+			throw new Error('dirLookup should not be needed after remote dir delta hydration')
+		})
+		const originalRemoteDirSet = remote.dirSet.bind(remote)
+		remote.dirSet = mock(async (...args) => originalRemoteDirSet(...args))
+
+		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
+		storages.push(storage)
+
+		await waitFor(async () => (await local.dirLookup(remote.rootIno, 'remote.txt')) !== null)
+		await storage.flush()
+
+		expect(await storage.dirLookup(remote.rootIno, 'remote.txt')).toEqual({
+			ino: '2',
+			type: FileType.Regular,
+		})
+		expect(await storage.getMeta('2')).toEqual(expect.objectContaining({
+			type: FileType.Regular,
+			mode: 0o644,
+		}))
+		expect(remote.dirLookup).toHaveBeenCalledTimes(0)
+		expect(remote.dirSet).toHaveBeenCalledTimes(0)
+	})
+
 	test('flushes legacy source-less local xattr ops', async () => {
 		const local = memStorage()
 		attachXattrOpLog(local)

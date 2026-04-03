@@ -35,11 +35,16 @@ This milestone landed the first end-to-end filesystem-backed note flow:
 	- tagging journaled ops with a per-client `source` in [`packages/fs/storage.ts`](./packages/fs/storage.ts)
 	- excluding the caller's own source in `/updates` via [`packages/core/src/fs.ts`](./packages/core/src/fs.ts) and the worker SQLite journal in [`packages/core/src/storage.sqlite.ts`](./packages/core/src/storage.sqlite.ts)
 	- covering remote-xattr hydration and legacy source-less local op replay in [`packages/fs/storage.cached.test.js`](./packages/fs/storage.cached.test.js)
+- Finished the local-first namespace bootstrap and sync model by:
+	- making local inode metadata and namespace state authoritative after bootstrap in [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts)
+	- adding one-time full namespace reconciliation plus persisted bootstrap state in [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts)
+	- sequencing startup sync as flush-local, bootstrap-if-needed, then incremental remote updates in [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts)
+	- covering first-sync reconciliation, no-resurrection deletes, and subsequent incremental startups in [`packages/fs/storage.cached.test.js`](./packages/fs/storage.cached.test.js)
 
 # Remaining Gaps
 
-- Medium: the namespace is still remote-authoritative. [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts) still delegates `dirList`, `dirAdd`, `dirSet`, `dirUnset`, and `rename` to remote immediately. This is acceptable for the current milestone, but it is not yet a fully local-first tree model.
 - Medium: the local outbound op log still has no compaction/ack cleanup path. [`packages/fs/storage.idb.ts`](./packages/fs/storage.idb.ts) can read `updates`, but old local ops will accumulate indefinitely.
+- Low: xattrs are still lazily hydrated rather than included in the namespace bootstrap. [`packages/fs/storage.cached.ts`](./packages/fs/storage.cached.ts) now fully mirrors dirents and inode metadata locally, but xattr reads can still fall back to remote until touched by a delta or explicit read.
 - Low: revisit the local journal representation. The current browser backend keeps its outbound op log in an IndexedDB `updates` store, which is pragmatic for now, but the original design intent was to model sync state as filesystem data under `/.state/`. If we want the local backend to be more purely filesystem-shaped, consider moving the local journal to `/.state` log files and keeping the DB-backed `fs_updates` table only on the authoritative worker side.
 - Low: asset serving is correct but not fully simplified yet. The editor currently loads authenticated blobs through the FS client instead of rendering directly from the cacheable `/fs/inodes/:ino/content/:filename` URL, and the legacy `/api/v1/memory/:memoryId/assets` worker routes are still mounted as dead code.
 
@@ -48,5 +53,5 @@ This milestone landed the first end-to-end filesystem-backed note flow:
 Focus the next round on finishing the FS boundary instead of broadening scope:
 
 1. Decide whether to remove the legacy memory asset routes now and whether preview rendering should switch to cacheable FS content URLs directly.
-2. Revisit whether local-first namespace operations are worth doing now or can wait for a later milestone.
+2. Add compaction / ack cleanup for the local outbound op log.
 3. Add retention and purge policy for `/.trash` once the lifecycle semantics are stable.
