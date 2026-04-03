@@ -209,17 +209,6 @@ export function cachedStorage(
 		return []
 	}
 
-	async function listAllDirEntries(storage: StorageBackend, dirIno: Ino): Promise<Array<{ name: string; ino: Ino; type: FileType }>> {
-		const entries: Array<{ name: string; ino: Ino; type: FileType }> = []
-		let cursor = '' as DirCursor
-		do {
-			const batch = await storage.dirList(dirIno, cursor)
-			entries.push(...batch.entries)
-			cursor = batch.next
-		} while (cursor !== '')
-		return entries
-	}
-
 	async function applyRemoteXattrToLocal(
 		ino: Ino,
 		name: string,
@@ -377,26 +366,6 @@ export function cachedStorage(
 		}
 	}
 
-	async function hasConsistentRootNamespace(): Promise<boolean> {
-		const [localEntries, remoteEntries] = await Promise.all([
-			listAllDirEntries(local, rootIno),
-			listAllDirEntries(remote, rootIno),
-		])
-		const localRootEntries = localEntries.filter((entry) => entry.name !== '.state')
-		if (localRootEntries.length === 0) return false
-		if (localRootEntries.length !== remoteEntries.length) return false
-
-		const remoteByName = new Map(remoteEntries.map((entry) => [entry.name, entry]))
-
-		for (const entry of localRootEntries) {
-			const remoteEntry = remoteByName.get(entry.name) ?? null
-			if (remoteEntry === null) return false
-			if (remoteEntry.ino !== entry.ino || remoteEntry.type !== entry.type) return false
-		}
-
-		return true
-	}
-
 	// ---- Dirty tracking + debounce ------------------------------------------
 
 	async function markDirty(ino: Ino, mask: number): Promise<void> {
@@ -511,12 +480,13 @@ export function cachedStorage(
 	async function collectSnapshot(
 		storage: StorageBackend,
 		options?: { requireMeta?: boolean },
-	): Promise<ScanEntry[]> {
+	): Promise<{ entries: ScanEntry[]; cursor?: string }> {
 		const requireMeta = options?.requireMeta ?? false
 
 		if (storage.scan) {
 			const entries: ScanEntry[] = []
 			const inoToPath = new Map<Ino, string>([[rootIno, '/']])
+			let snapshotCursor: string | undefined
 			let cursor = ''
 			do {
 				const batch = await storage.scan(cursor)
@@ -526,9 +496,10 @@ export function cachedStorage(
 					inoToPath.set(entry.ino, path)
 					entries.push({ ...entry, type: entry.meta.type, path })
 				}
+				if (batch.next === '') snapshotCursor = batch.cursor
 				cursor = batch.next
 			} while (cursor !== '')
-			return entries
+			return { entries, cursor: snapshotCursor }
 		}
 
 		const entries: ScanEntry[] = []
@@ -550,16 +521,18 @@ export function cachedStorage(
 		}
 
 		await walk(rootIno, '/')
-		return entries
+		return { entries }
 	}
 
 	async function bootstrapNamespace(options?: { invalidateAllContent?: boolean }): Promise<void> {
 		const invalidateAllContent = options?.invalidateAllContent ?? false
-		const [rootMeta, remoteEntries, localEntries] = await Promise.all([
+		const [rootMeta, remoteSnapshot, localSnapshot] = await Promise.all([
 			remote.getMeta(rootIno),
 			collectSnapshot(remote, { requireMeta: true }),
 			collectSnapshot(local),
 		])
+		const remoteEntries = remoteSnapshot.entries
+		const localEntries = localSnapshot.entries
 
 		const remoteEntryKeys = new Set(remoteEntries.map((entry) => dirCacheKey(entry.dirIno, entry.name)))
 		const remoteInos = new Set<Ino>([rootIno, ...remoteEntries.map((entry) => entry.ino)])
@@ -596,6 +569,9 @@ export function cachedStorage(
 			if (!remoteInos.has(ino)) metaCache.delete(ino)
 		}
 
+		if (typeof remoteSnapshot.cursor === 'string') {
+			remoteSyncCursor = remoteSnapshot.cursor
+		}
 		namespaceBootstrapped = true
 		await saveSyncState()
 	}
@@ -814,6 +790,7 @@ export function cachedStorage(
 					}
 					return
 				}
+				console.error('[cachedStorage] remote delta sync failed', error)
 				// Network error — keep last known cursor, retry on next interval
 			}
 		})
@@ -850,11 +827,6 @@ export function cachedStorage(
 
 	const startupPromise = Promise.all([loadSyncState(), loadDirtyState()])
 		.then(async () => {
-			if (namespaceBootstrapped && !(await hasConsistentRootNamespace())) {
-				namespaceBootstrapped = false
-				remoteSyncCursor = ''
-				await saveSyncState()
-			}
 			await runSyncCycle()
 			startDeltaSync()
 		})

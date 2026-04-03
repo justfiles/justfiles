@@ -1040,6 +1040,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 
 		async scan(cursor) {
 			await ensureBootstrapped()
+			const [headRow] = await db.query<{ seq: unknown }>(
+				'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1'
+			)
+			const headCursor = headRow?.seq == null ? undefined : String(headRow.seq)
 			const rows = cursor === ''
 				? await db.query<{
 						path: unknown
@@ -1147,7 +1151,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						symlinkTarget: toStringOrNull(row.symlink_target) ?? undefined
 					}
 				})),
-				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : ''
+				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : '',
+				cursor: rows.length === SCAN_PAGE_SIZE ? undefined : headCursor,
 			}
 		},
 
@@ -1182,6 +1187,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				ORDER BY seq ASC`,
 				[since]
 			)
+			const [headRow] = await db.query<{ seq: unknown }>(
+				'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1'
+			)
+			const headCursor = headRow?.seq == null ? cursor : String(headRow.seq)
 
 			const ops = filterOpsBySource(rows.map((row) => {
 				const opKind = String(row.op_kind)
@@ -1218,7 +1227,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 
 			return {
 				ops,
-				cursor: rows.length > 0 ? String(rows[rows.length - 1].seq) : cursor
+				cursor: rows.length > 0 ? String(rows[rows.length - 1].seq) : headCursor
 			}
 		}
 	}

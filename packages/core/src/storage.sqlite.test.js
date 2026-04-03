@@ -111,4 +111,28 @@ describe('sqlite fs update retention', () => {
 			code: 'cursor_expired',
 		})
 	})
+
+	test('scan returns the update-log cursor only on the final page', async () => {
+		const backend = await createTestStorage(10)
+		const ino = await backend.create(backend.rootIno, 'note.txt', {
+			type: FileType.Regular,
+			size: 0n,
+			mode: 0o644,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+		})
+		await backend.setMeta(ino, { mode: 0o600 })
+
+		const result = await backend.scan?.('')
+
+		expect(result?.next).toBe('')
+		expect(result?.cursor).toBe('3')
+		expect(result?.entries).toEqual([
+			expect.objectContaining({
+				ino,
+				dirIno: backend.rootIno,
+				name: 'note.txt',
+			}),
+		])
+	})
 })

@@ -100,6 +100,7 @@ export function createApi(store: Store) {
 		.get('/v1/changes', zValidator('query', ChangesQuerySchema), async (c) => {
 			const { since } = c.req.valid('query')
 			const result = await store.changes(since)
+			c.header('Cache-Control', 'no-store')
 			return c.json(result)
 		})
 		.get('/v1/draft', async (c) => {

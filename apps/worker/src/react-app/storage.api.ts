@@ -541,19 +541,16 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 		// ------------------------------------------------------------------
 
 		async updates(cursor: string) {
-			const res = await api.v1.changes.$get({ query: { since: cursor } })
+			const res = await api.v1.changes.$get(
+				{ query: { since: cursor } },
+				{ init: { cache: 'no-store' } }
+			)
 			// On error keep the cursor unchanged — next attempt re-fetches the
 			// same window so no changes are lost.
 			if (!res.ok) return { ops: [], cursor }
 			const data = await res.json()
 			const ops = data.upserted.flatMap((memory: ChangeRow) => pathToUpdateOps(memory))
-			// Derive the next cursor from the server's own updated_at values,
-			// never from the client clock. If no results came back, keep the
-			// current cursor so the next poll re-checks the same window.
-			const nextCursor: string = data.upserted.reduce(
-				(max: string, memory: ChangeRow) => (memory.updated_at > max ? memory.updated_at : max),
-				cursor
-			)
+			const nextCursor = typeof data.cursor === 'string' ? data.cursor : cursor
 			return { ops, cursor: nextCursor }
 		},
 
@@ -627,6 +624,24 @@ function parseMeta(wire: FsMetaResponse): InodeMeta {
 		contentHash: typeof meta.contentHash === 'string' ? meta.contentHash : undefined,
 		symlinkTarget: typeof meta.symlinkTarget === 'string' ? meta.symlinkTarget : undefined,
 	}
+}
+
+function parseMetaPatch(wire: unknown): Partial<InodeMeta> {
+	const meta = wire as Record<string, unknown>
+	const patch: Partial<InodeMeta> = {}
+
+	if (meta.type !== undefined) patch.type = Number(meta.type) as FileType
+	if (meta.size !== undefined) patch.size = BigInt(String(meta.size))
+	if (meta.mode !== undefined) patch.mode = Number(meta.mode)
+	if (meta.nlink !== undefined) patch.nlink = Number(meta.nlink)
+	if (meta.mtimeNs !== undefined) patch.mtimeNs = BigInt(String(meta.mtimeNs))
+	if (meta.ctimeNs !== undefined) patch.ctimeNs = BigInt(String(meta.ctimeNs))
+	if (typeof meta.contentHash === 'string') patch.contentHash = meta.contentHash
+	if ('contentHash' in meta && meta.contentHash === null) patch.contentHash = undefined
+	if (typeof meta.symlinkTarget === 'string') patch.symlinkTarget = meta.symlinkTarget
+	if ('symlinkTarget' in meta && meta.symlinkTarget === null) patch.symlinkTarget = undefined
+
+	return patch
 }
 
 function wireFromMeta(meta: Omit<InodeMeta, 'nlink'>) {
@@ -817,12 +832,22 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 					...entry,
 					meta: parseMeta(entry.meta)
 				})),
-				next: data.next
+				next: data.next,
+				cursor: typeof data.cursor === 'string' ? data.cursor : undefined,
 			}
 		},
 
 		async updates(cursor, options) {
-			const res = await c.updates.$get({ query: { cursor } }, mutationInit(options))
+			const requestInit = mutationInit(options)
+			const res = await c.updates.$get(
+				{ query: { cursor } },
+				{
+					...(requestInit ? { headers: requestInit.headers } : {}),
+					init: {
+						cache: 'no-store',
+					},
+				}
+			)
 			if (res.status === 501) return { ops: [], cursor }
 			if (res.status === 409) {
 				const data = await res.json().catch(() => null)
@@ -838,7 +863,7 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 					if (op.kind !== 'upsert-inode') return op
 					return {
 						...op,
-						meta: op.meta ? parseMeta(op.meta) : undefined,
+						meta: op.meta ? parseMetaPatch(op.meta) : undefined,
 						xattrs: op.xattrs
 							? Object.fromEntries(
 									Object.entries(op.xattrs as Record<string, string | null>).map(([k, v]) => [

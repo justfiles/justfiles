@@ -118,6 +118,7 @@ export function createFsApi(backend: StorageBackend) {
 				}
 				throw error
 			}
+			c.header('Cache-Control', 'no-store')
 			return c.json({ ops: result.ops.map(encodeOp), cursor: result.cursor })
 		})
 
@@ -128,6 +129,7 @@ export function createFsApi(backend: StorageBackend) {
 			return c.json({
 				entries: result.entries.map((e) => ({ ...e, meta: encodeMeta(e.meta) })),
 				next: result.next,
+				cursor: result.cursor,
 			})
 		})
 

@@ -325,6 +325,7 @@ export interface StorageBackend {
   scan?(cursor: string): Promise<{
     entries: { ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }[]
     next: string
+    cursor?: string
   }>
 
   /**

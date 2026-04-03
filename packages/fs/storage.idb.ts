@@ -98,6 +98,19 @@ const DIR_PAGE = 100
 // Public API
 // ---------------------------------------------------------------------------
 
+function toHex(bytes: Uint8Array): string {
+	return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+}
+
+async function sha256Hex(data: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', toArrayBuffer(data))
+	return toHex(new Uint8Array(digest))
+}
+
 export type IdbStorageBackend = StorageBackend & {
 	/** Root directory inode — always '1' for this backend. */
 	readonly rootIno: Ino
@@ -239,13 +252,14 @@ export function idbStorage(
 	): Promise<void> {
 		const now = Date.now()
 		const newSize = data.length
+		const contentHash = await sha256Hex(data)
 		const tx = db.transaction(['content', 'inodes', 'dirty', 'updates', 'meta'], 'readwrite')
 
 		await tx.objectStore('content').put({ ino, data, sizeBytes: newSize, lastAccessedAt: now })
 
 		const inode = await tx.objectStore('inodes').get(ino)
 		if (inode) {
-			const nextInode = { ...inode, size: BigInt(newSize) }
+			const nextInode = { ...inode, size: BigInt(newSize), contentHash }
 			await tx.objectStore('inodes').put(nextInode)
 			await tx.objectStore('updates').add({
 				op: {

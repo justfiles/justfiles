@@ -9,7 +9,7 @@ import {
 	useMemo,
 	useState,
 	useSyncExternalStore,
-	type ReactNode,
+	type ReactNode
 } from 'react'
 import {
 	cachedStorage,
@@ -18,7 +18,7 @@ import {
 	GHOSTORE_XATTR,
 	idbStorage,
 	type Volume,
-	volume as createVolume,
+	volume as createVolume
 } from 'ghost-fs'
 import { FileType } from 'ghost-fs/types'
 import { apiStorage } from './storage.api'
@@ -31,7 +31,7 @@ import {
 	isAssetPath,
 	nextAssetPath,
 	parentVolumePath,
-	resolveRelativeFsPath,
+	resolveRelativeFsPath
 } from './assets'
 
 type MemoryRecord = {
@@ -64,7 +64,7 @@ interface VolumeRuntime {
 	removeEntry(id: string): void
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
-	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
+	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null; record: MemoryRecord | null }>
 	writeAssetFile(file: File): Promise<string>
 	resolveAssetUrl(notePath: string, src: string): Promise<string | null>
 	readAssetBlob(notePath: string, src: string): Promise<Blob | null>
@@ -80,7 +80,7 @@ export interface VolumeService {
 	removeEntry(id: string): void
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
-	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null, record: MemoryRecord | null }>
+	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null; record: MemoryRecord | null }>
 	writeAssetFile(file: File): Promise<string>
 	resolveAssetUrl(notePath: string, src: string): Promise<string | null>
 	readAssetBlob(notePath: string, src: string): Promise<Blob | null>
@@ -122,7 +122,7 @@ function normalizeCachedEntry(value: unknown): MemoryMeta | null {
 		path: entry.path,
 		updated_at: entry.updated_at,
 		tags: entry.tags,
-		active: entry.active ?? 1,
+		active: entry.active ?? 1
 	}
 }
 
@@ -155,7 +155,7 @@ function toMemoryMeta(record: MemoryRecord): MemoryMeta {
 		path: record.path,
 		updated_at: record.updated_at,
 		tags: record.tags,
-		active: record.active,
+		active: record.active
 	}
 }
 
@@ -179,7 +179,11 @@ function entryIdentity(path: string): string {
 	return entryPath(path)
 }
 
-async function decodeOptionalXattr<T>(volume: Volume, path: string, name: string): Promise<T | null> {
+async function decodeOptionalXattr<T>(
+	volume: Volume,
+	path: string,
+	name: string
+): Promise<T | null> {
 	const raw = await volume.getXattr(path, name)
 	return raw ? decodeXattr<T>(raw) : null
 }
@@ -195,6 +199,8 @@ function trashInfoPath(id: string): string {
 function isTrashPath(path: string): boolean {
 	return path === TRASH_ROOT || path.startsWith(`${TRASH_ROOT}/`)
 }
+
+const SHOW_STATE_FOLDER = true
 
 function isStatePath(path: string): boolean {
 	return path === STATE_ROOT || path.startsWith(`${STATE_ROOT}/`)
@@ -214,7 +220,7 @@ function parseArchiveInfo(value: unknown): ArchiveInfo | null {
 	return {
 		id: info.id,
 		originalPath: info.originalPath,
-		archivedAt: info.archivedAt,
+		archivedAt: info.archivedAt
 	}
 }
 
@@ -244,7 +250,7 @@ async function readMemoryRecord(
 		decodeOptionalXattr<string>(volume, path, GHOSTORE_XATTR.title),
 		decodeOptionalXattr<string[]>(volume, path, GHOSTORE_XATTR.tags),
 		decodeOptionalXattr<LinkInfo[]>(volume, path, GHOSTORE_XATTR.links),
-		decodeOptionalXattr<string>(volume, path, GHOSTORE_XATTR.source),
+		decodeOptionalXattr<string>(volume, path, GHOSTORE_XATTR.source)
 	])
 
 	return {
@@ -257,11 +263,14 @@ async function readMemoryRecord(
 		links: links ?? [],
 		created_at: isoFromNs(stat.ctimeNs),
 		updated_at: options?.updatedAt ?? isoFromNs(stat.mtimeNs),
-		active: options?.active ?? 1,
+		active: options?.active ?? 1
 	}
 }
 
-async function listLiveMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promise<MemoryMeta[]> {
+async function listLiveMemoryEntries(
+	volume: Volume,
+	previous: MemoryMeta[]
+): Promise<MemoryMeta[]> {
 	const entries: MemoryMeta[] = []
 	const previousLive = previous.filter((entry) => entry.active !== 0)
 	const previousById = new Map(previousLive.map((entry) => [entry.id, entry]))
@@ -270,7 +279,7 @@ async function listLiveMemoryEntries(volume: Volume, previous: MemoryMeta[]): Pr
 	await volume.scan('/', async (path, stat) => {
 		if (stat.type !== FileType.Regular) return
 		if (path === DRAFT_PATH) return
-		if (isStatePath(path)) return
+		if (!SHOW_STATE_FOLDER && isStatePath(path)) return
 		if (isTrashPath(path)) return
 		if (isAssetPath(path)) return
 
@@ -283,7 +292,7 @@ async function listLiveMemoryEntries(volume: Volume, previous: MemoryMeta[]): Pr
 			path: currentPath,
 			updated_at: isoFromNs(stat.mtimeNs),
 			tags: cached?.tags ?? [],
-			active: 1,
+			active: 1
 		})
 	})
 
@@ -307,7 +316,7 @@ async function listArchivedMemoryEntries(volume: Volume): Promise<MemoryMeta[]> 
 
 		const [title, tags] = await Promise.all([
 			decodeOptionalXattr<string>(volume, path, GHOSTORE_XATTR.title),
-			decodeOptionalXattr<string[]>(volume, path, GHOSTORE_XATTR.tags),
+			decodeOptionalXattr<string[]>(volume, path, GHOSTORE_XATTR.tags)
 		])
 
 		entries.push({
@@ -316,7 +325,7 @@ async function listArchivedMemoryEntries(volume: Volume): Promise<MemoryMeta[]> 
 			path: info.originalPath,
 			updated_at: info.archivedAt,
 			tags: tags ?? [],
-			active: 0,
+			active: 0
 		})
 	})
 
@@ -326,9 +335,11 @@ async function listArchivedMemoryEntries(volume: Volume): Promise<MemoryMeta[]> 
 async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promise<MemoryMeta[]> {
 	const [liveEntries, archivedEntries] = await Promise.all([
 		listLiveMemoryEntries(volume, previous),
-		listArchivedMemoryEntries(volume),
+		listArchivedMemoryEntries(volume)
 	])
-	return [...liveEntries, ...archivedEntries].sort((left, right) => left.path.localeCompare(right.path))
+	return [...liveEntries, ...archivedEntries].sort((left, right) =>
+		left.path.localeCompare(right.path)
+	)
 }
 
 async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
@@ -386,7 +397,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 	}
 
 	function removeEntry(id: string) {
-		setEntries(entries.map((entry) => entry.id === id ? { ...entry, active: 0 } : entry))
+		setEntries(entries.map((entry) => (entry.id === id ? { ...entry, active: 0 } : entry)))
 	}
 
 	async function archiveMemory(id: string): Promise<void> {
@@ -404,7 +415,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		const info: ArchiveInfo = {
 			id,
 			originalPath: entry.path,
-			archivedAt,
+			archivedAt
 		}
 
 		await ensureTrashDirs(volume)
@@ -423,7 +434,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		upsertEntry({
 			...entry,
 			updated_at: archivedAt,
-			active: 0,
+			active: 0
 		})
 	}
 
@@ -447,7 +458,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		const record = await readMemoryRecord(volume, destinationPath, {
 			id,
 			logicalPath: info.originalPath,
-			active: 1,
+			active: 1
 		})
 		upsertEntry(toMemoryMeta(record))
 	}
@@ -471,7 +482,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 					path: info.originalPath,
 					updated_at: info.archivedAt,
 					tags: [],
-					active: 0,
+					active: 0
 				}
 			}
 
@@ -480,7 +491,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 				id: entry.id,
 				logicalPath: entry.path,
 				active: entry.active,
-				updatedAt: entry.active === 0 ? entry.updated_at : undefined,
+				updatedAt: entry.active === 0 ? entry.updated_at : undefined
 			})
 			const nextEntry = toMemoryMeta(record)
 			upsertEntry(nextEntry)
@@ -547,9 +558,9 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 			return () => listeners.delete(listener)
 		},
 
-			getSnapshot() {
-				return snapshot
-			},
+		getSnapshot() {
+			return snapshot
+		},
 
 		start() {
 			if (started) return
@@ -582,7 +593,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		resolveMemory,
 		writeAssetFile,
 		resolveAssetUrl,
-		readAssetBlob,
+		readAssetBlob
 	}
 }
 
@@ -598,7 +609,7 @@ function getOrCreateVolumeRuntime(userId: string, fsClient: FsClient): Promise<V
 export function VolumeProvider({
 	children,
 	userId,
-	fallback = null,
+	fallback = null
 }: {
 	children: ReactNode
 	userId: string
@@ -612,7 +623,9 @@ export function VolumeProvider({
 		getOrCreateVolumeRuntime(userId, fsClient).then((r) => {
 			if (active) setRuntime(r)
 		})
-		return () => { active = false }
+		return () => {
+			active = false
+		}
 	}, [userId, fsClient])
 
 	useEffect(() => {
@@ -632,19 +645,22 @@ export function useVolume(): VolumeService {
 
 	const snapshot = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot)
 
-	return useMemo(() => ({
-		volume: runtime.volume,
-		index: runtime.index,
-		entries: snapshot.entries,
-		fetchChanges: runtime.fetchChanges,
-		refresh: runtime.refresh,
-		upsertEntry: runtime.upsertEntry,
-		removeEntry: runtime.removeEntry,
-		archiveMemory: runtime.archiveMemory,
-		reviveMemory: runtime.reviveMemory,
-		resolveMemory: runtime.resolveMemory,
-		writeAssetFile: runtime.writeAssetFile,
-		resolveAssetUrl: runtime.resolveAssetUrl,
-		readAssetBlob: runtime.readAssetBlob,
-	}), [runtime, snapshot.entries])
+	return useMemo(
+		() => ({
+			volume: runtime.volume,
+			index: runtime.index,
+			entries: snapshot.entries,
+			fetchChanges: runtime.fetchChanges,
+			refresh: runtime.refresh,
+			upsertEntry: runtime.upsertEntry,
+			removeEntry: runtime.removeEntry,
+			archiveMemory: runtime.archiveMemory,
+			reviveMemory: runtime.reviveMemory,
+			resolveMemory: runtime.resolveMemory,
+			writeAssetFile: runtime.writeAssetFile,
+			resolveAssetUrl: runtime.resolveAssetUrl,
+			readAssetBlob: runtime.readAssetBlob
+		}),
+		[runtime, snapshot.entries]
+	)
 }

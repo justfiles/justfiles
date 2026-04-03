@@ -518,6 +518,7 @@ export type MemoryMeta = {
 
 export type ChangesResult = {
 	upserted: MemoryMeta[]
+	cursor: string
 }
 
 export type SearchResult = {
@@ -1556,6 +1557,11 @@ export function createStore(
 		},
 
 		async changes(since: string): Promise<ChangesResult> {
+			const [headRow] = await adapter.query<{ updated_at: unknown }>(
+				`SELECT updated_at FROM memories WHERE path NOT LIKE '*%' ORDER BY updated_at DESC LIMIT 1`
+			)
+			const headCursor = headRow?.updated_at == null ? since : String(headRow.updated_at)
+
 			const rows = await adapter.query<{
 				id: unknown
 				title: unknown
@@ -1563,11 +1569,14 @@ export function createStore(
 				updated_at: unknown
 				active: unknown
 			}>(
-				`SELECT id, title, path, updated_at, active FROM memories WHERE updated_at > ? AND path NOT LIKE '*%'`,
+				`SELECT id, title, path, updated_at, active
+					FROM memories
+					WHERE updated_at > ? AND path NOT LIKE '*%'
+					ORDER BY updated_at ASC, id ASC`,
 				[since]
 			)
 
-			if (rows.length === 0) return { upserted: [] }
+			if (rows.length === 0) return { upserted: [], cursor: headCursor }
 
 			const ids = rows.map((r) => String(r.id))
 			const tagRows = await adapter.query<{ memory_id: unknown; tag: unknown }>(
@@ -1589,7 +1598,8 @@ export function createStore(
 					updated_at: String(r.updated_at),
 					active: Number(r.active),
 					tags: tagMap.get(String(r.id)) ?? []
-				}))
+				})),
+				cursor: headCursor,
 			}
 		},
 

@@ -1,16 +1,36 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test'
 
 import { cachedStorage } from './storage.cached.ts'
+import { idbStorage } from './storage.idb.ts'
 import { memStorage } from './storage.mem.ts'
 import { FsCursorExpiredError } from './storage.ts'
 import { FileType } from './types.ts'
 import { GHOSTORE_XATTR, decodeXattr, encodeXattr } from './xattr.ts'
 
 const storages = []
+const databases = []
+const hasIndexedDb = typeof indexedDB !== 'undefined'
+
+async function deleteDatabase(name) {
+	await new Promise((resolve, reject) => {
+		const request = indexedDB.deleteDatabase(name)
+		request.onsuccess = () => resolve()
+		request.onerror = () => reject(request.error ?? new Error(`failed to delete ${name}`))
+		request.onblocked = () => reject(new Error(`delete blocked for ${name}`))
+	})
+}
 
 afterEach(() => {
 	for (const storage of storages.splice(0)) {
 		storage.destroy()
+	}
+})
+
+afterEach(async () => {
+	if (!hasIndexedDb) return
+	for (const { name, storage } of databases.splice(0)) {
+		storage.destroy()
+		await deleteDatabase(name)
 	}
 })
 
@@ -477,143 +497,101 @@ describe('cachedStorage', () => {
 			ino: '3',
 			type: FileType.Regular,
 		})
-		expect(remote.dirList).toHaveBeenCalledTimes(1)
-		expect(remote.updates).toHaveBeenCalled()
+		expect(remote.dirList).toHaveBeenCalledTimes(0)
+		expect(remote.updates).toHaveBeenCalledWith('1', expect.anything())
 	})
 
-	test('re-runs bootstrap when persisted bootstrap state exists but the local namespace is empty', async () => {
+	test('seeds the remote cursor from the final scan page before the first delta sync', async () => {
 		const local = memStorage()
-		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
-			remoteCursor: '7',
-			localCursor: '',
-			namespaceBootstrapped: true,
-		})))
-
 		const remote = memStorage()
-		const ino = await remote.create(remote.rootIno, 'note.txt', {
+		const ino = await remote.create(remote.rootIno, 'existing.txt', {
 			type: FileType.Regular,
 			size: 0n,
 			mode: 0o644,
 			mtimeNs: 0n,
 			ctimeNs: 0n,
 		})
-		const originalRemoteDirList = remote.dirList.bind(remote)
-		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
-		remote.updates = mock(async (cursor) => {
-			if (cursor !== '') {
-				throw new Error('stale cursor should be discarded before incremental sync')
+		remote.scan = mock(async (cursor) => {
+			if (cursor !== '') return { entries: [], next: '', cursor: '7' }
+			const meta = await remote.getMeta(ino)
+			return {
+				entries: meta === null
+					? []
+					: [{
+						ino,
+						dirIno: remote.rootIno,
+						name: 'existing.txt',
+						meta,
+					}],
+				next: '',
+				cursor: '7',
 			}
-			return { ops: [], cursor }
+		})
+		remote.updates = mock(async (cursor) => {
+			if (cursor !== '7') {
+				throw new Error(`expected seeded cursor 7, got ${cursor}`)
+			}
+			return { ops: [], cursor: '7' }
 		})
 
 		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
 		storages.push(storage)
 
-		expect(await storage.dirLookup(remote.rootIno, 'note.txt')).toEqual({
+		expect(await storage.dirLookup(remote.rootIno, 'existing.txt')).toEqual({
 			ino,
 			type: FileType.Regular,
 		})
-		expect(remote.dirList).toHaveBeenCalledTimes(2)
-		expect(remote.updates).toHaveBeenCalledWith('', expect.anything())
+		expect(remote.scan).toHaveBeenCalledWith('')
+		expect(remote.updates).toHaveBeenCalledWith('7', expect.anything())
 	})
 
-	test('re-runs bootstrap when local root entries no longer match the remote root namespace', async () => {
-		const local = memStorage()
-		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
-			remoteCursor: '7',
-			localCursor: '',
-			namespaceBootstrapped: true,
-		})))
-		await local.setMeta('stale-draft', {
-			type: FileType.Regular,
-			size: 0n,
-			mode: 0o644,
-			nlink: 1,
-			mtimeNs: 0n,
-			ctimeNs: 0n,
-		})
-		await local.dirAdd(local.rootIno, '*draft*', 'stale-draft', FileType.Regular)
+	;(hasIndexedDb ? test : test.skip)('persists the remote cursor in indexeddb-backed syncstate after delta sync', async () => {
+		const dbName = `ghostore-cached-sync-${crypto.randomUUID()}`
+		const local = idbStorage(dbName)
+		databases.push({ name: dbName, storage: local })
 
 		const remote = memStorage()
-		const ino = await remote.create(remote.rootIno, '*draft*', {
-			type: FileType.Regular,
-			size: 0n,
-			mode: 0o644,
-			mtimeNs: 0n,
-			ctimeNs: 0n,
-		})
-		const originalRemoteDirList = remote.dirList.bind(remote)
-		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
 		remote.updates = mock(async (cursor) => {
-			if (cursor !== '') {
-				throw new Error('stale cursor should be discarded before incremental sync')
+			if (cursor !== '') return { ops: [], cursor }
+			return {
+				ops: [
+					{
+						kind: 'upsert-inode',
+						source: 'remote-peer',
+						ino: 'r1',
+						meta: {
+							type: FileType.Regular,
+							size: 0n,
+							mode: 0o644,
+							nlink: 1,
+							mtimeNs: 0n,
+							ctimeNs: 0n,
+						},
+					},
+					{
+						kind: 'set-dirent',
+						source: 'remote-peer',
+						dirIno: remote.rootIno,
+						name: 'note.txt',
+						ino: 'r1',
+						type: FileType.Regular,
+					},
+				],
+				cursor: '5',
 			}
-			return { ops: [], cursor }
 		})
 
 		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
 		storages.push(storage)
 
-		expect(await storage.dirLookup(remote.rootIno, '*draft*')).toEqual({
-			ino,
-			type: FileType.Regular,
-		})
-		expect(remote.dirList).toHaveBeenCalledTimes(2)
-		expect(remote.updates).toHaveBeenCalledWith('', expect.anything())
-	})
+		await storage.dirList(remote.rootIno, '')
 
-	test('re-runs bootstrap when the remote root has entries missing from local root', async () => {
-		const local = memStorage()
-		await local.write('/.state/syncstate', 0n, new TextEncoder().encode(JSON.stringify({
-			remoteCursor: '7',
+		const raw = await local.read('/.state/syncstate', 0n, 512)
+		expect(JSON.parse(new TextDecoder().decode(raw))).toEqual({
+			remoteCursor: '5',
 			localCursor: '',
 			namespaceBootstrapped: true,
-		})))
-		await local.setMeta('2', {
-			type: FileType.Regular,
-			size: 0n,
-			mode: 0o644,
-			nlink: 1,
-			mtimeNs: 0n,
-			ctimeNs: 0n,
 		})
-		await local.dirAdd(local.rootIno, 'existing.txt', '2', FileType.Regular)
-
-		const remote = memStorage()
-		await remote.setMeta('2', {
-			type: FileType.Regular,
-			size: 0n,
-			mode: 0o644,
-			nlink: 1,
-			mtimeNs: 0n,
-			ctimeNs: 0n,
-		})
-		await remote.dirAdd(remote.rootIno, 'existing.txt', '2', FileType.Regular)
-		const freshIno = await remote.create(remote.rootIno, 'missing.txt', {
-			type: FileType.Regular,
-			size: 0n,
-			mode: 0o644,
-			mtimeNs: 0n,
-			ctimeNs: 0n,
-		})
-		const originalRemoteDirList = remote.dirList.bind(remote)
-		remote.dirList = mock(async (...args) => originalRemoteDirList(...args))
-		remote.updates = mock(async (cursor) => {
-			if (cursor !== '') {
-				throw new Error('stale cursor should be discarded before incremental sync')
-			}
-			return { ops: [], cursor }
-		})
-
-		const storage = cachedStorage(local, remote, { clientId: 'client-a' })
-		storages.push(storage)
-
-		expect(await storage.dirLookup(remote.rootIno, 'missing.txt')).toEqual({
-			ino: freshIno,
-			type: FileType.Regular,
-		})
-		expect(remote.dirList).toHaveBeenCalledTimes(2)
-		expect(remote.updates).toHaveBeenCalledWith('', expect.anything())
 	})
 
 	test('does not resurrect a locally deleted entry before flush', async () => {
