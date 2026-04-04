@@ -33,7 +33,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	const localVol = volume(fs(props.local))
 
-	const syncInterval = props.interval ?? 3_000
+	const syncInterval = props.interval ?? 30_000
 
 	// Cached xattr lookups — true means the inode is local-only and excluded from sync.
 	const _localOnlyCache = new Map<Ino, boolean>()
@@ -183,19 +183,28 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		}
 	}
 
+	const RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000]
+
 	let running: Promise<void> | null = null
 	let timer: ReturnType<typeof setTimeout> | null = null
 	let paused = false
 	let destroyed = false
+	let retryCount = 0
 
 	function schedule() {
 		if (paused || destroyed) return
-		timer = setTimeout(run, syncInterval)
+		const delay = retryCount > 0
+			? RETRY_DELAYS_MS[Math.min(retryCount - 1, RETRY_DELAYS_MS.length - 1)]!
+			: syncInterval
+		timer = setTimeout(run, delay)
 	}
 
 	function run() {
 		if (running || paused || destroyed) return
-		running = sync().catch(console.error).finally(() => { running = null; schedule() })
+		running = sync()
+			.then(() => { retryCount = 0 })
+			.catch((e) => { console.error(e); retryCount++ })
+			.finally(() => { running = null; schedule() })
 	}
 
 	function flush(): Promise<void> {
