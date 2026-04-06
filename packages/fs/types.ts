@@ -1,6 +1,3 @@
-/** Opaque handle — like a file descriptor */
-export type Fd = number;
-
 /** Inode identifier — unique within a filesystem */
 export type Ino = string;
 
@@ -8,7 +5,7 @@ export type Ino = string;
 export type Off = bigint;
 
 /**
- * Opaque directory cursor. Passed back to dirList / readdir to continue
+ * Opaque directory cursor. Passed back to listDirents to continue
  * iteration. Empty string signals start-of-directory; the backend returns
  * empty string to signal end-of-directory.
  *
@@ -32,8 +29,6 @@ export interface Stat {
   type: FileType;
   size: Off;
   mode: number;
-  /** @deprecated Hard links not supported in new stack. Only populated by fs.native.ts. */
-  nlink?: number;
   mtimeNs: bigint;
   ctimeNs: bigint;
   /**
@@ -55,25 +50,10 @@ export interface Dirent {
 /**
  * Minimal inode reference returned by directory lookup and removal.
  * Carries just enough information for the VFS to compose further operations
- * (e.g. dirSet in rename needs the type; cache invalidation needs the ino)
+ * (e.g. putDirent in rename needs the type; cache invalidation needs the ino)
  * without an extra getMeta round trip.
  */
 export interface DirentMin {
   ino: Ino;
   type: FileType;
-}
-
-/**
- * Flags for open() — access mode and optional truncate-on-open.
- *
- * Intentionally minimal: open() is inode-based, so creation and existence
- * checks (Create, Excl) are path-layer concerns handled by mknod/lookup.
- * Append is omitted because it requires hidden fd state that conflicts with
- * the stateless positional pread/pwrite design.
- */
-export const enum OpenFlags {
-  Read  = 1 << 0,
-  Write = 1 << 1,
-  /** Truncate file to 0 bytes on open. Only meaningful with Write. */
-  Trunc = 1 << 2,
 }
