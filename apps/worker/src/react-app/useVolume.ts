@@ -518,8 +518,10 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		const resolvedPath = resolveRelativeFsPath(notePath, src)
 		if (!resolvedPath) return src
 
-		const stat = await volume.stat(resolvedPath)
-		if (stat.type !== FileType.Regular) return null
+		// Fall back to remoteVolume if the synced volume hasn't pulled the asset yet
+		// (e.g. immediately after writeAssetFile which writes to remote only).
+		const stat = await volume.stat(resolvedPath).catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
+		if (!stat || stat.type !== FileType.Regular) return null
 
 		return assetUrlForIno(
 			stat.ino,
@@ -536,8 +538,9 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 			return await res.blob()
 		}
 
-		const stat = await volume.stat(resolvedPath)
-		if (stat.type !== FileType.Regular) return null
+		// Fall back to remoteVolume if the synced volume hasn't pulled the asset yet.
+		const stat = await volume.stat(resolvedPath).catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
+		if (!stat || stat.type !== FileType.Regular) return null
 
 		const filename = displayFilenameFromSrc(src)
 		const res = await fsClient.inodes[':ino'].content[':filename'].$get({
