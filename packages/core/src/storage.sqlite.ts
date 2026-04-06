@@ -1135,22 +1135,45 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						[ROOT_INO, FileType.Directory, cursor, SCAN_PAGE_SIZE]
 					)
 
+			// Fetch xattrs for all inodes in this page in one query.
+			const fileInos = rows
+				.filter(row => toNumber(row.type) === FileType.Regular)
+				.map(row => String(row.ino))
+			const xattrsByIno = new Map<string, Record<string, Uint8Array>>()
+			if (fileInos.length > 0) {
+				const placeholders = fileInos.map(() => '?').join(', ')
+				const xattrRows = await db.query<{ ino: unknown; name: unknown; value: unknown }>(
+					`SELECT ino, name, value FROM fs_xattrs WHERE ino IN (${placeholders})`,
+					fileInos
+				)
+				for (const row of xattrRows) {
+					const ino = String(row.ino)
+					if (!xattrsByIno.has(ino)) xattrsByIno.set(ino, {})
+					xattrsByIno.get(ino)![String(row.name)] = toUint8Array(row.value)
+				}
+			}
+
 			return {
-				entries: rows.map((row) => ({
-					ino: String(row.ino),
-					dirIno: String(row.dir_ino),
-					name: String(row.name),
-					meta: {
-						type: toNumber(row.type) as FileType,
-						size: toBigInt(row.size),
-						mode: toNumber(row.mode),
-						nlink: toNumber(row.nlink),
-						mtimeNs: toBigInt(row.mtime_ns),
-						ctimeNs: toBigInt(row.ctime_ns),
-						contentHash: toStringOrNull(row.content_hash) ?? undefined,
-						symlinkTarget: toStringOrNull(row.symlink_target) ?? undefined
+				entries: rows.map((row) => {
+					const ino = String(row.ino)
+					const xattrs = xattrsByIno.get(ino)
+					return {
+						ino,
+						dirIno: String(row.dir_ino),
+						name: String(row.name),
+						meta: {
+							type: toNumber(row.type) as FileType,
+							size: toBigInt(row.size),
+							mode: toNumber(row.mode),
+							nlink: toNumber(row.nlink),
+							mtimeNs: toBigInt(row.mtime_ns),
+							ctimeNs: toBigInt(row.ctime_ns),
+							contentHash: toStringOrNull(row.content_hash) ?? undefined,
+							symlinkTarget: toStringOrNull(row.symlink_target) ?? undefined
+						},
+						...(xattrs && Object.keys(xattrs).length > 0 ? { xattrs } : {})
 					}
-				})),
+				}),
 				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : '',
 				cursor: rows.length === SCAN_PAGE_SIZE ? undefined : headCursor,
 			}

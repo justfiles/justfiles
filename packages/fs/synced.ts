@@ -10,6 +10,7 @@ type Props = {
 	local: StorageBackend,
 	remote: StorageBackend,
 	interval?: number,
+	lazyContent?: boolean,
 }
 
 type SyncState = {
@@ -47,7 +48,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	async function markLocalOnly(ino: Ino): Promise<void> {
 		if (await isLocalOnly(ino)) return
-		await props.local.setXattr?.(ino, SYNC_LOCAL_ONLY_XATTR, new Uint8Array(0))
+		await props.local.setXattr?.(ino, SYNC_LOCAL_ONLY_XATTR, new Uint8Array(0), { source: REMOTE_SOURCE })
 		_localOnlyCache.set(ino, true)
 	}
 
@@ -122,7 +123,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 				const localMeta = await props.local.getMeta(op.ino)
 				if ((localMeta?.mtimeNs ?? 0n) >= (op.meta?.mtimeNs ?? 0n)) continue // local wins
 			}
-			await applyOp(op, props.remote, props.local, opts)
+			await applyOp(op, props.remote, props.local, opts, props.lazyContent)
 			if (op.kind === 'upsert-inode' && op.meta?.contentHash) {
 				await setHashBaseline(op.ino, op.meta.contentHash)
 			}
@@ -143,9 +144,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		do {
 			const { entries, next, cursor } = await props.remote.scan(scanCursor)
 			if (cursor !== undefined) remoteCursor = cursor
+			// TODO: reconcile — delete local dirents/inodes absent from remote snapshot
 			for (const entry of entries) {
-				await applyOp({ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta }, props.remote, props.local, opts)
-				await applyOp({ kind: 'set-dirent', dirIno: entry.dirIno, name: entry.name, ino: entry.ino, type: entry.meta.type }, props.remote, props.local, opts)
+				await applyOp({ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta, xattrs: entry.xattrs }, props.remote, props.local, opts, props.lazyContent)
+				await applyOp({ kind: 'set-dirent', dirIno: entry.dirIno, name: entry.name, ino: entry.ino, type: entry.meta.type }, props.remote, props.local, opts, props.lazyContent)
 				if (entry.meta.contentHash) await setHashBaseline(entry.ino, entry.meta.contentHash)
 			}
 			scanCursor = next
@@ -162,15 +164,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	async function setHashBaseline(ino: Ino, hash: string): Promise<void> {
-		await props.local.setXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`, new TextEncoder().encode(hash))
+		await props.local.setXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`, new TextEncoder().encode(hash), { source: REMOTE_SOURCE })
 	}
 
 	async function sync() {
-		const [id, state] = await Promise.all([clientId.get(), syncState.get()])
+		const state = await syncState.get()
 		if (!state.remoteCursor) {
 			await bootstrap()
 			return
 		}
+		const id = await clientId.get()
 		try {
 			const localCursor = await push(state.localCursor ?? '', id)
 			await syncState.patch({ localCursor })
@@ -222,16 +225,45 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	await sync()
 	schedule()
 
+	if (props.lazyContent) {
+		// Stub inodes (created by bootstrap or pull) have no local contentHash.
+		// On first read, fetch the blob from remote and cache it — putBlob then
+		// sets the contentHash on the IDB inode.
+		//
+		// Note: putBlob writes directly to the storage backend, bypassing the VFS
+		// metaCache. So stat.contentHash can remain stale (absent) even after the
+		// first hydration. We therefore double-check against storage directly before
+		// deciding to fetch — one extra IDB read only on the stale-cache path.
+		const readFile = async (path: string): Promise<Uint8Array> => {
+			const stat = await localVol.stat(path)
+			if (stat.type !== FileType.Regular || stat.size === 0n) return localVol.readFile(path)
+			if (stat.contentHash) return localVol.readFile(path)
+			// metaCache may be stale — verify against storage before fetching.
+			const storedMeta = await props.local.getMeta(stat.ino)
+			if (storedMeta?.contentHash) return localVol.readFile(path)
+			// Genuinely not hydrated — fetch from remote.
+			const data = await props.remote.read(stat.ino, 0n, Number(stat.size))
+			if (data.length > 0) await props.local.putBlob?.(stat.ino, data, { source: REMOTE_SOURCE })
+			return data
+		}
+		return { ...localVol, readFile, flush, pause, resume, destroy }
+	}
+
 	return { ...localVol, flush, pause, resume, destroy }
 }
 
 
 // Apply one FsOp to target, reading file content from source when needed.
-async function applyOp(op: FsOp, source: StorageBackend, target: StorageBackend, opts: MutationOptions): Promise<void> {
+// Pass skipContent=true during bootstrap/pull to create stub inodes without
+// downloading blobs — content is fetched lazily on first read instead.
+async function applyOp(op: FsOp, source: StorageBackend, target: StorageBackend, opts: MutationOptions, skipContent = false): Promise<void> {
 	switch (op.kind) {
 		case 'upsert-inode': {
-			if (op.meta) await target.setMeta(op.ino, op.meta, opts)
-			if (op.meta?.type === FileType.Regular && op.meta.size !== undefined) {
+			// When skipping content, strip contentHash so the local inode has no hash —
+			// that absence is the "not yet hydrated" signal read by the lazy readFile.
+			const meta = skipContent && op.meta ? { ...op.meta, contentHash: undefined } : op.meta
+			if (meta) await target.setMeta(op.ino, meta, opts)
+			if (!skipContent && op.meta?.type === FileType.Regular && op.meta.size !== undefined) {
 				const data = await source.read(op.ino, 0n, Number(op.meta.size))
 				if (target.putBlob) await target.putBlob(op.ino, data, opts)
 				else {

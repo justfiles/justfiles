@@ -12,13 +12,13 @@ import {
 	type ReactNode
 } from 'react'
 import {
-	cachedStorage,
 	decodeXattr,
 	fs as createFs,
 	GHOSTORE_XATTR,
 	idbStorage,
+	synced,
 	type Volume,
-	volume as createVolume
+	volume as createVolume,
 } from 'ghost-fs'
 import { FileType } from 'ghost-fs/types'
 import { apiStorage } from './storage.api'
@@ -345,8 +345,7 @@ async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promis
 async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
 	const local = idbStorage('ghostore-fs')
 	const remote = await apiStorage(fsClient)
-	const storage = cachedStorage(local, remote)
-	const volume = createVolume(createFs(storage))
+	const volume = await synced({ local, remote, lazyContent: true })
 	const remoteVolume = createVolume(createFs(remote))
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()

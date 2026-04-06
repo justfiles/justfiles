@@ -47,6 +47,13 @@ function encodeBytes(arr: Uint8Array): string {
 	return btoa(str)
 }
 
+function decodeBytes(b64: string): Uint8Array {
+	const binary = atob(b64)
+	const arr = new Uint8Array(binary.length)
+	for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
+	return arr
+}
+
 function encodeOp(op: FsOp) {
 	if (op.kind !== 'upsert-inode') return op
 	return {
@@ -127,7 +134,15 @@ export function createFsApi(backend: StorageBackend) {
 			const { cursor } = c.req.valid('query')
 			const result = await backend.scan(cursor)
 			return c.json({
-				entries: result.entries.map((e) => ({ ...e, meta: encodeMeta(e.meta) })),
+				entries: result.entries.map((e) => ({
+					...e,
+					meta: encodeMeta(e.meta),
+					xattrs: e.xattrs
+						? Object.fromEntries(
+							Object.entries(e.xattrs).map(([k, v]) => [k, encodeBytes(v)])
+						  )
+						: undefined,
+				})),
 				next: result.next,
 				cursor: result.cursor,
 			})
@@ -227,6 +242,39 @@ export function createFsApi(backend: StorageBackend) {
 				await backend.truncate(ino, 0n, mutationOptions(c.req.raw))
 				if (data.length > 0) await backend.write(ino, 0n, data, mutationOptions(c.req.raw))
 			}
+			return c.json({ ok: true })
+		})
+
+		// ── Extended attributes ───────────────────────────────────────────────
+
+		.get('/inodes/:ino/xattrs', zValidator('param', InoParam), async (c) => {
+			const { ino } = c.req.valid('param')
+			const names = await backend.listXattr?.(ino) ?? []
+			return c.json({ names })
+		})
+
+		.get('/inodes/:ino/xattrs/:name', zValidator('param', InoParam.extend({ name: z.string() })), async (c) => {
+			const { ino, name } = c.req.valid('param')
+			const value = await backend.getXattr?.(ino, name)
+			if (value === null || value === undefined) return c.json({ error: 'not found' }, 404)
+			return c.json({ value: encodeBytes(value) })
+		})
+
+		.put('/inodes/:ino/xattrs/:name',
+			zValidator('param', InoParam.extend({ name: z.string() })),
+			zValidator('json', z.object({ value: z.string() })),
+			async (c) => {
+				const { ino, name } = c.req.valid('param')
+				const { value } = c.req.valid('json')
+				const decoded = decodeBytes(value)
+				await backend.setXattr?.(ino, name, decoded, mutationOptions(c.req.raw))
+				return c.json({ ok: true })
+			}
+		)
+
+		.delete('/inodes/:ino/xattrs/:name', zValidator('param', InoParam.extend({ name: z.string() })), async (c) => {
+			const { ino, name } = c.req.valid('param')
+			await backend.removeXattr?.(ino, name, mutationOptions(c.req.raw))
 			return c.json({ ok: true })
 		})
 

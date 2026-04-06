@@ -390,7 +390,13 @@ export function volume(fs: FileSystem): Volume {
 					const parentIno = await resolvePath(parentPath, true)
 					const existingIno = await fs.lookup(parentIno, part)
 					if (existingIno !== null) continue
-					await fs.mknod(parentIno, part, FileType.Directory, mode)
+					try {
+						await fs.mknod(parentIno, part, FileType.Directory, mode)
+					} catch (e) {
+						// Concurrent mkdir — another caller created the directory between our
+						// lookup and mknod. That's fine; swallow EEXIST and move on.
+						if (!(e instanceof Error) || !e.message.startsWith('EEXIST')) throw e
+					}
 				}
 				return
 			}

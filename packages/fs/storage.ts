@@ -323,7 +323,7 @@ export interface StorageBackend {
    * The cursor is opaque, same semantics as DirCursor.
    */
   scan?(cursor: string): Promise<{
-    entries: { ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }[]
+    entries: { ino: Ino; dirIno: Ino; name: string; meta: InodeMeta; xattrs?: Record<string, Uint8Array> }[]
     next: string
     cursor?: string
   }>

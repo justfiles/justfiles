@@ -345,18 +345,12 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 		async getXattr(ino, name) {
 			const memory = await fetchMemory(ino)
 			if (!memory) return null
-
 			switch (name) {
-				case GHOSTORE_XATTR.title:
-					return memory.title != null ? encodeXattr(memory.title) : null
-				case GHOSTORE_XATTR.tags:
-					return memory.tags.length > 0 ? encodeXattr(memory.tags) : null
-				case GHOSTORE_XATTR.links:
-					return memory.links.length > 0 ? encodeXattr(memory.links) : null
-				case GHOSTORE_XATTR.source:
-					return memory.source != null ? encodeXattr(memory.source) : null
-				default:
-					return null
+				case GHOSTORE_XATTR.title: return memory.title != null ? encodeXattr(memory.title) : null
+				case GHOSTORE_XATTR.tags: return memory.tags.length > 0 ? encodeXattr(memory.tags) : null
+				case GHOSTORE_XATTR.links: return memory.links.length > 0 ? encodeXattr(memory.links) : null
+				case GHOSTORE_XATTR.source: return memory.source != null ? encodeXattr(memory.source) : null
+				default: return null
 			}
 		},
 
@@ -364,23 +358,13 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 			if (ino === ROOT_INO || ino.startsWith(DIR_PREFIX)) return
 			type UpdateBody = { id: string; title?: string; tags?: string[]; source?: string }
 			const body: UpdateBody = { id: ino }
-
 			switch (name) {
-				case GHOSTORE_XATTR.title:
-					body.title = decodeXattr<string>(value)
-					break
-				case GHOSTORE_XATTR.tags:
-					body.tags = decodeXattr<string[]>(value)
-					break
-				case GHOSTORE_XATTR.source:
-					body.source = decodeXattr<string>(value)
-					break
-				case GHOSTORE_XATTR.links:
-					return // read-only — the update API has no links field
-				default:
-					return // unsupported xattr — no-op
+				case GHOSTORE_XATTR.title: body.title = decodeXattr<string>(value); break
+				case GHOSTORE_XATTR.tags: body.tags = decodeXattr<string[]>(value); break
+				case GHOSTORE_XATTR.source: body.source = decodeXattr<string>(value); break
+				case GHOSTORE_XATTR.links: return
+				default: return
 			}
-
 			const res = await api.v1.update.$post({ json: body })
 			if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
 		},
@@ -821,6 +805,40 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 			return data.displaced
 		},
 
+		// ── Extended attributes ────────────────────────────────────────────
+
+		async getXattr(ino, name) {
+			const res = await c.inodes[':ino'].xattrs[':name'].$get({ param: { ino, name } })
+			if (res.status === 404) return null
+			if (!res.ok) throw new Error(`getXattr failed: ${res.status}`)
+			const data = await res.json()
+			return decodeBase64(data.value)
+		},
+
+		async setXattr(ino, name, value, options) {
+			const b64 = btoa(String.fromCharCode(...value))
+			const res = await c.inodes[':ino'].xattrs[':name'].$put(
+				{ param: { ino, name }, json: { value: b64 } },
+				mutationInit(options)
+			)
+			if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
+		},
+
+		async listXattr(ino) {
+			const res = await c.inodes[':ino'].xattrs.$get({ param: { ino } })
+			if (!res.ok) throw new Error(`listXattr failed: ${res.status}`)
+			const data = await res.json()
+			return data.names
+		},
+
+		async removeXattr(ino, name, options) {
+			const res = await c.inodes[':ino'].xattrs[':name'].$delete(
+				{ param: { ino, name } },
+				mutationInit(options)
+			)
+			if (!res.ok) throw new Error(`removeXattr failed: ${res.status}`)
+		},
+
 		// ── Optional: scan & updates ───────────────────────────────────────
 
 		async scan(cursor) {
@@ -830,7 +848,12 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 			return {
 				entries: data.entries.map((entry) => ({
 					...entry,
-					meta: parseMeta(entry.meta)
+					meta: parseMeta(entry.meta),
+					xattrs: entry.xattrs
+						? Object.fromEntries(
+							Object.entries(entry.xattrs as Record<string, string>).map(([k, v]) => [k, decodeBase64(v)])
+						  )
+						: undefined,
 				})),
 				next: data.next,
 				cursor: typeof data.cursor === 'string' ? data.cursor : undefined,
