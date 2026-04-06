@@ -26,7 +26,6 @@ const WireMetaPartialSchema = z.object({
 	type: FileTypeNum.optional(),
 	size: BigIntStr.optional(),
 	mode: z.number().int().optional(),
-	nlink: z.number().int().optional(),
 	mtimeNs: BigIntStr.optional(),
 	ctimeNs: BigIntStr.optional(),
 	contentHash: z.string().optional(),
@@ -102,20 +101,17 @@ export function createFsApi(backend: StorageBackend) {
 	return new Hono()
 
 		// ── Root ─────────────────────────────────────────────────────────────
-		// Entry point: tells the client which inode is the root.
 		.get('/', (c) => c.json({ rootIno: backend.rootIno }))
 
 		// ── Sync primitives ───────────────────────────────────────────────────
-		// These are the two most important endpoints for sync.
-		// /updates drives incremental sync; /scan drives full reconciliation.
 
 		.get('/updates', zValidator('query', CursorQuery), async (c) => {
-			if (!backend.updates) return c.json({ error: 'not supported' }, 501)
+			if (!backend.caps?.deltaUpdates) return c.json({ error: 'not supported' }, 501)
 			const { cursor } = c.req.valid('query')
 			const source = c.req.header(SOURCE_HEADER) ?? undefined
-			let result: Awaited<ReturnType<NonNullable<StorageBackend['updates']>>>
+			let result: Awaited<ReturnType<NonNullable<typeof backend.caps.deltaUpdates>>>
 			try {
-				result = await backend.updates(
+				result = await backend.caps.deltaUpdates(
 					cursor,
 					source ? { source, sourceMode: 'exclude' } : undefined
 				)
@@ -130,9 +126,9 @@ export function createFsApi(backend: StorageBackend) {
 		})
 
 		.get('/scan', zValidator('query', CursorQuery), async (c) => {
-			if (!backend.scan) return c.json({ error: 'not supported' }, 501)
+			if (!backend.caps?.fullScan) return c.json({ error: 'not supported' }, 501)
 			const { cursor } = c.req.valid('query')
-			const result = await backend.scan(cursor)
+			const result = await backend.caps.fullScan(cursor)
 			return c.json({
 				entries: result.entries.map((e) => ({
 					...e,
@@ -144,13 +140,12 @@ export function createFsApi(backend: StorageBackend) {
 						: undefined,
 				})),
 				next: result.next,
-				cursor: result.cursor,
+				syncCursor: result.syncCursor,
 			})
 		})
 
 		// ── Inode metadata ────────────────────────────────────────────────────
 
-		// Atomic alloc + dirAdd — never expose bare alloc() over the network.
 		.post('/inodes', zValidator('json', z.object({
 			dirIno: z.string(),
 			name: z.string(),
@@ -159,12 +154,12 @@ export function createFsApi(backend: StorageBackend) {
 			const { dirIno, name, meta } = c.req.valid('json')
 			let ino: string
 			try {
-				if (backend.create) {
-					ino = await backend.create(dirIno, name, meta, mutationOptions(c.req.raw))
+				if (backend.caps?.atomicCreate) {
+					ino = await backend.caps.atomicCreate(dirIno, name, meta, mutationOptions(c.req.raw))
 				} else {
-					ino = await backend.alloc(meta, mutationOptions(c.req.raw))
-					const added = await backend.dirAdd(dirIno, name, ino, meta.type, mutationOptions(c.req.raw))
-					if (!added) return c.json({ error: `EEXIST: ${name}` }, 409)
+					ino = crypto.randomUUID()
+					await backend.setMeta(ino, meta, mutationOptions(c.req.raw))
+					await backend.putDirent(dirIno, name, { ino, type: meta.type }, mutationOptions(c.req.raw))
 				}
 			} catch (error) {
 				const message = errorMessage(error)
@@ -192,14 +187,12 @@ export function createFsApi(backend: StorageBackend) {
 		})
 
 		// ── Blob content ──────────────────────────────────────────────────────
-		// Binary transfer. Kept separate from metadata so the JSON endpoints
-		// stay clean and content-type negotiation is unambiguous.
 
 		.get('/inodes/:ino/blob', zValidator('param', InoParam), async (c) => {
 			const { ino } = c.req.valid('param')
 			const meta = await backend.getMeta(ino)
 			if (!meta) return c.json({ error: 'not found' }, 404)
-			const data = await backend.read(ino, 0n, Number(meta.size))
+			const data = await backend.getBlob(ino)
 			return new Response(data.buffer as ArrayBuffer, {
 				headers: { 'Content-Type': 'application/octet-stream' },
 			})
@@ -221,7 +214,7 @@ export function createFsApi(backend: StorageBackend) {
 				})
 			}
 
-			const data = await backend.read(ino, 0n, Number(meta.size))
+			const data = await backend.getBlob(ino)
 			const headers = new Headers({
 				'content-type': inferContentType(filename),
 				'cache-control': etag
@@ -236,12 +229,7 @@ export function createFsApi(backend: StorageBackend) {
 		.put('/inodes/:ino/blob', zValidator('param', InoParam), async (c) => {
 			const { ino } = c.req.valid('param')
 			const data = new Uint8Array(await c.req.arrayBuffer())
-			if (backend.putBlob) {
-				await backend.putBlob(ino, data, mutationOptions(c.req.raw))
-			} else {
-				await backend.truncate(ino, 0n, mutationOptions(c.req.raw))
-				if (data.length > 0) await backend.write(ino, 0n, data, mutationOptions(c.req.raw))
-			}
+			await backend.putBlob(ino, data, mutationOptions(c.req.raw))
 			return c.json({ ok: true })
 		})
 
@@ -249,13 +237,13 @@ export function createFsApi(backend: StorageBackend) {
 
 		.get('/inodes/:ino/xattrs', zValidator('param', InoParam), async (c) => {
 			const { ino } = c.req.valid('param')
-			const names = await backend.listXattr?.(ino) ?? []
+			const names = await backend.caps?.listXattrs?.(ino) ?? []
 			return c.json({ names })
 		})
 
 		.get('/inodes/:ino/xattrs/:name', zValidator('param', InoParam.extend({ name: z.string() })), async (c) => {
 			const { ino, name } = c.req.valid('param')
-			const value = await backend.getXattr?.(ino, name)
+			const value = await backend.caps?.getXattr?.(ino, name)
 			if (value === null || value === undefined) return c.json({ error: 'not found' }, 404)
 			return c.json({ value: encodeBytes(value) })
 		})
@@ -267,14 +255,14 @@ export function createFsApi(backend: StorageBackend) {
 				const { ino, name } = c.req.valid('param')
 				const { value } = c.req.valid('json')
 				const decoded = decodeBytes(value)
-				await backend.setXattr?.(ino, name, decoded, mutationOptions(c.req.raw))
+				await backend.caps?.setXattr?.(ino, name, decoded, mutationOptions(c.req.raw))
 				return c.json({ ok: true })
 			}
 		)
 
 		.delete('/inodes/:ino/xattrs/:name', zValidator('param', InoParam.extend({ name: z.string() })), async (c) => {
 			const { ino, name } = c.req.valid('param')
-			await backend.removeXattr?.(ino, name, mutationOptions(c.req.raw))
+			await backend.caps?.removeXattr?.(ino, name, mutationOptions(c.req.raw))
 			return c.json({ ok: true })
 		})
 
@@ -283,40 +271,44 @@ export function createFsApi(backend: StorageBackend) {
 		.get('/inodes/:dirIno/entries', zValidator('param', DirInoParam), zValidator('query', CursorQuery), async (c) => {
 			const { dirIno } = c.req.valid('param')
 			const { cursor } = c.req.valid('query')
-			const result = await backend.dirList(dirIno, cursor)
+			const result = await backend.listDirents(dirIno, cursor)
 			return c.json(result)
 		})
 
 		.get('/inodes/:dirIno/entries/:name', zValidator('param', DirInoNameParam), async (c) => {
 			const { dirIno, name } = c.req.valid('param')
-			const entry = await backend.dirLookup(dirIno, name)
+			const entry = await backend.getDirent(dirIno, name)
 			if (!entry) return c.json({ error: 'not found' }, 404)
 			return c.json(entry)
 		})
 
-		// dirSet: unconditional overwrite, used in rename's destination step.
-		// Returns the displaced entry so the caller can invalidate its cache.
+		// putDirent: insert or replace. Returns displaced entry info for cache invalidation.
 		.put('/inodes/:dirIno/entries/:name', zValidator('param', DirInoNameParam), zValidator('json', z.object({
 			ino: z.string(),
 			type: FileTypeNum,
 		})), async (c) => {
 			const { dirIno, name } = c.req.valid('param')
 			const { ino, type } = c.req.valid('json')
-			const displaced = await backend.dirSet(dirIno, name, ino, type, mutationOptions(c.req.raw))
+			const existing = await backend.getDirent(dirIno, name)
+			await backend.putDirent(dirIno, name, { ino, type }, mutationOptions(c.req.raw))
+			const displaced = existing && existing.ino !== ino ? existing : null
+			if (displaced) {
+				await backend.deleteInode(displaced.ino)
+			}
 			return c.json({ displaced })
 		})
 
-		// dirUnset: remove entry and decrement nlink (backend frees inode if 0).
+		// deleteDirent + deleteInode: remove entry and free the inode.
 		.delete('/inodes/:dirIno/entries/:name', zValidator('param', DirInoNameParam), async (c) => {
 			const { dirIno, name } = c.req.valid('param')
-			const removed = await backend.dirUnset(dirIno, name, mutationOptions(c.req.raw))
-			if (!removed) return c.json({ error: 'not found' }, 404)
-			return c.json({ removed })
+			const entry = await backend.getDirent(dirIno, name)
+			if (!entry) return c.json({ error: 'not found' }, 404)
+			await backend.deleteDirent(dirIno, name, mutationOptions(c.req.raw))
+			await backend.deleteInode(entry.ino)
+			return c.json({ removed: entry })
 		})
 
 		// ── Rename ────────────────────────────────────────────────────────────
-		// Returns the displaced ino so the caller can evict it from its cache.
-		// Falls back to dirSet + dirUnset if backend.rename is absent.
 		.post('/rename', zValidator('json', z.object({
 			oldDirIno: z.string(),
 			oldName: z.string(),
@@ -326,14 +318,18 @@ export function createFsApi(backend: StorageBackend) {
 			const { oldDirIno, oldName, newDirIno, newName } = c.req.valid('json')
 			let displaced: string | null = null
 			try {
-				if (backend.rename) {
-					displaced = await backend.rename(oldDirIno, oldName, newDirIno, newName, mutationOptions(c.req.raw))
+				if (backend.caps?.atomicMove) {
+					displaced = await backend.caps.atomicMove(oldDirIno, oldName, newDirIno, newName, mutationOptions(c.req.raw))
 				} else {
-					const source = await backend.dirLookup(oldDirIno, oldName)
+					const source = await backend.getDirent(oldDirIno, oldName)
 					if (!source) return c.json({ error: `ENOENT: ${oldName}` }, 404)
-					const d = await backend.dirSet(newDirIno, newName, source.ino, source.type, mutationOptions(c.req.raw))
-					await backend.dirUnset(oldDirIno, oldName, mutationOptions(c.req.raw))
-					displaced = d?.ino ?? null
+					const dest = await backend.getDirent(newDirIno, newName)
+					await backend.putDirent(newDirIno, newName, { ino: source.ino, type: source.type }, mutationOptions(c.req.raw))
+					await backend.deleteDirent(oldDirIno, oldName, mutationOptions(c.req.raw))
+					if (dest && dest.ino !== source.ino) {
+						await backend.deleteInode(dest.ino)
+						displaced = dest.ino
+					}
 				}
 			} catch (error) {
 				const message = errorMessage(error)

@@ -13,7 +13,6 @@ import {
 } from 'react'
 import {
 	decodeXattr,
-	fs as createFs,
 	GHOSTORE_XATTR,
 	idbStorage,
 	synced,
@@ -346,7 +345,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 	const local = idbStorage('ghostore-fs')
 	const remote = await apiStorage(fsClient)
 	const volume = await synced({ local, remote, lazyContent: true })
-	const remoteVolume = createVolume(createFs(remote))
+	const remoteVolume = createVolume(remote)
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()
 	let entries = loadCache(userId)

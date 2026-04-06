@@ -25,5 +25,5 @@ export const coreMigrations: MigrationEntry[] = [
 	{ version: 4, sql: MIGRATION_0004 },
 	{ version: 5, sql: MIGRATION_0005 },
 	{ version: 6, sql: MIGRATION_0006 },
-	{ version: 7, sql: MIGRATION_0007 }
+	{ version: 7, sql: MIGRATION_0007 },
 ]

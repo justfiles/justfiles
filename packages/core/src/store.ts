@@ -597,14 +597,14 @@ export function parseSqlStatements(sql: string): string[] {
 			else depth--
 		}
 		if (sql[i] === ';' && depth === 0) {
-			const stmt = sql.slice(start, i).trim()
-			if (stmt && !stmt.startsWith('--')) statements.push(stmt)
+			const stmt = sql.slice(start, i).trim().replace(/^(--[^\n]*\n\s*)+/, '').trim()
+			if (stmt) statements.push(stmt)
 			start = i + 1
 		}
 	}
 
-	const last = sql.slice(start).trim()
-	if (last && !last.startsWith('--')) statements.push(last)
+	const last = sql.slice(start).trim().replace(/^(--[^\n]*\n\s*)+/, '').trim()
+	if (last) statements.push(last)
 
 	return statements.filter(Boolean)
 }

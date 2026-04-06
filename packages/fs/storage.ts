@@ -1,358 +1,201 @@
-import type { FileType, Ino, Off, DirCursor, DirentMin } from './types';
+import type { FileType, Ino } from './types';
 
 export interface InodeMeta {
-  type: FileType;
-  size: Off;
-  mode: number;
-  /**
-   * Hard link count. Entirely owned by the backend — the VFS never reads
-   * or writes this field directly. The backend increments it inside dirAdd
-   * and dirSet (when adding an entry) and decrements it inside dirUnset
-   * (freeing the inode when it hits 0). Exposed in Stat so consumers above
-   * the VFS can read it.
-   *
-   * New inodes start at nlink = 0. The first dirAdd call (from mknod or
-   * create?) brings it to 1.
-   */
-  nlink: number;
-  mtimeNs: bigint;
-  ctimeNs: bigint;
-  /**
-   * Hash of the file's current content (e.g. SHA-256, hex-encoded).
-   * Set by the backend on every write. Absent for directories and symlinks.
-   *
-   * The primary consumers are:
-   *   - Sync layer: compare hashes to decide what to upload.
-   *   - Embedding pipeline: skip re-embedding when hash is unchanged.
-   */
-  contentHash?: string;
-  /** For symlinks: the target path. Stored inline to avoid a separate
-   *  data read on every symlink traversal. */
-  symlinkTarget?: string;
+	type: FileType;
+	size: bigint;
+	mode: number;
+	mtimeNs: bigint;
+	ctimeNs: bigint;
+	contentHash?: string;
+	symlinkTarget?: string;
+	uid?: number;
+	gid?: number;
 }
 
 export type MutationOptions = {
-	/** Identifies the client or actor that originated the mutation. */
 	source?: string;
 }
 
 export type UpdateQueryOptions = {
-	/** Match against FsOp.source. */
 	source?: string;
-	/** `only` includes matching source, `exclude` removes it. */
 	sourceMode?: 'only' | 'exclude';
 }
 
 export type FsOp =
 	| {
-			/**
-			 * Reconcile this inode to the sender's current snapshot.
-			 *
-			 * `meta` is a metadata patch. When the target inode is missing and
-			 * `meta.type` is present, recipients may create it with sensible
-			 * defaults and then apply the provided fields.
-			 *
-			 * `xattrs`, when present, is the complete desired xattr set for this
-			 * inode. Recipients should replace their current xattrs with it.
-			 * If `xattrs` is omitted, xattrs are unchanged. `xattrs: {}` means
-			 * "clear all xattrs".
-			 */
-			kind: 'upsert-inode'
-			source?: string
-			ino: Ino
-			meta?: Partial<InodeMeta>
-			xattrs?: Record<string, Uint8Array | null>
+			kind: 'upsert-inode';
+			source?: string;
+			ino: Ino;
+			meta?: Partial<InodeMeta>;
+			xattrs?: Record<string, Uint8Array | null>;
 		}
 	| {
-			kind: 'set-dirent'
-			source?: string
-			dirIno: Ino
-			name: string
-			ino: Ino
-			type: FileType
+			kind: 'set-dirent';
+			source?: string;
+			dirIno: Ino;
+			name: string;
+			ino: Ino;
+			type: FileType;
 		}
 	| {
-			kind: 'unset-dirent'
-			source?: string
-			dirIno: Ino
-			name: string
-			ino?: Ino
+			kind: 'unset-dirent';
+			source?: string;
+			dirIno: Ino;
+			name: string;
+			ino?: Ino;
 		};
 
 export class FsCursorExpiredError extends Error {
 	constructor(message = 'FS sync cursor expired') {
-		super(message)
-		this.name = 'FsCursorExpiredError'
+		super(message);
+		this.name = 'FsCursorExpiredError';
 	}
 }
 
 export function isFsCursorExpiredError(error: unknown): error is FsCursorExpiredError {
 	return error instanceof FsCursorExpiredError ||
-		(error instanceof Error && error.name === 'FsCursorExpiredError')
+		(error instanceof Error && error.name === 'FsCursorExpiredError');
+}
+
+export type ScanEntry = {
+	ino: Ino;
+	dirIno: Ino;
+	name: string;
+	meta: InodeMeta;
+	xattrs?: Record<string, Uint8Array>;
 }
 
 /**
- * Metadata fields that may be applied via setMeta.
- *
- * The VFS typically uses this for partial attribute updates, but the sync
- * layer may also send a full inode snapshot to materialize a missing inode on
- * a remote backend during local-first replay.
+ * Optional performance and feature capabilities that backends may declare.
+ * Accessed via `backend.caps`.
  */
-type InodeMetaUpdate = Partial<InodeMeta>;
+export interface StorageCapabilities {
+	/**
+	 * Atomic alloc + dirAdd in one operation — eliminates the orphaned-inode
+	 * window between a bare setMeta + putDirent two-step.
+	 * Returns the new ino. Throws EEXIST if name already exists in dirIno.
+	 */
+	atomicCreate?(dirIno: Ino, name: string, meta: InodeMeta, options?: MutationOptions): Promise<Ino>;
+
+	/**
+	 * Atomic rename — moves a name from one directory to another without a
+	 * window where both names exist. The backend handles freeing any displaced
+	 * inode atomically. Returns the ino of the displaced entry (for cache
+	 * invalidation), or null if nothing was displaced.
+	 */
+	atomicMove?(oldDir: Ino, oldName: string, newDir: Ino, newName: string, options?: MutationOptions): Promise<Ino | null>;
+
+	/** Partial read — if absent the VFS does a full getBlob. */
+	readRange?(ino: Ino, offset: number, length: number): Promise<Uint8Array>;
+
+	/** Partial write — if absent the VFS does getBlob + modify + putBlob. */
+	writeRange?(ino: Ino, offset: number, data: Uint8Array, options?: MutationOptions): Promise<void>;
+
+	/** Resize — if absent the VFS emulates via getBlob + slice + putBlob. */
+	truncate?(ino: Ino, size: bigint, options?: MutationOptions): Promise<void>;
+
+	/** Extended attribute read. */
+	getXattr?(ino: Ino, name: string): Promise<Uint8Array | null>;
+
+	/** Extended attribute write. */
+	setXattr?(ino: Ino, name: string, value: Uint8Array, options?: MutationOptions): Promise<void>;
+
+	/** List all xattr names on an inode. */
+	listXattrs?(ino: Ino): Promise<string[]>;
+
+	/** Remove a single xattr. */
+	removeXattr?(ino: Ino, name: string, options?: MutationOptions): Promise<void>;
+
+	/**
+	 * Full filesystem scan in parent-before-child order.
+	 * `syncCursor` is the deltaUpdates cursor captured at scan time —
+	 * callers store it as the starting point for subsequent incremental pulls.
+	 */
+	fullScan?(cursor: string): Promise<{ entries: ScanEntry[]; next: string; syncCursor?: string }>;
+
+	/**
+	 * Return filesystem updates since the position encoded in `cursor`.
+	 * Empty string means "from the beginning".
+	 */
+	deltaUpdates?(cursor: string, options?: UpdateQueryOptions): Promise<{ ops: FsOp[]; cursor: string }>;
+}
 
 /**
- * Minimal backend interface.
+ * Minimal storage backend — 9 pure K/V operations.
  *
- * 11 required methods + 3 optional. A filesystem is fundamentally:
- * "a pool of numbered blobs with metadata, plus a naming layer."
+ * Each method touches exactly one logical store (meta, blob, or dirents).
+ * No nlink management, no cross-store side effects. The VFS owns sequencing.
  *
- * Hard link reference counting (nlink) is backend-internal. The VFS
- * never calls free(), linkInc(), or linkDec() — it simply adds and
- * removes directory entries via dirAdd / dirSet / dirUnset, and the
- * backend atomically maintains nlink as a side effect.
+ * Hard links are not supported; every inode has exactly one directory entry.
+ * deleteInode is therefore always called after deleteDirent — the VFS sequences
+ * these two calls whenever it removes a file.
  *
- * dirAdd and dirSet are intentionally distinct:
- *   dirAdd  — no-clobber insert (mknod, link). TOCTOU-safe.
- *   dirSet  — unconditional replace (rename overwrite path only).
+ * Implement `caps` to opt into atomicity and performance features.
  */
 export interface StorageBackend {
+	/** Backend-defined root inode — entry point for path resolution. */
+	readonly rootIno: Ino;
 
-  /** Backend-defined root inode used as the entry point for path resolution. */
-  readonly rootIno: Ino;
+	/** Optional capability declarations. */
+	readonly caps?: StorageCapabilities;
 
-  // ==========================================
-  // 1. INODE LIFECYCLE — allocate
-  // ==========================================
+	// ── Inode metadata ─────────────────────────────────────────────────────────
 
-  /**
-   * Allocate a new inode with initial metadata. Returns the assigned ino.
-   * nlink is not supplied by the caller — the backend initialises it to 0.
-   * The first dirAdd call on this inode (from mknod or create?) brings
-   * nlink to 1.
-   *
-   * Why the backend assigns inos: it knows its own numbering strategy
-   * (sequential, random, UUID-mapped, etc.). The VFS does not care.
-   */
-  alloc(meta: Omit<InodeMeta, 'nlink'>, options?: MutationOptions): Promise<Ino>;
+	/** Read all metadata for an inode. Returns null if not found. */
+	getMeta(ino: Ino): Promise<InodeMeta | null>;
 
-  /**
-   * Atomically allocate a new inode AND add its directory entry,
-   * no-clobber. Optional — if implemented, the VFS uses this for mknod
-   * instead of the two-step alloc() + dirAdd(). Backends with
-   * conditional/transactional writes (DynamoDB, SQLite, Postgres) should
-   * implement this to eliminate the orphaned-inode failure window.
-   *
-   * Fails (rejects) if name already exists in dirIno — matching the
-   * no-clobber semantics of dirAdd().
-   * The backend sets nlink = 1 inside this operation.
-   */
-  create?(dirIno: Ino, name: string, meta: Omit<InodeMeta, 'nlink'>, options?: MutationOptions): Promise<Ino>;
+	/**
+	 * Partial update of metadata fields.
+	 * If the inode does not exist AND patch contains enough fields to construct a
+	 * full InodeMeta (type, size, mode, mtimeNs, ctimeNs), the inode is created.
+	 * This "upsert" behaviour lets the sync layer materialise remote inodes.
+	 */
+	setMeta(ino: Ino, patch: Partial<InodeMeta>, options?: MutationOptions): Promise<void>;
 
-  // ==========================================
-  // 2. INODE METADATA — the "stat" of a node
-  // ==========================================
+	/**
+	 * Free an inode entirely — deletes metadata, blob data, and any xattrs.
+	 * The caller (VFS) is responsible for removing the directory entry first.
+	 */
+	deleteInode(ino: Ino): Promise<void>;
 
-  /**
-   * Read all metadata for an inode.
-   * Returns null if ino doesn't exist (not an error — the VFS needs to
-   * distinguish "gone" from "I/O failure").
-   */
-  getMeta(ino: Ino): Promise<InodeMeta | null>;
+	// ── Blob content ────────────────────────────────────────────────────────────
 
-  /**
-   * Partial update of metadata fields. nlink is excluded from the update
-   * type — nlink is backend-owned and only modified by dirAdd / dirSet /
-   * dirUnset. The VFS calls setMeta for chmod, utimes, and similar attribute
-   * changes.
-   */
-  setMeta(ino: Ino, partial: InodeMetaUpdate, options?: MutationOptions): Promise<void>;
+	/**
+	 * Read the full content of an inode.
+	 * Returns an empty Uint8Array if the inode has no content (new file, directory).
+	 */
+	getBlob(ino: Ino): Promise<Uint8Array>;
 
-  // ==========================================
-  // 2b. EXTENDED ATTRIBUTES — small inode metadata blobs
-  // ==========================================
+	/**
+	 * Replace the entire content of an inode atomically.
+	 * The backend MUST update size and contentHash in metadata as a side effect.
+	 */
+	putBlob(ino: Ino, data: Uint8Array, options?: MutationOptions): Promise<void>;
 
-  /**
-   * Read a single extended attribute value.
-   * Optional — backends without xattr support should simply omit it.
-   */
-  getXattr?(ino: Ino, name: string): Promise<Uint8Array | null>;
+	// ── Directory entries ────────────────────────────────────────────────────────
 
-  /**
-   * Write or replace a single extended attribute value.
-   * Optional — omitted means "xattrs unsupported", not an error.
-   */
-  setXattr?(ino: Ino, name: string, value: Uint8Array, options?: MutationOptions): Promise<void>;
+	/** Look up a single name in a directory. Returns null if not found. */
+	getDirent(dirIno: Ino, name: string): Promise<import('./types').DirentMin | null>;
 
-  /**
-   * List all xattr names currently set on an inode.
-   * Optional — omitted means no xattrs are available.
-   */
-  listXattr?(ino: Ino): Promise<string[]>;
+	/**
+	 * Insert or replace a directory entry.
+	 * Does NOT touch inode metadata — the VFS sequences this with setMeta/deleteInode.
+	 */
+	putDirent(dirIno: Ino, name: string, entry: import('./types').DirentMin, options?: MutationOptions): Promise<void>;
 
-  /**
-   * Remove a single extended attribute.
-   * Optional — omitted means "unsupported", so callers treat it as a no-op.
-   */
-  removeXattr?(ino: Ino, name: string, options?: MutationOptions): Promise<void>;
+	/**
+	 * Remove a directory entry.
+	 * Does NOT free the inode — the caller (VFS) calls deleteInode separately.
+	 */
+	deleteDirent(dirIno: Ino, name: string, options?: MutationOptions): Promise<void>;
 
-  // ==========================================
-  // 3. DATA I/O — raw byte storage per inode
-  // ==========================================
-
-  /**
-   * Read up to `length` bytes starting at `offset`.
-   * Returns the bytes read. May be shorter than requested (short read)
-   * or empty (offset >= size, i.e. EOF).
-   */
-  read(ino: Ino, offset: Off, length: number): Promise<Uint8Array>;
-
-  /**
-   * Write bytes at offset. Grows the file if offset + data.length > size.
-   * Returns bytes written (always data.length unless the medium is full).
-   * The backend must update size in its metadata if the file grew.
-   */
-  write(ino: Ino, offset: Off, data: Uint8Array, options?: MutationOptions): Promise<number>;
-
-  /**
-   * Resize the data to exactly `size` bytes.
-   * If shrinking: discard trailing data.
-   * If growing: the new bytes read as zeroes.
-   *
-   * A required primitive rather than a write()-based emulation: truncating
-   * a large file to 0 must be O(1), not O(n). Object-store backends without
-   * native truncate implement it as putBlob(ino, emptyOrSlicedData).
-   */
-  truncate(ino: Ino, size: Off, options?: MutationOptions): Promise<void>;
-
-  // ==========================================
-  // 4. DIRECTORY ENTRIES — the naming layer
-  // ==========================================
-
-  /**
-   * Look up a single name in a directory inode.
-   * Returns { ino, type } or null. Returns type alongside ino so the VFS
-   * can use the result in a subsequent dirSet (e.g. in synthesised rename)
-   * without an extra getMeta round trip.
-   */
-  dirLookup(dirIno: Ino, name: string): Promise<DirentMin | null>;
-
-  /**
-   * List entries in batches. An empty-string cursor starts from the
-   * beginning; the backend returns empty string to signal end-of-directory.
-   * The cursor is opaque — a stringified offset, a DynamoDB token, a B-tree
-   * key, whatever the backend needs. DirCursor is typed as string to
-   * accommodate all of these without artificial encoding.
-   */
-  dirList(dirIno: Ino, cursor: DirCursor): Promise<{
-    entries: { name: string; ino: Ino; type: FileType }[];
-    next: DirCursor;
-  }>;
-
-  /**
-   * Insert a new directory entry if and only if the name does not already
-   * exist. Atomically increments nlink on ino when the entry is added.
-   * Returns true if the entry was added, false if the name already existed
-   * (nlink is NOT modified in that case).
-   *
-   * This is the primitive for mknod (after alloc) and hard-link creation
-   * (link()). It is explicitly no-clobber: the VFS maps a false return to
-   * EEXIST. Using a separate no-clobber primitive (rather than a pre-lookup
-   * + dirSet) eliminates the TOCTOU race where two concurrent callers both
-   * see "name is free" and both proceed to overwrite each other.
-   *
-   * Crash safety: a crash after alloc() but before dirAdd() leaves an
-   * orphaned inode (nlink = 0, no directory entry). Use create?() to
-   * close this window for mknod.
-   */
-  dirAdd(dirIno: Ino, name: string, ino: Ino, type: FileType, options?: MutationOptions): Promise<boolean>;
-
-  /**
-   * Unconditionally replace (or insert) a directory entry AND atomically
-   * manage nlink on both the incoming and any displaced inode.
-   * If an existing entry is displaced, the backend atomically decrements
-   * nlink on the displaced inode (freeing it if nlink hits 0) and returns
-   * the displaced entry so the VFS can invalidate its cache.
-   * Returns null if no entry previously existed at name.
-   *
-   * This is the primitive for the rename overwrite path — the one operation
-   * that legitimately replaces an existing name. It is NOT used for mknod
-   * or link(); those use dirAdd() to get no-clobber semantics.
-   */
-  dirSet(dirIno: Ino, name: string, ino: Ino, type: FileType, options?: MutationOptions): Promise<DirentMin | null>;
-
-  /**
-   * Remove a directory entry AND atomically decrement nlink on the inode,
-   * freeing the inode entirely if nlink reaches 0.
-   * Returns the removed entry, or null if name was not present.
-   *
-   * This is the single operation the VFS uses for unlink(). Because nlink
-   * is managed atomically inside this call, the VFS never needs a separate
-   * decrement or free step.
-   *
-   * Note: rename() uses dirSet + dirUnset but with a temporary nlink
-   * increment followed by a decrement — net zero, so the inode is never
-   * freed prematurely. See rename?() for the atomic alternative.
-   */
-  dirUnset(dirIno: Ino, name: string, options?: MutationOptions): Promise<DirentMin | null>;
-
-  /**
-   * Atomically move a name from one directory to another (or rename within
-   * the same directory). Optional — if absent, the VFS synthesises rename
-   * as dirLookup + dirSet + dirUnset.
-   *
-   * Why synthesised rename is safe but not ideal:
-   *   dirSet(newDir, newName, ino, type)  → nlink temporarily +1
-   *   dirUnset(oldDir, oldName)           → nlink back to original
-   *   Net nlink change: 0. The inode is never freed prematurely.
-   *   Downside: there is a window where both names exist simultaneously.
-   *
-   * rename?() closes that consistency window. If newName already existed,
-   * the backend atomically displaces it (decrement its nlink, free if 0)
-   * and returns its ino so the VFS can invalidate the cache entry.
-   */
-  rename?(oldDir: Ino, oldName: string, newDir: Ino, newName: string, options?: MutationOptions): Promise<Ino | null>;
-
-  /**
-   * Enumerate every inode in the filesystem in a single paginated scan.
-   * Optional — cloud backends (DynamoDB, S3) should implement this to avoid
-   * O(directories) round trips during sync tree walks.
-   *
-   * Entries MUST be returned in parent-before-child order so callers can
-   * build an ino→path map incrementally without backtracking.
-   *
-   * The cursor is opaque, same semantics as DirCursor.
-   */
-  scan?(cursor: string): Promise<{
-    entries: { ino: Ino; dirIno: Ino; name: string; meta: InodeMeta; xattrs?: Record<string, Uint8Array> }[]
-    next: string
-    cursor?: string
-  }>
-
-  /**
-   * Replace the entire content of a file atomically.
-   * Optional — if absent, the VFS falls back to write().
-   *
-   * Object stores (S3, R2, GCS) do not support partial writes — every
-   * mutation is a full object PUT. putBlob() lets the VFS signal "here is
-   * the complete new content" so the backend can issue a single PUT with
-   * no prior GET. Backends that support efficient partial writes ignore
-   * this method.
-   */
-  putBlob?(ino: Ino, data: Uint8Array, options?: MutationOptions): Promise<void>;
-
-  /**
-   * Return filesystem updates since the position encoded in `cursor`.
-   * Optional — if absent, delta sync is disabled in `CachedStorageBackend`.
-   *
-   * `cursor` is an opaque string issued by the backend. The client stores it
-   * verbatim and passes it back on the next call. Empty string means
-   * "from the beginning". The backend encodes whatever it needs (ISO
-   * timestamp, sequence number, …); the client never interprets or generates
-   * it. This eliminates client/server clock-skew bugs that arise when the
-   * client supplies a wall-clock time.
-   *
-   * `options.source` and `options.sourceMode` allow journals to include or
-   * exclude updates from a given client without changing cursor semantics.
-   */
-  updates?(cursor: string, options?: UpdateQueryOptions): Promise<{ ops: FsOp[]; cursor: string }>;
+	/**
+	 * List entries in a directory in batches.
+	 * Empty-string cursor = start from beginning.
+	 * Backend returns empty string next to signal end-of-directory.
+	 */
+	listDirents(dirIno: Ino, cursor: string): Promise<{
+		entries: { name: string; ino: Ino; type: FileType }[];
+		next: string;
+	}>;
 }

@@ -1,15 +1,22 @@
 import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
-import type { StorageBackend, InodeMeta, FsOp, MutationOptions, UpdateQueryOptions } from './storage'
+import type { StorageBackend, StorageCapabilities, InodeMeta, FsOp, MutationOptions, UpdateQueryOptions } from './storage'
 import { FileType } from './types'
-import type { Ino, Off, DirCursor } from './types'
+import type { Ino } from './types'
 
 // ---------------------------------------------------------------------------
 // IDB schema
 // ---------------------------------------------------------------------------
 
-interface InodeRecord extends InodeMeta {
+interface InodeRecord {
 	ino: Ino
+	type: FileType
+	size: bigint
+	mode: number
+	mtimeNs: bigint
+	ctimeNs: bigint
+	contentHash?: string
+	symlinkTarget?: string
 	lastAccessedAt: number
 }
 
@@ -89,7 +96,7 @@ const KeyRange = (globalThis as unknown as {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DB_VERSION = 2
+const DB_VERSION = 3
 const DEFAULT_CONTENT_CAP = 50 * 1024 * 1024 // 50 MB
 const ROOT_INO: Ino = '1'
 const DIR_PAGE = 100
@@ -122,7 +129,7 @@ export type IdbStorageBackend = StorageBackend & {
  * IndexedDB-backed StorageBackend with LRU content eviction.
  *
  * Uses seven object stores:
- *   inodes   — inode metadata
+ *   inodes   — inode metadata (no nlink)
  *   content  — file data (subject to LRU eviction up to contentCapBytes)
  *   dirs     — directory entries keyed by [dirIno, name]
  *   xattrs   — extended attributes keyed by [ino, name]
@@ -130,8 +137,7 @@ export type IdbStorageBackend = StorageBackend & {
  *   updates  — append-only local operation log for outbound sync
  *   meta     — key-value bootstrap state (rootIno, totalContentBytes, etc.)
  *
- * The root inode is always '1' (matching the memStorage convention and
- * the current fs.ts hardcoding).
+ * The root inode is always '1' (matching the memStorage convention).
  */
 export function idbStorage(
 	dbName: string,
@@ -166,6 +172,14 @@ export function idbStorage(
 					if (oldVersion < 2 && !db.objectStoreNames.contains('updates')) {
 						db.createObjectStore('updates', { keyPath: 'seq', autoIncrement: true })
 					}
+					if (oldVersion < 3) {
+						// Recreate inodes store without nlink column.
+						// Data migration not required — existing data bootstrapped via sync.
+						if (db.objectStoreNames.contains('inodes')) {
+							db.deleteObjectStore('inodes')
+						}
+						db.createObjectStore('inodes', { keyPath: 'ino' })
+					}
 				},
 				blocked() {
 					console.warn(`[idbStorage] DB "${dbName}" is blocked — another tab may be open`)
@@ -181,7 +195,6 @@ export function idbStorage(
 						type: FileType.Directory,
 						size: 0n,
 						mode: 0o755,
-						nlink: 1,
 						mtimeNs: BigInt(now) * 1_000_000n,
 						ctimeNs: BigInt(now) * 1_000_000n,
 						lastAccessedAt: now,
@@ -200,32 +213,18 @@ export function idbStorage(
 	// LRU helpers
 	// ---------------------------------------------------------------------------
 
-	/**
-	 * Evict least-recently-accessed, non-dirty content entries until adding
-	 * `addingBytes` would not exceed the cap. Does NOT evict the inode being
-	 * written (skipIno) nor any dirty inodes (unflushed writes must survive).
-	 * Updates totalContentBytes in the meta store.
-	 *
-	 * Cap enforcement is best-effort: a single write whose size exceeds the cap
-	 * cannot be prevented (we must persist it), but all evictable content is
-	 * cleared before accepting the oversized write.
-	 */
 	async function evictContent(db: Db, addingBytes: number, skipIno: Ino): Promise<void> {
 		const total = (await db.get('meta', 'totalContentBytes') as number | undefined) ?? 0
 		if (total + addingBytes <= cap) return
 
-		// Include 'dirty' so we can check per-entry whether eviction is safe
 		const tx = db.transaction(['content', 'dirty', 'meta'], 'readwrite')
 		const lruIndex = tx.objectStore('content').index('by-lru')
 
 		let running = total
 		let cursor = await lruIndex.openCursor()
-		// Stop as soon as enough space is freed. When a candidate is dirty,
-		// skip it without stopping — keep scanning for the next clean entry.
 		while (cursor && running + addingBytes > cap) {
 			const { ino, sizeBytes } = cursor.value
 			if (ino !== skipIno) {
-				// Never evict dirty content — it has unflushed writes
 				const isDirty = await tx.objectStore('dirty').get(ino)
 				if (!isDirty) {
 					running -= sizeBytes
@@ -239,8 +238,13 @@ export function idbStorage(
 		await tx.done
 	}
 
+	function metaFromRecord(record: InodeRecord): InodeMeta {
+		const { ino: _ino, lastAccessedAt: _lastAccessedAt, ...meta } = record
+		return meta
+	}
+
 	/**
-	 * Atomically write content, update inode size, mark dirty, update total.
+	 * Atomically write content, update inode size and contentHash, mark dirty, update total.
 	 * Caller must call evictContent first if needed.
 	 */
 	async function writeContent(
@@ -278,39 +282,33 @@ export function idbStorage(
 		await tx.done
 	}
 
-function defaultModeForType(type: FileType): number {
-	switch (type) {
-		case FileType.Directory:
-			return 0o755
-		case FileType.Symlink:
-			return 0o777
-		case FileType.Regular:
-		default:
-			return 0o644
+	function defaultModeForType(type: FileType): number {
+		switch (type) {
+			case FileType.Directory:
+				return 0o755
+			case FileType.Symlink:
+				return 0o777
+			case FileType.Regular:
+			default:
+				return 0o644
+		}
 	}
-}
 
-function buildMissingInodeRecord(ino: Ino, partial: Partial<InodeMeta>, now = Date.now()): InodeRecord | null {
-	if (partial.type === undefined) return null
-	const stamp = BigInt(now) * 1_000_000n
-	return {
-		ino,
-		type: partial.type,
-		size: partial.size ?? 0n,
-		mode: partial.mode ?? defaultModeForType(partial.type),
-		nlink: partial.nlink ?? 0,
-		mtimeNs: partial.mtimeNs ?? stamp,
-		ctimeNs: partial.ctimeNs ?? stamp,
-		contentHash: partial.contentHash,
-		symlinkTarget: partial.symlinkTarget,
-		lastAccessedAt: now,
+	function buildMissingInodeRecord(ino: Ino, partial: Partial<InodeMeta>, now = Date.now()): InodeRecord | null {
+		if (partial.type === undefined) return null
+		const stamp = BigInt(now) * 1_000_000n
+		return {
+			ino,
+			type: partial.type,
+			size: partial.size ?? 0n,
+			mode: partial.mode ?? defaultModeForType(partial.type),
+			mtimeNs: partial.mtimeNs ?? stamp,
+			ctimeNs: partial.ctimeNs ?? stamp,
+			contentHash: partial.contentHash,
+			symlinkTarget: partial.symlinkTarget,
+			lastAccessedAt: now,
+		}
 	}
-}
-
-function metaFromRecord(record: InodeRecord): InodeMeta {
-	const { ino: _ino, lastAccessedAt: _lastAccessedAt, ...meta } = record
-	return meta
-}
 
 	function filterOpsBySource(ops: FsOp[], options?: UpdateQueryOptions): FsOp[] {
 		const source = options?.source
@@ -325,8 +323,8 @@ function metaFromRecord(record: InodeRecord): InodeMeta {
 	}
 
 	/**
-	 * Free an inode and all associated data (content, xattrs, dir children).
-	 * Used when nlink reaches 0.
+	 * Free an inode and all associated data (content, xattrs).
+	 * Does NOT remove directory entries — caller manages dirents.
 	 */
 	async function freeIno(
 		tx: FullTx,
@@ -337,20 +335,11 @@ function metaFromRecord(record: InodeRecord): InodeMeta {
 		await tx.objectStore('dirty').delete(ino)
 
 		if (type === FileType.Regular) {
-			// Update totalContentBytes before deleting
 			const rec = await tx.objectStore('content').get(ino)
 			if (rec) {
 				const total = (await tx.objectStore('meta').get('totalContentBytes') as number | undefined) ?? 0
 				await tx.objectStore('meta').put(Math.max(0, total - rec.sizeBytes), 'totalContentBytes')
 				await tx.objectStore('content').delete(ino)
-			}
-		}
-
-		if (type === FileType.Directory) {
-			// Delete all child dir entries
-			const childKeys = await tx.objectStore('dirs').index('by-dir').getAllKeys(ino)
-			for (const k of childKeys) {
-				await tx.objectStore('dirs').delete(k)
 			}
 		}
 
@@ -362,49 +351,69 @@ function metaFromRecord(record: InodeRecord): InodeMeta {
 	}
 
 	// ---------------------------------------------------------------------------
-	// StorageBackend implementation
+	// Capabilities
 	// ---------------------------------------------------------------------------
 
-	return {
-		rootIno: ROOT_INO,
-
-		destroy() {
-			dbPromise?.then((db) => db.close()).catch(() => {})
-			dbPromise = null
+	const caps: StorageCapabilities = {
+		async getXattr(ino, name) {
+			const db = await getDb()
+			const rec = await db.get('xattrs', [ino, name])
+			return rec ? rec.value.slice() : null
 		},
 
-		// --- alloc / create ---
-
-		async alloc(meta, options) {
+		async setXattr(ino, name, value, options) {
 			const db = await getDb()
-			const ino = crypto.randomUUID()
-			const now = Date.now()
-			const tx = db.transaction(['inodes', 'content', 'updates'], 'readwrite')
-			await tx.objectStore('inodes').put({ ino, ...meta, nlink: 0, lastAccessedAt: now })
-			if (meta.type === FileType.Regular) {
-				await tx.objectStore('content').put({ ino, data: new Uint8Array(), sizeBytes: 0, lastAccessedAt: now })
-			}
+			const tx = db.transaction(['xattrs', 'updates', 'inodes'], 'readwrite')
+			await tx.objectStore('xattrs').put({ ino, name, value: value.slice() })
+			const inode = await tx.objectStore('inodes').get(ino)
+			const xattrs = await listAllXattrsInTx(tx as FullTx, ino)
 			await tx.objectStore('updates').add({
 				op: {
 					kind: 'upsert-inode',
 					source: options?.source,
 					ino,
-					meta: { ...meta, nlink: 0 },
+					meta: inode ? metaFromRecord(inode) : undefined,
+					xattrs,
 				},
 			})
 			await tx.done
-			return ino
 		},
 
-		async create(dirIno, name, meta, options) {
+		async listXattrs(ino) {
+			const db = await getDb()
+			const keys = await db.getAllKeysFromIndex('xattrs', 'by-ino', ino)
+			return keys.map((k) => k[1])
+		},
+
+		async removeXattr(ino, name, options) {
+			const db = await getDb()
+			const tx = db.transaction(['xattrs', 'updates', 'inodes'], 'readwrite')
+			await tx.objectStore('xattrs').delete([ino, name])
+			const inode = await tx.objectStore('inodes').get(ino)
+			const xattrs = await listAllXattrsInTx(tx as FullTx, ino)
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'upsert-inode',
+					source: options?.source,
+					ino,
+					meta: inode ? metaFromRecord(inode) : undefined,
+					xattrs,
+				},
+			})
+			await tx.done
+		},
+
+		async atomicCreate(dirIno, name, meta, options) {
 			const db = await getDb()
 			const tx = db.transaction(['inodes', 'content', 'dirs', 'updates'], 'readwrite')
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
-			if (existing) throw new Error(`EEXIST: ${name}`)
-
+			if (existing) {
+				await tx.done
+				throw new Error(`EEXIST: ${name}`)
+			}
 			const ino = crypto.randomUUID()
 			const now = Date.now()
-			await tx.objectStore('inodes').put({ ino, ...meta, nlink: 1, lastAccessedAt: now })
+			await tx.objectStore('inodes').put({ ino, ...meta, lastAccessedAt: now })
 			if (meta.type === FileType.Regular) {
 				await tx.objectStore('content').put({ ino, data: new Uint8Array(), sizeBytes: 0, lastAccessedAt: now })
 			}
@@ -414,7 +423,7 @@ function metaFromRecord(record: InodeRecord): InodeMeta {
 					kind: 'upsert-inode',
 					source: options?.source,
 					ino,
-					meta: { ...meta, nlink: 0 },
+					meta,
 				},
 			})
 			await tx.objectStore('updates').add({
@@ -431,14 +440,134 @@ function metaFromRecord(record: InodeRecord): InodeMeta {
 			return ino
 		},
 
-		// --- inode metadata ---
+		async atomicMove(oldDir, oldName, newDir, newName, options) {
+			const db = await getDb()
+			const tx = db.transaction(['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
+
+			const source = await tx.objectStore('dirs').get([oldDir, oldName])
+			if (!source) {
+				await tx.done
+				throw new Error(`ENOENT: ${oldName}`)
+			}
+
+			const destination = await tx.objectStore('dirs').get([newDir, newName])
+			let displaced: Ino | null = null
+
+			if (destination && destination.ino !== source.ino) {
+				displaced = destination.ino
+				await freeIno(tx as FullTx, destination.ino, destination.type)
+				await tx.objectStore('dirs').delete([newDir, newName])
+			}
+
+			await tx.objectStore('dirs').delete([oldDir, oldName])
+			await tx.objectStore('dirs').put({ dirIno: newDir, name: newName, ino: source.ino, type: source.type })
+
+			await tx.objectStore('updates').add({
+				op: { kind: 'set-dirent', source: options?.source, dirIno: newDir, name: newName, ino: source.ino, type: source.type },
+			})
+			await tx.objectStore('updates').add({
+				op: { kind: 'unset-dirent', source: options?.source, dirIno: oldDir, name: oldName, ino: source.ino },
+			})
+
+			await tx.done
+			return displaced
+		},
+
+		async fullScan(cursor) {
+			const db = await getDb()
+			const inoToPath = new Map<Ino, string>([[ROOT_INO, '/']])
+			const entries: import('./storage').ScanEntry[] = []
+
+			// Get current update head as the syncCursor
+			const allKeys = await db.getAllKeys('updates')
+			const syncCursor = allKeys.length > 0 ? String(allKeys[allKeys.length - 1]) : '-1'
+
+			// BFS walk
+			const queue: Ino[] = [ROOT_INO]
+			while (queue.length > 0) {
+				const dirIno = queue.shift()!
+				let cur = cursor
+				do {
+					const lower: [string, string] = [dirIno, cur]
+					const upper: [string, string] = [dirIno, '\uffff']
+					const range = KeyRange.bound(lower, upper, cur !== '', false) as never
+					const records = await db.getAll('dirs', range, DIR_PAGE + 1)
+					const hasMore = records.length > DIR_PAGE
+					const page = records.slice(0, DIR_PAGE)
+
+					for (const r of page) {
+						const dirPath = inoToPath.get(r.dirIno) ?? '/'
+						const path = dirPath === '/' ? `/${r.name}` : `${dirPath}/${r.name}`
+						inoToPath.set(r.ino, path)
+						const meta = await db.get('inodes', r.ino)
+						if (!meta) continue
+						const xattrRecs = await db.getAllFromIndex('xattrs', 'by-ino', r.ino)
+						const xattrs = xattrRecs.length > 0
+							? Object.fromEntries(xattrRecs.map(x => [x.name, x.value.slice()]))
+							: undefined
+						entries.push({
+							ino: r.ino,
+							dirIno: r.dirIno,
+							name: r.name,
+							meta: metaFromRecord(meta),
+							...(xattrs ? { xattrs } : {}),
+						})
+						if (r.type === FileType.Directory) queue.push(r.ino)
+					}
+
+					cur = hasMore ? (page[DIR_PAGE - 1]?.name ?? '') : ''
+				} while (cur !== '')
+				// Reset cursor after root (cursor only applies to root for pagination purposes)
+				cursor = ''
+			}
+
+			return { entries, next: '', syncCursor }
+		},
+
+		async deltaUpdates(cursor, options) {
+			const db = await getDb()
+			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
+			if (Number.isFinite(since) && since > 0) {
+				const compactTx = db.transaction(['updates'], 'readwrite')
+				const compactStore = compactTx.objectStore('updates')
+				let record = await compactStore.openCursor(KeyRange.upperBound(since) as never)
+				while (record) {
+					await record.delete()
+					record = await record.continue()
+				}
+				await compactTx.done
+			}
+
+			const lowerBound = Number.isFinite(since) && since > 0 ? since + 1 : 1
+			const range = KeyRange.lowerBound(lowerBound) as never
+			const records = await db.getAll('updates', range)
+			const keys = await db.getAllKeys('updates', range)
+			const nextCursor = keys.length > 0 ? String(keys[keys.length - 1]) : cursor
+			return {
+				ops: filterOpsBySource(records.map((record) => record.op), options),
+				cursor: nextCursor,
+			}
+		},
+	}
+
+	// ---------------------------------------------------------------------------
+	// StorageBackend implementation
+	// ---------------------------------------------------------------------------
+
+	return {
+		rootIno: ROOT_INO,
+		caps,
+
+		destroy() {
+			dbPromise?.then((db) => db.close()).catch(() => {})
+			dbPromise = null
+		},
 
 		async getMeta(ino) {
 			const db = await getDb()
 			const rec = await db.get('inodes', ino)
 			if (!rec) return null
-			const { lastAccessedAt: _laa, ino: _ino, ...meta } = rec
-			return meta
+			return metaFromRecord(rec)
 		},
 
 		async setMeta(ino, partial, options) {
@@ -484,240 +613,42 @@ function metaFromRecord(record: InodeRecord): InodeMeta {
 			await tx.done
 		},
 
-		// --- xattrs ---
-
-		async getXattr(ino, name) {
+		async deleteInode(ino) {
 			const db = await getDb()
-			const rec = await db.get('xattrs', [ino, name])
-			return rec ? rec.value.slice() : null
-		},
+			const inode = await db.get('inodes', ino)
+			if (!inode) return
+			const tx = db.transaction(['inodes', 'content', 'xattrs', 'dirty', 'meta'], 'readwrite')
+			await tx.objectStore('inodes').delete(ino)
+			await tx.objectStore('dirty').delete(ino)
 
-		async setXattr(ino, name, value, options) {
-			const db = await getDb()
-			const tx = db.transaction(['xattrs', 'updates', 'inodes'], 'readwrite')
-			await tx.objectStore('xattrs').put({ ino, name, value: value.slice() })
-			const inode = await tx.objectStore('inodes').get(ino)
-			const xattrs = await listAllXattrsInTx(tx as FullTx, ino)
-			await tx.objectStore('updates').add({
-				op: {
-					kind: 'upsert-inode',
-					source: options?.source,
-					ino,
-					meta: inode ? metaFromRecord(inode) : undefined,
-					xattrs,
-				},
-			})
+			if (inode.type === FileType.Regular) {
+				const rec = await tx.objectStore('content').get(ino)
+				if (rec) {
+					const total = (await tx.objectStore('meta').get('totalContentBytes') as number | undefined) ?? 0
+					await tx.objectStore('meta').put(Math.max(0, total - rec.sizeBytes), 'totalContentBytes')
+					await tx.objectStore('content').delete(ino)
+				}
+			}
+
+			const xkeys = await tx.objectStore('xattrs').index('by-ino').getAllKeys(ino)
+			for (const k of xkeys) {
+				await tx.objectStore('xattrs').delete(k)
+			}
 			await tx.done
 		},
 
-		async listXattr(ino) {
-			const db = await getDb()
-			const keys = await db.getAllKeysFromIndex('xattrs', 'by-ino', ino)
-			return keys.map((k) => k[1])
-		},
-
-		async removeXattr(ino, name, options) {
-			const db = await getDb()
-			const tx = db.transaction(['xattrs', 'updates', 'inodes'], 'readwrite')
-			await tx.objectStore('xattrs').delete([ino, name])
-			const inode = await tx.objectStore('inodes').get(ino)
-			const xattrs = await listAllXattrsInTx(tx as FullTx, ino)
-			await tx.objectStore('updates').add({
-				op: {
-					kind: 'upsert-inode',
-					source: options?.source,
-					ino,
-					meta: inode ? metaFromRecord(inode) : undefined,
-					xattrs,
-				},
-			})
-			await tx.done
-		},
-
-		// --- data I/O ---
-
-		async read(ino, offset: Off, length) {
+		async getBlob(ino) {
 			const db = await getDb()
 			const tx = db.transaction(['content'], 'readwrite')
 			const rec = await tx.objectStore('content').get(ino)
-			if (!rec) return new Uint8Array()
-			// Touch lastAccessedAt for LRU tracking
+			if (!rec) {
+				await tx.done
+				return new Uint8Array()
+			}
 			await tx.objectStore('content').put({ ...rec, lastAccessedAt: Date.now() })
 			await tx.done
-			const start = Number(offset)
-			return rec.data.slice(start, start + length)
+			return rec.data.slice()
 		},
-
-		async write(ino, offset: Off, chunk, options) {
-			const db = await getDb()
-			const existing = await db.get('content', ino)
-			const start = Number(offset)
-			const end = start + chunk.length
-
-			let buf = existing?.data ?? new Uint8Array()
-			if (end > buf.length) {
-				const grown = new Uint8Array(end)
-				grown.set(buf)
-				buf = grown
-			} else {
-				buf = buf.slice()
-			}
-			buf.set(chunk, start)
-
-			const oldSize = existing?.sizeBytes ?? 0
-			const delta = buf.length - oldSize
-			if (delta > 0) await evictContent(db, delta, ino)
-			await writeContent(db, ino, buf, oldSize, options)
-			return chunk.length
-		},
-
-		async truncate(ino, size: Off, options) {
-			const db = await getDb()
-			const n = Number(size)
-			const existing = await db.get('content', ino)
-			const oldData = existing?.data ?? new Uint8Array()
-			const oldSize = existing?.sizeBytes ?? 0
-
-			const next = new Uint8Array(n)
-			next.set(oldData.subarray(0, n))
-
-			const delta = n - oldSize
-			if (delta > 0) await evictContent(db, delta, ino)
-			await writeContent(db, ino, next, oldSize, options)
-		},
-
-		// --- directory operations ---
-
-		async dirLookup(dirIno, name) {
-			const db = await getDb()
-			const rec = await db.get('dirs', [dirIno, name])
-			return rec ? { ino: rec.ino, type: rec.type } : null
-		},
-
-		async dirList(dirIno, cursor: DirCursor) {
-			const db = await getDb()
-			// Use compound key range on the primary key [dirIno, name]
-			const lower: [string, string] = [dirIno, cursor]
-			const upper: [string, string] = [dirIno, '\uffff']
-			const range = KeyRange.bound(lower, upper, cursor !== '', false) as never
-
-			const records = await db.getAll('dirs', range, DIR_PAGE + 1)
-			const hasMore = records.length > DIR_PAGE
-			const page = records.slice(0, DIR_PAGE)
-
-			return {
-				entries: page.map((r) => ({ name: r.name, ino: r.ino, type: r.type })),
-				next: (hasMore ? (page[DIR_PAGE - 1]?.name ?? '') : '') as DirCursor,
-			}
-		},
-
-		async dirAdd(dirIno, name, ino, type, options) {
-			const db = await getDb()
-			const tx = db.transaction(['dirs', 'inodes', 'updates'], 'readwrite')
-			const existing = await tx.objectStore('dirs').get([dirIno, name])
-			if (existing) {
-				await tx.done
-				return false
-			}
-			await tx.objectStore('dirs').put({ dirIno, name, ino, type })
-			const inode = await tx.objectStore('inodes').get(ino)
-			if (inode) {
-				await tx.objectStore('inodes').put({ ...inode, nlink: inode.nlink + 1 })
-			}
-			await tx.objectStore('updates').add({
-				op: {
-					kind: 'set-dirent',
-					source: options?.source,
-					dirIno,
-					name,
-					ino,
-					type,
-				},
-			})
-			await tx.done
-			return true
-		},
-
-		async dirSet(dirIno, name, ino, type, options) {
-			const db = await getDb()
-			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
-			const displaced = await tx.objectStore('dirs').get([dirIno, name]) ?? null
-
-			await tx.objectStore('dirs').put({ dirIno, name, ino, type })
-
-			// Only increment nlink when this ino was not already at this slot.
-			// If displaced.ino === ino the +1 and the -1 below cancel out; skip
-			// both to avoid a spurious nlink round-trip that would leak a ref.
-			if (!displaced || displaced.ino !== ino) {
-				const incoming = await tx.objectStore('inodes').get(ino)
-				if (incoming) {
-					await tx.objectStore('inodes').put({ ...incoming, nlink: incoming.nlink + 1 })
-				}
-			}
-
-			// Handle displaced inode (always a different inode at this point)
-			if (displaced && displaced.ino !== ino) {
-				const disp = await tx.objectStore('inodes').get(displaced.ino)
-				if (disp) {
-					const newNlink = disp.nlink - 1
-					if (newNlink <= 0) {
-						await freeIno(tx as FullTx, displaced.ino, displaced.type)
-					} else {
-						await tx.objectStore('inodes').put({ ...disp, nlink: newNlink })
-					}
-				}
-			}
-
-			await tx.objectStore('updates').add({
-				op: {
-					kind: 'set-dirent',
-					source: options?.source,
-					dirIno,
-					name,
-					ino,
-					type,
-				},
-			})
-			await tx.done
-			return displaced ? { ino: displaced.ino, type: displaced.type } : null
-		},
-
-
-		async dirUnset(dirIno, name, options) {
-			const db = await getDb()
-			const tx = db.transaction(['dirs', 'inodes', 'content', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
-			const entry = await tx.objectStore('dirs').get([dirIno, name]) ?? null
-			if (!entry) {
-				await tx.done
-				return null
-			}
-
-			await tx.objectStore('dirs').delete([dirIno, name])
-
-			const inode = await tx.objectStore('inodes').get(entry.ino)
-			if (inode) {
-				const newNlink = inode.nlink - 1
-				if (newNlink <= 0) {
-						await freeIno(tx as FullTx, entry.ino, entry.type)
-				} else {
-					await tx.objectStore('inodes').put({ ...inode, nlink: newNlink })
-				}
-			}
-
-			await tx.objectStore('updates').add({
-				op: {
-					kind: 'unset-dirent',
-					source: options?.source,
-					dirIno,
-					name,
-					ino: entry.ino,
-				},
-			})
-			await tx.done
-			return { ino: entry.ino, type: entry.type }
-		},
-
-		// --- putBlob ---
 
 		async putBlob(ino, data, options) {
 			const db = await getDb()
@@ -728,28 +659,63 @@ function metaFromRecord(record: InodeRecord): InodeMeta {
 			await writeContent(db, ino, data.slice(), oldSize, options)
 		},
 
-		async updates(cursor: string, options) {
+		async getDirent(dirIno, name) {
 			const db = await getDb()
-			const since = cursor === '' ? 0 : Number.parseInt(cursor, 10)
-			if (Number.isFinite(since) && since > 0) {
-				const compactTx = db.transaction(['updates'], 'readwrite')
-				const compactStore = compactTx.objectStore('updates')
-				let record = await compactStore.openCursor(KeyRange.upperBound(since) as never)
-				while (record) {
-					await record.delete()
-					record = await record.continue()
-				}
-				await compactTx.done
-			}
+			const rec = await db.get('dirs', [dirIno, name])
+			return rec ? { ino: rec.ino, type: rec.type } : null
+		},
 
-			const lowerBound = Number.isFinite(since) && since > 0 ? since + 1 : 1
-			const range = KeyRange.lowerBound(lowerBound) as never
-			const records = await db.getAll('updates', range)
-			const keys = await db.getAllKeys('updates', range)
-			const nextCursor = keys.length > 0 ? String(keys[keys.length - 1]) : cursor
+		async putDirent(dirIno, name, entry, options) {
+			const db = await getDb()
+			const tx = db.transaction(['dirs', 'updates'], 'readwrite')
+			await tx.objectStore('dirs').put({ dirIno, name, ino: entry.ino, type: entry.type })
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'set-dirent',
+					source: options?.source,
+					dirIno,
+					name,
+					ino: entry.ino,
+					type: entry.type,
+				},
+			})
+			await tx.done
+		},
+
+		async deleteDirent(dirIno, name, options) {
+			const db = await getDb()
+			const tx = db.transaction(['dirs', 'updates'], 'readwrite')
+			const existing = await tx.objectStore('dirs').get([dirIno, name])
+			if (!existing) {
+				await tx.done
+				return
+			}
+			await tx.objectStore('dirs').delete([dirIno, name])
+			await tx.objectStore('updates').add({
+				op: {
+					kind: 'unset-dirent',
+					source: options?.source,
+					dirIno,
+					name,
+					ino: existing.ino,
+				},
+			})
+			await tx.done
+		},
+
+		async listDirents(dirIno, cursor) {
+			const db = await getDb()
+			const lower: [string, string] = [dirIno, cursor]
+			const upper: [string, string] = [dirIno, '\uffff']
+			const range = KeyRange.bound(lower, upper, cursor !== '', false) as never
+
+			const records = await db.getAll('dirs', range, DIR_PAGE + 1)
+			const hasMore = records.length > DIR_PAGE
+			const page = records.slice(0, DIR_PAGE)
+
 			return {
-				ops: filterOpsBySource(records.map((record) => record.op), options),
-				cursor: nextCursor,
+				entries: page.map((r) => ({ name: r.name, ino: r.ino, type: r.type })),
+				next: hasMore ? (page[DIR_PAGE - 1]?.name ?? '') : '',
 			}
 		},
 	}

@@ -1,6 +1,6 @@
 import { FsCursorExpiredError, type StorageBackend, type InodeMeta, type FsOp, type MutationOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
-import type { Ino, Off, DirCursor } from 'ghost-fs/types'
+import type { Ino } from 'ghost-fs/types'
 import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'ghost-fs/xattr'
 import type { InferResponseType } from 'hono/client'
 import type { ApiClient, FsClient } from './useApiClient'
@@ -69,7 +69,6 @@ function metaFromMemory(memory: MemoryResponse): InodeMeta {
 		type: FileType.Regular,
 		size: BigInt(enc.encode(memory.raw_text).length),
 		mode: 0o644,
-		nlink: 1,
 		mtimeNs: BigInt(Date.parse(memory.updated_at)) * 1_000_000n,
 		ctimeNs: BigInt(Date.parse(memory.created_at)) * 1_000_000n,
 		contentHash: undefined
@@ -80,7 +79,6 @@ const SYNTHETIC_DIR_META: InodeMeta = {
 	type: FileType.Directory,
 	size: 0n,
 	mode: 0o755,
-	nlink: 2,
 	mtimeNs: 0n,
 	ctimeNs: 0n
 }
@@ -176,7 +174,6 @@ function pathToUpdateOps(memory: ChangeRow): FsOp[] {
 			type: FileType.Regular,
 			size: 0n,
 			mode: 0o644,
-			nlink: 1,
 			mtimeNs: BigInt(Date.parse(memory.updated_at)) * 1_000_000n,
 			ctimeNs: BigInt(Date.parse(memory.updated_at)) * 1_000_000n,
 		},
@@ -307,23 +304,7 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 		rootIno: ROOT_INO,
 
 		// ------------------------------------------------------------------
-		// 1. INODE LIFECYCLE
-		// ------------------------------------------------------------------
-
-		async alloc(meta) {
-			if (meta.type !== FileType.Regular) {
-				throw new Error('ApiStorageBackend: only Regular files can be alloc-ed via the API')
-			}
-			const res = await api.v1.write.$post({
-				json: { content: '' }
-			})
-			if (!res.ok) throw new Error(`alloc failed: ${res.status}`)
-			const data = await res.json()
-			return data.id
-		},
-
-		// ------------------------------------------------------------------
-		// 2. INODE METADATA
+		// INODE METADATA
 		// ------------------------------------------------------------------
 
 		async getMeta(ino) {
@@ -338,70 +319,18 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 			// mode/mtime changes have no API mapping — silently no-op
 		},
 
-		// ------------------------------------------------------------------
-		// 2b. EXTENDED ATTRIBUTES
-		// ------------------------------------------------------------------
-
-		async getXattr(ino, name) {
-			const memory = await fetchMemory(ino)
-			if (!memory) return null
-			switch (name) {
-				case GHOSTORE_XATTR.title: return memory.title != null ? encodeXattr(memory.title) : null
-				case GHOSTORE_XATTR.tags: return memory.tags.length > 0 ? encodeXattr(memory.tags) : null
-				case GHOSTORE_XATTR.links: return memory.links.length > 0 ? encodeXattr(memory.links) : null
-				case GHOSTORE_XATTR.source: return memory.source != null ? encodeXattr(memory.source) : null
-				default: return null
-			}
-		},
-
-		async setXattr(ino, name, value) {
-			if (ino === ROOT_INO || ino.startsWith(DIR_PREFIX)) return
-			type UpdateBody = { id: string; title?: string; tags?: string[]; source?: string }
-			const body: UpdateBody = { id: ino }
-			switch (name) {
-				case GHOSTORE_XATTR.title: body.title = decodeXattr<string>(value); break
-				case GHOSTORE_XATTR.tags: body.tags = decodeXattr<string[]>(value); break
-				case GHOSTORE_XATTR.source: body.source = decodeXattr<string>(value); break
-				case GHOSTORE_XATTR.links: return
-				default: return
-			}
-			const res = await api.v1.update.$post({ json: body })
-			if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
-		},
-
-		async listXattr(ino) {
-			const memory = await fetchMemory(ino)
-			if (!memory) return []
-			const names: string[] = []
-			if (memory.title != null) names.push(GHOSTORE_XATTR.title)
-			if (memory.tags.length > 0) names.push(GHOSTORE_XATTR.tags)
-			if (memory.links.length > 0) names.push(GHOSTORE_XATTR.links)
-			if (memory.source != null) names.push(GHOSTORE_XATTR.source)
-			return names
+		async deleteInode(_ino) {
+			// no-op: archiving is handled via deleteDirent → archiveMemory
 		},
 
 		// ------------------------------------------------------------------
-		// 3. DATA I/O
+		// DATA I/O
 		// ------------------------------------------------------------------
 
-		async read(ino, offset: Off, length) {
+		async getBlob(ino) {
 			const memory = await fetchMemory(ino)
 			if (!memory) return new Uint8Array(0)
-			const bytes = enc.encode(memory.raw_text)
-			const start = Number(offset)
-			return bytes.subarray(start, start + length)
-		},
-
-		async write(_ino, _offset: Off, _data) {
-			throw new Error('ApiStorageBackend: partial write not supported — use putBlob')
-		},
-
-		async truncate(ino, size: Off) {
-			if (size !== 0n) {
-				throw new Error('ApiStorageBackend: only size-0 truncate is supported')
-			}
-			const res = await api.v1.update.$post({ json: { id: ino, content: '' } })
-			if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
+			return enc.encode(memory.raw_text)
 		},
 
 		async putBlob(ino, data) {
@@ -411,10 +340,10 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 		},
 
 		// ------------------------------------------------------------------
-		// 4. DIRECTORY ENTRIES
+		// DIRECTORY ENTRIES
 		// ------------------------------------------------------------------
 
-		async dirLookup(dirIno, name) {
+		async getDirent(dirIno, name) {
 			const dirPath = dirInoToPath(dirIno)
 			const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			const children = immediateChildren(all, dirPath)
@@ -422,9 +351,9 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 			return child ?? null
 		},
 
-		async dirList(dirIno, cursor: DirCursor) {
+		async listDirents(dirIno, cursor) {
 			// We return everything in one shot (cursor is always "" → done)
-			if (cursor !== '') return { entries: [], next: '' as DirCursor }
+			if (cursor !== '') return { entries: [], next: '' }
 
 			const dirPath = dirInoToPath(dirIno)
 			const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
@@ -436,160 +365,167 @@ export function _apiStorage(client: ApiClient): ApiStorageBackend {
 				type
 			}))
 
-			return { entries, next: '' as DirCursor }
+			return { entries, next: '' }
 		},
 
-		async dirAdd(dirIno, name, ino, type) {
-			// No-clobber insert: update the memory's path only if nothing already lives there.
-			const dirPath = dirInoToPath(dirIno)
-			if (type !== FileType.Regular) return true // virtual dirs need no storage
-			const newPath = joinPath(dirPath, name)
-
-			// Check for an existing memory at the target path (no-clobber contract).
-			const existing = await listAllDeduped(dirPath === '' ? undefined : dirPath)
-			if (existing.some((m) => m.path === newPath)) return false
-
-			const res = await api.v1.update.$post({ json: { id: ino, path: newPath } })
-			if (!res.ok) throw new Error(`dirAdd failed: ${res.status}`)
-			return true
-		},
-
-		async dirSet(dirIno, name, ino, type) {
+		async putDirent(dirIno, name, entry) {
 			// Unconditional replace: archive any displaced entry, then move ino to the new path.
 			const dirPath = dirInoToPath(dirIno)
-			if (type !== FileType.Regular) return null
+			if (entry.type !== FileType.Regular) return // virtual dirs need no storage
 			const newPath = joinPath(dirPath, name)
-
-			// Detect displaced entry (a different memory already at newPath).
-			const existing = await listAllDeduped(dirPath === '' ? undefined : dirPath)
-			const displaced = existing.find((m) => m.path === newPath && m.id !== ino) ?? null
-
-			if (displaced) {
-				const ar = await api.v1.memory[':id'].archive.$post({ param: { id: displaced.id } })
-				if (!ar.ok) throw new Error(`dirSet archive displaced failed: ${ar.status}`)
-			}
-
-			const res = await api.v1.update.$post({ json: { id: ino, path: newPath } })
-			if (!res.ok) throw new Error(`dirSet failed: ${res.status}`)
-			return displaced ? { ino: displaced.id, type: FileType.Regular } : null
+			const res = await api.v1.update.$post({ json: { id: entry.ino, path: newPath } })
+			if (!res.ok) throw new Error(`putDirent failed: ${res.status}`)
 		},
 
-		// Atomic rename — avoids the VFS two-step (dirSet + dirUnset) where the path
-		// rewrite in dirSet makes the subsequent dirUnset unable to find the old entry.
-		async rename(oldDirIno, oldName, newDirIno, newName) {
-			const oldDirPath = dirInoToPath(oldDirIno)
-			const newDirPath = dirInoToPath(newDirIno)
-			const oldPath = joinPath(oldDirPath, oldName)
-			const newPath = joinPath(newDirPath, newName)
-
-			const all = await listAllDeduped(undefined)
-			const src = all.find((m) => m.path === oldPath)
-			if (!src) {
-				await renameTree(oldPath, newPath)
-				return null
-			}
-
-			const displaced = all.find((m) => m.path === newPath && m.id !== src.id) ?? null
-
-			// NOTE: the two calls below are NOT atomic. If the archive succeeds but the
-			// path update fails, the displaced memory is gone and the source has not moved —
-			// a consistency window that cannot be closed without a server-side rename
-			// transaction. This is still strictly better than the VFS two-step fallback,
-			// which could leave two memories at the destination path.
-			if (displaced) {
-				await archiveMemory(displaced.id)
-			}
-
-			await updatePath(src.id, newPath)
-			return displaced ? displaced.id : null
-		},
-
-		async dirUnset(dirIno, name) {
+		async deleteDirent(dirIno, name) {
 			// To "remove" a file from a directory means archiving the memory.
-			// First look it up to get its ino.
 			const dirPath = dirInoToPath(dirIno)
 			const targetPath = joinPath(dirPath, name)
 			const all = await listAllDeduped(dirPath === '' ? undefined : dirPath)
 			const match = all.find((m) => m.path === targetPath)
 			if (match) {
 				await archiveMemory(match.id)
-				return { ino: match.id, type: FileType.Regular }
+				return
 			}
-
-			const removed = await archiveTree(targetPath)
-			return removed[0] ?? null
+			await archiveTree(targetPath)
 		},
 
 		// ------------------------------------------------------------------
-		// Optional: updates — delta sync support
+		// CAPABILITIES
 		// ------------------------------------------------------------------
 
-		async updates(cursor: string) {
-			const res = await api.v1.changes.$get(
-				{ query: { since: cursor } },
-				{ init: { cache: 'no-store' } }
-			)
-			// On error keep the cursor unchanged — next attempt re-fetches the
-			// same window so no changes are lost.
-			if (!res.ok) return { ops: [], cursor }
-			const data = await res.json()
-			const ops = data.upserted.flatMap((memory: ChangeRow) => pathToUpdateOps(memory))
-			const nextCursor = typeof data.cursor === 'string' ? data.cursor : cursor
-			return { ops, cursor: nextCursor }
-		},
+		caps: {
+			async getXattr(ino, name) {
+				const memory = await fetchMemory(ino)
+				if (!memory) return null
+				switch (name) {
+					case GHOSTORE_XATTR.title: return memory.title != null ? encodeXattr(memory.title) : null
+					case GHOSTORE_XATTR.tags: return memory.tags.length > 0 ? encodeXattr(memory.tags) : null
+					case GHOSTORE_XATTR.links: return memory.links.length > 0 ? encodeXattr(memory.links) : null
+					case GHOSTORE_XATTR.source: return memory.source != null ? encodeXattr(memory.source) : null
+					default: return null
+				}
+			},
 
-		// ------------------------------------------------------------------
-		// Optional: scan (parent-before-child order)
-		// ------------------------------------------------------------------
+			async setXattr(ino, name, value) {
+				if (ino === ROOT_INO || ino.startsWith(DIR_PREFIX)) return
+				type UpdateBody = { id: string; title?: string; tags?: string[]; source?: string }
+				const body: UpdateBody = { id: ino }
+				switch (name) {
+					case GHOSTORE_XATTR.title: body.title = decodeXattr<string>(value); break
+					case GHOSTORE_XATTR.tags: body.tags = decodeXattr<string[]>(value); break
+					case GHOSTORE_XATTR.source: body.source = decodeXattr<string>(value); break
+					case GHOSTORE_XATTR.links: return
+					default: return
+				}
+				const res = await api.v1.update.$post({ json: body })
+				if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
+			},
 
-		async scan(_cursor: string) {
-			const all = await listAllDeduped(undefined)
-			// Build full list — directories first, then files, in path order
-			const dirsSeen = new Set<string>()
-			const entries: Array<{ ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }> = []
+			async listXattrs(ino) {
+				const memory = await fetchMemory(ino)
+				if (!memory) return []
+				const names: string[] = []
+				if (memory.title != null) names.push(GHOSTORE_XATTR.title)
+				if (memory.tags.length > 0) names.push(GHOSTORE_XATTR.tags)
+				if (memory.links.length > 0) names.push(GHOSTORE_XATTR.links)
+				if (memory.source != null) names.push(GHOSTORE_XATTR.source)
+				return names
+			},
 
-			// Collect all directory paths in order (parent-before-child)
-			for (const m of all) {
-				const segments = m.path.split('/')
-				// Ensure all ancestor directories are emitted first
-				for (let depth = 1; depth < segments.length; depth++) {
-					const dirPath = segments.slice(0, depth).join('/')
-					if (!dirsSeen.has(dirPath)) {
-						dirsSeen.add(dirPath)
-						const parentDepth = depth - 1
-						const parentPath = parentDepth === 0 ? '' : segments.slice(0, parentDepth).join('/')
-						const dName = segments[depth - 1]!
-						entries.push({
-							ino: pathToDirIno(dirPath),
-							dirIno: parentPath === '' ? ROOT_INO : pathToDirIno(parentPath),
-							name: dName,
-							meta: { ...SYNTHETIC_DIR_META }
-						})
+			// Atomic rename — avoids double path-update races
+			async atomicMove(oldDirIno, oldName, newDirIno, newName) {
+				const oldDirPath = dirInoToPath(oldDirIno)
+				const newDirPath = dirInoToPath(newDirIno)
+				const oldPath = joinPath(oldDirPath, oldName)
+				const newPath = joinPath(newDirPath, newName)
+
+				const all = await listAllDeduped(undefined)
+				const src = all.find((m) => m.path === oldPath)
+				if (!src) {
+					await renameTree(oldPath, newPath)
+					return null
+				}
+
+				const displaced = all.find((m) => m.path === newPath && m.id !== src.id) ?? null
+
+				// NOTE: the two calls below are NOT atomic. If the archive succeeds but the
+				// path update fails, the displaced memory is gone and the source has not moved —
+				// a consistency window that cannot be closed without a server-side rename
+				// transaction. This is still strictly better than the VFS two-step fallback,
+				// which could leave two memories at the destination path.
+				if (displaced) {
+					await archiveMemory(displaced.id)
+				}
+
+				await updatePath(src.id, newPath)
+				return displaced ? displaced.id : null
+			},
+
+			// Delta sync support
+			async deltaUpdates(cursor: string) {
+				const res = await api.v1.changes.$get(
+					{ query: { since: cursor } },
+					{ init: { cache: 'no-store' } }
+				)
+				// On error keep the cursor unchanged — next attempt re-fetches the
+				// same window so no changes are lost.
+				if (!res.ok) return { ops: [], cursor }
+				const data = await res.json()
+				const ops = data.upserted.flatMap((memory: ChangeRow) => pathToUpdateOps(memory))
+				const nextCursor = typeof data.cursor === 'string' ? data.cursor : cursor
+				return { ops, cursor: nextCursor }
+			},
+
+			// Full scan (parent-before-child order)
+			async fullScan(_cursor: string) {
+				const all = await listAllDeduped(undefined)
+				// Build full list — directories first, then files, in path order
+				const dirsSeen = new Set<string>()
+				const entries: Array<{ ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }> = []
+
+				// Collect all directory paths in order (parent-before-child)
+				for (const m of all) {
+					const segments = m.path.split('/')
+					// Ensure all ancestor directories are emitted first
+					for (let depth = 1; depth < segments.length; depth++) {
+						const dirPath = segments.slice(0, depth).join('/')
+						if (!dirsSeen.has(dirPath)) {
+							dirsSeen.add(dirPath)
+							const parentDepth = depth - 1
+							const parentPath = parentDepth === 0 ? '' : segments.slice(0, parentDepth).join('/')
+							const dName = segments[depth - 1]!
+							entries.push({
+								ino: pathToDirIno(dirPath),
+								dirIno: parentPath === '' ? ROOT_INO : pathToDirIno(parentPath),
+								name: dName,
+								meta: { ...SYNTHETIC_DIR_META }
+							})
+						}
 					}
 				}
-			}
 
-			// Then emit all files
-			for (const m of all) {
-				const slash = m.path.lastIndexOf('/')
-				const parentPath = slash === -1 ? '' : m.path.slice(0, slash)
-				const name = slash === -1 ? m.path : m.path.slice(slash + 1)
-				entries.push({
-					ino: m.id,
-					dirIno: parentPath === '' ? ROOT_INO : pathToDirIno(parentPath),
-					name,
-					meta: {
-						type: FileType.Regular,
-						size: 0n, // size unknown without fetching raw_text
-						mode: 0o644,
-						nlink: 1,
-						mtimeNs: 0n,
-						ctimeNs: 0n
-					}
-				})
-			}
+				// Then emit all files
+				for (const m of all) {
+					const slash = m.path.lastIndexOf('/')
+					const parentPath = slash === -1 ? '' : m.path.slice(0, slash)
+					const name = slash === -1 ? m.path : m.path.slice(slash + 1)
+					entries.push({
+						ino: m.id,
+						dirIno: parentPath === '' ? ROOT_INO : pathToDirIno(parentPath),
+						name,
+						meta: {
+							type: FileType.Regular,
+							size: 0n, // size unknown without fetching raw_text
+							mode: 0o644,
+							mtimeNs: 0n,
+							ctimeNs: 0n
+						}
+					})
+				}
 
-			return { entries, next: '' }
+				return { entries, next: '', syncCursor: '' }
+			}
 		}
 	}
 }
@@ -602,7 +538,6 @@ function parseMeta(wire: FsMetaResponse): InodeMeta {
 		type: Number(meta.type) as FileType,
 		size: BigInt(String(meta.size)),
 		mode: Number(meta.mode),
-		nlink: Number(meta.nlink),
 		mtimeNs: BigInt(String(meta.mtimeNs)),
 		ctimeNs: BigInt(String(meta.ctimeNs)),
 		contentHash: typeof meta.contentHash === 'string' ? meta.contentHash : undefined,
@@ -617,7 +552,6 @@ function parseMetaPatch(wire: unknown): Partial<InodeMeta> {
 	if (meta.type !== undefined) patch.type = Number(meta.type) as FileType
 	if (meta.size !== undefined) patch.size = BigInt(String(meta.size))
 	if (meta.mode !== undefined) patch.mode = Number(meta.mode)
-	if (meta.nlink !== undefined) patch.nlink = Number(meta.nlink)
 	if (meta.mtimeNs !== undefined) patch.mtimeNs = BigInt(String(meta.mtimeNs))
 	if (meta.ctimeNs !== undefined) patch.ctimeNs = BigInt(String(meta.ctimeNs))
 	if (typeof meta.contentHash === 'string') patch.contentHash = meta.contentHash
@@ -628,7 +562,7 @@ function parseMetaPatch(wire: unknown): Partial<InodeMeta> {
 	return patch
 }
 
-function wireFromMeta(meta: Omit<InodeMeta, 'nlink'>) {
+function wireFromMeta(meta: InodeMeta) {
 	return {
 		...meta,
 		size: meta.size.toString(),
@@ -666,22 +600,6 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 	const backend: StorageBackend = {
 		rootIno,
 
-		// ── Inode lifecycle ────────────────────────────────────────────────
-
-		async alloc(_meta, _options) {
-			// VFS prefers create() over alloc()+dirAdd() — this path is unreachable
-			// when create() is implemented. Kept to satisfy the interface.
-			throw new Error('apiStorage: alloc() not supported — use create()')
-		},
-
-		async create(dirIno, name, meta, options) {
-			const res = await c.inodes.$post({ json: { dirIno, name, meta: wireFromMeta(meta) } }, mutationInit(options))
-			if (res.status === 409) throw new Error(`EEXIST: ${name}`)
-			if (!res.ok) throw new Error(`create failed: ${res.status}`)
-			const data = await res.json()
-			return data.ino
-		},
-
 		// ── Inode metadata ─────────────────────────────────────────────────
 
 		async getMeta(ino) {
@@ -694,46 +612,22 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 		async setMeta(ino, partial, options) {
 			const wire: Record<string, unknown> = { ...partial }
 			if (partial.size !== undefined) wire.size = partial.size.toString()
-			if (partial.nlink !== undefined) wire.nlink = partial.nlink
 			if (partial.mtimeNs !== undefined) wire.mtimeNs = partial.mtimeNs.toString()
 			if (partial.ctimeNs !== undefined) wire.ctimeNs = partial.ctimeNs.toString()
 			const res = await c.inodes[':ino'].$patch({ param: { ino }, json: wire }, mutationInit(options))
 			if (!res.ok) throw new Error(`setMeta failed: ${res.status}`)
 		},
 
+		async deleteInode(_ino) {
+			// server handles inode deletion atomically when deleting a dirent
+		},
+
 		// ── Data I/O ───────────────────────────────────────────────────────
 
-		async read(ino, offset, length) {
+		async getBlob(ino) {
 			const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
-			if (!res.ok) throw new Error(`read failed: ${res.status}`)
-			const full = new Uint8Array(await res.arrayBuffer())
-			const start = Number(offset)
-			return full.subarray(start, start + length)
-		},
-
-		async write(ino, offset, data, options) {
-			// Read-modify-write fallback. Sync layer should call putBlob() instead.
-			const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
-			if (!res.ok) throw new Error(`write failed: ${res.status}`)
-			const full = new Uint8Array(await res.arrayBuffer())
-			const start = Number(offset)
-			const newSize = Math.max(full.length, start + data.length)
-			const buf = new Uint8Array(newSize)
-			buf.set(full)
-			buf.set(data, start)
-			await backend.putBlob!(ino, buf, options)
-			return data.length
-		},
-
-		async truncate(ino, size, options) {
-			if (size === 0n) {
-				await backend.putBlob!(ino, new Uint8Array(0), options)
-			} else {
-				const res = await c.inodes[':ino'].blob.$get({ param: { ino } })
-				if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
-				const full = new Uint8Array(await res.arrayBuffer())
-				await backend.putBlob!(ino, full.subarray(0, Number(size)), options)
-			}
+			if (!res.ok) throw new Error(`getBlob failed: ${res.status}`)
+			return new Uint8Array(await res.arrayBuffer())
 		},
 
 		async putBlob(ino, data, options) {
@@ -752,152 +646,144 @@ export async function apiStorage(client: FsClient): Promise<StorageBackend> {
 
 		// ── Directory entries ──────────────────────────────────────────────
 
-		async dirLookup(dirIno, name) {
+		async getDirent(dirIno, name) {
 			const res = await c.inodes[':dirIno'].entries[':name'].$get({ param: { dirIno, name } })
 			if (res.status === 404) return null
-			if (!res.ok) throw new Error(`dirLookup failed: ${res.status}`)
+			if (!res.ok) throw new Error(`getDirent failed: ${res.status}`)
 			const data = await res.json()
 			return data
 		},
 
-		async dirList(dirIno, cursor) {
+		async listDirents(dirIno, cursor) {
 			const res = await c.inodes[':dirIno'].entries.$get({ param: { dirIno }, query: { cursor } })
-			if (!res.ok) throw new Error(`dirList failed: ${res.status}`)
+			if (!res.ok) throw new Error(`listDirents failed: ${res.status}`)
 			const data = await res.json()
 			return data
 		},
 
-		async dirAdd(dirIno, name, ino, type, options) {
-			// No-clobber: check first (not atomic, acceptable for remote backend).
-			const existing = await backend.dirLookup(dirIno, name)
-			if (existing !== null) return false
+		async putDirent(dirIno, name, entry, options) {
 			const res = await c.inodes[':dirIno'].entries[':name'].$put({
 				param: { dirIno, name },
-				json: { ino, type }
+				json: { ino: entry.ino, type: entry.type }
 			}, mutationInit(options))
-			if (!res.ok) throw new Error(`dirAdd failed: ${res.status}`)
-			return true
+			if (!res.ok) throw new Error(`putDirent failed: ${res.status}`)
 		},
 
-		async dirSet(dirIno, name, ino, type, options) {
-			const res = await c.inodes[':dirIno'].entries[':name'].$put({
-				param: { dirIno, name },
-				json: { ino, type }
-			}, mutationInit(options))
-			if (!res.ok) throw new Error(`dirSet failed: ${res.status}`)
-			const data = await res.json()
-			return data.displaced
-		},
-
-		async dirUnset(dirIno, name, options) {
+		async deleteDirent(dirIno, name, options) {
 			const res = await c.inodes[':dirIno'].entries[':name'].$delete({ param: { dirIno, name } }, mutationInit(options))
-			if (res.status === 404) return null
-			if (!res.ok) throw new Error(`dirUnset failed: ${res.status}`)
-			const data = await res.json()
-			return data.removed
+			if (res.status === 404) return
+			if (!res.ok) throw new Error(`deleteDirent failed: ${res.status}`)
 		},
 
-		async rename(oldDirIno, oldName, newDirIno, newName, options) {
-			const res = await c.rename.$post({ json: { oldDirIno, oldName, newDirIno, newName } }, mutationInit(options))
-			if (res.status === 404) return null
-			if (!res.ok) throw new Error(`rename failed: ${res.status}`)
-			const data = await res.json()
-			return data.displaced
-		},
+		// ── Capabilities ───────────────────────────────────────────────────
 
-		// ── Extended attributes ────────────────────────────────────────────
+		caps: {
+			async atomicCreate(dirIno, name, meta, options) {
+				const res = await c.inodes.$post({ json: { dirIno, name, meta: wireFromMeta(meta) } }, mutationInit(options))
+				if (res.status === 409) throw new Error(`EEXIST: ${name}`)
+				if (!res.ok) throw new Error(`atomicCreate failed: ${res.status}`)
+				const data = await res.json()
+				return data.ino
+			},
 
-		async getXattr(ino, name) {
-			const res = await c.inodes[':ino'].xattrs[':name'].$get({ param: { ino, name } })
-			if (res.status === 404) return null
-			if (!res.ok) throw new Error(`getXattr failed: ${res.status}`)
-			const data = await res.json()
-			return decodeBase64(data.value)
-		},
+			async atomicMove(oldDirIno, oldName, newDirIno, newName, options) {
+				const res = await c.rename.$post({ json: { oldDirIno, oldName, newDirIno, newName } }, mutationInit(options))
+				if (res.status === 404) return null
+				if (!res.ok) throw new Error(`atomicMove failed: ${res.status}`)
+				const data = await res.json()
+				return data.displaced
+			},
 
-		async setXattr(ino, name, value, options) {
-			const b64 = btoa(String.fromCharCode(...value))
-			const res = await c.inodes[':ino'].xattrs[':name'].$put(
-				{ param: { ino, name }, json: { value: b64 } },
-				mutationInit(options)
-			)
-			if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
-		},
+			async getXattr(ino, name) {
+				const res = await c.inodes[':ino'].xattrs[':name'].$get({ param: { ino, name } })
+				if (res.status === 404) return null
+				if (!res.ok) throw new Error(`getXattr failed: ${res.status}`)
+				const data = await res.json()
+				return decodeBase64(data.value)
+			},
 
-		async listXattr(ino) {
-			const res = await c.inodes[':ino'].xattrs.$get({ param: { ino } })
-			if (!res.ok) throw new Error(`listXattr failed: ${res.status}`)
-			const data = await res.json()
-			return data.names
-		},
+			async setXattr(ino, name, value, options) {
+				const b64 = btoa(String.fromCharCode(...value))
+				const res = await c.inodes[':ino'].xattrs[':name'].$put(
+					{ param: { ino, name }, json: { value: b64 } },
+					mutationInit(options)
+				)
+				if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
+			},
 
-		async removeXattr(ino, name, options) {
-			const res = await c.inodes[':ino'].xattrs[':name'].$delete(
-				{ param: { ino, name } },
-				mutationInit(options)
-			)
-			if (!res.ok) throw new Error(`removeXattr failed: ${res.status}`)
-		},
+			async listXattrs(ino) {
+				const res = await c.inodes[':ino'].xattrs.$get({ param: { ino } })
+				if (!res.ok) throw new Error(`listXattrs failed: ${res.status}`)
+				const data = await res.json()
+				return data.names
+			},
 
-		// ── Optional: scan & updates ───────────────────────────────────────
+			async removeXattr(ino, name, options) {
+				const res = await c.inodes[':ino'].xattrs[':name'].$delete(
+					{ param: { ino, name } },
+					mutationInit(options)
+				)
+				if (!res.ok) throw new Error(`removeXattr failed: ${res.status}`)
+			},
 
-		async scan(cursor) {
-			const res = await c.scan.$get({ query: { cursor } })
-			if (!res.ok) throw new Error(`scan failed: ${res.status}`)
-			const data = await res.json()
-			return {
-				entries: data.entries.map((entry) => ({
-					...entry,
-					meta: parseMeta(entry.meta),
-					xattrs: entry.xattrs
-						? Object.fromEntries(
-							Object.entries(entry.xattrs as Record<string, string>).map(([k, v]) => [k, decodeBase64(v)])
-						  )
-						: undefined,
-				})),
-				next: data.next,
-				cursor: typeof data.cursor === 'string' ? data.cursor : undefined,
-			}
-		},
-
-		async updates(cursor, options) {
-			const requestInit = mutationInit(options)
-			const res = await c.updates.$get(
-				{ query: { cursor } },
-				{
-					...(requestInit ? { headers: requestInit.headers } : {}),
-					init: {
-						cache: 'no-store',
-					},
-				}
-			)
-			if (res.status === 501) return { ops: [], cursor }
-			if (res.status === 409) {
-				const data = await res.json().catch(() => null)
-				if (data && typeof data === 'object' && 'code' in data && data.code === 'cursor_expired') {
-					const message = typeof data.error === 'string' ? data.error : 'FS sync cursor expired'
-					throw new FsCursorExpiredError(message)
-				}
-			}
-			if (!res.ok) throw new Error(`updates failed: ${res.status}`)
-			const data = await res.json()
-			return {
-				ops: data.ops.map((op) => {
-					if (op.kind !== 'upsert-inode') return op
-					return {
-						...op,
-						meta: op.meta ? parseMetaPatch(op.meta) : undefined,
-						xattrs: op.xattrs
+			async fullScan(cursor) {
+				const res = await c.scan.$get({ query: { cursor } })
+				if (!res.ok) throw new Error(`fullScan failed: ${res.status}`)
+				const data = await res.json()
+				return {
+					entries: data.entries.map((entry) => ({
+						...entry,
+						meta: parseMeta(entry.meta),
+						xattrs: entry.xattrs
 							? Object.fromEntries(
-									Object.entries(op.xattrs as Record<string, string | null>).map(([k, v]) => [
-										k,
-										v !== null ? decodeBase64(v) : null
-									])
-								)
-							: undefined
+								Object.entries(entry.xattrs as Record<string, string>).map(([k, v]) => [k, decodeBase64(v)])
+							  )
+							: undefined,
+					})),
+					next: data.next,
+					syncCursor: typeof data.syncCursor === 'string' ? data.syncCursor : '',
+				}
+			},
+
+			async deltaUpdates(cursor, options) {
+				const requestInit = mutationInit(options)
+				const res = await c.updates.$get(
+					{ query: { cursor } },
+					{
+						...(requestInit ? { headers: requestInit.headers } : {}),
+						init: {
+							cache: 'no-store',
+						},
 					}
-				}),
-				cursor: data.cursor
+				)
+				if (res.status === 501) return { ops: [], cursor }
+				if (res.status === 409) {
+					const data = await res.json().catch(() => null)
+					if (data && typeof data === 'object' && 'code' in data && data.code === 'cursor_expired') {
+						const message = typeof data.error === 'string' ? data.error : 'FS sync cursor expired'
+						throw new FsCursorExpiredError(message)
+					}
+				}
+				if (!res.ok) throw new Error(`deltaUpdates failed: ${res.status}`)
+				const data = await res.json()
+				return {
+					ops: data.ops.map((op) => {
+						if (op.kind !== 'upsert-inode') return op
+						return {
+							...op,
+							meta: op.meta ? parseMetaPatch(op.meta) : undefined,
+							xattrs: op.xattrs
+								? Object.fromEntries(
+										Object.entries(op.xattrs as Record<string, string | null>).map(([k, v]) => [
+											k,
+											v !== null ? decodeBase64(v) : null
+										])
+									)
+								: undefined
+						}
+					}),
+					cursor: data.cursor
+				}
 			}
 		}
 	}

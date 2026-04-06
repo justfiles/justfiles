@@ -1,197 +1,118 @@
-import type { StorageBackend, InodeMeta } from './storage'
+import type { StorageBackend, StorageCapabilities, InodeMeta } from './storage'
 import { FileType } from './types'
-import type { Ino, Off, DirCursor } from './types'
+import type { Ino, DirentMin } from './types'
 
-type Entry = { ino: Ino; type: FileType }
-
-/**
- * Minimal in-memory StorageBackend for testing.
- * No optimisation, no persistence, no concurrency safety.
- */
 export function memStorage(): StorageBackend {
 	const metas = new Map<Ino, InodeMeta>()
 	const blobs = new Map<Ino, Uint8Array>()
-	const dirs = new Map<Ino, Map<string, Entry>>()
+	const dirs = new Map<string, DirentMin>()   // key: `${dirIno}\0${name}`
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
-	let nextIno = 2
 
-	metas.set(rootIno, { type: FileType.Directory, size: 0n, mode: 0o755, nlink: 1, mtimeNs: 0n, ctimeNs: 0n })
-	dirs.set(rootIno, new Map())
+	metas.set(rootIno, {
+		type: FileType.Directory,
+		size: 0n,
+		mode: 0o755,
+		mtimeNs: 0n,
+		ctimeNs: 0n,
+	})
 
-	function addIno(ino: Ino, m: InodeMeta): void {
-		metas.set(ino, m)
-		if (m.type === FileType.Regular) blobs.set(ino, new Uint8Array())
-		if (m.type === FileType.Directory) dirs.set(ino, new Map())
+	function dirKey(dirIno: Ino, name: string): string {
+		return `${dirIno}\0${name}`
 	}
 
-	function free(ino: Ino): void {
-		metas.delete(ino)
-		blobs.delete(ino)
-		dirs.delete(ino)
-		xattrs.delete(ino)
+	function defaultMode(type: FileType): number {
+		return type === FileType.Directory ? 0o755 : type === FileType.Symlink ? 0o777 : 0o644
 	}
 
-	function adjustNlink(ino: Ino, delta: number): void {
-		const m = metas.get(ino)
-		if (!m) return
-		const nlink = m.nlink + delta
-		if (nlink <= 0) free(ino)
-		else metas.set(ino, { ...m, nlink })
-	}
-
-	function defaultModeForType(type: FileType): number {
-		switch (type) {
-			case FileType.Directory:
-				return 0o755
-			case FileType.Symlink:
-				return 0o777
-			case FileType.Regular:
-			default:
-				return 0o644
-		}
-	}
-
-	function buildMissingInodeMeta(partial: Partial<InodeMeta>): InodeMeta | null {
-		if (partial.type === undefined) return null
-		return {
-			type: partial.type,
-			size: partial.size ?? 0n,
-			mode: partial.mode ?? defaultModeForType(partial.type),
-			nlink: partial.nlink ?? 0,
-			mtimeNs: partial.mtimeNs ?? 0n,
-			ctimeNs: partial.ctimeNs ?? 0n,
-			contentHash: partial.contentHash,
-			symlinkTarget: partial.symlinkTarget,
-		}
+	const caps: StorageCapabilities = {
+		async getXattr(ino, name) {
+			return xattrs.get(ino)?.get(name)?.slice() ?? null
+		},
+		async setXattr(ino, name, value) {
+			let m = xattrs.get(ino)
+			if (!m) { m = new Map(); xattrs.set(ino, m) }
+			m.set(name, value.slice())
+		},
+		async listXattrs(ino) {
+			return [...(xattrs.get(ino)?.keys() ?? [])]
+		},
+		async removeXattr(ino, name) {
+			const m = xattrs.get(ino)
+			if (!m) return
+			m.delete(name)
+			if (m.size === 0) xattrs.delete(ino)
+		},
 	}
 
 	return {
 		rootIno,
-
-		async alloc(m) {
-			const ino = String(nextIno++)
-			addIno(ino, { ...m, nlink: 0 })
-			return ino
-		},
-
-		async create(dirIno, name, m) {
-			const dir = dirs.get(dirIno)!
-			if (dir.has(name)) throw new Error(`EEXIST: ${name}`)
-			const ino = String(nextIno++)
-			addIno(ino, { ...m, nlink: 1 })
-			dir.set(name, { ino, type: m.type })
-			return ino
-		},
+		caps,
 
 		async getMeta(ino) {
 			return metas.get(ino) ?? null
 		},
 
-		async setMeta(ino, partial) {
-			const m = metas.get(ino)
-			if (m) {
-				metas.set(ino, { ...m, ...partial })
+		async setMeta(ino, patch) {
+			const existing = metas.get(ino)
+			if (existing) {
+				metas.set(ino, { ...existing, ...patch })
 				return
 			}
-			const next = buildMissingInodeMeta(partial)
-			if (next) addIno(ino, next)
-		},
-
-		async getXattr(ino, name) {
-			const value = xattrs.get(ino)?.get(name)
-			return value ? value.slice() : null
-		},
-
-		async setXattr(ino, name, value) {
-			let attrs = xattrs.get(ino)
-			if (!attrs) {
-				attrs = new Map()
-				xattrs.set(ino, attrs)
+			if (patch.type === undefined) return
+			const now = 0n
+			const full: InodeMeta = {
+				type: patch.type,
+				size: patch.size ?? 0n,
+				mode: patch.mode ?? defaultMode(patch.type),
+				mtimeNs: patch.mtimeNs ?? now,
+				ctimeNs: patch.ctimeNs ?? now,
+				contentHash: patch.contentHash,
+				symlinkTarget: patch.symlinkTarget,
 			}
-			attrs.set(name, value.slice())
+			metas.set(ino, full)
+			if (patch.type === FileType.Regular) blobs.set(ino, new Uint8Array())
 		},
 
-		async listXattr(ino) {
-			return [...(xattrs.get(ino)?.keys() ?? [])]
+		async deleteInode(ino) {
+			metas.delete(ino)
+			blobs.delete(ino)
+			xattrs.delete(ino)
 		},
 
-		async removeXattr(ino, name) {
-			const attrs = xattrs.get(ino)
-			if (!attrs) return
-			attrs.delete(name)
-			if (attrs.size === 0) {
-				xattrs.delete(ino)
+		async getBlob(ino) {
+			return blobs.get(ino)?.slice() ?? new Uint8Array()
+		},
+
+		async putBlob(ino, data) {
+			blobs.set(ino, data.slice())
+			const meta = metas.get(ino)
+			if (meta) metas.set(ino, { ...meta, size: BigInt(data.length) })
+		},
+
+		async getDirent(dirIno, name) {
+			return dirs.get(dirKey(dirIno, name)) ?? null
+		},
+
+		async putDirent(dirIno, name, entry) {
+			dirs.set(dirKey(dirIno, name), entry)
+		},
+
+		async deleteDirent(dirIno, name) {
+			dirs.delete(dirKey(dirIno, name))
+		},
+
+		async listDirents(dirIno, cursor) {
+			const prefix = `${dirIno}\0`
+			const entries: { name: string; ino: Ino; type: FileType }[] = []
+			for (const [key, entry] of dirs) {
+				if (!key.startsWith(prefix)) continue
+				const name = key.slice(prefix.length)
+				if (cursor === '' || name > cursor) {
+					entries.push({ name, ino: entry.ino, type: entry.type })
+				}
 			}
-		},
-
-		async read(ino, offset: Off, length) {
-			const buf = blobs.get(ino) ?? new Uint8Array()
-			const start = Number(offset)
-			return buf.subarray(start, start + length)
-		},
-
-		async write(ino, offset: Off, chunk) {
-			const start = Number(offset)
-			const end = start + chunk.length
-			let buf = blobs.get(ino) ?? new Uint8Array()
-			if (end > buf.length) {
-				const grown = new Uint8Array(end)
-				grown.set(buf)
-				buf = grown
-			}
-			buf.set(chunk, start)
-			blobs.set(ino, buf)
-			const m = metas.get(ino)
-			if (m) metas.set(ino, { ...m, size: BigInt(buf.length) })
-			return chunk.length
-		},
-
-		async truncate(ino, size: Off) {
-			const n = Number(size)
-			const buf = blobs.get(ino) ?? new Uint8Array()
-			const next = new Uint8Array(n)
-			next.set(buf.subarray(0, n))
-			blobs.set(ino, next)
-			const m = metas.get(ino)
-			if (m) metas.set(ino, { ...m, size })
-		},
-
-		async dirLookup(dirIno, name) {
-			return dirs.get(dirIno)?.get(name) ?? null
-		},
-
-		async dirList(dirIno, cursor: DirCursor) {
-			if (cursor !== '') return { entries: [], next: '' as DirCursor }
-			const entries = [...(dirs.get(dirIno) ?? new Map()).entries()]
-				.map(([name, { ino, type }]) => ({ name, ino, type }))
-			return { entries, next: '' as DirCursor }
-		},
-
-		async dirAdd(dirIno, name, ino, type) {
-			const dir = dirs.get(dirIno)!
-			if (dir.has(name)) return false
-			dir.set(name, { ino, type })
-			adjustNlink(ino, +1)
-			return true
-		},
-
-		async dirSet(dirIno, name, ino, type) {
-			const dir = dirs.get(dirIno)!
-			const displaced = dir.get(name) ?? null
-			dir.set(name, { ino, type })
-			adjustNlink(ino, +1)
-			if (displaced) adjustNlink(displaced.ino, -1)
-			return displaced
-		},
-
-		async dirUnset(dirIno, name) {
-			const dir = dirs.get(dirIno)!
-			const entry = dir.get(name) ?? null
-			if (!entry) return null
-			dir.delete(name)
-			adjustNlink(entry.ino, -1)
-			return entry
+			return { entries, next: '' }
 		},
 	}
 }

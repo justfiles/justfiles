@@ -1,7 +1,7 @@
 import type { DbAdapter } from './db'
 import { FsCursorExpiredError, type StorageBackend, type FsOp, type InodeMeta, type MutationOptions, type UpdateQueryOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
-import type { DirCursor, Ino } from 'ghost-fs/types'
+import type { Ino } from 'ghost-fs/types'
 
 type BlobObject = {
 	arrayBuffer(): Promise<ArrayBuffer>
@@ -31,7 +31,6 @@ type InodeRow = {
 	ino: unknown
 	type: unknown
 	mode: unknown
-	nlink: unknown
 	size: unknown
 	mtime_ns: unknown
 	ctime_ns: unknown
@@ -160,7 +159,6 @@ function buildMissingInodeMeta(partial: Partial<InodeMeta>): InodeMeta | null {
 		type: partial.type,
 		size: partial.size ?? 0n,
 		mode: partial.mode ?? defaultModeForType(partial.type),
-		nlink: partial.nlink ?? 0,
 		mtimeNs: partial.mtimeNs ?? stamp,
 		ctimeNs: partial.ctimeNs ?? stamp,
 		contentHash: partial.contentHash,
@@ -173,7 +171,6 @@ function metaFromRow(row: InodeRow): InodeMeta {
 		type: toNumber(row.type) as FileType,
 		size: toBigInt(row.size),
 		mode: toNumber(row.mode),
-		nlink: toNumber(row.nlink),
 		mtimeNs: toBigInt(row.mtime_ns),
 		ctimeNs: toBigInt(row.ctime_ns),
 		contentHash: toStringOrNull(row.content_hash) ?? undefined,
@@ -186,7 +183,6 @@ function serializeMeta(meta: Partial<InodeMeta>): string {
 	if (meta.type !== undefined) encoded.type = meta.type
 	if (meta.size !== undefined) encoded.size = meta.size.toString()
 	if (meta.mode !== undefined) encoded.mode = meta.mode
-	if (meta.nlink !== undefined) encoded.nlink = meta.nlink
 	if (meta.mtimeNs !== undefined) encoded.mtimeNs = meta.mtimeNs.toString()
 	if (meta.ctimeNs !== undefined) encoded.ctimeNs = meta.ctimeNs.toString()
 	if ('contentHash' in meta) encoded.contentHash = meta.contentHash ?? null
@@ -200,7 +196,6 @@ function parseMetaJson(raw: string): Partial<InodeMeta> {
 	if (parsed.type !== undefined) meta.type = Number(parsed.type) as FileType
 	if (parsed.size !== undefined) meta.size = BigInt(String(parsed.size))
 	if (parsed.mode !== undefined) meta.mode = Number(parsed.mode)
-	if (parsed.nlink !== undefined) meta.nlink = Number(parsed.nlink)
 	if (parsed.mtimeNs !== undefined) meta.mtimeNs = BigInt(String(parsed.mtimeNs))
 	if (parsed.ctimeNs !== undefined) meta.ctimeNs = BigInt(String(parsed.ctimeNs))
 	if ('contentHash' in parsed) meta.contentHash = parsed.contentHash == null ? undefined : String(parsed.contentHash)
@@ -292,13 +287,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			await db.transaction(async (tx) => {
 				await tx.run(
 					`INSERT OR IGNORE INTO fs_inodes(
-						ino, type, mode, nlink, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
-					) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
+						ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
+					) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
 					[
 						ROOT_INO,
 						FileType.Directory,
 						0o755,
-						1,
 						0,
 						now,
 						now,
@@ -539,29 +533,17 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 		}
 	}
 
-	async function freeIfUnlinked(
+	/**
+	 * Free an inode — deletes metadata, blob, and xattrs.
+	 * Does NOT remove directory entries (caller manages dirents).
+	 */
+	async function deleteInodeInTx(
 		tx: DbAdapter,
 		ino: Ino,
 		orphanedR2Keys: string[]
 	): Promise<void> {
 		const inode = await getInode(tx, ino)
 		if (!inode) return
-		if (ino === ROOT_INO) return
-
-		if (toNumber(inode.type) === FileType.Directory) {
-			const childRows = await tx.query<{ count: unknown }>(
-				'SELECT COUNT(*) AS count FROM fs_dirents WHERE dir_ino = ?',
-				[ino]
-			)
-			if (toNumber(childRows[0]?.count ?? 0) > 0) throw new Error(`ENOTEMPTY: ${ino}`)
-		}
-
-		const nextNlink = toNumber(inode.nlink) - 1
-		if (nextNlink > 0) {
-			await tx.run('UPDATE fs_inodes SET nlink = ? WHERE ino = ?', [nextNlink, ino])
-			return
-		}
-
 		const oldHash = toStringOrNull(inode.content_hash)
 		await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
 		await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
@@ -615,149 +597,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 		}
 	}
 
-	return {
-		rootIno: ROOT_INO,
+	// ── StorageCapabilities ──────────────────────────────────────────────────────
 
-		async alloc(meta, options) {
-			await ensureBootstrapped()
-			const ino = randomId()
-			const stamp = nowNs()
-			const size = meta.type === FileType.Regular ? 0 : Number(meta.size)
-			const nextMeta: InodeMeta = {
-				...meta,
-				size: BigInt(size),
-				nlink: 0
-			}
-
-			await db.transaction(async (tx) => {
-				await tx.run(
-					`INSERT INTO fs_inodes(
-						ino, type, mode, nlink, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
-					) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)`,
-					[
-						ino,
-						meta.type,
-						meta.mode,
-						0,
-						size,
-						meta.mtimeNs ?? stamp,
-						meta.ctimeNs ?? stamp,
-						meta.symlinkTarget ?? null,
-						STORAGE_NONE
-					]
-				)
-				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: nextMeta }], options))
-			})
-
-			return ino
-		},
-
-		async create(dirIno, name, meta, options) {
-			await ensureBootstrapped()
-			const ino = randomId()
-			const stamp = nowNs()
-			const size = meta.type === FileType.Regular ? 0 : Number(meta.size)
-			const nextMeta: InodeMeta = {
-				...meta,
-				size: BigInt(size),
-				nlink: 1
-			}
-
-			await db.transaction(async (tx) => {
-				await ensureDirectory(tx, dirIno)
-				const existing = await getDirent(tx, dirIno, name)
-				if (existing) throw new Error(`EEXIST: ${name}`)
-
-				await tx.run(
-					`INSERT INTO fs_inodes(
-						ino, type, mode, nlink, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
-					) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)`,
-					[
-						ino,
-						meta.type,
-						meta.mode,
-						1,
-						size,
-						meta.mtimeNs ?? stamp,
-						meta.ctimeNs ?? stamp,
-						meta.symlinkTarget ?? null,
-						STORAGE_NONE
-					]
-				)
-				await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-					dirIno,
-					name,
-					ino,
-					meta.type
-				])
-				await appendOps(tx, withSource([
-					{ kind: 'upsert-inode', ino, meta: nextMeta },
-					{ kind: 'set-dirent', dirIno, name, ino, type: meta.type }
-				], options))
-			})
-
-			return ino
-		},
-
-		async getMeta(ino) {
-			await ensureBootstrapped()
-			const row = await getInode(db, ino)
-			return row ? metaFromRow(row) : null
-		},
-
-		async setMeta(ino, partial, options) {
-			await ensureBootstrapped()
-			await db.transaction(async (tx) => {
-				const row = await getInode(tx, ino)
-				if (!row) {
-					const created = buildMissingInodeMeta(partial)
-					if (!created) return
-					await tx.run(
-						`INSERT INTO fs_inodes(
-							ino, type, mode, nlink, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
-						[
-							ino,
-							created.type,
-							created.mode,
-							created.nlink,
-							Number(created.size),
-							created.mtimeNs,
-							created.ctimeNs,
-							created.contentHash ?? null,
-							created.symlinkTarget ?? null,
-							STORAGE_NONE
-						]
-					)
-					await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial }], options))
-					return
-				}
-				const current = metaFromRow(row)
-				const next: InodeMeta = {
-					...current,
-					...partial
-				}
-				await tx.run(
-					`UPDATE fs_inodes
-					 SET type = ?, mode = ?, nlink = ?, size = ?, mtime_ns = ?, ctime_ns = ?, content_hash = ?, symlink_target = ?
-					 WHERE ino = ?`,
-					[
-						next.type,
-						next.mode,
-						next.nlink,
-						Number(next.size),
-						next.mtimeNs,
-						next.ctimeNs,
-						next.contentHash ?? null,
-						next.symlinkTarget ?? null,
-						ino
-					]
-				)
-				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial }], options))
-			})
-		},
-
-		async getXattr(ino, name) {
+	const caps = {
+		async getXattr(ino: Ino, name: string): Promise<Uint8Array | null> {
 			await ensureBootstrapped()
 			const rows = await db.query<{ value: unknown }>(
 				'SELECT value FROM fs_xattrs WHERE ino = ? AND name = ? LIMIT 1',
@@ -767,7 +610,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return toUint8Array(rows[0].value)
 		},
 
-		async setXattr(ino, name, value, options) {
+		async setXattr(ino: Ino, name: string, value: Uint8Array, options?: MutationOptions): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
@@ -784,12 +627,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						ino,
 						meta: metaFromRow(inode),
 						xattrs,
-					}
+					} as FsOp
 				], options))
 			})
 		},
 
-		async listXattr(ino) {
+		async listXattrs(ino: Ino): Promise<string[]> {
 			await ensureBootstrapped()
 			const rows = await db.query<{ name: unknown }>(
 				'SELECT name FROM fs_xattrs WHERE ino = ? ORDER BY name',
@@ -798,7 +641,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return rows.map((row) => String(row.name))
 		},
 
-		async removeXattr(ino, name, options) {
+		async removeXattr(ino: Ino, name: string, options?: MutationOptions): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
@@ -811,178 +654,50 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						ino,
 						meta: metaFromRow(inode),
 						xattrs,
-					}
+					} as FsOp
 				], options))
 			})
 		},
 
-		async read(ino, offset, length) {
+		async atomicCreate(dirIno: Ino, name: string, meta: InodeMeta, options?: MutationOptions): Promise<Ino> {
 			await ensureBootstrapped()
-			const full = await readFullContent(db, ino)
-			const start = Number(offset)
-			return full.slice(start, start + length)
-		},
+			const ino = randomId()
+			const stamp = nowNs()
+			const size = meta.type === FileType.Regular ? 0 : Number(meta.size)
 
-		async write(ino, offset, data, options) {
-			await ensureBootstrapped()
-			const full = await readFullContent(db, ino)
-			const start = Number(offset)
-			const next = new Uint8Array(Math.max(full.length, start + data.length))
-			next.set(full)
-			next.set(data, start)
-			await updateInodeContent(ino, next, options)
-			return data.length
-		},
-
-		async truncate(ino, size, options) {
-			await ensureBootstrapped()
-			const full = await readFullContent(db, ino)
-			const next = new Uint8Array(Number(size))
-			next.set(full.subarray(0, Number(size)))
-			await updateInodeContent(ino, next, options)
-		},
-
-		async dirLookup(dirIno, name) {
-			await ensureBootstrapped()
-			const row = await getDirent(db, dirIno, name)
-			return row
-				? {
-						ino: String(row.ino),
-						type: toNumber(row.type) as FileType
-					}
-				: null
-		},
-
-		async dirList(dirIno, cursor: DirCursor) {
-			await ensureBootstrapped()
-			const rows = cursor === ''
-				? await db.query<DirentRow>(
-						`SELECT dir_ino, name, ino, type
-						 FROM fs_dirents
-						 WHERE dir_ino = ?
-						 ORDER BY name
-						 LIMIT ?`,
-						[dirIno, DIR_PAGE_SIZE]
-					)
-				: await db.query<DirentRow>(
-						`SELECT dir_ino, name, ino, type
-						 FROM fs_dirents
-						 WHERE dir_ino = ? AND name > ?
-						 ORDER BY name
-						 LIMIT ?`,
-						[dirIno, cursor, DIR_PAGE_SIZE]
-					)
-
-			return {
-				entries: rows.map((row) => ({
-					name: String(row.name),
-					ino: String(row.ino),
-					type: toNumber(row.type) as FileType
-				})),
-				next: rows.length === DIR_PAGE_SIZE ? String(rows[rows.length - 1].name) : ''
-			}
-		},
-
-		async dirAdd(dirIno, name, ino, type, options) {
-			await ensureBootstrapped()
-			let added = false
 			await db.transaction(async (tx) => {
 				await ensureDirectory(tx, dirIno)
-				const target = await getInode(tx, ino)
-				if (!target) throw new Error(`ENOENT: ${ino}`)
 				const existing = await getDirent(tx, dirIno, name)
-				if (existing) return
+				if (existing) throw new Error(`EEXIST: ${name}`)
 
+				await tx.run(
+					`INSERT INTO fs_inodes(
+						ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
+					) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)`,
+					[
+						ino,
+						meta.type,
+						meta.mode,
+						size,
+						meta.mtimeNs ?? stamp,
+						meta.ctimeNs ?? stamp,
+						meta.symlinkTarget ?? null,
+						STORAGE_NONE
+					]
+				)
 				await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-					dirIno,
-					name,
-					ino,
-					type
+					dirIno, name, ino, meta.type
 				])
-				await tx.run('UPDATE fs_inodes SET nlink = nlink + 1 WHERE ino = ?', [ino])
-				await appendOps(tx, withSource([{ kind: 'set-dirent', dirIno, name, ino, type }], options))
-				added = true
-			})
-			return added
-		},
-
-		async dirSet(dirIno, name, ino, type, options) {
-			await ensureBootstrapped()
-			let displaced: { ino: Ino; type: FileType } | null = null
-			const orphanedR2Keys: string[] = []
-
-			await db.transaction(async (tx) => {
-				await ensureDirectory(tx, dirIno)
-				const target = await getInode(tx, ino)
-				if (!target) throw new Error(`ENOENT: ${ino}`)
-				const existing = await getDirent(tx, dirIno, name)
-				displaced = existing
-					? { ino: String(existing.ino), type: toNumber(existing.type) as FileType }
-					: null
-
-				if (existing && String(existing.ino) === ino && toNumber(existing.type) === type) return
-
-				if (existing) {
-					await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
-						ino,
-						type,
-						dirIno,
-						name
-					])
-				} else {
-					await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-						dirIno,
-						name,
-						ino,
-						type
-					])
-				}
-
-				if (!existing || String(existing.ino) !== ino) {
-					await tx.run('UPDATE fs_inodes SET nlink = nlink + 1 WHERE ino = ?', [ino])
-				}
-
-				if (existing && String(existing.ino) !== ino) {
-					await freeIfUnlinked(tx, String(existing.ino), orphanedR2Keys)
-				}
-
-				await appendOps(tx, withSource([{ kind: 'set-dirent', dirIno, name, ino, type }], options))
+				await appendOps(tx, withSource([
+					{ kind: 'upsert-inode', ino, meta } as FsOp,
+					{ kind: 'set-dirent', dirIno, name, ino, type: meta.type } as FsOp
+				], options))
 			})
 
-			if (blobStore?.delete) {
-				for (const key of orphanedR2Keys) {
-					await blobStore.delete(key)
-				}
-			}
-
-			return displaced
+			return ino
 		},
 
-		async dirUnset(dirIno, name, options) {
-			await ensureBootstrapped()
-			let removed: { ino: Ino; type: FileType } | null = null
-			const orphanedR2Keys: string[] = []
-
-			await db.transaction(async (tx) => {
-				const entry = await getDirent(tx, dirIno, name)
-				if (!entry) return
-
-				removed = { ino: String(entry.ino), type: toNumber(entry.type) as FileType }
-				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
-				await freeIfUnlinked(tx, String(entry.ino), orphanedR2Keys)
-				await appendOps(tx, withSource([{ kind: 'unset-dirent', dirIno, name, ino: String(entry.ino) }], options))
-			})
-
-			if (blobStore?.delete) {
-				for (const key of orphanedR2Keys) {
-					await blobStore.delete(key)
-				}
-			}
-
-			return removed
-		},
-
-		async rename(oldDirIno, oldName, newDirIno, newName, options) {
+		async atomicMove(oldDirIno: Ino, oldName: string, newDirIno: Ino, newName: string, options?: MutationOptions): Promise<Ino | null> {
 			await ensureBootstrapped()
 			let displaced: Ino | null = null
 			const orphanedR2Keys: string[] = []
@@ -1002,14 +717,11 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				if (destination) {
 					displaced = String(destination.ino)
 					await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [newDirIno, newName])
-					await freeIfUnlinked(tx, String(destination.ino), orphanedR2Keys)
+					await deleteInodeInTx(tx, String(destination.ino), orphanedR2Keys)
 				}
 
 				await tx.run('UPDATE fs_dirents SET dir_ino = ?, name = ? WHERE dir_ino = ? AND name = ?', [
-					newDirIno,
-					newName,
-					oldDirIno,
-					oldName
+					newDirIno, newName, oldDirIno, oldName
 				])
 
 				await appendOps(tx, withSource([
@@ -1038,7 +750,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 			return displaced
 		},
 
-		async scan(cursor) {
+		async fullScan(cursor: string) {
 			await ensureBootstrapped()
 			const [headRow] = await db.query<{ seq: unknown }>(
 				'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1'
@@ -1052,7 +764,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						name: unknown
 						type: unknown
 						mode: unknown
-						nlink: unknown
 						size: unknown
 						mtime_ns: unknown
 						ctime_ns: unknown
@@ -1077,7 +788,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 							tree.name,
 							inode.type,
 							inode.mode,
-							inode.nlink,
 							inode.size,
 							inode.mtime_ns,
 							inode.ctime_ns,
@@ -1096,7 +806,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 						name: unknown
 						type: unknown
 						mode: unknown
-						nlink: unknown
 						size: unknown
 						mtime_ns: unknown
 						ctime_ns: unknown
@@ -1121,7 +830,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 							tree.name,
 							inode.type,
 							inode.mode,
-							inode.nlink,
 							inode.size,
 							inode.mtime_ns,
 							inode.ctime_ns,
@@ -1165,7 +873,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 							type: toNumber(row.type) as FileType,
 							size: toBigInt(row.size),
 							mode: toNumber(row.mode),
-							nlink: toNumber(row.nlink),
 							mtimeNs: toBigInt(row.mtime_ns),
 							ctimeNs: toBigInt(row.ctime_ns),
 							contentHash: toStringOrNull(row.content_hash) ?? undefined,
@@ -1175,15 +882,11 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 					}
 				}),
 				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : '',
-				cursor: rows.length === SCAN_PAGE_SIZE ? undefined : headCursor,
+				syncCursor: rows.length === SCAN_PAGE_SIZE ? undefined : headCursor,
 			}
 		},
 
-		async putBlob(ino, data, options) {
-			await updateInodeContent(ino, data, options)
-		},
-
-		async updates(cursor, options) {
+		async deltaUpdates(cursor: string, options?: UpdateQueryOptions) {
 			await ensureBootstrapped()
 			const parsedCursor = cursor === '' ? 0 : Number.parseInt(cursor, 10)
 			const since = Number.isFinite(parsedCursor) && parsedCursor > 0 ? parsedCursor : 0
@@ -1252,6 +955,162 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 				ops,
 				cursor: rows.length > 0 ? String(rows[rows.length - 1].seq) : headCursor
 			}
-		}
+		},
+	}
+
+	// ── StorageBackend implementation ─────────────────────────────────────────
+
+	return {
+		rootIno: ROOT_INO,
+		caps,
+
+		async getMeta(ino: Ino) {
+			await ensureBootstrapped()
+			const row = await getInode(db, ino)
+			return row ? metaFromRow(row) : null
+		},
+
+		async setMeta(ino: Ino, partial: Partial<InodeMeta>, options?: MutationOptions) {
+			await ensureBootstrapped()
+			await db.transaction(async (tx) => {
+				const row = await getInode(tx, ino)
+				if (!row) {
+					const created = buildMissingInodeMeta(partial)
+					if (!created) return
+					await tx.run(
+						`INSERT INTO fs_inodes(
+							ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+						[
+							ino,
+							created.type,
+							created.mode,
+							Number(created.size),
+							created.mtimeNs,
+							created.ctimeNs,
+							created.contentHash ?? null,
+							created.symlinkTarget ?? null,
+							STORAGE_NONE
+						]
+					)
+					await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options))
+					return
+				}
+				const current = metaFromRow(row)
+				const next: InodeMeta = { ...current, ...partial }
+				await tx.run(
+					`UPDATE fs_inodes
+					 SET type = ?, mode = ?, size = ?, mtime_ns = ?, ctime_ns = ?, content_hash = ?, symlink_target = ?
+					 WHERE ino = ?`,
+					[
+						next.type,
+						next.mode,
+						Number(next.size),
+						next.mtimeNs,
+						next.ctimeNs,
+						next.contentHash ?? null,
+						next.symlinkTarget ?? null,
+						ino
+					]
+				)
+				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options))
+			})
+		},
+
+		async deleteInode(ino: Ino) {
+			await ensureBootstrapped()
+			const orphanedR2Keys: string[] = []
+			await db.transaction(async (tx) => {
+				await deleteInodeInTx(tx, ino, orphanedR2Keys)
+			})
+			if (blobStore?.delete) {
+				for (const key of orphanedR2Keys) {
+					await blobStore.delete(key)
+				}
+			}
+		},
+
+		async getBlob(ino: Ino) {
+			await ensureBootstrapped()
+			return readFullContent(db, ino)
+		},
+
+		async putBlob(ino: Ino, data: Uint8Array, options?: MutationOptions) {
+			await updateInodeContent(ino, data, options)
+		},
+
+		async getDirent(dirIno: Ino, name: string) {
+			await ensureBootstrapped()
+			const row = await getDirent(db, dirIno, name)
+			return row ? { ino: String(row.ino), type: toNumber(row.type) as FileType } : null
+		},
+
+		async putDirent(dirIno: Ino, name: string, entry: { ino: Ino; type: FileType }, options?: MutationOptions) {
+			await ensureBootstrapped()
+			await db.transaction(async (tx) => {
+				const existing = await getDirent(tx, dirIno, name)
+				if (existing) {
+					await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
+						entry.ino, entry.type, dirIno, name
+					])
+				} else {
+					await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
+						dirIno, name, entry.ino, entry.type
+					])
+				}
+				await appendOps(tx, withSource([{
+					kind: 'set-dirent',
+					dirIno,
+					name,
+					ino: entry.ino,
+					type: entry.type
+				} as FsOp], options))
+			})
+		},
+
+		async deleteDirent(dirIno: Ino, name: string, options?: MutationOptions) {
+			await ensureBootstrapped()
+			await db.transaction(async (tx) => {
+				const existing = await getDirent(tx, dirIno, name)
+				if (!existing) return
+				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
+				await appendOps(tx, withSource([{
+					kind: 'unset-dirent',
+					dirIno,
+					name,
+					ino: String(existing.ino)
+				} as FsOp], options))
+			})
+		},
+
+		async listDirents(dirIno: Ino, cursor: string) {
+			await ensureBootstrapped()
+			const rows = cursor === ''
+				? await db.query<DirentRow>(
+						`SELECT dir_ino, name, ino, type
+						 FROM fs_dirents
+						 WHERE dir_ino = ?
+						 ORDER BY name
+						 LIMIT ?`,
+						[dirIno, DIR_PAGE_SIZE]
+					)
+				: await db.query<DirentRow>(
+						`SELECT dir_ino, name, ino, type
+						 FROM fs_dirents
+						 WHERE dir_ino = ? AND name > ?
+						 ORDER BY name
+						 LIMIT ?`,
+						[dirIno, cursor, DIR_PAGE_SIZE]
+					)
+
+			return {
+				entries: rows.map((row) => ({
+					name: String(row.name),
+					ino: String(row.ino),
+					type: toNumber(row.type) as FileType
+				})),
+				next: rows.length === DIR_PAGE_SIZE ? String(rows[rows.length - 1].name) : ''
+			}
+		},
 	}
 }

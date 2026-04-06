@@ -2,7 +2,6 @@ CREATE TABLE IF NOT EXISTS fs_inodes (
 	ino TEXT PRIMARY KEY,
 	type INTEGER NOT NULL,
 	mode INTEGER NOT NULL,
-	nlink INTEGER NOT NULL,
 	size INTEGER NOT NULL,
 	mtime_ns INTEGER NOT NULL,
 	ctime_ns INTEGER NOT NULL,
@@ -12,7 +11,6 @@ CREATE TABLE IF NOT EXISTS fs_inodes (
 	storage_kind INTEGER NOT NULL DEFAULT 0,
 	CHECK (type IN (0, 1, 2)),
 	CHECK (storage_kind IN (0, 1, 2)),
-	CHECK (nlink >= 0),
 	CHECK (size >= 0)
 );
 

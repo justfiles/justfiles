@@ -1,10 +1,10 @@
-import type { FileSystem } from './fs'
-import { FileType, OpenFlags } from './types'
-import type { Dirent, Stat } from './types'
-import type { Ino } from './types'
+import type { StorageBackend, InodeMeta } from './storage'
+import { createSingleFlight } from './singleFlight'
+import { FileType } from './types'
+import type { Dirent, Stat, Ino } from './types'
 
 /**
- * Path-based filesystem interface built on top of FileSystem.
+ * Path-based filesystem interface built on top of StorageBackend.
  *
  * Design principles:
  * - All paths are absolute (start with '/').
@@ -158,7 +158,7 @@ export interface Volume {
 	 * Directories are visited before their contents. Paths passed to the
 	 * visitor are absolute and normalised.
 	 *
-	 * Delegates to FileSystem.scan() when the storage backend supports it —
+	 * Delegates to StorageBackend.caps.fullScan() when available —
 	 * O(pages) round trips for cloud backends. Falls back to recursive readdir.
 	 *
 	 * Throws ENOENT if path does not exist.
@@ -169,26 +169,87 @@ export interface Volume {
 	): Promise<void>
 }
 
-export function volume(fs: FileSystem): Volume {
+export function volume(storage: StorageBackend): Volume {
 	const MAX_SYMLINK_DEPTH = 40
+
+	const metaCache = new Map<Ino, InodeMeta>()
+	const dirCache = new Map<string, Ino | null>()
+	const metaRequests = createSingleFlight<Ino, InodeMeta>()
+	const dirLookupRequests = createSingleFlight<string, Ino | null>()
+
+	function nowNs(): bigint {
+		return BigInt(Date.now()) * 1_000_000n
+	}
+
+	function dirCacheKey(dirIno: Ino, name: string): string {
+		return `${dirIno}:${name}`
+	}
+
+	function invalidateDirCache(dirIno: Ino): void {
+		const prefix = `${dirIno}:`
+		for (const key of dirCache.keys()) {
+			if (key.startsWith(prefix)) {
+				dirCache.delete(key)
+			}
+		}
+		dirLookupRequests.deleteWhere((key) => key.startsWith(prefix))
+	}
+
+	function invalidateIno(ino: Ino): void {
+		metaCache.delete(ino)
+		metaRequests.delete(ino)
+	}
+
+	function makeStat(ino: Ino, meta: InodeMeta): Stat {
+		return {
+			ino,
+			type: meta.type,
+			size: meta.size,
+			mode: meta.mode,
+			mtimeNs: meta.mtimeNs,
+			ctimeNs: meta.ctimeNs,
+			contentHash: meta.contentHash,
+		}
+	}
+
+	async function getMetaOrThrow(ino: Ino): Promise<InodeMeta> {
+		const cached = metaCache.get(ino)
+		if (cached) return cached
+
+		return metaRequests.run(ino, async () => {
+			const meta = await storage.getMeta(ino)
+			if (meta === null) {
+				throw new Error(`ENOENT: inode ${ino}`)
+			}
+			metaCache.set(ino, meta)
+			return meta
+		})
+	}
+
+	async function lookupIno(dirIno: Ino, name: string): Promise<Ino | null> {
+		const key = dirCacheKey(dirIno, name)
+		if (dirCache.has(key)) {
+			return dirCache.get(key) ?? null
+		}
+
+		return dirLookupRequests.run(key, async () => {
+			const entry = await storage.getDirent(dirIno, name)
+			const ino = entry?.ino ?? null
+			dirCache.set(key, ino)
+			return ino
+		})
+	}
 
 	/**
 	 * Resolve an absolute path to an inode number.
 	 * followLast controls whether a final symlink component is followed.
-	 *
-	 * Uses a mutable queue + inoStack so that:
-	 *  - '..' pops the stack without re-walking from root
-	 *  - symlink targets (relative or absolute) are spliced into the queue
-	 *    in-place, keeping the loop linear and handling chains naturally
 	 */
 	async function resolvePath(path: string, followLast: boolean, initialDepth = 0): Promise<Ino> {
 		const normalized = path.replace(/\/+$/, '') || '/'
-		if (normalized === '/') return fs.root()
+		if (normalized === '/') return storage.rootIno
 
-		// Mutable queue of remaining components
 		const queue: string[] = normalized.split('/').filter(p => p !== '')
-		// Stack of resolved inodes; inoStack[0] is always root
-		const inoStack: Ino[] = [fs.root()]
+		const inoStack: Ino[] = [storage.rootIno]
 		let symlinkDepth = initialDepth
 
 		for (let i = 0; i < queue.length; i++) {
@@ -204,24 +265,23 @@ export function volume(fs: FileSystem): Volume {
 			const isLast = i === queue.length - 1
 			const currentIno = inoStack[inoStack.length - 1]!
 
-			const childIno = await fs.lookup(currentIno, name)
+			const childIno = await lookupIno(currentIno, name)
 			if (childIno === null) throw new Error(`ENOENT: ${path}`)
 
-			const stat = await fs.stat(childIno)
+			const meta = await getMetaOrThrow(childIno)
 
-			if (stat.type === FileType.Symlink && (!isLast || followLast)) {
+			if (meta.type === FileType.Symlink && (!isLast || followLast)) {
 				if (++symlinkDepth > MAX_SYMLINK_DEPTH) throw new Error('ELOOP: too many levels of symbolic links')
 
-				const target = await fs.readlink(childIno)
+				const target = meta.symlinkTarget
+				if (!target) throw new Error(`EINVAL: symlink has no target`)
 				const targetParts = target.split('/').filter(p => p !== '')
 
 				if (target.startsWith('/')) {
-					// Absolute target: reset traversal to root
-					inoStack.splice(0, inoStack.length, fs.root())
+					inoStack.splice(0, inoStack.length, storage.rootIno)
 				}
-				// Replace the current component with the target components
 				queue.splice(i, 1, ...targetParts)
-				i-- // re-process from the first target part (loop will i++)
+				i--
 			} else {
 				inoStack.push(childIno)
 			}
@@ -230,7 +290,6 @@ export function volume(fs: FileSystem): Volume {
 		return inoStack[inoStack.length - 1]!
 	}
 
-	/** Split path into parent dir path and final name component. */
 	function splitPath(path: string): { dir: string; name: string } {
 		const lastSlash = path.lastIndexOf('/')
 		const dir = lastSlash === 0 ? '/' : path.slice(0, lastSlash)
@@ -238,34 +297,56 @@ export function volume(fs: FileSystem): Volume {
 		return { dir, name }
 	}
 
-	/** Resolve the parent directory of a path, returning its ino and the final name. */
 	async function resolveParent(path: string): Promise<{ dirIno: Ino; name: string }> {
 		const { dir, name } = splitPath(path)
 		const dirIno = await resolvePath(dir, true)
 		return { dirIno, name }
 	}
 
-	/** Read all entries from a directory, handling pagination. */
 	async function readdirAll(dirIno: Ino): Promise<Dirent[]> {
 		const entries: Dirent[] = []
 		let cursor = ''
 		do {
-			const batch = await fs.readdir(dirIno, cursor)
-			entries.push(...batch.entries)
+			const batch = await storage.listDirents(dirIno, cursor)
+			entries.push(...batch.entries.map(e => ({ ino: e.ino, name: e.name, type: e.type })))
 			cursor = batch.next
 		} while (cursor !== '')
 		return entries
 	}
 
-	return {
+	async function createNode(dirIno: Ino, name: string, meta: InodeMeta): Promise<Ino> {
+		if (storage.caps?.atomicCreate) {
+			const ino = await storage.caps.atomicCreate(dirIno, name, meta)
+			invalidateDirCache(dirIno)
+			return ino
+		}
+
+		const ino = crypto.randomUUID()
+		await storage.setMeta(ino, meta)
+		await storage.putDirent(dirIno, name, { ino, type: meta.type })
+		dirCache.set(dirCacheKey(dirIno, name), ino)
+		metaCache.set(ino, meta)
+		return ino
+	}
+
+	async function unlinkIno(dirIno: Ino, name: string): Promise<void> {
+		const entry = await storage.getDirent(dirIno, name)
+		if (entry === null) throw new Error(`ENOENT: ${name}`)
+		await storage.deleteDirent(dirIno, name)
+		await storage.deleteInode(entry.ino)
+		invalidateDirCache(dirIno)
+		invalidateIno(entry.ino)
+	}
+
+	const vol: Volume = {
 		async stat(path) {
 			const ino = await resolvePath(path, true)
-			return fs.stat(ino)
+			return makeStat(ino, await getMetaOrThrow(ino))
 		},
 
 		async lstat(path) {
 			const ino = await resolvePath(path, false)
-			return fs.stat(ino)
+			return makeStat(ino, await getMetaOrThrow(ino))
 		},
 
 		async exists(path) {
@@ -279,48 +360,34 @@ export function volume(fs: FileSystem): Volume {
 
 		async getXattr(path, name) {
 			const ino = await resolvePath(path, true)
-			return fs.getXattr(ino, name)
+			return storage.caps?.getXattr?.(ino, name) ?? null
 		},
 
 		async setXattr(path, name, value) {
 			const ino = await resolvePath(path, true)
-			await fs.setXattr(ino, name, value)
+			await storage.caps?.setXattr?.(ino, name, value)
 		},
 
 		async listXattr(path) {
 			const ino = await resolvePath(path, true)
-			return fs.listXattr(ino)
+			return storage.caps?.listXattrs?.(ino) ?? []
 		},
 
 		async removeXattr(path, name) {
 			const ino = await resolvePath(path, true)
-			await fs.removeXattr(ino, name)
+			await storage.caps?.removeXattr?.(ino, name)
 		},
 
 		async readFile(path) {
 			const ino = await resolvePath(path, true)
-			const stat = await fs.stat(ino)
-			if (stat.type === FileType.Directory) {
+			const meta = await getMetaOrThrow(ino)
+			if (meta.type === FileType.Directory) {
 				throw new Error(`EISDIR: ${path}`)
 			}
-			const fd = await fs.open(ino, OpenFlags.Read)
-			try {
-				const buf = new Uint8Array(Number(stat.size))
-				let offset = 0n
-				while (offset < stat.size) {
-					const n = await fs.pread(fd, buf.subarray(Number(offset)), offset)
-					if (n === 0) break
-					offset += BigInt(n)
-				}
-				return buf
-			} finally {
-				await fs.close(fd)
-			}
+			return storage.getBlob(ino)
 		},
 
 		async writeFile(path, data) {
-			// Follow the full path (including any final symlink) so writes go to
-			// the symlink target, not to the symlink inode itself.
 			let ino: Ino
 			let resolved: Ino | null = null
 			try {
@@ -330,26 +397,27 @@ export function volume(fs: FileSystem): Volume {
 			}
 
 			if (resolved !== null) {
-				const stat = await fs.stat(resolved)
-				if (stat.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
+				const meta = await getMetaOrThrow(resolved)
+				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
 			} else {
 				const { dirIno, name } = await resolveParent(path)
-				ino = await fs.mknod(dirIno, name, FileType.Regular, 0o644)
+				const now = nowNs()
+				ino = await createNode(dirIno, name, {
+					type: FileType.Regular,
+					size: 0n,
+					mode: 0o644,
+					mtimeNs: now,
+					ctimeNs: now,
+				})
 			}
 
-			const fd = await fs.open(ino, OpenFlags.Write | OpenFlags.Trunc)
-			try {
-				await fs.pwrite(fd, data, 0n)
-				await fs.fsync(fd)
-			} finally {
-				await fs.close(fd)
-			}
+			await storage.putBlob(ino, data)
+			invalidateIno(ino)
 		},
 
 		async appendFile(path, data) {
 			let ino: Ino
-			let appendOffset: bigint
 			let resolved: Ino | null = null
 			try {
 				resolved = await resolvePath(path, true)
@@ -358,23 +426,27 @@ export function volume(fs: FileSystem): Volume {
 			}
 
 			if (resolved !== null) {
-				const stat = await fs.stat(resolved)
-				if (stat.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
+				const meta = await getMetaOrThrow(resolved)
+				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
-				appendOffset = stat.size
+				const existing = await storage.getBlob(ino)
+				const merged = new Uint8Array(existing.length + data.length)
+				merged.set(existing)
+				merged.set(data, existing.length)
+				await storage.putBlob(ino, merged)
 			} else {
 				const { dirIno, name } = await resolveParent(path)
-				ino = await fs.mknod(dirIno, name, FileType.Regular, 0o644)
-				appendOffset = 0n
+				const now = nowNs()
+				ino = await createNode(dirIno, name, {
+					type: FileType.Regular,
+					size: 0n,
+					mode: 0o644,
+					mtimeNs: now,
+					ctimeNs: now,
+				})
+				await storage.putBlob(ino, data)
 			}
-
-			const fd = await fs.open(ino, OpenFlags.Write)
-			try {
-				await fs.pwrite(fd, data, appendOffset)
-				await fs.fsync(fd)
-			} finally {
-				await fs.close(fd)
-			}
+			invalidateIno(ino)
 		},
 
 		async mkdir(path, opts) {
@@ -388,13 +460,18 @@ export function volume(fs: FileSystem): Volume {
 					const parentPath = current
 					current = current === '/' ? `/${part}` : `${current}/${part}`
 					const parentIno = await resolvePath(parentPath, true)
-					const existingIno = await fs.lookup(parentIno, part)
+					const existingIno = await lookupIno(parentIno, part)
 					if (existingIno !== null) continue
 					try {
-						await fs.mknod(parentIno, part, FileType.Directory, mode)
+						const now = nowNs()
+						await createNode(parentIno, part, {
+							type: FileType.Directory,
+							size: 0n,
+							mode,
+							mtimeNs: now,
+							ctimeNs: now,
+						})
 					} catch (e) {
-						// Concurrent mkdir — another caller created the directory between our
-						// lookup and mknod. That's fine; swallow EEXIST and move on.
 						if (!(e instanceof Error) || !e.message.startsWith('EEXIST')) throw e
 					}
 				}
@@ -402,17 +479,24 @@ export function volume(fs: FileSystem): Volume {
 			}
 
 			const { dirIno, name } = await resolveParent(path)
-			const existingIno = await fs.lookup(dirIno, name)
+			const existingIno = await lookupIno(dirIno, name)
 			if (existingIno !== null) {
 				throw new Error(`EEXIST: ${path}`)
 			}
-			await fs.mknod(dirIno, name, FileType.Directory, mode)
+			const now = nowNs()
+			await createNode(dirIno, name, {
+				type: FileType.Directory,
+				size: 0n,
+				mode,
+				mtimeNs: now,
+				ctimeNs: now,
+			})
 		},
 
 		async readdir(path) {
 			const ino = await resolvePath(path, true)
-			const stat = await fs.stat(ino)
-			if (stat.type !== FileType.Directory) {
+			const meta = await getMetaOrThrow(ino)
+			if (meta.type !== FileType.Directory) {
 				throw new Error(`ENOTDIR: ${path}`)
 			}
 			return readdirAll(ino)
@@ -430,8 +514,8 @@ export function volume(fs: FileSystem): Volume {
 				throw e
 			}
 
-			const stat = await fs.stat(ino)
-			if (stat.type === FileType.Directory) {
+			const meta = await getMetaOrThrow(ino)
+			if (meta.type === FileType.Directory) {
 				const entries = await readdirAll(ino)
 				if (entries.length > 0 && !recursive) {
 					throw new Error(`ENOTEMPTY: ${path}`)
@@ -439,139 +523,170 @@ export function volume(fs: FileSystem): Volume {
 				if (recursive) {
 					for (const entry of entries) {
 						const childPath = path === '/' ? `/${entry.name}` : `${path}/${entry.name}`
-						await this.rm(childPath, { recursive: true })
+						await vol.rm(childPath, { recursive: true })
 					}
 				}
 			}
 
 			const { dirIno, name } = await resolveParent(path)
-			await fs.unlink(dirIno, name)
+			await unlinkIno(dirIno, name)
 		},
 
 		async rename(oldPath, newPath) {
 			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
 			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
-			await fs.rename(oldDirIno, oldName, newDirIno, newName)
+
+			if (storage.caps?.atomicMove) {
+				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName)
+				invalidateDirCache(oldDirIno)
+				invalidateDirCache(newDirIno)
+				if (displaced !== null) invalidateIno(displaced)
+				return
+			}
+
+			const source = await storage.getDirent(oldDirIno, oldName)
+			if (source === null) throw new Error(`ENOENT: ${oldName}`)
+
+			const displaced = await storage.getDirent(newDirIno, newName)
+			await storage.putDirent(newDirIno, newName, { ino: source.ino, type: source.type })
+			await storage.deleteDirent(oldDirIno, oldName)
+
+			if (displaced && displaced.ino !== source.ino) {
+				await storage.deleteInode(displaced.ino)
+				invalidateIno(displaced.ino)
+			}
+
+			invalidateDirCache(oldDirIno)
+			invalidateDirCache(newDirIno)
 		},
 
 		async cp(src, dest, opts) {
 			const recursive = opts?.recursive ?? false
 
 			const srcIno = await resolvePath(src, true)
-			const srcStat = await fs.stat(srcIno)
+			const srcMeta = await getMetaOrThrow(srcIno)
 
-			if (srcStat.type === FileType.Directory) {
-				if (!recursive) {
-					throw new Error(`EISDIR: ${src}`)
-				}
+			if (srcMeta.type === FileType.Directory) {
+				if (!recursive) throw new Error(`EISDIR: ${src}`)
 
 				let destExists = false
 				try {
 					const destIno = await resolvePath(dest, true)
-					const destStat = await fs.stat(destIno)
-					if (destStat.type !== FileType.Directory) {
-						throw new Error(`ENOTDIR: ${dest}`)
-					}
+					const destMeta = await getMetaOrThrow(destIno)
+					if (destMeta.type !== FileType.Directory) throw new Error(`ENOTDIR: ${dest}`)
 					destExists = true
 				} catch (e) {
 					if (!(e as Error).message.startsWith('ENOENT')) throw e
 				}
 
 				if (!destExists) {
-					await this.mkdir(dest, { mode: srcStat.mode })
+					await vol.mkdir(dest, { mode: srcMeta.mode })
 				}
 
 				const entries = await readdirAll(srcIno)
 				for (const entry of entries) {
 					const srcChild = src === '/' ? `/${entry.name}` : `${src}/${entry.name}`
 					const destChild = dest === '/' ? `/${entry.name}` : `${dest}/${entry.name}`
-					await this.cp(srcChild, destChild, { recursive })
+					await vol.cp(srcChild, destChild, { recursive })
 				}
 			} else {
 				try {
 					const destIno = await resolvePath(dest, true)
-					const destStat = await fs.stat(destIno)
-					if (destStat.type === FileType.Directory) {
-						throw new Error(`EISDIR: ${dest}`)
-					}
+					const destMeta = await getMetaOrThrow(destIno)
+					if (destMeta.type === FileType.Directory) throw new Error(`EISDIR: ${dest}`)
 				} catch (e) {
 					if (!(e as Error).message.startsWith('ENOENT')) throw e
 				}
 
-				const data = await this.readFile(src)
-				await this.writeFile(dest, data)
+				const data = await vol.readFile(src)
+				await vol.writeFile(dest, data)
 			}
 		},
 
 		async symlink(target, path) {
 			const { dirIno, name } = await resolveParent(path)
-			const existingIno = await fs.lookup(dirIno, name)
-			if (existingIno !== null) {
-				throw new Error(`EEXIST: ${path}`)
-			}
-			await fs.symlink(dirIno, name, target)
+			const existingIno = await lookupIno(dirIno, name)
+			if (existingIno !== null) throw new Error(`EEXIST: ${path}`)
+			const now = nowNs()
+			await createNode(dirIno, name, {
+				type: FileType.Symlink,
+				size: BigInt(new TextEncoder().encode(target).length),
+				mode: 0o777,
+				mtimeNs: now,
+				ctimeNs: now,
+				symlinkTarget: target,
+			})
 		},
 
 		async readlink(path) {
 			const ino = await resolvePath(path, false)
-			const stat = await fs.stat(ino)
-			if (stat.type !== FileType.Symlink) {
-				throw new Error(`EINVAL: ${path} is not a symlink`)
-			}
-			return fs.readlink(ino)
+			const meta = await getMetaOrThrow(ino)
+			if (meta.type !== FileType.Symlink) throw new Error(`EINVAL: ${path} is not a symlink`)
+			if (!meta.symlinkTarget) throw new Error(`EINVAL: symlink has no target`)
+			return meta.symlinkTarget
 		},
 
 		async chmod(path, mode) {
 			const ino = await resolvePath(path, true)
-			await fs.setattr(ino, { mode })
+			await storage.setMeta(ino, { mode })
+			invalidateIno(ino)
 		},
 
 		async utimes(path, mtimeNs) {
 			const ino = await resolvePath(path, true)
-			await fs.setattr(ino, { mtimeNs })
+			await storage.setMeta(ino, { mtimeNs })
+			invalidateIno(ino)
 		},
 
 		async scan(path, visitor) {
 			const ino = await resolvePath(path, true)
-			const stat = await fs.stat(ino)
+			const meta = await getMetaOrThrow(ino)
 
-			await visitor(path, stat)
+			await visitor(path, makeStat(ino, meta))
 
-			if (stat.type !== FileType.Directory) return
+			if (meta.type !== FileType.Directory) return
 
-			if (path === '/') {
-				// Root: emit everything _fs.scan() produces.
-				await fs.scan(async (fsPath, _fsIno, fsStat) => {
-					await visitor(fsPath, fsStat)
-				})
+			if (storage.caps?.fullScan) {
+				const inoToPath = new Map<Ino, string>([[storage.rootIno, '/']])
+				let cursor = ''
+				do {
+					const { entries, next } = await storage.caps.fullScan(cursor)
+					for (const e of entries) {
+						const dir = inoToPath.get(e.dirIno) ?? '/'
+						const ePath = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
+						inoToPath.set(e.ino, ePath)
+						metaCache.set(e.ino, e.meta)
+						dirCache.set(dirCacheKey(e.dirIno, e.name), e.ino)
+						// Filter to descendants of the requested path
+						if (path === '/' || ePath === path || ePath.startsWith(path + '/')) {
+							await visitor(ePath, makeStat(e.ino, e.meta))
+						}
+					}
+					cursor = next
+				} while (cursor !== '')
 				return
 			}
 
-			// Non-root: _fs.scan() emits canonical filesystem paths, which may
-			// differ from `path` when `path` resolves through a symlink (e.g.
-			// path='/link' but the real directory is '/real'). We discover the
-			// canonical path by matching the resolved ino, then filter descendants
-			// against that canonical prefix and remap them back to `path`.
-			//
-			// Special case: if `ino` is the root inode (e.g. path='/root-link' →
-			// '/'), _fs.scan() never emits the root entry itself, so we pre-seed
-			// canonicalRoot rather than waiting for a match that never arrives.
-			let canonicalRoot: string | null = ino === fs.root() ? '/' : null
-			await fs.scan(async (fsPath, fsIno, fsStat) => {
-				if (canonicalRoot === null) {
-					if (fsIno === ino) canonicalRoot = fsPath
-					return // skip everything until we locate the scan root
-				}
-				const inSubtree = canonicalRoot === '/' || fsPath.startsWith(canonicalRoot + '/')
-				if (inSubtree) {
-					// For canonicalRoot='/' fsPath already has the leading slash,
-					// so path+fsPath produces the correct remapped path.
-					// For any other canonicalRoot, fsPath.slice(canonicalRoot.length)
-					// starts with '/', giving path+'/child'.
-					const remapped = canonicalRoot === '/' ? path + fsPath : path + fsPath.slice(canonicalRoot.length)
-					await visitor(remapped, fsStat)
-				}
-			})
+			// Recursive fallback
+			async function walk(dirIno: Ino, dirPath: string): Promise<void> {
+				let cursor = ''
+				do {
+					const { entries, next } = await storage.listDirents(dirIno, cursor)
+					for (const e of entries) {
+						const ePath = dirPath === '/' ? `/${e.name}` : `${dirPath}/${e.name}`
+						const eMeta = await storage.getMeta(e.ino)
+						if (eMeta === null) continue
+						metaCache.set(e.ino, eMeta)
+						dirCache.set(dirCacheKey(dirIno, e.name), e.ino)
+						await visitor(ePath, makeStat(e.ino, eMeta))
+						if (e.type === FileType.Directory) await walk(e.ino, ePath)
+					}
+					cursor = next
+				} while (cursor !== '')
+			}
+			await walk(ino, path)
 		},
 	}
+
+	return vol
 }

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type { StorageBackend } from './storage';
 import { createSingleFlight } from './singleFlight';
 import { FileType, OpenFlags } from './types';

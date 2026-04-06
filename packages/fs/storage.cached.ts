@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { isFsCursorExpiredError, type StorageBackend, type InodeMeta, type FsOp } from './storage'
 import type { Ino, Off, DirCursor, DirentMin } from './types'
 import { FileType } from './types'

@@ -32,13 +32,8 @@ export interface Stat {
   type: FileType;
   size: Off;
   mode: number;
-  /**
-   * Hard link count. Maintained entirely inside the backend as a side
-   * effect of dirAdd / dirSet / dirUnset — the VFS never reads or writes
-   * this field directly. Exposed here so consumers above the VFS can read
-   * it without knowing about InodeMeta.
-   */
-  nlink: number;
+  /** @deprecated Hard links not supported in new stack. Only populated by fs.native.ts. */
+  nlink?: number;
   mtimeNs: bigint;
   ctimeNs: bigint;
   /**

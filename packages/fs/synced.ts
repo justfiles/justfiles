@@ -2,7 +2,6 @@ import type { StorageBackend, FsOp, MutationOptions } from './storage';
 import { isFsCursorExpiredError } from './storage';
 import type { Ino } from './types';
 import { FileType } from './types';
-import { fs } from './fs';
 import { volume, type Volume } from './volume';
 import { persistedState } from './persistedState';
 
@@ -32,7 +31,7 @@ interface SyncLifecycle {
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
-	const localVol = volume(fs(props.local))
+	const localVol = volume(props.local)
 
 	const syncInterval = props.interval ?? 30_000
 
@@ -41,14 +40,14 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	async function isLocalOnly(ino: Ino): Promise<boolean> {
 		if (_localOnlyCache.has(ino)) return _localOnlyCache.get(ino)!
-		const marked = (await props.local.getXattr?.(ino, SYNC_LOCAL_ONLY_XATTR)) !== null
-		_localOnlyCache.set(ino, marked)
-		return marked
+		const marked = (await props.local.caps?.getXattr?.(ino, SYNC_LOCAL_ONLY_XATTR)) !== null
+		_localOnlyCache.set(ino, marked ?? false)
+		return marked ?? false
 	}
 
 	async function markLocalOnly(ino: Ino): Promise<void> {
 		if (await isLocalOnly(ino)) return
-		await props.local.setXattr?.(ino, SYNC_LOCAL_ONLY_XATTR, new Uint8Array(0), { source: REMOTE_SOURCE })
+		await props.local.caps?.setXattr?.(ino, SYNC_LOCAL_ONLY_XATTR, new Uint8Array(0), { source: REMOTE_SOURCE })
 		_localOnlyCache.set(ino, true)
 	}
 
@@ -60,7 +59,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		await markLocalOnly(stateIno)
 		let cursor = ''
 		do {
-			const { entries, next } = await props.local.dirList(stateIno, cursor)
+			const { entries, next } = await props.local.listDirents(stateIno, cursor)
 			await Promise.all(entries.map(e => markLocalOnly(e.ino)))
 			cursor = next
 		} while (cursor)
@@ -90,10 +89,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * Returns the new localCursor to persist.
 	 */
 	async function push(localCursor: string, clientId: string): Promise<string> {
-		if (!props.local.updates) return localCursor
+		if (!props.local.caps?.deltaUpdates) return localCursor
 		const [{ ops, cursor }] = await Promise.all([
 			// Exclude ops the sync layer wrote to local (tagged REMOTE_SOURCE) — only push user-originated writes.
-			props.local.updates(localCursor, { source: REMOTE_SOURCE, sourceMode: 'exclude' }),
+			props.local.caps.deltaUpdates(localCursor, { source: REMOTE_SOURCE, sourceMode: 'exclude' }),
 			initStateMarkers(),
 		])
 		// Tag remote writes with clientId so other clients can filter out our echoes in their pull.
@@ -114,8 +113,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * Returns the new remoteCursor to persist.
 	 */
 	async function pull(remoteCursor: string, clientId: string): Promise<string> {
-		if (!props.remote.updates) return remoteCursor
-		const { ops, cursor } = await props.remote.updates(remoteCursor, { source: clientId, sourceMode: 'exclude' })
+		if (!props.remote.caps?.deltaUpdates) return remoteCursor
+		const { ops, cursor } = await props.remote.caps.deltaUpdates(remoteCursor, { source: clientId, sourceMode: 'exclude' })
 		// Tag as REMOTE_SOURCE so push knows not to re-send these back.
 		const opts: MutationOptions = { source: REMOTE_SOURCE }
 		for (const op of ops) {
@@ -137,20 +136,20 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * and captures the update cursor from the scan so the next pull is incremental.
 	 */
 	async function bootstrap(): Promise<void> {
-		if (!props.remote.scan) throw new Error('remote backend does not support scan — bootstrap unavailable')
+		if (!props.remote.caps?.fullScan) throw new Error('remote backend does not support scan — bootstrap unavailable')
 		const opts: MutationOptions = { source: REMOTE_SOURCE }
 		let scanCursor = ''
 		let remoteCursor: string | undefined
 		do {
-			const { entries, next, cursor } = await props.remote.scan(scanCursor)
-			if (cursor !== undefined) remoteCursor = cursor
+			const result = await props.remote.caps.fullScan(scanCursor)
+			if (result.syncCursor !== undefined) remoteCursor = result.syncCursor
 			// TODO: reconcile — delete local dirents/inodes absent from remote snapshot
-			for (const entry of entries) {
+			for (const entry of result.entries) {
 				await applyOp({ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta, xattrs: entry.xattrs }, props.remote, props.local, opts, props.lazyContent)
 				await applyOp({ kind: 'set-dirent', dirIno: entry.dirIno, name: entry.name, ino: entry.ino, type: entry.meta.type }, props.remote, props.local, opts, props.lazyContent)
 				if (entry.meta.contentHash) await setHashBaseline(entry.ino, entry.meta.contentHash)
 			}
-			scanCursor = next
+			scanCursor = result.next
 		} while (scanCursor)
 		await syncState.patch({ remoteCursor: remoteCursor ?? '' })
 	}
@@ -159,12 +158,12 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const syncState = persistedState<SyncState>(localVol, '/.state/sync', {})
 
 	async function getHashBaseline(ino: Ino): Promise<string | null> {
-		const raw = await props.local.getXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`)
+		const raw = await props.local.caps?.getXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`)
 		return raw ? new TextDecoder().decode(raw) : null
 	}
 
 	async function setHashBaseline(ino: Ino, hash: string): Promise<void> {
-		await props.local.setXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`, new TextEncoder().encode(hash), { source: REMOTE_SOURCE })
+		await props.local.caps?.setXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`, new TextEncoder().encode(hash), { source: REMOTE_SOURCE })
 	}
 
 	async function sync() {
@@ -229,11 +228,6 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// Stub inodes (created by bootstrap or pull) have no local contentHash.
 		// On first read, fetch the blob from remote and cache it — putBlob then
 		// sets the contentHash on the IDB inode.
-		//
-		// Note: putBlob writes directly to the storage backend, bypassing the VFS
-		// metaCache. So stat.contentHash can remain stale (absent) even after the
-		// first hydration. We therefore double-check against storage directly before
-		// deciding to fetch — one extra IDB read only on the stale-cache path.
 		const readFile = async (path: string): Promise<Uint8Array> => {
 			const stat = await localVol.stat(path)
 			if (stat.type !== FileType.Regular || stat.size === 0n) return localVol.readFile(path)
@@ -242,8 +236,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			const storedMeta = await props.local.getMeta(stat.ino)
 			if (storedMeta?.contentHash) return localVol.readFile(path)
 			// Genuinely not hydrated — fetch from remote.
-			const data = await props.remote.read(stat.ino, 0n, Number(stat.size))
-			if (data.length > 0) await props.local.putBlob?.(stat.ino, data, { source: REMOTE_SOURCE })
+			const data = await props.remote.getBlob(stat.ino)
+			if (data.length > 0) await props.local.putBlob(stat.ino, data, { source: REMOTE_SOURCE })
 			return data
 		}
 		return { ...localVol, readFile, flush, pause, resume, destroy }
@@ -259,30 +253,34 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 async function applyOp(op: FsOp, source: StorageBackend, target: StorageBackend, opts: MutationOptions, skipContent = false): Promise<void> {
 	switch (op.kind) {
 		case 'upsert-inode': {
-			// When skipping content, strip contentHash so the local inode has no hash —
-			// that absence is the "not yet hydrated" signal read by the lazy readFile.
 			const meta = skipContent && op.meta ? { ...op.meta, contentHash: undefined } : op.meta
 			if (meta) await target.setMeta(op.ino, meta, opts)
-			if (!skipContent && op.meta?.type === FileType.Regular && op.meta.size !== undefined) {
-				const data = await source.read(op.ino, 0n, Number(op.meta.size))
-				if (target.putBlob) await target.putBlob(op.ino, data, opts)
-				else {
-					await target.truncate(op.ino, op.meta.size, opts)
-					if (data.length) await target.write(op.ino, 0n, data, opts)
-				}
+			if (!skipContent && op.meta?.type === FileType.Regular) {
+				const data = await source.getBlob(op.ino)
+				await target.putBlob(op.ino, data, opts)
 			}
 			for (const [name, value] of Object.entries(op.xattrs ?? {})) {
-				if (name.startsWith(SYNC_XATTR_PREFIX)) continue
-				if (value === null) await target.removeXattr?.(op.ino, name, opts)
-				else await target.setXattr?.(op.ino, name, value, opts)
+				if (name.startsWith('trusted.sync.')) continue
+				if (value === null) await target.caps?.removeXattr?.(op.ino, name, opts)
+				else await target.caps?.setXattr?.(op.ino, name, value, opts)
 			}
 			break
 		}
-		case 'set-dirent':
-			await target.dirSet(op.dirIno, op.name, op.ino, op.type, opts)
+		case 'set-dirent': {
+			const existing = await target.getDirent(op.dirIno, op.name)
+			await target.putDirent(op.dirIno, op.name, { ino: op.ino, type: op.type }, opts)
+			if (existing && existing.ino !== op.ino) {
+				await target.deleteInode(existing.ino)
+			}
 			break
-		case 'unset-dirent':
-			await target.dirUnset(op.dirIno, op.name, opts)
+		}
+		case 'unset-dirent': {
+			const existing = await target.getDirent(op.dirIno, op.name)
+			if (existing) {
+				await target.deleteDirent(op.dirIno, op.name, opts)
+				await target.deleteInode(existing.ino)
+			}
 			break
+		}
 	}
 }

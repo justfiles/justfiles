@@ -1,11 +1,13 @@
-export {fs, type FileSystem} from './fs'
 export {
 	FsCursorExpiredError,
 	isFsCursorExpiredError,
 	type StorageBackend,
+	type StorageCapabilities,
+	type InodeMeta,
 	type FsOp,
 	type MutationOptions,
-	type UpdateQueryOptions
+	type UpdateQueryOptions,
+	type ScanEntry,
 } from './storage'
 export {GHOSTORE_XATTR, XATTR_NAMESPACE, decodeXattr, encodeXattr} from './xattr'
 export {idbStorage, type IdbStorageBackend} from './storage.idb'
