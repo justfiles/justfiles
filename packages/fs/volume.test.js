@@ -1,12 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { fs } from './fs.ts'
 import { memStorage } from './storage.mem.ts'
 import { volume } from './volume.ts'
 import { FileType } from './types.ts'
 import { GHOSTORE_XATTR, decodeXattr, encodeXattr } from './xattr.ts'
 
 function makeVol() {
-	return volume(fs(memStorage()))
+	return volume(memStorage())
 }
 
 function bytes(str) {
