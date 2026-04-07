@@ -3,8 +3,8 @@ import { useNavigate } from '@tanstack/react-router'
 import { useEffect, type ReactNode } from 'react'
 import { FiMenu, FiSettings } from 'react-icons/fi'
 import { Editor } from './editor'
+import type { ProseMirrorJsonDocument } from './editCache'
 import { useSidebarActions } from './SidebarContext'
-import type { ProseMirrorJsonDocument } from './sync'
 
 type Props = {
 	id: string | null

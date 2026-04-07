@@ -1,7 +1,7 @@
 // @ts-ignore Bun resolves this at runtime; TypeScript in this workspace does not.
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
-import { FsCursorExpiredError } from 'just-files'
+import { FsCursorExpiredError } from 'just-files/storage'
 import { FileType } from 'just-files/types'
 import { createFsApi } from './fs'
 import { createSqliteAdapter } from './db.sqlite'

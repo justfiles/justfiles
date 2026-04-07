@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Selection } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
-import { type ProseMirrorJsonDocument } from '../sync'
+import { type ProseMirrorJsonDocument } from '../editCache'
 import { DrawingEditorModal, makeDrawingNodeView } from './DrawingNodeView'
 import { buildGutterPlugin } from './plugins/gutterMenu'
 import { startImageUpload, makeImageNodeView } from './plugins/imageUpload'

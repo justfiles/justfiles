@@ -1,9 +1,9 @@
+import type { Volume } from 'just-files'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { normalizeVolumePath, parentVolumePath } from './assets'
-import type { ProseMirrorJsonDocument } from './sync'
+import type { ProseMirrorJsonDocument } from './editCache'
 import { useVolume } from './useVolume'
-import type { Volume } from 'just-files'
 
 const DRAFT_PATH = '/*draft*'
 let ensureDraftPromise: Promise<void> | null = null

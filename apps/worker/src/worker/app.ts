@@ -1,67 +1,18 @@
 import { StreamableHTTPTransport } from '@hono/mcp'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
-import { createApi, createFsApi, type Store } from '@ghostore/core'
+import { createFsApi, type Store } from '@ghostore/core'
 import { Hono } from 'hono'
-import type { Storage } from 'just-files'
+import type { Storage } from 'just-files/storage'
 import { z } from 'zod'
 
-type AssetObject = {
-	body: ReadableStream | null
-	httpEtag: string
-	writeHttpMetadata(headers: Headers): void
-}
-
-type AssetBucket = {
-	put(
-		key: string,
-		value: File,
-		options: {
-			httpMetadata?: { contentType?: string }
-			customMetadata?: Record<string, string>
-		}
-	): Promise<unknown>
-	get(key: string): Promise<AssetObject | null>
-}
-
-export function createWorkerApiApp(args: { bucket: AssetBucket; store: Store; fs: Storage }) {
-	const { bucket, store, fs } = args
+export function createWorkerApiApp(args: { store: Store; fs: Storage }) {
+	const { store, fs } = args
 	const mcpServer = new McpServer({ name: 'ghostore', version: '1.0.0' })
 	const transport = new StreamableHTTPTransport()
 	registerMcpTools(mcpServer, store)
 
 	return new Hono()
-		.post('/api/v1/memory/:memoryId/assets', async (c) => {
-			const { memoryId } = c.req.param()
-			const userId = c.req.header('x-user-id') ?? 'unknown'
-			const formData = await c.req.formData()
-			const file = formData.get('file') as File | null
-			if (!file) return c.json({ error: 'No file provided' }, 400)
-
-			const ext = file.name.split('.').pop()?.toLowerCase() ?? 'bin'
-			const uuid = crypto.randomUUID()
-			const key = `${userId}/assets/${memoryId}/${uuid}.${ext}`
-
-			await bucket.put(key, file, {
-				httpMetadata: { contentType: file.type || 'application/octet-stream' },
-				customMetadata: { filename: file.name, memoryId }
-			})
-
-			return c.json({ key: `${uuid}.${ext}` })
-		})
-		.get('/api/v1/memory/:memoryId/assets/:filename', async (c) => {
-			const { memoryId, filename } = c.req.param()
-			const userId = c.req.header('x-user-id') ?? 'unknown'
-			const key = `${userId}/assets/${memoryId}/${filename}`
-			const object = await bucket.get(key)
-			if (!object) return c.json({ error: 'Not found' }, 404)
-
-			const headers = new Headers()
-			object.writeHttpMetadata(headers)
-			headers.set('etag', object.httpEtag)
-			return new Response(object.body, { headers })
-		})
-		.route('/api', createApi(store))
 		.route('/fs', createFsApi(fs))
 		.all('/mcp', async (c) => {
 			if (!mcpServer.isConnected()) {

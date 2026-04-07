@@ -38,7 +38,7 @@ export class MemoryObject extends DurableObject<Env> {
 		})
 		const fs = cfFsStorage(ctx.storage, namespace, env.ASSETS)
 		this.store = store
-		this.app = createWorkerApiApp({ bucket: env.ASSETS, store, fs })
+		this.app = createWorkerApiApp({ store, fs })
 	}
 
 	async fetch(request: Request): Promise<Response> {

@@ -6,7 +6,6 @@ import { HeaderActionMenu } from './HeaderActionMenu'
 import { useDraft } from './draft'
 import { MemoryEditor } from './MemoryEditor'
 import { ModeSelector } from './ModeSelector'
-import { useSyncRuntimeStatus } from './sync'
 import {
 	type Destination,
 	expandTemplate,
@@ -14,6 +13,26 @@ import {
 	loadSettings,
 	saveSettings
 } from './settings'
+
+function useOnlineStatus() {
+	const [isOnline, setIsOnline] = useState(() => navigator.onLine)
+
+	useEffect(() => {
+		function syncOnlineState() {
+			setIsOnline(navigator.onLine)
+		}
+
+		window.addEventListener('online', syncOnlineState)
+		window.addEventListener('offline', syncOnlineState)
+
+		return () => {
+			window.removeEventListener('online', syncOnlineState)
+			window.removeEventListener('offline', syncOnlineState)
+		}
+	}, [])
+
+	return isOnline
+}
 
 function App() {
 	const { userId } = useAuth()
@@ -23,7 +42,7 @@ function App() {
 	)
 	const [draftEditorVersion, setDraftEditorVersion] = useState(0)
 	const { id, isLoading, content, save, submit, uploadAsset, getAssetUrl, loadAssetBlob } = useDraft()
-	const { isOnline } = useSyncRuntimeStatus()
+	const isOnline = useOnlineStatus()
 
 	const submitMutation = useMutation({
 		mutationFn: async ({ path }: { path: string }) => {

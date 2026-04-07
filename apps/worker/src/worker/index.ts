@@ -80,8 +80,8 @@ const applyApiKeyAuth = async (
 
 let clerkMw: ReturnType<typeof clerkMiddleware> | null = null
 
-// Apply auth + routing to /api/*, /fs*, and /mcp
-for (const path of ['/api/*', '/fs', '/fs/*', '/mcp'] as const) {
+// Apply auth + routing to /fs* and /mcp.
+for (const path of ['/fs', '/fs/*', '/mcp'] as const) {
 	app.use(path, async (c, next) => applyApiKeyAuth(c as never, next))
 	app.use(path, async (c, next) => {
 		if (!clerkMw) clerkMw = clerkMiddleware()
