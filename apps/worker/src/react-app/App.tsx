@@ -1,9 +1,10 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useMutation } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { FiSearch } from 'react-icons/fi'
+import { FiFilePlus, FiSearch } from 'react-icons/fi'
 import { HeaderActionMenu } from './HeaderActionMenu'
 import { useDraft } from './draft'
+import { useCreateNote } from './useCreateNote'
 import { MemoryEditor } from './MemoryEditor'
 import { ModeSelector } from './ModeSelector'
 import {
@@ -41,6 +42,7 @@ function App() {
 		getActiveDestination(settings)
 	)
 	const [draftEditorVersion, setDraftEditorVersion] = useState(0)
+	const createNote = useCreateNote()
 	const { id, isLoading, content, save, submit, uploadAsset, getAssetUrl, loadAssetBlob } = useDraft()
 	const isOnline = useOnlineStatus()
 
@@ -52,6 +54,10 @@ function App() {
 		onSuccess: () => {
 			setDraftEditorVersion((v) => v + 1)
 		}
+	})
+
+	const createNoteMutation = useMutation({
+		mutationFn: createNote
 	})
 
 	function handleSubmit() {
@@ -118,6 +124,14 @@ function App() {
 							onClick: handleSubmit,
 							disabled: submitMutation.isPending || !isOnline,
 							tone: 'primary'
+						},
+						{
+							key: 'new-note',
+							label: 'New note',
+							onClick: () => createNoteMutation.mutate(),
+							disabled: createNoteMutation.isPending,
+							icon: <FiFilePlus className="w-4 h-4" />,
+							hideLabelOnMobile: true
 						}
 					]}
 				/>

@@ -1,11 +1,13 @@
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import React, { useState } from 'react'
-import { FiArchive, FiEdit3, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
+import React, { useEffect, useState } from 'react'
+import { FiArchive, FiEdit3, FiFilePlus, FiFolder, FiRefreshCw, FiSearch } from 'react-icons/fi'
 import type { LinkInfo } from '@ghostore/core'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { MemoryEditor } from './MemoryEditor'
+import { noteFilenameFromPath, noteNameFromPath, notePathWithName } from './notePath'
 import { useSidebarActions } from './SidebarContext'
+import { useCreateNote } from './useCreateNote'
 import { useMemory } from './useMemory'
 import { useVolume } from './useVolume'
 
@@ -44,7 +46,7 @@ function LinkedMemories({ links }: { links?: LinkInfo[] }) {
 										{direction}
 									</span>
 									<span className="text-sm text-base-content/70 group-hover:text-base-content truncate">
-										{link.title ?? <span className="italic text-base-content/40">Untitled</span>}
+										{link.path ? noteFilenameFromPath(link.path) : (link.title ?? <span className="italic text-base-content/40">Untitled</span>)}
 									</span>
 									<span className="text-xs text-base-content/30 font-mono shrink-0 ml-auto">
 										{link.rel_type}
@@ -66,29 +68,31 @@ export function MemoryPage() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	const navigate = useNavigate()
 	const { archiveMemory, reviveMemory } = useVolume()
-	const { memory, content, saveContent, saveTitle, movePath, uploadAsset, getAssetUrl, loadAssetBlob, reload, isLoading } = useMemory(id)
+	const createNote = useCreateNote()
+	const { memory, content, saveContent, movePath, uploadAsset, getAssetUrl, loadAssetBlob, reload, isLoading } = useMemory(id)
 	const { upsertEntry } = useSidebarActions()
 
-	const [editingTitle, setEditingTitle] = useState(false)
-	const [titleDraft, setTitleDraft] = useState('')
+	const [nameDraft, setNameDraft] = useState('')
 
-	const saveTitleMutation = useMutation({
-		mutationFn: async (title: string) => {
-			await saveTitle(title || null)
-			return title
+	const renameNoteMutation = useMutation({
+		mutationFn: async (rawName: string) => {
+			if (!memory?.path) return memory?.path ?? ''
+			const nextPath = await movePath(notePathWithName(memory.path, rawName), { dedupe: true })
+			return nextPath ?? memory.path
 		},
-		onSuccess: (title) => {
+		onSuccess: (path) => {
 			const now = new Date().toISOString()
 			if (memory) {
 				upsertEntry({
-					id: id,
-					title: title || null,
-					path: memory.path ?? '',
+					id,
+					title: null,
+					path,
 					updated_at: now,
 					tags: memory.tags ?? [],
 					active: memory.active ?? 1
 				})
 			}
+			setNameDraft(noteNameFromPath(path))
 		}
 	})
 
@@ -108,43 +112,51 @@ export function MemoryPage() {
 
 	const movePathMutation = useMutation({
 		mutationFn: async (path: string) => {
-			await movePath(path)
-			return path
+			return (await movePath(path)) ?? path
 		},
 		onSuccess: (path) => {
 			const now = new Date().toISOString()
 			if (memory) {
 				upsertEntry({
 					id,
-					title: memory.title ?? null,
+					title: null,
 					path,
 					updated_at: now,
 					tags: memory.tags ?? [],
 					active: 1
 				})
 			}
+			setNameDraft(noteNameFromPath(path))
 		}
 	})
 
-	function startEditingTitle() {
-		setTitleDraft(memory?.title ?? '')
-		setEditingTitle(true)
-	}
+	const createNoteMutation = useMutation({
+		mutationFn: createNote
+	})
 
-	function commitTitle() {
-		setEditingTitle(false)
-		const trimmed = titleDraft.trim()
-		if (trimmed !== (memory?.title ?? '')) {
-			saveTitleMutation.mutate(trimmed)
+	useEffect(() => {
+		setNameDraft(memory?.path ? noteNameFromPath(memory.path) : '')
+	}, [memory?.path])
+
+	function commitName() {
+		if (!memory?.path || memory.active === 0) return
+		const currentName = noteNameFromPath(memory.path)
+		const trimmed = nameDraft.trim()
+		if (trimmed && trimmed !== currentName) {
+			renameNoteMutation.mutate(trimmed)
+			return
 		}
+		setNameDraft(currentName)
 	}
 
-	function onTitleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+	function onNameKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
 		if (e.key === 'Enter') {
 			e.preventDefault()
-			commitTitle()
+			commitName()
+			e.currentTarget.blur()
 		} else if (e.key === 'Escape') {
-			setEditingTitle(false)
+			setNameDraft(memory?.path ? noteNameFromPath(memory.path) : '')
+			e.currentTarget.blur()
 		}
 	}
 
@@ -157,9 +169,9 @@ export function MemoryPage() {
 	}
 
 	const headerActions: HeaderActionMenuItem[] = [
-		{
-			key: 'search',
-			label: 'Search',
+			{
+				key: 'search',
+				label: 'Search',
 			onClick: () => window.dispatchEvent(new Event('open-command-palette')),
 			icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
 			shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
@@ -173,8 +185,24 @@ export function MemoryPage() {
 				disabled: movePathMutation.isPending || !memory,
 				icon: <FiFolder className="w-4 h-4" />,
 				hideLabelOnMobile: true
-			} satisfies HeaderActionMenuItem]
+				} satisfies HeaderActionMenuItem]
 			: []),
+		{
+			key: 'draft',
+			label: 'Draft',
+			onClick: () => navigate({ to: '/' }),
+			icon: <FiEdit3 className="w-4 h-4" />,
+			hideLabelOnMobile: true
+		},
+		{
+			key: 'new-note',
+			label: 'New note',
+			onClick: () => createNoteMutation.mutate(),
+			disabled: createNoteMutation.isPending,
+			icon: <FiFilePlus className="w-4 h-4" />,
+			hideLabelOnMobile: true,
+			tone: 'primary'
+		},
 		(memory?.active === 0
 			? {
 				key: 'revive',
@@ -193,15 +221,7 @@ export function MemoryPage() {
 				icon: <FiArchive className="w-4 h-4" />,
 				hideLabelOnMobile: true,
 				tone: 'danger'
-			}) satisfies HeaderActionMenuItem,
-		{
-			key: 'create',
-			label: 'Create',
-			onClick: () => navigate({ to: '/' }),
-			icon: <FiEdit3 className="w-4 h-4" />,
-			hideLabelOnMobile: true,
-			tone: 'primary'
-		}
+				}) satisfies HeaderActionMenuItem,
 	]
 
 	return (
@@ -217,28 +237,28 @@ export function MemoryPage() {
 			updatedAt={memory?.updated_at}
 			headerLeft={
 				memory ? (
-					editingTitle ? (
-						<input
-							type="text"
-							value={titleDraft}
-							onChange={(e) => setTitleDraft(e.target.value)}
-							onBlur={commitTitle}
-							onKeyDown={onTitleKeyDown}
-							placeholder="Untitled"
-							className="block w-full text-sm font-medium bg-transparent border-b border-base-content/30 outline-none text-base-content/70 placeholder:text-base-content/30"
-						/>
-					) : (
-						<button
-							type="button"
-							onClick={startEditingTitle}
-							className={`block w-full text-left text-sm font-medium truncate transition-colors cursor-text ${memory.active === 0 ? 'text-base-content/30 line-through hover:text-base-content/50' : 'text-base-content/70 hover:text-base-content'}`}
-						>
-							{memory.title ?? <span className="italic">Untitled</span>}
-						</button>
-					)
+					<p className={`truncate text-sm font-medium ${memory.active === 0 ? 'text-base-content/30 line-through' : 'text-base-content/70'}`}>
+						{noteFilenameFromPath(memory.path ?? '')}
+					</p>
 				) : (
 					<p className="text-sm text-base-content/40 font-mono">Loading…</p>
 				)
+			}
+			editorHeader={
+				memory ? (
+					<div className="mb-1">
+							<input
+								type="text"
+								value={nameDraft}
+								onChange={(e) => setNameDraft(e.target.value)}
+								onBlur={commitName}
+								onKeyDown={onNameKeyDown}
+								placeholder="untitled"
+							readOnly={memory.active === 0}
+							className={`block w-full bg-transparent px-0 py-0 text-[1.85rem] leading-tight font-semibold tracking-tight outline-none placeholder:text-base-content/25 ${memory.active === 0 ? 'text-base-content/30 line-through' : 'text-base-content/85'}`}
+						/>
+					</div>
+				) : undefined
 			}
 			headerRight={
 				<HeaderActionMenu items={headerActions} />

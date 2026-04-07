@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { LinkInfo } from '@ghostore/core'
-import { GHOSTORE_XATTR, encodeXattr } from 'just-files/xattr'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { openEditCache, type EditCache, type ProseMirrorJsonDocument } from './editCache'
 import { useVolume } from './useVolume'
-import { normalizeVolumePath, parentVolumePath } from './assets'
+import { basename, normalizeVolumePath, parentVolumePath } from './assets'
 
 export interface MemoryData {
 	content: ProseMirrorJsonDocument
@@ -41,6 +40,15 @@ function markdownToJson(markdown: string): ProseMirrorJsonDocument {
 
 function jsonToMarkdown(content: ProseMirrorJsonDocument): string {
 	return docToMarkdown(remarkSchema.nodeFromJSON(content))
+}
+
+function splitFilename(filename: string): { stem: string; extension: string } {
+	const idx = filename.lastIndexOf('.')
+	if (idx <= 0) return { stem: filename, extension: '' }
+	return {
+		stem: filename.slice(0, idx),
+		extension: filename.slice(idx)
+	}
 }
 
 export function useMemory(id: string | null) {
@@ -154,27 +162,35 @@ export function useMemory(id: string | null) {
 		}, 500)
 	}, [id, memory?.active, memory?.path, volume])
 
-	const saveTitle = useCallback(async (title: string | null) => {
-		if (!id || !memory?.path || memory.active === 0) return
-		const volumePath = normalizeVolumePath(memory.path)
-		if (title === null) {
-			await volume.removeXattr(volumePath, GHOSTORE_XATTR.title)
-		} else {
-			await volume.setXattr(volumePath, GHOSTORE_XATTR.title, encodeXattr(title))
-		}
-		const now = new Date().toISOString()
-		setMemory((current) => (current ? { ...current, title, updated_at: now } : current))
-	}, [id, memory?.active, memory?.path, volume])
-
-	const movePath = useCallback(async (path: string) => {
+	const movePath = useCallback(async (
+		path: string,
+		options?: { dedupe?: boolean }
+	) => {
 		if (!id || !memory?.path || memory.active === 0) return
 		const oldPath = memory.path
 		const normalizedOldPath = normalizeVolumePath(oldPath)
-		const normalizedNewPath = normalizeVolumePath(path)
-		await volume.mkdir(parentVolumePath(normalizedNewPath), { recursive: true })
-		await volume.rename(normalizedOldPath, normalizedNewPath)
+		const requestedPath = normalizeVolumePath(path)
+		const targetDir = parentVolumePath(requestedPath)
+		const { stem, extension } = splitFilename(basename(requestedPath))
+
+		let resolvedPath = requestedPath
+		if (options?.dedupe) {
+			let attempt = 1
+			while (resolvedPath !== normalizedOldPath && await volume.exists(resolvedPath)) {
+				attempt += 1
+				resolvedPath = normalizeVolumePath(`${targetDir}/${stem} ${attempt}${extension}`)
+			}
+		}
+
+		if (resolvedPath === normalizedOldPath) return oldPath
+
+		await volume.mkdir(parentVolumePath(resolvedPath), { recursive: true })
+		await volume.rename(normalizedOldPath, resolvedPath)
+
+		const nextPath = resolvedPath.slice(1)
 		const now = new Date().toISOString()
-		setMemory((current) => (current ? { ...current, path, updated_at: now } : current))
+		setMemory((current) => (current ? { ...current, path: nextPath, updated_at: now } : current))
+		return nextPath
 	}, [id, memory?.active, memory?.path, volume])
 
 	const uploadAsset = useCallback(async (file: File) => {
@@ -202,7 +218,6 @@ export function useMemory(id: string | null) {
 		memory,
 		content: memory?.content ?? null,
 		saveContent,
-		saveTitle,
 		movePath,
 		uploadAsset,
 		getAssetUrl,

@@ -15,6 +15,7 @@ type Props = {
 	readAssetBlob?: (src: string) => Promise<Blob | null>
 	headerLeft?: ReactNode
 	headerRight?: ReactNode
+	editorHeader?: ReactNode
 	footer?: ReactNode
 	isLoading?: boolean
 	readOnly?: boolean
@@ -30,6 +31,7 @@ export function MemoryEditor({
 	readAssetBlob,
 	headerLeft,
 	headerRight,
+	editorHeader,
 	footer,
 	isLoading,
 	readOnly,
@@ -81,12 +83,13 @@ export function MemoryEditor({
 					<div className="safe-area-content max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
 						{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
 						<div className="flex justify-between mb-2">
-						<span className="text-[11px] text-base-content/30 font-mono">
-							{updatedAt ? `updated: ${new Date(updatedAt).toLocaleString()}` : ''}
-						</span>
-					</div>
-					{id && content ? (
+							<span className="text-[11px] text-base-content/30 font-mono">
+								{updatedAt ? `updated: ${new Date(updatedAt).toLocaleString()}` : ''}
+							</span>
+						</div>
+						{id && content ? (
 							<div className="flex-1 flex flex-col min-h-0">
+								{editorHeader && <div className="mb-3">{editorHeader}</div>}
 								<Editor
 									key={id}
 									value={content}
@@ -95,13 +98,13 @@ export function MemoryEditor({
 									resolveAssetUrl={resolveAssetUrl}
 									readAssetBlob={readAssetBlob}
 									readOnly={readOnly}
-							/>
-						</div>
-					) : (
-						<p className="text-sm text-base-content/50 font-mono">{showLoading ? 'Loading…' : 'Empty'}</p>
-					)}
-					{footer}
-				</div>
+								/>
+							</div>
+						) : (
+							<p className="text-sm text-base-content/50 font-mono">{showLoading ? 'Loading…' : 'Empty'}</p>
+						)}
+						{footer}
+					</div>
 			</main>
 		</div>
 	)

@@ -1,7 +1,9 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { MemoryMeta } from '@ghostore/core'
-import { FiChevronDown, FiChevronRight, FiFile, FiX } from 'react-icons/fi'
+import { FiChevronDown, FiChevronRight, FiFile, FiFilePlus, FiX } from 'react-icons/fi'
+import { noteFilenameFromPath } from './notePath'
+import { useCreateNote } from './useCreateNote'
 
 type TreeNode = {
 	name: string
@@ -90,9 +92,8 @@ function FolderNode({ node, depth, activeId, showArchived }: FolderNodeProps) {
 								}`}
 							>
 								<FiFile className="w-3 h-3 shrink-0 opacity-50 mt-0.5" />
-								<span className="flex flex-col min-w-0">
-									<span className="truncate text-[10px] opacity-40 leading-tight text-left">{entry.path.split('/').slice(-1)[0]}</span>
-									<span className={`truncate text-xs leading-snug ${isArchived ? 'line-through' : ''}`}>{entry.title ?? entry.path.split('/').slice(-1)[0] ?? entry.id}</span>
+								<span className={`truncate text-xs leading-snug text-left ${isArchived ? 'line-through' : ''}`}>
+									{noteFilenameFromPath(entry.path)}
 								</span>
 							</button>
 						)
@@ -111,6 +112,7 @@ type Props = {
 export function Sidebar({ entries, onClose }: Props) {
 	const params = useParams({ strict: false }) as { id?: string }
 	const [showArchived, setShowArchived] = useState(false)
+	const createNote = useCreateNote()
 
 	const displayEntries = showArchived ? entries : entries.filter((e) => e.active !== 0)
 	const tree = buildTree(entries)
@@ -131,6 +133,14 @@ export function Sidebar({ entries, onClose }: Props) {
 				</button>
 			</div>
 			<div className="flex items-center gap-2 px-3 py-1.5 shrink-0 border-b border-base-300">
+				<button
+					type="button"
+					onClick={() => void createNote()}
+					className="btn btn-xs btn-primary gap-1.5 font-mono"
+				>
+					<FiFilePlus className="w-3 h-3" />
+					New note
+				</button>
 				<label className="flex items-center gap-2 cursor-pointer">
 					<input
 						type="checkbox"
