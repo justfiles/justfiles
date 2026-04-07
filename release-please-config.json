@@ -6,6 +6,9 @@
 		},
 		"apps/worker": {
 			"release-type": "node"
+		},
+		"packages/just-files": {
+			"release-type": "node"
 		}
 	},
 	"plugins": ["node-workspace"]

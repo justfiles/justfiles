@@ -40,10 +40,10 @@
         "@tursodatabase/database": "^0.4.0",
         "@types/mdast": "^4.0.4",
         "dotenv": "^17.3.1",
-        "ghost-fs": "workspace:*",
         "hono": "4.11.1",
         "hono-rate-limiter": "^0.5.3",
         "idb": "^8.0.3",
+        "just-files": "workspace:*",
         "prosemirror-commands": "^1.7.1",
         "prosemirror-dropcursor": "^1.8.2",
         "prosemirror-gapcursor": "^1.4.1",
@@ -94,18 +94,21 @@
       "dependencies": {
         "@hono/zod-validator": "^0.7.6",
         "@libsql/client": "^0.17.0",
-        "ghost-fs": "workspace:*",
         "hono": "4.11.1",
+        "just-files": "workspace:*",
         "zod": "^4.3.6",
       },
     },
-    "packages/fs": {
-      "name": "ghost-fs",
+    "packages/just-files": {
+      "name": "just-files",
+      "version": "0.0.1",
       "dependencies": {
         "idb": "^8.0.3",
       },
       "devDependencies": {
         "@types/bun": "latest",
+        "tsdown": "^0.21.5",
+        "typescript": "^5",
       },
       "peerDependencies": {
         "typescript": "^5",
@@ -1245,8 +1248,6 @@
 
     "get-tsconfig": ["get-tsconfig@4.13.6", "", { "dependencies": { "resolve-pkg-maps": "^1.0.0" } }, "sha512-shZT/QMiSHc/YBLxxOkMtgSid5HFoauqCE3/exfsEcwg1WkeqjG+V40yBbBrsD+jW2HDXcs28xOfcbm2jI8Ddw=="],
 
-    "ghost-fs": ["ghost-fs@workspace:packages/fs"],
-
     "glob": ["glob@11.1.0", "", { "dependencies": { "foreground-child": "^3.3.1", "jackspeak": "^4.1.1", "minimatch": "^10.1.1", "minipass": "^7.1.2", "package-json-from-dist": "^1.0.0", "path-scurry": "^2.0.0" }, "bin": { "glob": "dist/esm/bin.mjs" } }, "sha512-vuNwKSaKiqm7g0THUBu2x7ckSs3XJLXE+2ssL7/MfTGPLLcrJQ/4Uq1CjPTtO5cCIiRxqvN6Twy1qOwhL0Xjcw=="],
 
     "glob-parent": ["glob-parent@6.0.2", "", { "dependencies": { "is-glob": "^4.0.3" } }, "sha512-XxwI8EOhVQgWp6iDL+3b0r86f4d6AX6zSU55HfB4ydCEuXLXc5FcYeOu+nnGftS4TEju/11rt4KJPTMgbfmv4A=="],
@@ -1428,6 +1429,8 @@
     "jsonfile": ["jsonfile@6.2.0", "", { "dependencies": { "universalify": "^2.0.0" }, "optionalDependencies": { "graceful-fs": "^4.1.6" } }, "sha512-FGuPw30AdOIUTRMC2OMRtQV+jkVj2cfPqSeWXv1NEAJ1qZ5zb1X6z1mFhbfOB/iy3ssJCD+3KuZ8r8C3uVFlAg=="],
 
     "jsonpointer": ["jsonpointer@5.0.1", "", {}, "sha512-p/nXbhSEcu3pZRdkW1OfJhpsVtW1gd4Wa1fnQc9YLiTfAjn0312eMKimbdIQzuZl9aa9xUGaRlP9T/CJE/ditQ=="],
+
+    "just-files": ["just-files@workspace:packages/just-files"],
 
     "katex": ["katex@0.16.44", "", { "dependencies": { "commander": "^8.3.0" }, "bin": { "katex": "cli.js" } }, "sha512-EkxoDTk8ufHqHlf9QxGwcxeLkWRR3iOuYfRpfORgYfqc8s13bgb+YtRY59NK5ZpRaCwq1kqA6a5lpX8C/eLphQ=="],
 

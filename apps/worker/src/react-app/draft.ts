@@ -3,7 +3,7 @@ import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemi
 import { normalizeVolumePath, parentVolumePath } from './assets'
 import type { ProseMirrorJsonDocument } from './sync'
 import { useVolume } from './useVolume'
-import type { Volume } from 'ghost-fs'
+import type { Volume } from 'just-files'
 
 const DRAFT_PATH = '/*draft*'
 let ensureDraftPromise: Promise<void> | null = null

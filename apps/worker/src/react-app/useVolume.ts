@@ -17,9 +17,9 @@ import {
 	synced,
 	type Volume,
 	volume as createVolume,
-} from 'ghost-fs'
-import { idbStorage } from 'ghost-fs/storage/idb'
-import { FileType } from 'ghost-fs/types'
+} from 'just-files'
+import { idbStorage } from 'just-files/storage/idb'
+import { FileType } from 'just-files/types'
 import { apiStorage } from './storage.api'
 import { createMemoryIndex, type MemoryIndex } from './memoryIndex'
 import { type FsClient, useFsClient } from './useApiClient'

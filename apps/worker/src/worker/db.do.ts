@@ -9,7 +9,7 @@ import type {
 } from '@ghostore/core'
 import { createStore, migrateFromEntries, sqliteStorage } from '@ghostore/core'
 import { coreMigrations } from '@ghostore/core/migrations'
-import type { Storage } from 'ghost-fs/storage'
+import type { Storage } from 'just-files/storage'
 
 type BlobObject = {
 	arrayBuffer(): Promise<ArrayBuffer>

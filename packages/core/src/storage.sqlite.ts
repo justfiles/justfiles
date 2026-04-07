@@ -1,7 +1,7 @@
 import type { DbAdapter } from './db'
-import { FsCursorExpiredError, type Storage, type FsOp, type InodeMeta, type MutationOptions, type UpdateQueryOptions } from 'ghost-fs/storage'
-import { FileType } from 'ghost-fs/types'
-import type { Ino } from 'ghost-fs/types'
+import { FsCursorExpiredError, type Storage, type FsOp, type InodeMeta, type MutationOptions, type UpdateQueryOptions } from 'just-files/storage'
+import { FileType } from 'just-files/types'
+import type { Ino } from 'just-files/types'
 
 type BlobObject = {
 	arrayBuffer(): Promise<ArrayBuffer>

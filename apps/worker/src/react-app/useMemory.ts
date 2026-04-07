@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { LinkInfo } from '@ghostore/core'
-import { GHOSTORE_XATTR, encodeXattr } from 'ghost-fs/xattr'
+import { GHOSTORE_XATTR, encodeXattr } from 'just-files/xattr'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { openEditCache, type EditCache } from './editCache'
 import { type ProseMirrorJsonDocument } from './sync'

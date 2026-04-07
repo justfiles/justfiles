@@ -1,0 +1,44 @@
+{
+	"name": "just-files",
+	"version": "0.0.1",
+	"type": "module",
+	"module": "index.ts",
+	"exports": {
+		".": "./index.ts",
+		"./storage": "./storage.ts",
+		"./storage/mem": "./storage.mem.ts",
+		"./storage/idb": "./storage.idb.ts",
+		"./storage/fs": "./storage.fs.ts",
+		"./types": "./types.ts",
+		"./xattr": "./xattr.ts"
+	},
+	"publishConfig": {
+		"main": "./dist/index.js",
+		"module": "./dist/index.js",
+		"exports": {
+			".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+			"./storage": { "types": "./dist/storage.d.ts", "import": "./dist/storage.js" },
+			"./storage/mem": { "types": "./dist/storage.mem.d.ts", "import": "./dist/storage.mem.js" },
+			"./storage/idb": { "types": "./dist/storage.idb.d.ts", "import": "./dist/storage.idb.js" },
+			"./storage/fs": { "types": "./dist/storage.fs.d.ts", "import": "./dist/storage.fs.js" },
+			"./types": { "types": "./dist/types.d.ts", "import": "./dist/types.js" },
+			"./xattr": { "types": "./dist/xattr.d.ts", "import": "./dist/xattr.js" }
+		}
+	},
+	"files": ["dist"],
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"idb": "^8.0.3"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"tsdown": "^0.21.5",
+		"typescript": "^5"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	}
+}

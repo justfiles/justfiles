@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import { createApi, createFsApi, type Store } from '@ghostore/core'
 import { Hono } from 'hono'
-import type { Storage } from 'ghost-fs'
+import type { Storage } from 'just-files'
 import { z } from 'zod'
 
 type AssetObject = {

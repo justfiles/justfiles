@@ -1,7 +1,7 @@
-import { FsCursorExpiredError, type Storage, type InodeMeta, type FsOp, type MutationOptions } from 'ghost-fs/storage'
-import { FileType } from 'ghost-fs/types'
-import type { Ino } from 'ghost-fs/types'
-import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'ghost-fs/xattr'
+import { FsCursorExpiredError, type Storage, type InodeMeta, type FsOp, type MutationOptions } from 'just-files/storage'
+import { FileType } from 'just-files/types'
+import type { Ino } from 'just-files/types'
+import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'just-files/xattr'
 import type { InferResponseType } from 'hono/client'
 import type { ApiClient, FsClient } from './useApiClient'
 
