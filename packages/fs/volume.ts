@@ -1,10 +1,10 @@
-import type { StorageBackend, InodeMeta } from './storage'
+import type { Storage, InodeMeta } from './storage'
 import { createSingleFlight } from './singleFlight'
 import { FileType } from './types'
 import type { Dirent, Stat, Ino } from './types'
 
 /**
- * Path-based filesystem interface built on top of StorageBackend.
+ * Path-based filesystem interface built on top of Storage.
  *
  * Design principles:
  * - All paths are absolute (start with '/').
@@ -158,7 +158,7 @@ export interface Volume {
 	 * Directories are visited before their contents. Paths passed to the
 	 * visitor are absolute and normalised.
 	 *
-	 * Delegates to StorageBackend.caps.fullScan() when available —
+	 * Delegates to Storage.caps.fullScan() when available —
 	 * O(pages) round trips for cloud backends. Falls back to recursive readdir.
 	 *
 	 * Throws ENOENT if path does not exist.
@@ -169,7 +169,7 @@ export interface Volume {
 	): Promise<void>
 }
 
-export function volume(storage: StorageBackend): Volume {
+export function volume(storage: Storage): Volume {
 	const MAX_SYMLINK_DEPTH = 40
 
 	const metaCache = new Map<Ino, InodeMeta>()

@@ -1,4 +1,4 @@
-import { FsCursorExpiredError, type StorageBackend, type InodeMeta, type FsOp, type MutationOptions } from 'ghost-fs/storage'
+import { FsCursorExpiredError, type Storage, type InodeMeta, type FsOp, type MutationOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { Ino } from 'ghost-fs/types'
 import { GHOSTORE_XATTR, encodeXattr, decodeXattr } from 'ghost-fs/xattr'
@@ -208,13 +208,13 @@ function pathToUpdateOps(memory: ChangeRow): FsOp[] {
 
 // ---- exported factory -------------------------------------------------------
 
-export interface ApiStorageBackend extends StorageBackend {
+export interface ApiStorage extends Storage {
 	rootIno: string
 }
 
 type FsMetaResponse = InferResponseType<FsClient['inodes'][':ino']['$get'], 200>
 
-export function _apiStorage(client: ApiClient): ApiStorageBackend {
+export function _apiStorage(client: ApiClient): ApiStorage {
 	const api = client
 	const memoryFetches = new Map<string, Promise<MemoryResponse | null>>()
 	const listFetches = new Map<string, Promise<Array<{ id: string; path: string }>>>()
@@ -585,19 +585,19 @@ function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 }
 
 /**
- * StorageBackend backed by the remote /fs REST API (createFsApi).
+ * Storage backed by the remote /fs REST API (createFsApi).
  *
  * Async factory: pre-fetches rootIno via GET / so the sync rootIno property
  * is available immediately on the returned backend.
  */
-export async function apiStorage(client: FsClient): Promise<StorageBackend> {
+export async function apiStorage(client: FsClient): Promise<Storage> {
 	const c = client
 
 	const rootRes = await c.$get()
 	if (!rootRes.ok) throw new Error(`apiStorage: failed to fetch root: ${rootRes.status}`)
 	const { rootIno } = await rootRes.json()
 
-	const backend: StorageBackend = {
+	const backend: Storage = {
 		rootIno,
 
 		// ── Inode metadata ─────────────────────────────────────────────────

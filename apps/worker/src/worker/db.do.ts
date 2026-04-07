@@ -9,7 +9,7 @@ import type {
 } from '@ghostore/core'
 import { createStore, migrateFromEntries, sqliteStorage } from '@ghostore/core'
 import { coreMigrations } from '@ghostore/core/migrations'
-import type { StorageBackend } from 'ghost-fs/storage'
+import type { Storage } from 'ghost-fs/storage'
 
 type BlobObject = {
 	arrayBuffer(): Promise<ArrayBuffer>
@@ -68,6 +68,6 @@ export function cfFsStorage(
 	storage: DurableObjectStorage,
 	namespace: string,
 	blobStore?: BlobStore
-): StorageBackend {
+): Storage {
 	return sqliteStorage(createDOSqliteAdapter(storage), { namespace, blobStore })
 }

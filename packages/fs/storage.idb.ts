@@ -1,6 +1,6 @@
 import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
-import type { StorageBackend, StorageCapabilities, InodeMeta, FsOp, MutationOptions, UpdateQueryOptions } from './storage'
+import type { Storage, StorageCapabilities, InodeMeta, FsOp, MutationOptions, UpdateQueryOptions } from './storage'
 import { FileType } from './types'
 import type { Ino } from './types'
 
@@ -118,7 +118,7 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 	return toHex(new Uint8Array(digest))
 }
 
-export type IdbStorageBackend = StorageBackend & {
+export type IdbStorage = Storage & {
 	/** Root directory inode — always '1' for this backend. */
 	readonly rootIno: Ino
 	/** Close the database and release resources. */
@@ -126,7 +126,7 @@ export type IdbStorageBackend = StorageBackend & {
 }
 
 /**
- * IndexedDB-backed StorageBackend with LRU content eviction.
+ * IndexedDB-backed Storage with LRU content eviction.
  *
  * Uses seven object stores:
  *   inodes   — inode metadata (no nlink)
@@ -142,7 +142,7 @@ export type IdbStorageBackend = StorageBackend & {
 export function idbStorage(
 	dbName: string,
 	options?: { contentCapBytes?: number },
-): IdbStorageBackend {
+): IdbStorage {
 	const cap = options?.contentCapBytes ?? DEFAULT_CONTENT_CAP
 	let dbPromise: Promise<Db> | null = null
 
@@ -551,7 +551,7 @@ export function idbStorage(
 	}
 
 	// ---------------------------------------------------------------------------
-	// StorageBackend implementation
+	// Storage implementation
 	// ---------------------------------------------------------------------------
 
 	return {

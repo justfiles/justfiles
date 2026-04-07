@@ -5,6 +5,9 @@
 	"exports": {
 		".": "./index.ts",
 		"./storage": "./storage.ts",
+		"./storage/mem": "./storage.mem.ts",
+		"./storage/idb": "./storage.idb.ts",
+		"./storage/fs": "./storage.fs.ts",
 		"./types": "./types.ts",
 		"./xattr": "./xattr.ts"
 	},

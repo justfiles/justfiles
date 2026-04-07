@@ -1,4 +1,4 @@
-import type { StorageBackend, FsOp, MutationOptions } from './storage';
+import type { Storage, FsOp, MutationOptions } from './storage';
 import { isFsCursorExpiredError } from './storage';
 import type { Ino } from './types';
 import { FileType } from './types';
@@ -6,8 +6,8 @@ import { volume, type Volume } from './volume';
 import { persistedState } from './persistedState';
 
 type Props = {
-	local: StorageBackend,
-	remote: StorageBackend,
+	local: Storage,
+	remote: Storage,
 	interval?: number,
 	lazyContent?: boolean,
 }
@@ -250,7 +250,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 // Apply one FsOp to target, reading file content from source when needed.
 // Pass skipContent=true during bootstrap/pull to create stub inodes without
 // downloading blobs — content is fetched lazily on first read instead.
-async function applyOp(op: FsOp, source: StorageBackend, target: StorageBackend, opts: MutationOptions, skipContent = false): Promise<void> {
+async function applyOp(op: FsOp, source: Storage, target: Storage, opts: MutationOptions, skipContent = false): Promise<void> {
 	switch (op.kind) {
 		case 'upsert-inode': {
 			const meta = skipContent && op.meta ? { ...op.meta, contentHash: undefined } : op.meta

@@ -1,9 +1,9 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { FsCursorExpiredError, type StorageBackend, type FsOp } from 'ghost-fs'
+import { FsCursorExpiredError, type Storage, type FsOp } from 'ghost-fs'
 
-type InodeMeta = NonNullable<Awaited<ReturnType<StorageBackend['getMeta']>>>
+type InodeMeta = NonNullable<Awaited<ReturnType<Storage['getMeta']>>>
 type InodeMetaPatch = Partial<InodeMeta>
 
 // ── Wire-format helpers ──────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ const SOURCE_HEADER = 'x-fs-source'
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
-export function createFsApi(backend: StorageBackend) {
+export function createFsApi(backend: Storage) {
 	const errorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : String(error)
 	const mutationOptions = (request: Request): { source?: string } => {

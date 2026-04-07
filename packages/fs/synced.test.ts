@@ -11,7 +11,7 @@
 import { describe, it, expect, afterEach } from 'bun:test'
 import { synced } from './synced'
 import { memStorage } from './storage.mem'
-import type { StorageBackend, StorageCapabilities, FsOp, UpdateQueryOptions } from './storage'
+import type { Storage, StorageCapabilities, FsOp, UpdateQueryOptions } from './storage'
 import { FsCursorExpiredError } from './storage'
 import type { InodeMeta } from './storage'
 import { FileType } from './types'
@@ -36,7 +36,7 @@ function hashBytes(data: Uint8Array): string {
 // journaledStorage — memStorage extended with deltaUpdates() + fullScan() + putBlob()
 // ---------------------------------------------------------------------------
 
-type JournaledStorage = StorageBackend & {
+type JournaledStorage = Storage & {
 	/** Cause the next call to deltaUpdates() to throw FsCursorExpiredError. */
 	triggerCursorExpiry(): void
 }

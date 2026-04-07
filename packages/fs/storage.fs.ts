@@ -1,7 +1,7 @@
 import { lstat as _lstat, readdir, mkdir, open, writeFile, readFile, unlink, rmdir, rename as _rename, symlink as _symlink, chmod, lutimes } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
 import { join } from 'node:path'
-import type { StorageBackend, StorageCapabilities, InodeMeta } from './storage'
+import type { Storage, StorageCapabilities, InodeMeta } from './storage'
 import { FileType } from './types'
 import type { Ino } from './types'
 
@@ -9,17 +9,17 @@ import type { Ino } from './types'
 const lstat = (path: string): Promise<Stats> => _lstat(path) as Promise<Stats>
 
 /**
- * A StorageBackend backed directly by the local filesystem.
+ * A Storage backed directly by the local filesystem.
  *
  * Ino = OS inode number (stat.ino, stringified). The pathMap bridges the
- * inode-based StorageBackend interface to Node's path-based APIs. It is
+ * inode-based Storage interface to Node's path-based APIs. It is
  * populated lazily — every Ino handed to a caller was obtained via
  * getDirent/listDirents/atomicCreate in the same session, which already
  * inserted the path.
  *
  * No caching: the OS page cache and dentry cache handle that.
  */
-export async function nativeStorage(root: string): Promise<StorageBackend> {
+export async function nativeStorage(root: string): Promise<Storage> {
 	const pathMap = new Map<Ino, string>()
 
 	const rootStat = await lstat(root)

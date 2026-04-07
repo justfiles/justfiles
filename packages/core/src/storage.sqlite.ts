@@ -1,5 +1,5 @@
 import type { DbAdapter } from './db'
-import { FsCursorExpiredError, type StorageBackend, type FsOp, type InodeMeta, type MutationOptions, type UpdateQueryOptions } from 'ghost-fs/storage'
+import { FsCursorExpiredError, type Storage, type FsOp, type InodeMeta, type MutationOptions, type UpdateQueryOptions } from 'ghost-fs/storage'
 import { FileType } from 'ghost-fs/types'
 import type { Ino } from 'ghost-fs/types'
 
@@ -267,7 +267,7 @@ function inferText(data: Uint8Array, limit: number): { text: string; mimeType: s
 	return { text, mimeType: 'text/plain; charset=utf-8' }
 }
 
-export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBackend {
+export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	const blobStore = options.blobStore
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
@@ -958,7 +958,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): StorageBac
 		},
 	}
 
-	// ── StorageBackend implementation ─────────────────────────────────────────
+	// ── Storage implementation ─────────────────────────────────────────
 
 	return {
 		rootIno: ROOT_INO,

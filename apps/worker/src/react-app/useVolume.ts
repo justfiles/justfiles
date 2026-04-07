@@ -14,11 +14,11 @@ import {
 import {
 	decodeXattr,
 	GHOSTORE_XATTR,
-	idbStorage,
 	synced,
 	type Volume,
 	volume as createVolume,
 } from 'ghost-fs'
+import { idbStorage } from 'ghost-fs/storage/idb'
 import { FileType } from 'ghost-fs/types'
 import { apiStorage } from './storage.api'
 import { createMemoryIndex, type MemoryIndex } from './memoryIndex'

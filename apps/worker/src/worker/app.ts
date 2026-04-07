@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import { createApi, createFsApi, type Store } from '@ghostore/core'
 import { Hono } from 'hono'
-import type { StorageBackend } from 'ghost-fs'
+import type { Storage } from 'ghost-fs'
 import { z } from 'zod'
 
 type AssetObject = {
@@ -24,7 +24,7 @@ type AssetBucket = {
 	get(key: string): Promise<AssetObject | null>
 }
 
-export function createWorkerApiApp(args: { bucket: AssetBucket; store: Store; fs: StorageBackend }) {
+export function createWorkerApiApp(args: { bucket: AssetBucket; store: Store; fs: Storage }) {
 	const { bucket, store, fs } = args
 	const mcpServer = new McpServer({ name: 'ghostore', version: '1.0.0' })
 	const transport = new StreamableHTTPTransport()

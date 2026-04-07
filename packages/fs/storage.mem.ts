@@ -1,8 +1,8 @@
-import type { StorageBackend, StorageCapabilities, InodeMeta } from './storage'
+import type { Storage, StorageCapabilities, InodeMeta } from './storage'
 import { FileType } from './types'
 import type { Ino, DirentMin } from './types'
 
-export function memStorage(): StorageBackend {
+export function memStorage(): Storage {
 	const metas = new Map<Ino, InodeMeta>()
 	const blobs = new Map<Ino, Uint8Array>()
 	const dirs = new Map<string, DirentMin>()   // key: `${dirIno}\0${name}`

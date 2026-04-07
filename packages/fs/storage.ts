@@ -132,7 +132,7 @@ export interface StorageCapabilities {
  *
  * Implement `caps` to opt into atomicity and performance features.
  */
-export interface StorageBackend {
+export interface Storage {
 	/** Backend-defined root inode — entry point for path resolution. */
 	readonly rootIno: Ino;
 
