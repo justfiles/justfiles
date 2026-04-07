@@ -26,9 +26,11 @@ import { type FsClient, useFsClient } from './useApiClient'
 import {
 	assetDirPath,
 	assetUrlForIno,
+	basename,
 	displayFilenameFromSrc,
 	isAssetPath,
 	nextAssetPath,
+	normalizeVolumePath,
 	parentVolumePath,
 	resolveRelativeFsPath
 } from './assets'
@@ -61,6 +63,7 @@ interface VolumeRuntime {
 	refresh(): Promise<void>
 	upsertEntry(entry: MemoryMeta): void
 	removeEntry(id: string): void
+	moveMemory(id: string, path: string, options?: { dedupe?: boolean }): Promise<string>
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
 	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null; record: MemoryRecord | null }>
@@ -77,6 +80,7 @@ export interface VolumeService {
 	refresh(): Promise<void>
 	upsertEntry(entry: MemoryMeta): void
 	removeEntry(id: string): void
+	moveMemory(id: string, path: string, options?: { dedupe?: boolean }): Promise<string>
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
 	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null; record: MemoryRecord | null }>
@@ -104,6 +108,15 @@ type ArchiveInfo = {
 	id: string
 	originalPath: string
 	archivedAt: string
+}
+
+function splitFilename(filename: string): { stem: string; extension: string } {
+	const idx = filename.lastIndexOf('.')
+	if (idx <= 0) return { stem: filename, extension: '' }
+	return {
+		stem: filename.slice(0, idx),
+		extension: filename.slice(idx)
+	}
 }
 
 function normalizeCachedEntry(value: unknown): MemoryMeta | null {
@@ -398,6 +411,45 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		setEntries(entries.map((entry) => (entry.id === id ? { ...entry, active: 0 } : entry)))
 	}
 
+	async function moveMemory(id: string, path: string, options?: { dedupe?: boolean }): Promise<string> {
+		let entry = index.get(id)
+		if (!entry) {
+			await refresh()
+			entry = index.get(id)
+		}
+		if (!entry) throw new Error(`ENOENT: ${id}`)
+		if (entry.active === 0) throw new Error(`EINVAL: ${id}`)
+
+		const normalizedOldPath = toVolumePath(entry.path)
+		const requestedPath = normalizeVolumePath(path)
+		const targetDir = parentVolumePath(requestedPath)
+		const { stem, extension } = splitFilename(basename(requestedPath))
+
+		let resolvedPath = requestedPath
+		if (options?.dedupe) {
+			let attempt = 1
+			while (resolvedPath !== normalizedOldPath && await volume.exists(resolvedPath)) {
+				attempt += 1
+				resolvedPath = normalizeVolumePath(`${targetDir}/${stem} ${attempt}${extension}`)
+			}
+		}
+
+		if (resolvedPath === normalizedOldPath) return entry.path
+
+		await volume.mkdir(parentVolumePath(resolvedPath), { recursive: true })
+		await volume.rename(normalizedOldPath, resolvedPath)
+
+		const now = new Date().toISOString()
+		const nextPath = resolvedPath.slice(1)
+		upsertEntry({
+			...entry,
+			path: nextPath,
+			updated_at: now,
+			active: 1
+		})
+		return nextPath
+	}
+
 	async function archiveMemory(id: string): Promise<void> {
 		let entry = index.get(id)
 		if (!entry) {
@@ -589,6 +641,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 
 		upsertEntry,
 		removeEntry,
+		moveMemory,
 		archiveMemory,
 		reviveMemory,
 		resolveMemory,
@@ -655,6 +708,7 @@ export function useVolume(): VolumeService {
 			refresh: runtime.refresh,
 			upsertEntry: runtime.upsertEntry,
 			removeEntry: runtime.removeEntry,
+			moveMemory: runtime.moveMemory,
 			archiveMemory: runtime.archiveMemory,
 			reviveMemory: runtime.reviveMemory,
 			resolveMemory: runtime.resolveMemory,

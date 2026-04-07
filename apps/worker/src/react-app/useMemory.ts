@@ -3,7 +3,7 @@ import type { LinkInfo } from '@ghostore/core'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { openEditCache, type EditCache, type ProseMirrorJsonDocument } from './editCache'
 import { useVolume } from './useVolume'
-import { basename, normalizeVolumePath, parentVolumePath } from './assets'
+import { normalizeVolumePath } from './assets'
 
 export interface MemoryData {
 	content: ProseMirrorJsonDocument
@@ -42,17 +42,8 @@ function jsonToMarkdown(content: ProseMirrorJsonDocument): string {
 	return docToMarkdown(remarkSchema.nodeFromJSON(content))
 }
 
-function splitFilename(filename: string): { stem: string; extension: string } {
-	const idx = filename.lastIndexOf('.')
-	if (idx <= 0) return { stem: filename, extension: '' }
-	return {
-		stem: filename.slice(0, idx),
-		extension: filename.slice(idx)
-	}
-}
-
 export function useMemory(id: string | null) {
-	const { volume, resolveMemory, writeAssetFile, resolveAssetUrl, readAssetBlob } = useVolume()
+	const { volume, resolveMemory, moveMemory, writeAssetFile, resolveAssetUrl, readAssetBlob } = useVolume()
 	const [isLoading, setIsLoading] = useState(false)
 	const [memory, setMemory] = useState<MemoryData | null>(null)
 	const [reloadVersion, setReloadVersion] = useState(0)
@@ -167,31 +158,11 @@ export function useMemory(id: string | null) {
 		options?: { dedupe?: boolean }
 	) => {
 		if (!id || !memory?.path || memory.active === 0) return
-		const oldPath = memory.path
-		const normalizedOldPath = normalizeVolumePath(oldPath)
-		const requestedPath = normalizeVolumePath(path)
-		const targetDir = parentVolumePath(requestedPath)
-		const { stem, extension } = splitFilename(basename(requestedPath))
-
-		let resolvedPath = requestedPath
-		if (options?.dedupe) {
-			let attempt = 1
-			while (resolvedPath !== normalizedOldPath && await volume.exists(resolvedPath)) {
-				attempt += 1
-				resolvedPath = normalizeVolumePath(`${targetDir}/${stem} ${attempt}${extension}`)
-			}
-		}
-
-		if (resolvedPath === normalizedOldPath) return oldPath
-
-		await volume.mkdir(parentVolumePath(resolvedPath), { recursive: true })
-		await volume.rename(normalizedOldPath, resolvedPath)
-
-		const nextPath = resolvedPath.slice(1)
+		const nextPath = await moveMemory(id, path, options)
 		const now = new Date().toISOString()
 		setMemory((current) => (current ? { ...current, path: nextPath, updated_at: now } : current))
 		return nextPath
-	}, [id, memory?.active, memory?.path, volume])
+	}, [id, memory?.active, memory?.path, moveMemory])
 
 	const uploadAsset = useCallback(async (file: File) => {
 		if (!id || !memory?.path || memory.active === 0) {
