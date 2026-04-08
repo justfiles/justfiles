@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useLayoutMode, type LayoutMode } from './layoutMode'
 
 type HeaderActionTone = 'default' | 'primary' | 'danger' | 'success'
 
@@ -12,10 +13,14 @@ export type HeaderActionMenuItem = {
 	hideLabelOnMobile?: boolean
 	tone?: HeaderActionTone
 	title?: string
+	layoutModes?: LayoutMode[]
 }
+
+export type HeaderActionSurface = 'sidebar' | 'editor'
 
 type Props = {
 	items: HeaderActionMenuItem[]
+	surface: HeaderActionSurface
 	collapseMode?: 'viewport' | 'container'
 }
 
@@ -26,13 +31,19 @@ const toneClasses: Record<HeaderActionTone, string> = {
 	success: 'text-success hover:bg-success/10 hover:text-success'
 }
 
-export function HeaderActionMenu({ items, collapseMode = 'viewport' }: Props) {
+export function HeaderActionMenu({ items, surface, collapseMode = 'viewport' }: Props) {
+	const { mode } = useLayoutMode()
+	const visibleItems = items.filter((item) => !item.layoutModes || item.layoutModes.includes(mode))
+
+	if (visibleItems.length === 0) return null
+
 	return (
 		<ul
+			data-surface={surface}
 			data-collapse-mode={collapseMode}
-			className="header-action-menu menu menu-horizontal menu-sm rounded-box border border-base-300 bg-base-200 p-1 gap-1"
+			className="header-action-menu menu menu-horizontal menu-sm rounded-box p-1 gap-1"
 		>
-			{items.map((item) => {
+			{visibleItems.map((item) => {
 				const tone = item.tone ?? 'default'
 
 				return (
@@ -48,7 +59,11 @@ export function HeaderActionMenu({ items, collapseMode = 'viewport' }: Props) {
 							{item.icon}
 							<span
 								data-compact={item.hideLabelOnMobile ? 'true' : undefined}
-								className={item.hideLabelOnMobile && collapseMode === 'viewport' ? 'hidden sm:inline' : undefined}
+								className={
+									item.hideLabelOnMobile && collapseMode === 'viewport'
+										? 'hidden sm:inline'
+										: undefined
+								}
 							>
 								{item.label}
 							</span>

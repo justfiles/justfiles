@@ -4,13 +4,13 @@ import React, { useEffect, useState } from 'react'
 import {
 	FiArchive,
 	FiChevronLeft,
-	FiEdit3,
 	FiFilePlus,
 	FiFolder,
 	FiRefreshCw,
 	FiSearch
 } from 'react-icons/fi'
 import type { LinkInfo } from '@ghostore/core'
+import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { MemoryEditor } from './MemoryEditor'
 import { noteFilenameFromPath, noteNameFromPath, notePathWithName } from './notePath'
@@ -208,14 +208,14 @@ export function MemoryPage() {
 	}
 
 	const headerActions: HeaderActionMenuItem[] = [
-		{
+		applySharedHeaderActionPolicy({
 			key: 'search',
 			label: 'Search',
 			onClick: () => window.dispatchEvent(new Event('open-command-palette')),
 			icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
 			shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
 			hideLabelOnMobile: true
-		},
+		}, 'search', 'editor'),
 		...(memory?.active !== 0
 			? [
 					{
@@ -254,7 +254,7 @@ export function MemoryPage() {
 					hideLabelOnMobile: true,
 					tone: 'danger'
 				}) satisfies HeaderActionMenuItem,
-		{
+		applySharedHeaderActionPolicy({
 			key: 'new-note',
 			label: 'New file',
 			onClick: () => createNoteMutation.mutate(),
@@ -262,7 +262,7 @@ export function MemoryPage() {
 			icon: <FiFilePlus className="w-4 h-4" />,
 			hideLabelOnMobile: true,
 			tone: 'primary'
-		}
+		}, 'new-file', 'editor')
 	]
 
 	return (
@@ -304,7 +304,7 @@ export function MemoryPage() {
 					</div>
 				) : undefined
 			}
-			headerRight={<HeaderActionMenu items={headerActions} />}
+			headerRight={<HeaderActionMenu items={headerActions} surface="editor" />}
 			footer={memory ? <LinkedMemories links={memory.links} /> : undefined}
 		/>
 	)

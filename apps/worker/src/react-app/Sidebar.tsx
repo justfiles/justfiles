@@ -15,6 +15,7 @@ import {
 import { LuGripVertical } from 'react-icons/lu'
 import { AppHeader } from './AppHeader'
 import { normalizeVolumePath } from './assets'
+import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { noteFilenameFromPath } from './notePath'
 import { useCreateNote } from './useCreateNote'
@@ -304,29 +305,29 @@ export function Sidebar({ entries, onClose, headerActions }: Props) {
 	const displayEntries = showArchived ? entries : entries.filter((e) => e.active !== 0)
 	const tree = buildTree(entries)
 	const fileToolbarItems: HeaderActionMenuItem[] = [
-		{
+		applySharedHeaderActionPolicy({
 			key: 'organize',
 			label: organizeMode ? 'Done' : 'Organize',
 			onClick: () => setOrganizeMode((value) => !value),
 			icon: <FiMove className="w-3.5 h-3.5" />,
 			tone: organizeMode ? 'primary' : 'default',
 			hideLabelOnMobile: true
-		},
-		{
+		}, 'organize', 'sidebar'),
+		applySharedHeaderActionPolicy({
 			key: 'search',
 			label: 'Search',
 			onClick: () => window.dispatchEvent(new Event('open-command-palette')),
 			icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
 			hideLabelOnMobile: true
-		},
-		{
+		}, 'search', 'sidebar'),
+		applySharedHeaderActionPolicy({
 			key: 'new-file',
 			label: 'New file',
 			onClick: () => void createNote(),
 			icon: <FiFilePlus className="w-3.5 h-3.5" />,
 			tone: 'primary',
 			hideLabelOnMobile: true
-		}
+		}, 'new-file', 'sidebar')
 	]
 
 	return (
@@ -360,7 +361,11 @@ export function Sidebar({ entries, onClose, headerActions }: Props) {
 					}
 					trailing={
 						<>
-							<HeaderActionMenu items={fileToolbarItems} collapseMode="container" />
+							<HeaderActionMenu
+								items={fileToolbarItems}
+								surface="sidebar"
+								collapseMode="container"
+							/>
 							{headerActions}
 							{onClose && (
 								<button

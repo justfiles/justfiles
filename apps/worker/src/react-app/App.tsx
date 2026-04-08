@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { FiChevronLeft, FiFilePlus, FiSearch } from 'react-icons/fi'
+import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { HeaderActionMenu } from './HeaderActionMenu'
 import { useDraft } from './draft'
 import { useCreateNote } from './useCreateNote'
@@ -121,15 +122,16 @@ function App() {
 			}
 			headerRight={
 				<HeaderActionMenu
+					surface="editor"
 					items={[
-						{
+						applySharedHeaderActionPolicy({
 							key: 'search',
 							label: 'Search',
 							onClick: () => window.dispatchEvent(new Event('open-command-palette')),
 							icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
 							shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
 							hideLabelOnMobile: true
-						},
+						}, 'search', 'editor'),
 						{
 							key: 'submit',
 							label: submitMutation.isPending ? 'Saving…' : 'Submit',
@@ -137,14 +139,14 @@ function App() {
 							disabled: submitMutation.isPending || !isOnline,
 							tone: 'primary'
 						},
-						{
+						applySharedHeaderActionPolicy({
 							key: 'new-note',
 							label: 'New file',
 							onClick: () => createNoteMutation.mutate(),
 							disabled: createNoteMutation.isPending,
 							icon: <FiFilePlus className="w-4 h-4" />,
 							hideLabelOnMobile: true
-						}
+						}, 'new-file', 'editor')
 					]}
 				/>
 			}

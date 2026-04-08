@@ -1,6 +1,7 @@
 import { UserButton } from '@clerk/clerk-react'
-import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
+import { Outlet, useNavigate } from '@tanstack/react-router'
 import { FiSettings } from 'react-icons/fi'
+import { useLayoutMode } from './layoutMode'
 import { Sidebar } from './Sidebar'
 import { useVolume } from './useVolume'
 
@@ -57,21 +58,20 @@ export function FilesIndexPage() {
 
 export function FilesLayout() {
 	const { entries } = useVolume()
-	const pathname = useRouterState({ select: (state) => state.location.pathname })
-	const showingDetail = pathname !== '/files'
+	const { showingFileDetail } = useLayoutMode()
 
 	return (
 		<div className="flex h-full min-h-0 bg-base-100">
 			<aside
-				className={`${showingDetail ? 'hidden sm:flex' : 'flex'} min-h-0 w-full shrink-0 flex-col border-r border-base-300 bg-base-100 sm:w-72 md:w-80`}
+				className={`${showingFileDetail ? 'hidden sm:flex' : 'flex'} min-h-0 w-full shrink-0 flex-col border-r border-base-300 bg-base-100 sm:w-72 md:w-80`}
 			>
 				<Sidebar
 					entries={entries}
-					headerActions={<FilesListActions showAccount={!showingDetail} />}
+					headerActions={<FilesListActions showAccount={!showingFileDetail} />}
 				/>
 			</aside>
 			<section
-				className={`${showingDetail ? 'flex' : 'hidden sm:flex'} min-h-0 min-w-0 flex-1 flex-col bg-base-100`}
+				className={`${showingFileDetail ? 'flex' : 'hidden sm:flex'} min-h-0 min-w-0 flex-1 flex-col bg-base-100`}
 			>
 				<Outlet />
 			</section>

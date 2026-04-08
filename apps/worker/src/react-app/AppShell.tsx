@@ -3,6 +3,7 @@ import { Outlet } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { CommandPalette } from './CommandPalette'
+import { LayoutModeProvider } from './layoutMode'
 import { PWAToast } from './PWAToast'
 import { SidebarContext } from './SidebarContext'
 import { loadSettings } from './settings'
@@ -54,9 +55,11 @@ function AppShellInner({ userId }: { userId: string }) {
 		<SidebarContext.Provider value={{ upsertEntry, removeEntry, refresh }}>
 			<PWAToast />
 			<CommandPalette />
-			<div className="app-shell bg-base-100">
-				<Outlet />
-			</div>
+			<LayoutModeProvider>
+				<div className="app-shell bg-base-100">
+					<Outlet />
+				</div>
+			</LayoutModeProvider>
 		</SidebarContext.Provider>
 	)
 }
