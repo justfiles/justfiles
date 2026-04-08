@@ -31,7 +31,7 @@ export function useCreateNote() {
 		}
 
 		upsertEntry(entry)
-		await navigate({ to: '/memory/$id', params: { id: entry.id } })
+		await navigate({ to: '/files/$id', params: { id: entry.id }, viewTransition: true })
 
 		return entry
 	}, [navigate, upsertEntry, volume])

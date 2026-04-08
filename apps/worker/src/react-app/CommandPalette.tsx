@@ -130,7 +130,7 @@ export function CommandPalette() {
 					ref={inputRef}
 					value={query}
 					onChange={(event) => setQuery(event.target.value)}
-					placeholder="Search memories…"
+					placeholder="Search files…"
 					className="input w-full border-b border-base-200 rounded-none px-4 py-3.5 text-base bg-transparent font-mono outline-none"
 					onKeyDown={(event) => {
 						if (event.key === 'ArrowDown') {
@@ -167,8 +167,9 @@ export function CommandPalette() {
 								<li key={result.id}>
 									<Link
 										ref={index === selectedIndex ? selectedRef : undefined}
-										to="/memory/$id"
+										to="/files/$id"
 										params={{ id: result.id }}
+										viewTransition
 										className={`block px-4 py-2.5 no-underline text-inherit cursor-pointer ${index === selectedIndex ? 'bg-base-200' : 'hover:bg-base-200'}`}
 										onClick={() => setOpen(false)}
 									>
@@ -192,8 +193,9 @@ export function CommandPalette() {
 							<li key={result.id}>
 								<Link
 									ref={index === selectedIndex ? selectedRef : undefined}
-									to="/memory/$id"
+									to="/files/$id"
 									params={{ id: result.id }}
+									viewTransition
 									className={`block px-4 py-2.5 no-underline text-inherit cursor-pointer ${index === selectedIndex ? 'bg-base-200' : 'hover:bg-base-200'}`}
 									onClick={() => setOpen(false)}
 									>

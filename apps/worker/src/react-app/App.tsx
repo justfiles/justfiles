@@ -1,7 +1,8 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useMutation } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-import { FiFilePlus, FiSearch } from 'react-icons/fi'
+import { FiChevronLeft, FiFilePlus, FiSearch } from 'react-icons/fi'
 import { HeaderActionMenu } from './HeaderActionMenu'
 import { useDraft } from './draft'
 import { useCreateNote } from './useCreateNote'
@@ -37,6 +38,7 @@ function useOnlineStatus() {
 
 function App() {
 	const { userId } = useAuth()
+	const navigate = useNavigate()
 	const [settings] = useState(() => loadSettings(userId!))
 	const [activeDestination, setActiveDestination] = useState<Destination>(() =>
 		getActiveDestination(settings)
@@ -95,6 +97,16 @@ function App() {
 			resolveAssetUrl={getAssetUrl}
 			readAssetBlob={loadAssetBlob}
 			isLoading={isLoading}
+			leadingControl={
+				<button
+					type="button"
+					onClick={() => navigate({ to: '/files', viewTransition: true })}
+					className="btn btn-ghost btn-sm text-primary gap-0.5 -ml-1"
+				>
+					<FiChevronLeft className="w-5 h-5" />
+					Files
+				</button>
+			}
 			headerLeft={
 				<div className="flex items-center gap-2 min-w-0">
 					<span className="text-sm font-medium text-base-content/70 font-mono shrink-0">
@@ -127,7 +139,7 @@ function App() {
 						},
 						{
 							key: 'new-note',
-							label: 'New note',
+							label: 'New file',
 							onClick: () => createNoteMutation.mutate(),
 							disabled: createNoteMutation.isPending,
 							icon: <FiFilePlus className="w-4 h-4" />,

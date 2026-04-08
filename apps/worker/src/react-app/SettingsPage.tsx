@@ -1,4 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
+import { useCanGoBack, useNavigate, useRouter } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { FiChevronLeft, FiTrash2 } from 'react-icons/fi'
 import {
@@ -206,6 +207,9 @@ function DestinationRow({
 
 export function SettingsPage() {
 	const { userId } = useAuth()
+	const canGoBack = useCanGoBack()
+	const navigate = useNavigate()
+	const router = useRouter()
 	const [destinations, setDestinations] = useState(() => loadSettings(userId!).destinations)
 	const [theme, setTheme] = useState(() => loadSettings(userId!).theme)
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -251,7 +255,14 @@ export function SettingsPage() {
 				<div className="max-w-lg mx-auto w-full px-4 flex items-center gap-2">
 					<button
 						type="button"
-						onClick={() => window.history.back()}
+						onClick={() => {
+							if (canGoBack) {
+								router.history.back()
+								return
+							}
+
+							void navigate({ to: '/files', replace: true, viewTransition: true })
+						}}
 						className="btn btn-ghost btn-sm text-primary gap-0.5 -ml-1"
 					>
 						<FiChevronLeft className="w-5 h-5" />

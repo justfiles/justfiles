@@ -16,6 +16,7 @@ export type HeaderActionMenuItem = {
 
 type Props = {
 	items: HeaderActionMenuItem[]
+	collapseMode?: 'viewport' | 'container'
 }
 
 const toneClasses: Record<HeaderActionTone, string> = {
@@ -25,9 +26,12 @@ const toneClasses: Record<HeaderActionTone, string> = {
 	success: 'text-success hover:bg-success/10 hover:text-success'
 }
 
-export function HeaderActionMenu({ items }: Props) {
+export function HeaderActionMenu({ items, collapseMode = 'viewport' }: Props) {
 	return (
-		<ul className="menu menu-horizontal menu-sm rounded-box border border-base-300 bg-base-200 p-1 gap-1">
+		<ul
+			data-collapse-mode={collapseMode}
+			className="header-action-menu menu menu-horizontal menu-sm rounded-box border border-base-300 bg-base-200 p-1 gap-1"
+		>
 			{items.map((item) => {
 				const tone = item.tone ?? 'default'
 
@@ -42,7 +46,10 @@ export function HeaderActionMenu({ items }: Props) {
 							className={`flex min-h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-mono transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClasses[tone]}`}
 						>
 							{item.icon}
-							<span className={item.hideLabelOnMobile ? 'hidden sm:inline' : undefined}>
+							<span
+								data-compact={item.hideLabelOnMobile ? 'true' : undefined}
+								className={item.hideLabelOnMobile && collapseMode === 'viewport' ? 'hidden sm:inline' : undefined}
+							>
 								{item.label}
 							</span>
 							{item.shortcut}
