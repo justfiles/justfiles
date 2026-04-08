@@ -282,7 +282,7 @@ export function MemoryPage() {
 					<p
 						className={`truncate text-sm font-medium ${memory.active === 0 ? 'text-base-content/30 line-through' : 'text-base-content/70'}`}
 					>
-						{noteFilenameFromPath(memory.path ?? '')}
+						/{memory.path ?? ''}
 					</p>
 				) : (
 					<p className="text-sm text-base-content/40 font-mono">Loading…</p>
