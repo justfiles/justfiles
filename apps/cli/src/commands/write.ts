@@ -1,58 +1,50 @@
+import { Buffer } from 'node:buffer'
+import { CliUsageError } from '../errors.ts'
+import { normalizeVolumePath, parentVolumePath } from '../paths.ts'
+import { out, info, printJson, readStdin } from '../output.ts'
+import type { CommandContext, CommandModule } from '../command.ts'
 import { parseCommandArgs } from '../args.ts'
-import type { Config } from '../config.ts'
-import { makeClient } from '../client.ts'
-import { out, info, printError, printJson, readStdin } from '../output.ts'
-import { resolveDate } from '../utils.ts'
 
-export const help = `\
-Usage: ghostore write [options] [content]
+const help = `\
+Usage: files write [options] <path> [content]
 
-Write a memory. Content can be a positional argument or piped via stdin.
+Write a file. Content can be passed as an argument or piped through stdin.
+
+Arguments:
+  <path>             Absolute path to write
+  [content]          Text content when not using --stdin
 
 Options:
-  -p, --path <path>         Path for the memory [default: inbox/<timestamp>]
-  -t, --title <text>        Title for the memory
-  --tags <tag,...>          Comma-separated list of tags
-  --mode <w|a|x>            Write mode: w=overwrite (default), a=append, x=exclusive
-  --source <source>         Origin label (e.g. agent, human)
-  --created-at <date>       Override creation timestamp (YYYY-MM-DD or ISO 8601, for imports)
-  --updated-at <date>       Override updated timestamp (YYYY-MM-DD or ISO 8601, for imports)
-  --json                    Output as JSON: {"id":"mem_..."}
-  -q, --quiet               Suppress informational output
-  -h, --help                Show this help
+  --stdin            Read content from stdin
+  --append           Append instead of overwrite
+  --parents          Create missing parent directories before writing
+  -h, --help         Show this help
 
-Stdin:
-  Pipe or redirect file content:
-    echo "hello" | ghostore write --path notes/greeting
-    ghostore write --path inbox/idea < idea.md
+Global options:
+  --volume <name>    Select a configured volume
+  --config <path>    Load a specific JS config module
+  --json             Output as JSON
 
 Exit codes:
-  0  Success — prints memory ID on stdout
-  1  API or network error
-  3  Conflict (path exists in exclusive mode)
-  4  Missing required content
+  0  Success
+  1  Backend or runtime error
+  2  Parent directory not found
+  3  Conflict
+  4  Missing or invalid argument
 
 Examples:
-  ghostore write --path inbox/note --title "Meeting notes" "discussed Q2 goals"
-  ghostore write --path daily/log --mode a "added another entry"
-  ghostore write --path archive/old --created-at 2025-01-15 "old note"       # date only
-  ghostore write --path archive/old --created-at yesterday "old note"        # natural word
-  ghostore write --path archive/old --created-at 2025-01-15T09:00:00Z "old note"  # full ISO
-  ID=\$(ghostore write --path inbox/idea "great idea")`
+  files write /notes/today.md "hello world"
+  printf 'hello\\n' | files write --stdin /notes/today.md
+  files write --append /notes/log.txt "another line"
+  files write --parents /notes/daily/2026-04-08.md "entry"`
 
-export async function run(args: string[], cfg: Config): Promise<void> {
+async function run(args: string[], context: CommandContext): Promise<void> {
 	const { values, positionals } = parseCommandArgs({
 		args,
 		options: {
-			path: { type: 'string', short: 'p' },
-			title: { type: 'string', short: 't' },
-			tags: { type: 'string' },
-			mode: { type: 'string' },
-			source: { type: 'string' },
-			'created-at': { type: 'string' },
-			'updated-at': { type: 'string' },
-			json: { type: 'boolean' },
-			quiet: { type: 'boolean', short: 'q' },
+			stdin: { type: 'boolean' },
+			append: { type: 'boolean' },
+			parents: { type: 'boolean' },
 			help: { type: 'boolean', short: 'h' },
 		},
 		allowPositionals: true,
@@ -63,45 +55,53 @@ export async function run(args: string[], cfg: Config): Promise<void> {
 		return
 	}
 
-	const useJson = (values.json as boolean | undefined) ?? cfg.json
-	const quiet = (values.quiet as boolean | undefined) ?? cfg.quiet
-
-	let content = positionals.join(' ')
-	if (!content) content = await readStdin()
-
-	if (!content) {
-		printError('content is required — pass it as an argument or pipe via stdin', help)
-		process.exit(4)
+	if (positionals.length === 0) {
+		throw new CliUsageError('write requires a <path> argument', help)
 	}
 
-	const tags = values.tags
-		? (values.tags as string).split(',').map((t) => t.trim()).filter(Boolean)
-		: undefined
+	const path = normalizeVolumePath(positionals[0]!)
+	const contentArg = positionals.slice(1).join(' ')
 
-	const modeRaw = values.mode as string | undefined
-	const mode = (modeRaw === 'w' || modeRaw === 'a' || modeRaw === 'x') ? modeRaw : undefined
-
-	const res = await makeClient(cfg).api.v1.write.$post({
-		json: {
-			content,
-			path: values.path as string | undefined,
-			title: values.title as string | undefined,
-			tags,
-			mode,
-			source: values.source as string | undefined,
-			created_at: values['created-at'] ? resolveDate(values['created-at'] as string, 'since') : undefined,
-			updated_at: values['updated-at'] ? resolveDate(values['updated-at'] as string, 'since') : undefined,
-		},
-	})
-	const result = await res.json()
-	if ('error' in result) {
-		printError(result.error)
-		process.exit(res.status === 409 ? 3 : 1)
+	if (values.stdin && contentArg) {
+		throw new CliUsageError('pass content either via [content] or --stdin, not both', help)
 	}
-	if (useJson) {
-		printJson(result)
+
+	let content: string | null = null
+	if (values.stdin) {
+		content = await readStdin()
+	} else if (contentArg) {
+		content = contentArg
+	} else if (!process.stdin.isTTY) {
+		content = await readStdin()
+	}
+
+	if (content === null) {
+		throw new CliUsageError('content is required — pass [content] or pipe stdin', help)
+	}
+
+	if (values.parents) {
+		await context.volume.mkdir(parentVolumePath(path), { recursive: true })
+	}
+
+	const bytes = Buffer.from(content, 'utf8')
+	if (values.append) {
+		await context.volume.appendFile(path, bytes)
 	} else {
-		out(result.id)
-		info('Memory written.', quiet)
+		await context.volume.writeFile(path, bytes)
 	}
+
+	if (context.json) {
+		printJson({
+			ok: true,
+			volume: context.volumeName,
+			path,
+			mode: values.append ? 'append' : 'write',
+			bytes: bytes.length,
+		})
+		return
+	}
+
+	info(`Wrote ${path}.`, context.quiet)
 }
+
+export default { help, run } satisfies CommandModule

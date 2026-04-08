@@ -2,13 +2,14 @@
 	"packages": {
 		"apps/cli": {
 			"release-type": "node",
-			"package-name": "@ghostore/cli"
+			"package-name": "@justfiles/cli"
 		},
 		"apps/worker": {
 			"release-type": "node"
 		},
 		"packages/just-files": {
-			"release-type": "node"
+			"release-type": "node",
+			"package-name": "@justfiles/fs"
 		}
 	},
 	"plugins": ["node-workspace"]

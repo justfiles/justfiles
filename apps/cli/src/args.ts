@@ -1,5 +1,5 @@
 import { parseArgs } from 'util'
-import { printError } from './output.ts'
+import { CliUsageError } from './errors.ts'
 
 type ParsedCommandArgs = {
 	values: Record<string, string | boolean | undefined>
@@ -13,7 +13,6 @@ export function parseCommandArgs(
 	try {
 		return parseArgs({ ...config, strict: true }) as ParsedCommandArgs
 	} catch (error) {
-		printError(error instanceof Error ? error.message : String(error), help)
-		process.exit(4)
+		throw new CliUsageError(error instanceof Error ? error.message : String(error), help)
 	}
 }

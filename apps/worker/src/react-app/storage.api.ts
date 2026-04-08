@@ -3,8 +3,8 @@ import {
 	type InodeMeta,
 	type MutationOptions,
 	type Storage
-} from 'just-files/storage'
-import { FileType } from 'just-files/types'
+} from '@justfiles/fs/storage'
+import { FileType } from '@justfiles/fs/types'
 import type { InferResponseType } from 'hono/client'
 import type { FsClient } from './useApiClient'
 

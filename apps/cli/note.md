@@ -8,7 +8,7 @@ bun run build
 bun link
 ```
 
-This creates a global symlink so `ghostore` is available system-wide and points to the local `dist/index.mjs`.
+This creates a global symlink so `files` is available system-wide and points to the local `dist/index.mjs`.
 
 After making changes, rebuild:
 

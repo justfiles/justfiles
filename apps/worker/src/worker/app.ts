@@ -3,7 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import { createFsApi, type Store } from '@ghostore/core'
 import { Hono } from 'hono'
-import type { Storage } from 'just-files/storage'
+import type { Storage } from '@justfiles/fs/storage'
 import { z } from 'zod'
 
 export function createWorkerApiApp(args: { store: Store; fs: Storage }) {

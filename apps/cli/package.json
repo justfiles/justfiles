@@ -1,15 +1,13 @@
 {
-	"name": "@ghostore/cli",
-	"version": "0.3.4",
+	"name": "@justfiles/cli",
+	"version": "0.1.0",
 	"devDependencies": {
-		"@ghostore/core": "workspace:*",
-		"@ghostore/worker": "workspace:*",
 		"@types/node": "^25.5.0",
 		"tsdown": "^0.21.5",
 		"typescript": "5.8.3"
 	},
 	"bin": {
-		"ghostore": "./dist/index.mjs"
+		"files": "./dist/index.mjs"
 	},
 	"files": [
 		"dist"
@@ -20,6 +18,6 @@
 	},
 	"type": "module",
 	"dependencies": {
-		"hono": "4.11.1"
+		"@justfiles/fs": "workspace:*"
 	}
 }

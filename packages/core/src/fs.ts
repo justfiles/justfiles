@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { FsCursorExpiredError, type Storage, type FsOp } from 'just-files/storage'
+import { FsCursorExpiredError, type Storage, type FsOp } from '@justfiles/fs/storage'
 
 type InodeMeta = NonNullable<Awaited<ReturnType<Storage['getMeta']>>>
 type InodeMetaPatch = Partial<InodeMeta>

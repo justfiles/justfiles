@@ -1,79 +1,98 @@
-import { parseArgs } from 'util'
+import { parseArgs } from 'node:util'
 import { loadConfig } from './config.ts'
-import { out, printError } from './output.ts'
-import * as write from './commands/write.ts'
-import * as get from './commands/get.ts'
-import * as search from './commands/search.ts'
-import * as update from './commands/update.ts'
-import * as list from './commands/list.ts'
-import * as link from './commands/link.ts'
-import * as archive from './commands/archive.ts'
+import { CliUsageError, errorMessage, exitCodeForError, getErrno } from './errors.ts'
+import { out, printError, printJsonError } from './output.ts'
+import type { CommandModule } from './command.ts'
+import { loadVolume } from './volumes.ts'
+import ls from './commands/ls.ts'
+import cat from './commands/cat.ts'
+import write from './commands/write.ts'
+import mkdir from './commands/mkdir.ts'
+import rm from './commands/rm.ts'
+import mv from './commands/mv.ts'
+import cp from './commands/cp.ts'
+import stat from './commands/stat.ts'
 
 const MAIN_HELP = `\
-Usage: ghostore [options] <command> [command-options]
+Usage: files [options] <command> [command-options]
 
-A command-line interface for interacting with the Ghostore memory backend.
-Designed to be agent-friendly: all commands support --json output, structured
-exit codes, and print usage hints on error.
+A command-line interface for interacting with Just Files volumes.
+Designed to be agent-friendly: all commands have focused help, structured
+exit codes, and usage-rich errors.
 
 Commands:
-  write    Write a memory (create or update by path)
-  get      Fetch a memory by ID or path
-  search   Search memories with semantic/full-text/hybrid search
-  update   Update an existing memory's metadata or content
-  list     List memories by path prefix or tag
-  link     Create a directed link between two memories
-  archive  Archive a memory (soft-delete, recoverable for 30 days)
+  ls       List a directory or inspect a single file
+  cat      Print a file to stdout
+  write    Write or append a file
+  mkdir    Create a directory
+  rm       Remove a file or directory
+  mv       Move or rename a file or directory
+  cp       Copy a file or directory
+  stat     Inspect metadata for a path
 
 Global options:
-  --url <url>    Backend URL [env: GHOSTORE_URL] [default: https://ghostore.net]
-  --key <key>    API key  [env: GHOSTORE_API_KEY]
-  --json         Output all results as JSON
-  -q, --quiet    Suppress informational output
-  -h, --help     Show this help
-  -v, --version  Show version
+  --config <path>   Load a specific JS config module
+  --volume <name>   Select a configured volume [env: FILES_VOLUME]
+  --json            Output command results as JSON when supported
+  -q, --quiet       Suppress informational stderr output
+  -h, --help        Show this help
+  -v, --version     Show version
 
 Configuration:
-  API key and URL can be set in a config file (JSON). Locations checked in order:
-    ~/.config/ghostore/config.json
-    ~/.ghostore.json
+  The CLI loads the first config file it finds from:
+    ./files.config.js
+    ./files.config.mjs
+    ./files.config.cjs
+    ~/.config/files/config.js
+    ~/.files/config.js
 
-  Example config file:
-    {
-      "key": "your-api-key"
+  Example files.config.js:
+    export default {
+      defaultVolume: 'local',
+      volumes: {
+        local: './notes',
+        scratch: myCustomVolume,
+        lazy: () => anotherVolume()
+      }
     }
 
-  Priority: --key flag > GHOSTORE_API_KEY env > config file > default
+  Volume values can be:
+    '/some/path' or './relative/path'  Local filesystem shortcut
+    a Volume instance                  Fully custom JS-defined volume
+    a function returning a Volume      Lazy custom volume
+
+  Local volume roots are resolved relative to the config file directory.
 
 Exit codes:
   0  Success
-  1  API or network error
+  1  Backend or runtime error
   2  Not found
   3  Conflict
   4  Missing or invalid argument
 
-Run 'ghostore <command> --help' for command-specific options and examples.`
+Run 'files <command> --help' for command-specific options and examples.`
 
-const commands: Record<string, { help: string; run: (args: string[], cfg: ReturnType<typeof loadConfig>) => Promise<void> }> = {
+const commands: Record<string, CommandModule> = {
+	ls,
+	cat,
 	write,
-	get,
-	search,
-	update,
-	list,
-	link,
-	archive,
+	mkdir,
+	rm,
+	mv,
+	cp,
+	stat,
 }
 
-const GLOBAL_VALUED_FLAGS = new Set(['--url', '--key'])
+const GLOBAL_VALUED_FLAGS = new Set(['--config', '--volume'])
 const GLOBAL_BOOLEAN_FLAGS = new Set(['--json', '--quiet', '-q'])
 
 function stripGlobalArgs(args: string[]): string[] {
 	const result: string[] = []
 
-	for (let i = 0; i < args.length; i++) {
-		const arg = args[i]
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index]!
 		if (GLOBAL_VALUED_FLAGS.has(arg)) {
-			i++
+			index += 1
 			continue
 		}
 		if (GLOBAL_BOOLEAN_FLAGS.has(arg)) continue
@@ -83,25 +102,62 @@ function stripGlobalArgs(args: string[]): string[] {
 	return result
 }
 
+function findCommandIndex(argv: string[]): number {
+	let index = 0
+
+	while (index < argv.length) {
+		const arg = argv[index]!
+		if (GLOBAL_VALUED_FLAGS.has(arg)) {
+			if (index + 1 >= argv.length) {
+				throw new CliUsageError(`option requires a value: ${arg}`, MAIN_HELP)
+			}
+			index += 2
+			continue
+		}
+		if (GLOBAL_BOOLEAN_FLAGS.has(arg) || arg === '--help' || arg === '-h' || arg === '--version' || arg === '-v') {
+			index += 1
+			continue
+		}
+		if (arg.startsWith('-')) {
+			throw new CliUsageError(`unknown global option: ${arg}`, MAIN_HELP)
+		}
+		return index
+	}
+
+	return -1
+}
+
+function printCaughtError(error: unknown, json: boolean): never {
+	const message = errorMessage(error)
+	if (json) {
+		printJsonError({
+			error: message,
+			code: getErrno(error) ?? (error instanceof CliUsageError ? 'usage' : 'runtime_error'),
+			usage: error instanceof CliUsageError ? error.help : undefined,
+		})
+	} else {
+		printError(message, error instanceof CliUsageError ? error.help : undefined)
+	}
+	process.exit(exitCodeForError(error))
+}
+
 async function main() {
 	const argv = process.argv.slice(2)
 
-	// Fast path: no args or top-level --help / --version
 	if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
 		out(MAIN_HELP)
 		process.exit(0)
 	}
 	if (argv[0] === '--version' || argv[0] === '-v') {
-		out('0.1.0')
+		out('0.3.4')
 		process.exit(0)
 	}
 
-	// Parse global flags (strict: false so we don't error on command-specific flags)
 	const { values } = parseArgs({
 		args: argv,
 		options: {
-			url: { type: 'string' },
-			key: { type: 'string' },
+			config: { type: 'string' },
+			volume: { type: 'string' },
 			json: { type: 'boolean' },
 			quiet: { type: 'boolean', short: 'q' },
 			help: { type: 'boolean', short: 'h' },
@@ -111,56 +167,38 @@ async function main() {
 		strict: false,
 	})
 
-	const cfg = loadConfig({
-		url: values.url,
-		key: values.key,
-		json: values.json as boolean | undefined,
-		quiet: values.quiet as boolean | undefined,
-	})
-
-	// Find the command: first non-flag arg, skipping values of known valued flags
-	let cmdIndex = -1
-	let i = 0
-	while (i < argv.length) {
-		const arg = argv[i]
-		if (GLOBAL_VALUED_FLAGS.has(arg)) {
-			if (i + 1 >= argv.length) {
-				printError(`option requires a value: ${arg}`, MAIN_HELP)
-				process.exit(4)
-			}
-			i += 2
-		} else if (GLOBAL_BOOLEAN_FLAGS.has(arg) || arg === '--help' || arg === '-h' || arg === '--version' || arg === '-v') {
-			i++
-		} else if (arg.startsWith('-')) {
-			printError(`unknown global option: ${arg}`, MAIN_HELP)
-			process.exit(4)
-		} else {
-			cmdIndex = i
-			break
+	try {
+		const commandIndex = findCommandIndex(argv)
+		if (commandIndex === -1) {
+			out(MAIN_HELP)
+			process.exit(0)
 		}
+
+		const commandName = argv[commandIndex]!
+		const command = commands[commandName]
+		if (!command) {
+			throw new CliUsageError(`unknown command: ${commandName}`, `Run 'files --help' to see available commands.`)
+		}
+
+		const config = await loadConfig({
+			config: values.config,
+			volume: values.volume,
+			json: values.json as boolean | undefined,
+			quiet: values.quiet as boolean | undefined,
+		})
+		const { volumeName, volume } = await loadVolume(config)
+
+		await command.run(stripGlobalArgs(argv.slice(commandIndex + 1)), {
+			volume,
+			volumeName,
+			json: config.json,
+			quiet: config.quiet,
+		})
+	} catch (error) {
+		printCaughtError(error, Boolean(values.json))
 	}
-
-	if (cmdIndex === -1) {
-		out(MAIN_HELP)
-		process.exit(0)
-	}
-
-	const commandName = argv[cmdIndex]
-	const commandArgs = stripGlobalArgs(argv.slice(cmdIndex + 1))
-	const command = commands[commandName]
-
-	if (!command) {
-		printError(
-			`unknown command: ${commandName}`,
-			`Run 'ghostore --help' to see available commands.`,
-		)
-		process.exit(4)
-	}
-
-	await command.run(commandArgs, cfg)
 }
 
-main().catch((e) => {
-	printError(e instanceof Error ? e.message : String(e))
-	process.exit(1)
+main().catch((error) => {
+	printCaughtError(error, false)
 })

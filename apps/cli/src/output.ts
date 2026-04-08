@@ -15,11 +15,19 @@ export function printJson(data: unknown) {
 	process.stdout.write(JSON.stringify(data, null, 2) + '\n')
 }
 
+export function printJsonError(data: { error: string; code: string; usage?: string }) {
+	printJson(data)
+}
+
 export async function readStdin(): Promise<string> {
 	if (process.stdin.isTTY) return ''
 	const chunks: Buffer[] = []
 	for await (const chunk of process.stdin as AsyncIterable<Buffer>) {
 		chunks.push(chunk)
 	}
-	return Buffer.concat(chunks).toString('utf8').trim()
+	return Buffer.concat(chunks).toString('utf8')
+}
+
+export function writeBytes(data: Uint8Array) {
+	process.stdout.write(Buffer.from(data))
 }

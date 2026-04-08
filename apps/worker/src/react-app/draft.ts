@@ -1,4 +1,4 @@
-import type { Volume } from 'just-files'
+import type { Volume } from '@justfiles/fs'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { normalizeVolumePath, parentVolumePath } from './assets'
