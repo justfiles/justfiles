@@ -21,7 +21,7 @@
 		"noUnusedParameters": true,
 		"noFallthroughCasesInSwitch": true,
 		"noUncheckedSideEffectImports": true,
-		"types": ["vite-plugin-pwa/client"]
+		"types": ["vite-plugin-pwa/client", "bun"]
 	},
 	"include": ["src/react-app"]
 }

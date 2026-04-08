@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MemoryMeta } from '@ghostore/core'
 import { noteFilenameFromPath } from './notePath'
+import { searchPaths } from './search'
 import { useVolume } from './useVolume'
 
 const RECENT_LIMIT = 5
@@ -22,12 +23,10 @@ export function CommandPalette() {
 	const inputRef = useRef<HTMLInputElement>(null)
 	const selectedRef = useRef<HTMLAnchorElement>(null)
 
-	const isPathQuery = (value: string) => value.startsWith('/') && !value.includes(' ')
-
 	useEffect(() => {
-		if (!isPathQuery(query)) return
+		if (!query.trim()) return
 		const timeout = setTimeout(() => {
-			setSubmittedQuery(query)
+			setSubmittedQuery(query.trim())
 			setSelectedIndex(-1)
 		}, 200)
 		return () => clearTimeout(timeout)
@@ -102,26 +101,17 @@ export function CommandPalette() {
 
 	const results = useMemo(() => {
 		const trimmed = submittedQuery.trim()
-		if (!trimmed || !isPathQuery(trimmed)) return []
+		if (!trimmed) return []
 
-		const prefix = trimmed.replace(/^\/+/, '')
-		return entries
-			.filter((entry) => entry.active !== 0 && entry.path.startsWith(prefix))
-			.slice()
-			.sort((left: MemoryMeta, right: MemoryMeta) => right.updated_at.localeCompare(left.updated_at))
-			.map((entry: MemoryMeta) => ({
-				id: entry.id,
-				path: entry.path,
-				snippet: null
-			} satisfies PaletteResult))
+		return searchPaths(entries, trimmed).map((entry: MemoryMeta) => ({
+			id: entry.id,
+			path: entry.path,
+			snippet: null
+		} satisfies PaletteResult))
 	}, [entries, submittedQuery])
 
 	const hasSubmitted = submittedQuery.trim().length > 0
 	const hasSelection = selectedIndex >= 0
-	const errorMessage =
-		hasSubmitted && !isPathQuery(submittedQuery)
-			? 'Search is not implemented yet'
-			: null
 
 	return (
 		<dialog ref={dialogRef} className="modal items-start pt-[12vh]">
@@ -130,7 +120,7 @@ export function CommandPalette() {
 					ref={inputRef}
 					value={query}
 					onChange={(event) => setQuery(event.target.value)}
-					placeholder="Search files…"
+					placeholder="Search paths…"
 					className="input w-full border-b border-base-200 rounded-none px-4 py-3.5 text-base bg-transparent font-mono outline-none"
 					onKeyDown={(event) => {
 						if (event.key === 'ArrowDown') {
@@ -151,10 +141,7 @@ export function CommandPalette() {
 						}
 					}}
 				/>
-				{errorMessage && (
-					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">{errorMessage}</p>
-				)}
-				{!errorMessage && hasSubmitted && results.length === 0 && (
+				{hasSubmitted && results.length === 0 && (
 					<p className="m-0 px-4 py-2.5 text-base-content/50 text-sm">No results</p>
 				)}
 				{!query && recentResults.length > 0 && (
