@@ -7,7 +7,7 @@
 		"apps/worker": {
 			"release-type": "node"
 		},
-		"packages/just-files": {
+		"packages/fs": {
 			"release-type": "node",
 			"package-name": "@justfiles/fs"
 		}

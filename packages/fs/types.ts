@@ -17,34 +17,34 @@ export type Off = bigint;
 export type DirCursor = string;
 
 /** File type — kept minimal */
-export const enum FileType {
-  Regular,
-  Directory,
-  Symlink,
+export enum FileType {
+	Regular,
+	Directory,
+	Symlink,
 }
 
 /** Minimal stat — what the FS actually stores per inode */
 export interface Stat {
-  ino: Ino;
-  type: FileType;
-  size: Off;
-  mode: number;
-  mtimeNs: bigint;
-  ctimeNs: bigint;
-  /**
-   * Hash of the file's current content (e.g. SHA-256, hex-encoded).
-   * Promoted from backend-private InodeMeta to the public Stat surface
-   * because upper layers (sync, embedding pipeline) need it as a change
-   * signal without reading file content.
-   */
-  contentHash?: string;
+	ino: Ino;
+	type: FileType;
+	size: Off;
+	mode: number;
+	mtimeNs: bigint;
+	ctimeNs: bigint;
+	/**
+	 * Hash of the file's current content (e.g. SHA-256, hex-encoded).
+	 * Promoted from backend-private InodeMeta to the public Stat surface
+	 * because upper layers (sync, embedding pipeline) need it as a change
+	 * signal without reading file content.
+	 */
+	contentHash?: string;
 }
 
 /** Directory entry — what you get when reading a directory */
 export interface Dirent {
-  ino: Ino;
-  name: string;
-  type: FileType;
+	ino: Ino;
+	name: string;
+	type: FileType;
 }
 
 /**
@@ -54,6 +54,6 @@ export interface Dirent {
  * without an extra getMeta round trip.
  */
 export interface DirentMin {
-  ino: Ino;
-  type: FileType;
+	ino: Ino;
+	type: FileType;
 }
