@@ -28,9 +28,9 @@
         "@dnd-kit/dom": "^0.3.2",
         "@dnd-kit/react": "^0.3.2",
         "@excalidraw/excalidraw": "^0.18.0",
-        "@ghostore/core": "workspace:*",
         "@hono/clerk-auth": "^3.1.0",
         "@hono/zod-validator": "^0.7.6",
+        "@justfiles/core": "workspace:*",
         "@justfiles/fs": "workspace:*",
         "@tailwindcss/vite": "^4.2.1",
         "@tanstack/react-query": "^5.90.21",
@@ -85,7 +85,7 @@
       },
     },
     "packages/core": {
-      "name": "@ghostore/core",
+      "name": "@justfiles/core",
       "dependencies": {
         "@hono/zod-validator": "^0.7.6",
         "@justfiles/fs": "workspace:*",
@@ -448,8 +448,6 @@
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.11", "", {}, "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg=="],
 
-    "@ghostore/core": ["@ghostore/core@workspace:packages/core"],
-
     "@ghostore/worker": ["@ghostore/worker@workspace:apps/worker"],
 
     "@hono/clerk-auth": ["@hono/clerk-auth@3.1.0", "", { "dependencies": { "@clerk/backend": "^2.29.2", "@clerk/shared": "^3.42.0" }, "peerDependencies": { "hono": ">=3.0.0" } }, "sha512-kkC6WiCaRwud7sQGSU0zgJJEI1CHPsnM0oK3jmVtozQn7rHMeqITFn4SU+ehnrXdHJBryYJsGheMJwQuhusDgw=="],
@@ -529,6 +527,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.9", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.0.3", "@jridgewell/sourcemap-codec": "^1.4.10" } }, "sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ=="],
 
     "@justfiles/cli": ["@justfiles/cli@workspace:apps/cli"],
+
+    "@justfiles/core": ["@justfiles/core@workspace:packages/core"],
 
     "@justfiles/fs": ["@justfiles/fs@workspace:packages/fs"],
 

@@ -1,6 +1,6 @@
-import type { DbAdapter, SqlValue } from '@ghostore/core'
-import { migrateFromEntries, sqliteStorage } from '@ghostore/core'
-import { coreMigrations } from '@ghostore/core/migrations'
+import type { DbAdapter, SqlValue } from '@justfiles/core'
+import { migrateFromEntries, sqliteStorage } from '@justfiles/core'
+import { coreMigrations } from '@justfiles/core/migrations'
 import type { Storage } from '@justfiles/fs/storage'
 
 type BlobObject = {

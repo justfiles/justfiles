@@ -1,5 +1,5 @@
 {
-	"name": "@ghostore/core",
+	"name": "@justfiles/core",
 	"private": true,
 	"type": "module",
 	"exports": {

@@ -1,4 +1,4 @@
-import { createFsApi } from '@ghostore/core'
+import { createFsApi } from '@justfiles/core'
 import { Hono } from 'hono'
 import type { Storage } from '@justfiles/fs/storage'
 
