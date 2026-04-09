@@ -23,7 +23,7 @@ interface EditCacheDB extends DBSchema {
 	}
 }
 
-const DB_NAME = 'ghostore-edit-cache'
+const DB_NAME = 'justfiles-edit-cache'
 const DB_VERSION = 1
 
 export async function openEditCache(): Promise<EditCache> {

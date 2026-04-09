@@ -90,7 +90,7 @@
 		"check": "tsc -b && vite build && wrangler deploy --dry-run",
 		"format": "biome check --write src",
 		"preview": "bun run build && vite preview",
-		"mcp:inspect": "bunx @modelcontextprotocol/inspector https://ghostore.net/mcp"
+		"mcp:inspect": "bunx @modelcontextprotocol/inspector https://justfiles.app/mcp"
 	},
 	"type": "module",
 	"version": "0.4.0"

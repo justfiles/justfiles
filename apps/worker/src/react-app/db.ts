@@ -8,7 +8,7 @@ export interface PendingPatch {
 	savedAt: number
 }
 
-interface GhostoreDB extends DBSchema {
+interface JustfilesDB extends DBSchema {
 	'pending-patches': {
 		key: string
 		value: PendingPatch
@@ -19,7 +19,7 @@ interface GhostoreDB extends DBSchema {
 	}
 }
 
-let dbPromise: Promise<IDBPDatabase<GhostoreDB>> | null = null
+let dbPromise: Promise<IDBPDatabase<JustfilesDB>> | null = null
 
 function createPatchId(): string {
 	if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -28,9 +28,9 @@ function createPatchId(): string {
 	return `patch_${Date.now()}_${Math.random().toString(36).slice(2)}`
 }
 
-export function openDB(): Promise<IDBPDatabase<GhostoreDB>> {
+export function openDB(): Promise<IDBPDatabase<JustfilesDB>> {
 	if (!dbPromise) {
-		dbPromise = idbOpenDB<GhostoreDB>('ghostore-db', 1, {
+		dbPromise = idbOpenDB<JustfilesDB>('justfiles-db', 1, {
 			upgrade(db) {
 				const patches = db.createObjectStore('pending-patches', { keyPath: 'id' })
 				patches.createIndex('by-documentId', 'documentId')

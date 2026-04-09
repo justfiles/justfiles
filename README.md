@@ -1,4 +1,4 @@
-# Ghostore
+# Justfiles
 
 A focused memory service for humans and AI agents.
 
@@ -12,34 +12,38 @@ This is a monorepo with three packages:
 
 ## CLI
 
-The `ghostore` CLI is designed for scripting and AI agent use. It has good help/error message that helps agents discover the usage in a "progressive disclosure" way. (Saves token, only read when needs them)
+The `files` CLI is designed for scripting and AI agent use. It has good help/error message that helps agents discover the usage in a "progressive disclosure" way. (Saves token, only read when needs them)
 
 ```sh
 # Configure once
-echo '{"key":"ak_YOUR_API_KEY"}' > ~/.config/ghostore/config.json
+cat > ~/.config/files/config.js <<'EOF'
+export default {
+	defaultVolume: 'local',
+	volumes: {
+		local: './notes'
+	}
+}
+EOF
 
 # Commands
-ghostore write --path notes/foo "Hello world"
-ghostore get notes/foo
-ghostore search "something I remember"
-ghostore list --path notes/
-ghostore update <id> --title "New title"
-ghostore link <from-id> <to-id> rel-type
-ghostore archive <id>
+files write --path notes/foo "Hello world"
+files get notes/foo
+files search "something I remember"
+files ls notes/
 ```
 
-Global flags: `--url`, `--key` (or env `GHOSTORE_URL` / `GHOSTORE_API_KEY`), `--json`, `--quiet`.
+Global flags: `--config`, `--volume` (or env `FILES_VOLUME`), `--json`, `--quiet`.
 
 ## MCP
 
-Ghostore exposes an MCP server at `/mcp`. To connect an AI agent, add it to your `mcp.json` with a Clerk API key (generate one from the Ghostore web UI):
+Justfiles exposes an MCP server at `/mcp`. To connect an AI agent, add it to your `mcp.json` with a Clerk API key (generate one from the Justfiles web UI):
 
 ```json
 {
   "mcpServers": {
-    "ghostore": {
+    "justfiles": {
       "type": "http",
-      "url": "https://ghostore.net/mcp",
+      "url": "https://justfiles.app/mcp",
       "headers": {
         "Authorization": "Bearer ak_YOUR_API_KEY"
       }

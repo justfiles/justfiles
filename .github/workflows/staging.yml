@@ -15,11 +15,11 @@ jobs:
       - run: bun install
       - run: bun run --filter "@ghostore/worker" build
         env:
-          CLOUDFLARE_ENV: staging
-          VITE_CLERK_PUBLISHABLE_KEY: pk_test_cmF0aW9uYWwtcHJpbWF0ZS05Ni5jbGVyay5hY2NvdW50cy5kZXYk
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_STAGING }}
       - uses: cloudflare/wrangler-action@v3.14.1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          environment: staging
           packageManager: bun
           workingDirectory: apps/worker

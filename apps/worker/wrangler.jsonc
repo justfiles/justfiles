@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "../../node_modules/wrangler/config-schema.json",
-	"name": "ghostore",
+	"name": "justfiles",
 	"main": "./src/worker/index.ts",
 	"compatibility_date": "2025-10-08",
 	"compatibility_flags": [
@@ -40,7 +40,7 @@
 	"r2_buckets": [
 		{
 			"binding": "ASSETS",
-			"bucket_name": "ghostore-assets"
+			"bucket_name": "justfiles-assets"
 		}
 	],
 	"rules": [
@@ -71,37 +71,45 @@
 	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
 	"routes": [
 		{
-			"pattern": "ghostore.net",
+			"pattern": "justfiles.app",
 			"custom_domain": true
 		}
 	],
 	"env": {
 		"dev": {
-			"name": "ghostore-dev",
+			"name": "justfiles-dev",
 			"durable_objects": {
 				"bindings": [
-					{ "name": "STORE", "class_name": "MemoryObject" }
+					{
+						"name": "STORE",
+						"class_name": "MemoryObject"
+					}
 				]
 			},
 			"migrations": [
-				{ "tag": "v1", "new_sqlite_classes": ["MemoryObject"] }
+				{
+					"tag": "v1",
+					"new_sqlite_classes": [
+						"MemoryObject"
+					]
+				}
 			],
 			"r2_buckets": [
 				{
 					"binding": "ASSETS",
-					"bucket_name": "ghostore-assets-dev"
+					"bucket_name": "justfiles-assets-dev"
 				}
 			],
 			"vectorize": [
 				{
 					"binding": "VECTORIZE",
-					"index_name": "ghostore-512-dev",
+					"index_name": "justfiles-512-dev",
 					"remote": true
 				}
 			]
 		},
 		"staging": {
-			"name": "ghostore-staging",
+			"name": "justfiles-staging",
 			"vars": {},
 			"observability": {
 				"logs": {
@@ -111,7 +119,7 @@
 			},
 			"routes": [
 				{
-					"pattern": "staging.ghostore.net",
+					"pattern": "staging.justfiles.app",
 					"custom_domain": true
 				}
 			],
@@ -134,14 +142,14 @@
 			"r2_buckets": [
 				{
 					"binding": "ASSETS",
-					"bucket_name": "ghostore-assets-staging"
+					"bucket_name": "justfiles-assets-staging"
 				}
 			],
 			"vectorize": [
 				{
 					"binding": "VECTORIZE",
-					"index_name": "ghostore-512-staging",
-					"experimental_remote": true
+					"index_name": "justfiles-512-staging",
+					"remote": true
 				}
 			]
 		}
@@ -149,7 +157,7 @@
 	"vectorize": [
 		{
 			"binding": "VECTORIZE",
-			"index_name": "ghostore-512",
+			"index_name": "justfiles-512",
 			"remote": true
 		}
 	]

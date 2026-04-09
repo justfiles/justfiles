@@ -43,7 +43,7 @@ jobs:
       - run: bun install
       - run: bun run --filter "@ghostore/worker" build
         env:
-          VITE_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsuZ2hvc3RvcmUubmV0JA
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY_PRODUCTION }}
       - uses: cloudflare/wrangler-action@v3.14.1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

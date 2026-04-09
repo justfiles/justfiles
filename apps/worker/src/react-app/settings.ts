@@ -29,7 +29,7 @@ export const DAISYUI_THEMES = [
 ] as const
 
 function lsSettingsKey(userId: string) {
-	return `ghostore:${userId}:settings`
+	return `justfiles:${userId}:settings`
 }
 
 export function loadSettings(userId: string): Settings {

@@ -30,9 +30,9 @@ export default defineConfig({
 			injectRegister: "inline",
 			includeAssets: ["favicon.ico", "apple-touch-icon-180x180.png"],
 			manifest: {
-				name: "Ghostore",
-				short_name: "Ghostore",
-				description: "Your personal memory store",
+				name: "Justfiles",
+				short_name: "Justfiles",
+				description: "Your personal file and memory store",
 				theme_color: "#ffffff",
 				background_color: "#ffffff",
 				display: "standalone",

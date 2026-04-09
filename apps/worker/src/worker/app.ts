@@ -8,7 +8,7 @@ import { z } from 'zod'
 
 export function createWorkerApiApp(args: { store: Store; fs: Storage }) {
 	const { store, fs } = args
-	const mcpServer = new McpServer({ name: 'ghostore', version: '1.0.0' })
+	const mcpServer = new McpServer({ name: 'justfiles', version: '1.0.0' })
 	const transport = new StreamableHTTPTransport()
 	registerMcpTools(mcpServer, store)
 

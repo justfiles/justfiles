@@ -33,7 +33,7 @@ export function FilesIndexPage() {
 			<div className="safe-area-content flex min-h-full items-center justify-center px-6 py-10">
 				<div className="max-w-sm text-center">
 					<p className="text-xs font-mono uppercase tracking-[0.24em] text-base-content/35">
-						Ghostore
+						Justfiles
 					</p>
 					<h1 className="mt-3 text-2xl font-semibold tracking-tight text-base-content/85">
 						Choose a file

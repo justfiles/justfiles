@@ -93,7 +93,7 @@ const VolumeContext = createContext<VolumeRuntime | null>(null)
 const runtimeSingletons = new Map<string, Promise<VolumeRuntime>>()
 
 function lsCacheKey(userId: string) {
-	return `ghostore:${userId}:sidebar`
+	return `justfiles:${userId}:sidebar`
 }
 
 const DRAFT_PATH = '/*draft*'
@@ -355,7 +355,7 @@ async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promis
 }
 
 async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
-	const local = idbStorage('ghostore-fs')
+	const local = idbStorage('justfiles-fs')
 	const remote = await apiStorage(fsClient)
 	const volume = await synced({ local, remote, lazyContent: true })
 	const remoteVolume = createVolume(remote)

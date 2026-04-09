@@ -61,7 +61,7 @@ export function resolveRelativeFsPath(notePath: string, href: string): string | 
 	if (!href) return null
 	if (/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(href) || href.startsWith('//')) return null
 
-	const base = new URL(`https://ghostore.invalid${normalizeVolumePath(notePath)}`)
+	const base = new URL(`https://justfiles.invalid${normalizeVolumePath(notePath)}`)
 	return normalizeVolumePath(new URL(href, base).pathname)
 }
 

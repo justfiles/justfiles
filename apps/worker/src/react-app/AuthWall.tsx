@@ -38,7 +38,7 @@ export function AuthWall() {
 		<div className="min-h-dvh bg-base-100 flex flex-col">
 			{/* Nav */}
 			<header className="flex items-center justify-between px-6 py-4 border-b border-base-200">
-				<span className="text-xl font-bold tracking-tight">ghostore</span>
+				<span className="text-xl font-bold tracking-tight">justfiles</span>
 				<div className="flex gap-2">
 					<SignInButton>
 						<button type="button" className="btn btn-sm btn-ghost">
@@ -85,10 +85,10 @@ export function AuthWall() {
 				{/* Code snippet teaser */}
 				<div className="mockup-code w-full max-w-lg text-left text-sm mt-4 opacity-80">
 					<pre data-prefix="$">
-						<code>ghostore write "token clock skew fix"</code>
+						<code>files write "token clock skew fix"</code>
 					</pre>
 					<pre data-prefix="$">
-						<code>ghostore search "auth"</code>
+						<code>files search "auth"</code>
 					</pre>
 					<pre data-prefix=" " className="text-success">
 						<code>→ token clock skew fix</code>
@@ -126,7 +126,7 @@ export function AuthWall() {
 					Ready to build your second brain?
 				</h2>
 				<p className="text-base-content/60 max-w-sm">
-					Ghostore is in beta — everything is free while we're getting started. No paid plans, no
+					Justfiles is in beta - everything is free while we're getting started. No paid plans, no
 					credit card required.
 				</p>
 				<SignUpButton>
@@ -138,7 +138,7 @@ export function AuthWall() {
 
 			{/* Footer */}
 			<footer className="border-t border-base-200 px-6 py-6 text-center text-xs text-base-content/40">
-				ghostore — memory for humans and agents
+				justfiles - memory for humans and agents
 			</footer>
 		</div>
 	)
