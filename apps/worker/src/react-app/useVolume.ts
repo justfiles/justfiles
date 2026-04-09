@@ -91,10 +91,6 @@ export interface VolumeService {
 const VolumeContext = createContext<VolumeRuntime | null>(null)
 const runtimeSingletons = new Map<string, Promise<VolumeRuntime>>()
 
-function lsCacheKey(userId: string) {
-	return `justfiles:${userId}:sidebar`
-}
-
 const DRAFT_PATH = '/*draft*'
 const STATE_ROOT = '/.state'
 const TRASH_ROOT = '/.trash'
@@ -116,41 +112,6 @@ function splitFilename(filename: string): { stem: string; extension: string } {
 		stem: filename.slice(0, idx),
 		extension: filename.slice(idx)
 	}
-}
-
-function normalizeCachedEntry(value: unknown): FileMeta | null {
-	if (typeof value !== 'object' || value === null) return null
-
-	const entry = value as Partial<FileMeta>
-	if (typeof entry.id !== 'string') return null
-	if (typeof entry.path !== 'string') return null
-	if (typeof entry.updated_at !== 'string') return null
-	if (!Array.isArray(entry.tags) || !entry.tags.every((tag) => typeof tag === 'string')) return null
-
-	return {
-		id: entry.id,
-		title: entry.title ?? null,
-		path: entry.path,
-		updated_at: entry.updated_at,
-		tags: entry.tags,
-		active: entry.active ?? 1
-	}
-}
-
-function loadCache(userId: string): FileMeta[] {
-	try {
-		const raw = JSON.parse(localStorage.getItem(lsCacheKey(userId)) ?? '[]')
-		if (!Array.isArray(raw)) return []
-		return raw
-			.map((entry) => normalizeCachedEntry(entry))
-			.filter((entry): entry is FileMeta => entry !== null)
-	} catch {
-		return []
-	}
-}
-
-function saveCache(userId: string, entries: FileMeta[]) {
-	localStorage.setItem(lsCacheKey(userId), JSON.stringify(entries))
 }
 
 function applyDelta(cache: FileMeta[], upserted: FileMeta[]): FileMeta[] {
@@ -353,18 +314,35 @@ async function listMemoryEntries(volume: Volume, previous: FileMeta[]): Promise<
 	)
 }
 
-async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<VolumeRuntime> {
+async function loadInitialEntries(
+	volume: Volume
+): Promise<{ entries: FileMeta[]; loaded: boolean }> {
+	try {
+		return {
+			entries: await listMemoryEntries(volume, []),
+			loaded: true
+		}
+	} catch {
+		return {
+			entries: [],
+			loaded: false
+		}
+	}
+}
+
+async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 	const local = idbStorage('justfiles-fs')
 	const remote = await apiStorage(fsClient)
 	const volume = await synced({ local, remote, lazyContent: true })
 	const remoteVolume = createVolume(remote)
 	const index = createMemoryIndex()
 	const listeners = new Set<() => void>()
-	let entries = loadCache(userId)
+	const initialEntries = await loadInitialEntries(volume)
+	let entries = initialEntries.entries
 	let snapshot: VolumeSnapshot = { entries }
 	let started = false
 	let onFocus: (() => void) | null = null
-	let hasInitialRefresh = false
+	let hasInitialRefresh = initialEntries.loaded
 	let refreshPromise: Promise<void> | null = null
 
 	index.hydrate(entries)
@@ -377,7 +355,6 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		entries = next
 		snapshot = { entries }
 		index.hydrate(entries)
-		saveCache(userId, entries)
 		notify()
 	}
 
@@ -654,7 +631,7 @@ function getOrCreateVolumeRuntime(userId: string, fsClient: FsClient): Promise<V
 	const existing = runtimeSingletons.get(userId)
 	if (existing) return existing
 
-	const promise = createVolumeRuntime(userId, fsClient)
+	const promise = createVolumeRuntime(fsClient)
 	runtimeSingletons.set(userId, promise)
 	return promise
 }
