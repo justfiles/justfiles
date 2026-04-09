@@ -100,13 +100,7 @@
 					"bucket_name": "justfiles-assets-dev"
 				}
 			],
-			"vectorize": [
-				{
-					"binding": "VECTORIZE",
-					"index_name": "justfiles-512-dev",
-					"remote": true
-				}
-			]
+			"vectorize": []
 		},
 		"staging": {
 			"name": "justfiles-staging",
@@ -145,20 +139,8 @@
 					"bucket_name": "justfiles-assets-staging"
 				}
 			],
-			"vectorize": [
-				{
-					"binding": "VECTORIZE",
-					"index_name": "justfiles-512-staging",
-					"remote": true
-				}
-			]
+			"vectorize": []
 		}
 	},
-	"vectorize": [
-		{
-			"binding": "VECTORIZE",
-			"index_name": "justfiles-512",
-			"remote": true
-		}
-	]
+	"vectorize": []
 }

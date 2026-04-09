@@ -3,8 +3,8 @@ import { SignInButton, SignUpButton } from '@clerk/clerk-react'
 const features = [
 	{
 		icon: '⌘',
-		title: 'CLI-first capture',
-		desc: 'Pipe output, capture thoughts, search memories — all from your terminal. Built to integrate with any AI workflow.',
+		title: 'CLI-first editing',
+		desc: 'Write, inspect, and organize notes from your terminal with the same filesystem model used by the web app.',
 	},
 	{
 		icon: '⚡',
@@ -12,19 +12,14 @@ const features = [
 		desc: 'Your notes stay available across devices with a file-system model that keeps local edits and remote state in sync.',
 	},
 	{
-		icon: '🔍',
-		title: 'Hybrid search',
-		desc: 'BM25 full-text, semantic vector search, and a neural reranker blended together. Finds what you mean, not just what you typed.',
-	},
-	{
-		icon: '🧠',
-		title: 'Permanent agent memory',
-		desc: 'Give your AI assistant a memory that persists across sessions, tools, and models. Build once, remember forever.',
-	},
-	{
 		icon: '🗂️',
-		title: 'Structured knowledge',
-		desc: 'Paths, tags, links, and temporal decay scoring. Your knowledge base stays organised and relevant over time.',
+		title: 'Structured files',
+		desc: 'Paths, tags, links, and hidden asset storage keep your notes organized without a separate database model.',
+	},
+	{
+		icon: '🔄',
+		title: 'One storage model',
+		desc: 'The worker, web UI, and CLI all operate on the same filesystem-backed notes and metadata.',
 	},
 	{
 		icon: '📱',
@@ -65,8 +60,8 @@ export function AuthWall() {
 				</h1>
 
 				<p className="text-base-content/60 text-lg sm:text-xl max-w-xl leading-relaxed">
-					Capture, search, and connect everything you know through a web app and a CLI built
-					around a durable file-system-backed store.
+					Work with notes through a web app and a CLI built around one durable
+					file-system-backed store.
 				</p>
 
 				<div className="flex flex-wrap gap-3 justify-center">
@@ -83,17 +78,17 @@ export function AuthWall() {
 				</div>
 
 				{/* Code snippet teaser */}
-				<div className="mockup-code w-full max-w-lg text-left text-sm mt-4 opacity-80">
-					<pre data-prefix="$">
-						<code>files write "token clock skew fix"</code>
-					</pre>
-					<pre data-prefix="$">
-						<code>files search "auth"</code>
-					</pre>
-					<pre data-prefix=" " className="text-success">
-						<code>→ token clock skew fix</code>
-					</pre>
-				</div>
+					<div className="mockup-code w-full max-w-lg text-left text-sm mt-4 opacity-80">
+						<pre data-prefix="$">
+							<code>files write "token clock skew fix"</code>
+						</pre>
+						<pre data-prefix="$">
+							<code>files ls notes/</code>
+						</pre>
+						<pre data-prefix=" " className="text-success">
+							<code>→ token-clock-skew-fix.md</code>
+						</pre>
+					</div>
 			</section>
 
 			{/* Features */}
@@ -138,7 +133,7 @@ export function AuthWall() {
 
 			{/* Footer */}
 			<footer className="border-t border-base-200 px-6 py-6 text-center text-xs text-base-content/40">
-				justfiles - memory for humans and agents
+				justfiles - notes for humans and agents
 			</footer>
 		</div>
 	)

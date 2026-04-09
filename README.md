@@ -8,7 +8,7 @@ This is a monorepo with three packages:
 |-----------------|------------------------------------------------------------|
 | `apps/worker`   | Cloudflare Worker — filesystem API and React web UI        |
 | `apps/cli`      | Agent-friendly CLI for interacting with the backend        |
-| `packages/core` | Shared memory store logic (DB, embeddings, search)         |
+| `packages/core` | Shared filesystem API, SQLite migrations, and storage      |
 
 ## CLI
 
@@ -28,7 +28,7 @@ EOF
 # Commands
 files write --path notes/foo "Hello world"
 files get notes/foo
-files search "something I remember"
+files stat notes/foo
 files ls notes/
 ```
 
@@ -49,11 +49,8 @@ bun dev
 
 **Worker runtime secrets:**
 
-- `OPENAI_KEY`: OpenAI API key — required for memory embedding and LLM processing.
 - `CLERK_SECRET_KEY`: Clerk secret key — required for JWT session auth and API key verification.
 - `CLERK_PUBLISHABLE_KEY`: Clerk publishable key — required by the Clerk middleware in the worker.
-- `GOOGLE_PROJECT_ID`: Google Cloud project ID — optional, enables the Vertex AI reranker when set alongside `GOOGLE_SA_KEY`.
-- `GOOGLE_SA_KEY`: Google service account key JSON — optional, enables the Vertex AI reranker.
 
 #### Local development
 
@@ -72,13 +69,9 @@ Use one of the local flows:
 
   ```sh
   cat > .dev.vars <<'EOF'
-  OPENAI_KEY=sk-...
   CLERK_SECRET_KEY=sk_test_...
   CLERK_PUBLISHABLE_KEY=pk_test_...
   VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
-  # Optional: enable Google Vertex AI reranker
-  # GOOGLE_PROJECT_ID=...
-  # GOOGLE_SA_KEY={"type":"service_account",...}
   EOF
   bunx wrangler dev
   ```
@@ -111,11 +104,8 @@ bun run deploy
 Set runtime secrets in Cloudflare before deploying:
 
 ```sh
-bunx wrangler secret put OPENAI_KEY
 bunx wrangler secret put CLERK_SECRET_KEY
 bunx wrangler secret put CLERK_PUBLISHABLE_KEY
 ```
 
 Each Durable Object instance has its own embedded SQLite database managed by Cloudflare — no separate provisioning needed. Migrations run automatically on the first request.
-
-To export data from a live instance, use the **Download DB** button in the UI, which downloads the `memories` table as JSON via `GET /api/v1/export`.

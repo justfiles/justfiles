@@ -1,4 +1,3 @@
-// TODO: do we need these two?
 export type FileMeta = {
 	id: string
 	title: string | null

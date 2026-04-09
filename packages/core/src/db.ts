@@ -1,6 +1,6 @@
-// Unified adapter interface over bun:sqlite and @libsql/client.
-// All methods are async so the interface works with both sync (bun:sqlite) and
-// async (libsql) backends.
+// Unified adapter interface for SQLite-backed storage adapters.
+// All methods are async so the interface works with both sync and async
+// implementations.
 
 export type SqlValue = null | string | number | bigint | Uint8Array | ArrayBuffer
 
