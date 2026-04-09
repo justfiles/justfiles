@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.5.0...worker-v0.6.0) (2026-04-09)
+
+
+### Features
+
+* **worker:** show app version in settings ([e731cba](https://github.com/xiaoxinghu/justfiles/commit/e731cba30b78a6626f422c1aff26fb5bdd85b15a))
+
 ## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.4.0...worker-v0.5.0) (2026-04-09)
 
 
