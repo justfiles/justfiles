@@ -9,12 +9,12 @@ import {
 	FiRefreshCw,
 	FiSearch
 } from 'react-icons/fi'
-import type { LinkInfo } from '@ghostore/core'
 import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { MemoryEditor } from './MemoryEditor'
 import { noteFilenameFromPath, noteNameFromPath, notePathWithName } from './notePath'
 import { useSidebarActions } from './SidebarContext'
+import type { LinkInfo } from './types'
 import { useCreateNote } from './useCreateNote'
 import { useMemory } from './useMemory'
 import { useVolume } from './useVolume'

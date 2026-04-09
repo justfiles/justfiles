@@ -1,5 +1,3 @@
-import type { MemoryMeta } from '@ghostore/core'
-import type { LinkInfo } from '@ghostore/core'
 import {
 	createContext,
 	createElement,
@@ -34,6 +32,7 @@ import {
 	parentVolumePath,
 	resolveRelativeFsPath
 } from './assets'
+import type { FileMeta, LinkInfo } from './types'
 
 type MemoryRecord = {
 	id: string
@@ -49,7 +48,7 @@ type MemoryRecord = {
 }
 
 interface VolumeSnapshot {
-	entries: MemoryMeta[]
+	entries: FileMeta[]
 }
 
 interface VolumeRuntime {
@@ -61,12 +60,12 @@ interface VolumeRuntime {
 	stop(): void
 	fetchChanges(since?: string): Promise<void>
 	refresh(): Promise<void>
-	upsertEntry(entry: MemoryMeta): void
+	upsertEntry(entry: FileMeta): void
 	removeEntry(id: string): void
 	moveMemory(id: string, path: string, options?: { dedupe?: boolean }): Promise<string>
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
-	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null; record: MemoryRecord | null }>
+	resolveMemory(id: string): Promise<{ entry: FileMeta | null; record: MemoryRecord | null }>
 	writeAssetFile(file: File): Promise<string>
 	resolveAssetUrl(notePath: string, src: string): Promise<string | null>
 	readAssetBlob(notePath: string, src: string): Promise<Blob | null>
@@ -75,15 +74,15 @@ interface VolumeRuntime {
 export interface VolumeService {
 	readonly volume: Volume
 	readonly index: MemoryIndex
-	readonly entries: MemoryMeta[]
+	readonly entries: FileMeta[]
 	fetchChanges(since?: string): Promise<void>
 	refresh(): Promise<void>
-	upsertEntry(entry: MemoryMeta): void
+	upsertEntry(entry: FileMeta): void
 	removeEntry(id: string): void
 	moveMemory(id: string, path: string, options?: { dedupe?: boolean }): Promise<string>
 	archiveMemory(id: string): Promise<void>
 	reviveMemory(id: string): Promise<void>
-	resolveMemory(id: string): Promise<{ entry: MemoryMeta | null; record: MemoryRecord | null }>
+	resolveMemory(id: string): Promise<{ entry: FileMeta | null; record: MemoryRecord | null }>
 	writeAssetFile(file: File): Promise<string>
 	resolveAssetUrl(notePath: string, src: string): Promise<string | null>
 	readAssetBlob(notePath: string, src: string): Promise<Blob | null>
@@ -119,10 +118,10 @@ function splitFilename(filename: string): { stem: string; extension: string } {
 	}
 }
 
-function normalizeCachedEntry(value: unknown): MemoryMeta | null {
+function normalizeCachedEntry(value: unknown): FileMeta | null {
 	if (typeof value !== 'object' || value === null) return null
 
-	const entry = value as Partial<MemoryMeta>
+	const entry = value as Partial<FileMeta>
 	if (typeof entry.id !== 'string') return null
 	if (typeof entry.path !== 'string') return null
 	if (typeof entry.updated_at !== 'string') return null
@@ -138,29 +137,29 @@ function normalizeCachedEntry(value: unknown): MemoryMeta | null {
 	}
 }
 
-function loadCache(userId: string): MemoryMeta[] {
+function loadCache(userId: string): FileMeta[] {
 	try {
 		const raw = JSON.parse(localStorage.getItem(lsCacheKey(userId)) ?? '[]')
 		if (!Array.isArray(raw)) return []
 		return raw
 			.map((entry) => normalizeCachedEntry(entry))
-			.filter((entry): entry is MemoryMeta => entry !== null)
+			.filter((entry): entry is FileMeta => entry !== null)
 	} catch {
 		return []
 	}
 }
 
-function saveCache(userId: string, entries: MemoryMeta[]) {
+function saveCache(userId: string, entries: FileMeta[]) {
 	localStorage.setItem(lsCacheKey(userId), JSON.stringify(entries))
 }
 
-function applyDelta(cache: MemoryMeta[], upserted: MemoryMeta[]): MemoryMeta[] {
+function applyDelta(cache: FileMeta[], upserted: FileMeta[]): FileMeta[] {
 	const map = new Map(cache.map((entry) => [entry.id, entry]))
 	for (const entry of upserted) map.set(entry.id, entry)
 	return [...map.values()].sort((left, right) => left.path.localeCompare(right.path))
 }
 
-function toMemoryMeta(record: MemoryRecord): MemoryMeta {
+function toFileMeta(record: MemoryRecord): FileMeta {
 	return {
 		id: record.id,
 		title: record.title,
@@ -281,9 +280,9 @@ async function readMemoryRecord(
 
 async function listLiveMemoryEntries(
 	volume: Volume,
-	previous: MemoryMeta[]
-): Promise<MemoryMeta[]> {
-	const entries: MemoryMeta[] = []
+	previous: FileMeta[]
+): Promise<FileMeta[]> {
+	const entries: FileMeta[] = []
 	const previousLive = previous.filter((entry) => entry.active !== 0)
 	const previousById = new Map(previousLive.map((entry) => [entry.id, entry]))
 	const previousByPath = new Map(previousLive.map((entry) => [entry.path, entry]))
@@ -311,10 +310,10 @@ async function listLiveMemoryEntries(
 	return entries.sort((left, right) => left.path.localeCompare(right.path))
 }
 
-async function listArchivedMemoryEntries(volume: Volume): Promise<MemoryMeta[]> {
+async function listArchivedMemoryEntries(volume: Volume): Promise<FileMeta[]> {
 	if (!(await volume.exists(TRASH_FILES_PATH))) return []
 
-	const entries: MemoryMeta[] = []
+	const entries: FileMeta[] = []
 
 	await volume.scan(TRASH_FILES_PATH, async (path, stat) => {
 		if (path === TRASH_FILES_PATH) return
@@ -344,7 +343,7 @@ async function listArchivedMemoryEntries(volume: Volume): Promise<MemoryMeta[]> 
 	return entries.sort((left, right) => left.path.localeCompare(right.path))
 }
 
-async function listMemoryEntries(volume: Volume, previous: MemoryMeta[]): Promise<MemoryMeta[]> {
+async function listMemoryEntries(volume: Volume, previous: FileMeta[]): Promise<FileMeta[]> {
 	const [liveEntries, archivedEntries] = await Promise.all([
 		listLiveMemoryEntries(volume, previous),
 		listArchivedMemoryEntries(volume)
@@ -374,7 +373,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		for (const listener of listeners) listener()
 	}
 
-	function setEntries(next: MemoryMeta[]) {
+	function setEntries(next: FileMeta[]) {
 		entries = next
 		snapshot = { entries }
 		index.hydrate(entries)
@@ -403,7 +402,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 		await refresh()
 	}
 
-	function upsertEntry(entry: MemoryMeta) {
+	function upsertEntry(entry: FileMeta) {
 		setEntries(applyDelta(entries, [entry]))
 	}
 
@@ -510,13 +509,13 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 			logicalPath: info.originalPath,
 			active: 1
 		})
-		upsertEntry(toMemoryMeta(record))
-	}
+			upsertEntry(toFileMeta(record))
+		}
 
-	async function resolveMemory(id: string): Promise<{
-		entry: MemoryMeta | null
-		record: MemoryRecord | null
-	}> {
+		async function resolveMemory(id: string): Promise<{
+			entry: FileMeta | null
+			record: MemoryRecord | null
+		}> {
 		try {
 			let entry = index.get(id)
 			if (!entry) {
@@ -543,7 +542,7 @@ async function createVolumeRuntime(userId: string, fsClient: FsClient): Promise<
 				active: entry.active,
 				updatedAt: entry.active === 0 ? entry.updated_at : undefined
 			})
-			const nextEntry = toMemoryMeta(record)
+				const nextEntry = toFileMeta(record)
 			upsertEntry(nextEntry)
 			return { entry: nextEntry, record }
 		} catch {

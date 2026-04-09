@@ -1,7 +1,7 @@
-import type { MemoryMeta } from '@ghostore/core'
 import { useVolume } from './useVolume'
+import type { FileMeta } from './types'
 
-export type { MemoryMeta }
+export type { FileMeta }
 
 export function useSidebar() {
 	const { entries, fetchChanges, refresh, upsertEntry, removeEntry } = useVolume()

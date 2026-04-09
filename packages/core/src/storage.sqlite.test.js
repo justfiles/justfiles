@@ -5,8 +5,8 @@ import { FsCursorExpiredError } from '@justfiles/fs/storage'
 import { FileType } from '@justfiles/fs/types'
 import { createFsApi } from './fs'
 import { createSqliteAdapter } from './db.sqlite'
+import { parseSqlStatements } from './migrations/utils'
 import { storage as sqliteStorage } from './storage.sqlite'
-import { parseSqlStatements } from './store'
 
 async function createTestStorage(maxRetainedUpdates) {
 	const db = new Database(':memory:')

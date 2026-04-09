@@ -1,8 +1,8 @@
 import { createContext, useContext } from 'react'
-import type { MemoryMeta } from '@ghostore/core'
+import type { FileMeta } from './types'
 
 type SidebarContextValue = {
-	upsertEntry: (entry: MemoryMeta) => void
+	upsertEntry: (entry: FileMeta) => void
 	removeEntry: (id: string) => void
 	refresh: () => void
 }

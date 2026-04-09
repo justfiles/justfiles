@@ -2,7 +2,6 @@ import { useMutation } from '@tanstack/react-query'
 import { DragDropProvider, DragOverlay, useDraggable, useDroppable } from '@dnd-kit/react'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useEffect, useState, type ReactNode } from 'react'
-import type { MemoryMeta } from '@ghostore/core'
 import {
 	FiChevronDown,
 	FiChevronRight,
@@ -18,6 +17,7 @@ import { normalizeVolumePath } from './assets'
 import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { noteFilenameFromPath } from './notePath'
+import type { FileMeta } from './types'
 import { useCreateNote } from './useCreateNote'
 import { useVolume } from './useVolume'
 
@@ -45,10 +45,10 @@ type TreeNode = {
 	name: string
 	fullPath: string
 	children: Map<string, TreeNode>
-	entries: MemoryMeta[]
+	entries: FileMeta[]
 }
 
-function buildTree(entries: MemoryMeta[]): TreeNode {
+function buildTree(entries: FileMeta[]): TreeNode {
 	const root: TreeNode = { name: '', fullPath: '', children: new Map(), entries: [] }
 	for (const entry of entries) {
 		const parts = entry.path.split('/').filter(Boolean)
@@ -83,7 +83,7 @@ type FolderNodeProps = {
 }
 
 type FileNodeProps = {
-	entry: MemoryMeta
+	entry: FileMeta
 	depth: number
 	activeId: string | undefined
 	movingEntryId: string | null
@@ -281,7 +281,7 @@ function RootDropTarget({ active }: { active: boolean }) {
 }
 
 type Props = {
-	entries: MemoryMeta[]
+	entries: FileMeta[]
 	onClose?: () => void
 	headerActions?: ReactNode
 }
@@ -290,7 +290,7 @@ export function Sidebar({ entries, onClose, headerActions }: Props) {
 	const params = useParams({ strict: false }) as { id?: string }
 	const [showArchived, setShowArchived] = useState(false)
 	const [organizeMode, setOrganizeMode] = useState(false)
-	const [draggedEntry, setDraggedEntry] = useState<MemoryMeta | null>(null)
+	const [draggedEntry, setDraggedEntry] = useState<FileMeta | null>(null)
 	const createNote = useCreateNote()
 	const { moveMemory } = useVolume()
 

@@ -1,8 +1,8 @@
 import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { MemoryMeta } from '@ghostore/core'
 import { noteFilenameFromPath } from './notePath'
 import { searchPaths } from './search'
+import type { FileMeta } from './types'
 import { useVolume } from './useVolume'
 
 const RECENT_LIMIT = 5
@@ -89,9 +89,9 @@ export function CommandPalette() {
 			entries
 				.filter((entry) => entry.active !== 0)
 				.slice()
-				.sort((left: MemoryMeta, right: MemoryMeta) => right.updated_at.localeCompare(left.updated_at))
+				.sort((left: FileMeta, right: FileMeta) => right.updated_at.localeCompare(left.updated_at))
 				.slice(0, RECENT_LIMIT)
-				.map((entry: MemoryMeta) => ({
+				.map((entry: FileMeta) => ({
 					id: entry.id,
 					path: entry.path,
 					snippet: null
@@ -103,7 +103,7 @@ export function CommandPalette() {
 		const trimmed = submittedQuery.trim()
 		if (!trimmed) return []
 
-		return searchPaths(entries, trimmed).map((entry: MemoryMeta) => ({
+		return searchPaths(entries, trimmed).map((entry: FileMeta) => ({
 			id: entry.id,
 			path: entry.path,
 			snippet: null

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { LinkInfo } from '@ghostore/core'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
 import { openEditCache, type EditCache, type ProseMirrorJsonDocument } from './editCache'
+import type { LinkInfo } from './types'
 import { useVolume } from './useVolume'
 import { normalizeVolumePath } from './assets'
 

@@ -1,20 +1,20 @@
-import type { MemoryMeta } from '@ghostore/core'
+import type { FileMeta } from './types'
 
 export interface MemoryIndex {
-	hydrate(entries: MemoryMeta[]): void
-	upsert(entry: MemoryMeta): void
+	hydrate(entries: FileMeta[]): void
+	upsert(entry: FileMeta): void
 	remove(id: string): void
-	get(id: string): MemoryMeta | null
-	getByPath(path: string): MemoryMeta | null
+	get(id: string): FileMeta | null
+	getByPath(path: string): FileMeta | null
 	getPath(id: string): string | null
 	getId(path: string): string | null
 }
 
 export function createMemoryIndex(): MemoryIndex {
-	const byId = new Map<string, MemoryMeta>()
+	const byId = new Map<string, FileMeta>()
 	const idByPath = new Map<string, string>()
 
-	function indexEntry(entry: MemoryMeta): void {
+	function indexEntry(entry: FileMeta): void {
 		const previous = byId.get(entry.id)
 		if (previous) idByPath.delete(previous.path)
 		byId.set(entry.id, entry)

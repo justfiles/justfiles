@@ -1,13 +1,5 @@
-import type {
-	DbAdapter,
-	EmbeddingProvider,
-	LLM,
-	Reranker,
-	SqlValue,
-	Store,
-	VectorStore
-} from '@ghostore/core'
-import { createStore, migrateFromEntries, sqliteStorage } from '@ghostore/core'
+import type { DbAdapter, SqlValue } from '@ghostore/core'
+import { migrateFromEntries, sqliteStorage } from '@ghostore/core'
 import { coreMigrations } from '@ghostore/core/migrations'
 import type { Storage } from '@justfiles/fs/storage'
 
@@ -31,12 +23,17 @@ type BlobStore = {
 // SQLite-backed Durable Objects already provide atomic read/write isolation for
 // storage operations with no intervening non-storage I/O. We keep the adapter
 // thin so higher layers can perform transactional read-modify-write flows.
-export function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
+function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	const { sql } = storage
-	const normalizeArgs = (args: SqlValue[]): Array<null | string | number | Uint8Array | ArrayBuffer> =>
+	const normalizeArgs = (
+		args: SqlValue[]
+	): Array<null | string | number | Uint8Array | ArrayBuffer> =>
 		args.map((arg) => (typeof arg === 'bigint' ? arg.toString() : arg))
 	const adapter: DbAdapter = {
-		async query<T extends Record<string, unknown>>(query: string, args: SqlValue[] = []): Promise<T[]> {
+		async query<T extends Record<string, unknown>>(
+			query: string,
+			args: SqlValue[] = []
+		): Promise<T[]> {
 			return sql.exec(query, ...normalizeArgs(args)).toArray() as unknown as T[]
 		},
 		async run(query: string, args: SqlValue[] = []): Promise<void> {
@@ -51,17 +48,6 @@ export function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter 
 
 export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 	await migrateFromEntries(createDOSqliteAdapter(storage), coreMigrations)
-}
-
-export function cfStore(
-	storage: DurableObjectStorage,
-	namespace: string,
-	embProvider?: EmbeddingProvider,
-	llm?: LLM,
-	reranker?: Reranker,
-	vectorStore?: VectorStore
-): Store {
-	return createStore(createDOSqliteAdapter(storage), namespace, embProvider, llm, reranker, vectorStore)
 }
 
 export function cfFsStorage(
