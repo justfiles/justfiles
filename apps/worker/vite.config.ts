@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defaultClientConditions, defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { cloudflare } from "@cloudflare/vite-plugin";
@@ -15,6 +15,10 @@ const sqlTextPlugin = {
 }
 
 export default defineConfig({
+	resolve: {
+		// Preserve Vite's defaults and prepend the workspace source condition.
+		conditions: ["@justfiles/src", ...defaultClientConditions],
+	},
 	plugins: [
 		tailwindcss(),
 		sqlTextPlugin,

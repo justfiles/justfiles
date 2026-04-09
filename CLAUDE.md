@@ -69,6 +69,14 @@ Make sure the following tests pass after making file changes:
 bun run typecheck
 ```
 
+# Workspace Packages
+
+- `@justfiles/fs` is `dist`-first in `package.json` exports. Do not rely on `publishConfig` to rewrite exports for Bun.
+- Local workspace source resolution uses the custom export condition `@justfiles/src`.
+- TypeScript configs opt into `@justfiles/src` via `compilerOptions.customConditions` for IDE/typecheck.
+- Vite must preserve its default conditions and prepend `@justfiles/src` via `defaultClientConditions`; do not replace the full list with hard-coded literals.
+- External consumers, including `bun link`, should resolve workspace packages to `dist` unless they explicitly opt into `@justfiles/src`.
+
 If the change is a api/mcp change, test it before call it done. Test the api directly against http://localhost:5173
 use the API_KEY from .agent file to get access
 

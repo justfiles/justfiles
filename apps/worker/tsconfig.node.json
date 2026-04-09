@@ -8,6 +8,7 @@
 
 		/* Bundler mode */
 		"moduleResolution": "bundler",
+		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"isolatedModules": true,
 		"moduleDetection": "force",
