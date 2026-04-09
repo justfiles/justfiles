@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.4.0...worker-v0.5.0) (2026-04-09)
+
+
+### Features
+
+* **cli:** redesign files CLI around volumes ([501c6a9](https://github.com/xiaoxinghu/justfiles/commit/501c6a9c60c2a7124a222af7b294ba42ada326f3))
+* **editor:** add gutter + insert menu for images, drawings, dividers, and tables ([2f3f476](https://github.com/xiaoxinghu/justfiles/commit/2f3f47687ef7f44e3d730aa54fc85ddccaf2de14))
+* **fs:** add ApiStorageBackend wrapping the ghostore REST API ([1a9238e](https://github.com/xiaoxinghu/justfiles/commit/1a9238ef429afc02014814e389da53582bba28b6))
+* **fs:** add CachedStorageBackend with read-through/write-behind sync ([df7927a](https://github.com/xiaoxinghu/justfiles/commit/df7927a94ffb16e81c88f485a0f208245b067fc3))
+* **fs:** add sqlite-backed worker filesystem ([5ba79ef](https://github.com/xiaoxinghu/justfiles/commit/5ba79ef46576c262b329bca84692ed8732676183))
+* **fs:** add update streams to storage sync ([3d9eda5](https://github.com/xiaoxinghu/justfiles/commit/3d9eda55b13348058ca37f65e889d41dedaed5a5))
+* **fs:** add xattr sync support and lazy content loading to synced volume ([fc1e769](https://github.com/xiaoxinghu/justfiles/commit/fc1e769ae406ca236671fe2491b169432708114c))
+* **fs:** move editor assets into the filesystem ([d03e22f](https://github.com/xiaoxinghu/justfiles/commit/d03e22feba77e5fcab1e72703674dba3cf03692c))
+* **fs:** support rename and remove for virtual directory trees ([deec840](https://github.com/xiaoxinghu/justfiles/commit/deec840d7f26aaf2ff76df9df921ea6c1e1ef995))
+* **worker:** add local fuzzy path search ([39b5864](https://github.com/xiaoxinghu/justfiles/commit/39b586486c1d3d9dfde4f10232f8dec3cfe09e3d))
+* **worker:** add responsive files navigation UI ([b2318cb](https://github.com/xiaoxinghu/justfiles/commit/b2318cb1fa44918b3cc514e226717490d328946e))
+* **worker:** add sidebar drag and drop note moves ([e120f85](https://github.com/xiaoxinghu/justfiles/commit/e120f8539a7a035b679422e85fa5deea010c03c0))
+* **worker:** cut over deployment to justfiles ([8bbe202](https://github.com/xiaoxinghu/justfiles/commit/8bbe202aba6ebb4fccdf56016bd59542f4c1261c))
+* **worker:** move memory editing onto cached volume ([7592903](https://github.com/xiaoxinghu/justfiles/commit/759290395b8db00f182083b850a9cb2098cb258b))
+* **worker:** use filename-based note editing ([ae3c147](https://github.com/xiaoxinghu/justfiles/commit/ae3c1472037769266f512475d863c1148b2547fa))
+
+
+### Bug Fixes
+
+* **editor:** fall back to remoteVolume stat for freshly uploaded assets ([9901379](https://github.com/xiaoxinghu/justfiles/commit/9901379acd17189a51985b7a42bf5484f93dd0e3))
+* **fs:** align workspace source resolution ([d2abec6](https://github.com/xiaoxinghu/justfiles/commit/d2abec6aa3d4646b305ff6b90d0285eb261fcfb4))
+* **fs:** stabilize cached sync state ([a1dee6a](https://github.com/xiaoxinghu/justfiles/commit/a1dee6a2e4b023fbb6b17fba0aa0af2168d053b2))
+* **worker:** align notes layout backgrounds ([ec25ea4](https://github.com/xiaoxinghu/justfiles/commit/ec25ea42b67a8c73063ff278efad50df0f5badd0))
+* **worker:** dedupe file header actions by layout ([c315bd9](https://github.com/xiaoxinghu/justfiles/commit/c315bd92fe4cd5d527c96ea33dd5e7f7747f620a))
+* **worker:** support nested note renames ([b0ce90e](https://github.com/xiaoxinghu/justfiles/commit/b0ce90e3b39296b2b9d1e87e06f659bbb0c83c93))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 1.0.0
+
 ## [0.4.0](https://github.com/xiaoxinghu/ghostore/compare/worker-v0.3.2...worker-v0.4.0) (2026-03-29)
 
 

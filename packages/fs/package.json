@@ -1,6 +1,6 @@
 {
 	"name": "@justfiles/fs",
-	"version": "0.0.1",
+	"version": "1.0.0",
 	"type": "module",
 	"main": "./dist/index.js",
 	"module": "./dist/index.js",
@@ -42,7 +42,9 @@
 			"default": "./dist/xattr.js"
 		}
 	},
-	"files": ["dist"],
+	"files": [
+		"dist"
+	],
 	"scripts": {
 		"build": "tsdown",
 		"typecheck": "tsc --noEmit"
