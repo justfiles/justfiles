@@ -49,8 +49,8 @@ export default defineConfig({
 			workbox: {
 				globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
 				navigateFallback: "/index.html",
-				// Don't intercept Worker API or MCP routes
-				navigateFallbackDenylist: [/^\/api/, /^\/mcp/],
+				// Don't intercept Worker API routes
+				navigateFallbackDenylist: [/^\/api/],
 				runtimeCaching: [
 					{
 						urlPattern: /^\/api\/.*/i,

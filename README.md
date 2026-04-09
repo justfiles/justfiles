@@ -6,7 +6,7 @@ This is a monorepo with three packages:
 
 | Package         | Description                                                |
 |-----------------|------------------------------------------------------------|
-| `apps/worker`   | Cloudflare Worker — REST API, MCP server, and React web UI |
+| `apps/worker`   | Cloudflare Worker — filesystem API and React web UI        |
 | `apps/cli`      | Agent-friendly CLI for interacting with the backend        |
 | `packages/core` | Shared memory store logic (DB, embeddings, search)         |
 
@@ -33,36 +33,6 @@ files ls notes/
 ```
 
 Global flags: `--config`, `--volume` (or env `FILES_VOLUME`), `--json`, `--quiet`.
-
-## MCP
-
-Justfiles exposes an MCP server at `/mcp`. To connect an AI agent, add it to your `mcp.json` with a Clerk API key (generate one from the Justfiles web UI):
-
-```json
-{
-  "mcpServers": {
-    "justfiles": {
-      "type": "http",
-      "url": "https://justfiles.app/mcp",
-      "headers": {
-        "Authorization": "Bearer ak_YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-### Tools
-
-| Tool             | Description                                                                                 |
-|------------------|---------------------------------------------------------------------------------------------|
-| `write_memory`   | Write a memory at a path. `mode`: `w` overwrite (default), `a` append, `x` exclusive create |
-| `search_memory`  | Hybrid/semantic/exact search with optional tag and path filters                             |
-| `update_memory`  | Update content, path, title, or tags of an existing memory by ID                            |
-| `list_memories`  | List memories by `path_prefix`, glob `path_pattern`, tags, or date range                    |
-| `get_memory`     | Fetch a memory by ID or path                                                                |
-| `archive_memory` | Soft-delete one or more memories by ID                                                      |
-| `link_memories`  | Create a directed relationship between two memories                                         |
 
 ## Development
 

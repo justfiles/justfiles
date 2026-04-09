@@ -8,8 +8,8 @@ const features = [
 	},
 	{
 		icon: '⚡',
-		title: 'MCP server built-in',
-		desc: 'Any agent that speaks Model Context Protocol can read and write your memory store. No glue code required.',
+		title: 'Local-first sync',
+		desc: 'Your notes stay available across devices with a file-system model that keeps local edits and remote state in sync.',
 	},
 	{
 		icon: '🔍',
@@ -65,8 +65,8 @@ export function AuthWall() {
 				</h1>
 
 				<p className="text-base-content/60 text-lg sm:text-xl max-w-xl leading-relaxed">
-					Capture, search, and connect everything you know — through a web app, a CLI, or an MCP
-					server your AI agents can talk to directly.
+					Capture, search, and connect everything you know through a web app and a CLI built
+					around a durable file-system-backed store.
 				</p>
 
 				<div className="flex flex-wrap gap-3 justify-center">
