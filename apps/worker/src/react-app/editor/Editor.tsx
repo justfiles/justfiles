@@ -146,8 +146,8 @@ export function Editor({
 	}, [])
 
 	return (
-		<div className="ghostore-editor">
-			<div ref={containerRef} className="ghostore-pm-editor" />
+		<div className="editor-shell">
+			<div ref={containerRef} className="pm-editor" />
 			{drawingEditor ? (
 				<DrawingEditorModal
 					drawingId={drawingEditor.id}
