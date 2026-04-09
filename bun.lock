@@ -21,7 +21,7 @@
       },
     },
     "apps/worker": {
-      "name": "@ghostore/worker",
+      "name": "@justfiles/worker",
       "version": "0.4.0",
       "dependencies": {
         "@clerk/clerk-react": "^5.0.0",
@@ -448,7 +448,7 @@
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.11", "", {}, "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg=="],
 
-    "@ghostore/worker": ["@ghostore/worker@workspace:apps/worker"],
+    "@justfiles/worker": ["@justfiles/worker@workspace:apps/worker"],
 
     "@hono/clerk-auth": ["@hono/clerk-auth@3.1.0", "", { "dependencies": { "@clerk/backend": "^2.29.2", "@clerk/shared": "^3.42.0" }, "peerDependencies": { "hono": ">=3.0.0" } }, "sha512-kkC6WiCaRwud7sQGSU0zgJJEI1CHPsnM0oK3jmVtozQn7rHMeqITFn4SU+ehnrXdHJBryYJsGheMJwQuhusDgw=="],
 

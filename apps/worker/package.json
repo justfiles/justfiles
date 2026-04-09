@@ -1,5 +1,5 @@
 {
-	"name": "@ghostore/worker",
+	"name": "@justfiles/worker",
 	"private": true,
 	"cloudflare": {
 		"label": "Vite React Template",
