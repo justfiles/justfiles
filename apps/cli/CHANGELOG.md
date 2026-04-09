@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.3.4...cli-v0.4.0) (2026-04-09)
+
+
+### Features
+
+* **cli:** redesign files CLI around volumes ([501c6a9](https://github.com/xiaoxinghu/justfiles/commit/501c6a9c60c2a7124a222af7b294ba42ada326f3))
+
+
+### Bug Fixes
+
+* **fs:** align workspace source resolution ([d2abec6](https://github.com/xiaoxinghu/justfiles/commit/d2abec6aa3d4646b305ff6b90d0285eb261fcfb4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 1.0.0
+
 ## [0.3.4](https://github.com/xiaoxinghu/ghostore/compare/cli-v0.3.3...cli-v0.3.4) (2026-03-29)
 
 
