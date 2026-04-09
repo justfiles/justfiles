@@ -17,6 +17,11 @@
 		}
 	},
 	"upload_source_maps": true,
+	"secrets": {
+		"required": [
+			"CLERK_SECRET_KEY"
+		]
+	},
 	"assets": {
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"
@@ -52,7 +57,9 @@
 			"fallthrough": true
 		}
 	],
-	"vars": {},
+	"vars": {
+		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuanVzdGZpbGVzLmFwcCQ"
+	},
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
@@ -78,6 +85,9 @@
 	"env": {
 		"dev": {
 			"name": "justfiles-dev",
+			"vars": {
+				"CLERK_PUBLISHABLE_KEY": "pk_test_c3VtbWFyeS1sYWItODUuY2xlcmsuYWNjb3VudHMuZGV2JA"
+			},
 			"durable_objects": {
 				"bindings": [
 					{
@@ -104,7 +114,9 @@
 		},
 		"staging": {
 			"name": "justfiles-staging",
-			"vars": {},
+			"vars": {
+				"CLERK_PUBLISHABLE_KEY": "pk_test_c3VtbWFyeS1sYWItODUuY2xlcmsuYWNjb3VudHMuZGV2JA"
+			},
 			"observability": {
 				"logs": {
 					"enabled": true,

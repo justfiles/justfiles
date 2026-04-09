@@ -47,6 +47,14 @@ const getUserIdFromApiKey = (apiKey: {
 	return apiKey.createdBy ?? null
 }
 
+const requireClerkSecretKey = (env: Env): string => {
+	if (!env.CLERK_SECRET_KEY) {
+		throw new Error('Missing CLERK_SECRET_KEY')
+	}
+
+	return env.CLERK_SECRET_KEY
+}
+
 const applyApiKeyAuth = async (
 	c: { req: { header: (h: string) => string | undefined }; set: (k: string, v: string) => void; env: Env },
 	next: () => Promise<void>
@@ -61,7 +69,7 @@ const applyApiKeyAuth = async (
 
 	let apiKey
 	try {
-		apiKey = await verifyApiKey(token, c.env.CLERK_SECRET_KEY)
+		apiKey = await verifyApiKey(token, requireClerkSecretKey(c.env))
 	} catch {
 		return new Response('Unauthorized', { status: 401 })
 	}

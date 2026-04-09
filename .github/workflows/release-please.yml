@@ -52,13 +52,11 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
           CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
         run: |
           set -eu
           test -n "${CLOUDFLARE_API_TOKEN}"
           test -n "${CLOUDFLARE_ACCOUNT_ID}"
-          test -n "${CLERK_SECRET_KEY}"
           test -n "${CLERK_PUBLISHABLE_KEY}"
           case "${CLERK_PUBLISHABLE_KEY}" in
             pk_live_*) ;;
@@ -79,12 +77,6 @@ jobs:
           command: deploy
           packageManager: bun
           workingDirectory: apps/worker
-          secrets: |
-            CLERK_SECRET_KEY
-            CLERK_PUBLISHABLE_KEY
-        env:
-          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
-          CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
 
   publish-cli:
     needs: release-please

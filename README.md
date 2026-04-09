@@ -47,10 +47,10 @@ bun dev
 
 - `VITE_CLERK_PUBLISHABLE_KEY`: Clerk publishable key — required at build time for the React frontend.
 
-**Worker runtime secrets:**
+**Worker runtime config:**
 
 - `CLERK_SECRET_KEY`: Clerk secret key — required for JWT session auth and API key verification.
-- `CLERK_PUBLISHABLE_KEY`: Clerk publishable key — required by the Clerk middleware in the worker.
+- `CLERK_PUBLISHABLE_KEY`: Clerk publishable key — required by the Clerk middleware in the worker. This is non-sensitive and should live in `wrangler.jsonc` `vars`, not Cloudflare secrets.
 
 #### Local development
 
@@ -70,11 +70,12 @@ Use one of the local flows:
   ```sh
   cat > .dev.vars <<'EOF'
   CLERK_SECRET_KEY=sk_test_...
-  CLERK_PUBLISHABLE_KEY=pk_test_...
   VITE_CLERK_PUBLISHABLE_KEY=pk_test_...
   EOF
-  bunx wrangler dev
+  CLOUDFLARE_ENV=dev vite
   ```
+
+`apps/worker/wrangler.jsonc` provides the local Worker runtime `CLERK_PUBLISHABLE_KEY` for the `dev` environment. `apps/worker/.env` provides the frontend build-time `VITE_CLERK_PUBLISHABLE_KEY`. Keep them pointed at the same Clerk project.
 
 The dev server starts a local Cloudflare Worker with a Durable Object backed by a persisted SQLite file at `.wrangler/state/v3/do/`.
 
@@ -101,11 +102,10 @@ bun run build
 bun run deploy
 ```
 
-Set runtime secrets in Cloudflare before deploying:
+Set runtime secret(s) in Cloudflare before deploying:
 
 ```sh
 bunx wrangler secret put CLERK_SECRET_KEY
-bunx wrangler secret put CLERK_PUBLISHABLE_KEY
 ```
 
 Each Durable Object instance has its own embedded SQLite database managed by Cloudflare — no separate provisioning needed. Migrations run automatically on the first request.
