@@ -21,7 +21,14 @@ type DrawingEditorState = {
 	onSave: (id: string, previewUrl: string) => void
 } | null
 
-export function Editor({ value, onChange, uploadAsset, resolveAssetUrl, readAssetBlob, readOnly }: Props) {
+export function Editor({
+	value,
+	onChange,
+	uploadAsset,
+	resolveAssetUrl,
+	readAssetBlob,
+	readOnly
+}: Props) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
 	const [drawingEditor, setDrawingEditor] = useState<DrawingEditorState>(null)
@@ -146,7 +153,10 @@ export function Editor({ value, onChange, uploadAsset, resolveAssetUrl, readAsse
 					drawingId={drawingEditor.id}
 					resolveAssetUrl={(src) => resolveAssetUrlRef.current?.(src ?? '') ?? Promise.resolve(src)}
 					readAssetBlob={(src) => readAssetBlobRef.current?.(src ?? '') ?? Promise.resolve(null)}
-					uploadAsset={(file) => uploadAssetRef.current?.(file) ?? Promise.reject(new Error('Asset uploads are unavailable'))}
+					uploadAsset={(file) =>
+						uploadAssetRef.current?.(file) ??
+						Promise.reject(new Error('Asset uploads are unavailable'))
+					}
 					onSave={(id, previewUrl) => {
 						drawingEditor.onSave(id, previewUrl)
 						setDrawingEditor(null)

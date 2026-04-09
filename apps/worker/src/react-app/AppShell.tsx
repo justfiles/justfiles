@@ -56,7 +56,7 @@ function AppShellInner({ userId }: { userId: string }) {
 			<PWAToast />
 			<CommandPalette />
 			<LayoutModeProvider>
-				<div className="app-shell bg-base-100">
+				<div className="app-shell bg-base-200">
 					<Outlet />
 				</div>
 			</LayoutModeProvider>

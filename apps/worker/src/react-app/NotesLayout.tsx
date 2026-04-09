@@ -29,7 +29,7 @@ export function FilesIndexPage() {
 	const navigate = useNavigate()
 
 	return (
-		<div className="hidden sm:flex flex-1 min-h-0 overflow-y-auto bg-base-100">
+		<div className="hidden sm:flex flex-1 min-h-0 overflow-y-auto">
 			<div className="safe-area-content flex min-h-full items-center justify-center px-6 py-10">
 				<div className="max-w-sm text-center">
 					<p className="text-xs font-mono uppercase tracking-[0.24em] text-base-content/35">
@@ -61,7 +61,7 @@ export function FilesLayout() {
 	const { showingFileDetail } = useLayoutMode()
 
 	return (
-		<div className="flex h-full min-h-0 bg-base-100">
+		<div className="flex h-full min-h-0">
 			<aside
 				className={`${showingFileDetail ? 'hidden sm:flex' : 'flex'} min-h-0 w-full shrink-0 flex-col border-r border-base-300 bg-base-100 sm:w-72 md:w-80`}
 			>
@@ -71,7 +71,7 @@ export function FilesLayout() {
 				/>
 			</aside>
 			<section
-				className={`${showingFileDetail ? 'flex' : 'hidden sm:flex'} min-h-0 min-w-0 flex-1 flex-col bg-base-100`}
+				className={`${showingFileDetail ? 'flex' : 'hidden sm:flex'} min-h-0 min-w-0 flex-1 flex-col`}
 			>
 				<Outlet />
 			</section>
