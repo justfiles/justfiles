@@ -1,114 +1,84 @@
-CREATE TABLE IF NOT EXISTS memories (
-	id TEXT PRIMARY KEY NOT NULL,
-	scope TEXT NOT NULL,
-	title TEXT,
-	content_hash TEXT NOT NULL,
-	path TEXT NOT NULL,
-	source TEXT,
-	active INTEGER NOT NULL DEFAULT 1,
-	expires_at TEXT,
-	last_retrieved_at TEXT,
-	retrieval_count INTEGER DEFAULT 0,
-	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS fs_inodes (
+	ino TEXT PRIMARY KEY,
+	type INTEGER NOT NULL,
+	mode INTEGER NOT NULL,
+	size INTEGER NOT NULL,
+	mtime_ns INTEGER NOT NULL,
+	ctime_ns INTEGER NOT NULL,
+	content_hash TEXT,
+	symlink_target TEXT,
+	mime_type TEXT,
+	storage_kind INTEGER NOT NULL DEFAULT 0,
+	CHECK (type IN (0, 1, 2)),
+	CHECK (storage_kind IN (0, 1, 2)),
+	CHECK (size >= 0)
 );
 
-CREATE TABLE IF NOT EXISTS memory_tags (
-	memory_id TEXT NOT NULL REFERENCES memories(id),
-	tag TEXT NOT NULL,
-	PRIMARY KEY (memory_id, tag)
+CREATE INDEX IF NOT EXISTS idx_fs_inodes_content_hash ON fs_inodes(content_hash);
+
+CREATE TABLE IF NOT EXISTS fs_dirents (
+	dir_ino TEXT NOT NULL,
+	name TEXT NOT NULL COLLATE BINARY,
+	ino TEXT NOT NULL,
+	type INTEGER NOT NULL,
+	PRIMARY KEY (dir_ino, name)
 );
 
-CREATE TABLE IF NOT EXISTS content (
-	hash TEXT PRIMARY KEY,
-	text TEXT NOT NULL,
-	created_at TEXT NOT NULL
+CREATE INDEX IF NOT EXISTS idx_fs_dirents_ino ON fs_dirents(ino);
+
+CREATE TABLE IF NOT EXISTS fs_xattrs (
+	ino TEXT NOT NULL,
+	name TEXT NOT NULL,
+	value BLOB NOT NULL,
+	PRIMARY KEY (ino, name)
 );
 
-CREATE TABLE IF NOT EXISTS chunks (
-	id TEXT PRIMARY KEY NOT NULL,
-	memory_id TEXT NOT NULL REFERENCES memories(id),
-	seq INTEGER NOT NULL,
-	pos INTEGER,
-	len INTEGER,
-	token_count INTEGER,
-	hash TEXT NOT NULL,
-	embedding_model TEXT NOT NULL,
-	created_at TEXT NOT NULL
+CREATE INDEX IF NOT EXISTS idx_fs_xattrs_ino ON fs_xattrs(ino);
+
+CREATE TABLE IF NOT EXISTS fs_contents (
+	content_hash TEXT PRIMARY KEY,
+	storage_kind INTEGER NOT NULL,
+	size INTEGER NOT NULL,
+	inline_bytes BLOB,
+	inline_text TEXT,
+	r2_key TEXT,
+	mime_type TEXT,
+	text_encoding TEXT,
+	created_at_ns INTEGER NOT NULL,
+	CHECK (storage_kind IN (1, 2)),
+	CHECK (
+		(storage_kind = 1 AND inline_bytes IS NOT NULL AND r2_key IS NULL) OR
+		(storage_kind = 2 AND inline_bytes IS NULL AND r2_key IS NOT NULL)
+	),
+	CHECK (size >= 0)
 );
 
-CREATE TABLE IF NOT EXISTS events (
-	id TEXT PRIMARY KEY,
-	memory_id TEXT REFERENCES memories(id),
-	type TEXT NOT NULL,
-	actor TEXT,
-	at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS memory_links (
-	from_id TEXT NOT NULL REFERENCES memories(id),
-	to_id TEXT NOT NULL REFERENCES memories(id),
-	rel_type TEXT NOT NULL,
-	actor_type TEXT,
-	actor_name TEXT,
-	reason TEXT,
-	created_at TEXT NOT NULL,
-	PRIMARY KEY(from_id, to_id, rel_type)
-);
-
-CREATE TABLE IF NOT EXISTS proposals (
-	id TEXT PRIMARY KEY,
-	memory_id TEXT NOT NULL REFERENCES memories(id),
-	proposal_type TEXT NOT NULL,
-	payload_json TEXT NOT NULL,
-	reason TEXT NOT NULL,
-	status TEXT NOT NULL DEFAULT 'pending',
-	actor_type TEXT,
-	actor_name TEXT,
-	created_at TEXT NOT NULL,
-	resolved_at TEXT,
-	resolved_by TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_memories_scope_active ON memories(scope, active);
-CREATE INDEX IF NOT EXISTS idx_memories_path ON memories(scope, path);
-CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
-CREATE INDEX IF NOT EXISTS idx_chunks_memory ON chunks(memory_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_memory_seq ON chunks(memory_id, seq);
-CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag);
-CREATE INDEX IF NOT EXISTS idx_memory_links_from ON memory_links(from_id);
-CREATE INDEX IF NOT EXISTS idx_memory_links_to ON memory_links(to_id);
-CREATE INDEX IF NOT EXISTS idx_proposals_memory ON proposals(memory_id, status);
-CREATE INDEX IF NOT EXISTS idx_proposals_pending ON proposals(status) WHERE status = 'pending';
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_active_memories_scope_path ON memories(scope, path) WHERE active = 1;
-
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-	memory_id UNINDEXED,
+CREATE VIRTUAL TABLE IF NOT EXISTS fs_content_fts USING fts5(
+	content_hash UNINDEXED,
 	text
 );
 
-CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories
-WHEN NEW.active = 1
-BEGIN
-	INSERT INTO memory_fts (memory_id, text)
-	SELECT NEW.id, text FROM content WHERE hash = NEW.content_hash;
-END;
+CREATE TABLE IF NOT EXISTS fs_updates (
+	seq INTEGER PRIMARY KEY AUTOINCREMENT,
+	tx_id TEXT NOT NULL,
+	op_index INTEGER NOT NULL,
+	at_ns INTEGER NOT NULL,
+	op_kind TEXT NOT NULL,
+	ino TEXT,
+	dir_ino TEXT,
+	name TEXT,
+	entry_ino TEXT,
+	entry_type INTEGER,
+	meta_json TEXT,
+	xattrs_json TEXT,
+	content_changed INTEGER NOT NULL DEFAULT 0,
+	source TEXT
+);
 
-CREATE TRIGGER IF NOT EXISTS memories_fts_au_content AFTER UPDATE OF content_hash ON memories
-BEGIN
-	DELETE FROM memory_fts WHERE memory_id = OLD.id;
-	INSERT INTO memory_fts (memory_id, text)
-	SELECT NEW.id, text FROM content WHERE hash = NEW.content_hash;
-END;
+CREATE INDEX IF NOT EXISTS idx_fs_updates_tx_id ON fs_updates(tx_id, op_index);
+CREATE INDEX IF NOT EXISTS idx_fs_updates_source_seq ON fs_updates(source, seq);
 
-CREATE TRIGGER IF NOT EXISTS memories_fts_au_active AFTER UPDATE OF active ON memories
-WHEN NEW.active = 0
-BEGIN
-	DELETE FROM memory_fts WHERE memory_id = OLD.id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories
-BEGIN
-	DELETE FROM memory_fts WHERE memory_id = OLD.id;
-END;
+CREATE TABLE IF NOT EXISTS fs_state (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);

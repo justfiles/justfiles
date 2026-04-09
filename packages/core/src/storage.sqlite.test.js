@@ -11,15 +11,7 @@ import { storage as sqliteStorage } from './storage.sqlite'
 async function createTestStorage(maxRetainedUpdates) {
 	const db = new Database(':memory:')
 	const adapter = createSqliteAdapter(db)
-	for (const file of [
-		'0001_schema.sql',
-		'0002_dirty_flag.sql',
-		'0003_drop_chunk_vectors.sql',
-		'0004_reset_dirty.sql',
-		'0005_fs_schema.sql',
-		'0006_fs_updates_source.sql',
-		'0007_fs_state.sql',
-	]) {
+	for (const file of ['0001_schema.sql']) {
 		const sql = await Bun.file(new URL(`./migrations/${file}`, import.meta.url)).text()
 		for (const statement of parseSqlStatements(sql)) {
 			await adapter.run(statement)
