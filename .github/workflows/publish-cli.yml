@@ -1,0 +1,13 @@
+name: publish-cli
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+
+jobs:
+  publish:
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      package_name: CLI
+      working_directory: apps/cli

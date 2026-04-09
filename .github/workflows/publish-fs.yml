@@ -1,0 +1,13 @@
+name: publish-fs
+
+on:
+  push:
+    tags:
+      - 'fs-v*'
+
+jobs:
+  publish:
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      package_name: FS
+      working_directory: packages/fs

@@ -4,15 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      publish_cli:
-        description: 'Publish CLI to npm'
-        type: boolean
-        default: false
-      deploy_worker:
-        description: 'Deploy worker to production'
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -21,9 +12,6 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    outputs:
-      worker_released: ${{ steps.release.outputs['apps/worker--release_created'] }}
-      cli_released: ${{ steps.release.outputs['apps/cli--release_created'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -31,70 +19,3 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-
-  deploy-production:
-    needs: release-please
-    if: needs.release-please.outputs.worker_released == 'true' || inputs.deploy_worker == true
-    runs-on: ubuntu-latest
-    name: Deploy Production
-    timeout-minutes: 30
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
-    environment: production
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install
-      - name: Validate deploy secrets
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
-        run: |
-          set -eu
-          test -n "${CLOUDFLARE_API_TOKEN}"
-          test -n "${CLOUDFLARE_ACCOUNT_ID}"
-          test -n "${CLERK_PUBLISHABLE_KEY}"
-          case "${CLERK_PUBLISHABLE_KEY}" in
-            pk_live_*) ;;
-            *)
-              echo "CLERK_PUBLISHABLE_KEY must be a live Clerk key in the production environment"
-              exit 1
-              ;;
-          esac
-      - run: bun run typecheck
-      - run: bun run build
-        env:
-          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
-      - uses: cloudflare/wrangler-action@v3.14.1
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: 4.71.0
-          command: deploy
-          packageManager: bun
-          workingDirectory: apps/worker
-
-  publish-cli:
-    needs: release-please
-    if: needs.release-please.outputs.cli_released == 'true' || inputs.publish_cli == true
-    runs-on: ubuntu-latest
-    name: Publish CLI to npm
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 'lts/*'
-          registry-url: 'https://registry.npmjs.org'
-      - run: bun install
-      - run: bun run build
-        working-directory: apps/cli
-      - run: npm publish --access public
-        working-directory: apps/cli

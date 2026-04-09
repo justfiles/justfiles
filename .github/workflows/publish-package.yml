@@ -1,0 +1,36 @@
+name: publish-package
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        required: true
+        type: string
+      working_directory:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.package_name }} to npm
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 'lts/*'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: bun install
+
+      - run: bun run build
+        working-directory: ${{ inputs.working_directory }}
+
+      - run: npm publish --access public
+        working-directory: ${{ inputs.working_directory }}
