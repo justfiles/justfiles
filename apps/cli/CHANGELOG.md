@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.2.0...cli-v0.2.1) (2026-04-10)
+
+
+### Bug Fixes
+
+* **cli:** bundle workspace deps to fix npm install for published package ([159f6bb](https://github.com/xiaoxinghu/justfiles/commit/159f6bba772a9028953004849ccbdb94c3dddc9c))
+
 ## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.1.0...cli-v0.2.0) (2026-04-10)
 
 
