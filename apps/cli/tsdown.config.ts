@@ -16,4 +16,9 @@ export default defineConfig({
 			/^@justfiles\//,
 		],
 	},
+	inputOptions(options) {
+		options.resolve ??= {}
+		options.resolve.conditionNames = ['@justfiles/src', 'import', 'default']
+		return options
+	},
 })

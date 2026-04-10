@@ -53,6 +53,7 @@ jobs:
 
       - run: bun run build
         if: steps.npm.outputs.should_publish == 'true'
+        working-directory: ${{ inputs.working_directory }}
 
       - run: npm publish --access public
         if: steps.npm.outputs.should_publish == 'true'

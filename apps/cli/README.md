@@ -1,6 +1,6 @@
 # @justfiles/cli
 
-Agent-friendly CLI for interacting with [justfiles](https://justfiles.app).
+An agent-friendly CLI for interacting with [justfiles](https://justfiles.app).
 
 ## Install
 
