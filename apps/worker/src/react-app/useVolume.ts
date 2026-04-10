@@ -16,9 +16,9 @@ import {
 	type Volume,
 	volume as createVolume
 } from '@justfiles/fs'
+import { apiStorage } from '@justfiles/core'
 import { idbStorage } from '@justfiles/fs/storage/idb'
 import { FileType } from '@justfiles/fs/types'
-import { apiStorage } from './storage.api'
 import { createMemoryIndex, type MemoryIndex } from './memoryIndex'
 import { type FsClient, useFsClient } from './useApiClient'
 import {

@@ -4,6 +4,7 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
+		"./fs.client": "./src/fs.client.ts",
 		"./migrations": "./src/migrations/index.ts"
 	},
 	"dependencies": {

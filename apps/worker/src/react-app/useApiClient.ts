@@ -1,9 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
-import { hc } from 'hono/client'
+import { createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
 import { useMemo } from 'react'
-import type { WorkerApiType } from '../worker/app'
-
-export type FsClient = ReturnType<typeof hc<WorkerApiType>>['fs']
 
 function makeHeaders(getToken: () => Promise<string | null>) {
 	return async () => {
@@ -12,8 +9,10 @@ function makeHeaders(getToken: () => Promise<string | null>) {
 	}
 }
 
+export type { FsClient }
+
 export function createFsClient(getToken: () => Promise<string | null>): FsClient {
-	return hc<WorkerApiType>('', { headers: makeHeaders(getToken) }).fs
+	return createCoreFsClient({ baseUrl: '/fs', headers: makeHeaders(getToken) })
 }
 
 export function useFsClient() {

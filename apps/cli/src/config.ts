@@ -11,7 +11,13 @@ export type VolumeFactory =
 	  }
 	| (() => Promise<Volume> | Volume)
 
-export type VolumeConfig = Volume | string | VolumeFactory
+export interface RemoteVolumeConfig {
+	type: 'remote'
+	url?: string
+	token?: string
+}
+
+export type VolumeConfig = Volume | string | VolumeFactory | RemoteVolumeConfig
 
 export interface FileConfig {
 	defaultVolume?: string

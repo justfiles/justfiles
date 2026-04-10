@@ -48,20 +48,29 @@ Configuration:
 
   Example files.config.js:
     export default {
-      defaultVolume: 'local',
+      defaultVolume: 'work',
       volumes: {
         local: './notes',
-        scratch: myCustomVolume,
-        lazy: () => anotherVolume()
+        work: {
+          type: 'remote',
+          token: process.env.JUSTFILES_TOKEN
+        },
+        localDev: {
+          type: 'remote',
+          token: process.env.JUSTFILES_TOKEN,
+          url: 'http://localhost:5173'
+        }
       }
     }
 
   Volume values can be:
     '/some/path' or './relative/path'  Local filesystem shortcut
+    { type: 'remote', token, url? }    Built-in backend-backed volume
     a Volume instance                  Fully custom JS-defined volume
     a function returning a Volume      Lazy custom volume
 
   Local volume roots are resolved relative to the config file directory.
+  Remote volumes default to https://justfiles.app and mount /fs automatically.
 
 Exit codes:
   0  Success

@@ -1,3 +1,4 @@
+import { hc, type InferResponseType } from 'hono/client'
 import {
 	FsCursorExpiredError,
 	type InodeMeta,
@@ -5,10 +6,19 @@ import {
 	type Storage
 } from '@justfiles/fs/storage'
 import { FileType } from '@justfiles/fs/types'
-import type { InferResponseType } from 'hono/client'
-import type { FsClient } from './useApiClient'
+import type { createFsApi } from './fs'
 
 const FS_SOURCE_HEADER = 'x-fs-source'
+
+export type FsApiType = ReturnType<typeof createFsApi>
+export type FsClient = ReturnType<typeof hc<FsApiType>>
+export type FsClientHeaders = Record<string, string>
+
+export interface FsClientOptions {
+	baseUrl?: string
+	headers?: FsClientHeaders | (() => FsClientHeaders | Promise<FsClientHeaders>)
+	fetch?: typeof fetch
+}
 
 type FsMetaResponse = InferResponseType<FsClient['inodes'][':ino']['$get'], 200>
 
@@ -70,8 +80,15 @@ function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 	return body
 }
 
+export function createFsClient(options: FsClientOptions = {}): FsClient {
+	return hc<FsApiType>(options.baseUrl ?? '', {
+		headers: options.headers,
+		fetch: options.fetch
+	})
+}
+
 export async function apiStorage(client: FsClient): Promise<Storage> {
-	const rootRes = await client.$get()
+	const rootRes = await client.index.$get()
 	if (!rootRes.ok) throw new Error(`apiStorage: failed to fetch root: ${rootRes.status}`)
 	const { rootIno } = await rootRes.json()
 

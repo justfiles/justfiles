@@ -18,6 +18,7 @@
 	},
 	"type": "module",
 	"dependencies": {
+		"@justfiles/core": "workspace:*",
 		"@justfiles/fs": "workspace:*"
 	}
 }

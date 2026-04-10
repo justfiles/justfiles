@@ -12,6 +12,7 @@
         "files": "./dist/index.mjs",
       },
       "dependencies": {
+        "@justfiles/core": "workspace:*",
         "@justfiles/fs": "workspace:*",
       },
       "devDependencies": {
@@ -22,7 +23,7 @@
     },
     "apps/worker": {
       "name": "@justfiles/worker",
-      "version": "0.4.0",
+      "version": "0.7.0",
       "dependencies": {
         "@clerk/clerk-react": "^5.0.0",
         "@dnd-kit/dom": "^0.3.2",
@@ -95,7 +96,7 @@
     },
     "packages/fs": {
       "name": "@justfiles/fs",
-      "version": "0.0.1",
+      "version": "0.1.0",
       "dependencies": {
         "idb": "^8.0.3",
       },
