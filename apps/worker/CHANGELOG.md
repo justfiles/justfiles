@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.7.0...worker-v0.8.0) (2026-04-10)
+
+
+### Features
+
+* **cli:** support remote volumes ([ebd5147](https://github.com/xiaoxinghu/justfiles/commit/ebd51474d1a37e73df0571739aa94d6d759c5321))
+* **fs:** optimize remote reads and harden namespace integrity ([c55276f](https://github.com/xiaoxinghu/justfiles/commit/c55276fd8fa6f6734238efbd34eb6c7bf1299140))
+* **worker:** auto-focus and select file name input on new file creation ([2ca87f7](https://github.com/xiaoxinghu/justfiles/commit/2ca87f79f3ed0245f780555fac3f334c3c0ba55c))
+
+
+### Bug Fixes
+
+* **worker:** focus editor after filename submit ([a062ec1](https://github.com/xiaoxinghu/justfiles/commit/a062ec1fac27bab97db39823266976cfb5383d6c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 1.1.0
+
 ## [0.7.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.6.0...worker-v0.7.0) (2026-04-10)
 
 

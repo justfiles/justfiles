@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.4.0...cli-v0.5.0) (2026-04-10)
+
+
+### Features
+
+* **cli:** support remote volumes ([ebd5147](https://github.com/xiaoxinghu/justfiles/commit/ebd51474d1a37e73df0571739aa94d6d759c5321))
+* **fs:** optimize remote reads and harden namespace integrity ([c55276f](https://github.com/xiaoxinghu/justfiles/commit/c55276fd8fa6f6734238efbd34eb6c7bf1299140))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 1.1.0
+
 ## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.3.4...cli-v0.4.0) (2026-04-09)
 
 

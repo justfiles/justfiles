@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v1.0.0...fs-v1.1.0) (2026-04-10)
+
+
+### Features
+
+* **fs:** optimize remote reads and harden namespace integrity ([c55276f](https://github.com/xiaoxinghu/justfiles/commit/c55276fd8fa6f6734238efbd34eb6c7bf1299140))
+
 ## 1.0.0 (2026-04-09)
 
 
