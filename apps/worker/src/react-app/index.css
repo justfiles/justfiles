@@ -41,7 +41,7 @@
 }
 
 .pm-editor .ProseMirror {
-	@apply prose prose-slate max-w-none outline-none py-3 pr-3 pl-10;
+	@apply prose prose-slate max-w-none outline-none py-3;
 	flex: 1;
 }
 

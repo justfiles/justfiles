@@ -3,7 +3,6 @@ import { Selection } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
 import { type ProseMirrorJsonDocument } from '../editCache'
 import { DrawingEditorModal, makeDrawingNodeView } from './DrawingNodeView'
-import { buildGutterPlugin } from './plugins/gutterMenu'
 import { startImageUpload, makeImageNodeView } from './plugins/imageUpload'
 import { buildState } from './state'
 
@@ -50,12 +49,8 @@ export function Editor({
 	}, [readOnly])
 
 	useEffect(() => {
-		const gutterPlugin = buildGutterPlugin({
-			getUploadAsset: () => uploadAssetRef.current
-		})
-
 		const view = new EditorView(containerRef.current!, {
-			state: buildState(value, [gutterPlugin]),
+			state: buildState(value),
 			editable: () => !readOnlyRef.current,
 			nodeViews: resolveAssetUrl
 				? {
