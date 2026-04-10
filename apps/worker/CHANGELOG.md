@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.6.0...worker-v0.7.0) (2026-04-10)
+
+
+### Features
+
+* **worker:** add scratch buffer flow ([064e6c3](https://github.com/xiaoxinghu/justfiles/commit/064e6c3f3edbbc54b809142c9ade034f9c654479))
+
+
+### Bug Fixes
+
+* **editor:** remove gutter insert control ([f2fccf0](https://github.com/xiaoxinghu/justfiles/commit/f2fccf0a0c3bb3d2640ea90e72b3e7b714c6f31c))
+* **worker:** hide hidden volume entries ([42d93db](https://github.com/xiaoxinghu/justfiles/commit/42d93db6adc0dc943002350bb664c118073b630f))
+* **worker:** use folder icon for organize action ([9ee5355](https://github.com/xiaoxinghu/justfiles/commit/9ee5355feedc234b601f6c83f7e8e870ef07df51))
+
 ## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.5.0...worker-v0.6.0) (2026-04-09)
 
 
