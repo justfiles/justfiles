@@ -14,7 +14,7 @@ import {
 	GHOSTORE_XATTR,
 	synced,
 	type Volume,
-	volume as createVolume,
+	volume as createVolume
 } from '@justfiles/fs'
 import { idbStorage } from '@justfiles/fs/storage/idb'
 import { FileType } from '@justfiles/fs/types'
@@ -26,7 +26,6 @@ import {
 	assetUrlForIno,
 	basename,
 	displayFilenameFromSrc,
-	isAssetPath,
 	nextAssetPath,
 	normalizeVolumePath,
 	parentVolumePath,
@@ -93,7 +92,6 @@ const runtimeSingletons = new Map<string, Promise<VolumeRuntime>>()
 
 const LEGACY_DRAFT_PATH = '/*draft*'
 const SCRATCH_PATH = '/*scratch*'
-const STATE_ROOT = '/.state'
 const TRASH_ROOT = '/.trash'
 const TRASH_FILES_PATH = `${TRASH_ROOT}/files`
 const TRASH_INFO_PATH = `${TRASH_ROOT}/info`
@@ -169,15 +167,11 @@ function trashInfoPath(id: string): string {
 	return `${TRASH_INFO_PATH}/${id}.json`
 }
 
-function isTrashPath(path: string): boolean {
-	return path === TRASH_ROOT || path.startsWith(`${TRASH_ROOT}/`)
+function isHiddenPath(path: string): boolean {
+	return path.split('/').some((segment) => segment.length > 0 && segment.startsWith('.'))
 }
 
-const SHOW_STATE_FOLDER = true
-
-function isStatePath(path: string): boolean {
-	return path === STATE_ROOT || path.startsWith(`${STATE_ROOT}/`)
-}
+const SHOW_HIDDEN_FOLDER = false
 
 async function ensureTrashDirs(volume: Volume): Promise<void> {
 	await volume.mkdir(TRASH_FILES_PATH, { recursive: true })
@@ -240,10 +234,7 @@ async function readMemoryRecord(
 	}
 }
 
-async function listLiveMemoryEntries(
-	volume: Volume,
-	previous: FileMeta[]
-): Promise<FileMeta[]> {
+async function listLiveMemoryEntries(volume: Volume, previous: FileMeta[]): Promise<FileMeta[]> {
 	const entries: FileMeta[] = []
 	const previousLive = previous.filter((entry) => entry.active !== 0)
 	const previousById = new Map(previousLive.map((entry) => [entry.id, entry]))
@@ -252,9 +243,7 @@ async function listLiveMemoryEntries(
 	await volume.scan('/', async (path, stat) => {
 		if (stat.type !== FileType.Regular) return
 		if (path === LEGACY_DRAFT_PATH || path === SCRATCH_PATH) return
-		if (!SHOW_STATE_FOLDER && isStatePath(path)) return
-		if (isTrashPath(path)) return
-		if (isAssetPath(path)) return
+		if (!SHOW_HIDDEN_FOLDER && isHiddenPath(path)) return
 
 		const currentPath = entryIdentity(path)
 		const cached = previousById.get(stat.ino) ?? previousByPath.get(currentPath)
@@ -388,7 +377,11 @@ async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 		setEntries(entries.map((entry) => (entry.id === id ? { ...entry, active: 0 } : entry)))
 	}
 
-	async function moveMemory(id: string, path: string, options?: { dedupe?: boolean }): Promise<string> {
+	async function moveMemory(
+		id: string,
+		path: string,
+		options?: { dedupe?: boolean }
+	): Promise<string> {
 		let entry = index.get(id)
 		if (!entry) {
 			await refresh()
@@ -405,7 +398,7 @@ async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 		let resolvedPath = requestedPath
 		if (options?.dedupe) {
 			let attempt = 1
-			while (resolvedPath !== normalizedOldPath && await volume.exists(resolvedPath)) {
+			while (resolvedPath !== normalizedOldPath && (await volume.exists(resolvedPath))) {
 				attempt += 1
 				resolvedPath = normalizeVolumePath(`${targetDir}/${stem} ${attempt}${extension}`)
 			}
@@ -487,13 +480,13 @@ async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 			logicalPath: info.originalPath,
 			active: 1
 		})
-			upsertEntry(toFileMeta(record))
-		}
+		upsertEntry(toFileMeta(record))
+	}
 
-		async function resolveMemory(id: string): Promise<{
-			entry: FileMeta | null
-			record: MemoryRecord | null
-		}> {
+	async function resolveMemory(id: string): Promise<{
+		entry: FileMeta | null
+		record: MemoryRecord | null
+	}> {
 		try {
 			let entry = index.get(id)
 			if (!entry) {
@@ -520,7 +513,7 @@ async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 				active: entry.active,
 				updatedAt: entry.active === 0 ? entry.updated_at : undefined
 			})
-				const nextEntry = toFileMeta(record)
+			const nextEntry = toFileMeta(record)
 			upsertEntry(nextEntry)
 			return { entry: nextEntry, record }
 		} catch {
@@ -549,7 +542,9 @@ async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 
 		// Fall back to remoteVolume if the synced volume hasn't pulled the asset yet
 		// (e.g. immediately after writeAssetFile which writes to remote only).
-		const stat = await volume.stat(resolvedPath).catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
+		const stat = await volume
+			.stat(resolvedPath)
+			.catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
 		if (!stat || stat.type !== FileType.Regular) return null
 
 		return assetUrlForIno(
@@ -568,7 +563,9 @@ async function createVolumeRuntime(fsClient: FsClient): Promise<VolumeRuntime> {
 		}
 
 		// Fall back to remoteVolume if the synced volume hasn't pulled the asset yet.
-		const stat = await volume.stat(resolvedPath).catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
+		const stat = await volume
+			.stat(resolvedPath)
+			.catch(() => remoteVolume.stat(resolvedPath).catch(() => null))
 		if (!stat || stat.type !== FileType.Regular) return null
 
 		const filename = displayFilenameFromSrc(src)
