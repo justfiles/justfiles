@@ -13,6 +13,7 @@ type Props = {
 	resolveAssetUrl?: (src: string) => Promise<string | null>
 	readAssetBlob?: (src: string) => Promise<Blob | null>
 	readOnly?: boolean
+	autoFocus?: boolean
 }
 
 export type EditorHandle = {
@@ -25,7 +26,7 @@ type DrawingEditorState = {
 } | null
 
 export const Editor = forwardRef<EditorHandle, Props>(function Editor(
-	{ value, onChange, uploadAsset, resolveAssetUrl, readAssetBlob, readOnly }: Props,
+	{ value, onChange, uploadAsset, resolveAssetUrl, readAssetBlob, readOnly, autoFocus = true }: Props,
 	ref
 ) {
 	const containerRef = useRef<HTMLDivElement>(null)
@@ -142,7 +143,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
 			}
 		})
 		viewRef.current = view
-		view.focus()
+		if (autoFocus) view.focus()
 		return () => {
 			view.destroy()
 			viewRef.current = null

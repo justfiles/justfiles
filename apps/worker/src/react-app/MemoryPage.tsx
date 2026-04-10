@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { useNavigate, useParams } from '@tanstack/react-router'
+import { useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import React, { useEffect, useRef, useState } from 'react'
 import {
 	FiArchive,
@@ -112,6 +112,9 @@ export function MemoryPage() {
 	} = useMemory(id)
 	const { upsertEntry } = useSidebarActions()
 
+	const isNew = useRouterState({ select: (s) => s.location.state.isNew === true })
+	const nameInputRef = useRef<HTMLInputElement | null>(null)
+	const pendingSelectRef = useRef(isNew)
 	const [nameDraft, setNameDraft] = useState('')
 	const editorRef = useRef<EditorHandle | null>(null)
 
@@ -178,6 +181,13 @@ export function MemoryPage() {
 	useEffect(() => {
 		setNameDraft(memory?.path ? noteNameFromPath(memory.path) : '')
 	}, [memory?.path])
+
+	useEffect(() => {
+		if (pendingSelectRef.current && nameDraft) {
+			pendingSelectRef.current = false
+			nameInputRef.current?.select()
+		}
+	}, [nameDraft])
 
 	function commitName() {
 		if (!memory?.path || memory.active === 0) return
@@ -287,6 +297,8 @@ export function MemoryPage() {
 				memory ? (
 					<div className="mb-1">
 						<input
+							ref={nameInputRef}
+							autoFocus={isNew}
 							type="text"
 							value={nameDraft}
 							onChange={(e) => setNameDraft(e.target.value)}
@@ -302,6 +314,7 @@ export function MemoryPage() {
 			headerRight={<HeaderActionMenu items={headerActions} surface="editor" />}
 			footer={memory ? <LinkedMemories links={memory.links} /> : undefined}
 			editorRef={editorRef}
+			autoFocusEditor={!isNew}
 		/>
 	)
 }

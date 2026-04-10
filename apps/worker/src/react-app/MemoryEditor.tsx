@@ -22,6 +22,7 @@ type Props = {
 	readOnly?: boolean
 	updatedAt?: string
 	editorRef?: RefObject<EditorHandle | null>
+	autoFocusEditor?: boolean
 }
 
 export function MemoryEditor({
@@ -39,10 +40,10 @@ export function MemoryEditor({
 	isLoading,
 	readOnly,
 	updatedAt,
-	editorRef
+	editorRef,
+	autoFocusEditor
 }: Props) {
 	const navigate = useNavigate()
-	const showLoading = Boolean(isLoading)
 
 	useEffect(() => {
 		function onKeyDown(e: KeyboardEvent) {
@@ -75,7 +76,7 @@ export function MemoryEditor({
 					</>
 				}
 			/>
-			<main className={`no-overscroll flex-1 overflow-y-auto transition-[filter] duration-150${showLoading ? ' blur-sm pointer-events-none' : ''}`}>
+			<main className="no-overscroll flex-1 overflow-y-auto">
 				<div className="safe-area-content max-w-[680px] mx-auto px-4 py-4 min-h-full flex flex-col">
 					{headerLeft && <div className="sm:hidden w-full min-w-0 pb-2">{headerLeft}</div>}
 					<div className="flex justify-between mb-2">
@@ -95,10 +96,11 @@ export function MemoryEditor({
 								resolveAssetUrl={resolveAssetUrl}
 								readAssetBlob={readAssetBlob}
 								readOnly={readOnly}
+								autoFocus={autoFocusEditor}
 							/>
 						</div>
 					) : (
-						<p className="text-sm text-base-content/50 font-mono">{showLoading ? 'Loading…' : 'Empty'}</p>
+						<p className="text-sm text-base-content/50 font-mono">{isLoading ? 'Loading…' : 'Empty'}</p>
 					)}
 					{footer}
 				</div>
