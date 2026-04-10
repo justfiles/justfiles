@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.2.2...cli-v0.2.3) (2026-04-10)
+
+
+### Bug Fixes
+
+* **cli:** ensure workspace packages are bundled in CI builds ([07e37cc](https://github.com/xiaoxinghu/justfiles/commit/07e37cc87bfbbce09802e8980f38716ee38e633d))
+
 ## [0.2.2](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.2.1...cli-v0.2.2) (2026-04-10)
 
 
