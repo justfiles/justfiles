@@ -112,7 +112,14 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		},
 
 		async deleteInode(ino) {
-			pathMap.delete(ino)
+			const path = pathMap.get(ino)
+			if (!path) return
+			try {
+				await lstat(path)
+				return
+			} catch {
+				pathMap.delete(ino)
+			}
 		},
 
 		async getBlob(ino) {

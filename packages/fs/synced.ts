@@ -168,7 +168,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	async function sync() {
 		const state = await syncState.get()
-		if (!state.remoteCursor) {
+		if (state.remoteCursor === undefined) {
 			await bootstrap()
 			return
 		}

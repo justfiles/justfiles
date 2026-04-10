@@ -21,6 +21,13 @@ export function memStorage(): Storage {
 		return `${dirIno}\0${name}`
 	}
 
+	function hasDirentReference(ino: Ino): boolean {
+		for (const entry of dirs.values()) {
+			if (entry.ino === ino) return true
+		}
+		return false
+	}
+
 	function defaultMode(type: FileType): number {
 		return type === FileType.Directory ? 0o755 : type === FileType.Symlink ? 0o777 : 0o644
 	}
@@ -75,6 +82,7 @@ export function memStorage(): Storage {
 		},
 
 		async deleteInode(ino) {
+			if (hasDirentReference(ino)) return
 			metas.delete(ino)
 			blobs.delete(ino)
 			xattrs.delete(ino)

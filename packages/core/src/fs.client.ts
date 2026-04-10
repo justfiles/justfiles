@@ -20,6 +20,10 @@ export interface FsClientOptions {
 	fetch?: typeof fetch
 }
 
+export interface ApiStorageOptions {
+	rootIno?: string
+}
+
 type FsMetaResponse = InferResponseType<FsClient['inodes'][':ino']['$get'], 200>
 
 function mutationInit(options?: MutationOptions): { headers: Record<string, string> } | undefined {
@@ -87,10 +91,8 @@ export function createFsClient(options: FsClientOptions = {}): FsClient {
 	})
 }
 
-export async function apiStorage(client: FsClient): Promise<Storage> {
-	const rootRes = await client.index.$get()
-	if (!rootRes.ok) throw new Error(`apiStorage: failed to fetch root: ${rootRes.status}`)
-	const { rootIno } = await rootRes.json()
+export async function apiStorage(client: FsClient, options: ApiStorageOptions = {}): Promise<Storage> {
+	const rootIno = options.rootIno ?? '1'
 
 	const backend: Storage = {
 		rootIno,

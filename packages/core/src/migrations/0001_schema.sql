@@ -11,7 +11,12 @@ CREATE TABLE IF NOT EXISTS fs_inodes (
 	storage_kind INTEGER NOT NULL DEFAULT 0,
 	CHECK (type IN (0, 1, 2)),
 	CHECK (storage_kind IN (0, 1, 2)),
-	CHECK (size >= 0)
+	CHECK (size >= 0),
+	CHECK (type = 0 OR content_hash IS NULL),
+	CHECK (
+		(type = 2 AND symlink_target IS NOT NULL) OR
+		(type != 2 AND symlink_target IS NULL)
+	)
 );
 
 CREATE INDEX IF NOT EXISTS idx_fs_inodes_content_hash ON fs_inodes(content_hash);
@@ -21,7 +26,14 @@ CREATE TABLE IF NOT EXISTS fs_dirents (
 	name TEXT NOT NULL COLLATE BINARY,
 	ino TEXT NOT NULL,
 	type INTEGER NOT NULL,
-	PRIMARY KEY (dir_ino, name)
+	PRIMARY KEY (dir_ino, name),
+	CHECK (type IN (0, 1, 2)),
+	CHECK (name <> ''),
+	CHECK (instr(name, '/') = 0),
+	CHECK (name <> '.'),
+	CHECK (name <> '..'),
+	FOREIGN KEY (dir_ino) REFERENCES fs_inodes(ino) ON DELETE RESTRICT,
+	FOREIGN KEY (ino) REFERENCES fs_inodes(ino) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_fs_dirents_ino ON fs_dirents(ino);
@@ -30,7 +42,9 @@ CREATE TABLE IF NOT EXISTS fs_xattrs (
 	ino TEXT NOT NULL,
 	name TEXT NOT NULL,
 	value BLOB NOT NULL,
-	PRIMARY KEY (ino, name)
+	PRIMARY KEY (ino, name),
+	CHECK (name <> ''),
+	FOREIGN KEY (ino) REFERENCES fs_inodes(ino) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_fs_xattrs_ino ON fs_xattrs(ino);

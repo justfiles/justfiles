@@ -2,6 +2,7 @@ import { zValidator } from '@hono/zod-validator'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { FsCursorExpiredError, type Storage, type FsOp } from '@justfiles/fs/storage'
+import { volume } from '@justfiles/fs'
 
 type InodeMeta = NonNullable<Awaited<ReturnType<Storage['getMeta']>>>
 type InodeMetaPatch = Partial<InodeMeta>
@@ -93,6 +94,7 @@ const SOURCE_HEADER = 'x-fs-source'
 export function createFsApi(backend: Storage) {
 	const errorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : String(error)
+	const vol = volume(backend)
 	const mutationOptions = (request: Request): { source?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
 		return source ? { source } : {}
@@ -196,6 +198,31 @@ export function createFsApi(backend: Storage) {
 			return new Response(data.buffer as ArrayBuffer, {
 				headers: { 'Content-Type': 'application/octet-stream' },
 			})
+		})
+
+		.get('/file/*', async (c) => {
+			const requestPath = new URL(c.req.url).pathname
+			const routePrefix = requestPath.startsWith('/fs/file') ? '/fs/file' : '/file'
+			const rawPath = requestPath === routePrefix
+				? '/'
+				: requestPath.startsWith(`${routePrefix}/`)
+					? requestPath.slice(routePrefix.length)
+					: '/'
+			const path = rawPath ? decodeURIComponent(rawPath) : '/'
+
+			try {
+				const data = await vol.readFile(path)
+				return new Response(data.buffer as ArrayBuffer, {
+					headers: {
+						'content-type': inferContentType(path),
+					},
+				})
+			} catch (error) {
+				const message = errorMessage(error)
+				if (message.startsWith('ENOENT:')) return c.json({ error: message }, 404)
+				if (message.startsWith('EISDIR:')) return c.json({ error: message }, 400)
+				throw error
+			}
 		})
 
 		.get('/inodes/:ino/content/:filename', zValidator('param', InoFilenameParam), async (c) => {

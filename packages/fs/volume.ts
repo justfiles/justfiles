@@ -1,7 +1,7 @@
 import type { Storage, InodeMeta } from './storage'
 import { createSingleFlight } from './singleFlight'
 import { FileType } from './types'
-import type { Dirent, Stat, Ino } from './types'
+import type { Dirent, Stat, Ino, DirentMin } from './types'
 
 /**
  * Path-based filesystem interface built on top of Storage.
@@ -173,9 +173,9 @@ export function volume(storage: Storage): Volume {
 	const MAX_SYMLINK_DEPTH = 40
 
 	const metaCache = new Map<Ino, InodeMeta>()
-	const dirCache = new Map<string, Ino | null>()
+	const dirCache = new Map<string, DirentMin | null>()
 	const metaRequests = createSingleFlight<Ino, InodeMeta>()
-	const dirLookupRequests = createSingleFlight<string, Ino | null>()
+	const dirLookupRequests = createSingleFlight<string, DirentMin | null>()
 
 	function nowNs(): bigint {
 		return BigInt(Date.now()) * 1_000_000n
@@ -226,7 +226,7 @@ export function volume(storage: Storage): Volume {
 		})
 	}
 
-	async function lookupIno(dirIno: Ino, name: string): Promise<Ino | null> {
+	async function lookupDirent(dirIno: Ino, name: string): Promise<DirentMin | null> {
 		const key = dirCacheKey(dirIno, name)
 		if (dirCache.has(key)) {
 			return dirCache.get(key) ?? null
@@ -234,23 +234,35 @@ export function volume(storage: Storage): Volume {
 
 		return dirLookupRequests.run(key, async () => {
 			const entry = await storage.getDirent(dirIno, name)
-			const ino = entry?.ino ?? null
-			dirCache.set(key, ino)
-			return ino
+			dirCache.set(key, entry)
+			return entry
 		})
 	}
 
+	async function lookupIno(dirIno: Ino, name: string): Promise<Ino | null> {
+		return (await lookupDirent(dirIno, name))?.ino ?? null
+	}
+
+	type ResolvedPath = {
+		ino: Ino
+		type: FileType
+	}
+
 	/**
-	 * Resolve an absolute path to an inode number.
+	 * Resolve an absolute path to an inode and final type.
 	 * followLast controls whether a final symlink component is followed.
 	 */
-	async function resolvePath(path: string, followLast: boolean, initialDepth = 0): Promise<Ino> {
+	async function resolvePathInfo(path: string, followLast: boolean, initialDepth = 0): Promise<ResolvedPath> {
 		const normalized = path.replace(/\/+$/, '') || '/'
-		if (normalized === '/') return storage.rootIno
+		if (normalized === '/') {
+			const meta = await getMetaOrThrow(storage.rootIno)
+			return { ino: storage.rootIno, type: meta.type }
+		}
 
 		const queue: string[] = normalized.split('/').filter(p => p !== '')
 		const inoStack: Ino[] = [storage.rootIno]
 		let symlinkDepth = initialDepth
+		let resolved: ResolvedPath | null = null
 
 		for (let i = 0; i < queue.length; i++) {
 			const name = queue[i]!
@@ -265,12 +277,11 @@ export function volume(storage: Storage): Volume {
 			const isLast = i === queue.length - 1
 			const currentIno = inoStack[inoStack.length - 1]!
 
-			const childIno = await lookupIno(currentIno, name)
-			if (childIno === null) throw new Error(`ENOENT: ${path}`)
+			const entry = await lookupDirent(currentIno, name)
+			if (entry === null) throw new Error(`ENOENT: ${path}`)
 
-			const meta = await getMetaOrThrow(childIno)
-
-			if (meta.type === FileType.Symlink && (!isLast || followLast)) {
+			if (entry.type === FileType.Symlink && (!isLast || followLast)) {
+				const meta = await getMetaOrThrow(entry.ino)
 				if (++symlinkDepth > MAX_SYMLINK_DEPTH) throw new Error('ELOOP: too many levels of symbolic links')
 
 				const target = meta.symlinkTarget
@@ -283,11 +294,19 @@ export function volume(storage: Storage): Volume {
 				queue.splice(i, 1, ...targetParts)
 				i--
 			} else {
-				inoStack.push(childIno)
+				inoStack.push(entry.ino)
+				resolved = { ino: entry.ino, type: entry.type }
 			}
 		}
 
-		return inoStack[inoStack.length - 1]!
+		if (!resolved) {
+			throw new Error(`ENOENT: ${path}`)
+		}
+		return resolved
+	}
+
+	async function resolvePath(path: string, followLast: boolean, initialDepth = 0): Promise<Ino> {
+		return (await resolvePathInfo(path, followLast, initialDepth)).ino
 	}
 
 	function splitPath(path: string): { dir: string; name: string } {
@@ -324,7 +343,7 @@ export function volume(storage: Storage): Volume {
 		const ino = crypto.randomUUID()
 		await storage.setMeta(ino, meta)
 		await storage.putDirent(dirIno, name, { ino, type: meta.type })
-		dirCache.set(dirCacheKey(dirIno, name), ino)
+		dirCache.set(dirCacheKey(dirIno, name), { ino, type: meta.type })
 		metaCache.set(ino, meta)
 		return ino
 	}
@@ -379,12 +398,11 @@ export function volume(storage: Storage): Volume {
 		},
 
 		async readFile(path) {
-			const ino = await resolvePath(path, true)
-			const meta = await getMetaOrThrow(ino)
-			if (meta.type === FileType.Directory) {
+			const resolved = await resolvePathInfo(path, true)
+			if (resolved.type === FileType.Directory) {
 				throw new Error(`EISDIR: ${path}`)
 			}
-			return storage.getBlob(ino)
+			return storage.getBlob(resolved.ino)
 		},
 
 		async writeFile(path, data) {
@@ -656,7 +674,7 @@ export function volume(storage: Storage): Volume {
 						const ePath = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
 						inoToPath.set(e.ino, ePath)
 						metaCache.set(e.ino, e.meta)
-						dirCache.set(dirCacheKey(e.dirIno, e.name), e.ino)
+						dirCache.set(dirCacheKey(e.dirIno, e.name), { ino: e.ino, type: e.meta.type })
 						// Filter to descendants of the requested path
 						if (path === '/' || ePath === path || ePath.startsWith(path + '/')) {
 							await visitor(ePath, makeStat(e.ino, e.meta))
@@ -677,7 +695,7 @@ export function volume(storage: Storage): Volume {
 						const eMeta = await storage.getMeta(e.ino)
 						if (eMeta === null) continue
 						metaCache.set(e.ino, eMeta)
-						dirCache.set(dirCacheKey(dirIno, e.name), e.ino)
+						dirCache.set(dirCacheKey(dirIno, e.name), { ino: e.ino, type: e.type })
 						await visitor(ePath, makeStat(e.ino, eMeta))
 						if (e.type === FileType.Directory) await walk(e.ino, ePath)
 					}

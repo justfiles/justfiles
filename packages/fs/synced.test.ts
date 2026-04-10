@@ -242,6 +242,22 @@ describe('synced', () => {
 		expect(await remoteVol.exists('/notes/idea.txt')).toBe(true)
 	})
 
+	it('pushes renames without deleting the moved inode', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+
+		const vol = track(await synced({ local: journaledStorage(), remote, interval: 99_999 }))
+
+		await vol.writeFile('/untitled.md', enc.encode('hello'))
+		await vol.flush()
+		await vol.rename('/untitled.md', '/hello.md')
+		await vol.flush()
+
+		expect(await remoteVol.exists('/untitled.md')).toBe(false)
+		expect(await remoteVol.exists('/hello.md')).toBe(true)
+		expect(dec.decode(await remoteVol.readFile('/hello.md'))).toBe('hello')
+	})
+
 	// -------------------------------------------------------------------------
 	// 3. Pull
 	// -------------------------------------------------------------------------

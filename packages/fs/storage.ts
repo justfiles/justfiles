@@ -126,9 +126,10 @@ export interface StorageCapabilities {
  * Each method touches exactly one logical store (meta, blob, or dirents).
  * No nlink management, no cross-store side effects. The VFS owns sequencing.
  *
- * Hard links are not supported; every inode has exactly one directory entry.
- * deleteInode is therefore always called after deleteDirent — the VFS sequences
- * these two calls whenever it removes a file.
+ * Hard links are not supported; steady state should have one directory entry
+ * per inode. Sync replay can still create a transient second name during
+ * rename/move, so backends should treat deleteInode as a no-op while the inode
+ * is still referenced by any dirent.
  *
  * Implement `caps` to opt into atomicity and performance features.
  */
@@ -154,7 +155,8 @@ export interface Storage {
 
 	/**
 	 * Free an inode entirely — deletes metadata, blob data, and any xattrs.
-	 * The caller (VFS) is responsible for removing the directory entry first.
+	 * Backends should no-op if the inode is still referenced by any directory
+	 * entry.
 	 */
 	deleteInode(ino: Ino): Promise<void>;
 

@@ -25,6 +25,7 @@ type BlobStore = {
 // thin so higher layers can perform transactional read-modify-write flows.
 function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	const { sql } = storage
+	sql.exec('PRAGMA foreign_keys = ON')
 	const normalizeArgs = (
 		args: SqlValue[]
 	): Array<null | string | number | Uint8Array | ArrayBuffer> =>

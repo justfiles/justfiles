@@ -209,6 +209,11 @@ export function idbStorage(
 		return dbPromise
 	}
 
+	async function hasDirentReference(db: Db, ino: Ino): Promise<boolean> {
+		const rows = await db.getAll('dirs')
+		return rows.some((row) => row.ino === ino)
+	}
+
 	// ---------------------------------------------------------------------------
 	// LRU helpers
 	// ---------------------------------------------------------------------------
@@ -617,6 +622,7 @@ export function idbStorage(
 			const db = await getDb()
 			const inode = await db.get('inodes', ino)
 			if (!inode) return
+			if (await hasDirentReference(db, ino)) return
 			const tx = db.transaction(['inodes', 'content', 'xattrs', 'dirty', 'meta'], 'readwrite')
 			await tx.objectStore('inodes').delete(ino)
 			await tx.objectStore('dirty').delete(ino)

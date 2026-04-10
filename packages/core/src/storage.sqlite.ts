@@ -336,17 +336,38 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		return row ?? null
 	}
 
-	async function ensureDirectory(tx: DbAdapter, dirIno: Ino): Promise<void> {
-		const row = await getInode(tx, dirIno)
-		if (!row) throw new Error(`ENOENT: ${dirIno}`)
-		if (toNumber(row.type) !== FileType.Directory) throw new Error(`ENOTDIR: ${dirIno}`)
-	}
+async function ensureDirectory(tx: DbAdapter, dirIno: Ino): Promise<void> {
+	const row = await getInode(tx, dirIno)
+	if (!row) throw new Error(`ENOENT: ${dirIno}`)
+	if (toNumber(row.type) !== FileType.Directory) throw new Error(`ENOTDIR: ${dirIno}`)
+}
 
-	async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
-		const row = await getInode(tx, ino)
-		if (!row) throw new Error(`ENOENT: ${ino}`)
-		if (toNumber(row.type) !== FileType.Regular) throw new Error(`EINVAL: ${ino} is not a regular file`)
-		return row
+async function ensureDirentTarget(
+	tx: DbAdapter,
+	dirIno: Ino,
+	entry: { ino: Ino; type: FileType }
+): Promise<void> {
+	await ensureDirectory(tx, dirIno)
+	const row = await getInode(tx, entry.ino)
+	if (!row) throw new Error(`ENOENT: ${entry.ino}`)
+	if (toNumber(row.type) !== entry.type) {
+		throw new Error(`EINVAL: dirent type mismatch for ${entry.ino}`)
+	}
+}
+
+async function hasDirentReference(tx: DbAdapter, ino: Ino): Promise<boolean> {
+	const rows = await tx.query<{ present: unknown }>(
+		'SELECT 1 AS present FROM fs_dirents WHERE ino = ? LIMIT 1',
+		[ino]
+	)
+	return rows.length > 0
+}
+
+async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
+	const row = await getInode(tx, ino)
+	if (!row) throw new Error(`ENOENT: ${ino}`)
+	if (toNumber(row.type) !== FileType.Regular) throw new Error(`EINVAL: ${ino} is not a regular file`)
+	return row
 	}
 
 	async function insertFtsRow(tx: DbAdapter, contentHash: string, text: string | null): Promise<void> {
@@ -534,8 +555,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	}
 
 	/**
-	 * Free an inode — deletes metadata, blob, and xattrs.
-	 * Does NOT remove directory entries (caller manages dirents).
+	 * Free an inode only when it has no remaining directory entry references.
+	 * Sync rename replay can temporarily create a second name for the same inode
+	 * before removing the old one.
 	 */
 	async function deleteInodeInTx(
 		tx: DbAdapter,
@@ -544,6 +566,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	): Promise<void> {
 		const inode = await getInode(tx, ino)
 		if (!inode) return
+		if (await hasDirentReference(tx, ino)) return
 		const oldHash = toStringOrNull(inode.content_hash)
 		await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
 		await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
@@ -1041,13 +1064,21 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 		async getDirent(dirIno: Ino, name: string) {
 			await ensureBootstrapped()
-			const row = await getDirent(db, dirIno, name)
+			const [row] = await db.query<DirentRow>(
+				`SELECT dirent.dir_ino, dirent.name, dirent.ino, dirent.type
+				 FROM fs_dirents AS dirent
+				 JOIN fs_inodes AS inode ON inode.ino = dirent.ino
+				 WHERE dirent.dir_ino = ? AND dirent.name = ?
+				 LIMIT 1`,
+				[dirIno, name]
+			)
 			return row ? { ino: String(row.ino), type: toNumber(row.type) as FileType } : null
 		},
 
 		async putDirent(dirIno: Ino, name: string, entry: { ino: Ino; type: FileType }, options?: MutationOptions) {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
+				await ensureDirentTarget(tx, dirIno, entry)
 				const existing = await getDirent(tx, dirIno, name)
 				if (existing) {
 					await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
@@ -1087,18 +1118,20 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			await ensureBootstrapped()
 			const rows = cursor === ''
 				? await db.query<DirentRow>(
-						`SELECT dir_ino, name, ino, type
-						 FROM fs_dirents
-						 WHERE dir_ino = ?
-						 ORDER BY name
+						`SELECT dirent.dir_ino, dirent.name, dirent.ino, dirent.type
+						 FROM fs_dirents AS dirent
+						 JOIN fs_inodes AS inode ON inode.ino = dirent.ino
+						 WHERE dirent.dir_ino = ?
+						 ORDER BY dirent.name
 						 LIMIT ?`,
 						[dirIno, DIR_PAGE_SIZE]
 					)
 				: await db.query<DirentRow>(
-						`SELECT dir_ino, name, ino, type
-						 FROM fs_dirents
-						 WHERE dir_ino = ? AND name > ?
-						 ORDER BY name
+						`SELECT dirent.dir_ino, dirent.name, dirent.ino, dirent.type
+						 FROM fs_dirents AS dirent
+						 JOIN fs_inodes AS inode ON inode.ino = dirent.ino
+						 WHERE dirent.dir_ino = ? AND dirent.name > ?
+						 ORDER BY dirent.name
 						 LIMIT ?`,
 						[dirIno, cursor, DIR_PAGE_SIZE]
 					)

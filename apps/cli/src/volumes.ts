@@ -73,16 +73,44 @@ async function createLocalVolume(root: string, cliConfig: CliConfig): Promise<Vo
 	return volume(storage)
 }
 
+function encodeVolumePath(path: string): string {
+	return path.split('/').map(encodeURIComponent).join('/')
+}
+
 async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 	const token = resolveRemoteToken(config)
+	const baseUrl = resolveFsBaseUrl(config.url ?? DEFAULT_REMOTE_VOLUME_URL)
+	const headers = {
+		Authorization: `Bearer ${token}`,
+	}
 	const client = createFsClient({
-		baseUrl: resolveFsBaseUrl(config.url ?? DEFAULT_REMOTE_VOLUME_URL),
-		headers: {
-			Authorization: `Bearer ${token}`,
-		},
+		baseUrl,
+		headers,
 	})
 
-	return volume(await apiStorage(client))
+	const baseVolume = volume(await apiStorage(client))
+	return {
+		...baseVolume,
+		async readFile(path) {
+			const url = new URL(`${baseUrl}/file${encodeVolumePath(path)}`)
+			const res = await fetch(url, { headers })
+			if (res.ok) return new Uint8Array(await res.arrayBuffer())
+
+			let message = `readFile failed: ${res.status}`
+			const contentType = res.headers.get('content-type') ?? ''
+			if (contentType.includes('application/json')) {
+				const payload = await res.json() as { error?: string }
+				if (typeof payload.error === 'string') message = payload.error
+			}
+
+			if (message.startsWith('ENOENT:') || message.startsWith('EISDIR:')) {
+				throw new Error(message)
+			}
+
+			console.warn(`[files] remote read fast path failed for ${path}: ${message}; falling back to inode walk`)
+			return baseVolume.readFile(path)
+		},
+	}
 }
 
 async function createVolumeFromConfig(config: VolumeConfig, cliConfig: CliConfig): Promise<Volume> {
