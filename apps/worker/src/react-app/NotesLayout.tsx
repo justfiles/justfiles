@@ -30,22 +30,24 @@ export function FilesIndexPage() {
 
 	return (
 		<div className="hidden sm:flex flex-1 min-h-0 overflow-y-auto">
-			<div className="safe-area-content flex min-h-full items-center justify-center px-6 py-10">
-				<div className="max-w-sm text-center">
-					<p className="text-xs font-mono uppercase tracking-[0.24em] text-base-content/35">
+			<div className="safe-area-content flex min-h-full w-full flex-1 items-center justify-center px-6 py-10">
+				<div className="max-w-md text-center font-sans">
+					<p className="text-[0.65rem] font-medium uppercase tracking-[0.28em] text-base-content/25">
 						Justfiles
 					</p>
-					<h1 className="mt-3 text-2xl font-semibold tracking-tight text-base-content/85">
-						Choose a file
-					</h1>
-					<p className="mt-3 text-sm text-base-content/55">
-						Select a file from the list, or jump back into your scratch buffer.
-					</p>
-					<div className="mt-6 flex items-center justify-center gap-3">
+					<div className="mt-4 space-y-3">
+						<p className="text-sm leading-6 text-base-content/45">
+							Choose a file from the sidebar to open it here.
+						</p>
+						<p className="text-sm leading-6 text-base-content/35">
+							If you just need a temporary place to write, use your scratch buffer.
+						</p>
+					</div>
+					<div className="mt-5 flex items-center justify-center">
 						<button
 							type="button"
 							onClick={() => navigate({ to: '/files/scratch', viewTransition: true })}
-							className="btn btn-primary"
+							className="btn btn-ghost btn-sm border-0 font-normal text-base-content/50 hover:bg-base-200 hover:text-base-content/70"
 						>
 							Open scratch
 						</button>
