@@ -8,7 +8,7 @@ import {
 	FiEdit3,
 	FiFile,
 	FiFilePlus,
-	FiMove,
+	FiFolder,
 	FiX,
 	FiSearch
 } from 'react-icons/fi'
@@ -313,7 +313,7 @@ export function Sidebar({ entries, onClose, headerActions }: Props) {
 			key: 'organize',
 			label: organizeMode ? 'Done' : 'Organize',
 			onClick: () => setOrganizeMode((value) => !value),
-			icon: <FiMove className="w-3.5 h-3.5" />,
+			icon: <FiFolder className="w-3.5 h-3.5" />,
 			tone: organizeMode ? 'primary' : 'default',
 			hideLabelOnMobile: true
 		}, 'organize', 'sidebar'),
