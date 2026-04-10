@@ -13,6 +13,7 @@ export default defineConfig({
 	deps: {
 		alwaysBundle: [
 			/^hono($|\/)/,
+			/^@justfiles\//,
 		],
 	},
 })
