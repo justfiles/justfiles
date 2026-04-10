@@ -12,11 +12,11 @@ const sharedHeaderActionModes: Record<
 	},
 	search: {
 		sidebar: ['sidebar-only'],
-		editor: ['detail-only', 'split', 'draft']
+		editor: ['detail-only', 'split']
 	},
 	'new-file': {
 		sidebar: ['sidebar-only'],
-		editor: ['detail-only', 'split', 'draft']
+		editor: ['detail-only', 'split']
 	}
 }
 

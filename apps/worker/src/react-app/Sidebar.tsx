@@ -1,10 +1,11 @@
 import { useMutation } from '@tanstack/react-query'
 import { DragDropProvider, DragOverlay, useDraggable, useDroppable } from '@dnd-kit/react'
-import { useNavigate, useParams } from '@tanstack/react-router'
+import { useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { useEffect, useState, type ReactNode } from 'react'
 import {
 	FiChevronDown,
 	FiChevronRight,
+	FiEdit3,
 	FiFile,
 	FiFilePlus,
 	FiMove,
@@ -288,11 +289,14 @@ type Props = {
 
 export function Sidebar({ entries, onClose, headerActions }: Props) {
 	const params = useParams({ strict: false }) as { id?: string }
+	const pathname = useRouterState({ select: (state) => state.location.pathname })
+	const navigate = useNavigate()
 	const [showArchived, setShowArchived] = useState(false)
 	const [organizeMode, setOrganizeMode] = useState(false)
 	const [draggedEntry, setDraggedEntry] = useState<FileMeta | null>(null)
 	const createNote = useCreateNote()
 	const { moveMemory } = useVolume()
+	const isScratchActive = pathname === '/files/scratch'
 
 	const moveMutation = useMutation({
 		mutationFn: async ({ id, path }: { id: string; path: string }) =>
@@ -392,6 +396,24 @@ export function Sidebar({ entries, onClose, headerActions }: Props) {
 					}
 				/>
 				<div className="no-overscroll flex-1 overflow-y-auto py-2">
+					<div className="px-2 pb-2">
+						<button
+							type="button"
+							onClick={() => void navigate({ to: '/files/scratch', viewTransition: true })}
+							className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition-colors ${
+								isScratchActive
+									? 'bg-primary/12 text-primary ring-1 ring-primary/25'
+									: 'bg-base-200/70 text-base-content/75 hover:bg-base-200 hover:text-base-content'
+							}`}
+						>
+							<span className={`rounded-lg p-2 ${isScratchActive ? 'bg-primary/12' : 'bg-base-100'}`}>
+								<FiEdit3 className="h-4 w-4" />
+							</span>
+							<span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">
+								Scratch
+							</span>
+						</button>
+						</div>
 					<RootDropTarget active={draggedEntry !== null} />
 					{displayEntries.length === 0 ? (
 						<p className="px-3 py-2 text-xs text-base-content/30 font-mono">No files yet</p>

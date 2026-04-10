@@ -8,7 +8,7 @@ import {
 	type ReactNode
 } from 'react'
 
-export type LayoutMode = 'sidebar-only' | 'detail-only' | 'split' | 'draft' | 'other'
+export type LayoutMode = 'sidebar-only' | 'detail-only' | 'split' | 'other'
 
 type LayoutModeValue = {
 	mode: LayoutMode
@@ -40,14 +40,6 @@ function getLayoutMode(pathname: string, isDesktop: boolean): LayoutModeValue {
 			mode: isDesktop ? 'split' : 'detail-only',
 			isDesktop,
 			showingFileDetail: true
-		}
-	}
-
-	if (pathname === '/draft') {
-		return {
-			mode: 'draft',
-			isDesktop,
-			showingFileDetail: false
 		}
 	}
 

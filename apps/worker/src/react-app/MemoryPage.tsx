@@ -228,13 +228,6 @@ export function MemoryPage() {
 					} satisfies HeaderActionMenuItem
 				]
 			: []),
-		// {
-		// 	key: 'draft',
-		// 	label: 'Draft',
-		// 	onClick: () => navigate({ to: '/draft', viewTransition: true }),
-		// 	icon: <FiEdit3 className="w-4 h-4" />,
-		// 	hideLabelOnMobile: true
-		// },
 		(memory?.active === 0
 			? {
 					key: 'revive',

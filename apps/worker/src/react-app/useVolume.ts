@@ -91,7 +91,8 @@ export interface VolumeService {
 const VolumeContext = createContext<VolumeRuntime | null>(null)
 const runtimeSingletons = new Map<string, Promise<VolumeRuntime>>()
 
-const DRAFT_PATH = '/*draft*'
+const LEGACY_DRAFT_PATH = '/*draft*'
+const SCRATCH_PATH = '/*scratch*'
 const STATE_ROOT = '/.state'
 const TRASH_ROOT = '/.trash'
 const TRASH_FILES_PATH = `${TRASH_ROOT}/files`
@@ -250,7 +251,7 @@ async function listLiveMemoryEntries(
 
 	await volume.scan('/', async (path, stat) => {
 		if (stat.type !== FileType.Regular) return
-		if (path === DRAFT_PATH) return
+		if (path === LEGACY_DRAFT_PATH || path === SCRATCH_PATH) return
 		if (!SHOW_STATE_FOLDER && isStatePath(path)) return
 		if (isTrashPath(path)) return
 		if (isAssetPath(path)) return

@@ -10,7 +10,7 @@ describe('notePath', () => {
 		expect(notePathWithName('notes/today.md', '/projects\\roadmap.md')).toBe('/notes/projects/roadmap.md')
 	})
 
-	test('keeps the editor draft based on the basename after moving', () => {
+	test('keeps the scratch filename based on the basename after moving', () => {
 		expect(noteNameFromPath('notes/projects/roadmap.md')).toBe('roadmap')
 	})
 

@@ -10,7 +10,7 @@ export const rootRoute = createRootRoute({
 })
 
 function RootRedirect() {
-	return <Navigate to="/files" replace />
+	return <Navigate to="/files/scratch" replace />
 }
 
 const indexRoute = createRoute({
@@ -31,6 +31,22 @@ const filesIndexRoute = createRoute({
 	component: FilesIndexPage,
 })
 
+const filesScratchRoute = createRoute({
+	getParentRoute: () => filesRoute,
+	path: 'scratch',
+	component: App,
+})
+
+function LegacyFilesDraftRedirect() {
+	return <Navigate to="/files/scratch" replace />
+}
+
+const legacyFilesDraftRoute = createRoute({
+	getParentRoute: () => filesRoute,
+	path: 'draft',
+	component: LegacyFilesDraftRedirect,
+})
+
 function MemoryPageRoute() {
 	const { id } = useParams({ strict: false }) as { id: string }
 	return <MemoryPage key={id} />
@@ -42,10 +58,14 @@ const memoryRoute = createRoute({
 	component: MemoryPageRoute,
 })
 
-const draftRoute = createRoute({
+function LegacyDraftRedirect() {
+	return <Navigate to="/files/scratch" replace />
+}
+
+const legacyDraftRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/draft',
-	component: App,
+	component: LegacyDraftRedirect,
 })
 
 const settingsRoute = createRoute({
@@ -56,8 +76,8 @@ const settingsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
 	indexRoute,
-	filesRoute.addChildren([filesIndexRoute, memoryRoute]),
-	draftRoute,
+	filesRoute.addChildren([filesIndexRoute, filesScratchRoute, legacyFilesDraftRoute, memoryRoute]),
+	legacyDraftRoute,
 	settingsRoute,
 ])
 

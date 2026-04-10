@@ -39,15 +39,15 @@ export function FilesIndexPage() {
 						Choose a file
 					</h1>
 					<p className="mt-3 text-sm text-base-content/55">
-						Select a file from the list to open it, or jump into the draft inbox.
+						Select a file from the list, or jump back into your scratch buffer.
 					</p>
 					<div className="mt-6 flex items-center justify-center gap-3">
 						<button
 							type="button"
-							onClick={() => navigate({ to: '/draft', viewTransition: true })}
+							onClick={() => navigate({ to: '/files/scratch', viewTransition: true })}
 							className="btn btn-primary"
 						>
-							Open draft
+							Open scratch
 						</button>
 					</div>
 				</div>
