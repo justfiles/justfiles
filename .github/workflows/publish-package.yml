@@ -20,17 +20,41 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: oven-sh/setup-bun@v2
-
       - uses: actions/setup-node@v6
         with:
           node-version: 'lts/*'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Read package metadata
+        id: package
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          NAME=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).name")
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm for existing version
+        id: npm
+        run: |
+          if npm view "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }} is already published"
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }} will be published"
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.npm.outputs.should_publish == 'true'
+
       - run: bun install
+        if: steps.npm.outputs.should_publish == 'true'
 
       - run: bun run build
+        if: steps.npm.outputs.should_publish == 'true'
         working-directory: ${{ inputs.working_directory }}
 
       - run: npm publish --access public
+        if: steps.npm.outputs.should_publish == 'true'
         working-directory: ${{ inputs.working_directory }}
