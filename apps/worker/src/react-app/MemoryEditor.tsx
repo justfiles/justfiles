@@ -1,9 +1,9 @@
 import { UserButton } from '@clerk/clerk-react'
 import { useNavigate } from '@tanstack/react-router'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, type RefObject, type ReactNode } from 'react'
 import { FiSettings } from 'react-icons/fi'
 import { AppHeader } from './AppHeader'
-import { Editor } from './editor'
+import { Editor, type EditorHandle } from './editor'
 import type { ProseMirrorJsonDocument } from './editCache'
 
 type Props = {
@@ -21,6 +21,7 @@ type Props = {
 	isLoading?: boolean
 	readOnly?: boolean
 	updatedAt?: string
+	editorRef?: RefObject<EditorHandle | null>
 }
 
 export function MemoryEditor({
@@ -37,7 +38,8 @@ export function MemoryEditor({
 	footer,
 	isLoading,
 	readOnly,
-	updatedAt
+	updatedAt,
+	editorRef
 }: Props) {
 	const navigate = useNavigate()
 	const showLoading = Boolean(isLoading)
@@ -86,6 +88,7 @@ export function MemoryEditor({
 							{editorHeader && <div className="mb-3">{editorHeader}</div>}
 							<Editor
 								key={id}
+								ref={editorRef}
 								value={content}
 								onChange={onSave}
 								uploadAsset={onUploadAsset}

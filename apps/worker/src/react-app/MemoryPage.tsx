@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
 	FiArchive,
 	FiChevronLeft,
@@ -12,6 +12,7 @@ import {
 import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
 import { MemoryEditor } from './MemoryEditor'
+import type { EditorHandle } from './editor'
 import { noteFilenameFromPath, noteNameFromPath, notePathWithName } from './notePath'
 import { useSidebarActions } from './SidebarContext'
 import type { LinkInfo } from './types'
@@ -112,6 +113,7 @@ export function MemoryPage() {
 	const { upsertEntry } = useSidebarActions()
 
 	const [nameDraft, setNameDraft] = useState('')
+	const editorRef = useRef<EditorHandle | null>(null)
 
 	const renameNoteMutation = useMutation({
 		mutationFn: async (rawName: string) => {
@@ -192,7 +194,7 @@ export function MemoryPage() {
 		if (e.key === 'Enter') {
 			e.preventDefault()
 			commitName()
-			e.currentTarget.blur()
+			editorRef.current?.focus()
 		} else if (e.key === 'Escape') {
 			setNameDraft(memory?.path ? noteNameFromPath(memory.path) : '')
 			e.currentTarget.blur()
@@ -299,6 +301,7 @@ export function MemoryPage() {
 			}
 			headerRight={<HeaderActionMenu items={headerActions} surface="editor" />}
 			footer={memory ? <LinkedMemories links={memory.links} /> : undefined}
+			editorRef={editorRef}
 		/>
 	)
 }

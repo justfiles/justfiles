@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Selection } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
 import { type ProseMirrorJsonDocument } from '../editCache'
@@ -15,19 +15,19 @@ type Props = {
 	readOnly?: boolean
 }
 
+export type EditorHandle = {
+	focus: () => void
+}
+
 type DrawingEditorState = {
 	id: string | null
 	onSave: (id: string, previewUrl: string) => void
 } | null
 
-export function Editor({
-	value,
-	onChange,
-	uploadAsset,
-	resolveAssetUrl,
-	readAssetBlob,
-	readOnly
-}: Props) {
+export const Editor = forwardRef<EditorHandle, Props>(function Editor(
+	{ value, onChange, uploadAsset, resolveAssetUrl, readAssetBlob, readOnly }: Props,
+	ref
+) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const viewRef = useRef<EditorView | null>(null)
 	const [drawingEditor, setDrawingEditor] = useState<DrawingEditorState>(null)
@@ -41,6 +41,16 @@ export function Editor({
 	resolveAssetUrlRef.current = resolveAssetUrl
 	const readAssetBlobRef = useRef(readAssetBlob)
 	readAssetBlobRef.current = readAssetBlob
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			focus() {
+				viewRef.current?.focus()
+			}
+		}),
+		[]
+	)
 
 	useEffect(() => {
 		const view = viewRef.current
@@ -161,4 +171,4 @@ export function Editor({
 			) : null}
 		</div>
 	)
-}
+})
