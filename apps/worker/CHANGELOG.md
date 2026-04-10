@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.1](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.8.0...worker-v0.8.1) (2026-04-10)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.2.0
+
 ## [0.8.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.7.0...worker-v0.8.0) (2026-04-10)
 
 
