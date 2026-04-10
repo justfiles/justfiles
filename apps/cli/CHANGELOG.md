@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.2.1...cli-v0.2.2) (2026-04-10)
+
+
+### Bug Fixes
+
+* **cli:** add README and trigger rebuild with bundled deps ([3129876](https://github.com/xiaoxinghu/justfiles/commit/312987626ed8bceff7b063ee54a22713546464e6))
+
 ## [0.2.1](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.2.0...cli-v0.2.1) (2026-04-10)
 
 
