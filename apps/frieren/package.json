@@ -14,6 +14,7 @@
 	"dependencies": {
 		"@justfiles/core": "workspace:*",
 		"@justfiles/fs": "workspace:*",
+		"@justfiles/ui": "workspace:*",
 		"@mariozechner/pi-agent-core": "^0.66.1",
 		"@mariozechner/pi-ai": "^0.66.1",
 		"@sinclair/typebox": "^0.34.49",
