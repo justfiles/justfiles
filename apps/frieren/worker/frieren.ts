@@ -5,6 +5,7 @@ import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Message } from "@mariozechner/pi-ai";
 import { volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
+import { createFrierenApiApp, type FrierenApiType } from './app.ts';
 import { createFsTools } from "./tools.ts";
 
 interface ClientMessage {
@@ -63,10 +64,14 @@ When you learn something worth remembering, save it. When answering questions th
 
 export class Frieren extends DurableObject<Env> {
 	private agent: Agent | null = null;
+	private readonly app: FrierenApiType;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		ctx.blockConcurrencyWhile(() => migrateCF(ctx.storage));
+		const namespace = ctx.id.toString();
+		const fs = cfFsStorage(ctx.storage, namespace);
+		this.app = createFrierenApiApp({ fs });
 	}
 
 	private getOrCreateAgent(): Agent {
@@ -271,7 +276,7 @@ export class Frieren extends DurableObject<Env> {
 			});
 		}
 
-		return new Response("Expected WebSocket upgrade", { status: 426 });
+		return this.app.fetch(request);
 	}
 }
 
