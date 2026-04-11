@@ -12,8 +12,11 @@
 		"cf-typegen": "wrangler types"
 	},
 	"dependencies": {
+		"@justfiles/core": "workspace:*",
+		"@justfiles/fs": "workspace:*",
 		"@mariozechner/pi-agent-core": "^0.66.1",
 		"@mariozechner/pi-ai": "^0.66.1",
+		"@sinclair/typebox": "^0.34.49",
 		"@tailwindcss/vite": "^4.2.2",
 		"daisyui": "^5.5.19",
 		"react": "^19.2.0",
