@@ -73,6 +73,29 @@ function App() {
 				return;
 			}
 
+			if (data.type === "history") {
+				// Replay persisted conversation on reconnect
+				const restored: ChatMessage[] = (data.messages ?? []).map(
+					(m: { role: string; content: string; toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[] }) => ({
+						id: crypto.randomUUID(),
+						role: m.role as "user" | "assistant",
+						content: m.content,
+						toolCalls: m.toolCalls?.map((tc) => ({
+							id: crypto.randomUUID(),
+							name: tc.name,
+							args: tc.args,
+							result: tc.result,
+							isError: tc.isError,
+							status: "done" as const,
+						})),
+					}),
+				);
+				if (restored.length > 0) {
+					setMessages(restored);
+				}
+				return;
+			}
+
 			if (data.type === "error") {
 				console.error("Server error:", data.message);
 				setIsStreaming(false);
