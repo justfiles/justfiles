@@ -134,24 +134,61 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * Full download from remote via scan.
 	 * Applies every remote inode and directory entry to local, sets baselines,
 	 * and captures the update cursor from the scan so the next pull is incremental.
+	 * After applying, reconciles by deleting local entries absent from the remote snapshot.
 	 */
 	async function bootstrap(): Promise<void> {
 		if (!props.remote.caps?.fullScan) throw new Error('remote backend does not support scan — bootstrap unavailable')
 		const opts: MutationOptions = { source: REMOTE_SOURCE }
+		const remoteInos = new Set<Ino>()
 		let scanCursor = ''
 		let remoteCursor: string | undefined
 		do {
 			const result = await props.remote.caps.fullScan(scanCursor)
 			if (result.syncCursor !== undefined) remoteCursor = result.syncCursor
-			// TODO: reconcile — delete local dirents/inodes absent from remote snapshot
 			for (const entry of result.entries) {
+				remoteInos.add(entry.ino)
 				await applyOp({ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta, xattrs: entry.xattrs }, props.remote, props.local, opts, props.lazyContent)
 				await applyOp({ kind: 'set-dirent', dirIno: entry.dirIno, name: entry.name, ino: entry.ino, type: entry.meta.type }, props.remote, props.local, opts, props.lazyContent)
 				if (entry.meta.contentHash) await setHashBaseline(entry.ino, entry.meta.contentHash)
 			}
 			scanCursor = result.next
 		} while (scanCursor)
+		await reconcileLocal(remoteInos, opts)
 		await syncState.patch({ remoteCursor: remoteCursor ?? '' })
+	}
+
+	/**
+	 * Walk local dirents and delete any entries whose ino is not in the remote
+	 * snapshot. Skips local-only entries (e.g. /.state). Processes children
+	 * before parents so directory removals succeed.
+	 */
+	async function reconcileLocal(remoteInos: Set<Ino>, opts: MutationOptions): Promise<void> {
+		await initStateMarkers()
+		const toDelete: Array<{ dirIno: Ino; name: string; ino: Ino }>  = []
+
+		async function walk(dirIno: Ino): Promise<void> {
+			let cur = ''
+			do {
+				const { entries, next } = await props.local.listDirents(dirIno, cur)
+				for (const e of entries) {
+					if (await isLocalOnly(e.ino)) continue
+					if (remoteInos.has(e.ino)) {
+						if (e.type === FileType.Directory) await walk(e.ino)
+					} else {
+						// Recurse into directories first so children are deleted before parent.
+						if (e.type === FileType.Directory) await walk(e.ino)
+						toDelete.push({ dirIno, name: e.name, ino: e.ino })
+					}
+				}
+				cur = next
+			} while (cur)
+		}
+
+		await walk(props.local.rootIno)
+		for (const { dirIno, name, ino } of toDelete) {
+			await props.local.deleteDirent(dirIno, name, opts)
+			await props.local.deleteInode(ino)
+		}
 	}
 
 	const clientId = persistedState(localVol, '/.state/clientid', () => crypto.randomUUID())
