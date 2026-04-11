@@ -366,6 +366,86 @@ describe('synced', () => {
 		expect(await vol.exists('/added-later.txt')).toBe(true)
 	})
 
+	it('bootstrap deletes local files absent from remote snapshot', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/keep.txt', enc.encode('keep'))
+		await remoteVol.writeFile('/gone.txt', enc.encode('will be deleted'))
+
+		const local = journaledStorage()
+		const vol = track(await synced({ local, remote, interval: 99_999 }))
+		vol.pause()
+
+		// Confirm bootstrap populated both files using a cold volume to
+		// avoid warming dirCache on the synced vol (same pattern as test 7).
+		expect(await volume(local).exists('/keep.txt')).toBe(true)
+		expect(await volume(local).exists('/gone.txt')).toBe(true)
+
+		// Delete /gone.txt on the remote while client is paused.
+		await remoteVol.rm('/gone.txt')
+
+		// Trigger cursor expiry so the next sync falls back to bootstrap.
+		remote.triggerCursorExpiry()
+
+		vol.resume()
+		await vol.flush()
+
+		// Cold dirCache → fresh storage lookup.
+		// /keep.txt should survive, /gone.txt should be reconciled away.
+		expect(await vol.exists('/keep.txt')).toBe(true)
+		expect(await vol.exists('/gone.txt')).toBe(false)
+	})
+
+	it('bootstrap deletes local directories absent from remote snapshot', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.mkdir('/docs')
+		await remoteVol.writeFile('/docs/a.txt', enc.encode('a'))
+		await remoteVol.writeFile('/root.txt', enc.encode('root'))
+
+		const local = journaledStorage()
+		const vol = track(await synced({ local, remote, interval: 99_999 }))
+		vol.pause()
+
+		// Confirm via cold volume without warming synced vol dirCache.
+		expect(await volume(local).exists('/docs/a.txt')).toBe(true)
+
+		// Remove the entire /docs tree on remote.
+		await remoteVol.rm('/docs/a.txt')
+		await remoteVol.rm('/docs')
+
+		remote.triggerCursorExpiry()
+		vol.resume()
+		await vol.flush()
+
+		// Cold dirCache → fresh storage lookup.
+		expect(await vol.exists('/root.txt')).toBe(true)
+		expect(await vol.exists('/docs')).toBe(false)
+		expect(await vol.exists('/docs/a.txt')).toBe(false)
+	})
+
+	it('bootstrap does not delete local-only entries like .state', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/data.txt', enc.encode('data'))
+
+		const local = journaledStorage()
+		const vol = track(await synced({ local, remote, interval: 99_999 }))
+
+		// .state is created by synced() internally and should survive reconciliation.
+		expect(await volume(local).exists('/.state')).toBe(true)
+
+		// Force a re-bootstrap via cursor expiry.
+		vol.pause()
+		remote.triggerCursorExpiry()
+		vol.resume()
+		await vol.flush()
+
+		// .state must survive — it's local-only.
+		expect(await volume(local).exists('/.state')).toBe(true)
+		expect(await vol.exists('/data.txt')).toBe(true)
+	})
+
 	// -------------------------------------------------------------------------
 	// 7. Delete propagation
 	// -------------------------------------------------------------------------
