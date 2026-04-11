@@ -1,22 +1,20 @@
-export { Frieren } from "./frieren.ts";
+import { Hono } from 'hono'
+import { createFrierenApiApp } from './app.ts'
 
+export { Frieren } from './frieren.ts'
 
-export default {
-	async fetch(request, env) {
-		const url = new URL(request.url);
+type WorkerEnv = {
+	Bindings: Env
+}
 
-		// WebSocket upgrade → route to Durable Object
-		if (url.pathname === "/ws") {
-			const id = env.FRIEREN.idFromName("default");
-			const stub = env.FRIEREN.get(id);
-			return stub.fetch(request);
-		}
+const app = new Hono<WorkerEnv>()
 
-		// REST API routes
-		if (url.pathname.startsWith("/api/")) {
-			return Response.json({ name: "Frieren" });
-		}
+app.get('/ws', (c) => {
+	const id = c.env.FRIEREN.idFromName('default')
+	const stub = c.env.FRIEREN.get(id)
+	return stub.fetch(c.req.raw)
+})
 
-		return new Response(null, { status: 404 });
-	},
-} satisfies ExportedHandler<Env>;
+app.route('/api', createFrierenApiApp())
+
+export default app
