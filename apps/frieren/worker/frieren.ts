@@ -18,16 +18,9 @@ interface ClientMessage {
 }
 
 interface ServerMessage {
-	type: "event" | "error" | "ready" | "history";
+	type: "event" | "error" | "ready";
 	event?: AgentEvent;
 	message?: string;
-	messages?: SerializedMessage[];
-}
-
-interface SerializedMessage {
-	role: string;
-	content: string;
-	toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[];
 }
 
 const decoder = new TextDecoder();
@@ -115,12 +108,6 @@ export class Frieren extends DurableObject<Env> {
 			},
 		});
 
-		// Restore conversation from SQLite
-		const saved = this.loadMessages();
-		if (saved.length > 0) {
-			agent.state.messages = saved;
-		}
-
 		return agent;
 	}
 
@@ -178,66 +165,6 @@ export class Frieren extends DurableObject<Env> {
 			}
 		}
 		return lines;
-	}
-
-	// ── Conversation persistence ──────────────────────────────────────────
-
-	private ensureMessagesTable(): void {
-		this.ctx.storage.sql.exec(`
-			CREATE TABLE IF NOT EXISTS conversation (
-				seq INTEGER PRIMARY KEY AUTOINCREMENT,
-				data TEXT NOT NULL
-			)
-		`);
-	}
-
-	private saveMessages(messages: AgentMessage[]): void {
-		this.ensureMessagesTable();
-		this.ctx.storage.sql.exec('DELETE FROM conversation');
-		for (const msg of messages) {
-			this.ctx.storage.sql.exec(
-				'INSERT INTO conversation (data) VALUES (?)',
-				JSON.stringify(msg, bigIntReplacer),
-			);
-		}
-	}
-
-	private loadMessages(): AgentMessage[] {
-		this.ensureMessagesTable();
-		const rows = this.ctx.storage.sql.exec(
-			'SELECT data FROM conversation ORDER BY seq',
-		).toArray();
-		return rows.map(r => JSON.parse(r.data as string));
-	}
-
-	private serializeForClient(messages: AgentMessage[]): SerializedMessage[] {
-		const result: SerializedMessage[] = [];
-		for (const msg of messages) {
-			if (!('role' in msg)) continue;
-			const m = msg as Message;
-			if (m.role === 'user') {
-				const text = typeof m.content === 'string'
-					? m.content
-					: Array.isArray(m.content)
-						? m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('')
-						: '';
-				result.push({ role: 'user', content: text });
-			} else if (m.role === 'assistant') {
-				const am = m as any;
-				let text = '';
-				const toolCalls: SerializedMessage['toolCalls'] = [];
-				if (Array.isArray(am.content)) {
-					for (const block of am.content) {
-						if (block.type === 'text') text += block.text;
-						if (block.type === 'toolCall') {
-							toolCalls.push({ name: block.name, args: block.args });
-						}
-					}
-				}
-				result.push({ role: 'assistant', content: text, toolCalls: toolCalls.length > 0 ? toolCalls : undefined });
-			}
-		}
-		return result;
 	}
 
 	// ── WebSocket handlers ────────────────────────────────────────────────
@@ -319,7 +246,6 @@ export class Frieren extends DurableObject<Env> {
 
 				try {
 					await agent.prompt(parsed.text);
-					this.saveMessages(agent.state.messages);
 
 					// Record transcript and touch session
 					if (this.currentSessionId) {
@@ -376,15 +302,6 @@ export class Frieren extends DurableObject<Env> {
 				JSON.stringify({ type: "ready" } satisfies ServerMessage),
 			);
 
-			// Replay conversation history to the new client
-			const saved = this.loadMessages();
-			if (saved.length > 0) {
-				const history = this.serializeForClient(saved);
-				server.send(
-					JSON.stringify({ type: "history", messages: history } satisfies ServerMessage),
-				);
-			}
-
 			return new Response(null, {
 				status: 101,
 				webSocket: client,
@@ -393,8 +310,4 @@ export class Frieren extends DurableObject<Env> {
 
 		return this.app.fetch(request);
 	}
-}
-
-function bigIntReplacer(_key: string, value: unknown): unknown {
-	return typeof value === 'bigint' ? value.toString() : value;
 }
