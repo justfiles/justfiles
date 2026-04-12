@@ -95,6 +95,33 @@ export function createFsTools(vol: Volume): AgentTool<any>[] {
 	return [readFile, writeFile, listDir, makeDir, removeFile];
 }
 
+const fetchParams = Type.Object({
+	url: Type.String({ description: 'Absolute https:// URL of the web page to read' }),
+});
+
+export function createFetchTool(): AgentTool<typeof fetchParams> {
+	return {
+		name: 'fetch',
+		label: 'Fetch Web Page',
+		description: 'Fetch a web page and return its main content as clean markdown. Ads, navigation, and boilerplate are stripped. Use for reading articles, docs, blog posts, or any public web page. Response is truncated to 100KB.',
+		parameters: fetchParams,
+		async execute(_toolCallId, params, signal) {
+			const endpoint = `https://readable.page/md?url=${encodeURIComponent(params.url)}`;
+			const res = await fetch(endpoint, { signal });
+			const raw = await res.text();
+			if (!res.ok) {
+				throw new Error(`readable.page returned HTTP ${res.status}: ${raw.slice(0, 500)}`);
+			}
+			const MAX = 100_000;
+			const text = raw.length > MAX ? raw.slice(0, MAX) + `\n…[truncated ${raw.length - MAX} bytes]` : raw;
+			return {
+				content: [{ type: 'text', text }],
+				details: { url: params.url, bytes: raw.length },
+			};
+		},
+	};
+}
+
 // ── TypeBox parameter schemas ─────────────────────────────────────────────
 
 const readParams = Type.Object({
