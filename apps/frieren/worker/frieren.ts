@@ -4,12 +4,12 @@ import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Message } from "@mariozechner/pi-ai";
 import { volume } from "@justfiles/fs";
-import type { Volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
 import { createFrierenApiApp, type FrierenApiType } from './app.ts';
 import { createFsTools } from "./tools.ts";
 import { createSessionManager } from "./session/manager.ts";
 import { createTranscriptWriter } from "./session/transcript.ts";
+import { buildSystemPrompt, windowMessages } from "./session/context.ts";
 import type { SessionManager, TranscriptWriter, TranscriptLine } from "./session/types.ts";
 
 interface ClientMessage {
@@ -23,32 +23,16 @@ interface ServerMessage {
 	message?: string;
 }
 
-const decoder = new TextDecoder();
-const SOUL_PATH = '/soul.md';
-const DEFAULT_SETUP_PROMPT = `You are a personal assistant and this is your first setup. Nothing has been set up yet.
-
-Your first job is to set yourself up with the user. Tell the user that setup is incomplete and ask for the information you need to define who you are.
-
-You should collect:
-- the user's name
-- the user's age
-- who you are as the agent
-- the character the user wants you to play
-- a short description of the personality and tone the user prefers
-
-Keep the setup conversational and concise. If some details are missing, ask follow-up questions until you have enough to define the assistant clearly.
-
-Once you have enough information, write a complete future system prompt to ${SOUL_PATH} using the write tool. The file should contain the actual system prompt that future sessions will use, not a summary or notes.
-
-Until ${SOUL_PATH} exists, prioritize setup. After the file has been written, follow the character and personality defined there in future sessions.`;
-
 export class Frieren extends DurableObject<Env> {
 	private agent: Agent | null = null;
 	private agentPromise: Promise<Agent> | null = null;
 	private readonly app: FrierenApiType;
+	private readonly vol;
 	private readonly sessionManager: SessionManager;
 	private readonly transcriptWriter: TranscriptWriter;
 	private currentSessionId: string | null = null;
+	private isNewSession = false;
+	private latestHandoffPath: string | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -57,10 +41,10 @@ export class Frieren extends DurableObject<Env> {
 		const fs = cfFsStorage(ctx.storage, namespace);
 		this.app = createFrierenApiApp({ fs });
 
-		const vol = volume(fs);
-		this.transcriptWriter = createTranscriptWriter(vol);
+		this.vol = volume(fs);
+		this.transcriptWriter = createTranscriptWriter(this.vol);
 		const placeholderGenerate = async () => 'placeholder';
-		this.sessionManager = createSessionManager(vol, this.transcriptWriter, placeholderGenerate);
+		this.sessionManager = createSessionManager(this.vol, this.transcriptWriter, placeholderGenerate);
 	}
 
 	private async getOrCreateAgent(): Promise<Agent> {
@@ -77,16 +61,33 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async createAgent(): Promise<Agent> {
-		const model = getModel("openai", "gpt-4.1-mini");
-		const namespace = this.ctx.id.toString();
-		const storage = cfFsStorage(this.ctx.storage, namespace);
-		const vol = volume(storage);
-		const systemPrompt = await this.readSystemPrompt(vol);
-		const tools = createFsTools(vol);
+		// OpenAI (kept for reference — switch BACKEND below to use it again)
+		const openaiModel = getModel("openai", "gpt-4.1-mini");
+
+		// Local LM Studio backend — OpenAI-compatible /v1/chat/completions.
+		// No real auth, but the OpenAI SDK requires a non-empty apiKey string.
+		const localModel = {
+			id: "google/gemma-4-e4b",
+			name: "Gemma 4 (local)",
+			api: "openai-completions",
+			provider: "lm-studio",
+			baseUrl: "http://127.0.0.1:1234/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 8192,
+		} as unknown as typeof openaiModel;
+
+		const BACKEND: 'openai' | 'local' = 'local';
+		const model = BACKEND === 'local' ? localModel : openaiModel;
+		const apiKey = BACKEND === 'local' ? 'lm-studio' : this.env.OPENAI_API_KEY;
+
+		const tools = createFsTools(this.vol);
 
 		const agent = new Agent({
 			initialState: {
-				systemPrompt,
+				systemPrompt: '', // set dynamically each turn in webSocketMessage
 				model,
 				tools,
 			},
@@ -99,25 +100,21 @@ export class Frieren extends DurableObject<Env> {
 							m.role === "toolResult"),
 				);
 			},
-			getApiKey: () => this.env.OPENAI_API_KEY,
+			getApiKey: () => apiKey,
 			streamFn: (model, context, options) => {
 				return streamSimple(model, context, {
 					...options,
-					apiKey: this.env.OPENAI_API_KEY,
+					apiKey,
 				});
 			},
 		});
 
+		// transformContext only sees messages — it cannot set systemPrompt,
+		// because the Agent snapshots systemPrompt BEFORE transformContext runs.
+		// Use it purely for context windowing.
+		agent.transformContext = async (messages) => windowMessages(messages, 20);
+
 		return agent;
-	}
-
-	private async readSystemPrompt(vol: Volume): Promise<string> {
-		if (!(await vol.exists(SOUL_PATH))) {
-			return DEFAULT_SETUP_PROMPT;
-		}
-
-		const systemPrompt = decoder.decode(await vol.readFile(SOUL_PATH)).trim();
-		return systemPrompt.length > 0 ? systemPrompt : DEFAULT_SETUP_PROMPT;
 	}
 
 	// ── Transcript extraction ────────────────────────────────────────────
@@ -201,8 +198,11 @@ export class Frieren extends DurableObject<Env> {
 					if (current?.current_session_id) {
 						await this.sessionManager.close(current.current_session_id);
 						this.currentSessionId = await this.sessionManager.startNew();
-						this.agent = null;
-						this.agentPromise = null;
+						this.isNewSession = true;
+						this.latestHandoffPath = (await this.sessionManager.getCurrent())?.latest_handoff_path ?? null;
+						// Clear agent transcript — keep the agent alive
+						const agent = await this.getOrCreateAgent();
+						agent.state.messages = [];
 					}
 					ws.send(JSON.stringify({
 						type: "event",
@@ -225,13 +225,30 @@ export class Frieren extends DurableObject<Env> {
 				if (result.action === 'close_and_start') {
 					await this.sessionManager.close(result.old_session_id);
 					this.currentSessionId = await this.sessionManager.startNew();
+					this.isNewSession = true;
+					this.latestHandoffPath = result.latest_handoff_path;
+					// Clear agent transcript on session rotation
+					if (this.agent) this.agent.state.messages = [];
 				} else if (result.action === 'start_new') {
 					this.currentSessionId = await this.sessionManager.startNew();
+					this.isNewSession = true;
+					this.latestHandoffPath = result.latest_handoff_path;
 				} else {
 					this.currentSessionId = result.session_id;
+					this.isNewSession = false;
 				}
 
 				const agent = await this.getOrCreateAgent();
+
+				// Set systemPrompt BEFORE prompt() — the Agent snapshots it by value
+				// at the start of each turn, so mid-turn mutations (e.g. inside
+				// transformContext) would be ignored for the current call.
+				agent.state.systemPrompt = await buildSystemPrompt(this.sessionManager, {
+					currentSessionId: this.currentSessionId,
+					isNewSession: this.isNewSession,
+					latestHandoffPath: this.latestHandoffPath,
+				});
+
 				const messageCountBefore = agent.state.messages.length;
 				const unsubscribe = agent.subscribe(
 					(event: AgentEvent, _signal: AbortSignal) => {
@@ -256,6 +273,10 @@ export class Frieren extends DurableObject<Env> {
 						}
 						await this.sessionManager.touch(this.currentSessionId);
 					}
+
+					// After first turn of a new session, handoff has been loaded;
+					// subsequent turns use rolling summary instead.
+					if (this.isNewSession) this.isNewSession = false;
 				} finally {
 					unsubscribe();
 				}
@@ -288,10 +309,8 @@ export class Frieren extends DurableObject<Env> {
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get("Upgrade");
 		if (upgradeHeader === "websocket") {
-			// Treat each WebSocket connection as a fresh chat session so /soul.md is re-read.
-			this.agent = null;
-			this.agentPromise = null;
-
+			// Agent is long-lived — transformContext re-reads soul.md every turn,
+			// so there is no need to recreate the agent on reconnect.
 			const pair = new WebSocketPair();
 			const [client, server] = Object.values(pair);
 
