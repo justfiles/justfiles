@@ -116,11 +116,11 @@ Four line types only:
 
 Required fields per role:
 
-| role | required fields |
-|---|---|
-| `user` | `ts`, `role`, `content` |
-| `assistant` | `ts`, `role`, `content` |
-| `tool_call` | `ts`, `role`, `tool_name`, `input` |
+| role          | required fields                      |
+|---------------|--------------------------------------|
+| `user`        | `ts`, `role`, `content`              |
+| `assistant`   | `ts`, `role`, `content`              |
+| `tool_call`   | `ts`, `role`, `tool_name`, `input`   |
 | `tool_result` | `ts`, `role`, `tool_name`, `content` |
 
 No additional fields. `content` in `tool_result` is a string; JSON-serialise complex values. `input` in `tool_call` is an object.
