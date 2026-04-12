@@ -8,6 +8,9 @@ import type { Volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
 import { createFrierenApiApp, type FrierenApiType } from './app.ts';
 import { createFsTools } from "./tools.ts";
+import { createSessionManager } from "./session/manager.ts";
+import { createTranscriptWriter } from "./session/transcript.ts";
+import type { SessionManager, TranscriptWriter, TranscriptLine } from "./session/types.ts";
 
 interface ClientMessage {
 	type: "prompt" | "abort";
@@ -50,6 +53,9 @@ export class Frieren extends DurableObject<Env> {
 	private agent: Agent | null = null;
 	private agentPromise: Promise<Agent> | null = null;
 	private readonly app: FrierenApiType;
+	private readonly sessionManager: SessionManager;
+	private readonly transcriptWriter: TranscriptWriter;
+	private currentSessionId: string | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -57,6 +63,11 @@ export class Frieren extends DurableObject<Env> {
 		const namespace = ctx.id.toString();
 		const fs = cfFsStorage(ctx.storage, namespace);
 		this.app = createFrierenApiApp({ fs });
+
+		const vol = volume(fs);
+		this.transcriptWriter = createTranscriptWriter(vol);
+		const placeholderGenerate = async () => 'placeholder';
+		this.sessionManager = createSessionManager(vol, this.transcriptWriter, placeholderGenerate);
 	}
 
 	private async getOrCreateAgent(): Promise<Agent> {
@@ -120,6 +131,53 @@ export class Frieren extends DurableObject<Env> {
 
 		const systemPrompt = decoder.decode(await vol.readFile(SOUL_PATH)).trim();
 		return systemPrompt.length > 0 ? systemPrompt : DEFAULT_SETUP_PROMPT;
+	}
+
+	// ── Transcript extraction ────────────────────────────────────────────
+
+	private extractTranscriptLines(messages: AgentMessage[]): TranscriptLine[] {
+		const lines: TranscriptLine[] = [];
+		const now = new Date().toISOString();
+		for (const msg of messages) {
+			if (!('role' in msg)) continue;
+			const m = msg as Message;
+			if (m.role === 'user') {
+				const text = typeof m.content === 'string'
+					? m.content
+					: Array.isArray(m.content)
+						? m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('')
+						: '';
+				lines.push({ ts: now, role: 'user', content: text });
+			} else if (m.role === 'assistant') {
+				const am = m as any;
+				let text = '';
+				if (Array.isArray(am.content)) {
+					for (const block of am.content) {
+						if (block.type === 'text') text += block.text;
+						if (block.type === 'toolCall') {
+							lines.push({
+								ts: now,
+								role: 'tool_call',
+								tool_name: block.name,
+								input: block.args ?? {},
+							});
+						}
+					}
+				}
+				if (text) {
+					lines.push({ ts: now, role: 'assistant', content: text });
+				}
+			} else if (m.role === 'toolResult') {
+				const tr = m as any;
+				lines.push({
+					ts: now,
+					role: 'tool_result',
+					tool_name: tr.name ?? 'unknown',
+					content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+				});
+			}
+		}
+		return lines;
 	}
 
 	// ── Conversation persistence ──────────────────────────────────────────
@@ -209,8 +267,45 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === "prompt" && parsed.text) {
+			// Handle /new command
+			if (parsed.text.trim() === '/new') {
+				try {
+					const current = await this.sessionManager.getCurrent();
+					if (current?.current_session_id) {
+						await this.sessionManager.close(current.current_session_id);
+						this.currentSessionId = await this.sessionManager.startNew();
+						this.agent = null;
+						this.agentPromise = null;
+					}
+					ws.send(JSON.stringify({
+						type: "event",
+						message: current?.current_session_id
+							? "Session closed. Starting fresh."
+							: "No active session to close.",
+					} satisfies ServerMessage));
+				} catch (err) {
+					ws.send(JSON.stringify({
+						type: "error",
+						message: err instanceof Error ? err.message : "Unknown error",
+					} satisfies ServerMessage));
+				}
+				return;
+			}
+
 			try {
+				// Resolve session before prompting
+				const result = await this.sessionManager.resolve();
+				if (result.action === 'close_and_start') {
+					await this.sessionManager.close(result.old_session_id);
+					this.currentSessionId = await this.sessionManager.startNew();
+				} else if (result.action === 'start_new') {
+					this.currentSessionId = await this.sessionManager.startNew();
+				} else {
+					this.currentSessionId = result.session_id;
+				}
+
 				const agent = await this.getOrCreateAgent();
+				const messageCountBefore = agent.state.messages.length;
 				const unsubscribe = agent.subscribe(
 					(event: AgentEvent, _signal: AbortSignal) => {
 						ws.send(
@@ -224,8 +319,17 @@ export class Frieren extends DurableObject<Env> {
 
 				try {
 					await agent.prompt(parsed.text);
-					// Persist conversation after each completed prompt
 					this.saveMessages(agent.state.messages);
+
+					// Record transcript and touch session
+					if (this.currentSessionId) {
+						const newMessages = agent.state.messages.slice(messageCountBefore);
+						const lines = this.extractTranscriptLines(newMessages);
+						if (lines.length > 0) {
+							await this.transcriptWriter.append(this.currentSessionId, lines);
+						}
+						await this.sessionManager.touch(this.currentSessionId);
+					}
 				} finally {
 					unsubscribe();
 				}
