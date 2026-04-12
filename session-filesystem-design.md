@@ -1,150 +1,26 @@
-# Session Filesystem Design
+# Frieren Session & Memory Design
 
-## Purpose
+## Core Principle
 
-This document records:
+This system has two layers with different ownership and different change velocities.
 
-- findings from researching OpenClaw session management
-- findings from the current `ghostore` / `apps/frieren` setup
-- a proposed filesystem-shaped session design
-- multiple implementation options
-- tradeoffs between those options
-- a practical recommended plan
+**The session layer is a machine.** The system writes it. Every file has a fixed schema, every trigger is concrete, every template has a word limit. The agent has no discretion here.
 
-The design target is:
+**The memory layer is Frieren's.** She owns the entire filesystem below `/memory/` (except the inbox). She decides how to organise it, when to restructure it, and what to merge, split, or discard. It evolves over time as she learns what retrieval patterns actually work.
 
-- Python runtime
-- no OpenClaw coding-agent runtime
-- filesystem-backed state, using the existing filesystem abstraction as the main storage model
-- preserved raw conversations
-- short-term continuity across sessions
-- simple long-term memory writing
+Everything is a file. The volume implementation — whether Cloudflare DO-backed SQLite, a local disk, or a browser filesystem — is an infrastructure concern and does not affect this design.
 
-## Findings
+---
 
-### What OpenClaw does well
+## Part 1: Session Layer (System-Owned)
 
-OpenClaw separates three concerns clearly:
+### Filesystem Layout
 
-- routing: a stable `sessionKey` decides which conversation bucket a message belongs to
-- active transcript: a mutable pointer from `sessionKey` to the current `sessionId`
-- persistence: full raw transcript is kept on disk, while carry-over context is compressed
-
-The useful ideas to borrow are:
-
-- one stable conversation key can outlive many concrete transcript files
-- each concrete session gets its own transcript file
-- old sessions are preserved, not overwritten
-- the next session should not load old raw transcripts by default
-- continuity comes from compact summaries and memory, not from replaying everything
-
-### What OpenClaw does not do by default
-
-OpenClaw does not appear to re-read the last several old transcripts on every new session by default.
-
-Instead, it relies on:
-
-- staying in the same active session while the conversation is ongoing
-- in-session compaction when the transcript grows large
-- optional memory plugins or hooks for carry-over
-- explicit cross-session history tools when needed
-
-That is the right constraint to keep.
-
-### What the current `apps/frieren` setup does
-
-Current strengths:
-
-- `/soul.md` already exists as a root bootstrap prompt
-- the agent already has filesystem tools: `read`, `write`, `ls`, `mkdir`, `rm`
-- the filesystem abstraction is already durable and suitable as the primary storage model
-- the DO-backed SQLite layer is already good enough to persist files across hibernation
-
-Current weaknesses:
-
-- conversation persistence is currently one flat `conversation` table
-- there is no stable `session_key -> current session_id` layer
-- there is no archive layout for old sessions
-- there is no short-term handoff document between sessions
-- there is no disciplined distinction between short-term and long-term memory
-
-### Main design conclusion
-
-The missing piece is not storage.
-
-The missing piece is a session model on top of storage.
-
-You already have the filesystem. You need:
-
-- session identity
-- transcript lifecycle
-- handoff summaries
-- long-term memory promotion rules
-
-## Design Goals
-
-The system should satisfy these goals:
-
-1. Preserve all conversations.
-2. Keep active context small and cheap.
-3. Carry the right information into the next session.
-4. Avoid reloading huge transcript history by default.
-5. Make long-term memory explicit and inspectable as files.
-6. Keep the model understandable enough to debug by reading files directly.
-
-## Core Concepts
-
-### `session_key`
-
-A stable conversation bucket.
-
-Examples:
-
-- `user:alice`
-- `user:alice:channel:web`
-- `user:+61412345678:channel:whatsapp`
-
-This answers:
-
-- "Which conversation stream is this message part of?"
-
-### `session_id`
-
-A concrete transcript instance.
-
-This answers:
-
-- "Which exact session file are we currently appending to?"
-
-One `session_key` can have many `session_id`s over time.
-
-### Transcript
-
-The full raw append-only conversation log for one `session_id`.
-
-This is the source of truth for that session.
-
-### Rolling summary
-
-A compact in-session summary that helps keep context short while the session is still active.
-
-### Handoff
-
-A short note written when a session ends so the next session can continue from the right state without loading the full transcript.
-
-### Long-term memory
-
-Durable facts and preferences that should survive across many sessions.
-
-## Recommended Filesystem Layout
-
-```text
+```
 /soul.md
-/profiles/
-	{user_id}.md
+/profiles/{user_id}.md
 
 /sessions/
-	index.json
 	keys/
 		{session_key}.json
 	active/
@@ -160,47 +36,38 @@ Durable facts and preferences that should survive across many sessions.
 					transcript.jsonl
 					final-summary.md
 					handoff.md
-
-/memory/
-	inbox/
-		YYYY-MM-DD-HHMM-{slug}.md
-	people/
-		{user_id}.md
-	topics/
-		{topic}.md
 ```
 
-## File Roles
+Everything under `/sessions/` is written by the system. The agent never reads or writes session files directly. The system exposes session context to the agent through prompt assembly only.
 
-### `/soul.md`
+---
 
-Always loaded.
+### Core Concepts
 
-Contains:
+**`session_key`**
 
-- assistant identity
-- tone
-- behavior rules
-- standing operating instructions
+A stable conversation bucket. One `session_key` persists across many concrete sessions.
 
-### `/profiles/{user_id}.md`
+Format: `user:{user_id}` or `user:{user_id}:channel:{channel}`
 
-Always loaded for that user.
+Examples:
+- `user:alice`
+- `user:alice:channel:web`
+- `user:+61412345678:channel:whatsapp`
 
-Contains:
+**`session_id`**
 
-- stable user facts
-- preferences
-- recurring projects
-- standing instructions from the user
+A concrete session instance. One `session_key` accumulates many `session_id`s over time.
 
-This is the simplest durable long-term memory file.
+Format: `{ISO8601 datetime with colons replaced by dashes}_{4-char lowercase hex}`
 
-### `/sessions/keys/{session_key}.json`
+Example: `2026-04-12T09-20-31Z_f83a`
 
-Small pointer file for session routing.
+---
 
-Suggested shape:
+### File Schemas
+
+#### `/sessions/keys/{session_key}.json`
 
 ```json
 {
@@ -211,471 +78,371 @@ Suggested shape:
 }
 ```
 
-### `/sessions/active/{session_id}/transcript.jsonl`
+`current_session_id` is `null` when no session is active.
+`latest_handoff_path` is `null` when there is no prior completed session.
 
-Append-only raw conversation.
+---
 
-Contains:
+#### `/sessions/active/{session_id}/meta.json`
 
-- user messages
-- assistant messages
-- tool calls
-- tool results
-- timestamps
+```json
+{
+	"session_id": "2026-04-12T09-20-31Z_f83a",
+	"session_key": "user:alice:channel:web",
+	"user_id": "alice",
+	"started_at": "2026-04-12T09:20:31Z",
+	"last_activity_at": "2026-04-12T10:04:11Z",
+	"turn_count": 42,
+	"state": "active"
+}
+```
 
-### `/sessions/active/{session_id}/rolling-summary.md`
+`state` is one of: `active`, `closing`, `archived`.
 
-Short evolving summary of the current live session.
+---
 
-Used to avoid loading too much raw transcript into the model.
+#### `/sessions/active/{session_id}/transcript.jsonl`
 
-### `/sessions/archive/.../final-summary.md`
+One JSON object per line. Append-only. Never modified after writing.
 
-A more complete summary of what happened in a finished session.
+Four line types only:
 
-Useful for humans and explicit review.
+```jsonl
+{"ts": "2026-04-12T09:20:31Z", "role": "user", "content": "..."}
+{"ts": "2026-04-12T09:20:35Z", "role": "assistant", "content": "..."}
+{"ts": "2026-04-12T09:20:36Z", "role": "tool_call", "tool_name": "read_file", "input": {"path": "/soul.md"}}
+{"ts": "2026-04-12T09:20:37Z", "role": "tool_result", "tool_name": "read_file", "content": "..."}
+```
 
-### `/sessions/archive/.../handoff.md`
+Required fields per role:
 
-A small, operational summary for the next session.
+| role | required fields |
+|---|---|
+| `user` | `ts`, `role`, `content` |
+| `assistant` | `ts`, `role`, `content` |
+| `tool_call` | `ts`, `role`, `tool_name`, `input` |
+| `tool_result` | `ts`, `role`, `tool_name`, `content` |
 
-This is the main short-term memory bridge.
+No additional fields. `content` in `tool_result` is a string; JSON-serialise complex values. `input` in `tool_call` is an object.
 
-### `/memory/inbox/*.md`
+Transcripts are never loaded by default. They are only read when explicitly required (debugging, audit, explicit history review).
 
-Unreviewed or not-yet-promoted memory candidates.
+---
 
-Use this when the system notices something maybe durable but is not confident enough to merge it into the canonical profile yet.
+#### `/sessions/active/{session_id}/rolling-summary.md`
 
-### `/memory/people/{user_id}.md`
+**Trigger:** Regenerate after every 20 turns, or when the estimated token count of unread raw turns exceeds 4,000 — whichever comes first.
 
-Optional canonical long-term memory file for that person.
-
-This can be merged with `/profiles/{user_id}.md` if you want fewer moving parts.
-
-## Session Lifecycle
-
-### Start session
-
-1. Resolve the `session_key`.
-2. Read `/sessions/keys/{session_key}.json` if it exists.
-3. Decide whether to reuse the current session or open a new one.
-4. If reusing:
-	- load `soul.md`
-	- load profile
-	- load rolling summary
-	- load recent raw turns
-5. If starting new:
-	- create a new `session_id`
-	- create the active session folder
-	- update the `session_key` pointer
-	- load `soul.md`
-	- load profile
-	- load the previous handoff if present
-
-### During session
-
-For each turn:
-
-1. Append raw events to `transcript.jsonl`.
-2. Optionally update a small `meta.json`.
-3. Periodically regenerate `rolling-summary.md`.
-4. Build model context from:
-	- `soul.md`
-	- profile
-	- rolling summary
-	- recent raw turns
-
-### End session
-
-When rolling over:
-
-1. Finalize `final-summary.md`.
-2. Write `handoff.md`.
-3. Promote durable facts to long-term memory.
-4. Move the session folder from `active/` to `archive/YYYY/MM/`.
-5. Create a fresh active session for the same `session_key`.
-
-## When To Start A New Session
-
-Keep this policy simple.
-
-Recommended triggers:
-
-- explicit `/new`
-- idle timeout, for example 6 hours
-- daily rollover, if desired
-- transcript too large even after compaction
-
-Avoid clever hidden rules.
-
-## Prompt Assembly Rules
-
-### Existing active session
-
-Load:
-
-1. `/soul.md`
-2. `/profiles/{user_id}.md`
-3. `/sessions/active/{session_id}/rolling-summary.md`
-4. last N turns from `transcript.jsonl`
-
-### New session
-
-Load:
-
-1. `/soul.md`
-2. `/profiles/{user_id}.md`
-3. previous session `handoff.md`
-4. optionally previous `final-summary.md` only as fallback
-
-Do not automatically load the last few raw transcripts.
-
-That is expensive, noisy, and eventually unstable.
-
-## Summary Strategy
-
-This is the fuzzy part, so keep it narrow and concrete.
-
-Use two summaries, not one:
-
-### Rolling summary
-
-Purpose:
-
-- support the current active session
-- reduce context cost
-
-Properties:
-
-- short
-- frequently regenerated
-- disposable
-
-Suggested sections:
+**Template (exact, no deviations):**
 
 ```md
 # Rolling Summary
 
-## Current topic
+updated: {ISO8601}
 
-## Decisions so far
+## Current topic
+{1–3 sentences}
+
+## Decisions made
+{bullet list, max 5 items}
 
 ## Open questions
+{bullet list, max 5 items}
 
 ## Temporary facts
+{bullet list of facts that matter now but will not survive the session}
 ```
 
-### Handoff summary
+Maximum total length: 300 words. Write `none` for any section with nothing to say.
 
-Purpose:
+---
 
-- bridge from one session to the next
+#### `/sessions/archive/YYYY/MM/{session_id}/handoff.md`
 
-Properties:
+Written once at session end. Never updated after writing.
 
-- small
-- written once at session end
-- more stable than the rolling summary
+This is the only file loaded by default at the start of the next session. It must be fully self-contained.
 
-Suggested sections:
+**Template (exact, no deviations):**
 
 ```md
 # Handoff
 
-## Current context
+written: {ISO8601}
+session: {session_id}
 
-## Open loops
+## What we were doing
+{1–3 sentences describing the active task or conversation topic at session end}
 
-## Recent decisions
+## What is unresolved
+{bullet list, max 5 items — omit section if nothing is unresolved}
 
-## Temporary facts worth carrying
+## What changed that matters
+{bullet list, max 5 items of facts, decisions, or state changes with durable relevance}
 ```
 
-### Final summary
+Maximum total length: 200 words.
 
-Purpose:
+---
 
-- archive readability
-- explicit review
+#### `/sessions/archive/YYYY/MM/{session_id}/final-summary.md`
 
-Properties:
+Written once at session end. Not loaded by default. Used for human review and audit.
 
-- longer than handoff
-- not loaded by default
+**Template:**
 
-## Long-Term Memory Rules
+```md
+# Final Summary
 
-Only promote facts that are:
+written: {ISO8601}
+session: {session_id}
+duration: {started_at} → {ended_at}
 
-- stable
-- likely useful later
-- not tied to a single short-lived conversation
+## What happened
+{paragraph summary of the full session}
 
-Good candidates:
+## Key decisions
+{bullet list}
 
-- name
-- preferences
-- recurring projects
-- style preferences
-- standing instructions
-- important relationships
+## Facts worth preserving
+{bullet list of facts flagged as memory candidates for Frieren's inbox}
 
-Bad candidates:
+## Mood and tone
+{1 sentence characterising the session quality and user state, if notable — omit if unremarkable}
+```
 
-- one-off debugging details
-- ephemeral plans
-- temporary emotional states
-- session-specific logistics that will age badly
+No hard length limit. Prefer concise over exhaustive.
 
-If unsure, write to `/memory/inbox/*.md` instead of the canonical profile.
+---
 
-## Options
+### Session Lifecycle
 
-## Option A: Small And Minimal
+#### Starting a session
+
+1. Resolve `session_key` from the incoming message.
+2. Read `/sessions/keys/{session_key}.json`.
+	- File does not exist → start a new session.
+	- `current_session_id` is `null` → start a new session.
+	- `last_activity_at` is more than 6 hours ago → close the current session (run end-of-session steps), then start a new session.
+	- Otherwise → resume the existing session.
+3. **Resume existing session — load in order:**
+	1. `/soul.md`
+	2. `/profiles/{user_id}.md`
+	3. `/sessions/active/{session_id}/rolling-summary.md`
+	4. Last 20 turns from `transcript.jsonl`
+4. **Start new session:**
+	1. Generate `session_id`
+	2. Create `/sessions/active/{session_id}/` with `meta.json` (state: `active`) and empty `transcript.jsonl`
+	3. Update `/sessions/keys/{session_key}.json` to point to the new `session_id`
+	4. Load in order:
+		1. `/soul.md`
+		2. `/profiles/{user_id}.md`
+		3. `latest_handoff_path` if not `null`
+
+Do not load old raw transcripts when starting a new session.
+
+#### During a session
+
+For every turn:
+
+1. Append the turn to `transcript.jsonl` immediately, before generating a response.
+2. Update `last_activity_at` and increment `turn_count` in `meta.json`.
+3. Check rolling summary trigger. If triggered, regenerate `rolling-summary.md`.
+
+#### Ending a session
+
+Triggered by: explicit `/new` command, idle timeout (6 hours), or `turn_count` exceeding 200.
+
+1. Set `state` to `closing` in `meta.json`.
+2. Write `final-summary.md`.
+3. Write `handoff.md`.
+4. Write memory inbox candidates to `/memory/inbox/` (see Part 2).
+5. Move the session folder from `/sessions/active/{session_id}/` to `/sessions/archive/YYYY/MM/{session_id}/`.
+6. Set `state` to `archived` in `meta.json`.
+7. Update `/sessions/keys/{session_key}.json`: set `current_session_id` to `null`, set `latest_handoff_path` to the new handoff path.
+
+---
+
+### Prompt Assembly
+
+**Resuming existing session:**
+
+```
+1. /soul.md
+2. /profiles/{user_id}.md
+3. /sessions/active/{session_id}/rolling-summary.md
+4. last 20 turns from transcript.jsonl
+```
+
+**Starting new session:**
+
+```
+1. /soul.md
+2. /profiles/{user_id}.md
+3. {latest_handoff_path}  (skip if null)
+```
+
+No other files are loaded by default. Loading additional context — old transcripts, archived summaries, memory files — is Frieren's decision during her turn, not the system's.
+
+---
+
+## Part 2: Memory Layer (Frieren-Owned)
+
+Frieren owns the entire filesystem below `/memory/`, with one exception: the system writes to `/memory/inbox/` as the hand-off mechanism. Everything else — directory structure, file names, organisation strategy — is Frieren's to create, restructure, and maintain as she sees fit. The layout is expected to evolve over time.
 
 ### Layout
 
-```text
-/soul.md
-/profiles/{user_id}.md
-/sessions/keys/{session_key}.json
-/sessions/active/{session_id}/transcript.jsonl
-/sessions/archive/.../{session_id}/transcript.jsonl
-/sessions/archive/.../{session_id}/handoff.md
 ```
-
-### Behavior
-
-- keep full transcript forever
-- no rolling summary
-- new sessions load:
-	- `soul.md`
-	- profile
-	- previous handoff
-- long-term memory is just `/profiles/{user_id}.md`
-
-### Advantages
-
-- easiest to implement
-- easiest to inspect manually
-- very few files and moving parts
-- good enough for many personal assistant use cases
-
-### Disadvantages
-
-- active sessions can get large
-- no good in-session compaction mechanism
-- handoff quality matters more because there is no separate rolling summary
-- less flexible if you later want search or memory review workflows
-
-### Best for
-
-- single user
-- low to medium conversation volume
-- early prototype
-- preference for maximum simplicity
-
-## Option B: Balanced Recommended
-
-### Layout
-
-```text
-/soul.md
-/profiles/{user_id}.md
-/sessions/keys/{session_key}.json
-/sessions/active/{session_id}/
-	meta.json
-	transcript.jsonl
-	rolling-summary.md
-/sessions/archive/.../{session_id}/
-	meta.json
-	transcript.jsonl
-	final-summary.md
-	handoff.md
-/memory/inbox/
-```
-
-### Behavior
-
-- keep full transcript forever
-- maintain a rolling summary while the session is active
-- write a handoff and final summary when the session closes
-- promote durable facts into profile or inbox
-
-### Advantages
-
-- still understandable
-- much better short-term continuity
-- active session context stays small
-- archive stays readable
-- separates current compression from next-session carry-over cleanly
-
-### Disadvantages
-
-- more files
-- needs summary generation policy
-- requires a small amount of memory promotion logic
-
-### Best for
-
-- the system you likely want
-- one or more persistent users
-- long conversations
-- filesystem-first debugging and maintenance
-
-## Option C: Full And Powerful
-
-### Layout
-
-```text
-/soul.md
-/profiles/{user_id}.md
-/sessions/index.json
-/sessions/keys/{session_key}.json
-/sessions/active/{session_id}/
-	meta.json
-	transcript.jsonl
-	rolling-summary.md
-	checkpoints/
-		{timestamp}.md
-/sessions/archive/.../{session_id}/
-	meta.json
-	transcript.jsonl
-	final-summary.md
-	handoff.md
-	extracted-facts.json
 /memory/
+	STRUCTURE.md               ← Frieren's own documentation of her current layout
 	inbox/
-	people/
-	topics/
-	projects/
-	events/
-	reviews/
+		{YYYY-MM-DD-HHMM}-{slug}.md   ← written by system at session end only
+	{... everything else Frieren decides ...}
 ```
 
-### Behavior
+---
 
-- everything in the balanced option
-- periodic checkpoint summaries inside active sessions
-- extracted facts separated from natural-language summaries
-- richer long-term memory namespaces
-- optional indexing or search over archived session summaries
-- optional review flow for memory promotion
+### Inbox
 
-### Advantages
+The inbox is the boundary between the system and Frieren's memory layer. The system writes candidates here at session end. One file per candidate.
 
-- most scalable
-- richest introspection
-- better support for search and structured memory
-- easier to build review and dedupe workflows later
+**Inbox file format:**
 
-### Disadvantages
+```md
+---
+captured: {ISO8601}
+session: {session_id}
+user: {user_id}
+confidence: low|medium|high
+---
 
-- significantly more complexity
-- easier to over-engineer
-- harder to keep prompts and promotion logic disciplined
-- more maintenance burden
+{the fact, observation, preference, or material to consider}
+```
 
-### Best for
+Inbox files are never modified after writing. Frieren reads and processes them during reflection passes. She does not write to the inbox directly.
 
-- many long-lived users
-- large memory corpus
-- explicit review workflows
-- future semantic search or retrieval plans
+---
 
-## Tradeoffs
+### Reflection Pass
 
-### Simplicity vs capability
+Frieren runs a reflection pass at the start of each new session, after loading soul.md, the profile, and the handoff — before the conversation begins.
 
-- minimal is easiest to trust
-- balanced is the best practical compromise
-- full is best only if you are sure you need the extra machinery
+During a reflection pass, Frieren:
 
-### Raw transcript loading vs summary loading
+1. Reads `/memory/STRUCTURE.md` to recall her current layout.
+2. Reads all files in `/memory/inbox/`.
+3. For each inbox file, decides one of:
+	- **Absorb**: integrate the fact into an existing memory file.
+	- **Create**: create a new memory file if no suitable category exists.
+	- **Defer**: leave the inbox file in place and revisit next session.
+	- **Discard**: the information is no longer relevant, incorrect, or too ephemeral to keep.
+4. Evaluates whether the current memory layout still serves retrieval well.
+5. If reorganisation is warranted: moves, merges, renames, or removes files, then updates `STRUCTURE.md`.
+6. Deletes processed inbox files.
 
-- raw transcript loading preserves fidelity
-- summary loading preserves budget and signal
-- the right default is:
-	- recent raw turns for the active session
-	- a handoff summary for the next session
+The reflection pass must complete in one focused agent turn before the session continues. If the inbox is large, prefer deferring over processing slowly.
 
-### One profile file vs many memory buckets
+---
 
-- one profile file is simpler and often enough
-- many memory buckets are cleaner at scale
-- start with one profile file and an inbox
+### `/memory/STRUCTURE.md`
 
-### Automatic promotion vs cautious promotion
+Frieren writes and maintains this file. It documents her current organisation and her reasoning for it.
 
-- aggressive promotion increases recall
-- aggressive promotion also increases memory pollution
-- default to cautious promotion
+It must answer:
 
-## Recommended Plan
+- What directories and files currently exist under `/memory/`?
+- Why is the information organised this way?
+- What changed in the most recent reorganisation, and why?
 
-Build Option B first.
+This file is loaded at the start of every reflection pass. It is not loaded during normal sessions.
 
-Specifically:
+Example (illustrative only — the actual structure is Frieren's to decide):
 
-1. Keep `/soul.md` as the always-loaded root prompt.
-2. Add `/profiles/{user_id}.md` as the canonical long-term memory file.
-3. Replace the single flat `conversation` table with a filesystem session layout.
-4. Introduce `session_key` and `session_id`.
-5. Store raw transcript as `transcript.jsonl`.
-6. Maintain `rolling-summary.md` during the session.
-7. Write `handoff.md` and `final-summary.md` at session end.
-8. Add `/memory/inbox/` for uncertain memory candidates.
+```md
+# Memory Structure
 
-This gives:
+last updated: 2026-04-12
 
-- preserved raw history
-- compact carry-over between sessions
-- explicit long-term memory files
-- a model that stays easy to debug
+## Current layout
 
-## Suggested First Implementation Scope
+- `people/alice.md` — long-term facts about Alice: preferences, context, standing instructions
+- `projects/frieren.md` — notes on the Frieren project: current state, decisions, open threads
+- `preferences.md` — cross-session patterns and recurring preferences not tied to one person
 
-For the first pass, do only this:
+## Rationale
 
-- `soul.md`
-- `profiles/{user_id}.md`
-- `sessions/keys/{session_key}.json`
-- `sessions/active/{session_id}/transcript.jsonl`
-- `sessions/active/{session_id}/rolling-summary.md`
-- `sessions/archive/.../{session_id}/final-summary.md`
-- `sessions/archive/.../{session_id}/handoff.md`
-- `memory/inbox/`
+Merged `topics/` into `projects/` after noticing topic files were always project-specific.
+Removed `events/` because time-indexed facts were more usefully stored inside person or project files.
 
-Skip for now:
+## Last change
 
-- search
-- structured extracted facts
-- topic/project/event memory splits
-- multi-level checkpointing
+2026-04-10: collapsed three thin topic files into `projects/frieren.md`.
+```
 
-## Concrete Recommendation For `apps/frieren`
+---
 
-Refactor the current implementation so that:
+### Memory Promotion Guidelines
 
-- `/soul.md` stays as-is
-- the agent no longer restores one global `conversation` table as the single truth
-- each chat runs against a resolved `session_key`
-- the current session transcript is stored as a file under `/sessions/active/`
-- archived sessions move to `/sessions/archive/`
-- the next new session loads profile plus handoff instead of old raw transcripts
+Frieren decides what to promote. These are guidelines for her judgment, not system constraints:
 
-The filesystem should be the source of truth.
+**Promote:**
+- Stable facts specific to the user (name, timezone, preferences, standing instructions)
+- Recurring projects and their current state
+- Confirmed patterns in user communication or working style
 
-If SQL is used, it should support the filesystem, not compete with it as a second conversation model.
+**Do not promote:**
+- One-off debugging details
+- Ephemeral plans that have already resolved
+- Session-specific logistics
+- Anything with an expiry implied by its nature
 
-## Follow-Up Work
+**When uncertain:** write to inbox with `confidence: low` rather than promoting directly.
 
-A good next step would be to turn this document into:
+**Prefer updating existing files** over creating new ones. If a file grows unwieldy, split it — but update `STRUCTURE.md` to explain the split.
 
-- a Python `SessionManager` interface
-- exact JSON schemas for `meta.json` and `keys/{session_key}.json`
-- transcript event schema for `transcript.jsonl`
-- prompt assembly code
-- session rollover rules
-- memory promotion rules
+---
+
+## Profiles
+
+### `/profiles/{user_id}.md`
+
+The user profile is a filesystem file maintained by Frieren under a fixed schema. It is loaded on every session. Frieren may update the content within sections but must not rename or remove sections.
+
+**Template (fixed sections):**
+
+```md
+# Profile: {user_id}
+
+updated: {ISO8601}
+
+## Identity
+name: {display name}
+timezone: {IANA timezone string}
+preferred language: {language}
+
+## Standing instructions
+{bullet list of explicit user-given instructions that always apply}
+
+## Recurring projects
+{bullet list of active long-term projects}
+
+## Preferences
+{bullet list of confirmed style, communication, and behavior preferences}
+```
+
+Maximum length: 300 words. Keep it current; remove facts that are no longer true.
+
+Long-form or evolving notes about the user belong in Frieren's memory layer, not here.
+
+---
+
+## `/soul.md`
+
+Always loaded. Never modified by Frieren or the system at runtime.
+
+Contains:
+- Frieren's identity
+- Tone and behavior rules
+- Standing operating instructions
+
+Changes to `/soul.md` are made by the developer only.
