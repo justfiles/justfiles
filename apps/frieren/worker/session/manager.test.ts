@@ -252,7 +252,7 @@ describe('closeSession', () => {
 })
 
 describe('maybeUpdateRollingSummary', () => {
-	it('writes a rolling summary after enough completed turns', async () => {
+	it('writes a rolling summary when older turns no longer fit in the retained tail budget', async () => {
 		const calls: Array<{ systemPrompt: string; userPrompt: string }> = []
 		const generate: GenerateText = async (systemPrompt, userPrompt) => {
 			calls.push({ systemPrompt, userPrompt })
@@ -266,22 +266,30 @@ describe('maybeUpdateRollingSummary', () => {
 			await runtime.runPromise(
 				Effect.flatMap(TranscriptStore, (store) =>
 					store.append(sessionId, [
-						{ ts: 't1', role: 'user', content: 'first' },
-						{ ts: 't2', role: 'assistant', content: 'one' },
-						{ ts: 't3', role: 'user', content: 'second' },
-						{ ts: 't4', role: 'assistant', content: 'two' },
-						{ ts: 't5', role: 'user', content: 'third' },
-						{ ts: 't6', role: 'assistant', content: 'three' },
+						{ ts: 't1', role: 'user', content: 'first '.repeat(48) },
+						{ ts: 't2', role: 'assistant', content: 'one '.repeat(48) },
+						{ ts: 't3', role: 'user', content: 'second '.repeat(48) },
+						{ ts: 't4', role: 'assistant', content: 'two '.repeat(48) },
+						{ ts: 't5', role: 'user', content: 'third '.repeat(48) },
+						{ ts: 't6', role: 'assistant', content: 'three '.repeat(48) },
 					]),
 				),
 			)
 
-			const updated = await runtime.runPromise(maybeUpdateRollingSummary(sessionId))
+			const updated = await runtime.runPromise(
+				maybeUpdateRollingSummary(sessionId, {
+					contextTokenBudget: 60,
+					responseReserveTokens: 0,
+				}),
+			)
 
 			expect(updated).toBe(true)
 			expect(calls).toHaveLength(1)
 			expect(calls[0]!.systemPrompt).toContain('rolling summary')
-			expect(calls[0]!.userPrompt).toContain('Transcript:')
+			expect(calls[0]!.userPrompt).toContain('Transcript head to fold in:')
+			expect(calls[0]!.userPrompt).toContain('first')
+			expect(calls[0]!.userPrompt).toContain('second')
+			expect(calls[0]!.userPrompt).not.toContain('third')
 			expect(dec.decode(await vol.readFile(PATHS.rollingSummary(sessionId)))).toBe(
 				'# Rolling Summary\nUser is building session summaries.',
 			)
@@ -290,7 +298,7 @@ describe('maybeUpdateRollingSummary', () => {
 		}
 	})
 
-	it('skips summary generation before the trigger threshold', async () => {
+	it('skips summary generation while the retained tail still fits in budget', async () => {
 		const calls: Array<{ systemPrompt: string; userPrompt: string }> = []
 		const generate: GenerateText = async (systemPrompt, userPrompt) => {
 			calls.push({ systemPrompt, userPrompt })
@@ -312,7 +320,12 @@ describe('maybeUpdateRollingSummary', () => {
 				),
 			)
 
-			const updated = await runtime.runPromise(maybeUpdateRollingSummary(sessionId))
+			const updated = await runtime.runPromise(
+				maybeUpdateRollingSummary(sessionId, {
+					contextTokenBudget: 200,
+					responseReserveTokens: 0,
+				}),
+			)
 
 			expect(updated).toBe(false)
 			expect(calls).toHaveLength(0)

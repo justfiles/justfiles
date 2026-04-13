@@ -221,23 +221,31 @@ describe('loadRehydrationMessages', () => {
 		}
 	})
 
-	it('caps the tail to the requested limit', async () => {
+	it('keeps whole recent turns inside the token budget', async () => {
 		const { runtime } = setup()
 		try {
 			const sessionId = await runtime.runPromise(startNewSession())
-			const lines: TranscriptLine[] = []
-			for (let i = 0; i < 10; i++) {
-				lines.push({ ts: `t${i}a`, role: 'user', content: `q${i}` })
-				lines.push({ ts: `t${i}b`, role: 'assistant', content: `a${i}` })
-			}
+			const lines: TranscriptLine[] = [
+				{ ts: 't1a', role: 'user', content: 'a'.repeat(256) },
+				{ ts: 't1b', role: 'assistant', content: 'b'.repeat(256) },
+				{ ts: 't2a', role: 'user', content: 'c'.repeat(256) },
+				{ ts: 't2b', role: 'assistant', content: 'd'.repeat(256) },
+				{ ts: 't3a', role: 'user', content: 'e'.repeat(256) },
+				{ ts: 't3b', role: 'assistant', content: 'f'.repeat(256) },
+			]
 			await runtime.runPromise(
 				Effect.flatMap(TranscriptStore, (s) => s.append(sessionId, lines)),
 			)
 
-			const rehydrated = await runtime.runPromise(loadRehydrationMessages(sessionId, 4))
+			const rehydrated = await runtime.runPromise(
+				loadRehydrationMessages(sessionId, {
+					contextTokenBudget: 300,
+					responseReserveTokens: 0,
+				}),
+			)
 			expect(rehydrated).toHaveLength(4)
-			expect(rehydrated[0]).toEqual({ role: 'user', content: 'q8' })
-			expect(rehydrated[3]).toEqual({ role: 'assistant', content: 'a9' })
+			expect(rehydrated[0]).toEqual({ role: 'user', content: 'c'.repeat(256) })
+			expect(rehydrated[3]).toEqual({ role: 'assistant', content: 'f'.repeat(256) })
 		} finally {
 			await runtime.dispose()
 		}

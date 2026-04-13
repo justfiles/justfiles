@@ -328,7 +328,9 @@ export class Frieren extends DurableObject<Env> {
 					// so the model sees the same conversation the user does.
 					try {
 						const lines = await this.sessionRuntime.runPromise(
-							loadRehydrationMessages(sessionId),
+							loadRehydrationMessages(sessionId, {
+								systemPrompt: prepared.systemPrompt,
+							}),
 						);
 						if (lines.length > 0) {
 							agent.state.messages = this.buildRehydratedMessages(lines);
@@ -373,7 +375,9 @@ export class Frieren extends DurableObject<Env> {
 						);
 						try {
 							await this.sessionRuntime.runPromise(
-								maybeUpdateRollingSummary(sessionId),
+								maybeUpdateRollingSummary(sessionId, {
+									systemPrompt: prepared.systemPrompt,
+								}),
 							);
 						} catch (err) {
 							console.error('Failed to update rolling summary', err);

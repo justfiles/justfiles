@@ -54,7 +54,15 @@ export interface DisplayMessage {
 }
 
 export const DEFAULT_HISTORY_LIMIT = 10
-export const DEFAULT_ROLLING_SUMMARY_TRIGGER_TURNS = 3
+export const DEFAULT_CONTEXT_TOKEN_BUDGET = 4096
+export const DEFAULT_RESPONSE_RESERVE_TOKENS = 1024
+export const MIN_RETAINED_TAIL_TOKENS = 256
+
+export interface TokenBudgetOptions {
+	readonly systemPrompt?: string
+	readonly contextTokenBudget?: number
+	readonly responseReserveTokens?: number
+}
 
 export const resolveLifecycle = (
 	idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
@@ -241,7 +249,7 @@ export const persistTurn = (
 
 export const maybeUpdateRollingSummary = (
 	sessionId: string,
-	triggerTurns: number = DEFAULT_ROLLING_SUMMARY_TRIGGER_TURNS,
+	options: TokenBudgetOptions = {},
 ): Effect.Effect<
 	boolean,
 	StorageFailure | SessionNotFound | GenerationFailure,
@@ -252,14 +260,18 @@ export const maybeUpdateRollingSummary = (
 		const context = yield* ContextStore
 		const text = yield* TextGenerator
 		const lines = yield* transcript.readAll(sessionId)
+		const normalized = normalizeRehydrationLines(lines)
+		const retainedTail = selectRetainedTail(
+			normalized,
+			getRetainedTailTokenBudget(options),
+		)
+		const keptStart = retainedTail[0]?.sourceStart ?? lines.length
 
-		const completedTurns = countCompletedTurns(lines)
-		console.log({ completedTurns, triggerTurns })
-		if (completedTurns < triggerTurns || completedTurns % triggerTurns !== 0) {
+		if (retainedTail.length === 0 || keptStart <= 0) {
 			return false
 		}
 
-		const transcriptText = serializeTranscript(lines)
+		const transcriptText = serializeTranscript(lines.slice(0, keptStart))
 		if (transcriptText.trim().length === 0) return false
 
 		const existing = yield* context.readRollingSummary(sessionId)
@@ -268,13 +280,13 @@ export const maybeUpdateRollingSummary = (
 			systemPrompt:
 				'You maintain a compact rolling summary for resumed chat sessions. Focus on durable context, current work, user preferences, decisions, and open threads.',
 			userPrompt: [
-				'Write a concise rolling summary for the active session.',
-				'This summary will be injected into the system prompt on resumed turns.',
-				'Prefer stable facts, current tasks, and unresolved follow-ups over verbatim dialogue.',
+				'Update the rolling summary for the active session.',
+				'Fold the older transcript head into the summary and leave the retained recent tail out of the summary.',
+				'Prefer stable facts, current tasks, user preferences, decisions, and unresolved follow-ups over verbatim dialogue.',
 				existing
 					? `Existing rolling summary:\n\n${existing}`
 					: null,
-				`Transcript:\n\n${transcriptText}`,
+				`Transcript head to fold in:\n\n${transcriptText}`,
 			]
 				.filter((part) => part !== null)
 				.join('\n\n'),
@@ -353,11 +365,9 @@ export type RehydrationLine =
 	| { readonly role: 'user'; readonly content: string }
 	| { readonly role: 'assistant'; readonly content: string }
 
-export const DEFAULT_REHYDRATION_LIMIT = 40
-
 export const loadRehydrationMessages = (
 	sessionId: string,
-	limit: number = DEFAULT_REHYDRATION_LIMIT,
+	options: TokenBudgetOptions = {},
 ): Effect.Effect<
 	ReadonlyArray<RehydrationLine>,
 	StorageFailure | SessionNotFound,
@@ -365,45 +375,11 @@ export const loadRehydrationMessages = (
 > =>
 	Effect.gen(function* () {
 		const transcript = yield* TranscriptStore
-		const lines = yield* transcript.readLastN(sessionId, limit * 4)
-		const textOnly: RehydrationLine[] = []
-		for (const line of lines) {
-			if (line.role !== 'user' && line.role !== 'assistant') continue
-			const prev = textOnly[textOnly.length - 1]
-			if (prev && prev.role === line.role) {
-				// Coalesce consecutive same-role lines. extractTranscriptLines
-				// splits one model turn into multiple assistant lines whenever
-				// tool calls are interleaved with text; after dropping tools
-				// here, the survivors must be merged or providers reject the
-				// back-to-back same-role sequence.
-				textOnly[textOnly.length - 1] = {
-					role: prev.role,
-					content: prev.content + line.content,
-				}
-			} else {
-				textOnly.push({ role: line.role, content: line.content })
-			}
-		}
-		// Drop any leading assistant messages so the rehydrated tail always
-		// starts at a user-message boundary — providers accept that shape
-		// unambiguously and it avoids orphan assistant turns.
-		let start = 0
-		while (start < textOnly.length && textOnly[start]!.role !== 'user') {
-			start++
-		}
-
-		const normalized = textOnly.slice(start)
-
-		// A cold-start resume only happens once a *new* user prompt arrives.
-		// If the transcript tail already ends in an unanswered user message from
-		// a prior failed/aborted turn, rehydrating it would stack that stale
-		// request directly before the fresh prompt. Local models then tend to
-		// continue the old request instead of answering the new one.
-		if (normalized.at(-1)?.role === 'user') {
-			normalized.pop()
-		}
-
-		return normalized.slice(-limit)
+		const lines = yield* transcript.readAll(sessionId)
+		return selectRetainedTail(
+			normalizeRehydrationLines(lines),
+			getRetainedTailTokenBudget(options),
+		).map(({ role, content }) => ({ role, content }))
 	})
 
 export const loadRecentHistory = (
@@ -512,32 +488,118 @@ function serializeTranscript(lines: ReadonlyArray<TranscriptLine>): string {
 		.join('\n')
 }
 
-function countCompletedTurns(lines: ReadonlyArray<TranscriptLine>): number {
-	let turns = 0
-	let sawUser = false
-	let sawAssistant = false
+type IndexedRehydrationLine = RehydrationLine & {
+	readonly sourceStart: number
+}
 
-	for (const line of lines) {
-		if (line.role === 'user') {
-			if (sawUser && sawAssistant) {
-				turns++
+function normalizeRehydrationLines(
+	lines: ReadonlyArray<TranscriptLine>,
+): Array<IndexedRehydrationLine> {
+	const textOnly: IndexedRehydrationLine[] = []
+
+	for (const [index, line] of lines.entries()) {
+		if (line.role !== 'user' && line.role !== 'assistant') continue
+
+		const prev = textOnly[textOnly.length - 1]
+		if (prev && prev.role === line.role) {
+			textOnly[textOnly.length - 1] = {
+				role: prev.role,
+				content: prev.content + line.content,
+				sourceStart: prev.sourceStart,
 			}
-			sawUser = true
-			sawAssistant = false
 			continue
 		}
 
-		if (
-			sawUser &&
-			(line.role === 'assistant' || line.role === 'assistant_thinking' || line.role === 'tool_call' || line.role === 'tool_result')
-		) {
-			sawAssistant = true
-		}
+		textOnly.push({
+			role: line.role,
+			content: line.content,
+			sourceStart: index,
+		})
 	}
 
-	if (sawUser && sawAssistant) {
-		turns++
+	let start = 0
+	while (start < textOnly.length && textOnly[start]!.role !== 'user') {
+		start++
+	}
+
+	const normalized = textOnly.slice(start)
+
+	// A cold-start resume only happens once a *new* user prompt arrives.
+	// If the transcript tail already ends in an unanswered user message from
+	// a prior failed/aborted turn, rehydrating it would stack that stale
+	// request directly before the fresh prompt.
+	if (normalized.at(-1)?.role === 'user') {
+		normalized.pop()
+	}
+
+	return normalized
+}
+
+function selectRetainedTail(
+	lines: ReadonlyArray<IndexedRehydrationLine>,
+	budgetTokens: number,
+): Array<IndexedRehydrationLine> {
+	const turns = toCompletedTurns(lines)
+	if (turns.length === 0) return []
+
+	const kept: IndexedRehydrationLine[] = []
+	let tokens = 0
+
+	for (let i = turns.length - 1; i >= 0; i--) {
+		const turn = turns[i]!
+		if (kept.length > 0 && tokens + turn.tokens > budgetTokens) break
+		kept.unshift(...turn.lines)
+		tokens += turn.tokens
+	}
+
+	return kept.length > 0 ? kept : [...turns[turns.length - 1]!.lines]
+}
+
+function toCompletedTurns(
+	lines: ReadonlyArray<IndexedRehydrationLine>,
+): Array<{ readonly lines: Array<IndexedRehydrationLine>; readonly tokens: number }> {
+	const turns: Array<{ lines: Array<IndexedRehydrationLine>; tokens: number }> = []
+	let current: Array<IndexedRehydrationLine> = []
+	let tokens = 0
+
+	for (const line of lines) {
+		if (line.role === 'user') {
+			if (current.length > 0) {
+				turns.push({ lines: current, tokens })
+			}
+			current = [line]
+			tokens = estimateMessageTokens(line.content)
+			continue
+		}
+
+		if (current.length === 0) continue
+		current.push(line)
+		tokens += estimateMessageTokens(line.content)
+	}
+
+	if (current.some((line) => line.role === 'assistant')) {
+		turns.push({ lines: current, tokens })
 	}
 
 	return turns
+}
+
+function getRetainedTailTokenBudget(options: TokenBudgetOptions): number {
+	const contextTokenBudget = options.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET
+	const responseReserveTokens = options.responseReserveTokens ?? DEFAULT_RESPONSE_RESERVE_TOKENS
+	const systemPromptTokens = estimateTokens(options.systemPrompt ?? '')
+	return Math.max(
+		MIN_RETAINED_TAIL_TOKENS,
+		contextTokenBudget - responseReserveTokens - systemPromptTokens,
+	)
+}
+
+function estimateMessageTokens(content: string): number {
+	return estimateTokens(content) + 4
+}
+
+function estimateTokens(content: string): number {
+	const normalized = content.trim()
+	if (normalized.length === 0) return 0
+	return Math.ceil(normalized.length / 4)
 }
