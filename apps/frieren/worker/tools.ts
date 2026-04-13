@@ -99,6 +99,87 @@ const fetchParams = Type.Object({
 	url: Type.String({ description: 'Absolute https:// URL of the web page to read' }),
 });
 
+const searchParams = Type.Object({
+	query: Type.String({ description: 'Search query' }),
+});
+
+export function createSearchTool(): AgentTool<typeof searchParams> {
+	return {
+		name: 'search',
+		label: 'Web Search',
+		description: 'Search the web and return a list of results (title, url, snippet). Use this to find pages, then call the fetch tool on promising URLs to read their contents.',
+		parameters: searchParams,
+		async execute(_toolCallId, params, signal) {
+			const res = await fetch('https://html.duckduckgo.com/html/', {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/x-www-form-urlencoded',
+					'user-agent': 'Mozilla/5.0 (compatible; FrierenAgent/1.0)',
+				},
+				body: `q=${encodeURIComponent(params.query)}`,
+				signal,
+			});
+			if (!res.ok) {
+				throw new Error(`DuckDuckGo returned HTTP ${res.status}`);
+			}
+			const html = await res.text();
+			const results = parseDuckDuckGoResults(html).slice(0, 10);
+			if (results.length === 0) {
+				return {
+					content: [{ type: 'text', text: `No results for "${params.query}".` }],
+					details: { query: params.query, count: 0 },
+				};
+			}
+			const text = results
+				.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
+				.join('\n\n');
+			return {
+				content: [{ type: 'text', text }],
+				details: { query: params.query, count: results.length, results },
+			};
+		},
+	};
+}
+
+interface SearchResult { title: string; url: string; snippet: string }
+
+function parseDuckDuckGoResults(html: string): SearchResult[] {
+	const results: SearchResult[] = [];
+	const blockRe = /<a rel="nofollow" class="result__a" href="([^"]+)">([\s\S]*?)<\/a>[\s\S]*?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+	let m: RegExpExecArray | null;
+	while ((m = blockRe.exec(html)) !== null) {
+		const rawUrl = decodeHtmlEntities(m[1]);
+		results.push({
+			url: unwrapDuckDuckGoUrl(rawUrl),
+			title: stripTags(m[2]),
+			snippet: stripTags(m[3]),
+		});
+	}
+	return results;
+}
+
+function stripTags(s: string): string {
+	return decodeHtmlEntities(s.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim();
+}
+
+function decodeHtmlEntities(s: string): string {
+	return s
+		.replace(/&amp;/g, '&')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'")
+		.replace(/&#x2F;/g, '/');
+}
+
+function unwrapDuckDuckGoUrl(url: string): string {
+	// DDG wraps outbound links like //duckduckgo.com/l/?uddg=<encoded>&rut=...
+	const match = url.match(/[?&]uddg=([^&]+)/);
+	if (match) return decodeURIComponent(match[1]);
+	if (url.startsWith('//')) return 'https:' + url;
+	return url;
+}
+
 export function createFetchTool(): AgentTool<typeof fetchParams> {
 	return {
 		name: 'fetch',
