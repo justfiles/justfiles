@@ -6,7 +6,7 @@ import type { Message } from "@mariozechner/pi-ai";
 import { volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
 import { createFrierenApiApp, type FrierenApiType } from './app.ts';
-import { createFsTools, createFetchTool } from "./tools.ts";
+import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
 import { createSessionManager } from "./session/manager.ts";
 import { createTranscriptWriter } from "./session/transcript.ts";
 import { buildSystemPrompt, windowMessages } from "./session/context.ts";
@@ -83,7 +83,7 @@ export class Frieren extends DurableObject<Env> {
 		const model = BACKEND === 'local' ? localModel : openaiModel;
 		const apiKey = BACKEND === 'local' ? 'lm-studio' : this.env.OPENAI_API_KEY;
 
-		const tools = [...createFsTools(this.vol), createFetchTool()];
+		const tools = [...createFsTools(this.vol), createFetchTool(), createSearchTool()];
 
 		const agent = new Agent({
 			initialState: {
