@@ -513,10 +513,13 @@ What is still missing:
 	- `frieren.ts` rebuilds `agent.state.messages` from that tail when `prepareTurn` resolves to `resume` and the agent's in-memory state is empty
 	- failures are logged and fall through to an empty message list so the turn still proceeds
 	- `windowMessages(20)` in `transformContext` continues to bound per-call context
+- rolling summary generation during active sessions (Phase B):
+	- `maybeUpdateRollingSummary` regenerates `rolling-summary.md` from the active session transcript on a conservative completed-turn trigger
+	- `frieren.ts` runs rolling summary updates after transcript persistence as a best-effort background maintenance step
+	- `buildSystemPrompt` now consumes a file that is actually written during active sessions, not just at resume time
 
 ### Not Done Yet
 
-- rolling summary generation during active sessions (Phase B)
 - token-budget-driven tail retention with compaction into the rolling summary (Phase C)
 - memory inbox extraction on close
 - reflection / inbox processing pass
@@ -548,19 +551,7 @@ Outcome:
 
 ### Phase B: Rolling Summary
 
-Add rolling summary generation to the active internal session. Depends on Phase A so the model sees both a recent verbatim tail and a narrative recap of older turns.
-
-Likely shape:
-
-- add a program such as `maybeUpdateRollingSummary`
-- trigger it from turn persistence after enough transcript growth
-- use transcript growth or estimated token growth as summary triggers
-- `buildSystemPrompt` already reads `rolling-summary.md` for resumed sessions; this phase just starts writing it
-
-Outcome:
-
-- long internal sessions stay resumable without relying only on raw recent turns
-- the model sees older conversation as a summary plus a verbatim recent tail
+Done. `maybeUpdateRollingSummary` now regenerates `rolling-summary.md` from the active transcript once enough completed turns have accumulated, and `frieren.ts` triggers it after successful turn persistence. `buildSystemPrompt` already read `rolling-summary.md`; this phase made that file live.
 
 ### Phase C: Token-Budget-Driven Tail Retention
 

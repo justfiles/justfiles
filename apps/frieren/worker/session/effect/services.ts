@@ -97,6 +97,10 @@ export class ContextStore extends Context.Tag('Frieren/ContextStore')<
 		readonly readRollingSummary: (
 			sessionId: string,
 		) => Effect.Effect<string | null, StorageFailure>
+		readonly writeRollingSummary: (
+			sessionId: string,
+			summary: string,
+		) => Effect.Effect<void, StorageFailure>
 		readonly readHandoff: (
 			path: string,
 		) => Effect.Effect<string | null, StorageFailure>
