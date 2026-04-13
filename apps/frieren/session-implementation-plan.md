@@ -517,10 +517,15 @@ What is still missing:
 	- `maybeUpdateRollingSummary` regenerates `rolling-summary.md` from the active session transcript on a conservative completed-turn trigger
 	- `frieren.ts` runs rolling summary updates after transcript persistence as a best-effort background maintenance step
 	- `buildSystemPrompt` now consumes a file that is actually written during active sessions, not just at resume time
+- token-budget-driven tail retention with compaction into the rolling summary (Phase C):
+	- `loadRehydrationMessages` now derives the retained tail from a token budget instead of a fixed message-count limit
+	- token budgeting accounts for the prepared system prompt so the retained tail shares budget with prompt assembly
+	- retained-tail cuts stay at user-message boundaries so resumed context rehydrates as whole text turns
+	- `maybeUpdateRollingSummary` now folds only the transcript head that falls outside the retained tail budget into `rolling-summary.md`
+	- `frieren.ts` passes the per-turn system prompt into both rehydration and rolling-summary maintenance so both decisions are driven by the same budget inputs
 
 ### Not Done Yet
 
-- token-budget-driven tail retention with compaction into the rolling summary (Phase C)
 - memory inbox extraction on close
 - reflection / inbox processing pass
 - permanent memory store beyond prompt/profile/session files
@@ -553,20 +558,21 @@ Outcome:
 
 Done. `maybeUpdateRollingSummary` now regenerates `rolling-summary.md` from the active transcript once enough completed turns have accumulated, and `frieren.ts` triggers it after successful turn persistence. `buildSystemPrompt` already read `rolling-summary.md`; this phase made that file live.
 
-### Phase C: Token-Budget-Driven Tail Retention
+### Phase C: Token-Budget-Driven Tail Retention (done)
 
-With Phase A and Phase B both in place, replace the fixed-count rehydration cap and the growth-trigger for the rolling summary with token-budget logic. Depends strictly on A and B.
+Done. Rehydration and rolling-summary maintenance now use token-budget logic instead of fixed-count retention.
 
-Likely shape:
+Implemented shape:
 
-- estimate tokens across the rehydrated tail plus the system prompt
-- when the tail exceeds a budget, fold the head of the tail into the rolling summary and drop those lines from rehydration on the next cold start
-- keep cut points at user-message boundaries for clean rehydration
+- estimate retained-tail budget from overall context budget, reserved response tokens, and the prepared system prompt
+- rehydrate only the recent text-only tail that fits inside that budget
+- keep cut points at user-message boundaries so resumed context is reconstructed as complete turns
+- fold the older transcript head that no longer fits into the retained tail into `rolling-summary.md`
 
 Outcome:
 
-- resumed turns see a compacted summary plus a bounded recent tail, matching the Pi/OpenClaw model
-- context length stays predictable as sessions grow
+- resumed turns now see a compacted summary plus a bounded recent tail, matching the intended Pi/OpenClaw-style model
+- context length is more predictable as sessions grow
 
 ### Phase 3: Memory Inbox
 
@@ -655,8 +661,8 @@ Testing approach from here:
 1. (done) remove `/new` from the web chat product flow
 2. (done) add current-session history hydration on UI connect with a fixed cap
 3. (done) add text-only model context rehydration on cold-start resume (Phase A)
-4. add rolling summary generation for long internal sessions (Phase B, depends on A)
-5. switch rehydration and summary triggers to token-budget-driven retention (Phase C, depends on A and B)
+4. (done) add rolling summary generation for long internal sessions (Phase B, depends on A)
+5. (done) switch rehydration and summary triggers to token-budget-driven retention (Phase C, depends on A and B)
 6. add memory inbox extraction on session close
 7. add reflection flow in `frieren.ts`
 8. add thin channel metadata only where it helps future extensibility
