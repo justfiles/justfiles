@@ -3,25 +3,10 @@
  *
  * These types define the surfaces between components:
  * - What's stored in the filesystem (file schemas)
- * - What the SessionManager returns (resolve decisions)
+ * - What the session programs return (resolve decisions)
  * - What crosses the boundary between components
  *
  * No implementation lives here — only shapes.
- *
- * ## How the Agent hooks wire to sessions
- *
- * The Agent is long-lived (one per DO instance). Session management is
- * integrated via pi-agent-core hooks — not by recreating the Agent:
- *
- * - `transformContext`: injects rolling summary and windows recent turns
- *   before each LLM call. This is where context assembly happens per-turn.
- * - `subscribe()` → `turn_end`: records transcript, calls touch(), checks
- *   rolling summary trigger, checks turn limit for auto-close.
- * - `subscribe()` → `agent_end`: final persistence barrier.
- * - `agent.followUp()`: queues the reflection pass after session rotation
- *   so it runs before the user's next message reaches the LLM.
- *
- * The SessionManager owns all filesystem state. The hooks call into it.
  */
 
 // ── File Schemas ─────────────────────────────────────────────────────────
@@ -31,7 +16,7 @@
  * `/sessions/current.json`
  *
  * Tracks the single active session for this account (one user = one DO).
- * Written by SessionManager. Read on every incoming message to decide
+ * Written by the session runtime. Read on every incoming message to decide
  * whether to start, resume, or rotate a session.
  */
 export interface CurrentSession {
@@ -79,12 +64,8 @@ export interface InboxCandidate {
 	content: string         // the fact/observation body (after frontmatter)
 }
 
-// ── Session Manager ──────────────────────────────────────────────────────
-// The single owner of session lifecycle and filesystem state.
-// The Agent hooks call into this — it does not know about the Agent.
-
 /**
- * The result of SessionManager.resolve().
+ * The result of session lifecycle resolution.
  *
  * Tells the caller exactly what to do — no ambiguity.
  * The caller matches on `action` and follows the corresponding lifecycle.
@@ -104,73 +85,8 @@ export type ResolveResult =
 		latest_handoff_path: string | null
 	}
 
-export interface SessionManager {
-	/** Decide whether to start, resume, or rotate a session. */
-	resolve(): Promise<ResolveResult>
-
-	/** Create a new session. Returns the new session_id. */
-	startNew(): Promise<string>
-
-	/** Record activity: bump turn_count, set last_activity_at to now. */
-	touch(sessionId: string): Promise<SessionMeta>
-
-	/**
-	 * Full session close:
-	 * 1. Set state to 'closing'
-	 * 2. Generate final-summary.md (LLM)
-	 * 3. Generate handoff.md (LLM)
-	 * 4. Write memory inbox candidates (LLM)
-	 * 5. Move to archive (rename active → archive)
-	 * 6. Set state to 'archived'
-	 * 7. Update current.json
-	 *
-	 * Returns the handoff path in the archive.
-	 */
-	close(sessionId: string): Promise<string>
-
-	/**
-	 * Check if rolling summary needs regeneration, and regenerate if so.
-	 * Called after every turn. Uses turn_count and token estimation
-	 * to decide.
-	 */
-	maybeUpdateSummary(sessionId: string, meta: SessionMeta): Promise<void>
-
-	// ── reads used by hooks ──────────────────────────────────────────────
-
-	/** Read the current session state. Returns null if no current.json. */
-	getCurrent(): Promise<CurrentSession | null>
-
-	/** Read the system prompt (soul.md). Returns null if missing. */
-	readSoul(): Promise<string | null>
-
-	/** Read the user profile. Returns null if missing. */
-	readProfile(): Promise<string | null>
-
-	/** Read the rolling summary for a session. Returns null if missing. */
-	readRollingSummary(sessionId: string): Promise<string | null>
-
-	/** Read the handoff at the given path. Returns null if missing. */
-	readHandoff(path: string): Promise<string | null>
-
-	/** Read inbox files. Returns empty array if inbox is empty/missing. */
-	readInbox(): Promise<InboxCandidate[]>
-}
-
-// ── Transcript ───────────────────────────────────────────────────────────
-
-export interface TranscriptWriter {
-	/** Append one or more lines to the session's transcript.jsonl. */
-	append(sessionId: string, lines: TranscriptLine[]): Promise<void>
-
-	/** Read the last N lines from the transcript. Returns fewer if transcript is shorter. */
-	readLastN(sessionId: string, n: number): Promise<TranscriptLine[]>
-
-	/** Read all lines. Used for final summary generation at session close. */
-	readAll(sessionId: string): Promise<TranscriptLine[]>
-}
-
 // ── LLM Boundary ────────────────────────────────────────────────────────
-// The mockable interface for all non-agent LLM calls (summaries, handoffs).
+// The mockable interface for non-agent LLM calls (summaries, handoffs).
 
 /**
  * Simple text generation function. All session-system LLM calls go through

@@ -9,7 +9,6 @@ import type {
 import type {
 	CurrentSessionCorrupt,
 	GenerationFailure,
-	NotImplemented,
 	SessionNotFound,
 	StorageFailure,
 } from './errors.ts'
@@ -39,22 +38,22 @@ export class SessionStore extends Context.Tag('Frieren/SessionStore')<
 	{
 		readonly getCurrent: () => Effect.Effect<
 			CurrentSession | null,
-			NotImplemented | StorageFailure | CurrentSessionCorrupt
+			StorageFailure | CurrentSessionCorrupt
 		>
 		readonly createSession: (input: {
 			readonly sessionId: string
 			readonly now: string
 			readonly latestHandoffPath: string | null
-		}) => Effect.Effect<void, NotImplemented | StorageFailure>
+		}) => Effect.Effect<void, StorageFailure>
 		readonly loadMeta: (
 			sessionId: string,
-		) => Effect.Effect<SessionMeta, NotImplemented | StorageFailure | SessionNotFound>
+		) => Effect.Effect<SessionMeta, StorageFailure | SessionNotFound>
 		readonly saveMeta: (
 			meta: SessionMeta,
-		) => Effect.Effect<void, NotImplemented | StorageFailure>
+		) => Effect.Effect<void, StorageFailure>
 		readonly writeCurrent: (
 			current: CurrentSession,
-		) => Effect.Effect<void, NotImplemented | StorageFailure>
+		) => Effect.Effect<void, StorageFailure>
 		readonly archiveSession: (input: {
 			readonly sessionId: string
 			readonly finalSummary: string
@@ -62,7 +61,7 @@ export class SessionStore extends Context.Tag('Frieren/SessionStore')<
 			readonly archivedMeta: SessionMeta
 		}) => Effect.Effect<
 			{ readonly handoffPath: string },
-			NotImplemented | StorageFailure
+			StorageFailure
 		>
 	}
 >() {}
@@ -73,19 +72,19 @@ export class TranscriptStore extends Context.Tag('Frieren/TranscriptStore')<
 		readonly append: (
 			sessionId: string,
 			lines: ReadonlyArray<TranscriptLine>,
-		) => Effect.Effect<void, NotImplemented | StorageFailure>
+		) => Effect.Effect<void, StorageFailure>
 		readonly readLastN: (
 			sessionId: string,
 			n: number,
 		) => Effect.Effect<
 			ReadonlyArray<TranscriptLine>,
-			NotImplemented | StorageFailure | SessionNotFound
+			StorageFailure | SessionNotFound
 		>
 		readonly readAll: (
 			sessionId: string,
 		) => Effect.Effect<
 			ReadonlyArray<TranscriptLine>,
-			NotImplemented | StorageFailure | SessionNotFound
+			StorageFailure | SessionNotFound
 		>
 	}
 >() {}
@@ -93,17 +92,17 @@ export class TranscriptStore extends Context.Tag('Frieren/TranscriptStore')<
 export class ContextStore extends Context.Tag('Frieren/ContextStore')<
 	ContextStore,
 	{
-		readonly readSoul: () => Effect.Effect<string | null, NotImplemented | StorageFailure>
-		readonly readProfile: () => Effect.Effect<string | null, NotImplemented | StorageFailure>
+		readonly readSoul: () => Effect.Effect<string | null, StorageFailure>
+		readonly readProfile: () => Effect.Effect<string | null, StorageFailure>
 		readonly readRollingSummary: (
 			sessionId: string,
-		) => Effect.Effect<string | null, NotImplemented | StorageFailure>
+		) => Effect.Effect<string | null, StorageFailure>
 		readonly readHandoff: (
 			path: string,
-		) => Effect.Effect<string | null, NotImplemented | StorageFailure>
+		) => Effect.Effect<string | null, StorageFailure>
 		readonly readInbox: () => Effect.Effect<
 			ReadonlyArray<InboxCandidate>,
-			NotImplemented | StorageFailure
+			StorageFailure
 		>
 	}
 >() {}
@@ -115,11 +114,11 @@ export class TextGenerator extends Context.Tag('Frieren/TextGenerator')<
 			readonly step: 'final-summary' | 'handoff' | 'rolling-summary' | 'memory-inbox'
 			readonly systemPrompt: string
 			readonly userPrompt: string
-		}) => Effect.Effect<string, NotImplemented | GenerationFailure>
+		}) => Effect.Effect<string, GenerationFailure>
 	}
 >() {}
 
-export type SessionDraftEnv =
+export type SessionEnv =
 	| Volume
 	| SessionClock
 	| SessionIdGenerator
@@ -128,4 +127,4 @@ export type SessionDraftEnv =
 	| ContextStore
 	| TextGenerator
 
-export type SessionDraftLayer = Layer.Layer<SessionDraftEnv>
+export type SessionLayer = Layer.Layer<SessionEnv>

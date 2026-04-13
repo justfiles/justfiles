@@ -4,7 +4,6 @@ import type { ResolveResult, TranscriptLine } from '../types.ts'
 import type {
 	CurrentSessionCorrupt,
 	GenerationFailure,
-	NotImplemented,
 	SessionNotFound,
 	StorageFailure,
 } from './errors.ts'
@@ -44,7 +43,7 @@ export const resolveLifecycle = (
 	idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
 ): Effect.Effect<
 	ResolveResult,
-	NotImplemented | CurrentSessionCorrupt | StorageFailure,
+	CurrentSessionCorrupt | StorageFailure,
 	SessionClock | SessionStore
 > =>
 	Effect.gen(function* () {
@@ -80,7 +79,7 @@ export const resolveLifecycle = (
 
 export const startNewSession = (): Effect.Effect<
 	string,
-	NotImplemented | CurrentSessionCorrupt | StorageFailure,
+	CurrentSessionCorrupt | StorageFailure,
 	SessionClock | SessionIdGenerator | SessionStore
 > =>
 	Effect.gen(function* () {
@@ -104,7 +103,7 @@ export const touchSession = (
 	sessionId: string,
 ): Effect.Effect<
 	void,
-	NotImplemented | SessionNotFound | CurrentSessionCorrupt | StorageFailure,
+	SessionNotFound | CurrentSessionCorrupt | StorageFailure,
 	SessionClock | SessionStore
 > =>
 	Effect.gen(function* () {
@@ -130,7 +129,7 @@ export const touchSession = (
 
 export const buildSystemPrompt = (
 	input: BuildSystemPromptInput,
-): Effect.Effect<string, NotImplemented | StorageFailure, ContextStore> =>
+): Effect.Effect<string, StorageFailure, ContextStore> =>
 	Effect.gen(function* () {
 		const store = yield* ContextStore
 		const soul = yield* store.readSoul()
@@ -158,7 +157,7 @@ export const closeSession = (
 	sessionId: string,
 ): Effect.Effect<
 	string,
-	NotImplemented | SessionNotFound | StorageFailure | GenerationFailure,
+	SessionNotFound | StorageFailure | GenerationFailure,
 	SessionStore | TranscriptStore | TextGenerator
 > =>
 	Effect.gen(function* () {
@@ -210,7 +209,7 @@ export const persistTurn = (
 	input: PersistTurnInput,
 ): Effect.Effect<
 	void,
-	NotImplemented | SessionNotFound | CurrentSessionCorrupt | StorageFailure,
+	SessionNotFound | CurrentSessionCorrupt | StorageFailure,
 	TranscriptStore | SessionClock | SessionStore
 > =>
 	Effect.gen(function* () {
@@ -225,7 +224,6 @@ export const persistTurn = (
 
 export const prepareTurn = (): Effect.Effect<
 	PreparedTurn,
-	| NotImplemented
 	| SessionNotFound
 	| CurrentSessionCorrupt
 	| StorageFailure
