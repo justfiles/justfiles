@@ -9,7 +9,7 @@ import { createFrierenApiApp, type FrierenApiType } from './app.ts';
 import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
 import { windowMessages } from "./session/context.ts";
 import { makeSessionRuntime } from './session/effect/live.ts'
-import { loadRecentHistory, loadRehydrationMessages, persistTurn, prepareTurn, type DisplayMessage, type RehydrationLine } from './session/effect/programs.ts'
+import { loadRecentHistory, loadRehydrationMessages, maybeUpdateRollingSummary, persistTurn, prepareTurn, type DisplayMessage, type RehydrationLine } from './session/effect/programs.ts'
 import type { TranscriptLine } from "./session/types.ts";
 
 interface ClientMessage {
@@ -64,11 +64,17 @@ export class Frieren extends DurableObject<Env> {
 			maxTokens: 8192,
 		} as unknown as typeof openaiModel;
 
-		const BACKEND: 'openai' | 'local' = 'local';
-		const model = BACKEND === 'local' ? localModel : openaiModel;
-		const apiKey = BACKEND === 'local' ? 'lm-studio' : this.env.OPENAI_API_KEY;
+		const backend = this.env.FRIEREN_BACKEND === 'local' ? 'local' : 'openai';
 
-		return { model, apiKey };
+		return backend === 'local'
+			? {
+				model: localModel,
+				apiKey: 'lm-studio',
+			}
+			: {
+				model: openaiModel,
+				apiKey: this.env.OPENAI_API_KEY,
+			};
 	}
 
 	private createSessionTextGenerator() {
@@ -365,6 +371,13 @@ export class Frieren extends DurableObject<Env> {
 								lines,
 							}),
 						);
+						try {
+							await this.sessionRuntime.runPromise(
+								maybeUpdateRollingSummary(sessionId),
+							);
+						} catch (err) {
+							console.error('Failed to update rolling summary', err);
+						}
 					}
 				} finally {
 					unsubscribe();

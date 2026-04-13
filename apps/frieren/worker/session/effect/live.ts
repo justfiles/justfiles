@@ -143,6 +143,8 @@ export const ContextStoreLive = Layer.effect(ContextStore, Effect.gen(function* 
 		readSoul: () => readTextFile(vol, PATHS.soul),
 		readProfile: () => readTextFile(vol, PATHS.profile),
 		readRollingSummary: (sessionId) => readTextFile(vol, PATHS.rollingSummary(sessionId)),
+		writeRollingSummary: (sessionId, summary) =>
+			writeFile(vol, PATHS.rollingSummary(sessionId), summary),
 		readHandoff: (path) => readTextFile(vol, path),
 		readInbox: () => Effect.succeed([] as ReadonlyArray<InboxCandidate>),
 	}

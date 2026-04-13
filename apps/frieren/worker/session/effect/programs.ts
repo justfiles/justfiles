@@ -54,6 +54,7 @@ export interface DisplayMessage {
 }
 
 export const DEFAULT_HISTORY_LIMIT = 10
+export const DEFAULT_ROLLING_SUMMARY_TRIGGER_TURNS = 3
 
 export const resolveLifecycle = (
 	idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
@@ -236,6 +237,51 @@ export const persistTurn = (
 		}
 
 		yield* touchSession(input.sessionId)
+	})
+
+export const maybeUpdateRollingSummary = (
+	sessionId: string,
+	triggerTurns: number = DEFAULT_ROLLING_SUMMARY_TRIGGER_TURNS,
+): Effect.Effect<
+	boolean,
+	StorageFailure | SessionNotFound | GenerationFailure,
+	TranscriptStore | ContextStore | TextGenerator
+> =>
+	Effect.gen(function* () {
+		const transcript = yield* TranscriptStore
+		const context = yield* ContextStore
+		const text = yield* TextGenerator
+		const lines = yield* transcript.readAll(sessionId)
+
+		const completedTurns = countCompletedTurns(lines)
+		console.log({ completedTurns, triggerTurns })
+		if (completedTurns < triggerTurns || completedTurns % triggerTurns !== 0) {
+			return false
+		}
+
+		const transcriptText = serializeTranscript(lines)
+		if (transcriptText.trim().length === 0) return false
+
+		const existing = yield* context.readRollingSummary(sessionId)
+		const summary = yield* text.generate({
+			step: 'rolling-summary',
+			systemPrompt:
+				'You maintain a compact rolling summary for resumed chat sessions. Focus on durable context, current work, user preferences, decisions, and open threads.',
+			userPrompt: [
+				'Write a concise rolling summary for the active session.',
+				'This summary will be injected into the system prompt on resumed turns.',
+				'Prefer stable facts, current tasks, and unresolved follow-ups over verbatim dialogue.',
+				existing
+					? `Existing rolling summary:\n\n${existing}`
+					: null,
+				`Transcript:\n\n${transcriptText}`,
+			]
+				.filter((part) => part !== null)
+				.join('\n\n'),
+		})
+
+		yield* context.writeRollingSummary(sessionId, summary)
+		return true
 	})
 
 export const prepareTurn = (): Effect.Effect<
@@ -464,4 +510,34 @@ function serializeTranscript(lines: ReadonlyArray<TranscriptLine>): string {
 			}
 		})
 		.join('\n')
+}
+
+function countCompletedTurns(lines: ReadonlyArray<TranscriptLine>): number {
+	let turns = 0
+	let sawUser = false
+	let sawAssistant = false
+
+	for (const line of lines) {
+		if (line.role === 'user') {
+			if (sawUser && sawAssistant) {
+				turns++
+			}
+			sawUser = true
+			sawAssistant = false
+			continue
+		}
+
+		if (
+			sawUser &&
+			(line.role === 'assistant' || line.role === 'assistant_thinking' || line.role === 'tool_call' || line.role === 'tool_result')
+		) {
+			sawAssistant = true
+		}
+	}
+
+	if (sawUser && sawAssistant) {
+		turns++
+	}
+
+	return turns
 }
