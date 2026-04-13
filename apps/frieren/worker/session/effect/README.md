@@ -1,7 +1,6 @@
-# Effect Draft For `worker/session/*`
+# Effect Session Runtime For `worker/session/*`
 
-This folder is an isolated sketch of what an Effect-based session layer could
-look like without changing the current runtime path.
+This folder contains the Effect-based session runtime for Frieren.
 
 ## Shape
 
@@ -12,10 +11,10 @@ look like without changing the current runtime path.
   - contains orchestration programs built from those services
   - `resolveLifecycle`, `startNewSession`, `closeSession`, `prepareTurn`
 - `live.ts`
-  - wires a draft runtime
+  - wires the real live runtime
   - injects a real `@justfiles/fs` `Volume`
   - real clock/id generator
-  - everything else intentionally returns `NotImplemented`
+  - real store implementations built on top of `Volume`
 - `errors.ts`
   - sketches typed domain failures
 
@@ -43,9 +42,9 @@ That means later you can provide:
 - a browser-backed `Volume`
 - a completely different backend that still satisfies the same `Volume` interface
 
-The orchestration programs still do not depend on `Volume` directly. The intent
-is for repo implementations to `yield* Volume` and keep path/file mechanics
-behind those service boundaries.
+The orchestration programs do not depend on `Volume` directly. Store
+implementations `yield* Volume` in `live.ts` and keep path/file mechanics behind
+those service boundaries.
 
 ## Why This Shape
 

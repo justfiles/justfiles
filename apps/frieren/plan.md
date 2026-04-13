@@ -1,5 +1,7 @@
 # Frieren — Personal AI Assistant on Cloudflare Workers
 
+> Historical planning note: parts of this document describe the pre-Effect session design and do not match the current `worker/session/effect/*` runtime exactly.
+
 ## Overview
 
 A personal AI assistant running on Cloudflare Workers + Durable Objects, using

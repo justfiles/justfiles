@@ -1,16 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 import { Agent } from "@mariozechner/pi-agent-core";
-import { getModel, streamSimple } from "@mariozechner/pi-ai";
+import { completeSimple, getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Message } from "@mariozechner/pi-ai";
+import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
+import { Effect } from 'effect'
 import { volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
 import { createFrierenApiApp, type FrierenApiType } from './app.ts';
 import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
-import { createSessionManager } from "./session/manager.ts";
-import { createTranscriptWriter } from "./session/transcript.ts";
-import { buildSystemPrompt, windowMessages } from "./session/context.ts";
-import type { SessionManager, TranscriptWriter, TranscriptLine } from "./session/types.ts";
+import { windowMessages } from "./session/context.ts";
+import { makeSessionRuntime } from './session/effect/live.ts'
+import { closeSession, persistTurn, prepareTurn, startNewSession } from './session/effect/programs.ts'
+import { SessionStore } from './session/effect/services.ts'
+import type { TranscriptLine } from "./session/types.ts";
 
 interface ClientMessage {
 	type: "prompt" | "abort";
@@ -28,11 +30,7 @@ export class Frieren extends DurableObject<Env> {
 	private agentPromise: Promise<Agent> | null = null;
 	private readonly app: FrierenApiType;
 	private readonly vol;
-	private readonly sessionManager: SessionManager;
-	private readonly transcriptWriter: TranscriptWriter;
-	private currentSessionId: string | null = null;
-	private isNewSession = false;
-	private latestHandoffPath: string | null = null;
+	private readonly sessionRuntime: ReturnType<typeof makeSessionRuntime>;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -42,26 +40,11 @@ export class Frieren extends DurableObject<Env> {
 		this.app = createFrierenApiApp({ fs });
 
 		this.vol = volume(fs);
-		this.transcriptWriter = createTranscriptWriter(this.vol);
-		const placeholderGenerate = async () => 'placeholder';
-		this.sessionManager = createSessionManager(this.vol, this.transcriptWriter, placeholderGenerate);
+		const generateSessionText = this.createSessionTextGenerator();
+		this.sessionRuntime = makeSessionRuntime(this.vol, generateSessionText);
 	}
 
-	private async getOrCreateAgent(): Promise<Agent> {
-		if (this.agent) return this.agent;
-		if (this.agentPromise) return this.agentPromise;
-
-		this.agentPromise = this.createAgent();
-		try {
-			this.agent = await this.agentPromise;
-			return this.agent;
-		} finally {
-			this.agentPromise = null;
-		}
-	}
-
-	private async createAgent(): Promise<Agent> {
-		// OpenAI (kept for reference — switch BACKEND below to use it again)
+	private getBackendConfig() {
 		const openaiModel = getModel("openai", "gpt-4.1-mini");
 
 		// Local LM Studio backend — OpenAI-compatible /v1/chat/completions.
@@ -82,6 +65,58 @@ export class Frieren extends DurableObject<Env> {
 		const BACKEND: 'openai' | 'local' = 'local';
 		const model = BACKEND === 'local' ? localModel : openaiModel;
 		const apiKey = BACKEND === 'local' ? 'lm-studio' : this.env.OPENAI_API_KEY;
+
+		return { model, apiKey };
+	}
+
+	private createSessionTextGenerator() {
+		const { model, apiKey } = this.getBackendConfig();
+
+		return async (systemPrompt: string, userPrompt: string) => {
+			const response = await completeSimple(model, {
+				systemPrompt,
+				messages: [
+					{
+						role: 'user',
+						content: userPrompt,
+						timestamp: Date.now(),
+					},
+				],
+			}, { apiKey });
+
+			return this.extractAssistantText(response);
+		};
+	}
+
+	private extractAssistantText(message: AssistantMessage): string {
+		const text = message.content
+			.filter((block) => block.type === 'text')
+			.map((block) => block.text)
+			.join('')
+			.trim();
+
+		if (!text) {
+			throw new Error('Session text generation returned no text content')
+		}
+
+		return text
+	}
+
+	private async getOrCreateAgent(): Promise<Agent> {
+		if (this.agent) return this.agent;
+		if (this.agentPromise) return this.agentPromise;
+
+		this.agentPromise = this.createAgent();
+		try {
+			this.agent = await this.agentPromise;
+			return this.agent;
+		} finally {
+			this.agentPromise = null;
+		}
+	}
+
+	private async createAgent(): Promise<Agent> {
+		const { model, apiKey } = this.getBackendConfig();
 
 		const tools = [...createFsTools(this.vol), createFetchTool(), createSearchTool()];
 
@@ -194,15 +229,16 @@ export class Frieren extends DurableObject<Env> {
 			// Handle /new command
 			if (parsed.text.trim() === '/new') {
 				try {
-					const current = await this.sessionManager.getCurrent();
+					const current = await this.sessionRuntime.runPromise(
+						Effect.flatMap(SessionStore, (store) => store.getCurrent()),
+					);
 					if (current?.current_session_id) {
-						await this.sessionManager.close(current.current_session_id);
-						this.currentSessionId = await this.sessionManager.startNew();
-						this.isNewSession = true;
-						this.latestHandoffPath = (await this.sessionManager.getCurrent())?.latest_handoff_path ?? null;
+						await this.sessionRuntime.runPromise(
+							closeSession(current.current_session_id),
+						);
+						await this.sessionRuntime.runPromise(startNewSession());
 						// Clear agent transcript — keep the agent alive
-						const agent = await this.getOrCreateAgent();
-						agent.state.messages = [];
+						if (this.agent) this.agent.state.messages = [];
 					}
 					ws.send(JSON.stringify({
 						type: "event",
@@ -220,34 +256,18 @@ export class Frieren extends DurableObject<Env> {
 			}
 
 			try {
-				// Resolve session before prompting
-				const result = await this.sessionManager.resolve();
-				if (result.action === 'close_and_start') {
-					await this.sessionManager.close(result.old_session_id);
-					this.currentSessionId = await this.sessionManager.startNew();
-					this.isNewSession = true;
-					this.latestHandoffPath = result.latest_handoff_path;
-					// Clear agent transcript on session rotation
-					if (this.agent) this.agent.state.messages = [];
-				} else if (result.action === 'start_new') {
-					this.currentSessionId = await this.sessionManager.startNew();
-					this.isNewSession = true;
-					this.latestHandoffPath = result.latest_handoff_path;
-				} else {
-					this.currentSessionId = result.session_id;
-					this.isNewSession = false;
-				}
+				const prepared = await this.sessionRuntime.runPromise(prepareTurn());
+				const sessionId = prepared.currentSessionId;
 
 				const agent = await this.getOrCreateAgent();
+				if (prepared.isNewSession && agent.state.messages.length > 0) {
+					agent.state.messages = [];
+				}
 
 				// Set systemPrompt BEFORE prompt() — the Agent snapshots it by value
 				// at the start of each turn, so mid-turn mutations (e.g. inside
 				// transformContext) would be ignored for the current call.
-				agent.state.systemPrompt = await buildSystemPrompt(this.sessionManager, {
-					currentSessionId: this.currentSessionId,
-					isNewSession: this.isNewSession,
-					latestHandoffPath: this.latestHandoffPath,
-				});
+				agent.state.systemPrompt = prepared.systemPrompt;
 
 				const messageCountBefore = agent.state.messages.length;
 				const unsubscribe = agent.subscribe(
@@ -265,18 +285,16 @@ export class Frieren extends DurableObject<Env> {
 					await agent.prompt(parsed.text);
 
 					// Record transcript and touch session
-					if (this.currentSessionId) {
+					if (sessionId) {
 						const newMessages = agent.state.messages.slice(messageCountBefore);
 						const lines = this.extractTranscriptLines(newMessages);
-						if (lines.length > 0) {
-							await this.transcriptWriter.append(this.currentSessionId, lines);
-						}
-						await this.sessionManager.touch(this.currentSessionId);
+						await this.sessionRuntime.runPromise(
+							persistTurn({
+								sessionId,
+								lines,
+							}),
+						);
 					}
-
-					// After first turn of a new session, handoff has been loaded;
-					// subsequent turns use rolling summary instead.
-					if (this.isNewSession) this.isNewSession = false;
 				} finally {
 					unsubscribe();
 				}
