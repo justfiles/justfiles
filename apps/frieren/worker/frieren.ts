@@ -3,15 +3,13 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import { completeSimple, getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
-import { Effect } from 'effect'
 import { volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
 import { createFrierenApiApp, type FrierenApiType } from './app.ts';
 import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
 import { windowMessages } from "./session/context.ts";
 import { makeSessionRuntime } from './session/effect/live.ts'
-import { closeSession, persistTurn, prepareTurn, startNewSession } from './session/effect/programs.ts'
-import { SessionStore } from './session/effect/services.ts'
+import { loadRecentHistory, loadRehydrationMessages, persistTurn, prepareTurn, type DisplayMessage, type RehydrationLine } from './session/effect/programs.ts'
 import type { TranscriptLine } from "./session/types.ts";
 
 interface ClientMessage {
@@ -20,10 +18,14 @@ interface ClientMessage {
 }
 
 interface ServerMessage {
-	type: "event" | "error" | "ready";
+	type: "event" | "error" | "ready" | "history";
 	event?: AgentEvent;
 	message?: string;
+	messages?: ReadonlyArray<DisplayMessage>;
 }
+
+const FINAL_ANSWER_ONLY_INSTRUCTION =
+	'When you answer the user, output only the final assistant reply. Do not emit your reasoning process, analysis, or thinking trace.'
 
 export class Frieren extends DurableObject<Env> {
 	private agent: Agent | null = null;
@@ -126,15 +128,8 @@ export class Frieren extends DurableObject<Env> {
 				model,
 				tools,
 			},
-			convertToLlm: (messages: AgentMessage[]): Message[] => {
-				return messages.filter(
-					(m): m is Message =>
-						"role" in m &&
-						(m.role === "user" ||
-							m.role === "assistant" ||
-							m.role === "toolResult"),
-				);
-			},
+			convertToLlm: (messages: AgentMessage[]): Message[] =>
+				this.buildModelVisibleMessages(messages),
 			getApiKey: () => apiKey,
 			streamFn: (model, context, options) => {
 				return streamSimple(model, context, {
@@ -150,6 +145,83 @@ export class Frieren extends DurableObject<Env> {
 		agent.transformContext = async (messages) => windowMessages(messages, 20);
 
 		return agent;
+	}
+
+	private buildModelVisibleMessages(messages: AgentMessage[]): Message[] {
+		const out: Message[] = [];
+
+		for (const message of messages) {
+			if (!("role" in message)) continue;
+
+			if (message.role === "assistant") {
+				const content = Array.isArray(message.content) ? message.content : [];
+				const hasText = content.some(
+					(block) => block.type === "text" && block.text.trim().length > 0,
+				);
+				const hasToolCalls = content.some((block) => block.type === "toolCall");
+
+				// Thinking-only assistant turns are not useful model-visible context
+				// for the next request. Keeping them would effectively erase the
+				// assistant turn and leave the prior user message orphaned.
+				if (!hasText && !hasToolCalls) continue;
+			}
+
+			if (message.role === "user") {
+				const prev = out[out.length - 1];
+
+				// Consecutive user turns indicate an earlier prompt never produced
+				// durable assistant text. Keep only the latest user prompt so the
+				// next model call answers the freshest request.
+				if (prev?.role === "user") {
+					out[out.length - 1] = message;
+					continue;
+				}
+			}
+
+			out.push(message);
+		}
+
+		while (out[0]?.role === "assistant") {
+			out.shift();
+		}
+
+		return out;
+	}
+
+	// ── Model context rehydration (Phase A) ──────────────────────────────
+
+	private buildRehydratedMessages(lines: ReadonlyArray<RehydrationLine>): Message[] {
+		const { model } = this.getBackendConfig();
+		const now = Date.now();
+		const out: Message[] = [];
+		for (const line of lines) {
+			if (line.role === 'user') {
+				out.push({
+					role: 'user',
+					content: line.content,
+					timestamp: now,
+				});
+			} else {
+				out.push({
+					role: 'assistant',
+					content: [{ type: 'text', text: line.content }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: 'stop',
+					timestamp: now,
+				});
+			}
+		}
+		return out;
 	}
 
 	// ── Transcript extraction ────────────────────────────────────────────
@@ -173,6 +245,13 @@ export class Frieren extends DurableObject<Env> {
 				if (Array.isArray(am.content)) {
 					for (const block of am.content) {
 						if (block.type === 'text') text += block.text;
+						if (block.type === 'thinking') {
+							lines.push({
+								ts: now,
+								role: 'assistant_thinking',
+								content: block.thinking,
+							});
+						}
 						if (block.type === 'toolCall') {
 							lines.push({
 								ts: now,
@@ -226,35 +305,6 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === "prompt" && parsed.text) {
-			// Handle /new command
-			if (parsed.text.trim() === '/new') {
-				try {
-					const current = await this.sessionRuntime.runPromise(
-						Effect.flatMap(SessionStore, (store) => store.getCurrent()),
-					);
-					if (current?.current_session_id) {
-						await this.sessionRuntime.runPromise(
-							closeSession(current.current_session_id),
-						);
-						await this.sessionRuntime.runPromise(startNewSession());
-						// Clear agent transcript — keep the agent alive
-						if (this.agent) this.agent.state.messages = [];
-					}
-					ws.send(JSON.stringify({
-						type: "event",
-						message: current?.current_session_id
-							? "Session closed. Starting fresh."
-							: "No active session to close.",
-					} satisfies ServerMessage));
-				} catch (err) {
-					ws.send(JSON.stringify({
-						type: "error",
-						message: err instanceof Error ? err.message : "Unknown error",
-					} satisfies ServerMessage));
-				}
-				return;
-			}
-
 			try {
 				const prepared = await this.sessionRuntime.runPromise(prepareTurn());
 				const sessionId = prepared.currentSessionId;
@@ -262,12 +312,33 @@ export class Frieren extends DurableObject<Env> {
 				const agent = await this.getOrCreateAgent();
 				if (prepared.isNewSession && agent.state.messages.length > 0) {
 					agent.state.messages = [];
+				} else if (
+					!prepared.isNewSession &&
+					agent.state.messages.length === 0 &&
+					sessionId
+				) {
+					// Cold-start resume: the DO hibernated and lost in-memory
+					// agent state. Rebuild a text-only tail from the transcript
+					// so the model sees the same conversation the user does.
+					try {
+						const lines = await this.sessionRuntime.runPromise(
+							loadRehydrationMessages(sessionId),
+						);
+						if (lines.length > 0) {
+							agent.state.messages = this.buildRehydratedMessages(lines);
+						}
+					} catch (err) {
+						console.error('Failed to rehydrate agent messages', err);
+					}
 				}
 
 				// Set systemPrompt BEFORE prompt() — the Agent snapshots it by value
 				// at the start of each turn, so mid-turn mutations (e.g. inside
 				// transformContext) would be ignored for the current call.
-				agent.state.systemPrompt = prepared.systemPrompt;
+				agent.state.systemPrompt = [
+					prepared.systemPrompt,
+					FINAL_ANSWER_ONLY_INSTRUCTION,
+				].join("\n\n---\n\n");
 
 				const messageCountBefore = agent.state.messages.length;
 				const unsubscribe = agent.subscribe(
@@ -333,6 +404,17 @@ export class Frieren extends DurableObject<Env> {
 			const [client, server] = Object.values(pair);
 
 			this.ctx.acceptWebSocket(server);
+
+			try {
+				const history = await this.sessionRuntime.runPromise(loadRecentHistory());
+				if (history.length > 0) {
+					server.send(
+						JSON.stringify({ type: "history", messages: history } satisfies ServerMessage),
+					);
+				}
+			} catch (err) {
+				console.error("Failed to load recent history", err);
+			}
 
 			// Send ready signal
 			server.send(

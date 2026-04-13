@@ -8,6 +8,7 @@ interface ChatMessage {
 	id: string
 	role: 'user' | 'assistant'
 	content: string
+	thinking?: string
 	toolCalls?: ToolCallInfo[]
 }
 
@@ -78,11 +79,13 @@ export function ChatPage() {
 					(m: {
 						role: string
 						content: string
+						thinking?: string
 						toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[]
 					}) => ({
 						id: crypto.randomUUID(),
 						role: m.role as 'user' | 'assistant',
 						content: m.content,
+						thinking: m.thinking,
 						toolCalls: m.toolCalls?.map((tc) => ({
 							id: crypto.randomUUID(),
 							name: tc.name,
@@ -145,7 +148,7 @@ export function ChatPage() {
 				if (event.message?.role === 'assistant') {
 					const id = crypto.randomUUID()
 					currentAssistantIdRef.current = id
-					setMessages((prev) => [...prev, { id, role: 'assistant', content: '', toolCalls: [] }])
+					setMessages((prev) => [...prev, { id, role: 'assistant', content: '', thinking: '', toolCalls: [] }])
 				}
 				break
 			}
@@ -159,6 +162,17 @@ export function ChatPage() {
 						prev.map((message) =>
 							message.id === currentId
 								? { ...message, content: message.content + assistantEvent.delta }
+								: message
+						)
+					)
+				}
+				if (assistantEvent?.type === 'thinking_delta' && assistantEvent.delta) {
+					const currentId = currentAssistantIdRef.current
+					if (!currentId) break
+					setMessages((prev) =>
+						prev.map((message) =>
+							message.id === currentId
+								? { ...message, thinking: (message.thinking ?? '') + assistantEvent.delta }
 								: message
 						)
 					)
@@ -284,6 +298,16 @@ export function ChatPage() {
 									<span className="ml-px inline-block h-[1em] w-0.5 animate-pulse bg-current align-text-bottom" />
 								) : null}
 							</div>
+							{message.role === 'assistant' && message.thinking ? (
+								<details className="mt-2 rounded-lg border border-base-300 bg-base-200/50">
+									<summary className="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wide opacity-60">
+										Thinking
+									</summary>
+									<pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 pb-3 text-xs">
+										{message.thinking}
+									</pre>
+								</details>
+							) : null}
 							{message.toolCalls && message.toolCalls.length > 0 ? (
 								<div className="chat-footer mt-2 flex w-full flex-col gap-1.5">
 									{message.toolCalls.map((toolCall) => (

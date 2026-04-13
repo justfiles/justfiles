@@ -43,10 +43,11 @@ export type SessionState = 'active' | 'closing' | 'archived'
 /**
  * One line in `/sessions/active/{session_id}/transcript.jsonl`.
  *
- * Append-only. Four line types, discriminated by `role`.
+ * Append-only. Line types are discriminated by `role`.
  */
 export type TranscriptLine =
 	| { ts: string; role: 'user'; content: string }
+	| { ts: string; role: 'assistant_thinking'; content: string }
 	| { ts: string; role: 'assistant'; content: string }
 	| { ts: string; role: 'tool_call'; tool_name: string; input: Record<string, unknown> }
 	| { ts: string; role: 'tool_result'; tool_name: string; content: string }

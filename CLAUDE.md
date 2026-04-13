@@ -1,3 +1,5 @@
+IMPORTANT: keep code minimal
+
 # Tools
 use bun for package management.
 

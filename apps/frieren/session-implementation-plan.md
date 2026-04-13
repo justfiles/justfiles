@@ -306,6 +306,84 @@ The transcript should remain the full internal record, including:
 
 The UI history API should produce a chat-oriented projection, not a raw internal transcript dump.
 
+## Model Context Hydration
+
+The transcript is the durable source of truth, but the `pi-agent-core` Agent only sees what is held in `agent.state.messages` for the current turn. That in-memory array is tied to the Durable Object's lifetime: once the DO hibernates, it is gone. Unless we explicitly rebuild it on cold start, a resumed session is indistinguishable from a brand-new one from the model's perspective, even if the user just saw their previous messages replayed in the UI.
+
+UI hydration (the `history` frame sent on WebSocket connect) is a visual replay only. It does not touch `agent.state.messages`. Model context hydration is a separate concern and must be treated as such.
+
+### Prior-art reference
+
+Both Pi's `SessionManager` and OpenClaw's embedded runner follow the same general pattern:
+
+- the transcript on disk is fuller than anything the model sees in a single call
+- the message list sent to the model is **derived** from persisted state, not replayed raw
+- older turns are collapsed into summaries; recent turns are kept verbatim
+- tool results are deliberately pruned or dropped across turns by default
+- context assembly is token-budget driven, not fixed last-N
+
+See `openclaw-session-hydration-research.md` for the full analysis. Frieren does not need to copy this exactly, but the separation between "persisted transcript" and "model-visible context" is the important idea.
+
+### Target endpoint: hybrid summary + retained tail (Option C)
+
+Eventually, on a resumed turn the Agent should see:
+
+- a rolling summary covering older parts of the current internal session
+- a retained tail of recent user/assistant text turns reconstructed from the transcript
+- no replayed tool calls or tool results from prior turns
+
+Tool calls and tool results remain durable in the transcript but are not rehydrated into `agent.state.messages`. This matches Pi and OpenClaw's explicit stance that old tool output is the first thing to drop from live context.
+
+### Implementation order
+
+The three phases build on each other in strict order:
+
+**A. Text-only rehydration of recent turns.**
+
+On the first turn after a cold start where the lifecycle resolution is `resume` and `agent.state.messages` is empty, read the last N transcript lines from the active session, keep only `user` and `assistant` text lines, and reconstruct a valid `Message[]` for `agent.state.messages` before calling `agent.prompt()`.
+
+Intentionally lossy: `tool_call` and `tool_result` lines are dropped on rehydration. This avoids the tool-call-id reassembly problem (we do not persist `tool_call_id` in the transcript) and matches the long-term design where old tool output should not live in active context.
+
+Edge cases:
+
+- drop any leading orphan `toolResult`-shaped messages before assigning, in case rehydration logic later includes them — providers reject orphan tool results.
+- if the transcript is empty or the session has no prior turns, rehydration is a no-op.
+- if rehydration fails, log and fall back to an empty message list. The agent should still be able to take a turn.
+
+The `windowMessages(20)` helper in `transformContext` already bounds how much rehydrated context the model sees per turn.
+
+**B. Rolling summary generation.**
+
+After Phase A is shipped, add rolling summary generation during active turns (see Phase 2 in "Next Phases"). The summary lives in the system prompt on every resumed turn via `buildSystemPrompt`, which already reads `rolling-summary.md` — that path is wired but the file is never written yet.
+
+At this stage, the model sees both: a narrative summary of older turns (via system prompt) and the text-only rehydrated recent tail (via `agent.state.messages`). Together they cover the same ground the final hybrid does, just without any budget-driven compaction yet.
+
+**C. Token-budget-driven compaction and retention.**
+
+Once A and B are both working, refine the rehydration and summary logic so that:
+
+- the retained tail length is driven by a token budget, not a fixed message count
+- when the tail grows past the budget, older turns at the head of the tail are folded into the rolling summary rather than replayed raw
+- rehydration reads from the transcript once per cold start and then relies on in-memory state for subsequent turns
+
+This is the endpoint that matches the Pi/OpenClaw model. It should not be implemented ahead of A and B, because each earlier phase makes the next one simpler and testable in isolation.
+
+### What not to do
+
+- do not add a user-facing reset or "forget" command as a workaround
+- do not persist `tool_call_id` into the transcript schema just to enable full-fidelity tool-call rehydration; the long-term design drops tool context across turns anyway
+- do not couple UI history projection to model rehydration — they have different consumers and different fidelity requirements
+
+### Accepted tradeoffs in Phase A
+
+These are intentional and should only be revisited if a concrete requirement forces the issue. None of them are blockers for Phase B or Phase C.
+
+- **Historical assistant provider/model are lossy.** `buildRehydratedMessages` in `frieren.ts` fills `api`, `provider`, and `model` from the *current* backend config, not from whatever produced the message originally. The transcript does not persist those fields. Fine as long as we do not depend on provider-specific continuity (prompt-cache signatures, opaque reasoning payloads, matching tool-call ids). If we ever need that, the fix is a transcript schema change, not a change to the rehydration program.
+- **Historical timestamps are collapsed to `Date.now()`.** `RehydrationLine` drops `ts` from the original transcript line. The Agent does not use timestamps for logic, so this is invisible in practice.
+- **`limit * 4` over-read is a heuristic.** `loadRehydrationMessages` reads `limit * 4` transcript lines to leave slack for dropped tool lines. A turn that is extremely tool-heavy could still underfill the rehydrated tail. This is a capacity loss, not a correctness loss. If it ever bites, replace the over-read with a streaming reader that keeps pulling until it has `limit` text-only lines or hits the head of the transcript.
+- **Concurrency race on cold start.** If two prompts arrive on a cold DO before the first one finishes persisting, both turns may see `agent.state.messages.length === 0` and both rehydrate, with the second overwrite discarding any in-flight turn from the first. This race is not introduced by Phase A — the existing `isNewSession` clear branch has the same shape — but it is worth recording so it is not mistaken for a Phase A bug. A proper fix belongs with a broader per-turn serialization pass, not inside rehydration.
+- **Corrupt current-session pointer is best-effort.** If `/sessions/current.json` points to a session whose transcript file is missing, `loadRehydrationMessages` surfaces `SessionNotFound`, which `frieren.ts` logs and swallows. The turn still runs with an empty message list. Graceful degradation, but not yet self-healing — a followup should have `resolveLifecycle` treat that state as "start a new session."
+
 ## History Loading Design
 
 ### Initial load
@@ -425,12 +503,21 @@ What is still missing:
 - generated outputs do not yet have stronger structural expectations
 - backend/model selection for session generation is still embedded in `frieren.ts`
 
+### Done (continued)
+
+- UI history hydration on WebSocket connect with a fixed cap
+- UI-facing projection from transcript lines to chat messages (`projectTranscriptToDisplay`)
+- removal of user-facing `/new` reset command
+- text-only model context rehydration on cold-start resume (Phase A):
+	- `loadRehydrationMessages` program reads the active session transcript tail, keeps only `user` and `assistant` text lines, drops any leading non-user messages
+	- `frieren.ts` rebuilds `agent.state.messages` from that tail when `prepareTurn` resolves to `resume` and the agent's in-memory state is empty
+	- failures are logged and fall through to an empty message list so the turn still proceeds
+	- `windowMessages(20)` in `transformContext` continues to bound per-call context
+
 ### Not Done Yet
 
-- rolling summary generation during active sessions
-- transcript replay on connect for the current session
-- transcript replay on connect for the current session, capped to a fixed recent-history window
-- UI-facing projection from transcript lines to chat messages
+- rolling summary generation during active sessions (Phase B)
+- token-budget-driven tail retention with compaction into the rolling summary (Phase C)
 - memory inbox extraction on close
 - reflection / inbox processing pass
 - permanent memory store beyond prompt/profile/session files
@@ -439,34 +526,56 @@ What is still missing:
 
 ## Next Phases
 
-### Phase 1: Current Session History Hydration
+### Phase 1: UI History Hydration (done)
 
-Add history loading for the current active session.
+Added `loadRecentHistory` and `projectTranscriptToDisplay`. On WebSocket connect, the client receives a `history` frame with the latest N display messages before `ready`. The `/new` reset command was removed from the web chat product flow.
+
+### Phase A: Text-Only Model Context Rehydration
+
+Rebuild the Agent's live message list on cold-start resume so the LLM shares the user's view of the conversation.
 
 Likely shape:
 
-- add a program such as `loadRecentHistory`
-- read the active session transcript
-- project transcript lines into UI display messages
-- send the latest N entries on WebSocket connect
+- add a program such as `loadRehydrationMessages` that reads the last N transcript lines for the current session and keeps only `user` and `assistant` text lines
+- in `frieren.ts`, when `prepareTurn` returns `resume` and `agent.state.messages.length === 0`, call the program, convert the lines into valid `pi-ai` `Message[]` values (using the live backend's `api`/`provider`/`model` for assistant messages), and assign them to `agent.state.messages` before `agent.prompt()`
+- drop any leading orphan `toolResult`-shaped message defensively (should not occur with text-only filtering, but the guard is cheap)
+- on rehydration failure, log and continue with an empty message list
 
 Outcome:
 
-- the user sees recent conversation history immediately when opening the web UI
+- after a Durable Object cold start, the Agent no longer acts amnesiac on a resumed session
+- tool calls from prior turns are intentionally not rehydrated — they remain in the transcript as the durable record only
 
-### Phase 2: Rolling Summary
+### Phase B: Rolling Summary
 
-Add rolling summary generation to the active internal session.
+Add rolling summary generation to the active internal session. Depends on Phase A so the model sees both a recent verbatim tail and a narrative recap of older turns.
 
 Likely shape:
 
 - add a program such as `maybeUpdateRollingSummary`
 - trigger it from turn persistence after enough transcript growth
 - use transcript growth or estimated token growth as summary triggers
+- `buildSystemPrompt` already reads `rolling-summary.md` for resumed sessions; this phase just starts writing it
 
 Outcome:
 
 - long internal sessions stay resumable without relying only on raw recent turns
+- the model sees older conversation as a summary plus a verbatim recent tail
+
+### Phase C: Token-Budget-Driven Tail Retention
+
+With Phase A and Phase B both in place, replace the fixed-count rehydration cap and the growth-trigger for the rolling summary with token-budget logic. Depends strictly on A and B.
+
+Likely shape:
+
+- estimate tokens across the rehydrated tail plus the system prompt
+- when the tail exceeds a budget, fold the head of the tail into the rolling summary and drop those lines from rehydration on the next cold start
+- keep cut points at user-message boundaries for clean rehydration
+
+Outcome:
+
+- resumed turns see a compacted summary plus a bounded recent tail, matching the Pi/OpenClaw model
+- context length stays predictable as sessions grow
 
 ### Phase 3: Memory Inbox
 
@@ -552,12 +661,14 @@ Testing approach from here:
 
 ## Implementation Order From Here
 
-1. remove `/new` from the web chat product flow
-2. add current-session history hydration on UI connect with a fixed cap
-3. add rolling summary generation for long internal sessions
-4. add memory inbox extraction on session close
-5. add reflection flow in `frieren.ts`
-6. add thin channel metadata only where it helps future extensibility
+1. (done) remove `/new` from the web chat product flow
+2. (done) add current-session history hydration on UI connect with a fixed cap
+3. (done) add text-only model context rehydration on cold-start resume (Phase A)
+4. add rolling summary generation for long internal sessions (Phase B, depends on A)
+5. switch rehydration and summary triggers to token-budget-driven retention (Phase C, depends on A and B)
+6. add memory inbox extraction on session close
+7. add reflection flow in `frieren.ts`
+8. add thin channel metadata only where it helps future extensibility
 
 ## Future Improvement Notes
 

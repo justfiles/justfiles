@@ -39,6 +39,22 @@ export interface PersistTurnInput {
 	readonly lines: ReadonlyArray<TranscriptLine>
 }
 
+export interface DisplayToolCall {
+	name: string
+	args: unknown
+	result?: unknown
+	isError?: boolean
+}
+
+export interface DisplayMessage {
+	readonly role: 'user' | 'assistant'
+	readonly content: string
+	readonly thinking?: string
+	readonly toolCalls?: ReadonlyArray<DisplayToolCall>
+}
+
+export const DEFAULT_HISTORY_LIMIT = 10
+
 export const resolveLifecycle = (
 	idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
 ): Effect.Effect<
@@ -287,11 +303,158 @@ export const prepareTurn = (): Effect.Effect<
 		}
 	})
 
+export type RehydrationLine =
+	| { readonly role: 'user'; readonly content: string }
+	| { readonly role: 'assistant'; readonly content: string }
+
+export const DEFAULT_REHYDRATION_LIMIT = 40
+
+export const loadRehydrationMessages = (
+	sessionId: string,
+	limit: number = DEFAULT_REHYDRATION_LIMIT,
+): Effect.Effect<
+	ReadonlyArray<RehydrationLine>,
+	StorageFailure | SessionNotFound,
+	TranscriptStore
+> =>
+	Effect.gen(function* () {
+		const transcript = yield* TranscriptStore
+		const lines = yield* transcript.readLastN(sessionId, limit * 4)
+		const textOnly: RehydrationLine[] = []
+		for (const line of lines) {
+			if (line.role !== 'user' && line.role !== 'assistant') continue
+			const prev = textOnly[textOnly.length - 1]
+			if (prev && prev.role === line.role) {
+				// Coalesce consecutive same-role lines. extractTranscriptLines
+				// splits one model turn into multiple assistant lines whenever
+				// tool calls are interleaved with text; after dropping tools
+				// here, the survivors must be merged or providers reject the
+				// back-to-back same-role sequence.
+				textOnly[textOnly.length - 1] = {
+					role: prev.role,
+					content: prev.content + line.content,
+				}
+			} else {
+				textOnly.push({ role: line.role, content: line.content })
+			}
+		}
+		// Drop any leading assistant messages so the rehydrated tail always
+		// starts at a user-message boundary — providers accept that shape
+		// unambiguously and it avoids orphan assistant turns.
+		let start = 0
+		while (start < textOnly.length && textOnly[start]!.role !== 'user') {
+			start++
+		}
+
+		const normalized = textOnly.slice(start)
+
+		// A cold-start resume only happens once a *new* user prompt arrives.
+		// If the transcript tail already ends in an unanswered user message from
+		// a prior failed/aborted turn, rehydrating it would stack that stale
+		// request directly before the fresh prompt. Local models then tend to
+		// continue the old request instead of answering the new one.
+		if (normalized.at(-1)?.role === 'user') {
+			normalized.pop()
+		}
+
+		return normalized.slice(-limit)
+	})
+
+export const loadRecentHistory = (
+	limit: number = DEFAULT_HISTORY_LIMIT,
+): Effect.Effect<
+	ReadonlyArray<DisplayMessage>,
+	CurrentSessionCorrupt | StorageFailure | SessionNotFound,
+	SessionStore | TranscriptStore
+> =>
+	Effect.gen(function* () {
+		const store = yield* SessionStore
+		const current = yield* store.getCurrent()
+		if (!current || !current.current_session_id) return []
+
+		const transcript = yield* TranscriptStore
+		// Read more than `limit` lines so projection still yields up to
+		// `limit` display messages even when tool calls inflate line count.
+		const lines = yield* transcript.readLastN(current.current_session_id, limit * 4)
+		const messages = projectTranscriptToDisplay(lines)
+		return messages.slice(-limit)
+	})
+
+export function projectTranscriptToDisplay(
+	lines: ReadonlyArray<TranscriptLine>,
+): ReadonlyArray<DisplayMessage> {
+	const out: DisplayMessage[] = []
+	let currentAssistant: {
+		role: 'assistant'
+		content: string
+		thinking: string
+		toolCalls: DisplayToolCall[]
+	} | null = null
+
+	const flushAssistant = () => {
+		if (!currentAssistant) return
+		out.push({
+			role: 'assistant',
+			content: currentAssistant.content,
+			...(currentAssistant.thinking.length > 0
+				? { thinking: currentAssistant.thinking }
+				: {}),
+			...(currentAssistant.toolCalls.length > 0
+				? { toolCalls: currentAssistant.toolCalls }
+				: {}),
+		})
+		currentAssistant = null
+	}
+
+	for (const line of lines) {
+		switch (line.role) {
+			case 'user':
+				flushAssistant()
+				out.push({ role: 'user', content: line.content })
+				break
+			case 'assistant_thinking':
+				if (!currentAssistant) {
+					currentAssistant = { role: 'assistant', content: '', thinking: line.content, toolCalls: [] }
+				} else {
+					currentAssistant.thinking += line.content
+				}
+				break
+			case 'assistant':
+				if (!currentAssistant) {
+					currentAssistant = { role: 'assistant', content: line.content, thinking: '', toolCalls: [] }
+				} else {
+					currentAssistant.content += line.content
+				}
+				break
+			case 'tool_call':
+				if (!currentAssistant) {
+					currentAssistant = { role: 'assistant', content: '', thinking: '', toolCalls: [] }
+				}
+				currentAssistant.toolCalls.push({ name: line.tool_name, args: line.input })
+				break
+			case 'tool_result': {
+				if (!currentAssistant) break
+				for (let i = currentAssistant.toolCalls.length - 1; i >= 0; i--) {
+					const tc = currentAssistant.toolCalls[i]!
+					if (tc.name === line.tool_name && tc.result === undefined) {
+						tc.result = line.content
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+	flushAssistant()
+	return out
+}
+
 function serializeTranscript(lines: ReadonlyArray<TranscriptLine>): string {
 	return lines
 		.map((line) => {
 			switch (line.role) {
 				case 'user':
+				case 'assistant_thinking':
 				case 'assistant':
 					return `[${line.role}] ${line.content}`
 				case 'tool_call':
