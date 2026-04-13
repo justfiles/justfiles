@@ -1,0 +1,224 @@
+import { useEffect, useRef, useState } from 'react'
+import type { ChatMessage, ConnectionState } from './types'
+
+interface AgentEvent {
+	type: string
+	message?: { role: string }
+	assistantMessageEvent?: { type: string; delta?: string }
+	toolCallId?: string
+	toolName?: string
+	args?: unknown
+	result?: unknown
+	isError?: boolean
+}
+
+export function useChat() {
+	const [messages, setMessages] = useState<ChatMessage[]>([])
+	const [input, setInput] = useState('')
+	const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
+	const [isStreaming, setIsStreaming] = useState(false)
+	const [connectKey, setConnectKey] = useState(0)
+
+	const wsRef = useRef<WebSocket | null>(null)
+	const currentAssistantIdRef = useRef<string | null>(null)
+
+	useEffect(() => {
+		const handleAgentEvent = (event: AgentEvent) => {
+			switch (event.type) {
+				case 'agent_start':
+					setIsStreaming(true)
+					break
+
+				case 'agent_end':
+					setIsStreaming(false)
+					currentAssistantIdRef.current = null
+					break
+
+				case 'message_start': {
+					if (event.message?.role === 'assistant') {
+						const id = crypto.randomUUID()
+						currentAssistantIdRef.current = id
+						setMessages((prev) => [...prev, { id, role: 'assistant', content: '', thinking: '', toolCalls: [] }])
+					}
+					break
+				}
+
+				case 'message_update': {
+					const assistantEvent = event.assistantMessageEvent
+					if (assistantEvent?.type === 'text_delta' && assistantEvent.delta) {
+						const currentId = currentAssistantIdRef.current
+						if (!currentId) break
+						setMessages((prev) =>
+							prev.map((message) =>
+								message.id === currentId
+									? { ...message, content: message.content + assistantEvent.delta }
+									: message
+							)
+						)
+					}
+					if (assistantEvent?.type === 'thinking_delta' && assistantEvent.delta) {
+						const currentId = currentAssistantIdRef.current
+						if (!currentId) break
+						setMessages((prev) =>
+							prev.map((message) =>
+								message.id === currentId
+									? { ...message, thinking: (message.thinking ?? '') + assistantEvent.delta }
+									: message
+							)
+						)
+					}
+					break
+				}
+
+				case 'tool_execution_start': {
+					const currentId = currentAssistantIdRef.current
+					if (!currentId) break
+					setMessages((prev) =>
+						prev.map((message) =>
+							message.id === currentId
+								? {
+									...message,
+									toolCalls: [
+										...(message.toolCalls ?? []),
+										{
+											id: event.toolCallId!,
+											name: event.toolName!,
+											args: event.args,
+											status: 'running' as const
+										}
+									]
+								}
+								: message
+						)
+					)
+					break
+				}
+
+				case 'tool_execution_end': {
+					const currentId = currentAssistantIdRef.current
+					if (!currentId) break
+					setMessages((prev) =>
+						prev.map((message) =>
+							message.id === currentId
+								? {
+									...message,
+									toolCalls: message.toolCalls?.map((toolCall) =>
+										toolCall.id === event.toolCallId
+											? {
+												...toolCall,
+												result: event.result,
+												isError: event.isError,
+												status: 'done' as const
+											}
+											: toolCall
+									)
+								}
+								: message
+						)
+					)
+					break
+				}
+			}
+		}
+
+		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+		const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
+
+		setConnectionState('connecting')
+		wsRef.current = ws
+
+		ws.onmessage = (event) => {
+			const data = JSON.parse(event.data)
+
+			if (data.type === 'ready') {
+				setConnectionState('ready')
+				return
+			}
+
+			if (data.type === 'history') {
+				const restored: ChatMessage[] = (data.messages ?? []).map(
+					(m: {
+						role: string
+						content: string
+						thinking?: string
+						toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[]
+					}) => ({
+						id: crypto.randomUUID(),
+						role: m.role as 'user' | 'assistant',
+						content: m.content,
+						thinking: m.thinking,
+						toolCalls: m.toolCalls?.map((tc) => ({
+							id: crypto.randomUUID(),
+							name: tc.name,
+							args: tc.args,
+							result: tc.result,
+							isError: tc.isError,
+							status: 'done' as const
+						}))
+					})
+				)
+				if (restored.length > 0) setMessages(restored)
+				return
+			}
+
+			if (data.type === 'error') {
+				console.error('Server error:', data.message)
+				setIsStreaming(false)
+				return
+			}
+
+			if (data.type === 'event') handleAgentEvent(data.event)
+		}
+
+		ws.onclose = () => {
+			if (wsRef.current === ws) {
+				setConnectionState('disconnected')
+				setIsStreaming(false)
+				wsRef.current = null
+			}
+		}
+
+		ws.onerror = () => {
+			if (wsRef.current === ws) {
+				setConnectionState('disconnected')
+				setIsStreaming(false)
+			}
+		}
+
+		return () => {
+			ws.close()
+		}
+	}, [connectKey])
+
+	const sendMessage = () => {
+		const text = input.trim()
+		if (!text || !wsRef.current || connectionState !== 'ready') return
+
+		const userMessage: ChatMessage = {
+			id: crypto.randomUUID(),
+			role: 'user',
+			content: text
+		}
+
+		setMessages((prev) => [...prev, userMessage])
+		setInput('')
+		wsRef.current.send(JSON.stringify({ type: 'prompt', text }))
+	}
+
+	const abort = () => {
+		wsRef.current?.send(JSON.stringify({ type: 'abort' }))
+	}
+
+	const reconnect = () => setConnectKey((value) => value + 1)
+
+	return {
+		messages,
+		input,
+		setInput,
+		connectionState,
+		isStreaming,
+		sendMessage,
+		abort,
+		reconnect
+	}
+}
