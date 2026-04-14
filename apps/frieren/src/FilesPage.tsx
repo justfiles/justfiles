@@ -1,6 +1,7 @@
+import { UserButton, useAuth } from '@clerk/clerk-react'
 import { FileTreeView, type FileTreeItem } from '@justfiles/ui'
 import { FileType } from '@justfiles/fs/types'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Volume } from './fs'
 import { createFsVolume } from './fs'
 import { navigate } from './clientRouter'
@@ -63,6 +64,9 @@ async function listFiles(volume: Volume): Promise<FsFile[]> {
 }
 
 export function FilesPage({ search }: { search: string }) {
+	const { getToken } = useAuth()
+	const getTokenRef = useRef(getToken)
+	getTokenRef.current = getToken
 	const selectedPath = useMemo(() => new URLSearchParams(search).get('path'), [search])
 
 	const [volume, setVolume] = useState<Volume | null>(null)
@@ -83,7 +87,7 @@ export function FilesPage({ search }: { search: string }) {
 			setLoadingFiles(true)
 			setError(null)
 			try {
-				const nextVolume = await createFsVolume()
+				const nextVolume = await createFsVolume(() => getTokenRef.current())
 				const nextFiles = await listFiles(nextVolume)
 				if (cancelled) return
 				setVolume(nextVolume)
@@ -136,6 +140,23 @@ export function FilesPage({ search }: { search: string }) {
 
 	const selectFile = (item: FileTreeItem) => {
 		navigate(`/files?path=${encodeURIComponent(item.path)}`)
+	}
+
+	const nukeAll = async () => {
+		if (!window.confirm('Delete ALL files in the volume? This cannot be undone.')) return
+		setError(null)
+		try {
+			const token = await getTokenRef.current()
+			const res = await fetch('/api/nuke', {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${token ?? ''}` },
+			})
+			if (!res.ok) throw new Error(`Nuke failed: ${res.status}`)
+			if (selectedPath) navigate('/files', { replace: true })
+			setReloadToken((value) => value + 1)
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause))
+		}
 	}
 
 	const moveFile = async ({
@@ -197,6 +218,14 @@ export function FilesPage({ search }: { search: string }) {
 					>
 						Refresh
 					</button>
+					<button
+						type="button"
+						className="btn btn-ghost btn-xs text-error"
+						onClick={() => void nukeAll()}
+					>
+						Nuke
+					</button>
+					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 				</div>
 			</header>
 

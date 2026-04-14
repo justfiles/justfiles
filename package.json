@@ -1,11 +1,11 @@
 {
 	"name": "ghostore-monorepo",
-	"private": true,
-	"workspaces": ["apps/*", "packages/*"],
 	"packageManager": "bun@1.3.10",
+	"private": true,
 	"scripts": {
 		"build": "bun run --workspaces --if-present build",
 		"dev": "bun run --filter @justfiles/worker dev",
 		"typecheck": "tsc -b --noEmit"
-	}
+	},
+	"workspaces": ["apps/*", "packages/*"]
 }

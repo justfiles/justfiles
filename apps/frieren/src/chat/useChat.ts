@@ -1,3 +1,4 @@
+import { useAuth } from '@clerk/clerk-react'
 import { useEffect, useRef, useState } from 'react'
 import type { ChatMessage, ConnectionState } from './types'
 
@@ -13,6 +14,7 @@ interface AgentEvent {
 }
 
 export function useChat() {
+	const { getToken } = useAuth()
 	const [messages, setMessages] = useState<ChatMessage[]>([])
 	const [input, setInput] = useState('')
 	const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
@@ -21,6 +23,8 @@ export function useChat() {
 
 	const wsRef = useRef<WebSocket | null>(null)
 	const currentAssistantIdRef = useRef<string | null>(null)
+	const getTokenRef = useRef(getToken)
+	getTokenRef.current = getToken
 
 	useEffect(() => {
 		const handleAgentEvent = (event: AgentEvent) => {
@@ -121,13 +125,28 @@ export function useChat() {
 			}
 		}
 
-		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-		const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
-
+		let ws: WebSocket | null = null
+		let cancelled = false
 		setConnectionState('connecting')
-		wsRef.current = ws
 
-		ws.onmessage = (event) => {
+		const connect = async () => {
+			const token = await getTokenRef.current().catch(() => null)
+			if (cancelled) return
+			if (!token) {
+				setConnectionState('disconnected')
+				return
+			}
+
+			const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+			ws = new WebSocket(
+				`${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`
+			)
+			wsRef.current = ws
+			attachHandlers(ws)
+		}
+
+		const attachHandlers = (socket: WebSocket) => {
+		socket.onmessage = (event) => {
 			const data = JSON.parse(event.data)
 
 			if (data.type === 'ready') {
@@ -170,23 +189,27 @@ export function useChat() {
 			if (data.type === 'event') handleAgentEvent(data.event)
 		}
 
-		ws.onclose = () => {
-			if (wsRef.current === ws) {
+		socket.onclose = () => {
+			if (wsRef.current === socket) {
 				setConnectionState('disconnected')
 				setIsStreaming(false)
 				wsRef.current = null
 			}
 		}
 
-		ws.onerror = () => {
-			if (wsRef.current === ws) {
+		socket.onerror = () => {
+			if (wsRef.current === socket) {
 				setConnectionState('disconnected')
 				setIsStreaming(false)
 			}
 		}
+		}
+
+		void connect()
 
 		return () => {
-			ws.close()
+			cancelled = true
+			ws?.close()
 		}
 	}, [connectKey])
 

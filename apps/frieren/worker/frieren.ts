@@ -39,7 +39,15 @@ export class Frieren extends DurableObject<Env> {
 		ctx.blockConcurrencyWhile(() => migrateCF(ctx.storage));
 		const namespace = ctx.id.toString();
 		const fs = cfFsStorage(ctx.storage, namespace);
-		this.app = createFrierenApiApp({ fs });
+		this.app = createFrierenApiApp({
+			fs,
+			onNuke: async () => {
+				await ctx.storage.deleteAll();
+				await migrateCF(ctx.storage);
+				this.agent = null;
+				this.agentPromise = null;
+			},
+		});
 
 		this.vol = volume(fs);
 		const generateSessionText = this.createSessionTextGenerator();
@@ -66,15 +74,17 @@ export class Frieren extends DurableObject<Env> {
 
 		const backend = this.env.FRIEREN_BACKEND === 'local' ? 'local' : 'openai';
 
-		return backend === 'local'
-			? {
-				model: localModel,
-				apiKey: 'lm-studio',
-			}
-			: {
-				model: openaiModel,
-				apiKey: this.env.OPENAI_API_KEY,
-			};
+		if (backend === 'local') {
+			return { model: localModel, apiKey: 'lm-studio' };
+		}
+
+		const apiKey = this.env.OPENAI_API_KEY;
+		if (!apiKey) {
+			throw new Error(
+				'OPENAI_API_KEY is not set. Add it to apps/frieren/.dev.vars (local) or as a Cloudflare secret (deployed), and declare it in wrangler.jsonc `secrets.required`.',
+			);
+		}
+		return { model: openaiModel, apiKey };
 	}
 
 	private createSessionTextGenerator() {
@@ -312,6 +322,10 @@ export class Frieren extends DurableObject<Env> {
 
 		if (parsed.type === "prompt" && parsed.text) {
 			try {
+				// Fail fast if backend config is invalid (e.g. missing API key)
+				// so the client sees a real error instead of silent empty turns.
+				this.getBackendConfig();
+
 				const prepared = await this.sessionRuntime.runPromise(prepareTurn());
 				const sessionId = prepared.currentSessionId;
 
@@ -387,6 +401,9 @@ export class Frieren extends DurableObject<Env> {
 					unsubscribe();
 				}
 			} catch (err) {
+				console.error('[frieren] prompt flow failed', err)
+				this.agent = null;
+				this.agentPromise = null;
 				ws.send(
 					JSON.stringify({
 						type: "error",
