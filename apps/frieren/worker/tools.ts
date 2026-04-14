@@ -30,10 +30,14 @@ export function createFsTools(vol: Volume): AgentTool<any>[] {
 	const writeFile: AgentTool<typeof writeParams> = {
 		name: 'write',
 		label: 'Write File',
-		description: 'Write text content to a file in your memory filesystem. Creates the file if it does not exist, overwrites if it does. Parent directories must exist (use mkdir first).',
+		description: 'Write text content to a file in your memory filesystem. Creates the file if it does not exist, overwrites if it does. Parent directories are created automatically.',
 		parameters: writeParams,
 		async execute(_toolCallId, params) {
 			const data = encoder.encode(params.content);
+			const parent = params.path.replace(/\/[^/]*$/, '');
+			if (parent && parent !== params.path) {
+				await vol.mkdir(parent, { recursive: true });
+			}
 			await vol.writeFile(params.path, data);
 			return {
 				content: [{ type: 'text', text: `Wrote ${data.length} bytes to ${params.path}` }],

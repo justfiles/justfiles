@@ -1,3 +1,4 @@
+import { UserButton } from '@clerk/clerk-react'
 import { useState } from 'react'
 import type { ReactElement } from 'react'
 import { navigate } from './clientRouter'
@@ -56,6 +57,7 @@ export function ChatPage() {
 					<span className={`badge badge-sm ${statusBadge[chat.connectionState]}`}>
 						{chat.connectionState}
 					</span>
+					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 				</div>
 			</header>
 

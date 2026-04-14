@@ -3,10 +3,19 @@ import { volume, type Volume } from '@justfiles/fs'
 
 export type { FsClient, Volume }
 
-export function createFsClient(): FsClient {
-	return createCoreFsClient({ baseUrl: '/fs' })
+export type GetToken = () => Promise<string | null>
+
+function makeHeaders(getToken: GetToken) {
+	return async () => {
+		const token = await getToken()
+		return { Authorization: `Bearer ${token ?? ''}` }
+	}
 }
 
-export async function createFsVolume(): Promise<Volume> {
-	return volume(await apiStorage(createFsClient()))
+export function createFsClient(getToken: GetToken): FsClient {
+	return createCoreFsClient({ baseUrl: '/fs', headers: makeHeaders(getToken) })
+}
+
+export async function createFsVolume(getToken: GetToken): Promise<Volume> {
+	return volume(await apiStorage(createFsClient(getToken)))
 }

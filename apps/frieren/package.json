@@ -12,6 +12,10 @@
 		"cf-typegen": "wrangler types"
 	},
 	"dependencies": {
+		"@clerk/backend": "^3.2.9",
+		"@clerk/clerk-react": "^5.61.3",
+		"@clerk/hono": "^0.1.11",
+		"@hono/clerk-auth": "^3.1.1",
 		"@justfiles/core": "workspace:*",
 		"@justfiles/fs": "workspace:*",
 		"@justfiles/ui": "workspace:*",
