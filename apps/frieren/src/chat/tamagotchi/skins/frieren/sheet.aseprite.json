@@ -1,0 +1,108 @@
+{
+	"frames": [
+		{
+			"filename": "idle_neutral_0",
+			"frame": { "x": 0, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "idle_neutral_1",
+			"frame": { "x": 41, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "idle_happy_0",
+			"frame": { "x": 82, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "idle_happy_1",
+			"frame": { "x": 123, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "idle_sad_0",
+			"frame": { "x": 164, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "idle_sad_1",
+			"frame": { "x": 205, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "idle_angry_0",
+			"frame": { "x": 246, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "idle_angry_1",
+			"frame": { "x": 287, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "walk_neutral_0",
+			"frame": { "x": 328, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "walk_neutral_1",
+			"frame": { "x": 369, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "walk_happy_0",
+			"frame": { "x": 410, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "walk_happy_1",
+			"frame": { "x": 451, "y": 0, "w": 41, "h": 54 },
+			"duration": 180
+		},
+		{
+			"filename": "listen_neutral_0",
+			"frame": { "x": 492, "y": 0, "w": 41, "h": 54 },
+			"duration": 220
+		},
+		{
+			"filename": "talk_neutral_0",
+			"frame": { "x": 533, "y": 0, "w": 41, "h": 54 },
+			"duration": 140
+		},
+		{
+			"filename": "talk_neutral_1",
+			"frame": { "x": 574, "y": 0, "w": 41, "h": 54 },
+			"duration": 140
+		},
+		{
+			"filename": "poke_0",
+			"frame": { "x": 615, "y": 0, "w": 41, "h": 54 },
+			"duration": 90
+		},
+		{
+			"filename": "poke_1",
+			"frame": { "x": 656, "y": 0, "w": 41, "h": 54 },
+			"duration": 90
+		}
+	],
+	"meta": {
+		"app": "ghostore-placeholder",
+		"version": "2.0",
+		"image": "sheet.png",
+		"format": "RGBA8888",
+		"size": { "w": 697, "h": 54 },
+		"scale": "1",
+		"frameTags": [
+			{ "name": "idle_neutral", "from": 0, "to": 1, "direction": "forward" },
+			{ "name": "idle_happy", "from": 2, "to": 3, "direction": "forward" },
+			{ "name": "idle_sad", "from": 4, "to": 5, "direction": "forward" },
+			{ "name": "idle_angry", "from": 6, "to": 7, "direction": "forward" },
+			{ "name": "walk_neutral", "from": 8, "to": 9, "direction": "forward" },
+			{ "name": "walk_happy", "from": 10, "to": 11, "direction": "forward" },
+			{ "name": "listen_neutral", "from": 12, "to": 12, "direction": "forward" },
+			{ "name": "talk_neutral", "from": 13, "to": 14, "direction": "forward" },
+			{ "name": "poke", "from": 15, "to": 16, "direction": "forward" }
+		]
+	}
+}
