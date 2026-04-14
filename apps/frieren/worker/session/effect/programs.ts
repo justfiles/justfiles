@@ -1,6 +1,6 @@
 import { Effect } from 'effect'
 import { DEFAULT_SETUP_PROMPT } from '../context.ts'
-import type { ResolveResult, TranscriptLine } from '../types.ts'
+import type { InboxCandidate, ResolveResult, TranscriptLine } from '../types.ts'
 import type {
 	CurrentSessionCorrupt,
 	GenerationFailure,
@@ -183,7 +183,7 @@ export const closeSession = (
 ): Effect.Effect<
 	string,
 	SessionNotFound | StorageFailure | GenerationFailure,
-	SessionStore | TranscriptStore | TextGenerator
+	SessionStore | TranscriptStore | ContextStore | TextGenerator | SessionClock
 > =>
 	Effect.gen(function* () {
 		const store = yield* SessionStore
@@ -197,6 +197,11 @@ export const closeSession = (
 		const lines = yield* transcript.readAll(sessionId)
 		const transcriptText = serializeTranscript(lines)
 
+		yield* Effect.catchAll(
+			extractMemoryInbox(sessionId, lines),
+			(cause) => Effect.logWarning('memory-inbox extraction failed', cause).pipe(Effect.as(0)),
+		)
+
 		const finalSummary = yield* text.generate({
 			step: 'final-summary',
 			systemPrompt: 'You write concise session summaries.',
@@ -209,8 +214,9 @@ export const closeSession = (
 			userPrompt: `Write a handoff note for the next session based on:\n\n${transcriptText}`,
 		})
 
+		const latestMeta = yield* store.loadMeta(sessionId)
 		const archivedMeta = {
-			...closingMeta,
+			...latestMeta,
 			state: 'archived' as const,
 		}
 
@@ -228,6 +234,91 @@ export const closeSession = (
 		})
 
 		return archived.handoffPath
+	})
+
+const MEMORY_INBOX_SYSTEM_PROMPT = `You extract durable memory candidates from chat session transcripts.
+
+Return a JSON array of objects. Each object has:
+- "slug": short kebab-case identifier (max 6 words)
+- "confidence": "low" | "medium" | "high"
+- "content": one or two sentences capturing a durable fact, preference, decision, or unresolved follow-up worth remembering across sessions
+
+Only include items that are durable and user-specific. Skip small talk, ephemeral tool output, and anything already obvious from /profiles/user.md. If nothing is worth saving, return [].
+
+Output ONLY the JSON array. No prose, no code fences.`
+
+export interface MemoryCandidateDraft {
+	readonly slug: string
+	readonly confidence: InboxCandidate['confidence']
+	readonly content: string
+}
+
+export const extractMemoryInbox = (
+	sessionId: string,
+	providedLines?: ReadonlyArray<TranscriptLine>,
+): Effect.Effect<
+	number,
+	SessionNotFound | StorageFailure | GenerationFailure,
+	SessionStore | TranscriptStore | ContextStore | TextGenerator | SessionClock
+> =>
+	Effect.gen(function* () {
+		const sessionStore = yield* SessionStore
+		const transcript = yield* TranscriptStore
+		const context = yield* ContextStore
+		const text = yield* TextGenerator
+		const clock = yield* SessionClock
+
+		const meta = yield* sessionStore.loadMeta(sessionId)
+		if (meta.inbox_extracted_at) return 0
+
+		const markExtracted = (iso: string) =>
+			sessionStore.saveMeta({ ...meta, inbox_extracted_at: iso })
+
+		const lines = providedLines ?? (yield* transcript.readAll(sessionId))
+		if (lines.length === 0) {
+			yield* markExtracted(yield* clock.nowIso())
+			return 0
+		}
+
+		const transcriptText = serializeTranscript(lines)
+		if (transcriptText.trim().length === 0) {
+			yield* markExtracted(yield* clock.nowIso())
+			return 0
+		}
+
+		const raw = yield* text.generate({
+			step: 'memory-inbox',
+			systemPrompt: MEMORY_INBOX_SYSTEM_PROMPT,
+			userPrompt: `Session transcript:\n\n${transcriptText}`,
+		})
+
+		const drafts = parseMemoryCandidates(raw)
+		const capturedIso = yield* clock.nowIso()
+
+		if (drafts.length === 0) {
+			yield* markExtracted(capturedIso)
+			return 0
+		}
+
+		const prefix = toInboxFilenamePrefix(capturedIso)
+		let written = 0
+
+		for (let i = 0; i < drafts.length; i++) {
+			const draft = drafts[i]!
+			const slug = draft.slug || `note-${i + 1}`
+			const filename = `${prefix}-${slug}.md`
+			const markdown = formatInboxMarkdown({
+				captured: capturedIso,
+				session: sessionId,
+				confidence: draft.confidence,
+				content: draft.content,
+			})
+			yield* context.writeInboxCandidate(filename, markdown)
+			written++
+		}
+
+		yield* markExtracted(capturedIso)
+		return written
 	})
 
 export const persistTurn = (
@@ -469,6 +560,63 @@ export function projectTranscriptToDisplay(
 	}
 	flushAssistant()
 	return out
+}
+
+function parseMemoryCandidates(raw: string): Array<MemoryCandidateDraft> {
+	const trimmed = raw.trim()
+	if (trimmed.length === 0) return []
+
+	const jsonStart = trimmed.indexOf('[')
+	const jsonEnd = trimmed.lastIndexOf(']')
+	if (jsonStart === -1 || jsonEnd === -1 || jsonEnd <= jsonStart) return []
+
+	let parsed: unknown
+	try {
+		parsed = JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1))
+	} catch {
+		return []
+	}
+	if (!Array.isArray(parsed)) return []
+
+	const out: Array<MemoryCandidateDraft> = []
+	for (const entry of parsed) {
+		if (!entry || typeof entry !== 'object') continue
+		const rec = entry as Record<string, unknown>
+		const content = typeof rec.content === 'string' ? rec.content.trim() : ''
+		if (content.length === 0) continue
+		const slugRaw = typeof rec.slug === 'string' ? rec.slug : ''
+		const slug = slugRaw
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 48)
+		const confidence: InboxCandidate['confidence'] =
+			rec.confidence === 'high' || rec.confidence === 'medium' || rec.confidence === 'low'
+				? rec.confidence
+				: 'low'
+		out.push({ slug, confidence, content })
+	}
+	return out
+}
+
+function toInboxFilenamePrefix(iso: string): string {
+	const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso)
+	if (!match) return iso.replace(/[^0-9]/g, '').slice(0, 12)
+	const [, y, mo, d, h, mi] = match
+	return `${y}-${mo}-${d}-${h}${mi}`
+}
+
+function formatInboxMarkdown(candidate: InboxCandidate): string {
+	return [
+		'---',
+		`captured: ${candidate.captured}`,
+		`session: ${candidate.session}`,
+		`confidence: ${candidate.confidence}`,
+		'---',
+		'',
+		candidate.content,
+		'',
+	].join('\n')
 }
 
 function serializeTranscript(lines: ReadonlyArray<TranscriptLine>): string {

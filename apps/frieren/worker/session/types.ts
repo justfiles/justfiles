@@ -36,6 +36,7 @@ export interface SessionMeta {
 	last_activity_at: string    // ISO8601
 	turn_count: number
 	state: SessionState
+	inbox_extracted_at?: string // ISO8601; set by extractMemoryInbox
 }
 
 export type SessionState = 'active' | 'closing' | 'archived'

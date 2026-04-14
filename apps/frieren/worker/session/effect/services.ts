@@ -108,6 +108,10 @@ export class ContextStore extends Context.Tag('Frieren/ContextStore')<
 			ReadonlyArray<InboxCandidate>,
 			StorageFailure
 		>
+		readonly writeInboxCandidate: (
+			filename: string,
+			markdown: string,
+		) => Effect.Effect<void, StorageFailure>
 	}
 >() {}
 
