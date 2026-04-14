@@ -517,6 +517,11 @@ What is still missing:
 	- `maybeUpdateRollingSummary` regenerates `rolling-summary.md` from the active session transcript on a conservative completed-turn trigger
 	- `frieren.ts` runs rolling summary updates after transcript persistence as a best-effort background maintenance step
 	- `buildSystemPrompt` now consumes a file that is actually written during active sessions, not just at resume time
+- memory inbox extraction on `closeSession` (Phase 3):
+	- `extractMemoryInbox` program asks the `TextGenerator` for a JSON array of durable memory candidates from the closed session transcript
+	- parses `{slug, confidence, content}` entries leniently, normalizes slugs, and falls back to `note-N` when the LLM omits a slug
+	- writes each candidate as a frontmatter markdown file under `/memory/inbox/{YYYY-MM-DD-HHMM}-{slug}.md` via a new `ContextStore.writeInboxCandidate` method
+	- runs as a best-effort step inside `closeSession` (before archive) so extraction never blocks session rotation
 - token-budget-driven tail retention with compaction into the rolling summary (Phase C):
 	- `loadRehydrationMessages` now derives the retained tail from a token budget instead of a fixed message-count limit
 	- token budgeting accounts for the prepared system prompt so the retained tail shares budget with prompt assembly
@@ -526,7 +531,6 @@ What is still missing:
 
 ### Not Done Yet
 
-- memory inbox extraction on close
 - reflection / inbox processing pass
 - permanent memory store beyond prompt/profile/session files
 - explicit extraction of backend/model config into a reusable configuration module
@@ -574,19 +578,9 @@ Outcome:
 - resumed turns now see a compacted summary plus a bounded recent tail, matching the intended Pi/OpenClaw-style model
 - context length is more predictable as sessions grow
 
-### Phase 3: Memory Inbox
+### Phase 3: Memory Inbox (done)
 
-Add extraction of durable memory candidates during session close.
-
-Likely shape:
-
-- keep transcript and session archive logic in the existing stores
-- generate structured memory candidates from the transcript during `closeSession`
-- write them into `/memory/inbox`
-
-Outcome:
-
-- session closure produces durable memory candidates without overloading session metadata APIs
+Done. `extractMemoryInbox` runs inside `closeSession` as a best-effort step, asks the `TextGenerator` for durable memory candidates as JSON, and writes each accepted entry as a frontmatter markdown file under `/memory/inbox`. Failures are logged and never block archive.
 
 ### Phase 4: Reflection Pass
 
@@ -663,7 +657,7 @@ Testing approach from here:
 3. (done) add text-only model context rehydration on cold-start resume (Phase A)
 4. (done) add rolling summary generation for long internal sessions (Phase B, depends on A)
 5. (done) switch rehydration and summary triggers to token-budget-driven retention (Phase C, depends on A and B)
-6. add memory inbox extraction on session close
+6. (done) add memory inbox extraction on session close
 7. add reflection flow in `frieren.ts`
 8. add thin channel metadata only where it helps future extensibility
 

@@ -147,6 +147,11 @@ export const ContextStoreLive = Layer.effect(ContextStore, Effect.gen(function* 
 			writeFile(vol, PATHS.rollingSummary(sessionId), summary),
 		readHandoff: (path) => readTextFile(vol, path),
 		readInbox: () => Effect.succeed([] as ReadonlyArray<InboxCandidate>),
+		writeInboxCandidate: (filename, markdown) =>
+			Effect.gen(function* () {
+				yield* mkdir(vol, PATHS.memoryInbox)
+				yield* writeFile(vol, `${PATHS.memoryInbox}/${filename}`, markdown)
+			}),
 	}
 }))
 
