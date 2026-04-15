@@ -5,13 +5,21 @@
  * name, label, description, parameters (TypeBox), execute.
  */
 import { Type } from '@sinclair/typebox';
-import type { AgentTool } from '@mariozechner/pi-agent-core';
+import type { AfterToolCallContext, AgentTool, BeforeToolCallContext, BeforeToolCallResult } from '@mariozechner/pi-agent-core';
 import type { Volume } from '@justfiles/fs';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-export function createFsTools(vol: Volume): AgentTool<any>[] {
+export interface FsToolset {
+	tools: AgentTool<any>[];
+	beforeToolCall: (ctx: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined>;
+	afterToolCall: (ctx: AfterToolCallContext) => Promise<undefined>;
+}
+
+export function createFsTools(vol: Volume): FsToolset {
+	const readPaths = new Set<string>();
+
 	const readFile: AgentTool<typeof readParams> = {
 		name: 'read',
 		label: 'Read File',
@@ -30,7 +38,7 @@ export function createFsTools(vol: Volume): AgentTool<any>[] {
 	const writeFile: AgentTool<typeof writeParams> = {
 		name: 'write',
 		label: 'Write File',
-		description: 'Write text content to a file in your memory filesystem. Creates the file if it does not exist, overwrites if it does. Parent directories are created automatically.',
+		description: 'Write text content to a file in your memory filesystem. Creates the file if it does not exist, overwrites if it does. Parent directories are created automatically. You MUST call `read` on the path first if the file already exists — otherwise the write is blocked.',
 		parameters: writeParams,
 		async execute(_toolCallId, params) {
 			const data = encoder.encode(params.content);
@@ -44,6 +52,27 @@ export function createFsTools(vol: Volume): AgentTool<any>[] {
 				details: { path: params.path, size: data.length },
 			};
 		},
+	};
+
+	const beforeToolCall = async (ctx: BeforeToolCallContext): Promise<BeforeToolCallResult | undefined> => {
+		if (ctx.toolCall.name !== 'write') return undefined;
+		const path = (ctx.args as { path?: string }).path;
+		if (!path) return undefined;
+		if (readPaths.has(path)) return undefined;
+		if (!(await vol.exists(path))) return undefined;
+		return {
+			block: true,
+			reason: `Refusing to overwrite ${path}: call \`read\` on it first, then write the merged content.`,
+		};
+	};
+
+	const afterToolCall = async (ctx: AfterToolCallContext): Promise<undefined> => {
+		if (ctx.isError) return undefined;
+		const name = ctx.toolCall.name;
+		if (name !== 'read' && name !== 'write') return undefined;
+		const path = (ctx.args as { path?: string }).path;
+		if (path) readPaths.add(path);
+		return undefined;
 	};
 
 	const listDir: AgentTool<typeof lsParams> = {
@@ -96,7 +125,11 @@ export function createFsTools(vol: Volume): AgentTool<any>[] {
 		},
 	};
 
-	return [readFile, writeFile, listDir, makeDir, removeFile];
+	return {
+		tools: [readFile, writeFile, listDir, makeDir, removeFile],
+		beforeToolCall,
+		afterToolCall,
+	};
 }
 
 const fetchParams = Type.Object({
@@ -182,6 +215,37 @@ function unwrapDuckDuckGoUrl(url: string): string {
 	if (match) return decodeURIComponent(match[1]);
 	if (url.startsWith('//')) return 'https:' + url;
 	return url;
+}
+
+const takeNoteParams = Type.Object({
+	content: Type.String({
+		description: 'One short sentence capturing a durable fact, preference, decision, or follow-up worth remembering across sessions.',
+	}),
+});
+
+export function createTakeNoteTool(
+	append: (content: string) => Promise<void>,
+): AgentTool<typeof takeNoteParams> {
+	return {
+		name: 'takeNote',
+		label: 'Take Note',
+		description: 'Record a durable note for the current session. Use when the user tells you a fact, preference, decision, or follow-up worth remembering across sessions. Notes are reviewed when the session closes and may become permanent memory.',
+		parameters: takeNoteParams,
+		async execute(_toolCallId, params) {
+			const content = params.content.trim();
+			if (content.length === 0) {
+				return {
+					content: [{ type: 'text', text: 'Empty note, skipped.' }],
+					details: { skipped: true },
+				};
+			}
+			await append(content);
+			return {
+				content: [{ type: 'text', text: `Noted: ${content}` }],
+				details: { content },
+			};
+		},
+	};
 }
 
 export function createFetchTool(): AgentTool<typeof fetchParams> {

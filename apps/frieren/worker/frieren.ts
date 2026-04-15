@@ -6,11 +6,11 @@ import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
 import { volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
 import { createFrierenApiApp, type FrierenApiType } from './app.ts';
-import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
+import { createFsTools, createFetchTool, createSearchTool, createTakeNoteTool } from "./tools.ts";
 import { windowMessages } from "./session/context.ts";
 import { makeSessionRuntime } from './session/effect/live.ts'
-import { loadRecentHistory, loadRehydrationMessages, maybeUpdateRollingSummary, persistTurn, prepareTurn, type DisplayMessage, type RehydrationLine } from './session/effect/programs.ts'
-import type { TranscriptLine } from "./session/types.ts";
+import { appendNote, claimNotesForReflection, clearReflectionClaim, loadRecentHistory, loadRehydrationMessages, maybeUpdateRollingSummary, persistTurn, prepareTurn, type DisplayMessage, type RehydrationLine } from './session/effect/programs.ts'
+import type { NoteEntry, TranscriptLine } from "./session/types.ts";
 
 interface ClientMessage {
 	type: "prompt" | "abort";
@@ -27,12 +27,26 @@ interface ServerMessage {
 const FINAL_ANSWER_ONLY_INSTRUCTION =
 	'When you answer the user, output only the final assistant reply. Do not emit your reasoning process, analysis, or thinking trace.'
 
+const REFLECTION_SYSTEM_PROMPT = `You are processing notes captured during recent chat sessions.
+
+The user message contains a JSONL batch of notes — one JSON object per line with {sessionId, content, ts}. Notes may span multiple sessions. Integrate the durable ones into long-term memory by reading and updating:
+- /profiles/user.md — durable facts, preferences, and decisions about the user
+
+For each note, decide one of:
+- merge it into /profiles/user.md (read the file first, then write the updated file with the new information folded in; prefer merging over appending duplicates)
+- discard it if redundant, uncertain, already present, or not durable
+
+Do not create new files outside /profiles. Do not ask questions. Finish with a single short line summarizing what you merged or discarded.`
+
+const REFLECTION_INITIAL_DELAY_MS = 5_000
+const REFLECTION_RETRY_DELAY_MS = 5 * 60_000
+
 export class Frieren extends DurableObject<Env> {
-	private agent: Agent | null = null;
-	private agentPromise: Promise<Agent> | null = null;
+	private _agent: Agent | null = null;
 	private readonly app: FrierenApiType;
 	private readonly vol;
 	private readonly sessionRuntime: ReturnType<typeof makeSessionRuntime>;
+	private currentSessionId: string | null = null;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -44,8 +58,7 @@ export class Frieren extends DurableObject<Env> {
 			onNuke: async () => {
 				await ctx.storage.deleteAll();
 				await migrateCF(ctx.storage);
-				this.agent = null;
-				this.agentPromise = null;
+				this._agent = null;
 			},
 		});
 
@@ -120,23 +133,27 @@ export class Frieren extends DurableObject<Env> {
 		return text
 	}
 
-	private async getOrCreateAgent(): Promise<Agent> {
-		if (this.agent) return this.agent;
-		if (this.agentPromise) return this.agentPromise;
-
-		this.agentPromise = this.createAgent();
-		try {
-			this.agent = await this.agentPromise;
-			return this.agent;
-		} finally {
-			this.agentPromise = null;
-		}
+	private get agent(): Agent {
+		if (!this._agent) this._agent = this.createAgent();
+		return this._agent;
 	}
 
-	private async createAgent(): Promise<Agent> {
+	private createAgent(): Agent {
 		const { model, apiKey } = this.getBackendConfig();
 
-		const tools = [...createFsTools(this.vol), createFetchTool(), createSearchTool()];
+		const takeNote = createTakeNoteTool(async (content) => {
+			const sessionId = this.currentSessionId;
+			if (!sessionId) return;
+			const entry: NoteEntry = {
+				sessionId,
+				content,
+				ts: new Date().toISOString(),
+			};
+			await this.sessionRuntime.runPromise(appendNote(entry));
+		});
+
+		const fs = createFsTools(this.vol);
+		const tools = [...fs.tools, createFetchTool(), createSearchTool(), takeNote];
 
 		const agent = new Agent({
 			initialState: {
@@ -153,6 +170,8 @@ export class Frieren extends DurableObject<Env> {
 					apiKey,
 				});
 			},
+			beforeToolCall: fs.beforeToolCall,
+			afterToolCall: fs.afterToolCall,
 		});
 
 		// transformContext only sees messages — it cannot set systemPrompt,
@@ -316,7 +335,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === "abort") {
-			this.agent?.abort();
+			this._agent?.abort();
 			return;
 		}
 
@@ -328,8 +347,13 @@ export class Frieren extends DurableObject<Env> {
 
 				const prepared = await this.sessionRuntime.runPromise(prepareTurn());
 				const sessionId = prepared.currentSessionId;
+				this.currentSessionId = sessionId;
 
-				const agent = await this.getOrCreateAgent();
+				if (prepared.resolution.action === 'close_and_start') {
+					await this.scheduleReflection();
+				}
+
+				const agent = this.agent;
 				if (prepared.isNewSession && agent.state.messages.length > 0) {
 					agent.state.messages = [];
 				} else if (
@@ -402,8 +426,7 @@ export class Frieren extends DurableObject<Env> {
 				}
 			} catch (err) {
 				console.error('[frieren] prompt flow failed', err)
-				this.agent = null;
-				this.agentPromise = null;
+				this._agent = null;
 				ws.send(
 					JSON.stringify({
 						type: "error",
@@ -412,6 +435,59 @@ export class Frieren extends DurableObject<Env> {
 					} satisfies ServerMessage),
 				);
 			}
+		}
+	}
+
+	private async scheduleReflection(delayMs = REFLECTION_INITIAL_DELAY_MS): Promise<void> {
+		try {
+			const existing = await this.ctx.storage.getAlarm();
+			const target = Date.now() + delayMs;
+			if (existing !== null && existing <= target) return;
+			await this.ctx.storage.setAlarm(target);
+		} catch (err) {
+			console.error('[frieren] failed to schedule reflection alarm', err);
+		}
+	}
+
+	private async reflectOnNotes(notes: ReadonlyArray<NoteEntry>): Promise<void> {
+		const userPrompt = notes.map((n) => JSON.stringify(n)).join('\n');
+		const { model, apiKey } = this.getBackendConfig();
+		const fs = createFsTools(this.vol);
+		const agent = new Agent({
+			initialState: {
+				systemPrompt: REFLECTION_SYSTEM_PROMPT,
+				model,
+				tools: fs.tools,
+			},
+			convertToLlm: (messages: AgentMessage[]): Message[] =>
+				this.buildModelVisibleMessages(messages),
+			getApiKey: () => apiKey,
+			streamFn: (m, context, options) =>
+				streamSimple(m, context, { ...options, apiKey }),
+			beforeToolCall: fs.beforeToolCall,
+			afterToolCall: fs.afterToolCall,
+		});
+		await agent.prompt(userPrompt);
+	}
+
+	async alarm(): Promise<void> {
+		let claimed: ReadonlyArray<NoteEntry>;
+		try {
+			claimed = await this.sessionRuntime.runPromise(claimNotesForReflection());
+		} catch (err) {
+			console.error('[frieren] failed to claim notes for reflection', err);
+			await this.scheduleReflection(REFLECTION_RETRY_DELAY_MS);
+			return;
+		}
+
+		if (claimed.length === 0) return;
+
+		try {
+			await this.reflectOnNotes(claimed);
+			await this.sessionRuntime.runPromise(clearReflectionClaim());
+		} catch (err) {
+			console.error('[frieren] reflection failed', err);
+			await this.scheduleReflection(REFLECTION_RETRY_DELAY_MS);
 		}
 	}
 
@@ -449,6 +525,10 @@ export class Frieren extends DurableObject<Env> {
 			} catch (err) {
 				console.error("Failed to load recent history", err);
 			}
+
+			// Catch up on any inbox items left over from a previous session
+			// that never got reflected (e.g. DO crashed mid-alarm).
+			await this.scheduleReflection();
 
 			// Send ready signal
 			server.send(
