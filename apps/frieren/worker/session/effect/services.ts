@@ -2,7 +2,7 @@ import { Context, type Effect, Layer } from 'effect'
 import type { Volume as FsVolume } from '@justfiles/fs'
 import type {
 	CurrentSession,
-	InboxCandidate,
+	NoteEntry,
 	SessionMeta,
 	TranscriptLine,
 } from '../types.ts'
@@ -104,14 +104,17 @@ export class ContextStore extends Context.Tag('Frieren/ContextStore')<
 		readonly readHandoff: (
 			path: string,
 		) => Effect.Effect<string | null, StorageFailure>
-		readonly readInbox: () => Effect.Effect<
-			ReadonlyArray<InboxCandidate>,
+		readonly appendNote: (
+			entry: NoteEntry,
+		) => Effect.Effect<void, StorageFailure>
+		readonly readNotesForSession: (
+			sessionId: string,
+		) => Effect.Effect<ReadonlyArray<NoteEntry>, StorageFailure>
+		readonly claimNotesForReflection: () => Effect.Effect<
+			ReadonlyArray<NoteEntry>,
 			StorageFailure
 		>
-		readonly writeInboxCandidate: (
-			filename: string,
-			markdown: string,
-		) => Effect.Effect<void, StorageFailure>
+		readonly clearReflectionClaim: () => Effect.Effect<void, StorageFailure>
 	}
 >() {}
 
@@ -119,7 +122,7 @@ export class TextGenerator extends Context.Tag('Frieren/TextGenerator')<
 	TextGenerator,
 	{
 		readonly generate: (input: {
-			readonly step: 'final-summary' | 'handoff' | 'rolling-summary' | 'memory-inbox'
+			readonly step: 'final-summary' | 'handoff' | 'rolling-summary'
 			readonly systemPrompt: string
 			readonly userPrompt: string
 		}) => Effect.Effect<string, GenerationFailure>

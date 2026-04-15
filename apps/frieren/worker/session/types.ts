@@ -36,7 +36,6 @@ export interface SessionMeta {
 	last_activity_at: string    // ISO8601
 	turn_count: number
 	state: SessionState
-	inbox_extracted_at?: string // ISO8601; set by extractMemoryInbox
 }
 
 export type SessionState = 'active' | 'closing' | 'archived'
@@ -54,16 +53,14 @@ export type TranscriptLine =
 	| { ts: string; role: 'tool_result'; tool_name: string; content: string }
 
 /**
- * `/memory/inbox/{YYYY-MM-DD-HHMM}-{slug}.md` frontmatter.
+ * `/notes.jsonl` row schema.
  *
- * Written at session close. Read during reflection at next session start.
- * Never modified after writing.
+ * One JSON object per line. Append-only, claimed by reflection via atomic rename.
  */
-export interface InboxCandidate {
-	captured: string        // ISO8601
-	session: string         // session_id
-	confidence: 'low' | 'medium' | 'high'
-	content: string         // the fact/observation body (after frontmatter)
+export interface NoteEntry {
+	sessionId: string
+	content: string
+	ts: string  // ISO8601
 }
 
 /**
@@ -114,6 +111,7 @@ export const PATHS = {
 	rollingSummary: (id: string) => `/sessions/active/${id}/rolling-summary.md`,
 	archiveSession: (id: string) => `/sessions/archive/${id}`,
 	archiveHandoff: (id: string) => `/sessions/archive/${id}/handoff.md`,
-	memoryInbox: '/memory/inbox',
+	notes: '/notes.jsonl',
+	notesProcessing: '/notes.processing.jsonl',
 	memoryStructure: '/memory/STRUCTURE.md',
 } as const

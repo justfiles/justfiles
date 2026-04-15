@@ -3,7 +3,7 @@ import type { Volume as FsVolume } from '@justfiles/fs'
 import type {
 	CurrentSession,
 	GenerateText,
-	InboxCandidate,
+	NoteEntry,
 	SessionMeta,
 	TranscriptLine,
 } from '../types.ts'
@@ -146,12 +146,32 @@ export const ContextStoreLive = Layer.effect(ContextStore, Effect.gen(function* 
 		writeRollingSummary: (sessionId, summary) =>
 			writeFile(vol, PATHS.rollingSummary(sessionId), summary),
 		readHandoff: (path) => readTextFile(vol, path),
-		readInbox: () => Effect.succeed([] as ReadonlyArray<InboxCandidate>),
-		writeInboxCandidate: (filename, markdown) =>
+		appendNote: (entry) =>
+			appendFile(vol, PATHS.notes, JSON.stringify(entry) + '\n'),
+		readNotesForSession: (sessionId) =>
 			Effect.gen(function* () {
-				yield* mkdir(vol, PATHS.memoryInbox)
-				yield* writeFile(vol, `${PATHS.memoryInbox}/${filename}`, markdown)
+				const main = yield* readNotesFile(vol, PATHS.notes)
+				const processing = yield* readNotesFile(vol, PATHS.notesProcessing)
+				return [...main, ...processing].filter((n) => n.sessionId === sessionId)
 			}),
+		claimNotesForReflection: () =>
+			Effect.tryPromise({
+				try: async () => {
+					if (!(await vol.exists(PATHS.notesProcessing))) {
+						if (!(await vol.exists(PATHS.notes))) return []
+						await vol.rename(PATHS.notes, PATHS.notesProcessing)
+					}
+					const raw = dec.decode(await vol.readFile(PATHS.notesProcessing))
+					return parseNotesJsonl(raw)
+				},
+				catch: (cause) =>
+					new StorageFailure({
+						operation: 'claimNotesForReflection',
+						path: PATHS.notes,
+						cause,
+					}),
+			}),
+		clearReflectionClaim: () => rm(vol, PATHS.notesProcessing),
 	}
 }))
 
@@ -294,6 +314,39 @@ function parseJson<T, E>(
 		try: () => JSON.parse(text) as T,
 		catch: onError,
 	})
+}
+
+function readNotesFile(
+	vol: FsVolume,
+	path: string,
+): Effect.Effect<ReadonlyArray<NoteEntry>, StorageFailure> {
+	return Effect.tryPromise({
+		try: async () => {
+			if (!(await vol.exists(path))) return []
+			const raw = dec.decode(await vol.readFile(path))
+			return parseNotesJsonl(raw)
+		},
+		catch: (cause) =>
+			new StorageFailure({ operation: 'readNotesFile', path, cause }),
+	})
+}
+
+function parseNotesJsonl(raw: string): Array<NoteEntry> {
+	if (!raw.trim()) return []
+	const out: Array<NoteEntry> = []
+	for (const line of raw.split('\n')) {
+		const trimmed = line.trim()
+		if (!trimmed) continue
+		try {
+			const parsed = JSON.parse(trimmed) as NoteEntry
+			if (parsed && typeof parsed.content === 'string' && typeof parsed.sessionId === 'string') {
+				out.push(parsed)
+			}
+		} catch {
+			// skip malformed line
+		}
+	}
+	return out
 }
 
 function readTranscriptLines(
