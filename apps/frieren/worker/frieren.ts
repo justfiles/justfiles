@@ -1,70 +1,76 @@
 import { DurableObject } from "cloudflare:workers";
 import { Agent } from "@mariozechner/pi-agent-core";
-import { completeSimple, getModel, streamSimple } from "@mariozechner/pi-ai";
+import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
-import { volume } from "@justfiles/fs";
+import type { Message } from "@mariozechner/pi-ai";
+import { volume, type Volume } from "@justfiles/fs";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
 import { createFrierenApiApp, type FrierenApiType } from './app.ts';
-import { createFsTools, createFetchTool, createSearchTool, createTakeNoteTool } from "./tools.ts";
-import { windowMessages } from "./session/context.ts";
-import { makeSessionRuntime } from './session/effect/live.ts'
-import { appendNote, claimNotesForReflection, clearReflectionClaim, loadRecentHistory, loadRehydrationMessages, maybeUpdateRollingSummary, persistTurn, prepareTurn, type DisplayMessage, type RehydrationLine } from './session/effect/programs.ts'
-import type { NoteEntry, TranscriptLine } from "./session/types.ts";
+import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
+import { runtime, type Runtime } from './frieren.runtime';
+import type { SessionEntry } from "./session.manager.ts";
+import { text } from './llm.text';
 
 interface ClientMessage {
 	type: "prompt" | "abort";
 	text?: string;
 }
 
+interface DisplayToolCall {
+	name: string
+	args: unknown
+	result?: unknown
+	isError?: boolean
+}
+
+interface DisplayMessage {
+	readonly role: 'user' | 'assistant'
+	readonly content: string
+	readonly thinking?: string
+	readonly toolCalls?: ReadonlyArray<DisplayToolCall>
+}
+
 interface ServerMessage {
-	type: "event" | "error" | "ready" | "history";
+	// TODO: remove debug
+	type: "debug" | "event" | "error" | "ready" | "history";
 	event?: AgentEvent;
 	message?: string;
 	messages?: ReadonlyArray<DisplayMessage>;
 }
 
-const FINAL_ANSWER_ONLY_INSTRUCTION =
-	'When you answer the user, output only the final assistant reply. Do not emit your reasoning process, analysis, or thinking trace.'
 
-const REFLECTION_SYSTEM_PROMPT = `You are processing notes captured during recent chat sessions.
-
-The user message contains a JSONL batch of notes — one JSON object per line with {sessionId, content, ts}. Notes may span multiple sessions. Integrate the durable ones into long-term memory by reading and updating:
-- /profiles/user.md — durable facts, preferences, and decisions about the user
-
-For each note, decide one of:
-- merge it into /profiles/user.md (read the file first, then write the updated file with the new information folded in; prefer merging over appending duplicates)
-- discard it if redundant, uncertain, already present, or not durable
-
-Do not create new files outside /profiles. Do not ask questions. Finish with a single short line summarizing what you merged or discarded.`
-
-const REFLECTION_INITIAL_DELAY_MS = 5_000
-const REFLECTION_RETRY_DELAY_MS = 5 * 60_000
+const DEBUG_COMMAND = '/debug'
 
 export class Frieren extends DurableObject<Env> {
-	private _agent: Agent | null = null;
 	private readonly app: FrierenApiType;
-	private readonly vol;
-	private readonly sessionRuntime: ReturnType<typeof makeSessionRuntime>;
-	private currentSessionId: string | null = null;
+	private readonly vol: Volume;
+	private runtime?: Runtime;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
-		ctx.blockConcurrencyWhile(() => migrateCF(ctx.storage));
 		const namespace = ctx.id.toString();
 		const fs = cfFsStorage(ctx.storage, namespace);
-		this.app = createFrierenApiApp({
-			fs,
-			onNuke: async () => {
-				await ctx.storage.deleteAll();
-				await migrateCF(ctx.storage);
-				this._agent = null;
-			},
-		});
-
 		this.vol = volume(fs);
-		const generateSessionText = this.createSessionTextGenerator();
-		this.sessionRuntime = makeSessionRuntime(this.vol, generateSessionText);
+		this.app = createFrierenApiApp({
+				fs,
+				onNuke: async () => {
+					await ctx.storage.deleteAll();
+					await this.reset()
+				},
+			});
+			ctx.blockConcurrencyWhile(async () => {
+				await this.reset()
+			});
+		}
+
+	private async reset() {
+		const { model, apiKey } = this.getBackendConfig()
+		await migrateCF(this.ctx.storage);
+		this.runtime?.shutdown()
+		this.runtime = await runtime({
+			volume: this.vol,
+			agent: this.createAgent(),
+			text: text({model, apiKey})})
 	}
 
 	private getBackendConfig() {
@@ -100,60 +106,11 @@ export class Frieren extends DurableObject<Env> {
 		return { model: openaiModel, apiKey };
 	}
 
-	private createSessionTextGenerator() {
-		const { model, apiKey } = this.getBackendConfig();
-
-		return async (systemPrompt: string, userPrompt: string) => {
-			const response = await completeSimple(model, {
-				systemPrompt,
-				messages: [
-					{
-						role: 'user',
-						content: userPrompt,
-						timestamp: Date.now(),
-					},
-				],
-			}, { apiKey });
-
-			return this.extractAssistantText(response);
-		};
-	}
-
-	private extractAssistantText(message: AssistantMessage): string {
-		const text = message.content
-			.filter((block) => block.type === 'text')
-			.map((block) => block.text)
-			.join('')
-			.trim();
-
-		if (!text) {
-			throw new Error('Session text generation returned no text content')
-		}
-
-		return text
-	}
-
-	private get agent(): Agent {
-		if (!this._agent) this._agent = this.createAgent();
-		return this._agent;
-	}
-
 	private createAgent(): Agent {
 		const { model, apiKey } = this.getBackendConfig();
 
-		const takeNote = createTakeNoteTool(async (content) => {
-			const sessionId = this.currentSessionId;
-			if (!sessionId) return;
-			const entry: NoteEntry = {
-				sessionId,
-				content,
-				ts: new Date().toISOString(),
-			};
-			await this.sessionRuntime.runPromise(appendNote(entry));
-		});
-
 		const fs = createFsTools(this.vol);
-		const tools = [...fs.tools, createFetchTool(), createSearchTool(), takeNote];
+		const tools = [...fs.tools, createFetchTool(), createSearchTool()];
 
 		const agent = new Agent({
 			initialState: {
@@ -174,10 +131,8 @@ export class Frieren extends DurableObject<Env> {
 			afterToolCall: fs.afterToolCall,
 		});
 
-		// transformContext only sees messages — it cannot set systemPrompt,
-		// because the Agent snapshots systemPrompt BEFORE transformContext runs.
-		// Use it purely for context windowing.
-		agent.transformContext = async (messages) => windowMessages(messages, 20);
+		// TODO: cut off line threads
+		agent.transformContext = async (messages) => messages;
 
 		return agent;
 	}
@@ -223,96 +178,6 @@ export class Frieren extends DurableObject<Env> {
 		return out;
 	}
 
-	// ── Model context rehydration (Phase A) ──────────────────────────────
-
-	private buildRehydratedMessages(lines: ReadonlyArray<RehydrationLine>): Message[] {
-		const { model } = this.getBackendConfig();
-		const now = Date.now();
-		const out: Message[] = [];
-		for (const line of lines) {
-			if (line.role === 'user') {
-				out.push({
-					role: 'user',
-					content: line.content,
-					timestamp: now,
-				});
-			} else {
-				out.push({
-					role: 'assistant',
-					content: [{ type: 'text', text: line.content }],
-					api: model.api,
-					provider: model.provider,
-					model: model.id,
-					usage: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-					},
-					stopReason: 'stop',
-					timestamp: now,
-				});
-			}
-		}
-		return out;
-	}
-
-	// ── Transcript extraction ────────────────────────────────────────────
-
-	private extractTranscriptLines(messages: AgentMessage[]): TranscriptLine[] {
-		const lines: TranscriptLine[] = [];
-		const now = new Date().toISOString();
-		for (const msg of messages) {
-			if (!('role' in msg)) continue;
-			const m = msg as Message;
-			if (m.role === 'user') {
-				const text = typeof m.content === 'string'
-					? m.content
-					: Array.isArray(m.content)
-						? m.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('')
-						: '';
-				lines.push({ ts: now, role: 'user', content: text });
-			} else if (m.role === 'assistant') {
-				const am = m as any;
-				let text = '';
-				if (Array.isArray(am.content)) {
-					for (const block of am.content) {
-						if (block.type === 'text') text += block.text;
-						if (block.type === 'thinking') {
-							lines.push({
-								ts: now,
-								role: 'assistant_thinking',
-								content: block.thinking,
-							});
-						}
-						if (block.type === 'toolCall') {
-							lines.push({
-								ts: now,
-								role: 'tool_call',
-								tool_name: block.name,
-								input: block.args ?? {},
-							});
-						}
-					}
-				}
-				if (text) {
-					lines.push({ ts: now, role: 'assistant', content: text });
-				}
-			} else if (m.role === 'toolResult') {
-				const tr = m as any;
-				lines.push({
-					ts: now,
-					role: 'tool_result',
-					tool_name: tr.name ?? 'unknown',
-					content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
-				});
-			}
-		}
-		return lines;
-	}
-
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(
@@ -335,159 +200,34 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === "abort") {
-			this._agent?.abort();
+			this.runtime?.shutdown()
 			return;
 		}
 
 		if (parsed.type === "prompt" && parsed.text) {
-			try {
-				// Fail fast if backend config is invalid (e.g. missing API key)
-				// so the client sees a real error instead of silent empty turns.
-				this.getBackendConfig();
-
-				const prepared = await this.sessionRuntime.runPromise(prepareTurn());
-				const sessionId = prepared.currentSessionId;
-				this.currentSessionId = sessionId;
-
-				if (prepared.resolution.action === 'close_and_start') {
-					await this.scheduleReflection();
-				}
-
-				const agent = this.agent;
-				if (prepared.isNewSession && agent.state.messages.length > 0) {
-					agent.state.messages = [];
-				} else if (
-					!prepared.isNewSession &&
-					agent.state.messages.length === 0 &&
-					sessionId
-				) {
-					// Cold-start resume: the DO hibernated and lost in-memory
-					// agent state. Rebuild a text-only tail from the transcript
-					// so the model sees the same conversation the user does.
-					try {
-						const lines = await this.sessionRuntime.runPromise(
-							loadRehydrationMessages(sessionId, {
-								systemPrompt: prepared.systemPrompt,
-							}),
-						);
-						if (lines.length > 0) {
-							agent.state.messages = this.buildRehydratedMessages(lines);
-						}
-					} catch (err) {
-						console.error('Failed to rehydrate agent messages', err);
-					}
-				}
-
-				// Set systemPrompt BEFORE prompt() — the Agent snapshots it by value
-				// at the start of each turn, so mid-turn mutations (e.g. inside
-				// transformContext) would be ignored for the current call.
-				agent.state.systemPrompt = [
-					prepared.systemPrompt,
-					FINAL_ANSWER_ONLY_INSTRUCTION,
-				].join("\n\n---\n\n");
-
-				const messageCountBefore = agent.state.messages.length;
-				const unsubscribe = agent.subscribe(
-					(event: AgentEvent, _signal: AbortSignal) => {
-						ws.send(
-							JSON.stringify({
-								type: "event",
-								event,
-							} satisfies ServerMessage),
-						);
-					},
-				);
-
-				try {
-					await agent.prompt(parsed.text);
-
-					// Record transcript and touch session
-					if (sessionId) {
-						const newMessages = agent.state.messages.slice(messageCountBefore);
-						const lines = this.extractTranscriptLines(newMessages);
-						await this.sessionRuntime.runPromise(
-							persistTurn({
-								sessionId,
-								lines,
-							}),
-						);
-						try {
-							await this.sessionRuntime.runPromise(
-								maybeUpdateRollingSummary(sessionId, {
-									systemPrompt: prepared.systemPrompt,
-								}),
-							);
-						} catch (err) {
-							console.error('Failed to update rolling summary', err);
-						}
-					}
-				} finally {
-					unsubscribe();
-				}
-			} catch (err) {
-				console.error('[frieren] prompt flow failed', err)
-				this._agent = null;
+			const sp = this.runtime?._agent().state.systemPrompt
+			if (parsed.text.trim() === DEBUG_COMMAND) {
 				ws.send(
 					JSON.stringify({
-						type: "error",
-						message:
-							err instanceof Error ? err.message : "Unknown error",
+						type: 'debug',
+						message: sp,
 					} satisfies ServerMessage),
-				);
+				)
+				return
 			}
-		}
-	}
 
-	private async scheduleReflection(delayMs = REFLECTION_INITIAL_DELAY_MS): Promise<void> {
-		try {
-			const existing = await this.ctx.storage.getAlarm();
-			const target = Date.now() + delayMs;
-			if (existing !== null && existing <= target) return;
-			await this.ctx.storage.setAlarm(target);
-		} catch (err) {
-			console.error('[frieren] failed to schedule reflection alarm', err);
-		}
-	}
-
-	private async reflectOnNotes(notes: ReadonlyArray<NoteEntry>): Promise<void> {
-		const userPrompt = notes.map((n) => JSON.stringify(n)).join('\n');
-		const { model, apiKey } = this.getBackendConfig();
-		const fs = createFsTools(this.vol);
-		const agent = new Agent({
-			initialState: {
-				systemPrompt: REFLECTION_SYSTEM_PROMPT,
-				model,
-				tools: fs.tools,
-			},
-			convertToLlm: (messages: AgentMessage[]): Message[] =>
-				this.buildModelVisibleMessages(messages),
-			getApiKey: () => apiKey,
-			streamFn: (m, context, options) =>
-				streamSimple(m, context, { ...options, apiKey }),
-			beforeToolCall: fs.beforeToolCall,
-			afterToolCall: fs.afterToolCall,
-		});
-		await agent.prompt(userPrompt);
-	}
-
-	async alarm(): Promise<void> {
-		let claimed: ReadonlyArray<NoteEntry>;
-		try {
-			claimed = await this.sessionRuntime.runPromise(claimNotesForReflection());
-		} catch (err) {
-			console.error('[frieren] failed to claim notes for reflection', err);
-			await this.scheduleReflection(REFLECTION_RETRY_DELAY_MS);
-			return;
-		}
-
-		if (claimed.length === 0) return;
-
-		try {
-			await this.reflectOnNotes(claimed);
-			await this.sessionRuntime.runPromise(clearReflectionClaim());
-		} catch (err) {
-			console.error('[frieren] reflection failed', err);
-			await this.scheduleReflection(REFLECTION_RETRY_DELAY_MS);
+			const unsubscribe = this.runtime?.subscribe(
+				(event, _signal) => {
+					ws.send(
+						JSON.stringify({
+							type: "event",
+							event,
+						} satisfies ServerMessage),
+					);
+				},
+			);
+			await this.runtime?.prompt(parsed.text)
+			unsubscribe?.()
 		}
 	}
 
@@ -515,20 +255,12 @@ export class Frieren extends DurableObject<Env> {
 
 			this.ctx.acceptWebSocket(server);
 
-			try {
-				const history = await this.sessionRuntime.runPromise(loadRecentHistory());
-				if (history.length > 0) {
-					server.send(
-						JSON.stringify({ type: "history", messages: history } satisfies ServerMessage),
-					);
-				}
-			} catch (err) {
-				console.error("Failed to load recent history", err);
+			const history = (await this.runtime?.history() ?? []).map(sessionEntry2DisplayMessage)
+			if (history.length > 0) {
+			server.send(
+			JSON.stringify({ type: "history", messages: history } satisfies ServerMessage),
+			);
 			}
-
-			// Catch up on any inbox items left over from a previous session
-			// that never got reflected (e.g. DO crashed mid-alarm).
-			await this.scheduleReflection();
 
 			// Send ready signal
 			server.send(
@@ -542,5 +274,29 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		return this.app.fetch(request);
+	}
+}
+
+function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage {
+	switch (entry.type) {
+		case 'message':
+			switch (entry.role) {
+				case 'user':
+					return { role: 'user', content: entry.content }
+				case 'assistant':
+					return { role: 'assistant', content: entry.content }
+				case 'assistant_thinking':
+					return { role: 'assistant', content: '', thinking: entry.content }
+				case 'tool_call':
+					return { role: 'assistant', content: '', toolCalls: [{ name: entry.tool_name, args: entry.input }] }
+				case 'tool_result':
+					return { role: 'assistant', content: `[${entry.tool_name}]: ${entry.content}` }
+			}
+		case 'compaction':
+			return { role: 'assistant', content: entry.summary }
+		case 'branch_summary':
+			return { role: 'assistant', content: entry.summary }
+		case 'label':
+			return { role: 'assistant', content: `[${entry.label}]` }
 	}
 }

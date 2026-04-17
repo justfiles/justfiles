@@ -19,94 +19,103 @@
  * replaces loadRehydrationMessages + maybeUpdateRollingSummary slice logic.
  */
 
+import { z } from 'zod'
+
+export { session } from './session.manager.impl'
+
 // ── Entry Identity ────────────────────────────────────────────────────────
 
 /** 8-character hex string. Unique within a session. */
 export type EntryId = string
 
-// ── Entry Base ────────────────────────────────────────────────────────────
+// ── Schemas & Inferred Types ─────────────────────────────────────────────
 
-interface EntryBase {
-	readonly id: EntryId
-	/** Id of the preceding entry on this branch. Null only for the root. */
-	readonly parentId: EntryId | null
-	readonly ts: string  // ISO8601
-}
+const EntryBase = z.object({
+	id: z.string(),
+	parentId: z.string().nullable(),
+	ts: z.string(),
+})
 
-// ── Concrete Entry Types ──────────────────────────────────────────────────
+const UserMessage = EntryBase.extend({
+	type: z.literal('message'),
+	role: z.literal('user'),
+	content: z.string(),
+})
 
-/**
- * A chat message — user input, assistant response, or tool interaction.
- * Mirrors the current TranscriptLine roles, extended with tree headers.
- */
-export type MessageEntry = EntryBase & { readonly type: 'message' } & (
-	| { readonly role: 'user'; readonly content: string }
-	| { readonly role: 'assistant_thinking'; readonly content: string }
-	| { readonly role: 'assistant'; readonly content: string }
-	| { readonly role: 'tool_call'; readonly tool_name: string; readonly input: Record<string, unknown> }
-	| { readonly role: 'tool_result'; readonly tool_name: string; readonly content: string }
-)
+const AssistantThinkingMessage = EntryBase.extend({
+	type: z.literal('message'),
+	role: z.literal('assistant_thinking'),
+	content: z.string(),
+})
 
-/**
- * A compaction node. Not a rewrite — appended as a regular tree entry by the
- * manager when the active branch exceeds the token budget inside append().
- *
- * buildSessionContext() splices `summary` in place of everything before
- * `firstKeptEntryId` when it encounters this node during the leaf → root walk.
- * The folded entries remain on disk for audit and branching; they stop being
- * replayed into the model context.
- */
-export interface CompactionEntry extends EntryBase {
-	readonly type: 'compaction'
-	readonly summary: string
-	/** First entry still replayed verbatim (everything before it is folded). */
-	readonly firstKeptEntryId: EntryId
-	/** Token estimate of the folded prefix, for accounting. */
-	readonly tokensBefore: number
-}
+const AssistantMessage = EntryBase.extend({
+	type: z.literal('message'),
+	role: z.literal('assistant'),
+	content: z.string(),
+})
 
-/**
- * A postmortem note appended to a new branch after the user rewinds.
- * The model inherits the lesson ("we tried X, it failed because Y") without
- * replaying the failed subtree turn-by-turn.
- *
- * Reserved for future power-user branching UI. Not appended in normal flow.
- */
-export interface BranchSummaryEntry extends EntryBase {
-	readonly type: 'branch_summary'
-	/** The abandoned leaf this branch diverged from. */
-	readonly fromId: EntryId
-	readonly summary: string
-	readonly details?: string
-}
+const ToolCallMessage = EntryBase.extend({
+	type: z.literal('message'),
+	role: z.literal('tool_call'),
+	tool_name: z.string(),
+	input: z.record(z.string(), z.unknown()),
+})
 
-/** Arbitrary named marker — e.g. session-start, phase boundary, checkpoint. */
-export interface LabelEntry extends EntryBase {
-	readonly type: 'label'
-	readonly label: string
-}
+const ToolResultMessage = EntryBase.extend({
+	type: z.literal('message'),
+	role: z.literal('tool_result'),
+	tool_name: z.string(),
+	content: z.string(),
+})
 
-/** Discriminated union of all entry types. */
-export type SessionEntry =
-	| MessageEntry
-	| CompactionEntry
-	| BranchSummaryEntry
-	| LabelEntry
+export const MessageEntrySchema = z.discriminatedUnion('role', [
+	UserMessage,
+	AssistantThinkingMessage,
+	AssistantMessage,
+	ToolCallMessage,
+	ToolResultMessage,
+])
+
+export type MessageEntry = z.infer<typeof MessageEntrySchema>
+
+export const CompactionEntrySchema = EntryBase.extend({
+	type: z.literal('compaction'),
+	summary: z.string(),
+	firstKeptEntryId: z.string(),
+	tokensBefore: z.number(),
+})
+
+export type CompactionEntry = z.infer<typeof CompactionEntrySchema>
+
+export const BranchSummaryEntrySchema = EntryBase.extend({
+	type: z.literal('branch_summary'),
+	fromId: z.string(),
+	summary: z.string(),
+	details: z.string().optional(),
+})
+
+export type BranchSummaryEntry = z.infer<typeof BranchSummaryEntrySchema>
+
+export const LabelEntrySchema = EntryBase.extend({
+	type: z.literal('label'),
+	label: z.string(),
+})
+
+export type LabelEntry = z.infer<typeof LabelEntrySchema>
+
+export const SessionEntrySchema = z.union([
+	MessageEntrySchema,
+	CompactionEntrySchema,
+	BranchSummaryEntrySchema,
+	LabelEntrySchema,
+])
+
+export type SessionEntry = z.infer<typeof SessionEntrySchema>
 
 // ── Append Input ──────────────────────────────────────────────────────────
 
-/**
- * What the caller provides when appending. id / parentId / ts are assigned
- * by the manager. Only message entries are appendable — compaction is
- * internal to the manager and triggered automatically inside append().
- */
-export type MessagePayload = { readonly type: 'message' } & (
-	| { readonly role: 'user'; readonly content: string }
-	| { readonly role: 'assistant_thinking'; readonly content: string }
-	| { readonly role: 'assistant'; readonly content: string }
-	| { readonly role: 'tool_call'; readonly tool_name: string; readonly input: Record<string, unknown> }
-	| { readonly role: 'tool_result'; readonly tool_name: string; readonly content: string }
-)
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+export type MessagePayload = DistributiveOmit<MessageEntry, 'id' | 'parentId' | 'ts'>
 
 // ── Context Output ────────────────────────────────────────────────────────
 
@@ -137,6 +146,10 @@ export interface CompactionOptions {
 	readonly contextBudget?: number
 }
 
+export type AppendResult = {
+	compacted: boolean
+}
+
 // ── SessionManager ────────────────────────────────────────────────────────
 
 export interface SessionManager {
@@ -159,7 +172,7 @@ export interface SessionManager {
 	 * then appends the new messages as children of that node. The caller
 	 * observes none of this — append() always succeeds or throws.
 	 */
-	append(entries: ReadonlyArray<MessagePayload>, compactionOptions?: CompactionOptions): Promise<void>
+	append(entries: ReadonlyArray<MessagePayload>, compactionOptions?: CompactionOptions): Promise<AppendResult>
 
 	// ── Core: Read ───────────────────────────────────────────────────
 
@@ -221,3 +234,4 @@ export interface SessionManager {
 	 */
 	fork(): Promise<SessionManager>
 }
+

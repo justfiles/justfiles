@@ -186,6 +186,12 @@ export function useChat() {
 				return
 			}
 
+			// TODO: remove later
+			if (data.type === 'debug') {
+				console.log(String(data.message ?? ''))
+				return
+			}
+
 			if (data.type === 'event') handleAgentEvent(data.event)
 		}
 
