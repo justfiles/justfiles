@@ -1,15 +1,17 @@
 import { type Volume } from '@justfiles/fs'
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { session, type ContextMessage, type MessagePayload, type SessionEntry, type SessionManager } from "./session.manager";
+import { session, type AppendPayload, type ContextMessage, type SessionEntry, type SessionManager } from "./session.manager";
 import { z } from 'zod';
 import { file } from './file';
 import { DEFAULT_SETUP_PROMPT, SETUP_USER_PROFILE, systemPrompt } from './prompts';
-import type { GenerateText } from './llm.text';
+import type { LLMText } from './llm.text';
+import { shouldCompact, compact, type CompactionSettings, prepareCompaction } from './compaction';
 
 type RuntimeProps = {
 	volume: Volume,
 	agent: Agent,
-	text: GenerateText,
+	text: LLMText,
+	compaction: CompactionSettings
 }
 
 type FrierenEvent = AgentEvent
@@ -25,7 +27,7 @@ export interface Runtime {
 }
 
 
-export async function runtime({volume, agent, text}: RuntimeProps): Promise<Runtime> {
+export async function runtime({volume, agent, text, compaction}: RuntimeProps): Promise<Runtime> {
 	const agentId = 'main'
 	const session = await route({agentId}, volume, text)
 	await initSession(session)
@@ -46,8 +48,21 @@ export async function runtime({volume, agent, text}: RuntimeProps): Promise<Runt
 		const offset = agent.state.messages.length
 		await agent.prompt(message)
 		const newMessages = agent.state.messages.slice(offset)
-		const result = await session.append(newMessages.map(transform))
-		if (result.compacted) {
+		await session.append(newMessages.map(transform))
+		if (shouldCompact(agent, compaction)) {
+			const branch = await session.walkActiveBranch()
+			const prepared = prepareCompaction(branch, compaction)
+			const notes = await text.takeNotes(prepared.content)
+			if (notes) {
+				await file(volume, PATHS.daily()).append(`\n\n${notes}`)
+			}
+			const result = await compact(text, prepared)
+			session.append([{
+				type: 'compaction',
+				summary: result.summary,
+				firstKeptEntryId: result.firstKeptEntryId,
+				tokensBefore: result.tokensBefore
+			}])
 			await initSession(session)
 		}
 	}
@@ -80,10 +95,9 @@ export async function runtime({volume, agent, text}: RuntimeProps): Promise<Runt
 
 		return prompt.build()
 	}
-
 }
 
-function transform(message: AgentMessage): MessagePayload {
+function transform(message: AgentMessage): AppendPayload {
 	if (!('role' in message)) throw new Error(`unsupported message: ${JSON.stringify(message)}`)
 	switch (message.role) {
 		case 'user': {
@@ -136,6 +150,7 @@ const PATHS = {
 	soul: '/soul.md',
 	profile: '/profiles/user.md',
 	memory: '/MEMORY.md',
+	daily: (date: Date = new Date()) => `/memory/daily/${date.toISOString().slice(0, 10)}.md`,
 	sessions: (agentId: string) => `/agents/${agentId}/sessions/sessions.json`,
 	sessionFile: (agentId: string, sessionId: string) => `/agents/${agentId}/sessions/${sessionId}.jsonl`
 } as const
@@ -153,7 +168,7 @@ type MessageContext = {
 	agentId: string
 }
 
-async function route(ctx: MessageContext, volume: Volume, text: GenerateText): Promise<SessionManager> {
+async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promise<SessionManager> {
 	const sessionKey = resolveSessionKey(ctx)
 	const sessionsMap = file(volume, PATHS.sessions(ctx.agentId))
 	const sessions = await sessionsMap.json(SessionsMap) ?? {}
@@ -165,14 +180,26 @@ async function route(ctx: MessageContext, volume: Volume, text: GenerateText): P
 	if (existing && (now.getTime() - existing.lastActive.getTime()) < SIX_HOURS) {
 		existing.lastActive = now
 		await sessionsMap.write(JSON.stringify(sessions))
-		return session(existing.sessionFile, volume, text)
+		return session(existing.sessionFile, volume)
+	}
+
+	if (existing) {
+		const previous = session(existing.sessionFile, volume)
+		const context = await previous.buildSessionContext()
+		if (context.length > 0) {
+			const tail = context.map(m => `${m.role}: ${m.content}`).join('\n')
+			const notes = await text.takeNotes(tail)
+			if (notes) {
+				await file(volume, PATHS.daily(now)).append(`\n\n${notes}`)
+			}
+		}
 	}
 
 	const sessionId = crypto.randomUUID().slice(0, 8)
 	const sessionFile = PATHS.sessionFile(ctx.agentId, sessionId)
 	sessions[sessionKey] = { sessionId, lastActive: now, sessionFile }
 	await sessionsMap.write(JSON.stringify(sessions))
-	return session(sessionFile, volume, text)
+	return session(sessionFile, volume)
 }
 
 function resolveSessionKey(ctx: MessageContext): string {

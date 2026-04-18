@@ -115,7 +115,7 @@ export type SessionEntry = z.infer<typeof SessionEntrySchema>
 // ── Append Input ──────────────────────────────────────────────────────────
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
-export type MessagePayload = DistributiveOmit<MessageEntry, 'id' | 'parentId' | 'ts'>
+export type AppendPayload = DistributiveOmit<MessageEntry | CompactionEntry, 'id' | 'parentId' | 'ts'>
 
 // ── Context Output ────────────────────────────────────────────────────────
 
@@ -133,21 +133,9 @@ export type ContextMessage =
 	| { readonly role: 'user'; readonly content: string; readonly timestamp: number }
 	| { readonly role: 'assistant'; readonly content: string; readonly timestamp: number }
 
-// ── Compaction Options ────────────────────────────────────────────────────
-
-/**
- * Token budget hints passed to append(). The manager uses these to decide
- * whether the active branch needs compaction before writing new entries.
- */
-export interface CompactionOptions {
-	/** Estimated token count of the current system prompt. */
-	readonly systemPromptTokens?: number
-	/** Total context budget in tokens. Defaults to a conservative constant. */
-	readonly contextBudget?: number
-}
-
 export type AppendResult = {
 	compacted: boolean
+	notes?: string
 }
 
 // ── SessionManager ────────────────────────────────────────────────────────
@@ -164,7 +152,7 @@ export interface SessionManager {
 	// ── Core: Write ──────────────────────────────────────────────────
 
 	/**
-	 * Append message entries to the active branch.
+	 * Append entries to the active branch.
 	 *
 	 * If the active branch exceeds the token budget (derived from
 	 * compactionOptions), the manager compacts internally before writing:
@@ -172,7 +160,7 @@ export interface SessionManager {
 	 * then appends the new messages as children of that node. The caller
 	 * observes none of this — append() always succeeds or throws.
 	 */
-	append(entries: ReadonlyArray<MessagePayload>, compactionOptions?: CompactionOptions): Promise<AppendResult>
+	append(payloads: ReadonlyArray<AppendPayload>): Promise<AppendResult>
 
 	// ── Core: Read ───────────────────────────────────────────────────
 
@@ -234,4 +222,3 @@ export interface SessionManager {
 	 */
 	fork(): Promise<SessionManager>
 }
-
