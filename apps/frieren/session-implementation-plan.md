@@ -1,6 +1,16 @@
 # Session & Memory Implementation Plan
 
-This document reflects the current Effect-based session runtime in `apps/frieren/worker/session/effect/*`, updated with the current product decision:
+This document is now partly historical. The Effect-based runtime previously described here has been removed.
+
+The current implementation is simpler:
+
+- `apps/frieren/worker/session.manager.ts` defines the tree-shaped session data model
+- `apps/frieren/worker/session.manager.impl.ts` persists and projects that tree
+- `apps/frieren/worker/frieren.runtime.ts` integrates the session manager with the live PI agent
+
+The product direction below still stands, but any section that mentions `worker/session/effect/*`, Effect services, or `prepareTurn()` reflects an abandoned design rather than the live runtime.
+
+Current product decision:
 
 - one Durable Object per user
 - one visible chat surface for now: the web UI
@@ -141,123 +151,96 @@ The DO already scopes the user. Right now channel is metadata, not a primary par
 
 ## Current Live Design
 
-The live runtime is split across four layers.
+The live runtime is now split across three simpler pieces.
 
 ### 1. Filesystem Boundary
 
-`@justfiles/fs` `Volume` is the portability boundary.
+`@justfiles/fs` `Volume` remains the portability boundary.
 
-The runtime does not hardcode Durable Object storage semantics into the programs. Instead:
+The session manager only depends on a `Volume` plus a file path:
 
-- the live layer injects the current DO SQLite-backed `Volume`
-- tests inject an in-memory `Volume`
-- future browser or alternate backend implementations can provide a different `Volume`
+- the live runtime can provide the current DO-backed volume
+- tests can provide an in-memory volume
+- storage remains replaceable without changing the session API
 
-This remains the right abstraction surface because the session system fundamentally operates on files, while the rest of the code should not care how those files are stored.
+### 2. Tree-Based Session Manager
 
-### 2. Effect Services
+Defined in `worker/session.manager.ts` and `worker/session.manager.impl.ts`.
 
-Defined in `worker/session/effect/services.ts`:
+This is the live session model today:
 
-- `Volume`
-- `SessionClock`
-- `SessionIdGenerator`
-- `SessionStore`
-- `TranscriptStore`
-- `ContextStore`
-- `TextGenerator`
+- each transcript entry is a node with `id`, `parentId`, and `ts`
+- the active branch is append-only
+- tool calls and tool results are persisted as message nodes
+- compaction writes an explicit `compaction` node into the same tree
+- `buildSessionContext()` projects the active branch into plain model-visible user/assistant messages
+- `walkActiveBranch()` returns the raw branch for history and compaction work
 
-These services are the dependency boundaries. They separate:
+The design keeps the session state in one JSONL file per session instead of splitting logic across multiple stores and Effect services.
 
-- filesystem-backed session metadata
-- transcript persistence
-- prompt/context file reads
-- non-agent text generation
-- runtime clock and id generation
+### 3. Runtime Integration
 
-### 3. Effect Programs
+Defined in `worker/frieren.runtime.ts`.
 
-Defined in `worker/session/effect/programs.ts`:
+`frieren.runtime.ts` is the live integration point. It:
 
-- `resolveLifecycle`
-- `startNewSession`
-- `touchSession`
-- `buildSystemPrompt`
-- `closeSession`
-- `persistTurn`
-- `prepareTurn`
-
-These are the business-logic entry points. They orchestrate the stores and generator without knowing about Cloudflare, the Agent instance, or the concrete `Volume` backend.
-
-### 4. Live Integration
-
-Defined in two places:
-
-- `worker/session/effect/live.ts`
-- `worker/frieren.ts`
-
-`live.ts` provides the real store implementations and builds the managed runtime.
-
-`frieren.ts` uses that runtime inside the Durable Object to:
-
-- prepare the turn through Effect
-- set the dynamic system prompt
-- run the PI agent turn
-- persist transcript lines back through Effect
+- resolves or rotates the current session file
+- initializes the PI agent from session context
+- appends newly produced agent messages into the session tree
+- triggers compaction when configured thresholds are exceeded
+- writes compaction notes into memory files when available
 
 ## Current File Layout
 
 ```text
-apps/frieren/worker/session/
-	context.ts
-	context.test.ts
-	manager.test.ts
-	transcript.test.ts
-	types.ts
-	effect/
-		README.md
-		errors.ts
-		index.ts
-		live.ts
-		programs.ts
-		services.ts
+apps/frieren/worker/
+	frieren.runtime.ts
+	session.manager.ts
+	session.manager.impl.ts
+	session.manager.test.ts
+	compaction.ts
+	compaction.test.ts
 ```
 
-Important note: `manager.ts` and `transcript.ts` no longer exist. Their responsibilities were absorbed into the Effect stores and programs.
+Important note: the former `worker/session/` subtree has been removed. Any references below to Effect services, `live.ts`, or `programs.ts` describe an abandoned design.
 
 ## Actual Runtime Flow
 
 ### Normal User Prompt
 
-`frieren.ts:webSocketMessage(...)` currently does this:
+`frieren.runtime.ts` currently does this:
 
-1. parse the inbound WebSocket message
-2. call `prepareTurn()`
-3. `prepareTurn()` decides whether to:
-	- resume the current session
-	- start a new session
-	- close and rotate before starting a new session
-4. build the system prompt from:
-	- `/soul.md`
-	- `/profiles/user.md`
-	- rolling summary for resumed sessions
-	- latest handoff for newly started sessions
-5. assign that prompt to the live PI agent
-6. run `agent.prompt(...)`
-7. extract transcript lines from the newly added agent messages
-8. call `persistTurn(...)`
+1. route the request to the active session file for the agent
+2. initialize the PI agent from `session.buildSessionContext()`
+3. run `agent.prompt(...)`
+4. transform the newly added PI messages into session entries
+5. append those entries onto the active branch
+6. if compaction thresholds are exceeded:
+	- walk the active branch
+	- prepare and generate a compaction result
+	- append a `compaction` entry
+	- rebuild the PI agent context from the compacted branch
 
-### Context Windowing
+### Context Projection
 
-`agent.transformContext` remains intentionally small. It only does message windowing through `windowMessages(...)`.
+The current runtime no longer uses rolling-summary rehydration helpers from the old Effect design.
 
-That means:
+Instead:
 
-- prompt assembly is an Effect program
-- message trimming remains a pure helper
-- the PI agent still owns the main turn loop
+- the session file stores raw message and compaction nodes
+- `buildSessionContext()` emits only user/assistant messages visible to the model
+- tool traffic is preserved in storage but stripped from active context
+- the latest compaction node acts as the boundary for prompt reconstruction
 
-### Session Close
+### Session Rotation
+
+The runtime still keeps a time-based session routing policy in `frieren.runtime.ts`:
+
+- reuse an existing session if it was active within the last six hours
+- otherwise create a new session file
+- when rotating, optionally derive notes from the previous session context before switching over
+
+This is simpler than the previous planned lifecycle manager and is the live behavior today.
 
 `closeSession(sessionId)` currently:
 
@@ -446,16 +429,12 @@ Those should instead drive summarization and compaction behavior inside the curr
 
 ### Done
 
-- canonical file schemas and path definitions in `worker/session/types.ts`
-- Effect service boundaries
-- live store implementations on top of `Volume`
-- session lifecycle resolution
-- session creation
-- transcript append and read operations
-- prompt assembly for setup, resumed sessions, and handoff-based new sessions
-- session close and archive flow
-- live integration from `frieren.ts` into the Effect runtime
-- migrated unit tests for session lifecycle, transcript persistence, and prompt assembly
+- tree-based session entry schemas in `worker/session.manager.ts`
+- JSONL-backed session persistence in `worker/session.manager.impl.ts`
+- active-branch walking and context projection
+- explicit compaction entries in the session tree
+- live runtime integration in `worker/frieren.runtime.ts`
+- unit tests for append, branch walking, and compaction projection in `worker/session.manager.test.ts`
 
 ### Partially Done
 
@@ -463,25 +442,22 @@ Those should instead drive summarization and compaction behavior inside the curr
 
 What exists now:
 
-- lifecycle resolution already distinguishes between:
-	- resume current session
-	- start a new session
-	- close the current session and start another one
-- idle-time based rotation is implemented through `resolveLifecycle()` and `prepareTurn()`
-- `closeSession()` archives the old session and `startNewSession()` creates the next one
-- the next session can pick up the archived handoff through `latest_handoff_path`
+- session routing already distinguishes between:
+	- reusing a recent session
+	- creating a new session after idle timeout
+- idle-time based rotation is implemented directly in `frieren.runtime.ts`
+- a new session starts from a fresh JSONL file while the old session remains available for note extraction and history reads
+- compaction is handled inside the active session tree rather than through a separate lifecycle program
 
 What is still missing or should change:
 
 - no central rotation policy module yet
-- token growth and transcript growth are not yet redirected into summary/compaction policy
-- the product still has a `/new` path in `frieren.ts`, which should be removed from the user-facing flow
+- token growth and transcript growth still rely on runtime compaction thresholds rather than a more explicit policy layer
 - no reflection or memory-processing step is attached to the rotation boundary yet
 
 What needs to happen next:
 
 - define a single internal rotation policy centered on idle timeout
-- remove user-initiated reset from the web chat product
 - make the rotation reason explicit in tests
 - keep future room for additional internal-only rotation reasons without exposing them to the user
 

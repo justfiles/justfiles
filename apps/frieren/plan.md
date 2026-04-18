@@ -1,6 +1,6 @@
 # Frieren — Personal AI Assistant on Cloudflare Workers
 
-> Historical planning note: parts of this document describe the pre-Effect session design and do not match the current `worker/session/effect/*` runtime exactly.
+> Historical planning note: this document captures product and architecture planning over time. The old `worker/session/effect/*` runtime has been removed. The current session implementation is the tree-based manager in `worker/session.manager.ts`, used by `worker/frieren.runtime.ts`.
 
 ## Overview
 
