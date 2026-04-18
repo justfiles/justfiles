@@ -118,8 +118,6 @@ export class Frieren extends DurableObject<Env> {
 		const fs = createFsTools(this.vol);
 		const agent = createAgent(this.getBackendConfig());
 		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool()];
-		agent.beforeToolCall = fs.beforeToolCall;
-		agent.afterToolCall = fs.afterToolCall;
 		return agent;
 	}
 
