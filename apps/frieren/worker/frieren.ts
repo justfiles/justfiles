@@ -10,6 +10,7 @@ import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
 import { runtime, type Runtime } from './frieren.runtime';
 import type { SessionEntry } from "./session.manager.ts";
 import { text } from './llm.text';
+import type { CompactionSettings } from './compaction';
 
 interface ClientMessage {
 	type: "prompt" | "abort";
@@ -41,6 +42,12 @@ interface ServerMessage {
 
 const DEBUG_COMMAND = '/debug'
 
+const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
+	enabled: true,
+	reserveTokens: 16384,
+	keepRecentTokens: 20000,
+};
+
 export class Frieren extends DurableObject<Env> {
 	private readonly app: FrierenApiType;
 	private readonly vol: Volume;
@@ -70,7 +77,9 @@ export class Frieren extends DurableObject<Env> {
 		this.runtime = await runtime({
 			volume: this.vol,
 			agent: this.createAgent(),
-			text: text({model, apiKey})})
+			text: text({model, apiKey}),
+			compaction: DEFAULT_COMPACTION_SETTINGS
+		})
 	}
 
 	private getBackendConfig() {
