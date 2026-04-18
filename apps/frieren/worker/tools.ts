@@ -5,7 +5,7 @@
  * name, label, description, parameters (TypeBox), execute.
  */
 import { Type } from '@sinclair/typebox';
-import type { AfterToolCallContext, AgentTool, BeforeToolCallContext, BeforeToolCallResult } from '@mariozechner/pi-agent-core';
+import type { AgentTool } from '@mariozechner/pi-agent-core';
 import type { Volume } from '@justfiles/fs';
 
 const encoder = new TextEncoder();
@@ -13,12 +13,11 @@ const decoder = new TextDecoder();
 
 export interface FsToolset {
 	tools: AgentTool<any>[];
-	beforeToolCall: (ctx: BeforeToolCallContext) => Promise<BeforeToolCallResult | undefined>;
-	afterToolCall: (ctx: AfterToolCallContext) => Promise<undefined>;
 }
 
 export function createFsTools(vol: Volume): FsToolset {
-	const readPaths = new Set<string>();
+	// Maps path → mtimeNs at the time of last read. Used to detect external modifications.
+	const readMtimes = new Map<string, bigint>();
 
 	const readFile: AgentTool<typeof readParams> = {
 		name: 'read',
@@ -26,7 +25,8 @@ export function createFsTools(vol: Volume): FsToolset {
 		description: 'Read the contents of a file from your memory filesystem. Returns the file content as text.',
 		parameters: readParams,
 		async execute(_toolCallId, params) {
-			const data = await vol.readFile(params.path);
+			const [data, stat] = await Promise.all([vol.readFile(params.path), vol.stat(params.path)]);
+			readMtimes.set(params.path, stat.mtimeNs);
 			const text = decoder.decode(data);
 			return {
 				content: [{ type: 'text', text }],
@@ -41,38 +41,30 @@ export function createFsTools(vol: Volume): FsToolset {
 		description: 'Write text content to a file in your memory filesystem. Creates the file if it does not exist, overwrites if it does. Parent directories are created automatically. You MUST call `read` on the path first if the file already exists — otherwise the write is blocked.',
 		parameters: writeParams,
 		async execute(_toolCallId, params) {
+			if (await vol.exists(params.path)) {
+				const lastReadMtime = readMtimes.get(params.path);
+				if (lastReadMtime === undefined) {
+					throw new Error(`Refusing to overwrite ${params.path}: call \`read\` on it first, then write the merged content.`);
+				}
+				const current = await vol.stat(params.path);
+				if (current.mtimeNs !== lastReadMtime) {
+					readMtimes.delete(params.path);
+					throw new Error(`Refusing to overwrite ${params.path}: file was modified since last read. Call \`read\` again to get the latest content.`);
+				}
+			}
 			const data = encoder.encode(params.content);
 			const parent = params.path.replace(/\/[^/]*$/, '');
 			if (parent && parent !== params.path) {
 				await vol.mkdir(parent, { recursive: true });
 			}
 			await vol.writeFile(params.path, data);
+			const stat = await vol.stat(params.path);
+			readMtimes.set(params.path, stat.mtimeNs);
 			return {
 				content: [{ type: 'text', text: `Wrote ${data.length} bytes to ${params.path}` }],
 				details: { path: params.path, size: data.length },
 			};
 		},
-	};
-
-	const beforeToolCall = async (ctx: BeforeToolCallContext): Promise<BeforeToolCallResult | undefined> => {
-		if (ctx.toolCall.name !== 'write') return undefined;
-		const path = (ctx.args as { path?: string }).path;
-		if (!path) return undefined;
-		if (readPaths.has(path)) return undefined;
-		if (!(await vol.exists(path))) return undefined;
-		return {
-			block: true,
-			reason: `Refusing to overwrite ${path}: call \`read\` on it first, then write the merged content.`,
-		};
-	};
-
-	const afterToolCall = async (ctx: AfterToolCallContext): Promise<undefined> => {
-		if (ctx.isError) return undefined;
-		const name = ctx.toolCall.name;
-		if (name !== 'read' && name !== 'write') return undefined;
-		const path = (ctx.args as { path?: string }).path;
-		if (path) readPaths.add(path);
-		return undefined;
 	};
 
 	const listDir: AgentTool<typeof lsParams> = {
@@ -127,8 +119,6 @@ export function createFsTools(vol: Volume): FsToolset {
 
 	return {
 		tools: [readFile, writeFile, listDir, makeDir, removeFile],
-		beforeToolCall,
-		afterToolCall,
 	};
 }
 
