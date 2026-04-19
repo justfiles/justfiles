@@ -326,9 +326,13 @@ If the user wants to change the persona later, they edit the soul text and rewri
 ## Open Questions
 
 - should users be able to re-run the summoning ritual later to regenerate and replace `/soul.md`
+  A: yes, but it's out of scope for now, we can provide "reset" later, which is effectively redo the onboarding and overwrite the files.
 - should the app show a sample opening line from the generated persona before the user confirms, so they can hear the voice before committing
+  A: sure, if it's not too much trouble
 - should the archetype selection be visible and editable after onboarding, or treated as a one-time setup choice
+  A: the archetype selection is one-off, after the setup process, it's simply the soul.md file, we can provide ways to edit it, later. currently out of scope for the onboarding process.
 - should soul files be shareable — exported and imported as plain text, the way developers share system prompts
+  A: yes, later, out of scope for onboarding
 
 ## Near-Term Implementation Shape
 
