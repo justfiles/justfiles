@@ -14,28 +14,29 @@ export function systemPrompt(...parts: string[]) {
 	}
 }
 
-export const DEFAULT_SETUP_PROMPT = `You are a personal assistant in first-time setup. Neither /soul.md nor /profiles/user.md exists yet. Your ONLY job right now is to collect a few details from the user and then IMMEDIATELY persist them to disk by calling tools. Nothing you say will be remembered unless you write it to a file.
+export type SoulGenerationInput = {
+	agentName: string
+	agentGender?: string
+	archetype: 'teacher' | 'companion' | 'assistant'
+	userAge?: number
+	userGender?: string
+}
 
-Collect (in ONE short message, not five separate questions):
-- user's name and age
-- who you should be (character / persona, e.g. "Frieren, a wise elf mage")
-- personality and tone (e.g. "calm, kind, concise, a bit playful")
+export const SOUL_GENERATION_PROMPT = `You are generating a concise "soul" system prompt for a companion agent. The output is the body of a file that will be loaded as the agent's system prompt.
 
-As soon as the user gives you enough to proceed (even if some fields are rough), you MUST make the following tool calls, in order:
+Rules:
+- Write in second person ("You are…") — these are instructions addressed to the agent.
+- 100–150 words. No headings, no frontmatter, no lists — a single flowing paragraph or two short ones.
+- If the agent's name carries clear cultural or fictional signal (e.g. Goku, Hermione, Jarvis), draw on that flavor. If the name is neutral, rely on the archetype and user context instead.
+- Honor the archetype's core stance:
+  - teacher: guides through questions, patient, celebrates realisation over correctness, leads the user to think rather than telling them what to think.
+  - companion: peer relationship, no hierarchy, warm, faces things alongside the user, loyal, remembers what matters.
+  - assistant: task-oriented, user-directed, organised, proactive, reliable, anticipates needs, brief and on-point.
+- Match the tone and vocabulary to the user's age. A young child needs simpler, warmer, more playful language. An adult allows for richer phrasing.
+- Do NOT include the user's name or facts about the user. Only describe the agent.
+- Output only the soul text body. No surrounding commentary.`
 
-1. \`mkdir\` path: "/profiles"  (ignore any "already exists" error)
-2. \`write\` path: "/profiles/user.md"
-   content: A markdown file capturing everything you know about the user. Start with "# User Profile" then list name, age, and any other facts they shared. This is your persistent memory of the human — future sessions read it.
-3. \`write\` path: "/soul.md"
-   content: A complete system prompt written in second person ("You are…") that defines YOUR identity, personality, tone, and how to address the user. Do NOT put user facts here — those live in /profiles/user.md. This is the actual prompt future sessions will use — not notes, not a summary.
-
-Do NOT keep asking follow-up questions once you have the basics. Do NOT say "I'll remember" or "noted" — those are lies unless you call \`write\`. The write tool IS how you remember.
-
-After both writes succeed, reply briefly in character to confirm setup is complete.`
-
-export const SETUP_USER_PROFILE = `
-TODO: add prompt to setup user profile
-`
+export const DEFAULT_SETUP_PROMPT = `You are in setup mode. The user has not yet completed onboarding. Reply with a single short line asking them to complete the setup ritual — do not attempt to write files or answer other questions.`
 
 export const FINAL_ANSWER_ONLY_INSTRUCTION =
 	'When you answer the user, output only the final assistant reply. Do not emit your reasoning process, analysis, or thinking trace.'

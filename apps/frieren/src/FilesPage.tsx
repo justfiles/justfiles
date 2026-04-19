@@ -159,6 +159,22 @@ export function FilesPage({ search }: { search: string }) {
 		}
 	}
 
+	const resetOnboarding = async () => {
+		if (!volume) return
+		if (!window.confirm('Remove /soul.md and /profiles/user.md? The onboarding ritual will run again.')) return
+		setError(null)
+		try {
+			await volume.rm('/soul.md', { force: true })
+			await volume.rm('/profiles/user.md', { force: true })
+			if (selectedPath === '/soul.md' || selectedPath === '/profiles/user.md') {
+				navigate('/files', { replace: true })
+			}
+			setReloadToken((value) => value + 1)
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause))
+		}
+	}
+
 	const moveFile = async ({
 		item,
 		destinationFolderPath
@@ -217,6 +233,13 @@ export function FilesPage({ search }: { search: string }) {
 						onClick={() => setReloadToken((value) => value + 1)}
 					>
 						Refresh
+					</button>
+					<button
+						type="button"
+						className="btn btn-ghost btn-xs text-warning"
+						onClick={() => void resetOnboarding()}
+					>
+						Reset
 					</button>
 					<button
 						type="button"

@@ -3,7 +3,7 @@ import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agen
 import { session, type AppendPayload, type ContextMessage, type SessionEntry, type SessionManager } from "./session.manager";
 import { z } from 'zod';
 import { file } from './file';
-import { DEFAULT_SETUP_PROMPT, SETUP_USER_PROFILE, systemPrompt } from './prompts';
+import { DEFAULT_SETUP_PROMPT, systemPrompt } from './prompts';
 import type { LLMText } from './llm.text';
 import { shouldCompact, compact, type CompactionSettings, prepareCompaction } from './compaction';
 
@@ -83,15 +83,9 @@ export async function runtime({volume, agent, text, compaction}: RuntimeProps): 
 
 		const prompt = systemPrompt(soul)
 		const profile = await file(volume, PATHS.profile).text()
-		if (!profile) {
-			prompt.add(SETUP_USER_PROFILE)
-			return prompt.build()
-		}
-			prompt.add(profile)
+		if (profile) prompt.add(profile)
 		const memory = await file(volume, PATHS.memory).text()
-		if (memory) {
-			prompt.add(memory)
-		}
+		if (memory) prompt.add(memory)
 
 		return prompt.build()
 	}

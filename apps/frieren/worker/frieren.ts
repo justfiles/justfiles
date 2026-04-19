@@ -2,14 +2,16 @@ import { DurableObject } from "cloudflare:workers";
 import { getModel } from "@mariozechner/pi-ai";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { volume, type Volume } from "@justfiles/fs";
+import { Hono } from "hono";
 import { cfFsStorage, migrateCF } from "./db.do.ts";
-import { createFrierenApiApp, type FrierenApiType } from './app.ts';
+import { createFrierenApiApp } from './app.ts';
 import { createFsTools, createFetchTool, createSearchTool } from "./tools.ts";
 import { runtime, type Runtime } from './frieren.runtime';
 import type { SessionEntry } from "./session.manager.ts";
-import { text } from './llm.text';
+import { text, type LLMText } from './llm.text';
 import type { CompactionSettings } from './compaction';
 import { createAgent } from './llm.agent';
+import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts';
 
 interface ClientMessage {
 	type: "prompt" | "abort";
@@ -48,35 +50,62 @@ const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 };
 
 export class Frieren extends DurableObject<Env> {
-	private readonly app: FrierenApiType;
+	private readonly app: Hono;
 	private readonly vol: Volume;
 	private runtime?: Runtime;
+	private text?: LLMText;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		const namespace = ctx.id.toString();
 		const fs = cfFsStorage(ctx.storage, namespace);
 		this.vol = volume(fs);
-		this.app = createFrierenApiApp({
-				fs,
-				onNuke: async () => {
-					await ctx.storage.deleteAll();
-					await this.reset()
-				},
-			});
-			ctx.blockConcurrencyWhile(async () => {
-				await this.reset()
-			});
+
+		this.app = new Hono()
+			.post('/api/nuke', async (c) => {
+				await ctx.storage.deleteAll();
+				await this.reset();
+				return c.body(null, 204);
+			})
+			.post('/api/onboarding/soul', async (c) => {
+				const body = await c.req.json<SoulGenerationInput>();
+				if (!body?.agentName || !body?.archetype) {
+					return c.json({ error: 'agentName and archetype are required' }, 400);
+				}
+				const generated = await this.generateSoul(body);
+				return c.json({ text: generated });
+			})
+			.route('/', createFrierenApiApp(fs));
+
+		ctx.blockConcurrencyWhile(async () => {
+			await this.reset();
+		});
+	}
+
+	private async generateSoul(input: SoulGenerationInput): Promise<string> {
+		if (!this.text) {
+			const { model, apiKey } = this.getBackendConfig();
+			this.text = text({ model, apiKey });
 		}
+		const lines: string[] = [
+			`agent name: ${input.agentName}`,
+			`archetype: ${input.archetype}`,
+		];
+		if (input.agentGender) lines.push(`agent gender: ${input.agentGender}`);
+		if (input.userAge !== undefined) lines.push(`user age: ${input.userAge}`);
+		if (input.userGender) lines.push(`user gender: ${input.userGender}`);
+		return this.text.gen(SOUL_GENERATION_PROMPT, lines.join('\n'));
+	}
 
 	private async reset() {
 		const { model, apiKey } = this.getBackendConfig()
 		await migrateCF(this.ctx.storage);
 		this.runtime?.shutdown()
+		this.text = text({ model, apiKey })
 		this.runtime = await runtime({
 			volume: this.vol,
 			agent: this.buildAgent(),
-			text: text({model, apiKey}),
+			text: this.text,
 			compaction: DEFAULT_COMPACTION_SETTINGS
 		})
 	}
