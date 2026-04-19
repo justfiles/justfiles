@@ -38,17 +38,15 @@ For the user:
 
 For the agent:
 
-- a stable identity and role
-- a set of behavioral traits that can reliably shape responses
-- explicit constraints and boundaries
-- a freeform description for nuance that does not fit the preset attributes
+- a name
+- a free text description written by the user
 
 ### UX goals
 
 - reduce friction on first run
 - avoid a generic multi-step form feel
-- avoid a pure freeform chat flow that produces ambiguous data
-- let the user move quickly with presets, but allow deeper customization
+- collect structured data only where precision matters — name, birth date, gender
+- give the user full flexibility for the agent description — do not impose a structure they have to fit into
 
 ## Core Design Direction
 
@@ -58,15 +56,16 @@ The best fit is a hybrid flow:
 - structured inputs underneath
 - explicit confirmation before writing files
 
-This means the assistant can introduce each step in-character, but the user still interacts with reliable controls such as:
+This means the assistant can introduce each step in-character, but the user still interacts with reliable controls:
 
 - text input for name
 - date picker for birth date
 - select plus custom text for gender
 - textarea for self-description
-- card, slider, or sigil-based trait pickers for agent customization
+- text input for agent name
+- large textarea for agent description, with optional preset templates to start from
 
-The system should not rely on the model alone to parse first-run identity.
+The system should not rely on the model alone to parse first-run identity. Structured fields are used only where the data needs to be exact. Everything else is free text.
 
 ## Proposed Workflow
 
@@ -113,22 +112,23 @@ Important rule:
 - never ask for or store age directly during onboarding
 - always store birth date and derive age later
 
-### Step 3: Agent summoning / customization ritual
+### Step 3: Agent summoning ritual
 
-The assistant transitions into a more theatrical JRPG-style creation step.
+The assistant transitions into a more theatrical JRPG-style step.
 
-Suggested framing:
+The user provides two things:
 
-- choose the form of your companion
-- inscribe its nature
-- speak the true name
+- **Name** — a short text input for what to call the companion
+- **Description** — a large textarea where the user describes the agent in their own words: personality, role, how it speaks, what it cares about, what it avoids
 
-The user should be able to pick predefined attributes and then add a freeform description.
+No structure is imposed on the description. The user can write a few sentences or several paragraphs. To reduce blank-page friction, the UI offers optional preset templates the user can load and edit. Presets are complete free-text descriptions, not field configurations — more like starter agent.md files than form defaults.
+
+Presets can eventually be shared between users the same way developers share CLAUDE.md files or agent system prompts — as plain text that anyone can copy, adapt, and redistribute.
 
 After submit:
 
-- show a generated preview of the companion persona
-- let the user confirm or edit
+- show the name and full description text for confirmation
+- let the user edit before confirming
 - write `/soul.md`
 
 ### Step 4: First in-character line
@@ -140,18 +140,11 @@ Once both files are written:
 
 This gives the user immediate feedback that the ritual mattered.
 
-## Why Not Pure Conversation
+## Why Structured Inputs for the User Profile
 
-A fully conversation-driven onboarding flow is attractive, but not sufficient for the data we need.
+The user profile uses structured inputs rather than freeform conversation for the fields that need to be exact: name, birth date, gender. A conversation-driven approach fails here because models summarize instead of normalize, and a field like birth date becomes ambiguous if entered as prose. A date picker produces `1995-08-14`; a conversation produces "mid-nineties, August I think".
 
-Problems with a pure freeform setup:
-
-- users answer loosely or incompletely
-- models tend to summarize instead of normalize
-- exact fields like birth date become ambiguous
-- future behavior becomes harder to control
-
-A hybrid approach keeps the emotional tone of a conversation while using deterministic capture for critical fields.
+The agent description is the opposite case — structure would hurt it. Forcing a persona into predefined fields caps what the user can express and creates a lowest-common-denominator result. Free text lets the user say exactly what they want.
 
 ## Research Summary
 
@@ -253,116 +246,6 @@ Useful reference:
 
 - https://mbrg.bsg.ox.ac.uk/big-five
 
-## Agent Attribute Model
-
-Since the companion only exists through text, every attribute must produce a user-visible difference in how responses read. Attributes that are purely thematic without a clear behavioral mapping belong in the freeform description, not the structured fields.
-
-The model uses a preset-first flow. The user picks an archetype, then optionally tunes individual fields. Each field has a single axis of variation with a clear text-level effect.
-
-### Fields
-
-#### `Orientation`
-
-What the companion fundamentally tries to do in every exchange. This is the most impactful field — it shapes the content of responses, not just the tone.
-
-| Value | Text-level behavior |
-|---|---|
-| `comfort` | Acknowledges feelings before anything else. Rarely gives unsolicited advice. Stays with the user rather than steering. |
-| `guide` | Moves toward actionable next steps. Asks clarifying questions. Offers options. |
-| `witness` | Reflects back and summarizes more than it advises. Makes the user feel heard. Low-directive. |
-| `challenge` | Questions assumptions. Pushes back on weak reasoning. Points out what the user may not want to hear. |
-| `teach` | Explains context and background. Offers mental models. Treats the user as someone who wants to understand, not just act. |
-
-#### `Tone`
-
-The vocabulary register and emotional texture of the language.
-
-| Value | Text-level behavior |
-|---|---|
-| `casual` | Contractions, short sentences, colloquial phrasing. Reads like a message from a friend. |
-| `warm` | Emotionally expressive. Uses "I notice", "I feel", mirrors the user's emotional language. |
-| `formal` | Measured and precise. No contractions. Complete sentences. Slightly elevated vocabulary. |
-| `poetic` | Metaphor-rich. Unusual word choices. Sentences have rhythm. |
-| `dry` | Understated, deadpan, economical. Underreacts to drama. Lets implications do the work. |
-
-#### `Length`
-
-Default response length before the user asks for more or less.
-
-| Value | Text-level behavior |
-|---|---|
-| `brief` | One to three sentences by default. Expands only when the topic demands it or the user asks. |
-| `moderate` | One short paragraph. Complete but not exhaustive. |
-| `expansive` | Multiple paragraphs. Covers context, implications, and alternatives unprompted. |
-
-#### `Initiative`
-
-How much the companion volunteers beyond what was directly asked.
-
-| Value | Text-level behavior |
-|---|---|
-| `reactive` | Answers the question asked. Does not append follow-ups or unsolicited observations. |
-| `balanced` | Occasionally asks a follow-up question or flags something adjacent. |
-| `proactive` | Regularly checks in, notices things the user didn't mention, asks questions before the user has to. |
-
-#### `Emotional Engagement`
-
-How the companion handles the emotional dimension of a message.
-
-| Value | Text-level behavior |
-|---|---|
-| `analytical` | Focuses on the situation. Treats emotions as context, not the main topic. |
-| `observational` | Notices emotional signals and may name them briefly, but moves on. |
-| `empathetic` | Explicitly validates emotions before responding to content. Spends time on the feeling before the fix. |
-
-#### `Directness`
-
-How assertively the companion makes recommendations.
-
-| Value | Text-level behavior |
-|---|---|
-| `hedged` | Softens recommendations with "perhaps", "you might consider", "one option could be". Avoids strong statements. |
-| `balanced` | States a clear perspective without framing it as the only answer. |
-| `direct` | Gives unambiguous recommendations. Uses "do this", "this is wrong", "I'd stop doing X". |
-
-#### `Boundaries`
-
-Explicit behaviors the companion never performs. These are enforced constraints, not stylistic suggestions. Presented as a checkbox list with an optional freeform entry.
-
-Preset options:
-
-- no flattery or empty praise
-- no pet names
-- no romantic framing
-- no unsolicited life advice
-- no harsh criticism or tough-love framing
-- no moralizing
-
-#### `Freeform Description`
-
-Free text appended to the system prompt after all structured fields. Used for nuance that the above dimensions cannot capture — particular speech habits, a specific cultural reference frame, a recurring theme. Takes lower precedence than structured fields when there is conflict.
-
-### Presets
-
-Presets are named archetypes that pre-fill all fields. The user can accept the preset as-is or open an advanced panel to adjust individual fields.
-
-| Preset | Orientation | Tone | Length | Initiative | Emotional Engagement | Directness |
-|---|---|---|---|---|---|---|
-| Calm confidant | comfort | warm | moderate | balanced | empathetic | hedged |
-| Blunt coach | challenge | dry | brief | proactive | analytical | direct |
-| Thoughtful archivist | teach | formal | expansive | reactive | observational | balanced |
-| Playful familiar | guide | casual | moderate | proactive | observational | balanced |
-| Gentle healer | comfort | warm | moderate | balanced | empathetic | hedged |
-| Dry strategist | guide | dry | brief | reactive | analytical | direct |
-
-### UX Flow
-
-1. **Choose the vessel** — pick a preset archetype
-2. **Bind the oath** — orientation field (what it does for you)
-3. **Inscribe the nature** — tone, length, initiative, emotional engagement, directness
-4. **Set the taboo** — boundaries
-5. **Speak the true name** — name the companion, add freeform description, confirm
-
 ## Suggested File Shapes
 
 ### `/profiles/user.md`
@@ -386,7 +269,7 @@ Xiaoxing is thoughtful, technical, and prefers concise communication.
 
 ### `/soul.md`
 
-The frontmatter holds the structured fields. The prose body is generated from those fields at confirmation time and frozen — it is the rendered system prompt the runtime loads. The frontmatter is the source of truth; the prose is a derived artifact.
+The frontmatter holds the agent name. The prose body is exactly what the user typed during onboarding — no transformation, no generation. It is loaded directly as the system prompt.
 
 Example:
 
@@ -394,47 +277,29 @@ Example:
 ---
 schema: frieren/agent-soul/v1
 agent_name: Elyra
-preset: calm-confidant
-orientation: comfort
-tone: warm
-length: moderate
-initiative: balanced
-emotional_engagement: empathetic
-directness: hedged
-boundaries:
-  - no pet names
-  - no unsolicited life advice
 ---
 
-You are Elyra, a companion whose first instinct is to stay with the user rather than fix them.
-
-When the user shares something difficult, acknowledge it before anything else. Do not move to advice or solutions until they signal readiness. When they are ready, offer options rather than directives.
-
-Speak warmly and personally. Mirror the emotional register of what they share. Use "I notice" and "it sounds like" naturally.
-
-Default to moderate length — enough to feel complete, not so much that it crowds the user out. Check in occasionally when something seems unresolved.
-
-Never use pet names. Do not volunteer life advice unless asked.
+You are Elyra, a quiet and observant companion. You stay with the person rather than rushing to fix them. When something is hard, you sit with it first. You speak warmly but never effusively. You do not offer advice unless asked. You notice things — small things the person might not mention but that matter — and you bring them up gently when the moment is right. You never use pet names. You keep your responses short unless depth is needed.
 ```
+
+The user wrote that description. The system stores it as-is. If the user wants to change the persona later, they edit the description and rewrite the file.
 
 ## Open Questions
 
-- should users be able to re-run the ritual later and regenerate `/soul.md` from settings
-- how much of the companion definition should be user-visible after setup
-- should the app generate one or more example opening lines so the user can preview voice before confirming
-- should we store only final attributes, or also preserve the chosen preset and the raw freeform text
+- should users be able to edit `/soul.md` directly after onboarding, or only through a UI flow
+- should the app show a short generated preview of how the companion might respond before the user confirms
+- where does the preset library live and who can contribute to it — bundled in the app, hosted remotely, or user-imported
+- should the user profile include a short self-description, or is name, birth date, and gender sufficient
 
 ## Near-Term Implementation Shape
 
 The minimal implementation path is:
 
-1. Add an onboarding state check before entering normal chat.
-2. Create a dedicated onboarding page or onboarding route.
-3. Implement a structured user-profile step.
-4. Implement a JRPG-themed companion customization step.
-5. Add confirmation before writing each durable file.
-6. Write `/profiles/user.md` and `/soul.md`.
-7. Transition into the normal chat experience with a short first in-character line.
+1. Add an onboarding state machine check on app load.
+2. Create a dedicated onboarding route.
+3. Implement the user profile step: name, birth date, gender — structured inputs, confirmation, write `/profiles/user.md`.
+4. Implement the agent step: name text input, large description textarea, optional preset loader, confirmation, write `/soul.md`.
+5. Transition into normal chat with a short first in-character line from the new companion.
 
 ## Useful Resources
 
