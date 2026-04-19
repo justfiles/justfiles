@@ -182,7 +182,7 @@ export function ShadcnView(props: ChatViewProps) {
 									</div>
 									<Textarea
 										ref={inputRef}
-										className="min-h-[3.5rem] resize-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed text-amber-50 shadow-none placeholder:text-muted-foreground focus-visible:border-0 focus-visible:ring-0"
+										className="min-h-[3.5rem] resize-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed text-amber-50 shadow-none placeholder:text-muted-foreground focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
 										value={input}
 										onChange={(event) => setInput(event.target.value)}
 										onFocus={() => setFocused(true)}
