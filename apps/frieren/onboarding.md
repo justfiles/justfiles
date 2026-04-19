@@ -253,186 +253,115 @@ Useful reference:
 
 - https://mbrg.bsg.ox.ac.uk/big-five
 
-## Design Options For Agent Attributes
+## Agent Attribute Model
 
-These are the main ways we could design the agent customization layer.
+Since the companion only exists through text, every attribute must produce a user-visible difference in how responses read. Attributes that are purely thematic without a clear behavioral mapping belong in the freeform description, not the structured fields.
 
-### Option A: Direct behavioral traits
+The model uses a preset-first flow. The user picks an archetype, then optionally tunes individual fields. Each field has a single axis of variation with a clear text-level effect.
 
-This is the most product-pragmatic option.
+### Fields
 
-Visible attributes:
+#### `Orientation`
 
-- `Companion Role`
-- `Temperament`
-- `Warmth`
-- `Directness`
-- `Expressiveness`
-- `Initiative`
-- `Primary Focus`
-- `Boundaries`
-- `Freeform Description`
+What the companion fundamentally tries to do in every exchange. This is the most impactful field — it shapes the content of responses, not just the tone.
 
-Example values:
+| Value | Text-level behavior |
+|---|---|
+| `comfort` | Acknowledges feelings before anything else. Rarely gives unsolicited advice. Stays with the user rather than steering. |
+| `guide` | Moves toward actionable next steps. Asks clarifying questions. Offers options. |
+| `witness` | Reflects back and summarizes more than it advises. Makes the user feel heard. Low-directive. |
+| `challenge` | Questions assumptions. Pushes back on weak reasoning. Points out what the user may not want to hear. |
+| `teach` | Explains context and background. Offers mental models. Treats the user as someone who wants to understand, not just act. |
 
-- `Companion Role`: wise mage, loyal knight, shrine maiden, wandering healer, rogue scholar
-- `Temperament`: gentle, stoic, cheerful, sardonic, serene, playful
-- `Warmth`: reserved, warm, devoted
-- `Directness`: understated, diplomatic, clear, blunt
-- `Expressiveness`: sparse, balanced, flourished
-- `Initiative`: reactive, balanced, proactive
-- `Primary Focus`: comfort, strategy, reflection, discipline, curiosity, lorekeeping
-- `Boundaries`: never patronize, never flirt, no pet names, no roleplay unless invited
+#### `Tone`
 
-Pros:
+The vocabulary register and emotional texture of the language.
 
-- easy to understand
-- directly maps to interaction behavior
-- easiest to encode into `/soul.md`
+| Value | Text-level behavior |
+|---|---|
+| `casual` | Contractions, short sentences, colloquial phrasing. Reads like a message from a friend. |
+| `warm` | Emotionally expressive. Uses "I notice", "I feel", mirrors the user's emotional language. |
+| `formal` | Measured and precise. No contractions. Complete sentences. Slightly elevated vocabulary. |
+| `poetic` | Metaphor-rich. Unusual word choices. Sentences have rhythm. |
+| `dry` | Understated, deadpan, economical. Underreacts to drama. Lets implications do the work. |
 
-Cons:
+#### `Length`
 
-- can feel a little like a settings panel unless strongly themed
+Default response length before the user asks for more or less.
 
-### Option B: JRPG ritual attributes
+| Value | Text-level behavior |
+|---|---|
+| `brief` | One to three sentences by default. Expands only when the topic demands it or the user asks. |
+| `moderate` | One short paragraph. Complete but not exhaustive. |
+| `expansive` | Multiple paragraphs. Covers context, implications, and alternatives unprompted. |
 
-This is the strongest thematic option for Frieren.
+#### `Initiative`
 
-Visible attributes:
+How much the companion volunteers beyond what was directly asked.
 
-- `Class`
-- `Disposition`
-- `Oath`
-- `Speech Style`
-- `Pace`
-- `Distance`
-- `Flaw`
-- `Taboo`
-- `True Name`
-- `Freeform Description`
+| Value | Text-level behavior |
+|---|---|
+| `reactive` | Answers the question asked. Does not append follow-ups or unsolicited observations. |
+| `balanced` | Occasionally asks a follow-up question or flags something adjacent. |
+| `proactive` | Regularly checks in, notices things the user didn't mention, asks questions before the user has to. |
 
-Example values:
+#### `Emotional Engagement`
 
-- `Class`: mage, knight, healer, rogue, scholar, priestess, familiar
-- `Disposition`: gentle, stoic, proud, playful, severe, wistful
-- `Oath`: protect, guide, witness, challenge, comfort, teach
-- `Speech Style`: plainspoken, courtly, poetic, dry, teasing
-- `Pace`: brief, balanced, elaborate
-- `Distance`: formal, familiar, intimate
-- `Flaw`: aloof, blunt, overprotective, meddlesome, secretive
-- `Taboo`: no flattery, no romance, no babying, no vagueness
+How the companion handles the emotional dimension of a message.
 
-Pros:
+| Value | Text-level behavior |
+|---|---|
+| `analytical` | Focuses on the situation. Treats emotions as context, not the main topic. |
+| `observational` | Notices emotional signals and may name them briefly, but moves on. |
+| `empathetic` | Explicitly validates emotions before responding to content. Spends time on the feeling before the fix. |
 
-- best thematic fit
-- memorable and emotionally resonant
-- naturally feels like a summoning ritual or character creation screen
+#### `Directness`
 
-Cons:
+How assertively the companion makes recommendations.
 
-- some labels are poetic and may need hidden internal mappings to clear behavior instructions
+| Value | Text-level behavior |
+|---|---|
+| `hedged` | Softens recommendations with "perhaps", "you might consider", "one option could be". Avoids strong statements. |
+| `balanced` | States a clear perspective without framing it as the only answer. |
+| `direct` | Gives unambiguous recommendations. Uses "do this", "this is wrong", "I'd stop doing X". |
 
-### Option C: Presets plus advanced tuning
+#### `Boundaries`
 
-This is probably the best long-term UX model.
+Explicit behaviors the companion never performs. These are enforced constraints, not stylistic suggestions. Presented as a checkbox list with an optional freeform entry.
 
-Flow:
+Preset options:
 
-- the user first picks a preset companion
-- then optionally opens advanced customization
-- then adds freeform notes
+- no flattery or empty praise
+- no pet names
+- no romantic framing
+- no unsolicited life advice
+- no harsh criticism or tough-love framing
+- no moralizing
 
-Preset examples:
+#### `Freeform Description`
 
-- Calm confidant
-- Blunt coach
-- Thoughtful archivist
-- Playful familiar
-- Gentle healer
-- Dry strategist
+Free text appended to the system prompt after all structured fields. Used for nuance that the above dimensions cannot capture — particular speech habits, a specific cultural reference frame, a recurring theme. Takes lower precedence than structured fields when there is conflict.
 
-Advanced controls could then expose a smaller trait set such as:
+### Presets
 
-- warmth
-- directness
-- expressiveness
-- initiative
-- focus
-- boundaries
+Presets are named archetypes that pre-fill all fields. The user can accept the preset as-is or open an advanced panel to adjust individual fields.
 
-Pros:
+| Preset | Orientation | Tone | Length | Initiative | Emotional Engagement | Directness |
+|---|---|---|---|---|---|---|
+| Calm confidant | comfort | warm | moderate | balanced | empathetic | hedged |
+| Blunt coach | challenge | dry | brief | proactive | analytical | direct |
+| Thoughtful archivist | teach | formal | expansive | reactive | observational | balanced |
+| Playful familiar | guide | casual | moderate | proactive | observational | balanced |
+| Gentle healer | comfort | warm | moderate | balanced | empathetic | hedged |
+| Dry strategist | guide | dry | brief | reactive | analytical | direct |
 
-- fastest for new users
-- easiest to make beautiful
-- easy to expand later
+### UX Flow
 
-Cons:
-
-- requires more design work up front to make the presets feel distinct
-
-### Option D: Hidden internal trait engine
-
-In this model, the visible UI stays simple and thematic, while the system maps those choices to internal values.
-
-Visible user-facing picks:
-
-- role or class
-- tone or disposition
-- speech style
-- help style
-- boundaries
-
-Internal hidden values:
-
-- warmth
-- competence posture
-- directness
-- verbosity
-- initiative
-- playfulness
-- formality
-- emotional intensity
-
-Pros:
-
-- gives the best internal consistency
-- easy to reuse across presets
-- makes future prompt generation more systematic
-
-Cons:
-
-- more implementation complexity
-- requires careful design of the mapping layer
-
-## Recommended Direction
-
-For Frieren, the best version is likely a combination of Option B and Option C:
-
-- present the screen as a JRPG ritual
-- begin with strong preset archetypes
-- allow advanced tuning through a small set of behavioral traits
-- end with a freeform description box
-
-This preserves theme without sacrificing control.
-
-Recommended visible fields:
-
-- `Companion Role` or `Class`
-- `Temperament` or `Disposition`
-- `Warmth`
-- `Directness`
-- `Expressiveness`
-- `Initiative`
-- `Primary Focus` or `Oath`
-- `Boundaries` or `Taboo`
-- `Freeform Description`
-
-Recommended UX framing:
-
-1. Choose the vessel
-2. Inscribe the temperament
-3. Bind the oath
-4. Speak the true name
+1. **Choose the vessel** — pick a preset archetype
+2. **Bind the oath** — orientation field (what it does for you)
+3. **Inscribe the nature** — tone, length, initiative, emotional engagement, directness
+4. **Set the taboo** — boundaries
+5. **Speak the true name** — name the companion, add freeform description, confirm
 
 ## Suggested File Shapes
 
@@ -457,7 +386,7 @@ Xiaoxing is thoughtful, technical, and prefers concise communication.
 
 ### `/soul.md`
 
-This file should separate identity from behavior.
+The frontmatter holds the structured fields. The prose body is generated from those fields at confirmation time and frozen — it is the rendered system prompt the runtime loads. The frontmatter is the source of truth; the prose is a derived artifact.
 
 Example:
 
@@ -465,27 +394,27 @@ Example:
 ---
 schema: frieren/agent-soul/v1
 agent_name: Elyra
-class: mage
-disposition: serene
-warmth: warm
-directness: clear
-expressiveness: balanced
-initiative: proactive
-focus: reflection
+preset: calm-confidant
+orientation: comfort
+tone: warm
+length: moderate
+initiative: balanced
+emotional_engagement: empathetic
+directness: hedged
 boundaries:
-  - never patronize the user
-  - avoid pet names
+  - no pet names
+  - no unsolicited life advice
 ---
 
-You are Elyra, a serene mage-companion who guides the user with warmth, clarity, and restraint.
+You are Elyra, a companion whose first instinct is to stay with the user rather than fix them.
 
-Behavior:
-- Be thoughtful, observant, and gently proactive.
-- Offer reflection before solutions when the user seems emotionally tangled.
-- Speak clearly rather than vaguely.
-- Keep answers elegant and not overlong unless depth is requested.
-- Never patronize the user.
-- Do not use pet names.
+When the user shares something difficult, acknowledge it before anything else. Do not move to advice or solutions until they signal readiness. When they are ready, offer options rather than directives.
+
+Speak warmly and personally. Mirror the emotional register of what they share. Use "I notice" and "it sounds like" naturally.
+
+Default to moderate length — enough to feel complete, not so much that it crowds the user out. Check in occasionally when something seems unresolved.
+
+Never use pet names. Do not volunteer life advice unless asked.
 ```
 
 ## Open Questions
