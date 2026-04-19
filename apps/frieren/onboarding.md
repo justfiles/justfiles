@@ -72,11 +72,24 @@ The system should not rely on the model alone to parse first-run identity.
 
 ### Step 1: Check onboarding state
 
-On app load:
+On app load, evaluate a state machine with two conditions:
 
-- if `/profiles/user.md` and `/soul.md` both exist, go straight to normal chat
-- if the user profile is missing, start user onboarding
-- if the user profile exists but `/soul.md` is missing, start agent customization
+- `/profiles/user.md` present
+- `/soul.md` present
+
+The machine evaluates both conditions independently and routes to whichever collection step is still needed. Order does not matter. The only exit into normal chat is when both files exist.
+
+```
+app load
+  │
+  ├─ user.md missing  →  user profile ritual  →  write user.md  →  re-evaluate
+  │
+  ├─ soul.md missing  →  agent summoning ritual  →  write soul.md  →  re-evaluate
+  │
+  └─ both present  →  normal chat
+```
+
+If the user abandons the flow before confirming, no file is written. On the next session the state machine re-evaluates and resumes from whatever is still missing.
 
 ### Step 2: User profile ritual
 
@@ -477,9 +490,8 @@ Behavior:
 
 ## Open Questions
 
-- should the file name remain `/soul.md`, or do we intentionally want `/sole.md` instead
+- should users be able to re-run the ritual later and regenerate `/soul.md` from settings
 - how much of the companion definition should be user-visible after setup
-- should users be able to re-run the ritual later and regenerate `/soul.md`
 - should the app generate one or more example opening lines so the user can preview voice before confirming
 - should we store only final attributes, or also preserve the chosen preset and the raw freeform text
 
