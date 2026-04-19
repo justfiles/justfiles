@@ -10,5 +10,11 @@
 		{
 			"path": "./tsconfig.tools.json"
 		}
-	]
+	],
+	"compilerOptions": {
+		"baseUrl": ".",
+		"paths": {
+			"@/*": ["./src/*"]
+		}
+	}
 }

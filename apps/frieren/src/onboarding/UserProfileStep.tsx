@@ -1,6 +1,30 @@
 import { useState, type FormEvent } from 'react'
+import { Badge } from '@/components/ui/badge'
 import type { Volume } from '../fs'
 import { PATHS } from './state'
+import { Button } from "@/components/ui/button"
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardFooter,
+	CardHeader,
+	CardTitle,
+} from '@/components/ui/card'
+import {
+	Field,
+	FieldDescription,
+	FieldError,
+	FieldGroup,
+	FieldLabel,
+	FieldLegend,
+	FieldSet,
+} from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import {
+	NativeSelect,
+	NativeSelectOption,
+} from '@/components/ui/native-select'
 
 const encoder = new TextEncoder()
 
@@ -77,120 +101,148 @@ export function UserProfileStep({ volume, onDone }: { volume: Volume; onDone: ()
 	if (reviewing) {
 		const gender = resolveGender(draft)
 		return (
-			<div className="mx-auto flex w-full max-w-lg flex-col gap-6 p-6">
-				<header className="flex flex-col gap-2 text-center">
-					<span className="badge badge-outline badge-sm tracking-widest uppercase opacity-60">
-						The Rite of Naming
-					</span>
-					<h1 className="text-2xl font-semibold">Is this you?</h1>
-					<p className="text-sm text-base-content/60">
-						Confirm what will be etched into the record.
-					</p>
-				</header>
+			<div className="mx-auto w-full max-w-lg p-6">
+				<Card>
+					<CardHeader>
+						<Badge variant="outline" className="mb-2 tracking-[0.2em] uppercase">
+							The Rite of Naming
+						</Badge>
+						<CardTitle>Is this you?</CardTitle>
+						<CardDescription>
+							Confirm what will be etched into the record.
+						</CardDescription>
+					</CardHeader>
 
-				<dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-lg border border-base-300 p-4 text-sm">
-					<dt className="text-base-content/50">Name</dt>
-					<dd className="font-medium">{draft.name}</dd>
-					<dt className="text-base-content/50">Birth date</dt>
-					<dd className="font-medium">{draft.birthDate}</dd>
-					{gender ? (
-						<>
-							<dt className="text-base-content/50">Gender</dt>
-							<dd className="font-medium">{gender}</dd>
-						</>
-					) : null}
-				</dl>
+					<CardContent className="space-y-4">
+						<dl className="grid gap-3 rounded-none border border-border bg-muted/20 p-4 sm:grid-cols-[8rem_1fr] sm:gap-x-4">
+							<dt className="text-muted-foreground">Name</dt>
+							<dd className="font-medium text-foreground">{draft.name}</dd>
+							<dt className="text-muted-foreground">Birth date</dt>
+							<dd className="font-medium text-foreground">{draft.birthDate}</dd>
+							{gender ? (
+								<>
+									<dt className="text-muted-foreground">Gender</dt>
+									<dd className="font-medium text-foreground">{gender}</dd>
+								</>
+							) : null}
+						</dl>
 
-				{error ? <p className="text-sm text-error">{error}</p> : null}
+						<FieldError>{error}</FieldError>
+					</CardContent>
 
-				<div className="flex gap-2">
-					<button
-						type="button"
-						className="btn btn-outline flex-1"
-						onClick={() => setReviewing(false)}
-						disabled={saving}
-					>
-						Edit
-					</button>
-					<button
-						type="button"
-						className="btn btn-primary flex-1"
-						onClick={() => void confirm()}
-						disabled={saving}
-					>
-						{saving ? 'Inscribing…' : 'Confirm'}
-					</button>
-				</div>
+					<CardFooter className="flex-col gap-2 sm:flex-row">
+						<Button
+							type="button"
+							variant="outline"
+							className="w-full flex-1"
+							onClick={() => setReviewing(false)}
+							disabled={saving}
+						>
+							Edit
+						</Button>
+						<Button
+							type="button"
+							className="w-full flex-1"
+							onClick={() => void confirm()}
+							disabled={saving}
+						>
+							{saving ? 'Inscribing…' : 'Confirm'}
+						</Button>
+					</CardFooter>
+				</Card>
 			</div>
 		)
 	}
 
 	return (
-		<form className="mx-auto flex w-full max-w-lg flex-col gap-6 p-6" onSubmit={toReview}>
-			<header className="flex flex-col gap-2 text-center">
-				<span className="badge badge-outline badge-sm tracking-widest uppercase opacity-60">
-					The Rite of Naming
-				</span>
-				<h1 className="text-2xl font-semibold">Who walks these halls?</h1>
-				<p className="text-sm text-base-content/60">
-					A few details, so we know who you are when we meet again.
-				</p>
-			</header>
+		<form className="mx-auto w-full max-w-lg p-6" onSubmit={toReview}>
+			<Card>
+				<CardHeader>
+					<Badge variant="outline" className="mb-2 tracking-[0.2em] uppercase">
+						The Rite of Naming
+					</Badge>
+					<CardTitle>Who walks these halls?</CardTitle>
+					<CardDescription>
+						A few details, so we know who you are when we meet again.
+					</CardDescription>
+				</CardHeader>
 
-			<label className="flex flex-col gap-1">
-				<span className="text-sm font-medium">Name</span>
-				<input
-					type="text"
-					className="input input-bordered"
-					value={draft.name}
-					onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-					autoFocus
-					required
-				/>
-			</label>
+				<CardContent>
+					<FieldGroup>
+						<Field>
+							<FieldLabel htmlFor="user-profile-name">Name</FieldLabel>
+							<Input
+								id="user-profile-name"
+								type="text"
+								value={draft.name}
+								onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+								autoFocus
+								required
+							/>
+						</Field>
 
-			<label className="flex flex-col gap-1">
-				<span className="text-sm font-medium">Birth date</span>
-				<input
-					type="date"
-					className="input input-bordered"
-					value={draft.birthDate}
-					onChange={(e) => setDraft({ ...draft, birthDate: e.target.value })}
-					required
-				/>
-				<span className="text-xs text-base-content/45">Stored as a date, not an age.</span>
-			</label>
+						<Field>
+							<FieldLabel htmlFor="user-profile-birth-date">Birth date</FieldLabel>
+							<Input
+								id="user-profile-birth-date"
+								type="date"
+								value={draft.birthDate}
+								onChange={(e) => setDraft({ ...draft, birthDate: e.target.value })}
+								required
+							/>
+							<FieldDescription>Stored as a date, not an age.</FieldDescription>
+						</Field>
 
-			<label className="flex flex-col gap-1">
-				<span className="text-sm font-medium">
-					Gender <span className="text-base-content/45">(optional)</span>
-				</span>
-				<select
-					className="select select-bordered"
-					value={draft.genderChoice}
-					onChange={(e) => setDraft({ ...draft, genderChoice: e.target.value })}
-				>
-					<option value="">—</option>
-					{GENDER_OPTIONS.map((o) => (
-						<option key={o.value} value={o.value}>
-							{o.label}
-						</option>
-					))}
-				</select>
-				{draft.genderChoice === 'custom' ? (
-					<input
-						type="text"
-						className="input input-bordered mt-2"
-						placeholder="Describe in your own words"
-						value={draft.genderCustom}
-						onChange={(e) => setDraft({ ...draft, genderCustom: e.target.value })}
-					/>
-				) : null}
-			</label>
+						<FieldSet>
+							<FieldLegend variant="label" className="mb-0">
+								Gender <span className="text-muted-foreground">(optional)</span>
+							</FieldLegend>
+							<FieldGroup className="gap-3">
+								<Field>
+									<NativeSelect
+										value={draft.genderChoice}
+										onChange={(e) =>
+											setDraft({ ...draft, genderChoice: e.target.value })
+										}
+										aria-label="Gender"
+										className="w-full"
+									>
+										<NativeSelectOption value="">—</NativeSelectOption>
+										{GENDER_OPTIONS.map((option) => (
+											<NativeSelectOption key={option.value} value={option.value}>
+												{option.label}
+											</NativeSelectOption>
+										))}
+									</NativeSelect>
+								</Field>
 
-			<button type="submit" className="btn btn-primary" disabled={!canReview}>
-				Review
-			</button>
+								{draft.genderChoice === 'custom' ? (
+									<Field>
+										<FieldLabel htmlFor="user-profile-gender-custom">
+											Describe in your own words
+										</FieldLabel>
+										<Input
+											id="user-profile-gender-custom"
+											type="text"
+											placeholder="Describe in your own words"
+											value={draft.genderCustom}
+											onChange={(e) =>
+												setDraft({ ...draft, genderCustom: e.target.value })
+											}
+										/>
+									</Field>
+								) : null}
+							</FieldGroup>
+						</FieldSet>
+					</FieldGroup>
+				</CardContent>
+
+				<CardFooter>
+					<Button type="submit" className="w-full" disabled={!canReview}>
+						Review
+					</Button>
+				</CardFooter>
+			</Card>
 		</form>
 	)
 }
