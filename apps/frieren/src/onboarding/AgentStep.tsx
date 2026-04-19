@@ -1,5 +1,34 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useState, type FormEvent } from 'react'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardFooter,
+	CardHeader,
+	CardTitle,
+} from '@/components/ui/card'
+import {
+	Field,
+	FieldDescription,
+	FieldError,
+	FieldGroup,
+	FieldLabel,
+	FieldLegend,
+	FieldSet,
+} from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import {
+	NativeSelect,
+	NativeSelectOption,
+} from '@/components/ui/native-select'
+import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
+import assistantImage from '../assets/assistant.png'
+import companionImage from '../assets/companion.png'
+import teacherImage from '../assets/teacher.png'
 import type { Volume } from '../fs'
 import { PATHS } from './state'
 
@@ -7,13 +36,20 @@ const encoder = new TextEncoder()
 
 type Archetype = 'teacher' | 'companion' | 'assistant'
 
-const ARCHETYPES: { id: Archetype; title: string; tagline: string; blurb: string }[] = [
+const ARCHETYPES: {
+	id: Archetype
+	title: string
+	tagline: string
+	blurb: string
+	image: string
+}[] = [
 	{
 		id: 'teacher',
 		title: 'Teacher',
 		tagline: 'Leads you to your own answers.',
 		blurb:
 			'Patient and knowledgeable. Guides through questions rather than giving answers. Celebrates the moment of realisation.',
+		image: teacherImage,
 	},
 	{
 		id: 'companion',
@@ -21,6 +57,7 @@ const ARCHETYPES: { id: Archetype; title: string; tagline: string; blurb: string
 		tagline: 'Beside you, not above you.',
 		blurb:
 			'A peer. Warm, attentive, loyal. Faces things alongside you rather than solving them for you. Remembers what matters.',
+		image: companionImage,
 	},
 	{
 		id: 'assistant',
@@ -28,6 +65,7 @@ const ARCHETYPES: { id: Archetype; title: string; tagline: string; blurb: string
 		tagline: 'Gets things done.',
 		blurb:
 			'Task-oriented and reliable. Organised and proactive. Anticipates what you need. Clear, brief, on-point.',
+		image: assistantImage,
 	},
 ]
 
@@ -76,6 +114,10 @@ export function AgentStep({
 	const [error, setError] = useState<string | null>(null)
 
 	const canSubmit = draft.name.trim().length > 0 && draft.archetype !== null
+	const selectedArchetype =
+		draft.archetype === null
+			? null
+			: ARCHETYPES.find((archetype) => archetype.id === draft.archetype) ?? null
 
 	const generate = async (archetype: Archetype) => {
 		if (!draft.name.trim()) return
@@ -136,141 +178,209 @@ export function AgentStep({
 
 	if (soulText || generating) {
 		return (
-			<div className="mx-auto flex w-full max-w-xl flex-col gap-6 p-6">
-				<header className="flex flex-col gap-2 text-center">
-					<span className="badge badge-outline badge-sm tracking-widest uppercase opacity-60">
-						The Summoning
-					</span>
-					<h1 className="text-2xl font-semibold">
-						{draft.name.trim()} takes shape.
-					</h1>
-					<p className="text-sm text-base-content/60">
-						Read their soul. Adjust anything that does not ring true.
-					</p>
-				</header>
+			<div className="mx-auto w-full max-w-3xl p-6">
+				<Card>
+					<CardHeader>
+						<Badge variant="outline" className="mb-2 tracking-[0.2em] uppercase">
+							The Summoning
+						</Badge>
+						<CardTitle>{draft.name.trim()} takes shape.</CardTitle>
+						<CardDescription>
+							Read their soul. Adjust anything that does not ring true.
+						</CardDescription>
+					</CardHeader>
 
-				{generating ? (
-					<div className="flex items-center justify-center gap-2 p-8 text-sm text-base-content/60">
-						<span className="loading loading-dots loading-md" />
-						<span>Summoning…</span>
-					</div>
-				) : (
-					<textarea
-						className="textarea textarea-bordered min-h-[18rem] font-mono text-sm leading-6"
-						value={soulText}
-						onChange={(e) => setSoulText(e.target.value)}
-					/>
-				)}
+					<CardContent className="space-y-4">
+						{generating ? (
+							<div className="flex min-h-72 flex-col items-center justify-center gap-3 border border-dashed border-border bg-muted/20 px-6 py-10 text-center text-xs text-muted-foreground">
+								<div className="flex items-center gap-2">
+									<span className="size-2 animate-pulse rounded-full bg-current" />
+									<span className="size-2 animate-pulse rounded-full bg-current [animation-delay:120ms]" />
+									<span className="size-2 animate-pulse rounded-full bg-current [animation-delay:240ms]" />
+								</div>
+								<p>Summoning…</p>
+							</div>
+						) : (
+							<Field>
+								<FieldLabel htmlFor="agent-soul-text">Soul</FieldLabel>
+								<Textarea
+									id="agent-soul-text"
+									className="min-h-72 font-mono leading-6"
+									value={soulText}
+									onChange={(e) => setSoulText(e.target.value)}
+								/>
+								<FieldDescription>
+									Edit the draft directly before binding it to your companion.
+								</FieldDescription>
+							</Field>
+						)}
 
-				{error ? <p className="text-sm text-error">{error}</p> : null}
+						<FieldError>{error}</FieldError>
+					</CardContent>
 
-				<div className="flex gap-2">
-					<button
-						type="button"
-						className="btn btn-outline"
-						onClick={() => {
-							setSoulText('')
-							setDraft({ ...draft, archetype: null })
-						}}
-						disabled={generating || saving}
-					>
-						Back
-					</button>
-					<button
-						type="button"
-						className="btn btn-ghost"
-						onClick={regenerate}
-						disabled={generating || saving}
-					>
-						Regenerate
-					</button>
-					<button
-						type="button"
-						className="btn btn-primary flex-1"
-						onClick={() => void confirm()}
-						disabled={generating || saving || !soulText.trim()}
-					>
-						{saving ? 'Binding…' : 'Bind'}
-					</button>
-				</div>
+					<CardFooter className="flex-col gap-2 sm:flex-row">
+						<Button
+							type="button"
+							variant="outline"
+							className="w-full sm:w-auto"
+							onClick={() => {
+								setSoulText('')
+								setDraft({ ...draft, archetype: null })
+							}}
+							disabled={generating || saving}
+						>
+							Back
+						</Button>
+						<Button
+							type="button"
+							variant="ghost"
+							className="w-full sm:w-auto"
+							onClick={regenerate}
+							disabled={generating || saving}
+						>
+							Regenerate
+						</Button>
+						<Button
+							type="button"
+							className="w-full sm:ml-auto sm:w-auto"
+							onClick={() => void confirm()}
+							disabled={generating || saving || !soulText.trim()}
+						>
+							{saving ? 'Binding…' : 'Bind'}
+						</Button>
+					</CardFooter>
+				</Card>
 			</div>
 		)
 	}
 
 	return (
-		<form className="mx-auto flex w-full max-w-xl flex-col gap-6 p-6" onSubmit={pickArchetype}>
-			<header className="flex flex-col gap-2 text-center">
-				<span className="badge badge-outline badge-sm tracking-widest uppercase opacity-60">
-					The Summoning
-				</span>
-				<h1 className="text-2xl font-semibold">Call your companion.</h1>
-				<p className="text-sm text-base-content/60">
-					Give them a name, a shape, and the stance they should take.
-				</p>
-			</header>
+		<form className="mx-auto w-full max-w-3xl p-6" onSubmit={pickArchetype}>
+			<Card>
+				<CardHeader>
+					<Badge variant="outline" className="mb-2 tracking-[0.2em] uppercase">
+						The Summoning
+					</Badge>
+					<CardTitle>Call your companion.</CardTitle>
+					<CardDescription>
+						Give them a name, a shape, and the stance they should take.
+					</CardDescription>
+				</CardHeader>
 
-			<label className="flex flex-col gap-1">
-				<span className="text-sm font-medium">Name</span>
-				<input
-					type="text"
-					className="input input-bordered"
-					value={draft.name}
-					onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-					autoFocus
-					required
-				/>
-			</label>
+				<CardContent>
+					<FieldGroup>
+						<Field>
+							<FieldLabel htmlFor="agent-name">Name</FieldLabel>
+							<Input
+								id="agent-name"
+								type="text"
+								value={draft.name}
+								onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+								autoFocus
+								required
+							/>
+						</Field>
 
-			<label className="flex flex-col gap-1">
-				<span className="text-sm font-medium">
-					Gender <span className="text-base-content/45">(optional)</span>
-				</span>
-				<select
-					className="select select-bordered"
-					value={draft.gender}
-					onChange={(e) => setDraft({ ...draft, gender: e.target.value })}
-				>
-					<option value="">—</option>
-					{GENDER_OPTIONS.map((o) => (
-						<option key={o.value} value={o.value}>
-							{o.label}
-						</option>
-					))}
-				</select>
-			</label>
-
-			<fieldset className="flex flex-col gap-2">
-				<legend className="text-sm font-medium">Archetype</legend>
-				<div className="grid gap-3">
-					{ARCHETYPES.map((a) => {
-						const selected = draft.archetype === a.id
-						return (
-							<button
-								type="button"
-								key={a.id}
-								onClick={() => setDraft({ ...draft, archetype: a.id })}
-								className={`flex flex-col gap-1 rounded-lg border p-4 text-left transition ${
-									selected
-										? 'border-primary bg-primary/5'
-										: 'border-base-300 hover:border-base-content/30'
-								}`}
+						<Field>
+							<FieldLabel htmlFor="agent-gender">
+								Gender <span className="text-muted-foreground">(optional)</span>
+							</FieldLabel>
+							<NativeSelect
+								id="agent-gender"
+								value={draft.gender}
+								onChange={(e) => setDraft({ ...draft, gender: e.target.value })}
+								className="w-full"
 							>
-								<div className="flex items-baseline justify-between gap-2">
-									<span className="font-semibold">{a.title}</span>
-									<span className="text-xs text-base-content/50">{a.tagline}</span>
-								</div>
-								<p className="text-sm text-base-content/70">{a.blurb}</p>
-							</button>
-						)
-					})}
-				</div>
-			</fieldset>
+								<NativeSelectOption value="">—</NativeSelectOption>
+								{GENDER_OPTIONS.map((option) => (
+									<NativeSelectOption key={option.value} value={option.value}>
+										{option.label}
+									</NativeSelectOption>
+								))}
+							</NativeSelect>
+						</Field>
 
-			{error ? <p className="text-sm text-error">{error}</p> : null}
+						<FieldSet>
+							<FieldLegend variant="label" className="mb-0">
+								Archetype
+							</FieldLegend>
+							<FieldDescription>
+								Choose the stance they should take when they speak to you.
+							</FieldDescription>
+							<div className="grid gap-3 md:grid-cols-3">
+								{ARCHETYPES.map((archetype) => {
+									const selected = draft.archetype === archetype.id
+									return (
+										<label key={archetype.id} className="block">
+											<input
+												type="radio"
+												name="agent-archetype"
+												value={archetype.id}
+												checked={selected}
+												onChange={() =>
+													setDraft({ ...draft, archetype: archetype.id })
+												}
+												className="sr-only"
+											/>
+											<div
+												className={cn(
+													'relative overflow-hidden border bg-muted/40 transition-colors',
+													selected
+														? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+														: 'border-border hover:border-foreground/20 hover:bg-muted/30'
+												)}
+											>
+												<img
+													src={archetype.image}
+													alt={`${archetype.title} placeholder`}
+													className={cn(
+														'aspect-[3/4] h-full w-full object-cover transition-[filter,transform] duration-300',
+														selected
+															? 'grayscale-0'
+															: 'grayscale contrast-110'
+													)}
+												/>
+												<div className="absolute inset-x-0 top-0 flex justify-end p-3">
+													<span
+														aria-hidden="true"
+														className={cn(
+															'size-3 shrink-0 rounded-full border bg-background/80 backdrop-blur-sm',
+															selected
+																? 'border-primary bg-primary'
+																: 'border-muted-foreground/40'
+														)}
+													/>
+												</div>
+											</div>
+										</label>
+									)
+								})}
+							</div>
+							{selectedArchetype ? (
+								<Card size="sm" className="border-primary/40 bg-primary/5">
+									<CardHeader>
+										<CardTitle>{selectedArchetype.title}</CardTitle>
+										<CardDescription>{selectedArchetype.tagline}</CardDescription>
+									</CardHeader>
+									<CardContent>
+										<p className="text-xs/relaxed text-muted-foreground">
+											{selectedArchetype.blurb}
+										</p>
+									</CardContent>
+								</Card>
+							) : null}
+						</FieldSet>
 
-			<button type="submit" className="btn btn-primary" disabled={!canSubmit}>
-				Summon
-			</button>
+						<FieldError>{error}</FieldError>
+					</FieldGroup>
+				</CardContent>
+
+				<CardFooter>
+					<Button type="submit" className="w-full sm:w-auto" disabled={!canSubmit}>
+						Summon
+					</Button>
+				</CardFooter>
+			</Card>
 		</form>
 	)
 }
