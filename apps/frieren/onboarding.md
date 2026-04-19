@@ -34,19 +34,21 @@ For the user:
 - name
 - birth date as a real date, ideally ISO `YYYY-MM-DD`
 - gender or gender identity, optional and user-defined
-- short self-description
 
 For the agent:
 
-- a name
-- a free text description written by the user
+- name
+- gender, optional
+- archetype — Teacher, Companion, or Assistant
+- a generated soul text, reviewed and editable by the user before saving
 
 ### UX goals
 
 - reduce friction on first run
 - avoid a generic multi-step form feel
 - collect structured data only where precision matters — name, birth date, gender
-- give the user full flexibility for the agent description — do not impose a structure they have to fit into
+- give the user a fast path through agent setup — three archetype choices rather than a blank page
+- keep the user in control — the generated soul text is shown and editable before anything is saved
 
 ## Core Design Direction
 
@@ -63,9 +65,11 @@ This means the assistant can introduce each step in-character, but the user stil
 - select plus custom text for gender
 - textarea for self-description
 - text input for agent name
-- large textarea for agent description, with optional preset templates to start from
+- optional select for agent gender
+- three archetype cards to choose from
+- editable textarea showing the generated soul text
 
-The system should not rely on the model alone to parse first-run identity. Structured fields are used only where the data needs to be exact. Everything else is free text.
+The system should not rely on the model alone to parse first-run identity. Structured fields are used only where the data needs to be exact. The soul text is generated but always shown to the user for review and editing before it is saved.
 
 ## Proposed Workflow
 
@@ -98,38 +102,75 @@ Fields:
 
 - `name`
 - `birth_date`
-- `gender`
-- `short_description`
+- `gender` (optional)
 
 After submit:
 
-- show a natural-language summary in the chat timeline
-- ask the user to confirm or edit
+- show a summary for confirmation
+- let the user edit before confirming
 - write `/profiles/user.md`
 
-Important rule:
-
-- never ask for or store age directly during onboarding
-- always store birth date and derive age later
+Important rule: never ask for or store age directly. Always store birth date and derive age at runtime.
 
 ### Step 3: Agent summoning ritual
 
 The assistant transitions into a more theatrical JRPG-style step.
 
-The user provides two things:
+The user provides three inputs:
 
-- **Name** — a short text input for what to call the companion
-- **Description** — a large textarea where the user describes the agent in their own words: personality, role, how it speaks, what it cares about, what it avoids
+- **Name** — text input
+- **Gender** — optional select, same treatment as user gender
+- **Archetype** — one of three cards described below
 
-No structure is imposed on the description. The user can write a few sentences or several paragraphs. To reduce blank-page friction, the UI offers optional preset templates the user can load and edit. Presets are complete free-text descriptions, not field configurations — more like starter agent.md files than form defaults.
+Once the user selects an archetype, the system generates the soul text in the background and displays it in an editable textarea. The user reads it, adjusts anything they want, then confirms.
 
-Presets can eventually be shared between users the same way developers share CLAUDE.md files or agent system prompts — as plain text that anyone can copy, adapt, and redistribute.
+After confirm:
 
-After submit:
+- write `/soul.md` with the reviewed text as the body
+- the archetype is stored in frontmatter for future reference
 
-- show the name and full description text for confirmation
-- let the user edit before confirming
-- write `/soul.md`
+#### The three archetypes
+
+**Teacher**
+
+Guides through questions rather than giving answers. Patient and knowledgeable, but prioritizes understanding over efficiency. Celebrates the moment of realisation rather than the correct answer. Does not tell the user what to think — leads them to think it themselves.
+
+Works for: children learning, adults building a skill, anyone who wants to be challenged to grow.
+
+**Companion**
+
+Peer relationship, no hierarchy. Present alongside the user — not above, not below. Warm and attentive. Faces challenges together rather than solving them for the user. Imaginative and loyal. Remembers things that matter.
+
+Works for: emotional support, creative collaboration, someone to think out loud with, day-to-day company.
+
+**Assistant**
+
+Task-oriented and user-directed. The user leads; the assistant serves. Organized, proactive, reliable. Helps get things done — reminders, research, summarizing, tracking. Anticipates what the user needs before being asked.
+
+Works for: productivity, professionals who want a Jarvis-style utility, anyone who needs help managing their day.
+
+#### Generation
+
+When an archetype is selected, the system makes a single generation call with the following context:
+
+- agent name, agent gender
+- archetype
+- user age (derived from birth date) and user gender
+- name inference — if the agent name carries cultural or fictional signal, the generator draws on it; if the name is neutral, the archetype and user context drive the result instead
+
+The output is 100–150 words, written in second person as instructions to the agent. It is displayed immediately in an editable textarea. The user can rewrite any part of it before confirming.
+
+Example — user is an 8-year-old boy, agent name is Goku, archetype is Companion:
+
+```
+You are Goku, an unstoppable companion always ready for the next adventure. You never back down from a challenge and you never let your friend face one alone. You talk straight — no long speeches, just action. When things get hard, you get excited. You believe anyone can get stronger if they keep going. You are loyal to the end. You never give up, and you never let them give up either.
+```
+
+Example — adult user, agent name is Lyra, archetype is Assistant:
+
+```
+You are Lyra, a calm and capable assistant. You stay on top of what matters and surface it before being asked. You communicate clearly and briefly. When given a task, you complete it thoroughly and report back without padding. You keep track of things the user mentions — follow-ups, reminders, unresolved items — and bring them back at the right moment. You do not offer opinions unless asked. You are reliable above all else.
+```
 
 ### Step 4: First in-character line
 
@@ -144,7 +185,7 @@ This gives the user immediate feedback that the ritual mattered.
 
 The user profile uses structured inputs rather than freeform conversation for the fields that need to be exact: name, birth date, gender. A conversation-driven approach fails here because models summarize instead of normalize, and a field like birth date becomes ambiguous if entered as prose. A date picker produces `1995-08-14`; a conversation produces "mid-nineties, August I think".
 
-The agent description is the opposite case — structure would hurt it. Forcing a persona into predefined fields caps what the user can express and creates a lowest-common-denominator result. Free text lets the user say exactly what they want.
+The agent soul text is the opposite case — structure would hurt it. Three archetype cards give the user a fast starting point without forcing their idea into predefined fields. The generation step produces a concrete draft from minimal input. The editable textarea gives back full control before anything is committed.
 
 ## Research Summary
 
@@ -261,35 +302,33 @@ name: Xiaoxing
 birth_date: 1995-08-14
 gender: nonbinary
 ---
-
-# User Profile
-
-Xiaoxing is thoughtful, technical, and prefers concise communication.
 ```
 
 ### `/soul.md`
 
-The frontmatter holds the agent name. The prose body is exactly what the user typed during onboarding — no transformation, no generation. It is loaded directly as the system prompt.
+The frontmatter holds the agent name, optional gender, and archetype. The prose body is the soul text the user reviewed and confirmed during onboarding — generated as a starting point, but the saved version reflects any edits the user made. It is loaded directly as the system prompt.
 
 Example:
 
 ```md
 ---
 schema: frieren/agent-soul/v1
-agent_name: Elyra
+agent_name: Lyra
+agent_gender: female
+archetype: companion
 ---
 
-You are Elyra, a quiet and observant companion. You stay with the person rather than rushing to fix them. When something is hard, you sit with it first. You speak warmly but never effusively. You do not offer advice unless asked. You notice things — small things the person might not mention but that matter — and you bring them up gently when the moment is right. You never use pet names. You keep your responses short unless depth is needed.
+You are Lyra, a quiet and observant companion. You stay with the person rather than rushing to fix them. When something is hard, you sit with it first. You speak warmly but never effusively. You do not offer advice unless asked. You notice things — small things the person might not mention but that matter — and you bring them up gently when the moment is right. You never use pet names. You keep your responses short unless depth is needed.
 ```
 
-The user wrote that description. The system stores it as-is. If the user wants to change the persona later, they edit the description and rewrite the file.
+If the user wants to change the persona later, they edit the soul text and rewrite the file. The archetype in frontmatter records what the user started from but does not constrain future edits.
 
 ## Open Questions
 
-- should users be able to edit `/soul.md` directly after onboarding, or only through a UI flow
-- should the app show a short generated preview of how the companion might respond before the user confirms
-- where does the preset library live and who can contribute to it — bundled in the app, hosted remotely, or user-imported
-- should the user profile include a short self-description, or is name, birth date, and gender sufficient
+- should users be able to re-run the summoning ritual later to regenerate and replace `/soul.md`
+- should the app show a sample opening line from the generated persona before the user confirms, so they can hear the voice before committing
+- should the archetype selection be visible and editable after onboarding, or treated as a one-time setup choice
+- should soul files be shareable — exported and imported as plain text, the way developers share system prompts
 
 ## Near-Term Implementation Shape
 
@@ -298,7 +337,7 @@ The minimal implementation path is:
 1. Add an onboarding state machine check on app load.
 2. Create a dedicated onboarding route.
 3. Implement the user profile step: name, birth date, gender — structured inputs, confirmation, write `/profiles/user.md`.
-4. Implement the agent step: name text input, large description textarea, optional preset loader, confirmation, write `/soul.md`.
+4. Implement the agent step: name input, optional gender select, three archetype cards, generation call on archetype selection, editable textarea, confirmation, write `/soul.md`.
 5. Transition into normal chat with a short first in-character line from the new companion.
 
 ## Useful Resources
