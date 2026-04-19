@@ -114,11 +114,12 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		async deleteInode(ino) {
 			const path = pathMap.get(ino)
 			if (!path) return
-			try {
-				await lstat(path)
-				return
-			} catch {
-				pathMap.delete(ino)
+			pathMap.delete(ino)
+			const prefix = path.endsWith('/') ? path : path + '/'
+			for (const [childIno, childPath] of pathMap) {
+				if (childPath.startsWith(prefix)) {
+					pathMap.delete(childIno)
+				}
 			}
 		},
 

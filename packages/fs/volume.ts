@@ -300,7 +300,10 @@ export function volume(storage: Storage): Volume {
 		}
 
 		if (!resolved) {
-			throw new Error(`ENOENT: ${path}`)
+			const ino = inoStack[inoStack.length - 1]
+			if (!ino) throw new Error(`ENOENT: ${path}`)
+			const meta = await getMetaOrThrow(ino)
+			return { ino, type: meta.type }
 		}
 		return resolved
 	}
