@@ -2,6 +2,32 @@ import { UserButton, useAuth } from '@clerk/clerk-react'
 import { FileTreeView, type FileTreeItem } from '@justfiles/ui'
 import { FileType } from '@justfiles/fs/types'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from '@/components/ui/card'
+import {
+	Empty,
+	EmptyContent,
+	EmptyDescription,
+	EmptyHeader,
+	EmptyMedia,
+	EmptyTitle,
+} from '@/components/ui/empty'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Spinner } from '@/components/ui/spinner'
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableRow,
+} from '@/components/ui/table'
 import type { Volume } from './fs'
 import { createFsVolume } from './fs'
 import { navigate } from './clientRouter'
@@ -29,6 +55,12 @@ function stem(path: string): string {
 
 function joinPath(folderPath: string, name: string): string {
 	return folderPath === '/' ? `/${name}` : `${folderPath}/${name}`
+}
+
+function dirname(path: string): string {
+	const parts = path.split('/').filter(Boolean)
+	if (parts.length <= 1) return '/'
+	return `/${parts.slice(0, -1).join('/')}`
 }
 
 async function resolveMoveDestination(
@@ -68,6 +100,9 @@ export function FilesPage({ search }: { search: string }) {
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 	const selectedPath = useMemo(() => new URLSearchParams(search).get('path'), [search])
+	const selectedName = selectedPath ? basename(selectedPath) : null
+	const selectedFolder = selectedPath ? dirname(selectedPath) : null
+	const selectedExtension = selectedPath ? extname(selectedPath) || 'none' : null
 
 	const [volume, setVolume] = useState<Volume | null>(null)
 	const [files, setFiles] = useState<FsFile[]>([])
@@ -207,111 +242,173 @@ export function FilesPage({ search }: { search: string }) {
 	}
 
 	return (
-		<div className="flex h-screen min-h-0 flex-col">
-			<header className="navbar min-h-12 border-b border-base-300 px-4">
-				<div className="flex flex-1 items-center gap-3">
-					<button
-						type="button"
-						className="btn btn-ghost btn-xs text-base-content/60"
-						onClick={() => navigate('/')}
-						>
+		<div className="flex h-screen min-h-0 flex-col bg-background">
+			<header className="border-b bg-background/95 px-4 py-3 backdrop-blur">
+				<div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+					<div className="flex flex-wrap items-center gap-3">
+						<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/')}>
 							Chat
-						</button>
-						<span className="text-lg font-semibold">Files</span>
+						</Button>
+						<div>
+							<p className="text-sm font-semibold tracking-tight">Files</p>
+							<p className="text-xs text-muted-foreground">
+								{loadingFiles
+									? 'Loading files…'
+									: `${files.length} file${files.length === 1 ? '' : 's'}`}
+							</p>
+						</div>
+						{organizeMode ? <Badge>Organize mode</Badge> : null}
 					</div>
-					<div className="flex flex-none items-center gap-2">
-						<button
+					<div className="flex flex-wrap items-center gap-2">
+						<Button
 							type="button"
-							className={`btn btn-ghost btn-xs ${organizeMode ? 'text-primary' : 'text-base-content/60'}`}
+							variant={organizeMode ? 'default' : 'ghost'}
+							size="sm"
 							onClick={() => setOrganizeMode((value) => !value)}
 						>
 							{organizeMode ? 'Done' : 'Organize'}
-						</button>
-						<button
+						</Button>
+						<Button
 							type="button"
-							className="btn btn-ghost btn-xs text-base-content/60"
-						onClick={() => setReloadToken((value) => value + 1)}
-					>
-						Refresh
-					</button>
-					<button
-						type="button"
-						className="btn btn-ghost btn-xs text-warning"
-						onClick={() => void resetOnboarding()}
-					>
-						Reset
-					</button>
-					<button
-						type="button"
-						className="btn btn-ghost btn-xs text-error"
-						onClick={() => void nukeAll()}
-					>
-						Nuke
-					</button>
-					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+							variant="ghost"
+							size="sm"
+							onClick={() => setReloadToken((value) => value + 1)}
+						>
+							Refresh
+						</Button>
+						<Button type="button" variant="outline" size="sm" onClick={() => void resetOnboarding()}>
+							Reset
+						</Button>
+						<Button type="button" variant="destructive" size="sm" onClick={() => void nukeAll()}>
+							Nuke
+						</Button>
+						<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+					</div>
 				</div>
 			</header>
 
-			<div className="flex min-h-0 flex-1">
+			<div className="flex min-h-0 flex-1 flex-col gap-4 p-4 sm:flex-row">
 				<aside
-					className={`${showingDetail ? 'hidden sm:flex' : 'flex'} min-h-0 w-full shrink-0 flex-col border-r border-base-300 bg-base-100 sm:w-72 md:w-80`}
+					className={`${showingDetail ? 'hidden sm:flex' : 'flex'} min-h-0 w-full shrink-0 flex-col sm:w-80`}
 				>
-					<div className="border-b border-base-300 px-4 py-3">
-						<p className="text-sm font-semibold tracking-tight text-base-content/80">Filesystem</p>
-						<p className="mt-1 text-xs text-base-content/45">
-							{loadingFiles ? 'Loading files...' : `${files.length} file${files.length === 1 ? '' : 's'}`}
-						</p>
-					</div>
-					<div className="flex-1 overflow-y-auto py-2">
-						{loadingFiles ? (
-							<p className="px-3 py-2 font-mono text-xs text-base-content/30">Loading...</p>
-						) : (
-							<FileTreeView
-								items={files}
-								selectedId={selectedPath ?? undefined}
-								dragEnabled={organizeMode}
-								movingItemId={movingItemId}
-								onSelect={selectFile}
-								onMove={(args) => void moveFile(args)}
-							/>
-						)}
-					</div>
+					<Card className="min-h-0 flex-1">
+						<CardHeader className="gap-1">
+							<CardTitle className="text-sm">Filesystem</CardTitle>
+							<CardDescription>Browse, preview, and reorganize stored files.</CardDescription>
+						</CardHeader>
+						<CardContent className="min-h-0 flex-1 px-0">
+							<ScrollArea className="h-full">
+								<div className="px-2 pb-4">
+									{loadingFiles ? (
+										<div className="flex min-h-32 items-center justify-center">
+											<Spinner className="size-5" />
+										</div>
+									) : (
+										<FileTreeView
+											items={files}
+											selectedId={selectedPath ?? undefined}
+											dragEnabled={organizeMode}
+											movingItemId={movingItemId}
+											emptyState={
+												<Empty className="border-0">
+													<EmptyHeader>
+														<EmptyMedia variant="icon">
+															<span className="font-mono text-sm">/</span>
+														</EmptyMedia>
+														<EmptyTitle>No files yet</EmptyTitle>
+														<EmptyDescription>
+															Files created during onboarding and chat will appear here.
+														</EmptyDescription>
+													</EmptyHeader>
+												</Empty>
+											}
+											onSelect={selectFile}
+											onMove={(args) => void moveFile(args)}
+										/>
+									)}
+								</div>
+							</ScrollArea>
+						</CardContent>
+					</Card>
 				</aside>
 
 				<section
 					className={`${showingDetail ? 'flex' : 'hidden sm:flex'} min-h-0 min-w-0 flex-1 flex-col`}
 				>
-					<div className="border-b border-base-300 px-5 py-3">
-						<div className="flex items-center gap-3">
-							{showingDetail ? (
-								<button
-									type="button"
-									className="btn btn-ghost btn-xs sm:hidden"
-									onClick={() => navigate('/files')}
-								>
-									Back
-								</button>
-							) : null}
-							<p className="truncate font-mono text-xs text-base-content/45">
-								{selectedPath ?? 'No file selected'}
-							</p>
-						</div>
-					</div>
-					<div className="flex-1 overflow-auto bg-base-100">
-						{error ? (
-							<div className="p-5 text-sm text-error">{error}</div>
-						) : loadingContent ? (
-							<div className="p-5 text-sm text-base-content/40">Loading content...</div>
-						) : selectedPath ? (
-							<pre className="min-h-full whitespace-pre-wrap break-words p-5 font-mono text-sm leading-6 text-base-content/80">
-								{content}
-							</pre>
-						) : (
-							<div className="flex min-h-full items-center justify-center p-5 text-sm text-base-content/40">
-								Select a file from the tree to preview it.
+					<Card className="min-h-0 flex-1">
+						<CardHeader className="gap-2">
+							<div className="flex flex-wrap items-center gap-2">
+								{showingDetail ? (
+									<Button type="button" variant="ghost" size="sm" className="sm:hidden" onClick={() => navigate('/files')}>
+										Back
+									</Button>
+								) : null}
+								<Badge variant="outline">Preview</Badge>
 							</div>
-						)}
-					</div>
+							<CardTitle className="truncate text-sm">
+								{selectedName ?? 'Select a file'}
+							</CardTitle>
+							<CardDescription className="truncate font-mono text-[11px]">
+								{selectedPath ?? 'Choose a file from the tree to inspect its contents.'}
+							</CardDescription>
+						</CardHeader>
+						<CardContent className="flex min-h-0 flex-1 flex-col gap-4">
+							{error ? (
+								<Alert variant="destructive">
+									<AlertTitle>Unable to load file data</AlertTitle>
+									<AlertDescription>{error}</AlertDescription>
+								</Alert>
+							) : loadingContent ? (
+								<Empty className="border-0">
+									<EmptyHeader>
+										<EmptyTitle>Loading preview</EmptyTitle>
+										<EmptyDescription>
+											Reading {selectedPath ?? 'the selected file'}…
+										</EmptyDescription>
+									</EmptyHeader>
+									<EmptyContent>
+										<Spinner className="size-5" />
+									</EmptyContent>
+								</Empty>
+							) : selectedPath ? (
+								<>
+									<Table>
+										<TableBody>
+											<TableRow>
+												<TableCell className="w-28 text-muted-foreground">Name</TableCell>
+												<TableCell className="font-mono">{selectedName}</TableCell>
+											</TableRow>
+											<TableRow>
+												<TableCell className="text-muted-foreground">Folder</TableCell>
+												<TableCell className="font-mono">{selectedFolder}</TableCell>
+											</TableRow>
+											<TableRow>
+												<TableCell className="text-muted-foreground">Extension</TableCell>
+												<TableCell className="font-mono">{selectedExtension}</TableCell>
+											</TableRow>
+										</TableBody>
+									</Table>
+									<ScrollArea className="min-h-0 flex-1 rounded-none border bg-muted/10">
+										<pre className="min-h-full whitespace-pre-wrap break-words p-4 font-mono text-sm leading-6 text-foreground/85">
+											{content}
+										</pre>
+									</ScrollArea>
+								</>
+							) : (
+								<Empty className="border-0">
+									<EmptyHeader>
+										<EmptyMedia variant="icon">
+											<span className="font-mono text-sm">txt</span>
+										</EmptyMedia>
+										<EmptyTitle>No file selected</EmptyTitle>
+										<EmptyDescription>
+											Pick a file from the tree to preview it here.
+										</EmptyDescription>
+									</EmptyHeader>
+								</Empty>
+							)}
+						</CardContent>
+					</Card>
 				</section>
 			</div>
 		</div>

@@ -1,11 +1,14 @@
 import { UserButton } from '@clerk/clerk-react'
 import { useState } from 'react'
 import type { ReactElement } from 'react'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { navigate } from './clientRouter'
 import { useChat } from './chat/useChat'
 import { ClassicView } from './chat/ClassicView'
 import { JrpgView } from './chat/JrpgView'
 import type { ChatViewProps, ConnectionState } from './chat/types'
+import { cn } from './lib/utils'
 
 type ViewMode = 'classic' | 'jrpg'
 
@@ -16,10 +19,10 @@ const VIEWS: Record<ViewMode, { label: string; component: (props: ChatViewProps)
 
 const ORDER: ViewMode[] = ['classic', 'jrpg']
 
-const statusBadge: Record<ConnectionState, string> = {
-	ready: 'badge-success',
-	connecting: 'badge-warning',
-	disconnected: 'badge-error'
+const statusBadgeClass: Record<ConnectionState, string> = {
+	ready: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+	connecting: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+	disconnected: 'border-destructive/30 bg-destructive/10 text-destructive'
 }
 
 export function ChatPage() {
@@ -38,25 +41,27 @@ export function ChatPage() {
 	const View = VIEWS[mode].component
 
 	return (
-		<div className="flex h-screen flex-col">
-			<header className="navbar min-h-12 border-b border-base-300 px-4">
+		<div className="flex h-screen flex-col bg-background">
+			<header className="flex min-h-14 items-center justify-between border-b bg-background/95 px-4 backdrop-blur">
 				<div className="flex flex-1 items-center gap-3">
-					<span className="text-lg font-semibold">Frieren</span>
-					<button
-						type="button"
-						className="btn btn-ghost btn-xs text-base-content/60"
-						onClick={() => navigate('/files')}
-					>
+					<div>
+						<p className="text-sm font-semibold tracking-tight">Frieren</p>
+						<p className="text-xs text-muted-foreground">Conversation</p>
+					</div>
+					<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/files')}>
 						Files
-					</button>
+					</Button>
 				</div>
 				<div className="flex flex-none items-center gap-2">
-					<button type="button" className="btn btn-ghost btn-xs" onClick={cycleMode}>
+					<Button type="button" variant="ghost" size="sm" onClick={cycleMode}>
 						{VIEWS[mode].label} ▾
-					</button>
-					<span className={`badge badge-sm ${statusBadge[chat.connectionState]}`}>
+					</Button>
+					<Badge
+						variant="outline"
+						className={cn('capitalize', statusBadgeClass[chat.connectionState])}
+					>
 						{chat.connectionState}
-					</span>
+					</Badge>
 					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 				</div>
 			</header>
@@ -64,14 +69,10 @@ export function ChatPage() {
 			<View {...chat} />
 
 			{chat.connectionState === 'disconnected' ? (
-				<div className="px-4 pb-4">
-					<button
-						type="button"
-						className="btn btn-outline btn-block btn-sm"
-						onClick={chat.reconnect}
-					>
+				<div className="border-t p-4">
+					<Button type="button" variant="outline" className="w-full" onClick={chat.reconnect}>
 						Reconnect
-					</button>
+					</Button>
 				</div>
 			) : null}
 		</div>

@@ -2,11 +2,21 @@ import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { ChatPage } from './ChatPage'
+import { Spinner } from './components/ui/spinner'
 import { FilesPage } from './FilesPage'
 import { useClientLocation } from './clientRouter'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { createFsVolume } from './fs'
 import { resolveOnboardingState } from './onboarding/state'
+
+function LoadingScreen({ label }: { label: string }) {
+	return (
+		<div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background px-6 text-center">
+			<Spinner className="size-5" />
+			<p className="text-sm text-muted-foreground">{label}</p>
+		</div>
+	)
+}
 
 function App() {
 	const { isLoaded, isSignedIn, getToken } = useAuth()
@@ -33,9 +43,9 @@ function App() {
 
 	const handleOnboardingComplete = useCallback(() => setOnboardingDone(true), [])
 
-	if (!isLoaded) return <p className="m-8">Loading…</p>
+	if (!isLoaded) return <LoadingScreen label="Loading session…" />
 	if (!isSignedIn) return <AuthWall />
-	if (onboardingDone === null) return <p className="m-8">Loading…</p>
+	if (onboardingDone === null) return <LoadingScreen label="Loading workspace…" />
 	if (!onboardingDone) return <OnboardingPage onComplete={handleOnboardingComplete} />
 
 	if (location.pathname.startsWith('/files')) {
