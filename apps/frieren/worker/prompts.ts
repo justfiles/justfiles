@@ -10,7 +10,7 @@ export function systemPrompt(...parts: string[]) {
 	 * add a section
 	 */
 	function add(...content: string[]) {
-		parts.push('---', ...content)
+		parts.push('\n', ...content)
 	}
 }
 

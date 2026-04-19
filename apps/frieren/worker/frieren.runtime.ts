@@ -85,12 +85,27 @@ export async function runtime({volume, agent, text, compaction}: RuntimeProps): 
 		const prompt = systemPrompt(soul)
 		const profile = await file(volume, PATHS.profile).text()
 		if (profile) {
-			prompt.add(profile)
+			prompt.add('# about the user', profile)
 			const calibration = ageCalibration(profile)
 			if (calibration) prompt.add(calibration)
 		}
 		const memory = await file(volume, PATHS.memory).text()
-		if (memory) prompt.add(memory)
+		if (memory) prompt.add('# permanent memory', memory)
+
+		const today = new Date()
+		const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
+		const dailies: string[] = []
+		for (const date of [yesterday, today]) {
+			const daily = await file(volume, PATHS.daily(date)).text()
+			if (daily) dailies.push(`## ${date.toISOString().slice(0, 10)}\n${daily}`)
+		}
+		if (dailies.length > 0) {
+			prompt.add(
+				'# memories of the past 2 days',
+				`Recent daily notes (last 2 days). These are raw, unprocessed jottings from recent sessions — treat as lower-priority hints than the durable memory above. They may be noisy, redundant, or contradicted by later facts; defer to the durable memory on conflict.`,
+				...dailies,
+			)
+		}
 
 		return prompt.build()
 	}
