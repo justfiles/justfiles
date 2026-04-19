@@ -6,6 +6,7 @@ import { file } from './file';
 import { DEFAULT_SETUP_PROMPT, systemPrompt } from './prompts';
 import type { LLMText } from './llm.text';
 import { shouldCompact, compact, type CompactionSettings, prepareCompaction } from './compaction';
+import { ageCalibration } from './age-calibration';
 
 type RuntimeProps = {
 	volume: Volume,
@@ -83,7 +84,11 @@ export async function runtime({volume, agent, text, compaction}: RuntimeProps): 
 
 		const prompt = systemPrompt(soul)
 		const profile = await file(volume, PATHS.profile).text()
-		if (profile) prompt.add(profile)
+		if (profile) {
+			prompt.add(profile)
+			const calibration = ageCalibration(profile)
+			if (calibration) prompt.add(calibration)
+		}
 		const memory = await file(volume, PATHS.memory).text()
 		if (memory) prompt.add(memory)
 

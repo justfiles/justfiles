@@ -12,6 +12,7 @@ import { text, type LLMText } from './llm.text';
 import type { CompactionSettings } from './compaction';
 import { createAgent } from './llm.agent';
 import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts';
+import { parseFrontmatter } from './markdown';
 
 interface ClientMessage {
 	type: "prompt" | "abort";
@@ -300,16 +301,3 @@ async function readFrontmatter(
 	return parseFrontmatter(new TextDecoder().decode(await vol.readFile(path)))
 }
 
-function parseFrontmatter(text: string): Record<string, string> {
-	const match = text.match(/^---\n([\s\S]*?)\n---/)
-	if (!match) return {}
-	const out: Record<string, string> = {}
-	for (const line of match[1].split('\n')) {
-		const idx = line.indexOf(':')
-		if (idx === -1) continue
-		const key = line.slice(0, idx).trim()
-		const value = line.slice(idx + 1).trim()
-		if (key && value) out[key] = value
-	}
-	return out
-}
