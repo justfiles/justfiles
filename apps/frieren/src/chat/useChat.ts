@@ -17,6 +17,8 @@ export function useChat() {
 	const { getToken } = useAuth()
 	const [messages, setMessages] = useState<ChatMessage[]>([])
 	const [input, setInput] = useState('')
+	const [userName, setUserName] = useState('You')
+	const [agentName, setAgentName] = useState('Frieren')
 	const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connectKey, setConnectKey] = useState(0)
@@ -150,11 +152,19 @@ export function useChat() {
 			const data = JSON.parse(event.data)
 
 			if (data.type === 'ready') {
+				if (data.participants) {
+					setUserName(data.participants.userName || 'You')
+					setAgentName(data.participants.agentName || 'Frieren')
+				}
 				setConnectionState('ready')
 				return
 			}
 
 			if (data.type === 'history') {
+				if (data.participants) {
+					setUserName(data.participants.userName || 'You')
+					setAgentName(data.participants.agentName || 'Frieren')
+				}
 				const restored: ChatMessage[] = (data.messages ?? []).map(
 					(m: {
 						role: string
@@ -244,6 +254,8 @@ export function useChat() {
 		messages,
 		input,
 		setInput,
+		userName,
+		agentName,
 		connectionState,
 		isStreaming,
 		sendMessage,

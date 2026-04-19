@@ -21,6 +21,8 @@ export interface ChatViewProps {
 	messages: ChatMessage[]
 	input: string
 	setInput: (value: string) => void
+	userName: string
+	agentName: string
 	connectionState: ConnectionState
 	isStreaming: boolean
 	sendMessage: () => void

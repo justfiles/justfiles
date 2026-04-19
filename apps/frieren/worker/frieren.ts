@@ -32,12 +32,18 @@ interface DisplayMessage {
 	readonly toolCalls?: ReadonlyArray<DisplayToolCall>
 }
 
+interface DisplayParticipants {
+	readonly userName: string
+	readonly agentName: string
+}
+
 interface ServerMessage {
 	// TODO: remove debug
 	type: "debug" | "event" | "error" | "ready" | "history";
 	event?: AgentEvent;
 	message?: string;
 	messages?: ReadonlyArray<DisplayMessage>;
+	participants?: DisplayParticipants;
 }
 
 
@@ -227,16 +233,17 @@ export class Frieren extends DurableObject<Env> {
 
 			this.ctx.acceptWebSocket(server);
 
+			const participants = await this.loadParticipants()
 			const history = (await this.runtime?.history() ?? []).map(sessionEntry2DisplayMessage)
 			if (history.length > 0) {
 			server.send(
-			JSON.stringify({ type: "history", messages: history } satisfies ServerMessage),
+			JSON.stringify({ type: "history", messages: history, participants } satisfies ServerMessage),
 			);
 			}
 
 			// Send ready signal
 			server.send(
-				JSON.stringify({ type: "ready" } satisfies ServerMessage),
+				JSON.stringify({ type: "ready", participants } satisfies ServerMessage),
 			);
 
 			return new Response(null, {
@@ -246,6 +253,18 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		return this.app.fetch(request);
+	}
+
+	private async loadParticipants(): Promise<DisplayParticipants> {
+		const [profile, soul] = await Promise.all([
+			readFrontmatter(this.vol, '/profiles/user.md'),
+			readFrontmatter(this.vol, '/soul.md')
+		])
+
+		return {
+			userName: profile.name || 'You',
+			agentName: soul.agent_name || 'Frieren'
+		}
 	}
 }
 
@@ -271,4 +290,26 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage {
 		case 'label':
 			return { role: 'assistant', content: `[${entry.label}]` }
 	}
+}
+
+async function readFrontmatter(
+	vol: Volume,
+	path: string
+): Promise<Record<string, string>> {
+	if (!(await vol.exists(path))) return {}
+	return parseFrontmatter(new TextDecoder().decode(await vol.readFile(path)))
+}
+
+function parseFrontmatter(text: string): Record<string, string> {
+	const match = text.match(/^---\n([\s\S]*?)\n---/)
+	if (!match) return {}
+	const out: Record<string, string> = {}
+	for (const line of match[1].split('\n')) {
+		const idx = line.indexOf(':')
+		if (idx === -1) continue
+		const key = line.slice(0, idx).trim()
+		const value = line.slice(idx + 1).trim()
+		if (key && value) out[key] = value
+	}
+	return out
 }

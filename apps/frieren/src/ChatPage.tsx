@@ -3,21 +3,22 @@ import { useState } from 'react'
 import type { ReactElement } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { navigate } from './clientRouter'
 import { useChat } from './chat/useChat'
 import { ClassicView } from './chat/ClassicView'
 import { JrpgView } from './chat/JrpgView'
+import { ShadcnView } from './chat/ShadcnView'
 import type { ChatViewProps, ConnectionState } from './chat/types'
 import { cn } from './lib/utils'
 
-type ViewMode = 'classic' | 'jrpg'
+type ViewMode = 'classic' | 'jrpg' | 'shadcn'
 
 const VIEWS: Record<ViewMode, { label: string; component: (props: ChatViewProps) => ReactElement }> = {
 	classic: { label: 'Classic', component: ClassicView },
-	jrpg: { label: 'JRPG', component: JrpgView }
+	jrpg: { label: 'JRPG', component: JrpgView },
+	shadcn: { label: 'Shadcn', component: ShadcnView }
 }
-
-const ORDER: ViewMode[] = ['classic', 'jrpg']
 
 const statusBadgeClass: Record<ConnectionState, string> = {
 	ready: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
@@ -31,12 +32,6 @@ export function ChatPage() {
 		const saved = localStorage.getItem('frieren-view-mode') as ViewMode | null
 		return saved && saved in VIEWS ? saved : 'classic'
 	})
-
-	const cycleMode = () => {
-		const next = ORDER[(ORDER.indexOf(mode) + 1) % ORDER.length]
-		setMode(next)
-		localStorage.setItem('frieren-view-mode', next)
-	}
 
 	const View = VIEWS[mode].component
 
@@ -53,9 +48,26 @@ export function ChatPage() {
 					</Button>
 				</div>
 				<div className="flex flex-none items-center gap-2">
-					<Button type="button" variant="ghost" size="sm" onClick={cycleMode}>
-						{VIEWS[mode].label} ▾
-					</Button>
+					<div className="flex items-center gap-2">
+						<span className="text-xs text-muted-foreground">Style</span>
+						<NativeSelect
+							size="sm"
+							className="w-28"
+							value={mode}
+							onChange={(event) => {
+								const next = event.target.value as ViewMode
+								setMode(next)
+								localStorage.setItem('frieren-view-mode', next)
+							}}
+							aria-label="Chat style"
+						>
+							{Object.entries(VIEWS).map(([value, view]) => (
+								<NativeSelectOption key={value} value={value}>
+									{view.label}
+								</NativeSelectOption>
+							))}
+						</NativeSelect>
+					</div>
 					<Badge
 						variant="outline"
 						className={cn('capitalize', statusBadgeClass[chat.connectionState])}
