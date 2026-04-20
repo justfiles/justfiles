@@ -1,4 +1,4 @@
-name: Deploy Staging
+name: Deploy Worker Staging
 
 on:
   push:
@@ -9,10 +9,10 @@ on:
 jobs:
   deploy-staging:
     runs-on: ubuntu-latest
-    name: Deploy Staging
+    name: Deploy Worker Staging
     timeout-minutes: 30
     concurrency:
-      group: deploy-staging
+      group: deploy-worker-staging
       cancel-in-progress: false
     environment: staging
     permissions:

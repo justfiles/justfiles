@@ -7,6 +7,9 @@
 		"apps/worker": {
 			"release-type": "node"
 		},
+		"apps/frieren": {
+			"release-type": "node"
+		},
 		"packages/fs": {
 			"release-type": "node",
 			"package-name": "@justfiles/fs"

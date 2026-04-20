@@ -15,7 +15,7 @@
 		"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY"]
 	},
 	"vars": {
-		"CLERK_PUBLISHABLE_KEY": "pk_test_c3VtbWFyeS1sYWItODUuY2xlcmsuYWNjb3VudHMuZGV2JA"
+		"CLERK_PUBLISHABLE_KEY": "pk_test_Y2FwYWJsZS1zcGlkZXItNzkuY2xlcmsuYWNjb3VudHMuZGV2JA"
 	},
 	"durable_objects": {
 		"bindings": [
@@ -30,5 +30,30 @@
 			"tag": "v1",
 			"new_sqlite_classes": ["Frieren"]
 		}
-	]
+	],
+	"env": {
+		"staging": {
+			"name": "frieren-staging",
+			"vars": {
+				"CLERK_PUBLISHABLE_KEY": "pk_test_Y2FwYWJsZS1zcGlkZXItNzkuY2xlcmsuYWNjb3VudHMuZGV2JA"
+			},
+			"observability": {
+				"enabled": true
+			},
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "FRIEREN",
+						"class_name": "Frieren"
+					}
+				]
+			},
+			"migrations": [
+				{
+					"tag": "v1",
+					"new_sqlite_classes": ["Frieren"]
+				}
+			]
+		}
+	}
 }

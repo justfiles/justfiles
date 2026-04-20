@@ -1,9 +1,9 @@
-name: deploy-production
+name: Deploy Frieren Production
 
 on:
   push:
     tags:
-      - 'worker-v*'
+      - 'frieren-v*'
   workflow_dispatch:
     inputs:
       ref:
@@ -13,11 +13,11 @@ on:
 
 jobs:
   deploy:
-    name: Deploy Production
+    name: Deploy Frieren Production
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: deploy-production
+      group: deploy-frieren-production
       cancel-in-progress: false
     environment: production
     permissions:
@@ -35,8 +35,8 @@ jobs:
             deploy_ref="${{ inputs.ref }}"
           fi
 
-          [[ "${deploy_ref}" == worker-v* ]] || {
-            echo "Deploy ref must be a worker-v* tag" >&2
+          [[ "${deploy_ref}" == frieren-v* ]] || {
+            echo "Deploy ref must be a frieren-v* tag" >&2
             exit 1
           }
 
@@ -54,25 +54,25 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
+          FRIEREN_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
         run: |
           set -eu
           test -n "${CLOUDFLARE_API_TOKEN}"
           test -n "${CLOUDFLARE_ACCOUNT_ID}"
-          test -n "${CLERK_PUBLISHABLE_KEY}"
-          case "${CLERK_PUBLISHABLE_KEY}" in
+          test -n "${FRIEREN_CLERK_PUBLISHABLE_KEY}"
+          case "${FRIEREN_CLERK_PUBLISHABLE_KEY}" in
             pk_live_*) ;;
             *)
-              echo "CLERK_PUBLISHABLE_KEY must be a live Clerk key in the production environment"
+              echo "FRIEREN_CLERK_PUBLISHABLE_KEY must be a live Clerk key in the production environment"
               exit 1
               ;;
           esac
 
       - run: bun run typecheck
 
-      - run: bun run build
+      - run: bun run --filter frieren build
         env:
-          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
 
       - uses: cloudflare/wrangler-action@v3.14.1
         with:
@@ -81,4 +81,4 @@ jobs:
           wranglerVersion: 4.71.0
           command: deploy
           packageManager: bun
-          workingDirectory: apps/worker
+          workingDirectory: apps/frieren

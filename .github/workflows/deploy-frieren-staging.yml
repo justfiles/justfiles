@@ -1,0 +1,49 @@
+name: Deploy Frieren Staging
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    name: Deploy Frieren Staging
+    timeout-minutes: 30
+    concurrency:
+      group: deploy-frieren-staging
+      cancel-in-progress: false
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: Validate deploy secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          FRIEREN_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
+        run: |
+          set -eu
+          test -n "${CLOUDFLARE_API_TOKEN}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID}"
+          test -n "${FRIEREN_CLERK_PUBLISHABLE_KEY}"
+      - run: bun run typecheck
+      - run: bun run --filter frieren build
+        env:
+          CLOUDFLARE_ENV: staging
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
+      - uses: cloudflare/wrangler-action@v3.14.1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: 4.71.0
+          command: deploy
+          environment: staging
+          packageManager: bun
+          workingDirectory: apps/frieren
+        env:
+          CLOUDFLARE_ENV: staging
