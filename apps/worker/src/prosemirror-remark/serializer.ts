@@ -193,7 +193,8 @@ function serializeInline(node: PMNode): PhrasingContent | null {
 	}
 
 	if (node.isText) {
-		return wrapWithMarks(node.text!, node.marks)
+		if (node.text) return wrapWithMarks(node.text, node.marks)
+		return null
 	}
 
 	// Unknown inline node — fall back to plain text rather than dropping content.

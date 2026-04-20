@@ -68,7 +68,9 @@ class MenuView {
 		this.dom.className =
 			'flex flex-wrap gap-1 p-1 rounded-lg shadow-lg border border-base-300 bg-base-100'
 		this.dom.style.cssText = 'position:fixed;display:none;z-index:50;'
-		items.forEach(({ dom }) => this.dom.appendChild(dom))
+		items.forEach(({ dom }) => {
+			this.dom.appendChild(dom)
+		})
 		document.body.appendChild(this.dom)
 
 		this.dom.addEventListener('mousedown', (e) => {
@@ -116,8 +118,8 @@ class MenuView {
 		// flip below if too close to the top of the viewport
 		if (top < gap) top = rect.bottom + gap
 
-		this.dom.style.left = left + 'px'
-		this.dom.style.top = top + 'px'
+		this.dom.style.left = `${left}px`
+		this.dom.style.top = `${top}px`
 	}
 
 	destroy() {

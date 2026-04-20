@@ -224,7 +224,7 @@ export function CommandPalette() {
 				</div>
 			</div>
 			<form method="dialog" className="modal-backdrop">
-				<button>close</button>
+				<button type="submit">close</button>
 			</form>
 		</dialog>
 	)

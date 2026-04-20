@@ -176,7 +176,9 @@ export function listSkinIds() {
 }
 
 export function getSkin(skinId: string) {
-	return SKINS[skinId] ?? SKINS[DEFAULT_SKIN_ID]!
+	const skin = SKINS[skinId] ?? SKINS[DEFAULT_SKIN_ID]
+	if (skin) return skin
+	throw new Error(`Missing skin: ${skinId}`)
 }
 
 export function getSkinAvatarUrl(skinId: string) {
@@ -201,7 +203,9 @@ export function resolveClip(skin: SkinDefinition, pose: CharacterPose) {
 		if (clip) return clip
 	}
 
-	return Object.values(skin.clips)[0]!
+	const [firstClip] = Object.values(skin.clips)
+	if (firstClip) return firstClip
+	throw new Error(`Skin ${skin.id} has no clips`)
 }
 
 export function frameAt(clip: AnimationClip, elapsedMs: number) {
@@ -216,7 +220,9 @@ export function frameAt(clip: AnimationClip, elapsedMs: number) {
 		time -= frame.durationMs
 	}
 
-	return clip.frames[clip.frames.length - 1]!
+	const lastFrame = clip.frames.at(-1)
+	if (lastFrame) return lastFrame
+	throw new Error('Animation clip has no frames')
 }
 
 export function drawCharacterFrame(

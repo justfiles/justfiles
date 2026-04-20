@@ -90,78 +90,102 @@ export function JrpgView(props: ChatViewProps) {
 								🗡️
 							</div>
 						) : null}
-						<div
-							className={`flex-1 border-4 border-double border-sky-300 bg-slate-900 p-3 shadow-[6px_6px_0_rgba(0,0,0,0.6)] ${showPanel ? 'cursor-pointer hover:border-amber-300' : ''}`}
-							onClick={showPanel && !isStreaming ? dismissPanel : undefined}
-						>
-							{showPanel && pinned ? (
-								<div>
-									<div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-widest text-sky-300/80">
-										<span>* Frieren *</span>
-										{isStreaming ? (
-											<button
-												type="button"
-												className="text-rose-300 hover:underline"
-												onClick={(event) => {
-													event.stopPropagation()
-													abort()
-												}}
-											>
-												[stop]
-											</button>
-										) : (
+						{showPanel && !isStreaming ? (
+							<button
+								type="button"
+								className={`flex-1 border-4 border-double border-sky-300 bg-slate-900 p-3 text-left shadow-[6px_6px_0_rgba(0,0,0,0.6)] ${showPanel ? 'cursor-pointer hover:border-amber-300' : ''}`}
+								onClick={dismissPanel}
+							>
+								{showPanel && pinned ? (
+									<div>
+										<div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-widest text-sky-300/80">
+											<span>* Frieren *</span>
 											<span className="text-amber-300/80">[click to reply ▸]</span>
-										)}
-									</div>
-									<div className="min-h-[3.5rem] whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-100">
-										{pinned.content || <span className="opacity-60">...</span>}
-										{isStreaming ? (
-											<span className="ml-px inline-block h-[1em] w-1 animate-pulse bg-sky-200 align-text-bottom" />
+										</div>
+										<div className="min-h-[3.5rem] whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-100">
+											{pinned.content || <span className="opacity-60">...</span>}
+										</div>
+										{pinned.toolCalls && pinned.toolCalls.length > 0 ? (
+											<div className="mt-2 flex flex-col gap-1">
+												{pinned.toolCalls.map((toolCall) => (
+													<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
+												))}
+											</div>
 										) : null}
 									</div>
-									{pinned.toolCalls && pinned.toolCalls.length > 0 ? (
-										<div className="mt-2 flex flex-col gap-1">
-											{pinned.toolCalls.map((toolCall) => (
-												<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
-											))}
+								) : null}
+							</button>
+						) : (
+							<div className="flex-1 border-4 border-double border-sky-300 bg-slate-900 p-3 shadow-[6px_6px_0_rgba(0,0,0,0.6)]">
+								{showPanel && pinned ? (
+									<div>
+										<div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-widest text-sky-300/80">
+											<span>* Frieren *</span>
+											{isStreaming ? (
+												<button
+													type="button"
+													className="text-rose-300 hover:underline"
+													onClick={(event) => {
+														event.stopPropagation()
+														abort()
+													}}
+												>
+													[stop]
+												</button>
+											) : (
+												<span className="text-amber-300/80">[click to reply ▸]</span>
+											)}
 										</div>
-									) : null}
-								</div>
-							) : (
-								<form
-									onSubmit={(event) => {
-										event.preventDefault()
-										submit()
-									}}
-								>
-									<div className="mb-1 text-[10px] uppercase tracking-widest text-amber-300/80">
-										* Hero * {connectionState !== 'ready' ? `[${connectionState}]` : ''}
+										<div className="min-h-[3.5rem] whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-100">
+											{pinned.content || <span className="opacity-60">...</span>}
+											{isStreaming ? (
+												<span className="ml-px inline-block h-[1em] w-1 animate-pulse bg-sky-200 align-text-bottom" />
+											) : null}
+										</div>
+										{pinned.toolCalls && pinned.toolCalls.length > 0 ? (
+											<div className="mt-2 flex flex-col gap-1">
+												{pinned.toolCalls.map((toolCall) => (
+													<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
+												))}
+											</div>
+										) : null}
 									</div>
-									<textarea
-										ref={inputRef}
-										className="min-h-[3.5rem] w-full resize-none bg-transparent text-sm leading-relaxed text-amber-100 placeholder:text-slate-500 focus:outline-none"
-										value={input}
-										onChange={(event) => setInput(event.target.value)}
-										onFocus={() => setFocused(true)}
-										onBlur={() => setFocused(false)}
-										onKeyDown={(event) => {
-											if (event.key === 'Enter' && !event.shiftKey) {
-												event.preventDefault()
-												submit()
-											}
+								) : (
+									<form
+										onSubmit={(event) => {
+											event.preventDefault()
+											submit()
 										}}
-										placeholder={
-											connectionState === 'ready' ? 'What will you say?' : 'Connecting...'
-										}
-										disabled={connectionState !== 'ready'}
-										rows={2}
-									/>
-									<div className="flex justify-end text-[10px] text-slate-500">
-										▼ ENTER to speak
-									</div>
-								</form>
-							)}
-						</div>
+									>
+										<div className="mb-1 text-[10px] uppercase tracking-widest text-amber-300/80">
+											* Hero * {connectionState !== 'ready' ? `[${connectionState}]` : ''}
+										</div>
+										<textarea
+											ref={inputRef}
+											className="min-h-[3.5rem] w-full resize-none bg-transparent text-sm leading-relaxed text-amber-100 placeholder:text-slate-500 focus:outline-none"
+											value={input}
+											onChange={(event) => setInput(event.target.value)}
+											onFocus={() => setFocused(true)}
+											onBlur={() => setFocused(false)}
+											onKeyDown={(event) => {
+												if (event.key === 'Enter' && !event.shiftKey) {
+													event.preventDefault()
+													submit()
+												}
+											}}
+											placeholder={
+												connectionState === 'ready' ? 'What will you say?' : 'Connecting...'
+											}
+											disabled={connectionState !== 'ready'}
+											rows={2}
+										/>
+										<div className="flex justify-end text-[10px] text-slate-500">
+											▼ ENTER to speak
+										</div>
+									</form>
+								)}
+							</div>
+						)}
 						{showPanel ? (
 							<div
 								className="shrink-0 overflow-hidden border-4 border-double border-sky-300 bg-indigo-950 shadow-[4px_4px_0_rgba(0,0,0,0.6)]"

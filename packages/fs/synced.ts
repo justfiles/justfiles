@@ -38,7 +38,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const _localOnlyCache = new Map<Ino, boolean>()
 
 	async function isLocalOnly(ino: Ino): Promise<boolean> {
-		if (_localOnlyCache.has(ino)) return _localOnlyCache.get(ino)!
+		const cached = _localOnlyCache.get(ino)
+		if (cached !== undefined) return cached
 		const marked = (await props.local.caps?.getXattr?.(ino, SYNC_LOCAL_ONLY_XATTR)) !== null
 		_localOnlyCache.set(ino, marked ?? false)
 		return marked ?? false
@@ -263,10 +264,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	function schedule() {
 		if (paused || destroyed) return
-		const delay =
-			retryCount > 0
-				? RETRY_DELAYS_MS[Math.min(retryCount - 1, RETRY_DELAYS_MS.length - 1)]!
-				: syncInterval
+		const retryDelay = RETRY_DELAYS_MS[Math.min(retryCount - 1, RETRY_DELAYS_MS.length - 1)]
+		const delay = retryCount > 0 && retryDelay !== undefined ? retryDelay : syncInterval
 		timer = setTimeout(run, delay)
 	}
 

@@ -55,8 +55,9 @@ async function run(args: string[], context: CommandContext): Promise<void> {
 		throw new CliUsageError('cp requires <source> and <destination>', help)
 	}
 
-	const source = normalizeVolumePath(positionals[0]!)
-	const destination = normalizeVolumePath(positionals[1]!)
+	const [sourcePath, destinationPath] = positionals
+	const source = normalizeVolumePath(sourcePath)
+	const destination = normalizeVolumePath(destinationPath)
 	const recursive = Boolean(values.recursive)
 
 	await context.volume.cp(source, destination, recursive ? { recursive: true } : undefined)

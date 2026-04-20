@@ -1,5 +1,5 @@
 import { DragDropProvider, DragOverlay, useDraggable, useDroppable } from '@dnd-kit/react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { FiChevronDown, FiChevronRight, FiFile } from 'react-icons/fi'
 import { LuGripVertical } from 'react-icons/lu'
 
@@ -54,6 +54,10 @@ type RootDropData = {
 }
 
 type TreeDragData = FileDragData | FolderDropData | RootDropData
+type DragStartEvent = Parameters<
+	NonNullable<ComponentProps<typeof DragDropProvider>['onDragStart']>
+>[0]
+type DragEndEvent = Parameters<NonNullable<ComponentProps<typeof DragDropProvider>['onDragEnd']>>[0]
 
 function itemName(item: FileTreeItem): string {
 	if (item.label) return item.label
@@ -332,12 +336,12 @@ export function FileTreeView({
 
 	return (
 		<DragDropProvider
-			onDragStart={({ operation }: any) => {
+			onDragStart={({ operation }: DragStartEvent) => {
 				const source = operation.source?.data as FileDragData | undefined
 				if (source?.kind !== 'file') return
 				setDraggedItem(itemsById.get(source.itemId) ?? null)
 			}}
-			onDragEnd={({ canceled, operation }: any) => {
+			onDragEnd={({ canceled, operation }: DragEndEvent) => {
 				const source = operation.source?.data as FileDragData | undefined
 				const target = operation.target?.data as FolderDropData | RootDropData | undefined
 				setDraggedItem(null)
@@ -348,26 +352,24 @@ export function FileTreeView({
 				onMove({ item, destinationFolderPath: target.path })
 			}}
 		>
-			<>
-				<RootDropTarget active={draggedItem !== null} label={rootDropLabel} />
-				<FolderNode
-					node={tree}
-					depth={0}
-					selectedId={selectedId}
-					dragEnabled
-					draggingItemId={draggedItem?.id ?? null}
-					movingItemId={movingItemId}
-					onSelect={onSelect}
-					onMove={onMove}
-				/>
-				<DragOverlay className="pointer-events-none" dropAnimation={null}>
-					{draggedItem ? (
-						<div className="rounded border border-base-300 bg-base-100 px-3 py-1.5 font-mono text-xs text-base-content/80 shadow-lg">
-							{itemName(draggedItem)}
-						</div>
-					) : null}
-				</DragOverlay>
-			</>
+			<RootDropTarget active={draggedItem !== null} label={rootDropLabel} />
+			<FolderNode
+				node={tree}
+				depth={0}
+				selectedId={selectedId}
+				dragEnabled
+				draggingItemId={draggedItem?.id ?? null}
+				movingItemId={movingItemId}
+				onSelect={onSelect}
+				onMove={onMove}
+			/>
+			<DragOverlay className="pointer-events-none" dropAnimation={null}>
+				{draggedItem ? (
+					<div className="rounded border border-base-300 bg-base-100 px-3 py-1.5 font-mono text-xs text-base-content/80 shadow-lg">
+						{itemName(draggedItem)}
+					</div>
+				) : null}
+			</DragOverlay>
 		</DragDropProvider>
 	)
 }

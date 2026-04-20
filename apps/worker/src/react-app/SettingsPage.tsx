@@ -232,24 +232,25 @@ export function SettingsPage() {
 	const canGoBack = useCanGoBack()
 	const navigate = useNavigate()
 	const router = useRouter()
-	const [destinations, setDestinations] = useState(() => loadSettings(userId!).destinations)
-	const [theme, setTheme] = useState(() => loadSettings(userId!).theme)
+	const currentUserId = userId ?? 'anonymous'
+	const [destinations, setDestinations] = useState(() => loadSettings(currentUserId).destinations)
+	const [theme, setTheme] = useState(() => loadSettings(currentUserId).theme)
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
 	// Debounced persist whenever destinations change
 	useEffect(() => {
 		if (saveTimer.current) clearTimeout(saveTimer.current)
 		saveTimer.current = setTimeout(() => {
-			saveSettings({ destinations }, userId!)
+			saveSettings({ destinations }, currentUserId)
 		}, 300)
 		return () => {
 			if (saveTimer.current) clearTimeout(saveTimer.current)
 		}
-	}, [destinations, userId])
+	}, [currentUserId, destinations])
 
 	function handleThemeChange(next: string) {
 		setTheme(next)
-		saveSettings({ theme: next }, userId!)
+		saveSettings({ theme: next }, currentUserId)
 		document.documentElement.setAttribute('data-theme', next)
 	}
 

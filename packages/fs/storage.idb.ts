@@ -518,7 +518,8 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			// BFS walk
 			const queue: Ino[] = [ROOT_INO]
 			while (queue.length > 0) {
-				const dirIno = queue.shift()!
+				const dirIno = queue.shift()
+				if (dirIno === undefined) break
 				let cur = cursor
 				do {
 					const lower: [string, string] = [dirIno, cur]

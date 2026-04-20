@@ -99,7 +99,8 @@ function stripGlobalArgs(args: string[]): string[] {
 	const result: string[] = []
 
 	for (let index = 0; index < args.length; index += 1) {
-		const arg = args[index]!
+		const arg = args[index]
+		if (arg === undefined) break
 		if (GLOBAL_VALUED_FLAGS.has(arg)) {
 			index += 1
 			continue
@@ -115,7 +116,8 @@ function findCommandIndex(argv: string[]): number {
 	let index = 0
 
 	while (index < argv.length) {
-		const arg = argv[index]!
+		const arg = argv[index]
+		if (arg === undefined) break
 		if (GLOBAL_VALUED_FLAGS.has(arg)) {
 			if (index + 1 >= argv.length) {
 				throw new CliUsageError(`option requires a value: ${arg}`, MAIN_HELP)
@@ -189,7 +191,10 @@ async function main() {
 			process.exit(0)
 		}
 
-		const commandName = argv[commandIndex]!
+		const commandName = argv[commandIndex]
+		if (commandName === undefined) {
+			throw new CliUsageError('missing command', MAIN_HELP)
+		}
 		const command = commands[commandName]
 		if (!command) {
 			throw new CliUsageError(

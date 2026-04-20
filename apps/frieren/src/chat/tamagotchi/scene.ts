@@ -29,7 +29,9 @@ export interface TamagotchiHandle {
 
 export function createTamagotchi(opts: TamagotchiOptions): TamagotchiHandle {
 	const canvas = opts.canvas
-	const ctx = canvas.getContext('2d')!
+	const context = canvas.getContext('2d')
+	if (!context) throw new Error('2D canvas context is unavailable')
+	const ctx: CanvasRenderingContext2D = context
 	ctx.imageSmoothingEnabled = false
 
 	let seed = opts.seed ?? Math.floor(Math.random() * 1e9)

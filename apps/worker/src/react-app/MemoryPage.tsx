@@ -42,11 +42,12 @@ function LinkedMemories({ links }: { links?: LinkInfo[] }) {
 			</button>
 			{open && (
 				<ul className="mt-2 flex flex-col gap-1">
-					{items.map((link, i) => {
-						const linkedId = link.to_id ?? link.from_id!
+					{items.map((link) => {
+						const linkedId = link.to_id ?? link.from_id
+						if (!linkedId) return null
 						const direction = link.to_id ? '→' : '←'
 						return (
-							<li key={i}>
+							<li key={`${link.rel_type}:${linkedId}:${link.path ?? link.title ?? ''}`}>
 								<button
 									type="button"
 									onClick={() =>
@@ -307,7 +308,6 @@ export function MemoryPage() {
 					<div className="mb-1">
 						<input
 							ref={nameInputRef}
-							autoFocus={isNew}
 							type="text"
 							value={nameDraft}
 							onChange={(e) => setNameDraft(e.target.value)}

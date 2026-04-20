@@ -9,7 +9,12 @@ if (!publishableKey) {
 	throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY')
 }
 
-createRoot(document.getElementById('root')!).render(
+const rootElement = document.getElementById('root')
+if (!rootElement) {
+	throw new Error('Missing root element')
+}
+
+createRoot(rootElement).render(
 	<StrictMode>
 		<ClerkProvider publishableKey={publishableKey}>
 			<App />

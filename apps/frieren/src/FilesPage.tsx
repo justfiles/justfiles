@@ -105,6 +105,8 @@ export function FilesPage({ search }: { search: string }) {
 	const showingDetail = Boolean(selectedPath)
 
 	useEffect(() => {
+		void reloadToken
+
 		let cancelled = false
 
 		void (async () => {

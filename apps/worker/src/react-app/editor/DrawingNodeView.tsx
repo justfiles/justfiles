@@ -138,6 +138,8 @@ export function DrawingEditorModal({
 	return createPortal(
 		<div
 			className="fixed inset-0 z-50 flex flex-col"
+			role="dialog"
+			aria-modal="true"
 			onMouseDown={(event) => event.stopPropagation()}
 			onPointerDown={(event) => event.stopPropagation()}
 			onDragStart={(event) => event.preventDefault()}
@@ -146,10 +148,10 @@ export function DrawingEditorModal({
 				<div className="flex shrink-0 items-center justify-between border-b border-base-300 bg-base-100 px-4 py-2">
 					<span className="text-sm font-semibold">Drawing</span>
 					<div className="flex gap-2">
-						<button className="btn btn-sm btn-ghost" onClick={onClose}>
+						<button type="button" className="btn btn-sm btn-ghost" onClick={onClose}>
 							Cancel
 						</button>
-						<button className="btn btn-sm btn-primary" onClick={handleSave}>
+						<button type="button" className="btn btn-sm btn-primary" onClick={handleSave}>
 							Save
 						</button>
 					</div>

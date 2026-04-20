@@ -50,8 +50,8 @@ export function buildGutterPlugin(opts: GutterPluginOptions): Plugin {
 			if (left + mw > vw - 8) left = Math.max(8, btnRect.left - mw - 6)
 			let top = btnRect.top
 			if (top + mh > vh - 8) top = Math.max(8, vh - mh - 8)
-			menu.style.left = left + 'px'
-			menu.style.top = top + 'px'
+			menu.style.left = `${left}px`
+			menu.style.top = `${top}px`
 		})
 	}
 

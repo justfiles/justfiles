@@ -118,7 +118,8 @@ function ScratchFiledToast({
 function ScratchPage() {
 	const { userId } = useAuth()
 	const navigate = useNavigate()
-	const [settings] = useState(() => loadSettings(userId!))
+	const currentUserId = userId ?? 'anonymous'
+	const [settings] = useState(() => loadSettings(currentUserId))
 	const [activeDestination, setActiveDestination] = useState<Destination>(() =>
 		getActiveDestination(settings)
 	)
@@ -150,7 +151,7 @@ function ScratchPage() {
 
 	function handleSelectDestination(destination: Destination) {
 		setActiveDestination(destination)
-		saveSettings({ lastUsedDestinationId: destination.id }, userId!)
+		saveSettings({ lastUsedDestinationId: destination.id }, currentUserId)
 	}
 
 	function resetFilingForm(destination: Destination) {

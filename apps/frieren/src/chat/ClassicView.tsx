@@ -9,7 +9,7 @@ export function ClassicView(props: ChatViewProps) {
 
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-	}, [messages])
+	}, [])
 
 	const submit = () => {
 		sendMessage()

@@ -104,9 +104,12 @@ describe('session manager', () => {
 		const branchBefore = await manager.walkActiveBranch()
 		const firstKeptEntryId = branchBefore[1]?.id
 		expect(firstKeptEntryId).toBeDefined()
+		if (!firstKeptEntryId) {
+			throw new Error('expected the second branch entry to exist')
+		}
 
 		await manager.append([
-			compactionPayload('Summary of the original exchange.', firstKeptEntryId!),
+			compactionPayload('Summary of the original exchange.', firstKeptEntryId),
 			user('Follow-up question'),
 			assistant('Follow-up answer')
 		])

@@ -51,6 +51,7 @@ export function useMemory(id: string | null) {
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
 	useEffect(() => {
+		void reloadVersion
 		if (!id) {
 			setMemory(null)
 			setIsLoading(false)

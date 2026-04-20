@@ -1,4 +1,4 @@
-import { parseArgs } from 'util'
+import { parseArgs } from 'node:util'
 import { CliUsageError } from './errors.ts'
 
 type ParsedCommandArgs = {

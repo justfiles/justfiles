@@ -1,9 +1,9 @@
 export function out(msg: string) {
-	process.stdout.write(msg + '\n')
+	process.stdout.write(`${msg}\n`)
 }
 
 export function info(msg: string, quiet: boolean) {
-	if (!quiet) process.stderr.write(msg + '\n')
+	if (!quiet) process.stderr.write(`${msg}\n`)
 }
 
 export function printError(msg: string, usage?: string) {
@@ -12,7 +12,7 @@ export function printError(msg: string, usage?: string) {
 }
 
 export function printJson(data: unknown) {
-	process.stdout.write(JSON.stringify(data, null, 2) + '\n')
+	process.stdout.write(`${JSON.stringify(data, null, 2)}\n`)
 }
 
 export function printJsonError(data: { error: string; code: string; usage?: string }) {

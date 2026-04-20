@@ -63,6 +63,7 @@ export function useAdventureViewState(props: {
 	}
 
 	useEffect(() => {
+		void history.length
 		historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'smooth' })
 	}, [history.length])
 

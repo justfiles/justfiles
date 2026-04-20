@@ -35,7 +35,8 @@ export function persistedState<T>(
 	async function get(): Promise<T> {
 		if (_cache !== undefined) return _cache
 		if (await vol.exists(path)) {
-			return (_cache = JSON.parse(dec.decode(await vol.readFile(path))) as T)
+			_cache = JSON.parse(dec.decode(await vol.readFile(path))) as T
+			return _cache
 		}
 		const value = typeof init === 'function' ? await (init as () => T | Promise<T>)() : init
 		await set(value)

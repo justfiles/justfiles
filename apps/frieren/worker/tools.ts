@@ -12,8 +12,15 @@ import { Type } from '@sinclair/typebox'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+type FsTool =
+	| AgentTool<typeof readParams>
+	| AgentTool<typeof writeParams>
+	| AgentTool<typeof lsParams>
+	| AgentTool<typeof mkdirParams>
+	| AgentTool<typeof rmParams>
+
 export interface FsToolset {
-	tools: AgentTool<any>[]
+	tools: FsTool[]
 }
 
 export function createFsTools(vol: Volume): FsToolset {
@@ -189,14 +196,15 @@ function parseDuckDuckGoResults(html: string): SearchResult[] {
 	const results: SearchResult[] = []
 	const blockRe =
 		/<a rel="nofollow" class="result__a" href="([^"]+)">([\s\S]*?)<\/a>[\s\S]*?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
-	let m: RegExpExecArray | null
-	while ((m = blockRe.exec(html)) !== null) {
-		const rawUrl = decodeHtmlEntities(m[1])
+	let match = blockRe.exec(html)
+	while (match !== null) {
+		const rawUrl = decodeHtmlEntities(match[1])
 		results.push({
 			url: unwrapDuckDuckGoUrl(rawUrl),
-			title: stripTags(m[2]),
-			snippet: stripTags(m[3])
+			title: stripTags(match[2]),
+			snippet: stripTags(match[3])
 		})
+		match = blockRe.exec(html)
 	}
 	return results
 }
@@ -221,7 +229,7 @@ function unwrapDuckDuckGoUrl(url: string): string {
 	// DDG wraps outbound links like //duckduckgo.com/l/?uddg=<encoded>&rut=...
 	const match = url.match(/[?&]uddg=([^&]+)/)
 	if (match) return decodeURIComponent(match[1])
-	if (url.startsWith('//')) return 'https:' + url
+	if (url.startsWith('//')) return `https:${url}`
 	return url
 }
 
@@ -274,7 +282,7 @@ export function createFetchTool(): AgentTool<typeof fetchParams> {
 			}
 			const MAX = 100_000
 			const text =
-				raw.length > MAX ? raw.slice(0, MAX) + `\n…[truncated ${raw.length - MAX} bytes]` : raw
+				raw.length > MAX ? `${raw.slice(0, MAX)}\n…[truncated ${raw.length - MAX} bytes]` : raw
 			return {
 				content: [{ type: 'text', text }],
 				details: { url: params.url, bytes: raw.length }

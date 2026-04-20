@@ -54,7 +54,8 @@ async function run(args: string[], context: CommandContext): Promise<void> {
 		throw new CliUsageError('mkdir requires exactly one <path> argument', help)
 	}
 
-	const path = normalizeVolumePath(positionals[0]!)
+	const [targetPath] = positionals
+	const path = normalizeVolumePath(targetPath)
 	const recursive = Boolean(values.parents)
 	await context.volume.mkdir(path, recursive ? { recursive: true } : undefined)
 

@@ -283,6 +283,8 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage {
 						role: 'assistant',
 						content: `[${entry.tool_name}]: ${entry.content}`
 					}
+				default:
+					throw new Error('unsupported message role')
 			}
 		case 'compaction':
 			return { role: 'assistant', content: entry.summary }

@@ -29,6 +29,8 @@ export function useChat() {
 	getTokenRef.current = getToken
 
 	useEffect(() => {
+		void connectKey
+
 		const handleAgentEvent = (event: AgentEvent) => {
 			switch (event.type) {
 				case 'agent_start':
@@ -81,7 +83,9 @@ export function useChat() {
 
 				case 'tool_execution_start': {
 					const currentId = currentAssistantIdRef.current
-					if (!currentId) break
+					if (!currentId || !event.toolCallId || !event.toolName) break
+					const toolCallId = event.toolCallId
+					const toolName = event.toolName
 					setMessages((prev) =>
 						prev.map((message) =>
 							message.id === currentId
@@ -90,8 +94,8 @@ export function useChat() {
 										toolCalls: [
 											...(message.toolCalls ?? []),
 											{
-												id: event.toolCallId!,
-												name: event.toolName!,
+												id: toolCallId,
+												name: toolName,
 												args: event.args,
 												status: 'running' as const
 											}

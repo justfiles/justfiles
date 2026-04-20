@@ -161,8 +161,9 @@ function transform(message: AgentMessage): AppendPayload {
 					.map((b) => b.text)
 					.join('\n')
 			}
-		default:
-			throw new Error(`unsupported role: ${(message as any).role}`)
+		default: {
+			throw new Error('unsupported role')
+		}
 	}
 }
 
@@ -174,8 +175,8 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 			return {
 				role: 'assistant',
 				content: [{ type: 'text', text: message.content }],
-				api: 'anthropic' as any,
-				provider: 'anthropic' as any,
+				api: 'anthropic',
+				provider: 'anthropic',
 				model: '',
 				usage: {
 					input: 0,
@@ -187,7 +188,7 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 				},
 				stopReason: 'stop',
 				timestamp: message.timestamp
-			}
+			} as AgentMessage
 	}
 }
 
@@ -201,14 +202,13 @@ const PATHS = {
 		`/agents/${agentId}/sessions/${sessionId}.jsonl`
 } as const
 
-const SessionMeta = z.object({
+const SessionMetaSchema = z.object({
 	sessionId: z.string(),
 	lastActive: z.iso.datetime().transform((s) => new Date(s)),
 	sessionFile: z.string()
 })
-type SessionMeta = z.infer<typeof SessionMeta>
 
-const SessionsMap = z.record(z.string(), SessionMeta)
+const SessionsMap = z.record(z.string(), SessionMetaSchema)
 
 type MessageContext = {
 	agentId: string

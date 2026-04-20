@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 
 function Label({ className, ...props }: React.ComponentProps<'label'>) {
 	return (
+		// biome-ignore lint/a11y/noLabelWithoutControl: reusable label primitive receives its control association from callers
 		<label
 			data-slot="label"
 			className={cn(

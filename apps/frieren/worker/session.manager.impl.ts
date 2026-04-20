@@ -19,12 +19,12 @@ function walkBranch(entries: SessionEntry[], leafId: EntryId | null): SessionEnt
 	if (!leafId) return []
 	const byId = new Map(entries.map((e) => [e.id, e]))
 	const branch: SessionEntry[] = []
-	let cur = leafId
+	let cur: EntryId | null = leafId
 	while (cur) {
 		const entry = byId.get(cur)
 		if (!entry) break
 		branch.push(entry)
-		cur = entry.parentId!
+		cur = entry.parentId ?? null
 	}
 	branch.reverse()
 	return branch
@@ -45,7 +45,7 @@ export function session(path: string, volume: Volume): SessionManager {
 	}
 
 	async function appendEntries(entries: SessionEntry[]): Promise<void> {
-		const lines = entries.map((e) => JSON.stringify(e)).join('\n') + '\n'
+		const lines = `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`
 		await sessionFile.append(lines)
 	}
 

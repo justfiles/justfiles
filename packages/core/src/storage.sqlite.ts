@@ -949,7 +949,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				for (const row of xattrRows) {
 					const ino = String(row.ino)
 					if (!xattrsByIno.has(ino)) xattrsByIno.set(ino, {})
-					xattrsByIno.get(ino)![String(row.name)] = toUint8Array(row.value)
+					const xattrs = xattrsByIno.get(ino)
+					if (xattrs) {
+						xattrs[String(row.name)] = toUint8Array(row.value)
+					}
 				}
 			}
 

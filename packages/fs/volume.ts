@@ -265,7 +265,8 @@ export function volume(storage: Storage): Volume {
 		let resolved: ResolvedPath | null = null
 
 		for (let i = 0; i < queue.length; i++) {
-			const name = queue[i]!
+			const name = queue[i]
+			if (name === undefined) continue
 
 			if (name === '.') continue
 
@@ -275,7 +276,8 @@ export function volume(storage: Storage): Volume {
 			}
 
 			const isLast = i === queue.length - 1
-			const currentIno = inoStack[inoStack.length - 1]!
+			const currentIno = inoStack[inoStack.length - 1]
+			if (currentIno === undefined) throw new Error(`ENOENT: ${path}`)
 
 			const entry = await lookupDirent(currentIno, name)
 			if (entry === null) throw new Error(`ENOENT: ${path}`)
@@ -680,7 +682,7 @@ export function volume(storage: Storage): Volume {
 						metaCache.set(e.ino, e.meta)
 						dirCache.set(dirCacheKey(e.dirIno, e.name), { ino: e.ino, type: e.meta.type })
 						// Filter to descendants of the requested path
-						if (path === '/' || ePath === path || ePath.startsWith(path + '/')) {
+						if (path === '/' || ePath === path || ePath.startsWith(`${path}/`)) {
 							await visitor(ePath, makeStat(e.ino, e.meta))
 						}
 					}

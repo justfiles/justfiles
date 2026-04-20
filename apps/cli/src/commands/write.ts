@@ -62,7 +62,8 @@ async function run(args: string[], context: CommandContext): Promise<void> {
 		throw new CliUsageError('write requires a <path> argument', help)
 	}
 
-	const path = normalizeVolumePath(positionals[0]!)
+	const [targetPath] = positionals
+	const path = normalizeVolumePath(targetPath)
 	const contentArg = positionals.slice(1).join(' ')
 
 	if (values.stdin && contentArg) {

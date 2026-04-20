@@ -50,6 +50,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
 	resolveAssetUrlRef.current = resolveAssetUrl
 	const readAssetBlobRef = useRef(readAssetBlob)
 	readAssetBlobRef.current = readAssetBlob
+	const initialValueRef = useRef(value)
+	const autoFocusRef = useRef(autoFocus)
 
 	useImperativeHandle(
 		ref,
@@ -62,16 +64,20 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
 	)
 
 	useEffect(() => {
+		void readOnly
 		const view = viewRef.current
 		if (!view) return
 		view.dispatch(view.state.tr)
 	}, [readOnly])
 
 	useEffect(() => {
-		const view = new EditorView(containerRef.current!, {
-			state: buildState(value),
+		const container = containerRef.current
+		if (!container) return
+
+		const view = new EditorView(container, {
+			state: buildState(initialValueRef.current),
 			editable: () => !readOnlyRef.current,
-			nodeViews: resolveAssetUrl
+			nodeViews: resolveAssetUrlRef.current
 				? {
 						image: makeImageNodeView(
 							(src) => resolveAssetUrlRef.current?.(src) ?? Promise.resolve(src),
@@ -151,12 +157,11 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor(
 			}
 		})
 		viewRef.current = view
-		if (autoFocus) view.focus()
+		if (autoFocusRef.current) view.focus()
 		return () => {
 			view.destroy()
 			viewRef.current = null
 		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
 
 	return (

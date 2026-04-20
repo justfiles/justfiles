@@ -151,7 +151,10 @@ function resolveVolumeName(config: CliConfig): string {
 	if (config.defaultVolume) return config.defaultVolume
 
 	const names = Object.keys(config.volumes)
-	if (names.length === 1) return names[0]!
+	if (names.length === 1) {
+		const [name] = names
+		if (name !== undefined) return name
+	}
 
 	if (names.length === 0) {
 		throw new CliUsageError(

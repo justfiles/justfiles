@@ -120,7 +120,7 @@ export async function loadConfig(
 ): Promise<CliConfig> {
 	const selectedVolume =
 		(typeof overrides.volume === 'string' ? overrides.volume : undefined) ??
-		process.env['FILES_VOLUME']
+		process.env.FILES_VOLUME
 
 	const { path, dir, config } = await loadFileConfig(
 		typeof overrides.config === 'string' ? overrides.config : undefined

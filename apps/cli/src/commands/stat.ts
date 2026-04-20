@@ -50,7 +50,8 @@ async function run(args: string[], context: CommandContext): Promise<void> {
 		throw new CliUsageError('stat requires exactly one <path> argument', help)
 	}
 
-	const path = normalizeVolumePath(positionals[0]!)
+	const [targetPath] = positionals
+	const path = normalizeVolumePath(targetPath)
 	const stat = await context.volume.stat(path)
 
 	if (context.json) {

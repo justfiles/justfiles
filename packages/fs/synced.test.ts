@@ -13,7 +13,7 @@ import type { FsOp, InodeMeta, Storage, StorageCapabilities, UpdateQueryOptions 
 import { FsCursorExpiredError } from './storage'
 import { memStorage } from './storage.mem'
 import { synced } from './synced'
-import type { DirentMin, Ino } from './types'
+import type { Ino } from './types'
 import { FileType } from './types'
 import { volume } from './volume'
 
@@ -59,19 +59,26 @@ function journaledStorage(): JournaledStorage {
 
 	/** Returns the last seq number in the journal, or -1 if empty. */
 	function lastSeq(): number {
-		return journal.length > 0 ? journal[journal.length - 1]!.seq : -1
+		return journal.at(-1)?.seq ?? -1
 	}
+
+	const baseCaps = base.caps
+	if (!baseCaps?.getXattr || !baseCaps.setXattr || !baseCaps.listXattrs || !baseCaps.removeXattr) {
+		throw new Error('journaledStorage requires xattr capabilities')
+	}
+	const setXattr = baseCaps.setXattr
+	const removeXattr = baseCaps.removeXattr
 
 	const caps: StorageCapabilities = {
 		// Inherit xattr caps from base
-		getXattr: base.caps!.getXattr,
+		getXattr: baseCaps.getXattr,
 		setXattr: async (ino, name, value, opts) => {
-			await base.caps!.setXattr!(ino, name, value, opts)
+			await setXattr(ino, name, value, opts)
 			record({ kind: 'upsert-inode', ino, xattrs: { [name]: value } }, opts?.source)
 		},
-		listXattrs: base.caps!.listXattrs,
+		listXattrs: baseCaps.listXattrs,
 		removeXattr: async (ino, name, opts) => {
-			await base.caps!.removeXattr!(ino, name, opts)
+			await removeXattr(ino, name, opts)
 			record({ kind: 'upsert-inode', ino, xattrs: { [name]: null } }, opts?.source)
 		},
 
@@ -86,7 +93,7 @@ function journaledStorage(): JournaledStorage {
 				expireNext = false
 				throw new FsCursorExpiredError()
 			}
-			const fromSeq = cursor === '' ? 0 : parseInt(cursor) + 1
+			const fromSeq = cursor === '' ? 0 : parseInt(cursor, 10) + 1
 			let entries = journal.filter((e) => e.seq >= fromSeq)
 			if (options?.source) {
 				if (options.sourceMode === 'exclude') {
@@ -111,7 +118,8 @@ function journaledStorage(): JournaledStorage {
 			const entries: { ino: Ino; dirIno: Ino; name: string; meta: InodeMeta }[] = []
 			const queue: Ino[] = [base.rootIno]
 			while (queue.length > 0) {
-				const dirIno = queue.shift()!
+				const dirIno = queue.shift()
+				if (dirIno === undefined) break
 				let cur = ''
 				do {
 					const { entries: batch, next } = await base.listDirents(dirIno, cur)

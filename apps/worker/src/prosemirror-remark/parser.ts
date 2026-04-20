@@ -13,11 +13,17 @@ import { unified } from 'unified'
 // Single shared processor — stateless after construction
 const processor = unified().use(remarkParse).use(remarkGfm)
 
+function createFallbackParagraph(schema: Schema): PMNode {
+	const paragraph = schema.nodes.paragraph.createAndFill()
+	if (paragraph) return paragraph
+	throw new Error('Failed to create fallback paragraph node')
+}
+
 export function markdownToDoc(markdown: string, schema: Schema): PMNode {
 	const ast = processor.parse(markdown) as Root
 	const blocks = convertBlocks(ast.children as (BlockContent | DefinitionContent)[], schema)
 	// Ensure doc always has at least one block
-	const content = blocks.length > 0 ? blocks : [schema.nodes.paragraph.createAndFill()!]
+	const content = blocks.length > 0 ? blocks : [createFallbackParagraph(schema)]
 	return schema.nodes.doc.create(null, content)
 }
 
@@ -104,7 +110,7 @@ function convertList(node: List, schema: Schema): PMNode {
 		const children =
 			item.children.length > 0
 				? convertBlocks(item.children as (BlockContent | DefinitionContent)[], schema)
-				: [schema.nodes.paragraph.createAndFill()!]
+				: [createFallbackParagraph(schema)]
 		return schema.nodes.list_item.create(null, children)
 	})
 

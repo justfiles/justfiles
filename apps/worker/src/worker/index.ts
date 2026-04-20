@@ -106,7 +106,7 @@ const applyApiKeyAuth = async (
 		return
 	}
 
-	let apiKey
+	let apiKey: Awaited<ReturnType<typeof verifyApiKey>> | null = null
 	try {
 		apiKey = await verifyApiKey(token, requireClerkSecretKey(c.env))
 	} catch {
