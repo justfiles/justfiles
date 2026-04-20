@@ -5,6 +5,8 @@ use bun for package management.
 
 use tab for indentation.
 
+always run `bun run format` to format code after editing.
+
 # Monorepo Structure
 
 | Package         | Description                                                |
@@ -69,6 +71,8 @@ Retrieve API references and limits from:
 Make sure the following tests pass after making file changes:
 ```sh
 bun run typecheck
+bun run lint:fix
+bun test
 ```
 
 # Workspace Packages
