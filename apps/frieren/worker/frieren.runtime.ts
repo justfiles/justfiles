@@ -5,7 +5,7 @@ import { ageCalibration } from './age-calibration'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
 import { file } from './file'
 import type { LLMText } from './llm.text'
-import { DEFAULT_SETUP_PROMPT, systemPrompt } from './prompts'
+import { DEFAULT_SETUP_PROMPT, MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
 import {
 	type AppendPayload,
 	type ContextMessage,
@@ -29,6 +29,7 @@ export interface Runtime {
 	shutdown: () => Promise<void>
 	subscribe: (lisener: FrierenEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
+	consolidateMemory: (now?: Date) => Promise<void>
 	// TODO: remove
 	_agent: () => Agent
 }
@@ -43,6 +44,7 @@ export async function runtime({ volume, agent, text, compaction }: RuntimeProps)
 		prompt,
 		subscribe,
 		history: () => session.walkActiveBranch(),
+		consolidateMemory,
 		_agent: () => agent
 	}
 
@@ -73,6 +75,26 @@ export async function runtime({ volume, agent, text, compaction }: RuntimeProps)
 			])
 			await initSession(session)
 		}
+	}
+
+	async function consolidateMemory(now: Date = new Date()) {
+		const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+		const dateStr = yesterday.toISOString().slice(0, 10)
+		const daily = await file(volume, PATHS.daily(yesterday)).text()
+		if (!daily?.trim()) return
+		const existing = (await file(volume, PATHS.memory).text()) ?? ''
+		const userPrompt = [
+			'# Current MEMORY.md (read-only)',
+			'',
+			existing.trim() || '(empty)',
+			'',
+			`# Yesterday's daily notes (${dateStr})`,
+			'',
+			daily
+		].join('\n')
+		const additions = (await text.gen(MEMORY_CONSOLIDATION_PROMPT, userPrompt)).trim()
+		if (!additions) return
+		await file(volume, PATHS.memory).append(`\n\n## ${dateStr}\n${additions}\n`)
 	}
 
 	async function initSession(session: SessionManager) {

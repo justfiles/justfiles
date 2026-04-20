@@ -5,6 +5,7 @@ import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import { createFrierenApiApp } from './app.ts'
 import type { CompactionSettings } from './compaction'
+import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
 import { type Runtime, runtime } from './frieren.runtime'
 import { createAgent } from './llm.agent'
@@ -60,6 +61,7 @@ export class Frieren extends DurableObject<Env> {
 	private readonly vol: Volume
 	private runtime?: Runtime
 	private text?: LLMText
+	private cfTimezone?: string
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -156,6 +158,7 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+		await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -214,7 +217,15 @@ export class Frieren extends DurableObject<Env> {
 		ws.close(1011, 'WebSocket error')
 	}
 
+	// Do not reschedule here — only WebSocket interactions set the next alarm,
+	// so a silent day naturally stops the daily routine.
+	async alarm(): Promise<void> {
+		await this.runtime?.consolidateMemory()
+	}
+
 	async fetch(request: Request): Promise<Response> {
+		this.cfTimezone = (request.cf as { timezone?: string } | undefined)?.timezone
+
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
@@ -224,6 +235,7 @@ export class Frieren extends DurableObject<Env> {
 			const [client, server] = Object.values(pair)
 
 			this.ctx.acceptWebSocket(server)
+			await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
 
 			const participants = await this.loadParticipants()
 			const history = ((await this.runtime?.history()) ?? []).map(sessionEntry2DisplayMessage)
