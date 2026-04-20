@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { Node as PMNode } from 'prosemirror-model'
 import type { NodeView } from 'prosemirror-view'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 const Excalidraw = lazy(async () => {
@@ -209,8 +209,7 @@ export function makeDrawingNodeView(
 		img.alt = 'drawing'
 		img.draggable = false
 
-		empty.className =
-			'flex h-32 items-center justify-center text-sm text-base-content/40'
+		empty.className = 'flex h-32 items-center justify-center text-sm text-base-content/40'
 		empty.textContent = 'Empty drawing'
 
 		overlay.className =
@@ -245,30 +244,33 @@ export function makeDrawingNodeView(
 
 			if (previewSrc) {
 				const token = ++renderToken
-				void resolveAssetUrl(previewSrc).then((url) => {
-					if (token !== renderToken) return
-					if (!url) {
+				void resolveAssetUrl(previewSrc)
+					.then((url) => {
+						if (token !== renderToken) return
+						if (!url) {
+							img.hidden = true
+							empty.hidden = false
+							return
+						}
+						return readAssetBlob(previewSrc).then((blob) => ({ blob }))
+					})
+					.then(async (result) => {
+						if (!result || token !== renderToken || !result.blob) {
+							img.hidden = true
+							empty.hidden = false
+							return
+						}
+						if (objectUrl) URL.revokeObjectURL(objectUrl)
+						objectUrl = URL.createObjectURL(result.blob)
+						img.src = objectUrl
+						img.hidden = false
+						empty.hidden = true
+					})
+					.catch(() => {
+						if (token !== renderToken) return
 						img.hidden = true
 						empty.hidden = false
-						return
-					}
-					return readAssetBlob(previewSrc).then((blob) => ({ blob }))
-				}).then(async (result) => {
-					if (!result || token !== renderToken || !result.blob) {
-						img.hidden = true
-						empty.hidden = false
-						return
-					}
-					if (objectUrl) URL.revokeObjectURL(objectUrl)
-					objectUrl = URL.createObjectURL(result.blob)
-					img.src = objectUrl
-					img.hidden = false
-					empty.hidden = true
-				}).catch(() => {
-					if (token !== renderToken) return
-					img.hidden = true
-					empty.hidden = false
-				})
+					})
 			} else {
 				renderToken++
 				img.hidden = true

@@ -1,7 +1,7 @@
-import { Plugin, type EditorState } from 'prosemirror-state'
-import { type EditorView } from 'prosemirror-view'
-import { type MarkType, type NodeType } from 'prosemirror-model'
-import { toggleMark, setBlockType, wrapIn } from 'prosemirror-commands'
+import { setBlockType, toggleMark, wrapIn } from 'prosemirror-commands'
+import type { MarkType, NodeType } from 'prosemirror-model'
+import { type EditorState, Plugin } from 'prosemirror-state'
+import type { EditorView } from 'prosemirror-view'
 import { schema } from '../../../prosemirror-remark'
 
 // ── State helpers ────────────────────────────────────────────────────────────

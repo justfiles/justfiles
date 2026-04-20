@@ -12,13 +12,21 @@ export function parseSqlStatements(sql: string): string[] {
 			else depth--
 		}
 		if (sql[i] === ';' && depth === 0) {
-			const stmt = sql.slice(start, i).trim().replace(/^(--[^\n]*\n\s*)+/, '').trim()
+			const stmt = sql
+				.slice(start, i)
+				.trim()
+				.replace(/^(--[^\n]*\n\s*)+/, '')
+				.trim()
 			if (stmt) statements.push(stmt)
 			start = i + 1
 		}
 	}
 
-	const last = sql.slice(start).trim().replace(/^(--[^\n]*\n\s*)+/, '').trim()
+	const last = sql
+		.slice(start)
+		.trim()
+		.replace(/^(--[^\n]*\n\s*)+/, '')
+		.trim()
 	if (last) statements.push(last)
 
 	return statements.filter(Boolean)

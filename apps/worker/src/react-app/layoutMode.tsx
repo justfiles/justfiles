@@ -1,12 +1,5 @@
 import { useRouterState } from '@tanstack/react-router'
-import {
-	createContext,
-	useContext,
-	useEffect,
-	useMemo,
-	useState,
-	type ReactNode
-} from 'react'
+import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from 'react'
 
 export type LayoutMode = 'sidebar-only' | 'detail-only' | 'split' | 'other'
 
@@ -67,10 +60,7 @@ export function LayoutModeProvider({ children }: { children: ReactNode }) {
 		return () => mediaQuery.removeEventListener('change', onChange)
 	}, [])
 
-	const value = useMemo(
-		() => getLayoutMode(pathname, isDesktop),
-		[pathname, isDesktop]
-	)
+	const value = useMemo(() => getLayoutMode(pathname, isDesktop), [pathname, isDesktop])
 
 	return <LayoutModeContext.Provider value={value}>{children}</LayoutModeContext.Provider>
 }

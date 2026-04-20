@@ -1,8 +1,8 @@
-import { CliUsageError } from '../errors.ts'
-import { normalizeVolumePath } from '../paths.ts'
-import { out, info, printJson } from '../output.ts'
-import type { CommandContext, CommandModule } from '../command.ts'
 import { parseCommandArgs } from '../args.ts'
+import type { CommandContext, CommandModule } from '../command.ts'
+import { CliUsageError } from '../errors.ts'
+import { info, out, printJson } from '../output.ts'
+import { normalizeVolumePath } from '../paths.ts'
 
 const help = `\
 Usage: files mv <source> <destination>
@@ -31,13 +31,16 @@ Examples:
   files mv /notes/inbox /notes/archive`
 
 async function run(args: string[], context: CommandContext): Promise<void> {
-	const { values, positionals } = parseCommandArgs({
-		args,
-		options: {
-			help: { type: 'boolean', short: 'h' },
+	const { values, positionals } = parseCommandArgs(
+		{
+			args,
+			options: {
+				help: { type: 'boolean', short: 'h' }
+			},
+			allowPositionals: true
 		},
-		allowPositionals: true,
-	}, help)
+		help
+	)
 
 	if (values.help) {
 		out(help)

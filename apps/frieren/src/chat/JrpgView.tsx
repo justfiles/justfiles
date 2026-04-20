@@ -1,11 +1,11 @@
-import type { ChatViewProps } from './types'
-import { ToolCallBlock } from './ToolCallBlock'
 import {
 	AssistantAvatar,
 	PORTRAIT_SIZE,
 	ROAM_HEIGHT,
 	useAdventureViewState
 } from './adventureShared'
+import { ToolCallBlock } from './ToolCallBlock'
+import type { ChatViewProps } from './types'
 
 export function JrpgView(props: ChatViewProps) {
 	const { messages, input, setInput, connectionState, isStreaming, sendMessage, abort } = props
@@ -32,7 +32,9 @@ export function JrpgView(props: ChatViewProps) {
 				) : null}
 				{history.map((message) => (
 					<div key={message.id} className="flex flex-col gap-1">
-						<div className={`flex items-start gap-3 ${message.role === 'assistant' ? 'flex-row-reverse' : ''}`}>
+						<div
+							className={`flex items-start gap-3 ${message.role === 'assistant' ? 'flex-row-reverse' : ''}`}
+						>
 							<div
 								className={`flex h-10 w-10 shrink-0 items-center justify-center border-2 border-double text-xl shadow-[3px_3px_0_rgba(0,0,0,0.6)] ${
 									message.role === 'user'
@@ -85,7 +87,7 @@ export function JrpgView(props: ChatViewProps) {
 								className="flex shrink-0 items-center justify-center border-4 border-double border-amber-300 bg-amber-950 text-3xl text-amber-100 shadow-[4px_4px_0_rgba(0,0,0,0.6)]"
 								style={{ width: PORTRAIT_SIZE, height: PORTRAIT_SIZE }}
 							>
-	🗡️
+								🗡️
 							</div>
 						) : null}
 						<div
@@ -105,7 +107,7 @@ export function JrpgView(props: ChatViewProps) {
 													abort()
 												}}
 											>
-	[stop]
+												[stop]
 											</button>
 										) : (
 											<span className="text-amber-300/80">[click to reply ▸]</span>
@@ -133,7 +135,7 @@ export function JrpgView(props: ChatViewProps) {
 									}}
 								>
 									<div className="mb-1 text-[10px] uppercase tracking-widest text-amber-300/80">
-	* Hero * {connectionState !== 'ready' ? `[${connectionState}]` : ''}
+										* Hero * {connectionState !== 'ready' ? `[${connectionState}]` : ''}
 									</div>
 									<textarea
 										ref={inputRef}
@@ -148,12 +150,14 @@ export function JrpgView(props: ChatViewProps) {
 												submit()
 											}
 										}}
-										placeholder={connectionState === 'ready' ? 'What will you say?' : 'Connecting...'}
+										placeholder={
+											connectionState === 'ready' ? 'What will you say?' : 'Connecting...'
+										}
 										disabled={connectionState !== 'ready'}
 										rows={2}
 									/>
 									<div className="flex justify-end text-[10px] text-slate-500">
-	▼ ENTER to speak
+										▼ ENTER to speak
 									</div>
 								</form>
 							)}
@@ -163,7 +167,10 @@ export function JrpgView(props: ChatViewProps) {
 								className="shrink-0 overflow-hidden border-4 border-double border-sky-300 bg-indigo-950 shadow-[4px_4px_0_rgba(0,0,0,0.6)]"
 								style={{ width: PORTRAIT_SIZE, height: PORTRAIT_SIZE }}
 							>
-								<AssistantAvatar size={PORTRAIT_SIZE} className="h-full w-full object-cover object-center" />
+								<AssistantAvatar
+									size={PORTRAIT_SIZE}
+									className="h-full w-full object-cover object-center"
+								/>
 							</div>
 						) : null}
 					</div>

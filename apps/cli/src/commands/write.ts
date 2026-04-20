@@ -1,9 +1,9 @@
 import { Buffer } from 'node:buffer'
-import { CliUsageError } from '../errors.ts'
-import { normalizeVolumePath, parentVolumePath } from '../paths.ts'
-import { out, info, printJson, readStdin } from '../output.ts'
-import type { CommandContext, CommandModule } from '../command.ts'
 import { parseCommandArgs } from '../args.ts'
+import type { CommandContext, CommandModule } from '../command.ts'
+import { CliUsageError } from '../errors.ts'
+import { info, out, printJson, readStdin } from '../output.ts'
+import { normalizeVolumePath, parentVolumePath } from '../paths.ts'
 
 const help = `\
 Usage: files write [options] <path> [content]
@@ -39,16 +39,19 @@ Examples:
   files write --parents /notes/daily/2026-04-08.md "entry"`
 
 async function run(args: string[], context: CommandContext): Promise<void> {
-	const { values, positionals } = parseCommandArgs({
-		args,
-		options: {
-			stdin: { type: 'boolean' },
-			append: { type: 'boolean' },
-			parents: { type: 'boolean' },
-			help: { type: 'boolean', short: 'h' },
+	const { values, positionals } = parseCommandArgs(
+		{
+			args,
+			options: {
+				stdin: { type: 'boolean' },
+				append: { type: 'boolean' },
+				parents: { type: 'boolean' },
+				help: { type: 'boolean', short: 'h' }
+			},
+			allowPositionals: true
 		},
-		allowPositionals: true,
-	}, help)
+		help
+	)
 
 	if (values.help) {
 		out(help)
@@ -96,7 +99,7 @@ async function run(args: string[], context: CommandContext): Promise<void> {
 			volume: context.volumeName,
 			path,
 			mode: values.append ? 'append' : 'write',
-			bytes: bytes.length,
+			bytes: bytes.length
 		})
 		return
 	}

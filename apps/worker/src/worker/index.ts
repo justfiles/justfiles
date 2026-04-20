@@ -12,10 +12,13 @@ const API_KEY_PREFIX = 'ak_'
 const CLERK_API_KEYS_VERIFY_URL = 'https://api.clerk.com/v1/api_keys/verify'
 const API_KEY_SUCCESS_TTL_MS = 60_000
 const API_KEY_FAILURE_TTL_MS = 5_000
-const apiKeyCache = new Map<string, {
-	expiresAt: number
-	userId: string | null
-}>()
+const apiKeyCache = new Map<
+	string,
+	{
+		expiresAt: number
+		userId: string | null
+	}
+>()
 
 if (import.meta.env.DEV) {
 	app.use('*', async (c, next) => {
@@ -79,7 +82,11 @@ const requireClerkSecretKey = (env: Env): string => {
 }
 
 const applyApiKeyAuth = async (
-	c: { req: { header: (h: string) => string | undefined }; set: (k: string, v: string) => void; env: Env },
+	c: {
+		req: { header: (h: string) => string | undefined }
+		set: (k: string, v: string) => void
+		env: Env
+	},
 	next: () => Promise<void>
 ) => {
 	const authorization = (c.req.header('authorization') ?? '').trim()

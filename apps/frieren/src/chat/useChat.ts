@@ -44,7 +44,10 @@ export function useChat() {
 					if (event.message?.role === 'assistant') {
 						const id = crypto.randomUUID()
 						currentAssistantIdRef.current = id
-						setMessages((prev) => [...prev, { id, role: 'assistant', content: '', thinking: '', toolCalls: [] }])
+						setMessages((prev) => [
+							...prev,
+							{ id, role: 'assistant', content: '', thinking: '', toolCalls: [] }
+						])
 					}
 					break
 				}
@@ -83,17 +86,17 @@ export function useChat() {
 						prev.map((message) =>
 							message.id === currentId
 								? {
-									...message,
-									toolCalls: [
-										...(message.toolCalls ?? []),
-										{
-											id: event.toolCallId!,
-											name: event.toolName!,
-											args: event.args,
-											status: 'running' as const
-										}
-									]
-								}
+										...message,
+										toolCalls: [
+											...(message.toolCalls ?? []),
+											{
+												id: event.toolCallId!,
+												name: event.toolName!,
+												args: event.args,
+												status: 'running' as const
+											}
+										]
+									}
 								: message
 						)
 					)
@@ -107,18 +110,18 @@ export function useChat() {
 						prev.map((message) =>
 							message.id === currentId
 								? {
-									...message,
-									toolCalls: message.toolCalls?.map((toolCall) =>
-										toolCall.id === event.toolCallId
-											? {
-												...toolCall,
-												result: event.result,
-												isError: event.isError,
-												status: 'done' as const
-											}
-											: toolCall
-									)
-								}
+										...message,
+										toolCalls: message.toolCalls?.map((toolCall) =>
+											toolCall.id === event.toolCallId
+												? {
+														...toolCall,
+														result: event.result,
+														isError: event.isError,
+														status: 'done' as const
+													}
+												: toolCall
+										)
+									}
 								: message
 						)
 					)
@@ -148,77 +151,77 @@ export function useChat() {
 		}
 
 		const attachHandlers = (socket: WebSocket) => {
-		socket.onmessage = (event) => {
-			const data = JSON.parse(event.data)
+			socket.onmessage = (event) => {
+				const data = JSON.parse(event.data)
 
-			if (data.type === 'ready') {
-				if (data.participants) {
-					setUserName(data.participants.userName || 'You')
-					setAgentName(data.participants.agentName || 'Frieren')
+				if (data.type === 'ready') {
+					if (data.participants) {
+						setUserName(data.participants.userName || 'You')
+						setAgentName(data.participants.agentName || 'Frieren')
+					}
+					setConnectionState('ready')
+					return
 				}
-				setConnectionState('ready')
-				return
-			}
 
-			if (data.type === 'history') {
-				if (data.participants) {
-					setUserName(data.participants.userName || 'You')
-					setAgentName(data.participants.agentName || 'Frieren')
-				}
-				const restored: ChatMessage[] = (data.messages ?? []).map(
-					(m: {
-						role: string
-						content: string
-						thinking?: string
-						toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[]
-					}) => ({
-						id: crypto.randomUUID(),
-						role: m.role as 'user' | 'assistant',
-						content: m.content,
-						thinking: m.thinking,
-						toolCalls: m.toolCalls?.map((tc) => ({
+				if (data.type === 'history') {
+					if (data.participants) {
+						setUserName(data.participants.userName || 'You')
+						setAgentName(data.participants.agentName || 'Frieren')
+					}
+					const restored: ChatMessage[] = (data.messages ?? []).map(
+						(m: {
+							role: string
+							content: string
+							thinking?: string
+							toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[]
+						}) => ({
 							id: crypto.randomUUID(),
-							name: tc.name,
-							args: tc.args,
-							result: tc.result,
-							isError: tc.isError,
-							status: 'done' as const
-						}))
-					})
-				)
-				if (restored.length > 0) setMessages(restored)
-				return
+							role: m.role as 'user' | 'assistant',
+							content: m.content,
+							thinking: m.thinking,
+							toolCalls: m.toolCalls?.map((tc) => ({
+								id: crypto.randomUUID(),
+								name: tc.name,
+								args: tc.args,
+								result: tc.result,
+								isError: tc.isError,
+								status: 'done' as const
+							}))
+						})
+					)
+					if (restored.length > 0) setMessages(restored)
+					return
+				}
+
+				if (data.type === 'error') {
+					console.error('Server error:', data.message)
+					setIsStreaming(false)
+					return
+				}
+
+				// TODO: remove later
+				if (data.type === 'debug') {
+					console.log(String(data.message ?? ''))
+					return
+				}
+
+				if (data.type === 'event') handleAgentEvent(data.event)
 			}
 
-			if (data.type === 'error') {
-				console.error('Server error:', data.message)
-				setIsStreaming(false)
-				return
+			socket.onclose = () => {
+				if (wsRef.current === socket) {
+					setConnectionState('disconnected')
+					setIsStreaming(false)
+					wsRef.current = null
+				}
 			}
 
-			// TODO: remove later
-			if (data.type === 'debug') {
-				console.log(String(data.message ?? ''))
-				return
+			socket.onerror = () => {
+				if (wsRef.current === socket) {
+					setConnectionState('disconnected')
+					setIsStreaming(false)
+				}
 			}
-
-			if (data.type === 'event') handleAgentEvent(data.event)
-		}
-
-		socket.onclose = () => {
-			if (wsRef.current === socket) {
-				setConnectionState('disconnected')
-				setIsStreaming(false)
-				wsRef.current = null
-			}
-		}
-
-		socket.onerror = () => {
-			if (wsRef.current === socket) {
-				setConnectionState('disconnected')
-				setIsStreaming(false)
-			}
-		}
 		}
 
 		void connect()

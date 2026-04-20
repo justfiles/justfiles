@@ -1,5 +1,5 @@
 import { apiStorage, createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
-import { volume, type Volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 
 export type { FsClient, Volume }
 

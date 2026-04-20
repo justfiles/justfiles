@@ -1,4 +1,9 @@
-import { inputRules, wrappingInputRule, textblockTypeInputRule, InputRule } from 'prosemirror-inputrules'
+import {
+	InputRule,
+	inputRules,
+	textblockTypeInputRule,
+	wrappingInputRule
+} from 'prosemirror-inputrules'
 import { schema } from '../../../prosemirror-remark'
 
 // Markdown shorthand input rules: #, -, >, ```, ---

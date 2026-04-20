@@ -1,10 +1,10 @@
 import { FileType } from '@justfiles/fs/types'
+import { parseCommandArgs } from '../args.ts'
+import type { CommandContext, CommandModule } from '../command.ts'
 import { CliUsageError } from '../errors.ts'
 import { formatLongEntry, statToJson } from '../fs-output.ts'
-import { basenameVolumePath, joinVolumePath, normalizeVolumePath } from '../paths.ts'
 import { out, printJson } from '../output.ts'
-import type { CommandContext, CommandModule } from '../command.ts'
-import { parseCommandArgs } from '../args.ts'
+import { basenameVolumePath, joinVolumePath, normalizeVolumePath } from '../paths.ts'
 
 const help = `\
 Usage: files ls [options] [path]
@@ -36,14 +36,17 @@ Examples:
   files --volume api ls /notes --json`
 
 async function run(args: string[], context: CommandContext): Promise<void> {
-	const { values, positionals } = parseCommandArgs({
-		args,
-		options: {
-			l: { type: 'boolean', short: 'l' },
-			help: { type: 'boolean', short: 'h' },
+	const { values, positionals } = parseCommandArgs(
+		{
+			args,
+			options: {
+				l: { type: 'boolean', short: 'l' },
+				help: { type: 'boolean', short: 'h' }
+			},
+			allowPositionals: true
 		},
-		allowPositionals: true,
-	}, help)
+		help
+	)
 
 	if (values.help) {
 		out(help)
@@ -73,19 +76,28 @@ async function run(args: string[], context: CommandContext): Promise<void> {
 
 	if (context.json) {
 		if (!long) {
-			printJson(entries.map((entry) => ({
-				name: entry.name,
-				path: joinVolumePath(path, entry.name),
-				type: entry.type === FileType.Directory ? 'directory' : entry.type === FileType.Symlink ? 'symlink' : 'file',
-				ino: entry.ino,
-			})))
+			printJson(
+				entries.map((entry) => ({
+					name: entry.name,
+					path: joinVolumePath(path, entry.name),
+					type:
+						entry.type === FileType.Directory
+							? 'directory'
+							: entry.type === FileType.Symlink
+								? 'symlink'
+								: 'file',
+					ino: entry.ino
+				}))
+			)
 			return
 		}
 
-		const results = await Promise.all(entries.map(async (entry) => {
-			const entryPath = joinVolumePath(path, entry.name)
-			return statToJson(entryPath, await context.volume.stat(entryPath))
-		}))
+		const results = await Promise.all(
+			entries.map(async (entry) => {
+				const entryPath = joinVolumePath(path, entry.name)
+				return statToJson(entryPath, await context.volume.stat(entryPath))
+			})
+		)
 		printJson(results)
 		return
 	}

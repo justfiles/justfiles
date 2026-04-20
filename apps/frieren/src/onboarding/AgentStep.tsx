@@ -1,5 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
-import { useState, type FormEvent } from 'react'
+import { type FormEvent, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -8,7 +8,7 @@ import {
 	CardDescription,
 	CardFooter,
 	CardHeader,
-	CardTitle,
+	CardTitle
 } from '@/components/ui/card'
 import {
 	Field,
@@ -17,13 +17,10 @@ import {
 	FieldGroup,
 	FieldLabel,
 	FieldLegend,
-	FieldSet,
+	FieldSet
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import {
-	NativeSelect,
-	NativeSelectOption,
-} from '@/components/ui/native-select'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import assistantImage from '../assets/assistant.png'
@@ -49,7 +46,7 @@ const ARCHETYPES: {
 		tagline: 'Leads you to your own answers.',
 		blurb:
 			'Patient and knowledgeable. Guides through questions rather than giving answers. Celebrates the moment of realisation.',
-		image: teacherImage,
+		image: teacherImage
 	},
 	{
 		id: 'companion',
@@ -57,7 +54,7 @@ const ARCHETYPES: {
 		tagline: 'Beside you, not above you.',
 		blurb:
 			'A peer. Warm, attentive, loyal. Faces things alongside you rather than solving them for you. Remembers what matters.',
-		image: companionImage,
+		image: companionImage
 	},
 	{
 		id: 'assistant',
@@ -65,15 +62,15 @@ const ARCHETYPES: {
 		tagline: 'Gets things done.',
 		blurb:
 			'Task-oriented and reliable. Organised and proactive. Anticipates what you need. Clear, brief, on-point.',
-		image: assistantImage,
-	},
+		image: assistantImage
+	}
 ]
 
 const GENDER_OPTIONS = [
 	{ value: 'female', label: 'Female' },
 	{ value: 'male', label: 'Male' },
 	{ value: 'nonbinary', label: 'Non-binary' },
-	{ value: 'none', label: 'None' },
+	{ value: 'none', label: 'None' }
 ] as const
 
 type Draft = {
@@ -87,11 +84,7 @@ const EMPTY: Draft = { name: '', gender: '', archetype: null }
 type UserCtx = { userAge?: number; userGender?: string }
 
 function buildSoulFile(draft: Draft, body: string): string {
-	const lines = [
-		'---',
-		'schema: frieren/agent-soul/v1',
-		`agent_name: ${draft.name.trim()}`,
-	]
+	const lines = ['---', 'schema: frieren/agent-soul/v1', `agent_name: ${draft.name.trim()}`]
 	if (draft.gender && draft.gender !== 'none') lines.push(`agent_gender: ${draft.gender}`)
 	lines.push(`archetype: ${draft.archetype}`, '---', '', body.trim(), '')
 	return lines.join('\n')
@@ -100,7 +93,7 @@ function buildSoulFile(draft: Draft, body: string): string {
 export function AgentStep({
 	volume,
 	userCtx,
-	onDone,
+	onDone
 }: {
 	volume: Volume
 	userCtx: UserCtx
@@ -117,7 +110,7 @@ export function AgentStep({
 	const selectedArchetype =
 		draft.archetype === null
 			? null
-			: ARCHETYPES.find((archetype) => archetype.id === draft.archetype) ?? null
+			: (ARCHETYPES.find((archetype) => archetype.id === draft.archetype) ?? null)
 
 	const generate = async (archetype: Archetype) => {
 		if (!draft.name.trim()) return
@@ -131,15 +124,15 @@ export function AgentStep({
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					Authorization: `Bearer ${token ?? ''}`,
+					Authorization: `Bearer ${token ?? ''}`
 				},
 				body: JSON.stringify({
 					agentName: draft.name.trim(),
 					agentGender: draft.gender && draft.gender !== 'none' ? draft.gender : undefined,
 					archetype,
 					userAge: userCtx.userAge,
-					userGender: userCtx.userGender,
-				}),
+					userGender: userCtx.userGender
+				})
 			})
 			if (!res.ok) throw new Error(`Summoning failed: ${res.status}`)
 			const data = (await res.json()) as { text: string }
@@ -317,9 +310,7 @@ export function AgentStep({
 												name="agent-archetype"
 												value={archetype.id}
 												checked={selected}
-												onChange={() =>
-													setDraft({ ...draft, archetype: archetype.id })
-												}
+												onChange={() => setDraft({ ...draft, archetype: archetype.id })}
 												className="sr-only"
 											/>
 											<div
@@ -335,9 +326,7 @@ export function AgentStep({
 													alt={`${archetype.title} placeholder`}
 													className={cn(
 														'aspect-[3/4] h-full w-full object-cover transition-[filter,transform] duration-300',
-														selected
-															? 'grayscale-0'
-															: 'grayscale contrast-110'
+														selected ? 'grayscale-0' : 'grayscale contrast-110'
 													)}
 												/>
 												<div className="absolute inset-x-0 top-0 flex justify-end p-3">
@@ -345,9 +334,7 @@ export function AgentStep({
 														aria-hidden="true"
 														className={cn(
 															'size-3 shrink-0 rounded-full border bg-background/80 backdrop-blur-sm',
-															selected
-																? 'border-primary bg-primary'
-																: 'border-muted-foreground/40'
+															selected ? 'border-primary bg-primary' : 'border-muted-foreground/40'
 														)}
 													/>
 												</div>

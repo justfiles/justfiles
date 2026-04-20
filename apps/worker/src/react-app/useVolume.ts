@@ -1,26 +1,24 @@
+import { apiStorage } from '@justfiles/core'
+import {
+	volume as createVolume,
+	decodeXattr,
+	GHOSTORE_XATTR,
+	synced,
+	type Volume
+} from '@justfiles/fs'
+import { idbStorage } from '@justfiles/fs/storage/idb'
+import { FileType } from '@justfiles/fs/types'
 import {
 	createContext,
 	createElement,
 	Fragment,
+	type ReactNode,
 	useContext,
 	useEffect,
 	useMemo,
 	useState,
-	useSyncExternalStore,
-	type ReactNode
+	useSyncExternalStore
 } from 'react'
-import {
-	decodeXattr,
-	GHOSTORE_XATTR,
-	synced,
-	type Volume,
-	volume as createVolume
-} from '@justfiles/fs'
-import { apiStorage } from '@justfiles/core'
-import { idbStorage } from '@justfiles/fs/storage/idb'
-import { FileType } from '@justfiles/fs/types'
-import { createMemoryIndex, type MemoryIndex } from './memoryIndex'
-import { type FsClient, useFsClient } from './useApiClient'
 import {
 	assetDirPath,
 	assetUrlForIno,
@@ -31,7 +29,9 @@ import {
 	parentVolumePath,
 	resolveRelativeFsPath
 } from './assets'
+import { createMemoryIndex, type MemoryIndex } from './memoryIndex'
 import type { FileMeta, LinkInfo } from './types'
+import { type FsClient, useFsClient } from './useApiClient'
 
 type MemoryRecord = {
 	id: string

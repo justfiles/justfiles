@@ -1,4 +1,10 @@
-import { Navigate, createRootRoute, createRoute, createRouter, useParams } from '@tanstack/react-router'
+import {
+	createRootRoute,
+	createRoute,
+	createRouter,
+	Navigate,
+	useParams
+} from '@tanstack/react-router'
 import App from './App'
 import { AppShell } from './AppShell'
 import { MemoryPage } from './MemoryPage'
@@ -6,7 +12,7 @@ import { FilesIndexPage, FilesLayout } from './NotesLayout'
 import { SettingsPage } from './SettingsPage'
 
 export const rootRoute = createRootRoute({
-	component: AppShell,
+	component: AppShell
 })
 
 function RootRedirect() {
@@ -16,25 +22,25 @@ function RootRedirect() {
 const indexRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/',
-	component: RootRedirect,
+	component: RootRedirect
 })
 
 const filesRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/files',
-	component: FilesLayout,
+	component: FilesLayout
 })
 
 const filesIndexRoute = createRoute({
 	getParentRoute: () => filesRoute,
 	path: '/',
-	component: FilesIndexPage,
+	component: FilesIndexPage
 })
 
 const filesScratchRoute = createRoute({
 	getParentRoute: () => filesRoute,
 	path: 'scratch',
-	component: App,
+	component: App
 })
 
 function LegacyFilesDraftRedirect() {
@@ -44,7 +50,7 @@ function LegacyFilesDraftRedirect() {
 const legacyFilesDraftRoute = createRoute({
 	getParentRoute: () => filesRoute,
 	path: 'draft',
-	component: LegacyFilesDraftRedirect,
+	component: LegacyFilesDraftRedirect
 })
 
 function MemoryPageRoute() {
@@ -55,7 +61,7 @@ function MemoryPageRoute() {
 const memoryRoute = createRoute({
 	getParentRoute: () => filesRoute,
 	path: '$id',
-	component: MemoryPageRoute,
+	component: MemoryPageRoute
 })
 
 function LegacyDraftRedirect() {
@@ -65,20 +71,20 @@ function LegacyDraftRedirect() {
 const legacyDraftRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/draft',
-	component: LegacyDraftRedirect,
+	component: LegacyDraftRedirect
 })
 
 const settingsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/settings',
-	component: SettingsPage,
+	component: SettingsPage
 })
 
 const routeTree = rootRoute.addChildren([
 	indexRoute,
 	filesRoute.addChildren([filesIndexRoute, filesScratchRoute, legacyFilesDraftRoute, memoryRoute]),
 	legacyDraftRoute,
-	settingsRoute,
+	settingsRoute
 ])
 
 export const router = createRouter({ routeTree })

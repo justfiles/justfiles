@@ -1,5 +1,5 @@
-import { type Node } from 'prosemirror-model'
-import { Plugin, PluginKey, type EditorState } from 'prosemirror-state'
+import type { Node } from 'prosemirror-model'
+import { type EditorState, Plugin, PluginKey } from 'prosemirror-state'
 import { Decoration, DecorationSet, type EditorView, type NodeView } from 'prosemirror-view'
 
 const uploadKey = new PluginKey<DecorationSet>('upload')
@@ -42,7 +42,7 @@ export async function startImageUpload(
 	uploadAsset: (file: File) => Promise<string>
 ) {
 	const id = {}
-	let tr = view.state.tr
+	const tr = view.state.tr
 	if (!tr.selection.empty) tr.deleteSelection()
 	tr.setMeta(uploadPlugin, { add: { id, pos: tr.selection.from } })
 	view.dispatch(tr)
@@ -72,16 +72,19 @@ export function makeImageNodeView(
 		const src = node.attrs.src as string
 		img.alt = node.attrs.alt ?? ''
 		if (node.attrs.title) img.title = node.attrs.title
-		void resolveAssetUrl(src).then((url) => {
-			if (!url) return null
-			const token = ++renderToken
-			return readAssetBlob(src).then((blob) => ({ blob, token }))
-		}).then(async (result) => {
-			if (!result || result.token !== renderToken || !result.blob) return
-			if (objectUrl) URL.revokeObjectURL(objectUrl)
-			objectUrl = URL.createObjectURL(result.blob)
-			img.src = objectUrl
-		}).catch(() => {})
+		void resolveAssetUrl(src)
+			.then((url) => {
+				if (!url) return null
+				const token = ++renderToken
+				return readAssetBlob(src).then((blob) => ({ blob, token }))
+			})
+			.then(async (result) => {
+				if (!result || result.token !== renderToken || !result.blob) return
+				if (objectUrl) URL.revokeObjectURL(objectUrl)
+				objectUrl = URL.createObjectURL(result.blob)
+				img.src = objectUrl
+			})
+			.catch(() => {})
 		return {
 			dom: img,
 			destroy() {

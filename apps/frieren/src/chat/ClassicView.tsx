@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
-import type { ChatViewProps } from './types'
 import { ToolCallBlock } from './ToolCallBlock'
+import type { ChatViewProps } from './types'
 
 export function ClassicView(props: ChatViewProps) {
 	const { messages, input, setInput, connectionState, isStreaming, sendMessage, abort } = props

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useLayoutMode, type LayoutMode } from './layoutMode'
+import { type LayoutMode, useLayoutMode } from './layoutMode'
 
 type HeaderActionTone = 'default' | 'primary' | 'danger' | 'success'
 

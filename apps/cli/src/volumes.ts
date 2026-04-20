@@ -1,6 +1,6 @@
 import { resolve } from 'node:path'
 import { apiStorage, createFsClient } from '@justfiles/core/fs.client'
-import { volume, type Volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 import type { CliConfig, RemoteVolumeConfig, VolumeConfig } from './config.ts'
 import { CliUsageError } from './errors.ts'
@@ -11,7 +11,8 @@ const REMOTE_TOKEN_ENV_KEYS = ['JUSTFILES_TOKEN', 'FILES_TOKEN', 'API_KEY'] as c
 function isVolumeInstance(config: VolumeConfig): config is Volume {
 	if (!config || typeof config !== 'object') return false
 	const candidate = config as Partial<Volume>
-	return typeof candidate.stat === 'function' &&
+	return (
+		typeof candidate.stat === 'function' &&
 		typeof candidate.readFile === 'function' &&
 		typeof candidate.writeFile === 'function' &&
 		typeof candidate.mkdir === 'function' &&
@@ -19,14 +20,22 @@ function isVolumeInstance(config: VolumeConfig): config is Volume {
 		typeof candidate.rm === 'function' &&
 		typeof candidate.rename === 'function' &&
 		typeof candidate.cp === 'function'
+	)
 }
 
-function isCustomVolumeConfig(config: VolumeConfig): config is Exclude<VolumeConfig, string | Volume> {
-	return typeof config === 'function' || (typeof config === 'object' && config !== null && 'create' in config)
+function isCustomVolumeConfig(
+	config: VolumeConfig
+): config is Exclude<VolumeConfig, string | Volume> {
+	return (
+		typeof config === 'function' ||
+		(typeof config === 'object' && config !== null && 'create' in config)
+	)
 }
 
 function isRemoteVolumeConfig(config: VolumeConfig): config is RemoteVolumeConfig {
-	return typeof config === 'object' && config !== null && 'type' in config && config.type === 'remote'
+	return (
+		typeof config === 'object' && config !== null && 'type' in config && config.type === 'remote'
+	)
 }
 
 function resolveLocalRoot(root: string, configDir: string): string {
@@ -81,11 +90,11 @@ async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 	const token = resolveRemoteToken(config)
 	const baseUrl = resolveFsBaseUrl(config.url ?? DEFAULT_REMOTE_VOLUME_URL)
 	const headers = {
-		Authorization: `Bearer ${token}`,
+		Authorization: `Bearer ${token}`
 	}
 	const client = createFsClient({
 		baseUrl,
-		headers,
+		headers
 	})
 
 	const baseVolume = volume(await apiStorage(client))
@@ -99,7 +108,7 @@ async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 			let message = `readFile failed: ${res.status}`
 			const contentType = res.headers.get('content-type') ?? ''
 			if (contentType.includes('application/json')) {
-				const payload = await res.json() as { error?: string }
+				const payload = (await res.json()) as { error?: string }
 				if (typeof payload.error === 'string') message = payload.error
 			}
 
@@ -107,9 +116,11 @@ async function createRemoteVolume(config: RemoteVolumeConfig): Promise<Volume> {
 				throw new Error(message)
 			}
 
-			console.warn(`[files] remote read fast path failed for ${path}: ${message}; falling back to inode walk`)
+			console.warn(
+				`[files] remote read fast path failed for ${path}: ${message}; falling back to inode walk`
+			)
 			return baseVolume.readFile(path)
-		},
+		}
 	}
 }
 
@@ -153,7 +164,9 @@ function resolveVolumeName(config: CliConfig): string {
 	)
 }
 
-export async function loadVolume(config: CliConfig): Promise<{ volumeName: string; volume: Volume }> {
+export async function loadVolume(
+	config: CliConfig
+): Promise<{ volumeName: string; volume: Volume }> {
 	const volumeName = resolveVolumeName(config)
 	const volumeConfig = config.volumes[volumeName]
 	if (!volumeConfig) {
@@ -162,6 +175,6 @@ export async function loadVolume(config: CliConfig): Promise<{ volumeName: strin
 
 	return {
 		volumeName,
-		volume: await createVolumeFromConfig(volumeConfig, config),
+		volume: await createVolumeFromConfig(volumeConfig, config)
 	}
 }

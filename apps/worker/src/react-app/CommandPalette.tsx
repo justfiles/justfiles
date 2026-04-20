@@ -91,11 +91,14 @@ export function CommandPalette() {
 				.slice()
 				.sort((left: FileMeta, right: FileMeta) => right.updated_at.localeCompare(left.updated_at))
 				.slice(0, RECENT_LIMIT)
-				.map((entry: FileMeta) => ({
-					id: entry.id,
-					path: entry.path,
-					snippet: null
-				} satisfies PaletteResult)),
+				.map(
+					(entry: FileMeta) =>
+						({
+							id: entry.id,
+							path: entry.path,
+							snippet: null
+						}) satisfies PaletteResult
+				),
 		[entries]
 	)
 
@@ -103,11 +106,14 @@ export function CommandPalette() {
 		const trimmed = submittedQuery.trim()
 		if (!trimmed) return []
 
-		return searchPaths(entries, trimmed).map((entry: FileMeta) => ({
-			id: entry.id,
-			path: entry.path,
-			snippet: null
-		} satisfies PaletteResult))
+		return searchPaths(entries, trimmed).map(
+			(entry: FileMeta) =>
+				({
+					id: entry.id,
+					path: entry.path,
+					snippet: null
+				}) satisfies PaletteResult
+		)
 	}, [entries, submittedQuery])
 
 	const hasSubmitted = submittedQuery.trim().length > 0
@@ -160,14 +166,14 @@ export function CommandPalette() {
 										className={`block px-4 py-2.5 no-underline text-inherit cursor-pointer ${index === selectedIndex ? 'bg-base-200' : 'hover:bg-base-200'}`}
 										onClick={() => setOpen(false)}
 									>
-											<div className="flex items-baseline justify-between gap-3">
-												<span className="text-sm text-base-content truncate">
-													{noteFilenameFromPath(result.path)}
-												</span>
-												<span className="text-xs text-base-content/40 shrink-0 truncate max-w-[40%]">
-													/{result.path}
-												</span>
-											</div>
+										<div className="flex items-baseline justify-between gap-3">
+											<span className="text-sm text-base-content truncate">
+												{noteFilenameFromPath(result.path)}
+											</span>
+											<span className="text-xs text-base-content/40 shrink-0 truncate max-w-[40%]">
+												/{result.path}
+											</span>
+										</div>
 									</Link>
 								</li>
 							))}
@@ -185,15 +191,15 @@ export function CommandPalette() {
 									viewTransition
 									className={`block px-4 py-2.5 no-underline text-inherit cursor-pointer ${index === selectedIndex ? 'bg-base-200' : 'hover:bg-base-200'}`}
 									onClick={() => setOpen(false)}
-									>
-										<div className="flex items-baseline justify-between gap-3">
-											<span className="text-sm text-base-content truncate">
-												{noteFilenameFromPath(result.path)}
-											</span>
-											<span className="text-xs text-base-content/40 shrink-0 truncate max-w-[40%]">
-												/{result.path}
-											</span>
-										</div>
+								>
+									<div className="flex items-baseline justify-between gap-3">
+										<span className="text-sm text-base-content truncate">
+											{noteFilenameFromPath(result.path)}
+										</span>
+										<span className="text-xs text-base-content/40 shrink-0 truncate max-w-[40%]">
+											/{result.path}
+										</span>
+									</div>
 									{result.snippet && (
 										<div className="mt-0.5 text-xs text-base-content/60 whitespace-pre-wrap">
 											{result.snippet}

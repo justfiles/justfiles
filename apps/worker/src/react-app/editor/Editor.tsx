@@ -1,9 +1,9 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Selection } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
-import { type ProseMirrorJsonDocument } from '../editCache'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import type { ProseMirrorJsonDocument } from '../editCache'
 import { DrawingEditorModal, makeDrawingNodeView } from './DrawingNodeView'
-import { startImageUpload, makeImageNodeView } from './plugins/imageUpload'
+import { makeImageNodeView, startImageUpload } from './plugins/imageUpload'
 import { buildState } from './state'
 
 type Props = {
@@ -26,7 +26,15 @@ type DrawingEditorState = {
 } | null
 
 export const Editor = forwardRef<EditorHandle, Props>(function Editor(
-	{ value, onChange, uploadAsset, resolveAssetUrl, readAssetBlob, readOnly, autoFocus = true }: Props,
+	{
+		value,
+		onChange,
+		uploadAsset,
+		resolveAssetUrl,
+		readAssetBlob,
+		readOnly,
+		autoFocus = true
+	}: Props,
 	ref
 ) {
 	const containerRef = useRef<HTMLDivElement>(null)

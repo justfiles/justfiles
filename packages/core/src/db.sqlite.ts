@@ -9,7 +9,10 @@ export function createSqliteAdapter(db: BunDatabase): DbAdapter {
 	db.exec('PRAGMA foreign_keys = ON')
 
 	const adapter: DbAdapter = {
-		async query<T extends Record<string, unknown>>(sql: string, args: SqlValue[] = []): Promise<T[]> {
+		async query<T extends Record<string, unknown>>(
+			sql: string,
+			args: SqlValue[] = []
+		): Promise<T[]> {
 			return db.prepare(sql).all(...args) as T[]
 		},
 		async run(sql: string, args: SqlValue[] = []): Promise<void> {

@@ -1,7 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { useCallback } from 'react'
-import { useSidebarActions } from './SidebarContext'
 import { noteFilenameFromName } from './notePath'
+import { useSidebarActions } from './SidebarContext'
 import { useVolume } from './useVolume'
 
 export function useCreateNote() {
@@ -31,7 +31,12 @@ export function useCreateNote() {
 		}
 
 		upsertEntry(entry)
-		await navigate({ to: '/files/$id', params: { id: entry.id }, viewTransition: true, state: { isNew: true } })
+		await navigate({
+			to: '/files/$id',
+			params: { id: entry.id },
+			viewTransition: true,
+			state: { isNew: true }
+		})
 
 		return entry
 	}, [navigate, upsertEntry, volume])

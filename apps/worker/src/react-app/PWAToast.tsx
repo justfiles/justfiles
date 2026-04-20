@@ -7,17 +7,9 @@ export function PWAToast() {
 
 	return (
 		<div className="safe-area-toast fixed z-50 flex items-center gap-3 rounded-lg bg-base-300 px-4 py-3 shadow-lg text-sm">
-			{offlineReady ? (
-				<span>App ready for offline use.</span>
-			) : (
-				<span>Update available.</span>
-			)}
+			{offlineReady ? <span>App ready for offline use.</span> : <span>Update available.</span>}
 			{needRefresh && (
-				<button
-					type="button"
-					className="btn btn-sm btn-primary"
-					onClick={() => updateSW?.(true)}
-				>
+				<button type="button" className="btn btn-sm btn-primary" onClick={() => updateSW?.(true)}>
 					Reload
 				</button>
 			)}

@@ -1,23 +1,23 @@
 import type { Volume } from '@justfiles/fs'
 import { file } from './file'
 import {
-    SessionEntrySchema,
 	type CompactionEntry,
 	type ContextMessage,
-    type EntryId,
-    type SessionEntry,
-    type SessionManager,
+	type EntryId,
+	type SessionEntry,
+	SessionEntrySchema,
+	type SessionManager
 } from './session.manager'
 
 function entryId(): EntryId {
 	const bytes = new Uint8Array(4)
 	crypto.getRandomValues(bytes)
-	return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+	return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 function walkBranch(entries: SessionEntry[], leafId: EntryId | null): SessionEntry[] {
 	if (!leafId) return []
-	const byId = new Map(entries.map(e => [e.id, e]))
+	const byId = new Map(entries.map((e) => [e.id, e]))
 	const branch: SessionEntry[] = []
 	let cur = leafId
 	while (cur) {
@@ -45,13 +45,15 @@ export function session(path: string, volume: Volume): SessionManager {
 	}
 
 	async function appendEntries(entries: SessionEntry[]): Promise<void> {
-		const lines = entries.map(e => JSON.stringify(e)).join('\n') + '\n'
+		const lines = entries.map((e) => JSON.stringify(e)).join('\n') + '\n'
 		await sessionFile.append(lines)
 	}
 
 	const mgr: SessionManager = {
 		sessionId: crypto.randomUUID(),
-		get activeLeafId() { return activeLeafId },
+		get activeLeafId() {
+			return activeLeafId
+		},
 
 		async append(payloads) {
 			await init()
@@ -82,7 +84,7 @@ export function session(path: string, volume: Volume): SessionManager {
 				if (branch[i].type === 'compaction') {
 					const c = branch[i] as CompactionEntry
 					messages.push({ role: 'assistant', content: c.summary, timestamp: Date.parse(c.ts) })
-					const keptIdx = branch.findIndex(e => e.id === c.firstKeptEntryId)
+					const keptIdx = branch.findIndex((e) => e.id === c.firstKeptEntryId)
 					startIdx = keptIdx >= 0 ? keptIdx : i + 1
 					break
 				}
@@ -105,9 +107,15 @@ export function session(path: string, volume: Volume): SessionManager {
 			const all = await sessionFile.jsonl(SessionEntrySchema)
 			return walkBranch(all, activeLeafId)
 		},
-		branch() { throw new Error('not implemented') },
-		branchWithSummary() { throw new Error('not implemented') },
-		fork() { throw new Error('not implemented') },
+		branch() {
+			throw new Error('not implemented')
+		},
+		branchWithSummary() {
+			throw new Error('not implemented')
+		},
+		fork() {
+			throw new Error('not implemented')
+		}
 	}
 
 	return mgr

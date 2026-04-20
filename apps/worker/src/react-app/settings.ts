@@ -11,21 +11,48 @@ export type Settings = {
 }
 
 export const DEFAULT_DESTINATIONS: Destination[] = [
-	{ id: 'default-inbox', name: 'Inbox', pathTemplate: 'inbox/{timestamp}' },
+	{ id: 'default-inbox', name: 'Inbox', pathTemplate: 'inbox/{timestamp}' }
 ]
 
 export const DEFAULT_SETTINGS: Settings = {
 	destinations: DEFAULT_DESTINATIONS,
 	lastUsedDestinationId: 'default-inbox',
-	theme: 'light',
+	theme: 'light'
 }
 
 export const DAISYUI_THEMES = [
-	'light', 'dark', 'cupcake', 'bumblebee', 'emerald', 'corporate',
-	'synthwave', 'retro', 'cyberpunk', 'valentine', 'halloween', 'garden',
-	'forest', 'aqua', 'lofi', 'pastel', 'fantasy', 'wireframe', 'black',
-	'luxury', 'dracula', 'cmyk', 'autumn', 'business', 'acid', 'lemonade',
-	'night', 'coffee', 'winter', 'dim', 'nord', 'sunset',
+	'light',
+	'dark',
+	'cupcake',
+	'bumblebee',
+	'emerald',
+	'corporate',
+	'synthwave',
+	'retro',
+	'cyberpunk',
+	'valentine',
+	'halloween',
+	'garden',
+	'forest',
+	'aqua',
+	'lofi',
+	'pastel',
+	'fantasy',
+	'wireframe',
+	'black',
+	'luxury',
+	'dracula',
+	'cmyk',
+	'autumn',
+	'business',
+	'acid',
+	'lemonade',
+	'night',
+	'coffee',
+	'winter',
+	'dim',
+	'nord',
+	'sunset'
 ] as const
 
 function lsSettingsKey(userId: string) {
@@ -35,15 +62,24 @@ function lsSettingsKey(userId: string) {
 export function loadSettings(userId: string): Settings {
 	try {
 		const raw = localStorage.getItem(lsSettingsKey(userId))
-		if (!raw) return { destinations: [...DEFAULT_DESTINATIONS], lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId, theme: DEFAULT_SETTINGS.theme }
+		if (!raw)
+			return {
+				destinations: [...DEFAULT_DESTINATIONS],
+				lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId,
+				theme: DEFAULT_SETTINGS.theme
+			}
 		const parsed = JSON.parse(raw) as Partial<Settings>
 		return {
 			destinations: parsed.destinations?.length ? parsed.destinations : [...DEFAULT_DESTINATIONS],
 			lastUsedDestinationId: parsed.lastUsedDestinationId ?? DEFAULT_SETTINGS.lastUsedDestinationId,
-			theme: parsed.theme ?? DEFAULT_SETTINGS.theme,
+			theme: parsed.theme ?? DEFAULT_SETTINGS.theme
 		}
 	} catch {
-		return { destinations: [...DEFAULT_DESTINATIONS], lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId, theme: DEFAULT_SETTINGS.theme }
+		return {
+			destinations: [...DEFAULT_DESTINATIONS],
+			lastUsedDestinationId: DEFAULT_SETTINGS.lastUsedDestinationId,
+			theme: DEFAULT_SETTINGS.theme
+		}
 	}
 }
 
@@ -73,38 +109,38 @@ export const TEMPLATE_TOKENS: TemplateToken[] = [
 		token: '{timestamp}',
 		label: 'timestamp',
 		description: 'Unix timestamp in seconds',
-		example: () => String(Math.floor(Date.now() / 1000)),
+		example: () => String(Math.floor(Date.now() / 1000))
 	},
 	{
 		token: '{datetime}',
 		label: 'datetime',
 		description: 'Date and time (YYYY-MM-DDTHH-MM-SS)',
-		example: () => new Date().toISOString().slice(0, 19).replace(/:/g, '-'),
+		example: () => new Date().toISOString().slice(0, 19).replace(/:/g, '-')
 	},
 	{
 		token: '{date}',
 		label: 'date',
 		description: 'Current date (YYYY-MM-DD)',
-		example: () => new Date().toISOString().slice(0, 10),
+		example: () => new Date().toISOString().slice(0, 10)
 	},
 	{
 		token: '{year}',
 		label: 'year',
 		description: 'Four-digit year',
-		example: () => String(new Date().getFullYear()),
+		example: () => String(new Date().getFullYear())
 	},
 	{
 		token: '{month}',
 		label: 'month',
 		description: 'Month, zero-padded (01–12)',
-		example: () => String(new Date().getMonth() + 1).padStart(2, '0'),
+		example: () => String(new Date().getMonth() + 1).padStart(2, '0')
 	},
 	{
 		token: '{day}',
 		label: 'day',
 		description: 'Day of month, zero-padded (01–31)',
-		example: () => String(new Date().getDate()).padStart(2, '0'),
-	},
+		example: () => String(new Date().getDate()).padStart(2, '0')
+	}
 ]
 
 export function expandTemplate(template: string, at: Date = new Date()): string {

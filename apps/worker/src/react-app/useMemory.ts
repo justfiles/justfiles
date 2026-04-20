@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { docToMarkdown, markdownToDoc, schema as remarkSchema } from '../prosemirror-remark'
-import { openEditCache, type EditCache, type ProseMirrorJsonDocument } from './editCache'
+import { normalizeVolumePath } from './assets'
+import { type EditCache, openEditCache, type ProseMirrorJsonDocument } from './editCache'
 import type { LinkInfo } from './types'
 import { useVolume } from './useVolume'
-import { normalizeVolumePath } from './assets'
 
 export interface MemoryData {
 	content: ProseMirrorJsonDocument
@@ -29,7 +29,7 @@ function getEditCache(): Promise<EditCache> {
 
 function sameContent(
 	left: ProseMirrorJsonDocument | null,
-	right: ProseMirrorJsonDocument,
+	right: ProseMirrorJsonDocument
 ): boolean {
 	return left !== null && JSON.stringify(left) === JSON.stringify(right)
 }
@@ -43,7 +43,8 @@ function jsonToMarkdown(content: ProseMirrorJsonDocument): string {
 }
 
 export function useMemory(id: string | null) {
-	const { volume, resolveMemory, moveMemory, writeAssetFile, resolveAssetUrl, readAssetBlob } = useVolume()
+	const { volume, resolveMemory, moveMemory, writeAssetFile, resolveAssetUrl, readAssetBlob } =
+		useVolume()
 	const [isLoading, setIsLoading] = useState(false)
 	const [memory, setMemory] = useState<MemoryData | null>(null)
 	const [reloadVersion, setReloadVersion] = useState(0)
@@ -69,22 +70,24 @@ export function useMemory(id: string | null) {
 
 				const nextMemory: MemoryData | null = record
 					? {
-						id: record.id,
-						content: markdownToJson(record.raw_text),
-						title: record.title,
-						path: record.path,
-						source: record.source,
-						created_at: record.created_at,
-						updated_at: record.updated_at,
-						active: record.active,
-						links: record.links,
-						tags: record.tags,
-					}
+							id: record.id,
+							content: markdownToJson(record.raw_text),
+							title: record.title,
+							path: record.path,
+							source: record.source,
+							created_at: record.created_at,
+							updated_at: record.updated_at,
+							active: record.active,
+							links: record.links,
+							tags: record.tags
+						}
 					: null
 
 				if (cancelled) return
 
-				setMemory(cachedContent && nextMemory ? { ...nextMemory, content: cachedContent } : nextMemory)
+				setMemory(
+					cachedContent && nextMemory ? { ...nextMemory, content: cachedContent } : nextMemory
+				)
 
 				if (cachedContent && nextMemory?.path && nextMemory.active !== 0) {
 					const nextPath = nextMemory.path
@@ -121,65 +124,77 @@ export function useMemory(id: string | null) {
 		}
 	}, [])
 
-	const saveContent = useCallback((content: ProseMirrorJsonDocument) => {
-		if (!id || !memory?.path || memory.active === 0) return
-		const notePath = memory.path
-		setMemory((current) => (current ? { ...current, content } : current))
-		void getEditCache()
-			.then((cache) => cache.put(id, content))
-			.catch(() => {})
-		if (debounceRef.current) clearTimeout(debounceRef.current)
-		debounceRef.current = setTimeout(() => {
-			debounceRef.current = null
-			void (async () => {
-				let cache: EditCache | null = null
-				try {
-					cache = await getEditCache()
-				} catch {}
+	const saveContent = useCallback(
+		(content: ProseMirrorJsonDocument) => {
+			if (!id || !memory?.path || memory.active === 0) return
+			const notePath = memory.path
+			setMemory((current) => (current ? { ...current, content } : current))
+			void getEditCache()
+				.then((cache) => cache.put(id, content))
+				.catch(() => {})
+			if (debounceRef.current) clearTimeout(debounceRef.current)
+			debounceRef.current = setTimeout(() => {
+				debounceRef.current = null
+				void (async () => {
+					let cache: EditCache | null = null
+					try {
+						cache = await getEditCache()
+					} catch {}
 
-				try {
-					await volume.writeFile(
-						normalizeVolumePath(notePath),
-						new TextEncoder().encode(jsonToMarkdown(content))
-					)
-					if (cache) {
-						const latest = await cache.get(id)
-						if (sameContent(latest, content)) {
-							await cache.delete(id)
+					try {
+						await volume.writeFile(
+							normalizeVolumePath(notePath),
+							new TextEncoder().encode(jsonToMarkdown(content))
+						)
+						if (cache) {
+							const latest = await cache.get(id)
+							if (sameContent(latest, content)) {
+								await cache.delete(id)
+							}
 						}
-					}
-				} catch {}
-			})()
-		}, 500)
-	}, [id, memory?.active, memory?.path, volume])
+					} catch {}
+				})()
+			}, 500)
+		},
+		[id, memory?.active, memory?.path, volume]
+	)
 
-	const movePath = useCallback(async (
-		path: string,
-		options?: { dedupe?: boolean }
-	) => {
-		if (!id || !memory?.path || memory.active === 0) return
-		const nextPath = await moveMemory(id, path, options)
-		const now = new Date().toISOString()
-		setMemory((current) => (current ? { ...current, path: nextPath, updated_at: now } : current))
-		return nextPath
-	}, [id, memory?.active, memory?.path, moveMemory])
+	const movePath = useCallback(
+		async (path: string, options?: { dedupe?: boolean }) => {
+			if (!id || !memory?.path || memory.active === 0) return
+			const nextPath = await moveMemory(id, path, options)
+			const now = new Date().toISOString()
+			setMemory((current) => (current ? { ...current, path: nextPath, updated_at: now } : current))
+			return nextPath
+		},
+		[id, memory?.active, memory?.path, moveMemory]
+	)
 
-	const uploadAsset = useCallback(async (file: File) => {
-		if (!id || !memory?.path || memory.active === 0) {
-			throw new Error('Cannot upload asset for an archived or missing note')
-		}
-		return writeAssetFile(file)
-	}, [id, memory?.active, memory?.path, writeAssetFile])
+	const uploadAsset = useCallback(
+		async (file: File) => {
+			if (!id || !memory?.path || memory.active === 0) {
+				throw new Error('Cannot upload asset for an archived or missing note')
+			}
+			return writeAssetFile(file)
+		},
+		[id, memory?.active, memory?.path, writeAssetFile]
+	)
 
-	const getAssetUrl = useCallback(async (src: string) => {
-		if (!memory?.path) return src
-		return resolveAssetUrl(memory.path, src)
-	}, [memory?.path, resolveAssetUrl])
+	const getAssetUrl = useCallback(
+		async (src: string) => {
+			if (!memory?.path) return src
+			return resolveAssetUrl(memory.path, src)
+		},
+		[memory?.path, resolveAssetUrl]
+	)
 
-	const loadAssetBlob = useCallback(async (src: string) => {
-		if (!memory?.path) return null
-		return readAssetBlob(memory.path, src)
-	}, [memory?.path, readAssetBlob])
+	const loadAssetBlob = useCallback(
+		async (src: string) => {
+			if (!memory?.path) return null
+			return readAssetBlob(memory.path, src)
+		},
+		[memory?.path, readAssetBlob]
+	)
 
 	const reload = useCallback(() => {
 		setReloadVersion((version) => version + 1)

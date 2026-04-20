@@ -3,17 +3,27 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import type { ChatViewProps } from './types'
-import { ToolCallBlock } from './ToolCallBlock'
 import {
 	AssistantAvatar,
 	PORTRAIT_SIZE,
 	ROAM_HEIGHT,
 	useAdventureViewState
 } from './adventureShared'
+import { ToolCallBlock } from './ToolCallBlock'
+import type { ChatViewProps } from './types'
 
 export function ShadcnView(props: ChatViewProps) {
-	const { messages, input, setInput, userName, agentName, connectionState, isStreaming, sendMessage, abort } = props
+	const {
+		messages,
+		input,
+		setInput,
+		userName,
+		agentName,
+		connectionState,
+		isStreaming,
+		sendMessage,
+		abort
+	} = props
 	const {
 		canvasRef,
 		dismissPanel,
@@ -52,7 +62,10 @@ export function ShadcnView(props: ChatViewProps) {
 									{isUser ? (
 										'🗡️'
 									) : (
-										<AssistantAvatar size={40} className="h-full w-full object-cover object-center" />
+										<AssistantAvatar
+											size={40}
+											className="h-full w-full object-cover object-center"
+										/>
 									)}
 								</div>
 								<Card
@@ -70,9 +83,9 @@ export function ShadcnView(props: ChatViewProps) {
 											'w-fit rounded-none border-current bg-transparent px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em]',
 											isUser ? 'text-amber-200' : 'text-sky-200'
 										)}
-										>
-											{isUser ? userName : agentName}
-										</Badge>
+									>
+										{isUser ? userName : agentName}
+									</Badge>
 									<div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
 										{message.content}
 										{!message.content && isStreaming && !isUser ? (
@@ -193,7 +206,9 @@ export function ShadcnView(props: ChatViewProps) {
 												submit()
 											}
 										}}
-										placeholder={connectionState === 'ready' ? 'What will you say?' : 'Connecting...'}
+										placeholder={
+											connectionState === 'ready' ? 'What will you say?' : 'Connecting...'
+										}
 										disabled={connectionState !== 'ready'}
 										rows={2}
 									/>
@@ -208,7 +223,10 @@ export function ShadcnView(props: ChatViewProps) {
 								className="shrink-0 overflow-hidden border-2 border-sky-300 bg-slate-950 shadow-[4px_4px_0_rgba(0,0,0,0.45)]"
 								style={{ width: PORTRAIT_SIZE, height: PORTRAIT_SIZE }}
 							>
-								<AssistantAvatar size={PORTRAIT_SIZE} className="h-full w-full object-cover object-center" />
+								<AssistantAvatar
+									size={PORTRAIT_SIZE}
+									className="h-full w-full object-cover object-center"
+								/>
 							</div>
 						) : null}
 					</div>

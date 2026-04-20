@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 @plugin "@tailwindcss/typography";
 @plugin "daisyui" {
 	themes: all;
@@ -29,7 +29,7 @@
 }
 
 .editor-shell .milkdown .editor .is-placeholder::before {
-	content: 'Start writing…';
+	content: "Start writing…";
 	@apply text-base-content/30 pointer-events-none float-left h-0;
 }
 
@@ -46,7 +46,7 @@
 }
 
 .pm-editor .ProseMirror .is-placeholder::before {
-	content: 'Start writing…';
+	content: "Start writing…";
 	@apply text-base-content/30 pointer-events-none float-left h-0;
 }
 
@@ -66,7 +66,7 @@
 
 /* Selected cell highlight (prosemirror-tables) */
 .pm-editor .ProseMirror .selectedCell::after {
-	content: '';
+	content: "";
 	@apply absolute inset-0 pointer-events-none bg-primary/15 z-10;
 }
 
@@ -110,8 +110,8 @@ upload-placeholder {
 	--safe-area-bottom: env(safe-area-inset-bottom, 0px);
 	--safe-area-left: env(safe-area-inset-left, 0px);
 	font-family:
-		'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas,
-		'Liberation Mono', 'Courier New', monospace;
+		"ui-monospace", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+		monospace;
 	line-height: 1.5;
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
@@ -148,8 +148,7 @@ body {
 }
 
 .safe-area-page {
-	padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom)
-		var(--safe-area-left);
+	padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left);
 }
 
 .safe-area-header {
@@ -179,14 +178,12 @@ body {
 	right: calc(1rem + var(--safe-area-right));
 	bottom: calc(1rem + var(--safe-area-bottom));
 	width: fit-content;
-	max-width: calc(
-		100vw - var(--safe-area-left) - var(--safe-area-right) - 2rem
-	);
+	max-width: calc(100vw - var(--safe-area-left) - var(--safe-area-right) - 2rem);
 	margin-inline: auto;
 }
 
 @container (max-width: 28rem) {
-	.header-action-menu[data-collapse-mode='container'] [data-compact='true'] {
+	.header-action-menu[data-collapse-mode="container"] [data-compact="true"] {
 		display: none;
 	}
 }

@@ -5,24 +5,34 @@ import { FiChevronLeft, FiTrash2 } from 'react-icons/fi'
 import {
 	DAISYUI_THEMES,
 	DEFAULT_DESTINATIONS,
-	TEMPLATE_TOKENS,
 	type Destination,
-	type TemplateToken,
 	expandTemplate,
 	genId,
 	loadSettings,
-	saveSettings
+	saveSettings,
+	TEMPLATE_TOKENS,
+	type TemplateToken
 } from './settings'
 
 // ── layout primitives ──────────────────────────────────────────────────────
 
-function Section({ label, children, overflow = true }: { label: string; children: React.ReactNode; overflow?: boolean }) {
+function Section({
+	label,
+	children,
+	overflow = true
+}: {
+	label: string
+	children: React.ReactNode
+	overflow?: boolean
+}) {
 	return (
 		<div className="mb-8">
 			<p className="text-xs uppercase tracking-wider text-base-content/50 px-1 mb-2 font-semibold">
 				{label}
 			</p>
-			<div className={`bg-base-100 rounded-xl shadow-sm border border-base-200 ${overflow ? 'overflow-hidden' : ''}`}>
+			<div
+				className={`bg-base-100 rounded-xl shadow-sm border border-base-200 ${overflow ? 'overflow-hidden' : ''}`}
+			>
 				{children}
 			</div>
 		</div>
@@ -87,7 +97,12 @@ function DestinationRow({
 	onDelete: () => void
 }) {
 	const templateInputRef = useRef<HTMLInputElement>(null)
-	const [dd, setDd] = useState<DropdownState>({ open: false, query: '', triggerPos: -1, activeIndex: 0 })
+	const [dd, setDd] = useState<DropdownState>({
+		open: false,
+		query: '',
+		triggerPos: -1,
+		activeIndex: 0
+	})
 	const preview = expandTemplate(dest.pathTemplate)
 
 	const filteredTokens = TEMPLATE_TOKENS.filter((t) => t.label.startsWith(dd.query.toLowerCase()))
@@ -117,7 +132,8 @@ function DestinationRow({
 		const el = templateInputRef.current
 		if (!el) return
 		const cursor = el.selectionStart ?? dest.pathTemplate.length
-		const next = dest.pathTemplate.slice(0, dd.triggerPos) + token.token + dest.pathTemplate.slice(cursor)
+		const next =
+			dest.pathTemplate.slice(0, dd.triggerPos) + token.token + dest.pathTemplate.slice(cursor)
 		onChange({ ...dest, pathTemplate: next })
 		setDd((d) => ({ ...d, open: false }))
 		requestAnimationFrame(() => {
@@ -137,7 +153,10 @@ function DestinationRow({
 			setDd((d) => ({ ...d, activeIndex: Math.max(d.activeIndex - 1, 0) }))
 		} else if (e.key === 'Enter' || e.key === 'Tab') {
 			const t = filteredTokens[dd.activeIndex]
-			if (t) { e.preventDefault(); selectToken(t) }
+			if (t) {
+				e.preventDefault()
+				selectToken(t)
+			}
 		} else if (e.key === 'Escape') {
 			setDd((d) => ({ ...d, open: false }))
 		}
@@ -173,7 +192,10 @@ function DestinationRow({
 								<button
 									key={t.token}
 									type="button"
-									onMouseDown={(e) => { e.preventDefault(); selectToken(t) }}
+									onMouseDown={(e) => {
+										e.preventDefault()
+										selectToken(t)
+									}}
 									className={`w-full text-left px-3 py-2 flex items-baseline gap-3 transition-colors ${i === dd.activeIndex ? 'bg-base-200' : 'hover:bg-base-200'}`}
 								>
 									<span className="font-mono text-xs text-base-content/80 shrink-0">{t.token}</span>
@@ -249,7 +271,7 @@ export function SettingsPage() {
 	}
 
 	return (
-			<div className="safe-area-page no-overscroll w-full h-dvh overflow-y-auto bg-base-200 text-base-content font-sans">
+		<div className="safe-area-page no-overscroll w-full h-dvh overflow-y-auto bg-base-200 text-base-content font-sans">
 			{/* Nav bar */}
 			<div className="navbar sticky top-0 z-10 bg-base-200/90 backdrop-blur border-b border-base-200 min-h-14">
 				<div className="max-w-lg mx-auto w-full px-4 flex items-center gap-2">
@@ -329,9 +351,7 @@ export function SettingsPage() {
 					<div className="flex items-center justify-between gap-4 px-4 py-3">
 						<div className="min-w-0">
 							<p className="text-sm font-medium text-base-content">Justfiles</p>
-							<p className="text-xs text-base-content/55">
-								App version
-							</p>
+							<p className="text-xs text-base-content/55">App version</p>
 						</div>
 						<code className="shrink-0 rounded-md bg-base-200 px-2 py-1 text-xs text-base-content/70">
 							v{__APP_VERSION__}

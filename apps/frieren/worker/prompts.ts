@@ -1,6 +1,5 @@
 export function systemPrompt(...parts: string[]) {
-
-	return {add, build}
+	return { add, build }
 
 	function build() {
 		return parts.join('\n')
@@ -51,7 +50,6 @@ For each note, decide one of:
 - discard it if redundant, uncertain, already present, or not durable
 
 Do not create new files outside /profiles. Do not ask questions. Finish with a single short line summarizing what you merged or discarded.`
-
 
 export const NOTE_TAKING_PROMPT = `You are extracting durable notes from a conversation segment that is about to be compacted out of active context.
 

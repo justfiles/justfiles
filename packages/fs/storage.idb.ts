@@ -1,8 +1,15 @@
-import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
-import type { Storage, StorageCapabilities, InodeMeta, FsOp, MutationOptions, UpdateQueryOptions } from './storage'
-import { FileType } from './types'
+import { openDB } from 'idb'
+import type {
+	FsOp,
+	InodeMeta,
+	MutationOptions,
+	Storage,
+	StorageCapabilities,
+	UpdateQueryOptions
+} from './storage'
 import type { Ino } from './types'
+import { FileType } from './types'
 
 // ---------------------------------------------------------------------------
 // IDB schema
@@ -79,18 +86,20 @@ type Db = IDBPDatabase<GhostoreFsSchema>
 type AllStores = ('inodes' | 'content' | 'dirs' | 'xattrs' | 'dirty' | 'updates' | 'meta')[]
 type FullTx = IDBPTransaction<GhostoreFsSchema, AllStores, 'readwrite'>
 type KeyRangeLike = NonNullable<Parameters<Db['getAll']>[1]>
-const KeyRange = (globalThis as unknown as {
-	IDBKeyRange: {
-		bound(
-			lower: [string, string],
-			upper: [string, string],
-			lowerOpen?: boolean,
-			upperOpen?: boolean
-		): KeyRangeLike
-		lowerBound(lower: number): KeyRangeLike
-		upperBound(upper: number): KeyRangeLike
+const KeyRange = (
+	globalThis as unknown as {
+		IDBKeyRange: {
+			bound(
+				lower: [string, string],
+				upper: [string, string],
+				lowerOpen?: boolean,
+				upperOpen?: boolean
+			): KeyRangeLike
+			lowerBound(lower: number): KeyRangeLike
+			upperBound(upper: number): KeyRangeLike
+		}
 	}
-}).IDBKeyRange
+).IDBKeyRange
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -139,10 +148,7 @@ export type IdbStorage = Storage & {
  *
  * The root inode is always '1' (matching the memStorage convention).
  */
-export function idbStorage(
-	dbName: string,
-	options?: { contentCapBytes?: number },
-): IdbStorage {
+export function idbStorage(dbName: string, options?: { contentCapBytes?: number }): IdbStorage {
 	const cap = options?.contentCapBytes ?? DEFAULT_CONTENT_CAP
 	let dbPromise: Promise<Db> | null = null
 
@@ -183,7 +189,7 @@ export function idbStorage(
 				},
 				blocked() {
 					console.warn(`[idbStorage] DB "${dbName}" is blocked — another tab may be open`)
-				},
+				}
 			}).then(async (db) => {
 				// Bootstrap root inode on first open
 				const existing = await db.get('meta', 'rootIno')
@@ -197,7 +203,7 @@ export function idbStorage(
 						mode: 0o755,
 						mtimeNs: BigInt(now) * 1_000_000n,
 						ctimeNs: BigInt(now) * 1_000_000n,
-						lastAccessedAt: now,
+						lastAccessedAt: now
 					})
 					await tx.objectStore('meta').put(ROOT_INO, 'rootIno')
 					await tx.objectStore('meta').put(0, 'totalContentBytes')
@@ -219,7 +225,7 @@ export function idbStorage(
 	// ---------------------------------------------------------------------------
 
 	async function evictContent(db: Db, addingBytes: number, skipIno: Ino): Promise<void> {
-		const total = (await db.get('meta', 'totalContentBytes') as number | undefined) ?? 0
+		const total = ((await db.get('meta', 'totalContentBytes')) as number | undefined) ?? 0
 		if (total + addingBytes <= cap) return
 
 		const tx = db.transaction(['content', 'dirty', 'meta'], 'readwrite')
@@ -257,7 +263,7 @@ export function idbStorage(
 		ino: Ino,
 		data: Uint8Array,
 		oldSize: number,
-		options?: MutationOptions,
+		options?: MutationOptions
 	): Promise<void> {
 		const now = Date.now()
 		const newSize = data.length
@@ -275,14 +281,15 @@ export function idbStorage(
 					kind: 'upsert-inode',
 					source: options?.source,
 					ino,
-					meta: metaFromRecord(nextInode),
-				},
+					meta: metaFromRecord(nextInode)
+				}
 			})
 		}
 
 		await tx.objectStore('dirty').put({ ino, markedAt: now })
 
-		const total = (await tx.objectStore('meta').get('totalContentBytes') as number | undefined) ?? 0
+		const total =
+			((await tx.objectStore('meta').get('totalContentBytes')) as number | undefined) ?? 0
 		await tx.objectStore('meta').put(total - oldSize + newSize, 'totalContentBytes')
 		await tx.done
 	}
@@ -299,7 +306,11 @@ export function idbStorage(
 		}
 	}
 
-	function buildMissingInodeRecord(ino: Ino, partial: Partial<InodeMeta>, now = Date.now()): InodeRecord | null {
+	function buildMissingInodeRecord(
+		ino: Ino,
+		partial: Partial<InodeMeta>,
+		now = Date.now()
+	): InodeRecord | null {
 		if (partial.type === undefined) return null
 		const stamp = BigInt(now) * 1_000_000n
 		return {
@@ -311,7 +322,7 @@ export function idbStorage(
 			ctimeNs: partial.ctimeNs ?? stamp,
 			contentHash: partial.contentHash,
 			symlinkTarget: partial.symlinkTarget,
-			lastAccessedAt: now,
+			lastAccessedAt: now
 		}
 	}
 
@@ -319,7 +330,7 @@ export function idbStorage(
 		const source = options?.source
 		const mode = options?.sourceMode ?? 'only'
 		if (!source) return ops
-		return ops.filter((op) => mode === 'exclude' ? op.source !== source : op.source === source)
+		return ops.filter((op) => (mode === 'exclude' ? op.source !== source : op.source === source))
 	}
 
 	async function listAllXattrsInTx(tx: FullTx, ino: Ino): Promise<Record<string, Uint8Array>> {
@@ -331,18 +342,15 @@ export function idbStorage(
 	 * Free an inode and all associated data (content, xattrs).
 	 * Does NOT remove directory entries — caller manages dirents.
 	 */
-	async function freeIno(
-		tx: FullTx,
-		ino: Ino,
-		type: FileType,
-	): Promise<void> {
+	async function freeIno(tx: FullTx, ino: Ino, type: FileType): Promise<void> {
 		await tx.objectStore('inodes').delete(ino)
 		await tx.objectStore('dirty').delete(ino)
 
 		if (type === FileType.Regular) {
 			const rec = await tx.objectStore('content').get(ino)
 			if (rec) {
-				const total = (await tx.objectStore('meta').get('totalContentBytes') as number | undefined) ?? 0
+				const total =
+					((await tx.objectStore('meta').get('totalContentBytes')) as number | undefined) ?? 0
 				await tx.objectStore('meta').put(Math.max(0, total - rec.sizeBytes), 'totalContentBytes')
 				await tx.objectStore('content').delete(ino)
 			}
@@ -378,8 +386,8 @@ export function idbStorage(
 					source: options?.source,
 					ino,
 					meta: inode ? metaFromRecord(inode) : undefined,
-					xattrs,
-				},
+					xattrs
+				}
 			})
 			await tx.done
 		},
@@ -402,8 +410,8 @@ export function idbStorage(
 					source: options?.source,
 					ino,
 					meta: inode ? metaFromRecord(inode) : undefined,
-					xattrs,
-				},
+					xattrs
+				}
 			})
 			await tx.done
 		},
@@ -420,7 +428,9 @@ export function idbStorage(
 			const now = Date.now()
 			await tx.objectStore('inodes').put({ ino, ...meta, lastAccessedAt: now })
 			if (meta.type === FileType.Regular) {
-				await tx.objectStore('content').put({ ino, data: new Uint8Array(), sizeBytes: 0, lastAccessedAt: now })
+				await tx
+					.objectStore('content')
+					.put({ ino, data: new Uint8Array(), sizeBytes: 0, lastAccessedAt: now })
 			}
 			await tx.objectStore('dirs').put({ dirIno, name, ino, type: meta.type })
 			await tx.objectStore('updates').add({
@@ -428,8 +438,8 @@ export function idbStorage(
 					kind: 'upsert-inode',
 					source: options?.source,
 					ino,
-					meta,
-				},
+					meta
+				}
 			})
 			await tx.objectStore('updates').add({
 				op: {
@@ -438,8 +448,8 @@ export function idbStorage(
 					dirIno,
 					name,
 					ino,
-					type: meta.type,
-				},
+					type: meta.type
+				}
 			})
 			await tx.done
 			return ino
@@ -447,7 +457,10 @@ export function idbStorage(
 
 		async atomicMove(oldDir, oldName, newDir, newName, options) {
 			const db = await getDb()
-			const tx = db.transaction(['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'updates', 'meta'], 'readwrite')
+			const tx = db.transaction(
+				['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'updates', 'meta'],
+				'readwrite'
+			)
 
 			const source = await tx.objectStore('dirs').get([oldDir, oldName])
 			if (!source) {
@@ -465,13 +478,28 @@ export function idbStorage(
 			}
 
 			await tx.objectStore('dirs').delete([oldDir, oldName])
-			await tx.objectStore('dirs').put({ dirIno: newDir, name: newName, ino: source.ino, type: source.type })
+			await tx
+				.objectStore('dirs')
+				.put({ dirIno: newDir, name: newName, ino: source.ino, type: source.type })
 
 			await tx.objectStore('updates').add({
-				op: { kind: 'set-dirent', source: options?.source, dirIno: newDir, name: newName, ino: source.ino, type: source.type },
+				op: {
+					kind: 'set-dirent',
+					source: options?.source,
+					dirIno: newDir,
+					name: newName,
+					ino: source.ino,
+					type: source.type
+				}
 			})
 			await tx.objectStore('updates').add({
-				op: { kind: 'unset-dirent', source: options?.source, dirIno: oldDir, name: oldName, ino: source.ino },
+				op: {
+					kind: 'unset-dirent',
+					source: options?.source,
+					dirIno: oldDir,
+					name: oldName,
+					ino: source.ino
+				}
 			})
 
 			await tx.done
@@ -507,15 +535,16 @@ export function idbStorage(
 						const meta = await db.get('inodes', r.ino)
 						if (!meta) continue
 						const xattrRecs = await db.getAllFromIndex('xattrs', 'by-ino', r.ino)
-						const xattrs = xattrRecs.length > 0
-							? Object.fromEntries(xattrRecs.map(x => [x.name, x.value.slice()]))
-							: undefined
+						const xattrs =
+							xattrRecs.length > 0
+								? Object.fromEntries(xattrRecs.map((x) => [x.name, x.value.slice()]))
+								: undefined
 						entries.push({
 							ino: r.ino,
 							dirIno: r.dirIno,
 							name: r.name,
 							meta: metaFromRecord(meta),
-							...(xattrs ? { xattrs } : {}),
+							...(xattrs ? { xattrs } : {})
 						})
 						if (r.type === FileType.Directory) queue.push(r.ino)
 					}
@@ -549,10 +578,13 @@ export function idbStorage(
 			const keys = await db.getAllKeys('updates', range)
 			const nextCursor = keys.length > 0 ? String(keys[keys.length - 1]) : cursor
 			return {
-				ops: filterOpsBySource(records.map((record) => record.op), options),
-				cursor: nextCursor,
+				ops: filterOpsBySource(
+					records.map((record) => record.op),
+					options
+				),
+				cursor: nextCursor
 			}
-		},
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -591,7 +623,7 @@ export function idbStorage(
 						ino,
 						data: new Uint8Array(),
 						sizeBytes: 0,
-						lastAccessedAt: next.lastAccessedAt,
+						lastAccessedAt: next.lastAccessedAt
 					})
 				}
 				await tx.objectStore('updates').add({
@@ -599,8 +631,8 @@ export function idbStorage(
 						kind: 'upsert-inode',
 						source: options?.source,
 						ino,
-						meta: { ...partial },
-					},
+						meta: { ...partial }
+					}
 				})
 				await tx.done
 				return
@@ -612,8 +644,8 @@ export function idbStorage(
 					kind: 'upsert-inode',
 					source: options?.source,
 					ino,
-					meta: { ...partial },
-				},
+					meta: { ...partial }
+				}
 			})
 			await tx.done
 		},
@@ -630,7 +662,8 @@ export function idbStorage(
 			if (inode.type === FileType.Regular) {
 				const rec = await tx.objectStore('content').get(ino)
 				if (rec) {
-					const total = (await tx.objectStore('meta').get('totalContentBytes') as number | undefined) ?? 0
+					const total =
+						((await tx.objectStore('meta').get('totalContentBytes')) as number | undefined) ?? 0
 					await tx.objectStore('meta').put(Math.max(0, total - rec.sizeBytes), 'totalContentBytes')
 					await tx.objectStore('content').delete(ino)
 				}
@@ -682,8 +715,8 @@ export function idbStorage(
 					dirIno,
 					name,
 					ino: entry.ino,
-					type: entry.type,
-				},
+					type: entry.type
+				}
 			})
 			await tx.done
 		},
@@ -703,8 +736,8 @@ export function idbStorage(
 					source: options?.source,
 					dirIno,
 					name,
-					ino: existing.ino,
-				},
+					ino: existing.ino
+				}
 			})
 			await tx.done
 		},
@@ -721,8 +754,8 @@ export function idbStorage(
 
 			return {
 				entries: page.map((r) => ({ name: r.name, ino: r.ino, type: r.type })),
-				next: hasMore ? (page[DIR_PAGE - 1]?.name ?? '') : '',
+				next: hasMore ? (page[DIR_PAGE - 1]?.name ?? '') : ''
 			}
-		},
+		}
 	}
 }

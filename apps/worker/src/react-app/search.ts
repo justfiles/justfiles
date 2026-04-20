@@ -124,7 +124,13 @@ function scoreCandidate(path: string, query: PreparedQuery): CandidateScore | nu
 	let matchDistance = 0
 
 	for (const piece of query.pieces) {
-		const pieceScore = scoreQueryPiece(normalizedPath, basename, dirname, piece, query.containsPathSeparator)
+		const pieceScore = scoreQueryPiece(
+			normalizedPath,
+			basename,
+			dirname,
+			piece,
+			query.containsPathSeparator
+		)
 		if (!pieceScore) return null
 		totalScore += pieceScore.score
 		labelMatchCount += pieceScore.labelMatchCount
@@ -194,10 +200,8 @@ function scoreFuzzy(target: string, query: string, queryLower: string): FuzzySco
 			const currentIndex = rowOffset + targetIndex
 			const leftScore = targetIndex > 0 ? scores[currentIndex - 1] : 0
 			const diagIndex = prevRowOffset + targetIndex - 1
-			const diagScore =
-				queryIndex > 0 && targetIndex > 0 ? scores[diagIndex] : 0
-			const sequenceLength =
-				queryIndex > 0 && targetIndex > 0 ? matches[diagIndex] : 0
+			const diagScore = queryIndex > 0 && targetIndex > 0 ? scores[diagIndex] : 0
+			const sequenceLength = queryIndex > 0 && targetIndex > 0 ? matches[diagIndex] : 0
 
 			let charScore = 0
 			if (!(queryIndex > 0 && diagScore === 0)) {

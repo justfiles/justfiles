@@ -1,15 +1,15 @@
-import type { Storage, FsOp, MutationOptions } from './storage';
-import { isFsCursorExpiredError } from './storage';
-import type { Ino } from './types';
-import { FileType } from './types';
-import { volume, type Volume } from './volume';
-import { persistedState } from './persistedState';
+import { persistedState } from './persistedState'
+import type { FsOp, MutationOptions, Storage } from './storage'
+import { isFsCursorExpiredError } from './storage'
+import type { Ino } from './types'
+import { FileType } from './types'
+import { type Volume, volume } from './volume'
 
 type Props = {
-	local: Storage,
-	remote: Storage,
-	interval?: number,
-	lazyContent?: boolean,
+	local: Storage
+	remote: Storage
+	interval?: number
+	lazyContent?: boolean
 }
 
 type SyncState = {
@@ -30,7 +30,6 @@ interface SyncLifecycle {
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
-
 	const localVol = volume(props.local)
 
 	const syncInterval = props.interval ?? 30_000
@@ -47,7 +46,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	async function markLocalOnly(ino: Ino): Promise<void> {
 		if (await isLocalOnly(ino)) return
-		await props.local.caps?.setXattr?.(ino, SYNC_LOCAL_ONLY_XATTR, new Uint8Array(0), { source: REMOTE_SOURCE })
+		await props.local.caps?.setXattr?.(ino, SYNC_LOCAL_ONLY_XATTR, new Uint8Array(0), {
+			source: REMOTE_SOURCE
+		})
 		_localOnlyCache.set(ino, true)
 	}
 
@@ -60,7 +61,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		let cursor = ''
 		do {
 			const { entries, next } = await props.local.listDirents(stateIno, cursor)
-			await Promise.all(entries.map(e => markLocalOnly(e.ino)))
+			await Promise.all(entries.map((e) => markLocalOnly(e.ino)))
 			cursor = next
 		} while (cursor)
 	}
@@ -77,7 +78,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// the last agreed baseline — a genuine conflict requiring resolution.
 	async function hasConflict(ino: Ino, remoteHash: string | undefined): Promise<boolean> {
 		if (!remoteHash) return false
-		const [localMeta, baseline] = await Promise.all([props.local.getMeta(ino), getHashBaseline(ino)])
+		const [localMeta, baseline] = await Promise.all([
+			props.local.getMeta(ino),
+			getHashBaseline(ino)
+		])
 		const localHash = localMeta?.contentHash
 		if (!localHash || !baseline) return false
 		return localHash !== baseline && remoteHash !== baseline && localHash !== remoteHash
@@ -93,7 +97,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		const [{ ops, cursor }] = await Promise.all([
 			// Exclude ops the sync layer wrote to local (tagged REMOTE_SOURCE) — only push user-originated writes.
 			props.local.caps.deltaUpdates(localCursor, { source: REMOTE_SOURCE, sourceMode: 'exclude' }),
-			initStateMarkers(),
+			initStateMarkers()
 		])
 		// Tag remote writes with clientId so other clients can filter out our echoes in their pull.
 		const opts: MutationOptions = { source: clientId }
@@ -114,11 +118,14 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 */
 	async function pull(remoteCursor: string, clientId: string): Promise<string> {
 		if (!props.remote.caps?.deltaUpdates) return remoteCursor
-		const { ops, cursor } = await props.remote.caps.deltaUpdates(remoteCursor, { source: clientId, sourceMode: 'exclude' })
+		const { ops, cursor } = await props.remote.caps.deltaUpdates(remoteCursor, {
+			source: clientId,
+			sourceMode: 'exclude'
+		})
 		// Tag as REMOTE_SOURCE so push knows not to re-send these back.
 		const opts: MutationOptions = { source: REMOTE_SOURCE }
 		for (const op of ops) {
-			if (op.kind === 'upsert-inode' && await hasConflict(op.ino, op.meta?.contentHash)) {
+			if (op.kind === 'upsert-inode' && (await hasConflict(op.ino, op.meta?.contentHash))) {
 				const localMeta = await props.local.getMeta(op.ino)
 				if ((localMeta?.mtimeNs ?? 0n) >= (op.meta?.mtimeNs ?? 0n)) continue // local wins
 			}
@@ -137,7 +144,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * After applying, reconciles by deleting local entries absent from the remote snapshot.
 	 */
 	async function bootstrap(): Promise<void> {
-		if (!props.remote.caps?.fullScan) throw new Error('remote backend does not support scan — bootstrap unavailable')
+		if (!props.remote.caps?.fullScan)
+			throw new Error('remote backend does not support scan — bootstrap unavailable')
 		const opts: MutationOptions = { source: REMOTE_SOURCE }
 		const remoteInos = new Set<Ino>()
 		let scanCursor = ''
@@ -147,8 +155,26 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			if (result.syncCursor !== undefined) remoteCursor = result.syncCursor
 			for (const entry of result.entries) {
 				remoteInos.add(entry.ino)
-				await applyOp({ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta, xattrs: entry.xattrs }, props.remote, props.local, opts, props.lazyContent)
-				await applyOp({ kind: 'set-dirent', dirIno: entry.dirIno, name: entry.name, ino: entry.ino, type: entry.meta.type }, props.remote, props.local, opts, props.lazyContent)
+				await applyOp(
+					{ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta, xattrs: entry.xattrs },
+					props.remote,
+					props.local,
+					opts,
+					props.lazyContent
+				)
+				await applyOp(
+					{
+						kind: 'set-dirent',
+						dirIno: entry.dirIno,
+						name: entry.name,
+						ino: entry.ino,
+						type: entry.meta.type
+					},
+					props.remote,
+					props.local,
+					opts,
+					props.lazyContent
+				)
 				if (entry.meta.contentHash) await setHashBaseline(entry.ino, entry.meta.contentHash)
 			}
 			scanCursor = result.next
@@ -164,7 +190,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 */
 	async function reconcileLocal(remoteInos: Set<Ino>, opts: MutationOptions): Promise<void> {
 		await initStateMarkers()
-		const toDelete: Array<{ dirIno: Ino; name: string; ino: Ino }>  = []
+		const toDelete: Array<{ dirIno: Ino; name: string; ino: Ino }> = []
 
 		async function walk(dirIno: Ino): Promise<void> {
 			let cur = ''
@@ -200,7 +226,12 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	async function setHashBaseline(ino: Ino, hash: string): Promise<void> {
-		await props.local.caps?.setXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`, new TextEncoder().encode(hash), { source: REMOTE_SOURCE })
+		await props.local.caps?.setXattr?.(
+			ino,
+			`${SYNC_XATTR_PREFIX}baseline`,
+			new TextEncoder().encode(hash),
+			{ source: REMOTE_SOURCE }
+		)
 	}
 
 	async function sync() {
@@ -232,30 +263,57 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	function schedule() {
 		if (paused || destroyed) return
-		const delay = retryCount > 0
-			? RETRY_DELAYS_MS[Math.min(retryCount - 1, RETRY_DELAYS_MS.length - 1)]!
-			: syncInterval
+		const delay =
+			retryCount > 0
+				? RETRY_DELAYS_MS[Math.min(retryCount - 1, RETRY_DELAYS_MS.length - 1)]!
+				: syncInterval
 		timer = setTimeout(run, delay)
 	}
 
 	function run() {
 		if (running || paused || destroyed) return
 		running = sync()
-			.then(() => { retryCount = 0 })
-			.catch((e) => { console.error(e); retryCount++ })
-			.finally(() => { running = null; schedule() })
+			.then(() => {
+				retryCount = 0
+			})
+			.catch((e) => {
+				console.error(e)
+				retryCount++
+			})
+			.finally(() => {
+				running = null
+				schedule()
+			})
 	}
 
 	function flush(): Promise<void> {
 		if (running) return running
-		if (timer) { clearTimeout(timer); timer = null }
+		if (timer) {
+			clearTimeout(timer)
+			timer = null
+		}
 		run()
 		return running ?? Promise.resolve()
 	}
 
-	function pause()   { paused = true;  if (timer) { clearTimeout(timer); timer = null } }
-	function resume()  { paused = false; run() }
-	function destroy() { destroyed = true; if (timer) { clearTimeout(timer); timer = null } }
+	function pause() {
+		paused = true
+		if (timer) {
+			clearTimeout(timer)
+			timer = null
+		}
+	}
+	function resume() {
+		paused = false
+		run()
+	}
+	function destroy() {
+		destroyed = true
+		if (timer) {
+			clearTimeout(timer)
+			timer = null
+		}
+	}
 
 	// Block until the first sync (bootstrap or incremental) completes, then start the loop.
 	await sync()
@@ -283,11 +341,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	return { ...localVol, flush, pause, resume, destroy }
 }
 
-
 // Apply one FsOp to target, reading file content from source when needed.
 // Pass skipContent=true during bootstrap/pull to create stub inodes without
 // downloading blobs — content is fetched lazily on first read instead.
-async function applyOp(op: FsOp, source: Storage, target: Storage, opts: MutationOptions, skipContent = false): Promise<void> {
+async function applyOp(
+	op: FsOp,
+	source: Storage,
+	target: Storage,
+	opts: MutationOptions,
+	skipContent = false
+): Promise<void> {
 	switch (op.kind) {
 		case 'upsert-inode': {
 			const meta = skipContent && op.meta ? { ...op.meta, contentHash: undefined } : op.meta

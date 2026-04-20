@@ -25,7 +25,7 @@ export type PersistedState<T> = {
 export function persistedState<T>(
 	vol: Volume,
 	path: string,
-	init: T | (() => T | Promise<T>),
+	init: T | (() => T | Promise<T>)
 ): PersistedState<T> {
 	let _cache: T | undefined
 	const enc = new TextEncoder()
@@ -37,9 +37,7 @@ export function persistedState<T>(
 		if (await vol.exists(path)) {
 			return (_cache = JSON.parse(dec.decode(await vol.readFile(path))) as T)
 		}
-		const value = typeof init === 'function'
-			? await (init as () => T | Promise<T>)()
-			: init
+		const value = typeof init === 'function' ? await (init as () => T | Promise<T>)() : init
 		await set(value)
 		return _cache as T
 	}
@@ -51,7 +49,7 @@ export function persistedState<T>(
 	}
 
 	async function patch(partial: Partial<T>): Promise<void> {
-		await set({ ...await get(), ...partial } as T)
+		await set({ ...(await get()), ...partial } as T)
 	}
 
 	return { get, set, patch } as PersistedState<T>

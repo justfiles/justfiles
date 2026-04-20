@@ -110,20 +110,20 @@ export function useScratch(): ScratchHook {
 		contentRef.current = nextContent
 	}, [volume])
 
-	const flushScratch = useCallback(async (nextContent?: ProseMirrorJsonDocument | null) => {
-		if (debounceRef.current) {
-			clearTimeout(debounceRef.current)
-			debounceRef.current = null
-		}
+	const flushScratch = useCallback(
+		async (nextContent?: ProseMirrorJsonDocument | null) => {
+			if (debounceRef.current) {
+				clearTimeout(debounceRef.current)
+				debounceRef.current = null
+			}
 
-		const current = nextContent ?? contentRef.current
-		if (!current) return
+			const current = nextContent ?? contentRef.current
+			if (!current) return
 
-		await volume.writeFile(
-			SCRATCH_PATH,
-			new TextEncoder().encode(jsonToMarkdown(current)),
-		)
-	}, [volume])
+			await volume.writeFile(SCRATCH_PATH, new TextEncoder().encode(jsonToMarkdown(current)))
+		},
+		[volume]
+	)
 
 	useEffect(() => {
 		let cancelled = false
@@ -144,69 +144,84 @@ export function useScratch(): ScratchHook {
 		}
 	}, [loadScratch])
 
-	const save = useCallback((nextContent: ProseMirrorJsonDocument) => {
-		setContent(nextContent)
-		contentRef.current = nextContent
+	const save = useCallback(
+		(nextContent: ProseMirrorJsonDocument) => {
+			setContent(nextContent)
+			contentRef.current = nextContent
 
-		if (debounceRef.current) clearTimeout(debounceRef.current)
-		debounceRef.current = setTimeout(() => {
-			debounceRef.current = null
-			void flushScratch(nextContent)
-		}, 500)
-	}, [flushScratch])
+			if (debounceRef.current) clearTimeout(debounceRef.current)
+			debounceRef.current = setTimeout(() => {
+				debounceRef.current = null
+				void flushScratch(nextContent)
+			}, 500)
+		},
+		[flushScratch]
+	)
 
-	const submit = useCallback(async (path: string) => {
-		if (!id) throw new Error('Scratch inode is not ready')
-		await flushScratch()
+	const submit = useCallback(
+		async (path: string) => {
+			if (!id) throw new Error('Scratch inode is not ready')
+			await flushScratch()
 
-		const targetPath = normalizeVolumePath(path)
-		const targetDir = parentVolumePath(targetPath)
-		const { stem, extension } = splitFilename(basename(targetPath))
-		let resolvedPath = targetPath
-		let attempt = 1
+			const targetPath = normalizeVolumePath(path)
+			const targetDir = parentVolumePath(targetPath)
+			const { stem, extension } = splitFilename(basename(targetPath))
+			let resolvedPath = targetPath
+			let attempt = 1
 
-		while (await volume.exists(resolvedPath)) {
-			attempt += 1
-			resolvedPath = normalizeVolumePath(`${targetDir}/${stem} ${attempt}${extension}`)
-		}
+			while (await volume.exists(resolvedPath)) {
+				attempt += 1
+				resolvedPath = normalizeVolumePath(`${targetDir}/${stem} ${attempt}${extension}`)
+			}
 
-		await volume.mkdir(parentVolumePath(resolvedPath), { recursive: true })
-		await volume.rename(SCRATCH_PATH, resolvedPath)
+			await volume.mkdir(parentVolumePath(resolvedPath), { recursive: true })
+			await volume.rename(SCRATCH_PATH, resolvedPath)
 
-		const submittedStat = await volume.stat(resolvedPath)
-		const submittedPath = entryPath(resolvedPath)
-		upsertEntry({
-			id: submittedStat.ino,
-			title: null,
-			path: submittedPath,
-			updated_at: new Date().toISOString(),
-			tags: [],
-			active: 1,
-		})
+			const submittedStat = await volume.stat(resolvedPath)
+			const submittedPath = entryPath(resolvedPath)
+			upsertEntry({
+				id: submittedStat.ino,
+				title: null,
+				path: submittedPath,
+				updated_at: new Date().toISOString(),
+				tags: [],
+				active: 1
+			})
 
-		await volume.writeFile(SCRATCH_PATH, new Uint8Array())
-		const nextScratchStat = await volume.stat(SCRATCH_PATH)
-		setId(nextScratchStat.ino)
-		setContent(EMPTY_DRAFT_DOC)
-		contentRef.current = EMPTY_DRAFT_DOC
-		return {
-			id: submittedStat.ino,
-			path: submittedPath
-		}
-	}, [flushScratch, id, upsertEntry, volume])
+			await volume.writeFile(SCRATCH_PATH, new Uint8Array())
+			const nextScratchStat = await volume.stat(SCRATCH_PATH)
+			setId(nextScratchStat.ino)
+			setContent(EMPTY_DRAFT_DOC)
+			contentRef.current = EMPTY_DRAFT_DOC
+			return {
+				id: submittedStat.ino,
+				path: submittedPath
+			}
+		},
+		[flushScratch, id, upsertEntry, volume]
+	)
 
-	const uploadAsset = useCallback(async (file: File) => {
-		if (!id) throw new Error('Scratch inode is not ready')
-		return writeAssetFile(file)
-	}, [id, writeAssetFile])
+	const uploadAsset = useCallback(
+		async (file: File) => {
+			if (!id) throw new Error('Scratch inode is not ready')
+			return writeAssetFile(file)
+		},
+		[id, writeAssetFile]
+	)
 
-	const getAssetUrl = useCallback(async (src: string) => {
-		return resolveAssetUrl(SCRATCH_PATH, src)
-	}, [resolveAssetUrl])
+	const getAssetUrl = useCallback(
+		async (src: string) => {
+			return resolveAssetUrl(SCRATCH_PATH, src)
+		},
+		[resolveAssetUrl]
+	)
 
-	const loadAssetBlob = useCallback(async (src: string) => {
-		return readAssetBlob(SCRATCH_PATH, src)
-	}, [readAssetBlob])
+	const loadAssetBlob = useCallback(
+		async (src: string) => {
+			return readAssetBlob(SCRATCH_PATH, src)
+		},
+		[readAssetBlob]
+	)
 
 	return {
 		id,
@@ -216,6 +231,6 @@ export function useScratch(): ScratchHook {
 		submit,
 		uploadAsset,
 		getAssetUrl,
-		loadAssetBlob,
+		loadAssetBlob
 	}
 }

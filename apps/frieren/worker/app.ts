@@ -1,9 +1,7 @@
 import { createFsApi } from '@justfiles/core'
-import { Hono } from 'hono'
 import type { Storage } from '@justfiles/fs/storage'
+import { Hono } from 'hono'
 
 export function createFrierenApiApp(fs: Storage) {
-	return new Hono()
-		.get('/', (c) => c.json({ name: 'Frieren' }))
-		.route('/fs', createFsApi(fs))
+	return new Hono().get('/', (c) => c.json({ name: 'Frieren' })).route('/fs', createFsApi(fs))
 }

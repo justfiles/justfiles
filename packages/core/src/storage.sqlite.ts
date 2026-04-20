@@ -1,7 +1,14 @@
-import type { DbAdapter } from './db'
-import { FsCursorExpiredError, type Storage, type FsOp, type InodeMeta, type MutationOptions, type UpdateQueryOptions } from '@justfiles/fs/storage'
-import { FileType } from '@justfiles/fs/types'
+import {
+	FsCursorExpiredError,
+	type FsOp,
+	type InodeMeta,
+	type MutationOptions,
+	type Storage,
+	type UpdateQueryOptions
+} from '@justfiles/fs/storage'
 import type { Ino } from '@justfiles/fs/types'
+import { FileType } from '@justfiles/fs/types'
+import type { DbAdapter } from './db'
 
 type BlobObject = {
 	arrayBuffer(): Promise<ArrayBuffer>
@@ -162,7 +169,7 @@ function buildMissingInodeMeta(partial: Partial<InodeMeta>): InodeMeta | null {
 		mtimeNs: partial.mtimeNs ?? stamp,
 		ctimeNs: partial.ctimeNs ?? stamp,
 		contentHash: partial.contentHash,
-		symlinkTarget: partial.symlinkTarget,
+		symlinkTarget: partial.symlinkTarget
 	}
 }
 
@@ -198,8 +205,10 @@ function parseMetaJson(raw: string): Partial<InodeMeta> {
 	if (parsed.mode !== undefined) meta.mode = Number(parsed.mode)
 	if (parsed.mtimeNs !== undefined) meta.mtimeNs = BigInt(String(parsed.mtimeNs))
 	if (parsed.ctimeNs !== undefined) meta.ctimeNs = BigInt(String(parsed.ctimeNs))
-	if ('contentHash' in parsed) meta.contentHash = parsed.contentHash == null ? undefined : String(parsed.contentHash)
-	if ('symlinkTarget' in parsed) meta.symlinkTarget = parsed.symlinkTarget == null ? undefined : String(parsed.symlinkTarget)
+	if ('contentHash' in parsed)
+		meta.contentHash = parsed.contentHash == null ? undefined : String(parsed.contentHash)
+	if ('symlinkTarget' in parsed)
+		meta.symlinkTarget = parsed.symlinkTarget == null ? undefined : String(parsed.symlinkTarget)
 	return meta
 }
 
@@ -212,13 +221,16 @@ function filterOpsBySource(ops: FsOp[], options?: UpdateQueryOptions): FsOp[] {
 	const source = options?.source
 	const mode = options?.sourceMode ?? 'only'
 	if (!source) return ops
-	return ops.filter((op) => mode === 'exclude' ? op.source !== source : op.source === source)
+	return ops.filter((op) => (mode === 'exclude' ? op.source !== source : op.source === source))
 }
 
 function serializeXattrs(xattrs: Record<string, Uint8Array | null>): string {
 	return JSON.stringify(
 		Object.fromEntries(
-			Object.entries(xattrs).map(([name, value]) => [name, value === null ? null : encodeBytes(value)])
+			Object.entries(xattrs).map(([name, value]) => [
+				name,
+				value === null ? null : encodeBytes(value)
+			])
 		)
 	)
 }
@@ -226,7 +238,10 @@ function serializeXattrs(xattrs: Record<string, Uint8Array | null>): string {
 function parseXattrsJson(raw: string): Record<string, Uint8Array | null> {
 	const parsed = JSON.parse(raw) as Record<string, string | null>
 	return Object.fromEntries(
-		Object.entries(parsed).map(([name, value]) => [name, value === null ? null : decodeBytes(value)])
+		Object.entries(parsed).map(([name, value]) => [
+			name,
+			value === null ? null : decodeBytes(value)
+		])
 	)
 }
 
@@ -278,9 +293,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	async function ensureBootstrapped(): Promise<void> {
 		if (bootstrapPromise) return bootstrapPromise
 		bootstrapPromise = (async () => {
-			const existing = await db.query<{ ino: unknown }>('SELECT ino FROM fs_inodes WHERE ino = ? LIMIT 1', [
-				ROOT_INO
-			])
+			const existing = await db.query<{ ino: unknown }>(
+				'SELECT ino FROM fs_inodes WHERE ino = ? LIMIT 1',
+				[ROOT_INO]
+			)
 			if (existing.length > 0) return
 
 			const now = nowNs()
@@ -289,15 +305,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					`INSERT OR IGNORE INTO fs_inodes(
 						ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind
 					) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
-					[
-						ROOT_INO,
-						FileType.Directory,
-						0o755,
-						0,
-						now,
-						now,
-						STORAGE_NONE
-					]
+					[ROOT_INO, FileType.Directory, 0o755, 0, now, now, STORAGE_NONE]
 				)
 			})
 		})()
@@ -310,7 +318,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	}
 
 	async function getStateNumber(tx: DbAdapter, key: string): Promise<number> {
-		const [row] = await tx.query<{ value: unknown }>('SELECT value FROM fs_state WHERE key = ? LIMIT 1', [key])
+		const [row] = await tx.query<{ value: unknown }>(
+			'SELECT value FROM fs_state WHERE key = ? LIMIT 1',
+			[key]
+		)
 		const parsed = row?.value == null ? 0 : Number.parseInt(String(row.value), 10)
 		return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
 	}
@@ -336,41 +347,46 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		return row ?? null
 	}
 
-async function ensureDirectory(tx: DbAdapter, dirIno: Ino): Promise<void> {
-	const row = await getInode(tx, dirIno)
-	if (!row) throw new Error(`ENOENT: ${dirIno}`)
-	if (toNumber(row.type) !== FileType.Directory) throw new Error(`ENOTDIR: ${dirIno}`)
-}
-
-async function ensureDirentTarget(
-	tx: DbAdapter,
-	dirIno: Ino,
-	entry: { ino: Ino; type: FileType }
-): Promise<void> {
-	await ensureDirectory(tx, dirIno)
-	const row = await getInode(tx, entry.ino)
-	if (!row) throw new Error(`ENOENT: ${entry.ino}`)
-	if (toNumber(row.type) !== entry.type) {
-		throw new Error(`EINVAL: dirent type mismatch for ${entry.ino}`)
-	}
-}
-
-async function hasDirentReference(tx: DbAdapter, ino: Ino): Promise<boolean> {
-	const rows = await tx.query<{ present: unknown }>(
-		'SELECT 1 AS present FROM fs_dirents WHERE ino = ? LIMIT 1',
-		[ino]
-	)
-	return rows.length > 0
-}
-
-async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
-	const row = await getInode(tx, ino)
-	if (!row) throw new Error(`ENOENT: ${ino}`)
-	if (toNumber(row.type) !== FileType.Regular) throw new Error(`EINVAL: ${ino} is not a regular file`)
-	return row
+	async function ensureDirectory(tx: DbAdapter, dirIno: Ino): Promise<void> {
+		const row = await getInode(tx, dirIno)
+		if (!row) throw new Error(`ENOENT: ${dirIno}`)
+		if (toNumber(row.type) !== FileType.Directory) throw new Error(`ENOTDIR: ${dirIno}`)
 	}
 
-	async function insertFtsRow(tx: DbAdapter, contentHash: string, text: string | null): Promise<void> {
+	async function ensureDirentTarget(
+		tx: DbAdapter,
+		dirIno: Ino,
+		entry: { ino: Ino; type: FileType }
+	): Promise<void> {
+		await ensureDirectory(tx, dirIno)
+		const row = await getInode(tx, entry.ino)
+		if (!row) throw new Error(`ENOENT: ${entry.ino}`)
+		if (toNumber(row.type) !== entry.type) {
+			throw new Error(`EINVAL: dirent type mismatch for ${entry.ino}`)
+		}
+	}
+
+	async function hasDirentReference(tx: DbAdapter, ino: Ino): Promise<boolean> {
+		const rows = await tx.query<{ present: unknown }>(
+			'SELECT 1 AS present FROM fs_dirents WHERE ino = ? LIMIT 1',
+			[ino]
+		)
+		return rows.length > 0
+	}
+
+	async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
+		const row = await getInode(tx, ino)
+		if (!row) throw new Error(`ENOENT: ${ino}`)
+		if (toNumber(row.type) !== FileType.Regular)
+			throw new Error(`EINVAL: ${ino} is not a regular file`)
+		return row
+	}
+
+	async function insertFtsRow(
+		tx: DbAdapter,
+		contentHash: string,
+		text: string | null
+	): Promise<void> {
 		if (text == null) return
 		await tx.run('INSERT OR REPLACE INTO fs_content_fts(content_hash, text) VALUES (?, ?)', [
 			contentHash,
@@ -383,9 +399,10 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 	}
 
 	async function loadContentRow(tx: DbAdapter, contentHash: string): Promise<ContentRow | null> {
-		const [row] = await tx.query<ContentRow>('SELECT * FROM fs_contents WHERE content_hash = ? LIMIT 1', [
-			contentHash
-		])
+		const [row] = await tx.query<ContentRow>(
+			'SELECT * FROM fs_contents WHERE content_hash = ? LIMIT 1',
+			[contentHash]
+		)
 		return row ?? null
 	}
 
@@ -528,7 +545,7 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 						[txId, i, atNs, op.kind, op.source ?? null, op.dirIno, op.name, op.ino ?? null]
 					)
 					break
-				}
+			}
 		}
 		await pruneUpdates(tx)
 	}
@@ -559,11 +576,7 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 	 * Sync rename replay can temporarily create a second name for the same inode
 	 * before removing the old one.
 	 */
-	async function deleteInodeInTx(
-		tx: DbAdapter,
-		ino: Ino,
-		orphanedR2Keys: string[]
-	): Promise<void> {
+	async function deleteInodeInTx(tx: DbAdapter, ino: Ino, orphanedR2Keys: string[]): Promise<void> {
 		const inode = await getInode(tx, ino)
 		if (!inode) return
 		if (await hasDirentReference(tx, ino)) return
@@ -604,13 +617,19 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 				ctimeNs: stamp,
 				contentHash
 			}
-			await appendOps(tx, withSource([
-				{
-					kind: 'upsert-inode',
-					ino,
-					meta: nextMeta,
-				}
-			], options))
+			await appendOps(
+				tx,
+				withSource(
+					[
+						{
+							kind: 'upsert-inode',
+							ino,
+							meta: nextMeta
+						}
+					],
+					options
+				)
+			)
 		})
 
 		if (blobStore?.delete) {
@@ -633,7 +652,12 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 			return toUint8Array(rows[0].value)
 		},
 
-		async setXattr(ino: Ino, name: string, value: Uint8Array, options?: MutationOptions): Promise<void> {
+		async setXattr(
+			ino: Ino,
+			name: string,
+			value: Uint8Array,
+			options?: MutationOptions
+		): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
@@ -644,14 +668,20 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 					[ino, name, value]
 				)
 				const xattrs = await listAllXattrs(tx, ino)
-				await appendOps(tx, withSource([
-					{
-						kind: 'upsert-inode',
-						ino,
-						meta: metaFromRow(inode),
-						xattrs,
-					} as FsOp
-				], options))
+				await appendOps(
+					tx,
+					withSource(
+						[
+							{
+								kind: 'upsert-inode',
+								ino,
+								meta: metaFromRow(inode),
+								xattrs
+							} as FsOp
+						],
+						options
+					)
+				)
 			})
 		},
 
@@ -671,18 +701,29 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 				if (!inode) throw new Error(`ENOENT: ${ino}`)
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ? AND name = ?', [ino, name])
 				const xattrs = await listAllXattrs(tx, ino)
-				await appendOps(tx, withSource([
-					{
-						kind: 'upsert-inode',
-						ino,
-						meta: metaFromRow(inode),
-						xattrs,
-					} as FsOp
-				], options))
+				await appendOps(
+					tx,
+					withSource(
+						[
+							{
+								kind: 'upsert-inode',
+								ino,
+								meta: metaFromRow(inode),
+								xattrs
+							} as FsOp
+						],
+						options
+					)
+				)
 			})
 		},
 
-		async atomicCreate(dirIno: Ino, name: string, meta: InodeMeta, options?: MutationOptions): Promise<Ino> {
+		async atomicCreate(
+			dirIno: Ino,
+			name: string,
+			meta: InodeMeta,
+			options?: MutationOptions
+		): Promise<Ino> {
 			await ensureBootstrapped()
 			const ino = randomId()
 			const stamp = nowNs()
@@ -709,18 +750,33 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 					]
 				)
 				await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-					dirIno, name, ino, meta.type
+					dirIno,
+					name,
+					ino,
+					meta.type
 				])
-				await appendOps(tx, withSource([
-					{ kind: 'upsert-inode', ino, meta } as FsOp,
-					{ kind: 'set-dirent', dirIno, name, ino, type: meta.type } as FsOp
-				], options))
+				await appendOps(
+					tx,
+					withSource(
+						[
+							{ kind: 'upsert-inode', ino, meta } as FsOp,
+							{ kind: 'set-dirent', dirIno, name, ino, type: meta.type } as FsOp
+						],
+						options
+					)
+				)
 			})
 
 			return ino
 		},
 
-		async atomicMove(oldDirIno: Ino, oldName: string, newDirIno: Ino, newName: string, options?: MutationOptions): Promise<Ino | null> {
+		async atomicMove(
+			oldDirIno: Ino,
+			oldName: string,
+			newDirIno: Ino,
+			newName: string,
+			options?: MutationOptions
+		): Promise<Ino | null> {
 			await ensureBootstrapped()
 			let displaced: Ino | null = null
 			const orphanedR2Keys: string[] = []
@@ -739,29 +795,41 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 
 				if (destination) {
 					displaced = String(destination.ino)
-					await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [newDirIno, newName])
+					await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [
+						newDirIno,
+						newName
+					])
 					await deleteInodeInTx(tx, String(destination.ino), orphanedR2Keys)
 				}
 
 				await tx.run('UPDATE fs_dirents SET dir_ino = ?, name = ? WHERE dir_ino = ? AND name = ?', [
-					newDirIno, newName, oldDirIno, oldName
+					newDirIno,
+					newName,
+					oldDirIno,
+					oldName
 				])
 
-				await appendOps(tx, withSource([
-					{
-						kind: 'set-dirent',
-						dirIno: newDirIno,
-						name: newName,
-						ino: String(source.ino),
-						type: toNumber(source.type) as FileType
-					},
-					{
-						kind: 'unset-dirent',
-						dirIno: oldDirIno,
-						name: oldName,
-						ino: String(source.ino)
-					}
-				], options))
+				await appendOps(
+					tx,
+					withSource(
+						[
+							{
+								kind: 'set-dirent',
+								dirIno: newDirIno,
+								name: newName,
+								ino: String(source.ino),
+								type: toNumber(source.type) as FileType
+							},
+							{
+								kind: 'unset-dirent',
+								dirIno: oldDirIno,
+								name: oldName,
+								ino: String(source.ino)
+							}
+						],
+						options
+					)
+				)
 			})
 
 			if (blobStore?.delete) {
@@ -779,21 +847,22 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 				'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1'
 			)
 			const headCursor = headRow?.seq == null ? undefined : String(headRow.seq)
-			const rows = cursor === ''
-				? await db.query<{
-						path: unknown
-						ino: unknown
-						dir_ino: unknown
-						name: unknown
-						type: unknown
-						mode: unknown
-						size: unknown
-						mtime_ns: unknown
-						ctime_ns: unknown
-						content_hash: unknown
-						symlink_target: unknown
-					}>(
-						`WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
+			const rows =
+				cursor === ''
+					? await db.query<{
+							path: unknown
+							ino: unknown
+							dir_ino: unknown
+							name: unknown
+							type: unknown
+							mode: unknown
+							size: unknown
+							mtime_ns: unknown
+							ctime_ns: unknown
+							content_hash: unknown
+							symlink_target: unknown
+						}>(
+							`WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
 							SELECT name, ino, dir_ino, name
 							FROM fs_dirents
 							WHERE dir_ino = ?
@@ -820,22 +889,22 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 						JOIN fs_inodes inode ON inode.ino = tree.ino
 						ORDER BY tree.path
 						LIMIT ?`,
-						[ROOT_INO, FileType.Directory, SCAN_PAGE_SIZE]
-					)
-				: await db.query<{
-						path: unknown
-						ino: unknown
-						dir_ino: unknown
-						name: unknown
-						type: unknown
-						mode: unknown
-						size: unknown
-						mtime_ns: unknown
-						ctime_ns: unknown
-						content_hash: unknown
-						symlink_target: unknown
-					}>(
-						`WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
+							[ROOT_INO, FileType.Directory, SCAN_PAGE_SIZE]
+						)
+					: await db.query<{
+							path: unknown
+							ino: unknown
+							dir_ino: unknown
+							name: unknown
+							type: unknown
+							mode: unknown
+							size: unknown
+							mtime_ns: unknown
+							ctime_ns: unknown
+							content_hash: unknown
+							symlink_target: unknown
+						}>(
+							`WITH RECURSIVE tree(path, ino, dir_ino, name) AS (
 							SELECT name, ino, dir_ino, name
 							FROM fs_dirents
 							WHERE dir_ino = ?
@@ -863,13 +932,13 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 						WHERE tree.path > ?
 						ORDER BY tree.path
 						LIMIT ?`,
-						[ROOT_INO, FileType.Directory, cursor, SCAN_PAGE_SIZE]
-					)
+							[ROOT_INO, FileType.Directory, cursor, SCAN_PAGE_SIZE]
+						)
 
 			// Fetch xattrs for all inodes in this page in one query.
 			const fileInos = rows
-				.filter(row => toNumber(row.type) === FileType.Regular)
-				.map(row => String(row.ino))
+				.filter((row) => toNumber(row.type) === FileType.Regular)
+				.map((row) => String(row.ino))
 			const xattrsByIno = new Map<string, Record<string, Uint8Array>>()
 			if (fileInos.length > 0) {
 				const placeholders = fileInos.map(() => '?').join(', ')
@@ -905,7 +974,7 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 					}
 				}),
 				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : '',
-				syncCursor: rows.length === SCAN_PAGE_SIZE ? undefined : headCursor,
+				syncCursor: rows.length === SCAN_PAGE_SIZE ? undefined : headCursor
 			}
 		},
 
@@ -941,44 +1010,47 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 			)
 			const headCursor = headRow?.seq == null ? cursor : String(headRow.seq)
 
-			const ops = filterOpsBySource(rows.map((row) => {
-				const opKind = String(row.op_kind)
-				switch (opKind) {
-					case 'upsert-inode':
-					return {
-						kind: 'upsert-inode',
-						source: toStringOrNull(row.source) ?? undefined,
-						ino: String(row.ino),
-						meta: row.meta_json ? parseMetaJson(String(row.meta_json)) : undefined,
-						xattrs: row.xattrs_json ? parseXattrsJson(String(row.xattrs_json)) : undefined,
+			const ops = filterOpsBySource(
+				rows.map((row) => {
+					const opKind = String(row.op_kind)
+					switch (opKind) {
+						case 'upsert-inode':
+							return {
+								kind: 'upsert-inode',
+								source: toStringOrNull(row.source) ?? undefined,
+								ino: String(row.ino),
+								meta: row.meta_json ? parseMetaJson(String(row.meta_json)) : undefined,
+								xattrs: row.xattrs_json ? parseXattrsJson(String(row.xattrs_json)) : undefined
+							}
+						case 'set-dirent':
+							return {
+								kind: 'set-dirent',
+								source: toStringOrNull(row.source) ?? undefined,
+								dirIno: String(row.dir_ino),
+								name: String(row.name),
+								ino: String(row.entry_ino),
+								type: toNumber(row.entry_type) as FileType
+							}
+						case 'unset-dirent':
+							return {
+								kind: 'unset-dirent',
+								source: toStringOrNull(row.source) ?? undefined,
+								dirIno: String(row.dir_ino),
+								name: String(row.name),
+								ino: toStringOrNull(row.entry_ino) ?? undefined
+							}
+						default:
+							throw new Error(`Unknown fs update op: ${opKind}`)
 					}
-					case 'set-dirent':
-						return {
-							kind: 'set-dirent',
-							source: toStringOrNull(row.source) ?? undefined,
-							dirIno: String(row.dir_ino),
-							name: String(row.name),
-							ino: String(row.entry_ino),
-							type: toNumber(row.entry_type) as FileType
-						}
-					case 'unset-dirent':
-						return {
-							kind: 'unset-dirent',
-							source: toStringOrNull(row.source) ?? undefined,
-							dirIno: String(row.dir_ino),
-							name: String(row.name),
-							ino: toStringOrNull(row.entry_ino) ?? undefined
-						}
-					default:
-						throw new Error(`Unknown fs update op: ${opKind}`)
-				}
-			}), options)
+				}),
+				options
+			)
 
 			return {
 				ops,
 				cursor: rows.length > 0 ? String(rows[rows.length - 1].seq) : headCursor
 			}
-		},
+		}
 	}
 
 	// ── Storage implementation ─────────────────────────────────────────
@@ -1016,7 +1088,10 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 							STORAGE_NONE
 						]
 					)
-					await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options))
+					await appendOps(
+						tx,
+						withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options)
+					)
 					return
 				}
 				const current = metaFromRow(row)
@@ -1036,7 +1111,10 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 						ino
 					]
 				)
-				await appendOps(tx, withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options))
+				await appendOps(
+					tx,
+					withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options)
+				)
 			})
 		},
 
@@ -1075,27 +1153,46 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 			return row ? { ino: String(row.ino), type: toNumber(row.type) as FileType } : null
 		},
 
-		async putDirent(dirIno: Ino, name: string, entry: { ino: Ino; type: FileType }, options?: MutationOptions) {
+		async putDirent(
+			dirIno: Ino,
+			name: string,
+			entry: { ino: Ino; type: FileType },
+			options?: MutationOptions
+		) {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				await ensureDirentTarget(tx, dirIno, entry)
 				const existing = await getDirent(tx, dirIno, name)
 				if (existing) {
 					await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
-						entry.ino, entry.type, dirIno, name
+						entry.ino,
+						entry.type,
+						dirIno,
+						name
 					])
 				} else {
 					await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
-						dirIno, name, entry.ino, entry.type
+						dirIno,
+						name,
+						entry.ino,
+						entry.type
 					])
 				}
-				await appendOps(tx, withSource([{
-					kind: 'set-dirent',
-					dirIno,
-					name,
-					ino: entry.ino,
-					type: entry.type
-				} as FsOp], options))
+				await appendOps(
+					tx,
+					withSource(
+						[
+							{
+								kind: 'set-dirent',
+								dirIno,
+								name,
+								ino: entry.ino,
+								type: entry.type
+							} as FsOp
+						],
+						options
+					)
+				)
 			})
 		},
 
@@ -1105,36 +1202,45 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 				const existing = await getDirent(tx, dirIno, name)
 				if (!existing) return
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
-				await appendOps(tx, withSource([{
-					kind: 'unset-dirent',
-					dirIno,
-					name,
-					ino: String(existing.ino)
-				} as FsOp], options))
+				await appendOps(
+					tx,
+					withSource(
+						[
+							{
+								kind: 'unset-dirent',
+								dirIno,
+								name,
+								ino: String(existing.ino)
+							} as FsOp
+						],
+						options
+					)
+				)
 			})
 		},
 
 		async listDirents(dirIno: Ino, cursor: string) {
 			await ensureBootstrapped()
-			const rows = cursor === ''
-				? await db.query<DirentRow>(
-						`SELECT dirent.dir_ino, dirent.name, dirent.ino, dirent.type
+			const rows =
+				cursor === ''
+					? await db.query<DirentRow>(
+							`SELECT dirent.dir_ino, dirent.name, dirent.ino, dirent.type
 						 FROM fs_dirents AS dirent
 						 JOIN fs_inodes AS inode ON inode.ino = dirent.ino
 						 WHERE dirent.dir_ino = ?
 						 ORDER BY dirent.name
 						 LIMIT ?`,
-						[dirIno, DIR_PAGE_SIZE]
-					)
-				: await db.query<DirentRow>(
-						`SELECT dirent.dir_ino, dirent.name, dirent.ino, dirent.type
+							[dirIno, DIR_PAGE_SIZE]
+						)
+					: await db.query<DirentRow>(
+							`SELECT dirent.dir_ino, dirent.name, dirent.ino, dirent.type
 						 FROM fs_dirents AS dirent
 						 JOIN fs_inodes AS inode ON inode.ino = dirent.ino
 						 WHERE dirent.dir_ino = ? AND dirent.name > ?
 						 ORDER BY dirent.name
 						 LIMIT ?`,
-						[dirIno, cursor, DIR_PAGE_SIZE]
-					)
+							[dirIno, cursor, DIR_PAGE_SIZE]
+						)
 
 			return {
 				entries: rows.map((row) => ({
@@ -1144,6 +1250,6 @@ async function ensureRegularFile(tx: DbAdapter, ino: Ino): Promise<InodeRow> {
 				})),
 				next: rows.length === DIR_PAGE_SIZE ? String(rows[rows.length - 1].name) : ''
 			}
-		},
+		}
 	}
 }

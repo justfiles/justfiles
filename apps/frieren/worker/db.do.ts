@@ -35,9 +35,6 @@ export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 	await migrateFromEntries(createDOSqliteAdapter(storage), coreMigrations)
 }
 
-export function cfFsStorage(
-	storage: DurableObjectStorage,
-	namespace: string,
-): Storage {
+export function cfFsStorage(storage: DurableObjectStorage, namespace: string): Storage {
 	return sqliteStorage(createDOSqliteAdapter(storage), { namespace })
 }

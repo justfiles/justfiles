@@ -33,39 +33,39 @@ export type EntryId = string
 const EntryBase = z.object({
 	id: z.string(),
 	parentId: z.string().nullable(),
-	ts: z.string(),
+	ts: z.string()
 })
 
 const UserMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('user'),
-	content: z.string(),
+	content: z.string()
 })
 
 const AssistantThinkingMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('assistant_thinking'),
-	content: z.string(),
+	content: z.string()
 })
 
 const AssistantMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('assistant'),
-	content: z.string(),
+	content: z.string()
 })
 
 const ToolCallMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('tool_call'),
 	tool_name: z.string(),
-	input: z.record(z.string(), z.unknown()),
+	input: z.record(z.string(), z.unknown())
 })
 
 const ToolResultMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('tool_result'),
 	tool_name: z.string(),
-	content: z.string(),
+	content: z.string()
 })
 
 export const MessageEntrySchema = z.discriminatedUnion('role', [
@@ -73,7 +73,7 @@ export const MessageEntrySchema = z.discriminatedUnion('role', [
 	AssistantThinkingMessage,
 	AssistantMessage,
 	ToolCallMessage,
-	ToolResultMessage,
+	ToolResultMessage
 ])
 
 export type MessageEntry = z.infer<typeof MessageEntrySchema>
@@ -82,7 +82,7 @@ export const CompactionEntrySchema = EntryBase.extend({
 	type: z.literal('compaction'),
 	summary: z.string(),
 	firstKeptEntryId: z.string(),
-	tokensBefore: z.number(),
+	tokensBefore: z.number()
 })
 
 export type CompactionEntry = z.infer<typeof CompactionEntrySchema>
@@ -91,14 +91,14 @@ export const BranchSummaryEntrySchema = EntryBase.extend({
 	type: z.literal('branch_summary'),
 	fromId: z.string(),
 	summary: z.string(),
-	details: z.string().optional(),
+	details: z.string().optional()
 })
 
 export type BranchSummaryEntry = z.infer<typeof BranchSummaryEntrySchema>
 
 export const LabelEntrySchema = EntryBase.extend({
 	type: z.literal('label'),
-	label: z.string(),
+	label: z.string()
 })
 
 export type LabelEntry = z.infer<typeof LabelEntrySchema>
@@ -107,7 +107,7 @@ export const SessionEntrySchema = z.union([
 	MessageEntrySchema,
 	CompactionEntrySchema,
 	BranchSummaryEntrySchema,
-	LabelEntrySchema,
+	LabelEntrySchema
 ])
 
 export type SessionEntry = z.infer<typeof SessionEntrySchema>
@@ -115,7 +115,10 @@ export type SessionEntry = z.infer<typeof SessionEntrySchema>
 // ── Append Input ──────────────────────────────────────────────────────────
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
-export type AppendPayload = DistributiveOmit<MessageEntry | CompactionEntry, 'id' | 'parentId' | 'ts'>
+export type AppendPayload = DistributiveOmit<
+	MessageEntry | CompactionEntry,
+	'id' | 'parentId' | 'ts'
+>
 
 // ── Context Output ────────────────────────────────────────────────────────
 

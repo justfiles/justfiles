@@ -4,18 +4,11 @@
  * Pipeline: markdown string → mdast (remark-parse + remark-gfm) → PM Node
  */
 
-import { unified } from 'unified'
-import remarkParse from 'remark-parse'
+import type { BlockContent, DefinitionContent, List, PhrasingContent, Root, Table } from 'mdast'
+import { Fragment, type Mark, type Node as PMNode, type Schema } from 'prosemirror-model'
 import remarkGfm from 'remark-gfm'
-import type {
-	Root,
-	BlockContent,
-	DefinitionContent,
-	PhrasingContent,
-	List,
-	Table
-} from 'mdast'
-import { type Schema, type Node as PMNode, type Mark, Fragment } from 'prosemirror-model'
+import remarkParse from 'remark-parse'
+import { unified } from 'unified'
 
 // Single shared processor — stateless after construction
 const processor = unified().use(remarkParse).use(remarkGfm)
@@ -30,10 +23,7 @@ export function markdownToDoc(markdown: string, schema: Schema): PMNode {
 
 // ── Block conversion ──────────────────────────────────────────────────────────
 
-function convertBlocks(
-	nodes: (BlockContent | DefinitionContent)[],
-	schema: Schema
-): PMNode[] {
+function convertBlocks(nodes: (BlockContent | DefinitionContent)[], schema: Schema): PMNode[] {
 	return nodes.flatMap((node) => {
 		const result = convertBlock(node, schema)
 		if (!result) return []
@@ -57,10 +47,7 @@ function convertBlock(
 				const img = node.children[0]
 				return schema.nodes.drawing.create({ id: img.url, previewUrl: img.url })
 			}
-			return schema.nodes.paragraph.create(
-				null,
-				convertInlines(node.children, schema, [])
-			)
+			return schema.nodes.paragraph.create(null, convertInlines(node.children, schema, []))
 		}
 
 		case 'heading':
@@ -70,10 +57,7 @@ function convertBlock(
 			)
 
 		case 'blockquote':
-			return schema.nodes.blockquote.create(
-				null,
-				convertBlocks(node.children, schema)
-			)
+			return schema.nodes.blockquote.create(null, convertBlocks(node.children, schema))
 
 		case 'code':
 			return schema.nodes.code_block.create(
@@ -97,9 +81,7 @@ function convertBlock(
 			// in a paragraph rather than silently dropping the content.
 			if (typeof n.value === 'string') {
 				const text = (n.value as string).trim()
-				return text
-					? schema.nodes.paragraph.create(null, [schema.text(text)])
-					: null
+				return text ? schema.nodes.paragraph.create(null, [schema.text(text)]) : null
 			}
 
 			// Unknown container nodes (e.g. footnoteDefinition) — flatten children
@@ -127,10 +109,7 @@ function convertList(node: List, schema: Schema): PMNode {
 	})
 
 	if (node.ordered) {
-		return schema.nodes.ordered_list.create(
-			{ order: node.start ?? 1, tight },
-			items
-		)
+		return schema.nodes.ordered_list.create({ order: node.start ?? 1, tight }, items)
 	}
 	return schema.nodes.bullet_list.create({ tight }, items)
 }
@@ -166,11 +145,7 @@ function convertInlines(
 	return nodes.flatMap((node) => convertInline(node, schema, marks))
 }
 
-function convertInline(
-	node: PhrasingContent,
-	schema: Schema,
-	marks: readonly Mark[]
-): PMNode[] {
+function convertInline(node: PhrasingContent, schema: Schema, marks: readonly Mark[]): PMNode[] {
 	switch (node.type) {
 		case 'text':
 			return node.value ? [schema.text(node.value, marks as Mark[])] : []
@@ -179,18 +154,10 @@ function convertInline(
 			return [schema.text(node.value, addMark(marks, schema.marks.code.create()))]
 
 		case 'strong':
-			return convertInlines(
-				node.children,
-				schema,
-				addMark(marks, schema.marks.strong.create())
-			)
+			return convertInlines(node.children, schema, addMark(marks, schema.marks.strong.create()))
 
 		case 'emphasis':
-			return convertInlines(
-				node.children,
-				schema,
-				addMark(marks, schema.marks.em.create())
-			)
+			return convertInlines(node.children, schema, addMark(marks, schema.marks.em.create()))
 
 		case 'link':
 			return convertInlines(

@@ -1,20 +1,23 @@
 import { UserButton } from '@clerk/clerk-react'
-import { useState } from 'react'
 import type { ReactElement } from 'react'
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { navigate } from './clientRouter'
-import { useChat } from './chat/useChat'
 import { ClassicView } from './chat/ClassicView'
 import { JrpgView } from './chat/JrpgView'
 import { ShadcnView } from './chat/ShadcnView'
 import type { ChatViewProps, ConnectionState } from './chat/types'
+import { useChat } from './chat/useChat'
+import { navigate } from './clientRouter'
 import { cn } from './lib/utils'
 
 type ViewMode = 'classic' | 'jrpg' | 'shadcn'
 
-const VIEWS: Record<ViewMode, { label: string; component: (props: ChatViewProps) => ReactElement }> = {
+const VIEWS: Record<
+	ViewMode,
+	{ label: string; component: (props: ChatViewProps) => ReactElement }
+> = {
 	classic: { label: 'Classic', component: ClassicView },
 	jrpg: { label: 'JRPG', component: JrpgView },
 	shadcn: { label: 'Shadcn', component: ShadcnView }

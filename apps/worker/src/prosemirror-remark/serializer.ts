@@ -4,19 +4,19 @@
  * Pipeline: PM Node → mdast (Root) → remark-stringify → markdown string
  */
 
-import { unified } from 'unified'
-import remarkStringify from 'remark-stringify'
-import remarkGfm from 'remark-gfm'
 import type {
-	Root,
+	AlignType,
 	BlockContent,
-	PhrasingContent,
 	ListItem,
+	PhrasingContent,
+	Root,
 	TableCell,
-	TableRow,
-	AlignType
+	TableRow
 } from 'mdast'
-import type { Node as PMNode, Mark } from 'prosemirror-model'
+import type { Mark, Node as PMNode } from 'prosemirror-model'
+import remarkGfm from 'remark-gfm'
+import remarkStringify from 'remark-stringify'
+import { unified } from 'unified'
 
 const processor = unified().use(remarkGfm).use(remarkStringify, {
 	bullet: '-',

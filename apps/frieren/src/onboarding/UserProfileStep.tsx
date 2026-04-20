@@ -1,15 +1,13 @@
-import { useState, type FormEvent } from 'react'
+import { type FormEvent, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
-import type { Volume } from '../fs'
-import { PATHS } from './state'
-import { Button } from "@/components/ui/button"
+import { Button } from '@/components/ui/button'
 import {
 	Card,
 	CardContent,
 	CardDescription,
 	CardFooter,
 	CardHeader,
-	CardTitle,
+	CardTitle
 } from '@/components/ui/card'
 import {
 	Field,
@@ -18,13 +16,12 @@ import {
 	FieldGroup,
 	FieldLabel,
 	FieldLegend,
-	FieldSet,
+	FieldSet
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import {
-	NativeSelect,
-	NativeSelectOption,
-} from '@/components/ui/native-select'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import type { Volume } from '../fs'
+import { PATHS } from './state'
 
 const encoder = new TextEncoder()
 
@@ -33,7 +30,7 @@ const GENDER_OPTIONS = [
 	{ value: 'male', label: 'Male' },
 	{ value: 'nonbinary', label: 'Non-binary' },
 	{ value: 'prefer-not-to-say', label: 'Prefer not to say' },
-	{ value: 'custom', label: 'Self-describe…' },
+	{ value: 'custom', label: 'Self-describe…' }
 ] as const
 
 type Draft = {
@@ -57,7 +54,7 @@ function buildProfile(draft: Draft): string {
 		'---',
 		'schema: frieren/user-profile/v1',
 		`name: ${draft.name.trim()}`,
-		`birth_date: ${draft.birthDate}`,
+		`birth_date: ${draft.birthDate}`
 	]
 	const gender = resolveGender(draft)
 	if (gender) lines.push(`gender: ${gender}`)
@@ -108,9 +105,7 @@ export function UserProfileStep({ volume, onDone }: { volume: Volume; onDone: ()
 							The Rite of Naming
 						</Badge>
 						<CardTitle>Is this you?</CardTitle>
-						<CardDescription>
-							Confirm what will be etched into the record.
-						</CardDescription>
+						<CardDescription>Confirm what will be etched into the record.</CardDescription>
 					</CardHeader>
 
 					<CardContent className="space-y-4">
@@ -201,9 +196,7 @@ export function UserProfileStep({ volume, onDone }: { volume: Volume; onDone: ()
 								<Field>
 									<NativeSelect
 										value={draft.genderChoice}
-										onChange={(e) =>
-											setDraft({ ...draft, genderChoice: e.target.value })
-										}
+										onChange={(e) => setDraft({ ...draft, genderChoice: e.target.value })}
 										aria-label="Gender"
 										className="w-full"
 									>
@@ -226,9 +219,7 @@ export function UserProfileStep({ volume, onDone }: { volume: Volume; onDone: ()
 											type="text"
 											placeholder="Describe in your own words"
 											value={draft.genderCustom}
-											onChange={(e) =>
-												setDraft({ ...draft, genderCustom: e.target.value })
-											}
+											onChange={(e) => setDraft({ ...draft, genderCustom: e.target.value })}
 										/>
 									</Field>
 								) : null}

@@ -1,4 +1,4 @@
-import { openDB as idbOpenDB, type DBSchema, type IDBPDatabase } from 'idb'
+import { type DBSchema, type IDBPDatabase, openDB as idbOpenDB } from 'idb'
 
 export interface PendingPatch {
 	id: string

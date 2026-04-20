@@ -11,8 +11,7 @@ export function ToolCallBlock({ toolCall }: { toolCall: ToolCallInfo }) {
 				? 'text-error'
 				: 'text-success'
 
-	const indicatorLabel =
-		toolCall.status === 'running' ? '...' : toolCall.isError ? 'x' : 'ok'
+	const indicatorLabel = toolCall.status === 'running' ? '...' : toolCall.isError ? 'x' : 'ok'
 
 	return (
 		<div
@@ -20,11 +19,7 @@ export function ToolCallBlock({ toolCall }: { toolCall: ToolCallInfo }) {
 				toolCall.isError ? 'border-error/30' : ''
 			}`}
 		>
-			<input
-				type="checkbox"
-				checked={expanded}
-				onChange={() => setExpanded(!expanded)}
-			/>
+			<input type="checkbox" checked={expanded} onChange={() => setExpanded(!expanded)} />
 			<div className="collapse-title min-h-0 py-2 px-3 text-sm after:!top-4">
 				<div className="flex items-center gap-2">
 					<span className={`badge badge-xs font-mono text-xs ${indicatorClass}`}>

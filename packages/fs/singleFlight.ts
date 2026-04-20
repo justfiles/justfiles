@@ -46,6 +46,6 @@ export function createSingleFlight<K, V>(): SingleFlight<K, V> {
 
 		clear() {
 			inFlight.clear()
-		},
+		}
 	}
 }

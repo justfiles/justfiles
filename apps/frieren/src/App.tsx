@@ -2,11 +2,11 @@ import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { ChatPage } from './ChatPage'
+import { useClientLocation } from './clientRouter'
 import { Spinner } from './components/ui/spinner'
 import { FilesPage } from './FilesPage'
-import { useClientLocation } from './clientRouter'
-import { OnboardingPage } from './onboarding/OnboardingPage'
 import { createFsVolume } from './fs'
+import { OnboardingPage } from './onboarding/OnboardingPage'
 import { resolveOnboardingState } from './onboarding/state'
 
 function LoadingScreen({ label }: { label: string }) {

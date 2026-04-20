@@ -5,7 +5,7 @@ export function createExclusiveRunner() {
 		const run = tail.then(task, task)
 		tail = run.then(
 			() => undefined,
-			() => undefined,
+			() => undefined
 		)
 		return run
 	}
@@ -19,7 +19,7 @@ export function createKeyedExclusiveRunner<K>() {
 		const run = previous.then(task, task)
 		const completion = run.then(
 			() => undefined,
-			() => undefined,
+			() => undefined
 		)
 
 		tails.set(key, completion)

@@ -1,14 +1,14 @@
 export {
 	FsCursorExpiredError,
+	type FsOp,
+	type InodeMeta,
 	isFsCursorExpiredError,
+	type MutationOptions,
+	type ScanEntry,
 	type Storage,
 	type StorageCapabilities,
-	type InodeMeta,
-	type FsOp,
-	type MutationOptions,
-	type UpdateQueryOptions,
-	type ScanEntry,
+	type UpdateQueryOptions
 } from './storage'
-export {GHOSTORE_XATTR, XATTR_NAMESPACE, decodeXattr, encodeXattr} from './xattr'
-export {volume, type Volume} from './volume'
-export {synced} from './synced'
+export { synced } from './synced'
+export { type Volume, volume } from './volume'
+export { decodeXattr, encodeXattr, GHOSTORE_XATTR, XATTR_NAMESPACE } from './xattr'

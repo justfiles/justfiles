@@ -1,11 +1,11 @@
-import { hc, type InferResponseType } from 'hono/client'
 import {
 	FsCursorExpiredError,
 	type InodeMeta,
 	type MutationOptions,
 	type Storage
 } from '@justfiles/fs/storage'
-import { FileType } from '@justfiles/fs/types'
+import type { FileType } from '@justfiles/fs/types'
+import { hc, type InferResponseType } from 'hono/client'
 import type { createFsApi } from './fs'
 
 const FS_SOURCE_HEADER = 'x-fs-source'
@@ -39,7 +39,7 @@ function parseMeta(wire: FsMetaResponse): InodeMeta {
 		mtimeNs: BigInt(String(meta.mtimeNs)),
 		ctimeNs: BigInt(String(meta.ctimeNs)),
 		contentHash: typeof meta.contentHash === 'string' ? meta.contentHash : undefined,
-		symlinkTarget: typeof meta.symlinkTarget === 'string' ? meta.symlinkTarget : undefined,
+		symlinkTarget: typeof meta.symlinkTarget === 'string' ? meta.symlinkTarget : undefined
 	}
 }
 
@@ -91,7 +91,10 @@ export function createFsClient(options: FsClientOptions = {}): FsClient {
 	})
 }
 
-export async function apiStorage(client: FsClient, options: ApiStorageOptions = {}): Promise<Storage> {
+export async function apiStorage(
+	client: FsClient,
+	options: ApiStorageOptions = {}
+): Promise<Storage> {
 	const rootIno = options.rootIno ?? '1'
 
 	const backend: Storage = {
@@ -251,10 +254,10 @@ export async function apiStorage(client: FsClient, options: ApiStorageOptions = 
 										decodeBase64(value)
 									])
 								)
-							: undefined,
+							: undefined
 					})),
 					next: data.next,
-					syncCursor: typeof data.syncCursor === 'string' ? data.syncCursor : '',
+					syncCursor: typeof data.syncCursor === 'string' ? data.syncCursor : ''
 				}
 			},
 
@@ -265,17 +268,21 @@ export async function apiStorage(client: FsClient, options: ApiStorageOptions = 
 					{
 						...(requestInit ? { headers: requestInit.headers } : {}),
 						init: {
-							cache: 'no-store',
-						},
+							cache: 'no-store'
+						}
 					}
 				)
 
 				if (res.status === 501) return { ops: [], cursor }
 				if (res.status === 409) {
 					const data = await res.json().catch(() => null)
-					if (data && typeof data === 'object' && 'code' in data && data.code === 'cursor_expired') {
-						const message =
-							typeof data.error === 'string' ? data.error : 'FS sync cursor expired'
+					if (
+						data &&
+						typeof data === 'object' &&
+						'code' in data &&
+						data.code === 'cursor_expired'
+					) {
+						const message = typeof data.error === 'string' ? data.error : 'FS sync cursor expired'
 						throw new FsCursorExpiredError(message)
 					}
 				}
@@ -290,10 +297,9 @@ export async function apiStorage(client: FsClient, options: ApiStorageOptions = 
 							meta: op.meta ? parseMetaPatch(op.meta) : undefined,
 							xattrs: op.xattrs
 								? Object.fromEntries(
-										Object.entries(op.xattrs as Record<string, string | null>).map(([key, value]) => [
-											key,
-											value !== null ? decodeBase64(value) : null
-										])
+										Object.entries(op.xattrs as Record<string, string | null>).map(
+											([key, value]) => [key, value !== null ? decodeBase64(value) : null]
+										)
 									)
 								: undefined
 						}

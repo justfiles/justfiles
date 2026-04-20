@@ -1,5 +1,5 @@
 import { DragDropProvider, DragOverlay, useDraggable, useDroppable } from '@dnd-kit/react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
 import { FiChevronDown, FiChevronRight, FiFile } from 'react-icons/fi'
 import { LuGripVertical } from 'react-icons/lu'
 
@@ -122,15 +122,9 @@ type FileNodeProps = {
 	onSelect?: (item: FileTreeItem) => void
 }
 
-function FileNode({
-	item,
-	depth,
-	selectedId,
-	dragEnabled,
-	movingItemId,
-	onSelect
-}: FileNodeProps) {
-	const dragDisabled = !dragEnabled || item.draggable === false || item.disabled || movingItemId === item.id
+function FileNode({ item, depth, selectedId, dragEnabled, movingItemId, onSelect }: FileNodeProps) {
+	const dragDisabled =
+		!dragEnabled || item.draggable === false || item.disabled || movingItemId === item.id
 	const { ref, handleRef, isDragging } = useDraggable<TreeDragData>({
 		id: `file:${item.id}`,
 		data: {
@@ -244,16 +238,16 @@ function FolderNode({
 					<span className="truncate">{node.name}</span>
 				</button>
 			) : null}
-			{(open || !node.name) ? (
+			{open || !node.name ? (
 				<>
 					{node.children.map((child) => (
-							<FolderNode
-								key={child.fullPath}
-								node={child}
-								depth={node.name ? depth + 1 : depth}
-								selectedId={selectedId}
-								dragEnabled={dragEnabled}
-								draggingItemId={draggingItemId}
+						<FolderNode
+							key={child.fullPath}
+							node={child}
+							depth={node.name ? depth + 1 : depth}
+							selectedId={selectedId}
+							dragEnabled={dragEnabled}
+							draggingItemId={draggingItemId}
 							movingItemId={movingItemId}
 							onSelect={onSelect}
 							onMove={onMove}
@@ -278,13 +272,7 @@ function FolderNode({
 	)
 }
 
-function RootDropTarget({
-	active,
-	label
-}: {
-	active: boolean
-	label: string
-}) {
+function RootDropTarget({ active, label }: { active: boolean; label: string }) {
 	const { ref, isDropTarget } = useDroppable<TreeDragData>({
 		id: 'root-drop',
 		data: {

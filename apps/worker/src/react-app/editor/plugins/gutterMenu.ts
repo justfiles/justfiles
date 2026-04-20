@@ -1,5 +1,5 @@
 import { Plugin, TextSelection } from 'prosemirror-state'
-import { type EditorView } from 'prosemirror-view'
+import type { EditorView } from 'prosemirror-view'
 import { startImageUpload } from './imageUpload'
 
 export interface GutterPluginOptions {

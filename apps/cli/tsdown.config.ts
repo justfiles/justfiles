@@ -8,17 +8,17 @@ export default defineConfig({
 	banner: { js: '#!/usr/bin/env node' },
 	clean: true,
 	alias: {
-		'@justfiles/core/fs.client': resolve(import.meta.dirname, '../../packages/core/src/fs.client.ts'),
+		'@justfiles/core/fs.client': resolve(
+			import.meta.dirname,
+			'../../packages/core/src/fs.client.ts'
+		)
 	},
 	deps: {
-		alwaysBundle: [
-			/^hono($|\/)/,
-			/^@justfiles\//,
-		],
+		alwaysBundle: [/^hono($|\/)/, /^@justfiles\//]
 	},
 	inputOptions(options) {
 		options.resolve ??= {}
 		options.resolve.conditionNames = ['@justfiles/src', 'import', 'default']
 		return options
-	},
+	}
 })

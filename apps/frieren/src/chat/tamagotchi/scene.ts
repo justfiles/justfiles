@@ -1,10 +1,10 @@
 // Scene orchestration: procgen landscape, character sim, render loop.
 // Framework-agnostic — takes a canvas, returns a handle.
 
-import { DEFAULT_SKIN_ID, drawCharacterFrame, frameAt, getSkin, resolveClip } from './character'
 import type { CharacterActivity, CharacterEmotion, CharacterPose } from './character'
-import { PALETTES, type Biome, type Palette } from './palettes'
-import { mulberry32, makeNoise1D, type Noise1D } from './rng'
+import { DEFAULT_SKIN_ID, drawCharacterFrame, frameAt, getSkin, resolveClip } from './character'
+import { type Biome, PALETTES, type Palette } from './palettes'
+import { makeNoise1D, mulberry32, type Noise1D } from './rng'
 import { drawProp, type Prop, type PropKind } from './sprites'
 
 export type SceneMode = 'roam' | 'listen' | 'talk'
@@ -84,7 +84,8 @@ export function createTamagotchi(opts: TamagotchiOptions): TamagotchiHandle {
 		const n = yNear()
 		return Math.max(0, (y - f) / (n - f))
 	}
-	const scaleAt = (y: number) => 0.5 + Math.min(1, depthT(y)) * 0.7 + Math.max(0, depthT(y) - 1) * 1.1
+	const scaleAt = (y: number) =>
+		0.5 + Math.min(1, depthT(y)) * 0.7 + Math.max(0, depthT(y) - 1) * 1.1
 
 	// walkable trapezoid narrows toward the horizon
 	const boundsAt = (y: number): [number, number] => {

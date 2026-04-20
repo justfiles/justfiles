@@ -8,14 +8,13 @@
  * + `fullScan()` via caps on top.
  */
 
-import { describe, it, expect, afterEach } from 'bun:test'
-import { synced } from './synced'
-import { memStorage } from './storage.mem'
-import type { Storage, StorageCapabilities, FsOp, UpdateQueryOptions } from './storage'
+import { afterEach, describe, expect, it } from 'bun:test'
+import type { FsOp, InodeMeta, Storage, StorageCapabilities, UpdateQueryOptions } from './storage'
 import { FsCursorExpiredError } from './storage'
-import type { InodeMeta } from './storage'
+import { memStorage } from './storage.mem'
+import { synced } from './synced'
+import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
-import type { Ino, DirentMin } from './types'
 import { volume } from './volume'
 
 // ---------------------------------------------------------------------------
@@ -79,21 +78,24 @@ function journaledStorage(): JournaledStorage {
 		/**
 		 * Return all journal entries since `cursor`, filtered by source.
 		 */
-		async deltaUpdates(cursor: string, options?: UpdateQueryOptions): Promise<{ ops: FsOp[]; cursor: string }> {
+		async deltaUpdates(
+			cursor: string,
+			options?: UpdateQueryOptions
+		): Promise<{ ops: FsOp[]; cursor: string }> {
 			if (expireNext) {
 				expireNext = false
 				throw new FsCursorExpiredError()
 			}
 			const fromSeq = cursor === '' ? 0 : parseInt(cursor) + 1
-			let entries = journal.filter(e => e.seq >= fromSeq)
+			let entries = journal.filter((e) => e.seq >= fromSeq)
 			if (options?.source) {
 				if (options.sourceMode === 'exclude') {
-					entries = entries.filter(e => e.source !== options.source)
+					entries = entries.filter((e) => e.source !== options.source)
 				} else if (options.sourceMode === 'only') {
-					entries = entries.filter(e => e.source === options.source)
+					entries = entries.filter((e) => e.source === options.source)
 				}
 			}
-			return { ops: entries.map(e => e.op), cursor: String(lastSeq()) }
+			return { ops: entries.map((e) => e.op), cursor: String(lastSeq()) }
 		},
 
 		/**
@@ -125,7 +127,7 @@ function journaledStorage(): JournaledStorage {
 			// Use '-1' for an empty journal so the stored remoteCursor is truthy,
 			// preventing an infinite bootstrap loop.
 			return { entries, next: '', syncCursor: String(lastSeq()) }
-		},
+		}
 	}
 
 	const backend: JournaledStorage = {
@@ -169,7 +171,7 @@ function journaledStorage(): JournaledStorage {
 			const existing = await base.getDirent(dirIno, name)
 			await base.deleteDirent(dirIno, name, opts)
 			if (existing) record({ kind: 'unset-dirent', dirIno, name, ino: existing.ino }, opts?.source)
-		},
+		}
 	}
 
 	return backend
@@ -313,7 +315,7 @@ describe('synced', () => {
 
 		// Confirm root only contains what was explicitly pushed (nothing in this case).
 		const entries = await remoteVol.readdir('/')
-		const names = entries.map(e => e.name)
+		const names = entries.map((e) => e.name)
 		expect(names).not.toContain('.state')
 	})
 
@@ -523,6 +525,6 @@ describe('synced', () => {
 		const p2 = vol.flush()
 
 		const results = await Promise.allSettled([p1, p2])
-		expect(results.every(r => r.status === 'fulfilled')).toBe(true)
+		expect(results.every((r) => r.status === 'fulfilled')).toBe(true)
 	})
 })

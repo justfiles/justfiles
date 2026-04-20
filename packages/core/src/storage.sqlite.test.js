@@ -1,12 +1,12 @@
-// @ts-ignore Bun resolves this at runtime; TypeScript in this workspace does not.
+// @ts-expect-error Bun resolves this at runtime; TypeScript in this workspace does not.
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
-import { Hono } from 'hono'
+import { volume } from '@justfiles/fs'
 import { FsCursorExpiredError } from '@justfiles/fs/storage'
 import { FileType } from '@justfiles/fs/types'
-import { volume } from '@justfiles/fs'
-import { createFsApi } from './fs'
+import { Hono } from 'hono'
 import { createSqliteAdapter } from './db.sqlite'
+import { createFsApi } from './fs'
 import { parseSqlStatements } from './migrations/utils'
 import { storage as sqliteStorage } from './storage.sqlite'
 
@@ -33,7 +33,7 @@ describe('sqlite fs update retention', () => {
 			mode: 0o644,
 			nlink: 0,
 			mtimeNs: 0n,
-			ctimeNs: 0n,
+			ctimeNs: 0n
 		})
 
 		expect(await backend.getMeta(ino)).toEqual({
@@ -43,7 +43,7 @@ describe('sqlite fs update retention', () => {
 			mtimeNs: 0n,
 			ctimeNs: 0n,
 			contentHash: undefined,
-			symlinkTarget: undefined,
+			symlinkTarget: undefined
 		})
 	})
 
@@ -52,14 +52,16 @@ describe('sqlite fs update retention', () => {
 		const ino = 'partial-create-ino'
 
 		await backend.setMeta(ino, {
-			type: FileType.Regular,
+			type: FileType.Regular
 		})
 
-		expect(await backend.getMeta(ino)).toEqual(expect.objectContaining({
-			type: FileType.Regular,
-			size: 0n,
-			mode: 0o644,
-		}))
+		expect(await backend.getMeta(ino)).toEqual(
+			expect.objectContaining({
+				type: FileType.Regular,
+				size: 0n,
+				mode: 0o644
+			})
+		)
 	})
 
 	test('throws FsCursorExpiredError when the requested cursor has been pruned', async () => {
@@ -69,7 +71,7 @@ describe('sqlite fs update retention', () => {
 			size: 0n,
 			mode: 0o644,
 			mtimeNs: 0n,
-			ctimeNs: 0n,
+			ctimeNs: 0n
 		})
 		await backend.setMeta(ino, { mode: 0o600 })
 		await backend.setMeta(ino, { mode: 0o644 })
@@ -78,9 +80,9 @@ describe('sqlite fs update retention', () => {
 		await expect(backend.caps.deltaUpdates('2')).resolves.toEqual({
 			ops: [
 				expect.objectContaining({ kind: 'upsert-inode', ino }),
-				expect.objectContaining({ kind: 'upsert-inode', ino }),
+				expect.objectContaining({ kind: 'upsert-inode', ino })
 			],
-			cursor: '4',
+			cursor: '4'
 		})
 	})
 
@@ -91,7 +93,7 @@ describe('sqlite fs update retention', () => {
 			size: 0n,
 			mode: 0o644,
 			mtimeNs: 0n,
-			ctimeNs: 0n,
+			ctimeNs: 0n
 		})
 		await backend.setMeta(ino, { mode: 0o600 })
 		await backend.setMeta(ino, { mode: 0o644 })
@@ -102,7 +104,7 @@ describe('sqlite fs update retention', () => {
 		expect(response.status).toBe(409)
 		expect(await response.json()).toEqual({
 			error: 'FS sync cursor expired: 1',
-			code: 'cursor_expired',
+			code: 'cursor_expired'
 		})
 	})
 
@@ -113,7 +115,7 @@ describe('sqlite fs update retention', () => {
 			size: 0n,
 			mode: 0o644,
 			mtimeNs: 0n,
-			ctimeNs: 0n,
+			ctimeNs: 0n
 		})
 		await backend.setMeta(ino, { mode: 0o600 })
 
@@ -125,8 +127,8 @@ describe('sqlite fs update retention', () => {
 			expect.objectContaining({
 				ino,
 				dirIno: backend.rootIno,
-				name: 'note.txt',
-			}),
+				name: 'note.txt'
+			})
 		])
 	})
 

@@ -1,8 +1,8 @@
-import { CliUsageError } from '../errors.ts'
-import { normalizeVolumePath } from '../paths.ts'
-import { out, info, printJson } from '../output.ts'
-import type { CommandContext, CommandModule } from '../command.ts'
 import { parseCommandArgs } from '../args.ts'
+import type { CommandContext, CommandModule } from '../command.ts'
+import { CliUsageError } from '../errors.ts'
+import { info, out, printJson } from '../output.ts'
+import { normalizeVolumePath } from '../paths.ts'
 
 const help = `\
 Usage: files cp [options] <source> <destination>
@@ -34,14 +34,17 @@ Examples:
   files cp -r /notes/archive /backup/archive`
 
 async function run(args: string[], context: CommandContext): Promise<void> {
-	const { values, positionals } = parseCommandArgs({
-		args,
-		options: {
-			recursive: { type: 'boolean', short: 'r' },
-			help: { type: 'boolean', short: 'h' },
+	const { values, positionals } = parseCommandArgs(
+		{
+			args,
+			options: {
+				recursive: { type: 'boolean', short: 'r' },
+				help: { type: 'boolean', short: 'h' }
+			},
+			allowPositionals: true
 		},
-		allowPositionals: true,
-	}, help)
+		help
+	)
 
 	if (values.help) {
 		out(help)

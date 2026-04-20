@@ -9,6 +9,6 @@
  * to a monorepo structure.
  */
 
-export { schema } from './schema'
 export { markdownToDoc } from './parser'
+export { schema } from './schema'
 export { docToMarkdown } from './serializer'

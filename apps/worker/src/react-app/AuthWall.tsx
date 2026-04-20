@@ -4,28 +4,28 @@ const features = [
 	{
 		icon: '⌘',
 		title: 'CLI-first editing',
-		desc: 'Write, inspect, and organize notes from your terminal with the same filesystem model used by the web app.',
+		desc: 'Write, inspect, and organize notes from your terminal with the same filesystem model used by the web app.'
 	},
 	{
 		icon: '⚡',
 		title: 'Local-first sync',
-		desc: 'Your notes stay available across devices with a file-system model that keeps local edits and remote state in sync.',
+		desc: 'Your notes stay available across devices with a file-system model that keeps local edits and remote state in sync.'
 	},
 	{
 		icon: '🗂️',
 		title: 'Structured files',
-		desc: 'Paths, tags, links, and hidden asset storage keep your notes organized without a separate database model.',
+		desc: 'Paths, tags, links, and hidden asset storage keep your notes organized without a separate database model.'
 	},
 	{
 		icon: '🔄',
 		title: 'One storage model',
-		desc: 'The worker, web UI, and CLI all operate on the same filesystem-backed notes and metadata.',
+		desc: 'The worker, web UI, and CLI all operate on the same filesystem-backed notes and metadata.'
 	},
 	{
 		icon: '📱',
 		title: 'Human-first interface',
-		desc: 'A rich offline-capable web app for when you want to think, browse, and connect ideas the way humans do.',
-	},
+		desc: 'A rich offline-capable web app for when you want to think, browse, and connect ideas the way humans do.'
+	}
 ]
 
 export function AuthWall() {
@@ -55,13 +55,12 @@ export function AuthWall() {
 				</div>
 
 				<h1 className="text-4xl sm:text-6xl font-bold leading-tight max-w-3xl">
-					Your knowledge base,{' '}
-					<span className="text-primary">built for the agent era</span>
+					Your knowledge base, <span className="text-primary">built for the agent era</span>
 				</h1>
 
 				<p className="text-base-content/60 text-lg sm:text-xl max-w-xl leading-relaxed">
-					Work with notes through a web app and a CLI built around one durable
-					file-system-backed store.
+					Work with notes through a web app and a CLI built around one durable file-system-backed
+					store.
 				</p>
 
 				<div className="flex flex-wrap gap-3 justify-center">
@@ -78,17 +77,17 @@ export function AuthWall() {
 				</div>
 
 				{/* Code snippet teaser */}
-					<div className="mockup-code w-full max-w-lg text-left text-sm mt-4 opacity-80">
-						<pre data-prefix="$">
-							<code>files write "token clock skew fix"</code>
-						</pre>
-						<pre data-prefix="$">
-							<code>files ls notes/</code>
-						</pre>
-						<pre data-prefix=" " className="text-success">
-							<code>→ token-clock-skew-fix.md</code>
-						</pre>
-					</div>
+				<div className="mockup-code w-full max-w-lg text-left text-sm mt-4 opacity-80">
+					<pre data-prefix="$">
+						<code>files write "token clock skew fix"</code>
+					</pre>
+					<pre data-prefix="$">
+						<code>files ls notes/</code>
+					</pre>
+					<pre data-prefix=" " className="text-success">
+						<code>→ token-clock-skew-fix.md</code>
+					</pre>
+				</div>
 			</section>
 
 			{/* Features */}

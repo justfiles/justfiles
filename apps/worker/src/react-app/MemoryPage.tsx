@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate, useParams, useRouterState } from '@tanstack/react-router'
-import React, { useEffect, useRef, useState } from 'react'
+import type React from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
 	FiArchive,
 	FiChevronLeft,
@@ -9,10 +10,10 @@ import {
 	FiRefreshCw,
 	FiSearch
 } from 'react-icons/fi'
-import { applySharedHeaderActionPolicy } from './headerActionPolicy'
-import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
-import { MemoryEditor } from './MemoryEditor'
 import type { EditorHandle } from './editor'
+import { HeaderActionMenu, type HeaderActionMenuItem } from './HeaderActionMenu'
+import { applySharedHeaderActionPolicy } from './headerActionPolicy'
+import { MemoryEditor } from './MemoryEditor'
 import { noteFilenameFromPath, noteNameFromPath, notePathWithName } from './notePath'
 import { useSidebarActions } from './SidebarContext'
 import type { LinkInfo } from './types'
@@ -220,14 +221,18 @@ export function MemoryPage() {
 	}
 
 	const headerActions: HeaderActionMenuItem[] = [
-		applySharedHeaderActionPolicy({
-			key: 'search',
-			label: 'Search',
-			onClick: () => window.dispatchEvent(new Event('open-command-palette')),
-			icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
-			shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
-			hideLabelOnMobile: true
-		}, 'search', 'editor'),
+		applySharedHeaderActionPolicy(
+			{
+				key: 'search',
+				label: 'Search',
+				onClick: () => window.dispatchEvent(new Event('open-command-palette')),
+				icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
+				shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
+				hideLabelOnMobile: true
+			},
+			'search',
+			'editor'
+		),
 		...(memory?.active !== 0
 			? [
 					{
@@ -259,15 +264,19 @@ export function MemoryPage() {
 					hideLabelOnMobile: true,
 					tone: 'danger'
 				}) satisfies HeaderActionMenuItem,
-		applySharedHeaderActionPolicy({
-			key: 'new-note',
-			label: 'New file',
-			onClick: () => createNoteMutation.mutate(),
-			disabled: createNoteMutation.isPending,
-			icon: <FiFilePlus className="w-4 h-4" />,
-			hideLabelOnMobile: true,
-			tone: 'primary'
-		}, 'new-file', 'editor')
+		applySharedHeaderActionPolicy(
+			{
+				key: 'new-note',
+				label: 'New file',
+				onClick: () => createNoteMutation.mutate(),
+				disabled: createNoteMutation.isPending,
+				icon: <FiFilePlus className="w-4 h-4" />,
+				hideLabelOnMobile: true,
+				tone: 'primary'
+			},
+			'new-file',
+			'editor'
+		)
 	]
 
 	return (

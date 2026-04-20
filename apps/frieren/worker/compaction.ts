@@ -1,21 +1,27 @@
 import type { Agent, AgentMessage } from '@mariozechner/pi-agent-core'
-import type { UserMessage as PiUserMessage, ToolResultMessage as PiToolResultMessage } from '@mariozechner/pi-ai'
+import type {
+	ToolResultMessage as PiToolResultMessage,
+	UserMessage as PiUserMessage
+} from '@mariozechner/pi-ai'
 import type { LLMText } from './llm.text'
 import type { SessionEntry } from './session.manager'
 
 interface CompactionResult {
 	summary: string
-	firstKeptEntryId: string;
-	tokensBefore: number;
+	firstKeptEntryId: string
+	tokensBefore: number
 }
 
 export interface CompactionSettings {
-	enabled: boolean;
-	reserveTokens: number;
-	keepRecentTokens: number;
+	enabled: boolean
+	reserveTokens: number
+	keepRecentTokens: number
 }
 
-export function prepareCompaction(branch: ReadonlyArray<SessionEntry>, settings: CompactionSettings) {
+export function prepareCompaction(
+	branch: ReadonlyArray<SessionEntry>,
+	settings: CompactionSettings
+) {
 	// Mirror Pi's prepareCompaction: find where the previous compaction left off.
 	// boundaryStart is firstKeptEntryId of the last compaction (not the compaction
 	// node itself), so the kept tail from the previous compaction gets folded into
@@ -24,7 +30,7 @@ export function prepareCompaction(branch: ReadonlyArray<SessionEntry>, settings:
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const e = branch[i]
 		if (e.type === 'compaction') {
-			const keptIdx = branch.findIndex(entry => entry.id === e.firstKeptEntryId)
+			const keptIdx = branch.findIndex((entry) => entry.id === e.firstKeptEntryId)
 			boundaryStart = keptIdx >= 0 ? keptIdx : i + 1
 			break
 		}
@@ -34,7 +40,8 @@ export function prepareCompaction(branch: ReadonlyArray<SessionEntry>, settings:
 
 	const tokensBefore = Math.ceil(
 		window.reduce((sum, e) => {
-			if (e.type === 'message' && (e.role === 'user' || e.role === 'assistant')) return sum + e.content.length
+			if (e.type === 'message' && (e.role === 'user' || e.role === 'assistant'))
+				return sum + e.content.length
 			if (e.type === 'compaction') return sum + e.summary.length
 			return sum
 		}, 0) / 4
@@ -63,9 +70,11 @@ export function prepareCompaction(branch: ReadonlyArray<SessionEntry>, settings:
 
 	const content = window
 		.slice(0, splitIdx)
-		.filter((e): e is Extract<SessionEntry, { type: 'message'; role: 'user' | 'assistant' }> =>
-			e.type === 'message' && (e.role === 'user' || e.role === 'assistant'))
-		.map(e => `${e.role}: ${e.content}`)
+		.filter(
+			(e): e is Extract<SessionEntry, { type: 'message'; role: 'user' | 'assistant' }> =>
+				e.type === 'message' && (e.role === 'user' || e.role === 'assistant')
+		)
+		.map((e) => `${e.role}: ${e.content}`)
 		.join('\n')
 
 	return {
@@ -75,7 +84,10 @@ export function prepareCompaction(branch: ReadonlyArray<SessionEntry>, settings:
 	}
 }
 
-export async function compact(text: LLMText, {content, firstKeptEntryId, tokensBefore}: ReturnType<typeof prepareCompaction>): Promise<CompactionResult> {
+export async function compact(
+	text: LLMText,
+	{ content, firstKeptEntryId, tokensBefore }: ReturnType<typeof prepareCompaction>
+): Promise<CompactionResult> {
 	const summary = await text.summarise(content)
 	return { summary, firstKeptEntryId, tokensBefore }
 }
@@ -95,9 +107,13 @@ export function shouldCompact(agent: Agent, settings: CompactionSettings): boole
 	return _shouldCompact(contextTokens, contextWindow, settings)
 }
 
-function _shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
-	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+function _shouldCompact(
+	contextTokens: number,
+	contextWindow: number,
+	settings: CompactionSettings
+): boolean {
+	if (!settings.enabled) return false
+	return contextTokens > contextWindow - settings.reserveTokens
 }
 
 export function estimateTokens(message: AgentMessage): number {
@@ -108,7 +124,8 @@ export function estimateTokens(message: AgentMessage): number {
 		return m.content.reduce((sum, block) => {
 			if (block.type === 'text') return sum + Math.ceil(block.text.length / 4)
 			if (block.type === 'thinking') return sum + Math.ceil(block.thinking.length / 4)
-			if (block.type === 'toolCall') return sum + Math.ceil(JSON.stringify(block.arguments).length / 4)
+			if (block.type === 'toolCall')
+				return sum + Math.ceil(JSON.stringify(block.arguments).length / 4)
 			return sum
 		}, 0)
 	}

@@ -1,11 +1,11 @@
-import type { Storage, StorageCapabilities, InodeMeta } from './storage'
+import type { InodeMeta, Storage, StorageCapabilities } from './storage'
+import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
-import type { Ino, DirentMin } from './types'
 
 export function memStorage(): Storage {
 	const metas = new Map<Ino, InodeMeta>()
 	const blobs = new Map<Ino, Uint8Array>()
-	const dirs = new Map<string, DirentMin>()   // key: `${dirIno}\0${name}`
+	const dirs = new Map<string, DirentMin>() // key: `${dirIno}\0${name}`
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
 
@@ -14,7 +14,7 @@ export function memStorage(): Storage {
 		size: 0n,
 		mode: 0o755,
 		mtimeNs: 0n,
-		ctimeNs: 0n,
+		ctimeNs: 0n
 	})
 
 	function dirKey(dirIno: Ino, name: string): string {
@@ -38,7 +38,10 @@ export function memStorage(): Storage {
 		},
 		async setXattr(ino, name, value) {
 			let m = xattrs.get(ino)
-			if (!m) { m = new Map(); xattrs.set(ino, m) }
+			if (!m) {
+				m = new Map()
+				xattrs.set(ino, m)
+			}
 			m.set(name, value.slice())
 		},
 		async listXattrs(ino) {
@@ -49,7 +52,7 @@ export function memStorage(): Storage {
 			if (!m) return
 			m.delete(name)
 			if (m.size === 0) xattrs.delete(ino)
-		},
+		}
 	}
 
 	return {
@@ -75,7 +78,7 @@ export function memStorage(): Storage {
 				mtimeNs: patch.mtimeNs ?? now,
 				ctimeNs: patch.ctimeNs ?? now,
 				contentHash: patch.contentHash,
-				symlinkTarget: patch.symlinkTarget,
+				symlinkTarget: patch.symlinkTarget
 			}
 			metas.set(ino, full)
 			if (patch.type === FileType.Regular) blobs.set(ino, new Uint8Array())
@@ -121,6 +124,6 @@ export function memStorage(): Storage {
 				}
 			}
 			return { entries, next: '' }
-		},
+		}
 	}
 }

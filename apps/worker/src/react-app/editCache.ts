@@ -1,4 +1,4 @@
-import { openDB as idbOpenDB, type DBSchema, type IDBPDatabase } from 'idb'
+import { type DBSchema, type IDBPDatabase, openDB as idbOpenDB } from 'idb'
 import type { Node as ProseMirrorNode } from 'prosemirror-model'
 
 export type ProseMirrorJsonDocument = ReturnType<ProseMirrorNode['toJSON']>

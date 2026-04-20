@@ -7,7 +7,7 @@ import {
 	CardDescription,
 	CardFooter,
 	CardHeader,
-	CardTitle,
+	CardTitle
 } from './components/ui/card'
 
 export function AuthWall() {
@@ -23,8 +23,8 @@ export function AuthWall() {
 						Your personal agent, behind a sign-in.
 					</CardTitle>
 					<CardDescription className="max-w-lg text-sm/6 sm:text-base/7">
-						Sign in to chat with Frieren. Your conversations, onboarding, and files
-						are scoped to your account.
+						Sign in to chat with Frieren. Your conversations, onboarding, and files are scoped to
+						your account.
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="grid gap-3 sm:grid-cols-2">
@@ -37,8 +37,7 @@ export function AuthWall() {
 					<div className="border border-border bg-muted/30 p-3">
 						<p className="font-medium text-foreground">Persistent files</p>
 						<p className="mt-1 text-muted-foreground">
-							Notes, profiles, and generated artifacts stay available after you come
-							back.
+							Notes, profiles, and generated artifacts stay available after you come back.
 						</p>
 					</div>
 				</CardContent>

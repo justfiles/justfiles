@@ -78,7 +78,10 @@ export interface SkinDefinition {
 
 const ONE_SHOT_CLIPS = new Set(['poke'])
 const imageCache = new Map<string, HTMLImageElement | null>()
-const skinModules = import.meta.glob('./skins/*/index.ts', { eager: true }) as Record<string, { default: SkinBundle }>
+const skinModules = import.meta.glob('./skins/*/index.ts', { eager: true }) as Record<
+	string,
+	{ default: SkinBundle }
+>
 
 function getImage(src: string) {
 	if (!imageCache.has(src)) {
@@ -122,7 +125,10 @@ function createClip(frames: SheetFrame[], loop: boolean): AnimationClip {
 	return {
 		frames,
 		loop,
-		totalDurationMs: Math.max(1, frames.reduce((sum, frame) => sum + frame.durationMs, 0))
+		totalDurationMs: Math.max(
+			1,
+			frames.reduce((sum, frame) => sum + frame.durationMs, 0)
+		)
 	}
 }
 
@@ -150,8 +156,12 @@ function skinFromBundle(bundle: SkinBundle): SkinDefinition {
 	}
 }
 
-const BUNDLES = Object.fromEntries(Object.values(skinModules).map((module) => [module.default.id, module.default]))
-const SKINS = Object.fromEntries(Object.values(BUNDLES).map((bundle) => [bundle.id, skinFromBundle(bundle)])) as Record<string, SkinDefinition>
+const BUNDLES = Object.fromEntries(
+	Object.values(skinModules).map((module) => [module.default.id, module.default])
+)
+const SKINS = Object.fromEntries(
+	Object.values(BUNDLES).map((bundle) => [bundle.id, skinFromBundle(bundle)])
+) as Record<string, SkinDefinition>
 
 export const DEFAULT_SKIN_ID = 'frieren'
 

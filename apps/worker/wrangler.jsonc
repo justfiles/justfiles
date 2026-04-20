@@ -7,9 +7,7 @@
 	"name": "justfiles",
 	"main": "./src/worker/index.ts",
 	"compatibility_date": "2025-10-08",
-	"compatibility_flags": [
-		"nodejs_compat"
-	],
+	"compatibility_flags": ["nodejs_compat"],
 	"observability": {
 		"logs": {
 			"enabled": true,
@@ -18,9 +16,7 @@
 	},
 	"upload_source_maps": true,
 	"secrets": {
-		"required": [
-			"CLERK_SECRET_KEY"
-		]
+		"required": ["CLERK_SECRET_KEY"]
 	},
 	"assets": {
 		"directory": "./dist/client",
@@ -37,9 +33,7 @@
 	"migrations": [
 		{
 			"tag": "v1",
-			"new_sqlite_classes": [
-				"MemoryObject"
-			]
+			"new_sqlite_classes": ["MemoryObject"]
 		}
 	],
 	"r2_buckets": [
@@ -51,9 +45,7 @@
 	"rules": [
 		{
 			"type": "Text",
-			"globs": [
-				"**/*.sql"
-			],
+			"globs": ["**/*.sql"],
 			"fallthrough": true
 		}
 	],
@@ -99,9 +91,7 @@
 			"migrations": [
 				{
 					"tag": "v1",
-					"new_sqlite_classes": [
-						"MemoryObject"
-					]
+					"new_sqlite_classes": ["MemoryObject"]
 				}
 			],
 			"r2_buckets": [
@@ -140,9 +130,7 @@
 			"migrations": [
 				{
 					"tag": "v1",
-					"new_sqlite_classes": [
-						"MemoryObject"
-					]
+					"new_sqlite_classes": ["MemoryObject"]
 				}
 			],
 			"r2_buckets": [

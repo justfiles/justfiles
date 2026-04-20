@@ -1,10 +1,10 @@
 import { UserButton } from '@clerk/clerk-react'
 import { useNavigate } from '@tanstack/react-router'
-import { useEffect, type RefObject, type ReactNode } from 'react'
+import { type ReactNode, type RefObject, useEffect } from 'react'
 import { FiSettings } from 'react-icons/fi'
 import { AppHeader } from './AppHeader'
-import { Editor, type EditorHandle } from './editor'
 import type { ProseMirrorJsonDocument } from './editCache'
+import { Editor, type EditorHandle } from './editor'
 
 type Props = {
 	id: string | null
@@ -100,7 +100,9 @@ export function MemoryEditor({
 							/>
 						</div>
 					) : (
-						<p className="text-sm text-base-content/50 font-mono">{isLoading ? 'Loading…' : 'Empty'}</p>
+						<p className="text-sm text-base-content/50 font-mono">
+							{isLoading ? 'Loading…' : 'Empty'}
+						</p>
 					)}
 					{footer}
 				</div>

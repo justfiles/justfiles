@@ -1,9 +1,8 @@
-import {z } from 'zod'
-import { type Volume} from '@justfiles/fs'
+import type { Volume } from '@justfiles/fs'
+import type { z } from 'zod'
 
 export function file(volume: Volume, path: string) {
-
-	return {text, lines, json, jsonl, write, append}
+	return { text, lines, json, jsonl, write, append }
 
 	async function text(): Promise<string | null> {
 		let raw: Uint8Array
@@ -35,7 +34,7 @@ export function file(volume: Volume, path: string) {
 
 	async function jsonl<T>(schema: z.ZodType<T>): Promise<T[]> {
 		const all = await lines()
-		return all.map(line => schema.parse(JSON.parse(line)))
+		return all.map((line) => schema.parse(JSON.parse(line)))
 	}
 
 	async function write(content: string): Promise<void> {

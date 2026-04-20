@@ -1,5 +1,5 @@
-import { TextSelection } from 'prosemirror-state'
 import { keymap } from 'prosemirror-keymap'
+import { TextSelection } from 'prosemirror-state'
 
 // Mod-Enter exits a code block by inserting a paragraph after it
 export const exitCodeBlock = keymap({

@@ -4,11 +4,11 @@ import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { FiChevronLeft, FiSearch, FiX } from 'react-icons/fi'
 import { basename, normalizeVolumePath, parentVolumePath } from './assets'
-import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { HeaderActionMenu } from './HeaderActionMenu'
+import { applySharedHeaderActionPolicy } from './headerActionPolicy'
 import { MemoryEditor } from './MemoryEditor'
-import { noteFilenameFromName, noteNameFromPath } from './notePath'
 import { ModeSelector } from './ModeSelector'
+import { noteFilenameFromName, noteNameFromPath } from './notePath'
 import { useScratch } from './scratch'
 import {
 	type Destination,
@@ -65,7 +65,9 @@ function createFilingForm(destination: Destination): FilingFormState {
 
 function buildFiledPath(form: FilingFormState): string {
 	const filename = noteFilenameFromName(form.name)
-	return normalizeVolumePath(form.folder.trim() ? `${form.folder.trim()}/${filename}` : `/${filename}`)
+	return normalizeVolumePath(
+		form.folder.trim() ? `${form.folder.trim()}/${filename}` : `/${filename}`
+	)
 }
 
 function FilesBackButton() {
@@ -83,7 +85,11 @@ function FilesBackButton() {
 	)
 }
 
-function ScratchFiledToast({ scratch, onOpen, onClose }: {
+function ScratchFiledToast({
+	scratch,
+	onOpen,
+	onClose
+}: {
 	scratch: FiledScratch
 	onOpen: () => void
 	onClose: () => void
@@ -94,11 +100,7 @@ function ScratchFiledToast({ scratch, onOpen, onClose }: {
 				<p className="font-medium text-base-content">Scratch filed</p>
 				<p className="truncate font-mono text-xs text-base-content/60">/{scratch.path}</p>
 			</div>
-			<button
-				type="button"
-				onClick={onOpen}
-				className="btn btn-primary btn-xs"
-			>
+			<button type="button" onClick={onOpen} className="btn btn-primary btn-xs">
 				Open file
 			</button>
 			<button
@@ -126,16 +128,8 @@ function ScratchPage() {
 		createFilingForm(getActiveDestination(settings))
 	)
 	const [filedScratch, setFiledScratch] = useState<FiledScratch | null>(null)
-	const {
-		id,
-		isLoading,
-		content,
-		save,
-		submit,
-		uploadAsset,
-		getAssetUrl,
-		loadAssetBlob
-	} = useScratch()
+	const { id, isLoading, content, save, submit, uploadAsset, getAssetUrl, loadAssetBlob } =
+		useScratch()
 	const isOnline = useOnlineStatus()
 	const dialogRef = useRef<HTMLDialogElement>(null)
 	const formRef = useRef<HTMLFormElement>(null)
@@ -269,55 +263,60 @@ function ScratchPage() {
 					</div>
 				}
 				editorHeader={
-						<div className="mb-1">
-							<h1 className="text-[1.85rem] leading-tight font-semibold tracking-tight text-base-content/85">
-								Scratch
-							</h1>
-						</div>
-					}
+					<div className="mb-1">
+						<h1 className="text-[1.85rem] leading-tight font-semibold tracking-tight text-base-content/85">
+							Scratch
+						</h1>
+					</div>
+				}
 				headerRight={
 					<HeaderActionMenu
 						surface="editor"
 						items={[
-							applySharedHeaderActionPolicy({
-								key: 'search',
-								label: 'Search',
-								onClick: () => window.dispatchEvent(new Event('open-command-palette')),
-								icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
-								shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
-								hideLabelOnMobile: true
-							}, 'search', 'editor'),
+							applySharedHeaderActionPolicy(
 								{
-									key: 'file-scratch',
-									label: fileScratchMutation.isPending ? 'Filing…' : 'File…',
-									onClick: openFilingDialog,
-									disabled: fileScratchMutation.isPending || !isOnline,
-									tone: 'primary'
-								}
+									key: 'search',
+									label: 'Search',
+									onClick: () => window.dispatchEvent(new Event('open-command-palette')),
+									icon: <FiSearch className="w-3.5 h-3.5 shrink-0" />,
+									shortcut: <kbd className="kbd kbd-xs hidden sm:inline">⌘K</kbd>,
+									hideLabelOnMobile: true
+								},
+								'search',
+								'editor'
+							),
+							{
+								key: 'file-scratch',
+								label: fileScratchMutation.isPending ? 'Filing…' : 'File…',
+								onClick: openFilingDialog,
+								disabled: fileScratchMutation.isPending || !isOnline,
+								tone: 'primary'
+							}
 						]}
 					/>
 				}
 			/>
 
-				<dialog ref={dialogRef} className="modal items-start pt-[12vh]">
-					<div className="modal-box w-[min(560px,92vw)] max-w-none rounded-xl p-0">
-						<form ref={formRef} onSubmit={handleFileScratch}>
-							<div className="border-b border-base-200 px-6 py-4">
-								<div className="flex items-start justify-between gap-4">
-									<div>
-										<h2 className="text-lg font-semibold text-base-content">File scratch</h2>
-										<p className="mt-1 text-sm text-base-content/60">
-											Give this scratch note a name. A fresh empty scratch will be created right after.
-										</p>
-									</div>
+			<dialog ref={dialogRef} className="modal items-start pt-[12vh]">
+				<div className="modal-box w-[min(560px,92vw)] max-w-none rounded-xl p-0">
+					<form ref={formRef} onSubmit={handleFileScratch}>
+						<div className="border-b border-base-200 px-6 py-4">
+							<div className="flex items-start justify-between gap-4">
+								<div>
+									<h2 className="text-lg font-semibold text-base-content">File scratch</h2>
+									<p className="mt-1 text-sm text-base-content/60">
+										Give this scratch note a name. A fresh empty scratch will be created right
+										after.
+									</p>
+								</div>
 								<button
-										type="button"
-										onClick={closeFilingDialog}
-										className="btn btn-ghost btn-sm btn-circle"
-										aria-label="Close file scratch dialog"
-									>
-										<FiX className="h-4 w-4" />
-									</button>
+									type="button"
+									onClick={closeFilingDialog}
+									className="btn btn-ghost btn-sm btn-circle"
+									aria-label="Close file scratch dialog"
+								>
+									<FiX className="h-4 w-4" />
+								</button>
 							</div>
 						</div>
 
@@ -330,15 +329,17 @@ function ScratchPage() {
 									ref={nameInputRef}
 									type="text"
 									value={filingForm.name}
-										onChange={(e) => setFilingForm((current) => ({
+									onChange={(e) =>
+										setFilingForm((current) => ({
 											...current,
 											name: e.target.value
-										}))}
-										placeholder={noteNameFromPath(suggestedScratchPath(activeDestination))}
-										className="input input-bordered w-full font-medium"
-										disabled={fileScratchMutation.isPending}
-									/>
-								</label>
+										}))
+									}
+									placeholder={noteNameFromPath(suggestedScratchPath(activeDestination))}
+									className="input input-bordered w-full font-medium"
+									disabled={fileScratchMutation.isPending}
+								/>
+							</label>
 
 							<div className="rounded-lg bg-base-200/70 px-3 py-2">
 								<p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-base-content/45">
@@ -386,10 +387,12 @@ function ScratchPage() {
 										<input
 											type="text"
 											value={filingForm.folder}
-											onChange={(e) => setFilingForm((current) => ({
-												...current,
-												folder: e.target.value
-											}))}
+											onChange={(e) =>
+												setFilingForm((current) => ({
+													...current,
+													folder: e.target.value
+												}))
+											}
 											placeholder="inbox"
 											spellCheck={false}
 											className="input input-bordered w-full font-mono text-sm"
@@ -401,27 +404,29 @@ function ScratchPage() {
 						</div>
 
 						<div className="flex items-center justify-end gap-3 border-t border-base-200 px-6 py-4">
-								<button
-									type="button"
-									onClick={closeFilingDialog}
-									className="btn btn-ghost"
-									disabled={fileScratchMutation.isPending}
-								>
-									Cancel
-								</button>
-								<button
-									type="submit"
-									className="btn btn-primary"
-									disabled={fileScratchMutation.isPending || !isOnline}
-								>
-									{fileScratchMutation.isPending ? 'Filing…' : 'File scratch'}
-								</button>
-							</div>
-						</form>
+							<button
+								type="button"
+								onClick={closeFilingDialog}
+								className="btn btn-ghost"
+								disabled={fileScratchMutation.isPending}
+							>
+								Cancel
+							</button>
+							<button
+								type="submit"
+								className="btn btn-primary"
+								disabled={fileScratchMutation.isPending || !isOnline}
+							>
+								{fileScratchMutation.isPending ? 'Filing…' : 'File scratch'}
+							</button>
+						</div>
+					</form>
 				</div>
 
 				<form method="dialog" className="modal-backdrop">
-					<button type="button" onClick={closeFilingDialog}>Close</button>
+					<button type="button" onClick={closeFilingDialog}>
+						Close
+					</button>
 				</form>
 			</dialog>
 

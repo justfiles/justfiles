@@ -91,7 +91,11 @@ export const schema = new Schema({
 				}
 			],
 			toDOM(node) {
-				return ['pre', node.attrs.params ? { 'data-params': node.attrs.params } : {}, ['code', 0]] as const
+				return [
+					'pre',
+					node.attrs.params ? { 'data-params': node.attrs.params } : {},
+					['code', 0]
+				] as const
 			}
 		},
 

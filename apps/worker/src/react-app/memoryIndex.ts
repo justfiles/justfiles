@@ -45,7 +45,7 @@ export function createMemoryIndex(): MemoryIndex {
 
 		getByPath(path) {
 			const id = idByPath.get(path)
-			return id ? byId.get(id) ?? null : null
+			return id ? (byId.get(id) ?? null) : null
 		},
 
 		getPath(id) {
@@ -54,6 +54,6 @@ export function createMemoryIndex(): MemoryIndex {
 
 		getId(path) {
 			return idByPath.get(path) ?? null
-		},
+		}
 	}
 }

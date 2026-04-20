@@ -1,36 +1,25 @@
 import { UserButton, useAuth } from '@clerk/clerk-react'
-import { FileTreeView, type FileTreeItem } from '@justfiles/ui'
 import { FileType } from '@justfiles/fs/types'
+import { type FileTreeItem, FileTreeView } from '@justfiles/ui'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardHeader,
-	CardTitle,
-} from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
 	Empty,
 	EmptyContent,
 	EmptyDescription,
 	EmptyHeader,
 	EmptyMedia,
-	EmptyTitle,
+	EmptyTitle
 } from '@/components/ui/empty'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Spinner } from '@/components/ui/spinner'
-import {
-	Table,
-	TableBody,
-	TableCell,
-	TableRow,
-} from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableRow } from '@/components/ui/table'
+import { navigate } from './clientRouter'
 import type { Volume } from './fs'
 import { createFsVolume } from './fs'
-import { navigate } from './clientRouter'
 
 type FsFile = FileTreeItem
 
@@ -184,7 +173,7 @@ export function FilesPage({ search }: { search: string }) {
 			const token = await getTokenRef.current()
 			const res = await fetch('/api/nuke', {
 				method: 'POST',
-				headers: { Authorization: `Bearer ${token ?? ''}` },
+				headers: { Authorization: `Bearer ${token ?? ''}` }
 			})
 			if (!res.ok) throw new Error(`Nuke failed: ${res.status}`)
 			if (selectedPath) navigate('/files', { replace: true })
@@ -196,7 +185,12 @@ export function FilesPage({ search }: { search: string }) {
 
 	const resetOnboarding = async () => {
 		if (!volume) return
-		if (!window.confirm('Remove /soul.md and /profiles/user.md? The onboarding ritual will run again.')) return
+		if (
+			!window.confirm(
+				'Remove /soul.md and /profiles/user.md? The onboarding ritual will run again.'
+			)
+		)
+			return
 		setError(null)
 		try {
 			await volume.rm('/soul.md', { force: true })
@@ -276,7 +270,12 @@ export function FilesPage({ search }: { search: string }) {
 						>
 							Refresh
 						</Button>
-						<Button type="button" variant="outline" size="sm" onClick={() => void resetOnboarding()}>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							onClick={() => void resetOnboarding()}
+						>
 							Reset
 						</Button>
 						<Button type="button" variant="destructive" size="sm" onClick={() => void nukeAll()}>
@@ -339,15 +338,19 @@ export function FilesPage({ search }: { search: string }) {
 						<CardHeader className="gap-2">
 							<div className="flex flex-wrap items-center gap-2">
 								{showingDetail ? (
-									<Button type="button" variant="ghost" size="sm" className="sm:hidden" onClick={() => navigate('/files')}>
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										className="sm:hidden"
+										onClick={() => navigate('/files')}
+									>
 										Back
 									</Button>
 								) : null}
 								<Badge variant="outline">Preview</Badge>
 							</div>
-							<CardTitle className="truncate text-sm">
-								{selectedName ?? 'Select a file'}
-							</CardTitle>
+							<CardTitle className="truncate text-sm">{selectedName ?? 'Select a file'}</CardTitle>
 							<CardDescription className="truncate font-mono text-[11px]">
 								{selectedPath ?? 'Choose a file from the tree to inspect its contents.'}
 							</CardDescription>

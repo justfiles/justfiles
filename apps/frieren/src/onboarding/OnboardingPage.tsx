@@ -5,8 +5,8 @@ import { Spinner } from '@/components/ui/spinner'
 import type { Volume } from '../fs'
 import { createFsVolume } from '../fs'
 import { AgentStep } from './AgentStep'
+import { type OnboardingState, readUserProfile, resolveOnboardingState } from './state'
 import { UserProfileStep } from './UserProfileStep'
-import { readUserProfile, resolveOnboardingState, type OnboardingState } from './state'
 
 function deriveAge(birthDate?: string): number | undefined {
 	if (!birthDate) return undefined
@@ -39,7 +39,7 @@ export function OnboardingPage({ onComplete }: { onComplete: () => void }) {
 				const profile = await readUserProfile(vol)
 				setUserCtx({
 					userAge: deriveAge(profile?.birth_date),
-					userGender: profile?.gender,
+					userGender: profile?.gender
 				})
 			}
 		},

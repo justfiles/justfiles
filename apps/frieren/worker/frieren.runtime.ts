@@ -1,17 +1,23 @@
-import { type Volume } from '@justfiles/fs'
-import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { session, type AppendPayload, type ContextMessage, type SessionEntry, type SessionManager } from "./session.manager";
-import { z } from 'zod';
-import { file } from './file';
-import { DEFAULT_SETUP_PROMPT, systemPrompt } from './prompts';
-import type { LLMText } from './llm.text';
-import { shouldCompact, compact, type CompactionSettings, prepareCompaction } from './compaction';
-import { ageCalibration } from './age-calibration';
+import type { Volume } from '@justfiles/fs'
+import type { Agent, AgentEvent, AgentMessage } from '@mariozechner/pi-agent-core'
+import { z } from 'zod'
+import { ageCalibration } from './age-calibration'
+import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
+import { file } from './file'
+import type { LLMText } from './llm.text'
+import { DEFAULT_SETUP_PROMPT, systemPrompt } from './prompts'
+import {
+	type AppendPayload,
+	type ContextMessage,
+	type SessionEntry,
+	type SessionManager,
+	session
+} from './session.manager'
 
 type RuntimeProps = {
-	volume: Volume,
-	agent: Agent,
-	text: LLMText,
+	volume: Volume
+	agent: Agent
+	text: LLMText
 	compaction: CompactionSettings
 }
 
@@ -27,10 +33,9 @@ export interface Runtime {
 	_agent: () => Agent
 }
 
-
-export async function runtime({volume, agent, text, compaction}: RuntimeProps): Promise<Runtime> {
+export async function runtime({ volume, agent, text, compaction }: RuntimeProps): Promise<Runtime> {
 	const agentId = 'main'
-	const session = await route({agentId}, volume, text)
+	const session = await route({ agentId }, volume, text)
 	await initSession(session)
 
 	return {
@@ -38,7 +43,7 @@ export async function runtime({volume, agent, text, compaction}: RuntimeProps): 
 		prompt,
 		subscribe,
 		history: () => session.walkActiveBranch(),
-		_agent: () => agent,
+		_agent: () => agent
 	}
 
 	async function shutdown() {
@@ -58,12 +63,14 @@ export async function runtime({volume, agent, text, compaction}: RuntimeProps): 
 				await file(volume, PATHS.daily()).append(`\n\n${notes}`)
 			}
 			const result = await compact(text, prepared)
-			session.append([{
-				type: 'compaction',
-				summary: result.summary,
-				firstKeptEntryId: result.firstKeptEntryId,
-				tokensBefore: result.tokensBefore
-			}])
+			session.append([
+				{
+					type: 'compaction',
+					summary: result.summary,
+					firstKeptEntryId: result.firstKeptEntryId,
+					tokensBefore: result.tokensBefore
+				}
+			])
 			await initSession(session)
 		}
 	}
@@ -103,7 +110,7 @@ export async function runtime({volume, agent, text, compaction}: RuntimeProps): 
 			prompt.add(
 				'# memories of the past 2 days',
 				`Recent daily notes (last 2 days). These are raw, unprocessed jottings from recent sessions — treat as lower-priority hints than the durable memory above. They may be noisy, redundant, or contradicted by later facts; defer to the durable memory on conflict.`,
-				...dailies,
+				...dailies
 			)
 		}
 
@@ -115,9 +122,13 @@ function transform(message: AgentMessage): AppendPayload {
 	if (!('role' in message)) throw new Error(`unsupported message: ${JSON.stringify(message)}`)
 	switch (message.role) {
 		case 'user': {
-			const content = typeof message.content === 'string'
-				? message.content
-				: message.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+			const content =
+				typeof message.content === 'string'
+					? message.content
+					: message.content
+							.filter((b) => b.type === 'text')
+							.map((b) => b.text)
+							.join('\n')
 			return { type: 'message', role: 'user', content }
 		}
 		case 'assistant': {
@@ -125,9 +136,19 @@ function transform(message: AgentMessage): AppendPayload {
 			const toolCalls: { tool_name: string; input: Record<string, unknown> }[] = []
 			for (const block of message.content) {
 				if (block.type === 'text') texts.push(block.text)
-				if (block.type === 'toolCall') toolCalls.push({ tool_name: block.name, input: block.arguments as Record<string, unknown> })
+				if (block.type === 'toolCall')
+					toolCalls.push({
+						tool_name: block.name,
+						input: block.arguments as Record<string, unknown>
+					})
 			}
-			if (toolCalls.length > 0) return { type: 'message', role: 'tool_call', tool_name: toolCalls[0].tool_name, input: toolCalls[0].input }
+			if (toolCalls.length > 0)
+				return {
+					type: 'message',
+					role: 'tool_call',
+					tool_name: toolCalls[0].tool_name,
+					input: toolCalls[0].input
+				}
 			return { type: 'message', role: 'assistant', content: texts.join('\n') }
 		}
 		case 'toolResult':
@@ -135,7 +156,10 @@ function transform(message: AgentMessage): AppendPayload {
 				type: 'message',
 				role: 'tool_result',
 				tool_name: message.toolName,
-				content: message.content.filter(b => b.type === 'text').map(b => b.text).join('\n'),
+				content: message.content
+					.filter((b) => b.type === 'text')
+					.map((b) => b.text)
+					.join('\n')
 			}
 		default:
 			throw new Error(`unsupported role: ${(message as any).role}`)
@@ -153,9 +177,16 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 				api: 'anthropic' as any,
 				provider: 'anthropic' as any,
 				model: '',
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+				},
 				stopReason: 'stop',
-				timestamp: message.timestamp,
+				timestamp: message.timestamp
 			}
 	}
 }
@@ -166,13 +197,14 @@ const PATHS = {
 	memory: '/MEMORY.md',
 	daily: (date: Date = new Date()) => `/memory/daily/${date.toISOString().slice(0, 10)}.md`,
 	sessions: (agentId: string) => `/agents/${agentId}/sessions/sessions.json`,
-	sessionFile: (agentId: string, sessionId: string) => `/agents/${agentId}/sessions/${sessionId}.jsonl`
+	sessionFile: (agentId: string, sessionId: string) =>
+		`/agents/${agentId}/sessions/${sessionId}.jsonl`
 } as const
 
 const SessionMeta = z.object({
 	sessionId: z.string(),
-	lastActive: z.iso.datetime().transform(s => new Date(s)),
-	sessionFile: z.string(),
+	lastActive: z.iso.datetime().transform((s) => new Date(s)),
+	sessionFile: z.string()
 })
 type SessionMeta = z.infer<typeof SessionMeta>
 
@@ -185,13 +217,13 @@ type MessageContext = {
 async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promise<SessionManager> {
 	const sessionKey = resolveSessionKey(ctx)
 	const sessionsMap = file(volume, PATHS.sessions(ctx.agentId))
-	const sessions = await sessionsMap.json(SessionsMap) ?? {}
+	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
 	const existing = sessions[sessionKey]
 
 	const SIX_HOURS = 6 * 60 * 60 * 1000
 	const now = new Date()
 
-	if (existing && (now.getTime() - existing.lastActive.getTime()) < SIX_HOURS) {
+	if (existing && now.getTime() - existing.lastActive.getTime() < SIX_HOURS) {
 		existing.lastActive = now
 		await sessionsMap.write(JSON.stringify(sessions))
 		return session(existing.sessionFile, volume)
@@ -201,7 +233,7 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 		const previous = session(existing.sessionFile, volume)
 		const context = await previous.buildSessionContext()
 		if (context.length > 0) {
-			const tail = context.map(m => `${m.role}: ${m.content}`).join('\n')
+			const tail = context.map((m) => `${m.role}: ${m.content}`).join('\n')
 			const notes = await text.takeNotes(tail)
 			if (notes) {
 				await file(volume, PATHS.daily(now)).append(`\n\n${notes}`)

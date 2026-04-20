@@ -1,7 +1,12 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
-import { session, type AppendPayload, type ContextMessage, type SessionEntry } from './session.manager.ts'
+import {
+	type AppendPayload,
+	type ContextMessage,
+	type SessionEntry,
+	session
+} from './session.manager.ts'
 
 function user(content: string): AppendPayload {
 	return { type: 'message', role: 'user', content }
@@ -24,7 +29,7 @@ function compactionPayload(summary: string, firstKeptEntryId: string): AppendPay
 		type: 'compaction',
 		summary,
 		firstKeptEntryId,
-		tokensBefore: 42,
+		tokensBefore: 42
 	}
 }
 
@@ -53,7 +58,7 @@ describe('session manager', () => {
 
 		const first = await manager.append([
 			user('I need help planning a Kyoto trip.'),
-			assistant('Happy to help. What kind of trip are you after?'),
+			assistant('Happy to help. What kind of trip are you after?')
 		])
 		expect(first.compacted).toBe(false)
 		const firstLeafId = manager.activeLeafId
@@ -62,7 +67,7 @@ describe('session manager', () => {
 			user('Find a quiet ryokan with a private bath.'),
 			toolCall('search_hotels', { city: 'Kyoto', bath: true }),
 			toolResult('search_hotels', 'Three matching ryokans found.'),
-			assistant('I found three ryokans that fit that request.'),
+			assistant('I found three ryokans that fit that request.')
 		])
 		expect(second.compacted).toBe(false)
 
@@ -72,13 +77,13 @@ describe('session manager', () => {
 		expect(firstLeafId).toBe(branch[1]?.id)
 		expect(manager.activeLeafId).toBe(branch[5]?.id)
 
-		expect(branch.map((entry) => entry.type === 'message' ? entry.role : entry.type)).toEqual([
+		expect(branch.map((entry) => (entry.type === 'message' ? entry.role : entry.type))).toEqual([
 			'user',
 			'assistant',
 			'user',
 			'tool_call',
 			'tool_result',
-			'assistant',
+			'assistant'
 		])
 
 		const context = await manager.buildSessionContext()
@@ -86,7 +91,7 @@ describe('session manager', () => {
 			{ role: 'user', content: 'I need help planning a Kyoto trip.' },
 			{ role: 'assistant', content: 'Happy to help. What kind of trip are you after?' },
 			{ role: 'user', content: 'Find a quiet ryokan with a private bath.' },
-			{ role: 'assistant', content: 'I found three ryokans that fit that request.' },
+			{ role: 'assistant', content: 'I found three ryokans that fit that request.' }
 		])
 		expect(context.every((message) => Number.isFinite(message.timestamp))).toBe(true)
 	})
@@ -94,10 +99,7 @@ describe('session manager', () => {
 	test('accepts explicit compaction payloads in append', async () => {
 		const manager = await makeManager()
 
-		await manager.append([
-			user('Original question'),
-			assistant('Original answer'),
-		])
+		await manager.append([user('Original question'), assistant('Original answer')])
 
 		const branchBefore = await manager.walkActiveBranch()
 		const firstKeptEntryId = branchBefore[1]?.id
@@ -106,16 +108,16 @@ describe('session manager', () => {
 		await manager.append([
 			compactionPayload('Summary of the original exchange.', firstKeptEntryId!),
 			user('Follow-up question'),
-			assistant('Follow-up answer'),
+			assistant('Follow-up answer')
 		])
 
 		const branch = await manager.walkActiveBranch()
-		expect(branch.map((entry) => entry.type === 'message' ? entry.role : entry.type)).toEqual([
+		expect(branch.map((entry) => (entry.type === 'message' ? entry.role : entry.type))).toEqual([
 			'user',
 			'assistant',
 			'compaction',
 			'user',
-			'assistant',
+			'assistant'
 		])
 
 		const context = await manager.buildSessionContext()
@@ -123,7 +125,7 @@ describe('session manager', () => {
 			{ role: 'assistant', content: 'Summary of the original exchange.' },
 			{ role: 'assistant', content: 'Original answer' },
 			{ role: 'user', content: 'Follow-up question' },
-			{ role: 'assistant', content: 'Follow-up answer' },
+			{ role: 'assistant', content: 'Follow-up answer' }
 		])
 	})
 })

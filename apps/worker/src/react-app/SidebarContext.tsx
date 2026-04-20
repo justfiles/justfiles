@@ -10,7 +10,7 @@ type SidebarContextValue = {
 export const SidebarContext = createContext<SidebarContextValue>({
 	upsertEntry: () => {},
 	removeEntry: () => {},
-	refresh: () => {},
+	refresh: () => {}
 })
 
 export const useSidebarActions = () => useContext(SidebarContext)

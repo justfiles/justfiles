@@ -1,7 +1,7 @@
-import type { Storage, InodeMeta } from './storage'
 import { createSingleFlight } from './singleFlight'
+import type { InodeMeta, Storage } from './storage'
+import type { Dirent, DirentMin, Ino, Stat } from './types'
 import { FileType } from './types'
-import type { Dirent, Stat, Ino, DirentMin } from './types'
 
 /**
  * Path-based filesystem interface built on top of Storage.
@@ -17,7 +17,6 @@ import type { Dirent, Stat, Ino, DirentMin } from './types'
  *   thrown as plain Error objects with the code at the start of the message.
  */
 export interface Volume {
-
 	// --- metadata ---
 
 	/**
@@ -163,10 +162,7 @@ export interface Volume {
 	 *
 	 * Throws ENOENT if path does not exist.
 	 */
-	scan(
-		path: string,
-		visitor: (path: string, stat: Stat) => Promise<void>,
-	): Promise<void>
+	scan(path: string, visitor: (path: string, stat: Stat) => Promise<void>): Promise<void>
 }
 
 export function volume(storage: Storage): Volume {
@@ -208,7 +204,7 @@ export function volume(storage: Storage): Volume {
 			mode: meta.mode,
 			mtimeNs: meta.mtimeNs,
 			ctimeNs: meta.ctimeNs,
-			contentHash: meta.contentHash,
+			contentHash: meta.contentHash
 		}
 	}
 
@@ -252,14 +248,18 @@ export function volume(storage: Storage): Volume {
 	 * Resolve an absolute path to an inode and final type.
 	 * followLast controls whether a final symlink component is followed.
 	 */
-	async function resolvePathInfo(path: string, followLast: boolean, initialDepth = 0): Promise<ResolvedPath> {
+	async function resolvePathInfo(
+		path: string,
+		followLast: boolean,
+		initialDepth = 0
+	): Promise<ResolvedPath> {
 		const normalized = path.replace(/\/+$/, '') || '/'
 		if (normalized === '/') {
 			const meta = await getMetaOrThrow(storage.rootIno)
 			return { ino: storage.rootIno, type: meta.type }
 		}
 
-		const queue: string[] = normalized.split('/').filter(p => p !== '')
+		const queue: string[] = normalized.split('/').filter((p) => p !== '')
 		const inoStack: Ino[] = [storage.rootIno]
 		let symlinkDepth = initialDepth
 		let resolved: ResolvedPath | null = null
@@ -282,11 +282,12 @@ export function volume(storage: Storage): Volume {
 
 			if (entry.type === FileType.Symlink && (!isLast || followLast)) {
 				const meta = await getMetaOrThrow(entry.ino)
-				if (++symlinkDepth > MAX_SYMLINK_DEPTH) throw new Error('ELOOP: too many levels of symbolic links')
+				if (++symlinkDepth > MAX_SYMLINK_DEPTH)
+					throw new Error('ELOOP: too many levels of symbolic links')
 
 				const target = meta.symlinkTarget
 				if (!target) throw new Error(`EINVAL: symlink has no target`)
-				const targetParts = target.split('/').filter(p => p !== '')
+				const targetParts = target.split('/').filter((p) => p !== '')
 
 				if (target.startsWith('/')) {
 					inoStack.splice(0, inoStack.length, storage.rootIno)
@@ -330,7 +331,7 @@ export function volume(storage: Storage): Volume {
 		let cursor = ''
 		do {
 			const batch = await storage.listDirents(dirIno, cursor)
-			entries.push(...batch.entries.map(e => ({ ino: e.ino, name: e.name, type: e.type })))
+			entries.push(...batch.entries.map((e) => ({ ino: e.ino, name: e.name, type: e.type })))
 			cursor = batch.next
 		} while (cursor !== '')
 		return entries
@@ -429,7 +430,7 @@ export function volume(storage: Storage): Volume {
 					size: 0n,
 					mode: 0o644,
 					mtimeNs: now,
-					ctimeNs: now,
+					ctimeNs: now
 				})
 			}
 
@@ -463,7 +464,7 @@ export function volume(storage: Storage): Volume {
 					size: 0n,
 					mode: 0o644,
 					mtimeNs: now,
-					ctimeNs: now,
+					ctimeNs: now
 				})
 				await storage.putBlob(ino, data)
 			}
@@ -475,7 +476,7 @@ export function volume(storage: Storage): Volume {
 			const mode = opts?.mode ?? 0o755
 
 			if (recursive) {
-				const parts = path.split('/').filter(p => p !== '')
+				const parts = path.split('/').filter((p) => p !== '')
 				let current = '/'
 				for (const part of parts) {
 					const parentPath = current
@@ -490,7 +491,7 @@ export function volume(storage: Storage): Volume {
 							size: 0n,
 							mode,
 							mtimeNs: now,
-							ctimeNs: now,
+							ctimeNs: now
 						})
 					} catch (e) {
 						if (!(e instanceof Error) || !e.message.startsWith('EEXIST')) throw e
@@ -510,7 +511,7 @@ export function volume(storage: Storage): Volume {
 				size: 0n,
 				mode,
 				mtimeNs: now,
-				ctimeNs: now,
+				ctimeNs: now
 			})
 		},
 
@@ -635,7 +636,7 @@ export function volume(storage: Storage): Volume {
 				mode: 0o777,
 				mtimeNs: now,
 				ctimeNs: now,
-				symlinkTarget: target,
+				symlinkTarget: target
 			})
 		},
 
@@ -706,7 +707,7 @@ export function volume(storage: Storage): Volume {
 				} while (cursor !== '')
 			}
 			await walk(ino, path)
-		},
+		}
 	}
 
 	return vol

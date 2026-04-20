@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatMessage } from './types'
 import { createTamagotchi, getSkinAvatarUrl, type TamagotchiHandle } from './tamagotchi'
+import type { ChatMessage } from './types'
 
 export const ROAM_HEIGHT = 96
 export const PORTRAIT_SIZE = 64
@@ -52,7 +52,7 @@ export function useAdventureViewState(props: {
 		}
 	}, [lastAssistant?.id])
 
-	const pinned = pinnedId ? messages.find((message) => message.id === pinnedId) ?? null : null
+	const pinned = pinnedId ? (messages.find((message) => message.id === pinnedId) ?? null) : null
 	const showPanel = !!pinned
 	const history = pinned ? messages.slice(0, messages.indexOf(pinned)) : messages
 	const listening = (focused || input.length > 0) && !showPanel

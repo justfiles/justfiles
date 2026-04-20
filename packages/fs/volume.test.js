@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { memStorage } from './storage.mem.ts'
-import { volume } from './volume.ts'
 import { FileType } from './types.ts'
-import { GHOSTORE_XATTR, decodeXattr, encodeXattr } from './xattr.ts'
+import { volume } from './volume.ts'
+import { decodeXattr, encodeXattr, GHOSTORE_XATTR } from './xattr.ts'
 
 function makeVol() {
 	return volume(memStorage())
@@ -17,7 +17,6 @@ function str(data) {
 }
 
 describe('volume', () => {
-
 	describe('writeFile / readFile', () => {
 		test('round-trips file content', async () => {
 			const vol = makeVol()
@@ -134,14 +133,14 @@ describe('volume', () => {
 			await vol.writeFile('/a.txt', bytes(''))
 			await vol.mkdir('/sub')
 			const entries = await vol.readdir('/')
-			expect(entries.map(e => e.name).sort()).toEqual(['a.txt', 'sub'])
+			expect(entries.map((e) => e.name).sort()).toEqual(['a.txt', 'sub'])
 		})
 
 		test('returns correct type per entry', async () => {
 			const vol = makeVol()
 			await vol.writeFile('/file.txt', bytes(''))
 			await vol.mkdir('/dir')
-			const byName = Object.fromEntries((await vol.readdir('/')).map(e => [e.name, e.type]))
+			const byName = Object.fromEntries((await vol.readdir('/')).map((e) => [e.name, e.type]))
 			expect(byName['file.txt']).toBe(FileType.Regular)
 			expect(byName['dir']).toBe(FileType.Directory)
 		})
@@ -234,12 +233,21 @@ describe('volume', () => {
 
 			await vol.setXattr('/note.md', GHOSTORE_XATTR.title, encodeXattr('My Note'))
 			await vol.setXattr('/note.md', GHOSTORE_XATTR.tags, encodeXattr(['fs', 'xattr']))
-			await vol.setXattr('/note.md', GHOSTORE_XATTR.links, encodeXattr([{ rel: 'related', path: '/other.md' }]))
+			await vol.setXattr(
+				'/note.md',
+				GHOSTORE_XATTR.links,
+				encodeXattr([{ rel: 'related', path: '/other.md' }])
+			)
 			await vol.setXattr('/note.md', GHOSTORE_XATTR.source, encodeXattr('agent'))
 
 			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.title))).toBe('My Note')
-			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.tags))).toEqual(['fs', 'xattr'])
-			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.links))).toEqual([{ rel: 'related', path: '/other.md' }])
+			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.tags))).toEqual([
+				'fs',
+				'xattr'
+			])
+			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.links))).toEqual([
+				{ rel: 'related', path: '/other.md' }
+			])
 			expect(decodeXattr(await vol.getXattr('/note.md', GHOSTORE_XATTR.source))).toBe('agent')
 		})
 
@@ -251,7 +259,7 @@ describe('volume', () => {
 
 			expect((await vol.listXattr('/note.md')).sort()).toEqual([
 				GHOSTORE_XATTR.tags,
-				GHOSTORE_XATTR.title,
+				GHOSTORE_XATTR.title
 			])
 		})
 
@@ -506,7 +514,9 @@ describe('volume', () => {
 			await vol.writeFile('/a/b/y.txt', bytes(''))
 
 			const visited = []
-			await vol.scan('/', async (path) => { visited.push(path) })
+			await vol.scan('/', async (path) => {
+				visited.push(path)
+			})
 			expect(visited.sort()).toEqual(['/', '/a', '/a/b', '/a/b/y.txt', '/a/x.txt'])
 		})
 
@@ -516,7 +526,9 @@ describe('volume', () => {
 			await vol.writeFile('/dir/child.txt', bytes(''))
 
 			const visited = []
-			await vol.scan('/', async (path) => { visited.push(path) })
+			await vol.scan('/', async (path) => {
+				visited.push(path)
+			})
 			// '/' first, then '/dir' before its child
 			expect(visited.indexOf('/')).toBeLessThan(visited.indexOf('/dir'))
 			expect(visited.indexOf('/dir')).toBeLessThan(visited.indexOf('/dir/child.txt'))
@@ -529,7 +541,9 @@ describe('volume', () => {
 			await vol.writeFile('/sub/child.txt', bytes(''))
 
 			const visited = []
-			await vol.scan('/sub', async (path) => { visited.push(path) })
+			await vol.scan('/sub', async (path) => {
+				visited.push(path)
+			})
 			expect(visited).toEqual(['/sub', '/sub/child.txt'])
 		})
 
@@ -538,7 +552,9 @@ describe('volume', () => {
 			await vol.writeFile('/f.txt', bytes('hello'))
 
 			const seen = new Map()
-			await vol.scan('/', async (path, stat) => { seen.set(path, stat) })
+			await vol.scan('/', async (path, stat) => {
+				seen.set(path, stat)
+			})
 			// root itself is visited
 			expect(seen.get('/').type).toBe(FileType.Directory)
 			// file is visited with correct metadata
@@ -558,7 +574,9 @@ describe('volume', () => {
 			await vol.symlink('/real', '/link')
 
 			const visited = []
-			await vol.scan('/link', async (path) => { visited.push(path) })
+			await vol.scan('/link', async (path) => {
+				visited.push(path)
+			})
 			expect(visited.sort()).toEqual(['/link', '/link/child.txt'])
 		})
 
@@ -568,7 +586,9 @@ describe('volume', () => {
 			await vol.symlink('/', '/root-link')
 
 			const visited = []
-			await vol.scan('/root-link', async (path) => { visited.push(path) })
+			await vol.scan('/root-link', async (path) => {
+				visited.push(path)
+			})
 			// root has two children: top.txt and root-link itself
 			expect(visited.sort()).toEqual(['/root-link', '/root-link/root-link', '/root-link/top.txt'])
 		})

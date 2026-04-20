@@ -1,5 +1,5 @@
-import { useVolume } from './useVolume'
 import type { FileMeta } from './types'
+import { useVolume } from './useVolume'
 
 export type { FileMeta }
 

@@ -1,17 +1,17 @@
 import { parseArgs } from 'node:util'
+import type { CommandModule } from './command.ts'
+import cat from './commands/cat.ts'
+import cp from './commands/cp.ts'
+import ls from './commands/ls.ts'
+import mkdir from './commands/mkdir.ts'
+import mv from './commands/mv.ts'
+import rm from './commands/rm.ts'
+import stat from './commands/stat.ts'
+import write from './commands/write.ts'
 import { loadConfig } from './config.ts'
 import { CliUsageError, errorMessage, exitCodeForError, getErrno } from './errors.ts'
 import { out, printError, printJsonError } from './output.ts'
-import type { CommandModule } from './command.ts'
 import { loadVolume } from './volumes.ts'
-import ls from './commands/ls.ts'
-import cat from './commands/cat.ts'
-import write from './commands/write.ts'
-import mkdir from './commands/mkdir.ts'
-import rm from './commands/rm.ts'
-import mv from './commands/mv.ts'
-import cp from './commands/cp.ts'
-import stat from './commands/stat.ts'
 
 const MAIN_HELP = `\
 Usage: files [options] <command> [command-options]
@@ -89,7 +89,7 @@ const commands: Record<string, CommandModule> = {
 	rm,
 	mv,
 	cp,
-	stat,
+	stat
 }
 
 const GLOBAL_VALUED_FLAGS = new Set(['--config', '--volume'])
@@ -123,7 +123,13 @@ function findCommandIndex(argv: string[]): number {
 			index += 2
 			continue
 		}
-		if (GLOBAL_BOOLEAN_FLAGS.has(arg) || arg === '--help' || arg === '-h' || arg === '--version' || arg === '-v') {
+		if (
+			GLOBAL_BOOLEAN_FLAGS.has(arg) ||
+			arg === '--help' ||
+			arg === '-h' ||
+			arg === '--version' ||
+			arg === '-v'
+		) {
 			index += 1
 			continue
 		}
@@ -142,7 +148,7 @@ function printCaughtError(error: unknown, json: boolean): never {
 		printJsonError({
 			error: message,
 			code: getErrno(error) ?? (error instanceof CliUsageError ? 'usage' : 'runtime_error'),
-			usage: error instanceof CliUsageError ? error.help : undefined,
+			usage: error instanceof CliUsageError ? error.help : undefined
 		})
 	} else {
 		printError(message, error instanceof CliUsageError ? error.help : undefined)
@@ -170,10 +176,10 @@ async function main() {
 			json: { type: 'boolean' },
 			quiet: { type: 'boolean', short: 'q' },
 			help: { type: 'boolean', short: 'h' },
-			version: { type: 'boolean', short: 'v' },
+			version: { type: 'boolean', short: 'v' }
 		},
 		allowPositionals: true,
-		strict: false,
+		strict: false
 	})
 
 	try {
@@ -186,14 +192,17 @@ async function main() {
 		const commandName = argv[commandIndex]!
 		const command = commands[commandName]
 		if (!command) {
-			throw new CliUsageError(`unknown command: ${commandName}`, `Run 'files --help' to see available commands.`)
+			throw new CliUsageError(
+				`unknown command: ${commandName}`,
+				`Run 'files --help' to see available commands.`
+			)
 		}
 
 		const config = await loadConfig({
 			config: values.config,
 			volume: values.volume,
 			json: values.json as boolean | undefined,
-			quiet: values.quiet as boolean | undefined,
+			quiet: values.quiet as boolean | undefined
 		})
 		const { volumeName, volume } = await loadVolume(config)
 
@@ -201,7 +210,7 @@ async function main() {
 			volume,
 			volumeName,
 			json: config.json,
-			quiet: config.quiet,
+			quiet: config.quiet
 		})
 	} catch (error) {
 		printCaughtError(error, Boolean(values.json))

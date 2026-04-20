@@ -45,7 +45,7 @@ function configCandidates(): string[] {
 		join(home, '.config', 'files', 'config.cjs'),
 		join(home, '.files', 'config.js'),
 		join(home, '.files', 'config.mjs'),
-		join(home, '.files', 'config.cjs'),
+		join(home, '.files', 'config.cjs')
 	]
 }
 
@@ -67,17 +67,22 @@ function assertFileConfig(value: unknown, filePath: string): FileConfig {
 	if (config.defaultVolume !== undefined && typeof config.defaultVolume !== 'string') {
 		throw new CliUsageError(`invalid defaultVolume in ${filePath}: expected a string`)
 	}
-	if (config.volumes !== undefined && (!config.volumes || typeof config.volumes !== 'object' || Array.isArray(config.volumes))) {
+	if (
+		config.volumes !== undefined &&
+		(!config.volumes || typeof config.volumes !== 'object' || Array.isArray(config.volumes))
+	) {
 		throw new CliUsageError(`invalid volumes in ${filePath}: expected an object`)
 	}
 
 	return {
 		defaultVolume: config.defaultVolume as string | undefined,
-		volumes: (config.volumes as Record<string, VolumeConfig> | undefined) ?? {},
+		volumes: (config.volumes as Record<string, VolumeConfig> | undefined) ?? {}
 	}
 }
 
-async function loadFileConfig(configPath?: string): Promise<{ path?: string; dir: string; config: FileConfig }> {
+async function loadFileConfig(
+	configPath?: string
+): Promise<{ path?: string; dir: string; config: FileConfig }> {
 	if (configPath) {
 		const resolved = isAbsolute(configPath) ? configPath : resolve(process.cwd(), configPath)
 		if (!existsSync(resolved)) {
@@ -86,7 +91,7 @@ async function loadFileConfig(configPath?: string): Promise<{ path?: string; dir
 		return {
 			path: resolved,
 			dir: dirname(resolved),
-			config: assertFileConfig(await importConfigModule(resolved), resolved),
+			config: assertFileConfig(await importConfigModule(resolved), resolved)
 		}
 	}
 
@@ -95,22 +100,24 @@ async function loadFileConfig(configPath?: string): Promise<{ path?: string; dir
 		return {
 			path: candidate,
 			dir: dirname(candidate),
-			config: assertFileConfig(await importConfigModule(candidate), candidate),
+			config: assertFileConfig(await importConfigModule(candidate), candidate)
 		}
 	}
 
 	return {
 		dir: process.cwd(),
-		config: { volumes: {} },
+		config: { volumes: {} }
 	}
 }
 
-export async function loadConfig(overrides: {
-	config?: string | boolean
-	volume?: string | boolean
-	json?: boolean
-	quiet?: boolean
-} = {}): Promise<CliConfig> {
+export async function loadConfig(
+	overrides: {
+		config?: string | boolean
+		volume?: string | boolean
+		json?: boolean
+		quiet?: boolean
+	} = {}
+): Promise<CliConfig> {
 	const selectedVolume =
 		(typeof overrides.volume === 'string' ? overrides.volume : undefined) ??
 		process.env['FILES_VOLUME']
@@ -126,6 +133,6 @@ export async function loadConfig(overrides: {
 		volumes: config.volumes ?? {},
 		json: overrides.json ?? false,
 		quiet: overrides.quiet ?? false,
-		selectedVolume,
+		selectedVolume
 	}
 }

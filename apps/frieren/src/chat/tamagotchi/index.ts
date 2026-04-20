@@ -8,8 +8,8 @@
 // y-depth scaling, y-sorted props + character, contact shadows, biome palettes.
 // Character skins live in ./character.ts; prop helpers live in ./sprites.ts.
 
-export { createTamagotchi } from './scene'
-export type { TamagotchiOptions, TamagotchiHandle, SceneMode } from './scene'
-export type { Biome } from './palettes'
 export type { CharacterActivity, CharacterEmotion, CharacterReaction } from './character'
 export { DEFAULT_SKIN_ID, getSkin, getSkinAvatarUrl, listSkinIds } from './character'
+export type { Biome } from './palettes'
+export type { SceneMode, TamagotchiHandle, TamagotchiOptions } from './scene'
+export { createTamagotchi } from './scene'

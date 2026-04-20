@@ -1,6 +1,6 @@
 import { verifyToken } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
-import { Hono, type Context } from 'hono'
+import { type Context, Hono } from 'hono'
 
 export { Frieren } from './frieren.ts'
 

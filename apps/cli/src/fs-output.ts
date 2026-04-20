@@ -34,7 +34,7 @@ export function statToJson(path: string, stat: Stat) {
 		size: stat.size.toString(),
 		mtimeNs: stat.mtimeNs.toString(),
 		ctimeNs: stat.ctimeNs.toString(),
-		contentHash: stat.contentHash ?? null,
+		contentHash: stat.contentHash ?? null
 	}
 }
 
@@ -46,7 +46,7 @@ export function formatStat(path: string, stat: Stat): string[] {
 		`size: ${stat.size.toString()}`,
 		`mtime: ${isoFromNs(stat.mtimeNs)}`,
 		`ctime: ${isoFromNs(stat.ctimeNs)}`,
-		`content-hash: ${stat.contentHash ?? '(none)'}`,
+		`content-hash: ${stat.contentHash ?? '(none)'}`
 	]
 }
 

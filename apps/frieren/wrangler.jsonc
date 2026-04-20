@@ -10,14 +10,9 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
-	"compatibility_flags": [
-		"nodejs_compat"
-	],
+	"compatibility_flags": ["nodejs_compat"],
 	"secrets": {
-		"required": [
-			"CLERK_SECRET_KEY",
-			"OPENAI_API_KEY"
-		]
+		"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY"]
 	},
 	"vars": {
 		"CLERK_PUBLISHABLE_KEY": "pk_test_c3VtbWFyeS1sYWItODUuY2xlcmsuYWNjb3VudHMuZGV2JA"

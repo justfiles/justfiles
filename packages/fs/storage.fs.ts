@@ -1,9 +1,22 @@
-import { lstat as _lstat, readdir, mkdir, open, writeFile, readFile, unlink, rmdir, rename as _rename, symlink as _symlink, chmod, lutimes } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
+import {
+	lstat as _lstat,
+	rename as _rename,
+	symlink as _symlink,
+	chmod,
+	lutimes,
+	mkdir,
+	open,
+	readdir,
+	readFile,
+	rmdir,
+	unlink,
+	writeFile
+} from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Storage, StorageCapabilities, InodeMeta } from './storage'
-import { FileType } from './types'
+import type { InodeMeta, Storage, StorageCapabilities } from './storage'
 import type { Ino } from './types'
+import { FileType } from './types'
 
 // Pin lstat to the non-bigint overload so Stats fields are number, not number|bigint
 const lstat = (path: string): Promise<Stats> => _lstat(path) as Promise<Stats>
@@ -44,7 +57,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			size: BigInt(s.size),
 			mode: s.mode & 0o7777,
 			mtimeNs: BigInt(Math.trunc(s.mtimeMs)) * 1_000_000n,
-			ctimeNs: BigInt(Math.trunc(s.ctimeMs)) * 1_000_000n,
+			ctimeNs: BigInt(Math.trunc(s.ctimeMs)) * 1_000_000n
 		}
 	}
 
@@ -82,12 +95,13 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const oldPrefix = oldPath + '/'
 			for (const [ino, p] of pathMap) {
 				if (p === oldPath) pathMap.set(ino, newPath)
-				else if (p.startsWith(oldPrefix)) pathMap.set(ino, newPath + '/' + p.slice(oldPrefix.length))
+				else if (p.startsWith(oldPrefix))
+					pathMap.set(ino, newPath + '/' + p.slice(oldPrefix.length))
 			}
 			if (displaced !== null) pathMap.delete(displaced)
 
 			return displaced
-		},
+		}
 	}
 
 	return {
@@ -161,11 +175,11 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		async listDirents(dirIno, cursor) {
 			const dirPath = getPath(dirIno)
 			const names = (await readdir(dirPath)).sort()
-			const start = cursor === '' ? 0 : names.findIndex(n => n > cursor)
+			const start = cursor === '' ? 0 : names.findIndex((n) => n > cursor)
 			const slice = start === -1 ? [] : names.slice(start)
 
 			const entries = await Promise.all(
-				slice.map(async name => {
+				slice.map(async (name) => {
 					const childPath = join(dirPath, name)
 					const s = await lstat(childPath)
 					const ino = String(s.ino)
@@ -175,6 +189,6 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			)
 
 			return { entries, next: '' }
-		},
+		}
 	}
 }

@@ -66,7 +66,14 @@ export function drawRock(ctx: Ctx, p: Palette, x: number, y: number, s: number, 
 	ctx.fill()
 }
 
-export function drawMushroom(ctx: Ctx, _p: Palette, x: number, y: number, s: number, variant: number) {
+export function drawMushroom(
+	ctx: Ctx,
+	_p: Palette,
+	x: number,
+	y: number,
+	s: number,
+	variant: number
+) {
 	ctx.fillStyle = '#f6f0d8'
 	ctx.fillRect(x - 0.5 * s, y - 2 * s, s, 2 * s)
 	ctx.fillStyle = variant % 2 ? '#c23a3a' : '#d4772a'

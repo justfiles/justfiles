@@ -7,7 +7,7 @@ export const GHOSTORE_XATTR = {
 	title: `${XATTR_NAMESPACE}title`,
 	tags: `${XATTR_NAMESPACE}tags`,
 	links: `${XATTR_NAMESPACE}links`,
-	source: `${XATTR_NAMESPACE}source`,
+	source: `${XATTR_NAMESPACE}source`
 } as const
 
 export function encodeXattr(value: unknown): Uint8Array {

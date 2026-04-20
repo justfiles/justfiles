@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
 import { registerSW } from 'virtual:pwa-register'
+import { useEffect, useState } from 'react'
 
 export function usePWA() {
 	const [needRefresh, setNeedRefresh] = useState(false)
@@ -10,7 +10,7 @@ export function usePWA() {
 		const update = registerSW({
 			immediate: true,
 			onNeedRefresh: () => setNeedRefresh(true),
-			onOfflineReady: () => setOfflineReady(true),
+			onOfflineReady: () => setOfflineReady(true)
 		})
 		setUpdateSW(() => update)
 	}, [])

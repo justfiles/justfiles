@@ -7,7 +7,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
-	writeFileSync,
+	writeFileSync
 } from 'node:fs'
 import { readlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -31,7 +31,7 @@ function text(data: Uint8Array): string {
 
 // ── Fixture management ────────────────────────────────────────────────────────
 
-let tempDirs: string[] = []
+const tempDirs: string[] = []
 
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) {
@@ -88,7 +88,7 @@ describe('nativeStorage', () => {
 	// ── getMeta ───────────────────────────────────────────────────────────────
 
 	test('getMeta returns correct size for a regular file', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'hello.txt'), 'hello world'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'hello.txt'), 'hello world'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'hello.txt')
 		const meta = await storage.getMeta(dirent!.ino)
@@ -97,7 +97,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('getMeta returns FileType.Symlink for a symlink', async () => {
-		const root = makeTmp(dir => symlinkSync('../other.txt', join(dir, 'link.txt')))
+		const root = makeTmp((dir) => symlinkSync('../other.txt', join(dir, 'link.txt')))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'link.txt')
 		const meta = await storage.getMeta(dirent!.ino)
@@ -105,7 +105,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('getMeta returns FileType.Directory for a subdirectory', async () => {
-		const root = makeTmp(dir => mkdirSync(join(dir, 'subdir')))
+		const root = makeTmp((dir) => mkdirSync(join(dir, 'subdir')))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'subdir')
 		const meta = await storage.getMeta(dirent!.ino)
@@ -115,7 +115,7 @@ describe('nativeStorage', () => {
 	// ── setMeta ───────────────────────────────────────────────────────────────
 
 	test('setMeta updates mode on disk', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'file.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'file.txt'), 'x'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'file.txt')
 
@@ -126,7 +126,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('setMeta updates mtimeNs on disk', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'file.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'file.txt'), 'x'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'file.txt')
 
@@ -141,7 +141,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('setMeta with empty patch is a no-op', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'file.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'file.txt'), 'x'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'file.txt')
 		const before = await storage.getMeta(dirent!.ino)
@@ -155,7 +155,7 @@ describe('nativeStorage', () => {
 	// ── deleteInode ───────────────────────────────────────────────────────────
 
 	test('deleteInode removes the ino from the internal pathMap', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'file.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'file.txt'), 'x'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'file.txt')
 		const ino = dirent!.ino
@@ -171,7 +171,7 @@ describe('nativeStorage', () => {
 	// ── getBlob / putBlob ─────────────────────────────────────────────────────
 
 	test('getBlob reads existing file content', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'note.txt'), 'hello'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'note.txt'), 'hello'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'note.txt')
 
@@ -180,7 +180,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('putBlob writes content to disk and getBlob reads it back', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'file.txt'), ''))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'file.txt'), ''))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'file.txt')
 
@@ -194,7 +194,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('putBlob with binary data round-trips correctly', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'bin'), Buffer.alloc(0)))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'bin'), Buffer.alloc(0)))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'bin')
 
@@ -206,7 +206,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('putBlob overwrites existing content completely', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'file.txt'), 'long original content'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'file.txt'), 'long original content'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'file.txt')
 
@@ -225,7 +225,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('getDirent returns consistent ino across multiple calls', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'stable.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'stable.txt'), 'x'))
 		const storage = await nativeStorage(root)
 		const a = await storage.getDirent(storage.rootIno, 'stable.txt')
 		const b = await storage.getDirent(storage.rootIno, 'stable.txt')
@@ -233,7 +233,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('getDirent ino from getDirent matches rootIno for the root directory itself', async () => {
-		const root = makeTmp(dir => mkdirSync(join(dir, 'sub')))
+		const root = makeTmp((dir) => mkdirSync(join(dir, 'sub')))
 		const storage = await nativeStorage(root)
 		// sub is a subdirectory; create a storage rooted at sub and confirm its ino
 		const subDirent = await storage.getDirent(storage.rootIno, 'sub')
@@ -242,7 +242,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('getDirent type matches the actual filesystem entry type', async () => {
-		const root = makeTmp(dir => {
+		const root = makeTmp((dir) => {
 			writeFileSync(join(dir, 'file.txt'), 'x')
 			mkdirSync(join(dir, 'dir'))
 			symlinkSync('../target', join(dir, 'link'))
@@ -262,7 +262,7 @@ describe('nativeStorage', () => {
 	// ── putDirent ─────────────────────────────────────────────────────────────
 
 	test('putDirent moves a file to a new name within the same directory', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'src.txt'), 'move me'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'src.txt'), 'move me'))
 		const storage = await nativeStorage(root)
 		const dirent = await storage.getDirent(storage.rootIno, 'src.txt')
 
@@ -273,7 +273,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('putDirent moves a file to a subdirectory', async () => {
-		const root = makeTmp(dir => {
+		const root = makeTmp((dir) => {
 			writeFileSync(join(dir, 'file.txt'), 'content')
 			mkdirSync(join(dir, 'subdir'))
 		})
@@ -288,7 +288,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('putDirent preserves the ino after move', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'src.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'src.txt'), 'x'))
 		const storage = await nativeStorage(root)
 		const before = await storage.getDirent(storage.rootIno, 'src.txt')
 
@@ -302,7 +302,7 @@ describe('nativeStorage', () => {
 	// ── deleteDirent ──────────────────────────────────────────────────────────
 
 	test('deleteDirent removes a regular file from disk', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'delete-me.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'delete-me.txt'), 'x'))
 		const storage = await nativeStorage(root)
 
 		await storage.deleteDirent(storage.rootIno, 'delete-me.txt')
@@ -311,7 +311,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('deleteDirent removes an empty directory from disk', async () => {
-		const root = makeTmp(dir => mkdirSync(join(dir, 'empty-dir')))
+		const root = makeTmp((dir) => mkdirSync(join(dir, 'empty-dir')))
 		const storage = await nativeStorage(root)
 
 		await storage.deleteDirent(storage.rootIno, 'empty-dir')
@@ -320,7 +320,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('deleteDirent removes a symlink (not the target)', async () => {
-		const root = makeTmp(dir => {
+		const root = makeTmp((dir) => {
 			writeFileSync(join(dir, 'target.txt'), 'keep me')
 			symlinkSync('target.txt', join(dir, 'link.txt'))
 		})
@@ -335,7 +335,7 @@ describe('nativeStorage', () => {
 	// ── listDirents ───────────────────────────────────────────────────────────
 
 	test('listDirents returns entries in sorted order', async () => {
-		const root = makeTmp(dir => {
+		const root = makeTmp((dir) => {
 			writeFileSync(join(dir, 'z-last.txt'), '')
 			writeFileSync(join(dir, 'a-first.txt'), '')
 			mkdirSync(join(dir, 'm-middle'))
@@ -344,11 +344,11 @@ describe('nativeStorage', () => {
 
 		const result = await storage.listDirents(storage.rootIno, '')
 
-		expect(result.entries.map(e => e.name)).toEqual(['a-first.txt', 'm-middle', 'z-last.txt'])
+		expect(result.entries.map((e) => e.name)).toEqual(['a-first.txt', 'm-middle', 'z-last.txt'])
 	})
 
 	test('listDirents returns correct types', async () => {
-		const root = makeTmp(dir => {
+		const root = makeTmp((dir) => {
 			writeFileSync(join(dir, 'file.txt'), '')
 			mkdirSync(join(dir, 'dir'))
 			symlinkSync('../other', join(dir, 'link'))
@@ -356,7 +356,7 @@ describe('nativeStorage', () => {
 		const storage = await nativeStorage(root)
 
 		const { entries } = await storage.listDirents(storage.rootIno, '')
-		const byName = Object.fromEntries(entries.map(e => [e.name, e]))
+		const byName = Object.fromEntries(entries.map((e) => [e.name, e]))
 
 		expect(byName['file.txt']!.type).toBe(FileType.Regular)
 		expect(byName['dir']!.type).toBe(FileType.Directory)
@@ -364,7 +364,7 @@ describe('nativeStorage', () => {
 	})
 
 	test('listDirents cursor skips entries up to and including the cursor value', async () => {
-		const root = makeTmp(dir => {
+		const root = makeTmp((dir) => {
 			writeFileSync(join(dir, 'a.txt'), '')
 			writeFileSync(join(dir, 'b.txt'), '')
 			writeFileSync(join(dir, 'c.txt'), '')
@@ -373,11 +373,11 @@ describe('nativeStorage', () => {
 
 		// cursor = 'a.txt' means: return entries whose names are > 'a.txt'
 		const result = await storage.listDirents(storage.rootIno, 'a.txt')
-		expect(result.entries.map(e => e.name)).toEqual(['b.txt', 'c.txt'])
+		expect(result.entries.map((e) => e.name)).toEqual(['b.txt', 'c.txt'])
 	})
 
 	test('listDirents cursor at last entry returns empty list', async () => {
-		const root = makeTmp(dir => {
+		const root = makeTmp((dir) => {
 			writeFileSync(join(dir, 'a.txt'), '')
 			writeFileSync(join(dir, 'z.txt'), '')
 		})
@@ -398,11 +398,11 @@ describe('nativeStorage', () => {
 	})
 
 	test('listDirents registers inodes in pathMap (getDirent works after listDirents)', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'listed.txt'), 'content'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'listed.txt'), 'content'))
 		const storage = await nativeStorage(root)
 
 		const { entries } = await storage.listDirents(storage.rootIno, '')
-		const listed = entries.find(e => e.name === 'listed.txt')!
+		const listed = entries.find((e) => e.name === 'listed.txt')!
 
 		// getBlob should work because listDirents populated the pathMap
 		const data = await storage.getBlob(listed.ino)
@@ -421,7 +421,7 @@ describe('nativeStorage', () => {
 				size: 0n,
 				mode: 0o644,
 				mtimeNs: 0n,
-				ctimeNs: 0n,
+				ctimeNs: 0n
 			})
 
 			expect(typeof ino).toBe('string')
@@ -439,7 +439,7 @@ describe('nativeStorage', () => {
 				size: 0n,
 				mode: 0o644,
 				mtimeNs: 0n,
-				ctimeNs: 0n,
+				ctimeNs: 0n
 			})
 
 			const data = await storage.getBlob(ino)
@@ -455,7 +455,7 @@ describe('nativeStorage', () => {
 				size: 0n,
 				mode: 0o600,
 				mtimeNs: 0n,
-				ctimeNs: 0n,
+				ctimeNs: 0n
 			})
 
 			const s = statSync(join(root, 'restricted.txt'))
@@ -471,7 +471,7 @@ describe('nativeStorage', () => {
 				size: 0n,
 				mode: 0o755,
 				mtimeNs: 0n,
-				ctimeNs: 0n,
+				ctimeNs: 0n
 			})
 
 			expect(typeof ino).toBe('string')
@@ -489,7 +489,7 @@ describe('nativeStorage', () => {
 				mode: 0o777,
 				mtimeNs: 0n,
 				ctimeNs: 0n,
-				symlinkTarget: '../target.txt',
+				symlinkTarget: '../target.txt'
 			})
 
 			expect(typeof ino).toBe('string')
@@ -506,7 +506,7 @@ describe('nativeStorage', () => {
 				size: 0n,
 				mode: 0o644,
 				mtimeNs: 0n,
-				ctimeNs: 0n,
+				ctimeNs: 0n
 			})
 
 			const meta = await storage.getMeta(ino)
@@ -523,7 +523,7 @@ describe('nativeStorage', () => {
 				size: 0n,
 				mode: 0o644,
 				mtimeNs: 0n,
-				ctimeNs: 0n,
+				ctimeNs: 0n
 			})
 
 			const dirent = await storage.getDirent(storage.rootIno, 'file.txt')
@@ -535,13 +535,15 @@ describe('nativeStorage', () => {
 
 	describe('caps.atomicMove', () => {
 		test('renames a file within the same directory', async () => {
-			const root = makeTmp(dir => writeFileSync(join(dir, 'old.txt'), 'content'))
+			const root = makeTmp((dir) => writeFileSync(join(dir, 'old.txt'), 'content'))
 			const storage = await nativeStorage(root)
 			await storage.getDirent(storage.rootIno, 'old.txt') // populate pathMap
 
 			const displaced = await storage.caps!.atomicMove!(
-				storage.rootIno, 'old.txt',
-				storage.rootIno, 'new.txt',
+				storage.rootIno,
+				'old.txt',
+				storage.rootIno,
+				'new.txt'
 			)
 
 			expect(displaced).toBeNull()
@@ -550,7 +552,7 @@ describe('nativeStorage', () => {
 		})
 
 		test('moves a file to a subdirectory', async () => {
-			const root = makeTmp(dir => {
+			const root = makeTmp((dir) => {
 				writeFileSync(join(dir, 'file.txt'), 'data')
 				mkdirSync(join(dir, 'sub'))
 			})
@@ -559,8 +561,10 @@ describe('nativeStorage', () => {
 			const subDirent = await storage.getDirent(storage.rootIno, 'sub')
 
 			const displaced = await storage.caps!.atomicMove!(
-				storage.rootIno, 'file.txt',
-				subDirent!.ino, 'file.txt',
+				storage.rootIno,
+				'file.txt',
+				subDirent!.ino,
+				'file.txt'
 			)
 
 			expect(displaced).toBeNull()
@@ -569,7 +573,7 @@ describe('nativeStorage', () => {
 		})
 
 		test('displaces an existing file and returns its ino', async () => {
-			const root = makeTmp(dir => {
+			const root = makeTmp((dir) => {
 				writeFileSync(join(dir, 'src.txt'), 'src')
 				writeFileSync(join(dir, 'dst.txt'), 'dst')
 			})
@@ -578,8 +582,10 @@ describe('nativeStorage', () => {
 			const dstDirent = await storage.getDirent(storage.rootIno, 'dst.txt')
 
 			const displaced = await storage.caps!.atomicMove!(
-				storage.rootIno, 'src.txt',
-				storage.rootIno, 'dst.txt',
+				storage.rootIno,
+				'src.txt',
+				storage.rootIno,
+				'dst.txt'
 			)
 
 			expect(displaced).toBe(dstDirent!.ino)
@@ -587,7 +593,7 @@ describe('nativeStorage', () => {
 		})
 
 		test('atomicMove updates pathMap so descendants remain accessible', async () => {
-			const root = makeTmp(dir => {
+			const root = makeTmp((dir) => {
 				mkdirSync(join(dir, 'olddir'))
 				writeFileSync(join(dir, 'olddir', 'child.txt'), 'child')
 			})
@@ -595,10 +601,7 @@ describe('nativeStorage', () => {
 			const oldDirDirent = await storage.getDirent(storage.rootIno, 'olddir')
 			const childDirent = await storage.getDirent(oldDirDirent!.ino, 'child.txt')
 
-			await storage.caps!.atomicMove!(
-				storage.rootIno, 'olddir',
-				storage.rootIno, 'newdir',
-			)
+			await storage.caps!.atomicMove!(storage.rootIno, 'olddir', storage.rootIno, 'newdir')
 
 			// The child's ino should still be usable — pathMap was updated
 			const childData = await storage.getBlob(childDirent!.ino)
@@ -607,13 +610,15 @@ describe('nativeStorage', () => {
 		})
 
 		test('atomicMove returns null when displacing the same inode (self-rename)', async () => {
-			const root = makeTmp(dir => writeFileSync(join(dir, 'same.txt'), 'x'))
+			const root = makeTmp((dir) => writeFileSync(join(dir, 'same.txt'), 'x'))
 			const storage = await nativeStorage(root)
 			await storage.getDirent(storage.rootIno, 'same.txt')
 
 			const displaced = await storage.caps!.atomicMove!(
-				storage.rootIno, 'same.txt',
-				storage.rootIno, 'same.txt',
+				storage.rootIno,
+				'same.txt',
+				storage.rootIno,
+				'same.txt'
 			)
 
 			// same src and dst ino — no displacement
@@ -621,7 +626,7 @@ describe('nativeStorage', () => {
 		})
 
 		test('atomicMove updates deeply nested descendants', async () => {
-			const root = makeTmp(dir => {
+			const root = makeTmp((dir) => {
 				mkdirSync(join(dir, 'a'))
 				mkdirSync(join(dir, 'a', 'b'))
 				writeFileSync(join(dir, 'a', 'b', 'deep.txt'), 'deep')
@@ -632,10 +637,7 @@ describe('nativeStorage', () => {
 			const bDirent = await storage.getDirent(aDirent!.ino, 'b')
 			const deepDirent = await storage.getDirent(bDirent!.ino, 'deep.txt')
 
-			await storage.caps!.atomicMove!(
-				storage.rootIno, 'a',
-				storage.rootIno, 'renamed',
-			)
+			await storage.caps!.atomicMove!(storage.rootIno, 'a', storage.rootIno, 'renamed')
 
 			const data = await storage.getBlob(deepDirent!.ino)
 			expect(text(data)).toBe('deep')
@@ -646,11 +648,11 @@ describe('nativeStorage', () => {
 	// ── Cross-operation consistency ───────────────────────────────────────────
 
 	test('ino from listDirents matches ino from getDirent for the same file', async () => {
-		const root = makeTmp(dir => writeFileSync(join(dir, 'file.txt'), 'x'))
+		const root = makeTmp((dir) => writeFileSync(join(dir, 'file.txt'), 'x'))
 		const storage = await nativeStorage(root)
 
 		const { entries } = await storage.listDirents(storage.rootIno, '')
-		const fromList = entries.find(e => e.name === 'file.txt')!
+		const fromList = entries.find((e) => e.name === 'file.txt')!
 
 		const fromGet = await storage.getDirent(storage.rootIno, 'file.txt')
 
@@ -666,7 +668,7 @@ describe('nativeStorage', () => {
 			size: 0n,
 			mode: 0o644,
 			mtimeNs: 0n,
-			ctimeNs: 0n,
+			ctimeNs: 0n
 		})
 
 		await storage.putBlob(ino, bytes('hello world'))
@@ -684,7 +686,7 @@ describe('nativeStorage', () => {
 			size: 0n,
 			mode: 0o644,
 			mtimeNs: 0n,
-			ctimeNs: 0n,
+			ctimeNs: 0n
 		})
 
 		// Write
@@ -695,7 +697,7 @@ describe('nativeStorage', () => {
 
 		// Verify listed
 		const { entries } = await storage.listDirents(storage.rootIno, '')
-		expect(entries.some(e => e.name === 'lifecycle.txt')).toBe(true)
+		expect(entries.some((e) => e.name === 'lifecycle.txt')).toBe(true)
 
 		// Delete dirent then inode
 		await storage.deleteDirent(storage.rootIno, 'lifecycle.txt')
@@ -703,6 +705,6 @@ describe('nativeStorage', () => {
 
 		expect(existsSync(join(root, 'lifecycle.txt'))).toBe(false)
 		const { entries: after } = await storage.listDirents(storage.rootIno, '')
-		expect(after.some(e => e.name === 'lifecycle.txt')).toBe(false)
+		expect(after.some((e) => e.name === 'lifecycle.txt')).toBe(false)
 	})
 })
