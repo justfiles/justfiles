@@ -32,7 +32,7 @@ jobs:
           test -n "${CLOUDFLARE_ACCOUNT_ID}"
           test -n "${FRIEREN_CLERK_PUBLISHABLE_KEY}"
       - run: bun run typecheck
-      - run: bun run --filter frieren build
+      - run: bun run build
         env:
           CLOUDFLARE_ENV: staging
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
