@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "ghostore-monorepo",
+      "devDependencies": {
+        "@biomejs/biome": "^2.4.6",
+      },
     },
     "apps/cli": {
       "name": "@justfiles/cli",
@@ -109,7 +112,6 @@
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@biomejs/biome": "^2.4.6",
         "@cloudflare/vite-plugin": "1.15.3",
         "@eslint/js": "9.39.1",
         "@tailwindcss/typography": "^0.5.19",
