@@ -3,12 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import {
-	AssistantAvatar,
-	PORTRAIT_SIZE,
-	ROAM_HEIGHT,
-	useAdventureViewState
-} from './adventureShared'
+import { AssistantAvatar, useAdventureViewState } from './adventureShared'
 import { ToolCallBlock } from './ToolCallBlock'
 import type { ChatViewProps } from './types'
 
@@ -24,22 +19,15 @@ export function ShadcnView(props: ChatViewProps) {
 		sendMessage,
 		abort
 	} = props
-	const {
-		canvasRef,
-		dismissPanel,
-		history,
-		historyRef,
-		inputRef,
-		pinned,
-		poke,
-		setFocused,
-		showPanel,
-		submit
-	} = useAdventureViewState({ messages, input, sendMessage })
+	const { dismissPanel, history, historyRef, inputRef, pinned, setFocused, showPanel, submit } =
+		useAdventureViewState({ messages, input, sendMessage })
 
 	return (
-		<div className="relative mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden bg-gradient-to-b from-background via-slate-950 to-slate-950 text-foreground">
-			<div ref={historyRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
+		<div className="relative flex w-full flex-1 overflow-hidden bg-gradient-to-b from-background via-slate-950 to-slate-950 font-mono text-foreground">
+			<div
+				ref={historyRef}
+				className="flex min-w-0 flex-[1.618] flex-col gap-3 overflow-y-auto border-r-4 border-double border-sky-300/40 px-6 py-4"
+			>
 				{history.length === 0 ? (
 					<div className="flex flex-1 items-center justify-center text-muted-foreground">
 						<p>* A mysterious silence fills the air... *</p>
@@ -53,7 +41,7 @@ export function ShadcnView(props: ChatViewProps) {
 							<div className={cn('flex items-start gap-3', !isUser && 'flex-row-reverse')}>
 								<div
 									className={cn(
-										'flex h-10 w-10 shrink-0 items-center justify-center border text-xl shadow-[3px_3px_0_rgba(0,0,0,0.45)]',
+										'flex h-10 w-10 shrink-0 items-center justify-center border-2 border-double text-xl shadow-[3px_3px_0_rgba(0,0,0,0.45)]',
 										isUser
 											? 'border-amber-300 bg-amber-950 text-amber-100'
 											: 'overflow-hidden border-sky-300 bg-slate-950'
@@ -71,7 +59,7 @@ export function ShadcnView(props: ChatViewProps) {
 								<Card
 									size="sm"
 									className={cn(
-										'max-w-[75%] gap-2 border-2 px-3 py-2 shadow-[4px_4px_0_rgba(0,0,0,0.45)]',
+										'max-w-[75%] gap-2 rounded-none border-2 border-double px-3 py-2 shadow-[4px_4px_0_rgba(0,0,0,0.45)]',
 										isUser
 											? 'border-amber-300 bg-slate-900/90 text-amber-50'
 											: 'border-sky-300 bg-slate-900/90 text-sky-50'
@@ -106,130 +94,123 @@ export function ShadcnView(props: ChatViewProps) {
 				})}
 			</div>
 
-			<div className="relative">
-				<canvas
-					ref={canvasRef}
-					onClick={poke}
-					className="block w-full cursor-pointer border-t-4 border-double border-sky-300/40"
-					style={{ height: ROAM_HEIGHT, imageRendering: 'pixelated' }}
-				/>
-
-				<div className="border-t-4 border-double border-sky-300/60 bg-background/80 p-4">
-					<div className="flex gap-3">
-						{!showPanel ? (
-							<div
-								className="flex shrink-0 items-center justify-center border-2 border-amber-300 bg-amber-950 text-3xl text-amber-100 shadow-[4px_4px_0_rgba(0,0,0,0.45)]"
-								style={{ width: PORTRAIT_SIZE, height: PORTRAIT_SIZE }}
-							>
-								🗡️
-							</div>
-						) : null}
-						<Card
-							size="sm"
-							className={cn(
-								'flex-1 border-2 border-sky-300 bg-slate-950/90 px-4 py-3 shadow-[6px_6px_0_rgba(0,0,0,0.45)]',
-								showPanel && !isStreaming && 'cursor-pointer hover:border-amber-300'
-							)}
-							onClick={showPanel && !isStreaming ? dismissPanel : undefined}
+			<div className="flex min-w-0 flex-[1] flex-col bg-slate-950/60">
+				<div className="flex min-h-0 flex-[1.618] flex-col border-b-4 border-double border-sky-300/60 p-4">
+					<div className="relative flex flex-1 items-center justify-center overflow-hidden border-4 border-double border-sky-300 bg-gradient-to-b from-indigo-950 via-slate-900 to-slate-950 shadow-[6px_6px_0_rgba(0,0,0,0.45)]">
+						<AssistantAvatar
+							size={320}
+							className="h-auto max-h-full w-auto max-w-full object-contain"
+						/>
+						<Badge
+							variant="outline"
+							className="absolute bottom-2 left-2 rounded-none border-sky-300 bg-slate-950/90 px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"
 						>
-							{showPanel && pinned ? (
-								<div className="space-y-2">
-									<div className="flex items-center justify-between gap-3">
-										<Badge
-											variant="outline"
-											className="rounded-none border-sky-300 bg-transparent px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"
-										>
-											{agentName}
-										</Badge>
-										{isStreaming ? (
-											<Button
-												type="button"
-												variant="destructive"
-												size="xs"
-												onClick={(event) => {
-													event.stopPropagation()
-													abort()
-												}}
-											>
-												Stop
-											</Button>
-										) : (
-											<span className="text-[10px] uppercase tracking-[0.24em] text-amber-300/80">
-												Click to reply
-											</span>
-										)}
-									</div>
-									<div className="min-h-[3.5rem] whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-50">
-										{pinned.content || <span className="opacity-60">...</span>}
-										{isStreaming ? (
-											<span className="ml-px inline-block h-[1em] w-1 animate-pulse bg-sky-200 align-text-bottom" />
-										) : null}
-									</div>
-									{pinned.toolCalls && pinned.toolCalls.length > 0 ? (
-										<div className="flex flex-col gap-1">
-											{pinned.toolCalls.map((toolCall) => (
-												<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
-											))}
-										</div>
-									) : null}
-								</div>
-							) : (
-								<form
-									onSubmit={(event) => {
-										event.preventDefault()
-										submit()
-									}}
-								>
-									<div className="mb-2 flex items-center justify-between gap-3">
-										<Badge
-											variant="outline"
-											className="rounded-none border-amber-300 bg-transparent px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-amber-200"
-										>
-											{userName}
-										</Badge>
-										{connectionState !== 'ready' ? (
-											<span className="text-[10px] uppercase tracking-[0.24em] text-muted-foreground">
-												{connectionState}
-											</span>
-										) : null}
-									</div>
-									<Textarea
-										ref={inputRef}
-										className="min-h-[3.5rem] resize-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed text-amber-50 shadow-none placeholder:text-muted-foreground focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
-										value={input}
-										onChange={(event) => setInput(event.target.value)}
-										onFocus={() => setFocused(true)}
-										onBlur={() => setFocused(false)}
-										onKeyDown={(event) => {
-											if (event.key === 'Enter' && !event.shiftKey) {
-												event.preventDefault()
-												submit()
-											}
-										}}
-										placeholder={
-											connectionState === 'ready' ? 'What will you say?' : 'Connecting...'
-										}
-										disabled={connectionState !== 'ready'}
-										rows={2}
-									/>
-									<div className="mt-2 flex justify-end text-[10px] uppercase tracking-[0.24em] text-muted-foreground">
-										Enter to speak
-									</div>
-								</form>
-							)}
-						</Card>
-						{showPanel ? (
-							<div
-								className="shrink-0 overflow-hidden border-2 border-sky-300 bg-slate-950 shadow-[4px_4px_0_rgba(0,0,0,0.45)]"
-								style={{ width: PORTRAIT_SIZE, height: PORTRAIT_SIZE }}
+							{agentName}
+						</Badge>
+						{isStreaming ? (
+							<Badge
+								variant="outline"
+								className="absolute bottom-2 right-2 rounded-none border-amber-300 bg-slate-950/90 px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-amber-200"
 							>
-								<AssistantAvatar
-									size={PORTRAIT_SIZE}
-									className="h-full w-full object-cover object-center"
-								/>
-							</div>
+								▸ Speaking...
+							</Badge>
 						) : null}
 					</div>
+				</div>
+
+				<div className="flex min-h-0 flex-[1] flex-col p-4">
+					<Card
+						size="sm"
+						className={cn(
+							'flex min-h-0 flex-1 flex-col gap-2 rounded-none border-4 border-double border-sky-300 bg-slate-950/90 px-4 py-3 shadow-[6px_6px_0_rgba(0,0,0,0.45)]',
+							showPanel && !isStreaming && 'cursor-pointer hover:border-amber-300'
+						)}
+						onClick={showPanel && !isStreaming ? dismissPanel : undefined}
+					>
+						{showPanel && pinned ? (
+							<>
+								<div className="flex items-center justify-between gap-3">
+									<Badge
+										variant="outline"
+										className="rounded-none border-sky-300 bg-transparent px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"
+									>
+										{agentName}
+									</Badge>
+									{isStreaming ? (
+										<Button
+											type="button"
+											variant="destructive"
+											size="xs"
+											onClick={(event) => {
+												event.stopPropagation()
+												abort()
+											}}
+										>
+											Stop
+										</Button>
+									) : (
+										<span className="text-[10px] uppercase tracking-[0.24em] text-amber-300/80">
+											▸ Click to reply
+										</span>
+									)}
+								</div>
+								<div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-50">
+									{pinned.content || <span className="opacity-60">...</span>}
+									{isStreaming ? (
+										<span className="ml-px inline-block h-[1em] w-1 animate-pulse bg-sky-200 align-text-bottom" />
+									) : null}
+								</div>
+								{pinned.toolCalls && pinned.toolCalls.length > 0 ? (
+									<div className="flex flex-col gap-1">
+										{pinned.toolCalls.map((toolCall) => (
+											<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
+										))}
+									</div>
+								) : null}
+							</>
+						) : (
+							<form
+								className="flex min-h-0 flex-1 flex-col"
+								onSubmit={(event) => {
+									event.preventDefault()
+									submit()
+								}}
+							>
+								<div className="mb-2 flex items-center justify-between gap-3">
+									<Badge
+										variant="outline"
+										className="rounded-none border-amber-300 bg-transparent px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-amber-200"
+									>
+										{userName}
+									</Badge>
+									{connectionState !== 'ready' ? (
+										<span className="text-[10px] uppercase tracking-[0.24em] text-muted-foreground">
+											{connectionState}
+										</span>
+									) : null}
+								</div>
+								<Textarea
+									ref={inputRef}
+									className="min-h-0 flex-1 resize-none border-0 bg-transparent px-0 py-0 text-sm leading-relaxed text-amber-50 shadow-none placeholder:text-muted-foreground focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
+									value={input}
+									onChange={(event) => setInput(event.target.value)}
+									onFocus={() => setFocused(true)}
+									onBlur={() => setFocused(false)}
+									onKeyDown={(event) => {
+										if (event.key === 'Enter' && !event.shiftKey) {
+											event.preventDefault()
+											submit()
+										}
+									}}
+									placeholder={connectionState === 'ready' ? 'What will you say?' : 'Connecting...'}
+									disabled={connectionState !== 'ready'}
+								/>
+								<div className="mt-2 flex justify-end text-[10px] uppercase tracking-[0.24em] text-muted-foreground">
+									▼ Enter to speak
+								</div>
+							</form>
+						)}
+					</Card>
 				</div>
 			</div>
 		</div>
