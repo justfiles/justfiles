@@ -3,7 +3,6 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import { createFrierenApiApp } from './app.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
@@ -14,6 +13,7 @@ import { parseFrontmatter } from './markdown'
 import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts'
 import type { SessionEntry } from './session.manager.ts'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
+import { createFsApi } from '@justfiles/core'
 
 interface ClientMessage {
 	type: 'prompt' | 'abort'
@@ -83,7 +83,7 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			.route('/', createFrierenApiApp(fs))
+			.route('/fs', createFsApi(fs))
 
 		ctx.blockConcurrencyWhile(async () => {
 			await this.reset()
