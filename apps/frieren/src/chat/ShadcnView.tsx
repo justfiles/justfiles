@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
+import { AppFrame } from '../AppFrame'
 import { AssistantAvatar, useAdventureViewState } from './adventureShared'
 import { ToolCallBlock } from './ToolCallBlock'
 import type { ChatViewProps } from './types'
@@ -17,7 +18,9 @@ export function ShadcnView(props: ChatViewProps) {
 		connectionState,
 		isStreaming,
 		sendMessage,
-		abort
+		abort,
+		activeApp,
+		sendAppAction
 	} = props
 	const { dismissPanel, history, historyRef, inputRef, pinned, setFocused, showPanel, submit } =
 		useAdventureViewState({ messages, input, sendMessage })
@@ -26,7 +29,7 @@ export function ShadcnView(props: ChatViewProps) {
 		<div className="relative flex w-full flex-1 overflow-hidden bg-gradient-to-b from-background via-slate-950 to-slate-950 font-mono text-foreground">
 			<div
 				ref={historyRef}
-				className="flex min-w-0 flex-[1.618] flex-col gap-3 overflow-y-auto border-r-4 border-double border-sky-300/40 px-6 py-4"
+				className="flex min-w-0 flex-[1] flex-col gap-3 overflow-y-auto border-r-4 border-double border-sky-300/40 px-6 py-4"
 			>
 				{history.length === 0 ? (
 					<div className="flex flex-1 items-center justify-center text-muted-foreground">
@@ -94,13 +97,22 @@ export function ShadcnView(props: ChatViewProps) {
 				})}
 			</div>
 
-			<div className="flex min-w-0 flex-[1] flex-col bg-slate-950/60">
+			<div className="flex min-w-0 flex-[1.618] flex-col bg-slate-950/60">
 				<div className="flex min-h-0 flex-[1.618] flex-col border-b-4 border-double border-sky-300/60 p-4">
 					<div className="relative flex flex-1 items-center justify-center overflow-hidden border-4 border-double border-sky-300 bg-gradient-to-b from-indigo-950 via-slate-900 to-slate-950 shadow-[6px_6px_0_rgba(0,0,0,0.45)]">
-						<AssistantAvatar
-							size={320}
-							className="h-auto max-h-full w-auto max-w-full object-contain"
-						/>
+						{activeApp ? (
+							<AppFrame
+								id={activeApp.id}
+								ui={activeApp.ui}
+								state={activeApp.state}
+								onAction={sendAppAction}
+							/>
+						) : (
+							<AssistantAvatar
+								size={320}
+								className="h-auto max-h-full w-auto max-w-full object-contain"
+							/>
+						)}
 						<Badge
 							variant="outline"
 							className="absolute bottom-2 left-2 rounded-none border-sky-300 bg-slate-950/90 px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"

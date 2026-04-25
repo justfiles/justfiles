@@ -17,6 +17,15 @@ export interface ChatMessage {
 	toolCalls?: ToolCallInfo[]
 }
 
+export type ActiveApp = {
+	id: string
+	ui: { entry: string; assets: Record<string, string> }
+	state: unknown
+} | null
+
+// Actions flow through the registry; at this wire boundary they're opaque.
+export type AppAction = { type: string; payload: unknown }
+
 export interface ChatViewProps {
 	messages: ChatMessage[]
 	input: string
@@ -28,4 +37,6 @@ export interface ChatViewProps {
 	sendMessage: () => void
 	abort: () => void
 	reconnect: () => void
+	activeApp: ActiveApp
+	sendAppAction: (action: AppAction) => void
 }

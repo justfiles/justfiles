@@ -27,6 +27,6 @@
 			"name": "@effect/language-service"
 		}
 	],
-	"include": ["worker", "worker/env.d.ts"],
-	"exclude": ["worker/**/*.test.ts"]
+	"include": ["worker", "worker/env.d.ts", "apps"],
+	"exclude": ["worker/**/*.test.ts", "apps/**/*.tsx"]
 }
