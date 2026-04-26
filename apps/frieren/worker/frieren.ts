@@ -7,7 +7,7 @@ import { Hono } from 'hono'
 import { appRegistry } from '../apps'
 import type { AnyApp } from '../apps/app'
 import type { Action, Actor } from '../apps/engine'
-import { session as makeSession, type Session } from '../apps/session'
+import { type LogEntry, session as makeSession, type Session } from '../apps/session'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
@@ -81,6 +81,7 @@ interface ActiveApp {
 interface PersistedApp {
 	id: string
 	state: unknown
+	log?: LogEntry<Action>[]
 }
 
 const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -280,13 +281,13 @@ export class Frieren extends DurableObject<Env> {
 		const app = appRegistry[saved.id]
 		if (!app) return
 		if (app.done?.(saved.state)) return
-		this.mountApp(app, saved.state)
+		this.mountApp(app, saved.state, saved.log)
 	}
 
-	private mountApp(app: AnyApp, initial?: unknown): ActiveApp {
+	private mountApp(app: AnyApp, initial?: unknown, log?: LogEntry<Action>[]): ActiveApp {
 		const userActor: Actor = { id: USER_ID, kind: 'human' }
 		const agentActor: Actor = { id: AGENT_ID, kind: 'agent' }
-		const session = makeSession(app.engine, initial) as AnySession
+		const session = makeSession(app.engine, { initial, log }) as AnySession
 		const tools =
 			app.agent?.createTools?.({
 				getSession: () => this.activeApp?.session ?? null,
@@ -311,7 +312,8 @@ export class Frieren extends DurableObject<Env> {
 	private persistApp(active: ActiveApp): void {
 		void this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, {
 			id: active.id,
-			state: active.session.state()
+			state: active.session.state(),
+			log: [...active.session.log()]
 		})
 	}
 
@@ -368,8 +370,9 @@ export class Frieren extends DurableObject<Env> {
 
 	private async handleAppAction(ws: WebSocket, action: Action): Promise<void> {
 		if (!this.activeApp) return
-		const { session, userActor, app } = this.activeApp
+		const { session, userActor, agentActor, app } = this.activeApp
 
+		const prev = session.state()
 		const result = session.dispatch(userActor, action)
 		if (!result.ok) {
 			ws.send(
@@ -381,10 +384,11 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		const describe = app.agent?.describeUserMove
-		if (describe) {
-			const agentView = session.view(this.activeApp.agentActor)
-			await this.promptAgent(ws, describe(action, agentView))
+		const narrate = app.agent?.narrate
+		if (narrate) {
+			const agentView = session.view(agentActor)
+			const message = narrate({ prev, next: result.state, action, actor: userActor }, agentView)
+			if (message) await this.promptAgent(ws, message)
 		}
 	}
 

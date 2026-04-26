@@ -1,36 +1,19 @@
 # Apps
 
-Small apps that run in sandboxed iframes inside the chat. The engine runs on the worker; the iframe renders and dispatches actions.
+Small apps that run in sandboxed iframes inside the chat. State lives on the worker; the iframe renders and dispatches actions. Same reducer drives the human UI and the agent's tools.
 
-## Minimum structure
+## Structure
 
 One directory per app. Launch with `/<id>` in chat.
 
 ```
 hello/
-├── index.ts      server-side: bundle + export
-├── app.js        engine + metadata
-├── index.html    iframe entry
-└── hello.js      iframe UI code
+├── index.ts      # exports the App (engine + UI + agent metadata)
+├── index.html    # iframe entry
+└── hello.js      # iframe UI code
 ```
 
 ## Hello world
-
-**`hello/app.js`** — the app.
-
-```js
-import { defineApp } from '../iframe'
-
-export default defineApp({
-	id: 'hello',
-	name: 'Hello',
-	description: 'Greets you.',
-	engine: {
-		initial: { message: 'Hello, world.' },
-		step: (state) => state
-	}
-})
-```
 
 **`hello/index.html`**
 
@@ -50,17 +33,25 @@ window.app.subscribe((state) => {
 })
 ```
 
-**`hello/index.ts`** — bundles HTML + JS with the definition.
+**`hello/index.ts`** — single `app(...)` factory call.
 
 ```ts
-import { iframeApp } from '../iframe'
-import definition from './app.js'
+import { app } from '../app'
 import script from './hello.js?raw'
 import html from './index.html?raw'
 
-export const helloApp = iframeApp(definition, {
-	'index.html': html,
-	'hello.js': script
+export const helloApp = app({
+	id: 'hello',
+	name: 'Hello',
+	description: 'Greets you.',
+	engine: {
+		initial: { message: 'Hello, world.' },
+		step: (state) => state
+	},
+	ui: {
+		entry: 'index.html',
+		assets: { 'index.html': html, 'hello.js': script }
+	}
 })
 ```
 
@@ -73,21 +64,21 @@ export const appRegistry = { [helloApp.id]: helloApp }
 
 ## Actions
 
-The engine is a reducer: `(state, action) => nextState`. Dispatch from the iframe.
+The engine is a reducer: `(state, action, actor) => nextState`. Dispatch from the iframe.
 
-```js
-// app.js
+```ts
 engine: {
 	initial: { count: 0 },
 	step(state, action) {
 		switch (action.type) {
-			case 'increment': return { ...state, count: state.count + 1 }
-			case 'decrement': return { ...state, count: state.count - 1 }
-			default: return state
+			case 'increment': return { count: state.count + 1 }
+			case 'decrement': return { count: state.count - 1 }
 		}
 	}
 }
+```
 
+```js
 // hello.js
 button.addEventListener('click', () => {
 	window.app.dispatch({ type: 'increment', payload: {} })
@@ -112,55 +103,71 @@ window.app: {
 
 Optional. Reject illegal moves before they reach `step`.
 
-```js
-engine: {
-	// ...
-	allows(_state, _actor, action) {
-		return ['increment', 'decrement'].includes(action.type)
-	}
+```ts
+allows(_state, _actor, action) {
+	return ['increment', 'decrement'].includes(action.type)
 }
 ```
 
 ## Per-actor views
 
-Optional. Project state differently for human vs. agent. Iframes see the user projection; agent tools see theirs.
+Optional. Project state differently for human vs. agent.
 
-```js
+```ts
+view(state, actor) {
+	return actor.kind === 'agent' ? { count: state.count } : state
+}
+```
+
+## Action schemas → typed agent tools
+
+Declare a TypeBox schema per action type and the runtime auto-generates one tool per action plus a `<id>_state` tool. Payloads are validated at the boundary.
+
+```ts
+import { Type } from '@sinclair/typebox'
+
 engine: {
-	// ...
-	view(state, actor) {
-		return actor.kind === 'agent' ? { count: state.count } : state
+	initial: { count: 0 },
+	step(state, action) { /* ... */ },
+	actionSchemas: {
+		increment: Type.Object({}),
+		decrement: Type.Object({}),
+		set: Type.Object({ value: Type.Integer() })
 	}
 }
 ```
 
-## Agent hooks
+The agent now sees `counter_state`, `counter_increment`, `counter_decrement`, `counter_set({value})` as separate tools with proper schemas.
 
-Every app automatically gets two tools — `get_current_state` and `game_act` — plus a default briefing. Override any of:
+If you skip `actionSchemas` you get a generic `<id>_dispatch` tool instead.
 
-```js
+## Briefing & narration
+
+Optional agent metadata.
+
+```ts
 agent: {
-	briefing: 'Deal first by calling game_act with {type:"deal", card:n}.',
-	createTools: (args) => [...],                // custom AgentTool[]
-	describeUserMove: (action, view) => '...'    // narration after user acts
+	briefing: 'Card game launched. Call card_deal with { card: <1-100> } to start.',
+	narrate(transition, view) {
+		return `User played ${transition.action.type}. View: ${JSON.stringify(view)}`
+	}
 }
 ```
 
-Engine stays pure — agent concerns never leak into game logic.
+`briefing` is sent on launch. `narrate` is called after a non-agent dispatch — return a string to prompt the agent, or `null` to stay silent.
 
-## TypeScript
+## Custom tools
 
-For editor support on JS apps, add a sibling `app.d.ts`:
+If the auto-derived tools aren't enough, override:
 
 ```ts
-import type { App } from '../app'
-import type { Action, Actor } from '../engine'
-
-declare const definition: App<
-	{ count: number },
-	Action<'increment' | 'decrement', {}>,
-	Actor,
-	{ count: number }
->
-export default definition
+agent: {
+	createTools({ getSession, agentActor }) {
+		return [/* AgentTool[] */]
+	}
+}
 ```
+
+## Transition log
+
+Sessions keep an append-only log of `{ at, actorId, action }` (capped at 200 by default), persisted by the worker. Read with `session.log()` for replay/debugging.

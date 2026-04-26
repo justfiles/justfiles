@@ -3,6 +3,7 @@
 // Someone deals a hidden card (1-100). Two or more players each submit a guess.
 // When someone calls reveal, the card is shown and whoever was closest wins.
 
+import { Type } from '@sinclair/typebox'
 import type { Action, Actor, Engine } from '../engine'
 
 export type Phase = 'setup' | 'guessing' | 'revealed'
@@ -101,5 +102,15 @@ export const cardEngine: Engine<CardState, CardAction, Actor, CardView> = {
 			otherGuesses,
 			winner: state.winner
 		}
+	},
+
+	actionSchemas: {
+		deal: Type.Object({
+			card: Type.Integer({ minimum: 1, maximum: 100, description: 'Hidden card value' })
+		}),
+		guess: Type.Object({
+			value: Type.Integer({ minimum: 1, maximum: 100, description: 'Your guess' })
+		}),
+		reveal: Type.Object({})
 	}
 }

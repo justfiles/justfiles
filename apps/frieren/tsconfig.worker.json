@@ -28,5 +28,5 @@
 		}
 	],
 	"include": ["worker", "worker/env.d.ts", "apps"],
-	"exclude": ["worker/**/*.test.ts", "apps/**/*.tsx"]
+	"exclude": ["worker/**/*.test.ts", "apps/**/*.test.ts", "apps/**/*.tsx"]
 }
