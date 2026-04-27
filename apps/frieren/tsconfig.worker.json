@@ -11,6 +11,7 @@
 		"moduleResolution": "bundler",
 		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
+		"allowJs": true,
 		"verbatimModuleSyntax": true,
 		"moduleDetection": "force",
 		"noEmit": true,

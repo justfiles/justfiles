@@ -126,7 +126,7 @@ us atomic writes and survives hibernation/eviction.
 | DO memory limit: 128MB | Low | Personal assistant context is small. Not loading entire codebases. Monitor and paginate if needed. |
 | pi packages import Node.js globals (e.g. `process`, `Buffer`) | Medium | `nodejs_compat` flag is already set. Test early — Phase 1 will surface these issues. |
 | pi-ai provider auth assumes file-based storage | Low | Use `InMemoryAuthStorage` from pi-ai and inject API keys from Worker secrets / env vars. |
-| `@sinclair/typebox` may use `new Function()` internally | Medium | Test in Phase 1. If it crashes, pin to a version that uses interpreter mode or swap to manual validation. |
+| `typebox` may use `new Function()` internally | Medium | Test in Phase 1. If it crashes, pin to a version that uses interpreter mode or swap to manual validation. |
 | pi upstream changes / instability | Low | Pin exact versions. The core agent API (`Agent`, `prompt()`, `subscribe()`) is stable. |
 | WebSocket message ordering during rapid interaction | Low | DO processes messages sequentially by design. No race conditions. |
 

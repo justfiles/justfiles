@@ -4,13 +4,11 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import { appRegistry } from '../apps'
-import type { AnyApp } from '../apps/app'
 import type { Action, Actor } from '../apps/engine'
-import { type LogEntry, session as makeSession, type Session } from '../apps/session'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
+import { type AppFacet, buildAppTools, hasApp, loadAppFacet } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { createAgent } from './llm.agent'
 import { type LLMText, text } from './llm.text'
@@ -51,12 +49,7 @@ type ServerMessage =
 	| { type: 'error'; message: string }
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
-	| {
-			type: 'app_open'
-			id: string
-			ui: { entry: string; assets: Record<string, string> }
-			state: unknown
-	  }
+	| { type: 'app_open'; id: string; ui: { url: string }; state: unknown }
 	| { type: 'app_state'; id: string; state: unknown }
 	| { type: 'app_close' }
 
@@ -66,22 +59,22 @@ const AGENT_ID = 'agent'
 const USER_ID = 'user'
 const APP_STORAGE_KEY = 'active_app'
 
-// biome-ignore lint/suspicious/noExplicitAny: existential erasure at the registry boundary
-type AnySession = Session<any, Action, Actor, any>
+type DispatchResult =
+	| { ok: true; view: unknown; narration?: string | null; availableActions?: readonly Action[] }
+	| { ok: false; error: string }
+type Dispatcher = (action: Action, actor: Actor) => Promise<DispatchResult>
 
 interface ActiveApp {
 	id: string
-	app: AnyApp
-	session: AnySession
+	facet: AppFacet
 	tools: AgentTool[]
 	userActor: Actor
 	agentActor: Actor
+	dispatch: Dispatcher
 }
 
 interface PersistedApp {
 	id: string
-	state: unknown
-	log?: LogEntry<Action>[]
 }
 
 const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -242,11 +235,11 @@ export class Frieren extends DurableObject<Env> {
 				return
 			}
 
-			// `/card`, `/chess`, … — launch the matching registered app.
+			// `/counter`, `/chess`, … — launch the matching registered app.
 			if (trimmed.startsWith('/')) {
-				const kind = trimmed.slice(1)
-				if (appRegistry[kind]) {
-					await this.launchApp(ws, kind)
+				const id = trimmed.slice(1)
+				if (hasApp(id)) {
+					await this.launchApp(ws, id)
 					return
 				}
 			}
@@ -266,92 +259,76 @@ export class Frieren extends DurableObject<Env> {
 
 	// ── App orchestration ──────────────────────────────────────────────
 	//
-	// The runtime holds at most one active app at a time. On launch it
-	// creates a Session, attaches the module's tools to the agent, subscribes
-	// for transitions, and kicks off the game. On close it removes those tools
-	// and broadcasts null to clients.
+	// At most one app is active at a time. The engine + state live in a
+	// per-app dynamic-worker facet (own SQLite), reached over RPC. The
+	// supervisor only holds the facet stub, the agent-tool wrappers, and a
+	// dispatcher closure that broadcasts state on every transition.
 	//
-	// Durable Objects can hibernate between WS messages, so app state must be
-	// persisted; session + subscriber + tools are rebuilt on each wake.
+	// DOs can hibernate between WS messages, so the active-app object is
+	// rebuilt from a persisted `{ id }` on each wake.
 
 	private async hydrateApp(): Promise<void> {
 		if (this.activeApp) return
 		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
-		if (!saved) return
-		const app = appRegistry[saved.id]
-		if (!app) return
-		if (app.done?.(saved.state)) return
-		this.mountApp(app, saved.state, saved.log)
+		if (!saved || !hasApp(saved.id)) return
+		const facet = loadAppFacet(this.ctx, this.env, saved.id)
+		if (await facet.done()) {
+			await this.ctx.storage.delete(APP_STORAGE_KEY)
+			return
+		}
+		await this.mountApp(saved.id)
 	}
 
-	private mountApp(app: AnyApp, initial?: unknown, log?: LogEntry<Action>[]): ActiveApp {
+	private async mountApp(id: string): Promise<ActiveApp> {
 		const userActor: Actor = { id: USER_ID, kind: 'human' }
 		const agentActor: Actor = { id: AGENT_ID, kind: 'agent' }
-		const session = makeSession(app.engine, { initial, log }) as AnySession
-		const tools =
-			app.agent?.createTools?.({
-				getSession: () => this.activeApp?.session ?? null,
-				agentActor
-			}) ?? []
-		const active: ActiveApp = { id: app.id, app, session, tools, userActor, agentActor }
-		this.activeApp = active
+		const facet = loadAppFacet(this.ctx, this.env, id)
 
-		session.subscribe(() => {
-			if (this.activeApp === active) this.broadcastState(active)
-		})
+		// Single dispatch path for both human (app_action) and agent (tool
+		// execute). Always broadcasts new view on success.
+		const dispatch: Dispatcher = async (action, actor) => {
+			const result = (await facet.dispatch(action, actor)) as DispatchResult
+			if (result.ok) this.broadcastState(id, result.view)
+			return result
+		}
+
+		const tools = await buildAppTools(facet, id, agentActor, dispatch)
+		const active: ActiveApp = { id, facet, tools, userActor, agentActor, dispatch }
+		this.activeApp = active
 
 		const agent = this.runtime?._agent()
 		if (agent) agent.state.tools = [...agent.state.tools, ...tools]
 
-		this.persistApp(active)
-		this.broadcastOpen(active)
-
+		await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
+		await this.broadcastOpen(active)
 		return active
 	}
 
-	private persistApp(active: ActiveApp): void {
-		void this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, {
-			id: active.id,
-			state: active.session.state(),
-			log: [...active.session.log()]
-		})
-	}
-
-	// Static bundle + initial state: sent once on mount and on reconnects.
-	private broadcastOpen(active: ActiveApp): void {
-		const payload = JSON.stringify(this.openMessage(active))
+	private broadcastState(id: string, state: unknown): void {
+		const payload = JSON.stringify({ type: 'app_state', id, state } satisfies ServerMessage)
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}
 
-	// Dynamic state only: sent on every subsequent engine transition.
-	private broadcastState(active: ActiveApp): void {
-		this.persistApp(active)
-		const payload = JSON.stringify({
-			type: 'app_state',
-			id: active.id,
-			state: active.session.view(active.userActor)
-		} satisfies ServerMessage)
+	private async broadcastOpen(active: ActiveApp): Promise<void> {
+		const payload = JSON.stringify(await this.openMessage(active))
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}
 
-	private openMessage(active: ActiveApp): ServerMessage {
-		const ui = active.app.ui
+	private async openMessage(active: ActiveApp): Promise<ServerMessage> {
+		const state: unknown = await active.facet.view(active.userActor)
 		return {
 			type: 'app_open',
 			id: active.id,
-			ui: { entry: ui?.entry ?? 'index.html', assets: ui?.assets ?? {} },
-			state: active.session.view(active.userActor)
+			ui: { url: `/apps/${active.id}/` },
+			state
 		}
 	}
 
 	private async launchApp(ws: WebSocket, id: string): Promise<void> {
-		const app = appRegistry[id]
-		if (!app) return
-
+		if (!hasApp(id)) return
 		if (this.activeApp) await this.closeApp()
-
-		this.mountApp(app)
-		const briefing = app.agent?.briefing
+		const active = await this.mountApp(id)
+		const briefing = await active.facet.briefing()
 		if (briefing) await this.promptAgent(ws, briefing)
 	}
 
@@ -359,9 +336,7 @@ export class Frieren extends DurableObject<Env> {
 		if (!this.activeApp) return
 		const { tools } = this.activeApp
 		const agent = this.runtime?._agent()
-		if (agent) {
-			agent.state.tools = agent.state.tools.filter((t) => !tools.includes(t))
-		}
+		if (agent) agent.state.tools = agent.state.tools.filter((t) => !tools.includes(t))
 		this.activeApp = undefined
 		await this.ctx.storage.delete(APP_STORAGE_KEY)
 		const payload = JSON.stringify({ type: 'app_close' } satisfies ServerMessage)
@@ -370,10 +345,7 @@ export class Frieren extends DurableObject<Env> {
 
 	private async handleAppAction(ws: WebSocket, action: Action): Promise<void> {
 		if (!this.activeApp) return
-		const { session, userActor, agentActor, app } = this.activeApp
-
-		const prev = session.state()
-		const result = session.dispatch(userActor, action)
+		const result = await this.activeApp.dispatch(action, this.activeApp.userActor)
 		if (!result.ok) {
 			ws.send(
 				JSON.stringify({
@@ -383,13 +355,7 @@ export class Frieren extends DurableObject<Env> {
 			)
 			return
 		}
-
-		const narrate = app.agent?.narrate
-		if (narrate) {
-			const agentView = session.view(agentActor)
-			const message = narrate({ prev, next: result.state, action, actor: userActor }, agentView)
-			if (message) await this.promptAgent(ws, message)
-		}
+		if (result.narration) await this.promptAgent(ws, result.narration)
 	}
 
 	private async promptAgent(ws: WebSocket, prompt: string): Promise<void> {
@@ -449,10 +415,10 @@ export class Frieren extends DurableObject<Env> {
 			// Send ready signal
 			server.send(JSON.stringify({ type: 'ready', participants } satisfies ServerMessage))
 
-			// If an app is already running, send the bundle + current state so
+			// If an app is already running, send the URL + current state so
 			// this client can boot the iframe from scratch.
 			if (this.activeApp) {
-				server.send(JSON.stringify(this.openMessage(this.activeApp)))
+				server.send(JSON.stringify(await this.openMessage(this.activeApp)))
 			}
 
 			return new Response(null, {

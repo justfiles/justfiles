@@ -6,34 +6,39 @@
 //   simplest        { initial, step }
 //   + actor views   + view(state, actor)             // GUI for humans, data for agents
 //   + permissions   + allows(state, actor, action)   // roles, turn order, etc.
-//   + discovery     + actions(state, actor)          // enumerate legal moves
-//   + schemas       + actionSchemas                  // typed agent tools + validation
+//   + schemas       + actions                        // typed agent tools + validation
+//   + discovery     + availableActions(state, actor) // enumerate legal moves
 
-import type { TSchema } from '@sinclair/typebox'
+import type Type from 'typebox'
 
 export type Action<T extends string = string, P = unknown> = {
 	type: T
 	payload: P
 }
 
+export type ActionDef<S extends Type.TSchema = Type.TSchema> = {
+	schema: S
+	description?: string
+}
+
+export type ActionDefs = Record<string, ActionDef>
+
+export type ActionFromDefs<D extends ActionDefs> = {
+	[K in keyof D & string]: Action<K, Type.Static<D[K]['schema']>>
+}[keyof D & string]
+
 export type Actor = {
 	id: string
 	kind?: 'human' | 'agent' | 'system'
 }
 
-export interface Engine<S, A extends Action = Action, TActor = Actor, V = S> {
+export interface Engine<S, D extends ActionDefs, TActor = Actor, V = S> {
 	// Pure idle state. Randomness / seeds / levels flow in through a setup action
 	// (see card game's 'deal'), not through this initial value.
 	initial: S
-	step(state: S, action: A, actor: TActor): S
-
+	actions: D
+	step(state: S, action: ActionFromDefs<D>, actor: TActor): S
 	view?(state: S, actor: TActor): V
-	allows?(state: S, actor: TActor, action: A): boolean
-	actions?(state: S, actor: TActor): readonly A[]
-
-	// Optional payload schemas keyed by action type. When present, the runtime
-	// generates one typed agent tool per key (e.g. card_deal, card_guess) and
-	// validates payloads at the boundary. When absent, a single generic
-	// dispatch tool is generated.
-	actionSchemas?: Record<string, TSchema>
+	allows?(state: S, actor: TActor, action: ActionFromDefs<D>): boolean
+	availableActions?(state: S, actor: TActor): readonly ActionFromDefs<D>[]
 }

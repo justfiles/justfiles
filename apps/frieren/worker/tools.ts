@@ -7,7 +7,7 @@
 
 import type { Volume } from '@justfiles/fs'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
-import { Type } from '@sinclair/typebox'
+import Type from 'typebox'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()

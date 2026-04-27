@@ -4,7 +4,8 @@
 	"main": "worker/index.ts",
 	"compatibility_date": "2026-04-10",
 	"assets": {
-		"not_found_handling": "single-page-application"
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/apps/*", "/api/*", "/fs/*", "/ws"]
 	},
 	"observability": {
 		"enabled": true
@@ -29,6 +30,11 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["Frieren"]
+		}
+	],
+	"worker_loaders": [
+		{
+			"binding": "LOADER"
 		}
 	],
 	"env": {

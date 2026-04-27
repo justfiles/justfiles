@@ -19,7 +19,7 @@ export interface ChatMessage {
 
 export type ActiveApp = {
 	id: string
-	ui: { entry: string; assets: Record<string, string> }
+	ui: { url: string }
 	state: unknown
 } | null
 
