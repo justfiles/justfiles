@@ -42,3 +42,14 @@ export interface Engine<S, D extends ActionDefs, TActor = Actor, V = S> {
 	allows?(state: S, actor: TActor, action: ActionFromDefs<D>): boolean
 	availableActions?(state: S, actor: TActor): readonly ActionFromDefs<D>[]
 }
+
+/**
+ * Define an Engine with full type inference. Pass the engine object literal
+ * and `S`, `D`, `TActor`, `V` are inferred — `step`/`allows`/`availableActions`
+ * get correctly-typed `action` parameters derived from `actions`.
+ */
+export function define<S, D extends ActionDefs, TActor = Actor, V = S>(
+	engine: Engine<S, D, TActor, V>
+): Engine<S, D, TActor, V> {
+	return engine
+}

@@ -1,7 +1,7 @@
 import { verifyToken } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
-import { ASSET_ENTRY, BRIDGE_JS, getAsset, hasApp } from './frieren.app'
+import { BRIDGE_JS, getAsset, getEntryPath, hasApp } from './frieren.app'
 
 export { Frieren } from './frieren.ts'
 
@@ -42,19 +42,50 @@ const injectBridge = (html: string): string =>
 const app = new Hono<WorkerEnv>()
 
 // Public, unauthenticated app assets — registered before clerk middleware.
+// Bundled HTML carries `crossorigin` on its module/CSS tags, and the iframe
+// is sandboxed (origin: null), so the browser CORS-checks every asset. Allow
+// any origin since these are already public.
+//
+// TODO(security): production hardening for cross-origin asset access.
+// `*` is acceptable today because:
+//   - assets are public (no auth, no cookies — Allow-Credentials stays false,
+//     and `*` cannot be combined with credentialed CORS anyway)
+//   - bundle contents are static UI; nothing user-specific is baked in
+// Risks if those invariants ever slip:
+//   - any third-party site can fetch and read app bundles (hot-linking; data
+//     leakage if a build accidentally inlines secrets or per-tenant config)
+//   - the wildcard hides the actual caller, so we can't audit who's loading
+//     bundles from off-domain
+// Recommended hardening, in order of priority:
+//   1. Move app assets to a dedicated origin (apps.<DOMAIN>) — the existing
+//      FUTURE note below. Isolates the sandbox iframe from host-origin paths
+//      AND lets us treat the apps origin as a static-only CDN with its own
+//      caching/abuse story.
+//   2. Add a build-time check that app bundles contain no secrets / env-
+//      specific URLs / per-tenant data. (Audit script over dist before
+//      registering in the host.)
+//   3. Once the apps origin is split out, narrow `*` → an explicit list:
+//      the host origin and `null` (for sandbox iframes), reflected from the
+//      Origin header. Keeps random sites from hot-linking.
+//   4. Consider SRI hashes on the script/link tags if hot-linking becomes a
+//      real abuse vector — Vite emits stable hashed names, so this is cheap.
+const appAssetHeaders = (path: string): Record<string, string> => ({
+	'content-type': mimeFor(path),
+	'access-control-allow-origin': '*'
+})
 app.get(
 	'/apps/_bridge.js',
-	() => new Response(BRIDGE_JS, { headers: { 'content-type': mimeFor('_bridge.js') } })
+	() => new Response(BRIDGE_JS, { headers: appAssetHeaders('_bridge.js') })
 )
 app.get('/apps/*', (c) => {
 	const rest = c.req.path.replace(/^\/apps\//, '').split('/')
 	const appId = rest.shift()!
 	if (!hasApp(appId)) return c.notFound()
-	const path = rest.join('/') || ASSET_ENTRY
+	const path = rest.join('/') || getEntryPath(appId) || 'index.html'
 	const content = getAsset(appId, path)
 	if (content === undefined) return c.notFound()
 	const body = path.endsWith('.html') ? injectBridge(content) : content
-	return new Response(body, { headers: { 'content-type': mimeFor(path) } })
+	return new Response(body, { headers: appAssetHeaders(path) })
 })
 
 app.get('/ws', async (c) => {

@@ -1,20 +1,23 @@
-// Host-side wiring for dynamic worker apps.
+/// <reference types="@justfiles/app/virtual" />
 //
-//   worker/dynamic/<id>/app.js          - App spec (engine + agent), bundled
-//                                          into a per-app dynamic worker.
-//   worker/dynamic/<id>/{*.html,*.js,…}  - assets, served by the host.
-//   worker/dynamic/_bridge.js            - postMessage bridge auto-injected
-//                                          into every served HTML.
+// Host-side wiring for dynamic worker apps. The registry is the build-time
+// virtual module emitted by `hostApps()` in vite.config.ts (see
+// @justfiles/app/vite). Each entry carries `manifest`, `code` (backend ESM),
+// and a flat `assets` map — the same shape regardless of source.
 //
-// Apps are auto-registered at module load via Vite glob — drop a directory in
-// and it's picked up. POC layout: bundles ship as inline strings via `?raw`.
-// Production: swap the glob for an R2/KV-backed source with the same shape.
+// Production: in addition to the build-time `hostApps` channel, frieren will
+// load user-uploaded apps from R2 at runtime via `installFromR2`. Both paths
+// converge on `loadAppPackage` (see @justfiles/app/host) and yield the same
+// `AppEntry`, so the registry consumer doesn't have to care which source.
 
 import { createWorker } from '@cloudflare/worker-bundler'
+import type { Action, Actor } from '@justfiles/app'
+import bridgeJs from '@justfiles/app/client?raw'
+import type { AppEntry } from '@justfiles/app/host'
+import runtimeJs from '@justfiles/app/runtime.js?raw'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import Type from 'typebox'
-import type { Action, Actor } from '../apps/engine'
-import bridgeJs from './dynamic/_bridge.js?raw'
+import { registry } from 'virtual:@justfiles/apps'
 import type { App as FacetApp } from './dynamic/do.js'
 import doCode from './dynamic/do.js?raw'
 
@@ -32,43 +35,16 @@ export interface AppFacet {
 
 const PACKAGE_JSON = JSON.stringify({ dependencies: { typebox: '^1.1.33' } })
 const COMPAT_DATE = '2026-04-25'
-const ENTRY = 'index.html'
-
-type AppEntry = { code: string; assets: Record<string, string> }
-
-const registry = ((): Map<string, AppEntry> => {
-	const codes = import.meta.glob('./dynamic/*/app.js', {
-		query: '?raw',
-		import: 'default',
-		eager: true
-	}) as Record<string, string>
-	const allAssets = import.meta.glob('./dynamic/*/**/*.{html,js,css,svg,json}', {
-		query: '?raw',
-		import: 'default',
-		eager: true
-	}) as Record<string, string>
-
-	const out = new Map<string, AppEntry>()
-	for (const [path, code] of Object.entries(codes)) {
-		const dir = path.slice(0, -'/app.js'.length)
-		const id = dir.split('/').pop()!
-		const assets: Record<string, string> = {}
-		for (const [aPath, content] of Object.entries(allAssets)) {
-			if (aPath.startsWith(`${dir}/`) && !aPath.endsWith('/app.js')) {
-				assets[aPath.slice(dir.length + 1)] = content
-			}
-		}
-		out.set(id, { code, assets })
-	}
-	return out
-})()
 
 export const listAppIds = (): string[] => [...registry.keys()]
 export const hasApp = (id: string): boolean => registry.has(id)
-export const getAsset = (id: string, path: string): string | undefined =>
-	registry.get(id)?.assets[path || ENTRY]
+export const getAsset = (id: string, path: string): string | undefined => {
+	const entry = registry.get(id)
+	if (!entry) return undefined
+	return entry.assets[path || entry.manifest.entry]
+}
+export const getEntryPath = (id: string): string | undefined => registry.get(id)?.manifest.entry
 export const BRIDGE_JS = bridgeJs
-export const ASSET_ENTRY = ENTRY
 
 // First call per appId pays the bundle cost (esbuild-wasm + npm fetch for
 // declared deps). Subsequent calls hit the worker-loader cache.
@@ -82,6 +58,7 @@ export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): 
 				files: {
 					'src/index.js': doCode,
 					'src/app.js': entry.code,
+					'src/runtime.js': runtimeJs,
 					'package.json': PACKAGE_JSON
 				},
 				entryPoint: 'src/index.js'
@@ -92,6 +69,15 @@ export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): 
 	})
 	return facet as unknown as AppFacet
 }
+
+// TODO(uploads): runtime adapter for user-submitted apps. Reads every key
+// under `prefix` from R2, decodes utf-8 (binary assets blocked at upload
+// time per format.ts TODO), and feeds the bag to `loadAppPackage`. Same
+// `AppEntry` returned, same downstream wiring.
+export async function installFromR2(_prefix: string): Promise<AppEntry> {
+	throw new Error('installFromR2: not implemented')
+}
+
 type ToolDescriptor = { name: string; description?: string; parameters: unknown }
 
 // Synthesize callable AgentTools from facet's data-only descriptors.

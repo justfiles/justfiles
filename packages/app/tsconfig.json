@@ -1,0 +1,31 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"lib": ["ES2022", "DOM"],
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"outDir": "./dist",
+		"rootDir": ".",
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"strict": true,
+		"skipLibCheck": true,
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"noUncheckedIndexedAccess": true,
+		"types": ["bun"]
+	},
+	"include": [
+		"index.ts",
+		"app.ts",
+		"engine.ts",
+		"runtime.ts",
+		"protocol.ts",
+		"server.ts",
+		"vite-plugin.ts",
+		"format.ts",
+		"host.ts"
+	],
+	"exclude": ["node_modules", "dist"]
+}

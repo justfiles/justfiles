@@ -1,0 +1,70 @@
+{
+	"name": "@justfiles/app",
+	"type": "module",
+	"sideEffects": false,
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"@justfiles/src": "./index.ts",
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./server": {
+			"@justfiles/src": "./server.ts",
+			"types": "./dist/server.d.ts",
+			"default": "./dist/server.js"
+		},
+		"./client": {
+			"@justfiles/src": "./client.js",
+			"types": "./client.d.ts",
+			"default": "./client.js"
+		},
+		"./vite": {
+			"@justfiles/src": "./vite-plugin.ts",
+			"types": "./dist/vite-plugin.d.ts",
+			"default": "./dist/vite-plugin.js"
+		},
+		"./host": {
+			"@justfiles/src": "./host.ts",
+			"types": "./dist/host.d.ts",
+			"default": "./dist/host.js"
+		},
+		"./format": {
+			"@justfiles/src": "./format.ts",
+			"types": "./dist/format.d.ts",
+			"default": "./dist/format.js"
+		},
+		"./virtual": {
+			"types": "./virtual.d.ts"
+		},
+		"./runtime.js": {
+			"default": "./dist/runtime.js"
+		}
+	},
+	"files": [
+		"dist",
+		"client.js",
+		"client.d.ts",
+		"virtual.d.ts"
+	],
+	"scripts": {
+		"build": "tsc",
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"typebox": "^1.1.34",
+		"vite": "^6 || ^7 || ^8"
+	},
+	"peerDependenciesMeta": {
+		"vite": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typebox": "^1.1.34",
+		"typescript": "^6.0.3",
+		"vite": "^8.0.0-beta.13"
+	}
+}
