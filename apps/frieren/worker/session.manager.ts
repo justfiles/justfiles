@@ -39,7 +39,8 @@ const EntryBase = z.object({
 const UserMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('user'),
-	content: z.string()
+	content: z.string(),
+	source: z.enum(['user', 'app']).optional()
 })
 
 const AssistantThinkingMessage = EntryBase.extend({

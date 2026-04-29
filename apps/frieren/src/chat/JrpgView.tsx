@@ -1,3 +1,4 @@
+import { AppPromptBlock } from './AppPromptBlock'
 import {
 	AssistantAvatar,
 	PORTRAIT_SIZE,
@@ -30,46 +31,74 @@ export function JrpgView(props: ChatViewProps) {
 						<p>* A mysterious silence fills the air... *</p>
 					</div>
 				) : null}
-				{history.map((message) => (
-					<div key={message.id} className="flex flex-col gap-1">
-						<div
-							className={`flex items-start gap-3 ${message.role === 'assistant' ? 'flex-row-reverse' : ''}`}
-						>
-							<div
-								className={`flex h-10 w-10 shrink-0 items-center justify-center border-2 border-double text-xl shadow-[3px_3px_0_rgba(0,0,0,0.6)] ${
-									message.role === 'user'
-										? 'border-amber-300 bg-amber-950 text-amber-100'
-										: 'overflow-hidden border-sky-300 bg-indigo-950'
-								}`}
-							>
-								{message.role === 'user' ? (
-									'🗡️'
-								) : (
-									<AssistantAvatar size={40} className="h-full w-full object-cover object-center" />
-								)}
-							</div>
-							<div
-								className={`max-w-[75%] border-2 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-[4px_4px_0_rgba(0,0,0,0.6)] ${
-									message.role === 'user'
-										? 'border-amber-300 bg-slate-900/90 text-amber-100'
-										: 'border-sky-300 bg-slate-900/90 text-sky-100'
-								}`}
-							>
-								<div className="mb-1 text-[10px] uppercase tracking-widest opacity-70">
-									{message.role === 'user' ? '> Hero' : '> Frieren'}
+				{history.map((message) => {
+					const toolOnly =
+						message.role === 'assistant' &&
+						!message.content &&
+						!message.thinking &&
+						!!message.toolCalls?.length
+
+					return (
+						<div key={message.id} className="flex flex-col gap-1">
+							{message.source === 'app' ? (
+								<AppPromptBlock content={message.content} />
+							) : toolOnly ? (
+								<div className="flex flex-col gap-1">
+									<div className="text-[10px] uppercase tracking-widest text-sky-300/80">
+										&gt; Frieren
+									</div>
+									<div className="flex max-w-[75%] flex-col gap-1">
+										{message.toolCalls?.map((toolCall) => (
+											<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
+										))}
+									</div>
 								</div>
-								{message.content}
-							</div>
+							) : (
+								<>
+									<div
+										className={`flex items-start gap-3 ${message.role === 'assistant' ? 'flex-row-reverse' : ''}`}
+									>
+										<div
+											className={`flex h-10 w-10 shrink-0 items-center justify-center border-2 border-double text-xl shadow-[3px_3px_0_rgba(0,0,0,0.6)] ${
+												message.role === 'user'
+													? 'border-amber-300 bg-amber-950 text-amber-100'
+													: 'overflow-hidden border-sky-300 bg-indigo-950'
+											}`}
+										>
+											{message.role === 'user' ? (
+												'🗡️'
+											) : (
+												<AssistantAvatar
+													size={40}
+													className="h-full w-full object-cover object-center"
+												/>
+											)}
+										</div>
+										<div
+											className={`max-w-[75%] border-2 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-[4px_4px_0_rgba(0,0,0,0.6)] ${
+												message.role === 'user'
+													? 'border-amber-300 bg-slate-900/90 text-amber-100'
+													: 'border-sky-300 bg-slate-900/90 text-sky-100'
+											}`}
+										>
+											<div className="mb-1 text-[10px] uppercase tracking-widest opacity-70">
+												{message.role === 'user' ? '> Hero' : '> Frieren'}
+											</div>
+											{message.content}
+										</div>
+									</div>
+									{message.toolCalls && message.toolCalls.length > 0 ? (
+										<div className="ml-14 flex flex-col gap-1">
+											{message.toolCalls.map((toolCall) => (
+												<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
+											))}
+										</div>
+									) : null}
+								</>
+							)}
 						</div>
-						{message.toolCalls && message.toolCalls.length > 0 ? (
-							<div className="ml-14 flex flex-col gap-1">
-								{message.toolCalls.map((toolCall) => (
-									<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
-								))}
-							</div>
-						) : null}
-					</div>
-				))}
+					)
+				})}
 			</div>
 
 			<div className="relative">
@@ -103,7 +132,10 @@ export function JrpgView(props: ChatViewProps) {
 											<span className="text-amber-300/80">[click to reply ▸]</span>
 										</div>
 										<div className="min-h-[3.5rem] whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-100">
-											{pinned.content || <span className="opacity-60">...</span>}
+											{pinned.content ||
+												(!pinned.toolCalls?.length ? (
+													<span className="opacity-60">...</span>
+												) : null)}
 										</div>
 										{pinned.toolCalls && pinned.toolCalls.length > 0 ? (
 											<div className="mt-2 flex flex-col gap-1">
@@ -137,7 +169,10 @@ export function JrpgView(props: ChatViewProps) {
 											)}
 										</div>
 										<div className="min-h-[3.5rem] whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-100">
-											{pinned.content || <span className="opacity-60">...</span>}
+											{pinned.content ||
+												(!pinned.toolCalls?.length ? (
+													<span className="opacity-60">...</span>
+												) : null)}
 											{isStreaming ? (
 												<span className="ml-px inline-block h-[1em] w-1 animate-pulse bg-sky-200 align-text-bottom" />
 											) : null}

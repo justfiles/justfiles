@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AppFrame } from '../AppFrame'
+import { AppPromptBlock } from './AppPromptBlock'
 import { AssistantAvatar, useAdventureViewState } from './adventureShared'
 import { ToolCallBlock } from './ToolCallBlock'
 import type { ChatViewProps } from './types'
@@ -37,7 +38,31 @@ export function ShadcnView(props: ChatViewProps) {
 					</div>
 				) : null}
 				{history.map((message) => {
+					if (message.source === 'app') {
+						return <AppPromptBlock key={message.id} content={message.content} />
+					}
+
 					const isUser = message.role === 'user'
+					const toolOnly =
+						!isUser && !message.content && !message.thinking && !!message.toolCalls?.length
+
+					if (toolOnly) {
+						return (
+							<div key={message.id} className="flex flex-col gap-1">
+								<Badge
+									variant="outline"
+									className="w-fit rounded-none border-sky-300 bg-transparent px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"
+								>
+									{agentName}
+								</Badge>
+								<div className="flex max-w-[75%] flex-col gap-1">
+									{message.toolCalls?.map((toolCall) => (
+										<ToolCallBlock key={toolCall.id} toolCall={toolCall} />
+									))}
+								</div>
+							</div>
+						)
+					}
 
 					return (
 						<div key={message.id} className="flex flex-col gap-1">
@@ -167,7 +192,8 @@ export function ShadcnView(props: ChatViewProps) {
 									)}
 								</div>
 								<div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-relaxed text-sky-50">
-									{pinned.content || <span className="opacity-60">...</span>}
+									{pinned.content ||
+										(!pinned.toolCalls?.length ? <span className="opacity-60">...</span> : null)}
 									{isStreaming ? (
 										<span className="ml-px inline-block h-[1em] w-1 animate-pulse bg-sky-200 align-text-bottom" />
 									) : null}

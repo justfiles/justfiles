@@ -33,6 +33,7 @@ interface DisplayToolCall {
 interface DisplayMessage {
 	readonly role: 'user' | 'assistant'
 	readonly content: string
+	readonly source?: 'user' | 'app'
 	readonly thinking?: string
 	readonly toolCalls?: ReadonlyArray<DisplayToolCall>
 }
@@ -45,6 +46,7 @@ interface DisplayParticipants {
 type ServerMessage =
 	| { type: 'ready'; participants?: DisplayParticipants }
 	| { type: 'history'; messages: ReadonlyArray<DisplayMessage>; participants?: DisplayParticipants }
+	| { type: 'app_prompt'; text: string }
 	| { type: 'event'; event: AgentEvent }
 	| { type: 'error'; message: string }
 	// TODO: remove debug
@@ -259,7 +261,7 @@ export class Frieren extends DurableObject<Env> {
 				)
 			})
 			try {
-				await this.runtime?.prompt(parsed.text)
+				await this.runtime?.prompt(parsed.text, 'user')
 			} catch (error) {
 				ws.send(
 					JSON.stringify({
@@ -392,11 +394,12 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async promptAgent(ws: WebSocket, prompt: string): Promise<void> {
+		ws.send(JSON.stringify({ type: 'app_prompt', text: prompt } satisfies ServerMessage))
 		const unsubscribe = this.runtime?.subscribe((event, _signal) => {
 			ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
 		})
 		try {
-			await this.runtime?.prompt(prompt)
+			await this.runtime?.prompt(prompt, 'app')
 		} catch (error) {
 			ws.send(
 				JSON.stringify({
@@ -444,7 +447,7 @@ export class Frieren extends DurableObject<Env> {
 			await this.hydrateApp()
 
 			const participants = await this.loadParticipants()
-			const history = ((await this.runtime?.history()) ?? []).map(sessionEntry2DisplayMessage)
+			const history = sessionEntries2DisplayMessages((await this.runtime?.history()) ?? [])
 			if (history.length > 0) {
 				server.send(
 					JSON.stringify({
@@ -486,12 +489,59 @@ export class Frieren extends DurableObject<Env> {
 	}
 }
 
-function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage {
+function sessionEntries2DisplayMessages(entries: readonly SessionEntry[]): DisplayMessage[] {
+	const messages: DisplayMessage[] = []
+	for (const entry of entries) {
+		if (entry.type === 'message' && entry.role === 'tool_result') {
+			const last = messages[messages.length - 1]
+			const toolCalls = last?.toolCalls ? [...last.toolCalls] : []
+			const index = toolCalls.findLastIndex(
+				(toolCall) => toolCall.name === entry.tool_name && toolCall.result === undefined
+			)
+			if (last?.role === 'assistant' && index >= 0) {
+				toolCalls[index] = { ...toolCalls[index], result: parseToolResult(entry.content) }
+				messages[messages.length - 1] = { ...last, toolCalls }
+				continue
+			}
+		}
+
+		const message = sessionEntry2DisplayMessage(entry)
+		if (!message) continue
+
+		const last = messages[messages.length - 1]
+		if (
+			last?.role === 'assistant' &&
+			!last.content &&
+			last.toolCalls?.length &&
+			message.role === 'assistant' &&
+			message.toolCalls?.length
+		) {
+			messages[messages.length - 1] = {
+				...last,
+				toolCalls: [...last.toolCalls, ...message.toolCalls]
+			}
+			continue
+		}
+
+		messages.push(message)
+	}
+	return messages
+}
+
+function parseToolResult(content: string): unknown {
+	try {
+		return JSON.parse(content)
+	} catch {
+		return content
+	}
+}
+
+function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null {
 	switch (entry.type) {
 		case 'message':
 			switch (entry.role) {
 				case 'user':
-					return { role: 'user', content: entry.content }
+					return { role: 'user', content: entry.content, source: entry.source ?? 'user' }
 				case 'assistant':
 					return { role: 'assistant', content: entry.content }
 				case 'assistant_thinking':

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createTamagotchi, getSkinAvatarUrl, type TamagotchiHandle } from './tamagotchi'
 import type { ChatMessage } from './types'
 
@@ -62,10 +62,11 @@ export function useAdventureViewState(props: {
 		setTimeout(() => inputRef.current?.focus(), 0)
 	}
 
-	useEffect(() => {
+	useLayoutEffect(() => {
 		void history.length
-		historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'smooth' })
-	}, [history.length])
+		const historyEl = historyRef.current
+		if (historyEl) historyEl.scrollTop = historyEl.scrollHeight
+	}, [history])
 
 	useEffect(() => {
 		if (!canvasRef.current) return

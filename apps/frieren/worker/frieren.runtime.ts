@@ -25,7 +25,7 @@ type FrierenEvent = AgentEvent
 type FrierenEventListener = (event: FrierenEvent, signal: AbortSignal) => Promise<void> | void
 
 export interface Runtime {
-	prompt: (message: string) => Promise<void>
+	prompt: (message: string, source?: 'user' | 'app') => Promise<void>
 	shutdown: () => Promise<void>
 	subscribe: (lisener: FrierenEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
@@ -52,11 +52,13 @@ export async function runtime({ volume, agent, text, compaction }: RuntimeProps)
 		agent.abort()
 	}
 
-	async function prompt(message: string) {
+	async function prompt(message: string, source: 'user' | 'app' = 'user') {
 		const offset = agent.state.messages.length
 		await agent.prompt(message)
 		const newMessages = agent.state.messages.slice(offset)
-		await session.append(newMessages.map(transform))
+		await session.append(
+			newMessages.map((message, index) => transform(message, index === 0 ? source : 'user'))
+		)
 		if (shouldCompact(agent, compaction)) {
 			const branch = await session.walkActiveBranch()
 			const prepared = prepareCompaction(branch, compaction)
@@ -140,7 +142,7 @@ export async function runtime({ volume, agent, text, compaction }: RuntimeProps)
 	}
 }
 
-function transform(message: AgentMessage): AppendPayload {
+function transform(message: AgentMessage, source: 'user' | 'app'): AppendPayload {
 	if (!('role' in message)) throw new Error(`unsupported message: ${JSON.stringify(message)}`)
 	switch (message.role) {
 		case 'user': {
@@ -151,7 +153,7 @@ function transform(message: AgentMessage): AppendPayload {
 							.filter((b) => b.type === 'text')
 							.map((b) => b.text)
 							.join('\n')
-			return { type: 'message', role: 'user', content }
+			return { type: 'message', role: 'user', content, source }
 		}
 		case 'assistant': {
 			const texts: string[] = []

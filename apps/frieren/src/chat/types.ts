@@ -13,6 +13,7 @@ export interface ChatMessage {
 	id: string
 	role: 'user' | 'assistant'
 	content: string
+	source?: 'user' | 'app'
 	thinking?: string
 	toolCalls?: ToolCallInfo[]
 }

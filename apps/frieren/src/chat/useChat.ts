@@ -177,12 +177,14 @@ export function useChat() {
 						(m: {
 							role: string
 							content: string
+							source?: 'user' | 'app'
 							thinking?: string
 							toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[]
 						}) => ({
 							id: crypto.randomUUID(),
 							role: m.role as 'user' | 'assistant',
 							content: m.content,
+							source: m.source,
 							thinking: m.thinking,
 							toolCalls: m.toolCalls?.map((tc) => ({
 								id: crypto.randomUUID(),
@@ -195,6 +197,19 @@ export function useChat() {
 						})
 					)
 					if (restored.length > 0) setMessages(restored)
+					return
+				}
+
+				if (data.type === 'app_prompt') {
+					setMessages((prev) => [
+						...prev,
+						{
+							id: crypto.randomUUID(),
+							role: 'user',
+							source: 'app',
+							content: String(data.text ?? '')
+						}
+					])
 					return
 				}
 
