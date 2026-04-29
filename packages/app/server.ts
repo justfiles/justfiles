@@ -7,7 +7,12 @@
 import type { HTMLBundle, Server, ServerWebSocket } from 'bun'
 import type { AnyApp } from './app.js'
 import type { Action, Actor } from './engine.js'
-import { dispatch, briefing as getBriefing, view as getView } from './runtime.js'
+import {
+	dispatch,
+	briefing as getBriefing,
+	initial as getInitial,
+	view as getView
+} from './runtime.js'
 
 type SocketData = Record<string, never>
 
@@ -27,7 +32,7 @@ interface Frame {
 
 export function serveApp(opts: ServeAppOptions): Server<SocketData> {
 	const actor: Actor = opts.actor ?? { id: 'user', kind: 'human' }
-	let state: unknown = opts.app.engine.initial
+	let state = getInitial(opts.app)
 	const sockets = new Set<ServerWebSocket<SocketData>>()
 
 	const broadcastState = (newState: unknown) => {

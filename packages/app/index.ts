@@ -5,12 +5,16 @@
 export { type AnyApp, type App, define as defineApp, type Transition } from './app.js'
 export {
 	type Action,
-	type ActionDef,
-	type ActionDefs,
-	type ActionFromDefs,
+	type ActionFromStates,
 	type Actor,
+	type ActorGate,
 	define as defineEngine,
-	type Engine
+	type Engine,
+	type Snapshot,
+	type StateDef,
+	type StateDefs,
+	type TransitionArgs,
+	type TransitionDef
 } from './engine.js'
 export type {
 	ActionRequest,
@@ -24,6 +28,7 @@ export type {
 	StateNotification
 } from './protocol.js'
 export {
+	allows,
 	availableActions,
 	briefing,
 	type DispatchErr,
@@ -31,6 +36,7 @@ export {
 	type DispatchResult,
 	dispatch,
 	done,
+	initial,
 	type ToolDescriptor,
 	tools,
 	view

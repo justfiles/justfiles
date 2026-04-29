@@ -5,10 +5,12 @@
 // `runtimeJs` import in worker/frieren.app.ts).
 
 export {
+	allows,
 	availableActions,
 	briefing,
 	dispatch,
 	done,
+	initial,
 	tools,
 	view
 } from '@justfiles/app'

@@ -12,11 +12,9 @@ const app = {
 	name: 'stub',
 	description: 'stub — replaced at runtime by dynamically loaded app module',
 	engine: {
-		initial: undefined,
-		actions: {},
-		step() {
-			throw new Error('stub')
-		}
+		initial: 'stub',
+		context: {},
+		states: { stub: {} }
 	}
 }
 export default app

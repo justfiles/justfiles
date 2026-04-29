@@ -10,6 +10,7 @@
 // converge on `loadAppPackage` (see @justfiles/app/host) and yield the same
 // `AppEntry`, so the registry consumer doesn't have to care which source.
 
+import { registry } from 'virtual:@justfiles/apps'
 import { createWorker } from '@cloudflare/worker-bundler'
 import type { Action, Actor } from '@justfiles/app'
 import bridgeJs from '@justfiles/app/client?raw'
@@ -17,7 +18,6 @@ import type { AppEntry } from '@justfiles/app/host'
 import runtimeJs from '@justfiles/app/runtime.js?raw'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import Type from 'typebox'
-import { registry } from 'virtual:@justfiles/apps'
 import type { App as FacetApp } from './dynamic/do.js'
 import doCode from './dynamic/do.js?raw'
 

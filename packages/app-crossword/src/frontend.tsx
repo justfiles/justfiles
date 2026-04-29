@@ -3,7 +3,7 @@ import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 
-type CounterView = { count?: number }
+type CounterView = { context?: { count?: number } }
 
 function Counter() {
 	const [view, setView] = useState<CounterView>((window.app.state as CounterView) ?? {})
@@ -14,7 +14,7 @@ function Counter() {
 	return (
 		<main className="counter">
 			<h1>Counter</h1>
-			<output>{view.count ?? '—'}</output>
+			<output>{view.context?.count ?? '—'}</output>
 			<div>
 				<button type="button" onClick={() => dispatch('decrement')}>
 					-

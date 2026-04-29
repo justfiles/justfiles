@@ -5,15 +5,29 @@
 
 import { DurableObject } from 'cloudflare:workers'
 import app from './app.js'
-import { availableActions, briefing, dispatch, done, tools, view } from './runtime.js'
+import {
+	allows,
+	availableActions,
+	briefing,
+	dispatch,
+	done,
+	initial,
+	tools,
+	view
+} from './runtime.js'
 
 /** @import { Action, Actor } from '@justfiles/app' */
 
 const STATE_KEY = 'state'
 
 export class App extends DurableObject {
+	/** @returns {import('@justfiles/app').Snapshot} */
 	#state() {
-		return this.ctx.storage.kv.get(STATE_KEY) ?? app.engine.initial
+		const saved = this.ctx.storage.kv.get(STATE_KEY)
+		if (isSnapshot(saved)) return saved
+		const fresh = initial(app)
+		this.ctx.storage.kv.put(STATE_KEY, fresh)
+		return fresh
 	}
 
 	/**
@@ -36,7 +50,7 @@ export class App extends DurableObject {
 	 * @param {Action} action
 	 */
 	async allows(actor, action) {
-		return app.engine.allows ? app.engine.allows(this.#state(), actor, action) : true
+		return allows(app, this.#state(), actor, action)
 	}
 
 	/** @param {Actor} actor */
@@ -55,4 +69,17 @@ export class App extends DurableObject {
 	async done() {
 		return done(app, this.#state())
 	}
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is import('@justfiles/app').Snapshot}
+ */
+function isSnapshot(value) {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		typeof (/** @type {{ state?: unknown }} */ (value).state) === 'string' &&
+		'context' in value
+	)
 }

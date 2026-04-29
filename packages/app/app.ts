@@ -10,20 +10,29 @@
 // UI and tools are NOT on the App type:
 //   - assets sit alongside the backend module in the package's content root
 //     and are served as a flat bag by the host (see @justfiles/app/host).
-//   - agent tools are auto-derived from engine.actions inside the host's
+//   - agent tools are auto-derived from engine transition descriptors inside the host's
 //     dynamic-worker facet; the supervisor synthesizes callable AgentTools
-//     from the action descriptors.
+//     from the transition descriptors.
 
-import type { ActionDefs, ActionFromDefs, Actor, Engine } from './engine.js'
+import type { ActionFromStates, Actor, Engine, Snapshot, StateDefs } from './engine.js'
 
-export interface App<S, D extends ActionDefs, TActor extends Actor, V> {
+export interface App<
+	TState extends string,
+	TContext,
+	States extends StateDefs<TState, TContext, TActor>,
+	TActor extends Actor,
+	V
+> {
 	name: string
 	description: string
-	engine: Engine<S, D, TActor, V>
-	done?(state: S): boolean
+	engine: Engine<TState, TContext, States, TActor, V>
+	done?(snapshot: Snapshot<TState, TContext>): boolean
 	agent?: {
 		briefing?: string
-		narrate?(transition: Transition<S, ActionFromDefs<D>, TActor>, view: V): string | null
+		narrate?(
+			transition: Transition<TState, TContext, ActionFromStates<States>, TActor>,
+			view: V
+		): string | null
 	}
 	/**
 	 * Set at build time by `appBuilder()` (via Vite's `define`) to the
@@ -34,15 +43,15 @@ export interface App<S, D extends ActionDefs, TActor extends Actor, V> {
 	__pkg?: string
 }
 
-export type Transition<S, A, TActor> = {
-	prev: S
-	next: S
+export type Transition<TState extends string, TContext, A, TActor> = {
+	prev: Snapshot<TState, TContext>
+	next: Snapshot<TState, TContext>
 	action: A
 	actor: TActor
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: existential erasure at the registry boundary
-export type AnyApp = App<any, any, Actor, any>
+export type AnyApp = App<any, any, any, Actor, any>
 
 // `__JUSTFILES_PKG__` is replaced with the package name (a string literal)
 // by `appBuilder()` via Vite's `define`. Outside that build it stays
@@ -51,12 +60,16 @@ declare const __JUSTFILES_PKG__: string
 
 /**
  * Define an App with full type inference. Pass the app object literal and
- * `S`, `D`, `TActor`, `V` are inferred from `engine` so `done` and
+ * `TState`, `TContext`, `States`, `TActor`, `V` are inferred from `engine` so `done` and
  * `agent.narrate` get correctly-typed `state`/`transition`/`view` params.
  */
-export function define<S, D extends ActionDefs, TActor extends Actor, V>(
-	app: App<S, D, TActor, V>
-): App<S, D, TActor, V> {
+export function define<
+	TState extends string,
+	TContext,
+	States extends StateDefs<TState, TContext, TActor>,
+	TActor extends Actor,
+	V
+>(app: App<TState, TContext, States, TActor, V>): App<TState, TContext, States, TActor, V> {
 	const pkg = typeof __JUSTFILES_PKG__ !== 'undefined' ? __JUSTFILES_PKG__ : undefined
 	return pkg ? { ...app, __pkg: pkg } : app
 }
