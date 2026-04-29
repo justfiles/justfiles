@@ -10,32 +10,48 @@ body {
 	display: grid;
 	place-items: center;
 }
-.counter {
-	display: grid;
-	gap: 16px;
-	justify-items: center;
-	padding: 32px;
-	border: 4px double #7dd3fc;
-	background: rgb(15 23 42 / 0.86);
+main {
+	padding: 24px;
 }
-h1 {
+.standby {
 	margin: 0;
-	font-size: 24px;
+	padding: 16px 24px;
+	border: 2px dashed #475569;
+	color: #94a3b8;
+	font-size: 14px;
+	text-transform: uppercase;
+	letter-spacing: 0.12em;
 }
-output {
-	font-size: 72px;
-	font-weight: 800;
-	color: #fcd34d;
-}
-button {
+.grid {
+	display: grid;
+	gap: 2px;
+	padding: 2px;
+	background: #1e293b;
 	border: 2px solid #7dd3fc;
-	background: #020617;
-	color: #e0f2fe;
-	padding: 8px 12px;
-	font: inherit;
-	cursor: pointer;
+	width: min(80vmin, 600px);
+	aspect-ratio: 1 / 1;
 }
-button:hover {
-	border-color: #fcd34d;
-	color: #fcd34d;
+.cell {
+	position: relative;
+	background: #f8fafc;
+}
+.cell.block {
+	background: #020617;
+}
+.num {
+	position: absolute;
+	top: 1px;
+	left: 2px;
+	font-size: 9px;
+	color: #334155;
+	line-height: 1;
+}
+.letter {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	font-size: clamp(14px, 3.2vmin, 28px);
+	font-weight: 700;
+	color: #0f172a;
 }

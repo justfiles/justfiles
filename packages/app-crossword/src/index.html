@@ -4,9 +4,92 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Crossword</title>
+		<link rel="stylesheet" href="./index.css" />
 	</head>
 	<body>
-		<div id="root"></div>
-		<script type="module" src="./frontend.tsx"></script>
+		<main id="root"></main>
+		<script type="module">
+			import '@justfiles/app/client'
+
+			const root = document.getElementById('root')
+
+			const render = (snapshot) => {
+				root.replaceChildren(view(snapshot))
+			}
+
+			const view = (snapshot) => {
+				if (!snapshot) return standby('Loading…')
+				const { state, context } = snapshot
+				if (state !== 'ready' || !context?.grid) return standby(state ?? '—')
+				return board(solve(context.grid, context.slots ?? [], context.entries ?? {}), context.slots ?? [])
+			}
+
+			const solve = (rows, slots, entries) => {
+				const cells = rows.map((r) => r.split(''))
+				for (const slot of slots) {
+					const answer = entries[slot.id]?.answer
+					if (!answer) continue
+					for (let i = 0; i < answer.length; i++) {
+						const r = slot.direction === 'across' ? slot.row : slot.row + i
+						const c = slot.direction === 'across' ? slot.col + i : slot.col
+						if (cells[r]?.[c] !== '#') cells[r][c] = answer[i]
+					}
+				}
+				return cells.map((r) => r.join(''))
+			}
+
+			const standby = (text) => {
+				const el = document.createElement('p')
+				el.className = 'standby'
+				el.textContent = text
+				return el
+			}
+
+			const board = (rows, slots) => {
+				const numbers = numberStarts(slots)
+				const width = rows[0]?.length ?? 0
+				const grid = document.createElement('div')
+				grid.className = 'grid'
+				grid.style.gridTemplateColumns = `repeat(${width}, 1fr)`
+				rows.forEach((row, r) => {
+					for (let c = 0; c < row.length; c++) {
+						grid.append(cell(row[c], numbers.get(`${r},${c}`)))
+					}
+				})
+				return grid
+			}
+
+			const cell = (ch, num) => {
+				const el = document.createElement('div')
+				el.className = ch === '#' ? 'cell block' : 'cell'
+				if (num !== undefined) {
+					const tag = document.createElement('span')
+					tag.className = 'num'
+					tag.textContent = num
+					el.append(tag)
+				}
+				if (ch !== '#' && ch !== '.') {
+					const letter = document.createElement('span')
+					letter.className = 'letter'
+					letter.textContent = ch
+					el.append(letter)
+				}
+				return el
+			}
+
+			const numberStarts = (slots) => {
+				const starts = [...slots].sort((a, b) => a.row - b.row || a.col - b.col)
+				const out = new Map()
+				let n = 1
+				for (const s of starts) {
+					const key = `${s.row},${s.col}`
+					if (!out.has(key)) out.set(key, n++)
+				}
+				return out
+			}
+
+			render(window.app.state)
+			window.app.subscribe(render)
+		</script>
 	</body>
 </html>
