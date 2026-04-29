@@ -1,6 +1,7 @@
-import { PrinterIcon } from '@phosphor-icons/react'
-import { useEffect, useRef } from 'react'
+import { AppWindowIcon, BracketsCurlyIcon, PrinterIcon } from '@phosphor-icons/react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import type { AppAction } from './chat/types'
 
 type Ui = { url: string }
@@ -12,7 +13,9 @@ export function AppFrame(props: {
 	onAction: (action: AppAction) => void
 }) {
 	const { id, ui, state, onAction } = props
+	const [view, setView] = useState<'app' | 'state'>('app')
 	const iframeRef = useRef<HTMLIFrameElement>(null)
+	const stateJson = useMemo(() => JSON.stringify(state ?? null, null, 2), [state])
 
 	// Latest state goes to a ref so the RPC handler can respond to a late
 	// `app.ready` with the current value without re-binding listeners.
@@ -80,19 +83,56 @@ export function AppFrame(props: {
 				title={id}
 				sandbox="allow-scripts allow-forms allow-modals"
 				src={ui.url}
-				className="h-full w-full border-0"
+				className={cn('h-full w-full border-0', view === 'state' && 'hidden')}
 			/>
-			<Button
-				type="button"
-				variant="outline"
-				size="icon-sm"
-				className="absolute right-2 top-2 z-10 border-sky-300 bg-slate-950/90 text-sky-100 shadow-[3px_3px_0_rgba(0,0,0,0.45)] hover:bg-slate-900"
-				aria-label="Print app"
-				title="Print app"
-				onClick={printApp}
-			>
-				<PrinterIcon />
-			</Button>
+			{view === 'state' ? (
+				<pre className="h-full w-full overflow-auto whitespace-pre-wrap break-words bg-slate-950 p-4 font-mono text-[11px] leading-relaxed text-sky-50">
+					{stateJson}
+				</pre>
+			) : null}
+			<div className="absolute right-2 top-2 z-10 flex border border-sky-300 bg-slate-950/90 shadow-[3px_3px_0_rgba(0,0,0,0.45)]">
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-sm"
+					className={cn(
+						'text-sky-100 hover:bg-slate-900',
+						view === 'app' && 'bg-sky-300 text-slate-950 hover:bg-sky-200'
+					)}
+					aria-label="Show app UI"
+					aria-pressed={view === 'app'}
+					title="Show app UI"
+					onClick={() => setView('app')}
+				>
+					<AppWindowIcon />
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-sm"
+					className={cn(
+						'text-sky-100 hover:bg-slate-900',
+						view === 'state' && 'bg-sky-300 text-slate-950 hover:bg-sky-200'
+					)}
+					aria-label="Show state JSON"
+					aria-pressed={view === 'state'}
+					title="Show state JSON"
+					onClick={() => setView('state')}
+				>
+					<BracketsCurlyIcon />
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-sm"
+					className="text-sky-100 hover:bg-slate-900"
+					aria-label="Print app"
+					title="Print app"
+					onClick={printApp}
+				>
+					<PrinterIcon />
+				</Button>
+			</div>
 		</div>
 	)
 }
