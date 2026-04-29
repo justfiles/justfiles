@@ -31,4 +31,10 @@ export type StateNotification = {
 	params: { state: unknown }
 }
 
-export type ServerMessage = Response | StateNotification
+export type PrintNotification = {
+	jsonrpc: '2.0'
+	method: 'app.print'
+	params: object
+}
+
+export type ServerMessage = Response | StateNotification | PrintNotification

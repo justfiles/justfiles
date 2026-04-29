@@ -9,6 +9,8 @@ const SIZE = 11
 
 type Entry = { slotId: string; answer: string; clue: string }
 
+const BAD_CLUE_MARKERS = ['abbreviated', 'clipped', 'shortened', 'shorter', 'to fit', 'truncated']
+
 type Context = {
 	theme?: string
 	candidates: string[]
@@ -34,6 +36,16 @@ function matchesPattern(answer: string, pattern: string): boolean {
 	return true
 }
 
+function admitsShortening(clue: string): boolean {
+	const text = clue.toLowerCase()
+	return BAD_CLUE_MARKERS.some((marker) => text.includes(marker))
+}
+
+function revealsAnswer(clue: string, answer: string): boolean {
+	const words = clue.toUpperCase().match(/[A-Z]+/g)
+	return words?.includes(answer.toUpperCase()) ?? false
+}
+
 function resetContext(theme?: string): Context {
 	return { theme, candidates: [], slots: [], unplaced: [], entries: {} }
 }
@@ -45,6 +57,8 @@ const themeNarration = (theme: string) =>
 		`Generate 8-12 ${theme}-themed single-word answers yourself.`,
 		'Do not ask the user for word ideas — that is your job, not theirs.',
 		'Each answer must be uppercase A-Z, 3-8 letters, no spaces or punctuation.',
+		'Never abbreviate, clip, truncate, or shorten a longer themed term to make it fit. If the canonical answer is too long or needs spaces/punctuation, choose a different canonical single-word answer instead.',
+		'Do not use fragments, prefixes, initials, acronyms, nicknames, or partial names unless that exact form is the standard canonical answer.',
 		'Spread across different facets of the theme — e.g. people/characters, places, objects, concepts, actions, lesser-known deep cuts. Avoid only the obvious top-of-mind picks.',
 		'Immediately call seeds({ candidates: [...] }) with your words.'
 	].join(' ')
@@ -101,6 +115,9 @@ const engine = defineEngine({
 							}
 							lines.push(
 								'For each slot, pick an answer matching the pattern (? = any letter) and write a thematic clue yourself.',
+								'Every answer must be a complete canonical word/name for its clue. Never abbreviate, clip, truncate, or shorten a longer themed term just to fit the slot.',
+								'Never include the answer itself in its clue, including inside quoted phrases or examples.',
+								'If only a fragment, prefix, initialism, nickname, or partial name would fit, pick a different real answer or call regenerate({}).',
 								'Do not ask the user — you are the constructor.',
 								'Immediately call fill({ entries: [{ slotId, answer, clue }, ...] }).',
 								'If a slot pattern has no possible real word (e.g. impossible letter combination), or fill is rejected and you cannot fix it, call regenerate({}) to discard this puzzle and try again with different seed words.'
@@ -133,7 +150,10 @@ const engine = defineEngine({
 						for (const e of entries) {
 							const slot = slotMap.get(e.slotId)
 							if (!slot) return false
-							if (!matchesPattern(e.answer.toUpperCase(), slot.pattern)) return false
+							const answer = e.answer.toUpperCase()
+							if (!matchesPattern(answer, slot.pattern)) return false
+							if (admitsShortening(e.clue)) return false
+							if (revealsAnswer(e.clue, answer)) return false
 						}
 						return true
 					},
@@ -158,6 +178,7 @@ const engine = defineEngine({
 							'Internal instruction for the agent:',
 							'Puzzle discarded. The previous seeds did not work.',
 							'Generate 8-12 NEW seed words for the theme — pick different words than before, especially avoiding any that produced impossible patterns. Spread across different facets (people, places, objects, concepts, deep cuts).',
+							'Use only complete canonical single-word answers. Never abbreviate, clip, truncate, or shorten a longer themed term to make it fit.',
 							'Immediately call seeds({ candidates: [...] }) with your new words.'
 						].join(' ')
 				}
@@ -181,6 +202,7 @@ const engine = defineEngine({
 							'Internal instruction for the agent:',
 							'Puzzle discarded. The previous seeds did not work.',
 							'Generate 8-12 NEW seed words for the theme — pick different words than before, especially avoiding any that produced impossible patterns. Spread across different facets (people, places, objects, concepts, deep cuts).',
+							'Use only complete canonical single-word answers. Never abbreviate, clip, truncate, or shorten a longer themed term to make it fit.',
 							'Immediately call seeds({ candidates: [...] }) with your new words.'
 						].join(' ')
 				}

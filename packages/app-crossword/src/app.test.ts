@@ -70,6 +70,62 @@ test('fill rejects an answer that does not match the slot pattern', () => {
 	expect(bogus.ok).toBe(false)
 })
 
+test('fill rejects clues that admit the answer was shortened to fit', () => {
+	let state = initial(app)
+	state = mustOk(dispatch(app, state, { type: 'theme', payload: { theme: 'harry potter' } }, actor))
+	state = mustOk(
+		dispatch(app, state, { type: 'seeds', payload: { candidates: ['HOGWART'] } }, actor)
+	)
+	const slot = state.context.slots[0]
+	expect(slot).toBeDefined()
+	if (!slot) return
+	const bogus = dispatch(
+		app,
+		state,
+		{
+			type: 'fill',
+			payload: {
+				entries: [
+					{
+						slotId: slot.id,
+						answer: slot.pattern.replaceAll('?', 'A'),
+						clue: 'Wizarding school truncated by the grid'
+					}
+				]
+			}
+		},
+		actor
+	)
+	expect(bogus.ok).toBe(false)
+})
+
+test('fill rejects clues that reveal the answer', () => {
+	let state = initial(app)
+	state = mustOk(dispatch(app, state, { type: 'theme', payload: { theme: 'remembrance' } }, actor))
+	state = mustOk(dispatch(app, state, { type: 'seeds', payload: { candidates: ['LEST'] } }, actor))
+	const slot = state.context.slots[0]
+	expect(slot).toBeDefined()
+	if (!slot) return
+	const bogus = dispatch(
+		app,
+		state,
+		{
+			type: 'fill',
+			payload: {
+				entries: [
+					{
+						slotId: slot.id,
+						answer: slot.pattern.replaceAll('?', 'A'),
+						clue: "Word often seen in the phrase 'Lest We Forget'"
+					}
+				]
+			}
+		},
+		actor
+	)
+	expect(bogus.ok).toBe(false)
+})
+
 test('regenerate from review returns to themed and clears entries', () => {
 	let state = initial(app)
 	state = mustOk(dispatch(app, state, { type: 'theme', payload: { theme: 'animals' } }, actor))
@@ -153,6 +209,8 @@ test('theme narration instructs the agent to generate words itself, not ask the 
 	const n = (r.narration ?? '').toLowerCase()
 	expect(n).toContain('yourself')
 	expect(n).toContain('do not ask')
+	expect(n).toContain('canonical')
+	expect(n).toContain('truncate')
 	expect(n).toContain('seeds')
 })
 
@@ -164,6 +222,9 @@ test('seeds narration instructs the agent to fill the slots itself', () => {
 	if (!r.ok) return
 	const n = (r.narration ?? '').toLowerCase()
 	expect(n).toContain('do not ask')
+	expect(n).toContain('canonical')
+	expect(n).toContain('truncate')
+	expect(n).toContain('answer')
 	expect(n).toContain('fill')
 })
 
@@ -188,6 +249,8 @@ test('regenerate from filling drives the retry loop with new seeds', () => {
 	expect(n).toContain('new')
 	expect(n).toContain('seeds')
 	expect(n).toContain('different')
+	expect(n).toContain('canonical')
+	expect(n).toContain('truncate')
 })
 
 function mustOk<S, V>(r: { ok: true; next: S; view: V } | { ok: false; error: string }): S {

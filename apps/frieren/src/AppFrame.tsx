@@ -1,4 +1,6 @@
+import { PrinterIcon } from '@phosphor-icons/react'
 import { useEffect, useRef } from 'react'
+import { Button } from '@/components/ui/button'
 import type { AppAction } from './chat/types'
 
 type Ui = { url: string }
@@ -64,13 +66,33 @@ export function AppFrame(props: {
 		return () => window.removeEventListener('message', receive)
 	}, [onAction])
 
+	const printApp = () => {
+		iframeRef.current?.contentWindow?.postMessage(
+			{ jsonrpc: '2.0', method: 'app.print', params: {} },
+			'*'
+		)
+	}
+
 	return (
-		<iframe
-			ref={iframeRef}
-			title={id}
-			sandbox="allow-scripts allow-forms"
-			src={ui.url}
-			className="h-full w-full border-0"
-		/>
+		<div className="relative h-full w-full">
+			<iframe
+				ref={iframeRef}
+				title={id}
+				sandbox="allow-scripts allow-forms allow-modals"
+				src={ui.url}
+				className="h-full w-full border-0"
+			/>
+			<Button
+				type="button"
+				variant="outline"
+				size="icon-sm"
+				className="absolute right-2 top-2 z-10 border-sky-300 bg-slate-950/90 text-sky-100 shadow-[3px_3px_0_rgba(0,0,0,0.45)] hover:bg-slate-900"
+				aria-label="Print app"
+				title="Print app"
+				onClick={printApp}
+			>
+				<PrinterIcon />
+			</Button>
+		</div>
 	)
 }

@@ -40,6 +40,11 @@
 		}
 		if (message.method === 'app.state' && isRecord(message.params)) {
 			notify(message.params.state)
+			return
+		}
+		if (message.method === 'app.print') {
+			window.focus()
+			window.print()
 		}
 	}
 

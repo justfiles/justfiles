@@ -12,8 +12,11 @@
 			import '@justfiles/app/client'
 
 			const root = document.getElementById('root')
+			let currentSnapshot
+			let revealed = false
 
 			const render = (snapshot) => {
+				currentSnapshot = snapshot
 				root.replaceChildren(view(snapshot))
 			}
 
@@ -21,7 +24,10 @@
 				if (!snapshot) return standby('Loading…')
 				const { state, context } = snapshot
 				if (state !== 'ready' || !context?.grid) return standby(state ?? '—')
-				return board(solve(context.grid, context.slots ?? [], context.entries ?? {}), context.slots ?? [])
+				const slots = context.slots ?? []
+				const entries = context.entries ?? {}
+				const rows = solve(context.grid, slots, entries)
+				return crossword(revealed ? rows : hideLetters(rows), slots, entries)
 			}
 
 			const solve = (rows, slots, entries) => {
@@ -38,6 +44,8 @@
 				return cells.map((r) => r.join(''))
 			}
 
+			const hideLetters = (rows) => rows.map((row) => [...row].map((ch) => (ch === '#' ? ch : '.')).join(''))
+
 			const standby = (text) => {
 				const el = document.createElement('p')
 				el.className = 'standby'
@@ -45,8 +53,31 @@
 				return el
 			}
 
-			const board = (rows, slots) => {
+			const crossword = (rows, slots, entries) => {
 				const numbers = numberStarts(slots)
+				const el = document.createElement('div')
+				el.className = 'crossword'
+				el.append(puzzle(rows, numbers), clues(slots, entries, numbers))
+				return el
+			}
+
+			const puzzle = (rows, numbers) => {
+				const el = document.createElement('section')
+				el.className = 'puzzle'
+				const button = document.createElement('button')
+				button.className = 'reveal-toggle'
+				button.type = 'button'
+				button.ariaPressed = String(revealed)
+				button.textContent = revealed ? 'Hide answers' : 'Reveal answers'
+				button.addEventListener('click', () => {
+					revealed = !revealed
+					render(currentSnapshot)
+				})
+				el.append(button, board(rows, numbers))
+				return el
+			}
+
+			const board = (rows, numbers) => {
 				const width = rows[0]?.length ?? 0
 				const grid = document.createElement('div')
 				grid.className = 'grid'
@@ -57,6 +88,36 @@
 					}
 				})
 				return grid
+			}
+
+			const clues = (slots, entries, numbers) => {
+				const el = document.createElement('aside')
+				el.className = 'clues'
+				for (const direction of ['across', 'down']) {
+					const section = document.createElement('section')
+					const heading = document.createElement('h2')
+					heading.textContent = direction
+					section.append(heading)
+
+					const list = document.createElement('ol')
+					list.className = 'clue-list'
+					for (const slot of slots.filter((s) => s.direction === direction)) {
+						const entry = entries[slot.id]
+						if (!entry) continue
+						const item = document.createElement('li')
+						item.className = 'clue'
+						const num = document.createElement('span')
+						num.className = 'clue-num'
+						num.textContent = numbers.get(`${slot.row},${slot.col}`)
+						const text = document.createElement('span')
+						text.textContent = entry.clue || '—'
+						item.append(num, text)
+						list.append(item)
+					}
+					section.append(list)
+					el.append(section)
+				}
+				return el
 			}
 
 			const cell = (ch, num) => {
