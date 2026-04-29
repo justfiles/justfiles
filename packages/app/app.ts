@@ -1,6 +1,6 @@
 // An App pairs a pure Engine with the surface needed to embed it: a name,
-// description, an optional `done` predicate, and an optional `agent` section
-// (briefing for launch, narrate for per-action prompting).
+// description, an optional `done` predicate, and an optional `agent` briefing
+// for launch.
 //
 // Convention: each app package's `package.json#main` resolves to a module
 // that default-exports the App. `defineApp` injects an internal `__pkg`
@@ -14,7 +14,9 @@
 //     dynamic-worker facet; the supervisor synthesizes callable AgentTools
 //     from the transition descriptors.
 
-import type { ActionFromStates, Actor, Engine, Snapshot, StateDefs } from './engine.js'
+import type { Actor, Engine, Snapshot, StateDefs } from './engine.js'
+
+export type { Transition } from './engine.js'
 
 export interface App<
 	TState extends string,
@@ -29,10 +31,6 @@ export interface App<
 	done?(snapshot: Snapshot<TState, TContext>): boolean
 	agent?: {
 		briefing?: string
-		narrate?(
-			transition: Transition<TState, TContext, ActionFromStates<States>, TActor>,
-			view: V
-		): string | null
 	}
 	/**
 	 * Set at build time by `appBuilder()` (via Vite's `define`) to the
@@ -41,13 +39,6 @@ export interface App<
 	 * builds; absence is fine outside of host registration.
 	 */
 	__pkg?: string
-}
-
-export type Transition<TState extends string, TContext, A, TActor> = {
-	prev: Snapshot<TState, TContext>
-	next: Snapshot<TState, TContext>
-	action: A
-	actor: TActor
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: existential erasure at the registry boundary
@@ -60,8 +51,8 @@ declare const __JUSTFILES_PKG__: string
 
 /**
  * Define an App with full type inference. Pass the app object literal and
- * `TState`, `TContext`, `States`, `TActor`, `V` are inferred from `engine` so `done` and
- * `agent.narrate` get correctly-typed `state`/`transition`/`view` params.
+ * `TState`, `TContext`, `States`, `TActor`, `V` are inferred from `engine` so `done`
+ * gets correctly-typed `state` params.
  */
 export function define<
 	TState extends string,

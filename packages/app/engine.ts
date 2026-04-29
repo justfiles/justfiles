@@ -39,6 +39,13 @@ export type TransitionArgs<
 	actor: TActor
 }
 
+export type Transition<TState extends string, TContext, A, TActor> = {
+	prev: Snapshot<TState, TContext>
+	next: Snapshot<TState, TContext>
+	action: A
+	actor: TActor
+}
+
 export type ActorGate<
 	TState extends string = string,
 	TContext = unknown,
@@ -62,6 +69,10 @@ export type TransitionDef<
 	actor?: ActorGate<TState, TContext, Action<TType, Type.Static<S>>, TActor>
 	guard?(args: TransitionArgs<TState, TContext, Action<TType, Type.Static<S>>, TActor>): boolean
 	actions?(args: TransitionArgs<TState, TContext, Action<TType, Type.Static<S>>, TActor>): TContext
+	narrate?(
+		transition: Transition<TState, TContext, Action<TType, Type.Static<S>>, TActor>,
+		view: unknown
+	): string | null
 }
 
 export type StateDef<TState extends string, TContext, TActor extends Actor> = {

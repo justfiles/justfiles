@@ -31,6 +31,7 @@ export interface AppFacet {
 	tools(): Promise<unknown>
 	briefing(): Promise<string | null>
 	done(): Promise<boolean>
+	reset(): Promise<unknown>
 }
 
 const PACKAGE_JSON = JSON.stringify({ dependencies: { typebox: '^1.1.33' } })

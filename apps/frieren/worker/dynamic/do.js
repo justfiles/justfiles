@@ -21,12 +21,12 @@ import {
 const STATE_KEY = 'state'
 
 export class App extends DurableObject {
-	/** @returns {import('@justfiles/app').Snapshot} */
-	#state() {
-		const saved = this.ctx.storage.kv.get(STATE_KEY)
+	/** @returns {Promise<import('@justfiles/app').Snapshot>} */
+	async #state() {
+		const saved = await this.ctx.storage.kv.get(STATE_KEY)
 		if (isSnapshot(saved)) return saved
 		const fresh = initial(app)
-		this.ctx.storage.kv.put(STATE_KEY, fresh)
+		await this.ctx.storage.kv.put(STATE_KEY, fresh)
 		return fresh
 	}
 
@@ -35,14 +35,14 @@ export class App extends DurableObject {
 	 * @param {Actor} actor
 	 */
 	async dispatch(action, actor) {
-		const result = dispatch(app, this.#state(), action, actor)
-		if (result.ok) this.ctx.storage.kv.put(STATE_KEY, result.next)
+		const result = dispatch(app, await this.#state(), action, actor)
+		if (result.ok) await this.ctx.storage.kv.put(STATE_KEY, result.next)
 		return result
 	}
 
 	/** @param {Actor} actor */
 	async view(actor) {
-		return view(app, this.#state(), actor)
+		return view(app, await this.#state(), actor)
 	}
 
 	/**
@@ -50,12 +50,19 @@ export class App extends DurableObject {
 	 * @param {Action} action
 	 */
 	async allows(actor, action) {
-		return allows(app, this.#state(), actor, action)
+		return allows(app, await this.#state(), actor, action)
 	}
 
 	/** @param {Actor} actor */
 	async availableActions(actor) {
-		return availableActions(app, this.#state(), actor)
+		return availableActions(app, await this.#state(), actor)
+	}
+
+	/** @returns {Promise<import('@justfiles/app').Snapshot>} */
+	async reset() {
+		const fresh = initial(app)
+		await this.ctx.storage.kv.put(STATE_KEY, fresh)
+		return fresh
 	}
 
 	async tools() {
@@ -67,7 +74,7 @@ export class App extends DurableObject {
 	}
 
 	async done() {
-		return done(app, this.#state())
+		return done(app, await this.#state())
 	}
 }
 

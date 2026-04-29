@@ -55,6 +55,7 @@ type ServerMessage =
 
 const DEBUG_COMMAND = '/debug'
 const CLOSE_COMMAND = '/close'
+const RESET_COMMAND = '/reset'
 const AGENT_ID = 'agent'
 const USER_ID = 'user'
 const APP_STORAGE_KEY = 'active_app'
@@ -144,7 +145,7 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private getBackendConfig() {
-		const openaiModel = getModel('openai', 'gpt-4.1-mini')
+		const openaiModel = getModel('openai', 'gpt-5.4-mini')
 
 		// Local LM Studio backend — OpenAI-compatible /v1/chat/completions.
 		// No real auth, but the OpenAI SDK requires a non-empty apiKey string.
@@ -235,6 +236,11 @@ export class Frieren extends DurableObject<Env> {
 				return
 			}
 
+			if (trimmed === RESET_COMMAND) {
+				await this.resetApp(ws)
+				return
+			}
+
 			// `/counter`, `/chess`, … — launch the matching registered app.
 			if (trimmed.startsWith('/')) {
 				const id = trimmed.slice(1)
@@ -252,8 +258,18 @@ export class Frieren extends DurableObject<Env> {
 					} satisfies ServerMessage)
 				)
 			})
-			await this.runtime?.prompt(parsed.text)
-			unsubscribe?.()
+			try {
+				await this.runtime?.prompt(parsed.text)
+			} catch (error) {
+				ws.send(
+					JSON.stringify({
+						type: 'error',
+						message: error instanceof Error ? error.message : String(error)
+					} satisfies ServerMessage)
+				)
+			} finally {
+				unsubscribe?.()
+			}
 		}
 	}
 
@@ -293,6 +309,15 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		const tools = await buildAppTools(facet, id, agentActor, dispatch)
+		// console.log(
+		// 	`[app:${id}] generated tools`,
+		// 	tools.map(({ name, label, description, parameters }) => ({
+		// 		name,
+		// 		label,
+		// 		description,
+		// 		parameters
+		// 	}))
+		// )
 		const active: ActiveApp = { id, facet, tools, userActor, agentActor, dispatch }
 		this.activeApp = active
 
@@ -343,6 +368,14 @@ export class Frieren extends DurableObject<Env> {
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}
 
+	private async resetApp(ws: WebSocket): Promise<void> {
+		if (!this.activeApp) return
+		await this.activeApp.facet.reset()
+		await this.broadcastOpen(this.activeApp)
+		const briefing = await this.activeApp.facet.briefing()
+		if (briefing) await this.promptAgent(ws, briefing)
+	}
+
 	private async handleAppAction(ws: WebSocket, action: Action): Promise<void> {
 		if (!this.activeApp) return
 		const result = await this.activeApp.dispatch(action, this.activeApp.userActor)
@@ -362,8 +395,18 @@ export class Frieren extends DurableObject<Env> {
 		const unsubscribe = this.runtime?.subscribe((event, _signal) => {
 			ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
 		})
-		await this.runtime?.prompt(prompt)
-		unsubscribe?.()
+		try {
+			await this.runtime?.prompt(prompt)
+		} catch (error) {
+			ws.send(
+				JSON.stringify({
+					type: 'error',
+					message: error instanceof Error ? error.message : String(error)
+				} satisfies ServerMessage)
+			)
+		} finally {
+			unsubscribe?.()
+		}
 	}
 
 	async webSocketClose(

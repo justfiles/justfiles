@@ -73,8 +73,8 @@ export function dispatch<
 	}
 	const v = view(app, next, actor)
 	const result: DispatchOk<Snapshot<TState, TContext>, V> = { ok: true, prev: state, next, view: v }
-	if (app.agent?.narrate) {
-		result.narration = app.agent.narrate({ prev: state, next, action: typed, actor }, v)
+	if (def.narrate) {
+		result.narration = def.narrate({ prev: state, next, action: typed, actor }, v)
 	}
 	result.availableActions = availableActions(app, next, actor)
 	return result
