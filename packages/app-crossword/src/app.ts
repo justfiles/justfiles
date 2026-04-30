@@ -104,6 +104,7 @@ const themeNarration = (theme: string) =>
 		'Never abbreviate, clip, truncate, or shorten a longer themed term to make it fit. If the canonical answer is too long or needs spaces/punctuation, choose a different canonical single-word answer instead.',
 		'Do not use fragments, prefixes, initials, acronyms, nicknames, or partial names unless that exact form is the standard canonical answer.',
 		'Spread across different facets of the theme — e.g. people/characters, places, objects, concepts, actions, lesser-known deep cuts. Avoid only the obvious top-of-mind picks.',
+		'Do not reveal answer words in visible chat. Put answer words only in tool arguments.',
 		'Immediately call seeds({ candidates: [...] }) with your words.'
 	].join(' ')
 
@@ -112,6 +113,7 @@ const regenNarration = [
 	'Puzzle discarded. The previous seeds did not work.',
 	'Generate 8-12 NEW seed words for the theme — pick different words than before, especially avoiding any that produced impossible patterns. Spread across different facets (people, places, objects, concepts, deep cuts).',
 	'Use only complete canonical single-word answers. Never abbreviate, clip, truncate, or shorten a longer themed term to make it fit.',
+	'Do not reveal answer words in visible chat. Put answer words only in tool arguments.',
 	'Immediately call seeds({ candidates: [...] }) with your new words.'
 ].join(' ')
 
@@ -243,6 +245,7 @@ const engine = defineEngine({
 								'Never include the answer itself in its clue, including inside quoted phrases or examples.',
 								'If only a fragment, prefix, initialism, nickname, or partial name would fit, pick a different real answer or call regenerate({}).',
 								'Do not ask the user — you are the constructor.',
+								'Do not reveal answer words in visible chat. Put answer words only in tool arguments.',
 								'Immediately call fill({ entries: [{ slotId, answer, clue }, ...] }).',
 								'If a slot pattern has no possible real word (e.g. impossible letter combination), or fill is rejected and you cannot fix it, call regenerate({}) to discard this puzzle and try again with different seed words.'
 							)
@@ -293,7 +296,7 @@ const engine = defineEngine({
 						return { ...ctx, entries: map, grid: baked }
 					},
 					narrate: () =>
-						'Puzzle filled. Show it to the user. Call approve() to lock it in or regenerate() to start over.'
+						'Puzzle filled. Do not reveal answers in visible chat. Call approve() to lock it in or regenerate() to start over.'
 				},
 				regenerate: {
 					description: 'Discard the current puzzle and start over with new seeds.',
@@ -316,7 +319,8 @@ const engine = defineEngine({
 						...(context as Context),
 						play: { ...freshPlay(), startedAt: Date.now() }
 					}),
-					narrate: () => 'Puzzle approved. The user is solving it.'
+					narrate: () =>
+						'Puzzle approved. Tell the user the game is ready to play. Do not reveal answers.'
 				},
 				regenerate: {
 					description: 'Discard the puzzle and start over with new seeds.',
@@ -614,6 +618,7 @@ export default defineApp({
 			'Step 1: Ask the user what theme they want.',
 			'Step 2: Call theme({ theme }) with their answer.',
 			'Steps 3+: Generate seed words and clues yourself; do not ask the user for word ideas.',
+			'Never reveal crossword answers in visible chat. When the puzzle is approved, simply tell the user the game is ready to play.',
 			'Once approved, the user solves the puzzle. You do not enter letters for them.',
 			'Follow the per-step instructions returned after each tool call.'
 		].join(' ')
