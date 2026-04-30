@@ -1,6 +1,7 @@
 import { UserButton, useAuth } from '@clerk/clerk-react'
 import { FileType } from '@justfiles/fs/types'
 import { type FileTreeItem, FileTreeView } from '@justfiles/ui'
+import { CheckIcon, ClipboardIcon } from '@phosphor-icons/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -102,6 +103,7 @@ export function FilesPage({ search }: { search: string }) {
 	const [organizeMode, setOrganizeMode] = useState(false)
 	const [reloadToken, setReloadToken] = useState(0)
 	const [movingItemId, setMovingItemId] = useState<string | null>(null)
+	const [contentCopied, setContentCopied] = useState(false)
 	const showingDetail = Boolean(selectedPath)
 
 	useEffect(() => {
@@ -133,6 +135,7 @@ export function FilesPage({ search }: { search: string }) {
 
 	useEffect(() => {
 		let cancelled = false
+		setContentCopied(false)
 
 		if (!volume || !selectedPath) {
 			setError(null)
@@ -166,6 +169,13 @@ export function FilesPage({ search }: { search: string }) {
 
 	const selectFile = (item: FileTreeItem) => {
 		navigate(`/files?path=${encodeURIComponent(item.path)}`)
+	}
+
+	const copyContent = async () => {
+		if (!selectedPath) return
+		setContentCopied(false)
+		await navigator.clipboard.writeText(content)
+		setContentCopied(true)
 	}
 
 	const nukeAll = async () => {
@@ -351,6 +361,21 @@ export function FilesPage({ search }: { search: string }) {
 									</Button>
 								) : null}
 								<Badge variant="outline">Preview</Badge>
+								{selectedPath && !loadingContent && !error ? (
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={() => void copyContent()}
+									>
+										{contentCopied ? (
+											<CheckIcon aria-hidden="true" data-icon="inline-start" />
+										) : (
+											<ClipboardIcon aria-hidden="true" data-icon="inline-start" />
+										)}
+										{contentCopied ? 'Copied' : 'Copy'}
+									</Button>
+								) : null}
 							</div>
 							<CardTitle className="truncate text-sm">{selectedName ?? 'Select a file'}</CardTitle>
 							<CardDescription className="truncate font-mono text-[11px]">
