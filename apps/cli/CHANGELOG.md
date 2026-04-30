@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.4](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.2.3...cli-v0.2.4) (2026-04-30)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @justfiles/fs bumped to 0.2.1
+
 ## [0.2.3](https://github.com/xiaoxinghu/justfiles/compare/cli-v0.2.2...cli-v0.2.3) (2026-04-10)
 
 

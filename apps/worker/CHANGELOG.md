@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.9.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.8.1...worker-v0.9.0) (2026-04-30)
+
+
+### Features
+
+* **ui:** share file tree view across apps ([2b5e34e](https://github.com/xiaoxinghu/justfiles/commit/2b5e34e453bd53073bb462bf66ba4e7d8443f950))
+
+
+### Bug Fixes
+
+* align react and react-dom versions to 19.2.5 ([9316504](https://github.com/xiaoxinghu/justfiles/commit/93165041c18e4799516d410653787cea8cb4a2d6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.2.1
+
 ## [0.8.1](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.8.0...worker-v0.8.1) (2026-04-10)
 
 

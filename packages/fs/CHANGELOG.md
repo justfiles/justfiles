@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.2.0...fs-v0.2.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **fs:** handle stale inodes and root symlinks ([db99677](https://github.com/xiaoxinghu/justfiles/commit/db996779402cc3b5a47ca3906772c336efc92230))
+* **fs:** reconcile local entries absent from remote during bootstrap ([63012cb](https://github.com/xiaoxinghu/justfiles/commit/63012cb74e173909805d4d12a3495f79b543a62f))
+
 ## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.1.0...fs-v0.2.0) (2026-04-10)
 
 
