@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/xiaoxinghu/justfiles/compare/frieren-v1.0.1...frieren-v1.0.2) (2026-04-30)
+
+
+### Bug Fixes
+
+* **frieren:** use justbuddy clerk key ([e3039b7](https://github.com/xiaoxinghu/justfiles/commit/e3039b75d5575cb821665265071064a54c4e7064))
+
 ## [1.0.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v1.0.0...frieren-v1.0.1) (2026-04-30)
 
 
