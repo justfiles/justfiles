@@ -36,3 +36,53 @@ test('dispatch returns transition narration', () => {
 	expect(result.ok).toBe(true)
 	if (result.ok) expect(result.narration).toBe('setup space')
 })
+
+test('target function chooses the next state from post-action context', () => {
+	const app = defineApp({
+		name: 'Branching',
+		description: 'Branching test app',
+		engine: defineEngine({
+			initial: 'a' as 'a' | 'b' | 'c',
+			context: { n: 0 },
+			states: {
+				a: {
+					on: {
+						bump: {
+							schema: Type.Object({ by: Type.Number() }),
+							target: ({ context }) => (context.n >= 10 ? 'c' : 'b'),
+							actions: ({ context, action }) => ({
+								n: context.n + (action.payload as { by: number }).by
+							})
+						}
+					}
+				},
+				b: {},
+				c: {}
+			}
+		})
+	})
+
+	const small = dispatch(
+		app,
+		{ state: 'a', context: { n: 0 } },
+		{ type: 'bump', payload: { by: 1 } },
+		{ id: 'u' }
+	)
+	expect(small.ok).toBe(true)
+	if (small.ok) {
+		expect(small.next.state).toBe('b')
+		expect(small.next.context.n).toBe(1)
+	}
+
+	const big = dispatch(
+		app,
+		{ state: 'a', context: { n: 5 } },
+		{ type: 'bump', payload: { by: 7 } },
+		{ id: 'u' }
+	)
+	expect(big.ok).toBe(true)
+	if (big.ok) {
+		expect(big.next.state).toBe('c')
+		expect(big.next.context.n).toBe(12)
+	}
+})

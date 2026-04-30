@@ -65,7 +65,9 @@ export type TransitionDef<
 > = {
 	schema: S
 	description?: string
-	target?: TState
+	target?:
+		| TState
+		| ((args: TransitionArgs<TState, TContext, Action<TType, Type.Static<S>>, TActor>) => TState)
 	actor?: ActorGate<TState, TContext, Action<TType, Type.Static<S>>, TActor>
 	guard?(args: TransitionArgs<TState, TContext, Action<TType, Type.Static<S>>, TActor>): boolean
 	actions?(args: TransitionArgs<TState, TContext, Action<TType, Type.Static<S>>, TActor>): TContext

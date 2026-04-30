@@ -67,10 +67,12 @@ export function dispatch<
 		return { ok: false, error: `not allowed: ${action.type}` }
 	}
 	const args = { snapshot: state, context: state.context, action: typed, actor }
-	const next = {
-		state: def.target ?? state.state,
-		context: def.actions ? def.actions(args) : state.context
-	}
+	const nextContext = def.actions ? def.actions(args) : state.context
+	const nextState =
+		typeof def.target === 'function'
+			? def.target({ ...args, context: nextContext })
+			: (def.target ?? state.state)
+	const next = { state: nextState, context: nextContext }
 	const v = view(app, next, actor)
 	const result: DispatchOk<Snapshot<TState, TContext>, V> = { ok: true, prev: state, next, view: v }
 	if (def.narrate) {

@@ -19,3 +19,17 @@ export type Slot = {
 	length: number
 	pattern: string
 }
+
+// "row,col" key into the user's per-cell map.
+export type Cell = string
+
+export type Play = {
+	userGrid: Record<Cell, string>
+	revealed: Cell[]
+	wrongCells: Cell[]
+	startedAt?: number
+	finishedAt?: number
+	hintsUsed: number
+	checksUsed: number
+	submitCount: number
+}
