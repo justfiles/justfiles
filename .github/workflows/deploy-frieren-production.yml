@@ -70,7 +70,7 @@ jobs:
 
       - run: bun run typecheck
 
-      - run: bun run --filter frieren build
+      - run: bun run build
         env:
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
 

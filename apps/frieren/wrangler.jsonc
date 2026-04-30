@@ -46,6 +46,9 @@
 			"observability": {
 				"enabled": true
 			},
+			"secrets": {
+				"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY"]
+			},
 			"durable_objects": {
 				"bindings": [
 					{
@@ -58,6 +61,11 @@
 				{
 					"tag": "v1",
 					"new_sqlite_classes": ["Frieren"]
+				}
+			],
+			"worker_loaders": [
+				{
+					"binding": "LOADER"
 				}
 			]
 		}
