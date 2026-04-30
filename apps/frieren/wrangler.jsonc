@@ -37,6 +37,12 @@
 			"binding": "LOADER"
 		}
 	],
+	"routes": [
+		{
+			"pattern": "justbuddy.app",
+			"custom_domain": true
+		}
+	],
 	"env": {
 		"staging": {
 			"name": "frieren-staging",
@@ -49,6 +55,12 @@
 			"secrets": {
 				"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY"]
 			},
+			"routes": [
+				{
+					"pattern": "staging.justbuddy.app",
+					"custom_domain": true
+				}
+			],
 			"durable_objects": {
 				"bindings": [
 					{

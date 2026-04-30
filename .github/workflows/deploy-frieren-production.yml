@@ -54,16 +54,16 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          FRIEREN_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
+          CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
         run: |
           set -eu
           test -n "${CLOUDFLARE_API_TOKEN}"
           test -n "${CLOUDFLARE_ACCOUNT_ID}"
-          test -n "${FRIEREN_CLERK_PUBLISHABLE_KEY}"
-          case "${FRIEREN_CLERK_PUBLISHABLE_KEY}" in
+          test -n "${CLERK_PUBLISHABLE_KEY}"
+          case "${CLERK_PUBLISHABLE_KEY}" in
             pk_live_*) ;;
             *)
-              echo "FRIEREN_CLERK_PUBLISHABLE_KEY must be a live Clerk key in the production environment"
+              echo "CLERK_PUBLISHABLE_KEY must be a live Clerk key in the production environment"
               exit 1
               ;;
           esac
@@ -72,7 +72,7 @@ jobs:
 
       - run: bun run build
         env:
-          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
 
       - uses: cloudflare/wrangler-action@v3.14.1
         with:
