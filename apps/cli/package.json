@@ -1,6 +1,6 @@
 {
 	"name": "@justfiles/cli",
-	"version": "0.2.3",
+	"version": "0.2.4",
 	"devDependencies": {
 		"@justfiles/core": "workspace:*",
 		"@justfiles/fs": "workspace:*",
