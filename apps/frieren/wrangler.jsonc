@@ -16,7 +16,7 @@
 		"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY"]
 	},
 	"vars": {
-		"CLERK_PUBLISHABLE_KEY": "pk_test_Y2FwYWJsZS1zcGlkZXItNzkuY2xlcmsuYWNjb3VudHMuZGV2JA"
+		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuanVzdGJ1ZGR5LmFwcCQ"
 	},
 	"durable_objects": {
 		"bindings": [
