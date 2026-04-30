@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/xiaoxinghu/justfiles/compare/frieren-v1.0.0...frieren-v1.0.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **frieren:** configure justbuddy domain ([728449b](https://github.com/xiaoxinghu/justfiles/commit/728449bf84da6de01c3be45501fe14aadf9bac24))
+
 ## 1.0.0 (2026-04-30)
 
 
