@@ -13,6 +13,7 @@ declare module 'virtual:@justfiles/apps' {
 				name: string
 				description: string
 				version: string
+				icon?: string
 				entry: string
 				backend: string
 			}

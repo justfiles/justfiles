@@ -106,18 +106,29 @@ export function appBuilder(opts: AppBuilderOptions = {}): Plugin {
 			if (!fs.existsSync(backendPath)) return
 			// Cache-busting query so subsequent builds see the latest module.
 			const url = `${pathToFileURL(backendPath).href}?t=${Date.now()}`
-			const mod: { default?: { name?: string; description?: string } } = await import(url)
+			const mod: { default?: { name?: string; description?: string; icon?: string } } =
+				await import(url)
 			const app = mod.default
 			if (!app || typeof app.name !== 'string') {
 				throw new Error(
 					`appBuilder: ${backendName} must default-export an App with a string \`name\``
 				)
 			}
+			const icon = normalizeFlatAssetPath(app.icon)
+			if (icon) {
+				const source = path.resolve(pkgRoot, srcDir, icon)
+				const dest = path.join(absOut, icon)
+				if (!fs.existsSync(source) && !fs.existsSync(dest)) {
+					throw new Error(`appBuilder: icon "${icon}" not found in ${srcDir}/ or ${outDir}/`)
+				}
+				if (fs.existsSync(source)) fs.copyFileSync(source, dest)
+			}
 			const manifest: Manifest = {
 				format: FORMAT_VERSION,
 				name: app.name,
 				description: app.description ?? '',
 				version: pkgVersion,
+				icon,
 				entry: entryName,
 				backend: backendName
 			}
@@ -209,6 +220,14 @@ function loadFromInstalledPackage(
 function deriveId(pkgName: string): string {
 	const tail = pkgName.includes('/') ? (pkgName.split('/').pop() ?? pkgName) : pkgName
 	return tail.replace(/^app-/, '')
+}
+
+function normalizeFlatAssetPath(value: unknown): string | undefined {
+	if (typeof value !== 'string' || value.length === 0) return undefined
+	if (path.isAbsolute(value) || value.includes('/') || value.includes('\\')) {
+		throw new Error(`appBuilder: icon must be a flat app asset filename, got "${value}"`)
+	}
+	return value
 }
 
 function readJson<T>(filePath: string): T {

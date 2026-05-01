@@ -1,4 +1,4 @@
-import { AppWindowIcon, BracketsCurlyIcon, PrinterIcon } from '@phosphor-icons/react'
+import { AppWindowIcon, BracketsCurlyIcon, HouseIcon, PrinterIcon } from '@phosphor-icons/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -11,8 +11,9 @@ export function AppFrame(props: {
 	ui: Ui
 	state: unknown
 	onAction: (action: AppAction) => void
+	onHome: () => void
 }) {
-	const { id, ui, state, onAction } = props
+	const { id, ui, state, onAction, onHome } = props
 	const [view, setView] = useState<'app' | 'state'>('app')
 	const iframeRef = useRef<HTMLIFrameElement>(null)
 	const stateJson = useMemo(() => JSON.stringify(state ?? null, null, 2), [state])
@@ -81,7 +82,8 @@ export function AppFrame(props: {
 			<iframe
 				ref={iframeRef}
 				title={id}
-				sandbox="allow-scripts allow-forms allow-modals"
+				allow="pointer-lock"
+				sandbox="allow-scripts allow-forms allow-modals allow-pointer-lock"
 				src={ui.url}
 				className={cn('h-full w-full border-0', view === 'state' && 'hidden')}
 			/>
@@ -91,6 +93,17 @@ export function AppFrame(props: {
 				</pre>
 			) : null}
 			<div className="absolute right-2 top-2 z-10 flex border border-sky-300 bg-slate-950/90 shadow-[3px_3px_0_rgba(0,0,0,0.45)]">
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-sm"
+					className="text-sky-100 hover:bg-slate-900"
+					aria-label="Return home"
+					title="Return home"
+					onClick={onHome}
+				>
+					<HouseIcon />
+				</Button>
 				<Button
 					type="button"
 					variant="ghost"

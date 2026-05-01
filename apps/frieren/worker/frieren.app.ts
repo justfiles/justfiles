@@ -38,6 +38,13 @@ const PACKAGE_JSON = JSON.stringify({ dependencies: { typebox: '^1.1.33' } })
 const COMPAT_DATE = '2026-04-25'
 
 export const listAppIds = (): string[] => [...registry.keys()]
+export const listApps = (): { id: string; name: string; description: string; iconUrl?: string }[] =>
+	[...registry.entries()].map(([id, entry]) => ({
+		id,
+		name: entry.manifest.name,
+		description: entry.manifest.description,
+		iconUrl: entry.manifest.icon ? `/apps/${id}/${entry.manifest.icon}` : undefined
+	}))
 export const hasApp = (id: string): boolean => registry.has(id)
 export const getAsset = (id: string, path: string): string | undefined => {
 	const entry = registry.get(id)

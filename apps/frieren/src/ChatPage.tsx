@@ -33,7 +33,7 @@ export function ChatPage() {
 	const chat = useChat()
 	const [mode, setMode] = useState<ViewMode>(() => {
 		const saved = localStorage.getItem('frieren-view-mode') as ViewMode | null
-		return saved && saved in VIEWS ? saved : 'classic'
+		return saved && saved in VIEWS ? saved : 'shadcn'
 	})
 
 	const View = VIEWS[mode].component

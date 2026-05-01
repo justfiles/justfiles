@@ -24,6 +24,7 @@ export const ManifestSchema = Type.Object({
 	name: Type.String({ minLength: 1, maxLength: 128 }),
 	description: Type.String({ maxLength: 1024 }),
 	version: Type.String(),
+	icon: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 	entry: Type.String(),
 	backend: Type.String()
 })

@@ -24,6 +24,13 @@ export type ActiveApp = {
 	state: unknown
 } | null
 
+export interface InstalledApp {
+	id: string
+	name: string
+	description: string
+	iconUrl?: string
+}
+
 // Actions flow through the registry; at this wire boundary they're opaque.
 export type AppAction = { type: string; payload: unknown }
 
@@ -39,5 +46,8 @@ export interface ChatViewProps {
 	abort: () => void
 	reconnect: () => void
 	activeApp: ActiveApp
+	installedApps: InstalledApp[]
+	launchApp: (id: string) => void
+	closeApp: () => void
 	sendAppAction: (action: AppAction) => void
 }

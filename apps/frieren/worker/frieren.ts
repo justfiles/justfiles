@@ -8,7 +8,7 @@ import { Hono } from 'hono'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import { type AppFacet, buildAppTools, hasApp, loadAppFacet } from './frieren.app'
+import { type AppFacet, buildAppTools, hasApp, listApps, loadAppFacet } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { createAgent } from './llm.agent'
 import { type LLMText, text } from './llm.text'
@@ -18,8 +18,9 @@ import type { SessionEntry } from './session.manager.ts'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_action'
+	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close'
 	text?: string
+	id?: string
 	action?: Action
 }
 
@@ -43,8 +44,15 @@ interface DisplayParticipants {
 	readonly agentName: string
 }
 
+interface DisplayApp {
+	readonly id: string
+	readonly name: string
+	readonly description: string
+	readonly iconUrl?: string
+}
+
 type ServerMessage =
-	| { type: 'ready'; participants?: DisplayParticipants }
+	| { type: 'ready'; participants?: DisplayParticipants; apps?: ReadonlyArray<DisplayApp> }
 	| { type: 'history'; messages: ReadonlyArray<DisplayMessage>; participants?: DisplayParticipants }
 	| { type: 'app_prompt'; text: string }
 	| { type: 'event'; event: AgentEvent }
@@ -208,6 +216,16 @@ export class Frieren extends DurableObject<Env> {
 
 		if (parsed.type === 'abort') {
 			this.runtime?.shutdown()
+			return
+		}
+
+		if (parsed.type === 'app_close') {
+			await this.closeApp()
+			return
+		}
+
+		if (parsed.type === 'app_launch' && parsed.id) {
+			await this.launchApp(ws, parsed.id)
 			return
 		}
 
@@ -459,7 +477,9 @@ export class Frieren extends DurableObject<Env> {
 			}
 
 			// Send ready signal
-			server.send(JSON.stringify({ type: 'ready', participants } satisfies ServerMessage))
+			server.send(
+				JSON.stringify({ type: 'ready', participants, apps: listApps() } satisfies ServerMessage)
+			)
 
 			// If an app is already running, send the URL + current state so
 			// this client can boot the iframe from scratch.

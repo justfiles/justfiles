@@ -1,6 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useEffect, useRef, useState } from 'react'
-import type { ActiveApp, AppAction, ChatMessage, ConnectionState } from './types'
+import type { ActiveApp, AppAction, ChatMessage, ConnectionState, InstalledApp } from './types'
 
 interface AgentEvent {
 	type: string
@@ -23,6 +23,7 @@ export function useChat() {
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connectKey, setConnectKey] = useState(0)
 	const [activeApp, setActiveApp] = useState<ActiveApp>(null)
+	const [installedApps, setInstalledApps] = useState<InstalledApp[]>([])
 
 	const wsRef = useRef<WebSocket | null>(null)
 	const currentAssistantIdRef = useRef<string | null>(null)
@@ -164,6 +165,7 @@ export function useChat() {
 						setUserName(data.participants.userName || 'You')
 						setAgentName(data.participants.agentName || 'Frieren')
 					}
+					setInstalledApps(Array.isArray(data.apps) ? data.apps : [])
 					setConnectionState('ready')
 					return
 				}
@@ -291,6 +293,16 @@ export function useChat() {
 		wsRef.current.send(JSON.stringify({ type: 'app_action', action }))
 	}
 
+	const launchApp = (id: string) => {
+		if (!wsRef.current || connectionState !== 'ready') return
+		wsRef.current.send(JSON.stringify({ type: 'app_launch', id }))
+	}
+
+	const closeApp = () => {
+		if (!wsRef.current || connectionState !== 'ready') return
+		wsRef.current.send(JSON.stringify({ type: 'app_close' }))
+	}
+
 	const reconnect = () => setConnectKey((value) => value + 1)
 
 	return {
@@ -305,6 +317,9 @@ export function useChat() {
 		abort,
 		reconnect,
 		activeApp,
+		installedApps,
+		launchApp,
+		closeApp,
 		sendAppAction
 	}
 }

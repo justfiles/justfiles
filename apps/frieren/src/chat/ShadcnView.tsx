@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AppFrame } from '../AppFrame'
+import { LauncherView } from '../LauncherView'
 import { AppPromptBlock } from './AppPromptBlock'
 import { AssistantAvatar, useAdventureViewState } from './adventureShared'
 import { ToolCallBlock } from './ToolCallBlock'
@@ -21,6 +22,9 @@ export function ShadcnView(props: ChatViewProps) {
 		sendMessage,
 		abort,
 		activeApp,
+		installedApps,
+		launchApp,
+		closeApp,
 		sendAppAction
 	} = props
 	const { dismissPanel, history, historyRef, inputRef, pinned, setFocused, showPanel, submit } =
@@ -131,19 +135,19 @@ export function ShadcnView(props: ChatViewProps) {
 								ui={activeApp.ui}
 								state={activeApp.state}
 								onAction={sendAppAction}
+								onHome={closeApp}
 							/>
 						) : (
-							<AssistantAvatar
-								size={320}
-								className="h-auto max-h-full w-auto max-w-full object-contain"
-							/>
+							<LauncherView apps={installedApps} onLaunch={launchApp} />
 						)}
-						<Badge
-							variant="outline"
-							className="absolute bottom-2 left-2 rounded-none border-sky-300 bg-slate-950/90 px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"
-						>
-							{agentName}
-						</Badge>
+						{activeApp ? (
+							<Badge
+								variant="outline"
+								className="absolute bottom-2 left-2 rounded-none border-sky-300 bg-slate-950/90 px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"
+							>
+								{agentName}
+							</Badge>
+						) : null}
 						{isStreaming ? (
 							<Badge
 								variant="outline"

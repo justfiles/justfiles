@@ -27,6 +27,7 @@ export interface App<
 > {
 	name: string
 	description: string
+	icon?: string
 	engine: Engine<TState, TContext, States, TActor, V>
 	done?(snapshot: Snapshot<TState, TContext>): boolean
 	agent?: {

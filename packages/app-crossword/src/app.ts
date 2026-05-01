@@ -611,6 +611,7 @@ function mergeWrong(prev: Cell[], scope: Cell[], wrong: Cell[]): Cell[] {
 export default defineApp({
 	name: 'Crossword',
 	description: 'Crossword puzzle builder.',
+	icon: 'icon.svg',
 	engine,
 	agent: {
 		briefing: [
