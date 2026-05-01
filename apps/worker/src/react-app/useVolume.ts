@@ -171,7 +171,7 @@ function isHiddenPath(path: string): boolean {
 	return path.split('/').some((segment) => segment.length > 0 && segment.startsWith('.'))
 }
 
-const SHOW_HIDDEN_FOLDER = true
+const SHOW_HIDDEN_FOLDER = false
 
 async function ensureTrashDirs(volume: Volume): Promise<void> {
 	await volume.mkdir(TRASH_FILES_PATH, { recursive: true })
