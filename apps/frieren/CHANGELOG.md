@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v1.0.2...frieren-v1.1.0) (2026-05-01)
+
+
+### Features
+
+* add app launcher with icons ([2ce60be](https://github.com/xiaoxinghu/justfiles/commit/2ce60be553a6c679666433c55b77a0daa2b52e40))
+* **app-doom:** add browser doom app ([75d6c79](https://github.com/xiaoxinghu/justfiles/commit/75d6c79cc6be395059705d909c2351c59119ec2f))
+* stream app assets via static-assets binding ([2078dbc](https://github.com/xiaoxinghu/justfiles/commit/2078dbcfe7d29e56109694ee59a47337d6e4f4d6))
+
 ## [1.0.2](https://github.com/xiaoxinghu/justfiles/compare/frieren-v1.0.1...frieren-v1.0.2) (2026-04-30)
 
 
