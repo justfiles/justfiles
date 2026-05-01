@@ -179,6 +179,13 @@
         "zod": "^4.3.6",
       },
     },
+    "packages/create-app": {
+      "name": "@justbuddy/create-app",
+      "version": "0.1.0",
+      "bin": {
+        "create-app": "./index.js",
+      },
+    },
     "packages/fs": {
       "name": "@justfiles/fs",
       "version": "0.2.0",
@@ -753,6 +760,8 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@justbuddy/create-app": ["@justbuddy/create-app@workspace:packages/create-app"],
 
     "@justfiles/app": ["@justfiles/app@workspace:packages/app"],
 
