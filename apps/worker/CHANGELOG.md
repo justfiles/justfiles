@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.9.0...worker-v0.9.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **worker:** hide hidden folders ([60556e5](https://github.com/xiaoxinghu/justfiles/commit/60556e55ffd40636d0de9d5891ddfa25525c0c0b))
+
 ## [0.9.0](https://github.com/xiaoxinghu/justfiles/compare/worker-v0.8.1...worker-v0.9.0) (2026-04-30)
 
 
