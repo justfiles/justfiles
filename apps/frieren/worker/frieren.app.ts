@@ -1,20 +1,20 @@
 /// <reference types="@justfiles/app/virtual" />
 //
-// Host-side wiring for dynamic worker apps. The registry is the build-time
-// virtual module emitted by `hostApps()` in vite.config.ts (see
-// @justfiles/app/vite). Each entry carries `manifest`, `code` (backend ESM),
-// and a flat `assets` map — the same shape regardless of source.
+// Host-side wiring for dynamic worker apps. The build-time virtual module
+// (emitted by `hostApps()` in vite.config.ts; see @justfiles/app/vite) gives
+// us {manifest, code} per app — small data the worker bundles. The bytes
+// for HTML/JS/CSS/wasm/wad ship via Workers Static Assets under
+// `/apps/<id>/<path>` and are streamed through `c.env.ASSETS` by the
+// `/apps/*` route in `index.ts`.
 //
 // Production: in addition to the build-time `hostApps` channel, frieren will
 // load user-uploaded apps from R2 at runtime via `installFromR2`. Both paths
-// converge on `loadAppPackage` (see @justfiles/app/host) and yield the same
-// `AppEntry`, so the registry consumer doesn't have to care which source.
+// can converge on `loadAppPackage` with their own `AppPackageSource`.
 
 import { registry } from 'virtual:@justfiles/apps'
 import { createWorker } from '@cloudflare/worker-bundler'
 import type { Action, Actor } from '@justfiles/app'
 import bridgeJs from '@justfiles/app/client?raw'
-import type { AppEntry } from '@justfiles/app/host'
 import runtimeJs from '@justfiles/app/runtime.js?raw'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import Type from 'typebox'
@@ -46,11 +46,6 @@ export const listApps = (): { id: string; name: string; description: string; ico
 		iconUrl: entry.manifest.icon ? `/apps/${id}/${entry.manifest.icon}` : undefined
 	}))
 export const hasApp = (id: string): boolean => registry.has(id)
-export const getAsset = (id: string, path: string): string | undefined => {
-	const entry = registry.get(id)
-	if (!entry) return undefined
-	return entry.assets[path || entry.manifest.entry]
-}
 export const getEntryPath = (id: string): string | undefined => registry.get(id)?.manifest.entry
 export const BRIDGE_JS = bridgeJs
 
@@ -78,11 +73,11 @@ export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): 
 	return facet as unknown as AppFacet
 }
 
-// TODO(uploads): runtime adapter for user-submitted apps. Reads every key
-// under `prefix` from R2, decodes utf-8 (binary assets blocked at upload
-// time per format.ts TODO), and feeds the bag to `loadAppPackage`. Same
-// `AppEntry` returned, same downstream wiring.
-export async function installFromR2(_prefix: string): Promise<AppEntry> {
+// TODO(uploads): runtime adapter for user-submitted apps. Wraps an R2
+// bucket as an AppPackageSource (open() → bucket.get(prefix+path), returning
+// the streamed body) and feeds it to `loadAppPackage`. Same AppEntry shape,
+// streaming end-to-end.
+export async function installFromR2(_prefix: string): Promise<never> {
 	throw new Error('installFromR2: not implemented')
 }
 

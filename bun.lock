@@ -177,7 +177,6 @@
       "dependencies": {
         "@justfiles/app": "workspace:*",
         "typebox": "^1.1.34",
-        "wasm-doom": "^1.2.0",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -2755,8 +2754,6 @@
     "vscode-uri": ["vscode-uri@3.0.8", "", {}, "sha512-AyFQ0EVmsOZOlAnxoFOGOq1SQDWAB7C6aqMGS23svWAllfOaxbuFvcT8D1i8z3Gyn8fraVeZNNmN6e9bxxXkKw=="],
 
     "w3c-keyname": ["w3c-keyname@2.2.8", "", {}, "sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ=="],
-
-    "wasm-doom": ["wasm-doom@1.2.0", "", {}, "sha512-8Bg2vGMSVBWMOAWsBmLl4+4CYClvYl7aKvWqjKK3CpMM+42gRQkql93Tm9kG23bQaT1YnxBGq/IufrV2vnQa/w=="],
 
     "web-streams-polyfill": ["web-streams-polyfill@3.3.3", "", {}, "sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw=="],
 

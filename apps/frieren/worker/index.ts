@@ -1,7 +1,7 @@
 import { verifyToken } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
-import { BRIDGE_JS, getAsset, getEntryPath, hasApp } from './frieren.app'
+import { BRIDGE_JS, getEntryPath, hasApp } from './frieren.app'
 
 export { Frieren } from './frieren.ts'
 
@@ -22,7 +22,14 @@ const MIME: Record<string, string> = {
 	mjs: 'application/javascript; charset=utf-8',
 	css: 'text/css; charset=utf-8',
 	json: 'application/json; charset=utf-8',
-	svg: 'image/svg+xml'
+	svg: 'image/svg+xml',
+	wasm: 'application/wasm',
+	wad: 'application/octet-stream',
+	cfg: 'text/plain; charset=utf-8',
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	webp: 'image/webp'
 }
 const mimeFor = (path: string): string => {
 	const ext = path.split('.').pop()?.toLowerCase() ?? ''
@@ -77,15 +84,28 @@ app.get(
 	'/apps/_bridge.js',
 	() => new Response(BRIDGE_JS, { headers: appAssetHeaders('_bridge.js') })
 )
-app.get('/apps/*', (c) => {
+app.get('/apps/*', async (c) => {
 	const rest = c.req.path.replace(/^\/apps\//, '').split('/')
 	const appId = rest.shift()!
 	if (!hasApp(appId)) return c.notFound()
 	const path = rest.join('/') || getEntryPath(appId) || 'index.html'
-	const content = getAsset(appId, path)
-	if (content === undefined) return c.notFound()
-	const body = path.endsWith('.html') ? injectBridge(content) : content
-	return new Response(body, { headers: appAssetHeaders(path) })
+
+	// `ASSETS.fetch` resolves directly through the static-assets layer (it
+	// does not loop back through this worker), so bytes stream from edge to
+	// client without ever buffering in worker RAM.
+	const assetUrl = new URL(c.req.url)
+	assetUrl.pathname = `/apps/${appId}/${path}`
+	const upstream = await c.env.ASSETS.fetch(assetUrl.toString())
+	if (!upstream.ok) return c.notFound()
+
+	const headers = appAssetHeaders(path)
+	if (path.endsWith('.html')) {
+		// Buffer just the HTML so we can inject the postMessage bridge.
+		// Everything else (JS/CSS/wasm/wad/images) streams pass-through.
+		const html = await upstream.text()
+		return new Response(injectBridge(html), { headers })
+	}
+	return new Response(upstream.body, { headers })
 })
 
 app.get('/ws', async (c) => {

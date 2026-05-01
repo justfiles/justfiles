@@ -17,8 +17,7 @@
 	},
 	"dependencies": {
 		"@justfiles/app": "workspace:*",
-		"typebox": "^1.1.34",
-		"wasm-doom": "^1.2.0"
+		"typebox": "^1.1.34"
 	},
 	"devDependencies": {
 		"@types/bun": "latest",

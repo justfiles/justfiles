@@ -1,170 +1,154 @@
+/// <reference types="vite/client" />
+
 import '@justfiles/app/client'
-import { DOOM } from 'wasm-doom'
 import './index.css'
 
-const WIDTH = 640
-const HEIGHT = 400
-const KEY = {
-	comma: 44,
-	ctrl: 17,
-	down: 40,
-	left: 37,
-	period: 46,
-	right: 39,
-	shift: 16,
-	space: 32,
-	up: 38
-} as const
+const COMMON_ARGS = [
+	'-iwad',
+	'doom1.wad',
+	'-window',
+	'-nogui',
+	'-nomusic',
+	'-config',
+	'default.cfg',
+	'-servername',
+	'doomflare',
+	'-nodes',
+	'4'
+]
 
-type DoomStatus = 'loading' | 'running' | 'error'
-
-type DoomState = {
-	status: DoomStatus
-	frames: number
-	fps: number
-	lastFrameAt?: number
-	error?: string
+type EmscriptenFs = {
+	createPreloadedFile(
+		parent: string,
+		name: string,
+		url: string,
+		canRead: boolean,
+		canWrite: boolean
+	): void
 }
+
+type DoomModule = {
+	FS?: EmscriptenFs
+	SDL2?: {
+		audioContext?: AudioContext
+	}
+	canvas: HTMLCanvasElement
+	noInitialRun: boolean
+	wasmBinary: ArrayBuffer
+	onRuntimeInitialized(): void
+	preRun(): void
+	print(text: string): void
+	printErr(text: string): void
+	setStatus(text: string): void
+	monitorRunDependencies(left: number): void
+	totalDependencies: number
+}
+
+type DoomWindow = Window &
+	typeof globalThis & {
+		Module?: DoomModule
+		callMain?: (args: string[]) => void
+	}
 
 const root = document.querySelector<HTMLDivElement>('#root')
 
 if (!root) throw new Error('missing #root')
 
-mountDoom(root)
+void mountDoom(root)
 
-function mountDoom(root: HTMLElement) {
+async function mountDoom(root: HTMLElement) {
 	const canvas = document.createElement('canvas')
+	const start = document.createElement('button')
 	const bindings = document.createElement('div')
-	const keyboard = document.createElement('div')
 	const monitor = document.createElement('output')
-	const ctx = canvas.getContext('2d')
-	if (!ctx) throw new Error('canvas 2d context unavailable')
 
-	const state: DoomState = { status: 'loading', frames: 0, fps: 0 }
-	let secondStartedAt = performance.now()
-	let secondFrames = 0
+	canvas.id = 'canvas'
+	canvas.className = 'screen'
+	canvas.tabIndex = -1
+	canvas.addEventListener('contextmenu', (event) => event.preventDefault())
 
-	canvas.width = WIDTH
-	canvas.height = HEIGHT
+	start.type = 'button'
+	start.className = 'start'
+	start.disabled = true
+	start.textContent = 'Loading'
+
 	bindings.className = 'bindings'
 	bindings.textContent =
 		'W/S move | A/D strafe | E or Space use | Shift run | Click fire | Mouse turn'
-	keyboard.hidden = true
+
 	monitor.className = 'monitor'
-	root.tabIndex = 0
-	root.replaceChildren(canvas, bindings, keyboard, monitor)
-	root.addEventListener('pointerdown', () => root.focus(), { passive: true })
-	root.focus()
-	bindInput(canvas, keyboard)
+	root.replaceChildren(canvas, start, bindings, monitor)
 
-	const update = (patch: Partial<DoomState>) => {
-		Object.assign(state, patch)
-		monitor.value =
-			state.status === 'error'
-				? `error: ${state.error ?? 'unknown'}`
-				: `${state.status} | ${state.fps} fps | ${state.frames} frames`
+	const setStatus = (text: string) => {
+		monitor.value = text
 	}
 
-	update({})
+	try {
+		const wasmBinary = await fetchBinary('./doom.wasm')
 
-	const game = new DOOM({
-		screenWidth: WIDTH,
-		screenHeight: HEIGHT,
-		keyboardTarget: keyboard,
-		onFrameRender: ({ screen }) => {
-			const now = performance.now()
-			state.frames++
-			secondFrames++
-			if (now - secondStartedAt >= 1000) {
-				state.fps = Math.round((secondFrames * 1000) / (now - secondStartedAt))
-				secondFrames = 0
-				secondStartedAt = now
+		const win = window as DoomWindow
+		win.Module = {
+			canvas,
+			noInitialRun: true,
+			wasmBinary,
+			totalDependencies: 0,
+			onRuntimeInitialized() {
+				start.disabled = false
+				start.textContent = 'Start'
+				setStatus('ready')
+			},
+			// Emscripten attaches `FS` to Module before invoking preRun,
+			// so the optional chain is safe — the cast just satisfies TS.
+			preRun() {
+				const fs = win.Module?.FS
+				fs?.createPreloadedFile('', 'doom1.wad', './doom1.wad', true, true)
+				fs?.createPreloadedFile('', 'default.cfg', './default.cfg', true, true)
+			},
+			print(text) {
+				console.log(text)
+				if (text.includes('doom: 10,')) setStatus('running')
+			},
+			printErr(text) {
+				console.error(text)
+				setStatus(text)
+			},
+			setStatus,
+			monitorRunDependencies(left) {
+				this.totalDependencies = Math.max(this.totalDependencies, left)
+				setStatus(
+					left ? `loading ${this.totalDependencies - left}/${this.totalDependencies}` : 'ready'
+				)
 			}
-			ctx.putImageData(new ImageData(screen, WIDTH, HEIGHT), 0, 0)
-			update({ status: 'running', lastFrameAt: now })
 		}
-	})
 
-	void game.start().catch((error) => {
-		update({ status: 'error', error: error instanceof Error ? error.message : String(error) })
-	})
+		start.addEventListener('click', () => {
+			start.hidden = true
+			canvas.focus()
+			void win.Module?.SDL2?.audioContext?.resume()
+			setStatus('starting')
+			win.callMain?.(COMMON_ARGS)
+		})
 
-	return {
-		canvas,
-		getState: () => ({ ...state })
+		await loadRuntime('./doom-runtime.js')
+	} catch (error) {
+		start.disabled = true
+		start.textContent = 'Error'
+		setStatus(error instanceof Error ? error.message : String(error))
 	}
 }
 
-function bindInput(canvas: HTMLCanvasElement, keyboard: HTMLElement) {
-	const remap: Record<string, number> = {
-		Comma: KEY.comma,
-		KeyA: KEY.comma,
-		KeyD: KEY.period,
-		KeyE: KEY.space,
-		KeyS: KEY.down,
-		KeyW: KEY.up,
-		Period: KEY.period,
-		ShiftLeft: KEY.shift,
-		ShiftRight: KEY.shift,
-		Space: KEY.space
-	}
-	const pressed = new Set<number>()
-
-	const press = (keyCode: number) => {
-		if (pressed.has(keyCode)) return
-		pressed.add(keyCode)
-		emit(keyboard, 'keydown', keyCode)
-	}
-	const release = (keyCode: number) => {
-		if (!pressed.delete(keyCode)) return
-		emit(keyboard, 'keyup', keyCode)
-	}
-
-	window.addEventListener('keydown', (event) => {
-		if (event.repeat) return
-		const keyCode = remap[event.code] ?? event.keyCode
-		event.preventDefault()
-		press(keyCode)
-	})
-	window.addEventListener('keyup', (event) => {
-		const keyCode = remap[event.code] ?? event.keyCode
-		event.preventDefault()
-		release(keyCode)
-	})
-	canvas.addEventListener('click', () => canvas.requestPointerLock())
-	canvas.addEventListener('mousedown', (event) => {
-		event.preventDefault()
-		press(event.button === 2 ? KEY.space : KEY.ctrl)
-	})
-	canvas.addEventListener('mouseup', (event) => {
-		event.preventDefault()
-		release(event.button === 2 ? KEY.space : KEY.ctrl)
-	})
-	canvas.addEventListener('contextmenu', (event) => event.preventDefault())
-	document.addEventListener('pointermove', (event) => {
-		if (document.pointerLockElement !== canvas) return
-		tap(keyboard, event.movementX < 0 ? KEY.left : KEY.right, Math.abs(event.movementX))
-	})
-	window.addEventListener('blur', () => {
-		for (const keyCode of pressed) emit(keyboard, 'keyup', keyCode)
-		pressed.clear()
-	})
+async function fetchBinary(url: string): Promise<ArrayBuffer> {
+	const res = await fetch(url)
+	if (!res.ok) throw new Error(`failed to load ${url}: ${res.status}`)
+	return res.arrayBuffer()
 }
 
-function tap(target: HTMLElement, keyCode: number, amount: number) {
-	if (amount < 1) return
-	emit(target, 'keydown', keyCode)
-	setTimeout(() => emit(target, 'keyup', keyCode), Math.min(80, 12 + amount * 2))
-}
-
-function emit(target: HTMLElement, type: 'keydown' | 'keyup', keyCode: number) {
-	const event = new KeyboardEvent(type, {
-		bubbles: true,
-		cancelable: true,
-		keyCode,
-		which: keyCode
+function loadRuntime(url: string): Promise<void> {
+	const script = document.createElement('script')
+	return new Promise((resolve, reject) => {
+		script.src = url
+		script.onload = () => resolve()
+		script.onerror = () => reject(new Error(`failed to load ${url}`))
+		document.body.append(script)
 	})
-	Object.defineProperty(event, 'keyCode', { get: () => keyCode })
-	Object.defineProperty(event, 'which', { get: () => keyCode })
-	target.dispatchEvent(event)
 }

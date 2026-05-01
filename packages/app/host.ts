@@ -1,15 +1,29 @@
-// Canonical "bytes → AppEntry" pipeline. Every delivery channel — workspace
-// package (build-time), npm package (build-time), zip upload (runtime) —
-// converts its source into a FileBag and calls `loadAppPackage`. There is
-// no other path to register an app.
+// Canonical "source → AppEntry" pipeline. Every delivery channel — workspace
+// package (build-time), npm package (build-time), R2 upload (runtime) —
+// exposes an `AppPackageSource`. There is no other path to register an app.
+//
+// The source is stream-shaped on purpose: binary assets (wasm, wad, fonts)
+// can be huge, and Cloudflare Workers have tight memory + bundle-size
+// limits. The host loads only the manifest + backend code eagerly (small,
+// always needed), and lazy-streams everything else through `open()`.
 
 import { Check, Errors } from 'typebox/value'
-import { type FileBag, FORMAT_VERSION, type Manifest, ManifestSchema } from './format.js'
+import { FORMAT_VERSION, type Manifest, ManifestSchema } from './format.js'
+
+export interface AppAsset {
+	body: ReadableStream<Uint8Array>
+	size?: number
+	contentType?: string
+}
+
+export interface AppPackageSource {
+	open(path: string): Promise<AppAsset | undefined>
+}
 
 export interface AppEntry {
 	manifest: Manifest
 	code: string
-	assets: Record<string, string>
+	open(path: string): Promise<AppAsset | undefined>
 }
 
 export type AppPackageErrorCode =
@@ -17,7 +31,6 @@ export type AppPackageErrorCode =
 	| 'INVALID_MANIFEST'
 	| 'UNKNOWN_FORMAT'
 	| 'MISSING_BACKEND'
-	| 'MISSING_ENTRY'
 
 export class AppPackageError extends Error {
 	constructor(
@@ -29,14 +42,14 @@ export class AppPackageError extends Error {
 	}
 }
 
-export function loadAppPackage(files: FileBag): AppEntry {
-	const raw = files['manifest.json']
-	if (raw === undefined) {
+export async function loadAppPackage(src: AppPackageSource): Promise<AppEntry> {
+	const manifestText = await readText(src, 'manifest.json')
+	if (manifestText === undefined) {
 		throw new AppPackageError('MISSING_MANIFEST', 'manifest.json not found in package')
 	}
 	let parsed: unknown
 	try {
-		parsed = JSON.parse(raw)
+		parsed = JSON.parse(manifestText)
 	} catch (e) {
 		throw new AppPackageError('INVALID_MANIFEST', `manifest.json is not valid JSON: ${String(e)}`)
 	}
@@ -53,17 +66,15 @@ export function loadAppPackage(files: FileBag): AppEntry {
 			`format ${manifest.format} not supported (expected ${FORMAT_VERSION})`
 		)
 	}
-	const code = files[manifest.backend]
+	const code = await readText(src, manifest.backend)
 	if (code === undefined) {
 		throw new AppPackageError('MISSING_BACKEND', `backend file "${manifest.backend}" not found`)
 	}
-	const assets: Record<string, string> = {}
-	for (const [path, content] of Object.entries(files)) {
-		if (path === 'manifest.json' || path === manifest.backend) continue
-		assets[path] = content
-	}
-	if (assets[manifest.entry] === undefined) {
-		throw new AppPackageError('MISSING_ENTRY', `entry file "${manifest.entry}" not found`)
-	}
-	return { manifest, code, assets }
+	return { manifest, code, open: (p) => src.open(p) }
+}
+
+async function readText(src: AppPackageSource, path: string): Promise<string | undefined> {
+	const asset = await src.open(path)
+	if (!asset) return undefined
+	return new Response(asset.body).text()
 }

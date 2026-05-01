@@ -19,10 +19,36 @@ body {
 	outline: none;
 }
 
-canvas {
+.screen {
 	width: min(100vw, calc(100dvh * 1.6));
 	height: min(100dvh, calc(100vw / 1.6));
 	image-rendering: pixelated;
+	background: #000;
+	outline: none;
+}
+
+.start {
+	position: fixed;
+	inset: 50% auto auto 50%;
+	min-width: 120px;
+	height: 40px;
+	transform: translate(-50%, -50%);
+	border: 1px solid rgb(255 255 255 / 0.34);
+	border-radius: 4px;
+	background: rgb(0 0 0 / 0.82);
+	color: #f8fafc;
+	font:
+		14px / 1 ui-monospace,
+		SFMono-Regular,
+		Menlo,
+		Consolas,
+		monospace;
+	cursor: pointer;
+}
+
+.start:disabled {
+	color: #94a3b8;
+	cursor: wait;
 }
 
 .monitor {
