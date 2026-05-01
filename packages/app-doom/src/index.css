@@ -1,0 +1,62 @@
+:root {
+	font-family: system-ui, sans-serif;
+	color: #f8fafc;
+	background: #050505;
+}
+
+body {
+	margin: 0;
+	min-height: 100dvh;
+	overflow: hidden;
+}
+
+#root {
+	position: fixed;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	background: #050505;
+	outline: none;
+}
+
+canvas {
+	width: min(100vw, calc(100dvh * 1.6));
+	height: min(100dvh, calc(100vw / 1.6));
+	image-rendering: pixelated;
+}
+
+.monitor {
+	position: fixed;
+	left: 8px;
+	bottom: 8px;
+	padding: 4px 6px;
+	background: rgb(0 0 0 / 0.72);
+	color: #cbd5e1;
+	border: 1px solid rgb(255 255 255 / 0.16);
+	border-radius: 4px;
+	font:
+		12px / 1.2 ui-monospace,
+		SFMono-Regular,
+		Menlo,
+		Consolas,
+		monospace;
+}
+
+.bindings {
+	position: fixed;
+	right: 8px;
+	bottom: 8px;
+	max-width: min(720px, calc(100vw - 16px));
+	padding: 4px 6px;
+	background: rgb(0 0 0 / 0.72);
+	color: #cbd5e1;
+	border: 1px solid rgb(255 255 255 / 0.16);
+	border-radius: 4px;
+	font:
+		12px / 1.2 ui-monospace,
+		SFMono-Regular,
+		Menlo,
+		Consolas,
+		monospace;
+	text-align: right;
+}

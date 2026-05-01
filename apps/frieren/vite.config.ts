@@ -2,6 +2,7 @@ import path from 'node:path'
 import { cloudflare } from '@cloudflare/vite-plugin'
 import { hostApps } from '@justfiles/app/vite'
 import crossword from '@justfiles/app-crossword'
+import doom from '@justbuddy/app-doom'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defaultClientConditions, defineConfig } from 'vite'
@@ -14,5 +15,5 @@ export default defineConfig({
 			'@': path.resolve(__dirname, './src')
 		}
 	},
-	plugins: [tailwindcss(), react(), cloudflare(), hostApps([crossword])]
+	plugins: [tailwindcss(), react(), cloudflare(), hostApps([crossword, doom])]
 })
