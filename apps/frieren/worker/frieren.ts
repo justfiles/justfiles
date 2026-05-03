@@ -5,6 +5,8 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import { createBashTool } from './bash/index.ts'
+import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
@@ -189,8 +191,10 @@ export class Frieren extends DurableObject<Env> {
 
 	private buildAgent() {
 		const fs = createFsTools(this.vol)
+		const bashRegistry = new CommandRegistry()
+		const bash = createBashTool(bashRegistry, { vol: this.vol })
 		const agent = createAgent(this.getBackendConfig())
-		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool()]
+		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash]
 		return agent
 	}
 
