@@ -96,12 +96,14 @@ const staticCreds = (token: string): CredentialRecord => ({
 describe('Integrations', () => {
 	test('list reports defined integrations with disconnected status', () => {
 		const { integrations } = makeIntegrations()
-		integrations.define(fastmail())
+		const def = fastmail()
+		integrations.define(def)
 		expect(integrations.list()).toEqual([
 			{
 				id: 'fastmail',
 				name: 'Fastmail',
 				description: 'Email via JMAP',
+				credentialsSchema: def.credentialsSchema,
 				connectedAccounts: []
 			}
 		])

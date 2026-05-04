@@ -18,17 +18,17 @@ export interface ChatMessage {
 	toolCalls?: ToolCallInfo[]
 }
 
-export type ActiveApp = {
-	id: string
-	ui: { url: string }
-	state: unknown
-} | null
+export type ActiveApp =
+	| { kind: 'sandbox'; id: string; ui: { url: string }; state: unknown }
+	| { kind: 'builtin'; id: string }
+	| null
 
 export interface InstalledApp {
 	id: string
 	name: string
 	description: string
 	iconUrl?: string
+	kind?: 'sandbox' | 'builtin'
 }
 
 // Actions flow through the registry; at this wire boundary they're opaque.
@@ -47,7 +47,7 @@ export interface ChatViewProps {
 	reconnect: () => void
 	activeApp: ActiveApp
 	installedApps: InstalledApp[]
-	launchApp: (id: string) => void
+	launchApp: (app: InstalledApp) => void
 	closeApp: () => void
 	sendAppAction: (action: AppAction) => void
 }

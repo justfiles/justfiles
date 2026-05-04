@@ -58,11 +58,20 @@ export function createJmapClient(opts: JmapClientOptions): JmapClient {
 	const fetchFn = opts.fetch ?? globalThis.fetch
 	let sessionPromise: Promise<Session> | undefined
 
-	const auth = `Bearer ${opts.token}`
+	const auth = `Bearer ${opts.token.trim()}`
 
 	async function loadSession(): Promise<Session> {
 		const res = await fetchFn(SESSION_URL, { headers: { Authorization: auth } })
-		if (!res.ok) throw new Error(`fastmail session failed: ${res.status}`)
+		if (!res.ok) {
+			const detail = await res.text().catch(() => '')
+			const hint =
+				res.status === 401
+					? ' (use a Fastmail API token, not an app password — Settings → Privacy & Security → Connected apps & API tokens → API tokens)'
+					: ''
+			throw new Error(
+				`fastmail session failed: ${res.status}${hint}${detail ? ` — ${detail.slice(0, 200)}` : ''}`
+			)
+		}
 		const body = (await res.json()) as {
 			apiUrl: string
 			primaryAccounts: Record<string, string>

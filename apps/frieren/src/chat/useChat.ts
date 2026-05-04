@@ -228,12 +228,14 @@ export function useChat() {
 				}
 
 				if (data.type === 'app_open') {
-					setActiveApp({ id: data.id, ui: data.ui, state: data.state })
+					setActiveApp({ kind: 'sandbox', id: data.id, ui: data.ui, state: data.state })
 					return
 				}
 
 				if (data.type === 'app_state') {
-					setActiveApp((prev) => (prev ? { ...prev, state: data.state } : prev))
+					setActiveApp((prev) =>
+						prev && prev.kind === 'sandbox' ? { ...prev, state: data.state } : prev
+					)
 					return
 				}
 
@@ -293,14 +295,22 @@ export function useChat() {
 		wsRef.current.send(JSON.stringify({ type: 'app_action', action }))
 	}
 
-	const launchApp = (id: string) => {
+	const launchApp = (app: InstalledApp) => {
+		if (app.kind === 'builtin') {
+			setActiveApp({ kind: 'builtin', id: app.id })
+			return
+		}
 		if (!wsRef.current || connectionState !== 'ready') return
-		wsRef.current.send(JSON.stringify({ type: 'app_launch', id }))
+		wsRef.current.send(JSON.stringify({ type: 'app_launch', id: app.id }))
 	}
 
 	const closeApp = () => {
-		if (!wsRef.current || connectionState !== 'ready') return
-		wsRef.current.send(JSON.stringify({ type: 'app_close' }))
+		setActiveApp((prev) => {
+			if (prev?.kind === 'sandbox' && wsRef.current && connectionState === 'ready') {
+				wsRef.current.send(JSON.stringify({ type: 'app_close' }))
+			}
+			return null
+		})
 	}
 
 	const reconnect = () => setConnectKey((value) => value + 1)

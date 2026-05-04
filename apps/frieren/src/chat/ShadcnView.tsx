@@ -4,6 +4,8 @@ import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AppFrame } from '../AppFrame'
+import { BuiltinHost } from '../BuiltinHost'
+import { builtinLauncherEntries } from '../builtin'
 import { LauncherView } from '../LauncherView'
 import { AppPromptBlock } from './AppPromptBlock'
 import { AssistantAvatar, useAdventureViewState } from './adventureShared'
@@ -129,7 +131,7 @@ export function ShadcnView(props: ChatViewProps) {
 			<div className="flex min-w-0 flex-[1.618] flex-col bg-slate-950/60">
 				<div className="flex min-h-0 flex-[1.618] flex-col border-b-4 border-double border-sky-300/60 p-4">
 					<div className="relative flex flex-1 items-center justify-center overflow-hidden border-4 border-double border-sky-300 bg-gradient-to-b from-indigo-950 via-slate-900 to-slate-950 shadow-[6px_6px_0_rgba(0,0,0,0.45)]">
-						{activeApp ? (
+						{activeApp?.kind === 'sandbox' ? (
 							<AppFrame
 								id={activeApp.id}
 								ui={activeApp.ui}
@@ -137,8 +139,13 @@ export function ShadcnView(props: ChatViewProps) {
 								onAction={sendAppAction}
 								onHome={closeApp}
 							/>
+						) : activeApp?.kind === 'builtin' ? (
+							<BuiltinHost id={activeApp.id} onHome={closeApp} />
 						) : (
-							<LauncherView apps={installedApps} onLaunch={launchApp} />
+							<LauncherView
+								apps={[...installedApps, ...builtinLauncherEntries()]}
+								onLaunch={launchApp}
+							/>
 						)}
 						{activeApp ? (
 							<Badge

@@ -21,6 +21,7 @@ export interface IntegrationStatus {
 	id: string
 	name: string
 	description: string
+	credentialsSchema: TSchema
 	connectedAccounts: ReadonlyArray<{ accountId: string; lastError?: string }>
 }
 
@@ -84,6 +85,7 @@ export class Integrations {
 			id: def.id,
 			name: def.name,
 			description: def.description,
+			credentialsSchema: def.credentialsSchema,
 			connectedAccounts: [...this.active.values()]
 				.filter((c) => c.integrationId === def.id)
 				.map((c) => ({ accountId: c.accountId, lastError: c.lastError }))

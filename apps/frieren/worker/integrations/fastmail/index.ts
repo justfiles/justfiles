@@ -3,7 +3,12 @@ import type { Integration } from '../registry.ts'
 import { createFastmailCommand } from './commands.ts'
 import { createJmapClient } from './jmap.ts'
 
-export const fastmailCredentialsSchema = Type.Object({ token: Type.String({ minLength: 1 }) })
+export const fastmailCredentialsSchema = Type.Object({
+	token: Type.String({
+		minLength: 1,
+		description: 'Fastmail API token (Settings → Privacy & Security → API tokens). Not an app password.'
+	})
+})
 
 export function fastmailIntegration(): Integration {
 	return {
