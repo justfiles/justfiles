@@ -60,7 +60,7 @@ describe('icloud-calendar command', () => {
 		}
 	})
 
-	test('list with default days returns tab-separated rows', async () => {
+	test('list with default days returns tab-separated rows in UTC by default', async () => {
 		const { client, rec } = fakeClient({
 			async listEvents() {
 				return [SAMPLE_EVENT]
@@ -71,6 +71,34 @@ describe('icloud-calendar command', () => {
 		expect(res.exitCode).toBe(0)
 		expect(rec.listed).toEqual([{ days: 7 }])
 		expect(res.stdout).toBe('event-1@frieren\t2026-05-10T10:00:00Z\tStandup')
+	})
+
+	test('list renders dtstart in resolved timezone', async () => {
+		const { client } = fakeClient({
+			async listEvents() {
+				return [SAMPLE_EVENT]
+			}
+		})
+		const cmd = createIcloudCalendarCommand(client, {
+			getTimezone: () => 'America/New_York'
+		})
+		const res = await cmd.run(['list'], ctx)
+		expect(res.exitCode).toBe(0)
+		expect(res.stdout).toBe('event-1@frieren\t2026-05-10T06:00:00-04:00\tStandup')
+	})
+
+	test('list --tz overrides the resolver', async () => {
+		const { client } = fakeClient({
+			async listEvents() {
+				return [SAMPLE_EVENT]
+			}
+		})
+		const cmd = createIcloudCalendarCommand(client, {
+			getTimezone: () => 'UTC'
+		})
+		const res = await cmd.run(['list', '--tz', 'America/New_York'], ctx)
+		expect(res.exitCode).toBe(0)
+		expect(res.stdout).toBe('event-1@frieren\t2026-05-10T06:00:00-04:00\tStandup')
 	})
 
 	test('list --days forwards the count', async () => {

@@ -26,6 +26,7 @@ import { type LLMText, text } from './llm.text'
 import { parseFrontmatter } from './markdown'
 import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts'
 import type { SessionEntry } from './session.manager.ts'
+import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
@@ -175,7 +176,8 @@ export class Frieren extends DurableObject<Env> {
 			volume: this.vol,
 			agent,
 			text: this.text,
-			compaction: DEFAULT_COMPACTION_SETTINGS
+			compaction: DEFAULT_COMPACTION_SETTINGS,
+			getTimezone: () => resolveTimezone(this.vol, this.cfTimezone)
 		})
 	}
 
@@ -229,7 +231,11 @@ export class Frieren extends DurableObject<Env> {
 			coalescer: this.coalescer
 		})
 		integrations.define(fastmailIntegration())
-		integrations.define(icloudCalendarIntegration())
+		integrations.define(
+			icloudCalendarIntegration({
+				getTimezone: () => resolveTimezone(this.vol, this.cfTimezone)
+			})
+		)
 		return { agent, integrations }
 	}
 

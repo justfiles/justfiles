@@ -1,18 +1,38 @@
 import type { Command, CommandResult } from '../../bash/registry.ts'
+import { DEFAULT_TIMEZONE, isoToTimezone } from '../../timezone.ts'
 import type { CalDavClient, CreateEventInput } from './caldav.ts'
 
 const HELP = [
 	'icloud-calendar — list, read, create, delete iCloud Calendar events',
 	'',
 	'Subcommands:',
-	'  list [--days N]                                        List events in next N days (default 7)',
-	'  read <uid>                                             Show full details for one event',
-	'  create date:<iso> title:<text> [duration:<minutes>]    Create an event; returns its uid',
-	'  delete <uid>                                           Delete an event by uid'
+	'  list [--days N] [--tz <iana>]                          List events in next N days (default 7)',
+	'  read <uid> [--tz <iana>]                               Show full details for one event',
+	"  create date:<iso> title:<text> [duration:<minutes>]    Create an event; date may include offset (e.g. 2026-05-10T09:00:00-04:00) or 'Z' for UTC",
+	'  delete <uid>                                           Delete an event by uid',
+	'',
+	'Times are rendered in the user’s timezone (from /profiles/user.md `timezone` field).',
+	'Override per-call with --tz <IANA name>, e.g. --tz America/New_York.'
 ].join('\n')
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
+}
+
+function takeTzFlag(argv: string[]): { argv: string[]; tz?: string } | { error: string } {
+	const out: string[] = []
+	let tz: string | undefined
+	for (let i = 0; i < argv.length; i++) {
+		if (argv[i] === '--tz') {
+			const val = argv[i + 1]
+			if (!val) return { error: '--tz requires an IANA timezone name' }
+			tz = val
+			i++
+		} else {
+			out.push(argv[i])
+		}
+	}
+	return { argv: out, tz }
 }
 
 function parseDays(argv: string[]): { days: number } | { error: string } {
@@ -59,40 +79,40 @@ function parseCreateArgs(argv: string[]): CreateEventInput | { error: string } {
 	return input
 }
 
-function renderList(events: Awaited<ReturnType<CalDavClient['listEvents']>>): string {
+function renderList(events: Awaited<ReturnType<CalDavClient['listEvents']>>, tz: string): string {
 	if (events.length === 0) return '(no events)'
-	return events.map((e) => `${e.uid}\t${e.dtstart}\t${e.summary}`).join('\n')
+	return events.map((e) => `${e.uid}\t${isoToTimezone(e.dtstart, tz)}\t${e.summary}`).join('\n')
 }
 
-function renderRead(event: Awaited<ReturnType<CalDavClient['readEvent']>>): string {
+function renderRead(event: Awaited<ReturnType<CalDavClient['readEvent']>>, tz: string): string {
 	const lines = [
 		`UID: ${event.uid}`,
 		`Summary: ${event.summary}`,
-		`Start: ${event.dtstart}`,
-		`End: ${event.dtend}`,
+		`Start: ${isoToTimezone(event.dtstart, tz)}`,
+		`End: ${isoToTimezone(event.dtend, tz)}`,
 		`Location: ${event.location ?? ''}`,
 		`Description: ${event.description ?? ''}`
 	]
 	return lines.join('\n')
 }
 
-async function runList(client: CalDavClient, argv: string[]): Promise<CommandResult> {
+async function runList(client: CalDavClient, argv: string[], tz: string): Promise<CommandResult> {
 	const parsed = parseDays(argv)
 	if ('error' in parsed) return { stdout: '', stderr: parsed.error, exitCode: 2 }
 	try {
 		const events = await client.listEvents({ days: parsed.days })
-		return { stdout: renderList(events), stderr: '', exitCode: 0 }
+		return { stdout: renderList(events, tz), stderr: '', exitCode: 0 }
 	} catch (error) {
 		return { stdout: '', stderr: `icloud-calendar list: ${errorMessage(error)}`, exitCode: 1 }
 	}
 }
 
-async function runRead(client: CalDavClient, argv: string[]): Promise<CommandResult> {
+async function runRead(client: CalDavClient, argv: string[], tz: string): Promise<CommandResult> {
 	const uid = argv[0]
 	if (!uid) return { stdout: '', stderr: 'read: missing required argument: uid', exitCode: 2 }
 	try {
 		const event = await client.readEvent(uid)
-		return { stdout: renderRead(event), stderr: '', exitCode: 0 }
+		return { stdout: renderRead(event, tz), stderr: '', exitCode: 0 }
 	} catch (error) {
 		return { stdout: '', stderr: `icloud-calendar read: ${errorMessage(error)}`, exitCode: 1 }
 	}
@@ -120,7 +140,15 @@ async function runDelete(client: CalDavClient, argv: string[]): Promise<CommandR
 	}
 }
 
-export function createIcloudCalendarCommand(client: CalDavClient): Command {
+export interface IcloudCalendarCommandOptions {
+	getTimezone?: () => Promise<string> | string
+}
+
+export function createIcloudCalendarCommand(
+	client: CalDavClient,
+	options: IcloudCalendarCommandOptions = {}
+): Command {
+	const { getTimezone } = options
 	return {
 		name: 'icloud-calendar',
 		summary: 'iCloud Calendar (list/read/create/delete)',
@@ -129,15 +157,18 @@ export function createIcloudCalendarCommand(client: CalDavClient): Command {
 				return { stdout: HELP, stderr: '', exitCode: 0 }
 			}
 			const [sub, ...rest] = argv
+			const tzParse = takeTzFlag(rest)
+			if ('error' in tzParse) return { stdout: '', stderr: tzParse.error, exitCode: 2 }
+			const tz = tzParse.tz ?? (getTimezone ? await getTimezone() : DEFAULT_TIMEZONE)
 			switch (sub) {
 				case 'list':
-					return runList(client, rest)
+					return runList(client, tzParse.argv, tz)
 				case 'read':
-					return runRead(client, rest)
+					return runRead(client, tzParse.argv, tz)
 				case 'create':
-					return runCreate(client, rest)
+					return runCreate(client, tzParse.argv)
 				case 'delete':
-					return runDelete(client, rest)
+					return runDelete(client, tzParse.argv)
 				default:
 					return {
 						stdout: '',

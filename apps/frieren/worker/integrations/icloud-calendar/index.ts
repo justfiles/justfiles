@@ -15,7 +15,13 @@ export const icloudCalendarCredentialsSchema = Type.Object({
 	})
 })
 
-export function icloudCalendarIntegration(): Integration {
+export interface IcloudCalendarIntegrationOptions {
+	getTimezone?: () => Promise<string> | string
+}
+
+export function icloudCalendarIntegration(
+	options: IcloudCalendarIntegrationOptions = {}
+): Integration {
 	return {
 		id: 'icloud-calendar',
 		name: 'iCloud Calendar',
@@ -24,7 +30,7 @@ export function icloudCalendarIntegration(): Integration {
 		commands: (creds) => {
 			const { username, password } = creds as { username: string; password: string }
 			const client = createCalDavClient({ username, password })
-			return [createIcloudCalendarCommand(client)]
+			return [createIcloudCalendarCommand(client, { getTimezone: options.getTimezone })]
 		}
 	}
 }
