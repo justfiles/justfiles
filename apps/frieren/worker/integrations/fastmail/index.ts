@@ -6,7 +6,8 @@ import { createJmapClient } from './jmap.ts'
 export const fastmailCredentialsSchema = Type.Object({
 	token: Type.String({
 		minLength: 1,
-		description: 'Fastmail API token (Settings → Privacy & Security → API tokens). Not an app password.'
+		description:
+			'Fastmail API token (Settings → Privacy & Security → API tokens). Not an app password.'
 	})
 })
 

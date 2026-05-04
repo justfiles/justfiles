@@ -17,6 +17,7 @@ import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { Coalescer } from './integrations/coalescer.ts'
 import { fastmailIntegration } from './integrations/fastmail/index.ts'
+import { icloudCalendarIntegration } from './integrations/icloud-calendar/index.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { Integrations } from './integrations/registry.ts'
 import { ConnectionStore } from './integrations/storage.ts'
@@ -228,6 +229,7 @@ export class Frieren extends DurableObject<Env> {
 			coalescer: this.coalescer
 		})
 		integrations.define(fastmailIntegration())
+		integrations.define(icloudCalendarIntegration())
 		return { agent, integrations }
 	}
 
