@@ -16,6 +16,7 @@ import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { Coalescer } from './integrations/coalescer.ts'
+import { fastmailIntegration } from './integrations/fastmail/index.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { Integrations } from './integrations/registry.ts'
 import { ConnectionStore } from './integrations/storage.ts'
@@ -226,6 +227,7 @@ export class Frieren extends DurableObject<Env> {
 			rateLimit: new TokenBucket({ capacity: 60, windowMs: 60_000 }),
 			coalescer: this.coalescer
 		})
+		integrations.define(fastmailIntegration())
 		return { agent, integrations }
 	}
 
