@@ -135,7 +135,8 @@ export async function runtime({
 			'# current time',
 			`Now: ${formatInTimezone(now, tz)} (${tz}).`,
 			'When the user references relative dates ("today", "tomorrow", "next week"), interpret them in this timezone.',
-			"When passing date: arguments to calendar tools, use ISO 8601 with the user's offset (or 'Z' for UTC). The agent is responsible for the conversion."
+			"When passing date: arguments to calendar tools, use ISO 8601 with the user's offset (or 'Z' for UTC). The agent is responsible for the conversion.",
+			'If this session has been running long enough that the time above may be stale, run `now` to get the current time.'
 		)
 		const memory = await file(volume, PATHS.memory).text()
 		if (memory) prompt.add('# permanent memory', memory)
