@@ -13,6 +13,12 @@ import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
 import { type AppFacet, buildAppTools, hasApp, listApps, loadAppFacet } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
+import { integrationRoutes } from './integrations/api.ts'
+import { AuditLog } from './integrations/audit.ts'
+import { Coalescer } from './integrations/coalescer.ts'
+import { TokenBucket } from './integrations/rate-limit.ts'
+import { Integrations } from './integrations/registry.ts'
+import { ConnectionStore } from './integrations/storage.ts'
 import { createAgent } from './llm.agent'
 import { type LLMText, text } from './llm.text'
 import { parseFrontmatter } from './markdown'
@@ -104,6 +110,8 @@ export class Frieren extends DurableObject<Env> {
 	private text?: LLMText
 	private cfTimezone?: string
 	private activeApp?: ActiveApp
+	private integrations?: Integrations
+	private readonly coalescer = new Coalescer()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -125,11 +133,20 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
+			.route(
+				'/',
+				integrationRoutes(() => this.requireIntegrations())
+			)
 			.route('/fs', createFsApi(fs))
 
 		ctx.blockConcurrencyWhile(async () => {
 			await this.reset()
 		})
+	}
+
+	private requireIntegrations(): Integrations {
+		if (!this.integrations) throw new Error('integrations not initialised')
+		return this.integrations
 	}
 
 	private async generateSoul(input: SoulGenerationInput): Promise<string> {
@@ -149,9 +166,12 @@ export class Frieren extends DurableObject<Env> {
 		await migrateCF(this.ctx.storage)
 		this.runtime?.shutdown()
 		this.text = text({ model, apiKey })
+		const { agent, integrations } = this.buildAgent()
+		this.integrations = integrations
+		await integrations.hydrate()
 		this.runtime = await runtime({
 			volume: this.vol,
-			agent: this.buildAgent(),
+			agent,
 			text: this.text,
 			compaction: DEFAULT_COMPACTION_SETTINGS
 		})
@@ -197,7 +217,16 @@ export class Frieren extends DurableObject<Env> {
 		const bash = createBashTool(bashRegistry, { vol: this.vol })
 		const agent = createAgent(this.getBackendConfig())
 		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash]
-		return agent
+
+		const connections = new ConnectionStore(this.ctx.storage, this.env.INTEGRATION_KEY)
+		const integrations = new Integrations({
+			commands: bashRegistry,
+			connections,
+			audit: new AuditLog(this.ctx.storage),
+			rateLimit: new TokenBucket({ capacity: 60, windowMs: 60_000 }),
+			coalescer: this.coalescer
+		})
+		return { agent, integrations }
 	}
 
 	// ── WebSocket handlers ────────────────────────────────────────────────
@@ -285,7 +314,10 @@ export class Frieren extends DurableObject<Env> {
 				)
 			})
 			try {
-				await this.runtime?.prompt(parsed.text, 'user')
+				const promptText = parsed.text
+				await this.coalescer.during(async () => {
+					await this.runtime?.prompt(promptText, 'user')
+				})
 			} catch (error) {
 				ws.send(
 					JSON.stringify({
@@ -423,7 +455,9 @@ export class Frieren extends DurableObject<Env> {
 			ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
 		})
 		try {
-			await this.runtime?.prompt(prompt, 'app')
+			await this.coalescer.during(async () => {
+				await this.runtime?.prompt(prompt, 'app')
+			})
 		} catch (error) {
 			ws.send(
 				JSON.stringify({

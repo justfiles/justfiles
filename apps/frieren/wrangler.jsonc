@@ -14,7 +14,7 @@
 	"upload_source_maps": true,
 	"compatibility_flags": ["nodejs_compat"],
 	"secrets": {
-		"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY"]
+		"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY", "INTEGRATION_KEY"]
 	},
 	"vars": {
 		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuanVzdGJ1ZGR5LmFwcCQ"
@@ -54,7 +54,7 @@
 				"enabled": true
 			},
 			"secrets": {
-				"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY"]
+				"required": ["CLERK_SECRET_KEY", "OPENAI_API_KEY", "INTEGRATION_KEY"]
 			},
 			"routes": [
 				{
