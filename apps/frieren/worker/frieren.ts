@@ -6,6 +6,7 @@ import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import { cp, mv, rm } from './bash/commands/fs.ts'
+import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
 import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
@@ -26,6 +27,7 @@ import { type LLMText, text } from './llm.text'
 import { parseFrontmatter } from './markdown'
 import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts'
 import type { SessionEntry } from './session.manager.ts'
+import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
@@ -151,6 +153,8 @@ export class Frieren extends DurableObject<Env> {
 		return this.integrations
 	}
 
+	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
+
 	private async generateSoul(input: SoulGenerationInput): Promise<string> {
 		if (!this.text) {
 			const { model, apiKey } = this.getBackendConfig()
@@ -175,7 +179,8 @@ export class Frieren extends DurableObject<Env> {
 			volume: this.vol,
 			agent,
 			text: this.text,
-			compaction: DEFAULT_COMPACTION_SETTINGS
+			compaction: DEFAULT_COMPACTION_SETTINGS,
+			getTimezone: this.getTimezone
 		})
 	}
 
@@ -215,7 +220,8 @@ export class Frieren extends DurableObject<Env> {
 	private buildAgent() {
 		const fs = createFsTools(this.vol)
 		const bashRegistry = new CommandRegistry()
-		for (const command of [cp, mv, rm]) bashRegistry.register(command)
+		for (const command of [cp, mv, rm, createNowCommand({ getTimezone: this.getTimezone })])
+			bashRegistry.register(command)
 		const bash = createBashTool(bashRegistry, { vol: this.vol })
 		const agent = createAgent(this.getBackendConfig())
 		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash]
@@ -229,7 +235,7 @@ export class Frieren extends DurableObject<Env> {
 			coalescer: this.coalescer
 		})
 		integrations.define(fastmailIntegration())
-		integrations.define(icloudCalendarIntegration())
+		integrations.define(icloudCalendarIntegration({ getTimezone: this.getTimezone }))
 		return { agent, integrations }
 	}
 

@@ -13,12 +13,14 @@ import {
 	type SessionManager,
 	session
 } from './session.manager'
+import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
 
 type RuntimeProps = {
 	volume: Volume
 	agent: Agent
 	text: LLMText
 	compaction: CompactionSettings
+	getTimezone?: () => Promise<string> | string
 }
 
 type FrierenEvent = AgentEvent
@@ -34,7 +36,13 @@ export interface Runtime {
 	_agent: () => Agent
 }
 
-export async function runtime({ volume, agent, text, compaction }: RuntimeProps): Promise<Runtime> {
+export async function runtime({
+	volume,
+	agent,
+	text,
+	compaction,
+	getTimezone
+}: RuntimeProps): Promise<Runtime> {
 	const agentId = 'main'
 	const session = await route({ agentId }, volume, text)
 	await initSession(session)
@@ -120,6 +128,16 @@ export async function runtime({ volume, agent, text, compaction }: RuntimeProps)
 			const calibration = ageCalibration(profile)
 			if (calibration) prompt.add(calibration)
 		}
+
+		const tz = (getTimezone ? await getTimezone() : DEFAULT_TIMEZONE) || DEFAULT_TIMEZONE
+		const now = new Date()
+		prompt.add(
+			'# current time',
+			`Now: ${formatInTimezone(now, tz)} (${tz}).`,
+			'When the user references relative dates ("today", "tomorrow", "next week"), interpret them in this timezone.',
+			"When passing date: arguments to calendar tools, use ISO 8601 with the user's offset (or 'Z' for UTC). The agent is responsible for the conversion.",
+			'If this session has been running long enough that the time above may be stale, run `now` to get the current time.'
+		)
 		const memory = await file(volume, PATHS.memory).text()
 		if (memory) prompt.add('# permanent memory', memory)
 
