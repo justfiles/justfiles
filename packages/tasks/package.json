@@ -25,6 +25,16 @@
 			"@justfiles/src": "./format.ts",
 			"import": "./dist/format.js",
 			"default": "./dist/format.js"
+		},
+		"./dates": {
+			"@justfiles/src": "./dates.ts",
+			"import": "./dist/dates.js",
+			"default": "./dist/dates.js"
+		},
+		"./query": {
+			"@justfiles/src": "./query.ts",
+			"import": "./dist/query.js",
+			"default": "./dist/query.js"
 		}
 	},
 	"bin": {

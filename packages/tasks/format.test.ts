@@ -1,9 +1,16 @@
 import { describe, expect, test } from 'bun:test'
-import { formatMarkdown } from './format.ts'
+import { formatMarkdown, formatSections } from './format.ts'
+import { groupTasks } from './query.ts'
 import type { Task } from './store.ts'
 
-function task(id: string, title: string): Task {
-	return { id, status: 'TODO', title, path: `/tasks/${id}--TODO--${title}.md` }
+function task(id: string, title: string, due?: string): Task {
+	return {
+		id,
+		status: 'TODO',
+		title,
+		path: `/tasks/${id}.md`,
+		...(due ? { due } : {})
+	}
 }
 
 describe('format', () => {
@@ -17,5 +24,65 @@ describe('format', () => {
 
 	test('formatMarkdown handles empty list', () => {
 		expect(formatMarkdown([])).toBe('No tasks.\n')
+	})
+
+	test('formatSections renders all four sections in order', () => {
+		const sections = groupTasks(
+			[
+				task('20260601T100000', 'past', '20260610'),
+				task('20260615T100000', 'now', '20260615'),
+				task('20260620T100000', 'future', '20260620'),
+				task('20260605T100000', 'someday')
+			],
+			'20260615'
+		)
+		const out = formatSections(sections)
+		expect(out).toBe(
+			[
+				'# overdue',
+				'',
+				'- [20260601T100000] past',
+				'',
+				'# today',
+				'',
+				'- [20260615T100000] now',
+				'',
+				'# upcoming',
+				'',
+				'- [20260620T100000] future',
+				'',
+				'# undated',
+				'',
+				'- [20260605T100000] someday',
+				''
+			].join('\n')
+		)
+	})
+
+	test('formatSections omits empty sections', () => {
+		const sections = groupTasks(
+			[task('20260601T100000', 'past', '20260610'), task('20260620T100000', 'future', '20260620')],
+			'20260615'
+		)
+		const out = formatSections(sections)
+		expect(out).toContain('# overdue')
+		expect(out).toContain('# upcoming')
+		expect(out).not.toContain('# today')
+		expect(out).not.toContain('# undated')
+	})
+
+	test('formatSections collapses headers when only one section has tasks', () => {
+		const sections = groupTasks(
+			[task('20260605T100000', 'a'), task('20260606T100000', 'b')],
+			'20260615'
+		)
+		const out = formatSections(sections)
+		expect(out).toBe('- [20260605T100000] a\n- [20260606T100000] b\n')
+		expect(out).not.toContain('#')
+	})
+
+	test('formatSections handles all-empty input', () => {
+		const sections = groupTasks([], '20260615')
+		expect(formatSections(sections)).toBe('No tasks.\n')
 	})
 })
