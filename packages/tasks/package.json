@@ -1,0 +1,52 @@
+{
+	"name": "@justfiles/tasks",
+	"version": "0.0.1",
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"@justfiles/src": "./index.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./parse": {
+			"@justfiles/src": "./parse.ts",
+			"import": "./dist/parse.js",
+			"default": "./dist/parse.js"
+		},
+		"./store": {
+			"@justfiles/src": "./store.ts",
+			"import": "./dist/store.js",
+			"default": "./dist/store.js"
+		},
+		"./format": {
+			"@justfiles/src": "./format.ts",
+			"import": "./dist/format.js",
+			"default": "./dist/format.js"
+		}
+	},
+	"bin": {
+		"task": "./dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@justfiles/fs": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"@types/node": "^25.5.0",
+		"tsdown": "^0.21.5",
+		"typescript": "^5"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	}
+}
