@@ -13,6 +13,7 @@ export type Store = {
 	listTasks(): Promise<Task[]>
 	getTask(id: string): Promise<Task | null>
 	getTaskContent(id: string): Promise<string>
+	completeTask(id: string): Promise<Task>
 }
 
 function pad(n: number, width: number): string {
@@ -89,6 +90,17 @@ export function createStore(volume: Volume, dir: string): Store {
 			if (!task) throw new Error(`ENOENT: task ${id}`)
 			const data = await volume.readFile(task.path)
 			return dec.decode(data)
+		},
+
+		async completeTask(id) {
+			const task = await this.getTask(id)
+			if (!task) throw new Error(`task not found: ${id}`)
+			if (task.status === 'DONE') return task
+			const newMeta: TaskMeta = { id: task.id, status: 'DONE', title: task.title }
+			const newFilename = encodeFilename(newMeta)
+			const newPath = joinPath(dir, newFilename)
+			await volume.rename(task.path, newPath)
+			return { ...newMeta, path: newPath }
 		}
 	}
 }

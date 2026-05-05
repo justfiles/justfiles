@@ -8,6 +8,7 @@ const HELP = `Usage: task <command> [options]
 Commands:
   add <title>      Add a new TODO task. Stdin (if piped) becomes file content.
   list             List TODO tasks as a markdown bullet list.
+  done <id>        Mark a task complete by its ID.
 
 Environment:
   TASKS_DIR        Directory for tasks (default: ~/tasks)
@@ -42,6 +43,19 @@ async function cmdAdd(args: string[]): Promise<number> {
 	return 0
 }
 
+async function cmdDone(args: string[]): Promise<number> {
+	const { positionals } = parseArgs({ args, allowPositionals: true })
+	const id = positionals[0]?.trim()
+	if (!id) {
+		process.stderr.write('error: task done requires an ID\n')
+		return 2
+	}
+	const manager = await createTaskManager(tasksDir())
+	const task = await manager.completeTask(id)
+	process.stdout.write(`${task.id}\n`)
+	return 0
+}
+
 async function cmdList(_args: string[]): Promise<number> {
 	const manager = await createTaskManager(tasksDir())
 	const tasks = (await manager.listTasks()).filter((t) => t.status === 'TODO')
@@ -59,6 +73,8 @@ async function main(argv: string[]): Promise<number> {
 			return command === undefined ? 1 : 0
 		case 'add':
 			return cmdAdd(rest)
+		case 'done':
+			return cmdDone(rest)
 		case 'list':
 			return cmdList(rest)
 		default:
