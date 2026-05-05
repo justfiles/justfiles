@@ -85,4 +85,39 @@ describe('store', () => {
 		const id = generateId(new Date('2026-05-05T10:15:30Z'))
 		expect(id).toMatch(/^\d{8}T\d{6}$/)
 	})
+
+	test('completeTask transitions TODO to DONE and renames file', async () => {
+		const { vol, store } = makeStore()
+		const task = await store.addTask({ title: 'buy milk', now: new Date('2026-05-05T10:15:30Z') })
+		expect(task.status).toBe('TODO')
+		const done = await store.completeTask(task.id)
+		expect(done.status).toBe('DONE')
+		expect(done.id).toBe(task.id)
+		expect(done.path).toContain('--DONE--')
+		expect(await vol.exists(done.path)).toBe(true)
+		expect(await vol.exists(task.path)).toBe(false)
+	})
+
+	test('completeTask preserves file content', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({ title: 'x', content: 'notes here' })
+		const done = await store.completeTask(task.id)
+		expect(await store.getTaskContent(done.id)).toBe('notes here')
+	})
+
+	test('completeTask is a no-op when already DONE', async () => {
+		const { vol, store } = makeStore()
+		const task = await store.addTask({ title: 'x', now: new Date('2026-05-05T10:15:30Z') })
+		const first = await store.completeTask(task.id)
+		const second = await store.completeTask(task.id)
+		expect(second.status).toBe('DONE')
+		expect(second.path).toBe(first.path)
+		const files = (await vol.readdir('/tasks')).map((e) => e.name)
+		expect(files.filter((f) => f.includes(task.id))).toHaveLength(1)
+	})
+
+	test('completeTask throws on unknown ID', async () => {
+		const { store } = makeStore()
+		await expect(store.completeTask('20260101T000000')).rejects.toThrow('task not found')
+	})
 })
