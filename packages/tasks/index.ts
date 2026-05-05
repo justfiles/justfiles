@@ -1,8 +1,10 @@
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { systemTimezone } from './dates.ts'
 import { createStore, type Store } from './store.ts'
 
 export type { TaskMeta } from './parse.ts'
+export type { SectionKey, Sections } from './query.ts'
 export type { Task } from './store.ts'
 
 export type TaskManagerOptions = {
@@ -26,11 +28,12 @@ async function volumeForPath(path: string): Promise<{ volume: Volume; root: stri
 
 export async function createTaskManager(
 	pathOrVolume: string | Volume,
-	_options: TaskManagerOptions = {}
+	options: TaskManagerOptions = {}
 ): Promise<TaskManager> {
+	const tz = options.timezone ?? systemTimezone()
 	if (isVolume(pathOrVolume)) {
-		return createStore(pathOrVolume, '/')
+		return createStore(pathOrVolume, '/', { timezone: tz })
 	}
 	const { volume: vol, root } = await volumeForPath(pathOrVolume)
-	return createStore(vol, root)
+	return createStore(vol, root, { timezone: tz })
 }

@@ -3,9 +3,9 @@ import { volume } from '../fs/index.ts'
 import { memStorage } from '../fs/storage.mem.ts'
 import { createStore, generateId } from './store.ts'
 
-function makeStore(dir = '/tasks') {
+function makeStore(dir = '/tasks', timezone = 'UTC') {
 	const vol = volume(memStorage())
-	return { vol, store: createStore(vol, dir) }
+	return { vol, store: createStore(vol, dir, { timezone }) }
 }
 
 describe('store', () => {
@@ -17,6 +17,35 @@ describe('store', () => {
 		expect(task.id).toMatch(/^\d{8}T\d{6}$/)
 		expect(task.path).toContain('--TODO--buy-milk.md')
 		expect(await vol.exists(task.path)).toBe(true)
+	})
+
+	test('addTask with --due encodes the date in the filename', async () => {
+		const { vol, store } = makeStore()
+		const task = await store.addTask({
+			title: 'pay bill',
+			due: '20260615',
+			now: new Date('2026-05-05T10:15:30Z')
+		})
+		expect(task.due).toBe('20260615')
+		expect(task.path).toContain('--TODO--20260615--pay-bill.md')
+		expect(await vol.exists(task.path)).toBe(true)
+	})
+
+	test('addTask rejects invalid due format', async () => {
+		const { store } = makeStore()
+		await expect(store.addTask({ title: 'x', due: '2026-06-15' })).rejects.toThrow('invalid due')
+	})
+
+	test('store exposes its configured timezone', () => {
+		const { store } = makeStore('/tasks', 'Pacific/Auckland')
+		expect(store.timezone).toBe('Pacific/Auckland')
+	})
+
+	test('generateId uses the configured timezone', async () => {
+		// 2026-05-05 23:30 UTC → next day in Auckland
+		const { store } = makeStore('/tasks', 'Pacific/Auckland')
+		const task = await store.addTask({ title: 'x', now: new Date('2026-05-05T23:30:00Z') })
+		expect(task.id.slice(0, 8)).toBe('20260506')
 	})
 
 	test('tasks directory is auto-created', async () => {
@@ -82,8 +111,8 @@ describe('store', () => {
 	})
 
 	test('generateId produces a denote-style timestamp', () => {
-		const id = generateId(new Date('2026-05-05T10:15:30Z'))
-		expect(id).toMatch(/^\d{8}T\d{6}$/)
+		const id = generateId(new Date('2026-05-05T10:15:30Z'), 'UTC')
+		expect(id).toBe('20260505T101530')
 	})
 
 	test('completeTask transitions TODO to DONE and renames file', async () => {
@@ -96,6 +125,14 @@ describe('store', () => {
 		expect(done.path).toContain('--DONE--')
 		expect(await vol.exists(done.path)).toBe(true)
 		expect(await vol.exists(task.path)).toBe(false)
+	})
+
+	test('completeTask preserves the due date', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({ title: 'x', due: '20260615' })
+		const done = await store.completeTask(task.id)
+		expect(done.due).toBe('20260615')
+		expect(done.path).toContain('--DONE--20260615--x.md')
 	})
 
 	test('completeTask preserves file content', async () => {
@@ -119,5 +156,32 @@ describe('store', () => {
 	test('completeTask throws on unknown ID', async () => {
 		const { store } = makeStore()
 		await expect(store.completeTask('20260101T000000')).rejects.toThrow('task not found')
+	})
+
+	test('end-to-end: add+list groups tasks via query.groupTasks', async () => {
+		const { store } = makeStore('/tasks', 'UTC')
+		await store.addTask({
+			title: 'past',
+			due: '20260610',
+			now: new Date('2026-06-01T10:00:00Z')
+		})
+		await store.addTask({
+			title: 'now',
+			due: '20260615',
+			now: new Date('2026-06-02T10:00:00Z')
+		})
+		await store.addTask({
+			title: 'future',
+			due: '20260620',
+			now: new Date('2026-06-03T10:00:00Z')
+		})
+		await store.addTask({ title: 'someday', now: new Date('2026-06-04T10:00:00Z') })
+		const tasks = await store.listTasks()
+		const { groupTasks } = await import('./query.ts')
+		const sections = groupTasks(tasks, '20260615')
+		expect(sections.overdue.map((t) => t.title)).toEqual(['past'])
+		expect(sections.today.map((t) => t.title)).toEqual(['now'])
+		expect(sections.upcoming.map((t) => t.title)).toEqual(['future'])
+		expect(sections.undated.map((t) => t.title)).toEqual(['someday'])
 	})
 })
