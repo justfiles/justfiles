@@ -5,8 +5,9 @@ const HELP = [
 	'fastmail — list, read, send email via Fastmail',
 	'',
 	'Subcommands:',
-	'  list [--limit N]        List inbox messages (default 20)',
-	'  read <id>               Fetch and print one message',
+	'  list [--limit N] [--unread]           List inbox messages (default 20)',
+	'  read <id>                             Fetch and print one message',
+	'  mark-read <id>                        Mark a message as read',
 	'  send to:<addr> subject:<s> body:<b>   Send a plain-text email'
 ].join('\n')
 
@@ -41,8 +42,9 @@ function renderRead(email: EmailDetails): string {
 	return lines.join('\n')
 }
 
-function parseLimit(argv: string[]): { limit: number } | { error: string } {
+function parseListArgs(argv: string[]): { limit: number; unread: boolean } | { error: string } {
 	let limit = 20
+	let unread = false
 	for (let i = 0; i < argv.length; i++) {
 		const tok = argv[i]
 		if (tok === '--limit') {
@@ -52,11 +54,13 @@ function parseLimit(argv: string[]): { limit: number } | { error: string } {
 				return { error: 'list: --limit requires a positive number' }
 			limit = Math.floor(n)
 			i++
+		} else if (tok === '--unread') {
+			unread = true
 		} else {
 			return { error: `list: unexpected argument: ${tok}` }
 		}
 	}
-	return { limit }
+	return { limit, unread }
 }
 
 function parseSendArgs(
@@ -80,13 +84,24 @@ function parseSendArgs(
 }
 
 async function runList(client: JmapClient, argv: string[]): Promise<CommandResult> {
-	const parsed = parseLimit(argv)
+	const parsed = parseListArgs(argv)
 	if ('error' in parsed) return { stdout: '', stderr: parsed.error, exitCode: 2 }
 	try {
-		const emails = await client.list({ limit: parsed.limit })
+		const emails = await client.list({ limit: parsed.limit, unread: parsed.unread })
 		return { stdout: renderList(emails), stderr: '', exitCode: 0 }
 	} catch (error) {
 		return { stdout: '', stderr: `fastmail list: ${errorMessage(error)}`, exitCode: 1 }
+	}
+}
+
+async function runMarkRead(client: JmapClient, argv: string[]): Promise<CommandResult> {
+	const id = argv[0]
+	if (!id) return { stdout: '', stderr: 'mark-read: missing required argument: id', exitCode: 2 }
+	try {
+		await client.markRead(id)
+		return { stdout: `marked ${id} as read`, stderr: '', exitCode: 0 }
+	} catch (error) {
+		return { stdout: '', stderr: `fastmail mark-read: ${errorMessage(error)}`, exitCode: 1 }
 	}
 }
 
@@ -126,6 +141,8 @@ export function createFastmailCommand(client: JmapClient): Command {
 					return runList(client, rest)
 				case 'read':
 					return runRead(client, rest)
+				case 'mark-read':
+					return runMarkRead(client, rest)
 				case 'send':
 					return runSend(client, rest)
 				default:

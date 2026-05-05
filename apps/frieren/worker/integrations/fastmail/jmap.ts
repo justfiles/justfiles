@@ -28,9 +28,10 @@ export interface SendInput {
 }
 
 export interface JmapClient {
-	list(options: { limit: number }): Promise<EmailSummary[]>
+	list(options: { limit: number; unread?: boolean }): Promise<EmailSummary[]>
 	read(id: string): Promise<EmailDetails>
 	send(input: SendInput): Promise<{ id: string }>
+	markRead(id: string): Promise<void>
 }
 
 interface Session {
@@ -129,9 +130,12 @@ export function createJmapClient(opts: JmapClientOptions): JmapClient {
 	}
 
 	return {
-		async list({ limit }) {
+		async list({ limit, unread }) {
 			const { accountId } = await session()
 			const inboxId = await findInbox()
+			const filter = unread
+				? { conditions: [{ inMailbox: inboxId }, { notKeyword: '$seen' }], operator: 'AND' }
+				: { inMailbox: inboxId }
 			const res = await call(
 				[CORE_CAPABILITY, MAIL_CAPABILITY],
 				[
@@ -139,7 +143,7 @@ export function createJmapClient(opts: JmapClientOptions): JmapClient {
 						'Email/query',
 						{
 							accountId,
-							filter: { inMailbox: inboxId },
+							filter,
 							sort: [{ property: 'receivedAt', isAscending: false }],
 							limit,
 							collapseThreads: true
@@ -285,6 +289,32 @@ export function createJmapClient(opts: JmapClientOptions): JmapClient {
 			const draftId = created.created?.draft?.id
 			if (!draftId) throw new Error('fastmail: send failed (no draft id)')
 			return { id: draftId }
+		},
+
+		async markRead(id) {
+			const { accountId } = await session()
+			const res = await call(
+				[CORE_CAPABILITY, MAIL_CAPABILITY],
+				[
+					[
+						'Email/set',
+						{
+							accountId,
+							update: { [id]: { 'keywords/$seen': true } }
+						},
+						'0'
+					] as unknown as JmapInvocation
+				]
+			)
+			const err = takeError(res, '0')
+			if (err) throw new Error(`fastmail: Email/set ${err.type}`)
+			const got = take<{
+				updated?: Record<string, unknown>
+				notUpdated?: Record<string, { type: string; description?: string }>
+			}>(res, 'Email/set', '0')
+			const notUpdated = got.notUpdated?.[id]
+			if (notUpdated) throw new Error(`fastmail: mark-read failed: ${notUpdated.type}`)
+			if (!got.updated || !(id in got.updated)) throw new Error(`fastmail: email ${id} not updated`)
 		}
 	}
 }

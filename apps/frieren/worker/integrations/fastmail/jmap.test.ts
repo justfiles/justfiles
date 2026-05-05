@@ -226,6 +226,64 @@ describe('jmap client', () => {
 		})
 	})
 
+	test('list with unread filters by notKeyword $seen', async () => {
+		const { fetch, calls } = mockFetch([
+			() => jsonResponse(SESSION),
+			() =>
+				jsonResponse({
+					methodResponses: [
+						['Mailbox/get', { list: [{ id: 'mb-inbox', role: 'inbox', name: 'Inbox' }] }, '0']
+					]
+				}),
+			() =>
+				jsonResponse({
+					methodResponses: [
+						['Email/query', { ids: [] }, '0'],
+						['Email/get', { list: [] }, '1']
+					]
+				})
+		])
+
+		const client = createJmapClient({ token: 'tok', fetch })
+		await client.list({ limit: 10, unread: true })
+		const queryBody = JSON.parse(calls[2]?.init?.body as string)
+		expect(queryBody.methodCalls[0][1].filter).toEqual({
+			conditions: [{ inMailbox: 'mb-inbox' }, { notKeyword: '$seen' }],
+			operator: 'AND'
+		})
+	})
+
+	test('markRead sets $seen keyword via Email/set', async () => {
+		const { fetch, calls } = mockFetch([
+			() => jsonResponse(SESSION),
+			() =>
+				jsonResponse({
+					methodResponses: [['Email/set', { updated: { e1: null } }, '0']]
+				})
+		])
+
+		const client = createJmapClient({ token: 'tok', fetch })
+		await client.markRead('e1')
+		const body = JSON.parse(calls[1]?.init?.body as string)
+		expect(body.methodCalls[0][0]).toBe('Email/set')
+		expect(body.methodCalls[0][1]).toMatchObject({
+			accountId: 'acc1',
+			update: { e1: { 'keywords/$seen': true } }
+		})
+	})
+
+	test('markRead throws when notUpdated', async () => {
+		const { fetch } = mockFetch([
+			() => jsonResponse(SESSION),
+			() =>
+				jsonResponse({
+					methodResponses: [['Email/set', { notUpdated: { e1: { type: 'notFound' } } }, '0']]
+				})
+		])
+		const client = createJmapClient({ token: 'tok', fetch })
+		await expect(client.markRead('e1')).rejects.toThrow(/notFound/)
+	})
+
 	test('http error surfaces as thrown error', async () => {
 		const { fetch } = mockFetch([() => new Response('unauthorized', { status: 401 })])
 		const client = createJmapClient({ token: 'bad', fetch })
