@@ -3,9 +3,15 @@ import { homedir } from 'node:os'
 import { parseArgs } from 'node:util'
 import { parseDueInput, resolveTimezone, today } from './dates.ts'
 import { formatIds, formatJson, formatSections } from './format.ts'
-import { createTaskManager, findLocalTasksDir, type TaskManagerOptions } from './index.ts'
+import {
+	createTaskManager,
+	findLocalTasksDir,
+	type TaskManager,
+	type TaskManagerOptions
+} from './index.ts'
 import { isValidDue, type Recur } from './parse.ts'
 import { isValidInterval } from './recur.ts'
+import type { Task } from './store.ts'
 
 import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 
@@ -20,13 +26,13 @@ Commands:
                    Interval: daily|weekly|biweekly|monthly|quarterly|yearly|Nd|Nw|Nm|Ny|mon…sun
   list             List tasks grouped into overdue/today/upcoming/undated.
                    Options: --tag <name> (repeatable, AND), --priority 1|2|3, --due YYYYMMDD, --status <status>, --json, --ids
-  done <id>        Mark a task complete by its ID.
-  delete <id>      Delete a task by its ID.
-  snooze <id>      Change a task due date. Options: --due YYYYMMDD
-  edit <id>        Open task content in $EDITOR.
-  set <id>         Mutate task metadata. Options: --status, --due, --title, --tag, --priority
-                   --recur, --recur-restart, --recur-fixed (pass "" to clear)
-  show <id>        Print parsed metadata and file content.
+  done [id]        Mark a task complete. Opens fzf picker when no ID given.
+  delete [id]      Delete a task. Opens fzf picker when no ID given.
+  snooze [id]      Change a task due date. Options: --due YYYYMMDD. Opens fzf picker when no ID given.
+  edit [id]        Open task content in $EDITOR. Opens fzf picker when no ID given.
+  set [id]         Mutate task metadata. Options: --status, --due, --title, --tag, --priority
+                   --recur, --recur-restart, --recur-fixed (pass "" to clear). Opens fzf picker when no ID given.
+  show [id]        Print parsed metadata and file content. Opens fzf picker when no ID given.
 
 Global options:
   --tz <zone>      IANA timezone (e.g. Pacific/Auckland). Overrides TASKS_TZ.
@@ -35,6 +41,44 @@ Environment:
   TASKS_DIR        Directory for tasks (default: ~/tasks)
   TASKS_TZ         Default timezone for date computations
 `
+
+export function formatPickerEntry(task: Task): string {
+	const due = task.due ? `  due:${task.due}` : ''
+	const priority = task.priority ? `  p${task.priority}` : ''
+	const tags = task.tags.length > 0 ? `  [${task.tags.join(',')}]` : ''
+	return `${task.id}  ${task.title}${due}${priority}${tags}`
+}
+
+// Mutable in tests to avoid spawning a real fzf process
+export const _picker = {
+	fzf: (input: string): { status: number | null; stdout: string; error?: Error } => {
+		const r = spawnSync('fzf', ['--no-sort'], {
+			input,
+			encoding: 'utf8',
+			stdio: ['pipe', 'pipe', 'inherit']
+		})
+		return { status: r.status, stdout: r.stdout as string, error: r.error }
+	}
+}
+
+async function pickTask(manager: TaskManager): Promise<string | null> {
+	const tasks = await manager.listTasks()
+	const todo = tasks.filter((t) => t.status === 'TODO')
+	if (todo.length === 0) {
+		process.stderr.write('no TODO tasks found\n')
+		return null
+	}
+	const r = _picker.fzf(todo.map(formatPickerEntry).join('\n'))
+	if (r.error) {
+		process.stderr.write(
+			'error: fzf is not installed. Install from https://github.com/junegunn/fzf#installation\nAlternatively, pass the task ID directly.\n'
+		)
+		return null
+	}
+	if (r.status !== 0) return null
+	const id = r.stdout.trim().split(/\s+/)[0]
+	return id ?? null
+}
 
 function tasksDir(): string {
 	const env = process.env.TASKS_DIR
@@ -61,17 +105,24 @@ function parseRecur(
 	fixed: string | undefined
 ): { recur: Recur | undefined; error: string | null } {
 	const set = [catchup, restart, fixed].filter((v) => v !== undefined)
-	if (set.length > 1) return { recur: undefined, error: '--recur, --recur-restart, and --recur-fixed are mutually exclusive' }
+	if (set.length > 1)
+		return {
+			recur: undefined,
+			error: '--recur, --recur-restart, and --recur-fixed are mutually exclusive'
+		}
 	if (catchup !== undefined) {
-		if (!isValidInterval(catchup)) return { recur: undefined, error: `invalid recurrence interval: ${catchup}` }
+		if (!isValidInterval(catchup))
+			return { recur: undefined, error: `invalid recurrence interval: ${catchup}` }
 		return { recur: { type: 'catchup', interval: catchup }, error: null }
 	}
 	if (restart !== undefined) {
-		if (!isValidInterval(restart)) return { recur: undefined, error: `invalid recurrence interval: ${restart}` }
+		if (!isValidInterval(restart))
+			return { recur: undefined, error: `invalid recurrence interval: ${restart}` }
 		return { recur: { type: 'restart', interval: restart }, error: null }
 	}
 	if (fixed !== undefined) {
-		if (!isValidInterval(fixed)) return { recur: undefined, error: `invalid recurrence interval: ${fixed}` }
+		if (!isValidInterval(fixed))
+			return { recur: undefined, error: `invalid recurrence interval: ${fixed}` }
 		return { recur: { type: 'fixed', interval: fixed }, error: null }
 	}
 	return { recur: undefined, error: null }
@@ -134,7 +185,11 @@ async function cmdAdd(args: string[]): Promise<number> {
 		process.stderr.write('error: --priority must be 1, 2, or 3\n')
 		return 2
 	}
-	const { recur, error: recurError } = parseRecur(values.recur, values['recur-restart'], values['recur-fixed'])
+	const { recur, error: recurError } = parseRecur(
+		values.recur,
+		values['recur-restart'],
+		values['recur-fixed']
+	)
 	if (recurError) {
 		process.stderr.write(`error: ${recurError}\n`)
 		return 2
@@ -160,12 +215,13 @@ async function cmdDelete(args: string[]): Promise<number> {
 		allowPositionals: true,
 		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
-	const id = positionals[0]?.trim()
-	if (!id) {
-		process.stderr.write('error: task delete requires an ID\n')
-		return 2
-	}
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
+	let id = positionals[0]?.trim()
+	if (!id) {
+		const picked = await pickTask(manager)
+		if (!picked) return 1
+		id = picked
+	}
 	await manager.deleteTask(id)
 	process.stdout.write(`${id}\n`)
 	return 0
@@ -177,12 +233,13 @@ async function cmdDone(args: string[]): Promise<number> {
 		allowPositionals: true,
 		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
-	const id = positionals[0]?.trim()
-	if (!id) {
-		process.stderr.write('error: task done requires an ID\n')
-		return 2
-	}
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
+	let id = positionals[0]?.trim()
+	if (!id) {
+		const picked = await pickTask(manager)
+		if (!picked) return 1
+		id = picked
+	}
 	const task = await manager.completeTask(id)
 	process.stdout.write(`${task.id}\n`)
 	return 0
@@ -194,11 +251,6 @@ async function cmdSnooze(args: string[]): Promise<number> {
 		allowPositionals: true,
 		options: { due: { type: 'string' }, tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
-	const id = positionals[0]?.trim()
-	if (!id) {
-		process.stderr.write('error: task snooze requires an ID\n')
-		return 2
-	}
 	if (!values.due) {
 		process.stderr.write('error: task snooze requires --due\n')
 		return 2
@@ -212,6 +264,12 @@ async function cmdSnooze(args: string[]): Promise<number> {
 		return 2
 	}
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
+	let id = positionals[0]?.trim()
+	if (!id) {
+		const picked = await pickTask(manager)
+		if (!picked) return 1
+		id = picked
+	}
 	const task = await manager.setTask(id, { due })
 	process.stdout.write(`${task.id}\n`)
 	return 0
@@ -223,11 +281,6 @@ async function cmdEdit(args: string[]): Promise<number> {
 		allowPositionals: true,
 		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
-	const id = positionals[0]?.trim()
-	if (!id) {
-		process.stderr.write('error: task edit requires an ID\n')
-		return 2
-	}
 	const editor = process.env.EDITOR
 	if (!editor) {
 		process.stderr.write('error: EDITOR is not set\n')
@@ -235,6 +288,12 @@ async function cmdEdit(args: string[]): Promise<number> {
 	}
 	const dir = await scopedDir(values.local)
 	const manager = await createTaskManager(dir, timezoneOption(values.tz))
+	let id = positionals[0]?.trim()
+	if (!id) {
+		const picked = await pickTask(manager)
+		if (!picked) return 1
+		id = picked
+	}
 	const task = await manager.getTask(id)
 	if (!task) throw new Error(`task not found: ${id}`)
 	const result = spawnSync(editor, [taskPath(dir, task.path)], { stdio: 'inherit' })
@@ -258,11 +317,6 @@ async function cmdSet(args: string[]): Promise<number> {
 			'recur-fixed': { type: 'string' }
 		}
 	})
-	const id = positionals[0]?.trim()
-	if (!id) {
-		process.stderr.write('error: task set requires an ID\n')
-		return 2
-	}
 	const priority = parsePriority(values.priority)
 	if (values.priority !== undefined && values.priority !== '' && priority === undefined) {
 		process.stderr.write('error: --priority must be 1, 2, or 3\n')
@@ -299,12 +353,20 @@ async function cmdSet(args: string[]): Promise<number> {
 		if (recur) recurPatch = recur
 	}
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
+	let id = positionals[0]?.trim()
+	if (!id) {
+		const picked = await pickTask(manager)
+		if (!picked) return 1
+		id = picked
+	}
 	const task = await manager.setTask(id, {
 		...(values.status !== undefined ? { status: values.status } : {}),
 		...(values.due !== undefined ? { due: values.due === '' ? null : parsedDue } : {}),
 		...(values.title !== undefined ? { title: values.title } : {}),
 		...(values.tag !== undefined ? { tags: values.tag } : {}),
-		...(values.priority !== undefined ? { priority: values.priority === '' ? null : priority } : {}),
+		...(values.priority !== undefined
+			? { priority: values.priority === '' ? null : priority }
+			: {}),
 		...(recurPatch !== undefined ? { recur: recurPatch } : {})
 	})
 	process.stdout.write(`${task.id}\n`)
@@ -317,12 +379,13 @@ async function cmdShow(args: string[]): Promise<number> {
 		allowPositionals: true,
 		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
-	const id = positionals[0]?.trim()
-	if (!id) {
-		process.stderr.write('error: task show requires an ID\n')
-		return 2
-	}
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
+	let id = positionals[0]?.trim()
+	if (!id) {
+		const picked = await pickTask(manager)
+		if (!picked) return 1
+		id = picked
+	}
 	const task = await manager.getTask(id)
 	if (!task) throw new Error(`task not found: ${id}`)
 	const content = await manager.getTaskContent(id)
@@ -428,12 +491,14 @@ async function main(argv: string[]): Promise<number> {
 	}
 }
 
-main(process.argv.slice(2)).then(
-	(code) => {
-		process.exit(code)
-	},
-	(err: unknown) => {
-		process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`)
-		process.exit(1)
-	}
-)
+if (import.meta.main) {
+	main(process.argv.slice(2)).then(
+		(code) => {
+			process.exit(code)
+		},
+		(err: unknown) => {
+			process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`)
+			process.exit(1)
+		}
+	)
+}
