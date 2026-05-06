@@ -78,3 +78,69 @@ export function isOverdue(
 	if (status !== 'TODO') return false
 	return due < today(tz, now)
 }
+
+const WEEKDAY_SHORT = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+const WEEKDAY_LONG: Record<string, number> = {
+	sunday: 0,
+	monday: 1,
+	tuesday: 2,
+	wednesday: 3,
+	thursday: 4,
+	friday: 5,
+	saturday: 6
+}
+
+function addDays(dateStr: string, n: number): string {
+	const y = parseInt(dateStr.slice(0, 4))
+	const mo = parseInt(dateStr.slice(4, 6)) - 1
+	const d = parseInt(dateStr.slice(6, 8))
+	const dt = new Date(Date.UTC(y, mo, d))
+	dt.setUTCDate(dt.getUTCDate() + n)
+	return (
+		String(dt.getUTCFullYear()) +
+		String(dt.getUTCMonth() + 1).padStart(2, '0') +
+		String(dt.getUTCDate()).padStart(2, '0')
+	)
+}
+
+function dowOfDateStr(dateStr: string): number {
+	const y = parseInt(dateStr.slice(0, 4))
+	const mo = parseInt(dateStr.slice(4, 6)) - 1
+	const d = parseInt(dateStr.slice(6, 8))
+	return new Date(Date.UTC(y, mo, d)).getUTCDay()
+}
+
+const PARSE_DUE_HELP =
+	'accepted: today, tomorrow, yesterday, next week, next month, next year, weekday name (mon/monday/…), +Nd/+Nw/+Nm/+Ny, or YYYYMMDD'
+
+export function parseDueInput(input: string, tz: string, now: Date = new Date()): string {
+	const norm = input.trim().toLowerCase()
+	const todayStr = today(tz, now)
+
+	if (/^\d{8}$/.test(norm)) return norm
+
+	if (norm === 'today') return todayStr
+	if (norm === 'tomorrow') return addDays(todayStr, 1)
+	if (norm === 'yesterday') return addDays(todayStr, -1)
+	if (norm === 'next week') return addDays(todayStr, 7)
+	if (norm === 'next month') return addDays(todayStr, 30)
+	if (norm === 'next year') return addDays(todayStr, 365)
+
+	const shortIdx = WEEKDAY_SHORT.indexOf(norm)
+	const longIdx = WEEKDAY_LONG[norm] ?? -1
+	const targetDow = shortIdx >= 0 ? shortIdx : longIdx
+	if (targetDow >= 0) {
+		const diff = ((targetDow - dowOfDateStr(todayStr) + 7) % 7) || 0
+		return addDays(todayStr, diff)
+	}
+
+	const relative = /^\+(\d+)([dwmy])$/.exec(norm)
+	if (relative) {
+		const n = parseInt(relative[1]!)
+		const unit = relative[2]!
+		const days = unit === 'd' ? n : unit === 'w' ? n * 7 : unit === 'm' ? n * 30 : n * 365
+		return addDays(todayStr, days)
+	}
+
+	throw new Error(`invalid date: "${input}" — ${PARSE_DUE_HELP}`)
+}

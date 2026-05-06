@@ -3,6 +3,7 @@ import {
 	isOverdue,
 	isValidTimezone,
 	nowTimestamp,
+	parseDueInput,
 	resolveTimezone,
 	systemTimezone,
 	today
@@ -63,5 +64,78 @@ describe('dates', () => {
 		expect(isValidTimezone('Pacific/Auckland')).toBe(true)
 		expect(isValidTimezone('UTC')).toBe(true)
 		expect(isValidTimezone('Not/A/Zone')).toBe(false)
+	})
+})
+
+describe('parseDueInput', () => {
+	// Monday 2026-06-15
+	const monday = new Date('2026-06-15T12:00:00Z')
+
+	test('ISO YYYYMMDD passes through', () => {
+		expect(parseDueInput('20260615', 'UTC', monday)).toBe('20260615')
+		expect(parseDueInput('20261231', 'UTC', monday)).toBe('20261231')
+	})
+
+	test('today, tomorrow, yesterday', () => {
+		expect(parseDueInput('today', 'UTC', monday)).toBe('20260615')
+		expect(parseDueInput('tomorrow', 'UTC', monday)).toBe('20260616')
+		expect(parseDueInput('yesterday', 'UTC', monday)).toBe('20260614')
+	})
+
+	test('next week, next month, next year', () => {
+		expect(parseDueInput('next week', 'UTC', monday)).toBe('20260622')
+		expect(parseDueInput('next month', 'UTC', monday)).toBe('20260715')
+		expect(parseDueInput('next year', 'UTC', monday)).toBe('20270615')
+	})
+
+	test('weekday short names resolve to next occurrence including today', () => {
+		// monday = Mon → today
+		expect(parseDueInput('mon', 'UTC', monday)).toBe('20260615')
+		// tuesday → next day
+		expect(parseDueInput('tue', 'UTC', monday)).toBe('20260616')
+		// sunday → 6 days forward
+		expect(parseDueInput('sun', 'UTC', monday)).toBe('20260621')
+	})
+
+	test('weekday full names resolve correctly', () => {
+		expect(parseDueInput('monday', 'UTC', monday)).toBe('20260615')
+		expect(parseDueInput('friday', 'UTC', monday)).toBe('20260619')
+		expect(parseDueInput('saturday', 'UTC', monday)).toBe('20260620')
+	})
+
+	test('+N relative offsets', () => {
+		expect(parseDueInput('+3d', 'UTC', monday)).toBe('20260618')
+		expect(parseDueInput('+2w', 'UTC', monday)).toBe('20260629')
+		expect(parseDueInput('+1m', 'UTC', monday)).toBe('20260715')
+		expect(parseDueInput('+1y', 'UTC', monday)).toBe('20270615')
+	})
+
+	test('parsing is case-insensitive and trims whitespace', () => {
+		expect(parseDueInput('  Tomorrow  ', 'UTC', monday)).toBe('20260616')
+		expect(parseDueInput('MON', 'UTC', monday)).toBe('20260615')
+		expect(parseDueInput('Next Week', 'UTC', monday)).toBe('20260622')
+	})
+
+	test('invalid input throws with a helpful message', () => {
+		expect(() => parseDueInput('next', 'UTC', monday)).toThrow('invalid date')
+		expect(() => parseDueInput('friday the 13th', 'UTC', monday)).toThrow('invalid date')
+		expect(() => parseDueInput('20261332', 'UTC', monday)).not.toThrow() // passthrough, not validated further
+	})
+
+	test('timezone-aware: today uses configured timezone', () => {
+		// 2026-06-15 23:30 UTC → June 16 in Auckland (UTC+12)
+		const t = new Date('2026-06-15T23:30:00Z')
+		expect(parseDueInput('today', 'Pacific/Auckland', t)).toBe('20260616')
+		expect(parseDueInput('today', 'UTC', t)).toBe('20260615')
+	})
+
+	test('year boundary: +1y from Dec 31', () => {
+		const dec31 = new Date('2026-12-31T12:00:00Z')
+		expect(parseDueInput('+1y', 'UTC', dec31)).toBe('20271231')
+	})
+
+	test('month boundary: +30d from Jan 15', () => {
+		const jan15 = new Date('2026-01-15T12:00:00Z')
+		expect(parseDueInput('+30d', 'UTC', jan15)).toBe('20260214')
 	})
 })
