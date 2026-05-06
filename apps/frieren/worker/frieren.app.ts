@@ -18,6 +18,8 @@ import bridgeJs from '@justfiles/app/client?raw'
 import runtimeJs from '@justfiles/app/runtime.js?raw'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import Type from 'typebox'
+import { sandboxCacheKey } from './broker/cache-key.ts'
+import type { SandboxContext } from './broker/contracts.ts'
 import type { App as FacetApp } from './dynamic/do.js'
 import doCode from './dynamic/do.js?raw'
 
@@ -52,11 +54,25 @@ export const BRIDGE_JS = bridgeJs
 // First call per appId pays the bundle cost (esbuild-wasm + npm fetch for
 // declared deps). Subsequent calls hit the worker-loader cache.
 // TODO(prod): pre-bundle at deploy time and skip the runtime install path.
-export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): AppFacet {
+//
+// Cache key includes app version, user, and capability-grant hash so a
+// sandbox isolate cannot be reused across users or differing capability
+// scopes (issue #59 acceptance criteria). The facet key still uses appId
+// because Durable Object facets are scoped to the parent DO (already
+// per-user) — only the worker isolate cache is global.
+export function loadAppFacet(
+	ctx: DurableObjectState,
+	env: Env,
+	appId: string,
+	sandboxContext?: SandboxContext
+): AppFacet {
 	const entry = registry.get(appId)
 	if (!entry) throw new Error(`unknown app: ${appId}`)
+	const cacheKey = sandboxContext
+		? sandboxCacheKey(sandboxContext)
+		: `${appId}:${entry.manifest.version ?? '0.0.0'}`
 	const facet = ctx.facets.get<FacetApp>(appId, async () => {
-		const worker = env.LOADER?.get(appId, async () => {
+		const worker = env.LOADER?.get(cacheKey, async () => {
 			const { mainModule, modules } = await createWorker({
 				files: {
 					'src/index.js': doCode,
@@ -66,6 +82,8 @@ export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): 
 				},
 				entryPoint: 'src/index.js'
 			})
+			// globalOutbound: null disables generic outbound network. Capabilities
+			// MUST be provided through `env` instead — see broker/cloudflare.ts.
 			return { mainModule, modules, compatibilityDate: COMPAT_DATE, globalOutbound: null }
 		})
 		if (!worker) throw new Error('LOADER binding is required')
