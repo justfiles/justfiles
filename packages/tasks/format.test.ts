@@ -3,13 +3,15 @@ import { formatMarkdown, formatSections } from './format.ts'
 import { groupTasks } from './query.ts'
 import type { Task } from './store.ts'
 
-function task(id: string, title: string, due?: string): Task {
+function task(id: string, title: string, due?: string, priority?: 1 | 2 | 3): Task {
 	return {
 		id,
 		status: 'TODO',
 		title,
+		tags: [],
 		path: `/tasks/${id}.md`,
-		...(due ? { due } : {})
+		...(due ? { due } : {}),
+		...(priority ? { priority } : {})
 	}
 }
 
@@ -20,6 +22,19 @@ describe('format', () => {
 			task('20260505T111530', 'write-report')
 		])
 		expect(out).toBe('- [20260505T101530] buy-milk\n- [20260505T111530] write-report\n')
+	})
+
+	test('formatMarkdown shows priority prefix when set', () => {
+		const out = formatMarkdown([
+			task('20260505T101530', 'urgent-fix', undefined, 1),
+			task('20260505T111530', 'normal-task')
+		])
+		expect(out).toBe('- [20260505T101530] [p1] urgent-fix\n- [20260505T111530] normal-task\n')
+	})
+
+	test('formatMarkdown omits priority prefix when not set', () => {
+		const out = formatMarkdown([task('20260505T101530', 'no-priority')])
+		expect(out).not.toContain('[p')
 	})
 
 	test('formatMarkdown handles empty list', () => {

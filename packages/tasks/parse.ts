@@ -15,6 +15,8 @@ export type TaskMeta = {
 	status: string
 	due?: string
 	title: string
+	tags: string[]
+	priority?: 1 | 2 | 3
 }
 
 const ID_PATTERN = /^\d{8}T\d{6}(?:-\d+)?$/
@@ -47,8 +49,10 @@ export function encodeFilename(meta: TaskMeta): string {
 		throw new Error(`invalid due date: ${meta.due}`)
 	}
 	const title = slugify(meta.title)
+	const tags = (meta.tags ?? []).map((t) => `__${t}`).join('')
+	const priority = meta.priority ? `__p${meta.priority}` : ''
 	const dueSegment = meta.due ? `--${meta.due}` : ''
-	return `${meta.id}--${meta.status}${dueSegment}--${title}.md`
+	return `${meta.id}--${meta.status}${dueSegment}--${title}${tags}${priority}.md`
 }
 
 export function decodeFilename(filename: string): TaskMeta | null {
@@ -69,8 +73,24 @@ export function decodeFilename(filename: string): TaskMeta | null {
 		titleParts = rest.slice(1)
 	}
 
-	const title = titleParts.join('--')
-	if (title.length === 0) return null
+	const titleSegment = titleParts.join('--')
+	if (titleSegment.length === 0) return null
 
-	return due ? { id, status, due, title } : { id, status, title }
+	const [titleSlug, ...tokens] = titleSegment.split('__')
+	if (!titleSlug) return null
+
+	const tags: string[] = []
+	let priority: 1 | 2 | 3 | undefined
+	for (const token of tokens) {
+		if (token === 'p1') priority = 1
+		else if (token === 'p2') priority = 2
+		else if (token === 'p3') priority = 3
+		else if (token.length > 0) tags.push(token)
+	}
+
+	const base = { id, status, title: titleSlug, tags }
+	if (due && priority) return { ...base, due, priority }
+	if (due) return { ...base, due }
+	if (priority) return { ...base, priority }
+	return base
 }

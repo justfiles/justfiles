@@ -2,7 +2,8 @@ import { SECTION_ORDER, type Sections } from './query.ts'
 import type { Task } from './store.ts'
 
 function bullet(task: Task): string {
-	return `- [${task.id}] ${task.title}`
+	const priority = task.priority ? `[p${task.priority}] ` : ''
+	return `- [${task.id}] ${priority}${task.title}`
 }
 
 export function formatMarkdown(tasks: Task[]): string {

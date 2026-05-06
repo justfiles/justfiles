@@ -13,6 +13,22 @@ export type Sections = Record<SectionKey, Task[]>
 
 export const SECTION_ORDER: SectionKey[] = ['overdue', 'today', 'upcoming', 'undated']
 
+export type FilterOptions = {
+	tags?: string[]
+	priority?: 1 | 2 | 3
+}
+
+export function filterTasks(tasks: Task[], opts: FilterOptions): Task[] {
+	let result = tasks
+	if (opts.tags && opts.tags.length > 0) {
+		result = result.filter((t) => opts.tags!.every((tag) => t.tags.includes(tag)))
+	}
+	if (opts.priority !== undefined) {
+		result = result.filter((t) => t.priority === opts.priority)
+	}
+	return result
+}
+
 export function groupTasks(tasks: Task[], today: string): Sections {
 	const sections: Sections = { overdue: [], today: [], upcoming: [], undated: [] }
 	for (const t of tasks) {
