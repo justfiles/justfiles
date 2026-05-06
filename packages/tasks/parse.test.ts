@@ -208,4 +208,81 @@ describe('parse', () => {
 		expect(decoded?.tags).toEqual(['work'])
 		expect(decoded?.priority).toBe(1)
 	})
+
+	test('encode/decode round-trip with catchup recurrence', () => {
+		const meta = {
+			id: '20260505T101530',
+			status: 'TODO',
+			due: '20260512',
+			title: 'weekly review',
+			tags: [],
+			recur: { type: 'catchup' as const, interval: 'weekly' }
+		}
+		const filename = encodeFilename(meta)
+		expect(filename).toBe('20260505T101530--TODO--20260512--weekly-review__r-weekly.md')
+		const decoded = decodeFilename(filename)
+		expect(decoded?.recur).toEqual({ type: 'catchup', interval: 'weekly' })
+	})
+
+	test('encode/decode round-trip with restart recurrence', () => {
+		const meta = {
+			id: '20260505T101530',
+			status: 'TODO',
+			title: 'habit',
+			tags: [],
+			recur: { type: 'restart' as const, interval: '3d' }
+		}
+		const filename = encodeFilename(meta)
+		expect(filename).toBe('20260505T101530--TODO--habit__rs-3d.md')
+		const decoded = decodeFilename(filename)
+		expect(decoded?.recur).toEqual({ type: 'restart', interval: '3d' })
+	})
+
+	test('encode/decode round-trip with fixed recurrence', () => {
+		const meta = {
+			id: '20260505T101530',
+			status: 'TODO',
+			title: 'bill',
+			tags: [],
+			recur: { type: 'fixed' as const, interval: 'monthly' }
+		}
+		const filename = encodeFilename(meta)
+		expect(filename).toBe('20260505T101530--TODO--bill__rf-monthly.md')
+		const decoded = decodeFilename(filename)
+		expect(decoded?.recur).toEqual({ type: 'fixed', interval: 'monthly' })
+	})
+
+	test('encode/decode round-trip: tags + priority + recurrence together', () => {
+		const meta = {
+			id: '20260505T101530',
+			status: 'TODO',
+			due: '20260512',
+			title: 'review',
+			tags: ['work'],
+			priority: 2 as const,
+			recur: { type: 'catchup' as const, interval: 'weekly' }
+		}
+		const filename = encodeFilename(meta)
+		expect(filename).toBe('20260505T101530--TODO--20260512--review__work__p2__r-weekly.md')
+		const decoded = decodeFilename(filename)
+		expect(decoded?.tags).toEqual(['work'])
+		expect(decoded?.priority).toBe(2)
+		expect(decoded?.recur).toEqual({ type: 'catchup', interval: 'weekly' })
+	})
+
+	test('encode → decode → encode is stable with recurrence', () => {
+		const meta = {
+			id: '20260505T101530',
+			status: 'TODO',
+			title: 'habit',
+			tags: ['health'],
+			priority: 1 as const,
+			recur: { type: 'restart' as const, interval: '3d' }
+		}
+		const first = encodeFilename(meta)
+		const decoded = decodeFilename(first)
+		if (!decoded) throw new Error('decode failed')
+		const second = encodeFilename(decoded)
+		expect(second).toBe(first)
+	})
 })

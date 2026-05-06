@@ -1,6 +1,7 @@
 import type { Volume } from '@justfiles/fs'
-import { nowTimestamp, systemTimezone } from './dates.ts'
-import { decodeFilename, encodeFilename, isValidDue, type TaskMeta } from './parse.ts'
+import { nowTimestamp, systemTimezone, today } from './dates.ts'
+import { decodeFilename, encodeFilename, isValidDue, type Recur, type TaskMeta } from './parse.ts'
+import { nextDue } from './recur.ts'
 
 export type Task = TaskMeta & {
 	path: string
@@ -19,6 +20,7 @@ export type AddTaskOptions = {
 	due?: string
 	tags?: string[]
 	priority?: 1 | 2 | 3
+	recur?: Recur
 	now?: Date
 }
 
@@ -28,6 +30,7 @@ export type SetTaskPatch = {
 	title?: string
 	tags?: string[]
 	priority?: 1 | 2 | 3 | null
+	recur?: Recur | null
 }
 
 export type Store = {
@@ -39,7 +42,7 @@ export type Store = {
 	setTaskContent(id: string, content: string): Promise<void>
 	deleteTask(id: string): Promise<void>
 	setTask(id: string, patch: SetTaskPatch): Promise<Task>
-	completeTask(id: string): Promise<Task>
+	completeTask(id: string, now?: Date): Promise<Task>
 }
 
 export function generateId(now: Date, tz: string = systemTimezone()): string {
@@ -81,7 +84,7 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 	const store: Store = {
 		timezone: tz,
 
-		async addTask({ title, content = '', due, tags = [], priority, now = new Date() }) {
+		async addTask({ title, content = '', due, tags = [], priority, recur, now = new Date() }) {
 			if (due !== undefined && !isValidDue(due)) {
 				throw new Error(`invalid due date: ${due} (expected YYYYMMDD)`)
 			}
@@ -93,7 +96,8 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 				title,
 				tags,
 				...(due ? { due } : {}),
-				...(priority ? { priority } : {})
+				...(priority ? { priority } : {}),
+				...(recur ? { recur } : {})
 			}
 			const filename = encodeFilename(meta)
 			const path = joinPath(dir, filename)
@@ -164,6 +168,13 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 						: {}
 					: patch.priority
 						? { priority: patch.priority }
+						: {}),
+				...(patch.recur === undefined
+					? task.recur
+						? { recur: task.recur }
+						: {}
+					: patch.recur
+						? { recur: patch.recur }
 						: {})
 			}
 			const newPath = joinPath(dir, encodeFilename(next))
@@ -171,22 +182,39 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 			return { ...next, path: newPath }
 		},
 
-		async completeTask(id) {
+		async completeTask(id, now = new Date()) {
 			const task = await store.getTask(id)
 			if (!task) throw new Error(`task not found: ${id}`)
 			if (task.status === 'DONE') return task
-			const newMeta: TaskMeta = {
+			const doneMeta: TaskMeta = {
 				id: task.id,
 				status: 'DONE',
 				title: task.title,
 				tags: task.tags,
 				...(task.due ? { due: task.due } : {}),
-				...(task.priority ? { priority: task.priority } : {})
+				...(task.priority ? { priority: task.priority } : {}),
+				...(task.recur ? { recur: task.recur } : {})
 			}
-			const newFilename = encodeFilename(newMeta)
-			const newPath = joinPath(dir, newFilename)
-			await volume.rename(task.path, newPath)
-			return { ...newMeta, path: newPath }
+			const donePath = joinPath(dir, encodeFilename(doneMeta))
+			await volume.rename(task.path, donePath)
+			if (task.recur) {
+				const completedAt = today(tz, now)
+				const due = nextDue(task.due, task.recur, completedAt)
+				const nextId = await uniqueId(generateId(now, tz))
+				const nextMeta: TaskMeta = {
+					id: nextId,
+					status: 'TODO',
+					title: task.title,
+					tags: task.tags,
+					due,
+					...(task.priority ? { priority: task.priority } : {}),
+					recur: task.recur
+				}
+				const nextPath = joinPath(dir, encodeFilename(nextMeta))
+				await volume.writeFile(nextPath, enc.encode(''))
+				return { ...nextMeta, path: nextPath }
+			}
+			return { ...doneMeta, path: donePath }
 		}
 	}
 	return store

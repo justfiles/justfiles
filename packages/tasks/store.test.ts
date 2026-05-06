@@ -269,6 +269,154 @@ describe('store', () => {
 		await expect(store.completeTask('20260101T000000')).rejects.toThrow('task not found')
 	})
 
+	test('addTask with recur encodes recurrence token in filename', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({
+			title: 'weekly review',
+			recur: { type: 'catchup', interval: 'weekly' },
+			now: new Date('2026-05-05T10:15:30Z')
+		})
+		expect(task.recur).toEqual({ type: 'catchup', interval: 'weekly' })
+		expect(task.path).toContain('__r-weekly.md')
+	})
+
+	test('addTask encodes restart and fixed recurrence tokens', async () => {
+		const { store } = makeStore()
+		const t1 = await store.addTask({
+			title: 'habit',
+			recur: { type: 'restart', interval: '3d' },
+			now: new Date('2026-05-05T10:15:30Z')
+		})
+		const t2 = await store.addTask({
+			title: 'bill',
+			recur: { type: 'fixed', interval: 'monthly' },
+			now: new Date('2026-05-05T11:15:30Z')
+		})
+		expect(t1.path).toContain('__rs-3d.md')
+		expect(t2.path).toContain('__rf-monthly.md')
+	})
+
+	test('completeTask on recurring task renames to DONE and spawns new TODO', async () => {
+		const { vol, store } = makeStore('/tasks', 'UTC')
+		const task = await store.addTask({
+			title: 'weekly review',
+			due: '20260427',
+			recur: { type: 'catchup', interval: 'weekly' },
+			now: new Date('2026-04-27T10:00:00Z')
+		})
+		// Complete on 2026-05-04 (Monday)
+		const next = await store.completeTask(task.id, new Date('2026-05-04T10:00:00Z'))
+
+		expect(next.status).toBe('TODO')
+		expect(next.due).toBe('20260511')
+		expect(next.recur).toEqual({ type: 'catchup', interval: 'weekly' })
+		expect(next.title).toBe('weekly-review')
+		expect(next.tags).toEqual([])
+
+		const files = (await vol.readdir('/tasks')).map((e) => e.name)
+		expect(files.filter((f) => f.includes('--DONE--'))).toHaveLength(1)
+		expect(files.filter((f) => f.includes('--TODO--'))).toHaveLength(1)
+	})
+
+	test('completeTask preserves DONE file content; new TODO file content is empty', async () => {
+		const { store } = makeStore('/tasks', 'UTC')
+		const task = await store.addTask({
+			title: 'review',
+			due: '20260504',
+			content: 'notes from last week',
+			recur: { type: 'restart', interval: 'weekly' },
+			now: new Date('2026-05-04T10:00:00Z')
+		})
+		const next = await store.completeTask(task.id, new Date('2026-05-04T10:00:00Z'))
+
+		// DONE task still has original content
+		const doneTask = (await store.listTasks()).find((t) => t.status === 'DONE')
+		expect(doneTask).toBeDefined()
+		expect(await store.getTaskContent(doneTask!.id)).toBe('notes from last week')
+
+		// New TODO task has empty content
+		expect(await store.getTaskContent(next.id)).toBe('')
+	})
+
+	test('completeTask restart: next due is completedAt + interval', async () => {
+		const { store } = makeStore('/tasks', 'UTC')
+		const task = await store.addTask({
+			title: 'habit',
+			due: '20260401',
+			recur: { type: 'restart', interval: '3d' },
+			now: new Date('2026-04-01T10:00:00Z')
+		})
+		const next = await store.completeTask(task.id, new Date('2026-05-04T10:00:00Z'))
+		expect(next.due).toBe('20260507')
+	})
+
+	test('completeTask fixed: next due is original due + interval', async () => {
+		const { store } = makeStore('/tasks', 'UTC')
+		const task = await store.addTask({
+			title: 'bill',
+			due: '20260401',
+			recur: { type: 'fixed', interval: 'monthly' },
+			now: new Date('2026-04-01T10:00:00Z')
+		})
+		const next = await store.completeTask(task.id, new Date('2026-05-04T10:00:00Z'))
+		expect(next.due).toBe('20260501')
+	})
+
+	test('completeTask preserves priority and tags on spawned task', async () => {
+		const { store } = makeStore('/tasks', 'UTC')
+		const task = await store.addTask({
+			title: 'review',
+			due: '20260501',
+			tags: ['work', 'weekly'],
+			priority: 1,
+			recur: { type: 'catchup', interval: 'weekly' },
+			now: new Date('2026-05-01T10:00:00Z')
+		})
+		const next = await store.completeTask(task.id, new Date('2026-05-04T10:00:00Z'))
+		expect(next.tags).toEqual(['work', 'weekly'])
+		expect(next.priority).toBe(1)
+		expect(next.recur).toEqual({ type: 'catchup', interval: 'weekly' })
+	})
+
+	test('setTask can update recurrence', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({
+			title: 'review',
+			recur: { type: 'catchup', interval: 'weekly' },
+			now: new Date('2026-05-05T10:15:30Z')
+		})
+		const updated = await store.setTask(task.id, { recur: { type: 'restart', interval: '3d' } })
+		expect(updated.recur).toEqual({ type: 'restart', interval: '3d' })
+		expect(updated.path).toContain('__rs-3d.md')
+	})
+
+	test('setTask can clear recurrence', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({
+			title: 'review',
+			recur: { type: 'catchup', interval: 'weekly' },
+			now: new Date('2026-05-05T10:15:30Z')
+		})
+		const updated = await store.setTask(task.id, { recur: null })
+		expect(updated.recur).toBeUndefined()
+		expect(updated.path).not.toContain('__r-')
+	})
+
+	test('completeTask uses configured timezone for completedAt', async () => {
+		const { store } = makeStore('/tasks', 'Pacific/Auckland')
+		// 2026-05-05 23:30 UTC = 2026-05-06 in Auckland
+		const task = await store.addTask({
+			title: 'review',
+			due: '20260506',
+			recur: { type: 'catchup', interval: 'weekly' },
+			now: new Date('2026-05-06T00:00:00Z')
+		})
+		// Complete at 2026-05-05T23:30Z = 2026-05-06 in Auckland → completedAt = '20260506'
+		const next = await store.completeTask(task.id, new Date('2026-05-05T23:30:00Z'))
+		// due=20260506 <= completedAt=20260506 → advance to 20260513
+		expect(next.due).toBe('20260513')
+	})
+
 	test('end-to-end: add+list groups tasks via query.groupTasks', async () => {
 		const { store } = makeStore('/tasks', 'UTC')
 		await store.addTask({
