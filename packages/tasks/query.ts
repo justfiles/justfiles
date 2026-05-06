@@ -16,15 +16,24 @@ export const SECTION_ORDER: SectionKey[] = ['overdue', 'today', 'upcoming', 'und
 export type FilterOptions = {
 	tags?: string[]
 	priority?: 1 | 2 | 3
+	due?: string
+	status?: string
 }
 
 export function filterTasks(tasks: Task[], opts: FilterOptions): Task[] {
 	let result = tasks
-	if (opts.tags && opts.tags.length > 0) {
-		result = result.filter((t) => opts.tags!.every((tag) => t.tags.includes(tag)))
+	const tags = opts.tags
+	if (tags && tags.length > 0) {
+		result = result.filter((t) => tags.every((tag) => t.tags.includes(tag)))
 	}
 	if (opts.priority !== undefined) {
 		result = result.filter((t) => t.priority === opts.priority)
+	}
+	if (opts.due !== undefined) {
+		result = result.filter((t) => t.due === opts.due)
+	}
+	if (opts.status !== undefined) {
+		result = result.filter((t) => t.status === opts.status)
 	}
 	return result
 }

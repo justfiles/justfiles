@@ -81,4 +81,16 @@ describe('filterTasks', () => {
 		const result = filterTasks(tasks, { tags: ['nonexistent'] })
 		expect(result).toHaveLength(0)
 	})
+
+	test('filters by due and status', () => {
+		const result = filterTasks(
+			[
+				task({ id: '20260601T100000', title: 'a', due: '20260610' }),
+				task({ id: '20260602T100000', title: 'b', status: 'DONE', due: '20260610' }),
+				task({ id: '20260603T100000', title: 'c', status: 'DONE', due: '20260611' })
+			],
+			{ due: '20260610', status: 'DONE' }
+		)
+		expect(result.map((t) => t.title)).toEqual(['b'])
+	})
 })

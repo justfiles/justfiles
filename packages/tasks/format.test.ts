@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { formatMarkdown, formatSections } from './format.ts'
+import { formatIds, formatJson, formatMarkdown, formatSections } from './format.ts'
 import { groupTasks } from './query.ts'
 import type { Task } from './store.ts'
 
@@ -99,5 +99,33 @@ describe('format', () => {
 	test('formatSections handles all-empty input', () => {
 		const sections = groupTasks([], '20260615')
 		expect(formatSections(sections)).toBe('No tasks.\n')
+	})
+
+	test('formatJson renders task fields as a JSON array', () => {
+		const out = formatJson([task('20260505T101530', 'pay-bill', '20260506', 1)])
+		expect(JSON.parse(out)).toEqual([
+			{
+				id: '20260505T101530',
+				status: 'TODO',
+				due: '20260506',
+				title: 'pay-bill',
+				tags: [],
+				priority: 1,
+				path: '/tasks/20260505T101530.md'
+			}
+		])
+	})
+
+	test('formatJson handles empty input', () => {
+		expect(formatJson([])).toBe('[]\n')
+	})
+
+	test('formatIds renders filenames in input order', () => {
+		const out = formatIds([task('20260505T101530', 'first'), task('20260505T111530', 'second')])
+		expect(out).toBe('20260505T101530.md\n20260505T111530.md')
+	})
+
+	test('formatIds handles empty input without a trailing newline', () => {
+		expect(formatIds([])).toBe('')
 	})
 })

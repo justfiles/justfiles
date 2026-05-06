@@ -2,18 +2,18 @@ import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { parseArgs } from 'node:util'
 import { resolveTimezone, today } from './dates.ts'
-import { formatSections } from './format.ts'
+import { formatIds, formatJson, formatSections } from './format.ts'
 import { createTaskManager, type TaskManagerOptions } from './index.ts'
 import { isValidDue } from './parse.ts'
-import { filterTasks, groupTasks } from './query.ts'
+import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 
 const HELP = `Usage: task <command> [options]
 
 Commands:
   add <title>      Add a new TODO task. Stdin (if piped) becomes file content.
                    Options: --due YYYYMMDD, --tag <name> (repeatable), --priority 1|2|3
-  list             List TODO tasks grouped into overdue/today/upcoming/undated.
-                   Options: --tag <name> (repeatable, AND), --priority 1|2|3
+  list             List tasks grouped into overdue/today/upcoming/undated.
+                   Options: --tag <name> (repeatable, AND), --priority 1|2|3, --due YYYYMMDD, --status <status>, --json, --ids
   done <id>        Mark a task complete by its ID.
   delete <id>      Delete a task by its ID.
   snooze <id>      Change a task due date. Options: --due YYYYMMDD
@@ -247,20 +247,41 @@ async function cmdList(args: string[]): Promise<number> {
 		options: {
 			tz: { type: 'string' },
 			tag: { type: 'string', multiple: true },
-			priority: { type: 'string' }
+			priority: { type: 'string' },
+			due: { type: 'string' },
+			status: { type: 'string' },
+			json: { type: 'boolean' },
+			ids: { type: 'boolean' }
 		}
 	})
+	if (values.json && values.ids) {
+		process.stderr.write('error: --json and --ids cannot be combined\n')
+		return 2
+	}
+	if (values.due !== undefined && !isValidDue(values.due)) {
+		process.stderr.write('error: --due must be YYYYMMDD\n')
+		return 2
+	}
 	const opts = timezoneOption(values.tz)
 	const manager = await createTaskManager(tasksDir(), opts)
 	const priority = parsePriority(values.priority)
+	if (values.priority !== undefined && priority === undefined) {
+		process.stderr.write('error: --priority must be 1, 2, or 3\n')
+		return 2
+	}
 	const tags = values.tag ?? []
-	let tasks = (await manager.listTasks()).filter((t) => t.status === 'TODO')
+	let tasks = await manager.listTasks()
 	tasks = filterTasks(tasks, {
 		...(tags.length > 0 ? { tags } : {}),
-		...(priority ? { priority } : {})
+		...(priority ? { priority } : {}),
+		...(values.due ? { due: values.due } : {}),
+		...(values.status ? { status: values.status } : { status: 'TODO' })
 	})
 	const sections = groupTasks(tasks, today(manager.timezone))
-	process.stdout.write(formatSections(sections))
+	const ordered = SECTION_ORDER.flatMap((section) => sections[section])
+	if (values.json) process.stdout.write(formatJson(ordered))
+	else if (values.ids) process.stdout.write(formatIds(ordered))
+	else process.stdout.write(formatSections(sections))
 	return 0
 }
 

@@ -1,6 +1,10 @@
 import { SECTION_ORDER, type Sections } from './query.ts'
 import type { Task } from './store.ts'
 
+function filename(path: string): string {
+	return path.split('/').pop() ?? path
+}
+
 function bullet(task: Task): string {
 	const priority = task.priority ? `[p${task.priority}] ` : ''
 	return `- [${task.id}] ${priority}${task.title}`
@@ -9,6 +13,14 @@ function bullet(task: Task): string {
 export function formatMarkdown(tasks: Task[]): string {
 	if (tasks.length === 0) return 'No tasks.\n'
 	return `${tasks.map(bullet).join('\n')}\n`
+}
+
+export function formatJson(tasks: Task[]): string {
+	return `${JSON.stringify(tasks, null, 2)}\n`
+}
+
+export function formatIds(tasks: Task[]): string {
+	return tasks.map((task) => filename(task.path)).join('\n')
 }
 
 export function formatSections(sections: Sections): string {
