@@ -17,6 +17,8 @@ export type AddTaskOptions = {
 	title: string
 	content?: string
 	due?: string
+	tags?: string[]
+	priority?: 1 | 2 | 3
 	now?: Date
 }
 
@@ -68,15 +70,13 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 	const store: Store = {
 		timezone: tz,
 
-		async addTask({ title, content = '', due, now = new Date() }) {
+		async addTask({ title, content = '', due, tags = [], priority, now = new Date() }) {
 			if (due !== undefined && !isValidDue(due)) {
 				throw new Error(`invalid due date: ${due} (expected YYYYMMDD)`)
 			}
 			await ensureDir(volume, dir)
 			const id = await uniqueId(generateId(now, tz))
-			const meta: TaskMeta = due
-				? { id, status: 'TODO', due, title }
-				: { id, status: 'TODO', title }
+			const meta: TaskMeta = { id, status: 'TODO', title, tags, ...(due ? { due } : {}), ...(priority ? { priority } : {}) }
 			const filename = encodeFilename(meta)
 			const path = joinPath(dir, filename)
 			await volume.writeFile(path, enc.encode(content))
@@ -111,9 +111,14 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 			const task = await store.getTask(id)
 			if (!task) throw new Error(`task not found: ${id}`)
 			if (task.status === 'DONE') return task
-			const newMeta: TaskMeta = task.due
-				? { id: task.id, status: 'DONE', due: task.due, title: task.title }
-				: { id: task.id, status: 'DONE', title: task.title }
+			const newMeta: TaskMeta = {
+				id: task.id,
+				status: 'DONE',
+				title: task.title,
+				tags: task.tags,
+				...(task.due ? { due: task.due } : {}),
+				...(task.priority ? { priority: task.priority } : {})
+			}
 			const newFilename = encodeFilename(newMeta)
 			const newPath = joinPath(dir, newFilename)
 			await volume.rename(task.path, newPath)

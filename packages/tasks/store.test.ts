@@ -16,7 +16,37 @@ describe('store', () => {
 		expect(task.title).toBe('buy milk')
 		expect(task.id).toMatch(/^\d{8}T\d{6}$/)
 		expect(task.path).toContain('--TODO--buy-milk.md')
+		expect(task.tags).toEqual([])
+		expect(task.priority).toBeUndefined()
 		expect(await vol.exists(task.path)).toBe(true)
+	})
+
+	test('addTask with tags and priority encodes them in filename', async () => {
+		const { vol, store } = makeStore()
+		const task = await store.addTask({
+			title: 'fix bug',
+			tags: ['work', 'urgent'],
+			priority: 1,
+			now: new Date('2026-05-05T10:15:30Z')
+		})
+		expect(task.tags).toEqual(['work', 'urgent'])
+		expect(task.priority).toBe(1)
+		expect(task.path).toContain('__work__urgent__p1.md')
+		expect(await vol.exists(task.path)).toBe(true)
+	})
+
+	test('completeTask preserves tags and priority', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({
+			title: 'pay bill',
+			tags: ['finance'],
+			priority: 2,
+			now: new Date('2026-05-05T10:15:30Z')
+		})
+		const done = await store.completeTask(task.id)
+		expect(done.tags).toEqual(['finance'])
+		expect(done.priority).toBe(2)
+		expect(done.path).toContain('__finance__p2.md')
 	})
 
 	test('addTask with --due encodes the date in the filename', async () => {
