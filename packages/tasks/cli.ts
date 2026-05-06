@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { parseArgs } from 'node:util'
-import { resolveTimezone, today } from './dates.ts'
+import { parseDueInput, resolveTimezone, today } from './dates.ts'
 import { formatIds, formatJson, formatSections } from './format.ts'
 import { createTaskManager, findLocalTasksDir, type TaskManagerOptions } from './index.ts'
 import { isValidDue } from './parse.ts'
+
 import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 
 const HELP = `Usage: task <command> [options]
@@ -87,10 +88,15 @@ async function cmdAdd(args: string[]): Promise<number> {
 		process.stderr.write('error: task add requires a title\n')
 		return 2
 	}
-	const due = values.due
-	if (due !== undefined && !isValidDue(due)) {
-		process.stderr.write('error: --due must be YYYYMMDD\n')
-		return 2
+	const tz = resolveTimezone({ flag: values.tz, env: process.env.TASKS_TZ })
+	let due: string | undefined
+	if (values.due !== undefined) {
+		try {
+			due = parseDueInput(values.due, tz)
+		} catch (e) {
+			process.stderr.write(`error: ${e instanceof Error ? e.message : e}\n`)
+			return 2
+		}
 	}
 	const priority = parsePriority(values.priority)
 	if (values.priority !== undefined && priority === undefined) {
@@ -156,9 +162,16 @@ async function cmdSnooze(args: string[]): Promise<number> {
 		process.stderr.write('error: task snooze requires an ID\n')
 		return 2
 	}
-	const due = values.due
-	if (!due || !isValidDue(due)) {
-		process.stderr.write('error: --due must be YYYYMMDD\n')
+	if (!values.due) {
+		process.stderr.write('error: task snooze requires --due\n')
+		return 2
+	}
+	const tz = resolveTimezone({ flag: values.tz, env: process.env.TASKS_TZ })
+	let due: string
+	try {
+		due = parseDueInput(values.due, tz)
+	} catch (e) {
+		process.stderr.write(`error: ${e instanceof Error ? e.message : e}\n`)
 		return 2
 	}
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
@@ -215,9 +228,15 @@ async function cmdSet(args: string[]): Promise<number> {
 		process.stderr.write('error: --priority must be 1, 2, or 3\n')
 		return 2
 	}
-	if (values.due !== undefined && values.due !== '' && !isValidDue(values.due)) {
-		process.stderr.write('error: --due must be YYYYMMDD\n')
-		return 2
+	const tz = resolveTimezone({ flag: values.tz, env: process.env.TASKS_TZ })
+	let parsedDue: string | undefined
+	if (values.due !== undefined && values.due !== '') {
+		try {
+			parsedDue = parseDueInput(values.due, tz)
+		} catch (e) {
+			process.stderr.write(`error: ${e instanceof Error ? e.message : e}\n`)
+			return 2
+		}
 	}
 	if (values.status === '' || values.title === '') {
 		process.stderr.write('error: --status and --title cannot be empty\n')
@@ -226,7 +245,7 @@ async function cmdSet(args: string[]): Promise<number> {
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	const task = await manager.setTask(id, {
 		...(values.status !== undefined ? { status: values.status } : {}),
-		...(values.due !== undefined ? { due: values.due === '' ? null : values.due } : {}),
+		...(values.due !== undefined ? { due: values.due === '' ? null : parsedDue } : {}),
 		...(values.title !== undefined ? { title: values.title } : {}),
 		...(values.tag !== undefined ? { tags: values.tag } : {}),
 		...(values.priority !== undefined ? { priority: values.priority === '' ? null : priority } : {})
