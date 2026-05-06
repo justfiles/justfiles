@@ -4,7 +4,8 @@ import { parseArgs } from 'node:util'
 import { parseDueInput, resolveTimezone, today } from './dates.ts'
 import { formatIds, formatJson, formatSections } from './format.ts'
 import { createTaskManager, findLocalTasksDir, type TaskManagerOptions } from './index.ts'
-import { isValidDue } from './parse.ts'
+import { isValidDue, type Recur } from './parse.ts'
+import { isValidInterval } from './recur.ts'
 
 import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 
@@ -13,6 +14,10 @@ const HELP = `Usage: task <command> [options]
 Commands:
   add <title>      Add a new TODO task. Stdin (if piped) becomes file content.
                    Options: --due YYYYMMDD, --tag <name> (repeatable), --priority 1|2|3
+                            --recur <interval>         catch-up recurrence
+                            --recur-restart <interval> restart recurrence
+                            --recur-fixed <interval>   fixed recurrence
+                   Interval: daily|weekly|biweekly|monthly|quarterly|yearly|Nd|Nw|Nm|Ny|mon…sun
   list             List tasks grouped into overdue/today/upcoming/undated.
                    Options: --tag <name> (repeatable, AND), --priority 1|2|3, --due YYYYMMDD, --status <status>, --json, --ids
   done <id>        Mark a task complete by its ID.
@@ -20,6 +25,7 @@ Commands:
   snooze <id>      Change a task due date. Options: --due YYYYMMDD
   edit <id>        Open task content in $EDITOR.
   set <id>         Mutate task metadata. Options: --status, --due, --title, --tag, --priority
+                   --recur, --recur-restart, --recur-fixed (pass "" to clear)
   show <id>        Print parsed metadata and file content.
 
 Global options:
@@ -47,6 +53,28 @@ async function readStdin(): Promise<string> {
 		chunks.push(chunk as Buffer)
 	}
 	return Buffer.concat(chunks).toString('utf8')
+}
+
+function parseRecur(
+	catchup: string | undefined,
+	restart: string | undefined,
+	fixed: string | undefined
+): { recur: Recur | undefined; error: string | null } {
+	const set = [catchup, restart, fixed].filter((v) => v !== undefined)
+	if (set.length > 1) return { recur: undefined, error: '--recur, --recur-restart, and --recur-fixed are mutually exclusive' }
+	if (catchup !== undefined) {
+		if (!isValidInterval(catchup)) return { recur: undefined, error: `invalid recurrence interval: ${catchup}` }
+		return { recur: { type: 'catchup', interval: catchup }, error: null }
+	}
+	if (restart !== undefined) {
+		if (!isValidInterval(restart)) return { recur: undefined, error: `invalid recurrence interval: ${restart}` }
+		return { recur: { type: 'restart', interval: restart }, error: null }
+	}
+	if (fixed !== undefined) {
+		if (!isValidInterval(fixed)) return { recur: undefined, error: `invalid recurrence interval: ${fixed}` }
+		return { recur: { type: 'fixed', interval: fixed }, error: null }
+	}
+	return { recur: undefined, error: null }
 }
 
 function parsePriority(val: string | undefined): 1 | 2 | 3 | undefined {
@@ -80,7 +108,10 @@ async function cmdAdd(args: string[]): Promise<number> {
 			tag: { type: 'string', multiple: true },
 			priority: { type: 'string' },
 			tz: { type: 'string' },
-			local: { type: 'boolean' }
+			local: { type: 'boolean' },
+			recur: { type: 'string' },
+			'recur-restart': { type: 'string' },
+			'recur-fixed': { type: 'string' }
 		}
 	})
 	const title = positionals.join(' ').trim()
@@ -103,6 +134,11 @@ async function cmdAdd(args: string[]): Promise<number> {
 		process.stderr.write('error: --priority must be 1, 2, or 3\n')
 		return 2
 	}
+	const { recur, error: recurError } = parseRecur(values.recur, values['recur-restart'], values['recur-fixed'])
+	if (recurError) {
+		process.stderr.write(`error: ${recurError}\n`)
+		return 2
+	}
 	const tags = values.tag ?? []
 	const content = await readStdin()
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
@@ -111,7 +147,8 @@ async function cmdAdd(args: string[]): Promise<number> {
 		content,
 		...(due ? { due } : {}),
 		tags,
-		...(priority ? { priority } : {})
+		...(priority ? { priority } : {}),
+		...(recur ? { recur } : {})
 	})
 	process.stdout.write(`${task.id}\n`)
 	return 0
@@ -215,7 +252,10 @@ async function cmdSet(args: string[]): Promise<number> {
 			tag: { type: 'string', multiple: true },
 			priority: { type: 'string' },
 			tz: { type: 'string' },
-			local: { type: 'boolean' }
+			local: { type: 'boolean' },
+			recur: { type: 'string' },
+			'recur-restart': { type: 'string' },
+			'recur-fixed': { type: 'string' }
 		}
 	})
 	const id = positionals[0]?.trim()
@@ -242,13 +282,30 @@ async function cmdSet(args: string[]): Promise<number> {
 		process.stderr.write('error: --status and --title cannot be empty\n')
 		return 2
 	}
+	// Recurrence: empty --recur clears; --recur-restart / --recur-fixed set typed recurrence
+	let recurPatch: Recur | null | undefined
+	if (values.recur !== undefined && values.recur === '') {
+		recurPatch = null
+	} else {
+		const { recur, error: recurError } = parseRecur(
+			values.recur,
+			values['recur-restart'],
+			values['recur-fixed']
+		)
+		if (recurError) {
+			process.stderr.write(`error: ${recurError}\n`)
+			return 2
+		}
+		if (recur) recurPatch = recur
+	}
 	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	const task = await manager.setTask(id, {
 		...(values.status !== undefined ? { status: values.status } : {}),
 		...(values.due !== undefined ? { due: values.due === '' ? null : parsedDue } : {}),
 		...(values.title !== undefined ? { title: values.title } : {}),
 		...(values.tag !== undefined ? { tags: values.tag } : {}),
-		...(values.priority !== undefined ? { priority: values.priority === '' ? null : priority } : {})
+		...(values.priority !== undefined ? { priority: values.priority === '' ? null : priority } : {}),
+		...(recurPatch !== undefined ? { recur: recurPatch } : {})
 	})
 	process.stdout.write(`${task.id}\n`)
 	return 0

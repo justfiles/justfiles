@@ -10,6 +10,11 @@
  *   prefixed with `task-` to avoid being misparsed as a due date
  */
 
+export type Recur = {
+	type: 'catchup' | 'restart' | 'fixed'
+	interval: string
+}
+
 export type TaskMeta = {
 	id: string
 	status: string
@@ -17,6 +22,7 @@ export type TaskMeta = {
 	title: string
 	tags: string[]
 	priority?: 1 | 2 | 3
+	recur?: Recur
 }
 
 const ID_PATTERN = /^\d{8}T\d{6}(?:-\d+)?$/
@@ -51,8 +57,11 @@ export function encodeFilename(meta: TaskMeta): string {
 	const title = slugify(meta.title)
 	const tags = (meta.tags ?? []).map((t) => `__${t}`).join('')
 	const priority = meta.priority ? `__p${meta.priority}` : ''
+	const recurToken = meta.recur
+		? `__${meta.recur.type === 'catchup' ? 'r' : meta.recur.type === 'restart' ? 'rs' : 'rf'}-${meta.recur.interval}`
+		: ''
 	const dueSegment = meta.due ? `--${meta.due}` : ''
-	return `${meta.id}--${meta.status}${dueSegment}--${title}${tags}${priority}.md`
+	return `${meta.id}--${meta.status}${dueSegment}--${title}${tags}${priority}${recurToken}.md`
 }
 
 export function decodeFilename(filename: string): TaskMeta | null {
@@ -81,16 +90,20 @@ export function decodeFilename(filename: string): TaskMeta | null {
 
 	const tags: string[] = []
 	let priority: 1 | 2 | 3 | undefined
+	let recur: Recur | undefined
 	for (const token of tokens) {
 		if (token === 'p1') priority = 1
 		else if (token === 'p2') priority = 2
 		else if (token === 'p3') priority = 3
+		else if (/^r-(.+)$/.test(token)) recur = { type: 'catchup', interval: token.slice(2) }
+		else if (/^rs-(.+)$/.test(token)) recur = { type: 'restart', interval: token.slice(3) }
+		else if (/^rf-(.+)$/.test(token)) recur = { type: 'fixed', interval: token.slice(3) }
 		else if (token.length > 0) tags.push(token)
 	}
 
-	const base = { id, status, title: titleSlug, tags }
-	if (due && priority) return { ...base, due, priority }
-	if (due) return { ...base, due }
-	if (priority) return { ...base, priority }
-	return base
+	const result: TaskMeta = { id, status, title: titleSlug, tags }
+	if (due) result.due = due
+	if (priority) result.priority = priority
+	if (recur) result.recur = recur
+	return result
 }
