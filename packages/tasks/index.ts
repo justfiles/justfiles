@@ -26,6 +26,21 @@ async function volumeForPath(path: string): Promise<{ volume: Volume; root: stri
 	return { volume: volume(storage), root: '/' }
 }
 
+export async function findLocalTasksDir(cwd: string = process.cwd()): Promise<string | null> {
+	const { existsSync, statSync } = await import('node:fs')
+	const { dirname, join, resolve } = await import('node:path')
+	const home = resolve((await import('node:os')).homedir())
+	let dir = resolve(cwd)
+	while (true) {
+		const tasks = join(dir, 'tasks')
+		if (existsSync(tasks) && statSync(tasks).isDirectory()) return tasks
+		if (existsSync(join(dir, '.git')) || dir === home) return null
+		const parent = dirname(dir)
+		if (parent === dir) return null
+		dir = parent
+	}
+}
+
 export async function createTaskManager(
 	pathOrVolume: string | Volume,
 	options: TaskManagerOptions = {}

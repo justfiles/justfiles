@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { parseArgs } from 'node:util'
 import { resolveTimezone, today } from './dates.ts'
 import { formatIds, formatJson, formatSections } from './format.ts'
-import { createTaskManager, type TaskManagerOptions } from './index.ts'
+import { createTaskManager, findLocalTasksDir, type TaskManagerOptions } from './index.ts'
 import { isValidDue } from './parse.ts'
 import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 
@@ -59,6 +59,17 @@ function taskPath(taskDir: string, path: string): string {
 	return `${taskDir.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`
 }
 
+async function scopedDir(local?: boolean): Promise<string> {
+	if (!local) return tasksDir()
+	const dir = await findLocalTasksDir(process.cwd())
+	if (!dir) throw new Error('no local tasks/ directory found (walked up to git root or home)')
+	return dir
+}
+
+async function managerFor(local: boolean | undefined, opts: TaskManagerOptions) {
+	return createTaskManager(await scopedDir(local), opts)
+}
+
 async function cmdAdd(args: string[]): Promise<number> {
 	const { positionals, values } = parseArgs({
 		args,
@@ -67,7 +78,8 @@ async function cmdAdd(args: string[]): Promise<number> {
 			due: { type: 'string' },
 			tag: { type: 'string', multiple: true },
 			priority: { type: 'string' },
-			tz: { type: 'string' }
+			tz: { type: 'string' },
+			local: { type: 'boolean' }
 		}
 	})
 	const title = positionals.join(' ').trim()
@@ -87,7 +99,7 @@ async function cmdAdd(args: string[]): Promise<number> {
 	}
 	const tags = values.tag ?? []
 	const content = await readStdin()
-	const manager = await createTaskManager(tasksDir(), timezoneOption(values.tz))
+	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	const task = await manager.addTask({
 		title,
 		content,
@@ -103,14 +115,14 @@ async function cmdDelete(args: string[]): Promise<number> {
 	const { positionals, values } = parseArgs({
 		args,
 		allowPositionals: true,
-		options: { tz: { type: 'string' } }
+		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
 	const id = positionals[0]?.trim()
 	if (!id) {
 		process.stderr.write('error: task delete requires an ID\n')
 		return 2
 	}
-	const manager = await createTaskManager(tasksDir(), timezoneOption(values.tz))
+	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	await manager.deleteTask(id)
 	process.stdout.write(`${id}\n`)
 	return 0
@@ -120,14 +132,14 @@ async function cmdDone(args: string[]): Promise<number> {
 	const { positionals, values } = parseArgs({
 		args,
 		allowPositionals: true,
-		options: { tz: { type: 'string' } }
+		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
 	const id = positionals[0]?.trim()
 	if (!id) {
 		process.stderr.write('error: task done requires an ID\n')
 		return 2
 	}
-	const manager = await createTaskManager(tasksDir(), timezoneOption(values.tz))
+	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	const task = await manager.completeTask(id)
 	process.stdout.write(`${task.id}\n`)
 	return 0
@@ -137,7 +149,7 @@ async function cmdSnooze(args: string[]): Promise<number> {
 	const { positionals, values } = parseArgs({
 		args,
 		allowPositionals: true,
-		options: { due: { type: 'string' }, tz: { type: 'string' } }
+		options: { due: { type: 'string' }, tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
 	const id = positionals[0]?.trim()
 	if (!id) {
@@ -149,7 +161,7 @@ async function cmdSnooze(args: string[]): Promise<number> {
 		process.stderr.write('error: --due must be YYYYMMDD\n')
 		return 2
 	}
-	const manager = await createTaskManager(tasksDir(), timezoneOption(values.tz))
+	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	const task = await manager.setTask(id, { due })
 	process.stdout.write(`${task.id}\n`)
 	return 0
@@ -159,7 +171,7 @@ async function cmdEdit(args: string[]): Promise<number> {
 	const { positionals, values } = parseArgs({
 		args,
 		allowPositionals: true,
-		options: { tz: { type: 'string' } }
+		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
 	const id = positionals[0]?.trim()
 	if (!id) {
@@ -171,7 +183,7 @@ async function cmdEdit(args: string[]): Promise<number> {
 		process.stderr.write('error: EDITOR is not set\n')
 		return 2
 	}
-	const dir = tasksDir()
+	const dir = await scopedDir(values.local)
 	const manager = await createTaskManager(dir, timezoneOption(values.tz))
 	const task = await manager.getTask(id)
 	if (!task) throw new Error(`task not found: ${id}`)
@@ -189,7 +201,8 @@ async function cmdSet(args: string[]): Promise<number> {
 			title: { type: 'string' },
 			tag: { type: 'string', multiple: true },
 			priority: { type: 'string' },
-			tz: { type: 'string' }
+			tz: { type: 'string' },
+			local: { type: 'boolean' }
 		}
 	})
 	const id = positionals[0]?.trim()
@@ -210,7 +223,7 @@ async function cmdSet(args: string[]): Promise<number> {
 		process.stderr.write('error: --status and --title cannot be empty\n')
 		return 2
 	}
-	const manager = await createTaskManager(tasksDir(), timezoneOption(values.tz))
+	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	const task = await manager.setTask(id, {
 		...(values.status !== undefined ? { status: values.status } : {}),
 		...(values.due !== undefined ? { due: values.due === '' ? null : values.due } : {}),
@@ -226,14 +239,14 @@ async function cmdShow(args: string[]): Promise<number> {
 	const { positionals, values } = parseArgs({
 		args,
 		allowPositionals: true,
-		options: { tz: { type: 'string' } }
+		options: { tz: { type: 'string' }, local: { type: 'boolean' } }
 	})
 	const id = positionals[0]?.trim()
 	if (!id) {
 		process.stderr.write('error: task show requires an ID\n')
 		return 2
 	}
-	const manager = await createTaskManager(tasksDir(), timezoneOption(values.tz))
+	const manager = await managerFor(values.local, timezoneOption(values.tz))
 	const task = await manager.getTask(id)
 	if (!task) throw new Error(`task not found: ${id}`)
 	const content = await manager.getTaskContent(id)
@@ -251,11 +264,17 @@ async function cmdList(args: string[]): Promise<number> {
 			due: { type: 'string' },
 			status: { type: 'string' },
 			json: { type: 'boolean' },
-			ids: { type: 'boolean' }
+			ids: { type: 'boolean' },
+			local: { type: 'boolean' },
+			all: { type: 'boolean' }
 		}
 	})
 	if (values.json && values.ids) {
 		process.stderr.write('error: --json and --ids cannot be combined\n')
+		return 2
+	}
+	if (values.local && values.all) {
+		process.stderr.write('error: --local and --all cannot be combined\n')
 		return 2
 	}
 	if (values.due !== undefined && !isValidDue(values.due)) {
@@ -263,7 +282,7 @@ async function cmdList(args: string[]): Promise<number> {
 		return 2
 	}
 	const opts = timezoneOption(values.tz)
-	const manager = await createTaskManager(tasksDir(), opts)
+	const manager = await managerFor(values.local, opts)
 	const priority = parsePriority(values.priority)
 	if (values.priority !== undefined && priority === undefined) {
 		process.stderr.write('error: --priority must be 1, 2, or 3\n')
@@ -271,6 +290,24 @@ async function cmdList(args: string[]): Promise<number> {
 	}
 	const tags = values.tag ?? []
 	let tasks = await manager.listTasks()
+	if (values.all) {
+		const globalDir = tasksDir()
+		const localDir = await findLocalTasksDir(process.cwd())
+		const global = await (await createTaskManager(globalDir, opts)).listTasks()
+		const local = localDir ? await (await createTaskManager(localDir, opts)).listTasks() : []
+		tasks = [
+			...global.map((task) => ({
+				...task,
+				path: taskPath(globalDir, task.path),
+				source: 'global'
+			})),
+			...local.map((task) => ({
+				...task,
+				path: taskPath(localDir ?? '', task.path),
+				source: localDir?.split('/').slice(-2, -1)[0] ?? 'local'
+			}))
+		]
+	}
 	tasks = filterTasks(tasks, {
 		...(tags.length > 0 ? { tags } : {}),
 		...(priority ? { priority } : {}),

@@ -5,22 +5,23 @@ function filename(path: string): string {
 	return path.split('/').pop() ?? path
 }
 
-function bullet(task: Task): string {
+function bullet(task: Task & { source?: string }): string {
 	const priority = task.priority ? `[p${task.priority}] ` : ''
-	return `- [${task.id}] ${priority}${task.title}`
+	const source = task.source ? ` [${task.source}]` : ''
+	return `- [${task.id}] ${priority}${task.title}${source}`
 }
 
-export function formatMarkdown(tasks: Task[]): string {
+export function formatMarkdown(tasks: (Task & { source?: string })[]): string {
 	if (tasks.length === 0) return 'No tasks.\n'
 	return `${tasks.map(bullet).join('\n')}\n`
 }
 
-export function formatJson(tasks: Task[]): string {
+export function formatJson(tasks: (Task & { source?: string })[]): string {
 	return `${JSON.stringify(tasks, null, 2)}\n`
 }
 
-export function formatIds(tasks: Task[]): string {
-	return tasks.map((task) => filename(task.path)).join('\n')
+export function formatIds(tasks: (Task & { source?: string })[]): string {
+	return tasks.map((task) => (task.source ? task.path : filename(task.path))).join('\n')
 }
 
 export function formatSections(sections: Sections): string {
