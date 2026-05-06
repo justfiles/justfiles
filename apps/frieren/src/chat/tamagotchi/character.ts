@@ -235,7 +235,7 @@ export function drawCharacterFrame(
 	facing: 1 | -1
 ) {
 	const image = getImage(skin.imageSrc)
-	if (!image || !image.complete || image.naturalWidth === 0) return
+	if (!image?.complete || image.naturalWidth === 0) return
 
 	const dw = Math.max(1, Math.round(skin.size.w * scale * skin.displayScale))
 	const dh = Math.max(1, Math.round(skin.size.h * scale * skin.displayScale))

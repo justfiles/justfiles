@@ -142,7 +142,7 @@ describe('volume', () => {
 			await vol.mkdir('/dir')
 			const byName = Object.fromEntries((await vol.readdir('/')).map((e) => [e.name, e.type]))
 			expect(byName['file.txt']).toBe(FileType.Regular)
-			expect(byName['dir']).toBe(FileType.Directory)
+			expect(byName.dir).toBe(FileType.Directory)
 		})
 
 		test('returns an empty array for an empty directory', async () => {

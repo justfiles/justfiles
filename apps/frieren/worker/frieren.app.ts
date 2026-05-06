@@ -68,7 +68,8 @@ export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): 
 			})
 			return { mainModule, modules, compatibilityDate: COMPAT_DATE, globalOutbound: null }
 		})
-		return { class: worker!.getDurableObjectClass<FacetApp>('App') }
+		if (!worker) throw new Error('LOADER binding is required')
+		return { class: worker.getDurableObjectClass<FacetApp>('App') }
 	})
 	return facet as unknown as AppFacet
 }

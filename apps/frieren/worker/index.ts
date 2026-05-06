@@ -86,8 +86,8 @@ app.get(
 )
 app.get('/apps/*', async (c) => {
 	const rest = c.req.path.replace(/^\/apps\//, '').split('/')
-	const appId = rest.shift()!
-	if (!hasApp(appId)) return c.notFound()
+	const appId = rest.shift()
+	if (!appId || !hasApp(appId)) return c.notFound()
 	const path = rest.join('/') || getEntryPath(appId) || 'index.html'
 
 	// `ASSETS.fetch` resolves directly through the static-assets layer (it

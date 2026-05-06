@@ -95,6 +95,7 @@ main {
 	color: #334155;
 	line-height: 1;
 }
+/* biome-ignore lint/style/noDescendingSpecificity: state selectors intentionally override base letter styling */
 .letter {
 	position: absolute;
 	inset: 0;
@@ -299,6 +300,7 @@ main {
 		color: #111827;
 		font-size: 8pt;
 	}
+	/* biome-ignore lint/style/noDescendingSpecificity: print letter styling intentionally resets screen state styling */
 	.letter {
 		color: #111827;
 		font-size: 18pt;

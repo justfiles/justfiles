@@ -45,6 +45,7 @@
 	flex: 1;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: separate editor implementations share placeholder styling */
 .pm-editor .ProseMirror .is-placeholder::before {
 	content: "Start writing…";
 	@apply text-base-content/30 pointer-events-none float-left h-0;

@@ -359,8 +359,8 @@ describe('nativeStorage', () => {
 		const byName = Object.fromEntries(entries.map((e) => [e.name, e]))
 
 		expect(byName['file.txt']!.type).toBe(FileType.Regular)
-		expect(byName['dir']!.type).toBe(FileType.Directory)
-		expect(byName['link']!.type).toBe(FileType.Symlink)
+		expect(byName.dir!.type).toBe(FileType.Directory)
+		expect(byName.link!.type).toBe(FileType.Symlink)
 	})
 
 	test('listDirents cursor skips entries up to and including the cursor value', async () => {

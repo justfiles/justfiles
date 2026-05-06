@@ -300,7 +300,6 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 				return 0o755
 			case FileType.Symlink:
 				return 0o777
-			case FileType.Regular:
 			default:
 				return 0o644
 		}

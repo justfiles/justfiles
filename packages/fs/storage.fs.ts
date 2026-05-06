@@ -92,11 +92,11 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			await _rename(oldPath, newPath)
 
 			// Update pathMap for the moved entry and all cached descendants
-			const oldPrefix = oldPath + '/'
+			const oldPrefix = `${oldPath}/`
 			for (const [ino, p] of pathMap) {
 				if (p === oldPath) pathMap.set(ino, newPath)
 				else if (p.startsWith(oldPrefix))
-					pathMap.set(ino, newPath + '/' + p.slice(oldPrefix.length))
+					pathMap.set(ino, `${newPath}/${p.slice(oldPrefix.length)}`)
 			}
 			if (displaced !== null) pathMap.delete(displaced)
 
@@ -129,7 +129,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const path = pathMap.get(ino)
 			if (!path) return
 			pathMap.delete(ino)
-			const prefix = path.endsWith('/') ? path : path + '/'
+			const prefix = path.endsWith('/') ? path : `${path}/`
 			for (const [childIno, childPath] of pathMap) {
 				if (childPath.startsWith(prefix)) {
 					pathMap.delete(childIno)
