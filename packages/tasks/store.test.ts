@@ -140,6 +140,87 @@ describe('store', () => {
 		expect(await store.getTaskContent(task.id)).toBe('body')
 	})
 
+	test('setTaskContent replaces the stored body', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({ title: 'x', content: 'body' })
+		await store.setTaskContent(task.id, 'updated')
+		expect(await store.getTaskContent(task.id)).toBe('updated')
+	})
+
+	test('deleteTask removes the task file', async () => {
+		const { vol, store } = makeStore()
+		const task = await store.addTask({ title: 'x' })
+		await store.deleteTask(task.id)
+		expect(await vol.exists(task.path)).toBe(false)
+		expect(await store.getTask(task.id)).toBeNull()
+	})
+
+	test('deleteTask throws on unknown ID', async () => {
+		const { store } = makeStore()
+		await expect(store.deleteTask('20260101T000000')).rejects.toThrow('task not found')
+	})
+
+	test('setTask changes status', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({ title: 'x' })
+		const updated = await store.setTask(task.id, { status: 'WAITING' })
+		expect(updated.status).toBe('WAITING')
+		expect(updated.path).toContain('--WAITING--')
+	})
+
+	test('setTask changes due date and preserves other fields', async () => {
+		const { vol, store } = makeStore()
+		const task = await store.addTask({
+			title: 'pay bill',
+			due: '20260615',
+			tags: ['finance'],
+			priority: 1
+		})
+		const updated = await store.setTask(task.id, { due: '20260620' })
+		expect(updated.due).toBe('20260620')
+		expect(updated.tags).toEqual(['finance'])
+		expect(updated.priority).toBe(1)
+		expect(updated.path).toContain('--TODO--20260620--pay-bill__finance__p1.md')
+		expect(await vol.exists(task.path)).toBe(false)
+		expect(await vol.exists(updated.path)).toBe(true)
+	})
+
+	test('setTask clears due date and priority', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({ title: 'x', due: '20260615', priority: 2 })
+		const updated = await store.setTask(task.id, { due: null, priority: null })
+		expect(updated.due).toBeUndefined()
+		expect(updated.priority).toBeUndefined()
+		expect(updated.path).toContain('--TODO--x.md')
+	})
+
+	test('setTask changes title, tags, and priority together', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({ title: 'x', tags: ['old'], priority: 3 })
+		const updated = await store.setTask(task.id, {
+			title: 'New Title',
+			tags: ['work', 'urgent'],
+			priority: 1
+		})
+		expect(updated.title).toBe('New Title')
+		expect(updated.tags).toEqual(['work', 'urgent'])
+		expect(updated.priority).toBe(1)
+		expect(updated.path).toContain('--new-title__work__urgent__p1.md')
+	})
+
+	test('setTask throws on unknown ID', async () => {
+		const { store } = makeStore()
+		await expect(store.setTask('20260101T000000', { status: 'WAITING' })).rejects.toThrow(
+			'task not found'
+		)
+	})
+
+	test('setTask rejects empty status', async () => {
+		const { store } = makeStore()
+		const task = await store.addTask({ title: 'x' })
+		await expect(store.setTask(task.id, { status: '' })).rejects.toThrow('invalid status')
+	})
+
 	test('generateId produces a denote-style timestamp', () => {
 		const id = generateId(new Date('2026-05-05T10:15:30Z'), 'UTC')
 		expect(id).toBe('20260505T101530')

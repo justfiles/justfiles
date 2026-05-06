@@ -150,12 +150,23 @@ describe('parse', () => {
 
 	test('encodeFilename rejects invalid due', () => {
 		expect(() =>
-			encodeFilename({ id: '20260505T101530', status: 'TODO', due: '2026-06-15', title: 'x', tags: [] })
+			encodeFilename({
+				id: '20260505T101530',
+				status: 'TODO',
+				due: '2026-06-15',
+				title: 'x',
+				tags: []
+			})
 		).toThrow()
 	})
 
 	test('encodeFilename prefixes a bare-8-digit title', () => {
-		const filename = encodeFilename({ id: '20260505T101530', status: 'TODO', title: '20260120', tags: [] })
+		const filename = encodeFilename({
+			id: '20260505T101530',
+			status: 'TODO',
+			title: '20260120',
+			tags: []
+		})
 		expect(filename).toBe('20260505T101530--TODO--task-20260120.md')
 		const decoded = decodeFilename(filename)
 		expect(decoded?.due).toBeUndefined()

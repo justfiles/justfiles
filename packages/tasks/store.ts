@@ -22,12 +22,23 @@ export type AddTaskOptions = {
 	now?: Date
 }
 
+export type SetTaskPatch = {
+	status?: string
+	due?: string | null
+	title?: string
+	tags?: string[]
+	priority?: 1 | 2 | 3 | null
+}
+
 export type Store = {
 	readonly timezone: string
 	addTask(opts: AddTaskOptions): Promise<Task>
 	listTasks(): Promise<Task[]>
 	getTask(id: string): Promise<Task | null>
 	getTaskContent(id: string): Promise<string>
+	setTaskContent(id: string, content: string): Promise<void>
+	deleteTask(id: string): Promise<void>
+	setTask(id: string, patch: SetTaskPatch): Promise<Task>
 	completeTask(id: string): Promise<Task>
 }
 
@@ -76,7 +87,14 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 			}
 			await ensureDir(volume, dir)
 			const id = await uniqueId(generateId(now, tz))
-			const meta: TaskMeta = { id, status: 'TODO', title, tags, ...(due ? { due } : {}), ...(priority ? { priority } : {}) }
+			const meta: TaskMeta = {
+				id,
+				status: 'TODO',
+				title,
+				tags,
+				...(due ? { due } : {}),
+				...(priority ? { priority } : {})
+			}
 			const filename = encodeFilename(meta)
 			const path = joinPath(dir, filename)
 			await volume.writeFile(path, enc.encode(content))
@@ -102,9 +120,55 @@ export function createStore(volume: Volume, dir: string, options: StoreOptions =
 
 		async getTaskContent(id) {
 			const task = await store.getTask(id)
-			if (!task) throw new Error(`ENOENT: task ${id}`)
+			if (!task) throw new Error(`task not found: ${id}`)
 			const data = await volume.readFile(task.path)
 			return dec.decode(data)
+		},
+
+		async setTaskContent(id, content) {
+			const task = await store.getTask(id)
+			if (!task) throw new Error(`task not found: ${id}`)
+			await volume.writeFile(task.path, enc.encode(content))
+		},
+
+		async deleteTask(id) {
+			const task = await store.getTask(id)
+			if (!task) throw new Error(`task not found: ${id}`)
+			await volume.rm(task.path)
+		},
+
+		async setTask(id, patch) {
+			const task = await store.getTask(id)
+			if (!task) throw new Error(`task not found: ${id}`)
+			if (patch.status === '') {
+				throw new Error('invalid status: cannot be empty')
+			}
+			if (patch.due !== undefined && patch.due !== null && !isValidDue(patch.due)) {
+				throw new Error(`invalid due date: ${patch.due} (expected YYYYMMDD)`)
+			}
+			const next: TaskMeta = {
+				id: task.id,
+				status: patch.status ?? task.status,
+				title: patch.title ?? task.title,
+				tags: patch.tags ?? task.tags,
+				...(patch.due === undefined
+					? task.due
+						? { due: task.due }
+						: {}
+					: patch.due
+						? { due: patch.due }
+						: {}),
+				...(patch.priority === undefined
+					? task.priority
+						? { priority: task.priority }
+						: {}
+					: patch.priority
+						? { priority: patch.priority }
+						: {})
+			}
+			const newPath = joinPath(dir, encodeFilename(next))
+			await volume.rename(task.path, newPath)
+			return { ...next, path: newPath }
 		},
 
 		async completeTask(id) {
