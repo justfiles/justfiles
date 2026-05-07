@@ -1,9 +1,9 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { Type } from 'typebox'
 import { define as defineApp } from './app.js'
-import { define as defineEngine } from './engine.js'
+import { type Snapshot, define as defineEngine } from './engine.js'
 import { Runner } from './runner.js'
-import { defineTasks, type RunnerState, task } from './tasks.js'
+import { defineTasks, task } from './tasks.js'
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
@@ -111,7 +111,6 @@ describe('Runner invoke lifecycle', () => {
 					})
 			)
 		})
-		const onSettled = mock(() => undefined)
 		const app = defineApp({
 			name: 'stale',
 			description: '',
@@ -139,15 +138,14 @@ describe('Runner invoke lifecycle', () => {
 				}
 			})
 		})
-		const runner = new Runner({ app, onTaskSettled: onSettled })
+		const runner = new Runner({ app })
 		await runner.start()
 		const r = await runner.dispatch({ type: 'cancel', payload: {} }, { id: 'user' })
 		expect(r.ok).toBe(true)
 		// Wait beyond the slow task's timer.
 		await new Promise((res) => setTimeout(res, 80))
 		expect(runner.snapshot.state).toBe('idle')
-		// Aborted task does not produce a settled event.
-		expect(onSettled).not.toHaveBeenCalled()
+		// State did not transition to 'done', confirming the stale result was dropped.
 	})
 
 	test('task failure dispatches onError as system', async () => {
@@ -348,18 +346,15 @@ describe('Runner invoke lifecycle', () => {
 	})
 
 	test('runner restores snapshot from storage and starts invokes for current state', async () => {
-		let saved: RunnerState | undefined = {
-			snapshot: {
-				state: 'briefing',
-				context: { reason: 'morning', items: ['restored'], error: null }
-			},
-			invocations: []
+		let saved: Snapshot | undefined = {
+			state: 'briefing',
+			context: { reason: 'morning', items: ['restored'], error: null }
 		}
 		const storage = {
 			async load() {
 				return saved
 			},
-			async save(s: RunnerState) {
+			async save(s: Snapshot) {
 				saved = s
 			}
 		}
@@ -391,46 +386,41 @@ describe('Runner invoke lifecycle', () => {
 		expect(userTools).not.toContain('load_failed')
 	})
 
-	test('persisted state contains snapshot and invocation metadata', async () => {
-		let last: RunnerState | undefined
+	test('storage receives bare snapshot (no runtime metadata)', async () => {
+		let last: Snapshot | undefined
 		const storage = {
 			async load() {
 				return undefined
 			},
-			async save(s: RunnerState) {
+			async save(s: Snapshot) {
 				last = s
 			}
 		}
-		const tasks = defineTasks({
-			slow: task<void, void>(
-				async ({ signal }) =>
-					new Promise<void>((resolve, reject) => {
-						const t = setTimeout(resolve, 100)
-						signal.addEventListener('abort', () => {
-							clearTimeout(t)
-							reject(new Error('aborted'))
-						})
-					})
-			)
-		})
 		const app = defineApp({
 			name: 'persist',
 			description: '',
 			engine: defineEngine({
-				tasks,
-				initial: 'loading' as 'loading',
-				context: {},
+				initial: 'a' as 'a' | 'b',
+				context: { n: 0 },
 				states: {
-					loading: { invoke: { src: 'slow' }, on: {} }
+					a: {
+						on: {
+							next: {
+								schema: Type.Object({}),
+								target: 'b',
+								actions: () => ({ n: 1 })
+							}
+						}
+					},
+					b: {}
 				}
 			})
 		})
 		const runner = new Runner({ app, storage })
 		await runner.start()
-		await flush()
-		expect(last?.snapshot.state).toBe('loading')
-		expect(last?.invocations.length ?? 0).toBeGreaterThanOrEqual(1)
-		expect(last?.invocations[0]?.src).toBe('slow')
-		runner.stop()
+		expect(last?.state).toBe('a')
+		await runner.dispatch({ type: 'next', payload: {} }, { id: 'u' })
+		expect(last?.state).toBe('b')
+		expect(last).toEqual({ state: 'b', context: { n: 1 } })
 	})
 })

@@ -9,7 +9,7 @@ import { DurableObject } from 'cloudflare:workers'
 import app from './app.js'
 import { Runner } from './runner.js'
 
-/** @import { Action, Actor, RunnerState } from '@justfiles/app' */
+/** @import { Action, Actor, Snapshot } from '@justfiles/app' */
 
 const STATE_KEY = 'state'
 
@@ -24,14 +24,14 @@ export class App extends DurableObject {
 	constructor(ctx, env) {
 		super(ctx, env)
 		const storage = {
-			/** @returns {Promise<RunnerState | undefined>} */
+			/** @returns {Promise<Snapshot | undefined>} */
 			load: async () => {
 				const saved = await this.ctx.storage.kv.get(STATE_KEY)
-				return isRunnerState(saved) ? saved : undefined
+				return isSnapshot(saved) ? saved : undefined
 			},
-			/** @param {RunnerState} state */
-			save: async (state) => {
-				await this.ctx.storage.kv.put(STATE_KEY, state)
+			/** @param {Snapshot} snapshot */
+			save: async (snapshot) => {
+				await this.ctx.storage.kv.put(STATE_KEY, snapshot)
 			}
 		}
 		this.#runner = new Runner({
@@ -102,16 +102,13 @@ export class App extends DurableObject {
 
 /**
  * @param {unknown} value
- * @returns {value is RunnerState}
+ * @returns {value is Snapshot}
  */
-function isRunnerState(value) {
-	if (typeof value !== 'object' || value === null) return false
-	const v = /** @type {{ snapshot?: unknown }} */ (value)
-	const s = v.snapshot
+function isSnapshot(value) {
 	return (
-		typeof s === 'object' &&
-		s !== null &&
-		typeof (/** @type {{ state?: unknown }} */ (s).state) === 'string' &&
-		'context' in s
+		typeof value === 'object' &&
+		value !== null &&
+		typeof (/** @type {{ state?: unknown }} */ (value).state) === 'string' &&
+		'context' in value
 	)
 }

@@ -1,7 +1,7 @@
 // Live app runner. Hosts (Frieren Dynamic Worker DO, Bun dev harness) drive
 // app lifecycle through this single class so that invoke semantics — pure
 // dispatch, state-entry task startup, abort on state exit, stale-result
-// discard, persisted bookkeeping — are identical everywhere.
+// discard — are identical everywhere.
 //
 // The pure runtime helpers in `runtime.ts` are still the source of truth for
 // transition validation, projection, and tool descriptors; the runner only
@@ -21,47 +21,36 @@ import {
 	tools as pureTools,
 	type ToolDescriptor
 } from './runtime.js'
-import type {
-	AnyTask,
-	InvocationMeta,
-	InvokeDef,
-	RunnerState,
-	TaskContext,
-	TaskError
-} from './tasks.js'
+import type { AnyTask, InvokeDef, TaskContext, TaskError } from './tasks.js'
 import { SYSTEM_ACTOR } from './tasks.js'
 
 type AnyInvokeDef = InvokeDef<Record<string, AnyTask>, string, unknown>
 
-type ActiveInvoke = {
-	meta: InvocationMeta
-	controller: AbortController
-}
+type ActiveInvoke = { runId: string; controller: AbortController }
 
 /**
  * Persistence boundary for the runner. Hosts plug in CF DO storage, an
- * in-memory map, etc. Both methods may throw — the caller's behavior on
- * failure is host-defined.
+ * in-memory map, etc.
  */
 export interface RunnerStorage {
-	load(): Promise<RunnerState | undefined>
-	save(state: RunnerState): Promise<void>
+	load(): Promise<Snapshot | undefined>
+	save(snapshot: Snapshot): Promise<void>
 }
 
 /** In-memory storage convenient for tests and ephemeral hosts. */
 export function memoryStorage(): RunnerStorage {
-	let saved: RunnerState | undefined
+	let saved: Snapshot | undefined
 	return {
 		async load() {
 			return saved
 		},
-		async save(state) {
-			saved = state
+		async save(s) {
+			saved = s
 		}
 	}
 }
 
-export interface RunnerOptions<Host = Record<string, never>> {
+export interface RunnerOptions {
 	app: AnyApp
 	storage?: RunnerStorage
 	/**
@@ -69,14 +58,9 @@ export interface RunnerOptions<Host = Record<string, never>> {
 	 * `TaskContext` so capability bridges, env, etc. reach task handlers
 	 * without leaking into pure engine code.
 	 */
-	host?: () => Host
+	host?: () => object
 	/** Notified after each successful state change (including system results). */
 	onChange?: (snapshot: Snapshot) => void
-	/**
-	 * Notified when a task completes or fails. Hosts may surface for logging;
-	 * stale/aborted outcomes are not reported here.
-	 */
-	onTaskSettled?: (event: { invocation: InvocationMeta; ok: boolean; error?: TaskError }) => void
 }
 
 export type RunnerDispatchResult = DispatchOk<Snapshot, unknown> | DispatchErr
@@ -84,24 +68,22 @@ export type RunnerDispatchResult = DispatchOk<Snapshot, unknown> | DispatchErr
 /**
  * Live app runner. Construct, then `await start()` before dispatching.
  */
-export class Runner<Host = Record<string, never>> {
+export class Runner {
 	#app: AnyApp
 	#storage: RunnerStorage
-	#host?: () => Host
+	#host?: () => object
 	#onChange?: (snapshot: Snapshot) => void
-	#onTaskSettled?: RunnerOptions['onTaskSettled']
 	#snapshot: Snapshot
 	#active = new Map<string, ActiveInvoke>()
 	#queue: Promise<unknown> = Promise.resolve()
 	#started = false
 	#stopped = false
 
-	constructor(opts: RunnerOptions<Host>) {
+	constructor(opts: RunnerOptions) {
 		this.#app = opts.app
 		this.#storage = opts.storage ?? memoryStorage()
 		this.#host = opts.host
 		this.#onChange = opts.onChange
-		this.#onTaskSettled = opts.onTaskSettled
 		this.#snapshot = initialSnapshot(this.#app)
 	}
 
@@ -113,11 +95,11 @@ export class Runner<Host = Record<string, never>> {
 		if (this.#started) return this.#snapshot
 		this.#started = true
 		const loaded = await this.#storage.load()
-		if (loaded?.snapshot) {
-			this.#snapshot = loaded.snapshot
+		if (loaded) {
+			this.#snapshot = loaded
 		} else {
 			this.#snapshot = initialSnapshot(this.#app)
-			await this.#persist()
+			await this.#storage.save(this.#snapshot)
 		}
 		this.#startInvokesForState()
 		return this.#snapshot
@@ -160,7 +142,7 @@ export class Runner<Host = Record<string, never>> {
 		return this.#enqueue(async () => {
 			this.#abortAll()
 			this.#snapshot = initialSnapshot(this.#app)
-			await this.#persist()
+			await this.#storage.save(this.#snapshot)
 			this.#onChange?.(this.#snapshot)
 			this.#startInvokesForState()
 			return this.#snapshot
@@ -183,7 +165,7 @@ export class Runner<Host = Record<string, never>> {
 		if (prevState !== nextState) {
 			this.#abortAll()
 		}
-		await this.#persist()
+		await this.#storage.save(this.#snapshot)
 		this.#onChange?.(this.#snapshot)
 		if (prevState !== nextState) {
 			this.#startInvokesForState()
@@ -226,31 +208,21 @@ export class Runner<Host = Record<string, never>> {
 		const task = tasks?.[invokeDef.src]
 		if (!task) {
 			// Misconfigured app: surface via onError so author sees the failure.
-			const err: TaskError = {
+			this.#fireResultAction(invokeDef, false, undefined, {
 				code: 'TASK_FAILED',
 				message: `unknown task: ${invokeDef.src}`
-			}
-			this.#fireResultAction(invokeDef, false, undefined, err)
+			})
 			return
 		}
 		const runId = newRunId()
 		const controller = new AbortController()
-		const meta: InvocationMeta = {
-			id,
-			src: invokeDef.src,
-			state: this.#snapshot.state,
-			runId,
-			startedAt: Date.now()
-		}
-		this.#active.set(id, { meta, controller })
-		this.#persist().catch(() => undefined)
+		this.#active.set(id, { runId, controller })
 
 		const input = invokeDef.input
 			? invokeDef.input({ context: this.#snapshot.context, snapshot: this.#snapshot })
 			: undefined
-		const hostCtx = this.#host ? this.#host() : ({} as Host)
 		const ctx = {
-			...(hostCtx as object),
+			...(this.#host ? this.#host() : {}),
 			input,
 			snapshot: this.#snapshot,
 			signal: controller.signal
@@ -267,8 +239,6 @@ export class Runner<Host = Record<string, never>> {
 	#onTaskSuccess(id: string, runId: string, invokeDef: AnyInvokeDef, output: unknown): void {
 		if (!this.#isCurrent(id, runId)) return
 		this.#active.delete(id)
-		this.#persist().catch(() => undefined)
-		this.#onTaskSettled?.({ invocation: this.#metaFor(id, runId, invokeDef), ok: true })
 		this.#fireResultAction(invokeDef, true, output, undefined)
 	}
 
@@ -281,26 +251,13 @@ export class Runner<Host = Record<string, never>> {
 	): void {
 		if (!this.#isCurrent(id, runId)) return
 		this.#active.delete(id)
-		this.#persist().catch(() => undefined)
 		if (aborted) return
-		const error = normalizeError(err)
-		this.#onTaskSettled?.({ invocation: this.#metaFor(id, runId, invokeDef), ok: false, error })
-		this.#fireResultAction(invokeDef, false, undefined, error)
-	}
-
-	#metaFor(id: string, runId: string, invokeDef: AnyInvokeDef): InvocationMeta {
-		return {
-			id,
-			src: invokeDef.src,
-			state: this.#snapshot.state,
-			runId,
-			startedAt: Date.now()
-		}
+		this.#fireResultAction(invokeDef, false, undefined, normalizeError(err))
 	}
 
 	#isCurrent(id: string, runId: string): boolean {
 		const cur = this.#active.get(id)
-		return !!cur && cur.meta.runId === runId
+		return !!cur && cur.runId === runId
 	}
 
 	#fireResultAction(
@@ -323,11 +280,6 @@ export class Runner<Host = Record<string, never>> {
 	#abortAll(): void {
 		for (const { controller } of this.#active.values()) controller.abort()
 		this.#active.clear()
-	}
-
-	async #persist(): Promise<void> {
-		const invocations: InvocationMeta[] = [...this.#active.values()].map((a) => a.meta)
-		await this.#storage.save({ snapshot: this.#snapshot, invocations })
 	}
 }
 

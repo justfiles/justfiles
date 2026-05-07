@@ -14,7 +14,6 @@ import type {
 	StateDefs,
 	TransitionDef
 } from './engine.js'
-import type { TasksRecord } from './tasks.js'
 
 export type DispatchOk<S, V> = {
 	ok: true
@@ -32,23 +31,21 @@ export type ToolDescriptor = { name: string; description?: string; parameters: u
 export function initial<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V, Tasks>): Snapshot<TState, TContext> {
+>(app: App<TState, TContext, States, TActor, V>): Snapshot<TState, TContext> {
 	return { state: app.engine.initial, context: app.engine.context }
 }
 
 export function dispatch<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V, Tasks>,
+	app: App<TState, TContext, States, TActor, V>,
 	state: Snapshot<TState, TContext>,
 	action: Action,
 	actor: TActor
@@ -88,12 +85,11 @@ export function dispatch<
 export function view<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V, Tasks>,
+	app: App<TState, TContext, States, TActor, V>,
 	state: Snapshot<TState, TContext>,
 	actor: TActor
 ): V {
@@ -103,11 +99,10 @@ export function view<
 export function tools<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V, Tasks>, actor?: TActor): ToolDescriptor[] {
+>(app: App<TState, TContext, States, TActor, V>, actor?: TActor): ToolDescriptor[] {
 	const entries = Object.entries(transitionDefs(app))
 	const filtered = actor ? entries.filter(([_, def]) => actorAllowed(def, actor)) : entries
 	return filtered.map(([name, def]) => ({
@@ -120,12 +115,11 @@ export function tools<
 export function allows<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V, Tasks>,
+	app: App<TState, TContext, States, TActor, V>,
 	state: Snapshot<TState, TContext>,
 	actor: TActor,
 	action: Action
@@ -137,12 +131,11 @@ export function allows<
 export function availableActions<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V, Tasks>,
+	app: App<TState, TContext, States, TActor, V>,
 	state: Snapshot<TState, TContext>,
 	actor: TActor
 ): readonly Action[] | null {
@@ -155,45 +148,34 @@ export function availableActions<
 export function done<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
->(
-	app: App<TState, TContext, States, TActor, V, Tasks>,
-	state: Snapshot<TState, TContext>
-): boolean {
+>(app: App<TState, TContext, States, TActor, V>, state: Snapshot<TState, TContext>): boolean {
 	return app.done ? app.done(state) : false
 }
 
 export function briefing<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V, Tasks>): string | null {
+>(app: App<TState, TContext, States, TActor, V>): string | null {
 	return app.agent?.briefing ?? null
 }
 
 function transitionDefs<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V, Tasks>
+	app: App<TState, TContext, States, TActor, V>
 ): Record<string, TransitionDef<Type.TSchema, TState, TContext, TActor>> {
 	const defs: Record<string, TransitionDef<Type.TSchema, TState, TContext, TActor>> = {}
-	for (const state of Object.values(app.engine.states) as StateDef<
-		TState,
-		TContext,
-		TActor,
-		Tasks
-	>[]) {
+	for (const state of Object.values(app.engine.states) as StateDef<TState, TContext, TActor>[]) {
 		for (const [type, def] of Object.entries(state.on ?? {})) defs[type] ??= def
 	}
 	return defs
@@ -202,12 +184,11 @@ function transitionDefs<
 function transitionDef<
 	TState extends string,
 	TContext,
-	Tasks extends TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks>,
+	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V, Tasks>,
+	app: App<TState, TContext, States, TActor, V>,
 	type: string
 ): TransitionDef<Type.TSchema, TState, TContext, TActor> | undefined {
 	return transitionDefs(app)[type]

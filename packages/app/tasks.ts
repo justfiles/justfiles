@@ -65,8 +65,12 @@ export function defineTasks<T extends TasksRecord>(tasks: T): T {
 	return tasks
 }
 
-export type InputOf<T> = T extends Task<infer I, unknown> ? I : never
-export type OutputOf<T> = T extends Task<unknown, infer O> ? O : never
+// Inferred via the phantom `__input`/`__output` fields rather than the
+// handler signature: `Input` appears in a contravariant position on the
+// handler, so `T extends Task<infer I, _>` would only match when `I` is the
+// top type. The phantoms sidestep that.
+export type InputOf<T> = T extends { __input?: infer I } ? I : never
+export type OutputOf<T> = T extends { __output?: infer O } ? O : never
 
 /** Args passed to `invoke.input(...)`. */
 export type InvokeInputArgs<TState extends string, TContext> = {
@@ -107,26 +111,6 @@ export type InvokeDef<
 export type InvokeConfig<Tasks extends TasksRecord, TState extends string, TContext> =
 	| InvokeDef<Tasks, TState, TContext>
 	| ReadonlyArray<InvokeDef<Tasks, TState, TContext>>
-
-/**
- * Per-invoke runtime metadata persisted alongside the snapshot. Authors do
- * not see this — runner-private bookkeeping only.
- */
-export type InvocationMeta = {
-	id: string
-	src: string
-	state: string
-	runId: string
-	startedAt: number
-}
-
-/**
- * Persisted runner state: the pure snapshot plus invoke bookkeeping.
- */
-export type RunnerState<TState extends string = string, TContext = unknown> = {
-	snapshot: Snapshot<TState, TContext>
-	invocations: InvocationMeta[]
-}
 
 /** System actor used for task result actions. */
 export const SYSTEM_ACTOR: Actor = { id: 'system', kind: 'system' }
