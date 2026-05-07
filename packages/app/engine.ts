@@ -82,20 +82,27 @@ export type StateDef<
 	TState extends string,
 	TContext,
 	TActor extends Actor,
-	Tasks extends TasksRecord = TasksRecord
+	Tasks extends TasksRecord = TasksRecord,
+	Actions extends Action = Action
 > = {
 	on?: Record<string, TransitionDef<Type.TSchema, TState, TContext, TActor>>
-	invoke?: InvokeConfig<Tasks, TState, TContext>
+	invoke?: InvokeConfig<Tasks, TState, TContext, Actions>
 }
 
 export type StateDefs<
 	TState extends string,
 	TContext,
 	TActor extends Actor,
-	Tasks extends TasksRecord = TasksRecord
-> = Record<TState, StateDef<TState, TContext, TActor, Tasks>>
+	Tasks extends TasksRecord = TasksRecord,
+	Actions extends Action = Action
+> = Record<TState, StateDef<TState, TContext, TActor, Tasks, Actions>>
 
-type TransitionsOf<States> = States[keyof States & string] extends { on?: infer T } ? T : never
+// Skip states without `on` so the union doesn't collapse to `never` when any
+// state has no transitions (the optional-`on?` form would distribute into
+// `undefined` for those, killing the resulting key set).
+type TransitionsOf<States> = {
+	[K in keyof States]: States[K] extends { on: infer T } ? T : never
+}[keyof States]
 
 export type ActionFromStates<States> = {
 	[K in keyof TransitionsOf<States> & string]: TransitionsOf<States>[K] extends TransitionDef<
@@ -125,23 +132,45 @@ export interface Engine<
 }
 
 /**
- * Define an Engine with full type inference. Pass the engine object literal
- * and `TState`, `TContext`, `States`, `TActor`, `V`, `Tasks` are inferred.
+ * Engine builder returned by `setup()`. The two-step setup-then-engine flow
+ * mirrors XState v5: `setup()` binds type-determining inputs (tasks) up
+ * front, then `.engine()` checks the state literal with those types already
+ * concrete. This breaks the recursion that prevents typing `invoke.onDone`'s
+ * return as `ActionFromStates<States>` in a single-call API.
  */
-export function define<
-	TState extends string,
-	TContext,
-	TActor extends Actor = Actor,
-	Tasks extends TasksRecord = TasksRecord,
-	States extends StateDefs<TState, TContext, TActor, Tasks> = StateDefs<
-		TState,
+export interface EngineBuilder<Tasks extends TasksRecord> {
+	engine<
+		TState extends string,
 		TContext,
-		TActor,
-		Tasks
-	>,
-	V = Snapshot<TState, TContext>
->(
-	engine: Engine<TState, TContext, States, TActor, V, Tasks>
-): Engine<TState, TContext, States, TActor, V, Tasks> {
-	return engine
+		States extends StateDefs<TState, TContext, TActor, Tasks, ActionFromStates<States>>,
+		TActor extends Actor = Actor,
+		V = Snapshot<TState, TContext>
+	>(config: {
+		initial: TState
+		context: TContext
+		states: States
+		view?(snapshot: Snapshot<TState, TContext>, actor: TActor): V
+	}): Engine<TState, TContext, States, TActor, V, Tasks>
+}
+
+/**
+ * Bind tasks (and any future setup-time types), then call `.engine(...)` to
+ * declare the state machine. Without `tasks`, `setup()` is the no-op entry
+ * point — equivalent to a defaulted-Tasks engine.
+ */
+export function setup<Tasks extends TasksRecord = TasksRecord>(
+	config: { tasks?: Tasks } = {}
+): EngineBuilder<Tasks> {
+	return {
+		// biome-ignore lint/suspicious/noExplicitAny: builder erases generics internally; the public signature is exact
+		engine(literal: any): any {
+			return {
+				initial: literal.initial,
+				context: literal.context,
+				states: literal.states,
+				...(literal.view ? { view: literal.view } : {}),
+				...(config.tasks ? { tasks: config.tasks } : {})
+			}
+		}
+	}
 }

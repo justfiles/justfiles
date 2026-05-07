@@ -92,25 +92,33 @@ export type InvokeOnErrorArgs<TContext> = {
 
 /**
  * Invoke configuration on a state. `Tasks` comes from the engine; `K` selects
- * one task and gates `input`/`onDone` types.
+ * one task and gates `input`/`onDone` types. `Actions` is the engine's typed
+ * action union — bound by `setup()` so `onDone`/`onError` returns must be a
+ * declared transition's action.
  */
 export type InvokeDef<
 	Tasks extends TasksRecord,
 	TState extends string,
 	TContext,
+	Actions extends Action = Action,
 	K extends keyof Tasks & string = keyof Tasks & string
 > = {
 	src: K
 	id?: string
 	reenter?: boolean
 	input?: (args: InvokeInputArgs<TState, TContext>) => InputOf<Tasks[K]>
-	onDone?: (args: InvokeOnDoneArgs<TContext, OutputOf<Tasks[K]>>) => Action | null
-	onError?: (args: InvokeOnErrorArgs<TContext>) => Action | null
+	onDone?: (args: InvokeOnDoneArgs<TContext, OutputOf<Tasks[K]>>) => Actions | null
+	onError?: (args: InvokeOnErrorArgs<TContext>) => Actions | null
 }
 
-export type InvokeConfig<Tasks extends TasksRecord, TState extends string, TContext> =
-	| InvokeDef<Tasks, TState, TContext>
-	| ReadonlyArray<InvokeDef<Tasks, TState, TContext>>
+export type InvokeConfig<
+	Tasks extends TasksRecord,
+	TState extends string,
+	TContext,
+	Actions extends Action = Action
+> =
+	| InvokeDef<Tasks, TState, TContext, Actions>
+	| ReadonlyArray<InvokeDef<Tasks, TState, TContext, Actions>>
 
 /** System actor used for task result actions. */
 export const SYSTEM_ACTOR: Actor = { id: 'system', kind: 'system' }

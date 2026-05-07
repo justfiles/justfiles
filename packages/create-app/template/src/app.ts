@@ -1,11 +1,11 @@
-import { defineApp, defineEngine } from '@justfiles/app'
+import { defineApp, setup } from '@justfiles/app'
 import { Type } from 'typebox'
 
 type Context = {
 	count: number
 }
 
-const engine = defineEngine({
+const engine = setup().engine({
 	initial: 'ready',
 	context: { count: 0 } satisfies Context,
 	states: {

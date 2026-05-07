@@ -1,4 +1,4 @@
-import { defineApp, defineEngine } from '@justfiles/app'
+import { defineApp, setup } from '@justfiles/app'
 import { Type } from 'typebox'
 import { addBlocks } from './blocks.js'
 import { place } from './placement.js'
@@ -177,7 +177,7 @@ function viewFor(snapshot: { state: string; context: Context }, actor: { kind?: 
 	}
 }
 
-const engine = defineEngine({
+const engine = setup().engine({
 	initial: 'init' as 'init' | 'themed' | 'filling' | 'review' | 'playing' | 'solved',
 	context: resetContext(),
 	view: viewFor,

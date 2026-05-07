@@ -1,6 +1,6 @@
-import { defineApp, defineEngine } from '@justfiles/app'
+import { defineApp, setup } from '@justfiles/app'
 
-const engine = defineEngine({
+const engine = setup().engine({
 	initial: 'playing',
 	context: {},
 	states: {

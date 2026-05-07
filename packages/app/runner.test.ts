@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Type } from 'typebox'
 import { define as defineApp } from './app.js'
-import { type Snapshot, define as defineEngine } from './engine.js'
+import { type Snapshot, setup } from './engine.js'
 import { Runner } from './runner.js'
 import { defineTasks, task } from './tasks.js'
 
@@ -23,8 +23,7 @@ function loadingApp() {
 	return defineApp({
 		name: 'loading-test',
 		description: 'invoke test app',
-		engine: defineEngine({
-			tasks,
+		engine: setup({ tasks }).engine({
 			initial: 'loading' as 'idle' | 'loading' | 'briefing' | 'failed',
 			context: initialContext,
 			states: {
@@ -114,8 +113,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'stale',
 			description: '',
-			engine: defineEngine({
-				tasks,
+			engine: setup({ tasks }).engine({
 				initial: 'loading' as 'loading' | 'idle' | 'done',
 				context: {},
 				states: {
@@ -157,8 +155,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'fail',
 			description: '',
-			engine: defineEngine({
-				tasks,
+			engine: setup({ tasks }).engine({
 				initial: 'loading' as 'loading' | 'failed',
 				context: { msg: '' },
 				states: {
@@ -194,7 +191,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'plain',
 			description: '',
-			engine: defineEngine({
+			engine: setup().engine({
 				initial: 'a' as 'a' | 'b',
 				context: { n: 0 },
 				states: {
@@ -231,8 +228,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'reenter',
 			description: '',
-			engine: defineEngine({
-				tasks,
+			engine: setup({ tasks }).engine({
 				initial: 'loading' as 'loading',
 				context: {},
 				states: {
@@ -272,8 +268,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'reenter',
 			description: '',
-			engine: defineEngine({
-				tasks,
+			engine: setup({ tasks }).engine({
 				initial: 'loading' as 'loading',
 				context: {},
 				states: {
@@ -305,8 +300,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'multi',
 			description: '',
-			engine: defineEngine({
-				tasks,
+			engine: setup({ tasks }).engine({
 				initial: 'loading' as 'loading',
 				context: {},
 				states: {
@@ -386,6 +380,47 @@ describe('Runner invoke lifecycle', () => {
 		expect(userTools).not.toContain('load_failed')
 	})
 
+	test('onDone return type is inferred from the engine action union', async () => {
+		const tasks = defineTasks({
+			load: task<void, { items: number[] }>(async () => ({ items: [1, 2] }))
+		})
+		const app = defineApp({
+			name: 'typed',
+			description: '',
+			engine: setup({ tasks }).engine({
+				initial: 'a' as 'a' | 'b',
+				context: { items: [] as number[] },
+				states: {
+					a: {
+						on: {
+							gotItems: {
+								schema: Type.Object({ items: Type.Array(Type.Number()) }),
+								actor: 'system',
+								target: 'b',
+								actions: ({ action }) => ({
+									items: (action.payload as { items: number[] }).items
+								})
+							}
+						},
+						invoke: {
+							src: 'load',
+							// onDone's return is constrained to ActionFromStates<States>:
+							// `type` must be 'gotItems' and `payload` must match its schema.
+							onDone: ({ output }) => ({ type: 'gotItems' as const, payload: output })
+						}
+					},
+					b: {}
+				}
+			})
+		})
+		const runner = new Runner({ app })
+		await runner.start()
+		await flush()
+		await flush()
+		expect(runner.snapshot.state).toBe('b')
+		expect((runner.snapshot.context as { items: number[] }).items).toEqual([1, 2])
+	})
+
 	test('storage receives bare snapshot (no runtime metadata)', async () => {
 		let last: Snapshot | undefined
 		const storage = {
@@ -399,7 +434,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'persist',
 			description: '',
-			engine: defineEngine({
+			engine: setup().engine({
 				initial: 'a' as 'a' | 'b',
 				context: { n: 0 },
 				states: {
