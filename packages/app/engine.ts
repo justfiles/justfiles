@@ -10,6 +10,7 @@
 //   + actor views   + view(snapshot, actor) // GUI for humans, data for agents
 
 import type Type from 'typebox'
+import type { InvokeConfig, TasksRecord } from './tasks.js'
 
 export type Action<T extends string = string, P = unknown> = {
 	type: T
@@ -77,14 +78,22 @@ export type TransitionDef<
 	): string | null
 }
 
-export type StateDef<TState extends string, TContext, TActor extends Actor> = {
+export type StateDef<
+	TState extends string,
+	TContext,
+	TActor extends Actor,
+	Tasks extends TasksRecord = TasksRecord
+> = {
 	on?: Record<string, TransitionDef<Type.TSchema, TState, TContext, TActor>>
+	invoke?: InvokeConfig<Tasks, TState, TContext>
 }
 
-export type StateDefs<TState extends string, TContext, TActor extends Actor> = Record<
-	TState,
-	StateDef<TState, TContext, TActor>
->
+export type StateDefs<
+	TState extends string,
+	TContext,
+	TActor extends Actor,
+	Tasks extends TasksRecord = TasksRecord
+> = Record<TState, StateDef<TState, TContext, TActor, Tasks>>
 
 type TransitionsOf<States> = States[keyof States & string] extends { on?: infer T } ? T : never
 
@@ -103,28 +112,36 @@ export type ActionFromStates<States> = {
 export interface Engine<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor = Actor,
-	V = Snapshot<TState, TContext>
+	V = Snapshot<TState, TContext>,
+	Tasks extends TasksRecord = TasksRecord
 > {
 	initial: TState
 	context: TContext
 	states: States
+	tasks?: Tasks
 	view?(snapshot: Snapshot<TState, TContext>, actor: TActor): V
 }
 
 /**
  * Define an Engine with full type inference. Pass the engine object literal
- * and `TState`, `TContext`, `States`, `TActor`, `V` are inferred.
+ * and `TState`, `TContext`, `States`, `TActor`, `V`, `Tasks` are inferred.
  */
 export function define<
 	TState extends string,
 	TContext,
 	TActor extends Actor = Actor,
-	States extends StateDefs<TState, TContext, TActor> = StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord = TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks> = StateDefs<
+		TState,
+		TContext,
+		TActor,
+		Tasks
+	>,
 	V = Snapshot<TState, TContext>
 >(
-	engine: Engine<TState, TContext, States, TActor, V>
-): Engine<TState, TContext, States, TActor, V> {
+	engine: Engine<TState, TContext, States, TActor, V, Tasks>
+): Engine<TState, TContext, States, TActor, V, Tasks> {
 	return engine
 }

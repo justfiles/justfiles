@@ -41,3 +41,22 @@ export {
 	tools,
 	view
 } from './runtime.js'
+export {
+	type AnyTask,
+	defineTasks,
+	type InputOf,
+	type InvocationMeta,
+	type InvokeConfig,
+	type InvokeDef,
+	type InvokeInputArgs,
+	type InvokeOnDoneArgs,
+	type InvokeOnErrorArgs,
+	type OutputOf,
+	type RunnerState,
+	SYSTEM_ACTOR,
+	type Task,
+	type TaskContext,
+	type TaskError,
+	type TasksRecord,
+	task
+} from './tasks.js'

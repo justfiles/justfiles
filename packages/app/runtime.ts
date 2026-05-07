@@ -14,6 +14,7 @@ import type {
 	StateDefs,
 	TransitionDef
 } from './engine.js'
+import type { TasksRecord } from './tasks.js'
 
 export type DispatchOk<S, V> = {
 	ok: true
@@ -31,21 +32,23 @@ export type ToolDescriptor = { name: string; description?: string; parameters: u
 export function initial<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V>): Snapshot<TState, TContext> {
+>(app: App<TState, TContext, States, TActor, V, Tasks>): Snapshot<TState, TContext> {
 	return { state: app.engine.initial, context: app.engine.context }
 }
 
 export function dispatch<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V>,
+	app: App<TState, TContext, States, TActor, V, Tasks>,
 	state: Snapshot<TState, TContext>,
 	action: Action,
 	actor: TActor
@@ -85,11 +88,12 @@ export function dispatch<
 export function view<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V>,
+	app: App<TState, TContext, States, TActor, V, Tasks>,
 	state: Snapshot<TState, TContext>,
 	actor: TActor
 ): V {
@@ -99,11 +103,14 @@ export function view<
 export function tools<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V>): ToolDescriptor[] {
-	return Object.entries(transitionDefs(app)).map(([name, def]) => ({
+>(app: App<TState, TContext, States, TActor, V, Tasks>, actor?: TActor): ToolDescriptor[] {
+	const entries = Object.entries(transitionDefs(app))
+	const filtered = actor ? entries.filter(([_, def]) => actorAllowed(def, actor)) : entries
+	return filtered.map(([name, def]) => ({
 		name,
 		description: def.description,
 		parameters: def.schema
@@ -113,11 +120,12 @@ export function tools<
 export function allows<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V>,
+	app: App<TState, TContext, States, TActor, V, Tasks>,
 	state: Snapshot<TState, TContext>,
 	actor: TActor,
 	action: Action
@@ -129,11 +137,12 @@ export function allows<
 export function availableActions<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V>,
+	app: App<TState, TContext, States, TActor, V, Tasks>,
 	state: Snapshot<TState, TContext>,
 	actor: TActor
 ): readonly Action[] | null {
@@ -146,34 +155,45 @@ export function availableActions<
 export function done<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V>, state: Snapshot<TState, TContext>): boolean {
+>(
+	app: App<TState, TContext, States, TActor, V, Tasks>,
+	state: Snapshot<TState, TContext>
+): boolean {
 	return app.done ? app.done(state) : false
 }
 
 export function briefing<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V>): string | null {
+>(app: App<TState, TContext, States, TActor, V, Tasks>): string | null {
 	return app.agent?.briefing ?? null
 }
 
 function transitionDefs<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V>
+	app: App<TState, TContext, States, TActor, V, Tasks>
 ): Record<string, TransitionDef<Type.TSchema, TState, TContext, TActor>> {
 	const defs: Record<string, TransitionDef<Type.TSchema, TState, TContext, TActor>> = {}
-	for (const state of Object.values(app.engine.states) as StateDef<TState, TContext, TActor>[]) {
+	for (const state of Object.values(app.engine.states) as StateDef<
+		TState,
+		TContext,
+		TActor,
+		Tasks
+	>[]) {
 		for (const [type, def] of Object.entries(state.on ?? {})) defs[type] ??= def
 	}
 	return defs
@@ -182,11 +202,12 @@ function transitionDefs<
 function transitionDef<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	Tasks extends TasksRecord,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
 	V
 >(
-	app: App<TState, TContext, States, TActor, V>,
+	app: App<TState, TContext, States, TActor, V, Tasks>,
 	type: string
 ): TransitionDef<Type.TSchema, TState, TContext, TActor> | undefined {
 	return transitionDefs(app)[type]
@@ -210,6 +231,20 @@ function allowsTransition<
 		if (Array.isArray(def.actor) && !actorMatches(actor, def.actor)) return false
 	}
 	return def.guard ? def.guard(args) : true
+}
+
+// Looser "is this actor permitted by the gate at all?" check used to filter
+// agent tool descriptors. Skips guard/payload because we have neither a
+// snapshot nor a payload at descriptor-listing time.
+function actorAllowed<TState extends string, TContext, TActor extends Actor>(
+	def: TransitionDef<Type.TSchema, TState, TContext, TActor>,
+	actor: TActor
+): boolean {
+	if (!def.actor) return true
+	if (typeof def.actor === 'function') return true
+	if (typeof def.actor === 'string') return actorMatches(actor, [def.actor])
+	if (Array.isArray(def.actor)) return actorMatches(actor, def.actor)
+	return true
 }
 
 function actorMatches(actor: Actor, names: readonly string[]): boolean {

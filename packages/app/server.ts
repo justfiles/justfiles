@@ -7,12 +7,7 @@
 import type { HTMLBundle, Server, ServerWebSocket } from 'bun'
 import type { AnyApp } from './app.js'
 import type { Action, Actor } from './engine.js'
-import {
-	dispatch,
-	briefing as getBriefing,
-	initial as getInitial,
-	view as getView
-} from './runtime.js'
+import { Runner } from './runner.js'
 
 type SocketData = Record<string, never>
 
@@ -21,6 +16,11 @@ export interface ServeAppOptions {
 	html: HTMLBundle
 	port?: number
 	actor?: Actor
+	/**
+	 * Optional task host context factory. The Bun harness has no broker, so
+	 * authors typically pass fakes here for local iteration.
+	 */
+	taskHost?: () => Record<string, unknown>
 }
 
 interface Frame {
@@ -32,7 +32,6 @@ interface Frame {
 
 export function serveApp(opts: ServeAppOptions): Server<SocketData> {
 	const actor: Actor = opts.actor ?? { id: 'user', kind: 'human' }
-	let state = getInitial(opts.app)
 	const sockets = new Set<ServerWebSocket<SocketData>>()
 
 	const broadcastState = (newState: unknown) => {
@@ -43,6 +42,13 @@ export function serveApp(opts: ServeAppOptions): Server<SocketData> {
 		})
 		for (const s of sockets) s.send(note)
 	}
+
+	const runner = new Runner({
+		app: opts.app,
+		host: opts.taskHost,
+		onChange: () => broadcastState(runner.view(actor))
+	})
+	const ready = runner.start()
 
 	return Bun.serve<SocketData, '/__app' | '/*'>({
 		port: opts.port,
@@ -60,31 +66,30 @@ export function serveApp(opts: ServeAppOptions): Server<SocketData> {
 			close(ws) {
 				sockets.delete(ws)
 			},
-			message(ws, raw) {
+			async message(ws, raw) {
 				let msg: Frame
 				try {
 					msg = JSON.parse(typeof raw === 'string' ? raw : new TextDecoder().decode(raw))
 				} catch {
 					return
 				}
+				await ready
 				if (msg.method === 'app.ready') {
 					ws.send(
 						JSON.stringify({
 							jsonrpc: '2.0',
 							id: msg.id,
 							result: {
-								state: getView(opts.app, state, actor),
-								briefing: getBriefing(opts.app)
+								state: runner.view(actor),
+								briefing: runner.briefing()
 							}
 						})
 					)
 					return
 				}
 				if (msg.method === 'app.action' && msg.params?.action) {
-					const result = dispatch(opts.app, state, msg.params.action, actor)
-					if (result.ok) state = result.next
+					const result = await runner.dispatch(msg.params.action, actor)
 					ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }))
-					if (result.ok) broadcastState(result.view)
 				}
 			}
 		},

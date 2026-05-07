@@ -15,20 +15,22 @@
 //     from the transition descriptors.
 
 import type { Actor, Engine, Snapshot, StateDefs } from './engine.js'
+import type { TasksRecord } from './tasks.js'
 
 export type { Transition } from './engine.js'
 
 export interface App<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
-	V
+	V,
+	Tasks extends TasksRecord = TasksRecord
 > {
 	name: string
 	description: string
 	icon?: string
-	engine: Engine<TState, TContext, States, TActor, V>
+	engine: Engine<TState, TContext, States, TActor, V, Tasks>
 	done?(snapshot: Snapshot<TState, TContext>): boolean
 	agent?: {
 		briefing?: string
@@ -43,7 +45,7 @@ export interface App<
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: existential erasure at the registry boundary
-export type AnyApp = App<any, any, any, Actor, any>
+export type AnyApp = App<any, any, any, Actor, any, any>
 
 // `__JUSTFILES_PKG__` is replaced with the package name (a string literal)
 // by `appBuilder()` via Vite's `define`. Outside that build it stays
@@ -58,10 +60,13 @@ declare const __JUSTFILES_PKG__: string
 export function define<
 	TState extends string,
 	TContext,
-	States extends StateDefs<TState, TContext, TActor>,
+	States extends StateDefs<TState, TContext, TActor, Tasks>,
 	TActor extends Actor,
-	V
->(app: App<TState, TContext, States, TActor, V>): App<TState, TContext, States, TActor, V> {
+	V,
+	Tasks extends TasksRecord = TasksRecord
+>(
+	app: App<TState, TContext, States, TActor, V, Tasks>
+): App<TState, TContext, States, TActor, V, Tasks> {
 	const pkg = typeof __JUSTFILES_PKG__ !== 'undefined' ? __JUSTFILES_PKG__ : undefined
 	return pkg ? { ...app, __pkg: pkg } : app
 }

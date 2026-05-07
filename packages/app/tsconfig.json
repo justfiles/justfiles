@@ -21,6 +21,8 @@
 		"app.ts",
 		"engine.ts",
 		"runtime.ts",
+		"runner.ts",
+		"tasks.ts",
 		"protocol.ts",
 		"server.ts",
 		"vite-plugin.ts",
