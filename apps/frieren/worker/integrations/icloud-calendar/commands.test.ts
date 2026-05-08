@@ -21,6 +21,9 @@ function fakeClient(overrides: Partial<CalDavClient> = {}): {
 			rec.listed.push(opts)
 			return overrides.listEvents ? overrides.listEvents(opts) : []
 		},
+		async listEventsBetween(start, end) {
+			return overrides.listEventsBetween ? overrides.listEventsBetween(start, end) : []
+		},
 		async readEvent(uid) {
 			rec.read.push(uid)
 			if (overrides.readEvent) return overrides.readEvent(uid)
