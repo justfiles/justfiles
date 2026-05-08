@@ -8,12 +8,7 @@
 import { RpcTarget } from 'cloudflare:workers'
 import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
 
-export {
-	type AppFacetScope,
-	appLoaderCacheKey,
-	type CapabilityGrant,
-	grantsHash
-} from './app-loader-key'
+export { type AppFacetScope, appLoaderCacheKey } from './app-loader-key'
 
 export class AppBridge extends RpcTarget {
 	#bridge: CapabilityBridge

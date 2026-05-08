@@ -6,8 +6,6 @@
 import type { CapabilityGrant } from '@justfiles/app/capabilities/broker'
 import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
 
-export type { CapabilityGrant }
-
 /**
  * Per-mount runtime context handed to `loadAppFacet`. Encodes who the
  * sandbox runs for, what they're allowed to do, and the broker that
@@ -35,8 +33,8 @@ export function appLoaderCacheKey(args: {
 	return `${args.appId}:${args.version}:${args.userId}:${grantsHash(args.grants)}`
 }
 
-/** Stable, order-independent hash of a grant set. */
-export function grantsHash(grants: readonly CapabilityGrant[]): string {
+// Stable, order-independent hash of a grant set.
+function grantsHash(grants: readonly CapabilityGrant[]): string {
 	const parts = grants.map((g) => `${g.capability}|${g.scope}|${g.accountId ?? ''}`).sort()
 	return fnv1a(parts.join('\n')).toString(16)
 }
