@@ -35,6 +35,11 @@
 			"@justfiles/src": "./query.ts",
 			"import": "./dist/query.js",
 			"default": "./dist/query.js"
+		},
+		"./node": {
+			"@justfiles/src": "./node.ts",
+			"import": "./dist/node.js",
+			"default": "./dist/node.js"
 		}
 	},
 	"bin": {

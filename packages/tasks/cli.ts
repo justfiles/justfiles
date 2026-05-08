@@ -3,12 +3,8 @@ import { homedir } from 'node:os'
 import { parseArgs } from 'node:util'
 import { parseDueInput, resolveTimezone, today } from './dates.ts'
 import { formatIds, formatJson, formatSections } from './format.ts'
-import {
-	createTaskManager,
-	findLocalTasksDir,
-	type TaskManager,
-	type TaskManagerOptions
-} from './index.ts'
+import type { TaskManager, TaskManagerOptions } from './index.ts'
+import { createNodeTaskManager, findLocalTasksDir } from './node.ts'
 import { isValidDue, type Recur } from './parse.ts'
 import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 import { isValidInterval } from './recur.ts'
@@ -146,7 +142,7 @@ async function scopedDir(local?: boolean): Promise<string> {
 }
 
 async function managerFor(local: boolean | undefined, opts: TaskManagerOptions) {
-	return createTaskManager(await scopedDir(local), opts)
+	return createNodeTaskManager(await scopedDir(local), opts)
 }
 
 async function cmdAdd(args: string[]): Promise<number> {
@@ -286,7 +282,7 @@ async function cmdEdit(args: string[]): Promise<number> {
 		return 2
 	}
 	const dir = await scopedDir(values.local)
-	const manager = await createTaskManager(dir, timezoneOption(values.tz))
+	const manager = await createNodeTaskManager(dir, timezoneOption(values.tz))
 	let id = positionals[0]?.trim()
 	if (!id) {
 		const picked = await pickTask(manager)
@@ -431,8 +427,8 @@ async function cmdList(args: string[]): Promise<number> {
 	if (values.all) {
 		const globalDir = tasksDir()
 		const localDir = await findLocalTasksDir(process.cwd())
-		const global = await (await createTaskManager(globalDir, opts)).listTasks()
-		const local = localDir ? await (await createTaskManager(localDir, opts)).listTasks() : []
+		const global = await (await createNodeTaskManager(globalDir, opts)).listTasks()
+		const local = localDir ? await (await createNodeTaskManager(localDir, opts)).listTasks() : []
 		tasks = [
 			...global.map((task) => ({
 				...task,
