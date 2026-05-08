@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Type } from 'typebox'
 import { define as defineApp } from './app.js'
+import { mockCapabilities } from './capabilities/core.js'
 import { email } from './capabilities/email/index.js'
 import { engine, type Snapshot } from './engine.js'
 import { Runner } from './runner.js'
@@ -499,22 +500,132 @@ describe('Runner invoke lifecycle', () => {
 					}
 				})
 		})
-		const fakeEmail = {
-			async listUnread() {
-				return [
+		const capabilities = mockCapabilities([email], {
+			email: {
+				listUnread: async () => [
 					{ id: '1', from: 'a', subject: 's', receivedAt: 0, unread: true },
 					{ id: '2', from: 'b', subject: 't', receivedAt: 0, unread: true }
 				]
 			}
-		}
+		})
 		const runner = new Runner({
 			app,
-			host: () => ({ capabilities: { email: fakeEmail } })
+			host: () => ({ capabilities })
 		})
 		await runner.start()
 		await flush()
 		await flush()
 		expect(runner.snapshot.state).toBe('done')
 		expect((runner.snapshot.context as { count: number }).count).toBe(2)
+	})
+
+	test('TaskError preserves capability/method when broker-style error is thrown', async () => {
+		const app = defineApp({
+			name: 'cap-err',
+			description: '',
+			engine: engine()
+				.withTasks(({ task }) => ({
+					boom: task<void, never>(async () => {
+						throw {
+							code: 'CAPABILITY_DENIED',
+							message: 'no read.unread grant',
+							capability: 'email',
+							method: 'listUnread'
+						}
+					})
+				}))
+				.build({
+					initial: 'loading' as 'loading' | 'failed',
+					context: { cap: '', method: '', code: '' },
+					states: {
+						loading: {
+							invoke: {
+								src: 'boom',
+								onError: ({ error }) => ({
+									type: 'failed',
+									payload: {
+										cap: error.capability ?? '',
+										method: error.method ?? '',
+										code: error.code
+									}
+								})
+							},
+							on: {
+								failed: {
+									schema: Type.Object({
+										cap: Type.String(),
+										method: Type.String(),
+										code: Type.String()
+									}),
+									actor: 'system',
+									target: 'failed',
+									actions: ({ action }) =>
+										action.payload as { cap: string; method: string; code: string }
+								}
+							}
+						},
+						failed: {}
+					}
+				})
+		})
+		const runner = new Runner({ app })
+		await runner.start()
+		await flush()
+		await flush()
+		expect(runner.snapshot.state).toBe('failed')
+		expect(runner.snapshot.context).toEqual({
+			cap: 'email',
+			method: 'listUnread',
+			code: 'CAPABILITY_DENIED'
+		})
+	})
+
+	test('host() factory receives TaskMeta for each invoke', async () => {
+		const seen: { taskId: string; state: string; runIdLen: number }[] = []
+		const app = defineApp({
+			name: 'meta',
+			description: '',
+			engine: engine()
+				.withTasks(({ task }) => ({
+					ping: task<void, string>(async () => 'ok')
+				}))
+				.build({
+					initial: 'loading' as 'loading' | 'done',
+					context: {},
+					states: {
+						loading: {
+							invoke: {
+								src: 'ping',
+								onDone: () => ({ type: 'finish', payload: {} })
+							},
+							on: {
+								finish: { schema: Type.Object({}), actor: 'system', target: 'done' }
+							}
+						},
+						done: {}
+					}
+				})
+		})
+		const runner = new Runner({
+			app,
+			host: (meta) => {
+				seen.push({ taskId: meta.taskId, state: meta.state, runIdLen: meta.runId.length })
+				return {}
+			}
+		})
+		await runner.start()
+		await flush()
+		await flush()
+		expect(seen.length).toBe(1)
+		expect(seen[0]?.taskId).toBe('ping')
+		expect(seen[0]?.state).toBe('loading')
+		expect(seen[0]?.runIdLen).toBeGreaterThan(0)
+	})
+
+	test('mockCapabilities throws on un-stubbed methods', () => {
+		const fakes = mockCapabilities([email], {})
+		expect(() => (fakes.email.listUnread as () => unknown)()).toThrow(
+			/email\.listUnread\(\) is not stubbed/
+		)
 	})
 })

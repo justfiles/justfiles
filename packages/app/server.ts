@@ -8,6 +8,7 @@ import type { HTMLBundle, Server, ServerWebSocket } from 'bun'
 import type { AnyApp } from './app.js'
 import type { Action, Actor } from './engine.js'
 import { Runner } from './runner.js'
+import type { TaskMeta } from './tasks.js'
 
 type SocketData = Record<string, never>
 
@@ -18,9 +19,11 @@ export interface ServeAppOptions {
 	actor?: Actor
 	/**
 	 * Optional task host context factory. The Bun harness has no broker, so
-	 * authors typically pass fakes here for local iteration.
+	 * authors typically pass fakes here for local iteration. `meta` carries
+	 * the active task id, run id, and state if the fake needs to branch on
+	 * which task is running.
 	 */
-	taskHost?: () => Record<string, unknown>
+	taskHost?: (meta: TaskMeta) => Record<string, unknown>
 }
 
 interface Frame {

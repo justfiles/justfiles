@@ -21,7 +21,7 @@ import {
 	tools as pureTools,
 	type ToolDescriptor
 } from './runtime.js'
-import type { AnyTask, InvokeDef, TaskContext, TaskError } from './tasks.js'
+import type { AnyTask, InvokeDef, TaskContext, TaskError, TaskMeta } from './tasks.js'
 import { SYSTEM_ACTOR } from './tasks.js'
 
 type AnyInvokeDef = InvokeDef<Record<string, AnyTask>, string, unknown>
@@ -56,9 +56,10 @@ export interface RunnerOptions {
 	/**
 	 * Per-invocation host context factory. Returned object is merged into
 	 * `TaskContext` so capability bridges, env, etc. reach task handlers
-	 * without leaking into pure engine code.
+	 * without leaking into pure engine code. `meta` lets the host correlate
+	 * provider-side audit logs to a specific task run.
 	 */
-	host?: () => object
+	host?: (meta: TaskMeta) => object
 	/** Notified after each successful state change (including system results). */
 	onChange?: (snapshot: Snapshot) => void
 }
@@ -71,7 +72,7 @@ export type RunnerDispatchResult = DispatchOk<Snapshot, unknown> | DispatchErr
 export class Runner {
 	#app: AnyApp
 	#storage: RunnerStorage
-	#host?: () => object
+	#host?: (meta: TaskMeta) => object
 	#onChange?: (snapshot: Snapshot) => void
 	#snapshot: Snapshot
 	#active = new Map<string, ActiveInvoke>()
@@ -221,7 +222,8 @@ export class Runner {
 		const input = invokeDef.input
 			? invokeDef.input({ context: this.#snapshot.context, snapshot: this.#snapshot })
 			: undefined
-		const hostFields = this.#host ? this.#host() : {}
+		const meta: TaskMeta = { taskId: invokeDef.src, runId, state: this.#snapshot.state }
+		const hostFields = this.#host ? this.#host(meta) : {}
 		const ctx = {
 			capabilities: {},
 			...hostFields,
@@ -294,9 +296,12 @@ function newRunId(): string {
 
 function normalizeError(err: unknown): TaskError {
 	if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
-		const e = err as { code: unknown; message: unknown }
+		const e = err as { code: unknown; message: unknown; capability?: unknown; method?: unknown }
 		if (typeof e.code === 'string' && typeof e.message === 'string') {
-			return { code: e.code as TaskError['code'], message: e.message }
+			const out: TaskError = { code: e.code as TaskError['code'], message: e.message }
+			if (typeof e.capability === 'string') out.capability = e.capability
+			if (typeof e.method === 'string') out.method = e.method
+			return out
 		}
 	}
 	const message = err instanceof Error ? err.message : String(err)

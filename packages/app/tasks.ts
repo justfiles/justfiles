@@ -23,12 +23,18 @@ export const TaskErrorSchema = Type.Object({
 		Type.Literal('CAPABILITY_DENIED'),
 		Type.Literal('CAPABILITY_FAILED')
 	]),
-	message: Type.String()
+	message: Type.String(),
+	capability: Type.Optional(Type.String()),
+	method: Type.Optional(Type.String())
 })
 
 export type TaskError = {
 	code: 'TASK_FAILED' | 'TASK_ABORTED' | 'CAPABILITY_DENIED' | 'CAPABILITY_FAILED'
 	message: string
+	// Populated only for CAPABILITY_* codes so `onError` can branch on which
+	// capability/method failed rather than string-matching `message`.
+	capability?: string
+	method?: string
 }
 
 /**
@@ -113,6 +119,10 @@ export type InvokeOnErrorArgs<TContext> = {
  * one task and gates `input`/`onDone` types. `Actions` is the engine's typed
  * action union — bound by `setup()` so `onDone`/`onError` returns must be a
  * declared transition's action.
+ *
+ * Per-task `uses: [...]` capability scope subsets are deferred (see #64).
+ * Per-app grants are sufficient for v1; revisit when an app declares 4+
+ * capabilities or 5+ tasks, or a security review flags per-app as too coarse.
  */
 export type InvokeDef<
 	Tasks extends TasksRecord,
@@ -140,3 +150,14 @@ export type InvokeConfig<
 
 /** System actor used for task result actions. */
 export const SYSTEM_ACTOR: Actor = { id: 'system', kind: 'system' }
+
+/**
+ * Metadata handed to the runner's `host()` factory at the start of each
+ * invoke. Lets the host (typically a capability broker) tag provider-side
+ * audit logs with the originating task run.
+ */
+export type TaskMeta = {
+	taskId: string
+	runId: string
+	state: string
+}

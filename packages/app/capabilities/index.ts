@@ -7,5 +7,6 @@ export {
 	type CapabilityInstance,
 	type CapabilityScope,
 	type CapsFromInstances,
-	defineCapability
+	defineCapability,
+	mockCapabilities
 } from './core.js'
