@@ -102,8 +102,10 @@ export function tools<
 	States extends StateDefs<TState, TContext, TActor>,
 	TActor extends Actor,
 	V
->(app: App<TState, TContext, States, TActor, V>): ToolDescriptor[] {
-	return Object.entries(transitionDefs(app)).map(([name, def]) => ({
+>(app: App<TState, TContext, States, TActor, V>, actor?: TActor): ToolDescriptor[] {
+	const entries = Object.entries(transitionDefs(app))
+	const filtered = actor ? entries.filter(([_, def]) => actorAllowed(def, actor)) : entries
+	return filtered.map(([name, def]) => ({
 		name,
 		description: def.description,
 		parameters: def.schema
@@ -210,6 +212,20 @@ function allowsTransition<
 		if (Array.isArray(def.actor) && !actorMatches(actor, def.actor)) return false
 	}
 	return def.guard ? def.guard(args) : true
+}
+
+// Looser "is this actor permitted by the gate at all?" check used to filter
+// agent tool descriptors. Skips guard/payload because we have neither a
+// snapshot nor a payload at descriptor-listing time.
+function actorAllowed<TState extends string, TContext, TActor extends Actor>(
+	def: TransitionDef<Type.TSchema, TState, TContext, TActor>,
+	actor: TActor
+): boolean {
+	if (!def.actor) return true
+	if (typeof def.actor === 'function') return true
+	if (typeof def.actor === 'string') return actorMatches(actor, [def.actor])
+	if (Array.isArray(def.actor)) return actorMatches(actor, def.actor)
+	return true
 }
 
 function actorMatches(actor: Actor, names: readonly string[]): boolean {

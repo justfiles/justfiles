@@ -8,8 +8,9 @@ export {
 	type ActionFromStates,
 	type Actor,
 	type ActorGate,
-	define as defineEngine,
 	type Engine,
+	type EngineBuilder,
+	setup,
 	type Snapshot,
 	type StateDef,
 	type StateDefs,
@@ -41,3 +42,20 @@ export {
 	tools,
 	view
 } from './runtime.js'
+export {
+	type AnyTask,
+	defineTasks,
+	type InputOf,
+	type InvokeConfig,
+	type InvokeDef,
+	type InvokeInputArgs,
+	type InvokeOnDoneArgs,
+	type InvokeOnErrorArgs,
+	type OutputOf,
+	SYSTEM_ACTOR,
+	type Task,
+	type TaskContext,
+	type TaskError,
+	type TasksRecord,
+	task
+} from './tasks.js'

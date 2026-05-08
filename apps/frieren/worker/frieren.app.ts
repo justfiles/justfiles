@@ -15,6 +15,7 @@ import { registry } from 'virtual:@justfiles/apps'
 import { createWorker } from '@cloudflare/worker-bundler'
 import type { Action, Actor } from '@justfiles/app'
 import bridgeJs from '@justfiles/app/client?raw'
+import runnerJs from '@justfiles/app/runner.js?raw'
 import runtimeJs from '@justfiles/app/runtime.js?raw'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import Type from 'typebox'
@@ -28,7 +29,7 @@ export interface AppFacet {
 	view(actor: Actor): Promise<unknown>
 	allows(actor: Actor, action: Action): Promise<boolean>
 	availableActions(actor: Actor): Promise<unknown>
-	tools(): Promise<unknown>
+	tools(actor?: Actor): Promise<unknown>
 	briefing(): Promise<string | null>
 	done(): Promise<boolean>
 	reset(): Promise<unknown>
@@ -62,6 +63,7 @@ export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): 
 					'src/index.js': doCode,
 					'src/app.js': entry.code,
 					'src/runtime.js': runtimeJs,
+					'src/runner.js': runnerJs,
 					'package.json': PACKAGE_JSON
 				},
 				entryPoint: 'src/index.js'
@@ -94,7 +96,7 @@ export async function buildAppTools(
 	actor: Actor,
 	dispatch: (action: Action, actor: Actor) => Promise<unknown>
 ): Promise<AgentTool[]> {
-	const descriptors = (await facet.tools()) as ToolDescriptor[]
+	const descriptors = (await facet.tools(actor)) as ToolDescriptor[]
 
 	const wrap = (
 		name: string,
