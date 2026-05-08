@@ -27,7 +27,10 @@
 		"server.ts",
 		"vite-plugin.ts",
 		"format.ts",
-		"host.ts"
+		"host.ts",
+		"capabilities-bridge.ts",
+		"capabilities/**/*.ts",
+		"engine.typecheck.ts"
 	],
 	"exclude": ["node_modules", "dist"]
 }

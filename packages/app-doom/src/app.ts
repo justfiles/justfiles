@@ -1,6 +1,6 @@
-import { defineApp, setup } from '@justfiles/app'
+import { defineApp, engine as engineBuilder } from '@justfiles/app'
 
-const engine = setup().engine({
+const engine = engineBuilder().build({
 	initial: 'playing',
 	context: {},
 	states: {

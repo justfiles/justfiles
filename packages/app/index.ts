@@ -8,12 +8,16 @@ export {
 	type ActionFromStates,
 	type Actor,
 	type ActorGate,
+	type BuildStep,
+	type CapsBuilder,
+	type EmptyCaps,
 	type Engine,
 	type EngineBuilder,
-	setup,
+	engine,
 	type Snapshot,
 	type StateDef,
 	type StateDefs,
+	type TaskFactory,
 	type TransitionArgs,
 	type TransitionDef
 } from './engine.js'
@@ -56,6 +60,7 @@ export {
 	type Task,
 	type TaskContext,
 	type TaskError,
+	TaskErrorSchema,
 	type TasksRecord,
 	task
 } from './tasks.js'

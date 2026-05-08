@@ -10,7 +10,8 @@
 //   + actor views   + view(snapshot, actor) // GUI for humans, data for agents
 
 import type Type from 'typebox'
-import type { InvokeConfig, TasksRecord } from './tasks.js'
+import type { CapabilityInstance, CapsFromInstances } from './capabilities/core.js'
+import type { InvokeConfig, Task, TaskContext, TasksRecord } from './tasks.js'
 
 export type Action<T extends string = string, P = unknown> = {
 	type: T
@@ -128,18 +129,34 @@ export interface Engine<
 	context: TContext
 	states: States
 	tasks?: Tasks
+	capabilities?: ReadonlyArray<CapabilityInstance>
 	view?(snapshot: Snapshot<TState, TContext>, actor: TActor): V
 }
 
 /**
- * Engine builder returned by `setup()`. The two-step setup-then-engine flow
- * mirrors XState v5: `setup()` binds type-determining inputs (tasks) up
- * front, then `.engine()` checks the state literal with those types already
- * concrete. This breaks the recursion that prevents typing `invoke.onDone`'s
- * return as `ActionFromStates<States>` in a single-call API.
+ * `task` factory handed to `withTasks(({ task }) => …)`. Closures over the
+ * builder's bound `Caps` so `ctx.capabilities` is typed against declared
+ * capabilities, with no type-level access to capabilities the app didn't
+ * declare.
  */
-export interface EngineBuilder<Tasks extends TasksRecord> {
-	engine<
+export type TaskFactory<Caps> = <Input = unknown, Output = unknown>(
+	handler: (ctx: TaskContext<Input, string, unknown, Caps>) => Promise<Output>
+) => Task<Input, Output>
+
+/**
+ * Empty-capabilities default for engines that skip `withCapabilities`. Any
+ * property access on `EmptyCaps` is a type error so handler authors can't
+ * silently call into capabilities they didn't declare.
+ */
+// biome-ignore lint/complexity/noBannedTypes: empty object type is exactly the right shape here
+export type EmptyCaps = {}
+
+/**
+ * Common terminal step for every builder phase. Once `Tasks` is bound,
+ * `.build(...)` types the state literal against it.
+ */
+export interface BuildStep<Tasks extends TasksRecord> {
+	build<
 		TState extends string,
 		TContext,
 		States extends StateDefs<TState, TContext, TActor, Tasks, ActionFromStates<States>>,
@@ -154,23 +171,96 @@ export interface EngineBuilder<Tasks extends TasksRecord> {
 }
 
 /**
- * Bind tasks (and any future setup-time types), then call `.engine(...)` to
- * declare the state machine. Without `tasks`, `setup()` is the no-op entry
- * point — equivalent to a defaulted-Tasks engine.
+ * After `engine()`. Caps and Tasks both default to empty, so apps that
+ * `.build(...)` immediately keep working.
  */
-export function setup<Tasks extends TasksRecord = TasksRecord>(
-	config: { tasks?: Tasks } = {}
-): EngineBuilder<Tasks> {
-	return {
-		// biome-ignore lint/suspicious/noExplicitAny: builder erases generics internally; the public signature is exact
-		engine(literal: any): any {
-			return {
-				initial: literal.initial,
-				context: literal.context,
-				states: literal.states,
-				...(literal.view ? { view: literal.view } : {}),
-				...(config.tasks ? { tasks: config.tasks } : {})
-			}
-		}
+export interface EngineBuilder<Caps, Tasks extends TasksRecord> extends BuildStep<Tasks> {
+	withCapabilities<const C extends readonly CapabilityInstance[]>(
+		caps: C
+	): CapsBuilder<CapsFromInstances<C>>
+	withTasks<T extends TasksRecord>(factory: (api: { task: TaskFactory<Caps> }) => T): BuildStep<T>
+}
+
+/**
+ * After `withCapabilities(...)`. `withCapabilities` is no longer offered:
+ * binding tasks closes over the current Caps, so re-binding caps later
+ * would silently leave already-typed handlers stale.
+ */
+export interface CapsBuilder<Caps> extends BuildStep<Record<string, never>> {
+	withTasks<T extends TasksRecord>(factory: (api: { task: TaskFactory<Caps> }) => T): BuildStep<T>
+}
+
+/**
+ * Start a new engine builder. Phases are fresh object literals whose static
+ * types match the next phase's interface; runtime data (caps array, tasks
+ * record) flows through closure, so the phantom generics `Caps`/`Tasks`
+ * never need reification.
+ *
+ * One cast remains: the `task` factory passed into `withTasks(({ task }))`
+ * has type `TaskFactory<Caps>` (a function generic in `<Input, Output>`,
+ * polymorphic over the closured `Caps`). Its body — `(handler) => ({
+ * handler })` — doesn't reference Caps at all, but TypeScript can't accept
+ * a non-generic function literal as a uniformly polymorphic generic
+ * function without a hint. This is higher-rank polymorphism, which TS
+ * doesn't support. zod, drizzle, kysely, xstate all hit the same wall and
+ * resolve it the same way.
+ */
+export function engine(): EngineBuilder<EmptyCaps, Record<string, never>> {
+	return makeBuilder<EmptyCaps, Record<string, never>>(undefined, undefined)
+}
+
+function makeBuilder<Caps, Tasks extends TasksRecord>(
+	capabilities: ReadonlyArray<CapabilityInstance> | undefined,
+	tasks: Tasks | undefined
+): EngineBuilder<Caps, Tasks> {
+	const builder: EngineBuilder<Caps, Tasks> = {
+		withCapabilities: (caps) => makeCapsBuilder(caps),
+		withTasks: (factory) => {
+			const taskFactory = ((handler) => ({ handler })) as TaskFactory<Caps>
+			return makeBuildStep(capabilities, factory({ task: taskFactory }))
+		},
+		build: (config) => ({
+			initial: config.initial,
+			context: config.context,
+			states: config.states,
+			...(config.view && { view: config.view }),
+			...(tasks && { tasks }),
+			...(capabilities && { capabilities })
+		})
 	}
+	return builder
+}
+
+function makeCapsBuilder<Caps>(capabilities: ReadonlyArray<CapabilityInstance>): CapsBuilder<Caps> {
+	const builder: CapsBuilder<Caps> = {
+		withTasks: (factory) => {
+			const taskFactory = ((handler) => ({ handler })) as TaskFactory<Caps>
+			return makeBuildStep(capabilities, factory({ task: taskFactory }))
+		},
+		build: (config) => ({
+			initial: config.initial,
+			context: config.context,
+			states: config.states,
+			...(config.view && { view: config.view }),
+			capabilities
+		})
+	}
+	return builder
+}
+
+function makeBuildStep<Tasks extends TasksRecord>(
+	capabilities: ReadonlyArray<CapabilityInstance> | undefined,
+	tasks: Tasks
+): BuildStep<Tasks> {
+	const step: BuildStep<Tasks> = {
+		build: (config) => ({
+			initial: config.initial,
+			context: config.context,
+			states: config.states,
+			...(config.view && { view: config.view }),
+			tasks,
+			...(capabilities && { capabilities })
+		})
+	}
+	return step
 }

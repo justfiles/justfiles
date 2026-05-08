@@ -1,19 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { Type } from 'typebox'
 import { define as defineApp } from './app.js'
-import { type Snapshot, setup } from './engine.js'
+import { email } from './capabilities/email/index.js'
+import { engine, type Snapshot } from './engine.js'
 import { Runner } from './runner.js'
-import { defineTasks, task } from './tasks.js'
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
 function loadingApp() {
-	const tasks = defineTasks({
-		loadBriefing: task<{ reason: string }, { items: string[] }>(async ({ input }) => {
-			return { items: [`for-${input.reason}`] }
-		})
-	})
-
 	const initialContext: { reason: string; items: string[] | null; error: string | null } = {
 		reason: 'morning',
 		items: null,
@@ -23,65 +17,71 @@ function loadingApp() {
 	return defineApp({
 		name: 'loading-test',
 		description: 'invoke test app',
-		engine: setup({ tasks }).engine({
-			initial: 'loading' as 'idle' | 'loading' | 'briefing' | 'failed',
-			context: initialContext,
-			states: {
-				idle: {
-					on: {
-						load: {
-							schema: Type.Object({ reason: Type.String() }),
-							target: 'loading',
-							actions: ({ context, action }) => ({
-								...context,
-								reason: (action.payload as { reason: string }).reason
-							})
+		engine: engine()
+			.withTasks(({ task }) => ({
+				loadBriefing: task<{ reason: string }, { items: string[] }>(async ({ input }) => {
+					return { items: [`for-${input.reason}`] }
+				})
+			}))
+			.build({
+				initial: 'loading' as 'idle' | 'loading' | 'briefing' | 'failed',
+				context: initialContext,
+				states: {
+					idle: {
+						on: {
+							load: {
+								schema: Type.Object({ reason: Type.String() }),
+								target: 'loading',
+								actions: ({ context, action }) => ({
+									...context,
+									reason: (action.payload as { reason: string }).reason
+								})
+							}
 						}
-					}
-				},
-				loading: {
-					invoke: {
-						src: 'loadBriefing',
-						input: ({ context }) => ({ reason: context.reason }),
-						onDone: ({ output }) => ({ type: 'load_briefing', payload: output }),
-						onError: ({ error }) => ({ type: 'load_failed', payload: { message: error.message } })
 					},
-					on: {
-						load_briefing: {
-							schema: Type.Object({ items: Type.Array(Type.String()) }),
-							actor: 'system',
-							target: 'briefing',
-							actions: ({ context, action }) => ({
-								...context,
-								items: (action.payload as { items: string[] }).items
-							})
+					loading: {
+						invoke: {
+							src: 'loadBriefing',
+							input: ({ context }) => ({ reason: context.reason }),
+							onDone: ({ output }) => ({ type: 'load_briefing', payload: output }),
+							onError: ({ error }) => ({ type: 'load_failed', payload: { message: error.message } })
 						},
-						load_failed: {
-							schema: Type.Object({ message: Type.String() }),
-							actor: 'system',
-							target: 'failed',
-							actions: ({ context, action }) => ({
-								...context,
-								error: (action.payload as { message: string }).message
-							})
-						},
-						cancel: {
-							schema: Type.Object({}),
-							target: 'idle'
+						on: {
+							load_briefing: {
+								schema: Type.Object({ items: Type.Array(Type.String()) }),
+								actor: 'system',
+								target: 'briefing',
+								actions: ({ context, action }) => ({
+									...context,
+									items: (action.payload as { items: string[] }).items
+								})
+							},
+							load_failed: {
+								schema: Type.Object({ message: Type.String() }),
+								actor: 'system',
+								target: 'failed',
+								actions: ({ context, action }) => ({
+									...context,
+									error: (action.payload as { message: string }).message
+								})
+							},
+							cancel: {
+								schema: Type.Object({}),
+								target: 'idle'
+							}
 						}
-					}
-				},
-				briefing: {
-					on: {
-						reload: {
-							schema: Type.Object({}),
-							target: 'loading'
+					},
+					briefing: {
+						on: {
+							reload: {
+								schema: Type.Object({}),
+								target: 'loading'
+							}
 						}
-					}
-				},
-				failed: {}
-			}
-		})
+					},
+					failed: {}
+				}
+			})
 	})
 }
 
@@ -98,43 +98,44 @@ describe('Runner invoke lifecycle', () => {
 	})
 
 	test('exits invoking state before task settles → result is ignored', async () => {
-		const tasks = defineTasks({
-			slow: task<void, string>(
-				async ({ signal }) =>
-					new Promise<string>((resolve, reject) => {
-						const t = setTimeout(() => resolve('late'), 50)
-						signal.addEventListener('abort', () => {
-							clearTimeout(t)
-							reject(new Error('aborted'))
-						})
-					})
-			)
-		})
 		const app = defineApp({
 			name: 'stale',
 			description: '',
-			engine: setup({ tasks }).engine({
-				initial: 'loading' as 'loading' | 'idle' | 'done',
-				context: {},
-				states: {
-					loading: {
-						invoke: {
-							src: 'slow',
-							onDone: ({ output }) => ({ type: 'finish', payload: { v: output } })
-						},
-						on: {
-							cancel: { schema: Type.Object({}), target: 'idle' },
-							finish: {
-								schema: Type.Object({ v: Type.String() }),
-								actor: 'system',
-								target: 'done'
+			engine: engine()
+				.withTasks(({ task }) => ({
+					slow: task<void, string>(
+						async ({ signal }) =>
+							new Promise<string>((resolve, reject) => {
+								const t = setTimeout(() => resolve('late'), 50)
+								signal.addEventListener('abort', () => {
+									clearTimeout(t)
+									reject(new Error('aborted'))
+								})
+							})
+					)
+				}))
+				.build({
+					initial: 'loading' as 'loading' | 'idle' | 'done',
+					context: {},
+					states: {
+						loading: {
+							invoke: {
+								src: 'slow',
+								onDone: ({ output }) => ({ type: 'finish', payload: { v: output } })
+							},
+							on: {
+								cancel: { schema: Type.Object({}), target: 'idle' },
+								finish: {
+									schema: Type.Object({ v: Type.String() }),
+									actor: 'system',
+									target: 'done'
+								}
 							}
-						}
-					},
-					idle: {},
-					done: {}
-				}
-			})
+						},
+						idle: {},
+						done: {}
+					}
+				})
 		})
 		const runner = new Runner({ app })
 		await runner.start()
@@ -143,41 +144,41 @@ describe('Runner invoke lifecycle', () => {
 		// Wait beyond the slow task's timer.
 		await new Promise((res) => setTimeout(res, 80))
 		expect(runner.snapshot.state).toBe('idle')
-		// State did not transition to 'done', confirming the stale result was dropped.
 	})
 
 	test('task failure dispatches onError as system', async () => {
-		const tasks = defineTasks({
-			boom: task<void, never>(async () => {
-				throw new Error('nope')
-			})
-		})
 		const app = defineApp({
 			name: 'fail',
 			description: '',
-			engine: setup({ tasks }).engine({
-				initial: 'loading' as 'loading' | 'failed',
-				context: { msg: '' },
-				states: {
-					loading: {
-						invoke: {
-							src: 'boom',
-							onError: ({ error }) => ({ type: 'failed', payload: { msg: error.message } })
-						},
-						on: {
-							failed: {
-								schema: Type.Object({ msg: Type.String() }),
-								actor: 'system',
-								target: 'failed',
-								actions: ({ action }) => ({
-									msg: (action.payload as { msg: string }).msg
-								})
+			engine: engine()
+				.withTasks(({ task }) => ({
+					boom: task<void, never>(async () => {
+						throw new Error('nope')
+					})
+				}))
+				.build({
+					initial: 'loading' as 'loading' | 'failed',
+					context: { msg: '' },
+					states: {
+						loading: {
+							invoke: {
+								src: 'boom',
+								onError: ({ error }) => ({ type: 'failed', payload: { msg: error.message } })
+							},
+							on: {
+								failed: {
+									schema: Type.Object({ msg: Type.String() }),
+									actor: 'system',
+									target: 'failed',
+									actions: ({ action }) => ({
+										msg: (action.payload as { msg: string }).msg
+									})
+								}
 							}
-						}
-					},
-					failed: {}
-				}
-			})
+						},
+						failed: {}
+					}
+				})
 		})
 		const runner = new Runner({ app })
 		await runner.start()
@@ -191,7 +192,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'plain',
 			description: '',
-			engine: setup().engine({
+			engine: engine().build({
 				initial: 'a' as 'a' | 'b',
 				context: { n: 0 },
 				states: {
@@ -218,28 +219,29 @@ describe('Runner invoke lifecycle', () => {
 
 	test('same-state transition does not restart invoke unless reenter:true', async () => {
 		let starts = 0
-		const tasks = defineTasks({
-			counter: task<void, number>(async () => {
-				starts++
-				await new Promise((r) => setTimeout(r, 100))
-				return starts
-			})
-		})
 		const app = defineApp({
 			name: 'reenter',
 			description: '',
-			engine: setup({ tasks }).engine({
-				initial: 'loading' as 'loading',
-				context: {},
-				states: {
-					loading: {
-						invoke: { src: 'counter' },
-						on: {
-							ping: { schema: Type.Object({}) }
+			engine: engine()
+				.withTasks(({ task }) => ({
+					counter: task<void, number>(async () => {
+						starts++
+						await new Promise((r) => setTimeout(r, 100))
+						return starts
+					})
+				}))
+				.build({
+					initial: 'loading' as 'loading',
+					context: {},
+					states: {
+						loading: {
+							invoke: { src: 'counter' },
+							on: {
+								ping: { schema: Type.Object({}) }
+							}
 						}
 					}
-				}
-			})
+				})
 		})
 		const runner = new Runner({ app })
 		await runner.start()
@@ -253,33 +255,34 @@ describe('Runner invoke lifecycle', () => {
 
 	test('reenter:true restarts invoke on same-state transition', async () => {
 		let starts = 0
-		const tasks = defineTasks({
-			counter: task<void, number>(async ({ signal }) => {
-				starts++
-				return new Promise<number>((resolve, reject) => {
-					const t = setTimeout(() => resolve(starts), 100)
-					signal.addEventListener('abort', () => {
-						clearTimeout(t)
-						reject(new Error('aborted'))
-					})
-				})
-			})
-		})
 		const app = defineApp({
 			name: 'reenter',
 			description: '',
-			engine: setup({ tasks }).engine({
-				initial: 'loading' as 'loading',
-				context: {},
-				states: {
-					loading: {
-						invoke: { src: 'counter', reenter: true },
-						on: {
-							ping: { schema: Type.Object({}) }
+			engine: engine()
+				.withTasks(({ task }) => ({
+					counter: task<void, number>(async ({ signal }) => {
+						starts++
+						return new Promise<number>((resolve, reject) => {
+							const t = setTimeout(() => resolve(starts), 100)
+							signal.addEventListener('abort', () => {
+								clearTimeout(t)
+								reject(new Error('aborted'))
+							})
+						})
+					})
+				}))
+				.build({
+					initial: 'loading' as 'loading',
+					context: {},
+					states: {
+						loading: {
+							invoke: { src: 'counter', reenter: true },
+							on: {
+								ping: { schema: Type.Object({}) }
+							}
 						}
 					}
-				}
-			})
+				})
 		})
 		const runner = new Runner({ app })
 		await runner.start()
@@ -292,44 +295,45 @@ describe('Runner invoke lifecycle', () => {
 	})
 
 	test('multiple concurrent invokes per state run independently', async () => {
-		const tasks = defineTasks({
-			a: task<void, string>(async () => 'A'),
-			b: task<void, string>(async () => 'B')
-		})
 		const seen: string[] = []
 		const app = defineApp({
 			name: 'multi',
 			description: '',
-			engine: setup({ tasks }).engine({
-				initial: 'loading' as 'loading',
-				context: {},
-				states: {
-					loading: {
-						invoke: [
-							{ src: 'a', onDone: ({ output }) => ({ type: 'noteA', payload: { v: output } }) },
-							{ src: 'b', onDone: ({ output }) => ({ type: 'noteB', payload: { v: output } }) }
-						],
-						on: {
-							noteA: {
-								schema: Type.Object({ v: Type.String() }),
-								actor: 'system',
-								actions: ({ action }) => {
-									seen.push(`A:${(action.payload as { v: string }).v}`)
-									return {}
-								}
-							},
-							noteB: {
-								schema: Type.Object({ v: Type.String() }),
-								actor: 'system',
-								actions: ({ action }) => {
-									seen.push(`B:${(action.payload as { v: string }).v}`)
-									return {}
+			engine: engine()
+				.withTasks(({ task }) => ({
+					a: task<void, string>(async () => 'A'),
+					b: task<void, string>(async () => 'B')
+				}))
+				.build({
+					initial: 'loading' as 'loading',
+					context: {},
+					states: {
+						loading: {
+							invoke: [
+								{ src: 'a', onDone: ({ output }) => ({ type: 'noteA', payload: { v: output } }) },
+								{ src: 'b', onDone: ({ output }) => ({ type: 'noteB', payload: { v: output } }) }
+							],
+							on: {
+								noteA: {
+									schema: Type.Object({ v: Type.String() }),
+									actor: 'system',
+									actions: ({ action }) => {
+										seen.push(`A:${(action.payload as { v: string }).v}`)
+										return {}
+									}
+								},
+								noteB: {
+									schema: Type.Object({ v: Type.String() }),
+									actor: 'system',
+									actions: ({ action }) => {
+										seen.push(`B:${(action.payload as { v: string }).v}`)
+										return {}
+									}
 								}
 							}
 						}
 					}
-				}
-			})
+				})
 		})
 		const runner = new Runner({ app })
 		await runner.start()
@@ -364,7 +368,6 @@ describe('Runner invoke lifecycle', () => {
 		await flush()
 		await flush()
 		expect(runner.snapshot.state).toBe('briefing')
-		// Move out via reload then reset.
 		await runner.reset()
 		await flush()
 		await flush()
@@ -381,37 +384,38 @@ describe('Runner invoke lifecycle', () => {
 	})
 
 	test('onDone return type is inferred from the engine action union', async () => {
-		const tasks = defineTasks({
-			load: task<void, { items: number[] }>(async () => ({ items: [1, 2] }))
-		})
 		const app = defineApp({
 			name: 'typed',
 			description: '',
-			engine: setup({ tasks }).engine({
-				initial: 'a' as 'a' | 'b',
-				context: { items: [] as number[] },
-				states: {
-					a: {
-						on: {
-							gotItems: {
-								schema: Type.Object({ items: Type.Array(Type.Number()) }),
-								actor: 'system',
-								target: 'b',
-								actions: ({ action }) => ({
-									items: (action.payload as { items: number[] }).items
-								})
+			engine: engine()
+				.withTasks(({ task }) => ({
+					load: task<void, { items: number[] }>(async () => ({ items: [1, 2] }))
+				}))
+				.build({
+					initial: 'a' as 'a' | 'b',
+					context: { items: [] as number[] },
+					states: {
+						a: {
+							on: {
+								gotItems: {
+									schema: Type.Object({ items: Type.Array(Type.Number()) }),
+									actor: 'system',
+									target: 'b',
+									actions: ({ action }) => ({
+										items: (action.payload as { items: number[] }).items
+									})
+								}
+							},
+							invoke: {
+								src: 'load',
+								// onDone's return is constrained to ActionFromStates<States>:
+								// `type` must be 'gotItems' and `payload` must match its schema.
+								onDone: ({ output }) => ({ type: 'gotItems' as const, payload: output })
 							}
 						},
-						invoke: {
-							src: 'load',
-							// onDone's return is constrained to ActionFromStates<States>:
-							// `type` must be 'gotItems' and `payload` must match its schema.
-							onDone: ({ output }) => ({ type: 'gotItems' as const, payload: output })
-						}
-					},
-					b: {}
-				}
-			})
+						b: {}
+					}
+				})
 		})
 		const runner = new Runner({ app })
 		await runner.start()
@@ -434,7 +438,7 @@ describe('Runner invoke lifecycle', () => {
 		const app = defineApp({
 			name: 'persist',
 			description: '',
-			engine: setup().engine({
+			engine: engine().build({
 				initial: 'a' as 'a' | 'b',
 				context: { n: 0 },
 				states: {
@@ -457,5 +461,60 @@ describe('Runner invoke lifecycle', () => {
 		await runner.dispatch({ type: 'next', payload: {} }, { id: 'u' })
 		expect(last?.state).toBe('b')
 		expect(last).toEqual({ state: 'b', context: { n: 1 } })
+	})
+
+	test('typed ctx.capabilities reaches handler via fake bridge host()', async () => {
+		const app = defineApp({
+			name: 'caps',
+			description: '',
+			engine: engine()
+				.withCapabilities([email({ scopes: ['read.unread'] })])
+				.withTasks(({ task }) => ({
+					loadInbox: task<void, { count: number }>(async ({ capabilities }) => {
+						const list = await capabilities.email.listUnread({ limit: 5 })
+						return { count: list.length }
+					})
+				}))
+				.build({
+					initial: 'loading' as 'loading' | 'done',
+					context: { count: 0 },
+					states: {
+						loading: {
+							invoke: {
+								src: 'loadInbox',
+								onDone: ({ output }) => ({ type: 'loaded', payload: output })
+							},
+							on: {
+								loaded: {
+									schema: Type.Object({ count: Type.Number() }),
+									actor: 'system',
+									target: 'done',
+									actions: ({ action }) => ({
+										count: (action.payload as { count: number }).count
+									})
+								}
+							}
+						},
+						done: {}
+					}
+				})
+		})
+		const fakeEmail = {
+			async listUnread() {
+				return [
+					{ id: '1', from: 'a', subject: 's', receivedAt: 0, unread: true },
+					{ id: '2', from: 'b', subject: 't', receivedAt: 0, unread: true }
+				]
+			}
+		}
+		const runner = new Runner({
+			app,
+			host: () => ({ capabilities: { email: fakeEmail } })
+		})
+		await runner.start()
+		await flush()
+		await flush()
+		expect(runner.snapshot.state).toBe('done')
+		expect((runner.snapshot.context as { count: number }).count).toBe(2)
 	})
 })
