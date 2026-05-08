@@ -7,9 +7,11 @@
 
 import { DurableObject } from 'cloudflare:workers'
 import app from './app.js'
+import { bindCapabilities } from './capabilities-bridge.js'
 import { Runner } from './runner.js'
 
 /** @import { Action, Actor, Snapshot } from '@justfiles/app' */
+/** @import { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js' */
 
 const STATE_KEY = 'state'
 
@@ -19,7 +21,7 @@ export class App extends DurableObject {
 
 	/**
 	 * @param {DurableObjectState} ctx
-	 * @param {Env} env
+	 * @param {Env & { APP_BRIDGE?: CapabilityBridge }} env
 	 */
 	constructor(ctx, env) {
 		super(ctx, env)
@@ -34,12 +36,17 @@ export class App extends DurableObject {
 				await this.ctx.storage.kv.put(STATE_KEY, snapshot)
 			}
 		}
+		const bridge = env.APP_BRIDGE
+		const instances = app.engine.capabilities ?? []
 		this.#runner = new Runner({
 			app,
 			storage,
-			// #59 will inject capability bridge here from this.env; `meta` lets
-			// the broker tag provider-side audit logs with the task run.
-			host: (_meta) => ({})
+			// `meta` is ignored for now; #64 will let the broker tag audit
+			// logs by task run. Without a bridge (no capabilities declared or
+			// host did not wire one) handlers see `capabilities: {}`.
+			host: (_meta) => ({
+				capabilities: bridge ? bindCapabilities(bridge, instances) : {}
+			})
 		})
 		this.#ready = this.#runner.start()
 	}

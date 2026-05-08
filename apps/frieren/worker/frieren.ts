@@ -5,6 +5,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import type { AppFacetScope } from './app-bridge'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -351,11 +352,32 @@ export class Frieren extends DurableObject<Env> {
 	// DOs can hibernate between WS messages, so the active-app object is
 	// rebuilt from a persisted `{ id }` on each wake.
 
+	// Per-mount scope handed to the dynamic-worker loader. `userId` is the
+	// Frieren DO id (one DO per user); grants are empty until the broker
+	// integration lands (#59), so the bridge denies every capability call
+	// with a stable shape so apps fail loudly instead of silently.
+	private appScope(): AppFacetScope {
+		return {
+			userId: this.ctx.id.toString(),
+			grants: [],
+			bridge: {
+				async invoke(req: { capability: string; method: string; input: unknown }) {
+					throw {
+						code: 'CAPABILITY_FAILED',
+						message: 'no broker configured',
+						capability: req.capability,
+						method: req.method
+					}
+				}
+			}
+		}
+	}
+
 	private async hydrateApp(): Promise<void> {
 		if (this.activeApp) return
 		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
 		if (!saved || !hasApp(saved.id)) return
-		const facet = loadAppFacet(this.ctx, this.env, saved.id)
+		const facet = loadAppFacet(this.ctx, this.env, saved.id, this.appScope())
 		if (await facet.done()) {
 			await this.ctx.storage.delete(APP_STORAGE_KEY)
 			return
@@ -366,7 +388,7 @@ export class Frieren extends DurableObject<Env> {
 	private async mountApp(id: string): Promise<ActiveApp> {
 		const userActor: Actor = { id: USER_ID, kind: 'human' }
 		const agentActor: Actor = { id: AGENT_ID, kind: 'agent' }
-		const facet = loadAppFacet(this.ctx, this.env, id)
+		const facet = loadAppFacet(this.ctx, this.env, id, this.appScope())
 
 		// Single dispatch path for both human (app_action) and agent (tool
 		// execute). Always broadcasts new view on success.

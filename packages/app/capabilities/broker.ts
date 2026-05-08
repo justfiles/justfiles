@@ -8,7 +8,7 @@ type MethodScopes<Shape> = {
 	[K in keyof Shape]: string
 }
 
-type CapabilityGrant<Id extends string = string> = {
+export type CapabilityGrant<Id extends string = string> = {
 	capability: Id
 	scope: string
 	accountId?: string
