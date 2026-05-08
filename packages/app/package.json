@@ -47,6 +47,31 @@
 			"@justfiles/src": "./runner.ts",
 			"types": "./dist/runner.d.ts",
 			"default": "./dist/runner.js"
+		},
+		"./capabilities-bridge.js": {
+			"@justfiles/src": "./capabilities-bridge.ts",
+			"types": "./dist/capabilities-bridge.d.ts",
+			"default": "./dist/capabilities-bridge.js"
+		},
+		"./capabilities": {
+			"@justfiles/src": "./capabilities/index.ts",
+			"types": "./dist/capabilities/index.d.ts",
+			"default": "./dist/capabilities/index.js"
+		},
+		"./capabilities/email": {
+			"@justfiles/src": "./capabilities/email/index.ts",
+			"types": "./dist/capabilities/email/index.d.ts",
+			"default": "./dist/capabilities/email/index.js"
+		},
+		"./capabilities/calendar": {
+			"@justfiles/src": "./capabilities/calendar/index.ts",
+			"types": "./dist/capabilities/calendar/index.d.ts",
+			"default": "./dist/capabilities/calendar/index.js"
+		},
+		"./capabilities/volume": {
+			"@justfiles/src": "./capabilities/volume/index.ts",
+			"types": "./dist/capabilities/volume/index.d.ts",
+			"default": "./dist/capabilities/volume/index.js"
 		}
 	},
 	"files": [

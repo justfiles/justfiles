@@ -5,30 +5,48 @@
 // See engine.ts for the InvokeDef shape that wires tasks into states, and
 // runner.ts for lifecycle (start, abort, stale-result discard).
 
+import { Type } from 'typebox'
 import type { Action, Actor, Snapshot } from './engine.js'
 
 /**
  * Stable serializable error shape passed to `invoke.onError`. v1 maps thrown
  * errors to `TASK_FAILED`; #59 will preserve broker capability codes.
+ *
+ * `TaskErrorSchema` is the typebox shape of this type — apps reusing it on a
+ * system-actor transition (e.g. `briefing_failed`) can `schema:
+ * TaskErrorSchema` instead of re-declaring it.
  */
+export const TaskErrorSchema = Type.Object({
+	code: Type.Union([
+		Type.Literal('TASK_FAILED'),
+		Type.Literal('TASK_ABORTED'),
+		Type.Literal('CAPABILITY_DENIED'),
+		Type.Literal('CAPABILITY_FAILED')
+	]),
+	message: Type.String()
+})
+
 export type TaskError = {
 	code: 'TASK_FAILED' | 'TASK_ABORTED' | 'CAPABILITY_DENIED' | 'CAPABILITY_FAILED'
 	message: string
 }
 
 /**
- * Runtime context handed to a task handler. Host-injected fields (e.g. a
- * capability bridge from #59) are merged via the `Host` parameter.
+ * Runtime context handed to a task handler. `Caps` is derived from the
+ * engine's `withCapabilities([...])` declaration; apps with no capabilities
+ * see `capabilities: {}`. The host wires the actual binding (Cloudflare
+ * `APP_BRIDGE` etc.) into `capabilities` via the runner's `host()` factory.
  */
 export type TaskContext<
 	Input = unknown,
 	TState extends string = string,
 	TContext = unknown,
-	Host = Record<string, never>
-> = Host & {
+	Caps = Record<string, never>
+> = {
 	input: Input
 	snapshot: Snapshot<TState, TContext>
 	signal: AbortSignal
+	capabilities: Caps
 }
 
 /**

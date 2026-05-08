@@ -221,8 +221,10 @@ export class Runner {
 		const input = invokeDef.input
 			? invokeDef.input({ context: this.#snapshot.context, snapshot: this.#snapshot })
 			: undefined
+		const hostFields = this.#host ? this.#host() : {}
 		const ctx = {
-			...(this.#host ? this.#host() : {}),
+			capabilities: {},
+			...hostFields,
 			input,
 			snapshot: this.#snapshot,
 			signal: controller.signal

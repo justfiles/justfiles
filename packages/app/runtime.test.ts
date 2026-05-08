@@ -1,14 +1,14 @@
 import { expect, test } from 'bun:test'
 import { Type } from 'typebox'
 import { define as defineApp } from './app.js'
-import { setup } from './engine.js'
+import { engine } from './engine.js'
 import { dispatch } from './runtime.js'
 
 test('dispatch returns transition narration', () => {
 	const app = defineApp({
 		name: 'Test',
 		description: 'Test app',
-		engine: setup().engine({
+		engine: engine().build({
 			initial: 'init',
 			context: {},
 			states: {
@@ -41,7 +41,7 @@ test('target function chooses the next state from post-action context', () => {
 	const app = defineApp({
 		name: 'Branching',
 		description: 'Branching test app',
-		engine: setup().engine({
+		engine: engine().build({
 			initial: 'a' as 'a' | 'b' | 'c',
 			context: { n: 0 },
 			states: {
