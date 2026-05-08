@@ -3,16 +3,7 @@ import type { Integration } from '../registry.ts'
 import { createFastmailCommand } from './commands.ts'
 import { createJmapClient } from './jmap.ts'
 
-export type { FastmailEmailCredentials } from './provider.ts'
-export {
-	buildFastmailEmailCapability,
-	createFastmailEmailProvider,
-	FASTMAIL_PROVIDER_ID,
-	fastmailEmailProvider,
-	formatFrom,
-	normalizeEmailDetail,
-	normalizeEmailSummary
-} from './provider.ts'
+export { createFastmailEmailProvider, fastmailEmailProvider } from './provider.ts'
 
 export const fastmailCredentialsSchema = Type.Object({
 	token: Type.String({
