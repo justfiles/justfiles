@@ -15,13 +15,26 @@ export interface CapabilityBridge {
 	invoke(req: { capability: string; method: string; input: unknown }): Promise<unknown>
 }
 
+function withCapabilityMeta(err: unknown, capability: string, method: string): unknown {
+	if (!err || typeof err !== 'object') return err
+	const e = err as Record<string, unknown>
+	if (typeof e.code !== 'string' || typeof e.message !== 'string') return err
+	return { ...e, capability, method }
+}
+
 function bindOne(bridge: CapabilityBridge, id: string): Record<string, unknown> {
 	return new Proxy(
 		{},
 		{
 			get(_target, method) {
 				if (typeof method !== 'string') return undefined
-				return (input: unknown) => bridge.invoke({ capability: id, method, input })
+				return async (input: unknown) => {
+					try {
+						return await bridge.invoke({ capability: id, method, input })
+					} catch (err) {
+						throw withCapabilityMeta(err, id, method)
+					}
+				}
 			}
 		}
 	) as Record<string, unknown>

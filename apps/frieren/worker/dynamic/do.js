@@ -37,8 +37,9 @@ export class App extends DurableObject {
 		this.#runner = new Runner({
 			app,
 			storage,
-			// #59 will inject capability bridge here from this.env.
-			host: () => ({})
+			// #59 will inject capability bridge here from this.env; `meta` lets
+			// the broker tag provider-side audit logs with the task run.
+			host: (_meta) => ({})
 		})
 		this.#ready = this.#runner.start()
 	}

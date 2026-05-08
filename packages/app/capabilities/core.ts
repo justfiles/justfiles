@@ -51,3 +51,56 @@ export type CapsFromInstances<C extends readonly CapabilityInstance[]> = UnionTo
 			: never
 	}[number]
 >
+
+// biome-ignore lint/suspicious/noExplicitAny: existential erasure for factory tuples
+type AnyCapabilityFactory = CapabilityFactory<string, any>
+
+type CapsFromFactories<C extends readonly AnyCapabilityFactory[]> = UnionToIntersection<
+	{
+		[K in keyof C]: C[K] extends CapabilityFactory<infer Id, infer Shape>
+			? Id extends string
+				? { [P in Id]: Shape }
+				: never
+			: never
+	}[number]
+>
+
+type MockImpls<C extends readonly AnyCapabilityFactory[]> = {
+	[K in keyof CapsFromFactories<C>]?: Partial<CapsFromFactories<C>[K]>
+}
+
+/**
+ * Build type-compatible fake capabilities for tests and the Bun dev harness.
+ *
+ * Pass the capability factories the engine declares plus partial impls keyed
+ * by capability id. Methods that aren't stubbed throw on call so test
+ * failures point at the missing fixture instead of a silent `undefined`.
+ *
+ * ```ts
+ * const fakes = mockCapabilities([email, calendar], {
+ *   email: { listUnread: async () => [...] }
+ * })
+ * ```
+ */
+export function mockCapabilities<C extends readonly AnyCapabilityFactory[]>(
+	caps: C,
+	impls: MockImpls<C> = {} as MockImpls<C>
+): CapsFromFactories<C> {
+	const out: Record<string, unknown> = {}
+	const provided = impls as unknown as Record<string, Record<string, unknown> | undefined>
+	for (const factory of caps) {
+		const id = factory({ scopes: [] }).id
+		const stub = provided[id] ?? {}
+		out[id] = new Proxy(stub, {
+			get(target, prop, receiver) {
+				if (typeof prop === 'symbol' || prop in target) {
+					return Reflect.get(target, prop, receiver)
+				}
+				return () => {
+					throw new Error(`mockCapabilities: ${id}.${String(prop)}() is not stubbed`)
+				}
+			}
+		})
+	}
+	return out as CapsFromFactories<C>
+}

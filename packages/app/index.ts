@@ -61,6 +61,7 @@ export {
 	type TaskContext,
 	type TaskError,
 	TaskErrorSchema,
+	type TaskMeta,
 	type TasksRecord,
 	task
 } from './tasks.js'
