@@ -30,7 +30,7 @@
 		"host.ts",
 		"capabilities-bridge.ts",
 		"capabilities/**/*.ts",
-		"engine.types.ts"
+		"engine.typecheck.ts"
 	],
 	"exclude": ["node_modules", "dist"]
 }
