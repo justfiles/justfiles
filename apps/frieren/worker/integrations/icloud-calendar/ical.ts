@@ -22,7 +22,7 @@ function parseUtcDateTime(s: string): string {
 	return `${y}-${mo}-${d}T${h}:${mi}:${sec}Z`
 }
 
-function localToUtc(localDateStr: string, tzid: string): string {
+export function localToUtc(localDateStr: string, tzid: string): string {
 	const y = +localDateStr.slice(0, 4)
 	const mo = +localDateStr.slice(4, 6) - 1
 	const d = +localDateStr.slice(6, 8)

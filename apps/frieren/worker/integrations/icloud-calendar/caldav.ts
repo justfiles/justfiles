@@ -19,6 +19,7 @@ export interface CreateEventInput {
 
 export interface CalDavClient {
 	listEvents(options?: { days?: number }): Promise<CalEvent[]>
+	listEventsBetween(start: Date, end: Date): Promise<CalEvent[]>
 	readEvent(uid: string): Promise<CalEvent>
 	createEvent(input: CreateEventInput): Promise<{ uid: string }>
 	deleteEvent(uid: string): Promise<void>
@@ -250,22 +251,28 @@ export function createCalDavClient(opts: CalDavClientOptions): CalDavClient {
 		return undefined
 	}
 
+	async function listEventsBetween(start: Date, end: Date): Promise<CalEvent[]> {
+		const filter = `<C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"><C:time-range start="${utcStamp(start)}" end="${utcStamp(end)}"/></C:comp-filter></C:comp-filter>`
+		const s = await session()
+		const all: CalEvent[] = []
+		for (const cal of s.calendars) {
+			const items = await calendarQuery(cal, filter)
+			for (const item of items) {
+				for (const ev of parseIcs(item.ics)) all.push({ ...ev, href: item.href })
+			}
+		}
+		return all
+	}
+
 	return {
 		async listEvents(options = {}) {
 			const days = options.days ?? 7
 			const start = new Date()
 			const end = new Date(start.getTime() + days * 24 * 60 * 60 * 1000)
-			const filter = `<C:comp-filter name="VCALENDAR"><C:comp-filter name="VEVENT"><C:time-range start="${utcStamp(start)}" end="${utcStamp(end)}"/></C:comp-filter></C:comp-filter>`
-			const s = await session()
-			const all: CalEvent[] = []
-			for (const cal of s.calendars) {
-				const items = await calendarQuery(cal, filter)
-				for (const item of items) {
-					for (const ev of parseIcs(item.ics)) all.push({ ...ev, href: item.href })
-				}
-			}
-			return all
+			return listEventsBetween(start, end)
 		},
+
+		listEventsBetween,
 
 		async readEvent(uid) {
 			const found = await findByUid(uid)
