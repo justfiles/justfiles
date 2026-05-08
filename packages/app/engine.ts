@@ -191,41 +191,76 @@ export interface CapsBuilder<Caps> extends BuildStep<Record<string, never>> {
 }
 
 /**
- * Start a new engine builder. With no `withCapabilities`/`withTasks` calls,
- * `Caps` and `Tasks` default to empty records — `ctx.capabilities` is `{}`
- * and `invoke.src` cannot reference any task name.
+ * Start a new engine builder. Phases are fresh object literals whose static
+ * types match the next phase's interface; runtime data (caps array, tasks
+ * record) flows through closure, so the phantom generics `Caps`/`Tasks`
+ * never need reification.
+ *
+ * One cast remains: the `task` factory passed into `withTasks(({ task }))`
+ * has type `TaskFactory<Caps>` (a function generic in `<Input, Output>`,
+ * polymorphic over the closured `Caps`). Its body — `(handler) => ({
+ * handler })` — doesn't reference Caps at all, but TypeScript can't accept
+ * a non-generic function literal as a uniformly polymorphic generic
+ * function without a hint. This is higher-rank polymorphism, which TS
+ * doesn't support. zod, drizzle, kysely, xstate all hit the same wall and
+ * resolve it the same way.
  */
 export function engine(): EngineBuilder<EmptyCaps, Record<string, never>> {
-	let capabilities: ReadonlyArray<CapabilityInstance> | undefined
-	let tasks: TasksRecord | undefined
+	return makeBuilder<EmptyCaps, Record<string, never>>(undefined, undefined)
+}
 
-	const taskFactory = <I, O>(
-		handler: (ctx: TaskContext<I, string, unknown, unknown>) => Promise<O>
-	): Task<I, O> => ({ handler })
-
-	const builder = {
-		withCapabilities(caps: ReadonlyArray<CapabilityInstance>) {
-			capabilities = caps
-			return builder
+function makeBuilder<Caps, Tasks extends TasksRecord>(
+	capabilities: ReadonlyArray<CapabilityInstance> | undefined,
+	tasks: Tasks | undefined
+): EngineBuilder<Caps, Tasks> {
+	const builder: EngineBuilder<Caps, Tasks> = {
+		withCapabilities: (caps) => makeCapsBuilder(caps),
+		withTasks: (factory) => {
+			const taskFactory = ((handler) => ({ handler })) as TaskFactory<Caps>
+			return makeBuildStep(capabilities, factory({ task: taskFactory }))
 		},
-		// biome-ignore lint/suspicious/noExplicitAny: builder erases generics; public signature is exact
-		withTasks(factory: any) {
-			// biome-ignore lint/suspicious/noExplicitAny: same — generics erased internally
-			tasks = factory({ task: taskFactory as any })
-			return builder
-		},
-		// biome-ignore lint/suspicious/noExplicitAny: same
-		build(literal: any): any {
-			return {
-				initial: literal.initial,
-				context: literal.context,
-				states: literal.states,
-				...(literal.view ? { view: literal.view } : {}),
-				...(tasks ? { tasks } : {}),
-				...(capabilities ? { capabilities } : {})
-			}
-		}
-		// biome-ignore lint/suspicious/noExplicitAny: builder is internally untyped
-	} as any
+		build: (config) => ({
+			initial: config.initial,
+			context: config.context,
+			states: config.states,
+			...(config.view && { view: config.view }),
+			...(tasks && { tasks }),
+			...(capabilities && { capabilities })
+		})
+	}
 	return builder
+}
+
+function makeCapsBuilder<Caps>(capabilities: ReadonlyArray<CapabilityInstance>): CapsBuilder<Caps> {
+	const builder: CapsBuilder<Caps> = {
+		withTasks: (factory) => {
+			const taskFactory = ((handler) => ({ handler })) as TaskFactory<Caps>
+			return makeBuildStep(capabilities, factory({ task: taskFactory }))
+		},
+		build: (config) => ({
+			initial: config.initial,
+			context: config.context,
+			states: config.states,
+			...(config.view && { view: config.view }),
+			capabilities
+		})
+	}
+	return builder
+}
+
+function makeBuildStep<Tasks extends TasksRecord>(
+	capabilities: ReadonlyArray<CapabilityInstance> | undefined,
+	tasks: Tasks
+): BuildStep<Tasks> {
+	const step: BuildStep<Tasks> = {
+		build: (config) => ({
+			initial: config.initial,
+			context: config.context,
+			states: config.states,
+			...(config.view && { view: config.view }),
+			tasks,
+			...(capabilities && { capabilities })
+		})
+	}
+	return step
 }
