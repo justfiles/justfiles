@@ -20,9 +20,9 @@ export function isValidInterval(interval: string): boolean {
 }
 
 function addDays(dateStr: string, n: number): string {
-	const y = parseInt(dateStr.slice(0, 4))
-	const mo = parseInt(dateStr.slice(4, 6)) - 1
-	const d = parseInt(dateStr.slice(6, 8))
+	const y = parseInt(dateStr.slice(0, 4), 10)
+	const mo = parseInt(dateStr.slice(4, 6), 10) - 1
+	const d = parseInt(dateStr.slice(6, 8), 10)
 	const dt = new Date(Date.UTC(y, mo, d))
 	dt.setUTCDate(dt.getUTCDate() + n)
 	return (
@@ -33,9 +33,9 @@ function addDays(dateStr: string, n: number): string {
 }
 
 function addMonths(dateStr: string, n: number): string {
-	const y = parseInt(dateStr.slice(0, 4))
-	const mo = parseInt(dateStr.slice(4, 6)) - 1
-	const d = parseInt(dateStr.slice(6, 8))
+	const y = parseInt(dateStr.slice(0, 4), 10)
+	const mo = parseInt(dateStr.slice(4, 6), 10) - 1
+	const d = parseInt(dateStr.slice(6, 8), 10)
 	const totalMonths = mo + n
 	const newYear = y + Math.floor(totalMonths / 12)
 	const newMonth = ((totalMonths % 12) + 12) % 12
@@ -48,9 +48,9 @@ function addMonths(dateStr: string, n: number): string {
 }
 
 function dowOf(dateStr: string): number {
-	const y = parseInt(dateStr.slice(0, 4))
-	const mo = parseInt(dateStr.slice(4, 6)) - 1
-	const d = parseInt(dateStr.slice(6, 8))
+	const y = parseInt(dateStr.slice(0, 4), 10)
+	const mo = parseInt(dateStr.slice(4, 6), 10) - 1
+	const d = parseInt(dateStr.slice(6, 8), 10)
 	return new Date(Date.UTC(y, mo, d)).getUTCDay()
 }
 
@@ -72,8 +72,10 @@ export function addInterval(dateStr: string, interval: string): string {
 	}
 	const numeric = /^(\d+)([dwmy])$/.exec(interval)
 	if (numeric) {
-		const n = parseInt(numeric[1]!)
-		const unit = numeric[2]!
+		const amount = numeric[1]
+		const unit = numeric[2]
+		if (!amount || !unit) throw new Error(`invalid recurrence interval: ${interval}`)
+		const n = parseInt(amount, 10)
 		if (unit === 'd') return addDays(dateStr, n)
 		if (unit === 'w') return addDays(dateStr, n * 7)
 		if (unit === 'm') return addMonths(dateStr, n)
@@ -81,7 +83,7 @@ export function addInterval(dateStr: string, interval: string): string {
 	}
 	const targetDow = WEEKDAY[interval]
 	if (targetDow !== undefined) {
-		const diff = ((targetDow - dowOf(dateStr) + 7) % 7) || 7
+		const diff = (targetDow - dowOf(dateStr) + 7) % 7 || 7
 		return addDays(dateStr, diff)
 	}
 	throw new Error(`invalid recurrence interval: ${interval}`)

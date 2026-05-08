@@ -58,6 +58,11 @@
 			"types": "./dist/capabilities/index.d.ts",
 			"default": "./dist/capabilities/index.js"
 		},
+		"./capabilities/broker": {
+			"@justfiles/src": "./capabilities/broker.ts",
+			"types": "./dist/capabilities/broker.d.ts",
+			"default": "./dist/capabilities/broker.js"
+		},
 		"./capabilities/email": {
 			"@justfiles/src": "./capabilities/email/index.ts",
 			"types": "./dist/capabilities/email/index.d.ts",

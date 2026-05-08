@@ -117,13 +117,17 @@ describe('addInterval', () => {
 describe('nextDue — catch-up', () => {
 	test('weekly: original due in past advances past completedAt', () => {
 		// due=20260427(Mon), completed=20260504(Mon) → next Mon after 20260504 = 20260511
-		expect(nextDue('20260427', { type: 'catchup', interval: 'weekly' }, '20260504')).toBe('20260511')
+		expect(nextDue('20260427', { type: 'catchup', interval: 'weekly' }, '20260504')).toBe(
+			'20260511'
+		)
 	})
 
 	test('multiple missed cycles: monthly, many months in past', () => {
 		// due=20260101, monthly, completed=20260504
 		// 01→02→03→04→05→06; first > 20260504 is 20260601
-		expect(nextDue('20260101', { type: 'catchup', interval: 'monthly' }, '20260504')).toBe('20260601')
+		expect(nextDue('20260101', { type: 'catchup', interval: 'monthly' }, '20260504')).toBe(
+			'20260601'
+		)
 	})
 
 	test('daily: due yesterday, completed today', () => {
@@ -152,13 +156,17 @@ describe('nextDue — catch-up', () => {
 	test('end-of-month boundary: Jan 31 monthly catch-up', () => {
 		// due=20260131, completed=20260228
 		// 20260131 + 1m = 20260228 ≤ 20260228 → + 1m = 20260328
-		expect(nextDue('20260131', { type: 'catchup', interval: 'monthly' }, '20260228')).toBe('20260328')
+		expect(nextDue('20260131', { type: 'catchup', interval: 'monthly' }, '20260228')).toBe(
+			'20260328'
+		)
 	})
 })
 
 describe('nextDue — restart', () => {
 	test('weekly: completion date + 7', () => {
-		expect(nextDue('20260427', { type: 'restart', interval: 'weekly' }, '20260504')).toBe('20260511')
+		expect(nextDue('20260427', { type: 'restart', interval: 'weekly' }, '20260504')).toBe(
+			'20260511'
+		)
 	})
 
 	test('3d: completion date + 3', () => {
@@ -166,7 +174,9 @@ describe('nextDue — restart', () => {
 	})
 
 	test('monthly: completion date + 1 month', () => {
-		expect(nextDue(undefined, { type: 'restart', interval: 'monthly' }, '20260504')).toBe('20260604')
+		expect(nextDue(undefined, { type: 'restart', interval: 'monthly' }, '20260504')).toBe(
+			'20260604'
+		)
 	})
 
 	test('weekday: next occurrence of that weekday after completion', () => {
@@ -175,7 +185,9 @@ describe('nextDue — restart', () => {
 	})
 
 	test('yearly restart', () => {
-		expect(nextDue('20250101', { type: 'restart', interval: 'yearly' }, '20260504')).toBe('20270504')
+		expect(nextDue('20250101', { type: 'restart', interval: 'yearly' }, '20260504')).toBe(
+			'20270504'
+		)
 	})
 })
 
@@ -208,17 +220,23 @@ describe('nextDue — fixed', () => {
 	})
 
 	test('biweekly fixed', () => {
-		expect(nextDue('20260420', { type: 'fixed', interval: 'biweekly' }, '20260420')).toBe('20260504')
+		expect(nextDue('20260420', { type: 'fixed', interval: 'biweekly' }, '20260420')).toBe(
+			'20260504'
+		)
 	})
 })
 
 describe('nextDue — DST boundary dates', () => {
 	// Pure YYYYMMDD arithmetic uses UTC internally; DST has no effect.
 	test('spring forward (US): 2026-03-08 + weekly = 2026-03-15', () => {
-		expect(nextDue('20260308', { type: 'restart', interval: 'weekly' }, '20260308')).toBe('20260315')
+		expect(nextDue('20260308', { type: 'restart', interval: 'weekly' }, '20260308')).toBe(
+			'20260315'
+		)
 	})
 
 	test('fall back (US): catch-up crosses 2026-11-01', () => {
-		expect(nextDue('20261025', { type: 'catchup', interval: 'weekly' }, '20261025')).toBe('20261101')
+		expect(nextDue('20261025', { type: 'catchup', interval: 'weekly' }, '20261025')).toBe(
+			'20261101'
+		)
 	})
 })

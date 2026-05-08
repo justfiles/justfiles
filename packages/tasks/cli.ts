@@ -10,10 +10,9 @@ import {
 	type TaskManagerOptions
 } from './index.ts'
 import { isValidDue, type Recur } from './parse.ts'
+import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 import { isValidInterval } from './recur.ts'
 import type { Task } from './store.ts'
-
-import { filterTasks, groupTasks, SECTION_ORDER } from './query.ts'
 
 const HELP = `Usage: task <command> [options]
 

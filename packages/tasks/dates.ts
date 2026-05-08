@@ -91,9 +91,9 @@ const WEEKDAY_LONG: Record<string, number> = {
 }
 
 function addDays(dateStr: string, n: number): string {
-	const y = parseInt(dateStr.slice(0, 4))
-	const mo = parseInt(dateStr.slice(4, 6)) - 1
-	const d = parseInt(dateStr.slice(6, 8))
+	const y = parseInt(dateStr.slice(0, 4), 10)
+	const mo = parseInt(dateStr.slice(4, 6), 10) - 1
+	const d = parseInt(dateStr.slice(6, 8), 10)
 	const dt = new Date(Date.UTC(y, mo, d))
 	dt.setUTCDate(dt.getUTCDate() + n)
 	return (
@@ -104,9 +104,9 @@ function addDays(dateStr: string, n: number): string {
 }
 
 function dowOfDateStr(dateStr: string): number {
-	const y = parseInt(dateStr.slice(0, 4))
-	const mo = parseInt(dateStr.slice(4, 6)) - 1
-	const d = parseInt(dateStr.slice(6, 8))
+	const y = parseInt(dateStr.slice(0, 4), 10)
+	const mo = parseInt(dateStr.slice(4, 6), 10) - 1
+	const d = parseInt(dateStr.slice(6, 8), 10)
 	return new Date(Date.UTC(y, mo, d)).getUTCDay()
 }
 
@@ -130,14 +130,16 @@ export function parseDueInput(input: string, tz: string, now: Date = new Date())
 	const longIdx = WEEKDAY_LONG[norm] ?? -1
 	const targetDow = shortIdx >= 0 ? shortIdx : longIdx
 	if (targetDow >= 0) {
-		const diff = ((targetDow - dowOfDateStr(todayStr) + 7) % 7) || 0
+		const diff = (targetDow - dowOfDateStr(todayStr) + 7) % 7 || 0
 		return addDays(todayStr, diff)
 	}
 
 	const relative = /^\+(\d+)([dwmy])$/.exec(norm)
 	if (relative) {
-		const n = parseInt(relative[1]!)
-		const unit = relative[2]!
+		const amount = relative[1]
+		const unit = relative[2]
+		if (!amount || !unit) throw new Error(`invalid date: "${input}" — ${PARSE_DUE_HELP}`)
+		const n = parseInt(amount, 10)
 		const days = unit === 'd' ? n : unit === 'w' ? n * 7 : unit === 'm' ? n * 30 : n * 365
 		return addDays(todayStr, days)
 	}
