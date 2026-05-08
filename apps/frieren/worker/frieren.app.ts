@@ -14,11 +14,13 @@
 import { registry } from 'virtual:@justfiles/apps'
 import { createWorker } from '@cloudflare/worker-bundler'
 import type { Action, Actor } from '@justfiles/app'
+import capBridgeJs from '@justfiles/app/capabilities-bridge.js?raw'
 import bridgeJs from '@justfiles/app/client?raw'
 import runnerJs from '@justfiles/app/runner.js?raw'
 import runtimeJs from '@justfiles/app/runtime.js?raw'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import Type from 'typebox'
+import { AppBridge, type AppFacetScope, appLoaderCacheKey } from './app-bridge'
 import type { App as FacetApp } from './dynamic/do.js'
 import doCode from './dynamic/do.js?raw'
 
@@ -50,25 +52,48 @@ export const hasApp = (id: string): boolean => registry.has(id)
 export const getEntryPath = (id: string): string | undefined => registry.get(id)?.manifest.entry
 export const BRIDGE_JS = bridgeJs
 
-// First call per appId pays the bundle cost (esbuild-wasm + npm fetch for
-// declared deps). Subsequent calls hit the worker-loader cache.
+// First call per (appId, version, user, grants) pays the bundle cost
+// (esbuild-wasm + npm fetch for declared deps). Subsequent calls hit the
+// worker-loader cache. The cache key fences sandboxes per user and grant
+// set so a sandbox is never reused across versions, users, or grants.
+// `env.APP_BRIDGE` ships a `WorkerEntrypoint`-style RPC stub (see
+// `app-bridge.ts`) the dynamic worker reads to invoke broker-backed
+// capabilities; sandbox egress stays closed via `globalOutbound: null`.
 // TODO(prod): pre-bundle at deploy time and skip the runtime install path.
-export function loadAppFacet(ctx: DurableObjectState, env: Env, appId: string): AppFacet {
+export function loadAppFacet(
+	ctx: DurableObjectState,
+	env: Env,
+	appId: string,
+	scope: AppFacetScope
+): AppFacet {
 	const entry = registry.get(appId)
 	if (!entry) throw new Error(`unknown app: ${appId}`)
-	const facet = ctx.facets.get<FacetApp>(appId, async () => {
-		const worker = env.LOADER?.get(appId, async () => {
+	const cacheKey = appLoaderCacheKey({
+		appId,
+		version: entry.manifest.version,
+		userId: scope.userId,
+		grants: scope.grants
+	})
+	const facet = ctx.facets.get<FacetApp>(cacheKey, async () => {
+		const worker = env.LOADER?.get(cacheKey, async () => {
 			const { mainModule, modules } = await createWorker({
 				files: {
 					'src/index.js': doCode,
 					'src/app.js': entry.code,
 					'src/runtime.js': runtimeJs,
 					'src/runner.js': runnerJs,
+					'src/capabilities-bridge.js': capBridgeJs,
 					'package.json': PACKAGE_JSON
 				},
 				entryPoint: 'src/index.js'
 			})
-			return { mainModule, modules, compatibilityDate: COMPAT_DATE, globalOutbound: null }
+			return {
+				mainModule,
+				modules,
+				compatibilityDate: COMPAT_DATE,
+				globalOutbound: null,
+				env: { APP_BRIDGE: new AppBridge(scope.bridge) }
+			}
 		})
 		if (!worker) throw new Error('LOADER binding is required')
 		return { class: worker.getDurableObjectClass<FacetApp>('App') }
