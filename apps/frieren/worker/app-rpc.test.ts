@@ -2,6 +2,7 @@
 // public boundary — frame in, frame out — the way the WS loop calls it.
 
 import { describe, expect, test } from 'bun:test'
+import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
 import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
 import { dispatchAppRpc } from './app-rpc'
@@ -10,6 +11,12 @@ const APP_ID = 'demo'
 
 function makeVol(): Volume {
 	return volume(memStorage())
+}
+
+const denyAllBridge: CapabilityBridge = {
+	async invoke() {
+		throw new Error('bridge not stubbed')
+	}
 }
 
 const writeText = (id: string, path: string, text: string) => ({
@@ -36,7 +43,7 @@ const readFile = (id: string, path: string) => ({
 describe('dispatchAppRpc', () => {
 	test('text round-trip persists under app-private storage', async () => {
 		const vol = makeVol()
-		const ctx = { vol, appId: APP_ID, permissions: ['volume'] as const }
+		const ctx = { vol, appId: APP_ID, permissions: ['volume'] as const, bridge: denyAllBridge }
 		const writeReply = await dispatchAppRpc(ctx, writeText('1', 'last.txt', 'hello'))
 		expect(writeReply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
 
@@ -48,7 +55,12 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('binary round-trip preserves bytes including high values', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: ['volume'] as const }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['volume'] as const,
+			bridge: denyAllBridge
+		}
 		const bytes = btoa('\x00\x01\x02\xfa\xff')
 		await dispatchAppRpc(ctx, writeFile('1', 'blob.bin', bytes))
 		const reply = await dispatchAppRpc(ctx, readFile('2', 'blob.bin'))
@@ -56,7 +68,12 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('readText on missing file returns the not_found error code', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: ['volume'] as const }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['volume'] as const,
+			bridge: denyAllBridge
+		}
 		const reply = await dispatchAppRpc(ctx, readText('1', 'missing.txt'))
 		expect(reply.error?.code).toBe(-32001)
 		expect(reply.error?.message).toBe('not_found')
@@ -64,7 +81,12 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('paths escaping the app-private root are rejected', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: ['volume'] as const }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['volume'] as const,
+			bridge: denyAllBridge
+		}
 		const cases = ['../escape', 'a/../b', '..', '']
 		for (const path of cases) {
 			const reply = await dispatchAppRpc(ctx, writeText('x', path, 'nope'))
@@ -77,19 +99,19 @@ describe('dispatchAppRpc', () => {
 		const vol = makeVol()
 		const perms = ['volume'] as const
 		await dispatchAppRpc(
-			{ vol, appId: 'one', permissions: perms },
+			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge },
 			writeText('1', 'shared.txt', 'one-secret')
 		)
 		await dispatchAppRpc(
-			{ vol, appId: 'two', permissions: perms },
+			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge },
 			writeText('2', 'shared.txt', 'two-secret')
 		)
 		const oneReply = await dispatchAppRpc(
-			{ vol, appId: 'one', permissions: perms },
+			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge },
 			readText('3', 'shared.txt')
 		)
 		const twoReply = await dispatchAppRpc(
-			{ vol, appId: 'two', permissions: perms },
+			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge },
 			readText('4', 'shared.txt')
 		)
 		expect(oneReply.result).toEqual({ text: 'one-secret' })
@@ -97,7 +119,7 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('volume calls without the volume permission return permission_denied', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const }
+		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge: denyAllBridge }
 		const cases = [
 			writeText('1', 'last.txt', 'hi'),
 			readText('2', 'last.txt'),
@@ -116,7 +138,7 @@ describe('dispatchAppRpc', () => {
 	test('denied volume writes do not touch the underlying volume', async () => {
 		const vol = makeVol()
 		const reply = await dispatchAppRpc(
-			{ vol, appId: APP_ID, permissions: [] as const },
+			{ vol, appId: APP_ID, permissions: [] as const, bridge: denyAllBridge },
 			writeText('1', 'leaked.txt', 'should not persist')
 		)
 		expect(reply.error?.code).toBe(-32005)
@@ -124,7 +146,7 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('unknown methods report method_not_found before permission gate', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const }
+		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge: denyAllBridge }
 		const reply = await dispatchAppRpc(ctx, {
 			id: '1',
 			method: 'app.volume.unlink',
@@ -134,14 +156,24 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('invalid base64 bytes return invalid_payload', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: ['volume'] as const }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['volume'] as const,
+			bridge: denyAllBridge
+		}
 		const reply = await dispatchAppRpc(ctx, writeFile('1', 'blob.bin', 'not!base64!!'))
 		expect(reply.error?.code).toBe(-32003)
 		expect(reply.error?.message).toBe('invalid_payload')
 	})
 
 	test('unknown method returns method_not_found', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: ['volume'] as const }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['volume'] as const,
+			bridge: denyAllBridge
+		}
 		const reply = await dispatchAppRpc(ctx, {
 			id: '1',
 			method: 'app.volume.unlink',
@@ -151,10 +183,96 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('writeText creates parent directories implicitly', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: ['volume'] as const }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['volume'] as const,
+			bridge: denyAllBridge
+		}
 		const reply = await dispatchAppRpc(ctx, writeText('1', 'nested/dir/file.txt', 'x'))
 		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
 		const readReply = await dispatchAppRpc(ctx, readText('2', 'nested/dir/file.txt'))
 		expect(readReply.result).toEqual({ text: 'x' })
+	})
+
+	// ── capability invocation ────────────────────────────────────────────
+
+	const invoke = (id: string, capability: string, method: string, input: unknown) => ({
+		id,
+		method: 'app.capability.invoke' as const,
+		params: { capability, method, input }
+	})
+
+	test('capability.invoke routes generically through the host bridge', async () => {
+		const calls: { capability: string; method: string; input: unknown }[] = []
+		const bridge: CapabilityBridge = {
+			async invoke(req) {
+				calls.push(req)
+				return [{ id: 'e1', subject: 'hello' }]
+			}
+		}
+		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const reply = await dispatchAppRpc(
+			ctx,
+			invoke('1', 'email', 'listUnread', { limit: 5, accountId: 'primary' })
+		)
+		expect(reply).toEqual({
+			jsonrpc: '2.0',
+			id: '1',
+			result: { value: [{ id: 'e1', subject: 'hello' }] }
+		})
+		expect(calls).toEqual([
+			{ capability: 'email', method: 'listUnread', input: { limit: 5, accountId: 'primary' } }
+		])
+	})
+
+	test('capability denial maps to capability_denied with capability/method data', async () => {
+		const bridge: CapabilityBridge = {
+			async invoke() {
+				throw Object.assign(new Error('missing scope: read.unread'), {
+					code: 'CAPABILITY_DENIED'
+				})
+			}
+		}
+		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const reply = await dispatchAppRpc(ctx, invoke('1', 'email', 'listUnread', {}))
+		expect(reply.error?.code).toBe(-32010)
+		expect(reply.error?.message).toBe('missing scope: read.unread')
+		expect(reply.error?.data).toEqual({ capability: 'email', method: 'listUnread' })
+		expect(reply.result).toBeUndefined()
+	})
+
+	test('capability failure maps to capability_failed with capability/method data', async () => {
+		const bridge: CapabilityBridge = {
+			async invoke() {
+				throw Object.assign(new Error('upstream down'), { code: 'CAPABILITY_FAILED' })
+			}
+		}
+		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const reply = await dispatchAppRpc(
+			ctx,
+			invoke('1', 'calendar', 'listToday', { timezone: 'UTC' })
+		)
+		expect(reply.error?.code).toBe(-32011)
+		expect(reply.error?.message).toBe('upstream down')
+		expect(reply.error?.data).toEqual({ capability: 'calendar', method: 'listToday' })
+	})
+
+	test('capability invocation does not require any manifest permission', async () => {
+		const bridge: CapabilityBridge = {
+			async invoke() {
+				return { ok: true }
+			}
+		}
+		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const reply = await dispatchAppRpc(ctx, invoke('1', 'email', 'listUnread', {}))
+		expect(reply.error).toBeUndefined()
+		expect(reply.result).toEqual({ value: { ok: true } })
+	})
+
+	test('capability.invoke with empty capability id returns invalid_payload', async () => {
+		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge: denyAllBridge }
+		const reply = await dispatchAppRpc(ctx, invoke('1', '', 'listUnread', {}))
+		expect(reply.error?.code).toBe(-32003)
 	})
 })

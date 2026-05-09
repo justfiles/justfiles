@@ -34,6 +34,8 @@ export {
 	type ActionResult,
 	APP_RPC_ERROR,
 	APP_RPC_PERMISSION,
+	type AppCapabilities,
+	type AppCapabilityMap,
 	type AppRpcError,
 	type AppRpcMethod,
 	type AppRpcParams,

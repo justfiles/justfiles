@@ -14,6 +14,7 @@ import {
 	type AppRpcResult,
 	type RequestId
 } from '@justfiles/app'
+import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
 import type { Volume } from '@justfiles/fs'
 
 export interface AppRpcContext {
@@ -22,6 +23,11 @@ export interface AppRpcContext {
 	// Permissions granted to the active app by its manifest. Default-deny:
 	// missing entries on the manifest grant nothing.
 	permissions: readonly AppPermission[]
+	// Routes `app.capability.invoke` calls to the host capability broker.
+	// Errors thrown with `code === 'CAPABILITY_DENIED' | 'CAPABILITY_FAILED'`
+	// are mapped to stable RPC error codes; anything else surfaces as
+	// `internal_error`.
+	bridge: CapabilityBridge
 }
 
 type Handler<M extends AppRpcMethod> = (
@@ -115,8 +121,44 @@ const handlers: { [M in AppRpcMethod]: Handler<M> } = {
 		await ensureParent(vol, full)
 		await vol.writeFile(full, decoded)
 		return null
+	},
+	'app.capability.invoke': async ({ bridge }, { capability, method, input }) => {
+		if (typeof capability !== 'string' || capability.length === 0)
+			fail(APP_RPC_ERROR.invalidPayload)
+		if (typeof method !== 'string' || method.length === 0) fail(APP_RPC_ERROR.invalidPayload)
+		try {
+			const value = await bridge.invoke({ capability, method, input })
+			return { value }
+		} catch (err) {
+			throw toCapabilityRpcError(err, capability, method)
+		}
 	}
 }
+
+function toCapabilityRpcError(err: unknown, capability: string, method: string): RpcError {
+	const code = isRecord(err) && typeof err.code === 'string' ? err.code : ''
+	const message =
+		isRecord(err) && typeof err.message === 'string'
+			? err.message
+			: err instanceof Error
+				? err.message
+				: ''
+	const data = { capability, method }
+	if (code === 'CAPABILITY_DENIED') {
+		return new RpcError({
+			code: APP_RPC_ERROR.capabilityDenied.code,
+			message: message || APP_RPC_ERROR.capabilityDenied.message,
+			data
+		})
+	}
+	return new RpcError({
+		code: APP_RPC_ERROR.capabilityFailed.code,
+		message: message || APP_RPC_ERROR.capabilityFailed.message,
+		data
+	})
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
 
 export async function dispatchAppRpc(
 	ctx: AppRpcContext,
