@@ -10,6 +10,8 @@
 // via the worker's ASSETS binding.
 
 declare module 'virtual:@justfiles/apps' {
+	import type { AppPermission } from '@justfiles/app'
+
 	export const registry: ReadonlyMap<
 		string,
 		{
@@ -20,7 +22,8 @@ declare module 'virtual:@justfiles/apps' {
 				version: string
 				icon?: string
 				entry: string
-				backend: string
+				backend?: string
+				permissions?: readonly AppPermission[]
 			}
 			code: string
 		}

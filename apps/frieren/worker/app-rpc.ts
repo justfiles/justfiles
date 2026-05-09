@@ -5,6 +5,8 @@
 
 import {
 	APP_RPC_ERROR,
+	APP_RPC_PERMISSION,
+	type AppPermission,
 	type AppRpcError,
 	type AppRpcMethod,
 	type AppRpcParams,
@@ -17,6 +19,9 @@ import type { Volume } from '@justfiles/fs'
 export interface AppRpcContext {
 	vol: Volume
 	appId: string
+	// Permissions granted to the active app by its manifest. Default-deny:
+	// missing entries on the manifest grant nothing.
+	permissions: readonly AppPermission[]
 }
 
 type Handler<M extends AppRpcMethod> = (
@@ -120,6 +125,14 @@ export async function dispatchAppRpc(
 	const handler = (handlers as Record<string, Handler<AppRpcMethod>>)[frame.method]
 	if (!handler) {
 		return { jsonrpc: '2.0', id: frame.id, error: { ...APP_RPC_ERROR.methodNotFound } }
+	}
+	const required = APP_RPC_PERMISSION[frame.method as AppRpcMethod]
+	if (required && !ctx.permissions.includes(required)) {
+		return {
+			jsonrpc: '2.0',
+			id: frame.id,
+			error: { ...APP_RPC_ERROR.permissionDenied, data: { permission: required } }
+		}
 	}
 	const params = (frame.params ?? {}) as AppRpcParams<AppRpcMethod>
 	try {
