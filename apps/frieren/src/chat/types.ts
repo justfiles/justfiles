@@ -34,6 +34,18 @@ export interface InstalledApp {
 // Actions flow through the registry; at this wire boundary they're opaque.
 export type AppAction = { type: string; payload: unknown }
 
+// Iframe→worker JSON-RPC frame opaque at the chat layer; the worker owns
+// the typed registry. The chat client only correlates ids.
+export type AppRpcFrame = {
+	jsonrpc: '2.0'
+	id: string | number
+	method?: string
+	params?: unknown
+	result?: unknown
+	error?: { code: number; message: string }
+}
+export type AppRpcSender = (frame: AppRpcFrame) => Promise<AppRpcFrame>
+
 export interface ChatViewProps {
 	messages: ChatMessage[]
 	input: string
@@ -50,4 +62,5 @@ export interface ChatViewProps {
 	launchApp: (app: InstalledApp) => void
 	closeApp: () => void
 	sendAppAction: (action: AppAction) => void
+	sendAppRpc: AppRpcSender
 }

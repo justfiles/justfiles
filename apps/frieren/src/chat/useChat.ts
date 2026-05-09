@@ -1,6 +1,13 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useEffect, useRef, useState } from 'react'
-import type { ActiveApp, AppAction, ChatMessage, ConnectionState, InstalledApp } from './types'
+import type {
+	ActiveApp,
+	AppAction,
+	AppRpcFrame,
+	ChatMessage,
+	ConnectionState,
+	InstalledApp
+} from './types'
 
 interface AgentEvent {
 	type: string
@@ -29,6 +36,9 @@ export function useChat() {
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
+	// Pending app-RPC requests keyed by frame id. The iframe minted the id;
+	// the worker echoes it back on `app_rpc` so we can resolve here.
+	const pendingRpcRef = useRef(new Map<string, (frame: AppRpcFrame) => void>())
 
 	useEffect(() => {
 		void connectKey
@@ -244,6 +254,15 @@ export function useChat() {
 					return
 				}
 
+				if (data.type === 'app_rpc' && data.frame) {
+					const frame = data.frame as AppRpcFrame
+					const resolver = pendingRpcRef.current.get(String(frame.id))
+					if (!resolver) return
+					pendingRpcRef.current.delete(String(frame.id))
+					resolver(frame)
+					return
+				}
+
 				if (data.type === 'event') handleAgentEvent(data.event)
 			}
 
@@ -252,6 +271,14 @@ export function useChat() {
 					setConnectionState('disconnected')
 					setIsStreaming(false)
 					wsRef.current = null
+					for (const [id, resolve] of pendingRpcRef.current) {
+						resolve({
+							jsonrpc: '2.0',
+							id,
+							error: { code: -32004, message: 'connection_closed' }
+						})
+					}
+					pendingRpcRef.current.clear()
 				}
 			}
 
@@ -295,6 +322,18 @@ export function useChat() {
 		wsRef.current.send(JSON.stringify({ type: 'app_action', action }))
 	}
 
+	const sendAppRpc = (frame: AppRpcFrame): Promise<AppRpcFrame> =>
+		new Promise<AppRpcFrame>((resolve) => {
+			const ws = wsRef.current
+			const id = String(frame.id)
+			if (!ws || connectionState !== 'ready') {
+				resolve({ jsonrpc: '2.0', id, error: { code: -32004, message: 'no_connection' } })
+				return
+			}
+			pendingRpcRef.current.set(id, resolve)
+			ws.send(JSON.stringify({ type: 'app_rpc', frame }))
+		})
+
 	const launchApp = (app: InstalledApp) => {
 		if (app.kind === 'builtin') {
 			setActiveApp({ kind: 'builtin', id: app.id })
@@ -330,6 +369,7 @@ export function useChat() {
 		installedApps,
 		launchApp,
 		closeApp,
-		sendAppAction
+		sendAppAction,
+		sendAppRpc
 	}
 }

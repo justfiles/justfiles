@@ -27,7 +27,8 @@ export function ShadcnView(props: ChatViewProps) {
 		installedApps,
 		launchApp,
 		closeApp,
-		sendAppAction
+		sendAppAction,
+		sendAppRpc
 	} = props
 	const { dismissPanel, history, historyRef, inputRef, pinned, setFocused, showPanel, submit } =
 		useAdventureViewState({ messages, input, sendMessage })
@@ -137,6 +138,7 @@ export function ShadcnView(props: ChatViewProps) {
 								ui={activeApp.ui}
 								state={activeApp.state}
 								onAction={sendAppAction}
+								onRpc={sendAppRpc}
 								onHome={closeApp}
 							/>
 						) : activeApp?.kind === 'builtin' ? (

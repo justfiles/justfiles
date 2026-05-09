@@ -2,7 +2,7 @@ import { AppWindowIcon, BracketsCurlyIcon, HouseIcon, PrinterIcon } from '@phosp
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { AppAction } from './chat/types'
+import type { AppAction, AppRpcSender } from './chat/types'
 
 type Ui = { url: string }
 
@@ -11,9 +11,10 @@ export function AppFrame(props: {
 	ui: Ui
 	state: unknown
 	onAction: (action: AppAction) => void
+	onRpc: AppRpcSender
 	onHome: () => void
 }) {
-	const { id, ui, state, onAction, onHome } = props
+	const { id, ui, state, onAction, onRpc, onHome } = props
 	const [view, setView] = useState<'app' | 'state'>('app')
 	const iframeRef = useRef<HTMLIFrameElement>(null)
 	const stateJson = useMemo(() => JSON.stringify(state ?? null, null, 2), [state])
@@ -47,28 +48,32 @@ export function AppFrame(props: {
 				return
 			}
 
-			switch (data.method) {
-				case 'app.ready':
-					respond(data.id, { state: stateRef.current })
-					break
-				case 'app.action': {
-					const action = data.params?.action
-					if (!action || typeof action.type !== 'string') {
-						reject(data.id, -32602, 'Invalid app action.')
-						return
-					}
-					onAction(action)
-					respond(data.id, { ok: true })
-					break
-				}
-				default:
-					reject(data.id, -32601, `Unknown method: ${data.method}`)
+			if (data.method === 'app.ready') {
+				respond(data.id, { state: stateRef.current })
+				return
 			}
+			if (data.method === 'app.action') {
+				const action = data.params?.action
+				if (!action || typeof action.type !== 'string') {
+					reject(data.id, -32602, 'Invalid app action.')
+					return
+				}
+				onAction(action)
+				respond(data.id, { ok: true })
+				return
+			}
+			// Everything else flows to the worker over WS. The dispatcher there
+			// owns the typed registry; the chat layer just correlates by id.
+			onRpc({ jsonrpc: '2.0', id: data.id, method: data.method, params: data.params }).then(
+				(reply) => {
+					iframeRef.current?.contentWindow?.postMessage(reply, '*')
+				}
+			)
 		}
 
 		window.addEventListener('message', receive)
 		return () => window.removeEventListener('message', receive)
-	}, [onAction])
+	}, [onAction, onRpc])
 
 	const printApp = () => {
 		iframeRef.current?.contentWindow?.postMessage(
