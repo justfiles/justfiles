@@ -1,0 +1,7 @@
+{
+	"format": 1,
+	"name": "Hello",
+	"description": "Client-only hello-world app — proves the manifest+HTML slice.",
+	"version": "0.1.0",
+	"entry": "index.html"
+}

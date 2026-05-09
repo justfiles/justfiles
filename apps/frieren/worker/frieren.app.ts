@@ -50,6 +50,10 @@ export const listApps = (): { id: string; name: string; description: string; ico
 	}))
 export const hasApp = (id: string): boolean => registry.has(id)
 export const getEntryPath = (id: string): string | undefined => registry.get(id)?.manifest.entry
+// Client-only apps ship just static assets — no backend module, no
+// state-machine facet. The launcher still opens them in the iframe host;
+// the parent skips facet load, tool registration, and dispatch.
+export const isClientApp = (id: string): boolean => !registry.get(id)?.manifest.backend
 export const BRIDGE_JS = bridgeJs
 
 // First call per (appId, version, user, grants) pays the bundle cost

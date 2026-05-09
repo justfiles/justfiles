@@ -22,6 +22,7 @@ export interface AppPackageSource {
 
 export interface AppEntry {
 	manifest: Manifest
+	// Empty string for client-only apps (manifest omits `backend`).
 	code: string
 	open(path: string): Promise<AppAsset | undefined>
 }
@@ -66,9 +67,13 @@ export async function loadAppPackage(src: AppPackageSource): Promise<AppEntry> {
 			`format ${manifest.format} not supported (expected ${FORMAT_VERSION})`
 		)
 	}
-	const code = await readText(src, manifest.backend)
-	if (code === undefined) {
-		throw new AppPackageError('MISSING_BACKEND', `backend file "${manifest.backend}" not found`)
+	let code = ''
+	if (manifest.backend) {
+		const loaded = await readText(src, manifest.backend)
+		if (loaded === undefined) {
+			throw new AppPackageError('MISSING_BACKEND', `backend file "${manifest.backend}" not found`)
+		}
+		code = loaded
 	}
 	return { manifest, code, open: (p) => src.open(p) }
 }

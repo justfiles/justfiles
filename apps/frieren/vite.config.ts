@@ -15,5 +15,12 @@ export default defineConfig({
 			'@': path.resolve(__dirname, './src')
 		}
 	},
-	plugins: [tailwindcss(), react(), cloudflare(), hostApps([crossword, doom])]
+	plugins: [
+		tailwindcss(),
+		react(),
+		cloudflare(),
+		// `@justfiles/app-hello` is referenced by package name because
+		// client-only apps have no JS module to import.
+		hostApps([crossword, doom, '@justfiles/app-hello'])
+	]
 })

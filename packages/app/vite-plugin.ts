@@ -296,11 +296,14 @@ function resolveInstalledApp(
 			`hostApps: ${pkgName} has format ${manifest.format}, expected ${FORMAT_VERSION}`
 		)
 	}
-	const codePath = path.join(contentDir, manifest.backend)
-	if (!fs.existsSync(codePath)) {
-		throw new Error(`hostApps: ${pkgName} backend "${manifest.backend}" not found at ${codePath}`)
+	let code = ''
+	if (manifest.backend) {
+		const codePath = path.join(contentDir, manifest.backend)
+		if (!fs.existsSync(codePath)) {
+			throw new Error(`hostApps: ${pkgName} backend "${manifest.backend}" not found at ${codePath}`)
+		}
+		code = fs.readFileSync(codePath, 'utf8')
 	}
-	const code = fs.readFileSync(codePath, 'utf8')
 	return { id, contentDir, manifest, code }
 }
 

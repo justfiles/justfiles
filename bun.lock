@@ -36,6 +36,7 @@
         "@justbuddy/app-doom": "workspace:*",
         "@justfiles/app": "workspace:*",
         "@justfiles/app-crossword": "workspace:*",
+        "@justfiles/app-hello": "workspace:*",
         "@justfiles/core": "workspace:*",
         "@justfiles/fs": "workspace:*",
         "@justfiles/ui": "workspace:*",
@@ -183,6 +184,10 @@
         "typescript": "^6.0.3",
         "vite": "^8.0.0-beta.13",
       },
+    },
+    "packages/app-hello": {
+      "name": "@justfiles/app-hello",
+      "version": "0.1.0",
     },
     "packages/core": {
       "name": "@justfiles/core",
@@ -801,6 +806,8 @@
     "@justfiles/app": ["@justfiles/app@workspace:packages/app"],
 
     "@justfiles/app-crossword": ["@justfiles/app-crossword@workspace:packages/app-crossword"],
+
+    "@justfiles/app-hello": ["@justfiles/app-hello@workspace:packages/app-hello"],
 
     "@justfiles/cli": ["@justfiles/cli@workspace:apps/cli"],
 

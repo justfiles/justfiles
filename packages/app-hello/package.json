@@ -1,0 +1,7 @@
+{
+	"name": "@justfiles/app-hello",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"main": "./static/manifest.json"
+}
