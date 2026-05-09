@@ -13,7 +13,14 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import { type AppFacet, buildAppTools, hasApp, listApps, loadAppFacet } from './frieren.app'
+import {
+	type AppFacet,
+	buildAppTools,
+	hasApp,
+	isClientApp,
+	listApps,
+	loadAppFacet
+} from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -91,11 +98,12 @@ type Dispatcher = (action: Action, actor: Actor) => Promise<DispatchResult>
 
 interface ActiveApp {
 	id: string
-	facet: AppFacet
+	// Client-only apps (no backend module) leave these undefined.
+	facet?: AppFacet
 	tools: AgentTool[]
 	userActor: Actor
 	agentActor: Actor
-	dispatch: Dispatcher
+	dispatch?: Dispatcher
 }
 
 interface PersistedApp {
@@ -377,10 +385,12 @@ export class Frieren extends DurableObject<Env> {
 		if (this.activeApp) return
 		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
 		if (!saved || !hasApp(saved.id)) return
-		const facet = loadAppFacet(this.ctx, this.env, saved.id, this.appScope())
-		if (await facet.done()) {
-			await this.ctx.storage.delete(APP_STORAGE_KEY)
-			return
+		if (!isClientApp(saved.id)) {
+			const facet = loadAppFacet(this.ctx, this.env, saved.id, this.appScope())
+			if (await facet.done()) {
+				await this.ctx.storage.delete(APP_STORAGE_KEY)
+				return
+			}
 		}
 		await this.mountApp(saved.id)
 	}
@@ -388,6 +398,15 @@ export class Frieren extends DurableObject<Env> {
 	private async mountApp(id: string): Promise<ActiveApp> {
 		const userActor: Actor = { id: USER_ID, kind: 'human' }
 		const agentActor: Actor = { id: AGENT_ID, kind: 'agent' }
+
+		if (isClientApp(id)) {
+			const active: ActiveApp = { id, tools: [], userActor, agentActor }
+			this.activeApp = active
+			await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
+			await this.broadcastOpen(active)
+			return active
+		}
+
 		const facet = loadAppFacet(this.ctx, this.env, id, this.appScope())
 
 		// Single dispatch path for both human (app_action) and agent (tool
@@ -430,7 +449,7 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async openMessage(active: ActiveApp): Promise<ServerMessage> {
-		const state: unknown = await active.facet.view(active.userActor)
+		const state: unknown = active.facet ? await active.facet.view(active.userActor) : null
 		return {
 			type: 'app_open',
 			id: active.id,
@@ -443,7 +462,7 @@ export class Frieren extends DurableObject<Env> {
 		if (!hasApp(id)) return
 		if (this.activeApp) await this.closeApp()
 		const active = await this.mountApp(id)
-		const briefing = await active.facet.briefing()
+		const briefing = active.facet ? await active.facet.briefing() : null
 		if (briefing) await this.promptAgent(ws, briefing)
 	}
 
@@ -459,7 +478,7 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async resetApp(ws: WebSocket): Promise<void> {
-		if (!this.activeApp) return
+		if (!this.activeApp?.facet) return
 		await this.activeApp.facet.reset()
 		await this.broadcastOpen(this.activeApp)
 		const briefing = await this.activeApp.facet.briefing()
@@ -467,7 +486,7 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async handleAppAction(ws: WebSocket, action: Action): Promise<void> {
-		if (!this.activeApp) return
+		if (!this.activeApp?.dispatch) return
 		const result = await this.activeApp.dispatch(action, this.activeApp.userActor)
 		if (!result.ok) {
 			ws.send(

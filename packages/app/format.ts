@@ -26,6 +26,8 @@ export const ManifestSchema = Type.Object({
 	version: Type.String(),
 	icon: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 	entry: Type.String(),
-	backend: Type.String()
+	// Optional: client-only apps ship just static assets and have no
+	// backend ESM module. Sandbox apps (state-machine runtime) set this.
+	backend: Type.Optional(Type.String())
 })
 export type Manifest = Type.Static<typeof ManifestSchema>
