@@ -1,9 +1,9 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { VolumeRequest } from '../AppFrame'
+import type { HostRpcRequest } from '../AppFrame'
 import type { ActiveApp, AppAction, ChatMessage, ConnectionState, InstalledApp } from './types'
 
-interface VolumePending {
+interface RpcPending {
 	resolve: (value: unknown) => void
 	reject: (reason: Error) => void
 }
@@ -35,7 +35,7 @@ export function useChat() {
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
-	const volumePendingRef = useRef<Map<string, VolumePending>>(new Map())
+	const rpcPendingRef = useRef<Map<string, RpcPending>>(new Map())
 
 	useEffect(() => {
 		void connectKey
@@ -251,11 +251,11 @@ export function useChat() {
 					return
 				}
 
-				if (data.type === 'app_volume_result') {
+				if (data.type === 'app_rpc_result') {
 					const reqId = String(data.reqId ?? '')
-					const pending = volumePendingRef.current.get(reqId)
+					const pending = rpcPendingRef.current.get(reqId)
 					if (!pending) return
-					volumePendingRef.current.delete(reqId)
+					rpcPendingRef.current.delete(reqId)
 					if (typeof data.error === 'string') pending.reject(new Error(data.error))
 					else pending.resolve(data.result)
 					return
@@ -270,10 +270,10 @@ export function useChat() {
 					setIsStreaming(false)
 					wsRef.current = null
 				}
-				for (const pending of volumePendingRef.current.values()) {
+				for (const pending of rpcPendingRef.current.values()) {
 					pending.reject(new Error('socket closed'))
 				}
-				volumePendingRef.current.clear()
+				rpcPendingRef.current.clear()
 			}
 
 			socket.onerror = () => {
@@ -317,9 +317,9 @@ export function useChat() {
 	}
 
 	// Stable callback so AppFrame's message listener doesn't tear down on
-	// every re-render. Pending volume calls are held in a ref keyed by reqId.
-	const handleVolumeRequest = useCallback(
-		(req: VolumeRequest): Promise<unknown> =>
+	// every re-render. Pending host RPC calls are held in a ref keyed by reqId.
+	const handleHostRequest = useCallback(
+		(req: HostRpcRequest): Promise<unknown> =>
 			new Promise((resolve, reject) => {
 				const ws = wsRef.current
 				if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -329,11 +329,11 @@ export function useChat() {
 				const reqId =
 					typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
 						? crypto.randomUUID()
-						: `v${Date.now()}.${Math.random().toString(36).slice(2)}`
-				volumePendingRef.current.set(reqId, { resolve, reject })
+						: `r${Date.now()}.${Math.random().toString(36).slice(2)}`
+				rpcPendingRef.current.set(reqId, { resolve, reject })
 				ws.send(
 					JSON.stringify({
-						type: 'app_volume',
+						type: 'app_rpc',
 						reqId,
 						method: req.method,
 						params: req.params
@@ -379,6 +379,6 @@ export function useChat() {
 		launchApp,
 		closeApp,
 		sendAppAction,
-		handleVolumeRequest
+		handleHostRequest
 	}
 }

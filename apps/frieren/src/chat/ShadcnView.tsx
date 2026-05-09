@@ -28,7 +28,7 @@ export function ShadcnView(props: ChatViewProps) {
 		launchApp,
 		closeApp,
 		sendAppAction,
-		handleVolumeRequest
+		handleHostRequest
 	} = props
 	const { dismissPanel, history, historyRef, inputRef, pinned, setFocused, showPanel, submit } =
 		useAdventureViewState({ messages, input, sendMessage })
@@ -139,7 +139,7 @@ export function ShadcnView(props: ChatViewProps) {
 								state={activeApp.state}
 								onAction={sendAppAction}
 								onHome={closeApp}
-								onVolumeRequest={handleVolumeRequest}
+								onHostRequest={handleHostRequest}
 							/>
 						) : activeApp?.kind === 'builtin' ? (
 							<BuiltinHost id={activeApp.id} onHome={closeApp} />

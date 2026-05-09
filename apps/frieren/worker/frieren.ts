@@ -6,7 +6,8 @@ import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import type { AppFacetScope } from './app-bridge'
-import { executeVolumeOp, VolumeError } from './app-volume.ts'
+import { dispatchHostRpc, type HostHandlers } from './app-host.ts'
+import { volumeHandlers } from './app-volume.ts'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -40,7 +41,7 @@ import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close' | 'app_volume'
+	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close' | 'app_rpc'
 	text?: string
 	id?: string
 	action?: Action
@@ -87,7 +88,7 @@ type ServerMessage =
 	| { type: 'app_open'; id: string; ui: { url: string }; state: unknown }
 	| { type: 'app_state'; id: string; state: unknown }
 	| { type: 'app_close' }
-	| { type: 'app_volume_result'; reqId: string; result?: unknown; error?: string }
+	| { type: 'app_rpc_result'; reqId: string; result?: unknown; error?: string }
 
 const DEBUG_COMMAND = '/debug'
 const CLOSE_COMMAND = '/close'
@@ -297,8 +298,8 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (parsed.type === 'app_volume') {
-			await this.handleVolume(ws, parsed.reqId, parsed.method, parsed.params)
+		if (parsed.type === 'app_rpc') {
+			await this.handleHostRpc(ws, parsed.reqId, parsed.method, parsed.params)
 			return
 		}
 
@@ -495,7 +496,9 @@ export class Frieren extends DurableObject<Env> {
 		if (briefing) await this.promptAgent(ws, briefing)
 	}
 
-	private async handleVolume(
+	private readonly hostRegistry: HostHandlers = { ...volumeHandlers }
+
+	private async handleHostRpc(
 		ws: WebSocket,
 		reqId: string | undefined,
 		method: string | undefined,
@@ -504,20 +507,22 @@ export class Frieren extends DurableObject<Env> {
 		if (typeof reqId !== 'string' || reqId.length === 0) return
 		const send = (msg: ServerMessage) => ws.send(JSON.stringify(msg))
 		if (!this.activeApp) {
-			send({ type: 'app_volume_result', reqId, error: 'no active app' })
+			send({ type: 'app_rpc_result', reqId, error: 'no active app' })
 			return
 		}
 		if (typeof method !== 'string') {
-			send({ type: 'app_volume_result', reqId, error: 'EINVAL: method required' })
+			send({ type: 'app_rpc_result', reqId, error: 'EINVAL: method required' })
 			return
 		}
 		try {
-			const result = await executeVolumeOp(this.vol, this.activeApp.id, { method, params })
-			send({ type: 'app_volume_result', reqId, result })
+			const result = await dispatchHostRpc(this.hostRegistry, method, params, {
+				vol: this.vol,
+				appId: this.activeApp.id
+			})
+			send({ type: 'app_rpc_result', reqId, result })
 		} catch (err) {
-			const message =
-				err instanceof VolumeError ? err.message : err instanceof Error ? err.message : String(err)
-			send({ type: 'app_volume_result', reqId, error: message })
+			const message = err instanceof Error ? err.message : String(err)
+			send({ type: 'app_rpc_result', reqId, error: message })
 		}
 	}
 

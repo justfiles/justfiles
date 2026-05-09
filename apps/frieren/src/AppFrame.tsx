@@ -6,14 +6,12 @@ import type { AppAction } from './chat/types'
 
 type Ui = { url: string }
 
-const VOLUME_METHODS = new Set([
-	'app.volume.readText',
-	'app.volume.writeText',
-	'app.volume.readFile',
-	'app.volume.writeFile'
-])
+// Methods AppFrame answers locally without involving the host RPC pipe.
+// `app.ready` and `app.action` belong to the legacy state-machine bridge;
+// everything else falls through to `onHostRequest`.
+const LOCAL_METHODS = new Set(['app.ready', 'app.action'])
 
-export interface VolumeRequest {
+export interface HostRpcRequest {
 	method: string
 	params: unknown
 }
@@ -24,9 +22,9 @@ export function AppFrame(props: {
 	state: unknown
 	onAction: (action: AppAction) => void
 	onHome: () => void
-	onVolumeRequest?: (req: VolumeRequest) => Promise<unknown>
+	onHostRequest?: (req: HostRpcRequest) => Promise<unknown>
 }) {
-	const { id, ui, state, onAction, onHome, onVolumeRequest } = props
+	const { id, ui, state, onAction, onHome, onHostRequest } = props
 	const [view, setView] = useState<'app' | 'state'>('app')
 	const iframeRef = useRef<HTMLIFrameElement>(null)
 	const stateJson = useMemo(() => JSON.stringify(state ?? null, null, 2), [state])
@@ -36,10 +34,10 @@ export function AppFrame(props: {
 	const stateRef = useRef<unknown>(state)
 	stateRef.current = state
 
-	// Same trick for the volume bridge so we don't tear down the message
+	// Same trick for the host pipe so we don't tear down the message
 	// listener every time the chat hook recreates the callback.
-	const volumeRef = useRef(onVolumeRequest)
-	volumeRef.current = onVolumeRequest
+	const hostRef = useRef(onHostRequest)
+	hostRef.current = onHostRequest
 
 	useEffect(() => {
 		iframeRef.current?.contentWindow?.postMessage(
@@ -65,10 +63,10 @@ export function AppFrame(props: {
 				return
 			}
 
-			if (VOLUME_METHODS.has(data.method)) {
-				const handler = volumeRef.current
+			if (!LOCAL_METHODS.has(data.method)) {
+				const handler = hostRef.current
 				if (!handler) {
-					reject(data.id, -32601, 'Volume bridge unavailable')
+					reject(data.id, -32601, `Unknown method: ${data.method}`)
 					return
 				}
 				Promise.resolve(handler({ method: data.method, params: data.params }))
@@ -94,8 +92,6 @@ export function AppFrame(props: {
 					respond(data.id, { ok: true })
 					break
 				}
-				default:
-					reject(data.id, -32601, `Unknown method: ${data.method}`)
 			}
 		}
 

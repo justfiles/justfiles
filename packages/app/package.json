@@ -34,6 +34,11 @@
 			"types": "./dist/host.d.ts",
 			"default": "./dist/host.js"
 		},
+		"./host-methods": {
+			"@justfiles/src": "./host-methods.ts",
+			"types": "./dist/host-methods.d.ts",
+			"default": "./dist/host-methods.js"
+		},
 		"./format": {
 			"@justfiles/src": "./format.ts",
 			"types": "./dist/format.d.ts",

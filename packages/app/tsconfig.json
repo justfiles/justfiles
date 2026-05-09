@@ -28,6 +28,7 @@
 		"vite-plugin.ts",
 		"format.ts",
 		"host.ts",
+		"host-methods.ts",
 		"capabilities-bridge.ts",
 		"capabilities/**/*.ts",
 		"engine.typecheck.ts"

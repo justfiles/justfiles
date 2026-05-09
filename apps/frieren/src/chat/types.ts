@@ -34,7 +34,7 @@ export interface InstalledApp {
 // Actions flow through the registry; at this wire boundary they're opaque.
 export type AppAction = { type: string; payload: unknown }
 
-export interface VolumeRequestPayload {
+export interface HostRpcRequestPayload {
 	method: string
 	params: unknown
 }
@@ -55,5 +55,5 @@ export interface ChatViewProps {
 	launchApp: (app: InstalledApp) => void
 	closeApp: () => void
 	sendAppAction: (action: AppAction) => void
-	handleVolumeRequest: (req: VolumeRequestPayload) => Promise<unknown>
+	handleHostRequest: (req: HostRpcRequestPayload) => Promise<unknown>
 }
