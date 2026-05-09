@@ -20,6 +20,10 @@
 			"types": "./client.d.ts",
 			"default": "./client.js"
 		},
+		"./sdk": {
+			"types": "./sdk.d.ts",
+			"default": "./sdk.js"
+		},
 		"./vite": {
 			"@justfiles/src": "./vite-plugin.ts",
 			"types": "./dist/vite-plugin.d.ts",
@@ -83,6 +87,8 @@
 		"dist",
 		"client.js",
 		"client.d.ts",
+		"sdk.js",
+		"sdk.d.ts",
 		"virtual.d.ts"
 	],
 	"scripts": {

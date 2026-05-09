@@ -18,6 +18,7 @@ import capBridgeJs from '@justfiles/app/capabilities-bridge.js?raw'
 import bridgeJs from '@justfiles/app/client?raw'
 import runnerJs from '@justfiles/app/runner.js?raw'
 import runtimeJs from '@justfiles/app/runtime.js?raw'
+import sdkJs from '@justfiles/app/sdk?raw'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import Type from 'typebox'
 import { AppBridge, type AppFacetScope, appLoaderCacheKey } from './app-bridge'
@@ -55,6 +56,7 @@ export const getEntryPath = (id: string): string | undefined => registry.get(id)
 // the parent skips facet load, tool registration, and dispatch.
 export const isClientApp = (id: string): boolean => !registry.get(id)?.manifest.backend
 export const BRIDGE_JS = bridgeJs
+export const SDK_JS = sdkJs
 
 // First call per (appId, version, user, grants) pays the bundle cost
 // (esbuild-wasm + npm fetch for declared deps). Subsequent calls hit the
