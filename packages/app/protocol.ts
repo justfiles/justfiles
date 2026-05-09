@@ -62,6 +62,7 @@ export type AppRpcRegistry = {
 		params: { capability: string; method: string; input: unknown }
 		result: { value: unknown }
 	}
+	'app.agent.send': { params: { text: string }; result: null }
 }
 
 export type AppRpcMethod = keyof AppRpcRegistry
@@ -103,7 +104,8 @@ export const APP_RPC_PERMISSION: { [M in AppRpcMethod]: AppPermission | null } =
 	'app.volume.writeText': 'volume',
 	'app.volume.readFile': 'volume',
 	'app.volume.writeFile': 'volume',
-	'app.capability.invoke': null
+	'app.capability.invoke': null,
+	'app.agent.send': 'agent'
 }
 
 // ── SDK surface — author-facing types ──────────────────────────────────
@@ -151,6 +153,13 @@ export interface AppCapabilityMap {
 
 export type AppCapabilities = { readonly [K in keyof AppCapabilityMap]: AppCapabilityMap[K] }
 
+export interface AppAgent {
+	/** Send text into the host agent flow as if the app were prompting it.
+	 *  Requires the `agent` manifest permission. Resolves once the prompt
+	 *  has been accepted by the host (not when the agent finishes). */
+	send(text: string): Promise<void>
+}
+
 export interface App {
 	/** Host SDK API version. Bumped on breaking changes to `window.app`. */
 	readonly version: number
@@ -161,4 +170,7 @@ export interface App {
 	 *  Rejections carry stable `code` values (`capability_denied`,
 	 *  `capability_failed`) and a `data` envelope with `capability` + `method`. */
 	readonly capabilities: AppCapabilities
+	/** App-to-agent bridge. Lets the app push prompts into the host's chat
+	 *  flow without app-authored server-side code. */
+	readonly agent: AppAgent
 }

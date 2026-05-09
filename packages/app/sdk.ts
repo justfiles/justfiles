@@ -13,6 +13,7 @@
 
 import type {
 	App,
+	AppAgent,
 	AppCapabilities,
 	AppLifecycle,
 	AppRpcMethod,
@@ -176,11 +177,20 @@ void (() => {
 	}
 	const volume: AppVolume = Object.freeze(volumeImpl)
 
+	const agentImpl: AppAgent = {
+		async send(text: string): Promise<void> {
+			if (typeof text !== 'string') throw new TypeError('text must be a string')
+			await request('app.agent.send', { text })
+		}
+	}
+	const agent: AppAgent = Object.freeze(agentImpl)
+
 	const app: App = Object.freeze({
 		version: API_VERSION,
 		lifecycle,
 		volume,
-		capabilities
+		capabilities,
+		agent
 	})
 
 	Object.defineProperty(window, 'app', {

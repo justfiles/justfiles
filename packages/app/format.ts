@@ -17,9 +17,9 @@ export const FORMAT_VERSION = 1
 // missing entries on the manifest grant nothing. Adding a permission here
 // updates the manifest schema, the SDK author types, and the host gate map
 // in protocol.ts in lockstep.
-export const PermissionSchema = Type.Union([Type.Literal('volume')])
+export const PermissionSchema = Type.Union([Type.Literal('volume'), Type.Literal('agent')])
 export type AppPermission = Type.Static<typeof PermissionSchema>
-export const APP_PERMISSIONS: readonly AppPermission[] = ['volume']
+export const APP_PERMISSIONS: readonly AppPermission[] = ['volume', 'agent']
 
 // TODO(signing): zip submissions from untrusted users need integrity + origin
 // proof. Likely shape: a detached signature file (e.g. `signature.bin`)

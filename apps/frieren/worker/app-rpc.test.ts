@@ -19,6 +19,8 @@ const denyAllBridge: CapabilityBridge = {
 	}
 }
 
+const noopSend = async () => {}
+
 const writeText = (id: string, path: string, text: string) => ({
 	id,
 	method: 'app.volume.writeText' as const,
@@ -43,7 +45,13 @@ const readFile = (id: string, path: string) => ({
 describe('dispatchAppRpc', () => {
 	test('text round-trip persists under app-private storage', async () => {
 		const vol = makeVol()
-		const ctx = { vol, appId: APP_ID, permissions: ['volume'] as const, bridge: denyAllBridge }
+		const ctx = {
+			vol,
+			appId: APP_ID,
+			permissions: ['volume'] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
+		}
 		const writeReply = await dispatchAppRpc(ctx, writeText('1', 'last.txt', 'hello'))
 		expect(writeReply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
 
@@ -59,7 +67,8 @@ describe('dispatchAppRpc', () => {
 			vol: makeVol(),
 			appId: APP_ID,
 			permissions: ['volume'] as const,
-			bridge: denyAllBridge
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
 		}
 		const bytes = btoa('\x00\x01\x02\xfa\xff')
 		await dispatchAppRpc(ctx, writeFile('1', 'blob.bin', bytes))
@@ -72,7 +81,8 @@ describe('dispatchAppRpc', () => {
 			vol: makeVol(),
 			appId: APP_ID,
 			permissions: ['volume'] as const,
-			bridge: denyAllBridge
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
 		}
 		const reply = await dispatchAppRpc(ctx, readText('1', 'missing.txt'))
 		expect(reply.error?.code).toBe(-32001)
@@ -85,7 +95,8 @@ describe('dispatchAppRpc', () => {
 			vol: makeVol(),
 			appId: APP_ID,
 			permissions: ['volume'] as const,
-			bridge: denyAllBridge
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
 		}
 		const cases = ['../escape', 'a/../b', '..', '']
 		for (const path of cases) {
@@ -99,19 +110,19 @@ describe('dispatchAppRpc', () => {
 		const vol = makeVol()
 		const perms = ['volume'] as const
 		await dispatchAppRpc(
-			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge },
+			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
 			writeText('1', 'shared.txt', 'one-secret')
 		)
 		await dispatchAppRpc(
-			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge },
+			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
 			writeText('2', 'shared.txt', 'two-secret')
 		)
 		const oneReply = await dispatchAppRpc(
-			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge },
+			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
 			readText('3', 'shared.txt')
 		)
 		const twoReply = await dispatchAppRpc(
-			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge },
+			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
 			readText('4', 'shared.txt')
 		)
 		expect(oneReply.result).toEqual({ text: 'one-secret' })
@@ -119,7 +130,13 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('volume calls without the volume permission return permission_denied', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge: denyAllBridge }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
+		}
 		const cases = [
 			writeText('1', 'last.txt', 'hi'),
 			readText('2', 'last.txt'),
@@ -138,7 +155,13 @@ describe('dispatchAppRpc', () => {
 	test('denied volume writes do not touch the underlying volume', async () => {
 		const vol = makeVol()
 		const reply = await dispatchAppRpc(
-			{ vol, appId: APP_ID, permissions: [] as const, bridge: denyAllBridge },
+			{
+				vol,
+				appId: APP_ID,
+				permissions: [] as const,
+				bridge: denyAllBridge,
+				sendAgentPrompt: noopSend
+			},
 			writeText('1', 'leaked.txt', 'should not persist')
 		)
 		expect(reply.error?.code).toBe(-32005)
@@ -146,7 +169,13 @@ describe('dispatchAppRpc', () => {
 	})
 
 	test('unknown methods report method_not_found before permission gate', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge: denyAllBridge }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
+		}
 		const reply = await dispatchAppRpc(ctx, {
 			id: '1',
 			method: 'app.volume.unlink',
@@ -160,7 +189,8 @@ describe('dispatchAppRpc', () => {
 			vol: makeVol(),
 			appId: APP_ID,
 			permissions: ['volume'] as const,
-			bridge: denyAllBridge
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
 		}
 		const reply = await dispatchAppRpc(ctx, writeFile('1', 'blob.bin', 'not!base64!!'))
 		expect(reply.error?.code).toBe(-32003)
@@ -172,7 +202,8 @@ describe('dispatchAppRpc', () => {
 			vol: makeVol(),
 			appId: APP_ID,
 			permissions: ['volume'] as const,
-			bridge: denyAllBridge
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
 		}
 		const reply = await dispatchAppRpc(ctx, {
 			id: '1',
@@ -187,7 +218,8 @@ describe('dispatchAppRpc', () => {
 			vol: makeVol(),
 			appId: APP_ID,
 			permissions: ['volume'] as const,
-			bridge: denyAllBridge
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
 		}
 		const reply = await dispatchAppRpc(ctx, writeText('1', 'nested/dir/file.txt', 'x'))
 		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
@@ -211,7 +243,13 @@ describe('dispatchAppRpc', () => {
 				return [{ id: 'e1', subject: 'hello' }]
 			}
 		}
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge,
+			sendAgentPrompt: noopSend
+		}
 		const reply = await dispatchAppRpc(
 			ctx,
 			invoke('1', 'email', 'listUnread', { limit: 5, accountId: 'primary' })
@@ -234,7 +272,13 @@ describe('dispatchAppRpc', () => {
 				})
 			}
 		}
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge,
+			sendAgentPrompt: noopSend
+		}
 		const reply = await dispatchAppRpc(ctx, invoke('1', 'email', 'listUnread', {}))
 		expect(reply.error?.code).toBe(-32010)
 		expect(reply.error?.message).toBe('missing scope: read.unread')
@@ -248,7 +292,13 @@ describe('dispatchAppRpc', () => {
 				throw Object.assign(new Error('upstream down'), { code: 'CAPABILITY_FAILED' })
 			}
 		}
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge,
+			sendAgentPrompt: noopSend
+		}
 		const reply = await dispatchAppRpc(
 			ctx,
 			invoke('1', 'calendar', 'listToday', { timezone: 'UTC' })
@@ -264,15 +314,99 @@ describe('dispatchAppRpc', () => {
 				return { ok: true }
 			}
 		}
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge,
+			sendAgentPrompt: noopSend
+		}
 		const reply = await dispatchAppRpc(ctx, invoke('1', 'email', 'listUnread', {}))
 		expect(reply.error).toBeUndefined()
 		expect(reply.result).toEqual({ value: { ok: true } })
 	})
 
 	test('capability.invoke with empty capability id returns invalid_payload', async () => {
-		const ctx = { vol: makeVol(), appId: APP_ID, permissions: [] as const, bridge: denyAllBridge }
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
+		}
 		const reply = await dispatchAppRpc(ctx, invoke('1', '', 'listUnread', {}))
 		expect(reply.error?.code).toBe(-32003)
+	})
+
+	// ── agent send ──────────────────────────────────────────────────────
+
+	const agentSend = (id: string, text: unknown) => ({
+		id,
+		method: 'app.agent.send' as const,
+		params: { text } as { text: string }
+	})
+
+	test('agent.send forwards text to the host and acks with null result', async () => {
+		const sent: string[] = []
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['agent'] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: async (text: string) => {
+				sent.push(text)
+			}
+		}
+		const reply = await dispatchAppRpc(ctx, agentSend('1', 'hello agent'))
+		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
+		expect(sent).toEqual(['hello agent'])
+	})
+
+	test('agent.send without the agent permission returns permission_denied', async () => {
+		const sent: string[] = []
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: async (text: string) => {
+				sent.push(text)
+			}
+		}
+		const reply = await dispatchAppRpc(ctx, agentSend('1', 'hello agent'))
+		expect(reply.error?.code).toBe(-32005)
+		expect(reply.error?.message).toBe('permission_denied')
+		expect(reply.error?.data).toEqual({ permission: 'agent' })
+		expect(sent).toEqual([])
+	})
+
+	test('agent.send with non-string or empty text returns invalid_payload', async () => {
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['agent'] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend
+		}
+		for (const text of ['', 42, null, undefined, {}]) {
+			const reply = await dispatchAppRpc(ctx, agentSend('x', text))
+			expect(reply.error?.code).toBe(-32003)
+			expect(reply.error?.message).toBe('invalid_payload')
+		}
+	})
+
+	test('agent.send surfaces host failure as internal_error', async () => {
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: ['agent'] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: async () => {
+				throw new Error('runtime missing')
+			}
+		}
+		const reply = await dispatchAppRpc(ctx, agentSend('1', 'hi'))
+		expect(reply.error?.code).toBe(-32000)
+		expect(reply.error?.message).toBe('runtime missing')
 	})
 })
