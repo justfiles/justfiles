@@ -21,16 +21,24 @@ export {
 	type TransitionArgs,
 	type TransitionDef
 } from './engine.js'
-export type {
-	ActionRequest,
-	ActionResult,
-	ClientRequest,
-	ReadyRequest,
-	ReadyResult,
-	RequestId,
-	Response as RpcResponse,
-	ServerMessage,
-	StateNotification
+export {
+	type ActionRequest,
+	type ActionResult,
+	APP_RPC_ERROR,
+	type AppRpcError,
+	type AppRpcMethod,
+	type AppRpcParams,
+	type AppRpcRegistry,
+	type AppRpcRequest,
+	type AppRpcResponse,
+	type AppRpcResult,
+	type ClientRequest,
+	type ReadyRequest,
+	type ReadyResult,
+	type RequestId,
+	type Response as RpcResponse,
+	type ServerMessage,
+	type StateNotification
 } from './protocol.js'
 export {
 	allows,

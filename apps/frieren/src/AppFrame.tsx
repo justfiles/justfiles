@@ -2,27 +2,33 @@ import { AppWindowIcon, BracketsCurlyIcon, HouseIcon, PrinterIcon } from '@phosp
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { AppAction } from './chat/types'
+import type { AppAction, AppRpcSender } from './chat/types'
 
 type Ui = { url: string }
 
 export function AppFrame(props: {
 	id: string
 	ui: Ui
+	// LEGACY: state, onAction, and the app.ready/app.action/app.state paths
+	// below belong to the state-machine app bridge. Removed with #76.
 	state: unknown
 	onAction: (action: AppAction) => void
+	onRpc: AppRpcSender
 	onHome: () => void
 }) {
-	const { id, ui, state, onAction, onHome } = props
+	const { id, ui, state, onAction, onRpc, onHome } = props
 	const [view, setView] = useState<'app' | 'state'>('app')
 	const iframeRef = useRef<HTMLIFrameElement>(null)
 	const stateJson = useMemo(() => JSON.stringify(state ?? null, null, 2), [state])
 
-	// Latest state goes to a ref so the RPC handler can respond to a late
-	// `app.ready` with the current value without re-binding listeners.
+	// LEGACY (state-machine): latest state goes to a ref so the RPC handler
+	// can respond to a late `app.ready` with the current value without
+	// re-binding listeners.
 	const stateRef = useRef<unknown>(state)
 	stateRef.current = state
 
+	// LEGACY (state-machine): broadcast new state to the iframe via the
+	// `app.state` notification consumed by `client.js`.
 	useEffect(() => {
 		iframeRef.current?.contentWindow?.postMessage(
 			{ jsonrpc: '2.0', method: 'app.state', params: { state } },
@@ -47,29 +53,38 @@ export function AppFrame(props: {
 				return
 			}
 
-			switch (data.method) {
-				case 'app.ready':
-					respond(data.id, { state: stateRef.current })
-					break
-				case 'app.action': {
-					const action = data.params?.action
-					if (!action || typeof action.type !== 'string') {
-						reject(data.id, -32602, 'Invalid app action.')
-						return
-					}
-					onAction(action)
-					respond(data.id, { ok: true })
-					break
-				}
-				default:
-					reject(data.id, -32601, `Unknown method: ${data.method}`)
+			// LEGACY (state-machine, removed with #76): `app.ready`/`app.action`
+			// are the legacy bridge methods served by `client.js`. Client-only
+			// apps using `sdk.ts` never send these.
+			if (data.method === 'app.ready') {
+				respond(data.id, { state: stateRef.current })
+				return
 			}
+			if (data.method === 'app.action') {
+				const action = data.params?.action
+				if (!action || typeof action.type !== 'string') {
+					reject(data.id, -32602, 'Invalid app action.')
+					return
+				}
+				onAction(action)
+				respond(data.id, { ok: true })
+				return
+			}
+			// Everything else flows to the worker over WS. The dispatcher there
+			// owns the typed registry; the chat layer just correlates by id.
+			onRpc({ jsonrpc: '2.0', id: data.id, method: data.method, params: data.params }).then(
+				(reply) => {
+					iframeRef.current?.contentWindow?.postMessage(reply, '*')
+				}
+			)
 		}
 
 		window.addEventListener('message', receive)
 		return () => window.removeEventListener('message', receive)
-	}, [onAction])
+	}, [onAction, onRpc])
 
+	// LEGACY (state-machine): `app.print` is consumed by `client.js`.
+	// Removed with #76.
 	const printApp = () => {
 		iframeRef.current?.contentWindow?.postMessage(
 			{ jsonrpc: '2.0', method: 'app.print', params: {} },

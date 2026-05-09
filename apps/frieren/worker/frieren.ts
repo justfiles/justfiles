@@ -1,11 +1,12 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { Action, Actor } from '@justfiles/app'
+import type { Action, Actor, AppRpcResponse, RequestId } from '@justfiles/app'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import type { AppFacetScope } from './app-bridge'
+import { dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -39,10 +40,11 @@ import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close'
+	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close' | 'app_rpc'
 	text?: string
 	id?: string
 	action?: Action
+	frame?: { id: RequestId; method: string; params: unknown }
 }
 
 interface DisplayToolCall {
@@ -83,6 +85,7 @@ type ServerMessage =
 	| { type: 'app_open'; id: string; ui: { url: string }; state: unknown }
 	| { type: 'app_state'; id: string; state: unknown }
 	| { type: 'app_close' }
+	| { type: 'app_rpc'; frame: AppRpcResponse }
 
 const DEBUG_COMMAND = '/debug'
 const CLOSE_COMMAND = '/close'
@@ -283,6 +286,17 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		if (parsed.type === 'app_rpc' && parsed.frame) {
+			const frame = parsed.frame
+			const reply: AppRpcResponse = this.activeApp
+				? await dispatchAppRpc({ vol: this.vol, appId: this.activeApp.id }, frame)
+				: noActiveAppResponse(frame.id)
+			ws.send(JSON.stringify({ type: 'app_rpc', frame: reply } satisfies ServerMessage))
+			return
+		}
+
+		// LEGACY (state-machine; removed with #76). Client-only apps go
+		// through the `app_rpc` branch above.
 		if (parsed.type === 'app_action' && parsed.action) {
 			if (!this.activeApp) {
 				ws.send(JSON.stringify({ type: 'error', message: 'No active app' } satisfies ServerMessage))

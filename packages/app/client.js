@@ -1,3 +1,6 @@
+// LEGACY (state-machine apps). Slated for removal alongside the
+// state-machine app system — see #76. New apps use `sdk.ts` instead.
+//
 // Author-transparent bridge. Installs `window.app` on import.
 //
 // Transport is auto-selected:
