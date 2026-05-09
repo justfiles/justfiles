@@ -295,7 +295,13 @@ export class Frieren extends DurableObject<Env> {
 							vol: this.vol,
 							appId: this.activeApp.id,
 							permissions: getAppPermissions(this.activeApp.id),
-							bridge: this.appScope().bridge
+							bridge: this.appScope().bridge,
+							// Fire-and-forget: the iframe's `app.agent.send` resolves
+							// once the host has accepted the prompt; the agent run
+							// streams events over WS independently.
+							sendAgentPrompt: async (text: string) => {
+								void this.promptAgent(ws, text)
+							}
 						},
 						frame
 					)

@@ -21,6 +21,7 @@ interface FakeApp {
 		writeFile(path: string, bytes: Uint8Array): Promise<void>
 	}
 	capabilities: Record<string, Record<string, (input: unknown) => Promise<unknown>>>
+	agent: { send(text: string): Promise<void> }
 }
 interface FakeWindow {
 	app?: FakeApp
@@ -313,6 +314,46 @@ test('capability proxies are extensible — unknown ids produce a usable proxy',
 	expect(sent.params.method).toBe('list')
 	h.dispatch({ jsonrpc: '2.0', id: sent.id, result: { value: [] } })
 	await expect(promise).resolves.toEqual([])
+})
+
+// ── agent / send ──────────────────────────────────────────────────────
+
+type AgentFrame = {
+	jsonrpc: '2.0'
+	id: string
+	method: 'app.agent.send'
+	params: { text: string }
+}
+
+test('app.agent.send posts a typed request and resolves on null result', async () => {
+	const h = setup()
+	const promise = h.win.app?.agent.send('hello agent')
+	const sent = h.parentSent[0] as AgentFrame
+	expect(sent.method).toBe('app.agent.send')
+	expect(sent.params).toEqual({ text: 'hello agent' })
+	h.dispatch({ jsonrpc: '2.0', id: sent.id, result: null })
+	await expect(promise).resolves.toBeUndefined()
+})
+
+test('app.agent.send rejects with the rpc error code on permission_denied', async () => {
+	const h = setup()
+	const promise = h.win.app?.agent.send('hi')
+	const sent = h.parentSent[0] as AgentFrame
+	h.dispatch({
+		jsonrpc: '2.0',
+		id: sent.id,
+		error: { code: -32005, message: 'permission_denied', data: { permission: 'agent' } }
+	})
+	await expect(promise).rejects.toMatchObject({
+		message: 'permission_denied',
+		code: -32005,
+		data: { permission: 'agent' }
+	})
+})
+
+test('app.agent.send throws on non-string input', () => {
+	const { win } = setup()
+	expect(() => win.app?.agent.send(42 as unknown as string)).toThrow(TypeError)
 })
 
 test('ignores lifecycle frames with unknown events', () => {

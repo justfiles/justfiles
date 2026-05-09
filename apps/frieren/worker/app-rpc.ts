@@ -28,6 +28,10 @@ export interface AppRpcContext {
 	// are mapped to stable RPC error codes; anything else surfaces as
 	// `internal_error`.
 	bridge: CapabilityBridge
+	// Pushes a prompt from the active app into the host agent flow. The
+	// supervisor wires this to the same path that handles `app_prompt`
+	// today, so app-sourced prompts appear in chat as `source: 'app'`.
+	sendAgentPrompt: (text: string) => Promise<void>
 }
 
 type Handler<M extends AppRpcMethod> = (
@@ -132,6 +136,11 @@ const handlers: { [M in AppRpcMethod]: Handler<M> } = {
 		} catch (err) {
 			throw toCapabilityRpcError(err, capability, method)
 		}
+	},
+	'app.agent.send': async ({ sendAgentPrompt }, { text }) => {
+		if (typeof text !== 'string' || text.length === 0) fail(APP_RPC_ERROR.invalidPayload)
+		await sendAgentPrompt(text as string)
+		return null
 	}
 }
 

@@ -36,4 +36,25 @@ window.app?.lifecycle.onStart(async () => {
 	} catch (err) {
 		console.error('failed to persist last visit:', err)
 	}
+
+	const sayHi = document.getElementById('say-hi')
+	const agentStatus = document.getElementById('agent-status')
+	sayHi?.addEventListener('click', async () => {
+		if (agentStatus) {
+			agentStatus.textContent = 'sending…'
+			agentStatus.dataset.state = 'sending'
+		}
+		try {
+			await window.app.agent.send('Hello from the hello app.')
+			if (agentStatus) {
+				agentStatus.textContent = 'sent'
+				agentStatus.dataset.state = 'sent'
+			}
+		} catch (err) {
+			if (agentStatus) {
+				agentStatus.textContent = `error: ${err?.message ?? err}`
+				agentStatus.dataset.state = 'error'
+			}
+		}
+	})
 })
