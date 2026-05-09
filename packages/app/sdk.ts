@@ -79,8 +79,10 @@ void (() => {
 			if (isRecord(data.error)) {
 				const err = new Error(String(data.error.message ?? 'rpc_error')) as Error & {
 					code?: number
+					data?: unknown
 				}
 				if (typeof data.error.code === 'number') err.code = data.error.code
+				if ('data' in data.error) err.data = data.error.data
 				p.reject(err)
 			} else {
 				p.resolve(data.result)

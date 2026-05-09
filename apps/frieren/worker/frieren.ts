@@ -17,6 +17,7 @@ import { cfFsStorage, migrateCF } from './db.do.ts'
 import {
 	type AppFacet,
 	buildAppTools,
+	getAppPermissions,
 	hasApp,
 	isClientApp,
 	listApps,
@@ -289,7 +290,14 @@ export class Frieren extends DurableObject<Env> {
 		if (parsed.type === 'app_rpc' && parsed.frame) {
 			const frame = parsed.frame
 			const reply: AppRpcResponse = this.activeApp
-				? await dispatchAppRpc({ vol: this.vol, appId: this.activeApp.id }, frame)
+				? await dispatchAppRpc(
+						{
+							vol: this.vol,
+							appId: this.activeApp.id,
+							permissions: getAppPermissions(this.activeApp.id)
+						},
+						frame
+					)
 				: noActiveAppResponse(frame.id)
 			ws.send(JSON.stringify({ type: 'app_rpc', frame: reply } satisfies ServerMessage))
 			return

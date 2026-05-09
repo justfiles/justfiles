@@ -13,6 +13,14 @@ import Type from 'typebox'
 
 export const FORMAT_VERSION = 1
 
+// Closed set of host-mediated permissions an app can request. Default-deny:
+// missing entries on the manifest grant nothing. Adding a permission here
+// updates the manifest schema, the SDK author types, and the host gate map
+// in protocol.ts in lockstep.
+export const PermissionSchema = Type.Union([Type.Literal('volume')])
+export type AppPermission = Type.Static<typeof PermissionSchema>
+export const APP_PERMISSIONS: readonly AppPermission[] = ['volume']
+
 // TODO(signing): zip submissions from untrusted users need integrity + origin
 // proof. Likely shape: a detached signature file (e.g. `signature.bin`)
 // covering manifest.json plus a content-addressed file list. Bump
@@ -28,6 +36,8 @@ export const ManifestSchema = Type.Object({
 	entry: Type.String(),
 	// Optional: client-only apps ship just static assets and have no
 	// backend ESM module. Sandbox apps (state-machine runtime) set this.
-	backend: Type.Optional(Type.String())
+	backend: Type.Optional(Type.String()),
+	// Host APIs the app wants to use. Default-deny: omitted == [].
+	permissions: Type.Optional(Type.Array(PermissionSchema, { uniqueItems: true }))
 })
 export type Manifest = Type.Static<typeof ManifestSchema>

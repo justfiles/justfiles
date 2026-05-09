@@ -13,7 +13,7 @@
 
 import { registry } from 'virtual:@justfiles/apps'
 import { createWorker } from '@cloudflare/worker-bundler'
-import type { Action, Actor } from '@justfiles/app'
+import type { Action, Actor, AppPermission } from '@justfiles/app'
 import capBridgeJs from '@justfiles/app/capabilities-bridge.js?raw'
 import bridgeJs from '@justfiles/app/client?raw'
 import runnerJs from '@justfiles/app/runner.js?raw'
@@ -55,6 +55,11 @@ export const getEntryPath = (id: string): string | undefined => registry.get(id)
 // state-machine facet. The launcher still opens them in the iframe host;
 // the parent skips facet load, tool registration, and dispatch.
 export const isClientApp = (id: string): boolean => !registry.get(id)?.manifest.backend
+// Manifest-declared permissions for an app. Default-deny — an unknown id
+// or a manifest without the field returns an empty list, which the RPC
+// dispatcher gates volume calls against.
+export const getAppPermissions = (id: string): readonly AppPermission[] =>
+	registry.get(id)?.manifest.permissions ?? []
 export const BRIDGE_JS = bridgeJs
 export const SDK_JS = sdkJs
 

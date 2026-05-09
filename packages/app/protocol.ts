@@ -2,6 +2,7 @@
 // (postMessage in frieren prod, WebSocket in dev) carry these verbatim.
 
 import type { Action } from './engine.js'
+import type { AppPermission } from './format.js'
 import type { DispatchResult } from './runtime.js'
 
 export type RequestId = string
@@ -65,7 +66,7 @@ export type AppRpcRequest = {
 	[M in AppRpcMethod]: { jsonrpc: '2.0'; id: RequestId; method: M; params: AppRpcParams<M> }
 }[AppRpcMethod]
 
-export type AppRpcError = { code: number; message: string }
+export type AppRpcError = { code: number; message: string; data?: unknown }
 
 export type AppRpcResponse = {
 	jsonrpc: '2.0'
@@ -80,9 +81,19 @@ export const APP_RPC_ERROR = {
 	invalidPath: { code: -32002, message: 'invalid_path' },
 	invalidPayload: { code: -32003, message: 'invalid_payload' },
 	noActiveApp: { code: -32004, message: 'no_active_app' },
+	permissionDenied: { code: -32005, message: 'permission_denied' },
 	methodNotFound: { code: -32601, message: 'method_not_found' },
 	internal: { code: -32000, message: 'internal_error' }
 } as const
+
+// Single source of truth for which manifest permission a method requires.
+// The host gates dispatch against this map; `null` means no permission needed.
+export const APP_RPC_PERMISSION: { [M in AppRpcMethod]: AppPermission | null } = {
+	'app.volume.readText': 'volume',
+	'app.volume.writeText': 'volume',
+	'app.volume.readFile': 'volume',
+	'app.volume.writeFile': 'volume'
+}
 
 // ── SDK surface — author-facing types ──────────────────────────────────
 //

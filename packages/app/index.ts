@@ -22,9 +22,18 @@ export {
 	type TransitionDef
 } from './engine.js'
 export {
+	APP_PERMISSIONS,
+	type AppPermission,
+	FORMAT_VERSION,
+	type Manifest,
+	ManifestSchema,
+	PermissionSchema
+} from './format.js'
+export {
 	type ActionRequest,
 	type ActionResult,
 	APP_RPC_ERROR,
+	APP_RPC_PERMISSION,
 	type AppRpcError,
 	type AppRpcMethod,
 	type AppRpcParams,
