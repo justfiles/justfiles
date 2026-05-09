@@ -170,12 +170,18 @@ export interface HostAppsOptions {
 
 const VIRTUAL_ID = 'virtual:@justfiles/apps'
 const RESOLVED_ID = `\0${VIRTUAL_ID}`
+const SDK_FILENAME = '__sdk.js'
 
 interface ResolvedApp {
 	id: string
 	contentDir: string
 	manifest: Manifest
 	code: string
+}
+
+function resolveSdkPath(): string {
+	const require = createRequire(path.join(process.cwd(), 'package.json'))
+	return require.resolve('@justfiles/app/sdk')
 }
 
 export function hostApps(arg: HostAppsArg, opts: HostAppsOptions = {}): Plugin {
@@ -224,15 +230,23 @@ export function hostApps(arg: HostAppsArg, opts: HostAppsOptions = {}): Plugin {
 		},
 		// Dev: serve `/apps/<id>/*` from each package's dist on disk so the
 		// worker's ASSETS.fetch resolves through the dev server's static
-		// pipeline (cloudflare/vite-plugin proxies to it).
+		// pipeline (cloudflare/vite-plugin proxies to it). `/apps/__sdk.js`
+		// serves the client-only SDK (window.app bridge) from the app package.
 		configureServer(server) {
 			const apps = ensureResolved()
 			const byId = new Map(apps.map((a) => [a.id, a.contentDir]))
+			const sdkPath = resolveSdkPath()
 			server.middlewares.use((req, res, next) => {
 				if (!req.url) return next()
 				const url = new URL(req.url, 'http://_')
 				if (!url.pathname.startsWith(urlPrefix)) return next()
 				const tail = url.pathname.slice(urlPrefix.length)
+				if (tail === SDK_FILENAME) {
+					if (!fs.existsSync(sdkPath)) return next()
+					res.setHeader('content-type', mimeFor(sdkPath))
+					fs.createReadStream(sdkPath).pipe(res)
+					return
+				}
 				const slash = tail.indexOf('/')
 				if (slash === -1) return next()
 				const appId = tail.slice(0, slash)
@@ -265,6 +279,14 @@ export function hostApps(arg: HostAppsArg, opts: HostAppsOptions = {}): Plugin {
 						source: fs.readFileSync(abs)
 					})
 				}
+			}
+			const sdkPath = resolveSdkPath()
+			if (fs.existsSync(sdkPath)) {
+				this.emitFile({
+					type: 'asset',
+					fileName: `apps/${SDK_FILENAME}`,
+					source: fs.readFileSync(sdkPath)
+				})
 			}
 		}
 	}

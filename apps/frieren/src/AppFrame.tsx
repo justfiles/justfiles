@@ -77,6 +77,17 @@ export function AppFrame(props: {
 		)
 	}
 
+	// Fire `app.lifecycle` start once the iframe document is loaded — at that
+	// point client-only apps' SDK has installed its message listener, so a
+	// notification posted now is guaranteed to land before any author code
+	// would otherwise need to know we've started.
+	const handleIframeLoad = () => {
+		iframeRef.current?.contentWindow?.postMessage(
+			{ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } },
+			'*'
+		)
+	}
+
 	return (
 		<div className="relative h-full w-full">
 			<iframe
@@ -85,6 +96,7 @@ export function AppFrame(props: {
 				allow="pointer-lock"
 				sandbox="allow-scripts allow-forms allow-modals allow-pointer-lock"
 				src={ui.url}
+				onLoad={handleIframeLoad}
 				className={cn('h-full w-full border-0', view === 'state' && 'hidden')}
 			/>
 			{view === 'state' ? (
