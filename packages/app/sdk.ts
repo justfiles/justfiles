@@ -13,6 +13,7 @@
 
 import type {
 	App,
+	AppCapabilities,
 	AppLifecycle,
 	AppRpcMethod,
 	AppRpcParams,
@@ -119,6 +120,43 @@ void (() => {
 	}
 	const lifecycle: AppLifecycle = Object.freeze(lifecycleImpl)
 
+	// Per-capability proxy: any property access becomes a method call that
+	// fans out to the single generic `app.capability.invoke` RPC. Method
+	// names aren't enumerated here — each capability's typed contract on
+	// `AppCapabilityMap` decides what authors can call. Errors thrown by
+	// the host broker travel back as `code: -32010` (denied) or
+	// `code: -32011` (failed) with `data: { capability, method }`.
+	function capabilityProxy(id: string): unknown {
+		return new Proxy(
+			{},
+			{
+				get(_target, prop) {
+					if (typeof prop !== 'string') return undefined
+					return async (input: unknown) => {
+						const r = await request('app.capability.invoke', {
+							capability: id,
+							method: prop,
+							input
+						})
+						return r.value
+					}
+				}
+			}
+		)
+	}
+
+	const capabilities = new Proxy({} as Record<string, unknown>, {
+		get(target, prop) {
+			if (typeof prop !== 'string') return undefined
+			let cached = target[prop]
+			if (!cached) {
+				cached = capabilityProxy(prop)
+				target[prop] = cached
+			}
+			return cached
+		}
+	}) as AppCapabilities
+
 	const volumeImpl: AppVolume = {
 		async readText(path: string): Promise<string> {
 			const r = await request('app.volume.readText', { path })
@@ -141,7 +179,8 @@ void (() => {
 	const app: App = Object.freeze({
 		version: API_VERSION,
 		lifecycle,
-		volume
+		volume,
+		capabilities
 	})
 
 	Object.defineProperty(window, 'app', {

@@ -20,6 +20,7 @@ interface FakeApp {
 		readFile(path: string): Promise<Uint8Array>
 		writeFile(path: string, bytes: Uint8Array): Promise<void>
 	}
+	capabilities: Record<string, Record<string, (input: unknown) => Promise<unknown>>>
 }
 interface FakeWindow {
 	app?: FakeApp
@@ -237,6 +238,81 @@ test('out-of-band response with unknown id is ignored', () => {
 	const { dispatch } = setup()
 	dispatch({ jsonrpc: '2.0', id: 'never-issued', result: { text: 'oops' } })
 	// no throw; nothing to assert beyond reaching this point
+})
+
+// ── capabilities / generic invocation ──────────────────────────────────
+
+type InvokeFrame = {
+	jsonrpc: '2.0'
+	id: string
+	method: 'app.capability.invoke'
+	params: { capability: string; method: string; input: unknown }
+}
+
+test('app.capabilities.email.listUnread sends one generic invoke frame', async () => {
+	const h = setup()
+	const promise = h.win.app?.capabilities.email?.listUnread({ limit: 3, accountId: 'primary' })
+	const sent = h.parentSent[0] as InvokeFrame
+	expect(sent.method).toBe('app.capability.invoke')
+	expect(sent.params).toEqual({
+		capability: 'email',
+		method: 'listUnread',
+		input: { limit: 3, accountId: 'primary' }
+	})
+	h.dispatch({ jsonrpc: '2.0', id: sent.id, result: { value: [{ id: 'e1' }] } })
+	await expect(promise).resolves.toEqual([{ id: 'e1' }])
+})
+
+test('app.capabilities.calendar uses the same invoke transport with calendar id', async () => {
+	const h = setup()
+	const promise = h.win.app?.capabilities.calendar?.listToday({ timezone: 'UTC' })
+	const sent = h.parentSent[0] as InvokeFrame
+	expect(sent.params.capability).toBe('calendar')
+	expect(sent.params.method).toBe('listToday')
+	h.dispatch({ jsonrpc: '2.0', id: sent.id, result: { value: [] } })
+	await expect(promise).resolves.toEqual([])
+})
+
+test('capability denial rejects with code -32010 and capability/method data', async () => {
+	const h = setup()
+	const promise = h.win.app?.capabilities.email?.listUnread({})
+	const sent = h.parentSent[0] as InvokeFrame
+	h.dispatch({
+		jsonrpc: '2.0',
+		id: sent.id,
+		error: {
+			code: -32010,
+			message: 'capability_denied',
+			data: { capability: 'email', method: 'listUnread' }
+		}
+	})
+	await expect(promise).rejects.toMatchObject({
+		message: 'capability_denied',
+		code: -32010,
+		data: { capability: 'email', method: 'listUnread' }
+	})
+})
+
+test('capability proxies are cached per id (stable identity across access)', () => {
+	const { win } = setup()
+	const a = win.app?.capabilities.email
+	const b = win.app?.capabilities.email
+	expect(a).toBe(b)
+})
+
+test('capability proxies are extensible — unknown ids produce a usable proxy', async () => {
+	const h = setup()
+	// Author-side: a future capability registered via module augmentation.
+	// At runtime, the proxy treats every id uniformly.
+	const futureCap = (
+		h.win.app?.capabilities as Record<string, Record<string, (i: unknown) => Promise<unknown>>>
+	).reminders
+	const promise = futureCap?.list({})
+	const sent = h.parentSent[0] as InvokeFrame
+	expect(sent.params.capability).toBe('reminders')
+	expect(sent.params.method).toBe('list')
+	h.dispatch({ jsonrpc: '2.0', id: sent.id, result: { value: [] } })
+	await expect(promise).resolves.toEqual([])
 })
 
 test('ignores lifecycle frames with unknown events', () => {

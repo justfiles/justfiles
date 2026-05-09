@@ -1,6 +1,8 @@
 // Frame types for the FE↔BE bridge. Plain JSON-RPC. Both transports
 // (postMessage in frieren prod, WebSocket in dev) carry these verbatim.
 
+import type { CalendarCapability } from './capabilities/calendar/contract.js'
+import type { EmailCapability } from './capabilities/email/contract.js'
 import type { Action } from './engine.js'
 import type { AppPermission } from './format.js'
 import type { DispatchResult } from './runtime.js'
@@ -56,6 +58,10 @@ export type AppRpcRegistry = {
 	'app.volume.writeText': { params: { path: string; text: string }; result: null }
 	'app.volume.readFile': { params: { path: string }; result: { bytes: string } }
 	'app.volume.writeFile': { params: { path: string; bytes: string }; result: null }
+	'app.capability.invoke': {
+		params: { capability: string; method: string; input: unknown }
+		result: { value: unknown }
+	}
 }
 
 export type AppRpcMethod = keyof AppRpcRegistry
@@ -82,17 +88,22 @@ export const APP_RPC_ERROR = {
 	invalidPayload: { code: -32003, message: 'invalid_payload' },
 	noActiveApp: { code: -32004, message: 'no_active_app' },
 	permissionDenied: { code: -32005, message: 'permission_denied' },
+	capabilityDenied: { code: -32010, message: 'capability_denied' },
+	capabilityFailed: { code: -32011, message: 'capability_failed' },
 	methodNotFound: { code: -32601, message: 'method_not_found' },
 	internal: { code: -32000, message: 'internal_error' }
 } as const
 
 // Single source of truth for which manifest permission a method requires.
 // The host gates dispatch against this map; `null` means no permission needed.
+// Capability invocation isn't gated by manifest permission — the broker's
+// per-scope grants (and provider account resolution) own that decision.
 export const APP_RPC_PERMISSION: { [M in AppRpcMethod]: AppPermission | null } = {
 	'app.volume.readText': 'volume',
 	'app.volume.writeText': 'volume',
 	'app.volume.readFile': 'volume',
-	'app.volume.writeFile': 'volume'
+	'app.volume.writeFile': 'volume',
+	'app.capability.invoke': null
 }
 
 // ── SDK surface — author-facing types ──────────────────────────────────
@@ -119,9 +130,35 @@ export interface AppVolume {
 	writeFile(path: string, bytes: Uint8Array): Promise<void>
 }
 
+/**
+ * Author-facing typed map of host capabilities reachable from `app.capabilities`.
+ *
+ * Extensible by interface declaration merging — adding a future capability
+ * means augmenting this map plus registering a host broker, with no transport
+ * change. Runtime invocation goes through one generic
+ * `app.capability.invoke` JSON-RPC method regardless of which key is called.
+ *
+ * ```ts
+ * declare module '@justfiles/app/protocol' {
+ *   interface AppCapabilityMap { reminders: RemindersCapability }
+ * }
+ * ```
+ */
+export interface AppCapabilityMap {
+	email: EmailCapability
+	calendar: CalendarCapability
+}
+
+export type AppCapabilities = { readonly [K in keyof AppCapabilityMap]: AppCapabilityMap[K] }
+
 export interface App {
 	/** Host SDK API version. Bumped on breaking changes to `window.app`. */
 	readonly version: number
 	readonly lifecycle: AppLifecycle
 	readonly volume: AppVolume
+	/** Typed access to host capabilities. Calls route through one generic
+	 *  invocation path; the broker enforces grants and resolves accounts.
+	 *  Rejections carry stable `code` values (`capability_denied`,
+	 *  `capability_failed`) and a `data` envelope with `capability` + `method`. */
+	readonly capabilities: AppCapabilities
 }

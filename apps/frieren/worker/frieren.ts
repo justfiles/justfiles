@@ -294,7 +294,8 @@ export class Frieren extends DurableObject<Env> {
 						{
 							vol: this.vol,
 							appId: this.activeApp.id,
-							permissions: getAppPermissions(this.activeApp.id)
+							permissions: getAppPermissions(this.activeApp.id),
+							bridge: this.appScope().bridge
 						},
 						frame
 					)
