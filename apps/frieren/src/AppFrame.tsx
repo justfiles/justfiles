@@ -6,14 +6,27 @@ import type { AppAction } from './chat/types'
 
 type Ui = { url: string }
 
+const VOLUME_METHODS = new Set([
+	'app.volume.readText',
+	'app.volume.writeText',
+	'app.volume.readFile',
+	'app.volume.writeFile'
+])
+
+export interface VolumeRequest {
+	method: string
+	params: unknown
+}
+
 export function AppFrame(props: {
 	id: string
 	ui: Ui
 	state: unknown
 	onAction: (action: AppAction) => void
 	onHome: () => void
+	onVolumeRequest?: (req: VolumeRequest) => Promise<unknown>
 }) {
-	const { id, ui, state, onAction, onHome } = props
+	const { id, ui, state, onAction, onHome, onVolumeRequest } = props
 	const [view, setView] = useState<'app' | 'state'>('app')
 	const iframeRef = useRef<HTMLIFrameElement>(null)
 	const stateJson = useMemo(() => JSON.stringify(state ?? null, null, 2), [state])
@@ -22,6 +35,11 @@ export function AppFrame(props: {
 	// `app.ready` with the current value without re-binding listeners.
 	const stateRef = useRef<unknown>(state)
 	stateRef.current = state
+
+	// Same trick for the volume bridge so we don't tear down the message
+	// listener every time the chat hook recreates the callback.
+	const volumeRef = useRef(onVolumeRequest)
+	volumeRef.current = onVolumeRequest
 
 	useEffect(() => {
 		iframeRef.current?.contentWindow?.postMessage(
@@ -44,6 +62,21 @@ export function AppFrame(props: {
 			if (event.source !== iframeRef.current?.contentWindow) return
 			const data = event.data
 			if (!data || data.jsonrpc !== '2.0' || !('id' in data) || typeof data.method !== 'string') {
+				return
+			}
+
+			if (VOLUME_METHODS.has(data.method)) {
+				const handler = volumeRef.current
+				if (!handler) {
+					reject(data.id, -32601, 'Volume bridge unavailable')
+					return
+				}
+				Promise.resolve(handler({ method: data.method, params: data.params }))
+					.then((result) => respond(data.id, result))
+					.catch((err: unknown) => {
+						const message = err instanceof Error ? err.message : String(err)
+						reject(data.id, -32603, message)
+					})
 				return
 			}
 

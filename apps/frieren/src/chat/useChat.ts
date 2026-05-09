@@ -1,6 +1,12 @@
 import { useAuth } from '@clerk/clerk-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { VolumeRequest } from '../AppFrame'
 import type { ActiveApp, AppAction, ChatMessage, ConnectionState, InstalledApp } from './types'
+
+interface VolumePending {
+	resolve: (value: unknown) => void
+	reject: (reason: Error) => void
+}
 
 interface AgentEvent {
 	type: string
@@ -29,6 +35,7 @@ export function useChat() {
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
+	const volumePendingRef = useRef<Map<string, VolumePending>>(new Map())
 
 	useEffect(() => {
 		void connectKey
@@ -244,6 +251,16 @@ export function useChat() {
 					return
 				}
 
+				if (data.type === 'app_volume_result') {
+					const reqId = String(data.reqId ?? '')
+					const pending = volumePendingRef.current.get(reqId)
+					if (!pending) return
+					volumePendingRef.current.delete(reqId)
+					if (typeof data.error === 'string') pending.reject(new Error(data.error))
+					else pending.resolve(data.result)
+					return
+				}
+
 				if (data.type === 'event') handleAgentEvent(data.event)
 			}
 
@@ -253,6 +270,10 @@ export function useChat() {
 					setIsStreaming(false)
 					wsRef.current = null
 				}
+				for (const pending of volumePendingRef.current.values()) {
+					pending.reject(new Error('socket closed'))
+				}
+				volumePendingRef.current.clear()
 			}
 
 			socket.onerror = () => {
@@ -295,6 +316,33 @@ export function useChat() {
 		wsRef.current.send(JSON.stringify({ type: 'app_action', action }))
 	}
 
+	// Stable callback so AppFrame's message listener doesn't tear down on
+	// every re-render. Pending volume calls are held in a ref keyed by reqId.
+	const handleVolumeRequest = useCallback(
+		(req: VolumeRequest): Promise<unknown> =>
+			new Promise((resolve, reject) => {
+				const ws = wsRef.current
+				if (!ws || ws.readyState !== WebSocket.OPEN) {
+					reject(new Error('not connected'))
+					return
+				}
+				const reqId =
+					typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+						? crypto.randomUUID()
+						: `v${Date.now()}.${Math.random().toString(36).slice(2)}`
+				volumePendingRef.current.set(reqId, { resolve, reject })
+				ws.send(
+					JSON.stringify({
+						type: 'app_volume',
+						reqId,
+						method: req.method,
+						params: req.params
+					})
+				)
+			}),
+		[]
+	)
+
 	const launchApp = (app: InstalledApp) => {
 		if (app.kind === 'builtin') {
 			setActiveApp({ kind: 'builtin', id: app.id })
@@ -330,6 +378,7 @@ export function useChat() {
 		installedApps,
 		launchApp,
 		closeApp,
-		sendAppAction
+		sendAppAction,
+		handleVolumeRequest
 	}
 }

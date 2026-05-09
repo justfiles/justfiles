@@ -9,9 +9,17 @@
 	<body>
 		<main>
 			<h1>Hello, world.</h1>
-			<p>This page is a plain client-only app: a manifest, an HTML file, and one stylesheet. No backend, no state machine.</p>
 			<p id="time"></p>
 			<p id="status" data-started="false">waiting for host…</p>
+			<section class="note">
+				<label for="note">Persistent note</label>
+				<textarea id="note" rows="4" placeholder="type something and press save"></textarea>
+				<div class="row">
+					<button id="save" type="button">Save</button>
+					<span id="saved-at" class="muted"></span>
+				</div>
+				<p class="muted small">Saved to <code>note.txt</code> in this app's private volume. Relaunch to see it persist.</p>
+			</section>
 		</main>
 		<script src="./hello.js"></script>
 	</body>

@@ -6,6 +6,7 @@ import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import type { AppFacetScope } from './app-bridge'
+import { executeVolumeOp, VolumeError } from './app-volume.ts'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -39,10 +40,13 @@ import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close'
+	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close' | 'app_volume'
 	text?: string
 	id?: string
 	action?: Action
+	reqId?: string
+	method?: string
+	params?: unknown
 }
 
 interface DisplayToolCall {
@@ -83,6 +87,7 @@ type ServerMessage =
 	| { type: 'app_open'; id: string; ui: { url: string }; state: unknown }
 	| { type: 'app_state'; id: string; state: unknown }
 	| { type: 'app_close' }
+	| { type: 'app_volume_result'; reqId: string; result?: unknown; error?: string }
 
 const DEBUG_COMMAND = '/debug'
 const CLOSE_COMMAND = '/close'
@@ -292,6 +297,11 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		if (parsed.type === 'app_volume') {
+			await this.handleVolume(ws, parsed.reqId, parsed.method, parsed.params)
+			return
+		}
+
 		if (parsed.type === 'prompt' && parsed.text) {
 			const sp = this.runtime?._agent().state.systemPrompt
 			const trimmed = parsed.text.trim()
@@ -483,6 +493,32 @@ export class Frieren extends DurableObject<Env> {
 		await this.broadcastOpen(this.activeApp)
 		const briefing = await this.activeApp.facet.briefing()
 		if (briefing) await this.promptAgent(ws, briefing)
+	}
+
+	private async handleVolume(
+		ws: WebSocket,
+		reqId: string | undefined,
+		method: string | undefined,
+		params: unknown
+	): Promise<void> {
+		if (typeof reqId !== 'string' || reqId.length === 0) return
+		const send = (msg: ServerMessage) => ws.send(JSON.stringify(msg))
+		if (!this.activeApp) {
+			send({ type: 'app_volume_result', reqId, error: 'no active app' })
+			return
+		}
+		if (typeof method !== 'string') {
+			send({ type: 'app_volume_result', reqId, error: 'EINVAL: method required' })
+			return
+		}
+		try {
+			const result = await executeVolumeOp(this.vol, this.activeApp.id, { method, params })
+			send({ type: 'app_volume_result', reqId, result })
+		} catch (err) {
+			const message =
+				err instanceof VolumeError ? err.message : err instanceof Error ? err.message : String(err)
+			send({ type: 'app_volume_result', reqId, error: message })
+		}
 	}
 
 	private async handleAppAction(ws: WebSocket, action: Action): Promise<void> {

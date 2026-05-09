@@ -9,26 +9,44 @@ import path from 'node:path'
 
 type MessageListener = (event: { source: unknown; data: unknown }) => void
 
+interface AppShape {
+	version: number
+	lifecycle: { onStart(cb: () => void): () => void }
+	volume: {
+		readText(path: string): Promise<string>
+		writeText(path: string, data: string): Promise<void>
+		readFile(path: string): Promise<Uint8Array>
+		writeFile(path: string, bytes: Uint8Array): Promise<void>
+	}
+}
+
 interface FakeWindow {
-	app?: { version: number; lifecycle: { onStart(cb: () => void): () => void } }
+	app?: AppShape
 	addEventListener(type: 'message', fn: MessageListener): void
 	parent: { postMessage(message: unknown, targetOrigin: string): void }
+}
+
+interface RpcRequest {
+	jsonrpc: '2.0'
+	id: string
+	method: string
+	params: Record<string, unknown>
 }
 
 interface Harness {
 	win: FakeWindow
 	dispatch: (data: unknown, source?: unknown) => void
-	parentSent: unknown[]
+	parentSent: RpcRequest[]
 }
 
 const SDK_SOURCE = readFileSync(path.join(import.meta.dir, 'sdk.js'), 'utf8')
 
 function setup(): Harness {
 	const listeners: MessageListener[] = []
-	const parentSent: unknown[] = []
+	const parentSent: RpcRequest[] = []
 	const parent = {
 		postMessage(message: unknown) {
-			parentSent.push(message)
+			parentSent.push(message as RpcRequest)
 		}
 	}
 	const win: FakeWindow = {
@@ -47,6 +65,27 @@ function setup(): Harness {
 			for (const fn of listeners) fn({ source, data })
 		}
 	}
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+	let str = ''
+	for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i] ?? 0)
+	return btoa(str)
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+	const str = atob(b64)
+	const out = new Uint8Array(str.length)
+	for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i)
+	return out
+}
+
+function respond(harness: Harness, frame: RpcRequest, result: unknown) {
+	harness.dispatch({ jsonrpc: '2.0', id: frame.id, result })
+}
+
+function rejectRpc(harness: Harness, frame: RpcRequest, message: string) {
+	harness.dispatch({ jsonrpc: '2.0', id: frame.id, error: { message } })
 }
 
 test('installs window.app with API version 1', () => {
@@ -152,4 +191,89 @@ test('ignores lifecycle frames with unknown events', () => {
 	})
 	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'pause' } })
 	expect(called).toBe(0)
+})
+
+// ── volume bridge ────────────────────────────────────────────────────────
+
+test('readText sends app.volume.readText and resolves with the result', async () => {
+	const harness = setup()
+	const { win, parentSent } = harness
+	const promise = win.app!.volume.readText('greeting.txt')
+	expect(parentSent.length).toBe(1)
+	const frame = parentSent[0]!
+	expect(frame.method).toBe('app.volume.readText')
+	expect(frame.params).toEqual({ path: 'greeting.txt' })
+	respond(harness, frame, 'hello world')
+	expect(await promise).toBe('hello world')
+})
+
+test('writeText sends string payload and resolves on null result', async () => {
+	const harness = setup()
+	const { win, parentSent } = harness
+	const promise = win.app!.volume.writeText('/state.json', '{"n":1}')
+	const frame = parentSent[0]!
+	expect(frame.method).toBe('app.volume.writeText')
+	expect(frame.params).toEqual({ path: '/state.json', data: '{"n":1}' })
+	respond(harness, frame, null)
+	await expect(promise).resolves.toBeUndefined()
+})
+
+test('writeText rejects when host responds with error', async () => {
+	const harness = setup()
+	const { win, parentSent } = harness
+	const promise = win.app!.volume.writeText('bad', 'x')
+	rejectRpc(harness, parentSent[0]!, 'EINVAL: path may not contain `..`')
+	await expect(promise).rejects.toThrow('EINVAL: path may not contain `..`')
+})
+
+test('readFile decodes base64 payload to Uint8Array', async () => {
+	const harness = setup()
+	const { win, parentSent } = harness
+	const bytes = new Uint8Array([0, 1, 2, 254, 255])
+	const promise = win.app!.volume.readFile('blob.bin')
+	respond(harness, parentSent[0]!, uint8ToBase64(bytes))
+	const result = await promise
+	expect(result).toBeInstanceOf(Uint8Array)
+	expect(Array.from(result)).toEqual(Array.from(bytes))
+})
+
+test('writeFile encodes Uint8Array as base64 in params', async () => {
+	const harness = setup()
+	const { win, parentSent } = harness
+	const bytes = new Uint8Array([1, 2, 3, 4, 5])
+	const promise = win.app!.volume.writeFile('blob.bin', bytes)
+	const frame = parentSent[0]!
+	expect(frame.method).toBe('app.volume.writeFile')
+	expect(frame.params.path).toBe('blob.bin')
+	expect(typeof frame.params.bytes).toBe('string')
+	expect(Array.from(base64ToUint8(frame.params.bytes as string))).toEqual(Array.from(bytes))
+	respond(harness, frame, null)
+	await promise
+})
+
+test('writeFile rejects non-Uint8Array bytes synchronously', async () => {
+	const { win } = setup()
+	// @ts-expect-error - intentionally wrong type at runtime
+	await expect(win.app!.volume.writeFile('blob.bin', 'string')).rejects.toThrow(
+		/must be a Uint8Array/
+	)
+})
+
+test('readText rejects non-string paths synchronously', async () => {
+	const { win } = setup()
+	// @ts-expect-error - intentionally wrong type at runtime
+	await expect(win.app!.volume.readText(42)).rejects.toThrow(/must be a string/)
+})
+
+test('concurrent volume calls correlate by id', async () => {
+	const harness = setup()
+	const { win, parentSent } = harness
+	const a = win.app!.volume.readText('a.txt')
+	const b = win.app!.volume.readText('b.txt')
+	expect(parentSent.length).toBe(2)
+	// Reply out of order to confirm correlation works.
+	respond(harness, parentSent[1]!, 'B')
+	respond(harness, parentSent[0]!, 'A')
+	expect(await a).toBe('A')
+	expect(await b).toBe('B')
 })
