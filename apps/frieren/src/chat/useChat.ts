@@ -317,6 +317,8 @@ export function useChat() {
 		wsRef.current?.send(JSON.stringify({ type: 'abort' }))
 	}
 
+	// LEGACY (state-machine; removed with #76). Client-only apps go through
+	// `sendAppRpc` below.
 	const sendAppAction = (action: AppAction) => {
 		if (!wsRef.current || connectionState !== 'ready') return
 		wsRef.current.send(JSON.stringify({ type: 'app_action', action }))

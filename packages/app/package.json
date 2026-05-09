@@ -21,8 +21,9 @@
 			"default": "./client.js"
 		},
 		"./sdk": {
-			"types": "./sdk.d.ts",
-			"default": "./sdk.js"
+			"@justfiles/src": "./sdk.ts",
+			"types": "./dist/sdk.d.ts",
+			"default": "./dist/sdk.js"
 		},
 		"./vite": {
 			"@justfiles/src": "./vite-plugin.ts",
@@ -87,12 +88,10 @@
 		"dist",
 		"client.js",
 		"client.d.ts",
-		"sdk.js",
-		"sdk.d.ts",
 		"virtual.d.ts"
 	],
 	"scripts": {
-		"build": "tsc",
+		"build": "tsc && bun build sdk.ts --target=browser --format=iife --outfile=dist/sdk.js",
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {

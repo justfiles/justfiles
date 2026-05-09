@@ -6,6 +6,10 @@ import type { DispatchResult } from './runtime.js'
 
 export type RequestId = string
 
+// ── LEGACY: state-machine app bridge ────────────────────────────────────
+// Everything in this section ships with `client.js` and the state-machine
+// app system. Slated for removal alongside that platform — see #76.
+
 export type ReadyRequest = { jsonrpc: '2.0'; id: RequestId; method: 'app.ready'; params: object }
 export type ActionRequest = {
 	jsonrpc: '2.0'
@@ -79,3 +83,34 @@ export const APP_RPC_ERROR = {
 	methodNotFound: { code: -32601, message: 'method_not_found' },
 	internal: { code: -32000, message: 'internal_error' }
 } as const
+
+// ── SDK surface — author-facing types ──────────────────────────────────
+//
+// `sdk.ts` derives its concrete API from these so the registry stays the
+// only place a method's shape is declared.
+
+export interface AppLifecycle {
+	/** Register a callback that fires once when the host starts the app.
+	 *  If the app has already started, the callback runs in a microtask.
+	 *  Returns an unsubscribe function. */
+	onStart(callback: () => void): () => void
+}
+
+export interface AppVolume {
+	/** Read a UTF-8 text file from app-private storage. Rejects with
+	 *  `code: -32001` (not_found) when the file is missing. */
+	readText(path: string): Promise<string>
+	/** Write a UTF-8 text file. Parent directories are created as needed. */
+	writeText(path: string, text: string): Promise<void>
+	/** Read raw bytes from app-private storage. */
+	readFile(path: string): Promise<Uint8Array>
+	/** Write raw bytes. Parent directories are created as needed. */
+	writeFile(path: string, bytes: Uint8Array): Promise<void>
+}
+
+export interface App {
+	/** Host SDK API version. Bumped on breaking changes to `window.app`. */
+	readonly version: number
+	readonly lifecycle: AppLifecycle
+	readonly volume: AppVolume
+}

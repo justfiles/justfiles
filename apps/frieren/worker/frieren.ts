@@ -295,6 +295,8 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		// LEGACY (state-machine; removed with #76). Client-only apps go
+		// through the `app_rpc` branch above.
 		if (parsed.type === 'app_action' && parsed.action) {
 			if (!this.activeApp) {
 				ws.send(JSON.stringify({ type: 'error', message: 'No active app' } satisfies ServerMessage))

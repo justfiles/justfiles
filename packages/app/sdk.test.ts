@@ -1,11 +1,13 @@
-// Behavior tests for the injected `window.app` SDK (sdk.js). The file ships
-// as a plain script — these tests load its source into a hand-rolled window
-// stub so they can drive the postMessage <→> lifecycle flow end-to-end without
-// a real DOM.
+// Behavior tests for the injected `window.app` SDK (sdk.ts). The build ships
+// it as a classic-script IIFE (dist/sdk.js); these tests transpile the TS
+// source with Bun and load the result into a hand-rolled window stub so they
+// can drive the postMessage ⇄ lifecycle flow end-to-end without a real DOM
+// and without depending on the build artifact.
 
 import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { Transpiler } from 'bun'
 
 type MessageListener = (event: { source: unknown; data: unknown }) => void
 
@@ -31,7 +33,9 @@ interface Harness {
 	parentSent: unknown[]
 }
 
-const SDK_SOURCE = readFileSync(path.join(import.meta.dir, 'sdk.js'), 'utf8')
+const SDK_SOURCE = new Transpiler({ loader: 'ts' }).transformSync(
+	readFileSync(path.join(import.meta.dir, 'sdk.ts'), 'utf8')
+)
 
 function setup(): Harness {
 	const listeners: MessageListener[] = []

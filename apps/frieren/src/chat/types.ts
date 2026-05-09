@@ -31,6 +31,7 @@ export interface InstalledApp {
 	kind?: 'sandbox' | 'builtin'
 }
 
+// LEGACY (state-machine apps; removed with #76).
 // Actions flow through the registry; at this wire boundary they're opaque.
 export type AppAction = { type: string; payload: unknown }
 
@@ -61,6 +62,7 @@ export interface ChatViewProps {
 	installedApps: InstalledApp[]
 	launchApp: (app: InstalledApp) => void
 	closeApp: () => void
+	/** LEGACY (state-machine; removed with #76). */
 	sendAppAction: (action: AppAction) => void
 	sendAppRpc: AppRpcSender
 }

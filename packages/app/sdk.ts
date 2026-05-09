@@ -6,35 +6,62 @@
 // correlates request/response frames for typed APIs (`volume`, …).
 // Idempotent: a second load is a no-op so apps can include it without
 // worrying about double-injection.
+//
+// Build pipeline: this file is bundled to `dist/sdk.js` as a classic-script
+// IIFE by `bun build --format=iife`. Type-only imports are stripped, so
+// the wire artifact has zero runtime dependencies.
 
-;(function () {
-	if (typeof window === 'undefined' || window.app) return
+import type {
+	App,
+	AppLifecycle,
+	AppRpcMethod,
+	AppRpcParams,
+	AppRpcResult,
+	AppVolume
+} from './protocol.js'
+
+declare global {
+	interface Window {
+		readonly app: App
+	}
+}
+
+type Pending = {
+	resolve: (value: unknown) => void
+	reject: (reason: unknown) => void
+}
+
+void (() => {
+	if (typeof window === 'undefined' || (window as { app?: App }).app) return
 
 	const API_VERSION = 1
-	const onStart = new Set()
-	const pending = new Map()
+	const onStart = new Set<() => void>()
+	const pending = new Map<string, Pending>()
 	let started = false
 	let nextId = 0
 
-	const isRecord = (v) => typeof v === 'object' && v !== null
+	const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
 
-	function uint8ToBase64(u8) {
+	function uint8ToBase64(u8: Uint8Array): string {
 		let bin = ''
-		for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i])
+		for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i] ?? 0)
 		return btoa(bin)
 	}
 
-	function base64ToUint8(b64) {
+	function base64ToUint8(b64: string): Uint8Array {
 		const bin = atob(b64)
 		const u8 = new Uint8Array(bin.length)
 		for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
 		return u8
 	}
 
-	function request(method, params) {
+	function request<M extends AppRpcMethod>(
+		method: M,
+		params: AppRpcParams<M>
+	): Promise<AppRpcResult<M>> {
 		const id = `app-${++nextId}`
-		return new Promise((resolve, reject) => {
-			pending.set(id, { resolve, reject })
+		return new Promise<AppRpcResult<M>>((resolve, reject) => {
+			pending.set(id, { resolve: resolve as Pending['resolve'], reject })
 			window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*')
 		})
 	}
@@ -50,8 +77,10 @@
 			if (!p) return
 			pending.delete(id)
 			if (isRecord(data.error)) {
-				const err = new Error(String(data.error.message ?? 'rpc_error'))
-				err.code = data.error.code
+				const err = new Error(String(data.error.message ?? 'rpc_error')) as Error & {
+					code?: number
+				}
+				if (typeof data.error.code === 'number') err.code = data.error.code
 				p.reject(err)
 			} else {
 				p.resolve(data.result)
@@ -73,39 +102,50 @@
 		}
 	})
 
-	const lifecycle = Object.freeze({
-		onStart(callback) {
+	const lifecycleImpl: AppLifecycle = {
+		onStart(callback: () => void): () => void {
 			if (typeof callback !== 'function') return () => {}
 			if (started) {
 				queueMicrotask(callback)
 				return () => {}
 			}
 			onStart.add(callback)
-			return () => onStart.delete(callback)
+			return () => {
+				onStart.delete(callback)
+			}
 		}
-	})
+	}
+	const lifecycle: AppLifecycle = Object.freeze(lifecycleImpl)
 
-	const volume = Object.freeze({
-		async readText(path) {
+	const volumeImpl: AppVolume = {
+		async readText(path: string): Promise<string> {
 			const r = await request('app.volume.readText', { path })
 			return r.text
 		},
-		async writeText(path, text) {
+		async writeText(path: string, text: string): Promise<void> {
 			await request('app.volume.writeText', { path, text })
 		},
-		async readFile(path) {
+		async readFile(path: string): Promise<Uint8Array> {
 			const r = await request('app.volume.readFile', { path })
 			return base64ToUint8(r.bytes)
 		},
-		async writeFile(path, bytes) {
+		async writeFile(path: string, bytes: Uint8Array): Promise<void> {
 			if (!(bytes instanceof Uint8Array)) throw new TypeError('bytes must be a Uint8Array')
 			await request('app.volume.writeFile', { path, bytes: uint8ToBase64(bytes) })
 		}
-	})
+	}
+	const volume: AppVolume = Object.freeze(volumeImpl)
 
-	window.app = Object.freeze({
+	const app: App = Object.freeze({
 		version: API_VERSION,
 		lifecycle,
 		volume
+	})
+
+	Object.defineProperty(window, 'app', {
+		value: app,
+		configurable: false,
+		enumerable: true,
+		writable: false
 	})
 })()

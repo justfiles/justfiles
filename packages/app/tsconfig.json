@@ -24,6 +24,7 @@
 		"runner.ts",
 		"tasks.ts",
 		"protocol.ts",
+		"sdk.ts",
 		"server.ts",
 		"vite-plugin.ts",
 		"format.ts",
