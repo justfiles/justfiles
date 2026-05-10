@@ -317,8 +317,7 @@ export class Frieren extends DurableObject<Env> {
 								if (activeApp.tools.some((t) => t.name === toolName)) return
 								const tool = this.createClientProxyTool(descriptor, activeApp.id)
 								activeApp.tools.push(tool)
-								const agent = this.runtime?._agent()
-								if (agent) agent.state.tools = [...agent.state.tools, tool]
+								this.runtime?.addTools([tool])
 								void this.persistClientTool(activeApp.id, descriptor)
 							}
 						},
@@ -330,7 +329,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'prompt' && parsed.text) {
-			const sp = this.runtime?._agent().state.systemPrompt
+			const sp = this.runtime?.systemPrompt()
 			const trimmed = parsed.text.trim()
 			if (trimmed === DEBUG_COMMAND) {
 				ws.send(
@@ -473,10 +472,7 @@ export class Frieren extends DurableObject<Env> {
 		const tools = stored.map((d) => this.createClientProxyTool(d, id))
 		const active: ActiveApp = { id, tools }
 		this.activeApp = active
-		if (tools.length > 0) {
-			const agent = this.runtime?._agent()
-			if (agent) agent.state.tools = [...agent.state.tools, ...tools]
-		}
+		if (tools.length > 0) this.runtime?.addTools(tools)
 		return active
 	}
 
@@ -516,8 +512,7 @@ export class Frieren extends DurableObject<Env> {
 	private async closeApp(): Promise<void> {
 		if (!this.activeApp) return
 		const { id, tools } = this.activeApp
-		const agent = this.runtime?._agent()
-		if (agent) agent.state.tools = agent.state.tools.filter((t) => !tools.includes(t))
+		this.runtime?.removeTools(tools)
 		this.failPendingToolCalls()
 		this.activeApp = undefined
 		await Promise.all([
@@ -538,8 +533,7 @@ export class Frieren extends DurableObject<Env> {
 		const prefix = `${active.id}_client_`
 		const stripped = active.tools.filter((t) => t.name.startsWith(prefix))
 		if (stripped.length === 0 && this.pendingToolCalls.size === 0) return
-		const agent = this.runtime?._agent()
-		if (agent) agent.state.tools = agent.state.tools.filter((t) => !stripped.includes(t))
+		this.runtime?.removeTools(stripped)
 		active.tools = active.tools.filter((t) => !stripped.includes(t))
 		this.failPendingToolCalls()
 		await this.ctx.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${active.id}`)

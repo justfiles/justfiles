@@ -1,5 +1,5 @@
 import type { Volume } from '@justfiles/fs'
-import type { Agent, AgentEvent, AgentMessage } from '@mariozechner/pi-agent-core'
+import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@mariozechner/pi-agent-core'
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
@@ -32,6 +32,9 @@ export interface Runtime {
 	subscribe: (lisener: FrierenEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
 	consolidateMemory: (now?: Date) => Promise<void>
+	addTools: (tools: readonly AgentTool[]) => void
+	removeTools: (tools: readonly AgentTool[]) => void
+	systemPrompt: () => string
 	// TODO: remove
 	_agent: () => Agent
 }
@@ -53,11 +56,22 @@ export async function runtime({
 		subscribe,
 		history: () => session.walkActiveBranch(),
 		consolidateMemory,
+		addTools,
+		removeTools,
+		systemPrompt: () => agent.state.systemPrompt,
 		_agent: () => agent
 	}
 
 	async function shutdown() {
 		agent.abort()
+	}
+
+	function addTools(tools: readonly AgentTool[]) {
+		agent.state.tools = [...agent.state.tools, ...tools]
+	}
+
+	function removeTools(tools: readonly AgentTool[]) {
+		agent.state.tools = agent.state.tools.filter((tool) => !tools.includes(tool))
 	}
 
 	async function prompt(message: string, source: 'user' | 'app' = 'user') {
