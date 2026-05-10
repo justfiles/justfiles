@@ -106,6 +106,7 @@ const RESET_COMMAND = '/reset'
 const AGENT_ID = 'agent'
 const USER_ID = 'user'
 const APP_STORAGE_KEY = 'active_app'
+const CLIENT_TOOLS_STORAGE_KEY = 'active_app_client_tools'
 
 type DispatchResult =
 	| { ok: true; view: unknown; narration?: string | null; availableActions?: readonly Action[] }
@@ -332,10 +333,13 @@ export class Frieren extends DurableObject<Env> {
 								void this.promptAgent(ws, text)
 							},
 							registerClientTool: (descriptor) => {
+								const toolName = `${activeApp.id}_client_${descriptor.name}`
+								if (activeApp.tools.some((t) => t.name === toolName)) return
 								const tool = this.createClientProxyTool(descriptor, activeApp.id)
 								activeApp.tools.push(tool)
 								const agent = this.runtime?._agent()
 								if (agent) agent.state.tools = [...agent.state.tools, tool]
+								void this.persistClientTool(activeApp.id, descriptor)
 							}
 						},
 						frame
@@ -445,6 +449,17 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
+	private async persistClientTool(appId: string, descriptor: ClientToolDescriptor): Promise<void> {
+		const stored =
+			(await this.ctx.storage.get<ClientToolDescriptor[]>(
+				`${CLIENT_TOOLS_STORAGE_KEY}:${appId}`
+			)) ?? []
+		if (!stored.some((d) => d.name === descriptor.name)) {
+			stored.push(descriptor)
+			await this.ctx.storage.put(`${CLIENT_TOOLS_STORAGE_KEY}:${appId}`, stored)
+		}
+	}
+
 	private createClientProxyTool(descriptor: ClientToolDescriptor, appId: string): AgentTool {
 		const toolName = `${appId}_client_${descriptor.name}`
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
@@ -511,8 +526,17 @@ export class Frieren extends DurableObject<Env> {
 		const agentActor: Actor = { id: AGENT_ID, kind: 'agent' }
 
 		if (isClientApp(id)) {
-			const active: ActiveApp = { id, tools: [], userActor, agentActor }
+			const stored =
+				(await this.ctx.storage.get<ClientToolDescriptor[]>(
+					`${CLIENT_TOOLS_STORAGE_KEY}:${id}`
+				)) ?? []
+			const tools = stored.map((d) => this.createClientProxyTool(d, id))
+			const active: ActiveApp = { id, tools, userActor, agentActor }
 			this.activeApp = active
+			if (tools.length > 0) {
+				const agent = this.runtime?._agent()
+				if (agent) agent.state.tools = [...agent.state.tools, ...tools]
+			}
 			await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
 			await this.broadcastOpen(active)
 			return active
@@ -579,11 +603,14 @@ export class Frieren extends DurableObject<Env> {
 
 	private async closeApp(): Promise<void> {
 		if (!this.activeApp) return
-		const { tools } = this.activeApp
+		const { id, tools } = this.activeApp
 		const agent = this.runtime?._agent()
 		if (agent) agent.state.tools = agent.state.tools.filter((t) => !tools.includes(t))
 		this.activeApp = undefined
-		await this.ctx.storage.delete(APP_STORAGE_KEY)
+		await Promise.all([
+			this.ctx.storage.delete(APP_STORAGE_KEY),
+			this.ctx.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)
+		])
 		const payload = JSON.stringify({ type: 'app_close' } satisfies ServerMessage)
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}
