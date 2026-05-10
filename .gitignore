@@ -200,3 +200,4 @@ dist
 .agent
 .claude/settings.json
 .tmp
+.playwright-cli/

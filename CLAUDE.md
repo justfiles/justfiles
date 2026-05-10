@@ -90,6 +90,19 @@ use the API_KEY from .agent file to get access
 
 - **http://localhost:5173** — Vite + Cloudflare plugin dev server. Serves both the React app AND the worker. This is the correct target for API/MCP testing.
 
+## Frieren UI verification
+
+For `apps/frieren` UI changes, do quick LLM-driven smoke checks instead of writing full e2e tests unless asked.
+
+```sh
+cd apps/frieren
+bun run dev
+# in another shell:
+bun run verify:ui
+```
+
+`verify:ui` creates/reuses a Clerk dev test user, seeds onboarding, opens an authenticated `playwright-cli` session named `frieren`, and navigates to `http://localhost:5173`. Then take over with arbitrary checks, e.g. `playwright-cli -s=frieren snapshot`, `fill`, `click`, `console`, `requests`. Close with `playwright-cli -s=frieren close`.
+
 ## API routes
 
 All REST endpoints are mounted at `/api` (e.g. `POST /api/v1/write`, `GET /api/v1/status`).
