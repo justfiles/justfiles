@@ -8,12 +8,13 @@
 // `/apps/*` route in `index.ts`.
 
 import { registry } from 'virtual:@justfiles/apps'
-import type { AppPermission } from '@justfiles/app'
+import type { AppPermission, AppRpcResponse, RequestId } from '@justfiles/app'
+import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import sdkJs from '@justfiles/app/sdk?raw'
 import type { Volume } from '@justfiles/fs'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type Type from 'typebox'
-import type { ClientToolDescriptor } from './app-rpc'
+import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import type { Runtime } from './frieren.runtime'
 
 export const listAppIds = (): string[] => [...registry.keys()]
@@ -47,11 +48,16 @@ type Socket = Pick<WebSocket, 'send'>
 type ClientMessage = {
 	type: string
 	id?: string
+	frame?: { id: RequestId; method: string; params: unknown }
+	callId?: string
+	result?: unknown
+	error?: unknown
 }
 
 type ServerMessage =
 	| { type: 'app_open'; id: string; ui: { url: string } }
 	| { type: 'app_close' }
+	| { type: 'app_rpc'; frame: AppRpcResponse }
 	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
 
 interface ActiveApp {
@@ -70,6 +76,8 @@ type PendingToolCall = {
 
 export class AppHost {
 	private activeApp?: ActiveApp
+	// Pending tool calls are scoped to the active app: only one app can be active,
+	// and close/reload rejects every outstanding call before changing that app.
 	private readonly pendingToolCalls = new Map<string, PendingToolCall>()
 
 	constructor(
@@ -78,13 +86,11 @@ export class AppHost {
 			volume: Volume
 			websockets: () => Iterable<Socket>
 			runtime: () => Runtime | undefined
+			capabilityBridge: CapabilityBridge
 			sendAgentPrompt: (ws: WebSocket, text: string) => Promise<string>
 			isApp?: (id: string) => boolean
 		}
-	) {
-		void deps.volume
-		void deps.sendAgentPrompt
-	}
+	) {}
 
 	current(): { id: string } | undefined {
 		return this.activeApp ? { id: this.activeApp.id } : undefined
@@ -118,13 +124,25 @@ export class AppHost {
 		this.broadcast({ type: 'app_close' })
 	}
 
-	async handleMessage(_ws: WebSocket, parsed: ClientMessage): Promise<boolean> {
+	async handleMessage(ws: WebSocket, parsed: ClientMessage): Promise<boolean> {
 		if (parsed.type === 'app_close') {
 			await this.close()
 			return true
 		}
 		if (parsed.type === 'app_launch') {
 			if (parsed.id) await this.launch(parsed.id)
+			return true
+		}
+		if (parsed.type === 'app_iframe_reload') {
+			await this.resetClientTools()
+			return true
+		}
+		if (parsed.type === 'app_tool_result') {
+			if (parsed.callId) this.handleToolResult(parsed.callId, parsed.result, parsed.error)
+			return true
+		}
+		if (parsed.type === 'app_rpc') {
+			if (parsed.frame) await this.handleRpc(ws, parsed.frame)
 			return true
 		}
 		return false
@@ -153,7 +171,7 @@ export class AppHost {
 		await this.persistClientTool(active.id, descriptor)
 	}
 
-	handleToolResult(callId: string, result: unknown, error?: unknown): void {
+	private handleToolResult(callId: string, result: unknown, error?: unknown): void {
 		const pending = this.pendingToolCalls.get(callId)
 		if (!pending) return
 		this.pendingToolCalls.delete(callId)
@@ -161,20 +179,42 @@ export class AppHost {
 		else pending.resolve(result)
 	}
 
-	async resetClientTools(): Promise<void> {
+	private async resetClientTools(): Promise<void> {
 		const active = this.activeApp
 		if (!active) return
 		const prefix = `${active.id}_client_`
 		const stripped = active.tools.filter((tool) => tool.name.startsWith(prefix))
-		if (stripped.length === 0 && this.pendingToolCalls.size === 0) return
-		this.deps.runtime()?.removeTools(stripped)
-		active.tools = active.tools.filter((tool) => !stripped.includes(tool))
+		if (stripped.length > 0) {
+			this.deps.runtime()?.removeTools(stripped)
+			active.tools = active.tools.filter((tool) => !stripped.includes(tool))
+		}
 		this.failPendingToolCalls()
 		await this.deps.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${active.id}`)
 	}
 
 	openMessage(): ServerMessage | undefined {
 		return this.activeApp ? this.openMessageFor(this.activeApp.id) : undefined
+	}
+
+	private async handleRpc(
+		ws: WebSocket,
+		frame: { id: RequestId; method: string; params: unknown }
+	): Promise<void> {
+		const activeApp = this.current()
+		const reply = activeApp
+			? await dispatchAppRpc(
+					{
+						vol: this.deps.volume,
+						appId: activeApp.id,
+						permissions: getAppPermissions(activeApp.id),
+						bridge: this.deps.capabilityBridge,
+						sendAgentPrompt: (text) => this.deps.sendAgentPrompt(ws, text),
+						registerClientTool: (descriptor) => this.registerClientTool(descriptor)
+					},
+					frame
+				)
+			: noActiveAppResponse(frame.id)
+		ws.send(JSON.stringify({ type: 'app_rpc', frame: reply } satisfies ServerMessage))
 	}
 
 	private async restoreActiveApp(id: string): Promise<ActiveApp> {

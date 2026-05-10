@@ -40,7 +40,7 @@ export interface AppRpcContext {
 	sendAgentPrompt: (text: string) => Promise<string>
 	// Registers a client-side tool descriptor so the host can expose a
 	// proxy AgentTool to the agent. The handler runs in the iframe.
-	registerClientTool: (descriptor: ClientToolDescriptor) => void
+	registerClientTool: (descriptor: ClientToolDescriptor) => void | Promise<void>
 }
 
 type Handler<M extends AppRpcMethod> = (
@@ -153,7 +153,7 @@ const handlers: { [M in AppRpcMethod]: Handler<M> } = {
 	'app.tool.register': async ({ registerClientTool }, { name, description, schema }) => {
 		if (typeof name !== 'string' || name.length === 0) fail(APP_RPC_ERROR.invalidPayload)
 		if (typeof description !== 'string') fail(APP_RPC_ERROR.invalidPayload)
-		registerClientTool({ name, description, schema: schema as Record<string, unknown> })
+		await registerClientTool({ name, description, schema: schema as Record<string, unknown> })
 		return null
 	}
 }

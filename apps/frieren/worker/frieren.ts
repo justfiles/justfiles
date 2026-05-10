@@ -6,7 +6,6 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import { dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -14,7 +13,7 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import { AppHost, getAppPermissions, listApps } from './frieren.app'
+import { AppHost, listApps } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -118,6 +117,7 @@ export class Frieren extends DurableObject<Env> {
 			volume: this.vol,
 			websockets: () => ctx.getWebSockets(),
 			runtime: () => this.runtime,
+			capabilityBridge: this.capabilityBridge(),
 			sendAgentPrompt: (ws, text) => this.promptAgent(ws, text, { throwOnError: true })
 		})
 
@@ -257,45 +257,10 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (parsed.type === 'abort') {
-			this.runtime?.shutdown()
-			return
-		}
-
 		if (await this.apps.handleMessage(ws, parsed)) return
 
-		if (parsed.type === 'app_iframe_reload') {
-			await this.apps.resetClientTools()
-			return
-		}
-
-		if (parsed.type === 'app_tool_result' && parsed.callId) {
-			this.apps.handleToolResult(parsed.callId, parsed.result, parsed.error)
-			return
-		}
-
-		if (parsed.type === 'app_rpc' && parsed.frame) {
-			const frame = parsed.frame
-			const activeApp = this.apps.current()
-			const reply: AppRpcResponse = activeApp
-				? await dispatchAppRpc(
-						{
-							vol: this.vol,
-							appId: activeApp.id,
-							permissions: getAppPermissions(activeApp.id),
-							bridge: this.capabilityBridge(),
-							// Fire-and-forget: the iframe's `app.agent.send` resolves
-							// once the host has accepted the prompt; the agent run
-							// streams events over WS independently.
-							sendAgentPrompt: (text: string) => this.promptAgent(ws, text, { throwOnError: true }),
-							registerClientTool: (descriptor) => {
-								void this.apps.registerClientTool(descriptor)
-							}
-						},
-						frame
-					)
-				: noActiveAppResponse(frame.id)
-			ws.send(JSON.stringify({ type: 'app_rpc', frame: reply } satisfies ServerMessage))
+		if (parsed.type === 'abort') {
+			this.runtime?.shutdown()
 			return
 		}
 

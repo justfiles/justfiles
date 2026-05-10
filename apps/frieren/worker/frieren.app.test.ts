@@ -1,4 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test'
+import { APP_RPC_ERROR } from '@justfiles/app'
+import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Runtime } from './frieren.runtime'
 
@@ -40,6 +42,13 @@ function setup() {
 	const storage = new StorageStub()
 	const sockets = [new SocketStub()]
 	const tools: AgentTool[] = []
+	const capabilityCalls: unknown[] = []
+	const capabilityBridge: CapabilityBridge = {
+		async invoke(req) {
+			capabilityCalls.push(req)
+			return { ok: true }
+		}
+	}
 	const runtime = {
 		addTools(next: readonly AgentTool[]) {
 			tools.push(...next)
@@ -56,9 +65,10 @@ function setup() {
 		volume: {} as never,
 		websockets: () => sockets,
 		runtime: () => runtime,
+		capabilityBridge,
 		sendAgentPrompt: async () => ''
 	})
-	return { host, storage, sockets, tools }
+	return { host, storage, sockets, tools, capabilityCalls }
 }
 
 const descriptor = {
@@ -129,14 +139,127 @@ describe('AppHost', () => {
 		expect(storage.values.has('active_app')).toBe(false)
 	})
 
-	test('handleMessage handles launch and close only', async () => {
-		const { host, storage } = setup()
+	test('handleMessage claims app messages and rejects prompt/abort', async () => {
+		const { host, storage, sockets } = setup()
+		const ws = sockets[0] as unknown as WebSocket
 
-		expect(await host.handleMessage({} as WebSocket, { type: 'prompt' })).toBe(false)
-		expect(await host.handleMessage({} as WebSocket, { type: 'app_rpc' })).toBe(false)
-		expect(await host.handleMessage({} as WebSocket, { type: 'app_launch', id: 'demo' })).toBe(true)
+		expect(await host.handleMessage(ws, { type: 'prompt' })).toBe(false)
+		expect(await host.handleMessage(ws, { type: 'abort' })).toBe(false)
+		expect(await host.handleMessage(ws, { type: 'app_launch', id: 'demo' })).toBe(true)
 		expect(storage.values.get('active_app')).toEqual({ id: 'demo' })
-		expect(await host.handleMessage({} as WebSocket, { type: 'app_close' })).toBe(true)
+		expect(await host.handleMessage(ws, { type: 'app_rpc' })).toBe(true)
+		expect(await host.handleMessage(ws, { type: 'app_tool_result' })).toBe(true)
+		expect(await host.handleMessage(ws, { type: 'app_iframe_reload' })).toBe(true)
+		expect(await host.handleMessage(ws, { type: 'app_close' })).toBe(true)
 		expect(storage.values.has('active_app')).toBe(false)
+	})
+
+	test('app.tool.register adds a runtime tool and persists idempotently', async () => {
+		const { host, storage, sockets, tools } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		await host.launch('demo')
+		const frame = {
+			id: '1',
+			method: 'app.tool.register',
+			params: descriptor
+		}
+
+		await host.handleMessage(ws, { type: 'app_rpc', frame })
+		await host.handleMessage(ws, { type: 'app_rpc', frame: { ...frame, id: '2' } })
+
+		expect(tools.map((tool) => tool.name)).toEqual(['demo_client_pick'])
+		expect(storage.values.get('active_app_client_tools:demo')).toEqual([descriptor])
+		expect(sockets[0].sent.at(-1)).toEqual({
+			type: 'app_rpc',
+			frame: { jsonrpc: '2.0', id: '2', result: null }
+		})
+	})
+
+	test('client tool round-trip resolves and rejects on app_tool_result', async () => {
+		const { host, sockets, tools } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		await host.launch('demo')
+		await host.registerClientTool(descriptor)
+
+		const ok = (
+			tools[0] as AgentTool & { execute: (id: string, input: unknown) => Promise<unknown> }
+		).execute('call', { value: 1 })
+		const invoke = sockets[0].sent.at(-1) as { callId: string }
+		await host.handleMessage(ws, {
+			type: 'app_tool_result',
+			callId: invoke.callId,
+			result: { picked: 1 }
+		})
+		await expect(ok).resolves.toEqual({
+			content: [{ type: 'text', text: JSON.stringify({ picked: 1 }, null, 2) }],
+			details: { picked: 1 }
+		})
+
+		const bad = (
+			tools[0] as AgentTool & { execute: (id: string, input: unknown) => Promise<unknown> }
+		).execute('call', { value: 2 })
+		const failed = sockets[0].sent.at(-1) as { callId: string }
+		await host.handleMessage(ws, {
+			type: 'app_tool_result',
+			callId: failed.callId,
+			error: { code: -1, message: 'nope' }
+		})
+		await expect(bad).rejects.toEqual({ code: -1, message: 'nope' })
+	})
+
+	test('iframe reload rejects pending calls, removes tools, and clears storage', async () => {
+		const { host, storage, sockets, tools } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		await host.launch('demo')
+		await host.registerClientTool(descriptor)
+		const pending = (
+			tools[0] as AgentTool & { execute: (id: string, input: unknown) => Promise<unknown> }
+		).execute('call', {})
+
+		await host.handleMessage(ws, { type: 'app_iframe_reload' })
+
+		expect(tools).toEqual([])
+		expect(storage.values.has('active_app_client_tools:demo')).toBe(false)
+		await expect(pending).rejects.toEqual({ code: -32020, message: 'tool_unavailable' })
+	})
+
+	test('app_rpc with no active app returns noActiveApp', async () => {
+		const { host, sockets } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+
+		await host.handleMessage(ws, {
+			type: 'app_rpc',
+			frame: { id: '1', method: 'app.tool.register', params: descriptor }
+		})
+
+		expect(sockets[0].sent).toEqual([
+			{
+				type: 'app_rpc',
+				frame: { jsonrpc: '2.0', id: '1', error: APP_RPC_ERROR.noActiveApp }
+			}
+		])
+	})
+
+	test('capability RPC uses the constructor bridge', async () => {
+		const { host, sockets, capabilityCalls } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		await host.launch('demo')
+
+		await host.handleMessage(ws, {
+			type: 'app_rpc',
+			frame: {
+				id: '1',
+				method: 'app.capability.invoke',
+				params: { capability: 'email', method: 'listUnread', input: { limit: 1 } }
+			}
+		})
+
+		expect(capabilityCalls).toEqual([
+			{ capability: 'email', method: 'listUnread', input: { limit: 1 } }
+		])
+		expect(sockets[0].sent.at(-1)).toEqual({
+			type: 'app_rpc',
+			frame: { jsonrpc: '2.0', id: '1', result: { value: { ok: true } } }
+		})
 	})
 })
