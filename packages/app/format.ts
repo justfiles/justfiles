@@ -29,10 +29,10 @@ export const APP_PERMISSIONS: readonly AppPermission[] = ['volume', 'agent']
 export const ManifestSchema = Type.Object({
 	format: Type.Literal(FORMAT_VERSION),
 	name: Type.String({ minLength: 1, maxLength: 128 }),
-	description: Type.String({ maxLength: 1024 }),
-	version: Type.String(),
+	description: Type.Optional(Type.String({ maxLength: 1024 })),
+	version: Type.Optional(Type.String()),
 	icon: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-	entry: Type.String(),
+	entry: Type.String({ minLength: 1 }),
 	// Host APIs the app wants to use. Default-deny: omitted == [].
 	permissions: Type.Optional(Type.Array(PermissionSchema, { uniqueItems: true }))
 })

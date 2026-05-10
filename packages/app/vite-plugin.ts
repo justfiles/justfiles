@@ -20,8 +20,9 @@
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { Check, Errors } from 'typebox/value'
 import type { Plugin, UserConfig } from 'vite'
-import { FORMAT_VERSION, type Manifest } from './format.js'
+import { FORMAT_VERSION, type Manifest, ManifestSchema } from './format.js'
 
 // ── appBuilder ─────────────────────────────────────────────────────────────
 
@@ -200,12 +201,8 @@ function resolveInstalledApp(
 	if (!fs.existsSync(manifestPath)) {
 		throw new Error(`hostApps: ${pkgName} is missing manifest.json at ${manifestPath}.`)
 	}
-	const manifest = readJson<Manifest>(manifestPath)
-	if (manifest.format !== FORMAT_VERSION) {
-		throw new Error(
-			`hostApps: ${pkgName} has format ${manifest.format}, expected ${FORMAT_VERSION}`
-		)
-	}
+	const manifest = readManifest(manifestPath, pkgName)
+	validateEntry(pkgName, contentDir, manifest.entry)
 	return { id, contentDir, manifest }
 }
 
@@ -227,8 +224,44 @@ function deriveId(pkgName: string): string {
 	return tail.replace(/^app-/, '')
 }
 
-function readJson<T>(filePath: string): T {
-	return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T
+function readManifest(filePath: string, pkgName: string): Manifest {
+	let value: unknown
+	try {
+		value = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+	} catch (e) {
+		throw new Error(`hostApps: ${pkgName} has invalid manifest JSON at ${filePath}: ${String(e)}`)
+	}
+	if (!Check(ManifestSchema, value)) {
+		const message = [...Errors(ManifestSchema, value)]
+			.map((e) => `${e.instancePath || '/'} ${e.message}`)
+			.join('; ')
+		throw new Error(`hostApps: ${pkgName} has invalid manifest: ${message}`)
+	}
+	if (value.format !== FORMAT_VERSION) {
+		throw new Error(`hostApps: ${pkgName} has format ${value.format}, expected ${FORMAT_VERSION}`)
+	}
+	return value
+}
+
+function validateEntry(pkgName: string, contentDir: string, entry: string): void {
+	if (entry.length === 0 || entry.includes('\0')) {
+		throw new Error(`hostApps: ${pkgName} has invalid entry "${entry}".`)
+	}
+	if (path.isAbsolute(entry) || entry.startsWith('//') || /^[a-z][a-z\d+.-]*:/i.test(entry)) {
+		throw new Error(`hostApps: ${pkgName} entry must be a safe relative path: "${entry}".`)
+	}
+	const normalized = path.posix.normalize(entry.replaceAll(path.win32.sep, path.posix.sep))
+	if (normalized === '..' || normalized.startsWith('../')) {
+		throw new Error(`hostApps: ${pkgName} entry escapes the app content directory: "${entry}".`)
+	}
+	const filePath = path.resolve(contentDir, normalized)
+	const relative = path.relative(contentDir, filePath)
+	if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+		throw new Error(`hostApps: ${pkgName} entry escapes the app content directory: "${entry}".`)
+	}
+	if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+		throw new Error(`hostApps: ${pkgName} entry file does not exist: ${filePath}.`)
+	}
 }
 
 const MIME_BY_EXT: Record<string, string> = {

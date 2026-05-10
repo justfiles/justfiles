@@ -22,7 +22,7 @@ export const listApps = (): { id: string; name: string; description: string; ico
 	[...registry.entries()].map(([id, entry]) => ({
 		id,
 		name: entry.manifest.name,
-		description: entry.manifest.description,
+		description: entry.manifest.description ?? '',
 		iconUrl: entry.manifest.icon ? `/apps/${id}/${entry.manifest.icon}` : undefined
 	}))
 export const hasApp = (id: string): boolean => registry.has(id)
