@@ -27,7 +27,6 @@ export function ShadcnView(props: ChatViewProps) {
 		installedApps,
 		launchApp,
 		closeApp,
-		sendAppAction,
 		sendAppRpc,
 		registerToolInvokeHandler,
 		sendToolResult,
@@ -139,8 +138,6 @@ export function ShadcnView(props: ChatViewProps) {
 							<AppFrame
 								id={activeApp.id}
 								ui={activeApp.ui}
-								state={activeApp.state}
-								onAction={sendAppAction}
 								onRpc={sendAppRpc}
 								onHome={closeApp}
 								onRegisterToolInvoke={registerToolInvokeHandler}

@@ -185,29 +185,31 @@ function App() {
 				required: ['entries']
 			},
 			handler: (input: unknown) => {
+				// Validate against the current puzzle BEFORE touching React state.
+				// Throwing from inside a setState updater corrupts the render tree;
+				// throwing from the tool handler reports cleanly back to the agent.
 				const raw = (input as { entries?: unknown }).entries
 				if (!Array.isArray(raw)) throw new Error('entries must be an array')
-				setPuzzle((prev) => {
-					if (!prev) throw new Error('no puzzle to fill — call seeds first')
-					const slotMap = new Map(prev.slots.map((s) => [s.id, s]))
-					const entries: Entry[] = raw.map((e) => {
-						const o = e as Entry
-						const slot = slotMap.get(o.slotId)
-						if (!slot) throw new Error(`unknown slot ${o.slotId}`)
-						const answer = upper(o.answer)
-						if (!patternMatches(answer, slot.pattern))
-							throw new Error(`answer ${answer} does not match ${slot.pattern}`)
-						if (!o.clue || o.clue.toUpperCase().includes(answer))
-							throw new Error(`clue for ${o.slotId} reveals the answer`)
-						return { slotId: o.slotId, answer, clue: o.clue }
-					})
-					const map: Record<string, Entry> = {}
-					for (const e of entries) map[e.slotId] = e
-					const baked = bakeAnswers(prev.grid, prev.slots, entries)
-					const next = { ...prev, grid: baked, entries: map }
-					puzzleRef.current = next
-					return next
+				const prev = puzzleRef.current
+				if (!prev) throw new Error('no puzzle to fill — call seeds first')
+				const slotMap = new Map(prev.slots.map((s) => [s.id, s]))
+				const entries: Entry[] = raw.map((e) => {
+					const o = e as Entry
+					const slot = slotMap.get(o.slotId)
+					if (!slot) throw new Error(`unknown slot ${o.slotId}`)
+					const answer = upper(o.answer)
+					if (!patternMatches(answer, slot.pattern))
+						throw new Error(`answer ${answer} does not match ${slot.pattern}`)
+					if (!o.clue || o.clue.toUpperCase().includes(answer))
+						throw new Error(`clue for ${o.slotId} reveals the answer`)
+					return { slotId: o.slotId, answer, clue: o.clue }
 				})
+				const map: Record<string, Entry> = {}
+				for (const e of entries) map[e.slotId] = e
+				const baked = bakeAnswers(prev.grid, prev.slots, entries)
+				const next = { ...prev, grid: baked, entries: map }
+				puzzleRef.current = next
+				setPuzzle(next)
 				userGridRef.current = {}
 				revealedRef.current = new Set()
 				wrongRef.current = new Set()

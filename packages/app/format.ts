@@ -1,13 +1,12 @@
 // Wire format for an app package. The shape is identical regardless of how
 // the package reaches the host: an npm install, a workspace dep, or an
-// unzipped user upload. Adapters expose an `AppPackageSource` (see ./host);
-// `loadAppPackage` is the single ingestion point.
+// unzipped user upload.
 //
-// The package's `package.json#main` points at the backend ESM module; the
+// The package's `package.json#main` points at `manifest.json`; the
 // directory containing `main` is the *content root* and every file inside
 // that directory ships with the app. `manifest.json` describes the layout
-// (`backend` filename, `entry` HTML), and the host validates against
-// `ManifestSchema` before trusting any of it.
+// (`entry` HTML), and the host validates against `ManifestSchema` before
+// trusting any of it.
 
 import Type from 'typebox'
 
@@ -34,9 +33,6 @@ export const ManifestSchema = Type.Object({
 	version: Type.String(),
 	icon: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 	entry: Type.String(),
-	// Optional: client-only apps ship just static assets and have no
-	// backend ESM module. Sandbox apps (state-machine runtime) set this.
-	backend: Type.Optional(Type.String()),
 	// Host APIs the app wants to use. Default-deny: omitted == [].
 	permissions: Type.Optional(Type.Array(PermissionSchema, { uniqueItems: true }))
 })

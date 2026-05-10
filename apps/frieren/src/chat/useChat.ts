@@ -2,7 +2,6 @@ import { useAuth } from '@clerk/clerk-react'
 import { useEffect, useRef, useState } from 'react'
 import type {
 	ActiveApp,
-	AppAction,
 	AppRpcFrame,
 	ChatMessage,
 	ConnectionState,
@@ -242,14 +241,7 @@ export function useChat() {
 				}
 
 				if (data.type === 'app_open') {
-					setActiveApp({ kind: 'sandbox', id: data.id, ui: data.ui, state: data.state })
-					return
-				}
-
-				if (data.type === 'app_state') {
-					setActiveApp((prev) =>
-						prev && prev.kind === 'sandbox' ? { ...prev, state: data.state } : prev
-					)
+					setActiveApp({ kind: 'sandbox', id: data.id, ui: data.ui })
 					return
 				}
 
@@ -330,13 +322,6 @@ export function useChat() {
 		wsRef.current?.send(JSON.stringify({ type: 'abort' }))
 	}
 
-	// LEGACY (state-machine; removed with #76). Client-only apps go through
-	// `sendAppRpc` below.
-	const sendAppAction = (action: AppAction) => {
-		if (!wsRef.current || connectionState !== 'ready') return
-		wsRef.current.send(JSON.stringify({ type: 'app_action', action }))
-	}
-
 	const sendAppRpc = (frame: AppRpcFrame): Promise<AppRpcFrame> =>
 		new Promise<AppRpcFrame>((resolve) => {
 			const ws = wsRef.current
@@ -396,7 +381,6 @@ export function useChat() {
 		installedApps,
 		launchApp,
 		closeApp,
-		sendAppAction,
 		sendAppRpc,
 		registerToolInvokeHandler,
 		sendToolResult,

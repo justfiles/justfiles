@@ -3,10 +3,8 @@
 // declare.
 
 export {
+	type CapabilityBridge,
 	type CapabilityFactory,
-	type CapabilityInstance,
 	type CapabilityScope,
-	type CapsFromInstances,
-	defineCapability,
-	mockCapabilities
+	defineCapability
 } from './core.js'

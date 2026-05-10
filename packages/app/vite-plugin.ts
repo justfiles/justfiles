@@ -1,32 +1,25 @@
 // Vite plugins for the @justfiles/app format.
 //
-// `appBuilder()` — used by app authors. Declares two build environments
-// (client iframe + backend ESM), bakes the package name into `defineApp`'s
-// `__JUSTFILES_PKG__` constant, and emits `dist/manifest.json` after the
-// backend env builds (by importing the just-written `app.js` and reading its
-// default-exported metadata). A `<pkgRoot>/public/` directory is treated as
-// Vite's `publicDir` so binary assets (wasm, wad, fonts) flow through to
-// `dist/` verbatim.
+// `appBuilder()` — used by app authors. A thin wrapper over the standard
+// Vite client build. Treats `<pkgRoot>/public/` as Vite's `publicDir` so
+// binary assets (wasm, wad, fonts) flow through to `dist/` verbatim, and
+// emits relative asset URLs so the dist works under any mount path
+// (Frieren serves apps under `/apps/<id>/`, dev harness from `/`).
 //
 // `hostApps()` — used by hosts that aggregate multiple app packages. Reads
 // each registered package's `package.json#main` to find its content root,
 // validates the manifest, and:
-//   1. exposes `{id, manifest, code}` via the virtual module
+//   1. exposes `{id, manifest}` via the virtual module
 //      `'virtual:@justfiles/apps'` — small data the worker bundles;
 //   2. emits every other file under `dist/apps/<id>/<path>` into the host's
 //      build output, so the bytes ship via Workers Static Assets and the
 //      worker streams them through its ASSETS binding.
 // In dev, a Vite middleware mirrors step 2 by serving `/apps/<id>/*` from
 // each package's installed dist directory.
-//
-// Modeled on @cloudflare/vite-plugin: declarative environments + default
-// series builder. Authors compose `appBuilder()` with framework plugins
-// (e.g. @vitejs/plugin-react) — these plugins only own the format wiring.
 
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import type { Plugin, UserConfig } from 'vite'
 import { FORMAT_VERSION, type Manifest } from './format.js'
 
@@ -35,36 +28,23 @@ import { FORMAT_VERSION, type Manifest } from './format.js'
 export interface AppBuilderOptions {
 	/** Source dir relative to package root. Defaults to `src`. */
 	srcDir?: string
-	/** Backend entry, relative to `srcDir`. Defaults to `app.ts`. */
-	appEntry?: string
 	/** HTML entry, relative to `srcDir`. Defaults to `index.html`. */
 	htmlEntry?: string
 	/** Output dir relative to package root. Defaults to `dist`. */
 	outDir?: string
 	/** Public dir relative to package root. Defaults to `public`. */
 	publicDir?: string
-	/** Modules kept external in the backend bundle. Defaults to typebox. */
-	external?: string[]
 }
 
 export function appBuilder(opts: AppBuilderOptions = {}): Plugin {
 	const srcDir = opts.srcDir ?? 'src'
-	const appEntry = opts.appEntry ?? 'app.ts'
 	const htmlEntry = opts.htmlEntry ?? 'index.html'
 	const outDir = opts.outDir ?? 'dist'
 	const publicDir = opts.publicDir ?? 'public'
-	const external = opts.external ?? ['typebox', 'typebox/value']
 
 	const pkgRoot = process.cwd()
-	const pkgJson = readJson<{ name?: string; version?: string }>(
-		path.resolve(pkgRoot, 'package.json')
-	)
-	const pkgName = pkgJson.name ?? ''
-	const pkgVersion = pkgJson.version ?? '0.0.0'
 	const absOut = path.resolve(pkgRoot, outDir)
 	const absPublic = path.resolve(pkgRoot, publicDir)
-	const backendName = 'app.js'
-	const entryName = 'index.html'
 
 	return {
 		name: '@justfiles/app:builder',
@@ -78,87 +58,26 @@ export function appBuilder(opts: AppBuilderOptions = {}): Plugin {
 				// Relative asset URLs so the dist works under any mount path
 				// (Frieren serves apps under /apps/<id>/, dev harness from /).
 				base: './',
-				// Bake the package name into `defineApp` so the runtime app
-				// object carries `__pkg`. `JSON.stringify` produces a valid JS
-				// string literal for Vite's `define` substitution.
-				define: { __JUSTFILES_PKG__: JSON.stringify(pkgName) },
-				environments: {
-					client: {
-						build: {
-							outDir: absOut,
-							rollupOptions: {
-								input: htmlEntry,
-								output: {
-									entryFileNames: '[name].js',
-									chunkFileNames: '[name].js',
-									assetFileNames: '[name][extname]'
-								}
-							}
-						}
-					},
-					app: {
-						consumer: 'server',
-						build: {
-							outDir: absOut,
-							emptyOutDir: false,
-							rollupOptions: {
-								input: appEntry,
-								output: { entryFileNames: backendName, format: 'es' },
-								external
-							}
+				build: {
+					outDir: absOut,
+					rollupOptions: {
+						input: htmlEntry,
+						output: {
+							entryFileNames: '[name].js',
+							chunkFileNames: '[name].js',
+							assetFileNames: '[name][extname]'
 						}
 					}
 				}
 			}
-		},
-		// Emit manifest.json once the backend env has flushed `app.js` to disk.
-		// Loading the file picks up the same default export the host will see.
-		applyToEnvironment(env) {
-			return env.name === 'app'
-		},
-		async closeBundle() {
-			const backendPath = path.join(absOut, backendName)
-			if (!fs.existsSync(backendPath)) return
-			// Cache-busting query so subsequent builds see the latest module.
-			const url = `${pathToFileURL(backendPath).href}?t=${Date.now()}`
-			const mod: { default?: { name?: string; description?: string; icon?: string } } =
-				await import(url)
-			const app = mod.default
-			if (!app || typeof app.name !== 'string') {
-				throw new Error(
-					`appBuilder: ${backendName} must default-export an App with a string \`name\``
-				)
-			}
-			const icon = normalizeFlatAssetPath(app.icon)
-			if (icon && !fs.existsSync(path.join(absOut, icon))) {
-				const srcCandidates = [path.resolve(pkgRoot, srcDir, icon), path.resolve(absPublic, icon)]
-				const found = srcCandidates.find((p) => fs.existsSync(p))
-				if (!found) {
-					throw new Error(
-						`appBuilder: icon "${icon}" not found in ${srcDir}/, ${publicDir}/, or ${outDir}/`
-					)
-				}
-				fs.copyFileSync(found, path.join(absOut, icon))
-			}
-			const manifest: Manifest = {
-				format: FORMAT_VERSION,
-				name: app.name,
-				description: app.description ?? '',
-				version: pkgVersion,
-				icon,
-				entry: entryName,
-				backend: backendName
-			}
-			fs.writeFileSync(path.join(absOut, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
 		}
 	}
 }
 
 // ── hostApps ──────────────────────────────────────────────────────────────
 
-/** Reference to an app package: either a bare name, or an imported app
- * object that carries `__pkg` (added by `appBuilder()`). */
-export type AppRef = string | { __pkg?: string }
+/** Reference to an app package by package name. */
+export type AppRef = string
 
 /** Either a list (id derived from package name) or an explicit id→ref map. */
 export type HostAppsArg = AppRef[] | Record<string, AppRef>
@@ -175,7 +94,6 @@ interface ResolvedApp {
 	id: string
 	contentDir: string
 	manifest: Manifest
-	code: string
 }
 
 export function hostApps(arg: HostAppsArg, opts: HostAppsOptions = {}): Plugin {
@@ -191,20 +109,14 @@ export function hostApps(arg: HostAppsArg, opts: HostAppsOptions = {}): Plugin {
 		const seen = new Set<string>()
 		const out: ResolvedApp[] = []
 		for (const [explicitId, ref] of pairs) {
-			const pkgName = typeof ref === 'string' ? ref : ref.__pkg
-			if (!pkgName) {
-				throw new Error(
-					"hostApps: ref is missing `__pkg`. Pass a package-name string, or import a package built with `appBuilder()` (which injects __pkg via Vite's `define`)."
-				)
-			}
-			const id = explicitId ?? deriveId(pkgName)
+			const id = explicitId ?? deriveId(ref)
 			if (seen.has(id)) {
 				throw new Error(
 					`hostApps: duplicate id "${id}" — use the object form ({ "${id}": ref, "${id}-alt": otherRef }) to disambiguate.`
 				)
 			}
 			seen.add(id)
-			out.push(resolveInstalledApp(require, id, pkgName))
+			out.push(resolveInstalledApp(require, id, ref))
 		}
 		resolved = out
 		return out
@@ -219,7 +131,7 @@ export function hostApps(arg: HostAppsArg, opts: HostAppsOptions = {}): Plugin {
 		load(id) {
 			if (id !== RESOLVED_ID) return undefined
 			const apps = ensureResolved()
-			const entries = apps.map((a) => [a.id, { manifest: a.manifest, code: a.code }] as const)
+			const entries = apps.map((a) => [a.id, { manifest: a.manifest }] as const)
 			return `export const registry = new Map(${JSON.stringify(entries)})\n`
 		},
 		// Dev: serve `/apps/<id>/*` from each package's dist on disk so the
@@ -280,15 +192,13 @@ function resolveInstalledApp(
 		mainPath = require.resolve(pkgName)
 	} catch (e) {
 		throw new Error(
-			`hostApps: cannot resolve package "${pkgName}". Is it installed and built (\`vite build --app\`)? Underlying: ${String(e)}`
+			`hostApps: cannot resolve package "${pkgName}". Is it installed and built? Underlying: ${String(e)}`
 		)
 	}
 	const contentDir = path.dirname(mainPath)
 	const manifestPath = path.join(contentDir, 'manifest.json')
 	if (!fs.existsSync(manifestPath)) {
-		throw new Error(
-			`hostApps: ${pkgName} is missing manifest.json at ${manifestPath}. Did you run \`vite build --app\`?`
-		)
+		throw new Error(`hostApps: ${pkgName} is missing manifest.json at ${manifestPath}.`)
 	}
 	const manifest = readJson<Manifest>(manifestPath)
 	if (manifest.format !== FORMAT_VERSION) {
@@ -296,15 +206,7 @@ function resolveInstalledApp(
 			`hostApps: ${pkgName} has format ${manifest.format}, expected ${FORMAT_VERSION}`
 		)
 	}
-	let code = ''
-	if (manifest.backend) {
-		const codePath = path.join(contentDir, manifest.backend)
-		if (!fs.existsSync(codePath)) {
-			throw new Error(`hostApps: ${pkgName} backend "${manifest.backend}" not found at ${codePath}`)
-		}
-		code = fs.readFileSync(codePath, 'utf8')
-	}
-	return { id, contentDir, manifest, code }
+	return { id, contentDir, manifest }
 }
 
 function* walkFiles(dir: string, prefix = ''): Iterable<string> {
@@ -323,14 +225,6 @@ function* walkFiles(dir: string, prefix = ''): Iterable<string> {
 function deriveId(pkgName: string): string {
 	const tail = pkgName.includes('/') ? (pkgName.split('/').pop() ?? pkgName) : pkgName
 	return tail.replace(/^app-/, '')
-}
-
-function normalizeFlatAssetPath(value: unknown): string | undefined {
-	if (typeof value !== 'string' || value.length === 0) return undefined
-	if (path.isAbsolute(value) || value.includes('/') || value.includes('\\')) {
-		throw new Error(`appBuilder: icon must be a flat app asset filename, got "${value}"`)
-	}
-	return value
 }
 
 function readJson<T>(filePath: string): T {

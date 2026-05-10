@@ -10,16 +10,6 @@
 			"types": "./dist/index.d.ts",
 			"default": "./dist/index.js"
 		},
-		"./server": {
-			"@justfiles/src": "./server.ts",
-			"types": "./dist/server.d.ts",
-			"default": "./dist/server.js"
-		},
-		"./client": {
-			"@justfiles/src": "./client.js",
-			"types": "./client.d.ts",
-			"default": "./client.js"
-		},
 		"./sdk": {
 			"@justfiles/src": "./sdk.ts",
 			"types": "./dist/sdk.d.ts",
@@ -30,11 +20,6 @@
 			"types": "./dist/vite-plugin.d.ts",
 			"default": "./dist/vite-plugin.js"
 		},
-		"./host": {
-			"@justfiles/src": "./host.ts",
-			"types": "./dist/host.d.ts",
-			"default": "./dist/host.js"
-		},
 		"./format": {
 			"@justfiles/src": "./format.ts",
 			"types": "./dist/format.d.ts",
@@ -42,21 +27,6 @@
 		},
 		"./virtual": {
 			"types": "./virtual.d.ts"
-		},
-		"./runtime.js": {
-			"@justfiles/src": "./runtime.ts",
-			"types": "./dist/runtime.d.ts",
-			"default": "./dist/runtime.js"
-		},
-		"./runner.js": {
-			"@justfiles/src": "./runner.ts",
-			"types": "./dist/runner.d.ts",
-			"default": "./dist/runner.js"
-		},
-		"./capabilities-bridge.js": {
-			"@justfiles/src": "./capabilities-bridge.ts",
-			"types": "./dist/capabilities-bridge.d.ts",
-			"default": "./dist/capabilities-bridge.js"
 		},
 		"./capabilities": {
 			"@justfiles/src": "./capabilities/index.ts",
@@ -86,8 +56,6 @@
 	},
 	"files": [
 		"dist",
-		"client.js",
-		"client.d.ts",
 		"virtual.d.ts"
 	],
 	"scripts": {
