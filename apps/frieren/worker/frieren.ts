@@ -3,11 +3,10 @@ import type { AppRpcResponse, RequestId } from '@justfiles/app'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
-import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
+import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import type Type from 'typebox'
-import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
+import { dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -15,7 +14,7 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import { getAppPermissions, hasApp, listApps } from './frieren.app'
+import { AppHost, getAppPermissions, listApps } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -91,28 +90,11 @@ type ServerMessage =
 	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
 
 const DEBUG_COMMAND = '/debug'
-const CLOSE_COMMAND = '/close'
-const APP_STORAGE_KEY = 'active_app'
-const CLIENT_TOOLS_STORAGE_KEY = 'active_app_client_tools'
-
-interface ActiveApp {
-	id: string
-	tools: AgentTool[]
-}
-
-interface PersistedApp {
-	id: string
-}
 
 const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000
-}
-
-type PendingToolCall = {
-	resolve: (value: unknown) => void
-	reject: (reason: unknown) => void
 }
 
 export class Frieren extends DurableObject<Env> {
@@ -121,16 +103,23 @@ export class Frieren extends DurableObject<Env> {
 	private runtime?: Runtime
 	private text?: LLMText
 	private cfTimezone?: string
-	private activeApp?: ActiveApp
+	private apps: AppHost
 	private integrations?: Integrations
 	private readonly coalescer = new Coalescer()
-	private readonly pendingToolCalls = new Map<string, PendingToolCall>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
 		const namespace = ctx.id.toString()
 		const fs = cfFsStorage(ctx.storage, namespace)
 		this.vol = volume(fs)
+
+		this.apps = new AppHost({
+			storage: ctx.storage,
+			volume: this.vol,
+			websockets: () => ctx.getWebSockets(),
+			runtime: () => this.runtime,
+			sendAgentPrompt: (ws, text) => this.promptAgent(ws, text, { throwOnError: true })
+		})
 
 		this.app = new Hono()
 			.post('/api/nuke', async (c) => {
@@ -252,7 +241,7 @@ export class Frieren extends DurableObject<Env> {
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
 		await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
-		await this.hydrateApp()
+		await this.apps.hydrate()
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -273,34 +262,21 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (parsed.type === 'app_close') {
-			await this.closeApp()
-			return
-		}
+		if (await this.apps.handleMessage(ws, parsed)) return
 
 		if (parsed.type === 'app_iframe_reload') {
-			await this.resetClientTools()
-			return
-		}
-
-		if (parsed.type === 'app_launch' && parsed.id) {
-			await this.launchApp(parsed.id)
+			await this.apps.resetClientTools()
 			return
 		}
 
 		if (parsed.type === 'app_tool_result' && parsed.callId) {
-			const pending = this.pendingToolCalls.get(parsed.callId)
-			if (pending) {
-				this.pendingToolCalls.delete(parsed.callId)
-				if (parsed.error) pending.reject(parsed.error)
-				else pending.resolve(parsed.result)
-			}
+			this.apps.handleToolResult(parsed.callId, parsed.result, parsed.error)
 			return
 		}
 
 		if (parsed.type === 'app_rpc' && parsed.frame) {
 			const frame = parsed.frame
-			const activeApp = this.activeApp
+			const activeApp = this.apps.current()
 			const reply: AppRpcResponse = activeApp
 				? await dispatchAppRpc(
 						{
@@ -313,12 +289,7 @@ export class Frieren extends DurableObject<Env> {
 							// streams events over WS independently.
 							sendAgentPrompt: (text: string) => this.promptAgent(ws, text, { throwOnError: true }),
 							registerClientTool: (descriptor) => {
-								const toolName = `${activeApp.id}_client_${descriptor.name}`
-								if (activeApp.tools.some((t) => t.name === toolName)) return
-								const tool = this.createClientProxyTool(descriptor, activeApp.id)
-								activeApp.tools.push(tool)
-								this.runtime?.addTools([tool])
-								void this.persistClientTool(activeApp.id, descriptor)
+								void this.apps.registerClientTool(descriptor)
 							}
 						},
 						frame
@@ -341,19 +312,7 @@ export class Frieren extends DurableObject<Env> {
 				return
 			}
 
-			if (trimmed === CLOSE_COMMAND) {
-				await this.closeApp()
-				return
-			}
-
-			// `/counter`, `/chess`, … — launch the matching registered app.
-			if (trimmed.startsWith('/')) {
-				const id = trimmed.slice(1)
-				if (hasApp(id)) {
-					await this.launchApp(id)
-					return
-				}
-			}
+			if (await this.apps.handlePromptCommand(trimmed)) return
 
 			const unsubscribe = this.runtime?.subscribe((event, _signal) => {
 				ws.send(
@@ -381,13 +340,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
-	// ── App orchestration ──────────────────────────────────────────────
-	//
-	// At most one app is active at a time. Apps are client-only (manifest +
-	// HTML entry); the supervisor only holds the active app id and any
-	// client-side agent tools the app has registered. DOs can hibernate
-	// between WS messages, so the active-app object is rebuilt from a
-	// persisted `{ id }` on each wake.
+	// ── App RPC support ──────────────────────────────────────────────
 
 	// Capability broker bridge handed to the RPC dispatcher. Until the
 	// broker integration lands (#59) every capability call is denied with a
@@ -403,147 +356,6 @@ export class Frieren extends DurableObject<Env> {
 				}
 			}
 		}
-	}
-
-	private async persistClientTool(appId: string, descriptor: ClientToolDescriptor): Promise<void> {
-		const stored =
-			(await this.ctx.storage.get<ClientToolDescriptor[]>(
-				`${CLIENT_TOOLS_STORAGE_KEY}:${appId}`
-			)) ?? []
-		if (!stored.some((d) => d.name === descriptor.name)) {
-			stored.push(descriptor)
-			await this.ctx.storage.put(`${CLIENT_TOOLS_STORAGE_KEY}:${appId}`, stored)
-		}
-	}
-
-	private createClientProxyTool(descriptor: ClientToolDescriptor, appId: string): AgentTool {
-		const toolName = `${appId}_client_${descriptor.name}`
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		const self = this
-		// Cast JSON Schema → TSchema once at the boundary; TypeBox IS JSON Schema.
-		const schema = descriptor.schema as unknown as Type.TSchema
-		const tool: AgentTool<typeof schema> = {
-			name: toolName,
-			label: `${appId}: ${descriptor.name}`,
-			description: descriptor.description,
-			parameters: schema,
-			async execute(_id, input) {
-				const callId = crypto.randomUUID()
-				const msg = JSON.stringify({
-					type: 'app_tool_invoke',
-					callId,
-					name: descriptor.name,
-					input
-				} satisfies ServerMessage)
-				for (const client of self.ctx.getWebSockets()) client.send(msg)
-
-				const result = await new Promise<unknown>((resolve, reject) => {
-					const timeout = setTimeout(() => {
-						self.pendingToolCalls.delete(callId)
-						reject({ code: -32021, message: 'tool_timeout' })
-					}, 30_000)
-					self.pendingToolCalls.set(callId, {
-						resolve: (v) => {
-							clearTimeout(timeout)
-							resolve(v)
-						},
-						reject: (e) => {
-							clearTimeout(timeout)
-							reject(e)
-						}
-					})
-				})
-				return {
-					content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-					details: result
-				}
-			}
-		}
-		return tool as unknown as AgentTool
-	}
-
-	// Rebuild the in-memory active-app state from storage. Used by both
-	// `hydrateApp` (silent rebuild after DO wakes up) and `mountApp` (full
-	// launch path that also persists the active id and broadcasts `app_open`).
-	private async restoreActiveApp(id: string): Promise<ActiveApp> {
-		const stored =
-			(await this.ctx.storage.get<ClientToolDescriptor[]>(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)) ??
-			[]
-		const tools = stored.map((d) => this.createClientProxyTool(d, id))
-		const active: ActiveApp = { id, tools }
-		this.activeApp = active
-		if (tools.length > 0) this.runtime?.addTools(tools)
-		return active
-	}
-
-	private async hydrateApp(): Promise<void> {
-		if (this.activeApp) return
-		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
-		if (!saved || !hasApp(saved.id)) return
-		await this.restoreActiveApp(saved.id)
-	}
-
-	private async mountApp(id: string): Promise<ActiveApp> {
-		const active = await this.restoreActiveApp(id)
-		await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
-		await this.broadcastOpen(active)
-		return active
-	}
-
-	private async broadcastOpen(active: ActiveApp): Promise<void> {
-		const payload = JSON.stringify(this.openMessage(active))
-		for (const client of this.ctx.getWebSockets()) client.send(payload)
-	}
-
-	private openMessage(active: ActiveApp): ServerMessage {
-		return {
-			type: 'app_open',
-			id: active.id,
-			ui: { url: `/apps/${active.id}/` }
-		}
-	}
-
-	private async launchApp(id: string): Promise<void> {
-		if (!hasApp(id)) return
-		if (this.activeApp) await this.closeApp()
-		await this.mountApp(id)
-	}
-
-	private async closeApp(): Promise<void> {
-		if (!this.activeApp) return
-		const { id, tools } = this.activeApp
-		this.runtime?.removeTools(tools)
-		this.failPendingToolCalls()
-		this.activeApp = undefined
-		await Promise.all([
-			this.ctx.storage.delete(APP_STORAGE_KEY),
-			this.ctx.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)
-		])
-		const payload = JSON.stringify({ type: 'app_close' } satisfies ServerMessage)
-		for (const client of this.ctx.getWebSockets()) client.send(payload)
-	}
-
-	// Iframe reload — same iframe URL, fresh JS context. The app's previous
-	// SDK instance is gone, so any pending tool invocation against it will
-	// never resolve; reject pending calls and drop the proxy tools so the
-	// reloaded app's `register` calls produce a clean set.
-	private async resetClientTools(): Promise<void> {
-		const active = this.activeApp
-		if (!active) return
-		const prefix = `${active.id}_client_`
-		const stripped = active.tools.filter((t) => t.name.startsWith(prefix))
-		if (stripped.length === 0 && this.pendingToolCalls.size === 0) return
-		this.runtime?.removeTools(stripped)
-		active.tools = active.tools.filter((t) => !stripped.includes(t))
-		this.failPendingToolCalls()
-		await this.ctx.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${active.id}`)
-	}
-
-	private failPendingToolCalls(): void {
-		if (this.pendingToolCalls.size === 0) return
-		const pending = Array.from(this.pendingToolCalls.values())
-		this.pendingToolCalls.clear()
-		for (const p of pending) p.reject({ code: -32020, message: 'tool_unavailable' })
 	}
 
 	private async promptAgent(
@@ -607,7 +419,7 @@ export class Frieren extends DurableObject<Env> {
 
 			this.ctx.acceptWebSocket(server)
 			await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
-			await this.hydrateApp()
+			await this.apps.hydrate()
 
 			const participants = await this.loadParticipants()
 			const history = sessionEntries2DisplayMessages((await this.runtime?.history()) ?? [])
@@ -628,9 +440,8 @@ export class Frieren extends DurableObject<Env> {
 
 			// If an app is already running, send the URL so this client can
 			// boot the iframe from scratch.
-			if (this.activeApp) {
-				server.send(JSON.stringify(this.openMessage(this.activeApp)))
-			}
+			const open = this.apps.openMessage()
+			if (open) server.send(JSON.stringify(open))
 
 			return new Response(null, {
 				status: 101,
