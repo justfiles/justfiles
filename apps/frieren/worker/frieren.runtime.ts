@@ -35,8 +35,6 @@ export interface Runtime {
 	addTools: (tools: readonly AgentTool[]) => void
 	removeTools: (tools: readonly AgentTool[]) => void
 	systemPrompt: () => string
-	// TODO: remove
-	_agent: () => Agent
 }
 
 export async function runtime({
@@ -58,8 +56,7 @@ export async function runtime({
 		consolidateMemory,
 		addTools,
 		removeTools,
-		systemPrompt: () => agent.state.systemPrompt,
-		_agent: () => agent
+		systemPrompt: () => agent.state.systemPrompt
 	}
 
 	async function shutdown() {
