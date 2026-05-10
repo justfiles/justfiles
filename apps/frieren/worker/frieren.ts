@@ -463,14 +463,10 @@ export class Frieren extends DurableObject<Env> {
 		return tool as unknown as AgentTool
 	}
 
-	private async hydrateApp(): Promise<void> {
-		if (this.activeApp) return
-		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
-		if (!saved || !hasApp(saved.id)) return
-		await this.mountApp(saved.id)
-	}
-
-	private async mountApp(id: string): Promise<ActiveApp> {
+	// Rebuild the in-memory active-app state from storage. Used by both
+	// `hydrateApp` (silent rebuild after DO wakes up) and `mountApp` (full
+	// launch path that also persists the active id and broadcasts `app_open`).
+	private async restoreActiveApp(id: string): Promise<ActiveApp> {
 		const stored =
 			(await this.ctx.storage.get<ClientToolDescriptor[]>(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)) ??
 			[]
@@ -481,6 +477,18 @@ export class Frieren extends DurableObject<Env> {
 			const agent = this.runtime?._agent()
 			if (agent) agent.state.tools = [...agent.state.tools, ...tools]
 		}
+		return active
+	}
+
+	private async hydrateApp(): Promise<void> {
+		if (this.activeApp) return
+		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
+		if (!saved || !hasApp(saved.id)) return
+		await this.restoreActiveApp(saved.id)
+	}
+
+	private async mountApp(id: string): Promise<ActiveApp> {
+		const active = await this.restoreActiveApp(id)
 		await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
 		await this.broadcastOpen(active)
 		return active
