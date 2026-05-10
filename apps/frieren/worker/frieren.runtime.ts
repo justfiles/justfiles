@@ -62,11 +62,32 @@ export async function runtime({
 
 	async function prompt(message: string, source: 'user' | 'app' = 'user') {
 		const offset = agent.state.messages.length
-		await agent.prompt(message)
+		let promptError: unknown
+		try {
+			await agent.prompt(message)
+		} catch (error) {
+			promptError = error
+		}
+
 		const newMessages = agent.state.messages.slice(offset)
-		await session.append(
-			newMessages.map((message, index) => transform(message, index === 0 ? source : 'user'))
-		)
+		if (newMessages.length > 0) {
+			await session.append(
+				newMessages.map((message, index) => transform(message, index === 0 ? source : 'user'))
+			)
+		}
+
+		const diagnostic = promptError
+			? { message: errorMessage(promptError) }
+			: newMessages.map(assistantDiagnostic).find((value) => value !== undefined)
+		if (diagnostic) {
+			console.error('[frieren-agent-failure]', {
+				source,
+				message: diagnostic.message,
+				persistedMessages: newMessages.length
+			})
+			throw new Error(diagnostic.message)
+		}
+
 		if (shouldCompact(agent, compaction)) {
 			const branch = await session.walkActiveBranch()
 			const prepared = prepareCompaction(branch, compaction)
@@ -160,6 +181,29 @@ export async function runtime({
 	}
 }
 
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
+}
+
+function assistantDiagnostic(message: AgentMessage): { message: string } | undefined {
+	if (!('role' in message) || message.role !== 'assistant') return undefined
+	if (message.stopReason === 'error' || message.stopReason === 'aborted' || message.errorMessage) {
+		return {
+			message: message.errorMessage || `Assistant stopped with reason: ${message.stopReason}`
+		}
+	}
+
+	const hasText = message.content.some(
+		(block) => block.type === 'text' && block.text.trim().length > 0
+	)
+	const hasToolCall = message.content.some((block) => block.type === 'toolCall')
+	if (!hasText && !hasToolCall) {
+		return { message: 'Assistant returned no visible text or tool calls.' }
+	}
+
+	return undefined
+}
+
 function transform(message: AgentMessage, source: 'user' | 'app'): AppendPayload {
 	if (!('role' in message)) throw new Error(`unsupported message: ${JSON.stringify(message)}`)
 	switch (message.role) {
@@ -174,6 +218,15 @@ function transform(message: AgentMessage, source: 'user' | 'app'): AppendPayload
 			return { type: 'message', role: 'user', content, source }
 		}
 		case 'assistant': {
+			const diagnostic = assistantDiagnostic(message)
+			if (diagnostic) {
+				return {
+					type: 'message',
+					role: 'assistant',
+					content: `[Agent error: ${diagnostic.message}]`
+				}
+			}
+
 			const texts: string[] = []
 			const toolCalls: { tool_name: string; input: Record<string, unknown> }[] = []
 			for (const block of message.content) {
