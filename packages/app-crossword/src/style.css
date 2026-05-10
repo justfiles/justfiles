@@ -16,14 +16,50 @@ main {
 	width: min(1120px, 100%);
 	padding: 24px;
 }
-.standby {
+.standby,
+.error {
 	margin: 0;
 	padding: 16px 24px;
 	border: 2px dashed #475569;
 	color: #94a3b8;
 	font-size: 14px;
-	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.error {
+	border-color: #ef4444;
+	color: #fecaca;
+}
+.setup {
+	display: grid;
+	gap: 12px;
+	max-width: 480px;
+}
+.setup h1 {
+	margin: 0;
+	color: #bae6fd;
 	letter-spacing: 0.12em;
+	text-transform: uppercase;
+}
+.setup input {
+	padding: 10px 12px;
+	border: 1px solid #475569;
+	border-radius: 4px;
+	background: #0f172a;
+	color: inherit;
+	font: inherit;
+}
+.setup button {
+	padding: 10px 12px;
+	border: 1px solid #7dd3fc;
+	border-radius: 4px;
+	background: #0f172a;
+	color: #e0f2fe;
+	font: inherit;
+	cursor: pointer;
+}
+.setup button:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
 }
 .crossword {
 	display: grid;
@@ -34,19 +70,6 @@ main {
 .puzzle {
 	display: grid;
 	gap: 12px;
-}
-.reveal-toggle {
-	justify-self: end;
-	padding: 7px 10px;
-	border: 1px solid #7dd3fc;
-	background: #0f172a;
-	color: #e0f2fe;
-	font: inherit;
-	font-size: 12px;
-	cursor: pointer;
-}
-.reveal-toggle:hover {
-	background: #164e63;
 }
 .grid {
 	display: grid;
@@ -95,7 +118,7 @@ main {
 	color: #334155;
 	line-height: 1;
 }
-/* biome-ignore lint/style/noDescendingSpecificity: state selectors intentionally override base letter styling */
+/* biome-ignore lint/style/noDescendingSpecificity: state selectors override base styling */
 .letter {
 	position: absolute;
 	inset: 0;
@@ -170,48 +193,13 @@ main {
 	text-transform: uppercase;
 	letter-spacing: 0.12em;
 }
-.stats {
-	display: flex;
-	gap: 16px;
-	margin: 0;
-	font-size: 12px;
-	color: #94a3b8;
-}
-.stats div {
-	display: flex;
-	gap: 4px;
-}
-.stats dt {
-	text-transform: uppercase;
-	letter-spacing: 0.08em;
-}
-.stats dd {
-	margin: 0;
-	color: #e0f2fe;
-	font-variant-numeric: tabular-nums;
-}
 .toolbar {
 	display: flex;
-	gap: 12px;
+	gap: 8px;
 	flex-wrap: wrap;
 }
-.toolbar fieldset {
-	display: flex;
-	gap: 6px;
-	border: 1px solid #334155;
-	border-radius: 4px;
-	padding: 6px 8px;
-	margin: 0;
-}
-.toolbar legend {
-	color: #7dd3fc;
-	font-size: 11px;
-	text-transform: uppercase;
-	letter-spacing: 0.1em;
-	padding: 0 4px;
-}
 .toolbar button {
-	padding: 4px 10px;
+	padding: 6px 10px;
 	border: 1px solid #475569;
 	background: #0f172a;
 	color: #e0f2fe;
@@ -246,77 +234,5 @@ main {
 	}
 	.clues {
 		max-height: none;
-	}
-}
-
-@media print {
-	:root {
-		color-scheme: light;
-		color: #111827;
-		background: #ffffff;
-	}
-	body {
-		display: block;
-		min-height: auto;
-		background: #ffffff;
-	}
-	main {
-		width: 100%;
-		padding: 0;
-	}
-	.crossword {
-		grid-template-columns: 5.75in 1fr;
-		gap: 0.25in;
-	}
-	.reveal-toggle {
-		display: none;
-	}
-	.grid,
-	.cell,
-	.cell.block {
-		print-color-adjust: exact;
-		-webkit-print-color-adjust: exact;
-	}
-	.grid {
-		gap: 0;
-		padding: 0;
-		background: transparent;
-		border: 2px solid #111827;
-		width: 5.75in;
-		max-width: 100%;
-		break-inside: avoid;
-	}
-	.cell {
-		box-sizing: border-box;
-		background: #ffffff;
-		border: 1px solid #111827;
-	}
-	.cell.block {
-		background: #111827;
-	}
-	.num {
-		top: 2px;
-		left: 3px;
-		color: #111827;
-		font-size: 8pt;
-	}
-	/* biome-ignore lint/style/noDescendingSpecificity: print letter styling intentionally resets screen state styling */
-	.letter {
-		color: #111827;
-		font-size: 18pt;
-	}
-	.clues {
-		max-height: none;
-		overflow: visible;
-		gap: 0.18in;
-	}
-	.clues h2,
-	.clue,
-	.clue-num {
-		color: #111827;
-	}
-	.clue {
-		grid-template-columns: 0.28in 1fr;
-		font-size: 10pt;
 	}
 }
