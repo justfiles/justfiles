@@ -1,7 +1,6 @@
 import path from 'node:path'
 import { cloudflare } from '@cloudflare/vite-plugin'
 import { hostApps } from '@justfiles/app/vite'
-import crossword from '@justfiles/app-crossword'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defaultClientConditions, defineConfig } from 'vite'
@@ -20,6 +19,11 @@ export default defineConfig({
 		cloudflare(),
 		// Client-only apps are referenced by package name because they
 		// have no JS module to import.
-		hostApps([crossword, '@justbuddy/app-doom', '@justfiles/app-hello', '@justfiles/app-demo'])
+		hostApps([
+			'@justbuddy/app-doom',
+			'@justfiles/app-crossword',
+			'@justfiles/app-hello',
+			'@justfiles/app-demo'
+		])
 	]
 })

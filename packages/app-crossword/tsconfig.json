@@ -1,37 +1,25 @@
 {
 	"compilerOptions": {
-		// Environment setup & latest features
-		"lib": ["ESNext", "DOM"],
-		"target": "ESNext",
-		"module": "Preserve",
-		"moduleDetection": "force",
+		"target": "es2023",
+		"module": "esnext",
+		"lib": ["ES2023", "DOM"],
 		"jsx": "react-jsx",
-		"allowJs": true,
+		"types": ["vite/client", "bun"],
+		"skipLibCheck": true,
 
-		// Bundler mode
 		"moduleResolution": "bundler",
 		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"verbatimModuleSyntax": true,
+		"moduleDetection": "force",
 		"noEmit": true,
 
-		// Best practices
 		"strict": true,
-		"skipLibCheck": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"erasableSyntaxOnly": true,
 		"noFallthroughCasesInSwitch": true,
-		"noUncheckedIndexedAccess": true,
-		"noImplicitOverride": true,
-
-		"baseUrl": ".",
-		"paths": {
-			"@/*": ["./src/*"]
-		},
-
-		// Some stricter flags (disabled by default)
-		"noUnusedLocals": false,
-		"noUnusedParameters": false,
-		"noPropertyAccessFromIndexSignature": false
+		"noUncheckedIndexedAccess": true
 	},
-
-	"exclude": ["dist", "node_modules"]
+	"include": ["src"]
 }
