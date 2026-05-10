@@ -1,6 +1,5 @@
 /// <reference types="vite/client" />
 
-import '@justfiles/app/client'
 import './index.css'
 
 const COMMON_ARGS = [
@@ -51,6 +50,9 @@ type DoomWindow = Window &
 	}
 
 const root = document.querySelector<HTMLDivElement>('#root')
+let statusText = 'booting'
+
+window.app?.agent.describe(() => `Doom is mounted in the browser canvas. Status: ${statusText}.`)
 
 if (!root) throw new Error('missing #root')
 
@@ -80,6 +82,7 @@ async function mountDoom(root: HTMLElement) {
 	root.replaceChildren(canvas, start, bindings, monitor)
 
 	const setStatus = (text: string) => {
+		statusText = text
 		monitor.value = text
 	}
 

@@ -3,24 +3,16 @@
 	"version": "0.1.0",
 	"private": true,
 	"type": "module",
-	"main": "./dist/app.js",
-	"exports": {
-		".": {
-			"@justfiles/src": "./src/app.ts",
-			"default": "./dist/app.js"
-		}
-	},
+	"main": "./dist/manifest.json",
 	"scripts": {
-		"dev": "bun --hot src/server.ts",
-		"build": "vite build --app",
-		"start": "NODE_ENV=production bun src/server.ts"
+		"dev": "vite",
+		"build": "tsc && vite build",
+		"preview": "vite preview"
 	},
 	"dependencies": {
-		"@justfiles/app": "workspace:*",
-		"typebox": "^1.1.34"
+		"@justfiles/app": "workspace:*"
 	},
 	"devDependencies": {
-		"@types/bun": "latest",
 		"typescript": "^6.0.3",
 		"vite": "^8.0.0-beta.13"
 	}
