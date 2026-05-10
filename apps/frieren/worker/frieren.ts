@@ -5,6 +5,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import Type from 'typebox'
 import type { AppFacetScope } from './app-bridge'
 import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
@@ -448,11 +449,14 @@ export class Frieren extends DurableObject<Env> {
 		const toolName = `${appId}_client_${descriptor.name}`
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const self = this
-		const tool: AgentTool = {
+		// Cast JSON Schema → TSchema once at the boundary; TypeBox IS JSON Schema.
+		// Mirrors the buildAppTools pattern in frieren.app.ts.
+		const schema = descriptor.schema as unknown as Type.TSchema
+		const tool: AgentTool<typeof schema> = {
 			name: toolName,
 			label: `${appId}: ${descriptor.name}`,
 			description: descriptor.description,
-			parameters: descriptor.schema as unknown as Parameters<typeof tool.execute>[1],
+			parameters: schema,
 			async execute(_id, input) {
 				const callId = crypto.randomUUID()
 				const msg = JSON.stringify({

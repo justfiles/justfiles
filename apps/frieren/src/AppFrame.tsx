@@ -4,6 +4,11 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { AppAction, AppRpcSender, ToolInvokeHandler, ToolResultSender } from './chat/types'
 
+type ToolResolveData = {
+	result?: { callId: string; value: unknown }
+	error?: { code: number; message: string }
+}
+
 type Ui = { url: string }
 
 export function AppFrame(props: {
@@ -30,11 +35,7 @@ export function AppFrame(props: {
 	stateRef.current = state
 
 	// Pending server-originated tool invocations awaiting the iframe response.
-	type ToolInvokeResolver = (data: {
-		result?: { callId: string; value: unknown }
-		error?: { code: number; message: string }
-	}) => void
-	const pendingToolInvokes = useRef(new Map<string, ToolInvokeResolver>())
+	const pendingToolInvokes = useRef(new Map<string, (data: ToolResolveData) => void>())
 
 	// LEGACY (state-machine): broadcast new state to the iframe via the
 	// `app.state` notification consumed by `client.js`.
@@ -90,7 +91,7 @@ export function AppFrame(props: {
 				const resolver = pendingToolInvokes.current.get(String(data.id))
 				if (resolver) {
 					pendingToolInvokes.current.delete(String(data.id))
-					resolver(data as Parameters<ToolInvokeResolver>[0])
+					resolver(data as ToolResolveData)
 					return
 				}
 			}
