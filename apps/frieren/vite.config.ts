@@ -19,8 +19,8 @@ export default defineConfig({
 		tailwindcss(),
 		react(),
 		cloudflare(),
-		// `@justfiles/app-hello` is referenced by package name because
-		// client-only apps have no JS module to import.
-		hostApps([crossword, doom, '@justfiles/app-hello'])
+		// Client-only apps are referenced by package name because they
+		// have no JS module to import.
+		hostApps([crossword, doom, '@justfiles/app-hello', '@justfiles/app-demo'])
 	]
 })

@@ -36,6 +36,7 @@
         "@justbuddy/app-doom": "workspace:*",
         "@justfiles/app": "workspace:*",
         "@justfiles/app-crossword": "workspace:*",
+        "@justfiles/app-demo": "workspace:*",
         "@justfiles/app-hello": "workspace:*",
         "@justfiles/core": "workspace:*",
         "@justfiles/fs": "workspace:*",
@@ -169,6 +170,17 @@
         "@types/react": "^19",
         "@types/react-dom": "^19",
         "@vitejs/plugin-react": "^5",
+        "vite": "^8.0.0-beta.13",
+      },
+    },
+    "packages/app-demo": {
+      "name": "@justfiles/app-demo",
+      "version": "0.1.0",
+      "dependencies": {
+        "@justfiles/app": "workspace:*",
+      },
+      "devDependencies": {
+        "typescript": "~6.0.3",
         "vite": "^8.0.0-beta.13",
       },
     },
@@ -806,6 +818,8 @@
     "@justfiles/app": ["@justfiles/app@workspace:packages/app"],
 
     "@justfiles/app-crossword": ["@justfiles/app-crossword@workspace:packages/app-crossword"],
+
+    "@justfiles/app-demo": ["@justfiles/app-demo@workspace:packages/app-demo"],
 
     "@justfiles/app-hello": ["@justfiles/app-hello@workspace:packages/app-hello"],
 
