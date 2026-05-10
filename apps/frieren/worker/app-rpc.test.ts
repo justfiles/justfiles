@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
 import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
-import { dispatchAppRpc } from './app-rpc'
+import { type ClientToolDescriptor, dispatchAppRpc } from './app-rpc'
 
 const APP_ID = 'demo'
 
@@ -20,6 +20,7 @@ const denyAllBridge: CapabilityBridge = {
 }
 
 const noopSend = async () => {}
+const noopRegisterTool = (_descriptor: ClientToolDescriptor) => {}
 
 const writeText = (id: string, path: string, text: string) => ({
 	id,
@@ -50,7 +51,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['volume'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const writeReply = await dispatchAppRpc(ctx, writeText('1', 'last.txt', 'hello'))
 		expect(writeReply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
@@ -68,7 +70,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['volume'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const bytes = btoa('\x00\x01\x02\xfa\xff')
 		await dispatchAppRpc(ctx, writeFile('1', 'blob.bin', bytes))
@@ -82,7 +85,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['volume'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, readText('1', 'missing.txt'))
 		expect(reply.error?.code).toBe(-32001)
@@ -96,7 +100,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['volume'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const cases = ['../escape', 'a/../b', '..', '']
 		for (const path of cases) {
@@ -110,19 +115,47 @@ describe('dispatchAppRpc', () => {
 		const vol = makeVol()
 		const perms = ['volume'] as const
 		await dispatchAppRpc(
-			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
+			{
+				vol,
+				appId: 'one',
+				permissions: perms,
+				bridge: denyAllBridge,
+				sendAgentPrompt: noopSend,
+				registerClientTool: noopRegisterTool
+			},
 			writeText('1', 'shared.txt', 'one-secret')
 		)
 		await dispatchAppRpc(
-			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
+			{
+				vol,
+				appId: 'two',
+				permissions: perms,
+				bridge: denyAllBridge,
+				sendAgentPrompt: noopSend,
+				registerClientTool: noopRegisterTool
+			},
 			writeText('2', 'shared.txt', 'two-secret')
 		)
 		const oneReply = await dispatchAppRpc(
-			{ vol, appId: 'one', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
+			{
+				vol,
+				appId: 'one',
+				permissions: perms,
+				bridge: denyAllBridge,
+				sendAgentPrompt: noopSend,
+				registerClientTool: noopRegisterTool
+			},
 			readText('3', 'shared.txt')
 		)
 		const twoReply = await dispatchAppRpc(
-			{ vol, appId: 'two', permissions: perms, bridge: denyAllBridge, sendAgentPrompt: noopSend },
+			{
+				vol,
+				appId: 'two',
+				permissions: perms,
+				bridge: denyAllBridge,
+				sendAgentPrompt: noopSend,
+				registerClientTool: noopRegisterTool
+			},
 			readText('4', 'shared.txt')
 		)
 		expect(oneReply.result).toEqual({ text: 'one-secret' })
@@ -135,7 +168,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: [] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const cases = [
 			writeText('1', 'last.txt', 'hi'),
@@ -160,7 +194,8 @@ describe('dispatchAppRpc', () => {
 				appId: APP_ID,
 				permissions: [] as const,
 				bridge: denyAllBridge,
-				sendAgentPrompt: noopSend
+				sendAgentPrompt: noopSend,
+				registerClientTool: noopRegisterTool
 			},
 			writeText('1', 'leaked.txt', 'should not persist')
 		)
@@ -174,7 +209,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: [] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, {
 			id: '1',
@@ -190,7 +226,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['volume'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, writeFile('1', 'blob.bin', 'not!base64!!'))
 		expect(reply.error?.code).toBe(-32003)
@@ -203,7 +240,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['volume'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, {
 			id: '1',
@@ -219,7 +257,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['volume'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, writeText('1', 'nested/dir/file.txt', 'x'))
 		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
@@ -248,7 +287,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: [] as const,
 			bridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(
 			ctx,
@@ -277,7 +317,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: [] as const,
 			bridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, invoke('1', 'email', 'listUnread', {}))
 		expect(reply.error?.code).toBe(-32010)
@@ -297,7 +338,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: [] as const,
 			bridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(
 			ctx,
@@ -319,7 +361,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: [] as const,
 			bridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, invoke('1', 'email', 'listUnread', {}))
 		expect(reply.error).toBeUndefined()
@@ -332,7 +375,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: [] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, invoke('1', '', 'listUnread', {}))
 		expect(reply.error?.code).toBe(-32003)
@@ -355,7 +399,8 @@ describe('dispatchAppRpc', () => {
 			bridge: denyAllBridge,
 			sendAgentPrompt: async (text: string) => {
 				sent.push(text)
-			}
+			},
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, agentSend('1', 'hello agent'))
 		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
@@ -371,7 +416,8 @@ describe('dispatchAppRpc', () => {
 			bridge: denyAllBridge,
 			sendAgentPrompt: async (text: string) => {
 				sent.push(text)
-			}
+			},
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, agentSend('1', 'hello agent'))
 		expect(reply.error?.code).toBe(-32005)
@@ -386,7 +432,8 @@ describe('dispatchAppRpc', () => {
 			appId: APP_ID,
 			permissions: ['agent'] as const,
 			bridge: denyAllBridge,
-			sendAgentPrompt: noopSend
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
 		}
 		for (const text of ['', 42, null, undefined, {}]) {
 			const reply = await dispatchAppRpc(ctx, agentSend('x', text))
@@ -403,10 +450,55 @@ describe('dispatchAppRpc', () => {
 			bridge: denyAllBridge,
 			sendAgentPrompt: async () => {
 				throw new Error('runtime missing')
-			}
+			},
+			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, agentSend('1', 'hi'))
 		expect(reply.error?.code).toBe(-32000)
 		expect(reply.error?.message).toBe('runtime missing')
+	})
+
+	// ── client tool registration ────────────────────────────────────────
+
+	const toolRegister = (id: string, params: ClientToolDescriptor) => ({
+		id,
+		method: 'app.tool.register' as const,
+		params
+	})
+
+	test('app.tool.register forwards descriptor to ctx.registerClientTool', async () => {
+		const registered: ClientToolDescriptor[] = []
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend,
+			registerClientTool: (d: ClientToolDescriptor) => {
+				registered.push(d)
+			}
+		}
+		const reply = await dispatchAppRpc(
+			ctx,
+			toolRegister('1', { name: 'highlight', description: 'Highlights text', schema: {} })
+		)
+		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
+		expect(registered).toEqual([{ name: 'highlight', description: 'Highlights text', schema: {} }])
+	})
+
+	test('app.tool.register with empty name returns invalid_payload', async () => {
+		const ctx = {
+			vol: makeVol(),
+			appId: APP_ID,
+			permissions: [] as const,
+			bridge: denyAllBridge,
+			sendAgentPrompt: noopSend,
+			registerClientTool: noopRegisterTool
+		}
+		const reply = await dispatchAppRpc(
+			ctx,
+			toolRegister('1', { name: '', description: 'x', schema: {} })
+		)
+		expect(reply.error?.code).toBe(-32003)
 	})
 })

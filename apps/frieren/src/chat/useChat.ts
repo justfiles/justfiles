@@ -377,6 +377,10 @@ export function useChat() {
 		wsRef.current?.send(JSON.stringify({ type: 'app_tool_result', callId, result, error }))
 	}
 
+	const notifyIframeReload = () => {
+		wsRef.current?.send(JSON.stringify({ type: 'app_iframe_reload' }))
+	}
+
 	return {
 		messages,
 		input,
@@ -395,6 +399,7 @@ export function useChat() {
 		sendAppAction,
 		sendAppRpc,
 		registerToolInvokeHandler,
-		sendToolResult
+		sendToolResult,
+		notifyIframeReload
 	}
 }

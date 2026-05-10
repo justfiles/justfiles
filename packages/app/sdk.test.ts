@@ -13,7 +13,7 @@ type MessageListener = (event: { source: unknown; data: unknown }) => void
 
 interface FakeApp {
 	version: number
-	lifecycle: { onStart(cb: () => void): () => void }
+	lifecycle: { onStart(cb: () => void): () => void; onStop(cb: () => void): () => void }
 	volume: {
 		readText(path: string): Promise<string>
 		writeText(path: string, text: string): Promise<void>
@@ -666,6 +666,104 @@ test('register throws TypeError on invalid name', () => {
 			handler: () => {}
 		})
 	).toThrow(TypeError)
+})
+
+// ── lifecycle / stop ──────────────────────────────────────────────────
+
+test('onStop fires when host sends lifecycle stop notification after start', () => {
+	const { win, dispatch } = setup()
+	let stops = 0
+	win.app?.lifecycle.onStop(() => {
+		stops++
+	})
+	// Stop only fires after start has happened — guards against pre-start no-op.
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } })
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'stop' } })
+	expect(stops).toBe(1)
+})
+
+test('onStop only fires once per stop event', () => {
+	const { win, dispatch } = setup()
+	let stops = 0
+	win.app?.lifecycle.onStop(() => {
+		stops++
+	})
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } })
+	const stop = { jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'stop' } }
+	dispatch(stop)
+	dispatch(stop)
+	expect(stops).toBe(1)
+})
+
+test('onStop does not fire if app never started', () => {
+	const { win, dispatch } = setup()
+	let stops = 0
+	win.app?.lifecycle.onStop(() => {
+		stops++
+	})
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'stop' } })
+	expect(stops).toBe(0)
+})
+
+test('multiple onStop callbacks all fire, throwing one does not block the rest', () => {
+	const { win, dispatch } = setup()
+	const log: string[] = []
+	win.app?.lifecycle.onStop(() => log.push('a'))
+	win.app?.lifecycle.onStop(() => {
+		throw new Error('boom')
+	})
+	win.app?.lifecycle.onStop(() => log.push('c'))
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } })
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'stop' } })
+	expect(log).toEqual(['a', 'c'])
+})
+
+test('onStop unsubscribe removes the callback', () => {
+	const { win, dispatch } = setup()
+	let stops = 0
+	const off = win.app?.lifecycle.onStop(() => {
+		stops++
+	})
+	off?.()
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } })
+	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'stop' } })
+	expect(stops).toBe(0)
+})
+
+test('lifecycle stop clears tool handlers — subsequent invoke returns tool_unavailable', async () => {
+	const h = setup()
+	let calls = 0
+	h.win.app?.agent.tools.register({
+		name: 'mute-me',
+		description: 'Will be muted on stop',
+		schema: {},
+		handler: () => {
+			calls++
+			return 'ran'
+		}
+	})
+	// Drain register RPC.
+	const regFrame = h.parentSent[0] as ToolRegisterFrame
+	h.dispatch({ jsonrpc: '2.0', id: regFrame.id, result: null })
+
+	h.dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } })
+	h.dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'stop' } })
+
+	const req: ToolInvokeRequest = {
+		jsonrpc: '2.0',
+		id: 'invoke-after-stop',
+		method: 'app.tool.invoke',
+		params: { callId: 'call-after-stop', name: 'mute-me', input: {} }
+	}
+	h.dispatch(req)
+	await new Promise((r) => setTimeout(r, 0))
+	const resp = h.parentSent[h.parentSent.length - 1] as ToolInvokeResponse
+	expect(resp).toMatchObject({
+		jsonrpc: '2.0',
+		id: 'invoke-after-stop',
+		error: { code: -32020, message: 'tool_unavailable' }
+	})
+	expect(calls).toBe(0)
 })
 
 test('tool.invoke from unknown source is ignored', async () => {

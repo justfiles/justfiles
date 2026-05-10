@@ -76,4 +76,6 @@ export interface ChatViewProps {
 	registerToolInvokeHandler: (handler: ToolInvokeHandler | null) => void
 	/** Send a client tool result back to the server. */
 	sendToolResult: ToolResultSender
+	/** Tell the worker the iframe reloaded so it drops stale client tools. */
+	notifyIframeReload: () => void
 }

@@ -22,8 +22,19 @@ export function AppFrame(props: {
 	onHome: () => void
 	onRegisterToolInvoke: (handler: ToolInvokeHandler | null) => void
 	onToolResult: ToolResultSender
+	onIframeReload: () => void
 }) {
-	const { id, ui, state, onAction, onRpc, onHome, onRegisterToolInvoke, onToolResult } = props
+	const {
+		id,
+		ui,
+		state,
+		onAction,
+		onRpc,
+		onHome,
+		onRegisterToolInvoke,
+		onToolResult,
+		onIframeReload
+	} = props
 	const [view, setView] = useState<'app' | 'state'>('app')
 	const iframeRef = useRef<HTMLIFrameElement>(null)
 	const stateJson = useMemo(() => JSON.stringify(state ?? null, null, 2), [state])
@@ -36,6 +47,11 @@ export function AppFrame(props: {
 
 	// Pending server-originated tool invocations awaiting the iframe response.
 	const pendingToolInvokes = useRef(new Map<string, (data: ToolResolveData) => void>())
+	// Iframe `onLoad` fires for the initial mount AND every reload. We use
+	// the count to distinguish: > 1 means the iframe re-loaded (browser
+	// refresh, navigation, or `location.reload()` from inside) so the
+	// worker needs to drop the previous SDK instance's client tools.
+	const loadCount = useRef(0)
 
 	// LEGACY (state-machine): broadcast new state to the iframe via the
 	// `app.state` notification consumed by `client.js`.
@@ -144,11 +160,26 @@ export function AppFrame(props: {
 	// notification posted now is guaranteed to land before any author code
 	// would otherwise need to know we've started.
 	const handleIframeLoad = () => {
+		loadCount.current += 1
+		if (loadCount.current > 1) onIframeReload()
 		iframeRef.current?.contentWindow?.postMessage(
 			{ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } },
 			'*'
 		)
 	}
+
+	// Best-effort stop on unmount. Posts before React removes the iframe
+	// from the DOM so the SDK can fire `onStop` callbacks and clear tool
+	// handlers before its window is destroyed.
+	useEffect(() => {
+		const iframe = iframeRef.current
+		return () => {
+			iframe?.contentWindow?.postMessage(
+				{ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'stop' } },
+				'*'
+			)
+		}
+	}, [])
 
 	return (
 		<div className="relative h-full w-full">
