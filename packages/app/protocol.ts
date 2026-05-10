@@ -3,48 +3,9 @@
 
 import type { CalendarCapability } from './capabilities/calendar/contract.js'
 import type { EmailCapability } from './capabilities/email/contract.js'
-import type { Action } from './engine.js'
 import type { AppPermission } from './format.js'
-import type { DispatchResult } from './runtime.js'
 
 export type RequestId = string
-
-// ── LEGACY: state-machine app bridge ────────────────────────────────────
-// Everything in this section ships with `client.js` and the state-machine
-// app system. Slated for removal alongside that platform — see #76.
-
-export type ReadyRequest = { jsonrpc: '2.0'; id: RequestId; method: 'app.ready'; params: object }
-export type ActionRequest = {
-	jsonrpc: '2.0'
-	id: RequestId
-	method: 'app.action'
-	params: { action: Action }
-}
-export type ClientRequest = ReadyRequest | ActionRequest
-
-export type ReadyResult = { state: unknown }
-export type ActionResult = DispatchResult<unknown, unknown>
-
-export type Response = {
-	jsonrpc: '2.0'
-	id: RequestId
-	result?: ReadyResult | ActionResult
-	error?: { message: string }
-}
-
-export type StateNotification = {
-	jsonrpc: '2.0'
-	method: 'app.state'
-	params: { state: unknown }
-}
-
-export type PrintNotification = {
-	jsonrpc: '2.0'
-	method: 'app.print'
-	params: object
-}
-
-export type ServerMessage = Response | StateNotification | PrintNotification
 
 // ── Client-only app RPC ─────────────────────────────────────────────────
 //

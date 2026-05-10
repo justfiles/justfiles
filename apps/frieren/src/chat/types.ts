@@ -19,7 +19,7 @@ export interface ChatMessage {
 }
 
 export type ActiveApp =
-	| { kind: 'sandbox'; id: string; ui: { url: string }; state: unknown }
+	| { kind: 'sandbox'; id: string; ui: { url: string } }
 	| { kind: 'builtin'; id: string }
 	| null
 
@@ -30,10 +30,6 @@ export interface InstalledApp {
 	iconUrl?: string
 	kind?: 'sandbox' | 'builtin'
 }
-
-// LEGACY (state-machine apps; removed with #76).
-// Actions flow through the registry; at this wire boundary they're opaque.
-export type AppAction = { type: string; payload: unknown }
 
 // Iframe→worker JSON-RPC frame opaque at the chat layer; the worker owns
 // the typed registry. The chat client only correlates ids.
@@ -69,8 +65,6 @@ export interface ChatViewProps {
 	installedApps: InstalledApp[]
 	launchApp: (app: InstalledApp) => void
 	closeApp: () => void
-	/** LEGACY (state-machine; removed with #76). */
-	sendAppAction: (action: AppAction) => void
 	sendAppRpc: AppRpcSender
 	/** Register a handler that AppFrame calls when the server requests a client tool invocation. */
 	registerToolInvokeHandler: (handler: ToolInvokeHandler | null) => void

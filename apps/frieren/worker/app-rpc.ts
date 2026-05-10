@@ -14,7 +14,7 @@ import {
 	type AppRpcResult,
 	type RequestId
 } from '@justfiles/app'
-import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
+import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
 
 export interface ClientToolDescriptor {

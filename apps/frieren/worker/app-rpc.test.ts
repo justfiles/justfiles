@@ -2,7 +2,7 @@
 // public boundary — frame in, frame out — the way the WS loop calls it.
 
 import { describe, expect, test } from 'bun:test'
-import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
+import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
 import { type ClientToolDescriptor, dispatchAppRpc } from './app-rpc'

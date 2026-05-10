@@ -4,10 +4,10 @@
 // `/// <reference types="@justfiles/app/virtual" />` directive) and can then
 // write `import { registry } from 'virtual:@justfiles/apps'` with full types.
 //
-// The registry holds only manifest + backend code — small data that runs at
-// registration time. Asset bytes (HTML, JS, CSS, wasm, wad, images) live in
-// the host's static-assets layer under `/apps/<id>/<path>` and are streamed
-// via the worker's ASSETS binding.
+// The registry holds only manifests — small data that runs at registration
+// time. Asset bytes (HTML, JS, CSS, wasm, wad, images) live in the host's
+// static-assets layer under `/apps/<id>/<path>` and are streamed via the
+// worker's ASSETS binding.
 
 declare module 'virtual:@justfiles/apps' {
 	import type { AppPermission } from '@justfiles/app'
@@ -22,10 +22,8 @@ declare module 'virtual:@justfiles/apps' {
 				version: string
 				icon?: string
 				entry: string
-				backend?: string
 				permissions?: readonly AppPermission[]
 			}
-			code: string
 		}
 	>
 }

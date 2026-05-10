@@ -33,11 +33,6 @@
 			"new_sqlite_classes": ["Frieren"]
 		}
 	],
-	"worker_loaders": [
-		{
-			"binding": "LOADER"
-		}
-	],
 	"routes": [
 		{
 			"pattern": "justbuddy.app",
@@ -74,11 +69,6 @@
 				{
 					"tag": "v1",
 					"new_sqlite_classes": ["Frieren"]
-				}
-			],
-			"worker_loaders": [
-				{
-					"binding": "LOADER"
 				}
 			]
 		}

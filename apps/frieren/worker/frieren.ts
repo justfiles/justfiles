@@ -1,12 +1,12 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { Action, Actor, AppRpcResponse, RequestId } from '@justfiles/app'
+import type { AppRpcResponse, RequestId } from '@justfiles/app'
+import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import type Type from 'typebox'
-import type { AppFacetScope } from './app-bridge'
 import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
@@ -15,15 +15,7 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import {
-	type AppFacet,
-	buildAppTools,
-	getAppPermissions,
-	hasApp,
-	isClientApp,
-	listApps,
-	loadAppFacet
-} from './frieren.app'
+import { getAppPermissions, hasApp, listApps } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -45,7 +37,6 @@ interface ClientMessage {
 	type:
 		| 'prompt'
 		| 'abort'
-		| 'app_action'
 		| 'app_launch'
 		| 'app_close'
 		| 'app_rpc'
@@ -53,7 +44,6 @@ interface ClientMessage {
 		| 'app_iframe_reload'
 	text?: string
 	id?: string
-	action?: Action
 	frame?: { id: RequestId; method: string; params: unknown }
 	callId?: string
 	result?: unknown
@@ -95,33 +85,19 @@ type ServerMessage =
 	| { type: 'error'; message: string }
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
-	| { type: 'app_open'; id: string; ui: { url: string }; state: unknown }
-	| { type: 'app_state'; id: string; state: unknown }
+	| { type: 'app_open'; id: string; ui: { url: string } }
 	| { type: 'app_close' }
 	| { type: 'app_rpc'; frame: AppRpcResponse }
 	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
 
 const DEBUG_COMMAND = '/debug'
 const CLOSE_COMMAND = '/close'
-const RESET_COMMAND = '/reset'
-const AGENT_ID = 'agent'
-const USER_ID = 'user'
 const APP_STORAGE_KEY = 'active_app'
 const CLIENT_TOOLS_STORAGE_KEY = 'active_app_client_tools'
 
-type DispatchResult =
-	| { ok: true; view: unknown; narration?: string | null; availableActions?: readonly Action[] }
-	| { ok: false; error: string }
-type Dispatcher = (action: Action, actor: Actor) => Promise<DispatchResult>
-
 interface ActiveApp {
 	id: string
-	// Client-only apps (no backend module) leave these undefined.
-	facet?: AppFacet
 	tools: AgentTool[]
-	userActor: Actor
-	agentActor: Actor
-	dispatch?: Dispatcher
 }
 
 interface PersistedApp {
@@ -308,7 +284,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'app_launch' && parsed.id) {
-			await this.launchApp(ws, parsed.id)
+			await this.launchApp(parsed.id)
 			return
 		}
 
@@ -331,7 +307,7 @@ export class Frieren extends DurableObject<Env> {
 							vol: this.vol,
 							appId: activeApp.id,
 							permissions: getAppPermissions(activeApp.id),
-							bridge: this.appScope().bridge,
+							bridge: this.capabilityBridge(),
 							// Fire-and-forget: the iframe's `app.agent.send` resolves
 							// once the host has accepted the prompt; the agent run
 							// streams events over WS independently.
@@ -353,17 +329,6 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		// LEGACY (state-machine; removed with #76). Client-only apps go
-		// through the `app_rpc` branch above.
-		if (parsed.type === 'app_action' && parsed.action) {
-			if (!this.activeApp) {
-				ws.send(JSON.stringify({ type: 'error', message: 'No active app' } satisfies ServerMessage))
-				return
-			}
-			await this.handleAppAction(ws, parsed.action)
-			return
-		}
-
 		if (parsed.type === 'prompt' && parsed.text) {
 			const sp = this.runtime?._agent().state.systemPrompt
 			const trimmed = parsed.text.trim()
@@ -382,16 +347,11 @@ export class Frieren extends DurableObject<Env> {
 				return
 			}
 
-			if (trimmed === RESET_COMMAND) {
-				await this.resetApp(ws)
-				return
-			}
-
 			// `/counter`, `/chess`, … — launch the matching registered app.
 			if (trimmed.startsWith('/')) {
 				const id = trimmed.slice(1)
 				if (hasApp(id)) {
-					await this.launchApp(ws, id)
+					await this.launchApp(id)
 					return
 				}
 			}
@@ -424,30 +384,23 @@ export class Frieren extends DurableObject<Env> {
 
 	// ── App orchestration ──────────────────────────────────────────────
 	//
-	// At most one app is active at a time. The engine + state live in a
-	// per-app dynamic-worker facet (own SQLite), reached over RPC. The
-	// supervisor only holds the facet stub, the agent-tool wrappers, and a
-	// dispatcher closure that broadcasts state on every transition.
-	//
-	// DOs can hibernate between WS messages, so the active-app object is
-	// rebuilt from a persisted `{ id }` on each wake.
+	// At most one app is active at a time. Apps are client-only (manifest +
+	// HTML entry); the supervisor only holds the active app id and any
+	// client-side agent tools the app has registered. DOs can hibernate
+	// between WS messages, so the active-app object is rebuilt from a
+	// persisted `{ id }` on each wake.
 
-	// Per-mount scope handed to the dynamic-worker loader. `userId` is the
-	// Frieren DO id (one DO per user); grants are empty until the broker
-	// integration lands (#59), so the bridge denies every capability call
-	// with a stable shape so apps fail loudly instead of silently.
-	private appScope(): AppFacetScope {
+	// Capability broker bridge handed to the RPC dispatcher. Until the
+	// broker integration lands (#59) every capability call is denied with a
+	// stable shape so apps fail loudly instead of silently.
+	private capabilityBridge(): CapabilityBridge {
 		return {
-			userId: this.ctx.id.toString(),
-			grants: [],
-			bridge: {
-				async invoke(req: { capability: string; method: string; input: unknown }) {
-					throw {
-						code: 'CAPABILITY_FAILED',
-						message: 'no broker configured',
-						capability: req.capability,
-						method: req.method
-					}
+			async invoke(req) {
+				throw {
+					code: 'CAPABILITY_FAILED',
+					message: 'no broker configured',
+					capability: req.capability,
+					method: req.method
 				}
 			}
 		}
@@ -469,7 +422,6 @@ export class Frieren extends DurableObject<Env> {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const self = this
 		// Cast JSON Schema → TSchema once at the boundary; TypeBox IS JSON Schema.
-		// Mirrors the buildAppTools pattern in frieren.app.ts.
 		const schema = descriptor.schema as unknown as Type.TSchema
 		const tool: AgentTool<typeof schema> = {
 			name: toolName,
@@ -515,93 +467,42 @@ export class Frieren extends DurableObject<Env> {
 		if (this.activeApp) return
 		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
 		if (!saved || !hasApp(saved.id)) return
-		if (!isClientApp(saved.id)) {
-			const facet = loadAppFacet(this.ctx, this.env, saved.id, this.appScope())
-			if (await facet.done()) {
-				await this.ctx.storage.delete(APP_STORAGE_KEY)
-				return
-			}
-		}
 		await this.mountApp(saved.id)
 	}
 
 	private async mountApp(id: string): Promise<ActiveApp> {
-		const userActor: Actor = { id: USER_ID, kind: 'human' }
-		const agentActor: Actor = { id: AGENT_ID, kind: 'agent' }
-
-		if (isClientApp(id)) {
-			const stored =
-				(await this.ctx.storage.get<ClientToolDescriptor[]>(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)) ??
-				[]
-			const tools = stored.map((d) => this.createClientProxyTool(d, id))
-			const active: ActiveApp = { id, tools, userActor, agentActor }
-			this.activeApp = active
-			if (tools.length > 0) {
-				const agent = this.runtime?._agent()
-				if (agent) agent.state.tools = [...agent.state.tools, ...tools]
-			}
-			await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
-			await this.broadcastOpen(active)
-			return active
-		}
-
-		const facet = loadAppFacet(this.ctx, this.env, id, this.appScope())
-
-		// Single dispatch path for both human (app_action) and agent (tool
-		// execute). Always broadcasts new view on success.
-		const dispatch: Dispatcher = async (action, actor) => {
-			const result = (await facet.dispatch(action, actor)) as DispatchResult
-			if (result.ok) this.broadcastState(id, result.view)
-			return result
-		}
-
-		const tools = await buildAppTools(facet, id, agentActor, dispatch)
-		// console.log(
-		// 	`[app:${id}] generated tools`,
-		// 	tools.map(({ name, label, description, parameters }) => ({
-		// 		name,
-		// 		label,
-		// 		description,
-		// 		parameters
-		// 	}))
-		// )
-		const active: ActiveApp = { id, facet, tools, userActor, agentActor, dispatch }
+		const stored =
+			(await this.ctx.storage.get<ClientToolDescriptor[]>(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)) ??
+			[]
+		const tools = stored.map((d) => this.createClientProxyTool(d, id))
+		const active: ActiveApp = { id, tools }
 		this.activeApp = active
-
-		const agent = this.runtime?._agent()
-		if (agent) agent.state.tools = [...agent.state.tools, ...tools]
-
+		if (tools.length > 0) {
+			const agent = this.runtime?._agent()
+			if (agent) agent.state.tools = [...agent.state.tools, ...tools]
+		}
 		await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
 		await this.broadcastOpen(active)
 		return active
 	}
 
-	private broadcastState(id: string, state: unknown): void {
-		const payload = JSON.stringify({ type: 'app_state', id, state } satisfies ServerMessage)
-		for (const client of this.ctx.getWebSockets()) client.send(payload)
-	}
-
 	private async broadcastOpen(active: ActiveApp): Promise<void> {
-		const payload = JSON.stringify(await this.openMessage(active))
+		const payload = JSON.stringify(this.openMessage(active))
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}
 
-	private async openMessage(active: ActiveApp): Promise<ServerMessage> {
-		const state: unknown = active.facet ? await active.facet.view(active.userActor) : null
+	private openMessage(active: ActiveApp): ServerMessage {
 		return {
 			type: 'app_open',
 			id: active.id,
-			ui: { url: `/apps/${active.id}/` },
-			state
+			ui: { url: `/apps/${active.id}/` }
 		}
 	}
 
-	private async launchApp(ws: WebSocket, id: string): Promise<void> {
+	private async launchApp(id: string): Promise<void> {
 		if (!hasApp(id)) return
 		if (this.activeApp) await this.closeApp()
-		const active = await this.mountApp(id)
-		const briefing = active.facet ? await active.facet.briefing() : null
-		if (briefing) await this.promptAgent(ws, briefing)
+		await this.mountApp(id)
 	}
 
 	private async closeApp(): Promise<void> {
@@ -641,29 +542,6 @@ export class Frieren extends DurableObject<Env> {
 		const pending = Array.from(this.pendingToolCalls.values())
 		this.pendingToolCalls.clear()
 		for (const p of pending) p.reject({ code: -32020, message: 'tool_unavailable' })
-	}
-
-	private async resetApp(ws: WebSocket): Promise<void> {
-		if (!this.activeApp?.facet) return
-		await this.activeApp.facet.reset()
-		await this.broadcastOpen(this.activeApp)
-		const briefing = await this.activeApp.facet.briefing()
-		if (briefing) await this.promptAgent(ws, briefing)
-	}
-
-	private async handleAppAction(ws: WebSocket, action: Action): Promise<void> {
-		if (!this.activeApp?.dispatch) return
-		const result = await this.activeApp.dispatch(action, this.activeApp.userActor)
-		if (!result.ok) {
-			ws.send(
-				JSON.stringify({
-					type: 'error',
-					message: `App action rejected: ${result.error}`
-				} satisfies ServerMessage)
-			)
-			return
-		}
-		if (result.narration) await this.promptAgent(ws, result.narration)
 	}
 
 	private async promptAgent(
@@ -746,10 +624,10 @@ export class Frieren extends DurableObject<Env> {
 				JSON.stringify({ type: 'ready', participants, apps: listApps() } satisfies ServerMessage)
 			)
 
-			// If an app is already running, send the URL + current state so
-			// this client can boot the iframe from scratch.
+			// If an app is already running, send the URL so this client can
+			// boot the iframe from scratch.
 			if (this.activeApp) {
-				server.send(JSON.stringify(await this.openMessage(this.activeApp)))
+				server.send(JSON.stringify(this.openMessage(this.activeApp)))
 			}
 
 			return new Response(null, {

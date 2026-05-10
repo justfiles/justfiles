@@ -1,7 +1,7 @@
 import { verifyToken } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
-import { BRIDGE_JS, getEntryPath, hasApp, isClientApp, SDK_JS } from './frieren.app'
+import { getEntryPath, hasApp, SDK_JS } from './frieren.app'
 
 export { Frieren } from './frieren.ts'
 
@@ -36,20 +36,15 @@ const mimeFor = (path: string): string => {
 	return MIME[ext] ?? 'application/octet-stream'
 }
 
-// Inject the right `window.app` provider into served HTML so app code can
-// use it without authoring boilerplate. State-machine apps get the legacy
-// bridge (state/subscribe/dispatch); client-only apps get the new SDK
-// (version/lifecycle).
+// Inject the `window.app` SDK script into served HTML so app code can use
+// it without authoring boilerplate.
 // FUTURE: move app assets to a separate origin (apps.<domain>) so the
 // sandboxed iframe can't fetch host-origin paths.
-const BRIDGE_TAG = '<script src="/apps/_bridge.js"></script>'
 const SDK_TAG = '<script src="/apps/__sdk.js"></script>'
-const injectAppScript = (html: string, appId: string): string => {
-	const tag = isClientApp(appId) ? SDK_TAG : BRIDGE_TAG
-	return /<head\b[^>]*>/i.test(html)
-		? html.replace(/<head\b([^>]*)>/i, `<head$1>${tag}`)
-		: `${tag}${html}`
-}
+const injectAppScript = (html: string): string =>
+	/<head\b[^>]*>/i.test(html)
+		? html.replace(/<head\b([^>]*)>/i, `<head$1>${SDK_TAG}`)
+		: `${SDK_TAG}${html}`
 
 const app = new Hono<WorkerEnv>()
 
@@ -85,10 +80,6 @@ const appAssetHeaders = (path: string): Record<string, string> => ({
 	'content-type': mimeFor(path),
 	'access-control-allow-origin': '*'
 })
-app.get(
-	'/apps/_bridge.js',
-	() => new Response(BRIDGE_JS, { headers: appAssetHeaders('_bridge.js') })
-)
 app.get('/apps/__sdk.js', () => new Response(SDK_JS, { headers: appAssetHeaders('__sdk.js') }))
 app.get('/apps/*', async (c) => {
 	const rest = c.req.path.replace(/^\/apps\//, '').split('/')
@@ -109,7 +100,7 @@ app.get('/apps/*', async (c) => {
 		// Buffer just the HTML so we can inject the postMessage bridge.
 		// Everything else (JS/CSS/wasm/wad/images) streams pass-through.
 		const html = await upstream.text()
-		return new Response(injectAppScript(html, appId), { headers })
+		return new Response(injectAppScript(html), { headers })
 	}
 	return new Response(upstream.body, { headers })
 })

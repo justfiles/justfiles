@@ -1,5 +1,4 @@
-import type { CapabilityBridge } from '../capabilities-bridge.js'
-import type { CapabilityFactory } from './core.js'
+import type { CapabilityBridge, CapabilityFactory } from './core.js'
 
 type IdOf<C> = C extends CapabilityFactory<infer Id, unknown> ? Id : never
 type ShapeOf<C> = C extends CapabilityFactory<string, infer Shape> ? Shape : never
