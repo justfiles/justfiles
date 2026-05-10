@@ -6,7 +6,9 @@ import type {
 	AppRpcFrame,
 	ChatMessage,
 	ConnectionState,
-	InstalledApp
+	InstalledApp,
+	ToolInvokeHandler,
+	ToolResultSender
 } from './types'
 
 interface AgentEvent {
@@ -39,6 +41,8 @@ export function useChat() {
 	// Pending app-RPC requests keyed by frame id. The iframe minted the id;
 	// the worker echoes it back on `app_rpc` so we can resolve here.
 	const pendingRpcRef = useRef(new Map<string, (frame: AppRpcFrame) => void>())
+	// Handler registered by AppFrame to receive server-originated tool invocations.
+	const toolInvokeHandlerRef = useRef<ToolInvokeHandler | null>(null)
 
 	useEffect(() => {
 		void connectKey
@@ -263,6 +267,15 @@ export function useChat() {
 					return
 				}
 
+				if (data.type === 'app_tool_invoke' && data.callId && data.name) {
+					toolInvokeHandlerRef.current?.(
+						String(data.callId),
+						String(data.name),
+						data.input as unknown
+					)
+					return
+				}
+
 				if (data.type === 'event') handleAgentEvent(data.event)
 			}
 
@@ -356,6 +369,14 @@ export function useChat() {
 
 	const reconnect = () => setConnectKey((value) => value + 1)
 
+	const registerToolInvokeHandler = (handler: ToolInvokeHandler | null) => {
+		toolInvokeHandlerRef.current = handler
+	}
+
+	const sendToolResult: ToolResultSender = (callId, result, error) => {
+		wsRef.current?.send(JSON.stringify({ type: 'app_tool_result', callId, result, error }))
+	}
+
 	return {
 		messages,
 		input,
@@ -372,6 +393,8 @@ export function useChat() {
 		launchApp,
 		closeApp,
 		sendAppAction,
-		sendAppRpc
+		sendAppRpc,
+		registerToolInvokeHandler,
+		sendToolResult
 	}
 }

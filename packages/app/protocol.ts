@@ -63,6 +63,10 @@ export type AppRpcRegistry = {
 		result: { value: unknown }
 	}
 	'app.agent.send': { params: { text: string }; result: null }
+	'app.tool.register': {
+		params: { name: string; description: string; schema: Record<string, unknown> }
+		result: null
+	}
 }
 
 export type AppRpcMethod = keyof AppRpcRegistry
@@ -91,6 +95,9 @@ export const APP_RPC_ERROR = {
 	permissionDenied: { code: -32005, message: 'permission_denied' },
 	capabilityDenied: { code: -32010, message: 'capability_denied' },
 	capabilityFailed: { code: -32011, message: 'capability_failed' },
+	toolUnavailable: { code: -32020, message: 'tool_unavailable' },
+	toolTimeout: { code: -32021, message: 'tool_timeout' },
+	toolHandlerError: { code: -32022, message: 'tool_handler_error' },
 	methodNotFound: { code: -32601, message: 'method_not_found' },
 	internal: { code: -32000, message: 'internal_error' }
 } as const
@@ -105,7 +112,8 @@ export const APP_RPC_PERMISSION: { [M in AppRpcMethod]: AppPermission | null } =
 	'app.volume.readFile': 'volume',
 	'app.volume.writeFile': 'volume',
 	'app.capability.invoke': null,
-	'app.agent.send': 'agent'
+	'app.agent.send': 'agent',
+	'app.tool.register': null
 }
 
 // ── SDK surface — author-facing types ──────────────────────────────────
@@ -156,6 +164,25 @@ export type AppCapabilities = { readonly [K in keyof AppCapabilityMap]: AppCapab
 /** Registry of JSON-RPC requests the host sends to the client SDK. */
 export type AppHostRpcRegistry = {
 	'app.agent.describe': { params: object; result: { description: string | null } }
+	'app.tool.invoke': { params: { callId: string; name: string; input: unknown }; result: unknown }
+}
+
+/** A client-side agent tool with a handler that runs in the iframe. */
+export interface AppTool {
+	readonly name: string
+	readonly description: string
+	/** JSON Schema object describing the tool's input. */
+	readonly schema: Record<string, unknown>
+	/** Called by the host when the agent invokes this tool. */
+	readonly handler: (input: unknown) => unknown | Promise<unknown>
+}
+
+/** Registry for client-side agent tools. */
+export interface AppToolRegistry {
+	/** Register a tool so the host can expose it to the agent.
+	 *  Returns an unregister function. The tool is removed automatically
+	 *  when the app stops. */
+	register(tool: AppTool): () => void
 }
 
 export interface AppAgent {
@@ -167,6 +194,9 @@ export interface AppAgent {
 	 *  current UI/app state for the agent. The host may call this at any
 	 *  time. Only the last registered callback is active. May be async. */
 	describe(callback: () => string | Promise<string>): void
+	/** Register and manage client-side agent tools. Tool handlers run in
+	 *  this iframe; the host exposes them as proxy tools to the agent. */
+	readonly tools: AppToolRegistry
 }
 
 export interface App {

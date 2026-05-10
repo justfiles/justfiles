@@ -5,8 +5,9 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import Type from 'typebox'
 import type { AppFacetScope } from './app-bridge'
-import { dispatchAppRpc, noActiveAppResponse } from './app-rpc'
+import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -41,11 +42,21 @@ import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close' | 'app_rpc'
+	type:
+		| 'prompt'
+		| 'abort'
+		| 'app_action'
+		| 'app_launch'
+		| 'app_close'
+		| 'app_rpc'
+		| 'app_tool_result'
 	text?: string
 	id?: string
 	action?: Action
 	frame?: { id: RequestId; method: string; params: unknown }
+	callId?: string
+	result?: unknown
+	error?: { code: number; message: string }
 }
 
 interface DisplayToolCall {
@@ -87,6 +98,7 @@ type ServerMessage =
 	| { type: 'app_state'; id: string; state: unknown }
 	| { type: 'app_close' }
 	| { type: 'app_rpc'; frame: AppRpcResponse }
+	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
 
 const DEBUG_COMMAND = '/debug'
 const CLOSE_COMMAND = '/close'
@@ -94,6 +106,7 @@ const RESET_COMMAND = '/reset'
 const AGENT_ID = 'agent'
 const USER_ID = 'user'
 const APP_STORAGE_KEY = 'active_app'
+const CLIENT_TOOLS_STORAGE_KEY = 'active_app_client_tools'
 
 type DispatchResult =
 	| { ok: true; view: unknown; narration?: string | null; availableActions?: readonly Action[] }
@@ -120,6 +133,11 @@ const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	keepRecentTokens: 20000
 }
 
+type PendingToolCall = {
+	resolve: (value: unknown) => void
+	reject: (reason: unknown) => void
+}
+
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly vol: Volume
@@ -129,6 +147,7 @@ export class Frieren extends DurableObject<Env> {
 	private activeApp?: ActiveApp
 	private integrations?: Integrations
 	private readonly coalescer = new Coalescer()
+	private readonly pendingToolCalls = new Map<string, PendingToolCall>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -287,20 +306,40 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		if (parsed.type === 'app_tool_result' && parsed.callId) {
+			const pending = this.pendingToolCalls.get(parsed.callId)
+			if (pending) {
+				this.pendingToolCalls.delete(parsed.callId)
+				if (parsed.error) pending.reject(parsed.error)
+				else pending.resolve(parsed.result)
+			}
+			return
+		}
+
 		if (parsed.type === 'app_rpc' && parsed.frame) {
 			const frame = parsed.frame
-			const reply: AppRpcResponse = this.activeApp
+			const activeApp = this.activeApp
+			const reply: AppRpcResponse = activeApp
 				? await dispatchAppRpc(
 						{
 							vol: this.vol,
-							appId: this.activeApp.id,
-							permissions: getAppPermissions(this.activeApp.id),
+							appId: activeApp.id,
+							permissions: getAppPermissions(activeApp.id),
 							bridge: this.appScope().bridge,
 							// Fire-and-forget: the iframe's `app.agent.send` resolves
 							// once the host has accepted the prompt; the agent run
 							// streams events over WS independently.
 							sendAgentPrompt: async (text: string) => {
 								void this.promptAgent(ws, text)
+							},
+							registerClientTool: (descriptor) => {
+								const toolName = `${activeApp.id}_client_${descriptor.name}`
+								if (activeApp.tools.some((t) => t.name === toolName)) return
+								const tool = this.createClientProxyTool(descriptor, activeApp.id)
+								activeApp.tools.push(tool)
+								const agent = this.runtime?._agent()
+								if (agent) agent.state.tools = [...agent.state.tools, tool]
+								void this.persistClientTool(activeApp.id, descriptor)
 							}
 						},
 						frame
@@ -410,6 +449,64 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
+	private async persistClientTool(appId: string, descriptor: ClientToolDescriptor): Promise<void> {
+		const stored =
+			(await this.ctx.storage.get<ClientToolDescriptor[]>(
+				`${CLIENT_TOOLS_STORAGE_KEY}:${appId}`
+			)) ?? []
+		if (!stored.some((d) => d.name === descriptor.name)) {
+			stored.push(descriptor)
+			await this.ctx.storage.put(`${CLIENT_TOOLS_STORAGE_KEY}:${appId}`, stored)
+		}
+	}
+
+	private createClientProxyTool(descriptor: ClientToolDescriptor, appId: string): AgentTool {
+		const toolName = `${appId}_client_${descriptor.name}`
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const self = this
+		// Cast JSON Schema → TSchema once at the boundary; TypeBox IS JSON Schema.
+		// Mirrors the buildAppTools pattern in frieren.app.ts.
+		const schema = descriptor.schema as unknown as Type.TSchema
+		const tool: AgentTool<typeof schema> = {
+			name: toolName,
+			label: `${appId}: ${descriptor.name}`,
+			description: descriptor.description,
+			parameters: schema,
+			async execute(_id, input) {
+				const callId = crypto.randomUUID()
+				const msg = JSON.stringify({
+					type: 'app_tool_invoke',
+					callId,
+					name: descriptor.name,
+					input
+				} satisfies ServerMessage)
+				for (const client of self.ctx.getWebSockets()) client.send(msg)
+
+				const result = await new Promise<unknown>((resolve, reject) => {
+					const timeout = setTimeout(() => {
+						self.pendingToolCalls.delete(callId)
+						reject({ code: -32021, message: 'tool_timeout' })
+					}, 30_000)
+					self.pendingToolCalls.set(callId, {
+						resolve: (v) => {
+							clearTimeout(timeout)
+							resolve(v)
+						},
+						reject: (e) => {
+							clearTimeout(timeout)
+							reject(e)
+						}
+					})
+				})
+				return {
+					content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+					details: result
+				}
+			}
+		}
+		return tool as unknown as AgentTool
+	}
+
 	private async hydrateApp(): Promise<void> {
 		if (this.activeApp) return
 		const saved = await this.ctx.storage.get<PersistedApp>(APP_STORAGE_KEY)
@@ -429,8 +526,17 @@ export class Frieren extends DurableObject<Env> {
 		const agentActor: Actor = { id: AGENT_ID, kind: 'agent' }
 
 		if (isClientApp(id)) {
-			const active: ActiveApp = { id, tools: [], userActor, agentActor }
+			const stored =
+				(await this.ctx.storage.get<ClientToolDescriptor[]>(
+					`${CLIENT_TOOLS_STORAGE_KEY}:${id}`
+				)) ?? []
+			const tools = stored.map((d) => this.createClientProxyTool(d, id))
+			const active: ActiveApp = { id, tools, userActor, agentActor }
 			this.activeApp = active
+			if (tools.length > 0) {
+				const agent = this.runtime?._agent()
+				if (agent) agent.state.tools = [...agent.state.tools, ...tools]
+			}
 			await this.ctx.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
 			await this.broadcastOpen(active)
 			return active
@@ -497,11 +603,14 @@ export class Frieren extends DurableObject<Env> {
 
 	private async closeApp(): Promise<void> {
 		if (!this.activeApp) return
-		const { tools } = this.activeApp
+		const { id, tools } = this.activeApp
 		const agent = this.runtime?._agent()
 		if (agent) agent.state.tools = agent.state.tools.filter((t) => !tools.includes(t))
 		this.activeApp = undefined
-		await this.ctx.storage.delete(APP_STORAGE_KEY)
+		await Promise.all([
+			this.ctx.storage.delete(APP_STORAGE_KEY),
+			this.ctx.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)
+		])
 		const payload = JSON.stringify({ type: 'app_close' } satisfies ServerMessage)
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}

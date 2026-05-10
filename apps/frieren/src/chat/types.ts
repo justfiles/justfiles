@@ -47,6 +47,13 @@ export type AppRpcFrame = {
 }
 export type AppRpcSender = (frame: AppRpcFrame) => Promise<AppRpcFrame>
 
+export type ToolInvokeHandler = (callId: string, name: string, input: unknown) => void
+export type ToolResultSender = (
+	callId: string,
+	result?: unknown,
+	error?: { code: number; message: string }
+) => void
+
 export interface ChatViewProps {
 	messages: ChatMessage[]
 	input: string
@@ -65,4 +72,8 @@ export interface ChatViewProps {
 	/** LEGACY (state-machine; removed with #76). */
 	sendAppAction: (action: AppAction) => void
 	sendAppRpc: AppRpcSender
+	/** Register a handler that AppFrame calls when the server requests a client tool invocation. */
+	registerToolInvokeHandler: (handler: ToolInvokeHandler | null) => void
+	/** Send a client tool result back to the server. */
+	sendToolResult: ToolResultSender
 }

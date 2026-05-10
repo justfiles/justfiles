@@ -487,3 +487,205 @@ test('host describe request from unknown source is ignored', async () => {
 	await Promise.resolve()
 	expect(h.parentSent).toHaveLength(0)
 })
+
+// ── agent / tools ─────────────────────────────────────────────────────
+
+type ToolRegisterFrame = {
+	jsonrpc: '2.0'
+	id: string
+	method: 'app.tool.register'
+	params: { name: string; description: string; schema: Record<string, unknown> }
+}
+
+type ToolInvokeRequest = {
+	jsonrpc: '2.0'
+	id: string
+	method: 'app.tool.invoke'
+	params: { callId: string; name: string; input: unknown }
+}
+
+type ToolInvokeResponse = {
+	jsonrpc: '2.0'
+	id: string
+	result?: { callId: string; value: unknown }
+	error?: { code: number; message: string }
+}
+
+test('app.agent.tools is an object with a register function', () => {
+	const { win } = setup()
+	expect(typeof win.app?.agent.tools).toBe('object')
+	expect(typeof win.app?.agent.tools.register).toBe('function')
+})
+
+test('register sends app.tool.register RPC to host', () => {
+	const h = setup()
+	h.win.app?.agent.tools.register({
+		name: 'highlight',
+		description: 'Highlights text in the app',
+		schema: { type: 'object', properties: { color: { type: 'string' } } },
+		handler: () => {}
+	})
+	const sent = h.parentSent[0] as ToolRegisterFrame
+	expect(sent.method).toBe('app.tool.register')
+	expect(sent.params.name).toBe('highlight')
+	expect(sent.params.description).toBe('Highlights text in the app')
+	expect(sent.params.schema).toEqual({ type: 'object', properties: { color: { type: 'string' } } })
+})
+
+test('host tool.invoke request calls the registered handler and responds with result', async () => {
+	const h = setup()
+	h.win.app?.agent.tools.register({
+		name: 'greet',
+		description: 'Say hi',
+		schema: {},
+		handler: (input) => `hello ${(input as { name: string }).name}`
+	})
+	// Consume the register RPC frame
+	const regFrame = h.parentSent[0] as ToolRegisterFrame
+	h.dispatch({ jsonrpc: '2.0', id: regFrame.id, result: null })
+
+	// Host invokes the tool
+	const req: ToolInvokeRequest = {
+		jsonrpc: '2.0',
+		id: 'invoke-1',
+		method: 'app.tool.invoke',
+		params: { callId: 'call-abc', name: 'greet', input: { name: 'world' } }
+	}
+	h.dispatch(req)
+	await new Promise((r) => setTimeout(r, 0))
+	const resp = h.parentSent[1] as ToolInvokeResponse
+	expect(resp).toMatchObject({
+		jsonrpc: '2.0',
+		id: 'invoke-1',
+		result: { callId: 'call-abc', value: 'hello world' }
+	})
+})
+
+test('host tool.invoke with async handler awaits and responds with result', async () => {
+	const h = setup()
+	h.win.app?.agent.tools.register({
+		name: 'slow',
+		description: 'Async tool',
+		schema: {},
+		handler: async () => {
+			await Promise.resolve()
+			return 42
+		}
+	})
+	const regFrame = h.parentSent[0] as ToolRegisterFrame
+	h.dispatch({ jsonrpc: '2.0', id: regFrame.id, result: null })
+
+	const req: ToolInvokeRequest = {
+		jsonrpc: '2.0',
+		id: 'invoke-2',
+		method: 'app.tool.invoke',
+		params: { callId: 'call-slow', name: 'slow', input: {} }
+	}
+	h.dispatch(req)
+	await new Promise((r) => setTimeout(r, 0))
+	const resp = h.parentSent[1] as ToolInvokeResponse
+	expect(resp).toMatchObject({ result: { value: 42 } })
+})
+
+test('host tool.invoke with unknown tool name returns tool_unavailable error', async () => {
+	const h = setup()
+	const req: ToolInvokeRequest = {
+		jsonrpc: '2.0',
+		id: 'invoke-3',
+		method: 'app.tool.invoke',
+		params: { callId: 'call-none', name: 'nonexistent', input: {} }
+	}
+	h.dispatch(req)
+	await new Promise((r) => setTimeout(r, 0))
+	const resp = h.parentSent[0] as ToolInvokeResponse
+	expect(resp).toMatchObject({
+		jsonrpc: '2.0',
+		id: 'invoke-3',
+		error: { code: -32020, message: 'tool_unavailable' }
+	})
+})
+
+test('throwing handler returns stable tool_handler_error shape', async () => {
+	const h = setup()
+	h.win.app?.agent.tools.register({
+		name: 'boom',
+		description: 'Throws',
+		schema: {},
+		handler: () => {
+			throw new Error('explosion')
+		}
+	})
+	const regFrame = h.parentSent[0] as ToolRegisterFrame
+	h.dispatch({ jsonrpc: '2.0', id: regFrame.id, result: null })
+
+	const req: ToolInvokeRequest = {
+		jsonrpc: '2.0',
+		id: 'invoke-4',
+		method: 'app.tool.invoke',
+		params: { callId: 'call-boom', name: 'boom', input: {} }
+	}
+	h.dispatch(req)
+	await new Promise((r) => setTimeout(r, 0))
+	const resp = h.parentSent[1] as ToolInvokeResponse
+	expect(resp).toMatchObject({
+		jsonrpc: '2.0',
+		id: 'invoke-4',
+		error: { code: -32022, message: 'explosion' }
+	})
+})
+
+test('unregister removes the tool handler so subsequent invocations return tool_unavailable', async () => {
+	const h = setup()
+	const off = h.win.app?.agent.tools.register({
+		name: 'removable',
+		description: 'Will be removed',
+		schema: {},
+		handler: () => 'present'
+	})
+	off?.()
+
+	const req: ToolInvokeRequest = {
+		jsonrpc: '2.0',
+		id: 'invoke-5',
+		method: 'app.tool.invoke',
+		params: { callId: 'call-removed', name: 'removable', input: {} }
+	}
+	h.dispatch(req)
+	await new Promise((r) => setTimeout(r, 0))
+	const resp = h.parentSent[1] as ToolInvokeResponse
+	expect(resp).toMatchObject({ error: { code: -32020, message: 'tool_unavailable' } })
+})
+
+test('register throws TypeError on invalid name', () => {
+	const { win } = setup()
+	expect(() =>
+		win.app?.agent.tools.register({
+			name: '',
+			description: '',
+			schema: {},
+			handler: () => {}
+		})
+	).toThrow(TypeError)
+})
+
+test('tool.invoke from unknown source is ignored', async () => {
+	const h = setup()
+	h.win.app?.agent.tools.register({
+		name: 'guarded',
+		description: '',
+		schema: {},
+		handler: () => 'should not run'
+	})
+	const req: ToolInvokeRequest = {
+		jsonrpc: '2.0',
+		id: 'invoke-6',
+		method: 'app.tool.invoke',
+		params: { callId: 'call-rogue', name: 'guarded', input: {} }
+	}
+	// Dispatch from a rogue source — SDK must ignore it.
+	h.dispatch(req, { rogue: true })
+	await new Promise((r) => setTimeout(r, 0))
+	// Only the register RPC was sent, no invoke response.
+	expect(h.parentSent).toHaveLength(1)
+	expect((h.parentSent[0] as ToolRegisterFrame).method).toBe('app.tool.register')
+})

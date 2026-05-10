@@ -10,13 +10,46 @@ setInterval(tick, 1000)
 // Internal state the agent should never see (e.g. draft text, unsaved form data).
 const _private = { draftNote: 'work in progress — not for agent eyes' }
 
+const highlightTarget = document.getElementById('highlight-target')
+const toolNotice = document.getElementById('tool-notice')
+
+// Register a client-side agent tool. The handler runs here in the iframe,
+// proving that client code — not the server — executed it by mutating the DOM.
+window.app?.agent.tools.register({
+	name: 'highlight',
+	description:
+		'Highlight the demo text in the Hello app with a chosen color. Use this to prove the client-side handler ran.',
+	schema: {
+		type: 'object',
+		properties: {
+			color: {
+				type: 'string',
+				description: 'CSS color value, e.g. "yellow", "#ff0", "rgba(0,255,0,0.3)"'
+			}
+		},
+		required: ['color']
+	},
+	handler(input) {
+		const color = input && typeof input.color === 'string' ? input.color : 'yellow'
+		if (highlightTarget) {
+			highlightTarget.style.background = color
+		}
+		if (toolNotice) {
+			toolNotice.textContent = `Agent called highlight(${color}) — handler ran in the iframe ✓`
+			toolNotice.dataset.state = 'triggered'
+		}
+		return { highlighted: true, color }
+	}
+})
+
 // Register a safe projection: exposes only what the agent needs to help the
 // user, keeping private/internal state out of the description.
 window.app?.agent.describe(() => {
 	const appStatus = status?.dataset.started === 'true' ? 'running' : 'waiting'
 	const lastVisit = last?.textContent ?? 'unknown'
+	const highlight = highlightTarget?.style.background || 'none'
 	// _private intentionally omitted
-	return `Hello app is ${appStatus}. ${lastVisit}.`
+	return `Hello app is ${appStatus}. ${lastVisit}. Current highlight color: ${highlight}.`
 })
 
 window.app?.lifecycle.onStart(async () => {
