@@ -21,7 +21,10 @@ interface FakeApp {
 		writeFile(path: string, bytes: Uint8Array): Promise<void>
 	}
 	capabilities: Record<string, Record<string, (input: unknown) => Promise<unknown>>>
-	agent: { send(text: string): Promise<void> }
+	agent: {
+		send(text: string): Promise<void>
+		describe(callback: () => unknown | Promise<unknown>): void
+	}
 }
 interface FakeWindow {
 	app?: FakeApp
@@ -364,4 +367,123 @@ test('ignores lifecycle frames with unknown events', () => {
 	})
 	dispatch({ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'pause' } })
 	expect(called).toBe(0)
+})
+
+// ── agent / describe ──────────────────────────────────────────────────
+
+type DescribeRequest = { jsonrpc: '2.0'; id: string; method: 'app.agent.describe'; params: object }
+type DescribeResponse = {
+	jsonrpc: '2.0'
+	id: string
+	result?: { description: unknown }
+	error?: { code: number; message: string }
+}
+
+const describeResponses = (h: Harness) => h.parentSent as DescribeResponse[]
+
+test('app.agent.describe is a function on the agent object', () => {
+	const { win } = setup()
+	expect(typeof win.app?.agent.describe).toBe('function')
+})
+
+test('host describe request returns the callback result', async () => {
+	const h = setup()
+	h.win.app?.agent.describe(() => ({ status: 'running', score: 42 }))
+	const req: DescribeRequest = {
+		jsonrpc: '2.0',
+		id: 'req1',
+		method: 'app.agent.describe',
+		params: {}
+	}
+	h.dispatch(req)
+	await Promise.resolve()
+	const sent = describeResponses(h)[0]
+	expect(sent).toMatchObject({
+		jsonrpc: '2.0',
+		id: 'req1',
+		result: { description: { status: 'running', score: 42 } }
+	})
+})
+
+test('no callback registered returns null description', async () => {
+	const h = setup()
+	const req: DescribeRequest = {
+		jsonrpc: '2.0',
+		id: 'req2',
+		method: 'app.agent.describe',
+		params: {}
+	}
+	h.dispatch(req)
+	await Promise.resolve()
+	const sent = describeResponses(h)[0]
+	expect(sent).toMatchObject({ jsonrpc: '2.0', id: 'req2', result: { description: null } })
+})
+
+test('async describe callback is awaited before responding', async () => {
+	const h = setup()
+	h.win.app?.agent.describe(async () => {
+		await Promise.resolve()
+		return { value: 'async' }
+	})
+	const req: DescribeRequest = {
+		jsonrpc: '2.0',
+		id: 'req3',
+		method: 'app.agent.describe',
+		params: {}
+	}
+	h.dispatch(req)
+	await new Promise((r) => setTimeout(r, 0))
+	const sent = describeResponses(h)[0]
+	expect(sent).toMatchObject({ result: { description: { value: 'async' } } })
+})
+
+test('throwing describe callback returns a stable error shape', async () => {
+	const h = setup()
+	h.win.app?.agent.describe(() => {
+		throw new Error('projection_failed')
+	})
+	const req: DescribeRequest = {
+		jsonrpc: '2.0',
+		id: 'req4',
+		method: 'app.agent.describe',
+		params: {}
+	}
+	h.dispatch(req)
+	await Promise.resolve()
+	const sent = describeResponses(h)[0]
+	expect(sent).toMatchObject({
+		jsonrpc: '2.0',
+		id: 'req4',
+		error: { code: -32000, message: 'projection_failed' }
+	})
+})
+
+test('only the last registered describe callback is active', async () => {
+	const h = setup()
+	h.win.app?.agent.describe(() => 'first')
+	h.win.app?.agent.describe(() => 'second')
+	const req: DescribeRequest = {
+		jsonrpc: '2.0',
+		id: 'req5',
+		method: 'app.agent.describe',
+		params: {}
+	}
+	h.dispatch(req)
+	await Promise.resolve()
+	const sent = describeResponses(h)[0]
+	expect(sent).toMatchObject({ result: { description: 'second' } })
+})
+
+test('host describe request from unknown source is ignored', async () => {
+	const h = setup()
+	h.win.app?.agent.describe(() => 'should not be called')
+	const req: DescribeRequest = {
+		jsonrpc: '2.0',
+		id: 'req6',
+		method: 'app.agent.describe',
+		params: {}
+	}
+	h.dispatch(req, { rogue: true })
+	await Promise.resolve()
+	expect(h.parentSent).toHaveLength(0)
 })
