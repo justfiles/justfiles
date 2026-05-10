@@ -10,6 +10,30 @@ This is a monorepo with three packages:
 | `apps/cli`      | Agent-friendly CLI for interacting with the backend        |
 | `packages/core` | Shared filesystem API, SQLite migrations, and storage      |
 
+## Creating an app package
+
+Use the local create package with Bun from the repo root:
+
+```sh
+bun packages/create-app/index.js packages/my-new-app
+bun install
+```
+
+This uses `packages/create-app` from the working tree, not npm. Avoid `bun create @justbuddy/app ...` or `bunx @justbuddy/create-app ...` when you need the local version.
+
+If the target directory already exists and is non-empty:
+
+```sh
+bun packages/create-app/index.js packages/my-new-app --force
+```
+
+Then run it with:
+
+```sh
+cd packages/my-new-app
+bun dev
+```
+
 ## CLI
 
 The `files` CLI is designed for scripting and AI agent use. It has good help/error message that helps agents discover the usage in a "progressive disclosure" way. (Saves token, only read when needs them)
