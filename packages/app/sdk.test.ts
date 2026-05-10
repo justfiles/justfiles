@@ -23,7 +23,7 @@ interface FakeApp {
 	capabilities: Record<string, Record<string, (input: unknown) => Promise<unknown>>>
 	agent: {
 		send(text: string): Promise<void>
-		describe(callback: () => unknown | Promise<unknown>): void
+		describe(callback: () => string | Promise<string>): void
 	}
 }
 interface FakeWindow {
@@ -375,7 +375,7 @@ type DescribeRequest = { jsonrpc: '2.0'; id: string; method: 'app.agent.describe
 type DescribeResponse = {
 	jsonrpc: '2.0'
 	id: string
-	result?: { description: unknown }
+	result?: { description: string | null }
 	error?: { code: number; message: string }
 }
 
@@ -388,7 +388,7 @@ test('app.agent.describe is a function on the agent object', () => {
 
 test('host describe request returns the callback result', async () => {
 	const h = setup()
-	h.win.app?.agent.describe(() => ({ status: 'running', score: 42 }))
+	h.win.app?.agent.describe(() => 'the app is running and showing the main screen')
 	const req: DescribeRequest = {
 		jsonrpc: '2.0',
 		id: 'req1',
@@ -401,7 +401,7 @@ test('host describe request returns the callback result', async () => {
 	expect(sent).toMatchObject({
 		jsonrpc: '2.0',
 		id: 'req1',
-		result: { description: { status: 'running', score: 42 } }
+		result: { description: 'the app is running and showing the main screen' }
 	})
 })
 
@@ -423,7 +423,7 @@ test('async describe callback is awaited before responding', async () => {
 	const h = setup()
 	h.win.app?.agent.describe(async () => {
 		await Promise.resolve()
-		return { value: 'async' }
+		return 'async description'
 	})
 	const req: DescribeRequest = {
 		jsonrpc: '2.0',
@@ -434,7 +434,7 @@ test('async describe callback is awaited before responding', async () => {
 	h.dispatch(req)
 	await new Promise((r) => setTimeout(r, 0))
 	const sent = describeResponses(h)[0]
-	expect(sent).toMatchObject({ result: { description: { value: 'async' } } })
+	expect(sent).toMatchObject({ result: { description: 'async description' } })
 })
 
 test('throwing describe callback returns a stable error shape', async () => {

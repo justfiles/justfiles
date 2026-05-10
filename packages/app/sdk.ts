@@ -44,7 +44,7 @@ void (() => {
 
 	const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
 
-	let describeCallback: (() => unknown | Promise<unknown>) | null = null
+	let describeCallback: (() => string | Promise<string>) | null = null
 
 	function uint8ToBase64(u8: Uint8Array): string {
 		let bin = ''
@@ -201,7 +201,7 @@ void (() => {
 			if (typeof text !== 'string') throw new TypeError('text must be a string')
 			await request('app.agent.send', { text })
 		},
-		describe(callback: () => unknown | Promise<unknown>): void {
+		describe(callback: () => string | Promise<string>): void {
 			describeCallback = callback
 		}
 	}
