@@ -335,9 +335,7 @@ export class Frieren extends DurableObject<Env> {
 							// Fire-and-forget: the iframe's `app.agent.send` resolves
 							// once the host has accepted the prompt; the agent run
 							// streams events over WS independently.
-							sendAgentPrompt: async (text: string) => {
-								void this.promptAgent(ws, text)
-							},
+							sendAgentPrompt: (text: string) => this.promptAgent(ws, text, { throwOnError: true }),
 							registerClientTool: (descriptor) => {
 								const toolName = `${activeApp.id}_client_${descriptor.name}`
 								if (activeApp.tools.some((t) => t.name === toolName)) return
@@ -668,15 +666,21 @@ export class Frieren extends DurableObject<Env> {
 		if (result.narration) await this.promptAgent(ws, result.narration)
 	}
 
-	private async promptAgent(ws: WebSocket, prompt: string): Promise<void> {
+	private async promptAgent(
+		ws: WebSocket,
+		prompt: string,
+		options: { throwOnError?: boolean } = {}
+	): Promise<string> {
 		ws.send(JSON.stringify({ type: 'app_prompt', text: prompt } satisfies ServerMessage))
 		const unsubscribe = this.runtime?.subscribe((event, _signal) => {
 			ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
 		})
 		try {
+			let answer = ''
 			await this.coalescer.during(async () => {
-				await this.runtime?.prompt(prompt, 'app')
+				answer = (await this.runtime?.prompt(prompt, 'app')) ?? ''
 			})
+			return answer
 		} catch (error) {
 			ws.send(
 				JSON.stringify({
@@ -684,6 +688,8 @@ export class Frieren extends DurableObject<Env> {
 					message: error instanceof Error ? error.message : String(error)
 				} satisfies ServerMessage)
 			)
+			if (options.throwOnError) throw error
+			return ''
 		} finally {
 			unsubscribe?.()
 		}

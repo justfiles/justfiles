@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './style.css'
 import {
@@ -31,6 +31,25 @@ const parseCell = (key: Cell): [number, number] => {
 
 const upper = (s: string) => s.toUpperCase().replace(/[^A-Z]/g, '')
 
+const cellNumbers = (grid: string[]): Record<Cell, number> => {
+	const map: Record<Cell, number> = {}
+	let n = 1
+	for (let r = 0; r < grid.length; r++) {
+		const row = grid[r] ?? ''
+		for (let c = 0; c < row.length; c++) {
+			if (row[c] === '#') continue
+			const startsAcross =
+				(c === 0 || row[c - 1] === '#') && c + 1 < row.length && row[c + 1] !== '#'
+			const startsDown =
+				(r === 0 || (grid[r - 1]?.[c] ?? '#') === '#') &&
+				r + 1 < grid.length &&
+				(grid[r + 1]?.[c] ?? '#') !== '#'
+			if (startsAcross || startsDown) map[cellKey(r, c)] = n++
+		}
+	}
+	return map
+}
+
 const seedsBriefing = (theme: string, slotMsg: string) =>
 	[
 		`Theme: "${theme}".`,
@@ -57,8 +76,22 @@ function App() {
 	const [userGrid, setUserGrid] = useState<Record<Cell, string>>({})
 	const [revealed, setRevealed] = useState<Set<Cell>>(new Set())
 	const [wrong, setWrong] = useState<Set<Cell>>(new Set())
+	const phaseRef = useRef(phase)
+	const puzzleRef = useRef(puzzle)
+	const activeThemeRef = useRef('')
+	const userGridRef = useRef(userGrid)
+	const revealedRef = useRef(revealed)
+	const wrongRef = useRef(wrong)
 
 	const grid = puzzle?.grid
+
+	useEffect(() => {
+		phaseRef.current = phase
+		puzzleRef.current = puzzle
+		userGridRef.current = userGrid
+		revealedRef.current = revealed
+		wrongRef.current = wrong
+	}, [phase, puzzle, userGrid, revealed, wrong])
 
 	useEffect(() => {
 		if (!grid || phase !== 'playing') return
@@ -69,6 +102,7 @@ function App() {
 				if (userGrid[cellKey(r, c)] !== row[c]) return
 			}
 		}
+		phaseRef.current = 'solved'
 		setPhase('solved')
 	}, [grid, userGrid, phase])
 
@@ -85,7 +119,7 @@ function App() {
 						: phase === 'solved'
 							? 'Solved.'
 							: ''
-			return `Crossword theme "${puzzle.theme}". Phase: ${phase}. ${slotInfo}`
+			return `Crossword theme "${puzzle.theme}". Phase: ${phase}. ${slotInfo} Use the state tool for exact answers, clues, filled letters, and hint requests.`
 		})
 
 		const unSeeds = a.agent.tools.register({
@@ -104,7 +138,15 @@ function App() {
 				const seeds = words.map((w) => upper(String(w))).filter((w) => w.length >= 2)
 				const built = buildPuzzle(seeds, SIZE)
 				if (built.slots.length === 0) throw new Error('no slots produced — try different seeds')
-				setPuzzle({ theme, grid: built.grid, slots: built.slots, entries: {} })
+				const next = {
+					theme: activeThemeRef.current || theme,
+					grid: built.grid,
+					slots: built.slots,
+					entries: {}
+				}
+				puzzleRef.current = next
+				phaseRef.current = 'awaiting-fill'
+				setPuzzle(next)
 				setPhase('awaiting-fill')
 				setError(null)
 				return {
@@ -162,8 +204,14 @@ function App() {
 					const map: Record<string, Entry> = {}
 					for (const e of entries) map[e.slotId] = e
 					const baked = bakeAnswers(prev.grid, prev.slots, entries)
-					return { ...prev, grid: baked, entries: map }
+					const next = { ...prev, grid: baked, entries: map }
+					puzzleRef.current = next
+					return next
 				})
+				userGridRef.current = {}
+				revealedRef.current = new Set()
+				wrongRef.current = new Set()
+				phaseRef.current = 'playing'
 				setUserGrid({})
 				setRevealed(new Set())
 				setWrong(new Set())
@@ -173,24 +221,71 @@ function App() {
 			}
 		})
 
+		const unState = a.agent.tools.register({
+			name: 'state',
+			description:
+				'Return the current crossword state, including solution answers, clues, filled letters, revealed cells, and wrong cells. Use this before giving hints about a clue.',
+			schema: { type: 'object', properties: {}, additionalProperties: false },
+			handler: () => {
+				const p = puzzleRef.current
+				if (!p) return { phase: phaseRef.current, theme: activeThemeRef.current }
+				const numbers = cellNumbers(p.grid)
+				return {
+					theme: p.theme,
+					phase: phaseRef.current,
+					slots: p.slots.map((s) => ({
+						slotId: s.id,
+						number: numbers[cellKey(s.row, s.col)],
+						direction: s.direction,
+						row: s.row,
+						col: s.col,
+						length: s.length,
+						pattern: s.pattern,
+						answer: p.entries[s.id]?.answer,
+						clue: p.entries[s.id]?.clue
+					})),
+					filled: userGridRef.current,
+					revealed: [...revealedRef.current],
+					wrong: [...wrongRef.current]
+				}
+			}
+		})
+
 		return () => {
 			unSeeds()
 			unFill()
+			unState()
 		}
 	}, [puzzle, phase, theme])
 
 	const start = useCallback(() => {
 		const t = theme.trim()
 		if (!t) return
+		activeThemeRef.current = t
+		puzzleRef.current = null
+		phaseRef.current = 'awaiting-seeds'
 		setError(null)
 		setPuzzle(null)
 		setPhase('awaiting-seeds')
-		void window.app?.agent
-			.send(seedsBriefing(t, 'Once seeds is called I will reply with the slot patterns.'))
-			.catch((err: unknown) => {
-				setError(err instanceof Error ? err.message : String(err))
-				setPhase('idle')
-			})
+		void (async () => {
+			const firstAnswer = await window.app.agent.send(
+				seedsBriefing(
+					t,
+					'After the seeds tool returns, stop; the app will send the slot patterns next.'
+				)
+			)
+			if (phaseRef.current === 'awaiting-seeds')
+				throw new Error(firstAnswer || 'Agent did not submit seed words.')
+			if (phaseRef.current === 'awaiting-fill' && puzzleRef.current) {
+				const fillAnswer = await window.app.agent.send(fillBriefing(puzzleRef.current.slots))
+				if (phaseRef.current === 'awaiting-fill')
+					throw new Error(fillAnswer || 'Agent did not fill the crossword.')
+			}
+		})().catch((err: unknown) => {
+			setError(err instanceof Error ? err.message : String(err))
+			phaseRef.current = 'idle'
+			setPhase('idle')
+		})
 	}, [theme])
 
 	if (!window.app)
@@ -323,24 +418,7 @@ function Game({
 	const [selected, setSelected] = useState<Cell | null>(firstPlay)
 	const [direction, setDirection] = useState<Direction>('across')
 
-	const cellNum = useMemo(() => {
-		const map: Record<Cell, number> = {}
-		let n = 1
-		for (let r = 0; r < grid.length; r++) {
-			const row = grid[r] ?? ''
-			for (let c = 0; c < row.length; c++) {
-				if (row[c] === '#') continue
-				const startsAcross =
-					(c === 0 || row[c - 1] === '#') && c + 1 < row.length && row[c + 1] !== '#'
-				const startsDown =
-					(r === 0 || (grid[r - 1]?.[c] ?? '#') === '#') &&
-					r + 1 < grid.length &&
-					(grid[r + 1]?.[c] ?? '#') !== '#'
-				if (startsAcross || startsDown) map[cellKey(r, c)] = n++
-			}
-		}
-		return map
-	}, [grid])
+	const cellNum = useMemo(() => cellNumbers(grid), [grid])
 
 	const slotByCell = useMemo(() => {
 		const a = new Map<Cell, string>()

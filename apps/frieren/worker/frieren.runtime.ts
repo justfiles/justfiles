@@ -27,7 +27,7 @@ type FrierenEvent = AgentEvent
 type FrierenEventListener = (event: FrierenEvent, signal: AbortSignal) => Promise<void> | void
 
 export interface Runtime {
-	prompt: (message: string, source?: 'user' | 'app') => Promise<void>
+	prompt: (message: string, source?: 'user' | 'app') => Promise<string>
 	shutdown: () => Promise<void>
 	subscribe: (lisener: FrierenEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
@@ -70,15 +70,22 @@ export async function runtime({
 		}
 
 		const newMessages = agent.state.messages.slice(offset)
+		const turnHasToolCall = newMessages.some(hasToolCall)
 		if (newMessages.length > 0) {
 			await session.append(
-				newMessages.map((message, index) => transform(message, index === 0 ? source : 'user'))
+				newMessages.flatMap((message, index) => {
+					const entry = transform(message, index === 0 ? source : 'user', turnHasToolCall)
+					return entry ? [entry] : []
+				})
 			)
 		}
 
+		const answer = assistantText(newMessages)
 		const diagnostic = promptError
 			? { message: errorMessage(promptError) }
-			: newMessages.map(assistantDiagnostic).find((value) => value !== undefined)
+			: newMessages
+					.map((message) => assistantDiagnostic(message, turnHasToolCall))
+					.find((value) => value !== undefined)
 		if (diagnostic) {
 			console.error('[frieren-agent-failure]', {
 				source,
@@ -106,6 +113,7 @@ export async function runtime({
 			])
 			await initSession(session)
 		}
+		return answer
 	}
 
 	async function consolidateMemory(now: Date = new Date()) {
@@ -185,7 +193,21 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
-function assistantDiagnostic(message: AgentMessage): { message: string } | undefined {
+function assistantText(messages: AgentMessage[]): string {
+	return messages
+		.flatMap((message) =>
+			'role' in message && message.role === 'assistant'
+				? message.content.filter((block) => block.type === 'text').map((block) => block.text)
+				: []
+		)
+		.join('\n')
+		.trim()
+}
+
+function assistantDiagnostic(
+	message: AgentMessage,
+	turnHasToolCall = false
+): { message: string } | undefined {
 	if (!('role' in message) || message.role !== 'assistant') return undefined
 	if (message.stopReason === 'error' || message.stopReason === 'aborted' || message.errorMessage) {
 		return {
@@ -197,14 +219,26 @@ function assistantDiagnostic(message: AgentMessage): { message: string } | undef
 		(block) => block.type === 'text' && block.text.trim().length > 0
 	)
 	const hasToolCall = message.content.some((block) => block.type === 'toolCall')
-	if (!hasText && !hasToolCall) {
+	if (!hasText && !hasToolCall && !turnHasToolCall) {
 		return { message: 'Assistant returned no visible text or tool calls.' }
 	}
 
 	return undefined
 }
 
-function transform(message: AgentMessage, source: 'user' | 'app'): AppendPayload {
+function hasToolCall(message: AgentMessage): boolean {
+	return (
+		'role' in message &&
+		message.role === 'assistant' &&
+		message.content.some((block) => block.type === 'toolCall')
+	)
+}
+
+function transform(
+	message: AgentMessage,
+	source: 'user' | 'app',
+	turnHasToolCall = false
+): AppendPayload | null {
 	if (!('role' in message)) throw new Error(`unsupported message: ${JSON.stringify(message)}`)
 	switch (message.role) {
 		case 'user': {
@@ -218,7 +252,7 @@ function transform(message: AgentMessage, source: 'user' | 'app'): AppendPayload
 			return { type: 'message', role: 'user', content, source }
 		}
 		case 'assistant': {
-			const diagnostic = assistantDiagnostic(message)
+			const diagnostic = assistantDiagnostic(message, turnHasToolCall)
 			if (diagnostic) {
 				return {
 					type: 'message',
@@ -244,7 +278,9 @@ function transform(message: AgentMessage, source: 'user' | 'app'): AppendPayload
 					tool_name: toolCalls[0].tool_name,
 					input: toolCalls[0].input
 				}
-			return { type: 'message', role: 'assistant', content: texts.join('\n') }
+			const content = texts.join('\n')
+			if (!content.trim() && turnHasToolCall) return null
+			return { type: 'message', role: 'assistant', content }
 		}
 		case 'toolResult':
 			return {

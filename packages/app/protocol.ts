@@ -62,7 +62,7 @@ export type AppRpcRegistry = {
 		params: { capability: string; method: string; input: unknown }
 		result: { value: unknown }
 	}
-	'app.agent.send': { params: { text: string }; result: null }
+	'app.agent.send': { params: { text: string }; result: { text: string } }
 	'app.tool.register': {
 		params: { name: string; description: string; schema: Record<string, unknown> }
 		result: null
@@ -193,10 +193,10 @@ export interface AppToolRegistry {
 }
 
 export interface AppAgent {
-	/** Send text into the host agent flow as if the app were prompting it.
-	 *  Requires the `agent` manifest permission. Resolves once the prompt
-	 *  has been accepted by the host (not when the agent finishes). */
-	send(text: string): Promise<void>
+	/** Send text into the host agent flow and wait until that agent turn finishes.
+	 *  Returns the visible assistant text from the completed turn. Callers may
+	 *  ignore the return value when they only need side effects/tool calls. */
+	send(text: string): Promise<string>
 	/** Register a callback that returns a natural-language description of
 	 *  current UI/app state for the agent. The host may call this at any
 	 *  time. Only the last registered callback is active. May be async. */

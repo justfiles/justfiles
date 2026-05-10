@@ -34,10 +34,10 @@ export interface AppRpcContext {
 	// are mapped to stable RPC error codes; anything else surfaces as
 	// `internal_error`.
 	bridge: CapabilityBridge
-	// Pushes a prompt from the active app into the host agent flow. The
-	// supervisor wires this to the same path that handles `app_prompt`
+	// Runs an app-sourced prompt to completion and returns visible assistant text.
+	// The supervisor wires this to the same path that handles `app_prompt`
 	// today, so app-sourced prompts appear in chat as `source: 'app'`.
-	sendAgentPrompt: (text: string) => Promise<void>
+	sendAgentPrompt: (text: string) => Promise<string>
 	// Registers a client-side tool descriptor so the host can expose a
 	// proxy AgentTool to the agent. The handler runs in the iframe.
 	registerClientTool: (descriptor: ClientToolDescriptor) => void
@@ -148,8 +148,7 @@ const handlers: { [M in AppRpcMethod]: Handler<M> } = {
 	},
 	'app.agent.send': async ({ sendAgentPrompt }, { text }) => {
 		if (typeof text !== 'string' || text.length === 0) fail(APP_RPC_ERROR.invalidPayload)
-		await sendAgentPrompt(text as string)
-		return null
+		return { text: await sendAgentPrompt(text as string) }
 	},
 	'app.tool.register': async ({ registerClientTool }, { name, description, schema }) => {
 		if (typeof name !== 'string' || name.length === 0) fail(APP_RPC_ERROR.invalidPayload)

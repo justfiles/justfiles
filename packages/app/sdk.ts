@@ -270,9 +270,10 @@ void (() => {
 	const tools: AppToolRegistry = Object.freeze(toolsImpl)
 
 	const agentImpl: AppAgent = {
-		async send(text: string): Promise<void> {
+		async send(text: string): Promise<string> {
 			if (typeof text !== 'string') throw new TypeError('text must be a string')
-			await request('app.agent.send', { text })
+			const r = await request('app.agent.send', { text })
+			return r.text
 		},
 		describe(callback: () => string | Promise<string>): void {
 			describeCallback = callback

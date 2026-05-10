@@ -19,7 +19,7 @@ const denyAllBridge: CapabilityBridge = {
 	}
 }
 
-const noopSend = async () => {}
+const noopSend = async () => ''
 const noopRegisterTool = (_descriptor: ClientToolDescriptor) => {}
 
 const writeText = (id: string, path: string, text: string) => ({
@@ -390,7 +390,7 @@ describe('dispatchAppRpc', () => {
 		params: { text } as { text: string }
 	})
 
-	test('agent.send forwards text to the host and acks with null result', async () => {
+	test('agent.send forwards text to the host and returns the assistant text', async () => {
 		const sent: string[] = []
 		const ctx = {
 			vol: makeVol(),
@@ -399,11 +399,12 @@ describe('dispatchAppRpc', () => {
 			bridge: denyAllBridge,
 			sendAgentPrompt: async (text: string) => {
 				sent.push(text)
+				return 'done'
 			},
 			registerClientTool: noopRegisterTool
 		}
 		const reply = await dispatchAppRpc(ctx, agentSend('1', 'hello agent'))
-		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: null })
+		expect(reply).toEqual({ jsonrpc: '2.0', id: '1', result: { text: 'done' } })
 		expect(sent).toEqual(['hello agent'])
 	})
 
@@ -416,6 +417,7 @@ describe('dispatchAppRpc', () => {
 			bridge: denyAllBridge,
 			sendAgentPrompt: async (text: string) => {
 				sent.push(text)
+				return ''
 			},
 			registerClientTool: noopRegisterTool
 		}

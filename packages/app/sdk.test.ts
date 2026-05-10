@@ -22,8 +22,16 @@ interface FakeApp {
 	}
 	capabilities: Record<string, Record<string, (input: unknown) => Promise<unknown>>>
 	agent: {
-		send(text: string): Promise<void>
+		send(text: string): Promise<string>
 		describe(callback: () => string | Promise<string>): void
+		tools: {
+			register(tool: {
+				name: string
+				description: string
+				schema: Record<string, unknown>
+				handler: (input: unknown) => unknown | Promise<unknown>
+			}): () => void
+		}
 	}
 }
 interface FakeWindow {
@@ -328,14 +336,14 @@ type AgentFrame = {
 	params: { text: string }
 }
 
-test('app.agent.send posts a typed request and resolves on null result', async () => {
+test('app.agent.send posts a typed request and resolves with assistant text', async () => {
 	const h = setup()
 	const promise = h.win.app?.agent.send('hello agent')
 	const sent = h.parentSent[0] as AgentFrame
 	expect(sent.method).toBe('app.agent.send')
 	expect(sent.params).toEqual({ text: 'hello agent' })
-	h.dispatch({ jsonrpc: '2.0', id: sent.id, result: null })
-	await expect(promise).resolves.toBeUndefined()
+	h.dispatch({ jsonrpc: '2.0', id: sent.id, result: { text: 'done' } })
+	await expect(promise).resolves.toBe('done')
 })
 
 test('app.agent.send rejects with the rpc error code on permission_denied', async () => {
