@@ -6,7 +6,7 @@ import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import type { AppFacetScope } from './app-bridge'
-import { dispatchAppRpc, noActiveAppResponse } from './app-rpc'
+import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -41,11 +41,21 @@ import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'app_action' | 'app_launch' | 'app_close' | 'app_rpc'
+	type:
+		| 'prompt'
+		| 'abort'
+		| 'app_action'
+		| 'app_launch'
+		| 'app_close'
+		| 'app_rpc'
+		| 'app_tool_result'
 	text?: string
 	id?: string
 	action?: Action
 	frame?: { id: RequestId; method: string; params: unknown }
+	callId?: string
+	result?: unknown
+	error?: { code: number; message: string }
 }
 
 interface DisplayToolCall {
@@ -87,6 +97,7 @@ type ServerMessage =
 	| { type: 'app_state'; id: string; state: unknown }
 	| { type: 'app_close' }
 	| { type: 'app_rpc'; frame: AppRpcResponse }
+	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
 
 const DEBUG_COMMAND = '/debug'
 const CLOSE_COMMAND = '/close'
@@ -120,6 +131,11 @@ const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	keepRecentTokens: 20000
 }
 
+type PendingToolCall = {
+	resolve: (value: unknown) => void
+	reject: (reason: unknown) => void
+}
+
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly vol: Volume
@@ -129,6 +145,7 @@ export class Frieren extends DurableObject<Env> {
 	private activeApp?: ActiveApp
 	private integrations?: Integrations
 	private readonly coalescer = new Coalescer()
+	private readonly pendingToolCalls = new Map<string, PendingToolCall>()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -287,20 +304,37 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		if (parsed.type === 'app_tool_result' && parsed.callId) {
+			const pending = this.pendingToolCalls.get(parsed.callId)
+			if (pending) {
+				this.pendingToolCalls.delete(parsed.callId)
+				if (parsed.error) pending.reject(parsed.error)
+				else pending.resolve(parsed.result)
+			}
+			return
+		}
+
 		if (parsed.type === 'app_rpc' && parsed.frame) {
 			const frame = parsed.frame
-			const reply: AppRpcResponse = this.activeApp
+			const activeApp = this.activeApp
+			const reply: AppRpcResponse = activeApp
 				? await dispatchAppRpc(
 						{
 							vol: this.vol,
-							appId: this.activeApp.id,
-							permissions: getAppPermissions(this.activeApp.id),
+							appId: activeApp.id,
+							permissions: getAppPermissions(activeApp.id),
 							bridge: this.appScope().bridge,
 							// Fire-and-forget: the iframe's `app.agent.send` resolves
 							// once the host has accepted the prompt; the agent run
 							// streams events over WS independently.
 							sendAgentPrompt: async (text: string) => {
 								void this.promptAgent(ws, text)
+							},
+							registerClientTool: (descriptor) => {
+								const tool = this.createClientProxyTool(descriptor, activeApp.id)
+								activeApp.tools.push(tool)
+								const agent = this.runtime?._agent()
+								if (agent) agent.state.tools = [...agent.state.tools, tool]
 							}
 						},
 						frame
@@ -408,6 +442,50 @@ export class Frieren extends DurableObject<Env> {
 				}
 			}
 		}
+	}
+
+	private createClientProxyTool(descriptor: ClientToolDescriptor, appId: string): AgentTool {
+		const toolName = `${appId}_client_${descriptor.name}`
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const self = this
+		const tool: AgentTool = {
+			name: toolName,
+			label: `${appId}: ${descriptor.name}`,
+			description: descriptor.description,
+			parameters: { type: 'object' } as unknown as Parameters<typeof tool.execute>[1],
+			async execute(_id, input) {
+				const callId = crypto.randomUUID()
+				const msg = JSON.stringify({
+					type: 'app_tool_invoke',
+					callId,
+					name: descriptor.name,
+					input
+				} satisfies ServerMessage)
+				for (const client of self.ctx.getWebSockets()) client.send(msg)
+
+				const result = await new Promise<unknown>((resolve, reject) => {
+					const timeout = setTimeout(() => {
+						self.pendingToolCalls.delete(callId)
+						reject({ code: -32021, message: 'tool_timeout' })
+					}, 30_000)
+					self.pendingToolCalls.set(callId, {
+						resolve: (v) => {
+							clearTimeout(timeout)
+							resolve(v)
+						},
+						reject: (e) => {
+							clearTimeout(timeout)
+							reject(e)
+						}
+					})
+				})
+				return {
+					content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+					details: result
+				}
+			}
+		}
+		return tool as unknown as AgentTool
 	}
 
 	private async hydrateApp(): Promise<void> {

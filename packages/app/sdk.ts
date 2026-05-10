@@ -19,6 +19,8 @@ import type {
 	AppRpcMethod,
 	AppRpcParams,
 	AppRpcResult,
+	AppTool,
+	AppToolRegistry,
 	AppVolume
 } from './protocol.js'
 
@@ -39,6 +41,7 @@ void (() => {
 	const API_VERSION = 1
 	const onStart = new Set<() => void>()
 	const pending = new Map<string, Pending>()
+	const toolHandlers = new Map<string, (input: unknown) => unknown | Promise<unknown>>()
 	let started = false
 	let nextId = 0
 
@@ -107,6 +110,39 @@ void (() => {
 						window.parent.postMessage({ jsonrpc: '2.0', id, error: { code: -32000, message } }, '*')
 					}
 				})()
+				return
+			}
+			if (data.method === 'app.tool.invoke' && isRecord(data.params)) {
+				const { callId, name, input } = data.params as {
+					callId: string
+					name: string
+					input: unknown
+				}
+				void (async () => {
+					const handler = toolHandlers.get(name)
+					if (!handler) {
+						window.parent.postMessage(
+							{
+								jsonrpc: '2.0',
+								id,
+								error: { code: -32020, message: 'tool_unavailable' }
+							},
+							'*'
+						)
+						return
+					}
+					try {
+						const result = await handler(input)
+						window.parent.postMessage(
+							{ jsonrpc: '2.0', id, result: { callId, value: result } },
+							'*'
+						)
+					} catch (err) {
+						const message = err instanceof Error ? err.message : 'tool_handler_error'
+						window.parent.postMessage({ jsonrpc: '2.0', id, error: { code: -32022, message } }, '*')
+					}
+				})()
+				return
 			}
 			return
 		}
@@ -196,6 +232,20 @@ void (() => {
 	}
 	const volume: AppVolume = Object.freeze(volumeImpl)
 
+	const toolsImpl: AppToolRegistry = {
+		register({ name, description, schema, handler }: AppTool): () => void {
+			if (typeof name !== 'string' || !name)
+				throw new TypeError('tool name must be a non-empty string')
+			if (typeof handler !== 'function') throw new TypeError('tool handler must be a function')
+			toolHandlers.set(name, handler)
+			void request('app.tool.register', { name, description, schema })
+			return () => {
+				toolHandlers.delete(name)
+			}
+		}
+	}
+	const tools: AppToolRegistry = Object.freeze(toolsImpl)
+
 	const agentImpl: AppAgent = {
 		async send(text: string): Promise<void> {
 			if (typeof text !== 'string') throw new TypeError('text must be a string')
@@ -203,7 +253,8 @@ void (() => {
 		},
 		describe(callback: () => string | Promise<string>): void {
 			describeCallback = callback
-		}
+		},
+		tools
 	}
 	const agent: AppAgent = Object.freeze(agentImpl)
 

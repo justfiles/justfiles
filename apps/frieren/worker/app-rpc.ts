@@ -17,6 +17,12 @@ import {
 import type { CapabilityBridge } from '@justfiles/app/capabilities-bridge.js'
 import type { Volume } from '@justfiles/fs'
 
+export interface ClientToolDescriptor {
+	name: string
+	description: string
+	schema: Record<string, unknown>
+}
+
 export interface AppRpcContext {
 	vol: Volume
 	appId: string
@@ -32,6 +38,9 @@ export interface AppRpcContext {
 	// supervisor wires this to the same path that handles `app_prompt`
 	// today, so app-sourced prompts appear in chat as `source: 'app'`.
 	sendAgentPrompt: (text: string) => Promise<void>
+	// Registers a client-side tool descriptor so the host can expose a
+	// proxy AgentTool to the agent. The handler runs in the iframe.
+	registerClientTool: (descriptor: ClientToolDescriptor) => void
 }
 
 type Handler<M extends AppRpcMethod> = (
@@ -140,6 +149,12 @@ const handlers: { [M in AppRpcMethod]: Handler<M> } = {
 	'app.agent.send': async ({ sendAgentPrompt }, { text }) => {
 		if (typeof text !== 'string' || text.length === 0) fail(APP_RPC_ERROR.invalidPayload)
 		await sendAgentPrompt(text as string)
+		return null
+	},
+	'app.tool.register': async ({ registerClientTool }, { name, description, schema }) => {
+		if (typeof name !== 'string' || name.length === 0) fail(APP_RPC_ERROR.invalidPayload)
+		if (typeof description !== 'string') fail(APP_RPC_ERROR.invalidPayload)
+		registerClientTool({ name, description, schema: schema as Record<string, unknown> })
 		return null
 	}
 }
