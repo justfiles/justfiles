@@ -153,11 +153,20 @@ export interface AppCapabilityMap {
 
 export type AppCapabilities = { readonly [K in keyof AppCapabilityMap]: AppCapabilityMap[K] }
 
+/** Registry of JSON-RPC requests the host sends to the client SDK. */
+export type AppHostRpcRegistry = {
+	'app.agent.describe': { params: object; result: { description: string | null } }
+}
+
 export interface AppAgent {
 	/** Send text into the host agent flow as if the app were prompting it.
 	 *  Requires the `agent` manifest permission. Resolves once the prompt
 	 *  has been accepted by the host (not when the agent finishes). */
 	send(text: string): Promise<void>
+	/** Register a callback that returns a natural-language description of
+	 *  current UI/app state for the agent. The host may call this at any
+	 *  time. Only the last registered callback is active. May be async. */
+	describe(callback: () => string | Promise<string>): void
 }
 
 export interface App {

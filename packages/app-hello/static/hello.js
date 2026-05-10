@@ -7,6 +7,18 @@ const tick = () => {
 tick()
 setInterval(tick, 1000)
 
+// Internal state the agent should never see (e.g. draft text, unsaved form data).
+const _private = { draftNote: 'work in progress — not for agent eyes' }
+
+// Register a safe projection: exposes only what the agent needs to help the
+// user, keeping private/internal state out of the description.
+window.app?.agent.describe(() => {
+	const appStatus = status?.dataset.started === 'true' ? 'running' : 'waiting'
+	const lastVisit = last?.textContent ?? 'unknown'
+	// _private intentionally omitted
+	return `Hello app is ${appStatus}. ${lastVisit}.`
+})
+
 window.app?.lifecycle.onStart(async () => {
 	if (status) {
 		status.textContent = `started · app sdk v${window.app.version}`

@@ -44,6 +44,8 @@ void (() => {
 
 	const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
 
+	let describeCallback: (() => string | Promise<string>) | null = null
+
 	function uint8ToBase64(u8: Uint8Array): string {
 		let bin = ''
 		for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i] ?? 0)
@@ -88,6 +90,23 @@ void (() => {
 				p.reject(err)
 			} else {
 				p.resolve(data.result)
+			}
+			return
+		}
+
+		// Host-to-client request: has id and method but no result/error.
+		if (data.id != null && typeof data.method === 'string') {
+			const id = String(data.id)
+			if (data.method === 'app.agent.describe') {
+				void (async () => {
+					try {
+						const description = describeCallback ? await describeCallback() : null
+						window.parent.postMessage({ jsonrpc: '2.0', id, result: { description } }, '*')
+					} catch (err) {
+						const message = err instanceof Error ? err.message : 'describe_error'
+						window.parent.postMessage({ jsonrpc: '2.0', id, error: { code: -32000, message } }, '*')
+					}
+				})()
 			}
 			return
 		}
@@ -181,6 +200,9 @@ void (() => {
 		async send(text: string): Promise<void> {
 			if (typeof text !== 'string') throw new TypeError('text must be a string')
 			await request('app.agent.send', { text })
+		},
+		describe(callback: () => string | Promise<string>): void {
+			describeCallback = callback
 		}
 	}
 	const agent: AppAgent = Object.freeze(agentImpl)
