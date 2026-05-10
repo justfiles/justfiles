@@ -452,7 +452,7 @@ export class Frieren extends DurableObject<Env> {
 			name: toolName,
 			label: `${appId}: ${descriptor.name}`,
 			description: descriptor.description,
-			parameters: { type: 'object' } as unknown as Parameters<typeof tool.execute>[1],
+			parameters: descriptor.schema as unknown as Parameters<typeof tool.execute>[1],
 			async execute(_id, input) {
 				const callId = crypto.randomUUID()
 				const msg = JSON.stringify({
