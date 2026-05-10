@@ -49,17 +49,19 @@ function setup() {
 			return { ok: true }
 		}
 	}
-	const runtime = {
-		addTools(next: readonly AgentTool[]) {
-			tools.push(...next)
-		},
-		removeTools(next: readonly AgentTool[]) {
-			for (const tool of next) {
-				const index = tools.indexOf(tool)
-				if (index >= 0) tools.splice(index, 1)
+	const makeRuntime = (toolList: AgentTool[]) =>
+		({
+			addTools(next: readonly AgentTool[]) {
+				toolList.push(...next)
+			},
+			removeTools(next: readonly AgentTool[]) {
+				for (const tool of next) {
+					const index = toolList.indexOf(tool)
+					if (index >= 0) toolList.splice(index, 1)
+				}
 			}
-		}
-	} as Runtime
+		}) as Runtime
+	let runtime = makeRuntime(tools)
 	const host = new AppHost({
 		storage,
 		volume: {} as never,
@@ -68,7 +70,16 @@ function setup() {
 		capabilityBridge,
 		sendAgentPrompt: async () => ''
 	})
-	return { host, storage, sockets, tools, capabilityCalls }
+	return {
+		host,
+		storage,
+		sockets,
+		tools,
+		capabilityCalls,
+		swapRuntime(nextTools: AgentTool[]) {
+			runtime = makeRuntime(nextTools)
+		}
+	}
 }
 
 const descriptor = {
@@ -126,6 +137,62 @@ describe('AppHost', () => {
 		expect(storage.values.has('active_app')).toBe(false)
 		expect(storage.values.has('active_app_client_tools:demo')).toBe(false)
 		expect(sockets[0].sent.at(-1)).toEqual({ type: 'app_close' })
+	})
+
+	test('rebind restores proxy tools on the current runtime and keeps pending calls', async () => {
+		const { host, sockets, tools, swapRuntime } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		await host.launch('demo')
+		await host.registerClientTool(descriptor)
+		const pending = (
+			tools[0] as AgentTool & { execute: (id: string, input: unknown) => Promise<unknown> }
+		).execute('call', {})
+		const invoke = sockets[0].sent.at(-1) as { callId: string }
+		const nextTools: AgentTool[] = []
+		swapRuntime(nextTools)
+
+		await host.rebind()
+		await host.handleMessage(ws, {
+			type: 'app_tool_result',
+			callId: invoke.callId,
+			result: { ok: true }
+		})
+
+		expect(nextTools.map((tool) => tool.name)).toEqual(['demo_client_pick'])
+		await expect(pending).resolves.toEqual({
+			content: [{ type: 'text', text: JSON.stringify({ ok: true }, null, 2) }],
+			details: { ok: true }
+		})
+	})
+
+	test('clear rejects pending calls, removes tools, and deletes storage', async () => {
+		const { host, storage, tools } = setup()
+		await host.launch('demo')
+		await host.registerClientTool(descriptor)
+		const pending = (
+			tools[0] as AgentTool & { execute: (id: string, input: unknown) => Promise<unknown> }
+		).execute('call', {})
+
+		await host.clear()
+
+		expect(tools).toEqual([])
+		expect(host.current()).toBeUndefined()
+		expect(storage.values.has('active_app')).toBe(false)
+		expect(storage.values.has('active_app_client_tools:demo')).toBe(false)
+		await expect(pending).rejects.toEqual({ code: -32020, message: 'tool_unavailable' })
+	})
+
+	test('clear then launch starts with clean client tools', async () => {
+		const { host, storage, tools } = setup()
+		await host.launch('demo')
+		await host.registerClientTool(descriptor)
+
+		await host.clear()
+		await host.launch('demo')
+
+		expect(tools).toEqual([])
+		expect(storage.values.get('active_app')).toEqual({ id: 'demo' })
+		expect(storage.values.has('active_app_client_tools:demo')).toBe(false)
 	})
 
 	test('slash commands route app commands only', async () => {

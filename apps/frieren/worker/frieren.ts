@@ -123,8 +123,9 @@ export class Frieren extends DurableObject<Env> {
 
 		this.app = new Hono()
 			.post('/api/nuke', async (c) => {
+				await this.apps.clear()
 				await ctx.storage.deleteAll()
-				await this.reset()
+				await ctx.blockConcurrencyWhile(() => this.reset())
 				return c.body(null, 204)
 			})
 			.post('/api/onboarding/soul', async (c) => {
@@ -180,6 +181,7 @@ export class Frieren extends DurableObject<Env> {
 			compaction: DEFAULT_COMPACTION_SETTINGS,
 			getTimezone: this.getTimezone
 		})
+		await this.apps.rebind()
 	}
 
 	private getBackendConfig() {

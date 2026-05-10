@@ -117,11 +117,25 @@ export class AppHost {
 		this.deps.runtime()?.removeTools(tools)
 		this.failPendingToolCalls()
 		this.activeApp = undefined
-		await Promise.all([
-			this.deps.storage.delete(APP_STORAGE_KEY),
-			this.deps.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)
-		])
+		await this.deleteStoredApp(id)
 		this.broadcast({ type: 'app_close' })
+	}
+
+	async rebind(): Promise<void> {
+		const id =
+			this.activeApp?.id ?? (await this.deps.storage.get<PersistedApp>(APP_STORAGE_KEY))?.id
+		if (!id || !this.isApp(id)) return
+		await this.restoreActiveApp(id)
+	}
+
+	async clear(): Promise<void> {
+		const id =
+			this.activeApp?.id ?? (await this.deps.storage.get<PersistedApp>(APP_STORAGE_KEY))?.id
+		if (this.activeApp) this.deps.runtime()?.removeTools(this.activeApp.tools)
+		this.failPendingToolCalls()
+		this.activeApp = undefined
+		if (id) await this.deleteStoredApp(id)
+		else await this.deps.storage.delete(APP_STORAGE_KEY)
 	}
 
 	async handleMessage(ws: WebSocket, parsed: ClientMessage): Promise<boolean> {
@@ -233,6 +247,13 @@ export class AppHost {
 		const stored = (await this.deps.storage.get<ClientToolDescriptor[]>(key)) ?? []
 		if (stored.some((value) => value.name === descriptor.name)) return
 		await this.deps.storage.put(key, [...stored, descriptor])
+	}
+
+	private async deleteStoredApp(id: string): Promise<void> {
+		await Promise.all([
+			this.deps.storage.delete(APP_STORAGE_KEY),
+			this.deps.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)
+		])
 	}
 
 	private createClientProxyTool(descriptor: ClientToolDescriptor, appId: string): AgentTool {
