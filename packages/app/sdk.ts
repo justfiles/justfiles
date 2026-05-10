@@ -40,6 +40,7 @@ void (() => {
 
 	const API_VERSION = 1
 	const onStart = new Set<() => void>()
+	const onStop = new Set<() => void>()
 	const pending = new Map<string, Pending>()
 	const toolHandlers = new Map<string, (input: unknown) => unknown | Promise<unknown>>()
 	let started = false
@@ -158,6 +159,21 @@ void (() => {
 				}
 			}
 			onStart.clear()
+			return
+		}
+		if (data.params.event === 'stop' && started) {
+			started = false
+			for (const cb of onStop) {
+				try {
+					cb()
+				} catch (err) {
+					console.error('app.lifecycle.onStop callback threw:', err)
+				}
+			}
+			onStop.clear()
+			// Drop tool handlers so any in-flight or late host invocations
+			// route through the unknown-tool path with `tool_unavailable`.
+			toolHandlers.clear()
 		}
 	})
 
@@ -171,6 +187,13 @@ void (() => {
 			onStart.add(callback)
 			return () => {
 				onStart.delete(callback)
+			}
+		},
+		onStop(callback: () => void): () => void {
+			if (typeof callback !== 'function') return () => {}
+			onStop.add(callback)
+			return () => {
+				onStop.delete(callback)
 			}
 		}
 	}

@@ -5,7 +5,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent, AgentTool } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import Type from 'typebox'
+import type Type from 'typebox'
 import type { AppFacetScope } from './app-bridge'
 import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import { cp, mv, rm } from './bash/commands/fs.ts'
@@ -50,6 +50,7 @@ interface ClientMessage {
 		| 'app_close'
 		| 'app_rpc'
 		| 'app_tool_result'
+		| 'app_iframe_reload'
 	text?: string
 	id?: string
 	action?: Action
@@ -301,6 +302,11 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
+		if (parsed.type === 'app_iframe_reload') {
+			await this.resetClientTools()
+			return
+		}
+
 		if (parsed.type === 'app_launch' && parsed.id) {
 			await this.launchApp(ws, parsed.id)
 			return
@@ -527,9 +533,8 @@ export class Frieren extends DurableObject<Env> {
 
 		if (isClientApp(id)) {
 			const stored =
-				(await this.ctx.storage.get<ClientToolDescriptor[]>(
-					`${CLIENT_TOOLS_STORAGE_KEY}:${id}`
-				)) ?? []
+				(await this.ctx.storage.get<ClientToolDescriptor[]>(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)) ??
+				[]
 			const tools = stored.map((d) => this.createClientProxyTool(d, id))
 			const active: ActiveApp = { id, tools, userActor, agentActor }
 			this.activeApp = active
@@ -606,6 +611,7 @@ export class Frieren extends DurableObject<Env> {
 		const { id, tools } = this.activeApp
 		const agent = this.runtime?._agent()
 		if (agent) agent.state.tools = agent.state.tools.filter((t) => !tools.includes(t))
+		this.failPendingToolCalls()
 		this.activeApp = undefined
 		await Promise.all([
 			this.ctx.storage.delete(APP_STORAGE_KEY),
@@ -613,6 +619,30 @@ export class Frieren extends DurableObject<Env> {
 		])
 		const payload = JSON.stringify({ type: 'app_close' } satisfies ServerMessage)
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
+	}
+
+	// Iframe reload — same iframe URL, fresh JS context. The app's previous
+	// SDK instance is gone, so any pending tool invocation against it will
+	// never resolve; reject pending calls and drop the proxy tools so the
+	// reloaded app's `register` calls produce a clean set.
+	private async resetClientTools(): Promise<void> {
+		const active = this.activeApp
+		if (!active) return
+		const prefix = `${active.id}_client_`
+		const stripped = active.tools.filter((t) => t.name.startsWith(prefix))
+		if (stripped.length === 0 && this.pendingToolCalls.size === 0) return
+		const agent = this.runtime?._agent()
+		if (agent) agent.state.tools = agent.state.tools.filter((t) => !stripped.includes(t))
+		active.tools = active.tools.filter((t) => !stripped.includes(t))
+		this.failPendingToolCalls()
+		await this.ctx.storage.delete(`${CLIENT_TOOLS_STORAGE_KEY}:${active.id}`)
+	}
+
+	private failPendingToolCalls(): void {
+		if (this.pendingToolCalls.size === 0) return
+		const pending = Array.from(this.pendingToolCalls.values())
+		this.pendingToolCalls.clear()
+		for (const p of pending) p.reject({ code: -32020, message: 'tool_unavailable' })
 	}
 
 	private async resetApp(ws: WebSocket): Promise<void> {

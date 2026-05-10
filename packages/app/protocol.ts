@@ -126,6 +126,13 @@ export interface AppLifecycle {
 	 *  If the app has already started, the callback runs in a microtask.
 	 *  Returns an unsubscribe function. */
 	onStart(callback: () => void): () => void
+	/** Register a callback that fires once when the host stops the app —
+	 *  either because the user closed it or the iframe is reloading. Runs
+	 *  best-effort: the iframe may be torn down before async work settles.
+	 *  After stop the SDK clears registered tool handlers; subsequent
+	 *  host invocations of those tools return `tool_unavailable`.
+	 *  Returns an unsubscribe function. */
+	onStop(callback: () => void): () => void
 }
 
 export interface AppVolume {
