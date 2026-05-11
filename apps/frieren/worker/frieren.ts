@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { AppRpcResponse, RequestId } from '@justfiles/app'
+import type { AppRpcRequest, AppRpcResponse } from '@justfiles/app'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
@@ -13,7 +13,7 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import { AppHost, listApps } from './frieren.app'
+import { FrierenAppHost, listApps } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -42,7 +42,7 @@ interface ClientMessage {
 		| 'app_iframe_reload'
 	text?: string
 	id?: string
-	frame?: { id: RequestId; method: string; params: unknown }
+	frame?: AppRpcRequest
 	callId?: string
 	result?: unknown
 	error?: { code: number; message: string }
@@ -102,7 +102,7 @@ export class Frieren extends DurableObject<Env> {
 	private runtime?: Runtime
 	private text?: LLMText
 	private cfTimezone?: string
-	private apps: AppHost
+	private apps: FrierenAppHost
 	private integrations?: Integrations
 	private readonly coalescer = new Coalescer()
 
@@ -112,13 +112,13 @@ export class Frieren extends DurableObject<Env> {
 		const fs = cfFsStorage(ctx.storage, namespace)
 		this.vol = volume(fs)
 
-		this.apps = new AppHost({
+		this.apps = new FrierenAppHost({
 			storage: ctx.storage,
 			volume: this.vol,
 			websockets: () => ctx.getWebSockets(),
 			runtime: () => this.runtime,
 			capabilityBridge: this.capabilityBridge(),
-			sendAgentPrompt: (ws, text) => this.promptAgent(ws, text, { throwOnError: true })
+			sendAgentPrompt: (text) => this.promptAgentBroadcast(text, { throwOnError: true })
 		})
 
 		this.app = new Hono()
@@ -325,14 +325,18 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
-	private async promptAgent(
-		ws: WebSocket,
+	private broadcast(message: ServerMessage): void {
+		const payload = JSON.stringify(message)
+		for (const client of this.ctx.getWebSockets()) client.send(payload)
+	}
+
+	private async promptAgentBroadcast(
 		prompt: string,
 		options: { throwOnError?: boolean } = {}
 	): Promise<string> {
-		ws.send(JSON.stringify({ type: 'app_prompt', text: prompt } satisfies ServerMessage))
+		this.broadcast({ type: 'app_prompt', text: prompt })
 		const unsubscribe = this.runtime?.subscribe((event, _signal) => {
-			ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
+			this.broadcast({ type: 'event', event })
 		})
 		try {
 			let answer = ''
@@ -341,12 +345,10 @@ export class Frieren extends DurableObject<Env> {
 			})
 			return answer
 		} catch (error) {
-			ws.send(
-				JSON.stringify({
-					type: 'error',
-					message: error instanceof Error ? error.message : String(error)
-				} satisfies ServerMessage)
-			)
+			this.broadcast({
+				type: 'error',
+				message: error instanceof Error ? error.message : String(error)
+			})
 			if (options.throwOnError) throw error
 			return ''
 		} finally {

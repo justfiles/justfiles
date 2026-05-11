@@ -22,6 +22,8 @@
 		"sdk.ts",
 		"vite-plugin.ts",
 		"format.ts",
+		"host.ts",
+		"client.ts",
 		"capabilities/**/*.ts"
 	],
 	"exclude": ["node_modules", "dist"]

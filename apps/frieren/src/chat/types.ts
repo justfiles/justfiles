@@ -1,3 +1,5 @@
+import type { AppLauncher, AppRelay } from '@justfiles/app'
+
 export type ConnectionState = 'connecting' | 'ready' | 'disconnected'
 
 export interface ToolCallInfo {
@@ -18,58 +20,24 @@ export interface ChatMessage {
 	toolCalls?: ToolCallInfo[]
 }
 
-export type ActiveApp =
-	| { kind: 'sandbox'; id: string; ui: { url: string } }
-	| { kind: 'builtin'; id: string }
-	| null
-
-export interface InstalledApp {
-	id: string
-	name: string
-	description: string
-	iconUrl?: string
-	kind?: 'sandbox' | 'builtin'
-}
-
-// Iframe→worker JSON-RPC frame opaque at the chat layer; the worker owns
-// the typed registry. The chat client only correlates ids.
-export type AppRpcFrame = {
-	jsonrpc: '2.0'
-	id: string | number
-	method?: string
-	params?: unknown
-	result?: unknown
-	error?: { code: number; message: string }
-}
-export type AppRpcSender = (frame: AppRpcFrame) => Promise<AppRpcFrame>
-
-export type ToolInvokeHandler = (callId: string, name: string, input: unknown) => void
-export type ToolResultSender = (
-	callId: string,
-	result?: unknown,
-	error?: { code: number; message: string }
-) => void
-
-export interface ChatViewProps {
+export interface ChatSession {
 	messages: ChatMessage[]
 	input: string
 	setInput: (value: string) => void
 	userName: string
 	agentName: string
-	connectionState: ConnectionState
 	isStreaming: boolean
 	sendMessage: () => void
 	abort: () => void
+}
+
+export interface ChatConnection {
+	state: ConnectionState
 	reconnect: () => void
-	activeApp: ActiveApp
-	installedApps: InstalledApp[]
-	launchApp: (app: InstalledApp) => void
-	closeApp: () => void
-	sendAppRpc: AppRpcSender
-	/** Register a handler that AppFrame calls when the server requests a client tool invocation. */
-	registerToolInvokeHandler: (handler: ToolInvokeHandler | null) => void
-	/** Send a client tool result back to the server. */
-	sendToolResult: ToolResultSender
-	/** Tell the worker the iframe reloaded so it drops stale client tools. */
-	notifyIframeReload: () => void
+}
+
+export interface ChatViewProps {
+	session: ChatSession
+	connection: ChatConnection
+	apps?: { launcher: AppLauncher; relay: AppRelay }
 }

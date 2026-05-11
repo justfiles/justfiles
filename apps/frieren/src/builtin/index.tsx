@@ -1,5 +1,5 @@
+import type { InstalledApp } from '@justfiles/app'
 import type { ComponentType } from 'react'
-import type { InstalledApp } from '../chat/types'
 import { SettingsApp } from './SettingsApp'
 import settingsIconUrl from './settings-icon.svg'
 

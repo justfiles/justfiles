@@ -30,7 +30,7 @@ const statusBadgeClass: Record<ConnectionState, string> = {
 }
 
 export function ChatPage() {
-	const chat = useChat()
+	const { session, connection, apps } = useChat()
 	const [mode, setMode] = useState<ViewMode>(() => {
 		const saved = localStorage.getItem('frieren-view-mode') as ViewMode | null
 		return saved && saved in VIEWS ? saved : 'shadcn'
@@ -71,21 +71,18 @@ export function ChatPage() {
 							))}
 						</NativeSelect>
 					</div>
-					<Badge
-						variant="outline"
-						className={cn('capitalize', statusBadgeClass[chat.connectionState])}
-					>
-						{chat.connectionState}
+					<Badge variant="outline" className={cn('capitalize', statusBadgeClass[connection.state])}>
+						{connection.state}
 					</Badge>
 					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 				</div>
 			</header>
 
-			<View {...chat} />
+			<View session={session} connection={connection} apps={apps} />
 
-			{chat.connectionState === 'disconnected' ? (
+			{connection.state === 'disconnected' ? (
 				<div className="border-t p-4">
-					<Button type="button" variant="outline" className="w-full" onClick={chat.reconnect}>
+					<Button type="button" variant="outline" className="w-full" onClick={connection.reconnect}>
 						Reconnect
 					</Button>
 				</div>

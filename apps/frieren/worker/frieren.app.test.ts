@@ -12,7 +12,7 @@ mock.module('virtual:@justfiles/apps', () => ({
 }))
 mock.module('@justfiles/app/sdk?raw', () => ({ default: '' }))
 
-const { AppHost } = await import('./frieren.app')
+const { FrierenAppHost } = await import('./frieren.app')
 
 class StorageStub {
 	readonly values = new Map<string, unknown>()
@@ -62,7 +62,7 @@ function setup() {
 			}
 		}) as Runtime
 	let runtime = makeRuntime(tools)
-	const host = new AppHost({
+	const host = new FrierenAppHost({
 		storage,
 		volume: {} as never,
 		websockets: () => sockets,
