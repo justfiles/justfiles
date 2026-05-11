@@ -21,10 +21,17 @@ export function EsmAppFrame(props: {
 		setError(null)
 		;(async () => {
 			try {
-				const manifest = await loadManifest({ url: manifestUrl })
+				const absoluteManifestUrl = new URL(manifestUrl, window.location.href).toString()
+				const absoluteBaseUrl = new URL(baseUrl, window.location.href).toString()
+				const manifest = await loadManifest({ url: absoluteManifestUrl })
 				if (cancelled) return
 				const host = createHost()
-				const loaded = await loadApp({ manifest, baseUrl, el: container, host })
+				const loaded = await loadApp({
+					manifest,
+					baseUrl: absoluteBaseUrl,
+					el: container,
+					host
+				})
 				if (cancelled) {
 					await loaded.unmount()
 					return
