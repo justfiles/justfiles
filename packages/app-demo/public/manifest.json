@@ -1,8 +1,0 @@
-{
-	"format": 1,
-	"name": "App Demo",
-	"description": "Tiny vanilla TypeScript demo for the client-only app SDK.",
-	"version": "0.1.0",
-	"entry": "index.html",
-	"permissions": ["volume", "agent"]
-}

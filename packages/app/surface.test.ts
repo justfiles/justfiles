@@ -14,6 +14,7 @@ const ALLOWLIST = [
 	'AppManifestSchema',
 	'FORMAT_VERSION',
 	'ManifestSchema',
+	'NotFoundError',
 	'PermissionSchema',
 	'createHost',
 	'defineApp',

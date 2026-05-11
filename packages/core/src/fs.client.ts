@@ -131,15 +131,20 @@ export async function apiStorage(
 		},
 
 		async putBlob(ino, data, options) {
+			// Per-request `header` (singular, on args[0]) is merged with the
+			// client-level `headers` function. Using args[1].headers instead
+			// would deep-merge-replace that function (it's not an object), so
+			// the client-level Authorization callback would be dropped — fine
+			// when a session cookie is present, 401 without one.
 			const res = await client.inodes[':ino'].blob.$put(
-				{ param: { ino } },
 				{
-					headers: {
+					param: { ino },
+					header: {
 						'Content-Type': 'application/octet-stream',
 						...(options?.source ? { [FS_SOURCE_HEADER]: options.source } : {})
-					},
-					init: { body: toArrayBuffer(data) }
-				}
+					}
+				} as Parameters<(typeof client.inodes)[':ino']['blob']['$put']>[0],
+				{ init: { body: toArrayBuffer(data) } }
 			)
 			if (!res.ok) throw new Error(`putBlob failed: ${res.status}`)
 		},

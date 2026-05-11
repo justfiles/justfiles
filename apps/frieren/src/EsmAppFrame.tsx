@@ -1,7 +1,9 @@
+import { useAuth } from '@clerk/clerk-react'
 import { type AppHandle, createHost, loadApp, loadManifest } from '@justfiles/app'
 import { HouseIcon } from '@phosphor-icons/react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { createFsVolume } from './fs'
 
 export function EsmAppFrame(props: {
 	id: string
@@ -10,6 +12,9 @@ export function EsmAppFrame(props: {
 	onHome: () => void
 }) {
 	const { id, manifestUrl, baseUrl, onHome } = props
+	const { getToken } = useAuth()
+	const getTokenRef = useRef(getToken)
+	getTokenRef.current = getToken
 	const containerRef = useRef<HTMLDivElement>(null)
 	const [error, setError] = useState<string | null>(null)
 
@@ -25,7 +30,9 @@ export function EsmAppFrame(props: {
 				const absoluteBaseUrl = new URL(baseUrl, window.location.href).toString()
 				const manifest = await loadManifest({ url: absoluteManifestUrl })
 				if (cancelled) return
-				const host = createHost()
+				const backend = await createFsVolume(() => getTokenRef.current())
+				if (cancelled) return
+				const host = createHost({ appId: manifest.id, volume: backend })
 				const loaded = await loadApp({
 					manifest,
 					baseUrl: absoluteBaseUrl,
