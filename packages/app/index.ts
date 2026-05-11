@@ -1,6 +1,8 @@
 // Public surface for app authors and host integrators. Pure types and
 // helpers — no transport, no persistence.
 
+export type { AppHandle, LoadAppOptions } from './app-loader.js'
+export { loadApp } from './app-loader.js'
 export type {
 	ActiveApp,
 	AppLauncher,
@@ -9,6 +11,12 @@ export type {
 	ToolInvokeHandler,
 	ToolResultSender
 } from './client.js'
+export type { App, Host, Manifest as AppManifest } from './contract.js'
+export {
+	APP_CONTRACT_VERSION,
+	defineApp,
+	ManifestSchema as AppManifestSchema
+} from './contract.js'
 export {
 	APP_PERMISSIONS,
 	type AppPermission,
@@ -18,6 +26,9 @@ export {
 	PermissionSchema
 } from './format.js'
 export type { AppHost } from './host.js'
+export { createHost } from './host-factory.js'
+export type { LoadManifestOptions } from './manifest-loader.js'
+export { isNewManifest, loadManifest } from './manifest-loader.js'
 export {
 	APP_RPC_ERROR,
 	APP_RPC_PERMISSION,

@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import { AppFrame } from '../AppFrame'
 import { BuiltinHost } from '../BuiltinHost'
 import { builtinLauncherEntries } from '../builtin'
+import { EsmAppFrame } from '../EsmAppFrame'
 import { LauncherView } from '../LauncherView'
 import { AppPromptBlock } from './AppPromptBlock'
 import { AssistantAvatar, useAdventureViewState } from './adventureShared'
@@ -124,6 +125,13 @@ export function ShadcnView(props: ChatViewProps) {
 								id={apps.launcher.activeApp.id}
 								ui={apps.launcher.activeApp.ui}
 								relay={apps.relay}
+								onHome={apps.launcher.close}
+							/>
+						) : apps && apps.launcher.activeApp?.kind === 'esm' ? (
+							<EsmAppFrame
+								id={apps.launcher.activeApp.id}
+								manifestUrl={apps.launcher.activeApp.manifestUrl}
+								baseUrl={apps.launcher.activeApp.baseUrl}
 								onHome={apps.launcher.close}
 							/>
 						) : apps && apps.launcher.activeApp?.kind === 'builtin' ? (

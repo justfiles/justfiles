@@ -6,6 +6,7 @@ import type { AppHostRpcRegistry, AppRpcError, AppRpcRequest, AppRpcResponse } f
 
 export type ActiveApp =
 	| { kind: 'sandbox'; id: string; ui: { url: string } }
+	| { kind: 'esm'; id: string; manifestUrl: string; baseUrl: string }
 	| { kind: 'builtin'; id: string }
 
 export interface InstalledApp {
@@ -13,7 +14,11 @@ export interface InstalledApp {
 	name: string
 	description: string
 	iconUrl?: string
-	kind?: 'sandbox' | 'builtin'
+	kind?: 'sandbox' | 'esm' | 'builtin'
+	// Present on new-shape (ESM) apps; lets the launcher mount directly
+	// without a worker round-trip.
+	manifestUrl?: string
+	baseUrl?: string
 }
 
 type ToolInvokeParams = AppHostRpcRegistry['app.tool.invoke']['params']
