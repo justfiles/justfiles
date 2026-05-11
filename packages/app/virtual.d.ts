@@ -12,18 +12,28 @@
 declare module 'virtual:@justfiles/apps' {
 	import type { AppPermission } from '@justfiles/app'
 
+	type LegacyManifest = {
+		format: 1
+		name: string
+		description: string
+		version: string
+		icon?: string
+		entry: string
+		permissions?: readonly AppPermission[]
+	}
+
+	type NewManifest = {
+		id: string
+		title: string
+		version: string
+		entry: string
+		icon?: string
+	}
+
 	export const registry: ReadonlyMap<
 		string,
 		{
-			manifest: {
-				format: 1
-				name: string
-				description: string
-				version: string
-				icon?: string
-				entry: string
-				permissions?: readonly AppPermission[]
-			}
+			manifest: LegacyManifest | NewManifest
 		}
 	>
 }

@@ -22,7 +22,12 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { Check, Errors } from 'typebox/value'
 import type { Plugin, UserConfig } from 'vite'
+import { type Manifest as NewManifest, ManifestSchema as NewManifestSchema } from './contract.js'
 import { FORMAT_VERSION, type Manifest, ManifestSchema } from './format.js'
+
+// Either the legacy iframe manifest or the new ESM-contract manifest. The
+// host shell branches at runtime; the plugin just passes both through.
+type AnyManifest = Manifest | NewManifest
 
 // ── appBuilder ─────────────────────────────────────────────────────────────
 
@@ -94,7 +99,7 @@ const RESOLVED_ID = `\0${VIRTUAL_ID}`
 interface ResolvedApp {
 	id: string
 	contentDir: string
-	manifest: Manifest
+	manifest: AnyManifest
 }
 
 export function hostApps(arg: HostAppsArg, opts: HostAppsOptions = {}): Plugin {
@@ -224,13 +229,16 @@ function deriveId(pkgName: string): string {
 	return tail.replace(/^app-/, '')
 }
 
-function readManifest(filePath: string, pkgName: string): Manifest {
+function readManifest(filePath: string, pkgName: string): AnyManifest {
 	let value: unknown
 	try {
 		value = JSON.parse(fs.readFileSync(filePath, 'utf8'))
 	} catch (e) {
 		throw new Error(`hostApps: ${pkgName} has invalid manifest JSON at ${filePath}: ${String(e)}`)
 	}
+	// New-shape manifest (carries an `id`): validate against the contract
+	// schema and short-circuit. Otherwise fall through to legacy.
+	if (Check(NewManifestSchema, value)) return value
 	if (!Check(ManifestSchema, value)) {
 		const message = [...Errors(ManifestSchema, value)]
 			.map((e) => `${e.instancePath || '/'} ${e.message}`)

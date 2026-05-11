@@ -73,6 +73,9 @@ interface DisplayApp {
 	readonly name: string
 	readonly description: string
 	readonly iconUrl?: string
+	readonly kind: 'sandbox' | 'esm'
+	readonly manifestUrl?: string
+	readonly baseUrl?: string
 }
 
 type ServerMessage =

@@ -23,21 +23,62 @@ import type Type from 'typebox'
 import { type ClientToolDescriptor, dispatchAppRpc, noActiveAppResponse } from './app-rpc'
 import type { Runtime } from './frieren.runtime'
 
+type RegistryManifest =
+	ReturnType<typeof registry.get> extends infer T
+		? T extends { manifest: infer M }
+			? M
+			: never
+		: never
+
+const isNewShape = (m: RegistryManifest): m is Extract<RegistryManifest, { id: string }> =>
+	'id' in m && 'title' in m
+
 export const listAppIds = (): string[] => [...registry.keys()]
-export const listApps = (): { id: string; name: string; description: string; iconUrl?: string }[] =>
-	[...registry.entries()].map(([id, entry]) => ({
-		id,
-		name: entry.manifest.name,
-		description: entry.manifest.description ?? '',
-		iconUrl: entry.manifest.icon ? `/apps/${id}/${entry.manifest.icon}` : undefined
-	}))
+export const listApps = (): {
+	id: string
+	name: string
+	description: string
+	iconUrl?: string
+	kind: 'sandbox' | 'esm'
+	manifestUrl?: string
+	baseUrl?: string
+}[] =>
+	[...registry.entries()].map(([id, entry]) => {
+		const m = entry.manifest
+		if (isNewShape(m)) {
+			return {
+				id,
+				name: m.title,
+				description: '',
+				iconUrl: m.icon ? `/apps/${id}/${m.icon}` : undefined,
+				kind: 'esm' as const,
+				manifestUrl: `/apps/${id}/manifest.json`,
+				baseUrl: `/apps/${id}/`
+			}
+		}
+		return {
+			id,
+			name: m.name,
+			description: m.description ?? '',
+			iconUrl: m.icon ? `/apps/${id}/${m.icon}` : undefined,
+			kind: 'sandbox' as const
+		}
+	})
 export const hasApp = (id: string): boolean => registry.has(id)
+export const isEsmApp = (id: string): boolean => {
+	const entry = registry.get(id)
+	return !!entry && isNewShape(entry.manifest)
+}
 export const getEntryPath = (id: string): string | undefined => registry.get(id)?.manifest.entry
-// Manifest-declared permissions for an app. Default-deny — an unknown id
-// or a manifest without the field returns an empty list, which the RPC
-// dispatcher gates volume calls against.
-export const getAppPermissions = (id: string): readonly AppPermission[] =>
-	registry.get(id)?.manifest.permissions ?? []
+// Manifest-declared permissions for an app. Default-deny — an unknown id,
+// a new-shape manifest (no permissions field yet), or a manifest without
+// the field returns an empty list, which the RPC dispatcher gates volume
+// calls against.
+export const getAppPermissions = (id: string): readonly AppPermission[] => {
+	const m = registry.get(id)?.manifest
+	if (!m || isNewShape(m)) return []
+	return m.permissions ?? []
+}
 export const SDK_JS = sdkJs
 
 const APP_STORAGE_KEY = 'active_app'

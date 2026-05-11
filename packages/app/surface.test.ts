@@ -7,12 +7,19 @@ import { expect, test } from 'bun:test'
 import * as pkg from './index.js'
 
 const ALLOWLIST = [
+	'APP_CONTRACT_VERSION',
 	'APP_PERMISSIONS',
 	'APP_RPC_ERROR',
 	'APP_RPC_PERMISSION',
+	'AppManifestSchema',
 	'FORMAT_VERSION',
 	'ManifestSchema',
-	'PermissionSchema'
+	'PermissionSchema',
+	'createHost',
+	'defineApp',
+	'isNewManifest',
+	'loadApp',
+	'loadManifest'
 ] as const
 
 test('public exports stay within the curated allowlist', () => {

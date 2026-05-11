@@ -359,6 +359,16 @@ export function useChat(): UseChatResult {
 			setActiveApp({ kind: 'builtin', id: app.id })
 			return
 		}
+		if (app.kind === 'esm') {
+			if (!app.manifestUrl || !app.baseUrl) return
+			setActiveApp({
+				kind: 'esm',
+				id: app.id,
+				manifestUrl: app.manifestUrl,
+				baseUrl: app.baseUrl
+			})
+			return
+		}
 		if (!wsRef.current || connectionState !== 'ready') return
 		wsRef.current.send(JSON.stringify({ type: 'app_launch', id: app.id }))
 	}

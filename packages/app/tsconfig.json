@@ -24,6 +24,10 @@
 		"format.ts",
 		"host.ts",
 		"client.ts",
+		"contract.ts",
+		"app-loader.ts",
+		"host-factory.ts",
+		"manifest-loader.ts",
 		"capabilities/**/*.ts"
 	],
 	"exclude": ["node_modules", "dist"]
