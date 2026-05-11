@@ -5,8 +5,14 @@
 // relay surface fails the type checker.
 
 import { test } from 'bun:test'
-import type { AppLauncher, AppRelay, ToolInvokeHandler, ToolResultSender } from './client.js'
-import type { AppHostRpcRegistry, AppRpcRequest, AppRpcResponse } from './protocol.js'
+import type {
+	AppLauncher,
+	AppRelay,
+	HostCallHandler,
+	ToolInvokeHandler,
+	ToolResultSender
+} from './client.js'
+import type { AppHostRpcRegistry, AppRpcError, AppRpcRequest, AppRpcResponse } from './protocol.js'
 
 type Equal<X, Y> =
 	(<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false
@@ -35,6 +41,21 @@ type SendToolResultParams = Parameters<ToolResultSender>
 type _ToolResultCallIdIsString = Expect<Equal<SendToolResultParams[0], string>>
 
 type _NotifyReload = Expect<Equal<Parameters<AppRelay['notifyIframeReload']>, []>>
+
+// `callIframe` is keyed off `AppHostRpcRegistry`. Picking a concrete method
+// must resolve to the registry's params + result shapes so a drift between
+// the registry and the relay surface fails the type checker.
+type DescribeResult = AppHostRpcRegistry['app.agent.describe']['result']
+declare const relay: AppRelay
+type DescribeCallReturn = Awaited<ReturnType<typeof relay.callIframe<'app.agent.describe'>>>
+type _CallIframeDescribeReturn = Expect<
+	Equal<DescribeCallReturn, { result?: DescribeResult; error?: AppRpcError }>
+>
+type _CallIframeDescribeParams = Expect<
+	Equal<Parameters<typeof relay.callIframe<'app.agent.describe'>>[1], object>
+>
+
+type _OnHostCallShape = Expect<Equal<Parameters<AppRelay['onHostCall']>[0], HostCallHandler | null>>
 
 // AppLauncher exposes a stable shape — launch/close take no extra args.
 type _LauncherLaunch = Expect<Equal<ReturnType<AppLauncher['launch']>, void>>

@@ -40,9 +40,12 @@ interface ClientMessage {
 		| 'app_rpc'
 		| 'app_tool_result'
 		| 'app_iframe_reload'
+		| 'app_host_reply'
 	text?: string
 	id?: string
-	frame?: AppRpcRequest
+	frame?:
+		| AppRpcRequest
+		| { id: string; result?: unknown; error?: { code: number; message: string } }
 	callId?: string
 	result?: unknown
 	error?: { code: number; message: string }
@@ -291,8 +294,9 @@ export class Frieren extends DurableObject<Env> {
 			})
 			try {
 				const promptText = parsed.text
+				const extraSystemContext = await this.activeAppProjection()
 				await this.coalescer.during(async () => {
-					await this.runtime?.prompt(promptText, 'user')
+					await this.runtime?.prompt(promptText, 'user', { extraSystemContext })
 				})
 			} catch (error) {
 				ws.send(
@@ -325,6 +329,23 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
+	// Best-effort fetch of the active app's self-projection. Returns
+	// `undefined` (and never throws) when no app is active, the app has no
+	// describe callback, the iframe is unreachable, or the call times out —
+	// callers append the result only when present.
+	private async activeAppProjection(): Promise<string | undefined> {
+		const active = this.apps.current()
+		if (!active) return undefined
+		const projection = await this.apps.callActive('app.agent.describe', {})
+		const description = projection?.description?.trim()
+		if (!description) return undefined
+		return [
+			`# active app projection (app-authored, safe-filtered)`,
+			`Active app: ${active.id}.`,
+			description
+		].join('\n\n')
+	}
+
 	private broadcast(message: ServerMessage): void {
 		const payload = JSON.stringify(message)
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
@@ -340,8 +361,9 @@ export class Frieren extends DurableObject<Env> {
 		})
 		try {
 			let answer = ''
+			const extraSystemContext = await this.activeAppProjection()
 			await this.coalescer.during(async () => {
-				answer = (await this.runtime?.prompt(prompt, 'app')) ?? ''
+				answer = (await this.runtime?.prompt(prompt, 'app', { extraSystemContext })) ?? ''
 			})
 			return answer
 		} catch (error) {

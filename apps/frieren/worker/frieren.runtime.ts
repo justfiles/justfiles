@@ -27,7 +27,11 @@ type FrierenEvent = AgentEvent
 type FrierenEventListener = (event: FrierenEvent, signal: AbortSignal) => Promise<void> | void
 
 export interface Runtime {
-	prompt: (message: string, source?: 'user' | 'app') => Promise<string>
+	prompt: (
+		message: string,
+		source?: 'user' | 'app',
+		options?: { extraSystemContext?: string }
+	) => Promise<string>
 	shutdown: () => Promise<void>
 	subscribe: (lisener: FrierenEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
@@ -71,13 +75,22 @@ export async function runtime({
 		agent.state.tools = agent.state.tools.filter((tool) => !tools.includes(tool))
 	}
 
-	async function prompt(message: string, source: 'user' | 'app' = 'user') {
+	async function prompt(
+		message: string,
+		source: 'user' | 'app' = 'user',
+		options: { extraSystemContext?: string } = {}
+	) {
 		const offset = agent.state.messages.length
+		const baseSystemPrompt = agent.state.systemPrompt
+		const extra = options.extraSystemContext?.trim()
+		if (extra) agent.state.systemPrompt = `${baseSystemPrompt}\n\n${extra}`
 		let promptError: unknown
 		try {
 			await agent.prompt(message)
 		} catch (error) {
 			promptError = error
+		} finally {
+			if (extra) agent.state.systemPrompt = baseSystemPrompt
 		}
 
 		const newMessages = agent.state.messages.slice(offset)

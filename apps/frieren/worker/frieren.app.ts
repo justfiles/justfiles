@@ -10,7 +10,11 @@
 import { registry } from 'virtual:@justfiles/apps'
 import type {
 	AppHost,
+	AppHostRpcMethod,
+	AppHostRpcParams,
+	AppHostRpcResult,
 	AppPermission,
+	AppRpcError,
 	AppRpcRequest,
 	AppRpcResponse,
 	RequestId
@@ -54,10 +58,23 @@ type Socket = Pick<WebSocket, 'send'>
 type ClientMessage = {
 	type: string
 	id?: string
-	frame?: { id: RequestId; method: string; params: unknown }
+	frame?: {
+		id: RequestId
+		method?: string
+		params?: unknown
+		result?: unknown
+		error?: AppRpcError
+	}
 	callId?: string
 	result?: unknown
 	error?: unknown
+}
+
+type HostCallFrame = {
+	jsonrpc: '2.0'
+	id: RequestId
+	method: AppHostRpcMethod
+	params: unknown
 }
 
 type ServerMessage =
@@ -65,6 +82,7 @@ type ServerMessage =
 	| { type: 'app_close' }
 	| { type: 'app_rpc'; frame: AppRpcResponse }
 	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
+	| { type: 'app_host_call'; frame: HostCallFrame }
 
 interface ActiveAppRecord {
 	id: string
@@ -80,11 +98,19 @@ type PendingToolCall = {
 	reject: (reason: unknown) => void
 }
 
+type PendingHostCall = {
+	resolve: (frame: { result?: unknown; error?: AppRpcError } | null) => void
+	timeout: ReturnType<typeof setTimeout>
+}
+
+const HOST_CALL_TIMEOUT_MS = 5_000
+
 export class FrierenAppHost implements AppHost {
 	private activeApp?: ActiveAppRecord
 	// Pending tool calls are scoped to the active app: only one app can be active,
 	// and close/reload rejects every outstanding call before changing that app.
 	private readonly pendingToolCalls = new Map<string, PendingToolCall>()
+	private readonly pendingHostCalls = new Map<string, PendingHostCall>()
 
 	constructor(
 		private readonly deps: {
@@ -122,6 +148,7 @@ export class FrierenAppHost implements AppHost {
 		const { id, tools } = this.activeApp
 		this.deps.runtime()?.removeTools(tools)
 		this.failPendingToolCalls()
+		this.failPendingHostCalls()
 		this.activeApp = undefined
 		await this.deleteStoredApp(id)
 		this.broadcast({ type: 'app_close' })
@@ -139,9 +166,46 @@ export class FrierenAppHost implements AppHost {
 			this.activeApp?.id ?? (await this.deps.storage.get<PersistedApp>(APP_STORAGE_KEY))?.id
 		if (this.activeApp) this.deps.runtime()?.removeTools(this.activeApp.tools)
 		this.failPendingToolCalls()
+		this.failPendingHostCalls()
 		this.activeApp = undefined
 		if (id) await this.deleteStoredApp(id)
 		else await this.deps.storage.delete(APP_STORAGE_KEY)
+	}
+
+	async callActive<M extends AppHostRpcMethod>(
+		method: M,
+		params: AppHostRpcParams<M>
+	): Promise<AppHostRpcResult<M> | null> {
+		if (!this.activeApp) return null
+		const socket = this.firstSocket()
+		if (!socket) return null
+		const id = crypto.randomUUID()
+		const reply = await new Promise<{ result?: unknown; error?: AppRpcError } | null>((resolve) => {
+			const timeout = setTimeout(() => {
+				this.pendingHostCalls.delete(id)
+				console.error('[frieren-app-host-call-timeout]', { method, id })
+				resolve(null)
+			}, HOST_CALL_TIMEOUT_MS)
+			this.pendingHostCalls.set(id, { resolve, timeout })
+			const message: ServerMessage = {
+				type: 'app_host_call',
+				frame: { jsonrpc: '2.0', id, method, params }
+			}
+			try {
+				socket.send(JSON.stringify(message))
+			} catch (err) {
+				clearTimeout(timeout)
+				this.pendingHostCalls.delete(id)
+				console.error('[frieren-app-host-call-send]', err)
+				resolve(null)
+			}
+		})
+		if (!reply) return null
+		if (reply.error) {
+			console.error('[frieren-app-host-call-error]', { method, error: reply.error })
+			return null
+		}
+		return (reply.result ?? null) as AppHostRpcResult<M> | null
 	}
 
 	async dispatch(frame: AppRpcRequest): Promise<AppRpcResponse> {
@@ -175,6 +239,13 @@ export class FrierenAppHost implements AppHost {
 		}
 		if (parsed.type === 'app_tool_result') {
 			if (parsed.callId) this.handleToolResult(parsed.callId, parsed.result, parsed.error)
+			return true
+		}
+		if (parsed.type === 'app_host_reply') {
+			const frame = parsed.frame as
+				| { id?: string; result?: unknown; error?: AppRpcError }
+				| undefined
+			if (frame?.id) this.handleHostCallReply(frame.id, frame.result, frame.error)
 			return true
 		}
 		if (parsed.type === 'app_rpc') {
@@ -216,6 +287,29 @@ export class FrierenAppHost implements AppHost {
 		this.pendingToolCalls.delete(callId)
 		if (error) pending.reject(error)
 		else pending.resolve(result)
+	}
+
+	private handleHostCallReply(id: string, result: unknown, error?: AppRpcError): void {
+		const pending = this.pendingHostCalls.get(id)
+		if (!pending) return
+		this.pendingHostCalls.delete(id)
+		clearTimeout(pending.timeout)
+		pending.resolve({ result, error })
+	}
+
+	private firstSocket(): Socket | undefined {
+		for (const ws of this.deps.websockets()) return ws
+		return undefined
+	}
+
+	private failPendingHostCalls(): void {
+		if (this.pendingHostCalls.size === 0) return
+		const pending = Array.from(this.pendingHostCalls.values())
+		this.pendingHostCalls.clear()
+		for (const p of pending) {
+			clearTimeout(p.timeout)
+			p.resolve(null)
+		}
 	}
 
 	private async resetClientTools(): Promise<void> {

@@ -1,4 +1,4 @@
-import type { AppRelay, ToolInvokeHandler } from '@justfiles/app'
+import type { AppRelay, HostCallHandler, ToolInvokeHandler } from '@justfiles/app'
 import { HouseIcon } from '@phosphor-icons/react'
 import { useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,13 @@ type ToolResolveData = {
 	error?: { code: number; message: string }
 }
 
+type HostResolveData = {
+	result?: unknown
+	error?: { code: number; message: string }
+}
+
+const HOST_CALL_TIMEOUT_MS = 5_000
+
 type Ui = { url: string }
 
 export function AppFrame(props: { id: string; ui: Ui; relay: AppRelay; onHome: () => void }) {
@@ -17,6 +24,9 @@ export function AppFrame(props: { id: string; ui: Ui; relay: AppRelay; onHome: (
 
 	// Pending server-originated tool invocations awaiting the iframe response.
 	const pendingToolInvokes = useRef(new Map<string, (data: ToolResolveData) => void>())
+	// Pending generic host-call invocations (typed via AppHostRpcRegistry)
+	// awaiting the iframe's JSON-RPC response, keyed by the host-minted id.
+	const pendingHostCalls = useRef(new Map<string, (data: HostResolveData) => void>())
 	// Iframe `onLoad` fires for the initial mount AND every reload. We use
 	// the count to distinguish: > 1 means the iframe re-loaded (browser
 	// refresh, navigation, or `location.reload()` from inside) so the
@@ -44,22 +54,56 @@ export function AppFrame(props: { id: string; ui: Ui; relay: AppRelay; onHome: (
 		return () => relay.onToolInvoke(null)
 	}, [relay])
 
+	// Register a generic host-call handler that forwards typed host→iframe
+	// requests (currently `app.agent.describe`) over postMessage and resolves
+	// when the iframe replies. The handler is method-agnostic — every
+	// `AppHostRpcRegistry` entry the SDK answers flows through this path.
+	useEffect(() => {
+		const handler: HostCallHandler = (method, params) =>
+			new Promise((resolve) => {
+				const id = crypto.randomUUID()
+				const settle = (data: HostResolveData) => {
+					pendingHostCalls.current.delete(id)
+					if (data.error) resolve({ error: data.error })
+					else resolve({ result: data.result as never })
+				}
+				const timeout = setTimeout(() => {
+					if (!pendingHostCalls.current.has(id)) return
+					settle({ error: { code: -32021, message: 'host_call_timeout' } })
+				}, HOST_CALL_TIMEOUT_MS)
+				pendingHostCalls.current.set(id, (data) => {
+					clearTimeout(timeout)
+					settle(data)
+				})
+				iframeRef.current?.contentWindow?.postMessage({ jsonrpc: '2.0', id, method, params }, '*')
+			})
+		relay.onHostCall(handler)
+		return () => relay.onHostCall(null)
+	}, [relay])
+
 	useEffect(() => {
 		const receive = (event: MessageEvent) => {
 			if (event.source !== iframeRef.current?.contentWindow) return
 			const data = event.data
 			if (!data || data.jsonrpc !== '2.0') return
 
-			// Handle tool invocation responses from the iframe (have id but no method).
+			// Handle iframe replies to host-initiated requests (id present, no method).
 			if (
 				'id' in data &&
 				typeof data.method === 'undefined' &&
 				('result' in data || 'error' in data)
 			) {
-				const resolver = pendingToolInvokes.current.get(String(data.id))
-				if (resolver) {
-					pendingToolInvokes.current.delete(String(data.id))
-					resolver(data as ToolResolveData)
+				const id = String(data.id)
+				const hostResolver = pendingHostCalls.current.get(id)
+				if (hostResolver) {
+					pendingHostCalls.current.delete(id)
+					hostResolver(data as HostResolveData)
+					return
+				}
+				const toolResolver = pendingToolInvokes.current.get(id)
+				if (toolResolver) {
+					pendingToolInvokes.current.delete(id)
+					toolResolver(data as ToolResolveData)
 					return
 				}
 			}

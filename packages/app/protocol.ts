@@ -135,6 +135,26 @@ export type AppHostRpcRegistry = {
 	'app.tool.invoke': { params: { callId: string; name: string; input: unknown }; result: unknown }
 }
 
+export type AppHostRpcMethod = keyof AppHostRpcRegistry
+export type AppHostRpcParams<M extends AppHostRpcMethod> = AppHostRpcRegistry[M]['params']
+export type AppHostRpcResult<M extends AppHostRpcMethod> = AppHostRpcRegistry[M]['result']
+
+export type AppHostRpcRequest = {
+	[M in AppHostRpcMethod]: {
+		jsonrpc: '2.0'
+		id: RequestId
+		method: M
+		params: AppHostRpcParams<M>
+	}
+}[AppHostRpcMethod]
+
+export type AppHostRpcResponse = {
+	jsonrpc: '2.0'
+	id: RequestId
+	result?: unknown
+	error?: AppRpcError
+}
+
 /** A client-side agent tool with a handler that runs in the iframe. */
 export interface AppTool {
 	readonly name: string

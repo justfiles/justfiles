@@ -1,9 +1,13 @@
 import { useAuth } from '@clerk/clerk-react'
 import type {
 	ActiveApp,
+	AppHostRpcMethod,
+	AppHostRpcParams,
+	AppHostRpcResult,
 	AppRpcError,
 	AppRpcRequest,
 	AppRpcResponse,
+	HostCallHandler,
 	InstalledApp,
 	ToolInvokeHandler,
 	ToolResultSender
@@ -34,6 +38,11 @@ export interface UseChatResult {
 		}
 		relay: {
 			sendRpc: (frame: AppRpcRequest) => Promise<AppRpcResponse>
+			callIframe: <M extends AppHostRpcMethod>(
+				method: M,
+				params: AppHostRpcParams<M>
+			) => Promise<{ result?: AppHostRpcResult<M>; error?: AppRpcError }>
+			onHostCall: (handler: HostCallHandler | null) => void
 			onToolInvoke: (handler: ToolInvokeHandler | null) => void
 			sendToolResult: ToolResultSender
 			notifyIframeReload: () => void
@@ -62,6 +71,8 @@ export function useChat(): UseChatResult {
 	const pendingRpcRef = useRef(new Map<string, (frame: AppRpcResponse) => void>())
 	// Handler registered by AppFrame to receive server-originated tool invocations.
 	const toolInvokeHandlerRef = useRef<ToolInvokeHandler | null>(null)
+	// Handler registered by AppFrame to handle server-originated typed host calls.
+	const hostCallHandlerRef = useRef<HostCallHandler | null>(null)
 
 	useEffect(() => {
 		void connectKey
@@ -288,6 +299,34 @@ export function useChat(): UseChatResult {
 					return
 				}
 
+				if (data.type === 'app_host_call' && data.frame) {
+					const frame = data.frame as {
+						id: string
+						method: AppHostRpcMethod
+						params: AppHostRpcParams<AppHostRpcMethod>
+					}
+					const handler = hostCallHandlerRef.current
+					const send = (reply: { result?: unknown; error?: AppRpcError }) => {
+						wsRef.current?.send(
+							JSON.stringify({
+								type: 'app_host_reply',
+								frame: { jsonrpc: '2.0', id: frame.id, ...reply }
+							})
+						)
+					}
+					if (!handler) {
+						send({ error: { code: -32601, message: 'method_not_found' } })
+						return
+					}
+					handler(frame.method, frame.params)
+						.then((reply) => send(reply))
+						.catch((err: unknown) => {
+							const message = err instanceof Error ? err.message : 'host_call_failed'
+							send({ error: { code: -32000, message } })
+						})
+					return
+				}
+
 				if (data.type === 'event') handleAgentEvent(data.event)
 			}
 
@@ -378,6 +417,19 @@ export function useChat(): UseChatResult {
 		toolInvokeHandlerRef.current = handler
 	}
 
+	const onHostCall = (handler: HostCallHandler | null) => {
+		hostCallHandlerRef.current = handler
+	}
+
+	const callIframe = async <M extends AppHostRpcMethod>(
+		method: M,
+		params: AppHostRpcParams<M>
+	): Promise<{ result?: AppHostRpcResult<M>; error?: AppRpcError }> => {
+		const handler = hostCallHandlerRef.current
+		if (!handler) return { error: { code: -32601, message: 'method_not_found' } }
+		return handler(method, params)
+	}
+
 	const sendToolResult: ToolResultSender = (callId, result, error?: AppRpcError) => {
 		wsRef.current?.send(JSON.stringify({ type: 'app_tool_result', callId, result, error }))
 	}
@@ -391,7 +443,14 @@ export function useChat(): UseChatResult {
 		connection: { state: connectionState, reconnect },
 		apps: {
 			launcher: { activeApp, installedApps, launch: launchApp, close: closeApp },
-			relay: { sendRpc, onToolInvoke, sendToolResult, notifyIframeReload }
+			relay: {
+				sendRpc,
+				callIframe,
+				onHostCall,
+				onToolInvoke,
+				sendToolResult,
+				notifyIframeReload
+			}
 		}
 	}
 }

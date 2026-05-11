@@ -6,7 +6,14 @@
 // compiler fails here before runtime.
 
 import { test } from 'bun:test'
-import type { AppHost, AppRpcMethod, AppRpcRequest, AppRpcResponse, RequestId } from './index.js'
+import type {
+	AppHost,
+	AppHostRpcRegistry,
+	AppRpcMethod,
+	AppRpcRequest,
+	AppRpcResponse,
+	RequestId
+} from './index.js'
 
 type Equal<X, Y> =
 	(<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false
@@ -33,5 +40,17 @@ type _Close = Expect<Equal<Parameters<AppHost['close']>, []>>
 // The `RequestId` import is referenced only for documentation: dispatch's
 // request id field is typed as `RequestId` via the registry.
 type _RequestIdShape = Expect<Equal<RequestId, AppRpcRequest['id']>>
+
+// `callActive` is keyed off `AppHostRpcRegistry`; the awaited result is
+// either the registry-typed result or `null` (no active app / unreachable
+// / timeout). The contract returns data — never throws — so callers branch
+// on `null` rather than catching.
+type DescribeResult = AppHostRpcRegistry['app.agent.describe']['result']
+declare const host: AppHost
+type CallActiveDescribeReturn = Awaited<ReturnType<typeof host.callActive<'app.agent.describe'>>>
+type _CallActiveDescribeReturn = Expect<Equal<CallActiveDescribeReturn, DescribeResult | null>>
+type _CallActiveDescribeParams = Expect<
+	Equal<Parameters<typeof host.callActive<'app.agent.describe'>>[1], object>
+>
 
 test('AppHost contract compiles', () => {})

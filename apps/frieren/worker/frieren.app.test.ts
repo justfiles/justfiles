@@ -307,6 +307,94 @@ describe('AppHost', () => {
 		])
 	})
 
+	test('callActive returns null when no active app', async () => {
+		const { host } = setup()
+		await expect(host.callActive('app.agent.describe', {})).resolves.toBeNull()
+	})
+
+	test('callActive returns null when active but no connected websocket', async () => {
+		const storage = new StorageStub()
+		const tools: AgentTool[] = []
+		const makeRuntime = () =>
+			({
+				addTools(next: readonly AgentTool[]) {
+					tools.push(...next)
+				},
+				removeTools(next: readonly AgentTool[]) {
+					for (const tool of next) {
+						const index = tools.indexOf(tool)
+						if (index >= 0) tools.splice(index, 1)
+					}
+				}
+			}) as Runtime
+		const host = new FrierenAppHost({
+			storage,
+			volume: {} as never,
+			websockets: () => [],
+			runtime: () => makeRuntime(),
+			capabilityBridge: {
+				async invoke() {
+					return { ok: true }
+				}
+			},
+			sendAgentPrompt: async () => ''
+		})
+		await host.launch('demo')
+		await expect(host.callActive('app.agent.describe', {})).resolves.toBeNull()
+	})
+
+	test('callActive resolves with the iframe-supplied frame on app_host_reply', async () => {
+		const { host, sockets } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		await host.launch('demo')
+
+		const pending = host.callActive('app.agent.describe', {})
+		const sent = sockets[0].sent.at(-1) as {
+			type: string
+			frame: { id: string; method: string }
+		}
+		expect(sent.type).toBe('app_host_call')
+		expect(sent.frame.method).toBe('app.agent.describe')
+
+		await host.handleMessage(ws, {
+			type: 'app_host_reply',
+			frame: { id: sent.frame.id, result: { description: 'hello' } }
+		})
+
+		await expect(pending).resolves.toEqual({ description: 'hello' })
+	})
+
+	test('callActive returns null on timeout', async () => {
+		const { host } = setup()
+		await host.launch('demo')
+
+		const originalSetTimeout = globalThis.setTimeout
+		globalThis.setTimeout = ((fn: () => void) => {
+			Promise.resolve().then(() => fn())
+			return 0 as unknown as ReturnType<typeof originalSetTimeout>
+		}) as typeof globalThis.setTimeout
+		try {
+			await expect(host.callActive('app.agent.describe', {})).resolves.toBeNull()
+		} finally {
+			globalThis.setTimeout = originalSetTimeout
+		}
+	})
+
+	test('callActive forwards error frames as null and logs', async () => {
+		const { host, sockets } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		await host.launch('demo')
+
+		const pending = host.callActive('app.agent.describe', {})
+		const sent = sockets[0].sent.at(-1) as { frame: { id: string } }
+		await host.handleMessage(ws, {
+			type: 'app_host_reply',
+			frame: { id: sent.frame.id, error: { code: -32021, message: 'host_call_timeout' } }
+		})
+
+		await expect(pending).resolves.toBeNull()
+	})
+
 	test('capability RPC uses the constructor bridge', async () => {
 		const { host, sockets, capabilityCalls } = setup()
 		const ws = sockets[0] as unknown as WebSocket
