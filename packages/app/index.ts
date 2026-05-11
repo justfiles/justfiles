@@ -11,7 +11,14 @@ export type {
 	ToolInvokeHandler,
 	ToolResultSender
 } from './client.js'
-export type { App, Host, Manifest as AppManifest, Volume } from './contract.js'
+export type {
+	App,
+	AppCapabilityMap,
+	Capabilities,
+	Host,
+	Manifest as AppManifest,
+	Volume
+} from './contract.js'
 export {
 	APP_CONTRACT_VERSION,
 	defineApp,
@@ -35,7 +42,6 @@ export {
 	APP_RPC_ERROR,
 	APP_RPC_PERMISSION,
 	type AppCapabilities,
-	type AppCapabilityMap,
 	type AppRpcError,
 	type AppRpcMethod,
 	type AppRpcParams,

@@ -1,9 +1,10 @@
 // Frame types for the FE↔BE bridge. Plain JSON-RPC. Both transports
 // (postMessage in frieren prod, WebSocket in dev) carry these verbatim.
 
-import type { CalendarCapability } from './capabilities/calendar/contract.js'
-import type { EmailCapability } from './capabilities/email/contract.js'
+import type { AppCapabilityMap } from './contract.js'
 import type { AppPermission } from './format.js'
+
+export type { AppCapabilityMap } from './contract.js'
 
 export type RequestId = string
 
@@ -106,25 +107,6 @@ export interface AppVolume {
 	readFile(path: string): Promise<Uint8Array>
 	/** Write raw bytes. Parent directories are created as needed. */
 	writeFile(path: string, bytes: Uint8Array): Promise<void>
-}
-
-/**
- * Author-facing typed map of host capabilities reachable from `app.capabilities`.
- *
- * Extensible by interface declaration merging — adding a future capability
- * means augmenting this map plus registering a host broker, with no transport
- * change. Runtime invocation goes through one generic
- * `app.capability.invoke` JSON-RPC method regardless of which key is called.
- *
- * ```ts
- * declare module '@justfiles/app/protocol' {
- *   interface AppCapabilityMap { reminders: RemindersCapability }
- * }
- * ```
- */
-export interface AppCapabilityMap {
-	email: EmailCapability
-	calendar: CalendarCapability
 }
 
 export type AppCapabilities = { readonly [K in keyof AppCapabilityMap]: AppCapabilityMap[K] }
