@@ -4,17 +4,10 @@ import { ToolCallBlock } from './ToolCallBlock'
 import type { ChatViewProps } from './types'
 
 export function ClassicView(props: ChatViewProps) {
-	const {
-		messages,
-		input,
-		setInput,
-		userName,
-		agentName,
-		connectionState,
-		isStreaming,
-		sendMessage,
-		abort
-	} = props
+	const { session, connection } = props
+	const { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort } =
+		session
+	const connectionState = connection.state
 	const messagesEndRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -103,7 +96,7 @@ export function ClassicView(props: ChatViewProps) {
 }
 
 function ChatMessageBlock(props: {
-	message: ChatViewProps['messages'][number]
+	message: ChatViewProps['session']['messages'][number]
 	userName: string
 	agentName: string
 	isStreaming: boolean
@@ -156,7 +149,10 @@ function ChatMessageBlock(props: {
 	)
 }
 
-function ToolCalls(props: { message: ChatViewProps['messages'][number]; className: string }) {
+function ToolCalls(props: {
+	message: ChatViewProps['session']['messages'][number]
+	className: string
+}) {
 	const { message, className } = props
 	if (!message.toolCalls?.length) return null
 	return (

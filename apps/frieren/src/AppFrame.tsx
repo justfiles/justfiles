@@ -1,8 +1,8 @@
+import type { AppRelay, ToolInvokeHandler } from '@justfiles/app'
 import { HouseIcon } from '@phosphor-icons/react'
 import { useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type { AppRpcSender, ToolInvokeHandler, ToolResultSender } from './chat/types'
 
 type ToolResolveData = {
 	result?: { callId: string; value: unknown }
@@ -11,16 +11,8 @@ type ToolResolveData = {
 
 type Ui = { url: string }
 
-export function AppFrame(props: {
-	id: string
-	ui: Ui
-	onRpc: AppRpcSender
-	onHome: () => void
-	onRegisterToolInvoke: (handler: ToolInvokeHandler | null) => void
-	onToolResult: ToolResultSender
-	onIframeReload: () => void
-}) {
-	const { id, ui, onRpc, onHome, onRegisterToolInvoke, onToolResult, onIframeReload } = props
+export function AppFrame(props: { id: string; ui: Ui; relay: AppRelay; onHome: () => void }) {
+	const { id, ui, relay, onHome } = props
 	const iframeRef = useRef<HTMLIFrameElement>(null)
 
 	// Pending server-originated tool invocations awaiting the iframe response.
@@ -31,7 +23,7 @@ export function AppFrame(props: {
 	// worker needs to drop the previous SDK instance's client tools.
 	const loadCount = useRef(0)
 
-	// Register tool invoke handler with useChat so server-originated tool calls
+	// Register tool invoke handler on the relay so server-originated tool calls
 	// are routed to the iframe. The handler posts the request to the iframe and
 	// resolves via `pendingToolInvokes` when the iframe responds.
 	useEffect(() => {
@@ -42,15 +34,15 @@ export function AppFrame(props: {
 			)
 			pendingToolInvokes.current.set(callId, (data) => {
 				if (data.error) {
-					onToolResult(callId, undefined, data.error)
+					relay.sendToolResult(callId, undefined, data.error)
 				} else {
-					onToolResult(callId, data.result?.value)
+					relay.sendToolResult(callId, data.result?.value)
 				}
 			})
 		}
-		onRegisterToolInvoke(handler)
-		return () => onRegisterToolInvoke(null)
-	}, [onRegisterToolInvoke, onToolResult])
+		relay.onToolInvoke(handler)
+		return () => relay.onToolInvoke(null)
+	}, [relay])
 
 	useEffect(() => {
 		const receive = (event: MessageEvent) => {
@@ -78,16 +70,16 @@ export function AppFrame(props: {
 
 			// Everything flows to the worker over WS. The dispatcher there
 			// owns the typed registry; the chat layer just correlates by id.
-			onRpc({ jsonrpc: '2.0', id: data.id, method: data.method, params: data.params }).then(
-				(reply) => {
+			relay
+				.sendRpc({ jsonrpc: '2.0', id: data.id, method: data.method, params: data.params })
+				.then((reply) => {
 					iframeRef.current?.contentWindow?.postMessage(reply, '*')
-				}
-			)
+				})
 		}
 
 		window.addEventListener('message', receive)
 		return () => window.removeEventListener('message', receive)
-	}, [onRpc])
+	}, [relay])
 
 	// Fire `app.lifecycle` start once the iframe document is loaded — at that
 	// point the SDK has installed its message listener, so a notification
@@ -95,7 +87,7 @@ export function AppFrame(props: {
 	// otherwise need to know we've started.
 	const handleIframeLoad = () => {
 		loadCount.current += 1
-		if (loadCount.current > 1) onIframeReload()
+		if (loadCount.current > 1) relay.notifyIframeReload()
 		iframeRef.current?.contentWindow?.postMessage(
 			{ jsonrpc: '2.0', method: 'app.lifecycle', params: { event: 'start' } },
 			'*'

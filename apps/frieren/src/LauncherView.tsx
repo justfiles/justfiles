@@ -1,4 +1,4 @@
-import type { InstalledApp } from './chat/types'
+import type { InstalledApp } from '@justfiles/app'
 
 export function LauncherView(props: {
 	apps: InstalledApp[]

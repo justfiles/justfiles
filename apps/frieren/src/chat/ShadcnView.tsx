@@ -13,25 +13,10 @@ import { ToolCallBlock } from './ToolCallBlock'
 import type { ChatViewProps } from './types'
 
 export function ShadcnView(props: ChatViewProps) {
-	const {
-		messages,
-		input,
-		setInput,
-		userName,
-		agentName,
-		connectionState,
-		isStreaming,
-		sendMessage,
-		abort,
-		activeApp,
-		installedApps,
-		launchApp,
-		closeApp,
-		sendAppRpc,
-		registerToolInvokeHandler,
-		sendToolResult,
-		notifyIframeReload
-	} = props
+	const { session, connection, apps } = props
+	const { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort } =
+		session
+	const connectionState = connection.state
 	const { dismissPanel, history, historyRef, inputRef, pinned, setFocused, showPanel, submit } =
 		useAdventureViewState({ messages, input, sendMessage })
 
@@ -134,25 +119,22 @@ export function ShadcnView(props: ChatViewProps) {
 			<div className="flex min-w-0 flex-[1.618] flex-col bg-slate-950/60">
 				<div className="flex min-h-0 flex-[1.618] flex-col border-b-4 border-double border-sky-300/60 p-4">
 					<div className="relative flex flex-1 items-center justify-center overflow-hidden border-4 border-double border-sky-300 bg-gradient-to-b from-indigo-950 via-slate-900 to-slate-950 shadow-[6px_6px_0_rgba(0,0,0,0.45)]">
-						{activeApp?.kind === 'sandbox' ? (
+						{apps && apps.launcher.activeApp?.kind === 'sandbox' ? (
 							<AppFrame
-								id={activeApp.id}
-								ui={activeApp.ui}
-								onRpc={sendAppRpc}
-								onHome={closeApp}
-								onRegisterToolInvoke={registerToolInvokeHandler}
-								onToolResult={sendToolResult}
-								onIframeReload={notifyIframeReload}
+								id={apps.launcher.activeApp.id}
+								ui={apps.launcher.activeApp.ui}
+								relay={apps.relay}
+								onHome={apps.launcher.close}
 							/>
-						) : activeApp?.kind === 'builtin' ? (
-							<BuiltinHost id={activeApp.id} onHome={closeApp} />
-						) : (
+						) : apps && apps.launcher.activeApp?.kind === 'builtin' ? (
+							<BuiltinHost id={apps.launcher.activeApp.id} onHome={apps.launcher.close} />
+						) : apps ? (
 							<LauncherView
-								apps={[...installedApps, ...builtinLauncherEntries()]}
-								onLaunch={launchApp}
+								apps={[...apps.launcher.installedApps, ...builtinLauncherEntries()]}
+								onLaunch={apps.launcher.launch}
 							/>
-						)}
-						{activeApp ? (
+						) : null}
+						{apps?.launcher.activeApp ? (
 							<Badge
 								variant="outline"
 								className="absolute bottom-2 left-2 rounded-none border-sky-300 bg-slate-950/90 px-1.5 py-0 font-mono text-[10px] uppercase tracking-[0.24em] text-sky-200"

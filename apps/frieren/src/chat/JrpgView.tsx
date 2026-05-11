@@ -9,7 +9,9 @@ import { ToolCallBlock } from './ToolCallBlock'
 import type { ChatViewProps } from './types'
 
 export function JrpgView(props: ChatViewProps) {
-	const { messages, input, setInput, connectionState, isStreaming, sendMessage, abort } = props
+	const { session, connection } = props
+	const { messages, input, setInput, isStreaming, sendMessage, abort } = session
+	const connectionState = connection.state
 	const {
 		canvasRef,
 		dismissPanel,
