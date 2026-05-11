@@ -33,3 +33,6 @@ bun run verify:ui
 
 ## Simplicity First.
 Minimum code that solves the problem. No speculative features. No abstractions for single-use code. If a senior engineer would call it overcomplicated — simplify.
+
+## Be Very Stingy on interfaces
+Keep the module surface to the absolutely minimal. think: do we absolutely have to expose this? Only add to interface when it will break the design otherwise.
