@@ -8,12 +8,30 @@ import Type from 'typebox'
 
 export const APP_CONTRACT_VERSION = 1
 
-// Host SDK passed to `mount()`. This slice exposes only `version` — `volume`,
-// `agent`, and `capabilities` arrive in later slices. App authors should
-// thread the `Host` instance through their own state (React context, props,
-// closures); reading it from a global is no longer supported.
+// App-facing scoped storage. Paths are app-relative; the host scopes them
+// under the app's private storage. Failures throw real `Error` instances
+// (with `NotFoundError` for missing files); no JSON-RPC error envelopes.
+export interface Volume {
+	readText(path: string): Promise<string>
+	writeText(path: string, text: string): Promise<void>
+	readFile(path: string): Promise<Uint8Array>
+	writeFile(path: string, data: Uint8Array): Promise<void>
+}
+
+export class NotFoundError extends Error {
+	constructor(path: string) {
+		super(`not found: ${path}`)
+		this.name = 'NotFoundError'
+	}
+}
+
+// Host SDK passed to `mount()`. `agent` and `capabilities` arrive in later
+// slices. App authors should thread the `Host` instance through their own
+// state (React context, props, closures); reading it from a global is no
+// longer supported.
 export interface Host {
 	readonly version: number
+	readonly volume: Volume
 }
 
 // An app's default export. The entry module must be import-side-effect-free:

@@ -177,13 +177,6 @@
     "packages/app-demo": {
       "name": "@justfiles/app-demo",
       "version": "0.1.0",
-      "dependencies": {
-        "@justfiles/app": "workspace:*",
-      },
-      "devDependencies": {
-        "typescript": "~6.0.3",
-        "vite": "^8.0.0-beta.13",
-      },
     },
     "packages/app-doom": {
       "name": "@justbuddy/app-doom",

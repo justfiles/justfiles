@@ -10,7 +10,19 @@ const manifest: Manifest = {
 	entry: 'index.js'
 }
 
-const host: Host = { version: 1 }
+const host: Host = {
+	version: 1,
+	volume: {
+		async readText() {
+			return ''
+		},
+		async writeText() {},
+		async readFile() {
+			return new Uint8Array()
+		},
+		async writeFile() {}
+	}
+}
 const el = {} as HTMLElement
 
 test('loadApp mounts the default export with the supplied el and host', async () => {
