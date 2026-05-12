@@ -41,6 +41,9 @@ interface ClientMessage {
 		| 'app_tool_result'
 		| 'app_iframe_reload'
 	text?: string
+	/** Optional context from the currently running ESM app (App.describe).
+	 *  Prepended to the user prompt before it reaches the agent runtime. */
+	appContext?: string | null
 	id?: string
 	frame?: AppRpcRequest
 	callId?: string
@@ -293,7 +296,14 @@ export class Frieren extends DurableObject<Env> {
 				)
 			})
 			try {
-				const promptText = parsed.text
+				// Prepend the running ESM app's self-description (App.describe)
+				// as bracketed context so the agent has live state to ground
+				// in. Empty / missing context falls back to the plain prompt.
+				const ctx =
+					typeof parsed.appContext === 'string' && parsed.appContext.length > 0
+						? parsed.appContext
+						: null
+				const promptText = ctx ? `[App context: ${ctx}]\n\n${parsed.text}` : parsed.text
 				await this.coalescer.during(async () => {
 					await this.runtime?.prompt(promptText, 'user')
 				})

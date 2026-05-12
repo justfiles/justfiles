@@ -133,6 +133,7 @@ export function ShadcnView(props: ChatViewProps) {
 								manifestUrl={apps.launcher.activeApp.manifestUrl}
 								baseUrl={apps.launcher.activeApp.baseUrl}
 								relay={apps.relay}
+								setAppDescribe={apps.setAppDescribe}
 								onHome={apps.launcher.close}
 							/>
 						) : apps && apps.launcher.activeApp?.kind === 'builtin' ? (

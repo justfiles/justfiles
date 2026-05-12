@@ -39,5 +39,9 @@ export interface ChatConnection {
 export interface ChatViewProps {
 	session: ChatSession
 	connection: ChatConnection
-	apps?: { launcher: AppLauncher; relay: AppRelay }
+	apps?: {
+		launcher: AppLauncher
+		setAppDescribe: (fn: (() => Promise<string | null>) | null) => void
+		relay: AppRelay
+	}
 }

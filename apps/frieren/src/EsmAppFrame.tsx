@@ -48,9 +48,10 @@ export function EsmAppFrame(props: {
 	manifestUrl: string
 	baseUrl: string
 	relay: AppRelay
+	setAppDescribe: (fn: (() => Promise<string | null>) | null) => void
 	onHome: () => void
 }) {
-	const { id, manifestUrl, baseUrl, relay, onHome } = props
+	const { id, manifestUrl, baseUrl, relay, setAppDescribe, onHome } = props
 	const { getToken } = useAuth()
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
@@ -152,18 +153,20 @@ export function EsmAppFrame(props: {
 					return
 				}
 				handle = loaded
+				setAppDescribe(() => loaded.describe())
 			} catch (e) {
 				if (!cancelled) setError(String(e instanceof Error ? e.message : e))
 			}
 		})()
 		return () => {
 			cancelled = true
+			setAppDescribe(null)
 			relay.onToolInvoke(null)
 			void handle?.unmount()
 			toolRegistry?.dispose()
 			if (container) container.innerHTML = ''
 		}
-	}, [manifestUrl, baseUrl, relay])
+	}, [manifestUrl, baseUrl, relay, setAppDescribe])
 
 	return (
 		<div className="relative h-full w-full">

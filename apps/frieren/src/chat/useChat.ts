@@ -31,6 +31,10 @@ export interface UseChatResult {
 			launch: (app: InstalledApp) => void
 			close: () => void
 		}
+		/** ESM apps register a describe fn here; sendMessage awaits it and
+		 *  ships the result alongside the prompt so the agent has live
+		 *  context about whatever app is running. */
+		setAppDescribe: (fn: (() => Promise<string | null>) | null) => void
 		relay: {
 			sendRpc: (frame: AppRpcRequest) => Promise<AppRpcResponse>
 			onToolInvoke: (handler: ToolInvokeHandler | null) => void
@@ -60,11 +64,19 @@ export function useChat(): UseChatResult {
 	// the latest value without becoming a new closure on every render.
 	const connectionStateRef = useRef<ConnectionState>(connectionState)
 	connectionStateRef.current = connectionState
+	// Mirror activeApp into a ref so the WS `ready` message handler can
+	// re-install the activeApp on the worker after a reconnect without
+	// being re-bound to fresh state every render.
+	const activeAppRef = useRef<ActiveApp | null>(activeApp)
+	activeAppRef.current = activeApp
 	// Pending app-RPC requests keyed by frame id. The iframe minted the id;
 	// the worker echoes it back on `app_rpc` so we can resolve here.
 	const pendingRpcRef = useRef(new Map<string, (frame: AppRpcResponse) => void>())
 	// Handler registered by AppFrame to receive server-originated tool invocations.
 	const toolInvokeHandlerRef = useRef<ToolInvokeHandler | null>(null)
+	// ESM apps populate this with `() => appHandle.describe()` on mount;
+	// sendMessage awaits it and forwards the description with the prompt.
+	const appDescribeRef = useRef<(() => Promise<string | null>) | null>(null)
 
 	// Stable relay — never recreated. Methods read latest values via refs so
 	// passing this object as a React effect dependency does not retrigger
@@ -230,6 +242,15 @@ export function useChat(): UseChatResult {
 					}
 					setInstalledApps(Array.isArray(data.apps) ? data.apps : [])
 					setConnectionState('ready')
+					// If the user had launched an ESM app before the WS was
+					// open — or this is a reconnect — re-install the
+					// activeApp record on the worker. Reads the latest
+					// activeApp via ref so the once-bound message handler
+					// always sees current state.
+					const current = activeAppRef.current
+					if (current?.kind === 'esm') {
+						wsRef.current?.send(JSON.stringify({ type: 'app_launch', id: current.id }))
+					}
 					return
 				}
 
@@ -365,7 +386,22 @@ export function useChat(): UseChatResult {
 
 		setMessages((prev) => [...prev, userMessage])
 		setInput('')
-		wsRef.current.send(JSON.stringify({ type: 'prompt', text }))
+
+		const ws = wsRef.current
+		const describe = appDescribeRef.current
+		// Pull the running app's self-description (App.describe) and ship it
+		// with the prompt so the worker can prepend it to the agent's input.
+		// Without this, the LLM has no idea an app is open or what state
+		// it's in.
+		void (async () => {
+			let appContext: string | null = null
+			if (describe) {
+				try {
+					appContext = await describe()
+				} catch {}
+			}
+			ws.send(JSON.stringify({ type: 'prompt', text, appContext }))
+		})()
 	}
 
 	const abort = () => {
@@ -385,10 +421,16 @@ export function useChat(): UseChatResult {
 				manifestUrl: app.manifestUrl,
 				baseUrl: app.baseUrl
 			})
-			// The "install activeApp on the worker" message is sent by the
-			// effect below — it fires whenever an ESM app is active and the
-			// connection is ready, so a click before the WS opens still
-			// works once 'ready' arrives.
+			// Send `app_launch` synchronously, before React commits and the
+			// child EsmAppFrame mounts. React fires child effects before
+			// parent effects, so without this synchronous send, the
+			// crossword's `app.tool.register` RPCs reach the worker before
+			// the activeApp record is installed and silently fail. If the
+			// WS isn't ready yet, the 'ready' message handler picks it up
+			// via `activeAppRef`.
+			if (wsRef.current && connectionStateRef.current === 'ready') {
+				wsRef.current.send(JSON.stringify({ type: 'app_launch', id: app.id }))
+			}
 			return
 		}
 		if (!wsRef.current || connectionState !== 'ready') return
@@ -408,16 +450,9 @@ export function useChat(): UseChatResult {
 		})
 	}
 
-	// Install the ESM activeApp on the worker once the WS is ready. Runs
-	// again on reconnect (connectionState transitions back to 'ready') so
-	// the worker's in-memory activeApp record — which the existing app-RPC
-	// dispatcher requires — is restored without the user re-clicking the
-	// app tile.
-	useEffect(() => {
-		if (connectionState !== 'ready') return
-		if (activeApp?.kind !== 'esm') return
-		wsRef.current?.send(JSON.stringify({ type: 'app_launch', id: activeApp.id }))
-	}, [connectionState, activeApp])
+	const setAppDescribe = (fn: (() => Promise<string | null>) | null) => {
+		appDescribeRef.current = fn
+	}
 
 	const reconnect = () => setConnectKey((value) => value + 1)
 
@@ -426,6 +461,7 @@ export function useChat(): UseChatResult {
 		connection: { state: connectionState, reconnect },
 		apps: {
 			launcher: { activeApp, installedApps, launch: launchApp, close: closeApp },
+			setAppDescribe,
 			relay: relayRef.current
 		}
 	}
