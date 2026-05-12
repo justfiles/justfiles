@@ -8,12 +8,13 @@
 // `/apps/*` route in `index.ts`.
 
 import { registry } from 'virtual:@justfiles/apps'
-import type {
-	AppHost,
-	AppPermission,
-	AppRpcRequest,
-	AppRpcResponse,
-	RequestId
+import {
+	APP_PERMISSIONS,
+	type AppHost,
+	type AppPermission,
+	type AppRpcRequest,
+	type AppRpcResponse,
+	type RequestId
 } from '@justfiles/app'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import sdkJs from '@justfiles/app/sdk?raw'
@@ -70,13 +71,16 @@ export const isEsmApp = (id: string): boolean => {
 	return !!entry && isNewShape(entry.manifest)
 }
 export const getEntryPath = (id: string): string | undefined => registry.get(id)?.manifest.entry
-// Manifest-declared permissions for an app. Default-deny — an unknown id,
-// a new-shape manifest (no permissions field yet), or a manifest without
-// the field returns an empty list, which the RPC dispatcher gates volume
-// calls against.
+// Manifest-declared permissions for an app. Default-deny for unknown ids
+// and sandbox manifests that omit the field. ESM (new-shape) manifests
+// intentionally do not carry a `permissions` field in this phase
+// (#117): first-party apps receive the full `Host`, so we grant the
+// full permission set here. When third-party / scoped ESM apps land,
+// this should switch back to reading a declared list off the manifest.
 export const getAppPermissions = (id: string): readonly AppPermission[] => {
 	const m = registry.get(id)?.manifest
-	if (!m || isNewShape(m)) return []
+	if (!m) return []
+	if (isNewShape(m)) return APP_PERMISSIONS
 	return m.permissions ?? []
 }
 export const SDK_JS = sdkJs
