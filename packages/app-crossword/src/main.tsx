@@ -524,6 +524,17 @@ function Game({
 		if (solved) return
 		const handler = (e: KeyboardEvent) => {
 			if (!selected) return
+			// Window-level listener fires for any keystroke on the page,
+			// including the host's chat textarea. Bail out when focus is in
+			// an editable element so we don't hijack typing meant for it.
+			const t = e.target as HTMLElement | null
+			if (
+				t instanceof HTMLInputElement ||
+				t instanceof HTMLTextAreaElement ||
+				t?.isContentEditable
+			) {
+				return
+			}
 			const arrow: [number, number, Direction] | null =
 				e.key === 'ArrowLeft'
 					? [0, -1, 'across']
