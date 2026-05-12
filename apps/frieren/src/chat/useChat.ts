@@ -450,9 +450,11 @@ export function useChat(): UseChatResult {
 		})
 	}
 
-	const setAppDescribe = (fn: (() => Promise<string | null>) | null) => {
+	// Stable across re-renders so consumers can hold it as a captured value
+	// without becoming a re-render trigger.
+	const setAppDescribe = useRef((fn: (() => Promise<string | null>) | null) => {
 		appDescribeRef.current = fn
-	}
+	}).current
 
 	const reconnect = () => setConnectKey((value) => value + 1)
 
