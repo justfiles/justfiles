@@ -1,7 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import type {
 	ActiveApp,
-	AppRpcError,
 	AppRpcRequest,
 	AppRpcResponse,
 	InstalledApp,
@@ -57,11 +56,42 @@ export function useChat(): UseChatResult {
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
+	// Mirror connectionState into a ref so the relay's `sendRpc` can read
+	// the latest value without becoming a new closure on every render.
+	const connectionStateRef = useRef<ConnectionState>(connectionState)
+	connectionStateRef.current = connectionState
 	// Pending app-RPC requests keyed by frame id. The iframe minted the id;
 	// the worker echoes it back on `app_rpc` so we can resolve here.
 	const pendingRpcRef = useRef(new Map<string, (frame: AppRpcResponse) => void>())
 	// Handler registered by AppFrame to receive server-originated tool invocations.
 	const toolInvokeHandlerRef = useRef<ToolInvokeHandler | null>(null)
+
+	// Stable relay — never recreated. Methods read latest values via refs so
+	// passing this object as a React effect dependency does not retrigger
+	// the effect on every parent re-render (which would, e.g., remount any
+	// active ESM app on each chat keystroke).
+	const relayRef = useRef<UseChatResult['apps']['relay']>({
+		sendRpc: (frame) =>
+			new Promise((resolve) => {
+				const ws = wsRef.current
+				const id = String(frame.id)
+				if (!ws || connectionStateRef.current !== 'ready') {
+					resolve({ jsonrpc: '2.0', id, error: { code: -32004, message: 'no_connection' } })
+					return
+				}
+				pendingRpcRef.current.set(id, resolve)
+				ws.send(JSON.stringify({ type: 'app_rpc', frame }))
+			}),
+		onToolInvoke: (handler) => {
+			toolInvokeHandlerRef.current = handler
+		},
+		sendToolResult: (callId, result, error) => {
+			wsRef.current?.send(JSON.stringify({ type: 'app_tool_result', callId, result, error }))
+		},
+		notifyIframeReload: () => {
+			wsRef.current?.send(JSON.stringify({ type: 'app_iframe_reload' }))
+		}
+	})
 
 	useEffect(() => {
 		void connectKey
@@ -342,18 +372,6 @@ export function useChat(): UseChatResult {
 		wsRef.current?.send(JSON.stringify({ type: 'abort' }))
 	}
 
-	const sendRpc = (frame: AppRpcRequest): Promise<AppRpcResponse> =>
-		new Promise<AppRpcResponse>((resolve) => {
-			const ws = wsRef.current
-			const id = String(frame.id)
-			if (!ws || connectionState !== 'ready') {
-				resolve({ jsonrpc: '2.0', id, error: { code: -32004, message: 'no_connection' } })
-				return
-			}
-			pendingRpcRef.current.set(id, resolve)
-			ws.send(JSON.stringify({ type: 'app_rpc', frame }))
-		})
-
 	const launchApp = (app: InstalledApp) => {
 		if (app.kind === 'builtin') {
 			setActiveApp({ kind: 'builtin', id: app.id })
@@ -403,24 +421,12 @@ export function useChat(): UseChatResult {
 
 	const reconnect = () => setConnectKey((value) => value + 1)
 
-	const onToolInvoke = (handler: ToolInvokeHandler | null) => {
-		toolInvokeHandlerRef.current = handler
-	}
-
-	const sendToolResult: ToolResultSender = (callId, result, error?: AppRpcError) => {
-		wsRef.current?.send(JSON.stringify({ type: 'app_tool_result', callId, result, error }))
-	}
-
-	const notifyIframeReload = () => {
-		wsRef.current?.send(JSON.stringify({ type: 'app_iframe_reload' }))
-	}
-
 	return {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
 		connection: { state: connectionState, reconnect },
 		apps: {
 			launcher: { activeApp, installedApps, launch: launchApp, close: closeApp },
-			relay: { sendRpc, onToolInvoke, sendToolResult, notifyIframeReload }
+			relay: relayRef.current
 		}
 	}
 }
