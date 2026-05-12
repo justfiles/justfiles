@@ -1,10 +1,14 @@
 import { useAuth } from '@clerk/clerk-react'
 import {
 	type AppHandle,
+	type AppRelay,
+	type AppRpcRequest,
 	type Capabilities,
 	createHost,
+	type HostInstance,
 	loadApp,
-	loadManifest
+	loadManifest,
+	type ToolInvokeHandler
 } from '@justfiles/app'
 import { HouseIcon } from '@phosphor-icons/react'
 import { useEffect, useRef, useState } from 'react'
@@ -30,13 +34,17 @@ function stubCapabilities(): Capabilities {
 	}
 }
 
+let rpcCounter = 0
+const nextRpcId = () => `esm-${++rpcCounter}`
+
 export function EsmAppFrame(props: {
 	id: string
 	manifestUrl: string
 	baseUrl: string
+	relay: AppRelay
 	onHome: () => void
 }) {
-	const { id, manifestUrl, baseUrl, onHome } = props
+	const { id, manifestUrl, baseUrl, relay, onHome } = props
 	const { getToken } = useAuth()
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
@@ -48,7 +56,57 @@ export function EsmAppFrame(props: {
 		if (!container) return
 		let cancelled = false
 		let handle: AppHandle | undefined
+		let hostInstance: HostInstance | undefined
 		setError(null)
+
+		const sendAgentPrompt = async (text: string): Promise<string> => {
+			const frame: AppRpcRequest = {
+				jsonrpc: '2.0',
+				id: nextRpcId(),
+				method: 'app.agent.send',
+				params: { text }
+			}
+			const reply = await relay.sendRpc(frame)
+			if (reply.error) throw new Error(reply.error.message)
+			const result = reply.result as { text: string } | undefined
+			return result?.text ?? ''
+		}
+
+		const registerWithWorker = async (tool: {
+			name: string
+			description: string
+			schema: unknown
+		}) => {
+			const frame: AppRpcRequest = {
+				jsonrpc: '2.0',
+				id: nextRpcId(),
+				method: 'app.tool.register',
+				params: {
+					name: tool.name,
+					description: tool.description,
+					schema: tool.schema as Record<string, unknown>
+				}
+			}
+			const reply = await relay.sendRpc(frame)
+			if (reply.error) throw new Error(reply.error.message)
+		}
+
+		const toolInvokeHandler: ToolInvokeHandler = (callId, name, input) => {
+			void (async () => {
+				if (!hostInstance) {
+					relay.sendToolResult(callId, undefined, { code: -32020, message: 'tool_unavailable' })
+					return
+				}
+				try {
+					const value = await hostInstance.invokeTool(name, input)
+					relay.sendToolResult(callId, value)
+				} catch (e) {
+					const message = e instanceof Error ? e.message : String(e)
+					relay.sendToolResult(callId, undefined, { code: -32022, message })
+				}
+			})()
+		}
+
 		;(async () => {
 			try {
 				const absoluteManifestUrl = new URL(manifestUrl, window.location.href).toString()
@@ -57,16 +115,28 @@ export function EsmAppFrame(props: {
 				if (cancelled) return
 				const backend = await createFsVolume(() => getTokenRef.current())
 				if (cancelled) return
-				const host = createHost({
+
+				const instance = createHost({
 					appId: manifest.id,
 					volume: backend,
-					capabilities: stubCapabilities()
+					capabilities: stubCapabilities(),
+					sendAgentPrompt,
+					onToolRegister: (tool) => {
+						void registerWithWorker(tool).catch((err) => {
+							console.error('failed to register tool with worker:', err)
+						})
+					}
 				})
+				hostInstance = instance
+
+				relay.onToolInvoke(toolInvokeHandler)
+				relay.launch(manifest.id)
+
 				const loaded = await loadApp({
 					manifest,
 					baseUrl: absoluteBaseUrl,
 					el: container,
-					host
+					host: instance.host
 				})
 				if (cancelled) {
 					await loaded.unmount()
@@ -79,10 +149,13 @@ export function EsmAppFrame(props: {
 		})()
 		return () => {
 			cancelled = true
+			relay.onToolInvoke(null)
+			relay.close()
 			void handle?.unmount()
+			hostInstance?.dispose()
 			if (container) container.innerHTML = ''
 		}
-	}, [manifestUrl, baseUrl])
+	}, [manifestUrl, baseUrl, relay])
 
 	return (
 		<div className="relative h-full w-full">

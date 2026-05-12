@@ -45,4 +45,9 @@ export interface AppRelay {
 	onToolInvoke(handler: ToolInvokeHandler | null): void
 	sendToolResult: ToolResultSender
 	notifyIframeReload(): void
+	// New ESM path: tells the worker to install/clear an ESM activeApp so the
+	// existing app-rpc dispatcher routes tool registration and agent.send
+	// through the same code path used by sandbox apps.
+	launch(id: string): void
+	close(): void
 }

@@ -110,6 +110,9 @@ type ServerMessage =
 interface ActiveAppRecord {
 	id: string
 	tools: AgentTool[]
+	// ESM apps live in the host page and re-register their tools on every
+	// mount; we skip persistence and the `app_open` broadcast for them.
+	mode: 'sandbox' | 'esm'
 }
 
 interface PersistedApp {
@@ -147,32 +150,40 @@ export class FrierenAppHost implements AppHost {
 		if (this.activeApp) return
 		const saved = await this.deps.storage.get<PersistedApp>(APP_STORAGE_KEY)
 		if (!saved || !this.isApp(saved.id)) return
-		await this.restoreActiveApp(saved.id)
+		// Only sandbox apps are persisted (ESM activations are page-local), so
+		// hydration always restores in sandbox mode.
+		await this.restoreActiveApp(saved.id, 'sandbox')
 	}
 
 	async launch(id: string): Promise<void> {
 		if (!this.isApp(id)) return
 		if (this.activeApp) await this.close()
-		const active = await this.restoreActiveApp(id)
-		await this.deps.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
-		this.broadcast(this.openMessageFor(active.id))
+		const mode: 'sandbox' | 'esm' = isEsmApp(id) ? 'esm' : 'sandbox'
+		const active = await this.restoreActiveApp(id, mode)
+		if (mode === 'sandbox') {
+			await this.deps.storage.put<PersistedApp>(APP_STORAGE_KEY, { id })
+			this.broadcast(this.openMessageFor(active.id))
+		}
 	}
 
 	async close(): Promise<void> {
 		if (!this.activeApp) return
-		const { id, tools } = this.activeApp
+		const { id, tools, mode } = this.activeApp
 		this.deps.runtime()?.removeTools(tools)
 		this.failPendingToolCalls()
 		this.activeApp = undefined
-		await this.deleteStoredApp(id)
-		this.broadcast({ type: 'app_close' })
+		if (mode === 'sandbox') {
+			await this.deleteStoredApp(id)
+			this.broadcast({ type: 'app_close' })
+		}
 	}
 
 	async rebind(): Promise<void> {
 		const id =
 			this.activeApp?.id ?? (await this.deps.storage.get<PersistedApp>(APP_STORAGE_KEY))?.id
 		if (!id || !this.isApp(id)) return
-		await this.restoreActiveApp(id)
+		// Only sandbox apps are persisted, so rebind never restores an ESM app.
+		await this.restoreActiveApp(id, 'sandbox')
 	}
 
 	async clear(): Promise<void> {
@@ -248,7 +259,10 @@ export class FrierenAppHost implements AppHost {
 		const tool = this.createClientProxyTool(descriptor, active.id)
 		active.tools.push(tool)
 		this.deps.runtime()?.addTools([tool])
-		await this.persistClientTool(active.id, descriptor)
+		// ESM apps re-register their tools on every mount, so we skip the
+		// persistence step. A persisted proxy would point at a client that
+		// is no longer listening.
+		if (active.mode === 'sandbox') await this.persistClientTool(active.id, descriptor)
 	}
 
 	private handleToolResult(callId: string, result: unknown, error?: unknown): void {
@@ -276,12 +290,15 @@ export class FrierenAppHost implements AppHost {
 		return this.activeApp ? this.openMessageFor(this.activeApp.id) : undefined
 	}
 
-	private async restoreActiveApp(id: string): Promise<ActiveAppRecord> {
+	private async restoreActiveApp(id: string, mode: 'sandbox' | 'esm'): Promise<ActiveAppRecord> {
 		const stored =
-			(await this.deps.storage.get<ClientToolDescriptor[]>(`${CLIENT_TOOLS_STORAGE_KEY}:${id}`)) ??
-			[]
+			mode === 'sandbox'
+				? ((await this.deps.storage.get<ClientToolDescriptor[]>(
+						`${CLIENT_TOOLS_STORAGE_KEY}:${id}`
+					)) ?? [])
+				: []
 		const tools = stored.map((descriptor) => this.createClientProxyTool(descriptor, id))
-		const active: ActiveAppRecord = { id, tools }
+		const active: ActiveAppRecord = { id, tools, mode }
 		this.activeApp = active
 		if (tools.length > 0) this.deps.runtime()?.addTools(tools)
 		return active

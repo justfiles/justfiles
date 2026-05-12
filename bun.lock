@@ -164,6 +164,7 @@
         "@justfiles/app": "workspace:*",
         "react": "^19",
         "react-dom": "^19",
+        "typebox": "^1.1.34",
       },
       "devDependencies": {
         "@types/bun": "latest",

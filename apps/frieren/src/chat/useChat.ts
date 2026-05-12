@@ -37,6 +37,8 @@ export interface UseChatResult {
 			onToolInvoke: (handler: ToolInvokeHandler | null) => void
 			sendToolResult: ToolResultSender
 			notifyIframeReload: () => void
+			launch: (id: string) => void
+			close: () => void
 		}
 	}
 }
@@ -396,12 +398,30 @@ export function useChat(): UseChatResult {
 		wsRef.current?.send(JSON.stringify({ type: 'app_iframe_reload' }))
 	}
 
+	// Worker-side launch/close for ESM apps. Unlike sandbox apps these do not
+	// receive an `app_open` broadcast (the client already drives the UI), but
+	// the worker still installs the activeApp record so `app.tool.register` /
+	// `app.agent.send` RPCs route through the existing dispatcher.
+	const relayLaunch = (id: string) => {
+		wsRef.current?.send(JSON.stringify({ type: 'app_launch', id }))
+	}
+	const relayClose = () => {
+		wsRef.current?.send(JSON.stringify({ type: 'app_close' }))
+	}
+
 	return {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
 		connection: { state: connectionState, reconnect },
 		apps: {
 			launcher: { activeApp, installedApps, launch: launchApp, close: closeApp },
-			relay: { sendRpc, onToolInvoke, sendToolResult, notifyIframeReload }
+			relay: {
+				sendRpc,
+				onToolInvoke,
+				sendToolResult,
+				notifyIframeReload,
+				launch: relayLaunch,
+				close: relayClose
+			}
 		}
 	}
 }

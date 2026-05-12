@@ -1,6 +1,16 @@
-import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createRoot } from 'react-dom/client'
-import './style.css'
+import { defineApp, type Host } from '@justfiles/app'
+import {
+	createContext,
+	StrictMode,
+	useCallback,
+	useContext,
+	useEffect,
+	useMemo,
+	useRef,
+	useState
+} from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import Type, { type Static } from 'typebox'
 import {
 	bakeAnswers,
 	buildPuzzle,
@@ -10,6 +20,9 @@ import {
 	patternMatches,
 	type Slot
 } from './puzzle.ts'
+// Library-mode builds emit CSS as a sibling file the host won't auto-load,
+// so we inline the stylesheet as a string and inject it at mount time.
+import styles from './style.css?inline'
 
 const SIZE = 11
 
@@ -23,6 +36,13 @@ type Puzzle = {
 }
 
 type Phase = 'idle' | 'awaiting-seeds' | 'awaiting-fill' | 'playing' | 'solved'
+
+const HostContext = createContext<Host | null>(null)
+const useHost = (): Host => {
+	const host = useContext(HostContext)
+	if (!host) throw new Error('Crossword app rendered outside HostContext')
+	return host
+}
 
 const parseCell = (key: Cell): [number, number] => {
 	const [r, c] = key.split(',').map(Number)
@@ -68,7 +88,23 @@ const fillBriefing = (slots: Slot[]) =>
 		'Call the fill tool with { entries: [{ slotId, answer, clue }, ...] }. If no real word fits a pattern, ask the user to pick a different theme.'
 	].join('\n')
 
-function App() {
+const SeedsSchema = Type.Object({
+	words: Type.Array(Type.String())
+})
+
+const FillEntrySchema = Type.Object({
+	slotId: Type.String(),
+	answer: Type.String(),
+	clue: Type.String()
+})
+const FillSchema = Type.Object({
+	entries: Type.Array(FillEntrySchema)
+})
+
+const StateSchema = Type.Object({}, { additionalProperties: false })
+
+function CrosswordApp() {
+	const host = useHost()
 	const [phase, setPhase] = useState<Phase>('idle')
 	const [puzzle, setPuzzle] = useState<Puzzle | null>(null)
 	const [theme, setTheme] = useState('')
@@ -107,9 +143,7 @@ function App() {
 	}, [grid, userGrid, phase])
 
 	useEffect(() => {
-		const a = window.app
-		if (!a) return
-		a.agent.describe(() => {
+		const unDescribe = host.agent.describe(() => {
 			if (!puzzle) return `Crossword waiting for a theme. Phase: ${phase}.`
 			const slotInfo =
 				phase === 'awaiting-fill'
@@ -122,20 +156,14 @@ function App() {
 			return `Crossword theme "${puzzle.theme}". Phase: ${phase}. ${slotInfo} Use the state tool for exact answers, clues, filled letters, and hint requests.`
 		})
 
-		const unSeeds = a.agent.tools.register({
+		const unSeeds = host.agent.tools.register({
 			name: 'seeds',
 			description:
 				'Submit themed seed words. Triggers grid generation and returns the slots needing answers.',
-			schema: {
-				type: 'object',
-				properties: { words: { type: 'array', items: { type: 'string' } } },
-				required: ['words']
-			},
-			handler: (input: unknown) => {
-				const words = (input as { words?: unknown }).words
-				if (!Array.isArray(words) || words.length === 0)
-					throw new Error('words must be a non-empty array')
-				const seeds = words.map((w) => upper(String(w))).filter((w) => w.length >= 2)
+			schema: SeedsSchema,
+			handler: (input: Static<typeof SeedsSchema>) => {
+				if (input.words.length === 0) throw new Error('words must be a non-empty array')
+				const seeds = input.words.map((w) => upper(String(w))).filter((w) => w.length >= 2)
 				const built = buildPuzzle(seeds, SIZE)
 				if (built.slots.length === 0) throw new Error('no slots produced — try different seeds')
 				const next = {
@@ -163,46 +191,26 @@ function App() {
 			}
 		})
 
-		const unFill = a.agent.tools.register({
+		const unFill = host.agent.tools.register({
 			name: 'fill',
 			description: 'Provide answer + clue for every slot. Each answer must match its slot pattern.',
-			schema: {
-				type: 'object',
-				properties: {
-					entries: {
-						type: 'array',
-						items: {
-							type: 'object',
-							properties: {
-								slotId: { type: 'string' },
-								answer: { type: 'string' },
-								clue: { type: 'string' }
-							},
-							required: ['slotId', 'answer', 'clue']
-						}
-					}
-				},
-				required: ['entries']
-			},
-			handler: (input: unknown) => {
+			schema: FillSchema,
+			handler: (input: Static<typeof FillSchema>) => {
 				// Validate against the current puzzle BEFORE touching React state.
 				// Throwing from inside a setState updater corrupts the render tree;
 				// throwing from the tool handler reports cleanly back to the agent.
-				const raw = (input as { entries?: unknown }).entries
-				if (!Array.isArray(raw)) throw new Error('entries must be an array')
 				const prev = puzzleRef.current
 				if (!prev) throw new Error('no puzzle to fill — call seeds first')
 				const slotMap = new Map(prev.slots.map((s) => [s.id, s]))
-				const entries: Entry[] = raw.map((e) => {
-					const o = e as Entry
-					const slot = slotMap.get(o.slotId)
-					if (!slot) throw new Error(`unknown slot ${o.slotId}`)
-					const answer = upper(o.answer)
+				const entries: Entry[] = input.entries.map((e) => {
+					const slot = slotMap.get(e.slotId)
+					if (!slot) throw new Error(`unknown slot ${e.slotId}`)
+					const answer = upper(e.answer)
 					if (!patternMatches(answer, slot.pattern))
 						throw new Error(`answer ${answer} does not match ${slot.pattern}`)
-					if (!o.clue || o.clue.toUpperCase().includes(answer))
-						throw new Error(`clue for ${o.slotId} reveals the answer`)
-					return { slotId: o.slotId, answer, clue: o.clue }
+					if (!e.clue || e.clue.toUpperCase().includes(answer))
+						throw new Error(`clue for ${e.slotId} reveals the answer`)
+					return { slotId: e.slotId, answer, clue: e.clue }
 				})
 				const map: Record<string, Entry> = {}
 				for (const e of entries) map[e.slotId] = e
@@ -223,11 +231,11 @@ function App() {
 			}
 		})
 
-		const unState = a.agent.tools.register({
+		const unState = host.agent.tools.register({
 			name: 'state',
 			description:
 				'Return the current crossword state, including solution answers, clues, filled letters, revealed cells, and wrong cells. Use this before giving hints about a clue.',
-			schema: { type: 'object', properties: {}, additionalProperties: false },
+			schema: StateSchema,
 			handler: () => {
 				const p = puzzleRef.current
 				if (!p) return { phase: phaseRef.current, theme: activeThemeRef.current }
@@ -254,11 +262,12 @@ function App() {
 		})
 
 		return () => {
+			unDescribe()
 			unSeeds()
 			unFill()
 			unState()
 		}
-	}, [puzzle, phase, theme])
+	}, [host, puzzle, phase, theme])
 
 	const start = useCallback(() => {
 		const t = theme.trim()
@@ -270,7 +279,7 @@ function App() {
 		setPuzzle(null)
 		setPhase('awaiting-seeds')
 		void (async () => {
-			const firstAnswer = await window.app.agent.send(
+			const firstAnswer = await host.agent.send(
 				seedsBriefing(
 					t,
 					'After the seeds tool returns, stop; the app will send the slot patterns next.'
@@ -279,7 +288,7 @@ function App() {
 			if (phaseRef.current === 'awaiting-seeds')
 				throw new Error(firstAnswer || 'Agent did not submit seed words.')
 			if (phaseRef.current === 'awaiting-fill' && puzzleRef.current) {
-				const fillAnswer = await window.app.agent.send(fillBriefing(puzzleRef.current.slots))
+				const fillAnswer = await host.agent.send(fillBriefing(puzzleRef.current.slots))
 				if (phaseRef.current === 'awaiting-fill')
 					throw new Error(fillAnswer || 'Agent did not fill the crossword.')
 			}
@@ -288,14 +297,7 @@ function App() {
 			phaseRef.current = 'idle'
 			setPhase('idle')
 		})
-	}, [theme])
-
-	if (!window.app)
-		return (
-			<main>
-				<p className="standby">window.app not injected by host</p>
-			</main>
-		)
+	}, [host, theme])
 
 	if (phase === 'idle' || !puzzle)
 		return (
@@ -724,10 +726,31 @@ function ClueList({
 	)
 }
 
-const root = document.getElementById('root')
-if (root)
-	createRoot(root).render(
-		<StrictMode>
-			<App />
-		</StrictMode>
-	)
+let root: Root | null = null
+let styleNode: HTMLStyleElement | null = null
+
+export default defineApp({
+	id: 'crossword',
+	mount(el, host) {
+		if (!styleNode) {
+			styleNode = document.createElement('style')
+			styleNode.setAttribute('data-app', 'crossword')
+			styleNode.textContent = styles
+			document.head.appendChild(styleNode)
+		}
+		root = createRoot(el)
+		root.render(
+			<StrictMode>
+				<HostContext.Provider value={host}>
+					<CrosswordApp />
+				</HostContext.Provider>
+			</StrictMode>
+		)
+	},
+	unmount() {
+		root?.unmount()
+		root = null
+		styleNode?.remove()
+		styleNode = null
+	}
+})

@@ -46,14 +46,39 @@ export interface AppCapabilityMap {
 // no stringly-typed capability/method names.
 export type Capabilities = { readonly [K in keyof AppCapabilityMap]: AppCapabilityMap[K] }
 
-// Host SDK passed to `mount()`. `agent` arrives in a later slice. App
-// authors should thread the `Host` instance through their own state (React
-// context, props, closures); reading it from a global is no longer
-// supported.
+// A tool the app exposes to the host's agent runtime. The schema is a
+// TypeBox object; `Type.Static<S>` flows through `handler`'s `input` so
+// authors get a typed argument. Input is validated at the host boundary
+// (TypeBox `Value.Check`) before the handler runs.
+export interface Tool<S extends Type.TSchema = Type.TSchema> {
+	readonly name: string
+	readonly description: string
+	readonly schema: S
+	handler(input: Type.Static<S>): unknown | Promise<unknown>
+}
+
+export interface ToolRegistry {
+	/** Register a tool. Returns an unregister function that is idempotent. */
+	register<S extends Type.TSchema>(tool: Tool<S>): () => void
+}
+
+// Agent sub-API. `describe(cb)` returns an unsubscribe symmetric with
+// `tools.register`; only the last registered callback is active. Cancellation
+// of in-flight `send` is implicit via `unmount()`.
+export interface Agent {
+	send(text: string): Promise<string>
+	describe(callback: () => string | Promise<string>): () => void
+	readonly tools: ToolRegistry
+}
+
+// Host SDK passed to `mount()`. App authors should thread the `Host`
+// instance through their own state (React context, props, closures);
+// reading it from a global is no longer supported.
 export interface Host {
 	readonly version: number
 	readonly volume: Volume
 	readonly capabilities: Capabilities
+	readonly agent: Agent
 }
 
 // An app's default export. The entry module must be import-side-effect-free:
