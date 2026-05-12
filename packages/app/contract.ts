@@ -5,6 +5,8 @@
 // coexists with the iframe-era exports until the legacy path is deleted.
 
 import Type from 'typebox'
+import type { CalendarCapability } from './capabilities/calendar/contract.js'
+import type { EmailCapability } from './capabilities/email/contract.js'
 
 export const APP_CONTRACT_VERSION = 1
 
@@ -25,13 +27,33 @@ export class NotFoundError extends Error {
 	}
 }
 
-// Host SDK passed to `mount()`. `agent` and `capabilities` arrive in later
-// slices. App authors should thread the `Host` instance through their own
-// state (React context, props, closures); reading it from a global is no
-// longer supported.
+// Typed map of host capabilities. Extensible via TypeScript declaration
+// merging — adding a future capability means augmenting this map plus
+// registering a host broker; no transport layer to touch.
+//
+// ```ts
+// declare module '@justfiles/app' {
+//   interface AppCapabilityMap { reminders: RemindersCapability }
+// }
+// ```
+export interface AppCapabilityMap {
+	email: EmailCapability
+	calendar: CalendarCapability
+}
+
+// App-facing capabilities object on `Host`. Each entry is a typed broker
+// reached through ordinary async method calls — no generic `invoke` wrapper,
+// no stringly-typed capability/method names.
+export type Capabilities = { readonly [K in keyof AppCapabilityMap]: AppCapabilityMap[K] }
+
+// Host SDK passed to `mount()`. `agent` arrives in a later slice. App
+// authors should thread the `Host` instance through their own state (React
+// context, props, closures); reading it from a global is no longer
+// supported.
 export interface Host {
 	readonly version: number
 	readonly volume: Volume
+	readonly capabilities: Capabilities
 }
 
 // An app's default export. The entry module must be import-side-effect-free:

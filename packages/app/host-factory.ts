@@ -2,7 +2,13 @@
 // agent.describe callback, registered tools) lives on the instance so it
 // cannot leak across slot swaps.
 
-import { APP_CONTRACT_VERSION, type Host, NotFoundError, type Volume } from './contract.js'
+import {
+	APP_CONTRACT_VERSION,
+	type Capabilities,
+	type Host,
+	NotFoundError,
+	type Volume
+} from './contract.js'
 
 // Minimal storage backend the Host Factory needs to scope per-app I/O.
 // Matches the subset of `@justfiles/fs.Volume` we use; defined structurally
@@ -16,12 +22,14 @@ export interface VolumeBackend {
 export interface CreateHostOptions {
 	appId: string
 	volume: VolumeBackend
+	capabilities: Capabilities
 }
 
 export function createHost(opts: CreateHostOptions): Host {
 	return Object.freeze({
 		version: APP_CONTRACT_VERSION,
-		volume: createScopedVolume(opts.appId, opts.volume)
+		volume: createScopedVolume(opts.appId, opts.volume),
+		capabilities: Object.freeze({ ...opts.capabilities })
 	})
 }
 

@@ -1,9 +1,34 @@
 import { useAuth } from '@clerk/clerk-react'
-import { type AppHandle, createHost, loadApp, loadManifest } from '@justfiles/app'
+import {
+	type AppHandle,
+	type Capabilities,
+	createHost,
+	loadApp,
+	loadManifest
+} from '@justfiles/app'
 import { HouseIcon } from '@phosphor-icons/react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { createFsVolume } from './fs'
+
+// Capability brokers run in the worker; routing direct typed calls from
+// the browser to those brokers is its own slice. Until that lands, expose
+// a stub that throws so any accidental call surfaces clearly instead of
+// silently resolving.
+function stubCapabilities(): Capabilities {
+	const reject = (capability: string, method: string) => () =>
+		Promise.reject(new Error(`capability ${capability}.${method} not wired`))
+	return {
+		email: {
+			listUnread: reject('email', 'listUnread'),
+			readDetail: reject('email', 'readDetail'),
+			markRead: reject('email', 'markRead')
+		},
+		calendar: {
+			listToday: reject('calendar', 'listToday')
+		}
+	}
+}
 
 export function EsmAppFrame(props: {
 	id: string
@@ -32,7 +57,11 @@ export function EsmAppFrame(props: {
 				if (cancelled) return
 				const backend = await createFsVolume(() => getTokenRef.current())
 				if (cancelled) return
-				const host = createHost({ appId: manifest.id, volume: backend })
+				const host = createHost({
+					appId: manifest.id,
+					volume: backend,
+					capabilities: stubCapabilities()
+				})
 				const loaded = await loadApp({
 					manifest,
 					baseUrl: absoluteBaseUrl,
