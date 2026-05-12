@@ -62,12 +62,13 @@ export interface ToolRegistry {
 	register<S extends Type.TSchema>(tool: Tool<S>): () => void
 }
 
-// Agent sub-API. `describe(cb)` returns an unsubscribe symmetric with
-// `tools.register`; only the last registered callback is active. Cancellation
-// of in-flight `send` is implicit via `unmount()`.
+// Agent sub-API. Cancellation of in-flight `send` is implicit via
+// `unmount()`. The app exposes its current self-description through the
+// optional `App.describe()` method, not through the agent — keeps the
+// app declarative ("here is how to read me") rather than imperative
+// ("call this on the agent").
 export interface Agent {
 	send(text: string): Promise<string>
-	describe(callback: () => string | Promise<string>): () => void
 	readonly tools: ToolRegistry
 }
 
@@ -82,11 +83,16 @@ export interface Host {
 }
 
 // An app's default export. The entry module must be import-side-effect-free:
-// rendering belongs inside `mount()`, not at module load.
+// rendering belongs inside `mount()`, not at module load. `describe()` is
+// optional — apps that have no live state for the agent to read omit it.
+// The host calls it whenever it is about to build agent context; the app
+// returns its current self-description, or `null` for "nothing to report
+// right now."
 export interface App {
 	readonly id: string
 	mount(el: HTMLElement, host: Host): void | Promise<void>
 	unmount(): void | Promise<void>
+	describe?(): string | null | Promise<string | null>
 }
 
 // Identity helper for ergonomic typing of `export default defineApp({...})`.

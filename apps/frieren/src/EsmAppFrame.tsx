@@ -1,14 +1,16 @@
 import { useAuth } from '@clerk/clerk-react'
 import {
+	type Agent,
 	type AppHandle,
 	type AppRelay,
 	type AppRpcRequest,
 	type Capabilities,
 	createHost,
-	type HostInstance,
+	createToolRegistry,
 	loadApp,
 	loadManifest,
-	type ToolInvokeHandler
+	type ToolInvokeHandler,
+	type ToolRegistryHandle
 } from '@justfiles/app'
 import { HouseIcon } from '@phosphor-icons/react'
 import { useEffect, useRef, useState } from 'react'
@@ -37,6 +39,10 @@ function stubCapabilities(): Capabilities {
 let rpcCounter = 0
 const nextRpcId = () => `esm-${++rpcCounter}`
 
+// Today's wiring reuses `AppRelay` (sandbox app JSON-RPC) to reach the
+// worker for `agent.send` / `tool.register`. Per the cleanup notes on
+// issue #123, this whole bridging block is meant to be deleted and
+// replaced with a small ESM-native typed bridge.
 export function EsmAppFrame(props: {
 	id: string
 	manifestUrl: string
@@ -56,7 +62,7 @@ export function EsmAppFrame(props: {
 		if (!container) return
 		let cancelled = false
 		let handle: AppHandle | undefined
-		let hostInstance: HostInstance | undefined
+		let toolRegistry: ToolRegistryHandle | undefined
 		setError(null)
 
 		const sendAgentPrompt = async (text: string): Promise<string> => {
@@ -93,12 +99,12 @@ export function EsmAppFrame(props: {
 
 		const toolInvokeHandler: ToolInvokeHandler = (callId, name, input) => {
 			void (async () => {
-				if (!hostInstance) {
+				if (!toolRegistry) {
 					relay.sendToolResult(callId, undefined, { code: -32020, message: 'tool_unavailable' })
 					return
 				}
 				try {
-					const value = await hostInstance.invokeTool(name, input)
+					const value = await toolRegistry.invoke(name, input)
 					relay.sendToolResult(callId, value)
 				} catch (e) {
 					const message = e instanceof Error ? e.message : String(e)
@@ -116,18 +122,22 @@ export function EsmAppFrame(props: {
 				const backend = await createFsVolume(() => getTokenRef.current())
 				if (cancelled) return
 
-				const instance = createHost({
-					appId: manifest.id,
-					volume: backend,
-					capabilities: stubCapabilities(),
-					sendAgentPrompt,
-					onToolRegister: (tool) => {
+				const tools = createToolRegistry({
+					onRegister: (tool) => {
 						void registerWithWorker(tool).catch((err) => {
 							console.error('failed to register tool with worker:', err)
 						})
 					}
 				})
-				hostInstance = instance
+				toolRegistry = tools
+
+				const agent: Agent = { send: sendAgentPrompt, tools: tools.registry }
+				const host = createHost({
+					appId: manifest.id,
+					volume: backend,
+					capabilities: stubCapabilities(),
+					agent
+				})
 
 				relay.onToolInvoke(toolInvokeHandler)
 				relay.launch(manifest.id)
@@ -136,7 +146,7 @@ export function EsmAppFrame(props: {
 					manifest,
 					baseUrl: absoluteBaseUrl,
 					el: container,
-					host: instance.host
+					host
 				})
 				if (cancelled) {
 					await loaded.unmount()
@@ -152,7 +162,7 @@ export function EsmAppFrame(props: {
 			relay.onToolInvoke(null)
 			relay.close()
 			void handle?.unmount()
-			hostInstance?.dispose()
+			toolRegistry?.dispose()
 			if (container) container.innerHTML = ''
 		}
 	}, [manifestUrl, baseUrl, relay])

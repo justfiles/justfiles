@@ -37,12 +37,7 @@ export {
 	PermissionSchema
 } from './format.js'
 export type { AppHost } from './host.js'
-export type {
-	CreateHostOptions,
-	HostInstance,
-	SendAgentPrompt,
-	VolumeBackend
-} from './host-factory.js'
+export type { CreateHostOptions, VolumeBackend } from './host-factory.js'
 export { createHost } from './host-factory.js'
 export type { LoadManifestOptions } from './manifest-loader.js'
 export { isNewManifest, loadManifest } from './manifest-loader.js'
@@ -59,3 +54,10 @@ export {
 	type AppRpcResult,
 	type RequestId
 } from './protocol.js'
+export type {
+	RegisteredTool,
+	ToolInvokeError,
+	ToolRegistryEvents,
+	ToolRegistryHandle
+} from './tool-registry.js'
+export { createToolRegistry, ToolInvokeFailure } from './tool-registry.js'

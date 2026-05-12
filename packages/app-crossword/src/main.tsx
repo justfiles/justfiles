@@ -103,6 +103,13 @@ const FillSchema = Type.Object({
 
 const StateSchema = Type.Object({}, { additionalProperties: false })
 
+// Module-scope snapshot of the live React state, kept in sync from inside
+// `CrosswordApp` so `App.describe()` (a property of the default export) can
+// read the current phase/puzzle without crossing the React boundary.
+const describeSnapshot: { current: { phase: Phase; puzzle: Puzzle | null } } = {
+	current: { phase: 'idle', puzzle: null }
+}
+
 function CrosswordApp() {
 	const host = useHost()
 	const [phase, setPhase] = useState<Phase>('idle')
@@ -127,6 +134,7 @@ function CrosswordApp() {
 		userGridRef.current = userGrid
 		revealedRef.current = revealed
 		wrongRef.current = wrong
+		describeSnapshot.current = { phase, puzzle }
 	}, [phase, puzzle, userGrid, revealed, wrong])
 
 	useEffect(() => {
@@ -143,19 +151,6 @@ function CrosswordApp() {
 	}, [grid, userGrid, phase])
 
 	useEffect(() => {
-		const unDescribe = host.agent.describe(() => {
-			if (!puzzle) return `Crossword waiting for a theme. Phase: ${phase}.`
-			const slotInfo =
-				phase === 'awaiting-fill'
-					? `Slots to fill:\n${puzzle.slots.map((s) => `  ${s.id} ${s.direction} ${s.pattern}`).join('\n')}`
-					: phase === 'playing'
-						? `${puzzle.slots.length} slots; user is solving.`
-						: phase === 'solved'
-							? 'Solved.'
-							: ''
-			return `Crossword theme "${puzzle.theme}". Phase: ${phase}. ${slotInfo} Use the state tool for exact answers, clues, filled letters, and hint requests.`
-		})
-
 		const unSeeds = host.agent.tools.register({
 			name: 'seeds',
 			description:
@@ -167,7 +162,10 @@ function CrosswordApp() {
 				const built = buildPuzzle(seeds, SIZE)
 				if (built.slots.length === 0) throw new Error('no slots produced — try different seeds')
 				const next = {
-					theme: activeThemeRef.current || theme,
+					// `start()` writes `activeThemeRef.current` before any agent
+					// turn fires this handler, so it always carries the theme
+					// the user kicked things off with.
+					theme: activeThemeRef.current,
 					grid: built.grid,
 					slots: built.slots,
 					entries: {}
@@ -262,12 +260,11 @@ function CrosswordApp() {
 		})
 
 		return () => {
-			unDescribe()
 			unSeeds()
 			unFill()
 			unState()
 		}
-	}, [host, puzzle, phase, theme])
+	}, [host])
 
 	const start = useCallback(() => {
 		const t = theme.trim()
@@ -752,5 +749,19 @@ export default defineApp({
 		root = null
 		styleNode?.remove()
 		styleNode = null
+		describeSnapshot.current = { phase: 'idle', puzzle: null }
+	},
+	describe() {
+		const { phase, puzzle } = describeSnapshot.current
+		if (!puzzle) return `Crossword waiting for a theme. Phase: ${phase}.`
+		const slotInfo =
+			phase === 'awaiting-fill'
+				? `Slots to fill:\n${puzzle.slots.map((s) => `  ${s.id} ${s.direction} ${s.pattern}`).join('\n')}`
+				: phase === 'playing'
+					? `${puzzle.slots.length} slots; user is solving.`
+					: phase === 'solved'
+						? 'Solved.'
+						: ''
+		return `Crossword theme "${puzzle.theme}". Phase: ${phase}. ${slotInfo} Use the state tool for exact answers, clues, filled letters, and hint requests.`
 	}
 })

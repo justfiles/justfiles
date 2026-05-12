@@ -19,6 +19,10 @@ export interface LoadAppOptions {
 export interface AppHandle {
 	readonly id: string
 	unmount(): Promise<void>
+	/** Returns the app's current self-description, or `null` if the app does
+	 *  not implement `describe()` or has nothing to report right now. The host
+	 *  shell calls this when building agent context. */
+	describe(): Promise<string | null>
 }
 
 export async function loadApp(opts: LoadAppOptions): Promise<AppHandle> {
@@ -43,6 +47,10 @@ export async function loadApp(opts: LoadAppOptions): Promise<AppHandle> {
 			if (unmounted) return
 			unmounted = true
 			await app.unmount()
+		},
+		async describe() {
+			if (unmounted || !app.describe) return null
+			return (await app.describe()) ?? null
 		}
 	}
 }
@@ -64,6 +72,9 @@ function extractDefaultApp(module: unknown, entryUrl: string): App {
 	}
 	if (typeof candidate.unmount !== 'function') {
 		throw new Error(`app entry ${entryUrl} default export is missing \`unmount()\``)
+	}
+	if (candidate.describe !== undefined && typeof candidate.describe !== 'function') {
+		throw new Error(`app entry ${entryUrl} default export \`describe\` must be a function`)
 	}
 	return candidate as App
 }
