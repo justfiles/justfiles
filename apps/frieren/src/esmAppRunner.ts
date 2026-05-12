@@ -47,6 +47,7 @@ export interface RunEsmAppOptions {
 	getToken: () => Promise<string | null>
 	relay: AppRelay
 	setAppDescribe: (fn: (() => Promise<string | null>) | null) => void
+	signal?: AbortSignal
 }
 
 export interface EsmAppSession {
@@ -54,18 +55,31 @@ export interface EsmAppSession {
 }
 
 export async function runEsmApp(opts: RunEsmAppOptions): Promise<EsmAppSession> {
-	const { el, manifestUrl, baseUrl, getToken, relay, setAppDescribe } = opts
+	const { el, manifestUrl, baseUrl, getToken, relay, setAppDescribe, signal } = opts
 
 	let disposed = false
 	let handle: AppHandle | undefined
+	let registerError: unknown
+	const pendingRegistrations = new Set<Promise<void>>()
+	const throwIfAborted = () => {
+		if (signal?.aborted) throw new Error('app session aborted')
+	}
 
 	const absoluteManifestUrl = new URL(manifestUrl, window.location.href).toString()
 	const absoluteBaseUrl = new URL(baseUrl, window.location.href).toString()
 	const manifest = await loadManifest({ url: absoluteManifestUrl })
+	throwIfAborted()
 
 	const backend = await createFsVolume(getToken)
+	throwIfAborted()
+
+	const waitForRegistrations = async () => {
+		await Promise.all([...pendingRegistrations])
+		if (registerError) throw registerError
+	}
 
 	const sendAgentPrompt = async (text: string): Promise<string> => {
+		await waitForRegistrations()
 		const frame: AppRpcRequest = {
 			jsonrpc: '2.0',
 			id: nextRpcId(),
@@ -99,9 +113,13 @@ export async function runEsmApp(opts: RunEsmAppOptions): Promise<EsmAppSession> 
 
 	const tools = createToolRegistry({
 		onRegister: (tool) => {
-			void registerWithWorker(tool).catch((err) => {
-				console.error('failed to register tool with worker:', err)
-			})
+			const pending = registerWithWorker(tool)
+				.catch((err) => {
+					registerError = err
+					console.error('failed to register tool with worker:', err)
+				})
+				.finally(() => pendingRegistrations.delete(pending))
+			pendingRegistrations.add(pending)
 		}
 	})
 
@@ -126,6 +144,7 @@ export async function runEsmApp(opts: RunEsmAppOptions): Promise<EsmAppSession> 
 		agent
 	})
 
+	throwIfAborted()
 	handle = await loadApp({
 		manifest,
 		baseUrl: absoluteBaseUrl,
@@ -133,7 +152,7 @@ export async function runEsmApp(opts: RunEsmAppOptions): Promise<EsmAppSession> 
 		host
 	})
 
-	if (disposed) {
+	if (disposed || signal?.aborted) {
 		// dispose() was called before mount finished; tear down what we built.
 		await handle.unmount()
 		tools.dispose()

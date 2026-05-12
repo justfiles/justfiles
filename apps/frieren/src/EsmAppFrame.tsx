@@ -33,6 +33,7 @@ export function EsmAppFrame(props: {
 		if (!container) return
 		let session: EsmAppSession | undefined
 		let cancelled = false
+		const abort = new AbortController()
 		setError(null)
 
 		runEsmApp({
@@ -41,7 +42,8 @@ export function EsmAppFrame(props: {
 			baseUrl,
 			getToken: () => getTokenRef.current(),
 			relay: relayRef.current,
-			setAppDescribe: setAppDescribeRef.current
+			setAppDescribe: setAppDescribeRef.current,
+			signal: abort.signal
 		})
 			.then((s) => {
 				if (cancelled) {
@@ -56,6 +58,7 @@ export function EsmAppFrame(props: {
 
 		return () => {
 			cancelled = true
+			abort.abort()
 			void session?.dispose()
 			if (container) container.innerHTML = ''
 		}

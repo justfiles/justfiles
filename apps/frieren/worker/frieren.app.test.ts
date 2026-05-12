@@ -7,7 +7,11 @@ import type { Runtime } from './frieren.runtime'
 mock.module('virtual:@justfiles/apps', () => ({
 	registry: new Map([
 		['demo', { manifest: { name: 'Demo', description: 'Demo app' } }],
-		['other', { manifest: { name: 'Other', description: 'Other app' } }]
+		['other', { manifest: { name: 'Other', description: 'Other app' } }],
+		[
+			'crossword',
+			{ manifest: { id: 'crossword', title: 'Crossword', version: '1', entry: 'main.js' } }
+		]
 	])
 }))
 mock.module('@justfiles/app/sdk?raw', () => ({ default: '' }))
@@ -94,7 +98,7 @@ describe('AppHost', () => {
 
 		await host.launch('demo')
 
-		expect(storage.values.get('active_app')).toEqual({ id: 'demo' })
+		expect(storage.values.get('active_app')).toEqual({ id: 'demo', mode: 'sandbox' })
 		expect(sockets[0].sent).toEqual([{ type: 'app_open', id: 'demo', ui: { url: '/apps/demo/' } }])
 	})
 
@@ -105,7 +109,7 @@ describe('AppHost', () => {
 
 		await host.launch('other')
 
-		expect(storage.values.get('active_app')).toEqual({ id: 'other' })
+		expect(storage.values.get('active_app')).toEqual({ id: 'other', mode: 'sandbox' })
 		expect(storage.values.has('active_app_client_tools:demo')).toBe(false)
 		expect(sockets[0].sent).toEqual([
 			{ type: 'app_open', id: 'demo', ui: { url: '/apps/demo/' } },
@@ -124,6 +128,42 @@ describe('AppHost', () => {
 
 		expect(host.current()).toEqual({ id: 'demo' })
 		expect(tools.map((tool) => tool.name)).toEqual(['demo_client_pick'])
+	})
+
+	test('hydrates ESM apps so app RPC survives websocket hibernation', async () => {
+		const { host, storage, sockets, tools } = setup()
+		const ws = sockets[0] as unknown as WebSocket
+		storage.values.set('active_app', { id: 'crossword', mode: 'esm' })
+
+		await host.hydrate()
+		await host.handleMessage(ws, {
+			type: 'app_rpc',
+			frame: { id: '1', method: 'app.tool.register', params: descriptor }
+		})
+
+		expect(host.openMessage()).toBeUndefined()
+		expect(tools.map((tool) => tool.name)).toEqual(['crossword_client_pick'])
+		expect(sockets[0].sent).toEqual([
+			{ type: 'app_rpc', frame: { jsonrpc: '2.0', id: '1', result: null } }
+		])
+	})
+
+	test('ESM client tools survive DO re-instantiation', async () => {
+		// DO hibernation rebuilds the runtime with only the base tool set,
+		// then `rebind()` runs to restore the active app. The WebSocket and
+		// live iframe survive, so persisted ESM proxies still target a
+		// listening client and must be re-attached to the new runtime.
+		const { host, storage, swapRuntime } = setup()
+		storage.values.set('active_app', { id: 'crossword', mode: 'esm' })
+		await host.hydrate()
+		await host.registerClientTool(descriptor)
+		expect(storage.values.get('active_app_client_tools:crossword')).toEqual([descriptor])
+
+		const nextTools: AgentTool[] = []
+		swapRuntime(nextTools)
+		await host.rebind()
+
+		expect(nextTools.map((tool) => tool.name)).toEqual(['crossword_client_pick'])
 	})
 
 	test('close removes tools, deletes storage, and broadcasts app_close', async () => {
@@ -191,7 +231,7 @@ describe('AppHost', () => {
 		await host.launch('demo')
 
 		expect(tools).toEqual([])
-		expect(storage.values.get('active_app')).toEqual({ id: 'demo' })
+		expect(storage.values.get('active_app')).toEqual({ id: 'demo', mode: 'sandbox' })
 		expect(storage.values.has('active_app_client_tools:demo')).toBe(false)
 	})
 
@@ -201,7 +241,7 @@ describe('AppHost', () => {
 		expect(await host.handlePromptCommand('hello')).toBe(false)
 		expect(await host.handlePromptCommand('/missing')).toBe(false)
 		expect(await host.handlePromptCommand('/demo')).toBe(true)
-		expect(storage.values.get('active_app')).toEqual({ id: 'demo' })
+		expect(storage.values.get('active_app')).toEqual({ id: 'demo', mode: 'sandbox' })
 		expect(await host.handlePromptCommand('/close')).toBe(true)
 		expect(storage.values.has('active_app')).toBe(false)
 	})
@@ -213,7 +253,7 @@ describe('AppHost', () => {
 		expect(await host.handleMessage(ws, { type: 'prompt' })).toBe(false)
 		expect(await host.handleMessage(ws, { type: 'abort' })).toBe(false)
 		expect(await host.handleMessage(ws, { type: 'app_launch', id: 'demo' })).toBe(true)
-		expect(storage.values.get('active_app')).toEqual({ id: 'demo' })
+		expect(storage.values.get('active_app')).toEqual({ id: 'demo', mode: 'sandbox' })
 		expect(await host.handleMessage(ws, { type: 'app_rpc' })).toBe(true)
 		expect(await host.handleMessage(ws, { type: 'app_tool_result' })).toBe(true)
 		expect(await host.handleMessage(ws, { type: 'app_iframe_reload' })).toBe(true)

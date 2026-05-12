@@ -438,16 +438,15 @@ export function useChat(): UseChatResult {
 	}
 
 	const closeApp = () => {
-		setActiveApp((prev) => {
-			if (
-				(prev?.kind === 'sandbox' || prev?.kind === 'esm') &&
-				wsRef.current &&
-				connectionState === 'ready'
-			) {
-				wsRef.current.send(JSON.stringify({ type: 'app_close' }))
-			}
-			return null
-		})
+		const current = activeAppRef.current
+		if (
+			(current?.kind === 'sandbox' || current?.kind === 'esm') &&
+			wsRef.current &&
+			connectionStateRef.current === 'ready'
+		) {
+			wsRef.current.send(JSON.stringify({ type: 'app_close' }))
+		}
+		setActiveApp(null)
 	}
 
 	// Stable across re-renders so consumers can hold it as a captured value
