@@ -140,7 +140,6 @@ export function EsmAppFrame(props: {
 				})
 
 				relay.onToolInvoke(toolInvokeHandler)
-				relay.launch(manifest.id)
 
 				const loaded = await loadApp({
 					manifest,
@@ -160,7 +159,6 @@ export function EsmAppFrame(props: {
 		return () => {
 			cancelled = true
 			relay.onToolInvoke(null)
-			relay.close()
 			void handle?.unmount()
 			toolRegistry?.dispose()
 			if (container) container.innerHTML = ''

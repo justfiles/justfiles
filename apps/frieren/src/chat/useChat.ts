@@ -37,8 +37,6 @@ export interface UseChatResult {
 			onToolInvoke: (handler: ToolInvokeHandler | null) => void
 			sendToolResult: ToolResultSender
 			notifyIframeReload: () => void
-			launch: (id: string) => void
-			close: () => void
 		}
 	}
 }
@@ -369,6 +367,10 @@ export function useChat(): UseChatResult {
 				manifestUrl: app.manifestUrl,
 				baseUrl: app.baseUrl
 			})
+			// The "install activeApp on the worker" message is sent by the
+			// effect below — it fires whenever an ESM app is active and the
+			// connection is ready, so a click before the WS opens still
+			// works once 'ready' arrives.
 			return
 		}
 		if (!wsRef.current || connectionState !== 'ready') return
@@ -377,12 +379,27 @@ export function useChat(): UseChatResult {
 
 	const closeApp = () => {
 		setActiveApp((prev) => {
-			if (prev?.kind === 'sandbox' && wsRef.current && connectionState === 'ready') {
+			if (
+				(prev?.kind === 'sandbox' || prev?.kind === 'esm') &&
+				wsRef.current &&
+				connectionState === 'ready'
+			) {
 				wsRef.current.send(JSON.stringify({ type: 'app_close' }))
 			}
 			return null
 		})
 	}
+
+	// Install the ESM activeApp on the worker once the WS is ready. Runs
+	// again on reconnect (connectionState transitions back to 'ready') so
+	// the worker's in-memory activeApp record — which the existing app-RPC
+	// dispatcher requires — is restored without the user re-clicking the
+	// app tile.
+	useEffect(() => {
+		if (connectionState !== 'ready') return
+		if (activeApp?.kind !== 'esm') return
+		wsRef.current?.send(JSON.stringify({ type: 'app_launch', id: activeApp.id }))
+	}, [connectionState, activeApp])
 
 	const reconnect = () => setConnectKey((value) => value + 1)
 
@@ -398,30 +415,12 @@ export function useChat(): UseChatResult {
 		wsRef.current?.send(JSON.stringify({ type: 'app_iframe_reload' }))
 	}
 
-	// Worker-side launch/close for ESM apps. Unlike sandbox apps these do not
-	// receive an `app_open` broadcast (the client already drives the UI), but
-	// the worker still installs the activeApp record so `app.tool.register` /
-	// `app.agent.send` RPCs route through the existing dispatcher.
-	const relayLaunch = (id: string) => {
-		wsRef.current?.send(JSON.stringify({ type: 'app_launch', id }))
-	}
-	const relayClose = () => {
-		wsRef.current?.send(JSON.stringify({ type: 'app_close' }))
-	}
-
 	return {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
 		connection: { state: connectionState, reconnect },
 		apps: {
 			launcher: { activeApp, installedApps, launch: launchApp, close: closeApp },
-			relay: {
-				sendRpc,
-				onToolInvoke,
-				sendToolResult,
-				notifyIframeReload,
-				launch: relayLaunch,
-				close: relayClose
-			}
+			relay: { sendRpc, onToolInvoke, sendToolResult, notifyIframeReload }
 		}
 	}
 }
