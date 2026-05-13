@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test'
 import { volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
+import { describe, expect, test } from 'vitest'
 import {
 	type AppendPayload,
 	type ContextMessage,

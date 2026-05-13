@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import type { Volume } from '@justfiles/fs'
+import { describe, expect, test } from 'vitest'
 import { createNowCommand } from './now.ts'
 
 const ctx = { vol: undefined as unknown as Volume }

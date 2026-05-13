@@ -1,7 +1,8 @@
 IMPORTANT: keep code minimal
 
 # Tools
-use bun for package management.
+use pnpm for package management.
+use bun as the JS runtime (bun run, bunx wrangler) and vitest as the test runner.
 
 use tab for indentation.
 
@@ -9,10 +10,10 @@ use tab for indentation.
 
 Make sure the following tests pass after making file changes:
 ```sh
-bun run format
-bun run typecheck
-bun run lint:fix
-bun test
+pnpm format
+pnpm typecheck
+pnpm lint:fix
+pnpm test
 ```
 
 ## Frieren UI verification

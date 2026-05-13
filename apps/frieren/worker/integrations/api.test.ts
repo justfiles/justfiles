@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import Type from 'typebox'
+import { describe, expect, test } from 'vitest'
 import { defineCommand } from '../bash/define.ts'
 import { CommandRegistry } from '../bash/registry.ts'
 import { integrationRoutes } from './api.ts'

@@ -1,16 +1,16 @@
-import { describe, expect, mock, test } from 'bun:test'
 import { APP_RPC_ERROR } from '@justfiles/app'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import { describe, expect, test, vi } from 'vitest'
 import type { Runtime } from './frieren.runtime'
 
-mock.module('virtual:@justfiles/apps', () => ({
+vi.mock('virtual:@justfiles/apps', () => ({
 	registry: new Map([
 		['demo', { manifest: { name: 'Demo', description: 'Demo app' } }],
 		['other', { manifest: { name: 'Other', description: 'Other app' } }]
 	])
 }))
-mock.module('@justfiles/app/sdk?raw', () => ({ default: '' }))
+vi.mock('@justfiles/app/sdk?raw', () => ({ default: '' }))
 
 const { FrierenAppHost } = await import('./frieren.app')
 

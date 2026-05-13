@@ -8,7 +8,6 @@
 		"skipLibCheck": true,
 
 		"moduleResolution": "bundler",
-		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"verbatimModuleSyntax": true,
 		"moduleDetection": "force",

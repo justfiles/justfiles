@@ -1,5 +1,5 @@
-import { expect, test } from 'bun:test'
 import { Check } from 'typebox/value'
+import { expect, test } from 'vitest'
 import type { App, Host, Volume } from './contract.js'
 import { APP_CONTRACT_VERSION, defineApp, ManifestSchema, NotFoundError } from './contract.js'
 

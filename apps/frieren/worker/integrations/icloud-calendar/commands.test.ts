@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import type { Volume } from '@justfiles/fs'
+import { describe, expect, test } from 'vitest'
 import type { CalDavClient, CreateEventInput } from './caldav.ts'
 import { createIcloudCalendarCommand } from './commands.ts'
 import type { CalEvent } from './ical.ts'

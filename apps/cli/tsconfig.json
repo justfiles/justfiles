@@ -5,7 +5,6 @@
 		"types": ["node"],
 		"module": "ESNext",
 		"moduleResolution": "bundler",
-		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"strict": true,
 		"noEmit": true,

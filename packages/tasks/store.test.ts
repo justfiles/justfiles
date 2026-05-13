@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { volume } from '../fs/index.ts'
 import { memStorage } from '../fs/storage.mem.ts'
 import { createStore, generateId } from './store.ts'

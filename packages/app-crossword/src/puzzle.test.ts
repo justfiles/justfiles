@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, test } from 'vitest'
 import { addBlocks, buildPuzzle, findSlots, place } from './puzzle.ts'
 
 test('place: single seed centered horizontally', () => {

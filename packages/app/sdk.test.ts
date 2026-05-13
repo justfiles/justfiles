@@ -4,10 +4,11 @@
 // can drive the postMessage ⇄ lifecycle flow end-to-end without a real DOM
 // and without depending on the build artifact.
 
-import { expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { Transpiler } from 'bun'
+import { fileURLToPath } from 'node:url'
+import { transformSync } from 'esbuild'
+import { expect, test } from 'vitest'
 
 type MessageListener = (event: { source: unknown; data: unknown }) => void
 
@@ -46,9 +47,10 @@ interface Harness {
 	parentSent: unknown[]
 }
 
-const SDK_SOURCE = new Transpiler({ loader: 'ts' }).transformSync(
-	readFileSync(path.join(import.meta.dir, 'sdk.ts'), 'utf8')
-)
+const here = path.dirname(fileURLToPath(import.meta.url))
+const SDK_SOURCE = transformSync(readFileSync(path.join(here, 'sdk.ts'), 'utf8'), {
+	loader: 'ts'
+}).code
 
 function setup(): Harness {
 	const listeners: MessageListener[] = []
@@ -239,11 +241,11 @@ test('volume.readFile decodes base64 from the response', async () => {
 	expect(Array.from(out)).toEqual([0, 1, 2, 250, 255])
 })
 
-test('volume.writeFile throws on non-Uint8Array input', () => {
+test('volume.writeFile throws on non-Uint8Array input', async () => {
 	const { win } = setup()
-	expect(() => win.app?.volume.writeFile('blob.bin', 'oops' as unknown as Uint8Array)).toThrow(
-		TypeError
-	)
+	await expect(
+		win.app?.volume.writeFile('blob.bin', 'oops' as unknown as Uint8Array)
+	).rejects.toBeInstanceOf(TypeError)
 })
 
 test('out-of-band response with unknown id is ignored', () => {
@@ -362,9 +364,9 @@ test('app.agent.send rejects with the rpc error code on permission_denied', asyn
 	})
 })
 
-test('app.agent.send throws on non-string input', () => {
+test('app.agent.send throws on non-string input', async () => {
 	const { win } = setup()
-	expect(() => win.app?.agent.send(42 as unknown as string)).toThrow(TypeError)
+	await expect(win.app?.agent.send(42 as unknown as string)).rejects.toBeInstanceOf(TypeError)
 })
 
 test('ignores lifecycle frames with unknown events', () => {

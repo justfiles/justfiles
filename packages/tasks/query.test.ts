@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { filterTasks, groupTasks } from './query.ts'
 import type { Task } from './store.ts'
 

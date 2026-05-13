@@ -5,7 +5,7 @@
 // shape, or returns something narrower than `AppRpcResponse`), the
 // compiler fails here before runtime.
 
-import { test } from 'bun:test'
+import { test } from 'vitest'
 import type { AppHost, AppRpcMethod, AppRpcRequest, AppRpcResponse, RequestId } from './index.js'
 
 type Equal<X, Y> =

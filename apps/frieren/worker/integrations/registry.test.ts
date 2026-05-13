@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'bun:test'
 import { volume } from '@justfiles/fs'
 import { memStorage as memFsStorage } from '@justfiles/fs/storage/mem'
 import Type from 'typebox'
+import { describe, expect, test } from 'vitest'
 import { defineCommand } from '../bash/define.ts'
 import type { Command } from '../bash/registry.ts'
 import { CommandRegistry } from '../bash/registry.ts'

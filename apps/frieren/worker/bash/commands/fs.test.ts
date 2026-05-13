@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test'
 import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
+import { describe, expect, test } from 'vitest'
 import { createBashTool } from '../index.ts'
 import { type CommandContext, CommandRegistry } from '../registry.ts'
 import { cp, mv, rm } from './fs.ts'

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { ConnectionStore, type CredentialRecord, type KvStorage } from './storage.ts'
 
 function memStorage(): KvStorage {

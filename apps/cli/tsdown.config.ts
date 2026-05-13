@@ -15,10 +15,5 @@ export default defineConfig({
 	},
 	deps: {
 		alwaysBundle: [/^hono($|\/)/, /^@justfiles\//]
-	},
-	inputOptions(options) {
-		options.resolve ??= {}
-		options.resolve.conditionNames = ['@justfiles/src', 'import', 'default']
-		return options
 	}
 })

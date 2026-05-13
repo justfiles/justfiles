@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { generateIcs, parseIcs } from './ical.ts'
 
 const UTC_ICS = `BEGIN:VCALENDAR

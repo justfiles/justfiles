@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, test } from 'vitest'
 import type { CalendarCapability } from './capabilities/calendar/contract.js'
 import type { EmailCapability, EmailDetail, EmailSummary } from './capabilities/email/contract.js'
 import { APP_CONTRACT_VERSION, type Capabilities, NotFoundError } from './contract.js'

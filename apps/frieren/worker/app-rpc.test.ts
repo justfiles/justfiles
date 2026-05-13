@@ -1,10 +1,10 @@
 // Behaviour tests for the client-only volume RPC dispatcher. Exercises the
 // public boundary — frame in, frame out — the way the WS loop calls it.
 
-import { describe, expect, test } from 'bun:test'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import { type Volume, volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
+import { describe, expect, test } from 'vitest'
 import { type ClientToolDescriptor, dispatchAppRpc } from './app-rpc'
 
 const APP_ID = 'demo'

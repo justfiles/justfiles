@@ -4,7 +4,7 @@
 // `app.tool.invoke` params). Any drift between the registries and the
 // relay surface fails the type checker.
 
-import { test } from 'bun:test'
+import { test } from 'vitest'
 import type { AppLauncher, AppRelay, ToolInvokeHandler, ToolResultSender } from './client.js'
 import type { AppHostRpcRegistry, AppRpcRequest, AppRpcResponse } from './protocol.js'
 

@@ -8,7 +8,7 @@
  * + `fullScan()` via caps on top.
  */
 
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { FsOp, InodeMeta, Storage, StorageCapabilities, UpdateQueryOptions } from './storage'
 import { FsCursorExpiredError } from './storage'
 import { memStorage } from './storage.mem'

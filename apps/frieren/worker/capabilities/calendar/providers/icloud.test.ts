@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import type { CalDavClient } from '../../../integrations/icloud-calendar/caldav.ts'
 import type { CalEvent } from '../../../integrations/icloud-calendar/ical.ts'
 import { calendarHost } from '../host.ts'

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { type Command, CommandRegistry } from './registry.ts'
 
 function stub(name: string, summary = `${name} summary`): Command {
