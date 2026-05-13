@@ -22,8 +22,8 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { Check, Errors } from 'typebox/value'
 import type { Plugin, UserConfig } from 'vite'
-import { type Manifest as NewManifest, ManifestSchema as NewManifestSchema } from './contract.js'
-import { FORMAT_VERSION, type Manifest, ManifestSchema } from './format.js'
+import { type Manifest as NewManifest, ManifestSchema as NewManifestSchema } from './contract.ts'
+import { FORMAT_VERSION, type Manifest, ManifestSchema } from './format.ts'
 
 // Either the legacy iframe manifest or the new ESM-contract manifest. The
 // host shell branches at runtime; the plugin just passes both through.

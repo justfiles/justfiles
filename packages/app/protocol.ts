@@ -1,10 +1,10 @@
 // Frame types for the FE↔BE bridge. Plain JSON-RPC. Both transports
 // (postMessage in frieren prod, WebSocket in dev) carry these verbatim.
 
-import type { AppCapabilityMap } from './contract.js'
-import type { AppPermission } from './format.js'
+import type { AppCapabilityMap } from './contract.ts'
+import type { AppPermission } from './format.ts'
 
-export type { AppCapabilityMap } from './contract.js'
+export type { AppCapabilityMap } from './contract.ts'
 
 export type RequestId = string
 

@@ -7,4 +7,4 @@ export {
 	type CapabilityFactory,
 	type CapabilityScope,
 	defineCapability
-} from './core.js'
+} from './core.ts'

@@ -1,7 +1,7 @@
 // Server-side host contract. Owns app lifecycle and dispatches RPC frames
 // from the browser shell. Frieren's worker implements this; tests mock it.
 
-import type { AppRpcRequest, AppRpcResponse } from './protocol.js'
+import type { AppRpcRequest, AppRpcResponse } from './protocol.ts'
 
 export interface AppHost {
 	/** Identity of the currently active app, if any. */
