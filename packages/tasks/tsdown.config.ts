@@ -18,8 +18,5 @@ export default defineConfig({
 	platform: 'neutral',
 	dts: true,
 	clean: true,
-	banner: { js: '#!/usr/bin/env node' },
-	deps: {
-		alwaysBundle: [/^@justfiles\//]
-	}
+	banner: { js: '#!/usr/bin/env node' }
 })
