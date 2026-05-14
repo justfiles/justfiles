@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, test } from 'vitest'
 import { loadApp } from './app-loader.js'
 import type { App, Host, Manifest } from './contract.js'
 import { defineApp } from './contract.js'

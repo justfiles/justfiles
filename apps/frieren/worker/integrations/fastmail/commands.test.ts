@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import type { Volume } from '@justfiles/fs'
+import { describe, expect, test } from 'vitest'
 import { createFastmailCommand } from './commands.ts'
 import type { EmailDetails, EmailSummary, JmapClient, SendInput } from './jmap.ts'
 

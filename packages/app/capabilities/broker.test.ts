@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { defineProviderBackedCapability } from './broker.js'
 import type { EmailCapability } from './email/index.js'
 import { email } from './email/index.js'

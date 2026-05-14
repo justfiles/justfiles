@@ -3,7 +3,7 @@
 // the allowlist intentionally when adding a contract — never to silence a
 // test failure.
 
-import { expect, test } from 'bun:test'
+import { expect, test } from 'vitest'
 import * as pkg from './index.js'
 
 const ALLOWLIST = [

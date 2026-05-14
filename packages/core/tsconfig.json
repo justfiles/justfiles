@@ -4,7 +4,6 @@
 		"lib": ["ES2023", "DOM"],
 		"module": "ESNext",
 		"moduleResolution": "bundler",
-		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"isolatedModules": true,
 		"moduleDetection": "force",

@@ -9,7 +9,6 @@
 
 		/* Bundler mode */
 		"moduleResolution": "bundler",
-		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"allowJs": true,
 		"verbatimModuleSyntax": true,

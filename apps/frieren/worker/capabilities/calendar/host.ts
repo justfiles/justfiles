@@ -2,8 +2,8 @@
 // etc.) register against `calendarHost` and the broker enforces method-level
 // scopes per call.
 
-import { defineProviderBackedCapability } from '../../../../../packages/app/capabilities/broker.ts'
-import { calendar } from '../../../../../packages/app/capabilities/calendar/index.ts'
+import { defineProviderBackedCapability } from '@justfiles/app/capabilities/broker'
+import { calendar } from '@justfiles/app/capabilities/calendar'
 
 export const calendarHost = defineProviderBackedCapability({
 	capability: calendar,

@@ -2,44 +2,55 @@
 	"name": "@justfiles/tasks",
 	"version": "0.0.1",
 	"type": "module",
-	"main": "./dist/index.js",
-	"module": "./dist/index.js",
-	"types": "./dist/index.d.ts",
 	"exports": {
-		".": {
-			"@justfiles/src": "./index.ts",
-			"import": "./dist/index.js",
-			"default": "./dist/index.js"
-		},
-		"./parse": {
-			"@justfiles/src": "./parse.ts",
-			"import": "./dist/parse.js",
-			"default": "./dist/parse.js"
-		},
-		"./store": {
-			"@justfiles/src": "./store.ts",
-			"import": "./dist/store.js",
-			"default": "./dist/store.js"
-		},
-		"./format": {
-			"@justfiles/src": "./format.ts",
-			"import": "./dist/format.js",
-			"default": "./dist/format.js"
-		},
-		"./dates": {
-			"@justfiles/src": "./dates.ts",
-			"import": "./dist/dates.js",
-			"default": "./dist/dates.js"
-		},
-		"./query": {
-			"@justfiles/src": "./query.ts",
-			"import": "./dist/query.js",
-			"default": "./dist/query.js"
-		},
-		"./node": {
-			"@justfiles/src": "./node.ts",
-			"import": "./dist/node.js",
-			"default": "./dist/node.js"
+		".": "./index.ts",
+		"./parse": "./parse.ts",
+		"./store": "./store.ts",
+		"./format": "./format.ts",
+		"./dates": "./dates.ts",
+		"./query": "./query.ts",
+		"./node": "./node.ts"
+	},
+	"publishConfig": {
+		"main": "./dist/index.js",
+		"module": "./dist/index.js",
+		"types": "./dist/index.d.ts",
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"import": "./dist/index.js",
+				"default": "./dist/index.js"
+			},
+			"./parse": {
+				"types": "./dist/parse.d.ts",
+				"import": "./dist/parse.js",
+				"default": "./dist/parse.js"
+			},
+			"./store": {
+				"types": "./dist/store.d.ts",
+				"import": "./dist/store.js",
+				"default": "./dist/store.js"
+			},
+			"./format": {
+				"types": "./dist/format.d.ts",
+				"import": "./dist/format.js",
+				"default": "./dist/format.js"
+			},
+			"./dates": {
+				"types": "./dist/dates.d.ts",
+				"import": "./dist/dates.js",
+				"default": "./dist/dates.js"
+			},
+			"./query": {
+				"types": "./dist/query.d.ts",
+				"import": "./dist/query.js",
+				"default": "./dist/query.js"
+			},
+			"./node": {
+				"types": "./dist/node.d.ts",
+				"import": "./dist/node.js",
+				"default": "./dist/node.js"
+			}
 		}
 	},
 	"bin": {

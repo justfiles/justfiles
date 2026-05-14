@@ -1,4 +1,3 @@
-import { afterEach, describe, expect, test } from 'bun:test'
 import {
 	existsSync,
 	mkdirSync,
@@ -12,6 +11,7 @@ import {
 import { readlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterEach, describe, expect, test } from 'vitest'
 
 import { nativeStorage } from './storage.fs.ts'
 import { FileType } from './types.ts'

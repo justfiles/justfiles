@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { MAX_OUTPUT_BYTES, truncateTail } from './truncate.ts'
 
 const enc = new TextEncoder()

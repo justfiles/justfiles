@@ -10,7 +10,6 @@
 
 		/* Bundler mode */
 		"moduleResolution": "bundler",
-		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"resolveJsonModule": true,
 		"verbatimModuleSyntax": true,

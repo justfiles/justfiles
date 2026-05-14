@@ -2,44 +2,55 @@
 	"name": "@justfiles/fs",
 	"version": "0.2.1",
 	"type": "module",
-	"main": "./dist/index.js",
-	"module": "./dist/index.js",
-	"types": "./dist/index.d.ts",
 	"exports": {
-		".": {
-			"@justfiles/src": "./index.ts",
-			"import": "./dist/index.js",
-			"default": "./dist/index.js"
-		},
-		"./storage": {
-			"@justfiles/src": "./storage.ts",
-			"import": "./dist/storage.js",
-			"default": "./dist/storage.js"
-		},
-		"./storage/mem": {
-			"@justfiles/src": "./storage.mem.ts",
-			"import": "./dist/storage.mem.js",
-			"default": "./dist/storage.mem.js"
-		},
-		"./storage/idb": {
-			"@justfiles/src": "./storage.idb.ts",
-			"import": "./dist/storage.idb.js",
-			"default": "./dist/storage.idb.js"
-		},
-		"./storage/fs": {
-			"@justfiles/src": "./storage.fs.ts",
-			"import": "./dist/storage.fs.js",
-			"default": "./dist/storage.fs.js"
-		},
-		"./types": {
-			"@justfiles/src": "./types.ts",
-			"import": "./dist/types.js",
-			"default": "./dist/types.js"
-		},
-		"./xattr": {
-			"@justfiles/src": "./xattr.ts",
-			"import": "./dist/xattr.js",
-			"default": "./dist/xattr.js"
+		".": "./index.ts",
+		"./storage": "./storage.ts",
+		"./storage/mem": "./storage.mem.ts",
+		"./storage/idb": "./storage.idb.ts",
+		"./storage/fs": "./storage.fs.ts",
+		"./types": "./types.ts",
+		"./xattr": "./xattr.ts"
+	},
+	"publishConfig": {
+		"main": "./dist/index.js",
+		"module": "./dist/index.js",
+		"types": "./dist/index.d.ts",
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"import": "./dist/index.js",
+				"default": "./dist/index.js"
+			},
+			"./storage": {
+				"types": "./dist/storage.d.ts",
+				"import": "./dist/storage.js",
+				"default": "./dist/storage.js"
+			},
+			"./storage/mem": {
+				"types": "./dist/storage.mem.d.ts",
+				"import": "./dist/storage.mem.js",
+				"default": "./dist/storage.mem.js"
+			},
+			"./storage/idb": {
+				"types": "./dist/storage.idb.d.ts",
+				"import": "./dist/storage.idb.js",
+				"default": "./dist/storage.idb.js"
+			},
+			"./storage/fs": {
+				"types": "./dist/storage.fs.d.ts",
+				"import": "./dist/storage.fs.js",
+				"default": "./dist/storage.fs.js"
+			},
+			"./types": {
+				"types": "./dist/types.d.ts",
+				"import": "./dist/types.js",
+				"default": "./dist/types.js"
+			},
+			"./xattr": {
+				"types": "./dist/xattr.d.ts",
+				"import": "./dist/xattr.js",
+				"default": "./dist/xattr.js"
+			}
 		}
 	},
 	"files": [

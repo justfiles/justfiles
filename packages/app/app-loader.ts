@@ -4,7 +4,7 @@
 // export, and calls `mount(el, host)`. Returns a handle that unmounts the
 // app exactly once.
 
-import type { App, Host, Manifest } from './contract.js'
+import type { App, Host, Manifest } from './contract.ts'
 
 export interface LoadAppOptions {
 	manifest: Manifest

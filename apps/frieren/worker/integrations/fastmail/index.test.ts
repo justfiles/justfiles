@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import { Check } from 'typebox/value'
+import { describe, expect, test } from 'vitest'
 import { fastmailCredentialsSchema, fastmailIntegration } from './index.ts'
 
 describe('fastmail integration', () => {

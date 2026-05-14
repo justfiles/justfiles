@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { decodeFilename, encodeFilename, isValidId, slugify } from './parse.ts'
 
 describe('parse', () => {

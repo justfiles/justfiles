@@ -5,7 +5,6 @@
 		"module": "Preserve",
 		"moduleDetection": "force",
 		"moduleResolution": "bundler",
-		"customConditions": ["@justfiles/src"],
 		"allowImportingTsExtensions": true,
 		"verbatimModuleSyntax": true,
 		"noEmit": true,

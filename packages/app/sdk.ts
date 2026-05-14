@@ -22,7 +22,7 @@ import type {
 	AppTool,
 	AppToolRegistry,
 	AppVolume
-} from './protocol.js'
+} from './protocol.ts'
 
 declare global {
 	interface Window {

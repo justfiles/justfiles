@@ -1,6 +1,6 @@
-import { defineCapability } from '../core.js'
-import type { VolumeCapability } from './contract.js'
+import { defineCapability } from '../core.ts'
+import type { VolumeCapability } from './contract.ts'
 
-export type { VolumeCapability } from './contract.js'
+export type { VolumeCapability } from './contract.ts'
 
 export const volume = defineCapability<'volume', VolumeCapability>('volume')

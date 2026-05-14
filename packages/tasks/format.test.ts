@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { formatIds, formatJson, formatMarkdown, formatSections } from './format.ts'
 import { groupTasks } from './query.ts'
 import type { Task } from './store.ts'

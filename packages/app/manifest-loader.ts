@@ -3,7 +3,7 @@
 // App Loader.
 
 import { Check, Errors } from 'typebox/value'
-import { type Manifest, ManifestSchema } from './contract.js'
+import { type Manifest, ManifestSchema } from './contract.ts'
 
 export interface LoadManifestOptions {
 	url: string

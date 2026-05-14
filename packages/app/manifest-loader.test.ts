@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, test } from 'vitest'
 import { isNewManifest, loadManifest } from './manifest-loader.js'
 
 const validManifest = {

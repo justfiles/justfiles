@@ -2,7 +2,7 @@
 // host UI start/stop apps; the relay forwards iframe ⇄ server JSON-RPC
 // frames and routes server-initiated tool invocations.
 
-import type { AppHostRpcRegistry, AppRpcError, AppRpcRequest, AppRpcResponse } from './protocol.js'
+import type { AppHostRpcRegistry, AppRpcError, AppRpcRequest, AppRpcResponse } from './protocol.ts'
 
 export type ActiveApp =
 	| { kind: 'sandbox'; id: string; ui: { url: string } }

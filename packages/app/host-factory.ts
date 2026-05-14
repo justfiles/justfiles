@@ -8,7 +8,7 @@ import {
 	type Host,
 	NotFoundError,
 	type Volume
-} from './contract.js'
+} from './contract.ts'
 
 // Minimal storage backend the Host Factory needs to scope per-app I/O.
 // Matches the subset of `@justfiles/fs.Volume` we use; defined structurally

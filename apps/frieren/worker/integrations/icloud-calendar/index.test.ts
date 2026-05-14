@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import { Check } from 'typebox/value'
+import { describe, expect, test } from 'vitest'
 import { icloudCalendarCredentialsSchema, icloudCalendarIntegration } from './index.ts'
 
 describe('icloud-calendar integration', () => {
