@@ -19,10 +19,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: 'lts/*'
+          node-version-file: .node-version
+          cache: pnpm
       - uses: oven-sh/setup-bun@v2
       - run: pnpm install --frozen-lockfile
       - name: Validate deploy secrets
@@ -40,7 +41,7 @@ jobs:
         env:
           CLOUDFLARE_ENV: staging
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
-      - uses: cloudflare/wrangler-action@v3.14.1
+      - uses: cloudflare/wrangler-action@v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

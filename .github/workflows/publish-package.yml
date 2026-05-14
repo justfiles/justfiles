@@ -20,10 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: pnpm/action-setup@v6
+
       - uses: actions/setup-node@v6
         with:
-          node-version: 'lts/*'
+          node-version-file: .node-version
           registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
 
       - name: Read package metadata
         id: package
@@ -44,9 +47,6 @@ jobs:
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
             echo "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }} will be published"
           fi
-
-      - uses: pnpm/action-setup@v4
-        if: steps.npm.outputs.should_publish == 'true'
 
       - uses: oven-sh/setup-bun@v2
         if: steps.npm.outputs.should_publish == 'true'
