@@ -46,9 +46,11 @@ jobs:
         with:
           ref: ${{ steps.target.outputs.deploy_ref }}
 
+      - uses: pnpm/action-setup@v4
+
       - uses: oven-sh/setup-bun@v2
 
-      - run: bun install
+      - run: pnpm install --frozen-lockfile
 
       - name: Validate deploy secrets
         env:
@@ -68,8 +70,8 @@ jobs:
               ;;
           esac
 
-      - run: bun run typecheck
-      - run: bun run build
+      - run: pnpm typecheck
+      - run: pnpm --filter frieren build
         env:
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.FRIEREN_CLERK_PUBLISHABLE_KEY }}
 
@@ -79,5 +81,5 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: 4.71.0
           command: deploy
-          packageManager: bun
+          packageManager: pnpm
           workingDirectory: apps/frieren

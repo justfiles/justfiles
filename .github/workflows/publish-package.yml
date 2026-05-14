@@ -45,16 +45,19 @@ jobs:
             echo "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }} will be published"
           fi
 
+      - uses: pnpm/action-setup@v4
+        if: steps.npm.outputs.should_publish == 'true'
+
       - uses: oven-sh/setup-bun@v2
         if: steps.npm.outputs.should_publish == 'true'
 
-      - run: bun install
+      - run: pnpm install --frozen-lockfile
         if: steps.npm.outputs.should_publish == 'true'
 
-      - run: bun run build
+      - run: pnpm run build
         if: steps.npm.outputs.should_publish == 'true'
         working-directory: ${{ inputs.working_directory }}
 
-      - run: npm publish --access public
+      - run: pnpm publish --no-git-checks --access public
         if: steps.npm.outputs.should_publish == 'true'
         working-directory: ${{ inputs.working_directory }}
