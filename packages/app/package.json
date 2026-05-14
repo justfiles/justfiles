@@ -80,9 +80,13 @@
 	},
 	"devDependencies": {
 		"@types/bun": "latest",
+		"@types/node": "^25.7.0",
 		"esbuild": "^0.27.0",
 		"typebox": "^1.1.34",
 		"typescript": "^6.0.3",
 		"vite": "^8.0.0-beta.13"
+	},
+	"dependencies": {
+		"@justfiles/fs": "workspace:*"
 	}
 }
