@@ -714,3 +714,49 @@ export function volume(storage: Storage): Volume {
 
 	return vol
 }
+
+function chrootPath(root: string, path: string): string {
+	if (!path.startsWith('/')) throw new Error(`path must be absolute: ${path}`)
+	const parts: string[] = []
+	for (const part of path.split('/')) {
+		if (!part || part === '.') continue
+		if (part === '..') {
+			if (parts.length === 0) throw new Error(`path escapes chroot: ${path}`)
+			parts.pop()
+			continue
+		}
+		parts.push(part)
+	}
+	return parts.length ? `${root}/${parts.join('/')}` : root
+}
+
+export function chroot(fs: Volume, root: string): Volume {
+	const at = (path: string) => chrootPath(root, path)
+	return {
+		stat: (path) => fs.stat(at(path)),
+		lstat: (path) => fs.lstat(at(path)),
+		exists: (path) => fs.exists(at(path)),
+		getXattr: (path, name) => fs.getXattr(at(path), name),
+		setXattr: (path, name, value) => fs.setXattr(at(path), name, value),
+		listXattr: (path) => fs.listXattr(at(path)),
+		removeXattr: (path, name) => fs.removeXattr(at(path), name),
+		readFile: (path) => fs.readFile(at(path)),
+		writeFile: (path, data) => fs.writeFile(at(path), data),
+		appendFile: (path, data) => fs.appendFile(at(path), data),
+		mkdir: (path, opts) => fs.mkdir(at(path), opts),
+		readdir: (path) => fs.readdir(at(path)),
+		rm: (path, opts) => fs.rm(at(path), opts),
+		rename: (oldPath, newPath) => fs.rename(at(oldPath), at(newPath)),
+		cp: (src, dest, opts) => fs.cp(at(src), at(dest), opts),
+		symlink: async () => {
+			throw new Error('symlink not supported in chroot')
+		},
+		readlink: (path) => fs.readlink(at(path)),
+		chmod: (path, mode) => fs.chmod(at(path), mode),
+		utimes: (path, mtimeNs) => fs.utimes(at(path), mtimeNs),
+		scan: (path, visitor) =>
+			fs.scan(at(path), async (realPath, stat) => {
+				await visitor(realPath.slice(root.length) || '/', stat)
+			})
+	}
+}

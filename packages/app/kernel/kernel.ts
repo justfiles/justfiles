@@ -1,4 +1,4 @@
-import type { Volume } from '@justfiles/fs'
+import { chroot, type Volume } from '@justfiles/fs'
 import type { Action, AppBundle, Context, InstalledApp } from './app'
 
 interface System {
@@ -61,52 +61,6 @@ function appRoot(appId: AppId): string {
 	return `/applications/${appId}`
 }
 
-function scopedPath(root: string, path: string): string {
-	if (!path.startsWith('/')) throw new Error(`path must be absolute: ${path}`)
-	const parts: string[] = []
-	for (const part of path.split('/')) {
-		if (!part || part === '.') continue
-		if (part === '..') {
-			if (parts.length === 0) throw new Error(`path escapes app sandbox: ${path}`)
-			parts.pop()
-			continue
-		}
-		parts.push(part)
-	}
-	return parts.length ? `${root}/${parts.join('/')}` : root
-}
-
-function scopedVolume(fs: Volume, root: string): Volume {
-	const at = (path: string) => scopedPath(root, path)
-	return {
-		stat: (path) => fs.stat(at(path)),
-		lstat: (path) => fs.lstat(at(path)),
-		exists: (path) => fs.exists(at(path)),
-		getXattr: (path, name) => fs.getXattr(at(path), name),
-		setXattr: (path, name, value) => fs.setXattr(at(path), name, value),
-		listXattr: (path) => fs.listXattr(at(path)),
-		removeXattr: (path, name) => fs.removeXattr(at(path), name),
-		readFile: (path) => fs.readFile(at(path)),
-		writeFile: (path, data) => fs.writeFile(at(path), data),
-		appendFile: (path, data) => fs.appendFile(at(path), data),
-		mkdir: (path, opts) => fs.mkdir(at(path), opts),
-		readdir: (path) => fs.readdir(at(path)),
-		rm: (path, opts) => fs.rm(at(path), opts),
-		rename: (oldPath, newPath) => fs.rename(at(oldPath), at(newPath)),
-		cp: (src, dest, opts) => fs.cp(at(src), at(dest), opts),
-		symlink: async () => {
-			throw new Error('symlink not supported in app sandbox')
-		},
-		readlink: (path) => fs.readlink(at(path)),
-		chmod: (path, mode) => fs.chmod(at(path), mode),
-		utimes: (path, mtimeNs) => fs.utimes(at(path), mtimeNs),
-		scan: (path, visitor) =>
-			fs.scan(at(path), async (realPath, stat) => {
-				await visitor(realPath.slice(root.length) || '/', stat)
-			})
-	}
-}
-
 export function kernel({ fs, sandbox }: System): Kernel {
 	return { install, uninstall, dispatch, subscribe }
 
@@ -155,7 +109,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const sb = await sandbox(text(await app.read(app.manifest.fn)))
 		const result = await sb.run(action, {
 			state,
-			files: scopedVolume(fs, `${root}/data/files`),
+			files: chroot(fs, `${root}/data/files`),
 			setState: saveState
 		})
 		await saveState(result)
