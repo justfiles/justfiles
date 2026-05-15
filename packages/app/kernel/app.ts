@@ -17,6 +17,7 @@ export interface Context<State = unknown> {
 }
 
 export interface AppManifest {
+	id: string
 	name: string
 	fn: string
 	gui?: string
@@ -30,6 +31,7 @@ export interface AppBundle {
 }
 
 export interface MemoryAppBundle {
+	id: string
 	name: string
 	fn: string
 	gui?: string
@@ -47,7 +49,7 @@ export function appBundleFromMemory(input: MemoryAppBundle): AppBundle {
 
 	return {
 		async manifest() {
-			return { name: input.name, fn: 'fn.js', gui: 'gui.js', cli: 'cli.js' }
+			return { id: input.id, name: input.name, fn: 'fn.js', gui: 'gui.js', cli: 'cli.js' }
 		},
 		async *list() {
 			yield* Object.keys(files)

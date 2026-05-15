@@ -3,10 +3,13 @@ export function greet(params, _context) {
 }
 
 export const app = {
-	dispatch: (action, { state }) => {
+	dispatch: async (action, { state, files }) => {
 		const current = state ?? { count: 0 }
 		if (action.type === 'increment') {
 			return { ...current, count: current.count + action.params.amount }
+		}
+		if (action.type === 'write') {
+			await files.writeFile('/note.txt', new TextEncoder().encode(action.params.text))
 		}
 		return current
 	}

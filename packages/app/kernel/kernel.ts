@@ -56,6 +56,57 @@ function text(data: Uint8Array): string {
 	return new TextDecoder().decode(data)
 }
 
+function appRoot(appId: AppId): string {
+	if (!/^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(appId)) throw new Error(`invalid app id: ${appId}`)
+	return `/applications/${appId}`
+}
+
+function scopedPath(root: string, path: string): string {
+	if (!path.startsWith('/')) throw new Error(`path must be absolute: ${path}`)
+	const parts: string[] = []
+	for (const part of path.split('/')) {
+		if (!part || part === '.') continue
+		if (part === '..') {
+			if (parts.length === 0) throw new Error(`path escapes app sandbox: ${path}`)
+			parts.pop()
+			continue
+		}
+		parts.push(part)
+	}
+	return parts.length ? `${root}/${parts.join('/')}` : root
+}
+
+function scopedVolume(fs: Volume, root: string): Volume {
+	const at = (path: string) => scopedPath(root, path)
+	return {
+		stat: (path) => fs.stat(at(path)),
+		lstat: (path) => fs.lstat(at(path)),
+		exists: (path) => fs.exists(at(path)),
+		getXattr: (path, name) => fs.getXattr(at(path), name),
+		setXattr: (path, name, value) => fs.setXattr(at(path), name, value),
+		listXattr: (path) => fs.listXattr(at(path)),
+		removeXattr: (path, name) => fs.removeXattr(at(path), name),
+		readFile: (path) => fs.readFile(at(path)),
+		writeFile: (path, data) => fs.writeFile(at(path), data),
+		appendFile: (path, data) => fs.appendFile(at(path), data),
+		mkdir: (path, opts) => fs.mkdir(at(path), opts),
+		readdir: (path) => fs.readdir(at(path)),
+		rm: (path, opts) => fs.rm(at(path), opts),
+		rename: (oldPath, newPath) => fs.rename(at(oldPath), at(newPath)),
+		cp: (src, dest, opts) => fs.cp(at(src), at(dest), opts),
+		symlink: async () => {
+			throw new Error('symlink not supported in app sandbox')
+		},
+		readlink: (path) => fs.readlink(at(path)),
+		chmod: (path, mode) => fs.chmod(at(path), mode),
+		utimes: (path, mtimeNs) => fs.utimes(at(path), mtimeNs),
+		scan: (path, visitor) =>
+			fs.scan(at(path), async (realPath, stat) => {
+				await visitor(realPath.slice(root.length) || '/', stat)
+			})
+	}
+}
+
 export function kernel({ fs, sandbox }: System): Kernel {
 	return { install, uninstall, dispatch, subscribe }
 
@@ -63,44 +114,32 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		await fs.mkdir('/applications', { recursive: true })
 
 		const manifest = await app.manifest()
-		const root = `/applications/${manifest.name}`
+		const appId = manifest.id
+		const root = appRoot(appId)
 		const manifestPath = `${root}/manifest.json`
-		const existing = (await fs.exists(manifestPath))
-			? JSON.parse(text(await fs.readFile(manifestPath)))
-			: null
-		const appId = existing?.id ?? crypto.randomUUID()
 
 		await fs.mkdir(root, { recursive: true })
 		for await (const path of app.list()) {
 			await fs.writeFile(`${root}/${path}`, await app.read(path))
 		}
-		await fs.writeFile(manifestPath, bytes(JSON.stringify({ id: appId, ...manifest })))
-
-		const index = await getIndex()
-		index[appId] = root
-		await saveIndex(index)
+		await fs.writeFile(manifestPath, bytes(JSON.stringify(manifest)))
 
 		return appId
 	}
 
 	async function uninstall(appId: AppId): Promise<void> {
-		const index = await getIndex()
-		const root = index[appId]
-		if (!root) return
-		await fs.rm(root, { recursive: true, force: true })
-		delete index[appId]
-		await saveIndex(index)
+		await fs.rm(appRoot(appId), { recursive: true, force: true })
 	}
 
 	async function dispatch(appId: AppId, action: Action): Promise<unknown> {
-		const index = await getIndex()
-		const root = index[appId]
-		if (!root) throw new Error(`app not found: ${appId}`)
+		const root = appRoot(appId)
+		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
 
 		const app = await getApp(appId)
 		if (!app) throw new Error(`app not found: ${appId}`)
 
-		const statePath = `${root}/state.json`
+		await fs.mkdir(`${root}/data/files`, { recursive: true })
+		const statePath = `${root}/data/state.json`
 		let state: unknown
 		try {
 			if (await fs.exists(statePath)) state = JSON.parse(text(await fs.readFile(statePath)))
@@ -116,7 +155,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const sb = await sandbox(text(await app.read(app.manifest.fn)))
 		const result = await sb.run(action, {
 			state,
-			files: fs,
+			files: scopedVolume(fs, `${root}/data/files`),
 			setState: saveState
 		})
 		await saveState(result)
@@ -128,21 +167,11 @@ export function kernel({ fs, sandbox }: System): Kernel {
 	}
 
 	async function getApp(appId: AppId): Promise<InstalledApp | null> {
-		const root = (await getIndex())[appId]
-		if (!root) return null
+		const root = appRoot(appId)
+		if (!(await fs.exists(root))) return null
 		return {
 			manifest: JSON.parse(text(await fs.readFile(`${root}/manifest.json`))),
 			read: (path) => fs.readFile(`${root}/${path}`)
 		}
-	}
-
-	async function getIndex(): Promise<Record<AppId, string>> {
-		const path = '/applications/index.json'
-		if (!(await fs.exists(path))) return {}
-		return JSON.parse(text(await fs.readFile(path)))
-	}
-
-	async function saveIndex(index: Record<AppId, string>): Promise<void> {
-		await fs.writeFile('/applications/index.json', bytes(JSON.stringify(index)))
 	}
 }
