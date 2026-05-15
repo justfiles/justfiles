@@ -6,19 +6,19 @@ import code from './kernel.testapp.js?raw'
 
 const sandbox: GetSandbox = async function (code: string) {
 	const mod = await import(`data:text/javascript;base64,${btoa(code)}`)
+	const app = mod.app
+	if (typeof app !== 'object') {
+		throw new Error(`app module must export an object named "app"`)
+	}
+
 	return {
-		run: async (action) => {
-			const fn = mod[action.type]
-			if (typeof fn !== 'function')
-				throw new Error(`action type "${action.type}" is not a function`)
-			return fn(action.params)
-		}
+		run: async (action, ctx) => await app.dispatch(action, ctx)
 	}
 }
 
 const clock = {}
 
-test('install works', async () => {
+test('smoke test kernel', async () => {
 	const fs = volume(memStorage())
 	const k = kernel({ fs, sandbox, clock })
 	const app = appBundleFromMemory({
@@ -29,11 +29,19 @@ test('install works', async () => {
 
 	expect(appId).toBeTruthy()
 	expect(await fs.exists('/applications/app/manifest.json')).toBe(true)
-	const result = await k.dispatch(appId, {
-		type: 'greet',
-		params: { name: 'John' },
+	let result = await k.dispatch(appId, {
+		type: 'increment',
+		params: { amount: 5 },
 		actor: 'agent'
 	})
 
-	expect(result).toBe('hello, John')
+	expect(result).toEqual({ count: 5 })
+
+	result = await k.dispatch(appId, {
+		type: 'increment',
+		params: { amount: 2 },
+		actor: 'agent'
+	})
+
+	expect(result).toEqual({ count: 7 })
 })

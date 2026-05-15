@@ -1,5 +1,5 @@
 import type { Volume } from '@justfiles/fs'
-import type { Action, AppBundle, InstalledApp } from './app'
+import type { Action, AppBundle, Context, InstalledApp } from './app'
 
 interface System {
 	fs: Volume
@@ -10,7 +10,7 @@ interface System {
 export type GetSandbox = (code: string) => Promise<Sandbox>
 
 export type Sandbox = {
-	run(action: Action): Promise<unknown>
+	run(action: Action, ctx: Context): Promise<unknown>
 }
 type Clock = object
 
@@ -92,11 +92,35 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		await saveIndex(index)
 	}
 
-	async function dispatch(appId: AppId, _action: Action): Promise<unknown> {
+	async function dispatch(appId: AppId, action: Action): Promise<unknown> {
+		const index = await getIndex()
+		const root = index[appId]
+		if (!root) throw new Error(`app not found: ${appId}`)
+
 		const app = await getApp(appId)
 		if (!app) throw new Error(`app not found: ${appId}`)
+
+		const statePath = `${root}/state.json`
+		let state: unknown
+		try {
+			if (await fs.exists(statePath)) state = JSON.parse(text(await fs.readFile(statePath)))
+		} catch {
+			state = undefined
+		}
+
+		async function saveState(next: unknown): Promise<void> {
+			state = next
+			await fs.writeFile(statePath, bytes(JSON.stringify(state)))
+		}
+
 		const sb = await sandbox(text(await app.read(app.manifest.fn)))
-		return await sb.run(_action)
+		const result = await sb.run(action, {
+			state,
+			files: fs,
+			setState: saveState
+		})
+		await saveState(result)
+		return result
 	}
 
 	function subscribe(_handler: KernelEventHandler): Unsubscribe {

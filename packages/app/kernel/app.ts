@@ -7,13 +7,12 @@ export type Action<Type extends string = string, Params = unknown> = {
 }
 
 export interface App<State> {
-	init: () => Promise<State>
-	dispath: (action: Action, ctx: Context<State>) => Promise<State>
+	dispatch: (action: Action, ctx: Context<State>) => Promise<State>
 }
 
-interface Context<State> {
+export interface Context<State = unknown> {
 	setState: (state: State) => Promise<void>
-	readonly state: State
+	readonly state?: State
 	files: Volume
 }
 
