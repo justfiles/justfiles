@@ -1,4 +1,5 @@
 import type { Volume } from '@justfiles/fs'
+import type { Action, AppBundle, InstalledApp } from './app'
 
 interface System {
 	fs: Volume
@@ -9,7 +10,7 @@ interface System {
 export type GetSandbox = (code: string) => Promise<Sandbox>
 
 export type Sandbox = {
-	run(action: AppAction): Promise<unknown>
+	run(action: Action): Promise<unknown>
 }
 type Clock = object
 
@@ -20,18 +21,7 @@ interface Kernel {
 	install: (app: AppBundle) => Promise<AppId> // after install, we get stable appId
 	uninstall: (appId: AppId) => Promise<void>
 	subscribe: (handler: KernelEventHandler) => Unsubscribe
-	dispatch: (action: Action) => Promise<unknown>
-}
-
-type AppAction = {
-	type: string
-	params: unknown
-}
-
-type Action = {
-	appId: string
-	actor: string
-	action: AppAction
+	dispatch: (appId: AppId, action: Action) => Promise<unknown>
 }
 
 type AppState = object
@@ -57,55 +47,6 @@ type Event =
 	  }
 
 // ------------------
-
-interface AppManifest {
-	name: string
-	fn: string
-	gui?: string
-	cli?: string
-}
-
-interface AppBundle {
-	manifest(): Promise<AppManifest>
-	list(): AsyncIterable<string>
-	read(path: string): Promise<Uint8Array>
-}
-
-interface MemoryAppBundle {
-	name: string
-	fn: string
-	gui?: string
-	cli?: string
-	assets?: Record<string, string | Uint8Array>
-}
-
-export function appBundleFromMemory(input: MemoryAppBundle): AppBundle {
-	const files: Record<string, string | Uint8Array> = {
-		'fn.js': input.fn,
-		'gui.js': input.gui ?? '',
-		'cli.js': input.cli ?? '',
-		...input.assets
-	}
-
-	return {
-		async manifest() {
-			return { name: input.name, fn: 'fn.js', gui: 'gui.js', cli: 'cli.js' }
-		},
-		async *list() {
-			yield* Object.keys(files)
-		},
-		async read(path) {
-			const file = files[path]
-			if (file == null) throw new Error(`file not found: ${path}`)
-			return typeof file === 'string' ? bytes(file) : file
-		}
-	}
-}
-
-interface InstalledApp {
-	manifest: AppManifest
-	read(path: string): Promise<Uint8Array>
-}
 
 function bytes(text: string): Uint8Array {
 	return new TextEncoder().encode(text)
@@ -151,11 +92,11 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		await saveIndex(index)
 	}
 
-	async function dispatch(_action: Action): Promise<unknown> {
-		const app = await getApp(_action.appId)
-		if (!app) throw new Error(`app not found: ${_action.appId}`)
+	async function dispatch(appId: AppId, _action: Action): Promise<unknown> {
+		const app = await getApp(appId)
+		if (!app) throw new Error(`app not found: ${appId}`)
 		const sb = await sandbox(text(await app.read(app.manifest.fn)))
-		return await sb.run(_action.action)
+		return await sb.run(_action)
 	}
 
 	function subscribe(_handler: KernelEventHandler): Unsubscribe {
