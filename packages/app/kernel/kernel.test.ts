@@ -1,8 +1,12 @@
 import { memStorage, volume } from '@justfiles/fs'
+import { transformSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app'
 import { type GetSandbox, kernel } from './kernel'
-import code from './kernel.testapp.js?raw'
+import source from './kernel.testapp.ts?raw'
+
+const compile = (source: string) => transformSync(source, { loader: 'ts', format: 'esm' }).code
+const code = compile(source)
 
 const sandbox: GetSandbox = async function (code: string) {
 	const mod = await import(`data:text/javascript;base64,${btoa(code)}`)
