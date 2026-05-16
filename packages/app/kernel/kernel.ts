@@ -106,7 +106,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 			await fs.writeFile(statePath, bytes(JSON.stringify(state)))
 		}
 
-		const sb = await sandbox(text(await app.read(app.manifest.fn)))
+		const sb = await sandbox(text(await app.read(app.manifest.app)))
 		const result = await sb.run(action, {
 			state,
 			files: chroot(fs, `${root}/data/files`),

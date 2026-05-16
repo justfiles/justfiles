@@ -24,7 +24,7 @@ test('smoke test kernel', async () => {
 	const app = appBundleFromMemory({
 		id: 'com.example.app',
 		name: 'App',
-		fn: code
+		app: code
 	})
 	const appId = await k.install(app)
 

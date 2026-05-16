@@ -19,7 +19,7 @@ export interface Context<State = unknown> {
 export interface AppManifest {
 	id: string
 	name: string
-	fn: string
+	app: string
 	gui?: string
 	cli?: string
 }
@@ -33,7 +33,7 @@ export interface AppBundle {
 export interface MemoryAppBundle {
 	id: string
 	name: string
-	fn: string
+	app: string
 	gui?: string
 	cli?: string
 	assets?: Record<string, string | Uint8Array>
@@ -41,7 +41,7 @@ export interface MemoryAppBundle {
 
 export function appBundleFromMemory(input: MemoryAppBundle): AppBundle {
 	const files: Record<string, string | Uint8Array> = {
-		'fn.js': input.fn,
+		'app.js': input.app,
 		'gui.js': input.gui ?? '',
 		'cli.js': input.cli ?? '',
 		...input.assets
@@ -49,7 +49,7 @@ export function appBundleFromMemory(input: MemoryAppBundle): AppBundle {
 
 	return {
 		async manifest() {
-			return { id: input.id, name: input.name, fn: 'fn.js', gui: 'gui.js', cli: 'cli.js' }
+			return { id: input.id, name: input.name, app: 'app.js', gui: 'gui.js', cli: 'cli.js' }
 		},
 		async *list() {
 			yield* Object.keys(files)

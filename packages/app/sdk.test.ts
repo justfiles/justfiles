@@ -37,7 +37,7 @@ interface FakeApp {
 }
 interface FakeWindow {
 	app?: FakeApp
-	addEventListener(type: 'message', fn: MessageListener): void
+	addEventListener(type: 'message', listener: MessageListener): void
 	parent: { postMessage(message: unknown, targetOrigin: string): void }
 }
 
@@ -61,8 +61,8 @@ function setup(): Harness {
 		}
 	}
 	const win: FakeWindow = {
-		addEventListener(type, fn) {
-			if (type === 'message') listeners.push(fn)
+		addEventListener(type, listener) {
+			if (type === 'message') listeners.push(listener)
 		},
 		parent
 	}
@@ -82,7 +82,7 @@ function setup(): Harness {
 		win,
 		parentSent,
 		dispatch(data, source = parent) {
-			for (const fn of listeners) fn({ source, data })
+			for (const listener of listeners) listener({ source, data })
 		}
 	}
 }
