@@ -11,7 +11,7 @@ export type ActionHandlers<State> = Record<string, ActionHandler<State, any>>
 
 interface AppSpec<State, Handlers extends ActionHandlers<State> = ActionHandlers<State>> {
 	init: State
-	handler: Handlers
+	handlers: Handlers
 }
 
 export function defineApp<State, Handlers extends ActionHandlers<State>>(
@@ -19,7 +19,7 @@ export function defineApp<State, Handlers extends ActionHandlers<State>>(
 ): App<State> {
 	return {
 		async dispatch(action, ctx) {
-			const handler = spec.handler[action.type]
+			const handler = spec.handlers[action.type]
 			if (!handler) throw new Error(`unknown action: ${action.type}`)
 			return handler(action.params, { ...ctx, state: ctx.state ?? spec.init })
 		}
