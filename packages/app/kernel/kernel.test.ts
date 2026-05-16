@@ -1,11 +1,17 @@
 import { memStorage, volume } from '@justfiles/fs'
-import { transformSync } from 'esbuild'
+import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app'
 import { type GetSandbox, kernel } from './kernel'
 import source from './kernel.testapp.ts?raw'
 
-const compile = (source: string) => transformSync(source, { loader: 'ts', format: 'esm' }).code
+const compile = (source: string) =>
+	buildSync({
+		stdin: { contents: source, loader: 'ts', resolveDir: import.meta.dirname },
+		bundle: true,
+		write: false,
+		format: 'esm'
+	}).outputFiles[0].text
 const code = compile(source)
 
 const sandbox: GetSandbox = async function (code: string) {

@@ -1,19 +1,14 @@
-type Action =
-	| { type: 'increment'; params: { amount: number }; actor: string }
-	| { type: 'write'; params: { text: string }; actor: string }
+import { defineApp } from './sdk.ts'
 
-export const app = {
-	dispatch: async (
-		action: Action,
-		{ state, files }: { state?: { count: number }; files: { writeFile(path: string, bytes: Uint8Array): Promise<void> } }
-	) => {
-		const current = state ?? { count: 0 }
-		if (action.type === 'increment') {
-			return { ...current, count: current.count + action.params.amount }
-		}
-		if (action.type === 'write') {
-			await files.writeFile('/note.txt', new TextEncoder().encode(action.params.text))
-		}
-		return current
-	}
-}
+export const app = defineApp({
+  init: { count: 0 },
+  handler: {
+    increment({ amount }: { amount: number }, ctx) {
+      return { ...ctx.state, count: ctx.state?.count ?? 0 + amount }
+    },
+    async write({ text }: { text: string }, ctx) {
+      await ctx.files.writeFile('/note.txt', new TextEncoder().encode(text))
+      return ctx.state!
+    },
+  },
+})

@@ -12,7 +12,7 @@ export interface App<State> {
 
 export interface Context<State = unknown> {
 	setState: (state: State) => Promise<void>
-	readonly state?: State
+	readonly state: State
 	files: Volume
 }
 
@@ -49,7 +49,13 @@ export function appBundleFromMemory(input: MemoryAppBundle): AppBundle {
 
 	return {
 		async manifest() {
-			return { id: input.id, name: input.name, app: 'app.js', gui: 'gui.js', cli: 'cli.js' }
+			return {
+				id: input.id,
+				name: input.name,
+				app: 'app.js',
+				gui: 'gui.js',
+				cli: 'cli.js'
+			}
 		},
 		async *list() {
 			yield* Object.keys(files)
