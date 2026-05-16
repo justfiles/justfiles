@@ -7,7 +7,11 @@ import source from './test-bundle/app.ts?raw'
 
 const compile = (source: string) =>
 	buildSync({
-		stdin: { contents: source, loader: 'ts', resolveDir: new URL('./test-bundle', import.meta.url).pathname },
+		stdin: {
+			contents: source,
+			loader: 'ts',
+			resolveDir: new URL('./test-bundle', import.meta.url).pathname
+		},
 		bundle: true,
 		write: false,
 		format: 'esm'
