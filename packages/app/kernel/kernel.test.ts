@@ -3,11 +3,11 @@ import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app'
 import { type GetSandbox, kernel } from './kernel'
-import source from './kernel.testapp.ts?raw'
+import source from './test-bundle/app.ts?raw'
 
 const compile = (source: string) =>
 	buildSync({
-		stdin: { contents: source, loader: 'ts', resolveDir: import.meta.dirname },
+		stdin: { contents: source, loader: 'ts', resolveDir: new URL('./test-bundle', import.meta.url).pathname },
 		bundle: true,
 		write: false,
 		format: 'esm'
