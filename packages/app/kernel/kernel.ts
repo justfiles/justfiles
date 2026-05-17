@@ -22,6 +22,7 @@ interface Kernel {
 	uninstall: (appId: AppId) => Promise<void>
 	subscribe: (handler: KernelEventHandler) => Unsubscribe
 	dispatch: (appId: AppId, action: Action) => Promise<unknown>
+	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 }
 
 type AppState = object
@@ -62,7 +63,7 @@ function appRoot(appId: AppId): string {
 }
 
 export function kernel({ fs, sandbox }: System): Kernel {
-	return { install, uninstall, dispatch, subscribe }
+	return { install, uninstall, dispatch, subscribe, app }
 
 	async function install(app: AppBundle): Promise<AppId> {
 		await fs.mkdir('/applications', { recursive: true })
@@ -118,6 +119,12 @@ export function kernel({ fs, sandbox }: System): Kernel {
 
 	function subscribe(_handler: KernelEventHandler): Unsubscribe {
 		throw new Error('not implemented')
+	}
+
+	async function app(appId: AppId): Promise<InstalledApp> {
+		const installed = await getApp(appId)
+		if (!installed) throw new Error(`app not found: ${appId}`)
+		return installed
 	}
 
 	async function getApp(appId: AppId): Promise<InstalledApp | null> {

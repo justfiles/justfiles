@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>{{title}}</title>
+	</head>
+	<body>
+		<div id="app"></div>
+		<script type="module">
+			import { gui } from '/app.js'
+			const state = { count: 0 }
+			gui.mount(document.getElementById('app'), state, { state })
+		</script>
+	</body>
+</html>
