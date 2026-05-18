@@ -1,4 +1,5 @@
 import { chroot, type Volume } from '@justfiles/fs'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { Action, AppBundle, Context, InstalledApp } from './app'
 
 interface System {
@@ -11,6 +12,7 @@ export type GetSandbox = (code: string) => Promise<Sandbox>
 
 export type Sandbox = {
 	run(action: Action, ctx: Context): Promise<unknown>
+	schemas: Record<string, StandardSchemaV1>
 }
 type Clock = object
 
@@ -108,11 +110,24 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		}
 
 		const sb = await sandbox(text(await app.read(app.manifest.app)))
-		const result = await sb.run(action, {
-			state,
-			files: chroot(fs, `${root}/data/files`),
-			setState: saveState
-		})
+
+		// Validate at the trust boundary, before entering the app. The
+		// handler receives the parsed output; the app does no validation.
+		let params = action.params
+		const schema = sb.schemas[action.type]
+		if (schema) {
+			const r = await schema['~standard'].validate(params)
+			if (r.issues)
+				throw new Error(
+					`invalid params for ${action.type}: ${r.issues.map((i) => i.message).join('; ')}`
+				)
+			params = r.value
+		}
+
+		const result = await sb.run(
+			{ ...action, params },
+			{ state, files: chroot(fs, `${root}/data/files`), setState: saveState }
+		)
 		await saveState(result)
 		return result
 	}

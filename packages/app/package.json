@@ -5,6 +5,10 @@
 	"exports": {
 		".": "./index.ts",
 		"./sdk": "./sdk.ts",
+		"./kernel": "./kernel/kernel.ts",
+		"./kernel/sdk": "./kernel/sdk.ts",
+		"./kernel/host": "./kernel/host.ts",
+		"./kernel/vite": "./kernel/vite.ts",
 		"./vite": "./vite-plugin.ts",
 		"./format": "./format.ts",
 		"./virtual": {
@@ -27,6 +31,22 @@
 			"./sdk": {
 				"types": "./dist/sdk.d.ts",
 				"default": "./dist/sdk.js"
+			},
+			"./kernel": {
+				"types": "./dist/kernel/kernel.d.ts",
+				"default": "./dist/kernel/kernel.js"
+			},
+			"./kernel/sdk": {
+				"types": "./dist/kernel/sdk.d.ts",
+				"default": "./dist/kernel/sdk.js"
+			},
+			"./kernel/host": {
+				"types": "./dist/kernel/host.d.ts",
+				"default": "./dist/kernel/host.js"
+			},
+			"./kernel/vite": {
+				"types": "./dist/kernel/vite.d.ts",
+				"default": "./dist/kernel/vite.js"
 			},
 			"./vite": {
 				"types": "./dist/vite-plugin.d.ts",
@@ -84,9 +104,11 @@
 		"esbuild": "^0.27.0",
 		"typebox": "^1.1.34",
 		"typescript": "^6.0.3",
+		"valibot": "^1.1.0",
 		"vite": "^8.0.0-beta.13"
 	},
 	"dependencies": {
-		"@justfiles/fs": "workspace:*"
+		"@justfiles/fs": "workspace:*",
+		"@standard-schema/spec": "^1.1.0"
 	}
 }

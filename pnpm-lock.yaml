@@ -70,7 +70,7 @@ importers:
         version: link:../../packages/app-demo
       '@justfiles/app-hello':
         specifier: workspace:*
-        version: link:../../packages/app-hello
+        version: link:../../packages/app-hello-bk
       '@justfiles/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -358,6 +358,9 @@ importers:
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../fs
+      '@standard-schema/spec':
+        specifier: ^1.1.0
+        version: 1.1.0
     devDependencies:
       '@types/bun':
         specifier: latest
@@ -374,6 +377,9 @@ importers:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.0(typescript@6.0.3)
       vite:
         specifier: ^8.0.0-beta.13
         version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
@@ -424,7 +430,26 @@ importers:
         specifier: ^8.0.0-beta.13
         version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
 
-  packages/app-hello: {}
+  packages/app-hello:
+    dependencies:
+      '@justfiles/app':
+        specifier: workspace:*
+        version: link:../app
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.0(typescript@6.0.3)
+    devDependencies:
+      esbuild:
+        specifier: ^0.27.0
+        version: 0.27.7
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.12
+        version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
+
+  packages/app-hello-bk: {}
 
   packages/core:
     dependencies:
@@ -7053,6 +7078,14 @@ packages:
   uuid@14.0.0:
     resolution: {integrity: sha512-Qo+uWgilfSmAhXCMav1uYFynlQO7fMFiMVZsQqZRMIXp0O7rR7qjkj+cPvBHLgBqi960QCoo/PH2/6ZtVqKvrg==}
     hasBin: true
+
+  valibot@1.4.0:
+    resolution: {integrity: sha512-iC/x7fVcSyOwlm/VSt7RlHnzNGLGvR9GnxdifUeWoCJo0q4ZZvrVkIHC6faTlkxG47I2Y4UrFquPuVHCrOnrLg==}
+    peerDependencies:
+      typescript: '>=5'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   validate-npm-package-name@7.0.2:
     resolution: {integrity: sha512-hVDIBwsRruT73PbK7uP5ebUt+ezEtCmzZz3F59BSr2F6OVFnJ/6h8liuvdLrQ88Xmnk6/+xGGuq+pG9WwTuy3A==}
@@ -14821,6 +14854,10 @@ snapshots:
   util-deprecate@1.0.2: {}
 
   uuid@14.0.0: {}
+
+  valibot@1.4.0(typescript@6.0.3):
+    optionalDependencies:
+      typescript: 6.0.3
 
   validate-npm-package-name@7.0.2: {}
 

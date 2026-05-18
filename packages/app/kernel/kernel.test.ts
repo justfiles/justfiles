@@ -26,7 +26,8 @@ const sandbox: GetSandbox = async function (code: string) {
 	}
 
 	return {
-		run: async (action, ctx) => await app.dispatch(action, ctx)
+		run: async (action, ctx) => await app.dispatch(action, ctx),
+		schemas: app.schemas
 	}
 }
 

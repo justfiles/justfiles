@@ -1,4 +1,5 @@
 import type { Volume } from '@justfiles/fs'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 
 export type Action<Type extends string = string, Params = unknown> = {
 	type: Type
@@ -7,6 +8,9 @@ export type Action<Type extends string = string, Params = unknown> = {
 }
 
 export interface App<State> {
+	// Per-action input schemas. The kernel validates against these at the
+	// trust boundary before entering the app; the app does no validation.
+	schemas: Record<string, StandardSchemaV1>
 	dispatch: (action: Action, ctx: Context<State>) => Promise<State>
 }
 

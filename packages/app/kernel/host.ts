@@ -18,7 +18,7 @@ const sandbox: GetSandbox = async (code) => {
 		/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 	)
 	if (typeof mod.app !== 'object') throw new Error('app module must export an object named "app"')
-	return { run: (action, ctx) => mod.app.dispatch(action, ctx) }
+	return { run: (action, ctx) => mod.app.dispatch(action, ctx), schemas: mod.app.schemas }
 }
 
 const compile = (entry: string) =>
