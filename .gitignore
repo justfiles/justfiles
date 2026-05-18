@@ -201,3 +201,4 @@ dist
 .claude/settings.json
 .tmp
 .playwright-cli/
+.playwright-mcp/

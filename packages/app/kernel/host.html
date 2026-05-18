@@ -8,8 +8,19 @@
 		<div id="app"></div>
 		<script type="module">
 			import { gui } from '/app.js'
+			const transport = {
+				invoke: (action) =>
+					fetch('/_dispatch', {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify(action)
+					}).then(async (r) => {
+						if (!r.ok) throw new Error(await r.text())
+						return r.json()
+					})
+			}
 			const state = { count: 0 }
-			gui.mount(document.getElementById('app'), state, { state })
+			gui.mount(document.getElementById('app'), state, { transport })
 		</script>
 	</body>
 </html>

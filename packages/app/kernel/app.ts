@@ -7,10 +7,14 @@ export type Action<Type extends string = string, Params = unknown> = {
 	actor?: string
 }
 
-export interface App<State> {
+export interface App<
+	State,
+	Schemas extends Record<string, StandardSchemaV1> = Record<string, StandardSchemaV1>
+> {
 	// Per-action input schemas. The kernel validates against these at the
 	// trust boundary before entering the app; the app does no validation.
-	schemas: Record<string, StandardSchemaV1>
+	// Kept in the type so `typeof app` can drive a typed client.
+	schemas: Schemas
 	dispatch: (action: Action, ctx: Context<State>) => Promise<State>
 }
 

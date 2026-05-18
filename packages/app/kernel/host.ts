@@ -3,7 +3,7 @@ import { dirname, extname, resolve } from 'node:path'
 import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import type { Connect } from 'vite'
-import { appBundleFromMemory } from './app'
+import { type Action, appBundleFromMemory } from './app'
 import { type GetSandbox, kernel } from './kernel'
 
 export interface HostOptions {
@@ -38,6 +38,22 @@ const mime = (path: string) =>
 const template = readFileSync(new URL('./host.html', import.meta.url), 'utf8')
 const page = (title: string) => template.split('{{title}}').join(title)
 
+const readJson = (req: { on: NodeJS.ReadableStream['on'] }): Promise<unknown> =>
+	new Promise((ok, fail) => {
+		let body = ''
+		req.on('data', (c) => {
+			body += c
+		})
+		req.on('end', () => {
+			try {
+				ok(body ? JSON.parse(body) : {})
+			} catch (e) {
+				fail(e)
+			}
+		})
+		req.on('error', fail)
+	})
+
 export async function createHost(
 	root: string,
 	opts: HostOptions
@@ -60,6 +76,17 @@ export async function createHost(
 			if (path === '/') {
 				res.setHeader('content-type', 'text/html')
 				res.end(page(opts.name))
+				return
+			}
+			if (path === '/_dispatch' && req.method === 'POST') {
+				try {
+					const result = await k.dispatch(appId, (await readJson(req)) as Action)
+					res.setHeader('content-type', 'application/json')
+					res.end(JSON.stringify(result))
+				} catch (err) {
+					res.statusCode = 400
+					res.end(err instanceof Error ? err.message : String(err))
+				}
 				return
 			}
 			const asset = path === '/app.js' ? installed.manifest.gui : path.slice(1)
