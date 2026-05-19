@@ -8,6 +8,7 @@
 		<div id="app"></div>
 		<script type="module">
 			import { gui } from '/app.js'
+
 			const transport = {
 				invoke: (action) =>
 					fetch('/_dispatch', {
@@ -17,8 +18,14 @@
 					}).then(async (r) => {
 						if (!r.ok) throw new Error(await r.text())
 						return r.json()
-					})
+					}),
+				subscribe: (onState) => {
+					const es = new EventSource('/_subscribe')
+					es.onmessage = (e) => onState(JSON.parse(e.data))
+					return () => es.close()
+				}
 			}
+			// Bootstrap only — the host pushes authoritative state via subscribe.
 			const state = { count: 0 }
 			gui.mount(document.getElementById('app'), state, { transport })
 		</script>

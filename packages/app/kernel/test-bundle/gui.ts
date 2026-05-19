@@ -2,7 +2,7 @@ import { defineGUI } from '../sdk'
 import type { app } from './app'
 
 export const gui = defineGUI<typeof app>({
-	mount(el, state, ctx) {
+	mount(el, state, _ctx) {
 		el.textContent = `count: ${state.count}`
 		document.body.appendChild(el)
 

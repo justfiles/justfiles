@@ -22,6 +22,7 @@ interface Kernel {
 	uninstall: (appId: AppId) => Promise<void>
 	subscribe: (handler: KernelEventHandler) => Unsubscribe
 	dispatch: (appId: AppId, action: Action) => Promise<unknown>
+	state: (appId: AppId) => Promise<unknown> // current persisted state (for push snapshots)
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 }
 
@@ -63,7 +64,24 @@ function appRoot(appId: AppId): string {
 }
 
 export function kernel({ fs, sandbox }: System): Kernel {
-	return { install, uninstall, dispatch, subscribe, app }
+	const handlers = new Set<KernelEventHandler>()
+	return { install, uninstall, dispatch, state, subscribe, app }
+
+	function emit(event: Event): void {
+		// Snapshot: a handler may unsubscribe (e.g. SSE connection close)
+		// while we iterate.
+		for (const handler of [...handlers]) handler(event)
+	}
+
+	async function loadState(root: string): Promise<unknown> {
+		const statePath = `${root}/data/state.json`
+		try {
+			if (await fs.exists(statePath)) return JSON.parse(text(await fs.readFile(statePath)))
+		} catch {
+			return undefined
+		}
+		return undefined
+	}
 
 	async function install(app: AppBundle): Promise<AppId> {
 		await fs.mkdir('/applications', { recursive: true })
@@ -95,33 +113,36 @@ export function kernel({ fs, sandbox }: System): Kernel {
 
 		await fs.mkdir(`${root}/data/files`, { recursive: true })
 		const statePath = `${root}/data/state.json`
-		let state: unknown
-		try {
-			if (await fs.exists(statePath)) state = JSON.parse(text(await fs.readFile(statePath)))
-		} catch {
-			state = undefined
-		}
+		const current = await loadState(root)
 
-		async function saveState(next: unknown): Promise<void> {
-			state = next
-			await fs.writeFile(statePath, bytes(JSON.stringify(state)))
-		}
+		const saveState = (next: unknown): Promise<void> =>
+			fs.writeFile(statePath, bytes(JSON.stringify(next)))
 
 		// Validation runs inside the app bundle (defineApp), so it works
 		// identically for in-process and remote sandboxes; the kernel just
 		// loads and runs.
 		const sb = await sandbox(text(await app.read(app.manifest.app)))
 		const result = await sb.run(action, {
-			state,
+			state: current,
 			files: chroot(fs, `${root}/data/files`),
 			setState: saveState
 		})
 		await saveState(result)
+		// State is push-only: every committed state change fans out to
+		// subscribers, scoped by appId.
+		emit({ type: 'app.update', appId, state: result as AppState })
 		return result
 	}
 
-	function subscribe(_handler: KernelEventHandler): Unsubscribe {
-		throw new Error('not implemented')
+	async function state(appId: AppId): Promise<unknown> {
+		const root = appRoot(appId)
+		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
+		return loadState(root)
+	}
+
+	function subscribe(handler: KernelEventHandler): Unsubscribe {
+		handlers.add(handler)
+		return () => handlers.delete(handler)
 	}
 
 	async function app(appId: AppId): Promise<InstalledApp> {

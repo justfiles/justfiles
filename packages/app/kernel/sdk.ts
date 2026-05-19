@@ -48,10 +48,13 @@ export function defineApp<State, Schemas extends Record<string, StandardSchemaV1
 
 // ----- client -----
 
-// The host-specific wire (REST in dev, WebSocket in frieren, ...). The SDK
-// owns this interface; each host owns an implementation.
+// The host-specific wire (REST+SSE in dev, WebSocket in frieren, ...). The
+// SDK owns this interface; each host owns an implementation. `invoke` sends
+// an action; `subscribe` receives authoritative state pushes (the host is
+// the single source of truth — see defineGUI).
 export interface Transport {
 	invoke(action: Action): Promise<unknown>
+	subscribe(onState: (state: unknown) => void): () => void
 }
 
 // `typeof app` -> { [action]: (params) => Promise<State> }. Inputs inferred
@@ -89,12 +92,22 @@ interface GUIInstance<State> {
 }
 
 // `defineGUI<typeof app>`. The host injects only the transport; defineGUI
-// builds the typed client from it, so the host needs no createClient and
-// the GUI needs no transport.
+// builds the typed client from it (so the host needs no createClient and
+// the GUI needs no transport) and bridges host state pushes into the GUI's
+// `update`. The GUI never reads the action return value — state flows in
+// one direction, from the host through `subscribe`.
 export function defineGUI<A>(spec: GUISpec<A>) {
 	return {
 		mount(el: HTMLElement, state: GUIState<A>, ctx: { transport: Transport }) {
-			return spec.mount(el, state, { client: createClient<A>(ctx.transport) })
+			const instance = spec.mount(el, state, { client: createClient<A>(ctx.transport) })
+			const unsubscribe = ctx.transport.subscribe((next) => instance.update(next as GUIState<A>))
+			return {
+				update: instance.update,
+				async unmount() {
+					unsubscribe()
+					await instance.unmount()
+				}
+			}
 		}
 	}
 }

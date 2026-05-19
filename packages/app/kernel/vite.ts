@@ -3,12 +3,12 @@ import { dirname, resolve } from 'node:path'
 import { buildSync } from 'esbuild'
 import type { Plugin } from 'vite'
 import type { AppManifest } from './app'
-import type { createHost, HostOptions } from './host'
+import type { createDevServer, DevServerOptions } from './dev-server'
 
 // `kernelHost` is the app package's only build wiring. It has two modes:
 //
 //   serve  — local dev only. Boots an in-memory kernel that emulates the
-//            real host (frieren), via ./host loaded through vite's pipeline.
+//            real host (frieren), via ./dev-server loaded through vite.
 //   build  — emits the production artifact: Vite builds the browser
 //            `gui.js`; closeBundle emits the headless `app.js` + manifest.
 //            The app never runs on its own — a kernel host (frieren, on
@@ -16,7 +16,7 @@ import type { createHost, HostOptions } from './host'
 //
 // Only bare specifiers + type-only imports here: the config loader
 // externalizes this plugin and resolves it with native Node, which can't
-// load relative TypeScript siblings (hence ./host goes via ssrLoadModule).
+// load relative TypeScript siblings (./dev-server goes via ssrLoadModule).
 const compile = (entry: string) =>
 	buildSync({
 		entryPoints: [entry],
@@ -27,7 +27,7 @@ const compile = (entry: string) =>
 		minify: true
 	}).outputFiles[0].text
 
-export function kernelHost(opts: HostOptions): Plugin {
+export function kernelHost(opts: DevServerOptions): Plugin {
 	const root = process.cwd()
 	let emitted = false
 	return {
@@ -51,10 +51,10 @@ export function kernelHost(opts: HostOptions): Plugin {
 		},
 		configureServer(server) {
 			return async () => {
-				const host = (await server.ssrLoadModule('@justfiles/app/kernel/host')) as {
-					createHost: typeof createHost
+				const mod = (await server.ssrLoadModule('@justfiles/app/kernel/dev-server')) as {
+					createDevServer: typeof createDevServer
 				}
-				server.middlewares.use(await host.createHost(server.config.root, opts))
+				server.middlewares.use(await mod.createDevServer(server.config.root, opts))
 			}
 		},
 		closeBundle() {

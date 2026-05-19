@@ -6,7 +6,7 @@ import type { Connect } from 'vite'
 import { type Action, appBundleFromMemory } from './app'
 import { type GetSandbox, kernel } from './kernel'
 
-export interface HostOptions {
+export interface DevServerOptions {
 	id: string
 	name: string
 	app: string // headless bundle entry, relative to vite root
@@ -35,7 +35,7 @@ const mime = (path: string) =>
 		extname(path)
 	] ?? 'application/octet-stream'
 
-const template = readFileSync(new URL('./host.html', import.meta.url), 'utf8')
+const template = readFileSync(new URL('./dev-server.html', import.meta.url), 'utf8')
 const page = (title: string) => template.split('{{title}}').join(title)
 
 const readJson = (req: { on: NodeJS.ReadableStream['on'] }): Promise<unknown> =>
@@ -54,9 +54,9 @@ const readJson = (req: { on: NodeJS.ReadableStream['on'] }): Promise<unknown> =>
 		req.on('error', fail)
 	})
 
-export async function createHost(
+export async function createDevServer(
 	root: string,
-	opts: HostOptions
+	opts: DevServerOptions
 ): Promise<Connect.NextHandleFunction> {
 	const fs = volume(memStorage())
 	const k = kernel({ fs, sandbox, clock: {} })
@@ -76,6 +76,22 @@ export async function createHost(
 			if (path === '/') {
 				res.setHeader('content-type', 'text/html')
 				res.end(page(opts.name))
+				return
+			}
+			if (path === '/_subscribe') {
+				res.setHeader('content-type', 'text/event-stream')
+				res.setHeader('cache-control', 'no-cache')
+				res.setHeader('connection', 'keep-alive')
+				const send = (state: unknown) => res.write(`data: ${JSON.stringify(state)}\n\n`)
+				// Snapshot first so the GUI reconciles immediately; an
+				// app that never dispatched has no state — the GUI keeps
+				// the bootstrap state it mounted with until the first push.
+				const initial = await k.state(appId)
+				if (initial !== undefined) send(initial)
+				const off = k.subscribe((e) => {
+					if (e.type === 'app.update' && e.appId === appId) send(e.state)
+				})
+				req.on('close', off)
 				return
 			}
 			if (path === '/_dispatch' && req.method === 'POST') {

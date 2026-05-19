@@ -6,7 +6,7 @@
 			"packages/**",
 			"!**/worker-configuration.d.ts",
 			"!packages/app-doom/public/doom-runtime.js",
-			"!packages/app/kernel/host.html"
+			"!packages/app/kernel/dev-server.html"
 		]
 	},
 	"vcs": {

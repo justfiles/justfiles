@@ -7,7 +7,7 @@
 		"./sdk": "./sdk.ts",
 		"./kernel": "./kernel/kernel.ts",
 		"./kernel/sdk": "./kernel/sdk.ts",
-		"./kernel/host": "./kernel/host.ts",
+		"./kernel/dev-server": "./kernel/dev-server.ts",
 		"./kernel/vite": "./kernel/vite.ts",
 		"./vite": "./vite-plugin.ts",
 		"./format": "./format.ts",
@@ -40,9 +40,9 @@
 				"types": "./dist/kernel/sdk.d.ts",
 				"default": "./dist/kernel/sdk.js"
 			},
-			"./kernel/host": {
-				"types": "./dist/kernel/host.d.ts",
-				"default": "./dist/kernel/host.js"
+			"./kernel/dev-server": {
+				"types": "./dist/kernel/dev-server.d.ts",
+				"default": "./dist/kernel/dev-server.js"
 			},
 			"./kernel/vite": {
 				"types": "./dist/kernel/vite.d.ts",
