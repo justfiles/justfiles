@@ -81,6 +81,24 @@ const appAssetHeaders = (path: string): Record<string, string> => ({
 	'access-control-allow-origin': '*'
 })
 app.get('/apps/__sdk.js', () => new Response(SDK_JS, { headers: appAssetHeaders('__sdk.js') }))
+
+// Phase 0 spike: prove the Worker Loader binding runs dynamic code on
+// Workers. Public, no DO, no auth — a plain worker loads an inline module
+// and proxies to it. Later phases swap the inline string for the kernel's
+// compiled app.js and the cache id for a per-user/app key.
+app.get('/apps/__kernel_hello', async (c) => {
+	if (!c.env.LOADER) return c.text('LOADER binding unavailable', 500)
+	const dynamic = c.env.LOADER.get('kernel-hello-v1', async () => ({
+		compatibilityDate: '2026-04-10',
+		mainModule: 'index.js',
+		modules: {
+			'index.js': 'export default { fetch() { return new Response("hello world") } }'
+		},
+		globalOutbound: null
+	}))
+	return dynamic.getEntrypoint().fetch(c.req.raw)
+})
+
 app.get('/apps/*', async (c) => {
 	const rest = c.req.path.replace(/^\/apps\//, '').split('/')
 	const appId = rest.shift()
