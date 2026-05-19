@@ -5,6 +5,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.6",
 		"@vitest/coverage-v8": "^4.0.18",
+		"typescript": "6.0.3",
 		"vitest": "^4.0.18"
 	},
 	"scripts": {

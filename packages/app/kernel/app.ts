@@ -11,9 +11,9 @@ export interface App<
 	State,
 	Schemas extends Record<string, StandardSchemaV1> = Record<string, StandardSchemaV1>
 > {
-	// Per-action input schemas. The kernel validates against these at the
-	// trust boundary before entering the app; the app does no validation.
-	// Kept in the type so `typeof app` can drive a typed client.
+	// Per-action input schemas. Carried so `typeof app` drives the typed
+	// client (and for host introspection). Validation itself runs in
+	// defineApp's dispatch — not here, not in the kernel.
 	schemas: Schemas
 	dispatch: (action: Action, ctx: Context<State>) => Promise<State>
 }

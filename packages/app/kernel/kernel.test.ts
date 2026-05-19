@@ -26,8 +26,7 @@ const sandbox: GetSandbox = async function (code: string) {
 	}
 
 	return {
-		run: async (action, ctx) => await app.dispatch(action, ctx),
-		schemas: app.schemas
+		run: async (action, ctx) => await app.dispatch(action, ctx)
 	}
 }
 
@@ -70,4 +69,9 @@ test('smoke test kernel', async () => {
 
 	expect(await fs.exists('/note.txt')).toBe(false)
 	expect(await fs.exists('/applications/com.example.app/data/files/note.txt')).toBe(true)
+
+	// Framework-owned validation rejects bad params before the handler.
+	await expect(
+		k.dispatch(appId, { type: 'increment', params: { amount: 'nope' }, actor: 'agent' })
+	).rejects.toThrow(/invalid params for increment/)
 })

@@ -10,8 +10,8 @@ interface AppSpec<State, Schemas extends Record<string, StandardSchemaV1>> {
 		[Name in keyof Schemas]: {
 			// Author's schema, from any Standard Schema validator (BYO).
 			schema: Schemas[Name]
-			// params is inferred from the schema; the kernel has already
-			// validated it before this runs.
+			// params is inferred from the schema; the framework validated
+			// it before this runs.
 			handler: (params: Infer<Schemas[Name]>, ctx: Context<State>) => MaybePromise<State>
 		}
 	}
@@ -34,7 +34,14 @@ export function defineApp<State, Schemas extends Record<string, StandardSchemaV1
 		async dispatch(action, ctx) {
 			const def = handlers[action.type]
 			if (!def) throw new Error(`unknown action: ${action.type}`)
-			return def.handler(action.params, { ...ctx, state: ctx.state ?? spec.init })
+			// Framework-owned validation: one implementation, compiled into
+			// every app bundle, so it runs identically in every sandbox.
+			const r = await def.schema['~standard'].validate(action.params)
+			if (r.issues)
+				throw new Error(
+					`invalid params for ${action.type}: ${r.issues.map((i) => i.message).join('; ')}`
+				)
+			return def.handler(r.value, { ...ctx, state: ctx.state ?? spec.init })
 		}
 	}
 }
