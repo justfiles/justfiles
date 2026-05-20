@@ -24,7 +24,6 @@
 		"@hono/clerk-auth": "^3.1.1",
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-crossword": "workspace:*",
-		"@justfiles/app-demo": "workspace:*",
 		"app-counter": "workspace:*",
 		"@justbuddy/app-doom": "workspace:*",
 		"@justfiles/core": "workspace:*",

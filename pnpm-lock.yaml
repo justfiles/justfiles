@@ -68,9 +68,6 @@ importers:
       '@justfiles/app-crossword':
         specifier: workspace:*
         version: link:../../packages/app-crossword
-      '@justfiles/app-demo':
-        specifier: workspace:*
-        version: link:../../packages/app-demo
       '@justfiles/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -437,8 +434,6 @@ importers:
         specifier: ^8.0.0-beta.13
         version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
 
-  packages/app-demo: {}
-
   packages/app-doom:
     dependencies:
       '@justfiles/app':
@@ -451,8 +446,6 @@ importers:
       vite:
         specifier: ^8.0.0-beta.13
         version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
-
-  packages/app-hello-bk: {}
 
   packages/core:
     dependencies:
