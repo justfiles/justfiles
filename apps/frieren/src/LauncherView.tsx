@@ -3,11 +3,24 @@ import type { InstalledApp } from '@justfiles/app'
 export function LauncherView(props: {
 	apps: InstalledApp[]
 	onLaunch: (app: InstalledApp) => void
+	onInstallKernelApp?: () => void
 }) {
-	const { apps, onLaunch } = props
+	const { apps, onLaunch, onInstallKernelApp } = props
 
 	return (
 		<div className="h-full w-full overflow-x-auto bg-gradient-to-br from-sky-800 via-blue-950 to-slate-950 p-8 pt-10 text-sky-50">
+			{onInstallKernelApp ? (
+				<div className="mb-6 flex justify-end">
+					<button
+						type="button"
+						onClick={onInstallKernelApp}
+						className="rounded border border-white/30 bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20"
+						title="Pick a directory containing manifest.json + app.js + gui.js"
+					>
+						+ Install kernel app
+					</button>
+				</div>
+			) : null}
 			<div className="grid grid-cols-4 justify-start gap-x-10 gap-y-8">
 				{apps.map((app) => (
 					<button

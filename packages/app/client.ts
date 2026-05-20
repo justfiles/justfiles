@@ -8,13 +8,14 @@ export type ActiveApp =
 	| { kind: 'sandbox'; id: string; ui: { url: string } }
 	| { kind: 'esm'; id: string; manifestUrl: string; baseUrl: string }
 	| { kind: 'builtin'; id: string }
+	| { kind: 'kernel'; id: string }
 
 export interface InstalledApp {
 	id: string
 	name: string
 	description: string
 	iconUrl?: string
-	kind?: 'sandbox' | 'esm' | 'builtin'
+	kind?: 'sandbox' | 'esm' | 'builtin' | 'kernel'
 	// Present on new-shape (ESM) apps; lets the launcher mount directly
 	// without a worker round-trip.
 	manifestUrl?: string

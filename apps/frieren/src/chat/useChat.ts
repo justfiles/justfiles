@@ -9,7 +9,8 @@ import type {
 	ToolResultSender
 } from '@justfiles/app'
 import { useEffect, useRef, useState } from 'react'
-import type { ChatConnection, ChatMessage, ChatSession, ConnectionState } from './types'
+import { createFsVolume } from '../fs'
+import type { ChatConnection, ChatMessage, ChatSession, ConnectionState, Launcher } from './types'
 
 interface AgentEvent {
 	type: string
@@ -26,12 +27,7 @@ export interface UseChatResult {
 	session: ChatSession
 	connection: ChatConnection
 	apps: {
-		launcher: {
-			activeApp: ActiveApp | null
-			installedApps: InstalledApp[]
-			launch: (app: InstalledApp) => void
-			close: () => void
-		}
+		launcher: Launcher
 		relay: {
 			sendRpc: (frame: AppRpcRequest) => Promise<AppRpcResponse>
 			onToolInvoke: (handler: ToolInvokeHandler | null) => void
@@ -369,6 +365,10 @@ export function useChat(): UseChatResult {
 			})
 			return
 		}
+		if (app.kind === 'kernel') {
+			setActiveApp({ kind: 'kernel', id: app.id })
+			return
+		}
 		if (!wsRef.current || connectionState !== 'ready') return
 		wsRef.current.send(JSON.stringify({ type: 'app_launch', id: app.id }))
 	}
@@ -383,6 +383,48 @@ export function useChat(): UseChatResult {
 	}
 
 	const reconnect = () => setConnectKey((value) => value + 1)
+
+	// Dev install: prompt the user for a directory containing a kernel-app
+	// bundle (manifest.json + app.js + gui.js), copy the bytes into the
+	// per-user Volume at /kernel/applications/<id>, then reconnect so the
+	// launcher's `ready` payload re-lists installed apps.
+	const installKernelApp = async () => {
+		const picker = (
+			window as unknown as { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }
+		).showDirectoryPicker
+		if (!picker) {
+			alert('Directory picker not supported in this browser (use Chrome or Edge).')
+			return
+		}
+		let dir: FileSystemDirectoryHandle
+		try {
+			dir = await picker()
+		} catch (e) {
+			if (e instanceof DOMException && e.name === 'AbortError') return
+			throw e
+		}
+		try {
+			const manifestFile = await (await dir.getFileHandle('manifest.json')).getFile()
+			const manifest = JSON.parse(await manifestFile.text()) as { id?: string }
+			if (!manifest.id) throw new Error('manifest.json is missing "id"')
+			const vol = await createFsVolume(() => getTokenRef.current())
+			const root = `/kernel/applications/${manifest.id}`
+			await vol.mkdir(root, { recursive: true })
+			for await (const [name, handle] of (
+				dir as unknown as {
+					entries(): AsyncIterable<[string, FileSystemHandle]>
+				}
+			).entries()) {
+				if (handle.kind !== 'file') continue
+				const file = await (handle as FileSystemFileHandle).getFile()
+				const bytes = new Uint8Array(await file.arrayBuffer())
+				await vol.writeFile(`${root}/${name}`, bytes)
+			}
+			reconnect()
+		} catch (e) {
+			alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
+		}
+	}
 
 	const onToolInvoke = (handler: ToolInvokeHandler | null) => {
 		toolInvokeHandlerRef.current = handler
@@ -400,7 +442,13 @@ export function useChat(): UseChatResult {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
 		connection: { state: connectionState, reconnect },
 		apps: {
-			launcher: { activeApp, installedApps, launch: launchApp, close: closeApp },
+			launcher: {
+				activeApp,
+				installedApps,
+				launch: launchApp,
+				close: closeApp,
+				installKernelApp
+			},
 			relay: { sendRpc, onToolInvoke, sendToolResult, notifyIframeReload }
 		}
 	}

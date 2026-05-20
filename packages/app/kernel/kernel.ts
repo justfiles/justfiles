@@ -1,5 +1,5 @@
 import { chroot, type Volume } from '@justfiles/fs'
-import type { Action, AppBundle, Context, InstalledApp } from './app'
+import type { Action, AppBundle, AppManifest, Context, InstalledApp } from './app'
 
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
@@ -28,6 +28,7 @@ interface Kernel {
 	dispatch: (appId: AppId, action: Action) => Promise<unknown>
 	state: (appId: AppId) => Promise<unknown> // current persisted state (for push snapshots)
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
+	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher
 }
 
 type AppState = object
@@ -69,7 +70,7 @@ function appRoot(appId: AppId): string {
 
 export function kernel({ fs, sandbox }: System): Kernel {
 	const handlers = new Set<KernelEventHandler>()
-	return { install, uninstall, dispatch, state, subscribe, app }
+	return { install, uninstall, dispatch, state, subscribe, app, list }
 
 	function emit(event: Event): void {
 		// Snapshot: a handler may unsubscribe (e.g. SSE connection close)
@@ -153,6 +154,17 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const installed = await getApp(appId)
 		if (!installed) throw new Error(`app not found: ${appId}`)
 		return installed
+	}
+
+	async function list(): Promise<AppManifest[]> {
+		if (!(await fs.exists('/applications'))) return []
+		const entries = await fs.readdir('/applications')
+		const manifests: AppManifest[] = []
+		for (const { name } of entries) {
+			const path = `/applications/${name}/manifest.json`
+			if (await fs.exists(path)) manifests.push(JSON.parse(text(await fs.readFile(path))))
+		}
+		return manifests
 	}
 
 	async function getApp(appId: AppId): Promise<InstalledApp | null> {

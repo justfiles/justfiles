@@ -1,5 +1,12 @@
 import type { AppLauncher, AppRelay } from '@justfiles/app'
 
+// Dev-only host capability: pick a directory, copy a kernel-app bundle
+// (manifest.json + app.js + gui.js) into the per-user Volume. Stand-in for
+// the eventual drag-drop install flow.
+export type Launcher = AppLauncher & {
+	installKernelApp?: () => Promise<void>
+}
+
 export type ConnectionState = 'connecting' | 'ready' | 'disconnected'
 
 export interface ToolCallInfo {
@@ -39,5 +46,5 @@ export interface ChatConnection {
 export interface ChatViewProps {
 	session: ChatSession
 	connection: ChatConnection
-	apps?: { launcher: AppLauncher; relay: AppRelay }
+	apps?: { launcher: Launcher; relay: AppRelay }
 }

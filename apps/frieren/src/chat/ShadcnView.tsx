@@ -7,6 +7,7 @@ import { AppFrame } from '../AppFrame'
 import { BuiltinHost } from '../BuiltinHost'
 import { builtinLauncherEntries } from '../builtin'
 import { EsmAppFrame } from '../EsmAppFrame'
+import { KernelAppFrame } from '../KernelAppFrame'
 import { LauncherView } from '../LauncherView'
 import { AppPromptBlock } from './AppPromptBlock'
 import { AssistantAvatar, useAdventureViewState } from './adventureShared'
@@ -136,10 +137,17 @@ export function ShadcnView(props: ChatViewProps) {
 							/>
 						) : apps && apps.launcher.activeApp?.kind === 'builtin' ? (
 							<BuiltinHost id={apps.launcher.activeApp.id} onHome={apps.launcher.close} />
+						) : apps && apps.launcher.activeApp?.kind === 'kernel' ? (
+							<KernelAppFrame id={apps.launcher.activeApp.id} onHome={apps.launcher.close} />
 						) : apps ? (
 							<LauncherView
 								apps={[...apps.launcher.installedApps, ...builtinLauncherEntries()]}
 								onLaunch={apps.launcher.launch}
+								onInstallKernelApp={
+									apps.launcher.installKernelApp
+										? () => void apps.launcher.installKernelApp?.()
+										: undefined
+								}
 							/>
 						) : null}
 						{apps?.launcher.activeApp ? (

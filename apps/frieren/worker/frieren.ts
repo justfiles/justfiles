@@ -75,7 +75,7 @@ interface DisplayApp {
 	readonly name: string
 	readonly description: string
 	readonly iconUrl?: string
-	readonly kind: 'sandbox' | 'esm'
+	readonly kind: 'sandbox' | 'esm' | 'kernel'
 	readonly manifestUrl?: string
 	readonly baseUrl?: string
 }
@@ -147,6 +147,21 @@ export class Frieren extends DurableObject<Env> {
 				'/',
 				integrationRoutes(() => this.requireIntegrations())
 			)
+			.get('/api/kernel/:appId/gui.js', async (c) => {
+				const appId = c.req.param('appId')
+				try {
+					const k = await this.kernel()
+					const installed = await k.app(appId)
+					const gui = installed.manifest.gui
+					if (!gui) return c.notFound()
+					const source = new TextDecoder().decode(await installed.read(gui))
+					return new Response(source, {
+						headers: { 'content-type': 'application/javascript; charset=utf-8' }
+					})
+				} catch {
+					return c.notFound()
+				}
+			})
 			.route('/fs', createFsApi(fs))
 
 		ctx.blockConcurrencyWhile(async () => {
@@ -381,6 +396,15 @@ export class Frieren extends DurableObject<Env> {
 	// only resolves the correlated `invoke` promise — same contract the dev
 	// server proves over REST+SSE, here over a single hibernatable socket.
 
+	private async kernelApps(): Promise<ReadonlyArray<DisplayApp>> {
+		try {
+			const manifests = await (await this.kernel()).list()
+			return manifests.map((m) => ({ id: m.id, name: m.name, description: '', kind: 'kernel' }))
+		} catch {
+			return []
+		}
+	}
+
 	private kernel(): Promise<ReturnType<typeof kernel>> {
 		this.kernelOnce ??= (async () => {
 			if (!this.env.LOADER) throw new Error('LOADER binding unavailable')
@@ -416,10 +440,12 @@ export class Frieren extends DurableObject<Env> {
 		this.ctx.acceptWebSocket(server)
 		server.serializeAttachment({ appId })
 		await this.ensureSubscribed()
-		// Snapshot on connect so a reloaded GUI reconciles immediately; an
-		// app that never dispatched has no state and keeps its bootstrap.
+		// Always emit a snapshot frame on connect — both as the reconciliation
+		// snapshot for a reload and as the "ready to mount" signal for a fresh
+		// GUI. State may be `null` for never-dispatched apps; the GUI passes
+		// that through to its mount() and renders whatever bootstrap it wants.
 		const snapshot = await k.state(appId).catch(() => undefined)
-		if (snapshot !== undefined) server.send(JSON.stringify({ type: 'state', state: snapshot }))
+		server.send(JSON.stringify({ type: 'state', state: snapshot ?? null }))
 		return new Response(null, { status: 101, webSocket: client })
 	}
 
@@ -503,7 +529,11 @@ export class Frieren extends DurableObject<Env> {
 
 			// Send ready signal
 			server.send(
-				JSON.stringify({ type: 'ready', participants, apps: listApps() } satisfies ServerMessage)
+				JSON.stringify({
+					type: 'ready',
+					participants,
+					apps: [...listApps(), ...(await this.kernelApps())]
+				} satisfies ServerMessage)
 			)
 
 			// If an app is already running, send the URL so this client can
