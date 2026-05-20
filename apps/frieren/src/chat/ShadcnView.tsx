@@ -148,6 +148,11 @@ export function ShadcnView(props: ChatViewProps) {
 										? () => void apps.launcher.installKernelApp?.()
 										: undefined
 								}
+								onUninstallKernelApp={
+									apps.launcher.uninstallKernelApp
+										? (id) => void apps.launcher.uninstallKernelApp?.(id)
+										: undefined
+								}
 							/>
 						) : null}
 						{apps?.launcher.activeApp ? (

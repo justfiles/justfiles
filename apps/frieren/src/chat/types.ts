@@ -2,9 +2,11 @@ import type { AppLauncher, AppRelay } from '@justfiles/app'
 
 // Dev-only host capability: pick a directory, copy a kernel-app bundle
 // (manifest.json + app.js + gui.js) into the per-user Volume. Stand-in for
-// the eventual drag-drop install flow.
+// the eventual drag-drop install flow. `uninstallKernelApp` removes a
+// previously-installed bundle by app id.
 export type Launcher = AppLauncher & {
 	installKernelApp?: () => Promise<void>
+	uninstallKernelApp?: (id: string) => Promise<void>
 }
 
 export type ConnectionState = 'connecting' | 'ready' | 'disconnected'

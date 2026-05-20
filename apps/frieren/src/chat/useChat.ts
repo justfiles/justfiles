@@ -426,6 +426,20 @@ export function useChat(): UseChatResult {
 		}
 	}
 
+	// Delete a kernel app bundle from the per-user Volume and drop it from
+	// the launcher state optimistically. Mirror of `installKernelApp`.
+	const uninstallKernelApp = async (id: string) => {
+		const prev = installedApps
+		setInstalledApps((apps) => apps.filter((a) => !(a.kind === 'kernel' && a.id === id)))
+		try {
+			const vol = await createFsVolume(() => getTokenRef.current())
+			await vol.rm(`/kernel/applications/${id}`, { recursive: true, force: true })
+		} catch (e) {
+			setInstalledApps(prev)
+			alert(`Uninstall failed: ${e instanceof Error ? e.message : String(e)}`)
+		}
+	}
+
 	const onToolInvoke = (handler: ToolInvokeHandler | null) => {
 		toolInvokeHandlerRef.current = handler
 	}
@@ -447,7 +461,8 @@ export function useChat(): UseChatResult {
 				installedApps,
 				launch: launchApp,
 				close: closeApp,
-				installKernelApp
+				installKernelApp,
+				uninstallKernelApp
 			},
 			relay: { sendRpc, onToolInvoke, sendToolResult, notifyIframeReload }
 		}
