@@ -1,8 +1,9 @@
 import { DurableObject } from 'cloudflare:workers'
 import type { AppRpcRequest, AppRpcResponse } from '@justfiles/app'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
+import { type Action, kernel } from '@justfiles/app/kernel'
 import { createFsApi } from '@justfiles/core'
-import { type Volume, volume } from '@justfiles/fs'
+import { chroot, type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
@@ -23,6 +24,7 @@ import { icloudCalendarIntegration } from './integrations/icloud-calendar/index.
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { Integrations } from './integrations/registry.ts'
 import { ConnectionStore } from './integrations/storage.ts'
+import { workerSandbox } from './kernel.sandbox.ts'
 import { createAgent } from './llm.agent'
 import { type LLMText, text } from './llm.text'
 import { parseFrontmatter } from './markdown'
@@ -108,6 +110,8 @@ export class Frieren extends DurableObject<Env> {
 	private apps: FrierenAppHost
 	private integrations?: Integrations
 	private readonly coalescer = new Coalescer()
+	private kernelOnce?: Promise<ReturnType<typeof kernel>>
+	private kernelSubscribed = false
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -245,6 +249,13 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+		// Kernel sockets carry an {appId} attachment; chat sockets never do.
+		const attachment = ws.deserializeAttachment() as { appId?: string } | null
+		if (attachment?.appId) {
+			await this.handleKernelMessage(ws, attachment.appId, message)
+			return
+		}
+
 		await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
 		await this.apps.hydrate()
 		if (typeof message !== 'string') return
@@ -359,6 +370,88 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
+	// ── Kernel app transport ─────────────────────────────────────────────
+	//
+	// One per-user WebSocket carries the SDK `Transport` both ways:
+	//   C→S  {"id":string,"action":{"type":string,"params":unknown}}
+	//   S→C  {"type":"state","state":unknown}                 (push)
+	//        {"type":"result","id":string,"result":unknown}   (invoke reply)
+	//        {"type":"error","id"?:string,"message":string}
+	// State is push-only (kernel.subscribe → app.update); the `result` frame
+	// only resolves the correlated `invoke` promise — same contract the dev
+	// server proves over REST+SSE, here over a single hibernatable socket.
+
+	private kernel(): Promise<ReturnType<typeof kernel>> {
+		this.kernelOnce ??= (async () => {
+			if (!this.env.LOADER) throw new Error('LOADER binding unavailable')
+			return kernel({
+				fs: chroot(this.vol, '/kernel'),
+				sandbox: workerSandbox(this.env.LOADER),
+				clock: {}
+			})
+		})()
+		return this.kernelOnce
+	}
+
+	// kernel.subscribe's handler is in-memory, so it dies with the DO on
+	// hibernation. Re-registered lazily per instance; it fans `app.update`
+	// to every live socket whose attachment appId matches the event.
+	private async ensureSubscribed(): Promise<void> {
+		if (this.kernelSubscribed) return
+		this.kernelSubscribed = true
+		const k = await this.kernel()
+		k.subscribe((event) => {
+			if (event.type !== 'app.update') return
+			const frame = JSON.stringify({ type: 'state', state: event.state })
+			for (const socket of this.ctx.getWebSockets()) {
+				const attachment = socket.deserializeAttachment() as { appId?: string } | null
+				if (attachment?.appId === event.appId) socket.send(frame)
+			}
+		})
+	}
+
+	private async kernelWebSocket(appId: string): Promise<Response> {
+		const k = await this.kernel()
+		const { 0: client, 1: server } = new WebSocketPair()
+		this.ctx.acceptWebSocket(server)
+		server.serializeAttachment({ appId })
+		await this.ensureSubscribed()
+		// Snapshot on connect so a reloaded GUI reconciles immediately; an
+		// app that never dispatched has no state and keeps its bootstrap.
+		const snapshot = await k.state(appId).catch(() => undefined)
+		if (snapshot !== undefined) server.send(JSON.stringify({ type: 'state', state: snapshot }))
+		return new Response(null, { status: 101, webSocket: client })
+	}
+
+	private async handleKernelMessage(
+		ws: WebSocket,
+		appId: string,
+		message: string | ArrayBuffer
+	): Promise<void> {
+		if (typeof message !== 'string') return
+		let request: { id?: string; action?: Action }
+		try {
+			request = JSON.parse(message)
+		} catch {
+			ws.send(JSON.stringify({ type: 'error', message: 'invalid JSON' }))
+			return
+		}
+		await this.ensureSubscribed()
+		try {
+			const k = await this.kernel()
+			const result = await k.dispatch(appId, request.action as Action)
+			ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
+		} catch (error) {
+			ws.send(
+				JSON.stringify({
+					type: 'error',
+					id: request.id,
+					message: error instanceof Error ? error.message : String(error)
+				})
+			)
+		}
+	}
+
 	async webSocketClose(
 		ws: WebSocket,
 		code: number,
@@ -384,6 +477,9 @@ export class Frieren extends DurableObject<Env> {
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
+			const kernelRoute = new URL(request.url).pathname.match(/^\/api\/kernel\/([^/]+)\/ws$/)
+			if (kernelRoute) return this.kernelWebSocket(kernelRoute[1])
+
 			// Agent is long-lived — transformContext re-reads soul.md every turn,
 			// so there is no need to recreate the agent on reconnect.
 			const pair = new WebSocketPair()

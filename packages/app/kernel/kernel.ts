@@ -1,6 +1,10 @@
 import { chroot, type Volume } from '@justfiles/fs'
 import type { Action, AppBundle, Context, InstalledApp } from './app'
 
+// `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
+// kernel's API surface, so a host (frieren) needs these to wire a transport.
+export type { Action, AppBundle, AppManifest } from './app'
+
 interface System {
 	fs: Volume
 	sandbox: GetSandbox

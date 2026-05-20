@@ -123,7 +123,12 @@ app.get('/apps/*', async (c) => {
 	return new Response(upstream.body, { headers })
 })
 
-app.get('/ws', async (c) => {
+// Browsers can't set Authorization on a WS handshake, and Clerk cookie auth
+// needs a handshake redirect a WS upgrade can't follow — so WS auth rides a
+// `?token=` query param verified here, before clerkMiddleware. Forwarding
+// `c.req.raw` preserves the path so the DO routes chat (`/ws`) vs. a kernel
+// app socket (`/api/kernel/:appId/ws`).
+const tokenWs = async (c: Ctx) => {
 	const token = new URL(c.req.url).searchParams.get('token')
 	if (!token) return new Response('Unauthorized', { status: 401 })
 	try {
@@ -133,7 +138,9 @@ app.get('/ws', async (c) => {
 	} catch {
 		return new Response('Unauthorized', { status: 401 })
 	}
-})
+}
+app.get('/ws', tokenWs)
+app.get('/api/kernel/:appId/ws', tokenWs)
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())
