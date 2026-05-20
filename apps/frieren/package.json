@@ -25,7 +25,7 @@
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-crossword": "workspace:*",
 		"@justfiles/app-demo": "workspace:*",
-		"@justfiles/app-hello": "workspace:*",
+		"app-counter": "workspace:*",
 		"@justbuddy/app-doom": "workspace:*",
 		"@justfiles/core": "workspace:*",
 		"@justfiles/fs": "workspace:*",
