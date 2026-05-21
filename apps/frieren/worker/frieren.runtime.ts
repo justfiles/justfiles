@@ -76,6 +76,7 @@ export async function runtime({
 		let promptError: unknown
 		try {
 			await agent.prompt(message)
+			await retryEmptyAssistant(offset)
 		} catch (error) {
 			promptError = error
 		}
@@ -125,6 +126,15 @@ export async function runtime({
 			await initSession(session)
 		}
 		return answer
+	}
+
+	async function retryEmptyAssistant(offset: number) {
+		const messages = agent.state.messages
+		const last = messages[messages.length - 1]
+		if (messages.length <= offset || !isEmptyAssistant(last)) return
+
+		agent.state.messages = messages.slice(0, -1)
+		await agent.continue()
 	}
 
 	async function consolidateMemory(now: Date = new Date()) {
@@ -242,6 +252,19 @@ function hasToolCall(message: AgentMessage): boolean {
 		'role' in message &&
 		message.role === 'assistant' &&
 		message.content.some((block) => block.type === 'toolCall')
+	)
+}
+
+function isEmptyAssistant(message: AgentMessage | undefined): boolean {
+	return (
+		!!message &&
+		'role' in message &&
+		message.role === 'assistant' &&
+		!message.errorMessage &&
+		message.content.every(
+			(block) =>
+				(block.type !== 'text' || block.text.trim().length === 0) && block.type !== 'toolCall'
+		)
 	)
 }
 

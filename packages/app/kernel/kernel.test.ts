@@ -26,7 +26,8 @@ const sandbox: GetSandbox = async function (code: string) {
 	}
 
 	return {
-		run: async (action, ctx) => await app.dispatch(action, ctx)
+		run: async (action, ctx) => await app.dispatch(action, ctx),
+		actions: async () => app.actions ?? {}
 	}
 }
 
@@ -45,6 +46,10 @@ test('smoke test kernel', async () => {
 	expect(appId).toBe('com.example.app')
 	expect(await fs.exists('/applications/com.example.app/manifest.json')).toBe(true)
 	expect(await fs.exists('/applications/index.json')).toBe(false)
+	expect(await k.actions(appId)).toMatchObject({
+		increment: { schemaHint: { amount: 'number' } }
+	})
+
 	let result = await k.dispatch(appId, {
 		type: 'increment',
 		params: { amount: 5 },

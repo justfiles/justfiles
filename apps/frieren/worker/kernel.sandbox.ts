@@ -14,6 +14,7 @@ const ENTRY = `import { WorkerEntrypoint } from 'cloudflare:workers'
 import { app } from './app.js'
 export default class extends WorkerEntrypoint {
 	dispatch(action, ctx) { return app.dispatch(action, ctx) }
+	actions() { return app.actions ?? {} }
 }`
 
 // Content-addressed so identical app code reuses the loaded isolate
@@ -25,7 +26,7 @@ async function cacheKey(code: string): Promise<string> {
 	return `kernel-${hex.slice(0, 16)}`
 }
 
-type Dispatcher = { dispatch: Sandbox['run'] }
+type Dispatcher = { dispatch: Sandbox['run']; actions?: Sandbox['actions'] }
 
 // Structural — only what we use. Kept free of the generated `WorkerLoader`
 // global so the adapter type-checks both in the worker project and when
@@ -51,6 +52,9 @@ export function workerSandbox(loader: Loader): GetSandbox {
 			globalOutbound: null
 		}))
 		const entry = stub.getEntrypoint() as unknown as Dispatcher
-		return { run: (action, ctx) => entry.dispatch(action, ctx) }
+		return {
+			run: (action, ctx) => entry.dispatch(action, ctx),
+			actions: () => entry.actions?.() ?? Promise.resolve({})
+		}
 	}
 }

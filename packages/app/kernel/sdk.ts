@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { Action, App, Context } from './app'
+import type { Action, ActionExample, ActionMeta, App, Context } from './app'
 
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
@@ -10,6 +10,8 @@ interface AppSpec<State, Schemas extends Record<string, StandardSchemaV1>> {
 		[Name in keyof Schemas]: {
 			// Author's schema, from any Standard Schema validator (BYO).
 			schema: Schemas[Name]
+			description?: string
+			examples?: ActionExample[]
 			// params is inferred from the schema; the framework validated
 			// it before this runs.
 			handler: (params: Infer<Schemas[Name]>, ctx: Context<State>) => MaybePromise<State>
@@ -24,13 +26,25 @@ export function defineApp<State, Schemas extends Record<string, StandardSchemaV1
 		string,
 		{
 			schema: StandardSchemaV1
+			description?: string
+			examples?: ActionExample[]
 			handler: (params: unknown, ctx: Context<State>) => MaybePromise<State>
 		}
 	>
 	const schemas = {} as Record<string, StandardSchemaV1>
-	for (const type in handlers) schemas[type] = handlers[type].schema
+	const actions = {} as Record<string, ActionMeta>
+	for (const type in handlers) {
+		const def = handlers[type]
+		schemas[type] = def.schema
+		actions[type] = {
+			description: def.description,
+			examples: def.examples,
+			schemaHint: schemaHint(def.schema)
+		}
+	}
 	return {
 		schemas: schemas as Schemas,
+		actions: actions as Record<keyof Schemas & string, ActionMeta>,
 		async dispatch(action, ctx) {
 			const def = handlers[action.type]
 			if (!def) throw new Error(`unknown action: ${action.type}`)
@@ -44,6 +58,34 @@ export function defineApp<State, Schemas extends Record<string, StandardSchemaV1
 			return def.handler(r.value, { ...ctx, state: ctx.state ?? spec.init })
 		}
 	}
+}
+
+function schemaHint(schema: StandardSchemaV1): unknown {
+	const value = schema as unknown as {
+		type?: string
+		expects?: string
+		entries?: Record<string, unknown>
+		wrapped?: unknown
+		'~standard'?: { vendor?: string }
+	}
+	if (value.type === 'object' && value.entries) {
+		return Object.fromEntries(
+			Object.entries(value.entries).map(([k, v]) => [k, schemaHintValue(v)])
+		)
+	}
+	return schemaHintValue(value)
+}
+
+function schemaHintValue(value: unknown): unknown {
+	const v = value as {
+		type?: string
+		expects?: string
+		wrapped?: unknown
+		'~standard'?: { vendor?: string }
+	}
+	if (v.type === 'optional') return { optional: schemaHintValue(v.wrapped) }
+	if (v.type) return v.type
+	return { vendor: v['~standard']?.vendor ?? 'unknown', note: 'schema is not introspectable' }
 }
 
 // ----- client -----

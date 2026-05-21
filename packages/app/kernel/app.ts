@@ -7,6 +7,17 @@ export type Action<Type extends string = string, Params = unknown> = {
 	actor?: string
 }
 
+export interface ActionExample {
+	params: Record<string, unknown>
+	description?: string
+}
+
+export interface ActionMeta {
+	description?: string
+	examples?: ActionExample[]
+	schemaHint?: unknown
+}
+
 export interface App<
 	State,
 	Schemas extends Record<string, StandardSchemaV1> = Record<string, StandardSchemaV1>
@@ -15,6 +26,7 @@ export interface App<
 	// client (and for host introspection). Validation itself runs in
 	// defineApp's dispatch — not here, not in the kernel.
 	schemas: Schemas
+	actions: Record<keyof Schemas & string, ActionMeta>
 	dispatch: (action: Action, ctx: Context<State>) => Promise<State>
 }
 

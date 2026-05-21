@@ -58,6 +58,7 @@ export function useChat(): UseChatResult {
 	const pendingRpcRef = useRef(new Map<string, (frame: AppRpcResponse) => void>())
 	// Handler registered by AppFrame to receive server-originated tool invocations.
 	const toolInvokeHandlerRef = useRef<ToolInvokeHandler | null>(null)
+	const installingKernelAppRef = useRef(false)
 
 	useEffect(() => {
 		void connectKey
@@ -261,7 +262,12 @@ export function useChat(): UseChatResult {
 					return
 				}
 
-				if (data.type === 'app_close') {
+				if (data.type === 'kernel_app_open') {
+					setActiveApp({ kind: 'kernel', id: data.id })
+					return
+				}
+
+				if (data.type === 'app_close' || data.type === 'kernel_app_close') {
 					setActiveApp(null)
 					return
 				}
@@ -367,6 +373,7 @@ export function useChat(): UseChatResult {
 		}
 		if (app.kind === 'kernel') {
 			setActiveApp({ kind: 'kernel', id: app.id })
+			wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
 			return
 		}
 		if (!wsRef.current || connectionState !== 'ready') return
@@ -377,6 +384,9 @@ export function useChat(): UseChatResult {
 		setActiveApp((prev) => {
 			if (prev?.kind === 'sandbox' && wsRef.current && connectionState === 'ready') {
 				wsRef.current.send(JSON.stringify({ type: 'app_close' }))
+			}
+			if (prev?.kind === 'kernel') {
+				wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close' }))
 			}
 			return null
 		})
@@ -389,6 +399,16 @@ export function useChat(): UseChatResult {
 	// per-user Volume at /kernel/applications/<id>, then reconnect so the
 	// launcher's `ready` payload re-lists installed apps.
 	const installKernelApp = async () => {
+		if (installingKernelAppRef.current) return
+		installingKernelAppRef.current = true
+		try {
+			await installKernelAppOnce()
+		} finally {
+			installingKernelAppRef.current = false
+		}
+	}
+
+	const installKernelAppOnce = async () => {
 		const picker = (
 			window as unknown as { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }
 		).showDirectoryPicker

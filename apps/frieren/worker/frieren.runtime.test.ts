@@ -1,6 +1,7 @@
 import { volume } from '@justfiles/fs'
 import { memStorage } from '@justfiles/fs/storage/mem'
 import { Agent, type AgentTool } from '@mariozechner/pi-agent-core'
+import { type AssistantMessage, createAssistantMessageEventStream } from '@mariozechner/pi-ai'
 import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
 import { runtime } from './frieren.runtime'
@@ -35,6 +36,55 @@ function testText(): LLMText {
 		}
 	} as LLMText
 }
+
+function assistant(content: AssistantMessage['content']): AssistantMessage {
+	return {
+		role: 'assistant',
+		content,
+		api: 'test',
+		provider: 'test',
+		model: 'test',
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+		},
+		stopReason: 'stop',
+		timestamp: Date.now()
+	}
+}
+
+function scriptedAgent(messages: AssistantMessage[]): Agent {
+	return new Agent({
+		streamFn: () => {
+			const stream = createAssistantMessageEventStream()
+			const message = messages.shift() ?? assistant([])
+			stream.push({ type: 'done', reason: 'stop', message })
+			stream.end(message)
+			return stream
+		}
+	})
+}
+
+describe('runtime prompt', () => {
+	test('retries an empty assistant response before persisting', async () => {
+		const rt = await runtime({
+			volume: volume(memStorage()),
+			agent: scriptedAgent([assistant([]), assistant([{ type: 'text', text: 'Recovered' }])]),
+			text: testText(),
+			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+		})
+
+		await expect(rt.prompt('hello')).resolves.toBe('Recovered')
+		expect(await rt.history()).toMatchObject([
+			{ type: 'message', role: 'user', content: 'hello' },
+			{ type: 'message', role: 'assistant', content: 'Recovered' }
+		])
+	})
+})
 
 describe('runtime tool API', () => {
 	test('adds and removes tools on the agent tool list', async () => {

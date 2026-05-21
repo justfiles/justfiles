@@ -1,9 +1,9 @@
 import { chroot, type Volume } from '@justfiles/fs'
-import type { Action, AppBundle, AppManifest, Context, InstalledApp } from './app'
+import type { Action, ActionMeta, AppBundle, AppManifest, Context, InstalledApp } from './app'
 
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
-export type { Action, AppBundle, AppManifest } from './app'
+export type { Action, ActionMeta, AppBundle, AppManifest } from './app'
 
 interface System {
 	fs: Volume
@@ -15,6 +15,7 @@ export type GetSandbox = (code: string) => Promise<Sandbox>
 
 export type Sandbox = {
 	run(action: Action, ctx: Context): Promise<unknown>
+	actions?(): Promise<Record<string, ActionMeta>>
 }
 type Clock = object
 
@@ -27,6 +28,7 @@ interface Kernel {
 	subscribe: (handler: KernelEventHandler) => Unsubscribe
 	dispatch: (appId: AppId, action: Action) => Promise<unknown>
 	state: (appId: AppId) => Promise<unknown> // current persisted state (for push snapshots)
+	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher
 }
@@ -70,7 +72,7 @@ function appRoot(appId: AppId): string {
 
 export function kernel({ fs, sandbox }: System): Kernel {
 	const handlers = new Set<KernelEventHandler>()
-	return { install, uninstall, dispatch, state, subscribe, app, list }
+	return { install, uninstall, dispatch, state, actions, subscribe, app, list }
 
 	function emit(event: Event): void {
 		// Snapshot: a handler may unsubscribe (e.g. SSE connection close)
@@ -143,6 +145,13 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
 		return loadState(root)
+	}
+
+	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {
+		const installed = await getApp(appId)
+		if (!installed) throw new Error(`app not found: ${appId}`)
+		const sb = await sandbox(text(await installed.read(installed.manifest.app)))
+		return (await sb.actions?.()) ?? {}
 	}
 
 	function subscribe(handler: KernelEventHandler): Unsubscribe {

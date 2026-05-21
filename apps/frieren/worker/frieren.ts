@@ -7,6 +7,7 @@ import { chroot, type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import { type AppController, createAppCommand } from './bash/commands/app.ts'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -42,6 +43,8 @@ interface ClientMessage {
 		| 'app_rpc'
 		| 'app_tool_result'
 		| 'app_iframe_reload'
+		| 'kernel_app_open'
+		| 'kernel_app_close'
 	text?: string
 	id?: string
 	frame?: AppRpcRequest
@@ -92,8 +95,11 @@ type ServerMessage =
 	| { type: 'app_close' }
 	| { type: 'app_rpc'; frame: AppRpcResponse }
 	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
+	| { type: 'kernel_app_open'; id: string }
+	| { type: 'kernel_app_close' }
 
 const DEBUG_COMMAND = '/debug'
+const CURRENT_KERNEL_APP_STORAGE_KEY = 'current_kernel_app'
 
 const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
@@ -242,7 +248,13 @@ export class Frieren extends DurableObject<Env> {
 	private buildAgent() {
 		const fs = createFsTools(this.vol)
 		const bashRegistry = new CommandRegistry()
-		for (const command of [cp, mv, rm, createNowCommand({ getTimezone: this.getTimezone })])
+		for (const command of [
+			cp,
+			mv,
+			rm,
+			createNowCommand({ getTimezone: this.getTimezone }),
+			createAppCommand(this.kernelAppController())
+		])
 			bashRegistry.register(command)
 		const bash = createBashTool(bashRegistry, { vol: this.vol })
 		const agent = createAgent(this.getBackendConfig())
@@ -292,6 +304,18 @@ export class Frieren extends DurableObject<Env> {
 
 		if (parsed.type === 'abort') {
 			this.runtime?.shutdown()
+			return
+		}
+
+		if (parsed.type === 'kernel_app_open' && parsed.id) {
+			await this.ctx.storage.put(CURRENT_KERNEL_APP_STORAGE_KEY, { id: parsed.id })
+			this.broadcast({ type: 'kernel_app_open', id: parsed.id })
+			return
+		}
+
+		if (parsed.type === 'kernel_app_close') {
+			await this.ctx.storage.delete(CURRENT_KERNEL_APP_STORAGE_KEY)
+			this.broadcast({ type: 'kernel_app_close' })
 			return
 		}
 
@@ -395,6 +419,53 @@ export class Frieren extends DurableObject<Env> {
 	// State is push-only (kernel.subscribe → app.update); the `result` frame
 	// only resolves the correlated `invoke` promise — same contract the dev
 	// server proves over REST+SSE, here over a single hibernatable socket.
+
+	private kernelAppController(): AppController {
+		return {
+			list: async () =>
+				(await this.kernelApps()).map(({ id, name, description }) => ({ id, name, description })),
+			launch: async (id) => {
+				const app = await this.inspectKernelApp(id)
+				await this.ctx.storage.put(CURRENT_KERNEL_APP_STORAGE_KEY, { id })
+				this.broadcast({ type: 'kernel_app_open', id })
+				return app
+			},
+			close: async () => {
+				await this.ctx.storage.delete(CURRENT_KERNEL_APP_STORAGE_KEY)
+				this.broadcast({ type: 'kernel_app_close' })
+			},
+			current: async () => {
+				const saved = await this.ctx.storage.get<{ id: string }>(CURRENT_KERNEL_APP_STORAGE_KEY)
+				return saved ? await this.inspectKernelApp(saved.id).catch(() => undefined) : undefined
+			},
+			inspect: (id) => this.inspectKernelApp(id),
+			state: async (id) => await (await this.kernel()).state(id),
+			run: async (id, action, params) => {
+				await this.ensureSubscribed()
+				return await (await this.kernel()).dispatch(id, { type: action, params, actor: 'agent' })
+			}
+		}
+	}
+
+	private async inspectKernelApp(appId: string) {
+		const k = await this.kernel()
+		const installed = await k.app(appId)
+		const [state, actions] = await Promise.all([
+			k.state(appId).catch(() => undefined),
+			k.actions(appId)
+		])
+		return {
+			id: installed.manifest.id,
+			name: installed.manifest.name,
+			description: '',
+			state: state ?? null,
+			actions
+		}
+	}
+
+	private async currentKernelAppId(): Promise<string | undefined> {
+		return (await this.ctx.storage.get<{ id: string }>(CURRENT_KERNEL_APP_STORAGE_KEY))?.id
+	}
 
 	private async kernelApps(): Promise<ReadonlyArray<DisplayApp>> {
 		try {
@@ -540,6 +611,8 @@ export class Frieren extends DurableObject<Env> {
 			// boot the iframe from scratch.
 			const open = this.apps.openMessage()
 			if (open) server.send(JSON.stringify(open))
+			const kernelAppId = await this.currentKernelAppId()
+			if (kernelAppId) server.send(JSON.stringify({ type: 'kernel_app_open', id: kernelAppId }))
 
 			return new Response(null, {
 				status: 101,
