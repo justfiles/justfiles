@@ -1,9 +1,0 @@
-{
-	"format": 1,
-	"name": "Crossword",
-	"description": "Agent-built crossword puzzle.",
-	"version": "0.1.0",
-	"icon": "icon.svg",
-	"entry": "index.html",
-	"permissions": ["agent"]
-}

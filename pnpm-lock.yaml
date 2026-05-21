@@ -414,6 +414,9 @@ importers:
       react-dom:
         specifier: ^19
         version: 19.2.5(react@19.2.5)
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.0(typescript@6.0.3)
     devDependencies:
       '@types/bun':
         specifier: latest

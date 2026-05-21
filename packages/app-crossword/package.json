@@ -6,13 +6,14 @@
 	"main": "./dist/manifest.json",
 	"scripts": {
 		"dev": "vite",
-		"build": "tsc && vite build",
+		"build": "vite build",
 		"preview": "vite preview"
 	},
 	"dependencies": {
 		"@justfiles/app": "workspace:*",
 		"react": "^19",
-		"react-dom": "^19"
+		"react-dom": "^19",
+		"valibot": "^1.1.0"
 	},
 	"devDependencies": {
 		"@types/bun": "latest",
