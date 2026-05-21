@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { ToolCallInfo } from './types'
 
@@ -35,21 +36,39 @@ export function ToolCallBlock({ toolCall }: { toolCall: ToolCallInfo }) {
 			<div className="space-y-2 border-t border-border/70 px-3 py-2">
 				<JsonBlock label="Arguments" value={toolCall.args} />
 				{toolCall.result !== undefined ? (
-					<JsonBlock label="Result" value={toolCall.result} />
+					<JsonBlock label="Result" value={toolCall.result} copyable />
 				) : null}
 			</div>
 		</details>
 	)
 }
 
-function JsonBlock(props: { label: string; value: unknown }) {
+function JsonBlock(props: { label: string; value: unknown; copyable?: boolean }) {
+	const [copied, setCopied] = useState(false)
+	const text = JSON.stringify(props.value, null, 2)
+
+	function copy() {
+		void navigator.clipboard
+			.writeText(text)
+			.then(() => {
+				setCopied(true)
+				window.setTimeout(() => setCopied(false), 1200)
+			})
+			.catch(() => {})
+	}
+
 	return (
 		<div>
-			<div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-				{props.label}
+			<div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+				<span>{props.label}</span>
+				{props.copyable ? (
+					<Button variant="ghost" size="xs" type="button" onClick={copy} className="h-5 px-1.5">
+						{copied ? 'Copied' : 'Copy'}
+					</Button>
+				) : null}
 			</div>
 			<pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-border/70 bg-background/70 p-2 font-mono text-[11px] leading-relaxed">
-				{JSON.stringify(props.value, null, 2)}
+				{text}
 			</pre>
 		</div>
 	)
