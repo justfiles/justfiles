@@ -42,8 +42,19 @@ type Loader = {
 	get(name: string | null, getCode: () => Promise<WorkerCode>): { getEntrypoint(): unknown }
 }
 
-export function workerSandbox(loader: Loader): GetSandbox {
-	return async (code) => {
+type CapabilityInvocation = {
+	capability: string
+	method: string
+	input: unknown
+	actor?: string
+}
+
+type WorkerSandboxOptions = {
+	capabilities?: (req: CapabilityInvocation & { appId: string }) => Promise<unknown>
+}
+
+export function workerSandbox(loader: Loader, options: WorkerSandboxOptions = {}): GetSandbox {
+	return async ({ appId, code }) => {
 		const stub = loader.get(await cacheKey(code), async () => ({
 			compatibilityDate: '2026-04-10',
 			mainModule: 'entry.js',
@@ -52,8 +63,12 @@ export function workerSandbox(loader: Loader): GetSandbox {
 			globalOutbound: null
 		}))
 		const entry = stub.getEntrypoint() as unknown as Dispatcher
+		const capabilities = options.capabilities
+		const capabilityInvoke = capabilities
+			? (req: CapabilityInvocation) => capabilities({ ...req, appId })
+			: undefined
 		return {
-			run: (action, ctx) => entry.dispatch(action, ctx),
+			run: (action, ctx) => entry.dispatch(action, { ...ctx, capabilityInvoke }),
 			actions: () => entry.actions?.() ?? Promise.resolve({})
 		}
 	}

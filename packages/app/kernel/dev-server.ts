@@ -13,7 +13,7 @@ export interface DevServerOptions {
 	gui: string // browser bundle entry, relative to vite root
 }
 
-const sandbox: GetSandbox = async (code) => {
+const sandbox: GetSandbox = async ({ code }) => {
 	const mod = await import(
 		/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 	)

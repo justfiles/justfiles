@@ -1,5 +1,12 @@
 import { chroot, type Volume } from '@justfiles/fs'
-import type { Action, ActionMeta, AppBundle, AppManifest, Context, InstalledApp } from './app'
+import type {
+	Action,
+	ActionMeta,
+	AppBundle,
+	AppManifest,
+	InstalledApp,
+	RuntimeContext
+} from './app'
 
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
@@ -11,10 +18,10 @@ interface System {
 	clock: Clock
 }
 
-export type GetSandbox = (code: string) => Promise<Sandbox>
+export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
 
 export type Sandbox = {
-	run(action: Action, ctx: Context): Promise<unknown>
+	run(action: Action, ctx: RuntimeContext): Promise<unknown>
 	actions?(): Promise<Record<string, ActionMeta>>
 }
 type Clock = object
@@ -128,7 +135,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		// Validation runs inside the app bundle (defineApp), so it works
 		// identically for in-process and remote sandboxes; the kernel just
 		// loads and runs.
-		const sb = await sandbox(text(await app.read(app.manifest.app)))
+		const sb = await sandbox({ appId, code: text(await app.read(app.manifest.app)) })
 		const result = await sb.run(action, {
 			state: current,
 			files: chroot(fs, `${root}/data/files`),
@@ -150,7 +157,10 @@ export function kernel({ fs, sandbox }: System): Kernel {
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {
 		const installed = await getApp(appId)
 		if (!installed) throw new Error(`app not found: ${appId}`)
-		const sb = await sandbox(text(await installed.read(installed.manifest.app)))
+		const sb = await sandbox({
+			appId,
+			code: text(await installed.read(installed.manifest.app))
+		})
 		return (await sb.actions?.()) ?? {}
 	}
 

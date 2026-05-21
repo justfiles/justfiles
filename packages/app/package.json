@@ -18,7 +18,8 @@
 		"./capabilities/broker": "./capabilities/broker.ts",
 		"./capabilities/email": "./capabilities/email/index.ts",
 		"./capabilities/calendar": "./capabilities/calendar/index.ts",
-		"./capabilities/volume": "./capabilities/volume/index.ts"
+		"./capabilities/volume": "./capabilities/volume/index.ts",
+		"./capabilities/ai": "./capabilities/ai/index.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -78,6 +79,10 @@
 			"./capabilities/volume": {
 				"types": "./dist/capabilities/volume/index.d.ts",
 				"default": "./dist/capabilities/volume/index.js"
+			},
+			"./capabilities/ai": {
+				"types": "./dist/capabilities/ai/index.d.ts",
+				"default": "./dist/capabilities/ai/index.js"
 			}
 		}
 	},

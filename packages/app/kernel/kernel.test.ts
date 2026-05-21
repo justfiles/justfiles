@@ -18,7 +18,7 @@ const compile = (source: string) =>
 	}).outputFiles[0].text
 const code = compile(source)
 
-const sandbox: GetSandbox = async function (code: string) {
+const sandbox: GetSandbox = async function ({ code }) {
 	const mod = await import(`data:text/javascript;base64,${btoa(code)}`)
 	const app = mod.app
 	if (typeof app !== 'object') {
@@ -26,7 +26,14 @@ const sandbox: GetSandbox = async function (code: string) {
 	}
 
 	return {
-		run: async (action, ctx) => await app.dispatch(action, ctx),
+		run: async (action, ctx) =>
+			await app.dispatch(action, {
+				...ctx,
+				capabilityInvoke: async (req) => {
+					if (req.capability === 'test' && req.method === 'echo') return req.input
+					throw new Error('missing capability')
+				}
+			}),
 		actions: async () => app.actions ?? {}
 	}
 }
@@ -74,6 +81,14 @@ test('smoke test kernel', async () => {
 
 	expect(await fs.exists('/note.txt')).toBe(false)
 	expect(await fs.exists('/applications/com.example.app/data/files/note.txt')).toBe(true)
+
+	result = await k.dispatch(appId, {
+		type: 'ask',
+		params: { text: 'capability' },
+		actor: 'agent'
+	})
+
+	expect(result).toEqual({ count: 'capability'.length })
 
 	// Framework-owned validation rejects bad params before the handler.
 	await expect(

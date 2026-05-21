@@ -1,5 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
+import type { CapabilityFactory } from '../capabilities/core.ts'
 
 export type Action<Type extends string = string, Params = unknown> = {
 	type: Type
@@ -18,22 +19,50 @@ export interface ActionMeta {
 	schemaHint?: unknown
 }
 
+type CapabilityRequest<Id extends string = string, Shape = unknown> = ReturnType<
+	CapabilityFactory<Id, Shape>
+>
+type CapabilityRequests = Record<string, CapabilityRequest>
+type NoCapabilities = Record<string, never>
+type CapabilityInvocation = {
+	capability: string
+	method: string
+	input: unknown
+	actor?: string
+}
+type CapabilityInvoke = (req: CapabilityInvocation) => Promise<unknown>
+
+type ShapeOf<C> = C extends CapabilityRequest<string, infer Shape> ? Shape : never
+type InjectedCapabilities<Caps extends CapabilityRequests> = {
+	readonly [K in keyof Caps]: ShapeOf<Caps[K]>
+}
+
 export interface App<
 	State,
-	Schemas extends Record<string, StandardSchemaV1> = Record<string, StandardSchemaV1>
+	Schemas extends Record<string, StandardSchemaV1> = Record<string, StandardSchemaV1>,
+	Caps extends CapabilityRequests = NoCapabilities
 > {
 	// Per-action input schemas. Carried so `typeof app` drives the typed
 	// client (and for host introspection). Validation itself runs in
 	// defineApp's dispatch — not here, not in the kernel.
 	schemas: Schemas
 	actions: Record<keyof Schemas & string, ActionMeta>
-	dispatch: (action: Action, ctx: Context<State>) => Promise<State>
+	readonly __capabilities?: Caps
+	dispatch: (action: Action, ctx: RuntimeContext<State>) => Promise<State>
 }
 
-export interface Context<State = unknown> {
+export interface Context<State = unknown, Caps extends CapabilityRequests = NoCapabilities> {
 	setState: (state: State) => Promise<void>
 	readonly state: State
 	files: Volume
+	readonly capabilities: InjectedCapabilities<Caps>
+}
+
+export interface RuntimeContext<State = unknown> {
+	setState: (state: State) => Promise<void>
+	readonly state: State
+	files: Volume
+	capabilityInvoke?: CapabilityInvoke
 }
 
 export interface AppManifest {

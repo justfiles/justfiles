@@ -70,7 +70,7 @@ test('valid dispatch returns the parsed result and threads state', async () => {
 	const { loader } = fakeLoader()
 	const getSandbox = workerSandbox(loader as unknown as Parameters<typeof workerSandbox>[0])
 
-	const sb = await getSandbox(CODE)
+	const sb = await getSandbox({ appId: 'test.app', code: CODE })
 	expect(await sb.run({ type: 'increment', params: { amount: 5 } }, ctx())).toEqual({ count: 5 })
 	expect(
 		await sb.run({ type: 'increment', params: { amount: 2 } }, { ...ctx(), state: { count: 5 } })
@@ -81,7 +81,7 @@ test('invalid params reject with the Standard Schema message from the bundle', a
 	const { loader } = fakeLoader()
 	const getSandbox = workerSandbox(loader as unknown as Parameters<typeof workerSandbox>[0])
 
-	const sb = await getSandbox(CODE)
+	const sb = await getSandbox({ appId: 'test.app', code: CODE })
 	await expect(sb.run({ type: 'increment', params: { amount: 'nope' } }, ctx())).rejects.toThrow(
 		/invalid params for increment/
 	)
@@ -91,8 +91,14 @@ test('builds the dynamic-worker graph and content-addresses the isolate', async 
 	const { loader, calls } = fakeLoader()
 	const getSandbox = workerSandbox(loader as unknown as Parameters<typeof workerSandbox>[0])
 
-	await (await getSandbox(CODE)).run({ type: 'increment', params: { amount: 1 } }, ctx())
-	await (await getSandbox(CODE)).run({ type: 'increment', params: { amount: 1 } }, ctx())
+	await (await getSandbox({ appId: 'test.app', code: CODE })).run(
+		{ type: 'increment', params: { amount: 1 } },
+		ctx()
+	)
+	await (await getSandbox({ appId: 'test.app', code: CODE })).run(
+		{ type: 'increment', params: { amount: 1 } },
+		ctx()
+	)
 
 	const [a, b] = calls
 	expect(a.key).toMatch(/^kernel-[0-9a-f]{16}$/)

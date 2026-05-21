@@ -481,11 +481,36 @@ export class Frieren extends DurableObject<Env> {
 			if (!this.env.LOADER) throw new Error('LOADER binding unavailable')
 			return kernel({
 				fs: chroot(this.vol, '/kernel'),
-				sandbox: workerSandbox(this.env.LOADER),
+				sandbox: workerSandbox(this.env.LOADER, {
+					capabilities: (req) => this.invokeKernelCapability(req)
+				}),
 				clock: {}
 			})
 		})()
 		return this.kernelOnce
+	}
+
+	private async invokeKernelCapability(req: {
+		capability: string
+		method: string
+		input: unknown
+		appId: string
+		actor?: string
+	}): Promise<unknown> {
+		if (req.capability !== 'ai' || req.method !== 'generateText') {
+			throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
+		}
+		const input = req.input as { system?: unknown; prompt?: unknown }
+		if (!input || typeof input !== 'object' || typeof input.prompt !== 'string') {
+			throw capabilityError('CAPABILITY_INVALID_INPUT', req.capability, req.method)
+		}
+		if (!this.text) {
+			const { model, apiKey } = this.getBackendConfig()
+			this.text = text({ model, apiKey })
+		}
+		return {
+			text: await this.text.gen(typeof input.system === 'string' ? input.system : '', input.prompt)
+		}
 	}
 
 	// kernel.subscribe's handler is in-memory, so it dies with the DO on
@@ -634,6 +659,10 @@ export class Frieren extends DurableObject<Env> {
 			agentName: soul.agent_name || 'Frieren'
 		}
 	}
+}
+
+function capabilityError(code: string, capability: string, method: string): Error {
+	return Object.assign(new Error(code), { code, capability, method })
 }
 
 function sessionEntries2DisplayMessages(entries: readonly SessionEntry[]): DisplayMessage[] {

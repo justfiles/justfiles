@@ -1,11 +1,19 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { Action, ActionExample, ActionMeta, App, Context } from './app'
+import type { Action, ActionExample, ActionMeta, App, Context, RuntimeContext } from './app'
 
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
 
-interface AppSpec<State, Schemas extends Record<string, StandardSchemaV1>> {
+interface AppSpec<
+	State,
+	Schemas extends Record<string, StandardSchemaV1>,
+	Caps extends Record<
+		string,
+		ReturnType<import('../capabilities/core.ts').CapabilityFactory<string, unknown>>
+	>
+> {
 	init: State
+	capabilities?: Caps
 	handlers: {
 		[Name in keyof Schemas]: {
 			// Author's schema, from any Standard Schema validator (BYO).
@@ -14,21 +22,26 @@ interface AppSpec<State, Schemas extends Record<string, StandardSchemaV1>> {
 			examples?: ActionExample[]
 			// params is inferred from the schema; the framework validated
 			// it before this runs.
-			handler: (params: Infer<Schemas[Name]>, ctx: Context<State>) => MaybePromise<State>
+			handler: (params: Infer<Schemas[Name]>, ctx: Context<State, Caps>) => MaybePromise<State>
 		}
 	}
 }
 
-export function defineApp<State, Schemas extends Record<string, StandardSchemaV1>>(
-	spec: AppSpec<State, Schemas>
-): App<State, Schemas> {
-	const handlers = spec.handlers as Record<
+export function defineApp<
+	State,
+	Schemas extends Record<string, StandardSchemaV1>,
+	Caps extends Record<
+		string,
+		ReturnType<import('../capabilities/core.ts').CapabilityFactory<string, unknown>>
+	> = Record<string, never>
+>(spec: AppSpec<State, Schemas, Caps>): App<State, Schemas, Caps> {
+	const handlers = spec.handlers as unknown as Record<
 		string,
 		{
 			schema: StandardSchemaV1
 			description?: string
 			examples?: ActionExample[]
-			handler: (params: unknown, ctx: Context<State>) => MaybePromise<State>
+			handler: (params: unknown, ctx: Context<State, Caps>) => MaybePromise<State>
 		}
 	>
 	const schemas = {} as Record<string, StandardSchemaV1>
@@ -45,7 +58,7 @@ export function defineApp<State, Schemas extends Record<string, StandardSchemaV1
 	return {
 		schemas: schemas as Schemas,
 		actions: actions as Record<keyof Schemas & string, ActionMeta>,
-		async dispatch(action, ctx) {
+		async dispatch(action, ctx: RuntimeContext<State>) {
 			const def = handlers[action.type]
 			if (!def) throw new Error(`unknown action: ${action.type}`)
 			// Framework-owned validation: one implementation, compiled into
@@ -55,9 +68,69 @@ export function defineApp<State, Schemas extends Record<string, StandardSchemaV1
 				throw new Error(
 					`invalid params for ${action.type}: ${r.issues.map((i) => i.message).join('; ')}`
 				)
-			return def.handler(r.value, { ...ctx, state: ctx.state ?? spec.init })
+			return def.handler(r.value, {
+				...ctx,
+				state: ctx.state ?? spec.init,
+				capabilities: createCapabilities(spec.capabilities ?? {}, ctx as RuntimeContext, action)
+			} as Context<State, Caps>)
 		}
 	}
+}
+
+function createCapabilities(
+	requests: Record<
+		string,
+		ReturnType<import('../capabilities/core.ts').CapabilityFactory<string, unknown>>
+	>,
+	ctx: RuntimeContext,
+	action: Action
+): unknown {
+	return new Proxy(
+		{},
+		{
+			get(_target, localName) {
+				if (typeof localName !== 'string') return undefined
+				const request = requests[localName]
+				if (!request) return undefined
+				return new Proxy(
+					{},
+					{
+						get(_target, method) {
+							if (typeof method !== 'string') return undefined
+							return async (input: unknown) => {
+								if (!ctx.capabilityInvoke)
+									throw capabilityError('CAPABILITY_UNAVAILABLE', request.id, method)
+								try {
+									return await ctx.capabilityInvoke({
+										capability: request.id,
+										method,
+										input,
+										actor: action.actor
+									})
+								} catch (error) {
+									throw normalizeCapabilityError(error, request.id, method)
+								}
+							}
+						}
+					}
+				)
+			}
+		}
+	)
+}
+
+function capabilityError(code: string, capability: string, method: string, message = code): Error {
+	return Object.assign(new Error(message), { code, capability, method })
+}
+
+function normalizeCapabilityError(error: unknown, capability: string, method: string): unknown {
+	if (error instanceof Error) {
+		return Object.assign(error, {
+			capability: (error as { capability?: string }).capability ?? capability,
+			method: (error as { method?: string }).method ?? method
+		})
+	}
+	return capabilityError('CAPABILITY_FAILED', capability, method, String(error))
 }
 
 function schemaHint(schema: StandardSchemaV1): unknown {
@@ -102,7 +175,7 @@ export interface Transport {
 // `typeof app` -> { [action]: (params) => Promise<State> }. Inputs inferred
 // from the schemas; output is uniformly State (the reducer model).
 export type Client<A> =
-	A extends App<infer State, infer Schemas>
+	A extends App<infer State, infer Schemas, infer _Caps>
 		? { [K in keyof Schemas & string]: (params: Infer<Schemas[K]>) => Promise<State> }
 		: never
 
@@ -117,7 +190,7 @@ export function createClient<A>(transport: Transport): Client<A> {
 
 // ----- gui -----
 
-type GUIState<A> = A extends App<infer State, infer _> ? State : never
+type GUIState<A> = A extends App<infer State, infer _Schemas, infer _Caps> ? State : never
 
 interface GUISpec<A> {
 	// The app's typed client is injected; the GUI never touches transport.
