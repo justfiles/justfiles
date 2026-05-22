@@ -1,9 +1,0 @@
-{
-	"format": 1,
-	"name": "Doom",
-	"description": "Play Doom in the browser.",
-	"version": "0.1.0",
-	"icon": "icon.svg",
-	"entry": "index.html",
-	"permissions": ["agent"]
-}
