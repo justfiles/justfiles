@@ -133,7 +133,8 @@ export interface InstalledApp {
 
 export function safeBundlePath(path: string): string {
 	if (!path || path.includes('\0')) throw new Error(`invalid app bundle path: ${path}`)
-	if (path.startsWith('/') || path.startsWith('//')) throw new Error(`invalid app bundle path: ${path}`)
+	if (path.startsWith('/') || path.startsWith('//'))
+		throw new Error(`invalid app bundle path: ${path}`)
 	const parts = path.split('/').filter((part) => part && part !== '.')
 	if (parts.length === 0 || parts.some((part) => part === '..')) {
 		throw new Error(`invalid app bundle path: ${path}`)

@@ -1,6 +1,13 @@
 import { chroot, type Volume } from '@justfiles/fs'
 import { safeBundlePath } from './app'
-import type { Action, ActionMeta, AppBundle, AppManifest, InstalledApp, RuntimeContext } from './app'
+import type {
+	Action,
+	ActionMeta,
+	AppBundle,
+	AppManifest,
+	InstalledApp,
+	RuntimeContext
+} from './app'
 
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
@@ -110,9 +117,12 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		await fs.mkdir(root, { recursive: true })
 		for await (const rawPath of app.list()) {
 			const path = safeBundlePath(rawPath)
+			const parent = path.split('/').slice(0, -1).join('/')
+			if (parent) await fs.mkdir(`${root}/${parent}`, { recursive: true })
 			await fs.writeFile(`${root}/${path}`, await app.read(rawPath))
 		}
-		if (!(await fs.exists(`${root}/${manifest.app}`))) throw new Error(`missing app entry: ${manifest.app}`)
+		if (!(await fs.exists(`${root}/${manifest.app}`)))
+			throw new Error(`missing app entry: ${manifest.app}`)
 		if (manifest.gui && !(await fs.exists(`${root}/${manifest.gui}`))) {
 			throw new Error(`missing gui entry: ${manifest.gui}`)
 		}

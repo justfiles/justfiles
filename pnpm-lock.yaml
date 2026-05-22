@@ -59,15 +59,9 @@ importers:
       '@hono/clerk-auth':
         specifier: ^3.1.1
         version: 3.1.1(hono@4.11.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      '@justbuddy/app-doom':
-        specifier: workspace:*
-        version: link:../../packages/app-doom
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
-      '@justfiles/app-crossword':
-        specifier: workspace:*
-        version: link:../../packages/app-crossword
       '@justfiles/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -89,9 +83,6 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.2
         version: 4.3.0(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))
-      app-counter:
-        specifier: workspace:*
-        version: link:../../packages/app-counter
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -101,6 +92,9 @@ importers:
       daisyui:
         specifier: ^5.5.19
         version: 5.5.19
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
       hono:
         specifier: 4.11.1
         version: 4.11.1
@@ -4867,6 +4861,9 @@ packages:
   fetch-blob@3.2.0:
     resolution: {integrity: sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==}
     engines: {node: ^12.20 || >= 14.13}
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   figures@6.1.0:
     resolution: {integrity: sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg==}
@@ -12226,6 +12223,8 @@ snapshots:
     dependencies:
       node-domexception: 1.0.0
       web-streams-polyfill: 3.3.3
+
+  fflate@0.8.3: {}
 
   figures@6.1.0:
     dependencies:

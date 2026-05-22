@@ -9,7 +9,6 @@ import type {
 	ToolResultSender
 } from '@justfiles/app'
 import { useEffect, useRef, useState } from 'react'
-import { createFsVolume } from '../fs'
 import type { ChatConnection, ChatMessage, ChatSession, ConnectionState, Launcher } from './types'
 
 interface AgentEvent {
@@ -21,6 +20,24 @@ interface AgentEvent {
 	args?: unknown
 	result?: unknown
 	isError?: boolean
+}
+
+function pickZipFile(): Promise<File | null> {
+	return new Promise((resolve) => {
+		const input = document.createElement('input')
+		input.type = 'file'
+		input.accept = '.zip,application/zip'
+		input.onchange = () => resolve(input.files?.[0] ?? null)
+		input.click()
+	})
+}
+
+async function responseError(res: Response): Promise<string> {
+	try {
+		const body = (await res.json()) as { error?: unknown }
+		if (typeof body.error === 'string') return body.error
+	} catch {}
+	return `${res.status} ${res.statusText}`
 }
 
 export interface UseChatResult {
@@ -394,10 +411,8 @@ export function useChat(): UseChatResult {
 
 	const reconnect = () => setConnectKey((value) => value + 1)
 
-	// Dev install: prompt the user for a directory containing a kernel-app
-	// bundle (manifest.json + app.js + gui.js), copy the bytes into the
-	// per-user Volume at /kernel/applications/<id>, then reconnect so the
-	// launcher's `ready` payload re-lists installed apps.
+	// Dev install: prompt the user for a zipped kernel-app bundle, upload it to
+	// the kernel install endpoint, then reconnect so the launcher re-lists apps.
 	const installKernelApp = async () => {
 		if (installingKernelAppRef.current) return
 		installingKernelAppRef.current = true
@@ -409,51 +424,34 @@ export function useChat(): UseChatResult {
 	}
 
 	const installKernelAppOnce = async () => {
-		const picker = (
-			window as unknown as { showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle> }
-		).showDirectoryPicker
-		if (!picker) {
-			alert('Directory picker not supported in this browser (use Chrome or Edge).')
-			return
-		}
-		let dir: FileSystemDirectoryHandle
+		const zip = await pickZipFile()
+		if (!zip) return
 		try {
-			dir = await picker()
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return
-			throw e
-		}
-		try {
-			const manifestFile = await (await dir.getFileHandle('manifest.json')).getFile()
-			const manifest = JSON.parse(await manifestFile.text()) as { id?: string }
-			if (!manifest.id) throw new Error('manifest.json is missing "id"')
-			const vol = await createFsVolume(() => getTokenRef.current())
-			const root = `/kernel/applications/${manifest.id}`
-			await vol.mkdir(root, { recursive: true })
-			for await (const [name, handle] of (
-				dir as unknown as {
-					entries(): AsyncIterable<[string, FileSystemHandle]>
-				}
-			).entries()) {
-				if (handle.kind !== 'file') continue
-				const file = await (handle as FileSystemFileHandle).getFile()
-				const bytes = new Uint8Array(await file.arrayBuffer())
-				await vol.writeFile(`${root}/${name}`, bytes)
-			}
+			const form = new FormData()
+			form.append('bundle', zip)
+			const res = await fetch('/api/apps/install', {
+				method: 'POST',
+				headers: { authorization: `Bearer ${await getTokenRef.current()}` },
+				body: form
+			})
+			if (!res.ok) throw new Error(await responseError(res))
 			reconnect()
 		} catch (e) {
 			alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
 		}
 	}
 
-	// Delete a kernel app bundle from the per-user Volume and drop it from
-	// the launcher state optimistically. Mirror of `installKernelApp`.
+	// Delete a kernel app bundle through the kernel lifecycle endpoint and drop
+	// it from the launcher state optimistically. Mirror of `installKernelApp`.
 	const uninstallKernelApp = async (id: string) => {
 		const prev = installedApps
 		setInstalledApps((apps) => apps.filter((a) => !(a.kind === 'kernel' && a.id === id)))
 		try {
-			const vol = await createFsVolume(() => getTokenRef.current())
-			await vol.rm(`/kernel/applications/${id}`, { recursive: true, force: true })
+			const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {
+				method: 'DELETE',
+				headers: { authorization: `Bearer ${await getTokenRef.current()}` }
+			})
+			if (!res.ok) throw new Error(await responseError(res))
 		} catch (e) {
 			setInstalledApps(prev)
 			alert(`Uninstall failed: ${e instanceof Error ? e.message : String(e)}`)

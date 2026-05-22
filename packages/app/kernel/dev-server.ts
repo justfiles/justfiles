@@ -52,7 +52,8 @@ const MIME: Record<string, string> = {
 	webp: 'image/webp'
 }
 
-const mime = (path: string) => MIME[extname(path).slice(1).toLowerCase()] ?? 'application/octet-stream'
+const mime = (path: string) =>
+	MIME[extname(path).slice(1).toLowerCase()] ?? 'application/octet-stream'
 
 const template = readFileSync(new URL('./dev-server.html', import.meta.url), 'utf8')
 const page = (title: string) => template.split('{{title}}').join(title)

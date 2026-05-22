@@ -1,11 +1,18 @@
 import { DurableObject } from 'cloudflare:workers'
 import type { AppRpcRequest, AppRpcResponse } from '@justfiles/app'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
-import { type Action, kernel, safeBundlePath } from '@justfiles/app/kernel'
+import {
+	type Action,
+	type AppBundle,
+	type AppManifest,
+	kernel,
+	safeBundlePath
+} from '@justfiles/app/kernel'
 import { createFsApi } from '@justfiles/core'
 import { chroot, type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
+import { unzipSync } from 'fflate'
 import { Hono } from 'hono'
 import { type AppController, createAppCommand } from './bash/commands/app.ts'
 import { cp, mv, rm } from './bash/commands/fs.ts'
@@ -153,6 +160,27 @@ export class Frieren extends DurableObject<Env> {
 				'/',
 				integrationRoutes(() => this.requireIntegrations())
 			)
+			.post('/api/apps/install', async (c) => {
+				try {
+					const form = await c.req.formData()
+					const bundle = form.get('bundle')
+					if (!(bundle instanceof File)) throw new Error('bundle file is required')
+					const id = await (await this.kernel()).install(
+						bundleFromUploadedZip(new Uint8Array(await bundle.arrayBuffer()))
+					)
+					return c.json({ id, apps: await this.kernelApps() })
+				} catch (error) {
+					return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
+				}
+			})
+			.delete('/api/apps/:id', async (c) => {
+				try {
+					await (await this.kernel()).uninstall(c.req.param('id'))
+					return c.body(null, 204)
+				} catch (error) {
+					return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
+				}
+			})
 			.get('/api/kernel/:appId/*', async (c) => {
 				const appId = c.req.param('appId')
 				let path: string
@@ -473,7 +501,13 @@ export class Frieren extends DurableObject<Env> {
 	private async kernelApps(): Promise<ReadonlyArray<DisplayApp>> {
 		try {
 			const manifests = await (await this.kernel()).list()
-			return manifests.map((m) => ({ id: m.id, name: m.name, description: '', kind: 'kernel' }))
+			return manifests.map((m) => ({
+				id: m.id,
+				name: m.name,
+				description: m.description ?? '',
+				iconUrl: m.icon ? `/api/kernel/${m.id}/${m.icon}` : undefined,
+				kind: 'kernel'
+			}))
 		} catch {
 			return []
 		}
@@ -662,6 +696,41 @@ export class Frieren extends DurableObject<Env> {
 			agentName: soul.agent_name || 'Frieren'
 		}
 	}
+}
+
+function bundleFromUploadedZip(zip: Uint8Array): AppBundle {
+	const rawEntries = Object.entries(unzipSync(zip))
+	const entries = rawEntries.filter(
+		([path]) => !path.endsWith('/') && !rawEntries.some(([other]) => other.startsWith(`${path}/`))
+	)
+	const prefix = entries.some(([path]) => path === 'manifest.json')
+		? ''
+		: commonTopLevelPrefix(entries.map(([path]) => path))
+	const map = new Map<string, Uint8Array>()
+	for (const [path, bytes] of entries)
+		map.set(safeBundlePath(prefix ? path.slice(prefix.length) : path), bytes)
+	return {
+		async manifest() {
+			const bytes = map.get('manifest.json')
+			if (!bytes) throw new Error('missing manifest.json')
+			return JSON.parse(new TextDecoder().decode(bytes)) as AppManifest
+		},
+		async *list() {
+			yield* map.keys()
+		},
+		async read(path) {
+			const bytes = map.get(safeBundlePath(path))
+			if (!bytes) throw new Error(`file not found: ${path}`)
+			return bytes
+		}
+	}
+}
+
+function commonTopLevelPrefix(paths: string[]): string {
+	const roots = new Set(paths.map((path) => path.split('/')[0]).filter(Boolean))
+	if (roots.size !== 1) return ''
+	const prefix = `${[...roots][0]}/`
+	return paths.includes(`${prefix}manifest.json`) ? prefix : ''
 }
 
 function capabilityError(code: string, capability: string, method: string): Error {
