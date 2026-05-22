@@ -1,15 +1,10 @@
 import { chroot, type Volume } from '@justfiles/fs'
-import type {
-	Action,
-	ActionMeta,
-	AppBundle,
-	AppManifest,
-	InstalledApp,
-	RuntimeContext
-} from './app'
+import { safeBundlePath } from './app'
+import type { Action, ActionMeta, AppBundle, AppManifest, InstalledApp, RuntimeContext } from './app'
 
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
+export { safeBundlePath } from './app'
 export type { Action, ActionMeta, AppBundle, AppManifest } from './app'
 
 interface System {
@@ -100,14 +95,29 @@ export function kernel({ fs, sandbox }: System): Kernel {
 	async function install(app: AppBundle): Promise<AppId> {
 		await fs.mkdir('/applications', { recursive: true })
 
-		const manifest = await app.manifest()
-		const appId = manifest.id
+		const rawManifest = await app.manifest()
+		const appId = rawManifest.id
 		const root = appRoot(appId)
 		const manifestPath = `${root}/manifest.json`
+		const manifest: AppManifest = {
+			...rawManifest,
+			app: safeBundlePath(rawManifest.app),
+			gui: rawManifest.gui ? safeBundlePath(rawManifest.gui) : undefined,
+			cli: rawManifest.cli ? safeBundlePath(rawManifest.cli) : undefined,
+			icon: rawManifest.icon ? safeBundlePath(rawManifest.icon) : undefined
+		}
 
 		await fs.mkdir(root, { recursive: true })
-		for await (const path of app.list()) {
-			await fs.writeFile(`${root}/${path}`, await app.read(path))
+		for await (const rawPath of app.list()) {
+			const path = safeBundlePath(rawPath)
+			await fs.writeFile(`${root}/${path}`, await app.read(rawPath))
+		}
+		if (!(await fs.exists(`${root}/${manifest.app}`))) throw new Error(`missing app entry: ${manifest.app}`)
+		if (manifest.gui && !(await fs.exists(`${root}/${manifest.gui}`))) {
+			throw new Error(`missing gui entry: ${manifest.gui}`)
+		}
+		if (manifest.icon && !(await fs.exists(`${root}/${manifest.icon}`))) {
+			throw new Error(`missing icon: ${manifest.icon}`)
 		}
 		await fs.writeFile(manifestPath, bytes(JSON.stringify(manifest)))
 
@@ -191,7 +201,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		if (!(await fs.exists(root))) return null
 		return {
 			manifest: JSON.parse(text(await fs.readFile(`${root}/manifest.json`))),
-			read: (path) => fs.readFile(`${root}/${path}`)
+			read: (path) => fs.readFile(`${root}/${safeBundlePath(path)}`)
 		}
 	}
 }

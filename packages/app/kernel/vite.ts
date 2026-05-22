@@ -63,7 +63,15 @@ export function kernelHost(opts: DevServerOptions): Plugin {
 			const out = resolve(root, 'dist')
 			mkdirSync(out, { recursive: true })
 			writeFileSync(resolve(out, 'app.js'), compile(resolve(root, opts.app)))
-			const manifest: AppManifest = { id: opts.id, name: opts.name, app: 'app.js', gui: 'gui.js' }
+			const manifest: AppManifest = {
+				id: opts.id,
+				name: opts.name,
+				description: opts.description,
+				version: opts.version,
+				icon: opts.icon,
+				app: 'app.js',
+				gui: 'gui.js'
+			}
 			writeFileSync(resolve(out, 'manifest.json'), JSON.stringify(manifest, null, '\t'))
 		}
 	}

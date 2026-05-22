@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import type { AppRpcRequest, AppRpcResponse } from '@justfiles/app'
 import type { CapabilityBridge } from '@justfiles/app/capabilities'
-import { type Action, kernel } from '@justfiles/app/kernel'
+import { type Action, kernel, safeBundlePath } from '@justfiles/app/kernel'
 import { createFsApi } from '@justfiles/core'
 import { chroot, type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
@@ -155,8 +155,12 @@ export class Frieren extends DurableObject<Env> {
 			)
 			.get('/api/kernel/:appId/*', async (c) => {
 				const appId = c.req.param('appId')
-				const path = c.req.path.split('/').slice(4).join('/')
-				if (!path || path.includes('..')) return c.notFound()
+				let path: string
+				try {
+					path = safeBundlePath(c.req.path.split('/').slice(4).join('/'))
+				} catch {
+					return c.notFound()
+				}
 				try {
 					const installed = await (await this.kernel()).app(appId)
 					const data = await installed.read(path)
@@ -665,10 +669,19 @@ function capabilityError(code: string, capability: string, method: string): Erro
 }
 
 const MIME: Record<string, string> = {
+	html: 'text/html; charset=utf-8',
 	js: 'application/javascript; charset=utf-8',
+	mjs: 'application/javascript; charset=utf-8',
+	css: 'text/css; charset=utf-8',
+	json: 'application/json; charset=utf-8',
+	svg: 'image/svg+xml',
 	wasm: 'application/wasm',
 	wad: 'application/octet-stream',
-	cfg: 'text/plain; charset=utf-8'
+	cfg: 'text/plain; charset=utf-8',
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	webp: 'image/webp'
 }
 
 function mimeFor(path: string): string {

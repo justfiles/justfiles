@@ -9,6 +9,9 @@ import { type GetSandbox, kernel } from './kernel'
 export interface DevServerOptions {
 	id: string
 	name: string
+	description?: string
+	version?: string
+	icon?: string
 	app: string // headless bundle entry, relative to vite root
 	gui: string // browser bundle entry, relative to vite root
 }
@@ -33,16 +36,23 @@ const compile = (entry: string) =>
 		format: 'esm'
 	}).outputFiles[0].text
 
-const mime = (path: string) =>
-	(
-		({
-			'.js': 'text/javascript',
-			'.html': 'text/html',
-			'.json': 'application/json',
-			'.wasm': 'application/wasm',
-			'.cfg': 'text/plain'
-		}) as Record<string, string>
-	)[extname(path)] ?? 'application/octet-stream'
+const MIME: Record<string, string> = {
+	html: 'text/html; charset=utf-8',
+	js: 'application/javascript; charset=utf-8',
+	mjs: 'application/javascript; charset=utf-8',
+	css: 'text/css; charset=utf-8',
+	json: 'application/json; charset=utf-8',
+	svg: 'image/svg+xml',
+	wasm: 'application/wasm',
+	wad: 'application/octet-stream',
+	cfg: 'text/plain; charset=utf-8',
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	webp: 'image/webp'
+}
+
+const mime = (path: string) => MIME[extname(path).slice(1).toLowerCase()] ?? 'application/octet-stream'
 
 const template = readFileSync(new URL('./dev-server.html', import.meta.url), 'utf8')
 const page = (title: string) => template.split('{{title}}').join(title)
@@ -63,13 +73,20 @@ const readJson = (req: { on: NodeJS.ReadableStream['on'] }): Promise<unknown> =>
 		req.on('error', fail)
 	})
 
+function* walkFiles(dir: string, prefix = ''): Iterable<string> {
+	for (const name of readdirSync(dir)) {
+		const full = join(dir, name)
+		const rel = prefix ? join(prefix, name) : name
+		const stat = statSync(full)
+		if (stat.isDirectory()) yield* walkFiles(full, rel)
+		else if (stat.isFile()) yield rel
+	}
+}
+
 function publicAssets(dir: string): Record<string, Uint8Array> {
 	if (!existsSync(dir)) return {}
 	const out: Record<string, Uint8Array> = {}
-	for (const name of readdirSync(dir)) {
-		const path = join(dir, name)
-		if (statSync(path).isFile()) out[name] = readFileSync(path)
-	}
+	for (const path of walkFiles(dir)) out[path] = readFileSync(join(dir, path))
 	return out
 }
 
@@ -83,6 +100,9 @@ export async function createDevServer(
 		appBundleFromMemory({
 			id: opts.id,
 			name: opts.name,
+			description: opts.description,
+			version: opts.version,
+			icon: opts.icon,
 			app: compile(resolve(root, opts.app)),
 			gui: compile(resolve(root, opts.gui)),
 			assets: publicAssets(resolve(root, 'public'))

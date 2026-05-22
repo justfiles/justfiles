@@ -68,6 +68,9 @@ export interface RuntimeContext<State = unknown> {
 export interface AppManifest {
 	id: string
 	name: string
+	description?: string
+	version?: string
+	icon?: string
 	app: string
 	gui?: string
 	cli?: string
@@ -82,6 +85,9 @@ export interface AppBundle {
 export interface MemoryAppBundle {
 	id: string
 	name: string
+	description?: string
+	version?: string
+	icon?: string
 	app: string
 	gui?: string
 	cli?: string
@@ -101,6 +107,9 @@ export function appBundleFromMemory(input: MemoryAppBundle): AppBundle {
 			return {
 				id: input.id,
 				name: input.name,
+				description: input.description,
+				version: input.version,
+				icon: input.icon,
 				app: 'app.js',
 				gui: 'gui.js',
 				cli: 'cli.js'
@@ -120,6 +129,16 @@ export function appBundleFromMemory(input: MemoryAppBundle): AppBundle {
 export interface InstalledApp {
 	manifest: AppManifest
 	read(path: string): Promise<Uint8Array>
+}
+
+export function safeBundlePath(path: string): string {
+	if (!path || path.includes('\0')) throw new Error(`invalid app bundle path: ${path}`)
+	if (path.startsWith('/') || path.startsWith('//')) throw new Error(`invalid app bundle path: ${path}`)
+	const parts = path.split('/').filter((part) => part && part !== '.')
+	if (parts.length === 0 || parts.some((part) => part === '..')) {
+		throw new Error(`invalid app bundle path: ${path}`)
+	}
+	return parts.join('/')
 }
 
 function bytes(text: string): Uint8Array {

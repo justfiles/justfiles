@@ -1,7 +1,7 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
-import { appBundleFromMemory } from './app'
+import { type AppBundle, appBundleFromMemory } from './app'
 import { type GetSandbox, kernel } from './kernel'
 import source from './test-bundle/app.ts?raw'
 
@@ -39,6 +39,24 @@ const sandbox: GetSandbox = async function ({ code }) {
 }
 
 const clock = {}
+
+function testKernel() {
+	return kernel({ fs: volume(memStorage()), sandbox, clock })
+}
+
+function bundle(manifest: AppBundle['manifest'], files: Record<string, string>): AppBundle {
+	return {
+		manifest,
+		async *list() {
+			yield* Object.keys(files)
+		},
+		async read(path) {
+			const file = files[path]
+			if (file == null) throw new Error(`file not found: ${path}`)
+			return new TextEncoder().encode(file)
+		}
+	}
+}
 
 test('smoke test kernel', async () => {
 	const fs = volume(memStorage())
@@ -94,4 +112,37 @@ test('smoke test kernel', async () => {
 	await expect(
 		k.dispatch(appId, { type: 'increment', params: { amount: 'nope' }, actor: 'agent' })
 	).rejects.toThrow(/invalid params for increment/)
+})
+
+test('install rejects invalid manifest entry path', async () => {
+	const k = testKernel()
+	await expect(
+		k.install(
+			bundle(async () => ({ id: 'com.example.app', name: 'App', app: '../app.js' }), {
+				'app.js': code
+			})
+		)
+	).rejects.toThrow(/invalid app bundle path/)
+})
+
+test('install rejects invalid listed file path', async () => {
+	const k = testKernel()
+	await expect(
+		k.install(
+			bundle(async () => ({ id: 'com.example.app', name: 'App', app: 'app.js' }), {
+				'../evil.js': code
+			})
+		)
+	).rejects.toThrow(/invalid app bundle path/)
+})
+
+test('install rejects missing app entry', async () => {
+	const k = testKernel()
+	await expect(
+		k.install(
+			bundle(async () => ({ id: 'com.example.app', name: 'App', app: 'app.js' }), {
+				'other.js': code
+			})
+		)
+	).rejects.toThrow(/missing app entry: app.js/)
 })
