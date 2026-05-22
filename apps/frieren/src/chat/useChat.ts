@@ -1,15 +1,14 @@
 import { useAuth } from '@clerk/clerk-react'
+import { useEffect, useRef, useState } from 'react'
 import type {
 	ActiveApp,
-	AppRpcError,
-	AppRpcRequest,
-	AppRpcResponse,
+	ChatConnection,
+	ChatMessage,
+	ChatSession,
+	ConnectionState,
 	InstalledApp,
-	ToolInvokeHandler,
-	ToolResultSender
-} from '@justfiles/app'
-import { useEffect, useRef, useState } from 'react'
-import type { ChatConnection, ChatMessage, ChatSession, ConnectionState, Launcher } from './types'
+	Launcher
+} from './types'
 
 interface AgentEvent {
 	type: string
@@ -45,12 +44,6 @@ export interface UseChatResult {
 	connection: ChatConnection
 	apps: {
 		launcher: Launcher
-		relay: {
-			sendRpc: (frame: AppRpcRequest) => Promise<AppRpcResponse>
-			onToolInvoke: (handler: ToolInvokeHandler | null) => void
-			sendToolResult: ToolResultSender
-			notifyIframeReload: () => void
-		}
 	}
 }
 
@@ -70,12 +63,7 @@ export function useChat(): UseChatResult {
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
-	// Pending app-RPC requests keyed by frame id. The iframe minted the id;
-	// the worker echoes it back on `app_rpc` so we can resolve here.
-	const pendingRpcRef = useRef(new Map<string, (frame: AppRpcResponse) => void>())
-	// Handler registered by AppFrame to receive server-originated tool invocations.
-	const toolInvokeHandlerRef = useRef<ToolInvokeHandler | null>(null)
-	const installingKernelAppRef = useRef(false)
+	const installingAppRef = useRef(false)
 
 	useEffect(() => {
 		void connectKey
@@ -274,36 +262,13 @@ export function useChat(): UseChatResult {
 					return
 				}
 
-				if (data.type === 'app_open') {
-					setActiveApp({ kind: 'sandbox', id: data.id, ui: data.ui })
-					return
-				}
-
 				if (data.type === 'kernel_app_open') {
-					setActiveApp({ kind: 'kernel', id: data.id })
+					setActiveApp({ kind: 'app', id: data.id })
 					return
 				}
 
-				if (data.type === 'app_close' || data.type === 'kernel_app_close') {
+				if (data.type === 'kernel_app_close') {
 					setActiveApp(null)
-					return
-				}
-
-				if (data.type === 'app_rpc' && data.frame) {
-					const frame = data.frame as AppRpcResponse
-					const resolver = pendingRpcRef.current.get(String(frame.id))
-					if (!resolver) return
-					pendingRpcRef.current.delete(String(frame.id))
-					resolver(frame)
-					return
-				}
-
-				if (data.type === 'app_tool_invoke' && data.callId && data.name) {
-					toolInvokeHandlerRef.current?.(
-						String(data.callId),
-						String(data.name),
-						data.input as unknown
-					)
 					return
 				}
 
@@ -315,14 +280,6 @@ export function useChat(): UseChatResult {
 					setConnectionState('disconnected')
 					setIsStreaming(false)
 					wsRef.current = null
-					for (const [id, resolve] of pendingRpcRef.current) {
-						resolve({
-							jsonrpc: '2.0',
-							id,
-							error: { code: -32004, message: 'connection_closed' }
-						})
-					}
-					pendingRpcRef.current.clear()
 				}
 			}
 
@@ -361,50 +318,20 @@ export function useChat(): UseChatResult {
 		wsRef.current?.send(JSON.stringify({ type: 'abort' }))
 	}
 
-	const sendRpc = (frame: AppRpcRequest): Promise<AppRpcResponse> =>
-		new Promise<AppRpcResponse>((resolve) => {
-			const ws = wsRef.current
-			const id = String(frame.id)
-			if (!ws || connectionState !== 'ready') {
-				resolve({ jsonrpc: '2.0', id, error: { code: -32004, message: 'no_connection' } })
-				return
-			}
-			pendingRpcRef.current.set(id, resolve)
-			ws.send(JSON.stringify({ type: 'app_rpc', frame }))
-		})
-
 	const launchApp = (app: InstalledApp) => {
 		if (app.kind === 'builtin') {
 			setActiveApp({ kind: 'builtin', id: app.id })
 			return
 		}
-		if (app.kind === 'esm') {
-			if (!app.manifestUrl || !app.baseUrl) return
-			setActiveApp({
-				kind: 'esm',
-				id: app.id,
-				manifestUrl: app.manifestUrl,
-				baseUrl: app.baseUrl
-			})
-			return
-		}
-		if (app.kind === 'kernel') {
-			setActiveApp({ kind: 'kernel', id: app.id })
+		if (app.kind === 'app') {
+			setActiveApp({ kind: 'app', id: app.id })
 			wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
-			return
 		}
-		if (!wsRef.current || connectionState !== 'ready') return
-		wsRef.current.send(JSON.stringify({ type: 'app_launch', id: app.id }))
 	}
 
 	const closeApp = () => {
 		setActiveApp((prev) => {
-			if (prev?.kind === 'sandbox' && wsRef.current && connectionState === 'ready') {
-				wsRef.current.send(JSON.stringify({ type: 'app_close' }))
-			}
-			if (prev?.kind === 'kernel') {
-				wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close' }))
-			}
+			if (prev?.kind === 'app') wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close' }))
 			return null
 		})
 	}
@@ -413,17 +340,17 @@ export function useChat(): UseChatResult {
 
 	// Dev install: prompt the user for a zipped kernel-app bundle, upload it to
 	// the kernel install endpoint, then reconnect so the launcher re-lists apps.
-	const installKernelApp = async () => {
-		if (installingKernelAppRef.current) return
-		installingKernelAppRef.current = true
+	const installApp = async () => {
+		if (installingAppRef.current) return
+		installingAppRef.current = true
 		try {
-			await installKernelAppOnce()
+			await installAppOnce()
 		} finally {
-			installingKernelAppRef.current = false
+			installingAppRef.current = false
 		}
 	}
 
-	const installKernelAppOnce = async () => {
+	const installAppOnce = async () => {
 		const zip = await pickZipFile()
 		if (!zip) return
 		try {
@@ -441,11 +368,11 @@ export function useChat(): UseChatResult {
 		}
 	}
 
-	// Delete a kernel app bundle through the kernel lifecycle endpoint and drop
-	// it from the launcher state optimistically. Mirror of `installKernelApp`.
-	const uninstallKernelApp = async (id: string) => {
+	// Delete an app-system bundle through the app lifecycle endpoint and drop
+	// it from the launcher state optimistically. Mirror of `installApp`.
+	const uninstallApp = async (id: string) => {
 		const prev = installedApps
-		setInstalledApps((apps) => apps.filter((a) => !(a.kind === 'kernel' && a.id === id)))
+		setInstalledApps((apps) => apps.filter((a) => !(a.kind === 'app' && a.id === id)))
 		try {
 			const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {
 				method: 'DELETE',
@@ -458,18 +385,6 @@ export function useChat(): UseChatResult {
 		}
 	}
 
-	const onToolInvoke = (handler: ToolInvokeHandler | null) => {
-		toolInvokeHandlerRef.current = handler
-	}
-
-	const sendToolResult: ToolResultSender = (callId, result, error?: AppRpcError) => {
-		wsRef.current?.send(JSON.stringify({ type: 'app_tool_result', callId, result, error }))
-	}
-
-	const notifyIframeReload = () => {
-		wsRef.current?.send(JSON.stringify({ type: 'app_iframe_reload' }))
-	}
-
 	return {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
 		connection: { state: connectionState, reconnect },
@@ -479,10 +394,9 @@ export function useChat(): UseChatResult {
 				installedApps,
 				launch: launchApp,
 				close: closeApp,
-				installKernelApp,
-				uninstallKernelApp
-			},
-			relay: { sendRpc, onToolInvoke, sendToolResult, notifyIframeReload }
+				installApp,
+				uninstallApp
+			}
 		}
 	}
 }

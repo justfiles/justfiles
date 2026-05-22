@@ -22,7 +22,7 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import { FrierenAppHost, listApps } from './frieren.app'
+import { FrierenAppHost } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -85,9 +85,7 @@ interface DisplayApp {
 	readonly name: string
 	readonly description: string
 	readonly iconUrl?: string
-	readonly kind: 'sandbox' | 'esm' | 'kernel'
-	readonly manifestUrl?: string
-	readonly baseUrl?: string
+	readonly kind: 'builtin' | 'app'
 }
 
 type ServerMessage =
@@ -506,7 +504,7 @@ export class Frieren extends DurableObject<Env> {
 				name: m.name,
 				description: m.description ?? '',
 				iconUrl: m.icon ? `/api/kernel/${m.id}/${m.icon}` : undefined,
-				kind: 'kernel'
+				kind: 'app'
 			}))
 		} catch {
 			return []
@@ -665,14 +663,10 @@ export class Frieren extends DurableObject<Env> {
 				JSON.stringify({
 					type: 'ready',
 					participants,
-					apps: [...listApps(), ...(await this.kernelApps())]
+					apps: await this.kernelApps()
 				} satisfies ServerMessage)
 			)
 
-			// If an app is already running, send the URL so this client can
-			// boot the iframe from scratch.
-			const open = this.apps.openMessage()
-			if (open) server.send(JSON.stringify(open))
 			const kernelAppId = await this.currentKernelAppId()
 			if (kernelAppId) server.send(JSON.stringify({ type: 'kernel_app_open', id: kernelAppId }))
 

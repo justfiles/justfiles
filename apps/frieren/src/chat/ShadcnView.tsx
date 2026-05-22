@@ -3,10 +3,8 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { AppFrame } from '../AppFrame'
 import { BuiltinHost } from '../BuiltinHost'
 import { builtinLauncherEntries } from '../builtin'
-import { EsmAppFrame } from '../EsmAppFrame'
 import { KernelAppFrame } from '../KernelAppFrame'
 import { LauncherView } from '../LauncherView'
 import { AppPromptBlock } from './AppPromptBlock'
@@ -121,36 +119,20 @@ export function ShadcnView(props: ChatViewProps) {
 			<div className="flex min-w-0 flex-[1.618] flex-col bg-slate-950/60">
 				<div className="flex min-h-0 flex-[1.618] flex-col border-b-4 border-double border-sky-300/60 p-4">
 					<div className="relative flex flex-1 items-center justify-center overflow-hidden border-4 border-double border-sky-300 bg-gradient-to-b from-indigo-950 via-slate-900 to-slate-950 shadow-[6px_6px_0_rgba(0,0,0,0.45)]">
-						{apps && apps.launcher.activeApp?.kind === 'sandbox' ? (
-							<AppFrame
-								id={apps.launcher.activeApp.id}
-								ui={apps.launcher.activeApp.ui}
-								relay={apps.relay}
-								onHome={apps.launcher.close}
-							/>
-						) : apps && apps.launcher.activeApp?.kind === 'esm' ? (
-							<EsmAppFrame
-								id={apps.launcher.activeApp.id}
-								manifestUrl={apps.launcher.activeApp.manifestUrl}
-								baseUrl={apps.launcher.activeApp.baseUrl}
-								onHome={apps.launcher.close}
-							/>
-						) : apps && apps.launcher.activeApp?.kind === 'builtin' ? (
+						{apps && apps.launcher.activeApp?.kind === 'builtin' ? (
 							<BuiltinHost id={apps.launcher.activeApp.id} onHome={apps.launcher.close} />
-						) : apps && apps.launcher.activeApp?.kind === 'kernel' ? (
+						) : apps && apps.launcher.activeApp?.kind === 'app' ? (
 							<KernelAppFrame id={apps.launcher.activeApp.id} onHome={apps.launcher.close} />
 						) : apps ? (
 							<LauncherView
 								apps={[...apps.launcher.installedApps, ...builtinLauncherEntries()]}
 								onLaunch={apps.launcher.launch}
-								onInstallKernelApp={
-									apps.launcher.installKernelApp
-										? () => void apps.launcher.installKernelApp?.()
-										: undefined
+								onInstallApp={
+									apps.launcher.installApp ? () => void apps.launcher.installApp?.() : undefined
 								}
-								onUninstallKernelApp={
-									apps.launcher.uninstallKernelApp
-										? (id) => void apps.launcher.uninstallKernelApp?.(id)
+								onUninstallApp={
+									apps.launcher.uninstallApp
+										? (id) => void apps.launcher.uninstallApp?.(id)
 										: undefined
 								}
 							/>

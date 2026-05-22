@@ -1,4 +1,4 @@
-import type { InstalledApp } from '@justfiles/app'
+import type { InstalledApp } from '../chat/types'
 import type { ComponentType } from 'react'
 import { SettingsApp } from './SettingsApp'
 import settingsIconUrl from './settings-icon.svg'

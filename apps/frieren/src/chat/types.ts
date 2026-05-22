@@ -1,12 +1,22 @@
-import type { AppLauncher, AppRelay } from '@justfiles/app'
+export type ActiveApp = { kind: 'builtin'; id: string } | { kind: 'app'; id: string }
 
-// Dev-only host capability: pick a directory, copy a kernel-app bundle
-// (manifest.json + app.js + gui.js) into the per-user Volume. Stand-in for
-// the eventual drag-drop install flow. `uninstallKernelApp` removes a
-// previously-installed bundle by app id.
-export type Launcher = AppLauncher & {
-	installKernelApp?: () => Promise<void>
-	uninstallKernelApp?: (id: string) => Promise<void>
+export interface InstalledApp {
+	id: string
+	name: string
+	description: string
+	iconUrl?: string
+	kind: 'builtin' | 'app'
+}
+
+// Dev-only host capability: upload a zipped app-system bundle to the kernel
+// install endpoint. `uninstallApp` removes a previously-installed bundle by id.
+export type Launcher = {
+	activeApp: ActiveApp | null
+	installedApps: InstalledApp[]
+	launch: (app: InstalledApp) => void
+	close: () => void
+	installApp?: () => Promise<void>
+	uninstallApp?: (id: string) => Promise<void>
 }
 
 export type ConnectionState = 'connecting' | 'ready' | 'disconnected'
@@ -48,5 +58,5 @@ export interface ChatConnection {
 export interface ChatViewProps {
 	session: ChatSession
 	connection: ChatConnection
-	apps?: { launcher: Launcher; relay: AppRelay }
+	apps?: { launcher: Launcher }
 }
