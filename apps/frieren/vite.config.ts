@@ -12,12 +12,5 @@ export default defineConfig({
 			'@': path.resolve(__dirname, './src')
 		}
 	},
-	plugins: [
-		tailwindcss(),
-		react(),
-		cloudflare(),
-		// Client-only apps are referenced by package name because they
-		// have no JS module to import.
-		hostApps(['@justbuddy/app-doom'])
-	]
+	plugins: [tailwindcss(), react(), cloudflare(), hostApps([])]
 })

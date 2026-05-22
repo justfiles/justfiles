@@ -141,10 +141,9 @@ const tokenWs = async (c: Ctx) => {
 }
 app.get('/ws', tokenWs)
 app.get('/api/kernel/:appId/ws', tokenWs)
-// gui.js is fetched via dynamic `import()` from the browser, which can't set
-// an Authorization header and trips the same Clerk-cookie 401 the WS hit —
-// so it rides `?token=` too. Same handler, same path-preserving forward.
-app.get('/api/kernel/:appId/gui.js', tokenWs)
+// Kernel app GUI assets are fetched by dynamic import/runtime code, which can't
+// set an Authorization header, so the token rides the URL.
+app.get('/api/kernel/:appId/*', tokenWs)
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())

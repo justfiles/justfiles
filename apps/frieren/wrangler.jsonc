@@ -32,6 +32,12 @@
 			"binding": "LOADER"
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "FS_BLOBS",
+			"bucket_name": "frieren-fs-blobs"
+		}
+	],
 	"migrations": [
 		{
 			"tag": "v1",
@@ -60,6 +66,12 @@
 				{
 					"pattern": "staging.justbuddy.app",
 					"custom_domain": true
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "FS_BLOBS",
+					"bucket_name": "frieren-staging-fs-blobs"
 				}
 			],
 			"durable_objects": {

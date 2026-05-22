@@ -122,7 +122,7 @@ export class Frieren extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
 		const namespace = ctx.id.toString()
-		const fs = cfFsStorage(ctx.storage, namespace)
+		const fs = cfFsStorage(ctx.storage, namespace, env.FS_BLOBS)
 		this.vol = volume(fs)
 
 		this.apps = new FrierenAppHost({
@@ -153,17 +153,16 @@ export class Frieren extends DurableObject<Env> {
 				'/',
 				integrationRoutes(() => this.requireIntegrations())
 			)
-			.get('/api/kernel/:appId/gui.js', async (c) => {
+			.get('/api/kernel/:appId/*', async (c) => {
 				const appId = c.req.param('appId')
+				const path = c.req.path.split('/').slice(4).join('/')
+				if (!path || path.includes('..')) return c.notFound()
 				try {
-					const k = await this.kernel()
-					const installed = await k.app(appId)
-					const gui = installed.manifest.gui
-					if (!gui) return c.notFound()
-					const source = new TextDecoder().decode(await installed.read(gui))
-					return new Response(source, {
-						headers: { 'content-type': 'application/javascript; charset=utf-8' }
-					})
+					const installed = await (await this.kernel()).app(appId)
+					const data = await installed.read(path)
+					const body = new ArrayBuffer(data.byteLength)
+					new Uint8Array(body).set(data)
+					return new Response(body, { headers: { 'content-type': mimeFor(path) } })
 				} catch {
 					return c.notFound()
 				}
@@ -663,6 +662,18 @@ export class Frieren extends DurableObject<Env> {
 
 function capabilityError(code: string, capability: string, method: string): Error {
 	return Object.assign(new Error(code), { code, capability, method })
+}
+
+const MIME: Record<string, string> = {
+	js: 'application/javascript; charset=utf-8',
+	wasm: 'application/wasm',
+	wad: 'application/octet-stream',
+	cfg: 'text/plain; charset=utf-8'
+}
+
+function mimeFor(path: string): string {
+	const ext = path.split('.').pop()?.toLowerCase() ?? ''
+	return MIME[ext] ?? 'application/octet-stream'
 }
 
 function sessionEntries2DisplayMessages(entries: readonly SessionEntry[]): DisplayMessage[] {

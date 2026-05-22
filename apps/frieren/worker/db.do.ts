@@ -7,6 +7,23 @@ import { migrateFromEntries, sqliteStorage } from '@justfiles/core'
 import { coreMigrations } from '@justfiles/core/migrations'
 import type { Storage } from '@justfiles/fs/storage'
 
+type BlobObject = {
+	arrayBuffer(): Promise<ArrayBuffer>
+}
+
+type BlobStore = {
+	put(
+		key: string,
+		value: ArrayBuffer | ArrayBufferView | string | Blob,
+		options?: {
+			httpMetadata?: { contentType?: string }
+			customMetadata?: Record<string, string>
+		}
+	): Promise<unknown>
+	get(key: string): Promise<BlobObject | null>
+	delete?(key: string): Promise<void>
+}
+
 function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	const { sql } = storage
 	sql.exec('PRAGMA foreign_keys = ON')
@@ -35,6 +52,10 @@ export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
 	await migrateFromEntries(createDOSqliteAdapter(storage), coreMigrations)
 }
 
-export function cfFsStorage(storage: DurableObjectStorage, namespace: string): Storage {
-	return sqliteStorage(createDOSqliteAdapter(storage), { namespace })
+export function cfFsStorage(
+	storage: DurableObjectStorage,
+	namespace: string,
+	blobStore?: BlobStore
+): Storage {
+	return sqliteStorage(createDOSqliteAdapter(storage), { namespace, blobStore })
 }

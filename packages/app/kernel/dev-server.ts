@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs'
-import { dirname, extname, resolve } from 'node:path'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { dirname, extname, join, resolve } from 'node:path'
 import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import type { Connect } from 'vite'
@@ -34,9 +34,15 @@ const compile = (entry: string) =>
 	}).outputFiles[0].text
 
 const mime = (path: string) =>
-	({ '.js': 'text/javascript', '.html': 'text/html', '.json': 'application/json' })[
-		extname(path)
-	] ?? 'application/octet-stream'
+	(
+		({
+			'.js': 'text/javascript',
+			'.html': 'text/html',
+			'.json': 'application/json',
+			'.wasm': 'application/wasm',
+			'.cfg': 'text/plain'
+		}) as Record<string, string>
+	)[extname(path)] ?? 'application/octet-stream'
 
 const template = readFileSync(new URL('./dev-server.html', import.meta.url), 'utf8')
 const page = (title: string) => template.split('{{title}}').join(title)
@@ -57,6 +63,16 @@ const readJson = (req: { on: NodeJS.ReadableStream['on'] }): Promise<unknown> =>
 		req.on('error', fail)
 	})
 
+function publicAssets(dir: string): Record<string, Uint8Array> {
+	if (!existsSync(dir)) return {}
+	const out: Record<string, Uint8Array> = {}
+	for (const name of readdirSync(dir)) {
+		const path = join(dir, name)
+		if (statSync(path).isFile()) out[name] = readFileSync(path)
+	}
+	return out
+}
+
 export async function createDevServer(
 	root: string,
 	opts: DevServerOptions
@@ -68,7 +84,8 @@ export async function createDevServer(
 			id: opts.id,
 			name: opts.name,
 			app: compile(resolve(root, opts.app)),
-			gui: compile(resolve(root, opts.gui))
+			gui: compile(resolve(root, opts.gui)),
+			assets: publicAssets(resolve(root, 'public'))
 		})
 	)
 	const installed = await k.app(appId)
