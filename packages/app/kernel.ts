@@ -6,13 +6,13 @@ import type {
 	AppManifest,
 	InstalledApp,
 	RuntimeContext
-} from './app'
-import { safeBundlePath } from './app'
+} from './app.ts'
+import { safeBundlePath } from './app.ts'
 
-export type { Action, ActionMeta, AppBundle, AppManifest } from './app'
+export type { Action, ActionMeta, AppBundle, AppManifest } from './app.ts'
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
-export { safeBundlePath } from './app'
+export { appBundleFromMemory, safeBundlePath } from './app.ts'
 
 interface System {
 	fs: Volume

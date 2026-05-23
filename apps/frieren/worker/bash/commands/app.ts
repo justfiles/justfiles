@@ -1,4 +1,4 @@
-import type { ActionMeta } from '@justfiles/app/kernel'
+import type { ActionMeta } from '@justfiles/app'
 import type { Command, CommandResult } from '../registry.ts'
 
 type AppSummary = { id: string; name: string; description?: string }

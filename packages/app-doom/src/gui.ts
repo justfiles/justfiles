@@ -1,4 +1,4 @@
-import { defineGUI } from '@justfiles/app/kernel/sdk'
+import { defineGUI } from '@justfiles/app'
 import type { DoomApp } from './app'
 import { css } from './style'
 

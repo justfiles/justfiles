@@ -1,4 +1,4 @@
-import { kernelHost } from '@justfiles/app/kernel/vite'
+import { kernelHost } from '@justfiles/app/vite'
 import { defineConfig } from 'vite'
 
 export default defineConfig({

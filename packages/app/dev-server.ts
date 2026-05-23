@@ -3,8 +3,8 @@ import { dirname, extname, join, resolve } from 'node:path'
 import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import type { Connect } from 'vite'
-import { type Action, appBundleFromMemory } from './app'
-import { type GetSandbox, kernel } from './kernel'
+import { type Action, appBundleFromMemory } from './app.ts'
+import { type GetSandbox, kernel } from './kernel.ts'
 
 export interface DevServerOptions {
 	id: string
@@ -34,7 +34,7 @@ const compile = (entry: string) =>
 		bundle: true,
 		write: false,
 		format: 'esm'
-	}).outputFiles[0].text
+	}).outputFiles[0]!.text
 
 const MIME: Record<string, string> = {
 	html: 'text/html; charset=utf-8',

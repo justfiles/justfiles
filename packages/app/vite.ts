@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { buildSync } from 'esbuild'
 import type { Plugin } from 'vite'
-import type { AppManifest } from './app'
-import type { createDevServer, DevServerOptions } from './dev-server'
+import type { AppManifest } from './app.ts'
+import type { createDevServer, DevServerOptions } from './dev-server.ts'
 
 // `kernelHost` is the app package's only build wiring. It has two modes:
 //
@@ -25,7 +25,7 @@ const compile = (entry: string) =>
 		write: false,
 		format: 'esm',
 		minify: true
-	}).outputFiles[0].text
+	}).outputFiles[0]!.text
 
 export function kernelHost(opts: DevServerOptions): Plugin {
 	const root = process.cwd()
@@ -51,7 +51,7 @@ export function kernelHost(opts: DevServerOptions): Plugin {
 		},
 		configureServer(server) {
 			return async () => {
-				const mod = (await server.ssrLoadModule('@justfiles/app/kernel/dev-server')) as {
+				const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
 					createDevServer: typeof createDevServer
 				}
 				server.middlewares.use(await mod.createDevServer(server.config.root, opts))

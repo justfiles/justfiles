@@ -1,4 +1,4 @@
-import { defineApp } from '@justfiles/app/kernel/sdk'
+import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'
 
 export const app = defineApp({

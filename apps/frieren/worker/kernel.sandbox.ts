@@ -1,4 +1,4 @@
-import type { GetSandbox, Sandbox } from '@justfiles/app/kernel'
+import type { GetSandbox, Sandbox } from '@justfiles/app'
 
 // Phase 1: a `GetSandbox` backed by Cloudflare Worker Loader. The kernel's
 // `run` becomes a single RPC into an isolated dynamic worker that loads the

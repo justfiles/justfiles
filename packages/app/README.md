@@ -1,83 +1,94 @@
 # @justfiles/app
 
-Platform-agnostic contract for the app system. Defines how a third-party app inside an iframe talks to a host server through a browser shell. No transport, no persistence — only types and helpers.
+Kernel app SDK for JustFiles apps.
 
-## Three parties, four contracts
+Apps split headless logic from browser UI:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  SERVER                                                 │
-│       AppHost                                           │
-│       │  current / launch / close                       │
-│       │  dispatch(AppRpcRequest) → AppRpcResponse       │
-└────────────────────────▲────────────────────────────────┘
-                         │   transport (WebSocket, …)
-                         │   carries JSON-RPC frames
-┌────────────────────────▼────────────────────────────────┐
-│  BROWSER SHELL                                          │
-│    AppLauncher                AppRelay                  │
-│    │ activeApp                │ sendRpc                 │
-│    │ installedApps            │ onToolInvoke            │
-│    │ launch                   │ sendToolResult          │
-│    └ close                    └ notifyIframeReload      │
-│         ▲                          ▲                    │
-│         │ chat view                │ iframe chrome      │
-└────────────────────────────────────▲────────────────────┘
-                                     │   postMessage
-                                     │   carries JSON-RPC frames
-┌────────────────────────────────────▼────────────────────┐
-│  IFRAME                                                 │
-│       window.app : App                                  │
-│       │  volume, capabilities, agent, tools, lifecycle  │
-└─────────────────────────────────────────────────────────┘
+- `app.ts` runs in a sandboxed kernel and owns actions/state.
+- `gui.ts` runs in the browser, renders state, and dispatches typed actions.
+- Frieren installs built app bundles into the kernel and serves per-user assets from `/api/kernel/:appId/*`.
+
+## App logic
+
+```ts
+import { defineApp } from '@justfiles/app'
+import * as v from 'valibot'
+
+export const app = defineApp({
+	init: { count: 0 },
+	handlers: {
+		increment: {
+			description: 'Increase the counter.',
+			schema: v.object({ amount: v.number() }),
+			handler: ({ amount }, ctx) => ({ count: ctx.state.count + amount })
+		}
+	}
+})
+
+export type CounterApp = typeof app
 ```
 
-| Contract | Side | Role | Consumer |
-|---|---|---|---|
-| `App` | iframe (`window.app`) | Author-facing SDK | App code |
-| `AppRelay` | browser shell | Forwards RPC frames iframe ⇄ server; routes server-initiated tool calls | Iframe chrome (e.g. `AppFrame`) |
-| `AppLauncher` | browser shell | Holds `activeApp` + `installedApps`; `launch()` / `close()` | Chat view that shows a launcher |
-| `AppHost` | server | Source of truth: dispatch, permissions, capabilities, tools, lifecycle | Server worker; tests mock the interface |
+Action schemas use Standard Schema-compatible validators. Handler return values become the next persisted app state.
 
-Naming rule: **Host hosts. Launcher launches. Relay relays. App is the app.**
+## GUI
 
-## Single source of truth
+```ts
+import { defineGUI } from '@justfiles/app'
+import type { CounterApp } from './app'
 
-All wire shapes live in [`protocol.ts`](./protocol.ts). Adding a method is a one-line edit; downstream signatures derive from these registries.
+export const gui = defineGUI<CounterApp>({
+	mount(el, state, ctx) {
+		const button = document.createElement('button')
+		button.textContent = `count: ${state.count}`
+		button.onclick = () => void ctx.client.increment({ amount: 1 })
+		el.append(button)
 
-| Registry | Direction | Drives |
-|---|---|---|
-| `AppRpcRegistry` | iframe → server | `App` SDK methods, `AppHost.dispatch` signature, `AppRelay.sendRpc` signature |
-| `AppHostRpcRegistry` | server → iframe | `AppRelay.onToolInvoke` / `sendToolResult` parameter types |
-| `AppCapabilityMap` | broker contract | `app.capabilities.*` typed access; extensible by interface declaration merging |
-
-Stable error codes ship as `APP_RPC_ERROR`. Manifest-permission gating ships as `APP_RPC_PERMISSION`.
-
-## Subpath exports
-
-- `@justfiles/app` — interfaces, registries, manifest schema. **No transport.**
-- `@justfiles/app/sdk` — the iframe `window.app` SDK (bundled to a classic-script IIFE).
-- `@justfiles/app/vite` — `hostApps()` plugin that emits the per-app manifest registry virtual module.
-- `@justfiles/app/virtual` — type ambient for `virtual:@justfiles/apps`.
-- `@justfiles/app/format` — manifest schema standalone.
-- `@justfiles/app/kernel/capabilities`, `@justfiles/app/kernel/capabilities/{broker,email,calendar,volume}` — capability contracts and the host-side broker interface.
-
-## Surface discipline
-
-The public surface is guarded by [`surface.test.ts`](./surface.test.ts), which snapshots `Object.keys` of `index.ts` against an explicit allowlist. Update the allowlist intentionally when adding a contract — never to silence a failing test.
-
-Before exporting anything, ask:
-
-- Is this a **contract** or an **implementation**? Only contracts and platform-level data types belong here.
-- Could this **leak** how a downstream module is built? (Loose unions, internal message shapes, transport adapters, persisted-storage shapes do not belong here.)
-- Is there a **derived form**? If a type can be derived from `AppRpcRegistry` / `AppHostRpcRegistry`, derive it.
-- Is the name **role-bearing**? Avoid `client`, `bridge`, `manager`. Prefer `Host`, `Launcher`, `Relay`.
-
-## Testing
-
-```sh
-bun run typecheck
-bun test
+		return {
+			update(next) {
+				button.textContent = `count: ${next.count}`
+			},
+			unmount() {
+				el.replaceChildren()
+			}
+		}
+	}
+})
 ```
 
-Type-level drift between the registries and the contracts is covered by [`host.test.ts`](./host.test.ts) and [`client.test.ts`](./client.test.ts). Adding a method to a registry without updating the corresponding contract is caught at compile time.
+`defineGUI` injects a typed client and subscribes to state updates through the host transport.
+
+## Build
+
+```ts
+import { kernelHost } from '@justfiles/app/vite'
+import { defineConfig } from 'vite'
+
+export default defineConfig({
+	plugins: [
+		kernelHost({
+			id: 'app.example.counter',
+			name: 'Counter',
+			description: 'A tiny counter app.',
+			app: 'src/app.ts',
+			gui: 'src/gui.ts'
+		})
+	]
+})
+```
+
+Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Manifest fields include `id`, `name`, optional metadata, and bundle entry paths.
+
+## Capabilities
+
+Import capability contracts from subpaths, for example:
+
+```ts
+import { ai } from '@justfiles/app/capabilities/ai'
+```
+
+## Exports
+
+- `@justfiles/app` — author SDK plus runtime types.
+- `@justfiles/app/runtime` — kernel runtime host API.
+- `@justfiles/app/vite` — Vite build/dev plugin.
+- `@justfiles/app/capabilities/*` — capability contracts and broker helpers.

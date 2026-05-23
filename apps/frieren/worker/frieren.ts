@@ -5,7 +5,7 @@ import {
 	type AppManifest,
 	kernel,
 	safeBundlePath
-} from '@justfiles/app/kernel'
+} from '@justfiles/app'
 import { createFsApi } from '@justfiles/core'
 import { chroot, type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'

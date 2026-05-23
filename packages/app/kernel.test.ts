@@ -1,8 +1,8 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
-import { type AppBundle, appBundleFromMemory } from './app'
-import { type GetSandbox, kernel } from './kernel'
+import { type AppBundle, appBundleFromMemory } from './app.ts'
+import { type GetSandbox, kernel } from './kernel.ts'
 import source from './test-bundle/app.ts?raw'
 
 const compile = (source: string) =>

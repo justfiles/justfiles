@@ -1,5 +1,5 @@
-import { ai } from '@justfiles/app/kernel/capabilities/ai'
-import { defineApp } from '@justfiles/app/kernel/sdk'
+import { ai } from '@justfiles/app/capabilities/ai'
+import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'
 import {
 	bakeAnswers,

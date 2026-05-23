@@ -1,4 +1,4 @@
-import { type Client, defineGUI } from '@justfiles/app/kernel/sdk'
+import { type Client, defineGUI } from '@justfiles/app'
 import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type CrosswordApp, type CrosswordState, type Entry, initialState } from './app'

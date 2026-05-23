@@ -3,95 +3,60 @@
 	"type": "module",
 	"sideEffects": false,
 	"exports": {
-		".": "./kernel/sdk.ts",
-		"./kernel": "./kernel/kernel.ts",
-		"./kernel/sdk": "./kernel/sdk.ts",
-		"./kernel/dev-server": "./kernel/dev-server.ts",
-		"./kernel/vite": "./kernel/vite.ts",
-		"./capabilities": "./kernel/capabilities/index.ts",
-		"./capabilities/broker": "./kernel/capabilities/broker.ts",
-		"./capabilities/email": "./kernel/capabilities/email/index.ts",
-		"./capabilities/calendar": "./kernel/capabilities/calendar/index.ts",
-		"./capabilities/volume": "./kernel/capabilities/volume/index.ts",
-		"./capabilities/ai": "./kernel/capabilities/ai/index.ts",
-		"./kernel/capabilities": "./kernel/capabilities/index.ts",
-		"./kernel/capabilities/broker": "./kernel/capabilities/broker.ts",
-		"./kernel/capabilities/email": "./kernel/capabilities/email/index.ts",
-		"./kernel/capabilities/calendar": "./kernel/capabilities/calendar/index.ts",
-		"./kernel/capabilities/volume": "./kernel/capabilities/volume/index.ts",
-		"./kernel/capabilities/ai": "./kernel/capabilities/ai/index.ts"
+		".": "./index.ts",
+		"./runtime": "./kernel.ts",
+		"./vite": "./vite.ts",
+		"./dev-server": "./dev-server.ts",
+		"./capabilities": "./capabilities/index.ts",
+		"./capabilities/broker": "./capabilities/broker.ts",
+		"./capabilities/email": "./capabilities/email/index.ts",
+		"./capabilities/calendar": "./capabilities/calendar/index.ts",
+		"./capabilities/volume": "./capabilities/volume/index.ts",
+		"./capabilities/ai": "./capabilities/ai/index.ts"
 	},
 	"publishConfig": {
-		"main": "./dist/kernel/sdk.js",
-		"types": "./dist/kernel/sdk.d.ts",
+		"main": "./dist/index.js",
+		"types": "./dist/index.d.ts",
 		"exports": {
 			".": {
-				"types": "./dist/kernel/sdk.d.ts",
-				"default": "./dist/kernel/sdk.js"
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
 			},
-			"./kernel": {
-				"types": "./dist/kernel/kernel.d.ts",
-				"default": "./dist/kernel/kernel.js"
+			"./runtime": {
+				"types": "./dist/kernel.d.ts",
+				"default": "./dist/kernel.js"
 			},
-			"./kernel/sdk": {
-				"types": "./dist/kernel/sdk.d.ts",
-				"default": "./dist/kernel/sdk.js"
+			"./vite": {
+				"types": "./dist/vite.d.ts",
+				"default": "./dist/vite.js"
 			},
-			"./kernel/dev-server": {
-				"types": "./dist/kernel/dev-server.d.ts",
-				"default": "./dist/kernel/dev-server.js"
-			},
-			"./kernel/vite": {
-				"types": "./dist/kernel/vite.d.ts",
-				"default": "./dist/kernel/vite.js"
+			"./dev-server": {
+				"types": "./dist/dev-server.d.ts",
+				"default": "./dist/dev-server.js"
 			},
 			"./capabilities": {
-				"types": "./dist/kernel/capabilities/index.d.ts",
-				"default": "./dist/kernel/capabilities/index.js"
+				"types": "./dist/capabilities/index.d.ts",
+				"default": "./dist/capabilities/index.js"
 			},
 			"./capabilities/broker": {
-				"types": "./dist/kernel/capabilities/broker.d.ts",
-				"default": "./dist/kernel/capabilities/broker.js"
+				"types": "./dist/capabilities/broker.d.ts",
+				"default": "./dist/capabilities/broker.js"
 			},
 			"./capabilities/email": {
-				"types": "./dist/kernel/capabilities/email/index.d.ts",
-				"default": "./dist/kernel/capabilities/email/index.js"
+				"types": "./dist/capabilities/email/index.d.ts",
+				"default": "./dist/capabilities/email/index.js"
 			},
 			"./capabilities/calendar": {
-				"types": "./dist/kernel/capabilities/calendar/index.d.ts",
-				"default": "./dist/kernel/capabilities/calendar/index.js"
+				"types": "./dist/capabilities/calendar/index.d.ts",
+				"default": "./dist/capabilities/calendar/index.js"
 			},
 			"./capabilities/volume": {
-				"types": "./dist/kernel/capabilities/volume/index.d.ts",
-				"default": "./dist/kernel/capabilities/volume/index.js"
+				"types": "./dist/capabilities/volume/index.d.ts",
+				"default": "./dist/capabilities/volume/index.js"
 			},
 			"./capabilities/ai": {
-				"types": "./dist/kernel/capabilities/ai/index.d.ts",
-				"default": "./dist/kernel/capabilities/ai/index.js"
-			},
-			"./kernel/capabilities": {
-				"types": "./dist/kernel/capabilities/index.d.ts",
-				"default": "./dist/kernel/capabilities/index.js"
-			},
-			"./kernel/capabilities/broker": {
-				"types": "./dist/kernel/capabilities/broker.d.ts",
-				"default": "./dist/kernel/capabilities/broker.js"
-			},
-			"./kernel/capabilities/email": {
-				"types": "./dist/kernel/capabilities/email/index.d.ts",
-				"default": "./dist/kernel/capabilities/email/index.js"
-			},
-			"./kernel/capabilities/calendar": {
-				"types": "./dist/kernel/capabilities/calendar/index.d.ts",
-				"default": "./dist/kernel/capabilities/calendar/index.js"
-			},
-			"./kernel/capabilities/volume": {
-				"types": "./dist/kernel/capabilities/volume/index.d.ts",
-				"default": "./dist/kernel/capabilities/volume/index.js"
-			},
-			"./kernel/capabilities/ai": {
-				"types": "./dist/kernel/capabilities/ai/index.d.ts",
-				"default": "./dist/kernel/capabilities/ai/index.js"
+				"types": "./dist/capabilities/ai/index.d.ts",
+				"default": "./dist/capabilities/ai/index.js"
 			}
 		}
 	},

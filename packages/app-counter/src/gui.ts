@@ -1,4 +1,4 @@
-import { defineGUI } from '@justfiles/app/kernel/sdk'
+import { defineGUI } from '@justfiles/app'
 import type { HelloApp } from './app'
 
 export const gui = defineGUI<HelloApp>({

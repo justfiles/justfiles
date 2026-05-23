@@ -1,5 +1,5 @@
-import { defineProviderBackedCapability } from '@justfiles/app/kernel/capabilities/broker'
-import { email } from '@justfiles/app/kernel/capabilities/email'
+import { defineProviderBackedCapability } from '@justfiles/app/capabilities/broker'
+import { email } from '@justfiles/app/capabilities/email'
 import { describe, expect, test } from 'vitest'
 import type { EmailDetails, EmailSummary, JmapClient, SendInput } from './jmap.ts'
 import { createFastmailEmailProvider, fastmailEmailProvider } from './provider.ts'

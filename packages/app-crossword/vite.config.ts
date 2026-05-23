@@ -1,4 +1,4 @@
-import { kernelHost } from '@justfiles/app/kernel/vite'
+import { kernelHost } from '@justfiles/app/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
