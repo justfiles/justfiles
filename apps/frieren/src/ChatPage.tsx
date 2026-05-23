@@ -1,26 +1,12 @@
 import { UserButton } from '@clerk/clerk-react'
-import type { ReactElement } from 'react'
-import { useState } from 'react'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { ClassicView } from './chat/ClassicView'
-import { JrpgView } from './chat/JrpgView'
-import { ShadcnView } from './chat/ShadcnView'
-import type { ChatViewProps, ConnectionState } from './chat/types'
+import { BuiltinHost } from './BuiltinHost'
+import { builtinLauncherEntries } from './builtin'
+import type { ConnectionState, InstalledApp } from './chat/types'
 import { useChat } from './chat/useChat'
 import { navigate } from './clientRouter'
-
-type ViewMode = 'classic' | 'jrpg' | 'shadcn'
-
-const VIEWS: Record<
-	ViewMode,
-	{ label: string; component: (props: ChatViewProps) => ReactElement }
-> = {
-	classic: { label: 'Classic', component: ClassicView },
-	jrpg: { label: 'JRPG', component: JrpgView },
-	shadcn: { label: 'Shadcn', component: ShadcnView }
-}
+import { KernelAppFrame } from './KernelAppFrame'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -29,16 +15,12 @@ const statusDotColor: Record<ConnectionState, string> = {
 }
 
 export function ChatPage() {
-	const { session, connection, apps } = useChat()
-	const [mode, setMode] = useState<ViewMode>(() => {
-		const saved = localStorage.getItem('frieren-view-mode') as ViewMode | null
-		return saved && saved in VIEWS ? saved : 'shadcn'
-	})
-
-	const View = VIEWS[mode].component
+	const { connection, apps } = useChat()
+	const { launcher } = apps
+	const desktopApps: InstalledApp[] = [...launcher.installedApps, ...builtinLauncherEntries()]
 
 	return (
-		<div className="flex h-screen flex-col bg-background">
+		<div className="flex h-screen flex-col">
 			<Menubar>
 				<div className="flex items-center gap-1">
 					<span className="font-medium">Frieren</span>
@@ -47,43 +29,48 @@ export function ChatPage() {
 					</Button>
 				</div>
 				<div className="flex items-center gap-3">
-					<NativeSelect
-						size="sm"
-						className="w-28"
-						value={mode}
-						onChange={(event) => {
-							const next = event.target.value as ViewMode
-							setMode(next)
-							localStorage.setItem('frieren-view-mode', next)
-						}}
-						aria-label="Chat style"
-					>
-						{Object.entries(VIEWS).map(([value, view]) => (
-							<NativeSelectOption key={value} value={value}>
-								{view.label}
-							</NativeSelectOption>
-						))}
-					</NativeSelect>
-					<span className="flex items-center gap-1.5 capitalize text-muted-foreground">
-						<span
-							className="inline-block size-1.5 rounded-full"
-							style={{ background: statusDotColor[connection.state] }}
-						/>
-						{connection.state}
-					</span>
+					<span
+						className="inline-block size-1.5 rounded-full"
+						style={{ background: statusDotColor[connection.state] }}
+						title={connection.state}
+					/>
 					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 				</div>
 			</Menubar>
 
-			<View session={session} connection={connection} apps={apps} />
-
-			{connection.state === 'disconnected' ? (
-				<div className="border-t p-4">
-					<Button type="button" variant="outline" className="w-full" onClick={connection.reconnect}>
-						Reconnect
-					</Button>
-				</div>
-			) : null}
+			<div
+				className="relative flex flex-1 overflow-hidden"
+				style={{ background: 'var(--desktop-bg)' }}
+			>
+				{launcher.activeApp?.kind === 'builtin' ? (
+					<BuiltinHost id={launcher.activeApp.id} onHome={launcher.close} />
+				) : launcher.activeApp?.kind === 'app' ? (
+					<KernelAppFrame id={launcher.activeApp.id} onHome={launcher.close} />
+				) : (
+					<div className="absolute top-4 right-4 flex flex-col gap-4">
+						{desktopApps.map((app) => (
+							<button
+								key={`${app.kind}:${app.id}`}
+								type="button"
+								onClick={() => launcher.launch(app)}
+								className="group flex w-20 flex-col items-center gap-1.5 text-center"
+								title={app.description || app.name}
+							>
+								<span className="flex size-16 items-center justify-center overflow-hidden rounded-xl border border-white/20 bg-white/15 text-xl font-semibold text-white shadow-[0_4px_14px_rgba(0,0,0,0.25)] backdrop-blur-sm transition group-hover:bg-white/25">
+									{app.iconUrl ? (
+										<img src={app.iconUrl} alt="" className="size-full object-cover" />
+									) : (
+										app.name.slice(0, 1).toUpperCase()
+									)}
+								</span>
+								<span className="w-full truncate text-xs font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
+									{app.name}
+								</span>
+							</button>
+						))}
+					</div>
+				)}
+			</div>
 		</div>
 	)
 }
