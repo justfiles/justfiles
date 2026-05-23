@@ -1,5 +1,7 @@
 # App system cleanup plan: make kernel the only app system
 
+> Historical cleanup plan. Legacy app-system references below describe deleted systems and are intentional.
+
 ## Context
 
 The current repository has three app-system shapes inside `@justfiles/app`:
@@ -1257,10 +1259,10 @@ Keep ADRs if they document the kernel design. Mark old docs as historical or del
 ### Verification
 
 ```sh
-rg "window\.app|iframe|hostApps|appBuilder|AppRelay|AppHost|loadApp|createHost|virtual:@justfiles/apps" docs packages apps -g '!**/node_modules/**'
+rg "window\.app|iframe|hostApps|appBuilder|AppRelay|AppHost|loadApp|createHost|virtual:@justfiles/apps" docs packages apps -g '!**/node_modules/**' -g '!docs/app-system-kernel-cleanup-plan.md'
 ```
 
-Expected: only intentional historical notes or no matches.
+Expected: no matches outside this historical plan.
 
 ---
 

@@ -1,18 +1,10 @@
 import { DurableObject } from 'cloudflare:workers'
-import {
-	type Action,
-	type AppBundle,
-	type AppManifest,
-	kernel,
-	safeBundlePath
-} from '@justfiles/app'
 import { createFsApi } from '@justfiles/core'
 import { chroot, type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
-import { unzipSync } from 'fflate'
 import { Hono } from 'hono'
-import { type AppController, createAppCommand } from './bash/commands/app.ts'
+import { createAppCommand } from './bash/commands/app.ts'
 import { cp, mv, rm } from './bash/commands/fs.ts'
 import { createNowCommand } from './bash/commands/now.ts'
 import { createBashTool } from './bash/index.ts'
@@ -20,6 +12,7 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
+import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -29,7 +22,6 @@ import { icloudCalendarIntegration } from './integrations/icloud-calendar/index.
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { Integrations } from './integrations/registry.ts'
 import { ConnectionStore } from './integrations/storage.ts'
-import { workerSandbox } from './kernel.sandbox.ts'
 import { createAgent } from './llm.agent'
 import { type LLMText, text } from './llm.text'
 import { parseFrontmatter } from './markdown'
@@ -64,16 +56,12 @@ interface DisplayParticipants {
 	readonly agentName: string
 }
 
-interface DisplayApp {
-	readonly id: string
-	readonly name: string
-	readonly description: string
-	readonly iconUrl?: string
-	readonly kind: 'builtin' | 'app'
-}
-
 type ServerMessage =
-	| { type: 'ready'; participants?: DisplayParticipants; apps?: ReadonlyArray<DisplayApp> }
+	| {
+			type: 'ready'
+			participants?: DisplayParticipants
+			apps?: Awaited<ReturnType<FrierenApps['list']>>
+	  }
 	| { type: 'history'; messages: ReadonlyArray<DisplayMessage>; participants?: DisplayParticipants }
 	| { type: 'event'; event: AgentEvent }
 	| { type: 'error'; message: string }
@@ -83,7 +71,6 @@ type ServerMessage =
 	| { type: 'kernel_app_close' }
 
 const DEBUG_COMMAND = '/debug'
-const CURRENT_KERNEL_APP_STORAGE_KEY = 'current_kernel_app'
 
 const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
@@ -99,8 +86,7 @@ export class Frieren extends DurableObject<Env> {
 	private cfTimezone?: string
 	private integrations?: Integrations
 	private readonly coalescer = new Coalescer()
-	private kernelOnce?: Promise<ReturnType<typeof kernel>>
-	private kernelSubscribed = false
+	private apps?: FrierenApps
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -131,40 +117,26 @@ export class Frieren extends DurableObject<Env> {
 					const form = await c.req.formData()
 					const bundle = form.get('bundle')
 					if (!(bundle instanceof File)) throw new Error('bundle file is required')
-					const id = await (await this.kernel()).install(
-						bundleFromUploadedZip(new Uint8Array(await bundle.arrayBuffer()))
+					const apps = this.requireApps()
+					const id = await apps.kernel.install(
+						apps.bundleFromZip(new Uint8Array(await bundle.arrayBuffer()))
 					)
-					return c.json({ id, apps: await this.kernelApps() })
+					return c.json({ id, apps: await apps.list() })
 				} catch (error) {
 					return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
 				}
 			})
 			.delete('/api/apps/:id', async (c) => {
 				try {
-					await (await this.kernel()).uninstall(c.req.param('id'))
+					await this.requireApps().kernel.uninstall(c.req.param('id'))
 					return c.body(null, 204)
 				} catch (error) {
 					return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
 				}
 			})
-			.get('/api/kernel/:appId/*', async (c) => {
-				const appId = c.req.param('appId')
-				let path: string
-				try {
-					path = safeBundlePath(c.req.path.split('/').slice(4).join('/'))
-				} catch {
-					return c.notFound()
-				}
-				try {
-					const installed = await (await this.kernel()).app(appId)
-					const data = await installed.read(path)
-					const body = new ArrayBuffer(data.byteLength)
-					new Uint8Array(body).set(data)
-					return new Response(body, { headers: { 'content-type': mimeFor(path) } })
-				} catch {
-					return c.notFound()
-				}
-			})
+			.get('/api/kernel/:appId/*', (c) =>
+				this.requireApps().asset(c.req.param('appId'), c.req.path.split('/').slice(4).join('/'))
+			)
 			.route('/fs', createFsApi(fs))
 
 		ctx.blockConcurrencyWhile(async () => {
@@ -175,6 +147,11 @@ export class Frieren extends DurableObject<Env> {
 	private requireIntegrations(): Integrations {
 		if (!this.integrations) throw new Error('integrations not initialised')
 		return this.integrations
+	}
+
+	private requireApps(): FrierenApps {
+		if (!this.apps) throw new Error('apps not initialised')
+		return this.apps
 	}
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
@@ -196,6 +173,15 @@ export class Frieren extends DurableObject<Env> {
 		await migrateCF(this.ctx.storage)
 		this.runtime?.shutdown()
 		this.text = text({ model, apiKey })
+		this.apps = frierenApps({
+			fs: chroot(this.vol, '/kernel'),
+			loader: this.env.LOADER,
+			storage: this.ctx.storage,
+			sockets: () => this.ctx.getWebSockets(),
+			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
+			text: this.text,
+			broadcast: (msg) => this.broadcast(msg)
+		})
 		const { agent, integrations } = this.buildAgent()
 		this.integrations = integrations
 		await integrations.hydrate()
@@ -249,7 +235,7 @@ export class Frieren extends DurableObject<Env> {
 			mv,
 			rm,
 			createNowCommand({ getTimezone: this.getTimezone }),
-			createAppCommand(this.kernelAppController())
+			createAppCommand(this.requireApps().controller)
 		])
 			bashRegistry.register(command)
 		const bash = createBashTool(bashRegistry, { vol: this.vol })
@@ -275,7 +261,7 @@ export class Frieren extends DurableObject<Env> {
 		// Kernel sockets carry an {appId} attachment; chat sockets never do.
 		const attachment = ws.deserializeAttachment() as { appId?: string } | null
 		if (attachment?.appId) {
-			await this.handleKernelMessage(ws, attachment.appId, message)
+			await this.requireApps().handleMessage(ws, attachment.appId, message)
 			return
 		}
 
@@ -301,14 +287,12 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'kernel_app_open' && parsed.id) {
-			await this.ctx.storage.put(CURRENT_KERNEL_APP_STORAGE_KEY, { id: parsed.id })
-			this.broadcast({ type: 'kernel_app_open', id: parsed.id })
+			await this.requireApps().open(parsed.id)
 			return
 		}
 
 		if (parsed.type === 'kernel_app_close') {
-			await this.ctx.storage.delete(CURRENT_KERNEL_APP_STORAGE_KEY)
-			this.broadcast({ type: 'kernel_app_close' })
+			await this.requireApps().close()
 			return
 		}
 
@@ -356,177 +340,6 @@ export class Frieren extends DurableObject<Env> {
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
 	}
 
-	// ── Kernel app transport ─────────────────────────────────────────────
-	//
-	// One per-user WebSocket carries the SDK `Transport` both ways:
-	//   C→S  {"id":string,"action":{"type":string,"params":unknown}}
-	//   S→C  {"type":"state","state":unknown}                 (push)
-	//        {"type":"result","id":string,"result":unknown}   (invoke reply)
-	//        {"type":"error","id"?:string,"message":string}
-	// State is push-only (kernel.subscribe → app.update); the `result` frame
-	// only resolves the correlated `invoke` promise — same contract the dev
-	// server proves over REST+SSE, here over a single hibernatable socket.
-
-	private kernelAppController(): AppController {
-		return {
-			list: async () =>
-				(await this.kernelApps()).map(({ id, name, description }) => ({ id, name, description })),
-			launch: async (id) => {
-				const app = await this.inspectKernelApp(id)
-				await this.ctx.storage.put(CURRENT_KERNEL_APP_STORAGE_KEY, { id })
-				this.broadcast({ type: 'kernel_app_open', id })
-				return app
-			},
-			close: async () => {
-				await this.ctx.storage.delete(CURRENT_KERNEL_APP_STORAGE_KEY)
-				this.broadcast({ type: 'kernel_app_close' })
-			},
-			current: async () => {
-				const saved = await this.ctx.storage.get<{ id: string }>(CURRENT_KERNEL_APP_STORAGE_KEY)
-				return saved ? await this.inspectKernelApp(saved.id).catch(() => undefined) : undefined
-			},
-			inspect: (id) => this.inspectKernelApp(id),
-			state: async (id) => await (await this.kernel()).state(id),
-			run: async (id, action, params) => {
-				await this.ensureSubscribed()
-				return await (await this.kernel()).dispatch(id, { type: action, params, actor: 'agent' })
-			}
-		}
-	}
-
-	private async inspectKernelApp(appId: string) {
-		const k = await this.kernel()
-		const installed = await k.app(appId)
-		const [state, actions] = await Promise.all([
-			k.state(appId).catch(() => undefined),
-			k.actions(appId)
-		])
-		return {
-			id: installed.manifest.id,
-			name: installed.manifest.name,
-			description: '',
-			state: state ?? null,
-			actions
-		}
-	}
-
-	private async currentKernelAppId(): Promise<string | undefined> {
-		return (await this.ctx.storage.get<{ id: string }>(CURRENT_KERNEL_APP_STORAGE_KEY))?.id
-	}
-
-	private async kernelApps(): Promise<ReadonlyArray<DisplayApp>> {
-		try {
-			const manifests = await (await this.kernel()).list()
-			return manifests.map((m) => ({
-				id: m.id,
-				name: m.name,
-				description: m.description ?? '',
-				iconUrl: m.icon ? `/api/kernel/${m.id}/${m.icon}` : undefined,
-				kind: 'app'
-			}))
-		} catch {
-			return []
-		}
-	}
-
-	private kernel(): Promise<ReturnType<typeof kernel>> {
-		this.kernelOnce ??= (async () => {
-			if (!this.env.LOADER) throw new Error('LOADER binding unavailable')
-			return kernel({
-				fs: chroot(this.vol, '/kernel'),
-				sandbox: workerSandbox(this.env.LOADER, {
-					capabilities: (req) => this.invokeKernelCapability(req)
-				}),
-				clock: {}
-			})
-		})()
-		return this.kernelOnce
-	}
-
-	private async invokeKernelCapability(req: {
-		capability: string
-		method: string
-		input: unknown
-		appId: string
-		actor?: string
-	}): Promise<unknown> {
-		if (req.capability !== 'ai' || req.method !== 'generateText') {
-			throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
-		}
-		const input = req.input as { system?: unknown; prompt?: unknown }
-		if (!input || typeof input !== 'object' || typeof input.prompt !== 'string') {
-			throw capabilityError('CAPABILITY_INVALID_INPUT', req.capability, req.method)
-		}
-		if (!this.text) {
-			const { model, apiKey } = this.getBackendConfig()
-			this.text = text({ model, apiKey })
-		}
-		return {
-			text: await this.text.gen(typeof input.system === 'string' ? input.system : '', input.prompt)
-		}
-	}
-
-	// kernel.subscribe's handler is in-memory, so it dies with the DO on
-	// hibernation. Re-registered lazily per instance; it fans `app.update`
-	// to every live socket whose attachment appId matches the event.
-	private async ensureSubscribed(): Promise<void> {
-		if (this.kernelSubscribed) return
-		this.kernelSubscribed = true
-		const k = await this.kernel()
-		k.subscribe((event) => {
-			if (event.type !== 'app.update') return
-			const frame = JSON.stringify({ type: 'state', state: event.state })
-			for (const socket of this.ctx.getWebSockets()) {
-				const attachment = socket.deserializeAttachment() as { appId?: string } | null
-				if (attachment?.appId === event.appId) socket.send(frame)
-			}
-		})
-	}
-
-	private async kernelWebSocket(appId: string): Promise<Response> {
-		const k = await this.kernel()
-		const { 0: client, 1: server } = new WebSocketPair()
-		this.ctx.acceptWebSocket(server)
-		server.serializeAttachment({ appId })
-		await this.ensureSubscribed()
-		// Always emit a snapshot frame on connect — both as the reconciliation
-		// snapshot for a reload and as the "ready to mount" signal for a fresh
-		// GUI. State may be `null` for never-dispatched apps; the GUI passes
-		// that through to its mount() and renders whatever bootstrap it wants.
-		const snapshot = await k.state(appId).catch(() => undefined)
-		server.send(JSON.stringify({ type: 'state', state: snapshot ?? null }))
-		return new Response(null, { status: 101, webSocket: client })
-	}
-
-	private async handleKernelMessage(
-		ws: WebSocket,
-		appId: string,
-		message: string | ArrayBuffer
-	): Promise<void> {
-		if (typeof message !== 'string') return
-		let request: { id?: string; action?: Action }
-		try {
-			request = JSON.parse(message)
-		} catch {
-			ws.send(JSON.stringify({ type: 'error', message: 'invalid JSON' }))
-			return
-		}
-		await this.ensureSubscribed()
-		try {
-			const k = await this.kernel()
-			const result = await k.dispatch(appId, request.action as Action)
-			ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
-		} catch (error) {
-			ws.send(
-				JSON.stringify({
-					type: 'error',
-					id: request.id,
-					message: error instanceof Error ? error.message : String(error)
-				})
-			)
-		}
-	}
-
 	async webSocketClose(
 		ws: WebSocket,
 		code: number,
@@ -553,7 +366,7 @@ export class Frieren extends DurableObject<Env> {
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
 			const kernelRoute = new URL(request.url).pathname.match(/^\/api\/kernel\/([^/]+)\/ws$/)
-			if (kernelRoute) return this.kernelWebSocket(kernelRoute[1])
+			if (kernelRoute) return this.requireApps().acceptWebSocket(kernelRoute[1])
 
 			// Agent is long-lived — transformContext re-reads soul.md every turn,
 			// so there is no need to recreate the agent on reconnect.
@@ -580,11 +393,11 @@ export class Frieren extends DurableObject<Env> {
 				JSON.stringify({
 					type: 'ready',
 					participants,
-					apps: await this.kernelApps()
+					apps: await this.requireApps().list()
 				} satisfies ServerMessage)
 			)
 
-			const kernelAppId = await this.currentKernelAppId()
+			const kernelAppId = await this.requireApps().currentId()
 			if (kernelAppId) server.send(JSON.stringify({ type: 'kernel_app_open', id: kernelAppId }))
 
 			return new Response(null, {
@@ -607,66 +420,6 @@ export class Frieren extends DurableObject<Env> {
 			agentName: soul.agent_name || 'Frieren'
 		}
 	}
-}
-
-function bundleFromUploadedZip(zip: Uint8Array): AppBundle {
-	const rawEntries = Object.entries(unzipSync(zip))
-	const entries = rawEntries.filter(
-		([path]) => !path.endsWith('/') && !rawEntries.some(([other]) => other.startsWith(`${path}/`))
-	)
-	const prefix = entries.some(([path]) => path === 'manifest.json')
-		? ''
-		: commonTopLevelPrefix(entries.map(([path]) => path))
-	const map = new Map<string, Uint8Array>()
-	for (const [path, bytes] of entries)
-		map.set(safeBundlePath(prefix ? path.slice(prefix.length) : path), bytes)
-	return {
-		async manifest() {
-			const bytes = map.get('manifest.json')
-			if (!bytes) throw new Error('missing manifest.json')
-			return JSON.parse(new TextDecoder().decode(bytes)) as AppManifest
-		},
-		async *list() {
-			yield* map.keys()
-		},
-		async read(path) {
-			const bytes = map.get(safeBundlePath(path))
-			if (!bytes) throw new Error(`file not found: ${path}`)
-			return bytes
-		}
-	}
-}
-
-function commonTopLevelPrefix(paths: string[]): string {
-	const roots = new Set(paths.map((path) => path.split('/')[0]).filter(Boolean))
-	if (roots.size !== 1) return ''
-	const prefix = `${[...roots][0]}/`
-	return paths.includes(`${prefix}manifest.json`) ? prefix : ''
-}
-
-function capabilityError(code: string, capability: string, method: string): Error {
-	return Object.assign(new Error(code), { code, capability, method })
-}
-
-const MIME: Record<string, string> = {
-	html: 'text/html; charset=utf-8',
-	js: 'application/javascript; charset=utf-8',
-	mjs: 'application/javascript; charset=utf-8',
-	css: 'text/css; charset=utf-8',
-	json: 'application/json; charset=utf-8',
-	svg: 'image/svg+xml',
-	wasm: 'application/wasm',
-	wad: 'application/octet-stream',
-	cfg: 'text/plain; charset=utf-8',
-	png: 'image/png',
-	jpg: 'image/jpeg',
-	jpeg: 'image/jpeg',
-	webp: 'image/webp'
-}
-
-function mimeFor(path: string): string {
-	const ext = path.split('.').pop()?.toLowerCase() ?? ''
-	return MIME[ext] ?? 'application/octet-stream'
 }
 
 function sessionEntries2DisplayMessages(entries: readonly SessionEntry[]): DisplayMessage[] {

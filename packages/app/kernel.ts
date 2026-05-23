@@ -31,7 +31,7 @@ type Clock = object
 type AppId = string
 type Unsubscribe = () => void
 
-interface Kernel {
+export interface Kernel {
 	install: (app: AppBundle) => Promise<AppId> // after install, we get stable appId
 	uninstall: (appId: AppId) => Promise<void>
 	subscribe: (handler: KernelEventHandler) => Unsubscribe

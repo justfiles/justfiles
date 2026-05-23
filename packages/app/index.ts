@@ -5,6 +5,7 @@ export {
 	type AppManifest,
 	appBundleFromMemory,
 	type GetSandbox,
+	type Kernel,
 	kernel,
 	type Sandbox,
 	safeBundlePath
