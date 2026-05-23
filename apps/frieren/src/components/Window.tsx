@@ -1,0 +1,75 @@
+import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+
+export function Window({
+	title,
+	onClose,
+	children
+}: {
+	title: string
+	onClose: () => void
+	children: ReactNode
+}) {
+	const [pos, setPos] = useState({ x: 80, y: 40 })
+	const dragRef = useRef<{ dx: number; dy: number } | null>(null)
+
+	useEffect(() => {
+		const handler = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') {
+				event.preventDefault()
+				onClose()
+			}
+		}
+		window.addEventListener('keydown', handler, { capture: true })
+		return () => window.removeEventListener('keydown', handler, { capture: true })
+	}, [onClose])
+
+	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+		event.currentTarget.setPointerCapture(event.pointerId)
+		dragRef.current = { dx: event.clientX - pos.x, dy: event.clientY - pos.y }
+	}
+	const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+		if (!dragRef.current) return
+		setPos({ x: event.clientX - dragRef.current.dx, y: event.clientY - dragRef.current.dy })
+	}
+	const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
+		dragRef.current = null
+		event.currentTarget.releasePointerCapture(event.pointerId)
+	}
+
+	return (
+		<div
+			className="absolute flex flex-col overflow-hidden rounded-md shadow-[0_20px_50px_rgba(0,0,0,0.35)]"
+			style={{
+				left: pos.x,
+				top: pos.y,
+				width: 720,
+				height: 520,
+				background: '#ffffff',
+				border: '1px solid var(--rule)',
+				color: 'var(--text)',
+				fontFamily: 'var(--font-ui)',
+				fontSize: 'var(--text-ui)'
+			}}
+		>
+			<div
+				onPointerDown={onPointerDown}
+				onPointerMove={onPointerMove}
+				onPointerUp={onPointerUp}
+				className="flex h-7 flex-none cursor-default select-none items-center gap-2 px-2"
+				style={{ background: 'var(--surface)', borderBottom: '1px solid var(--rule)' }}
+			>
+				<button
+					type="button"
+					aria-label="Close"
+					onPointerDown={(event) => event.stopPropagation()}
+					onClick={onClose}
+					className="size-3 rounded-full"
+					style={{ background: '#ff5f57', border: '1px solid rgba(0,0,0,0.18)' }}
+				/>
+				<span className="flex-1 text-center">{title}</span>
+				<span className="w-3" />
+			</div>
+			<div className="flex-1 overflow-hidden">{children}</div>
+		</div>
+	)
+}
