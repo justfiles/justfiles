@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { Action, ActionExample, ActionMeta, App, Context, RuntimeContext } from './app'
+import type { Action, ActionExample, ActionMeta, App, Context, RuntimeContext } from './app.ts'
 
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
@@ -48,6 +48,7 @@ export function defineApp<
 	const actions = {} as Record<string, ActionMeta>
 	for (const type in handlers) {
 		const def = handlers[type]
+		if (!def) continue
 		schemas[type] = def.schema
 		actions[type] = {
 			description: def.description,
@@ -58,7 +59,7 @@ export function defineApp<
 	return {
 		schemas: schemas as Schemas,
 		actions: actions as Record<keyof Schemas & string, ActionMeta>,
-		async dispatch(action, ctx: RuntimeContext<State>) {
+		async dispatch(action: Action, ctx: RuntimeContext<State>) {
 			const def = handlers[action.type]
 			if (!def) throw new Error(`unknown action: ${action.type}`)
 			// Framework-owned validation: one implementation, compiled into
@@ -175,7 +176,7 @@ export interface Transport {
 // `typeof app` -> { [action]: (params) => Promise<State> }. Inputs inferred
 // from the schemas; output is uniformly State (the reducer model).
 export type Client<A> =
-	A extends App<infer State, infer Schemas, infer _Caps>
+	A extends App<infer State, infer Schemas extends Record<string, StandardSchemaV1>, infer _Caps>
 		? { [K in keyof Schemas & string]: (params: Infer<Schemas[K]>) => Promise<State> }
 		: never
 

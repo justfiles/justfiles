@@ -3,17 +3,11 @@
 	"type": "module",
 	"sideEffects": false,
 	"exports": {
-		".": "./index.ts",
-		"./sdk": "./sdk.ts",
+		".": "./kernel/sdk.ts",
 		"./kernel": "./kernel/kernel.ts",
 		"./kernel/sdk": "./kernel/sdk.ts",
 		"./kernel/dev-server": "./kernel/dev-server.ts",
 		"./kernel/vite": "./kernel/vite.ts",
-		"./vite": "./vite-plugin.ts",
-		"./format": "./format.ts",
-		"./virtual": {
-			"types": "./virtual.d.ts"
-		},
 		"./capabilities": "./kernel/capabilities/index.ts",
 		"./capabilities/broker": "./kernel/capabilities/broker.ts",
 		"./capabilities/email": "./kernel/capabilities/email/index.ts",
@@ -28,16 +22,12 @@
 		"./kernel/capabilities/ai": "./kernel/capabilities/ai/index.ts"
 	},
 	"publishConfig": {
-		"main": "./dist/index.js",
-		"types": "./dist/index.d.ts",
+		"main": "./dist/kernel/sdk.js",
+		"types": "./dist/kernel/sdk.d.ts",
 		"exports": {
 			".": {
-				"types": "./dist/index.d.ts",
-				"default": "./dist/index.js"
-			},
-			"./sdk": {
-				"types": "./dist/sdk.d.ts",
-				"default": "./dist/sdk.js"
+				"types": "./dist/kernel/sdk.d.ts",
+				"default": "./dist/kernel/sdk.js"
 			},
 			"./kernel": {
 				"types": "./dist/kernel/kernel.d.ts",
@@ -54,17 +44,6 @@
 			"./kernel/vite": {
 				"types": "./dist/kernel/vite.d.ts",
 				"default": "./dist/kernel/vite.js"
-			},
-			"./vite": {
-				"types": "./dist/vite-plugin.d.ts",
-				"default": "./dist/vite-plugin.js"
-			},
-			"./format": {
-				"types": "./dist/format.d.ts",
-				"default": "./dist/format.js"
-			},
-			"./virtual": {
-				"types": "./virtual.d.ts"
 			},
 			"./capabilities": {
 				"types": "./dist/kernel/capabilities/index.d.ts",
@@ -117,15 +96,13 @@
 		}
 	},
 	"files": [
-		"dist",
-		"virtual.d.ts"
+		"dist"
 	],
 	"scripts": {
-		"build": "tsc && bun build sdk.ts --target=browser --format=iife --outfile=dist/sdk.js",
+		"build": "tsc",
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {
-		"typebox": "^1.1.34",
 		"vite": "^6 || ^7 || ^8"
 	},
 	"peerDependenciesMeta": {
@@ -137,7 +114,6 @@
 		"@types/bun": "latest",
 		"@types/node": "^25.7.0",
 		"esbuild": "^0.27.0",
-		"typebox": "^1.1.34",
 		"typescript": "^6.0.3",
 		"valibot": "^1.1.0",
 		"vite": "^8.0.0-beta.13"
