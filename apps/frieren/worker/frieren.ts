@@ -1,6 +1,4 @@
 import { DurableObject } from 'cloudflare:workers'
-import type { AppRpcRequest, AppRpcResponse } from '@justfiles/app'
-import type { CapabilityBridge } from '@justfiles/app/capabilities'
 import {
 	type Action,
 	type AppBundle,
@@ -22,7 +20,6 @@ import { CommandRegistry } from './bash/registry.ts'
 import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
-import { FrierenAppHost } from './frieren.app'
 import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -45,19 +42,10 @@ interface ClientMessage {
 	type:
 		| 'prompt'
 		| 'abort'
-		| 'app_launch'
-		| 'app_close'
-		| 'app_rpc'
-		| 'app_tool_result'
-		| 'app_iframe_reload'
 		| 'kernel_app_open'
 		| 'kernel_app_close'
 	text?: string
 	id?: string
-	frame?: AppRpcRequest
-	callId?: string
-	result?: unknown
-	error?: { code: number; message: string }
 }
 
 interface DisplayToolCall {
@@ -91,15 +79,10 @@ interface DisplayApp {
 type ServerMessage =
 	| { type: 'ready'; participants?: DisplayParticipants; apps?: ReadonlyArray<DisplayApp> }
 	| { type: 'history'; messages: ReadonlyArray<DisplayMessage>; participants?: DisplayParticipants }
-	| { type: 'app_prompt'; text: string }
 	| { type: 'event'; event: AgentEvent }
 	| { type: 'error'; message: string }
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
-	| { type: 'app_open'; id: string; ui: { url: string } }
-	| { type: 'app_close' }
-	| { type: 'app_rpc'; frame: AppRpcResponse }
-	| { type: 'app_tool_invoke'; callId: string; name: string; input: unknown }
 	| { type: 'kernel_app_open'; id: string }
 	| { type: 'kernel_app_close' }
 
@@ -118,7 +101,6 @@ export class Frieren extends DurableObject<Env> {
 	private runtime?: Runtime
 	private text?: LLMText
 	private cfTimezone?: string
-	private apps: FrierenAppHost
 	private integrations?: Integrations
 	private readonly coalescer = new Coalescer()
 	private kernelOnce?: Promise<ReturnType<typeof kernel>>
@@ -130,18 +112,9 @@ export class Frieren extends DurableObject<Env> {
 		const fs = cfFsStorage(ctx.storage, namespace, env.FS_BLOBS)
 		this.vol = volume(fs)
 
-		this.apps = new FrierenAppHost({
-			storage: ctx.storage,
-			volume: this.vol,
-			websockets: () => ctx.getWebSockets(),
-			runtime: () => this.runtime,
-			capabilityBridge: this.capabilityBridge(),
-			sendAgentPrompt: (text) => this.promptAgentBroadcast(text, { throwOnError: true })
-		})
 
 		this.app = new Hono()
 			.post('/api/nuke', async (c) => {
-				await this.apps.clear()
 				await ctx.storage.deleteAll()
 				await ctx.blockConcurrencyWhile(() => this.reset())
 				return c.body(null, 204)
@@ -238,7 +211,6 @@ export class Frieren extends DurableObject<Env> {
 			compaction: DEFAULT_COMPACTION_SETTINGS,
 			getTimezone: this.getTimezone
 		})
-		await this.apps.rebind()
 	}
 
 	private getBackendConfig() {
@@ -313,7 +285,6 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
-		await this.apps.hydrate()
 		if (typeof message !== 'string') return
 
 		let parsed: ClientMessage
@@ -329,7 +300,6 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (await this.apps.handleMessage(ws, parsed)) return
 
 		if (parsed.type === 'abort') {
 			this.runtime?.shutdown()
@@ -361,8 +331,6 @@ export class Frieren extends DurableObject<Env> {
 				return
 			}
 
-			if (await this.apps.handlePromptCommand(trimmed)) return
-
 			const unsubscribe = this.runtime?.subscribe((event, _signal) => {
 				ws.send(
 					JSON.stringify({
@@ -389,53 +357,9 @@ export class Frieren extends DurableObject<Env> {
 		}
 	}
 
-	// ── App RPC support ──────────────────────────────────────────────
-
-	// Capability broker bridge handed to the RPC dispatcher. Until the
-	// broker integration lands (#59) every capability call is denied with a
-	// stable shape so apps fail loudly instead of silently.
-	private capabilityBridge(): CapabilityBridge {
-		return {
-			async invoke(req) {
-				throw {
-					code: 'CAPABILITY_FAILED',
-					message: 'no broker configured',
-					capability: req.capability,
-					method: req.method
-				}
-			}
-		}
-	}
-
 	private broadcast(message: ServerMessage): void {
 		const payload = JSON.stringify(message)
 		for (const client of this.ctx.getWebSockets()) client.send(payload)
-	}
-
-	private async promptAgentBroadcast(
-		prompt: string,
-		options: { throwOnError?: boolean } = {}
-	): Promise<string> {
-		this.broadcast({ type: 'app_prompt', text: prompt })
-		const unsubscribe = this.runtime?.subscribe((event, _signal) => {
-			this.broadcast({ type: 'event', event })
-		})
-		try {
-			let answer = ''
-			await this.coalescer.during(async () => {
-				answer = (await this.runtime?.prompt(prompt, 'app')) ?? ''
-			})
-			return answer
-		} catch (error) {
-			this.broadcast({
-				type: 'error',
-				message: error instanceof Error ? error.message : String(error)
-			})
-			if (options.throwOnError) throw error
-			return ''
-		} finally {
-			unsubscribe?.()
-		}
 	}
 
 	// ── Kernel app transport ─────────────────────────────────────────────
@@ -644,7 +568,6 @@ export class Frieren extends DurableObject<Env> {
 
 			this.ctx.acceptWebSocket(server)
 			await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
-			await this.apps.hydrate()
 
 			const participants = await this.loadParticipants()
 			const history = sessionEntries2DisplayMessages((await this.runtime?.history()) ?? [])

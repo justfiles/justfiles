@@ -237,19 +237,6 @@ export function useChat(): UseChatResult {
 					return
 				}
 
-				if (data.type === 'app_prompt') {
-					setMessages((prev) => [
-						...prev,
-						{
-							id: crypto.randomUUID(),
-							role: 'user',
-							source: 'app',
-							content: String(data.text ?? '')
-						}
-					])
-					return
-				}
-
 				if (data.type === 'error') {
 					console.error('Server error:', data.message)
 					setIsStreaming(false)
