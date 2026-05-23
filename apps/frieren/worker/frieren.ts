@@ -39,11 +39,7 @@ import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type:
-		| 'prompt'
-		| 'abort'
-		| 'kernel_app_open'
-		| 'kernel_app_close'
+	type: 'prompt' | 'abort' | 'kernel_app_open' | 'kernel_app_close'
 	text?: string
 	id?: string
 }
@@ -111,7 +107,6 @@ export class Frieren extends DurableObject<Env> {
 		const namespace = ctx.id.toString()
 		const fs = cfFsStorage(ctx.storage, namespace, env.FS_BLOBS)
 		this.vol = volume(fs)
-
 
 		this.app = new Hono()
 			.post('/api/nuke', async (c) => {
@@ -299,7 +294,6 @@ export class Frieren extends DurableObject<Env> {
 			)
 			return
 		}
-
 
 		if (parsed.type === 'abort') {
 			this.runtime?.shutdown()

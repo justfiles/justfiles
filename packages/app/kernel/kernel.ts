@@ -1,5 +1,4 @@
 import { chroot, type Volume } from '@justfiles/fs'
-import { safeBundlePath } from './app'
 import type {
 	Action,
 	ActionMeta,
@@ -8,11 +7,12 @@ import type {
 	InstalledApp,
 	RuntimeContext
 } from './app'
+import { safeBundlePath } from './app'
 
+export type { Action, ActionMeta, AppBundle, AppManifest } from './app'
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
 export { safeBundlePath } from './app'
-export type { Action, ActionMeta, AppBundle, AppManifest } from './app'
 
 interface System {
 	fs: Volume

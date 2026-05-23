@@ -1,12 +1,8 @@
 # @justbuddy/create-app
 
-Minimal create package for a vanilla TypeScript `@justfiles/app`.
+Minimal create package for a kernel `@justfiles/app`.
 
-Vite's `create-vite --template` only accepts templates bundled in `create-vite`.
-Custom templates should use a create package, a GitHub template, or a local Bun
-template instead.
-
-After publishing this package:
+It generates a headless `src/app.ts`, browser `src/gui.ts`, and `vite.config.ts` using `kernelHost()`.
 
 ```sh
 npm create @justbuddy/app my-app

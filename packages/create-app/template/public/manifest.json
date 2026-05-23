@@ -1,8 +1,0 @@
-{
-	"format": 1,
-	"name": "Hello",
-	"description": "Minimal client-only app scaffold.",
-	"version": "0.1.0",
-	"entry": "index.html",
-	"permissions": ["volume"]
-}

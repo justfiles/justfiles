@@ -1,6 +1,14 @@
-import { appBuilder } from '@justfiles/app/vite'
+import { kernelHost } from '@justfiles/app/kernel/vite'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-	plugins: [appBuilder()]
+	plugins: [
+		kernelHost({
+			id: 'app.example.counter',
+			name: 'Counter',
+			description: 'A tiny kernel app.',
+			app: 'src/app.ts',
+			gui: 'src/gui.ts'
+		})
+	]
 })

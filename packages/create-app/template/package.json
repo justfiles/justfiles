@@ -10,7 +10,8 @@
 		"preview": "vite preview"
 	},
 	"dependencies": {
-		"@justfiles/app": "workspace:*"
+		"@justfiles/app": "workspace:*",
+		"valibot": "^1.1.0"
 	},
 	"devDependencies": {
 		"typescript": "^6.0.3",
