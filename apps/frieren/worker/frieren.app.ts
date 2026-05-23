@@ -20,7 +20,9 @@ interface DisplayApp {
 	readonly kind: 'builtin' | 'app'
 }
 
-type AppBroadcast = { type: 'kernel_app_open'; id: string } | { type: 'kernel_app_close' }
+type AppBroadcast =
+	| { type: 'kernel_app_open'; id: string }
+	| { type: 'kernel_app_close'; id: string }
 
 interface FrierenAppsDeps {
 	fs: Volume
@@ -37,15 +39,15 @@ export interface FrierenApps {
 	readonly controller: AppController
 	bundleFromZip(zip: Uint8Array): AppBundle
 	list(): Promise<readonly DisplayApp[]>
-	currentId(): Promise<string | undefined>
+	openIds(): Promise<string[]>
 	open(id: string): Promise<void>
-	close(): Promise<void>
+	close(id?: string): Promise<void>
 	asset(appId: string, path: string): Promise<Response>
 	acceptWebSocket(appId: string): Promise<Response>
 	handleMessage(ws: WebSocket, appId: string, message: string | ArrayBuffer): Promise<void>
 }
 
-const CURRENT_KERNEL_APP_STORAGE_KEY = 'current_kernel_app'
+const OPEN_KERNEL_APPS_STORAGE_KEY = 'open_kernel_apps'
 
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
@@ -125,18 +127,24 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 	}
 
-	async function currentId(): Promise<string | undefined> {
-		return (await deps.storage.get<{ id: string }>(CURRENT_KERNEL_APP_STORAGE_KEY))?.id
+	async function openIds(): Promise<string[]> {
+		return (await deps.storage.get<string[]>(OPEN_KERNEL_APPS_STORAGE_KEY)) ?? []
 	}
 
 	async function open(id: string): Promise<void> {
-		await deps.storage.put(CURRENT_KERNEL_APP_STORAGE_KEY, { id })
+		const ids = await openIds()
+		if (!ids.includes(id)) await deps.storage.put(OPEN_KERNEL_APPS_STORAGE_KEY, [...ids, id])
 		deps.broadcast({ type: 'kernel_app_open', id })
 	}
 
-	async function close(): Promise<void> {
-		await deps.storage.delete(CURRENT_KERNEL_APP_STORAGE_KEY)
-		deps.broadcast({ type: 'kernel_app_close' })
+	async function close(id?: string): Promise<void> {
+		const ids = await openIds()
+		const target = id ?? ids[ids.length - 1]
+		if (!target) return
+		const next = ids.filter((x) => x !== target)
+		if (next.length === 0) await deps.storage.delete(OPEN_KERNEL_APPS_STORAGE_KEY)
+		else await deps.storage.put(OPEN_KERNEL_APPS_STORAGE_KEY, next)
+		deps.broadcast({ type: 'kernel_app_close', id: target })
 	}
 
 	async function asset(appId: string, path: string): Promise<Response> {
@@ -219,10 +227,13 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			await open(id)
 			return app
 		},
-		close,
+		close: async (id?: string) => {
+			await close(id)
+		},
 		current: async () => {
-			const id = await currentId()
-			return id ? await inspect(id).catch(() => undefined) : undefined
+			const ids = await openIds()
+			const lastId = ids[ids.length - 1]
+			return lastId ? await inspect(lastId).catch(() => undefined) : undefined
 		},
 		inspect,
 		state: async (id) => await getKernel().state(id),
@@ -239,7 +250,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		controller,
 		bundleFromZip,
 		list,
-		currentId,
+		openIds,
 		open,
 		close,
 		asset,

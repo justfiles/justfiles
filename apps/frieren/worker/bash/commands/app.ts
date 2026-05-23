@@ -7,7 +7,7 @@ type AppInspection = AppSummary & { state: unknown; actions: Record<string, Acti
 export interface AppController {
 	list(): Promise<AppSummary[]>
 	launch(id: string): Promise<AppInspection>
-	close(): Promise<void>
+	close(id?: string): Promise<void>
 	current(): Promise<AppInspection | undefined>
 	inspect(id: string): Promise<AppInspection>
 	state(id: string): Promise<unknown>
@@ -33,7 +33,8 @@ async function run(controller: AppController, argv: string[]): Promise<CommandRe
 			return ok({ ok: true, current: await controller.launch(id) })
 		}
 		if (cmd === 'close') {
-			await controller.close()
+			const { id } = parseTarget(rest)
+			await controller.close(id)
 			return ok({ ok: true })
 		}
 		if (cmd === 'current') {

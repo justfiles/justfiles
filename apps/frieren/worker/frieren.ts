@@ -68,7 +68,7 @@ type ServerMessage =
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
 	| { type: 'kernel_app_open'; id: string }
-	| { type: 'kernel_app_close' }
+	| { type: 'kernel_app_close'; id: string }
 
 const DEBUG_COMMAND = '/debug'
 
@@ -292,7 +292,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'kernel_app_close') {
-			await this.requireApps().close()
+			await this.requireApps().close(parsed.id)
 			return
 		}
 
@@ -397,8 +397,9 @@ export class Frieren extends DurableObject<Env> {
 				} satisfies ServerMessage)
 			)
 
-			const kernelAppId = await this.requireApps().currentId()
-			if (kernelAppId) server.send(JSON.stringify({ type: 'kernel_app_open', id: kernelAppId }))
+			for (const openId of await this.requireApps().openIds()) {
+				server.send(JSON.stringify({ type: 'kernel_app_open', id: openId } satisfies ServerMessage))
+			}
 
 			return new Response(null, {
 				status: 101,

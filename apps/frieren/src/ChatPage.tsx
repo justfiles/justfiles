@@ -19,10 +19,6 @@ export function ChatPage() {
 	const { connection, apps } = useChat()
 	const { launcher } = apps
 	const desktopApps: InstalledApp[] = [...launcher.installedApps, ...builtinLauncherEntries()]
-	const activeApp = launcher.activeApp
-	const activeAppInfo = activeApp
-		? desktopApps.find((app) => app.kind === activeApp.kind && app.id === activeApp.id)
-		: null
 
 	return (
 		<div className="flex h-screen flex-col">
@@ -101,15 +97,28 @@ export function ChatPage() {
 						)
 					})}
 				</div>
-				{activeApp ? (
-					<Window title={activeAppInfo?.name ?? ''} onClose={launcher.close}>
-						{activeApp.kind === 'builtin' ? (
-							<BuiltinHost id={activeApp.id} />
-						) : (
-							<KernelAppFrame id={activeApp.id} />
-						)}
-					</Window>
-				) : null}
+				{launcher.openApps.map((app, index) => {
+					const key = `${app.kind}:${app.id}`
+					const info = desktopApps.find((d) => d.kind === app.kind && d.id === app.id)
+					const focused = launcher.focusedId === key
+					return (
+						<Window
+							key={key}
+							title={info?.name ?? ''}
+							onClose={launcher.close}
+							onFocus={() => launcher.focus(app)}
+							focused={focused}
+							zIndex={index + 1}
+							initialOffset={index * 24}
+						>
+							{app.kind === 'builtin' ? (
+								<BuiltinHost id={app.id} />
+							) : (
+								<KernelAppFrame id={app.id} />
+							)}
+						</Window>
+					)
+				})}
 			</div>
 		</div>
 	)
