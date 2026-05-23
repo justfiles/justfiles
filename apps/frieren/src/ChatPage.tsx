@@ -1,12 +1,15 @@
-import { UserButton } from '@clerk/clerk-react'
+import { UserButton, useAuth } from '@clerk/clerk-react'
+import { useCallback, useRef, useState } from 'react'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
-import { Window } from '@/components/Window'
+import { Window, type WindowPersist } from '@/components/Window'
 import { BuiltinHost } from './BuiltinHost'
 import { builtinLauncherEntries } from './builtin'
 import type { ConnectionState, InstalledApp } from './chat/types'
 import { ChatProvider, useChat } from './chat/useChat'
+import { createFsVolume } from './fs'
 import { KernelAppFrame } from './KernelAppFrame'
+import { loadWindowRect, saveWindowRect } from './windowState'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -14,11 +17,43 @@ const statusDotColor: Record<ConnectionState, string> = {
 	disconnected: '#ef4444'
 }
 
+function useWindowPersistence(): (appId: string) => WindowPersist {
+	const { getToken } = useAuth()
+	const getTokenRef = useRef(getToken)
+	getTokenRef.current = getToken
+	const [volumePromise] = useState(() => createFsVolume(() => getTokenRef.current()))
+	const cacheRef = useRef<Map<string, WindowPersist>>(new Map())
+
+	return useCallback(
+		(appId: string) => {
+			let entry = cacheRef.current.get(appId)
+			if (!entry) {
+				entry = {
+					load: async () => {
+						try {
+							return await loadWindowRect(await volumePromise, appId)
+						} catch {
+							return null
+						}
+					},
+					save: (rect) => {
+						void volumePromise.then((vol) => saveWindowRect(vol, appId, rect)).catch(() => {})
+					}
+				}
+				cacheRef.current.set(appId, entry)
+			}
+			return entry
+		},
+		[volumePromise]
+	)
+}
+
 export function ChatPage() {
 	const chat = useChat()
 	const { connection, apps } = chat
 	const { launcher } = apps
 	const desktopApps: InstalledApp[] = [...launcher.installedApps, ...builtinLauncherEntries()]
+	const persistFor = useWindowPersistence()
 
 	return (
 		<ChatProvider value={chat}>
@@ -109,6 +144,7 @@ export function ChatPage() {
 								focused={focused}
 								zIndex={index + 1}
 								initialOffset={index * 24}
+								persist={persistFor(app.id)}
 							>
 								{app.kind === 'builtin' ? (
 									<BuiltinHost id={app.id} />
