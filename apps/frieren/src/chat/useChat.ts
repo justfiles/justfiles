@@ -1,5 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type {
 	ActiveApp,
 	ChatConnection,
@@ -55,6 +55,16 @@ export interface UseChatResult {
 	apps: {
 		launcher: Launcher
 	}
+}
+
+const ChatContext = createContext<UseChatResult | null>(null)
+
+export const ChatProvider = ChatContext.Provider
+
+export function useChatSession(): UseChatResult {
+	const value = useContext(ChatContext)
+	if (!value) throw new Error('useChatSession must be used inside <ChatProvider>')
+	return value
 }
 
 export function useChat(): UseChatResult {

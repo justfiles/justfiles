@@ -2,6 +2,8 @@ import type { ComponentType } from 'react'
 import type { InstalledApp } from '../chat/types'
 import { FinderApp } from './FinderApp'
 import finderIconUrl from './finder-icon.svg'
+import { MessagesApp } from './MessagesApp'
+import messagesIconUrl from './messages-icon.svg'
 import { SettingsApp } from './SettingsApp'
 import settingsIconUrl from './settings-icon.svg'
 
@@ -20,6 +22,13 @@ export const BUILTIN_APPS: BuiltinApp[] = [
 		description: 'Browse and preview files',
 		iconUrl: finderIconUrl,
 		component: FinderApp
+	},
+	{
+		id: 'messages',
+		name: 'Messages',
+		description: 'Chat with the agent',
+		iconUrl: messagesIconUrl,
+		component: MessagesApp
 	},
 	{
 		id: 'settings',

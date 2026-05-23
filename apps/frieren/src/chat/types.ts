@@ -60,9 +60,3 @@ export interface ChatConnection {
 	state: ConnectionState
 	reconnect: () => void
 }
-
-export interface ChatViewProps {
-	session: ChatSession
-	connection: ChatConnection
-	apps?: { launcher: Launcher }
-}
