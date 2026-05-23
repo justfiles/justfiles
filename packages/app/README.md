@@ -60,7 +60,7 @@ Stable error codes ship as `APP_RPC_ERROR`. Manifest-permission gating ships as 
 - `@justfiles/app/vite` — `hostApps()` plugin that emits the per-app manifest registry virtual module.
 - `@justfiles/app/virtual` — type ambient for `virtual:@justfiles/apps`.
 - `@justfiles/app/format` — manifest schema standalone.
-- `@justfiles/app/capabilities`, `@justfiles/app/capabilities/{broker,email,calendar,volume}` — capability contracts and the host-side broker interface.
+- `@justfiles/app/kernel/capabilities`, `@justfiles/app/kernel/capabilities/{broker,email,calendar,volume}` — capability contracts and the host-side broker interface.
 
 ## Surface discipline
 

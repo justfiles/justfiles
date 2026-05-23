@@ -1,6 +1,10 @@
 import { expect, test } from 'vitest'
-import type { CalendarCapability } from './capabilities/calendar/contract.js'
-import type { EmailCapability, EmailDetail, EmailSummary } from './capabilities/email/contract.js'
+import type { CalendarCapability } from './kernel/capabilities/calendar/contract.js'
+import type {
+	EmailCapability,
+	EmailDetail,
+	EmailSummary
+} from './kernel/capabilities/email/contract.js'
 import { APP_CONTRACT_VERSION, type Capabilities, NotFoundError } from './contract.js'
 import { type CreateHostOptions, createHost, type VolumeBackend } from './host-factory.js'
 

@@ -1,5 +1,5 @@
 import * as v from 'valibot'
-import { defineCapability } from '../../capabilities/core.ts'
+import { defineCapability } from '../capabilities/core.ts'
 import { defineApp } from '../sdk.ts'
 
 interface TestCapability {

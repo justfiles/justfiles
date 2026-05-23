@@ -1,4 +1,4 @@
-import type { EmailCapability } from '@justfiles/app/capabilities/email'
+import type { EmailCapability } from '@justfiles/app/kernel/capabilities/email'
 import {
 	createJmapClient,
 	type EmailAddress,

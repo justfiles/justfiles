@@ -1,5 +1,5 @@
 // Public barrel for capability primitives. Per-capability contracts live in
-// `@justfiles/app/capabilities/<id>` subpaths so apps only import what they
+// `@justfiles/app/kernel/capabilities/<id>` subpaths so apps only import what they
 // declare.
 
 export {

@@ -5,8 +5,8 @@
 // coexists with the iframe-era exports until the legacy path is deleted.
 
 import Type from 'typebox'
-import type { CalendarCapability } from './capabilities/calendar/contract.ts'
-import type { EmailCapability } from './capabilities/email/contract.ts'
+import type { CalendarCapability } from './kernel/capabilities/calendar/contract.ts'
+import type { EmailCapability } from './kernel/capabilities/email/contract.ts'
 
 export const APP_CONTRACT_VERSION = 1
 

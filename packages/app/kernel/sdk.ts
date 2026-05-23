@@ -9,7 +9,7 @@ interface AppSpec<
 	Schemas extends Record<string, StandardSchemaV1>,
 	Caps extends Record<
 		string,
-		ReturnType<import('../capabilities/core.ts').CapabilityFactory<string, unknown>>
+		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
 	>
 > {
 	init: State
@@ -32,7 +32,7 @@ export function defineApp<
 	Schemas extends Record<string, StandardSchemaV1>,
 	Caps extends Record<
 		string,
-		ReturnType<import('../capabilities/core.ts').CapabilityFactory<string, unknown>>
+		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
 	> = Record<string, never>
 >(spec: AppSpec<State, Schemas, Caps>): App<State, Schemas, Caps> {
 	const handlers = spec.handlers as unknown as Record<
@@ -80,7 +80,7 @@ export function defineApp<
 function createCapabilities(
 	requests: Record<
 		string,
-		ReturnType<import('../capabilities/core.ts').CapabilityFactory<string, unknown>>
+		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
 	>,
 	ctx: RuntimeContext,
 	action: Action

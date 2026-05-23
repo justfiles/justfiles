@@ -1,6 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { CapabilityFactory } from '../capabilities/core.ts'
+import type { CapabilityFactory } from './capabilities/core.ts'
 
 export type Action<Type extends string = string, Params = unknown> = {
 	type: Type

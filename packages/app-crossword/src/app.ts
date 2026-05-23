@@ -1,4 +1,4 @@
-import { ai } from '@justfiles/app/capabilities/ai'
+import { ai } from '@justfiles/app/kernel/capabilities/ai'
 import { defineApp } from '@justfiles/app/kernel/sdk'
 import * as v from 'valibot'
 import {
