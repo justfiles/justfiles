@@ -4,6 +4,19 @@ import type { WindowRect } from '../windowState'
 const MIN_W = 320
 const MIN_H = 200
 
+type ResizeDir = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
+
+const HANDLES: { dir: ResizeDir; cls: string }[] = [
+	{ dir: 'n', cls: 'top-0 right-0 left-0 h-1 cursor-ns-resize' },
+	{ dir: 's', cls: 'right-0 bottom-0 left-0 h-1 cursor-ns-resize' },
+	{ dir: 'e', cls: 'top-0 right-0 bottom-0 w-1 cursor-ew-resize' },
+	{ dir: 'w', cls: 'top-0 bottom-0 left-0 w-1 cursor-ew-resize' },
+	{ dir: 'nw', cls: 'top-0 left-0 size-2 cursor-nwse-resize' },
+	{ dir: 'ne', cls: 'top-0 right-0 size-2 cursor-nesw-resize' },
+	{ dir: 'sw', cls: 'bottom-0 left-0 size-2 cursor-nesw-resize' },
+	{ dir: 'se', cls: 'right-0 bottom-0 size-3 cursor-nwse-resize' }
+]
+
 export interface WindowPersist {
 	load(): Promise<WindowRect | null>
 	save(rect: WindowRect): void
@@ -41,7 +54,12 @@ export function Window({
 
 	const [rect, setRect] = useState<WindowRect | null>(() => (persist ? null : defaultRect()))
 	const dragRef = useRef<{ dx: number; dy: number } | null>(null)
-	const resizeRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+	const resizeRef = useRef<{
+		x: number
+		y: number
+		rect: WindowRect
+		dir: ResizeDir
+	} | null>(null)
 	const saveTimerRef = useRef<number | null>(null)
 	const savedRectRef = useRef<WindowRect | null>(null)
 
@@ -107,26 +125,32 @@ export function Window({
 		event.currentTarget.releasePointerCapture(event.pointerId)
 	}
 
-	const onResizeDown = (event: PointerEvent<HTMLDivElement>) => {
+	const onResizeDown = (dir: ResizeDir) => (event: PointerEvent<HTMLDivElement>) => {
 		if (!rect) return
 		event.stopPropagation()
 		event.currentTarget.setPointerCapture(event.pointerId)
-		resizeRef.current = { x: event.clientX, y: event.clientY, w: rect.w, h: rect.h }
+		resizeRef.current = { x: event.clientX, y: event.clientY, rect, dir }
 	}
 	const onResizeMove = (event: PointerEvent<HTMLDivElement>) => {
 		const start = resizeRef.current
 		if (!start) return
 		const dx = event.clientX - start.x
 		const dy = event.clientY - start.y
-		setRect((r) =>
-			r
-				? {
-						...r,
-						w: Math.max(MIN_W, start.w + dx),
-						h: Math.max(MIN_H, start.h + dy)
-					}
-				: r
-		)
+		const { dir } = start
+		setRect(() => {
+			let { x, y, w, h } = start.rect
+			if (dir.includes('e')) w = Math.max(MIN_W, start.rect.w + dx)
+			if (dir.includes('s')) h = Math.max(MIN_H, start.rect.h + dy)
+			if (dir.includes('w')) {
+				w = Math.max(MIN_W, start.rect.w - dx)
+				x = start.rect.x + start.rect.w - w
+			}
+			if (dir.includes('n')) {
+				h = Math.max(MIN_H, start.rect.h - dy)
+				y = start.rect.y + start.rect.h - h
+			}
+			return { x, y, w, h }
+		})
 	}
 	const onResizeUp = (event: PointerEvent<HTMLDivElement>) => {
 		resizeRef.current = null
@@ -173,17 +197,15 @@ export function Window({
 				<span className="w-3" />
 			</div>
 			<div className="flex-1 overflow-hidden">{children}</div>
-			<div
-				onPointerDown={onResizeDown}
-				onPointerMove={onResizeMove}
-				onPointerUp={onResizeUp}
-				title="Resize"
-				className="absolute right-0 bottom-0 size-4 cursor-nwse-resize"
-				style={{
-					background:
-						'linear-gradient(135deg, transparent 0 55%, var(--rule) 55% 65%, transparent 65% 75%, var(--rule) 75% 85%, transparent 85%)'
-				}}
-			/>
+			{HANDLES.map(({ dir, cls }) => (
+				<div
+					key={dir}
+					onPointerDown={onResizeDown(dir)}
+					onPointerMove={onResizeMove}
+					onPointerUp={onResizeUp}
+					className={`absolute ${cls}`}
+				/>
+			))}
 		</div>
 	)
 }
