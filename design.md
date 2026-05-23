@@ -76,6 +76,8 @@ The system should also be themeable across drastically different aesthetics. A u
 
 The shared foundation should be CSS-based rather than component-runtime-based.
 
+The design system should live in a dedicated workspace package under `packages/design`, so both `apps/frieren` and inner apps can depend on the same source of truth.
+
 The likely direction is:
 
 - design tokens expressed as CSS variables

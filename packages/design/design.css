@@ -1,0 +1,9 @@
+:root {
+	--surface: #f5f5f4;
+	--text: #1c1c1c;
+	--rule: #d0d0cd;
+	--space: 4px;
+	--font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+	--text-ui: 13px;
+	--menubar-height: 32px;
+}

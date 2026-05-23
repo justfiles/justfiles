@@ -1,7 +1,7 @@
 import { UserButton } from '@clerk/clerk-react'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { Badge } from '@/components/ui/badge'
+import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { ClassicView } from './chat/ClassicView'
@@ -10,7 +10,6 @@ import { ShadcnView } from './chat/ShadcnView'
 import type { ChatViewProps, ConnectionState } from './chat/types'
 import { useChat } from './chat/useChat'
 import { navigate } from './clientRouter'
-import { cn } from './lib/utils'
 
 type ViewMode = 'classic' | 'jrpg' | 'shadcn'
 
@@ -23,10 +22,10 @@ const VIEWS: Record<
 	shadcn: { label: 'Shadcn', component: ShadcnView }
 }
 
-const statusBadgeClass: Record<ConnectionState, string> = {
-	ready: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-	connecting: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
-	disconnected: 'border-destructive/30 bg-destructive/10 text-destructive'
+const statusDotColor: Record<ConnectionState, string> = {
+	ready: '#22c55e',
+	connecting: '#f59e0b',
+	disconnected: '#ef4444'
 }
 
 export function ChatPage() {
@@ -40,43 +39,41 @@ export function ChatPage() {
 
 	return (
 		<div className="flex h-screen flex-col bg-background">
-			<header className="flex min-h-14 items-center justify-between border-b bg-background/95 px-4 backdrop-blur">
-				<div className="flex flex-1 items-center gap-3">
-					<div>
-						<p className="text-sm font-semibold tracking-tight">Frieren</p>
-						<p className="text-xs text-muted-foreground">Conversation</p>
-					</div>
+			<Menubar>
+				<div className="flex items-center gap-1">
+					<span className="font-medium">Frieren</span>
 					<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/files')}>
 						Files
 					</Button>
 				</div>
-				<div className="flex flex-none items-center gap-2">
-					<div className="flex items-center gap-2">
-						<span className="text-xs text-muted-foreground">Style</span>
-						<NativeSelect
-							size="sm"
-							className="w-28"
-							value={mode}
-							onChange={(event) => {
-								const next = event.target.value as ViewMode
-								setMode(next)
-								localStorage.setItem('frieren-view-mode', next)
-							}}
-							aria-label="Chat style"
-						>
-							{Object.entries(VIEWS).map(([value, view]) => (
-								<NativeSelectOption key={value} value={value}>
-									{view.label}
-								</NativeSelectOption>
-							))}
-						</NativeSelect>
-					</div>
-					<Badge variant="outline" className={cn('capitalize', statusBadgeClass[connection.state])}>
+				<div className="flex items-center gap-3">
+					<NativeSelect
+						size="sm"
+						className="w-28"
+						value={mode}
+						onChange={(event) => {
+							const next = event.target.value as ViewMode
+							setMode(next)
+							localStorage.setItem('frieren-view-mode', next)
+						}}
+						aria-label="Chat style"
+					>
+						{Object.entries(VIEWS).map(([value, view]) => (
+							<NativeSelectOption key={value} value={value}>
+								{view.label}
+							</NativeSelectOption>
+						))}
+					</NativeSelect>
+					<span className="flex items-center gap-1.5 capitalize text-muted-foreground">
+						<span
+							className="inline-block size-1.5 rounded-full"
+							style={{ background: statusDotColor[connection.state] }}
+						/>
 						{connection.state}
-					</Badge>
+					</span>
 					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 				</div>
-			</header>
+			</Menubar>
 
 			<View session={session} connection={connection} apps={apps} />
 

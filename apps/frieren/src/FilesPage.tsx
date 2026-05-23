@@ -3,6 +3,7 @@ import { FileType } from '@justfiles/fs/types'
 import { type FileTreeItem, FileTreeView } from '@justfiles/ui'
 import { CheckIcon, ClipboardIcon } from '@phosphor-icons/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Menubar } from '@/components/Menubar'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -249,54 +250,43 @@ export function FilesPage({ search }: { search: string }) {
 
 	return (
 		<div className="flex h-screen min-h-0 flex-col bg-background">
-			<header className="border-b bg-background/95 px-4 py-3 backdrop-blur">
-				<div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-					<div className="flex flex-wrap items-center gap-3">
-						<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/')}>
-							Chat
-						</Button>
-						<div>
-							<p className="text-sm font-semibold tracking-tight">Files</p>
-							<p className="text-xs text-muted-foreground">
-								{loadingFiles
-									? 'Loading files…'
-									: `${files.length} file${files.length === 1 ? '' : 's'}`}
-							</p>
-						</div>
-						{organizeMode ? <Badge>Organize mode</Badge> : null}
-					</div>
-					<div className="flex flex-wrap items-center gap-2">
-						<Button
-							type="button"
-							variant={organizeMode ? 'default' : 'ghost'}
-							size="sm"
-							onClick={() => setOrganizeMode((value) => !value)}
-						>
-							{organizeMode ? 'Done' : 'Organize'}
-						</Button>
-						<Button
-							type="button"
-							variant="ghost"
-							size="sm"
-							onClick={() => setReloadToken((value) => value + 1)}
-						>
-							Refresh
-						</Button>
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							onClick={() => void resetOnboarding()}
-						>
-							Reset
-						</Button>
-						<Button type="button" variant="destructive" size="sm" onClick={() => void nukeAll()}>
-							Nuke
-						</Button>
-						<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
-					</div>
+			<Menubar>
+				<div className="flex items-center gap-1">
+					<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/')}>
+						Chat
+					</Button>
+					<span className="font-medium">Files</span>
+					<span className="text-muted-foreground">
+						{loadingFiles ? 'Loading…' : `${files.length} file${files.length === 1 ? '' : 's'}`}
+					</span>
+					{organizeMode ? <Badge>Organize mode</Badge> : null}
 				</div>
-			</header>
+				<div className="flex items-center gap-1">
+					<Button
+						type="button"
+						variant={organizeMode ? 'default' : 'ghost'}
+						size="sm"
+						onClick={() => setOrganizeMode((value) => !value)}
+					>
+						{organizeMode ? 'Done' : 'Organize'}
+					</Button>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={() => setReloadToken((value) => value + 1)}
+					>
+						Refresh
+					</Button>
+					<Button type="button" variant="ghost" size="sm" onClick={() => void resetOnboarding()}>
+						Reset
+					</Button>
+					<Button type="button" variant="ghost" size="sm" onClick={() => void nukeAll()}>
+						Nuke
+					</Button>
+					<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+				</div>
+			</Menubar>
 
 			<div className="flex min-h-0 flex-1 flex-col gap-4 p-4 sm:flex-row">
 				<aside

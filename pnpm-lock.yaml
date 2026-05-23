@@ -65,6 +65,9 @@ importers:
       '@justfiles/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@justfiles/design':
+        specifier: workspace:*
+        version: link:../../packages/design
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs
@@ -365,9 +368,6 @@ importers:
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
-      typebox:
-        specifier: ^1.1.34
-        version: 1.1.38
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -460,6 +460,8 @@ importers:
         version: 4.4.3
 
   packages/create-app: {}
+
+  packages/design: {}
 
   packages/fs:
     dependencies:
