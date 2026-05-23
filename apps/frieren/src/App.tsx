@@ -2,9 +2,7 @@ import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { ChatPage } from './ChatPage'
-import { useClientLocation } from './clientRouter'
 import { Spinner } from './components/ui/spinner'
-import { FilesPage } from './FilesPage'
 import { createFsVolume } from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { resolveOnboardingState } from './onboarding/state'
@@ -20,7 +18,6 @@ function LoadingScreen({ label }: { label: string }) {
 
 function App() {
 	const { isLoaded, isSignedIn, getToken } = useAuth()
-	const location = useClientLocation()
 
 	const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null)
 
@@ -47,10 +44,6 @@ function App() {
 	if (!isSignedIn) return <AuthWall />
 	if (onboardingDone === null) return <LoadingScreen label="Loading workspace…" />
 	if (!onboardingDone) return <OnboardingPage onComplete={handleOnboardingComplete} />
-
-	if (location.pathname.startsWith('/files')) {
-		return <FilesPage search={location.search} />
-	}
 
 	return <ChatPage />
 }

@@ -6,7 +6,6 @@ import { BuiltinHost } from './BuiltinHost'
 import { builtinLauncherEntries } from './builtin'
 import type { ConnectionState, InstalledApp } from './chat/types'
 import { useChat } from './chat/useChat'
-import { navigate } from './clientRouter'
 import { KernelAppFrame } from './KernelAppFrame'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -25,9 +24,6 @@ export function ChatPage() {
 			<Menubar>
 				<div className="flex items-center gap-1">
 					<span className="font-medium">Frieren</span>
-					<Button type="button" variant="ghost" size="sm" onClick={() => navigate('/files')}>
-						Files
-					</Button>
 				</div>
 				<div className="flex items-center gap-3">
 					<span
