@@ -27,14 +27,17 @@ const sandbox: GetSandbox = async ({ code }) => {
 	}
 }
 
-const compile = (entry: string) =>
-	buildSync({
+const compile = (entry: string) => {
+	const output = buildSync({
 		entryPoints: [entry],
 		absWorkingDir: dirname(entry),
 		bundle: true,
 		write: false,
 		format: 'esm'
-	}).outputFiles[0]!.text
+	}).outputFiles[0]
+	if (!output) throw new Error(`failed to compile ${entry}`)
+	return output.text
+}
 
 const MIME: Record<string, string> = {
 	html: 'text/html; charset=utf-8',

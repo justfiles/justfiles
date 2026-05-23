@@ -1,4 +1,5 @@
-import { type Client, defineGUI } from '@justfiles/app'
+import type { Client } from '@justfiles/app'
+import { defineGUI } from '@justfiles/app/browser'
 import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type CrosswordApp, type CrosswordState, type Entry, initialState } from './app'

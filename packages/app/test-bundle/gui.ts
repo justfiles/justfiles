@@ -1,4 +1,4 @@
-import { defineGUI } from '../sdk'
+import { defineGUI } from '../browser'
 import type { app } from './app.ts'
 
 export const gui = defineGUI<typeof app>({

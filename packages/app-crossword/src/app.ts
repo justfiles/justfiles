@@ -1,5 +1,5 @@
-import { ai } from '@justfiles/app/capabilities/ai'
 import { defineApp } from '@justfiles/app'
+import { ai } from '@justfiles/app/capabilities/ai'
 import * as v from 'valibot'
 import {
 	bakeAnswers,

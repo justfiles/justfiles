@@ -5,6 +5,7 @@
 	"exports": {
 		".": "./index.ts",
 		"./runtime": "./kernel.ts",
+		"./browser": "./browser.ts",
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./capabilities": "./capabilities/index.ts",
@@ -25,6 +26,10 @@
 			"./runtime": {
 				"types": "./dist/kernel.d.ts",
 				"default": "./dist/kernel.js"
+			},
+			"./browser": {
+				"types": "./dist/browser.d.ts",
+				"default": "./dist/browser.js"
 			},
 			"./vite": {
 				"types": "./dist/vite.d.ts",

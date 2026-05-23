@@ -17,15 +17,18 @@ import type { createDevServer, DevServerOptions } from './dev-server.ts'
 // Only bare specifiers + type-only imports here: the config loader
 // externalizes this plugin and resolves it with native Node, which can't
 // load relative TypeScript siblings (./dev-server goes via ssrLoadModule).
-const compile = (entry: string) =>
-	buildSync({
+const compile = (entry: string) => {
+	const output = buildSync({
 		entryPoints: [entry],
 		absWorkingDir: dirname(entry),
 		bundle: true,
 		write: false,
 		format: 'esm',
 		minify: true
-	}).outputFiles[0]!.text
+	}).outputFiles[0]
+	if (!output) throw new Error(`failed to compile ${entry}`)
+	return output.text
+}
 
 export function kernelHost(opts: DevServerOptions): Plugin {
 	const root = process.cwd()

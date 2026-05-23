@@ -33,7 +33,7 @@ Action schemas use Standard Schema-compatible validators. Handler return values 
 ## GUI
 
 ```ts
-import { defineGUI } from '@justfiles/app'
+import { defineGUI } from '@justfiles/app/browser'
 import type { CounterApp } from './app'
 
 export const gui = defineGUI<CounterApp>({
@@ -88,7 +88,8 @@ import { ai } from '@justfiles/app/capabilities/ai'
 
 ## Exports
 
-- `@justfiles/app` — author SDK plus runtime types.
+- `@justfiles/app` — platform-agnostic author SDK plus runtime types.
+- `@justfiles/app/browser` — browser GUI SDK.
 - `@justfiles/app/runtime` — kernel runtime host API.
 - `@justfiles/app/vite` — Vite build/dev plugin.
 - `@justfiles/app/capabilities/*` — capability contracts and broker helpers.

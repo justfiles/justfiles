@@ -1,4 +1,4 @@
-import { defineGUI } from '@justfiles/app'
+import { defineGUI } from '@justfiles/app/browser'
 import type { DoomApp } from './app'
 import { css } from './style'
 
