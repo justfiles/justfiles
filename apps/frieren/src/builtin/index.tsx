@@ -1,5 +1,7 @@
 import type { ComponentType } from 'react'
 import type { InstalledApp } from '../chat/types'
+import { FinderApp } from './FinderApp'
+import finderIconUrl from './finder-icon.svg'
 import { SettingsApp } from './SettingsApp'
 import settingsIconUrl from './settings-icon.svg'
 
@@ -12,6 +14,13 @@ export interface BuiltinApp {
 }
 
 export const BUILTIN_APPS: BuiltinApp[] = [
+	{
+		id: 'finder',
+		name: 'Finder',
+		description: 'Browse and preview files',
+		iconUrl: finderIconUrl,
+		component: FinderApp
+	},
 	{
 		id: 'settings',
 		name: 'Settings',
