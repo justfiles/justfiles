@@ -23,12 +23,18 @@ function LoadingScreen({ label }: { label: string }) {
 }
 
 function App() {
-	const { isLoaded, isSignedIn, getToken } = useAuth()
+	const { isLoaded, isSignedIn, userId, getToken } = useAuth()
 
 	const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null)
+	const [chooserForUserId, setChooserForUserId] = useState<string | null>(null)
+	const showChooser = chooserForUserId !== null && chooserForUserId === userId
 
 	useEffect(() => {
-		if (!isSignedIn) return
+		if (!isSignedIn || !userId) {
+			setOnboardingDone(null)
+			return
+		}
+		setOnboardingDone(null)
 		let cancelled = false
 		void (async () => {
 			try {
@@ -42,16 +48,21 @@ function App() {
 		return () => {
 			cancelled = true
 		}
-	}, [isSignedIn, getToken])
+	}, [isSignedIn, userId, getToken])
 
 	const handleOnboardingComplete = useCallback(() => setOnboardingDone(true), [])
+	const requestSwitchUser = useCallback(() => {
+		if (userId) setChooserForUserId(userId)
+	}, [userId])
+	const dismissChooser = useCallback(() => setChooserForUserId(null), [])
 
 	if (!isLoaded) return <LoadingScreen label="Loading session…" />
 	if (!isSignedIn) return <AuthWall />
+	if (showChooser) return <AuthWall onDismiss={dismissChooser} />
 	if (onboardingDone === null) return <LoadingScreen label="Loading workspace…" />
 	if (!onboardingDone) return <OnboardingPage onComplete={handleOnboardingComplete} />
 
-	return <ChatPage />
+	return <ChatPage onSwitchUser={requestSwitchUser} />
 }
 
 export default App

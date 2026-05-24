@@ -49,7 +49,7 @@ function useWindowPersistence(): (appId: string) => WindowPersist {
 	)
 }
 
-export function ChatPage() {
+export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const chat = useChat()
 	const { connection, apps } = chat
 	const { launcher } = apps
@@ -58,6 +58,8 @@ export function ChatPage() {
 	const menu = useContextMenu()
 
 	const desktopMenuItems: ContextMenuItem[] = [
+		{ label: 'Switch User…', onSelect: onSwitchUser },
+		{ separator: true },
 		{ label: 'Change Wallpaper…', disabled: true, onSelect: () => {} },
 		{ separator: true },
 		{ label: 'Clean Up', disabled: true, onSelect: () => {} }
