@@ -1,5 +1,5 @@
 import { UserButton, useAuth } from '@clerk/clerk-react'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
@@ -56,6 +56,13 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const desktopApps: InstalledApp[] = [...launcher.installedApps, ...builtinLauncherEntries()]
 	const persistFor = useWindowPersistence()
 	const menu = useContextMenu()
+	const [fullscreenKey, setFullscreenKey] = useState<string | null>(null)
+
+	useEffect(() => {
+		if (!fullscreenKey) return
+		const stillOpen = launcher.openApps.some((app) => `${app.kind}:${app.id}` === fullscreenKey)
+		if (!stillOpen) setFullscreenKey(null)
+	}, [launcher.openApps, fullscreenKey])
 
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Switch User…', onSelect: onSwitchUser },
@@ -84,30 +91,32 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 	return (
 		<ChatProvider value={chat}>
 			<div className="flex h-screen flex-col">
-				<Menubar>
-					<div className="flex items-center gap-1">
-						<span className="font-medium">Frieren</span>
-					</div>
-					<div className="flex items-center gap-3">
-						<span
-							className="inline-block size-1.5 rounded-full"
-							style={{ background: statusDotColor[connection.state] }}
-							title={connection.state}
-						/>
-						{launcher.installApp ? (
-							<Button
-								type="button"
-								variant="ghost"
-								size="sm"
-								onClick={() => void launcher.installApp?.()}
-								title="Install app from zip"
-							>
-								Install
-							</Button>
-						) : null}
-						<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
-					</div>
-				</Menubar>
+				{fullscreenKey ? null : (
+					<Menubar>
+						<div className="flex items-center gap-1">
+							<span className="font-medium">Frieren</span>
+						</div>
+						<div className="flex items-center gap-3">
+							<span
+								className="inline-block size-1.5 rounded-full"
+								style={{ background: statusDotColor[connection.state] }}
+								title={connection.state}
+							/>
+							{launcher.installApp ? (
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									onClick={() => void launcher.installApp?.()}
+									title="Install app from zip"
+								>
+									Install
+								</Button>
+							) : null}
+							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+						</div>
+					</Menubar>
+				)}
 
 				{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
 				<div
@@ -147,6 +156,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 						const key = `${app.kind}:${app.id}`
 						const info = desktopApps.find((d) => d.kind === app.kind && d.id === app.id)
 						const focused = launcher.focusedId === key
+						const isFullscreen = fullscreenKey === key
 						return (
 							<Window
 								key={key}
@@ -157,6 +167,11 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 								zIndex={index + 1}
 								initialOffset={index * 24}
 								persist={persistFor(app.id)}
+								fullscreen={isFullscreen}
+								onFullscreenToggle={() => {
+									launcher.focus(app)
+									setFullscreenKey(isFullscreen ? null : key)
+								}}
 							>
 								{app.kind === 'builtin' ? (
 									<BuiltinHost id={app.id} />
