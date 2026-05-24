@@ -9,9 +9,15 @@ import { resolveOnboardingState } from './onboarding/state'
 
 function LoadingScreen({ label }: { label: string }) {
 	return (
-		<div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background px-6 text-center">
-			<Spinner className="size-5" />
-			<p className="text-sm text-muted-foreground">{label}</p>
+		<div
+			className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center text-white"
+			style={{
+				background:
+					'radial-gradient(ellipse at 50% 30%, rgba(255,255,255,0.12), transparent 60%), var(--desktop-bg)'
+			}}
+		>
+			<Spinner className="size-5 text-white/80" />
+			<p className="text-xs tracking-wide text-white/65">{label}</p>
 		</div>
 	)
 }

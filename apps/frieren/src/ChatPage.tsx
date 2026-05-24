@@ -1,5 +1,6 @@
 import { UserButton, useAuth } from '@clerk/clerk-react'
 import { useCallback, useRef, useState } from 'react'
+import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
 import { Window, type WindowPersist } from '@/components/Window'
@@ -54,6 +55,29 @@ export function ChatPage() {
 	const { launcher } = apps
 	const desktopApps: InstalledApp[] = [...launcher.installedApps, ...builtinLauncherEntries()]
 	const persistFor = useWindowPersistence()
+	const menu = useContextMenu()
+
+	const desktopMenuItems: ContextMenuItem[] = [
+		{ label: 'Change Wallpaper…', disabled: true, onSelect: () => {} },
+		{ separator: true },
+		{ label: 'Clean Up', disabled: true, onSelect: () => {} }
+	]
+
+	const appMenuItems = (app: InstalledApp): ContextMenuItem[] => {
+		const items: ContextMenuItem[] = [{ label: 'Open', onSelect: () => launcher.launch(app) }]
+		if (app.kind === 'app' && launcher.uninstallApp) {
+			items.push(
+				{ separator: true },
+				{
+					label: 'Uninstall',
+					onSelect: () => {
+						if (confirm(`Uninstall "${app.name}"?`)) void launcher.uninstallApp?.(app.id)
+					}
+				}
+			)
+		}
+		return items
+	}
 
 	return (
 		<ChatProvider value={chat}>
@@ -83,53 +107,39 @@ export function ChatPage() {
 					</div>
 				</Menubar>
 
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
 				<div
 					className="relative flex flex-1 overflow-hidden"
 					style={{ background: 'var(--desktop-bg)' }}
+					onContextMenu={(event) => menu.open(event, desktopMenuItems)}
 				>
 					<div className="absolute top-4 right-4 flex flex-col gap-4">
-						{desktopApps.map((app) => {
-							const canUninstall = app.kind === 'app' && !!launcher.uninstallApp
-							return (
-								<div
-									key={`${app.kind}:${app.id}`}
-									className="group relative flex w-20 flex-col items-center"
+						{desktopApps.map((app) => (
+							// biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the icon group
+							<div
+								key={`${app.kind}:${app.id}`}
+								className="group relative flex w-20 flex-col items-center"
+								onContextMenu={(event) => menu.open(event, appMenuItems(app))}
+							>
+								<button
+									type="button"
+									onClick={() => launcher.launch(app)}
+									className="flex w-full flex-col items-center gap-1.5 text-center"
+									title={app.description || app.name}
 								>
-									<button
-										type="button"
-										onClick={() => launcher.launch(app)}
-										className="flex w-full flex-col items-center gap-1.5 text-center"
-										title={app.description || app.name}
-									>
-										<span className="flex size-16 items-center justify-center overflow-hidden rounded-xl border border-white/20 bg-white/15 text-xl font-semibold text-white shadow-[0_4px_14px_rgba(0,0,0,0.25)] backdrop-blur-sm transition group-hover:bg-white/25">
-											{app.iconUrl ? (
-												<img src={app.iconUrl} alt="" className="size-full object-cover" />
-											) : (
-												app.name.slice(0, 1).toUpperCase()
-											)}
-										</span>
-										<span className="w-full truncate text-xs font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
-											{app.name}
-										</span>
-									</button>
-									{canUninstall ? (
-										<button
-											type="button"
-											aria-label={`Uninstall ${app.name}`}
-											title={`Uninstall ${app.name}`}
-											onClick={(event) => {
-												event.stopPropagation()
-												if (confirm(`Uninstall "${app.name}"?`))
-													void launcher.uninstallApp?.(app.id)
-											}}
-											className="absolute -top-1 right-2 hidden size-5 items-center justify-center rounded-full border border-white/40 bg-slate-900/90 text-xs leading-none text-white shadow hover:bg-red-600 group-hover:flex"
-										>
-											×
-										</button>
-									) : null}
-								</div>
-							)
-						})}
+									<span className="flex size-16 items-center justify-center overflow-hidden rounded-xl border border-white/20 bg-white/15 text-xl font-semibold text-white shadow-[0_4px_14px_rgba(0,0,0,0.25)] backdrop-blur-sm transition group-hover:bg-white/25">
+										{app.iconUrl ? (
+											<img src={app.iconUrl} alt="" className="size-full object-cover" />
+										) : (
+											app.name.slice(0, 1).toUpperCase()
+										)}
+									</span>
+									<span className="w-full truncate text-xs font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
+										{app.name}
+									</span>
+								</button>
+							</div>
+						))}
 					</div>
 					{launcher.openApps.map((app, index) => {
 						const key = `${app.kind}:${app.id}`
@@ -155,6 +165,7 @@ export function ChatPage() {
 						)
 					})}
 				</div>
+				<ContextMenu state={menu.state} onClose={menu.close} />
 			</div>
 		</ChatProvider>
 	)
