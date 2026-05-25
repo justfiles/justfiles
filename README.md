@@ -12,26 +12,26 @@ This is a monorepo with three packages:
 
 ## Creating an app package
 
-Use the local create package with Bun from the repo root:
+Use the local create package with Node from the repo root:
 
 ```sh
-bun packages/create-app/index.js packages/my-new-app
-bun install
+node packages/create-app/index.js packages/my-new-app
+pnpm install
 ```
 
-This uses `packages/create-app` from the working tree, not npm. Avoid `bun create @justbuddy/app ...` or `bunx @justbuddy/create-app ...` when you need the local version.
+This uses `packages/create-app` from the working tree, not npm. Avoid `pnpm create @justbuddy/app ...` or `pnpm dlx @justbuddy/create-app ...` when you need the local version.
 
 If the target directory already exists and is non-empty:
 
 ```sh
-bun packages/create-app/index.js packages/my-new-app --force
+node packages/create-app/index.js packages/my-new-app --force
 ```
 
 Then run it with:
 
 ```sh
 cd packages/my-new-app
-bun dev
+pnpm dev
 ```
 
 ## CLI
@@ -61,8 +61,8 @@ Global flags: `--config`, `--volume` (or env `FILES_VOLUME`), `--json`, `--quiet
 ## Development
 
 ```sh
-bun install
-bun dev
+pnpm install
+pnpm dev
 ```
 
 ### Environment and secrets
@@ -86,7 +86,7 @@ Use one of the local flows:
   # create .env.local with:
   #   VITE_CLERK_PUBLISHABLE_KEY=pk_live_...
   # then run:
-  bun dev
+  pnpm dev
   ```
 
 - Worker-backed development with Wrangler:
@@ -122,14 +122,14 @@ rm -rf .wrangler/state
 ## Production
 
 ```sh
-bun run build
-bun run deploy
+pnpm run build
+pnpm run deploy
 ```
 
 Set runtime secret(s) in Cloudflare before deploying:
 
 ```sh
-bunx wrangler secret put CLERK_SECRET_KEY
+pnpm dlx wrangler secret put CLERK_SECRET_KEY
 ```
 
 Each Durable Object instance has its own embedded SQLite database managed by Cloudflare — no separate provisioning needed. Migrations run automatically on the first request.

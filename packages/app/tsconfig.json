@@ -16,7 +16,7 @@
 		"verbatimModuleSyntax": true,
 		"isolatedModules": true,
 		"noUncheckedIndexedAccess": true,
-		"types": ["bun"]
+		"types": ["node"]
 	},
 	"include": ["*.ts", "capabilities/**/*.ts"],
 	"exclude": ["node_modules", "dist", "**/*.test.ts", "test-bundle"]

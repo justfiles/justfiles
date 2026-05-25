@@ -80,7 +80,7 @@ assets from the host.
 - New outputs: `apps/frieren/public/vendor/react.js`,
   `react-dom.js`, `react-dom-client.js`, `jsx-runtime.js`,
   `jsx-dev-runtime.js`.
-- `apps/frieren/package.json` — prepend `bun scripts/build-vendor.ts` to
+- `apps/frieren/package.json` — prepend `node scripts/build-vendor.ts` to
   the `build` script (and to `dev` via a `prebuild` step or one-time
   manual run; the outputs check into `public/` so dev works immediately).
 - `.gitignore` — keep `public/vendor/` ignored or check it in; pick one
@@ -89,7 +89,7 @@ assets from the host.
 
 **Verify:**
 ```sh
-cd apps/frieren && bun scripts/build-vendor.ts
+cd apps/frieren && node scripts/build-vendor.ts
 ls public/vendor/  # five .js files
 node --input-type=module -e "import('./public/vendor/react.js').then(m => console.log(Object.keys(m)))"
 # expect: useState, useEffect, …
@@ -236,9 +236,9 @@ the runtime infra is good.
 ```sh
 pnpm --filter @justfiles/app-crossword build
 ls packages/app-crossword/dist  # app.js, gui.js, manifest.json
-cd apps/frieren && bun run dev
+cd apps/frieren && pnpm run dev
 # in another shell:
-bun run verify:ui
+pnpm run verify:ui
 # install crossword (existing dev flow) and run through one full game
 ```
 
@@ -418,7 +418,7 @@ back to embedding bytes as a hex string in the generated TS module.)
 - `apps/frieren/package.json` — prepend the script to the `build`:
 
 ```json
-"build": "bun scripts/build-vendor.ts && bun scripts/build-builtins.ts && tsc -b && vite build"
+"build": "node scripts/build-vendor.ts && node scripts/build-builtins.ts && tsc -b && vite build"
 ```
 
 - `.gitignore` — ignore `apps/frieren/worker/builtins/*.zip` and
@@ -541,9 +541,9 @@ mount callback via `createRoot`, as `app-crossword` already does).
 **Verify:**
 ```sh
 pnpm --filter frieren build
-cd apps/frieren && bun run dev
+cd apps/frieren && pnpm run dev
 # in another shell:
-bun run verify:ui
+pnpm run verify:ui
 # launch Paint from the desktop, draw, save, verify file exists at /Paint/...
 # also test agent path:
 # in the chat: "app run app.frieren.paint setColor color=#ff0000"
@@ -604,7 +604,7 @@ Same flow as Paint. After verify, delete
 
 **Verify:**
 ```sh
-bun run verify:ui
+pnpm run verify:ui
 # open Finder, click a file, verify preview
 # in chat: "app run app.frieren.finder select path=/notes/x.md"
 # response should include the file contents (via state read)
@@ -649,7 +649,7 @@ Same flow. After verify, delete `apps/frieren/src/builtin/SettingsApp.tsx`.
 
 **Verify:**
 ```sh
-bun run verify:ui
+pnpm run verify:ui
 # open Settings, connect/disconnect an integration
 # in chat: "app run app.frieren.settings refresh"
 # in chat: "app actions app.frieren.settings"  → lists connect/disconnect/refresh with schemas
@@ -811,7 +811,7 @@ Verify thoroughly — Messages is the most coupled migration.
 
 **Verify:**
 ```sh
-bun run verify:ui
+pnpm run verify:ui
 # open Messages, send a message, see streaming response
 # kill connection mid-stream, reconnect, verify state restored
 # in chat: "app run app.frieren.messages send text=hello"
@@ -883,8 +883,8 @@ pnpm format
 pnpm typecheck
 pnpm lint:fix
 pnpm test
-cd apps/frieren && bun run dev
-bun run verify:ui
+cd apps/frieren && pnpm run dev
+pnpm run verify:ui
 # manual: open and exercise each of the 4 apps
 # manual: install a third-party app via the existing dev flow; verify it works alongside built-ins
 # manual: agent path — "app list" returns all 4 built-ins + any installed; agent can drive each

@@ -2,7 +2,9 @@ IMPORTANT: keep code minimal
 
 # Tools
 use pnpm for package management.
-use bun as the JS runtime (bun run, bunx wrangler) and vitest as the test runner.
+use node as the JS runtime (node directly runs TypeScript via the built-in
+strip-types loader; package.json scripts go through `pnpm run`/`pnpm dlx`).
+use vitest as the test runner.
 
 use tab for indentation.
 
@@ -22,9 +24,9 @@ For `apps/frieren` UI changes, do quick LLM-driven smoke checks instead of writi
 
 ```sh
 cd apps/frieren
-bun run dev
+pnpm run dev
 # in another shell:
-bun run verify:ui
+pnpm run verify:ui
 ```
 
 `verify:ui` creates/reuses a Clerk dev test user, seeds onboarding, opens an authenticated `playwright-cli` session named `frieren`, and navigates to `http://localhost:5173`. Then take over with arbitrary checks, e.g. `playwright-cli -s=frieren snapshot`, `fill`, `click`, `console`, `requests`. Close with `playwright-cli -s=frieren close`.
