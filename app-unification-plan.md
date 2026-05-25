@@ -18,6 +18,9 @@ volume on first launch, and update in place when their version changes.
 - New capability contracts (`volume{scope}`, `integrations`, `agent`) cover
   the host services built-ins need. Trusted built-ins get more permissive
   grants; the contract surface is the same.
+- Filesystem access is exposed through the `volume` capability. The current
+  ambient `ctx.files` injection is transitional only and should disappear
+  after apps have migrated to `ctx.capabilities.volume`.
 - Built-in app bundles live as zipped assets in the worker. On DO boot,
   `ensureBuiltinsInstalled(kernel)` compares versions and reinstalls any
   that are missing or outdated. Near-zero cost on the happy path.
@@ -266,9 +269,17 @@ all actions (start, enter, reveal, check) work.
 
 Goal: contracts and host implementations for `volume{scope}` and
 `integrations`. These are pure request/response — no subscription work
-yet.
+yet. This is also the start of retiring ambient filesystem access:
+`ctx.files` remains only as compatibility scaffolding until existing apps
+move to `ctx.capabilities.volume`.
 
-## Step 2.1 — `volume` capability gains a scope option
+## Step 2.1 — `volume` capability becomes the filesystem API
+
+`ctx.files` already gives apps a per-app chroot today, but it is ambient:
+apps do not declare it, the host cannot grant narrower/broader access via
+the same mechanism as other services, and the agent cannot see that the app
+needs filesystem access. Keep the default behavior for compatibility, but
+make `volume` the explicit API all migrated apps use.
 
 **Files:**
 
@@ -285,19 +296,28 @@ export interface VolumeCapability {
 ```
 
 - `packages/app/capabilities/volume/index.ts` — the factory takes
-  `scopes` already; document that `'system'` means root-volume access
-  (host enforces). Other scope strings mean specific path prefixes.
+  `scopes` already; document that `'app'`/missing means the existing
+  per-app chroot, `'system'` means root-volume access (host enforces),
+  and path-like scope strings mean specific path prefixes.
+
+- `packages/app/app.ts` / `packages/app/sdk.ts` — include the requested
+  capability scopes in `CapabilityInvocation` so the host can enforce the
+  declared grant. Do not remove `files` yet; mark it as deprecated or
+  internal transitional plumbing.
 
 - `apps/frieren/worker/frieren.app.ts` — extend `invokeCapability` with
-  a `volume` branch. Use the app's bundle scopes from the manifest to
-  decide what volume to hand back: `'system'` → host fs; specific prefix
-  → `chroot(fs, prefix)`; missing → existing per-app `chroot` at
+  a `volume` branch. Use the app's requested scopes to decide what volume
+  to hand back: `'system'` → host fs; specific prefix → `chroot(fs,
+  prefix)`; `'app'`/missing → existing per-app `chroot` at
   `/applications/:id/data/files`.
 
 **Verify:**
-- Existing apps unaffected (default scope is per-app chroot).
-- Unit test: a sandboxed app declaring `volume({ scopes: ['system'] })`
+- Existing apps unaffected while they still use `ctx.files`.
+- An app declaring `volume({ scopes: ['app'] })` can read/write only its
+  `/applications/:id/data/files` tree.
+- Unit test: a trusted sandboxed app declaring `volume({ scopes: ['system'] })`
   can read a file outside its own `data/files` dir.
+- Unit test: an app without a matching grant cannot use `system` volume access.
 
 ## Step 2.2 — `integrations` capability
 
@@ -833,14 +853,30 @@ Goal: erase every trace of the two-track architecture.
   `builtinLauncherEntries()` call; `launcher.installedApps` already
   contains everything.
 
-## Step 9.4 — Update SDK exports if needed
+## Step 9.4 — Remove legacy `ctx.files`
+
+After Paint/Finder/Settings/Messages and the sample apps use
+`ctx.capabilities.volume`, delete the old ambient filesystem injection.
+
+**Files:**
+
+- `packages/app/app.ts` — remove `files` from `Context` and
+  `RuntimeContext`.
+- `packages/app/kernel.ts` — stop passing `chroot(fs,
+  /applications/:id/data/files)` as `ctx.files`; that chroot is now only
+  selected inside the `volume` capability implementation for `'app'` scope.
+- `apps/frieren/worker/kernel.sandbox.ts` — update comments/transport
+  assumptions so only state, `setState`, and capability invocation cross
+  into the sandbox.
+
+## Step 9.5 — Update SDK exports if needed
 
 **Files:**
 
 - `packages/app/index.ts` and `packages/app/capabilities/index.ts` —
   ensure all new capability barrels are exported.
 
-## Step 9.5 — Full verification
+## Step 9.6 — Full verification
 
 ```sh
 pnpm format
