@@ -161,10 +161,10 @@ export function floodFill(ctx: CanvasRenderingContext2D, x: number, y: number, c
 function matches(
 	data: Uint8ClampedArray,
 	i: number,
-	r: number,
-	g: number,
-	b: number,
-	a: number
+	r: number | undefined,
+	g: number | undefined,
+	b: number | undefined,
+	a: number | undefined
 ): boolean {
 	return data[i] === r && data[i + 1] === g && data[i + 2] === b && data[i + 3] === a
 }
@@ -182,9 +182,16 @@ export function fill(ctx: CanvasRenderingContext2D, color: string) {
 	ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
 }
 
-export async function toPNG(canvas: HTMLCanvasElement): Promise<Uint8Array> {
+export async function canvasToPngBase64(canvas: HTMLCanvasElement): Promise<string> {
 	const blob: Blob = await new Promise((resolve, reject) => {
 		canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob returned null'))), 'image/png')
 	})
-	return new Uint8Array(await blob.arrayBuffer())
+	const buf = await blob.arrayBuffer()
+	const bytes = new Uint8Array(buf)
+	let binary = ''
+	const chunk = 0x8000
+	for (let i = 0; i < bytes.length; i += chunk) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+	}
+	return btoa(binary)
 }

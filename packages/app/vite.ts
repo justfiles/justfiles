@@ -13,7 +13,7 @@ import type { createDevServer, DevServerOptions } from './dev-server.ts'
 //            `gui.js`; closeBundle emits the headless `app.js`, manifest,
 //            and a self-contained `bundle.js` (id, version, manifest, files
 //            as Uint8Array). A host (frieren) installs the app by
-//            `import paint from '@justfiles/app-frieren-paint/bundle'` —
+//            `import paint from '@justfiles/app-paint/bundle'` —
 //            no zip step, no copy-to-worker pipeline.
 //
 // Only bare specifiers + type-only imports here: the config loader

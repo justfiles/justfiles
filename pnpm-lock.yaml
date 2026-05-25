@@ -62,6 +62,9 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
+      '@justfiles/app-paint':
+        specifier: workspace:*
+        version: link:../../packages/app-paint
       '@justfiles/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -85,7 +88,7 @@ importers:
         version: 2.1.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@tailwindcss/vite':
         specifier: ^4.2.2
-        version: 4.3.0(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1))
+        version: 4.3.0(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -128,7 +131,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: ^1.31.2
-        version: 1.36.4(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1))(workerd@1.20260508.1)(wrangler@4.90.1)
+        version: 1.36.4(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))(workerd@1.20260508.1)(wrangler@4.90.1)
       '@eslint/js':
         specifier: ^9.39.1
         version: 9.39.1
@@ -150,9 +153,6 @@ importers:
       '@rollup/plugin-terser':
         specifier: ^1.0.0
         version: 1.0.0(rollup@4.60.4)
-      '@types/bun':
-        specifier: ^1.3.12
-        version: 1.3.14
       '@types/node':
         specifier: ^25.6.0
         version: 25.7.0
@@ -164,7 +164,7 @@ importers:
         version: 19.2.3(@types/react@19.2.7)
       '@vitejs/plugin-react':
         specifier: ^5.1.1
-        version: 5.1.1(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1))
+        version: 5.1.1(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))
       eslint:
         specifier: ^9.39.1
         version: 9.39.2(jiti@2.7.0)
@@ -180,6 +180,9 @@ importers:
       rollup:
         specifier: ^4.60.4
         version: 4.60.4
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
@@ -188,7 +191,7 @@ importers:
         version: 8.48.0(eslint@9.39.2(jiti@2.7.0))(typescript@5.9.3)
       vite:
         specifier: ^8.0.0-beta.13
-        version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1)
+        version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
       wrangler:
         specifier: ^4.81.1
         version: 4.90.1
@@ -374,9 +377,6 @@ importers:
         specifier: ^1.1.0
         version: 1.1.0
     devDependencies:
-      '@types/bun':
-        specifier: latest
-        version: 1.3.14
       '@types/node':
         specifier: ^25.7.0
         version: 25.7.0
@@ -421,9 +421,6 @@ importers:
         specifier: ^1.1.0
         version: 1.4.0(typescript@6.0.3)
     devDependencies:
-      '@types/bun':
-        specifier: latest
-        version: 1.3.14
       '@types/react':
         specifier: ^19
         version: 19.2.7
@@ -459,6 +456,37 @@ importers:
         specifier: ^8.0.0-beta.13
         version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
 
+  packages/app-paint:
+    dependencies:
+      '@justfiles/app':
+        specifier: workspace:*
+        version: link:../app
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.0(typescript@6.0.3)
+    devDependencies:
+      '@types/react':
+        specifier: ^19
+        version: 19.2.7
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.2.3(@types/react@19.2.7)
+      '@vitejs/plugin-react':
+        specifier: ^5
+        version: 5.1.1(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))
+      react:
+        specifier: ^19
+        version: 19.2.5
+      react-dom:
+        specifier: ^19
+        version: 19.2.5(react@19.2.5)
+      typescript:
+        specifier: ~6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.0-beta.13
+        version: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
+
   packages/core:
     dependencies:
       '@hono/zod-validator':
@@ -484,9 +512,6 @@ importers:
         specifier: ^8.0.3
         version: 8.0.3
     devDependencies:
-      '@types/bun':
-        specifier: latest
-        version: 1.3.14
       '@types/node':
         specifier: ^25.5.0
         version: 25.7.0
@@ -503,9 +528,6 @@ importers:
         specifier: workspace:*
         version: link:../fs
     devDependencies:
-      '@types/bun':
-        specifier: latest
-        version: 1.3.14
       '@types/node':
         specifier: ^25.5.0
         version: 25.7.0
@@ -9008,12 +9030,12 @@ snapshots:
       - utf-8-validate
       - workerd
 
-  '@cloudflare/vite-plugin@1.36.4(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1))(workerd@1.20260508.1)(wrangler@4.90.1)':
+  '@cloudflare/vite-plugin@1.36.4(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))(workerd@1.20260508.1)(wrangler@4.90.1)':
     dependencies:
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260508.1)
       miniflare: 4.20260508.0
       unenv: 2.0.0-rc.24
-      vite: 8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1)
+      vite: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
       wrangler: 4.90.1
       ws: 8.18.0
     transitivePeerDependencies:
@@ -10356,14 +10378,14 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.0-rc.17': {}
 
-  '@rollup/plugin-babel@6.1.0(@babel/core@7.29.0)(@types/babel__core@7.20.5)(rollup@4.60.3)':
+  '@rollup/plugin-babel@6.1.0(@babel/core@7.29.0)(@types/babel__core@7.20.5)(rollup@4.60.4)':
     dependencies:
       '@babel/core': 7.29.0
       '@babel/helper-module-imports': 7.28.6
-      '@rollup/pluginutils': 5.3.0(rollup@4.60.3)
+      '@rollup/pluginutils': 5.3.0(rollup@4.60.4)
     optionalDependencies:
       '@types/babel__core': 7.20.5
-      rollup: 4.60.3
+      rollup: 4.60.4
     transitivePeerDependencies:
       - supports-color
 
@@ -10379,16 +10401,6 @@ snapshots:
     optionalDependencies:
       rollup: 4.60.4
 
-  '@rollup/plugin-node-resolve@16.0.3(rollup@4.60.3)':
-    dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.60.3)
-      '@types/resolve': 1.20.2
-      deepmerge: 4.3.1
-      is-module: 1.0.0
-      resolve: 1.22.12
-    optionalDependencies:
-      rollup: 4.60.3
-
   '@rollup/plugin-node-resolve@16.0.3(rollup@4.60.4)':
     dependencies:
       '@rollup/pluginutils': 5.3.0(rollup@4.60.4)
@@ -10399,27 +10411,12 @@ snapshots:
     optionalDependencies:
       rollup: 4.60.4
 
-  '@rollup/plugin-replace@6.0.3(rollup@4.60.3)':
-    dependencies:
-      '@rollup/pluginutils': 5.3.0(rollup@4.60.3)
-      magic-string: 0.30.21
-    optionalDependencies:
-      rollup: 4.60.3
-
   '@rollup/plugin-replace@6.0.3(rollup@4.60.4)':
     dependencies:
       '@rollup/pluginutils': 5.3.0(rollup@4.60.4)
       magic-string: 0.30.21
     optionalDependencies:
       rollup: 4.60.4
-
-  '@rollup/plugin-terser@1.0.0(rollup@4.60.3)':
-    dependencies:
-      serialize-javascript: 7.0.5
-      smob: 1.6.1
-      terser: 5.47.1
-    optionalDependencies:
-      rollup: 4.60.3
 
   '@rollup/plugin-terser@1.0.0(rollup@4.60.4)':
     dependencies:
@@ -10428,14 +10425,6 @@ snapshots:
       terser: 5.47.1
     optionalDependencies:
       rollup: 4.60.4
-
-  '@rollup/pluginutils@5.3.0(rollup@4.60.3)':
-    dependencies:
-      '@types/estree': 1.0.9
-      estree-walker: 2.0.2
-      picomatch: 4.0.4
-    optionalDependencies:
-      rollup: 4.60.3
 
   '@rollup/pluginutils@5.3.0(rollup@4.60.4)':
     dependencies:
@@ -10884,12 +10873,12 @@ snapshots:
       tailwindcss: 4.3.0
       vite: 6.4.2(@types/node@25.7.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass@1.51.0)(terser@5.47.1)(tsx@4.21.0)
 
-  '@tailwindcss/vite@4.3.0(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1))':
+  '@tailwindcss/vite@4.3.0(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))':
     dependencies:
       '@tailwindcss/node': 4.3.0
       '@tailwindcss/oxide': 4.3.0
       tailwindcss: 4.3.0
-      vite: 8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1)
+      vite: 8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)
 
   '@tanstack/history@1.161.6': {}
 
@@ -11328,18 +11317,6 @@ snapshots:
       '@types/babel__core': 7.20.5
       react-refresh: 0.18.0
       vite: 6.4.2(@types/node@25.7.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass@1.51.0)(terser@5.47.1)(tsx@4.21.0)
-    transitivePeerDependencies:
-      - supports-color
-
-  '@vitejs/plugin-react@5.1.1(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1))':
-    dependencies:
-      '@babel/core': 7.29.0
-      '@babel/plugin-transform-react-jsx-self': 7.27.1(@babel/core@7.29.0)
-      '@babel/plugin-transform-react-jsx-source': 7.27.1(@babel/core@7.29.0)
-      '@rolldown/pluginutils': 1.0.0-beta.47
-      '@types/babel__core': 7.20.5
-      react-refresh: 0.18.0
-      vite: 8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -15244,20 +15221,6 @@ snapshots:
       terser: 5.47.1
       tsx: 4.21.0
 
-  vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.3)(jiti@2.7.0)(terser@5.47.1):
-    dependencies:
-      lightningcss: 1.32.0
-      picomatch: 4.0.4
-      postcss: 8.5.14
-      rolldown: 1.0.0
-      tinyglobby: 0.2.16
-    optionalDependencies:
-      '@types/node': 25.7.0
-      esbuild: 0.27.3
-      fsevents: 2.3.3
-      jiti: 2.7.0
-      terser: 5.47.1
-
   vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0):
     dependencies:
       lightningcss: 1.32.0
@@ -15403,10 +15366,10 @@ snapshots:
       '@babel/core': 7.29.0
       '@babel/preset-env': 7.29.5(@babel/core@7.29.0)
       '@babel/runtime': 7.29.2
-      '@rollup/plugin-babel': 6.1.0(@babel/core@7.29.0)(@types/babel__core@7.20.5)(rollup@4.60.3)
-      '@rollup/plugin-node-resolve': 16.0.3(rollup@4.60.3)
-      '@rollup/plugin-replace': 6.0.3(rollup@4.60.3)
-      '@rollup/plugin-terser': 1.0.0(rollup@4.60.3)
+      '@rollup/plugin-babel': 6.1.0(@babel/core@7.29.0)(@types/babel__core@7.20.5)(rollup@4.60.4)
+      '@rollup/plugin-node-resolve': 16.0.3(rollup@4.60.4)
+      '@rollup/plugin-replace': 6.0.3(rollup@4.60.4)
+      '@rollup/plugin-terser': 1.0.0(rollup@4.60.4)
       '@trickfilm400/rollup-plugin-off-main-thread': 3.0.0-pre1
       ajv: 8.20.0
       common-tags: 1.8.2
@@ -15415,7 +15378,7 @@ snapshots:
       fs-extra: 9.1.0
       glob: 11.1.0
       pretty-bytes: 5.6.0
-      rollup: 4.60.3
+      rollup: 4.60.4
       source-map: 0.8.0-beta.0
       stringify-object: 3.3.0
       strip-comments: 2.0.1

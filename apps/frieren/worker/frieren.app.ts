@@ -166,7 +166,9 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 				id: m.id,
 				name: m.name,
 				description: m.description ?? '',
-				iconUrl: m.icon ? `/api/kernel/${m.id}/${m.icon}` : undefined,
+				iconUrl: m.icon
+					? `/api/kernel/${m.id}/${m.icon}${m.version ? `?v=${encodeURIComponent(m.version)}` : ''}`
+					: undefined,
 				guiUrl: m.version
 					? `/api/kernel/${m.id}/gui.js?v=${encodeURIComponent(m.version)}`
 					: `/api/kernel/${m.id}/gui.js`,

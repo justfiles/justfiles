@@ -4,8 +4,6 @@ import { FinderApp } from './FinderApp'
 import finderIconUrl from './finder-icon.svg'
 import { MessagesApp } from './MessagesApp'
 import messagesIconUrl from './messages-icon.svg'
-import { PaintApp } from './paint/PaintApp'
-import paintIconUrl from './paint-icon.svg'
 import { SettingsApp } from './SettingsApp'
 import settingsIconUrl from './settings-icon.svg'
 
@@ -31,13 +29,6 @@ export const BUILTIN_APPS: BuiltinApp[] = [
 		description: 'Chat with the agent',
 		iconUrl: messagesIconUrl,
 		component: MessagesApp
-	},
-	{
-		id: 'paint',
-		name: 'Paint',
-		description: 'Pixel drawing',
-		iconUrl: paintIconUrl,
-		component: PaintApp
 	},
 	{
 		id: 'settings',
