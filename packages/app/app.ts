@@ -28,6 +28,10 @@ type CapabilityInvocation = {
 	capability: string
 	method: string
 	input: unknown
+	// Scopes the app declared on the capability request. The host enforces
+	// what's actually allowed; the SDK just forwards what the app said it
+	// wanted, so the host can pick narrower implementations per scope.
+	scopes: readonly string[]
 	actor?: string
 }
 type CapabilityInvoke = (req: CapabilityInvocation) => Promise<unknown>

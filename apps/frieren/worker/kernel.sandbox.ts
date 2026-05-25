@@ -46,6 +46,7 @@ type CapabilityInvocation = {
 	capability: string
 	method: string
 	input: unknown
+	scopes: readonly string[]
 	actor?: string
 }
 

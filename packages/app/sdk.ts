@@ -106,6 +106,7 @@ function createCapabilities(
 										capability: request.id,
 										method,
 										input,
+										scopes: request.scopes,
 										actor: action.actor
 									})
 								} catch (error) {

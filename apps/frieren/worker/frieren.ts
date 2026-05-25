@@ -170,7 +170,8 @@ export class Frieren extends DurableObject<Env> {
 			sockets: () => this.ctx.getWebSockets(),
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
-			broadcast: (msg) => this.broadcast(msg)
+			broadcast: (msg) => this.broadcast(msg),
+			integrations: () => this.requireIntegrations()
 		})
 		const { agent, integrations } = this.buildAgent()
 		this.integrations = integrations

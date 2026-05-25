@@ -9,8 +9,11 @@ import {
 import type { Volume } from '@justfiles/fs'
 import { unzipSync } from 'fflate'
 import type { AppController } from './bash/commands/app.ts'
+import type { Integrations } from './integrations/registry.ts'
+import { invokeIntegrations } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 import type { LLMText } from './llm.text.ts'
+import { invokeVolume } from './volume.capability.ts'
 
 interface DisplayApp {
 	readonly id: string
@@ -35,6 +38,9 @@ interface FrierenAppsDeps {
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
 	broadcast: (msg: AppBroadcast) => void
+	// Lazily resolved so frierenApps can be constructed before the
+	// integrations registry exists; the volume capability does not need it.
+	integrations?: () => Integrations
 }
 
 export interface FrierenApps {
@@ -71,19 +77,31 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		capability: string
 		method: string
 		input: unknown
+		scopes: readonly string[]
 		appId: string
 		actor?: string
 	}): Promise<unknown> {
-		if (req.capability !== 'ai' || req.method !== 'generateText') {
-			throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
+		if (req.capability === 'ai' && req.method === 'generateText') {
+			const input = req.input as { system?: unknown; prompt?: unknown }
+			if (!input || typeof input !== 'object' || typeof input.prompt !== 'string') {
+				throw capabilityError('CAPABILITY_INVALID_INPUT', req.capability, req.method)
+			}
+			return {
+				text: await deps.text.gen(
+					typeof input.system === 'string' ? input.system : '',
+					input.prompt
+				)
+			}
 		}
-		const input = req.input as { system?: unknown; prompt?: unknown }
-		if (!input || typeof input !== 'object' || typeof input.prompt !== 'string') {
-			throw capabilityError('CAPABILITY_INVALID_INPUT', req.capability, req.method)
+		if (req.capability === 'volume') {
+			return invokeVolume(deps.fs, req)
 		}
-		return {
-			text: await deps.text.gen(typeof input.system === 'string' ? input.system : '', input.prompt)
+		if (req.capability === 'integrations') {
+			const registry = deps.integrations?.()
+			if (!registry) throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
+			return invokeIntegrations(registry, req)
 		}
+		throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 	}
 
 	// kernel.subscribe's handler is in-memory, so it dies with the DO on

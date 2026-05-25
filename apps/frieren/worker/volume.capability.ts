@@ -1,0 +1,93 @@
+import { chroot, type Volume } from '@justfiles/fs'
+import { FileType } from '@justfiles/fs/types'
+
+// Host-side `volume` capability implementation. The SDK proxy forwards the
+// app's declared scopes; resolveVolume picks the right backing volume, and
+// invokeVolume routes one method call against it.
+//
+// Scope semantics:
+//   'system'    → the user's root volume
+//   '/prefix'   → chroot at that absolute prefix
+//   'app' / any → per-app chroot at /applications/<id>/data/files
+
+export function resolveVolume(
+	fs: Volume,
+	appId: string,
+	scopes: readonly string[]
+): { vol: Volume; root: string | null } {
+	if (scopes.includes('system')) return { vol: fs, root: null }
+	const prefix = scopes.find((s) => s.startsWith('/'))
+	if (prefix) return { vol: chroot(fs, prefix), root: prefix }
+	const root = `/applications/${appId}/data/files`
+	return { vol: chroot(fs, root), root }
+}
+
+export async function invokeVolume(
+	fs: Volume,
+	req: { appId: string; method: string; input: unknown; scopes: readonly string[] }
+): Promise<unknown> {
+	const { vol, root } = resolveVolume(fs, req.appId, req.scopes)
+	// Chroot is a path-join wrapper: it does not create its prefix. The
+	// per-app data dir is created lazily here so writes succeed on a fresh
+	// app without each handler having to pre-mkdir.
+	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
+	const input = (req.input ?? {}) as { path?: unknown; data?: unknown; recursive?: unknown }
+	if (typeof input.path !== 'string') throw invalid(req.method)
+	switch (req.method) {
+		case 'readFile':
+			return await vol.readFile(input.path)
+		case 'writeFile': {
+			if (!(input.data instanceof Uint8Array)) throw invalid(req.method)
+			await mkdirParent(vol, input.path)
+			await vol.writeFile(input.path, input.data)
+			return undefined
+		}
+		case 'mkdir':
+			await vol.mkdir(input.path, { recursive: input.recursive !== false })
+			return undefined
+		case 'exists':
+			return await vol.exists(input.path)
+		case 'scan':
+			return await scanDir(vol, input.path)
+		default:
+			throw unavailable(req.method)
+	}
+}
+
+async function mkdirParent(vol: Volume, path: string): Promise<void> {
+	const parent = path.split('/').slice(0, -1).join('/')
+	if (parent) await vol.mkdir(parent, { recursive: true })
+}
+
+async function scanDir(
+	vol: Volume,
+	path: string
+): Promise<Array<{ path: string; type: 'file' | 'dir' }>> {
+	if (!(await vol.exists(path))) return []
+	const base = path.endsWith('/') ? path.slice(0, -1) : path
+	const out: Array<{ path: string; type: 'file' | 'dir' }> = []
+	for (const entry of await vol.readdir(path)) {
+		if (entry.type === FileType.Symlink) continue
+		out.push({
+			path: `${base}/${entry.name}`,
+			type: entry.type === FileType.Directory ? 'dir' : 'file'
+		})
+	}
+	return out
+}
+
+function invalid(method: string): Error {
+	return Object.assign(new Error('CAPABILITY_INVALID_INPUT'), {
+		code: 'CAPABILITY_INVALID_INPUT',
+		capability: 'volume',
+		method
+	})
+}
+
+function unavailable(method: string): Error {
+	return Object.assign(new Error('CAPABILITY_UNAVAILABLE'), {
+		code: 'CAPABILITY_UNAVAILABLE',
+		capability: 'volume',
+		method
+	})
+}
