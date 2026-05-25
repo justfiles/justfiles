@@ -93,3 +93,35 @@ import { ai } from '@justfiles/app/capabilities/ai'
 - `@justfiles/app/runtime` — kernel runtime host API.
 - `@justfiles/app/vite` — Vite build/dev plugin.
 - `@justfiles/app/capabilities/*` — capability contracts and broker helpers.
+
+## App-authoring discipline
+
+### Shared runtime
+
+`kernelHost` externalises `react`, `react-dom`, `react-dom/client`,
+`react/jsx-runtime`, and `react/jsx-dev-runtime`. Apps emit bare imports
+like `from "react"`; the host resolves them through its importmap to a
+single set of `/vendor/*.js` URLs, so every app and the host share one
+React module instance. Don't override the externals, don't bundle your
+own React, and don't add another React-based library to the shared
+stdlib without coordinating with the host — duplicating React breaks
+hooks and context.
+
+### State discipline
+
+Reducer state is semantic, persistable, agent-inspectable. Put values
+the agent needs to read or that the user expects to survive a reload in
+the reducer. Keep transient interaction state — drag positions, scroll
+offsets, in-progress text input, undo history — in GUI-local React
+state. Don't dispatch on every keystroke or pointer-move; one dispatch
+per semantic event (pointer-up, form submit, save) is the right
+granularity. Each dispatch round-trips to the kernel.
+
+### Capabilities
+
+Declare every host service the app touches in the `capabilities` field
+of `defineApp`. The kernel uses the declared set to scope grants and the
+agent uses it to know what an action might trigger. Even if the host
+grants you broad access today, declaring keeps `app actions` honest —
+the TUI surface for the agent — and surfaces accidental escapes when a
+new host enforces tighter scopes.

@@ -17,6 +17,9 @@ interface DisplayApp {
 	readonly name: string
 	readonly description: string
 	readonly iconUrl?: string
+	// Version-stamped gui URL when the manifest has a version. Pairs with the
+	// asset() handler, which sets immutable Cache-Control for matching v=.
+	readonly guiUrl?: string
 	readonly kind: 'builtin' | 'app'
 }
 
@@ -42,7 +45,7 @@ export interface FrierenApps {
 	openIds(): Promise<string[]>
 	open(id: string): Promise<void>
 	close(id?: string): Promise<void>
-	asset(appId: string, path: string): Promise<Response>
+	asset(appId: string, path: string, version?: string): Promise<Response>
 	acceptWebSocket(appId: string): Promise<Response>
 	handleMessage(ws: WebSocket, appId: string, message: string | ArrayBuffer): Promise<void>
 }
@@ -120,6 +123,9 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 				name: m.name,
 				description: m.description ?? '',
 				iconUrl: m.icon ? `/api/kernel/${m.id}/${m.icon}` : undefined,
+				guiUrl: m.version
+					? `/api/kernel/${m.id}/gui.js?v=${encodeURIComponent(m.version)}`
+					: `/api/kernel/${m.id}/gui.js`,
 				kind: 'app' as const
 			}))
 		} catch {
@@ -147,7 +153,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		deps.broadcast({ type: 'kernel_app_close', id: target })
 	}
 
-	async function asset(appId: string, path: string): Promise<Response> {
+	async function asset(appId: string, path: string, version?: string): Promise<Response> {
 		let safe: string
 		try {
 			safe = safeBundlePath(path)
@@ -159,7 +165,15 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			const data = await installed.read(safe)
 			const body = new ArrayBuffer(data.byteLength)
 			new Uint8Array(body).set(data)
-			return new Response(body, { headers: { 'content-type': mimeFor(safe) } })
+			const headers: Record<string, string> = { 'content-type': mimeFor(safe) }
+			// When the URL pins the manifest version, the byte stream is
+			// immutable for that URL — browsers re-use the cached entry on
+			// re-launch within the token's lifetime, and a version bump in
+			// list() drives a fresh fetch via a different URL.
+			if (version && installed.manifest.version && version === installed.manifest.version) {
+				headers['cache-control'] = 'private, max-age=31536000, immutable'
+			}
+			return new Response(body, { headers })
 		} catch {
 			return new Response(null, { status: 404 })
 		}

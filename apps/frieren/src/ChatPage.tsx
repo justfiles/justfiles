@@ -176,7 +176,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 								{app.kind === 'builtin' ? (
 									<BuiltinHost id={app.id} />
 								) : (
-									<KernelAppFrame id={app.id} />
+									<KernelAppFrame id={app.id} guiUrl={info?.guiUrl} />
 								)}
 							</Window>
 						)

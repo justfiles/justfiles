@@ -27,8 +27,8 @@ type ServerFrame =
 	| { type: 'result'; id: string; result: unknown }
 	| { type: 'error'; id?: string; message: string }
 
-export function KernelAppFrame(props: { id: string; onHome?: () => void }) {
-	const { id, onHome } = props
+export function KernelAppFrame(props: { id: string; guiUrl?: string; onHome?: () => void }) {
+	const { id, guiUrl, onHome } = props
 	const { getToken } = useAuth()
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
@@ -81,8 +81,12 @@ export function KernelAppFrame(props: { id: string; onHome?: () => void }) {
 				// per-user DO route (Volume-backed bytes). Token rides the URL
 				// for the same reason the WS does — Clerk cookie auth 401s a
 				// non-document fetch. Vite must not analyse this specifier.
+				// The guiUrl carries `?v=<manifest.version>` when known, so
+				// the asset handler can serve it with immutable cache headers.
+				const base = guiUrl ?? `/api/kernel/${id}/gui.js`
+				const sep = base.includes('?') ? '&' : '?'
 				const mod = (await import(
-					/* @vite-ignore */ `/api/kernel/${id}/gui.js?token=${encodeURIComponent(token)}`
+					/* @vite-ignore */ `${base}${sep}token=${encodeURIComponent(token)}`
 				)) as GuiModule
 				if (cancelled) return
 
@@ -147,7 +151,7 @@ export function KernelAppFrame(props: { id: string; onHome?: () => void }) {
 			socket?.close()
 			if (container) container.innerHTML = ''
 		}
-	}, [id])
+	}, [id, guiUrl])
 
 	return (
 		<div className="relative h-full w-full">

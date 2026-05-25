@@ -48,6 +48,19 @@ export function kernelHost(opts: DevServerOptions): Plugin {
 						entry: resolve(root, opts.gui),
 						formats: ['es'],
 						fileName: () => 'gui.js'
+					},
+					rollupOptions: {
+						// The host serves a single shared React via /vendor/*.js
+						// (see apps/frieren importmap). Apps emit bare specifiers
+						// and the browser resolves them through the importmap —
+						// one URL, one React instance across host and every app.
+						external: [
+							'react',
+							'react-dom',
+							'react-dom/client',
+							'react/jsx-runtime',
+							'react/jsx-dev-runtime'
+						]
 					}
 				}
 			}

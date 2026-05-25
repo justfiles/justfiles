@@ -121,7 +121,11 @@ export class Frieren extends DurableObject<Env> {
 				}
 			})
 			.get('/api/kernel/:appId/*', (c) =>
-				this.requireApps().asset(c.req.param('appId'), c.req.path.split('/').slice(4).join('/'))
+				this.requireApps().asset(
+					c.req.param('appId'),
+					c.req.path.split('/').slice(4).join('/'),
+					c.req.query('v')
+				)
 			)
 			.route('/fs', createFsApi(fs))
 
