@@ -2,6 +2,7 @@ import {
 	type Action,
 	type AppBundle,
 	type AppManifest,
+	type BuiltinBundle,
 	type Kernel,
 	kernel,
 	safeBundlePath
@@ -9,6 +10,7 @@ import {
 import type { Volume } from '@justfiles/fs'
 import { unzipSync } from 'fflate'
 import type { AppController } from './bash/commands/app.ts'
+import { BUILTINS } from './builtins/index.ts'
 import type { Integrations } from './integrations/registry.ts'
 import { invokeIntegrations } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
@@ -61,6 +63,7 @@ const OPEN_KERNEL_APPS_STORAGE_KEY = 'open_kernel_apps'
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
 	let subscribed = false
+	let builtinsReady: Promise<void> | undefined
 
 	function getKernel(): Kernel {
 		if (kernelInstance) return kernelInstance
@@ -71,6 +74,29 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			clock: {}
 		})
 		return kernelInstance
+	}
+
+	// Bundled built-in apps install themselves into the user's volume on the
+	// first kernel use per DO instance. After the first run the version diff
+	// short-circuits to a single `kernel.list()` read.
+	async function ensureBuiltinsInstalled(k: Kernel): Promise<void> {
+		if (!builtinsReady) {
+			builtinsReady = (async () => {
+				if (BUILTINS.length === 0) return
+				const installed = new Map((await k.list()).map((m) => [m.id, m.version]))
+				for (const builtin of BUILTINS) {
+					if (installed.get(builtin.id) === builtin.version) continue
+					await k.install(bundleFromBuiltin(builtin))
+				}
+			})()
+		}
+		return builtinsReady
+	}
+
+	async function kernelReady(): Promise<Kernel> {
+		const k = getKernel()
+		await ensureBuiltinsInstalled(k)
+		return k
 	}
 
 	async function invokeCapability(req: {
@@ -121,7 +147,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	}
 
 	async function inspect(id: string) {
-		const k = getKernel()
+		const k = await kernelReady()
 		const installed = await k.app(id)
 		const [state, actions] = await Promise.all([k.state(id).catch(() => undefined), k.actions(id)])
 		return {
@@ -135,7 +161,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {
-			const manifests = await getKernel().list()
+			const manifests = await (await kernelReady()).list()
 			return manifests.map((m) => ({
 				id: m.id,
 				name: m.name,
@@ -179,7 +205,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			return new Response(null, { status: 404 })
 		}
 		try {
-			const installed = await getKernel().app(appId)
+			const installed = await (await kernelReady()).app(appId)
 			const data = await installed.read(safe)
 			const body = new ArrayBuffer(data.byteLength)
 			new Uint8Array(body).set(data)
@@ -209,7 +235,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// server proves over REST+SSE, here over a single hibernatable socket.
 
 	async function acceptWebSocket(appId: string): Promise<Response> {
-		const k = getKernel()
+		const k = await kernelReady()
 		const { 0: client, 1: server } = new WebSocketPair()
 		deps.acceptWebSocket(server)
 		server.serializeAttachment({ appId })
@@ -238,7 +264,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 		ensureSubscribed()
 		try {
-			const result = await getKernel().dispatch(appId, request.action as Action)
+			const result = await (await kernelReady()).dispatch(appId, request.action as Action)
 			ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
 		} catch (error) {
 			ws.send(
@@ -268,10 +294,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			return lastId ? await inspect(lastId).catch(() => undefined) : undefined
 		},
 		inspect,
-		state: async (id) => await getKernel().state(id),
+		state: async (id) => await (await kernelReady()).state(id),
 		run: async (id, action, params) => {
 			ensureSubscribed()
-			return await getKernel().dispatch(id, { type: action, params, actor: 'agent' })
+			return await (await kernelReady()).dispatch(id, { type: action, params, actor: 'agent' })
 		}
 	}
 
@@ -288,6 +314,22 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		asset,
 		acceptWebSocket,
 		handleMessage
+	}
+}
+
+function bundleFromBuiltin(builtin: BuiltinBundle): AppBundle {
+	return {
+		async manifest() {
+			return builtin.manifest
+		},
+		async *list() {
+			yield* Object.keys(builtin.files)
+		},
+		async read(path) {
+			const bytes = builtin.files[safeBundlePath(path)]
+			if (!bytes) throw new Error(`file not found: ${path}`)
+			return bytes
+		}
 	}
 }
 

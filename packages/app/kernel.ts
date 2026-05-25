@@ -9,7 +9,7 @@ import type {
 } from './app.ts'
 import { safeBundlePath } from './app.ts'
 
-export type { Action, ActionMeta, AppBundle, AppManifest } from './app.ts'
+export type { Action, ActionMeta, AppBundle, AppManifest, BuiltinBundle } from './app.ts'
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
 export { appBundleFromMemory, safeBundlePath } from './app.ts'
