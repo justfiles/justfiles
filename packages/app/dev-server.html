@@ -25,9 +25,9 @@
 					return () => es.close()
 				}
 			}
-			// Bootstrap only — the host pushes authoritative state via subscribe.
-			const state = { count: 0 }
-			gui.mount(document.getElementById('app'), state, { transport })
+			// Mount with `null` — the app's GUI renders its initial state
+			// until the host pushes the first frame via subscribe.
+			gui.mount(document.getElementById('app'), null, { transport })
 		</script>
 	</body>
 </html>

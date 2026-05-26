@@ -4,6 +4,7 @@ import type {
 	ActionMeta,
 	AppBundle,
 	AppManifest,
+	DispatchResult,
 	InstalledApp,
 	RuntimeContext
 } from './app.ts'
@@ -23,7 +24,7 @@ interface System {
 export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
 
 export type Sandbox = {
-	run(action: Action, ctx: RuntimeContext): Promise<unknown>
+	run(action: Action, ctx: RuntimeContext): Promise<DispatchResult<unknown>>
 	actions?(): Promise<Record<string, ActionMeta>>
 }
 type Clock = object
@@ -156,16 +157,20 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		// identically for in-process and remote sandboxes; the kernel just
 		// loads and runs.
 		const sb = await sandbox({ appId, code: text(await app.read(app.manifest.app)) })
-		const result = await sb.run(action, {
+		const out = await sb.run(action, {
 			state: current,
 			files: chroot(fs, `${root}/data/files`),
 			setState: saveState
 		})
-		await saveState(result)
-		// State is push-only: every committed state change fans out to
-		// subscribers, scoped by appId.
-		emit({ type: 'app.update', appId, state: result as AppState })
-		return result
+		// Handlers populate `state`; queries don't. Only persist + push when
+		// the action declared itself as a state-mutating handler — that's
+		// what keeps query-style reads (e.g. Finder's readFile) from
+		// ballooning state with file content.
+		if (out.state !== undefined) {
+			await saveState(out.state)
+			emit({ type: 'app.update', appId, state: out.state as AppState })
+		}
+		return out.result
 	}
 
 	async function state(appId: AppId): Promise<unknown> {

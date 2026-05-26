@@ -368,15 +368,15 @@ and reinstalls only mismatches. Happy path: one `kernel.list()` call.
 
 ## Step 3.1 — Per-app version source
 
-Each built-in lives in its own `packages/app-frieren-<name>/` directory,
+Each built-in lives in its own `packages/app-<name>/` directory,
 with `package.json#version` as the source of truth.
 
 **Files (new packages — created in Parts 4–8):**
 
-- `packages/app-frieren-finder/`
-- `packages/app-frieren-paint/`
-- `packages/app-frieren-settings/`
-- `packages/app-frieren-messages/`
+- `packages/app-finder/`
+- `packages/app-paint/`
+- `packages/app-settings/`
+- `packages/app-messages/`
 
 Each has the standard kernel-app layout (`src/app.ts`, `src/gui.tsx`,
 `vite.config.ts`, `package.json` with workspace dep on `@justfiles/app`).
@@ -477,15 +477,15 @@ async function ensureBuiltinsInstalled(kernel: Kernel) {
 Smallest migration; only needs `volume`. Use this to shake out the
 build pipeline and the new mount path.
 
-## Step 4.1 — Scaffold `packages/app-frieren-paint/`
+## Step 4.1 — Scaffold `packages/app-paint/`
 
 **Files:**
 
-- `packages/app-frieren-paint/package.json` — workspace deps:
+- `packages/app-paint/package.json` — workspace deps:
   `@justfiles/app`, `@justfiles/app/capabilities/volume`, `react`,
   `react-dom`, `valibot`. Build script: `vite build`.
-- `packages/app-frieren-paint/vite.config.ts` — `kernelHost({ id: 'app.frieren.paint', name: 'Paint', description: 'Pixel drawing', icon: 'icon.svg', app: 'src/app.ts', gui: 'src/gui.tsx' })`.
-- `packages/app-frieren-paint/public/icon.svg` — copied from existing
+- `packages/app-paint/vite.config.ts` — `kernelHost({ id: 'app.frieren.paint', name: 'Paint', description: 'Pixel drawing', icon: 'icon.svg', app: 'src/app.ts', gui: 'src/gui.tsx' })`.
+- `packages/app-paint/public/icon.svg` — copied from existing
   `apps/frieren/src/builtin/paint-icon.svg`.
 
 ## Step 4.2 — Reducer (`src/app.ts`)
@@ -566,7 +566,7 @@ Paint now flows through `KernelAppFrame` like any other app.
 
 Exercises `volume{scope:'system'}`.
 
-## Step 5.1 — Scaffold `packages/app-frieren-finder/`
+## Step 5.1 — Scaffold `packages/app-finder/`
 
 Same shape as Paint. Capability: `volume({ scopes: ['system'] })`.
 
@@ -616,7 +616,7 @@ pnpm run verify:ui
 
 Exercises `integrations` capability.
 
-## Step 6.1 — Scaffold `packages/app-frieren-settings/`
+## Step 6.1 — Scaffold `packages/app-settings/`
 
 Capability: `integrations({})`. No volume access.
 
@@ -764,7 +764,7 @@ export interface AgentCapability {
   delegates to existing `session.manager` + `llm.agent` machinery.
   `events` subscription routes through the new subscription wire.
 
-## Step 8.2 — Scaffold `packages/app-frieren-messages/`
+## Step 8.2 — Scaffold `packages/app-messages/`
 
 Capability: `agent`.
 
@@ -904,7 +904,7 @@ pnpm run verify:ui
    actually writing the SDK code.
 4. **Step 7.4:** subscription state across DO hibernation. v1: in-memory
    only; subscriptions re-established on reconnect. Acceptable?
-5. **Whether to commit per-builtin packages under `packages/app-frieren-*`
+5. **Whether to commit per-builtin packages under `packages/app-*`
    or co-locate them under `apps/frieren/builtins/*`.** Recommendation:
    `packages/` for symmetry with `app-counter`/`app-crossword`/`app-doom`.
 

@@ -41,29 +41,29 @@ const color = v.pipe(v.string(), v.regex(/^#[0-9a-fA-F]{6}$/))
 export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: ['system'] }) },
-	handlers: {
-		setTool: {
+	actions: (b) => ({
+		setTool: b.handler({
 			description: 'Pick the active drawing tool.',
 			schema: v.object({ tool }),
 			handler({ tool }, ctx) {
 				return { ...ctx.state, tool }
 			}
-		},
-		setSize: {
+		}),
+		setSize: b.handler({
 			description: 'Pick the active brush size.',
 			schema: v.object({ size }),
 			handler({ size }, ctx) {
 				return { ...ctx.state, size }
 			}
-		},
-		setColor: {
+		}),
+		setColor: b.handler({
 			description: 'Pick the active color (hex #rrggbb).',
 			schema: v.object({ color }),
 			handler({ color }, ctx) {
 				return { ...ctx.state, color }
 			}
-		},
-		save: {
+		}),
+		save: b.handler({
 			description: 'Save the current canvas as PNG to /Paint/.',
 			schema: v.object({
 				pngBase64: v.pipe(v.string(), v.minLength(1)),
@@ -83,15 +83,15 @@ export const app = defineApp({
 					}
 				}
 			}
-		},
-		clearStatus: {
+		}),
+		clearStatus: b.handler({
 			description: 'Clear the save/error status line.',
 			schema: v.object({}),
 			handler(_, ctx) {
 				return { ...ctx.state, lastSavedPath: null, lastError: null }
 			}
-		}
-	}
+		})
+	})
 })
 
 export type PaintApp = typeof app

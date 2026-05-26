@@ -1281,9 +1281,9 @@ For Frieren UI smoke:
 
 ```sh
 cd apps/frieren
-bun run dev
+pnpm run dev
 # another shell
-bun run verify:ui
+pnpm run verify:ui
 ```
 
 Manual smoke scenarios:

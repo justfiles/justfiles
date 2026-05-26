@@ -1,15 +1,17 @@
 import type { App } from './app.ts'
 import { type Client, createClient, type Transport } from './sdk.ts'
 
-type GUIState<A> = A extends App<infer State, infer _Schemas, infer _Caps> ? State : never
+type GUIState<A> = A extends App<infer State, infer _Acts, infer _Caps> ? State : never
 
 interface GUISpec<A> {
 	// The app's typed client is injected; the GUI never touches transport.
+	// `state` is nullable — the host may mount before the kernel has any
+	// persisted state for this app, or before the WS round-trip completes.
 	mount: (
 		el: HTMLElement,
-		state: GUIState<A>,
+		state: GUIState<A> | null,
 		ctx: { readonly client: Client<A> }
-	) => GUIInstance<GUIState<A>>
+	) => GUIInstance<GUIState<A> | null>
 }
 
 interface GUIInstance<State> {
@@ -24,9 +26,11 @@ interface GUIInstance<State> {
 // one direction, from the host through `subscribe`.
 export function defineGUI<A>(spec: GUISpec<A>) {
 	return {
-		mount(el: HTMLElement, state: GUIState<A>, ctx: { transport: Transport }) {
+		mount(el: HTMLElement, state: GUIState<A> | null, ctx: { transport: Transport }) {
 			const instance = spec.mount(el, state, { client: createClient<A>(ctx.transport) })
-			const unsubscribe = ctx.transport.subscribe((next) => instance.update(next as GUIState<A>))
+			const unsubscribe = ctx.transport.subscribe((next) =>
+				instance.update(next as GUIState<A> | null)
+			)
 			return {
 				update: instance.update,
 				async unmount() {

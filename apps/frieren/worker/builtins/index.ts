@@ -5,6 +5,7 @@
 // '@justfiles/app-frieren-x/bundle'` and append `x` to BUILTINS below.
 
 import type { BuiltinBundle } from '@justfiles/app/runtime'
+import finder from '@justfiles/app-finder/bundle'
 import paint from '@justfiles/app-paint/bundle'
 
-export const BUILTINS: readonly BuiltinBundle[] = [paint]
+export const BUILTINS: readonly BuiltinBundle[] = [paint, finder]

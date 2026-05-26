@@ -48,7 +48,9 @@ export async function invokeVolume(
 		case 'exists':
 			return await vol.exists(input.path)
 		case 'scan':
-			return await scanDir(vol, input.path)
+			return input.recursive === true
+				? await scanTree(vol, input.path)
+				: await scanDir(vol, input.path)
 		default:
 			throw unavailable(req.method)
 	}
@@ -73,6 +75,26 @@ async function scanDir(
 			type: entry.type === FileType.Directory ? 'dir' : 'file'
 		})
 	}
+	return out
+}
+
+// Recursive walk that hits the storage layer's full-volume cursor (one
+// network round trip when the backing storage supports it), so callers
+// avoid N+1 capability invocations from the sandboxed worker.
+async function scanTree(
+	vol: Volume,
+	path: string
+): Promise<Array<{ path: string; type: 'file' | 'dir' }>> {
+	if (!(await vol.exists(path))) return []
+	const out: Array<{ path: string; type: 'file' | 'dir' }> = []
+	await vol.scan(path, async (entryPath, stat) => {
+		if (entryPath === path) return
+		if (stat.type === FileType.Symlink) return
+		out.push({
+			path: entryPath,
+			type: stat.type === FileType.Directory ? 'dir' : 'file'
+		})
+	})
 	return out
 }
 

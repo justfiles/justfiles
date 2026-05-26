@@ -94,6 +94,26 @@ describe('volume capability', () => {
 		])
 	})
 
+	test('scan with recursive=true returns the full descendant tree', async () => {
+		const { fs } = setup()
+		await seed(fs, '/applications/x/data/files/a.txt', 'a')
+		await seed(fs, '/applications/x/data/files/sub/b.txt', 'b')
+		await seed(fs, '/applications/x/data/files/sub/deep/c.txt', 'c')
+		const entries = (await invokeVolume(fs, {
+			appId: 'x',
+			method: 'scan',
+			input: { path: '/', recursive: true },
+			scopes: ['app']
+		})) as Array<{ path: string; type: 'file' | 'dir' }>
+		expect(entries.sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+			{ path: '/a.txt', type: 'file' },
+			{ path: '/sub', type: 'dir' },
+			{ path: '/sub/b.txt', type: 'file' },
+			{ path: '/sub/deep', type: 'dir' },
+			{ path: '/sub/deep/c.txt', type: 'file' }
+		])
+	})
+
 	test('exists reports presence without throwing on a missing path', async () => {
 		const { fs } = setup()
 		await seed(fs, '/applications/x/data/files/there.txt', 'hi')

@@ -385,6 +385,14 @@ export function useChat(): UseChatResult {
 	// it from the launcher state optimistically. Mirror of `installApp`.
 	const uninstallApp = async (id: string) => {
 		const prev = installedApps
+		// Close any open window for this app first. Otherwise the still-mounted
+		// KernelAppFrame sees its `guiUrl` go undefined when the launcher drops
+		// the app, the effect re-fires, and the GUI's React root is unmounted
+		// synchronously from inside the parent's commit — corrupting the DOM
+		// (NotFoundError on removeChild) and leaving the desktop in a half-
+		// broken state where the user sees "nothing happens".
+		setOpenApps((open) => open.filter((a) => !(a.kind === 'app' && a.id === id)))
+		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id }))
 		setInstalledApps((apps) => apps.filter((a) => !(a.kind === 'app' && a.id === id)))
 		try {
 			const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {

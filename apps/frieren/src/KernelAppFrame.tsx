@@ -44,21 +44,26 @@ export function KernelAppFrame(props: { id: string; guiUrl?: string; onHome?: ()
 		let nextId = 0
 		const pending = new Map<string, (frame: { result?: unknown; error?: string }) => void>()
 		const subscribers = new Set<(state: unknown) => void>()
+		// GUI mounts immediately (before WS opens) and is allowed to dispatch
+		// from its mount effect. Queue those frames here and flush once the
+		// socket reaches OPEN; without this, the first dispatch races the
+		// handshake and fails with `no_connection`.
+		const outbox: string[] = []
+		const send = (frame: string) => {
+			const ws = socket
+			if (ws && ws.readyState === ws.OPEN) ws.send(frame)
+			else outbox.push(frame)
+		}
 
 		const transport: Transport = {
 			invoke: (action) =>
 				new Promise((resolve, reject) => {
-					const ws = socket
-					if (!ws || ws.readyState !== ws.OPEN) {
-						reject(new Error('no_connection'))
-						return
-					}
 					const reqId = String(nextId++)
 					pending.set(reqId, (frame) => {
 						if (frame.error !== undefined) reject(new Error(frame.error))
 						else resolve(frame.result)
 					})
-					ws.send(JSON.stringify({ id: reqId, action }))
+					send(JSON.stringify({ id: reqId, action }))
 				}),
 			subscribe: (onState) => {
 				subscribers.add(onState)
@@ -90,13 +95,21 @@ export function KernelAppFrame(props: { id: string; guiUrl?: string; onHome?: ()
 				)) as GuiModule
 				if (cancelled) return
 
+				// Mount immediately with `null` so the app's GUI can render its
+				// own bootstrap UI (loading spinner, empty list, etc.) while the
+				// WS handshake completes. Without this, the user stares at a
+				// blank frame for the round-trip to the DO.
+				instance = mod.gui.mount(container, null, { transport })
+
 				const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 				const ws = new WebSocket(
 					`${protocol}//${window.location.host}/api/kernel/${id}/ws?token=${encodeURIComponent(token)}`
 				)
 				socket = ws
 
-				let mounted = false
+				ws.onopen = () => {
+					while (outbox.length > 0) ws.send(outbox.shift() as string)
+				}
 				ws.onmessage = (event) => {
 					let frame: ServerFrame
 					try {
@@ -105,12 +118,9 @@ export function KernelAppFrame(props: { id: string; guiUrl?: string; onHome?: ()
 						return
 					}
 					if (frame.type === 'state') {
-						if (!mounted && !cancelled) {
-							mounted = true
-							instance = mod.gui.mount(container, frame.state, { transport })
-						} else {
-							for (const fn of subscribers) fn(frame.state)
-						}
+						if (cancelled) return
+						void instance?.update(frame.state)
+						for (const fn of subscribers) fn(frame.state)
 						return
 					}
 					if (frame.type === 'result') {
@@ -139,6 +149,7 @@ export function KernelAppFrame(props: { id: string; guiUrl?: string; onHome?: ()
 				ws.onclose = () => {
 					for (const [, resolve] of pending) resolve({ error: 'connection_closed' })
 					pending.clear()
+					outbox.length = 0
 				}
 			} catch (e) {
 				if (!cancelled) setError(e instanceof Error ? e.message : String(e))
@@ -147,9 +158,14 @@ export function KernelAppFrame(props: { id: string; guiUrl?: string; onHome?: ()
 
 		return () => {
 			cancelled = true
-			void instance?.unmount()
+			// Defer the GUI's root.unmount() to a microtask. The GUI lives in
+			// its own React root; unmounting it synchronously from inside the
+			// parent's commit phase trips "Attempted to synchronously unmount
+			// a root while React was already rendering" and leaves the DOM in
+			// an inconsistent state (NotFoundError on removeChild).
+			const inst = instance
+			if (inst) queueMicrotask(() => void inst.unmount())
 			socket?.close()
-			if (container) container.innerHTML = ''
 		}
 	}, [id, guiUrl])
 
