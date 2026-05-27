@@ -32,7 +32,7 @@ function pickZipFile(): Promise<File | null> {
 }
 
 function activeKey(app: ActiveApp): string {
-	return `${app.kind}:${app.id}`
+	return app.id
 }
 
 function bringToFront(apps: ActiveApp[], target: ActiveApp): ActiveApp[] {
@@ -272,14 +272,13 @@ export function useChat(): UseChatResult {
 				}
 
 				if (data.type === 'kernel_app_open') {
-					const active: ActiveApp = { kind: 'app', id: data.id }
+					const active: ActiveApp = { id: data.id }
 					setOpenApps((prev) => bringToFront(prev, active))
 					return
 				}
 
 				if (data.type === 'kernel_app_close') {
-					const key = `app:${data.id}`
-					setOpenApps((prev) => prev.filter((a) => activeKey(a) !== key))
+					setOpenApps((prev) => prev.filter((a) => a.id !== data.id))
 					return
 				}
 
@@ -330,10 +329,9 @@ export function useChat(): UseChatResult {
 	}
 
 	const launchApp = (app: InstalledApp) => {
-		const active: ActiveApp = { kind: app.kind, id: app.id }
+		const active: ActiveApp = { id: app.id }
 		setOpenApps((prev) => bringToFront(prev, active))
-		if (app.kind === 'app')
-			wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
+		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
 	}
 
 	const closeApp = () => {
@@ -341,8 +339,7 @@ export function useChat(): UseChatResult {
 		if (!focused) return
 		const key = activeKey(focused)
 		setOpenApps((prev) => prev.filter((a) => activeKey(a) !== key))
-		if (focused.kind === 'app')
-			wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id: focused.id }))
+		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id: focused.id }))
 	}
 
 	const focusApp = (app: ActiveApp) => {
@@ -391,9 +388,9 @@ export function useChat(): UseChatResult {
 		// synchronously from inside the parent's commit — corrupting the DOM
 		// (NotFoundError on removeChild) and leaving the desktop in a half-
 		// broken state where the user sees "nothing happens".
-		setOpenApps((open) => open.filter((a) => !(a.kind === 'app' && a.id === id)))
+		setOpenApps((open) => open.filter((a) => a.id !== id))
 		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id }))
-		setInstalledApps((apps) => apps.filter((a) => !(a.kind === 'app' && a.id === id)))
+		setInstalledApps((apps) => apps.filter((a) => a.id !== id))
 		try {
 			const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {
 				method: 'DELETE',

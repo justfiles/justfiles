@@ -1,5 +1,4 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: variance-load-bearing — see ActionDef comment
-import type { Volume } from '@justfiles/fs'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { CapabilityFactory } from './capabilities/core.ts'
 
@@ -125,14 +124,12 @@ export interface App<
 export interface Context<State = unknown, Caps extends CapabilityRequests = NoCapabilities> {
 	setState: (state: State) => Promise<void>
 	readonly state: State
-	files: Volume
 	readonly capabilities: InjectedCapabilities<Caps>
 }
 
 export interface RuntimeContext<State = unknown> {
 	setState: (state: State) => Promise<void>
 	readonly state: State
-	files: Volume
 	capabilityInvoke?: CapabilityInvoke
 }
 

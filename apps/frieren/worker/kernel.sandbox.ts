@@ -7,9 +7,8 @@ import type { GetSandbox, Sandbox } from '@justfiles/app'
 
 // Worker Loader needs a WorkerEntrypoint as the main module. This wrapper
 // imports the app bundle and exposes `dispatch` as the one RPC the kernel
-// calls. `ctx` (state + the host `files` Volume + `setState`) crosses by
-// RPC: the plain Volume's methods and `setState` become stubs, so app file
-// I/O round-trips back to the host volume.
+// calls. `ctx` (state + `setState`) crosses by RPC; host services are
+// exposed only through explicit capability invocation.
 const ENTRY = `import { WorkerEntrypoint } from 'cloudflare:workers'
 import { app } from './app.js'
 export default class extends WorkerEntrypoint {

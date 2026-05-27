@@ -1,4 +1,4 @@
-export type ActiveApp = { kind: 'builtin'; id: string } | { kind: 'app'; id: string }
+export type ActiveApp = { id: string }
 
 export interface InstalledApp {
 	id: string
@@ -8,11 +8,10 @@ export interface InstalledApp {
 	// Version-stamped URL of the app's gui.js, e.g. /api/kernel/foo/gui.js?v=1.2.0.
 	// Absent for builtins and for apps without a version in their manifest.
 	guiUrl?: string
-	kind: 'builtin' | 'app'
 }
 
-// `openApps` is the running set; `focusedId` is the topmost window key
-// (`${kind}:${id}`). `activeApp` is a derived convenience: the focused app
+// `openApps` is the running set; `focusedId` is the topmost app id.
+// `activeApp` is a derived convenience: the focused app
 // object, kept for chat-view callers that only know the single-app model.
 // Dev-only host capability: upload a zipped app-system bundle to the kernel
 // install endpoint. `uninstallApp` removes a previously-installed bundle by id.

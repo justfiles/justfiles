@@ -25,7 +25,6 @@ interface DisplayApp {
 	// Version-stamped gui URL when the manifest has a version. Pairs with the
 	// asset() handler, which sets immutable Cache-Control for matching v=.
 	readonly guiUrl?: string
-	readonly kind: 'builtin' | 'app'
 }
 
 type AppBroadcast =
@@ -171,8 +170,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 					: undefined,
 				guiUrl: m.version
 					? `/api/kernel/${m.id}/gui.js?v=${encodeURIComponent(m.version)}`
-					: `/api/kernel/${m.id}/gui.js`,
-				kind: 'app' as const
+					: `/api/kernel/${m.id}/gui.js`
 			}))
 		} catch {
 			return []

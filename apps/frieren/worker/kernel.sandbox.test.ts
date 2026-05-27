@@ -1,5 +1,4 @@
 import { defineApp } from '@justfiles/app'
-import { chroot, memStorage, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
 import { workerSandbox } from './kernel.sandbox'
 
@@ -62,7 +61,6 @@ const fakeLoader = () => {
 
 const ctx = () => ({
 	state: undefined as unknown,
-	files: chroot(volume(memStorage()), '/'),
 	setState: async () => {}
 })
 

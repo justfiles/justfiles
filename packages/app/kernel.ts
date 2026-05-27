@@ -1,4 +1,4 @@
-import { chroot, type Volume } from '@justfiles/fs'
+import type { Volume } from '@justfiles/fs'
 import type {
 	Action,
 	ActionMeta,
@@ -221,7 +221,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const app = await getApp(appId)
 		if (!app) throw new Error(`app not found: ${appId}`)
 
-		await fs.mkdir(`${root}/data/files`, { recursive: true })
+		await fs.mkdir(`${root}/data`, { recursive: true })
 		const statePath = `${root}/data/state.json`
 		const current = await loadState(root)
 
@@ -234,7 +234,6 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const sb = await sandbox({ appId, code: text(await app.read(app.manifest.app)) })
 		const out = await sb.run(action, {
 			state: current,
-			files: chroot(fs, `${root}/data/files`),
 			setState: saveState
 		})
 		// Handlers populate `state`; queries don't. Only persist + push when

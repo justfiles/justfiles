@@ -5,8 +5,6 @@ import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
 import { Window, type WindowPersist } from '@/components/Window'
-import { BuiltinHost } from './BuiltinHost'
-import { builtinLauncherEntries } from './builtin'
 import { MessagesPanel } from './chat/MessagesPanel'
 import type { ConnectionState, InstalledApp } from './chat/types'
 import { ChatProvider, useChat } from './chat/useChat'
@@ -59,7 +57,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const chat = useChat()
 	const { connection, apps } = chat
 	const { launcher } = apps
-	const desktopApps: InstalledApp[] = [...launcher.installedApps, ...builtinLauncherEntries()]
+	const desktopApps: InstalledApp[] = launcher.installedApps
 	const persistFor = useWindowPersistence()
 	const menu = useContextMenu()
 	const [fullscreenKey, setFullscreenKey] = useState<string | null>(null)
@@ -69,7 +67,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 
 	useEffect(() => {
 		if (!fullscreenKey) return
-		const stillOpen = launcher.openApps.some((app) => `${app.kind}:${app.id}` === fullscreenKey)
+		const stillOpen = launcher.openApps.some((app) => app.id === fullscreenKey)
 		if (!stillOpen) setFullscreenKey(null)
 	}, [launcher.openApps, fullscreenKey])
 
@@ -83,7 +81,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 
 	const appMenuItems = (app: InstalledApp): ContextMenuItem[] => {
 		const items: ContextMenuItem[] = [{ label: 'Open', onSelect: () => launcher.launch(app) }]
-		if (app.kind === 'app' && launcher.uninstallApp) {
+		if (launcher.uninstallApp) {
 			items.push(
 				{ separator: true },
 				{
@@ -148,7 +146,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 						{desktopApps.map((app) => (
 							// biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the icon group
 							<div
-								key={`${app.kind}:${app.id}`}
+								key={app.id}
 								className="group relative flex w-20 flex-col items-center"
 								onContextMenu={(event) => menu.open(event, appMenuItems(app))}
 							>
@@ -173,8 +171,8 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 						))}
 					</div>
 					{launcher.openApps.map((app, index) => {
-						const key = `${app.kind}:${app.id}`
-						const info = desktopApps.find((d) => d.kind === app.kind && d.id === app.id)
+						const key = app.id
+						const info = desktopApps.find((d) => d.id === app.id)
 						const focused = launcher.focusedId === key
 						const isFullscreen = fullscreenKey === key
 						return (
@@ -193,11 +191,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 									setFullscreenKey(isFullscreen ? null : key)
 								}}
 							>
-								{app.kind === 'builtin' ? (
-									<BuiltinHost id={app.id} />
-								) : (
-									<KernelAppFrame id={app.id} guiUrl={info?.guiUrl} />
-								)}
+								<KernelAppFrame id={app.id} guiUrl={info?.guiUrl} />
 							</Window>
 						)
 					})}

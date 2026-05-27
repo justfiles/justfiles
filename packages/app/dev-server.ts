@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, extname, join, resolve } from 'node:path'
-import { memStorage, volume } from '@justfiles/fs'
+import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
+import { FileType } from '@justfiles/fs/types'
 import { buildSync } from 'esbuild'
 import type { Connect } from 'vite'
 import { type Action, appBundleFromMemory } from './app.ts'
@@ -16,14 +17,28 @@ export interface DevServerOptions {
 	gui: string // browser bundle entry, relative to vite root
 }
 
-const sandbox: GetSandbox = async ({ code }) => {
-	const mod = await import(
-		/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
-	)
-	if (typeof mod.app !== 'object') throw new Error('app module must export an object named "app"')
-	return {
-		run: (action, ctx) => mod.app.dispatch(action, ctx),
-		actions: async () => mod.app.actions ?? {}
+function sandboxFor(fs: Volume): GetSandbox {
+	return async ({ appId, code }) => {
+		const mod = await import(
+			/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
+		)
+		if (typeof mod.app !== 'object') throw new Error('app module must export an object named "app"')
+		return {
+			run: (action, ctx) =>
+				mod.app.dispatch(action, {
+					...ctx,
+					capabilityInvoke: (req: {
+						capability: string
+						method: string
+						input: unknown
+						scopes: readonly string[]
+					}) => {
+						if (req.capability === 'volume') return invokeVolume(fs, appId, req)
+						throw new Error(`capability unavailable: ${req.capability}`)
+					}
+				}),
+			actions: async () => mod.app.actions ?? {}
+		}
 	}
 }
 
@@ -94,12 +109,73 @@ function publicAssets(dir: string): Record<string, Uint8Array> {
 	return out
 }
 
+async function invokeVolume(
+	fs: Volume,
+	appId: string,
+	req: { method: string; input: unknown; scopes: readonly string[] }
+): Promise<unknown> {
+	const root = req.scopes.includes('system')
+		? null
+		: (req.scopes.find((s) => s.startsWith('/')) ?? `/applications/${appId}/data/files`)
+	const vol = root ? chroot(fs, root) : fs
+	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
+	const input = (req.input ?? {}) as { path?: unknown; data?: unknown; recursive?: unknown }
+	if (typeof input.path !== 'string') throw new Error('CAPABILITY_INVALID_INPUT')
+	switch (req.method) {
+		case 'readFile':
+			return await vol.readFile(input.path)
+		case 'writeFile': {
+			if (!(input.data instanceof Uint8Array)) throw new Error('CAPABILITY_INVALID_INPUT')
+			await mkdirParent(vol, input.path)
+			await vol.writeFile(input.path, input.data)
+			return undefined
+		}
+		case 'mkdir':
+			await vol.mkdir(input.path, { recursive: input.recursive !== false })
+			return undefined
+		case 'exists':
+			return await vol.exists(input.path)
+		case 'scan':
+			return input.recursive === true
+				? await scanTree(vol, input.path)
+				: await scanDir(vol, input.path)
+		default:
+			throw new Error('CAPABILITY_UNAVAILABLE')
+	}
+}
+
+async function mkdirParent(vol: Volume, path: string): Promise<void> {
+	const parent = path.split('/').slice(0, -1).join('/')
+	if (parent) await vol.mkdir(parent, { recursive: true })
+}
+
+async function scanDir(vol: Volume, path: string): Promise<Array<{ path: string; type: string }>> {
+	if (!(await vol.exists(path))) return []
+	const base = path.endsWith('/') ? path.slice(0, -1) : path
+	return (await vol.readdir(path))
+		.filter((entry) => entry.type !== FileType.Symlink)
+		.map((entry) => ({
+			path: `${base}/${entry.name}`,
+			type: entry.type === FileType.Directory ? 'dir' : 'file'
+		}))
+}
+
+async function scanTree(vol: Volume, path: string): Promise<Array<{ path: string; type: string }>> {
+	if (!(await vol.exists(path))) return []
+	const out: Array<{ path: string; type: string }> = []
+	await vol.scan(path, async (entryPath, stat) => {
+		if (entryPath === path || stat.type === FileType.Symlink) return
+		out.push({ path: entryPath, type: stat.type === FileType.Directory ? 'dir' : 'file' })
+	})
+	return out
+}
+
 export async function createDevServer(
 	root: string,
 	opts: DevServerOptions
 ): Promise<Connect.NextHandleFunction> {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox, clock: {} })
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock: {} })
 	const appId = await k.install(
 		appBundleFromMemory({
 			id: opts.id,
