@@ -6,18 +6,28 @@ import { FileType } from '@justfiles/fs/types'
 // invokeVolume routes one method call against it.
 //
 // Scope semantics:
-//   'system'    → the user's root volume
-//   '/prefix'   → chroot at that absolute prefix
+//   'system'    → the user's root volume (allowlisted apps only)
+//   '/prefix'   → chroot at that absolute prefix; /system[/...] requires 'system'
 //   'app' / any → per-app chroot at /data/<id>
+
+const SYSTEM_SCOPE_ALLOWLIST = new Set(['app.frieren.finder'])
 
 export function resolveVolume(
 	fs: Volume,
 	appId: string,
 	scopes: readonly string[]
 ): { vol: Volume; root: string | null } {
-	if (scopes.includes('system')) return { vol: fs, root: null }
+	if (scopes.includes('system')) {
+		if (!SYSTEM_SCOPE_ALLOWLIST.has(appId)) throw unavailable('resolveVolume')
+		return { vol: fs, root: null }
+	}
 	const prefix = scopes.find((s) => s.startsWith('/'))
-	if (prefix) return { vol: chroot(fs, prefix), root: prefix }
+	if (prefix) {
+		if (prefix === '/system' || prefix.startsWith('/system/')) {
+			throw unavailable('resolveVolume')
+		}
+		return { vol: chroot(fs, prefix), root: prefix }
+	}
 	const root = `/data/${appId}`
 	return { vol: chroot(fs, root), root }
 }

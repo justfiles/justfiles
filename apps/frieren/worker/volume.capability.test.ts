@@ -54,16 +54,48 @@ describe('volume capability', () => {
 		).rejects.toThrow()
 	})
 
-	test('scope=system grants the root volume', async () => {
+	test('scope=system grants the root volume to allowlisted apps', async () => {
 		const { fs } = setup()
 		await seed(fs, '/outside.txt', 'top-level')
 		const data = (await invokeVolume(fs, {
-			appId: 'com.example.trusted',
+			appId: 'app.frieren.finder',
 			method: 'readFile',
 			input: { path: '/outside.txt' },
 			scopes: ['system']
 		})) as Uint8Array
 		expect(dec.decode(data)).toBe('top-level')
+	})
+
+	test('scope=system is rejected for non-allowlisted apps', async () => {
+		const { fs } = setup()
+		await expect(
+			invokeVolume(fs, {
+				appId: 'com.example.untrusted',
+				method: 'readFile',
+				input: { path: '/outside.txt' },
+				scopes: ['system']
+			})
+		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+	})
+
+	test('/system prefix scope is rejected without the system scope', async () => {
+		const { fs } = setup()
+		await expect(
+			invokeVolume(fs, {
+				appId: 'com.example.snooper',
+				method: 'readFile',
+				input: { path: '/profiles/user.md' },
+				scopes: ['/system']
+			})
+		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+		await expect(
+			invokeVolume(fs, {
+				appId: 'com.example.snooper',
+				method: 'readFile',
+				input: { path: '/user.md' },
+				scopes: ['/system/profiles']
+			})
+		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
 	})
 
 	test('absolute-prefix scope binds a chroot at that prefix', async () => {
