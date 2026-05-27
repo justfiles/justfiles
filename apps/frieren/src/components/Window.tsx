@@ -6,16 +6,7 @@ const MIN_H = 200
 
 type ResizeDir = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 
-const HANDLES: { dir: ResizeDir; cls: string }[] = [
-	{ dir: 'n', cls: 'top-0 right-0 left-0 h-1 cursor-ns-resize' },
-	{ dir: 's', cls: 'right-0 bottom-0 left-0 h-1 cursor-ns-resize' },
-	{ dir: 'e', cls: 'top-0 right-0 bottom-0 w-1 cursor-ew-resize' },
-	{ dir: 'w', cls: 'top-0 bottom-0 left-0 w-1 cursor-ew-resize' },
-	{ dir: 'nw', cls: 'top-0 left-0 size-2 cursor-nwse-resize' },
-	{ dir: 'ne', cls: 'top-0 right-0 size-2 cursor-nesw-resize' },
-	{ dir: 'sw', cls: 'bottom-0 left-0 size-2 cursor-nesw-resize' },
-	{ dir: 'se', cls: 'right-0 bottom-0 size-3 cursor-nwse-resize' }
-]
+const HANDLES: ResizeDir[] = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se']
 
 export interface WindowPersist {
 	load(): Promise<WindowRect | null>
@@ -167,37 +158,27 @@ export function Window({
 	return (
 		<div
 			onPointerDownCapture={onFocus}
-			className={
+			className={`ds-window ${fullscreen ? 'ds-window-fullscreen' : 'ds-window-floating'}`}
+			data-focused={focused ? 'true' : 'false'}
+			style={
 				fullscreen
-					? 'fixed inset-0 flex flex-col overflow-hidden'
-					: 'absolute flex flex-col overflow-hidden rounded-md shadow-[0_20px_50px_rgba(0,0,0,0.35)]'
-			}
-			style={{
-				...(fullscreen
 					? { zIndex: (zIndex ?? 0) + 1000 }
-					: { left: rect.x, top: rect.y, width: rect.w, height: rect.h, zIndex }),
-				background: '#ffffff',
-				border: fullscreen ? 'none' : '1px solid var(--rule)',
-				color: 'var(--text)',
-				fontFamily: 'var(--font-ui)',
-				fontSize: 'var(--text-ui)'
-			}}
+					: { left: rect.x, top: rect.y, width: rect.w, height: rect.h, zIndex }
+			}
 		>
 			<div
 				onPointerDown={onPointerDown}
 				onPointerMove={onPointerMove}
 				onPointerUp={onPointerUp}
-				className="flex h-7 flex-none cursor-default select-none items-center gap-2 px-2"
-				style={{ background: 'var(--surface)', borderBottom: '1px solid var(--rule)' }}
+				className="ds-window-titlebar"
 			>
-				<div className="flex items-center gap-1.5" style={{ width: 30 }}>
+				<div className="ds-window-controls">
 					<button
 						type="button"
 						aria-label="Close"
 						onPointerDown={(event) => event.stopPropagation()}
 						onClick={onClose}
-						className="size-3 rounded-full"
-						style={{ background: '#ff5f57', border: '1px solid rgba(0,0,0,0.18)' }}
+						className="ds-window-control ds-window-control-close"
 					/>
 					{onFullscreenToggle ? (
 						<button
@@ -205,26 +186,23 @@ export function Window({
 							aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
 							onPointerDown={(event) => event.stopPropagation()}
 							onClick={onFullscreenToggle}
-							className="size-3 rounded-full"
-							style={{ background: '#28c940', border: '1px solid rgba(0,0,0,0.18)' }}
+							className="ds-window-control ds-window-control-fullscreen"
 						/>
 					) : null}
 				</div>
-				<span className="flex-1 text-center" style={{ opacity: focused ? 1 : 0.55 }}>
-					{title}
-				</span>
-				<span style={{ width: 30 }} />
+				<span className="ds-window-title">{title}</span>
+				<span className="ds-window-spacer" />
 			</div>
-			<div className="flex-1 overflow-hidden">{children}</div>
+			<div className="ds-window-body">{children}</div>
 			{fullscreen
 				? null
-				: HANDLES.map(({ dir, cls }) => (
+				: HANDLES.map((dir) => (
 						<div
 							key={dir}
 							onPointerDown={onResizeDown(dir)}
 							onPointerMove={onResizeMove}
 							onPointerUp={onResizeUp}
-							className={`absolute ${cls}`}
+							className={`ds-window-resize ds-window-resize-${dir}`}
 						/>
 					))}
 		</div>

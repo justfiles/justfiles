@@ -70,3 +70,154 @@
 	margin: var(--menu-padding) 0;
 	background: var(--menu-separator);
 }
+
+.ds-desktop {
+	position: fixed;
+	inset: 0;
+	background: var(--desktop-bg);
+}
+
+.ds-window {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background: #fff;
+	color: var(--text);
+	font-family: var(--font-ui);
+	font-size: var(--text-ui);
+}
+
+.ds-window-floating {
+	position: absolute;
+	border: 1px solid var(--rule);
+	border-radius: 6px;
+	box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+}
+
+.ds-window-fullscreen {
+	position: fixed;
+	inset: 0;
+	border: 0;
+}
+
+.ds-window-titlebar {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 8px;
+	height: 28px;
+	padding: 0 8px;
+	cursor: default;
+	user-select: none;
+	background: var(--surface);
+	border-bottom: 1px solid var(--rule);
+	touch-action: none;
+}
+
+.ds-window-controls,
+.ds-window-spacer {
+	display: flex;
+	gap: 6px;
+	width: 30px;
+}
+
+.ds-window-control {
+	width: 12px;
+	height: 12px;
+	padding: 0;
+	border: 1px solid rgba(0, 0, 0, 0.18);
+	border-radius: 999px;
+}
+
+.ds-window-control-close {
+	background: #ff5f57;
+}
+
+.ds-window-control-fullscreen {
+	background: #28c940;
+}
+
+.ds-window-title {
+	flex: 1;
+	text-align: center;
+	opacity: 0.55;
+}
+
+.ds-window[data-focused="true"] .ds-window-title {
+	opacity: 1;
+}
+
+.ds-window-body {
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.ds-window-resize {
+	position: absolute;
+	touch-action: none;
+}
+
+.ds-window-resize-n {
+	top: 0;
+	right: 0;
+	left: 0;
+	height: 4px;
+	cursor: ns-resize;
+}
+
+.ds-window-resize-s {
+	right: 0;
+	bottom: 0;
+	left: 0;
+	height: 4px;
+	cursor: ns-resize;
+}
+
+.ds-window-resize-e {
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: 4px;
+	cursor: ew-resize;
+}
+
+.ds-window-resize-w {
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: 4px;
+	cursor: ew-resize;
+}
+
+.ds-window-resize-nw,
+.ds-window-resize-ne,
+.ds-window-resize-sw,
+.ds-window-resize-se {
+	width: 12px;
+	height: 12px;
+}
+
+.ds-window-resize-nw {
+	top: 0;
+	left: 0;
+	cursor: nwse-resize;
+}
+
+.ds-window-resize-ne {
+	top: 0;
+	right: 0;
+	cursor: nesw-resize;
+}
+
+.ds-window-resize-sw {
+	bottom: 0;
+	left: 0;
+	cursor: nesw-resize;
+}
+
+.ds-window-resize-se {
+	right: 0;
+	bottom: 0;
+	cursor: nwse-resize;
+}

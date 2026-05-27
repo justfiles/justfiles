@@ -1,9 +1,14 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
+import tailwindcss from '@tailwindcss/vite'
 import { buildSync } from 'esbuild'
-import type { Plugin } from 'vite'
+import type { PluginOption } from 'vite'
 import type { AppManifest } from './app.ts'
 import type { createDevServer, DevServerOptions } from './dev-server.ts'
+
+const DEV_STYLE_URL = '/_kernel-host/dev-style.js'
+const DEV_STYLE_ID = '\0kernel-host:dev-style'
+const DEV_STYLE_CSS = `/@fs/${new URL('./dev-server.css', import.meta.url).pathname}`
 
 // `kernelHost` is the app package's only build wiring. It has two modes:
 //
@@ -80,68 +85,79 @@ function emitBuiltinBundle(out: string, manifest: AppManifest): void {
 	)
 }
 
-export function kernelHost(opts: DevServerOptions): Plugin {
+export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const root = process.cwd()
 	let emitted = false
-	return {
-		name: 'kernel-host',
-		config(_, env) {
-			if (env.command === 'serve') return { appType: 'custom' }
-			return {
-				base: './',
-				build: {
-					outDir: 'dist',
-					emptyOutDir: true,
-					// Library mode: preserve the entry's `export { gui }` (an app
-					// build tree-shakes it away — the sdk is sideEffects:false).
-					lib: {
-						entry: resolve(root, opts.gui),
-						formats: ['es'],
-						fileName: () => 'gui.js'
-					},
-					rollupOptions: {
-						// The host serves a single shared React via /vendor/*.js
-						// (see apps/frieren importmap). Apps emit bare specifiers
-						// and the browser resolves them through the importmap —
-						// one URL, one React instance across host and every app.
-						external: [
-							'react',
-							'react-dom',
-							'react-dom/client',
-							'react/jsx-runtime',
-							'react/jsx-dev-runtime'
-						]
+	return [
+		...tailwindcss(),
+		{
+			name: 'kernel-host',
+			config(_, env) {
+				if (env.command === 'serve') return { appType: 'custom' }
+				return {
+					base: './',
+					build: {
+						outDir: 'dist',
+						emptyOutDir: true,
+						// Library mode: preserve the entry's `export { gui }` (an app
+						// build tree-shakes it away — the sdk is sideEffects:false).
+						lib: {
+							entry: resolve(root, opts.gui),
+							formats: ['es'],
+							fileName: () => 'gui.js'
+						},
+						rollupOptions: {
+							// The host serves a single shared React via /vendor/*.js
+							// (see apps/frieren importmap). Apps emit bare specifiers
+							// and the browser resolves them through the importmap —
+							// one URL, one React instance across host and every app.
+							external: [
+								'react',
+								'react-dom',
+								'react-dom/client',
+								'react/jsx-runtime',
+								'react/jsx-dev-runtime'
+							]
+						}
 					}
 				}
-			}
-		},
-		configureServer(server) {
-			return async () => {
-				const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
-					createDevServer: typeof createDevServer
+			},
+			resolveId(id) {
+				if (id === DEV_STYLE_URL) return DEV_STYLE_ID
+				return null
+			},
+			load(id) {
+				if (id === DEV_STYLE_ID) return `import ${JSON.stringify(DEV_STYLE_CSS)}`
+				return null
+			},
+			configureServer(server) {
+				return async () => {
+					const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
+						createDevServer: typeof createDevServer
+					}
+					server.middlewares.use(await mod.createDevServer(server.config.root, opts))
 				}
-				server.middlewares.use(await mod.createDevServer(server.config.root, opts))
+			},
+			closeBundle() {
+				if (emitted) return
+				emitted = true
+				const out = resolve(root, 'dist')
+				mkdirSync(out, { recursive: true })
+				writeFileSync(resolve(out, 'app.js'), compile(resolve(root, opts.app)))
+				const manifest: AppManifest = {
+					id: opts.id,
+					name: opts.name,
+					description: opts.description,
+					// Fall back to package.json#version so apps don't have to thread it
+					// through the kernelHost() call by hand. Explicit opts.version wins.
+					version: opts.version ?? readPackageVersion(root),
+					icon: opts.icon,
+					app: 'app.js',
+					gui: 'gui.js'
+				}
+				writeFileSync(resolve(out, 'manifest.json'), JSON.stringify(manifest, null, '\t'))
+				emitBuiltinBundle(out, manifest)
 			}
-		},
-		closeBundle() {
-			if (emitted) return
-			emitted = true
-			const out = resolve(root, 'dist')
-			mkdirSync(out, { recursive: true })
-			writeFileSync(resolve(out, 'app.js'), compile(resolve(root, opts.app)))
-			const manifest: AppManifest = {
-				id: opts.id,
-				name: opts.name,
-				description: opts.description,
-				// Fall back to package.json#version so apps don't have to thread it
-				// through the kernelHost() call by hand. Explicit opts.version wins.
-				version: opts.version ?? readPackageVersion(root),
-				icon: opts.icon,
-				app: 'app.js',
-				gui: 'gui.js'
-			}
-			writeFileSync(resolve(out, 'manifest.json'), JSON.stringify(manifest, null, '\t'))
-			emitBuiltinBundle(out, manifest)
 		}
-	}
+	]
 }

@@ -3,9 +3,91 @@
 	<head>
 		<meta charset="utf-8" />
 		<title>{{title}}</title>
+		<script type="module" src="/_kernel-host/dev-style.js"></script>
 	</head>
 	<body>
-		<div id="app"></div>
+		<div class="ds-desktop">
+			<div id="dev-window" class="ds-window ds-window-floating" data-focused="true">
+				<div id="dev-titlebar" class="ds-window-titlebar">
+					<span class="ds-window-controls">
+						<span class="ds-window-control ds-window-control-close"></span>
+						<span class="ds-window-control ds-window-control-fullscreen"></span>
+					</span>
+					<span class="ds-window-title">{{title}}</span>
+					<span class="ds-window-spacer"></span>
+				</div>
+				<div class="ds-window-body"><div id="app"></div></div>
+				<div class="ds-window-resize ds-window-resize-n" data-resize="n"></div>
+				<div class="ds-window-resize ds-window-resize-s" data-resize="s"></div>
+				<div class="ds-window-resize ds-window-resize-e" data-resize="e"></div>
+				<div class="ds-window-resize ds-window-resize-w" data-resize="w"></div>
+				<div class="ds-window-resize ds-window-resize-nw" data-resize="nw"></div>
+				<div class="ds-window-resize ds-window-resize-ne" data-resize="ne"></div>
+				<div class="ds-window-resize ds-window-resize-sw" data-resize="sw"></div>
+				<div class="ds-window-resize ds-window-resize-se" data-resize="se"></div>
+			</div>
+		</div>
+		<script>
+			const win = document.getElementById('dev-window')
+			const titlebar = document.getElementById('dev-titlebar')
+			const minW = 320
+			const minH = 200
+			let rect = { x: 80, y: 48, w: 720, h: 520 }
+			const draw = () => {
+				win.style.left = `${rect.x}px`
+				win.style.top = `${rect.y}px`
+				win.style.width = `${rect.w}px`
+				win.style.height = `${rect.h}px`
+			}
+			draw()
+
+			let drag = null
+			titlebar.addEventListener('pointerdown', (event) => {
+				titlebar.setPointerCapture(event.pointerId)
+				drag = { dx: event.clientX - rect.x, dy: event.clientY - rect.y }
+			})
+			titlebar.addEventListener('pointermove', (event) => {
+				if (!drag) return
+				rect = { ...rect, x: event.clientX - drag.dx, y: event.clientY - drag.dy }
+				draw()
+			})
+			titlebar.addEventListener('pointerup', (event) => {
+				drag = null
+				titlebar.releasePointerCapture(event.pointerId)
+			})
+
+			for (const handle of document.querySelectorAll('.ds-window-resize')) {
+				let start = null
+				handle.addEventListener('pointerdown', (event) => {
+					event.stopPropagation()
+					handle.setPointerCapture(event.pointerId)
+					start = { x: event.clientX, y: event.clientY, rect: { ...rect } }
+				})
+				handle.addEventListener('pointermove', (event) => {
+					if (!start) return
+					const dir = handle.dataset.resize
+					const dx = event.clientX - start.x
+					const dy = event.clientY - start.y
+					let { x, y, w, h } = start.rect
+					if (dir.includes('e')) w = Math.max(minW, start.rect.w + dx)
+					if (dir.includes('s')) h = Math.max(minH, start.rect.h + dy)
+					if (dir.includes('w')) {
+						w = Math.max(minW, start.rect.w - dx)
+						x = start.rect.x + start.rect.w - w
+					}
+					if (dir.includes('n')) {
+						h = Math.max(minH, start.rect.h - dy)
+						y = start.rect.y + start.rect.h - h
+					}
+					rect = { x, y, w, h }
+					draw()
+				})
+				handle.addEventListener('pointerup', (event) => {
+					start = null
+					handle.releasePointerCapture(event.pointerId)
+				})
+			}
+		</script>
 		<script type="module">
 			import { gui } from '/app.js'
 
