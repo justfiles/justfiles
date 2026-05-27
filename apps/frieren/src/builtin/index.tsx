@@ -2,8 +2,6 @@ import type { ComponentType } from 'react'
 import type { InstalledApp } from '../chat/types'
 import { MessagesApp } from './MessagesApp'
 import messagesIconUrl from './messages-icon.svg'
-import { SettingsApp } from './SettingsApp'
-import settingsIconUrl from './settings-icon.svg'
 
 export interface BuiltinApp {
 	id: string
@@ -20,13 +18,6 @@ export const BUILTIN_APPS: BuiltinApp[] = [
 		description: 'Chat with the agent',
 		iconUrl: messagesIconUrl,
 		component: MessagesApp
-	},
-	{
-		id: 'settings',
-		name: 'Settings',
-		description: 'Manage integrations',
-		iconUrl: settingsIconUrl,
-		component: SettingsApp
 	}
 ]
 

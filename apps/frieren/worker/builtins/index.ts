@@ -7,5 +7,6 @@
 import type { BuiltinBundle } from '@justfiles/app/runtime'
 import finder from '@justfiles/app-finder/bundle'
 import paint from '@justfiles/app-paint/bundle'
+import settings from '@justfiles/app-settings/bundle'
 
-export const BUILTINS: readonly BuiltinBundle[] = [paint, finder]
+export const BUILTINS: readonly BuiltinBundle[] = [paint, finder, settings]
