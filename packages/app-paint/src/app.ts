@@ -40,7 +40,7 @@ const color = v.pipe(v.string(), v.regex(/^#[0-9a-fA-F]{6}$/))
 
 export const app = defineApp({
 	init: initialState,
-	capabilities: { volume: volume({ scopes: ['system'] }) },
+	capabilities: { volume: volume({ scopes: [] }) },
 	actions: (b) => ({
 		setTool: b.handler({
 			description: 'Pick the active drawing tool.',
