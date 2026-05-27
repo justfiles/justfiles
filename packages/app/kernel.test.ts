@@ -101,6 +101,12 @@ test('smoke test kernel', async () => {
 
 	expect(result).toEqual({ count: 7 })
 
+	expect(await fs.exists('/state/com.example.app.json')).toBe(true)
+	expect(await fs.exists('/applications/com.example.app/data/state.json')).toBe(false)
+	expect(
+		JSON.parse(new TextDecoder().decode(await fs.readFile('/state/com.example.app.json')))
+	).toEqual({ count: 7 })
+
 	await k.dispatch(appId, {
 		type: 'write',
 		params: { text: 'hello' },
@@ -144,6 +150,35 @@ test('install rejects invalid listed file path', async () => {
 			})
 		)
 	).rejects.toThrow(/invalid app bundle path/)
+})
+
+test('uninstall removes bundle, state, and data', async () => {
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const app = appBundleFromMemory({
+		id: 'com.example.app',
+		name: 'App',
+		app: code
+	})
+	const appId = await k.install(app)
+
+	await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
+	await k.dispatch(appId, { type: 'write', params: { text: 'hi' }, actor: 'agent' })
+
+	expect(await fs.exists('/applications/com.example.app')).toBe(true)
+	expect(await fs.exists('/state/com.example.app.json')).toBe(true)
+	expect(await fs.exists('/applications/com.example.app/data/files/note.txt')).toBe(true)
+
+	// Pretend the new-layout app-sandbox path also has bytes — uninstall must
+	// nuke it even though the test harness currently writes under /applications.
+	await fs.mkdir('/data/com.example.app', { recursive: true })
+	await fs.writeFile('/data/com.example.app/scratch.txt', new TextEncoder().encode('x'))
+
+	await k.uninstall(appId)
+
+	expect(await fs.exists('/applications/com.example.app')).toBe(false)
+	expect(await fs.exists('/state/com.example.app.json')).toBe(false)
+	expect(await fs.exists('/data/com.example.app')).toBe(false)
 })
 
 test('install rejects missing app entry', async () => {

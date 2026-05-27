@@ -160,8 +160,8 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		)
 	}
 
-	async function loadState(root: string): Promise<unknown> {
-		const statePath = `${root}/data/state.json`
+	async function loadState(appId: AppId): Promise<unknown> {
+		const statePath = `/state/${appId}.json`
 		try {
 			if (await fs.exists(statePath)) return JSON.parse(text(await fs.readFile(statePath)))
 		} catch {
@@ -211,6 +211,8 @@ export function kernel({ fs, sandbox }: System): Kernel {
 
 	async function uninstall(appId: AppId): Promise<void> {
 		await fs.rm(appRoot(appId), { recursive: true, force: true })
+		await fs.rm(`/state/${appId}.json`, { force: true })
+		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		dropFromIndex(appId)
 	}
 
@@ -221,9 +223,9 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const app = await getApp(appId)
 		if (!app) throw new Error(`app not found: ${appId}`)
 
-		await fs.mkdir(`${root}/data`, { recursive: true })
-		const statePath = `${root}/data/state.json`
-		const current = await loadState(root)
+		await fs.mkdir('/state', { recursive: true })
+		const statePath = `/state/${appId}.json`
+		const current = await loadState(appId)
 
 		const saveState = (next: unknown): Promise<void> =>
 			fs.writeFile(statePath, bytes(JSON.stringify(next)))
@@ -250,7 +252,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 	async function state(appId: AppId): Promise<unknown> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
-		return loadState(root)
+		return loadState(appId)
 	}
 
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {
