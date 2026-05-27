@@ -17,9 +17,9 @@ async function seed(fs: ReturnType<typeof volume>, path: string, body: string) {
 }
 
 describe('volume capability', () => {
-	test('scope=app chroots reads to /applications/<id>/data/files', async () => {
+	test('scope=app chroots reads to /data/<id>', async () => {
 		const { fs } = setup()
-		await seed(fs, '/applications/com.example.app/data/files/note.txt', 'hello')
+		await seed(fs, '/data/com.example.app/note.txt', 'hello')
 		const data = (await invokeVolume(fs, {
 			appId: 'com.example.app',
 			method: 'readFile',
@@ -37,7 +37,7 @@ describe('volume capability', () => {
 			input: { path: '/inside.txt', data: enc.encode('x') },
 			scopes: ['app']
 		})
-		expect(await fs.exists('/applications/com.example.app/data/files/inside.txt')).toBe(true)
+		expect(await fs.exists('/data/com.example.app/inside.txt')).toBe(true)
 		expect(await fs.exists('/inside.txt')).toBe(false)
 	})
 
@@ -80,8 +80,8 @@ describe('volume capability', () => {
 
 	test('scan returns flat dir listing tagged with type', async () => {
 		const { fs } = setup()
-		await seed(fs, '/applications/x/data/files/a.txt', 'a')
-		await seed(fs, '/applications/x/data/files/sub/b.txt', 'b')
+		await seed(fs, '/data/x/a.txt', 'a')
+		await seed(fs, '/data/x/sub/b.txt', 'b')
 		const entries = (await invokeVolume(fs, {
 			appId: 'x',
 			method: 'scan',
@@ -96,9 +96,9 @@ describe('volume capability', () => {
 
 	test('scan with recursive=true returns the full descendant tree', async () => {
 		const { fs } = setup()
-		await seed(fs, '/applications/x/data/files/a.txt', 'a')
-		await seed(fs, '/applications/x/data/files/sub/b.txt', 'b')
-		await seed(fs, '/applications/x/data/files/sub/deep/c.txt', 'c')
+		await seed(fs, '/data/x/a.txt', 'a')
+		await seed(fs, '/data/x/sub/b.txt', 'b')
+		await seed(fs, '/data/x/sub/deep/c.txt', 'c')
 		const entries = (await invokeVolume(fs, {
 			appId: 'x',
 			method: 'scan',
@@ -116,7 +116,7 @@ describe('volume capability', () => {
 
 	test('exists reports presence without throwing on a missing path', async () => {
 		const { fs } = setup()
-		await seed(fs, '/applications/x/data/files/there.txt', 'hi')
+		await seed(fs, '/data/x/there.txt', 'hi')
 		const present = await invokeVolume(fs, {
 			appId: 'x',
 			method: 'exists',
@@ -141,7 +141,7 @@ describe('volume capability', () => {
 			input: { path: '/deeply/nested/dir' },
 			scopes: ['app']
 		})
-		expect(await fs.exists('/applications/x/data/files/deeply/nested/dir')).toBe(true)
+		expect(await fs.exists('/data/x/deeply/nested/dir')).toBe(true)
 	})
 
 	test('rejects unknown methods', async () => {

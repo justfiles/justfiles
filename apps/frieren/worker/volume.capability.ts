@@ -8,7 +8,7 @@ import { FileType } from '@justfiles/fs/types'
 // Scope semantics:
 //   'system'    → the user's root volume
 //   '/prefix'   → chroot at that absolute prefix
-//   'app' / any → per-app chroot at /applications/<id>/data/files
+//   'app' / any → per-app chroot at /data/<id>
 
 export function resolveVolume(
 	fs: Volume,
@@ -18,7 +18,7 @@ export function resolveVolume(
 	if (scopes.includes('system')) return { vol: fs, root: null }
 	const prefix = scopes.find((s) => s.startsWith('/'))
 	if (prefix) return { vol: chroot(fs, prefix), root: prefix }
-	const root = `/applications/${appId}/data/files`
+	const root = `/data/${appId}`
 	return { vol: chroot(fs, root), root }
 }
 
