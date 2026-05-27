@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { createFsApi } from '@justfiles/core'
-import { chroot, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
@@ -164,7 +164,7 @@ export class Frieren extends DurableObject<Env> {
 		this.runtime?.shutdown()
 		this.text = text({ model, apiKey })
 		this.apps = frierenApps({
-			fs: chroot(this.vol, '/kernel'),
+			fs: this.vol,
 			loader: this.env.LOADER,
 			storage: this.ctx.storage,
 			sockets: () => this.ctx.getWebSockets(),
