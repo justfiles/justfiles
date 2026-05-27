@@ -36,9 +36,11 @@ export interface DispatchResult<State> {
 	result: unknown
 }
 
-type CapabilityRequest<Id extends string = string, Shape = unknown> = ReturnType<
-	CapabilityFactory<Id, Shape>
->
+type CapabilityRequest<
+	Id extends string = string,
+	Methods = unknown,
+	Events = unknown
+> = ReturnType<CapabilityFactory<Id, Methods, Events>>
 type CapabilityRequests = Record<string, CapabilityRequest>
 type NoCapabilities = Record<string, never>
 type CapabilityInvocation = {
@@ -53,9 +55,25 @@ type CapabilityInvocation = {
 }
 type CapabilityInvoke = (req: CapabilityInvocation) => Promise<unknown>
 
-type ShapeOf<C> = C extends CapabilityRequest<string, infer Shape> ? Shape : never
+// Per-capability methods injected as `ctx.capabilities.<id>`.
+type MethodsOf<C> = C extends CapabilityRequest<string, infer M, infer _E> ? M : never
+// Per-capability declared events — the kernel routes these into the app's
+// reducer via declared `on`-handlers (see OnHandlers below).
+export type EventsOf<C> = C extends CapabilityRequest<string, infer _M, infer E> ? E : never
 type InjectedCapabilities<Caps extends CapabilityRequests> = {
-	readonly [K in keyof Caps]: ShapeOf<Caps[K]>
+	readonly [K in keyof Caps]: MethodsOf<Caps[K]>
+}
+
+// `on` shape: keyed by capability name (from `capabilities`), then by event
+// name (from that capability's declared events). Both levels are optional —
+// handle what you care about, skip the rest.
+export type OnHandlers<State, Caps extends CapabilityRequests> = {
+	[C in keyof Caps & string]?: {
+		[E in keyof EventsOf<Caps[C]> & string]?: (
+			event: EventsOf<Caps[C]>[E],
+			ctx: Context<State, Caps>
+		) => MaybePromise<State>
+	}
 }
 
 // HandlerDef / QueryDef live here (not in sdk.ts) so the App<> bound can

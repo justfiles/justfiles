@@ -8,6 +8,7 @@ import type {
 	Context,
 	DispatchResult,
 	HandlerDef,
+	OnHandlers,
 	QueryDef,
 	RuntimeContext
 } from './app.ts'
@@ -17,7 +18,7 @@ type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
 
 type Capabilities = Record<
 	string,
-	ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
+	ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown, unknown>>
 >
 
 // `b.handler({...})` for state-mutating actions, `b.query({...})` for pure
@@ -52,6 +53,26 @@ interface AppSpec<
 	// in one shot while letting the surrounding defineApp call drive
 	// State/Caps inference from `init`/`capabilities`.
 	actions: (b: Builder<State, Caps>) => Acts
+	// Declarative event subscriptions. Keys are the names declared in
+	// `capabilities`; per-event handlers receive the payload type from the
+	// capability contract and the same `ctx` regular actions get. The kernel
+	// dispatches each event as a synthetic action `__event/<cap>.<event>`
+	// — so event handlers go through the same schema-less fast-path as
+	// regular dispatches and emit `app.update` on every state change.
+	on?: OnHandlers<State, Caps>
+}
+
+// Synthetic action key namespace for kernel-routed capability events.
+// Kept short — appears in every dispatched event and in the subscription
+// index that maps channel → app subscribers.
+export const EVENT_ACTION_PREFIX = '__event/'
+
+const passthroughSchema: StandardSchemaV1 = {
+	'~standard': {
+		version: 1,
+		vendor: 'kernel-event',
+		validate: (input) => ({ value: input })
+	}
 }
 
 export function defineApp<
@@ -64,7 +85,32 @@ export function defineApp<
 		query: (def) => ({ __kind: 'query', ...def })
 	}
 	const acts = spec.actions(builder) as Record<string, ActionDef<State, Caps>>
+	// Compose `on`-handlers into the same action table under
+	// `__event/<cap>.<event>` keys. Payload validation is intentionally
+	// skipped — the kernel routes only events the capability contract
+	// declares, so the payload type is already pinned at compile time.
+	const onSpec = (spec.on ?? {}) as Record<
+		string,
+		Record<string, (event: unknown, ctx: Context<State, Caps>) => MaybePromise<State>> | undefined
+	>
+	for (const capName in onSpec) {
+		const evMap = onSpec[capName]
+		if (!evMap) continue
+		for (const evName in evMap) {
+			const handler = evMap[evName]
+			if (!handler) continue
+			acts[`${EVENT_ACTION_PREFIX}${capName}.${evName}`] = {
+				__kind: 'handler',
+				schema: passthroughSchema,
+				handler
+			} as ActionDef<State, Caps>
+		}
+	}
+
 	const meta = {} as Record<string, ActionMeta>
+	// Keep `__event/*` entries in the sandbox-visible meta so the kernel
+	// can build its subscription index. The kernel's public `actions(appId)`
+	// API filters them out before exposing to agents.
 	for (const type in acts) {
 		const def = acts[type]
 		if (!def) continue
@@ -102,7 +148,7 @@ export function defineApp<
 function createCapabilities(
 	requests: Record<
 		string,
-		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
+		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown, unknown>>
 	>,
 	ctx: RuntimeContext,
 	action: Action

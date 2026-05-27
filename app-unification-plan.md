@@ -1,29 +1,41 @@
 # App Unification Migration Plan
 
-End state: a single, sandboxed kernel-app architecture. Built-in apps (Finder,
-Paint, Settings, Messages) are kernel apps with the same shape as any
+End state: a single, sandboxed kernel-app architecture for **applications**
+(Finder, Paint, Settings). Each is a kernel app with the same shape as any
 third-party app, differentiated only by which capabilities the host grants
-them. Built-ins ship with the worker, install themselves into the user's
+it. Built-ins ship with the worker, install themselves into the user's
 volume on first launch, and update in place when their version changes.
+
+**The agent (and its chat surface, today called "Messages") is OS-level,
+not an app.** Like Siri or Spotlight, it's invoked from the OS shell rather
+than launched from a desktop icon. The host's React shell owns the chat
+window; a menubar entry opens/closes it. The agent has god-mode access
+(LLM client, tools, all kernel-app actions); sandboxing it makes no sense.
 
 ## Architecture target
 
-- One dispatch path in the kernel (the sandboxed Worker Loader path). No
-  trusted/in-process branch.
-- One mount path in the browser (`KernelAppFrame`). No `BuiltinHost`.
-- One launcher entry shape (`{ id, name, description, iconUrl, version }`).
-  No `kind: 'builtin' | 'app'` distinction at the UI layer.
+- One dispatch path in the kernel for *apps* (the sandboxed Worker Loader
+  path). No trusted/in-process branch.
+- One mount path in the browser for *apps* (`KernelAppFrame`). No
+  `BuiltinHost`.
+- One launcher entry shape (`{ id, name, description, iconUrl, version }`)
+  for apps. No `kind: 'builtin' | 'app'` distinction at the UI layer.
+- The chat window is OS chrome, not in the launcher. A menubar button
+  opens it.
 - React, ReactDOM, and JSX runtime are shared across host and all apps via
   an import map. Apps externalize React in their bundle.
-- New capability contracts (`volume{scope}`, `integrations`, `agent`) cover
-  the host services built-ins need. Trusted built-ins get more permissive
-  grants; the contract surface is the same.
+- Capability contracts (`volume{scope}`, `integrations`, and the kernel
+  notification center for events) cover the host services apps need.
 - Filesystem access is exposed through the `volume` capability. The current
   ambient `ctx.files` injection is transitional only and should disappear
   after apps have migrated to `ctx.capabilities.volume`.
 - Built-in app bundles live as zipped assets in the worker. On DO boot,
   `ensureBuiltinsInstalled(kernel)` compares versions and reinstalls any
   that are missing or outdated. Near-zero cost on the happy path.
+- The kernel is the notification center: capability impls call
+  `kernel.emit(channel, event)`; apps declare reducer handlers via the
+  typed `on` block in `defineApp`. No per-capability subscription
+  bookkeeping.
 
 ## Sequencing
 
@@ -31,15 +43,21 @@ Each part depends on the previous. Within a part, steps are ordered.
 
 1. **Shared React runtime infrastructure.** Unblocks every app using React.
 2. **New capabilities** (`volume{scope}`, `integrations`) for migrating
-   Finder/Paint/Settings without touching the agent.
+   Finder/Paint/Settings.
 3. **Built-in install pipeline.** Worker ships bundles, installs on boot.
 4. **Migrate Paint** (smallest; exercises the pipeline end-to-end).
 5. **Migrate Finder** (exercises `volume{scope:'system'}`).
 6. **Migrate Settings** (exercises `integrations`).
-7. **Subscription extension to capabilities.** Required for Messages.
-8. **Migrate Messages** (exercises `agent` capability + subscriptions).
-9. **Cleanup.** Delete `BuiltinHost`, the `kind` discriminator, and the
-   old builtin table.
+7. **Kernel as notification center.** Typed capability events,
+   declarative `on`-handlers, `kernel.emit`. Used by `volume.watch`,
+   integrations auth state, and (future) the agent.
+8. **Demote Messages to OS chrome.** Strip the app pretense from the
+   existing `Messages` built-in: remove icon, remove launcher entry,
+   add a menubar button that opens the same window. The chat surface
+   stays in `apps/frieren/src/` where the session manager already lives.
+9. **Cleanup.** Delete `BuiltinHost`, drop the old builtin-apps table,
+   remove the `kind` discriminator for apps. The menubar chat is not
+   an app, so it does not flow through `KernelAppFrame`.
 
 ---
 
@@ -657,205 +675,289 @@ pnpm run verify:ui
 
 ---
 
-# Part 7 — Subscription extension to capabilities
+# Part 7 — Kernel as notification center  *(shipped)*
 
-Goal: capabilities can push events to the app reducer (and by extension
-to the GUI). Required for `agent` (message stream, tool calls,
-streaming). Also useful long-term for `volume` change-notify,
-`integrations` auth-state, etc.
+Goal: capabilities emit named events; apps declare reducer handlers for
+them via a typed `on` block; the kernel routes. One mechanism for
+`volume` change-notify, `integrations` auth-state, future kernel-level
+event sources, and (when needed) agent observation by other apps.
 
-## Step 7.1 — Design the wire protocol
+**Mental model.** Capabilities have two halves of their contract: the
+`Methods` interface (request/response — what the app calls) and the
+optional `Events` interface (named pushes — what the app reacts to).
+The reducer is a function from `(state, action | event) → state`;
+`actions` are user/agent-driven inputs, `on` is system-driven inputs.
+Both go through the same dispatch path so every state change is
+auditable and `app.update` fires for both.
 
-Add two action types to the capability invocation wire (currently
-`Promise<unknown>`-shaped):
+**Why kernel-mediated, not per-capability:** capability impls only
+declare *what* their events are and *when* they fire. They never
+manage routing, subscription bookkeeping, or fan-out — the kernel
+does all of that.
+
+## Step 7.1 — Contracts: events join `defineCapability`
+
+`defineCapability` gains a third type generic for events. Backwards-
+compatible: capabilities that don't emit don't pass it.
 
 ```ts
-// existing: one-shot request/response
-type CapInvoke = { capability: string; method: string; input: unknown; actor?: string }
-
-// new: long-lived subscription. Returns a subscription id; events come back
-// on the same WS as new frames keyed by sub id.
-type CapSubscribe = { capability: string; method: string; input: unknown; subId: string; actor?: string }
-type CapUnsubscribe = { subId: string }
+// packages/app/capabilities/agent/contract.ts
+export interface AgentMethods {
+	send(input: { text: string }): Promise<void>
+	abort(input: {}): Promise<void>
+}
+export interface AgentEvents {
+	message: { id: string; role: 'user' | 'assistant'; text: string }
+	chunk:   { messageId: string; delta: string }
+	done:    { messageId: string }
+}
+export const agent = defineCapability<'agent', AgentMethods, AgentEvents>('agent')
 ```
 
-WS server → client adds:
+The factory's return type carries `__methods` and `__events` phantoms
+so the app's `defineApp` can extract them.
+
+## Step 7.2 — Reducer-side ergonomics: declarative `on`
+
+`defineApp` takes an `on` block, keyed by capability name → event
+name. Both levels optional; payload type flows from the contract.
 
 ```ts
-{ type: 'capability_event'; subId: string; event: unknown }
+defineApp({
+	init: { messages: [], streaming: false },
+	capabilities: { agent: agent({ scopes: [] }) },
+	actions: (b) => ({
+		send: b.handler({
+			schema: v.object({ text: v.string() }),
+			async handler({ text }, ctx) {
+				await ctx.capabilities.agent.send({ text })
+				return ctx.state
+			}
+		})
+	}),
+	on: {
+		agent: {
+			message: (event, ctx) => ({ ...ctx.state, messages: [...ctx.state.messages, event] }),
+			chunk:   ({ messageId, delta }, ctx) => ({ ...ctx.state, streaming: true, messages: appendDelta(ctx.state.messages, messageId, delta) }),
+			done:    (_, ctx) => ({ ...ctx.state, streaming: false })
+		}
+	}
+})
 ```
 
-The kernel routes events to whichever app initiated the subscription; the
-app's reducer receives them via an auto-dispatched synthetic action.
+No builder. No `subscribe(method, input)` call. No subId. The app
+declares what it cares about; the kernel does the rest.
 
-## Step 7.2 — Reducer-side ergonomics
+Under the hood, `on` handlers register as actions under the key
+`__event/<capId>.<eventName>`. Same dispatch path as regular actions
+— but excluded from the public `kernel.actions(appId)` view so the
+agent doesn't see them as callable.
 
-Two viable shapes; pick one in this step before implementing.
+## Step 7.3 — Kernel-level event router
 
-**Option A — synthetic action dispatch.** When a subscription event
-arrives, the kernel dispatches an action `__capability/<capId>/<method>`
-with the event as params. The app's `defineApp` accepts handlers for
-these synthetic actions like any other handler.
+The kernel exposes one new method:
 
-**Option B — out-of-band event channel.** Subscriptions return an
-async iterator passed into the app's `init` or a new `mount` lifecycle.
-App author calls `ctx.setState(...)` from inside the iterator.
+```ts
+interface Kernel {
+	// ...
+	emit(channel: string, event: unknown): Promise<void>
+}
+```
 
-Recommendation: **Option A.** It keeps the reducer model pure (every
-state change is a dispatched action with a schema) and means the agent
-can introspect subscription-driven actions the same way as user-driven
-ones.
+Capability impls (host-side) call `kernel.emit('agent.chunk', payload)`.
+The kernel:
 
-## Step 7.3 — Implement in `packages/app`
+1. Looks up subscribers from an in-memory channel → app-ids index
+   (built lazily by scanning each installed app's `__event/*` action
+   keys; updated on install/uninstall).
+2. Dispatches a synthetic action `__event/<channel>` with the payload
+   into each subscriber app. Errors from one subscriber are swallowed
+   so a broken handler can't stop fan-out.
+3. The normal dispatch path persists state and emits `app.update`.
 
 **Files:**
 
-- `packages/app/app.ts` — extend `RuntimeContext` with
-  `capabilitySubscribe?: (req: CapSubscribe) => Promise<void>` and
-  `capabilityUnsubscribe?: (subId: string) => Promise<void>`.
-- `packages/app/sdk.ts` — extend the capability proxy to expose
-  `.subscribe(input, handler)` methods (where the capability contract
-  declares them as subscribable). Type-level: a method returning
-  `AsyncIterable<E>` in the contract becomes subscribable.
-- `packages/app/kernel.ts` — kernel emits an `app.update` after each
-  synthetic-action dispatch, same as regular dispatches.
+- `packages/app/capabilities/core.ts` — `defineCapability` gains
+  `Events` generic.
+- `packages/app/app.ts` — `OnHandlers` type; `EventsOf<C>` extractor;
+  `CapabilityRequest` accepts the third generic.
+- `packages/app/sdk.ts` — `EVENT_ACTION_PREFIX` constant; `defineApp`
+  accepts `on`; merges into the action table; keeps event keys in
+  the sandbox-visible meta (kernel filters at the public API).
+- `packages/app/kernel.ts` — `emit`, subscription index, public
+  `actions(appId)` filters out `__event/*`.
+- `packages/app/index.ts` — export updated types.
 
-## Step 7.4 — Implement in `apps/frieren/worker/frieren.app.ts`
+## Step 7.4 — Frieren worker plumbing
 
-- Track subscriptions per WS in the DO storage (or in-memory; design
-  decision: how to survive DO hibernation. Punt to in-memory for v1
-  with a note).
-- On `capability_event`, route through `kernel.dispatch` with the
-  synthetic action shape so the app's reducer processes it.
+The worker side is now trivial: capability impls call
+`getKernel().emit(channel, event)` when their underlying source
+fires. No per-WS subscription tracking, no sandbox-side
+subscribe/unsubscribe RPC, no client wire-protocol changes.
+
+When a capability eventually needs to push (volume change-notify is
+the canonical near-term example), the impl shape is just:
+
+```ts
+async function invokeCapability(req) {
+	if (req.capability === 'volume' && req.method === 'writeFile') {
+		await vol.writeFile(req.input.path, req.input.data)
+		void getKernel().emit('volume.changed', { path: req.input.path, type: 'modify' })
+		return
+	}
+	// ...
+}
+```
+
+Apps that care declare `on: { volume: { changed: (e, ctx) => ... } }`
+and react. No subscribe calls, no subIds.
 
 **Verify:**
-- Unit test: a test app declaring a `subscribable` capability method
-  receives events as dispatched actions; state updates reflect them.
+
+- Unit tests (`packages/app/event.test.ts`):
+  - `kernel.emit` fans events to apps declaring matching `on` handlers.
+  - Event handlers are not exposed in `kernel.actions(appId)`.
+  - Emit on channels with no subscribers is a no-op.
+  - Multi-app fan-out lands in every subscriber.
+  - Uninstall removes apps from the subscription index.
 
 ---
 
-# Part 8 — Migrate Messages
+# Part 8 — Demote Messages to OS chrome
 
-Capability: `agent({ scopes: [] })`.
+Messages stops pretending to be an app: no icon, no launcher tile, no
+`KernelAppFrame`. The same React component renders, but it's invoked
+from the OS shell (a menubar button) and lives outside the app
+abstraction entirely — like Spotlight or Siri, not like Notes.
 
-## Step 8.1 — Define `agent` capability
+The chat surface keeps living in `apps/frieren/src/` where it already
+is, alongside `session.manager`, `llm.agent`, and the rest of the
+agent machinery. No code moves into `packages/`. No `agent` capability
+gets built (deferred until a kernel app actually needs to talk to the
+agent — none do today).
+
+## Step 8.1 — Remove Messages from the app catalog
 
 **Files:**
 
-- New: `packages/app/capabilities/agent/contract.ts`:
+- `apps/frieren/src/builtin/index.tsx` — delete the `messages` entry
+  from `BUILTIN_APPS`. The file may then be left empty / removed
+  entirely if nothing else lives there; the next migration (Part 9
+  cleanup) will tear down `BUILTIN_APPS` and `builtinLauncherEntries`
+  altogether anyway, so it's fine to leave the array empty for now.
+- `apps/frieren/src/ChatPage.tsx` — when iterating launcher entries,
+  Messages no longer shows up; verify there's no special-cased
+  `id === 'messages'` branch left behind.
 
-```ts
-export interface AgentEvent {
-  type: 'message_start' | 'message_chunk' | 'message_done' | 'tool_call' | 'tool_result' | 'thinking' | 'error'
-  // discriminated union; concrete fields per type
-}
+After this step the launcher's desktop grid has Paint, Finder,
+Settings (post-migration) and any third-party installs — no Messages.
 
-export interface AgentCapability {
-  send(input: { text: string }): Promise<void>
-  abort(input: {}): Promise<void>
-  messages(input: { limit?: number }): Promise<ChatMessage[]>
-  // subscribable
-  events(input: {}): AsyncIterable<AgentEvent>
-}
-```
+## Step 8.2 — Add a menubar entry that opens the chat
 
-- New: `packages/app/capabilities/agent/index.ts` — factory.
-- `apps/frieren/worker/frieren.app.ts` — `invokeCapability` for `agent.*`
-  delegates to existing `session.manager` + `llm.agent` machinery.
-  `events` subscription routes through the new subscription wire.
+**Files:**
 
-## Step 8.2 — Scaffold `packages/app-messages/`
+- `apps/frieren/src/ChatPage.tsx` (or wherever the menubar/topbar lives
+  in the current shell) — add a button labelled "Messages" (or just an
+  agent icon) that toggles a `chatOpen` state in the page-level
+  component. Default closed on fresh sessions; persist the last-open
+  state per user if cheap.
+- When `chatOpen`, render the existing `MessagesApp` component in
+  whatever window/overlay shape we want today. For v1, keep the
+  same window/dialog the current built-in opens into — just sourced
+  from the menubar instead of the desktop grid.
+- The component imports stay where they are; no path changes for
+  `MessagesApp.tsx` itself in this step.
 
-Capability: `agent`.
+The point of this step is purely *invocation surface*: the chat is no
+longer "an app you launch," it's "the assistant you toggle." Visual
+polish (overlay, sidebar, keyboard shortcut, spotlight-style command
+bar) is future work.
 
-## Step 8.3 — Reducer
+## Step 8.3 — Make the chat surface independent of the app frame
 
-State:
+**Files:**
 
-```ts
-{
-  input: string
-  messages: ChatMessage[]      // built up via subscription events
-  streaming: boolean
-  agentName: string
-  userName: string
-  lastError: string | null
-}
-```
+- `apps/frieren/src/builtin/MessagesApp.tsx` — move out of the
+  `builtin/` directory (since it isn't a built-in app any more).
+  Suggested new home: `apps/frieren/src/chat/MessagesPanel.tsx`
+  alongside `useChatSession`. Rename to `MessagesPanel` to make the
+  not-an-app status obvious in imports.
+- Update all references to point to the new path.
+- The component continues to use `useChatSession` directly — that's
+  the *correct* coupling now that the chat surface is OS-level.
+- Drop any code that was added to make the component behave like a
+  kernel app (mount/unmount lifecycle hooks expected by
+  `BuiltinHost`, manifest-style props, etc.).
 
-Actions:
+## Step 8.4 — Verify
 
-- `setInput({ value })`.
-- `send()` — calls `ctx.capabilities.agent.send({ text: state.input })`,
-  clears `input`.
-- `abort()` — calls `ctx.capabilities.agent.abort({})`.
-- `__capability/agent/events` (synthetic) — receives an `AgentEvent` and
-  folds it into the `messages` array / `streaming` flag.
-
-On app launch, the kernel auto-subscribes to `agent.events` (declared
-in the app's capability spec as `autoSubscribe: true`, or the GUI
-dispatches an explicit `subscribe` action — design decision in step 7.2).
-
-## Step 8.4 — GUI
-
-Port `MessagesApp.tsx`. Renders from `state.messages`; dispatches
-`setInput`/`send`/`abort`. Drop the direct `useChatSession` dependency.
-
-The host React shell can keep `useChatSession` for its own purposes
-(connection state for the launcher, etc.); the kernel app no longer
-needs it.
-
-## Step 8.5 — Wire, verify, delete old
-
-Verify thoroughly — Messages is the most coupled migration.
-
-**Verify:**
 ```sh
+cd apps/frieren && pnpm run dev
+# in another shell:
 pnpm run verify:ui
-# open Messages, send a message, see streaming response
-# kill connection mid-stream, reconnect, verify state restored
-# in chat: "app run app.frieren.messages send text=hello"
-# (the agent calls itself via the same door — confirm it doesn't loop)
+# manual:
+#   - desktop grid no longer shows a Messages icon
+#   - menubar shows the agent button
+#   - clicking it opens the chat window
+#   - sending a message works exactly as before (streaming, tools)
+#   - closing/reopening preserves the conversation
 ```
+
+## Step 8.5 — Future: when (if) a kernel app needs the agent
+
+If/when a kernel app does want to integrate with the agent (e.g., a
+Tasks app that wants to react to `agent.tool_call` events), build the
+`agent` capability *then*. The notification center (Part 7) makes that
+addition a small contained change — declare `AgentEvents` in the
+contract, have `session.manager` call `kernel.emit('agent.tool_call',
+…)`, done. Until then, no point shipping an unused capability.
 
 ---
 
 # Part 9 — Cleanup
 
-Goal: erase every trace of the two-track architecture.
+Goal: erase every trace of the two-track architecture for apps. The
+menubar chat surface is *not* part of this — it lives outside the
+app abstraction by design.
 
 ## Step 9.1 — Delete `BuiltinHost.tsx`
+
+By the time we get here, Paint/Finder/Settings are kernel apps and
+Messages is OS chrome — no caller mounts a built-in app frame any more.
 
 **Files:**
 
 - Delete `apps/frieren/src/BuiltinHost.tsx`.
-- `apps/frieren/src/ChatPage.tsx` — replace the `app.kind === 'builtin'`
-  branch with a single `<KernelAppFrame id={app.id} ... />`.
+- `apps/frieren/src/ChatPage.tsx` — remove the `app.kind === 'builtin'`
+  branch; every launcher entry is a kernel app and mounts via
+  `<KernelAppFrame id={app.id} ... />`.
 
 ## Step 9.2 — Drop the `kind` discriminator
 
 **Files:**
 
 - `apps/frieren/src/chat/types.ts` — remove `kind: 'builtin' | 'app'`
-  from `InstalledApp` and `ActiveApp`. All apps are kernel apps.
+  from `InstalledApp` and `ActiveApp`. All launcher entries are kernel
+  apps.
 - `apps/frieren/src/chat/useChat.ts` — remove `kind: 'builtin'` from any
   hardcoded references.
 - `apps/frieren/worker/frieren.app.ts` — `list()` no longer marks
   `kind`; the discriminator is gone.
 
-## Step 9.3 — Delete the old builtin module
+## Step 9.3 — Delete the old builtin-apps module
 
 **Files:**
 
-- Delete `apps/frieren/src/builtin/` (entire directory). All apps now
-  live in their own packages.
+- Delete `apps/frieren/src/builtin/` (entire directory — Messages
+  moved out in Part 8 to `apps/frieren/src/chat/MessagesPanel.tsx`,
+  Paint/Finder/Settings live in their own packages).
 - `apps/frieren/src/ChatPage.tsx` — remove the
   `builtinLauncherEntries()` call; `launcher.installedApps` already
   contains everything.
 
 ## Step 9.4 — Remove legacy `ctx.files`
 
-After Paint/Finder/Settings/Messages and the sample apps use
+After Paint/Finder/Settings and the sample apps use
 `ctx.capabilities.volume`, delete the old ambient filesystem injection.
 
 **Files:**
@@ -885,28 +987,37 @@ pnpm lint:fix
 pnpm test
 cd apps/frieren && pnpm run dev
 pnpm run verify:ui
-# manual: open and exercise each of the 4 apps
+# manual: open and exercise each of the 3 kernel apps (Paint, Finder, Settings)
+# manual: open the menubar chat — agent works, streams, tool-calls land
 # manual: install a third-party app via the existing dev flow; verify it works alongside built-ins
-# manual: agent path — "app list" returns all 4 built-ins + any installed; agent can drive each
+# manual: agent path — "app list" returns the 3 built-ins + any installed; agent can drive each
 ```
 
 ---
 
-# Open decisions to resolve before starting
+# Open decisions
 
 1. **Step 1.2:** check in `apps/frieren/public/vendor/` or generate on
    install? Recommendation: generate, ignore in git.
 2. **Step 3.2:** binary `.zip` imports via Wrangler — confirm this works
    in the current Wrangler/Vite setup before committing. Fallback: emit
    bytes as a base64 string in the generated TS module.
-3. **Step 7.2:** synthetic-action subscription model (Option A) vs
-   out-of-band event channel (Option B). Plan assumes A; revisit when
-   actually writing the SDK code.
-4. **Step 7.4:** subscription state across DO hibernation. v1: in-memory
-   only; subscriptions re-established on reconnect. Acceptable?
-5. **Whether to commit per-builtin packages under `packages/app-*`
+3. **Whether to commit per-builtin packages under `packages/app-*`
    or co-locate them under `apps/frieren/builtins/*`.** Recommendation:
    `packages/` for symmetry with `app-counter`/`app-crossword`/`app-doom`.
+4. **Menubar chat invocation UX** (Part 8). Toggle button is enough
+   for v1; spotlight-style shortcut, persistent presence affordance,
+   notifications all come later.
+
+# Resolved decisions
+
+- **Part 7 subscription ergonomics:** kernel-as-notification-center,
+  declarative `on` handlers (no per-capability `.subscribe()`). Shipped.
+- **Agent capability:** deferred until a kernel app actually needs to
+  observe/talk to the agent. The OS-level chat surface (Part 8) does
+  not require it — it sits next to `session.manager` directly.
+- **Messages as kernel app vs OS chrome:** OS chrome. The agent is OS-
+  level, not an app.
 
 # Out of scope
 
@@ -916,3 +1027,6 @@ pnpm run verify:ui
 - Collaborative bitmap/document apps (the "Paint with agent" sketch
   from the design discussion).
 - Third-party app trust model beyond "trusted means on host allowlist."
+- Richer agent UX (spotlight-style command bar, contextual awareness
+  of focused app, system notifications). Part 8 just changes the
+  invocation surface; visual polish is follow-up work.
