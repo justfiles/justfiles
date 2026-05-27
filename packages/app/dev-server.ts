@@ -114,9 +114,8 @@ async function invokeVolume(
 	appId: string,
 	req: { method: string; input: unknown; scopes: readonly string[] }
 ): Promise<unknown> {
-	const root = req.scopes.includes('system')
-		? null
-		: (req.scopes.find((s) => s.startsWith('/')) ?? `/applications/${appId}/data/files`)
+	const prefix = req.scopes.find((s) => s.startsWith('/'))
+	const root = req.scopes.includes('system') ? null : (prefix ?? `/data/${appId}`)
 	const vol = root ? chroot(fs, root) : fs
 	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
 	const input = (req.input ?? {}) as { path?: unknown; data?: unknown; recursive?: unknown }
