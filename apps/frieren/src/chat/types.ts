@@ -1,20 +1,28 @@
-export type ActiveApp = { kind: 'builtin'; id: string } | { kind: 'app'; id: string }
+export type ActiveApp = { id: string }
 
 export interface InstalledApp {
 	id: string
 	name: string
 	description: string
 	iconUrl?: string
-	kind: 'builtin' | 'app'
+	// Version-stamped URL of the app's gui.js, e.g. /api/kernel/foo/gui.js?v=1.2.0.
+	// Absent for builtins and for apps without a version in their manifest.
+	guiUrl?: string
 }
 
+// `openApps` is the running set; `focusedId` is the topmost app id.
+// `activeApp` is a derived convenience: the focused app
+// object, kept for chat-view callers that only know the single-app model.
 // Dev-only host capability: upload a zipped app-system bundle to the kernel
 // install endpoint. `uninstallApp` removes a previously-installed bundle by id.
 export type Launcher = {
+	openApps: ActiveApp[]
+	focusedId: string | null
 	activeApp: ActiveApp | null
 	installedApps: InstalledApp[]
 	launch: (app: InstalledApp) => void
 	close: () => void
+	focus: (app: ActiveApp) => void
 	installApp?: () => Promise<void>
 	uninstallApp?: (id: string) => Promise<void>
 }
@@ -53,10 +61,4 @@ export interface ChatSession {
 export interface ChatConnection {
 	state: ConnectionState
 	reconnect: () => void
-}
-
-export interface ChatViewProps {
-	session: ChatSession
-	connection: ChatConnection
-	apps?: { launcher: Launcher }
 }

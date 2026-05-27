@@ -7,7 +7,7 @@ type AppInspection = AppSummary & { state: unknown; actions: Record<string, Acti
 export interface AppController {
 	list(): Promise<AppSummary[]>
 	launch(id: string): Promise<AppInspection>
-	close(): Promise<void>
+	close(id?: string): Promise<void>
 	current(): Promise<AppInspection | undefined>
 	inspect(id: string): Promise<AppInspection>
 	state(id: string): Promise<unknown>
@@ -33,7 +33,8 @@ async function run(controller: AppController, argv: string[]): Promise<CommandRe
 			return ok({ ok: true, current: await controller.launch(id) })
 		}
 		if (cmd === 'close') {
-			await controller.close()
+			const { id } = parseTarget(rest)
+			await controller.close(id)
 			return ok({ ok: true })
 		}
 		if (cmd === 'current') {
@@ -75,11 +76,14 @@ async function runAction(controller: AppController, argv: string[]): Promise<Com
 	}
 	const params = parseParams(tokens)
 	try {
+		// `result` is the action's return: the new state for handlers, the
+		// query's return value for queries. The action's `kind` is in
+		// `app.actions[action]`, so the agent can interpret accordingly.
 		return ok({
 			ok: true,
 			appId: app.id,
-			action: { type: action, params, actor: 'agent' },
-			state: await controller.run(app.id, action, params)
+			action: { type: action, params, actor: 'agent', kind: app.actions[action].kind },
+			result: await controller.run(app.id, action, params)
 		})
 	} catch (error) {
 		return fail('APP_VALIDATION_FAILED', error instanceof Error ? error.message : String(error), {

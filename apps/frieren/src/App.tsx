@@ -2,30 +2,39 @@ import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { ChatPage } from './ChatPage'
-import { useClientLocation } from './clientRouter'
 import { Spinner } from './components/ui/spinner'
-import { FilesPage } from './FilesPage'
 import { createFsVolume } from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { resolveOnboardingState } from './onboarding/state'
 
 function LoadingScreen({ label }: { label: string }) {
 	return (
-		<div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background px-6 text-center">
-			<Spinner className="size-5" />
-			<p className="text-sm text-muted-foreground">{label}</p>
+		<div
+			className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center text-white"
+			style={{
+				background:
+					'radial-gradient(ellipse at 50% 30%, rgba(255,255,255,0.12), transparent 60%), var(--desktop-bg)'
+			}}
+		>
+			<Spinner className="size-5 text-white/80" />
+			<p className="text-xs tracking-wide text-white/65">{label}</p>
 		</div>
 	)
 }
 
 function App() {
-	const { isLoaded, isSignedIn, getToken } = useAuth()
-	const location = useClientLocation()
+	const { isLoaded, isSignedIn, userId, getToken } = useAuth()
 
 	const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null)
+	const [chooserForUserId, setChooserForUserId] = useState<string | null>(null)
+	const showChooser = chooserForUserId !== null && chooserForUserId === userId
 
 	useEffect(() => {
-		if (!isSignedIn) return
+		if (!isSignedIn || !userId) {
+			setOnboardingDone(null)
+			return
+		}
+		setOnboardingDone(null)
 		let cancelled = false
 		void (async () => {
 			try {
@@ -39,20 +48,21 @@ function App() {
 		return () => {
 			cancelled = true
 		}
-	}, [isSignedIn, getToken])
+	}, [isSignedIn, userId, getToken])
 
 	const handleOnboardingComplete = useCallback(() => setOnboardingDone(true), [])
+	const requestSwitchUser = useCallback(() => {
+		if (userId) setChooserForUserId(userId)
+	}, [userId])
+	const dismissChooser = useCallback(() => setChooserForUserId(null), [])
 
 	if (!isLoaded) return <LoadingScreen label="Loading session…" />
 	if (!isSignedIn) return <AuthWall />
+	if (showChooser) return <AuthWall onDismiss={dismissChooser} />
 	if (onboardingDone === null) return <LoadingScreen label="Loading workspace…" />
 	if (!onboardingDone) return <OnboardingPage onComplete={handleOnboardingComplete} />
 
-	if (location.pathname.startsWith('/files')) {
-		return <FilesPage search={location.search} />
-	}
-
-	return <ChatPage />
+	return <ChatPage onSwitchUser={requestSwitchUser} />
 }
 
 export default App

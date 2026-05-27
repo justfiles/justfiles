@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { createFsApi } from '@justfiles/core'
-import { chroot, type Volume, volume } from '@justfiles/fs'
+import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
@@ -26,7 +26,6 @@ import { createAgent } from './llm.agent'
 import { type LLMText, text } from './llm.text'
 import { parseFrontmatter } from './markdown'
 import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts'
-import type { SessionEntry } from './session.manager.ts'
 import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
@@ -36,20 +35,7 @@ interface ClientMessage {
 	id?: string
 }
 
-interface DisplayToolCall {
-	name: string
-	args: unknown
-	result?: unknown
-	isError?: boolean
-}
-
-interface DisplayMessage {
-	readonly role: 'user' | 'assistant'
-	readonly content: string
-	readonly source?: 'user' | 'app'
-	readonly thinking?: string
-	readonly toolCalls?: ReadonlyArray<DisplayToolCall>
-}
+import { type DisplayMessage, sessionEntries2DisplayMessages } from './display'
 
 interface DisplayParticipants {
 	readonly userName: string
@@ -68,7 +54,7 @@ type ServerMessage =
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
 	| { type: 'kernel_app_open'; id: string }
-	| { type: 'kernel_app_close' }
+	| { type: 'kernel_app_close'; id: string }
 
 const DEBUG_COMMAND = '/debug'
 
@@ -135,7 +121,11 @@ export class Frieren extends DurableObject<Env> {
 				}
 			})
 			.get('/api/kernel/:appId/*', (c) =>
-				this.requireApps().asset(c.req.param('appId'), c.req.path.split('/').slice(4).join('/'))
+				this.requireApps().asset(
+					c.req.param('appId'),
+					c.req.path.split('/').slice(4).join('/'),
+					c.req.query('v')
+				)
 			)
 			.route('/fs', createFsApi(fs))
 
@@ -174,13 +164,14 @@ export class Frieren extends DurableObject<Env> {
 		this.runtime?.shutdown()
 		this.text = text({ model, apiKey })
 		this.apps = frierenApps({
-			fs: chroot(this.vol, '/kernel'),
+			fs: this.vol,
 			loader: this.env.LOADER,
 			storage: this.ctx.storage,
 			sockets: () => this.ctx.getWebSockets(),
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
-			broadcast: (msg) => this.broadcast(msg)
+			broadcast: (msg) => this.broadcast(msg),
+			integrations: () => this.requireIntegrations()
 		})
 		const { agent, integrations } = this.buildAgent()
 		this.integrations = integrations
@@ -292,7 +283,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'kernel_app_close') {
-			await this.requireApps().close()
+			await this.requireApps().close(parsed.id)
 			return
 		}
 
@@ -397,8 +388,9 @@ export class Frieren extends DurableObject<Env> {
 				} satisfies ServerMessage)
 			)
 
-			const kernelAppId = await this.requireApps().currentId()
-			if (kernelAppId) server.send(JSON.stringify({ type: 'kernel_app_open', id: kernelAppId }))
+			for (const openId of await this.requireApps().openIds()) {
+				server.send(JSON.stringify({ type: 'kernel_app_open', id: openId } satisfies ServerMessage))
+			}
 
 			return new Response(null, {
 				status: 101,
@@ -411,94 +403,14 @@ export class Frieren extends DurableObject<Env> {
 
 	private async loadParticipants(): Promise<DisplayParticipants> {
 		const [profile, soul] = await Promise.all([
-			readFrontmatter(this.vol, '/profiles/user.md'),
-			readFrontmatter(this.vol, '/soul.md')
+			readFrontmatter(this.vol, '/system/profiles/user.md'),
+			readFrontmatter(this.vol, '/system/soul.md')
 		])
 
 		return {
 			userName: profile.name || 'You',
 			agentName: soul.agent_name || 'Frieren'
 		}
-	}
-}
-
-function sessionEntries2DisplayMessages(entries: readonly SessionEntry[]): DisplayMessage[] {
-	const messages: DisplayMessage[] = []
-	for (const entry of entries) {
-		if (entry.type === 'message' && entry.role === 'tool_result') {
-			const last = messages[messages.length - 1]
-			const toolCalls = last?.toolCalls ? [...last.toolCalls] : []
-			const index = toolCalls.findLastIndex(
-				(toolCall) => toolCall.name === entry.tool_name && toolCall.result === undefined
-			)
-			if (last?.role === 'assistant' && index >= 0) {
-				toolCalls[index] = { ...toolCalls[index], result: parseToolResult(entry.content) }
-				messages[messages.length - 1] = { ...last, toolCalls }
-				continue
-			}
-		}
-
-		const message = sessionEntry2DisplayMessage(entry)
-		if (!message) continue
-
-		const last = messages[messages.length - 1]
-		if (
-			last?.role === 'assistant' &&
-			!last.content &&
-			last.toolCalls?.length &&
-			message.role === 'assistant' &&
-			message.toolCalls?.length
-		) {
-			messages[messages.length - 1] = {
-				...last,
-				toolCalls: [...last.toolCalls, ...message.toolCalls]
-			}
-			continue
-		}
-
-		messages.push(message)
-	}
-	return messages
-}
-
-function parseToolResult(content: string): unknown {
-	try {
-		return JSON.parse(content)
-	} catch {
-		return content
-	}
-}
-
-function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null {
-	switch (entry.type) {
-		case 'message':
-			switch (entry.role) {
-				case 'user':
-					return { role: 'user', content: entry.content, source: entry.source ?? 'user' }
-				case 'assistant':
-					return { role: 'assistant', content: entry.content }
-				case 'assistant_thinking':
-					return { role: 'assistant', content: '', thinking: entry.content }
-				case 'tool_call':
-					return {
-						role: 'assistant',
-						content: '',
-						toolCalls: [{ name: entry.tool_name, args: entry.input }]
-					}
-				case 'tool_result':
-					return {
-						role: 'assistant',
-						content: `[${entry.tool_name}]: ${entry.content}`
-					}
-				default:
-					throw new Error('unsupported message role')
-			}
-		case 'compaction':
-			return { role: 'assistant', content: entry.summary }
-		case 'branch_summary':
-			return { role: 'assistant', content: entry.summary }
-		case 'label':
-			return { role: 'assistant', content: `[${entry.label}]` }
 	}
 }
 

@@ -27,8 +27,8 @@ type ServerFrame =
 	| { type: 'result'; id: string; result: unknown }
 	| { type: 'error'; id?: string; message: string }
 
-export function KernelAppFrame(props: { id: string; onHome: () => void }) {
-	const { id, onHome } = props
+export function KernelAppFrame(props: { id: string; guiUrl?: string; onHome?: () => void }) {
+	const { id, guiUrl, onHome } = props
 	const { getToken } = useAuth()
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
@@ -44,21 +44,26 @@ export function KernelAppFrame(props: { id: string; onHome: () => void }) {
 		let nextId = 0
 		const pending = new Map<string, (frame: { result?: unknown; error?: string }) => void>()
 		const subscribers = new Set<(state: unknown) => void>()
+		// GUI mounts immediately (before WS opens) and is allowed to dispatch
+		// from its mount effect. Queue those frames here and flush once the
+		// socket reaches OPEN; without this, the first dispatch races the
+		// handshake and fails with `no_connection`.
+		const outbox: string[] = []
+		const send = (frame: string) => {
+			const ws = socket
+			if (ws && ws.readyState === ws.OPEN) ws.send(frame)
+			else outbox.push(frame)
+		}
 
 		const transport: Transport = {
 			invoke: (action) =>
 				new Promise((resolve, reject) => {
-					const ws = socket
-					if (!ws || ws.readyState !== ws.OPEN) {
-						reject(new Error('no_connection'))
-						return
-					}
 					const reqId = String(nextId++)
 					pending.set(reqId, (frame) => {
 						if (frame.error !== undefined) reject(new Error(frame.error))
 						else resolve(frame.result)
 					})
-					ws.send(JSON.stringify({ id: reqId, action }))
+					send(JSON.stringify({ id: reqId, action }))
 				}),
 			subscribe: (onState) => {
 				subscribers.add(onState)
@@ -81,10 +86,20 @@ export function KernelAppFrame(props: { id: string; onHome: () => void }) {
 				// per-user DO route (Volume-backed bytes). Token rides the URL
 				// for the same reason the WS does — Clerk cookie auth 401s a
 				// non-document fetch. Vite must not analyse this specifier.
+				// The guiUrl carries `?v=<manifest.version>` when known, so
+				// the asset handler can serve it with immutable cache headers.
+				const base = guiUrl ?? `/api/kernel/${id}/gui.js`
+				const sep = base.includes('?') ? '&' : '?'
 				const mod = (await import(
-					/* @vite-ignore */ `/api/kernel/${id}/gui.js?token=${encodeURIComponent(token)}`
+					/* @vite-ignore */ `${base}${sep}token=${encodeURIComponent(token)}`
 				)) as GuiModule
 				if (cancelled) return
+
+				// Mount immediately with `null` so the app's GUI can render its
+				// own bootstrap UI (loading spinner, empty list, etc.) while the
+				// WS handshake completes. Without this, the user stares at a
+				// blank frame for the round-trip to the DO.
+				instance = mod.gui.mount(container, null, { transport })
 
 				const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 				const ws = new WebSocket(
@@ -92,7 +107,9 @@ export function KernelAppFrame(props: { id: string; onHome: () => void }) {
 				)
 				socket = ws
 
-				let mounted = false
+				ws.onopen = () => {
+					while (outbox.length > 0) ws.send(outbox.shift() as string)
+				}
 				ws.onmessage = (event) => {
 					let frame: ServerFrame
 					try {
@@ -101,12 +118,9 @@ export function KernelAppFrame(props: { id: string; onHome: () => void }) {
 						return
 					}
 					if (frame.type === 'state') {
-						if (!mounted && !cancelled) {
-							mounted = true
-							instance = mod.gui.mount(container, frame.state, { transport })
-						} else {
-							for (const fn of subscribers) fn(frame.state)
-						}
+						if (cancelled) return
+						void instance?.update(frame.state)
+						for (const fn of subscribers) fn(frame.state)
 						return
 					}
 					if (frame.type === 'result') {
@@ -135,6 +149,7 @@ export function KernelAppFrame(props: { id: string; onHome: () => void }) {
 				ws.onclose = () => {
 					for (const [, resolve] of pending) resolve({ error: 'connection_closed' })
 					pending.clear()
+					outbox.length = 0
 				}
 			} catch (e) {
 				if (!cancelled) setError(e instanceof Error ? e.message : String(e))
@@ -143,33 +158,45 @@ export function KernelAppFrame(props: { id: string; onHome: () => void }) {
 
 		return () => {
 			cancelled = true
-			void instance?.unmount()
+			// Defer the GUI's root.unmount() to a microtask. The GUI lives in
+			// its own React root; unmounting it synchronously from inside the
+			// parent's commit phase trips "Attempted to synchronously unmount
+			// a root while React was already rendering" and leaves the DOM in
+			// an inconsistent state (NotFoundError on removeChild).
+			const inst = instance
+			if (inst) queueMicrotask(() => void inst.unmount())
 			socket?.close()
-			if (container) container.innerHTML = ''
 		}
-	}, [id])
+	}, [id, guiUrl])
 
 	return (
 		<div className="relative h-full w-full">
-			<div ref={containerRef} data-app-id={id} className="h-full w-full overflow-hidden" />
+			<div
+				ref={containerRef}
+				data-app-id={id}
+				className="h-full w-full overflow-hidden"
+				style={{ contain: 'paint' }}
+			/>
 			{error ? (
 				<div className="absolute inset-0 flex items-center justify-center bg-slate-950/95 p-6 text-center text-sm text-rose-200">
 					Failed to load app: {error}
 				</div>
 			) : null}
-			<div className="absolute right-2 top-2 z-10 flex border border-sky-300 bg-slate-950/90 shadow-[3px_3px_0_rgba(0,0,0,0.45)]">
-				<Button
-					type="button"
-					variant="ghost"
-					size="icon-sm"
-					className="text-sky-100 hover:bg-slate-900"
-					aria-label="Return home"
-					title="Return home"
-					onClick={onHome}
-				>
-					<HouseIcon />
-				</Button>
-			</div>
+			{onHome ? (
+				<div className="absolute right-2 top-2 z-10 flex border border-sky-300 bg-slate-950/90 shadow-[3px_3px_0_rgba(0,0,0,0.45)]">
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon-sm"
+						className="text-sky-100 hover:bg-slate-900"
+						aria-label="Return home"
+						title="Return home"
+						onClick={onHome}
+					>
+						<HouseIcon />
+					</Button>
+				</div>
+			) : null}
 		</div>
 	)
 }

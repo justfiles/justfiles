@@ -139,12 +139,12 @@ function FileNode({ item, depth, selectedId, dragEnabled, movingItemId, onSelect
 		disabled: dragDisabled,
 		feedback: 'move'
 	})
+	const isSelected = selectedId === item.id
 
 	return (
 		<div
 			ref={ref}
-			style={{ paddingLeft: `${depth * 12 + 8}px` }}
-			className={`flex w-full items-start gap-1 rounded transition-opacity ${
+			className={`flex w-full items-start gap-1 rounded px-1.5 transition-opacity ${
 				isDragging ? 'opacity-40' : ''
 			}`}
 		>
@@ -152,9 +152,13 @@ function FileNode({ item, depth, selectedId, dragEnabled, movingItemId, onSelect
 				type="button"
 				onClick={() => onSelect?.(item)}
 				disabled={item.disabled || movingItemId === item.id}
-				className={`flex min-w-0 flex-1 items-start gap-1.5 rounded px-2 py-1 font-mono transition-colors ${
-					selectedId === item.id
-						? 'bg-primary/15 text-primary'
+				style={{
+					paddingLeft: `${depth * 12 + 8}px`,
+					...(isSelected ? { background: 'var(--focus)', color: 'var(--on-focus)' } : {})
+				}}
+				className={`flex min-w-0 flex-1 items-start gap-1.5 rounded py-1 pr-2 font-mono transition-colors ${
+					isSelected
+						? ''
 						: item.muted
 							? 'text-base-content/30 hover:bg-base-200 hover:text-base-content/50'
 							: 'text-base-content/70 hover:bg-base-200 hover:text-base-content'
@@ -220,27 +224,29 @@ function FolderNode({
 			}
 		>
 			{node.name ? (
-				<button
-					type="button"
-					onClick={() => setOpen((value) => !value)}
-					style={{ paddingLeft: `${depth * 12}px` }}
-					className={`flex w-full cursor-pointer items-center gap-1 rounded px-2 py-0.5 font-mono text-xs transition-colors ${
-						isDropTarget
-							? 'bg-primary/12 text-primary ring-1 ring-primary/30'
-							: 'text-base-content/50 hover:bg-base-200 hover:text-base-content/80'
-					}`}
-				>
-					{hasChildren ? (
-						open ? (
-							<FiChevronDown className="h-3 w-3 shrink-0" />
+				<div className="px-1.5">
+					<button
+						type="button"
+						onClick={() => setOpen((value) => !value)}
+						style={{ paddingLeft: `${depth * 12 + 8}px` }}
+						className={`flex w-full cursor-pointer items-center gap-1 rounded py-0.5 pr-2 font-mono text-xs transition-colors ${
+							isDropTarget
+								? 'bg-primary/12 text-primary ring-1 ring-primary/30'
+								: 'text-base-content/50 hover:bg-base-200 hover:text-base-content/80'
+						}`}
+					>
+						{hasChildren ? (
+							open ? (
+								<FiChevronDown className="h-3 w-3 shrink-0" />
+							) : (
+								<FiChevronRight className="h-3 w-3 shrink-0" />
+							)
 						) : (
-							<FiChevronRight className="h-3 w-3 shrink-0" />
-						)
-					) : (
-						<span className="w-3" />
-					)}
-					<span className="truncate">{node.name}</span>
-				</button>
+							<span className="w-3" />
+						)}
+						<span className="truncate">{node.name}</span>
+					</button>
+				</div>
 			) : null}
 			{open || !node.name ? (
 				<>

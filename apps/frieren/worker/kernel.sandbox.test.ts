@@ -1,5 +1,4 @@
 import { defineApp } from '@justfiles/app'
-import { chroot, memStorage, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
 import { workerSandbox } from './kernel.sandbox'
 
@@ -20,14 +19,14 @@ const numberAmount = {
 
 const app = defineApp({
 	init: { count: 0 },
-	handlers: {
-		increment: {
+	actions: (b) => ({
+		increment: b.handler({
 			schema: numberAmount,
 			handler({ amount }, ctx) {
 				return { ...ctx.state, count: ctx.state.count + amount }
 			}
-		}
-	}
+		})
+	})
 })
 
 // CODE stands in for the compiled app.js. workerd can't run in Node, so the
@@ -62,7 +61,6 @@ const fakeLoader = () => {
 
 const ctx = () => ({
 	state: undefined as unknown,
-	files: chroot(volume(memStorage()), '/'),
 	setState: async () => {}
 })
 
@@ -71,10 +69,13 @@ test('valid dispatch returns the parsed result and threads state', async () => {
 	const getSandbox = workerSandbox(loader as unknown as Parameters<typeof workerSandbox>[0])
 
 	const sb = await getSandbox({ appId: 'test.app', code: CODE })
-	expect(await sb.run({ type: 'increment', params: { amount: 5 } }, ctx())).toEqual({ count: 5 })
+	expect(await sb.run({ type: 'increment', params: { amount: 5 } }, ctx())).toEqual({
+		state: { count: 5 },
+		result: { count: 5 }
+	})
 	expect(
 		await sb.run({ type: 'increment', params: { amount: 2 } }, { ...ctx(), state: { count: 5 } })
-	).toEqual({ count: 7 })
+	).toEqual({ state: { count: 7 }, result: { count: 7 } })
 })
 
 test('invalid params reject with the Standard Schema message from the bundle', async () => {

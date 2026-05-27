@@ -13,7 +13,8 @@ export function createNowCommand(options: NowCommandOptions = {}) {
 		args: [
 			{
 				name: 'tz',
-				description: "IANA timezone name; defaults to the user's timezone from /profiles/user.md"
+				description:
+					"IANA timezone name; defaults to the user's timezone from /system/profiles/user.md"
 			}
 		],
 		async run({ args }) {

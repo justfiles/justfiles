@@ -1,0 +1,8 @@
+{
+	"name": "@justfiles/design",
+	"private": true,
+	"type": "module",
+	"exports": {
+		"./design.css": "./design.css"
+	}
+}

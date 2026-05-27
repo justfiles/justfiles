@@ -1,59 +1,104 @@
-import { SignInButton, SignUpButton } from '@clerk/clerk-react'
-import { Badge } from './components/ui/badge'
+import { SignInButton, SignUpButton, useClerk } from '@clerk/clerk-react'
+import { useState } from 'react'
 import { Button } from './components/ui/button'
-import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardFooter,
-	CardHeader,
-	CardTitle
-} from './components/ui/card'
 
-export function AuthWall() {
+export function AuthWall({ onDismiss }: { onDismiss?: () => void } = {}) {
+	const clerk = useClerk()
+	const sessions = clerk.client?.signedInSessions ?? []
+	const [busy, setBusy] = useState(false)
+
+	const pick = async (sessionId: string) => {
+		setBusy(true)
+		try {
+			await clerk.setActive({ session: sessionId })
+			onDismiss?.()
+		} finally {
+			setBusy(false)
+		}
+	}
+
 	return (
-		<div className="relative flex min-h-dvh items-center justify-center overflow-hidden bg-background px-6 py-10">
-			<div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(0,0,0,0.05),transparent_55%)] dark:bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_55%)]" />
-			<Card className="relative w-full max-w-xl border border-border/60 bg-background/95 backdrop-blur">
-				<CardHeader className="gap-3">
-					<Badge variant="outline" className="w-fit tracking-[0.24em] uppercase">
-						Frieren
-					</Badge>
-					<CardTitle className="max-w-lg text-3xl leading-tight sm:text-4xl">
-						Your personal agent, behind a sign-in.
-					</CardTitle>
-					<CardDescription className="max-w-lg text-sm/6 sm:text-base/7">
-						Sign in to chat with Frieren. Your conversations, onboarding, and files are scoped to
-						your account.
-					</CardDescription>
-				</CardHeader>
-				<CardContent className="grid gap-3 sm:grid-cols-2">
-					<div className="border border-border bg-muted/30 p-3">
-						<p className="font-medium text-foreground">Scoped memory</p>
-						<p className="mt-1 text-muted-foreground">
-							Your workspace stays attached to you, not the browser tab.
-						</p>
+		<div
+			className="flex min-h-dvh flex-col items-center justify-center px-6 text-white"
+			style={{
+				background:
+					'radial-gradient(ellipse at 50% 35%, rgba(255,255,255,0.08), transparent 65%), var(--desktop-bg)'
+			}}
+		>
+			{sessions.length > 0 ? (
+				<>
+					<div className="flex flex-wrap items-start justify-center gap-x-10 gap-y-6">
+						{sessions.map((s) => {
+							const u = s.user
+							const name =
+								u?.firstName || u?.fullName || u?.primaryEmailAddress?.emailAddress || 'User'
+							return (
+								<div key={s.id} className="flex w-28 flex-col items-center gap-3">
+									<button
+										type="button"
+										onClick={() => void pick(s.id)}
+										disabled={busy}
+										className="flex size-24 items-center justify-center overflow-hidden rounded-full border border-white/30 bg-white/5 text-3xl font-light text-white shadow-[0_2px_10px_rgba(0,0,0,0.35)] transition hover:border-white/80 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent disabled:opacity-60"
+										title={name}
+									>
+										{u?.hasImage ? (
+											<img src={u.imageUrl} alt="" className="size-full object-cover" />
+										) : (
+											name.slice(0, 1).toUpperCase()
+										)}
+									</button>
+									<span className="w-full truncate text-center text-sm font-medium tracking-wide drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
+										{name}
+									</span>
+								</div>
+							)
+						})}
+
+						<div className="flex w-28 flex-col items-center gap-3">
+							<SignInButton>
+								<button
+									type="button"
+									className="flex size-24 items-center justify-center rounded-full border border-dashed border-white/30 bg-white/[0.03] text-3xl font-light text-white/60 transition hover:border-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
+									title="Add account"
+								>
+									+
+								</button>
+							</SignInButton>
+							<span className="w-full truncate text-center text-sm font-medium text-white/70 drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
+								Other…
+							</span>
+						</div>
 					</div>
-					<div className="border border-border bg-muted/30 p-3">
-						<p className="font-medium text-foreground">Persistent files</p>
-						<p className="mt-1 text-muted-foreground">
-							Notes, profiles, and generated artifacts stay available after you come back.
-						</p>
+
+					{onDismiss ? (
+						<button
+							type="button"
+							onClick={onDismiss}
+							className="mt-12 text-xs text-white/55 hover:text-white/90"
+						>
+							Cancel
+						</button>
+					) : null}
+				</>
+			) : (
+				<div className="flex flex-col items-center gap-6">
+					<div className="flex size-24 items-center justify-center rounded-full border border-white/25 bg-white/[0.03] text-3xl font-light text-white/50">
+						?
 					</div>
-				</CardContent>
-				<CardFooter className="flex-col gap-2 border-t-0 pt-0 sm:flex-row">
-					<SignInButton>
-						<Button type="button" size="lg" className="w-full flex-1">
-							Sign in
-						</Button>
-					</SignInButton>
-					<SignUpButton>
-						<Button type="button" variant="outline" size="lg" className="w-full flex-1">
-							Get started
-						</Button>
-					</SignUpButton>
-				</CardFooter>
-			</Card>
+					<div className="flex items-center gap-2">
+						<SignInButton>
+							<Button type="button" className="min-w-28">
+								Sign in
+							</Button>
+						</SignInButton>
+						<SignUpButton>
+							<Button type="button" variant="outline" className="min-w-28">
+								Create account
+							</Button>
+						</SignUpButton>
+					</div>
+				</div>
+			)}
 		</div>
 	)
 }

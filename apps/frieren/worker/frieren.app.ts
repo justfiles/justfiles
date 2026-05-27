@@ -2,6 +2,7 @@ import {
 	type Action,
 	type AppBundle,
 	type AppManifest,
+	type BuiltinBundle,
 	type Kernel,
 	kernel,
 	safeBundlePath
@@ -9,18 +10,26 @@ import {
 import type { Volume } from '@justfiles/fs'
 import { unzipSync } from 'fflate'
 import type { AppController } from './bash/commands/app.ts'
+import { BUILTINS } from './builtins/index.ts'
+import type { Integrations } from './integrations/registry.ts'
+import { invokeIntegrations } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 import type { LLMText } from './llm.text.ts'
+import { invokeVolume } from './volume.capability.ts'
 
 interface DisplayApp {
 	readonly id: string
 	readonly name: string
 	readonly description: string
 	readonly iconUrl?: string
-	readonly kind: 'builtin' | 'app'
+	// Version-stamped gui URL when the manifest has a version. Pairs with the
+	// asset() handler, which sets immutable Cache-Control for matching v=.
+	readonly guiUrl?: string
 }
 
-type AppBroadcast = { type: 'kernel_app_open'; id: string } | { type: 'kernel_app_close' }
+type AppBroadcast =
+	| { type: 'kernel_app_open'; id: string }
+	| { type: 'kernel_app_close'; id: string }
 
 interface FrierenAppsDeps {
 	fs: Volume
@@ -30,6 +39,9 @@ interface FrierenAppsDeps {
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
 	broadcast: (msg: AppBroadcast) => void
+	// Lazily resolved so frierenApps can be constructed before the
+	// integrations registry exists; the volume capability does not need it.
+	integrations?: () => Integrations
 }
 
 export interface FrierenApps {
@@ -37,19 +49,20 @@ export interface FrierenApps {
 	readonly controller: AppController
 	bundleFromZip(zip: Uint8Array): AppBundle
 	list(): Promise<readonly DisplayApp[]>
-	currentId(): Promise<string | undefined>
+	openIds(): Promise<string[]>
 	open(id: string): Promise<void>
-	close(): Promise<void>
-	asset(appId: string, path: string): Promise<Response>
+	close(id?: string): Promise<void>
+	asset(appId: string, path: string, version?: string): Promise<Response>
 	acceptWebSocket(appId: string): Promise<Response>
 	handleMessage(ws: WebSocket, appId: string, message: string | ArrayBuffer): Promise<void>
 }
 
-const CURRENT_KERNEL_APP_STORAGE_KEY = 'current_kernel_app'
+const OPEN_KERNEL_APPS_STORAGE_KEY = 'open_kernel_apps'
 
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
 	let subscribed = false
+	let builtinsReady: Promise<void> | undefined
 
 	function getKernel(): Kernel {
 		if (kernelInstance) return kernelInstance
@@ -62,23 +75,58 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return kernelInstance
 	}
 
+	// Bundled built-in apps install themselves into the user's volume on the
+	// first kernel use per DO instance. After the first run the version diff
+	// short-circuits to a single `kernel.list()` read.
+	async function ensureBuiltinsInstalled(k: Kernel): Promise<void> {
+		if (!builtinsReady) {
+			builtinsReady = (async () => {
+				if (BUILTINS.length === 0) return
+				const installed = new Map((await k.list()).map((m) => [m.id, m.version]))
+				for (const builtin of BUILTINS) {
+					if (installed.get(builtin.id) === builtin.version) continue
+					await k.install(bundleFromBuiltin(builtin))
+				}
+			})()
+		}
+		return builtinsReady
+	}
+
+	async function kernelReady(): Promise<Kernel> {
+		const k = getKernel()
+		await ensureBuiltinsInstalled(k)
+		return k
+	}
+
 	async function invokeCapability(req: {
 		capability: string
 		method: string
 		input: unknown
+		scopes: readonly string[]
 		appId: string
 		actor?: string
 	}): Promise<unknown> {
-		if (req.capability !== 'ai' || req.method !== 'generateText') {
-			throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
+		if (req.capability === 'ai' && req.method === 'generateText') {
+			const input = req.input as { system?: unknown; prompt?: unknown }
+			if (!input || typeof input !== 'object' || typeof input.prompt !== 'string') {
+				throw capabilityError('CAPABILITY_INVALID_INPUT', req.capability, req.method)
+			}
+			return {
+				text: await deps.text.gen(
+					typeof input.system === 'string' ? input.system : '',
+					input.prompt
+				)
+			}
 		}
-		const input = req.input as { system?: unknown; prompt?: unknown }
-		if (!input || typeof input !== 'object' || typeof input.prompt !== 'string') {
-			throw capabilityError('CAPABILITY_INVALID_INPUT', req.capability, req.method)
+		if (req.capability === 'volume') {
+			return invokeVolume(deps.fs, req)
 		}
-		return {
-			text: await deps.text.gen(typeof input.system === 'string' ? input.system : '', input.prompt)
+		if (req.capability === 'integrations') {
+			const registry = deps.integrations?.()
+			if (!registry) throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
+			return invokeIntegrations(registry, req)
 		}
+		throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 	}
 
 	// kernel.subscribe's handler is in-memory, so it dies with the DO on
@@ -98,7 +146,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	}
 
 	async function inspect(id: string) {
-		const k = getKernel()
+		const k = await kernelReady()
 		const installed = await k.app(id)
 		const [state, actions] = await Promise.all([k.state(id).catch(() => undefined), k.actions(id)])
 		return {
@@ -112,34 +160,44 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {
-			const manifests = await getKernel().list()
+			const manifests = await (await kernelReady()).list()
 			return manifests.map((m) => ({
 				id: m.id,
 				name: m.name,
 				description: m.description ?? '',
-				iconUrl: m.icon ? `/api/kernel/${m.id}/${m.icon}` : undefined,
-				kind: 'app' as const
+				iconUrl: m.icon
+					? `/api/kernel/${m.id}/${m.icon}${m.version ? `?v=${encodeURIComponent(m.version)}` : ''}`
+					: undefined,
+				guiUrl: m.version
+					? `/api/kernel/${m.id}/gui.js?v=${encodeURIComponent(m.version)}`
+					: `/api/kernel/${m.id}/gui.js`
 			}))
 		} catch {
 			return []
 		}
 	}
 
-	async function currentId(): Promise<string | undefined> {
-		return (await deps.storage.get<{ id: string }>(CURRENT_KERNEL_APP_STORAGE_KEY))?.id
+	async function openIds(): Promise<string[]> {
+		return (await deps.storage.get<string[]>(OPEN_KERNEL_APPS_STORAGE_KEY)) ?? []
 	}
 
 	async function open(id: string): Promise<void> {
-		await deps.storage.put(CURRENT_KERNEL_APP_STORAGE_KEY, { id })
+		const ids = await openIds()
+		if (!ids.includes(id)) await deps.storage.put(OPEN_KERNEL_APPS_STORAGE_KEY, [...ids, id])
 		deps.broadcast({ type: 'kernel_app_open', id })
 	}
 
-	async function close(): Promise<void> {
-		await deps.storage.delete(CURRENT_KERNEL_APP_STORAGE_KEY)
-		deps.broadcast({ type: 'kernel_app_close' })
+	async function close(id?: string): Promise<void> {
+		const ids = await openIds()
+		const target = id ?? ids[ids.length - 1]
+		if (!target) return
+		const next = ids.filter((x) => x !== target)
+		if (next.length === 0) await deps.storage.delete(OPEN_KERNEL_APPS_STORAGE_KEY)
+		else await deps.storage.put(OPEN_KERNEL_APPS_STORAGE_KEY, next)
+		deps.broadcast({ type: 'kernel_app_close', id: target })
 	}
 
-	async function asset(appId: string, path: string): Promise<Response> {
+	async function asset(appId: string, path: string, version?: string): Promise<Response> {
 		let safe: string
 		try {
 			safe = safeBundlePath(path)
@@ -147,11 +205,19 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			return new Response(null, { status: 404 })
 		}
 		try {
-			const installed = await getKernel().app(appId)
+			const installed = await (await kernelReady()).app(appId)
 			const data = await installed.read(safe)
 			const body = new ArrayBuffer(data.byteLength)
 			new Uint8Array(body).set(data)
-			return new Response(body, { headers: { 'content-type': mimeFor(safe) } })
+			const headers: Record<string, string> = { 'content-type': mimeFor(safe) }
+			// When the URL pins the manifest version, the byte stream is
+			// immutable for that URL — browsers re-use the cached entry on
+			// re-launch within the token's lifetime, and a version bump in
+			// list() drives a fresh fetch via a different URL.
+			if (version && installed.manifest.version && version === installed.manifest.version) {
+				headers['cache-control'] = 'private, max-age=31536000, immutable'
+			}
+			return new Response(body, { headers })
 		} catch {
 			return new Response(null, { status: 404 })
 		}
@@ -169,7 +235,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// server proves over REST+SSE, here over a single hibernatable socket.
 
 	async function acceptWebSocket(appId: string): Promise<Response> {
-		const k = getKernel()
+		const k = await kernelReady()
 		const { 0: client, 1: server } = new WebSocketPair()
 		deps.acceptWebSocket(server)
 		server.serializeAttachment({ appId })
@@ -198,7 +264,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 		ensureSubscribed()
 		try {
-			const result = await getKernel().dispatch(appId, request.action as Action)
+			const result = await (await kernelReady()).dispatch(appId, request.action as Action)
 			ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
 		} catch (error) {
 			ws.send(
@@ -219,16 +285,19 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			await open(id)
 			return app
 		},
-		close,
+		close: async (id?: string) => {
+			await close(id)
+		},
 		current: async () => {
-			const id = await currentId()
-			return id ? await inspect(id).catch(() => undefined) : undefined
+			const ids = await openIds()
+			const lastId = ids[ids.length - 1]
+			return lastId ? await inspect(lastId).catch(() => undefined) : undefined
 		},
 		inspect,
-		state: async (id) => await getKernel().state(id),
+		state: async (id) => await (await kernelReady()).state(id),
 		run: async (id, action, params) => {
 			ensureSubscribed()
-			return await getKernel().dispatch(id, { type: action, params, actor: 'agent' })
+			return await (await kernelReady()).dispatch(id, { type: action, params, actor: 'agent' })
 		}
 	}
 
@@ -239,12 +308,28 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		controller,
 		bundleFromZip,
 		list,
-		currentId,
+		openIds,
 		open,
 		close,
 		asset,
 		acceptWebSocket,
 		handleMessage
+	}
+}
+
+function bundleFromBuiltin(builtin: BuiltinBundle): AppBundle {
+	return {
+		async manifest() {
+			return builtin.manifest
+		},
+		async *list() {
+			yield* Object.keys(builtin.files)
+		},
+		async read(path) {
+			const bytes = builtin.files[safeBundlePath(path)]
+			if (!bytes) throw new Error(`file not found: ${path}`)
+			return bytes
+		}
 	}
 }
 

@@ -1,8 +1,8 @@
 import type { Volume } from '../fs'
 
 export const PATHS = {
-	profile: '/profiles/user.md',
-	soul: '/soul.md'
+	profile: '/system/profiles/user.md',
+	soul: '/system/soul.md'
 } as const
 
 export type OnboardingState = 'user' | 'agent' | 'done'

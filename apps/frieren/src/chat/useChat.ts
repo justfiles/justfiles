@@ -1,5 +1,5 @@
 import { useAuth } from '@clerk/clerk-react'
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type {
 	ActiveApp,
 	ChatConnection,
@@ -31,6 +31,16 @@ function pickZipFile(): Promise<File | null> {
 	})
 }
 
+function activeKey(app: ActiveApp): string {
+	return app.id
+}
+
+function bringToFront(apps: ActiveApp[], target: ActiveApp): ActiveApp[] {
+	const key = activeKey(target)
+	if (apps[apps.length - 1] && activeKey(apps[apps.length - 1]) === key) return apps
+	return [...apps.filter((a) => activeKey(a) !== key), target]
+}
+
 async function responseError(res: Response): Promise<string> {
 	try {
 		const body = (await res.json()) as { error?: unknown }
@@ -47,6 +57,16 @@ export interface UseChatResult {
 	}
 }
 
+const ChatContext = createContext<UseChatResult | null>(null)
+
+export const ChatProvider = ChatContext.Provider
+
+export function useChatSession(): UseChatResult {
+	const value = useContext(ChatContext)
+	if (!value) throw new Error('useChatSession must be used inside <ChatProvider>')
+	return value
+}
+
 export function useChat(): UseChatResult {
 	const { getToken } = useAuth()
 	const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -56,7 +76,9 @@ export function useChat(): UseChatResult {
 	const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connectKey, setConnectKey] = useState(0)
-	const [activeApp, setActiveApp] = useState<ActiveApp | null>(null)
+	// openApps doubles as the focus stack: last element is the focused window.
+	// Launch/focus moves an app to the end; close pops it.
+	const [openApps, setOpenApps] = useState<ActiveApp[]>([])
 	const [installedApps, setInstalledApps] = useState<InstalledApp[]>([])
 
 	const wsRef = useRef<WebSocket | null>(null)
@@ -250,12 +272,13 @@ export function useChat(): UseChatResult {
 				}
 
 				if (data.type === 'kernel_app_open') {
-					setActiveApp({ kind: 'app', id: data.id })
+					const active: ActiveApp = { id: data.id }
+					setOpenApps((prev) => bringToFront(prev, active))
 					return
 				}
 
 				if (data.type === 'kernel_app_close') {
-					setActiveApp(null)
+					setOpenApps((prev) => prev.filter((a) => a.id !== data.id))
 					return
 				}
 
@@ -306,21 +329,21 @@ export function useChat(): UseChatResult {
 	}
 
 	const launchApp = (app: InstalledApp) => {
-		if (app.kind === 'builtin') {
-			setActiveApp({ kind: 'builtin', id: app.id })
-			return
-		}
-		if (app.kind === 'app') {
-			setActiveApp({ kind: 'app', id: app.id })
-			wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
-		}
+		const active: ActiveApp = { id: app.id }
+		setOpenApps((prev) => bringToFront(prev, active))
+		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
 	}
 
 	const closeApp = () => {
-		setActiveApp((prev) => {
-			if (prev?.kind === 'app') wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close' }))
-			return null
-		})
+		const focused = openApps[openApps.length - 1]
+		if (!focused) return
+		const key = activeKey(focused)
+		setOpenApps((prev) => prev.filter((a) => activeKey(a) !== key))
+		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id: focused.id }))
+	}
+
+	const focusApp = (app: ActiveApp) => {
+		setOpenApps((prev) => bringToFront(prev, app))
 	}
 
 	const reconnect = () => setConnectKey((value) => value + 1)
@@ -359,7 +382,15 @@ export function useChat(): UseChatResult {
 	// it from the launcher state optimistically. Mirror of `installApp`.
 	const uninstallApp = async (id: string) => {
 		const prev = installedApps
-		setInstalledApps((apps) => apps.filter((a) => !(a.kind === 'app' && a.id === id)))
+		// Close any open window for this app first. Otherwise the still-mounted
+		// KernelAppFrame sees its `guiUrl` go undefined when the launcher drops
+		// the app, the effect re-fires, and the GUI's React root is unmounted
+		// synchronously from inside the parent's commit — corrupting the DOM
+		// (NotFoundError on removeChild) and leaving the desktop in a half-
+		// broken state where the user sees "nothing happens".
+		setOpenApps((open) => open.filter((a) => a.id !== id))
+		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id }))
+		setInstalledApps((apps) => apps.filter((a) => a.id !== id))
 		try {
 			const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {
 				method: 'DELETE',
@@ -372,15 +403,21 @@ export function useChat(): UseChatResult {
 		}
 	}
 
+	const activeApp = openApps[openApps.length - 1] ?? null
+	const focusedId = activeApp ? activeKey(activeApp) : null
+
 	return {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
 		connection: { state: connectionState, reconnect },
 		apps: {
 			launcher: {
+				openApps,
+				focusedId,
 				activeApp,
 				installedApps,
 				launch: launchApp,
 				close: closeApp,
+				focus: focusApp,
 				installApp,
 				uninstallApp
 			}

@@ -1,79 +1,146 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { Action, ActionExample, ActionMeta, App, Context, RuntimeContext } from './app.ts'
+import type {
+	Action,
+	ActionDef,
+	ActionExample,
+	ActionMeta,
+	App,
+	Context,
+	DispatchResult,
+	HandlerDef,
+	OnHandlers,
+	QueryDef,
+	RuntimeContext
+} from './app.ts'
 
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
 
+type Capabilities = Record<
+	string,
+	ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown, unknown>>
+>
+
+// `b.handler({...})` for state-mutating actions, `b.query({...})` for pure
+// reads. The builder is bound to `State` and `Caps` by the surrounding
+// `defineApp` call, so each method only needs to infer the per-action
+// schema type `S` (and `R` for queries). The handler field is named the
+// same in both kinds — the builder method already discriminates the kind.
+export interface Builder<State, Caps extends Capabilities> {
+	handler<S extends StandardSchemaV1>(def: {
+		schema: S
+		description?: string
+		examples?: ActionExample[]
+		handler: (params: Infer<S>, ctx: Context<State, Caps>) => MaybePromise<State>
+	}): HandlerDef<S, State, Caps>
+	query<S extends StandardSchemaV1, R>(def: {
+		schema: S
+		description?: string
+		examples?: ActionExample[]
+		handler: (params: Infer<S>, ctx: Context<State, Caps>) => MaybePromise<R>
+	}): QueryDef<S, State, Caps, R>
+}
+
 interface AppSpec<
 	State,
-	Schemas extends Record<string, StandardSchemaV1>,
-	Caps extends Record<
-		string,
-		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
-	>
+	Acts extends Record<string, ActionDef<State, Caps>>,
+	Caps extends Capabilities
 > {
 	init: State
 	capabilities?: Caps
-	handlers: {
-		[Name in keyof Schemas]: {
-			// Author's schema, from any Standard Schema validator (BYO).
-			schema: Schemas[Name]
-			description?: string
-			examples?: ActionExample[]
-			// params is inferred from the schema; the framework validated
-			// it before this runs.
-			handler: (params: Infer<Schemas[Name]>, ctx: Context<State, Caps>) => MaybePromise<State>
-		}
+	// Callback receives the State/Caps-bound builder. This is the standard
+	// trick (tRPC, Convex) for inferring per-action schema and return types
+	// in one shot while letting the surrounding defineApp call drive
+	// State/Caps inference from `init`/`capabilities`.
+	actions: (b: Builder<State, Caps>) => Acts
+	// Declarative event subscriptions. Keys are the names declared in
+	// `capabilities`; per-event handlers receive the payload type from the
+	// capability contract and the same `ctx` regular actions get. The kernel
+	// dispatches each event as a synthetic action `__event/<cap>.<event>`
+	// — so event handlers go through the same schema-less fast-path as
+	// regular dispatches and emit `app.update` on every state change.
+	on?: OnHandlers<State, Caps>
+}
+
+// Synthetic action key namespace for kernel-routed capability events.
+// Kept short — appears in every dispatched event and in the subscription
+// index that maps channel → app subscribers.
+export const EVENT_ACTION_PREFIX = '__event/'
+
+const passthroughSchema: StandardSchemaV1 = {
+	'~standard': {
+		version: 1,
+		vendor: 'kernel-event',
+		validate: (input) => ({ value: input })
 	}
 }
 
 export function defineApp<
 	State,
-	Schemas extends Record<string, StandardSchemaV1>,
-	Caps extends Record<
+	Acts extends Record<string, ActionDef<State, Caps>>,
+	Caps extends Capabilities = Record<string, never>
+>(spec: AppSpec<State, Acts, Caps>): App<State, Acts, Caps> {
+	const builder: Builder<State, Caps> = {
+		handler: (def) => ({ __kind: 'handler', ...def }),
+		query: (def) => ({ __kind: 'query', ...def })
+	}
+	const acts = spec.actions(builder) as Record<string, ActionDef<State, Caps>>
+	// Compose `on`-handlers into the same action table under
+	// `__event/<cap>.<event>` keys. Payload validation is intentionally
+	// skipped — the kernel routes only events the capability contract
+	// declares, so the payload type is already pinned at compile time.
+	const onSpec = (spec.on ?? {}) as Record<
 		string,
-		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
-	> = Record<string, never>
->(spec: AppSpec<State, Schemas, Caps>): App<State, Schemas, Caps> {
-	const handlers = spec.handlers as unknown as Record<
-		string,
-		{
-			schema: StandardSchemaV1
-			description?: string
-			examples?: ActionExample[]
-			handler: (params: unknown, ctx: Context<State, Caps>) => MaybePromise<State>
-		}
+		Record<string, (event: unknown, ctx: Context<State, Caps>) => MaybePromise<State>> | undefined
 	>
-	const schemas = {} as Record<string, StandardSchemaV1>
-	const actions = {} as Record<string, ActionMeta>
-	for (const type in handlers) {
-		const def = handlers[type]
+	for (const capName in onSpec) {
+		const evMap = onSpec[capName]
+		if (!evMap) continue
+		for (const evName in evMap) {
+			const handler = evMap[evName]
+			if (!handler) continue
+			acts[`${EVENT_ACTION_PREFIX}${capName}.${evName}`] = {
+				__kind: 'handler',
+				schema: passthroughSchema,
+				handler
+			} as ActionDef<State, Caps>
+		}
+	}
+
+	const meta = {} as Record<string, ActionMeta>
+	// Keep `__event/*` entries in the sandbox-visible meta so the kernel
+	// can build its subscription index. The kernel's public `actions(appId)`
+	// API filters them out before exposing to agents.
+	for (const type in acts) {
+		const def = acts[type]
 		if (!def) continue
-		schemas[type] = def.schema
-		actions[type] = {
+		meta[type] = {
+			kind: def.__kind,
 			description: def.description,
 			examples: def.examples,
 			schemaHint: schemaHint(def.schema)
 		}
 	}
 	return {
-		schemas: schemas as Schemas,
-		actions: actions as Record<keyof Schemas & string, ActionMeta>,
-		async dispatch(action: Action, ctx: RuntimeContext<State>) {
-			const def = handlers[action.type]
+		actions: meta as Record<keyof Acts & string, ActionMeta>,
+		async dispatch(action: Action, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
+			const def = acts[action.type]
 			if (!def) throw new Error(`unknown action: ${action.type}`)
-			// Framework-owned validation: one implementation, compiled into
-			// every app bundle, so it runs identically in every sandbox.
 			const r = await def.schema['~standard'].validate(action.params)
 			if (r.issues)
 				throw new Error(
 					`invalid params for ${action.type}: ${r.issues.map((i) => i.message).join('; ')}`
 				)
-			return def.handler(r.value, {
+			const handlerCtx = {
 				...ctx,
 				state: ctx.state ?? spec.init,
 				capabilities: createCapabilities(spec.capabilities ?? {}, ctx as RuntimeContext, action)
-			} as Context<State, Caps>)
+			} as Context<State, Caps>
+			if (def.__kind === 'query') {
+				return { result: await def.handler(r.value as never, handlerCtx) }
+			}
+			const state = await def.handler(r.value as never, handlerCtx)
+			return { state, result: state }
 		}
 	}
 }
@@ -81,7 +148,7 @@ export function defineApp<
 function createCapabilities(
 	requests: Record<
 		string,
-		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown>>
+		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown, unknown>>
 	>,
 	ctx: RuntimeContext,
 	action: Action
@@ -106,6 +173,7 @@ function createCapabilities(
 										capability: request.id,
 										method,
 										input,
+										scopes: request.scopes,
 										actor: action.actor
 									})
 								} catch (error) {
@@ -172,11 +240,29 @@ export interface Transport {
 	subscribe(onState: (state: unknown) => void): () => void
 }
 
-// `typeof app` -> { [action]: (params) => Promise<State> }. Inputs inferred
-// from the schemas; output is uniformly State (the reducer model).
+// `typeof app` -> { [action]: (params) => Promise<Result> }. Per-action:
+// params come from the schema's output type; handler actions resolve to
+// the new State, query actions resolve to the query handler's literal
+// return type (preserved via the QueryDef's R generic).
+type ParamsOf<Def> =
+	Def extends HandlerDef<infer S, infer _S, infer _C>
+		? Infer<S>
+		: Def extends QueryDef<infer S, infer _S, infer _C, infer _R>
+			? Infer<S>
+			: never
+
+type ResultOf<Def, State> =
+	Def extends QueryDef<infer _S, infer _ST, infer _C, infer R>
+		? Awaited<R>
+		: Def extends HandlerDef<infer _S, infer _ST, infer _C>
+			? State
+			: never
+
 export type Client<A> =
-	A extends App<infer State, infer Schemas extends Record<string, StandardSchemaV1>, infer _Caps>
-		? { [K in keyof Schemas & string]: (params: Infer<Schemas[K]>) => Promise<State> }
+	A extends App<infer State, infer Acts, infer _Caps>
+		? {
+				[K in keyof Acts & string]: (params: ParamsOf<Acts[K]>) => Promise<ResultOf<Acts[K], State>>
+			}
 		: never
 
 export function createClient<A>(transport: Transport): Client<A> {

@@ -13,7 +13,8 @@
 		"./capabilities/email": "./capabilities/email/index.ts",
 		"./capabilities/calendar": "./capabilities/calendar/index.ts",
 		"./capabilities/volume": "./capabilities/volume/index.ts",
-		"./capabilities/ai": "./capabilities/ai/index.ts"
+		"./capabilities/ai": "./capabilities/ai/index.ts",
+		"./capabilities/integrations": "./capabilities/integrations/index.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -62,6 +63,10 @@
 			"./capabilities/ai": {
 				"types": "./dist/capabilities/ai/index.d.ts",
 				"default": "./dist/capabilities/ai/index.js"
+			},
+			"./capabilities/integrations": {
+				"types": "./dist/capabilities/integrations/index.d.ts",
+				"default": "./dist/capabilities/integrations/index.js"
 			}
 		}
 	},
@@ -81,7 +86,6 @@
 		}
 	},
 	"devDependencies": {
-		"@types/bun": "latest",
 		"@types/node": "^25.7.0",
 		"esbuild": "^0.27.0",
 		"typescript": "^6.0.3",
@@ -90,6 +94,8 @@
 	},
 	"dependencies": {
 		"@justfiles/fs": "workspace:*",
-		"@standard-schema/spec": "^1.1.0"
+		"@standard-schema/spec": "^1.1.0",
+		"@tailwindcss/vite": "^4.3.0",
+		"tailwindcss": "^4.3.0"
 	}
 }

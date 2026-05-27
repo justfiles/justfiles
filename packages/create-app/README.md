@@ -7,7 +7,6 @@ It generates a headless `src/app.ts`, browser `src/gui.ts`, and `vite.config.ts`
 ```sh
 npm create @justbuddy/app my-app
 pnpm create @justbuddy/app my-app
-bun create @justbuddy/app my-app
 ```
 
 Direct execution also works:
@@ -15,7 +14,6 @@ Direct execution also works:
 ```sh
 npx @justbuddy/create-app my-app
 pnpm dlx @justbuddy/create-app my-app
-bunx @justbuddy/create-app my-app
 ```
 
 For local testing:

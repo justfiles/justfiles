@@ -1,4 +1,4 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { type AppBundle, appBundleFromMemory } from './app.ts'
@@ -18,30 +18,40 @@ const compile = (source: string) =>
 	}).outputFiles[0].text
 const code = compile(source)
 
-const sandbox: GetSandbox = async function ({ code }) {
-	const mod = await import(`data:text/javascript;base64,${btoa(code)}`)
-	const app = mod.app
-	if (typeof app !== 'object') {
-		throw new Error(`app module must export an object named "app"`)
-	}
+function sandboxFor(fs: Volume): GetSandbox {
+	return async ({ appId, code }) => {
+		const mod = await import(`data:text/javascript;base64,${btoa(code)}`)
+		const app = mod.app
+		if (typeof app !== 'object') {
+			throw new Error(`app module must export an object named "app"`)
+		}
 
-	return {
-		run: async (action, ctx) =>
-			await app.dispatch(action, {
-				...ctx,
-				capabilityInvoke: async (req) => {
-					if (req.capability === 'test' && req.method === 'echo') return req.input
-					throw new Error('missing capability')
-				}
-			}),
-		actions: async () => app.actions ?? {}
+		return {
+			run: async (action, ctx) =>
+				await app.dispatch(action, {
+					...ctx,
+					capabilityInvoke: async (req) => {
+						if (req.capability === 'test' && req.method === 'echo') return req.input
+						if (req.capability === 'volume' && req.method === 'writeFile') {
+							const root = `/applications/${appId}/data/files`
+							const input = req.input as { path: string; data: Uint8Array }
+							await fs.mkdir(root, { recursive: true })
+							await chroot(fs, root).writeFile(input.path, input.data)
+							return undefined
+						}
+						throw new Error('missing capability')
+					}
+				}),
+			actions: async () => app.actions ?? {}
+		}
 	}
 }
 
 const clock = {}
 
 function testKernel() {
-	return kernel({ fs: volume(memStorage()), sandbox, clock })
+	const fs = volume(memStorage())
+	return kernel({ fs, sandbox: sandboxFor(fs), clock })
 }
 
 function bundle(manifest: AppBundle['manifest'], files: Record<string, string>): AppBundle {
@@ -60,7 +70,7 @@ function bundle(manifest: AppBundle['manifest'], files: Record<string, string>):
 
 test('smoke test kernel', async () => {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox, clock })
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
 	const app = appBundleFromMemory({
 		id: 'com.example.app',
 		name: 'App',
@@ -90,6 +100,12 @@ test('smoke test kernel', async () => {
 	})
 
 	expect(result).toEqual({ count: 7 })
+
+	expect(await fs.exists('/state/com.example.app.json')).toBe(true)
+	expect(await fs.exists('/applications/com.example.app/data/state.json')).toBe(false)
+	expect(
+		JSON.parse(new TextDecoder().decode(await fs.readFile('/state/com.example.app.json')))
+	).toEqual({ count: 7 })
 
 	await k.dispatch(appId, {
 		type: 'write',
@@ -134,6 +150,35 @@ test('install rejects invalid listed file path', async () => {
 			})
 		)
 	).rejects.toThrow(/invalid app bundle path/)
+})
+
+test('uninstall removes bundle, state, and data', async () => {
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const app = appBundleFromMemory({
+		id: 'com.example.app',
+		name: 'App',
+		app: code
+	})
+	const appId = await k.install(app)
+
+	await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
+	await k.dispatch(appId, { type: 'write', params: { text: 'hi' }, actor: 'agent' })
+
+	expect(await fs.exists('/applications/com.example.app')).toBe(true)
+	expect(await fs.exists('/state/com.example.app.json')).toBe(true)
+	expect(await fs.exists('/applications/com.example.app/data/files/note.txt')).toBe(true)
+
+	// Pretend the new-layout app-sandbox path also has bytes — uninstall must
+	// nuke it even though the test harness currently writes under /applications.
+	await fs.mkdir('/data/com.example.app', { recursive: true })
+	await fs.writeFile('/data/com.example.app/scratch.txt', new TextEncoder().encode('x'))
+
+	await k.uninstall(appId)
+
+	expect(await fs.exists('/applications/com.example.app')).toBe(false)
+	expect(await fs.exists('/state/com.example.app.json')).toBe(false)
+	expect(await fs.exists('/data/com.example.app')).toBe(false)
 })
 
 test('install rejects missing app entry', async () => {

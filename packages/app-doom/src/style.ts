@@ -1,7 +1,8 @@
 export const css = `
 .doom-app {
-	position: fixed;
-	inset: 0;
+	position: relative;
+	width: 100%;
+	height: 100%;
 	display: grid;
 	place-items: center;
 	background: #050505;
@@ -11,16 +12,18 @@ export const css = `
 }
 
 .doom-app .screen {
-	width: min(100vw, calc(100dvh * 1.6));
-	height: min(100dvh, calc(100vw / 1.6));
+	max-width: 100%;
+	max-height: 100%;
+	aspect-ratio: 1.6;
 	image-rendering: pixelated;
 	background: #000;
 	outline: none;
 }
 
 .doom-app .start {
-	position: fixed;
-	inset: 50% auto auto 50%;
+	position: absolute;
+	top: 50%;
+	left: 50%;
 	min-width: 120px;
 	height: 40px;
 	transform: translate(-50%, -50%);
@@ -38,7 +41,7 @@ export const css = `
 }
 
 .doom-app .monitor {
-	position: fixed;
+	position: absolute;
 	left: 8px;
 	bottom: 8px;
 	padding: 4px 6px;
@@ -50,10 +53,10 @@ export const css = `
 }
 
 .doom-app .bindings {
-	position: fixed;
+	position: absolute;
 	right: 8px;
 	bottom: 8px;
-	max-width: min(720px, calc(100vw - 16px));
+	max-width: calc(100% - 16px);
 	padding: 4px 6px;
 	background: rgb(0 0 0 / 0.72);
 	color: #cbd5e1;

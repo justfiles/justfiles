@@ -142,8 +142,8 @@ function validateEntries(slots: Slot[], entries: Entry[]): Entry[] {
 export const app = defineApp({
 	init: initialState,
 	capabilities: { ai: ai({ scopes: [] }) },
-	handlers: {
-		start: {
+	actions: (b) => ({
+		start: b.handler({
 			description: 'Generate and start a new crossword for a theme.',
 			schema: v.object({ theme: v.string() }),
 			examples: [{ params: { theme: 'space' } }],
@@ -160,8 +160,8 @@ export const app = defineApp({
 				)
 				return playState(t, built.grid, built.slots, entries)
 			}
-		},
-		seeds: {
+		}),
+		seeds: b.handler({
 			description:
 				'Submit themed seed words. Triggers grid generation and returns slots needing answers.',
 			schema: v.object({ words: v.array(v.string()) }),
@@ -188,8 +188,8 @@ export const app = defineApp({
 					briefing: fillBriefing(built.slots)
 				}
 			}
-		},
-		fill: {
+		}),
+		fill: b.handler({
 			description: 'Provide answer + clue for every slot. Each answer must match its slot pattern.',
 			schema: v.object({
 				entries: v.array(v.object({ slotId: v.string(), answer: v.string(), clue: v.string() }))
@@ -203,8 +203,8 @@ export const app = defineApp({
 				)
 				return playState(prev.theme, prev.grid, prev.slots, nextEntries)
 			}
-		},
-		enter: {
+		}),
+		enter: b.handler({
 			description: 'Enter or clear one user letter in the grid.',
 			schema: v.object({ row: v.number(), col: v.number(), letter: v.string() }),
 			handler({ row, col, letter }, ctx) {
@@ -221,8 +221,8 @@ export const app = defineApp({
 					wrong: ctx.state.wrong.filter((k) => k !== key)
 				})
 			}
-		},
-		reveal: {
+		}),
+		reveal: b.handler({
 			description: 'Reveal solution letters for selected cells.',
 			schema: v.object({ cells: v.array(v.string()) }),
 			handler({ cells }, ctx) {
@@ -240,8 +240,8 @@ export const app = defineApp({
 				}
 				return solved({ ...ctx.state, userGrid, revealed: [...revealed], wrong: [] })
 			}
-		},
-		check: {
+		}),
+		check: b.handler({
 			description: 'Mark selected user letters as wrong when they do not match the solution.',
 			schema: v.object({ cells: v.array(v.string()) }),
 			handler({ cells }, ctx) {
@@ -257,8 +257,8 @@ export const app = defineApp({
 				}
 				return { ...ctx.state, wrong: [...wrong] }
 			}
-		}
-	}
+		})
+	})
 })
 
 export type CrosswordApp = typeof app

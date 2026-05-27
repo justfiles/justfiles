@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { createClerkClient } from '@clerk/backend'
@@ -42,33 +43,33 @@ async function loadEnvFile(path: string) {
 		const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
 		if (!match) continue
 		const [, key, rawValue] = match
-		if (Bun.env[key] !== undefined) continue
-		Bun.env[key] = rawValue.replace(/^['"]|['"]$/g, '')
+		if (process.env[key] !== undefined) continue
+		process.env[key] = rawValue.replace(/^['"]|['"]$/g, '')
 	}
 }
 
 async function loadEnv() {
 	await loadEnvFile('.env')
 	await loadEnvFile('.dev.vars')
-	if (!Bun.env.CLERK_PUBLISHABLE_KEY && Bun.env.VITE_CLERK_PUBLISHABLE_KEY) {
-		Bun.env.CLERK_PUBLISHABLE_KEY = Bun.env.VITE_CLERK_PUBLISHABLE_KEY
+	if (!process.env.CLERK_PUBLISHABLE_KEY && process.env.VITE_CLERK_PUBLISHABLE_KEY) {
+		process.env.CLERK_PUBLISHABLE_KEY = process.env.VITE_CLERK_PUBLISHABLE_KEY
 	}
 }
 
 function requireEnv(name: string): string {
-	const value = Bun.env[name]
+	const value = process.env[name]
 	if (!value) throw new Error(`Missing ${name}. Add it to apps/frieren/.dev.vars or export it.`)
 	return value
 }
 
 function config() {
-	const baseUrl = (Bun.env.FRIEREN_TEST_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
+	const baseUrl = (process.env.FRIEREN_TEST_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/$/, '')
 	return {
 		baseUrl,
-		email: Bun.env.FRIEREN_TEST_EMAIL ?? DEFAULT_EMAIL,
-		authState: Bun.env.FRIEREN_TEST_AUTH_STATE ?? DEFAULT_AUTH_STATE,
-		session: Bun.env.FRIEREN_TEST_SESSION ?? DEFAULT_SESSION,
-		headless: Bun.env.FRIEREN_TEST_HEADLESS !== '0'
+		email: process.env.FRIEREN_TEST_EMAIL ?? DEFAULT_EMAIL,
+		authState: process.env.FRIEREN_TEST_AUTH_STATE ?? DEFAULT_AUTH_STATE,
+		session: process.env.FRIEREN_TEST_SESSION ?? DEFAULT_SESSION,
+		headless: process.env.FRIEREN_TEST_HEADLESS !== '0'
 	}
 }
 
@@ -112,9 +113,9 @@ async function createAuthedVolume(token: string) {
 
 async function seedOnboarding(token: string) {
 	const vol = await createAuthedVolume(token)
-	await vol.mkdir('/profiles', { recursive: true })
+	await vol.mkdir('/system/profiles', { recursive: true })
 	await vol.writeFile(
-		'/profiles/user.md',
+		'/system/profiles/user.md',
 		encoder.encode(
 			[
 				'---',
@@ -127,7 +128,7 @@ async function seedOnboarding(token: string) {
 		)
 	)
 	await vol.writeFile(
-		'/soul.md',
+		'/system/soul.md',
 		encoder.encode(
 			[
 				'---',
@@ -177,9 +178,14 @@ async function bootstrapBrowserAuth() {
 
 async function run(command: string[]) {
 	log(`$ ${command.join(' ')}`)
-	const proc = Bun.spawn(command, { stdin: 'inherit', stdout: 'inherit', stderr: 'inherit' })
-	const exitCode = await proc.exited
-	if (exitCode !== 0) throw new Error(`${command[0]} exited with ${exitCode}`)
+	const [bin, ...args] = command
+	if (!bin) throw new Error('run() called with empty command')
+	const exitCode = await new Promise<number>((resolveExit, rejectExit) => {
+		const proc = spawn(bin, args, { stdio: 'inherit' })
+		proc.on('error', rejectExit)
+		proc.on('exit', (code) => resolveExit(code ?? 1))
+	})
+	if (exitCode !== 0) throw new Error(`${bin} exited with ${exitCode}`)
 }
 
 async function openPlaywrightCli() {
@@ -191,13 +197,13 @@ async function openPlaywrightCli() {
 
 async function main() {
 	await loadEnv()
-	const command = Bun.argv[2]
+	const command = process.argv[2]
 	if (!command || command === 'help' || command === '--help') {
-		console.log(`Usage: bun scripts/frieren-auth.ts <token|seed|bootstrap|ui>
+		console.log(`Usage: node scripts/frieren-auth.ts <token|seed|bootstrap|ui>
 
 Commands:
   token      Print a fresh Clerk session JWT for the LLM test user.
-  seed       Seed /profiles/user.md and /soul.md through the local app.
+  seed       Seed /system/profiles/user.md and /system/soul.md through the local app.
   bootstrap  Create user, seed onboarding, and write Playwright auth state.
   ui         Run bootstrap, then open an authenticated playwright-cli session.
 

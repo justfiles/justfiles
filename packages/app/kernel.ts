@@ -1,15 +1,17 @@
-import { chroot, type Volume } from '@justfiles/fs'
+import type { Volume } from '@justfiles/fs'
 import type {
 	Action,
 	ActionMeta,
 	AppBundle,
 	AppManifest,
+	DispatchResult,
 	InstalledApp,
 	RuntimeContext
 } from './app.ts'
 import { safeBundlePath } from './app.ts'
+import { EVENT_ACTION_PREFIX } from './sdk.ts'
 
-export type { Action, ActionMeta, AppBundle, AppManifest } from './app.ts'
+export type { Action, ActionMeta, AppBundle, AppManifest, BuiltinBundle } from './app.ts'
 // `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
 export { appBundleFromMemory, safeBundlePath } from './app.ts'
@@ -23,7 +25,7 @@ interface System {
 export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
 
 export type Sandbox = {
-	run(action: Action, ctx: RuntimeContext): Promise<unknown>
+	run(action: Action, ctx: RuntimeContext): Promise<DispatchResult<unknown>>
 	actions?(): Promise<Record<string, ActionMeta>>
 }
 type Clock = object
@@ -40,6 +42,11 @@ export interface Kernel {
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher
+	// Notification-center entry point for capability impls. `channel` is
+	// `<capabilityId>.<eventName>` (matches the contract's declared events);
+	// the kernel dispatches a `__event/<channel>` synthetic action into each
+	// app whose reducer declared an `on`-handler for it.
+	emit: (channel: string, event: unknown) => Promise<void>
 }
 
 type AppState = object
@@ -81,7 +88,21 @@ function appRoot(appId: AppId): string {
 
 export function kernel({ fs, sandbox }: System): Kernel {
 	const handlers = new Set<KernelEventHandler>()
-	return { install, uninstall, dispatch, state, actions, subscribe, app, list }
+	// channel -> apps that declared an `on` handler for it. Lazily populated
+	// on first emit by scanning installed apps' action keys; kept fresh by
+	// install/uninstall. In-memory only — recomputed on DO boot.
+	let subscriptionIndex: Map<string, Set<AppId>> | undefined
+	return {
+		install,
+		uninstall,
+		dispatch,
+		state,
+		actions,
+		subscribe,
+		app,
+		list,
+		emit: emitChannel
+	}
 
 	function emit(event: Event): void {
 		// Snapshot: a handler may unsubscribe (e.g. SSE connection close)
@@ -89,8 +110,58 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		for (const handler of [...handlers]) handler(event)
 	}
 
-	async function loadState(root: string): Promise<unknown> {
-		const statePath = `${root}/data/state.json`
+	async function ensureSubscriptionIndex(): Promise<Map<string, Set<AppId>>> {
+		if (subscriptionIndex) return subscriptionIndex
+		const idx = new Map<string, Set<AppId>>()
+		for (const manifest of await list()) {
+			await indexApp(idx, manifest.id)
+		}
+		subscriptionIndex = idx
+		return idx
+	}
+
+	async function indexApp(idx: Map<string, Set<AppId>>, appId: AppId): Promise<void> {
+		let meta: Record<string, ActionMeta>
+		try {
+			meta = await allActions(appId)
+		} catch {
+			return
+		}
+		for (const type in meta) {
+			if (!type.startsWith(EVENT_ACTION_PREFIX)) continue
+			const channel = type.slice(EVENT_ACTION_PREFIX.length)
+			const set = idx.get(channel) ?? new Set<AppId>()
+			set.add(appId)
+			idx.set(channel, set)
+		}
+	}
+
+	function dropFromIndex(appId: AppId): void {
+		if (!subscriptionIndex) return
+		for (const [channel, set] of subscriptionIndex) {
+			set.delete(appId)
+			if (set.size === 0) subscriptionIndex.delete(channel)
+		}
+	}
+
+	async function emitChannel(channel: string, event: unknown): Promise<void> {
+		const idx = await ensureSubscriptionIndex()
+		const subs = idx.get(channel)
+		if (!subs || subs.size === 0) return
+		const syntheticType = `${EVENT_ACTION_PREFIX}${channel}`
+		const actor = `capability:${channel.split('.')[0]}`
+		// Errors from one subscriber must not stall the rest. The dispatch
+		// path already emits `app.update` for successful runs and `app.error`
+		// for failures, so observability isn't lost here.
+		await Promise.all(
+			[...subs].map((appId) =>
+				dispatch(appId, { type: syntheticType, params: event, actor }).catch(() => undefined)
+			)
+		)
+	}
+
+	async function loadState(appId: AppId): Promise<unknown> {
+		const statePath = `/state/${appId}.json`
 		try {
 			if (await fs.exists(statePath)) return JSON.parse(text(await fs.readFile(statePath)))
 		} catch {
@@ -131,11 +202,18 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		}
 		await fs.writeFile(manifestPath, bytes(JSON.stringify(manifest)))
 
+		// If the index is already warm, fold the new app's subscriptions in.
+		// Otherwise we'll build it lazily on the first emit.
+		if (subscriptionIndex) await indexApp(subscriptionIndex, appId)
+
 		return appId
 	}
 
 	async function uninstall(appId: AppId): Promise<void> {
 		await fs.rm(appRoot(appId), { recursive: true, force: true })
+		await fs.rm(`/state/${appId}.json`, { force: true })
+		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
+		dropFromIndex(appId)
 	}
 
 	async function dispatch(appId: AppId, action: Action): Promise<unknown> {
@@ -145,9 +223,9 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const app = await getApp(appId)
 		if (!app) throw new Error(`app not found: ${appId}`)
 
-		await fs.mkdir(`${root}/data/files`, { recursive: true })
-		const statePath = `${root}/data/state.json`
-		const current = await loadState(root)
+		await fs.mkdir('/state', { recursive: true })
+		const statePath = `/state/${appId}.json`
+		const current = await loadState(appId)
 
 		const saveState = (next: unknown): Promise<void> =>
 			fs.writeFile(statePath, bytes(JSON.stringify(next)))
@@ -156,25 +234,41 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		// identically for in-process and remote sandboxes; the kernel just
 		// loads and runs.
 		const sb = await sandbox({ appId, code: text(await app.read(app.manifest.app)) })
-		const result = await sb.run(action, {
+		const out = await sb.run(action, {
 			state: current,
-			files: chroot(fs, `${root}/data/files`),
 			setState: saveState
 		})
-		await saveState(result)
-		// State is push-only: every committed state change fans out to
-		// subscribers, scoped by appId.
-		emit({ type: 'app.update', appId, state: result as AppState })
-		return result
+		// Handlers populate `state`; queries don't. Only persist + push when
+		// the action declared itself as a state-mutating handler — that's
+		// what keeps query-style reads (e.g. Finder's readFile) from
+		// ballooning state with file content.
+		if (out.state !== undefined) {
+			await saveState(out.state)
+			emit({ type: 'app.update', appId, state: out.state as AppState })
+		}
+		return out.result
 	}
 
 	async function state(appId: AppId): Promise<unknown> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
-		return loadState(root)
+		return loadState(appId)
 	}
 
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {
+		const all = await allActions(appId)
+		// Event handlers (`__event/*`) are kernel-internal — they exist so the
+		// subscription index can find them; agents/tooling should not see them
+		// in the public action list.
+		const out: Record<string, ActionMeta> = {}
+		for (const type in all) {
+			if (type.startsWith(EVENT_ACTION_PREFIX)) continue
+			out[type] = all[type] as ActionMeta
+		}
+		return out
+	}
+
+	async function allActions(appId: AppId): Promise<Record<string, ActionMeta>> {
 		const installed = await getApp(appId)
 		if (!installed) throw new Error(`app not found: ${appId}`)
 		const sb = await sandbox({
