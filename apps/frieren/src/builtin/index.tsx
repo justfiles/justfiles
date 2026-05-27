@@ -1,7 +1,5 @@
 import type { ComponentType } from 'react'
 import type { InstalledApp } from '../chat/types'
-import { MessagesApp } from './MessagesApp'
-import messagesIconUrl from './messages-icon.svg'
 
 export interface BuiltinApp {
 	id: string
@@ -11,15 +9,11 @@ export interface BuiltinApp {
 	component: ComponentType
 }
 
-export const BUILTIN_APPS: BuiltinApp[] = [
-	{
-		id: 'messages',
-		name: 'Messages',
-		description: 'Chat with the agent',
-		iconUrl: messagesIconUrl,
-		component: MessagesApp
-	}
-]
+// Messages used to live here. It's now OS chrome (see chat/MessagesPanel)
+// invoked from the menubar, not the launcher. Paint/Finder/Settings are
+// kernel apps. This list is empty in the new architecture; Part 9 deletes
+// the file along with BuiltinHost.tsx.
+export const BUILTIN_APPS: BuiltinApp[] = []
 
 export function findBuiltin(id: string): BuiltinApp | undefined {
 	return BUILTIN_APPS.find((app) => app.id === id)

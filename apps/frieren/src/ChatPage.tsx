@@ -1,4 +1,5 @@
 import { UserButton, useAuth } from '@clerk/clerk-react'
+import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
@@ -6,11 +7,16 @@ import { Button } from '@/components/ui/button'
 import { Window, type WindowPersist } from '@/components/Window'
 import { BuiltinHost } from './BuiltinHost'
 import { builtinLauncherEntries } from './builtin'
+import { MessagesPanel } from './chat/MessagesPanel'
 import type { ConnectionState, InstalledApp } from './chat/types'
 import { ChatProvider, useChat } from './chat/useChat'
 import { createFsVolume } from './fs'
 import { KernelAppFrame } from './KernelAppFrame'
 import { loadWindowRect, saveWindowRect } from './windowState'
+
+// Persistence key for the OS-level chat window. Kept distinct from any
+// kernel-app id so window rects don't collide with installed apps.
+const CHAT_WINDOW_KEY = 'system:chat'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -57,6 +63,9 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const persistFor = useWindowPersistence()
 	const menu = useContextMenu()
 	const [fullscreenKey, setFullscreenKey] = useState<string | null>(null)
+	// OS-level chat surface — not an app, not in launcher.openApps. Open/close
+	// is per-session for now; persistence is just a future polish item.
+	const [chatOpen, setChatOpen] = useState(false)
 
 	useEffect(() => {
 		if (!fullscreenKey) return
@@ -113,6 +122,17 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 									Install
 								</Button>
 							) : null}
+							<Button
+								type="button"
+								variant="ghost"
+								size="icon-sm"
+								onClick={() => setChatOpen((open) => !open)}
+								title={chatOpen ? 'Close Messages' : 'Open Messages'}
+								aria-label="Toggle Messages"
+								aria-pressed={chatOpen}
+							>
+								<ChatTeardropDotsIcon weight={chatOpen ? 'fill' : 'regular'} />
+							</Button>
 							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 						</div>
 					</Menubar>
@@ -181,6 +201,17 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 							</Window>
 						)
 					})}
+					{chatOpen ? (
+						<Window
+							title="Messages"
+							onClose={() => setChatOpen(false)}
+							focused={true}
+							zIndex={launcher.openApps.length + 100}
+							persist={persistFor(CHAT_WINDOW_KEY)}
+						>
+							<MessagesPanel />
+						</Window>
+					) : null}
 				</div>
 				<ContextMenu state={menu.state} onClose={menu.close} />
 			</div>

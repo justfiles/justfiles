@@ -1,9 +1,14 @@
 import { useLayoutEffect, useRef } from 'react'
-import type { ChatMessage, ToolCallInfo } from '../chat/types'
-import { useChatSession } from '../chat/useChat'
 import agentAvatarUrl from './agent-avatar.png'
+import type { ChatMessage, ToolCallInfo } from './types'
+import { useChatSession } from './useChat'
 
-export function MessagesApp() {
+// OS-level chat surface — invoked from the menubar, not the app launcher.
+// The agent is part of the OS, not an app, so this component sits next to
+// `useChatSession` and consumes the session directly. Wrap it in a window
+// (or whatever shell the host decides) at the caller; the panel itself is
+// presentation-only.
+export function MessagesPanel() {
 	const { session, connection } = useChatSession()
 	const { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort } =
 		session
