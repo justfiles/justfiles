@@ -9,7 +9,7 @@ import { MessagesPanel } from './chat/MessagesPanel'
 import type { ConnectionState, InstalledApp } from './chat/types'
 import { ChatProvider, useChat } from './chat/useChat'
 import { createFsVolume } from './fs'
-import { KernelAppFrame } from './KernelAppFrame'
+import { KernelAppSlot } from './KernelAppSlot'
 import { loadWindowRect, saveWindowRect } from './windowState'
 
 // Persistence key for the OS-level chat window. Kept distinct from any
@@ -175,6 +175,10 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 						const info = desktopApps.find((d) => d.id === app.id)
 						const focused = launcher.focusedId === key
 						const isFullscreen = fullscreenKey === key
+						// zIndex from focus stack (not openApps index), so reordering
+						// focus doesn't reorder the rendered children — React would
+						// unmount the moved Window and wipe its in-DOM state.
+						const focusRank = launcher.focusStack.indexOf(key)
 						return (
 							<Window
 								key={key}
@@ -182,7 +186,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 								onClose={launcher.close}
 								onFocus={() => launcher.focus(app)}
 								focused={focused}
-								zIndex={index + 1}
+								zIndex={focusRank + 1}
 								initialOffset={index * 24}
 								persist={persistFor(app.id)}
 								fullscreen={isFullscreen}
@@ -191,7 +195,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 									setFullscreenKey(isFullscreen ? null : key)
 								}}
 							>
-								<KernelAppFrame id={app.id} guiUrl={info?.guiUrl} />
+								<KernelAppSlot id={app.id} />
 							</Window>
 						)
 					})}

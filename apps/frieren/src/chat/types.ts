@@ -10,13 +10,17 @@ export interface InstalledApp {
 	guiUrl?: string
 }
 
-// `openApps` is the running set; `focusedId` is the topmost app id.
-// `activeApp` is a derived convenience: the focused app
-// object, kept for chat-view callers that only know the single-app model.
+// `openApps` is the running set in stable insertion order; `focusStack` is
+// the focus history (last element is the topmost app). Keeping them separate
+// means we can re-order focus without re-keying the rendered windows, which
+// would otherwise unmount the kernel app frame (and wipe canvas state).
+// `focusedId` is `focusStack` tail. `activeApp` is the focused app object,
+// kept for chat-view callers that only know the single-app model.
 // Dev-only host capability: upload a zipped app-system bundle to the kernel
 // install endpoint. `uninstallApp` removes a previously-installed bundle by id.
 export type Launcher = {
 	openApps: ActiveApp[]
+	focusStack: string[]
 	focusedId: string | null
 	activeApp: ActiveApp | null
 	installedApps: InstalledApp[]

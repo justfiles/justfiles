@@ -3,10 +3,27 @@ import type { WindowRect } from '../windowState'
 
 const MIN_W = 320
 const MIN_H = 200
+// Approximate menubar height; the desktop sits below it, so clamp y against
+// (innerHeight - TOP_INSET) to keep the titlebar grabbable.
+const TOP_INSET = 32
 
 type ResizeDir = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 
 const HANDLES: ResizeDir[] = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se']
+
+// Persisted rects can point off-screen after a resize/monitor change (window
+// at x=1448 on a 1440-wide viewport is invisible). Clamp so the whole frame
+// sits inside the desktop area before we hand it to the renderer.
+function clampToViewport(rect: WindowRect): WindowRect {
+	const vw = document.documentElement.clientWidth
+	const vh = document.documentElement.clientHeight
+	const availH = Math.max(MIN_H, vh - TOP_INSET)
+	const w = Math.max(MIN_W, Math.min(rect.w, vw))
+	const h = Math.max(MIN_H, Math.min(rect.h, availH))
+	const x = Math.max(0, Math.min(rect.x, vw - w))
+	const y = Math.max(0, Math.min(rect.y, availH - h))
+	return { x, y, w, h }
+}
 
 export interface WindowPersist {
 	load(): Promise<WindowRect | null>
@@ -64,7 +81,7 @@ export function Window({
 		void persist.load().then((loaded) => {
 			if (cancelled) return
 			savedRectRef.current = loaded
-			setRect(loaded ?? defaultRect())
+			setRect(loaded ? clampToViewport(loaded) : defaultRect())
 		})
 		return () => {
 			cancelled = true
@@ -114,7 +131,11 @@ export function Window({
 	const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
 		const drag = dragRef.current
 		if (!drag) return
-		setRect((r) => (r ? { ...r, x: event.clientX - drag.dx, y: event.clientY - drag.dy } : r))
+		// Clamp y >= 0 so the titlebar can't slide under the menubar and become
+		// ungrabbable. Desktop coords start at the bottom of the menubar.
+		setRect((r) =>
+			r ? { ...r, x: event.clientX - drag.dx, y: Math.max(0, event.clientY - drag.dy) } : r
+		)
 	}
 	const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
 		dragRef.current = null

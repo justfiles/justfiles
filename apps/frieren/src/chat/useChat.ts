@@ -1,5 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import * as kernelAppHost from '../kernelAppHost'
 import type {
 	ActiveApp,
 	ChatConnection,
@@ -31,14 +32,9 @@ function pickZipFile(): Promise<File | null> {
 	})
 }
 
-function activeKey(app: ActiveApp): string {
-	return app.id
-}
-
-function bringToFront(apps: ActiveApp[], target: ActiveApp): ActiveApp[] {
-	const key = activeKey(target)
-	if (apps[apps.length - 1] && activeKey(apps[apps.length - 1]) === key) return apps
-	return [...apps.filter((a) => activeKey(a) !== key), target]
+function bringToFront(stack: string[], id: string): string[] {
+	if (stack[stack.length - 1] === id) return stack
+	return [...stack.filter((x) => x !== id), id]
 }
 
 async function responseError(res: Response): Promise<string> {
@@ -76,15 +72,24 @@ export function useChat(): UseChatResult {
 	const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connectKey, setConnectKey] = useState(0)
-	// openApps doubles as the focus stack: last element is the focused window.
-	// Launch/focus moves an app to the end; close pops it.
+	// `openApps` is the running set in stable INSERTION order — never reorder
+	// it on focus. React unmounts/remounts the matching child even with
+	// stable keys when the children array reorders; the guest GUI now lives
+	// behind kernelAppHost so its DOM survives, but mount/unmount churn is
+	// still wasteful and leaks WS reconnects. Focus lives separately in
+	// `focusStack`; the last element is the focused id.
 	const [openApps, setOpenApps] = useState<ActiveApp[]>([])
+	const [focusStack, setFocusStack] = useState<string[]>([])
 	const [installedApps, setInstalledApps] = useState<InstalledApp[]>([])
 
 	const wsRef = useRef<WebSocket | null>(null)
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
+	// Snapshot of installedApps for the WS handler closure, which captures
+	// state at attach time. Used to resolve guiUrl on agent-initiated opens.
+	const installedAppsRef = useRef<InstalledApp[]>([])
+	installedAppsRef.current = installedApps
 	const installingAppRef = useRef(false)
 
 	useEffect(() => {
@@ -272,13 +277,21 @@ export function useChat(): UseChatResult {
 				}
 
 				if (data.type === 'kernel_app_open') {
-					const active: ActiveApp = { id: data.id }
-					setOpenApps((prev) => bringToFront(prev, active))
+					const id = data.id as string
+					const info = installedAppsRef.current.find((a) => a.id === id)
+					kernelAppHost.open(id, {
+						guiUrl: info?.guiUrl,
+						getToken: () => getTokenRef.current()
+					})
+					setOpenApps((prev) => (prev.some((a) => a.id === id) ? prev : [...prev, { id }]))
+					setFocusStack((prev) => bringToFront(prev, id))
 					return
 				}
 
 				if (data.type === 'kernel_app_close') {
 					setOpenApps((prev) => prev.filter((a) => a.id !== data.id))
+					setFocusStack((prev) => prev.filter((x) => x !== data.id))
+					kernelAppHost.close(data.id as string)
 					return
 				}
 
@@ -329,21 +342,26 @@ export function useChat(): UseChatResult {
 	}
 
 	const launchApp = (app: InstalledApp) => {
-		const active: ActiveApp = { id: app.id }
-		setOpenApps((prev) => bringToFront(prev, active))
+		kernelAppHost.open(app.id, {
+			guiUrl: app.guiUrl,
+			getToken: () => getTokenRef.current()
+		})
+		setOpenApps((prev) => (prev.some((a) => a.id === app.id) ? prev : [...prev, { id: app.id }]))
+		setFocusStack((prev) => bringToFront(prev, app.id))
 		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
 	}
 
 	const closeApp = () => {
-		const focused = openApps[openApps.length - 1]
-		if (!focused) return
-		const key = activeKey(focused)
-		setOpenApps((prev) => prev.filter((a) => activeKey(a) !== key))
-		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id: focused.id }))
+		const id = focusStack[focusStack.length - 1]
+		if (!id) return
+		setOpenApps((prev) => prev.filter((a) => a.id !== id))
+		setFocusStack((prev) => prev.filter((x) => x !== id))
+		kernelAppHost.close(id)
+		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id }))
 	}
 
 	const focusApp = (app: ActiveApp) => {
-		setOpenApps((prev) => bringToFront(prev, app))
+		setFocusStack((prev) => bringToFront(prev, app.id))
 	}
 
 	const reconnect = () => setConnectKey((value) => value + 1)
@@ -389,6 +407,8 @@ export function useChat(): UseChatResult {
 		// (NotFoundError on removeChild) and leaving the desktop in a half-
 		// broken state where the user sees "nothing happens".
 		setOpenApps((open) => open.filter((a) => a.id !== id))
+		setFocusStack((stack) => stack.filter((x) => x !== id))
+		kernelAppHost.close(id)
 		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id }))
 		setInstalledApps((apps) => apps.filter((a) => a.id !== id))
 		try {
@@ -403,8 +423,8 @@ export function useChat(): UseChatResult {
 		}
 	}
 
-	const activeApp = openApps[openApps.length - 1] ?? null
-	const focusedId = activeApp ? activeKey(activeApp) : null
+	const focusedId = focusStack[focusStack.length - 1] ?? null
+	const activeApp = focusedId ? (openApps.find((a) => a.id === focusedId) ?? null) : null
 
 	return {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
@@ -412,6 +432,7 @@ export function useChat(): UseChatResult {
 		apps: {
 			launcher: {
 				openApps,
+				focusStack,
 				focusedId,
 				activeApp,
 				installedApps,
