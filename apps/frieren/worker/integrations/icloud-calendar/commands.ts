@@ -11,7 +11,7 @@ const HELP = [
 	"  create date:<iso> title:<text> [duration:<minutes>]    Create an event; date may include offset (e.g. 2026-05-10T09:00:00-04:00) or 'Z' for UTC",
 	'  delete <uid>                                           Delete an event by uid',
 	'',
-	'Times are rendered in the user’s timezone (from /profiles/user.md `timezone` field).',
+	'Times are rendered in the user’s timezone (from /system/profiles/user.md `timezone` field).',
 	'Override per-call with --tz <IANA name>, e.g. --tz America/New_York.'
 ].join('\n')
 

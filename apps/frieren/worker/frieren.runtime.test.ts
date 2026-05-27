@@ -107,14 +107,13 @@ describe('runtime tool API', () => {
 
 	test('returns the composed system prompt', async () => {
 		const vol = volume(memStorage())
-		await vol.mkdir('/profiles')
-		await vol.mkdir('/memory')
-		await vol.mkdir('/memory/daily')
-		await vol.writeFile('/soul.md', encoder.encode('soul'))
-		await vol.writeFile('/profiles/user.md', encoder.encode('profile'))
-		await vol.writeFile('/MEMORY.md', encoder.encode('memory'))
+		await vol.mkdir('/system/profiles', { recursive: true })
+		await vol.mkdir('/system/memory/daily', { recursive: true })
+		await vol.writeFile('/system/soul.md', encoder.encode('soul'))
+		await vol.writeFile('/system/profiles/user.md', encoder.encode('profile'))
+		await vol.writeFile('/system/MEMORY.md', encoder.encode('memory'))
 		const today = new Date().toISOString().slice(0, 10)
-		await vol.writeFile(`/memory/daily/${today}.md`, encoder.encode('daily'))
+		await vol.writeFile(`/system/memory/daily/${today}.md`, encoder.encode('daily'))
 
 		const agent = new Agent()
 		const rt = await runtime({

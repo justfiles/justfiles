@@ -358,13 +358,13 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 }
 
 const PATHS = {
-	soul: '/soul.md',
-	profile: '/profiles/user.md',
-	memory: '/MEMORY.md',
-	daily: (date: Date = new Date()) => `/memory/daily/${date.toISOString().slice(0, 10)}.md`,
-	sessions: (agentId: string) => `/agents/${agentId}/sessions/sessions.json`,
+	soul: '/system/soul.md',
+	profile: '/system/profiles/user.md',
+	memory: '/system/MEMORY.md',
+	daily: (date: Date = new Date()) => `/system/memory/daily/${date.toISOString().slice(0, 10)}.md`,
+	sessions: (agentId: string) => `/system/agents/${agentId}/sessions/sessions.json`,
 	sessionFile: (agentId: string, sessionId: string) =>
-		`/agents/${agentId}/sessions/${sessionId}.jsonl`
+		`/system/agents/${agentId}/sessions/${sessionId}.jsonl`
 } as const
 
 const SessionMetaSchema = z.object({

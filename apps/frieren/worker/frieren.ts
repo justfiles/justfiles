@@ -403,8 +403,8 @@ export class Frieren extends DurableObject<Env> {
 
 	private async loadParticipants(): Promise<DisplayParticipants> {
 		const [profile, soul] = await Promise.all([
-			readFrontmatter(this.vol, '/profiles/user.md'),
-			readFrontmatter(this.vol, '/soul.md')
+			readFrontmatter(this.vol, '/system/profiles/user.md'),
+			readFrontmatter(this.vol, '/system/soul.md')
 		])
 
 		return {

@@ -113,9 +113,9 @@ async function createAuthedVolume(token: string) {
 
 async function seedOnboarding(token: string) {
 	const vol = await createAuthedVolume(token)
-	await vol.mkdir('/profiles', { recursive: true })
+	await vol.mkdir('/system/profiles', { recursive: true })
 	await vol.writeFile(
-		'/profiles/user.md',
+		'/system/profiles/user.md',
 		encoder.encode(
 			[
 				'---',
@@ -128,7 +128,7 @@ async function seedOnboarding(token: string) {
 		)
 	)
 	await vol.writeFile(
-		'/soul.md',
+		'/system/soul.md',
 		encoder.encode(
 			[
 				'---',
@@ -203,7 +203,7 @@ async function main() {
 
 Commands:
   token      Print a fresh Clerk session JWT for the LLM test user.
-  seed       Seed /profiles/user.md and /soul.md through the local app.
+  seed       Seed /system/profiles/user.md and /system/soul.md through the local app.
   bootstrap  Create user, seed onboarding, and write Playwright auth state.
   ui         Run bootstrap, then open an authenticated playwright-cli session.
 
