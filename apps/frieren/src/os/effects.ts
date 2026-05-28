@@ -1,6 +1,6 @@
 import type { Effect } from '@justfiles/state'
-import type { Volume } from '../fs'
 import type * as appHostModule from '../apps/host'
+import type { Volume } from '../fs'
 import { saveSnapshot } from './persistence'
 import type { OsAction, OsState } from './state'
 

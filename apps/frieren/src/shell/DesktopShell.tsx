@@ -1,16 +1,16 @@
 import { UserButton } from '@clerk/clerk-react'
-import { useStore } from '@justfiles/state/react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
 import { useState } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
 import { Window } from '@/components/Window'
+import { AppViewport } from '../apps/AppViewport'
 import { MessagesPanel } from '../chat/MessagesPanel'
 import type { ConnectionState, InstalledApp } from '../chat/types'
 import { ChatProvider, useChat } from '../chat/useChat'
-import { AppViewport } from '../apps/AppViewport'
 import { AppWindow } from '../os/AppWindow'
+import { useOsDispatch, useOsStore } from '../os/hooks'
 import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow, WindowRect } from '../os/state'
 
@@ -28,14 +28,15 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const chat = useChat()
-	const { connection, apps, store } = chat
+	const dispatch = useOsDispatch()
+	const { connection, apps } = chat
 	const { launcher } = apps
 	const desktopApps: InstalledApp[] = launcher.installedApps
 	const menu = useContextMenu()
 
-	const windows = useStore(store, selectOpenWindows, sameWindowIds)
-	const chatOpen = useStore(store, selectChatOpen)
-	const fullscreenId = useStore(store, selectVisibleFullscreenId)
+	const windows = useOsStore(selectOpenWindows, sameWindowIds)
+	const chatOpen = useOsStore(selectChatOpen)
+	const fullscreenId = useOsStore(selectVisibleFullscreenId)
 	// The chat surface is an overlay, not a persisted window — its position is
 	// session-local and lives here, not in OS state.
 	const [chatRect, setChatRect] = useState<WindowRect>(() => ({ x: 120, y: 80, w: 420, h: 560 }))
@@ -93,7 +94,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 								type="button"
 								variant="ghost"
 								size="icon-sm"
-								onClick={() => store.dispatch({ type: 'chat.setOpen', open: !chatOpen })}
+								onClick={() => dispatch({ type: 'chat.setOpen', open: !chatOpen })}
 								title={chatOpen ? 'Close Messages' : 'Open Messages'}
 								aria-label="Toggle Messages"
 								aria-pressed={chatOpen}
@@ -140,7 +141,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						))}
 					</div>
 					{windows.map((window) => (
-						<AppWindow key={window.id} store={store} id={window.id}>
+						<AppWindow key={window.id} id={window.id}>
 							<AppViewport id={window.id} />
 						</AppWindow>
 					))}
@@ -150,7 +151,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 							rect={chatRect}
 							focused={true}
 							zIndex={windows.length + 100}
-							onClose={() => store.dispatch({ type: 'chat.setOpen', open: false })}
+							onClose={() => dispatch({ type: 'chat.setOpen', open: false })}
 							onRectCommit={setChatRect}
 						>
 							<MessagesPanel />

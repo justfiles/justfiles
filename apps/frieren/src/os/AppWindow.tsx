@@ -1,24 +1,15 @@
-import type { Store } from '@justfiles/state'
-import { useStore } from '@justfiles/state/react'
 import type { ReactNode } from 'react'
 import { Window } from '../components/Window'
+import { useOsDispatch, useOsStore } from './hooks'
 import { selectFocusedWindowId, selectWindowZIndex } from './selectors'
-import type { OsAction, OsState } from './state'
 
 // Connects one window to its OS-state slice. Subscribing per id means moving or
 // focusing one window only re-renders that window, not the whole desktop.
-export function AppWindow({
-	store,
-	id,
-	children
-}: {
-	store: Store<OsState, OsAction>
-	id: string
-	children: ReactNode
-}) {
-	const window = useStore(store, (s) => s.windows[id])
-	const focused = useStore(store, (s) => selectFocusedWindowId(s) === id)
-	const zIndex = useStore(store, (s) => selectWindowZIndex(s, id))
+export function AppWindow({ id, children }: { id: string; children: ReactNode }) {
+	const dispatch = useOsDispatch()
+	const window = useOsStore((s) => s.windows[id])
+	const focused = useOsStore((s) => selectFocusedWindowId(s) === id)
+	const zIndex = useOsStore((s) => selectWindowZIndex(s, id))
 
 	if (!window || window.mode === 'minimized') return null
 
@@ -29,12 +20,12 @@ export function AppWindow({
 			focused={focused}
 			zIndex={zIndex}
 			fullscreen={window.mode === 'fullscreen'}
-			onClose={() => store.dispatch({ type: 'window.close', id })}
-			onFocus={() => store.dispatch({ type: 'window.focus', id })}
-			onRectCommit={(rect) => store.dispatch({ type: 'window.rectUpdated', id, rect })}
+			onClose={() => dispatch({ type: 'window.close', id })}
+			onFocus={() => dispatch({ type: 'window.focus', id })}
+			onRectCommit={(rect) => dispatch({ type: 'window.rectUpdated', id, rect })}
 			onFullscreenToggle={() => {
-				store.dispatch({ type: 'window.focus', id })
-				store.dispatch({
+				dispatch({ type: 'window.focus', id })
+				dispatch({
 					type: 'window.setMode',
 					id,
 					mode: window.mode === 'fullscreen' ? 'floating' : 'fullscreen'

@@ -1,6 +1,6 @@
 import { createStore, type Store } from '@justfiles/state'
-import type { Volume } from '../fs'
 import type * as appHostModule from '../apps/host'
+import type { Volume } from '../fs'
 import { makeKernelHostEffect, makePersistEffect } from './effects'
 import { loadSnapshot } from './persistence'
 import { osReducer } from './reducer'

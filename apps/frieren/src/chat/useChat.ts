@@ -1,10 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
-import type { Store } from '@justfiles/state'
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { createFsVolume } from '../fs'
-import * as appHost from '../apps/host'
-import type { OsAction, OsState } from '../os/state'
-import { bootOsStore, createOsStore } from '../os/store'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { useOsClient, useOsDispatch } from '../os/hooks'
 import type {
 	ChatConnection,
 	ChatMessage,
@@ -49,7 +45,6 @@ export interface UseChatResult {
 	apps: {
 		launcher: Launcher
 	}
-	store: Store<OsState, OsAction>
 }
 
 const ChatContext = createContext<UseChatResult | null>(null)
@@ -64,6 +59,8 @@ export function useChatSession(): UseChatResult {
 
 export function useChat(): UseChatResult {
 	const { getToken } = useAuth()
+	const osClient = useOsClient()
+	const dispatch = useOsDispatch()
 	const [messages, setMessages] = useState<ChatMessage[]>([])
 	const [input, setInput] = useState('')
 	const [userName, setUserName] = useState('You')
@@ -77,37 +74,28 @@ export function useChat(): UseChatResult {
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
-	// Snapshot of installedApps for stable closures (the WS handler and the OS
-	// store's guiUrl lookup) that must read the latest catalog without re-binding.
+	// Snapshot of installedApps for stable closures (the WS handler and OS client
+	// guiUrl lookup) that must read the latest catalog without re-binding.
 	const installedAppsRef = useRef<InstalledApp[]>([])
 	installedAppsRef.current = installedApps
 	const installingAppRef = useRef(false)
 
-	// Open windows, focus order, geometry, and chat visibility live in the OS
-	// store. It owns app host + websocket + persistence effects; `send` and
-	// `guiUrlFor` read refs so the store can be built once and outlive reconnects.
-	const [volumePromise] = useState(() => createFsVolume(() => getTokenRef.current()))
-	const send = useCallback((frame: object) => {
-		const ws = wsRef.current
-		if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame))
-	}, [])
-	const guiUrlFor = useCallback(
-		(appId: string) => installedAppsRef.current.find((app) => app.id === appId)?.guiUrl,
-		[]
-	)
-	const [store] = useState(() =>
-		createOsStore({
-			appHost,
-			getToken: () => getTokenRef.current(),
-			guiUrlFor,
-			send,
-			volume: volumePromise
-		})
+	useEffect(
+		() =>
+			osClient.setSend((frame) => {
+				const ws = wsRef.current
+				if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame))
+			}),
+		[osClient]
 	)
 
-	useEffect(() => {
-		void bootOsStore(store, volumePromise)
-	}, [store, volumePromise])
+	useEffect(
+		() =>
+			osClient.setGuiUrlFor(
+				(appId: string) => installedAppsRef.current.find((app) => app.id === appId)?.guiUrl
+			),
+		[osClient]
+	)
 
 	useEffect(() => {
 		void connectKey
@@ -244,7 +232,9 @@ export function useChat(): UseChatResult {
 						setUserName(data.participants.userName || 'You')
 						setAgentName(data.participants.agentName || 'Frieren')
 					}
-					setInstalledApps(Array.isArray(data.apps) ? data.apps : [])
+					const apps = Array.isArray(data.apps) ? data.apps : []
+					installedAppsRef.current = apps
+					setInstalledApps(apps)
 					setConnectionState('ready')
 					return
 				}
@@ -297,12 +287,12 @@ export function useChat(): UseChatResult {
 				if (data.type === 'kernel_app_open') {
 					const id = data.id as string
 					const title = installedAppsRef.current.find((a) => a.id === id)?.name
-					store.dispatch({ type: 'app.open', appId: id, title, remote: true })
+					dispatch({ type: 'app.open', appId: id, title, remote: true })
 					return
 				}
 
 				if (data.type === 'kernel_app_close') {
-					store.dispatch({ type: 'window.close', id: data.id as string, remote: true })
+					dispatch({ type: 'window.close', id: data.id as string, remote: true })
 					return
 				}
 
@@ -331,7 +321,7 @@ export function useChat(): UseChatResult {
 			cancelled = true
 			ws?.close()
 		}
-	}, [connectKey, store])
+	}, [connectKey, dispatch])
 
 	const sendMessage = () => {
 		const text = input.trim()
@@ -353,7 +343,7 @@ export function useChat(): UseChatResult {
 	}
 
 	const launchApp = (app: InstalledApp) => {
-		store.dispatch({ type: 'app.open', appId: app.id, title: app.name })
+		dispatch({ type: 'app.open', appId: app.id, title: app.name })
 	}
 
 	const reconnect = () => setConnectKey((value) => value + 1)
@@ -399,7 +389,7 @@ export function useChat(): UseChatResult {
 		// (NotFoundError on removeChild) and leaving the desktop in a half-
 		// broken state where the user sees "nothing happens". The close effect
 		// also tears down the app-host stage and notifies the server.
-		store.dispatch({ type: 'window.close', id })
+		dispatch({ type: 'window.close', id })
 		setInstalledApps((apps) => apps.filter((a) => a.id !== id))
 		try {
 			const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {
@@ -423,7 +413,6 @@ export function useChat(): UseChatResult {
 				installApp,
 				uninstallApp
 			}
-		},
-		store
+		}
 	}
 }

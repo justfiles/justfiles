@@ -1,11 +1,12 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
-import { DesktopShell } from './shell/DesktopShell'
 import { Spinner } from './components/ui/spinner'
 import { createFsVolume } from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { resolveOnboardingState } from './onboarding/state'
+import { OSProvider } from './os/Provider'
+import { DesktopShell } from './shell/DesktopShell'
 
 function LoadingScreen({ label }: { label: string }) {
 	return (
@@ -62,7 +63,11 @@ function App() {
 	if (onboardingDone === null) return <LoadingScreen label="Loading workspace…" />
 	if (!onboardingDone) return <OnboardingPage onComplete={handleOnboardingComplete} />
 
-	return <DesktopShell onSwitchUser={requestSwitchUser} />
+	return (
+		<OSProvider>
+			<DesktopShell onSwitchUser={requestSwitchUser} />
+		</OSProvider>
+	)
 }
 
 export default App
