@@ -1,18 +1,12 @@
 import type { Store } from '@justfiles/state'
 import { useStore } from '@justfiles/state/react'
 import { createContext, useContext } from 'react'
+import type { AgentClient, FrierenClient } from './client'
 import type { OsAction, OsState } from './state'
-
-export interface OsClient {
-	send(frame: object): void
-	guiUrlFor(appId: string): string | undefined
-	setSend(send: (frame: object) => void): () => void
-	setGuiUrlFor(guiUrlFor: (appId: string) => string | undefined): () => void
-}
 
 export interface OsContextValue {
 	store: Store<OsState, OsAction>
-	client: OsClient
+	client: FrierenClient
 }
 
 export const OsContext = createContext<OsContextValue | null>(null)
@@ -31,6 +25,10 @@ export function useOsDispatch(): Store<OsState, OsAction>['dispatch'] {
 	return useOsContext().store.dispatch
 }
 
-export function useOsClient(): OsClient {
+export function useOsClient(): FrierenClient {
 	return useOsContext().client
+}
+
+export function useAgentClient(): AgentClient {
+	return useOsContext().client.agent
 }
