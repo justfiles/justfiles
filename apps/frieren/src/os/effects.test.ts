@@ -32,7 +32,7 @@ describe('makeKernelHostEffect', () => {
 		effect(action, initialState, initialState, ctx(initialState))
 
 		expect(appHost.open).toHaveBeenCalledWith('notes', { guiUrl: undefined, getToken })
-		expect(send).toHaveBeenCalledWith({ type: 'kernel_app_open', id: 'notes' })
+		expect(send).toHaveBeenCalledWith({ type: 'app_open', id: 'notes' })
 	})
 
 	test('remote app.open mounts the stage without echoing to the server', () => {
@@ -52,7 +52,7 @@ describe('makeKernelHostEffect', () => {
 		effect(action, initialState, initialState, ctx(initialState))
 
 		expect(appHost.close).toHaveBeenCalledWith('notes')
-		expect(send).toHaveBeenCalledWith({ type: 'kernel_app_close', id: 'notes' })
+		expect(send).toHaveBeenCalledWith({ type: 'app_close', id: 'notes' })
 	})
 
 	test('remote window.close tears down the stage without echoing to the server', () => {
@@ -68,7 +68,7 @@ describe('makeKernelHostEffect', () => {
 	test('boot/loaded opens a host stage for every restored window', () => {
 		const { appHost, guiUrlFor, getToken, effect } = setup()
 		guiUrlFor.mockImplementation((id) =>
-			id === 'notes' ? '/api/kernel/notes/gui.js?v=1' : undefined
+			id === 'notes' ? '/api/apps/notes/gui.js?v=1' : undefined
 		)
 		const restored: OsState = {
 			...initialState,
@@ -82,14 +82,14 @@ describe('makeKernelHostEffect', () => {
 
 		expect(appHost.open).toHaveBeenCalledTimes(2)
 		expect(appHost.open).toHaveBeenCalledWith('notes', {
-			guiUrl: '/api/kernel/notes/gui.js?v=1',
+			guiUrl: '/api/apps/notes/gui.js?v=1',
 			getToken
 		})
 		// Missing catalog metadata falls back to undefined; host.ts derives the URL.
 		expect(appHost.open).toHaveBeenCalledWith('paint', { guiUrl: undefined, getToken })
 	})
 
-	test('boot restoration does not echo kernel_app_open to the server', () => {
+	test('boot restoration does not echo app_open to the server', () => {
 		const { send, effect } = setup()
 		const restored: OsState = {
 			...initialState,

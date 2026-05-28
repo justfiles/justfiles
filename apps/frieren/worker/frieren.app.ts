@@ -27,14 +27,11 @@ interface DisplayApp {
 	readonly guiUrl?: string
 }
 
-type AppBroadcast =
-	| { type: 'kernel_app_open'; id: string }
-	| { type: 'kernel_app_close'; id: string }
+type AppBroadcast = { type: 'app_open'; id: string } | { type: 'app_close'; id: string }
 
 interface FrierenAppsDeps {
 	fs: Volume
 	loader: Parameters<typeof workerSandbox>[0] | undefined
-	storage: DurableObjectStorage
 	sockets: () => Iterable<WebSocket>
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
@@ -49,7 +46,6 @@ export interface FrierenApps {
 	readonly controller: AppController
 	bundleFromZip(zip: Uint8Array): AppBundle
 	list(): Promise<readonly DisplayApp[]>
-	openIds(): Promise<string[]>
 	open(id: string): Promise<void>
 	close(id?: string): Promise<void>
 	asset(appId: string, path: string, version?: string): Promise<Response>
@@ -57,7 +53,7 @@ export interface FrierenApps {
 	handleMessage(ws: WebSocket, appId: string, message: string | ArrayBuffer): Promise<void>
 }
 
-const OPEN_KERNEL_APPS_STORAGE_KEY = 'open_kernel_apps'
+const OS_STATE_PATH = '/system/os-state.json'
 
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
@@ -166,35 +162,50 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 				name: m.name,
 				description: m.description ?? '',
 				iconUrl: m.icon
-					? `/api/kernel/${m.id}/${m.icon}${m.version ? `?v=${encodeURIComponent(m.version)}` : ''}`
+					? `/api/apps/${m.id}/${m.icon}${m.version ? `?v=${encodeURIComponent(m.version)}` : ''}`
 					: undefined,
 				guiUrl: m.version
-					? `/api/kernel/${m.id}/gui.js?v=${encodeURIComponent(m.version)}`
-					: `/api/kernel/${m.id}/gui.js`
+					? `/api/apps/${m.id}/gui.js?v=${encodeURIComponent(m.version)}`
+					: `/api/apps/${m.id}/gui.js`
 			}))
 		} catch {
 			return []
 		}
 	}
 
-	async function openIds(): Promise<string[]> {
-		return (await deps.storage.get<string[]>(OPEN_KERNEL_APPS_STORAGE_KEY)) ?? []
+	async function currentAppId(): Promise<string | undefined> {
+		try {
+			if (!(await deps.fs.exists(OS_STATE_PATH))) return undefined
+			const snapshot = JSON.parse(
+				new TextDecoder().decode(await deps.fs.readFile(OS_STATE_PATH))
+			) as {
+				windows?: Record<string, { appId?: unknown } | undefined>
+				focusStack?: unknown
+				openOrder?: unknown
+			}
+			for (const ids of [snapshot.focusStack, snapshot.openOrder]) {
+				if (!Array.isArray(ids)) continue
+				for (let i = ids.length - 1; i >= 0; i--) {
+					const id = ids[i]
+					if (typeof id !== 'string') continue
+					const appId = snapshot.windows?.[id]?.appId
+					if (typeof appId === 'string') return appId
+				}
+			}
+		} catch {
+			return undefined
+		}
+		return undefined
 	}
 
 	async function open(id: string): Promise<void> {
-		const ids = await openIds()
-		if (!ids.includes(id)) await deps.storage.put(OPEN_KERNEL_APPS_STORAGE_KEY, [...ids, id])
-		deps.broadcast({ type: 'kernel_app_open', id })
+		deps.broadcast({ type: 'app_open', id })
 	}
 
 	async function close(id?: string): Promise<void> {
-		const ids = await openIds()
-		const target = id ?? ids[ids.length - 1]
+		const target = id ?? (await currentAppId())
 		if (!target) return
-		const next = ids.filter((x) => x !== target)
-		if (next.length === 0) await deps.storage.delete(OPEN_KERNEL_APPS_STORAGE_KEY)
-		else await deps.storage.put(OPEN_KERNEL_APPS_STORAGE_KEY, next)
-		deps.broadcast({ type: 'kernel_app_close', id: target })
+		deps.broadcast({ type: 'app_close', id: target })
 	}
 
 	async function asset(appId: string, path: string, version?: string): Promise<Response> {
@@ -223,7 +234,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 	}
 
-	// ── Kernel app transport ─────────────────────────────────────────────
+	// ── App transport ───────────────────────────────────────────────────
 	//
 	// One per-user WebSocket carries the SDK `Transport` both ways:
 	//   C→S  {"id":string,"action":{"type":string,"params":unknown}}
@@ -289,9 +300,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			await close(id)
 		},
 		current: async () => {
-			const ids = await openIds()
-			const lastId = ids[ids.length - 1]
-			return lastId ? await inspect(lastId).catch(() => undefined) : undefined
+			const id = await currentAppId()
+			return id ? await inspect(id).catch(() => undefined) : undefined
 		},
 		inspect,
 		state: async (id) => await (await kernelReady()).state(id),
@@ -308,7 +318,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		controller,
 		bundleFromZip,
 		list,
-		openIds,
 		open,
 		close,
 		asset,

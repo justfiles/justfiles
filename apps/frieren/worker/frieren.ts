@@ -30,7 +30,7 @@ import { resolveTimezone } from './timezone'
 import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
-	type: 'prompt' | 'abort' | 'kernel_app_open' | 'kernel_app_close'
+	type: 'prompt' | 'abort' | 'app_open' | 'app_close'
 	text?: string
 	id?: string
 }
@@ -53,8 +53,8 @@ type ServerMessage =
 	| { type: 'error'; message: string }
 	// TODO: remove debug
 	| { type: 'debug'; message: string }
-	| { type: 'kernel_app_open'; id: string }
-	| { type: 'kernel_app_close'; id: string }
+	| { type: 'app_open'; id: string }
+	| { type: 'app_close'; id: string }
 
 const DEBUG_COMMAND = '/debug'
 
@@ -120,7 +120,7 @@ export class Frieren extends DurableObject<Env> {
 					return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
 				}
 			})
-			.get('/api/kernel/:appId/*', (c) =>
+			.get('/api/apps/:appId/*', (c) =>
 				this.requireApps().asset(
 					c.req.param('appId'),
 					c.req.path.split('/').slice(4).join('/'),
@@ -166,7 +166,6 @@ export class Frieren extends DurableObject<Env> {
 		this.apps = frierenApps({
 			fs: this.vol,
 			loader: this.env.LOADER,
-			storage: this.ctx.storage,
 			sockets: () => this.ctx.getWebSockets(),
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
@@ -249,7 +248,7 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		// Kernel sockets carry an {appId} attachment; chat sockets never do.
+		// App sockets carry an {appId} attachment; agent sockets never do.
 		const attachment = ws.deserializeAttachment() as { appId?: string } | null
 		if (attachment?.appId) {
 			await this.requireApps().handleMessage(ws, attachment.appId, message)
@@ -277,12 +276,12 @@ export class Frieren extends DurableObject<Env> {
 			return
 		}
 
-		if (parsed.type === 'kernel_app_open' && parsed.id) {
+		if (parsed.type === 'app_open' && parsed.id) {
 			await this.requireApps().open(parsed.id)
 			return
 		}
 
-		if (parsed.type === 'kernel_app_close') {
+		if (parsed.type === 'app_close') {
 			await this.requireApps().close(parsed.id)
 			return
 		}
@@ -356,8 +355,8 @@ export class Frieren extends DurableObject<Env> {
 		// Handle WebSocket upgrade
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
-			const kernelRoute = new URL(request.url).pathname.match(/^\/api\/kernel\/([^/]+)\/ws$/)
-			if (kernelRoute) return this.requireApps().acceptWebSocket(kernelRoute[1])
+			const appRoute = new URL(request.url).pathname.match(/^\/api\/apps\/([^/]+)\/ws$/)
+			if (appRoute) return this.requireApps().acceptWebSocket(appRoute[1])
 
 			// Agent is long-lived — transformContext re-reads soul.md every turn,
 			// so there is no need to recreate the agent on reconnect.
@@ -387,10 +386,6 @@ export class Frieren extends DurableObject<Env> {
 					apps: await this.requireApps().list()
 				} satisfies ServerMessage)
 			)
-
-			for (const openId of await this.requireApps().openIds()) {
-				server.send(JSON.stringify({ type: 'kernel_app_open', id: openId } satisfies ServerMessage))
-			}
 
 			return new Response(null, {
 				status: 101,

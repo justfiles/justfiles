@@ -17,7 +17,7 @@ export interface AppController {
 export function createAppCommand(controller: AppController): Command {
 	return {
 		name: 'app',
-		summary: 'List, launch, inspect, and control kernel apps',
+		summary: 'List, launch, inspect, and control apps',
 		run: (argv) => run(controller, argv)
 	}
 }

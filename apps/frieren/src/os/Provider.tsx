@@ -45,9 +45,9 @@ export function OSProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		// Server-echoed app open/close drive the OS store as remote actions. Wire
-		// the handler before connecting so a replayed open isn't missed. Queue
-		// replays until local OS state has booted; otherwise legacy server opens
-		// briefly create default-rect windows before the persisted rects load.
+		// the handler before connecting so an early live open isn't missed. Queue
+		// it until local OS state has booted; otherwise server opens briefly create
+		// default-rect windows before the persisted rects load.
 		const pending: Parameters<typeof store.dispatch>[0][] = []
 		const flushPending = () => {
 			if (!store.getState().booted) return

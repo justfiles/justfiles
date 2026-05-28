@@ -48,8 +48,8 @@ describe('osReducer', () => {
 	})
 
 	test('a remote open for an already-open window is a no-op and never refocuses', () => {
-		// 'a' is below 'b' in the focus stack. A server replay of its open
-		// (legacy worker compatibility) must not steal focus from 'b'.
+		// 'a' is below 'b' in the focus stack. A server echo of its open must not
+		// steal focus from 'b'.
 		const opened = run([
 			{ type: 'app.open', appId: 'a' },
 			{ type: 'app.open', appId: 'b' }

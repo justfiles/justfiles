@@ -22,9 +22,9 @@ export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsActi
 		if (action.type === 'boot/loaded') {
 			// Restore the GUI for every persisted window by opening its host stage
 			// directly. This is client-driven restoration, so it must not echo
-			// `kernel_app_open` back to the server. `guiUrlFor` is usually empty this
+			// `app_open` back to the server. `guiUrlFor` is usually empty this
 			// early (the catalog arrives with `ready`); host.ts then falls back to
-			// `/api/kernel/{id}/gui.js`, so the GUI need not wait on the catalog.
+			// `/api/apps/{id}/gui.js`, so the GUI need not wait on the catalog.
 			for (const id of next.openOrder) {
 				const window = next.windows[id]
 				if (!window) continue
@@ -40,11 +40,10 @@ export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsActi
 				guiUrl: env.guiUrlFor(action.appId),
 				getToken: env.getToken
 			})
-			// Legacy wire naming: app open/close protocol frames still use kernel_app_*.
-			if (!action.remote) env.send({ type: 'kernel_app_open', id: action.appId })
+			if (!action.remote) env.send({ type: 'app_open', id: action.appId })
 		} else if (action.type === 'window.close') {
 			env.appHost.close(action.id)
-			if (!action.remote) env.send({ type: 'kernel_app_close', id: action.id })
+			if (!action.remote) env.send({ type: 'app_close', id: action.id })
 		}
 	}
 }

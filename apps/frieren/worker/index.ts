@@ -52,8 +52,8 @@ const app = new Hono<WorkerEnv>()
 // Browsers can't set Authorization on a WS handshake, and Clerk cookie auth
 // needs a handshake redirect a WS upgrade can't follow — so WS auth rides a
 // `?token=` query param verified here, before clerkMiddleware. Forwarding
-// `c.req.raw` preserves the path so the DO routes chat (`/ws`) vs. a kernel
-// app socket (`/api/kernel/:appId/ws`).
+// `c.req.raw` preserves the path so the DO routes agent (`/ws`) vs. an app
+// socket (`/api/apps/:appId/ws`).
 const tokenWs = async (c: Ctx) => {
 	const token = new URL(c.req.url).searchParams.get('token')
 	if (!token) return new Response('Unauthorized', { status: 401 })
@@ -66,12 +66,12 @@ const tokenWs = async (c: Ctx) => {
 	}
 }
 app.get('/ws', tokenWs)
-app.get('/api/kernel/:appId/ws', tokenWs)
-// Kernel app GUI assets are fetched by dynamic import/runtime code, which can't
-// set an Authorization header, so the token rides the URL. Icon-extension paths
+app.get('/api/apps/:appId/ws', tokenWs)
+// App GUI assets are fetched by dynamic import/runtime code, which can't set an
+// Authorization header, so the token rides the URL. Icon-extension paths
 // short-circuit to public byte serving — they're shipped in BUILTINS and don't
 // need user routing.
-app.get('/api/kernel/:appId/*', (c) => {
+app.get('/api/apps/:appId/*', (c) => {
 	const appId = c.req.param('appId')
 	const path = c.req.path.split('/').slice(4).join('/')
 	const icon = tryServeBuiltinIcon(appId, path, c.req.query('v'))

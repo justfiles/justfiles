@@ -166,7 +166,7 @@ async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 		// non-document fetch. Vite must not analyse this specifier.
 		// The guiUrl carries `?v=<manifest.version>` when known, so
 		// the asset handler can serve it with immutable cache headers.
-		const base = opts.guiUrl ?? `/api/kernel/${stage.id}/gui.js`
+		const base = opts.guiUrl ?? `/api/apps/${stage.id}/gui.js`
 		const sep = base.includes('?') ? '&' : '?'
 		const mod = (await import(
 			/* @vite-ignore */ `${base}${sep}token=${encodeURIComponent(token)}`
@@ -181,7 +181,7 @@ async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 
 		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 		const ws = new WebSocket(
-			`${protocol}//${window.location.host}/api/kernel/${stage.id}/ws?token=${encodeURIComponent(token)}`
+			`${protocol}//${window.location.host}/api/apps/${stage.id}/ws?token=${encodeURIComponent(token)}`
 		)
 		stage.socket = ws
 

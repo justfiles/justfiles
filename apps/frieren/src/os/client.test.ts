@@ -156,10 +156,10 @@ describe('FrierenClient apps + windows', () => {
 
 		socket.emit({
 			type: 'ready',
-			apps: [{ id: 'notes', name: 'Notes', description: '', guiUrl: '/api/kernel/notes/gui.js' }]
+			apps: [{ id: 'notes', name: 'Notes', description: '', guiUrl: '/api/apps/notes/gui.js' }]
 		})
 		expect(seen.at(-1)).toEqual(['notes'])
-		expect(client.guiUrlFor('notes')).toBe('/api/kernel/notes/gui.js')
+		expect(client.guiUrlFor('notes')).toBe('/api/apps/notes/gui.js')
 	})
 
 	test('removeApp drops the app from the catalog and notifies subscribers', async () => {
@@ -185,7 +185,7 @@ describe('FrierenClient apps + windows', () => {
 		expect(seen.length).toBe(before)
 	})
 
-	test('kernel_app_open/close route to the remote-window handler', async () => {
+	test('app_open/close route to the remote-window handler', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [{ id: 'notes', name: 'Notes', description: '' }] })
@@ -193,8 +193,8 @@ describe('FrierenClient apps + windows', () => {
 		const actions: OsAction[] = []
 		client.onRemoteWindow((action) => actions.push(action))
 
-		socket.emit({ type: 'kernel_app_open', id: 'notes' })
-		socket.emit({ type: 'kernel_app_close', id: 'notes' })
+		socket.emit({ type: 'app_open', id: 'notes' })
+		socket.emit({ type: 'app_close', id: 'notes' })
 
 		expect(actions).toEqual([
 			{ type: 'app.open', appId: 'notes', title: 'Notes', remote: true },
