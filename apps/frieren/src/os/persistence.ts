@@ -13,7 +13,7 @@ function isOsState(data: unknown): data is OsState {
 		s.windows !== null &&
 		Array.isArray(s.openOrder) &&
 		Array.isArray(s.focusStack) &&
-		typeof s.chatOpen === 'boolean'
+		typeof s.agentOpen === 'boolean'
 	)
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { osReducer } from './reducer'
 import {
-	selectChatOpen,
+	selectAgentOpen,
 	selectFocusedWindowId,
 	selectOpenWindows,
 	selectVisibleFullscreenId,
@@ -42,9 +42,9 @@ describe('selectors', () => {
 		expect(selectWindowZIndex(state, 'missing')).toBe(0)
 	})
 
-	test('selectChatOpen reflects the flag', () => {
-		expect(selectChatOpen(initialState)).toBe(false)
-		expect(selectChatOpen(run([{ type: 'chat.setOpen', open: true }]))).toBe(true)
+	test('selectAgentOpen reflects the flag', () => {
+		expect(selectAgentOpen(initialState)).toBe(false)
+		expect(selectAgentOpen(run([{ type: 'agent.setOpen', open: true }]))).toBe(true)
 	})
 
 	test('selectVisibleFullscreenId returns the top fullscreen window, else null', () => {

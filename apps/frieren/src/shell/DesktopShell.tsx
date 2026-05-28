@@ -14,7 +14,7 @@ import { useAppCommands, useInstalledApps } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import { AppWindow } from '../os/AppWindow'
 import { useOsDispatch, useOsStore } from '../os/hooks'
-import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
+import { selectAgentOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow, WindowRect } from '../os/state'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -37,11 +37,11 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const menu = useContextMenu()
 
 	const windows = useOsStore(selectOpenWindows, sameWindowIds)
-	const chatOpen = useOsStore(selectChatOpen)
+	const agentOpen = useOsStore(selectAgentOpen)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
-	// The chat surface is an overlay, not a persisted window — its position is
+	// The agent surface is an overlay, not a persisted window — its position is
 	// session-local and lives here, not in OS state.
-	const [chatRect, setChatRect] = useState<WindowRect>(() => ({ x: 120, y: 80, w: 420, h: 560 }))
+	const [agentRect, setAgentRect] = useState<WindowRect>(() => ({ x: 120, y: 80, w: 420, h: 560 }))
 
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Switch User…', onSelect: onSwitchUser },
@@ -88,12 +88,12 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 							type="button"
 							variant="ghost"
 							size="icon-sm"
-							onClick={() => dispatch({ type: 'chat.setOpen', open: !chatOpen })}
-							title={chatOpen ? 'Close Messages' : 'Open Messages'}
+							onClick={() => dispatch({ type: 'agent.setOpen', open: !agentOpen })}
+							title={agentOpen ? 'Close Messages' : 'Open Messages'}
 							aria-label="Toggle Messages"
-							aria-pressed={chatOpen}
+							aria-pressed={agentOpen}
 						>
-							<ChatTeardropDotsIcon weight={chatOpen ? 'fill' : 'regular'} />
+							<ChatTeardropDotsIcon weight={agentOpen ? 'fill' : 'regular'} />
 						</Button>
 						<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 					</div>
@@ -143,14 +143,14 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						<AppViewport id={window.id} />
 					</AppWindow>
 				))}
-				{chatOpen ? (
+				{agentOpen ? (
 					<Window
 						title="Messages"
-						rect={chatRect}
+						rect={agentRect}
 						focused={true}
 						zIndex={windows.length + 100}
-						onClose={() => dispatch({ type: 'chat.setOpen', open: false })}
-						onRectCommit={setChatRect}
+						onClose={() => dispatch({ type: 'agent.setOpen', open: false })}
+						onRectCommit={setAgentRect}
 					>
 						<MessagesPanel />
 					</Window>

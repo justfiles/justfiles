@@ -128,9 +128,9 @@ describe('makePersistEffect', () => {
 
 	test('writes a discrete durable change promptly, without waiting on a timer', async () => {
 		const { effect } = makePersistEffect({ volume })
-		const next = booted({ chatOpen: true })
+		const next = booted({ agentOpen: true })
 
-		effect({ type: 'chat.setOpen', open: true }, initialState, next, ctx(next))
+		effect({ type: 'agent.setOpen', open: true }, initialState, next, ctx(next))
 		await tick()
 
 		expect(saveSnapshot).toHaveBeenCalledTimes(1)
@@ -173,11 +173,11 @@ describe('makePersistEffect', () => {
 
 	test('does not rewrite identical state', async () => {
 		const { effect } = makePersistEffect({ volume })
-		const next = booted({ chatOpen: true })
+		const next = booted({ agentOpen: true })
 
-		effect({ type: 'chat.setOpen', open: true }, initialState, next, ctx(next))
+		effect({ type: 'agent.setOpen', open: true }, initialState, next, ctx(next))
 		await tick()
-		effect({ type: 'chat.setOpen', open: true }, next, next, ctx(next))
+		effect({ type: 'agent.setOpen', open: true }, next, next, ctx(next))
 		await tick()
 
 		expect(saveSnapshot).toHaveBeenCalledTimes(1)

@@ -128,18 +128,18 @@ describe('osReducer', () => {
 			windows: { a: { id: 'a', appId: 'a', rect: { x: 1, y: 2, w: 3, h: 4 }, mode: 'floating' } },
 			openOrder: ['a'],
 			focusStack: ['a'],
-			chatOpen: true
+			agentOpen: true
 		}
 		const state = osReducer(initialState, { type: 'boot/loaded', state: snapshot })
 		expect(state.booted).toBe(true)
 		expect(state.openOrder).toEqual(['a'])
-		expect(state.chatOpen).toBe(true)
+		expect(state.agentOpen).toBe(true)
 	})
 
-	test('chat.setOpen flips the flag; a repeat is a no-op reference', () => {
-		const open = osReducer(initialState, { type: 'chat.setOpen', open: true })
-		expect(open.chatOpen).toBe(true)
-		expect(osReducer(open, { type: 'chat.setOpen', open: true })).toBe(open)
+	test('agent.setOpen flips the flag; a repeat is a no-op reference', () => {
+		const open = osReducer(initialState, { type: 'agent.setOpen', open: true })
+		expect(open.agentOpen).toBe(true)
+		expect(osReducer(open, { type: 'agent.setOpen', open: true })).toBe(open)
 	})
 
 	test('invariant: openOrder and focusStack ids always resolve to a window, no dups', () => {

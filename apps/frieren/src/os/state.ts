@@ -16,7 +16,7 @@ export type OsState = {
 	windows: Record<string, OsWindow>
 	openOrder: string[]
 	focusStack: string[]
-	chatOpen: boolean
+	agentOpen: boolean
 }
 
 export type OsAction =
@@ -29,7 +29,7 @@ export type OsAction =
 	| { type: 'window.focus'; id: string }
 	| { type: 'window.rectUpdated'; id: string; rect: WindowRect }
 	| { type: 'window.setMode'; id: string; mode: WindowMode }
-	| { type: 'chat.setOpen'; open: boolean }
+	| { type: 'agent.setOpen'; open: boolean }
 
 export const initialState: OsState = {
 	version: 1,
@@ -37,7 +37,7 @@ export const initialState: OsState = {
 	windows: {},
 	openOrder: [],
 	focusStack: [],
-	chatOpen: false
+	agentOpen: false
 }
 
 // Cascade new windows so they don't stack exactly on top of one another.

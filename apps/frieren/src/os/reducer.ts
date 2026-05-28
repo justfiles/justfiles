@@ -85,8 +85,8 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 			}
 		}
 
-		case 'chat.setOpen':
-			if (state.chatOpen === action.open) return state
-			return { ...state, chatOpen: action.open }
+		case 'agent.setOpen':
+			if (state.agentOpen === action.open) return state
+			return { ...state, agentOpen: action.open }
 	}
 }

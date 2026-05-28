@@ -33,6 +33,6 @@ export function selectVisibleFullscreenId(state: OsState): string | null {
 	return null
 }
 
-export function selectChatOpen(state: OsState): boolean {
-	return state.chatOpen
+export function selectAgentOpen(state: OsState): boolean {
+	return state.agentOpen
 }
