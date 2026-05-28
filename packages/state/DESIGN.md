@@ -40,10 +40,11 @@ The OS shell has the same durable-state need, but adds two requirements the app 
 
 - **State**: JSON-serializable durable data.
 - **Action**: serializable event/command input.
-- **Mutation**: action handler that returns next state.
-- **Query**: action handler that returns a value and does not persist state.
-- **Effect**: non-serializable work triggered around a state transition: filesystem writes, websocket sends, DOM/kernel host calls.
+- **Reducer**: pure function `(state, action) => state`.
+- **Effect**: non-serializable work triggered after a state transition: filesystem writes, websocket sends, DOM/kernel host calls.
 - **Selector**: function from state to a smaller value for subscriptions/rendering.
+
+"Mutation" and "Query" appear in `@justfiles/app`'s app-handler model and are not used by this store.
 
 ## Package shape
 
@@ -64,13 +65,7 @@ export type Unsubscribe = () => void
 export interface Store<State, Action> {
 	getState(): State
 	dispatch(action: Action): void
-	replaceState(state: State): void
 	subscribe(listener: () => void): Unsubscribe
-	subscribeSelector<T>(
-		selector: (state: State) => T,
-		listener: (value: T, previous: T) => void,
-		equal?: (a: T, b: T) => boolean
-	): Unsubscribe
 }
 ```
 
@@ -86,6 +81,11 @@ export function useStore<State, Action, T>(
 
 The React adapter is optional. The state package core must not import React.
 
+Notes on the minimal surface:
+
+- No `replaceState`. Boot-time hydration is just an action (`{ type: 'boot/loaded'; state }`) dispatched after the persisted snapshot loads. Keeps every state transition observable by effects and reducers; no second mutation path.
+- No `subscribeSelector` on the core. The React adapter is built on `useSyncExternalStoreWithSelector` from `use-sync-external-store/shim/with-selector` — `useSyncExternalStore` alone requires `getSnapshot` to return a stable reference, which would forbid derived-object selectors (`selectOpenWindows`, etc.). The `with-selector` variant caches the last `(state, selectedValue)` pair and runs the equality check, so selectors can freely return new objects. Add a non-React selector subscription only when a non-React caller actually needs one.
+
 ## Store model
 
 The OS shell should use a pure reducer plus effects:
@@ -93,38 +93,39 @@ The OS shell should use a pure reducer plus effects:
 ```ts
 export type Reducer<State, Action> = (state: State, action: Action) => State
 
-export type EffectContext<State, Action, Env> = {
+export type EffectContext<State, Action> = {
 	getState(): State
 	dispatch(action: Action): void
-	env: Env
 }
 
-export type Effect<State, Action, Env> = (
+export type Effect<State, Action> = (
 	action: Action,
 	previous: State,
 	next: State,
-	ctx: EffectContext<State, Action, Env>
+	ctx: EffectContext<State, Action>
 ) => MaybePromise<void>
 
-export function createStore<State, Action, Env = never>(options: {
+export function createStore<State, Action>(options: {
 	initialState: State
 	reducer: Reducer<State, Action>
-	effects?: readonly Effect<State, Action, Env>[]
-	env?: Env
+	effects?: readonly Effect<State, Action>[]
 }): Store<State, Action>
 ```
 
 Rules:
 
 - `reducer` is pure and synchronous.
-- `dispatch` updates state and notifies subscribers synchronously.
-- effects run after notification.
-- effects may dispatch follow-up actions.
-- effect failures do not roll back state; they should dispatch explicit failure actions when needed.
+- `dispatch` is synchronous and run-to-completion: for each action, the reducer runs, then (if state changed) subscribers are notified, then each effect's synchronous portion runs to completion before the next action is processed.
+- if the reducer returns the same state reference (`Object.is(prev, next)`), neither subscribers nor effects fire. Effects can therefore trust that `previous !== next`.
+- effects run in registration order, after subscriber notification. Each effect is invoked sequentially; its return value is not awaited before the next effect runs or before `dispatch` returns. Async effects detach at their first `await`.
+- re-entrant `dispatch` calls (from a subscriber or from inside an effect's sync portion) are queued FIFO and processed before the outer `dispatch` returns. They are not recursive — every effect always sees the `previous`/`next` pair that triggered it, never a half-applied state from a nested dispatch.
+- effect failures do not roll back state; they should dispatch explicit failure actions when needed. Unhandled effect errors are logged to `console.error`.
+
+No `Env` generic. Effects close over whatever they need (kernel host, websocket, persistence handle) at the call site that builds the effect list — e.g. `const effects = [makeOpenEffect({ kernelAppHost, socket })]`. The store stays generic over only `State` and `Action`.
 
 This gives the OS a clean split:
 
-- reducer owns durable facts: windows, rects, focus stack, fullscreen, open panels.
+- reducer owns durable facts: windows, rects, focus stack, modes, `chatOpen`.
 - effects own non-serializable work: `kernelAppHost.open`, websocket sends, debounced persistence.
 
 ## Async actions
@@ -147,33 +148,27 @@ function osReducer(state: OsState, action: OsAction): OsState {
 	}
 }
 
-const openEffect: Effect<OsState, OsAction, OsEnv> = async (action, _prev, _next, ctx) => {
-	if (action.type !== 'app.open') return
-	try {
-		ctx.env.kernelAppHost.open(action.appId)
-		ctx.env.socket.send(JSON.stringify({ type: 'kernel_app_open', id: action.appId }))
-	} catch (error) {
-		ctx.dispatch({
-			type: 'app.openFailed',
-			appId: action.appId,
-			message: error instanceof Error ? error.message : String(error)
-		})
+function makeOpenEffect(env: {
+	kernelAppHost: typeof import('../kernelAppHost')
+	socket: WebSocket
+}): Effect<OsState, OsAction> {
+	return async (action, _prev, _next, ctx) => {
+		if (action.type !== 'app.open') return
+		try {
+			env.kernelAppHost.open(action.appId)
+			env.socket.send(JSON.stringify({ type: 'kernel_app_open', id: action.appId }))
+		} catch (error) {
+			ctx.dispatch({
+				type: 'app.openFailed',
+				appId: action.appId,
+				message: error instanceof Error ? error.message : String(error)
+			})
+		}
 	}
 }
 ```
 
-For existing kernel apps, keep the current atomic async handler semantics initially. Later, `@justfiles/app` can reuse a small transaction helper from `@justfiles/state` without changing app author code:
-
-```ts
-export async function runMutation<State, Params, Env>(input: {
-	state: State
-	params: Params
-	env: Env
-	handler: (params: Params, ctx: { state: State; env: Env }) => MaybePromise<State>
-}): Promise<State>
-```
-
-Do not force all apps to convert to effect-style actions now. OS state and app state have different runtime needs.
+For existing kernel apps, keep the current atomic async handler semantics. `@justfiles/app` already has its own `Context.setState` model; no shared helper is needed until duplication actually appears. OS state and app state have different runtime needs.
 
 ## OS state shape
 
@@ -182,35 +177,64 @@ Initial target for Frieren:
 ```ts
 export type WindowRect = { x: number; y: number; w: number; h: number }
 
+export type WindowMode = 'floating' | 'minimized' | 'fullscreen'
+
 export type OsWindow = {
 	id: string
 	appId: string
-	kind: 'app' | 'system'
 	title?: string
 	rect: WindowRect
-	mode: 'floating' | 'fullscreen' | 'minimized'
+	mode: WindowMode
 }
 
 export type OsState = {
 	version: 1
+	booted: boolean       // false in initial state; true after `boot/loaded`
 	windows: Record<string, OsWindow>
-	openOrder: string[]
-	focusStack: string[]
-	panels: {
-		chatOpen: boolean
-	}
+	openOrder: string[]   // insertion order, stable — drives render iteration
+	focusStack: string[]  // last element is focused; closing pops normally
+	chatOpen: boolean
 }
 ```
+
+Modeling notes:
+
+- `OsWindow` is app-windows only. System surfaces like the chat panel are *not* windows (see below); no `kind` discriminator is needed.
+- Fullscreen is a per-window `mode`, following macOS semantics — multiple windows may be `fullscreen` in state, but only the top fullscreen window in `focusStack` is visible. The renderer derives "what's covering the desktop right now" via a selector rather than a separate `fullscreenId` field on state. Closing a fullscreen window just pops `focusStack`; the new top determines what's visible next.
+- Minimized windows stay in both `openOrder` and `focusStack` (the app is still running), but the renderer skips them. They're not focusable until restored.
+- `openOrder` and `focusStack` are intentionally separate. `openOrder` drives stable JSX child ordering (so React doesn't unmount/remount windows when focus changes); `focusStack` drives z-index and the visible-fullscreen selector.
+
+Reducer invariants — every transition must preserve:
+
+- every id in `openOrder` and `focusStack` exists as a key in `windows`.
+- no duplicates in `openOrder` or `focusStack`.
+- opening a window appends to both `openOrder` and `focusStack` (top).
+- closing a window removes it from `windows`, `openOrder`, and `focusStack`.
+- focusing pushes/moves to the top of `focusStack`; `openOrder` is never reordered.
 
 Derived selectors:
 
 ```ts
-selectOpenWindows(state)
-selectFocusedWindowId(state)
+selectBooted(state)                 // gates the loading screen in App.tsx
+selectOpenWindows(state)            // ordered by openOrder
+selectFocusedWindowId(state)        // last element of focusStack, or null
 selectWindow(state, id)
-selectWindowZIndex(state, id)
+selectWindowZIndex(state, id)       // rank in focusStack
+selectVisibleFullscreenId(state)    // top-down walk of focusStack, first fullscreen
 selectChatOpen(state)
 ```
+
+### System surfaces (chat, future overlays)
+
+Chat is an OS-level surface but is not a window — it lives outside `OsState.windows`. For now that's a single boolean:
+
+```ts
+chatOpen: boolean
+```
+
+When a second system surface arrives (e.g. spotlight, notification center), promote to an `overlays: { chat: boolean; spotlight: boolean }` record. Until then, the flat boolean stays. Each overlay owns its own input model, dismissal behavior, and positioning — none of which fits into `OsWindow`'s rect/focus/z-order shape.
+
+If chat ever genuinely needs to be windowable (user drags it around like an app), it becomes a real `OsWindow` and the overlay flag disappears. Don't pay for that flexibility now.
 
 Do not store:
 
@@ -224,16 +248,51 @@ Do not store:
 
 ## Persistence
 
-Persistence should be an OS effect, not part of the store core.
+Persistence is an OS effect, not part of the store core.
 
-- Load once during Frieren boot from `/system/os-state.json`.
-- Validate version and shape.
-- Reconcile with installed apps from the launcher list.
-- Call `store.replaceState(restored)`.
-- Debounce writes after state changes.
-- Save only `OsState`, not effects/env/actions.
+### Boot
 
-Do not migrate old per-window files at `/applications/:appId/window.json`. The product has not shipped, so backward compatibility is unnecessary. Once OS snapshot persistence lands, stop writing the old files.
+1. On Frieren boot, read `/system/os-state.json` from the user volume.
+2. Validate `version` and shape; on any failure, fall back to `initialState` (do not throw — a corrupt snapshot should not brick the shell).
+3. Reconcile with the installed-apps list from the launcher: drop windows whose `appId` is no longer installed.
+4. Dispatch `{ type: 'boot/loaded', state: { ...restored, booted: true } }`. The reducer overwrites state with the payload; `booted: true` is enforced here (not trusted from disk) so a missing/false value in the file can't leave the shell stuck on the loading screen.
+5. The `App.tsx` loading screen gates on `useStore(store, selectBooted)` rather than external React state — the store is self-describing about boot status.
+
+Initial state has `booted: false`. No user interaction is possible while the loading screen renders, so there's no race against user-dispatched actions.
+
+### Write — debounced and content-checked
+
+The persistence-write effect runs on every dispatched action and applies two gates:
+
+```ts
+let lastWritten: string | null = null
+const writeNow = debounce(async (state: OsState) => {
+	const serialized = JSON.stringify(state)
+	if (serialized === lastWritten) return
+	await volume.writeFile('/system/os-state.json', encoder.encode(serialized))
+	lastWritten = serialized
+}, 300, { maxWait: 2000 })
+
+const persistEffect: Effect<OsState, OsAction> = (_action, _prev, next) => {
+	if (!next.booted) return        // gate 1: no writes before/during boot
+	writeNow(next)                  // gate 2: debounced + string-equality
+}
+```
+
+- **`booted` gate** stops the `boot/loaded` dispatch itself from triggering a write that just round-trips the bytes we read.
+- **Trailing-edge debounce** (~300ms) coalesces bursts — arranging several windows, opening + immediately closing an app, rapid focus changes — into one write. `maxWait` ~2s bounds data loss if the user keeps generating events continuously.
+- **String-equality check** suppresses no-op writes the reducer couldn't catch: e.g. a sequence of actions whose final serialized form equals the last persisted form. We're already paying for `JSON.stringify` to write to disk; comparing the resulting strings is cheaper, simpler, and more correct than a hash (no collision risk, no algorithm choice).
+- **Boot initialization of `lastWritten`**: in the boot effect, set `lastWritten = serializedBytesFromDisk` *before* dispatching `boot/loaded`. Belt-and-braces — even if the `booted` gate is ever bypassed, the equality check still skips the round-trip.
+
+### Stability of `JSON.stringify`
+
+`JSON.stringify` preserves object property insertion order. If a reducer ever rebuilds `windows` with shifted key order (e.g. `{ ...rest, [id]: w }` after a delete-readd), the serialized string differs even though the state is semantically identical, causing a spurious write.
+
+Start naive: keep reducers careful about object construction order. If spurious writes show up in dev (easy to spot — log each `volume.writeFile`), upgrade to a stable stringifier (sort keys recursively). Don't pre-pay for this until observed.
+
+### Migration
+
+The product has not shipped. Ignore any old per-window files at `/applications/:appId/window.json` and stop writing them.
 
 ## How `@justfiles/app` should reuse this
 
@@ -276,30 +335,28 @@ Implement:
 - `createStore`.
 - `getState`.
 - `dispatch`.
-- `replaceState`.
 - `subscribe`.
-- `subscribeSelector`.
 
 Acceptance tests:
 
 - dispatch updates state.
 - no notification if reducer returns the same state.
-- `replaceState` notifies subscribers.
-- selector listener only fires when selected value changes.
-- custom equality works.
 
 ### Step 3: Implement effect runner
 
 - Run effects after state notification.
-- Pass `{ action, previous, next, getState, dispatch, env }`.
+- Pass `(action, previous, next, { getState, dispatch })`.
 - Allow async effects.
-- Catch/log unhandled effect errors or expose `onEffectError` option.
+- Always log unhandled effect errors to the console; no configuration knob.
 
 Acceptance tests:
 
 - effect observes previous and next state.
 - effect can dispatch follow-up action.
 - async effect does not block state notification.
+- re-entrant dispatch from inside an effect is queued: the outer effect finishes its sync portion before the queued action's reducer runs.
+- the queued action's effects see the post-outer-dispatch state as their `previous`.
+- when reducer returns the same state reference, neither subscribers nor effects fire.
 
 ### Step 4: Implement React adapter
 
@@ -317,14 +374,16 @@ New files under `apps/frieren/src/os/`:
 
 - `state.ts`: `OsState`, `OsAction`, initial state.
 - `reducer.ts`: pure transitions.
-- `selectors.ts`: focused window, z-index, ordered windows.
-- `store.ts`: creates store with effects.
+- `selectors.ts`: focused window, z-index, ordered windows, `selectVisibleFullscreenId`, `selectChatOpen`.
+- `store.ts`: builds effect list (closed over kernel host, socket, fs volume) and creates store.
 - `persistence.ts`: load/save snapshot.
 - `effects.ts`: kernel host, websocket, persistence effects.
 
 Acceptance:
 
 - reducer unit tests for open, close, focus, rect update, fullscreen/minimize.
+- selector test: `selectVisibleFullscreenId` returns the top-of-focusStack window whose mode is `fullscreen`, or `null` if none.
+- selector test: closing the visible fullscreen window pops focus; the new visible-fullscreen is the next fullscreen down the stack, or `null` if the new top is floating.
 
 ### Step 6: Migrate Frieren shell state
 
@@ -341,6 +400,9 @@ Keep outside OS store:
 - chat messages/input/streaming.
 - installed app catalog if it remains websocket-provided server data.
 - `kernelAppHost` internal map.
+- drag-in-progress state inside `Window` — only the committed rect (on drop/resize-end) flows to OS state via `window.rectUpdated`.
+
+`Window` component contract change: today it takes `persist={ load, save }` per instance. After migration it reads its `rect`/`focused`/`zIndex`/`mode` via OS-state selectors and dispatches actions (`window.rectUpdated`, `window.focused`, etc.) on user gestures. `windowState.ts` and per-app `/applications/:appId/window.json` go away.
 
 Acceptance:
 
