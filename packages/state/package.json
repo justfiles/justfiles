@@ -1,0 +1,26 @@
+{
+	"name": "@justfiles/state",
+	"private": true,
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": "./index.ts",
+		"./react": "./react.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"react": "^19.0.0"
+	},
+	"peerDependenciesMeta": {
+		"react": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@types/react": "^19.2.7",
+		"react": "^19.2.1",
+		"typescript": "^6.0.3"
+	}
+}

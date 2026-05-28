@@ -5,6 +5,7 @@
 		{ "path": "./apps/frieren/tsconfig.json" },
 		{ "path": "./packages/core/tsconfig.json" },
 		{ "path": "./packages/fs/tsconfig.json" },
+		{ "path": "./packages/state/tsconfig.json" },
 		{ "path": "./packages/tasks/tsconfig.json" },
 		{ "path": "./packages/ui/tsconfig.json" },
 		{ "path": "./apps/worker/tsconfig.json" }
