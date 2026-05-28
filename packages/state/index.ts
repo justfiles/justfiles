@@ -28,6 +28,7 @@ export function createStore<State, Action>(options: {
 }): Store<State, Action> {
 	let state = options.initialState
 	const listeners = new Set<() => void>()
+	const effects = options.effects ?? []
 	const queue: Action[] = []
 	let processing = false
 
@@ -54,11 +55,25 @@ export function createStore<State, Action>(options: {
 				if (Object.is(previous, next)) continue
 				state = next
 				for (const listener of listeners) listener()
+				for (const effect of effects) {
+					try {
+						const result = effect(current, previous, next, ctx)
+						if (result instanceof Promise) {
+							result.catch((error) => {
+								console.error(error)
+							})
+						}
+					} catch (error) {
+						console.error(error)
+					}
+				}
 			}
 		} finally {
 			processing = false
 		}
 	}
+
+	const ctx: EffectContext<State, Action> = { getState, dispatch }
 
 	return { getState, dispatch, subscribe }
 }

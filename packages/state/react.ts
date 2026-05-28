@@ -1,9 +1,16 @@
+import { useSyncExternalStoreWithSelector } from 'use-sync-external-store/shim/with-selector'
 import type { Store } from './index.ts'
 
 export function useStore<State, Action, T>(
-	_store: Store<State, Action>,
-	_selector: (state: State) => T,
-	_equal?: (a: T, b: T) => boolean
+	store: Store<State, Action>,
+	selector: (state: State) => T,
+	equal?: (a: T, b: T) => boolean
 ): T {
-	throw new Error('useStore: not implemented (Step 4)')
+	return useSyncExternalStoreWithSelector(
+		store.subscribe,
+		store.getState,
+		store.getState,
+		selector,
+		equal
+	)
 }
