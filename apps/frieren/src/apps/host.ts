@@ -74,6 +74,12 @@ export function close(id: string): void {
 	stages.delete(id)
 }
 
+// Tear down every open stage. Called on OS teardown (sign-out / user switch /
+// provider unmount) so a previous session's app GUIs don't leak into the next.
+export function closeAll(): void {
+	for (const id of [...stages.keys()]) close(id)
+}
+
 export function wrapperOf(id: string): HTMLDivElement | undefined {
 	return stages.get(id)?.wrapper
 }

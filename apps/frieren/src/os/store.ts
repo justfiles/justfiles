@@ -14,12 +14,20 @@ export interface CreateOsStoreOptions {
 	volume: Promise<Volume>
 }
 
-export function createOsStore(options: CreateOsStoreOptions): Store<OsState, OsAction> {
-	return createStore({
+export interface OsStoreHandle {
+	store: Store<OsState, OsAction>
+	// Flush pending debounced persistence (page hide / provider unmount).
+	flushPersist: () => void
+}
+
+export function createOsStore(options: CreateOsStoreOptions): OsStoreHandle {
+	const persist = makePersistEffect({ volume: options.volume })
+	const store = createStore({
 		initialState,
 		reducer: osReducer,
-		effects: [makeKernelHostEffect(options), makePersistEffect({ volume: options.volume })]
+		effects: [makeKernelHostEffect(options), persist.effect]
 	})
+	return { store, flushPersist: persist.flush }
 }
 
 // Hydrate the store from the persisted snapshot. Runs once after the volume is

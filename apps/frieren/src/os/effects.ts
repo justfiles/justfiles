@@ -4,34 +4,9 @@ import type { Volume } from '../fs'
 import { saveSnapshot } from './persistence'
 import type { OsAction, OsState } from './state'
 
-// Trailing-edge debounce that also fires once `maxWait` has elapsed since the
-// first call in a burst, bounding how long a pending write can be deferred.
-function debounce<A extends unknown[]>(
-	fn: (...args: A) => void,
-	wait: number,
-	maxWait: number
-): (...args: A) => void {
-	let timer: ReturnType<typeof setTimeout> | null = null
-	let firstAt = 0
-	let pending: A | null = null
-
-	const flush = () => {
-		timer = null
-		firstAt = 0
-		const args = pending
-		pending = null
-		if (args) fn(...args)
-	}
-
-	return (...args: A) => {
-		pending = args
-		const now = Date.now()
-		if (firstAt === 0) firstAt = now
-		const delay = Math.min(wait, Math.max(0, maxWait - (now - firstAt)))
-		if (timer !== null) clearTimeout(timer)
-		timer = setTimeout(flush, delay)
-	}
-}
+// Coalesce a burst of streaming geometry writes; every other durable change
+// writes promptly, so this only ever delays rect updates.
+const GEOMETRY_DEBOUNCE_MS = 300
 
 export interface KernelHostEnv {
 	appHost: Pick<typeof appHostModule, 'open' | 'close'>
@@ -43,7 +18,23 @@ export interface KernelHostEnv {
 // Mirror window open/close into the imperative app host. User gestures also
 // tell the server; server-echoed actions (`remote`) only sync the host.
 export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsAction> {
-	return (action) => {
+	return (action, _previous, next) => {
+		if (action.type === 'boot/loaded') {
+			// Restore the GUI for every persisted window by opening its host stage
+			// directly. This is client-driven restoration, so it must not echo
+			// `kernel_app_open` back to the server. `guiUrlFor` is usually empty this
+			// early (the catalog arrives with `ready`); host.ts then falls back to
+			// `/api/kernel/{id}/gui.js`, so the GUI need not wait on the catalog.
+			for (const id of next.openOrder) {
+				const window = next.windows[id]
+				if (!window) continue
+				env.appHost.open(window.id, {
+					guiUrl: env.guiUrlFor(window.appId),
+					getToken: env.getToken
+				})
+			}
+			return
+		}
 		if (action.type === 'app.open') {
 			env.appHost.open(action.appId, {
 				guiUrl: env.guiUrlFor(action.appId),
@@ -63,23 +54,43 @@ export interface PersistEnv {
 	volume: Promise<Volume>
 }
 
-export function makePersistEffect(env: PersistEnv): Effect<OsState, OsAction> {
+export interface PersistController {
+	effect: Effect<OsState, OsAction>
+	// Force any pending debounced write out now (page hide / unmount).
+	flush(): void
+}
+
+export function makePersistEffect(env: PersistEnv): PersistController {
 	let lastWritten: string | null = null
-	const writeNow = debounce(
-		(state: OsState) => {
-			const serialized = JSON.stringify(state)
-			if (serialized === lastWritten) return
-			lastWritten = serialized
-			void env.volume
-				.then((vol) => saveSnapshot(vol, serialized))
-				.catch((error) => {
-					console.error('os-state persist failed', error)
-				})
-		},
-		300,
-		2000
-	)
-	return (action, _previous, next) => {
+	let pending: OsState | null = null
+	let timer: ReturnType<typeof setTimeout> | null = null
+
+	const clearTimer = () => {
+		if (timer !== null) {
+			clearTimeout(timer)
+			timer = null
+		}
+	}
+
+	const write = (state: OsState) => {
+		const serialized = JSON.stringify(state)
+		if (serialized === lastWritten) return
+		lastWritten = serialized
+		void env.volume
+			.then((vol) => saveSnapshot(vol, serialized))
+			.catch((error) => {
+				console.error('os-state persist failed', error)
+			})
+	}
+
+	const flush = () => {
+		clearTimer()
+		const state = pending
+		pending = null
+		if (state) write(state)
+	}
+
+	const effect: Effect<OsState, OsAction> = (action, _previous, next) => {
 		// The boot snapshot is already on disk — record it as written so the
 		// hydration dispatch doesn't round-trip the bytes we just read.
 		if (action.type === 'boot/loaded') {
@@ -87,6 +98,21 @@ export function makePersistEffect(env: PersistEnv): Effect<OsState, OsAction> {
 			return
 		}
 		if (!next.booted) return
-		writeNow(next)
+		// Geometry can stream during a drag/resize, so coalesce it. Every other
+		// durable change (open/close, mode, focus/order, agent surface) writes
+		// promptly, so a refresh right after the gesture keeps the committed state.
+		if (action.type === 'window.rectUpdated') {
+			pending = next
+			clearTimer()
+			timer = setTimeout(flush, GEOMETRY_DEBOUNCE_MS)
+			return
+		}
+		// A prompt write supersedes any pending geometry write (same cumulative
+		// state), so drop the timer and persist now.
+		clearTimer()
+		pending = null
+		write(next)
 	}
+
+	return { effect, flush }
 }
