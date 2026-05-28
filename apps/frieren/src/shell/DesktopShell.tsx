@@ -9,8 +9,9 @@ import { useAgentConnection } from '../agent/hooks'
 import { MessagesPanel } from '../agent/MessagesPanel'
 import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
-import type { InstalledApp } from '../chat/types'
-import { useLauncher } from '../chat/useChat'
+import { resolveAppTitle } from '../apps/catalog'
+import { useAppCommands, useInstalledApps } from '../apps/hooks'
+import type { InstalledApp } from '../apps/types'
 import { AppWindow } from '../os/AppWindow'
 import { useOsDispatch, useOsStore } from '../os/hooks'
 import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
@@ -29,10 +30,10 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 }
 
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
-	const launcher = useLauncher()
+	const installedApps = useInstalledApps()
+	const { launchApp, installApp, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
 	const dispatch = useOsDispatch()
-	const desktopApps: InstalledApp[] = launcher.installedApps
 	const menu = useContextMenu()
 
 	const windows = useOsStore(selectOpenWindows, sameWindowIds)
@@ -50,21 +51,16 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		{ label: 'Clean Up', disabled: true, onSelect: () => {} }
 	]
 
-	const appMenuItems = (app: InstalledApp): ContextMenuItem[] => {
-		const items: ContextMenuItem[] = [{ label: 'Open', onSelect: () => launcher.launch(app) }]
-		if (launcher.uninstallApp) {
-			items.push(
-				{ separator: true },
-				{
-					label: 'Uninstall',
-					onSelect: () => {
-						if (confirm(`Uninstall "${app.name}"?`)) void launcher.uninstallApp?.(app.id)
-					}
-				}
-			)
+	const appMenuItems = (app: InstalledApp): ContextMenuItem[] => [
+		{ label: 'Open', onSelect: () => launchApp(app) },
+		{ separator: true },
+		{
+			label: 'Uninstall',
+			onSelect: () => {
+				if (confirm(`Uninstall "${app.name}"?`)) void uninstallApp(app.id)
+			}
 		}
-		return items
-	}
+	]
 
 	return (
 		<div className="flex h-screen flex-col">
@@ -79,17 +75,15 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 							style={{ background: statusDotColor[connection.state] }}
 							title={connection.state}
 						/>
-						{launcher.installApp ? (
-							<Button
-								type="button"
-								variant="ghost"
-								size="sm"
-								onClick={() => void launcher.installApp?.()}
-								title="Install app from zip"
-							>
-								Install
-							</Button>
-						) : null}
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							onClick={() => void installApp()}
+							title="Install app from zip"
+						>
+							Install
+						</Button>
 						<Button
 							type="button"
 							variant="ghost"
@@ -113,7 +107,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				onContextMenu={(event) => menu.open(event, desktopMenuItems)}
 			>
 				<div className="absolute top-4 right-4 flex flex-col gap-4">
-					{desktopApps.map((app) => (
+					{installedApps.map((app) => (
 						// biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the icon group
 						<div
 							key={app.id}
@@ -122,7 +116,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						>
 							<button
 								type="button"
-								onClick={() => launcher.launch(app)}
+								onClick={() => launchApp(app)}
 								className="flex w-full flex-col items-center gap-1.5 text-center"
 								title={app.description || app.name}
 							>
@@ -141,7 +135,11 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 					))}
 				</div>
 				{windows.map((window) => (
-					<AppWindow key={window.id} id={window.id}>
+					<AppWindow
+						key={window.id}
+						id={window.id}
+						title={resolveAppTitle(installedApps, window.appId, window.title)}
+					>
 						<AppViewport id={window.id} />
 					</AppWindow>
 				))}

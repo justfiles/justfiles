@@ -162,6 +162,29 @@ describe('FrierenClient apps + windows', () => {
 		expect(client.guiUrlFor('notes')).toBe('/api/kernel/notes/gui.js')
 	})
 
+	test('removeApp drops the app from the catalog and notifies subscribers', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({
+			type: 'ready',
+			apps: [
+				{ id: 'notes', name: 'Notes', description: '' },
+				{ id: 'mail', name: 'Mail', description: '' }
+			]
+		})
+
+		const seen: string[][] = []
+		client.subscribeApps((apps) => seen.push(apps.map((a) => a.id)))
+
+		client.removeApp('notes')
+		expect(seen.at(-1)).toEqual(['mail'])
+
+		// Removing an unknown app is a no-op (no extra notification).
+		const before = seen.length
+		client.removeApp('notes')
+		expect(seen.length).toBe(before)
+	})
+
 	test('kernel_app_open/close route to the remote-window handler', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()

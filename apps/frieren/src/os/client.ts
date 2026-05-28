@@ -1,7 +1,5 @@
 import type { AgentMessage, ConnectionState } from '../agent/types'
-// TODO(slice 8): InstalledApp moves to apps/types.ts; the OS layer should not
-// import from chat/ once the app-catalog module exists.
-import type { InstalledApp } from '../chat/types'
+import type { InstalledApp } from '../apps/types'
 import type { OsAction } from './state'
 
 // WebSocket.OPEN; spelled out so the readyState check doesn't depend on the
@@ -41,10 +39,16 @@ export interface AgentClient {
 export interface FrierenClient {
 	connect(): void
 	close(): void
+	// Re-run the handshake so a fresh `ready` re-lists installed apps (e.g. after
+	// an install). Distinct intent from connect(), which OSProvider owns for boot.
+	refresh(): void
 	send(frame: object): void
 	guiUrlFor(appId: string): string | undefined
 	agent: AgentClient
 	subscribeApps(listener: (apps: InstalledApp[]) => void): () => void
+	// Drop an app from the catalog optimistically (uninstall); a later `ready`
+	// or refresh() is authoritative.
+	removeApp(id: string): void
 	onRemoteWindow(handler: (action: OsAction) => void): () => void
 }
 
@@ -329,6 +333,26 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		ws?.close()
 	}
 
+	function connect(): void {
+		const gen = ++generation
+		closeSocket()
+		connectionState = 'connecting'
+		isStreaming = false
+		emitAgent()
+		void (async () => {
+			const token = await options.getToken().catch(() => null)
+			if (gen !== generation) return
+			if (!token) {
+				connectionState = 'disconnected'
+				emitAgent()
+				return
+			}
+			const ws = createSocket(token)
+			socket = ws
+			attach(ws)
+		})()
+	}
+
 	const agent: AgentClient = {
 		prompt(text) {
 			if (!socket || socket.readyState !== SOCKET_OPEN || connectionState !== 'ready') return
@@ -352,25 +376,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	return {
 		agent,
 
-		connect() {
-			const gen = ++generation
-			closeSocket()
-			connectionState = 'connecting'
-			isStreaming = false
-			emitAgent()
-			void (async () => {
-				const token = await options.getToken().catch(() => null)
-				if (gen !== generation) return
-				if (!token) {
-					connectionState = 'disconnected'
-					emitAgent()
-					return
-				}
-				const ws = createSocket(token)
-				socket = ws
-				attach(ws)
-			})()
-		},
+		connect,
+		refresh: connect,
 
 		close() {
 			generation++
@@ -395,6 +402,13 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return () => {
 				appsListeners.delete(listener)
 			}
+		},
+
+		removeApp(id) {
+			const next = apps.filter((app) => app.id !== id)
+			if (next.length === apps.length) return
+			apps = next
+			emitApps()
 		},
 
 		onRemoteWindow(handler) {

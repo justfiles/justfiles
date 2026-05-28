@@ -5,10 +5,11 @@ export default defineConfig({
 		include: [
 			'apps/frieren/worker/**/*.test.ts',
 			'apps/frieren/src/os/**/*.test.ts',
+			'apps/frieren/src/apps/**/*.test.ts',
 			'apps/worker/**/*.test.ts',
 			'packages/*/**/*.test.ts',
 			'packages/*/**/*.test.tsx'
 		],
-		exclude: ['**/node_modules/**', '**/dist/**', 'apps/frieren/src/!(os)/**']
+		exclude: ['**/node_modules/**', '**/dist/**', 'apps/frieren/src/!(os|apps)/**']
 	}
 })

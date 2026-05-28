@@ -4,8 +4,18 @@ import { useOsDispatch, useOsStore } from './hooks'
 import { selectFocusedWindowId, selectWindowZIndex } from './selectors'
 
 // Connects one window to its OS-state slice. Subscribing per id means moving or
-// focusing one window only re-renders that window, not the whole desktop.
-export function AppWindow({ id, children }: { id: string; children: ReactNode }) {
+// focusing one window only re-renders that window, not the whole desktop. The
+// title is supplied by the shell (derived from app-catalog metadata), not read
+// from OS state, so it tracks live catalog changes.
+export function AppWindow({
+	id,
+	title,
+	children
+}: {
+	id: string
+	title: string
+	children: ReactNode
+}) {
 	const dispatch = useOsDispatch()
 	const window = useOsStore((s) => s.windows[id])
 	const focused = useOsStore((s) => selectFocusedWindowId(s) === id)
@@ -15,7 +25,7 @@ export function AppWindow({ id, children }: { id: string; children: ReactNode })
 
 	return (
 		<Window
-			title={window.title ?? ''}
+			title={title}
 			rect={window.rect}
 			focused={focused}
 			zIndex={zIndex}
