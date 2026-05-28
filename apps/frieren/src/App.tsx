@@ -1,7 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
-import { ChatPage } from './ChatPage'
+import { DesktopShell } from './shell/DesktopShell'
 import { Spinner } from './components/ui/spinner'
 import { createFsVolume } from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
@@ -62,7 +62,7 @@ function App() {
 	if (onboardingDone === null) return <LoadingScreen label="Loading workspace…" />
 	if (!onboardingDone) return <OnboardingPage onComplete={handleOnboardingComplete} />
 
-	return <ChatPage onSwitchUser={requestSwitchUser} />
+	return <DesktopShell onSwitchUser={requestSwitchUser} />
 }
 
 export default App

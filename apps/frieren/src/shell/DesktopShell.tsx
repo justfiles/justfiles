@@ -6,13 +6,13 @@ import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
 import { Window } from '@/components/Window'
-import { MessagesPanel } from './chat/MessagesPanel'
-import type { ConnectionState, InstalledApp } from './chat/types'
-import { ChatProvider, useChat } from './chat/useChat'
-import { KernelAppSlot } from './KernelAppSlot'
-import { AppWindow } from './os/AppWindow'
-import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from './os/selectors'
-import type { OsWindow, WindowRect } from './os/state'
+import { MessagesPanel } from '../chat/MessagesPanel'
+import type { ConnectionState, InstalledApp } from '../chat/types'
+import { ChatProvider, useChat } from '../chat/useChat'
+import { KernelAppSlot } from '../KernelAppSlot'
+import { AppWindow } from '../os/AppWindow'
+import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
+import type { OsWindow, WindowRect } from '../os/state'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -26,7 +26,7 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 	return a.length === b.length && a.every((w, i) => w.id === b[i]?.id)
 }
 
-export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
+export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const chat = useChat()
 	const { connection, apps, store } = chat
 	const { launcher } = apps
