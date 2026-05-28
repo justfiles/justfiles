@@ -21,10 +21,44 @@ export type Effect<State, Action> = (
 	ctx: EffectContext<State, Action>
 ) => MaybePromise<void>
 
-export function createStore<State, Action>(_options: {
+export function createStore<State, Action>(options: {
 	initialState: State
 	reducer: Reducer<State, Action>
 	effects?: readonly Effect<State, Action>[]
 }): Store<State, Action> {
-	throw new Error('createStore: not implemented (Step 2)')
+	let state = options.initialState
+	const listeners = new Set<() => void>()
+	const queue: Action[] = []
+	let processing = false
+
+	function getState(): State {
+		return state
+	}
+
+	function subscribe(listener: () => void): Unsubscribe {
+		listeners.add(listener)
+		return () => {
+			listeners.delete(listener)
+		}
+	}
+
+	function dispatch(action: Action): void {
+		queue.push(action)
+		if (processing) return
+		processing = true
+		try {
+			while (queue.length > 0) {
+				const current = queue.shift() as Action
+				const previous = state
+				const next = options.reducer(previous, current)
+				if (Object.is(previous, next)) continue
+				state = next
+				for (const listener of listeners) listener()
+			}
+		} finally {
+			processing = false
+		}
+	}
+
+	return { getState, dispatch, subscribe }
 }
