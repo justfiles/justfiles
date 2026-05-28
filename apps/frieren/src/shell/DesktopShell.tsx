@@ -5,10 +5,12 @@ import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
 import { Window } from '@/components/Window'
+import { useAgentConnection } from '../agent/hooks'
+import { MessagesPanel } from '../agent/MessagesPanel'
+import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
-import { MessagesPanel } from '../chat/MessagesPanel'
-import type { ConnectionState, InstalledApp } from '../chat/types'
-import { ChatProvider, useChat } from '../chat/useChat'
+import type { InstalledApp } from '../chat/types'
+import { useLauncher } from '../chat/useChat'
 import { AppWindow } from '../os/AppWindow'
 import { useOsDispatch, useOsStore } from '../os/hooks'
 import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
@@ -27,10 +29,9 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 }
 
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
-	const chat = useChat()
+	const launcher = useLauncher()
+	const connection = useAgentConnection()
 	const dispatch = useOsDispatch()
-	const { connection, apps } = chat
-	const { launcher } = apps
 	const desktopApps: InstalledApp[] = launcher.installedApps
 	const menu = useContextMenu()
 
@@ -66,100 +67,98 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	}
 
 	return (
-		<ChatProvider value={chat}>
-			<div className="flex h-screen flex-col">
-				{fullscreenId ? null : (
-					<Menubar>
-						<div className="flex items-center gap-1">
-							<span className="font-medium">Frieren</span>
-						</div>
-						<div className="flex items-center gap-3">
-							<span
-								className="inline-block size-1.5 rounded-full"
-								style={{ background: statusDotColor[connection.state] }}
-								title={connection.state}
-							/>
-							{launcher.installApp ? (
-								<Button
-									type="button"
-									variant="ghost"
-									size="sm"
-									onClick={() => void launcher.installApp?.()}
-									title="Install app from zip"
-								>
-									Install
-								</Button>
-							) : null}
+		<div className="flex h-screen flex-col">
+			{fullscreenId ? null : (
+				<Menubar>
+					<div className="flex items-center gap-1">
+						<span className="font-medium">Frieren</span>
+					</div>
+					<div className="flex items-center gap-3">
+						<span
+							className="inline-block size-1.5 rounded-full"
+							style={{ background: statusDotColor[connection.state] }}
+							title={connection.state}
+						/>
+						{launcher.installApp ? (
 							<Button
 								type="button"
 								variant="ghost"
-								size="icon-sm"
-								onClick={() => dispatch({ type: 'chat.setOpen', open: !chatOpen })}
-								title={chatOpen ? 'Close Messages' : 'Open Messages'}
-								aria-label="Toggle Messages"
-								aria-pressed={chatOpen}
+								size="sm"
+								onClick={() => void launcher.installApp?.()}
+								title="Install app from zip"
 							>
-								<ChatTeardropDotsIcon weight={chatOpen ? 'fill' : 'regular'} />
+								Install
 							</Button>
-							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
-						</div>
-					</Menubar>
-				)}
-
-				{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
-				<div
-					className="relative flex flex-1 overflow-hidden"
-					style={{ background: 'var(--desktop-bg)' }}
-					onContextMenu={(event) => menu.open(event, desktopMenuItems)}
-				>
-					<div className="absolute top-4 right-4 flex flex-col gap-4">
-						{desktopApps.map((app) => (
-							// biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the icon group
-							<div
-								key={app.id}
-								className="group relative flex w-20 flex-col items-center"
-								onContextMenu={(event) => menu.open(event, appMenuItems(app))}
-							>
-								<button
-									type="button"
-									onClick={() => launcher.launch(app)}
-									className="flex w-full flex-col items-center gap-1.5 text-center"
-									title={app.description || app.name}
-								>
-									<span className="flex size-16 items-center justify-center overflow-hidden rounded-xl border border-white/20 bg-white/15 text-xl font-semibold text-white shadow-[0_4px_14px_rgba(0,0,0,0.25)] backdrop-blur-sm transition group-hover:bg-white/25">
-										{app.iconUrl ? (
-											<img src={app.iconUrl} alt="" className="size-full object-cover" />
-										) : (
-											app.name.slice(0, 1).toUpperCase()
-										)}
-									</span>
-									<span className="w-full truncate text-xs font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
-										{app.name}
-									</span>
-								</button>
-							</div>
-						))}
-					</div>
-					{windows.map((window) => (
-						<AppWindow key={window.id} id={window.id}>
-							<AppViewport id={window.id} />
-						</AppWindow>
-					))}
-					{chatOpen ? (
-						<Window
-							title="Messages"
-							rect={chatRect}
-							focused={true}
-							zIndex={windows.length + 100}
-							onClose={() => dispatch({ type: 'chat.setOpen', open: false })}
-							onRectCommit={setChatRect}
+						) : null}
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-sm"
+							onClick={() => dispatch({ type: 'chat.setOpen', open: !chatOpen })}
+							title={chatOpen ? 'Close Messages' : 'Open Messages'}
+							aria-label="Toggle Messages"
+							aria-pressed={chatOpen}
 						>
-							<MessagesPanel />
-						</Window>
-					) : null}
+							<ChatTeardropDotsIcon weight={chatOpen ? 'fill' : 'regular'} />
+						</Button>
+						<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+					</div>
+				</Menubar>
+			)}
+
+			{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
+			<div
+				className="relative flex flex-1 overflow-hidden"
+				style={{ background: 'var(--desktop-bg)' }}
+				onContextMenu={(event) => menu.open(event, desktopMenuItems)}
+			>
+				<div className="absolute top-4 right-4 flex flex-col gap-4">
+					{desktopApps.map((app) => (
+						// biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the icon group
+						<div
+							key={app.id}
+							className="group relative flex w-20 flex-col items-center"
+							onContextMenu={(event) => menu.open(event, appMenuItems(app))}
+						>
+							<button
+								type="button"
+								onClick={() => launcher.launch(app)}
+								className="flex w-full flex-col items-center gap-1.5 text-center"
+								title={app.description || app.name}
+							>
+								<span className="flex size-16 items-center justify-center overflow-hidden rounded-xl border border-white/20 bg-white/15 text-xl font-semibold text-white shadow-[0_4px_14px_rgba(0,0,0,0.25)] backdrop-blur-sm transition group-hover:bg-white/25">
+									{app.iconUrl ? (
+										<img src={app.iconUrl} alt="" className="size-full object-cover" />
+									) : (
+										app.name.slice(0, 1).toUpperCase()
+									)}
+								</span>
+								<span className="w-full truncate text-xs font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
+									{app.name}
+								</span>
+							</button>
+						</div>
+					))}
 				</div>
-				<ContextMenu state={menu.state} onClose={menu.close} />
+				{windows.map((window) => (
+					<AppWindow key={window.id} id={window.id}>
+						<AppViewport id={window.id} />
+					</AppWindow>
+				))}
+				{chatOpen ? (
+					<Window
+						title="Messages"
+						rect={chatRect}
+						focused={true}
+						zIndex={windows.length + 100}
+						onClose={() => dispatch({ type: 'chat.setOpen', open: false })}
+						onRectCommit={setChatRect}
+					>
+						<MessagesPanel />
+					</Window>
+				) : null}
 			</div>
-		</ChatProvider>
+			<ContextMenu state={menu.state} onClose={menu.close} />
+		</div>
 	)
 }

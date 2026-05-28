@@ -1,7 +1,11 @@
 import { useAuth } from '@clerk/clerk-react'
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { useAgentClient, useOsClient, useOsDispatch } from '../os/hooks'
-import type { ChatConnection, ChatSession, InstalledApp, Launcher } from './types'
+import { useEffect, useRef, useState } from 'react'
+import { useOsClient, useOsDispatch } from '../os/hooks'
+import type { InstalledApp, Launcher } from './types'
+
+// TODO(slice 8): the installed-app catalog and launch/install/uninstall
+// commands are OS-level concerns and move to the OS provider (useInstalledApps
+// / useAppCommands). This hook is the transitional home until then.
 
 function pickZipFile(): Promise<File | null> {
 	return new Promise((resolve) => {
@@ -21,50 +25,17 @@ async function responseError(res: Response): Promise<string> {
 	return `${res.status} ${res.statusText}`
 }
 
-export interface UseChatResult {
-	session: ChatSession
-	connection: ChatConnection
-	apps: {
-		launcher: Launcher
-	}
-}
-
-const ChatContext = createContext<UseChatResult | null>(null)
-
-export const ChatProvider = ChatContext.Provider
-
-export function useChatSession(): UseChatResult {
-	const value = useContext(ChatContext)
-	if (!value) throw new Error('useChatSession must be used inside <ChatProvider>')
-	return value
-}
-
-export function useChat(): UseChatResult {
+export function useLauncher(): Launcher {
 	const { getToken } = useAuth()
-	const agent = useAgentClient()
 	const client = useOsClient()
 	const dispatch = useOsDispatch()
 
-	// The websocket, frame parsing, and connection lifecycle live in the
-	// FrierenClient (OS infra). This hook is a thin React adapter over the agent
-	// snapshot plus the app launcher commands; slice 7 splits it into providers.
-	const snapshot = useSyncExternalStore(agent.subscribe, agent.snapshot)
-	const [input, setInput] = useState('')
 	const [installedApps, setInstalledApps] = useState<InstalledApp[]>([])
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 	const installingAppRef = useRef(false)
 
 	useEffect(() => client.subscribeApps(setInstalledApps), [client])
-
-	const sendMessage = () => {
-		const text = input.trim()
-		if (!text || snapshot.connectionState !== 'ready') return
-		agent.prompt(text)
-		setInput('')
-	}
-
-	const abort = () => agent.abort()
 
 	const launchApp = (app: InstalledApp) => {
 		dispatch({ type: 'app.open', appId: app.id, title: app.name })
@@ -129,24 +100,9 @@ export function useChat(): UseChatResult {
 	}
 
 	return {
-		session: {
-			messages: snapshot.messages,
-			input,
-			setInput,
-			userName: snapshot.userName,
-			agentName: snapshot.agentName,
-			isStreaming: snapshot.isStreaming,
-			sendMessage,
-			abort
-		},
-		connection: { state: snapshot.connectionState, reconnect },
-		apps: {
-			launcher: {
-				installedApps,
-				launch: launchApp,
-				installApp,
-				uninstallApp
-			}
-		}
+		installedApps,
+		launch: launchApp,
+		installApp,
+		uninstallApp
 	}
 }

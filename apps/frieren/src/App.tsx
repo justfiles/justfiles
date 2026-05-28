@@ -1,6 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
+import { AgentProvider } from './agent/Provider'
 import { Spinner } from './components/ui/spinner'
 import { createFsVolume } from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
@@ -65,7 +66,9 @@ function App() {
 
 	return (
 		<OSProvider>
-			<DesktopShell onSwitchUser={requestSwitchUser} />
+			<AgentProvider>
+				<DesktopShell onSwitchUser={requestSwitchUser} />
+			</AgentProvider>
 		</OSProvider>
 	)
 }

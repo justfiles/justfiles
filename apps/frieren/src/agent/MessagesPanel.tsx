@@ -1,15 +1,15 @@
 import { useLayoutEffect, useRef } from 'react'
 import agentAvatarUrl from './agent-avatar.png'
-import type { ChatMessage, ToolCallInfo } from './types'
-import { useChatSession } from './useChat'
+import { useAgentConnection, useAgentSession } from './hooks'
+import type { AgentMessage, ToolCallInfo } from './types'
 
-// OS-level chat surface — invoked from the menubar, not the app launcher.
-// The agent is part of the OS, not an app, so this component sits next to
-// `useChatSession` and consumes the session directly. Wrap it in a window
-// (or whatever shell the host decides) at the caller; the panel itself is
-// presentation-only.
+// OS-level agent surface — invoked from the menubar, not the app launcher.
+// The agent is part of the OS, not an app, so this component consumes the
+// agent session directly. Wrap it in a window (or whatever shell the host
+// decides) at the caller; the panel itself is presentation-only.
 export function MessagesPanel() {
-	const { session, connection } = useChatSession()
+	const session = useAgentSession()
+	const connection = useAgentConnection()
 	const { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort } =
 		session
 	const ready = connection.state === 'ready'
@@ -119,7 +119,7 @@ export function MessagesPanel() {
 	)
 }
 
-function MessageItem(props: { message: ChatMessage; userName: string; isStreaming: boolean }) {
+function MessageItem(props: { message: AgentMessage; userName: string; isStreaming: boolean }) {
 	const { message, isStreaming } = props
 
 	if (message.source === 'app') {

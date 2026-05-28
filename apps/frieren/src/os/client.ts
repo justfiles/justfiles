@@ -1,6 +1,7 @@
-// TODO(slice 7): these agent/app message types move to agent/types.ts; the OS
-// layer should not import from chat/ once the agent module exists.
-import type { ChatMessage, ConnectionState, InstalledApp } from '../chat/types'
+import type { AgentMessage, ConnectionState } from '../agent/types'
+// TODO(slice 8): InstalledApp moves to apps/types.ts; the OS layer should not
+// import from chat/ once the app-catalog module exists.
+import type { InstalledApp } from '../chat/types'
 import type { OsAction } from './state'
 
 // WebSocket.OPEN; spelled out so the readyState check doesn't depend on the
@@ -26,7 +27,7 @@ export interface AgentSnapshot {
 	connectionState: ConnectionState
 	userName: string
 	agentName: string
-	messages: ChatMessage[]
+	messages: AgentMessage[]
 	isStreaming: boolean
 }
 
@@ -102,7 +103,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	let connectionState: ConnectionState = 'disconnected'
 	let userName = 'You'
 	let agentName = 'Frieren'
-	let messages: ChatMessage[] = []
+	let messages: AgentMessage[] = []
 	let isStreaming = false
 	let currentAssistantId: string | null = null
 
@@ -118,12 +119,12 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		for (const listener of agentListeners) listener()
 	}
 
-	function setMessages(next: ChatMessage[]): void {
+	function setMessages(next: AgentMessage[]): void {
 		messages = next
 		emitAgent()
 	}
 
-	function mapMessages(fn: (message: ChatMessage) => ChatMessage): void {
+	function mapMessages(fn: (message: AgentMessage) => AgentMessage): void {
 		setMessages(messages.map(fn))
 	}
 
@@ -244,7 +245,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || 'Frieren'
 			}
-			const restored: ChatMessage[] = (data.messages ?? []).map((m) => ({
+			const restored: AgentMessage[] = (data.messages ?? []).map((m) => ({
 				id: crypto.randomUUID(),
 				role: m.role as 'user' | 'assistant',
 				content: m.content,
