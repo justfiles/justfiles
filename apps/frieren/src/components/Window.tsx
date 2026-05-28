@@ -1,5 +1,5 @@
-import { type PointerEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import type { WindowRect } from '../windowState'
+import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import type { WindowRect } from '../os/state'
 
 const MIN_W = 320
 const MIN_H = 200
@@ -25,90 +25,41 @@ function clampToViewport(rect: WindowRect): WindowRect {
 	return { x, y, w, h }
 }
 
-export interface WindowPersist {
-	load(): Promise<WindowRect | null>
-	save(rect: WindowRect): void
-}
-
+// Controlled window chrome. The committed `rect` lives in the caller (OS store
+// for app windows, local state for overlays); only drag/resize-in-progress is
+// kept here and flushed via `onRectCommit` on pointer-up.
 export function Window({
 	title,
-	onClose,
-	onFocus,
+	rect,
 	focused,
 	zIndex,
-	initialOffset = 0,
-	persist,
 	fullscreen = false,
+	onClose,
+	onFocus,
+	onRectCommit,
 	onFullscreenToggle,
 	children
 }: {
 	title: string
-	onClose: () => void
-	onFocus?: () => void
+	rect: WindowRect
 	focused?: boolean
 	zIndex?: number
-	initialOffset?: number
-	persist?: WindowPersist
 	fullscreen?: boolean
+	onClose: () => void
+	onFocus?: () => void
+	onRectCommit: (rect: WindowRect) => void
 	onFullscreenToggle?: () => void
 	children: ReactNode
 }) {
-	const initialOffsetRef = useRef(initialOffset)
-	const defaultRect = useCallback(
-		(): WindowRect => ({
-			x: 80 + initialOffsetRef.current,
-			y: 40 + initialOffsetRef.current,
-			w: 720,
-			h: 520
-		}),
-		[]
-	)
-
-	const [rect, setRect] = useState<WindowRect | null>(() => (persist ? null : defaultRect()))
+	const [live, setLive] = useState<WindowRect>(() => clampToViewport(rect))
 	const dragRef = useRef<{ dx: number; dy: number } | null>(null)
-	const resizeRef = useRef<{
-		x: number
-		y: number
-		rect: WindowRect
-		dir: ResizeDir
-	} | null>(null)
-	const saveTimerRef = useRef<number | null>(null)
-	const savedRectRef = useRef<WindowRect | null>(null)
+	const resizeRef = useRef<{ x: number; y: number; rect: WindowRect; dir: ResizeDir } | null>(null)
 
+	// Re-sync when the committed rect changes from outside (boot restore, etc).
+	// A drag commits the same value back, so this is a no-op for our own edits.
 	useEffect(() => {
-		if (!persist) return
-		let cancelled = false
-		void persist.load().then((loaded) => {
-			if (cancelled) return
-			savedRectRef.current = loaded
-			setRect(loaded ? clampToViewport(loaded) : defaultRect())
-		})
-		return () => {
-			cancelled = true
-		}
-	}, [persist, defaultRect])
-
-	useEffect(() => {
-		if (!persist || !rect) return
-		const saved = savedRectRef.current
-		if (
-			saved &&
-			saved.x === rect.x &&
-			saved.y === rect.y &&
-			saved.w === rect.w &&
-			saved.h === rect.h
-		) {
-			return
-		}
-		if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current)
-		saveTimerRef.current = window.setTimeout(() => {
-			persist.save(rect)
-			savedRectRef.current = rect
-		}, 300)
-		return () => {
-			if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current)
-		}
-	}, [rect, persist])
+		setLive(clampToViewport(rect))
+	}, [rect])
 
 	useEffect(() => {
 		if (!focused) return
@@ -124,29 +75,27 @@ export function Window({
 	}, [focused, onClose, fullscreen, onFullscreenToggle])
 
 	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-		if (!rect || fullscreen) return
+		if (fullscreen) return
 		event.currentTarget.setPointerCapture(event.pointerId)
-		dragRef.current = { dx: event.clientX - rect.x, dy: event.clientY - rect.y }
+		dragRef.current = { dx: event.clientX - live.x, dy: event.clientY - live.y }
 	}
 	const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
 		const drag = dragRef.current
 		if (!drag) return
 		// Clamp y >= 0 so the titlebar can't slide under the menubar and become
 		// ungrabbable. Desktop coords start at the bottom of the menubar.
-		setRect((r) =>
-			r ? { ...r, x: event.clientX - drag.dx, y: Math.max(0, event.clientY - drag.dy) } : r
-		)
+		setLive((r) => ({ ...r, x: event.clientX - drag.dx, y: Math.max(0, event.clientY - drag.dy) }))
 	}
 	const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
 		dragRef.current = null
 		event.currentTarget.releasePointerCapture(event.pointerId)
+		onRectCommit(live)
 	}
 
 	const onResizeDown = (dir: ResizeDir) => (event: PointerEvent<HTMLDivElement>) => {
-		if (!rect) return
 		event.stopPropagation()
 		event.currentTarget.setPointerCapture(event.pointerId)
-		resizeRef.current = { x: event.clientX, y: event.clientY, rect, dir }
+		resizeRef.current = { x: event.clientX, y: event.clientY, rect: live, dir }
 	}
 	const onResizeMove = (event: PointerEvent<HTMLDivElement>) => {
 		const start = resizeRef.current
@@ -154,27 +103,24 @@ export function Window({
 		const dx = event.clientX - start.x
 		const dy = event.clientY - start.y
 		const { dir } = start
-		setRect(() => {
-			let { x, y, w, h } = start.rect
-			if (dir.includes('e')) w = Math.max(MIN_W, start.rect.w + dx)
-			if (dir.includes('s')) h = Math.max(MIN_H, start.rect.h + dy)
-			if (dir.includes('w')) {
-				w = Math.max(MIN_W, start.rect.w - dx)
-				x = start.rect.x + start.rect.w - w
-			}
-			if (dir.includes('n')) {
-				h = Math.max(MIN_H, start.rect.h - dy)
-				y = start.rect.y + start.rect.h - h
-			}
-			return { x, y, w, h }
-		})
+		let { x, y, w, h } = start.rect
+		if (dir.includes('e')) w = Math.max(MIN_W, start.rect.w + dx)
+		if (dir.includes('s')) h = Math.max(MIN_H, start.rect.h + dy)
+		if (dir.includes('w')) {
+			w = Math.max(MIN_W, start.rect.w - dx)
+			x = start.rect.x + start.rect.w - w
+		}
+		if (dir.includes('n')) {
+			h = Math.max(MIN_H, start.rect.h - dy)
+			y = start.rect.y + start.rect.h - h
+		}
+		setLive({ x, y, w, h })
 	}
 	const onResizeUp = (event: PointerEvent<HTMLDivElement>) => {
 		resizeRef.current = null
 		event.currentTarget.releasePointerCapture(event.pointerId)
+		onRectCommit(live)
 	}
-
-	if (!rect) return null
 
 	return (
 		<div
@@ -184,7 +130,7 @@ export function Window({
 			style={
 				fullscreen
 					? { zIndex: (zIndex ?? 0) + 1000 }
-					: { left: rect.x, top: rect.y, width: rect.w, height: rect.h, zIndex }
+					: { left: live.x, top: live.y, width: live.w, height: live.h, zIndex }
 			}
 		>
 			<div

@@ -1,20 +1,18 @@
-import { UserButton, useAuth } from '@clerk/clerk-react'
+import { UserButton } from '@clerk/clerk-react'
+import { useStore } from '@justfiles/state/react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
-import { Window, type WindowPersist } from '@/components/Window'
+import { Window } from '@/components/Window'
 import { MessagesPanel } from './chat/MessagesPanel'
 import type { ConnectionState, InstalledApp } from './chat/types'
 import { ChatProvider, useChat } from './chat/useChat'
-import { createFsVolume } from './fs'
 import { KernelAppSlot } from './KernelAppSlot'
-import { loadWindowRect, saveWindowRect } from './windowState'
-
-// Persistence key for the OS-level chat window. Kept distinct from any
-// kernel-app id so window rects don't collide with installed apps.
-const CHAT_WINDOW_KEY = 'system:chat'
+import { AppWindow } from './os/AppWindow'
+import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from './os/selectors'
+import type { OsWindow, WindowRect } from './os/state'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -22,54 +20,25 @@ const statusDotColor: Record<ConnectionState, string> = {
 	disconnected: '#ef4444'
 }
 
-function useWindowPersistence(): (appId: string) => WindowPersist {
-	const { getToken } = useAuth()
-	const getTokenRef = useRef(getToken)
-	getTokenRef.current = getToken
-	const [volumePromise] = useState(() => createFsVolume(() => getTokenRef.current()))
-	const cacheRef = useRef<Map<string, WindowPersist>>(new Map())
-
-	return useCallback(
-		(appId: string) => {
-			let entry = cacheRef.current.get(appId)
-			if (!entry) {
-				entry = {
-					load: async () => {
-						try {
-							return await loadWindowRect(await volumePromise, appId)
-						} catch {
-							return null
-						}
-					},
-					save: (rect) => {
-						void volumePromise.then((vol) => saveWindowRect(vol, appId, rect)).catch(() => {})
-					}
-				}
-				cacheRef.current.set(appId, entry)
-			}
-			return entry
-		},
-		[volumePromise]
-	)
+// Re-render the desktop only when the set/order of windows changes, not on
+// every rect/mode edit — each AppWindow subscribes to its own slice.
+function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
+	return a.length === b.length && a.every((w, i) => w.id === b[i]?.id)
 }
 
 export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const chat = useChat()
-	const { connection, apps } = chat
+	const { connection, apps, store } = chat
 	const { launcher } = apps
 	const desktopApps: InstalledApp[] = launcher.installedApps
-	const persistFor = useWindowPersistence()
 	const menu = useContextMenu()
-	const [fullscreenKey, setFullscreenKey] = useState<string | null>(null)
-	// OS-level chat surface — not an app, not in launcher.openApps. Open/close
-	// is per-session for now; persistence is just a future polish item.
-	const [chatOpen, setChatOpen] = useState(false)
 
-	useEffect(() => {
-		if (!fullscreenKey) return
-		const stillOpen = launcher.openApps.some((app) => app.id === fullscreenKey)
-		if (!stillOpen) setFullscreenKey(null)
-	}, [launcher.openApps, fullscreenKey])
+	const windows = useStore(store, selectOpenWindows, sameWindowIds)
+	const chatOpen = useStore(store, selectChatOpen)
+	const fullscreenId = useStore(store, selectVisibleFullscreenId)
+	// The chat surface is an overlay, not a persisted window — its position is
+	// session-local and lives here, not in OS state.
+	const [chatRect, setChatRect] = useState<WindowRect>(() => ({ x: 120, y: 80, w: 420, h: 560 }))
 
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Switch User…', onSelect: onSwitchUser },
@@ -98,7 +67,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 	return (
 		<ChatProvider value={chat}>
 			<div className="flex h-screen flex-col">
-				{fullscreenKey ? null : (
+				{fullscreenId ? null : (
 					<Menubar>
 						<div className="flex items-center gap-1">
 							<span className="font-medium">Frieren</span>
@@ -124,7 +93,7 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 								type="button"
 								variant="ghost"
 								size="icon-sm"
-								onClick={() => setChatOpen((open) => !open)}
+								onClick={() => store.dispatch({ type: 'chat.setOpen', open: !chatOpen })}
 								title={chatOpen ? 'Close Messages' : 'Open Messages'}
 								aria-label="Toggle Messages"
 								aria-pressed={chatOpen}
@@ -170,42 +139,19 @@ export function ChatPage({ onSwitchUser }: { onSwitchUser: () => void }) {
 							</div>
 						))}
 					</div>
-					{launcher.openApps.map((app, index) => {
-						const key = app.id
-						const info = desktopApps.find((d) => d.id === app.id)
-						const focused = launcher.focusedId === key
-						const isFullscreen = fullscreenKey === key
-						// zIndex from focus stack (not openApps index), so reordering
-						// focus doesn't reorder the rendered children — React would
-						// unmount the moved Window and wipe its in-DOM state.
-						const focusRank = launcher.focusStack.indexOf(key)
-						return (
-							<Window
-								key={key}
-								title={info?.name ?? ''}
-								onClose={launcher.close}
-								onFocus={() => launcher.focus(app)}
-								focused={focused}
-								zIndex={focusRank + 1}
-								initialOffset={index * 24}
-								persist={persistFor(app.id)}
-								fullscreen={isFullscreen}
-								onFullscreenToggle={() => {
-									launcher.focus(app)
-									setFullscreenKey(isFullscreen ? null : key)
-								}}
-							>
-								<KernelAppSlot id={app.id} />
-							</Window>
-						)
-					})}
+					{windows.map((window) => (
+						<AppWindow key={window.id} store={store} id={window.id}>
+							<KernelAppSlot id={window.id} />
+						</AppWindow>
+					))}
 					{chatOpen ? (
 						<Window
 							title="Messages"
-							onClose={() => setChatOpen(false)}
+							rect={chatRect}
 							focused={true}
-							zIndex={launcher.openApps.length + 100}
-							persist={persistFor(CHAT_WINDOW_KEY)}
+							zIndex={windows.length + 100}
+							onClose={() => store.dispatch({ type: 'chat.setOpen', open: false })}
+							onRectCommit={setChatRect}
 						>
 							<MessagesPanel />
 						</Window>

@@ -1,8 +1,11 @@
 import { useAuth } from '@clerk/clerk-react'
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import type { Store } from '@justfiles/state'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createFsVolume } from '../fs'
 import * as kernelAppHost from '../kernelAppHost'
+import type { OsAction, OsState } from '../os/state'
+import { bootOsStore, createOsStore } from '../os/store'
 import type {
-	ActiveApp,
 	ChatConnection,
 	ChatMessage,
 	ChatSession,
@@ -32,11 +35,6 @@ function pickZipFile(): Promise<File | null> {
 	})
 }
 
-function bringToFront(stack: string[], id: string): string[] {
-	if (stack[stack.length - 1] === id) return stack
-	return [...stack.filter((x) => x !== id), id]
-}
-
 async function responseError(res: Response): Promise<string> {
 	try {
 		const body = (await res.json()) as { error?: unknown }
@@ -51,6 +49,7 @@ export interface UseChatResult {
 	apps: {
 		launcher: Launcher
 	}
+	store: Store<OsState, OsAction>
 }
 
 const ChatContext = createContext<UseChatResult | null>(null)
@@ -72,25 +71,43 @@ export function useChat(): UseChatResult {
 	const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connectKey, setConnectKey] = useState(0)
-	// `openApps` is the running set in stable INSERTION order — never reorder
-	// it on focus. React unmounts/remounts the matching child even with
-	// stable keys when the children array reorders; the guest GUI now lives
-	// behind kernelAppHost so its DOM survives, but mount/unmount churn is
-	// still wasteful and leaks WS reconnects. Focus lives separately in
-	// `focusStack`; the last element is the focused id.
-	const [openApps, setOpenApps] = useState<ActiveApp[]>([])
-	const [focusStack, setFocusStack] = useState<string[]>([])
 	const [installedApps, setInstalledApps] = useState<InstalledApp[]>([])
 
 	const wsRef = useRef<WebSocket | null>(null)
 	const currentAssistantIdRef = useRef<string | null>(null)
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
-	// Snapshot of installedApps for the WS handler closure, which captures
-	// state at attach time. Used to resolve guiUrl on agent-initiated opens.
+	// Snapshot of installedApps for stable closures (the WS handler and the OS
+	// store's guiUrl lookup) that must read the latest catalog without re-binding.
 	const installedAppsRef = useRef<InstalledApp[]>([])
 	installedAppsRef.current = installedApps
 	const installingAppRef = useRef(false)
+
+	// Open windows, focus order, geometry, and chat visibility live in the OS
+	// store. It owns kernel-host + websocket + persistence effects; `send` and
+	// `guiUrlFor` read refs so the store can be built once and outlive reconnects.
+	const [volumePromise] = useState(() => createFsVolume(() => getTokenRef.current()))
+	const send = useCallback((frame: object) => {
+		const ws = wsRef.current
+		if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame))
+	}, [])
+	const guiUrlFor = useCallback(
+		(appId: string) => installedAppsRef.current.find((app) => app.id === appId)?.guiUrl,
+		[]
+	)
+	const [store] = useState(() =>
+		createOsStore({
+			kernelAppHost,
+			getToken: () => getTokenRef.current(),
+			guiUrlFor,
+			send,
+			volume: volumePromise
+		})
+	)
+
+	useEffect(() => {
+		void bootOsStore(store, volumePromise)
+	}, [store, volumePromise])
 
 	useEffect(() => {
 		void connectKey
@@ -278,20 +295,13 @@ export function useChat(): UseChatResult {
 
 				if (data.type === 'kernel_app_open') {
 					const id = data.id as string
-					const info = installedAppsRef.current.find((a) => a.id === id)
-					kernelAppHost.open(id, {
-						guiUrl: info?.guiUrl,
-						getToken: () => getTokenRef.current()
-					})
-					setOpenApps((prev) => (prev.some((a) => a.id === id) ? prev : [...prev, { id }]))
-					setFocusStack((prev) => bringToFront(prev, id))
+					const title = installedAppsRef.current.find((a) => a.id === id)?.name
+					store.dispatch({ type: 'app.open', appId: id, title, remote: true })
 					return
 				}
 
 				if (data.type === 'kernel_app_close') {
-					setOpenApps((prev) => prev.filter((a) => a.id !== data.id))
-					setFocusStack((prev) => prev.filter((x) => x !== data.id))
-					kernelAppHost.close(data.id as string)
+					store.dispatch({ type: 'window.close', id: data.id as string, remote: true })
 					return
 				}
 
@@ -320,7 +330,7 @@ export function useChat(): UseChatResult {
 			cancelled = true
 			ws?.close()
 		}
-	}, [connectKey])
+	}, [connectKey, store])
 
 	const sendMessage = () => {
 		const text = input.trim()
@@ -342,26 +352,7 @@ export function useChat(): UseChatResult {
 	}
 
 	const launchApp = (app: InstalledApp) => {
-		kernelAppHost.open(app.id, {
-			guiUrl: app.guiUrl,
-			getToken: () => getTokenRef.current()
-		})
-		setOpenApps((prev) => (prev.some((a) => a.id === app.id) ? prev : [...prev, { id: app.id }]))
-		setFocusStack((prev) => bringToFront(prev, app.id))
-		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_open', id: app.id }))
-	}
-
-	const closeApp = () => {
-		const id = focusStack[focusStack.length - 1]
-		if (!id) return
-		setOpenApps((prev) => prev.filter((a) => a.id !== id))
-		setFocusStack((prev) => prev.filter((x) => x !== id))
-		kernelAppHost.close(id)
-		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id }))
-	}
-
-	const focusApp = (app: ActiveApp) => {
-		setFocusStack((prev) => bringToFront(prev, app.id))
+		store.dispatch({ type: 'app.open', appId: app.id, title: app.name })
 	}
 
 	const reconnect = () => setConnectKey((value) => value + 1)
@@ -405,11 +396,9 @@ export function useChat(): UseChatResult {
 		// the app, the effect re-fires, and the GUI's React root is unmounted
 		// synchronously from inside the parent's commit — corrupting the DOM
 		// (NotFoundError on removeChild) and leaving the desktop in a half-
-		// broken state where the user sees "nothing happens".
-		setOpenApps((open) => open.filter((a) => a.id !== id))
-		setFocusStack((stack) => stack.filter((x) => x !== id))
-		kernelAppHost.close(id)
-		wsRef.current?.send(JSON.stringify({ type: 'kernel_app_close', id }))
+		// broken state where the user sees "nothing happens". The close effect
+		// also tears down the kernel-host stage and notifies the server.
+		store.dispatch({ type: 'window.close', id })
 		setInstalledApps((apps) => apps.filter((a) => a.id !== id))
 		try {
 			const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {
@@ -423,25 +412,17 @@ export function useChat(): UseChatResult {
 		}
 	}
 
-	const focusedId = focusStack[focusStack.length - 1] ?? null
-	const activeApp = focusedId ? (openApps.find((a) => a.id === focusedId) ?? null) : null
-
 	return {
 		session: { messages, input, setInput, userName, agentName, isStreaming, sendMessage, abort },
 		connection: { state: connectionState, reconnect },
 		apps: {
 			launcher: {
-				openApps,
-				focusStack,
-				focusedId,
-				activeApp,
 				installedApps,
 				launch: launchApp,
-				close: closeApp,
-				focus: focusApp,
 				installApp,
 				uninstallApp
 			}
-		}
+		},
+		store
 	}
 }
