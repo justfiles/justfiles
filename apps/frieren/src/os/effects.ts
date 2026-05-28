@@ -1,6 +1,6 @@
 import type { Effect } from '@justfiles/state'
 import type { Volume } from '../fs'
-import type * as kernelAppHostModule from '../kernelAppHost'
+import type * as appHostModule from '../apps/host'
 import { saveSnapshot } from './persistence'
 import type { OsAction, OsState } from './state'
 
@@ -34,24 +34,25 @@ function debounce<A extends unknown[]>(
 }
 
 export interface KernelHostEnv {
-	kernelAppHost: Pick<typeof kernelAppHostModule, 'open' | 'close'>
+	appHost: Pick<typeof appHostModule, 'open' | 'close'>
 	getToken: () => Promise<string | null>
 	guiUrlFor: (appId: string) => string | undefined
 	send: (frame: object) => void
 }
 
-// Mirror window open/close into the imperative kernel-app host. User gestures
-// also tell the server; server-echoed actions (`remote`) only sync the host.
+// Mirror window open/close into the imperative app host. User gestures also
+// tell the server; server-echoed actions (`remote`) only sync the host.
 export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsAction> {
 	return (action) => {
 		if (action.type === 'app.open') {
-			env.kernelAppHost.open(action.appId, {
+			env.appHost.open(action.appId, {
 				guiUrl: env.guiUrlFor(action.appId),
 				getToken: env.getToken
 			})
+			// Legacy wire naming: app open/close protocol frames still use kernel_app_*.
 			if (!action.remote) env.send({ type: 'kernel_app_open', id: action.appId })
 		} else if (action.type === 'window.close') {
-			env.kernelAppHost.close(action.id)
+			env.appHost.close(action.id)
 			if (!action.remote) env.send({ type: 'kernel_app_close', id: action.id })
 		}
 	}

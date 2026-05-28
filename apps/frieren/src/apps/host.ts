@@ -1,4 +1,4 @@
-// Imperative lifecycle store for kernel apps. The host React tree must NOT
+// Imperative lifecycle store for apps. The host React tree must NOT
 // own the guest's mount node — when React reorders/unmounts a window for
 // any reason (StrictMode, list reorder, parent re-render quirks), it would
 // destroy the guest's DOM and wipe in-element state like canvas bitmaps.
@@ -154,7 +154,7 @@ async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 			return
 		}
 
-		// Dynamic import resolves the kernel app's gui.js through the
+		// Dynamic import resolves the app's gui.js through the
 		// per-user DO route (Volume-backed bytes). Token rides the URL
 		// for the same reason the WS does — Clerk cookie auth 401s a
 		// non-document fetch. Vite must not analyse this specifier.

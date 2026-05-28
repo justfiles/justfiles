@@ -22,7 +22,7 @@ export type OsState = {
 export type OsAction =
 	| { type: 'boot/loaded'; state: OsState }
 	// `remote: true` marks an open/close echoed back by the server, so the
-	// kernel-host effect mounts/unmounts the app without re-notifying the
+	// app-host effect mounts/unmounts the app without re-notifying the
 	// server (which would loop, since the server broadcasts to all clients).
 	| { type: 'app.open'; appId: string; title?: string; remote?: boolean }
 	| { type: 'window.close'; id: string; remote?: boolean }

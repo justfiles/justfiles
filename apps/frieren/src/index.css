@@ -4,8 +4,8 @@
 @import "@fontsource-variable/jetbrains-mono";
 @import "@justfiles/design/design.css";
 
-/* Scan kernel-app sources so utility classes used inside their GUIs end up
-   in the host compiled CSS. Kernel apps render inside frieren DOM and share
+/* Scan app sources so utility classes used inside their GUIs end up
+   in the host compiled CSS. Apps render inside frieren DOM and share
    the same stylesheet. */
 @source "../../../packages/app-*/src/**/*.{ts,tsx}";
 

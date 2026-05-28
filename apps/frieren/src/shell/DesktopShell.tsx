@@ -9,7 +9,7 @@ import { Window } from '@/components/Window'
 import { MessagesPanel } from '../chat/MessagesPanel'
 import type { ConnectionState, InstalledApp } from '../chat/types'
 import { ChatProvider, useChat } from '../chat/useChat'
-import { KernelAppSlot } from '../KernelAppSlot'
+import { AppViewport } from '../apps/AppViewport'
 import { AppWindow } from '../os/AppWindow'
 import { selectChatOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow, WindowRect } from '../os/state'
@@ -141,7 +141,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 					</div>
 					{windows.map((window) => (
 						<AppWindow key={window.id} store={store} id={window.id}>
-							<KernelAppSlot id={window.id} />
+							<AppViewport id={window.id} />
 						</AppWindow>
 					))}
 					{chatOpen ? (

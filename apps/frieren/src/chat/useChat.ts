@@ -2,7 +2,7 @@ import { useAuth } from '@clerk/clerk-react'
 import type { Store } from '@justfiles/state'
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { createFsVolume } from '../fs'
-import * as kernelAppHost from '../kernelAppHost'
+import * as appHost from '../apps/host'
 import type { OsAction, OsState } from '../os/state'
 import { bootOsStore, createOsStore } from '../os/store'
 import type {
@@ -84,7 +84,7 @@ export function useChat(): UseChatResult {
 	const installingAppRef = useRef(false)
 
 	// Open windows, focus order, geometry, and chat visibility live in the OS
-	// store. It owns kernel-host + websocket + persistence effects; `send` and
+	// store. It owns app host + websocket + persistence effects; `send` and
 	// `guiUrlFor` read refs so the store can be built once and outlive reconnects.
 	const [volumePromise] = useState(() => createFsVolume(() => getTokenRef.current()))
 	const send = useCallback((frame: object) => {
@@ -97,7 +97,7 @@ export function useChat(): UseChatResult {
 	)
 	const [store] = useState(() =>
 		createOsStore({
-			kernelAppHost,
+			appHost,
 			getToken: () => getTokenRef.current(),
 			guiUrlFor,
 			send,
@@ -293,6 +293,7 @@ export function useChat(): UseChatResult {
 					return
 				}
 
+				// Legacy wire naming: app open/close protocol frames still use kernel_app_*.
 				if (data.type === 'kernel_app_open') {
 					const id = data.id as string
 					const title = installedAppsRef.current.find((a) => a.id === id)?.name
@@ -357,8 +358,8 @@ export function useChat(): UseChatResult {
 
 	const reconnect = () => setConnectKey((value) => value + 1)
 
-	// Dev install: prompt the user for a zipped kernel-app bundle, upload it to
-	// the kernel install endpoint, then reconnect so the launcher re-lists apps.
+	// Dev install: prompt the user for a zipped app bundle, upload it to
+	// the install endpoint, then reconnect so the launcher re-lists apps.
 	const installApp = async () => {
 		if (installingAppRef.current) return
 		installingAppRef.current = true
@@ -387,17 +388,17 @@ export function useChat(): UseChatResult {
 		}
 	}
 
-	// Delete an app-system bundle through the app lifecycle endpoint and drop
-	// it from the launcher state optimistically. Mirror of `installApp`.
+	// Delete an app bundle through the app lifecycle endpoint and drop it from
+	// the launcher state optimistically. Mirror of `installApp`.
 	const uninstallApp = async (id: string) => {
 		const prev = installedApps
 		// Close any open window for this app first. Otherwise the still-mounted
-		// KernelAppFrame sees its `guiUrl` go undefined when the launcher drops
-		// the app, the effect re-fires, and the GUI's React root is unmounted
+		// app frame sees its `guiUrl` go undefined when the launcher drops the
+		// app, the effect re-fires, and the GUI's React root is unmounted
 		// synchronously from inside the parent's commit — corrupting the DOM
 		// (NotFoundError on removeChild) and leaving the desktop in a half-
 		// broken state where the user sees "nothing happens". The close effect
-		// also tears down the kernel-host stage and notifies the server.
+		// also tears down the app-host stage and notifies the server.
 		store.dispatch({ type: 'window.close', id })
 		setInstalledApps((apps) => apps.filter((a) => a.id !== id))
 		try {

@@ -1,13 +1,13 @@
 import { createStore, type Store } from '@justfiles/state'
 import type { Volume } from '../fs'
-import type * as kernelAppHostModule from '../kernelAppHost'
+import type * as appHostModule from '../apps/host'
 import { makeKernelHostEffect, makePersistEffect } from './effects'
 import { loadSnapshot } from './persistence'
 import { osReducer } from './reducer'
 import { initialState, type OsAction, type OsState } from './state'
 
 export interface CreateOsStoreOptions {
-	kernelAppHost: Pick<typeof kernelAppHostModule, 'open' | 'close'>
+	appHost: Pick<typeof appHostModule, 'open' | 'close'>
 	getToken: () => Promise<string | null>
 	guiUrlFor: (appId: string) => string | undefined
 	send: (frame: object) => void
