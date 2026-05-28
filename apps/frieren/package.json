@@ -29,6 +29,7 @@
 		"@justfiles/core": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
+		"@justfiles/state": "workspace:*",
 		"@justfiles/ui": "workspace:*",
 		"@mariozechner/pi-agent-core": "^0.70.2",
 		"@mariozechner/pi-ai": "^0.70.2",

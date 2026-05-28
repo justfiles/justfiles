@@ -423,6 +423,28 @@ Acceptance:
 - all existing app packages compile unchanged.
 - app runtime tests pass unchanged.
 
+### Step 8: Broaden the frieren test runner to all of `src`
+
+The `apps/frieren/src/**` vitest exclude predates any src tests — a blunt
+guardrail from the pnpm+vitest migration, not a considered choice. Step 5
+carved out `src/os/**` (pure, node-safe logic) as a stopgap. Once component and
+hook tests are wanted, replace the carve-out with full coverage:
+
+- Drop the `apps/frieren/src/!(os)/**` exclude and the `src/os/**` include; add
+  a single `apps/frieren/src/**/*.test.{ts,tsx}` include.
+- Give those tests a DOM: add `jsdom` (or `happy-dom`) and set
+  `test.environment` so React component/hook tests can render.
+- Resolve the `@/` path alias in the vitest config so `@/…` imports match the
+  app's tsconfig.
+
+Acceptance:
+
+- `pnpm test` runs every `*.test.ts(x)` under `apps/frieren/src`, including at
+  least one React-rendering test, with no env-resolution errors.
+
+Note: `tsc -b` already typechecks all of `src` (via `tsconfig.app.json`'s
+`include: ["src"]`); this step is about the *test runner*, not typecheck.
+
 ## Non-goals
 
 - No devtools protocol.
