@@ -45,11 +45,26 @@ export function OSProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		// Server-echoed app open/close drive the OS store as remote actions. Wire
-		// the handler before connecting so a replayed open isn't missed.
-		const unsubscribe = client.onRemoteWindow((action) => store.dispatch(action))
+		// the handler before connecting so a replayed open isn't missed. Queue
+		// replays until local OS state has booted; otherwise legacy server opens
+		// briefly create default-rect windows before the persisted rects load.
+		const pending: Parameters<typeof store.dispatch>[0][] = []
+		const flushPending = () => {
+			if (!store.getState().booted) return
+			for (const action of pending.splice(0)) store.dispatch(action)
+		}
+		const unsubscribeRemote = client.onRemoteWindow((action) => {
+			if (!store.getState().booted) {
+				pending.push(action)
+				return
+			}
+			store.dispatch(action)
+		})
+		const unsubscribeStore = store.subscribe(flushPending)
 		client.connect()
 		return () => {
-			unsubscribe()
+			unsubscribeRemote()
+			unsubscribeStore()
 			client.close()
 			// App GUI hosting is part of OS lifecycle: drop every stage so a
 			// previous session's DOM doesn't survive sign-out / user switch.

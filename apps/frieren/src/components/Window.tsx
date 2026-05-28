@@ -1,4 +1,11 @@
-import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import {
+	type PointerEvent,
+	type ReactNode,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState
+} from 'react'
 import type { WindowRect } from '../os/state'
 
 const MIN_W = 320
@@ -57,7 +64,7 @@ export function Window({
 
 	// Re-sync when the committed rect changes from outside (boot restore, etc).
 	// A drag commits the same value back, so this is a no-op for our own edits.
-	useEffect(() => {
+	useLayoutEffect(() => {
 		setLive(clampToViewport(rect))
 	}, [rect])
 

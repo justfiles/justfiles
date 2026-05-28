@@ -36,7 +36,10 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const dispatch = useOsDispatch()
 	const menu = useContextMenu()
 
-	const windows = useOsStore(selectOpenWindows, sameWindowIds)
+	const windows = useOsStore(
+		(state) => (state.booted ? selectOpenWindows(state) : []),
+		sameWindowIds
+	)
 	const agentOpen = useOsStore(selectAgentOpen)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
 	// The agent surface is an overlay, not a persisted window — its position is
