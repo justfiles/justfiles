@@ -277,7 +277,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
-		// Legacy wire naming: app open/close protocol frames still use kernel_app_*.
+		// Legacy compatibility: the worker persists open_kernel_apps and replays
+		// kernel_app_open on connect. Client OS state is now authoritative for
+		// window state, so we route these as `remote` actions; the reducer
+		// no-ops any open for a window we've already restored. (Wire naming also
+		// stays kernel_app_* for now.)
 		if (data.type === 'kernel_app_open') {
 			const id = data.id as string
 			const title = apps.find((app) => app.id === id)?.name

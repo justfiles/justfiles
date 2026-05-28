@@ -30,6 +30,14 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 		case 'app.open': {
 			const id = action.appId
 			if (state.windows[id]) {
+				// Client OS state is authoritative for window state. A server replay
+				// of an open we already restored (legacy worker compatibility: it
+				// persists open_kernel_apps and replays kernel_app_open on connect)
+				// must be a pure no-op — no refocus, no metadata overwrite. Returning
+				// the same reference also short-circuits the host/persist effects, so
+				// the stage is never re-opened. A direct user re-launch still
+				// brings the running window to the front.
+				if (action.remote) return state
 				const focusStack = bringToFront(state.focusStack, id)
 				if (focusStack === state.focusStack) return state
 				return { ...state, focusStack }

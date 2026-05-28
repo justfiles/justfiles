@@ -55,6 +55,16 @@ describe('makeKernelHostEffect', () => {
 		expect(send).toHaveBeenCalledWith({ type: 'kernel_app_close', id: 'notes' })
 	})
 
+	test('remote window.close tears down the stage without echoing to the server', () => {
+		const { appHost, send, effect } = setup()
+		const action: OsAction = { type: 'window.close', id: 'notes', remote: true }
+
+		effect(action, initialState, initialState, ctx(initialState))
+
+		expect(appHost.close).toHaveBeenCalledWith('notes')
+		expect(send).not.toHaveBeenCalled()
+	})
+
 	test('boot/loaded opens a host stage for every restored window', () => {
 		const { appHost, guiUrlFor, getToken, effect } = setup()
 		guiUrlFor.mockImplementation((id) =>

@@ -47,6 +47,25 @@ describe('osReducer', () => {
 		expect(next).toBe(opened)
 	})
 
+	test('a remote open for an already-open window is a no-op and never refocuses', () => {
+		// 'a' is below 'b' in the focus stack. A server replay of its open
+		// (legacy worker compatibility) must not steal focus from 'b'.
+		const opened = run([
+			{ type: 'app.open', appId: 'a' },
+			{ type: 'app.open', appId: 'b' }
+		])
+		const next = osReducer(opened, { type: 'app.open', appId: 'a', remote: true })
+		expect(next).toBe(opened)
+		expect(next.focusStack).toEqual(['a', 'b'])
+	})
+
+	test('a remote open for a window we have not restored still opens it', () => {
+		const state = osReducer(initialState, { type: 'app.open', appId: 'a', remote: true })
+		expect(state.windows.a).toMatchObject({ id: 'a', appId: 'a' })
+		expect(state.openOrder).toEqual(['a'])
+		expect(state.focusStack).toEqual(['a'])
+	})
+
 	test('close removes the window from windows, openOrder, and focusStack', () => {
 		const state = run([
 			{ type: 'app.open', appId: 'a' },
