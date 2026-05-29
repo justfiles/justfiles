@@ -1,0 +1,27 @@
+{
+	"name": "@justfiles/app-code",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"main": "./dist/manifest.json",
+	"exports": {
+		"./bundle": {
+			"types": "./dist/bundle.d.ts",
+			"default": "./dist/bundle.js"
+		}
+	},
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview"
+	},
+	"dependencies": {
+		"@justfiles/app": "workspace:*",
+		"valibot": "^1.1.0"
+	},
+	"devDependencies": {
+		"esbuild": "^0.27.0",
+		"typescript": "^6.0.3",
+		"vite": "^8.0.12"
+	}
+}
