@@ -45,6 +45,27 @@ const stateOrInitial = (value: unknown): PaintState =>
 	value && typeof value === 'object' && 'tool' in value ? (value as PaintState) : initialState
 
 export const gui = defineGUI<PaintApp>({
+	menu: (state, client) => {
+		const s = stateOrInitial(state)
+		return [
+			{
+				title: 'Tools',
+				items: TOOLS.map(({ id, label }) => ({
+					title: label,
+					checked: s.tool === id,
+					onSelect: () => void client.setTool({ tool: id })
+				}))
+			},
+			{
+				title: 'Brush',
+				items: SIZES.map((value) => ({
+					title: `${value}px`,
+					checked: s.size === value,
+					onSelect: () => void client.setSize({ size: value })
+				}))
+			}
+		]
+	},
 	mount(el, state, ctx) {
 		const root = createRoot(el)
 		const render = (next: PaintState | null) =>

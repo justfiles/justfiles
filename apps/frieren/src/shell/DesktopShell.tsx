@@ -1,6 +1,7 @@
 import { UserButton } from '@clerk/clerk-react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useSyncExternalStore } from 'react'
+import { AppMenus } from '@/components/AppMenus'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Dock } from '@/components/Dock'
 import { Menubar } from '@/components/Menubar'
@@ -12,10 +13,16 @@ import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
 import { resolveAppTitle } from '../apps/catalog'
 import { useAppCommands, useInstalledApps } from '../apps/hooks'
+import { menuOf, subscribeMenus } from '../apps/host'
 import type { InstalledApp } from '../apps/types'
 import { AppWindow } from '../os/AppWindow'
 import { useOsDispatch, useOsStore } from '../os/hooks'
-import { selectAgentOpen, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
+import {
+	selectAgentOpen,
+	selectFocusedWindowId,
+	selectOpenWindows,
+	selectVisibleFullscreenId
+} from '../os/selectors'
 import type { OsWindow, WindowRect } from '../os/state'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -30,12 +37,25 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 	return a.length === b.length && a.every((w, i) => w.id === b[i]?.id)
 }
 
+// The focused app's published menus, kept live via the app-host menu channel.
+// Window id === app id, so the focused window id is the stage key. The stage's
+// menu reference is stable between pushes, so useSyncExternalStore won't churn.
+function useFocusedMenu() {
+	const focusedId = useOsStore(selectFocusedWindowId)
+	return useSyncExternalStore(
+		subscribeMenus,
+		() => (focusedId ? menuOf(focusedId) : null),
+		() => null
+	)
+}
+
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const installedApps = useInstalledApps()
 	const { launchApp, installApp, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
 	const dispatch = useOsDispatch()
 	const menu = useContextMenu()
+	const appMenu = useFocusedMenu()
 
 	const windows = useOsStore(
 		(state) => (state.booted ? selectOpenWindows(state) : []),
@@ -73,8 +93,9 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		<div className="flex h-screen flex-col">
 			{fullscreenId ? null : (
 				<Menubar>
-					<div className="flex items-center gap-1">
+					<div className="flex items-center gap-2">
 						<span className="font-medium">Frieren</span>
+						{appMenu ? <AppMenus menu={appMenu} /> : null}
 					</div>
 					<div className="flex items-center gap-3">
 						<span

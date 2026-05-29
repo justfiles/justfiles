@@ -10,6 +10,8 @@
 // explicit close/uninstall paths (mirroring VS Code's createWebviewPanel /
 // panel.dispose model).
 
+import type { Menu } from '@justfiles/app/browser'
+
 interface Transport {
 	invoke(action: { type: string; params: unknown }): Promise<unknown>
 	subscribe(onState: (state: unknown) => void): () => void
@@ -22,7 +24,11 @@ interface GuiInstance {
 
 interface GuiModule {
 	gui: {
-		mount(el: HTMLElement, state: unknown, ctx: { transport: Transport }): GuiInstance
+		mount(
+			el: HTMLElement,
+			state: unknown,
+			ctx: { transport: Transport; setMenu(menu: Menu | null): void }
+		): GuiInstance
 	}
 }
 
@@ -38,6 +44,7 @@ interface Stage {
 	errorEl: HTMLDivElement
 	socket?: WebSocket
 	instance?: GuiInstance
+	menu?: Menu
 	cancelled: boolean
 	outbox: string[]
 	pending: Map<string, (frame: { result?: unknown; error?: string }) => void>
@@ -51,6 +58,26 @@ export interface OpenOptions {
 }
 
 const stages = new Map<string, Stage>()
+
+// Universal-menubar channel. Each stage's GUI publishes its current menus via
+// the `setMenu` injected into mount; the shell reads the *focused* stage's menu
+// and re-renders when any stage republishes (state change) or focus moves.
+const menuSubscribers = new Set<() => void>()
+
+function notifyMenus(): void {
+	for (const fn of [...menuSubscribers]) fn()
+}
+
+export function subscribeMenus(fn: () => void): () => void {
+	menuSubscribers.add(fn)
+	return () => {
+		menuSubscribers.delete(fn)
+	}
+}
+
+export function menuOf(id: string): Menu | null {
+	return stages.get(id)?.menu ?? null
+}
 
 export function open(id: string, opts: OpenOptions): void {
 	if (stages.has(id)) return
@@ -72,6 +99,8 @@ export function close(id: string): void {
 	stage.socket?.close()
 	stage.wrapper.remove()
 	stages.delete(id)
+	// The focused app may have just closed — drop its menu from the bar.
+	notifyMenus()
 }
 
 // Tear down every open stage. Called on OS teardown (sign-out / user switch /
@@ -177,7 +206,14 @@ async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 		// own bootstrap UI (loading spinner, empty list, etc.) while the
 		// WS handshake completes. Without this, the user stares at a
 		// blank frame for the round-trip to the DO.
-		stage.instance = mod.gui.mount(stage.mountEl, null, { transport })
+		stage.instance = mod.gui.mount(stage.mountEl, null, {
+			transport,
+			setMenu: (menu) => {
+				if (stage.cancelled) return
+				stage.menu = menu ?? undefined
+				notifyMenus()
+			}
+		})
 
 		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 		const ws = new WebSocket(

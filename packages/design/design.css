@@ -75,6 +75,23 @@
 	background: var(--menu-separator);
 }
 
+.ds-menu-title {
+	padding: 2px 8px;
+	background: transparent;
+	border: 0;
+	border-radius: 4px;
+	color: inherit;
+	font: inherit;
+	cursor: default;
+	white-space: nowrap;
+}
+
+.ds-menu-title[data-active="true"],
+.ds-menu-title:hover {
+	background: var(--focus);
+	color: var(--on-focus);
+}
+
 .ds-desktop {
 	position: fixed;
 	inset: 0;
