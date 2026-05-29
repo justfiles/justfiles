@@ -238,6 +238,76 @@ describe('synced', () => {
 		expect(dec.decode(await remoteVol.readFile('/pushed.txt'))).toBe('pushed content')
 	})
 
+	it('skips applyBatch when there are no syncable local ops', async () => {
+		const remote = journaledStorage()
+		let batchCalls = 0
+		const batched: typeof remote = {
+			...remote,
+			caps: {
+				...remote.caps,
+				async applyBatch() {
+					batchCalls++
+				}
+			}
+		}
+
+		const vol = track(
+			await synced({ local: journaledStorage(), remote: batched, interval: 99_999 })
+		)
+		await vol.flush()
+
+		expect(batchCalls).toBe(0)
+	})
+
+	it('uses applyBatch on push when the remote declares it', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+
+		// Wrap the remote with an applyBatch cap that replays ops through the same
+		// backend methods, counting invocations so we can assert the fast path ran.
+		let batchCalls = 0
+		let lastBatchSize = 0
+		const batched: typeof remote = {
+			...remote,
+			caps: {
+				...remote.caps,
+				async applyBatch(ops, getBlob, opts) {
+					batchCalls++
+					lastBatchSize = ops.length
+					for (const op of ops) {
+						if (op.kind === 'upsert-inode') {
+							if (op.meta) await remote.setMeta(op.ino, op.meta, opts)
+							if (op.meta?.type === FileType.Regular) {
+								await remote.putBlob(op.ino, await getBlob(op.ino), opts)
+							}
+							for (const [name, value] of Object.entries(op.xattrs ?? {})) {
+								if (name.startsWith('trusted.sync.')) continue
+								if (value === null) await remote.caps?.removeXattr?.(op.ino, name, opts)
+								else await remote.caps?.setXattr?.(op.ino, name, value, opts)
+							}
+						} else if (op.kind === 'set-dirent') {
+							await remote.putDirent(op.dirIno, op.name, { ino: op.ino, type: op.type }, opts)
+						} else {
+							await remote.deleteDirent(op.dirIno, op.name, opts)
+						}
+					}
+				}
+			}
+		}
+
+		const vol = track(
+			await synced({ local: journaledStorage(), remote: batched, interval: 99_999 })
+		)
+
+		await vol.writeFile('/batched.txt', enc.encode('via batch'))
+		await vol.flush()
+
+		expect(batchCalls).toBeGreaterThan(0)
+		expect(lastBatchSize).toBeGreaterThan(0)
+		expect(await remoteVol.exists('/batched.txt')).toBe(true)
+		expect(dec.decode(await remoteVol.readFile('/batched.txt'))).toBe('via batch')
+	})
+
 	it('pushes a newly created directory to remote', async () => {
 		const remote = journaledStorage()
 		const remoteVol = volume(remote)

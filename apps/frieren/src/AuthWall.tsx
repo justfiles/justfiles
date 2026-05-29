@@ -1,6 +1,7 @@
 import { SignInButton, SignUpButton, useClerk } from '@clerk/clerk-react'
 import { useState } from 'react'
 import { Button } from './components/ui/button'
+import { destroyFsVolume } from './fs'
 
 export function AuthWall({ onDismiss }: { onDismiss?: () => void } = {}) {
 	const clerk = useClerk()
@@ -10,6 +11,7 @@ export function AuthWall({ onDismiss }: { onDismiss?: () => void } = {}) {
 	const pick = async (sessionId: string) => {
 		setBusy(true)
 		try {
+			await destroyFsVolume()
 			await clerk.setActive({ session: sessionId })
 			onDismiss?.()
 		} finally {
@@ -58,6 +60,7 @@ export function AuthWall({ onDismiss }: { onDismiss?: () => void } = {}) {
 							<SignInButton>
 								<button
 									type="button"
+									onClickCapture={() => void destroyFsVolume()}
 									className="flex size-24 items-center justify-center rounded-full border border-dashed border-white/30 bg-white/[0.03] text-3xl font-light text-white/60 transition hover:border-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
 									title="Add account"
 								>

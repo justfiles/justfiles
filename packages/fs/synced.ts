@@ -102,9 +102,20 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		])
 		// Tag remote writes with clientId so other clients can filter out our echoes in their pull.
 		const opts: MutationOptions = { source: clientId }
+		const toSend: FsOp[] = []
 		for (const op of ops) {
-			if (await shouldSkipOp(op)) continue
-			await applyOp(op, props.local, props.remote, opts)
+			if (!(await shouldSkipOp(op))) toSend.push(op)
+		}
+		if (toSend.length === 0) return cursor
+		// Fast path: one round-trip if the remote can apply a batch; the helper
+		// inlines blob content for regular-file upserts. Otherwise fall back to
+		// the per-op path (one or more requests each).
+		if (props.remote.caps?.applyBatch) {
+			await props.remote.caps.applyBatch(toSend, (ino) => props.local.getBlob(ino), opts)
+		} else {
+			for (const op of toSend) await applyOp(op, props.local, props.remote, opts)
+		}
+		for (const op of toSend) {
 			if (op.kind === 'upsert-inode' && op.meta?.contentHash) {
 				await setHashBaseline(op.ino, op.meta.contentHash)
 			}

@@ -5,7 +5,8 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
-		"build": "vite build"
+		"build": "vite build",
+		"pack": "rm -f app.zip && cd dist && zip -r ../app.zip ."
 	},
 	"dependencies": {
 		"@justfiles/app": "workspace:*",

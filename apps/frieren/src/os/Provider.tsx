@@ -1,18 +1,23 @@
 import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import * as appHost from '../apps/host'
-import { createFsVolume } from '../fs'
+import { getFsVolume } from '../fs'
 import { createFrierenClient } from './client'
 import { OsContext } from './hooks'
 import { bootOsStore, createOsStore } from './store'
 
 export function OSProvider({ children }: { children: ReactNode }) {
-	const { getToken } = useAuth()
+	const { getToken, userId } = useAuth()
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 
 	const [client] = useState(() => createFrierenClient({ getToken: () => getTokenRef.current() }))
-	const [volumePromise] = useState(() => createFsVolume(() => getTokenRef.current()))
+	// The provider only mounts for a signed-in, onboarded user, so userId is set;
+	// the singleton hands back the same replica App created during onboarding.
+	const [volumePromise] = useState(() => {
+		if (!userId) throw new Error('OSProvider requires a signed-in user')
+		return getFsVolume(userId, () => getTokenRef.current())
+	})
 	const [{ store, flushPersist }] = useState(() =>
 		createOsStore({
 			appHost,

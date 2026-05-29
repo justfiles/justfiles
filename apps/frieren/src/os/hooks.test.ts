@@ -5,11 +5,11 @@ import { useOsClient, useOsDispatch, useOsStore } from './hooks'
 import { OSProvider } from './Provider'
 
 vi.mock('@clerk/clerk-react', () => ({
-	useAuth: () => ({ getToken: async () => null })
+	useAuth: () => ({ getToken: async () => null, userId: 'user-1' })
 }))
 
 vi.mock('../fs', () => ({
-	createFsVolume: async () => ({
+	getFsVolume: async () => ({
 		exists: async () => false,
 		readFile: async () => new Uint8Array(),
 		mkdir: async () => {},

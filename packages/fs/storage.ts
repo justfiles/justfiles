@@ -129,6 +129,19 @@ export interface StorageCapabilities {
 		cursor: string,
 		options?: UpdateQueryOptions
 	): Promise<{ ops: FsOp[]; cursor: string }>
+
+	/**
+	 * Apply a batch of ops in a single round-trip — the sync push fast-path.
+	 * `getBlob` supplies content for regular-file upserts so the implementation
+	 * can inline bytes instead of fetching each blob separately. If absent, the
+	 * sync layer falls back to applying ops one at a time. Callers must not rely
+	 * on atomicity.
+	 */
+	applyBatch?(
+		ops: FsOp[],
+		getBlob: (ino: Ino) => Promise<Uint8Array>,
+		options?: MutationOptions
+	): Promise<void>
 }
 
 /**

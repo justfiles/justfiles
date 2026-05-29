@@ -89,6 +89,36 @@ const DirInoNameParam = z.object({ dirIno: z.string(), name: z.string() })
 const CursorQuery = z.object({ cursor: z.string().default('') })
 const SOURCE_HEADER = 'x-fs-source'
 
+// Batch apply payload — the sync push fast-path. Mirrors FsOp; upsert carries
+// optional inlined blob content (base64) so one request replaces the per-op
+// setMeta + putBlob + xattr round-trips.
+const BatchOpsSchema = z.object({
+	ops: z.array(
+		z.discriminatedUnion('kind', [
+			z.object({
+				kind: z.literal('upsert-inode'),
+				ino: z.string(),
+				meta: WireMetaPartialSchema.optional(),
+				xattrs: z.record(z.string(), z.string().nullable()).optional(),
+				data: z.string().optional()
+			}),
+			z.object({
+				kind: z.literal('set-dirent'),
+				dirIno: z.string(),
+				name: z.string(),
+				ino: z.string(),
+				type: FileTypeNum
+			}),
+			z.object({
+				kind: z.literal('unset-dirent'),
+				dirIno: z.string(),
+				name: z.string(),
+				ino: z.string().optional()
+			})
+		])
+	)
+})
+
 // ── API ──────────────────────────────────────────────────────────────────────
 
 export function createFsApi(backend: Storage) {
@@ -143,6 +173,34 @@ export function createFsApi(backend: Storage) {
 					next: result.next,
 					syncCursor: result.syncCursor
 				})
+			})
+
+			// Batch apply — one request applies many ops (sync push).
+			.post('/ops', zValidator('json', BatchOpsSchema), async (c) => {
+				const { ops } = c.req.valid('json')
+				const opts = mutationOptions(c.req.raw)
+				for (const op of ops) {
+					if (op.kind === 'upsert-inode') {
+						if (op.meta) await backend.setMeta(op.ino, op.meta, opts)
+						if (op.data !== undefined) await backend.putBlob(op.ino, decodeBytes(op.data), opts)
+						for (const [name, value] of Object.entries(op.xattrs ?? {})) {
+							if (name.startsWith('trusted.sync.')) continue
+							if (value === null) await backend.caps?.removeXattr?.(op.ino, name, opts)
+							else await backend.caps?.setXattr?.(op.ino, name, decodeBytes(value), opts)
+						}
+					} else if (op.kind === 'set-dirent') {
+						const existing = await backend.getDirent(op.dirIno, op.name)
+						await backend.putDirent(op.dirIno, op.name, { ino: op.ino, type: op.type }, opts)
+						if (existing && existing.ino !== op.ino) await backend.deleteInode(existing.ino)
+					} else {
+						const existing = await backend.getDirent(op.dirIno, op.name)
+						if (existing) {
+							await backend.deleteDirent(op.dirIno, op.name, opts)
+							await backend.deleteInode(existing.ino)
+						}
+					}
+				}
+				return c.json({ ok: true })
 			})
 
 			// ── Inode metadata ────────────────────────────────────────────────────

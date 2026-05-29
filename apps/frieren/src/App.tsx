@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { AgentProvider } from './agent/Provider'
 import { Spinner } from './components/ui/spinner'
-import { createFsVolume } from './fs'
+import { destroyFsVolume, getFsVolume } from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { resolveOnboardingState } from './onboarding/state'
 import { OSProvider } from './os/Provider'
@@ -34,13 +34,14 @@ function App() {
 	useEffect(() => {
 		if (!isSignedIn || !userId) {
 			setOnboardingDone(null)
+			void destroyFsVolume({ flush: false })
 			return
 		}
 		setOnboardingDone(null)
 		let cancelled = false
 		void (async () => {
 			try {
-				const vol = await createFsVolume(() => getToken())
+				const vol = await getFsVolume(userId, () => getToken())
 				const state = await resolveOnboardingState(vol)
 				if (!cancelled) setOnboardingDone(state === 'done')
 			} catch {
