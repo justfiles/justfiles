@@ -22,8 +22,8 @@ interface DisplayApp {
 	readonly name: string
 	readonly description: string
 	readonly iconUrl?: string
-	// Version-stamped gui URL when the manifest has a version. Pairs with the
-	// asset() handler, which sets immutable Cache-Control for matching v=.
+	// Version-stamped gui URL. Prod uses manifest.version for immutable caching;
+	// dev uses a changing stamp to bypass the browser module cache.
 	readonly guiUrl?: string
 }
 
@@ -54,11 +54,13 @@ export interface FrierenApps {
 }
 
 const OS_STATE_PATH = '/system/os-state.json'
+const DEV_BUILTINS = import.meta.env.DEV
 
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
 	let subscribed = false
 	let builtinsReady: Promise<void> | undefined
+	let devAssetRevision = 0
 
 	function getKernel(): Kernel {
 		if (kernelInstance) return kernelInstance
@@ -71,20 +73,16 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return kernelInstance
 	}
 
-	// Bundled built-in apps install themselves into the user's volume on the
-	// first kernel use per DO instance. After the first run the version diff
-	// short-circuits to a single `kernel.list()` read.
+	// Bundled built-in apps install themselves into the user's volume on kernel
+	// use. Dev always overwrites bytes so local bundle changes show up without a
+	// package version bump; prod keeps the cheap version-diff path.
 	async function ensureBuiltinsInstalled(k: Kernel): Promise<void> {
-		if (!builtinsReady) {
-			builtinsReady = (async () => {
-				if (BUILTINS.length === 0) return
-				const installed = new Map((await k.list()).map((m) => [m.id, m.version]))
-				for (const builtin of BUILTINS) {
-					if (installed.get(builtin.id) === builtin.version) continue
-					await k.install(bundleFromBuiltin(builtin))
-				}
-			})()
+		if (BUILTINS.length === 0) return
+		if (DEV_BUILTINS) {
+			await installBuiltins(k, true)
+			return
 		}
+		if (!builtinsReady) builtinsReady = installBuiltins(k, false)
 		return builtinsReady
 	}
 
@@ -157,17 +155,17 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {
 			const manifests = await (await kernelReady()).list()
-			return manifests.map((m) => ({
-				id: m.id,
-				name: m.name,
-				description: m.description ?? '',
-				iconUrl: m.icon
-					? `/api/apps/${m.id}/${m.icon}${m.version ? `?v=${encodeURIComponent(m.version)}` : ''}`
-					: undefined,
-				guiUrl: m.version
-					? `/api/apps/${m.id}/gui.js?v=${encodeURIComponent(m.version)}`
-					: `/api/apps/${m.id}/gui.js`
-			}))
+			const devVersion = DEV_BUILTINS ? `dev-${++devAssetRevision}` : undefined
+			return manifests.map((m) => {
+				const version = devVersion ?? m.version
+				return {
+					id: m.id,
+					name: m.name,
+					description: m.description ?? '',
+					iconUrl: m.icon ? assetUrl(m.id, m.icon, version) : undefined,
+					guiUrl: assetUrl(m.id, 'gui.js', version)
+				}
+			})
 		} catch {
 			return []
 		}
@@ -221,11 +219,13 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			const body = new ArrayBuffer(data.byteLength)
 			new Uint8Array(body).set(data)
 			const headers: Record<string, string> = { 'content-type': mimeFor(safe) }
-			// When the URL pins the manifest version, the byte stream is
-			// immutable for that URL — browsers re-use the cached entry on
-			// re-launch within the token's lifetime, and a version bump in
-			// list() drives a fresh fetch via a different URL.
-			if (version && installed.manifest.version && version === installed.manifest.version) {
+			if (DEV_BUILTINS) {
+				headers['cache-control'] = 'no-store'
+			} else if (version && installed.manifest.version && version === installed.manifest.version) {
+				// When the URL pins the manifest version, the byte stream is
+				// immutable for that URL — browsers re-use the cached entry on
+				// re-launch within the token's lifetime, and a version bump in
+				// list() drives a fresh fetch via a different URL.
 				headers['cache-control'] = 'private, max-age=31536000, immutable'
 			}
 			return new Response(body, { headers })
@@ -324,6 +324,18 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		acceptWebSocket,
 		handleMessage
 	}
+}
+
+async function installBuiltins(k: Kernel, force: boolean): Promise<void> {
+	const installed = force ? undefined : new Map((await k.list()).map((m) => [m.id, m.version]))
+	for (const builtin of BUILTINS) {
+		if (installed?.get(builtin.id) === builtin.version) continue
+		await k.install(bundleFromBuiltin(builtin))
+	}
+}
+
+function assetUrl(appId: string, path: string, version?: string): string {
+	return `/api/apps/${appId}/${path}${version ? `?v=${encodeURIComponent(version)}` : ''}`
 }
 
 function bundleFromBuiltin(builtin: BuiltinBundle): AppBundle {

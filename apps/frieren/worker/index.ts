@@ -7,7 +7,10 @@ export { Frieren } from './frieren.ts'
 
 // Built-in icons ship with the worker bundle (same bytes for every user), so
 // the launcher loads them via plain `<img src>` — no token, no DO round-trip.
-// Version-stamped requests (`?v=<manifest version>`) get an immutable cache.
+// Version-stamped requests (`?v=<manifest version>`) get an immutable cache in
+// prod; dev disables caching so local bundle changes show immediately.
+const DEV_BUILTINS = import.meta.env.DEV
+
 const ICON_MIME: Record<string, string> = {
 	svg: 'image/svg+xml',
 	png: 'image/png',
@@ -30,7 +33,9 @@ function tryServeBuiltinIcon(
 	const bytes = builtin?.files[path]
 	if (!builtin || !bytes) return undefined
 	const headers: Record<string, string> = { 'content-type': mime }
-	if (version && version === builtin.version) {
+	if (DEV_BUILTINS) {
+		headers['cache-control'] = 'no-store'
+	} else if (version && version === builtin.version) {
 		headers['cache-control'] = 'public, max-age=31536000, immutable'
 	}
 	return new Response(bytes, { headers })

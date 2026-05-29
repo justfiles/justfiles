@@ -1,8 +1,8 @@
 # @justbuddy/create-app
 
-Minimal create package for a kernel `@justfiles/app`.
+Minimal create package for `@justfiles/app`.
 
-It generates a headless `src/app.ts`, browser `src/gui.ts`, and `vite.config.ts` using `kernelHost()`.
+It generates a headless `src/app.ts`, browser `src/gui.ts`, and `vite.config.ts` using the current `defineApp({ actions: ... })` and `kernelHost()` APIs. Builds emit `dist/manifest.json`, `dist/app.js`, `dist/gui.js`, and an importable `dist/bundle.js`.
 
 ```sh
 npm create @justbuddy/app my-app

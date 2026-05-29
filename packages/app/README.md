@@ -16,13 +16,13 @@ import * as v from 'valibot'
 
 export const app = defineApp({
 	init: { count: 0 },
-	handlers: {
-		increment: {
+	actions: (b) => ({
+		increment: b.handler({
 			description: 'Increase the counter.',
 			schema: v.object({ amount: v.number() }),
 			handler: ({ amount }, ctx) => ({ count: ctx.state.count + amount })
-		}
-	}
+		})
+	})
 })
 
 export type CounterApp = typeof app
@@ -39,14 +39,15 @@ import type { CounterApp } from './app'
 export const gui = defineGUI<CounterApp>({
 	mount(el, state, ctx) {
 		const button = document.createElement('button')
-		button.textContent = `count: ${state.count}`
+		const render = (s: { count: number } | null) => {
+			button.textContent = `count: ${s?.count ?? 0}`
+		}
+		render(state)
 		button.onclick = () => void ctx.client.increment({ amount: 1 })
 		el.append(button)
 
 		return {
-			update(next) {
-				button.textContent = `count: ${next.count}`
-			},
+			update: render,
 			unmount() {
 				el.replaceChildren()
 			}
@@ -76,7 +77,7 @@ export default defineConfig({
 })
 ```
 
-Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Manifest fields include `id`, `name`, optional metadata, and bundle entry paths.
+Build output contains `manifest.json`, `app.js`, `gui.js`, an importable `bundle.js`, and copied public assets. Manifest fields include `id`, `name`, optional metadata, and bundle entry paths.
 
 ## Capabilities
 

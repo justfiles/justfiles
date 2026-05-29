@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 const args = process.argv.slice(2)
 const force = args.includes('--force')
 const help = args.includes('--help') || args.includes('-h')
-const targetArg = args.find((arg) => !arg.startsWith('-')) ?? 'justbuddy-app'
+const targetArg = args.find((arg) => !arg.startsWith('-')) ?? 'justfiles-app'
 
 if (help) {
 	console.log('Usage: create-app [directory] [--force]')
@@ -83,8 +83,8 @@ function quote(value) {
 function packageManager() {
 	if (process.versions.bun) return 'bun'
 	const agent = process.env.npm_config_user_agent?.split('/')[0]
-	if (agent === 'pnpm' || agent === 'bun' || agent === 'yarn') return agent
-	return 'npm'
+	if (agent === 'pnpm' || agent === 'bun' || agent === 'yarn' || agent === 'npm') return agent
+	return 'pnpm'
 }
 
 function runCommand(pm, script) {
