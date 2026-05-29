@@ -10,6 +10,10 @@
 	--focus: #0a84ff;
 	--on-focus: #ffffff;
 
+	/* Dock — modern frosted-glass */
+	--dock-radius: 22px;
+	--dock-icon-size: 52px;
+
 	/* Popup menu (right-click / dropdown) */
 	--menu-bg: #ffffff;
 	--menu-fg: var(--text);
@@ -75,6 +79,88 @@
 	position: fixed;
 	inset: 0;
 	background: var(--desktop-bg);
+}
+
+.ds-dock-bar {
+	position: absolute;
+	bottom: 8px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 9000;
+}
+
+/* Modern macOS dock: a translucent frosted-glass pill that picks up the
+   wallpaper through the blur, with a hairline highlight and drop shadow. */
+.ds-dock {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px;
+	border: 1px solid rgba(255, 255, 255, 0.3);
+	border-radius: var(--dock-radius);
+	background: rgba(245, 246, 248, 0.22);
+	box-shadow:
+		0 12px 32px rgba(0, 0, 0, 0.35),
+		inset 0 1px 0 rgba(255, 255, 255, 0.45);
+	backdrop-filter: blur(20px) saturate(180%);
+	-webkit-backdrop-filter: blur(20px) saturate(180%);
+	user-select: none;
+}
+
+.ds-dock-item {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	cursor: default;
+}
+
+.ds-dock-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--dock-icon-size);
+	height: var(--dock-icon-size);
+	overflow: hidden;
+	border-radius: 12px;
+	background: rgba(255, 255, 255, 0.12);
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+	color: #fff;
+	font-size: 20px;
+	font-weight: 600;
+	transition: transform 120ms ease;
+}
+
+.ds-dock-item:hover .ds-dock-icon {
+	transform: translateY(-4px);
+}
+
+.ds-dock-icon img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+/* Small dot under a running app. Absolutely positioned in the dock's bottom
+   margin so it overlays the glass without consuming layout — keeping the
+   icon's top and bottom spacing equal. */
+.ds-dock-indicator {
+	position: absolute;
+	bottom: -7px;
+	left: 50%;
+	transform: translateX(-50%);
+	width: 4px;
+	height: 4px;
+	border-radius: 999px;
+	z-index: 2;
+}
+
+.ds-dock-indicator[data-running="true"] {
+	background: rgba(255, 255, 255, 0.9);
+	box-shadow: 0 0 2px rgba(0, 0, 0, 0.45);
 }
 
 .ds-window {

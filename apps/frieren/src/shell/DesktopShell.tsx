@@ -1,7 +1,8 @@
 import { UserButton } from '@clerk/clerk-react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
+import { Dock } from '@/components/Dock'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
 import { Window } from '@/components/Window'
@@ -42,6 +43,9 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	)
 	const agentOpen = useOsStore(selectAgentOpen)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
+	// `windows` only changes identity when the open set/order changes, so the
+	// running set stays stable across rect/mode edits.
+	const openAppIds = useMemo(() => new Set(windows.map((w) => w.appId)), [windows])
 	// The agent surface is an overlay, not a persisted window — its position is
 	// session-local and lives here, not in OS state.
 	const [agentRect, setAgentRect] = useState<WindowRect>(() => ({ x: 120, y: 80, w: 420, h: 560 }))
@@ -109,34 +113,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				style={{ background: 'var(--desktop-bg)' }}
 				onContextMenu={(event) => menu.open(event, desktopMenuItems)}
 			>
-				<div className="absolute top-4 right-4 flex flex-col gap-4">
-					{installedApps.map((app) => (
-						// biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the icon group
-						<div
-							key={app.id}
-							className="group relative flex w-20 flex-col items-center"
-							onContextMenu={(event) => menu.open(event, appMenuItems(app))}
-						>
-							<button
-								type="button"
-								onClick={() => launchApp(app)}
-								className="flex w-full flex-col items-center gap-1.5 text-center"
-								title={app.description || app.name}
-							>
-								<span className="flex size-16 items-center justify-center overflow-hidden rounded-xl border border-white/20 bg-white/15 text-xl font-semibold text-white shadow-[0_4px_14px_rgba(0,0,0,0.25)] backdrop-blur-sm transition group-hover:bg-white/25">
-									{app.iconUrl ? (
-										<img src={app.iconUrl} alt="" className="size-full object-cover" />
-									) : (
-										app.name.slice(0, 1).toUpperCase()
-									)}
-								</span>
-								<span className="w-full truncate text-xs font-medium text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]">
-									{app.name}
-								</span>
-							</button>
-						</div>
-					))}
-				</div>
 				{windows.map((window) => (
 					<AppWindow
 						key={window.id}
@@ -158,6 +134,14 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						<MessagesPanel />
 					</Window>
 				) : null}
+				{fullscreenId ? null : (
+					<Dock
+						apps={installedApps}
+						openAppIds={openAppIds}
+						onLaunch={launchApp}
+						onContextMenu={(event, app) => menu.open(event, appMenuItems(app))}
+					/>
+				)}
 			</div>
 			<ContextMenu state={menu.state} onClose={menu.close} />
 		</div>
