@@ -17,6 +17,7 @@
 	},
 	"dependencies": {
 		"@justfiles/app": "workspace:*",
+		"@justfiles/state": "workspace:*",
 		"valibot": "^1.1.0"
 	},
 	"peerDependencies": {

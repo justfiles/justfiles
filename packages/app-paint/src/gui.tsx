@@ -1,23 +1,18 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI } from '@justfiles/app/browser'
-import { StrictMode, useCallback, useEffect, useRef, useState } from 'react'
+import type { Store } from '@justfiles/state'
+import { StrictMode, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 import { initialState, type PaintApp, type PaintState, type Size, type Tool } from './app.ts'
+import { canvasToPngBase64, restore, snapshot, stampLine, stampPoint } from './bitmap.ts'
+import { BACKGROUND, CANVAS_H, CANVAS_W, drawOp, newDoc, newId, type Op, replay } from './doc.ts'
 import {
-	canvasToPngBase64,
-	drawEllipse,
-	drawRect,
-	fill,
-	floodFill,
-	restore,
-	snapshot,
-	stampLine,
-	stampPoint
-} from './bitmap.ts'
-
-const CANVAS_W = 800
-const CANVAS_H = 600
-const UNDO_LIMIT = 30
+	createPaintStore,
+	makePersistEffect,
+	type PaintAction,
+	type PaintStoreState,
+	type PersistController
+} from './store.ts'
 
 const TOOLS: { id: Tool; label: string }[] = [
 	{ id: 'pencil', label: 'Pencil' },
@@ -84,43 +79,85 @@ export const gui = defineGUI<PaintApp>({
 	}
 })
 
+// An in-progress op being dragged out; committed to the doc on pointer-up.
+// `base` is the committed canvas for shape preview (restored each move).
 interface Drag {
-	startX: number
-	startY: number
-	prevX: number
-	prevY: number
-	snap: ImageData
+	op: Op
+	base: ImageData | null
 }
 
 function Paint({ state, client }: { state: PaintState; client: Client<PaintApp> }) {
 	const canvasRef = useRef<HTMLCanvasElement>(null)
 	const dragRef = useRef<Drag | null>(null)
-	const undoRef = useRef<ImageData[]>([])
-	const redoRef = useRef<ImageData[]>([])
-	const [, setHistoryTick] = useState(0)
+	const clientRef = useRef(client)
+	clientRef.current = client
+	const docIdRef = useRef<string | null>(state.currentDocId)
+
+	// The store (committed op-log) and its debounced autosave are created once
+	// per mount. Persist writes the doc to the app data volume via the typed
+	// client — a query, so the drawing never touches kernel /state.
+	const setup = useRef<{
+		store: Store<PaintStoreState, PaintAction>
+		persist: PersistController
+	} | null>(null)
+	if (!setup.current) {
+		const persist = makePersistEffect((doc) => {
+			const docId = docIdRef.current
+			if (docId) void clientRef.current.saveDraft({ docId, doc })
+		})
+		setup.current = { store: createPaintStore(persist), persist }
+	}
+	const { store } = setup.current
+
 	const [busy, setBusy] = useState(false)
-	const bumpHistory = useCallback(() => setHistoryTick((t) => t + 1), [])
+	// React 19's native store subscription — avoids the use-sync-external-store
+	// CJS shim, whose `require('react')` breaks the react-external app bundle.
+	const canUndo = useSyncExternalStore(store.subscribe, () => store.getState().doc.ops.length > 0)
+	const canRedo = useSyncExternalStore(store.subscribe, () => store.getState().redo.length > 0)
 
 	const { tool, size, color, lastSavedPath, lastError } = state
 
 	const getCtx = () => canvasRef.current?.getContext('2d', { willReadFrequently: true }) ?? null
 
+	// The canvas is a pure replay of the store's doc; redraw on every change
+	// (commit / undo / redo / hydrate). Live drawing paints imperatively between
+	// commits; the commit's replay then redraws the identical pixels.
 	useEffect(() => {
 		const ctx = canvasRef.current?.getContext('2d', { willReadFrequently: true })
 		if (!ctx) return
 		ctx.imageSmoothingEnabled = false
-		fill(ctx, '#ffffff')
-	}, [])
+		const render = () => replay(ctx, store.getState().doc)
+		render()
+		return store.subscribe(render)
+	}, [store])
 
-	const pushUndo = useCallback(
-		(snap: ImageData) => {
-			undoRef.current.push(snap)
-			if (undoRef.current.length > UNDO_LIMIT) undoRef.current.shift()
-			redoRef.current = []
-			bumpHistory()
-		},
-		[bumpHistory]
-	)
+	// Resolve the draft id through a handler (its result is the authoritative
+	// persisted state, so this doesn't race the async state push that arrives on
+	// reload), then hydrate the store from the autosaved draft.
+	useEffect(() => {
+		let cancelled = false
+		void (async () => {
+			const next = await clientRef.current.ensureDoc({ candidate: newId() })
+			const docId = next.currentDocId
+			if (cancelled || !docId) return
+			docIdRef.current = docId
+			const loaded = await clientRef.current.loadDraft({ docId })
+			if (!cancelled) store.dispatch({ type: 'loaded', doc: loaded ?? newDoc() })
+		})()
+		return () => {
+			cancelled = true
+		}
+	}, [store])
+
+	// Flush any pending autosave on unmount / page hide.
+	useEffect(() => {
+		const onHide = () => setup.current?.persist.flush()
+		window.addEventListener('pagehide', onHide)
+		return () => {
+			window.removeEventListener('pagehide', onHide)
+			onHide()
+		}
+	}, [])
 
 	const pos = (e: { clientX: number; clientY: number }) => {
 		const canvas = canvasRef.current
@@ -136,16 +173,28 @@ function Paint({ state, client }: { state: PaintState; client: Client<PaintApp> 
 		const ctx = getCtx()
 		if (!canvas || !ctx) return
 		canvas.setPointerCapture(e.pointerId)
-		const { x, y } = pos(e)
-		const snap = snapshot(ctx)
-		pushUndo(snap)
-		dragRef.current = { startX: x, startY: y, prevX: x, prevY: y, snap }
+		const p = pos(e)
+		const x = Math.round(p.x)
+		const y = Math.round(p.y)
 
-		if (tool === 'pencil') stampPoint(ctx, x, y, size, color)
-		else if (tool === 'eraser') stampPoint(ctx, x, y, size, '#ffffff')
-		else if (tool === 'fill') {
-			floodFill(ctx, x, y, color)
-			dragRef.current = null
+		// Fill is order-dependent on prior pixels — let the commit's replay run it.
+		if (tool === 'fill') {
+			store.dispatch({ type: 'commit', op: { id: newId(), kind: 'fill', color, x, y } })
+			return
+		}
+		if (tool === 'pencil' || tool === 'eraser') {
+			const strokeColor = tool === 'eraser' ? BACKGROUND : color
+			stampPoint(ctx, x, y, size, strokeColor)
+			dragRef.current = {
+				op: { id: newId(), kind: 'stroke', tool, size, color: strokeColor, points: [x, y] },
+				base: null
+			}
+			return
+		}
+		// line | rect | ellipse — preview restores from the committed canvas.
+		dragRef.current = {
+			op: { id: newId(), kind: tool, size, color, x0: x, y0: y, x1: x, y1: y } as Op,
+			base: snapshot(ctx)
 		}
 	}
 
@@ -153,55 +202,43 @@ function Paint({ state, client }: { state: PaintState; client: Client<PaintApp> 
 		const drag = dragRef.current
 		const ctx = getCtx()
 		if (!drag || !ctx) return
+		const op = drag.op
 
-		if (tool === 'pencil' || tool === 'eraser') {
-			const strokeColor = tool === 'eraser' ? '#ffffff' : color
+		if (op.kind === 'stroke') {
 			const coalesced = e.nativeEvent.getCoalescedEvents?.() ?? []
 			const points = coalesced.length > 0 ? coalesced : [e.nativeEvent]
 			for (const ev of points) {
 				const p = pos(ev)
-				stampLine(ctx, drag.prevX, drag.prevY, p.x, p.y, size, strokeColor)
-				drag.prevX = p.x
-				drag.prevY = p.y
+				const px = op.points[op.points.length - 2] ?? 0
+				const py = op.points[op.points.length - 1] ?? 0
+				const nx = Math.round(p.x)
+				const ny = Math.round(p.y)
+				stampLine(ctx, px, py, nx, ny, op.size, op.color)
+				op.points.push(nx, ny)
 			}
 			return
 		}
-
-		const p = pos(e)
-		restore(ctx, drag.snap)
-		if (tool === 'line') stampLine(ctx, drag.startX, drag.startY, p.x, p.y, size, color)
-		else if (tool === 'rect') drawRect(ctx, drag.startX, drag.startY, p.x, p.y, size, color)
-		else if (tool === 'ellipse') drawEllipse(ctx, drag.startX, drag.startY, p.x, p.y, size, color)
+		if (op.kind === 'line' || op.kind === 'rect' || op.kind === 'ellipse') {
+			const p = pos(e)
+			if (drag.base) restore(ctx, drag.base)
+			op.x1 = Math.round(p.x)
+			op.y1 = Math.round(p.y)
+			drawOp(ctx, op)
+		}
 	}
 
 	const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
 		const canvas = canvasRef.current
 		if (canvas?.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId)
+		const drag = dragRef.current
 		dragRef.current = null
+		if (drag) store.dispatch({ type: 'commit', op: drag.op })
 	}
 
-	const handleUndo = () => {
-		const ctx = getCtx()
-		if (!ctx || undoRef.current.length === 0) return
-		redoRef.current.push(snapshot(ctx))
-		restore(ctx, undoRef.current.pop() as ImageData)
-		bumpHistory()
-	}
-
-	const handleRedo = () => {
-		const ctx = getCtx()
-		if (!ctx || redoRef.current.length === 0) return
-		undoRef.current.push(snapshot(ctx))
-		restore(ctx, redoRef.current.pop() as ImageData)
-		bumpHistory()
-	}
-
-	const handleNew = () => {
-		const ctx = getCtx()
-		if (!ctx) return
-		pushUndo(snapshot(ctx))
-		fill(ctx, '#ffffff')
-	}
+	const handleUndo = () => store.dispatch({ type: 'undo' })
+	const handleRedo = () => store.dispatch({ type: 'redo' })
+	const handleNew = () =>
+		store.dispatch({ type: 'commit', op: { id: newId(), kind: 'clear', color: BACKGROUND } })
 
 	const handleSave = async () => {
 		const canvas = canvasRef.current
@@ -215,8 +252,6 @@ function Paint({ state, client }: { state: PaintState; client: Client<PaintApp> 
 		}
 	}
 
-	const canUndo = undoRef.current.length > 0
-	const canRedo = redoRef.current.length > 0
 	const status = lastError ?? (lastSavedPath ? `Saved ${lastSavedPath}` : '')
 
 	return (

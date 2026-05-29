@@ -507,6 +507,9 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../app
+      '@justfiles/state':
+        specifier: workspace:*
+        version: link:../state
       valibot:
         specifier: ^1.1.0
         version: 1.4.0(typescript@6.0.3)

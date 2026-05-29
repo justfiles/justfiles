@@ -1,14 +1,16 @@
 import { defineApp } from '@justfiles/app'
 import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
+import { decode, encode, type PaintDoc, type Size } from './doc.ts'
 
 export type Tool = 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'ellipse'
-export type Size = 1 | 3 | 5
+export type { Size }
 
 export type PaintState = {
 	tool: Tool
 	size: Size
 	color: string
+	currentDocId: string | null
 	lastSavedPath: string | null
 	lastError: string | null
 }
@@ -17,11 +19,26 @@ export const initialState: PaintState = {
 	tool: 'pencil',
 	size: 1,
 	color: '#000000',
+	currentDocId: null,
 	lastSavedPath: null,
 	lastError: null
 }
 
 const SAVE_DIR = '/Paint'
+const DRAFTS_DIR = '/drafts'
+
+const draftPath = (docId: string) => `${DRAFTS_DIR}/${docId.replace(/[^\w-]/g, '_')}.json`
+
+// Envelope-only validation; ops keep their per-op `id`/`kind` but stay loose
+// (the doc shape is owned by our own GUI). encode/decode handle the bytes.
+const docSchema = v.object({
+	type: v.literal('justfiles/paint'),
+	version: v.literal(1),
+	width: v.number(),
+	height: v.number(),
+	background: v.string(),
+	ops: v.array(v.looseObject({ id: v.string(), kind: v.string() }))
+})
 
 function timestamp(): string {
 	return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
@@ -61,6 +78,33 @@ export const app = defineApp({
 			schema: v.object({ color }),
 			handler({ color }, ctx) {
 				return { ...ctx.state, color }
+			}
+		}),
+		ensureDoc: b.handler({
+			description: 'Return the current draft id, minting + persisting one on first run.',
+			schema: v.object({ candidate: v.string() }),
+			handler({ candidate }, ctx) {
+				return ctx.state.currentDocId ? ctx.state : { ...ctx.state, currentDocId: candidate }
+			}
+		}),
+		loadDraft: b.query({
+			description: 'Read the autosaved draft document, or null if none exists.',
+			schema: v.object({ docId: v.string() }),
+			async handler({ docId }, ctx): Promise<PaintDoc | null> {
+				const path = draftPath(docId)
+				if (!(await ctx.capabilities.volume.exists({ path }))) return null
+				return decode(await ctx.capabilities.volume.readFile({ path }))
+			}
+		}),
+		saveDraft: b.query({
+			description: 'Autosave the working draft document to the app data volume.',
+			schema: v.object({ docId: v.string(), doc: docSchema }),
+			async handler({ docId, doc }, ctx): Promise<boolean> {
+				await ctx.capabilities.volume.writeFile({
+					path: draftPath(docId),
+					data: encode(doc as PaintDoc)
+				})
+				return true
 			}
 		}),
 		save: b.handler({
