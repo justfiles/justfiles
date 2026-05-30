@@ -14,7 +14,7 @@ import {
 	writeFile
 } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { InodeMeta, Storage, StorageCapabilities } from './storage'
+import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { Ino } from './types'
 import { FileType } from './types'
 
@@ -39,6 +39,12 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	const rootIno = String(rootStat.ino)
 	pathMap.set(rootIno, root)
 
+	const listeners = new Set<(change: StorageChange) => void>()
+	function emit(change: StorageChange): void {
+		if (listeners.size === 0) return
+		for (const fn of [...listeners]) fn(change)
+	}
+
 	function getPath(ino: Ino): string {
 		const p = pathMap.get(ino)
 		if (p === undefined) throw new Error(`ESTALE: unknown inode ${ino}`)
@@ -62,7 +68,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	}
 
 	const caps: StorageCapabilities = {
-		async atomicCreate(dirIno, name, meta) {
+		async atomicCreate(dirIno, name, meta, options) {
 			const childPath = join(getPath(dirIno), name)
 			if (meta.type === FileType.Directory) {
 				await mkdir(childPath, { mode: meta.mode })
@@ -75,10 +81,12 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const s = await lstat(childPath)
 			const ino = String(s.ino)
 			pathMap.set(ino, childPath)
+			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
 			return ino
 		},
 
-		async atomicMove(oldDir, oldName, newDir, newName) {
+		async atomicMove(oldDir, oldName, newDir, newName, options) {
 			const oldPath = join(getPath(oldDir), oldName)
 			const newPath = join(getPath(newDir), newName)
 
@@ -100,7 +108,17 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			}
 			if (displaced !== null) pathMap.delete(displaced)
 
+			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+			emit({ ino: srcIno, kind: 'dirent', dirIno: newDir, name: newName, source: options?.source })
+			emit({ ino: srcIno, kind: 'dirent', dirIno: oldDir, name: oldName, source: options?.source })
 			return displaced
+		},
+
+		subscribe(listener) {
+			listeners.add(listener)
+			return () => {
+				listeners.delete(listener)
+			}
 		}
 	}
 
@@ -116,13 +134,14 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			}
 		},
 
-		async setMeta(ino, patch) {
+		async setMeta(ino, patch, options) {
 			const path = getPath(ino)
 			if (patch.mode !== undefined) await chmod(path, patch.mode)
 			if (patch.mtimeNs !== undefined) {
 				const t = new Date(Number(patch.mtimeNs / 1_000_000n))
 				await lutimes(path, t, t)
 			}
+			emit({ ino, kind: 'meta', source: options?.source })
 		},
 
 		async deleteInode(ino) {
@@ -135,6 +154,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 					pathMap.delete(childIno)
 				}
 			}
+			emit({ ino, kind: 'meta' })
 		},
 
 		async getBlob(ino) {
@@ -142,8 +162,9 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
 		},
 
-		async putBlob(ino, data) {
+		async putBlob(ino, data, options) {
 			await writeFile(getPath(ino), data)
+			emit({ ino, kind: 'content', source: options?.source })
 		},
 
 		async getDirent(dirIno, name) {
@@ -158,18 +179,21 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			}
 		},
 
-		async putDirent(dirIno, name, { ino }) {
+		async putDirent(dirIno, name, { ino }, options) {
 			const srcPath = getPath(ino)
 			const dstPath = join(getPath(dirIno), name)
 			await _rename(srcPath, dstPath)
 			pathMap.set(ino, dstPath)
+			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
-		async deleteDirent(dirIno, name) {
+		async deleteDirent(dirIno, name, options) {
 			const childPath = join(getPath(dirIno), name)
 			const s = await lstat(childPath)
+			const ino = String(s.ino)
 			if (s.isDirectory()) await rmdir(childPath)
 			else await unlink(childPath)
+			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
 		async listDirents(dirIno, cursor) {

@@ -16,6 +16,25 @@ export type MutationOptions = {
 	source?: string
 }
 
+/** Kind of change reported by the Storage change feed (see `subscribe`). */
+export type StorageChangeKind = 'meta' | 'content' | 'dirent'
+
+/**
+ * A single committed mutation, reported to `subscribe` listeners.
+ * - `meta`/`content`: the affected inode is `ino`.
+ * - `dirent`: the entry `(dirIno, name)` was set or removed; `ino` is the
+ *   entry's inode (the one bound, or the one that was bound before removal).
+ * `source` carries the `MutationOptions.source` the write was tagged with —
+ * sync-applied writes are tagged so listeners can filter out remote echoes.
+ */
+export interface StorageChange {
+	ino: Ino
+	kind: StorageChangeKind
+	source?: string
+	dirIno?: Ino
+	name?: string
+}
+
 export type UpdateQueryOptions = {
 	source?: string
 	sourceMode?: 'only' | 'exclude'
@@ -142,6 +161,19 @@ export interface StorageCapabilities {
 		getBlob: (ino: Ino) => Promise<Uint8Array>,
 		options?: MutationOptions
 	): Promise<void>
+
+	/**
+	 * Subscribe to a change feed of committed mutations — the substrate for
+	 * `volume.watch`. The listener fires once per committed mutation entry point
+	 * (`setMeta`/`putBlob`/`putDirent`/`deleteDirent`/`deleteInode` and the
+	 * atomic caps), AFTER the write commits. Detection lives here, below the
+	 * volume wrapper, because sync applies remote pulls straight to Storage —
+	 * a volume-level interceptor would miss exactly those changes.
+	 *
+	 * Implementations must make this near-zero cost when there are no listeners.
+	 * Returns an unsubscribe function.
+	 */
+	subscribe?(listener: (change: StorageChange) => void): () => void
 }
 
 /**

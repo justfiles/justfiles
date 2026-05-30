@@ -16,6 +16,7 @@ export interface KernelHostEnv {
 	send: (frame: object) => void
 	localKernel?: () => Promise<Kernel>
 	shouldUseLocalKernel?: (appId: string) => boolean
+	volume?: Promise<Volume>
 }
 
 // Mirror window open/close into the imperative app host. User gestures also
@@ -25,7 +26,7 @@ export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsActi
 		guiUrl: env.guiUrlFor(appId),
 		getToken: env.getToken,
 		...(env.localKernel && env.shouldUseLocalKernel?.(appId)
-			? { localKernel: env.localKernel }
+			? { localKernel: env.localKernel, volume: env.volume }
 			: {})
 	})
 	return (action, _previous, next) => {

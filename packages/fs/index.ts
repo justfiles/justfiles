@@ -7,9 +7,11 @@ export {
 	type ScanEntry,
 	type Storage,
 	type StorageCapabilities,
+	type StorageChange,
+	type StorageChangeKind,
 	type UpdateQueryOptions
 } from './storage'
 export { memStorage } from './storage.mem'
-export { synced } from './synced'
-export { chroot, type Volume, volume } from './volume'
+export { REMOTE_SOURCE, synced } from './synced'
+export { chroot, type Volume, volume, type WatchEvent } from './volume'
 export { decodeXattr, encodeXattr, GHOSTORE_XATTR, XATTR_NAMESPACE } from './xattr'

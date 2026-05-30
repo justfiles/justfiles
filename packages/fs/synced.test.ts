@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { FsOp, InodeMeta, Storage, StorageCapabilities, UpdateQueryOptions } from './storage'
 import { FsCursorExpiredError } from './storage'
 import { memStorage } from './storage.mem'
-import { synced } from './synced'
+import { REMOTE_SOURCE, synced } from './synced'
 import type { Ino } from './types'
 import { FileType } from './types'
 import { volume } from './volume'
@@ -81,6 +81,9 @@ function journaledStorage(): JournaledStorage {
 			await removeXattr(ino, name, opts)
 			record({ kind: 'upsert-inode', ino, xattrs: { [name]: null } }, opts?.source)
 		},
+
+		// Forward the base change feed so volume.watch works through synced.
+		subscribe: baseCaps.subscribe?.bind(baseCaps),
 
 		/**
 		 * Return all journal entries since `cursor`, filtered by source.
@@ -417,6 +420,33 @@ describe('synced', () => {
 
 		// Cold cache — stat reads fresh metadata → correct size → correct content.
 		expect(dec.decode(await vol.readFile('/data.txt'))).toBe('version-2')
+	})
+
+	it('watch fires on a remote pull and invalidates the meta cache', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/state.json', enc.encode('v1'))
+
+		const vol = track(await synced({ local: journaledStorage(), remote, interval: 99_999 }))
+		// Warm the local meta cache so a stale stat would be observable.
+		expect(Number((await vol.stat('/state.json')).size)).toBe(2)
+
+		let fired = 0
+		const sources: Array<string | undefined> = []
+		await vol.watch('/state.json', (e) => {
+			fired++
+			sources.push(e.source)
+		})
+
+		// A second client rewrites the file on remote; pulling it must fire the
+		// watcher and (the latent-bug fix) invalidate the warm meta cache.
+		await remoteVol.writeFile('/state.json', enc.encode('longer-version-2'))
+		await vol.flush()
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		expect(fired).toBeGreaterThanOrEqual(1)
+		expect(sources).toContain(REMOTE_SOURCE)
+		expect(Number((await vol.stat('/state.json')).size)).toBe('longer-version-2'.length)
 	})
 
 	// -------------------------------------------------------------------------
