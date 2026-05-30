@@ -7,15 +7,23 @@ import { type Volume, volume } from './volume'
 
 type Props = {
 	local: Storage
-	remote: Storage
+	// Optional: when absent, the volume is purely local (no replication).
+	remote?: Storage
 	interval?: number
 	lazyContent?: boolean
+	// Local-first boot: return the local volume immediately and run the first
+	// sync in the background, instead of blocking boot until it settles.
+	localFirst?: boolean
 }
 
 type SyncState = {
 	remoteCursor?: string
 	localCursor?: string
 }
+
+// What the sync loop knows about replication. Network/auth states (offline,
+// unauthenticated) are layered on top by the app, which holds those signals.
+export type SyncStatus = 'local-only' | 'connecting' | 'syncing' | 'synced' | 'error'
 
 const SYNC_XATTR_PREFIX = 'trusted.sync.'
 const SYNC_LOCAL_ONLY_XATTR = `${SYNC_XATTR_PREFIX}local-only`
@@ -29,6 +37,8 @@ interface SyncLifecycle {
 	destroy(): void
 	pause(): void
 	resume(): void
+	status(): SyncStatus
+	onStatusChange(fn: (status: SyncStatus) => void): () => void
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
@@ -96,7 +106,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * Returns the new localCursor to persist.
 	 */
 	async function push(localCursor: string, clientId: string): Promise<string> {
-		if (!props.local.caps?.deltaUpdates) return localCursor
+		const remote = props.remote
+		if (!remote || !props.local.caps?.deltaUpdates) return localCursor
 		const [{ ops, cursor }] = await Promise.all([
 			// Exclude ops the sync layer wrote to local (tagged REMOTE_SOURCE) — only push user-originated writes.
 			props.local.caps.deltaUpdates(localCursor, { source: REMOTE_SOURCE, sourceMode: 'exclude' }),
@@ -112,10 +123,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// Fast path: one round-trip if the remote can apply a batch; the helper
 		// inlines blob content for regular-file upserts. Otherwise fall back to
 		// the per-op path (one or more requests each).
-		if (props.remote.caps?.applyBatch) {
-			await props.remote.caps.applyBatch(toSend, (ino) => props.local.getBlob(ino), opts)
+		if (remote.caps?.applyBatch) {
+			await remote.caps.applyBatch(toSend, (ino) => props.local.getBlob(ino), opts)
 		} else {
-			for (const op of toSend) await applyOp(op, props.local, props.remote, opts)
+			for (const op of toSend) await applyOp(op, props.local, remote, opts)
 		}
 		for (const op of toSend) {
 			if (op.kind === 'upsert-inode' && op.meta?.contentHash) {
@@ -131,8 +142,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * Returns the new remoteCursor to persist.
 	 */
 	async function pull(remoteCursor: string, clientId: string): Promise<string> {
-		if (!props.remote.caps?.deltaUpdates) return remoteCursor
-		const { ops, cursor } = await props.remote.caps.deltaUpdates(remoteCursor, {
+		const remote = props.remote
+		if (!remote?.caps?.deltaUpdates) return remoteCursor
+		const { ops, cursor } = await remote.caps.deltaUpdates(remoteCursor, {
 			source: clientId,
 			sourceMode: 'exclude'
 		})
@@ -143,7 +155,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 				const localMeta = await props.local.getMeta(op.ino)
 				if ((localMeta?.mtimeNs ?? 0n) >= (op.meta?.mtimeNs ?? 0n)) continue // local wins
 			}
-			await applyOp(op, props.remote, props.local, opts, props.lazyContent)
+			await applyOp(op, remote, props.local, opts, props.lazyContent)
 			if (op.kind === 'upsert-inode' && op.meta?.contentHash) {
 				await setHashBaseline(op.ino, op.meta.contentHash)
 			}
@@ -158,20 +170,27 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * After applying, reconciles by deleting local entries absent from the remote snapshot.
 	 */
 	async function bootstrap(): Promise<void> {
-		if (!props.remote.caps?.fullScan)
+		const remote = props.remote
+		if (!remote?.caps?.fullScan)
 			throw new Error('remote backend does not support scan — bootstrap unavailable')
+		// Adoption guard: only reconcile (delete local entries absent from remote)
+		// once this profile has pushed at least once. A never-pushed profile is
+		// either empty (nothing to reconcile) or holds un-pushed local work that a
+		// destructive reconcile would silently destroy — so we merge the remote in
+		// and let the next push ship the local-only files up instead.
+		const everPushed = (await syncState.get()).localCursor !== undefined
 		const opts: MutationOptions = { source: REMOTE_SOURCE }
 		const remoteInos = new Set<Ino>()
 		let scanCursor = ''
 		let remoteCursor: string | undefined
 		do {
-			const result = await props.remote.caps.fullScan(scanCursor)
+			const result = await remote.caps.fullScan(scanCursor)
 			if (result.syncCursor !== undefined) remoteCursor = result.syncCursor
 			for (const entry of result.entries) {
 				remoteInos.add(entry.ino)
 				await applyOp(
 					{ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta, xattrs: entry.xattrs },
-					props.remote,
+					remote,
 					props.local,
 					opts,
 					props.lazyContent
@@ -184,7 +203,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 						ino: entry.ino,
 						type: entry.meta.type
 					},
-					props.remote,
+					remote,
 					props.local,
 					opts,
 					props.lazyContent
@@ -193,7 +212,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			}
 			scanCursor = result.next
 		} while (scanCursor)
-		await reconcileLocal(remoteInos, opts)
+		if (everPushed) await reconcileLocal(remoteInos, opts)
 		await syncState.patch({ remoteCursor: remoteCursor ?? '' })
 	}
 
@@ -274,6 +293,19 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	let paused = false
 	let destroyed = false
 	let retryCount = 0
+	let flushQueued: Promise<void> | null = null
+
+	let _status: SyncStatus = props.remote ? 'connecting' : 'local-only'
+	const statusListeners = new Set<(status: SyncStatus) => void>()
+	function setStatus(next: SyncStatus): void {
+		if (_status === next) return
+		_status = next
+		for (const fn of statusListeners) fn(next)
+	}
+	function onStatusChange(fn: (status: SyncStatus) => void): () => void {
+		statusListeners.add(fn)
+		return () => statusListeners.delete(fn)
+	}
 
 	function schedule() {
 		if (paused || destroyed) return
@@ -283,14 +315,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	function run() {
-		if (running || paused || destroyed) return
+		if (running || paused || destroyed || !props.remote) return
+		setStatus('syncing')
 		running = sync()
 			.then(() => {
 				retryCount = 0
+				setStatus('synced')
 			})
 			.catch((e) => {
 				console.error(e)
 				retryCount++
+				setStatus('error')
 			})
 			.finally(() => {
 				running = null
@@ -298,8 +333,18 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			})
 	}
 
+	// Request an immediate push+pull and resolve once writes made *before* this
+	// call have synced. If a sync is already in flight (it may predate those
+	// writes), chain one more after it; concurrent callers share that follow-up.
 	function flush(): Promise<void> {
-		if (running) return running
+		if (!props.remote) return Promise.resolve()
+		if (running) {
+			flushQueued ??= running.then(() => {
+				flushQueued = null
+				return flush()
+			})
+			return flushQueued
+		}
 		if (timer) {
 			clearTimeout(timer)
 			timer = null
@@ -327,9 +372,22 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		}
 	}
 
-	// Block until the first sync (bootstrap or incremental) completes, then start the loop.
-	await sync()
-	schedule()
+	const lifecycle: SyncLifecycle = {
+		flush,
+		pause,
+		resume,
+		destroy,
+		status: () => _status,
+		onStatusChange
+	}
+
+	// Kick the first sync. localFirst boots without waiting on it (the local
+	// volume is the working copy); otherwise block until it settles so the first
+	// read already sees synced data. A local-only volume has nothing to sync.
+	if (props.remote) {
+		if (props.localFirst) run()
+		else await flush()
+	}
 
 	if (props.lazyContent) {
 		// Stub inodes (created by bootstrap or pull) have no local contentHash.
@@ -342,15 +400,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			// metaCache may be stale — verify against storage before fetching.
 			const storedMeta = await props.local.getMeta(stat.ino)
 			if (storedMeta?.contentHash) return localVol.readFile(path)
+			// No remote to hydrate from — serve whatever local has.
+			if (!props.remote) return localVol.readFile(path)
 			// Genuinely not hydrated — fetch from remote.
 			const data = await props.remote.getBlob(stat.ino)
 			if (data.length > 0) await props.local.putBlob(stat.ino, data, { source: REMOTE_SOURCE })
 			return data
 		}
-		return { ...localVol, readFile, flush, pause, resume, destroy }
+		return { ...localVol, readFile, ...lifecycle }
 	}
 
-	return { ...localVol, flush, pause, resume, destroy }
+	return { ...localVol, ...lifecycle }
 }
 
 // Apply one FsOp to target, reading file content from source when needed.

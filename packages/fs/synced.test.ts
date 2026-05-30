@@ -670,4 +670,94 @@ describe('synced', () => {
 		const results = await Promise.allSettled([p1, p2])
 		expect(results.every((r) => r.status === 'fulfilled')).toBe(true)
 	})
+
+	// -------------------------------------------------------------------------
+	// 10. Local-first boot (Phase 4a)
+	// -------------------------------------------------------------------------
+
+	it('works as a local-only volume when no remote is given', async () => {
+		const vol = track(await synced({ local: journaledStorage(), interval: 99_999 }))
+
+		expect(vol.status()).toBe('local-only')
+		await vol.writeFile('/a.txt', enc.encode('local'))
+		expect(dec.decode(await vol.readFile('/a.txt'))).toBe('local')
+		// flush is a no-op that resolves; status stays local-only.
+		await vol.flush()
+		expect(vol.status()).toBe('local-only')
+	})
+
+	it('localFirst resolves immediately even if the remote never responds', async () => {
+		const remote = journaledStorage()
+		const hanging: typeof remote = {
+			...remote,
+			caps: { ...remote.caps, fullScan: () => new Promise(() => {}) }
+		}
+
+		// Without localFirst this await would hang on the bootstrap; with it the
+		// local volume is returned at once and the bootstrap runs in the background.
+		const vol = track(
+			await synced({
+				local: journaledStorage(),
+				remote: hanging,
+				localFirst: true,
+				interval: 99_999
+			})
+		)
+
+		await vol.writeFile('/note.txt', enc.encode('hi'))
+		expect(dec.decode(await vol.readFile('/note.txt'))).toBe('hi')
+		expect(vol.status()).toBe('syncing')
+	})
+
+	it('reports error status when a sync fails', async () => {
+		const remote = journaledStorage()
+		const failing: typeof remote = {
+			...remote,
+			caps: { ...remote.caps, fullScan: () => Promise.reject(new Error('boom')) }
+		}
+
+		const vol = track(
+			await synced({
+				local: journaledStorage(),
+				remote: failing,
+				localFirst: true,
+				interval: 99_999
+			})
+		)
+		await vol.flush()
+
+		expect(vol.status()).toBe('error')
+	})
+
+	it('notifies status subscribers as a sync settles', async () => {
+		const remote = journaledStorage()
+		const vol = track(
+			await synced({ local: journaledStorage(), remote, localFirst: true, interval: 99_999 })
+		)
+
+		const seen: string[] = []
+		vol.onStatusChange((s) => seen.push(s))
+		await vol.flush()
+
+		expect(seen).toContain('synced')
+	})
+
+	it('preserves un-pushed local files when first adopting a non-empty remote', async () => {
+		const remote = journaledStorage()
+		await volume(remote).writeFile('/remote.txt', enc.encode('from remote'))
+
+		// A profile with local work that has never synced.
+		const local = journaledStorage()
+		await volume(local).writeFile('/local-only.txt', enc.encode('my work'))
+
+		const vol = track(await synced({ local, remote, interval: 99_999 }))
+		// First sync bootstraps the remote; the second push ships local work up.
+		await vol.flush()
+
+		// Adoption must not destroy un-pushed local work, and must merge remote in.
+		expect(dec.decode(await vol.readFile('/local-only.txt'))).toBe('my work')
+		expect(dec.decode(await vol.readFile('/remote.txt'))).toBe('from remote')
+		// The local-only file is shipped up so the account gains it too.
+		expect(await volume(remote).exists('/local-only.txt')).toBe(true)
+	})
 })
