@@ -35,14 +35,19 @@ place where "invisibly non-breaking" is genuinely hard is called out in Phase 2.
 | `/system/profiles/user.md` | user profile (frontmatter)                                  | FE onboarding (`UserProfileStep`) |
 | `/system/soul.md`          | agent soul                                                  | FE onboarding (`AgentStep`)       |
 
+Phase 4 changes `/applications/<id>/` from copied bundle bytes to small package
+install records (`install.json`) whose assets live in Assets/R2/app-store storage
+and hydrate into a local sha256 cache. `/state` and `/data` stay volume-backed.
+
 ### Why two kernels is safe (no logic duplication)
 
-App logic is **not** compiled into either build. The kernel loads it from the
-volume: `code: text(await app.read(app.manifest.app))` (`kernel.ts:236`),
-content-addressed by SHA-256 (`kernel.sandbox.ts`). So the browser kernel and the
-server kernel read the *same* `/applications/<id>/app.js` from the *same synced
-FS*. They cannot diverge except by transient sync lag, which self-heals (new
-bytes → new content hash → fresh isolate; last-writer-wins converges).
+App logic is **not** compiled into either kernel runtime. The kernel loads app
+bytes through an installed-app resolver: today that resolver reads copied bundle
+bytes from the volume; Phase 4 changes it to read `/applications/<id>/install.json`
+and fetch the pinned `sha256` asset from local cache / Assets / R2. The browser
+kernel and server kernel therefore run the same hash-pinned `app.js`; they cannot
+diverge except by transient install-record sync lag or a cold asset cache, both of
+which self-heal by syncing/fetching and verifying the hash.
 
 The only thing compiled into both builds is the thin **kernel runtime**
 (`@justfiles/app`). Its two contracts must stay stable across deploys:
@@ -58,25 +63,51 @@ enforces this; paint already complies.
 
 ## Target architecture
 
-- **Browser kernel** runs `app.js` in a Web Worker against the synced local
+- **Browser kernel** runs `app.js` in a Web Worker against the local profile
   volume; executes the user's actions, offline-capable.
-- **Server kernel stays** and executes the agent's actions headless.
-- **One synced volume = the whole truth.** Both kernels read/write their own
-  replica; `synced.ts` reconciles via mtime-based last-writer-wins with a
-  local-bias tiebreak (`local mtime >= remote → local wins`).
+- **Server kernel stays** and executes the agent's actions headless when a
+  backend session exists.
+- **Local profile volume = working copy.** The browser-local IDB volume is the
+  source of truth for local execution. The backend is an optional replica, not a
+  boot prerequisite.
+- **`synced()` is local-first.** It returns a usable local volume immediately;
+  sync starts/continues in the background when auth + network + remote storage
+  are available. `flush()` is a replication request, not part of opening the OS.
+- **Apps are installed as package references, not copied bytes.** The user
+  volume stores small install records under `/applications/<id>/`; immutable app
+  assets live in the app store / R2 and are cached locally by hash for offline
+  launch.
+- **Built-ins are default app-store packages.** The OS ships a tiny system app
+  catalog (ids, versions, hashes, URLs) and preinstalls those records for new
+  profiles. The app bytes are static Assets/R2 objects, not bundled into the
+  Worker script.
 - **Capabilities split** (see table below): `volume` is local in the browser;
-  network capabilities proxy to the server and are unavailable offline.
-- **PWA**: service worker caches the shell and prefetches installed app bundles
-  so the whole OS — and every installed app — loads offline.
+  backend-backed capabilities proxy to the server and are unavailable when
+  offline or unauthenticated.
+- **PWA**: service worker caches the shell. Installed app assets are hydrated
+  into the local app-asset cache so the OS and installed apps boot offline.
+
+### App package / asset model
+
+Apps are content-addressed packages: the user volume stores small install
+records (`/applications/<id>/install.json`) and the immutable app bytes live in
+the app store (Assets/R2), cached locally by hash. Both kernels resolve apps
+through one shared resolver with a pluggable asset backend (browser Cache Storage
+vs. server R2 binding).
+
+This is a **self-contained feature** specified in
+[`APP_STORE_PLAN.md`](APP_STORE_PLAN.md). Phase 4 depends on it (built-ins
+installable without a server install; offline launch needs the local asset
+cache); it does not depend on local-first.
 
 ### Capability split
 
-| Capability           | Browser kernel                         | Offline                         |
-|----------------------|----------------------------------------|---------------------------------|
-| `volume`             | local synced volume (chroot per scope) | ✅ works                        |
-| `ai`                 | proxy → server over WS                 | ❌ rejects `CAPABILITY_OFFLINE` |
-| `integrations`       | proxy → server over WS                 | ❌ rejects                      |
-| `email` / `calendar` | proxy → server over WS                 | ❌ rejects                      |
+| Capability           | Browser kernel                         | Offline / signed out                       |
+|----------------------|----------------------------------------|--------------------------------------------|
+| `volume`             | local profile volume (chroot per scope) | ✅ works                                   |
+| `ai`                 | proxy → server over WS                 | ❌ rejects `CAPABILITY_OFFLINE` / unauth   |
+| `integrations`       | proxy → server over WS                 | ❌ rejects                                 |
+| `email` / `calendar` | proxy → server over WS                 | ❌ rejects                                 |
 
 ---
 
@@ -93,7 +124,9 @@ changes; apps untouched (still server-side over WS).
   `os/Provider.tsx:15` (today they create two separate volumes).
 - **Per-user IDB name** (`frieren-fs-<userId>`) and **destroy + delete IDB on
   sign-out / user switch** — Frieren supports user switching (`AuthWall`), so a
-  previous user's local volume must never leak into the next.
+  previous user's local volume must never leak into the next. This was the safe
+  transitional policy; Phase 4 replaces it with preserved local profiles plus an
+  explicit "forget this browser" action.
 - **Debounced, online-aware flush**: `synced` already runs on an interval with
   retry/backoff and exposes `flush()/pause()/resume()`. Wire `flush()` to a
   debounced write trigger + `pagehide`/`visibilitychange`; wire
@@ -189,14 +222,14 @@ Run `app.js` in the browser against the synced volume. Ship behind a flag so
   `kernel.subscribe → app.update`; replaces the WS `state` frame for local apps).
 - `src/apps/host.ts` — behind a per-app flag (default off), dispatch to the local
   kernel instead of the WS. GUI is still loaded via dynamic import of `gui.js`
-  (server-served for now; served from the local volume in Phase 3).
+  (server-served for now; served from local bytes in Phase 3, then from the
+  package asset cache in Phase 4).
 
-> **Cold start**: the client kernel runs an app only once its bundle is present
-> in the local volume — bare `kernel()` does **not** auto-install builtins (that
-> is `frieren.app.ts` wrapper logic). Bundles install server-side and sync down,
-> and their blobs hydrate on first read (`lazyContent`). So a brand-new device
-> must be **online for the first sync** before any app runs offline. Acceptable,
-> but explicit.
+> **Cold start (pre-Phase 4 package-store model)**: the client kernel runs an app
+> only once its executable bytes are available locally. Today those bytes sync
+> down into the local volume and hydrate on first read (`lazyContent`). Phase 4
+> replaces that with system/app-store install records plus a local sha256 asset
+> cache, so built-ins can be available without a server-side install first.
 
 **Still 100% functional?** Yes — flag defaults off, so behaviour is identical to
 today. New code ships dormant.
@@ -377,31 +410,38 @@ of the user's open tabs update.
 
 ## Phase 3 — PWA + offline boot
 
-Make the **shell** load with no network. App bundles do **not** need the SW —
-both halves come from the synced local volume (decided below).
+Make the **shell** load with no network. App byte availability is a hydration
+problem: after an app is installed, its executable assets must be cached locally
+before it can open offline.
 
-### Bundles load from the local volume (not HTTP)
+### App asset availability
 
-`app.js` is already read from the volume by the client kernel. **Do the same for
-`gui.js`**: read its bytes from `/applications/<id>/gui.js` in the local volume,
-`URL.createObjectURL` a module blob, and `import()` that — instead of the HTTP
-import in `host.ts:200`. This unifies both bundle halves on the synced volume and
-makes a clean consequence:
+The Phase 3 bridge loads both executable halves from local bytes:
 
-- **No SW caching of bundles**, and **the token-in-URL problem disappears** (no
-  `?token=…` asset fetch at all).
-- Offline bundle availability becomes a *volume hydration* concern, not an HTTP
-  one. After boot, run a background pass that reads each installed app's
-  `app.js`/`gui.js`/icon so `lazyContent` pulls those blobs into IDB — then every
-  installed app opens offline. (Don't *execute* apps on boot — hydrate bytes
-  only; instantiate the Worker lazily on window open.)
+- `app.js` is read by the browser kernel;
+- `gui.js` is read by the host, turned into a blob URL, and `import()`ed.
+
+In the current implementation those bytes live in `/applications/<id>/` inside
+the volume. The target app-store model keeps the same host/kernel shape but
+serves `app.js`/`gui.js` from the local sha256 asset cache via the package
+resolver (see [`APP_STORE_PLAN.md`](APP_STORE_PLAN.md)).
+
+Consequences:
+
+- **No token-in-URL dynamic imports.** GUI modules load from local cached bytes.
+- **No Worker bundle bloat.** Built-in app bytes are Assets/R2 blobs, not imports
+  embedded in `worker/index.ts`.
+- **Offline launch requires hydration.** After boot/catalog changes, prefetch each
+  installed app's `app.js`, `gui.js`, and icon into the local asset cache. Do not
+  execute apps on boot; instantiate workers lazily on window open.
 
 ### PWA shell
 
 - Web app manifest + a service worker (e.g. `vite-plugin-pwa`) that caches **only
-  the app shell** (Frieren's own build output) — that's all the SW is for now.
-- **Offline boot**: the synced volume serves reads from IDB and sync retries
-  (already built-in) when back online.
+  the app shell** (Frieren's own build output) and can cache immutable public app
+  asset responses opportunistically.
+- **Offline boot**: the local profile volume serves reads from IDB. Sync retries
+  when auth/network return; Phase 4 removes auth as a render gate entirely.
   - **Scope caveat — Phase 3 assumes a warm Clerk session.** Boot still goes
     through `ClerkProvider`, and `@clerk/clerk-react` fetches `clerk-js` at
     runtime from Clerk's frontend API (cross-origin, dynamic URL) — the
@@ -410,14 +450,13 @@ makes a clean consequence:
     session. A cold cache (or signed-out user) still wedges at the auth gate.
     Decoupling boot from auth entirely is **Phase 4**, below.
 
-**Still 100% functional?** Yes online — the SW is additive and the
-volume-blob import path is equivalent to the HTTP import when online. Use
-versioned caches + disciplined `skipWaiting`/`clientsClaim` so a bad SW can't
-wedge loading.
+**Still 100% functional?** Yes online — the SW is additive and the local-byte
+import path is equivalent to the HTTP import when online. Use versioned caches +
+disciplined `skipWaiting`/`clientsClaim` so a bad SW can't wedge loading.
 
-**Verify**: install to home screen; with network off after a warm boot (so blobs
-have hydrated), reload and open a never-opened-this-session app → it loads and
-works from the volume. Network caps show a clear offline state.
+**Verify**: install to home screen; with network off after a warm boot (so app
+assets have hydrated), reload and open a never-opened-this-session app → it loads
+and works from local cached bytes. Network caps show a clear offline state.
 
 ---
 
@@ -466,66 +505,196 @@ The end state of local-first: **the OS, the shell, and every local app boot with
 no auth at all.** Auth stops being a precondition for *running* Frieren and
 becomes purely a **gate on backend-backed capabilities** — sync, the agent (AI),
 email, calendar, integrations. Signed-out (or signed-in but offline), you still
-boot the desktop, open paint, and draw; the only differences are that your work
-isn't *synced* anywhere and the network capabilities reject. This is exactly the
-capability split the plan already defines (`volume` local, everything else
-proxied) — extended from "offline" to "no session at all."
+boot the desktop, open paint, install/uninstall apps locally, and work in the
+local profile volume.
 
-**Why this is its own phase, and why it lands *after* Phase 3.5 (the decision).**
-Auth-optional boot rests on one premise: **the local kernel is the *only* boot
-path, and it needs no token.** That premise is only *true after Phase 3.5*, which
-deletes `bootRemote` and the server-kernel FE path. If we did this before 3.5,
-we'd have to teach the about-to-be-deleted server path (which fundamentally needs
-a WS + token) how to degrade without auth — real work on doomed code. After 3.5,
-`host.ts` already always takes the local path, `gui.js` already loads from the
-volume with no token (Phase 3), and the *only* thing still holding a token is the
-`_caps` proxy socket — which is precisely the thing we *want* to gate. So the
-dependency arrow points one way: **3 → 3.5 → 4.** Do it after.
+**Why this lands after Phase 3.5.** Auth-optional boot rests on one premise: the
+local kernel is the only FE app execution path, and it needs no token. Phase 3.5
+establishes that by deleting `bootRemote`. After that, the only token-bearing
+paths are sync, the agent socket, app-store private/paid fetches, and the `_caps`
+network-capability proxy — exactly the things we want to gate.
 
-**The work**
-- **Boot the shell before/independent of Clerk.** Render the desktop without
-  waiting on a Clerk session; treat "signed in" as reactive state, not a boot
-  gate. `AuthWall` becomes a *capability* gate (it gates sync + network caps),
-  not a *render* gate.
-- **Volume identity without a user.** Today the IDB name is per-user
-  (`frieren-fs-<userId>`) and is destroyed on sign-out (Phase 0). Signed-out boot
-  needs an identity story: an **anonymous local volume** (`frieren-fs-anon`, no
-  remote, no sync) that, on first sign-in, either adopts or merges into the
-  user's synced volume. Pin this down — it's the one genuinely new design
-  question here (anon→authed handoff, and what happens to anon data).
-- **Gate, don't fail, the network capabilities.** `ai`/`integrations`/`email`/
-  `calendar` already reject `CAPABILITY_OFFLINE`; signed-out is the same shape —
-  reject `CAPABILITY_UNAUTHENTICATED` (or reuse offline) until a session exists.
-  The agent panel shows a "sign in to enable" state instead of erroring.
-- **`clerk-js` offline.** Resolve the Phase 3 caveat: either self-host/bundle
-  `@clerk/clerk-js` so the SW can precache it, or accept that *sign-in* needs
-  network while *booting and local apps* never do. With this phase the latter is
-  fine — auth is a gate, not a boot step — so bundling becomes optional, not
-  load-bearing.
+### Phase 4a — make `synced()` truly local-first
 
-**Still 100% functional?** Yes online/signed-in — this only *adds* a signed-out
-boot path; the authed path is unchanged. The risk surface is the anon-volume
-handoff, which is why it's a deliberate phase, not a Phase 3 sub-bullet.
+`@justfiles/fs` `synced()` should behave like a local filesystem with optional
+replication:
+
+- return the local `Volume` immediately after opening local storage;
+- start bootstrap/push/pull in the background when `remote` is available;
+- allow `remote` to be absent or lazily supplied after auth exists;
+- expose sync/backend status (`local-only`, `unauthenticated`, `offline`,
+  `connecting`, `syncing`, `synced`, `error`);
+- make `flush()` request push+pull without making OS boot depend on success.
+
+This is the natural `synced` contract: local is the working copy; remote is a
+replica.
+
+#### Adoption: server authoritative, but never silently destroy local work
+
+For an authed user the **server is the authority** for the synced namespace — the
+remote owns inos, and steady-state sync stays as-is (remote-authoritative pull
+with the existing mtime last-writer-wins tiebreak, `synced.ts:142`). We do **not**
+build a bidirectional merge.
+
+The one hazard is *adoption*: today `sync()` runs `bootstrap()` whenever
+`remoteCursor === undefined` (a never-synced profile's state on first sign-in),
+and `bootstrap()` → `reconcileLocal()` (`synced.ts:196`) **deletes every
+local-only file absent from the remote snapshot**. So a profile that has local
+work would lose it the moment it adopts a non-empty remote. This only bites in one
+narrow case: **a profile with un-pushed local writes adopting a non-empty
+remote.** (Brand-new user / empty remote → `push` ships local up, zero loss.)
+
+Keep it simple now; improve later:
+
+1. **Never destructively bootstrap a dirty profile.** Adoption opens/creates the
+   user's *own* profile volume and bootstraps **that**, leaving the existing
+   profile's IDB intact and separately openable (the Phase 4b per-profile model
+   makes this free). Concretely in `@justfiles/fs`: `reconcileLocal`'s
+   unconditional delete must not run against a profile that still has un-pushed
+   local-only inodes — gate it, or simply never point a dirty profile's volume at
+   a non-empty remote.
+2. **Warn + offer a backup** at the sign-in/adoption UI when the narrow lossy
+   trigger fires: "Signing in switches to your account's data; N local files
+   here won't be uploaded. [Download backup] [Continue] [Cancel]." This lives in
+   the profile-adoption UI, not in `synced.ts`.
+
+Deferred (not now): an opt-in *"import my local files into this account"* that
+re-writes local files by path+content as new creates (fresh UUID inos → pushed
+normally), with a per-path conflict policy (skip / overwrite / keep-both). Cheap
+to add later because inos are UUIDs; out of scope for the first cut.
+
+### Phase 4b — local profiles, not auth users, own local storage
+
+Create a local profile registry, separate from Clerk:
+
+```ts
+type LocalProfile = {
+  id: string
+  remoteUserId?: string
+  name?: string
+  lastOpenedAt: number
+}
+```
+
+Use DB names like `frieren-fs-profile-<localProfileId>`, not
+`frieren-fs-<clerkUserId>`. The **registry itself** is browser-global (one
+small IDB or `localStorage` key), separate from any profile volume, since it
+must be read before a profile volume is opened. Boot policy:
+
+1. open the last local profile;
+2. if none exists, create an anonymous profile;
+3. render the desktop immediately;
+4. start auth/sync as a side-effect if Clerk/session information is available.
+
+Sign-out stops sync and backend sockets, but **does not delete local data**. A
+separate explicit action (`Forget this profile from this browser`) deletes the
+IDB/profile. This is the right default for offline-capable local software. It can
+show private data to another person using the same browser profile, so add a
+visible profile switcher / forget action; stronger privacy (passcode/encryption)
+is a later hardening step.
+
+When a user signs in, adoption follows the Phase 4a rules (server authoritative,
+never destructively bootstrap a dirty profile):
+
+- if that remote user **already has a local profile** on this browser → switch to
+  it; do not auto-merge (open decision #7);
+- else if the current profile is **clean or the remote is empty** → attach the
+  remote user id to the current profile and start sync (no loss);
+- else (current profile has un-pushed local work **and** the remote is non-empty)
+  → this is 4a's narrow lossy case: warn + offer backup, then adopt the remote
+  into a profile that won't lose the local work.
+
+### Phase 4c — bundled system apps via the app-store package format
+
+Built-ins ship as app-store packages, not Worker-bundled byte modules. The
+mechanism — build/deploy catalog generation, atomic deploy ordering, the local
+asset cache, disabled markers, and **per-boot** catalog↔install-record
+reconciliation that honors disabled markers — is specified in
+[`APP_STORE_PLAN.md`](APP_STORE_PLAN.md).
+
+Local-first's only requirement here: on boot, materialize/refresh install records
+for system apps and hydrate their assets into the local asset cache so they launch
+offline.
+
+### Phase 4d — boot shell independent of Clerk
+
+`ClerkProvider` / auth state becomes optional infrastructure, not the root render
+gate. The OS can check auth every load, but it only updates backend status:
+
+```ts
+type BackendState =
+  | 'local-only'
+  | 'unauthenticated'
+  | 'offline'
+  | 'connecting'
+  | 'connected'
+  | 'error'
+```
+
+Menu bar can show this state (`Local only`, `Signed out`, `Connecting…`,
+`Synced`, `Offline`). The agent panel and network capabilities read this state;
+the desktop and local apps do not block on it.
+
+`clerk-js` offline becomes non-load-bearing: sign-in still needs network, but
+booting the OS and running local apps does not.
+
+### Phase 4e — move onboarding to opt-in setup
+
+First anonymous visit should load the desktop immediately. Onboarding is no
+longer a boot step. It runs when the user chooses one of these flows:
+
+- set up / enable the AI agent;
+- create or connect an account;
+- personalize the local profile.
+
+The agent panel should show a clear setup state (`Sign in and set up your agent
+to enable AI`) instead of erroring. Onboarding writes profile/soul files to the
+local profile volume; if a backend is connected, flush them before enabling the
+server agent.
+
+### Phase 4f — install/uninstall apps offline
+
+App management should be local volume work:
+
+- app-store install: fetch package manifest/assets when online, verify hashes,
+  cache assets locally, write `/applications/<id>/install.json`;
+- local zip install: unpack/hash files locally, cache assets, write an install
+  record with `source: "local"`;
+- uninstall: close the app and update/remove local install records immediately;
+- sync later replicates the install record/state/data when a backend exists.
+
+A synced install record can reach a second device whose asset cache is cold; the
+app is "installed" there but **needs one online launch on that device** before it
+runs offline (see *Installed ≠ launchable offline* in
+[`APP_STORE_PLAN.md`](APP_STORE_PLAN.md)). Surface that as a launch state, not an
+error.
+
+The existing server `/api/apps/install` / uninstall endpoints can become legacy
+or app-store publishing/admin paths; they should not be required for normal local
+app management.
+
+**Still 100% functional?** Yes online/signed-in — this adds local profile boot,
+keeps sync as a backend capability, and keeps the server kernel for agent work.
 
 **Verify**: with no Clerk session and network off, cold-boot the installed PWA →
-desktop loads, paint opens and draws (anon volume); network caps show a
-sign-in/offline state. Then sign in online → the volume adopts the user's synced
-replica and prior anon work is reconciled per the chosen handoff.
+desktop loads, built-in paint opens and draws, and a local zip app can install
+and uninstall. Then sign in online → backend status becomes connected, sync
+starts, agent setup is opt-in, and existing local work remains.
 
 ---
 
-## Phase 5 (optional, deferred) — isolation hardening
+## Phase 5 (required before public third-party apps) — isolation hardening
 
-A Web Worker is **not** a security sandbox (same origin, can `fetch`). If
-third-party / untrusted apps become a concern, move the app Worker behind a
-**cross-origin sandboxed iframe** (the browser analog of the server's
-`globalOutbound: null`). The Phase 2 capability bridge is designed to slot behind
-an iframe without touching app code.
+A Web Worker is **not** a security sandbox (same origin, can `fetch`). A real app
+store with third-party authors changes the trust model: GUI code imported into
+the host page can access the host origin and DOM. Before allowing untrusted public
+apps, move app execution/GUI behind a cross-origin sandboxed iframe (the browser
+analog of the server's `globalOutbound: null`) or another equivalent isolation
+boundary.
 
-**Deferred.** Two reasons: (1) the GUI shares React with the host, so an iframe
-boundary means a separate React root/origin and no shared module graph — real
-work; (2) the trust model (builtins + self-authored apps) doesn't require it yet.
-Start with a Worker; revisit only when untrusted apps land.
+The Phase 2 capability bridge is designed to slot behind an iframe without
+changing app logic. Until Phase 5 lands, the app store should be limited to
+built-ins, trusted/reviewed apps, or self-installed local zips.
 
 ---
 
@@ -533,19 +702,20 @@ Start with a Worker; revisit only when untrusted apps land.
 
 1. ~~os-state device-local vs. roam~~ — **resolved: sync everything** (the agent
    depends on os-state server-side; single-writer keeps it conflict-free).
-2. ~~Worker vs. iframe~~ — **resolved: Worker** (GUI shares React with the host,
-   making iframe costly; trust model doesn't require it). Iframe deferred to
-   Phase 5.
+2. ~~Worker vs. iframe for trusted/local apps~~ — **resolved: Worker for now.**
+   Phase 5 iframe/cross-origin isolation is required before public untrusted
+   third-party apps.
 3. ~~Agent→open-app live updates~~ — **resolved: add `volume.watch(path, fn)`**,
    an inotify-style primitive driven by a Storage-level change feed (detection
    must be below the volume, since sync pulls bypass the volume wrapper). Host
    watches each open app's state file (and open documents) and pushes fresh
    state via the existing GUI channel. Generalizes to documents; accepts a
    one-sync-cycle delay — collapsed to ~instant by the Phase 2c dirty-push.
-4. ~~Bundle offline mechanism~~ — **resolved: load `gui.js` from the local volume**
-   (blob-URL `import`), same as `app.js`. SW caches the shell only; the
-   token-in-URL problem disappears; offline bundles become a volume-hydration
-   concern.
+4. ~~Bundle offline mechanism~~ — **superseded/resolved: package assets + local
+   sha256 cache.** The volume stores install records; app bytes live in
+   Assets/R2/app-store storage and hydrate into a local asset cache. `app.js` and
+   `gui.js` still load from local bytes at runtime; the bytes no longer have to
+   be stored directly in the synced volume.
 5. ~~Server change-monitoring~~ — **resolved: none needed.** The kernel is
    stateless between dispatches, so the server reads current state on demand; its
    WS state-push (`ensureSubscribed`) is retired for client-side apps. The WS
@@ -553,13 +723,25 @@ Start with a Worker; revisit only when untrusted apps land.
    re-authorizes scopes from the installed manifest) — and, in Phase 2c, also
    carries a content-free `dirty` push so the client pulls the agent's changes
    immediately instead of waiting for the next interval.
-6. **Anon→authed volume handoff (open, Phase 4).** Signed-out boot needs an
-   anonymous local volume (`frieren-fs-anon`, no sync). On first sign-in, what
-   happens to that data — discard, adopt as the user's volume, or merge into the
-   synced replica? Undecided; the deciding factor is whether pre-sign-in work is
-   meant to be throwaway or claimable. Also gates the placement decision above:
-   Phase 4 lands **after Phase 3.5** (auth-optional boot assumes the local kernel
-   is the only token-free boot path, which 3.5 establishes).
+6. ~~Anon→authed volume handoff~~ — **resolved direction: local profiles are
+   first-class and preserved.** Boot opens the last local profile (creating an
+   anonymous one if needed). Sign-in attaches a remote user id to the current
+   local profile and starts sync; sign-out stops backend services but does not
+   delete IDB. If the same remote user already has another local profile on this
+   browser, prompt switch/merge/continue.
+7. **Precise merge UX (open, Phase 4).** The storage direction is clear
+   (server-authoritative adoption, local profile preserved — Phase 4a), but the
+   user-facing choice when both current-local and existing-remote/local-profile
+   data exist still needs product copy and conflict UX. **Safe default: do not
+   auto-merge.**
+   If signing in as user X while another local profile already maps to X, switch
+   to the existing profile and keep the just-used one as an orphan — auto-merging
+   creates two local replicas of one remote and cross-pollinates them on sync.
+   Merge stays an explicit, opt-in action.
+8. **App-store trust boundary (open before public launch).** The package/R2
+   asset model supports third-party apps, but public untrusted apps require Phase
+   5 isolation or an equivalent review/signing/trust policy. Tracked in
+   [`APP_STORE_PLAN.md`](APP_STORE_PLAN.md) *Trust*.
 
 ## Per-phase verification (every phase)
 
