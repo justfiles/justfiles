@@ -354,9 +354,29 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 async function installBuiltins(k: Kernel, force: boolean): Promise<void> {
 	const installed = force ? undefined : new Map((await k.list()).map((m) => [m.id, m.version]))
 	for (const builtin of BUILTINS) {
-		if (installed?.get(builtin.id) === builtin.version) continue
+		if (force ? await builtinMatches(k, builtin) : installed?.get(builtin.id) === builtin.version)
+			continue
 		await k.install(bundleFromBuiltin(builtin))
 	}
+}
+
+async function builtinMatches(k: Kernel, builtin: BuiltinBundle): Promise<boolean> {
+	try {
+		const installed = await k.app(builtin.id)
+		if (JSON.stringify(installed.manifest) !== JSON.stringify(builtin.manifest)) return false
+		for (const [path, bytes] of Object.entries(builtin.files)) {
+			if (!sameBytes(await installed.read(path), bytes)) return false
+		}
+		return true
+	} catch {
+		return false
+	}
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+	if (a.length !== b.length) return false
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+	return true
 }
 
 function assetUrl(appId: string, path: string, version?: string): string {

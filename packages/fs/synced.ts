@@ -365,7 +365,14 @@ async function applyOp(
 ): Promise<void> {
 	switch (op.kind) {
 		case 'upsert-inode': {
-			const meta = skipContent && op.meta ? { ...op.meta, contentHash: undefined } : op.meta
+			let meta = op.meta
+			if (skipContent && meta && 'contentHash' in meta) {
+				const existing = meta.contentHash ? await target.getMeta(op.ino) : null
+				meta = {
+					...meta,
+					contentHash: existing?.contentHash === meta.contentHash ? meta.contentHash : undefined
+				}
+			}
 			if (meta) await target.setMeta(op.ino, meta, opts)
 			if (!skipContent && op.meta?.type === FileType.Regular) {
 				const data = await source.getBlob(op.ino)

@@ -345,6 +345,41 @@ describe('synced', () => {
 	// 3. Pull
 	// -------------------------------------------------------------------------
 
+	it('keeps hydrated lazy content when an unchanged remote upsert is pulled', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/app.js', enc.encode('console.log(1)'))
+
+		let blobReads = 0
+		const countedRemote: typeof remote = {
+			...remote,
+			async getBlob(ino) {
+				blobReads++
+				return remote.getBlob(ino)
+			}
+		}
+		const local = journaledStorage()
+		const first = track(
+			await synced({ local, remote: countedRemote, lazyContent: true, interval: 99_999 })
+		)
+
+		expect(blobReads).toBe(0)
+		expect(dec.decode(await first.readFile('/app.js'))).toBe('console.log(1)')
+		expect(blobReads).toBe(1)
+		first.destroy()
+
+		const { ino } = await remoteVol.stat('/app.js')
+		const meta = await remote.getMeta(ino)
+		if (!meta) throw new Error('missing remote meta')
+		await remote.setMeta(ino, meta, { source: 'dev-reinstall' })
+
+		const second = track(
+			await synced({ local, remote: countedRemote, lazyContent: true, interval: 99_999 })
+		)
+		expect(dec.decode(await second.readFile('/app.js'))).toBe('console.log(1)')
+		expect(blobReads).toBe(1)
+	})
+
 	it('pulls remote writes to local on flush (two clients)', async () => {
 		const remote = journaledStorage()
 
