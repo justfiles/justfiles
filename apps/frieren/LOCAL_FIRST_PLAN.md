@@ -400,8 +400,15 @@ makes a clean consequence:
 
 - Web app manifest + a service worker (e.g. `vite-plugin-pwa`) that caches **only
   the app shell** (Frieren's own build output) — that's all the SW is for now.
-- **Offline boot**: ensure Clerk resumes from its cached session; the synced
-  volume serves reads from IDB; sync retries (already built-in) when back online.
+- **Offline boot**: the synced volume serves reads from IDB and sync retries
+  (already built-in) when back online.
+  - **Scope caveat — Phase 3 assumes a warm Clerk session.** Boot still goes
+    through `ClerkProvider`, and `@clerk/clerk-react` fetches `clerk-js` at
+    runtime from Clerk's frontend API (cross-origin, dynamic URL) — the
+    same-origin SW *cannot* precache it. So Phase 3 offline boot only survives if
+    `clerk-js` is already in the browser HTTP cache and Clerk resumes its cached
+    session. A cold cache (or signed-out user) still wedges at the auth gate.
+    Decoupling boot from auth entirely is **Phase 4**, below.
 
 **Still 100% functional?** Yes online — the SW is additive and the
 volume-blob import path is equivalent to the HTTP import when online. Use
@@ -453,7 +460,61 @@ open window via `volume.watch`.
 
 ---
 
-## Phase 4 (optional, deferred) — isolation hardening
+## Phase 4 — Auth-optional offline boot (the OS boots signed-out)
+
+The end state of local-first: **the OS, the shell, and every local app boot with
+no auth at all.** Auth stops being a precondition for *running* Frieren and
+becomes purely a **gate on backend-backed capabilities** — sync, the agent (AI),
+email, calendar, integrations. Signed-out (or signed-in but offline), you still
+boot the desktop, open paint, and draw; the only differences are that your work
+isn't *synced* anywhere and the network capabilities reject. This is exactly the
+capability split the plan already defines (`volume` local, everything else
+proxied) — extended from "offline" to "no session at all."
+
+**Why this is its own phase, and why it lands *after* Phase 3.5 (the decision).**
+Auth-optional boot rests on one premise: **the local kernel is the *only* boot
+path, and it needs no token.** That premise is only *true after Phase 3.5*, which
+deletes `bootRemote` and the server-kernel FE path. If we did this before 3.5,
+we'd have to teach the about-to-be-deleted server path (which fundamentally needs
+a WS + token) how to degrade without auth — real work on doomed code. After 3.5,
+`host.ts` already always takes the local path, `gui.js` already loads from the
+volume with no token (Phase 3), and the *only* thing still holding a token is the
+`_caps` proxy socket — which is precisely the thing we *want* to gate. So the
+dependency arrow points one way: **3 → 3.5 → 4.** Do it after.
+
+**The work**
+- **Boot the shell before/independent of Clerk.** Render the desktop without
+  waiting on a Clerk session; treat "signed in" as reactive state, not a boot
+  gate. `AuthWall` becomes a *capability* gate (it gates sync + network caps),
+  not a *render* gate.
+- **Volume identity without a user.** Today the IDB name is per-user
+  (`frieren-fs-<userId>`) and is destroyed on sign-out (Phase 0). Signed-out boot
+  needs an identity story: an **anonymous local volume** (`frieren-fs-anon`, no
+  remote, no sync) that, on first sign-in, either adopts or merges into the
+  user's synced volume. Pin this down — it's the one genuinely new design
+  question here (anon→authed handoff, and what happens to anon data).
+- **Gate, don't fail, the network capabilities.** `ai`/`integrations`/`email`/
+  `calendar` already reject `CAPABILITY_OFFLINE`; signed-out is the same shape —
+  reject `CAPABILITY_UNAUTHENTICATED` (or reuse offline) until a session exists.
+  The agent panel shows a "sign in to enable" state instead of erroring.
+- **`clerk-js` offline.** Resolve the Phase 3 caveat: either self-host/bundle
+  `@clerk/clerk-js` so the SW can precache it, or accept that *sign-in* needs
+  network while *booting and local apps* never do. With this phase the latter is
+  fine — auth is a gate, not a boot step — so bundling becomes optional, not
+  load-bearing.
+
+**Still 100% functional?** Yes online/signed-in — this only *adds* a signed-out
+boot path; the authed path is unchanged. The risk surface is the anon-volume
+handoff, which is why it's a deliberate phase, not a Phase 3 sub-bullet.
+
+**Verify**: with no Clerk session and network off, cold-boot the installed PWA →
+desktop loads, paint opens and draws (anon volume); network caps show a
+sign-in/offline state. Then sign in online → the volume adopts the user's synced
+replica and prior anon work is reconciled per the chosen handoff.
+
+---
+
+## Phase 5 (optional, deferred) — isolation hardening
 
 A Web Worker is **not** a security sandbox (same origin, can `fetch`). If
 third-party / untrusted apps become a concern, move the app Worker behind a
@@ -474,7 +535,7 @@ Start with a Worker; revisit only when untrusted apps land.
    depends on os-state server-side; single-writer keeps it conflict-free).
 2. ~~Worker vs. iframe~~ — **resolved: Worker** (GUI shares React with the host,
    making iframe costly; trust model doesn't require it). Iframe deferred to
-   Phase 4.
+   Phase 5.
 3. ~~Agent→open-app live updates~~ — **resolved: add `volume.watch(path, fn)`**,
    an inotify-style primitive driven by a Storage-level change feed (detection
    must be below the volume, since sync pulls bypass the volume wrapper). Host
@@ -492,6 +553,13 @@ Start with a Worker; revisit only when untrusted apps land.
    re-authorizes scopes from the installed manifest) — and, in Phase 2c, also
    carries a content-free `dirty` push so the client pulls the agent's changes
    immediately instead of waiting for the next interval.
+6. **Anon→authed volume handoff (open, Phase 4).** Signed-out boot needs an
+   anonymous local volume (`frieren-fs-anon`, no sync). On first sign-in, what
+   happens to that data — discard, adopt as the user's volume, or merge into the
+   synced replica? Undecided; the deciding factor is whether pre-sign-in work is
+   meant to be throwaway or claimable. Also gates the placement decision above:
+   Phase 4 lands **after Phase 3.5** (auth-optional boot assumes the local kernel
+   is the only token-free boot path, which 3.5 establishes).
 
 ## Per-phase verification (every phase)
 

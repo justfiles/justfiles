@@ -146,6 +146,21 @@ describe('FrierenClient agent', () => {
 })
 
 describe('FrierenClient apps + windows', () => {
+	test('connect replays local catalog while offline', async () => {
+		const client = createFrierenClient({
+			getToken: async () => null,
+			listLocalApps: async () => [{ id: 'paint', name: 'Paint', description: '' }]
+		})
+		const seen: string[][] = []
+		client.subscribeApps((apps) => seen.push(apps.map((a) => a.id)))
+
+		client.connect()
+		await flush()
+
+		expect(seen.at(-1)).toEqual(['paint'])
+		expect(client.agent.snapshot().connectionState).toBe('disconnected')
+	})
+
 	test('subscribeApps replays the current catalog and receives ready updates', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()

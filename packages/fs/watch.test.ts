@@ -16,6 +16,21 @@ const enc = new TextEncoder()
 // Drain the microtask queue (watch coalesces deliveries onto a microtask).
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
+async function waitFor(assertion: () => void): Promise<void> {
+	const deadline = Date.now() + 100
+	let lastError: unknown
+	while (Date.now() < deadline) {
+		try {
+			assertion()
+			return
+		} catch (e) {
+			lastError = e
+			await flush()
+		}
+	}
+	throw lastError
+}
+
 describe('storage subscribe cap', () => {
 	it('fires meta, content and dirent changes with their source', async () => {
 		const storage = memStorage()
@@ -206,7 +221,6 @@ describe('volume.watch over the atomic-cap backend (nativeStorage)', () => {
 		const settled = fired
 		await vol.writeFile('/other.txt', enc.encode('x'))
 		await vol.rename('/other.txt', '/note.txt')
-		await flush()
-		expect(fired).toBeGreaterThan(settled)
+		await waitFor(() => expect(fired).toBeGreaterThan(settled))
 	})
 })

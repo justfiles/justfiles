@@ -54,6 +54,8 @@ export interface FrierenClient {
 
 export interface FrierenClientOptions {
 	getToken: () => Promise<string | null>
+	// Local catalog fallback for offline boot; online `ready` remains authoritative.
+	listLocalApps?: () => Promise<InstalledApp[]>
 	// Inject the transport for tests; defaults to a browser WebSocket on /ws.
 	createSocket?: (token: string) => SocketLike
 }
@@ -138,6 +140,17 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	function emitApps(): void {
 		for (const listener of appsListeners) listener(apps)
+	}
+
+	function loadLocalApps(): void {
+		void options
+			.listLocalApps?.()
+			.then((localApps) => {
+				if (connectionState === 'ready') return
+				apps = localApps
+				emitApps()
+			})
+			.catch(() => {})
 	}
 
 	// --- server-echoed window open/close ---
@@ -313,12 +326,14 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			connectionState = 'disconnected'
 			isStreaming = false
 			emitAgent()
+			loadLocalApps()
 		}
 		ws.onerror = () => {
 			if (socket !== ws) return
 			connectionState = 'disconnected'
 			isStreaming = false
 			emitAgent()
+			loadLocalApps()
 		}
 	}
 
@@ -340,6 +355,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (!token) {
 				connectionState = 'disconnected'
 				emitAgent()
+				loadLocalApps()
 				return
 			}
 			const ws = createSocket(token)

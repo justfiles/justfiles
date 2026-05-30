@@ -3,7 +3,9 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import { shouldUseLocalKernel } from '../apps/flags'
 import * as appHost from '../apps/host'
+import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { createClientKernel } from '../apps/kernel.client'
+import type { InstalledApp } from '../apps/types'
 import { getFsVolume } from '../fs'
 import { createFrierenClient } from './client'
 import { OsContext } from './hooks'
@@ -14,7 +16,6 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 
-	const [client] = useState(() => createFrierenClient({ getToken: () => getTokenRef.current() }))
 	// The provider only mounts for a signed-in, onboarded user, so userId is set;
 	// the singleton hands back the same replica App created during onboarding.
 	const [volumePromise] = useState(() => {
@@ -28,6 +29,17 @@ export function OSProvider({ children }: { children: ReactNode }) {
 				createClientKernel({ fs, getToken: () => getTokenRef.current() })
 			))
 	})
+	const [client] = useState(() =>
+		createFrierenClient({
+			getToken: () => getTokenRef.current(),
+			listLocalApps: async (): Promise<InstalledApp[]> =>
+				(await (await localKernel()).list()).map((app) => ({
+					id: app.id,
+					name: app.name,
+					description: app.description ?? ''
+				}))
+		})
+	)
 	const [{ store, flushPersist }] = useState(() =>
 		createOsStore({
 			appHost,
@@ -43,6 +55,37 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		void bootOsStore(store, volumePromise)
 	}, [store, volumePromise])
+
+	useEffect(() => {
+		let cancelled = false
+		let running = false
+		let pending = false
+		const hydrate = () => {
+			if (cancelled) return
+			// Coalesce overlapping requests, but remember a catalog change that
+			// arrived mid-run so a newly-installed app still gets prefetched.
+			if (running) {
+				pending = true
+				return
+			}
+			running = true
+			void hydrateInstalledAppBundles(localKernel)
+				.catch(() => {})
+				.finally(() => {
+					running = false
+					if (pending && !cancelled) {
+						pending = false
+						hydrate()
+					}
+				})
+		}
+		hydrate()
+		const unsubscribe = client.subscribeApps(hydrate)
+		return () => {
+			cancelled = true
+			unsubscribe()
+		}
+	}, [client, localKernel])
 
 	useEffect(() => {
 		// OS state is authoritative client-side shell state, so don't rely on
