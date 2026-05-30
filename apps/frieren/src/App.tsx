@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { AgentProvider } from './agent/Provider'
 import { Spinner } from './components/ui/spinner'
-import { destroyFsVolume, getFsVolume } from './fs'
+import { getFsVolume, releaseFsVolume } from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { resolveOnboardingState } from './onboarding/state'
 import { OSProvider } from './os/Provider'
@@ -34,7 +34,7 @@ function App() {
 	useEffect(() => {
 		if (!isSignedIn || !userId) {
 			setOnboardingDone(null)
-			void destroyFsVolume({ flush: false })
+			void releaseFsVolume({ flush: false })
 			return
 		}
 		setOnboardingDone(null)
@@ -42,6 +42,10 @@ function App() {
 		void (async () => {
 			try {
 				const vol = await getFsVolume(userId, () => getToken())
+				// localFirst returns before the first sync settles; wait for it so a
+				// returning user's onboarding state reflects the backend, not an empty
+				// local replica. Resolves even offline (flush swallows sync errors).
+				await vol.flush()
 				const state = await resolveOnboardingState(vol)
 				if (!cancelled) setOnboardingDone(state === 'done')
 			} catch {
