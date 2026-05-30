@@ -35,19 +35,20 @@ place where "invisibly non-breaking" is genuinely hard is called out in Phase 2.
 | `/system/profiles/user.md` | user profile (frontmatter)                                  | FE onboarding (`UserProfileStep`) |
 | `/system/soul.md`          | agent soul                                                  | FE onboarding (`AgentStep`)       |
 
-Phase 4 changes `/applications/<id>/` from copied bundle bytes to small package
-install records (`install.json`) whose assets live in Assets/R2/app-store storage
-and hydrate into a local sha256 cache. `/state` and `/data` stay volume-backed.
+Apps stay **files in the volume** at `/applications/<id>/`; `/state` and `/data`
+are volume-backed too. Size and distribution are handled *below* the volume by its
+own blob layer (content-addressed blobs, `lazyContent` hydration, R2 on the
+server / IDB in the browser) — not by a separate app-asset cache. Built-ins are
+seeded from static assets (Phase 4c); the future app store
+([`APP_STORE_PLAN.md`](APP_STORE_PLAN.md)) is only a discovery layer on top.
 
 ### Why two kernels is safe (no logic duplication)
 
-App logic is **not** compiled into either kernel runtime. The kernel loads app
-bytes through an installed-app resolver: today that resolver reads copied bundle
-bytes from the volume; Phase 4 changes it to read `/applications/<id>/install.json`
-and fetch the pinned `sha256` asset from local cache / Assets / R2. The browser
-kernel and server kernel therefore run the same hash-pinned `app.js`; they cannot
-diverge except by transient install-record sync lag or a cold asset cache, both of
-which self-heal by syncing/fetching and verifying the hash.
+App logic is **not** compiled into either kernel runtime. Both kernels load app
+bytes by reading `/applications/<id>/app.js` (and `gui.js`) from the volume — the
+same files, synced between them, so they cannot diverge except by transient sync
+lag, which self-heals on the next pull. The volume's blob layer keeps the bytes
+content-addressed and hydrates them lazily where needed.
 
 The only thing compiled into both builds is the thin **kernel runtime**
 (`@justfiles/app`). Its two contracts must stay stable across deploys:
@@ -73,32 +74,31 @@ enforces this; paint already complies.
 - **`synced()` is local-first.** It returns a usable local volume immediately;
   sync starts/continues in the background when auth + network + remote storage
   are available. `flush()` is a replication request, not part of opening the OS.
-- **Apps are installed as package references, not copied bytes.** The user
-  volume stores small install records under `/applications/<id>/`; immutable app
-  assets live in the app store / R2 and are cached locally by hash for offline
-  launch.
-- **Built-ins are default app-store packages.** The OS ships a tiny system app
-  catalog (ids, versions, hashes, URLs) and preinstalls those records for new
-  profiles. The app bytes are static Assets/R2 objects, not bundled into the
-  Worker script.
+- **Apps are files in the volume.** `/applications/<id>/` holds the app's files
+  (`app.js`, `gui.js`, manifest, icon). Install = write files; uninstall = delete
+  them. Size/distribution are handled below the volume by its blob layer
+  (content-addressed, `lazyContent`, R2/IDB), not by a separate asset cache.
+- **Built-ins are seeded, not bundled.** The OS ships built-in app bytes as static
+  Assets and seeds them into a new profile's volume on boot (Phase 4c), instead of
+  embedding byte modules in the Worker script. A version-aware boot reconcile picks
+  up updates and honors uninstall (disabled) markers.
 - **Capabilities split** (see table below): `volume` is local in the browser;
   backend-backed capabilities proxy to the server and are unavailable when
   offline or unauthenticated.
-- **PWA**: service worker caches the shell. Installed app assets are hydrated
-  into the local app-asset cache so the OS and installed apps boot offline.
+- **PWA**: service worker caches the shell (and precaches built-in app assets so
+  new profiles can seed them offline). App files live in the volume (IDB), so the
+  OS and installed apps boot offline once their bytes are resident.
 
-### App package / asset model
+### App storage model
 
-Apps are content-addressed packages: the user volume stores small install
-records (`/applications/<id>/install.json`) and the immutable app bytes live in
-the app store (Assets/R2), cached locally by hash. Both kernels resolve apps
-through one shared resolver with a pluggable asset backend (browser Cache Storage
-vs. server R2 binding).
-
-This is a **self-contained feature** specified in
-[`APP_STORE_PLAN.md`](APP_STORE_PLAN.md). Phase 4 depends on it (built-ins
-installable without a server install; offline launch needs the local asset
-cache); it does not depend on local-first.
+Apps are files in the volume; there is no separate package/asset layer. The
+volume's blob layer already provides what a content-addressed app store would
+(dedup by hash, lazy hydration, R2 on the server / IDB in the browser), so install
+is just file I/O. Built-ins are seeded from static assets (Phase 4c); installing a
+local zip writes its files in (Phase 4f). A backend **app store** — browsing a
+catalog and installing remote apps — is a deferred discovery layer on top,
+specified in [`APP_STORE_PLAN.md`](APP_STORE_PLAN.md). It is not required for
+local-first and blocks nothing here.
 
 ### Capability split
 
@@ -222,14 +222,12 @@ Run `app.js` in the browser against the synced volume. Ship behind a flag so
   `kernel.subscribe → app.update`; replaces the WS `state` frame for local apps).
 - `src/apps/host.ts` — behind a per-app flag (default off), dispatch to the local
   kernel instead of the WS. GUI is still loaded via dynamic import of `gui.js`
-  (server-served for now; served from local bytes in Phase 3, then from the
-  package asset cache in Phase 4).
+  (server-served for now; served from local volume bytes from Phase 3 on).
 
-> **Cold start (pre-Phase 4 package-store model)**: the client kernel runs an app
-> only once its executable bytes are available locally. Today those bytes sync
-> down into the local volume and hydrate on first read (`lazyContent`). Phase 4
-> replaces that with system/app-store install records plus a local sha256 asset
-> cache, so built-ins can be available without a server-side install first.
+> **Cold start**: the client kernel runs an app only once its executable bytes are
+> available locally. Those bytes live in the volume and hydrate on first read
+> (`lazyContent`). Phase 4c seeds built-ins from static assets so they're available
+> without a server-side install first.
 
 **Still 100% functional?** Yes — flag defaults off, so behaviour is identical to
 today. New code ships dormant.
@@ -416,24 +414,23 @@ before it can open offline.
 
 ### App asset availability
 
-The Phase 3 bridge loads both executable halves from local bytes:
+The Phase 3 bridge loads both executable halves from local bytes in the volume:
 
 - `app.js` is read by the browser kernel;
 - `gui.js` is read by the host, turned into a blob URL, and `import()`ed.
 
-In the current implementation those bytes live in `/applications/<id>/` inside
-the volume. The target app-store model keeps the same host/kernel shape but
-serves `app.js`/`gui.js` from the local sha256 asset cache via the package
-resolver (see [`APP_STORE_PLAN.md`](APP_STORE_PLAN.md)).
+Both live as files in `/applications/<id>/`. This shape is unchanged by the app
+store — installing only ever *writes those files*; loading always reads them.
 
 Consequences:
 
-- **No token-in-URL dynamic imports.** GUI modules load from local cached bytes.
-- **No Worker bundle bloat.** Built-in app bytes are Assets/R2 blobs, not imports
-  embedded in `worker/index.ts`.
-- **Offline launch requires hydration.** After boot/catalog changes, prefetch each
-  installed app's `app.js`, `gui.js`, and icon into the local asset cache. Do not
-  execute apps on boot; instantiate workers lazily on window open.
+- **No token-in-URL dynamic imports.** GUI modules load from local volume bytes.
+- **No Worker bundle bloat.** Built-in app bytes are static Assets seeded into the
+  volume (Phase 4c), not imports embedded in `worker/index.ts`.
+- **Offline launch requires resident bytes.** An app opens offline once its files
+  are resident in the local volume (seeded for built-ins; hydrated on first online
+  launch for synced user apps). Instantiate workers lazily on window open, not on
+  boot.
 
 ### PWA shell
 
@@ -604,17 +601,97 @@ never destructively bootstrap a dirty profile):
   → this is 4a's narrow lossy case: warn + offer backup, then adopt the remote
   into a profile that won't lose the local work.
 
-### Phase 4c — bundled system apps via the app-store package format
+### Phase 4c — seed built-in apps from static assets
 
-Built-ins ship as app-store packages, not Worker-bundled byte modules. The
-mechanism — build/deploy catalog generation, atomic deploy ordering, the local
-asset cache, disabled markers, and **per-boot** catalog↔install-record
-reconciliation that honors disabled markers — is specified in
-[`APP_STORE_PLAN.md`](APP_STORE_PLAN.md).
+Built-ins ship as **static assets**, not Worker-bundled byte modules, and are
+seeded into each profile's volume as plain files. This is what lets a local (even
+signed-out, offline-after-first-load) profile launch built-ins with no backend.
 
-Local-first's only requirement here: on boot, materialize/refresh install records
-for system apps and hydrate their assets into the local asset cache so they launch
-offline.
+Today built-ins are imported as `@justfiles/app-*/bundle` byte modules into
+**both** the Worker bundle (`worker/builtins/index.ts` → `frieren.app.ts`
+`installBuiltins`) **and** the client (`worker/index.ts`). 4c removes both imports
+and replaces them with static assets + a manifest fetched over HTTP.
+
+#### URL scheme (shared with the future app store)
+
+Pick the namespace so built-in bytes are served **statically and publicly** today
+and the *same routes* host the dynamic store later. `wrangler.jsonc` runs the
+Worker first only for `["/api/*", "/fs/*", "/ws"]`; everything else falls through
+to the `ASSETS` binding. So put the app-store space at **`/appstore/*`** (not
+`/api/appstore`) — built-ins serve straight from `ASSETS`, no Worker, no auth, and
+the PWA can precache them.
+
+```txt
+GET /appstore/catalog.json                       the catalog
+GET /appstore/apps/<id>/<version>/<path>         an app file (app.js, gui.js, icon, manifest.json)
+```
+
+`catalog.json` is the one piece of "catalog" the OS needs now:
+
+```json
+{
+  "schema": "frieren/appstore-catalog/v1",
+  "apps": [
+    {
+      "id": "app.frieren.paint", "name": "Paint", "version": "0.1.0",
+      "icon": "icon.svg",
+      "files": [
+        { "path": "app.js", "hash": "sha256-…", "size": 12843 },
+        { "path": "gui.js", "hash": "sha256-…", "size": 30187 },
+        { "path": "manifest.json", "hash": "sha256-…", "size": 412 },
+        { "path": "icon.svg", "hash": "sha256-…", "size": 1180 }
+      ]
+    }
+  ]
+}
+```
+
+Bytes live at version-pathed URLs (`/appstore/apps/app.frieren.paint/0.1.0/app.js`)
+so a release is immutable and permanently cacheable; `hash` is for integrity on
+seed and for the volume's dedup. Later the store adds `category`/`description` to
+each entry and serves third-party apps from R2 through the Worker at the **same**
+`/appstore/apps/<id>/<version>/<path>` shape (add those paths to
+`run_worker_first` when that lands); built-ins keep serving from `ASSETS`.
+
+#### Build/deploy
+
+A small build step (Vite plugin or `tsc`-run script invoked from `build`) instead
+of the `@justfiles/app-*/bundle` worker imports:
+
+- for each built-in package, copy its `dist/bundle` files (`app.js`, `gui.js`,
+  `manifest.json`, icon) into `dist/client/appstore/apps/<id>/<version>/`;
+- hash each file and emit `dist/client/appstore/catalog.json`.
+
+Because these land in `dist/client`, the `ASSETS` binding serves them and the
+build is **atomic by construction** — the catalog and the bytes it references ship
+in the same deploy.
+
+**PWA precache.** App files are `.js`/`.svg` (already covered by the Workbox
+`globPatterns`); add `appstore/**/*.json` so `catalog.json` and per-app
+`manifest.json` precache too. After that, a warm browser can seed a *new* profile
+fully offline.
+
+#### Boot reconcile (every boot, version-aware)
+
+1. fetch `/appstore/catalog.json` (served from the SW cache when offline);
+2. for each app, read the installed version from
+   `/applications/<id>/manifest.json` (absent ⇒ not installed);
+3. **seed** if missing, **overwrite** if the catalog version is newer, **skip** if
+   equal — fetch each file, verify `hash`, write into a temp dir, then
+   `atomicMove` into `/applications/<id>/` so a half-written app never launches;
+4. **honor uninstall markers** — "uninstalling" a built-in writes
+   `/system/apps/disabled/<id>.json`; reconcile must not re-seed a disabled app on
+   a version bump.
+
+#### Synced profiles (server parity, deferrable)
+
+The same end state without a separate path: the client seeds locally and sync
+replicates the files up to R2; other devices pull them (lazy, hydrate on launch).
+The Durable Object can run the identical reconcile by fetching the same assets
+through its `ASSETS` binding (`env.ASSETS.fetch('/appstore/...')`) — no
+worker-bundled bytes. Guard against two fresh devices double-seeding before the
+first sync (seed only after first sync settles, or let the server be the sole
+materializer for synced profiles) — deferrable until sync'd seeding is built.
 
 ### Phase 4d — boot shell independent of Clerk
 
@@ -654,24 +731,28 @@ server agent.
 
 ### Phase 4f — install/uninstall apps offline
 
-App management should be local volume work:
+App management is plain local-volume file work — no records, no separate asset
+cache:
 
-- app-store install: fetch package manifest/assets when online, verify hashes,
-  cache assets locally, write `/applications/<id>/install.json`;
-- local zip install: unpack/hash files locally, cache assets, write an install
-  record with `source: "local"`;
-- uninstall: close the app and update/remove local install records immediately;
-- sync later replicates the install record/state/data when a backend exists.
+- **local zip install**: unpack the zip and write its files into
+  `/applications/<id>/` (stage + atomic rename); it runs on this browser
+  immediately, fully offline.
+- **uninstall**: close the app, then delete `/applications/<id>/` (and its
+  `/state`/`/data` for user apps); built-ins instead get a disabled marker so the
+  Phase 4c reconcile doesn't re-seed them.
+- **sync** later replicates the app files / state / data when a backend exists,
+  like any other volume content.
 
-A synced install record can reach a second device whose asset cache is cold; the
-app is "installed" there but **needs one online launch on that device** before it
-runs offline (see *Installed ≠ launchable offline* in
-[`APP_STORE_PLAN.md`](APP_STORE_PLAN.md)). Surface that as a launch state, not an
-error.
+A synced user app can reach a second device whose volume hasn't hydrated its bytes
+yet; it is "installed" there but **needs one online launch on that device** before
+it runs offline. This is the general lazy-file property, not an app-specific case —
+surface it as a launch state, not an error.
 
-The existing server `/api/apps/install` / uninstall endpoints can become legacy
-or app-store publishing/admin paths; they should not be required for normal local
-app management.
+Installing from a remote **app store** (browse a catalog, download an app's files)
+is the same file-write, sourced from a catalog instead of a zip — deferred to
+[`APP_STORE_PLAN.md`](APP_STORE_PLAN.md). The existing server `/api/apps/install` /
+uninstall endpoints can become legacy or app-store admin paths; they are not
+required for normal local app management.
 
 **Still 100% functional?** Yes online/signed-in — this adds local profile boot,
 keeps sync as a backend capability, and keeps the server kernel for agent work.
@@ -711,11 +792,12 @@ built-ins, trusted/reviewed apps, or self-installed local zips.
    watches each open app's state file (and open documents) and pushes fresh
    state via the existing GUI channel. Generalizes to documents; accepts a
    one-sync-cycle delay — collapsed to ~instant by the Phase 2c dirty-push.
-4. ~~Bundle offline mechanism~~ — **superseded/resolved: package assets + local
-   sha256 cache.** The volume stores install records; app bytes live in
-   Assets/R2/app-store storage and hydrate into a local asset cache. `app.js` and
-   `gui.js` still load from local bytes at runtime; the bytes no longer have to
-   be stored directly in the synced volume.
+4. ~~Bundle offline mechanism~~ — **resolved: apps stay files in the volume.** No
+   install records or separate asset cache; the volume's own blob layer
+   (content-addressed, `lazyContent`, R2/IDB) handles size and distribution below
+   the file abstraction. Built-ins are seeded from static assets (Phase 4c); a
+   backend app store is a deferred discovery layer
+   ([`APP_STORE_PLAN.md`](APP_STORE_PLAN.md)).
 5. ~~Server change-monitoring~~ — **resolved: none needed.** The kernel is
    stateless between dispatches, so the server reads current state on demand; its
    WS state-push (`ensureSubscribed`) is retired for client-side apps. The WS
@@ -738,9 +820,9 @@ built-ins, trusted/reviewed apps, or self-installed local zips.
    to the existing profile and keep the just-used one as an orphan — auto-merging
    creates two local replicas of one remote and cross-pollinates them on sync.
    Merge stays an explicit, opt-in action.
-8. **App-store trust boundary (open before public launch).** The package/R2
-   asset model supports third-party apps, but public untrusted apps require Phase
-   5 isolation or an equivalent review/signing/trust policy. Tracked in
+8. **App-store trust boundary (open before public launch).** Installing apps as
+   files supports third-party apps, but public untrusted apps require Phase 5
+   isolation **and** a review/signing/trust policy for catalog bytes. Tracked in
    [`APP_STORE_PLAN.md`](APP_STORE_PLAN.md) *Trust*.
 
 ## Per-phase verification (every phase)
