@@ -19,8 +19,10 @@ type SyncState = {
 
 const SYNC_XATTR_PREFIX = 'trusted.sync.'
 const SYNC_LOCAL_ONLY_XATTR = `${SYNC_XATTR_PREFIX}local-only`
-// Tag applied to every op the sync layer writes to local — lets push filter them out.
-const REMOTE_SOURCE = 'remote'
+// Tag applied to every op the sync layer writes to local — lets push filter them
+// out, and lets `volume.watch` listeners tell remote-applied pulls (the agent's
+// changes, synced down) from their own local writes.
+export const REMOTE_SOURCE = 'remote'
 
 interface SyncLifecycle {
 	flush(): Promise<void>

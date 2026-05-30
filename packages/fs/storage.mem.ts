@@ -1,4 +1,4 @@
-import type { InodeMeta, Storage, StorageCapabilities } from './storage'
+import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -8,6 +8,12 @@ export function memStorage(): Storage {
 	const dirs = new Map<string, DirentMin>() // key: `${dirIno}\0${name}`
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
+
+	const listeners = new Set<(change: StorageChange) => void>()
+	function emit(change: StorageChange): void {
+		if (listeners.size === 0) return
+		for (const fn of [...listeners]) fn(change)
+	}
 
 	metas.set(rootIno, {
 		type: FileType.Directory,
@@ -52,6 +58,13 @@ export function memStorage(): Storage {
 			if (!m) return
 			m.delete(name)
 			if (m.size === 0) xattrs.delete(ino)
+		},
+
+		subscribe(listener) {
+			listeners.add(listener)
+			return () => {
+				listeners.delete(listener)
+			}
 		}
 	}
 
@@ -63,10 +76,11 @@ export function memStorage(): Storage {
 			return metas.get(ino) ?? null
 		},
 
-		async setMeta(ino, patch) {
+		async setMeta(ino, patch, options) {
 			const existing = metas.get(ino)
 			if (existing) {
 				metas.set(ino, { ...existing, ...patch })
+				emit({ ino, kind: 'meta', source: options?.source })
 				return
 			}
 			if (patch.type === undefined) return
@@ -82,6 +96,7 @@ export function memStorage(): Storage {
 			}
 			metas.set(ino, full)
 			if (patch.type === FileType.Regular) blobs.set(ino, new Uint8Array())
+			emit({ ino, kind: 'meta', source: options?.source })
 		},
 
 		async deleteInode(ino) {
@@ -89,28 +104,34 @@ export function memStorage(): Storage {
 			metas.delete(ino)
 			blobs.delete(ino)
 			xattrs.delete(ino)
+			emit({ ino, kind: 'meta' })
 		},
 
 		async getBlob(ino) {
 			return blobs.get(ino)?.slice() ?? new Uint8Array()
 		},
 
-		async putBlob(ino, data) {
+		async putBlob(ino, data, options) {
 			blobs.set(ino, data.slice())
 			const meta = metas.get(ino)
 			if (meta) metas.set(ino, { ...meta, size: BigInt(data.length) })
+			emit({ ino, kind: 'content', source: options?.source })
 		},
 
 		async getDirent(dirIno, name) {
 			return dirs.get(dirKey(dirIno, name)) ?? null
 		},
 
-		async putDirent(dirIno, name, entry) {
+		async putDirent(dirIno, name, entry, options) {
 			dirs.set(dirKey(dirIno, name), entry)
+			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
-		async deleteDirent(dirIno, name) {
+		async deleteDirent(dirIno, name, options) {
+			const existing = dirs.get(dirKey(dirIno, name))
 			dirs.delete(dirKey(dirIno, name))
+			if (existing)
+				emit({ ino: existing.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
 		async listDirents(dirIno, cursor) {

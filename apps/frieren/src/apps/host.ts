@@ -12,6 +12,8 @@
 
 import type { Action, Kernel } from '@justfiles/app'
 import type { Menu } from '@justfiles/app/browser'
+import { REMOTE_SOURCE } from '@justfiles/fs'
+import type { Volume } from '../fs'
 import { terminateAppWorker } from './sandbox.worker'
 
 interface Transport {
@@ -46,6 +48,7 @@ interface Stage {
 	errorEl: HTMLDivElement
 	socket?: WebSocket
 	unsubscribe?: () => void
+	unwatch?: () => void
 	instance?: GuiInstance
 	menu?: Menu
 	local?: boolean
@@ -62,6 +65,9 @@ export interface OpenOptions {
 	// When present, the app runs in the browser kernel (local execution); its
 	// presence is the per-app flag. Absent → server kernel over the WS.
 	localKernel?: () => Promise<Kernel>
+	// The synced volume, for watching this app's state file so the open GUI
+	// re-renders when the agent (server kernel) writes state that syncs down.
+	volume?: Promise<Volume>
 }
 
 const stages = new Map<string, Stage>()
@@ -105,6 +111,7 @@ export function close(id: string): void {
 	if (inst) queueMicrotask(() => void inst.unmount())
 	stage.socket?.close()
 	stage.unsubscribe?.()
+	stage.unwatch?.()
 	// Last window of a local app closed — reclaim its Web Worker.
 	if (stage.local) terminateAppWorker(id)
 	stage.wrapper.remove()
@@ -195,7 +202,7 @@ function mountGui(stage: Stage, mod: GuiModule, transport: Transport): void {
 
 async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 	try {
-		if (opts.localKernel) await bootLocal(stage, opts.localKernel)
+		if (opts.localKernel) await bootLocal(stage, opts)
 		else await bootRemote(stage, opts)
 	} catch (e) {
 		if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
@@ -204,7 +211,9 @@ async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 
 // Browser-kernel path: dispatch locally, load gui.js from the synced volume
 // (no token, works offline once hydrated), push state via kernel events.
-async function bootLocal(stage: Stage, getKernel: () => Promise<Kernel>): Promise<void> {
+async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
+	const getKernel = opts.localKernel
+	if (!getKernel) return
 	const kernel = await getKernel()
 	if (stage.cancelled) return
 	stage.local = true
@@ -250,6 +259,25 @@ async function bootLocal(stage: Stage, getKernel: () => Promise<Kernel>): Promis
 	stage.unsubscribe = kernel.subscribe((event) => {
 		if (event.type === 'app.update' && event.appId === stage.id) pushState(stage, event.state)
 	})
+
+	// Local dispatches push state via the kernel events above. The agent runs on
+	// the SERVER kernel, so its writes never fire those events — they arrive as a
+	// remote-sourced sync pull of /state/<id>.json. Watch that file and re-read
+	// fresh state on a remote change so the open window reflects the agent's work.
+	if (opts.volume) {
+		const vol = await opts.volume
+		if (stage.cancelled) return
+		stage.unwatch = await vol.watch(`/state/${stage.id}.json`, (event) => {
+			if (event.source !== REMOTE_SOURCE || stage.cancelled) return
+			void kernel
+				.state(stage.id)
+				.then((state) => {
+					if (!stage.cancelled) pushState(stage, state ?? null)
+				})
+				.catch(() => {})
+		})
+	}
+
 	openGate()
 }
 
