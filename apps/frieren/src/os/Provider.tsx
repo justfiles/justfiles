@@ -1,6 +1,9 @@
 import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { resetCapabilitySocket } from '../apps/capabilities.client'
+import { shouldUseLocalKernel } from '../apps/flags'
 import * as appHost from '../apps/host'
+import { createClientKernel } from '../apps/kernel.client'
 import { getFsVolume } from '../fs'
 import { createFrierenClient } from './client'
 import { OsContext } from './hooks'
@@ -18,13 +21,22 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		if (!userId) throw new Error('OSProvider requires a signed-in user')
 		return getFsVolume(userId, () => getTokenRef.current())
 	})
+	const [localKernel] = useState(() => {
+		let kernelPromise: Promise<ReturnType<typeof createClientKernel>> | undefined
+		return () =>
+			(kernelPromise ??= volumePromise.then((fs) =>
+				createClientKernel({ fs, getToken: () => getTokenRef.current() })
+			))
+	})
 	const [{ store, flushPersist }] = useState(() =>
 		createOsStore({
 			appHost,
 			getToken: () => getTokenRef.current(),
 			guiUrlFor: client.guiUrlFor,
 			send: client.send,
-			volume: volumePromise
+			volume: volumePromise,
+			localKernel,
+			shouldUseLocalKernel
 		})
 	)
 
@@ -74,6 +86,8 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			// App GUI hosting is part of OS lifecycle: drop every stage so a
 			// previous session's DOM doesn't survive sign-out / user switch.
 			appHost.closeAll()
+			// Drop the shared capability-proxy socket for the same reason.
+			resetCapabilitySocket()
 		}
 	}, [client, store])
 

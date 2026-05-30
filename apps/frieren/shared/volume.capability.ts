@@ -1,8 +1,9 @@
 import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
+import { capabilityError } from './capability-error.ts'
 
-// Host-side `volume` capability implementation. The SDK proxy forwards the
-// app's declared scopes; resolveVolume picks the right backing volume, and
+// Shared `volume` capability implementation. The SDK proxy forwards the app's
+// declared scopes; resolveVolume picks the right backing volume, and
 // invokeVolume routes one method call against it.
 //
 // Scope semantics:
@@ -109,17 +110,9 @@ async function scanTree(
 }
 
 function invalid(method: string): Error {
-	return Object.assign(new Error('CAPABILITY_INVALID_INPUT'), {
-		code: 'CAPABILITY_INVALID_INPUT',
-		capability: 'volume',
-		method
-	})
+	return capabilityError('CAPABILITY_INVALID_INPUT', 'volume', method)
 }
 
 function unavailable(method: string): Error {
-	return Object.assign(new Error('CAPABILITY_UNAVAILABLE'), {
-		code: 'CAPABILITY_UNAVAILABLE',
-		capability: 'volume',
-		method
-	})
+	return capabilityError('CAPABILITY_UNAVAILABLE', 'volume', method)
 }

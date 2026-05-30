@@ -1,3 +1,4 @@
+import type { Kernel } from '@justfiles/app'
 import { createStore, type Store } from '@justfiles/state'
 import type * as appHostModule from '../apps/host'
 import type { Volume } from '../fs'
@@ -12,6 +13,8 @@ export interface CreateOsStoreOptions {
 	guiUrlFor: (appId: string) => string | undefined
 	send: (frame: object) => void
 	volume: Promise<Volume>
+	localKernel?: () => Promise<Kernel>
+	shouldUseLocalKernel?: (appId: string) => boolean
 }
 
 export interface OsStoreHandle {

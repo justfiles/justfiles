@@ -1,3 +1,4 @@
+import type { Kernel } from '@justfiles/app'
 import type { Effect } from '@justfiles/state'
 import type * as appHostModule from '../apps/host'
 import type { Volume } from '../fs'
@@ -13,11 +14,20 @@ export interface KernelHostEnv {
 	getToken: () => Promise<string | null>
 	guiUrlFor: (appId: string) => string | undefined
 	send: (frame: object) => void
+	localKernel?: () => Promise<Kernel>
+	shouldUseLocalKernel?: (appId: string) => boolean
 }
 
 // Mirror window open/close into the imperative app host. User gestures also
 // tell the server; server-echoed actions (`remote`) only sync the host.
 export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsAction> {
+	const openOptions = (appId: string) => ({
+		guiUrl: env.guiUrlFor(appId),
+		getToken: env.getToken,
+		...(env.localKernel && env.shouldUseLocalKernel?.(appId)
+			? { localKernel: env.localKernel }
+			: {})
+	})
 	return (action, _previous, next) => {
 		if (action.type === 'boot/loaded') {
 			// Restore the GUI for every persisted window by opening its host stage
@@ -28,18 +38,12 @@ export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsActi
 			for (const id of next.openOrder) {
 				const window = next.windows[id]
 				if (!window) continue
-				env.appHost.open(window.id, {
-					guiUrl: env.guiUrlFor(window.appId),
-					getToken: env.getToken
-				})
+				env.appHost.open(window.id, openOptions(window.appId))
 			}
 			return
 		}
 		if (action.type === 'app.open') {
-			env.appHost.open(action.appId, {
-				guiUrl: env.guiUrlFor(action.appId),
-				getToken: env.getToken
-			})
+			env.appHost.open(action.appId, openOptions(action.appId))
 			if (!action.remote) env.send({ type: 'app_open', id: action.appId })
 		} else if (action.type === 'window.close') {
 			env.appHost.close(action.id)

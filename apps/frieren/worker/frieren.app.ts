@@ -9,13 +9,14 @@ import {
 } from '@justfiles/app'
 import type { Volume } from '@justfiles/fs'
 import { unzipSync } from 'fflate'
+import { capabilityError, toWireError } from '../shared/capability-error.ts'
+import { invokeVolume } from '../shared/volume.capability.ts'
 import type { AppController } from './bash/commands/app.ts'
 import { BUILTINS } from './builtins/index.ts'
 import type { Integrations } from './integrations/registry.ts'
 import { invokeIntegrations } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 import type { LLMText } from './llm.text.ts'
-import { invokeVolume } from './volume.capability.ts'
 
 interface DisplayApp {
 	readonly id: string
@@ -50,11 +51,21 @@ export interface FrierenApps {
 	close(id?: string): Promise<void>
 	asset(appId: string, path: string, version?: string): Promise<Response>
 	acceptWebSocket(appId: string): Promise<Response>
-	handleMessage(ws: WebSocket, appId: string, message: string | ArrayBuffer): Promise<void>
+	handleMessage(
+		ws: WebSocket,
+		appId: string | undefined,
+		message: string | ArrayBuffer
+	): Promise<void>
 }
 
 const OS_STATE_PATH = '/system/os-state.json'
 const DEV_BUILTINS = import.meta.env.DEV
+
+// Reserved pseudo-app id for the single shared capability-proxy socket. Not a
+// valid app id (underscore is disallowed by the kernel), so it can't collide
+// with a real app. The browser kernel opens ONE of these for every app's
+// proxied capability calls; the target app id rides each frame.
+const CAPS_SOCKET = '_caps'
 
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
@@ -236,19 +247,26 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	// ── App transport ───────────────────────────────────────────────────
 	//
-	// One per-user WebSocket carries the SDK `Transport` both ways:
-	//   C→S  {"id":string,"action":{"type":string,"params":unknown}}
-	//   S→C  {"type":"state","state":unknown}                 (push)
+	// Two socket shapes share this DO:
+	//   • per-app socket (`/api/apps/<id>/ws`) — server-kernel apps. Carries
+	//     dispatches and push state; app id is fixed by the socket.
+	//   • caps socket (`/api/apps/_caps/ws`) — ONE per browser kernel, proxies
+	//     every app's network capability calls; the app id rides each frame.
+	//   C→S  {"id":string,"action":{"type":string,"params":unknown}}      (per-app)
+	//        {"id":string,"appId":string,"capability":string,"method":string,"input":unknown}
+	//   S→C  {"type":"state","state":unknown}                 (push, per-app)
 	//        {"type":"result","id":string,"result":unknown}   (invoke reply)
-	//        {"type":"error","id"?:string,"message":string}
-	// State is push-only (kernel.subscribe → app.update); the `result` frame
-	// only resolves the correlated `invoke` promise — same contract the dev
-	// server proves over REST+SSE, here over a single hibernatable socket.
+	//        {"type":"error","id"?:string,"message":string,"code"?:string,...}
 
 	async function acceptWebSocket(appId: string): Promise<Response> {
 		const k = await kernelReady()
 		const { 0: client, 1: server } = new WebSocketPair()
 		deps.acceptWebSocket(server)
+		if (appId === CAPS_SOCKET) {
+			// Capability proxy only: no app id, no state push, no snapshot.
+			server.serializeAttachment({ caps: true })
+			return new Response(null, { status: 101, webSocket: client })
+		}
 		server.serializeAttachment({ appId })
 		ensureSubscribed()
 		// Always emit a snapshot frame on connect — both as the reconciliation
@@ -260,31 +278,60 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return new Response(null, { status: 101, webSocket: client })
 	}
 
+	// `appId` is the socket-fixed id for a per-app socket, or undefined for the
+	// shared caps socket (where it rides each capability frame instead).
 	async function handleMessage(
 		ws: WebSocket,
-		appId: string,
+		appId: string | undefined,
 		message: string | ArrayBuffer
 	): Promise<void> {
 		if (typeof message !== 'string') return
-		let request: { id?: string; action?: Action }
+		let request: {
+			id?: string
+			action?: Action
+			appId?: string
+			capability?: string
+			method?: string
+			input?: unknown
+		}
 		try {
 			request = JSON.parse(message)
 		} catch {
 			ws.send(JSON.stringify({ type: 'error', message: 'invalid JSON' }))
 			return
 		}
-		ensureSubscribed()
 		try {
-			const result = await (await kernelReady()).dispatch(appId, request.action as Action)
-			ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
-		} catch (error) {
-			ws.send(
-				JSON.stringify({
-					type: 'error',
-					id: request.id,
-					message: error instanceof Error ? error.message : String(error)
+			if (request.action) {
+				if (!appId) throw new Error('missing app')
+				ensureSubscribed()
+				const result = await (await kernelReady()).dispatch(appId, request.action)
+				ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
+				return
+			}
+			if (typeof request.capability === 'string' && typeof request.method === 'string') {
+				const target = appId ?? request.appId
+				if (!target) throw new Error('missing app')
+				// `volume` is the only scope-bearing capability and is always served
+				// by the browser kernel against the local volume — it must never be
+				// proxied. Reject it explicitly rather than silently re-scoping.
+				if (request.capability === 'volume')
+					throw capabilityError('CAPABILITY_UNAVAILABLE', request.capability, request.method)
+				const result = await invokeCapability({
+					capability: request.capability,
+					method: request.method,
+					input: request.input,
+					// Client-claimed scopes are never trusted here. The proxied
+					// capabilities (ai/integrations) don't use scopes; scope
+					// enforcement is deferred until a proxied capability needs it.
+					scopes: [],
+					appId: target
 				})
-			)
+				ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
+				return
+			}
+			throw new Error('invalid request')
+		} catch (error) {
+			ws.send(JSON.stringify({ type: 'error', id: request.id, ...toWireError(error) }))
 		}
 	}
 
@@ -387,10 +434,6 @@ function commonTopLevelPrefix(paths: string[]): string {
 	if (roots.size !== 1) return ''
 	const prefix = `${[...roots][0]}/`
 	return paths.includes(`${prefix}manifest.json`) ? prefix : ''
-}
-
-function capabilityError(code: string, capability: string, method: string): Error {
-	return Object.assign(new Error(code), { code, capability, method })
 }
 
 const MIME: Record<string, string> = {
