@@ -43,7 +43,6 @@ export interface FrierenClient {
 	// an install). Distinct intent from connect(), which OSProvider owns for boot.
 	refresh(): void
 	send(frame: object): void
-	guiUrlFor(appId: string): string | undefined
 	agent: AgentClient
 	subscribeApps(listener: (apps: InstalledApp[]) => void): () => void
 	// Drop an app from the catalog optimistically (uninstall); a later `ready`
@@ -400,10 +399,6 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 		send(frame) {
 			if (socket && socket.readyState === SOCKET_OPEN) socket.send(JSON.stringify(frame))
-		},
-
-		guiUrlFor(appId) {
-			return apps.find((app) => app.id === appId)?.guiUrl
 		},
 
 		subscribeApps(listener) {

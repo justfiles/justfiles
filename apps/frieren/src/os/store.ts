@@ -10,11 +10,9 @@ import { initialState, type OsAction, type OsState } from './state'
 export interface CreateOsStoreOptions {
 	appHost: Pick<typeof appHostModule, 'open' | 'close'>
 	getToken: () => Promise<string | null>
-	guiUrlFor: (appId: string) => string | undefined
 	send: (frame: object) => void
 	volume: Promise<Volume>
-	localKernel?: () => Promise<Kernel>
-	shouldUseLocalKernel?: (appId: string) => boolean
+	localKernel: () => Promise<Kernel>
 }
 
 export interface OsStoreHandle {

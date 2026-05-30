@@ -1,7 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
-import { shouldUseLocalKernel } from '../apps/flags'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { createClientKernel } from '../apps/kernel.client'
@@ -44,11 +43,9 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		createOsStore({
 			appHost,
 			getToken: () => getTokenRef.current(),
-			guiUrlFor: client.guiUrlFor,
 			send: client.send,
 			volume: volumePromise,
-			localKernel,
-			shouldUseLocalKernel
+			localKernel
 		})
 	)
 

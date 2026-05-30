@@ -1,3 +1,4 @@
+import type { Kernel } from '@justfiles/app'
 import type { EffectContext } from '@justfiles/state'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { Volume } from '../fs'
@@ -18,20 +19,23 @@ function makeWindow(id: string): OsWindow {
 function setup() {
 	const appHost = { open: vi.fn(), close: vi.fn() }
 	const send = vi.fn()
-	const guiUrlFor = vi.fn((_id: string): string | undefined => undefined)
 	const getToken = async () => 'token'
-	const effect = makeKernelHostEffect({ appHost, getToken, guiUrlFor, send })
-	return { appHost, send, guiUrlFor, getToken, effect }
+	const localKernel = async () => ({}) as Kernel
+	const volume = Promise.resolve({} as Volume)
+	const effect = makeKernelHostEffect({ appHost, getToken, send, localKernel, volume })
+	// Every window opens with the same options now (no per-app branching).
+	const opts = { getToken, localKernel, volume }
+	return { appHost, send, getToken, opts, effect }
 }
 
 describe('makeKernelHostEffect', () => {
 	test('app.open opens a host stage and notifies the server', () => {
-		const { appHost, send, getToken, effect } = setup()
+		const { appHost, send, opts, effect } = setup()
 		const action: OsAction = { type: 'app.open', appId: 'notes', title: 'Notes' }
 
 		effect(action, initialState, initialState, ctx(initialState))
 
-		expect(appHost.open).toHaveBeenCalledWith('notes', { guiUrl: undefined, getToken })
+		expect(appHost.open).toHaveBeenCalledWith('notes', opts)
 		expect(send).toHaveBeenCalledWith({ type: 'app_open', id: 'notes' })
 	})
 
@@ -66,10 +70,7 @@ describe('makeKernelHostEffect', () => {
 	})
 
 	test('boot/loaded opens a host stage for every restored window', () => {
-		const { appHost, guiUrlFor, getToken, effect } = setup()
-		guiUrlFor.mockImplementation((id) =>
-			id === 'notes' ? '/api/apps/notes/gui.js?v=1' : undefined
-		)
+		const { appHost, opts, effect } = setup()
 		const restored: OsState = {
 			...initialState,
 			booted: true,
@@ -81,12 +82,8 @@ describe('makeKernelHostEffect', () => {
 		effect({ type: 'boot/loaded', state: restored }, initialState, restored, ctx(restored))
 
 		expect(appHost.open).toHaveBeenCalledTimes(2)
-		expect(appHost.open).toHaveBeenCalledWith('notes', {
-			guiUrl: '/api/apps/notes/gui.js?v=1',
-			getToken
-		})
-		// Missing catalog metadata falls back to undefined; host.ts derives the URL.
-		expect(appHost.open).toHaveBeenCalledWith('paint', { guiUrl: undefined, getToken })
+		expect(appHost.open).toHaveBeenCalledWith('notes', opts)
+		expect(appHost.open).toHaveBeenCalledWith('paint', opts)
 	})
 
 	test('boot restoration does not echo app_open to the server', () => {

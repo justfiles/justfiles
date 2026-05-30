@@ -77,12 +77,11 @@ export function useAppCommands(): AppCommands {
 		}
 
 		const uninstallApp = async (id: string) => {
-			// Close any open window first. Otherwise the still-mounted app frame
-			// sees its guiUrl go undefined when the app drops from the catalog, the
-			// effect re-fires, and the GUI's React root unmounts synchronously from
-			// inside the parent's commit — corrupting the DOM (NotFoundError on
-			// removeChild). The close effect also tears down the app-host stage and
-			// notifies the server.
+			// Close any open window first. Otherwise the app drops from the catalog
+			// while its frame is still mounted, the effect re-fires, and the GUI's
+			// React root unmounts synchronously from inside the parent's commit —
+			// corrupting the DOM (NotFoundError on removeChild). The close effect
+			// also tears down the app-host stage and notifies the server.
 			dispatch({ type: 'window.close', id })
 			client.removeApp(id)
 			try {

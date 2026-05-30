@@ -15,7 +15,6 @@ type CapabilityInvocation = {
 type Frame =
 	| { type: 'result'; id: string; result: unknown }
 	| ({ type: 'error'; id?: string } & WireError)
-	| { type: 'state'; state: unknown }
 	| { type: 'dirty'; appId?: string }
 
 // The browser kernel runs `volume` locally; every other capability proxies to
@@ -108,7 +107,7 @@ async function open(getToken: () => Promise<string | null>): Promise<Connection>
 			flushActiveVolume()
 			return
 		}
-		if (frame.type === 'state' || frame.id === undefined) return
+		if (frame.id === undefined) return
 		const p = pending.get(frame.id)
 		if (!p) return
 		pending.delete(frame.id)

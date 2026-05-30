@@ -12,39 +12,34 @@ const GEOMETRY_DEBOUNCE_MS = 300
 export interface KernelHostEnv {
 	appHost: Pick<typeof appHostModule, 'open' | 'close'>
 	getToken: () => Promise<string | null>
-	guiUrlFor: (appId: string) => string | undefined
 	send: (frame: object) => void
-	localKernel?: () => Promise<Kernel>
-	shouldUseLocalKernel?: (appId: string) => boolean
-	volume?: Promise<Volume>
+	localKernel: () => Promise<Kernel>
+	volume: Promise<Volume>
 }
 
 // Mirror window open/close into the imperative app host. User gestures also
 // tell the server; server-echoed actions (`remote`) only sync the host.
 export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsAction> {
-	const openOptions = (appId: string) => ({
-		guiUrl: env.guiUrlFor(appId),
+	const openOptions = {
 		getToken: env.getToken,
-		...(env.localKernel && env.shouldUseLocalKernel?.(appId)
-			? { localKernel: env.localKernel, volume: env.volume }
-			: {})
-	})
+		localKernel: env.localKernel,
+		volume: env.volume
+	}
 	return (action, _previous, next) => {
 		if (action.type === 'boot/loaded') {
 			// Restore the GUI for every persisted window by opening its host stage
 			// directly. This is client-driven restoration, so it must not echo
-			// `app_open` back to the server. `guiUrlFor` is usually empty this
-			// early (the catalog arrives with `ready`); host.ts then falls back to
-			// `/api/apps/{id}/gui.js`, so the GUI need not wait on the catalog.
+			// `app_open` back to the server. The GUI loads from the local volume,
+			// so restoration need not wait on the catalog.
 			for (const id of next.openOrder) {
 				const window = next.windows[id]
 				if (!window) continue
-				env.appHost.open(window.id, openOptions(window.appId))
+				env.appHost.open(window.id, openOptions)
 			}
 			return
 		}
 		if (action.type === 'app.open') {
-			env.appHost.open(action.appId, openOptions(action.appId))
+			env.appHost.open(action.appId, openOptions)
 			if (!action.remote) env.send({ type: 'app_open', id: action.appId })
 		} else if (action.type === 'window.close') {
 			env.appHost.close(action.id)

@@ -37,38 +37,27 @@ interface GuiModule {
 	}
 }
 
-type ServerFrame =
-	| { type: 'state'; state: unknown }
-	| { type: 'result'; id: string; result: unknown }
-	| { type: 'error'; id?: string; message: string }
-
 interface Stage {
 	id: string
 	wrapper: HTMLDivElement
 	mountEl: HTMLDivElement
 	errorEl: HTMLDivElement
-	socket?: WebSocket
 	unsubscribe?: () => void
 	unwatch?: () => void
 	instance?: GuiInstance
 	menu?: Menu
 	local?: boolean
 	cancelled: boolean
-	outbox: string[]
-	pending: Map<string, (frame: { result?: unknown; error?: string }) => void>
 	subscribers: Set<(state: unknown) => void>
-	nextId: number
 }
 
 export interface OpenOptions {
-	guiUrl?: string
 	getToken: () => Promise<string | null>
-	// When present, the app runs in the browser kernel (local execution); its
-	// presence is the per-app flag. Absent → server kernel over the WS.
-	localKernel?: () => Promise<Kernel>
+	// The browser kernel: the app dispatches locally against the synced volume.
+	localKernel: () => Promise<Kernel>
 	// The synced volume, for watching this app's state file so the open GUI
 	// re-renders when the agent (server kernel) writes state that syncs down.
-	volume?: Promise<Volume>
+	volume: Promise<Volume>
 }
 
 const stages = new Map<string, Stage>()
@@ -110,7 +99,6 @@ export function close(id: string): void {
 	// was already rendering" and leaves the DOM in an inconsistent state.
 	const inst = stage.instance
 	if (inst) queueMicrotask(() => void inst.unmount())
-	stage.socket?.close()
 	stage.unsubscribe?.()
 	stage.unwatch?.()
 	// Last window of a local app closed — reclaim its Web Worker.
@@ -153,10 +141,7 @@ function createStage(id: string): Stage {
 		mountEl,
 		errorEl,
 		cancelled: false,
-		outbox: [],
-		pending: new Map(),
-		subscribers: new Set(),
-		nextId: 0
+		subscribers: new Set()
 	}
 }
 
@@ -201,21 +186,18 @@ function mountGui(stage: Stage, mod: GuiModule, transport: Transport): void {
 	})
 }
 
+// Browser-kernel path: dispatch locally, load gui.js from the synced volume
+// (no token, works offline once hydrated), push state via kernel events.
 async function boot(stage: Stage, opts: OpenOptions): Promise<void> {
 	try {
-		if (opts.localKernel) await bootLocal(stage, opts)
-		else await bootRemote(stage, opts)
+		await bootLocal(stage, opts)
 	} catch (e) {
 		if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
 	}
 }
 
-// Browser-kernel path: dispatch locally, load gui.js from the synced volume
-// (no token, works offline once hydrated), push state via kernel events.
 async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
-	const getKernel = opts.localKernel
-	if (!getKernel) return
-	const kernel = await getKernel()
+	const kernel = await opts.localKernel()
 	if (stage.cancelled) return
 	stage.local = true
 
@@ -265,19 +247,17 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	// the SERVER kernel, so its writes never fire those events — they arrive as a
 	// remote-sourced sync pull of /state/<id>.json. Watch that file and re-read
 	// fresh state on a remote change so the open window reflects the agent's work.
-	if (opts.volume) {
-		const vol = await opts.volume
-		if (stage.cancelled) return
-		stage.unwatch = await vol.watch(`/state/${stage.id}.json`, (event) => {
-			if (event.source !== REMOTE_SOURCE || stage.cancelled) return
-			void kernel
-				.state(stage.id)
-				.then((state) => {
-					if (!stage.cancelled) pushState(stage, state ?? null)
-				})
-				.catch(() => {})
-		})
-	}
+	const vol = await opts.volume
+	if (stage.cancelled) return
+	stage.unwatch = await vol.watch(`/state/${stage.id}.json`, (event) => {
+		if (event.source !== REMOTE_SOURCE || stage.cancelled) return
+		void kernel
+			.state(stage.id)
+			.then((state) => {
+				if (!stage.cancelled) pushState(stage, state ?? null)
+			})
+			.catch(() => {})
+	})
 
 	// Open the caps socket eagerly so the server's `dirty` push reaches this app
 	// even if it never invokes a network capability (e.g. paint); pull-on-dirty
@@ -285,97 +265,4 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	ensureCapabilitySocket(opts.getToken)
 
 	openGate()
-}
-
-// Server-kernel path: dispatch and state ride a per-app WebSocket; gui.js is
-// imported over HTTP (token in URL, since Clerk cookie auth 401s a non-document
-// fetch). Vite must not analyse the dynamic specifier.
-async function bootRemote(stage: Stage, opts: OpenOptions): Promise<void> {
-	const token = await opts.getToken().catch(() => null)
-	if (stage.cancelled) return
-	if (!token) {
-		setError(stage, 'not authenticated')
-		return
-	}
-
-	// GUI may dispatch from its mount effect before the socket reaches OPEN;
-	// queue those frames and flush on open, else the first dispatch races the
-	// handshake and fails with `no_connection`.
-	const send = (frame: string) => {
-		const ws = stage.socket
-		if (ws && ws.readyState === ws.OPEN) ws.send(frame)
-		else stage.outbox.push(frame)
-	}
-	const transport: Transport = {
-		invoke: (action) =>
-			new Promise((resolve, reject) => {
-				const reqId = String(stage.nextId++)
-				stage.pending.set(reqId, (frame) => {
-					if (frame.error !== undefined) reject(new Error(frame.error))
-					else resolve(frame.result)
-				})
-				send(JSON.stringify({ id: reqId, action }))
-			}),
-		subscribe: subscribeState(stage)
-	}
-
-	// The guiUrl carries `?v=<manifest.version>` when known, so the asset
-	// handler can serve it with immutable cache headers.
-	const base = opts.guiUrl ?? `/api/apps/${stage.id}/gui.js`
-	const sep = base.includes('?') ? '&' : '?'
-	const mod = (await import(
-		/* @vite-ignore */ `${base}${sep}token=${encodeURIComponent(token)}`
-	)) as GuiModule
-	if (stage.cancelled) return
-
-	mountGui(stage, mod, transport)
-
-	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-	const ws = new WebSocket(
-		`${protocol}//${window.location.host}/api/apps/${stage.id}/ws?token=${encodeURIComponent(token)}`
-	)
-	stage.socket = ws
-
-	ws.onopen = () => {
-		while (stage.outbox.length > 0) ws.send(stage.outbox.shift() as string)
-	}
-	ws.onmessage = (event) => {
-		let frame: ServerFrame
-		try {
-			frame = JSON.parse(event.data)
-		} catch {
-			return
-		}
-		if (frame.type === 'state') {
-			pushState(stage, frame.state)
-			return
-		}
-		if (frame.type === 'result') {
-			const resolver = stage.pending.get(frame.id)
-			if (resolver) {
-				stage.pending.delete(frame.id)
-				resolver({ result: frame.result })
-			}
-			return
-		}
-		if (frame.type === 'error') {
-			if (frame.id !== undefined) {
-				const resolver = stage.pending.get(frame.id)
-				if (resolver) {
-					stage.pending.delete(frame.id)
-					resolver({ error: frame.message })
-				}
-			} else if (!stage.cancelled) {
-				setError(stage, frame.message)
-			}
-		}
-	}
-	ws.onerror = () => {
-		if (!stage.cancelled) setError(stage, 'connection error')
-	}
-	ws.onclose = () => {
-		for (const [, resolve] of stage.pending) resolve({ error: 'connection_closed' })
-		stage.pending.clear()
-		stage.outbox.length = 0
-	}
 }

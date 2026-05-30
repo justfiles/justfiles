@@ -57,8 +57,8 @@ const app = new Hono<WorkerEnv>()
 // Browsers can't set Authorization on a WS handshake, and Clerk cookie auth
 // needs a handshake redirect a WS upgrade can't follow — so WS auth rides a
 // `?token=` query param verified here, before clerkMiddleware. Forwarding
-// `c.req.raw` preserves the path so the DO routes agent (`/ws`) vs. an app
-// socket (`/api/apps/:appId/ws`).
+// `c.req.raw` preserves the path so the DO routes agent (`/ws`) vs. the shared
+// capability-proxy socket (`/api/apps/_caps/ws`).
 const tokenWs = async (c: Ctx) => {
 	const token = new URL(c.req.url).searchParams.get('token')
 	if (!token) return new Response('Unauthorized', { status: 401 })

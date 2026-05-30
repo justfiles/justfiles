@@ -1,5 +1,4 @@
 import {
-	type Action,
 	type AppBundle,
 	type AppManifest,
 	type BuiltinBundle,
@@ -23,9 +22,6 @@ interface DisplayApp {
 	readonly name: string
 	readonly description: string
 	readonly iconUrl?: string
-	// Version-stamped gui URL. Prod uses manifest.version for immutable caching;
-	// dev uses a changing stamp to bypass the browser module cache.
-	readonly guiUrl?: string
 }
 
 type AppBroadcast = { type: 'app_open'; id: string } | { type: 'app_close'; id: string }
@@ -135,24 +131,20 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	}
 
 	// kernel.subscribe's handler is in-memory, so it dies with the DO on
-	// hibernation. Re-registered lazily per instance; it fans `app.update`
-	// to every live socket whose attachment appId matches the event.
+	// hibernation. Re-registered lazily per instance. On the server kernel
+	// `app.update` fires only for the agent's own dispatches, so it nudges every
+	// caps socket to pull: the agent changed this app server-side; pull now
+	// instead of waiting for the next sync interval. The browser kernel renders
+	// the pulled state via `volume.watch`.
 	function ensureSubscribed(): void {
 		if (subscribed) return
 		subscribed = true
 		getKernel().subscribe((event) => {
 			if (event.type !== 'app.update') return
-			const stateFrame = JSON.stringify({ type: 'state', state: event.state })
-			// Content-free nudge for browser-kernel tabs: the agent changed this app
-			// server-side; pull now instead of waiting for the next sync interval.
 			const dirtyFrame = JSON.stringify({ type: 'dirty', appId: event.appId })
 			for (const socket of deps.sockets()) {
-				const attachment = socket.deserializeAttachment() as {
-					appId?: string
-					caps?: boolean
-				} | null
+				const attachment = socket.deserializeAttachment() as { caps?: boolean } | null
 				if (attachment?.caps) socket.send(dirtyFrame)
-				else if (attachment?.appId === event.appId) socket.send(stateFrame)
 			}
 		})
 	}
@@ -180,8 +172,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 					id: m.id,
 					name: m.name,
 					description: m.description ?? '',
-					iconUrl: m.icon ? assetUrl(m.id, m.icon, version) : undefined,
-					guiUrl: assetUrl(m.id, 'gui.js', version)
+					iconUrl: m.icon ? assetUrl(m.id, m.icon, version) : undefined
 				}
 			})
 		} catch {
@@ -252,43 +243,29 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 	}
 
-	// ── App transport ───────────────────────────────────────────────────
+	// ── Capability proxy transport ──────────────────────────────────────
 	//
-	// Two socket shapes share this DO:
-	//   • per-app socket (`/api/apps/<id>/ws`) — server-kernel apps. Carries
-	//     dispatches and push state; app id is fixed by the socket.
-	//   • caps socket (`/api/apps/_caps/ws`) — ONE per browser kernel, proxies
-	//     every app's network capability calls; the app id rides each frame.
-	//   C→S  {"id":string,"action":{"type":string,"params":unknown}}      (per-app)
-	//        {"id":string,"appId":string,"capability":string,"method":string,"input":unknown}
-	//   S→C  {"type":"state","state":unknown}                 (push, per-app)
-	//        {"type":"result","id":string,"result":unknown}   (invoke reply)
+	// The browser kernel opens ONE caps socket (`/api/apps/_caps/ws`) per
+	// session. It proxies every app's network capability calls (the app id rides
+	// each frame) and receives the agent's `dirty` pulls.
+	//   C→S  {"id":string,"appId":string,"capability":string,"method":string,"input":unknown}
+	//   S→C  {"type":"result","id":string,"result":unknown}   (invoke reply)
 	//        {"type":"error","id"?:string,"message":string,"code"?:string,...}
+	//        {"type":"dirty","appId":string}                  (agent changed app, pull)
 
 	async function acceptWebSocket(appId: string): Promise<Response> {
-		const k = await kernelReady()
+		// `_caps` is the only WS the browser opens here: no app id, no state push.
+		if (appId !== CAPS_SOCKET) return new Response(null, { status: 404 })
 		const { 0: client, 1: server } = new WebSocketPair()
 		deps.acceptWebSocket(server)
-		if (appId === CAPS_SOCKET) {
-			// Capability proxy + `dirty` push target: no app id, no state push, no
-			// snapshot. Subscribe so the agent's server-side writes nudge this tab.
-			server.serializeAttachment({ caps: true })
-			ensureSubscribed()
-			return new Response(null, { status: 101, webSocket: client })
-		}
-		server.serializeAttachment({ appId })
+		server.serializeAttachment({ caps: true })
+		// Subscribe so the agent's server-side writes nudge this tab to pull.
 		ensureSubscribed()
-		// Always emit a snapshot frame on connect — both as the reconciliation
-		// snapshot for a reload and as the "ready to mount" signal for a fresh
-		// GUI. State may be `null` for never-dispatched apps; the GUI passes
-		// that through to its mount() and renders whatever bootstrap it wants.
-		const snapshot = await k.state(appId).catch(() => undefined)
-		server.send(JSON.stringify({ type: 'state', state: snapshot ?? null }))
 		return new Response(null, { status: 101, webSocket: client })
 	}
 
-	// `appId` is the socket-fixed id for a per-app socket, or undefined for the
-	// shared caps socket (where it rides each capability frame instead).
+	// `appId` is undefined for the shared caps socket — the target app id rides
+	// each capability frame instead.
 	async function handleMessage(
 		ws: WebSocket,
 		appId: string | undefined,
@@ -297,7 +274,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		if (typeof message !== 'string') return
 		let request: {
 			id?: string
-			action?: Action
 			appId?: string
 			capability?: string
 			method?: string
@@ -310,13 +286,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			return
 		}
 		try {
-			if (request.action) {
-				if (!appId) throw new Error('missing app')
-				ensureSubscribed()
-				const result = await (await kernelReady()).dispatch(appId, request.action)
-				ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
-				return
-			}
 			if (typeof request.capability === 'string' && typeof request.method === 'string') {
 				const target = appId ?? request.appId
 				if (!target) throw new Error('missing app')

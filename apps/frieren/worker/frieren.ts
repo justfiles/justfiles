@@ -248,13 +248,9 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		// App sockets carry an {appId} attachment; the shared capability-proxy
-		// socket carries {caps:true}; agent sockets carry neither.
-		const attachment = ws.deserializeAttachment() as { appId?: string; caps?: boolean } | null
-		if (attachment?.appId) {
-			await this.requireApps().handleMessage(ws, attachment.appId, message)
-			return
-		}
+		// The shared capability-proxy socket carries {caps:true}; agent sockets
+		// carry neither.
+		const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
 		if (attachment?.caps) {
 			await this.requireApps().handleMessage(ws, undefined, message)
 			return

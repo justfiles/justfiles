@@ -171,10 +171,9 @@ describe('FrierenClient apps + windows', () => {
 
 		socket.emit({
 			type: 'ready',
-			apps: [{ id: 'notes', name: 'Notes', description: '', guiUrl: '/api/apps/notes/gui.js' }]
+			apps: [{ id: 'notes', name: 'Notes', description: '' }]
 		})
 		expect(seen.at(-1)).toEqual(['notes'])
-		expect(client.guiUrlFor('notes')).toBe('/api/apps/notes/gui.js')
 	})
 
 	test('removeApp drops the app from the catalog and notifies subscribers', async () => {
