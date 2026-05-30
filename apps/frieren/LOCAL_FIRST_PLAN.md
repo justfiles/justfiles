@@ -209,11 +209,16 @@ Phase 3 capability — `gui.js` and the shell still need network until then.)
 
 ### Phase 2b — make local execution the default
 
-Flip the flag for all apps. **Every app runs locally**, with its state always
-sourced from the local volume. Apps that need network capabilities still run
-locally — only those `ai`/`integrations`/`email`/`calendar` *calls* go over the
-WS (and fail with `CAPABILITY_OFFLINE` when offline). The WS is no longer used
-for dispatch or state — only as a capability proxy.
+Flip the flag's default to on, so **every app runs locally** with its state
+always sourced from the local volume. Apps that need network capabilities still
+run locally — only those `ai`/`integrations`/`email`/`calendar` *calls* go over
+the WS (and fail with `CAPABILITY_OFFLINE` when offline). The WS is no longer
+used for dispatch or state — only as a capability proxy.
+
+The flag itself **stays** (now narrowing-only: `VITE_FRIEREN_LOCAL_APPS=0` opts
+back onto the server kernel) as the reversibility lever for Phases 2b–3. It and
+the whole server-kernel FE path are deleted in **Phase 3.5**, once Phase 3 is
+validated and the rollback is no longer load-bearing.
 
 **The server stops pushing state.** Because the kernel is **stateless between
 dispatches** — it loads state fresh from `/state/<id>.json` each dispatch
@@ -343,6 +348,45 @@ wedge loading.
 **Verify**: install to home screen; with network off after a warm boot (so blobs
 have hydrated), reload and open a never-opened-this-session app → it loads and
 works from the volume. Network caps show a clear offline state.
+
+---
+
+## Phase 3.5 — retire the server-kernel FE path (cleanup, after 3 ships)
+
+Through Phases 2b–3 the **server-kernel boot path stays as the rollback lever**:
+`shouldUseLocalKernel` defaults on, but `VITE_FRIEREN_LOCAL_APPS=0` flips every
+app back to the proven server path with no code change. That reversibility is
+load-bearing *until* Phase 3 (PWA + offline boot) is validated in production —
+local execution is the thing being de-risked, and Phase 3 still rides on it.
+
+**Once Phase 3 is verified, the dual path is dead weight — delete it.** This is
+pure subtraction behind no flag, so it lands as its own PR with the full suite.
+
+**Remove (frontend)**
+- `apps/frieren/src/apps/flags.ts` (+ test) and the `localKernel?` /
+  `shouldUseLocalKernel?` branching in `os/effects.ts`, `os/store.ts`, `host.ts`
+  (`open` always takes the local path).
+- `bootRemote` in `host.ts` and its now-unused machinery: the `ServerFrame`
+  type, the per-app `/api/apps/<id>/ws` socket, the `outbox`/`pending` dispatch
+  plumbing, and the HTTP `gui.js` import (already superseded by the Phase 3
+  volume-blob `import`, so `guiUrl`/`guiUrlFor` and the `?token=` asset fetch
+  go too).
+
+**Remove (server, `frieren.app.ts`)**
+- The per-app dispatch socket and `ensureSubscribed` → WS `state` fan-out
+  (already retired *functionally* in 2b — no client opens it — this deletes the
+  now-dead code), plus the snapshot-on-connect `state` frame.
+
+**Keep**
+- The **server kernel itself** — the agent dispatches through it headless
+  (daily alarms / scheduled work), so it never goes away.
+- The **`_caps` socket + `invokeCapability`** — still the capability proxy for
+  `ai`/`integrations`/`email`/`calendar` from the browser kernel.
+
+**Verify**: standard suite; then `verify:ui` — every app opens, dispatches, and
+autosaves with no per-app WS in the network panel (only `_caps` when a network
+capability fires); the agent still drives apps headless and its changes reach an
+open window via `volume.watch`.
 
 ---
 
