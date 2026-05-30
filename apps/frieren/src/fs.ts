@@ -96,6 +96,13 @@ export async function destroyFsVolume(options: { flush?: boolean } = {}): Promis
 	await deleteIdb(dbName(prev.userId))
 }
 
+// Force an immediate sync (push+pull) on the active volume. The capability
+// socket's `dirty` push calls this so the agent's server-side writes land in
+// the local replica at once instead of waiting for the next sync interval.
+export function flushActiveVolume(): void {
+	void active?.volume.then((v) => v.flush()).catch(() => {})
+}
+
 function deleteIdb(name: string): Promise<void> {
 	return new Promise((resolve) => {
 		const req = indexedDB.deleteDatabase(name)

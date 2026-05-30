@@ -14,6 +14,7 @@ import type { Action, Kernel } from '@justfiles/app'
 import type { Menu } from '@justfiles/app/browser'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
+import { ensureCapabilitySocket } from './capabilities.client'
 import { terminateAppWorker } from './sandbox.worker'
 
 interface Transport {
@@ -277,6 +278,11 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 				.catch(() => {})
 		})
 	}
+
+	// Open the caps socket eagerly so the server's `dirty` push reaches this app
+	// even if it never invokes a network capability (e.g. paint); pull-on-dirty
+	// then lands the agent's writes at once via the watch above.
+	ensureCapabilitySocket(opts.getToken)
 
 	openGate()
 }

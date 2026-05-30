@@ -1,6 +1,7 @@
 import type { Volume } from '@justfiles/fs'
 import { capabilityError, fromWireError, type WireError } from '../../shared/capability-error.ts'
 import { invokeVolume } from '../../shared/volume.capability.ts'
+import { flushActiveVolume } from '../fs.ts'
 
 type CapabilityInvocation = {
 	capability: string
@@ -15,6 +16,7 @@ type Frame =
 	| { type: 'result'; id: string; result: unknown }
 	| ({ type: 'error'; id?: string } & WireError)
 	| { type: 'state'; state: unknown }
+	| { type: 'dirty'; appId?: string }
 
 // The browser kernel runs `volume` locally; every other capability proxies to
 // the server over ONE shared WebSocket (not one per call/app). The connection
@@ -39,6 +41,15 @@ export function resetCapabilitySocket(): void {
 	const pending = shared
 	shared = undefined
 	void pending?.then((c) => c.close()).catch(() => {})
+}
+
+// Eagerly open the shared caps socket — normally it is lazy (opened on the
+// first network capability), but the server's `dirty` push must also reach
+// volume-only apps (e.g. paint) whose open windows never invoke a network
+// capability. The host calls this on app open. Idempotent; failures self-heal
+// on the next call or network capability.
+export function ensureCapabilitySocket(getToken: () => Promise<string | null>): void {
+	void connection(getToken).catch(() => {})
 }
 
 let shared: Promise<Connection> | undefined
@@ -91,6 +102,10 @@ async function open(getToken: () => Promise<string | null>): Promise<Connection>
 		try {
 			frame = JSON.parse(event.data)
 		} catch {
+			return
+		}
+		if (frame.type === 'dirty') {
+			flushActiveVolume()
 			return
 		}
 		if (frame.type === 'state' || frame.id === undefined) return

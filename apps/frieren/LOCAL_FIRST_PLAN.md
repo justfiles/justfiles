@@ -310,6 +310,69 @@ Tests to add in `packages/fs`:
 works. Then: open paint, ask the agent to draw something → the open window
 updates within one sync cycle. (Reload-offline lands in Phase 3.)
 
+### Phase 2c — live agent→client push (collapse the one-sync-cycle lag)
+
+2b delivers the agent's changes correctly but on the **pull cadence**: the agent
+writes `/state/<id>.json` on the server replica, and the open window only updates
+when the client's next `sync()` pulls it down — up to `syncInterval` (30s,
+`synced.ts:37`) later. `volume.watch` is instant; the *pull* it waits on is not.
+2c closes that gap by having the server nudge the client to pull immediately,
+reusing the **existing `_caps` WebSocket** — no new socket, no new protocol
+layer, just a trigger on a channel that already exists.
+
+**Mechanism**
+- **Server** (`frieren.app.ts`): the server kernel already emits `app.update` on
+  every dispatch, and `ensureSubscribed` (`:140`) subscribes once and fans those
+  events to the matching per-app sockets. On the *server* kernel, `app.update`
+  fires only for the **agent's own** dispatches (`controller.run`, `actor:'agent'`,
+  `:357`) — exactly "the agent changed app X." So in that same handler, also
+  send a content-free `{type:'dirty', appId}` to every **caps** socket (tagged
+  `serializeAttachment({caps:true})` on accept, `:267`); and call
+  `ensureSubscribed()` from the `_caps` accept branch so the subscription is live
+  for a tab that only holds the caps socket. ~4 lines; no new dispatch hook.
+- **Client** (`capabilities.client.ts`): the `Frame` union already carries
+  server-initiated frames, and `onmessage` already ignores frames with no `id`
+  (`:96`) — so `{type:'dirty'}` is a clean drop-in. Add a branch that calls the
+  synced volume's `flush()` (`synced.ts:301`) → immediate push+pull → the
+  agent's write lands in local IDB tagged `REMOTE_SOURCE` → the **2b
+  `volume.watch` in `host.ts:270` fires unchanged** → the GUI re-renders. The
+  client can flush unconditionally and let the per-file watch route it; `appId` on
+  the frame is optional, for future targeting.
+
+**Two gotchas (the only non-trivial parts)**
+1. The `_caps` socket is a **lazy singleton**, opened on the first *network*
+   capability (`capabilities.client.ts:46`). A volume-only app (paint — the
+   canonical "agent draws on the open window" case) never opens it, so the push
+   would never arrive. Fix: open the caps socket **eagerly** while any app window
+   is open (or at OS boot). One socket per session; cheap.
+2. `flush()` lives on the `SyncedVolume` singleton in `fs.ts`, not reachable from
+   `capabilities.client.ts` today. Wire it minimally: export a module-level
+   `flushActiveVolume()` from `fs.ts` and call it from the dirty branch — keeps
+   the caps client decoupled from volume internals.
+
+**Coalescing / offline.** `flush()` already returns the in-flight sync if one is
+running (`synced.ts:302`), so a burst of agent writes triggers at most one extra
+pull. Offline, dirty frames simply don't arrive and the normal interval /
+`online` flush still converges — i.e. it degrades to exactly 2b.
+
+**No `@justfiles/fs` change.** `volume.watch` already exists; 2c is FE + worker
+only: ~4 lines in `ensureSubscribed` + a caps-branch `ensureSubscribed()` call
+(server); a ~3-line `onmessage` branch + eager open + a one-line `fs.ts` export
+(client). It is the lightweight successor to the per-app `state` fan-out: instead
+of computing and pushing full state, the server pushes "something changed, pull"
+and lets the client's existing sync + watch do the rest, over the one shared
+socket. (When the per-app server-kernel path is deleted in Phase 3.5, this dirty
+push and the caps socket are what remain of the old `ensureSubscribed` fan-out.)
+
+**Still 100% functional?** Yes — purely additive. If the frame is never sent or
+never handled, behaviour is identical to 2b (≤ one sync cycle). No flag needed;
+it only has any effect when local apps are on.
+
+**Verify**: open paint (local), ask the agent to draw → the window updates in
+~one round-trip + one incremental pull, not after the 30s tick. Offline: the push
+doesn't arrive; on reconnect the `online` flush pulls and the window updates. All
+of the user's open tabs update.
+
 ---
 
 ## Phase 3 — PWA + offline boot
@@ -417,7 +480,7 @@ Start with a Worker; revisit only when untrusted apps land.
    must be below the volume, since sync pulls bypass the volume wrapper). Host
    watches each open app's state file (and open documents) and pushes fresh
    state via the existing GUI channel. Generalizes to documents; accepts a
-   one-sync-cycle delay.
+   one-sync-cycle delay — collapsed to ~instant by the Phase 2c dirty-push.
 4. ~~Bundle offline mechanism~~ — **resolved: load `gui.js` from the local volume**
    (blob-URL `import`), same as `app.js`. SW caches the shell only; the
    token-in-URL problem disappears; offline bundles become a volume-hydration
@@ -425,8 +488,10 @@ Start with a Worker; revisit only when untrusted apps land.
 5. ~~Server change-monitoring~~ — **resolved: none needed.** The kernel is
    stateless between dispatches, so the server reads current state on demand; its
    WS state-push (`ensureSubscribed`) is retired for client-side apps. The WS
-   becomes a **capability proxy only** (new capability-invoke frame; server
-   re-authorizes scopes from the installed manifest).
+   becomes a **capability proxy** (new capability-invoke frame; server
+   re-authorizes scopes from the installed manifest) — and, in Phase 2c, also
+   carries a content-free `dirty` push so the client pulls the agent's changes
+   immediately instead of waiting for the next interval.
 
 ## Per-phase verification (every phase)
 

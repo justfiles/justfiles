@@ -142,10 +142,17 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		subscribed = true
 		getKernel().subscribe((event) => {
 			if (event.type !== 'app.update') return
-			const frame = JSON.stringify({ type: 'state', state: event.state })
+			const stateFrame = JSON.stringify({ type: 'state', state: event.state })
+			// Content-free nudge for browser-kernel tabs: the agent changed this app
+			// server-side; pull now instead of waiting for the next sync interval.
+			const dirtyFrame = JSON.stringify({ type: 'dirty', appId: event.appId })
 			for (const socket of deps.sockets()) {
-				const attachment = socket.deserializeAttachment() as { appId?: string } | null
-				if (attachment?.appId === event.appId) socket.send(frame)
+				const attachment = socket.deserializeAttachment() as {
+					appId?: string
+					caps?: boolean
+				} | null
+				if (attachment?.caps) socket.send(dirtyFrame)
+				else if (attachment?.appId === event.appId) socket.send(stateFrame)
 			}
 		})
 	}
@@ -263,8 +270,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		const { 0: client, 1: server } = new WebSocketPair()
 		deps.acceptWebSocket(server)
 		if (appId === CAPS_SOCKET) {
-			// Capability proxy only: no app id, no state push, no snapshot.
+			// Capability proxy + `dirty` push target: no app id, no state push, no
+			// snapshot. Subscribe so the agent's server-side writes nudge this tab.
 			server.serializeAttachment({ caps: true })
+			ensureSubscribed()
 			return new Response(null, { status: 101, webSocket: client })
 		}
 		server.serializeAttachment({ appId })
