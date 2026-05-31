@@ -53,19 +53,31 @@ function writeRegistry(profiles: LocalProfile[]): void {
 	localStorage.setItem(REGISTRY_KEY, JSON.stringify(profiles))
 }
 
-// The signed-out workspace. Never boot a remote user's most-recent profile when
-// auth is absent; choose an existing anonymous profile or create the browser's
-// default local profile.
+// Profiles are selected from browser-local state before Clerk finishes loading.
+// The most-recent profile is the current workspace; explicit sign-out makes the
+// anonymous profile current.
+function touchProfile(profiles: LocalProfile[], profile: LocalProfile): LocalProfile {
+	profile.lastOpenedAt = Date.now()
+	writeRegistry(profiles)
+	return profile
+}
+
+function currentProfile(): LocalProfile {
+	const profiles = readRegistry()
+	const profile = [...profiles].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
+	if (profile) return touchProfile(profiles, profile)
+	const next: LocalProfile = { id: 'local', lastOpenedAt: Date.now() }
+	profiles.push(next)
+	writeRegistry(profiles)
+	return next
+}
+
 function localProfile(): LocalProfile {
 	const profiles = readRegistry()
 	const profile =
 		profiles.find((p) => !p.remoteUserId && p.id === 'local') ??
 		[...profiles].filter((p) => !p.remoteUserId).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
-	if (profile) {
-		profile.lastOpenedAt = Date.now()
-		writeRegistry(profiles)
-		return profile
-	}
+	if (profile) return touchProfile(profiles, profile)
 	const next: LocalProfile = { id: 'local', lastOpenedAt: Date.now() }
 	profiles.push(next)
 	writeRegistry(profiles)
@@ -79,11 +91,8 @@ function profileForUser(remoteUserId: string): LocalProfile {
 	if (!profile) {
 		profile = { id: crypto.randomUUID(), remoteUserId, lastOpenedAt: Date.now() }
 		profiles.push(profile)
-	} else {
-		profile.lastOpenedAt = Date.now()
 	}
-	writeRegistry(profiles)
-	return profile
+	return touchProfile(profiles, profile)
 }
 
 function forgetProfileEntry(id: string): void {
@@ -212,17 +221,20 @@ function setActive(
 	return entry
 }
 
-function openLocalProfile(): ProfileVolume {
-	const profile = localProfile()
+function openProfileVolume(profile: LocalProfile): ProfileVolume {
 	const name = dbName(profile.id)
 	return setActive(profile.id, name, idbStorage(name), profile.remoteUserId).volume
 }
 
-// Open the default local profile's IDB volume. No backend is required here;
-// auth later switches to an account profile and starts sync.
+function openLocalProfile(): ProfileVolume {
+	return openProfileVolume(localProfile())
+}
+
+// Open the current browser profile's IDB volume. Remote profiles boot from their
+// local replica immediately; auth later starts sync or switches after sign-out.
 export function openProfile(): Promise<ProfileVolume> {
 	if (active) return Promise.resolve(active.volume)
-	return Promise.resolve(openLocalProfile())
+	return Promise.resolve(openProfileVolume(currentProfile()))
 }
 
 export function activeProfileId(): string | null {

@@ -17,9 +17,8 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 
-	// The local profile volume is opened at boot (App); the singleton hands back
-	// the same replica. getToken is only needed by network capabilities, which
-	// degrade when signed out.
+	// The current profile volume is opened at boot (App); the singleton hands back
+	// the same replica. getToken is only needed by network capabilities.
 	const [volumePromise] = useState(() => openProfile())
 	const [localKernel] = useState(() => {
 		let kernelPromise: Promise<ReturnType<typeof createClientKernel>> | undefined

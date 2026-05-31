@@ -73,10 +73,22 @@ describe('profile session switching', () => {
 		vi.unstubAllGlobals()
 	})
 
-	test('signed-out boot opens the local profile, not the last account profile', async () => {
+	test('boot opens the current account profile before auth sync', async () => {
 		const { fs } = await loadFs([
 			{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 2 },
 			{ id: 'local', lastOpenedAt: 1 }
+		])
+
+		await fs.openProfile()
+
+		expect(fs.activeProfileId()).toBe('account-profile')
+		expect(fs.activeRemoteUserId()).toBe('user-1')
+	})
+
+	test('boot opens local when the signed-out profile is current', async () => {
+		const { fs } = await loadFs([
+			{ id: 'account-profile', remoteUserId: 'user-1', lastOpenedAt: 1 },
+			{ id: 'local', lastOpenedAt: 2 }
 		])
 
 		await fs.openProfile()

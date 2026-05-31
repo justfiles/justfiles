@@ -39,23 +39,29 @@ function App() {
 	const [chooserForUserId, setChooserForUserId] = useState<string | null>(null)
 	const showChooser = chooserForUserId !== null && chooserForUserId === userId
 
-	// Boot a local profile immediately — independent of Clerk. The desktop never
-	// waits for clerk-js to load or for a sign-in; it opens local IDB and renders.
+	// Boot the current browser profile immediately — independent of Clerk. If the
+	// current profile belongs to an account, its local replica renders before sync.
 	useEffect(() => {
 		let cancelled = false
-		void openProfile()
-			.then(() => {
-				if (!cancelled) setProfileId(activeProfileId())
-			})
-			.catch(() => {})
+		void (async () => {
+			const vol = await openProfile()
+			let cachedOnboardingDone = false
+			if (activeProfileHasRemoteUser()) {
+				try {
+					cachedOnboardingDone = (await resolveOnboardingState(vol)) === 'done'
+				} catch {}
+			}
+			if (cancelled) return
+			if (cachedOnboardingDone) setOnboardingDone(true)
+			setProfileId(activeProfileId())
+		})().catch(() => {})
 		return () => {
 			cancelled = true
 		}
 	}, [])
 
-	// Auth only upgrades the running OS; it never gates boot. When a signed-in
-	// session resolves, switch to that account profile and start sync. Signing out
-	// switches back to the browser-local profile.
+	// Auth starts sync for the current account profile. It only switches profiles
+	// when Clerk resolves to signed-out or a different signed-in user.
 	useEffect(() => {
 		if (!isLoaded) return
 		let cancelled = false
