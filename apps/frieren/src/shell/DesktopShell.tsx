@@ -1,14 +1,12 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
-import { useMemo, useState, useSyncExternalStore } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import { AppMenus } from '@/components/AppMenus'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Dock } from '@/components/Dock'
 import { Menubar } from '@/components/Menubar'
 import { Button } from '@/components/ui/button'
-import { Window } from '@/components/Window'
 import { useAgentConnection } from '../agent/hooks'
-import { MessagesPanel } from '../agent/MessagesPanel'
 import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
 import { resolveAppTitle } from '../apps/catalog'
@@ -24,7 +22,8 @@ import {
 	selectOpenWindows,
 	selectVisibleFullscreenId
 } from '../os/selectors'
-import type { OsWindow, WindowRect } from '../os/state'
+import type { OsWindow } from '../os/state'
+import { AgentSidebar } from './AgentSidebar'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -112,9 +111,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	// `windows` only changes identity when the open set/order changes, so the
 	// running set stays stable across rect/mode edits.
 	const openAppIds = useMemo(() => new Set(windows.map((w) => w.appId)), [windows])
-	// The agent surface is an overlay, not a persisted window — its position is
-	// session-local and lives here, not in OS state.
-	const [agentRect, setAgentRect] = useState<WindowRect>(() => ({ x: 120, y: 80, w: 420, h: 560 }))
 
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Switch User…', onSelect: onSwitchUser },
@@ -198,18 +194,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						<AppViewport id={window.id} />
 					</AppWindow>
 				))}
-				{agentOpen ? (
-					<Window
-						title="Messages"
-						rect={agentRect}
-						focused={true}
-						zIndex={windows.length + 100}
-						onClose={() => dispatch({ type: 'agent.setOpen', open: false })}
-						onRectCommit={setAgentRect}
-					>
-						<MessagesPanel />
-					</Window>
-				) : null}
 				{fullscreenId ? null : (
 					<Dock
 						apps={installedApps}
@@ -218,6 +202,12 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						onContextMenu={(event, app) => menu.open(event, appMenuItems(app))}
 					/>
 				)}
+				{/* Overlay on the right of the desktop, below the menubar. It covers
+					    whatever is underneath rather than squishing the desktop. */}
+				<AgentSidebar
+					open={agentOpen}
+					onClose={() => dispatch({ type: 'agent.setOpen', open: false })}
+				/>
 			</div>
 			<ContextMenu state={menu.state} onClose={menu.close} />
 		</div>

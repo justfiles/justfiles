@@ -31,7 +31,7 @@ export function MessagesPanel() {
 		<div
 			className="flex h-full w-full flex-col"
 			style={{
-				background: '#ffffff',
+				background: 'transparent',
 				color: 'var(--text)',
 				fontFamily: 'var(--font-ui)',
 				fontSize: 'var(--text-ui)'
@@ -39,7 +39,7 @@ export function MessagesPanel() {
 		>
 			<header
 				className="flex flex-none flex-col items-center gap-1 px-3 py-3"
-				style={{ background: 'var(--surface)', borderBottom: '1px solid var(--rule)' }}
+				style={{ borderBottom: '1px solid rgba(0,0,0,0.07)' }}
 			>
 				<img
 					src={agentAvatarUrl}
@@ -67,7 +67,7 @@ export function MessagesPanel() {
 
 			<form
 				className="flex flex-none items-end gap-2 px-3 py-2"
-				style={{ borderTop: '1px solid var(--rule)', background: 'var(--surface)' }}
+				style={{ borderTop: '1px solid rgba(0,0,0,0.07)' }}
 				onSubmit={(event) => {
 					event.preventDefault()
 					submit()
@@ -88,8 +88,8 @@ export function MessagesPanel() {
 					disabled={!ready}
 					className="min-h-7 max-h-32 flex-1 resize-none rounded-full px-3 py-1 outline-none disabled:opacity-50"
 					style={{
-						background: '#ffffff',
-						border: '1px solid var(--rule)',
+						background: 'rgba(255,255,255,0.6)',
+						border: '1px solid rgba(255,255,255,0.7)',
 						color: 'var(--text)',
 						fontFamily: 'var(--font-ui)',
 						fontSize: 'var(--text-ui)'
@@ -154,7 +154,7 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 			<div
 				className="max-w-[78%] whitespace-pre-wrap break-words px-3 py-1.5"
 				style={{
-					background: isUser ? 'var(--focus)' : '#e5e5ea',
+					background: isUser ? 'var(--focus)' : 'rgba(255,255,255,0.62)',
 					color: isUser ? 'var(--on-focus)' : 'var(--text)',
 					borderRadius: '14px'
 				}}
