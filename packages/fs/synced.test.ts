@@ -675,17 +675,6 @@ describe('synced', () => {
 	// 10. Local-first boot (Phase 4a)
 	// -------------------------------------------------------------------------
 
-	it('works as a local-only volume when no remote is given', async () => {
-		const vol = track(await synced({ local: journaledStorage(), interval: 99_999 }))
-
-		expect(vol.status()).toBe('local-only')
-		await vol.writeFile('/a.txt', enc.encode('local'))
-		expect(dec.decode(await vol.readFile('/a.txt'))).toBe('local')
-		// flush is a no-op that resolves; status stays local-only.
-		await vol.flush()
-		expect(vol.status()).toBe('local-only')
-	})
-
 	it('localFirst resolves immediately even if the remote never responds', async () => {
 		const remote = journaledStorage()
 		const hanging: typeof remote = {

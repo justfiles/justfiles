@@ -1,14 +1,13 @@
 import { apiStorage, createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
-import { type SyncStatus, synced, type Volume } from '@justfiles/fs'
+import { type SyncStatus as FsSyncStatus, synced, type Volume, volume } from '@justfiles/fs'
 import { idbStorage } from '@justfiles/fs/storage/idb'
 
-export type { FsClient, SyncStatus, Volume }
+export type { FsClient, Volume }
+export type SyncStatus = FsSyncStatus | 'local-only'
 
-export type GetToken = () => Promise<string | null>
+type SyncVolume = Awaited<ReturnType<typeof synced>>
 
-// A synced local volume: a browser-local replica that reconciles with the
-// backend. Adds the sync lifecycle on top of the plain volume surface.
-export type SyncedVolume = Volume & {
+export type ProfileVolume = Volume & {
 	flush(): Promise<void>
 	pause(): void
 	resume(): void
@@ -16,6 +15,8 @@ export type SyncedVolume = Volume & {
 	status(): SyncStatus
 	onStatusChange(fn: (status: SyncStatus) => void): () => void
 }
+
+export type GetToken = () => Promise<string | null>
 
 function makeHeaders(getToken: GetToken) {
 	return async () => {
@@ -29,12 +30,12 @@ export function createFsClient(getToken: GetToken): FsClient {
 }
 
 // Local profiles own local storage, not Clerk users. A profile is a browser-local
-// identity that holds one IDB replica; signing in attaches a remote user to it.
-// Keeping the registry separate from auth lets local data survive sign-out and,
-// later, lets the OS boot a profile with no auth at all (Phase 4d).
+// identity that holds one IDB replica; it can be anonymous (no account), so the
+// OS boots one with no auth at all. Signing in attaches a remote user to the
+// profile and starts sync; signing out keeps the local data.
 export type LocalProfile = {
 	id: string
-	remoteUserId: string
+	remoteUserId?: string
 	lastOpenedAt: number
 }
 
@@ -53,8 +54,22 @@ function writeRegistry(profiles: LocalProfile[]): void {
 	localStorage.setItem(REGISTRY_KEY, JSON.stringify(profiles))
 }
 
-// Find (or create) the local profile that owns this remote user's storage, and
-// mark it most-recently opened.
+// The profile to boot with no auth: the most recently opened one, or a fresh
+// anonymous profile on first visit. Marked most-recently opened.
+function currentProfile(): LocalProfile {
+	const profiles = readRegistry()
+	const last = [...profiles].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
+	if (last) {
+		last.lastOpenedAt = Date.now()
+		writeRegistry(profiles)
+		return last
+	}
+	const profile: LocalProfile = { id: crypto.randomUUID(), lastOpenedAt: Date.now() }
+	writeRegistry([profile])
+	return profile
+}
+
+// Find (or create) the local profile that owns a remote user, marking it opened.
 function profileForUser(remoteUserId: string): LocalProfile {
 	const profiles = readRegistry()
 	let profile = profiles.find((p) => p.remoteUserId === remoteUserId)
@@ -80,34 +95,85 @@ type Active = {
 	profileId: string
 	dbName: string
 	local: ReturnType<typeof idbStorage>
-	volume: Promise<SyncedVolume>
+	sync: SyncVolume | null
+	volume: ProfileVolume
+	status: SyncStatus
+	unsubscribeSyncStatus?: () => void
 	teardown: () => void
 }
 
 let active: Active | null = null
+const statusListeners = new Set<() => void>()
 
-// Singleton, per-profile synced volume. The app shell, OS provider, and
-// onboarding all read/write one local replica, so there is exactly one sync loop
-// per profile. A different profile releases the previous replica first.
-export function getFsVolume(userId: string, getToken: GetToken): Promise<SyncedVolume> {
-	const profile = profileForUser(userId)
-	if (active && active.profileId === profile.id) return active.volume
-	void releaseFsVolume({ flush: false })
+function emitStatus(): void {
+	for (const fn of statusListeners) fn()
+}
 
-	const name = dbName(profile.id)
-	const local = idbStorage(name)
-	const volume = (async () => {
-		const remote = await apiStorage(createFsClient(getToken))
-		// localFirst: return the local replica immediately and sync in the
-		// background — boot does not block on first sync settling.
-		return synced({ local, remote, lazyContent: true, localFirst: true })
-	})()
+function setActiveStatus(entry: Active, status: SyncStatus): void {
+	if (entry.status === status) return
+	entry.status = status
+	emitStatus()
+}
+
+function createProfileVolume(localVolume: Volume, sync: () => SyncVolume | null): ProfileVolume {
+	return {
+		...localVolume,
+		// `synced` only adds behavior Frieren needs for remote-backed reads:
+		// lazy blob hydration. Writes/watch/stat can use the same local storage.
+		readFile: (path) => sync()?.readFile(path) ?? localVolume.readFile(path),
+		flush: () => sync()?.flush() ?? Promise.resolve(),
+		pause: () => sync()?.pause(),
+		resume: () => sync()?.resume(),
+		destroy: () => sync()?.destroy(),
+		status: activeStatus,
+		onStatusChange: (fn) => onActiveStatusChange(() => fn(activeStatus()))
+	}
+}
+
+function stopSync(entry: Active): void {
+	entry.unsubscribeSyncStatus?.()
+	entry.unsubscribeSyncStatus = undefined
+	entry.sync?.pause()
+	entry.sync?.destroy()
+	entry.sync = null
+	setActiveStatus(entry, 'local-only')
+}
+
+async function startSync(entry: Active, getToken: GetToken): Promise<void> {
+	entry.unsubscribeSyncStatus?.()
+	entry.sync?.destroy()
+	entry.sync = null
+	setActiveStatus(entry, 'connecting')
+	const remote = await apiStorage(createFsClient(getToken))
+	const syncVolume = await synced({
+		local: entry.local,
+		remote,
+		lazyContent: true,
+		localFirst: true
+	})
+	if (active !== entry) {
+		syncVolume.destroy()
+		return
+	}
+	entry.sync = syncVolume
+	setActiveStatus(entry, syncVolume.status())
+	entry.unsubscribeSyncStatus = syncVolume.onStatusChange((next) => {
+		if (active === entry) setActiveStatus(entry, next)
+	})
+}
+
+function setActive(profileId: string, name: string, local: ReturnType<typeof idbStorage>): Active {
+	const localVolume = volume(local)
+	let entry: Active
+	const managed = createProfileVolume(localVolume, () => entry.sync)
 
 	// Online-aware sync: stop pushing when the network drops, resume when it
 	// returns, and flush pending writes to the backend before the tab goes away.
-	const onOnline = () => void volume.then((v) => v.resume()).catch(() => {})
-	const onOffline = () => void volume.then((v) => v.pause()).catch(() => {})
-	const flush = () => void volume.then((v) => v.flush()).catch(() => {})
+	const onOnline = () => active === entry && entry.sync?.resume()
+	const onOffline = () => active === entry && entry.sync?.pause()
+	const flush = () => {
+		if (active === entry) void entry.sync?.flush().catch(() => {})
+	}
 	const onHidden = () => {
 		if (document.visibilityState !== 'visible') flush()
 	}
@@ -116,35 +182,93 @@ export function getFsVolume(userId: string, getToken: GetToken): Promise<SyncedV
 	window.addEventListener('pagehide', flush)
 	document.addEventListener('visibilitychange', onHidden)
 
-	active = {
-		profileId: profile.id,
+	entry = {
+		profileId,
 		dbName: name,
 		local,
-		volume,
+		sync: null,
+		volume: managed,
+		status: 'local-only',
 		teardown: () => {
+			entry.unsubscribeSyncStatus?.()
 			window.removeEventListener('online', onOnline)
 			window.removeEventListener('offline', onOffline)
 			window.removeEventListener('pagehide', flush)
 			document.removeEventListener('visibilitychange', onHidden)
 		}
 	}
-	return volume
+	active = entry
+	emitStatus()
+	return entry
+}
+
+// Open the active local profile's IDB volume. No backend is required here; when
+// auth exists, `attachRemoteUser` composes a `synced(local, remote)` sidecar on
+// top of the same local storage.
+export function openProfile(): Promise<ProfileVolume> {
+	if (active) return Promise.resolve(active.volume)
+	const profile = currentProfile()
+	const name = dbName(profile.id)
+	const entry = setActive(profile.id, name, idbStorage(name))
+	return Promise.resolve(entry.volume)
+}
+
+export function activeProfileId(): string | null {
+	return active?.profileId ?? null
+}
+
+export function activeProfileHasRemoteUser(): boolean {
+	const profileId = active?.profileId
+	return profileId ? Boolean(readRegistry().find((p) => p.id === profileId)?.remoteUserId) : false
+}
+
+export function activeStatus(): SyncStatus {
+	return active?.status ?? 'local-only'
+}
+
+export function onActiveStatusChange(fn: () => void): () => void {
+	statusListeners.add(fn)
+	return () => statusListeners.delete(fn)
+}
+
+// Attach a backend session to the local profile and start sync. Called when a
+// signed-in user resolves — never a boot prerequisite. Do not auto-merge an
+// anonymous profile into an account; keep it as an orphan and switch/create the
+// account profile instead.
+export async function attachRemoteUser(userId: string, getToken: GetToken): Promise<ProfileVolume> {
+	const cur = active
+	if (cur && readRegistry().find((p) => p.id === cur.profileId)?.remoteUserId === userId) {
+		await startSync(cur, getToken)
+		return cur.volume
+	}
+
+	// Switch to (or create) the profile that owns this user.
+	await releaseFsVolume({ flush: false })
+	const profile = profileForUser(userId)
+	const entry = setActive(profile.id, dbName(profile.id), idbStorage(dbName(profile.id)))
+	await startSync(entry, getToken)
+	return entry.volume
+}
+
+// Stop syncing without releasing the replica — used on sign-out so the desktop
+// keeps working on the local profile while no backend session exists.
+export function pauseActiveVolume(): void {
+	if (active) stopSync(active)
 }
 
 // Stop syncing and release the active replica WITHOUT deleting it. Called on
-// sign-out / user switch — local profile data is preserved on this browser so the
-// user can return to it. Per-profile DB names already prevent cross-user leakage,
-// so there is nothing to delete for safety. Explicit user switches flush first;
-// implicit auth teardown drops sync without using a possibly-new user's token.
+// user switch — local profile data is preserved on this browser so the user can
+// return to it. Per-profile DB names already prevent cross-user leakage, so
+// there is nothing to delete for safety.
 export async function releaseFsVolume(options: { flush?: boolean } = {}): Promise<void> {
 	const prev = active
 	if (!prev) return
 	active = null
+	emitStatus()
 	prev.teardown()
-	const vol = await prev.volume.catch(() => null)
-	if (options.flush ?? true) await vol?.flush().catch(() => {})
-	else vol?.pause()
-	vol?.destroy()
+	if (options.flush ?? true) await prev.sync?.flush().catch(() => {})
+	else prev.sync?.pause()
+	prev.sync?.destroy()
 	prev.local.destroy()
 }
 
@@ -163,7 +287,7 @@ export async function forgetActiveProfile(): Promise<void> {
 // socket's `dirty` push calls this so the agent's server-side writes land in
 // the local replica at once instead of waiting for the next sync interval.
 export function flushActiveVolume(): void {
-	void active?.volume.then((v) => v.flush()).catch(() => {})
+	void active?.sync?.flush().catch(() => {})
 }
 
 function deleteIdb(name: string): Promise<void> {

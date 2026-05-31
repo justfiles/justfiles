@@ -7,8 +7,7 @@ import { type Volume, volume } from './volume'
 
 type Props = {
 	local: Storage
-	// Optional: when absent, the volume is purely local (no replication).
-	remote?: Storage
+	remote: Storage
 	interval?: number
 	lazyContent?: boolean
 	// Local-first boot: return the local volume immediately and run the first
@@ -23,7 +22,7 @@ type SyncState = {
 
 // What the sync loop knows about replication. Network/auth states (offline,
 // unauthenticated) are layered on top by the app, which holds those signals.
-export type SyncStatus = 'local-only' | 'connecting' | 'syncing' | 'synced' | 'error'
+export type SyncStatus = 'connecting' | 'syncing' | 'synced' | 'error'
 
 const SYNC_XATTR_PREFIX = 'trusted.sync.'
 const SYNC_LOCAL_ONLY_XATTR = `${SYNC_XATTR_PREFIX}local-only`
@@ -107,7 +106,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 */
 	async function push(localCursor: string, clientId: string): Promise<string> {
 		const remote = props.remote
-		if (!remote || !props.local.caps?.deltaUpdates) return localCursor
+		if (!props.local.caps?.deltaUpdates) return localCursor
 		const [{ ops, cursor }] = await Promise.all([
 			// Exclude ops the sync layer wrote to local (tagged REMOTE_SOURCE) — only push user-originated writes.
 			props.local.caps.deltaUpdates(localCursor, { source: REMOTE_SOURCE, sourceMode: 'exclude' }),
@@ -143,7 +142,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 */
 	async function pull(remoteCursor: string, clientId: string): Promise<string> {
 		const remote = props.remote
-		if (!remote?.caps?.deltaUpdates) return remoteCursor
+		if (!remote.caps?.deltaUpdates) return remoteCursor
 		const { ops, cursor } = await remote.caps.deltaUpdates(remoteCursor, {
 			source: clientId,
 			sourceMode: 'exclude'
@@ -171,7 +170,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 */
 	async function bootstrap(): Promise<void> {
 		const remote = props.remote
-		if (!remote?.caps?.fullScan)
+		if (!remote.caps?.fullScan)
 			throw new Error('remote backend does not support scan — bootstrap unavailable')
 		// Adoption guard: only reconcile (delete local entries absent from remote)
 		// once this profile has pushed at least once. A never-pushed profile is
@@ -295,7 +294,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	let retryCount = 0
 	let flushQueued: Promise<void> | null = null
 
-	let _status: SyncStatus = props.remote ? 'connecting' : 'local-only'
+	let _status: SyncStatus = 'connecting'
 	const statusListeners = new Set<(status: SyncStatus) => void>()
 	function setStatus(next: SyncStatus): void {
 		if (_status === next) return
@@ -315,7 +314,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	function run() {
-		if (running || paused || destroyed || !props.remote) return
+		if (running || paused || destroyed) return
 		setStatus('syncing')
 		running = sync()
 			.then(() => {
@@ -337,7 +336,6 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// call have synced. If a sync is already in flight (it may predate those
 	// writes), chain one more after it; concurrent callers share that follow-up.
 	function flush(): Promise<void> {
-		if (!props.remote) return Promise.resolve()
 		if (running) {
 			flushQueued ??= running.then(() => {
 				flushQueued = null
@@ -383,11 +381,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	// Kick the first sync. localFirst boots without waiting on it (the local
 	// volume is the working copy); otherwise block until it settles so the first
-	// read already sees synced data. A local-only volume has nothing to sync.
-	if (props.remote) {
-		if (props.localFirst) run()
-		else await flush()
-	}
+	// read already sees synced data.
+	if (props.localFirst) run()
+	else await flush()
 
 	if (props.lazyContent) {
 		// Stub inodes (created by bootstrap or pull) have no local contentHash.
@@ -400,8 +396,6 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			// metaCache may be stale — verify against storage before fetching.
 			const storedMeta = await props.local.getMeta(stat.ino)
 			if (storedMeta?.contentHash) return localVol.readFile(path)
-			// No remote to hydrate from — serve whatever local has.
-			if (!props.remote) return localVol.readFile(path)
 			// Genuinely not hydrated — fetch from remote.
 			const data = await props.remote.getBlob(stat.ino)
 			if (data.length > 0) await props.local.putBlob(stat.ino, data, { source: REMOTE_SOURCE })

@@ -9,11 +9,13 @@ vi.mock('@clerk/clerk-react', () => ({
 }))
 
 vi.mock('../fs', () => ({
-	getFsVolume: async () => ({
+	activeProfileHasRemoteUser: () => false,
+	openProfile: async () => ({
 		exists: async () => false,
 		readFile: async () => new Uint8Array(),
 		mkdir: async () => {},
-		writeFile: async () => {}
+		writeFile: async () => {},
+		status: () => 'local-only'
 	})
 }))
 

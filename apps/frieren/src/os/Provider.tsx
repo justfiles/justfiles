@@ -5,23 +5,22 @@ import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { createClientKernel } from '../apps/kernel.client'
+import { seedBuiltins } from '../apps/seed'
 import type { InstalledApp } from '../apps/types'
-import { getFsVolume } from '../fs'
+import { activeProfileHasRemoteUser, openProfile } from '../fs'
 import { createFrierenClient } from './client'
 import { OsContext } from './hooks'
 import { bootOsStore, createOsStore } from './store'
 
 export function OSProvider({ children }: { children: ReactNode }) {
-	const { getToken, userId } = useAuth()
+	const { getToken, isLoaded, isSignedIn, userId } = useAuth()
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 
-	// The provider only mounts for a signed-in, onboarded user, so userId is set;
-	// the singleton hands back the same replica App created during onboarding.
-	const [volumePromise] = useState(() => {
-		if (!userId) throw new Error('OSProvider requires a signed-in user')
-		return getFsVolume(userId, () => getTokenRef.current())
-	})
+	// The local profile volume is opened at boot (App); the singleton hands back
+	// the same replica. getToken is only needed by network capabilities, which
+	// degrade when signed out.
+	const [volumePromise] = useState(() => openProfile())
 	const [localKernel] = useState(() => {
 		let kernelPromise: Promise<ReturnType<typeof createClientKernel>> | undefined
 		return () =>
@@ -57,6 +56,23 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		void bootOsStore(store, volumePromise)
 	}, [store, volumePromise])
+
+	useEffect(() => {
+		let cancelled = false
+		void (async () => {
+			// Anonymous profiles can seed immediately. Profiles already associated with
+			// an account should wait until Clerk resolves: signed-in profiles are
+			// materialized by the server; signed-out ones need local built-ins.
+			const hasRemoteUser = activeProfileHasRemoteUser()
+			if (hasRemoteUser && (!isLoaded || isSignedIn)) return
+			const fs = await volumePromise
+			await seedBuiltins(await localKernel(), fs)
+			if (!cancelled) client.refresh()
+		})().catch(() => {})
+		return () => {
+			cancelled = true
+		}
+	}, [client, isLoaded, isSignedIn, localKernel, volumePromise])
 
 	useEffect(() => {
 		let cancelled = false
@@ -123,7 +139,6 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			store.dispatch(action)
 		})
 		const unsubscribeStore = store.subscribe(flushPending)
-		client.connect()
 		return () => {
 			unsubscribeRemote()
 			unsubscribeStore()
@@ -135,6 +150,22 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			resetCapabilitySocket()
 		}
 	}, [client, store])
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: backend sockets must reconnect when Clerk's session changes.
+	useEffect(() => {
+		// Auth is optional. Before/without a signed-in session, keep backend sockets
+		// closed and let the client replay the local catalog.
+		resetCapabilitySocket()
+		if (!isLoaded || !isSignedIn) {
+			client.close()
+			return
+		}
+		client.connect()
+		return () => {
+			client.close()
+			resetCapabilitySocket()
+		}
+	}, [client, isLoaded, isSignedIn, userId])
 
 	const value = useMemo(() => ({ store, client }), [store, client])
 

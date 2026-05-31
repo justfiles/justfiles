@@ -395,6 +395,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			connectionState = 'disconnected'
 			isStreaming = false
 			emitAgent()
+			loadLocalApps()
 		},
 
 		send(frame) {
