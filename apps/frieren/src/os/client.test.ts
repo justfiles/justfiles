@@ -176,6 +176,30 @@ describe('FrierenClient apps + windows', () => {
 		expect(seen.at(-1)).toEqual(['notes'])
 	})
 
+	test('ready prefers the local catalog when available', async () => {
+		const sockets: FakeSocket[] = []
+		const client = createFrierenClient({
+			getToken: async () => 'tok',
+			listLocalApps: async () => [{ id: 'local', name: 'Local', description: '' }],
+			createSocket: () => {
+				const socket = new FakeSocket()
+				sockets.push(socket)
+				return socket
+			}
+		})
+		const seen: string[][] = []
+		client.subscribeApps((apps) => seen.push(apps.map((a) => a.id)))
+
+		client.connect()
+		await flush()
+		const socket = sockets[0]
+		if (!socket) throw new Error('socket not created')
+		socket.emit({ type: 'ready', apps: [{ id: 'server', name: 'Server', description: '' }] })
+		await flush()
+
+		expect(seen.at(-1)).toEqual(['local'])
+	})
+
 	test('removeApp drops the app from the catalog and notifies subscribers', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()

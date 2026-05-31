@@ -41,7 +41,8 @@ export function appFileUrl(app: { id: string; version: string }, path: string): 
 
 // "Uninstalling" a built-in writes a disabled marker so a version bump can't
 // resurrect it (Phase 4f writes these; reconcile only reads them).
-function disabledMarker(id: string): string {
+export function disabledMarker(id: string): string {
+	if (!/^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(id)) throw new Error(`invalid app id: ${id}`)
 	return `/system/apps/disabled/${id}.json`
 }
 

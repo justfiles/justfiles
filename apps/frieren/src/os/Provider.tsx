@@ -167,7 +167,10 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		}
 	}, [client, isLoaded, isSignedIn, userId])
 
-	const value = useMemo(() => ({ store, client }), [store, client])
+	const value = useMemo(
+		() => ({ store, client, localKernel, volume: volumePromise }),
+		[store, client, localKernel, volumePromise]
+	)
 
 	return <OsContext.Provider value={value}>{children}</OsContext.Provider>
 }

@@ -39,14 +39,12 @@ export interface AgentClient {
 export interface FrierenClient {
 	connect(): void
 	close(): void
-	// Re-run the handshake so a fresh `ready` re-lists installed apps (e.g. after
-	// an install). Distinct intent from connect(), which OSProvider owns for boot.
+	// Re-list installed apps from the local profile volume (e.g. after install).
 	refresh(): void
 	send(frame: object): void
 	agent: AgentClient
 	subscribeApps(listener: (apps: InstalledApp[]) => void): () => void
-	// Drop an app from the catalog optimistically (uninstall); a later `ready`
-	// or refresh() is authoritative.
+	// Drop an app from the catalog optimistically (uninstall); refresh() is authoritative.
 	removeApp(id: string): void
 	onRemoteWindow(handler: (action: OsAction) => void): () => void
 }
@@ -141,15 +139,22 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		for (const listener of appsListeners) listener(apps)
 	}
 
-	function loadLocalApps(): void {
+	function setApps(next: InstalledApp[]): void {
+		apps = next
+		emitApps()
+	}
+
+	function loadLocalApps(fallback?: InstalledApp[]): void {
+		if (!options.listLocalApps) {
+			if (fallback) setApps(fallback)
+			return
+		}
 		void options
-			.listLocalApps?.()
-			.then((localApps) => {
-				if (connectionState === 'ready') return
-				apps = localApps
-				emitApps()
+			.listLocalApps()
+			.then(setApps)
+			.catch(() => {
+				if (fallback) setApps(fallback)
 			})
-			.catch(() => {})
 	}
 
 	// --- server-echoed window open/close ---
@@ -249,10 +254,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || 'Frieren'
 			}
-			apps = Array.isArray(data.apps) ? (data.apps as InstalledApp[]) : []
 			connectionState = 'ready'
 			emitAgent()
-			emitApps()
+			loadLocalApps(Array.isArray(data.apps) ? (data.apps as InstalledApp[]) : [])
 			return
 		}
 
@@ -387,7 +391,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		agent,
 
 		connect,
-		refresh: connect,
+		refresh: () => loadLocalApps(),
 
 		close() {
 			generation++
@@ -414,8 +418,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		removeApp(id) {
 			const next = apps.filter((app) => app.id !== id)
 			if (next.length === apps.length) return
-			apps = next
-			emitApps()
+			setApps(next)
 		},
 
 		onRemoteWindow(handler) {

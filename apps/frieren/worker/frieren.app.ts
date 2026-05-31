@@ -1,12 +1,6 @@
-import {
-	type AppBundle,
-	type AppManifest,
-	type Kernel,
-	kernel,
-	safeBundlePath
-} from '@justfiles/app'
+import { type AppBundle, type Kernel, kernel, safeBundlePath } from '@justfiles/app'
 import type { Volume } from '@justfiles/fs'
-import { unzipSync } from 'fflate'
+import { bundleFromZip } from '../shared/app-bundle.ts'
 import { appFileUrl, CATALOG_PATH, type Catalog, reconcileBuiltins } from '../shared/appstore.ts'
 import { capabilityError, toWireError } from '../shared/capability-error.ts'
 import { invokeVolume } from '../shared/volume.capability.ts'
@@ -367,41 +361,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 // The `ASSETS` binding ignores the host; only the path matters.
 function assetRequest(path: string): Request {
 	return new Request(`https://assets.invalid${path}`)
-}
-
-function bundleFromZip(zip: Uint8Array): AppBundle {
-	const rawEntries = Object.entries(unzipSync(zip))
-	const entries = rawEntries.filter(
-		([path]) => !path.endsWith('/') && !rawEntries.some(([other]) => other.startsWith(`${path}/`))
-	)
-	const prefix = entries.some(([path]) => path === 'manifest.json')
-		? ''
-		: commonTopLevelPrefix(entries.map(([path]) => path))
-	const map = new Map<string, Uint8Array>()
-	for (const [path, bytes] of entries)
-		map.set(safeBundlePath(prefix ? path.slice(prefix.length) : path), bytes)
-	return {
-		async manifest() {
-			const bytes = map.get('manifest.json')
-			if (!bytes) throw new Error('missing manifest.json')
-			return JSON.parse(new TextDecoder().decode(bytes)) as AppManifest
-		},
-		async *list() {
-			yield* map.keys()
-		},
-		async read(path) {
-			const bytes = map.get(safeBundlePath(path))
-			if (!bytes) throw new Error(`file not found: ${path}`)
-			return bytes
-		}
-	}
-}
-
-function commonTopLevelPrefix(paths: string[]): string {
-	const roots = new Set(paths.map((path) => path.split('/')[0]).filter(Boolean))
-	if (roots.size !== 1) return ''
-	const prefix = `${[...roots][0]}/`
-	return paths.includes(`${prefix}manifest.json`) ? prefix : ''
 }
 
 const MIME: Record<string, string> = {

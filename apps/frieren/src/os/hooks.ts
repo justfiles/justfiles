@@ -1,12 +1,16 @@
+import type { Kernel } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
 import { useStore } from '@justfiles/state/react'
 import { createContext, useContext } from 'react'
+import type { Volume } from '../fs'
 import type { AgentClient, FrierenClient } from './client'
 import type { OsAction, OsState } from './state'
 
 export interface OsContextValue {
 	store: Store<OsState, OsAction>
 	client: FrierenClient
+	localKernel: () => Promise<Kernel>
+	volume: Promise<Volume>
 }
 
 export const OsContext = createContext<OsContextValue | null>(null)
@@ -27,6 +31,11 @@ export function useOsDispatch(): Store<OsState, OsAction>['dispatch'] {
 
 export function useOsClient(): FrierenClient {
 	return useOsContext().client
+}
+
+export function useOsRuntime(): Pick<OsContextValue, 'localKernel' | 'volume'> {
+	const { localKernel, volume } = useOsContext()
+	return { localKernel, volume }
 }
 
 export function useAgentClient(): AgentClient {
