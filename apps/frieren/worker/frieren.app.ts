@@ -1,17 +1,16 @@
 import {
 	type AppBundle,
 	type AppManifest,
-	type BuiltinBundle,
 	type Kernel,
 	kernel,
 	safeBundlePath
 } from '@justfiles/app'
 import type { Volume } from '@justfiles/fs'
 import { unzipSync } from 'fflate'
+import { appFileUrl, CATALOG_PATH, type Catalog, reconcileBuiltins } from '../shared/appstore.ts'
 import { capabilityError, toWireError } from '../shared/capability-error.ts'
 import { invokeVolume } from '../shared/volume.capability.ts'
 import type { AppController } from './bash/commands/app.ts'
-import { BUILTINS } from './builtins/index.ts'
 import type { Integrations } from './integrations/registry.ts'
 import { invokeIntegrations } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
@@ -29,6 +28,9 @@ type AppBroadcast = { type: 'app_open'; id: string } | { type: 'app_close'; id: 
 interface FrierenAppsDeps {
 	fs: Volume
 	loader: Parameters<typeof workerSandbox>[0] | undefined
+	// Static assets binding — serves the `/appstore` built-in app files seeded
+	// into the volume on boot.
+	assets: Fetcher
 	sockets: () => Iterable<WebSocket>
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
@@ -67,7 +69,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
 	let subscribed = false
 	let builtinsReady: Promise<void> | undefined
-	let devAssetRevision = 0
 
 	function getKernel(): Kernel {
 		if (kernelInstance) return kernelInstance
@@ -80,17 +81,32 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return kernelInstance
 	}
 
-	// Bundled built-in apps install themselves into the user's volume on kernel
-	// use. Dev always overwrites bytes so local bundle changes show up without a
-	// package version bump; prod keeps the cheap version-diff path.
+	// Built-in apps live as static `/appstore` assets and are seeded into the
+	// user's volume on kernel use (this DO is the sole materializer for the synced
+	// profile — see shared/appstore.ts). Dev always overwrites so local edits show
+	// up without a version bump; prod keeps the cheap version-diff path and only
+	// runs once per instance.
 	async function ensureBuiltinsInstalled(k: Kernel): Promise<void> {
-		if (BUILTINS.length === 0) return
-		if (DEV_BUILTINS) {
-			await installBuiltins(k, true)
-			return
-		}
-		if (!builtinsReady) builtinsReady = installBuiltins(k, false)
+		if (DEV_BUILTINS) return reconcileFromAssets(k, true)
+		if (!builtinsReady) builtinsReady = reconcileFromAssets(k, false)
 		return builtinsReady
+	}
+
+	async function reconcileFromAssets(k: Kernel, force: boolean): Promise<void> {
+		const res = await deps.assets.fetch(assetRequest(CATALOG_PATH))
+		if (!res.ok) return
+		const catalog = (await res.json()) as Catalog
+		await reconcileBuiltins(
+			k,
+			deps.fs,
+			catalog,
+			async (app, path) => {
+				const file = await deps.assets.fetch(assetRequest(appFileUrl(app, path)))
+				if (!file.ok) throw new Error(`appstore: ${app.id}/${path} ${file.status}`)
+				return new Uint8Array(await file.arrayBuffer())
+			},
+			force
+		)
 	}
 
 	async function kernelReady(): Promise<Kernel> {
@@ -165,16 +181,13 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {
 			const manifests = await (await kernelReady()).list()
-			const devVersion = DEV_BUILTINS ? `dev-${++devAssetRevision}` : undefined
-			return manifests.map((m) => {
-				const version = devVersion ?? m.version
-				return {
-					id: m.id,
-					name: m.name,
-					description: m.description ?? '',
-					iconUrl: m.icon ? assetUrl(m.id, m.icon, version) : undefined
-				}
-			})
+			return manifests.map((m) => ({
+				id: m.id,
+				name: m.name,
+				description: m.description ?? '',
+				iconUrl:
+					m.icon && m.version ? appFileUrl({ id: m.id, version: m.version }, m.icon) : undefined
+			}))
 		} catch {
 			return []
 		}
@@ -351,52 +364,9 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	}
 }
 
-async function installBuiltins(k: Kernel, force: boolean): Promise<void> {
-	const installed = force ? undefined : new Map((await k.list()).map((m) => [m.id, m.version]))
-	for (const builtin of BUILTINS) {
-		if (force ? await builtinMatches(k, builtin) : installed?.get(builtin.id) === builtin.version)
-			continue
-		await k.install(bundleFromBuiltin(builtin))
-	}
-}
-
-async function builtinMatches(k: Kernel, builtin: BuiltinBundle): Promise<boolean> {
-	try {
-		const installed = await k.app(builtin.id)
-		if (JSON.stringify(installed.manifest) !== JSON.stringify(builtin.manifest)) return false
-		for (const [path, bytes] of Object.entries(builtin.files)) {
-			if (!sameBytes(await installed.read(path), bytes)) return false
-		}
-		return true
-	} catch {
-		return false
-	}
-}
-
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-	if (a.length !== b.length) return false
-	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
-	return true
-}
-
-function assetUrl(appId: string, path: string, version?: string): string {
-	return `/api/apps/${appId}/${path}${version ? `?v=${encodeURIComponent(version)}` : ''}`
-}
-
-function bundleFromBuiltin(builtin: BuiltinBundle): AppBundle {
-	return {
-		async manifest() {
-			return builtin.manifest
-		},
-		async *list() {
-			yield* Object.keys(builtin.files)
-		},
-		async read(path) {
-			const bytes = builtin.files[safeBundlePath(path)]
-			if (!bytes) throw new Error(`file not found: ${path}`)
-			return bytes
-		}
-	}
+// The `ASSETS` binding ignores the host; only the path matters.
+function assetRequest(path: string): Request {
+	return new Request(`https://assets.invalid${path}`)
 }
 
 function bundleFromZip(zip: Uint8Array): AppBundle {

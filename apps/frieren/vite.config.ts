@@ -11,6 +11,7 @@ import react from '@vitejs/plugin-react'
 import { rollup } from 'rollup'
 import { defineConfig, type Plugin, type ResolvedConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { appstore } from './vite-appstore.ts'
 
 // Resolve the React stdlib to /vendor/*.js URLs in BOTH dev and prod.
 // Pairs with the importmap in index.html and the kernelHost plugin: kernel
@@ -214,6 +215,7 @@ export default defineConfig({
 	},
 	plugins: [
 		vendorReact(),
+		appstore(),
 		// NOTE: VitePWA conflicts with @cloudflare/vite-plugin when vitest resolves
 		// THIS config (e.g. `cd apps/frieren && vitest`); the canonical root
 		// `vitest.config.ts` has no plugins and is unaffected. Run tests from root.
@@ -241,7 +243,12 @@ export default defineConfig({
 				cleanupOutdatedCaches: true,
 				navigateFallback: '/index.html',
 				navigateFallbackDenylist: [/^\/api\//, /^\/fs\//, /^\/ws$/],
-				globPatterns: ['**/*.{js,css,html,svg,png,jpg,jpeg,avif,webp,woff2,webmanifest}']
+				// Built-in app files are .js/.svg (already matched); add the catalog +
+				// per-app manifest.json so a warm browser can seed a new profile offline.
+				globPatterns: [
+					'**/*.{js,css,html,svg,png,jpg,jpeg,avif,webp,woff2,webmanifest}',
+					'appstore/**/*.json'
+				]
 			}
 		}),
 		tailwindcss(),
