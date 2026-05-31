@@ -166,6 +166,7 @@ export class Frieren extends DurableObject<Env> {
 		this.apps = frierenApps({
 			fs: this.vol,
 			loader: this.env.LOADER,
+			assets: this.env.ASSETS,
 			sockets: () => this.ctx.getWebSockets(),
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
@@ -248,10 +249,11 @@ export class Frieren extends DurableObject<Env> {
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		// App sockets carry an {appId} attachment; agent sockets never do.
-		const attachment = ws.deserializeAttachment() as { appId?: string } | null
-		if (attachment?.appId) {
-			await this.requireApps().handleMessage(ws, attachment.appId, message)
+		// The shared capability-proxy socket carries {caps:true}; agent sockets
+		// carry neither.
+		const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
+		if (attachment?.caps) {
+			await this.requireApps().handleMessage(ws, undefined, message)
 			return
 		}
 

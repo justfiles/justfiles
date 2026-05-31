@@ -1,6 +1,6 @@
-import { useAuth } from '@clerk/clerk-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useOsClient, useOsDispatch } from '../os/hooks'
+import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
+import { installZipApp, uninstallLocalApp } from './manage'
 import type { InstalledApp } from './types'
 
 function pickZipFile(): Promise<File | null> {
@@ -11,14 +11,6 @@ function pickZipFile(): Promise<File | null> {
 		input.onchange = () => resolve(input.files?.[0] ?? null)
 		input.click()
 	})
-}
-
-async function responseError(res: Response): Promise<string> {
-	try {
-		const body = (await res.json()) as { error?: unknown }
-		if (typeof body.error === 'string') return body.error
-	} catch {}
-	return `${res.status} ${res.statusText}`
 }
 
 // The installed-app catalog the OS client owns, mirrored into local state so it
@@ -36,15 +28,12 @@ export interface AppCommands {
 	uninstallApp: (id: string) => Promise<void>
 }
 
-// App launch/install/uninstall are OS-level actions. Install/uninstall hit the
-// dev-only host HTTP endpoints; catalog re-listing goes through the client so
-// the raw websocket never leaks to the UI.
+// App launch/install/uninstall are OS-level local-volume actions. Sync later
+// replicates the files when a backend is connected.
 export function useAppCommands(): AppCommands {
-	const { getToken } = useAuth()
 	const client = useOsClient()
 	const dispatch = useOsDispatch()
-	const getTokenRef = useRef(getToken)
-	getTokenRef.current = getToken
+	const { localKernel, volume } = useOsRuntime()
 	const installingRef = useRef(false)
 
 	return useMemo<AppCommands>(() => {
@@ -52,22 +41,17 @@ export function useAppCommands(): AppCommands {
 			dispatch({ type: 'app.open', appId: app.id, title: app.name })
 		}
 
-		// Prompt for a zipped app bundle, upload it, then refresh so a fresh
-		// `ready` re-lists the catalog.
 		const installApp = async () => {
 			if (installingRef.current) return
 			installingRef.current = true
 			try {
 				const zip = await pickZipFile()
 				if (!zip) return
-				const form = new FormData()
-				form.append('bundle', zip)
-				const res = await fetch('/api/apps/install', {
-					method: 'POST',
-					headers: { authorization: `Bearer ${await getTokenRef.current()}` },
-					body: form
-				})
-				if (!res.ok) throw new Error(await responseError(res))
+				await installZipApp(
+					await localKernel(),
+					await volume,
+					new Uint8Array(await zip.arrayBuffer())
+				)
 				client.refresh()
 			} catch (e) {
 				alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -77,27 +61,23 @@ export function useAppCommands(): AppCommands {
 		}
 
 		const uninstallApp = async (id: string) => {
-			// Close any open window first. Otherwise the still-mounted app frame
-			// sees its guiUrl go undefined when the app drops from the catalog, the
-			// effect re-fires, and the GUI's React root unmounts synchronously from
-			// inside the parent's commit — corrupting the DOM (NotFoundError on
-			// removeChild). The close effect also tears down the app-host stage and
-			// notifies the server.
+			// Close any open window first. Otherwise the app drops from the catalog
+			// while its frame is still mounted, the effect re-fires, and the GUI's
+			// React root unmounts synchronously from inside the parent's commit —
+			// corrupting the DOM (NotFoundError on removeChild). The close effect
+			// also tears down the app-host stage and notifies the server.
 			dispatch({ type: 'window.close', id })
 			client.removeApp(id)
 			try {
-				const res = await fetch(`/api/apps/${encodeURIComponent(id)}`, {
-					method: 'DELETE',
-					headers: { authorization: `Bearer ${await getTokenRef.current()}` }
-				})
-				if (!res.ok) throw new Error(await responseError(res))
+				await uninstallLocalApp(await localKernel(), await volume, id)
+				client.refresh()
 			} catch (e) {
-				// The server still has it — refresh restores the optimistic removal.
+				// The volume still has it — refresh restores the optimistic removal.
 				client.refresh()
 				alert(`Uninstall failed: ${e instanceof Error ? e.message : String(e)}`)
 			}
 		}
 
 		return { launchApp, installApp, uninstallApp }
-	}, [client, dispatch])
+	}, [client, dispatch, localKernel, volume])
 }

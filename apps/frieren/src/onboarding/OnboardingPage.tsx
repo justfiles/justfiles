@@ -1,9 +1,7 @@
-import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Spinner } from '@/components/ui/spinner'
-import type { Volume } from '../fs'
-import { createFsVolume } from '../fs'
+import { openProfile, type ProfileVolume } from '../fs'
 import { AgentStep } from './AgentStep'
 import { type OnboardingState, readUserProfile, resolveOnboardingState } from './state'
 import { UserProfileStep } from './UserProfileStep'
@@ -20,18 +18,19 @@ function deriveAge(birthDate?: string): number | undefined {
 }
 
 export function OnboardingPage({ onComplete }: { onComplete: () => void }) {
-	const { getToken } = useAuth()
-
-	const [volume, setVolume] = useState<Volume | null>(null)
+	const [volume, setVolume] = useState<ProfileVolume | null>(null)
 	const [state, setState] = useState<OnboardingState | null>(null)
 	const [userCtx, setUserCtx] = useState<{ userAge?: number; userGender?: string }>({})
 	const [error, setError] = useState<string | null>(null)
 
 	const refresh = useCallback(
-		async (vol: Volume) => {
+		async (vol: ProfileVolume) => {
 			const next = await resolveOnboardingState(vol)
 			setState(next)
 			if (next === 'done') {
+				// Onboarding writes soul.md / user.md that the server agent reads;
+				// push them to the backend before entering the OS.
+				await vol.flush()
 				onComplete()
 				return
 			}
@@ -50,7 +49,7 @@ export function OnboardingPage({ onComplete }: { onComplete: () => void }) {
 		let cancelled = false
 		void (async () => {
 			try {
-				const vol = await createFsVolume(() => getToken())
+				const vol = await openProfile()
 				if (cancelled) return
 				setVolume(vol)
 				await refresh(vol)
@@ -61,7 +60,7 @@ export function OnboardingPage({ onComplete }: { onComplete: () => void }) {
 		return () => {
 			cancelled = true
 		}
-	}, [getToken, refresh])
+	}, [refresh])
 
 	if (error) {
 		return (

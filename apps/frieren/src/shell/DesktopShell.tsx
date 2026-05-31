@@ -1,4 +1,4 @@
-import { UserButton } from '@clerk/clerk-react'
+import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
 import { useMemo, useState, useSyncExternalStore } from 'react'
 import { AppMenus } from '@/components/AppMenus'
@@ -15,6 +15,7 @@ import { resolveAppTitle } from '../apps/catalog'
 import { useAppCommands, useInstalledApps } from '../apps/hooks'
 import { menuOf, subscribeMenus } from '../apps/host'
 import type { InstalledApp } from '../apps/types'
+import { activeStatus, onActiveStatusChange, type SyncStatus } from '../fs'
 import { AppWindow } from '../os/AppWindow'
 import { useOsDispatch, useOsStore } from '../os/hooks'
 import {
@@ -29,6 +30,50 @@ const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
 	connecting: '#f59e0b',
 	disconnected: '#ef4444'
+}
+
+function syncLabel(status: SyncStatus): string {
+	switch (status) {
+		case 'synced':
+			return 'Synced'
+		case 'syncing':
+			return 'Syncing…'
+		case 'error':
+			return 'Sync error'
+		default:
+			return 'Connecting…'
+	}
+}
+
+function subscribeOnline(onChange: () => void): () => void {
+	window.addEventListener('online', onChange)
+	window.addEventListener('offline', onChange)
+	return () => {
+		window.removeEventListener('online', onChange)
+		window.removeEventListener('offline', onChange)
+	}
+}
+
+// Backend status: auth is optional, so this reflects the sync state when signed
+// in and "Signed out" otherwise. The desktop boots and runs regardless.
+function BackendStatus() {
+	const { isSignedIn } = useAuth()
+	const status = useSyncExternalStore(
+		onActiveStatusChange,
+		activeStatus,
+		() => 'local-only' as SyncStatus
+	)
+	const online = useSyncExternalStore(
+		subscribeOnline,
+		() => navigator.onLine,
+		() => true
+	)
+	const label = !isSignedIn ? 'Signed out' : !online ? 'Offline' : syncLabel(status)
+	return (
+		<span className="text-white/55" title={`Backend: ${label}`}>
+			{label}
+		</span>
+	)
 }
 
 // Re-render the desktop only when the set/order of windows changes, not on
@@ -50,6 +95,7 @@ function useFocusedMenu() {
 }
 
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
+	const { isSignedIn } = useAuth()
 	const installedApps = useInstalledApps()
 	const { launchApp, installApp, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
@@ -98,6 +144,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						{appMenu ? <AppMenus menu={appMenu} /> : null}
 					</div>
 					<div className="flex items-center gap-3">
+						<BackendStatus />
 						<span
 							className="inline-block size-1.5 rounded-full"
 							style={{ background: statusDotColor[connection.state] }}
@@ -123,7 +170,15 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						>
 							<ChatTeardropDotsIcon weight={agentOpen ? 'fill' : 'regular'} />
 						</Button>
-						<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+						{isSignedIn ? (
+							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
+						) : (
+							<SignInButton>
+								<Button type="button" variant="ghost" size="sm">
+									Sign in
+								</Button>
+							</SignInButton>
+						)}
 					</div>
 				</Menubar>
 			)}

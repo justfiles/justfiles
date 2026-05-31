@@ -6,6 +6,7 @@ import type {
 	MutationOptions,
 	Storage,
 	StorageCapabilities,
+	StorageChange,
 	UpdateQueryOptions
 } from './storage'
 import type { Ino } from './types'
@@ -151,6 +152,14 @@ export type IdbStorage = Storage & {
 export function idbStorage(dbName: string, options?: { contentCapBytes?: number }): IdbStorage {
 	const cap = options?.contentCapBytes ?? DEFAULT_CONTENT_CAP
 	let dbPromise: Promise<Db> | null = null
+
+	// Change feed — the substrate for volume.watch. Listeners fire after a
+	// mutation's transaction commits; near-zero cost when nobody is listening.
+	const listeners = new Set<(change: StorageChange) => void>()
+	function emit(change: StorageChange): void {
+		if (listeners.size === 0) return
+		for (const fn of [...listeners]) fn(change)
+	}
 
 	// ---------------------------------------------------------------------------
 	// DB lifecycle
@@ -451,6 +460,8 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 				}
 			})
 			await tx.done
+			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
 			return ino
 		},
 
@@ -502,6 +513,21 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			})
 
 			await tx.done
+			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+			emit({
+				ino: source.ino,
+				kind: 'dirent',
+				dirIno: newDir,
+				name: newName,
+				source: options?.source
+			})
+			emit({
+				ino: source.ino,
+				kind: 'dirent',
+				dirIno: oldDir,
+				name: oldName,
+				source: options?.source
+			})
 			return displaced
 		},
 
@@ -584,6 +610,13 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 				),
 				cursor: nextCursor
 			}
+		},
+
+		subscribe(listener) {
+			listeners.add(listener)
+			return () => {
+				listeners.delete(listener)
+			}
 		}
 	}
 
@@ -635,6 +668,7 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 					}
 				})
 				await tx.done
+				emit({ ino, kind: 'meta', source: options?.source })
 				return
 			}
 			const next = { ...rec, ...partial }
@@ -648,6 +682,7 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 				}
 			})
 			await tx.done
+			emit({ ino, kind: 'meta', source: options?.source })
 		},
 
 		async deleteInode(ino) {
@@ -674,6 +709,7 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 				await tx.objectStore('xattrs').delete(k)
 			}
 			await tx.done
+			emit({ ino, kind: 'meta' })
 		},
 
 		async getBlob(ino) {
@@ -696,6 +732,7 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			const delta = data.length - oldSize
 			if (delta > 0) await evictContent(db, delta, ino)
 			await writeContent(db, ino, data.slice(), oldSize, options)
+			emit({ ino, kind: 'content', source: options?.source })
 		},
 
 		async getDirent(dirIno, name) {
@@ -719,6 +756,7 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 				}
 			})
 			await tx.done
+			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
 		async deleteDirent(dirIno, name, options) {
@@ -740,6 +778,7 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 				}
 			})
 			await tx.done
+			emit({ ino: existing.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
 		async listDirents(dirIno, cursor) {

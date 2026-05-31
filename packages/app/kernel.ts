@@ -172,11 +172,15 @@ export function kernel({ fs, sandbox }: System): Kernel {
 
 	async function install(app: AppBundle): Promise<AppId> {
 		await fs.mkdir('/applications', { recursive: true })
+		await fs.mkdir('/system/tmp/app-installs', { recursive: true })
 
 		const rawManifest = await app.manifest()
 		const appId = rawManifest.id
 		const root = appRoot(appId)
-		const manifestPath = `${root}/manifest.json`
+		const installId = crypto.randomUUID()
+		const tmp = `/system/tmp/app-installs/${appId}-${installId}`
+		const backup = `/system/tmp/app-installs/${appId}-previous-${installId}`
+		const manifestPath = `${tmp}/manifest.json`
 		const manifest: AppManifest = {
 			...rawManifest,
 			app: safeBundlePath(rawManifest.app),
@@ -184,26 +188,41 @@ export function kernel({ fs, sandbox }: System): Kernel {
 			cli: rawManifest.cli ? safeBundlePath(rawManifest.cli) : undefined,
 			icon: rawManifest.icon ? safeBundlePath(rawManifest.icon) : undefined
 		}
+		let backedUp = false
 
-		await fs.mkdir(root, { recursive: true })
-		for await (const rawPath of app.list()) {
-			const path = safeBundlePath(rawPath)
-			const parent = path.split('/').slice(0, -1).join('/')
-			if (parent) await fs.mkdir(`${root}/${parent}`, { recursive: true })
-			await fs.writeFile(`${root}/${path}`, await app.read(rawPath))
+		try {
+			await fs.mkdir(tmp, { recursive: true })
+			for await (const rawPath of app.list()) {
+				const path = safeBundlePath(rawPath)
+				const parent = path.split('/').slice(0, -1).join('/')
+				if (parent) await fs.mkdir(`${tmp}/${parent}`, { recursive: true })
+				await fs.writeFile(`${tmp}/${path}`, await app.read(rawPath))
+			}
+			if (!(await fs.exists(`${tmp}/${manifest.app}`)))
+				throw new Error(`missing app entry: ${manifest.app}`)
+			if (manifest.gui && !(await fs.exists(`${tmp}/${manifest.gui}`))) {
+				throw new Error(`missing gui entry: ${manifest.gui}`)
+			}
+			if (manifest.icon && !(await fs.exists(`${tmp}/${manifest.icon}`))) {
+				throw new Error(`missing icon: ${manifest.icon}`)
+			}
+			await fs.writeFile(manifestPath, bytes(JSON.stringify(manifest)))
+
+			if (await fs.exists(root)) {
+				await fs.rename(root, backup)
+				backedUp = true
+			}
+			await fs.rename(tmp, root)
+		} catch (e) {
+			await fs.rm(tmp, { recursive: true, force: true }).catch(() => {})
+			if (backedUp && !(await fs.exists(root))) await fs.rename(backup, root).catch(() => {})
+			throw e
 		}
-		if (!(await fs.exists(`${root}/${manifest.app}`)))
-			throw new Error(`missing app entry: ${manifest.app}`)
-		if (manifest.gui && !(await fs.exists(`${root}/${manifest.gui}`))) {
-			throw new Error(`missing gui entry: ${manifest.gui}`)
-		}
-		if (manifest.icon && !(await fs.exists(`${root}/${manifest.icon}`))) {
-			throw new Error(`missing icon: ${manifest.icon}`)
-		}
-		await fs.writeFile(manifestPath, bytes(JSON.stringify(manifest)))
+		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
 
 		// If the index is already warm, fold the new app's subscriptions in.
 		// Otherwise we'll build it lazily on the first emit.
+		dropFromIndex(appId)
 		if (subscriptionIndex) await indexApp(subscriptionIndex, appId)
 
 		return appId

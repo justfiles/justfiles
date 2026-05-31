@@ -191,3 +191,20 @@ test('install rejects missing app entry', async () => {
 		)
 	).rejects.toThrow(/missing app entry: app.js/)
 })
+
+test('failed reinstall preserves the existing app', async () => {
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	await k.install(appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code }))
+
+	await expect(
+		k.install(
+			bundle(async () => ({ id: 'com.example.app', name: 'App', app: 'app.js' }), {
+				'other.js': code
+			})
+		)
+	).rejects.toThrow(/missing app entry: app.js/)
+
+	expect(await fs.exists('/applications/com.example.app/app.js')).toBe(true)
+	expect((await k.list()).map((app) => app.id)).toEqual(['com.example.app'])
+})

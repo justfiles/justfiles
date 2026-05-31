@@ -146,6 +146,21 @@ describe('FrierenClient agent', () => {
 })
 
 describe('FrierenClient apps + windows', () => {
+	test('connect replays local catalog while offline', async () => {
+		const client = createFrierenClient({
+			getToken: async () => null,
+			listLocalApps: async () => [{ id: 'paint', name: 'Paint', description: '' }]
+		})
+		const seen: string[][] = []
+		client.subscribeApps((apps) => seen.push(apps.map((a) => a.id)))
+
+		client.connect()
+		await flush()
+
+		expect(seen.at(-1)).toEqual(['paint'])
+		expect(client.agent.snapshot().connectionState).toBe('disconnected')
+	})
+
 	test('subscribeApps replays the current catalog and receives ready updates', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
@@ -156,10 +171,33 @@ describe('FrierenClient apps + windows', () => {
 
 		socket.emit({
 			type: 'ready',
-			apps: [{ id: 'notes', name: 'Notes', description: '', guiUrl: '/api/apps/notes/gui.js' }]
+			apps: [{ id: 'notes', name: 'Notes', description: '' }]
 		})
 		expect(seen.at(-1)).toEqual(['notes'])
-		expect(client.guiUrlFor('notes')).toBe('/api/apps/notes/gui.js')
+	})
+
+	test('ready prefers the local catalog when available', async () => {
+		const sockets: FakeSocket[] = []
+		const client = createFrierenClient({
+			getToken: async () => 'tok',
+			listLocalApps: async () => [{ id: 'local', name: 'Local', description: '' }],
+			createSocket: () => {
+				const socket = new FakeSocket()
+				sockets.push(socket)
+				return socket
+			}
+		})
+		const seen: string[][] = []
+		client.subscribeApps((apps) => seen.push(apps.map((a) => a.id)))
+
+		client.connect()
+		await flush()
+		const socket = sockets[0]
+		if (!socket) throw new Error('socket not created')
+		socket.emit({ type: 'ready', apps: [{ id: 'server', name: 'Server', description: '' }] })
+		await flush()
+
+		expect(seen.at(-1)).toEqual(['local'])
 	})
 
 	test('removeApp drops the app from the catalog and notifies subscribers', async () => {

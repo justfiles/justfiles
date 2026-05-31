@@ -1,10 +1,11 @@
 import {
 	FsCursorExpiredError,
+	type FsOp,
 	type InodeMeta,
 	type MutationOptions,
 	type Storage
 } from '@justfiles/fs/storage'
-import type { FileType } from '@justfiles/fs/types'
+import { FileType } from '@justfiles/fs/types'
 import { hc, type InferResponseType } from 'hono/client'
 import type { createFsApi } from './fs'
 
@@ -26,8 +27,14 @@ export interface ApiStorageOptions {
 
 type FsMetaResponse = InferResponseType<FsClient['inodes'][':ino']['$get'], 200>
 
-function mutationInit(options?: MutationOptions): { headers: Record<string, string> } | undefined {
-	return options?.source ? { headers: { [FS_SOURCE_HEADER]: options.source } } : undefined
+// Attach the sync `source` as a request header on the Hono request object
+// (args[0].header) rather than via ClientRequestOptions (args[1].headers): the
+// latter is an object that replaces the client-level `headers` function, which
+// would drop the Authorization callback and 401 any Bearer-authed mutation. The
+// cast back to T hides the extra `header` key from the route's input type while
+// the client still sends it at runtime (same trick as putBlob below).
+function withSource<T extends Record<string, unknown>>(req: T, options?: MutationOptions): T {
+	return options?.source ? ({ ...req, header: { [FS_SOURCE_HEADER]: options.source } } as T) : req
 }
 
 function parseMeta(wire: FsMetaResponse): InodeMeta {
@@ -78,6 +85,36 @@ function decodeBase64(b64: string): Uint8Array {
 	return bytes
 }
 
+function encodeBase64(data: Uint8Array): string {
+	let binary = ''
+	for (const byte of data) binary += String.fromCharCode(byte)
+	return btoa(binary)
+}
+
+// Encode one op for the /ops batch wire: stringify meta bigints, base64 xattrs,
+// and inline regular-file content fetched via getBlob. set-/unset-dirent ops are
+// already JSON-safe and pass through unchanged.
+async function encodeBatchOp(
+	op: FsOp,
+	getBlob: (ino: string) => Promise<Uint8Array>
+): Promise<unknown> {
+	if (op.kind !== 'upsert-inode') return op
+	const meta = op.meta
+		? (() => {
+				const out: Record<string, unknown> = { ...op.meta }
+				if (op.meta.size !== undefined) out.size = op.meta.size.toString()
+				if (op.meta.mtimeNs !== undefined) out.mtimeNs = op.meta.mtimeNs.toString()
+				if (op.meta.ctimeNs !== undefined) out.ctimeNs = op.meta.ctimeNs.toString()
+				return out
+			})()
+		: undefined
+	const xattrs = op.xattrs
+		? Object.fromEntries(Object.entries(op.xattrs).map(([k, v]) => [k, v ? encodeBase64(v) : null]))
+		: undefined
+	const data = op.meta?.type === FileType.Regular ? encodeBase64(await getBlob(op.ino)) : undefined
+	return { kind: op.kind, ino: op.ino, meta, xattrs, data }
+}
+
 function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 	const body = new ArrayBuffer(data.byteLength)
 	new Uint8Array(body).set(data)
@@ -114,8 +151,7 @@ export async function apiStorage(
 			if (partial.ctimeNs !== undefined) wire.ctimeNs = partial.ctimeNs.toString()
 
 			const res = await client.inodes[':ino'].$patch(
-				{ param: { ino }, json: wire },
-				mutationInit(options)
+				withSource({ param: { ino }, json: wire }, options)
 			)
 			if (!res.ok) throw new Error(`setMeta failed: ${res.status}`)
 		},
@@ -169,19 +205,14 @@ export async function apiStorage(
 
 		async putDirent(dirIno, name, entry, options) {
 			const res = await client.inodes[':dirIno'].entries[':name'].$put(
-				{
-					param: { dirIno, name },
-					json: { ino: entry.ino, type: entry.type }
-				},
-				mutationInit(options)
+				withSource({ param: { dirIno, name }, json: { ino: entry.ino, type: entry.type } }, options)
 			)
 			if (!res.ok) throw new Error(`putDirent failed: ${res.status}`)
 		},
 
 		async deleteDirent(dirIno, name, options) {
 			const res = await client.inodes[':dirIno'].entries[':name'].$delete(
-				{ param: { dirIno, name } },
-				mutationInit(options)
+				withSource({ param: { dirIno, name } }, options)
 			)
 			if (res.status === 404) return
 			if (!res.ok) throw new Error(`deleteDirent failed: ${res.status}`)
@@ -190,8 +221,7 @@ export async function apiStorage(
 		caps: {
 			async atomicCreate(dirIno, name, meta, options) {
 				const res = await client.inodes.$post(
-					{ json: { dirIno, name, meta: wireFromMeta(meta) } },
-					mutationInit(options)
+					withSource({ json: { dirIno, name, meta: wireFromMeta(meta) } }, options)
 				)
 				if (res.status === 409) throw new Error(`EEXIST: ${name}`)
 				if (!res.ok) throw new Error(`atomicCreate failed: ${res.status}`)
@@ -201,8 +231,7 @@ export async function apiStorage(
 
 			async atomicMove(oldDirIno, oldName, newDirIno, newName, options) {
 				const res = await client.rename.$post(
-					{ json: { oldDirIno, oldName, newDirIno, newName } },
-					mutationInit(options)
+					withSource({ json: { oldDirIno, oldName, newDirIno, newName } }, options)
 				)
 				if (res.status === 404) return null
 				if (!res.ok) throw new Error(`atomicMove failed: ${res.status}`)
@@ -223,8 +252,7 @@ export async function apiStorage(
 			async setXattr(ino, name, value, options) {
 				const b64 = btoa(String.fromCharCode(...value))
 				const res = await client.inodes[':ino'].xattrs[':name'].$put(
-					{ param: { ino, name }, json: { value: b64 } },
-					mutationInit(options)
+					withSource({ param: { ino, name }, json: { value: b64 } }, options)
 				)
 				if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
 			},
@@ -238,8 +266,7 @@ export async function apiStorage(
 
 			async removeXattr(ino, name, options) {
 				const res = await client.inodes[':ino'].xattrs[':name'].$delete(
-					{ param: { ino, name } },
-					mutationInit(options)
+					withSource({ param: { ino, name } }, options)
 				)
 				if (!res.ok) throw new Error(`removeXattr failed: ${res.status}`)
 			},
@@ -266,17 +293,18 @@ export async function apiStorage(
 				}
 			},
 
-			async deltaUpdates(cursor, options) {
-				const requestInit = mutationInit(options)
-				const res = await client.updates.$get(
-					{ query: { cursor } },
-					{
-						...(requestInit ? { headers: requestInit.headers } : {}),
-						init: {
-							cache: 'no-store'
-						}
-					}
+			async applyBatch(ops, getBlob, options) {
+				const wire = await Promise.all(ops.map((op) => encodeBatchOp(op, getBlob)))
+				const res = await client.ops.$post(
+					withSource({ json: { ops: wire } }, options) as Parameters<typeof client.ops.$post>[0]
 				)
+				if (!res.ok) throw new Error(`applyBatch failed: ${res.status}`)
+			},
+
+			async deltaUpdates(cursor, options) {
+				const res = await client.updates.$get(withSource({ query: { cursor } }, options), {
+					init: { cache: 'no-store' }
+				})
 
 				if (res.status === 501) return { ops: [], cursor }
 				if (res.status === 409) {

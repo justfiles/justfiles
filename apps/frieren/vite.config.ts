@@ -10,6 +10,8 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { rollup } from 'rollup'
 import { defineConfig, type Plugin, type ResolvedConfig } from 'vite'
+import { VitePWA } from 'vite-plugin-pwa'
+import { appstore } from './vite-appstore.ts'
 
 // Resolve the React stdlib to /vendor/*.js URLs in BOTH dev and prod.
 // Pairs with the importmap in index.html and the kernelHost plugin: kernel
@@ -211,5 +213,46 @@ export default defineConfig({
 		// short-circuits these to URL imports before optimizer ever runs.
 		exclude: Object.keys(VENDOR_URLS)
 	},
-	plugins: [vendorReact(), tailwindcss(), react(), cloudflare()]
+	plugins: [
+		vendorReact(),
+		appstore(),
+		// NOTE: VitePWA conflicts with @cloudflare/vite-plugin when vitest resolves
+		// THIS config (e.g. `cd apps/frieren && vitest`); the canonical root
+		// `vitest.config.ts` has no plugins and is unaffected. Run tests from root.
+		VitePWA({
+			// We register the SW ourselves in pwa.ts (PROD only), so no injected
+			// registration and no dev SW; skipWaiting/clientsClaim drive updates.
+			registerType: 'autoUpdate',
+			injectRegister: false,
+			manifest: {
+				name: 'Frieren',
+				short_name: 'Frieren',
+				description: 'Local-first Frieren workspace',
+				start_url: '/',
+				scope: '/',
+				display: 'standalone',
+				background_color: '#020617',
+				theme_color: '#020617',
+				// SVG has no maskable safe-zone padding, so claim `any` only to avoid
+				// cropping on circular masks.
+				icons: [{ src: '/pwa-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]
+			},
+			workbox: {
+				skipWaiting: true,
+				clientsClaim: true,
+				cleanupOutdatedCaches: true,
+				navigateFallback: '/index.html',
+				navigateFallbackDenylist: [/^\/api\//, /^\/fs\//, /^\/ws$/],
+				// Built-in app files are .js/.svg (already matched); add the catalog +
+				// per-app manifest.json so a warm browser can seed a new profile offline.
+				globPatterns: [
+					'**/*.{js,css,html,svg,png,jpg,jpeg,avif,webp,woff2,webmanifest}',
+					'appstore/**/*.json'
+				]
+			}
+		}),
+		tailwindcss(),
+		react(),
+		cloudflare()
+	]
 })

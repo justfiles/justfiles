@@ -163,6 +163,31 @@ export interface Volume {
 	 * Throws ENOENT if path does not exist.
 	 */
 	scan(path: string, visitor: (path: string, stat: Stat) => Promise<void>): Promise<void>
+
+	/**
+	 * Watch a single path for changes — an inotify-style primitive.
+	 *
+	 * The listener fires after a change to the path commits, coalesced per
+	 * microtask (one logical write = several storage ops = one event). Like
+	 * real inotify it tracks both the resolved inode (content/meta edits) AND
+	 * the parent dentry, so a delete+recreate or rename/replace that rebinds
+	 * the path to a fresh inode still fires (and the next event re-resolves).
+	 *
+	 * The event carries the `source` the write was tagged with, so callers can
+	 * ignore their own writes (sync tags remote-applied pulls; local user
+	 * writes carry none). The path need not exist yet — once a dentry binds it,
+	 * the watch picks it up.
+	 *
+	 * Requires `Storage.caps.subscribe`; without it the watch is inert and the
+	 * returned unsubscribe is a no-op. Returns a promise of the unsubscribe.
+	 */
+	watch(path: string, listener: (event: WatchEvent) => void): Promise<() => void>
+}
+
+/** Payload delivered to a `volume.watch` listener. */
+export interface WatchEvent {
+	/** The `MutationOptions.source` the triggering write was tagged with. */
+	source?: string
 }
 
 export function volume(storage: Storage): Volume {
@@ -709,8 +734,75 @@ export function volume(storage: Storage): Volume {
 				} while (cursor !== '')
 			}
 			await walk(ino, path)
+		},
+
+		async watch(path, listener) {
+			const subscribe = storage.caps?.subscribe
+			if (!subscribe) return () => {}
+
+			// Track the resolved inode (content/meta edits) and the parent dentry
+			// (rebinds). The path need not exist yet — dirIno/name bind it once the
+			// parent exists.
+			let targetIno: Ino | null = null
+			let dirIno: Ino | null = null
+			let name = ''
+			async function resolve(): Promise<void> {
+				targetIno = await resolvePath(path, true).catch(() => null)
+				const parent = await resolveParent(path).catch(() => null)
+				dirIno = parent?.dirIno ?? null
+				name = parent?.name ?? ''
+			}
+			await resolve()
+
+			let scheduled = false
+			let needsResolve = false
+			let definiteFire = false
+			let pendingSource: string | undefined
+
+			return subscribe((change) => {
+				const hitsIno =
+					targetIno !== null &&
+					change.ino === targetIno &&
+					(change.kind === 'meta' || change.kind === 'content')
+				const hitsDentry =
+					change.kind === 'dirent' && change.dirIno === dirIno && change.name === name
+				// While the parent chain is incomplete (dirIno still null) we can't
+				// know which dentry will bind the path, so any dir mutation is a
+				// candidate: re-resolve and fire only if it actually bound the file.
+				const mayBind = dirIno === null && change.kind === 'dirent'
+				if (!hitsIno && !hitsDentry && !mayBind) return
+				pendingSource = change.source
+				if (hitsIno || hitsDentry) definiteFire = true
+				if (hitsDentry || mayBind) needsResolve = true
+				// Coalesce the several storage ops of one logical write into one event.
+				if (scheduled) return
+				scheduled = true
+				queueMicrotask(async () => {
+					scheduled = false
+					const fire = definiteFire
+					const wasUnbound = dirIno === null && targetIno === null
+					definiteFire = false
+					if (needsResolve) {
+						needsResolve = false
+						await resolve()
+					}
+					// A speculative re-resolve that still didn't bind the file (some
+					// unrelated dir was created) is not an event.
+					if (fire || (wasUnbound && targetIno !== null)) listener({ source: pendingSource })
+				})
+			})
 		}
 	}
+
+	// Keep the path caches coherent with writes that bypass this wrapper. Sync
+	// applies remote pulls straight to Storage (see synced.ts/applyOp), so without
+	// this a `stat` after a pull could return stale meta. Driving invalidation off
+	// the storage feed covers both our own writes (harmless re-invalidation) and
+	// foreign ones (the actual fix).
+	storage.caps?.subscribe?.((change) => {
+		if (change.kind === 'dirent' && change.dirIno !== undefined) invalidateDirCache(change.dirIno)
+		invalidateIno(change.ino)
+	})
 
 	return vol
 }
@@ -757,6 +849,7 @@ export function chroot(fs: Volume, root: string): Volume {
 		scan: (path, visitor) =>
 			fs.scan(at(path), async (realPath, stat) => {
 				await visitor(realPath.slice(root.length) || '/', stat)
-			})
+			}),
+		watch: (path, listener) => fs.watch(at(path), listener)
 	}
 }

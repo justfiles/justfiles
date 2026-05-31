@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { FsOp, InodeMeta, Storage, StorageCapabilities, UpdateQueryOptions } from './storage'
 import { FsCursorExpiredError } from './storage'
 import { memStorage } from './storage.mem'
-import { synced } from './synced'
+import { REMOTE_SOURCE, synced } from './synced'
 import type { Ino } from './types'
 import { FileType } from './types'
 import { volume } from './volume'
@@ -81,6 +81,9 @@ function journaledStorage(): JournaledStorage {
 			await removeXattr(ino, name, opts)
 			record({ kind: 'upsert-inode', ino, xattrs: { [name]: null } }, opts?.source)
 		},
+
+		// Forward the base change feed so volume.watch works through synced.
+		subscribe: baseCaps.subscribe?.bind(baseCaps),
 
 		/**
 		 * Return all journal entries since `cursor`, filtered by source.
@@ -238,6 +241,76 @@ describe('synced', () => {
 		expect(dec.decode(await remoteVol.readFile('/pushed.txt'))).toBe('pushed content')
 	})
 
+	it('skips applyBatch when there are no syncable local ops', async () => {
+		const remote = journaledStorage()
+		let batchCalls = 0
+		const batched: typeof remote = {
+			...remote,
+			caps: {
+				...remote.caps,
+				async applyBatch() {
+					batchCalls++
+				}
+			}
+		}
+
+		const vol = track(
+			await synced({ local: journaledStorage(), remote: batched, interval: 99_999 })
+		)
+		await vol.flush()
+
+		expect(batchCalls).toBe(0)
+	})
+
+	it('uses applyBatch on push when the remote declares it', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+
+		// Wrap the remote with an applyBatch cap that replays ops through the same
+		// backend methods, counting invocations so we can assert the fast path ran.
+		let batchCalls = 0
+		let lastBatchSize = 0
+		const batched: typeof remote = {
+			...remote,
+			caps: {
+				...remote.caps,
+				async applyBatch(ops, getBlob, opts) {
+					batchCalls++
+					lastBatchSize = ops.length
+					for (const op of ops) {
+						if (op.kind === 'upsert-inode') {
+							if (op.meta) await remote.setMeta(op.ino, op.meta, opts)
+							if (op.meta?.type === FileType.Regular) {
+								await remote.putBlob(op.ino, await getBlob(op.ino), opts)
+							}
+							for (const [name, value] of Object.entries(op.xattrs ?? {})) {
+								if (name.startsWith('trusted.sync.')) continue
+								if (value === null) await remote.caps?.removeXattr?.(op.ino, name, opts)
+								else await remote.caps?.setXattr?.(op.ino, name, value, opts)
+							}
+						} else if (op.kind === 'set-dirent') {
+							await remote.putDirent(op.dirIno, op.name, { ino: op.ino, type: op.type }, opts)
+						} else {
+							await remote.deleteDirent(op.dirIno, op.name, opts)
+						}
+					}
+				}
+			}
+		}
+
+		const vol = track(
+			await synced({ local: journaledStorage(), remote: batched, interval: 99_999 })
+		)
+
+		await vol.writeFile('/batched.txt', enc.encode('via batch'))
+		await vol.flush()
+
+		expect(batchCalls).toBeGreaterThan(0)
+		expect(lastBatchSize).toBeGreaterThan(0)
+		expect(await remoteVol.exists('/batched.txt')).toBe(true)
+		expect(dec.decode(await remoteVol.readFile('/batched.txt'))).toBe('via batch')
+	})
+
 	it('pushes a newly created directory to remote', async () => {
 		const remote = journaledStorage()
 		const remoteVol = volume(remote)
@@ -271,6 +344,41 @@ describe('synced', () => {
 	// -------------------------------------------------------------------------
 	// 3. Pull
 	// -------------------------------------------------------------------------
+
+	it('keeps hydrated lazy content when an unchanged remote upsert is pulled', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/app.js', enc.encode('console.log(1)'))
+
+		let blobReads = 0
+		const countedRemote: typeof remote = {
+			...remote,
+			async getBlob(ino) {
+				blobReads++
+				return remote.getBlob(ino)
+			}
+		}
+		const local = journaledStorage()
+		const first = track(
+			await synced({ local, remote: countedRemote, lazyContent: true, interval: 99_999 })
+		)
+
+		expect(blobReads).toBe(0)
+		expect(dec.decode(await first.readFile('/app.js'))).toBe('console.log(1)')
+		expect(blobReads).toBe(1)
+		first.destroy()
+
+		const { ino } = await remoteVol.stat('/app.js')
+		const meta = await remote.getMeta(ino)
+		if (!meta) throw new Error('missing remote meta')
+		await remote.setMeta(ino, meta, { source: 'dev-reinstall' })
+
+		const second = track(
+			await synced({ local, remote: countedRemote, lazyContent: true, interval: 99_999 })
+		)
+		expect(dec.decode(await second.readFile('/app.js'))).toBe('console.log(1)')
+		expect(blobReads).toBe(1)
+	})
 
 	it('pulls remote writes to local on flush (two clients)', async () => {
 		const remote = journaledStorage()
@@ -347,6 +455,33 @@ describe('synced', () => {
 
 		// Cold cache — stat reads fresh metadata → correct size → correct content.
 		expect(dec.decode(await vol.readFile('/data.txt'))).toBe('version-2')
+	})
+
+	it('watch fires on a remote pull and invalidates the meta cache', async () => {
+		const remote = journaledStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/state.json', enc.encode('v1'))
+
+		const vol = track(await synced({ local: journaledStorage(), remote, interval: 99_999 }))
+		// Warm the local meta cache so a stale stat would be observable.
+		expect(Number((await vol.stat('/state.json')).size)).toBe(2)
+
+		let fired = 0
+		const sources: Array<string | undefined> = []
+		await vol.watch('/state.json', (e) => {
+			fired++
+			sources.push(e.source)
+		})
+
+		// A second client rewrites the file on remote; pulling it must fire the
+		// watcher and (the latent-bug fix) invalidate the warm meta cache.
+		await remoteVol.writeFile('/state.json', enc.encode('longer-version-2'))
+		await vol.flush()
+		await new Promise((resolve) => setTimeout(resolve, 0))
+
+		expect(fired).toBeGreaterThanOrEqual(1)
+		expect(sources).toContain(REMOTE_SOURCE)
+		expect(Number((await vol.stat('/state.json')).size)).toBe('longer-version-2'.length)
 	})
 
 	// -------------------------------------------------------------------------
@@ -534,5 +669,84 @@ describe('synced', () => {
 
 		const results = await Promise.allSettled([p1, p2])
 		expect(results.every((r) => r.status === 'fulfilled')).toBe(true)
+	})
+
+	// -------------------------------------------------------------------------
+	// 10. Local-first boot (Phase 4a)
+	// -------------------------------------------------------------------------
+
+	it('localFirst resolves immediately even if the remote never responds', async () => {
+		const remote = journaledStorage()
+		const hanging: typeof remote = {
+			...remote,
+			caps: { ...remote.caps, fullScan: () => new Promise(() => {}) }
+		}
+
+		// Without localFirst this await would hang on the bootstrap; with it the
+		// local volume is returned at once and the bootstrap runs in the background.
+		const vol = track(
+			await synced({
+				local: journaledStorage(),
+				remote: hanging,
+				localFirst: true,
+				interval: 99_999
+			})
+		)
+
+		await vol.writeFile('/note.txt', enc.encode('hi'))
+		expect(dec.decode(await vol.readFile('/note.txt'))).toBe('hi')
+		expect(vol.status()).toBe('syncing')
+	})
+
+	it('reports error status when a sync fails', async () => {
+		const remote = journaledStorage()
+		const failing: typeof remote = {
+			...remote,
+			caps: { ...remote.caps, fullScan: () => Promise.reject(new Error('boom')) }
+		}
+
+		const vol = track(
+			await synced({
+				local: journaledStorage(),
+				remote: failing,
+				localFirst: true,
+				interval: 99_999
+			})
+		)
+		await vol.flush()
+
+		expect(vol.status()).toBe('error')
+	})
+
+	it('notifies status subscribers as a sync settles', async () => {
+		const remote = journaledStorage()
+		const vol = track(
+			await synced({ local: journaledStorage(), remote, localFirst: true, interval: 99_999 })
+		)
+
+		const seen: string[] = []
+		vol.onStatusChange((s) => seen.push(s))
+		await vol.flush()
+
+		expect(seen).toContain('synced')
+	})
+
+	it('preserves un-pushed local files when first adopting a non-empty remote', async () => {
+		const remote = journaledStorage()
+		await volume(remote).writeFile('/remote.txt', enc.encode('from remote'))
+
+		// A profile with local work that has never synced.
+		const local = journaledStorage()
+		await volume(local).writeFile('/local-only.txt', enc.encode('my work'))
+
+		const vol = track(await synced({ local, remote, interval: 99_999 }))
+		// First sync bootstraps the remote; the second push ships local work up.
+		await vol.flush()
+
+		// Adoption must not destroy un-pushed local work, and must merge remote in.
+		expect(dec.decode(await vol.readFile('/local-only.txt'))).toBe('my work')
+		expect(dec.decode(await vol.readFile('/remote.txt'))).toBe('from remote')
+		// The local-only file is shipped up so the account gains it too.
+		expect(await volume(remote).exists('/local-only.txt')).toBe(true)
 	})
 })

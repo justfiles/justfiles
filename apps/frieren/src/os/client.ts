@@ -39,21 +39,20 @@ export interface AgentClient {
 export interface FrierenClient {
 	connect(): void
 	close(): void
-	// Re-run the handshake so a fresh `ready` re-lists installed apps (e.g. after
-	// an install). Distinct intent from connect(), which OSProvider owns for boot.
+	// Re-list installed apps from the local profile volume (e.g. after install).
 	refresh(): void
 	send(frame: object): void
-	guiUrlFor(appId: string): string | undefined
 	agent: AgentClient
 	subscribeApps(listener: (apps: InstalledApp[]) => void): () => void
-	// Drop an app from the catalog optimistically (uninstall); a later `ready`
-	// or refresh() is authoritative.
+	// Drop an app from the catalog optimistically (uninstall); refresh() is authoritative.
 	removeApp(id: string): void
 	onRemoteWindow(handler: (action: OsAction) => void): () => void
 }
 
 export interface FrierenClientOptions {
 	getToken: () => Promise<string | null>
+	// Local catalog fallback for offline boot; online `ready` remains authoritative.
+	listLocalApps?: () => Promise<InstalledApp[]>
 	// Inject the transport for tests; defaults to a browser WebSocket on /ws.
 	createSocket?: (token: string) => SocketLike
 }
@@ -138,6 +137,24 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	function emitApps(): void {
 		for (const listener of appsListeners) listener(apps)
+	}
+
+	function setApps(next: InstalledApp[]): void {
+		apps = next
+		emitApps()
+	}
+
+	function loadLocalApps(fallback?: InstalledApp[]): void {
+		if (!options.listLocalApps) {
+			if (fallback) setApps(fallback)
+			return
+		}
+		void options
+			.listLocalApps()
+			.then(setApps)
+			.catch(() => {
+				if (fallback) setApps(fallback)
+			})
 	}
 
 	// --- server-echoed window open/close ---
@@ -237,10 +254,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || 'Frieren'
 			}
-			apps = Array.isArray(data.apps) ? (data.apps as InstalledApp[]) : []
 			connectionState = 'ready'
 			emitAgent()
-			emitApps()
+			loadLocalApps(Array.isArray(data.apps) ? (data.apps as InstalledApp[]) : [])
 			return
 		}
 
@@ -313,12 +329,14 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			connectionState = 'disconnected'
 			isStreaming = false
 			emitAgent()
+			loadLocalApps()
 		}
 		ws.onerror = () => {
 			if (socket !== ws) return
 			connectionState = 'disconnected'
 			isStreaming = false
 			emitAgent()
+			loadLocalApps()
 		}
 	}
 
@@ -340,6 +358,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			if (!token) {
 				connectionState = 'disconnected'
 				emitAgent()
+				loadLocalApps()
 				return
 			}
 			const ws = createSocket(token)
@@ -372,7 +391,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		agent,
 
 		connect,
-		refresh: connect,
+		refresh: () => loadLocalApps(),
 
 		close() {
 			generation++
@@ -380,14 +399,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			connectionState = 'disconnected'
 			isStreaming = false
 			emitAgent()
+			loadLocalApps()
 		},
 
 		send(frame) {
 			if (socket && socket.readyState === SOCKET_OPEN) socket.send(JSON.stringify(frame))
-		},
-
-		guiUrlFor(appId) {
-			return apps.find((app) => app.id === appId)?.guiUrl
 		},
 
 		subscribeApps(listener) {
@@ -402,8 +418,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		removeApp(id) {
 			const next = apps.filter((app) => app.id !== id)
 			if (next.length === apps.length) return
-			apps = next
-			emitApps()
+			setApps(next)
 		},
 
 		onRemoteWindow(handler) {
