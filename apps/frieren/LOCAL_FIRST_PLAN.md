@@ -715,7 +715,9 @@ the desktop and local apps do not block on it.
 `clerk-js` offline becomes non-load-bearing: sign-in still needs network, but
 booting the OS and running local apps does not.
 
-### Phase 4e — move onboarding to opt-in setup
+### Phase 4e — move onboarding to opt-in setup (defered)
+
+NOTE: this is defered to after we redesign the agent UI. don't worry about this
 
 First anonymous visit should load the desktop immediately. Onboarding is no
 longer a boot step. It runs when the user chooses one of these flows:
