@@ -180,6 +180,32 @@ describe('volume.watch', () => {
 		expect(fired).toBe(settled + 1)
 	})
 
+	it('binds a path whose parent directory does not exist yet', async () => {
+		const vol = volume(memStorage())
+
+		let fired = 0
+		await vol.watch('/state/app.json', () => {
+			fired++
+		})
+
+		// Creating an unrelated dir must not fire (the path still does not resolve).
+		await vol.mkdir('/other')
+		await flush()
+		expect(fired).toBe(0)
+
+		// Creating the missing parent then the file binds the watch and fires.
+		await vol.mkdir('/state')
+		await vol.writeFile('/state/app.json', enc.encode('1'))
+		await flush()
+		expect(fired).toBeGreaterThanOrEqual(1)
+
+		// A later content edit fires via the now-bound inode.
+		const settled = fired
+		await vol.writeFile('/state/app.json', enc.encode('2'))
+		await flush()
+		expect(fired).toBe(settled + 1)
+	})
+
 	it('returns a no-op when the storage has no change feed', async () => {
 		const base = memStorage()
 		const noFeed: Storage = { ...base, caps: { ...base.caps, subscribe: undefined } }

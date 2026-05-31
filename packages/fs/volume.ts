@@ -741,20 +741,22 @@ export function volume(storage: Storage): Volume {
 			if (!subscribe) return () => {}
 
 			// Track the resolved inode (content/meta edits) and the parent dentry
-			// (rebinds). The path need not exist yet — dirIno/name still bind it.
-			let targetIno: Ino | null = await resolvePath(path, true).catch(() => null)
+			// (rebinds). The path need not exist yet — dirIno/name bind it once the
+			// parent exists.
+			let targetIno: Ino | null = null
 			let dirIno: Ino | null = null
 			let name = ''
-			try {
-				const parent = await resolveParent(path)
-				dirIno = parent.dirIno
-				name = parent.name
-			} catch {
-				// Parent dir missing — fall back to inode-only watching.
+			async function resolve(): Promise<void> {
+				targetIno = await resolvePath(path, true).catch(() => null)
+				const parent = await resolveParent(path).catch(() => null)
+				dirIno = parent?.dirIno ?? null
+				name = parent?.name ?? ''
 			}
+			await resolve()
 
 			let scheduled = false
 			let needsResolve = false
+			let definiteFire = false
 			let pendingSource: string | undefined
 
 			return subscribe((change) => {
@@ -764,19 +766,29 @@ export function volume(storage: Storage): Volume {
 					(change.kind === 'meta' || change.kind === 'content')
 				const hitsDentry =
 					change.kind === 'dirent' && change.dirIno === dirIno && change.name === name
-				if (!hitsIno && !hitsDentry) return
+				// While the parent chain is incomplete (dirIno still null) we can't
+				// know which dentry will bind the path, so any dir mutation is a
+				// candidate: re-resolve and fire only if it actually bound the file.
+				const mayBind = dirIno === null && change.kind === 'dirent'
+				if (!hitsIno && !hitsDentry && !mayBind) return
 				pendingSource = change.source
-				if (hitsDentry) needsResolve = true
+				if (hitsIno || hitsDentry) definiteFire = true
+				if (hitsDentry || mayBind) needsResolve = true
 				// Coalesce the several storage ops of one logical write into one event.
 				if (scheduled) return
 				scheduled = true
 				queueMicrotask(async () => {
 					scheduled = false
+					const fire = definiteFire
+					const wasUnbound = dirIno === null && targetIno === null
+					definiteFire = false
 					if (needsResolve) {
 						needsResolve = false
-						targetIno = await resolvePath(path, true).catch(() => null)
+						await resolve()
 					}
-					listener({ source: pendingSource })
+					// A speculative re-resolve that still didn't bind the file (some
+					// unrelated dir was created) is not an event.
+					if (fire || (wasUnbound && targetIno !== null)) listener({ source: pendingSource })
 				})
 			})
 		}

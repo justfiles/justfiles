@@ -62,8 +62,29 @@ export async function reconcileBuiltins(
 		if (!force && installed.get(app.id) === app.version) continue
 		if (await fs.exists(disabledMarker(app.id))) continue
 		const files = new Map<string, Uint8Array>()
-		for (const file of app.files) files.set(safeBundlePath(file.path), await read(app, file.path))
+		for (const file of app.files) {
+			const bytes = await read(app, file.path)
+			await verifyHash(app, file, bytes)
+			files.set(safeBundlePath(file.path), bytes)
+		}
 		await kernel.install(bundleFromFiles(files))
+	}
+}
+
+// Integrity check: the catalog pins each file's `sha256-<hex>` digest (emitted
+// by the build over the exact served bytes). Verify before installing so
+// corrupt or tampered bytes never reach the volume — and so the same gate holds
+// once third-party / R2 bytes serve through the same `/appstore` routes.
+async function verifyHash(app: CatalogApp, file: CatalogFile, bytes: Uint8Array): Promise<void> {
+	const expected = file.hash.replace(/^sha256-/, '')
+	const buffer = bytes.buffer.slice(
+		bytes.byteOffset,
+		bytes.byteOffset + bytes.byteLength
+	) as ArrayBuffer
+	const digest = await crypto.subtle.digest('SHA-256', buffer)
+	const actual = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+	if (actual !== expected) {
+		throw new Error(`appstore: ${app.id}/${file.path} hash mismatch`)
 	}
 }
 
