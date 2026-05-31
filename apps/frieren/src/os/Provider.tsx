@@ -1,5 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { appFileUrl } from '../../shared/appstore'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
@@ -32,10 +33,14 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		createFrierenClient({
 			getToken: () => getTokenRef.current(),
 			listLocalApps: async (): Promise<InstalledApp[]> =>
-				(await (await localKernel()).list()).map((app) => ({
-					id: app.id,
-					name: app.name,
-					description: app.description ?? ''
+				(await (await localKernel()).list()).map((m) => ({
+					id: m.id,
+					name: m.name,
+					description: m.description ?? '',
+					// Icons load from the public `/appstore` assets (PWA-precached), so
+					// the Dock has them offline without a server round-trip.
+					iconUrl:
+						m.icon && m.version ? appFileUrl({ id: m.id, version: m.version }, m.icon) : undefined
 				}))
 		})
 	)

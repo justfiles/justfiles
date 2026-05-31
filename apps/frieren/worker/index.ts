@@ -1,45 +1,8 @@
 import { verifyToken } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
-import { BUILTINS } from './builtins/index.ts'
 
 export { Frieren } from './frieren.ts'
-
-// Built-in icons ship with the worker bundle (same bytes for every user), so
-// the launcher loads them via plain `<img src>` — no token, no DO round-trip.
-// Version-stamped requests (`?v=<manifest version>`) get an immutable cache in
-// prod; dev disables caching so local bundle changes show immediately.
-const DEV_BUILTINS = import.meta.env.DEV
-
-const ICON_MIME: Record<string, string> = {
-	svg: 'image/svg+xml',
-	png: 'image/png',
-	jpg: 'image/jpeg',
-	jpeg: 'image/jpeg',
-	webp: 'image/webp',
-	gif: 'image/gif',
-	ico: 'image/x-icon'
-}
-
-function tryServeBuiltinIcon(
-	appId: string,
-	path: string,
-	version: string | undefined
-): Response | undefined {
-	const ext = path.split('.').pop()?.toLowerCase()
-	const mime = ext ? ICON_MIME[ext] : undefined
-	if (!mime) return undefined
-	const builtin = BUILTINS.find((b) => b.id === appId)
-	const bytes = builtin?.files[path]
-	if (!builtin || !bytes) return undefined
-	const headers: Record<string, string> = { 'content-type': mime }
-	if (DEV_BUILTINS) {
-		headers['cache-control'] = 'no-store'
-	} else if (version && version === builtin.version) {
-		headers['cache-control'] = 'public, max-age=31536000, immutable'
-	}
-	return new Response(bytes, { headers })
-}
 
 type WorkerEnv = { Bindings: Env }
 type Ctx = Context<WorkerEnv>
@@ -73,15 +36,9 @@ const tokenWs = async (c: Ctx) => {
 app.get('/ws', tokenWs)
 app.get('/api/apps/:appId/ws', tokenWs)
 // App GUI assets are fetched by dynamic import/runtime code, which can't set an
-// Authorization header, so the token rides the URL. Icon-extension paths
-// short-circuit to public byte serving — they're shipped in BUILTINS and don't
-// need user routing.
-app.get('/api/apps/:appId/*', (c) => {
-	const appId = c.req.param('appId')
-	const path = c.req.path.split('/').slice(4).join('/')
-	const icon = tryServeBuiltinIcon(appId, path, c.req.query('v'))
-	return icon ?? tokenWs(c)
-})
+// Authorization header, so the token rides the URL. (Built-in icons no longer
+// route here — the launcher loads them from the public `/appstore` assets.)
+app.get('/api/apps/:appId/*', tokenWs)
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())
