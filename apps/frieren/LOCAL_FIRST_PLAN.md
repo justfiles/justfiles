@@ -534,12 +534,11 @@ with the existing mtime last-writer-wins tiebreak, `synced.ts:142`). We do **not
 build a bidirectional merge.
 
 The one hazard is *adoption*: today `sync()` runs `bootstrap()` whenever
-`remoteCursor === undefined` (a never-synced profile's state on first sign-in),
-and `bootstrap()` → `reconcileLocal()` (`synced.ts:196`) **deletes every
-local-only file absent from the remote snapshot**. So a profile that has local
-work would lose it the moment it adopts a non-empty remote. This only bites in one
-narrow case: **a profile with un-pushed local writes adopting a non-empty
-remote.** (Brand-new user / empty remote → `push` ships local up, zero loss.)
+`remoteCursor === undefined` (a never-synced profile's state on first sync), and
+`bootstrap()` → `reconcileLocal()` (`synced.ts:196`) **deletes every local-only
+file absent from the remote snapshot**. So never point the default local profile
+at an account remote. Account profiles are separate; explicit import can copy
+local files into them later.
 
 Keep it simple now; improve later:
 
@@ -550,10 +549,10 @@ Keep it simple now; improve later:
    unconditional delete must not run against a profile that still has un-pushed
    local-only inodes — gate it, or simply never point a dirty profile's volume at
    a non-empty remote.
-2. **Warn + offer a backup** at the sign-in/adoption UI when the narrow lossy
-   trigger fires: "Signing in switches to your account's data; N local files
-   here won't be uploaded. [Download backup] [Continue] [Cancel]." This lives in
-   the profile-adoption UI, not in `synced.ts`.
+2. **Warn + offer a backup** if the default local profile has work during
+   sign-in: "Signing in switches to your account's data; N local files here won't
+   be uploaded. [Download backup] [Continue]." This lives in the profile UI, not
+   in `synced.ts`.
 
 Deferred (not now): an opt-in *"import my local files into this account"* that
 re-writes local files by path+content as new creates (fresh UUID inos → pushed
@@ -578,13 +577,16 @@ Use DB names like `frieren-fs-profile-<localProfileId>`, not
 small IDB or `localStorage` key), separate from any profile volume, since it
 must be read before a profile volume is opened. Boot policy:
 
-1. open the last local profile;
-2. if none exists, create an anonymous profile;
-3. render the desktop immediately;
-4. start auth/sync as a side-effect if Clerk/session information is available.
+1. open the browser's default local profile (`local`), reusing an existing
+   anonymous profile if one exists;
+2. render the desktop immediately;
+3. start auth/sync as a side-effect if Clerk/session information is available.
 
-Sign-out stops sync and backend sockets, but **does not delete local data**. A
-separate explicit action (`Forget this profile from this browser`) deletes the
+Sign-in switches to the profile owned by that account (creating it if needed) and
+starts sync. The default local profile is not silently adopted into the account;
+import/merge is explicit later. Sign-out stops sync/backend sockets and switches
+back to the default local profile, but **does not delete account-local data**. A
+separate explicit action (`Forget this profile from this browser`) deletes an
 IDB/profile. This is the right default for offline-capable local software. It can
 show private data to another person using the same browser profile, so add a
 visible profile switcher / forget action; stronger privacy (passcode/encryption)
@@ -595,11 +597,9 @@ never destructively bootstrap a dirty profile):
 
 - if that remote user **already has a local profile** on this browser → switch to
   it; do not auto-merge (open decision #7);
-- else if the current profile is **clean or the remote is empty** → attach the
-  remote user id to the current profile and start sync (no loss);
-- else (current profile has un-pushed local work **and** the remote is non-empty)
-  → this is 4a's narrow lossy case: warn + offer backup, then adopt the remote
-  into a profile that won't lose the local work.
+- else create a new account profile for that remote user and sync it;
+- if the default local profile has work the user wants in the account, offer an
+  explicit backup/import flow instead of auto-merging.
 
 ### Phase 4c — seed built-in apps from static assets
 
@@ -806,11 +806,10 @@ built-ins, trusted/reviewed apps, or self-installed local zips.
    carries a content-free `dirty` push so the client pulls the agent's changes
    immediately instead of waiting for the next interval.
 6. ~~Anon→authed volume handoff~~ — **resolved direction: local profiles are
-   first-class and preserved.** Boot opens the last local profile (creating an
-   anonymous one if needed). Sign-in attaches a remote user id to the current
-   local profile and starts sync; sign-out stops backend services but does not
-   delete IDB. If the same remote user already has another local profile on this
-   browser, prompt switch/merge/continue.
+   first-class and preserved.** Signed-out boot opens the browser's default local
+   profile. Sign-in switches to that account's sibling profile and starts sync;
+   sign-out switches back to the default local profile. No automatic merge/import;
+   deleting local data requires an explicit "forget this browser" action.
 7. **Precise merge UX (open, Phase 4).** The storage direction is clear
    (server-authoritative adoption, local profile preserved — Phase 4a), but the
    user-facing choice when both current-local and existing-remote/local-profile

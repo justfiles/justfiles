@@ -30,9 +30,8 @@ export function createFsClient(getToken: GetToken): FsClient {
 }
 
 // Local profiles own local storage, not Clerk users. A profile is a browser-local
-// identity that holds one IDB replica; it can be anonymous (no account), so the
-// OS boots one with no auth at all. Signing in attaches a remote user to the
-// profile and starts sync; signing out keeps the local data.
+// identity that holds one IDB replica. The default local profile is the signed-out
+// workspace; signed-in accounts are sibling profiles that can sync.
 export type LocalProfile = {
 	id: string
 	remoteUserId?: string
@@ -54,19 +53,23 @@ function writeRegistry(profiles: LocalProfile[]): void {
 	localStorage.setItem(REGISTRY_KEY, JSON.stringify(profiles))
 }
 
-// The profile to boot with no auth: the most recently opened one, or a fresh
-// anonymous profile on first visit. Marked most-recently opened.
-function currentProfile(): LocalProfile {
+// The signed-out workspace. Never boot a remote user's most-recent profile when
+// auth is absent; choose an existing anonymous profile or create the browser's
+// default local profile.
+function localProfile(): LocalProfile {
 	const profiles = readRegistry()
-	const last = [...profiles].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
-	if (last) {
-		last.lastOpenedAt = Date.now()
+	const profile =
+		profiles.find((p) => !p.remoteUserId && p.id === 'local') ??
+		[...profiles].filter((p) => !p.remoteUserId).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
+	if (profile) {
+		profile.lastOpenedAt = Date.now()
 		writeRegistry(profiles)
-		return last
+		return profile
 	}
-	const profile: LocalProfile = { id: crypto.randomUUID(), lastOpenedAt: Date.now() }
-	writeRegistry([profile])
-	return profile
+	const next: LocalProfile = { id: 'local', lastOpenedAt: Date.now() }
+	profiles.push(next)
+	writeRegistry(profiles)
+	return next
 }
 
 // Find (or create) the local profile that owns a remote user, marking it opened.
@@ -93,6 +96,7 @@ function dbName(profileId: string): string {
 
 type Active = {
 	profileId: string
+	remoteUserId?: string
 	dbName: string
 	local: ReturnType<typeof idbStorage>
 	sync: SyncVolume | null
@@ -162,7 +166,12 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	})
 }
 
-function setActive(profileId: string, name: string, local: ReturnType<typeof idbStorage>): Active {
+function setActive(
+	profileId: string,
+	name: string,
+	local: ReturnType<typeof idbStorage>,
+	remoteUserId?: string
+): Active {
 	const localVolume = volume(local)
 	let entry: Active
 	const managed = createProfileVolume(localVolume, () => entry.sync)
@@ -184,6 +193,7 @@ function setActive(profileId: string, name: string, local: ReturnType<typeof idb
 
 	entry = {
 		profileId,
+		remoteUserId,
 		dbName: name,
 		local,
 		sync: null,
@@ -202,24 +212,29 @@ function setActive(profileId: string, name: string, local: ReturnType<typeof idb
 	return entry
 }
 
-// Open the active local profile's IDB volume. No backend is required here; when
-// auth exists, `attachRemoteUser` composes a `synced(local, remote)` sidecar on
-// top of the same local storage.
+function openLocalProfile(): ProfileVolume {
+	const profile = localProfile()
+	const name = dbName(profile.id)
+	return setActive(profile.id, name, idbStorage(name), profile.remoteUserId).volume
+}
+
+// Open the default local profile's IDB volume. No backend is required here;
+// auth later switches to an account profile and starts sync.
 export function openProfile(): Promise<ProfileVolume> {
 	if (active) return Promise.resolve(active.volume)
-	const profile = currentProfile()
-	const name = dbName(profile.id)
-	const entry = setActive(profile.id, name, idbStorage(name))
-	return Promise.resolve(entry.volume)
+	return Promise.resolve(openLocalProfile())
 }
 
 export function activeProfileId(): string | null {
 	return active?.profileId ?? null
 }
 
+export function activeRemoteUserId(): string | null {
+	return active?.remoteUserId ?? null
+}
+
 export function activeProfileHasRemoteUser(): boolean {
-	const profileId = active?.profileId
-	return profileId ? Boolean(readRegistry().find((p) => p.id === profileId)?.remoteUserId) : false
+	return Boolean(activeRemoteUserId())
 }
 
 export function activeStatus(): SyncStatus {
@@ -231,13 +246,12 @@ export function onActiveStatusChange(fn: () => void): () => void {
 	return () => statusListeners.delete(fn)
 }
 
-// Attach a backend session to the local profile and start sync. Called when a
-// signed-in user resolves — never a boot prerequisite. Do not auto-merge an
-// anonymous profile into an account; keep it as an orphan and switch/create the
-// account profile instead.
+// Switch to the signed-in account profile and start sync. Called when auth
+// resolves — never a boot prerequisite. Do not auto-merge the local workspace
+// into an account; keep it separate and switch/create the account profile.
 export async function attachRemoteUser(userId: string, getToken: GetToken): Promise<ProfileVolume> {
 	const cur = active
-	if (cur && readRegistry().find((p) => p.id === cur.profileId)?.remoteUserId === userId) {
+	if (cur?.remoteUserId === userId) {
 		await startSync(cur, getToken)
 		return cur.volume
 	}
@@ -245,15 +259,25 @@ export async function attachRemoteUser(userId: string, getToken: GetToken): Prom
 	// Switch to (or create) the profile that owns this user.
 	await releaseFsVolume({ flush: false })
 	const profile = profileForUser(userId)
-	const entry = setActive(profile.id, dbName(profile.id), idbStorage(dbName(profile.id)))
+	const entry = setActive(
+		profile.id,
+		dbName(profile.id),
+		idbStorage(dbName(profile.id)),
+		profile.remoteUserId
+	)
 	await startSync(entry, getToken)
 	return entry.volume
 }
 
-// Stop syncing without releasing the replica — used on sign-out so the desktop
-// keeps working on the local profile while no backend session exists.
-export function pauseActiveVolume(): void {
-	if (active) stopSync(active)
+// Sign-out switches back to the browser-local workspace. Account data stays on
+// disk for that account profile, but it is no longer the active desktop.
+export async function switchToLocalProfile(): Promise<ProfileVolume> {
+	if (active && !activeProfileHasRemoteUser()) {
+		stopSync(active)
+		return active.volume
+	}
+	await releaseFsVolume({ flush: false })
+	return openLocalProfile()
 }
 
 // Stop syncing and release the active replica WITHOUT deleting it. Called on

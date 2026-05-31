@@ -3,7 +3,14 @@ import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { AgentProvider } from './agent/Provider'
 import { Spinner } from './components/ui/spinner'
-import { activeProfileId, attachRemoteUser, openProfile, pauseActiveVolume } from './fs'
+import {
+	activeProfileHasRemoteUser,
+	activeProfileId,
+	activeRemoteUserId,
+	attachRemoteUser,
+	openProfile,
+	switchToLocalProfile
+} from './fs'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { resolveOnboardingState } from './onboarding/state'
 import { OSProvider } from './os/Provider'
@@ -35,22 +42,36 @@ function App() {
 	// Boot a local profile immediately — independent of Clerk. The desktop never
 	// waits for clerk-js to load or for a sign-in; it opens local IDB and renders.
 	useEffect(() => {
-		void openProfile().catch(() => {})
-		setProfileId(activeProfileId())
+		let cancelled = false
+		void openProfile()
+			.then(() => {
+				if (!cancelled) setProfileId(activeProfileId())
+			})
+			.catch(() => {})
+		return () => {
+			cancelled = true
+		}
 	}, [])
 
 	// Auth only upgrades the running OS; it never gates boot. When a signed-in
-	// session resolves, attach sync (switching profiles if the user owns a
-	// different one) and resolve their onboarding state. Signing out just pauses
-	// sync — the local profile stays open.
+	// session resolves, switch to that account profile and start sync. Signing out
+	// switches back to the browser-local profile.
 	useEffect(() => {
 		if (!isLoaded) return
+		let cancelled = false
 		if (!isSignedIn || !userId) {
 			setOnboardingDone(null)
-			pauseActiveVolume()
-			return
+			if (activeProfileId() && !activeProfileHasRemoteUser()) return
+			setProfileId(null)
+			void switchToLocalProfile()
+				.then(() => {
+					if (!cancelled) setProfileId(activeProfileId())
+				})
+				.catch(() => {})
+			return () => {
+				cancelled = true
+			}
 		}
-		let cancelled = false
 		void (async () => {
 			try {
 				const vol = await attachRemoteUser(userId, () => getToken())
@@ -63,7 +84,10 @@ function App() {
 				const state = await resolveOnboardingState(vol)
 				if (!cancelled) setOnboardingDone(state === 'done')
 			} catch {
-				if (!cancelled) setOnboardingDone(false)
+				if (!cancelled) {
+					setProfileId(activeProfileId())
+					setOnboardingDone(false)
+				}
 			}
 		})()
 		return () => {
@@ -77,7 +101,11 @@ function App() {
 	}, [userId])
 	const dismissChooser = useCallback(() => setChooserForUserId(null), [])
 
+	const remoteUserId = activeRemoteUserId()
 	if (!profileId) return <LoadingScreen label="Starting…" />
+	if (isLoaded && !isSignedIn && remoteUserId) return <LoadingScreen label="Switching workspace…" />
+	if (isLoaded && isSignedIn && userId && remoteUserId !== userId)
+		return <LoadingScreen label="Loading workspace…" />
 	if (showChooser) return <AuthWall onDismiss={dismissChooser} />
 	// Signed-in users finish setup once auth resolves; anonymous users go straight in.
 	if (isLoaded && isSignedIn && onboardingDone === null)
