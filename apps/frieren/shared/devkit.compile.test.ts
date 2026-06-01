@@ -1,0 +1,81 @@
+import * as esbuild from 'esbuild'
+import { beforeAll, describe, expect, test } from 'vitest'
+import { compile } from './devkit.compile.ts'
+import { buildRuntime } from './devkit-runtime.bundle.ts'
+
+// Exercises the real toolchain with Node esbuild standing in for esbuild-wasm
+// (same API); `buildRuntime` produces the same system-library bundles the
+// browser virtual module serves.
+
+const APP = `import { defineApp } from '@justfiles/app'
+import * as v from 'valibot'
+export const app = defineApp({
+	init: { count: 0 },
+	actions: (b) => ({
+		increment: b.handler({
+			schema: v.object({}),
+			handler(_, ctx) {
+				return { count: ctx.state.count + 1 }
+			}
+		})
+	})
+})`
+
+const GUI = `import { defineGUI } from '@justfiles/app/browser'
+export const gui = defineGUI({
+	mount(el, state) {
+		el.textContent = String((state as { count?: number } | null)?.count ?? 0)
+		return { update() {}, unmount() {} }
+	}
+})`
+
+describe('devkit compile', () => {
+	let runtime: Record<string, string>
+	beforeAll(async () => {
+		runtime = await buildRuntime()
+	}, 30_000)
+
+	test('bundles app.ts + gui.ts against the system runtime', async () => {
+		const { app, gui, diagnostics } = await compile(
+			{ 'app.ts': APP, 'gui.ts': GUI },
+			esbuild.build,
+			runtime
+		)
+		expect(diagnostics).toEqual([])
+		expect(app).toContain('dispatch') // the reducer surface is bundled in
+		expect(gui.length).toBeGreaterThan(0)
+		// @justfiles/app is bundled in, not left as a bare import — app.js is a
+		// self-contained module the sandbox worker can run with no importmap.
+		expect(app).not.toMatch(/from\s*["']@justfiles\/app["']/)
+	})
+
+	test('keeps React external in gui.tsx so the preview shares the host React', async () => {
+		const guiTsx = `import { defineGUI } from '@justfiles/app/browser'
+import { createRoot } from 'react-dom/client'
+export const gui = defineGUI({
+	mount(el) {
+		const root = createRoot(el)
+		root.render(<div />)
+		return { update() {}, unmount() { root.unmount() } }
+	}
+})`
+		const { gui, diagnostics } = await compile(
+			{ 'app.ts': APP, 'gui.tsx': guiTsx },
+			esbuild.build,
+			runtime
+		)
+		expect(diagnostics).toEqual([])
+		expect(gui).toMatch(/from\s*"react-dom\/client"/)
+		expect(gui).toMatch(/from\s*"react\/jsx-runtime"/)
+	})
+
+	test('reports diagnostics on a compile error', async () => {
+		const { app, diagnostics } = await compile(
+			{ 'app.ts': 'export const app = (', 'gui.ts': GUI },
+			esbuild.build,
+			runtime
+		)
+		expect(diagnostics.length).toBeGreaterThan(0)
+		expect(app).toBe('')
+	})
+})

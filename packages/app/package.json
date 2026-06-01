@@ -13,6 +13,7 @@
 		"./capabilities/email": "./capabilities/email/index.ts",
 		"./capabilities/calendar": "./capabilities/calendar/index.ts",
 		"./capabilities/volume": "./capabilities/volume/index.ts",
+		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
 		"./capabilities/integrations": "./capabilities/integrations/index.ts"
 	},
@@ -59,6 +60,10 @@
 			"./capabilities/volume": {
 				"types": "./dist/capabilities/volume/index.d.ts",
 				"default": "./dist/capabilities/volume/index.js"
+			},
+			"./capabilities/devkit": {
+				"types": "./dist/capabilities/devkit/index.d.ts",
+				"default": "./dist/capabilities/devkit/index.js"
 			},
 			"./capabilities/ai": {
 				"types": "./dist/capabilities/ai/index.d.ts",

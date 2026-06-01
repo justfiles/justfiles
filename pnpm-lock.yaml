@@ -110,6 +110,9 @@ importers:
       daisyui:
         specifier: ^5.5.19
         version: 5.5.19
+      esbuild-wasm:
+        specifier: ^0.27.7
+        version: 0.27.7
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
@@ -137,6 +140,9 @@ importers:
       typebox:
         specifier: ^1.1.33
         version: 1.1.38
+      valibot:
+        specifier: ^1.4.0
+        version: 1.4.0(typescript@5.9.3)
       zod:
         specifier: ^4.3.6
         version: 4.4.3
@@ -177,6 +183,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^5.1.1
         version: 5.1.1(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))
+      esbuild:
+        specifier: ^0.27.7
+        version: 0.27.7
       eslint:
         specifier: ^9.39.1
         version: 9.39.2(jiti@2.7.0)
@@ -5043,6 +5052,11 @@ packages:
   es6-promise-pool@2.5.0:
     resolution: {integrity: sha512-VHErXfzR/6r/+yyzPKeBvO0lgjfC5cbDCQWjWwMZWSb6YU39TGIl51OUmCfWCq4ylMdJSB8zkz2vIuIeIxXApA==}
     engines: {node: '>=0.10.0'}
+
+  esbuild-wasm@0.27.7:
+    resolution: {integrity: sha512-1k03e2/tGz+sLz3/xzoZmUsIqtaGIvJa8k4UqUeqCUry83nHmlxQYZUUES0WBFUYilSQUf7nDUGAciIIklljSg==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   esbuild@0.25.12:
     resolution: {integrity: sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg==}
@@ -12461,6 +12475,8 @@ snapshots:
 
   es6-promise-pool@2.5.0: {}
 
+  esbuild-wasm@0.27.7: {}
+
   esbuild@0.25.12:
     optionalDependencies:
       '@esbuild/aix-ppc64': 0.25.12
@@ -15454,6 +15470,10 @@ snapshots:
   util-deprecate@1.0.2: {}
 
   uuid@14.0.0: {}
+
+  valibot@1.4.0(typescript@5.9.3):
+    optionalDependencies:
+      typescript: 5.9.3
 
   valibot@1.4.0(typescript@6.0.3):
     optionalDependencies:

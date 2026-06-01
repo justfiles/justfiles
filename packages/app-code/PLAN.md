@@ -16,12 +16,12 @@ finder/settings** (no native/sandboxed split, no `defineGUI` change). Its
 reducer reads/writes project source through the **`volume` capability**, exactly
 like finder. The one privileged thing it does — compile a draft, run it in a
 scoped kernel, and embed that live app in its own window — is expressed as a
-**single `devhost` capability** that app-code *declares* and the host *grants*
+**single `devkit` capability** that app-code *declares* and the host *grants*
 (allowlist now, user-consent later). Privilege is graduated via capabilities,
 the system's existing entitlement currency: **anyone could build a competing
-Xcode-for-Frieren by declaring `devhost` and being granted it.**
+Xcode-for-Frieren by declaring `devkit` and being granted it.**
 
-Why this is mechanically clean: `devhost` is a **local, main-thread capability**
+Why this is mechanically clean: `devkit` is a **local, main-thread capability**
 (like `volume` in the browser — it never serializes to the server). Its impl
 *is* frieren main-thread code, so it holds `host` / `createClientKernel` /
 `chroot` / the esbuild toolchain natively. It reaches into the **caller's own
@@ -136,7 +136,7 @@ const flush = debounce((path, content) => void client.write({ path, content }), 
 
 ---
 
-## Slice 3 — The `devhost` capability (the one new platform piece)
+## Slice 3 — The `devkit` capability (the one new platform piece)
 
 **Goal:** add a single privileged, host-gated capability that compiles a draft,
 runs it in a scoped kernel, and embeds the live app at the caller's
@@ -144,16 +144,16 @@ runs it in a scoped kernel, and embeds the live app at the caller's
 by the system here**, not by the app.
 
 **Touches:**
-- `packages/app/capabilities/devhost/{contract.ts,index.ts}` — **new** SDK
+- `packages/app/capabilities/devkit/{contract.ts,index.ts}` — **new** SDK
   capability (sits beside `volume`).
-- `apps/frieren/src/apps/devhost.capability.ts` — **new** browser impl (the
+- `apps/frieren/src/apps/devkit.capability.ts` — **new** browser impl (the
   toolchain + host wiring). frieren gains `esbuild-wasm`.
-- `apps/frieren/src/apps/capabilities.client.ts` — route `devhost` locally.
-- `apps/frieren/shared/devhost.allowlist.ts` — the grant gate (v1: a constant).
+- `apps/frieren/src/apps/capabilities.client.ts` — route `devkit` locally.
+- `apps/frieren/shared/devkit.allowlist.ts` — the grant gate (v1: a constant).
 
 ```ts
-// packages/app/capabilities/devhost/contract.ts — all I/O serializable.
-export interface DevhostCapability {
+// packages/app/capabilities/devkit/contract.ts — all I/O serializable.
+export interface DevkitCapability {
 	run(i: { slug: string; files: Record<string, string> }): Promise<{ previewId: string; diagnostics: string[] }>
 	stop(i: { previewId: string }): Promise<void>
 	install(i: { slug: string; files: Record<string, string> }): Promise<{ id: string }>
@@ -161,28 +161,28 @@ export interface DevhostCapability {
 }
 // index.ts
 import { defineCapability } from '../core.ts'
-export const devhost = defineCapability<'devhost', DevhostCapability>('devhost')
+export const devkit = defineCapability<'devkit', DevkitCapability>('devkit')
 ```
 
 ```ts
-// apps/frieren/src/apps/capabilities.client.ts — devhost runs LOCALLY, never to server.
-if (req.capability === 'devhost') {
-	if (!DEVHOST_ALLOWLIST.has(req.appId)) throw capabilityError('CAPABILITY_UNAVAILABLE', 'devhost', req.method)
-	return invokeDevhost(fs, getToken, req)
+// apps/frieren/src/apps/capabilities.client.ts — devkit runs LOCALLY, never to server.
+if (req.capability === 'devkit') {
+	if (!DEVKIT_ALLOWLIST.has(req.appId)) throw capabilityError('CAPABILITY_UNAVAILABLE', 'devkit', req.method)
+	return invokeDevkit(fs, getToken, req)
 }
 ```
 
 ```ts
-// apps/frieren/src/apps/devhost.capability.ts — privilege held natively; DOM stays main-thread.
+// apps/frieren/src/apps/devkit.capability.ts — privilege held natively; DOM stays main-thread.
 import { appBundleFromMemory } from '@justfiles/app'
 import { chroot } from '@justfiles/fs'
 import { createClientKernel } from './kernel.client'
 import * as host from './host'
-import { compile } from './devhost.compile'        // esbuild-wasm + React-external vfs plugin
+import { compile } from './devkit.compile'        // esbuild-wasm + React-external vfs plugin
 
 async function run(fs, getToken, appId, { slug, files }) {
 	const { app, gui, diagnostics } = await compile(files)          // system toolchain
-	const runtimeRoot = `/data/${appId}/.devhost/${slug}`           // generic, caller-private
+	const runtimeRoot = `/data/${appId}/.devkit/${slug}`           // generic, caller-private
 	const scoped = chroot(fs, runtimeRoot)
 	const kernel = createClientKernel({ fs: scoped, getToken })
 	const previewId = `preview.${slug}`
@@ -206,11 +206,11 @@ const one = (files, entry) => esbuild.build({ entryPoints: [entry], bundle: true
 	format: 'esm', external: EXTERNAL, plugins: [vfs(files)] }).then((r) => r.outputFiles[0].text)
 ```
 
-**Verify (standalone, no app-code needed):** add `devhost` + `app.test.devhost`
-to the allowlist; a throwaway app declaring `devhost` calls `dev.run` with a
+**Verify (standalone, no app-code needed):** add `devkit` + `app.test.devkit`
+to the allowlist; a throwaway app declaring `devkit` calls `devkit.run` with a
 hardcoded two-file sample and renders `<div data-preview-slot>` → the sample app
 mounts and runs inside the throwaway app's window. A non-allowlisted app calling
-`dev.run` gets `CAPABILITY_UNAVAILABLE`. Force a syntax error → `run` resolves
+`devkit.run` gets `CAPABILITY_UNAVAILABLE`. Force a syntax error → `run` resolves
 with non-empty `diagnostics` and keeps the last-good child mounted.
 
 ---
@@ -218,21 +218,21 @@ with non-empty `diagnostics` and keeps the last-good child mounted.
 ## Slice 4 — Wire the live loop in app-code
 
 **Goal:** `[Editor | Preview]` toggle; on save (debounced) recompile-and-run via
-`devhost`; error strip from diagnostics; `⟳ Run/Restart`.
+`devkit`; error strip from diagnostics; `⟳ Run/Restart`.
 
-**Touches:** `src/app.ts` (`run`/`stop`/`setPane` actions + declare `devhost`),
+**Touches:** `src/app.ts` (`run`/`stop`/`setPane` actions + declare `devkit`),
 `src/gui.ts` (toolbar, persistent `[data-preview-slot]`, error strip).
 
 ```ts
 // app.ts — app-code is still a normal app; privilege is one capability line.
-capabilities: { volume: volume(), dev: devhost() },
+capabilities: { volume: volume(), devkit: devkit() },
 run: b.handler({ schema: v.object({}), async handler(_, ctx) {
 	const files = await readAllSrc(ctx.capabilities.volume, ctx.state.slug)   // Record<path, content>
-	const { previewId, diagnostics } = await ctx.capabilities.dev.run({ slug: ctx.state.slug, files })
+	const { previewId, diagnostics } = await ctx.capabilities.devkit.run({ slug: ctx.state.slug, files })
 	return { ...ctx.state, previewId, diagnostics }
 }}),
 stop: b.handler({ schema: v.object({}), async handler(_, ctx) {
-	if (ctx.state.previewId) await ctx.capabilities.dev.stop({ previewId: ctx.state.previewId })
+	if (ctx.state.previewId) await ctx.capabilities.devkit.stop({ previewId: ctx.state.previewId })
 	return { ...ctx.state, previewId: null }
 }})
 ```
@@ -245,7 +245,7 @@ void client.run({})
 // error strip renders state.diagnostics; previous canvas stays mounted on failure
 ```
 
-`⟳ Run/Restart` = `stop` then `run` (optionally delete `…/.devhost/<slug>/state`
+`⟳ Run/Restart` = `stop` then `run` (optionally delete `…/.devkit/<slug>/state`
 first for a clean boot; between runs the scoped state persists → hot-reload feel).
 
 **Verify:** with Preview active, edit `gui.ts`’s rendered text → within ~½s the
@@ -259,12 +259,12 @@ previous canvas stays. `⟳` resets in-app state.
 **Goal:** `⬆ Install` promotes the draft to the real `/applications`;
 `⧉ Pack` returns a downloadable `.zip`; import reuses the existing path.
 
-**Touches:** `devhost.capability.ts` (`install` guard, `pack` via `fflate`),
+**Touches:** `devkit.capability.ts` (`install` guard, `pack` via `fflate`),
 `src/gui.ts` (buttons + download). Import already exists (`installZipApp` +
 `.zip` picker in `apps/hooks.ts`).
 
 ```ts
-// devhost.capability.ts
+// devkit.capability.ts
 async function install(fs, getToken, appId, { slug, files }) {
 	const { app, gui } = await compile(files)
 	const manifest = readManifest(files)                       // the draft's real id/name
@@ -295,7 +295,7 @@ rejected with the guard message.
 
 ## Slice 6 — Polish & real consent
 
-- **Replace the allowlist with a grant flow:** declaring `devhost` triggers a
+- **Replace the allowlist with a grant flow:** declaring `devkit` triggers a
   one-time user consent (it can run code + write `/applications`). This is the
   same consent the design wants before running a stranger’s packed app.
 - **Canvas-focus**: collapse the explorer so the embedded preview goes
@@ -313,12 +313,12 @@ rejected with the guard message.
 ```
 0 built-in ─▶ 1 read files ─▶ 2 edit/save ─▶ 4 live loop ─▶ 5 ship/share ─▶ 6 polish+consent
                                                   ▲
-                          3 devhost capability ───┘   (independently verifiable
+                          3 devkit capability ───┘   (independently verifiable
                                                         with a throwaway app)
 ```
 
 Slice 3 (the only new platform surface) is built and verified **standalone** —
-with a throwaway app declaring `devhost`, before app-code ever calls it — which
+with a throwaway app declaring `devkit`, before app-code ever calls it — which
 de-risks the capability + the toolchain in isolation. Everything in 0–2 is
 verifiable without any compile-and-run. app-code stays an ordinary app
 throughout; the entire privilege story is one capability the host grants.

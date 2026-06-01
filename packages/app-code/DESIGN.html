@@ -294,7 +294,7 @@
 			<li><a href="#build"><span class="tnum">5</span>TS→JS build in browser</a></li>
 			<li><a href="#loop"><span class="tnum">6</span>The live loop</a></li>
 			<li><a href="#data"><span class="tnum">7</span>Data model &amp; storage</a></li>
-			<li><a href="#capability"><span class="tnum">8</span>The devhost capability</a></li>
+			<li><a href="#capability"><span class="tnum">8</span>The devkit capability</a></li>
 			<li><a href="#security"><span class="tnum">9</span>Isolation / security</a></li>
 			<li><a href="#milestones"><span class="tnum">10</span>Build order</a></li>
 			<li><a href="#open"><span class="tnum">11</span>Still to confirm</a></li>
@@ -309,7 +309,7 @@
 		<span class="tag">From your answers</span>
 		<ul>
 			<li><strong>No preview/run split, no pop-out.</strong> The right-pane Preview is the live app. There is no second window and no dock icon for a draft — popping out an identical instance buys nothing. The toolbar’s primary button is <strong>⟳ Run / Restart</strong> (re-run from clean state); auto-rebuild on save keeps it live in between.</li>
-			<li><strong>Drafts never touch <code>/applications</code>.</strong> Each project runs in a <strong>scoped preview kernel</strong> whose filesystem is rooted at <code>/data/app.code/.devhost/&lt;slug&gt;</code>. Its <code>/applications</code>, <code>/state</code>, <code>/data</code> resolve <em>inside that private scratch folder</em>, so a draft physically cannot overwrite a real app. The instance is dropped when app-code quits; files stay on disk.</li>
+			<li><strong>Drafts never touch <code>/applications</code>.</strong> Each project runs in a <strong>scoped preview kernel</strong> whose filesystem is rooted at <code>/data/app.code/.devkit/&lt;slug&gt;</code>. Its <code>/applications</code>, <code>/state</code>, <code>/data</code> resolve <em>inside that private scratch folder</em>, so a draft physically cannot overwrite a real app. The instance is dropped when app-code quits; files stay on disk.</li>
 			<li><strong>Source lives in app-code’s data dir</strong> — <code>/data/app.code/projects/&lt;slug&gt;/src/…</code> — edited through the <code>volume</code> capability.</li>
 			<li><strong>Ship &amp; share are explicit.</strong> <strong>Install</strong> calls the <em>real</em> <code>kernel.install()</code> (the only write to <code>/applications</code>); <strong>Pack</strong> emits a downloadable <code>.zip</code> others can import.</li>
 		</ul>
@@ -414,8 +414,8 @@
 		<text class="d-mono" x="220" y="284" text-anchor="middle">app.js + gui.js</text>
 
 		<rect class="d-node-accent" x="420" y="232" width="300" height="72" rx="10"/>
-		<text class="d-title" x="570" y="259" text-anchor="middle">devhost · scoped kernel</text>
-		<text class="d-mono" x="570" y="279" text-anchor="middle">.devhost/&lt;slug&gt;</text>
+		<text class="d-title" x="570" y="259" text-anchor="middle">devkit · scoped kernel</text>
+		<text class="d-mono" x="570" y="279" text-anchor="middle">.devkit/&lt;slug&gt;</text>
 		<text class="d-mono" x="570" y="296" text-anchor="middle">browserSandbox · state.json</text>
 
 		<polyline class="d-edge" points="434,126 434,190 220,190 220,232" marker-end="url(#d2-arrow)"/>
@@ -439,7 +439,7 @@
 		<polyline class="d-edge" points="220,304 220,330 635,330 635,352" marker-end="url(#d2-arrow)"/>
 		<text class="d-edge-label" x="430" y="324" text-anchor="middle">the compiled bundle</text>
 	</svg>
-	<p><strong>One live instance, in the pane.</strong> app-code dispatches <code>run</code>; the system <strong><code>devhost</code> capability</strong> (see §8) compiles the project, news up a <strong>preview kernel</strong> whose filesystem is rooted privately at <code>/data/app.code/.devhost/&lt;slug&gt;</code>, installs the bundle <em>there</em>, and embeds the running app at a DOM slot in app-code’s own pane. Because that filesystem is private and rooted, the draft’s <code>/applications</code> and <code>/state</code> live inside the scratch folder — the real ones are never touched.</p>
+	<p><strong>One live instance, in the pane.</strong> app-code dispatches <code>run</code>; the system <strong><code>devkit</code> capability</strong> (see §8) compiles the project, news up a <strong>preview kernel</strong> whose filesystem is rooted privately at <code>/data/app.code/.devkit/&lt;slug&gt;</code>, installs the bundle <em>there</em>, and embeds the running app at a DOM slot in app-code’s own pane. Because that filesystem is private and rooted, the draft’s <code>/applications</code> and <code>/state</code> live inside the scratch folder — the real ones are never touched.</p>
 	<p>It’s the same <code>kernel.ts</code> and the same <code>browserSandbox</code> as production, so the preview behaves exactly like the shipped app. Drafts stay local-first and never reach the server kernel until you <strong>Install</strong>. This is the SwiftUI-canvas model: the canvas <em>is</em> the compiled app, not a fake.</p>
 
 	<!-- 3 -->
@@ -503,7 +503,7 @@
 		<span class="tag">Recommendation</span>
 		<p style="margin-bottom:0.6rem"><strong>Use <code>esbuild-wasm</code>, bundling in the browser. Skip Vite-in-browser.</strong></p>
 	</div>
-	<p>This is the <strong>system-provided build chain</strong> — it lives inside the <code>devhost</code> capability impl (frieren), not in app-code. The app hands over source files; the system owns the toolchain, the way an OS ships a C compiler. Why esbuild-wasm:</p>
+	<p>This is the <strong>system-provided build chain</strong> — it lives inside the <code>devkit</code> capability impl (frieren), not in app-code. The app hands over source files; the system owns the toolchain, the way an OS ships a C compiler. Why esbuild-wasm:</p>
 	<ul>
 		<li>It does <em>exactly</em> what <code>kernelHost</code> already does at build time — <code>packages/app/vite.ts</code> bundles <code>app.js</code> with <strong>esbuild</strong> and builds <code>gui.js</code> with <strong>React external</strong>. The capability just runs both steps in the browser, once, shared across every dev app it serves.</li>
 		<li>Give esbuild a tiny resolver plugin (<code>onResolve</code>/<code>onLoad</code>) backed by the <code>projects/&lt;slug&gt;/src</code> file map, and:
@@ -526,37 +526,37 @@
 	<h2 id="loop"><span class="num">6</span>The live loop, end to end</h2>
 	<ol>
 		<li>Edit a file → app-code writes it to <code>/data/app.code/projects/&lt;slug&gt;/src/…</code> via the <strong><code>volume</code> capability</strong> (debounced).</li>
-		<li>app-code dispatches <code>run</code>; its reducer reads the project source and calls <code>dev.run({ slug, files })</code>. The <strong><code>devhost</code> capability</strong> compiles <code>app.js</code> + <code>gui.js</code>. On error: it returns <code>diagnostics</code>, the last-good canvas stays mounted, the strip shows the errors.</li>
-		<li><strong>Run in the scoped preview kernel.</strong> The capability installs the fresh bundle into a kernel rooted at <code>…/.devhost/&lt;slug&gt;</code> (atomic swap) and re-opens the stage. New code hash → fresh sandbox isolate; the scoped <code>state.json</code> persists across rebuilds → hot-reload feel. <strong>⟳ Run / Restart</strong> wipes that state for a clean run.</li>
+		<li>app-code dispatches <code>run</code>; its reducer reads the project source and calls <code>devkit.run({ slug, files })</code>. The <strong><code>devkit</code> capability</strong> compiles <code>app.js</code> + <code>gui.js</code>. On error: it returns <code>diagnostics</code>, the last-good canvas stays mounted, the strip shows the errors.</li>
+		<li><strong>Run in the scoped preview kernel.</strong> The capability installs the fresh bundle into a kernel rooted at <code>…/.devkit/&lt;slug&gt;</code> (atomic swap) and re-opens the stage. New code hash → fresh sandbox isolate; the scoped <code>state.json</code> persists across rebuilds → hot-reload feel. <strong>⟳ Run / Restart</strong> wipes that state for a clean run.</li>
 		<li>The capability parents the re-mounted stage at app-code’s <code>[data-preview-slot]</code>. No OS window, no dock entry — the instance lives in the pane, in app-code’s own layout flow.</li>
-		<li><strong>⬆ Install</strong> = <code>dev.install</code> → validate + the <em>real</em> <code>kernel.install</code> (check-first guard) → <code>/applications/&lt;id&gt;</code>. Now it’s a normal app (dock, server sync). <strong>⧉ Pack</strong> = <code>dev.pack</code> → <code>zipSync</code> <code>{manifest, app.js, gui.js}</code> → the gui downloads the returned bytes.</li>
+		<li><strong>⬆ Install</strong> = <code>devkit.install</code> → validate + the <em>real</em> <code>kernel.install</code> (check-first guard) → <code>/applications/&lt;id&gt;</code>. Now it’s a normal app (dock, server sync). <strong>⧉ Pack</strong> = <code>devkit.pack</code> → <code>zipSync</code> <code>{manifest, app.js, gui.js}</code> → the gui downloads the returned bytes.</li>
 	</ol>
 
 	<!-- 7 -->
 	<h2 id="data"><span class="num">7</span>Data model &amp; storage</h2>
 	<pre><code>/data/app.code/
   projects/&lt;slug&gt;/src/                     ← editable source (the real project)
-  .devhost/&lt;slug&gt;/                          ← capability-owned scratch; scoped kernel's private world
+  .devkit/&lt;slug&gt;/                          ← capability-owned scratch; scoped kernel's private world
     applications/preview.&lt;slug&gt;/{manifest,app.js,gui.js}
     state/preview.&lt;slug&gt;.json               ← draft state; wipe to reset (⟳ Restart)
 </code></pre>
 	<ul>
 		<li><strong>Project source</strong>: <code>…/projects/&lt;slug&gt;/src/*</code> (+ project meta). Edited via the <code>volume</code> capability — the agent and server can read/edit source directly.</li>
-		<li><strong>Scoped runtime</strong>: <code>…/.devhost/&lt;slug&gt;/*</code> is written only by the <code>devhost</code> capability’s scoped kernel — confined to the calling app’s own <code>/data/&lt;appId&gt;</code>, so it can’t collide with real apps. Delete it to fully reset a draft.</li>
+		<li><strong>Scoped runtime</strong>: <code>…/.devkit/&lt;slug&gt;/*</code> is written only by the <code>devkit</code> capability’s scoped kernel — confined to the calling app’s own <code>/data/&lt;appId&gt;</code>, so it can’t collide with real apps. Delete it to fully reset a draft.</li>
 		<li><strong>app-code’s own reducer state</strong> stays small/semantic: <code>{ openProject, selectedPath, openTabs, rightPane: 'editor'|'preview' }</code>. Transient editor state (cursor, scroll) stays GUI-local per the app state discipline.</li>
 		<li><strong>Shipped app</strong> (after Install): the standard <code>/applications/&lt;id&gt;</code> + <code>/state/&lt;id&gt;.json</code> — the only time the <em>real</em> dirs are written.</li>
 	</ul>
 
 	<!-- 8 -->
 	<h2 id="capability"><span class="num">8</span>What’s genuinely new: one granted capability</h2>
-	<p>app-code is an <strong>ordinary sandboxed app</strong> — a package with <code>defineApp</code> + <code>defineGUI</code>, shipped and installed through the <strong>same machinery as finder/settings</strong>. No native/sandboxed split, no <code>defineGUI</code> change. Its reducer reads and writes project source through the <strong><code>volume</code> capability</strong>, exactly like finder. The single privileged thing it does — compile a draft, run it in a scoped kernel, embed that live app in its own window — is one new platform surface: a <strong><code>devhost</code> capability</strong> that app-code <em>declares</em> and the host <em>grants</em>.</p>
+	<p>app-code is an <strong>ordinary sandboxed app</strong> — a package with <code>defineApp</code> + <code>defineGUI</code>, shipped and installed through the <strong>same machinery as finder/settings</strong>. No native/sandboxed split, no <code>defineGUI</code> change. Its reducer reads and writes project source through the <strong><code>volume</code> capability</strong>, exactly like finder. The single privileged thing it does — compile a draft, run it in a scoped kernel, embed that live app in its own window — is one new platform surface: a <strong><code>devkit</code> capability</strong> that app-code <em>declares</em> and the host <em>grants</em>.</p>
 	<div class="callout">
 		<span class="tag">Why a capability, not a privileged code tier</span>
-		<p style="margin-bottom:0.6rem">Privilege in Frieren is graduated through <strong>capabilities</strong> — the system’s entitlement currency (there’s already an allowlist gate: <code>SYSTEM_SCOPE_ALLOWLIST</code> for finder’s <code>system</code> volume scope). The Xcode parallel is exact: Xcode is <em>not</em> the OS; it’s an app that uses the OS app system with extra <em>entitlements</em>. So <code>devhost</code> is just a powerful capability any app may request and a granted few may use — <strong>anyone could build a competing app-code by declaring it and being granted it.</strong></p>
+		<p style="margin-bottom:0.6rem">Privilege in Frieren is graduated through <strong>capabilities</strong> — the system’s entitlement currency (there’s already an allowlist gate: <code>SYSTEM_SCOPE_ALLOWLIST</code> for finder’s <code>system</code> volume scope). The Xcode parallel is exact: Xcode is <em>not</em> the OS; it’s an app that uses the OS app system with extra <em>entitlements</em>. So <code>devkit</code> is just a powerful capability any app may request and a granted few may use — <strong>anyone could build a competing app-code by declaring it and being granted it.</strong></p>
 	</div>
-	<p><strong>What makes it mechanically clean:</strong> <code>devhost</code> is a <em>local, main-thread</em> capability — like <code>volume</code> in the browser, it never serializes to the server (<code>invokeClientCapability</code> runs it locally). Its impl <em>is</em> frieren main-thread code, so it natively holds <code>host</code>, <code>createClientKernel</code>, <code>chroot</code>, and the esbuild toolchain. A sandboxed app’s <code>gui.js</code> already runs on the main thread (<code>host.ts</code> mounts it), so the impl reaches into the <strong>caller’s own stage</strong> (<code>wrapperOf(appId)</code>) and parents the running draft at a DOM slot the gui rendered (<code>[data-preview-slot]</code>). <strong>No DOM ever crosses the worker boundary</strong>; the reducer only ever exchanges serializable values (file strings, ids, zip bytes).</p>
+	<p><strong>What makes it mechanically clean:</strong> <code>devkit</code> is a <em>local, main-thread</em> capability — like <code>volume</code> in the browser, it never serializes to the server (<code>invokeClientCapability</code> runs it locally). Its impl <em>is</em> frieren main-thread code, so it natively holds <code>host</code>, <code>createClientKernel</code>, <code>chroot</code>, and the esbuild toolchain. A sandboxed app’s <code>gui.js</code> already runs on the main thread (<code>host.ts</code> mounts it), so the impl reaches into the <strong>caller’s own stage</strong> (<code>wrapperOf(appId)</code>) and parents the running draft at a DOM slot the gui rendered (<code>[data-preview-slot]</code>). <strong>No DOM ever crosses the worker boundary</strong>; the reducer only ever exchanges serializable values (file strings, ids, zip bytes).</p>
 	<p>The whole contract is four serializable methods:</p>
-	<pre><code>interface DevhostCapability {
+	<pre><code>interface DevkitCapability {
   run(i: { slug: string; files: Record&lt;string,string&gt; }): Promise&lt;{ previewId: string; diagnostics: string[] }&gt;
   stop(i: { previewId: string }): Promise&lt;void&gt;
   install(i: { slug: string; files: Record&lt;string,string&gt; }): Promise&lt;{ id: string }&gt;   // → real /applications
@@ -565,7 +565,7 @@
 	<p>And <code>run</code>’s impl is the composition we verified in code (<code>chroot</code> + <code>createClientKernel</code> + <code>host.open</code> already exist; only the toolchain + wiring are new):</p>
 	<pre><code>async function run(fs, getToken, appId, { slug, files }) {
   const { app, gui, diagnostics } = await compile(files)          // system toolchain (esbuild-wasm, React external)
-  const scoped = chroot(fs, `/data/${appId}/.devhost/${slug}`)    // caller-private, generic
+  const scoped = chroot(fs, `/data/${appId}/.devkit/${slug}`)    // caller-private, generic
   const kernel = createClientKernel({ fs: scoped, getToken })
   const previewId = `preview.${slug}`
   await kernel.install(appBundleFromMemory({ id: previewId, name: slug, app, gui }))
@@ -582,7 +582,7 @@
 
 	<!-- 9 -->
 	<h2 id="security"><span class="num">9</span>Isolation / security note</h2>
-	<p><code>devhost</code> is a <strong>grant-gated</strong> capability: it can run code and write <code>/applications</code>, so it must be granted deliberately (v1: an allowlist constant like <code>SYSTEM_SCOPE_ALLOWLIST</code>; later: a one-time user-consent prompt when an app declares it). It is also <strong>browser-local only</strong> — there is no DOM or host on the server kernel, so it is simply unavailable server-side. Drafts run in a <strong>scoped kernel rooted in a private scratch folder</strong>, physically separated from real apps, and never leave the device until you Install — a work-in-progress can’t reach the server or touch <code>/applications</code>. Sandboxing is unchanged: isolates per code-hash with <code>globalOutbound: null</code>, host services only via declared capabilities. <strong>The same consent gate covers the later case</strong> of importing a stranger’s packed <code>.zip</code> — that code runs with whatever capabilities you grant it, so granting is the moment of trust.</p>
+	<p><code>devkit</code> is a <strong>grant-gated</strong> capability: it can run code and write <code>/applications</code>, so it must be granted deliberately (v1: an allowlist constant like <code>SYSTEM_SCOPE_ALLOWLIST</code>; later: a one-time user-consent prompt when an app declares it). It is also <strong>browser-local only</strong> — there is no DOM or host on the server kernel, so it is simply unavailable server-side. Drafts run in a <strong>scoped kernel rooted in a private scratch folder</strong>, physically separated from real apps, and never leave the device until you Install — a work-in-progress can’t reach the server or touch <code>/applications</code>. Sandboxing is unchanged: isolates per code-hash with <code>globalOutbound: null</code>, host services only via declared capabilities. <strong>The same consent gate covers the later case</strong> of importing a stranger’s packed <code>.zip</code> — that code runs with whatever capabilities you grant it, so granting is the moment of trust.</p>
 
 	<!-- 10 -->
 	<h2 id="milestones"><span class="num">10</span>Suggested build order (minimal first)</h2>
@@ -591,9 +591,9 @@
 		<li><strong>Ship <code>app-code</code> as a built-in</strong> (add to <code>BUILTIN_DIRS</code>) — the mock launches through the normal pipeline.</li>
 		<li><strong>Real files, read-only</strong>: reducer reads <code>…/projects/&lt;slug&gt;/src</code> via the <code>volume</code> capability; CodeMirror in the editor pane.</li>
 		<li><strong>Edit + save</strong>: debounced <code>write</code> handler through <code>volume</code>.</li>
-		<li><strong>The <code>devhost</code> capability</strong> (the one new platform surface) — contract in the SDK, local browser impl in frieren, grant gate. Verified <em>standalone</em> with a throwaway app before app-code uses it.</li>
-		<li><strong>Live loop</strong>: <code>run</code>/<code>stop</code> through <code>devhost</code>, <code>[Editor|Preview]</code> toggle, persistent <code>[data-preview-slot]</code>, error strip, <code>⟳ Run/Restart</code>.</li>
-		<li><strong>Ship &amp; share</strong>: <code>dev.install</code> (guarded real <code>kernel.install</code>) + <code>dev.pack</code> (<code>zipSync</code>); import via the existing <code>installZipApp</code>.</li>
+		<li><strong>The <code>devkit</code> capability</strong> (the one new platform surface) — contract in the SDK, local browser impl in frieren, grant gate. Verified <em>standalone</em> with a throwaway app before app-code uses it.</li>
+		<li><strong>Live loop</strong>: <code>run</code>/<code>stop</code> through <code>devkit</code>, <code>[Editor|Preview]</code> toggle, persistent <code>[data-preview-slot]</code>, error strip, <code>⟳ Run/Restart</code>.</li>
+		<li><strong>Ship &amp; share</strong>: <code>devkit.install</code> (guarded real <code>kernel.install</code>) + <code>devkit.pack</code> (<code>zipSync</code>); import via the existing <code>installZipApp</code>.</li>
 		<li><strong>Polish &amp; real consent</strong>: replace the allowlist with a grant prompt; canvas-focus, scaffold, diagnostics, Monaco.</li>
 	</ol>
 
@@ -603,14 +603,14 @@
 	<ul>
 		<li><strong>fs scoping</strong> ✅ <code>chroot(fs, root)</code> exists and is the platform’s per-app scoping primitive (<code>volume.capability.ts</code>, <code>frieren.app.ts</code>). No wrapper needed.</li>
 		<li><strong>Offline run</strong> ✅ <code>browserSandbox</code> runs each app in a per-(appId, code-hash) module Web Worker, torn down on change — local-first, identical semantics to the server kernel.</li>
-		<li><strong>Embedding the preview</strong> ✅ done inside the local <code>devhost</code> capability impl: <code>host.open(id, { localKernel, … })</code> injects the kernel <em>per open</em>, <code>host.wrapperOf(appId)</code> reaches the caller’s own stage, and the child stage is parented at its <code>[data-preview-slot]</code>. No <code>host.ts</code> or <code>defineGUI</code> change; no DOM crosses the worker boundary.</li>
+		<li><strong>Embedding the preview</strong> ✅ done inside the local <code>devkit</code> capability impl: <code>host.open(id, { localKernel, … })</code> injects the kernel <em>per open</em>, <code>host.wrapperOf(appId)</code> reaches the caller’s own stage, and the child stage is parented at its <code>[data-preview-slot]</code>. No <code>host.ts</code> or <code>defineGUI</code> change; no DOM crosses the worker boundary.</li>
 		<li><strong>Ship / pack / import</strong> ✅ <code>kernel.install</code> ships; <code>fflate</code> is already a dep and <code>bundleFromZip</code> + <code>installZipApp</code> + a <code>.zip</code> file-picker (<code>apps/hooks.ts</code>) already import a packed app. Pack is just <code>zipSync</code> over the compiled bundle.</li>
 	</ul>
 	<p><strong>Settled</strong>:</p>
 	<ul>
 		<li><strong>Pack artifact</strong> → a <code>.zip</code> via the existing <code>fflate</code> (manifest at root), installable through the existing <code>installZipApp</code> path. <em>(Correcting an earlier note — the zip dep and import path are already wired.)</em></li>
-		<li><strong>app-code privilege</strong> → a single grant-gated <code>devhost</code> capability (<code>run</code>/<code>stop</code>/<code>install</code>/<code>pack</code>) in the SDK; app-code stays an ordinary sandboxed app and is the capability’s first consumer. Anyone granted it can build a competing app-code.</li>
-		<li><strong>Scratch &amp; sync</strong> → <code>…/.devhost/&lt;slug&gt;</code> under the synced volume (durable, multi-device); a draft backs up as data but never <em>executes</em> server-side until Install (<code>devhost</code> is browser-local only).</li>
+		<li><strong>app-code privilege</strong> → a single grant-gated <code>devkit</code> capability (<code>run</code>/<code>stop</code>/<code>install</code>/<code>pack</code>) in the SDK; app-code stays an ordinary sandboxed app and is the capability’s first consumer. Anyone granted it can build a competing app-code.</li>
+		<li><strong>Scratch &amp; sync</strong> → <code>…/.devkit/&lt;slug&gt;</code> under the synced volume (durable, multi-device); a draft backs up as data but never <em>executes</em> server-side until Install (<code>devkit</code> is browser-local only).</li>
 	</ul>
 
 	<footer class="colophon">
