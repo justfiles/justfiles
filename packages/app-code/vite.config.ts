@@ -4,9 +4,10 @@ import { defineConfig } from 'vite'
 export default defineConfig({
 	plugins: [
 		kernelHost({
-			id: 'app.example.code',
+			id: 'app.code',
 			name: 'Code',
-			description: 'A mock IDE layout.',
+			icon: 'icon.svg',
+			description: 'Build Frieren apps inside Frieren.',
 			app: 'src/app.ts',
 			gui: 'src/gui.ts'
 		})
