@@ -171,9 +171,65 @@ export const gui = defineGUI<CodeApp>({
 			lineHeight: '1.55',
 			whiteSpace: 'pre-wrap'
 		})
+		const previewArea = div({
+			position: 'relative',
+			flex: '1 1 auto',
+			minHeight: '0',
+			boxSizing: 'border-box',
+			overflow: 'hidden',
+			padding: '22px',
+			background: '#d8d8dd',
+			display: 'flex'
+		})
+		const previewWindow = div({
+			flex: '1 1 auto',
+			minWidth: '0',
+			minHeight: '0',
+			display: 'flex',
+			flexDirection: 'column',
+			background: '#ffffff',
+			border: '1px solid #b9b9bf',
+			borderRadius: '10px',
+			boxShadow: '0 18px 40px rgba(0, 0, 0, 0.18)',
+			overflow: 'hidden'
+		})
+		const previewChrome = div({
+			flex: '0 0 auto',
+			height: '30px',
+			display: 'flex',
+			alignItems: 'center',
+			gap: '8px',
+			padding: '0 10px',
+			background: 'linear-gradient(#f9f9fa, #e6e6ea)',
+			borderBottom: '1px solid #c7c7cc'
+		})
+		const trafficLights = div({ display: 'flex', gap: '6px', width: '52px' })
+		for (const color of ['#ff5f57', '#ffbd2e', '#28c840']) {
+			trafficLights.append(
+				div({
+					width: '12px',
+					height: '12px',
+					borderRadius: '999px',
+					background: color,
+					border: '1px solid rgba(0, 0, 0, 0.16)'
+				})
+			)
+		}
+		const previewTitle = div({
+			flex: '1 1 auto',
+			overflow: 'hidden',
+			textOverflow: 'ellipsis',
+			whiteSpace: 'nowrap',
+			textAlign: 'center',
+			color: '#6e6e73',
+			fontSize: '12px',
+			fontWeight: '600'
+		})
+		previewChrome.append(trafficLights, previewTitle, div({ width: '52px' }))
 		// Stable slot the devkit capability parents the live preview into. Built
-		// once and only toggled via `display` — its children belong to the host,
-		// so we never replaceChildren it ourselves (that would drop the canvas).
+		// once inside the chrome and only toggled via its parent — its children
+		// belong to the host, so we never replaceChildren it ourselves (that would
+		// drop the canvas).
 		const previewSlot = div({
 			position: 'relative',
 			flex: '1 1 auto',
@@ -182,6 +238,8 @@ export const gui = defineGUI<CodeApp>({
 			background: '#ffffff'
 		})
 		previewSlot.dataset.previewSlot = ''
+		previewWindow.append(previewChrome, previewSlot)
+		previewArea.append(previewWindow)
 		const errorStrip = document.createElement('pre')
 		Object.assign(errorStrip.style, {
 			flex: '0 0 auto',
@@ -198,7 +256,7 @@ export const gui = defineGUI<CodeApp>({
 			whiteSpace: 'pre-wrap'
 		})
 		errorStrip.style.display = 'none'
-		editorArea.append(editorHost, message, previewSlot, errorStrip)
+		editorArea.append(editorHost, message, previewArea, errorStrip)
 		main.append(topbar, editorArea)
 		shell.append(sidebar, main)
 		el.replaceChildren(shell)
@@ -225,7 +283,8 @@ export const gui = defineGUI<CodeApp>({
 				!!current.selectedPath &&
 				source.path === current.selectedPath &&
 				source.content !== null
-			previewSlot.style.display = preview ? '' : 'none'
+			previewTitle.textContent = `Preview — ${current.slug}`
+			previewArea.style.display = preview ? 'flex' : 'none'
 			editorHost.style.display = ready ? '' : 'none'
 			message.style.display = !preview && !ready ? '' : 'none'
 			if (!preview && !ready) {
