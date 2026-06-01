@@ -46,21 +46,22 @@ export function disabledMarker(id: string): string {
 	return `/system/apps/disabled/${id}.json`
 }
 
-// Seed missing built-ins, overwrite version mismatches, skip equal, and never
-// resurrect a disabled one. `read` fetches a file's bytes (server: env.ASSETS;
-// client: fetch). `force` overwrites regardless of version (dev: pick up local
-// edits without a version bump).
+// Seed missing built-ins, reinstall the ones whose bytes changed, skip the rest,
+// and never resurrect a disabled one. `read` fetches a file's bytes (server:
+// env.ASSETS; client: fetch). Whether an app changed is decided by comparing the
+// installed assets' stored `contentHash` to the catalog's pinned hash — so a
+// caller that reconciles on every boot (dev re-materializes built-ins to pick up
+// local edits) only reinstalls the apps you actually rebuilt, not all of them.
 export async function reconcileBuiltins(
 	kernel: Kernel,
 	fs: Volume,
 	catalog: Catalog,
-	read: (app: CatalogApp, path: string) => Promise<Uint8Array>,
-	force = false
+	read: (app: CatalogApp, path: string) => Promise<Uint8Array>
 ): Promise<void> {
-	const installed = new Map((await kernel.list()).map((m) => [m.id, m.version]))
+	const installed = new Set((await kernel.list()).map((m) => m.id))
 	for (const app of catalog.apps) {
-		if (!force && installed.get(app.id) === app.version) continue
 		if (await fs.exists(disabledMarker(app.id))) continue
+		if (installed.has(app.id) && (await assetsMatch(fs, app))) continue
 		const files = new Map<string, Uint8Array>()
 		for (const file of app.files) {
 			const bytes = await read(app, file.path)
@@ -69,6 +70,26 @@ export async function reconcileBuiltins(
 		}
 		await kernel.install(bundleFromFiles(files))
 	}
+}
+
+// True when every catalog asset is already installed with identical bytes,
+// compared via the sha256 `contentHash` storage records on write. manifest.json
+// is excluded: the kernel re-serialises it on install (normalised entry paths),
+// so its installed bytes never match the catalog's verbatim copy — the other
+// assets (app.js / gui.js / icon) fully capture whether the app changed.
+async function assetsMatch(fs: Volume, app: CatalogApp): Promise<boolean> {
+	for (const file of app.files) {
+		if (file.path === 'manifest.json') continue
+		let contentHash: string | undefined
+		try {
+			const stat = await fs.stat(`/applications/${app.id}/${safeBundlePath(file.path)}`)
+			contentHash = stat.contentHash
+		} catch {
+			return false // asset missing locally → (re)install
+		}
+		if (`sha256-${contentHash ?? ''}` !== file.hash) return false
+	}
+	return true
 }
 
 // Integrity check: the catalog pins each file's `sha256-<hex>` digest (emitted

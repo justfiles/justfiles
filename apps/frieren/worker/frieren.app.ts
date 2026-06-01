@@ -77,30 +77,24 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	// Built-in apps live as static `/appstore` assets and are seeded into the
 	// user's volume on kernel use (this DO is the sole materializer for the synced
-	// profile — see shared/appstore.ts). Dev always overwrites so local edits show
-	// up without a version bump; prod keeps the cheap version-diff path and only
-	// runs once per instance.
+	// profile — see shared/appstore.ts). reconcileBuiltins reinstalls only the apps
+	// whose bytes changed, so dev re-checks on every kernel use to pick up local
+	// edits (cheap — unchanged apps are skipped); prod runs it once per instance.
 	async function ensureBuiltinsInstalled(k: Kernel): Promise<void> {
-		if (DEV_BUILTINS) return reconcileFromAssets(k, true)
-		if (!builtinsReady) builtinsReady = reconcileFromAssets(k, false)
+		if (DEV_BUILTINS) return reconcileFromAssets(k)
+		if (!builtinsReady) builtinsReady = reconcileFromAssets(k)
 		return builtinsReady
 	}
 
-	async function reconcileFromAssets(k: Kernel, force: boolean): Promise<void> {
+	async function reconcileFromAssets(k: Kernel): Promise<void> {
 		const res = await deps.assets.fetch(assetRequest(CATALOG_PATH))
 		if (!res.ok) return
 		const catalog = (await res.json()) as Catalog
-		await reconcileBuiltins(
-			k,
-			deps.fs,
-			catalog,
-			async (app, path) => {
-				const file = await deps.assets.fetch(assetRequest(appFileUrl(app, path)))
-				if (!file.ok) throw new Error(`appstore: ${app.id}/${path} ${file.status}`)
-				return new Uint8Array(await file.arrayBuffer())
-			},
-			force
-		)
+		await reconcileBuiltins(k, deps.fs, catalog, async (app, path) => {
+			const file = await deps.assets.fetch(assetRequest(appFileUrl(app, path)))
+			if (!file.ok) throw new Error(`appstore: ${app.id}/${path} ${file.status}`)
+			return new Uint8Array(await file.arrayBuffer())
+		})
 	}
 
 	async function kernelReady(): Promise<Kernel> {
