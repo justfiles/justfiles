@@ -9,10 +9,12 @@
 export interface DevkitCapability {
 	// Compile + (re)mount the draft at the caller's `[data-preview-slot]`.
 	// On a compile error, `diagnostics` is non-empty and the last-good preview
-	// stays mounted.
+	// stays mounted. `reset` wipes the draft's persisted state first, for a
+	// clean boot (⟳ Run/Restart); omit it to keep state across rebuilds.
 	run(input: {
 		slug: string
 		files: Record<string, string>
+		reset?: boolean
 	}): Promise<{ previewId: string; diagnostics: string[] }>
 	// Tear down a running preview.
 	stop(input: { previewId: string }): Promise<void>

@@ -1,4 +1,5 @@
 import { defineApp } from '@justfiles/app'
+import { devkit } from '@justfiles/app/capabilities/devkit'
 import { type VolumeCapability, volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 
@@ -59,7 +60,7 @@ const srcPathSchema = v.pipe(
 
 export const app = defineApp({
 	init: initialState,
-	capabilities: { volume: volume({ scopes: [] }) },
+	capabilities: { volume: volume({ scopes: [] }), devkit: devkit({ scopes: [] }) },
 	actions: (b) => ({
 		open: b.handler({
 			description: 'Open a project from app-code storage, seeding it on first use.',
@@ -112,6 +113,42 @@ export const app = defineApp({
 				return path === state.selectedPath ? { ...state, dirty: false } : state
 			}
 		}),
+		setPane: b.handler({
+			description: 'Switch the right pane between the editor and the live preview.',
+			schema: v.object({ pane: v.picklist(['editor', 'preview']) }),
+			examples: [{ params: { pane: 'preview' } }],
+			handler({ pane }, ctx) {
+				const state = normalizeState(ctx.state)
+				return state.rightPane === pane ? state : { ...state, rightPane: pane }
+			}
+		}),
+		// Compile the project and (re)mount it in the preview pane. `reset` wipes
+		// the draft's persisted state for a clean boot (⟳ Run/Restart); a plain
+		// run keeps state across rebuilds, for the live hot-reload feel on save.
+		run: b.handler({
+			description: 'Compile the project and run it in the preview pane.',
+			schema: v.object({ reset: v.optional(v.boolean()) }),
+			examples: [{ params: {} }, { params: { reset: true } }],
+			async handler({ reset }, ctx) {
+				const state = normalizeState(ctx.state)
+				const files = await readSource(ctx.capabilities.volume, state.slug)
+				const { previewId, diagnostics } = await ctx.capabilities.devkit.run({
+					slug: state.slug,
+					files,
+					reset
+				})
+				return { ...state, previewId, diagnostics }
+			}
+		}),
+		stop: b.handler({
+			description: 'Tear down the running preview.',
+			schema: v.object({}),
+			async handler(_, ctx) {
+				const state = normalizeState(ctx.state)
+				if (state.previewId) await ctx.capabilities.devkit.stop({ previewId: state.previewId })
+				return { ...state, previewId: null, diagnostics: [] }
+			}
+		}),
 		readFile: b.query({
 			description: 'Read a source file as text.',
 			schema: v.object({ path: srcPathSchema }),
@@ -136,6 +173,20 @@ async function listFiles(volume: VolumeCapability, slug: string): Promise<string
 		.filter((entry) => entry.type === 'file')
 		.map((entry) => entry.path.slice(root.length + 1))
 		.sort((a, b) => a.localeCompare(b))
+}
+
+// Read every source file fresh from disk as a path→content map for the
+// compiler. Reads from the volume (not `state.files`) so a just-saved edit is
+// always included, regardless of pending state pushes.
+async function readSource(volume: VolumeCapability, slug: string): Promise<Record<string, string>> {
+	const files = await listFiles(volume, slug)
+	const entries = await Promise.all(
+		files.map(
+			async (path) =>
+				[path, decoder.decode(await volume.readFile({ path: SRC(slug, `/${path}`) }))] as const
+		)
+	)
+	return Object.fromEntries(entries)
 }
 
 async function seed(volume: VolumeCapability, slug: string): Promise<void> {

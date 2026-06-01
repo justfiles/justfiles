@@ -27,7 +27,14 @@ export const gui = defineGUI<CodeApp>({
 
 		const writer = createWriter((path, content) => {
 			localDirty = false
-			void ctx.client.write({ path, content }).catch(() => {})
+			void ctx.client
+				.write({ path, content })
+				.then(() => {
+					// Auto-rebuild keeps a live preview current as you type. Only
+					// fires once a preview exists — nothing compiles until ⟳ Run.
+					if (current.previewId) void ctx.client.run({}).catch(() => {})
+				})
+				.catch(() => {})
 		}, 400)
 		const editor = createEditor((content) => {
 			if (!editorPath) return
@@ -109,6 +116,18 @@ export const gui = defineGUI<CodeApp>({
 			opacity: '0.6',
 			padding: '5px 10px'
 		})
+		// ⟳ Run/Restart: re-run from clean state (wipes the draft's persisted
+		// state) and reveal the live preview. Auto-rebuild on save keeps it live
+		// in between; this button is the explicit, stateful restart.
+		// Chain (not fire-and-forget two dispatches): `run` is slow (it compiles)
+		// and dispatches aren't serialized per app, so a concurrent `setPane`
+		// would be clobbered by run's late state write. Awaiting orders them.
+		run.onclick = () => {
+			void ctx.client
+				.setPane({ pane: 'preview' })
+				.then(() => ctx.client.run({ reset: true }))
+				.catch(() => {})
+		}
 		const title = div({
 			marginLeft: '8px',
 			minWidth: '0',
@@ -116,7 +135,19 @@ export const gui = defineGUI<CodeApp>({
 			textOverflow: 'ellipsis',
 			whiteSpace: 'nowrap'
 		})
-		topbar.append(run, title)
+		const segment = div({
+			display: 'flex',
+			marginLeft: 'auto',
+			border: '1px solid #d2d2d7',
+			borderRadius: '6px',
+			overflow: 'hidden'
+		})
+		const segEditor = segButton('Editor')
+		const segPreview = segButton('Preview')
+		segEditor.onclick = () => void ctx.client.setPane({ pane: 'editor' }).catch(() => {})
+		segPreview.onclick = () => void ctx.client.setPane({ pane: 'preview' }).catch(() => {})
+		segment.append(segEditor, segPreview)
+		topbar.append(run, title, segment)
 
 		const editorArea = div({
 			position: 'relative',
@@ -140,7 +171,34 @@ export const gui = defineGUI<CodeApp>({
 			lineHeight: '1.55',
 			whiteSpace: 'pre-wrap'
 		})
-		editorArea.append(editorHost, message)
+		// Stable slot the devkit capability parents the live preview into. Built
+		// once and only toggled via `display` — its children belong to the host,
+		// so we never replaceChildren it ourselves (that would drop the canvas).
+		const previewSlot = div({
+			position: 'relative',
+			flex: '1 1 auto',
+			minHeight: '0',
+			overflow: 'hidden',
+			background: '#ffffff'
+		})
+		previewSlot.dataset.previewSlot = ''
+		const errorStrip = document.createElement('pre')
+		Object.assign(errorStrip.style, {
+			flex: '0 0 auto',
+			margin: '0',
+			maxHeight: '30%',
+			overflow: 'auto',
+			padding: '10px 14px',
+			background: '#fff5f5',
+			borderTop: '1px solid #f3c0c0',
+			color: '#c41a16',
+			fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+			fontSize: '12px',
+			lineHeight: '1.5',
+			whiteSpace: 'pre-wrap'
+		})
+		errorStrip.style.display = 'none'
+		editorArea.append(editorHost, message, previewSlot, errorStrip)
 		main.append(topbar, editorArea)
 		shell.append(sidebar, main)
 		el.replaceChildren(shell)
@@ -156,14 +214,26 @@ export const gui = defineGUI<CodeApp>({
 			const name = current.selectedPath ?? 'No file selected'
 			title.textContent = current.selectedPath && current.dirty ? `● ${name}` : name
 			treeContainer.replaceChildren(...sidebarBody(current, loadError, projectLoaded, onSelect))
+			run.disabled = !projectLoaded
+			run.style.opacity = projectLoaded ? '1' : '0.6'
+			run.style.color = projectLoaded ? '#1d1d1f' : '#86868b'
+			const preview = current.rightPane === 'preview'
+			setSegment(segEditor, !preview)
+			setSegment(segPreview, preview)
 			const ready =
-				!!current.selectedPath && source.path === current.selectedPath && source.content !== null
+				!preview &&
+				!!current.selectedPath &&
+				source.path === current.selectedPath &&
+				source.content !== null
+			previewSlot.style.display = preview ? '' : 'none'
 			editorHost.style.display = ready ? '' : 'none'
-			message.style.display = ready ? 'none' : ''
-			if (!ready) {
+			message.style.display = !preview && !ready ? '' : 'none'
+			if (!preview && !ready) {
 				message.textContent = sourceText(current.selectedPath, source)
 				message.style.color = source.error ? '#c41a16' : '#86868b'
 			}
+			errorStrip.style.display = current.diagnostics.length > 0 ? '' : 'none'
+			if (current.diagnostics.length > 0) errorStrip.textContent = current.diagnostics.join('\n')
 		}
 
 		const syncSource = () => {
@@ -373,6 +443,26 @@ function fileButton(
 		textAlign: 'left'
 	})
 	return button
+}
+
+function segButton(label: string) {
+	const button = document.createElement('button')
+	button.type = 'button'
+	button.textContent = label
+	Object.assign(button.style, {
+		border: '0',
+		cursor: 'default',
+		font: 'inherit',
+		fontSize: '12px',
+		fontWeight: '600',
+		padding: '5px 12px'
+	})
+	return button
+}
+
+function setSegment(button: HTMLButtonElement, active: boolean) {
+	button.style.background = active ? '#007aff' : '#ffffff'
+	button.style.color = active ? '#ffffff' : '#1d1d1f'
 }
 
 function smallButton(label: string) {

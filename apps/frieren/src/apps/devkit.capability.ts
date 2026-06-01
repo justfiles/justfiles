@@ -14,7 +14,7 @@ import { createClientKernel } from './kernel.client'
 // capabilities.client / devkit.allowlist).
 
 type GetToken = () => Promise<string | null>
-type RunInput = { slug: string; files: Record<string, string> }
+type RunInput = { slug: string; files: Record<string, string>; reset?: boolean }
 type Toolchain = { build: Parameters<typeof compile>[1]; runtime: Record<string, string> }
 
 // esbuild-wasm initialises once per page; the system runtime bundle loads with
@@ -51,7 +51,7 @@ async function run(
 	fs: Volume,
 	getToken: GetToken,
 	appId: string,
-	{ slug, files }: RunInput
+	{ slug, files, reset }: RunInput
 ): Promise<{ previewId: string; diagnostics: string[] }> {
 	const previewId = `preview.${slug}`
 	const { build, runtime } = await getToolchain()
@@ -63,6 +63,9 @@ async function run(
 	const kernel = createClientKernel({ fs: scoped, getToken })
 	await kernel.install(appBundleFromMemory({ id: previewId, name: slug, app, gui }))
 	host.close(previewId) // restart-safe: drop any prior isolate + stage
+	// ⟳ Run/Restart: wipe persisted draft state so the next boot starts clean.
+	// Done after close (old isolate gone, can't re-persist) and before open.
+	if (reset) await scoped.rm(`/state/${previewId}.json`, { force: true })
 	host.open(previewId, {
 		getToken,
 		localKernel: async () => kernel,
@@ -82,11 +85,15 @@ async function stop({ previewId }: { previewId: string }): Promise<void> {
 }
 
 function runInput(input: unknown): RunInput {
-	const value = input as { slug?: unknown; files?: unknown }
-	if (typeof value?.slug !== 'string' || !isStringRecord(value.files)) {
+	const value = input as { slug?: unknown; files?: unknown; reset?: unknown }
+	if (
+		typeof value?.slug !== 'string' ||
+		!isStringRecord(value.files) ||
+		(value.reset !== undefined && typeof value.reset !== 'boolean')
+	) {
 		throw capabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'run')
 	}
-	return { slug: value.slug, files: value.files }
+	return { slug: value.slug, files: value.files, reset: value.reset }
 }
 
 function stopInput(input: unknown): { previewId: string } {

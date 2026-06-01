@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { dirname } from 'node:path'
 import { build } from 'esbuild'
 
 // The system libraries the devkit compiler injects into every draft bundle —
@@ -14,8 +15,19 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 	const require = createRequire(import.meta.url)
 	const runtime: Record<string, string> = {}
 	for (const spec of LIBS) {
+		// Re-export the package from a synthetic entry rather than bundling its
+		// resolved file directly. A CommonJS package (e.g. valibot) used as the
+		// entry collapses to a lone `export default`, so a draft's
+		// `import * as v from 'valibot'` sees no named exports and `v.object`
+		// compiles to `(void 0)`. Importing it here lets esbuild apply ESM
+		// conditions + CJS named-export detection, preserving `object`,
+		// `string`, … as real named exports.
 		const result = await build({
-			entryPoints: [require.resolve(spec)],
+			stdin: {
+				contents: `export * from ${JSON.stringify(spec)}`,
+				resolveDir: dirname(require.resolve(spec)),
+				loader: 'js'
+			},
 			bundle: true,
 			write: false,
 			format: 'esm',
