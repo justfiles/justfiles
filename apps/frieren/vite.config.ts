@@ -203,6 +203,14 @@ function vendorReact(): Plugin {
 }
 
 export default defineConfig({
+	server: {
+		// In dev, @cloudflare/vite-plugin serves the worker's `env.ASSETS.fetch()`
+		// through this dev server. Those requests carry the synthetic `assets.invalid`
+		// host the worker uses (the real ASSETS binding ignores the host — see
+		// worker/frieren.app.ts), which Vite's host check would otherwise 403,
+		// silently breaking the server-side built-in reconcile.
+		allowedHosts: ['assets.invalid']
+	},
 	resolve: {
 		alias: {
 			'@': path.resolve(__dirname, './src')
