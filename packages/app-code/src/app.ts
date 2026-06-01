@@ -8,6 +8,7 @@ export type CodeState = {
 	slug: string
 	files: string[]
 	selectedPath: string | null
+	dirty: boolean
 	rightPane: CodePane
 	previewId: string | null
 	diagnostics: string[]
@@ -17,6 +18,7 @@ export const initialState: CodeState = {
 	slug: 'untitled',
 	files: [],
 	selectedPath: null,
+	dirty: false,
 	rightPane: 'editor',
 	previewId: null,
 	diagnostics: []
@@ -72,17 +74,42 @@ export const app = defineApp({
 				const selectedPath = files.includes(state.selectedPath ?? '')
 					? state.selectedPath
 					: (files[0] ?? null)
-				return { ...state, slug, files, selectedPath }
+				return { ...state, slug, files, selectedPath, dirty: false }
 			}
 		}),
 		select: b.handler({
-			description: 'Select a source file to preview.',
+			description: 'Open a source file for editing.',
 			schema: v.object({ path: srcPathSchema }),
 			examples: [{ params: { path: 'app.ts' } }],
 			handler({ path }, ctx) {
 				const state = normalizeState(ctx.state)
-				if (!state.files.includes(path)) return state
-				return { ...state, selectedPath: path }
+				if (!state.files.includes(path) || path === state.selectedPath) return state
+				return { ...state, selectedPath: path, dirty: false }
+			}
+		}),
+		edit: b.handler({
+			description: 'Mark the open file as having unsaved edits.',
+			schema: v.object({}),
+			handler(_, ctx) {
+				const state = normalizeState(ctx.state)
+				if (!state.selectedPath || state.dirty) return state
+				return { ...state, dirty: true }
+			}
+		}),
+		// A real state transition: persist the bytes and clear `dirty` for the open
+		// file. Both the GUI and an agent drive this the same way — the reducer is
+		// the single source of truth for "is the open file saved?".
+		write: b.handler({
+			description: 'Persist a source file and mark it saved.',
+			schema: v.object({ path: srcPathSchema, content: v.string() }),
+			examples: [{ params: { path: 'app.ts', content: '' } }],
+			async handler({ path, content }, ctx) {
+				const state = normalizeState(ctx.state)
+				await ctx.capabilities.volume.writeFile({
+					path: SRC(state.slug, `/${path}`),
+					data: encoder.encode(content)
+				})
+				return path === state.selectedPath ? { ...state, dirty: false } : state
 			}
 		}),
 		readFile: b.query({
