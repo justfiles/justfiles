@@ -1,97 +1,170 @@
 import { defineApp } from '@justfiles/app'
+import { type VolumeCapability, volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 
-export type CodeFile = {
-	path: string
-	content: string
-}
-
-export type CodeMode = 'code' | 'agent'
+export type CodePane = 'editor' | 'preview'
 
 export type CodeState = {
-	mode: CodeMode
-	selectedPath: string
-	files: CodeFile[]
+	slug: string
+	files: string[]
+	selectedPath: string | null
+	rightPane: CodePane
+	previewId: string | null
+	diagnostics: string[]
 }
 
 export const initialState: CodeState = {
-	mode: 'code',
-	selectedPath: '/src/main.ts',
-	files: [
-		{
-			path: '/src/main.ts',
-			content: `import { createApp } from './runtime'
-import { routes } from './routes'
-
-createApp({
-	routes,
-	mount: '#app'
-})
-`
-		},
-		{
-			path: '/src/routes.ts',
-			content: `export const routes = [
-	{ path: '/', title: 'Dashboard' },
-	{ path: '/settings', title: 'Settings' }
-]
-`
-		},
-		{
-			path: '/src/runtime.ts',
-			content: `type AppConfig = {
-	routes: Array<{ path: string; title: string }>
-	mount: string
+	slug: 'untitled',
+	files: [],
+	selectedPath: null,
+	rightPane: 'editor',
+	previewId: null,
+	diagnostics: []
 }
 
-export function createApp(config: AppConfig) {
-	console.log('booting app', config)
+export function isCodeState(value: unknown): value is CodeState {
+	return (
+		!!value &&
+		typeof value === 'object' &&
+		'slug' in value &&
+		'files' in value &&
+		'rightPane' in value
+	)
 }
-`
-		},
-		{
-			path: '/package.json',
-			content: `{
-	"name": "mock-ide-project",
-	"type": "module",
-	"scripts": {
-		"dev": "vite"
-	}
-}
-`
-		},
-		{
-			path: '/README.md',
-			content: `# Mock IDE Project
 
-Select files from the explorer to preview their contents.
-The play button is a placeholder.
-`
-		}
-	]
-}
+const encoder = new TextEncoder()
+const decoder = new TextDecoder()
+
+const SRC = (slug: string, path = '') => `/projects/${slug}/src${path}`
+
+const slugSchema = v.pipe(
+	v.string(),
+	v.minLength(1),
+	v.regex(
+		/^[a-z0-9._-]+$/i,
+		'slug may only contain letters, numbers, dots, underscores, and dashes'
+	),
+	v.check((slug) => slug !== '.' && slug !== '..', 'slug may not be . or ..')
+)
+const srcPathSchema = v.pipe(
+	v.string(),
+	v.minLength(1),
+	v.check(
+		(path) => !path.startsWith('/') && !path.split('/').includes('..'),
+		'path must be relative to src and may not contain ..'
+	)
+)
 
 export const app = defineApp({
 	init: initialState,
+	capabilities: { volume: volume({ scopes: [] }) },
 	actions: (b) => ({
-		toggleMode: b.handler({
-			description: 'Toggle between code and agent mode.',
-			schema: v.object({}),
-			examples: [{ params: {} }],
-			handler(_, ctx) {
-				return { ...ctx.state, mode: ctx.state.mode === 'code' ? 'agent' : 'code' }
+		open: b.handler({
+			description: 'Open a project from app-code storage, seeding it on first use.',
+			schema: v.object({ slug: slugSchema }),
+			examples: [{ params: { slug: 'untitled' } }],
+			async handler({ slug }, ctx) {
+				const state = normalizeState(ctx.state)
+				if (!(await ctx.capabilities.volume.exists({ path: SRC(slug) }))) {
+					await seed(ctx.capabilities.volume, slug)
+				}
+				const files = await listFiles(ctx.capabilities.volume, slug)
+				const selectedPath = files.includes(state.selectedPath ?? '')
+					? state.selectedPath
+					: (files[0] ?? null)
+				return { ...state, slug, files, selectedPath }
 			}
 		}),
-		selectFile: b.handler({
-			description: 'Select a file to preview.',
-			schema: v.object({ path: v.string() }),
-			examples: [{ params: { path: '/src/main.ts' } }],
+		select: b.handler({
+			description: 'Select a source file to preview.',
+			schema: v.object({ path: srcPathSchema }),
+			examples: [{ params: { path: 'app.ts' } }],
 			handler({ path }, ctx) {
-				if (!ctx.state.files.some((file) => file.path === path)) return ctx.state
-				return { ...ctx.state, selectedPath: path }
+				const state = normalizeState(ctx.state)
+				if (!state.files.includes(path)) return state
+				return { ...state, selectedPath: path }
+			}
+		}),
+		readFile: b.query({
+			description: 'Read a source file as text.',
+			schema: v.object({ path: srcPathSchema }),
+			async handler({ path }, ctx) {
+				const state = normalizeState(ctx.state)
+				return decoder.decode(
+					await ctx.capabilities.volume.readFile({ path: SRC(state.slug, `/${path}`) })
+				)
 			}
 		})
 	})
 })
+
+function normalizeState(state: CodeState): CodeState {
+	return isCodeState(state) ? state : initialState
+}
+
+async function listFiles(volume: VolumeCapability, slug: string): Promise<string[]> {
+	const root = SRC(slug)
+	const entries = await volume.scan({ path: root, recursive: true })
+	return entries
+		.filter((entry) => entry.type === 'file')
+		.map((entry) => entry.path.slice(root.length + 1))
+		.sort((a, b) => a.localeCompare(b))
+}
+
+async function seed(volume: VolumeCapability, slug: string): Promise<void> {
+	await volume.writeFile({ path: SRC(slug, '/app.ts'), data: encoder.encode(starterApp) })
+	await volume.writeFile({ path: SRC(slug, '/gui.ts'), data: encoder.encode(starterGui) })
+}
+
+const starterApp = `import { defineApp } from '@justfiles/app'
+import * as v from 'valibot'
+
+export type CounterState = {
+	count: number
+}
+
+export const app = defineApp({
+	init: { count: 0 } as CounterState,
+	actions: (b) => ({
+		increment: b.handler({
+			schema: v.object({}),
+			handler(_, ctx) {
+				return { count: ctx.state.count + 1 }
+			}
+		})
+	})
+})
+
+export type CounterApp = typeof app
+`
+
+const starterGui = `import { defineGUI } from '@justfiles/app/browser'
+import type { CounterApp, CounterState } from './app'
+
+const stateOrInitial = (state: CounterState | null): CounterState => state ?? { count: 0 }
+
+export const gui = defineGUI<CounterApp>({
+	mount(el, state, ctx) {
+		const render = (next: CounterState | null) => {
+			const current = stateOrInitial(next)
+			const button = document.createElement('button')
+			button.type = 'button'
+			button.textContent = \`Count: \${current.count}\`
+			button.onclick = () => void ctx.client.increment({})
+			Object.assign(button.style, {
+				border: '0',
+				borderRadius: '8px',
+				background: '#2563eb',
+				color: '#fff',
+				font: '16px system-ui, sans-serif',
+				padding: '10px 14px'
+			})
+			el.replaceChildren(button)
+		}
+		render(state)
+		return { update: render, unmount: () => el.replaceChildren() }
+	}
+})
+`
 
 export type CodeApp = typeof app

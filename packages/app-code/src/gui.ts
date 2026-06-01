@@ -1,33 +1,105 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI } from '@justfiles/app/browser'
-import { type CodeApp, type CodeFile, type CodeState, initialState } from './app'
+import { type CodeApp, type CodeState, initialState, isCodeState } from './app'
 
-const stateOrInitial = (value: unknown): CodeState =>
-	value && typeof value === 'object' && 'files' in value && 'mode' in value
-		? (value as CodeState)
-		: initialState
+const stateOrInitial = (value: unknown): CodeState => (isCodeState(value) ? value : initialState)
 
-const messages = [
-	{ from: 'Agent', text: 'I found the route config and app entrypoint.' },
-	{ from: 'You', text: 'Can you preview what this app looks like?' },
-	{ from: 'Agent', text: 'Here is a mocked live GUI preview using the current app data.' }
-]
+type SourceView = {
+	path: string | null
+	content: string | null
+	error: string | null
+}
 
 export const gui = defineGUI<CodeApp>({
 	mount(el, state, ctx) {
-		const render = (next: CodeState | null) => renderLayout(el, stateOrInitial(next), ctx.client)
-		render(state)
+		let current = stateOrInitial(state)
+		let source: SourceView = { path: null, content: null, error: null }
+		let loadError: string | null = null
+		let readToken = 0
+		let didOpen = false
+		let projectLoaded = false
+		let mounted = true
+
+		const paint = () =>
+			renderLayout(el, current, ctx.client, source, loadError, projectLoaded, () =>
+				openProject(true)
+			)
+
+		const syncSource = () => {
+			const path = current.selectedPath
+			if (!path) {
+				if (source.path !== null) readToken++
+				source = { path: null, content: null, error: null }
+				return
+			}
+			if (source.path === path) return
+			const token = ++readToken
+			source = { path, content: null, error: null }
+			void ctx.client
+				.readFile({ path })
+				.then((content) => {
+					if (!mounted || token !== readToken) return
+					source = { path, content, error: null }
+					paint()
+				})
+				.catch((err) => {
+					if (!mounted || token !== readToken) return
+					source = { path, content: null, error: messageOf(err) }
+					paint()
+				})
+		}
+
+		const openProject = (showLoading: boolean) => {
+			didOpen = true
+			projectLoaded = false
+			if (showLoading) paint()
+			void ctx.client
+				.open({ slug: current.slug })
+				.then((next) => {
+					if (!mounted) return
+					projectLoaded = true
+					loadError = null
+					current = stateOrInitial(next)
+					syncSource()
+					paint()
+				})
+				.catch((err) => {
+					if (!mounted) return
+					projectLoaded = true
+					loadError = messageOf(err)
+					paint()
+				})
+		}
+
+		const update = (next: CodeState | null) => {
+			current = stateOrInitial(next)
+			loadError = null
+			syncSource()
+			if (!didOpen) openProject(false)
+			paint()
+		}
+
+		update(state)
 		return {
-			update: render,
+			update,
 			unmount() {
+				mounted = false
+				readToken++
 				el.replaceChildren()
 			}
 		}
 	}
 })
 
-function renderLayout(el: HTMLElement, state: CodeState, client: Client<CodeApp>) {
-	const selected = state.files.find((file) => file.path === state.selectedPath) ?? state.files[0]
+function renderLayout(
+	el: HTMLElement,
+	state: CodeState,
+	client: Client<CodeApp>,
+	source: SourceView,
+	loadError: string | null,
+	projectLoaded: boolean,
+	onRefresh: () => void
+) {
 	const shell = div({
 		display: 'flex',
 		height: '100%',
@@ -60,21 +132,34 @@ function renderLayout(el: HTMLElement, state: CodeState, client: Client<CodeApp>
 		textTransform: 'uppercase',
 		color: '#94a3b8'
 	})
-	sideTitle.textContent = state.mode === 'code' ? 'Explorer' : 'Agent'
-	const toggle = smallButton(state.mode === 'code' ? 'Agent' : 'Code')
-	toggle.style.marginLeft = 'auto'
-	toggle.onclick = () => void client.toggleMode({})
-	sideHeader.append(sideTitle, toggle)
+	sideTitle.textContent = 'Explorer'
+	const refresh = smallButton('Refresh')
+	refresh.style.marginLeft = 'auto'
+	refresh.onclick = onRefresh
+	sideHeader.append(sideTitle, refresh)
 	sidebar.append(sideHeader)
-	if (state.mode === 'code') {
-		sidebar.append(
-			renderTree(buildTree(state.files), state.selectedPath, (path) => {
-				void client.selectFile({ path })
-			})
-		)
-	} else {
-		sidebar.append(renderChat())
-	}
+	const project = div({
+		padding: '8px 10px',
+		borderBottom: '1px solid #1e293b',
+		color: '#94a3b8',
+		fontSize: '12px'
+	})
+	project.textContent = `Project: ${state.slug}`
+	sidebar.append(project)
+	if (loadError) sidebar.append(errorBlock(loadError))
+	sidebar.append(
+		state.files.length === 0
+			? emptyBlock(
+					loadError
+						? 'Could not load project.'
+						: projectLoaded
+							? 'Empty project.'
+							: 'Loading project…'
+				)
+			: renderTree(buildTree(state.files), state.selectedPath, (path) => {
+					void client.select({ path })
+				})
+	)
 
 	const main = div({ display: 'flex', flex: '1 1 auto', minWidth: '0', flexDirection: 'column' })
 	const topbar = div({
@@ -85,17 +170,18 @@ function renderLayout(el: HTMLElement, state: CodeState, client: Client<CodeApp>
 		background: '#1f2937',
 		borderBottom: '1px solid #374151'
 	})
-	const play = document.createElement('button')
-	play.type = 'button'
-	play.textContent = '▶ Play'
-	Object.assign(play.style, {
-		background: '#22c55e',
+	const run = document.createElement('button')
+	run.type = 'button'
+	run.disabled = true
+	run.textContent = '⟳ Run'
+	Object.assign(run.style, {
+		background: '#334155',
 		border: '0',
 		borderRadius: '6px',
-		color: '#052e16',
-		cursor: 'default',
+		color: '#94a3b8',
 		font: 'inherit',
 		fontWeight: '700',
+		opacity: '0.55',
 		padding: '5px 10px'
 	})
 	const title = div({
@@ -105,18 +191,17 @@ function renderLayout(el: HTMLElement, state: CodeState, client: Client<CodeApp>
 		textOverflow: 'ellipsis',
 		whiteSpace: 'nowrap'
 	})
-	title.textContent =
-		state.mode === 'code' ? (selected?.path ?? 'No file selected') : 'Live app preview'
-	topbar.append(play, title)
+	title.textContent = state.selectedPath ?? 'No file selected'
+	topbar.append(run, title)
 
-	main.append(topbar, state.mode === 'code' ? renderSource(selected) : renderAppPreview())
+	main.append(topbar, renderSource(state.selectedPath, source))
 	shell.append(sidebar, main)
 	el.replaceChildren(shell)
 }
 
-function renderSource(file: CodeFile | undefined) {
+function renderSource(path: string | null, source: SourceView) {
 	const preview = document.createElement('pre')
-	preview.textContent = file?.content ?? 'Select a file to preview.'
+	preview.textContent = sourceText(path, source)
 	Object.assign(preview.style, {
 		flex: '1 1 auto',
 		margin: '0',
@@ -124,7 +209,7 @@ function renderSource(file: CodeFile | undefined) {
 		overflow: 'auto',
 		padding: '18px',
 		background: '#111827',
-		color: '#e5e7eb',
+		color: source.error ? '#fca5a5' : '#e5e7eb',
 		fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
 		fontSize: '13px',
 		lineHeight: '1.55',
@@ -133,140 +218,22 @@ function renderSource(file: CodeFile | undefined) {
 	return preview
 }
 
-function renderChat() {
-	const chat = div({
-		display: 'flex',
-		flex: '1 1 auto',
-		minHeight: '0',
-		flexDirection: 'column',
-		gap: '10px',
-		overflow: 'auto',
-		padding: '12px'
-	})
-	for (const message of messages) {
-		const bubble = div({
-			alignSelf: message.from === 'You' ? 'flex-end' : 'flex-start',
-			maxWidth: '88%',
-			padding: '8px 10px',
-			background: message.from === 'You' ? '#2563eb' : '#1f2937',
-			border: '1px solid #334155',
-			borderRadius: '10px',
-			color: '#e5e7eb',
-			fontSize: '12px',
-			lineHeight: '1.4'
-		})
-		const from = div({ marginBottom: '4px', color: '#93c5fd', fontSize: '10px', fontWeight: '700' })
-		from.textContent = message.from
-		const text = div({})
-		text.textContent = message.text
-		bubble.append(from, text)
-		chat.append(bubble)
-	}
-	const input = div({
-		marginTop: 'auto',
-		padding: '8px 10px',
-		background: '#020617',
-		border: '1px solid #334155',
-		borderRadius: '8px',
-		color: '#64748b',
-		fontSize: '12px'
-	})
-	input.textContent = 'Ask agent…'
-	chat.append(input)
-	return chat
+function sourceText(path: string | null, source: SourceView): string {
+	if (!path) return 'Select a file to preview.'
+	if (source.path !== path || source.content === null) return source.error ?? 'Loading…'
+	return source.content
 }
 
-function renderAppPreview() {
-	const page = div({
-		flex: '1 1 auto',
-		minHeight: '0',
-		overflow: 'auto',
-		padding: '24px',
-		background: '#e5e7eb',
-		color: '#111827'
-	})
-	const app = div({
-		maxWidth: '860px',
-		margin: '0 auto',
-		background: '#ffffff',
-		border: '1px solid #d1d5db',
-		borderRadius: '16px',
-		boxShadow: '0 18px 45px rgba(15, 23, 42, 0.18)',
-		overflow: 'hidden'
-	})
-	const nav = div({
-		display: 'flex',
-		alignItems: 'center',
-		justifyContent: 'space-between',
-		padding: '14px 18px',
-		background: '#111827',
-		color: '#f9fafb'
-	})
-	nav.append(
-		textDiv('Mock Dashboard', { fontWeight: '800' }),
-		textDiv('Connected', { color: '#86efac' })
-	)
-	const body = div({
-		display: 'grid',
-		gridTemplateColumns: '1fr 1fr',
-		gap: '16px',
-		padding: '18px'
-	})
-	body.append(
-		card('Revenue', '$24,800', '+12% from last week'),
-		card('Active users', '1,284', '83 online now'),
-		listCard('Tasks', ['Ship IDE layout', 'Wire agent mode', 'Replace mock preview']),
-		formCard()
-	)
-	app.append(nav, body)
-	page.append(app)
-	return page
-}
+type TreeNode = { name: string; path: string; folders: TreeNode[]; files: string[] }
 
-function card(title: string, value: string, note: string) {
-	const box = panel()
-	box.append(textDiv(title, { color: '#6b7280', fontSize: '12px' }))
-	box.append(textDiv(value, { marginTop: '8px', fontSize: '28px', fontWeight: '800' }))
-	box.append(textDiv(note, { marginTop: '6px', color: '#16a34a', fontSize: '12px' }))
-	return box
-}
-
-function listCard(title: string, items: string[]) {
-	const box = panel()
-	box.append(textDiv(title, { marginBottom: '10px', fontWeight: '800' }))
-	for (const item of items) box.append(textDiv(`✓ ${item}`, { marginTop: '6px', color: '#374151' }))
-	return box
-}
-
-function formCard() {
-	const box = panel()
-	box.append(textDiv('Quick action', { marginBottom: '10px', fontWeight: '800' }))
-	const input = document.createElement('input')
-	input.value = 'Generate release notes'
-	Object.assign(input.style, {
-		boxSizing: 'border-box',
-		width: '100%',
-		padding: '9px 10px',
-		border: '1px solid #d1d5db',
-		borderRadius: '8px',
-		font: 'inherit'
-	})
-	const button = smallButton('Run mock action')
-	Object.assign(button.style, { marginTop: '10px', background: '#2563eb', color: '#ffffff' })
-	box.append(input, button)
-	return box
-}
-
-type TreeNode = { name: string; path: string; folders: TreeNode[]; files: CodeFile[] }
-
-function buildTree(files: CodeFile[]): TreeNode {
-	const root: TreeNode = { name: '', path: '/', folders: [], files: [] }
+function buildTree(files: string[]): TreeNode {
+	const root: TreeNode = { name: '', path: '', folders: [], files: [] }
 	for (const file of files) {
-		const parts = file.path.split('/').filter(Boolean)
+		const parts = file.split('/').filter(Boolean)
 		let node = root
 		let path = ''
 		for (const part of parts.slice(0, -1)) {
-			path = `${path}/${part}`
+			path = path ? `${path}/${part}` : part
 			let folder = node.folders.find((child) => child.name === part)
 			if (!folder) {
 				folder = { name: part, path, folders: [], files: [] }
@@ -282,11 +249,11 @@ function buildTree(files: CodeFile[]): TreeNode {
 
 function sortTree(node: TreeNode) {
 	node.folders.sort((a, b) => a.name.localeCompare(b.name))
-	node.files.sort((a, b) => basename(a.path).localeCompare(basename(b.path)))
+	node.files.sort((a, b) => basename(a).localeCompare(basename(b)))
 	for (const folder of node.folders) sortTree(folder)
 }
 
-function renderTree(node: TreeNode, selectedPath: string, onSelect: (path: string) => void) {
+function renderTree(node: TreeNode, selectedPath: string | null, onSelect: (path: string) => void) {
 	const tree = div({ flex: '1 1 auto', minHeight: '0', overflow: 'auto', padding: '10px 6px' })
 	appendNode(tree, node, 0, selectedPath, onSelect)
 	return tree
@@ -296,7 +263,7 @@ function appendNode(
 	parent: HTMLElement,
 	node: TreeNode,
 	depth: number,
-	selectedPath: string,
+	selectedPath: string | null,
 	onSelect: (path: string) => void
 ) {
 	for (const folder of node.folders) {
@@ -311,20 +278,20 @@ function appendNode(
 		appendNode(parent, folder, depth + 1, selectedPath, onSelect)
 	}
 	for (const file of node.files)
-		parent.append(fileButton(file, depth, file.path === selectedPath, onSelect))
+		parent.append(fileButton(file, depth, file === selectedPath, onSelect))
 }
 
 function fileButton(
-	file: CodeFile,
+	path: string,
 	depth: number,
 	selected: boolean,
 	onSelect: (path: string) => void
 ) {
 	const button = document.createElement('button')
 	button.type = 'button'
-	button.textContent = `⌞ ${basename(file.path)}`
-	button.title = file.path
-	button.onclick = () => onSelect(file.path)
+	button.textContent = `⌞ ${basename(path)}`
+	button.title = path
+	button.onclick = () => onSelect(path)
 	Object.assign(button.style, {
 		display: 'block',
 		width: '100%',
@@ -357,19 +324,20 @@ function smallButton(label: string) {
 	return button
 }
 
-function panel() {
-	return div({
-		padding: '16px',
-		background: '#f9fafb',
-		border: '1px solid #e5e7eb',
-		borderRadius: '12px'
-	})
+function emptyBlock(text: string) {
+	const block = div({ color: '#64748b', fontSize: '12px', padding: '12px' })
+	block.textContent = text
+	return block
 }
 
-function textDiv(text: string, style: Partial<CSSStyleDeclaration> = {}) {
-	const element = div(style)
-	element.textContent = text
-	return element
+function errorBlock(text: string) {
+	const block = div({ color: '#fca5a5', fontSize: '12px', padding: '8px 10px' })
+	block.textContent = text
+	return block
+}
+
+function messageOf(err: unknown) {
+	return err instanceof Error ? err.message : String(err)
 }
 
 function basename(path: string) {
