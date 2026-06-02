@@ -1,8 +1,26 @@
 import { defineGUI } from '@justfiles/app/browser'
-import { type CodeApp, type CodeState, initialState, isCodeState } from './app'
+import {
+	type CodeApp,
+	type CodeState,
+	type CodeStatus,
+	initialState,
+	isCodeState,
+	statusOf
+} from './app'
 import { createEditor } from './editor'
 
 const stateOrInitial = (value: unknown): CodeState => (isCodeState(value) ? value : initialState)
+
+// Derived toolbar label + color. Just a colored state label — details belong in
+// the bottom message area.
+const STATUS: Record<CodeStatus, { label: string; color: string }> = {
+	idle: { label: 'Idle', color: '#86868b' },
+	updating: { label: 'Updating', color: '#6e8efb' },
+	building: { label: 'Building', color: '#007aff' },
+	live: { label: 'Live', color: '#1aa251' },
+	'needs-fixes': { label: 'Needs fixes', color: '#d9822b' },
+	crashed: { label: 'Crashed', color: '#c41a16' }
+}
 
 type SourceView = {
 	path: string | null
@@ -19,36 +37,39 @@ export const gui = defineGUI<CodeApp>({
 		let didOpen = false
 		let projectLoaded = false
 		let mounted = true
+		let running = false // a `run` is in flight (client-local) → drives the `Building` label
+		let rerun = false // a write landed during a run → rebuild once it resolves
 		// `editorPath` is the file the CodeMirror buffer currently holds;
-		// `localDirty` mirrors `state.dirty` but is set synchronously so we only
-		// dispatch `edit` once per clean→dirty transition (not on every keystroke).
+		// `localDirty` is set synchronously on the first keystroke so the title
+		// shows the dirty dot immediately (not after the debounced write lands).
 		let editorPath: string | null = null
 		let localDirty = false
 
 		const writer = createWriter((path, content) => {
 			localDirty = false
+			// Auto-rebuild keeps the live App current as you type: persist, then run
+			// once the write resolves. `runBuild` is single-flight, so a burst of
+			// edits collapses to one trailing run.
 			void ctx.client
 				.write({ path, content })
-				.then(() => {
-					// Auto-rebuild keeps a live preview current as you type. Only
-					// fires once a preview exists — nothing compiles until ⟳ Run.
-					if (current.previewId) void ctx.client.run({}).catch(() => {})
-				})
+				.then(() => runBuild())
 				.catch(() => {})
-		}, 400)
+		}, 1000)
 		const editor = createEditor((content) => {
 			if (!editorPath) return
 			if (!localDirty) {
 				localDirty = true
-				void ctx.client.edit({}).catch(() => {})
+				patch()
 			}
 			writer.push(editorPath, content)
 		})
 
 		// --- chrome built once; only the dynamic parts below are patched, so the
-		// editor element is never re-parented (which would drop focus mid-edit) ---
+		// editor element and the preview slot are never re-parented (which would
+		// drop editor focus / the live App) ---
 		const shell = div({
 			display: 'flex',
+			flexDirection: 'column',
 			height: '100%',
 			width: '100%',
 			background: '#ffffff',
@@ -57,9 +78,73 @@ export const gui = defineGUI<CodeApp>({
 			fontSize: 'var(--text-ui)'
 		})
 
-		const sidebar = div({
-			width: '260px',
+		// Toolbar: [ state ]   [ Source | App ]   [ Install ]
+		const toolbar = div({
+			display: 'flex',
+			alignItems: 'center',
+			gap: '8px',
+			padding: '8px 12px',
+			background: '#f5f5f7',
+			borderBottom: '1px solid #d2d2d7'
+		})
+		const stateLabel = div({
+			flex: '1 1 0',
+			minWidth: '0',
+			fontSize: '12px',
+			fontWeight: '600',
+			whiteSpace: 'nowrap'
+		})
+
+		const segment = div({
+			display: 'flex',
 			flex: '0 0 auto',
+			border: '1px solid #d2d2d7',
+			borderRadius: '6px',
+			overflow: 'hidden'
+		})
+		const segSource = segButton('Source')
+		const segApp = segButton('App')
+		segSource.onclick = () => void ctx.client.setView({ view: 'source' }).catch(() => {})
+		segApp.onclick = () => void ctx.client.setView({ view: 'app' }).catch(() => {})
+		segment.append(segSource, segApp)
+
+		const rightGroup = div({
+			display: 'flex',
+			alignItems: 'center',
+			justifyContent: 'flex-end',
+			flex: '1 1 0',
+			minWidth: '0'
+		})
+		// Primary shipping action. Disabled placeholder until Phase 4 wires it to
+		// `canInstall(state)` and the devkit `install` capability.
+		const install = document.createElement('button')
+		install.type = 'button'
+		install.textContent = 'Install'
+		install.disabled = true
+		Object.assign(install.style, {
+			background: '#007aff',
+			border: '0',
+			borderRadius: '6px',
+			color: '#ffffff',
+			cursor: 'default',
+			font: 'inherit',
+			fontSize: '12px',
+			fontWeight: '600',
+			opacity: '0.4',
+			padding: '5px 14px'
+		})
+		rightGroup.append(install)
+		toolbar.append(stateLabel, segment, rightGroup)
+
+		// Content: Source view (file tree + editor) and App view (full preview
+		// slot) share the area; only one is shown at a time via `display`.
+		const content = div({ display: 'flex', flex: '1 1 auto', minHeight: '0' })
+
+		const sourceView = div({ display: 'flex', flex: '1 1 auto', minWidth: '0', minHeight: '0' })
+		const sidebar = div({
+			width: '240px',
+			flex: '0 0 auto',
+			minHeight: '0',
 			background: '#f5f5f7',
 			borderRight: '1px solid #d2d2d7',
 			display: 'flex',
@@ -72,92 +157,42 @@ export const gui = defineGUI<CodeApp>({
 			padding: '8px 10px',
 			borderBottom: '1px solid #e3e3e6'
 		})
-		const sideTitle = div({
-			fontSize: '11px',
-			fontWeight: '700',
-			letterSpacing: '0.08em',
-			textTransform: 'uppercase',
-			color: '#86868b'
-		})
-		sideTitle.textContent = 'Explorer'
-		const refresh = smallButton('Refresh')
-		refresh.style.marginLeft = 'auto'
-		refresh.onclick = () => openProject(true)
-		sideHeader.append(sideTitle, refresh)
 		const projectLabel = div({
-			padding: '8px 10px',
-			borderBottom: '1px solid #e3e3e6',
-			color: '#86868b',
-			fontSize: '12px'
-		})
-		const treeContainer = div({ flex: '1 1 auto', minHeight: '0', overflow: 'auto' })
-		sidebar.append(sideHeader, projectLabel, treeContainer)
-
-		const main = div({ display: 'flex', flex: '1 1 auto', minWidth: '0', flexDirection: 'column' })
-		const topbar = div({
-			display: 'flex',
-			alignItems: 'center',
-			gap: '8px',
-			padding: '8px 10px',
-			background: '#f5f5f7',
-			borderBottom: '1px solid #d2d2d7'
-		})
-		const run = document.createElement('button')
-		run.type = 'button'
-		run.disabled = true
-		run.textContent = '⟳ Run'
-		Object.assign(run.style, {
-			background: '#ffffff',
-			border: '1px solid #d2d2d7',
-			borderRadius: '6px',
-			color: '#86868b',
-			font: 'inherit',
-			fontWeight: '700',
-			opacity: '0.6',
-			padding: '5px 10px'
-		})
-		// ⟳ Run/Restart: re-run from clean state (wipes the draft's persisted
-		// state) and reveal the live preview. Auto-rebuild on save keeps it live
-		// in between; this button is the explicit, stateful restart.
-		// Chain (not fire-and-forget two dispatches): `run` is slow (it compiles)
-		// and dispatches aren't serialized per app, so a concurrent `setPane`
-		// would be clobbered by run's late state write. Awaiting orders them.
-		run.onclick = () => {
-			void ctx.client
-				.setPane({ pane: 'preview' })
-				.then(() => ctx.client.run({ reset: true }))
-				.catch(() => {})
-		}
-		const title = div({
-			marginLeft: '8px',
+			flex: '1 1 auto',
 			minWidth: '0',
 			overflow: 'hidden',
 			textOverflow: 'ellipsis',
-			whiteSpace: 'nowrap'
+			whiteSpace: 'nowrap',
+			color: '#1d1d1f',
+			fontSize: '12px',
+			fontWeight: '600'
 		})
-		const segment = div({
-			display: 'flex',
-			marginLeft: 'auto',
-			border: '1px solid #d2d2d7',
-			borderRadius: '6px',
-			overflow: 'hidden'
-		})
-		const segEditor = segButton('Editor')
-		const segPreview = segButton('Preview')
-		segEditor.onclick = () => void ctx.client.setPane({ pane: 'editor' }).catch(() => {})
-		segPreview.onclick = () => void ctx.client.setPane({ pane: 'preview' }).catch(() => {})
-		segment.append(segEditor, segPreview)
-		topbar.append(run, title, segment)
+		const refresh = smallButton('Refresh')
+		refresh.onclick = () => openProject(true)
+		sideHeader.append(projectLabel, refresh)
+		const treeContainer = div({ flex: '1 1 auto', minHeight: '0', overflow: 'auto' })
+		sidebar.append(sideHeader, treeContainer)
 
-		const editorArea = div({
-			position: 'relative',
+		const editorPane = div({
 			flex: '1 1 auto',
+			minWidth: '0',
 			minHeight: '0',
 			display: 'flex',
 			flexDirection: 'column'
 		})
+		const editorTitle = div({
+			flex: '0 0 auto',
+			padding: '6px 12px',
+			borderBottom: '1px solid #e3e3e6',
+			color: '#6e6e73',
+			fontSize: '12px',
+			overflow: 'hidden',
+			textOverflow: 'ellipsis',
+			whiteSpace: 'nowrap'
+		})
 		const editorHost = div({ flex: '1 1 auto', minHeight: '0', overflow: 'hidden' })
 		editorHost.append(editor.dom)
+		// Fallback shown in place of the editor when no file is loaded yet.
 		const message = document.createElement('pre')
 		Object.assign(message.style, {
 			flex: '1 1 auto',
@@ -171,94 +206,58 @@ export const gui = defineGUI<CodeApp>({
 			lineHeight: '1.55',
 			whiteSpace: 'pre-wrap'
 		})
-		const previewArea = div({
-			position: 'relative',
-			flex: '1 1 auto',
-			minHeight: '0',
-			boxSizing: 'border-box',
-			overflow: 'hidden',
-			padding: '22px',
-			background: '#d8d8dd',
-			display: 'flex'
-		})
-		const previewWindow = div({
+		editorPane.append(editorTitle, editorHost, message)
+		sourceView.append(sidebar, editorPane)
+
+		// App view: the full live app region. No file tree, no editor or window
+		// chrome — just the stable slot the devkit capability parents the live App
+		// into. Built once and only toggled via its parent; its children belong to
+		// the host, so we never replaceChildren it ourselves.
+		const appView = div({
+			display: 'none',
 			flex: '1 1 auto',
 			minWidth: '0',
 			minHeight: '0',
-			display: 'flex',
-			flexDirection: 'column',
-			background: '#ffffff',
-			border: '1px solid #b9b9bf',
-			borderRadius: '10px',
-			boxShadow: '0 18px 40px rgba(0, 0, 0, 0.18)',
-			overflow: 'hidden'
+			background: '#ffffff'
 		})
-		const previewChrome = div({
-			flex: '0 0 auto',
-			height: '30px',
-			display: 'flex',
-			alignItems: 'center',
-			gap: '8px',
-			padding: '0 10px',
-			background: 'linear-gradient(#f9f9fa, #e6e6ea)',
-			borderBottom: '1px solid #c7c7cc'
-		})
-		const trafficLights = div({ display: 'flex', gap: '6px', width: '52px' })
-		for (const color of ['#ff5f57', '#ffbd2e', '#28c840']) {
-			trafficLights.append(
-				div({
-					width: '12px',
-					height: '12px',
-					borderRadius: '999px',
-					background: color,
-					border: '1px solid rgba(0, 0, 0, 0.16)'
-				})
-			)
-		}
-		const previewTitle = div({
-			flex: '1 1 auto',
-			overflow: 'hidden',
-			textOverflow: 'ellipsis',
-			whiteSpace: 'nowrap',
-			textAlign: 'center',
-			color: '#6e6e73',
-			fontSize: '12px',
-			fontWeight: '600'
-		})
-		previewChrome.append(trafficLights, previewTitle, div({ width: '52px' }))
-		// Stable slot the devkit capability parents the live preview into. Built
-		// once inside the chrome and only toggled via its parent — its children
-		// belong to the host, so we never replaceChildren it ourselves (that would
-		// drop the canvas).
 		const previewSlot = div({
 			position: 'relative',
 			flex: '1 1 auto',
+			minWidth: '0',
 			minHeight: '0',
 			overflow: 'hidden',
 			background: '#ffffff'
 		})
 		previewSlot.dataset.previewSlot = ''
-		previewWindow.append(previewChrome, previewSlot)
-		previewArea.append(previewWindow)
-		const errorStrip = document.createElement('pre')
-		Object.assign(errorStrip.style, {
+		appView.append(previewSlot)
+		content.append(sourceView, appView)
+
+		// Bottom message area: latest build message + diagnostics.
+		const bottomBar = div({
 			flex: '0 0 auto',
-			margin: '0',
-			maxHeight: '30%',
+			display: 'none',
+			flexDirection: 'column',
+			gap: '6px',
+			maxHeight: '40%',
 			overflow: 'auto',
-			padding: '10px 14px',
-			background: '#fff5f5',
-			borderTop: '1px solid #f3c0c0',
+			padding: '8px 12px',
+			background: '#f5f5f7',
+			borderTop: '1px solid #d2d2d7'
+		})
+		const buildMessage = div({ fontSize: '12px', whiteSpace: 'pre-wrap' })
+		const diagnostics = document.createElement('pre')
+		Object.assign(diagnostics.style, {
+			margin: '0',
 			color: '#c41a16',
 			fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
 			fontSize: '12px',
 			lineHeight: '1.5',
 			whiteSpace: 'pre-wrap'
 		})
-		errorStrip.style.display = 'none'
-		editorArea.append(editorHost, message, previewArea, errorStrip)
-		main.append(topbar, editorArea)
-		shell.append(sidebar, main)
+		diagnostics.style.display = 'none'
+		bottomBar.append(buildMessage, diagnostics)
+
+		shell.append(toolbar, content, bottomBar)
 		el.replaceChildren(shell)
 
 		const onSelect = (path: string) => {
@@ -268,31 +267,66 @@ export const gui = defineGUI<CodeApp>({
 		}
 
 		const patch = () => {
-			projectLabel.textContent = `Project: ${current.slug}`
-			const name = current.selectedPath ?? 'No file selected'
-			title.textContent = current.selectedPath && current.dirty ? `● ${name}` : name
+			// Toolbar state label
+			const badge = STATUS[statusOf(current, running)]
+			stateLabel.textContent = `● ${badge.label}`
+			stateLabel.style.color = badge.color
+
+			// Segmented control + view toggle
+			const app = current.view === 'app'
+			setSegment(segSource, !app)
+			setSegment(segApp, app)
+			sourceView.style.display = app ? 'none' : 'flex'
+			appView.style.display = app ? 'flex' : 'none'
+
+			// Sidebar
+			projectLabel.textContent = current.slug
 			treeContainer.replaceChildren(...sidebarBody(current, loadError, projectLoaded, onSelect))
-			run.disabled = !projectLoaded
-			run.style.opacity = projectLoaded ? '1' : '0.6'
-			run.style.color = projectLoaded ? '#1d1d1f' : '#86868b'
-			const preview = current.rightPane === 'preview'
-			setSegment(segEditor, !preview)
-			setSegment(segPreview, preview)
+
+			// Editor pane: file title + editor/fallback
+			const name = current.selectedPath ?? 'No file selected'
+			editorTitle.textContent = current.selectedPath && localDirty ? `● ${name}` : name
 			const ready =
-				!preview &&
-				!!current.selectedPath &&
-				source.path === current.selectedPath &&
-				source.content !== null
-			previewTitle.textContent = `Preview — ${current.slug}`
-			previewArea.style.display = preview ? 'flex' : 'none'
+				!!current.selectedPath && source.path === current.selectedPath && source.content !== null
 			editorHost.style.display = ready ? '' : 'none'
-			message.style.display = !preview && !ready ? '' : 'none'
-			if (!preview && !ready) {
+			message.style.display = ready ? 'none' : ''
+			if (!ready) {
 				message.textContent = sourceText(current.selectedPath, source)
 				message.style.color = source.error ? '#c41a16' : '#86868b'
 			}
-			errorStrip.style.display = current.diagnostics.length > 0 ? '' : 'none'
-			if (current.diagnostics.length > 0) errorStrip.textContent = current.diagnostics.join('\n')
+
+			// Bottom message area
+			const build = current.build
+			bottomBar.style.display = build ? 'flex' : 'none'
+			if (build) {
+				buildMessage.textContent = build.message
+				buildMessage.style.color = build.result === 'ok' ? '#1aa251' : '#c41a16'
+				diagnostics.style.display = build.diagnostics.length > 0 ? '' : 'none'
+				if (build.diagnostics.length > 0) diagnostics.textContent = build.diagnostics.join('\n')
+			}
+		}
+
+		// Single-flight rebuild. While a run is in flight, a new write just marks a
+		// rerun that fires when the current run resolves — so two devkit.runs never
+		// clobber the same preview. Each run records the hash it built, so the
+		// toolbar stays honest about current vs previous regardless of coalescing.
+		const runBuild = async () => {
+			if (running) {
+				rerun = true
+				return
+			}
+			running = true
+			patch()
+			try {
+				await ctx.client.run({})
+			} catch {
+			} finally {
+				running = false
+				if (rerun) {
+					rerun = false
+					void runBuild()
+				} else patch()
+			}
 		}
 
 		const syncSource = () => {
@@ -326,6 +360,7 @@ export const gui = defineGUI<CodeApp>({
 		const openProject = (showLoading: boolean) => {
 			didOpen = true
 			projectLoaded = false
+			running = true // `open` compiles the initial build → show `Building`
 			if (showLoading) patch()
 			void ctx.client
 				.open({ slug: current.slug })
@@ -335,12 +370,15 @@ export const gui = defineGUI<CodeApp>({
 					loadError = null
 					current = stateOrInitial(next)
 					syncSource()
-					patch()
 				})
 				.catch((err) => {
 					if (!mounted) return
 					projectLoaded = true
 					loadError = messageOf(err)
+				})
+				.finally(() => {
+					if (!mounted) return
+					running = false
 					patch()
 				})
 		}

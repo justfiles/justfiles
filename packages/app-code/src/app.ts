@@ -3,35 +3,55 @@ import { devkit } from '@justfiles/app/capabilities/devkit'
 import { type VolumeCapability, volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 
-export type CodePane = 'editor' | 'preview'
+export type CodeView = 'source' | 'app'
+
+// The last build, tagged with the hash of the source it compiled. `result`
+// covers a runtime crash too (Phase 5) — a crash is still a fact about the
+// version that was built.
+export type CodeBuild = {
+	hash: string
+	result: 'ok' | 'failed' | 'crashed'
+	diagnostics: string[]
+	message: string
+	at: number
+}
 
 export type CodeState = {
+	// persisted document — open project, selected file, view
 	slug: string
-	files: string[]
 	selectedPath: string | null
-	dirty: boolean
-	rightPane: CodePane
-	previewId: string | null
-	diagnostics: string[]
+	view: CodeView
+	// content identity + last build; both are honest functions of the files on disk
+	files: string[] // cache of the disk scan, refreshed by open
+	sourceHash: string // hash of the current source on disk
+	build: CodeBuild | null
 }
 
 export const initialState: CodeState = {
 	slug: 'untitled',
-	files: [],
 	selectedPath: null,
-	dirty: false,
-	rightPane: 'editor',
-	previewId: null,
-	diagnostics: []
+	view: 'app',
+	files: [],
+	sourceHash: '',
+	build: null
+}
+
+// Derived toolbar label — never stored. Computed from the build record, the
+// hash comparison, and whether a `run` is in flight (client-local).
+export type CodeStatus = 'idle' | 'updating' | 'building' | 'live' | 'needs-fixes' | 'crashed'
+
+export function statusOf(state: CodeState, running: boolean): CodeStatus {
+	if (running) return 'building'
+	if (!state.build) return 'idle'
+	if (state.build.hash !== state.sourceHash) return 'updating'
+	if (state.build.result === 'failed') return 'needs-fixes'
+	if (state.build.result === 'crashed') return 'crashed'
+	return 'live'
 }
 
 export function isCodeState(value: unknown): value is CodeState {
 	return (
-		!!value &&
-		typeof value === 'object' &&
-		'slug' in value &&
-		'files' in value &&
-		'rightPane' in value
+		!!value && typeof value === 'object' && 'slug' in value && 'files' in value && 'view' in value
 	)
 }
 
@@ -71,11 +91,23 @@ export const app = defineApp({
 				if (!(await ctx.capabilities.volume.exists({ path: SRC(slug) }))) {
 					await seed(ctx.capabilities.volume, slug)
 				}
-				const files = await listFiles(ctx.capabilities.volume, slug)
+				const source = await readSource(ctx.capabilities.volume, slug)
+				const files = Object.keys(source)
 				const selectedPath = files.includes(state.selectedPath ?? '')
 					? state.selectedPath
 					: (files[0] ?? null)
-				return { ...state, slug, files, selectedPath, dirty: false }
+				// Run the initial build so the App is live on open, resuming the
+				// draft's persisted runtime state (no reset).
+				const hash = hashSource(source)
+				const { diagnostics } = await ctx.capabilities.devkit.run({ slug, files: source })
+				return {
+					...state,
+					slug,
+					files,
+					selectedPath,
+					sourceHash: hash,
+					build: buildRecord(hash, diagnostics)
+				}
 			}
 		}),
 		select: b.handler({
@@ -85,23 +117,14 @@ export const app = defineApp({
 			handler({ path }, ctx) {
 				const state = normalizeState(ctx.state)
 				if (!state.files.includes(path) || path === state.selectedPath) return state
-				return { ...state, selectedPath: path, dirty: false }
+				return { ...state, selectedPath: path }
 			}
 		}),
-		edit: b.handler({
-			description: 'Mark the open file as having unsaved edits.',
-			schema: v.object({}),
-			handler(_, ctx) {
-				const state = normalizeState(ctx.state)
-				if (!state.selectedPath || state.dirty) return state
-				return { ...state, dirty: true }
-			}
-		}),
-		// A real state transition: persist the bytes and clear `dirty` for the open
-		// file. Both the GUI and an agent drive this the same way — the reducer is
-		// the single source of truth for "is the open file saved?".
+		// Persist the bytes and recompute `sourceHash`. Fast; no compile; does not
+		// touch `build`. Clients write as many files as they need, then `run` once.
+		// Re-reading the small source set to rehash is cheap.
 		write: b.handler({
-			description: 'Persist a source file and mark it saved.',
+			description: 'Persist a source file and recompute the source hash.',
 			schema: v.object({ path: srcPathSchema, content: v.string() }),
 			examples: [{ params: { path: 'app.ts', content: '' } }],
 			async handler({ path, content }, ctx) {
@@ -110,43 +133,53 @@ export const app = defineApp({
 					path: SRC(state.slug, `/${path}`),
 					data: encoder.encode(content)
 				})
-				return path === state.selectedPath ? { ...state, dirty: false } : state
+				return {
+					...state,
+					sourceHash: hashSource(await readSource(ctx.capabilities.volume, state.slug))
+				}
 			}
 		}),
-		setPane: b.handler({
-			description: 'Switch the right pane between the editor and the live preview.',
-			schema: v.object({ pane: v.picklist(['editor', 'preview']) }),
-			examples: [{ params: { pane: 'preview' } }],
-			handler({ pane }, ctx) {
+		setView: b.handler({
+			description: 'Switch between the Source and App views. Never builds.',
+			schema: v.object({ view: v.picklist(['source', 'app']) }),
+			examples: [{ params: { view: 'app' } }],
+			handler({ view }, ctx) {
 				const state = normalizeState(ctx.state)
-				return state.rightPane === pane ? state : { ...state, rightPane: pane }
+				return state.view === view ? state : { ...state, view }
 			}
 		}),
-		// Compile the project and (re)mount it in the preview pane. `reset` wipes
-		// the draft's persisted state for a clean boot (⟳ Run/Restart); a plain
-		// run keeps state across rebuilds, for the live hot-reload feel on save.
+		// Read the freshest source from disk, hash it, compile + mount via
+		// `devkit.run`, and record the outcome tagged with the hash it built. Leaves
+		// `sourceHash` alone (write owns it), so a write that lands mid-run shows up
+		// as `updating` afterward. On compile failure the last-good App stays
+		// mounted and the record carries the diagnostics. `reset` wipes the draft's
+		// persisted state for a clean boot (restart).
 		run: b.handler({
-			description: 'Compile the project and run it in the preview pane.',
+			description: 'Compile the current source and run it as the live App.',
 			schema: v.object({ reset: v.optional(v.boolean()) }),
 			examples: [{ params: {} }, { params: { reset: true } }],
 			async handler({ reset }, ctx) {
 				const state = normalizeState(ctx.state)
-				const files = await readSource(ctx.capabilities.volume, state.slug)
-				const { previewId, diagnostics } = await ctx.capabilities.devkit.run({
+				const source = await readSource(ctx.capabilities.volume, state.slug)
+				const hash = hashSource(source)
+				const { diagnostics } = await ctx.capabilities.devkit.run({
 					slug: state.slug,
-					files,
+					files: source,
 					reset
 				})
-				return { ...state, previewId, diagnostics }
+				// sourceHash untouched — write owns it
+				return { ...state, build: buildRecord(hash, diagnostics) }
 			}
 		}),
+		// Internal cleanup only (unmount), not a user gesture; `previewId` is a pure
+		// function of the slug, derived here rather than stored.
 		stop: b.handler({
-			description: 'Tear down the running preview.',
+			description: 'Tear down the running App.',
 			schema: v.object({}),
 			async handler(_, ctx) {
 				const state = normalizeState(ctx.state)
-				if (state.previewId) await ctx.capabilities.devkit.stop({ previewId: state.previewId })
-				return { ...state, previewId: null, diagnostics: [] }
+				await ctx.capabilities.devkit.stop({ previewId: `preview.${state.slug}` })
+				return state
 			}
 		}),
 		readFile: b.query({
@@ -162,8 +195,53 @@ export const app = defineApp({
 	})
 })
 
-function normalizeState(state: CodeState): CodeState {
-	return isCodeState(state) ? state : initialState
+// Coerce ctx.state into the current shape on every handler. New-shape state
+// passes through untouched (so a `run`'s build survives later handlers). Old
+// persisted state is migrated: `rightPane` → `view`, everything runtime reset
+// (`build` null, `sourceHash` '') — `open` recomputes the hash.
+function normalizeState(state: unknown): CodeState {
+	if (isCodeState(state)) return state
+	if (!state || typeof state !== 'object') return initialState
+	const old = state as { slug?: unknown; selectedPath?: unknown; rightPane?: unknown }
+	return {
+		...initialState,
+		slug: typeof old.slug === 'string' ? old.slug : initialState.slug,
+		selectedPath: typeof old.selectedPath === 'string' ? old.selectedPath : null,
+		view:
+			old.rightPane === 'preview'
+				? 'app'
+				: old.rightPane === 'editor'
+					? 'source'
+					: initialState.view
+	}
+}
+
+// Stable content identity for a source set: FNV-1a over the sorted path→content
+// map. Non-cryptographic — it only needs to detect change and tag a build.
+function hashSource(files: Record<string, string>): string {
+	const text = Object.keys(files)
+		.sort()
+		.map((path) => `${path}\0${files[path]}`)
+		.join('\0')
+	let hash = 2166136261
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i)
+		hash = Math.imul(hash, 16777619)
+	}
+	return (hash >>> 0).toString(36)
+}
+
+// The build record for a compile outcome, tagged with the hash it built. Shared
+// by `open` (initial build) and `run`.
+function buildRecord(hash: string, diagnostics: string[]): CodeBuild {
+	const ok = diagnostics.length === 0
+	return {
+		hash,
+		result: ok ? 'ok' : 'failed',
+		diagnostics,
+		message: ok ? 'App build successful.' : 'Build failed. Showing last working app.',
+		at: Date.now()
+	}
 }
 
 async function listFiles(volume: VolumeCapability, slug: string): Promise<string[]> {
