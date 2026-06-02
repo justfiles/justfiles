@@ -92,6 +92,22 @@
 	color: var(--on-focus);
 }
 
+/* The menubar strip itself (holds the app menu titles). Shared by the OS
+   `Menubar` and the embedded app-code preview's menubar so both match. */
+.ds-menubar {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 8px;
+	height: var(--menubar-height);
+	padding: 0 8px;
+	background: var(--surface);
+	color: var(--text);
+	border-bottom: 1px solid var(--rule);
+	font-family: var(--font-ui);
+	font-size: var(--text-ui);
+}
+
 .ds-desktop {
 	position: fixed;
 	inset: 0;
@@ -192,6 +208,12 @@
 
 .ds-window-floating {
 	position: absolute;
+}
+
+/* Frame look (border, rounded corners, shadow), split out from positioning so
+   the embedded app-code preview can reuse it without the desktop's absolute
+   placement. */
+.ds-window-framed {
 	border: 1px solid var(--rule);
 	border-radius: 6px;
 	box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);

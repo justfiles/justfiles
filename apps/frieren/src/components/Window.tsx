@@ -132,7 +132,7 @@ export function Window({
 	return (
 		<div
 			onPointerDownCapture={onFocus}
-			className={`ds-window ${fullscreen ? 'ds-window-fullscreen' : 'ds-window-floating'}`}
+			className={`ds-window ${fullscreen ? 'ds-window-fullscreen' : 'ds-window-floating ds-window-framed'}`}
 			data-focused={focused ? 'true' : 'false'}
 			style={
 				fullscreen

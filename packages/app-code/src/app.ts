@@ -191,6 +191,34 @@ export const app = defineApp({
 					await ctx.capabilities.volume.readFile({ path: SRC(state.slug, `/${path}`) })
 				)
 			}
+		}),
+		// The live App's declared menubar (display structure only), pulled so the
+		// preview window can draw it on top with the shared design CSS — like the OS
+		// menubar reflects a focused app. Empty until the App mounts or if it
+		// declares no menus.
+		menu: b.query({
+			description: "Read the live App's declared menubar for the preview window.",
+			schema: v.object({}),
+			async handler(_, ctx) {
+				const state = normalizeState(ctx.state)
+				return ctx.capabilities.devkit.menu({ previewId: `preview.${state.slug}` })
+			}
+		}),
+		// Fire a preview menubar item by position; devkit invokes the real action
+		// against the live App on the main thread. No state of our own changes.
+		selectMenu: b.handler({
+			description: 'Fire a preview menubar item against the live App.',
+			schema: v.object({ menu: v.number(), item: v.number() }),
+			examples: [{ params: { menu: 0, item: 0 } }],
+			async handler({ menu, item }, ctx) {
+				const state = normalizeState(ctx.state)
+				await ctx.capabilities.devkit.selectMenu({
+					previewId: `preview.${state.slug}`,
+					menu,
+					item
+				})
+				return state
+			}
 		})
 	})
 })
@@ -319,7 +347,19 @@ export const gui = defineGUI<CounterApp>({
 		}
 		render(state)
 		return { update: render, unmount: () => el.replaceChildren() }
-	}
+	},
+	// Declared menus show in the preview window's menubar and run against the live
+	// app. 'Even' reflects state — it re-checks as the count changes.
+	menu: (state, client) => [
+		{
+			title: 'Count',
+			items: [
+				{ title: 'Increment', shortcut: '⌘I', onSelect: () => void client.increment({}) },
+				{ separator: true },
+				{ title: 'Even', checked: (state?.count ?? 0) % 2 === 0, disabled: true, onSelect: () => {} }
+			]
+		}
+	]
 })
 `
 

@@ -1,4 +1,5 @@
 import { defineGUI } from '@justfiles/app/browser'
+import type { MenuView } from '@justfiles/app/capabilities/devkit'
 import {
 	type CodeApp,
 	type CodeState,
@@ -29,7 +30,7 @@ type SourceView = {
 }
 
 export const gui = defineGUI<CodeApp>({
-	mount(el, state, ctx) {
+	mount(root, state, ctx) {
 		let current = stateOrInitial(state)
 		let source: SourceView = { path: null, content: null, error: null }
 		let loadError: string | null = null
@@ -47,6 +48,12 @@ export const gui = defineGUI<CodeApp>({
 		// Code-pane fraction of the content width; the user drags the handle to
 		// resize. The App fills the rest. Only meaningful while the Code pane shows.
 		let split = 0.5
+		// The live App's declared menubar, pulled from devkit and drawn in the
+		// preview's menubar (with the shared design CSS). `openMenu` is the open
+		// dropdown index; `lastShowCode` lets `patch` fetch on entering split view.
+		let menuView: MenuView = []
+		let openMenu: number | null = null
+		let lastShowCode = false
 
 		const writer = createWriter((path, content) => {
 			localDirty = false
@@ -201,26 +208,67 @@ export const gui = defineGUI<CodeApp>({
 			cursor: 'col-resize'
 		})
 
-		// App view: the full live app region. No tabs, no editor or window chrome —
-		// just the stable slot the devkit capability parents the live App into. Built
-		// once; its children belong to the host, so we never replaceChildren it.
+		// App view. In split view it becomes an Xcode-style preview: a grayed-out
+		// "desktop" with a menubar on top and the live App in a floating window.
+		// app-code draws this chrome itself, reusing the OS's design-system classes
+		// (`ds-menubar`, `ds-window*`, `ds-menu*`) so it matches the real UI — the
+		// host only ever hands over the running App (parented into `previewSlot`)
+		// and, on request, the menu data. In App-only view the chrome is dropped so
+		// the App fills the whole area. Built once; `previewSlot` is never
+		// re-parented, so the live App survives re-renders.
 		const appView = div({
 			display: 'flex',
+			flexDirection: 'column',
 			flex: '1 1 0',
 			minWidth: '0',
 			minHeight: '0',
 			background: '#ffffff'
 		})
+		// Desktop menubar (split view only). `position`/`zIndex` keep its dropdowns
+		// above the window, which sits in its own stacking context below.
+		const menubar = el('div', 'ds-menubar', {
+			display: 'none',
+			flex: '0 0 auto',
+			position: 'relative',
+			zIndex: '2'
+		})
+		// Region the window floats in; its padding is the desktop margin.
+		const desktopArea = div({ display: 'flex', flex: '1 1 auto', minWidth: '0', minHeight: '0' })
+		// The floating window: the OS window chrome, drawn statically. Its own
+		// stacking context (below the menubar) keeps any z-indexes the live App
+		// sets from painting over the menubar dropdowns.
+		const windowEl = el('div', 'ds-window', {
+			flex: '1 1 auto',
+			minWidth: '0',
+			minHeight: '0',
+			position: 'relative',
+			zIndex: '1'
+		})
+		windowEl.dataset.focused = 'true'
+		const titlebar = el('div', 'ds-window-titlebar')
+		const controls = el('div', 'ds-window-controls')
+		const closeDot = el('button', 'ds-window-control ds-window-control-close')
+		closeDot.type = 'button'
+		closeDot.setAttribute('aria-label', 'Close')
+		const fullscreenDot = el('button', 'ds-window-control ds-window-control-fullscreen')
+		fullscreenDot.type = 'button'
+		fullscreenDot.setAttribute('aria-label', 'Enter fullscreen')
+		controls.append(closeDot, fullscreenDot)
+		const windowTitle = el('span', 'ds-window-title')
+		titlebar.append(controls, windowTitle, el('span', 'ds-window-spacer'))
+		const windowBody = el('div', 'ds-window-body')
 		const previewSlot = div({
 			position: 'relative',
 			flex: '1 1 auto',
 			minWidth: '0',
 			minHeight: '0',
-			overflow: 'hidden',
-			background: '#ffffff'
+			overflow: 'hidden'
 		})
 		previewSlot.dataset.previewSlot = ''
-		appView.append(previewSlot)
+		windowBody.append(previewSlot)
+		windowEl.append(titlebar, windowBody)
+		desktopArea.append(windowEl)
+		appView.append(menubar, desktopArea)
 		content.append(sourceView, handle, appView)
 
 		// Bottom message area: latest build message + diagnostics.
@@ -249,7 +297,7 @@ export const gui = defineGUI<CodeApp>({
 		bottomBar.append(buildMessage, diagnostics)
 
 		shell.append(toolbar, content, bottomBar)
-		el.replaceChildren(shell)
+		root.replaceChildren(shell)
 
 		// Drag-to-resize: pointer x within the content rect sets the code-pane
 		// fraction. Clamped so neither pane collapses.
@@ -274,6 +322,124 @@ export const gui = defineGUI<CodeApp>({
 			void ctx.client.select({ path }).catch(() => {})
 		}
 
+		// Pull the live App's declared menu and redraw the bar. Cheap and
+		// idempotent; only meaningful in split view, where the bar is shown.
+		const refreshMenu = () => {
+			if (current.view !== 'source') return
+			void ctx.client
+				.menu({})
+				.then((next) => {
+					if (!mounted) return
+					menuView = Array.isArray(next) ? next : []
+					if (openMenu !== null && openMenu >= menuView.length) openMenu = null
+					renderMenubar()
+				})
+				.catch(() => {})
+		}
+		// Fetch now, then once more after the preview's async mount settles.
+		const scheduleMenuRefresh = () => {
+			refreshMenu()
+			setTimeout(() => {
+				if (mounted) refreshMenu()
+			}, 400)
+		}
+
+		// Redraw the menubar from `menuView` using the design system's `ds-menu*`
+		// classes, so it matches the OS bar exactly (hover/active come from CSS).
+		const renderMenubar = () => {
+			// App identity (bold, matching the OS bar's leading label), then the menu
+			// titles packed together — the `ds-menubar` gap separates the two.
+			const name = el('span', '', { fontWeight: '500', whiteSpace: 'nowrap' })
+			name.textContent = current.slug
+			const titles = el('div', '', { display: 'flex', alignItems: 'center' })
+			menuView.forEach((group, index) => {
+				const wrap = el('div', '', { position: 'relative' })
+				const title = el('button', 'ds-menu-title')
+				title.type = 'button'
+				title.textContent = group.title
+				if (openMenu === index) title.dataset.active = 'true'
+				title.onclick = () => {
+					openMenu = openMenu === index ? null : index
+					if (openMenu !== null) refreshMenu() // freshen checked/disabled before showing
+					renderMenubar()
+				}
+				title.onpointerenter = () => {
+					if (openMenu !== null && openMenu !== index) {
+						openMenu = index
+						renderMenubar()
+					}
+				}
+				wrap.append(title)
+				if (openMenu === index) wrap.append(renderDropdown(group, index))
+				titles.append(wrap)
+			})
+			menubar.replaceChildren(name, titles)
+		}
+
+		const renderDropdown = (group: MenuView[number], menuIndex: number) => {
+			const dropdown = el('div', 'ds-menu', {
+				position: 'absolute',
+				left: '0',
+				top: '100%',
+				marginTop: '1px',
+				zIndex: '10000'
+			})
+			dropdown.setAttribute('role', 'menu')
+			group.items.forEach((item, itemIndex) => {
+				if ('separator' in item) {
+					dropdown.append(el('div', 'ds-menu-separator'))
+					return
+				}
+				const row = el('button', 'ds-menu-item')
+				row.type = 'button'
+				row.setAttribute('role', 'menuitem')
+				if (item.disabled) {
+					row.disabled = true
+					row.setAttribute('aria-disabled', 'true')
+				}
+				const check = el('span', '', { width: '16px', flex: '0 0 auto' })
+				check.textContent = item.checked ? '✓' : ''
+				const label = el('span', '', { flex: '1 1 auto' })
+				label.textContent = item.title
+				row.append(check, label)
+				if (item.shortcut) {
+					const shortcut = el('span', '', {
+						marginLeft: 'auto',
+						paddingLeft: '24px',
+						opacity: '0.6'
+					})
+					shortcut.textContent = item.shortcut
+					row.append(shortcut)
+				}
+				if (!item.disabled) {
+					row.onclick = () => {
+						openMenu = null
+						renderMenubar()
+						void ctx.client
+							.selectMenu({ menu: menuIndex, item: itemIndex })
+							.then(() => setTimeout(() => mounted && refreshMenu(), 50))
+							.catch(() => {})
+					}
+				}
+				dropdown.append(row)
+			})
+			return dropdown
+		}
+
+		// Dismiss an open menu on outside click / Escape.
+		const onDocPointerDown = (event: PointerEvent) => {
+			if (openMenu === null || menubar.contains(event.target as Node)) return
+			openMenu = null
+			renderMenubar()
+		}
+		const onDocKey = (event: KeyboardEvent) => {
+			if (openMenu === null || event.key !== 'Escape') return
+			openMenu = null
+			renderMenubar()
+		}
+		window.addEventListener('pointerdown', onDocPointerDown, true)
+		window.addEventListener('keydown', onDocKey, true)
+
 		const patch = () => {
 			// Toolbar state label (center)
 			const badge = STATUS[statusOf(current, running)]
@@ -286,6 +452,21 @@ export const gui = defineGUI<CodeApp>({
 			sourceView.style.display = showCode ? 'flex' : 'none'
 			sourceView.style.width = `${split * 100}%`
 			handle.style.display = showCode ? 'block' : 'none'
+
+			// Preview chrome: an Xcode-style desktop (gray backdrop, floating framed
+			// window, menubar) in split view; full-bleed App otherwise (no frame,
+			// no titlebar, no margin).
+			appView.style.background = showCode ? '#e8e8ed' : '#ffffff'
+			menubar.style.display = showCode ? '' : 'none'
+			desktopArea.style.padding = showCode ? '24px' : '0'
+			windowEl.classList.toggle('ds-window-framed', showCode)
+			titlebar.style.display = showCode ? '' : 'none'
+			windowTitle.textContent = current.slug
+			if (showCode) {
+				if (!lastShowCode) scheduleMenuRefresh() // entering split — fetch the menu
+				renderMenubar()
+			} else openMenu = null
+			lastShowCode = showCode
 
 			// File tabs
 			tabsScroll.replaceChildren(
@@ -340,7 +521,10 @@ export const gui = defineGUI<CodeApp>({
 				if (rerun) {
 					rerun = false
 					void runBuild()
-				} else patch()
+				} else {
+					patch()
+					scheduleMenuRefresh() // the App may have re-mounted with new menus
+				}
 			}
 		}
 
@@ -395,6 +579,7 @@ export const gui = defineGUI<CodeApp>({
 					if (!mounted) return
 					running = false
 					patch()
+					scheduleMenuRefresh() // initial build mounts the App — show its menus
 				})
 		}
 
@@ -412,9 +597,11 @@ export const gui = defineGUI<CodeApp>({
 			unmount() {
 				mounted = false
 				readToken++
+				window.removeEventListener('pointerdown', onDocPointerDown, true)
+				window.removeEventListener('keydown', onDocKey, true)
 				writer.flush() // persist the last in-flight edit on close
 				editor.destroy()
-				el.replaceChildren()
+				root.replaceChildren()
 			}
 		}
 	}
@@ -523,5 +710,18 @@ function basename(path: string) {
 function div(style: Partial<CSSStyleDeclaration>) {
 	const element = document.createElement('div')
 	Object.assign(element.style, style)
+	return element
+}
+
+// Element with a class (for the shared design-system classes) and optional
+// inline layout styles.
+function el<K extends keyof HTMLElementTagNameMap>(
+	tag: K,
+	className: string,
+	style?: Partial<CSSStyleDeclaration>
+): HTMLElementTagNameMap[K] {
+	const element = document.createElement(tag)
+	element.className = className
+	if (style) Object.assign(element.style, style)
 	return element
 }
