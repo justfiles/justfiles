@@ -189,6 +189,17 @@ export function createFsApi(backend: Storage) {
 							else await backend.caps?.setXattr?.(op.ino, name, decodeBytes(value), opts)
 						}
 					} else if (op.kind === 'set-dirent') {
+						// Self-heal: a diverged replica can re-push a set-dirent whose target
+						// inode the server no longer has. Applying it throws ENOENT, which
+						// 500s the whole batch — and since the push never advances its cursor,
+						// every future sync re-sends the same op and stays wedged. Skip-and-log
+						// the dangling entry instead so sync recovers on its own.
+						if (!(await backend.getMeta(op.ino))) {
+							console.warn(
+								`fs/ops: skipped dangling set-dirent ${op.dirIno}/${op.name} → missing inode ${op.ino}`
+							)
+							continue
+						}
 						const existing = await backend.getDirent(op.dirIno, op.name)
 						await backend.putDirent(op.dirIno, op.name, { ino: op.ino, type: op.type }, opts)
 						if (existing && existing.ino !== op.ino) await backend.deleteInode(existing.ino)
