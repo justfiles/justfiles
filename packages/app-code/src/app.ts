@@ -59,6 +59,10 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
 const SRC = (slug: string, path = '') => `/projects/${slug}/src${path}`
+// The project's app icon, stored verbatim (as an image data URL) at the project
+// root — a sibling of `src/`, so a future `pack`/`install` (slice 5) bundles it
+// into the app's manifest icon.
+const ICON = (slug: string) => `/projects/${slug}/icon`
 
 const slugSchema = v.pipe(
 	v.string(),
@@ -190,6 +194,32 @@ export const app = defineApp({
 				return decoder.decode(
 					await ctx.capabilities.volume.readFile({ path: SRC(state.slug, `/${path}`) })
 				)
+			}
+		}),
+		// The project's app icon as an image data URL, or null if unset. Drives the
+		// preview Dock's icon tile (the icon editor).
+		readIcon: b.query({
+			description: "Read the project's app icon as an image data URL.",
+			schema: v.object({}),
+			async handler(_, ctx) {
+				const state = normalizeState(ctx.state)
+				const path = ICON(state.slug)
+				if (!(await ctx.capabilities.volume.exists({ path }))) return null
+				return decoder.decode(await ctx.capabilities.volume.readFile({ path }))
+			}
+		}),
+		// Set the project's app icon from an image data URL (verbatim — no resize).
+		writeIcon: b.handler({
+			description: "Set the project's app icon from an image data URL.",
+			schema: v.object({ dataUrl: v.pipe(v.string(), v.startsWith('data:image/')) }),
+			examples: [{ params: { dataUrl: 'data:image/png;base64,' } }],
+			async handler({ dataUrl }, ctx) {
+				const state = normalizeState(ctx.state)
+				await ctx.capabilities.volume.writeFile({
+					path: ICON(state.slug),
+					data: encoder.encode(dataUrl)
+				})
+				return state
 			}
 		}),
 		// The live App's declared menubar (display structure only), pulled so the

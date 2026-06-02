@@ -29,6 +29,20 @@ type SourceView = {
 	error: string | null
 }
 
+// iOS-style placeholder shown in the Dock when the project has no icon yet: a
+// light-gray rounded tile with a faint generic image glyph.
+const ICON_PLACEHOLDER =
+	'data:image/svg+xml,' +
+	encodeURIComponent(
+		`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">` +
+			`<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">` +
+			`<stop offset="0" stop-color="#ececef"/><stop offset="1" stop-color="#d4d4d9"/>` +
+			`</linearGradient></defs><rect width="64" height="64" fill="url(#g)"/>` +
+			`<g fill="none" stroke="#b3b3ba" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">` +
+			`<rect x="18" y="18" width="28" height="28" rx="7"/><path d="M23 41l7-8 4 4 5-6 6 10"/></g>` +
+			`<circle cx="27" cy="27" r="2.5" fill="#b3b3ba"/></svg>`
+	)
+
 export const gui = defineGUI<CodeApp>({
 	mount(root, state, ctx) {
 		let current = stateOrInitial(state)
@@ -50,10 +64,9 @@ export const gui = defineGUI<CodeApp>({
 		let split = 0.5
 		// The live App's declared menubar, pulled from devkit and drawn in the
 		// preview's menubar (with the shared design CSS). `openMenu` is the open
-		// dropdown index; `lastShowCode` lets `patch` fetch on entering split view.
+		// dropdown index.
 		let menuView: MenuView = []
 		let openMenu: number | null = null
-		let lastShowCode = false
 
 		const writer = createWriter((path, content) => {
 			localDirty = false
@@ -208,41 +221,51 @@ export const gui = defineGUI<CodeApp>({
 			cursor: 'col-resize'
 		})
 
-		// App view. In split view it becomes an Xcode-style preview: a grayed-out
-		// "desktop" with a menubar on top and the live App in a floating window.
-		// app-code draws this chrome itself, reusing the OS's design-system classes
-		// (`ds-menubar`, `ds-window*`, `ds-menu*`) so it matches the real UI — the
-		// host only ever hands over the running App (parented into `previewSlot`)
-		// and, on request, the menu data. In App-only view the chrome is dropped so
-		// the App fills the whole area. Built once; `previewSlot` is never
-		// re-parented, so the live App survives re-renders.
+		// App view: always an Xcode-style mini desktop — a gray "desktop" with the OS
+		// menubar on top, the live App in a floating framed window, and a Dock at the
+		// bottom. app-code draws this chrome itself, reusing the OS's design-system
+		// classes (`ds-menubar`, `ds-window*`, `ds-menu*`, `ds-dock*`) so it matches
+		// the real UI — the host only ever hands over the running App (parented into
+		// `previewSlot`) and, on request, the menu data. The Code toggle reveals the
+		// Source pane beside this desktop; it never strips the chrome. Built once;
+		// `previewSlot` is never re-parented, so the live App survives re-renders.
 		const appView = div({
 			display: 'flex',
 			flexDirection: 'column',
 			flex: '1 1 0',
 			minWidth: '0',
 			minHeight: '0',
-			background: '#ffffff'
+			background: '#e8e8ed'
 		})
-		// Desktop menubar (split view only). `position`/`zIndex` keep its dropdowns
-		// above the window, which sits in its own stacking context below.
+		// Desktop menubar. `position`/`zIndex` keep its dropdowns above the desktop
+		// (window + dock), which sits in its own stacking context below.
 		const menubar = el('div', 'ds-menubar', {
-			display: 'none',
 			flex: '0 0 auto',
 			position: 'relative',
 			zIndex: '2'
 		})
-		// Region the window floats in; its padding is the desktop margin.
-		const desktopArea = div({ display: 'flex', flex: '1 1 auto', minWidth: '0', minHeight: '0' })
-		// The floating window: the OS window chrome, drawn statically. Its own
-		// stacking context (below the menubar) keeps any z-indexes the live App
-		// sets from painting over the menubar dropdowns.
-		const windowEl = el('div', 'ds-window', {
+		// Region the window + dock float in; the padding is the desktop margin and
+		// `position: relative` anchors the absolutely-placed dock. The larger bottom
+		// padding reserves room for the dock (which doesn't consume layout) so the
+		// window ends above it rather than behind it. Its own stacking context (z
+		// below the menubar) keeps the window/dock under the menus.
+		const desktopArea = div({
+			display: 'flex',
 			flex: '1 1 auto',
 			minWidth: '0',
 			minHeight: '0',
 			position: 'relative',
-			zIndex: '1'
+			zIndex: '1',
+			padding: '24px 24px 96px'
+		})
+		// The floating window: the OS window chrome, drawn statically and always
+		// framed. `zIndex: 0` keeps any z-indexes the live App sets below the dock.
+		const windowEl = el('div', 'ds-window ds-window-framed', {
+			flex: '1 1 auto',
+			minWidth: '0',
+			minHeight: '0',
+			position: 'relative',
+			zIndex: '0'
 		})
 		windowEl.dataset.focused = 'true'
 		const titlebar = el('div', 'ds-window-titlebar')
@@ -267,9 +290,62 @@ export const gui = defineGUI<CodeApp>({
 		previewSlot.dataset.previewSlot = ''
 		windowBody.append(previewSlot)
 		windowEl.append(titlebar, windowBody)
-		desktopArea.append(windowEl)
+
+		// Dock: the live App's icon, doubling as an icon editor — click the tile to
+		// upload a new icon (drag-and-drop later). Reuses the OS `ds-dock*` classes;
+		// `data-editable` adds the pointer + hover camera overlay (design.css).
+		const dockBar = el('div', 'ds-dock-bar')
+		const dock = el('div', 'ds-dock')
+		dock.setAttribute('role', 'toolbar')
+		dock.setAttribute('aria-label', 'Dock')
+		const dockItem = el('button', 'ds-dock-item')
+		dockItem.type = 'button'
+		dockItem.dataset.editable = 'true'
+		dockItem.title = 'Set app icon'
+		const dockIcon = el('span', 'ds-dock-icon')
+		const dockImg = document.createElement('img')
+		dockImg.alt = ''
+		dockImg.src = ICON_PLACEHOLDER
+		dockIcon.append(dockImg)
+		const dockIndicator = el('span', 'ds-dock-indicator')
+		dockIndicator.dataset.running = 'true' // the preview App is always live
+		dockItem.append(dockIcon, dockIndicator)
+		dock.append(dockItem)
+		dockBar.append(dock)
+		desktopArea.append(windowEl, dockBar)
 		appView.append(menubar, desktopArea)
 		content.append(sourceView, handle, appView)
+
+		// Hidden picker the dock click opens; the file's bytes go to `writeIcon`
+		// verbatim as a data URL, and `readIcon` reflects the saved icon back.
+		const iconInput = document.createElement('input')
+		iconInput.type = 'file'
+		iconInput.accept = 'image/*'
+		iconInput.style.display = 'none'
+		const setIcon = (dataUrl: string | null) => {
+			dockImg.src = dataUrl ?? ICON_PLACEHOLDER
+		}
+		const refreshIcon = () => {
+			void ctx.client
+				.readIcon({})
+				.then((url) => {
+					if (mounted) setIcon(typeof url === 'string' ? url : null)
+				})
+				.catch(() => {})
+		}
+		dockItem.onclick = () => iconInput.click()
+		iconInput.onchange = () => {
+			const file = iconInput.files?.[0]
+			iconInput.value = '' // allow re-picking the same file
+			if (!file) return
+			const reader = new FileReader()
+			reader.onload = () => {
+				const dataUrl = String(reader.result)
+				setIcon(dataUrl) // optimistic — reflect immediately
+				void ctx.client.writeIcon({ dataUrl }).catch(() => {})
+			}
+			reader.readAsDataURL(file)
+		}
 
 		// Bottom message area: latest build message + diagnostics.
 		const bottomBar = div({
@@ -296,7 +372,7 @@ export const gui = defineGUI<CodeApp>({
 		diagnostics.style.display = 'none'
 		bottomBar.append(buildMessage, diagnostics)
 
-		shell.append(toolbar, content, bottomBar)
+		shell.append(toolbar, content, bottomBar, iconInput)
 		root.replaceChildren(shell)
 
 		// Drag-to-resize: pointer x within the content rect sets the code-pane
@@ -323,9 +399,8 @@ export const gui = defineGUI<CodeApp>({
 		}
 
 		// Pull the live App's declared menu and redraw the bar. Cheap and
-		// idempotent; only meaningful in split view, where the bar is shown.
+		// idempotent; the bar is always shown, so this runs in either view.
 		const refreshMenu = () => {
-			if (current.view !== 'source') return
 			void ctx.client
 				.menu({})
 				.then((next) => {
@@ -446,27 +521,18 @@ export const gui = defineGUI<CodeApp>({
 			stateLabel.textContent = `● ${badge.label}`
 			stateLabel.style.color = badge.color
 
-			// Code toggle + split visibility. The App stays mounted either way.
+			// Code toggle + Source-pane visibility. The mini-desktop chrome (menubar,
+			// framed window, dock, backdrop) is always on; only the Source pane and
+			// its drag handle appear/disappear with the toggle. The App stays mounted
+			// either way.
 			const showCode = current.view === 'source'
 			setToggle(codeToggle, showCode)
 			sourceView.style.display = showCode ? 'flex' : 'none'
 			sourceView.style.width = `${split * 100}%`
 			handle.style.display = showCode ? 'block' : 'none'
 
-			// Preview chrome: an Xcode-style desktop (gray backdrop, floating framed
-			// window, menubar) in split view; full-bleed App otherwise (no frame,
-			// no titlebar, no margin).
-			appView.style.background = showCode ? '#e8e8ed' : '#ffffff'
-			menubar.style.display = showCode ? '' : 'none'
-			desktopArea.style.padding = showCode ? '24px' : '0'
-			windowEl.classList.toggle('ds-window-framed', showCode)
-			titlebar.style.display = showCode ? '' : 'none'
 			windowTitle.textContent = current.slug
-			if (showCode) {
-				if (!lastShowCode) scheduleMenuRefresh() // entering split — fetch the menu
-				renderMenubar()
-			} else openMenu = null
-			lastShowCode = showCode
+			renderMenubar()
 
 			// File tabs
 			tabsScroll.replaceChildren(
@@ -569,6 +635,7 @@ export const gui = defineGUI<CodeApp>({
 					loadError = null
 					current = stateOrInitial(next)
 					syncSource()
+					refreshIcon()
 				})
 				.catch((err) => {
 					if (!mounted) return
