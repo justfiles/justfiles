@@ -21,24 +21,35 @@ happened.
 
 ## Top-level UI
 
-The entire app has one toolbar at the top.
+The entire app has one toolbar at the top. The App is always mounted; toggling
+`Code` reveals the source pane *beside* it rather than replacing it, so you can
+edit and watch the live App update at the same time.
 
 ```text
-┌────────────────────────────────────────────────────┐
-│ Live                    [ Source | App ]   Install │
-├────────────────────────────────────────────────────┤
-│                                                    │
-│ Source view: file tree + editor                    │
-│ App view: full live app region                     │
-│                                                    │
-├────────────────────────────────────────────────────┤
-│ Latest build/status message and diagnostics         │
-└────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ [ </> Code ]            ● Live                   Install   │
+├───────────────────────────────┬──────────────────────────┤
+│ app.ts  gui.ts ● editor.ts  ⟳ │                          │
+│ ───────────────────────────── │                          │
+│                               ║                          │
+│        editor (CodeMirror)    ║      live App            │
+│                               ║                          │
+├───────────────────────────────┴──────────────────────────┤
+│ Latest build/status message and diagnostics               │
+└──────────────────────────────────────────────────────────┘
 ```
+
+`║` is a draggable handle that resizes the split. When `Code` is off the source
+pane and handle hide and the App fills the whole area — the default for
+non-technical users, who shape the app through agents.
 
 ### Toolbar
 
-Left: state indicator only.
+Left: the `</> Code` toggle. One non-modal control: on → source pane shows beside
+the App (split); off → App only. It is not a `Source | App` mode switch, because
+the App never goes away.
+
+Middle: state indicator only.
 
 Examples:
 
@@ -53,15 +64,6 @@ These are display labels derived from the build record (see Status meanings).
 The toolbar should not show a full sentence. It is just a colored state label.
 Detailed text belongs in the bottom message area.
 
-Middle: view switch.
-
-```text
-[ Source | App ]
-```
-
-Use `Source` and `App`, not `Editor` and `Preview`. `App` reinforces that this
-is the real running draft app, not a fake preview.
-
 Right: primary shipping action.
 
 ```text
@@ -73,21 +75,24 @@ not crashed.
 
 `Pack` is uncommon and should move to a menu.
 
-### Source view
+### Source pane
 
-The area below the toolbar is split:
+The source pane (left of the split) is file tabs over an editor:
 
 ```text
-[file tree] [file editor]
+[tab] [tab] [tab]  ⟳
+[ editor                 ]
 ```
 
-Selecting a file switches/stays in Source view and loads that file into the
-editor.
+A tree column would make the split a busy three columns; app-code projects are a
+handful of files, so a tab bar is enough and keeps it to two clean panes. The
+dirty dot rides the active tab; `⟳` rescans the project (picks up files an agent
+added out of band). Selecting a tab loads that file into the editor.
 
 ### App view
 
-The area below the toolbar is the live app region. No file tree, no editor
-chrome, no fake window chrome by default.
+The right side of the split is the live app region. No tabs, no editor chrome, no
+fake window chrome by default.
 
 The implementation still uses a stable `[data-preview-slot]`, but the user-facing
 name is App.
@@ -465,12 +470,14 @@ recomputes the hash and runs the initial build.
 ### Phase 2 — Layout
 
 - make shell vertical
-- move toolbar above both views
-- left toolbar state text (from `statusOf`)
-- center `Source | App` segmented control
-- right `Install` button
-- source area = file tree + editor
-- app area = full stable `[data-preview-slot]`
+- move toolbar above the content
+- left toolbar = `</> Code` toggle (drives `view` via `setView`)
+- center = state text (from `statusOf`)
+- right = `Install` button
+- content = source pane | drag handle | App, side by side
+- source pane = file tabs + editor (no tree column)
+- `Code` off hides the source pane + handle; the App fills the area
+- App = stable `[data-preview-slot]`, always mounted
 - bottom area = `build.message` + diagnostics
 
 ### Phase 3 — Automatic live loop

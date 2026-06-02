@@ -40,10 +40,13 @@ export const gui = defineGUI<CodeApp>({
 		let running = false // a `run` is in flight (client-local) → drives the `Building` label
 		let rerun = false // a write landed during a run → rebuild once it resolves
 		// `editorPath` is the file the CodeMirror buffer currently holds;
-		// `localDirty` is set synchronously on the first keystroke so the title
-		// shows the dirty dot immediately (not after the debounced write lands).
+		// `localDirty` is set synchronously on the first keystroke so the tab shows
+		// the dirty dot immediately (not after the debounced write lands).
 		let editorPath: string | null = null
 		let localDirty = false
+		// Code-pane fraction of the content width; the user drags the handle to
+		// resize. The App fills the rest. Only meaningful while the Code pane shows.
+		let split = 0.5
 
 		const writer = createWriter((path, content) => {
 			localDirty = false
@@ -78,7 +81,8 @@ export const gui = defineGUI<CodeApp>({
 			fontSize: 'var(--text-ui)'
 		})
 
-		// Toolbar: [ state ]   [ Source | App ]   [ Install ]
+		// Toolbar: [ </> Code ]      ● Status      [ Install ]. Left and right groups
+		// share the slack equally so the status label stays centered.
 		const toolbar = div({
 			display: 'flex',
 			alignItems: 'center',
@@ -87,26 +91,35 @@ export const gui = defineGUI<CodeApp>({
 			background: '#f5f5f7',
 			borderBottom: '1px solid #d2d2d7'
 		})
+		const leftGroup = div({ display: 'flex', flex: '1 1 0', minWidth: '0', alignItems: 'center' })
+		const codeToggle = document.createElement('button')
+		codeToggle.type = 'button'
+		codeToggle.textContent = '</> Code'
+		Object.assign(codeToggle.style, {
+			border: '1px solid #d2d2d7',
+			borderRadius: '6px',
+			cursor: 'default',
+			font: 'inherit',
+			fontSize: '12px',
+			fontWeight: '600',
+			padding: '5px 12px',
+			whiteSpace: 'nowrap'
+		})
+		// One non-modal toggle: reveal the Code pane alongside the App, or hide it so
+		// the App fills the area (the default for non-technical users).
+		codeToggle.onclick = () =>
+			void ctx.client
+				.setView({ view: current.view === 'source' ? 'app' : 'source' })
+				.catch(() => {})
+		leftGroup.append(codeToggle)
+
 		const stateLabel = div({
-			flex: '1 1 0',
-			minWidth: '0',
+			flex: '0 0 auto',
+			textAlign: 'center',
 			fontSize: '12px',
 			fontWeight: '600',
 			whiteSpace: 'nowrap'
 		})
-
-		const segment = div({
-			display: 'flex',
-			flex: '0 0 auto',
-			border: '1px solid #d2d2d7',
-			borderRadius: '6px',
-			overflow: 'hidden'
-		})
-		const segSource = segButton('Source')
-		const segApp = segButton('App')
-		segSource.onclick = () => void ctx.client.setView({ view: 'source' }).catch(() => {})
-		segApp.onclick = () => void ctx.client.setView({ view: 'app' }).catch(() => {})
-		segment.append(segSource, segApp)
 
 		const rightGroup = div({
 			display: 'flex',
@@ -134,62 +147,33 @@ export const gui = defineGUI<CodeApp>({
 			padding: '5px 14px'
 		})
 		rightGroup.append(install)
-		toolbar.append(stateLabel, segment, rightGroup)
+		toolbar.append(leftGroup, stateLabel, rightGroup)
 
-		// Content: Source view (file tree + editor) and App view (full preview
-		// slot) share the area; only one is shown at a time via `display`.
+		// Content: Code pane (file tabs + editor) | drag handle | live App. The Code
+		// pane and handle hide when the toggle is off, so the App fills the area.
 		const content = div({ display: 'flex', flex: '1 1 auto', minHeight: '0' })
 
-		const sourceView = div({ display: 'flex', flex: '1 1 auto', minWidth: '0', minHeight: '0' })
-		const sidebar = div({
-			width: '240px',
+		// Code pane. File tabs replace a tree — app-code projects are a handful of
+		// files, so tabs keep the split to two clean panes (never a third column).
+		const sourceView = div({
+			display: 'none',
+			flexDirection: 'column',
 			flex: '0 0 auto',
-			minHeight: '0',
-			background: '#f5f5f7',
-			borderRight: '1px solid #d2d2d7',
-			display: 'flex',
-			flexDirection: 'column'
+			width: '50%',
+			minWidth: '0',
+			minHeight: '0'
 		})
-		const sideHeader = div({
+		const tabBar = div({
 			display: 'flex',
-			alignItems: 'center',
-			gap: '8px',
-			padding: '8px 10px',
+			flex: '0 0 auto',
+			minWidth: '0',
+			background: '#f5f5f7',
 			borderBottom: '1px solid #e3e3e6'
 		})
-		const projectLabel = div({
-			flex: '1 1 auto',
-			minWidth: '0',
-			overflow: 'hidden',
-			textOverflow: 'ellipsis',
-			whiteSpace: 'nowrap',
-			color: '#1d1d1f',
-			fontSize: '12px',
-			fontWeight: '600'
-		})
-		const refresh = smallButton('Refresh')
+		const tabsScroll = div({ display: 'flex', flex: '1 1 0', minWidth: '0', overflowX: 'auto' })
+		const refresh = iconButton('⟳', 'Rescan project files')
 		refresh.onclick = () => openProject(true)
-		sideHeader.append(projectLabel, refresh)
-		const treeContainer = div({ flex: '1 1 auto', minHeight: '0', overflow: 'auto' })
-		sidebar.append(sideHeader, treeContainer)
-
-		const editorPane = div({
-			flex: '1 1 auto',
-			minWidth: '0',
-			minHeight: '0',
-			display: 'flex',
-			flexDirection: 'column'
-		})
-		const editorTitle = div({
-			flex: '0 0 auto',
-			padding: '6px 12px',
-			borderBottom: '1px solid #e3e3e6',
-			color: '#6e6e73',
-			fontSize: '12px',
-			overflow: 'hidden',
-			textOverflow: 'ellipsis',
-			whiteSpace: 'nowrap'
-		})
+		tabBar.append(tabsScroll, refresh)
 		const editorHost = div({ flex: '1 1 auto', minHeight: '0', overflow: 'hidden' })
 		editorHost.append(editor.dom)
 		// Fallback shown in place of the editor when no file is loaded yet.
@@ -206,16 +190,23 @@ export const gui = defineGUI<CodeApp>({
 			lineHeight: '1.55',
 			whiteSpace: 'pre-wrap'
 		})
-		editorPane.append(editorTitle, editorHost, message)
-		sourceView.append(sidebar, editorPane)
+		sourceView.append(tabBar, editorHost, message)
 
-		// App view: the full live app region. No file tree, no editor or window
-		// chrome — just the stable slot the devkit capability parents the live App
-		// into. Built once and only toggled via its parent; its children belong to
-		// the host, so we never replaceChildren it ourselves.
-		const appView = div({
+		// Drag handle between the two panes; doubles as the divider.
+		const handle = div({
 			display: 'none',
-			flex: '1 1 auto',
+			flex: '0 0 auto',
+			width: '5px',
+			background: '#d2d2d7',
+			cursor: 'col-resize'
+		})
+
+		// App view: the full live app region. No tabs, no editor or window chrome —
+		// just the stable slot the devkit capability parents the live App into. Built
+		// once; its children belong to the host, so we never replaceChildren it.
+		const appView = div({
+			display: 'flex',
+			flex: '1 1 0',
 			minWidth: '0',
 			minHeight: '0',
 			background: '#ffffff'
@@ -230,7 +221,7 @@ export const gui = defineGUI<CodeApp>({
 		})
 		previewSlot.dataset.previewSlot = ''
 		appView.append(previewSlot)
-		content.append(sourceView, appView)
+		content.append(sourceView, handle, appView)
 
 		// Bottom message area: latest build message + diagnostics.
 		const bottomBar = div({
@@ -260,6 +251,23 @@ export const gui = defineGUI<CodeApp>({
 		shell.append(toolbar, content, bottomBar)
 		el.replaceChildren(shell)
 
+		// Drag-to-resize: pointer x within the content rect sets the code-pane
+		// fraction. Clamped so neither pane collapses.
+		handle.addEventListener('pointerdown', (event) => {
+			event.preventDefault()
+			const rect = content.getBoundingClientRect()
+			const onMove = (move: PointerEvent) => {
+				split = Math.min(0.85, Math.max(0.15, (move.clientX - rect.left) / rect.width))
+				sourceView.style.width = `${split * 100}%`
+			}
+			const onUp = () => {
+				window.removeEventListener('pointermove', onMove)
+				window.removeEventListener('pointerup', onUp)
+			}
+			window.addEventListener('pointermove', onMove)
+			window.addEventListener('pointerup', onUp)
+		})
+
 		const onSelect = (path: string) => {
 			if (path === current.selectedPath) return
 			writer.flush() // persist pending edits to the current file before switching
@@ -267,32 +275,39 @@ export const gui = defineGUI<CodeApp>({
 		}
 
 		const patch = () => {
-			// Toolbar state label
+			// Toolbar state label (center)
 			const badge = STATUS[statusOf(current, running)]
 			stateLabel.textContent = `● ${badge.label}`
 			stateLabel.style.color = badge.color
 
-			// Segmented control + view toggle
-			const app = current.view === 'app'
-			setSegment(segSource, !app)
-			setSegment(segApp, app)
-			sourceView.style.display = app ? 'none' : 'flex'
-			appView.style.display = app ? 'flex' : 'none'
+			// Code toggle + split visibility. The App stays mounted either way.
+			const showCode = current.view === 'source'
+			setToggle(codeToggle, showCode)
+			sourceView.style.display = showCode ? 'flex' : 'none'
+			sourceView.style.width = `${split * 100}%`
+			handle.style.display = showCode ? 'block' : 'none'
 
-			// Sidebar
-			projectLabel.textContent = current.slug
-			treeContainer.replaceChildren(...sidebarBody(current, loadError, projectLoaded, onSelect))
+			// File tabs
+			tabsScroll.replaceChildren(
+				...current.files.map((path) =>
+					tabButton(
+						path,
+						path === current.selectedPath,
+						localDirty && path === current.selectedPath,
+						onSelect
+					)
+				)
+			)
 
-			// Editor pane: file title + editor/fallback
-			const name = current.selectedPath ?? 'No file selected'
-			editorTitle.textContent = current.selectedPath && localDirty ? `● ${name}` : name
+			// Editor pane: editor when the file is loaded, else a fallback message
 			const ready =
 				!!current.selectedPath && source.path === current.selectedPath && source.content !== null
 			editorHost.style.display = ready ? '' : 'none'
 			message.style.display = ready ? 'none' : ''
 			if (!ready) {
-				message.textContent = sourceText(current.selectedPath, source)
-				message.style.color = source.error ? '#c41a16' : '#86868b'
+				const fallback = fallbackText(current, source, loadError, projectLoaded)
+				message.textContent = fallback.text
+				message.style.color = fallback.error ? '#c41a16' : '#86868b'
 			}
 
 			// Bottom message area
@@ -405,31 +420,18 @@ export const gui = defineGUI<CodeApp>({
 	}
 })
 
-function sidebarBody(
+function fallbackText(
 	state: CodeState,
+	source: SourceView,
 	loadError: string | null,
-	projectLoaded: boolean,
-	onSelect: (path: string) => void
-): HTMLElement[] {
-	const body: HTMLElement[] = []
-	if (loadError) body.push(errorBlock(loadError))
-	body.push(
-		state.files.length === 0
-			? emptyBlock(
-					loadError
-						? 'Could not load project.'
-						: projectLoaded
-							? 'Empty project.'
-							: 'Loading project…'
-				)
-			: renderTree(buildTree(state.files), state.selectedPath, onSelect)
-	)
-	return body
-}
-
-function sourceText(path: string | null, source: SourceView): string {
-	if (!path) return 'Select a file to edit.'
-	return source.error ?? 'Loading…'
+	projectLoaded: boolean
+): { text: string; error: boolean } {
+	if (loadError) return { text: loadError, error: true }
+	if (state.files.length === 0)
+		return { text: projectLoaded ? 'Empty project.' : 'Loading project…', error: false }
+	if (!state.selectedPath) return { text: 'Select a file to edit.', error: false }
+	if (source.error) return { text: source.error, error: true }
+	return { text: 'Loading…', error: false }
 }
 
 // Debounced, path-aware file writer. Coalesces rapid edits to one file; if the
@@ -459,136 +461,55 @@ function createWriter(write: (path: string, content: string) => void, ms: number
 	}
 }
 
-type TreeNode = { name: string; path: string; folders: TreeNode[]; files: string[] }
-
-function buildTree(files: string[]): TreeNode {
-	const root: TreeNode = { name: '', path: '', folders: [], files: [] }
-	for (const file of files) {
-		const parts = file.split('/').filter(Boolean)
-		let node = root
-		let path = ''
-		for (const part of parts.slice(0, -1)) {
-			path = path ? `${path}/${part}` : part
-			let folder = node.folders.find((child) => child.name === part)
-			if (!folder) {
-				folder = { name: part, path, folders: [], files: [] }
-				node.folders.push(folder)
-			}
-			node = folder
-		}
-		node.files.push(file)
-	}
-	sortTree(root)
-	return root
-}
-
-function sortTree(node: TreeNode) {
-	node.folders.sort((a, b) => a.name.localeCompare(b.name))
-	node.files.sort((a, b) => basename(a).localeCompare(basename(b)))
-	for (const folder of node.folders) sortTree(folder)
-}
-
-function renderTree(node: TreeNode, selectedPath: string | null, onSelect: (path: string) => void) {
-	const tree = div({ padding: '10px 6px' })
-	appendNode(tree, node, 0, selectedPath, onSelect)
-	return tree
-}
-
-function appendNode(
-	parent: HTMLElement,
-	node: TreeNode,
-	depth: number,
-	selectedPath: string | null,
-	onSelect: (path: string) => void
-) {
-	for (const folder of node.folders) {
-		const row = div({
-			padding: `3px 8px 3px ${depth * 14 + 8}px`,
-			color: '#6e6e73',
-			fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-			fontSize: '12px'
-		})
-		row.textContent = `▾ ${folder.name}`
-		parent.append(row)
-		appendNode(parent, folder, depth + 1, selectedPath, onSelect)
-	}
-	for (const file of node.files)
-		parent.append(fileButton(file, depth, file === selectedPath, onSelect))
-}
-
-function fileButton(
+function tabButton(
 	path: string,
-	depth: number,
-	selected: boolean,
+	active: boolean,
+	dirty: boolean,
 	onSelect: (path: string) => void
 ) {
 	const button = document.createElement('button')
 	button.type = 'button'
-	button.textContent = `⌞ ${basename(path)}`
 	button.title = path
+	button.textContent = `${dirty ? '● ' : ''}${basename(path)}`
 	button.onclick = () => onSelect(path)
 	Object.assign(button.style, {
-		display: 'block',
-		width: '100%',
-		padding: `4px 8px 4px ${depth * 14 + 8}px`,
-		background: selected ? '#007aff' : 'transparent',
+		flex: '0 0 auto',
 		border: '0',
-		borderRadius: '6px',
-		color: selected ? '#ffffff' : '#1d1d1f',
+		borderRight: '1px solid #e3e3e6',
+		background: active ? '#ffffff' : 'transparent',
+		color: active ? '#1d1d1f' : '#6e6e73',
 		cursor: 'default',
 		font: '12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-		textAlign: 'left'
+		fontWeight: active ? '600' : '400',
+		padding: '6px 12px',
+		whiteSpace: 'nowrap'
 	})
 	return button
 }
 
-function segButton(label: string) {
-	const button = document.createElement('button')
-	button.type = 'button'
-	button.textContent = label
-	Object.assign(button.style, {
-		border: '0',
-		cursor: 'default',
-		font: 'inherit',
-		fontSize: '12px',
-		fontWeight: '600',
-		padding: '5px 12px'
-	})
-	return button
-}
-
-function setSegment(button: HTMLButtonElement, active: boolean) {
+function setToggle(button: HTMLButtonElement, active: boolean) {
 	button.style.background = active ? '#007aff' : '#ffffff'
 	button.style.color = active ? '#ffffff' : '#1d1d1f'
+	button.style.borderColor = active ? '#007aff' : '#d2d2d7'
 }
 
-function smallButton(label: string) {
+function iconButton(symbol: string, title: string) {
 	const button = document.createElement('button')
 	button.type = 'button'
-	button.textContent = label
+	button.textContent = symbol
+	button.title = title
 	Object.assign(button.style, {
-		background: '#ffffff',
-		border: '1px solid #d2d2d7',
-		borderRadius: '6px',
-		color: '#1d1d1f',
+		flex: '0 0 auto',
+		border: '0',
+		borderLeft: '1px solid #e3e3e6',
+		background: 'transparent',
+		color: '#6e6e73',
 		cursor: 'default',
 		font: 'inherit',
-		fontSize: '12px',
-		padding: '4px 9px'
+		fontSize: '13px',
+		padding: '6px 10px'
 	})
 	return button
-}
-
-function emptyBlock(text: string) {
-	const block = div({ color: '#86868b', fontSize: '12px', padding: '12px' })
-	block.textContent = text
-	return block
-}
-
-function errorBlock(text: string) {
-	const block = div({ color: '#c41a16', fontSize: '12px', padding: '8px 10px' })
-	block.textContent = text
-	return block
 }
 
 function messageOf(err: unknown) {
