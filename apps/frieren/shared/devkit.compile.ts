@@ -20,6 +20,13 @@ export interface CompileResult {
 	diagnostics: string[]
 }
 
+// The entry source paths, declared by the project file (keys into `files`). The
+// project owns its layout — compile never guesses where the entries live.
+export interface CompileEntries {
+	app: string
+	gui?: string
+}
+
 const VFS = 'devkit-vfs'
 const RUNTIME = 'devkit-runtime'
 const EXTERNAL = [
@@ -32,6 +39,7 @@ const EXTERNAL = [
 
 export async function compile(
 	files: Record<string, string>,
+	entries: CompileEntries,
 	build: BuildFn,
 	runtime: Record<string, string>
 ): Promise<CompileResult> {
@@ -54,12 +62,11 @@ export async function compile(
 			return ''
 		}
 	}
-	const entry = (name: string) => [`${name}.ts`, `${name}.tsx`].find((path) => path in files)
-	const appEntry = entry('app')
-	const guiEntry = entry('gui')
-	if (!appEntry) diagnostics.push('missing entry: app.ts')
-	const app = appEntry ? await one(appEntry) : ''
-	const gui = guiEntry ? await one(guiEntry) : ''
+	const present = (entry: string | undefined): entry is string => !!entry && entry in files
+	if (!present(entries.app)) diagnostics.push(`missing entry: ${entries.app}`)
+	if (entries.gui && !present(entries.gui)) diagnostics.push(`missing entry: ${entries.gui}`)
+	const app = present(entries.app) ? await one(entries.app) : ''
+	const gui = present(entries.gui) ? await one(entries.gui) : ''
 	return { app, gui, diagnostics }
 }
 

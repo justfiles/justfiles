@@ -82,6 +82,23 @@ export function menuOf(id: string): Menu | null {
 	return stages.get(id)?.menu ?? null
 }
 
+// Installed-app catalog channel. `devkit.install` writes a new app to
+// `/applications` through its own kernel instance, so the OS launcher (which
+// caches the list) must be told to re-list. The OS subscribes once in
+// OSProvider; the capability calls `notifyCatalog()` after a successful install.
+const catalogSubscribers = new Set<() => void>()
+
+export function notifyCatalog(): void {
+	for (const fn of [...catalogSubscribers]) fn()
+}
+
+export function subscribeCatalog(fn: () => void): () => void {
+	catalogSubscribers.add(fn)
+	return () => {
+		catalogSubscribers.delete(fn)
+	}
+}
+
 export function open(id: string, opts: OpenOptions): void {
 	if (stages.has(id)) return
 	const stage = createStage(id)

@@ -60,9 +60,12 @@ const decoder = new TextDecoder()
 
 const SRC = (slug: string, path = '') => `/projects/${slug}/src${path}`
 // The project's app icon, stored verbatim (as an image data URL) at the project
-// root — a sibling of `src/`, so a future `pack`/`install` (slice 5) bundles it
-// into the app's manifest icon.
+// root — a sibling of `src/`. `project.json` declares it as the app icon, so
+// `devkit.install`/`pack` bundle it into the shipped app.
 const ICON = (slug: string) => `/projects/${slug}/icon`
+// The project file — the build contract devkit reads (identity + where the
+// entries and icon live). Lives at the project root beside `src/` and `icon`.
+const PROJECT = (slug: string) => `/projects/${slug}/project.json`
 
 const slugSchema = v.pipe(
 	v.string(),
@@ -95,15 +98,21 @@ export const app = defineApp({
 				if (!(await ctx.capabilities.volume.exists({ path: SRC(slug) }))) {
 					await seed(ctx.capabilities.volume, slug)
 				}
+				// Backfill the project file for projects created before it existed, so
+				// devkit always has its build contract.
+				if (!(await ctx.capabilities.volume.exists({ path: PROJECT(slug) }))) {
+					await writeProjectManifest(ctx.capabilities.volume, slug)
+				}
 				const source = await readSource(ctx.capabilities.volume, slug)
 				const files = Object.keys(source)
 				const selectedPath = files.includes(state.selectedPath ?? '')
 					? state.selectedPath
 					: (files[0] ?? null)
 				// Run the initial build so the App is live on open, resuming the
-				// draft's persisted runtime state (no reset).
+				// draft's persisted runtime state (no reset). devkit reads the source
+				// off disk itself — we pass only the slug.
 				const hash = hashSource(source)
-				const { diagnostics } = await ctx.capabilities.devkit.run({ slug, files: source })
+				const { diagnostics } = await ctx.capabilities.devkit.run({ slug })
 				return {
 					...state,
 					slug,
@@ -164,13 +173,10 @@ export const app = defineApp({
 			examples: [{ params: {} }, { params: { reset: true } }],
 			async handler({ reset }, ctx) {
 				const state = normalizeState(ctx.state)
-				const source = await readSource(ctx.capabilities.volume, state.slug)
-				const hash = hashSource(source)
-				const { diagnostics } = await ctx.capabilities.devkit.run({
-					slug: state.slug,
-					files: source,
-					reset
-				})
+				// Read the source only to tag this build with its content hash; devkit
+				// reads the same source off disk to compile + mount.
+				const hash = hashSource(await readSource(ctx.capabilities.volume, state.slug))
+				const { diagnostics } = await ctx.capabilities.devkit.run({ slug: state.slug, reset })
 				// sourceHash untouched — write owns it
 				return { ...state, build: buildRecord(hash, diagnostics) }
 			}
@@ -248,6 +254,26 @@ export const app = defineApp({
 					item
 				})
 				return state
+			}
+		}),
+		// Ship: promote the project to the real `/applications` as a standalone app.
+		// devkit reads the source + icon off disk, compiles fresh, and rejects a
+		// colliding id (its guard). A query — it writes outside our own state, so
+		// app-code's state is unchanged; the gui surfaces the returned id or error.
+		install: b.query({
+			description: 'Compile the current source and install it as a real app.',
+			schema: v.object({}),
+			async handler(_, ctx) {
+				return ctx.capabilities.devkit.install({ slug: normalizeState(ctx.state).slug })
+			}
+		}),
+		// Share: compile fresh and return a downloadable `.zip` of the bundle; the
+		// gui turns the bytes into a file download.
+		pack: b.query({
+			description: 'Compile the current source and return a downloadable .zip bundle.',
+			schema: v.object({}),
+			async handler(_, ctx) {
+				return ctx.capabilities.devkit.pack({ slug: normalizeState(ctx.state).slug })
 			}
 		})
 	})
@@ -328,6 +354,18 @@ async function readSource(volume: VolumeCapability, slug: string): Promise<Recor
 async function seed(volume: VolumeCapability, slug: string): Promise<void> {
 	await volume.writeFile({ path: SRC(slug, '/app.ts'), data: encoder.encode(starterApp) })
 	await volume.writeFile({ path: SRC(slug, '/gui.ts'), data: encoder.encode(starterGui) })
+	await writeProjectManifest(volume, slug)
+}
+
+// Write the project file devkit builds from. id/name default to the slug (a
+// valid app id; the author edits `project.json` to claim a real reverse-DNS id);
+// the entries and icon path declare the layout explicitly.
+async function writeProjectManifest(volume: VolumeCapability, slug: string): Promise<void> {
+	const manifest = { id: slug, name: slug, icon: 'icon', app: 'src/app.ts', gui: 'src/gui.ts' }
+	await volume.writeFile({
+		path: PROJECT(slug),
+		data: encoder.encode(`${JSON.stringify(manifest, null, 2)}\n`)
+	})
 }
 
 const starterApp = `import { defineApp } from '@justfiles/app'

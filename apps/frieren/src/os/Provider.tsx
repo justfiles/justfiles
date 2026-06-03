@@ -30,16 +30,28 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	const [client] = useState(() =>
 		createFrierenClient({
 			getToken: () => getTokenRef.current(),
-			listLocalApps: async (): Promise<InstalledApp[]> =>
-				(await (await localKernel()).list()).map((m) => ({
-					id: m.id,
-					name: m.name,
-					description: m.description ?? '',
-					// Icons load from the public `/appstore` assets (PWA-precached), so
-					// the Dock has them offline without a server round-trip.
-					iconUrl:
-						m.icon && m.version ? appFileUrl({ id: m.id, version: m.version }, m.icon) : undefined
-				}))
+			listLocalApps: async (): Promise<InstalledApp[]> => {
+				const kernel = await localKernel()
+				return Promise.all(
+					(await kernel.list()).map(async (m) => {
+						let iconUrl: string | undefined
+						if (m.icon && m.version) {
+							// Published apps: icons load from the public `/appstore` assets
+							// (PWA-precached), so the Dock has them offline without a round-trip.
+							iconUrl = appFileUrl({ id: m.id, version: m.version }, m.icon)
+						} else if (m.icon) {
+							// Locally installed (devkit/zip) apps have no published assets; their
+							// icon is stored verbatim as a self-describing data URL in the bundle.
+							try {
+								const bytes = await (await kernel.app(m.id)).read(m.icon)
+								const text = new TextDecoder().decode(bytes)
+								if (text.startsWith('data:')) iconUrl = text
+							} catch {}
+						}
+						return { id: m.id, name: m.name, description: m.description ?? '', iconUrl }
+					})
+				)
+			}
 		})
 	)
 	const [{ store, flushPersist }] = useState(() =>
@@ -72,6 +84,12 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			cancelled = true
 		}
 	}, [client, isLoaded, isSignedIn, localKernel, volumePromise])
+
+	useEffect(() => {
+		// app-code's `devkit.install` writes a new app straight to `/applications`
+		// via its own kernel; re-list so it appears in the launcher right away.
+		return appHost.subscribeCatalog(() => client.refresh())
+	}, [client])
 
 	useEffect(() => {
 		let cancelled = false

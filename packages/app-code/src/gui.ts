@@ -148,25 +148,55 @@ export const gui = defineGUI<CodeApp>({
 			flex: '1 1 0',
 			minWidth: '0'
 		})
-		// Primary shipping action. Disabled placeholder until Phase 4 wires it to
-		// `canInstall(state)` and the devkit `install` capability.
-		const install = document.createElement('button')
-		install.type = 'button'
-		install.textContent = 'Install'
-		install.disabled = true
-		Object.assign(install.style, {
-			background: '#007aff',
-			border: '0',
-			borderRadius: '6px',
-			color: '#ffffff',
-			cursor: 'default',
-			font: 'inherit',
-			fontSize: '12px',
-			fontWeight: '600',
-			opacity: '0.4',
-			padding: '5px 14px'
-		})
-		rightGroup.append(install)
+		// Shipping actions. `Pack` downloads a `.zip` others can import; `Install`
+		// promotes the draft to the real /applications as a standalone app. Both
+		// compile fresh in the devkit capability, so they ship the latest saved
+		// source. Enabled once the project loads; `shipping` blocks double-fires and
+		// their enabled/opacity state is driven from `patch`.
+		let shipping = false
+		const pack = shipButton('Pack', false)
+		const install = shipButton('Install', true)
+
+		// Run a ship action with minimal in-flight feedback: relabel while busy,
+		// briefly confirm on success, surface failures in an alert (the launcher's
+		// own install path does the same).
+		const ship = async (
+			button: HTMLButtonElement,
+			busy: string,
+			done: string,
+			run: () => Promise<void>
+		) => {
+			if (shipping || !projectLoaded) return
+			shipping = true
+			const label = button.textContent
+			button.textContent = busy
+			patch()
+			try {
+				await run()
+				button.textContent = done
+				setTimeout(() => {
+					if (!mounted) return
+					button.textContent = label
+				}, 1500)
+			} catch (err) {
+				button.textContent = label
+				alert(messageOf(err))
+			} finally {
+				shipping = false
+				patch()
+			}
+		}
+		install.onclick = () =>
+			void ship(install, 'Installing…', 'Installed ✓', async () => {
+				await ctx.client.install({})
+			})
+		pack.onclick = () =>
+			void ship(pack, 'Packing…', 'Packed ✓', async () => {
+				const { zip } = await ctx.client.pack({})
+				downloadZip(`${current.slug}.zip`, zip)
+			})
+
+		rightGroup.append(pack, install)
 		toolbar.append(leftGroup, stateLabel, rightGroup)
 
 		// Content: Code pane (file tabs + editor) | drag handle | live App. The Code
@@ -521,6 +551,14 @@ export const gui = defineGUI<CodeApp>({
 			stateLabel.textContent = `● ${badge.label}`
 			stateLabel.style.color = badge.color
 
+			// Ship buttons: live once the project has loaded and no ship is in flight.
+			// A broken build still lets you try — the capability compiles and errors.
+			const canShip = projectLoaded && !shipping
+			for (const button of [install, pack]) {
+				button.disabled = !canShip
+				button.style.opacity = canShip ? '1' : '0.4'
+			}
+
 			// Code toggle + Source-pane visibility. The mini-desktop chrome (menubar,
 			// framed window, dock, backdrop) is always on; only the Source pane and
 			// its drag handle appear/disappear with the toggle. The App stays mounted
@@ -764,6 +802,43 @@ function iconButton(symbol: string, title: string) {
 		padding: '6px 10px'
 	})
 	return button
+}
+
+// A toolbar shipping button: `primary` is the filled blue Install; otherwise a
+// bordered secondary (Pack). Starts disabled; `patch` drives the live state.
+function shipButton(label: string, primary: boolean) {
+	const button = document.createElement('button')
+	button.type = 'button'
+	button.textContent = label
+	button.disabled = true
+	Object.assign(button.style, {
+		flex: '0 0 auto',
+		marginLeft: '8px',
+		background: primary ? '#007aff' : '#ffffff',
+		border: primary ? '0' : '1px solid #d2d2d7',
+		borderRadius: '6px',
+		color: primary ? '#ffffff' : '#1d1d1f',
+		cursor: 'default',
+		font: 'inherit',
+		fontSize: '12px',
+		fontWeight: '600',
+		opacity: '0.4',
+		padding: primary ? '5px 14px' : '5px 12px'
+	})
+	return button
+}
+
+// Turn the packed zip bytes into a browser file download. Copy into a plain
+// ArrayBuffer so the Blob part type is satisfied regardless of the source view.
+function downloadZip(name: string, zip: Uint8Array) {
+	const buffer = new ArrayBuffer(zip.byteLength)
+	new Uint8Array(buffer).set(zip)
+	const url = URL.createObjectURL(new Blob([buffer], { type: 'application/zip' }))
+	const anchor = document.createElement('a')
+	anchor.href = url
+	anchor.download = name
+	anchor.click()
+	setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 function messageOf(err: unknown) {

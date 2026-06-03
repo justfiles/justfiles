@@ -1,10 +1,12 @@
 // App-facing devkit capability contract. The one privileged platform surface
-// app-code uses: compile a draft from its source files, run it in a scoped
-// preview kernel embedded in the caller's own window, and (later) ship it.
+// app-code uses: compile a draft, run it in a scoped preview kernel embedded in
+// the caller's own window, and ship it.
 //
-// Every method is serializable in and out — no DOM, no live objects cross the
-// boundary. The host holds the toolchain + kernel natively; the app only ever
-// hands over file strings and receives ids / diagnostics / zip bytes.
+// A devkit project is a directory in the caller's own data dir: source under
+// `projects/<slug>/src` and an optional `icon` file beside it. The caller only
+// ever names the project by `slug`; devkit reads the tree off disk itself, so
+// no file bytes cross the worker boundary. Every method is serializable in and
+// out — the app exchanges a slug and receives ids / diagnostics / zip bytes.
 
 // A display-only mirror of `@justfiles/app/browser`'s `Menu` — the live
 // `onSelect` closures are stripped, so it stays serializable. app-code pulls
@@ -17,13 +19,12 @@ export type MenuItemView =
 export type MenuView = { title: string; items: MenuItemView[] }[]
 
 export interface DevkitCapability {
-	// Compile + (re)mount the draft into the caller's preview slots.
+	// Compile the named project + (re)mount it into the caller's preview slots.
 	// On a compile error, `diagnostics` is non-empty and the last-good preview
 	// stays mounted. `reset` wipes the draft's persisted state first, for a
 	// clean boot (⟳ Run/Restart); omit it to keep state across rebuilds.
 	run(input: {
 		slug: string
-		files: Record<string, string>
 		reset?: boolean
 	}): Promise<{ previewId: string; diagnostics: string[] }>
 	// Tear down a running preview.
@@ -35,8 +36,13 @@ export interface DevkitCapability {
 	// Fire a preview menu item by position; the host invokes its real `onSelect`
 	// on the main thread, so the action runs against the live preview app.
 	selectMenu(input: { previewId: string; menu: number; item: number }): Promise<void>
-	// Promote the draft to the real `/applications` (slice 5).
-	install(input: { slug: string; files: Record<string, string> }): Promise<{ id: string }>
-	// Emit a downloadable `.zip` of the compiled bundle (slice 5).
-	pack(input: { slug: string; files: Record<string, string> }): Promise<{ zip: Uint8Array }>
+	// Promote the named project to the real `/applications` as a standalone app.
+	// Compiles fresh and rejects a colliding id (check-first guard) — install only
+	// creates, never overwrites. The project's `icon`, if any, is bundled so the
+	// app shows its icon in the launcher. Returns the installed id.
+	install(input: { slug: string }): Promise<{ id: string }>
+	// Compile and emit a `.zip` of the bundle (`manifest.json` + `app.js` +
+	// `gui.js` + optional `icon`), importable through the launcher's existing zip
+	// path.
+	pack(input: { slug: string }): Promise<{ zip: Uint8Array }>
 }

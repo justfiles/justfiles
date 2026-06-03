@@ -38,6 +38,7 @@ describe('devkit compile', () => {
 	test('bundles app.ts + gui.ts against the system runtime', async () => {
 		const { app, gui, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
+			{ app: 'app.ts', gui: 'gui.ts' },
 			esbuild.build,
 			runtime
 		)
@@ -58,6 +59,7 @@ describe('devkit compile', () => {
 	test('compiled app dispatches actions (valibot named exports resolve)', async () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
+			{ app: 'app.ts', gui: 'gui.ts' },
 			esbuild.build,
 			runtime
 		)
@@ -88,6 +90,7 @@ export const gui = defineGUI({
 })`
 		const { gui, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.tsx': guiTsx },
+			{ app: 'app.ts', gui: 'gui.tsx' },
 			esbuild.build,
 			runtime
 		)
@@ -99,6 +102,7 @@ export const gui = defineGUI({
 	test('reports diagnostics on a compile error', async () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': 'export const app = (', 'gui.ts': GUI },
+			{ app: 'app.ts', gui: 'gui.ts' },
 			esbuild.build,
 			runtime
 		)
