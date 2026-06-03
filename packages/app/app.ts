@@ -5,7 +5,7 @@ import type { CapabilityFactory } from './capabilities/core.ts'
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
 
-export type Action<Type extends string = string, Params = unknown> = {
+export type Message<Type extends string = string, Params = unknown> = {
 	type: Type
 	params: Params
 	actor?: string
@@ -118,7 +118,7 @@ export interface App<
 	// Phantom carriers — only used by the type-level `Client<A>` extractor.
 	readonly __acts?: Acts
 	readonly __capabilities?: Caps
-	dispatch: (action: Action, ctx: RuntimeContext<State>) => Promise<DispatchResult<State>>
+	dispatch: (message: Message, ctx: RuntimeContext<State>) => Promise<DispatchResult<State>>
 }
 
 export interface Context<State = unknown, Caps extends CapabilityRequests = NoCapabilities> {

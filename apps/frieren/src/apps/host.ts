@@ -10,7 +10,7 @@
 // explicit close/uninstall paths (mirroring VS Code's createWebviewPanel /
 // panel.dispose model).
 
-import type { Action, Kernel } from '@justfiles/app'
+import type { Kernel, Message } from '@justfiles/app'
 import type { Menu } from '@justfiles/app/browser'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
@@ -18,7 +18,7 @@ import { ensureCapabilitySocket } from './capabilities.client'
 import { terminateAppWorker } from './sandbox.worker'
 
 interface Transport {
-	invoke(action: Action): Promise<unknown>
+	invoke(message: Message): Promise<unknown>
 	subscribe(onState: (state: unknown) => void): () => void
 }
 

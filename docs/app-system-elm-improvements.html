@@ -151,8 +151,8 @@ function enqueue&lt;T&gt;(appId: AppId, work: () =&gt; Promise&lt;T&gt;): Promis
 	return run
 }
 
-async function dispatch(appId: AppId, action: Action): Promise&lt;unknown&gt; {
-	return enqueue(appId, () =&gt; dispatchNow(appId, action))
+async function dispatch(appId: AppId, message: Message): Promise&lt;unknown&gt; {
+	return enqueue(appId, () =&gt; dispatchNow(appId, message))
 }</code></pre>
 			<p class="note">This is the most important semantic fix. Do it before subscriptions.</p>
 		</li>

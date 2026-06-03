@@ -4,7 +4,7 @@ import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { buildSync } from 'esbuild'
 import type { Connect } from 'vite'
-import { type Action, appBundleFromMemory } from './app.ts'
+import { appBundleFromMemory, type Message } from './app.ts'
 import { type GetSandbox, kernel } from './kernel.ts'
 
 export interface DevServerOptions {
@@ -215,7 +215,7 @@ export async function createDevServer(
 			}
 			if (path === '/_dispatch' && req.method === 'POST') {
 				try {
-					const result = await k.dispatch(appId, (await readJson(req)) as Action)
+					const result = await k.dispatch(appId, (await readJson(req)) as Message)
 					res.setHeader('content-type', 'application/json')
 					res.end(JSON.stringify(result))
 				} catch (err) {

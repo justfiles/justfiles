@@ -1,5 +1,4 @@
 export {
-	type Action,
 	type ActionMeta,
 	type AppBundle,
 	type AppManifest,
@@ -8,6 +7,7 @@ export {
 	type GetSandbox,
 	type Kernel,
 	kernel,
+	type Message,
 	type Sandbox,
 	safeBundlePath
 } from './kernel.ts'

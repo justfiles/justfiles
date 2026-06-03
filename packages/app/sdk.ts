@@ -1,6 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type {
-	Action,
 	ActionDef,
 	ActionExample,
 	ActionMeta,
@@ -8,6 +7,7 @@ import type {
 	Context,
 	DispatchResult,
 	HandlerDef,
+	Message,
 	OnHandlers,
 	QueryDef,
 	RuntimeContext
@@ -123,18 +123,18 @@ export function defineApp<
 	}
 	return {
 		actions: meta as Record<keyof Acts & string, ActionMeta>,
-		async dispatch(action: Action, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
-			const def = acts[action.type]
-			if (!def) throw new Error(`unknown action: ${action.type}`)
-			const r = await def.schema['~standard'].validate(action.params)
+		async dispatch(message: Message, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
+			const def = acts[message.type]
+			if (!def) throw new Error(`unknown action: ${message.type}`)
+			const r = await def.schema['~standard'].validate(message.params)
 			if (r.issues)
 				throw new Error(
-					`invalid params for ${action.type}: ${r.issues.map((i) => i.message).join('; ')}`
+					`invalid params for ${message.type}: ${r.issues.map((i) => i.message).join('; ')}`
 				)
 			const handlerCtx = {
 				...ctx,
 				state: ctx.state ?? spec.init,
-				capabilities: createCapabilities(spec.capabilities ?? {}, ctx as RuntimeContext, action)
+				capabilities: createCapabilities(spec.capabilities ?? {}, ctx as RuntimeContext, message)
 			} as Context<State, Caps>
 			if (def.__kind === 'query') {
 				return { result: await def.handler(r.value as never, handlerCtx) }
@@ -151,7 +151,7 @@ function createCapabilities(
 		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown, unknown>>
 	>,
 	ctx: RuntimeContext,
-	action: Action
+	message: Message
 ): unknown {
 	return new Proxy(
 		{},
@@ -174,7 +174,7 @@ function createCapabilities(
 										method,
 										input,
 										scopes: request.scopes,
-										actor: action.actor
+										actor: message.actor
 									})
 								} catch (error) {
 									throw normalizeCapabilityError(error, request.id, method)
@@ -234,9 +234,9 @@ function schemaHintValue(value: unknown): unknown {
 
 // The host-specific wire (REST+SSE in dev, WebSocket in frieren, ...). The
 // SDK owns this interface; each host owns an implementation. `invoke` sends
-// an action; `subscribe` receives authoritative state pushes.
+// a message; `subscribe` receives authoritative state pushes.
 export interface Transport {
-	invoke(action: Action): Promise<unknown>
+	invoke(message: Message): Promise<unknown>
 	subscribe(onState: (state: unknown) => void): () => void
 }
 

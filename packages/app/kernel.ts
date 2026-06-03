@@ -1,18 +1,18 @@
 import type { Volume } from '@justfiles/fs'
 import type {
-	Action,
 	ActionMeta,
 	AppBundle,
 	AppManifest,
 	DispatchResult,
 	InstalledApp,
+	Message,
 	RuntimeContext
 } from './app.ts'
 import { safeBundlePath } from './app.ts'
 import { EVENT_ACTION_PREFIX } from './sdk.ts'
 
-export type { Action, ActionMeta, AppBundle, AppManifest, BuiltinBundle } from './app.ts'
-// `install(app: AppBundle)` and `dispatch(appId, action: Action)` are the
+export type { ActionMeta, AppBundle, AppManifest, BuiltinBundle, Message } from './app.ts'
+// `install(app: AppBundle)` and `dispatch(appId, message: Message)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
 export { appBundleFromMemory, safeBundlePath } from './app.ts'
 
@@ -25,7 +25,7 @@ interface System {
 export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
 
 export type Sandbox = {
-	run(action: Action, ctx: RuntimeContext): Promise<DispatchResult<unknown>>
+	run(message: Message, ctx: RuntimeContext): Promise<DispatchResult<unknown>>
 	actions?(): Promise<Record<string, ActionMeta>>
 }
 type Clock = object
@@ -37,7 +37,7 @@ export interface Kernel {
 	install: (app: AppBundle) => Promise<AppId> // after install, we get stable appId
 	uninstall: (appId: AppId) => Promise<void>
 	subscribe: (handler: KernelEventHandler) => Unsubscribe
-	dispatch: (appId: AppId, action: Action) => Promise<unknown>
+	dispatch: (appId: AppId, message: Message) => Promise<unknown>
 	state: (appId: AppId) => Promise<unknown> // current persisted state (for push snapshots)
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
@@ -235,7 +235,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		dropFromIndex(appId)
 	}
 
-	async function dispatch(appId: AppId, action: Action): Promise<unknown> {
+	async function dispatch(appId: AppId, message: Message): Promise<unknown> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
 
@@ -253,7 +253,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		// identically for in-process and remote sandboxes; the kernel just
 		// loads and runs.
 		const sb = await sandbox({ appId, code: text(await app.read(app.manifest.app)) })
-		const out = await sb.run(action, {
+		const out = await sb.run(message, {
 			state: current,
 			setState: saveState
 		})
