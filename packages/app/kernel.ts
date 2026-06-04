@@ -3,13 +3,14 @@ import type {
 	ActionMeta,
 	AppBundle,
 	AppManifest,
+	Command,
 	DispatchResult,
 	InstalledApp,
 	Message,
 	RuntimeContext
 } from './app.ts'
 import { safeBundlePath } from './app.ts'
-import { EVENT_ACTION_PREFIX } from './sdk.ts'
+import { CMD_RESULT_PREFIX, EVENT_ACTION_PREFIX } from './sdk.ts'
 
 export type { ActionMeta, AppBundle, AppManifest, BuiltinBundle, Message } from './app.ts'
 // `install(app: AppBundle)` and `dispatch(appId, message: Message)` are the
@@ -55,10 +56,12 @@ export interface Kernel {
 	uninstall: (appId: AppId) => Promise<void>
 	subscribe: (handler: KernelEventHandler) => Unsubscribe
 	dispatch: (appId: AppId, message: Message) => Promise<unknown>
-	// Resolve once the app is idle (per-app queue drained) at a committed
-	// version >= `seq`. The monotonic `seq` rides on every `app.update` event.
-	// This is the quiescence primitive procedures (later phases) wait on; the
-	// GUI never calls it.
+	// Resolve once the app is idle — the per-app queue is drained AND no command
+	// is in flight — at a committed version >= `seq`. A command runs outside the
+	// queue and re-enters its result as a fresh message, so quiescence means the
+	// whole emit→run→result cascade has settled. The monotonic `seq` rides on
+	// every `app.update` event. This is the quiescence primitive procedures
+	// (later phases) wait on; the GUI never calls it.
 	settled: (appId: AppId, seq: number, opts?: { timeout?: number }) => Promise<unknown>
 	state: (appId: AppId) => Promise<unknown> // current persisted state (for push snapshots)
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
@@ -106,6 +109,12 @@ function text(data: Uint8Array): string {
 	return new TextDecoder().decode(data)
 }
 
+// Shape a thrown value (or message) into the `Result` error a `fromResult`
+// edge folds into state.
+function errResult(error: unknown): { ok: false; error: { message: string } } {
+	return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } }
+}
+
 function appRoot(appId: AppId): string {
 	if (!/^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(appId)) throw new Error(`invalid app id: ${appId}`)
 	return `/applications/${appId}`
@@ -124,11 +133,20 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 	// and recomputed from zero on boot (like `subscriptionIndex`).
 	const queues = new Map<AppId, Promise<void>>()
 	const seqs = new Map<AppId, number>()
-	// Per-app declared capability scopes (id → trusted scopes), read from the
-	// bundle. Memoized like `subscriptionIndex`/`seqs` — in-memory, recomputed
-	// on boot, dropped on (re)install/uninstall since the bundle's declarations
-	// can change.
-	const declaredScopes = new Map<AppId, Promise<Map<string, readonly string[]>>>()
+	// Per-app declared capabilities (local name → { id, trusted scopes }), read
+	// from the bundle. Memoized like `subscriptionIndex`/`seqs` — in-memory,
+	// recomputed on boot, dropped on (re)install/uninstall since the bundle's
+	// declarations can change.
+	const declaredCaps = new Map<
+		AppId,
+		Promise<Record<string, { id: string; scopes: readonly string[] }>>
+	>()
+	// In-flight command tracking. A command runs OUTSIDE the dispatch queue (so
+	// a slow capability never blocks the GUI), but `settled` must still wait for
+	// the whole cascade — emit → run → result re-enters → maybe emits again — to
+	// quiesce. Each app counts its outstanding commands and holds a `done`
+	// promise that resolves when the count returns to zero; `settled` awaits it.
+	const inflight = new Map<AppId, { count: number; done: Promise<void>; wake: () => void }>()
 	return {
 		install,
 		uninstall,
@@ -159,37 +177,51 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		return run
 	}
 
-	// Resolve the app's declared capability scopes, keyed by capability id (the
-	// id the isolate's proxy forwards). Memoized per app; uses the already-loaded
-	// sandbox so there's no extra boundary round-trip beyond the first call.
-	function appScopes(appId: AppId, sb: Sandbox): Promise<Map<string, readonly string[]>> {
-		let cached = declaredScopes.get(appId)
+	// Load the app's sandbox: read its compiled entry and hand it to the host's
+	// `GetSandbox`. The adapters content-address the isolate, so repeated loads
+	// of the same bytes reuse it. Shared by dispatch, `allActions`, and the
+	// command executor.
+	async function loadSandbox(appId: AppId): Promise<Sandbox> {
+		const installed = await getApp(appId)
+		if (!installed) throw new Error(`app not found: ${appId}`)
+		return sandbox({ appId, code: text(await installed.read(installed.manifest.app)) })
+	}
+
+	// Resolve the app's declared capabilities (local name → { id, scopes }) from
+	// the bundle. Memoized per app; populated from an already-loaded sandbox when
+	// one is at hand (dispatch), otherwise it loads one (the out-of-queue command
+	// executor). This is the kernel's trusted source — never the scopes an
+	// isolate forwards.
+	function appCapabilities(
+		appId: AppId,
+		sb?: Sandbox
+	): Promise<Record<string, { id: string; scopes: readonly string[] }>> {
+		let cached = declaredCaps.get(appId)
 		if (!cached) {
-			cached = Promise.resolve(sb.capabilities?.()).then((declared) => {
-				const byId = new Map<string, readonly string[]>()
-				for (const name in declared) {
-					const cap = declared[name]
-					if (cap) byId.set(cap.id, cap.scopes)
-				}
-				return byId
-			})
-			declaredScopes.set(appId, cached)
+			cached = (async () => (await (sb ?? (await loadSandbox(appId))).capabilities?.()) ?? {})()
+			declaredCaps.set(appId, cached)
 		}
 		return cached
 	}
 
-	// The isolate-facing capability callback. The app names a capability (by the
-	// id its proxy forwards); the kernel ignores any scopes the isolate claims,
-	// attaches the app's declared scopes, and rejects undeclared capabilities —
-	// this is the trust boundary moving from the sandbox into the kernel.
+	// The isolate-facing capability callback for the legacy async-handler path.
+	// The app names a capability by the id its proxy forwards; the kernel ignores
+	// any scopes the isolate claims, attaches the app's declared scopes, and
+	// rejects undeclared capabilities — the trust boundary lives here, not in the
+	// sandbox.
 	async function trustedInvoke(
 		appId: AppId,
 		sb: Sandbox,
 		host: HostCapabilityInvoke
 	): Promise<NonNullable<RuntimeContext['capabilityInvoke']>> {
-		const scopes = await appScopes(appId, sb)
+		const declared = await appCapabilities(appId, sb)
+		const byId = new Map<string, readonly string[]>()
+		for (const name in declared) {
+			const cap = declared[name]
+			if (cap) byId.set(cap.id, cap.scopes)
+		}
 		return (req) => {
-			const granted = scopes.get(req.capability)
+			const granted = byId.get(req.capability)
 			if (!granted) throw new Error(`undeclared capability: ${req.capability}`)
 			return host({
 				appId,
@@ -202,15 +234,117 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		}
 	}
 
+	// ----- command executor (Part B) -----
+	// The only path that touches capabilities for the pure core. A transition
+	// emits a Command as data; the kernel runs it AFTER persisting state and
+	// OUTSIDE the dispatch queue (a slow capability must not block the GUI), then
+	// routes the typed Result back as a `__cmd/<to>` message — another reduce.
+
+	function commandStarted(appId: AppId): void {
+		const entry = inflight.get(appId)
+		if (entry) {
+			entry.count++
+			return
+		}
+		let wake!: () => void
+		const done = new Promise<void>((resolve) => {
+			wake = resolve
+		})
+		inflight.set(appId, { count: 1, done, wake })
+	}
+
+	function commandFinished(appId: AppId): void {
+		const entry = inflight.get(appId)
+		if (!entry || --entry.count > 0) return
+		inflight.delete(appId)
+		entry.wake()
+	}
+
+	// Kick a command off without awaiting it — awaiting here would deadlock the
+	// queue (the result re-enters via `dispatch`, which chains on this same app's
+	// tail). The in-flight count, bumped synchronously before we return, is what
+	// `settled` waits on.
+	function scheduleCommand(appId: AppId, command: Command, actor?: string): void {
+		if (command.kind === 'none') return
+		commandStarted(appId)
+		void runCommand(appId, command, actor).finally(() => commandFinished(appId))
+	}
+
+	async function runCommand(appId: AppId, command: Command, actor?: string): Promise<void> {
+		if (command.kind === 'none') return
+		if (command.kind === 'batch') {
+			// No ordering or atomicity across a batch; each sub-command routes its
+			// own ok/err result, so one failure never drops a sibling.
+			await Promise.all(command.commands.map((c) => runCommand(appId, c, actor)))
+			return
+		}
+		// The app named a LOCAL capability; the kernel resolves the trusted id +
+		// scopes from its declarations — never from the command data.
+		const declared = (await appCapabilities(appId))[command.capability]
+		const from = `capability:${declared?.id ?? command.capability}`
+		if (!declared) {
+			await deliver(
+				appId,
+				command.to,
+				errResult(`undeclared capability: ${command.capability}`),
+				from
+			)
+			return
+		}
+		if (!hostInvoke) {
+			await deliver(appId, command.to, errResult('capability execution unavailable'), from)
+			return
+		}
+		try {
+			const value = await hostInvoke({
+				appId,
+				capability: declared.id,
+				method: command.method,
+				input: command.input,
+				scopes: declared.scopes,
+				actor
+			})
+			await deliver(appId, command.to, { ok: true, value }, from)
+		} catch (error) {
+			await deliver(appId, command.to, errResult(error), from)
+		}
+	}
+
+	// Re-enter a command's Result as a `__cmd/<to>` message. A dangling result —
+	// the `to` edge no longer exists (the app was reinstalled) or its reducer
+	// threw — is surfaced as `app.error`, not allowed to crash the executor.
+	async function deliver(
+		appId: AppId,
+		to: string,
+		params: { ok: true; value: unknown } | { ok: false; error: { message: string } },
+		actor: string
+	): Promise<void> {
+		try {
+			await dispatch(appId, { type: `${CMD_RESULT_PREFIX}${to}`, params, actor })
+		} catch (error) {
+			emit({
+				type: 'app.error',
+				appId,
+				error: error instanceof Error ? error.message : String(error)
+			})
+		}
+	}
+
 	async function settled(appId: AppId, seq: number, opts?: { timeout?: number }): Promise<unknown> {
 		const deadline = opts?.timeout ? Date.now() + opts.timeout : Number.POSITIVE_INFINITY
-		// Drain the queue until it stops advancing (no new work was enqueued
-		// while we awaited the tail). Once idle, the committed version must be
-		// >= seq; if it isn't, nothing pending will ever reach it.
+		// Wait out both the queue and any in-flight command until neither advances:
+		// a queued task may enqueue more, and a command (run off-queue) re-enters
+		// its result as a fresh dispatch. Idle means the queue didn't move while we
+		// waited AND no command is outstanding. Once idle the committed version
+		// must be >= seq; if it isn't, nothing pending will ever reach it.
 		while (true) {
 			const tail = queues.get(appId)
-			await (tail ?? Promise.resolve()).catch(() => {})
-			if (queues.get(appId) === tail) {
+			const commands = inflight.get(appId)?.done
+			await Promise.all([
+				(tail ?? Promise.resolve()).catch(() => {}),
+				commands ?? Promise.resolve()
+			])
+			if (queues.get(appId) === tail && !inflight.has(appId)) {
 				if ((seqs.get(appId) ?? 0) >= seq) return state(appId)
 				throw new Error(
 					`settled: app ${appId} idle at seq ${seqs.get(appId) ?? 0}, never reached ${seq}`
@@ -341,7 +475,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		dropFromIndex(appId)
 		if (subscriptionIndex) await indexApp(subscriptionIndex, appId)
 		// The bundle changed — its declared capabilities may have too.
-		declaredScopes.delete(appId)
+		declaredCaps.delete(appId)
 
 		return appId
 	}
@@ -351,7 +485,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		await fs.rm(`/state/${appId}.json`, { force: true })
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		dropFromIndex(appId)
-		declaredScopes.delete(appId)
+		declaredCaps.delete(appId)
 	}
 
 	// Public dispatch is serialized per app; the actual work is `dispatchNow`.
@@ -363,9 +497,6 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
 
-		const app = await getApp(appId)
-		if (!app) throw new Error(`app not found: ${appId}`)
-
 		await fs.mkdir('/state', { recursive: true })
 		const statePath = `/state/${appId}.json`
 		const current = await loadState(appId)
@@ -376,7 +507,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		// Validation runs inside the app bundle (defineApp), so it works
 		// identically for in-process and remote sandboxes; the kernel just
 		// loads and runs.
-		const sb = await sandbox({ appId, code: text(await app.read(app.manifest.app)) })
+		const sb = await loadSandbox(appId)
 		const out = await sb.run(message, {
 			state: current,
 			setState: saveState,
@@ -392,6 +523,10 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 			seqs.set(appId, seq)
 			emit({ type: 'app.update', appId, state: out.state as AppState, seq })
 		}
+		// A pure-core edge may emit a command. Run it after the state is
+		// committed and OUTSIDE this critical section, so a slow capability
+		// can't stall the queue; its result re-enters as a `__cmd/<to>` message.
+		if (out.command) scheduleCommand(appId, out.command, message.actor)
 		return out.result
 	}
 
@@ -415,13 +550,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 	}
 
 	async function allActions(appId: AppId): Promise<Record<string, ActionMeta>> {
-		const installed = await getApp(appId)
-		if (!installed) throw new Error(`app not found: ${appId}`)
-		const sb = await sandbox({
-			appId,
-			code: text(await installed.read(installed.manifest.app))
-		})
-		return (await sb.actions?.()) ?? {}
+		return (await (await loadSandbox(appId)).actions?.()) ?? {}
 	}
 
 	function subscribe(handler: KernelEventHandler): Unsubscribe {

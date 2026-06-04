@@ -80,7 +80,8 @@ export const EVENT_ACTION_PREFIX = '__event/'
 // kernel runs the command, then dispatches the result; Part B). The prefix
 // keeps internal `fromResult` edges off the public, schema-validated path:
 // a public `on` edge matches only its plain name, a result edge only `__cmd/`.
-const CMD_RESULT_PREFIX = '__cmd/'
+// Exported so the kernel's command executor can address result edges by name.
+export const CMD_RESULT_PREFIX = '__cmd/'
 
 function resolveEdge<State>(
 	edges: Record<string, Edge<State>>,
