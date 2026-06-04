@@ -38,6 +38,11 @@ export interface Kernel {
 	uninstall: (appId: AppId) => Promise<void>
 	subscribe: (handler: KernelEventHandler) => Unsubscribe
 	dispatch: (appId: AppId, message: Message) => Promise<unknown>
+	// Resolve once the app is idle (per-app queue drained) at a committed
+	// version >= `seq`. The monotonic `seq` rides on every `app.update` event.
+	// This is the quiescence primitive procedures (later phases) wait on; the
+	// GUI never calls it.
+	settled: (appId: AppId, seq: number, opts?: { timeout?: number }) => Promise<unknown>
 	state: (appId: AppId) => Promise<unknown> // current persisted state (for push snapshots)
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
@@ -60,6 +65,9 @@ type Event =
 			type: 'app.update'
 			appId: string
 			state: AppState
+			// Monotonic per-app version, bumped on each committed state write.
+			// Push consumers can order/dedupe by it; `settled` waits on it.
+			seq: number
 	  }
 	| {
 			type: 'app.error'
@@ -92,16 +100,59 @@ export function kernel({ fs, sandbox }: System): Kernel {
 	// on first emit by scanning installed apps' action keys; kept fresh by
 	// install/uninstall. In-memory only — recomputed on DO boot.
 	let subscriptionIndex: Map<string, Set<AppId>> | undefined
+	// Per-app serialization. `queues` holds each app's tail promise so every
+	// dispatch (GUI, agent, capability event) runs to completion before the
+	// next begins — without this, two concurrent messages are a lost-update
+	// read-modify-write. `seqs` is the monotonic committed version, in-memory
+	// and recomputed from zero on boot (like `subscriptionIndex`).
+	const queues = new Map<AppId, Promise<void>>()
+	const seqs = new Map<AppId, number>()
 	return {
 		install,
 		uninstall,
 		dispatch,
+		settled,
 		state,
 		actions,
 		subscribe,
 		app,
 		list,
 		emit: emitChannel
+	}
+
+	// Chain `task` after the app's current tail so per-app work is strictly
+	// serialized. The stored tail always resolves (errors are swallowed there)
+	// so one failed dispatch never wedges the queue; the returned promise still
+	// carries the real result/rejection to the caller.
+	function enqueue<T>(appId: AppId, task: () => Promise<T>): Promise<T> {
+		const prev = queues.get(appId) ?? Promise.resolve()
+		const run = prev.then(task, task)
+		queues.set(
+			appId,
+			run.then(
+				() => {},
+				() => {}
+			)
+		)
+		return run
+	}
+
+	async function settled(appId: AppId, seq: number, opts?: { timeout?: number }): Promise<unknown> {
+		const deadline = opts?.timeout ? Date.now() + opts.timeout : Number.POSITIVE_INFINITY
+		// Drain the queue until it stops advancing (no new work was enqueued
+		// while we awaited the tail). Once idle, the committed version must be
+		// >= seq; if it isn't, nothing pending will ever reach it.
+		while (true) {
+			const tail = queues.get(appId)
+			await (tail ?? Promise.resolve()).catch(() => {})
+			if (queues.get(appId) === tail) {
+				if ((seqs.get(appId) ?? 0) >= seq) return state(appId)
+				throw new Error(
+					`settled: app ${appId} idle at seq ${seqs.get(appId) ?? 0}, never reached ${seq}`
+				)
+			}
+			if (Date.now() > deadline) throw new Error(`settled: timeout waiting for app ${appId}`)
+		}
 	}
 
 	function emit(event: Event): void {
@@ -235,7 +286,12 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		dropFromIndex(appId)
 	}
 
-	async function dispatch(appId: AppId, message: Message): Promise<unknown> {
+	// Public dispatch is serialized per app; the actual work is `dispatchNow`.
+	function dispatch(appId: AppId, message: Message): Promise<unknown> {
+		return enqueue(appId, () => dispatchNow(appId, message))
+	}
+
+	async function dispatchNow(appId: AppId, message: Message): Promise<unknown> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
 
@@ -263,7 +319,9 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		// ballooning state with file content.
 		if (out.state !== undefined) {
 			await saveState(out.state)
-			emit({ type: 'app.update', appId, state: out.state as AppState })
+			const seq = (seqs.get(appId) ?? 0) + 1
+			seqs.set(appId, seq)
+			emit({ type: 'app.update', appId, state: out.state as AppState, seq })
 		}
 		return out.result
 	}

@@ -130,6 +130,65 @@ test('smoke test kernel', async () => {
 	).rejects.toThrow(/invalid params for increment/)
 })
 
+test('serializes concurrent dispatches — no lost update', async () => {
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+
+	// `increment` is a read-modify-write (count + amount). Fired concurrently
+	// without per-app serialization, the dispatches interleave loadState →
+	// run → saveState and clobber each other. The queue makes the final count
+	// exact.
+	const n = 25
+	await Promise.all(
+		Array.from({ length: n }, () =>
+			k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
+		)
+	)
+
+	expect(await k.state(appId)).toEqual({ count: n })
+})
+
+test('settled resolves with the converged state at a version', async () => {
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+
+	const seqs: number[] = []
+	k.subscribe((e) => {
+		if (e.type === 'app.update' && e.appId === appId) seqs.push(e.seq)
+	})
+
+	const n = 10
+	// Fire without awaiting; settled drains the per-app queue, then returns the
+	// converged state once the committed version has reached `n`.
+	void Promise.all(
+		Array.from({ length: n }, () =>
+			k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
+		)
+	)
+
+	expect(await k.settled(appId, n)).toEqual({ count: n })
+	// seq rides on every app.update event, monotonic from 1.
+	expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+})
+
+test('settled rejects when the version can never be reached', async () => {
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+
+	await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
+	// Queue is idle at seq 1; nothing pending will ever reach seq 5.
+	await expect(k.settled(appId, 5, { timeout: 100 })).rejects.toThrow(/never reached 5/)
+})
+
 test('install rejects invalid manifest entry path', async () => {
 	const k = testKernel()
 	await expect(
