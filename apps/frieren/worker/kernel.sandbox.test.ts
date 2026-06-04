@@ -19,13 +19,11 @@ const numberAmount = {
 
 const app = defineApp({
 	init: { count: 0 },
-	actions: (b) => ({
-		increment: b.handler({
-			schema: numberAmount,
-			handler({ amount }, ctx) {
-				return { ...ctx.state, count: ctx.state.count + amount }
-			}
-		})
+	update: (t) => ({
+		increment: t.on(numberAmount, (state, { amount }) => ({
+			...state,
+			count: state.count + amount
+		}))
 	})
 })
 
@@ -59,10 +57,7 @@ const fakeLoader = () => {
 	return { loader, calls }
 }
 
-const ctx = () => ({
-	state: undefined as unknown,
-	setState: async () => {}
-})
+const ctx = () => ({ state: undefined as unknown })
 
 test('valid dispatch returns the parsed result and threads state', async () => {
 	const { loader } = fakeLoader()

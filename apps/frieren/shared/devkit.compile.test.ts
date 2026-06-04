@@ -11,13 +11,8 @@ const APP = `import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'
 export const app = defineApp({
 	init: { count: 0 },
-	actions: (b) => ({
-		increment: b.handler({
-			schema: v.object({}),
-			handler(_, ctx) {
-				return { count: ctx.state.count + 1 }
-			}
-		})
+	update: (t) => ({
+		increment: t.on(v.object({}), (state) => ({ count: state.count + 1 }))
 	})
 })`
 

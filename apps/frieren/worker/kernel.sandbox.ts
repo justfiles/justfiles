@@ -7,8 +7,8 @@ import type { GetSandbox, Sandbox } from '@justfiles/app'
 
 // Worker Loader needs a WorkerEntrypoint as the main module. This wrapper
 // imports the app bundle and exposes `dispatch` as the one RPC the kernel
-// calls. `ctx` (state + `setState`) crosses by RPC; host services are
-// exposed only through explicit capability invocation.
+// calls. `ctx` is just the current state — the reduce is pure, so effects ride
+// back out as command data rather than through an injected host callback.
 const ENTRY = `import { WorkerEntrypoint } from 'cloudflare:workers'
 import { app } from './app.js'
 export default class extends WorkerEntrypoint {
@@ -58,8 +58,8 @@ export function workerSandbox(loader: Loader): GetSandbox {
 			globalOutbound: null
 		}))
 		const entry = stub.getEntrypoint() as unknown as Dispatcher
-		// The kernel owns the capability callback now: it rides in `ctx`
-		// (alongside `setState`) and the kernel attaches trusted scopes + appId.
+		// Capability execution lives in the kernel (command executor + procedure
+		// invoke); the isolate emits only data, so no callback rides in `ctx`.
 		return {
 			run: (action, ctx) => entry.dispatch(action, ctx),
 			actions: () => entry.actions?.() ?? Promise.resolve({}),

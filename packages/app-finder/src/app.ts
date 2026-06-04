@@ -35,47 +35,39 @@ const pathSchema = v.pipe(
 export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: ['system'] }) },
-	actions: (b) => ({
-		refresh: b.handler({
-			description: 'Refresh the visible file list.',
-			schema: v.object({}),
-			async handler(_, ctx) {
-				try {
-					const entries = await ctx.capabilities.volume.scan({ path: '/', recursive: true })
-					const files = entries
-						.filter((entry) => entry.type === 'file')
-						.map((entry) => ({ path: entry.path }))
-						.sort((a, b) => a.path.localeCompare(b.path))
-					const stillThere = files.some((file) => file.path === ctx.state.currentViewing)
-					return {
-						...ctx.state,
-						files,
-						currentViewing: stillThere ? ctx.state.currentViewing : null,
-						loading: false,
-						error: null
-					}
-				} catch (err) {
-					return {
-						...ctx.state,
-						loading: false,
-						error: err instanceof Error ? err.message : String(err)
-					}
-				}
+	// Every state transition is a pure edge. The one effect — scanning the
+	// volume — is emitted as command data; its result folds back via `filesLoaded`.
+	update: (t) => ({
+		refresh: t.on(
+			v.object({}),
+			(state) => [
+				{ ...state, loading: true, error: null },
+				t.cmd('volume', 'scan', { path: '/', recursive: true }, 'filesLoaded')
+			],
+			{ description: 'Refresh the visible file list.' }
+		),
+		filesLoaded: t.fromResult('volume', 'scan', (state, r) => {
+			if (!r.ok) return { ...state, loading: false, error: r.error.message }
+			const files = r.value
+				.filter((entry) => entry.type === 'file')
+				.map((entry) => ({ path: entry.path }))
+				.sort((a, b) => a.path.localeCompare(b.path))
+			const stillThere = files.some((file) => file.path === state.currentViewing)
+			return {
+				...state,
+				files,
+				currentViewing: stillThere ? state.currentViewing : null,
+				loading: false,
+				error: null
 			}
 		}),
-		setView: b.handler({
-			description: 'Record which file the user is currently viewing.',
-			schema: v.object({ path: pathSchema }),
-			handler({ path }, ctx) {
-				return { ...ctx.state, currentViewing: path, error: null }
-			}
-		}),
-		clear: b.handler({
-			description: 'Clear the current Finder selection.',
-			schema: v.object({}),
-			handler(_, ctx) {
-				return { ...ctx.state, currentViewing: null, error: null }
-			}
+		setView: t.on(
+			v.object({ path: pathSchema }),
+			(state, { path }) => ({ ...state, currentViewing: path, error: null }),
+			{ description: 'Record which file the user is currently viewing.' }
+		),
+		clear: t.on(v.object({}), (state) => ({ ...state, currentViewing: null, error: null }), {
+			description: 'Clear the current Finder selection.'
 		})
 	}),
 	// A caller-scoped read (Part C): the bytes return to the caller, never into

@@ -1,7 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type {
-	ActionDef,
-	ActionExample,
 	ActionMeta,
 	App,
 	AppHandle,
@@ -9,13 +7,11 @@ import type {
 	DispatchResult,
 	Edge,
 	Edges,
-	HandlerDef,
 	Message,
 	OnHandlers,
 	ProcedureAudience,
 	ProcedureDef,
 	ProcedureDefs,
-	QueryDef,
 	RuntimeContext
 } from './app.ts'
 
@@ -26,26 +22,6 @@ type Capabilities = Record<
 	string,
 	ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown, unknown>>
 >
-
-// `b.handler({...})` for state-mutating actions, `b.query({...})` for pure
-// reads. The builder is bound to `State` and `Caps` by the surrounding
-// `defineApp` call, so each method only needs to infer the per-action
-// schema type `S` (and `R` for queries). The handler field is named the
-// same in both kinds — the builder method already discriminates the kind.
-export interface Builder<State, Caps extends Capabilities> {
-	handler<S extends StandardSchemaV1>(def: {
-		schema: S
-		description?: string
-		examples?: ActionExample[]
-		handler: (params: Infer<S>, ctx: Context<State, Caps>) => MaybePromise<State>
-	}): HandlerDef<S, State, Caps>
-	query<S extends StandardSchemaV1, R>(def: {
-		schema: S
-		description?: string
-		examples?: ActionExample[]
-		handler: (params: Infer<S>, ctx: Context<State, Caps>) => MaybePromise<R>
-	}): QueryDef<S, State, Caps, R>
-}
 
 // `p.procedure({...})` — the imperative facade (Part C). `run` receives the
 // validated params and an AppHandle bound to State. Bound to State/Caps by the
@@ -62,35 +38,27 @@ export interface Procedures<State, Caps extends Capabilities> {
 
 interface AppSpec<
 	State,
-	Acts extends Record<string, ActionDef<State, Caps>>,
 	Caps extends Capabilities,
-	Procs extends ProcedureDefs<State, Caps>
+	Procs extends ProcedureDefs<State, Caps>,
+	E extends Record<string, Edge<State>>
 > {
 	init: State
 	capabilities?: Caps
-	// Callback receives the State/Caps-bound builder. This is the standard
-	// trick (tRPC, Convex) for inferring per-action schema and return types
-	// in one shot while letting the surrounding defineApp call drive
-	// State/Caps inference from `init`/`capabilities`. Optional so a pure-core
-	// app may define only `update`.
-	actions?: (b: Builder<State, Caps>) => Acts
-	// Pure-core edge table (Part A). One `update` map of pure edges
-	// `(state, payload) → state | [state, command]`. Public edges declare a
-	// schema via `t.on`; internal edges receive a typed capability result via
-	// `t.fromResult`. Additive — an app may use `actions`, `update`, or both
-	// during migration; edges take precedence in dispatch.
-	update?: (t: Edges<State, Caps>) => Record<string, Edge<State>>
+	// Pure-core edge table (Part A) — the app's whole state machine. One `update`
+	// map of pure edges `(state, payload) → state | [state, command]`. Public
+	// edges declare a schema via `t.on` (validated, agent-visible); internal edges
+	// receive a typed capability result via `t.fromResult`. The returned table's
+	// type is captured as `E` so each public edge surfaces on `Client<A>`.
+	update?: (t: Edges<State, Caps>) => E
 	// Declarative event subscriptions. Keys are the names declared in
 	// `capabilities`; per-event handlers receive the payload type from the
-	// capability contract and the same `ctx` regular actions get. The kernel
-	// dispatches each event as a synthetic action `__event/<cap>.<event>`
-	// — so event handlers go through the same schema-less fast-path as
-	// regular dispatches and emit `app.update` on every state change.
+	// capability contract and the current state. The kernel dispatches each event
+	// as a synthetic action `__event/<cap>.<event>`, emitting `app.update` on
+	// every state change.
 	on?: OnHandlers<State, Caps>
-	// Procedures (Part C) — the optional imperative facade. Same builder trick
-	// as `actions`: the callback receives the State/Caps-bound `p` so each
-	// procedure's schema and return type infer per call. Apps that need none
-	// omit it entirely.
+	// Procedures (Part C) — the optional imperative facade. The callback receives
+	// the State/Caps-bound `p` so each procedure's schema and return type infer
+	// per call. Apps that need none omit it entirely.
 	procedures?: (p: Procedures<State, Caps>) => Procs
 }
 
@@ -118,57 +86,46 @@ function resolveEdge<State>(
 	return edge?.__edge === 'on' ? edge : undefined
 }
 
-const passthroughSchema: StandardSchemaV1 = {
-	'~standard': {
-		version: 1,
-		vendor: 'kernel-event',
-		validate: (input) => ({ value: input })
-	}
-}
-
 export function defineApp<
 	State,
-	Acts extends Record<string, ActionDef<State, Caps>>,
 	Caps extends Capabilities = Record<string, never>,
-	Procs extends ProcedureDefs<State, Caps> = Record<string, never>
->(spec: AppSpec<State, Acts, Caps, Procs>): App<State, Acts, Caps, Procs> {
-	const builder: Builder<State, Caps> = {
-		handler: (def) => ({ __kind: 'handler', ...def }),
-		query: (def) => ({ __kind: 'query', ...def })
-	}
-	const acts = (spec.actions?.(builder) ?? {}) as Record<string, ActionDef<State, Caps>>
-	// Compose `on`-handlers into the same action table under
-	// `__event/<cap>.<event>` keys. Payload validation is intentionally
-	// skipped — the kernel routes only events the capability contract
-	// declares, so the payload type is already pinned at compile time.
-	const onSpec = (spec.on ?? {}) as Record<
-		string,
-		Record<string, (event: unknown, ctx: Context<State, Caps>) => MaybePromise<State>> | undefined
-	>
-	for (const capName in onSpec) {
-		const evMap = onSpec[capName]
-		if (!evMap) continue
-		for (const evName in evMap) {
-			const handler = evMap[evName]
-			if (!handler) continue
-			acts[`${EVENT_ACTION_PREFIX}${capName}.${evName}`] = {
-				__kind: 'handler',
-				schema: passthroughSchema,
-				handler
-			} as ActionDef<State, Caps>
-		}
-	}
-
+	Procs extends ProcedureDefs<State, Caps> = Record<string, never>,
+	E extends Record<string, Edge<State>> = Record<string, never>
+>(spec: AppSpec<State, Caps, Procs, E>): App<State, Caps, Procs, E> {
 	// Pure-core edges (Part A). The builder erases payload types into the
 	// stored `Edge<State>`; `cmd` returns command data. `fromResult`'s
 	// capability/method are compile-time only (they type the payload) — the
 	// kernel routes results by edge name, so the runtime ignores them here.
 	const edgeBuilder: Edges<State, Caps> = {
-		on: (schema, transition) => ({ __edge: 'on', schema, transition }),
+		on: (schema, transition, meta) => ({
+			__edge: 'on',
+			schema,
+			description: meta?.description,
+			examples: meta?.examples,
+			transition
+		}),
 		fromResult: (_capability, _method, transition) => ({ __edge: 'result', transition }),
 		cmd: (capability, method, input, to) => ({ kind: 'capability', capability, method, input, to })
 	}
 	const edges = (spec.update?.(edgeBuilder) ?? {}) as Record<string, Edge<State>>
+
+	// `on`-handlers route as synthetic `__event/<cap>.<event>` messages. They
+	// take the current state and return the next — no schema (the kernel only
+	// fans events the capability contract declares, so the payload type is
+	// already pinned at compile time).
+	const onSpec = (spec.on ?? {}) as Record<
+		string,
+		Record<string, (event: unknown, ctx: Context<State>) => MaybePromise<State>> | undefined
+	>
+	const events: Record<string, (event: unknown, ctx: Context<State>) => MaybePromise<State>> = {}
+	for (const capName in onSpec) {
+		const evMap = onSpec[capName]
+		if (!evMap) continue
+		for (const evName in evMap) {
+			const handler = evMap[evName]
+			if (handler) events[`${EVENT_ACTION_PREFIX}${capName}.${evName}`] = handler
+		}
+	}
 
 	// Declared capabilities surfaced as runtime data so the kernel can attach
 	// trusted scopes server-side (Part B). The factory already resolved each
@@ -181,26 +138,22 @@ export function defineApp<
 	}
 
 	const meta = {} as Record<string, ActionMeta>
-	// Keep `__event/*` entries in the sandbox-visible meta so the kernel
-	// can build its subscription index. The kernel's public `actions(appId)`
-	// API filters them out before exposing to agents.
-	for (const type in acts) {
-		const def = acts[type]
-		if (!def) continue
-		meta[type] = {
-			kind: def.__kind,
-			description: def.description,
-			examples: def.examples,
-			schemaHint: schemaHint(def.schema)
-		}
-	}
+	// Keep `__event/*` entries in the sandbox-visible meta so the kernel can
+	// build its subscription index. The kernel's public `actions(appId)` API
+	// filters them out before exposing to agents.
+	for (const type in events) meta[type] = { kind: 'handler' }
 	// Public edges (those with a schema) join the action surface as handlers;
 	// internal `fromResult` edges are routed by the kernel and stay off the
 	// public, agent-visible list.
 	for (const type in edges) {
 		const edge = edges[type]
 		if (!edge || edge.__edge !== 'on' || !edge.schema) continue
-		meta[type] = { kind: 'handler', schemaHint: schemaHint(edge.schema) }
+		meta[type] = {
+			kind: 'handler',
+			description: edge.description,
+			examples: edge.examples,
+			schemaHint: schemaHint(edge.schema)
+		}
 	}
 
 	// Procedures (Part C). The builder stamps the default audience; their meta
@@ -236,10 +189,9 @@ export function defineApp<
 			return def.run(r.value as never, handle)
 		},
 		async dispatch(message: Message, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
-			// Pure-core edges take precedence over legacy actions. A public
-			// edge validates its schema; an internal `__cmd/<edge>` result is
-			// passed through. The transition is synchronous and effect-free —
-			// it returns the next state and, optionally, a command to run.
+			// A public edge validates its schema; an internal `__cmd/<edge>` result
+			// is passed through. The transition is synchronous and effect-free — it
+			// returns the next state and, optionally, a command to run.
 			const edge = resolveEdge(edges, message.type)
 			if (edge) {
 				let payload: unknown = message.params
@@ -255,82 +207,16 @@ export function defineApp<
 				const [state, command] = Array.isArray(out) ? out : [out]
 				return { state, command, result: state }
 			}
-			const def = acts[message.type]
-			if (!def) throw new Error(`unknown action: ${message.type}`)
-			const r = await def.schema['~standard'].validate(message.params)
-			if (r.issues)
-				throw new Error(
-					`invalid params for ${message.type}: ${r.issues.map((i) => i.message).join('; ')}`
-				)
-			const handlerCtx = {
-				...ctx,
-				state: ctx.state ?? spec.init,
-				capabilities: createCapabilities(spec.capabilities ?? {}, ctx as RuntimeContext, message)
-			} as Context<State, Caps>
-			if (def.__kind === 'query') {
-				return { result: await def.handler(r.value as never, handlerCtx) }
+			// `on`-event messages (`__event/<cap>.<event>`) carry a contract-typed
+			// payload, so they skip schema validation and just fold into state.
+			const event = events[message.type]
+			if (event) {
+				const state = await event(message.params, { state: ctx.state ?? spec.init })
+				return { state, result: state }
 			}
-			const state = await def.handler(r.value as never, handlerCtx)
-			return { state, result: state }
+			throw new Error(`unknown action: ${message.type}`)
 		}
 	}
-}
-
-function createCapabilities(
-	requests: Record<
-		string,
-		ReturnType<import('./capabilities/core.ts').CapabilityFactory<string, unknown, unknown>>
-	>,
-	ctx: RuntimeContext,
-	message: Message
-): unknown {
-	return new Proxy(
-		{},
-		{
-			get(_target, localName) {
-				if (typeof localName !== 'string') return undefined
-				const request = requests[localName]
-				if (!request) return undefined
-				return new Proxy(
-					{},
-					{
-						get(_target, method) {
-							if (typeof method !== 'string') return undefined
-							return async (input: unknown) => {
-								if (!ctx.capabilityInvoke)
-									throw capabilityError('CAPABILITY_UNAVAILABLE', request.id, method)
-								try {
-									return await ctx.capabilityInvoke({
-										capability: request.id,
-										method,
-										input,
-										scopes: request.scopes,
-										actor: message.actor
-									})
-								} catch (error) {
-									throw normalizeCapabilityError(error, request.id, method)
-								}
-							}
-						}
-					}
-				)
-			}
-		}
-	)
-}
-
-function capabilityError(code: string, capability: string, method: string, message = code): Error {
-	return Object.assign(new Error(message), { code, capability, method })
-}
-
-function normalizeCapabilityError(error: unknown, capability: string, method: string): unknown {
-	if (error instanceof Error) {
-		return Object.assign(error, {
-			capability: (error as { capability?: string }).capability ?? capability,
-			method: (error as { method?: string }).method ?? method
-		})
-	}
-	return capabilityError('CAPABILITY_FAILED', capability, method, String(error))
 }
 
 function schemaHint(schema: StandardSchemaV1): unknown {
@@ -371,36 +257,33 @@ export interface Transport {
 	subscribe(onState: (state: unknown) => void): () => void
 }
 
-// `typeof app` -> { [action]: (params) => Promise<Result> }. Per-action:
-// params come from the schema's output type; handler actions resolve to
-// the new State, query actions resolve to the query handler's literal
-// return type (preserved via the QueryDef's R generic).
-type ParamsOf<Def> =
-	Def extends HandlerDef<infer S, infer _S, infer _C>
-		? Infer<S>
-		: Def extends QueryDef<infer S, infer _S, infer _C, infer _R>
-			? Infer<S>
-			: never
-
-type ResultOf<Def, State> =
-	Def extends QueryDef<infer _S, infer _ST, infer _C, infer R>
-		? Awaited<R>
-		: Def extends HandlerDef<infer _S, infer _ST, infer _C>
-			? State
-			: never
-
-// Procedures are addressed by the same client/transport as actions; their
-// params come from the schema and the result is the `run` return type.
+// Procedures are addressed by the same client/transport as edges; their params
+// come from the schema and the result is the `run` return type.
 type ProcParamsOf<Def> =
 	Def extends ProcedureDef<infer S, infer _ST, infer _C, infer _R> ? Infer<S> : never
 type ProcResultOf<Def> =
 	Def extends ProcedureDef<infer _S, infer _ST, infer _C, infer R> ? Awaited<R> : never
 
+// Public `update` edges on the client. Only `t.on` edges carry a schema `S`;
+// `t.fromResult` edges (S = undefined) are internal and drop out. A dispatched
+// edge resolves with the app's State (the new model the host pushes back).
+type EdgeClient<E, State> = {
+	[K in keyof E as E[K] extends Edge<infer _St, infer S>
+		? S extends StandardSchemaV1
+			? K
+			: never
+		: never]: E[K] extends Edge<infer _St, infer S>
+		? S extends StandardSchemaV1
+			? (params: Infer<S>) => Promise<State>
+			: never
+		: never
+}
+
+// `typeof app` -> the typed client: one method per public edge (resolving with
+// the new State) and one per procedure (resolving with its `run` return type).
 export type Client<A> =
-	A extends App<infer State, infer Acts, infer _Caps, infer Procs>
-		? {
-				[K in keyof Acts & string]: (params: ParamsOf<Acts[K]>) => Promise<ResultOf<Acts[K], State>>
-			} & {
+	A extends App<infer State, infer _Caps, infer Procs, infer Edges_>
+		? EdgeClient<Edges_, State> & {
 				[K in keyof Procs & string]: (
 					params: ProcParamsOf<Procs[K]>
 				) => Promise<ProcResultOf<Procs[K]>>

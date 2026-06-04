@@ -139,47 +139,43 @@ function validateEntries(slots: Slot[], entries: Entry[]): Entry[] {
 	})
 }
 
+const slotSchema = v.object({
+	id: v.string(),
+	direction: v.picklist(['across', 'down'] as const),
+	row: v.number(),
+	col: v.number(),
+	length: v.number(),
+	pattern: v.string()
+})
+const entrySchema = v.object({ slotId: v.string(), answer: v.string(), clue: v.string() })
+// A fully-built puzzle, committed in one transition. The `start` procedure does
+// the AI generation off to the side and dispatches this only once everything is
+// in hand — so a failed generation never leaves a half-built puzzle in state.
+const playSchema = v.object({
+	theme: v.string(),
+	grid: v.array(v.string()),
+	slots: v.array(slotSchema),
+	entries: v.array(entrySchema)
+})
+
 export const app = defineApp({
 	init: initialState,
 	capabilities: { ai: ai({ scopes: [] }) },
-	actions: (b) => ({
-		start: b.handler({
-			description: 'Generate and start a new crossword for a theme.',
-			schema: v.object({ theme: v.string() }),
-			examples: [{ params: { theme: 'space' } }],
-			async handler({ theme }, ctx) {
-				const t = theme.trim()
-				if (!t) throw new Error('theme is required')
-				const seeds = await generateSeeds(ctx.capabilities.ai, t)
-				if (seeds.length === 0) throw new Error('AI returned no usable words')
-				const built = buildPuzzle(seeds, SIZE)
-				if (built.slots.length === 0) throw new Error('no slots produced — try another theme')
-				const entries = validateEntries(
-					built.slots,
-					await generateEntries(ctx.capabilities.ai, t, built.slots)
-				)
-				return playState(t, built.grid, built.slots, entries)
-			}
-		}),
-		seeds: b.handler({
-			description:
-				'Submit themed seed words. Triggers grid generation and returns slots needing answers.',
-			schema: v.object({ words: v.array(v.string()) }),
-			examples: [{ params: { words: ['ORBIT', 'COMET', 'NEBULA', 'APOLLO'] } }],
-			handler({ words }, ctx) {
-				if (!ctx.state.theme) throw new Error('no theme — run start first')
+	update: (t) => ({
+		play: t.on(playSchema, (_state, { theme, grid, slots, entries }) =>
+			playState(theme, grid, slots, entries)
+		),
+		seeds: t.on(
+			v.object({ words: v.array(v.string()) }),
+			(state, { words }) => {
+				if (!state.theme) throw new Error('no theme — run start first')
 				const seeds = words.map(upper).filter((w) => w.length >= 2)
 				if (seeds.length === 0) throw new Error('words must include at least one usable word')
 				const built = buildPuzzle(seeds, SIZE)
 				if (built.slots.length === 0) throw new Error('no slots produced — try different seeds')
-				const puzzle = {
-					theme: ctx.state.theme,
-					grid: built.grid,
-					slots: built.slots,
-					entries: {}
-				}
+				const puzzle = { theme: state.theme, grid: built.grid, slots: built.slots, entries: {} }
 				return {
-					...ctx.state,
+					...state,
 					phase: 'awaiting-fill' as const,
 					puzzle,
 					userGrid: {},
@@ -187,49 +183,52 @@ export const app = defineApp({
 					wrong: [],
 					briefing: fillBriefing(built.slots)
 				}
+			},
+			{
+				description:
+					'Submit themed seed words. Triggers grid generation and returns slots needing answers.',
+				examples: [{ params: { words: ['ORBIT', 'COMET', 'NEBULA', 'APOLLO'] } }]
 			}
-		}),
-		fill: b.handler({
-			description: 'Provide answer + clue for every slot. Each answer must match its slot pattern.',
-			schema: v.object({
-				entries: v.array(v.object({ slotId: v.string(), answer: v.string(), clue: v.string() }))
+		),
+		fill: t.on(
+			v.object({
+				entries: v.array(entrySchema)
 			}),
-			handler({ entries }, ctx) {
-				const prev = ctx.state.puzzle
+			(state, { entries }) => {
+				const prev = state.puzzle
 				if (!prev) throw new Error('no puzzle to fill — run seeds first')
 				const nextEntries = validateEntries(
 					prev.slots,
 					entries.map((e) => ({ slotId: e.slotId, answer: upper(e.answer), clue: e.clue }))
 				)
 				return playState(prev.theme, prev.grid, prev.slots, nextEntries)
+			},
+			{
+				description:
+					'Provide answer + clue for every slot. Each answer must match its slot pattern.'
 			}
-		}),
-		enter: b.handler({
-			description: 'Enter or clear one user letter in the grid.',
-			schema: v.object({ row: v.number(), col: v.number(), letter: v.string() }),
-			handler({ row, col, letter }, ctx) {
-				if (!ctx.state.puzzle || ctx.state.phase === 'solved') return ctx.state
+		),
+		enter: t.on(
+			v.object({ row: v.number(), col: v.number(), letter: v.string() }),
+			(state, { row, col, letter }) => {
+				if (!state.puzzle || state.phase === 'solved') return state
 				const key = cellKey(row, col)
-				if (ctx.state.revealed.includes(key)) return ctx.state
-				const nextGrid = { ...ctx.state.userGrid }
+				if (state.revealed.includes(key)) return state
+				const nextGrid = { ...state.userGrid }
 				const value = upper(letter)[0]
 				if (value) nextGrid[key] = value
 				else delete nextGrid[key]
-				return solved({
-					...ctx.state,
-					userGrid: nextGrid,
-					wrong: ctx.state.wrong.filter((k) => k !== key)
-				})
-			}
-		}),
-		reveal: b.handler({
-			description: 'Reveal solution letters for selected cells.',
-			schema: v.object({ cells: v.array(v.string()) }),
-			handler({ cells }, ctx) {
-				const puzzle = ctx.state.puzzle
-				if (!puzzle || ctx.state.phase === 'solved') return ctx.state
-				const userGrid = { ...ctx.state.userGrid }
-				const revealed = new Set(ctx.state.revealed)
+				return solved({ ...state, userGrid: nextGrid, wrong: state.wrong.filter((k) => k !== key) })
+			},
+			{ description: 'Enter or clear one user letter in the grid.' }
+		),
+		reveal: t.on(
+			v.object({ cells: v.array(v.string()) }),
+			(state, { cells }) => {
+				const puzzle = state.puzzle
+				if (!puzzle || state.phase === 'solved') return state
+				const userGrid = { ...state.userGrid }
+				const revealed = new Set(state.revealed)
 				for (const cell of cells as Cell[]) {
 					const [r, c] = parseCell(cell)
 					const answer = puzzle.grid[r]?.[c]
@@ -238,24 +237,52 @@ export const app = defineApp({
 						revealed.add(cell)
 					}
 				}
-				return solved({ ...ctx.state, userGrid, revealed: [...revealed], wrong: [] })
-			}
-		}),
-		check: b.handler({
-			description: 'Mark selected user letters as wrong when they do not match the solution.',
-			schema: v.object({ cells: v.array(v.string()) }),
-			handler({ cells }, ctx) {
-				const puzzle = ctx.state.puzzle
-				if (!puzzle) return ctx.state
-				const wrong = new Set(ctx.state.wrong)
+				return solved({ ...state, userGrid, revealed: [...revealed], wrong: [] })
+			},
+			{ description: 'Reveal solution letters for selected cells.' }
+		),
+		check: t.on(
+			v.object({ cells: v.array(v.string()) }),
+			(state, { cells }) => {
+				const puzzle = state.puzzle
+				if (!puzzle) return state
+				const wrong = new Set(state.wrong)
 				for (const cell of cells as Cell[]) {
 					const [r, c] = parseCell(cell)
 					const answer = puzzle.grid[r]?.[c]
 					if (!answer || answer === '#') continue
-					if (ctx.state.userGrid[cell] !== answer) wrong.add(cell)
+					if (state.userGrid[cell] !== answer) wrong.add(cell)
 					else wrong.delete(cell)
 				}
-				return { ...ctx.state, wrong: [...wrong] }
+				return { ...state, wrong: [...wrong] }
+			},
+			{ description: 'Mark selected user letters as wrong when they do not match the solution.' }
+		)
+	}),
+	// The AI-driven setup is a multi-step chain (generate seeds → build grid →
+	// generate clues), so it lives in a procedure. It computes the whole puzzle
+	// before committing it through the pure `play` edge.
+	procedures: (p) => ({
+		start: p.procedure({
+			description: 'Generate and start a new crossword for a theme.',
+			schema: v.object({ theme: v.string() }),
+			async run({ theme }, app) {
+				const t = theme.trim()
+				if (!t) throw new Error('theme is required')
+				const generate: Ai = { generateText: (input) => app.invoke('ai', 'generateText', input) }
+				const seeds = await generateSeeds(generate, t)
+				if (seeds.length === 0) throw new Error('AI returned no usable words')
+				const built = buildPuzzle(seeds, SIZE)
+				if (built.slots.length === 0) throw new Error('no slots produced — try another theme')
+				const entries = validateEntries(
+					built.slots,
+					await generateEntries(generate, t, built.slots)
+				)
+				const { seq } = await app.dispatch({
+					type: 'play',
+					params: { theme: t, grid: built.grid, slots: built.slots, entries }
+				})
+				return app.settled(seq)
 			}
 		})
 	})

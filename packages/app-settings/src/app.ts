@@ -26,64 +26,44 @@ const credentialsSchema = v.record(v.string(), v.string())
 export const app = defineApp({
 	init: initialState,
 	capabilities: { integrations: integrations({ scopes: [] }) },
-	actions: (b) => ({
-		refresh: b.handler({
-			description: 'Reload the list of integrations from the host.',
-			schema: v.object({}),
-			async handler(_, ctx) {
-				try {
-					const items = await ctx.capabilities.integrations.list({})
-					return { ...ctx.state, items, loading: false, error: null }
-				} catch (err) {
-					return {
-						...ctx.state,
-						loading: false,
-						error: err instanceof Error ? err.message : String(err)
-					}
-				}
-			}
-		}),
-		connect: b.handler({
+	// Pure edges drive state; `list` is the one effect, emitted as command data.
+	update: (t) => ({
+		refresh: t.on(
+			v.object({}),
+			(state) => [{ ...state, loading: true }, t.cmd('integrations', 'list', {}, 'listed')],
+			{ description: 'Reload the list of integrations from the host.' }
+		),
+		listed: t.fromResult('integrations', 'list', (state, r) =>
+			r.ok
+				? { ...state, items: r.value, loading: false, error: null }
+				: { ...state, loading: false, error: r.error.message }
+		),
+		clearError: t.on(v.object({}), (state) => ({ ...state, error: null }), {
+			description: 'Dismiss the current error banner.'
+		})
+	}),
+	// connect/disconnect are multi-step (mutate, then reload) and the caller
+	// awaits completion, so they live in procedures, not the pure core. Each
+	// drives the host capability then re-runs `refresh` to settle fresh items.
+	procedures: (p) => ({
+		connect: p.procedure({
 			description: 'Connect an account to an integration with static credentials.',
-			schema: v.object({
-				id: idSchema,
-				accountId: accountSchema,
-				credentials: credentialsSchema
-			}),
-			async handler({ id, accountId, credentials }, ctx) {
-				try {
-					await ctx.capabilities.integrations.connect({ id, accountId, credentials })
-					const items = await ctx.capabilities.integrations.list({})
-					return { ...ctx.state, items, error: null }
-				} catch (err) {
-					return {
-						...ctx.state,
-						error: err instanceof Error ? err.message : String(err)
-					}
-				}
+			schema: v.object({ id: idSchema, accountId: accountSchema, credentials: credentialsSchema }),
+			async run({ id, accountId, credentials }, app) {
+				await app.invoke('integrations', 'connect', { id, accountId, credentials })
+				await app.settled((await app.dispatch({ type: 'refresh', params: {} })).seq, {
+					timeout: 10_000
+				})
 			}
 		}),
-		disconnect: b.handler({
+		disconnect: p.procedure({
 			description: 'Disconnect an account from an integration.',
 			schema: v.object({ id: idSchema, accountId: accountSchema }),
-			async handler({ id, accountId }, ctx) {
-				try {
-					await ctx.capabilities.integrations.disconnect({ id, accountId })
-					const items = await ctx.capabilities.integrations.list({})
-					return { ...ctx.state, items, error: null }
-				} catch (err) {
-					return {
-						...ctx.state,
-						error: err instanceof Error ? err.message : String(err)
-					}
-				}
-			}
-		}),
-		clearError: b.handler({
-			description: 'Dismiss the current error banner.',
-			schema: v.object({}),
-			handler(_, ctx) {
-				return { ...ctx.state, error: null }
+			async run({ id, accountId }, app) {
+				await app.invoke('integrations', 'disconnect', { id, accountId })
+				await app.settled((await app.dispatch({ type: 'refresh', params: {} })).seq, {
+					timeout: 10_000
+				})
 			}
 		})
 	})

@@ -1,4 +1,4 @@
-import { defineApp } from '@justfiles/app'
+import { type AppHandle, defineApp } from '@justfiles/app'
 import { devkit } from '@justfiles/app/capabilities/devkit'
 import { type VolumeCapability, volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
@@ -85,196 +85,221 @@ const srcPathSchema = v.pipe(
 	)
 )
 
+const buildSchema = v.object({
+	hash: v.string(),
+	result: v.picklist(['ok', 'failed', 'crashed'] as const),
+	diagnostics: v.array(v.string()),
+	message: v.string(),
+	at: v.number()
+})
+// The opened-project snapshot the `open` procedure commits in one transition.
+const openedSchema = v.object({
+	slug: slugSchema,
+	files: v.array(v.string()),
+	selectedPath: v.nullable(v.string()),
+	sourceHash: v.string(),
+	build: v.nullable(buildSchema)
+})
+
+type CodeCaps = { volume: ReturnType<typeof volume>; devkit: ReturnType<typeof devkit> }
+
+// Adapt the kernel-mediated `app.invoke` into the `VolumeCapability` shape the
+// disk helpers (readSource/seed/…) expect — same trust path, typed surface.
+function volumeApi(app: AppHandle<CodeState, CodeCaps>): VolumeCapability {
+	return {
+		readFile: (input) => app.invoke('volume', 'readFile', input),
+		writeFile: (input) => app.invoke('volume', 'writeFile', input),
+		mkdir: (input) => app.invoke('volume', 'mkdir', input),
+		scan: (input) => app.invoke('volume', 'scan', input),
+		exists: (input) => app.invoke('volume', 'exists', input)
+	}
+}
+
 export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: [] }), devkit: devkit({ scopes: [] }) },
-	actions: (b) => ({
-		open: b.handler({
+	// Pure edges hold the genuine state transitions. The capability-driven work
+	// (compile, read, ship) lives in procedures, which commit results through the
+	// internal edges below.
+	update: (t) => ({
+		select: t.on(
+			v.object({ path: srcPathSchema }),
+			(state, { path }) => {
+				const s = normalizeState(state)
+				if (!s.files.includes(path) || path === s.selectedPath) return s
+				return { ...s, selectedPath: path }
+			},
+			{ description: 'Open a source file for editing.', examples: [{ params: { path: 'app.ts' } }] }
+		),
+		setView: t.on(
+			v.object({ view: v.picklist(['source', 'app']) }),
+			(state, { view }) => {
+				const s = normalizeState(state)
+				return s.view === view ? s : { ...s, view }
+			},
+			{
+				description: 'Switch between the Source and App views. Never builds.',
+				examples: [{ params: { view: 'app' } }]
+			}
+		),
+		// Commit the opened-project snapshot (dispatched by the `open` procedure).
+		opened: t.on(openedSchema, (state, snapshot) => ({ ...normalizeState(state), ...snapshot })),
+		// Record a build outcome; leaves `sourceHash` alone (write owns it).
+		recordBuild: t.on(v.object({ build: buildSchema }), (state, { build }) => ({
+			...normalizeState(state),
+			build
+		})),
+		// Record the recomputed source hash after a write.
+		recordHash: t.on(v.object({ sourceHash: v.string() }), (state, { sourceHash }) => ({
+			...normalizeState(state),
+			sourceHash
+		}))
+	}),
+	procedures: (p) => ({
+		open: p.procedure({
 			description: 'Open a project from app-code storage, seeding it on first use.',
 			schema: v.object({ slug: slugSchema }),
-			examples: [{ params: { slug: 'untitled' } }],
-			async handler({ slug }, ctx) {
-				const state = normalizeState(ctx.state)
-				if (!(await ctx.capabilities.volume.exists({ path: SRC(slug) }))) {
-					await seed(ctx.capabilities.volume, slug)
-				}
+			async run({ slug }, app) {
+				const state = normalizeState(app.state)
+				const vol = volumeApi(app)
+				if (!(await vol.exists({ path: SRC(slug) }))) await seed(vol, slug)
 				// Backfill the project file for projects created before it existed, so
 				// devkit always has its build contract.
-				if (!(await ctx.capabilities.volume.exists({ path: PROJECT(slug) }))) {
-					await writeProjectManifest(ctx.capabilities.volume, slug)
-				}
-				const source = await readSource(ctx.capabilities.volume, slug)
+				if (!(await vol.exists({ path: PROJECT(slug) }))) await writeProjectManifest(vol, slug)
+				const source = await readSource(vol, slug)
 				const files = Object.keys(source)
 				const selectedPath = files.includes(state.selectedPath ?? '')
 					? state.selectedPath
 					: (files[0] ?? null)
-				// Run the initial build so the App is live on open, resuming the
-				// draft's persisted runtime state (no reset). devkit reads the source
-				// off disk itself — we pass only the slug.
+				// Run the initial build so the App is live on open, resuming the draft's
+				// persisted runtime state (no reset). devkit reads the source off disk.
 				const hash = hashSource(source)
-				const { diagnostics } = await ctx.capabilities.devkit.run({ slug })
-				return {
-					...state,
-					slug,
-					files,
-					selectedPath,
-					sourceHash: hash,
-					build: buildRecord(hash, diagnostics)
-				}
-			}
-		}),
-		select: b.handler({
-			description: 'Open a source file for editing.',
-			schema: v.object({ path: srcPathSchema }),
-			examples: [{ params: { path: 'app.ts' } }],
-			handler({ path }, ctx) {
-				const state = normalizeState(ctx.state)
-				if (!state.files.includes(path) || path === state.selectedPath) return state
-				return { ...state, selectedPath: path }
+				const { diagnostics } = await app.invoke('devkit', 'run', { slug })
+				const { seq } = await app.dispatch({
+					type: 'opened',
+					params: {
+						slug,
+						files,
+						selectedPath,
+						sourceHash: hash,
+						build: buildRecord(hash, diagnostics)
+					}
+				})
+				return app.settled(seq)
 			}
 		}),
 		// Persist the bytes and recompute `sourceHash`. Fast; no compile; does not
 		// touch `build`. Clients write as many files as they need, then `run` once.
-		// Re-reading the small source set to rehash is cheap.
-		write: b.handler({
+		write: p.procedure({
 			description: 'Persist a source file and recompute the source hash.',
 			schema: v.object({ path: srcPathSchema, content: v.string() }),
-			examples: [{ params: { path: 'app.ts', content: '' } }],
-			async handler({ path, content }, ctx) {
-				const state = normalizeState(ctx.state)
-				await ctx.capabilities.volume.writeFile({
-					path: SRC(state.slug, `/${path}`),
-					data: encoder.encode(content)
+			async run({ path, content }, app) {
+				const state = normalizeState(app.state)
+				const vol = volumeApi(app)
+				await vol.writeFile({ path: SRC(state.slug, `/${path}`), data: encoder.encode(content) })
+				const { seq } = await app.dispatch({
+					type: 'recordHash',
+					params: { sourceHash: hashSource(await readSource(vol, state.slug)) }
 				})
-				return {
-					...state,
-					sourceHash: hashSource(await readSource(ctx.capabilities.volume, state.slug))
-				}
-			}
-		}),
-		setView: b.handler({
-			description: 'Switch between the Source and App views. Never builds.',
-			schema: v.object({ view: v.picklist(['source', 'app']) }),
-			examples: [{ params: { view: 'app' } }],
-			handler({ view }, ctx) {
-				const state = normalizeState(ctx.state)
-				return state.view === view ? state : { ...state, view }
+				return app.settled(seq)
 			}
 		}),
 		// Read the freshest source from disk, hash it, compile + mount via
 		// `devkit.run`, and record the outcome tagged with the hash it built. Leaves
 		// `sourceHash` alone (write owns it), so a write that lands mid-run shows up
-		// as `updating` afterward. On compile failure the last-good App stays
-		// mounted and the record carries the diagnostics. `reset` wipes the draft's
-		// persisted state for a clean boot (restart).
-		run: b.handler({
+		// as `updating` afterward. `reset` wipes the draft's persisted state.
+		run: p.procedure({
 			description: 'Compile the current source and run it as the live App.',
 			schema: v.object({ reset: v.optional(v.boolean()) }),
-			examples: [{ params: {} }, { params: { reset: true } }],
-			async handler({ reset }, ctx) {
-				const state = normalizeState(ctx.state)
-				// Read the source only to tag this build with its content hash; devkit
-				// reads the same source off disk to compile + mount.
-				const hash = hashSource(await readSource(ctx.capabilities.volume, state.slug))
-				const { diagnostics } = await ctx.capabilities.devkit.run({ slug: state.slug, reset })
-				// sourceHash untouched — write owns it
-				return { ...state, build: buildRecord(hash, diagnostics) }
+			async run({ reset }, app) {
+				const state = normalizeState(app.state)
+				const hash = hashSource(await readSource(volumeApi(app), state.slug))
+				const { diagnostics } = await app.invoke('devkit', 'run', { slug: state.slug, reset })
+				const { seq } = await app.dispatch({
+					type: 'recordBuild',
+					params: { build: buildRecord(hash, diagnostics) }
+				})
+				return app.settled(seq)
 			}
 		}),
-		// Internal cleanup only (unmount), not a user gesture; `previewId` is a pure
-		// function of the slug, derived here rather than stored.
-		stop: b.handler({
+		// Internal cleanup only (unmount); `previewId` is a pure function of the slug.
+		stop: p.procedure({
 			description: 'Tear down the running App.',
 			schema: v.object({}),
-			async handler(_, ctx) {
-				const state = normalizeState(ctx.state)
-				await ctx.capabilities.devkit.stop({ previewId: `preview.${state.slug}` })
-				return state
+			async run(_, app) {
+				await app.invoke('devkit', 'stop', {
+					previewId: `preview.${normalizeState(app.state).slug}`
+				})
 			}
 		}),
-		readFile: b.query({
+		readFile: p.procedure({
 			description: 'Read a source file as text.',
 			schema: v.object({ path: srcPathSchema }),
-			async handler({ path }, ctx) {
-				const state = normalizeState(ctx.state)
+			async run({ path }, app) {
+				const state = normalizeState(app.state)
 				return decoder.decode(
-					await ctx.capabilities.volume.readFile({ path: SRC(state.slug, `/${path}`) })
+					await app.invoke('volume', 'readFile', { path: SRC(state.slug, `/${path}`) })
 				)
 			}
 		}),
 		// The project's app icon as an image data URL, or null if unset. Drives the
 		// preview Dock's icon tile (the icon editor).
-		readIcon: b.query({
+		readIcon: p.procedure({
 			description: "Read the project's app icon as an image data URL.",
 			schema: v.object({}),
-			async handler(_, ctx) {
-				const state = normalizeState(ctx.state)
-				const path = ICON(state.slug)
-				if (!(await ctx.capabilities.volume.exists({ path }))) return null
-				return decoder.decode(await ctx.capabilities.volume.readFile({ path }))
+			async run(_, app): Promise<string | null> {
+				const path = ICON(normalizeState(app.state).slug)
+				if (!(await app.invoke('volume', 'exists', { path }))) return null
+				return decoder.decode(await app.invoke('volume', 'readFile', { path }))
 			}
 		}),
 		// Set the project's app icon from an image data URL (verbatim — no resize).
-		writeIcon: b.handler({
+		writeIcon: p.procedure({
 			description: "Set the project's app icon from an image data URL.",
 			schema: v.object({ dataUrl: v.pipe(v.string(), v.startsWith('data:image/')) }),
-			examples: [{ params: { dataUrl: 'data:image/png;base64,' } }],
-			async handler({ dataUrl }, ctx) {
-				const state = normalizeState(ctx.state)
-				await ctx.capabilities.volume.writeFile({
-					path: ICON(state.slug),
+			async run({ dataUrl }, app) {
+				await app.invoke('volume', 'writeFile', {
+					path: ICON(normalizeState(app.state).slug),
 					data: encoder.encode(dataUrl)
 				})
-				return state
 			}
 		}),
 		// The live App's declared menubar (display structure only), pulled so the
-		// preview window can draw it on top with the shared design CSS — like the OS
-		// menubar reflects a focused app. Empty until the App mounts or if it
-		// declares no menus.
-		menu: b.query({
+		// preview window can draw it on top with the shared design CSS. Empty until
+		// the App mounts or if it declares no menus.
+		menu: p.procedure({
 			description: "Read the live App's declared menubar for the preview window.",
 			schema: v.object({}),
-			async handler(_, ctx) {
-				const state = normalizeState(ctx.state)
-				return ctx.capabilities.devkit.menu({ previewId: `preview.${state.slug}` })
-			}
+			run: (_, app) =>
+				app.invoke('devkit', 'menu', { previewId: `preview.${normalizeState(app.state).slug}` })
 		}),
 		// Fire a preview menubar item by position; devkit invokes the real action
 		// against the live App on the main thread. No state of our own changes.
-		selectMenu: b.handler({
+		selectMenu: p.procedure({
 			description: 'Fire a preview menubar item against the live App.',
 			schema: v.object({ menu: v.number(), item: v.number() }),
-			examples: [{ params: { menu: 0, item: 0 } }],
-			async handler({ menu, item }, ctx) {
-				const state = normalizeState(ctx.state)
-				await ctx.capabilities.devkit.selectMenu({
-					previewId: `preview.${state.slug}`,
+			async run({ menu, item }, app) {
+				await app.invoke('devkit', 'selectMenu', {
+					previewId: `preview.${normalizeState(app.state).slug}`,
 					menu,
 					item
 				})
-				return state
 			}
 		}),
 		// Ship: promote the project to the real `/applications` as a standalone app.
 		// devkit reads the source + icon off disk, compiles fresh, and rejects a
-		// colliding id (its guard). A query — it writes outside our own state, so
-		// app-code's state is unchanged; the gui surfaces the returned id or error.
-		install: b.query({
+		// colliding id (its guard). Returns the installed id; our own state is unchanged.
+		install: p.procedure({
 			description: 'Compile the current source and install it as a real app.',
 			schema: v.object({}),
-			async handler(_, ctx) {
-				return ctx.capabilities.devkit.install({ slug: normalizeState(ctx.state).slug })
-			}
+			run: (_, app) => app.invoke('devkit', 'install', { slug: normalizeState(app.state).slug })
 		}),
 		// Share: compile fresh and return a downloadable `.zip` of the bundle; the
 		// gui turns the bytes into a file download.
-		pack: b.query({
+		pack: p.procedure({
 			description: 'Compile the current source and return a downloadable .zip bundle.',
 			schema: v.object({}),
-			async handler(_, ctx) {
-				return ctx.capabilities.devkit.pack({ slug: normalizeState(ctx.state).slug })
-			}
+			run: (_, app) => app.invoke('devkit', 'pack', { slug: normalizeState(app.state).slug })
 		})
 	})
 })
@@ -377,13 +402,8 @@ export type CounterState = {
 
 export const app = defineApp({
 	init: { count: 0 } as CounterState,
-	actions: (b) => ({
-		increment: b.handler({
-			schema: v.object({}),
-			handler(_, ctx) {
-				return { count: ctx.state.count + 1 }
-			}
-		})
+	update: (t) => ({
+		increment: t.on(v.object({}), (state) => ({ count: state.count + 1 }))
 	})
 })
 

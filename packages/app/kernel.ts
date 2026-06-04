@@ -139,11 +139,22 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 	// on first emit by scanning installed apps' action keys; kept fresh by
 	// install/uninstall. In-memory only — recomputed on DO boot.
 	let subscriptionIndex: Map<string, Set<AppId>> | undefined
+	// Per-app authoritative state, held in memory and written through to fs on
+	// every commit (durability + DO hibernation). Lazily hydrated from fs on
+	// first access; once cached, dispatch reads it directly instead of reloading
+	// per message. In-memory only — rehydrated from fs on boot, like the maps
+	// below. `.has()` distinguishes "not loaded" from "loaded, value undefined".
+	const states = new Map<AppId, unknown>()
 	// Per-app serialization. `queues` holds each app's tail promise so every
-	// dispatch (GUI, agent, capability event) runs to completion before the
-	// next begins — without this, two concurrent messages are a lost-update
-	// read-modify-write. `seqs` is the monotonic committed version, in-memory
-	// and recomputed from zero on boot (like `subscriptionIndex`).
+	// dispatch (GUI, agent, capability event) runs to completion before the next
+	// begins. The plan retires this once the reduce is synchronous — but the
+	// reduce runs in an out-of-process isolate, so `sb.run` is async: the
+	// read-modify-write straddles that await, and without serialization two
+	// concurrent messages are a lost update (see the kernel concurrency test). So
+	// the queue stays as the correctness primitive; what phase 5 removes is the
+	// per-dispatch fs reload — state is now the in-memory `states` cache above.
+	// `seqs` is the monotonic committed version, in-memory and recomputed from
+	// zero on boot (like `subscriptionIndex`).
 	const queues = new Map<AppId, Promise<void>>()
 	const seqs = new Map<AppId, number>()
 	// Per-app declared capabilities (local name → { id, trusted scopes }), read
@@ -262,36 +273,6 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 			scopes: declared.scopes,
 			actor
 		})
-	}
-
-	// The isolate-facing capability callback for the legacy async-handler path.
-	// The app names a capability by the id its proxy forwards; the kernel ignores
-	// any scopes the isolate claims, attaches the app's declared scopes, and
-	// rejects undeclared capabilities — the trust boundary lives here, not in the
-	// sandbox.
-	async function trustedInvoke(
-		appId: AppId,
-		sb: Sandbox,
-		host: HostCapabilityInvoke
-	): Promise<NonNullable<RuntimeContext['capabilityInvoke']>> {
-		const declared = await appCapabilities(appId, sb)
-		const byId = new Map<string, readonly string[]>()
-		for (const name in declared) {
-			const cap = declared[name]
-			if (cap) byId.set(cap.id, cap.scopes)
-		}
-		return (req) => {
-			const granted = byId.get(req.capability)
-			if (!granted) throw new Error(`undeclared capability: ${req.capability}`)
-			return host({
-				appId,
-				capability: req.capability,
-				method: req.method,
-				input: req.input,
-				scopes: granted,
-				actor: req.actor
-			})
-		}
 	}
 
 	// ----- command executor (Part B) -----
@@ -480,6 +461,26 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		return undefined
 	}
 
+	// Authoritative state for an app: the in-memory copy if present, otherwise
+	// hydrated from fs once and cached. Every reader (dispatch, procedure handle,
+	// push snapshot) goes through here so they share one committed value with no
+	// per-call fs read.
+	async function currentState(appId: AppId): Promise<unknown> {
+		if (states.has(appId)) return states.get(appId)
+		const loaded = await loadState(appId)
+		// A concurrent commit may have populated the cache while we read fs; keep
+		// the newer authoritative value rather than clobbering it with the load.
+		if (!states.has(appId)) states.set(appId, loaded)
+		return states.get(appId)
+	}
+
+	// Write-through persistence: the caller updates `states` (authoritative),
+	// this mirrors it to fs for durability and DO hibernation.
+	async function saveState(appId: AppId, next: unknown): Promise<void> {
+		await fs.mkdir('/state', { recursive: true })
+		await fs.writeFile(`/state/${appId}.json`, bytes(JSON.stringify(next)))
+	}
+
 	async function install(app: AppBundle): Promise<AppId> {
 		await fs.mkdir('/applications', { recursive: true })
 		await fs.mkdir('/system/tmp/app-installs', { recursive: true })
@@ -546,6 +547,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		await fs.rm(`/state/${appId}.json`, { force: true })
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		dropFromIndex(appId)
+		states.delete(appId)
 		declaredCaps.delete(appId)
 		procNames.delete(appId)
 	}
@@ -588,29 +590,26 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
 
-		await fs.mkdir('/state', { recursive: true })
-		const statePath = `/state/${appId}.json`
-		const current = await loadState(appId)
-
-		const saveState = (next: unknown): Promise<void> =>
-			fs.writeFile(statePath, bytes(JSON.stringify(next)))
+		// Read authoritative state from memory (hydrated from fs once). The queue
+		// serializes per app, so between this read and the write-through below no
+		// other dispatch for this app runs — the read-modify-write is atomic
+		// despite `sb.run` being async.
+		const current = await currentState(appId)
 
 		// Validation runs inside the app bundle (defineApp), so it works
-		// identically for in-process and remote sandboxes; the kernel just
-		// loads and runs.
+		// identically for in-process and remote sandboxes. The bundle's dispatch
+		// is a pure reduce over `state` — effects ride out as command data, so the
+		// kernel hands it only the current state.
 		const sb = await loadSandbox(appId)
-		const out = await sb.run(message, {
-			state: current,
-			setState: saveState,
-			capabilityInvoke: hostInvoke ? await trustedInvoke(appId, sb, hostInvoke) : undefined
-		})
-		// Handlers populate `state`; queries don't. Only persist + push when
-		// the action declared itself as a state-mutating handler — that's
-		// what keeps query-style reads (e.g. Finder's readFile) from
-		// ballooning state with file content.
+		const out = await sb.run(message, { state: current })
+		// A public edge populates `state`; a procedure-routed read does not. Only
+		// commit + push when the transition produced a next state — that keeps
+		// caller-scoped reads (e.g. Finder's readFile) from ballooning state.
 		let seq = seqs.get(appId) ?? 0
 		if (out.state !== undefined) {
-			await saveState(out.state)
+			// Authoritative in memory, written through to fs for durability.
+			states.set(appId, out.state)
+			await saveState(appId, out.state)
 			seq += 1
 			seqs.set(appId, seq)
 			emit({ type: 'app.update', appId, state: out.state as AppState, seq })
@@ -630,7 +629,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		const sb = await loadSandbox(appId)
 		if (!sb.runProcedure) throw new Error(`procedures unsupported by sandbox: ${appId}`)
 		const handle: RawAppHandle = {
-			state: await loadState(appId),
+			state: await currentState(appId),
 			dispatch: (m) => enqueue(appId, () => dispatchNow(appId, m)).then(({ seq }) => ({ seq })),
 			settled: (seq, opts) => settled(appId, seq, opts),
 			invoke: (capability, method, input) =>
@@ -642,7 +641,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 	async function state(appId: AppId): Promise<unknown> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
-		return loadState(appId)
+		return currentState(appId)
 	}
 
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {

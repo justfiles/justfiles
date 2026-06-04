@@ -1,4 +1,4 @@
-// biome-ignore-all lint/suspicious/noExplicitAny: variance-load-bearing — see ActionDef comment
+// biome-ignore-all lint/suspicious/noExplicitAny: variance-load-bearing — see Edge/ProcedureDefs comments
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { CapabilityFactory } from './capabilities/core.ts'
 
@@ -16,12 +16,12 @@ export interface ActionExample {
 	description?: string
 }
 
-// `kind` lets agents and tooling distinguish state-mutating handlers from
-// pure-read queries and from procedures (the imperative facade). A handler
-// returns the next state; a query returns an arbitrary value and never
-// persists; a procedure drives the reducer and returns a value to its caller.
+// `kind` lets agents and tooling distinguish state-mutating edges (`handler`)
+// from procedures (the imperative facade). A public edge dispatches into the
+// reducer and persists the next state; a procedure drives the reducer and
+// returns a value to its caller.
 export interface ActionMeta {
-	kind: 'handler' | 'query' | 'procedure'
+	kind: 'handler' | 'procedure'
 	// Set only for procedures — see ProcedureAudience. The kernel uses it to
 	// hide 'gui' procedures from the agent's tool list.
 	audience?: ProcedureAudience
@@ -30,15 +30,14 @@ export interface ActionMeta {
 	schemaHint?: unknown
 }
 
-// What a bundle's `dispatch` returns. Handlers populate `state` (saved and
-// pushed to subscribers); queries leave it absent. Both populate `result`,
-// which is what the dispatching caller receives — for handlers that's the
-// new state, for queries it's whatever the query returned.
+// What a bundle's `dispatch` returns. A public edge (or `on`-event) populates
+// `state` (saved and pushed to subscribers); `result` is what the dispatching
+// caller receives — for an edge that's the new state.
 export interface DispatchResult<State> {
 	state?: State
 	// A side effect the edge emitted (pure core). The kernel executes it and
 	// routes the result back as another message (Part B); until then it is
-	// simply surfaced here. Absent for queries and non-emitting transitions.
+	// simply surfaced here. Absent for non-emitting transitions.
 	command?: Command
 	result: unknown
 }
@@ -51,26 +50,12 @@ type CapabilityRequest<
 type CapabilityRequests = Record<string, CapabilityRequest>
 type NoCapabilities = Record<string, never>
 type NoProcedures = Record<string, never>
-type CapabilityInvocation = {
-	capability: string
-	method: string
-	input: unknown
-	// Scopes the app declared on the capability request. The host enforces
-	// what's actually allowed; the SDK just forwards what the app said it
-	// wanted, so the host can pick narrower implementations per scope.
-	scopes: readonly string[]
-	actor?: string
-}
-type CapabilityInvoke = (req: CapabilityInvocation) => Promise<unknown>
 
-// Per-capability methods injected as `ctx.capabilities.<id>`.
+// Per-capability method map, used to type `t.cmd`/`t.fromResult`/`app.invoke`.
 type MethodsOf<C> = C extends CapabilityRequest<string, infer M, infer _E> ? M : never
 // Per-capability declared events — the kernel routes these into the app's
 // reducer via declared `on`-handlers (see OnHandlers below).
 export type EventsOf<C> = C extends CapabilityRequest<string, infer _M, infer E> ? E : never
-type InjectedCapabilities<Caps extends CapabilityRequests> = {
-	readonly [K in keyof Caps]: MethodsOf<Caps[K]>
-}
 
 // `on` shape: keyed by capability name (from `capabilities`), then by event
 // name (from that capability's declared events). Both levels are optional —
@@ -79,7 +64,7 @@ export type OnHandlers<State, Caps extends CapabilityRequests> = {
 	[C in keyof Caps & string]?: {
 		[E in keyof EventsOf<Caps[C]> & string]?: (
 			event: EventsOf<Caps[C]>[E],
-			ctx: Context<State, Caps>
+			ctx: Context<State>
 		) => MaybePromise<State>
 	}
 }
@@ -115,11 +100,23 @@ type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => Promi
 
 // Stored shape of an edge in the `update` table. `schema` is present iff the
 // edge is public (declared via `t.on`); `__edge` discriminates the dispatch
-// path. The payload type is erased here — inference happens in the `Edges`
-// builder methods below, at the authoring call site.
-export interface Edge<State> {
+// path. `S` carries the public edge's schema type so `Client<A>` can infer its
+// params — it is `undefined` for internal `fromResult` edges. The payload type
+// of the transition is erased; inference happens in the `Edges` builder methods
+// below, at the authoring call site.
+export interface Edge<
+	State,
+	S extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined
+> {
 	readonly __edge: 'on' | 'result'
-	schema?: StandardSchemaV1
+	// Readonly so a concrete `Edge<State, Schema>` stays assignable to the
+	// `Edge<State>` bound (covariant in `S`) — lets the table type be captured
+	// without an `any` in the constraint.
+	readonly schema?: S
+	// Public-edge meta (the old handler's `description`/`examples`), surfaced to
+	// the agent's tool list. Internal `fromResult` edges carry neither.
+	description?: string
+	examples?: ActionExample[]
 	transition: Transition<State, any>
 }
 
@@ -128,14 +125,19 @@ export interface Edge<State> {
 // `Edge<State>` the table stores.
 export interface Edges<State, Caps extends CapabilityRequests> {
 	// public edge — declares an input schema, so it IS the external API
-	// (validated, agent-visible, consumer-dispatchable)
-	on<S extends StandardSchemaV1>(schema: S, transition: Transition<State, Infer<S>>): Edge<State>
+	// (validated, agent-visible, consumer-dispatchable). Optional `meta` carries
+	// the agent-facing description/examples (the old handler's).
+	on<S extends StandardSchemaV1>(
+		schema: S,
+		transition: Transition<State, Infer<S>>,
+		meta?: { description?: string; examples?: ActionExample[] }
+	): Edge<State, S>
 	// internal edge — payload is a capability result, typed from the contract
 	fromResult<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
 		capability: C,
 		method: M,
 		transition: Transition<State, Result<MethodOutput<MethodsOf<Caps[C]>, M>>>
-	): Edge<State>
+	): Edge<State, undefined>
 	// build a capability command; `input` is typed from the contract and `to`
 	// names the edge that receives the result
 	cmd<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
@@ -161,12 +163,11 @@ export interface AppHandle<State, Caps extends CapabilityRequests = NoCapabiliti
 	readonly state: State
 	dispatch(message: Message): Promise<{ seq: number }>
 	settled(seq: number, opts?: { timeout?: number }): Promise<State>
-	// Kernel-mediated, scope-checked capability invocation — the typed
-	// replacement for the legacy `ctx.capabilities.<name>.<method>(...)`, and the
-	// procedure-side parallel to the reducer's `cmd`: `cmd` routes the result
-	// back INTO state, `invoke` returns it TO the caller. `capability` is the
-	// app's LOCAL name; the kernel resolves the trusted id + scopes; `input` and
-	// the result are typed from the contract (same machinery as `cmd`).
+	// Kernel-mediated, scope-checked capability invocation — the procedure-side
+	// parallel to the reducer's `cmd`: `cmd` routes the result back INTO state,
+	// `invoke` returns it TO the caller. `capability` is the app's LOCAL name;
+	// the kernel resolves the trusted id + scopes; `input` and the result are
+	// typed from the contract (same machinery as `cmd`).
 	invoke<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
 		capability: C,
 		method: M,
@@ -205,55 +206,25 @@ export interface ProcedureDef<
 
 // `any` in the schema slot keeps the bound bivariant — a specific procedure's
 // `ProcedureDef<ObjectSchema, …>` stays assignable to it despite `S` appearing
-// in `run`'s param (mirrors the `any` trick on ActionDef). The inferred `Procs`
-// at the call site keeps the precise schema for `Client<A>`.
+// in `run`'s param (the same `any` trick `Edge` uses for its transition). The
+// inferred `Procs` at the call site keeps the precise schema for `Client<A>`.
 export type ProcedureDefs<State, Caps extends CapabilityRequests = CapabilityRequests> = Record<
 	string,
 	ProcedureDef<any, State, Caps, any>
 >
 
-// HandlerDef / QueryDef live here (not in sdk.ts) so the App<> bound can
-// be `Record<string, ActionDef<...>>` — without the cycle that would arise
-// from app.ts importing from sdk.ts.
-export interface HandlerDef<S extends StandardSchemaV1, State, Caps extends CapabilityRequests> {
-	readonly __kind: 'handler'
-	schema: S
-	description?: string
-	examples?: ActionExample[]
-	handler: (params: Infer<S>, ctx: Context<State, Caps>) => MaybePromise<State>
-}
-
-export interface QueryDef<S extends StandardSchemaV1, State, Caps extends CapabilityRequests, R> {
-	readonly __kind: 'query'
-	schema: S
-	description?: string
-	examples?: ActionExample[]
-	handler: (params: Infer<S>, ctx: Context<State, Caps>) => MaybePromise<R>
-}
-
-// Constraint shape for the `Acts` generic on `App`. `any` for the schema
-// position so the handler's `Infer<any>` = `any` params accept literals'
-// narrower types without tripping strict function-parameter
-// contravariance. Per-action S and R are preserved on the literal Acts
-// inferred at the `defineApp` call site.
-export type ActionDef<State, Caps extends CapabilityRequests = CapabilityRequests> =
-	| HandlerDef<StandardSchemaV1<any, any>, State, Caps>
-	| QueryDef<StandardSchemaV1<any, any>, State, Caps, any>
-
-// Generic order is `<State, Acts, Caps>` to keep `App<typeof spec>`-style
-// extraction sites stable. `Acts`'s constraint references `Caps`, which
-// would normally force `Caps` to be declared first, but TypeScript only
-// rejects forward references in *defaults* — the constraint itself is
-// fine. So we drop the default on `Acts` (it's always inferred at call
-// sites anyway) and keep the order.
+// Generic order keeps `State` first so `App<typeof spec>` extraction sites
+// (GUIState, Client) stay stable. `Procs`/`Edges_` are inferred at the
+// `defineApp` call site; `Edges_` preserves each public edge's schema for
+// `Client<A>`.
 export interface App<
 	State,
-	Acts extends Record<string, ActionDef<State, Caps>>,
 	Caps extends CapabilityRequests = NoCapabilities,
-	Procs extends ProcedureDefs<State, Caps> = NoProcedures
+	Procs extends ProcedureDefs<State, Caps> = NoProcedures,
+	Edges_ extends Record<string, Edge<State>> = Record<string, never>
 > {
-	// Public surface as runtime meta: edges/handlers/queries AND procedures
-	// (kind 'procedure'). The kernel routes a dispatch by name against this.
+	// Public surface as runtime meta: public edges (kind 'handler') AND
+	// procedures (kind 'procedure'). The kernel routes a dispatch by name here.
 	actions: Record<string, ActionMeta>
 	// Declared capabilities as runtime data: local name → { id, scopes }. The
 	// kernel reads this (never the scopes the isolate forwards) to attach the
@@ -261,9 +232,11 @@ export interface App<
 	// reject calls to capabilities the app never declared (Part B).
 	capabilities: Record<string, { id: string; scopes: readonly string[] }>
 	// Phantom carriers — only used by the type-level `Client<A>` extractor.
-	readonly __acts?: Acts
 	readonly __capabilities?: Caps
 	readonly __procs?: Procs
+	// The `update` edge table, type-preserved so `Client<A>` can offer each
+	// public edge as `(params) => Promise<State>`.
+	readonly __edges?: Edges_
 	dispatch: (message: Message, ctx: RuntimeContext<State>) => Promise<DispatchResult<State>>
 	// Run a declared procedure: validate params, then call its `run` with the
 	// handle. The kernel hands in a `RawAppHandle` across the (dynamic) sandbox
@@ -271,16 +244,17 @@ export interface App<
 	runProcedure: (name: string, params: unknown, app: AppHandle<State, Caps>) => Promise<unknown>
 }
 
-export interface Context<State = unknown, Caps extends CapabilityRequests = NoCapabilities> {
-	setState: (state: State) => Promise<void>
+// The context an `on`-event handler receives: just the current state. Event
+// handlers return the next state (no `setState`, no capability proxy).
+export interface Context<State = unknown> {
 	readonly state: State
-	readonly capabilities: InjectedCapabilities<Caps>
 }
 
+// What the kernel hands the bundle's `dispatch` across the sandbox boundary.
+// A pure edge needs only `state`; effects ride out as command data, so there is
+// no host callback to inject.
 export interface RuntimeContext<State = unknown> {
-	setState: (state: State) => Promise<void>
 	readonly state: State
-	capabilityInvoke?: CapabilityInvoke
 }
 
 export interface AppManifest {

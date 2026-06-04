@@ -1,8 +1,7 @@
 import { defineApp } from '@justfiles/app'
 
 export const app = defineApp({
-	init: {},
-	actions: () => ({})
+	init: {}
 })
 
 export type DoomApp = typeof app

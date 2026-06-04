@@ -17,13 +17,11 @@ const ticker = defineCapability<'ticker', TickerMethods, TickerEvents>('ticker')
 export const app = defineApp({
 	init: { count: 0, lastReason: null as string | null },
 	capabilities: { ticker: ticker({ scopes: [] }) },
-	actions: (b) => ({
-		bump: b.handler({
-			schema: v.object({ by: v.number() }),
-			handler({ by }, ctx) {
-				return { ...ctx.state, count: ctx.state.count + by }
-			}
-		})
+	update: (t) => ({
+		bump: t.on(v.object({ by: v.number() }), (state, { by }) => ({
+			...state,
+			count: state.count + by
+		}))
 	}),
 	on: {
 		ticker: {

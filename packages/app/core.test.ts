@@ -5,10 +5,7 @@ import { app, type CoreState, initialState } from './test-bundle/core.ts'
 // The whole point of the pure core: edges are deterministic, synchronous, and
 // testable with no kernel and no sandbox. We just call `app.dispatch` with a
 // minimal ctx — capabilities are never touched, so `capabilityInvoke` is absent.
-const ctx = (state: CoreState): RuntimeContext<CoreState> => ({
-	state,
-	setState: async () => {}
-})
+const ctx = (state: CoreState): RuntimeContext<CoreState> => ({ state })
 
 test('public edge validates input, updates state, and emits a command', async () => {
 	const out = await app.dispatch({ type: 'refresh', params: {} }, ctx(initialState))

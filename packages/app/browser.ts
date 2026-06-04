@@ -1,7 +1,7 @@
 import type { App } from './app.ts'
 import { type Client, createClient, type Transport } from './sdk.ts'
 
-type GUIState<A> = A extends App<infer State, infer _Acts, infer _Caps> ? State : never
+type GUIState<A> = A extends App<infer State, infer _C, infer _P, infer _E> ? State : never
 
 export type MenuItem =
 	| { separator: true }

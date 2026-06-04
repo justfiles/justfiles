@@ -1,32 +1,17 @@
 import type { GetSandbox, Message, RawAppHandle, Sandbox } from '@justfiles/app'
-import {
-	capabilityError,
-	fromWireError,
-	toWireError,
-	type WireError
-} from '../../shared/capability-error.ts'
+import { fromWireError, toWireError, type WireError } from '../../shared/capability-error.ts'
 
 // Browser-side GetSandbox. It runs the same volume-backed app.js bytes as the
-// server kernel, but in a module Web Worker and bridges host callbacks over
-// postMessage.
-
-type CapabilityInvocation = {
-	capability: string
-	method: string
-	input: unknown
-	scopes: readonly string[]
-	actor?: string
-}
+// server kernel, but in a module Web Worker and bridges procedure host-calls
+// over postMessage.
 
 // Worker→host frames: replies to a request (`result`/`error`) and the
-// host-calls a running dispatch/procedure makes back into the kernel. The
-// reducer path uses `setState`/`capability`; a procedure (Part C) uses
-// `dispatch`/`settled`/`invoke`, serviced by the handle stored on the request.
+// host-calls a running procedure (Part C) makes back into the kernel
+// (`dispatch`/`settled`/`invoke`), serviced by the handle stored on the request.
+// A plain reduce needs no host-call — the edge is pure and returns its result.
 type WorkerMessage =
 	| { type: 'result'; id: string; result: unknown }
 	| { type: 'error'; id: string; error: WireError }
-	| { type: 'setState'; id: string; callId: string; state: unknown }
-	| { type: 'capability'; id: string; callId: string; req: CapabilityInvocation }
 	| { type: 'dispatch'; id: string; callId: string; message: Message }
 	| { type: 'settled'; id: string; callId: string; seq: number; opts?: { timeout?: number } }
 	| {
@@ -38,12 +23,9 @@ type WorkerMessage =
 			input: unknown
 	  }
 
-type HostContext = Parameters<Sandbox['run']>[1]
-
 type Pending = {
 	resolve: (value: unknown) => void
 	reject: (error: Error) => void
-	ctx?: HostContext
 	handle?: RawAppHandle
 }
 
@@ -61,10 +43,10 @@ export function browserSandbox(): GetSandbox {
 		const worker = await workerFor(key, code)
 		appWorkers.set(appId, key)
 		return {
-			// The kernel owns the capability callback now — it rides in `ctx`
-			// (with `setState`) and is bridged to the worker over postMessage.
+			// The reduce is pure: only the current state crosses to the worker, and
+			// the edge returns its next state + command data (no host callback).
 			run: (action, ctx) =>
-				worker.request('dispatch', { action, state: ctx.state }, { ctx }) as Promise<
+				worker.request('dispatch', { action, state: ctx.state }) as Promise<
 					Awaited<ReturnType<Sandbox['run']>>
 				>,
 			actions: () =>
@@ -141,11 +123,11 @@ class WorkerClient {
 	request(
 		type: 'dispatch' | 'actions' | 'capabilities' | 'runProcedure',
 		payload: object,
-		services?: { ctx?: HostContext; handle?: RawAppHandle }
+		services?: { handle?: RawAppHandle }
 	): Promise<unknown> {
 		const id = String(this.nextId++)
 		return new Promise((resolve, reject) => {
-			this.pending.set(id, { resolve, reject, ctx: services?.ctx, handle: services?.handle })
+			this.pending.set(id, { resolve, reject, handle: services?.handle })
 			this.worker.postMessage({ type, id, ...payload })
 		})
 	}
@@ -170,25 +152,18 @@ class WorkerClient {
 		}
 		void (async () => {
 			try {
-				if (message.type === 'setState') await pending?.ctx?.setState(message.state)
-				else if (message.type === 'capability') {
-					if (!pending?.ctx?.capabilityInvoke) throw capabilityError('CAPABILITY_UNAVAILABLE')
-					reply('hostResult', await pending.ctx.capabilityInvoke(message.req))
-					return
-				} else if (message.type === 'dispatch') {
+				if (message.type === 'dispatch') {
 					reply('hostResult', await handleOf(pending).dispatch(message.message))
-					return
 				} else if (message.type === 'settled') {
 					reply('hostResult', await handleOf(pending).settled(message.seq, message.opts))
-					return
 				} else if (message.type === 'invoke') {
 					reply(
 						'hostResult',
 						await handleOf(pending).invoke(message.capability, message.method, message.input)
 					)
-					return
+				} else {
+					reply('hostResult', undefined)
 				}
-				reply('hostResult', undefined)
 			} catch (error) {
 				reply('hostError', error)
 			}
@@ -258,11 +233,7 @@ self.onmessage = async (event) => {
 			})
 			return
 		}
-		const result = await app.dispatch(msg.action, {
-			state: msg.state,
-			setState: (state) => hostCall(msg.id, 'setState', { state }),
-			capabilityInvoke: (req) => hostCall(msg.id, 'capability', { req })
-		})
+		const result = await app.dispatch(msg.action, { state: msg.state })
 		self.postMessage({ type: 'result', id: msg.id, result })
 	} catch (error) {
 		self.postMessage({ type: 'error', id: msg.id, error: errorToWire(error) })

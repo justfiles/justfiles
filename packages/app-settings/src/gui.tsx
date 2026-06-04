@@ -95,14 +95,20 @@ function IntegrationCard({
 	const [values, setValues] = useState<Record<string, string>>({})
 	const [accountId, setAccountId] = useState(DEFAULT_ACCOUNT)
 	const [busy, setBusy] = useState<string | null>(null)
+	// connect/disconnect are procedures that reject on failure (the chain no
+	// longer folds errors into state), so the card surfaces them inline.
+	const [error, setError] = useState<string | null>(null)
 
 	const submit = async (event: FormEvent) => {
 		event.preventDefault()
 		const account = accountId || DEFAULT_ACCOUNT
 		setBusy(account)
+		setError(null)
 		try {
 			await client.connect({ id: item.id, accountId: account, credentials: values })
 			setValues({})
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err))
 		} finally {
 			setBusy(null)
 		}
@@ -111,8 +117,11 @@ function IntegrationCard({
 	const disconnect = async (account: string) => {
 		if (!window.confirm(`Disconnect ${item.name} (${account})?`)) return
 		setBusy(account)
+		setError(null)
 		try {
 			await client.disconnect({ id: item.id, accountId: account })
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err))
 		} finally {
 			setBusy(null)
 		}
@@ -203,6 +212,11 @@ function IntegrationCard({
 						) : null}
 					</label>
 				))}
+				{error ? (
+					<p className="text-[11px]" style={{ color: '#b91c1c' }}>
+						{error}
+					</p>
+				) : null}
 				<div className="flex justify-end">
 					<button
 						type="submit"

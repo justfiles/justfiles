@@ -12,29 +12,30 @@ const test = defineCapability<'test', TestCapability>('test')
 export const app = defineApp({
 	init: { count: 0 },
 	capabilities: { test: test({ scopes: [] }), volume: volume({ scopes: ['app'] }) },
-	actions: (b) => ({
-		increment: b.handler({
-			schema: v.object({ amount: v.number() }),
-			handler({ amount }, ctx) {
-				return { ...ctx.state, count: ctx.state.count + amount }
-			}
-		}),
-		write: b.handler({
-			schema: v.object({ text: v.string() }),
-			async handler({ text }, ctx) {
-				await ctx.capabilities.volume.writeFile({
-					path: '/note.txt',
-					data: new TextEncoder().encode(text)
-				})
-				return ctx.state
-			}
-		}),
-		ask: b.handler({
-			schema: v.object({ text: v.string() }),
-			async handler({ text }, ctx) {
-				const result = await ctx.capabilities.test.echo({ text })
-				return { count: result.text.length }
-			}
-		})
+	update: (t) => ({
+		increment: t.on(v.object({ amount: v.number() }), (state, { amount }) => ({
+			...state,
+			count: state.count + amount
+		})),
+		// Effects ride as command data: write the note via the volume capability,
+		// then fold the (void) result back leaving state untouched.
+		write: t.on(v.object({ text: v.string() }), (state, { text }) => [
+			state,
+			t.cmd(
+				'volume',
+				'writeFile',
+				{ path: '/note.txt', data: new TextEncoder().encode(text) },
+				'written'
+			)
+		]),
+		written: t.fromResult('volume', 'writeFile', (state) => state),
+		// Echo capability: the result edge replaces count with the echoed length.
+		ask: t.on(v.object({ text: v.string() }), (state, { text }) => [
+			state,
+			t.cmd('test', 'echo', { text }, 'asked')
+		]),
+		asked: t.fromResult('test', 'echo', (state, r) =>
+			r.ok ? { count: r.value.text.length } : state
+		)
 	})
 })

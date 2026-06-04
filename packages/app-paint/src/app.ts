@@ -58,81 +58,70 @@ const color = v.pipe(v.string(), v.regex(/^#[0-9a-fA-F]{6}$/))
 export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: [] }) },
-	actions: (b) => ({
-		setTool: b.handler({
-			description: 'Pick the active drawing tool.',
-			schema: v.object({ tool }),
-			handler({ tool }, ctx) {
-				return { ...ctx.state, tool }
-			}
+	update: (t) => ({
+		setTool: t.on(v.object({ tool }), (state, { tool }) => ({ ...state, tool }), {
+			description: 'Pick the active drawing tool.'
 		}),
-		setSize: b.handler({
-			description: 'Pick the active brush size.',
-			schema: v.object({ size }),
-			handler({ size }, ctx) {
-				return { ...ctx.state, size }
-			}
+		setSize: t.on(v.object({ size }), (state, { size }) => ({ ...state, size }), {
+			description: 'Pick the active brush size.'
 		}),
-		setColor: b.handler({
-			description: 'Pick the active color (hex #rrggbb).',
-			schema: v.object({ color }),
-			handler({ color }, ctx) {
-				return { ...ctx.state, color }
-			}
+		setColor: t.on(v.object({ color }), (state, { color }) => ({ ...state, color }), {
+			description: 'Pick the active color (hex #rrggbb).'
 		}),
-		ensureDoc: b.handler({
-			description: 'Return the current draft id, minting + persisting one on first run.',
-			schema: v.object({ candidate: v.string() }),
-			handler({ candidate }, ctx) {
-				return ctx.state.currentDocId ? ctx.state : { ...ctx.state, currentDocId: candidate }
-			}
-		}),
-		loadDraft: b.query({
+		ensureDoc: t.on(
+			v.object({ candidate: v.string() }),
+			(state, { candidate }) =>
+				state.currentDocId ? state : { ...state, currentDocId: candidate },
+			{ description: 'Return the current draft id, minting + persisting one on first run.' }
+		),
+		// The save effect: stamp the path optimistically, write the bytes as a
+		// command, and clear it again if the write fails.
+		save: t.on(
+			v.object({
+				pngBase64: v.pipe(v.string(), v.minLength(1)),
+				filename: v.optional(v.string())
+			}),
+			(state, { pngBase64, filename }) => {
+				const safe = filename?.replace(/[^\w.-]/g, '_')
+				const name = safe || `untitled-${timestamp()}.png`
+				const path = `${SAVE_DIR}/${name}`
+				return [
+					{ ...state, lastSavedPath: path, lastError: null },
+					t.cmd('volume', 'writeFile', { path, data: base64ToBytes(pngBase64) }, 'saved')
+				]
+			},
+			{ description: 'Save the current canvas as PNG to /Paint/.' }
+		),
+		saved: t.fromResult('volume', 'writeFile', (state, r) =>
+			r.ok ? state : { ...state, lastSavedPath: null, lastError: r.error.message }
+		),
+		clearStatus: t.on(
+			v.object({}),
+			(state) => ({ ...state, lastSavedPath: null, lastError: null }),
+			{ description: 'Clear the save/error status line.' }
+		)
+	}),
+	// Draft read/write return a value (or are caller-scoped autosaves), so they
+	// live in procedures rather than the pure core.
+	procedures: (p) => ({
+		loadDraft: p.procedure({
 			description: 'Read the autosaved draft document, or null if none exists.',
 			schema: v.object({ docId: v.string() }),
-			async handler({ docId }, ctx): Promise<PaintDoc | null> {
+			async run({ docId }, app): Promise<PaintDoc | null> {
 				const path = draftPath(docId)
-				if (!(await ctx.capabilities.volume.exists({ path }))) return null
-				return decode(await ctx.capabilities.volume.readFile({ path }))
+				if (!(await app.invoke('volume', 'exists', { path }))) return null
+				return decode(await app.invoke('volume', 'readFile', { path }))
 			}
 		}),
-		saveDraft: b.query({
+		saveDraft: p.procedure({
 			description: 'Autosave the working draft document to the app data volume.',
 			schema: v.object({ docId: v.string(), doc: docSchema }),
-			async handler({ docId, doc }, ctx): Promise<boolean> {
-				await ctx.capabilities.volume.writeFile({
+			async run({ docId, doc }, app): Promise<boolean> {
+				await app.invoke('volume', 'writeFile', {
 					path: draftPath(docId),
 					data: encode(doc as PaintDoc)
 				})
 				return true
-			}
-		}),
-		save: b.handler({
-			description: 'Save the current canvas as PNG to /Paint/.',
-			schema: v.object({
-				pngBase64: v.pipe(v.string(), v.minLength(1)),
-				filename: v.optional(v.string())
-			}),
-			async handler({ pngBase64, filename }, ctx) {
-				try {
-					const safe = filename?.replace(/[^\w.-]/g, '_')
-					const name = safe || `untitled-${timestamp()}.png`
-					const path = `${SAVE_DIR}/${name}`
-					await ctx.capabilities.volume.writeFile({ path, data: base64ToBytes(pngBase64) })
-					return { ...ctx.state, lastSavedPath: path, lastError: null }
-				} catch (err) {
-					return {
-						...ctx.state,
-						lastError: err instanceof Error ? err.message : String(err)
-					}
-				}
-			}
-		}),
-		clearStatus: b.handler({
-			description: 'Clear the save/error status line.',
-			schema: v.object({}),
-			handler(_, ctx) {
-				return { ...ctx.state, lastSavedPath: null, lastError: null }
 			}
 		})
 	})
