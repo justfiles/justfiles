@@ -9,9 +9,8 @@ export function createClientKernel(options: {
 }): Kernel {
 	return kernel({
 		fs: options.fs,
-		sandbox: browserSandbox({
-			capabilities: (req) => invokeClientCapability(options.fs, options.getToken, req)
-		}),
-		clock: {}
+		sandbox: browserSandbox(),
+		clock: {},
+		capabilityInvoke: (req) => invokeClientCapability(options.fs, options.getToken, req)
 	})
 }

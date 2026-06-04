@@ -18,10 +18,6 @@ type CapabilityInvocation = {
 	actor?: string
 }
 
-type BrowserSandboxOptions = {
-	capabilities?: (req: CapabilityInvocation & { appId: string }) => Promise<unknown>
-}
-
 type WorkerMessage =
 	| { type: 'result'; id: string; result: unknown }
 	| { type: 'error'; id: string; error: WireError }
@@ -44,25 +40,25 @@ type Pending = {
 const workers = new Map<string, Promise<WorkerClient>>()
 const appWorkers = new Map<string, string>()
 
-export function browserSandbox(options: BrowserSandboxOptions = {}): GetSandbox {
+export function browserSandbox(): GetSandbox {
 	return async ({ appId, code }) => {
 		const key = await cacheKey(code)
 		const worker = await workerFor(key, code)
 		appWorkers.set(appId, key)
-		const capabilities = options.capabilities
 		return {
+			// The kernel owns the capability callback now — it rides in `ctx`
+			// (with `setState`) and is bridged to the worker over postMessage.
 			run: (action, ctx) =>
-				worker.request(
-					'dispatch',
-					{ action, state: ctx.state },
-					{
-						...ctx,
-						capabilityInvoke: capabilities ? (req) => capabilities({ ...req, appId }) : undefined
-					}
-				) as Promise<Awaited<ReturnType<Sandbox['run']>>>,
+				worker.request('dispatch', { action, state: ctx.state }, ctx) as Promise<
+					Awaited<ReturnType<Sandbox['run']>>
+				>,
 			actions: () =>
 				worker.request('actions', {}) as Promise<
 					Awaited<ReturnType<NonNullable<Sandbox['actions']>>>
+				>,
+			capabilities: () =>
+				worker.request('capabilities', {}) as Promise<
+					Awaited<ReturnType<NonNullable<Sandbox['capabilities']>>>
 				>
 		}
 	}
@@ -123,7 +119,11 @@ class WorkerClient {
 		URL.revokeObjectURL(this.appUrl)
 	}
 
-	request(type: 'dispatch' | 'actions', payload: object, ctx?: HostContext): Promise<unknown> {
+	request(
+		type: 'dispatch' | 'actions' | 'capabilities',
+		payload: object,
+		ctx?: HostContext
+	): Promise<unknown> {
 		const id = String(this.nextId++)
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject, ctx })
@@ -201,6 +201,10 @@ self.onmessage = async (event) => {
 	try {
 		if (msg.type === 'actions') {
 			self.postMessage({ type: 'result', id: msg.id, result: app.actions ?? {} })
+			return
+		}
+		if (msg.type === 'capabilities') {
+			self.postMessage({ type: 'result', id: msg.id, result: app.capabilities ?? {} })
 			return
 		}
 		const result = await app.dispatch(msg.action, {

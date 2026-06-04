@@ -2,7 +2,7 @@ import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { type AppBundle, appBundleFromMemory } from './app.ts'
-import { type GetSandbox, kernel } from './kernel.ts'
+import { type GetSandbox, type HostCapabilityInvoke, kernel } from './kernel.ts'
 import source from './test-bundle/app.ts?raw'
 
 const compile = (source: string) =>
@@ -18,8 +18,8 @@ const compile = (source: string) =>
 	}).outputFiles[0].text
 const code = compile(source)
 
-function sandboxFor(fs: Volume): GetSandbox {
-	return async ({ appId, code }) => {
+function sandboxFor(): GetSandbox {
+	return async ({ code }) => {
 		const mod = await import(`data:text/javascript;base64,${btoa(code)}`)
 		const app = mod.app
 		if (typeof app !== 'object') {
@@ -27,23 +27,26 @@ function sandboxFor(fs: Volume): GetSandbox {
 		}
 
 		return {
-			run: async (action, ctx) =>
-				await app.dispatch(action, {
-					...ctx,
-					capabilityInvoke: async (req) => {
-						if (req.capability === 'test' && req.method === 'echo') return req.input
-						if (req.capability === 'volume' && req.method === 'writeFile') {
-							const root = `/applications/${appId}/data/files`
-							const input = req.input as { path: string; data: Uint8Array }
-							await fs.mkdir(root, { recursive: true })
-							await chroot(fs, root).writeFile(input.path, input.data)
-							return undefined
-						}
-						throw new Error('missing capability')
-					}
-				}),
-			actions: async () => app.actions ?? {}
+			run: async (action, ctx) => await app.dispatch(action, ctx),
+			actions: async () => app.actions ?? {},
+			capabilities: async () => app.capabilities ?? {}
 		}
+	}
+}
+
+// The host capability executor is now owned by the kernel, not the sandbox.
+// The kernel attaches the app's declared scopes + appId before each call.
+function hostInvoke(fs: Volume): HostCapabilityInvoke {
+	return async (req) => {
+		if (req.capability === 'test' && req.method === 'echo') return req.input
+		if (req.capability === 'volume' && req.method === 'writeFile') {
+			const root = `/applications/${req.appId}/data/files`
+			const input = req.input as { path: string; data: Uint8Array }
+			await fs.mkdir(root, { recursive: true })
+			await chroot(fs, root).writeFile(input.path, input.data)
+			return undefined
+		}
+		throw new Error('missing capability')
 	}
 }
 
@@ -51,7 +54,7 @@ const clock = {}
 
 function testKernel() {
 	const fs = volume(memStorage())
-	return kernel({ fs, sandbox: sandboxFor(fs), clock })
+	return kernel({ fs, sandbox: sandboxFor(), clock, capabilityInvoke: hostInvoke(fs) })
 }
 
 function bundle(manifest: AppBundle['manifest'], files: Record<string, string>): AppBundle {
@@ -70,7 +73,7 @@ function bundle(manifest: AppBundle['manifest'], files: Record<string, string>):
 
 test('smoke test kernel', async () => {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilityInvoke: hostInvoke(fs) })
 	const app = appBundleFromMemory({
 		id: 'com.example.app',
 		name: 'App',
@@ -130,9 +133,37 @@ test('smoke test kernel', async () => {
 	).rejects.toThrow(/invalid params for increment/)
 })
 
+test('kernel attaches appId and the app-declared scopes to capability calls', async () => {
+	// The trust boundary moved into the kernel: the host executor receives the
+	// appId and the scopes the app DECLARED (volume → ['app'], test → []), read
+	// from the bundle — never whatever the isolate forwards.
+	const fs = volume(memStorage())
+	const calls: Array<{ appId: string; capability: string; scopes: readonly string[] }> = []
+	const k = kernel({
+		fs,
+		sandbox: sandboxFor(),
+		clock,
+		capabilityInvoke: async (req) => {
+			calls.push({ appId: req.appId, capability: req.capability, scopes: req.scopes })
+			return req.capability === 'test' ? req.input : undefined
+		}
+	})
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+
+	await k.dispatch(appId, { type: 'write', params: { text: 'hi' }, actor: 'agent' })
+	await k.dispatch(appId, { type: 'ask', params: { text: 'x' }, actor: 'agent' })
+
+	expect(calls).toEqual([
+		{ appId: 'com.example.app', capability: 'volume', scopes: ['app'] },
+		{ appId: 'com.example.app', capability: 'test', scopes: [] }
+	])
+})
+
 test('serializes concurrent dispatches — no lost update', async () => {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilityInvoke: hostInvoke(fs) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	)
@@ -153,7 +184,7 @@ test('serializes concurrent dispatches — no lost update', async () => {
 
 test('settled resolves with the converged state at a version', async () => {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilityInvoke: hostInvoke(fs) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	)
@@ -179,7 +210,7 @@ test('settled resolves with the converged state at a version', async () => {
 
 test('settled rejects when the version can never be reached', async () => {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilityInvoke: hostInvoke(fs) })
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	)
@@ -213,7 +244,7 @@ test('install rejects invalid listed file path', async () => {
 
 test('uninstall removes bundle, state, and data', async () => {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilityInvoke: hostInvoke(fs) })
 	const app = appBundleFromMemory({
 		id: 'com.example.app',
 		name: 'App',
@@ -253,7 +284,7 @@ test('install rejects missing app entry', async () => {
 
 test('failed reinstall preserves the existing app', async () => {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox: sandboxFor(fs), clock })
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilityInvoke: hostInvoke(fs) })
 	await k.install(appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code }))
 
 	await expect(

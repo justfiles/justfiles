@@ -69,8 +69,9 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		if (!deps.loader) throw new Error('LOADER binding unavailable')
 		kernelInstance = kernel({
 			fs: deps.fs,
-			sandbox: workerSandbox(deps.loader, { capabilities: invokeCapability }),
-			clock: {}
+			sandbox: workerSandbox(deps.loader),
+			clock: {},
+			capabilityInvoke: invokeCapability
 		})
 		return kernelInstance
 	}

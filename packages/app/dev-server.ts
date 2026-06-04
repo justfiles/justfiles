@@ -17,27 +17,16 @@ export interface DevServerOptions {
 	gui: string // browser bundle entry, relative to vite root
 }
 
-function sandboxFor(fs: Volume): GetSandbox {
-	return async ({ appId, code }) => {
+function sandboxFor(): GetSandbox {
+	return async ({ code }) => {
 		const mod = await import(
 			/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 		)
 		if (typeof mod.app !== 'object') throw new Error('app module must export an object named "app"')
 		return {
-			run: (action, ctx) =>
-				mod.app.dispatch(action, {
-					...ctx,
-					capabilityInvoke: (req: {
-						capability: string
-						method: string
-						input: unknown
-						scopes: readonly string[]
-					}) => {
-						if (req.capability === 'volume') return invokeVolume(fs, appId, req)
-						throw new Error(`capability unavailable: ${req.capability}`)
-					}
-				}),
-			actions: async () => mod.app.actions ?? {}
+			run: (action, ctx) => mod.app.dispatch(action, ctx),
+			actions: async () => mod.app.actions ?? {},
+			capabilities: async () => mod.app.capabilities ?? {}
 		}
 	}
 }
@@ -174,7 +163,15 @@ export async function createDevServer(
 	opts: DevServerOptions
 ): Promise<Connect.NextHandleFunction> {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox: sandboxFor(fs), clock: {} })
+	const k = kernel({
+		fs,
+		sandbox: sandboxFor(),
+		clock: {},
+		capabilityInvoke: (req) => {
+			if (req.capability === 'volume') return invokeVolume(fs, req.appId, req)
+			throw new Error(`capability unavailable: ${req.capability}`)
+		}
+	})
 	const appId = await k.install(
 		appBundleFromMemory({
 			id: opts.id,

@@ -14,6 +14,7 @@ import { app } from './app.js'
 export default class extends WorkerEntrypoint {
 	dispatch(action, ctx) { return app.dispatch(action, ctx) }
 	actions() { return app.actions ?? {} }
+	capabilities() { return app.capabilities ?? {} }
 }`
 
 // Content-addressed so identical app code reuses the loaded isolate
@@ -25,7 +26,11 @@ async function cacheKey(code: string): Promise<string> {
 	return `kernel-${hex.slice(0, 16)}`
 }
 
-type Dispatcher = { dispatch: Sandbox['run']; actions?: Sandbox['actions'] }
+type Dispatcher = {
+	dispatch: Sandbox['run']
+	actions?: Sandbox['actions']
+	capabilities?: Sandbox['capabilities']
+}
 
 // Structural — only what we use. Kept free of the generated `WorkerLoader`
 // global so the adapter type-checks both in the worker project and when
@@ -41,20 +46,8 @@ type Loader = {
 	get(name: string | null, getCode: () => Promise<WorkerCode>): { getEntrypoint(): unknown }
 }
 
-type CapabilityInvocation = {
-	capability: string
-	method: string
-	input: unknown
-	scopes: readonly string[]
-	actor?: string
-}
-
-type WorkerSandboxOptions = {
-	capabilities?: (req: CapabilityInvocation & { appId: string }) => Promise<unknown>
-}
-
-export function workerSandbox(loader: Loader, options: WorkerSandboxOptions = {}): GetSandbox {
-	return async ({ appId, code }) => {
+export function workerSandbox(loader: Loader): GetSandbox {
+	return async ({ code }) => {
 		const stub = loader.get(await cacheKey(code), async () => ({
 			compatibilityDate: '2026-04-10',
 			mainModule: 'entry.js',
@@ -63,13 +56,12 @@ export function workerSandbox(loader: Loader, options: WorkerSandboxOptions = {}
 			globalOutbound: null
 		}))
 		const entry = stub.getEntrypoint() as unknown as Dispatcher
-		const capabilities = options.capabilities
-		const capabilityInvoke = capabilities
-			? (req: CapabilityInvocation) => capabilities({ ...req, appId })
-			: undefined
+		// The kernel owns the capability callback now: it rides in `ctx`
+		// (alongside `setState`) and the kernel attaches trusted scopes + appId.
 		return {
-			run: (action, ctx) => entry.dispatch(action, { ...ctx, capabilityInvoke }),
-			actions: () => entry.actions?.() ?? Promise.resolve({})
+			run: (action, ctx) => entry.dispatch(action, ctx),
+			actions: () => entry.actions?.() ?? Promise.resolve({}),
+			capabilities: () => entry.capabilities?.() ?? Promise.resolve({})
 		}
 	}
 }

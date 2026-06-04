@@ -181,6 +181,11 @@ export interface App<
 	Caps extends CapabilityRequests = NoCapabilities
 > {
 	actions: Record<keyof Acts & string, ActionMeta>
+	// Declared capabilities as runtime data: local name → { id, scopes }. The
+	// kernel reads this (never the scopes the isolate forwards) to attach the
+	// app's declared, trusted scopes to every capability invocation, and to
+	// reject calls to capabilities the app never declared (Part B).
+	capabilities: Record<string, { id: string; scopes: readonly string[] }>
 	// Phantom carriers — only used by the type-level `Client<A>` extractor.
 	readonly __acts?: Acts
 	readonly __capabilities?: Caps

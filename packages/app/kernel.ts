@@ -20,13 +20,30 @@ interface System {
 	fs: Volume
 	sandbox: GetSandbox
 	clock: Clock
+	// The host's capability executor. The kernel owns it — apps never receive
+	// it directly. Before each call the kernel attaches the app's DECLARED
+	// scopes (not what the isolate claims) and its appId, so a compromised
+	// isolate cannot escalate scope or reach an undeclared capability.
+	capabilityInvoke?: HostCapabilityInvoke
 }
+
+export type HostCapabilityInvoke = (req: {
+	appId: string
+	capability: string
+	method: string
+	input: unknown
+	scopes: readonly string[]
+	actor?: string
+}) => Promise<unknown>
 
 export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
 
 export type Sandbox = {
 	run(message: Message, ctx: RuntimeContext): Promise<DispatchResult<unknown>>
 	actions?(): Promise<Record<string, ActionMeta>>
+	// Declared capabilities (local name → { id, scopes }). The kernel reads
+	// these to attach trusted scopes; mirrors `actions()` as a bundle accessor.
+	capabilities?(): Promise<Record<string, { id: string; scopes: readonly string[] }>>
 }
 type Clock = object
 
@@ -94,7 +111,7 @@ function appRoot(appId: AppId): string {
 	return `/applications/${appId}`
 }
 
-export function kernel({ fs, sandbox }: System): Kernel {
+export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): Kernel {
 	const handlers = new Set<KernelEventHandler>()
 	// channel -> apps that declared an `on` handler for it. Lazily populated
 	// on first emit by scanning installed apps' action keys; kept fresh by
@@ -107,6 +124,11 @@ export function kernel({ fs, sandbox }: System): Kernel {
 	// and recomputed from zero on boot (like `subscriptionIndex`).
 	const queues = new Map<AppId, Promise<void>>()
 	const seqs = new Map<AppId, number>()
+	// Per-app declared capability scopes (id → trusted scopes), read from the
+	// bundle. Memoized like `subscriptionIndex`/`seqs` — in-memory, recomputed
+	// on boot, dropped on (re)install/uninstall since the bundle's declarations
+	// can change.
+	const declaredScopes = new Map<AppId, Promise<Map<string, readonly string[]>>>()
 	return {
 		install,
 		uninstall,
@@ -135,6 +157,49 @@ export function kernel({ fs, sandbox }: System): Kernel {
 			)
 		)
 		return run
+	}
+
+	// Resolve the app's declared capability scopes, keyed by capability id (the
+	// id the isolate's proxy forwards). Memoized per app; uses the already-loaded
+	// sandbox so there's no extra boundary round-trip beyond the first call.
+	function appScopes(appId: AppId, sb: Sandbox): Promise<Map<string, readonly string[]>> {
+		let cached = declaredScopes.get(appId)
+		if (!cached) {
+			cached = Promise.resolve(sb.capabilities?.()).then((declared) => {
+				const byId = new Map<string, readonly string[]>()
+				for (const name in declared) {
+					const cap = declared[name]
+					if (cap) byId.set(cap.id, cap.scopes)
+				}
+				return byId
+			})
+			declaredScopes.set(appId, cached)
+		}
+		return cached
+	}
+
+	// The isolate-facing capability callback. The app names a capability (by the
+	// id its proxy forwards); the kernel ignores any scopes the isolate claims,
+	// attaches the app's declared scopes, and rejects undeclared capabilities —
+	// this is the trust boundary moving from the sandbox into the kernel.
+	async function trustedInvoke(
+		appId: AppId,
+		sb: Sandbox,
+		host: HostCapabilityInvoke
+	): Promise<NonNullable<RuntimeContext['capabilityInvoke']>> {
+		const scopes = await appScopes(appId, sb)
+		return (req) => {
+			const granted = scopes.get(req.capability)
+			if (!granted) throw new Error(`undeclared capability: ${req.capability}`)
+			return host({
+				appId,
+				capability: req.capability,
+				method: req.method,
+				input: req.input,
+				scopes: granted,
+				actor: req.actor
+			})
+		}
 	}
 
 	async function settled(appId: AppId, seq: number, opts?: { timeout?: number }): Promise<unknown> {
@@ -275,6 +340,8 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		// Otherwise we'll build it lazily on the first emit.
 		dropFromIndex(appId)
 		if (subscriptionIndex) await indexApp(subscriptionIndex, appId)
+		// The bundle changed — its declared capabilities may have too.
+		declaredScopes.delete(appId)
 
 		return appId
 	}
@@ -284,6 +351,7 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		await fs.rm(`/state/${appId}.json`, { force: true })
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		dropFromIndex(appId)
+		declaredScopes.delete(appId)
 	}
 
 	// Public dispatch is serialized per app; the actual work is `dispatchNow`.
@@ -311,7 +379,8 @@ export function kernel({ fs, sandbox }: System): Kernel {
 		const sb = await sandbox({ appId, code: text(await app.read(app.manifest.app)) })
 		const out = await sb.run(message, {
 			state: current,
-			setState: saveState
+			setState: saveState,
+			capabilityInvoke: hostInvoke ? await trustedInvoke(appId, sb, hostInvoke) : undefined
 		})
 		// Handlers populate `state`; queries don't. Only persist + push when
 		// the action declared itself as a state-mutating handler — that's

@@ -145,6 +145,16 @@ export function defineApp<
 	}
 	const edges = (spec.update?.(edgeBuilder) ?? {}) as Record<string, Edge<State>>
 
+	// Declared capabilities surfaced as runtime data so the kernel can attach
+	// trusted scopes server-side (Part B). The factory already resolved each
+	// to { id, scopes }; we just expose the local-name → { id, scopes } map.
+	const caps = (spec.capabilities ?? {}) as Capabilities
+	const declaredCapabilities: Record<string, { id: string; scopes: readonly string[] }> = {}
+	for (const name in caps) {
+		const cap = caps[name]
+		if (cap) declaredCapabilities[name] = { id: cap.id, scopes: cap.scopes }
+	}
+
 	const meta = {} as Record<string, ActionMeta>
 	// Keep `__event/*` entries in the sandbox-visible meta so the kernel
 	// can build its subscription index. The kernel's public `actions(appId)`
@@ -169,6 +179,7 @@ export function defineApp<
 	}
 	return {
 		actions: meta as Record<keyof Acts & string, ActionMeta>,
+		capabilities: declaredCapabilities,
 		async dispatch(message: Message, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
 			// Pure-core edges take precedence over legacy actions. A public
 			// edge validates its schema; an internal `__cmd/<edge>` result is
