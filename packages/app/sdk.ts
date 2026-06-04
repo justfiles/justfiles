@@ -6,6 +6,8 @@ import type {
 	App,
 	Context,
 	DispatchResult,
+	Edge,
+	Edges,
 	HandlerDef,
 	Message,
 	OnHandlers,
@@ -51,8 +53,15 @@ interface AppSpec<
 	// Callback receives the State/Caps-bound builder. This is the standard
 	// trick (tRPC, Convex) for inferring per-action schema and return types
 	// in one shot while letting the surrounding defineApp call drive
-	// State/Caps inference from `init`/`capabilities`.
-	actions: (b: Builder<State, Caps>) => Acts
+	// State/Caps inference from `init`/`capabilities`. Optional so a pure-core
+	// app may define only `update`.
+	actions?: (b: Builder<State, Caps>) => Acts
+	// Pure-core edge table (Part A). One `update` map of pure edges
+	// `(state, payload) → state | [state, command]`. Public edges declare a
+	// schema via `t.on`; internal edges receive a typed capability result via
+	// `t.fromResult`. Additive — an app may use `actions`, `update`, or both
+	// during migration; edges take precedence in dispatch.
+	update?: (t: Edges<State, Caps>) => Record<string, Edge<State>>
 	// Declarative event subscriptions. Keys are the names declared in
 	// `capabilities`; per-event handlers receive the payload type from the
 	// capability contract and the same `ctx` regular actions get. The kernel
@@ -66,6 +75,24 @@ interface AppSpec<
 // Kept short — appears in every dispatched event and in the subscription
 // index that maps channel → app subscribers.
 export const EVENT_ACTION_PREFIX = '__event/'
+
+// Capability results re-enter the reducer as `__cmd/<edge>` messages (the
+// kernel runs the command, then dispatches the result; Part B). The prefix
+// keeps internal `fromResult` edges off the public, schema-validated path:
+// a public `on` edge matches only its plain name, a result edge only `__cmd/`.
+const CMD_RESULT_PREFIX = '__cmd/'
+
+function resolveEdge<State>(
+	edges: Record<string, Edge<State>>,
+	type: string
+): Edge<State> | undefined {
+	if (type.startsWith(CMD_RESULT_PREFIX)) {
+		const edge = edges[type.slice(CMD_RESULT_PREFIX.length)]
+		return edge?.__edge === 'result' ? edge : undefined
+	}
+	const edge = edges[type]
+	return edge?.__edge === 'on' ? edge : undefined
+}
 
 const passthroughSchema: StandardSchemaV1 = {
 	'~standard': {
@@ -84,7 +111,7 @@ export function defineApp<
 		handler: (def) => ({ __kind: 'handler', ...def }),
 		query: (def) => ({ __kind: 'query', ...def })
 	}
-	const acts = spec.actions(builder) as Record<string, ActionDef<State, Caps>>
+	const acts = (spec.actions?.(builder) ?? {}) as Record<string, ActionDef<State, Caps>>
 	// Compose `on`-handlers into the same action table under
 	// `__event/<cap>.<event>` keys. Payload validation is intentionally
 	// skipped — the kernel routes only events the capability contract
@@ -107,6 +134,17 @@ export function defineApp<
 		}
 	}
 
+	// Pure-core edges (Part A). The builder erases payload types into the
+	// stored `Edge<State>`; `cmd` returns command data. `fromResult`'s
+	// capability/method are compile-time only (they type the payload) — the
+	// kernel routes results by edge name, so the runtime ignores them here.
+	const edgeBuilder: Edges<State, Caps> = {
+		on: (schema, transition) => ({ __edge: 'on', schema, transition }),
+		fromResult: (_capability, _method, transition) => ({ __edge: 'result', transition }),
+		cmd: (capability, method, input, to) => ({ kind: 'capability', capability, method, input, to })
+	}
+	const edges = (spec.update?.(edgeBuilder) ?? {}) as Record<string, Edge<State>>
+
 	const meta = {} as Record<string, ActionMeta>
 	// Keep `__event/*` entries in the sandbox-visible meta so the kernel
 	// can build its subscription index. The kernel's public `actions(appId)`
@@ -121,9 +159,36 @@ export function defineApp<
 			schemaHint: schemaHint(def.schema)
 		}
 	}
+	// Public edges (those with a schema) join the action surface as handlers;
+	// internal `fromResult` edges are routed by the kernel and stay off the
+	// public, agent-visible list.
+	for (const type in edges) {
+		const edge = edges[type]
+		if (!edge || edge.__edge !== 'on' || !edge.schema) continue
+		meta[type] = { kind: 'handler', schemaHint: schemaHint(edge.schema) }
+	}
 	return {
 		actions: meta as Record<keyof Acts & string, ActionMeta>,
 		async dispatch(message: Message, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
+			// Pure-core edges take precedence over legacy actions. A public
+			// edge validates its schema; an internal `__cmd/<edge>` result is
+			// passed through. The transition is synchronous and effect-free —
+			// it returns the next state and, optionally, a command to run.
+			const edge = resolveEdge(edges, message.type)
+			if (edge) {
+				let payload: unknown = message.params
+				if (edge.schema) {
+					const r = await edge.schema['~standard'].validate(message.params)
+					if (r.issues)
+						throw new Error(
+							`invalid params for ${message.type}: ${r.issues.map((i) => i.message).join('; ')}`
+						)
+					payload = r.value
+				}
+				const out = edge.transition(ctx.state ?? spec.init, payload)
+				const [state, command] = Array.isArray(out) ? out : [out]
+				return { state, command, result: state }
+			}
 			const def = acts[message.type]
 			if (!def) throw new Error(`unknown action: ${message.type}`)
 			const r = await def.schema['~standard'].validate(message.params)

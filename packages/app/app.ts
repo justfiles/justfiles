@@ -32,6 +32,10 @@ export interface ActionMeta {
 // new state, for queries it's whatever the query returned.
 export interface DispatchResult<State> {
 	state?: State
+	// A side effect the edge emitted (pure core). The kernel executes it and
+	// routes the result back as another message (Part B); until then it is
+	// simply surfaced here. Absent for queries and non-emitting transitions.
+	command?: Command
 	result: unknown
 }
 
@@ -73,6 +77,68 @@ export type OnHandlers<State, Caps extends CapabilityRequests> = {
 			ctx: Context<State, Caps>
 		) => MaybePromise<State>
 	}
+}
+
+// ----- pure core (Part A) -----
+// The state machine is `init` + one `update` table of pure edges. An edge is
+// `(state, payload) → state | [state, command]`: synchronous, no `ctx`, no
+// capabilities. Effects are described as data (Command) and run by the kernel.
+
+// A side effect described as data. `capability` names a LOCAL capability (the
+// app's declared key); the kernel resolves the trusted id + scopes and runs
+// it, routing the result to the `to` edge as a `__cmd/<to>` message.
+export type Command =
+	| { kind: 'none' }
+	| { kind: 'batch'; commands: Command[] }
+	| { kind: 'capability'; capability: string; method: string; input: unknown; to: string }
+
+// What a `fromResult` edge receives once a capability call settles.
+export type Result<T> = { ok: true; value: T } | { ok: false; error: { message: string } }
+
+// One edge of the machine: pure and synchronous. Returns the next state, or
+// the next state plus a command to run.
+export type Transition<State, Payload> = (
+	state: State,
+	payload: Payload
+) => State | [State, Command]
+
+// Per-capability method input/output, derived from the contract interface.
+type MethodInput<M, K extends keyof M> = M[K] extends (input: infer I) => unknown ? I : never
+type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => Promise<infer O>
+	? O
+	: never
+
+// Stored shape of an edge in the `update` table. `schema` is present iff the
+// edge is public (declared via `t.on`); `__edge` discriminates the dispatch
+// path. The payload type is erased here — inference happens in the `Edges`
+// builder methods below, at the authoring call site.
+export interface Edge<State> {
+	readonly __edge: 'on' | 'result'
+	schema?: StandardSchemaV1
+	transition: Transition<State, any>
+}
+
+// The `t` builder passed to `update`. Each constructor infers its payload
+// type from a schema or a capability contract; all return the erased
+// `Edge<State>` the table stores.
+export interface Edges<State, Caps extends CapabilityRequests> {
+	// public edge — declares an input schema, so it IS the external API
+	// (validated, agent-visible, consumer-dispatchable)
+	on<S extends StandardSchemaV1>(schema: S, transition: Transition<State, Infer<S>>): Edge<State>
+	// internal edge — payload is a capability result, typed from the contract
+	fromResult<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
+		capability: C,
+		method: M,
+		transition: Transition<State, Result<MethodOutput<MethodsOf<Caps[C]>, M>>>
+	): Edge<State>
+	// build a capability command; `input` is typed from the contract and `to`
+	// names the edge that receives the result
+	cmd<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
+		capability: C,
+		method: M,
+		input: MethodInput<MethodsOf<Caps[C]>, M>,
+		to: string
+	): Command
 }
 
 // HandlerDef / QueryDef live here (not in sdk.ts) so the App<> bound can
