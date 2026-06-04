@@ -98,17 +98,17 @@ type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => Promi
 	? O
 	: never
 
-// Stored shape of an edge in the `update` table. `schema` is present iff the
-// edge is public (declared via `t.on`); `__edge` discriminates the dispatch
-// path. `S` carries the public edge's schema type so `Client<A>` can infer its
-// params — it is `undefined` for internal `fromResult` edges. The payload type
-// of the transition is erased; inference happens in the `Edges` builder methods
-// below, at the authoring call site.
+// Stored shape of an edge in the `update` table. `schema` is present at runtime
+// for `on` and `commit` edges (both validate input); `__edge` discriminates the
+// dispatch path. `S` carries the schema type into `Client<A>` only for public
+// `on` edges — it is erased (`Edge<State>`) for internal `fromResult`/`commit`
+// edges so they never reach the typed client. The transition's payload type is
+// erased; inference happens in the `Edges` builder methods below.
 export interface Edge<
 	State,
 	S extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined
 > {
-	readonly __edge: 'on' | 'result'
+	readonly __edge: 'on' | 'result' | 'commit'
 	// Readonly so a concrete `Edge<State, Schema>` stays assignable to the
 	// `Edge<State>` bound (covariant in `S`) — lets the table type be captured
 	// without an `any` in the constraint.
@@ -132,6 +132,16 @@ export interface Edges<State, Caps extends CapabilityRequests> {
 		transition: Transition<State, Infer<S>>,
 		meta?: { description?: string; examples?: ActionExample[] }
 	): Edge<State, S>
+	// internal commit edge — validated like `on`, but kept OFF the public/agent
+	// action surface AND the typed client. Only the app's own procedures dispatch
+	// it by name (via `app.dispatch`), to commit a result they computed off to the
+	// side (a fully-built puzzle, a recorded build outcome). Returns the erased
+	// `Edge<State>` so its schema rides at runtime for validation but never
+	// surfaces on `Client<A>`.
+	commit<S extends StandardSchemaV1>(
+		schema: S,
+		transition: Transition<State, Infer<S>>
+	): Edge<State>
 	// internal edge — payload is a capability result, typed from the contract
 	fromResult<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
 		capability: C,

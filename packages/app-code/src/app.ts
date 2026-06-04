@@ -143,14 +143,17 @@ export const app = defineApp({
 			}
 		),
 		// Commit the opened-project snapshot (dispatched by the `open` procedure).
-		opened: t.on(openedSchema, (state, snapshot) => ({ ...normalizeState(state), ...snapshot })),
+		opened: t.commit(openedSchema, (state, snapshot) => ({
+			...normalizeState(state),
+			...snapshot
+		})),
 		// Record a build outcome; leaves `sourceHash` alone (write owns it).
-		recordBuild: t.on(v.object({ build: buildSchema }), (state, { build }) => ({
+		recordBuild: t.commit(v.object({ build: buildSchema }), (state, { build }) => ({
 			...normalizeState(state),
 			build
 		})),
 		// Record the recomputed source hash after a write.
-		recordHash: t.on(v.object({ sourceHash: v.string() }), (state, { sourceHash }) => ({
+		recordHash: t.commit(v.object({ sourceHash: v.string() }), (state, { sourceHash }) => ({
 			...normalizeState(state),
 			sourceHash
 		}))

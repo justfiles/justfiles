@@ -83,7 +83,10 @@ function resolveEdge<State>(
 		return edge?.__edge === 'result' ? edge : undefined
 	}
 	const edge = edges[type]
-	return edge?.__edge === 'on' ? edge : undefined
+	// `commit` edges resolve here too — a procedure dispatches them by name. They
+	// are kept off the published action surface (below), so only the app's own
+	// procedures reach them; an agent can't forge state through one directly.
+	return edge?.__edge === 'on' || edge?.__edge === 'commit' ? edge : undefined
 }
 
 export function defineApp<
@@ -104,6 +107,7 @@ export function defineApp<
 			examples: meta?.examples,
 			transition
 		}),
+		commit: (schema, transition) => ({ __edge: 'commit', schema, transition }),
 		fromResult: (_capability, _method, transition) => ({ __edge: 'result', transition }),
 		cmd: (capability, method, input, to) => ({ kind: 'capability', capability, method, input, to })
 	}
@@ -142,9 +146,10 @@ export function defineApp<
 	// build its subscription index. The kernel's public `actions(appId)` API
 	// filters them out before exposing to agents.
 	for (const type in events) meta[type] = { kind: 'handler' }
-	// Public edges (those with a schema) join the action surface as handlers;
-	// internal `fromResult` edges are routed by the kernel and stay off the
-	// public, agent-visible list.
+	// Only public `on` edges (those with a schema) join the action surface as
+	// handlers. Internal `fromResult` and `commit` edges are not `__edge: 'on'`,
+	// so they stay off the public, agent-visible list — a `commit` edge is
+	// reachable only by the app's own procedures dispatching it by name.
 	for (const type in edges) {
 		const edge = edges[type]
 		if (!edge || edge.__edge !== 'on' || !edge.schema) continue

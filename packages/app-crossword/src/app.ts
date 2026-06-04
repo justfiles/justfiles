@@ -162,7 +162,7 @@ export const app = defineApp({
 	init: initialState,
 	capabilities: { ai: ai({ scopes: [] }) },
 	update: (t) => ({
-		play: t.on(playSchema, (_state, { theme, grid, slots, entries }) =>
+		play: t.commit(playSchema, (_state, { theme, grid, slots, entries }) =>
 			playState(theme, grid, slots, entries)
 		),
 		seeds: t.on(

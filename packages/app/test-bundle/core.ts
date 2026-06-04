@@ -22,6 +22,13 @@ export const app = defineApp({
 			{ ...state, loading: true, error: null },
 			t.cmd('volume', 'scan', { path: '/', recursive: true }, 'filesLoaded')
 		]),
+		// internal commit edge — a procedure dispatches this by name to commit a
+		// value it computed off to the side. Validated like `on`, but kept off the
+		// public/agent action surface (only the app's own procedures reach it).
+		loaded: t.commit(
+			v.object({ files: v.array(v.object({ path: v.string() })) }),
+			(state, { files }) => ({ ...state, loading: false, error: null, files })
+		),
 		// internal edge — fed by a capability result; `r` is typed from volume.scan
 		filesLoaded: t.fromResult('volume', 'scan', (state, r) =>
 			r.ok
