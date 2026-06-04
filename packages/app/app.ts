@@ -17,10 +17,14 @@ export interface ActionExample {
 }
 
 // `kind` lets agents and tooling distinguish state-mutating handlers from
-// pure-read queries. A handler returns the next state; a query returns an
-// arbitrary value and never persists.
+// pure-read queries and from procedures (the imperative facade). A handler
+// returns the next state; a query returns an arbitrary value and never
+// persists; a procedure drives the reducer and returns a value to its caller.
 export interface ActionMeta {
-	kind: 'handler' | 'query'
+	kind: 'handler' | 'query' | 'procedure'
+	// Set only for procedures — see ProcedureAudience. The kernel uses it to
+	// hide 'gui' procedures from the agent's tool list.
+	audience?: ProcedureAudience
 	description?: string
 	examples?: ActionExample[]
 	schemaHint?: unknown
@@ -46,6 +50,7 @@ type CapabilityRequest<
 > = ReturnType<CapabilityFactory<Id, Methods, Events>>
 type CapabilityRequests = Record<string, CapabilityRequest>
 type NoCapabilities = Record<string, never>
+type NoProcedures = Record<string, never>
 type CapabilityInvocation = {
 	capability: string
 	method: string
@@ -141,6 +146,72 @@ export interface Edges<State, Caps extends CapabilityRequests> {
 	): Command
 }
 
+// ----- procedures (Part C) -----
+// The imperative facade. An async function over an AppHandle that drives the
+// reducer and reads capabilities, returning a value to its caller. ONE
+// definition serves the GUI (via the client) and the agent (auto-exposed as a
+// tool). Optional — an app with none still works through the dispatch default
+// (a plain agent dispatch resolves with the settled state).
+
+// What a procedure receives to drive the app. Data-only against the kernel:
+// `dispatch` and `read` round-trip through the kernel (which owns trust), so a
+// procedure stays imperative without ever holding a capability or touching
+// reducer purity. Procedures are never serialized — they suspend at `settled`.
+export interface AppHandle<State, Caps extends CapabilityRequests = NoCapabilities> {
+	readonly state: State
+	dispatch(message: Message): Promise<{ seq: number }>
+	settled(seq: number, opts?: { timeout?: number }): Promise<State>
+	// Kernel-mediated, scope-checked capability invocation — the typed
+	// replacement for the legacy `ctx.capabilities.<name>.<method>(...)`, and the
+	// procedure-side parallel to the reducer's `cmd`: `cmd` routes the result
+	// back INTO state, `invoke` returns it TO the caller. `capability` is the
+	// app's LOCAL name; the kernel resolves the trusted id + scopes; `input` and
+	// the result are typed from the contract (same machinery as `cmd`).
+	invoke<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
+		capability: C,
+		method: M,
+		input: MethodInput<MethodsOf<Caps[C]>, M>
+	): Promise<MethodOutput<MethodsOf<Caps[C]>, M>>
+}
+
+// The Caps-erased handle the kernel builds and forwards across the sandbox
+// boundary (RPC / postMessage). The infra calls `invoke` with plain strings
+// (the kernel resolves the trusted id + scopes at runtime); the bundle re-types
+// it as the per-app `AppHandle<State, Caps>` so the typed capability surface
+// lives at the author's `run`, not in this generic plumbing.
+export interface RawAppHandle {
+	readonly state: unknown
+	dispatch(message: Message): Promise<{ seq: number }>
+	settled(seq: number, opts?: { timeout?: number }): Promise<unknown>
+	invoke(capability: string, method: string, input: unknown): Promise<unknown>
+}
+
+// 'gui' procedures are hidden from the agent's tool surface; 'agent' ones are
+// not offered to the GUI client at runtime; 'both' (default) serves either.
+export type ProcedureAudience = 'gui' | 'agent' | 'both'
+
+export interface ProcedureDef<
+	S extends StandardSchemaV1,
+	State,
+	Caps extends CapabilityRequests,
+	R
+> {
+	readonly __kind: 'procedure'
+	audience: ProcedureAudience
+	description?: string
+	schema: S
+	run: (params: Infer<S>, app: AppHandle<State, Caps>) => MaybePromise<R>
+}
+
+// `any` in the schema slot keeps the bound bivariant — a specific procedure's
+// `ProcedureDef<ObjectSchema, …>` stays assignable to it despite `S` appearing
+// in `run`'s param (mirrors the `any` trick on ActionDef). The inferred `Procs`
+// at the call site keeps the precise schema for `Client<A>`.
+export type ProcedureDefs<State, Caps extends CapabilityRequests = CapabilityRequests> = Record<
+	string,
+	ProcedureDef<any, State, Caps, any>
+>
+
 // HandlerDef / QueryDef live here (not in sdk.ts) so the App<> bound can
 // be `Record<string, ActionDef<...>>` — without the cycle that would arise
 // from app.ts importing from sdk.ts.
@@ -178,9 +249,12 @@ export type ActionDef<State, Caps extends CapabilityRequests = CapabilityRequest
 export interface App<
 	State,
 	Acts extends Record<string, ActionDef<State, Caps>>,
-	Caps extends CapabilityRequests = NoCapabilities
+	Caps extends CapabilityRequests = NoCapabilities,
+	Procs extends ProcedureDefs<State, Caps> = NoProcedures
 > {
-	actions: Record<keyof Acts & string, ActionMeta>
+	// Public surface as runtime meta: edges/handlers/queries AND procedures
+	// (kind 'procedure'). The kernel routes a dispatch by name against this.
+	actions: Record<string, ActionMeta>
 	// Declared capabilities as runtime data: local name → { id, scopes }. The
 	// kernel reads this (never the scopes the isolate forwards) to attach the
 	// app's declared, trusted scopes to every capability invocation, and to
@@ -189,7 +263,12 @@ export interface App<
 	// Phantom carriers — only used by the type-level `Client<A>` extractor.
 	readonly __acts?: Acts
 	readonly __capabilities?: Caps
+	readonly __procs?: Procs
 	dispatch: (message: Message, ctx: RuntimeContext<State>) => Promise<DispatchResult<State>>
+	// Run a declared procedure: validate params, then call its `run` with the
+	// handle. The kernel hands in a `RawAppHandle` across the (dynamic) sandbox
+	// boundary; the bundle sees it as the typed `AppHandle<State, Caps>`.
+	runProcedure: (name: string, params: unknown, app: AppHandle<State, Caps>) => Promise<unknown>
 }
 
 export interface Context<State = unknown, Caps extends CapabilityRequests = NoCapabilities> {

@@ -31,7 +31,8 @@ const sandbox: GetSandbox = async ({ code }) => {
 	return {
 		run: (message, ctx) => mod.app.dispatch(message, ctx),
 		actions: async () => mod.app.actions ?? {},
-		capabilities: async () => mod.app.capabilities ?? {}
+		capabilities: async () => mod.app.capabilities ?? {},
+		runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle)
 	}
 }
 

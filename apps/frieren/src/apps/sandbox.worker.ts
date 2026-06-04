@@ -1,4 +1,4 @@
-import type { GetSandbox, Sandbox } from '@justfiles/app'
+import type { GetSandbox, Message, RawAppHandle, Sandbox } from '@justfiles/app'
 import {
 	capabilityError,
 	fromWireError,
@@ -18,11 +18,25 @@ type CapabilityInvocation = {
 	actor?: string
 }
 
+// Worker→host frames: replies to a request (`result`/`error`) and the
+// host-calls a running dispatch/procedure makes back into the kernel. The
+// reducer path uses `setState`/`capability`; a procedure (Part C) uses
+// `dispatch`/`settled`/`invoke`, serviced by the handle stored on the request.
 type WorkerMessage =
 	| { type: 'result'; id: string; result: unknown }
 	| { type: 'error'; id: string; error: WireError }
 	| { type: 'setState'; id: string; callId: string; state: unknown }
 	| { type: 'capability'; id: string; callId: string; req: CapabilityInvocation }
+	| { type: 'dispatch'; id: string; callId: string; message: Message }
+	| { type: 'settled'; id: string; callId: string; seq: number; opts?: { timeout?: number } }
+	| {
+			type: 'invoke'
+			id: string
+			callId: string
+			capability: string
+			method: string
+			input: unknown
+	  }
 
 type HostContext = Parameters<Sandbox['run']>[1]
 
@@ -30,6 +44,7 @@ type Pending = {
 	resolve: (value: unknown) => void
 	reject: (error: Error) => void
 	ctx?: HostContext
+	handle?: RawAppHandle
 }
 
 // One Web Worker per distinct app bundle (content hash), shared across every
@@ -49,7 +64,7 @@ export function browserSandbox(): GetSandbox {
 			// The kernel owns the capability callback now — it rides in `ctx`
 			// (with `setState`) and is bridged to the worker over postMessage.
 			run: (action, ctx) =>
-				worker.request('dispatch', { action, state: ctx.state }, ctx) as Promise<
+				worker.request('dispatch', { action, state: ctx.state }, { ctx }) as Promise<
 					Awaited<ReturnType<Sandbox['run']>>
 				>,
 			actions: () =>
@@ -59,7 +74,11 @@ export function browserSandbox(): GetSandbox {
 			capabilities: () =>
 				worker.request('capabilities', {}) as Promise<
 					Awaited<ReturnType<NonNullable<Sandbox['capabilities']>>>
-				>
+				>,
+			// Procedure (Part C): only the state snapshot crosses to the worker; the
+			// handle's dispatch/settled/read are serviced back over postMessage.
+			runProcedure: (name, params, handle) =>
+				worker.request('runProcedure', { name, params, state: handle.state }, { handle })
 		}
 	}
 }
@@ -120,13 +139,13 @@ class WorkerClient {
 	}
 
 	request(
-		type: 'dispatch' | 'actions' | 'capabilities',
+		type: 'dispatch' | 'actions' | 'capabilities' | 'runProcedure',
 		payload: object,
-		ctx?: HostContext
+		services?: { ctx?: HostContext; handle?: RawAppHandle }
 	): Promise<unknown> {
 		const id = String(this.nextId++)
 		return new Promise((resolve, reject) => {
-			this.pending.set(id, { resolve, reject, ctx })
+			this.pending.set(id, { resolve, reject, ctx: services?.ctx, handle: services?.handle })
 			this.worker.postMessage({ type, id, ...payload })
 		})
 	}
@@ -156,6 +175,18 @@ class WorkerClient {
 					if (!pending?.ctx?.capabilityInvoke) throw capabilityError('CAPABILITY_UNAVAILABLE')
 					reply('hostResult', await pending.ctx.capabilityInvoke(message.req))
 					return
+				} else if (message.type === 'dispatch') {
+					reply('hostResult', await handleOf(pending).dispatch(message.message))
+					return
+				} else if (message.type === 'settled') {
+					reply('hostResult', await handleOf(pending).settled(message.seq, message.opts))
+					return
+				} else if (message.type === 'invoke') {
+					reply(
+						'hostResult',
+						await handleOf(pending).invoke(message.capability, message.method, message.input)
+					)
+					return
 				}
 				reply('hostResult', undefined)
 			} catch (error) {
@@ -163,6 +194,11 @@ class WorkerClient {
 			}
 		})()
 	}
+}
+
+function handleOf(pending: Pending | undefined): RawAppHandle {
+	if (!pending?.handle) throw new Error('procedure handle unavailable')
+	return pending.handle
 }
 
 function workerSource(appUrl: string): string {
@@ -205,6 +241,21 @@ self.onmessage = async (event) => {
 		}
 		if (msg.type === 'capabilities') {
 			self.postMessage({ type: 'result', id: msg.id, result: app.capabilities ?? {} })
+			return
+		}
+		if (msg.type === 'runProcedure') {
+			const handle = {
+				state: msg.state,
+				dispatch: (message) => hostCall(msg.id, 'dispatch', { message }),
+				settled: (seq, opts) => hostCall(msg.id, 'settled', { seq, opts }),
+				invoke: (capability, method, input) =>
+					hostCall(msg.id, 'invoke', { capability, method, input })
+			}
+			self.postMessage({
+				type: 'result',
+				id: msg.id,
+				result: await app.runProcedure(msg.name, msg.params, handle)
+			})
 			return
 		}
 		const result = await app.dispatch(msg.action, {

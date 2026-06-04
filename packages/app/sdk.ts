@@ -4,6 +4,7 @@ import type {
 	ActionExample,
 	ActionMeta,
 	App,
+	AppHandle,
 	Context,
 	DispatchResult,
 	Edge,
@@ -11,6 +12,9 @@ import type {
 	HandlerDef,
 	Message,
 	OnHandlers,
+	ProcedureAudience,
+	ProcedureDef,
+	ProcedureDefs,
 	QueryDef,
 	RuntimeContext
 } from './app.ts'
@@ -43,10 +47,24 @@ export interface Builder<State, Caps extends Capabilities> {
 	}): QueryDef<S, State, Caps, R>
 }
 
+// `p.procedure({...})` — the imperative facade (Part C). `run` receives the
+// validated params and an AppHandle bound to State. Bound to State/Caps by the
+// surrounding `defineApp`, so each call only infers the per-procedure schema S
+// and return type R (preserved for `Client<A>`).
+export interface Procedures<State, Caps extends Capabilities> {
+	procedure<S extends StandardSchemaV1, R>(def: {
+		audience?: ProcedureAudience
+		description?: string
+		schema: S
+		run: (params: Infer<S>, app: AppHandle<State, Caps>) => MaybePromise<R>
+	}): ProcedureDef<S, State, Caps, R>
+}
+
 interface AppSpec<
 	State,
 	Acts extends Record<string, ActionDef<State, Caps>>,
-	Caps extends Capabilities
+	Caps extends Capabilities,
+	Procs extends ProcedureDefs<State, Caps>
 > {
 	init: State
 	capabilities?: Caps
@@ -69,6 +87,11 @@ interface AppSpec<
 	// — so event handlers go through the same schema-less fast-path as
 	// regular dispatches and emit `app.update` on every state change.
 	on?: OnHandlers<State, Caps>
+	// Procedures (Part C) — the optional imperative facade. Same builder trick
+	// as `actions`: the callback receives the State/Caps-bound `p` so each
+	// procedure's schema and return type infer per call. Apps that need none
+	// omit it entirely.
+	procedures?: (p: Procedures<State, Caps>) => Procs
 }
 
 // Synthetic action key namespace for kernel-routed capability events.
@@ -106,8 +129,9 @@ const passthroughSchema: StandardSchemaV1 = {
 export function defineApp<
 	State,
 	Acts extends Record<string, ActionDef<State, Caps>>,
-	Caps extends Capabilities = Record<string, never>
->(spec: AppSpec<State, Acts, Caps>): App<State, Acts, Caps> {
+	Caps extends Capabilities = Record<string, never>,
+	Procs extends ProcedureDefs<State, Caps> = Record<string, never>
+>(spec: AppSpec<State, Acts, Caps, Procs>): App<State, Acts, Caps, Procs> {
 	const builder: Builder<State, Caps> = {
 		handler: (def) => ({ __kind: 'handler', ...def }),
 		query: (def) => ({ __kind: 'query', ...def })
@@ -178,9 +202,39 @@ export function defineApp<
 		if (!edge || edge.__edge !== 'on' || !edge.schema) continue
 		meta[type] = { kind: 'handler', schemaHint: schemaHint(edge.schema) }
 	}
+
+	// Procedures (Part C). The builder stamps the default audience; their meta
+	// joins the same `actions` map with `kind: 'procedure'`, so the kernel can
+	// route a dispatch to `runProcedure` by name and the agent can list them.
+	const procBuilder: Procedures<State, Caps> = {
+		procedure: (def) => ({ __kind: 'procedure', audience: def.audience ?? 'both', ...def })
+	}
+	const procs = (spec.procedures?.(procBuilder) ?? {}) as ProcedureDefs<State, Caps>
+	for (const name in procs) {
+		const def = procs[name]
+		if (!def) continue
+		meta[name] = {
+			kind: 'procedure',
+			audience: def.audience,
+			description: def.description,
+			schemaHint: schemaHint(def.schema)
+		}
+	}
 	return {
-		actions: meta as Record<keyof Acts & string, ActionMeta>,
+		actions: meta,
 		capabilities: declaredCapabilities,
+		async runProcedure(name, params, app): Promise<unknown> {
+			const def = procs[name]
+			if (!def) throw new Error(`unknown procedure: ${name}`)
+			const schema = def.schema as StandardSchemaV1
+			const r = await schema['~standard'].validate(params)
+			if (r.issues)
+				throw new Error(`invalid params for ${name}: ${r.issues.map((i) => i.message).join('; ')}`)
+			// The kernel can't default `state` to `init` (init lives here, in the
+			// bundle), so fold it in — matching the reducer's `ctx.state ?? init`.
+			const handle = app.state == null ? { ...app, state: spec.init } : app
+			return def.run(r.value as never, handle)
+		},
 		async dispatch(message: Message, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
 			// Pure-core edges take precedence over legacy actions. A public
 			// edge validates its schema; an internal `__cmd/<edge>` result is
@@ -335,10 +389,21 @@ type ResultOf<Def, State> =
 			? State
 			: never
 
+// Procedures are addressed by the same client/transport as actions; their
+// params come from the schema and the result is the `run` return type.
+type ProcParamsOf<Def> =
+	Def extends ProcedureDef<infer S, infer _ST, infer _C, infer _R> ? Infer<S> : never
+type ProcResultOf<Def> =
+	Def extends ProcedureDef<infer _S, infer _ST, infer _C, infer R> ? Awaited<R> : never
+
 export type Client<A> =
-	A extends App<infer State, infer Acts, infer _Caps>
+	A extends App<infer State, infer Acts, infer _Caps, infer Procs>
 		? {
 				[K in keyof Acts & string]: (params: ParamsOf<Acts[K]>) => Promise<ResultOf<Acts[K], State>>
+			} & {
+				[K in keyof Procs & string]: (
+					params: ProcParamsOf<Procs[K]>
+				) => Promise<ProcResultOf<Procs[K]>>
 			}
 		: never
 

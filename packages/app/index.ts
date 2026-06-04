@@ -1,6 +1,7 @@
 export {
 	type ActionMeta,
 	type AppBundle,
+	type AppHandle,
 	type AppManifest,
 	appBundleFromMemory,
 	type BuiltinBundle,
@@ -8,6 +9,7 @@ export {
 	type Kernel,
 	kernel,
 	type Message,
+	type RawAppHandle,
 	type Sandbox,
 	safeBundlePath
 } from './kernel.ts'

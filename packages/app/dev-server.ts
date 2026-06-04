@@ -26,7 +26,8 @@ function sandboxFor(): GetSandbox {
 		return {
 			run: (action, ctx) => mod.app.dispatch(action, ctx),
 			actions: async () => mod.app.actions ?? {},
-			capabilities: async () => mod.app.capabilities ?? {}
+			capabilities: async () => mod.app.capabilities ?? {},
+			runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle)
 		}
 	}
 }

@@ -76,12 +76,16 @@ export const app = defineApp({
 			handler(_, ctx) {
 				return { ...ctx.state, currentViewing: null, error: null }
 			}
-		}),
-		readFile: b.query({
+		})
+	}),
+	// A caller-scoped read (Part C): the bytes return to the caller, never into
+	// state. The kernel attaches the declared scopes to `app.invoke`.
+	procedures: (p) => ({
+		readFile: p.procedure({
 			description: 'Read a file as text, capped at the preview limit.',
 			schema: v.object({ path: pathSchema }),
-			async handler({ path }, ctx) {
-				const bytes = await ctx.capabilities.volume.readFile({ path })
+			async run({ path }, app) {
+				const bytes = await app.invoke('volume', 'readFile', { path })
 				const truncated = bytes.byteLength > PREVIEW_LIMIT
 				const slice = truncated ? bytes.subarray(0, PREVIEW_LIMIT) : bytes
 				return { path, content: decoder.decode(slice), truncated }

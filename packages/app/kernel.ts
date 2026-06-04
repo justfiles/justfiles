@@ -7,12 +7,21 @@ import type {
 	DispatchResult,
 	InstalledApp,
 	Message,
+	RawAppHandle,
 	RuntimeContext
 } from './app.ts'
 import { safeBundlePath } from './app.ts'
 import { CMD_RESULT_PREFIX, EVENT_ACTION_PREFIX } from './sdk.ts'
 
-export type { ActionMeta, AppBundle, AppManifest, BuiltinBundle, Message } from './app.ts'
+export type {
+	ActionMeta,
+	AppBundle,
+	AppHandle,
+	AppManifest,
+	BuiltinBundle,
+	Message,
+	RawAppHandle
+} from './app.ts'
 // `install(app: AppBundle)` and `dispatch(appId, message: Message)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
 export { appBundleFromMemory, safeBundlePath } from './app.ts'
@@ -45,6 +54,10 @@ export type Sandbox = {
 	// Declared capabilities (local name → { id, scopes }). The kernel reads
 	// these to attach trusted scopes; mirrors `actions()` as a bundle accessor.
 	capabilities?(): Promise<Record<string, { id: string; scopes: readonly string[] }>>
+	// Run a declared procedure (Part C). The kernel builds the `app` handle and
+	// invokes this OUTSIDE the dispatch queue; the handle's `dispatch`/`read`
+	// round-trip back into the kernel.
+	runProcedure?(name: string, params: unknown, app: RawAppHandle): Promise<unknown>
 }
 type Clock = object
 
@@ -141,6 +154,11 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		AppId,
 		Promise<Record<string, { id: string; scopes: readonly string[] }>>
 	>()
+	// Per-app set of procedure names (Part C), derived once from the bundle's
+	// action meta (kind 'procedure'). Lets `dispatch` route a procedure call off
+	// the queue without an `actions()` RPC per dispatch. Memoized like
+	// `declaredCaps` — recomputed on boot, dropped on (re)install/uninstall.
+	const procNames = new Map<AppId, Promise<Set<string>>>()
 	// In-flight command tracking. A command runs OUTSIDE the dispatch queue (so
 	// a slow capability never blocks the GUI), but `settled` must still wait for
 	// the whole cascade — emit → run → result re-enters → maybe emits again — to
@@ -202,6 +220,48 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 			declaredCaps.set(appId, cached)
 		}
 		return cached
+	}
+
+	// The procedure names an app declares (Part C). Filtered from the bundle's
+	// action meta; memoized so routing in `dispatch` is a synchronous set lookup
+	// after the first (shared) load. The shared promise keeps concurrent first
+	// dispatches in registration order, so enqueue ordering is preserved.
+	function proceduresOf(appId: AppId): Promise<Set<string>> {
+		let cached = procNames.get(appId)
+		if (!cached) {
+			cached = (async () => {
+				const meta = await allActions(appId)
+				const set = new Set<string>()
+				for (const type in meta) if (meta[type]?.kind === 'procedure') set.add(type)
+				return set
+			})()
+			procNames.set(appId, cached)
+		}
+		return cached
+	}
+
+	// Kernel-mediated capability invocation for a procedure's `app.invoke(...)`.
+	// Same trust boundary as the command executor: the app names a LOCAL
+	// capability, the kernel resolves the trusted id + declared scopes — never
+	// the isolate.
+	async function invokeCapability(
+		appId: AppId,
+		capability: string,
+		method: string,
+		input: unknown,
+		actor?: string
+	): Promise<unknown> {
+		const declared = (await appCapabilities(appId))[capability]
+		if (!declared) throw new Error(`undeclared capability: ${capability}`)
+		if (!hostInvoke) throw new Error('capability execution unavailable')
+		return hostInvoke({
+			appId,
+			capability: declared.id,
+			method,
+			input,
+			scopes: declared.scopes,
+			actor
+		})
 	}
 
 	// The isolate-facing capability callback for the legacy async-handler path.
@@ -474,8 +534,9 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		// Otherwise we'll build it lazily on the first emit.
 		dropFromIndex(appId)
 		if (subscriptionIndex) await indexApp(subscriptionIndex, appId)
-		// The bundle changed — its declared capabilities may have too.
+		// The bundle changed — its declared capabilities and procedures may have too.
 		declaredCaps.delete(appId)
+		procNames.delete(appId)
 
 		return appId
 	}
@@ -486,14 +547,44 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		dropFromIndex(appId)
 		declaredCaps.delete(appId)
+		procNames.delete(appId)
 	}
 
-	// Public dispatch is serialized per app; the actual work is `dispatchNow`.
+	// Public dispatch. The queue is occupied SYNCHRONOUSLY (before any await) so a
+	// fire-and-forget `dispatch` is immediately visible to `settled`. The queued
+	// router then decides: a procedure (Part C) is a caller that must block
+	// nothing — it is kicked off OUTSIDE the queue and the slot returns at once,
+	// so it never deadlocks against its own `settled`. A plain message runs
+	// serialized via `dispatchNow`; the agent default is that a plain agent
+	// dispatch which changed state resolves with the SETTLED state (act →
+	// converged model), while the GUI gets the immediate result and renders via
+	// push.
 	function dispatch(appId: AppId, message: Message): Promise<unknown> {
-		return enqueue(appId, () => dispatchNow(appId, message))
+		let settle!: (value: unknown) => void
+		let reject!: (error: unknown) => void
+		const result = new Promise<unknown>((res, rej) => {
+			settle = res
+			reject = rej
+		})
+		enqueue(appId, async () => {
+			if ((await proceduresOf(appId)).has(message.type)) {
+				// Off-queue: kick it off, return so the slot frees immediately.
+				runProcedure(appId, message).then(settle, reject)
+				return
+			}
+			const committed = await dispatchNow(appId, message)
+			// Settle off-queue too — `settled` waits for the queue to drain, so
+			// awaiting it inside the slot would deadlock.
+			if (message.actor === 'agent' && committed.state !== undefined)
+				settled(appId, committed.seq).then(settle, reject)
+			else settle(committed.result)
+		}).catch(reject)
+		return result
 	}
 
-	async function dispatchNow(appId: AppId, message: Message): Promise<unknown> {
+	type Committed = { result: unknown; state?: unknown; seq: number }
+
+	async function dispatchNow(appId: AppId, message: Message): Promise<Committed> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
 
@@ -517,9 +608,10 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		// the action declared itself as a state-mutating handler — that's
 		// what keeps query-style reads (e.g. Finder's readFile) from
 		// ballooning state with file content.
+		let seq = seqs.get(appId) ?? 0
 		if (out.state !== undefined) {
 			await saveState(out.state)
-			const seq = (seqs.get(appId) ?? 0) + 1
+			seq += 1
 			seqs.set(appId, seq)
 			emit({ type: 'app.update', appId, state: out.state as AppState, seq })
 		}
@@ -527,7 +619,24 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		// committed and OUTSIDE this critical section, so a slow capability
 		// can't stall the queue; its result re-enters as a `__cmd/<to>` message.
 		if (out.command) scheduleCommand(appId, out.command, message.actor)
-		return out.result
+		return { result: out.result, state: out.state, seq }
+	}
+
+	// Run a procedure (Part C). The handle drives the reducer (each `dispatch`
+	// re-enters the per-app queue and reports its `seq`), waits via `settled`,
+	// and reads capabilities through the kernel — all without the procedure
+	// itself occupying the queue, so a long procedure never freezes the GUI.
+	async function runProcedure(appId: AppId, message: Message): Promise<unknown> {
+		const sb = await loadSandbox(appId)
+		if (!sb.runProcedure) throw new Error(`procedures unsupported by sandbox: ${appId}`)
+		const handle: RawAppHandle = {
+			state: await loadState(appId),
+			dispatch: (m) => enqueue(appId, () => dispatchNow(appId, m)).then(({ seq }) => ({ seq })),
+			settled: (seq, opts) => settled(appId, seq, opts),
+			invoke: (capability, method, input) =>
+				invokeCapability(appId, capability, method, input, message.actor)
+		}
+		return sb.runProcedure(message.type, message.params, handle)
 	}
 
 	async function state(appId: AppId): Promise<unknown> {
@@ -544,6 +653,9 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		const out: Record<string, ActionMeta> = {}
 		for (const type in all) {
 			if (type.startsWith(EVENT_ACTION_PREFIX)) continue
+			// 'gui' procedures are for the GUI client only — keep them off the
+			// agent's tool surface (Part C audience).
+			if (all[type]?.audience === 'gui') continue
 			out[type] = all[type] as ActionMeta
 		}
 		return out
