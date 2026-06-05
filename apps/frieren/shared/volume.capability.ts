@@ -67,6 +67,22 @@ export async function invokeVolume(
 	}
 }
 
+// Stream side of the volume capability (Part D): open a `volume.watch` on the
+// scope-resolved volume and forward each change event. Returns the unsubscribe
+// the kernel calls when the subscription leaves the app's declared set.
+export async function streamVolume(
+	fs: Volume,
+	req: { appId: string; method: string; input: unknown; scopes: readonly string[] },
+	emit: (event: unknown) => void
+): Promise<() => void> {
+	if (req.method !== 'watch') throw unavailable(req.method)
+	const { vol, root } = resolveVolume(fs, req.appId, req.scopes)
+	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
+	const input = (req.input ?? {}) as { path?: unknown }
+	if (typeof input.path !== 'string') throw invalid(req.method)
+	return vol.watch(input.path, (event) => emit(event))
+}
+
 async function mkdirParent(vol: Volume, path: string): Promise<void> {
 	const parent = path.split('/').slice(0, -1).join('/')
 	if (parent) await vol.mkdir(parent, { recursive: true })

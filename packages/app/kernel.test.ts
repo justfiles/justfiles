@@ -20,7 +20,8 @@ const code = compile(source)
 
 function sandboxFor(): GetSandbox {
 	return async ({ code }) => {
-		const mod = await import(`data:text/javascript;base64,${btoa(code)}`)
+		// Buffer (not btoa) so non-Latin1 bytes in the bundle survive the data URL.
+		const mod = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 		const app = mod.app
 		if (typeof app !== 'object') {
 			throw new Error(`app module must export an object named "app"`)

@@ -1,6 +1,6 @@
 import { type Kernel, kernel } from '@justfiles/app'
 import type { Volume } from '@justfiles/fs'
-import { invokeClientCapability } from './capabilities.client'
+import { invokeClientCapability, streamClientCapability } from './capabilities.client'
 import { browserSandbox } from './sandbox.worker'
 
 export function createClientKernel(options: {
@@ -11,6 +11,7 @@ export function createClientKernel(options: {
 		fs: options.fs,
 		sandbox: browserSandbox(),
 		clock: {},
-		capabilityInvoke: (req) => invokeClientCapability(options.fs, options.getToken, req)
+		capabilityInvoke: (req) => invokeClientCapability(options.fs, options.getToken, req),
+		capabilityStream: (req, emit) => streamClientCapability(options.fs, req, emit)
 	})
 }

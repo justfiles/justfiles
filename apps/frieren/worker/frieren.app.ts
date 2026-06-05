@@ -3,7 +3,7 @@ import type { Volume } from '@justfiles/fs'
 import { bundleFromZip } from '../shared/app-bundle.ts'
 import { appFileUrl, CATALOG_PATH, type Catalog, reconcileBuiltins } from '../shared/appstore.ts'
 import { capabilityError, toWireError } from '../shared/capability-error.ts'
-import { invokeVolume } from '../shared/volume.capability.ts'
+import { invokeVolume, streamVolume } from '../shared/volume.capability.ts'
 import type { AppController } from './bash/commands/app.ts'
 import type { Integrations } from './integrations/registry.ts'
 import { invokeIntegrations } from './integrations.capability.ts'
@@ -71,7 +71,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			fs: deps.fs,
 			sandbox: workerSandbox(deps.loader),
 			clock: {},
-			capabilityInvoke: invokeCapability
+			capabilityInvoke: invokeCapability,
+			capabilityStream: streamCapability
 		})
 		return kernelInstance
 	}
@@ -132,6 +133,23 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			if (!registry) throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 			return invokeIntegrations(registry, req)
 		}
+		throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
+	}
+
+	// Stream side of the capability boundary (Part D). Only `volume` streams today
+	// (`watch`), served against the user's synced volume — the same bridge that
+	// carries the agent's edits into the browser as REMOTE_SOURCE writes.
+	function streamCapability(
+		req: {
+			capability: string
+			method: string
+			input: unknown
+			scopes: readonly string[]
+			appId: string
+		},
+		emit: (event: unknown) => void
+	): Promise<() => void> {
+		if (req.capability === 'volume') return streamVolume(deps.fs, req, emit)
 		throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 	}
 

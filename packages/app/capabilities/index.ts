@@ -6,5 +6,6 @@ export {
 	type CapabilityBridge,
 	type CapabilityFactory,
 	type CapabilityScope,
-	defineCapability
+	defineCapability,
+	type Stream
 } from './core.ts'

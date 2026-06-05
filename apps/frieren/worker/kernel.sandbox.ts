@@ -16,6 +16,7 @@ export default class extends WorkerEntrypoint {
 	actions() { return app.actions ?? {} }
 	capabilities() { return app.capabilities ?? {} }
 	runProcedure(name, params, handle) { return app.runProcedure(name, params, handle) }
+	subscriptions(state) { return app.subscriptions?.(state) ?? [] }
 }`
 
 // Content-addressed so identical app code reuses the loaded isolate
@@ -32,6 +33,7 @@ type Dispatcher = {
 	actions?: Sandbox['actions']
 	capabilities?: Sandbox['capabilities']
 	runProcedure: NonNullable<Sandbox['runProcedure']>
+	subscriptions?: Sandbox['subscriptions']
 }
 
 // Structural — only what we use. Kept free of the generated `WorkerLoader`
@@ -64,6 +66,7 @@ export function workerSandbox(loader: Loader): GetSandbox {
 			run: (action, ctx) => entry.dispatch(action, ctx),
 			actions: () => entry.actions?.() ?? Promise.resolve({}),
 			capabilities: () => entry.capabilities?.() ?? Promise.resolve({}),
+			subscriptions: (state) => entry.subscriptions?.(state) ?? Promise.resolve([]),
 			// The handle's dispatch/settled/read cross back into the kernel as RPC
 			// stubs (same mechanism as ctx.setState/capabilityInvoke).
 			runProcedure: (name, params, handle) => entry.runProcedure(name, params, handle)

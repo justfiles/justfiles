@@ -3,16 +3,16 @@ import type {
 	ActionMeta,
 	App,
 	AppHandle,
-	Context,
 	DispatchResult,
 	Edge,
 	Edges,
 	Message,
-	OnHandlers,
 	ProcedureAudience,
 	ProcedureDef,
 	ProcedureDefs,
-	RuntimeContext
+	RuntimeContext,
+	Subs,
+	Subscription
 } from './app.ts'
 
 type MaybePromise<T> = T | Promise<T>
@@ -50,22 +50,18 @@ interface AppSpec<
 	// receive a typed capability result via `t.fromResult`. The returned table's
 	// type is captured as `E` so each public edge surfaces on `Client<A>`.
 	update?: (t: Edges<State, Caps>) => E
-	// Declarative event subscriptions. Keys are the names declared in
-	// `capabilities`; per-event handlers receive the payload type from the
-	// capability contract and the current state. The kernel dispatches each event
-	// as a synthetic action `__event/<cap>.<event>`, emitting `app.update` on
-	// every state change.
-	on?: OnHandlers<State, Caps>
+	// Declarative stream subscriptions (Part D) — a PURE function of state. Returns
+	// the ongoing streams the current state declares (via the `sub` builder, typed
+	// against `capabilities`). The kernel diffs this set on every commit, starting/
+	// stopping host streams by structural key, and routes each emitted event to the
+	// `t.fromEvent` edge named by its `to`. Optional — apps that need no live stream
+	// omit it. Recoverable by construction: rebuilt from persisted state on boot.
+	subscriptions?: (state: State, sub: Subs<Caps>) => Subscription[]
 	// Procedures (Part C) — the optional imperative facade. The callback receives
 	// the State/Caps-bound `p` so each procedure's schema and return type infer
 	// per call. Apps that need none omit it entirely.
 	procedures?: (p: Procedures<State, Caps>) => Procs
 }
-
-// Synthetic action key namespace for kernel-routed capability events.
-// Kept short — appears in every dispatched event and in the subscription
-// index that maps channel → app subscribers.
-export const EVENT_ACTION_PREFIX = '__event/'
 
 // Capability results re-enter the reducer as `__cmd/<edge>` messages (the
 // kernel runs the command, then dispatches the result; Part B). The prefix
@@ -74,6 +70,12 @@ export const EVENT_ACTION_PREFIX = '__event/'
 // Exported so the kernel's command executor can address result edges by name.
 export const CMD_RESULT_PREFIX = '__cmd/'
 
+// Stream events re-enter the reducer as `__sub/<edge>` messages (Part D). The
+// kernel keeps a `subscriptions(state)` stream alive and routes each emitted
+// event here; the prefix keeps internal `fromEvent` edges off the public path,
+// exactly like `__cmd/` for results. Exported so the kernel can address them.
+export const SUB_EVENT_PREFIX = '__sub/'
+
 function resolveEdge<State>(
 	edges: Record<string, Edge<State>>,
 	type: string
@@ -81,6 +83,10 @@ function resolveEdge<State>(
 	if (type.startsWith(CMD_RESULT_PREFIX)) {
 		const edge = edges[type.slice(CMD_RESULT_PREFIX.length)]
 		return edge?.__edge === 'result' ? edge : undefined
+	}
+	if (type.startsWith(SUB_EVENT_PREFIX)) {
+		const edge = edges[type.slice(SUB_EVENT_PREFIX.length)]
+		return edge?.__edge === 'event' ? edge : undefined
 	}
 	const edge = edges[type]
 	// `commit` edges resolve here too — a procedure dispatches them by name. They
@@ -109,27 +115,22 @@ export function defineApp<
 		}),
 		commit: (schema, transition) => ({ __edge: 'commit', schema, transition }),
 		fromResult: (_capability, _method, transition) => ({ __edge: 'result', transition }),
+		// `fromEvent` mirrors `fromResult`: capability/method type the payload at
+		// compile time; the kernel routes events by edge name, so they're dropped
+		// at runtime. The edge folds a stream event into state (Part D).
+		fromEvent: (_capability, _method, transition) => ({ __edge: 'event', transition }),
 		cmd: (capability, method, input, to) => ({ kind: 'capability', capability, method, input, to })
 	}
 	const edges = (spec.update?.(edgeBuilder) ?? {}) as Record<string, Edge<State>>
 
-	// `on`-handlers route as synthetic `__event/<cap>.<event>` messages. They
-	// take the current state and return the next — no schema (the kernel only
-	// fans events the capability contract declares, so the payload type is
-	// already pinned at compile time).
-	const onSpec = (spec.on ?? {}) as Record<
-		string,
-		Record<string, (event: unknown, ctx: Context<State>) => MaybePromise<State>> | undefined
-	>
-	const events: Record<string, (event: unknown, ctx: Context<State>) => MaybePromise<State>> = {}
-	for (const capName in onSpec) {
-		const evMap = onSpec[capName]
-		if (!evMap) continue
-		for (const evName in evMap) {
-			const handler = evMap[evName]
-			if (handler) events[`${EVENT_ACTION_PREFIX}${capName}.${evName}`] = handler
-		}
+	// `subscriptions(state)` is a pure function of state returning declared
+	// streams (Part D). The `sub` builder mirrors `cmd` — it just packages the
+	// stream descriptor as data; the kernel resolves trust and keeps it alive.
+	const subBuilder: Subs<Caps> = {
+		capability: (capability, method, input, to) => ({ capability, method, input, to })
 	}
+	const computeSubs = (state: State): Subscription[] =>
+		spec.subscriptions?.(state, subBuilder) ?? []
 
 	// Declared capabilities surfaced as runtime data so the kernel can attach
 	// trusted scopes server-side (Part B). The factory already resolved each
@@ -142,10 +143,6 @@ export function defineApp<
 	}
 
 	const meta = {} as Record<string, ActionMeta>
-	// Keep `__event/*` entries in the sandbox-visible meta so the kernel can
-	// build its subscription index. The kernel's public `actions(appId)` API
-	// filters them out before exposing to agents.
-	for (const type in events) meta[type] = { kind: 'handler' }
 	// Only public `on` edges (those with a schema) join the action surface as
 	// handlers. Internal `fromResult` and `commit` edges are not `__edge: 'on'`,
 	// so they stay off the public, agent-visible list — a `commit` edge is
@@ -181,6 +178,13 @@ export function defineApp<
 	return {
 		actions: meta,
 		capabilities: declaredCapabilities,
+		// The boot/warm path: the kernel asks for the streams a persisted state
+		// declares. `state` may be undefined before the first dispatch — default to
+		// `init`, matching the reducer. The hot path instead folds the set into the
+		// dispatch result below, so a state-changing dispatch needs no extra call.
+		subscriptions(state): Subscription[] {
+			return computeSubs(state ?? spec.init)
+		},
 		async runProcedure(name, params, app): Promise<unknown> {
 			const def = procs[name]
 			if (!def) throw new Error(`unknown procedure: ${name}`)
@@ -194,32 +198,27 @@ export function defineApp<
 			return def.run(r.value as never, handle)
 		},
 		async dispatch(message: Message, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
-			// A public edge validates its schema; an internal `__cmd/<edge>` result
-			// is passed through. The transition is synchronous and effect-free — it
+			// A public `on` edge validates its schema; an internal `__cmd/<edge>`
+			// result or `__sub/<edge>` event is passed through (its payload is already
+			// contract-typed). The transition is synchronous and effect-free — it
 			// returns the next state and, optionally, a command to run.
 			const edge = resolveEdge(edges, message.type)
-			if (edge) {
-				let payload: unknown = message.params
-				if (edge.schema) {
-					const r = await edge.schema['~standard'].validate(message.params)
-					if (r.issues)
-						throw new Error(
-							`invalid params for ${message.type}: ${r.issues.map((i) => i.message).join('; ')}`
-						)
-					payload = r.value
-				}
-				const out = edge.transition(ctx.state ?? spec.init, payload)
-				const [state, command] = Array.isArray(out) ? out : [out]
-				return { state, command, result: state }
+			if (!edge) throw new Error(`unknown action: ${message.type}`)
+			let payload: unknown = message.params
+			if (edge.schema) {
+				const r = await edge.schema['~standard'].validate(message.params)
+				if (r.issues)
+					throw new Error(
+						`invalid params for ${message.type}: ${r.issues.map((i) => i.message).join('; ')}`
+					)
+				payload = r.value
 			}
-			// `on`-event messages (`__event/<cap>.<event>`) carry a contract-typed
-			// payload, so they skip schema validation and just fold into state.
-			const event = events[message.type]
-			if (event) {
-				const state = await event(message.params, { state: ctx.state ?? spec.init })
-				return { state, result: state }
-			}
-			throw new Error(`unknown action: ${message.type}`)
+			const out = edge.transition(ctx.state ?? spec.init, payload)
+			const [state, command] = Array.isArray(out) ? out : [out]
+			// Fold the new state's declared streams into the result (Part D) — computed
+			// here in the isolate, so the kernel diffs without a second round-trip.
+			const subscriptions = state !== undefined ? computeSubs(state) : undefined
+			return { state, command, subscriptions, result: state }
 		}
 	}
 }

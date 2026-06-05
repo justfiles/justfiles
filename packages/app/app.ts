@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: variance-load-bearing — see Edge/ProcedureDefs comments
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { CapabilityFactory } from './capabilities/core.ts'
+import type { CapabilityFactory, Stream } from './capabilities/core.ts'
 
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
@@ -39,6 +39,10 @@ export interface DispatchResult<State> {
 	// routes the result back as another message (Part B); until then it is
 	// simply surfaced here. Absent for non-emitting transitions.
 	command?: Command
+	// The streams the NEW state declares (Part D), computed in-isolate alongside
+	// the reduce so the kernel diffs the set without a second round-trip. Present
+	// only when the transition produced a state; the kernel ignores it otherwise.
+	subscriptions?: Subscription[]
 	result: unknown
 }
 
@@ -52,22 +56,9 @@ type NoCapabilities = Record<string, never>
 type NoProcedures = Record<string, never>
 
 // Per-capability method map, used to type `t.cmd`/`t.fromResult`/`app.invoke`.
-type MethodsOf<C> = C extends CapabilityRequest<string, infer M, infer _E> ? M : never
-// Per-capability declared events — the kernel routes these into the app's
-// reducer via declared `on`-handlers (see OnHandlers below).
-export type EventsOf<C> = C extends CapabilityRequest<string, infer _M, infer E> ? E : never
-
-// `on` shape: keyed by capability name (from `capabilities`), then by event
-// name (from that capability's declared events). Both levels are optional —
-// handle what you care about, skip the rest.
-export type OnHandlers<State, Caps extends CapabilityRequests> = {
-	[C in keyof Caps & string]?: {
-		[E in keyof EventsOf<Caps[C]> & string]?: (
-			event: EventsOf<Caps[C]>[E],
-			ctx: Context<State>
-		) => MaybePromise<State>
-	}
-}
+type MethodsOf<C> = C extends CapabilityRequest<string, infer M, infer _S> ? M : never
+// Per-capability stream map (Part D), used to type `sub.capability`/`t.fromEvent`.
+type StreamsOf<C> = C extends CapabilityRequest<string, infer _M, infer S> ? S : never
 
 // ----- pure core (Part A) -----
 // The state machine is `init` + one `update` table of pure edges. An edge is
@@ -81,6 +72,19 @@ export type Command =
 	| { kind: 'none' }
 	| { kind: 'batch'; commands: Command[] }
 	| { kind: 'capability'; capability: string; method: string; input: unknown; to: string }
+
+// An ongoing stream the CURRENT state declares (Part D) — the dual of a Command
+// (which a transition emits one-shot). `subscriptions(state)` returns these;
+// the kernel diffs the set on every commit, starting/stopping host streams by
+// the structural key `{capability, method, input, to}`. Each emitted event
+// re-enters the reducer as a `__sub/<to>` message handled by a `t.fromEvent`
+// edge. `capability` names a LOCAL capability; the kernel resolves trust.
+export interface Subscription {
+	capability: string
+	method: string
+	input: unknown
+	to: string
+}
 
 // What a `fromResult` edge receives once a capability call settles.
 export type Result<T> = { ok: true; value: T } | { ok: false; error: { message: string } }
@@ -98,6 +102,14 @@ type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => Promi
 	? O
 	: never
 
+// Per-capability stream input/event, derived from the contract's `Stream` decl
+// (`name(input): Stream<Event>`). `StreamInput` types `sub.capability`'s input;
+// `StreamEvent` types the `t.fromEvent` edge's payload.
+type StreamInput<S, K extends keyof S> = S[K] extends (input: infer I) => unknown ? I : never
+type StreamEvent<S, K extends keyof S> = S[K] extends (...args: any[]) => Stream<infer E>
+	? E
+	: never
+
 // Stored shape of an edge in the `update` table. `schema` is present at runtime
 // for `on` and `commit` edges (both validate input); `__edge` discriminates the
 // dispatch path. `S` carries the schema type into `Client<A>` only for public
@@ -108,7 +120,7 @@ export interface Edge<
 	State,
 	S extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined
 > {
-	readonly __edge: 'on' | 'result' | 'commit'
+	readonly __edge: 'on' | 'result' | 'commit' | 'event'
 	// Readonly so a concrete `Edge<State, Schema>` stays assignable to the
 	// `Edge<State>` bound (covariant in `S`) — lets the table type be captured
 	// without an `any` in the constraint.
@@ -148,6 +160,14 @@ export interface Edges<State, Caps extends CapabilityRequests> {
 		method: M,
 		transition: Transition<State, Result<MethodOutput<MethodsOf<Caps[C]>, M>>>
 	): Edge<State, undefined>
+	// internal edge — payload is a capability STREAM event (Part D), typed from
+	// the contract's `Stream<Event>`. Fed by a `subscriptions(state)` entry the
+	// kernel keeps alive; events arrive as `__sub/<to>` messages.
+	fromEvent<C extends keyof Caps & string, M extends keyof StreamsOf<Caps[C]> & string>(
+		capability: C,
+		method: M,
+		transition: Transition<State, StreamEvent<StreamsOf<Caps[C]>, M>>
+	): Edge<State, undefined>
 	// build a capability command; `input` is typed from the contract and `to`
 	// names the edge that receives the result
 	cmd<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
@@ -156,6 +176,19 @@ export interface Edges<State, Caps extends CapabilityRequests> {
 		input: MethodInput<MethodsOf<Caps[C]>, M>,
 		to: string
 	): Command
+}
+
+// The `sub` builder passed to `subscriptions(state, sub)`. Mirrors `t.cmd` but
+// declares an ONGOING stream rather than a one-shot command: `input` is typed
+// from the contract's `Stream` decl and `to` names the `t.fromEvent` edge that
+// folds each event. The kernel resolves the trusted capability id + scopes.
+export interface Subs<Caps extends CapabilityRequests> {
+	capability<C extends keyof Caps & string, M extends keyof StreamsOf<Caps[C]> & string>(
+		capability: C,
+		method: M,
+		input: StreamInput<StreamsOf<Caps[C]>, M>,
+		to: string
+	): Subscription
 }
 
 // ----- procedures (Part C) -----
@@ -252,12 +285,10 @@ export interface App<
 	// handle. The kernel hands in a `RawAppHandle` across the (dynamic) sandbox
 	// boundary; the bundle sees it as the typed `AppHandle<State, Caps>`.
 	runProcedure: (name: string, params: unknown, app: AppHandle<State, Caps>) => Promise<unknown>
-}
-
-// The context an `on`-event handler receives: just the current state. Event
-// handlers return the next state (no `setState`, no capability proxy).
-export interface Context<State = unknown> {
-	readonly state: State
+	// The streams the given state declares (Part D). Pure: the kernel calls this
+	// after every commit, diffs the result against the running set, and starts/
+	// stops host streams accordingly. Empty (`[]`) when the app declares none.
+	subscriptions: (state: State) => Subscription[]
 }
 
 // What the kernel hands the bundle's `dispatch` across the sandbox boundary.

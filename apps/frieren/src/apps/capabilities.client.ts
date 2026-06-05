@@ -1,7 +1,7 @@
 import type { Volume } from '@justfiles/fs'
 import { capabilityError, fromWireError, type WireError } from '../../shared/capability-error.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
-import { invokeVolume } from '../../shared/volume.capability.ts'
+import { invokeVolume, streamVolume } from '../../shared/volume.capability.ts'
 import { flushActiveVolume } from '../fs.ts'
 
 type CapabilityInvocation = {
@@ -43,6 +43,21 @@ export async function invokeClientCapability(
 	}
 	const conn = await connection(getToken)
 	return conn.invoke(req)
+}
+
+// Stream side of the client capability boundary (Part D). `volume.watch` runs
+// against the LOCAL synced volume — the same single-file watch the host already
+// does by hand (host.ts watches `/state/<id>.json`) — so an app watching a
+// concrete file (e.g. its open document) catches the agent's REMOTE_SOURCE
+// writes to it for free. It is not recursive: a folder watch won't see child
+// writes. Network capability streams aren't needed yet.
+export function streamClientCapability(
+	fs: Volume,
+	req: CapabilityInvocation,
+	emit: (event: unknown) => void
+): Promise<() => void> {
+	if (req.capability === 'volume') return streamVolume(fs, req, emit)
+	throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 }
 
 // Drop the shared socket — called on OS teardown (sign-out / user switch) so a

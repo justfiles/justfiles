@@ -8,10 +8,11 @@ import type {
 	InstalledApp,
 	Message,
 	RawAppHandle,
-	RuntimeContext
+	RuntimeContext,
+	Subscription
 } from './app.ts'
 import { safeBundlePath } from './app.ts'
-import { CMD_RESULT_PREFIX, EVENT_ACTION_PREFIX } from './sdk.ts'
+import { CMD_RESULT_PREFIX, SUB_EVENT_PREFIX } from './sdk.ts'
 
 export type {
 	ActionMeta,
@@ -35,6 +36,11 @@ interface System {
 	// scopes (not what the isolate claims) and its appId, so a compromised
 	// isolate cannot escalate scope or reach an undeclared capability.
 	capabilityInvoke?: HostCapabilityInvoke
+	// The host's stream opener (Part D) — the streaming dual of `capabilityInvoke`.
+	// The kernel calls it to keep a `subscriptions(state)` stream alive, attaching
+	// the same trusted scopes/appId; `emit` feeds each event back into the reducer.
+	// Returns the unsubscribe the kernel calls when the stream leaves the set.
+	capabilityStream?: HostCapabilityStream
 }
 
 export type HostCapabilityInvoke = (req: {
@@ -45,6 +51,17 @@ export type HostCapabilityInvoke = (req: {
 	scopes: readonly string[]
 	actor?: string
 }) => Promise<unknown>
+
+export type HostCapabilityStream = (
+	req: {
+		appId: string
+		capability: string
+		method: string
+		input: unknown
+		scopes: readonly string[]
+	},
+	emit: (event: unknown) => void
+) => Promise<() => void>
 
 export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
 
@@ -58,11 +75,17 @@ export type Sandbox = {
 	// invokes this OUTSIDE the dispatch queue; the handle's `dispatch`/`read`
 	// round-trip back into the kernel.
 	runProcedure?(name: string, params: unknown, app: RawAppHandle): Promise<unknown>
+	// The streams the given state declares (Part D). The kernel calls this after
+	// every commit (and on boot) to diff the live stream set. Absent → no streams.
+	subscriptions?(state: unknown): Promise<Subscription[]>
 }
 type Clock = object
 
 type AppId = string
 type Unsubscribe = () => void
+// One running stream's teardown. `stop` is idempotent-safe: it flags the slot
+// stopped and calls the host unsubscribe once it has resolved (Part D).
+type RunningSub = { stop: () => void }
 
 export interface Kernel {
 	install: (app: AppBundle) => Promise<AppId> // after install, we get stable appId
@@ -80,11 +103,6 @@ export interface Kernel {
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher
-	// Notification-center entry point for capability impls. `channel` is
-	// `<capabilityId>.<eventName>` (matches the contract's declared events);
-	// the kernel dispatches a `__event/<channel>` synthetic action into each
-	// app whose reducer declared an `on`-handler for it.
-	emit: (channel: string, event: unknown) => Promise<void>
 }
 
 type AppState = object
@@ -122,10 +140,14 @@ function text(data: Uint8Array): string {
 	return new TextDecoder().decode(data)
 }
 
+function errMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
+}
+
 // Shape a thrown value (or message) into the `Result` error a `fromResult`
 // edge folds into state.
 function errResult(error: unknown): { ok: false; error: { message: string } } {
-	return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } }
+	return { ok: false, error: { message: errMessage(error) } }
 }
 
 function appRoot(appId: AppId): string {
@@ -133,12 +155,19 @@ function appRoot(appId: AppId): string {
 	return `/applications/${appId}`
 }
 
-export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): Kernel {
+export function kernel({
+	fs,
+	sandbox,
+	capabilityInvoke: hostInvoke,
+	capabilityStream: hostStream
+}: System): Kernel {
 	const handlers = new Set<KernelEventHandler>()
-	// channel -> apps that declared an `on` handler for it. Lazily populated
-	// on first emit by scanning installed apps' action keys; kept fresh by
-	// install/uninstall. In-memory only — recomputed on DO boot.
-	let subscriptionIndex: Map<string, Set<AppId>> | undefined
+	// Per-app running streams (Part D), keyed by the structural subscription key
+	// {capability,method,input,to}. The kernel diffs `subscriptions(state)`
+	// against this on every commit. In-memory only — rebuilt from persisted state
+	// on boot (the set is a pure function of state), so a DO hibernate/restart
+	// loses the host watchers and the next touch re-warms them.
+	const subs = new Map<AppId, Map<string, RunningSub>>()
 	// Per-app authoritative state, held in memory and written through to fs on
 	// every commit (durability + DO hibernation). Lazily hydrated from fs on
 	// first access; once cached, dispatch reads it directly instead of reloading
@@ -185,8 +214,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		actions,
 		subscribe,
 		app,
-		list,
-		emit: emitChannel
+		list
 	}
 
 	// Chain `task` after the app's current tail so per-app work is strictly
@@ -401,54 +429,133 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		for (const handler of [...handlers]) handler(event)
 	}
 
-	async function ensureSubscriptionIndex(): Promise<Map<string, Set<AppId>>> {
-		if (subscriptionIndex) return subscriptionIndex
-		const idx = new Map<string, Set<AppId>>()
-		for (const manifest of await list()) {
-			await indexApp(idx, manifest.id)
-		}
-		subscriptionIndex = idx
-		return idx
+	// ----- subscriptions (Part D) -----
+	// `subscriptions(state)` (in the bundle) declares the ongoing streams the
+	// current state wants. After every commit the kernel diffs that declared set
+	// against the running one — keyed structurally by {capability,method,input,to}
+	// — starting new streams and stopping gone ones. Each emitted event re-enters
+	// the reducer as a `__sub/<to>` message. Recoverable by construction: the set
+	// is a pure function of persisted state, so it is rebuilt on boot.
+
+	function subKey(sub: Subscription): string {
+		return JSON.stringify([sub.capability, sub.method, sub.input, sub.to])
 	}
 
-	async function indexApp(idx: Map<string, Set<AppId>>, appId: AppId): Promise<void> {
-		let meta: Record<string, ActionMeta>
-		try {
-			meta = await allActions(appId)
-		} catch {
-			return
+	// Converge the running set to the desired one (computed by the bundle). A pure
+	// synchronous diff: host stream starts are fire-and-forget, so a slow `watch`
+	// open never blocks. Always called inside the per-app queue (dispatchNow /
+	// ensureSubs) so diffs for one app never interleave.
+	function reconcileSubs(appId: AppId, desired: Subscription[]): void {
+		const want = new Map<string, Subscription>()
+		for (const sub of desired) want.set(subKey(sub), sub)
+		let running = subs.get(appId)
+		if (!running) {
+			running = new Map()
+			subs.set(appId, running)
 		}
-		for (const type in meta) {
-			if (!type.startsWith(EVENT_ACTION_PREFIX)) continue
-			const channel = type.slice(EVENT_ACTION_PREFIX.length)
-			const set = idx.get(channel) ?? new Set<AppId>()
-			set.add(appId)
-			idx.set(channel, set)
+		for (const [key, entry] of running) {
+			if (!want.has(key)) {
+				entry.stop()
+				running.delete(key)
+			}
 		}
+		for (const [key, sub] of want) if (!running.has(key)) startSub(appId, running, key, sub)
 	}
 
-	function dropFromIndex(appId: AppId): void {
-		if (!subscriptionIndex) return
-		for (const [channel, set] of subscriptionIndex) {
-			set.delete(appId)
-			if (set.size === 0) subscriptionIndex.delete(channel)
+	// Start one stream. The host start is async (it resolves the unsubscribe), so a
+	// placeholder claims the slot synchronously; if a concurrent diff stops it
+	// before the start resolves, the resolved unsubscribe is called at once.
+	function startSub(
+		appId: AppId,
+		running: Map<string, RunningSub>,
+		key: string,
+		sub: Subscription
+	): void {
+		let stopped = false
+		let unsub: (() => void) | null = null
+		const entry: RunningSub = {
+			stop: () => {
+				stopped = true
+				unsub?.()
+			}
 		}
-	}
-
-	async function emitChannel(channel: string, event: unknown): Promise<void> {
-		const idx = await ensureSubscriptionIndex()
-		const subs = idx.get(channel)
-		if (!subs || subs.size === 0) return
-		const syntheticType = `${EVENT_ACTION_PREFIX}${channel}`
-		const actor = `capability:${channel.split('.')[0]}`
-		// Errors from one subscriber must not stall the rest. The dispatch
-		// path already emits `app.update` for successful runs and `app.error`
-		// for failures, so observability isn't lost here.
-		await Promise.all(
-			[...subs].map((appId) =>
-				dispatch(appId, { type: syntheticType, params: event, actor }).catch(() => undefined)
-			)
+		running.set(key, entry)
+		// A stream is live only while it is THIS entry and unstopped. The host
+		// unsubscribe is not guaranteed synchronous (volume.watch coalesces onto a
+		// microtask), so a stopped/switched stream can still fire a late event —
+		// drop it rather than reduce stale data into the current state.
+		const isLive = () => !stopped && running.get(key) === entry
+		void startStream(appId, sub, isLive).then(
+			(u) => {
+				if (stopped) u()
+				else unsub = u
+			},
+			(error) => {
+				// Drop the failed slot so a later diff can retry; surface the failure.
+				if (running.get(key) === entry && !stopped) running.delete(key)
+				emit({ type: 'app.error', appId, error: errMessage(error) })
+			}
 		)
+	}
+
+	// Resolve the trusted capability and open the host stream. Each emitted event
+	// is dispatched as a `__sub/<to>` message (another reduce) — but only while the
+	// stream is still live (`isLive`), so a late event from a torn-down watcher
+	// never mutates state. A routing failure (the edge vanished after a reinstall)
+	// surfaces as `app.error`, like a command result.
+	async function startStream(
+		appId: AppId,
+		sub: Subscription,
+		isLive: () => boolean
+	): Promise<() => void> {
+		const declared = (await appCapabilities(appId))[sub.capability]
+		if (!declared) throw new Error(`undeclared capability: ${sub.capability}`)
+		if (!hostStream) throw new Error('capability streams unavailable')
+		const actor = `capability:${declared.id}`
+		return hostStream(
+			{
+				appId,
+				capability: declared.id,
+				method: sub.method,
+				input: sub.input,
+				scopes: declared.scopes
+			},
+			(event) => {
+				if (!isLive()) return
+				void dispatch(appId, {
+					type: `${SUB_EVENT_PREFIX}${sub.to}`,
+					params: event,
+					actor
+				}).catch((error) => emit({ type: 'app.error', appId, error: errMessage(error) }))
+			}
+		)
+	}
+
+	function stopSubs(appId: AppId): void {
+		const running = subs.get(appId)
+		if (!running) return
+		for (const entry of running.values()) entry.stop()
+		subs.delete(appId)
+	}
+
+	// Warm an app's streams from persisted state (Part D). A DO restart/reinstall
+	// drops the in-memory set, so the kernel rehydrates lazily on the FIRST touch
+	// of an app through any per-app entry point — `dispatch`, `actions`, `state`,
+	// and `install` all call this, so streams come up regardless of whether the
+	// GUI snapshots, the agent lists tools, a procedure-only call runs, or the
+	// app's `init` declares a stream. (Static asset reads via `app()` are not an
+	// activation signal, so they don't warm — a launcher reading icons shouldn't
+	// start watchers.) The marker is set synchronously to dedupe; the reconcile
+	// runs in-queue so it serializes with dispatch. No-op once warm — from there a
+	// state-changing dispatch keeps the set converged.
+	function ensureSubs(appId: AppId): void {
+		if (subs.has(appId) || !hostStream) return
+		subs.set(appId, new Map())
+		void enqueue(appId, async () => {
+			if (!(await fs.exists(appRoot(appId)))) return
+			const sb = await loadSandbox(appId)
+			reconcileSubs(appId, (await sb.subscriptions?.(await currentState(appId))) ?? [])
+		}).catch((error) => emit({ type: 'app.error', appId, error: errMessage(error) }))
 	}
 
 	async function loadState(appId: AppId): Promise<unknown> {
@@ -531,13 +638,15 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		}
 		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
 
-		// If the index is already warm, fold the new app's subscriptions in.
-		// Otherwise we'll build it lazily on the first emit.
-		dropFromIndex(appId)
-		if (subscriptionIndex) await indexApp(subscriptionIndex, appId)
-		// The bundle changed — its declared capabilities and procedures may have too.
+		// The bundle changed — its declared capabilities, procedures, and
+		// `subscriptions(state)` may have too. Drop the memoized caps/procs and stop
+		// the running streams, then re-warm against the NEW bundle so streams the
+		// installed state declares (incl. an unconditional `init` stream) come up
+		// without waiting for a first dispatch/snapshot (Part D).
 		declaredCaps.delete(appId)
 		procNames.delete(appId)
+		stopSubs(appId)
+		ensureSubs(appId)
 
 		return appId
 	}
@@ -546,7 +655,7 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 		await fs.rm(appRoot(appId), { recursive: true, force: true })
 		await fs.rm(`/state/${appId}.json`, { force: true })
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
-		dropFromIndex(appId)
+		stopSubs(appId)
 		states.delete(appId)
 		declaredCaps.delete(appId)
 		procNames.delete(appId)
@@ -562,6 +671,9 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 	// converged model), while the GUI gets the immediate result and renders via
 	// push.
 	function dispatch(appId: AppId, message: Message): Promise<unknown> {
+		// First touch of this app (post-boot/reinstall) warms its streams, so a
+		// procedure-only or non-state-changing dispatch still rehydrates them.
+		ensureSubs(appId)
 		let settle!: (value: unknown) => void
 		let reject!: (error: unknown) => void
 		const result = new Promise<unknown>((res, rej) => {
@@ -613,6 +725,10 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 			seq += 1
 			seqs.set(appId, seq)
 			emit({ type: 'app.update', appId, state: out.state as AppState, seq })
+			// State changed → the declared stream set may have too (Part D). The
+			// bundle folded it into `out.subscriptions` (same isolate, no extra RPC);
+			// diff it in-queue — host starts are fire-and-forget.
+			if (hostStream) reconcileSubs(appId, out.subscriptions ?? [])
 		}
 		// A pure-core edge may emit a command. Run it after the state is
 		// committed and OUTSIDE this critical section, so a slow capability
@@ -641,17 +757,20 @@ export function kernel({ fs, sandbox, capabilityInvoke: hostInvoke }: System): K
 	async function state(appId: AppId): Promise<unknown> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
+		// Boot/connect path: a host snapshotting state is the first touch after a DO
+		// restart, so warm the app's streams from persisted state (Part D). Fire and
+		// forget — the snapshot itself doesn't depend on the streams being live yet.
+		ensureSubs(appId)
 		return currentState(appId)
 	}
 
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {
+		// Agent first-touch is often listing tools before it dispatches — warm
+		// streams here too so they don't stay cold until the first action.
+		ensureSubs(appId)
 		const all = await allActions(appId)
-		// Event handlers (`__event/*`) are kernel-internal — they exist so the
-		// subscription index can find them; agents/tooling should not see them
-		// in the public action list.
 		const out: Record<string, ActionMeta> = {}
 		for (const type in all) {
-			if (type.startsWith(EVENT_ACTION_PREFIX)) continue
 			// 'gui' procedures are for the GUI client only — keep them off the
 			// agent's tool surface (Part C audience).
 			if (all[type]?.audience === 'gui') continue

@@ -57,6 +57,10 @@ export function browserSandbox(): GetSandbox {
 				worker.request('capabilities', {}) as Promise<
 					Awaited<ReturnType<NonNullable<Sandbox['capabilities']>>>
 				>,
+			subscriptions: (state) =>
+				worker.request('subscriptions', { state }) as Promise<
+					Awaited<ReturnType<NonNullable<Sandbox['subscriptions']>>>
+				>,
 			// Procedure (Part C): only the state snapshot crosses to the worker; the
 			// handle's dispatch/settled/read are serviced back over postMessage.
 			runProcedure: (name, params, handle) =>
@@ -121,7 +125,7 @@ class WorkerClient {
 	}
 
 	request(
-		type: 'dispatch' | 'actions' | 'capabilities' | 'runProcedure',
+		type: 'dispatch' | 'actions' | 'capabilities' | 'subscriptions' | 'runProcedure',
 		payload: object,
 		services?: { handle?: RawAppHandle }
 	): Promise<unknown> {
@@ -216,6 +220,10 @@ self.onmessage = async (event) => {
 		}
 		if (msg.type === 'capabilities') {
 			self.postMessage({ type: 'result', id: msg.id, result: app.capabilities ?? {} })
+			return
+		}
+		if (msg.type === 'subscriptions') {
+			self.postMessage({ type: 'result', id: msg.id, result: app.subscriptions?.(msg.state) ?? [] })
 			return
 		}
 		if (msg.type === 'runProcedure') {

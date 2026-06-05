@@ -27,7 +27,8 @@ function sandboxFor(): GetSandbox {
 			run: (action, ctx) => mod.app.dispatch(action, ctx),
 			actions: async () => mod.app.actions ?? {},
 			capabilities: async () => mod.app.capabilities ?? {},
-			runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle)
+			runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle),
+			subscriptions: async (state) => mod.app.subscriptions?.(state) ?? []
 		}
 	}
 }
@@ -133,6 +134,25 @@ async function invokeVolume(
 	}
 }
 
+// Stream side of the volume capability (Part D): open a `volume.watch` on the
+// scope-resolved chroot and forward each change as a stream event. Returns the
+// unsubscribe the kernel calls when the subscription leaves the declared set.
+async function streamVolume(
+	fs: Volume,
+	appId: string,
+	req: { method: string; input: unknown; scopes: readonly string[] },
+	emit: (event: unknown) => void
+): Promise<() => void> {
+	if (req.method !== 'watch') throw new Error('CAPABILITY_UNAVAILABLE')
+	const prefix = req.scopes.find((s) => s.startsWith('/'))
+	const root = req.scopes.includes('system') ? null : (prefix ?? `/data/${appId}`)
+	const vol = root ? chroot(fs, root) : fs
+	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
+	const input = (req.input ?? {}) as { path?: unknown }
+	if (typeof input.path !== 'string') throw new Error('CAPABILITY_INVALID_INPUT')
+	return vol.watch(input.path, (event) => emit(event))
+}
+
 async function mkdirParent(vol: Volume, path: string): Promise<void> {
 	const parent = path.split('/').slice(0, -1).join('/')
 	if (parent) await vol.mkdir(parent, { recursive: true })
@@ -170,6 +190,10 @@ export async function createDevServer(
 		clock: {},
 		capabilityInvoke: (req) => {
 			if (req.capability === 'volume') return invokeVolume(fs, req.appId, req)
+			throw new Error(`capability unavailable: ${req.capability}`)
+		},
+		capabilityStream: (req, emit) => {
+			if (req.capability === 'volume') return streamVolume(fs, req.appId, req, emit)
 			throw new Error(`capability unavailable: ${req.capability}`)
 		}
 	})
