@@ -405,8 +405,15 @@ export type CounterState = {
 
 export const app = defineApp({
 	init: { count: 0 } as CounterState,
+	// One update table of pure edges: (state, params) => next state. A public
+	// edge declares a schema, which makes it the validated, agent-visible app API
+	// — its description and examples are what the agent sees as a tool.
 	update: (t) => ({
-		increment: t.on(v.object({}), (state) => ({ count: state.count + 1 }))
+		increment: t.on(
+			v.object({ amount: v.number() }),
+			(state, { amount }) => ({ ...state, count: state.count + amount }),
+			{ description: 'Add to the counter.', examples: [{ params: { amount: 1 } }] }
+		)
 	})
 })
 
@@ -425,7 +432,7 @@ export const gui = defineGUI<CounterApp>({
 			const button = document.createElement('button')
 			button.type = 'button'
 			button.textContent = \`Count: \${current.count}\`
-			button.onclick = () => void ctx.client.increment({})
+			button.onclick = () => void ctx.client.increment({ amount: 1 })
 			Object.assign(button.style, {
 				border: '0',
 				borderRadius: '8px',
@@ -445,7 +452,7 @@ export const gui = defineGUI<CounterApp>({
 		{
 			title: 'Count',
 			items: [
-				{ title: 'Increment', shortcut: '⌘I', onSelect: () => void client.increment({}) },
+				{ title: 'Increment', shortcut: '⌘I', onSelect: () => void client.increment({ amount: 1 }) },
 				{ separator: true },
 				{ title: 'Even', checked: (state?.count ?? 0) % 2 === 0, disabled: true, onSelect: () => {} }
 			]
