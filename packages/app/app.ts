@@ -1,15 +1,14 @@
 // biome-ignore-all lint/suspicious/noExplicitAny: variance-load-bearing — see Edge/ProcedureDefs comments
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { CapabilityFactory, Stream } from './capabilities/core.ts'
+import type { Edge as MachineEdge, Message, Transition } from './machine.ts'
+
+// Re-surface the machine's `Message` so the kernel and the package's public
+// surface keep importing the dispatch vocabulary from here.
+export type { Message } from './machine.ts'
 
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
-
-export type Message<Type extends string = string, Params = unknown> = {
-	type: Type
-	params: Params
-	actor?: string
-}
 
 export interface ActionExample {
 	params: Record<string, unknown>
@@ -35,13 +34,13 @@ export interface ActionMeta {
 // caller receives — for an edge that's the new state.
 export interface DispatchResult<State> {
 	state?: State
-	// A side effect the edge emitted (pure core). The kernel executes it and
-	// routes the result back as another message (Part B); until then it is
+	// The effect the edge emitted, interpreted as a Command (Part B). The kernel
+	// executes it and routes the result back as another message; until then it is
 	// simply surfaced here. Absent for non-emitting transitions.
 	command?: Command
-	// The streams the NEW state declares (Part D), computed in-isolate alongside
-	// the reduce so the kernel diffs the set without a second round-trip. Present
-	// only when the transition produced a state; the kernel ignores it otherwise.
+	// The streams the NEW state declares (Part D), computed alongside the reduce
+	// so the kernel diffs the set without a second round-trip. Present only when
+	// the transition produced a state; the kernel ignores it otherwise.
 	subscriptions?: Subscription[]
 	result: unknown
 }
@@ -60,10 +59,13 @@ type MethodsOf<C> = C extends CapabilityRequest<string, infer M, infer _S> ? M :
 // Per-capability stream map (Part D), used to type `sub.capability`/`t.fromEvent`.
 type StreamsOf<C> = C extends CapabilityRequest<string, infer _M, infer S> ? S : never
 
-// ----- pure core (Part A) -----
-// The state machine is `init` + one `update` table of pure edges. An edge is
+// ----- effects & typed edges (the Command / Subscription add-ons) -----
+// The machine (machine.ts) is effect-agnostic. Here we pin its `Effect` to
+// `Command` and hand the author the typed `Edges` builder. An edge stays
 // `(state, payload) → state | [state, command]`: synchronous, no `ctx`, no
-// capabilities. Effects are described as data (Command) and run by the kernel.
+// capabilities. Effects are described as data (Command/Subscription) and run by
+// the kernel. These are the layers the machine is meant to outlive — they can
+// later move to their own modules without touching machine.ts.
 
 // A side effect described as data. `capability` names a LOCAL capability (the
 // app's declared key); the kernel resolves the trusted id + scopes and runs
@@ -89,13 +91,6 @@ export interface Subscription {
 // What a `fromResult` edge receives once a capability call settles.
 export type Result<T> = { ok: true; value: T } | { ok: false; error: { message: string } }
 
-// One edge of the machine: pure and synchronous. Returns the next state, or
-// the next state plus a command to run.
-export type Transition<State, Payload> = (
-	state: State,
-	payload: Payload
-) => State | [State, Command]
-
 // Per-capability method input/output, derived from the contract interface.
 type MethodInput<M, K extends keyof M> = M[K] extends (input: infer I) => unknown ? I : never
 type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => Promise<infer O>
@@ -110,26 +105,19 @@ type StreamEvent<S, K extends keyof S> = S[K] extends (...args: any[]) => Stream
 	? E
 	: never
 
-// Stored shape of an edge in the `update` table. `schema` is present at runtime
-// for `on` and `commit` edges (both validate input); `__edge` discriminates the
-// dispatch path. `S` carries the schema type into `Client<A>` only for public
-// `on` edges — it is erased (`Edge<State>`) for internal `fromResult`/`commit`
-// edges so they never reach the typed client. The transition's payload type is
-// erased; inference happens in the `Edges` builder methods below.
-export interface Edge<
-	State,
-	S extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined
-> {
+// A machine edge with `Effect` pinned to `Command`, plus the add-on metadata the
+// SDK needs: `__edge` discriminates the dispatch path (so the SDK keys internal
+// edges onto their `__cmd/`/`__sub/` message types and keeps them off the public
+// surface); `description`/`examples` are the agent-facing meta. `S` carries the
+// schema type into `Client<A>` for public `on` edges; it is erased
+// (`Edge<State>`) for internal `fromResult`/`commit` edges.
+export interface Edge<State, S extends StandardSchemaV1 | undefined = StandardSchemaV1 | undefined>
+	extends MachineEdge<State, Command, S> {
 	readonly __edge: 'on' | 'result' | 'commit' | 'event'
-	// Readonly so a concrete `Edge<State, Schema>` stays assignable to the
-	// `Edge<State>` bound (covariant in `S`) — lets the table type be captured
-	// without an `any` in the constraint.
-	readonly schema?: S
-	// Public-edge meta (the old handler's `description`/`examples`), surfaced to
-	// the agent's tool list. Internal `fromResult` edges carry neither.
+	// Public-edge meta surfaced to the agent's tool list. Internal `fromResult`
+	// edges carry neither.
 	description?: string
 	examples?: ActionExample[]
-	transition: Transition<State, any>
 }
 
 // The `t` builder passed to `update`. Each constructor infers its payload
@@ -138,10 +126,10 @@ export interface Edge<
 export interface Edges<State, Caps extends CapabilityRequests> {
 	// public edge — declares an input schema, so it IS the external API
 	// (validated, agent-visible, consumer-dispatchable). Optional `meta` carries
-	// the agent-facing description/examples (the old handler's).
+	// the agent-facing description/examples.
 	on<S extends StandardSchemaV1>(
 		schema: S,
-		transition: Transition<State, Infer<S>>,
+		transition: Transition<State, Infer<S>, Command>,
 		meta?: { description?: string; examples?: ActionExample[] }
 	): Edge<State, S>
 	// internal commit edge — validated like `on`, but kept OFF the public/agent
@@ -152,13 +140,13 @@ export interface Edges<State, Caps extends CapabilityRequests> {
 	// surfaces on `Client<A>`.
 	commit<S extends StandardSchemaV1>(
 		schema: S,
-		transition: Transition<State, Infer<S>>
+		transition: Transition<State, Infer<S>, Command>
 	): Edge<State>
 	// internal edge — payload is a capability result, typed from the contract
 	fromResult<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
 		capability: C,
 		method: M,
-		transition: Transition<State, Result<MethodOutput<MethodsOf<Caps[C]>, M>>>
+		transition: Transition<State, Result<MethodOutput<MethodsOf<Caps[C]>, M>>, Command>
 	): Edge<State, undefined>
 	// internal edge — payload is a capability STREAM event (Part D), typed from
 	// the contract's `Stream<Event>`. Fed by a `subscriptions(state)` entry the
@@ -166,7 +154,7 @@ export interface Edges<State, Caps extends CapabilityRequests> {
 	fromEvent<C extends keyof Caps & string, M extends keyof StreamsOf<Caps[C]> & string>(
 		capability: C,
 		method: M,
-		transition: Transition<State, StreamEvent<StreamsOf<Caps[C]>, M>>
+		transition: Transition<State, StreamEvent<StreamsOf<Caps[C]>, M>, Command>
 	): Edge<State, undefined>
 	// build a capability command; `input` is typed from the contract and `to`
 	// names the edge that receives the result

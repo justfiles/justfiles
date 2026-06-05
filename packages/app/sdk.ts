@@ -3,6 +3,7 @@ import type {
 	ActionMeta,
 	App,
 	AppHandle,
+	Command,
 	DispatchResult,
 	Edge,
 	Edges,
@@ -14,6 +15,7 @@ import type {
 	Subs,
 	Subscription
 } from './app.ts'
+import { buildMachine } from './machine.ts'
 
 type MaybePromise<T> = T | Promise<T>
 type Infer<S extends StandardSchemaV1> = StandardSchemaV1.InferOutput<S>
@@ -63,10 +65,10 @@ interface AppSpec<
 	procedures?: (p: Procedures<State, Caps>) => Procs
 }
 
-// Capability results re-enter the reducer as `__cmd/<edge>` messages (the
-// kernel runs the command, then dispatches the result; Part B). The prefix
-// keeps internal `fromResult` edges off the public, schema-validated path:
-// a public `on` edge matches only its plain name, a result edge only `__cmd/`.
+// Capability results re-enter the reducer as `__cmd/<edge>` messages (the kernel
+// runs the command, then dispatches the result; Part B). The prefix keeps
+// internal `fromResult` edges off the public, schema-validated path: a public
+// `on` edge is keyed by its plain name, a result edge only under `__cmd/`.
 // Exported so the kernel's command executor can address result edges by name.
 export const CMD_RESULT_PREFIX = '__cmd/'
 
@@ -76,35 +78,16 @@ export const CMD_RESULT_PREFIX = '__cmd/'
 // exactly like `__cmd/` for results. Exported so the kernel can address them.
 export const SUB_EVENT_PREFIX = '__sub/'
 
-function resolveEdge<State>(
-	edges: Record<string, Edge<State>>,
-	type: string
-): Edge<State> | undefined {
-	if (type.startsWith(CMD_RESULT_PREFIX)) {
-		const edge = edges[type.slice(CMD_RESULT_PREFIX.length)]
-		return edge?.__edge === 'result' ? edge : undefined
-	}
-	if (type.startsWith(SUB_EVENT_PREFIX)) {
-		const edge = edges[type.slice(SUB_EVENT_PREFIX.length)]
-		return edge?.__edge === 'event' ? edge : undefined
-	}
-	const edge = edges[type]
-	// `commit` edges resolve here too — a procedure dispatches them by name. They
-	// are kept off the published action surface (below), so only the app's own
-	// procedures reach them; an agent can't forge state through one directly.
-	return edge?.__edge === 'on' || edge?.__edge === 'commit' ? edge : undefined
-}
-
 export function defineApp<
 	State,
 	Caps extends Capabilities = Record<string, never>,
 	Procs extends ProcedureDefs<State, Caps> = Record<string, never>,
 	E extends Record<string, Edge<State>> = Record<string, never>
 >(spec: AppSpec<State, Caps, Procs, E>): App<State, Caps, Procs, E> {
-	// Pure-core edges (Part A). The builder erases payload types into the
-	// stored `Edge<State>`; `cmd` returns command data. `fromResult`'s
-	// capability/method are compile-time only (they type the payload) — the
-	// kernel routes results by edge name, so the runtime ignores them here.
+	// Pure-core edges (Part A). The builder erases payload types into the stored
+	// `Edge<State>`; `cmd` returns command data. `fromResult`/`fromEvent`'s
+	// capability/method are compile-time only (they type the payload) — the kernel
+	// routes results/events by edge name, so the runtime ignores them here.
 	const edgeBuilder: Edges<State, Caps> = {
 		on: (schema, transition, meta) => ({
 			__edge: 'on',
@@ -115,13 +98,30 @@ export function defineApp<
 		}),
 		commit: (schema, transition) => ({ __edge: 'commit', schema, transition }),
 		fromResult: (_capability, _method, transition) => ({ __edge: 'result', transition }),
-		// `fromEvent` mirrors `fromResult`: capability/method type the payload at
-		// compile time; the kernel routes events by edge name, so they're dropped
-		// at runtime. The edge folds a stream event into state (Part D).
 		fromEvent: (_capability, _method, transition) => ({ __edge: 'event', transition }),
 		cmd: (capability, method, input, to) => ({ kind: 'capability', capability, method, input, to })
 	}
 	const edges = (spec.update?.(edgeBuilder) ?? {}) as Record<string, Edge<State>>
+
+	// Route internal edges onto their prefixed message types, then compile the
+	// pure machine. `on`/`commit` keep their plain name (a `commit` edge is reached
+	// only by the app's own procedures dispatching it by name); a capability result
+	// arrives as `__cmd/<name>` and a stream event as `__sub/<name>`, matching what
+	// the kernel dispatches. The machine resolves by exact message type — the prefix
+	// convention (a Command/Subscription concern) lives here, not in the machine.
+	const routed: Record<string, Edge<State>> = {}
+	for (const name in edges) {
+		const edge = edges[name]
+		if (!edge) continue
+		const key =
+			edge.__edge === 'result'
+				? `${CMD_RESULT_PREFIX}${name}`
+				: edge.__edge === 'event'
+					? `${SUB_EVENT_PREFIX}${name}`
+					: name
+		routed[key] = edge
+	}
+	const machine = buildMachine<State, Command>(spec.init, routed)
 
 	// `subscriptions(state)` is a pure function of state returning declared
 	// streams (Part D). The `sub` builder mirrors `cmd` — it just packages the
@@ -144,9 +144,9 @@ export function defineApp<
 
 	const meta = {} as Record<string, ActionMeta>
 	// Only public `on` edges (those with a schema) join the action surface as
-	// handlers. Internal `fromResult` and `commit` edges are not `__edge: 'on'`,
-	// so they stay off the public, agent-visible list — a `commit` edge is
-	// reachable only by the app's own procedures dispatching it by name.
+	// handlers. Internal `fromResult`/`fromEvent`/`commit` edges are not
+	// `__edge: 'on'`, so they stay off the public, agent-visible list — a `commit`
+	// edge is reachable only by the app's own procedures dispatching it by name.
 	for (const type in edges) {
 		const edge = edges[type]
 		if (!edge || edge.__edge !== 'on' || !edge.schema) continue
@@ -193,32 +193,19 @@ export function defineApp<
 			if (r.issues)
 				throw new Error(`invalid params for ${name}: ${r.issues.map((i) => i.message).join('; ')}`)
 			// The kernel can't default `state` to `init` (init lives here, in the
-			// bundle), so fold it in — matching the reducer's `ctx.state ?? init`.
-			const handle = app.state == null ? { ...app, state: spec.init } : app
+			// bundle), so fold it in — matching the machine's `state ?? init`.
+			const handle = app.state == null ? { ...app, state: machine.init } : app
 			return def.run(r.value as never, handle)
 		},
+		// A pure reduce over `state` via the machine: it returns the next state and
+		// the edge's opaque `effect`, which this layer reads as a Command. Effects
+		// ride out as data, so the kernel hands the bundle only the current state.
+		// The new state's declared streams (Part D) are folded in here, alongside
+		// the reduce, so the kernel diffs without a second round-trip.
 		async dispatch(message: Message, ctx: RuntimeContext<State>): Promise<DispatchResult<State>> {
-			// A public `on` edge validates its schema; an internal `__cmd/<edge>`
-			// result or `__sub/<edge>` event is passed through (its payload is already
-			// contract-typed). The transition is synchronous and effect-free — it
-			// returns the next state and, optionally, a command to run.
-			const edge = resolveEdge(edges, message.type)
-			if (!edge) throw new Error(`unknown action: ${message.type}`)
-			let payload: unknown = message.params
-			if (edge.schema) {
-				const r = await edge.schema['~standard'].validate(message.params)
-				if (r.issues)
-					throw new Error(
-						`invalid params for ${message.type}: ${r.issues.map((i) => i.message).join('; ')}`
-					)
-				payload = r.value
-			}
-			const out = edge.transition(ctx.state ?? spec.init, payload)
-			const [state, command] = Array.isArray(out) ? out : [out]
-			// Fold the new state's declared streams into the result (Part D) — computed
-			// here in the isolate, so the kernel diffs without a second round-trip.
+			const { state, effect } = await machine.step(ctx.state, message)
 			const subscriptions = state !== undefined ? computeSubs(state) : undefined
-			return { state, command, subscriptions, result: state }
+			return { state, command: effect, subscriptions, result: state }
 		}
 	}
 }
