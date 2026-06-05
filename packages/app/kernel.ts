@@ -10,7 +10,7 @@ import type {
 	RuntimeContext,
 	Subscription
 } from './app.ts'
-import { appStore } from './kernel.app.ts'
+import { apps } from './kernel.app.ts'
 import { capabilities } from './kernel.capability.ts'
 import { commandRuntime } from './kernel.command.ts'
 import { stateStore } from './kernel.state.ts'
@@ -145,7 +145,7 @@ export function kernel({
 	// owns each app's authoritative state + commit version; the capability resolver
 	// owns the local-name → trusted { id, scopes } boundary. The kernel orchestrates
 	// the rest (commands, streams) on top of them.
-	const store = appStore(fs)
+	const store = apps(fs)
 	const states = stateStore(fs)
 	const caps = capabilities(async (appId) => (await loadSandbox(appId)).capabilities?.() ?? {})
 	// The command runtime (Part B) runs an edge's emitted Command off-queue and

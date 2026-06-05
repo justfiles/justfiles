@@ -26,7 +26,7 @@ function appRoot(appId: AppId): string {
 // This module knows nothing about runtime state, capabilities, or streams; the
 // kernel layers those on and owns the install/uninstall lifecycle that crosses
 // into them (cache invalidation, stream re-warming, state teardown).
-export interface AppStore {
+interface Apps {
 	// Returns the stable appId; the kernel keys every other subsystem by it.
 	install(bundle: AppBundle): Promise<AppId>
 	// Remove the installed bundle. State/data/caches the bundle accreted at
@@ -40,7 +40,7 @@ export interface AppStore {
 	list(): Promise<AppManifest[]>
 }
 
-export function appStore(fs: Volume): AppStore {
+export function apps(fs: Volume): Apps {
 	return { install, uninstall, get, has, list }
 
 	async function install(app: AppBundle): Promise<AppId> {
