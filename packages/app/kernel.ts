@@ -3,7 +3,6 @@ import type {
 	ActionMeta,
 	AppBundle,
 	AppManifest,
-	Command,
 	DispatchResult,
 	InstalledApp,
 	Message,
@@ -13,8 +12,9 @@ import type {
 } from './app.ts'
 import { appStore } from './kernel.app.ts'
 import { capabilities } from './kernel.capability.ts'
+import { commandRuntime } from './kernel.command.ts'
 import { stateStore } from './kernel.state.ts'
-import { CMD_RESULT_PREFIX, SUB_EVENT_PREFIX } from './sdk.ts'
+import { SUB_EVENT_PREFIX } from './sdk.ts'
 
 export type {
 	ActionMeta,
@@ -142,12 +142,6 @@ function errMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
-// Shape a thrown value (or message) into the `Result` error a `fromResult`
-// edge folds into state.
-function errResult(error: unknown): { ok: false; error: { message: string } } {
-	return { ok: false, error: { message: errMessage(error) } }
-}
-
 export function kernel({
 	fs,
 	sandbox,
@@ -161,6 +155,15 @@ export function kernel({
 	const store = appStore(fs)
 	const states = stateStore(fs)
 	const caps = capabilities(async (appId) => (await loadSandbox(appId)).capabilities?.() ?? {})
+	// The command runtime (Part B) runs an edge's emitted Command off-queue and
+	// re-enters its Result via `dispatch`. It owns the in-flight count `settled`
+	// waits on (via `commands.pending`).
+	const commands = commandRuntime({
+		resolve: caps.resolve,
+		hostInvoke,
+		dispatch,
+		onError: (appId, error) => emit({ type: 'app.error', appId, error })
+	})
 	const handlers = new Set<KernelEventHandler>()
 	// Per-app running streams (Part D), keyed by the structural subscription key
 	// {capability,method,input,to}. The kernel diffs `subscriptions(state)`
@@ -181,12 +184,6 @@ export function kernel({
 	// the queue without an `actions()` RPC per dispatch. Memoized in-memory,
 	// recomputed on boot, dropped on (re)install/uninstall.
 	const procNames = new Map<AppId, Promise<Set<string>>>()
-	// In-flight command tracking. A command runs OUTSIDE the dispatch queue (so
-	// a slow capability never blocks the GUI), but `settled` must still wait for
-	// the whole cascade — emit → run → result re-enters → maybe emits again — to
-	// quiesce. Each app counts its outstanding commands and holds a `done`
-	// promise that resolves when the count returns to zero; `settled` awaits it.
-	const inflight = new Map<AppId, { count: number; done: Promise<void>; wake: () => void }>()
 	return {
 		install,
 		uninstall,
@@ -268,102 +265,6 @@ export function kernel({
 		})
 	}
 
-	// ----- command executor (Part B) -----
-	// The only path that touches capabilities for the pure core. A transition
-	// emits a Command as data; the kernel runs it AFTER persisting state and
-	// OUTSIDE the dispatch queue (a slow capability must not block the GUI), then
-	// routes the typed Result back as a `__cmd/<to>` message — another reduce.
-
-	function commandStarted(appId: AppId): void {
-		const entry = inflight.get(appId)
-		if (entry) {
-			entry.count++
-			return
-		}
-		let wake!: () => void
-		const done = new Promise<void>((resolve) => {
-			wake = resolve
-		})
-		inflight.set(appId, { count: 1, done, wake })
-	}
-
-	function commandFinished(appId: AppId): void {
-		const entry = inflight.get(appId)
-		if (!entry || --entry.count > 0) return
-		inflight.delete(appId)
-		entry.wake()
-	}
-
-	// Kick a command off without awaiting it — awaiting here would deadlock the
-	// queue (the result re-enters via `dispatch`, which chains on this same app's
-	// tail). The in-flight count, bumped synchronously before we return, is what
-	// `settled` waits on.
-	function scheduleCommand(appId: AppId, command: Command, actor?: string): void {
-		if (command.kind === 'none') return
-		commandStarted(appId)
-		void runCommand(appId, command, actor).finally(() => commandFinished(appId))
-	}
-
-	async function runCommand(appId: AppId, command: Command, actor?: string): Promise<void> {
-		if (command.kind === 'none') return
-		if (command.kind === 'batch') {
-			// No ordering or atomicity across a batch; each sub-command routes its
-			// own ok/err result, so one failure never drops a sibling.
-			await Promise.all(command.commands.map((c) => runCommand(appId, c, actor)))
-			return
-		}
-		// The app named a LOCAL capability; the kernel resolves the trusted id +
-		// scopes from its declarations — never from the command data.
-		const declared = await caps.resolve(appId, command.capability)
-		const from = `capability:${declared?.id ?? command.capability}`
-		if (!declared) {
-			await deliver(
-				appId,
-				command.to,
-				errResult(`undeclared capability: ${command.capability}`),
-				from
-			)
-			return
-		}
-		if (!hostInvoke) {
-			await deliver(appId, command.to, errResult('capability execution unavailable'), from)
-			return
-		}
-		try {
-			const value = await hostInvoke({
-				appId,
-				capability: declared.id,
-				method: command.method,
-				input: command.input,
-				scopes: declared.scopes,
-				actor
-			})
-			await deliver(appId, command.to, { ok: true, value }, from)
-		} catch (error) {
-			await deliver(appId, command.to, errResult(error), from)
-		}
-	}
-
-	// Re-enter a command's Result as a `__cmd/<to>` message. A dangling result —
-	// the `to` edge no longer exists (the app was reinstalled) or its reducer
-	// threw — is surfaced as `app.error`, not allowed to crash the executor.
-	async function deliver(
-		appId: AppId,
-		to: string,
-		params: { ok: true; value: unknown } | { ok: false; error: { message: string } },
-		actor: string
-	): Promise<void> {
-		try {
-			await dispatch(appId, { type: `${CMD_RESULT_PREFIX}${to}`, params, actor })
-		} catch (error) {
-			emit({
-				type: 'app.error',
-				appId,
-				error: error instanceof Error ? error.message : String(error)
-			})
-		}
-	}
-
 	async function settled(appId: AppId, seq: number, opts?: { timeout?: number }): Promise<unknown> {
 		const deadline = opts?.timeout ? Date.now() + opts.timeout : Number.POSITIVE_INFINITY
 		// Wait out both the queue and any in-flight command until neither advances:
@@ -373,12 +274,12 @@ export function kernel({
 		// must be >= seq; if it isn't, nothing pending will ever reach it.
 		while (true) {
 			const tail = queues.get(appId)
-			const commands = inflight.get(appId)?.done
+			const pendingCommand = commands.pending(appId)
 			await Promise.all([
 				(tail ?? Promise.resolve()).catch(() => {}),
-				commands ?? Promise.resolve()
+				pendingCommand ?? Promise.resolve()
 			])
-			if (queues.get(appId) === tail && !inflight.has(appId)) {
+			if (queues.get(appId) === tail && !commands.pending(appId)) {
 				if (states.seq(appId) >= seq) return state(appId)
 				throw new Error(
 					`settled: app ${appId} idle at seq ${states.seq(appId)}, never reached ${seq}`
@@ -617,7 +518,7 @@ export function kernel({
 		// A pure-core edge may emit a command. Run it after the state is
 		// committed and OUTSIDE this critical section, so a slow capability
 		// can't stall the queue; its result re-enters as a `__cmd/<to>` message.
-		if (out.command) scheduleCommand(appId, out.command, message.actor)
+		if (out.command) commands.schedule(appId, out.command, message.actor)
 		return { result: out.result, state: out.state, seq }
 	}
 
