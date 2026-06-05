@@ -12,6 +12,7 @@ import type {
 	Subscription
 } from './app.ts'
 import { appStore } from './kernel.app.ts'
+import { capabilities } from './kernel.capability.ts'
 import { stateStore } from './kernel.state.ts'
 import { CMD_RESULT_PREFIX, SUB_EVENT_PREFIX } from './sdk.ts'
 
@@ -154,10 +155,12 @@ export function kernel({
 	capabilityStream: hostStream
 }: System): Kernel {
 	// The app store owns the `/applications/<id>` bundle layout; the state store
-	// owns each app's authoritative state + commit version. The kernel orchestrates
-	// everything else (capabilities, commands, streams) on top of them.
+	// owns each app's authoritative state + commit version; the capability resolver
+	// owns the local-name → trusted { id, scopes } boundary. The kernel orchestrates
+	// the rest (commands, streams) on top of them.
 	const store = appStore(fs)
 	const states = stateStore(fs)
+	const caps = capabilities(async (appId) => (await loadSandbox(appId)).capabilities?.() ?? {})
 	const handlers = new Set<KernelEventHandler>()
 	// Per-app running streams (Part D), keyed by the structural subscription key
 	// {capability,method,input,to}. The kernel diffs `subscriptions(state)`
@@ -173,17 +176,10 @@ export function kernel({
 	// the queue is the correctness primitive that keeps the state store's in-memory
 	// copy consistent across the async reduce.
 	const queues = new Map<AppId, Promise<void>>()
-	// Per-app declared capabilities (local name → { id, trusted scopes }), read
-	// from the bundle. Memoized in-memory, recomputed on boot, dropped on
-	// (re)install/uninstall since the bundle's declarations can change.
-	const declaredCaps = new Map<
-		AppId,
-		Promise<Record<string, { id: string; scopes: readonly string[] }>>
-	>()
 	// Per-app set of procedure names (Part C), derived once from the bundle's
 	// action meta (kind 'procedure'). Lets `dispatch` route a procedure call off
-	// the queue without an `actions()` RPC per dispatch. Memoized like
-	// `declaredCaps` — recomputed on boot, dropped on (re)install/uninstall.
+	// the queue without an `actions()` RPC per dispatch. Memoized in-memory,
+	// recomputed on boot, dropped on (re)install/uninstall.
 	const procNames = new Map<AppId, Promise<Set<string>>>()
 	// In-flight command tracking. A command runs OUTSIDE the dispatch queue (so
 	// a slow capability never blocks the GUI), but `settled` must still wait for
@@ -230,23 +226,6 @@ export function kernel({
 		return sandbox({ appId, code: text(await installed.read(installed.manifest.app)) })
 	}
 
-	// Resolve the app's declared capabilities (local name → { id, scopes }) from
-	// the bundle. Memoized per app; populated from an already-loaded sandbox when
-	// one is at hand (dispatch), otherwise it loads one (the out-of-queue command
-	// executor). This is the kernel's trusted source — never the scopes an
-	// isolate forwards.
-	function appCapabilities(
-		appId: AppId,
-		sb?: Sandbox
-	): Promise<Record<string, { id: string; scopes: readonly string[] }>> {
-		let cached = declaredCaps.get(appId)
-		if (!cached) {
-			cached = (async () => (await (sb ?? (await loadSandbox(appId))).capabilities?.()) ?? {})()
-			declaredCaps.set(appId, cached)
-		}
-		return cached
-	}
-
 	// The procedure names an app declares (Part C). Filtered from the bundle's
 	// action meta; memoized so routing in `dispatch` is a synchronous set lookup
 	// after the first (shared) load. The shared promise keeps concurrent first
@@ -276,7 +255,7 @@ export function kernel({
 		input: unknown,
 		actor?: string
 	): Promise<unknown> {
-		const declared = (await appCapabilities(appId))[capability]
+		const declared = await caps.resolve(appId, capability)
 		if (!declared) throw new Error(`undeclared capability: ${capability}`)
 		if (!hostInvoke) throw new Error('capability execution unavailable')
 		return hostInvoke({
@@ -335,7 +314,7 @@ export function kernel({
 		}
 		// The app named a LOCAL capability; the kernel resolves the trusted id +
 		// scopes from its declarations — never from the command data.
-		const declared = (await appCapabilities(appId))[command.capability]
+		const declared = await caps.resolve(appId, command.capability)
 		const from = `capability:${declared?.id ?? command.capability}`
 		if (!declared) {
 			await deliver(
@@ -494,7 +473,7 @@ export function kernel({
 		sub: Subscription,
 		isLive: () => boolean
 	): Promise<() => void> {
-		const declared = (await appCapabilities(appId))[sub.capability]
+		const declared = await caps.resolve(appId, sub.capability)
 		if (!declared) throw new Error(`undeclared capability: ${sub.capability}`)
 		if (!hostStream) throw new Error('capability streams unavailable')
 		const actor = `capability:${declared.id}`
@@ -551,7 +530,7 @@ export function kernel({
 		// the running streams, then re-warm against the NEW bundle so streams the
 		// installed state declares (incl. an unconditional `init` stream) come up
 		// without waiting for a first dispatch/snapshot (Part D).
-		declaredCaps.delete(appId)
+		caps.forget(appId)
 		procNames.delete(appId)
 		stopSubs(appId)
 		ensureSubs(appId)
@@ -566,7 +545,7 @@ export function kernel({
 		await states.drop(appId)
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		stopSubs(appId)
-		declaredCaps.delete(appId)
+		caps.forget(appId)
 		procNames.delete(appId)
 	}
 
