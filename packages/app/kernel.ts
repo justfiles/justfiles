@@ -11,7 +11,8 @@ import type {
 	RuntimeContext,
 	Subscription
 } from './app.ts'
-import { safeBundlePath } from './app.ts'
+import { appStore } from './kernel.app.ts'
+import { stateStore } from './kernel.state.ts'
 import { CMD_RESULT_PREFIX, SUB_EVENT_PREFIX } from './sdk.ts'
 
 export type {
@@ -132,10 +133,6 @@ type Event =
 
 // ------------------
 
-function bytes(text: string): Uint8Array {
-	return new TextEncoder().encode(text)
-}
-
 function text(data: Uint8Array): string {
 	return new TextDecoder().decode(data)
 }
@@ -150,17 +147,17 @@ function errResult(error: unknown): { ok: false; error: { message: string } } {
 	return { ok: false, error: { message: errMessage(error) } }
 }
 
-function appRoot(appId: AppId): string {
-	if (!/^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(appId)) throw new Error(`invalid app id: ${appId}`)
-	return `/applications/${appId}`
-}
-
 export function kernel({
 	fs,
 	sandbox,
 	capabilityInvoke: hostInvoke,
 	capabilityStream: hostStream
 }: System): Kernel {
+	// The app store owns the `/applications/<id>` bundle layout; the state store
+	// owns each app's authoritative state + commit version. The kernel orchestrates
+	// everything else (capabilities, commands, streams) on top of them.
+	const store = appStore(fs)
+	const states = stateStore(fs)
 	const handlers = new Set<KernelEventHandler>()
 	// Per-app running streams (Part D), keyed by the structural subscription key
 	// {capability,method,input,to}. The kernel diffs `subscriptions(state)`
@@ -168,28 +165,17 @@ export function kernel({
 	// on boot (the set is a pure function of state), so a DO hibernate/restart
 	// loses the host watchers and the next touch re-warms them.
 	const subs = new Map<AppId, Map<string, RunningSub>>()
-	// Per-app authoritative state, held in memory and written through to fs on
-	// every commit (durability + DO hibernation). Lazily hydrated from fs on
-	// first access; once cached, dispatch reads it directly instead of reloading
-	// per message. In-memory only — rehydrated from fs on boot, like the maps
-	// below. `.has()` distinguishes "not loaded" from "loaded, value undefined".
-	const states = new Map<AppId, unknown>()
 	// Per-app serialization. `queues` holds each app's tail promise so every
 	// dispatch (GUI, agent, capability event) runs to completion before the next
-	// begins. The plan retires this once the reduce is synchronous — but the
-	// reduce runs in an out-of-process isolate, so `sb.run` is async: the
-	// read-modify-write straddles that await, and without serialization two
+	// begins. The reduce runs in an out-of-process isolate, so `sb.run` is async:
+	// the read-modify-write straddles that await, and without serialization two
 	// concurrent messages are a lost update (see the kernel concurrency test). So
-	// the queue stays as the correctness primitive; what phase 5 removes is the
-	// per-dispatch fs reload — state is now the in-memory `states` cache above.
-	// `seqs` is the monotonic committed version, in-memory and recomputed from
-	// zero on boot (like `subscriptionIndex`).
+	// the queue is the correctness primitive that keeps the state store's in-memory
+	// copy consistent across the async reduce.
 	const queues = new Map<AppId, Promise<void>>()
-	const seqs = new Map<AppId, number>()
 	// Per-app declared capabilities (local name → { id, trusted scopes }), read
-	// from the bundle. Memoized like `subscriptionIndex`/`seqs` — in-memory,
-	// recomputed on boot, dropped on (re)install/uninstall since the bundle's
-	// declarations can change.
+	// from the bundle. Memoized in-memory, recomputed on boot, dropped on
+	// (re)install/uninstall since the bundle's declarations can change.
 	const declaredCaps = new Map<
 		AppId,
 		Promise<Record<string, { id: string; scopes: readonly string[] }>>
@@ -239,7 +225,7 @@ export function kernel({
 	// of the same bytes reuse it. Shared by dispatch, `allActions`, and the
 	// command executor.
 	async function loadSandbox(appId: AppId): Promise<Sandbox> {
-		const installed = await getApp(appId)
+		const installed = await store.get(appId)
 		if (!installed) throw new Error(`app not found: ${appId}`)
 		return sandbox({ appId, code: text(await installed.read(installed.manifest.app)) })
 	}
@@ -414,9 +400,9 @@ export function kernel({
 				commands ?? Promise.resolve()
 			])
 			if (queues.get(appId) === tail && !inflight.has(appId)) {
-				if ((seqs.get(appId) ?? 0) >= seq) return state(appId)
+				if (states.seq(appId) >= seq) return state(appId)
 				throw new Error(
-					`settled: app ${appId} idle at seq ${seqs.get(appId) ?? 0}, never reached ${seq}`
+					`settled: app ${appId} idle at seq ${states.seq(appId)}, never reached ${seq}`
 				)
 			}
 			if (Date.now() > deadline) throw new Error(`settled: timeout waiting for app ${appId}`)
@@ -552,92 +538,14 @@ export function kernel({
 		if (subs.has(appId) || !hostStream) return
 		subs.set(appId, new Map())
 		void enqueue(appId, async () => {
-			if (!(await fs.exists(appRoot(appId)))) return
+			if (!(await store.has(appId))) return
 			const sb = await loadSandbox(appId)
-			reconcileSubs(appId, (await sb.subscriptions?.(await currentState(appId))) ?? [])
+			reconcileSubs(appId, (await sb.subscriptions?.(await states.current(appId))) ?? [])
 		}).catch((error) => emit({ type: 'app.error', appId, error: errMessage(error) }))
 	}
 
-	async function loadState(appId: AppId): Promise<unknown> {
-		const statePath = `/state/${appId}.json`
-		try {
-			if (await fs.exists(statePath)) return JSON.parse(text(await fs.readFile(statePath)))
-		} catch {
-			return undefined
-		}
-		return undefined
-	}
-
-	// Authoritative state for an app: the in-memory copy if present, otherwise
-	// hydrated from fs once and cached. Every reader (dispatch, procedure handle,
-	// push snapshot) goes through here so they share one committed value with no
-	// per-call fs read.
-	async function currentState(appId: AppId): Promise<unknown> {
-		if (states.has(appId)) return states.get(appId)
-		const loaded = await loadState(appId)
-		// A concurrent commit may have populated the cache while we read fs; keep
-		// the newer authoritative value rather than clobbering it with the load.
-		if (!states.has(appId)) states.set(appId, loaded)
-		return states.get(appId)
-	}
-
-	// Write-through persistence: the caller updates `states` (authoritative),
-	// this mirrors it to fs for durability and DO hibernation.
-	async function saveState(appId: AppId, next: unknown): Promise<void> {
-		await fs.mkdir('/state', { recursive: true })
-		await fs.writeFile(`/state/${appId}.json`, bytes(JSON.stringify(next)))
-	}
-
 	async function install(app: AppBundle): Promise<AppId> {
-		await fs.mkdir('/applications', { recursive: true })
-		await fs.mkdir('/system/tmp/app-installs', { recursive: true })
-
-		const rawManifest = await app.manifest()
-		const appId = rawManifest.id
-		const root = appRoot(appId)
-		const installId = crypto.randomUUID()
-		const tmp = `/system/tmp/app-installs/${appId}-${installId}`
-		const backup = `/system/tmp/app-installs/${appId}-previous-${installId}`
-		const manifestPath = `${tmp}/manifest.json`
-		const manifest: AppManifest = {
-			...rawManifest,
-			app: safeBundlePath(rawManifest.app),
-			gui: rawManifest.gui ? safeBundlePath(rawManifest.gui) : undefined,
-			cli: rawManifest.cli ? safeBundlePath(rawManifest.cli) : undefined,
-			icon: rawManifest.icon ? safeBundlePath(rawManifest.icon) : undefined
-		}
-		let backedUp = false
-
-		try {
-			await fs.mkdir(tmp, { recursive: true })
-			for await (const rawPath of app.list()) {
-				const path = safeBundlePath(rawPath)
-				const parent = path.split('/').slice(0, -1).join('/')
-				if (parent) await fs.mkdir(`${tmp}/${parent}`, { recursive: true })
-				await fs.writeFile(`${tmp}/${path}`, await app.read(rawPath))
-			}
-			if (!(await fs.exists(`${tmp}/${manifest.app}`)))
-				throw new Error(`missing app entry: ${manifest.app}`)
-			if (manifest.gui && !(await fs.exists(`${tmp}/${manifest.gui}`))) {
-				throw new Error(`missing gui entry: ${manifest.gui}`)
-			}
-			if (manifest.icon && !(await fs.exists(`${tmp}/${manifest.icon}`))) {
-				throw new Error(`missing icon: ${manifest.icon}`)
-			}
-			await fs.writeFile(manifestPath, bytes(JSON.stringify(manifest)))
-
-			if (await fs.exists(root)) {
-				await fs.rename(root, backup)
-				backedUp = true
-			}
-			await fs.rename(tmp, root)
-		} catch (e) {
-			await fs.rm(tmp, { recursive: true, force: true }).catch(() => {})
-			if (backedUp && !(await fs.exists(root))) await fs.rename(backup, root).catch(() => {})
-			throw e
-		}
-		if (backedUp) await fs.rm(backup, { recursive: true, force: true }).catch(() => {})
-
+		const appId = await store.install(app)
 		// The bundle changed — its declared capabilities, procedures, and
 		// `subscriptions(state)` may have too. Drop the memoized caps/procs and stop
 		// the running streams, then re-warm against the NEW bundle so streams the
@@ -647,16 +555,17 @@ export function kernel({
 		procNames.delete(appId)
 		stopSubs(appId)
 		ensureSubs(appId)
-
 		return appId
 	}
 
 	async function uninstall(appId: AppId): Promise<void> {
-		await fs.rm(appRoot(appId), { recursive: true, force: true })
-		await fs.rm(`/state/${appId}.json`, { force: true })
+		await store.uninstall(appId)
+		// State and per-app data outlive the bundle dir, and the memoized
+		// caps/procs/streams are keyed off it — tear them all down here, the one
+		// place that crosses the stores into the runtime subsystems.
+		await states.drop(appId)
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		stopSubs(appId)
-		states.delete(appId)
 		declaredCaps.delete(appId)
 		procNames.delete(appId)
 	}
@@ -699,14 +608,13 @@ export function kernel({
 	type Committed = { result: unknown; state?: unknown; seq: number }
 
 	async function dispatchNow(appId: AppId, message: Message): Promise<Committed> {
-		const root = appRoot(appId)
-		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
+		if (!(await store.has(appId))) throw new Error(`app not found: ${appId}`)
 
 		// Read authoritative state from memory (hydrated from fs once). The queue
-		// serializes per app, so between this read and the write-through below no
-		// other dispatch for this app runs — the read-modify-write is atomic
-		// despite `sb.run` being async.
-		const current = await currentState(appId)
+		// serializes per app, so between this read and the commit below no other
+		// dispatch for this app runs — the read-modify-write is atomic despite
+		// `sb.run` being async.
+		const current = await states.current(appId)
 
 		// Validation runs inside the app bundle (defineApp), so it works
 		// identically for in-process and remote sandboxes. The bundle's dispatch
@@ -717,13 +625,10 @@ export function kernel({
 		// A public edge populates `state`; a procedure-routed read does not. Only
 		// commit + push when the transition produced a next state — that keeps
 		// caller-scoped reads (e.g. Finder's readFile) from ballooning state.
-		let seq = seqs.get(appId) ?? 0
+		let seq = states.seq(appId)
 		if (out.state !== undefined) {
-			// Authoritative in memory, written through to fs for durability.
-			states.set(appId, out.state)
-			await saveState(appId, out.state)
-			seq += 1
-			seqs.set(appId, seq)
+			// Write-through commit returns the new monotonic version.
+			seq = await states.commit(appId, out.state)
 			emit({ type: 'app.update', appId, state: out.state as AppState, seq })
 			// State changed → the declared stream set may have too (Part D). The
 			// bundle folded it into `out.subscriptions` (same isolate, no extra RPC);
@@ -745,7 +650,7 @@ export function kernel({
 		const sb = await loadSandbox(appId)
 		if (!sb.runProcedure) throw new Error(`procedures unsupported by sandbox: ${appId}`)
 		const handle: RawAppHandle = {
-			state: await currentState(appId),
+			state: await states.current(appId),
 			dispatch: (m) => enqueue(appId, () => dispatchNow(appId, m)).then(({ seq }) => ({ seq })),
 			settled: (seq, opts) => settled(appId, seq, opts),
 			invoke: (capability, method, input) =>
@@ -755,13 +660,12 @@ export function kernel({
 	}
 
 	async function state(appId: AppId): Promise<unknown> {
-		const root = appRoot(appId)
-		if (!(await fs.exists(root))) throw new Error(`app not found: ${appId}`)
+		if (!(await store.has(appId))) throw new Error(`app not found: ${appId}`)
 		// Boot/connect path: a host snapshotting state is the first touch after a DO
 		// restart, so warm the app's streams from persisted state (Part D). Fire and
 		// forget — the snapshot itself doesn't depend on the streams being live yet.
 		ensureSubs(appId)
-		return currentState(appId)
+		return states.current(appId)
 	}
 
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {
@@ -789,28 +693,12 @@ export function kernel({
 	}
 
 	async function app(appId: AppId): Promise<InstalledApp> {
-		const installed = await getApp(appId)
+		const installed = await store.get(appId)
 		if (!installed) throw new Error(`app not found: ${appId}`)
 		return installed
 	}
 
-	async function list(): Promise<AppManifest[]> {
-		if (!(await fs.exists('/applications'))) return []
-		const entries = await fs.readdir('/applications')
-		const manifests: AppManifest[] = []
-		for (const { name } of entries) {
-			const path = `/applications/${name}/manifest.json`
-			if (await fs.exists(path)) manifests.push(JSON.parse(text(await fs.readFile(path))))
-		}
-		return manifests
-	}
-
-	async function getApp(appId: AppId): Promise<InstalledApp | null> {
-		const root = appRoot(appId)
-		if (!(await fs.exists(root))) return null
-		return {
-			manifest: JSON.parse(text(await fs.readFile(`${root}/manifest.json`))),
-			read: (path) => fs.readFile(`${root}/${safeBundlePath(path)}`)
-		}
+	function list(): Promise<AppManifest[]> {
+		return store.list()
 	}
 }
