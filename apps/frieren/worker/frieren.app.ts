@@ -3,7 +3,7 @@ import type { Volume } from '@justfiles/fs'
 import { bundleFromZip } from '../shared/app-bundle.ts'
 import { appFileUrl, CATALOG_PATH, type Catalog, reconcileBuiltins } from '../shared/appstore.ts'
 import { capabilityError, toWireError } from '../shared/capability-error.ts'
-import { invokeVolume, streamVolume } from '../shared/volume.capability.ts'
+import { volumeCapability } from '../shared/volume.capability.ts'
 import type { AppController } from './bash/commands/app.ts'
 import type { Integrations } from './integrations/registry.ts'
 import { invokeIntegrations } from './integrations.capability.ts'
@@ -125,7 +125,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			}
 		}
 		if (req.capability === 'volume') {
-			return invokeVolume(deps.fs, req)
+			return volumeCapability(deps.fs).invoke(req)
 		}
 		if (req.capability === 'integrations') {
 			const registry = deps.integrations?.()
@@ -148,7 +148,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		},
 		emit: (event: unknown) => void
 	): Promise<() => void> {
-		if (req.capability === 'volume') return streamVolume(deps.fs, req, emit)
+		if (req.capability === 'volume') return volumeCapability(deps.fs).subscribe(req, emit)
 		throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 	}
 

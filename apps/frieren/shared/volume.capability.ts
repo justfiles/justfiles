@@ -1,10 +1,12 @@
+import { CapabilityError, implementCapability } from '@justfiles/app/capabilities'
+import { volume } from '@justfiles/app/capabilities/volume'
 import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
-import { capabilityError } from './capability-error.ts'
 
-// Shared `volume` capability implementation. The SDK proxy forwards the app's
-// declared scopes; resolveVolume picks the right backing volume, and
-// invokeVolume routes one method call against it.
+// The shared `volume` capability — one unit pairing the `volume` contract with a
+// flat object of typed handlers. `resolveVolume` is the host-specific scope→
+// volume policy; everything else (routing, errors, the invoke/subscribe split)
+// is the package's job.
 //
 // Scope semantics:
 //   'system'    → the user's root volume (allowlisted apps only)
@@ -33,55 +35,34 @@ export function resolveVolume(
 	return { vol: chroot(fs, root), root }
 }
 
-export async function invokeVolume(
-	fs: Volume,
-	req: { appId: string; method: string; input: unknown; scopes: readonly string[] }
-): Promise<unknown> {
-	const { vol, root } = resolveVolume(fs, req.appId, req.scopes)
-	// Chroot is a path-join wrapper: it does not create its prefix. The
-	// per-app data dir is created lazily here so writes succeed on a fresh
-	// app without each handler having to pre-mkdir.
+type Ctx = { appId: string; scopes: readonly string[] }
+
+// Resolve the scoped volume and lazily create the per-app root. Chroot is a
+// path-join wrapper: it does not create its prefix, so a fresh app's first write
+// would miss /data/<id> without this.
+async function bind(fs: Volume, ctx: Ctx): Promise<Volume> {
+	const { vol, root } = resolveVolume(fs, ctx.appId, ctx.scopes)
 	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
-	const input = (req.input ?? {}) as { path?: unknown; data?: unknown; recursive?: unknown }
-	if (typeof input.path !== 'string') throw invalid(req.method)
-	switch (req.method) {
-		case 'readFile':
-			return await vol.readFile(input.path)
-		case 'writeFile': {
-			if (!(input.data instanceof Uint8Array)) throw invalid(req.method)
-			await mkdirParent(vol, input.path)
-			await vol.writeFile(input.path, input.data)
-			return undefined
-		}
-		case 'mkdir':
-			await vol.mkdir(input.path, { recursive: input.recursive !== false })
-			return undefined
-		case 'exists':
-			return await vol.exists(input.path)
-		case 'scan':
-			return input.recursive === true
-				? await scanTree(vol, input.path)
-				: await scanDir(vol, input.path)
-		default:
-			throw unavailable(req.method)
-	}
+	return vol
 }
 
-// Stream side of the volume capability (Part D): open a `volume.watch` on the
-// scope-resolved volume and forward each change event. Returns the unsubscribe
-// the kernel calls when the subscription leaves the app's declared set.
-export async function streamVolume(
-	fs: Volume,
-	req: { appId: string; method: string; input: unknown; scopes: readonly string[] },
-	emit: (event: unknown) => void
-): Promise<() => void> {
-	if (req.method !== 'watch') throw unavailable(req.method)
-	const { vol, root } = resolveVolume(fs, req.appId, req.scopes)
-	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
-	const input = (req.input ?? {}) as { path?: unknown }
-	if (typeof input.path !== 'string') throw invalid(req.method)
-	return vol.watch(input.path, (event) => emit(event))
-}
+export const volumeCapability = (fs: Volume) =>
+	implementCapability(volume, {
+		readFile: async ({ path }, ctx) => (await bind(fs, ctx)).readFile(path),
+		writeFile: async ({ path, data }, ctx) => {
+			const vol = await bind(fs, ctx)
+			await mkdirParent(vol, path)
+			await vol.writeFile(path, data)
+		},
+		mkdir: async ({ path, recursive }, ctx) =>
+			(await bind(fs, ctx)).mkdir(path, { recursive: recursive !== false }),
+		exists: async ({ path }, ctx) => (await bind(fs, ctx)).exists(path),
+		scan: async ({ path, recursive }, ctx) => {
+			const vol = await bind(fs, ctx)
+			return recursive === true ? scanTree(vol, path) : scanDir(vol, path)
+		},
+		watch: async ({ path }, emit, ctx) => (await bind(fs, ctx)).watch(path, emit)
+	})
 
 async function mkdirParent(vol: Volume, path: string): Promise<void> {
 	const parent = path.split('/').slice(0, -1).join('/')
@@ -125,10 +106,6 @@ async function scanTree(
 	return out
 }
 
-function invalid(method: string): Error {
-	return capabilityError('CAPABILITY_INVALID_INPUT', 'volume', method)
-}
-
-function unavailable(method: string): Error {
-	return capabilityError('CAPABILITY_UNAVAILABLE', 'volume', method)
+function unavailable(method: string): CapabilityError {
+	return new CapabilityError('CAPABILITY_UNAVAILABLE', 'volume', method)
 }

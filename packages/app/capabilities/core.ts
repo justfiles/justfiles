@@ -27,7 +27,10 @@ export type Stream<Event> = { readonly __event?: Event }
 export type CapabilityFactory<
 	Id extends string,
 	Methods,
-	Streams = Record<string, never>
+	// Default has `keyof = never` (not `Record<string, never>`, whose `keyof` is
+	// `string`) so a stream-less capability's `implementCapability` impl maps to
+	// `{}` and requires no stream handlers.
+	Streams = Record<never, never>
 > = (opts: { scopes: readonly CapabilityScope[] }) => {
 	id: Id
 	scopes: readonly CapabilityScope[]
@@ -39,7 +42,7 @@ export type CapabilityFactory<
  * Define a capability contract. The host owns implementations; this only
  * fixes the public id, the one-shot method surface, and the streams it emits.
  */
-export function defineCapability<Id extends string, Methods, Streams = Record<string, never>>(
+export function defineCapability<Id extends string, Methods, Streams = Record<never, never>>(
 	id: Id
 ): CapabilityFactory<Id, Methods, Streams> {
 	return (opts) => ({ id, scopes: opts.scopes })

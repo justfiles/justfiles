@@ -1,7 +1,7 @@
 import type { Volume } from '@justfiles/fs'
 import { capabilityError, fromWireError, type WireError } from '../../shared/capability-error.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
-import { invokeVolume, streamVolume } from '../../shared/volume.capability.ts'
+import { volumeCapability } from '../../shared/volume.capability.ts'
 import { flushActiveVolume } from '../fs.ts'
 
 type CapabilityInvocation = {
@@ -27,7 +27,7 @@ export async function invokeClientCapability(
 	getToken: () => Promise<string | null>,
 	req: CapabilityInvocation
 ): Promise<unknown> {
-	if (req.capability === 'volume') return invokeVolume(fs, req)
+	if (req.capability === 'volume') return volumeCapability(fs).invoke(req)
 	// devkit also runs locally (it compiles + mounts on this thread, never the
 	// server). Grant-gated: only allowlisted apps may reach the impl. Lazily
 	// imported so its toolchain stays out of the initial bundle.
@@ -56,7 +56,7 @@ export function streamClientCapability(
 	req: CapabilityInvocation,
 	emit: (event: unknown) => void
 ): Promise<() => void> {
-	if (req.capability === 'volume') return streamVolume(fs, req, emit)
+	if (req.capability === 'volume') return volumeCapability(fs).subscribe(req, emit)
 	throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 }
 

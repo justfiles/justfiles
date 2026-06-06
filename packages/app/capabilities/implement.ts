@@ -31,15 +31,20 @@ type StreamImpl<F> = F extends (input: infer I) => Stream<infer E>
 	? (input: I, emit: (event: E) => void, ctx: Ctx) => Unsubscribe | Promise<Unsubscribe>
 	: never
 
-// `string extends keyof S` is only true for the empty-streams default
-// (`Record<string, never>`); a real streams surface has literal keys.
-type StreamImpls<S> = string extends keyof S
-	? Record<never, never>
-	: { [K in keyof S]: StreamImpl<S[K]> }
-
-type Impl<C> = { [K in keyof MethodsOf<C>]: MethodImpl<MethodsOf<C>[K]> } & StreamImpls<
-	StreamsOf<C>
->
+// ONE homomorphic mapped type over every declared method + stream key, so TS
+// instantiates it eagerly and contextually types each handler's params. An
+// intersection of two mapped types (or a stream half behind a top-level
+// `string extends keyof S ? … : …` conditional) is left un-instantiated when TS
+// pulls contextual types, collapsing handler args to `any`. Streams take a key
+// (they never collide with methods); the empty-streams default has `keyof =
+// never`, so a stream-less capability needs no stream handlers.
+type Impl<C, M = MethodsOf<C>, S = StreamsOf<C>> = {
+	[K in keyof M | keyof S]: K extends keyof S
+		? StreamImpl<S[K]>
+		: K extends keyof M
+			? MethodImpl<M[K]>
+			: never
+}
 
 export function implementCapability<C>(_contract: C, impl: Impl<C>): Capability {
 	const fn = (c: CapabilityCall) => {

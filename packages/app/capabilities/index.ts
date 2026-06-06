@@ -9,3 +9,18 @@ export {
 	defineCapability,
 	type Stream
 } from './core.ts'
+export {
+	type CapabilityCode,
+	CapabilityError,
+	fromWire,
+	toWire,
+	type WireError
+} from './error.ts'
+export { implementCapability } from './implement.ts'
+export type {
+	Capabilities,
+	Capability,
+	CapabilityCall,
+	Emit,
+	Unsubscribe
+} from './types.ts'
