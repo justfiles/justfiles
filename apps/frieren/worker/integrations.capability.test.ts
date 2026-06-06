@@ -1,9 +1,18 @@
+import type { CapabilityCall } from '@justfiles/app/capabilities'
 import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
 import { CommandRegistry } from './bash/registry.ts'
 import { type Integration, Integrations } from './integrations/registry.ts'
 import { ConnectionStore, type KvStorage } from './integrations/storage.ts'
-import { invokeIntegrations } from './integrations.capability.ts'
+import { integrationsCapability } from './integrations.capability.ts'
+
+const call = (method: string, input: unknown): CapabilityCall => ({
+	appId: 'app',
+	capability: 'integrations',
+	method,
+	input,
+	scopes: []
+})
 
 function memKv(): KvStorage {
 	const map = new Map<string, unknown>()
@@ -44,13 +53,13 @@ function setup() {
 	const connections = new ConnectionStore(memKv(), 'test-key')
 	const registry = new Integrations({ commands, connections })
 	registry.define(fastmail())
-	return { registry }
+	return { registry, cap: integrationsCapability(registry) }
 }
 
 describe('integrations capability', () => {
 	test('list projects the registry payload onto the portable descriptor shape', async () => {
-		const { registry } = setup()
-		const result = await invokeIntegrations(registry, { method: 'list', input: {} })
+		const { cap } = setup()
+		const result = await cap.invoke(call('list', {}))
 		expect(result).toEqual([
 			{
 				id: 'fastmail',
@@ -69,49 +78,37 @@ describe('integrations capability', () => {
 	})
 
 	test('connect adds a connected account that list reflects', async () => {
-		const { registry } = setup()
-		await invokeIntegrations(registry, {
-			method: 'connect',
-			input: { id: 'fastmail', accountId: 'primary', credentials: { token: 'abc' } }
-		})
-		const result = (await invokeIntegrations(registry, {
-			method: 'list',
-			input: {}
-		})) as Array<{ connectedAccounts: ReadonlyArray<{ accountId: string }> }>
+		const { cap } = setup()
+		await cap.invoke(
+			call('connect', { id: 'fastmail', accountId: 'primary', credentials: { token: 'abc' } })
+		)
+		const result = (await cap.invoke(call('list', {}))) as Array<{
+			connectedAccounts: ReadonlyArray<{ accountId: string }>
+		}>
 		expect(result[0]?.connectedAccounts).toEqual([{ accountId: 'primary' }])
 	})
 
 	test('disconnect removes a connected account', async () => {
-		const { registry } = setup()
-		await invokeIntegrations(registry, {
-			method: 'connect',
-			input: { id: 'fastmail', accountId: 'primary', credentials: { token: 'abc' } }
-		})
-		await invokeIntegrations(registry, {
-			method: 'disconnect',
-			input: { id: 'fastmail', accountId: 'primary' }
-		})
-		const result = (await invokeIntegrations(registry, {
-			method: 'list',
-			input: {}
-		})) as Array<{ connectedAccounts: unknown[] }>
+		const { cap } = setup()
+		await cap.invoke(
+			call('connect', { id: 'fastmail', accountId: 'primary', credentials: { token: 'abc' } })
+		)
+		await cap.invoke(call('disconnect', { id: 'fastmail', accountId: 'primary' }))
+		const result = (await cap.invoke(call('list', {}))) as Array<{ connectedAccounts: unknown[] }>
 		expect(result[0]?.connectedAccounts).toEqual([])
 	})
 
 	test('rejects malformed connect input', async () => {
-		const { registry } = setup()
+		const { cap } = setup()
 		await expect(
-			invokeIntegrations(registry, {
-				method: 'connect',
-				input: { id: 'fastmail', accountId: 'primary' }
-			})
+			cap.invoke(call('connect', { id: 'fastmail', accountId: 'primary' }))
 		).rejects.toMatchObject({ code: 'CAPABILITY_INVALID_INPUT' })
 	})
 
 	test('rejects unknown methods', async () => {
-		const { registry } = setup()
-		await expect(
-			invokeIntegrations(registry, { method: 'subscribe', input: {} })
-		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+		const { cap } = setup()
+		await expect(cap.invoke(call('subscribe', {}))).rejects.toMatchObject({
+			code: 'CAPABILITY_UNAVAILABLE'
+		})
 	})
 })

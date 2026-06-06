@@ -17,6 +17,7 @@ export {
 	type WireError
 } from './error.ts'
 export { implementCapability } from './implement.ts'
+export { capabilityRegistry } from './registry.ts'
 export type {
 	Capabilities,
 	Capability,

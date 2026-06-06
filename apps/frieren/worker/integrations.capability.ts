@@ -1,53 +1,35 @@
-import type {
-	IntegrationCredentialsSchema,
-	IntegrationDescriptor,
-	IntegrationField
+import { CapabilityError, implementCapability } from '@justfiles/app/capabilities'
+import {
+	type IntegrationCredentialsSchema,
+	type IntegrationDescriptor,
+	type IntegrationField,
+	integrations
 } from '@justfiles/app/capabilities/integrations'
 import type { TSchema } from 'typebox'
 import type { IntegrationStatus, Integrations } from './integrations/registry.ts'
 
-// Host-side `integrations` capability handler. Delegates to the in-memory
-// Integrations registry that the existing REST routes also drive, and
-// projects internal typebox schemas onto the portable JSON-schema-ish shape
-// the capability contract exposes.
+// Host-side `integrations` capability — one unit over the in-memory Integrations
+// registry that the existing REST routes also drive. It projects internal
+// typebox schemas onto the portable JSON-schema-ish shape the contract exposes.
+// Untrusted isolate input is validated before reaching the registry.
 
-export async function invokeIntegrations(
-	registry: Integrations,
-	req: { method: string; input: unknown }
-): Promise<unknown> {
-	switch (req.method) {
-		case 'list':
-			return registry.list().map(toDescriptor)
-		case 'connect': {
-			const input = (req.input ?? {}) as {
-				id?: unknown
-				accountId?: unknown
-				credentials?: unknown
-			}
-			if (
-				typeof input.id !== 'string' ||
-				typeof input.accountId !== 'string' ||
-				!isStringRecord(input.credentials)
-			)
-				throw invalid(req.method)
+export const integrationsCapability = (registry: Integrations) =>
+	implementCapability(integrations, {
+		list: async () => registry.list().map(toDescriptor),
+		connect: async ({ id, accountId, credentials }) => {
+			if (typeof id !== 'string' || typeof accountId !== 'string' || !isStringRecord(credentials))
+				throw invalid('connect')
 			await registry.connect({
-				integrationId: input.id,
-				accountId: input.accountId,
-				creds: { kind: 'static', static: input.credentials }
+				integrationId: id,
+				accountId,
+				creds: { kind: 'static', static: credentials }
 			})
-			return undefined
+		},
+		disconnect: async ({ id, accountId }) => {
+			if (typeof id !== 'string' || typeof accountId !== 'string') throw invalid('disconnect')
+			await registry.disconnect(id, accountId)
 		}
-		case 'disconnect': {
-			const input = (req.input ?? {}) as { id?: unknown; accountId?: unknown }
-			if (typeof input.id !== 'string' || typeof input.accountId !== 'string')
-				throw invalid(req.method)
-			await registry.disconnect(input.id, input.accountId)
-			return undefined
-		}
-		default:
-			throw unavailable(req.method)
-	}
-}
+	})
 
 function toDescriptor(status: IntegrationStatus): IntegrationDescriptor {
 	return {
@@ -89,18 +71,6 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 	return Object.values(value as Record<string, unknown>).every((v) => typeof v === 'string')
 }
 
-function invalid(method: string): Error {
-	return Object.assign(new Error('CAPABILITY_INVALID_INPUT'), {
-		code: 'CAPABILITY_INVALID_INPUT',
-		capability: 'integrations',
-		method
-	})
-}
-
-function unavailable(method: string): Error {
-	return Object.assign(new Error('CAPABILITY_UNAVAILABLE'), {
-		code: 'CAPABILITY_UNAVAILABLE',
-		capability: 'integrations',
-		method
-	})
+function invalid(method: string): CapabilityError {
+	return new CapabilityError('CAPABILITY_INVALID_INPUT', 'integrations', method)
 }

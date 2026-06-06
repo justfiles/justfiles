@@ -1,9 +1,9 @@
 import { type AppManifest, appBundleFromMemory, safeBundlePath } from '@justfiles/app'
+import { CapabilityError } from '@justfiles/app/capabilities'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
 import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { strToU8, zipSync } from 'fflate'
-import { capabilityError } from '../../shared/capability-error'
 import { type CompileEntries, compile } from '../../shared/devkit.compile'
 import * as host from './host'
 import { createClientKernel } from './kernel.client'
@@ -65,7 +65,7 @@ export async function invokeDevkit(
 		case 'pack':
 			return pack(fs, req.appId, slugInput(req.input, 'pack'))
 		default:
-			throw capabilityError('CAPABILITY_UNAVAILABLE', 'devkit', req.method)
+			throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', req.method)
 	}
 }
 
@@ -331,7 +331,7 @@ function runInput(input: unknown): RunInput {
 		typeof value?.slug !== 'string' ||
 		(value.reset !== undefined && typeof value.reset !== 'boolean')
 	) {
-		throw capabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'run')
+		throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'run')
 	}
 	return { slug: value.slug, reset: value.reset }
 }
@@ -339,7 +339,7 @@ function runInput(input: unknown): RunInput {
 function slugInput(input: unknown, method: string): { slug: string } {
 	const value = input as { slug?: unknown }
 	if (typeof value?.slug !== 'string') {
-		throw capabilityError('CAPABILITY_INVALID_INPUT', 'devkit', method)
+		throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'devkit', method)
 	}
 	return { slug: value.slug }
 }
@@ -347,7 +347,7 @@ function slugInput(input: unknown, method: string): { slug: string } {
 function stopInput(input: unknown): { previewId: string } {
 	const value = input as { previewId?: unknown }
 	if (typeof value?.previewId !== 'string') {
-		throw capabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'stop')
+		throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'stop')
 	}
 	return { previewId: value.previewId }
 }
@@ -355,7 +355,7 @@ function stopInput(input: unknown): { previewId: string } {
 function menuInput(input: unknown): { previewId: string } {
 	const value = input as { previewId?: unknown }
 	if (typeof value?.previewId !== 'string') {
-		throw capabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'menu')
+		throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'menu')
 	}
 	return { previewId: value.previewId }
 }
@@ -367,7 +367,7 @@ function selectMenuInput(input: unknown): { previewId: string; menu: number; ite
 		typeof value.menu !== 'number' ||
 		typeof value.item !== 'number'
 	) {
-		throw capabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'selectMenu')
+		throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'devkit', 'selectMenu')
 	}
 	return { previewId: value.previewId, menu: value.menu, item: value.item }
 }

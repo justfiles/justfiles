@@ -1,12 +1,19 @@
 import { type AppBundle, type Kernel, kernel, safeBundlePath } from '@justfiles/app'
+import {
+	type Capabilities,
+	type Capability,
+	CapabilityError,
+	capabilityRegistry,
+	toWire
+} from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
 import { bundleFromZip } from '../shared/app-bundle.ts'
 import { appFileUrl, CATALOG_PATH, type Catalog, reconcileBuiltins } from '../shared/appstore.ts'
-import { capabilityError, toWireError } from '../shared/capability-error.ts'
 import { volumeCapability } from '../shared/volume.capability.ts'
+import { aiCapability } from './ai.capability.ts'
 import type { AppController } from './bash/commands/app.ts'
 import type { Integrations } from './integrations/registry.ts'
-import { invokeIntegrations } from './integrations.capability.ts'
+import { integrationsCapability } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 import type { LLMText } from './llm.text.ts'
 
@@ -64,6 +71,27 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let subscribed = false
 	let builtinsReady: Promise<void> | undefined
 
+	// The server kernel's capability seam: `volume` and `ai` are local units;
+	// `integrations` defers to the registry that `frierenApps` is built before, so
+	// it resolves lazily per call. One wiring line replaces the old invoke/stream
+	// `if`-chains. The `_caps` proxy (handleMessage) also serves through this.
+	const integrations: Capability = {
+		invoke: async (call) => {
+			const registry = deps.integrations?.()
+			if (!registry)
+				throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
+			return integrationsCapability(registry).invoke(call)
+		},
+		subscribe: async (call) => {
+			throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
+		}
+	}
+	const capabilities: Capabilities = capabilityRegistry({
+		volume: volumeCapability(deps.fs),
+		ai: aiCapability(deps.text),
+		integrations
+	})
+
 	function getKernel(): Kernel {
 		if (kernelInstance) return kernelInstance
 		if (!deps.loader) throw new Error('LOADER binding unavailable')
@@ -71,7 +99,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			fs: deps.fs,
 			sandbox: workerSandbox(deps.loader),
 			clock: {},
-			capabilities: { invoke: invokeCapability, subscribe: streamCapability }
+			capabilities
 		})
 		return kernelInstance
 	}
@@ -102,54 +130,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		const k = getKernel()
 		await ensureBuiltinsInstalled(k)
 		return k
-	}
-
-	async function invokeCapability(req: {
-		capability: string
-		method: string
-		input: unknown
-		scopes: readonly string[]
-		appId: string
-		actor?: string
-	}): Promise<unknown> {
-		if (req.capability === 'ai' && req.method === 'generateText') {
-			const input = req.input as { system?: unknown; prompt?: unknown }
-			if (!input || typeof input !== 'object' || typeof input.prompt !== 'string') {
-				throw capabilityError('CAPABILITY_INVALID_INPUT', req.capability, req.method)
-			}
-			return {
-				text: await deps.text.gen(
-					typeof input.system === 'string' ? input.system : '',
-					input.prompt
-				)
-			}
-		}
-		if (req.capability === 'volume') {
-			return volumeCapability(deps.fs).invoke(req)
-		}
-		if (req.capability === 'integrations') {
-			const registry = deps.integrations?.()
-			if (!registry) throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
-			return invokeIntegrations(registry, req)
-		}
-		throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
-	}
-
-	// Stream side of the capability boundary (Part D). Only `volume` streams today
-	// (`watch`), served against the user's synced volume — the same bridge that
-	// carries the agent's edits into the browser as REMOTE_SOURCE writes.
-	function streamCapability(
-		req: {
-			capability: string
-			method: string
-			input: unknown
-			scopes: readonly string[]
-			appId: string
-		},
-		emit: (event: unknown) => void
-	): Promise<() => void> {
-		if (req.capability === 'volume') return volumeCapability(deps.fs).subscribe(req, emit)
-		throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
 	}
 
 	// kernel.subscribe's handler is in-memory, so it dies with the DO on
@@ -312,8 +292,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 				// by the browser kernel against the local volume — it must never be
 				// proxied. Reject it explicitly rather than silently re-scoping.
 				if (request.capability === 'volume')
-					throw capabilityError('CAPABILITY_UNAVAILABLE', request.capability, request.method)
-				const result = await invokeCapability({
+					throw new CapabilityError('CAPABILITY_UNAVAILABLE', request.capability, request.method)
+				const result = await capabilities.invoke({
 					capability: request.capability,
 					method: request.method,
 					input: request.input,
@@ -328,7 +308,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			}
 			throw new Error('invalid request')
 		} catch (error) {
-			ws.send(JSON.stringify({ type: 'error', id: request.id, ...toWireError(error) }))
+			ws.send(JSON.stringify({ type: 'error', id: request.id, ...toWire(error) }))
 		}
 	}
 

@@ -5,6 +5,8 @@ import { FileType } from '@justfiles/fs/types'
 import { buildSync } from 'esbuild'
 import type { Connect } from 'vite'
 import { appBundleFromMemory, type Message } from './app.ts'
+import { type Capability, capabilityRegistry, implementCapability } from './capabilities/index.ts'
+import { type VolumeEntry, volume as volumeCap } from './capabilities/volume/index.ts'
 import { type GetSandbox, kernel } from './kernel.ts'
 
 export interface DevServerOptions {
@@ -100,57 +102,34 @@ function publicAssets(dir: string): Record<string, Uint8Array> {
 	return out
 }
 
-async function invokeVolume(
-	fs: Volume,
-	appId: string,
-	req: { method: string; input: unknown; scopes: readonly string[] }
-): Promise<unknown> {
-	const prefix = req.scopes.find((s) => s.startsWith('/'))
-	const root = req.scopes.includes('system') ? null : (prefix ?? `/data/${appId}`)
-	const vol = root ? chroot(fs, root) : fs
-	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
-	const input = (req.input ?? {}) as { path?: unknown; data?: unknown; recursive?: unknown }
-	if (typeof input.path !== 'string') throw new Error('CAPABILITY_INVALID_INPUT')
-	switch (req.method) {
-		case 'readFile':
-			return await vol.readFile(input.path)
-		case 'writeFile': {
-			if (!(input.data instanceof Uint8Array)) throw new Error('CAPABILITY_INVALID_INPUT')
-			await mkdirParent(vol, input.path)
-			await vol.writeFile(input.path, input.data)
-			return undefined
-		}
-		case 'mkdir':
-			await vol.mkdir(input.path, { recursive: input.recursive !== false })
-			return undefined
-		case 'exists':
-			return await vol.exists(input.path)
-		case 'scan':
-			return input.recursive === true
-				? await scanTree(vol, input.path)
-				: await scanDir(vol, input.path)
-		default:
-			throw new Error('CAPABILITY_UNAVAILABLE')
+// The dev server's local `volume` unit — the same scope→chroot policy the old
+// hand-written router used (`'system'` → root, `/prefix` → prefix chroot, else
+// the per-app `/data/<id>` chroot), now expressed as one `implementCapability`
+// unit and routed through `capabilityRegistry`.
+function devVolume(fs: Volume): Capability {
+	const bind = async (ctx: { appId: string; scopes: readonly string[] }): Promise<Volume> => {
+		const prefix = ctx.scopes.find((s) => s.startsWith('/'))
+		const root = ctx.scopes.includes('system') ? null : (prefix ?? `/data/${ctx.appId}`)
+		const vol = root ? chroot(fs, root) : fs
+		if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
+		return vol
 	}
-}
-
-// Stream side of the volume capability (Part D): open a `volume.watch` on the
-// scope-resolved chroot and forward each change as a stream event. Returns the
-// unsubscribe the kernel calls when the subscription leaves the declared set.
-async function streamVolume(
-	fs: Volume,
-	appId: string,
-	req: { method: string; input: unknown; scopes: readonly string[] },
-	emit: (event: unknown) => void
-): Promise<() => void> {
-	if (req.method !== 'watch') throw new Error('CAPABILITY_UNAVAILABLE')
-	const prefix = req.scopes.find((s) => s.startsWith('/'))
-	const root = req.scopes.includes('system') ? null : (prefix ?? `/data/${appId}`)
-	const vol = root ? chroot(fs, root) : fs
-	if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
-	const input = (req.input ?? {}) as { path?: unknown }
-	if (typeof input.path !== 'string') throw new Error('CAPABILITY_INVALID_INPUT')
-	return vol.watch(input.path, (event) => emit(event))
+	return implementCapability(volumeCap, {
+		readFile: async ({ path }, ctx) => (await bind(ctx)).readFile(path),
+		writeFile: async ({ path, data }, ctx) => {
+			const vol = await bind(ctx)
+			await mkdirParent(vol, path)
+			await vol.writeFile(path, data)
+		},
+		mkdir: async ({ path, recursive }, ctx) =>
+			(await bind(ctx)).mkdir(path, { recursive: recursive !== false }),
+		exists: async ({ path }, ctx) => (await bind(ctx)).exists(path),
+		scan: async ({ path, recursive }, ctx) => {
+			const vol = await bind(ctx)
+			return recursive === true ? scanTree(vol, path) : scanDir(vol, path)
+		},
+		watch: async ({ path }, emit, ctx) => (await bind(ctx)).watch(path, emit)
+	})
 }
 
 async function mkdirParent(vol: Volume, path: string): Promise<void> {
@@ -158,7 +137,7 @@ async function mkdirParent(vol: Volume, path: string): Promise<void> {
 	if (parent) await vol.mkdir(parent, { recursive: true })
 }
 
-async function scanDir(vol: Volume, path: string): Promise<Array<{ path: string; type: string }>> {
+async function scanDir(vol: Volume, path: string): Promise<VolumeEntry[]> {
 	if (!(await vol.exists(path))) return []
 	const base = path.endsWith('/') ? path.slice(0, -1) : path
 	return (await vol.readdir(path))
@@ -169,9 +148,9 @@ async function scanDir(vol: Volume, path: string): Promise<Array<{ path: string;
 		}))
 }
 
-async function scanTree(vol: Volume, path: string): Promise<Array<{ path: string; type: string }>> {
+async function scanTree(vol: Volume, path: string): Promise<VolumeEntry[]> {
 	if (!(await vol.exists(path))) return []
-	const out: Array<{ path: string; type: string }> = []
+	const out: VolumeEntry[] = []
 	await vol.scan(path, async (entryPath, stat) => {
 		if (entryPath === path || stat.type === FileType.Symlink) return
 		out.push({ path: entryPath, type: stat.type === FileType.Directory ? 'dir' : 'file' })
@@ -188,16 +167,7 @@ export async function createDevServer(
 		fs,
 		sandbox: sandboxFor(),
 		clock: {},
-		capabilities: {
-			invoke: (req) => {
-				if (req.capability === 'volume') return invokeVolume(fs, req.appId, req)
-				throw new Error(`capability unavailable: ${req.capability}`)
-			},
-			subscribe: (req, emit) => {
-				if (req.capability === 'volume') return streamVolume(fs, req.appId, req, emit)
-				throw new Error(`capability unavailable: ${req.capability}`)
-			}
-		}
+		capabilities: capabilityRegistry({ volume: devVolume(fs) })
 	})
 	const appId = await k.install(
 		appBundleFromMemory({

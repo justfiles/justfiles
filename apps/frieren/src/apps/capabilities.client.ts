@@ -1,63 +1,67 @@
+import {
+	type Capabilities,
+	type Capability,
+	type CapabilityCall,
+	CapabilityError,
+	capabilityRegistry,
+	fromWire,
+	type WireError
+} from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
-import { capabilityError, fromWireError, type WireError } from '../../shared/capability-error.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { volumeCapability } from '../../shared/volume.capability.ts'
 import { flushActiveVolume } from '../fs.ts'
 
-type CapabilityInvocation = {
-	capability: string
-	method: string
-	input: unknown
-	scopes: readonly string[]
-	actor?: string
-	appId: string
-}
+type GetToken = () => Promise<string | null>
 
 type Frame =
 	| { type: 'result'; id: string; result: unknown }
 	| ({ type: 'error'; id?: string } & WireError)
 	| { type: 'dirty'; appId?: string }
 
-// The browser kernel runs `volume` locally; every other capability proxies to
-// the server over ONE shared WebSocket (not one per call/app). The connection
-// is lazy — opened on the first network capability — and self-heals: a drop
-// rejects in-flight calls and the next call reconnects.
-export async function invokeClientCapability(
-	fs: Volume,
-	getToken: () => Promise<string | null>,
-	req: CapabilityInvocation
-): Promise<unknown> {
-	if (req.capability === 'volume') return volumeCapability(fs).invoke(req)
-	// devkit also runs locally (it compiles + mounts on this thread, never the
-	// server). Grant-gated: only allowlisted apps may reach the impl. Lazily
-	// imported so its toolchain stays out of the initial bundle.
-	if (req.capability === 'devkit') {
-		if (!DEVKIT_ALLOWLIST.has(req.appId)) {
-			throw capabilityError('CAPABILITY_UNAVAILABLE', 'devkit', req.method)
-		}
-		const { invokeDevkit } = await import('./devkit.capability.ts')
-		return invokeDevkit(fs, getToken, req)
-	}
-	if (typeof navigator !== 'undefined' && !navigator.onLine) {
-		throw capabilityError('CAPABILITY_OFFLINE', req.capability, req.method)
-	}
-	const conn = await connection(getToken)
-	return conn.invoke(req)
+// The browser kernel's capability seam. `volume` and `devkit` run locally on this
+// thread; everything else (ai/integrations) proxies to the server through the
+// network fallback over ONE shared WebSocket. One wiring line replaces the old
+// hand-written invoke/stream routers.
+export function clientCapabilities(fs: Volume, getToken: GetToken): Capabilities {
+	return capabilityRegistry(
+		{ volume: volumeCapability(fs), devkit: devkitCapability(fs, getToken) },
+		{ fallback: networkFallback(getToken) }
+	)
 }
 
-// Stream side of the client capability boundary (Part D). `volume.watch` runs
-// against the LOCAL synced volume — the same single-file watch the host already
-// does by hand (host.ts watches `/state/<id>.json`) — so an app watching a
-// concrete file (e.g. its open document) catches the agent's REMOTE_SOURCE
-// writes to it for free. It is not recursive: a folder watch won't see child
-// writes. Network capability streams aren't needed yet.
-export function streamClientCapability(
-	fs: Volume,
-	req: CapabilityInvocation,
-	emit: (event: unknown) => void
-): Promise<() => void> {
-	if (req.capability === 'volume') return volumeCapability(fs).subscribe(req, emit)
-	throw capabilityError('CAPABILITY_UNAVAILABLE', req.capability, req.method)
+// devkit runs locally (it compiles + mounts on this thread, never the server) and
+// is grant-gated: only allowlisted apps may reach the impl. Its module — and the
+// esbuild toolchain it pulls — is imported lazily on first use, so a session that
+// never opens devkit pays nothing.
+function devkitCapability(fs: Volume, getToken: GetToken): Capability {
+	const reject = (method: string): Promise<never> =>
+		Promise.reject(new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', method))
+	return {
+		invoke: async (call) => {
+			if (!DEVKIT_ALLOWLIST.has(call.appId)) return reject(call.method)
+			const { invokeDevkit } = await import('./devkit.capability.ts')
+			return invokeDevkit(fs, getToken, call)
+		},
+		subscribe: (call) => reject(call.method)
+	}
+}
+
+// Everything not served locally proxies to the server. Offline guard mirrors the
+// old bridge: a network capability with no connectivity fails fast as OFFLINE
+// rather than hanging on a socket that can't open. Network streams aren't proxied
+// yet (slice 10), so subscribe is unavailable here.
+function networkFallback(getToken: GetToken): Capabilities {
+	return {
+		invoke: async (call) => {
+			if (typeof navigator !== 'undefined' && !navigator.onLine)
+				throw new CapabilityError('CAPABILITY_OFFLINE', call.capability, call.method)
+			return (await connection(getToken)).invoke(call)
+		},
+		subscribe: async (call) => {
+			throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
+		}
+	}
 }
 
 // Drop the shared socket — called on OS teardown (sign-out / user switch) so a
@@ -73,13 +77,13 @@ export function resetCapabilitySocket(): void {
 // volume-only apps (e.g. paint) whose open windows never invoke a network
 // capability. The host calls this on app open. Idempotent; failures self-heal
 // on the next call or network capability.
-export function ensureCapabilitySocket(getToken: () => Promise<string | null>): void {
+export function ensureCapabilitySocket(getToken: GetToken): void {
 	void connection(getToken).catch(() => {})
 }
 
 let shared: Promise<Connection> | undefined
 
-function connection(getToken: () => Promise<string | null>): Promise<Connection> {
+function connection(getToken: GetToken): Promise<Connection> {
 	if (!shared) {
 		shared = open(getToken).catch((error) => {
 			shared = undefined
@@ -90,23 +94,23 @@ function connection(getToken: () => Promise<string | null>): Promise<Connection>
 }
 
 interface Connection {
-	invoke(req: CapabilityInvocation): Promise<unknown>
+	invoke(call: CapabilityCall): Promise<unknown>
 	close(): void
 }
 
-async function open(getToken: () => Promise<string | null>): Promise<Connection> {
+async function open(getToken: GetToken): Promise<Connection> {
 	const token = await getToken()
-	if (!token) throw capabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')
+	if (!token) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 	const ws = new WebSocket(
 		`${protocol}//${window.location.host}/api/apps/_caps/ws?token=${encodeURIComponent(token)}`
 	)
 	const pending = new Map<
 		string,
-		{ req: CapabilityInvocation; resolve: (v: unknown) => void; reject: (e: Error) => void }
+		{ call: CapabilityCall; resolve: (v: unknown) => void; reject: (e: Error) => void }
 	>()
 	let nextId = 0
-	const dropped = () => capabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')
+	const dropped = () => new CapabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')
 
 	// Connect phase: resolve on open, reject the lazy singleton on a failed
 	// handshake so the next call reconnects.
@@ -138,24 +142,24 @@ async function open(getToken: () => Promise<string | null>): Promise<Connection>
 		if (!p) return
 		pending.delete(frame.id)
 		if (frame.type === 'error')
-			p.reject(fromWireError(frame, { capability: p.req.capability, method: p.req.method }))
+			p.reject(fromWire(frame, { capability: p.call.capability, method: p.call.method }))
 		else p.resolve(frame.result)
 	}
 	ws.onclose = () => fail(dropped())
 	ws.onerror = () => fail(dropped())
 
 	return {
-		invoke: (req) =>
+		invoke: (call) =>
 			new Promise((resolve, reject) => {
 				const id = String(nextId++)
-				pending.set(id, { req, resolve, reject })
+				pending.set(id, { call, resolve, reject })
 				ws.send(
 					JSON.stringify({
 						id,
-						appId: req.appId,
-						capability: req.capability,
-						method: req.method,
-						input: req.input
+						appId: call.appId,
+						capability: call.capability,
+						method: call.method,
+						input: call.input
 					})
 				)
 			}),

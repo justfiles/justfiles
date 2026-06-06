@@ -1,5 +1,5 @@
 import type { GetSandbox, Message, RawAppHandle, Sandbox } from '@justfiles/app'
-import { fromWireError, toWireError, type WireError } from '../../shared/capability-error.ts'
+import { fromWire, toWire, type WireError } from '@justfiles/app/capabilities'
 
 // Browser-side GetSandbox. It runs the same volume-backed app.js bytes as the
 // server kernel, but in a module Web Worker and bridges procedure host-calls
@@ -141,7 +141,7 @@ class WorkerClient {
 			const pending = this.pending.get(message.id)
 			if (!pending) return
 			this.pending.delete(message.id)
-			if (message.type === 'error') pending.reject(fromWireError(message.error))
+			if (message.type === 'error') pending.reject(fromWire(message.error))
 			else pending.resolve(message.result)
 			return
 		}
@@ -151,7 +151,7 @@ class WorkerClient {
 			this.worker.postMessage({
 				type,
 				callId: message.callId,
-				...(type === 'hostResult' ? { result: value } : { error: toWireError(value) })
+				...(type === 'hostResult' ? { result: value } : { error: toWire(value) })
 			})
 		}
 		void (async () => {
