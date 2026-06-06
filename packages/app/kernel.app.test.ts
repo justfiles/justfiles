@@ -1,13 +1,13 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
 import { type AppBundle, appBundleFromMemory } from './app.ts'
-import { appStore } from './kernel.app.ts'
+import { apps } from './kernel.app.ts'
 
 // The app store in isolation — no kernel, no sandbox, just a fs. Covers the
 // `/applications/<id>` layout, the install-existence guards, and the rollback
 // contract: a failed install must not corrupt the previously installed bundle.
 
-const store = () => appStore(volume(memStorage()))
+const store = () => apps(volume(memStorage()))
 const decode = (b: Uint8Array) => new TextDecoder().decode(b)
 
 test('install lays out the bundle and get/has/list reflect it', async () => {

@@ -1,27 +1,18 @@
 import type { Command, Message, Result } from './app.ts'
+import type { Capabilities } from './capabilities/types.ts'
 import type { Declared } from './kernel.capability.ts'
 import { CMD_RESULT_PREFIX } from './sdk.ts'
 
 type AppId = string
 
-// The host capability executor's signature (structurally the kernel's
-// HostCapabilityInvoke). The runtime calls it with the RESOLVED trusted id +
-// scopes; the kernel attaches nothing the isolate forwards.
-type HostInvoke = (req: {
-	appId: string
-	capability: string
-	method: string
-	input: unknown
-	scopes: readonly string[]
-	actor?: string
-}) => Promise<unknown>
-
 interface CommandDeps {
 	// Resolve a LOCAL capability name to its trusted { id, scopes } (the trust
 	// boundary; see kernel.capability.ts). Undefined → the app never declared it.
 	resolve: (appId: AppId, name: string) => Promise<Declared | undefined>
-	// The host capability executor. Absent → a command fails with an err Result.
-	hostInvoke?: HostInvoke
+	// The capability seam's invoke arm. The runtime calls it with the RESOLVED
+	// trusted id + scopes; nothing the isolate forwards. Absent → a command fails
+	// with an err Result.
+	invoke?: Capabilities['invoke']
 	// Re-enter a message into the reducer (the kernel's dispatch). A command's
 	// Result rides back in as a `__cmd/<to>` message — another reduce. Injecting
 	// it keeps the runtime → kernel direction one-way (no import cycle).
@@ -44,7 +35,7 @@ export interface Commands {
 // pure core. A transition emits a Command as data; the kernel runs it after
 // persisting state and OUTSIDE the dispatch queue, then routes the typed Result
 // back as a `__cmd/<to>` message.
-export function commandRuntime({ resolve, hostInvoke, dispatch, onError }: CommandDeps): Commands {
+export function commandRuntime({ resolve, invoke, dispatch, onError }: CommandDeps): Commands {
 	// In-flight tracking. A command runs off-queue, but `settled` must still wait
 	// for the whole cascade — emit → run → result re-enters → maybe emits again —
 	// to quiesce. Each app counts its outstanding commands and holds a `done`
@@ -107,12 +98,12 @@ export function commandRuntime({ resolve, hostInvoke, dispatch, onError }: Comma
 			)
 			return
 		}
-		if (!hostInvoke) {
+		if (!invoke) {
 			await deliver(appId, command.to, errResult('capability execution unavailable'), from)
 			return
 		}
 		try {
-			const value = await hostInvoke({
+			const value = await invoke({
 				appId,
 				capability: declared.id,
 				method: command.method,

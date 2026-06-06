@@ -23,7 +23,7 @@ const cap = (over: Partial<CapCommand> = {}): Command => ({
 
 function setup(
 	opts: {
-		hostInvoke?: (req: { input: unknown }) => Promise<unknown>
+		invoke?: (req: { input: unknown }) => Promise<unknown>
 		dispatch?: (appId: string, message: Message) => Promise<unknown>
 	} = {}
 ) {
@@ -31,7 +31,7 @@ function setup(
 	const errors: Array<{ appId: string; error: string }> = []
 	const commands = commandRuntime({
 		resolve,
-		hostInvoke: opts.hostInvoke as never,
+		invoke: opts.invoke as never,
 		dispatch:
 			opts.dispatch ??
 			(async (appId, message) => {
@@ -44,7 +44,7 @@ function setup(
 }
 
 test('runs a capability command and re-enters its ok Result', async () => {
-	const { commands, dispatched } = setup({ hostInvoke: async () => [1, 2, 3] })
+	const { commands, dispatched } = setup({ invoke: async () => [1, 2, 3] })
 	commands.schedule('app', cap())
 	await commands.pending('app')
 	// The result re-enters tagged with the capability as actor, not the caller.
@@ -63,7 +63,7 @@ test('runs a capability command and re-enters its ok Result', async () => {
 test('the kernel resolves trusted scopes — not the command data', async () => {
 	const calls: unknown[] = []
 	const { commands } = setup({
-		hostInvoke: async (req) => {
+		invoke: async (req) => {
 			calls.push(req)
 			return null
 		}
@@ -83,7 +83,7 @@ test('the kernel resolves trusted scopes — not the command data', async () => 
 })
 
 test('an undeclared capability delivers an err Result', async () => {
-	const { commands, dispatched } = setup({ hostInvoke: async () => 'x' })
+	const { commands, dispatched } = setup({ invoke: async () => 'x' })
 	commands.schedule('app', cap({ capability: 'missing', to: 'done' }))
 	await commands.pending('app')
 	expect(dispatched[0]?.message.params).toEqual({
@@ -94,7 +94,7 @@ test('an undeclared capability delivers an err Result', async () => {
 
 test('a thrown capability delivers an err Result', async () => {
 	const { commands, dispatched } = setup({
-		hostInvoke: async () => {
+		invoke: async () => {
 			throw new Error('denied')
 		}
 	})
@@ -107,7 +107,7 @@ test('no host executor delivers an err Result', async () => {
 	const dispatched: Array<{ appId: string; message: Message }> = []
 	const commands = commandRuntime({
 		resolve,
-		hostInvoke: undefined,
+		invoke: undefined,
 		dispatch: async (appId, message) => {
 			dispatched.push({ appId, message })
 			return undefined
@@ -123,7 +123,7 @@ test('no host executor delivers an err Result', async () => {
 })
 
 test('a batch runs every sub-command as one in-flight unit', async () => {
-	const { commands, dispatched } = setup({ hostInvoke: async () => 'ok' })
+	const { commands, dispatched } = setup({ invoke: async () => 'ok' })
 	commands.schedule('app', {
 		kind: 'batch',
 		commands: [cap({ to: 'a' }), cap({ to: 'b' })]
@@ -141,7 +141,7 @@ test('a none command is a no-op with nothing in flight', () => {
 
 test('a result that fails to route is surfaced via onError', async () => {
 	const { commands, errors } = setup({
-		hostInvoke: async () => 'x',
+		invoke: async () => 'x',
 		dispatch: async () => {
 			throw new Error('gone')
 		}

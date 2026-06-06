@@ -11,7 +11,9 @@ export function createClientKernel(options: {
 		fs: options.fs,
 		sandbox: browserSandbox(),
 		clock: {},
-		capabilityInvoke: (req) => invokeClientCapability(options.fs, options.getToken, req),
-		capabilityStream: (req, emit) => streamClientCapability(options.fs, req, emit)
+		capabilities: {
+			invoke: (req) => invokeClientCapability(options.fs, options.getToken, req),
+			subscribe: (req, emit) => streamClientCapability(options.fs, req, emit)
+		}
 	})
 }

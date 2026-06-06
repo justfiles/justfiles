@@ -188,13 +188,15 @@ export async function createDevServer(
 		fs,
 		sandbox: sandboxFor(),
 		clock: {},
-		capabilityInvoke: (req) => {
-			if (req.capability === 'volume') return invokeVolume(fs, req.appId, req)
-			throw new Error(`capability unavailable: ${req.capability}`)
-		},
-		capabilityStream: (req, emit) => {
-			if (req.capability === 'volume') return streamVolume(fs, req.appId, req, emit)
-			throw new Error(`capability unavailable: ${req.capability}`)
+		capabilities: {
+			invoke: (req) => {
+				if (req.capability === 'volume') return invokeVolume(fs, req.appId, req)
+				throw new Error(`capability unavailable: ${req.capability}`)
+			},
+			subscribe: (req, emit) => {
+				if (req.capability === 'volume') return streamVolume(fs, req.appId, req, emit)
+				throw new Error(`capability unavailable: ${req.capability}`)
+			}
 		}
 	})
 	const appId = await k.install(

@@ -1,22 +1,9 @@
 import type { Message, Subscription } from './app.ts'
+import type { Capabilities } from './capabilities/types.ts'
 import type { Declared } from './kernel.capability.ts'
 import { SUB_EVENT_PREFIX } from './sdk.ts'
 
 type AppId = string
-
-// The host's stream opener (structurally the kernel's HostCapabilityStream). The
-// runtime calls it with the RESOLVED trusted id + scopes; `emit` feeds each event
-// back into the reducer. Returns the unsubscribe to call when the stream stops.
-type HostStream = (
-	req: {
-		appId: string
-		capability: string
-		method: string
-		input: unknown
-		scopes: readonly string[]
-	},
-	emit: (event: unknown) => void
-) => Promise<() => void>
 
 // One running stream's teardown. `stop` is idempotent-safe: it flags the slot
 // stopped and calls the host unsubscribe once it has resolved.
@@ -26,9 +13,11 @@ interface SubscriptionDeps {
 	// Resolve a LOCAL capability name to its trusted { id, scopes } (the trust
 	// boundary; see kernel.capability.ts).
 	resolve: (appId: AppId, name: string) => Promise<Declared | undefined>
-	// The host's stream opener. Absent → subscriptions are inert (reconcile/ensure
-	// no-op); an app that declares none still dispatches normally.
-	hostStream?: HostStream
+	// The capability seam's subscribe arm. The runtime calls it with the RESOLVED
+	// trusted id + scopes; `emit` feeds each event back into the reducer. Absent →
+	// subscriptions are inert (reconcile/ensure no-op); an app that declares none
+	// still dispatches normally.
+	subscribe?: Capabilities['subscribe']
 	// Re-enter a stream event into the reducer (the kernel's dispatch). Injecting
 	// it keeps the runtime → kernel direction one-way (no import cycle).
 	dispatch: (appId: AppId, message: Message) => Promise<unknown>
@@ -60,7 +49,7 @@ export interface Subscriptions {
 // by construction: the set is a pure function of persisted state, rebuilt on boot.
 export function subscriptionRuntime({
 	resolve,
-	hostStream,
+	subscribe,
 	dispatch,
 	enqueue,
 	loadDesired,
@@ -79,7 +68,7 @@ export function subscriptionRuntime({
 	}
 
 	function reconcile(appId: AppId, desired: Subscription[]): void {
-		if (!hostStream) return
+		if (!subscribe) return
 		const want = new Map<string, Subscription>()
 		for (const sub of desired) want.set(subKey(sub), sub)
 		let running = subs.get(appId)
@@ -144,9 +133,9 @@ export function subscriptionRuntime({
 	): Promise<() => void> {
 		const declared = await resolve(appId, sub.capability)
 		if (!declared) throw new Error(`undeclared capability: ${sub.capability}`)
-		if (!hostStream) throw new Error('capability streams unavailable')
+		if (!subscribe) throw new Error('capability streams unavailable')
 		const actor = `capability:${declared.id}`
-		return hostStream(
+		return subscribe(
 			{
 				appId,
 				capability: declared.id,
@@ -178,7 +167,7 @@ export function subscriptionRuntime({
 	// serializes with dispatch. No-op once warm — from there a state-changing
 	// dispatch keeps the set converged.
 	function ensure(appId: AppId): void {
-		if (subs.has(appId) || !hostStream) return
+		if (subs.has(appId) || !subscribe) return
 		subs.set(appId, new Map())
 		void enqueue(appId, async () => {
 			const desired = await loadDesired(appId)

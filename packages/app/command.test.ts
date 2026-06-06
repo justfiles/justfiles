@@ -2,7 +2,7 @@ import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app.ts'
-import { type GetSandbox, type HostCapabilityInvoke, kernel } from './kernel.ts'
+import { type Capabilities, type GetSandbox, kernel } from './kernel.ts'
 import chainSource from './test-bundle/chain.ts?raw'
 import coreSource from './test-bundle/core.ts?raw'
 
@@ -36,8 +36,13 @@ const sandbox: GetSandbox = async ({ code }) => {
 	}
 }
 
-async function start(invoke: HostCapabilityInvoke, code = coreCode) {
-	const k = kernel({ fs: volume(memStorage()), sandbox, clock: {}, capabilityInvoke: invoke })
+async function start(invoke: Capabilities['invoke'], code = coreCode) {
+	const k = kernel({
+		fs: volume(memStorage()),
+		sandbox,
+		clock: {},
+		capabilities: { invoke, subscribe: async () => () => {} }
+	})
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	)
@@ -45,7 +50,7 @@ async function start(invoke: HostCapabilityInvoke, code = coreCode) {
 }
 
 test('a command runs in the kernel and its result re-enters the reducer', async () => {
-	const scan: HostCapabilityInvoke = async (req) => {
+	const scan: Capabilities['invoke'] = async (req) => {
 		if (req.capability === 'volume' && req.method === 'scan')
 			return [
 				{ path: '/a.txt', type: 'file' },
@@ -79,7 +84,7 @@ test('the kernel attaches appId and declared scopes to a command capability call
 		method: string
 		scopes: readonly string[]
 	}> = []
-	const scan: HostCapabilityInvoke = async (req) => {
+	const scan: Capabilities['invoke'] = async (req) => {
 		calls.push({
 			appId: req.appId,
 			capability: req.capability,
@@ -101,7 +106,7 @@ test('the kernel attaches appId and declared scopes to a command capability call
 })
 
 test('a failed command routes an err Result the reducer folds into state', async () => {
-	const scan: HostCapabilityInvoke = async () => {
+	const scan: Capabilities['invoke'] = async () => {
 		throw new Error('denied')
 	}
 	const { k, appId } = await start(scan)
@@ -112,7 +117,7 @@ test('a failed command routes an err Result the reducer folds into state', async
 
 test('settled waits out a multi-step command cascade', async () => {
 	// Echo `run`: start(1) → stepped(value 1) emits run(2) → finished(value 2).
-	const echo: HostCapabilityInvoke = async (req) => req.input
+	const echo: Capabilities['invoke'] = async (req) => req.input
 	const { k, appId } = await start(echo, chainCode)
 
 	const seqs: number[] = []

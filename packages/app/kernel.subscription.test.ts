@@ -35,7 +35,7 @@ type Opened = {
 }
 function fakeStream() {
 	const opened: Opened[] = []
-	const hostStream = async (
+	const subscribe = async (
 		req: Omit<Opened, 'emit' | 'stopped'>,
 		emit: (event: unknown) => void
 	) => {
@@ -47,7 +47,7 @@ function fakeStream() {
 	}
 	const live = () => opened.filter((o) => !o.stopped)
 	const pathOf = (o: Opened) => (o.input as { path: string }).path
-	return { opened, hostStream, live, pathOf }
+	return { opened, subscribe, live, pathOf }
 }
 
 const declared: Record<string, Declared> = { volume: { id: 'volume', scopes: ['system'] } }
@@ -58,7 +58,7 @@ function make(over: { resolve?: SubDeps['resolve']; loadDesired?: SubDeps['loadD
 	const errors: Array<{ appId: string; error: string }> = []
 	const runtime: Subscriptions = subscriptionRuntime({
 		resolve: over.resolve ?? (async (_app, name) => declared[name]),
-		hostStream: host.hostStream,
+		subscribe: host.subscribe,
 		dispatch: async (appId, message) => {
 			dispatched.push({ appId, message })
 			return undefined
@@ -173,7 +173,7 @@ test('without a host stream opener reconcile and ensure are inert', async () => 
 	const errors: string[] = []
 	const runtime = subscriptionRuntime({
 		resolve: async (_app, name) => declared[name],
-		hostStream: undefined,
+		subscribe: undefined,
 		dispatch: async (appId, message) => {
 			dispatched.push({ appId, message })
 			return undefined

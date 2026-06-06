@@ -10,8 +10,9 @@ import type {
 	RuntimeContext,
 	Subscription
 } from './app.ts'
+import type { Capabilities } from './capabilities/types.ts'
 import { apps } from './kernel.app.ts'
-import { capabilities } from './kernel.capability.ts'
+import { capabilityResolver } from './kernel.capability.ts'
 import { commandRuntime } from './kernel.command.ts'
 import { stateStore } from './kernel.state.ts'
 import { subscriptionRuntime } from './kernel.subscription.ts'
@@ -28,42 +29,21 @@ export type {
 // `install(app: AppBundle)` and `dispatch(appId, message: Message)` are the
 // kernel's API surface, so a host (frieren) needs these to wire a transport.
 export { appBundleFromMemory, safeBundlePath } from './app.ts'
+// The one capability seam a host wires in (a local registry, a remote proxy, or
+// both composed). Re-exported so a host types its wiring against it.
+export type { Capabilities } from './capabilities/types.ts'
 
 interface System {
 	fs: Volume
 	sandbox: GetSandbox
 	clock: Clock
-	// The host's capability executor. The kernel owns it — apps never receive
-	// it directly. Before each call the kernel attaches the app's DECLARED
-	// scopes (not what the isolate claims) and its appId, so a compromised
-	// isolate cannot escalate scope or reach an undeclared capability.
-	capabilityInvoke?: HostCapabilityInvoke
-	// The host's stream opener (Part D) — the streaming dual of `capabilityInvoke`.
-	// The kernel calls it to keep a `subscriptions(state)` stream alive, attaching
-	// the same trusted scopes/appId; `emit` feeds each event back into the reducer.
-	// Returns the unsubscribe the kernel calls when the stream leaves the set.
-	capabilityStream?: HostCapabilityStream
+	// The host's capability seam. The kernel owns it — apps never receive it
+	// directly. Before each call the kernel attaches the app's DECLARED scopes
+	// (not what the isolate claims) and its appId, so a compromised isolate
+	// cannot escalate scope or reach an undeclared capability. Absent → commands
+	// fail "unavailable" and subscriptions are inert.
+	capabilities?: Capabilities
 }
-
-export type HostCapabilityInvoke = (req: {
-	appId: string
-	capability: string
-	method: string
-	input: unknown
-	scopes: readonly string[]
-	actor?: string
-}) => Promise<unknown>
-
-export type HostCapabilityStream = (
-	req: {
-		appId: string
-		capability: string
-		method: string
-		input: unknown
-		scopes: readonly string[]
-	},
-	emit: (event: unknown) => void
-) => Promise<() => void>
 
 export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
 
@@ -135,25 +115,22 @@ function text(data: Uint8Array): string {
 	return new TextDecoder().decode(data)
 }
 
-export function kernel({
-	fs,
-	sandbox,
-	capabilityInvoke: hostInvoke,
-	capabilityStream: hostStream
-}: System): Kernel {
+export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 	// The app store owns the `/applications/<id>` bundle layout; the state store
 	// owns each app's authoritative state + commit version; the capability resolver
 	// owns the local-name → trusted { id, scopes } boundary. The kernel orchestrates
 	// the rest (commands, streams) on top of them.
 	const store = apps(fs)
 	const states = stateStore(fs)
-	const caps = capabilities(async (appId) => (await loadSandbox(appId)).capabilities?.() ?? {})
+	const resolver = capabilityResolver(
+		async (appId) => (await loadSandbox(appId)).capabilities?.() ?? {}
+	)
 	// The command runtime (Part B) runs an edge's emitted Command off-queue and
 	// re-enters its Result via `dispatch`. It owns the in-flight count `settled`
 	// waits on (via `commands.pending`).
 	const commands = commandRuntime({
-		resolve: caps.resolve,
-		hostInvoke,
+		resolve: resolver.resolve,
+		invoke: capabilities?.invoke,
 		dispatch,
 		onError: (appId, error) => emit({ type: 'app.error', appId, error })
 	})
@@ -161,8 +138,8 @@ export function kernel({
 	// declares alive, re-entering each event via `dispatch`. `loadDesired` rebuilds
 	// the set from persisted state when warming from boot.
 	const subs = subscriptionRuntime({
-		resolve: caps.resolve,
-		hostStream,
+		resolve: resolver.resolve,
+		subscribe: capabilities?.subscribe,
 		dispatch,
 		enqueue,
 		loadDesired: async (appId) => {
@@ -254,10 +231,10 @@ export function kernel({
 		input: unknown,
 		actor?: string
 	): Promise<unknown> {
-		const declared = await caps.resolve(appId, capability)
+		const declared = await resolver.resolve(appId, capability)
 		if (!declared) throw new Error(`undeclared capability: ${capability}`)
-		if (!hostInvoke) throw new Error('capability execution unavailable')
-		return hostInvoke({
+		if (!capabilities) throw new Error('capability execution unavailable')
+		return capabilities.invoke({
 			appId,
 			capability: declared.id,
 			method,
@@ -304,7 +281,7 @@ export function kernel({
 		// the running streams, then re-warm against the NEW bundle so streams the
 		// installed state declares (incl. an unconditional `init` stream) come up
 		// without waiting for a first dispatch/snapshot (Part D).
-		caps.forget(appId)
+		resolver.forget(appId)
 		procNames.delete(appId)
 		subs.stop(appId)
 		subs.ensure(appId)
@@ -319,7 +296,7 @@ export function kernel({
 		await states.drop(appId)
 		await fs.rm(`/data/${appId}`, { recursive: true, force: true })
 		subs.stop(appId)
-		caps.forget(appId)
+		resolver.forget(appId)
 		procNames.delete(appId)
 	}
 

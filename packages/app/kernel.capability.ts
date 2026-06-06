@@ -11,7 +11,7 @@ export type Declared = { id: string; scopes: readonly string[] }
 // compromised isolate can neither escalate scope nor reach a capability it never
 // declared. Declarations are read from the bundle once and memoized; the memo is
 // dropped on (re)install/uninstall, since a new bundle may declare differently.
-export interface Capabilities {
+export interface CapabilityResolver {
 	// The trusted { id, scopes } for a local name, or undefined if the app never
 	// declared it (the caller surfaces that as an undeclared-capability error).
 	resolve(appId: AppId, name: string): Promise<Declared | undefined>
@@ -21,9 +21,9 @@ export interface Capabilities {
 
 // `load` reads an app's declarations from its bundle (local name → { id, scopes }).
 // Injected so the resolver stays decoupled from how bundles are loaded.
-export function capabilities(
+export function capabilityResolver(
 	load: (appId: AppId) => Promise<Record<string, Declared>>
-): Capabilities {
+): CapabilityResolver {
 	// Per-app declarations, memoized as a shared promise so concurrent first
 	// callers resolve against a single load.
 	const declared = new Map<AppId, Promise<Record<string, Declared>>>()

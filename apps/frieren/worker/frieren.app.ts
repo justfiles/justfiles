@@ -71,8 +71,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			fs: deps.fs,
 			sandbox: workerSandbox(deps.loader),
 			clock: {},
-			capabilityInvoke: invokeCapability,
-			capabilityStream: streamCapability
+			capabilities: { invoke: invokeCapability, subscribe: streamCapability }
 		})
 		return kernelInstance
 	}

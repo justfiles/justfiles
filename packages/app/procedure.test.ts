@@ -2,7 +2,7 @@ import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app.ts'
-import { type GetSandbox, type HostCapabilityInvoke, kernel } from './kernel.ts'
+import { type Capabilities, type GetSandbox, kernel } from './kernel.ts'
 import procedureSource from './test-bundle/procedure.ts?raw'
 
 // Part C end-to-end: procedures run OUTSIDE the dispatch queue, drive the
@@ -30,15 +30,20 @@ const sandbox: GetSandbox = async ({ code }) => {
 	}
 }
 
-async function start(invoke: HostCapabilityInvoke) {
-	const k = kernel({ fs: volume(memStorage()), sandbox, clock: {}, capabilityInvoke: invoke })
+async function start(invoke: Capabilities['invoke']) {
+	const k = kernel({
+		fs: volume(memStorage()),
+		sandbox,
+		clock: {},
+		capabilities: { invoke, subscribe: async () => () => {} }
+	})
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
 	)
 	return { k, appId }
 }
 
-const files: HostCapabilityInvoke = async (req) => {
+const files: Capabilities['invoke'] = async (req) => {
 	if (req.capability === 'volume' && req.method === 'scan')
 		return [
 			{ path: '/a.txt', type: 'file' },

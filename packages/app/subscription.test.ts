@@ -2,7 +2,7 @@ import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { appBundleFromMemory } from './app.ts'
-import { type GetSandbox, type HostCapabilityStream, kernel } from './kernel.ts'
+import { type Capabilities, type GetSandbox, kernel } from './kernel.ts'
 import source from './test-bundle/subscription.ts?raw'
 import initSource from './test-bundle/subscription-init.ts?raw'
 
@@ -48,7 +48,7 @@ type Opened = {
 }
 function fakeStream() {
 	const opened: Opened[] = []
-	const stream: HostCapabilityStream = async (req, emit) => {
+	const stream: Capabilities['subscribe'] = async (req, emit) => {
 		const entry: Opened = { ...req, emit, stopped: false }
 		opened.push(entry)
 		return () => {
@@ -68,9 +68,14 @@ async function until(cond: () => boolean | Promise<boolean>, label: string): Pro
 	throw new Error(`timeout: ${label}`)
 }
 
-async function start(stream: HostCapabilityStream) {
+async function start(stream: Capabilities['subscribe']) {
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox, clock: {}, capabilityStream: stream })
+	const k = kernel({
+		fs,
+		sandbox,
+		clock: {},
+		capabilities: { invoke: async () => undefined, subscribe: stream }
+	})
 	const appId = await k.install(
 		appBundleFromMemory({ id: 'com.example.watch', name: 'Watch', app: code })
 	)
@@ -176,7 +181,12 @@ test('streams are rebuilt from persisted state on boot', async () => {
 
 	// New kernel over the SAME fs (a DO restart): in-memory streams are gone.
 	const host2 = fakeStream()
-	const k2 = kernel({ fs, sandbox, clock: {}, capabilityStream: host2.stream })
+	const k2 = kernel({
+		fs,
+		sandbox,
+		clock: {},
+		capabilities: { invoke: async () => undefined, subscribe: host2.stream }
+	})
 	expect(host2.opened).toHaveLength(0)
 
 	// Touching state is the host's first boot interaction — it re-warms the set.
@@ -195,7 +205,12 @@ test('a cold kernel rehydrates streams on first actions() touch, not only state(
 
 	// Restart: the agent's first touch is listing tools, never state().
 	const host2 = fakeStream()
-	const k2 = kernel({ fs, sandbox, clock: {}, capabilityStream: host2.stream })
+	const k2 = kernel({
+		fs,
+		sandbox,
+		clock: {},
+		capabilities: { invoke: async () => undefined, subscribe: host2.stream }
+	})
 	await k2.actions(appId)
 	await until(
 		() => host2.live().length === 1 && host2.pathOf(host2.live()[0]) === '/a',
@@ -206,7 +221,12 @@ test('a cold kernel rehydrates streams on first actions() touch, not only state(
 test('install starts a stream the init state unconditionally declares', async () => {
 	const host = fakeStream()
 	const fs = volume(memStorage())
-	const k = kernel({ fs, sandbox, clock: {}, capabilityStream: host.stream })
+	const k = kernel({
+		fs,
+		sandbox,
+		clock: {},
+		capabilities: { invoke: async () => undefined, subscribe: host.stream }
+	})
 	await k.install(
 		appBundleFromMemory({ id: 'com.example.initwatch', name: 'InitWatch', app: initCode })
 	)
