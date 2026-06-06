@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>The Capability system — a complete, pluggable concept</title>
+	<style>
+		:root {
+			--ink: #1d1d1f;
+			--muted: #6e6e73;
+			--rule: #e5e5ea;
+			--surface: #f5f5f7;
+			--code: #f7f8fa;
+			--accent: #2563eb;
+			--green: #137333;
+			--warn: #b45309;
+			--red: #b00020;
+			--violet: #6d28d9;
+		}
+		* { box-sizing: border-box; }
+		body {
+			margin: 0 auto;
+			max-width: 1000px;
+			padding: 48px 24px 96px;
+			color: var(--ink);
+			background: #fff;
+			font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+		}
+		h1, h2, h3 { line-height: 1.2; letter-spacing: -0.02em; }
+		h1 { margin: 0 0 8px; font-size: 34px; }
+		h2 { margin: 50px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--rule); font-size: 23px; }
+		h3 { margin: 28px 0 8px; font-size: 17px; }
+		p { margin: 10px 0; }
+		ul, ol { padding-left: 24px; }
+		li { margin: 7px 0; }
+		.lede { margin: 0 0 22px; color: var(--muted); font-size: 18px; }
+		.box {
+			margin: 18px 0;
+			padding: 16px 18px;
+			border: 1px solid var(--rule);
+			border-radius: 12px;
+			background: var(--surface);
+		}
+		.box h3 { margin-top: 0; }
+		.box.accent { border-left: 3px solid var(--accent); }
+		.box.good { border-left: 3px solid var(--green); }
+		.box.warn { border-left: 3px solid var(--warn); }
+		.box.violet { border-left: 3px solid var(--violet); }
+		code {
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+			font-size: 0.88em;
+		}
+		p code, li code, td code { padding: 1px 5px; border-radius: 5px; background: var(--surface); }
+		pre {
+			margin: 12px 0 18px;
+			padding: 14px 16px;
+			overflow-x: auto;
+			border: 1px solid #e6e8ec;
+			border-left: 3px solid var(--accent);
+			border-radius: 10px;
+			background: var(--code);
+		}
+		pre code { font-size: 13px; line-height: 1.55; padding: 0; background: none; }
+		pre.plain { border-left-color: #cbd5e1; }
+		.note { color: var(--muted); }
+		.good { color: var(--green); font-weight: 650; }
+		.warn { color: var(--warn); font-weight: 650; }
+		.bad { color: var(--red); font-weight: 650; }
+		.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+		.cols .box { margin: 0; }
+		.cols pre { margin: 0; }
+		@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+		table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 15px; }
+		th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+		th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+		td.kind { white-space: nowrap; }
+		.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+		.tag.keep { background: #ecfdf5; color: #137333; }
+		.tag.move { background: #eff6ff; color: #174ea6; }
+		.tag.host { background: #fff7ed; color: #b45309; }
+		.tag.new { background: #f5f3ff; color: #6d28d9; }
+		.kicker { margin: 0 0 6px; font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+		hr { border: none; border-top: 1px solid var(--rule); margin: 40px 0; }
+		.footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
+		.phase { display: inline-block; min-width: 22px; height: 22px; padding: 0 7px; margin-right: 8px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 13px; font-weight: 700; text-align: center; line-height: 22px; }
+		ol.phases { list-style: none; padding-left: 0; }
+		ol.phases > li { margin-bottom: 18px; }
+		svg.diagram { display: block; width: 100%; height: auto; margin: 18px 0; }
+		.d-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; fill: var(--ink); }
+		.d-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; fill: var(--ink); }
+		.d-muted { fill: var(--muted); }
+		.d-strong { font-weight: 700; }
+		.n { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; }
+		.n-blue { fill: #eff6ff; stroke: #93c5fd; stroke-width: 1.5; }
+		.n-green { fill: #ecfdf5; stroke: #86efac; stroke-width: 1.5; }
+		.n-violet { fill: #f5f3ff; stroke: #c4b5fd; stroke-width: 1.5; }
+		.n-red { fill: #fef2f2; stroke: #fca5a5; stroke-width: 1.5; }
+		.n-amber { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.5; }
+		.edge { stroke: #2563eb; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+		.edge-soft { stroke: #94a3b8; stroke-width: 1.75; fill: none; marker-end: url(#arrow-soft); }
+	</style>
+</head>
+<body>
+	<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+		<marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L8,3 z" fill="#2563eb"></path></marker>
+		<marker id="arrow-soft" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L8,3 z" fill="#94a3b8"></path></marker>
+	</defs></svg>
+	<p class="kicker">Capability subsystem · implementation plan</p>
+	<h1>The Capability system — a complete, pluggable concept</h1>
+	<p class="lede">Turn capabilities from per-backend copy-paste into a Volume-grade subsystem: a tiny set of composable primitives in <code>packages/app</code>, thin host implementations outside, and one streaming wire protocol that carries <code>subscribe</code> across any backend — with finder/code file-watching as the first stream it lights up.</p>
+
+	<div class="box accent">
+		<h3>Carried over from <code>app-kernel-capability-host.html</code> (settled)</h3>
+		<ul>
+			<li><strong>One request type</strong> <code>CapabilityCall = { appId, capability, method, input, scopes, actor? }</code>.</li>
+			<li><strong>One seam</strong> <code>Capabilities { invoke(call); subscribe(call, emit) }</code> — injected as <code>capabilities?</code> on <code>System</code>.</li>
+			<li><strong><code>subscribe</code>, not <code>stream</code></strong> — the return type is <code>Unsubscribe</code>; the whole feature already speaks &ldquo;sub&rdquo;.</li>
+			<li><strong>Two seams, one substrate:</strong> <code>machine.ts</code> is the unified event port (opaque <code>Effect</code>/<code>Message</code>); <code>Capabilities</code> is the typed interpreter where 1:1 becomes a <code>Promise</code> and 1:N becomes <code>(emit)=&gt;Unsubscribe</code>.</li>
+			<li><strong>Scopes are trusted &amp; kernel-attached</strong> — resolved from the app's bundle, never from the isolate. <code>CapabilityCall.input</code> stays <code>unknown</code> at the seam; types live at the ends.</li>
+		</ul>
+		<p class="note">This plan builds <em>on top of</em> those and does not re-argue them.</p>
+	</div>
+
+	<h2>Where we are: a half-built concept</h2>
+	<p>The reason capabilities feel ad-hoc next to <code>Volume</code> is concrete — the <em>contract</em> half already lives in the package, but the <em>machinery</em> half is reimplemented in every backend, and even the parts that are in the package are invoke-only and fragmented.</p>
+
+	<table>
+		<thead><tr><th>Piece</th><th>Today</th><th>Verdict</th></tr></thead>
+		<tbody>
+			<tr><td><code>defineCapability(id)</code> — typed contract (Methods + <code>Stream</code>)</td><td><code>packages/app/capabilities/core.ts</code></td><td><span class="tag keep">keep</span> the &ldquo;what&rdquo;</td></tr>
+			<tr><td><code>Stream&lt;Event&gt;</code> phantom — marks 1:N methods</td><td>core.ts (comment already says host runs it as <code>(input, emit)=&gt;unsubscribe</code>)</td><td><span class="tag keep">keep</span></td></tr>
+			<tr><td><code>CapabilityBridge { invoke }</code></td><td>core.ts — <strong>invoke-only</strong>, no appId/scopes/subscribe</td><td><span class="tag move">grow</span> into <code>Capabilities</code></td></tr>
+			<tr><td>Name→handler router (<code>if (cap === x) … else UNAVAILABLE</code>)</td><td><strong>6 copies</strong>: frieren.app.ts ×2, capabilities.client.ts ×2, dev-server.ts ×2</td><td><span class="tag new">→ registry</span></td></tr>
+			<tr><td>Error shape + codes</td><td><strong>fragmented</strong>: frieren <code>UNAVAILABLE/INVALID_INPUT/OFFLINE</code> vs broker <code>DENIED/FAILED</code>; re-inlined by hand in integrations.capability.ts</td><td><span class="tag move">unify → package</span></td></tr>
+			<tr><td>Request/reply correlation over a socket</td><td>pending-map in capabilities.client.ts + reply side in frieren.app.ts <code>handleMessage</code></td><td><span class="tag new">→ proxy</span></td></tr>
+			<tr><td>No <code>subscribe</code> wire leg at all</td><td>proxy is invoke-only; streams only ever run locally</td><td><span class="tag new">new scope</span></td></tr>
+			<tr><td>Per-capability impls (<code>volume</code>, <code>ai</code>, <code>integrations</code>, <code>devkit</code>)</td><td>frieren, bound to fs / LLM / registry</td><td><span class="tag host">stay in host</span></td></tr>
+		</tbody>
+	</table>
+
+	<p>So the work is not &ldquo;invent a capability system&rdquo; — it's <strong>finish the one that's started</strong>: grow the invoke-only bridge into the <code>invoke</code>+<code>subscribe</code> seam, give it a router, one error vocabulary, an implementation-definer that pairs with the existing contract-definer, and a wire protocol that carries both legs.</p>
+
+	<h2>The goal: Capability should compose like Volume</h2>
+	<p><code>@justfiles/fs</code> ships <code>Volume</code> (the interface) plus combinators (<code>chroot(vol, prefix)</code>) and backends (<code>memStorage</code>); a consumer composes them. Capabilities get the same anatomy:</p>
+	<div class="box">
+		<svg class="diagram" viewBox="0 0 940 296" role="img" aria-label="Volume and the Capability system share the same anatomy">
+			<text class="d-text d-muted d-strong" x="52" y="34">Volume — @justfiles/fs</text>
+			<text class="d-text d-muted d-strong" x="472" y="34">Capability system</text>
+
+			<rect class="n" x="50" y="55" width="300" height="46" rx="10"></rect>
+			<text class="d-code" x="66" y="83">Volume <tspan class="d-muted">(interface)</tspan></text>
+			<text class="d-muted" x="410" y="85" font-size="18">≈</text>
+			<rect class="n-blue" x="470" y="55" width="330" height="46" rx="10"></rect>
+			<text class="d-code" x="486" y="83">Capabilities { invoke, subscribe }</text>
+			<text class="d-text d-muted" x="814" y="83">the seam</text>
+
+			<rect class="n" x="50" y="117" width="300" height="46" rx="10"></rect>
+			<text class="d-code" x="66" y="145">chroot(vol, prefix)</text>
+			<text class="d-muted" x="410" y="147" font-size="18">≈</text>
+			<rect class="n" x="470" y="117" width="330" height="46" rx="10"></rect>
+			<text class="d-code" x="486" y="145">capabilityRegistry(map, { fallback })</text>
+			<text class="d-text d-muted" x="814" y="145">compose</text>
+
+			<rect class="n" x="50" y="179" width="300" height="46" rx="10"></rect>
+			<text class="d-code" x="66" y="207">memStorage()</text>
+			<text class="d-muted" x="410" y="209" font-size="18">≈</text>
+			<rect class="n" x="470" y="179" width="330" height="46" rx="10"></rect>
+			<text class="d-code" x="486" y="207">implementCapability(contract, impl)</text>
+			<text class="d-text d-muted" x="814" y="207">one backend</text>
+
+			<rect class="n" x="470" y="241" width="330" height="46" rx="10"></rect>
+			<text class="d-code" x="486" y="269">proxyCapabilities(channel)</text>
+			<text class="d-text d-muted" x="814" y="269">remote · transparent</text>
+		</svg>
+	</div>
+	<p>A backend is then <em>impls + one wiring line</em>; nothing re-derives routing, errors, ids, or transport.</p>
+
+	<h2>The layering (the spine)</h2>
+	<div class="box">
+		<svg class="diagram" viewBox="0 0 940 452" role="img" aria-label="Capability layering from the app down to local and remote backends">
+			<rect class="n" x="90" y="24" width="380" height="46" rx="10"></rect>
+			<text class="d-text d-strong" x="280" y="52" text-anchor="middle">app — sandbox / pure machine</text>
+			<text class="d-text d-muted" x="488" y="51">emits Command / Subscription as data — opaque Effect</text>
+			<path class="edge" d="M280,70 V104"></path>
+
+			<rect class="n" x="90" y="104" width="380" height="46" rx="10"></rect>
+			<text class="d-text d-strong" x="280" y="132" text-anchor="middle">kernel</text>
+			<text class="d-text d-muted" x="488" y="131">resolves TRUSTED scopes; builds CapabilityCall</text>
+			<path class="edge" d="M280,150 V184"></path>
+
+			<rect class="n-blue" x="90" y="184" width="380" height="52" rx="10"></rect>
+			<text class="d-code" x="280" y="215" text-anchor="middle" font-size="11.5">Capabilities { invoke(call) ; subscribe(call, emit) }</text>
+			<text class="d-text d-muted d-strong" x="488" y="214">the one seam</text>
+			<path class="edge" d="M280,236 V270"></path>
+
+			<rect class="n-violet" x="90" y="270" width="380" height="46" rx="10"></rect>
+			<text class="d-code" x="280" y="298" text-anchor="middle" font-size="11.5">capabilityRegistry({ volume, ai, … }, { fallback })</text>
+			<text class="d-text d-muted" x="488" y="297">routes by name / method</text>
+
+			<path class="edge" d="M280,316 V344 H200 V372"></path>
+			<path class="edge" d="M280,316 V344 H497 V372"></path>
+
+			<rect class="n-green" x="40" y="372" width="320" height="58" rx="10"></rect>
+			<text class="d-code" x="200" y="396" text-anchor="middle" font-size="11.5">implementCapability(volume, …)</text>
+			<text class="d-text d-muted" x="200" y="415" text-anchor="middle">LOCAL unit · the “how”</text>
+
+			<rect class="n-amber" x="392" y="372" width="210" height="58" rx="10"></rect>
+			<text class="d-code" x="497" y="396" text-anchor="middle" font-size="11.5">proxyCapabilities(channel)</text>
+			<text class="d-text d-muted" x="497" y="415" text-anchor="middle">fallback</text>
+
+			<path class="edge" d="M602,401 H654"></path>
+			<text class="d-text d-muted" x="628" y="393" text-anchor="middle" font-size="11">frames</text>
+
+			<rect class="n" x="660" y="372" width="258" height="58" rx="10"></rect>
+			<text class="d-code" x="789" y="396" text-anchor="middle" font-size="11">serveCapabilities(channel, remote)</text>
+			<text class="d-text d-muted" x="789" y="415" text-anchor="middle">other backend · server / electron-main</text>
+		</svg>
+	</div>
+	<p>Everything above the seam is unchanged kernel work. Everything below it is the subsystem this plan completes.</p>
+
+	<h2>The authoring surface — &ldquo;what&rdquo; and &ldquo;how&rdquo;</h2>
+	<p>This is the part to keep ruthlessly minimal. An implementer answers exactly two questions, and nothing else — no registration, no error plumbing, no transport, no ids.</p>
+
+	<div class="cols">
+		<div class="box good">
+			<p class="note"><strong>What can you do?</strong> — the contract (exists today)</p>
+			<pre><code>// packages/app/capabilities/volume
+export const volume =
+  defineCapability&lt;'volume',
+    VolumeCapability,   // one-shot methods
+    VolumeStreams&gt;(     // Stream&lt;Event&gt; methods
+    'volume')</code></pre>
+		</div>
+		<div class="box violet">
+			<p class="note"><strong>How do you do it?</strong> — the implementation (new)</p>
+			<pre><code>// host side — a flat object of typed fns
+export const volumeCapability = (fs: Volume) =&gt;
+  implementCapability(volume, {
+    readFile:  ({ path }, ctx) =&gt; vol(fs,ctx).readFile(path),
+    writeFile: ({ path, data }, ctx) =&gt; vol(fs,ctx).writeFile(path, data),
+    exists:    ({ path }, ctx) =&gt; vol(fs,ctx).exists(path),
+    scan:      ({ path, recursive }, ctx) =&gt; scan(vol(fs,ctx), path, recursive),
+    // a stream: "here's the callback, call it when it happens"
+    watch:     ({ path }, emit, ctx) =&gt; vol(fs,ctx).watch(path, emit),
+  })</code></pre>
+		</div>
+	</div>
+
+	<div class="box">
+		<h3>The whole rule, stated once</h3>
+		<ul>
+			<li>A <strong>unary method</strong> is <code>(input, ctx) =&gt; output</code>.</li>
+			<li>A <strong>stream method</strong> is <code>(input, emit, ctx) =&gt; Unsubscribe</code> — receive the callback, call it on each event, return the teardown. That is the entire stream contract.</li>
+			<li><code>ctx = { appId, scopes, actor? }</code> — the trusted metadata the kernel already attached (scope→resource resolution lives here, e.g. <code>resolveVolume</code>). Capabilities that don't need it ignore it.</li>
+			<li>Failures: <code>throw new CapabilityError(code, …)</code>. The registry/seam turn it into the right result/wire shape. The impl never formats errors.</li>
+		</ul>
+		<p>The author writes one object of typed functions. Which arm of the seam each lands behind (<code>invoke</code> vs <code>subscribe</code>) is decided by the kernel — it only ever calls <code>subscribe</code> for methods the app declared as <code>Stream</code>s — so the implementation never thinks about routing.</p>
+	</div>
+
+	<div class="box good">
+		<h3>The typing loop finally closes</h3>
+		<p>Both ends are typed off the <em>same</em> contract, and only the kernel transit is <code>unknown</code>:</p>
+		<svg class="diagram" viewBox="0 0 940 226" role="img" aria-label="The contract is the single source of truth typed at both ends, unknown only in transit">
+			<rect class="n-green" x="320" y="22" width="300" height="52" rx="10"></rect>
+			<text class="d-code d-strong" x="470" y="45" text-anchor="middle">VolumeCapability</text>
+			<text class="d-text d-muted" x="470" y="63" text-anchor="middle">contract · single source of truth</text>
+
+			<path class="edge" d="M455,74 L185,150"></path>
+			<path class="edge" d="M470,74 L480,150"></path>
+			<path class="edge" d="M485,74 L780,150"></path>
+			<text class="d-text d-muted" x="300" y="120" text-anchor="middle" font-size="11">typed ✓</text>
+			<text class="d-text d-muted" x="545" y="120" font-size="11">erased → unknown</text>
+			<text class="d-text d-muted" x="645" y="120" text-anchor="middle" font-size="11">typed ✓</text>
+
+			<rect class="n-blue" x="30" y="150" width="290" height="58" rx="10"></rect>
+			<text class="d-code" x="175" y="176" text-anchor="middle">ctx.cmd('volume','scan')</text>
+			<text class="d-text d-muted" x="175" y="195" text-anchor="middle">app author</text>
+
+			<rect class="n-red" x="335" y="150" width="290" height="58" rx="10"></rect>
+			<text class="d-code" x="480" y="176" text-anchor="middle">CapabilityCall.input</text>
+			<text class="d-text d-muted" x="480" y="195" text-anchor="middle">kernel transit · generic conduit</text>
+
+			<rect class="n-blue" x="640" y="150" width="290" height="58" rx="10"></rect>
+			<text class="d-code" x="785" y="176" text-anchor="middle">implementCapability(volume, …)</text>
+			<text class="d-text d-muted" x="785" y="195" text-anchor="middle">host impl</text>
+		</svg>
+		<p>That symmetry is what makes the concept feel as &ldquo;complete&rdquo; as <code>Volume</code>: the contract is the single source of truth, consumed identically on both shores.</p>
+	</div>
+
+	<h2>The registry — one router, with a fallback</h2>
+	<p>Collapse the six hand-written <code>if</code>-chains into one combinator. The optional <code>fallback</code> is exactly today's browser behaviour (volume/devkit local, everything else proxied):</p>
+	<pre><code>function capabilityRegistry(
+  map: Record&lt;string, Capability&gt;,
+  opts?: { fallback?: Capabilities },
+): Capabilities
+</code></pre>
+	<div class="cols">
+		<div class="box warn">
+			<p class="note"><strong>Before</strong> — frieren, repeated ×3 backends</p>
+			<pre><code>function invokeCapability(req) {
+  if (req.capability === 'ai') { … }
+  if (req.capability === 'volume') return invokeVolume(…)
+  if (req.capability === 'integrations') { … }
+  throw capabilityError('UNAVAILABLE', …)
+}
+// …and a near-identical streamCapability</code></pre>
+		</div>
+		<div class="box good">
+			<p class="note"><strong>After</strong> — one line per backend</p>
+			<pre><code>// browser kernel
+capabilityRegistry(
+  { volume: volumeCapability(fs), devkit: devkitCapability(fs) },
+  { fallback: proxyCapabilities(channel) },
+)
+
+// server kernel
+capabilityRegistry({
+  volume: volumeCapability(fs),
+  ai: aiCapability(text),
+  integrations: integrationsCapability(reg),
+})</code></pre>
+		</div>
+	</div>
+
+	<h2>One error vocabulary</h2>
+	<p>Move the error concept into <code>packages/app</code> and unify the two fragmented code sets (frieren's <code>UNAVAILABLE/INVALID_INPUT/OFFLINE</code> and the broker's <code>DENIED/FAILED</code>) into one <code>CapabilityError</code> + wire codec. Every layer — impl, registry, proxy, broker — raises and relays the same shape, and <code>integrations.capability.ts</code> stops re-inlining codes by hand.</p>
+	<pre><code>class CapabilityError extends Error { code; capability?; method? }
+const CAPABILITY = { UNAVAILABLE, INVALID_INPUT, DENIED, FAILED, OFFLINE } as const
+function toWire(e): WireError ; function fromWire(w, fallback?): CapabilityError</code></pre>
+
+	<h2>The frame protocol — <code>subscribe</code> across the wire (new scope)</h2>
+	<p>Generalize the <code>_caps</code> socket from invoke-only to both legs, over an abstract <code>Channel</code> so CF Workers, a Node server, and Electron-main all fit the same proxy. The proxy is <em>transparent</em>: a remote capability is a <code>Capabilities</code> just like a local one.</p>
+
+	<pre><code>// the only thing a transport must provide
+interface Channel {
+  send(frame: string): void
+  onMessage(cb: (frame: string) =&gt; void): void
+  onClose(cb: () =&gt; void): void
+}
+
+function proxyCapabilities(open: () =&gt; Promise&lt;Channel&gt;): Capabilities      // caller side
+function serveCapabilities(channel: Channel, local: Capabilities): void        // provider side</code></pre>
+
+	<table>
+		<thead><tr><th>Leg</th><th>Direction</th><th>Frame</th></tr></thead>
+		<tbody>
+			<tr><td rowspan="2"><strong>invoke</strong> (1:1)</td><td>C→S</td><td><code>{ t:'call', id, appId, capability, method, input }</code></td></tr>
+			<tr><td>S→C</td><td><code>{ t:'ok', id, value }</code> &nbsp;|&nbsp; <code>{ t:'err', id, …wire }</code></td></tr>
+			<tr><td rowspan="3"><strong>subscribe</strong> (1:N)</td><td>C→S</td><td><code>{ t:'sub', id, appId, capability, method, input }</code></td></tr>
+			<tr><td>S→C</td><td><code>{ t:'event', id, event }</code> &nbsp;(repeated) &nbsp;|&nbsp; <code>{ t:'err', id, …wire }</code></td></tr>
+			<tr><td>C→S</td><td><code>{ t:'unsub', id }</code> &nbsp;(teardown → the returned <code>Unsubscribe</code>)</td></tr>
+		</tbody>
+	</table>
+
+	<p><code>proxyCapabilities</code> is the same pending-map correlation we already have for <code>invoke</code>, plus an <code>id → emit</code> registry for <code>subscribe</code> (route <code>event</code> frames to the live <code>emit</code>; <code>unsub</code> on teardown). <code>serveCapabilities</code> is today's <code>handleMessage</code>, plus: on <code>sub</code>, call <code>local.subscribe(call, e =&gt; send event)</code> and keep the returned <code>Unsubscribe</code> under <code>id</code> until <code>unsub</code>.</p>
+
+	<div class="box warn">
+		<h3>Trust note — scopes never cross the channel</h3>
+		<p>Client-claimed scopes are untrusted (the current proxy already sends none). Scopes are attached by the kernel that <em>owns the trusted bundle and executes the capability</em>. So a proxied frame carries <code>appId</code> but not <code>scopes</code>; the serving side resolves scopes from its own copy of the app's declarations before invoking. Today's proxied capabilities (<code>ai</code>, <code>integrations</code>) are scope-free, so this is a no-op now and a clean rule for later.</p>
+	</div>
+
+	<h2>The immediate win: finder &amp; code watch the volume</h2>
+	<p><code>volume</code> already supports <code>watch</code>; what's needed is the <code>subscribe</code> path wired through as a first-class citizen. End to end:</p>
+	<svg class="diagram" viewBox="0 0 940 332" role="img" aria-label="End-to-end file-watch flow from finder's declared subscription back to a reduced message">
+		<rect class="n-blue" x="130" y="20" width="680" height="52" rx="10"></rect>
+		<text class="d-text d-strong" x="150" y="50">finder</text>
+		<text class="d-code" x="242" y="50">subscriptions(state) ⇒ [{ volume.watch, to:'fileChanged' }]</text>
+		<path class="edge" d="M470,72 V100"></path>
+
+		<rect class="n" x="130" y="100" width="680" height="52" rx="10"></rect>
+		<text class="d-text d-strong" x="150" y="130">kernel</text>
+		<text class="d-code" x="242" y="130">reconciles ⇒ Capabilities.subscribe(call, emit)</text>
+		<path class="edge" d="M470,152 V180"></path>
+
+		<rect class="n" x="130" y="180" width="680" height="52" rx="10"></rect>
+		<text class="d-text d-strong" x="150" y="210">registry</text>
+		<text class="d-code" x="242" y="210">→ volumeCapability.watch(…, emit) → vol.watch(path, emit)</text>
+		<path class="edge" d="M470,232 V260"></path>
+		<text class="d-text d-muted" x="505" y="250" font-size="11">events</text>
+
+		<rect class="n-green" x="130" y="260" width="680" height="52" rx="10"></rect>
+		<text class="d-text d-strong" x="150" y="290">app</text>
+		<text class="d-code" x="242" y="290">__sub/fileChanged ⇒ finder reduces it</text>
+	</svg>
+	<ul>
+		<li><strong>Locally</strong> (browser kernel owns the synced volume) this needs no frames — it's the registry calling the local unit. This is what lights finder/code up.</li>
+		<li><strong>Across the proxy</strong> the identical <code>subscribe</code> rides the new <code>sub</code>/<code>event</code>/<code>unsub</code> frames — the reference stream that proves both paths, and the principled replacement for today's ad-hoc <code>dirty</code> push (<code>app.update</code> → blanket <code>flushActiveVolume()</code>).</li>
+	</ul>
+	<p class="note">Acceptance: a file write to a watched path delivers exactly one <code>fileChanged</code> to the app, and leaving the watch's state stops the stream (reconciler diff → <code>Unsubscribe</code>).</p>
+
+	<h2>What goes where</h2>
+	<div class="cols">
+		<div class="box good">
+			<p class="note"><strong><code>packages/app</code></strong> — the subsystem</p>
+			<ul>
+				<li><code>CapabilityCall</code>, <code>Capabilities</code>, <code>Capability</code></li>
+				<li><code>defineCapability</code> (exists), <code>implementCapability</code> (new)</li>
+				<li><code>capabilityRegistry</code></li>
+				<li><code>proxyCapabilities</code>, <code>serveCapabilities</code>, <code>Channel</code></li>
+				<li><code>CapabilityError</code> + codes + wire codec</li>
+				<li>per-capability <em>contracts</em> (already here)</li>
+			</ul>
+		</div>
+		<div class="box host">
+			<p class="note"><strong>host (frieren / node / electron)</strong> — the bindings</p>
+			<ul>
+				<li><code>volumeCapability(fs)</code>, <code>aiCapability(text)</code>, <code>integrationsCapability(reg)</code>, <code>devkitCapability</code></li>
+				<li>the <code>Channel</code> adapter over its transport (WebSocket / IPC)</li>
+				<li>one <code>capabilityRegistry({…}, { fallback? })</code> wiring line</li>
+				<li>scope→resource policy that's genuinely host-specific (e.g. <code>resolveVolume</code>)</li>
+			</ul>
+		</div>
+	</div>
+	<p>A brand-new backend implements the bindings column and writes one registry line. That is the Volume-grade payoff.</p>
+
+	<h2>Build order</h2>
+	<ol class="phases">
+		<li><span class="phase">1</span><strong>Seam + types.</strong> <code>CapabilityCall</code>, <code>Capabilities</code>, <code>Capability</code>; grow <code>CapabilityBridge.invoke</code> into the seam. Rename the kernel's internal resolver <code>Capabilities</code> → <code>CapabilityResolver</code> (frees the name). Wire <code>System.capabilities?</code>. <em>No behavior change.</em></li>
+		<li><span class="phase">2</span><strong>Registry + one error vocabulary + <code>implementCapability</code>.</strong> Move <code>capability-error</code> into the package and unify codes; add the router and the impl-definer; port frieren's four impls onto them. Each backend collapses to one wiring line. <em>Pure dedup.</em></li>
+		<li><span class="phase">3</span><strong>Local <code>subscribe</code> end-to-end.</strong> Carry <code>subscribe</code> through the registry; finder/code watch the volume locally. Acceptance test above. <em>First user-visible win.</em></li>
+		<li><span class="phase">4</span><strong>Frame protocol, both legs.</strong> <code>Channel</code>, <code>proxyCapabilities</code>, <code>serveCapabilities</code> with <code>call</code>/<code>ok</code>/<code>err</code> + <code>sub</code>/<code>event</code>/<code>unsub</code>. Re-point frieren's <code>_caps</code> socket at them; the proxied volume watch exercises the <code>sub</code> leg and retires the <code>dirty</code> hack.</li>
+	</ol>
+	<p class="note">Phases 1–2 are mechanical and strictly remove code; 3 is the feature; 4 is the only one with real protocol design and should land on its own.</p>
+
+	<h2>The entire public surface</h2>
+	<p>The minimality test — everything an app author, a host implementer, or a new backend ever touches:</p>
+	<div class="box">
+		<pre class="plain"><code>// types
+CapabilityCall, Capabilities, Capability, Channel, CapabilityError, WireError
+
+// app author (contract)            — already exists
+defineCapability&lt;Id, Methods, Streams&gt;(id)
+
+// host implementer (one unit)
+implementCapability(contract, { [method]: (input, ctx) =&gt; out
+                              , [stream]: (input, emit, ctx) =&gt; Unsubscribe })
+
+// backend wiring (combinators)
+capabilityRegistry(map, { fallback? })
+proxyCapabilities(open)            serveCapabilities(channel, local)</code></pre>
+	</div>
+	<p>Six types and five functions, two of which already exist. An implementer's mental model never exceeds: <em>declare the typed functions; for streams, call the callback when it happens.</em></p>
+
+	<hr>
+	<p class="footer">Plan doc — no code changed yet. Companion: <code>docs/app-kernel-capability-host.html</code> (the seam &amp; naming rationale this builds on). Touches: <code>packages/app/capabilities/*</code>, <code>packages/app/kernel*.ts</code>, and the frieren capability bindings.</p>
+</body>
+</html>
