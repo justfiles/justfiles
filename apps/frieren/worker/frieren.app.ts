@@ -3,8 +3,9 @@ import {
 	type Capabilities,
 	type Capability,
 	CapabilityError,
+	type Channel,
 	capabilityRegistry,
-	toWire
+	serveCapabilities
 } from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
 import { bundleFromZip } from '../shared/app-bundle.ts'
@@ -74,7 +75,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// The server kernel's capability seam: `volume` and `ai` are local units;
 	// `integrations` defers to the registry that `frierenApps` is built before, so
 	// it resolves lazily per call. One wiring line replaces the old invoke/stream
-	// `if`-chains. The `_caps` proxy (handleMessage) also serves through this.
+	// `if`-chains.
+	const ai = aiCapability(deps.text)
 	const integrations: Capability = {
 		invoke: async (call) => {
 			const registry = deps.integrations?.()
@@ -88,9 +90,14 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	}
 	const capabilities: Capabilities = capabilityRegistry({
 		volume: volumeCapability(deps.fs),
-		ai: aiCapability(deps.text),
+		ai,
 		integrations
 	})
+	// What the browser may proxy over `_caps`: everything EXCEPT `volume`, which is
+	// always served locally by the browser kernel against the synced volume and so
+	// must never be re-served here. A `volume` frame misses this registry and comes
+	// back as CAPABILITY_UNAVAILABLE — the old explicit rejection, now structural.
+	const proxied: Capabilities = capabilityRegistry({ ai, integrations })
 
 	function getKernel(): Kernel {
 		if (kernelInstance) return kernelInstance
@@ -244,13 +251,34 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	// ── Capability proxy transport ──────────────────────────────────────
 	//
-	// The browser kernel opens ONE caps socket (`/api/apps/_caps/ws`) per
-	// session. It proxies every app's network capability calls (the app id rides
-	// each frame) and receives the agent's `dirty` pulls.
-	//   C→S  {"id":string,"appId":string,"capability":string,"method":string,"input":unknown}
-	//   S→C  {"type":"result","id":string,"result":unknown}   (invoke reply)
-	//        {"type":"error","id"?:string,"message":string,"code"?:string,...}
-	//        {"type":"dirty","appId":string}                  (agent changed app, pull)
+	// The browser kernel opens ONE caps socket (`/api/apps/_caps/ws`) per session
+	// and drives the package `proxyCapabilities` over it; this side runs the
+	// matching `serveCapabilities` against the `proxied` registry. The DO delivers
+	// frames via `webSocketMessage` (hibernation model), so the channel exposes a
+	// `feed` the message handler pushes raw frames into; replies go back over
+	// `ws.send`. The serve loop is bound lazily per socket (recreated per instance
+	// after hibernation — fine for invoke, where each call is one request/reply).
+	// The agent's `dirty` pulls ride the same socket out-of-band (see
+	// ensureSubscribed); the browser proxy ignores them.
+	const capsFeeds = new WeakMap<WebSocket, (frame: string) => void>()
+
+	function feedFor(ws: WebSocket): (frame: string) => void {
+		let feed = capsFeeds.get(ws)
+		if (!feed) {
+			let onMessage: ((frame: string) => void) | undefined
+			const channel: Channel = {
+				send: (frame) => ws.send(frame),
+				onMessage: (cb) => {
+					onMessage = cb
+				},
+				onClose: () => {}
+			}
+			serveCapabilities(channel, proxied)
+			feed = (frame) => onMessage?.(frame)
+			capsFeeds.set(ws, feed)
+		}
+		return feed
+	}
 
 	async function acceptWebSocket(appId: string): Promise<Response> {
 		// `_caps` is the only WS the browser opens here: no app id, no state push.
@@ -264,52 +292,18 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	}
 
 	// `appId` is undefined for the shared caps socket — the target app id rides
-	// each capability frame instead.
+	// each capability frame; `serveCapabilities` reads it off the frame.
 	async function handleMessage(
 		ws: WebSocket,
-		appId: string | undefined,
+		_appId: string | undefined,
 		message: string | ArrayBuffer
 	): Promise<void> {
 		if (typeof message !== 'string') return
-		let request: {
-			id?: string
-			appId?: string
-			capability?: string
-			method?: string
-			input?: unknown
-		}
+		// A malformed frame throws inside the serve loop's JSON.parse; swallow it
+		// so one bad frame can't crash the socket's message handler.
 		try {
-			request = JSON.parse(message)
-		} catch {
-			ws.send(JSON.stringify({ type: 'error', message: 'invalid JSON' }))
-			return
-		}
-		try {
-			if (typeof request.capability === 'string' && typeof request.method === 'string') {
-				const target = appId ?? request.appId
-				if (!target) throw new Error('missing app')
-				// `volume` is the only scope-bearing capability and is always served
-				// by the browser kernel against the local volume — it must never be
-				// proxied. Reject it explicitly rather than silently re-scoping.
-				if (request.capability === 'volume')
-					throw new CapabilityError('CAPABILITY_UNAVAILABLE', request.capability, request.method)
-				const result = await capabilities.invoke({
-					capability: request.capability,
-					method: request.method,
-					input: request.input,
-					// Client-claimed scopes are never trusted here. The proxied
-					// capabilities (ai/integrations) don't use scopes; scope
-					// enforcement is deferred until a proxied capability needs it.
-					scopes: [],
-					appId: target
-				})
-				ws.send(JSON.stringify({ type: 'result', id: request.id, result }))
-				return
-			}
-			throw new Error('invalid request')
-		} catch (error) {
-			ws.send(JSON.stringify({ type: 'error', id: request.id, ...toWire(error) }))
-		}
+			feedFor(ws)(message)
+		} catch {}
 	}
 
 	const controller: AppController = {

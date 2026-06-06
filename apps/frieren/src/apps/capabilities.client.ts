@@ -3,9 +3,9 @@ import {
 	type Capability,
 	type CapabilityCall,
 	CapabilityError,
+	type Channel,
 	capabilityRegistry,
-	fromWire,
-	type WireError
+	proxyCapabilities
 } from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
@@ -13,11 +13,6 @@ import { volumeCapability } from '../../shared/volume.capability.ts'
 import { flushActiveVolume } from '../fs.ts'
 
 type GetToken = () => Promise<string | null>
-
-type Frame =
-	| { type: 'result'; id: string; result: unknown }
-	| ({ type: 'error'; id?: string } & WireError)
-	| { type: 'dirty'; appId?: string }
 
 // The browser kernel's capability seam. `volume` and `devkit` run locally on this
 // thread; everything else (ai/integrations) proxies to the server through the
@@ -47,19 +42,24 @@ function devkitCapability(fs: Volume, getToken: GetToken): Capability {
 	}
 }
 
-// Everything not served locally proxies to the server. Offline guard mirrors the
-// old bridge: a network capability with no connectivity fails fast as OFFLINE
-// rather than hanging on a socket that can't open. Network streams aren't proxied
-// yet (slice 10), so subscribe is unavailable here.
+// Everything not served locally proxies to the server. The package proxy
+// correlates calls by id over the shared `_caps` socket and self-heals on a drop.
+// The OFFLINE guard fails fast before touching a socket that can't open. Network
+// streams aren't proxied yet (slice 11 lights up volume.watch locally).
 function networkFallback(getToken: GetToken): Capabilities {
+	const proxy = proxyCapabilities(() => openChannel(getToken))
+	const guard = (call: CapabilityCall): void => {
+		if (typeof navigator !== 'undefined' && !navigator.onLine)
+			throw new CapabilityError('CAPABILITY_OFFLINE', call.capability, call.method)
+	}
 	return {
 		invoke: async (call) => {
-			if (typeof navigator !== 'undefined' && !navigator.onLine)
-				throw new CapabilityError('CAPABILITY_OFFLINE', call.capability, call.method)
-			return (await connection(getToken)).invoke(call)
+			guard(call)
+			return proxy.invoke(call)
 		},
-		subscribe: async (call) => {
-			throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
+		subscribe: async (call, emit) => {
+			guard(call)
+			return proxy.subscribe(call, emit)
 		}
 	}
 }
@@ -67,25 +67,29 @@ function networkFallback(getToken: GetToken): Capabilities {
 // Drop the shared socket — called on OS teardown (sign-out / user switch) so a
 // previous session's connection doesn't leak into the next.
 export function resetCapabilitySocket(): void {
-	const pending = shared
+	const ws = sharedWs
+	sharedWs = undefined
 	shared = undefined
-	void pending?.then((c) => c.close()).catch(() => {})
+	ws?.close()
 }
 
-// Eagerly open the shared caps socket — normally it is lazy (opened on the
-// first network capability), but the server's `dirty` push must also reach
-// volume-only apps (e.g. paint) whose open windows never invoke a network
-// capability. The host calls this on app open. Idempotent; failures self-heal
-// on the next call or network capability.
+// Eagerly open the shared caps socket — normally it is lazy (opened on the first
+// network capability), but the server's `dirty` push must also reach volume-only
+// apps (e.g. paint) whose open windows never invoke a network capability. The host
+// calls this on app open. Idempotent; failures self-heal on the next call.
 export function ensureCapabilitySocket(getToken: GetToken): void {
-	void connection(getToken).catch(() => {})
+	void sharedSocket(getToken).catch(() => {})
 }
 
-let shared: Promise<Connection> | undefined
+// One authed `_caps` socket per session, shared by every proxied capability call
+// and the server's `dirty` pulls. Lazy + self-healing: a drop clears the singleton
+// so the next open (proxy reconnect or ensureCapabilitySocket) makes a fresh one.
+let shared: Promise<WebSocket> | undefined
+let sharedWs: WebSocket | undefined
 
-function connection(getToken: GetToken): Promise<Connection> {
+function sharedSocket(getToken: GetToken): Promise<WebSocket> {
 	if (!shared) {
-		shared = open(getToken).catch((error) => {
+		shared = openAuthedWs(getToken).catch((error) => {
 			shared = undefined
 			throw error
 		})
@@ -93,76 +97,50 @@ function connection(getToken: GetToken): Promise<Connection> {
 	return shared
 }
 
-interface Connection {
-	invoke(call: CapabilityCall): Promise<unknown>
-	close(): void
+async function openChannel(getToken: GetToken): Promise<Channel> {
+	return wsChannel(await sharedSocket(getToken))
 }
 
-async function open(getToken: GetToken): Promise<Connection> {
+// The Channel adapter over a browser WebSocket — the whole transport the package
+// proxy needs. Each `onMessage`/`onClose` is a separate listener, so the proxy's
+// frame dispatch and the `dirty` handler (wired in openAuthedWs) coexist.
+export function wsChannel(ws: WebSocket): Channel {
+	return {
+		send: (frame) => ws.send(frame),
+		onMessage: (cb) => ws.addEventListener('message', (event) => cb(event.data as string)),
+		onClose: (cb) => ws.addEventListener('close', () => cb())
+	}
+}
+
+async function openAuthedWs(getToken: GetToken): Promise<WebSocket> {
 	const token = await getToken()
 	if (!token) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 	const ws = new WebSocket(
 		`${protocol}//${window.location.host}/api/apps/_caps/ws?token=${encodeURIComponent(token)}`
 	)
-	const pending = new Map<
-		string,
-		{ call: CapabilityCall; resolve: (v: unknown) => void; reject: (e: Error) => void }
-	>()
-	let nextId = 0
-	const dropped = () => new CapabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')
-
-	// Connect phase: resolve on open, reject the lazy singleton on a failed
-	// handshake so the next call reconnects.
-	await new Promise<void>((resolve, reject) => {
-		ws.onopen = () => resolve()
-		ws.onerror = () => reject(dropped())
-	})
-
-	// Steady state: a drop rejects every in-flight call and clears the
-	// singleton; the next invoke opens a fresh socket.
-	const fail = (error: Error) => {
-		shared = undefined
-		for (const [, p] of pending) p.reject(error)
-		pending.clear()
-	}
-	ws.onmessage = (event) => {
-		let frame: Frame
+	sharedWs = ws
+	// The server pushes {type:'dirty',appId} when the agent changed an app
+	// server-side. The package proxy ignores these (no `t` field), so flush here.
+	ws.addEventListener('message', (event) => {
 		try {
-			frame = JSON.parse(event.data)
-		} catch {
-			return
+			if ((JSON.parse(event.data as string) as { type?: string }).type === 'dirty')
+				flushActiveVolume()
+		} catch {}
+	})
+	ws.addEventListener('close', () => {
+		if (sharedWs === ws) {
+			sharedWs = undefined
+			shared = undefined
 		}
-		if (frame.type === 'dirty') {
-			flushActiveVolume()
-			return
-		}
-		if (frame.id === undefined) return
-		const p = pending.get(frame.id)
-		if (!p) return
-		pending.delete(frame.id)
-		if (frame.type === 'error')
-			p.reject(fromWire(frame, { capability: p.call.capability, method: p.call.method }))
-		else p.resolve(frame.result)
-	}
-	ws.onclose = () => fail(dropped())
-	ws.onerror = () => fail(dropped())
-
-	return {
-		invoke: (call) =>
-			new Promise((resolve, reject) => {
-				const id = String(nextId++)
-				pending.set(id, { call, resolve, reject })
-				ws.send(
-					JSON.stringify({
-						id,
-						appId: call.appId,
-						capability: call.capability,
-						method: call.method,
-						input: call.input
-					})
-				)
-			}),
-		close: () => ws.close()
-	}
+	})
+	await new Promise<void>((resolve, reject) => {
+		ws.addEventListener('open', () => resolve(), { once: true })
+		ws.addEventListener(
+			'error',
+			() => reject(new CapabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')),
+			{ once: true }
+		)
+	})
+	return ws
 }

@@ -90,6 +90,20 @@ test('a channel close rejects all pending and the next call reopens', async () =
 	expect(opens).toBe(2) // reopened
 })
 
+test('a failed open does not wedge the proxy; the next call retries', async () => {
+	let opens = 0
+	const proxy = proxyCapabilities(async () => {
+		opens++
+		if (opens === 1) throw new Error('handshake failed')
+		const [a, b] = pair()
+		serveCapabilities(b, capabilityRegistry({ echo }))
+		return a
+	})
+	await expect(proxy.invoke(call('echo', 'm', 1))).rejects.toThrow('handshake failed')
+	expect(await proxy.invoke(call('echo', 'm', 2))).toBe(2) // reopened, not wedged
+	expect(opens).toBe(2)
+})
+
 test('subscribe streams events in order and stops on unsub', async () => {
 	const [a, b] = pair()
 	serveCapabilities(b, capabilityRegistry({ clock }))

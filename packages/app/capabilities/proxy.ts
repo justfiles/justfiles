@@ -113,11 +113,18 @@ export function proxyCapabilities(open: () => Promise<Channel>): Capabilities {
 
 	const connect = () => {
 		if (!channel)
-			channel = open().then((ch) => {
-				ch.onMessage((raw) => dispatch(JSON.parse(raw) as Frame))
-				ch.onClose(drop)
-				return ch
-			})
+			channel = open()
+				.then((ch) => {
+					ch.onMessage((raw) => dispatch(JSON.parse(raw) as Frame))
+					ch.onClose(drop)
+					return ch
+				})
+				.catch((e) => {
+					// A failed open must not wedge the proxy: clear the cached promise
+					// so the next call retries instead of re-awaiting the rejection.
+					channel = undefined
+					throw e
+				})
 		return channel
 	}
 
