@@ -1,0 +1,39 @@
+import { expect, test } from 'vitest'
+import { app, type CodeState } from './app.ts'
+
+// Slice 11 (code, interim): the watch is wired (refactor), but the product
+// decision on how to reconcile an external change is deferred — for now a foreign
+// change is surfaced loudly (a throw → app error) and the editor's own saves are
+// ignored, so nothing is silently reloaded or overwritten.
+
+const base: CodeState = {
+	slug: 'demo',
+	selectedPath: 'app.ts',
+	view: 'app',
+	files: ['app.ts'],
+	sourceHash: 'h',
+	build: null
+}
+
+test('declares a watch on the open source file, none when nothing is selected', () => {
+	expect(app.subscriptions(base)).toEqual([
+		{
+			capability: 'volume',
+			method: 'watch',
+			input: { path: '/projects/demo/src/app.ts' },
+			to: 'fileChanged'
+		}
+	])
+	expect(app.subscriptions({ ...base, selectedPath: null })).toEqual([])
+})
+
+test('a foreign on-disk change is surfaced loudly, not silently applied', async () => {
+	await expect(
+		app.dispatch({ type: '__sub/fileChanged', params: { source: 'remote' } }, { state: base })
+	).rejects.toThrow(/changed on disk outside the editor/)
+})
+
+test("the editor's own saves (no source) are ignored", async () => {
+	const out = await app.dispatch({ type: '__sub/fileChanged', params: {} }, { state: base })
+	expect(out.state).toEqual(base)
+})

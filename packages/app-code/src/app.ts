@@ -118,6 +118,23 @@ function volumeApi(app: AppHandle<CodeState, CodeCaps>): VolumeCapability {
 export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: [] }), devkit: devkit({ scopes: [] }) },
+	// Watch the open source file (Part D) so a foreign change to it is caught
+	// instead of being silently overwritten. The kernel keeps the stream alive
+	// while a file is selected and tears it down otherwise; events fold via
+	// `fileChanged`.
+	subscriptions: (state, sub) => {
+		const s = normalizeState(state)
+		return s.selectedPath
+			? [
+					sub.capability(
+						'volume',
+						'watch',
+						{ path: SRC(s.slug, `/${s.selectedPath}`) },
+						'fileChanged'
+					)
+				]
+			: []
+	},
 	// Pure edges hold the genuine state transitions. The capability-driven work
 	// (compile, read, ship) lives in procedures, which commit results through the
 	// internal edges below.
@@ -156,7 +173,21 @@ export const app = defineApp({
 		recordHash: t.commit(v.object({ sourceHash: v.string() }), (state, { sourceHash }) => ({
 			...normalizeState(state),
 			sourceHash
-		}))
+		})),
+		// The open source file changed on disk (Part D). A foreign-sourced write —
+		// e.g. the agent editing the project from elsewhere — must not be silently
+		// reloaded over unsaved edits nor silently overwritten by the next save, so
+		// we make it loud: throw, which surfaces as an app error. The editor's own
+		// local saves carry no `source` and are ignored (no churn). Graceful handling
+		// (reload / diff against the editor buffer) is a deferred product decision.
+		fileChanged: t.fromEvent('volume', 'watch', (state, event) => {
+			const s = normalizeState(state)
+			if (event.source)
+				throw new Error(
+					`Source file "${s.selectedPath}" changed on disk outside the editor. Reopen the project to reload — saving now would overwrite that change.`
+				)
+			return s
+		})
 	}),
 	procedures: (p) => ({
 		open: p.procedure({

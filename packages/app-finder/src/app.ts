@@ -8,6 +8,9 @@ import * as v from 'valibot'
 // that re-reads on demand (think `cat /path/to/file`).
 export type FinderState = {
 	currentViewing: string | null
+	// Bumped each time the watched file changes on disk (Part D). The GUI keys its
+	// preview re-read on it, so an external edit refreshes the open file.
+	revision: number
 	files: Array<{ path: string }>
 	loading: boolean
 	error: string | null
@@ -15,6 +18,7 @@ export type FinderState = {
 
 export const initialState: FinderState = {
 	currentViewing: null,
+	revision: 0,
 	files: [],
 	loading: true,
 	error: null
@@ -35,6 +39,13 @@ const pathSchema = v.pipe(
 export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: ['system'] }) },
+	// Watch the file being viewed (Part D): a pure function of state. The kernel
+	// keeps the stream alive while `currentViewing` holds and tears it down when it
+	// clears; each on-disk change folds in via `fileChanged`.
+	subscriptions: (state, sub) =>
+		state.currentViewing
+			? [sub.capability('volume', 'watch', { path: state.currentViewing }, 'fileChanged')]
+			: [],
 	// Every state transition is a pure edge. The one effect — scanning the
 	// volume — is emitted as command data; its result folds back via `filesLoaded`.
 	update: (t) => ({
@@ -68,7 +79,14 @@ export const app = defineApp({
 		),
 		clear: t.on(v.object({}), (state) => ({ ...state, currentViewing: null, error: null }), {
 			description: 'Clear the current Finder selection.'
-		})
+		}),
+		// The watched file changed on disk — bump `revision` so the GUI re-reads it.
+		// The bytes themselves never enter state (the preview is a caller-scoped
+		// query); this is just the change signal.
+		fileChanged: t.fromEvent('volume', 'watch', (state) => ({
+			...state,
+			revision: state.revision + 1
+		}))
 	}),
 	// A caller-scoped read (Part C): the bytes return to the caller, never into
 	// state. The kernel attaches the declared scopes to `app.invoke`.

@@ -43,14 +43,18 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 		if (state.files.length === 0) void client.refresh({})
 	}, [client, state.files.length])
 
-	// Re-read the file whenever `currentViewing` changes. Content is GUI-only
-	// transient state; the bytes can change underneath us and a stale cache
-	// would lie. A token guards against races: late responses from a
-	// previous path are dropped instead of clobbering a newer click.
+	// Re-read the file whenever `currentViewing` changes — or when `revision`
+	// bumps, which the app does each time the watched file changes on disk (Part
+	// D), so an external edit refreshes the preview. Content is GUI-only transient
+	// state; the bytes can change underneath us and a stale cache would lie. A
+	// token guards against races: late responses from a previous path are dropped
+	// instead of clobbering a newer click.
 	const [preview, setPreview] = useState<Preview | null>(null)
 	const [readError, setReadError] = useState<string | null>(null)
 	const tokenRef = useRef(0)
 	const viewing = state.currentViewing
+	const revision = state.revision
+	// biome-ignore lint/correctness/useExhaustiveDependencies: revision is a cache-busting trigger — a bump means the watched file changed on disk, so re-run the read even though the body doesn't read it.
 	useEffect(() => {
 		if (!viewing) {
 			setPreview(null)
@@ -70,7 +74,7 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 				setPreview(null)
 				setReadError(err instanceof Error ? err.message : String(err))
 			})
-	}, [client, viewing])
+	}, [client, viewing, revision])
 
 	const tree = useMemo(() => buildTree(state.files), [state.files])
 	const displayError = state.error ?? readError
