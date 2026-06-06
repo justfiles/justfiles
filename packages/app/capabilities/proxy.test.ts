@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest'
+import { CapabilityError } from './error.ts'
 import { type Channel, proxyCapabilities, serveCapabilities } from './proxy.ts'
 import { capabilityRegistry } from './registry.ts'
 import type { Capability, CapabilityCall } from './types.ts'
@@ -118,6 +119,43 @@ test('subscribe streams events in order and stops on unsub', async () => {
 	await tick()
 	expect(got.length).toBe(n) // no events after unsub
 	expect(got).toEqual([...Array(n)].map((_, i) => i + 1)) // ordered 1..n
+})
+
+test('a subscribe whose server-side open fails rejects the caller', async () => {
+	const failing: Capability = {
+		invoke: async () => undefined,
+		subscribe: async () => {
+			throw new CapabilityError('CAPABILITY_DENIED', 'failing', 'ticks')
+		}
+	}
+	const [a, b] = pair()
+	serveCapabilities(b, capabilityRegistry({ failing }))
+	const proxy = proxyCapabilities(async () => a)
+
+	await expect(proxy.subscribe(call('failing', 'ticks', {}), () => {})).rejects.toMatchObject({
+		code: 'CAPABILITY_DENIED',
+		capability: 'failing',
+		method: 'ticks'
+	})
+})
+
+test('an unknown-capability subscribe rejects rather than silently dying', async () => {
+	const [a, b] = pair()
+	serveCapabilities(b, capabilityRegistry({ echo }))
+	const proxy = proxyCapabilities(async () => a)
+
+	await expect(proxy.subscribe(call('nope', 'ticks', {}), () => {})).rejects.toMatchObject({
+		code: 'CAPABILITY_UNAVAILABLE'
+	})
+})
+
+test('a malformed frame does not crash the serve loop', async () => {
+	const [a, b] = pair()
+	serveCapabilities(b, capabilityRegistry({ echo }))
+	a.send('not json {{{') // garbage in — must be swallowed, not thrown
+	const proxy = proxyCapabilities(async () => a)
+	// The socket still works for a real call afterwards.
+	expect(await proxy.invoke(call('echo', 'm', 9))).toBe(9)
 })
 
 test('a channel close stops every server-side subscription', async () => {
