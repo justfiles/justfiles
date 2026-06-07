@@ -412,7 +412,7 @@ async function readSource(volume: VolumeCapability, slug: string): Promise<Recor
 
 async function seed(volume: VolumeCapability, slug: string): Promise<void> {
 	await volume.writeFile({ path: SRC(slug, '/app.ts'), data: encoder.encode(starterApp) })
-	await volume.writeFile({ path: SRC(slug, '/gui.ts'), data: encoder.encode(starterGui) })
+	await volume.writeFile({ path: SRC(slug, '/gui.tsx'), data: encoder.encode(starterGui) })
 	await writeProjectManifest(volume, slug)
 }
 
@@ -420,7 +420,7 @@ async function seed(volume: VolumeCapability, slug: string): Promise<void> {
 // valid app id; the author edits `project.json` to claim a real reverse-DNS id);
 // the entries and icon path declare the layout explicitly.
 async function writeProjectManifest(volume: VolumeCapability, slug: string): Promise<void> {
-	const manifest = { id: slug, name: slug, icon: 'icon', app: 'src/app.ts', gui: 'src/gui.ts' }
+	const manifest = { id: slug, name: slug, icon: 'icon', app: 'src/app.ts', gui: 'src/gui.tsx' }
 	await volume.writeFile({
 		path: PROJECT(slug),
 		data: encoder.encode(`${JSON.stringify(manifest, null, 2)}\n`)
@@ -451,31 +451,25 @@ export const app = defineApp({
 export type CounterApp = typeof app
 `
 
-const starterGui = `import { defineGUI } from '@justfiles/app/browser'
+const starterGui = `import type { Client } from '@justfiles/app'
+import { defineGUI } from '@justfiles/app/browser'
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
 import type { CounterApp, CounterState } from './app'
 
 const stateOrInitial = (state: CounterState | null): CounterState => state ?? { count: 0 }
 
 export const gui = defineGUI<CounterApp>({
 	mount(el, state, ctx) {
-		const render = (next: CounterState | null) => {
-			const current = stateOrInitial(next)
-			const button = document.createElement('button')
-			button.type = 'button'
-			button.textContent = \`Count: \${current.count}\`
-			button.onclick = () => void ctx.client.increment({ amount: 1 })
-			Object.assign(button.style, {
-				border: '0',
-				borderRadius: '8px',
-				background: '#2563eb',
-				color: '#fff',
-				font: '16px system-ui, sans-serif',
-				padding: '10px 14px'
-			})
-			el.replaceChildren(button)
-		}
+		const root = createRoot(el)
+		const render = (next: CounterState | null) =>
+			root.render(
+				<StrictMode>
+					<Counter state={stateOrInitial(next)} client={ctx.client} />
+				</StrictMode>
+			)
 		render(state)
-		return { update: render, unmount: () => el.replaceChildren() }
+		return { update: render, unmount: () => root.unmount() }
 	},
 	// Declared menus show in the preview window's menubar and run against the live
 	// app. 'Even' reflects state — it re-checks as the count changes.
@@ -490,6 +484,25 @@ export const gui = defineGUI<CounterApp>({
 		}
 	]
 })
+
+function Counter({ state, client }: { state: CounterState; client: Client<CounterApp> }) {
+	return (
+		<button
+			type="button"
+			onClick={() => void client.increment({ amount: 1 })}
+			style={{
+				border: 0,
+				borderRadius: 8,
+				background: '#2563eb',
+				color: '#fff',
+				font: '16px system-ui, sans-serif',
+				padding: '10px 14px'
+			}}
+		>
+			Count: {state.count}
+		</button>
+	)
+}
 `
 
 export type CodeApp = typeof app
