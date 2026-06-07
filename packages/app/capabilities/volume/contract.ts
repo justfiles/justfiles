@@ -16,6 +16,8 @@ export interface VolumeCapability {
 	mkdir(input: { path: string; recursive?: boolean }): Promise<void>
 	scan(input: { path: string; recursive?: boolean }): Promise<VolumeEntry[]>
 	exists(input: { path: string }): Promise<boolean>
+	rm(input: { path: string; recursive?: boolean }): Promise<void>
+	rename(input: { oldPath: string; newPath: string }): Promise<void>
 }
 
 // Payload delivered to a `volume.watch` subscriber. `source` is the tag the

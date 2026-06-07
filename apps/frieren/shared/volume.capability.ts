@@ -61,6 +61,8 @@ export const volumeCapability = (fs: Volume) =>
 			const vol = await bind(fs, ctx)
 			return recursive === true ? scanTree(vol, path) : scanDir(vol, path)
 		},
+		rm: async ({ path, recursive }, ctx) => (await bind(fs, ctx)).rm(path, { recursive }),
+		rename: async ({ oldPath, newPath }, ctx) => (await bind(fs, ctx)).rename(oldPath, newPath),
 		watch: async ({ path }, emit, ctx) => (await bind(fs, ctx)).watch(path, emit)
 	})
 

@@ -111,7 +111,9 @@ function volumeApi(app: AppHandle<CodeState, CodeCaps>): VolumeCapability {
 		writeFile: (input) => app.invoke('volume', 'writeFile', input),
 		mkdir: (input) => app.invoke('volume', 'mkdir', input),
 		scan: (input) => app.invoke('volume', 'scan', input),
-		exists: (input) => app.invoke('volume', 'exists', input)
+		exists: (input) => app.invoke('volume', 'exists', input),
+		rm: (input) => app.invoke('volume', 'rm', input),
+		rename: (input) => app.invoke('volume', 'rename', input)
 	}
 }
 

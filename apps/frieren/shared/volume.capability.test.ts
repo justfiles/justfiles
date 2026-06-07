@@ -169,6 +169,30 @@ describe('volume capability', () => {
 		expect(await fs.exists('/data/x/deeply/nested/dir')).toBe(true)
 	})
 
+	test('rm drops a subtree; rename moves it', async () => {
+		const { cap } = setup()
+		await cap.invoke(
+			call(
+				'writeFile',
+				{ path: '/projects/a/x.txt', data: enc.encode('hi') },
+				{ appId: 'app.code' }
+			)
+		)
+		await cap.invoke(
+			call('rename', { oldPath: '/projects/a', newPath: '/projects/b' }, { appId: 'app.code' })
+		)
+		expect(
+			await cap.invoke(call('exists', { path: '/projects/a/x.txt' }, { appId: 'app.code' }))
+		).toBe(false)
+		expect(
+			await cap.invoke(call('exists', { path: '/projects/b/x.txt' }, { appId: 'app.code' }))
+		).toBe(true)
+		await cap.invoke(call('rm', { path: '/projects/b', recursive: true }, { appId: 'app.code' }))
+		expect(await cap.invoke(call('exists', { path: '/projects/b' }, { appId: 'app.code' }))).toBe(
+			false
+		)
+	})
+
 	test('watch emits when the watched file changes', async () => {
 		const { cap } = setup()
 		const seen: unknown[] = []
@@ -185,7 +209,7 @@ describe('volume capability', () => {
 
 	test('rejects unknown methods', async () => {
 		const { cap } = setup()
-		await expect(cap.invoke(call('rm', { path: '/' }, { appId: 'x' }))).rejects.toMatchObject({
+		await expect(cap.invoke(call('cp', { path: '/' }, { appId: 'x' }))).rejects.toMatchObject({
 			code: 'CAPABILITY_UNAVAILABLE'
 		})
 	})
