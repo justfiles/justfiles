@@ -17,8 +17,8 @@ export {
 	type WireError
 } from './error.ts'
 export { implementCapability } from './implement.ts'
-export { type Channel, proxyCapabilities, serveCapabilities } from './proxy.ts'
 export { capabilityRegistry } from './registry.ts'
+export { type CapsClient, proxyCapabilitiesRpc, serveCapabilitiesRpc } from './rpc.ts'
 export type {
 	Capabilities,
 	Capability,
@@ -26,3 +26,4 @@ export type {
 	Emit,
 	Unsubscribe
 } from './types.ts'
+export { wsFeedTransport } from './wsFeedTransport.ts'

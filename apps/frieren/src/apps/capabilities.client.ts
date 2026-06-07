@@ -3,9 +3,9 @@ import {
 	type Capability,
 	type CapabilityCall,
 	CapabilityError,
-	type Channel,
 	capabilityRegistry,
-	proxyCapabilities
+	proxyCapabilitiesRpc,
+	wsFeedTransport
 } from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
@@ -42,12 +42,10 @@ function devkitCapability(fs: Volume, getToken: GetToken): Capability {
 	}
 }
 
-// Everything not served locally proxies to the server. The package proxy
-// correlates calls by id over the shared `_caps` socket and self-heals on a drop.
-// The OFFLINE guard fails fast before touching a socket that can't open. Network
-// streams aren't proxied yet (slice 11 lights up volume.watch locally).
+// Everything not served locally proxies to the server over ONE shared, authed
+// `_caps` Cap'n Web session. The OFFLINE guard fails fast before touching a socket
+// that can't open; each call resolves the shared connection (opened lazily, reused).
 function networkFallback(getToken: GetToken): Capabilities {
-	const proxy = proxyCapabilities(() => openChannel(getToken))
 	const guard = (call: CapabilityCall): void => {
 		if (typeof navigator !== 'undefined' && !navigator.onLine)
 			throw new CapabilityError('CAPABILITY_OFFLINE', call.capability, call.method)
@@ -55,11 +53,11 @@ function networkFallback(getToken: GetToken): Capabilities {
 	return {
 		invoke: async (call) => {
 			guard(call)
-			return proxy.invoke(call)
+			return (await sharedSocket(getToken)).caps.invoke(call)
 		},
 		subscribe: async (call, emit) => {
 			guard(call)
-			return proxy.subscribe(call, emit)
+			return (await sharedSocket(getToken)).caps.subscribe(call, emit)
 		}
 	}
 }
@@ -68,8 +66,10 @@ function networkFallback(getToken: GetToken): Capabilities {
 // previous session's connection doesn't leak into the next.
 export function resetCapabilitySocket(): void {
 	const ws = sharedWs
+	const conn = shared
 	sharedWs = undefined
 	shared = undefined
+	void conn?.then((c) => c.dispose()).catch(() => {})
 	ws?.close()
 }
 
@@ -81,15 +81,20 @@ export function ensureCapabilitySocket(getToken: GetToken): void {
 	void sharedSocket(getToken).catch(() => {})
 }
 
-// One authed `_caps` socket per session, shared by every proxied capability call
-// and the server's `dirty` pulls. Lazy + self-healing: a drop clears the singleton
-// so the next open (proxy reconnect or ensureCapabilitySocket) makes a fresh one.
-let shared: Promise<WebSocket> | undefined
+// One authed `_caps` Cap'n Web session per session, shared by every proxied
+// capability call and the server's `dirty` pushes. Lazy + self-healing: a broken
+// session or a socket close clears the singleton so the next open makes a fresh one.
+let shared: Promise<CapsConn> | undefined
 let sharedWs: WebSocket | undefined
 
-function sharedSocket(getToken: GetToken): Promise<WebSocket> {
+interface CapsConn {
+	caps: Capabilities
+	dispose(): void
+}
+
+function sharedSocket(getToken: GetToken): Promise<CapsConn> {
 	if (!shared) {
-		shared = openAuthedWs(getToken).catch((error) => {
+		shared = openConn(getToken).catch((error) => {
 			shared = undefined
 			throw error
 		})
@@ -97,19 +102,35 @@ function sharedSocket(getToken: GetToken): Promise<WebSocket> {
 	return shared
 }
 
-async function openChannel(getToken: GetToken): Promise<Channel> {
-	return wsChannel(await sharedSocket(getToken))
+async function openConn(getToken: GetToken): Promise<CapsConn> {
+	const ws = await openAuthedWs(getToken)
+	const proxy = capsProxyOverSocket(ws, flushActiveVolume)
+	// A broken session or a socket close drops the singleton so the next call
+	// reopens against a fresh connection.
+	const clear = () => {
+		if (sharedWs === ws) {
+			sharedWs = undefined
+			shared = undefined
+		}
+	}
+	proxy.onBroken(clear)
+	ws.addEventListener('close', clear)
+	return { caps: proxy.caps, dispose: () => proxy.dispose() }
 }
 
-// The Channel adapter over a browser WebSocket — the whole transport the package
-// proxy needs. Each `onMessage`/`onClose` is a separate listener, so the proxy's
-// frame dispatch and the `dirty` handler (wired in openAuthedWs) coexist.
-export function wsChannel(ws: WebSocket): Channel {
-	return {
-		send: (frame) => ws.send(frame),
-		onMessage: (cb) => ws.addEventListener('message', (event) => cb(event.data as string)),
-		onClose: (cb) => ws.addEventListener('close', () => cb())
-	}
+// Wire a browser WebSocket into the caps proxy: push-based `message` events feed
+// the pull-based transport; the server's `dirty` push runs `onDirty`. A close or
+// error aborts the transport so in-flight calls reject and the session breaks —
+// `wsFeedTransport.receive()` never rejects on its own. The whole browser-side
+// wire in one place — driven directly by the wire test.
+export function capsProxyOverSocket(ws: WebSocket, onDirty: () => void) {
+	const { transport, feed } = wsFeedTransport(ws)
+	ws.addEventListener('message', (e) => feed(e.data as string))
+	const abort = () =>
+		transport.abort?.(new CapabilityError('CAPABILITY_OFFLINE', 'capabilities', 'connect'))
+	ws.addEventListener('close', abort)
+	ws.addEventListener('error', abort)
+	return proxyCapabilitiesRpc(transport, { dirty: () => onDirty() })
 }
 
 async function openAuthedWs(getToken: GetToken): Promise<WebSocket> {
@@ -120,20 +141,6 @@ async function openAuthedWs(getToken: GetToken): Promise<WebSocket> {
 		`${protocol}//${window.location.host}/api/apps/_caps/ws?token=${encodeURIComponent(token)}`
 	)
 	sharedWs = ws
-	// The server pushes {type:'dirty',appId} when the agent changed an app
-	// server-side. The package proxy ignores these (no `t` field), so flush here.
-	ws.addEventListener('message', (event) => {
-		try {
-			if ((JSON.parse(event.data as string) as { type?: string }).type === 'dirty')
-				flushActiveVolume()
-		} catch {}
-	})
-	ws.addEventListener('close', () => {
-		if (sharedWs === ws) {
-			sharedWs = undefined
-			shared = undefined
-		}
-	})
 	await new Promise<void>((resolve, reject) => {
 		ws.addEventListener('open', () => resolve(), { once: true })
 		ws.addEventListener(

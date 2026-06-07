@@ -101,6 +101,7 @@
 		"@justfiles/fs": "workspace:*",
 		"@standard-schema/spec": "^1.1.0",
 		"@tailwindcss/vite": "^4.3.0",
+		"capnweb": "^0.8.0",
 		"tailwindcss": "^4.3.0"
 	}
 }

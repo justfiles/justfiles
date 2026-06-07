@@ -3,9 +3,9 @@ import {
 	type Capabilities,
 	type Capability,
 	CapabilityError,
-	type Channel,
 	capabilityRegistry,
-	serveCapabilities
+	serveCapabilitiesRpc,
+	wsFeedTransport
 } from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
 import { bundleFromZip } from '../shared/app-bundle.ts'
@@ -150,10 +150,9 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		subscribed = true
 		getKernel().subscribe((event) => {
 			if (event.type !== 'app.update') return
-			const dirtyFrame = JSON.stringify({ type: 'dirty', appId: event.appId })
 			for (const socket of deps.sockets()) {
 				const attachment = socket.deserializeAttachment() as { caps?: boolean } | null
-				if (attachment?.caps) socket.send(dirtyFrame)
+				if (attachment?.caps && freshSocket(socket)) linkFor(socket).dirty(event.appId)
 			}
 		})
 	}
@@ -252,32 +251,40 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// ── Capability proxy transport ──────────────────────────────────────
 	//
 	// The browser kernel opens ONE caps socket (`/api/apps/_caps/ws`) per session
-	// and drives the package `proxyCapabilities` over it; this side runs the
-	// matching `serveCapabilities` against the `proxied` registry. The DO delivers
-	// frames via `webSocketMessage` (hibernation model), so the channel exposes a
-	// `feed` the message handler pushes raw frames into; replies go back over
-	// `ws.send`. The serve loop is bound lazily per socket (recreated per instance
-	// after hibernation — fine for invoke, where each call is one request/reply).
-	// The agent's `dirty` pulls ride the same socket out-of-band (see
-	// ensureSubscribed); the browser proxy ignores them.
-	const capsFeeds = new WeakMap<WebSocket, (frame: string) => void>()
+	// and drives the package `proxyCapabilitiesRpc` over it; this side runs the
+	// matching `serveCapabilitiesRpc` against the `proxied` registry on a Cap'n Web
+	// session. The DO delivers frames via `webSocketMessage` (hibernation model),
+	// so `wsFeedTransport` exposes a `feed` the message handler pushes raw frames
+	// into; replies and server→client `dirty` pushes go back over `ws.send`.
+	const capsLinks = new WeakMap<
+		WebSocket,
+		{ feed: (frame: string) => void; dirty: (appId: string) => void }
+	>()
+	// Sockets whose Cap'n Web session was established in THIS instance. A session's
+	// import/export tables live only in memory, so they die on hibernation; the
+	// WeakSet (also in-memory) is empty after a wake. `freshSocket` uses that to
+	// tell an apt socket from a stale, post-hibernation one.
+	const acceptedThisInstance = new WeakSet<WebSocket>()
 
-	function feedFor(ws: WebSocket): (frame: string) => void {
-		let feed = capsFeeds.get(ws)
-		if (!feed) {
-			let onMessage: ((frame: string) => void) | undefined
-			const channel: Channel = {
-				send: (frame) => ws.send(frame),
-				onMessage: (cb) => {
-					onMessage = cb
-				},
-				onClose: () => {}
-			}
-			serveCapabilities(channel, proxied)
-			feed = (frame) => onMessage?.(frame)
-			capsFeeds.set(ws, feed)
+	function linkFor(ws: WebSocket) {
+		let link = capsLinks.get(ws)
+		if (!link) {
+			const { transport, feed } = wsFeedTransport(ws)
+			const served = serveCapabilitiesRpc(transport, proxied)
+			link = { feed, dirty: served.dirty }
+			capsLinks.set(ws, link)
 		}
-		return feed
+		return link
+	}
+
+	// A Cap'n Web session cannot continue across hibernation — a fresh server
+	// session can't resolve the live browser session's import/export ids ("no such
+	// export id"). So after a wake, close a socket the browser is still using and
+	// let it reconnect a clean session, rather than serving on a desynced one.
+	function freshSocket(ws: WebSocket): boolean {
+		if (acceptedThisInstance.has(ws)) return true
+		ws.close(1012, 'reconnect')
+		return false
 	}
 
 	async function acceptWebSocket(appId: string): Promise<Response> {
@@ -286,24 +293,22 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		const { 0: client, 1: server } = new WebSocketPair()
 		deps.acceptWebSocket(server)
 		server.serializeAttachment({ caps: true })
+		acceptedThisInstance.add(server)
 		// Subscribe so the agent's server-side writes nudge this tab to pull.
 		ensureSubscribed()
 		return new Response(null, { status: 101, webSocket: client })
 	}
 
 	// `appId` is undefined for the shared caps socket — the target app id rides
-	// each capability frame; `serveCapabilities` reads it off the frame.
+	// each capability call; the Cap'n Web session reads it off the frame.
 	async function handleMessage(
 		ws: WebSocket,
 		_appId: string | undefined,
 		message: string | ArrayBuffer
 	): Promise<void> {
 		if (typeof message !== 'string') return
-		// A malformed frame throws inside the serve loop's JSON.parse; swallow it
-		// so one bad frame can't crash the socket's message handler.
-		try {
-			feedFor(ws)(message)
-		} catch {}
+		if (!freshSocket(ws)) return
+		linkFor(ws).feed(message)
 	}
 
 	const controller: AppController = {
