@@ -205,7 +205,7 @@ describe('Fastmail provider via capability broker', () => {
 			broker.invoke({
 				capability: 'email',
 				method: 'listUnread',
-				input: { accountId: 'primary' }
+				args: [{ accountId: 'primary' }]
 			})
 		).resolves.toEqual([
 			{
@@ -232,7 +232,7 @@ describe('Fastmail provider via capability broker', () => {
 			resolveAccount: () => ({ providerId: provider.id, credentials: { token: 'tok' } })
 		})
 		await expect(
-			broker.invoke({ capability: 'email', method: 'listUnread', input: {} })
+			broker.invoke({ capability: 'email', method: 'listUnread', args: [{}] })
 		).rejects.toMatchObject({
 			code: 'CAPABILITY_FAILED',
 			capability: 'email',

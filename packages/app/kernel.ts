@@ -228,7 +228,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		appId: AppId,
 		capability: string,
 		method: string,
-		input: unknown,
+		args: readonly unknown[],
 		actor?: string
 	): Promise<unknown> {
 		const declared = await resolver.resolve(appId, capability)
@@ -238,7 +238,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 			appId,
 			capability: declared.id,
 			method,
-			input,
+			args,
 			scopes: declared.scopes,
 			actor
 		})
@@ -383,8 +383,8 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 			state: await states.current(appId),
 			dispatch: (m) => enqueue(appId, () => dispatchNow(appId, m)).then(({ seq }) => ({ seq })),
 			settled: (seq, opts) => settled(appId, seq, opts),
-			invoke: (capability, method, input) =>
-				invokeCapability(appId, capability, method, input, message.actor)
+			invoke: (capability, method, ...args) =>
+				invokeCapability(appId, capability, method, args, message.actor)
 		}
 		return sb.runProcedure(message.type, message.params, handle)
 	}

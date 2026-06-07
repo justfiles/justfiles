@@ -20,7 +20,7 @@ test('declares a watch on the open source file, none when nothing is selected', 
 		{
 			capability: 'volume',
 			method: 'watch',
-			input: { path: '/projects/demo/src/app.ts' },
+			args: [{ path: '/projects/demo/src/app.ts' }],
 			to: 'fileChanged'
 		}
 	])

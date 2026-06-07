@@ -243,11 +243,13 @@ describe('iCloud calendar provider — broker integration', () => {
 		const result = (await broker.invoke({
 			capability: 'calendar',
 			method: 'listToday',
-			input: {
-				timezone: 'Pacific/Auckland',
-				accountId: 'icloud-1',
-				now: Date.parse('2026-05-08T03:00:00Z')
-			}
+			args: [
+				{
+					timezone: 'Pacific/Auckland',
+					accountId: 'icloud-1',
+					now: Date.parse('2026-05-08T03:00:00Z')
+				}
+			]
 		})) as Array<{ id: string }>
 		expect(result.map((e) => e.id)).toEqual(['e1'])
 	})
@@ -269,7 +271,7 @@ describe('iCloud calendar provider — broker integration', () => {
 			broker.invoke({
 				capability: 'calendar',
 				method: 'listToday',
-				input: { timezone: 'Pacific/Auckland', now: Date.parse('2026-05-08T03:00:00Z') }
+				args: [{ timezone: 'Pacific/Auckland', now: Date.parse('2026-05-08T03:00:00Z') }]
 			})
 		).rejects.toMatchObject({
 			code: 'CAPABILITY_FAILED',
@@ -290,7 +292,7 @@ describe('iCloud calendar provider — broker integration', () => {
 			broker.invoke({
 				capability: 'calendar',
 				method: 'listToday',
-				input: { timezone: 'Pacific/Auckland' }
+				args: [{ timezone: 'Pacific/Auckland' }]
 			})
 		).rejects.toMatchObject({
 			code: 'CAPABILITY_DENIED',

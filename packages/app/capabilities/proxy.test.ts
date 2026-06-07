@@ -9,7 +9,7 @@ const call = (
 	method: string,
 	input: unknown,
 	x?: Partial<CapabilityCall>
-): CapabilityCall => ({ appId: 'app', capability, method, input, scopes: [], ...x })
+): CapabilityCall => ({ appId: 'app', capability, method, args: [input], scopes: [], ...x })
 
 // An in-memory Channel pair — the only "transport" the proxy tests need.
 function pair(): [Channel, Channel] {
@@ -26,7 +26,7 @@ function pair(): [Channel, Channel] {
 	return [mk(0), mk(1)]
 }
 
-const echo: Capability = { invoke: async (c) => c.input, subscribe: async () => () => {} }
+const echo: Capability = { invoke: async (c) => c.args[0], subscribe: async () => () => {} }
 
 const tick = () => new Promise((r) => setTimeout(r, 10))
 

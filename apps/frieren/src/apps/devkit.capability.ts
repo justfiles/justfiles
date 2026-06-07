@@ -49,21 +49,22 @@ function getToolchain(): Promise<Toolchain> {
 export async function invokeDevkit(
 	fs: Volume,
 	getToken: GetToken,
-	req: { method: string; input: unknown; appId: string }
+	req: { method: string; args: readonly unknown[]; appId: string }
 ): Promise<unknown> {
+	const input = req.args[0]
 	switch (req.method) {
 		case 'run':
-			return run(fs, getToken, req.appId, runInput(req.input))
+			return run(fs, getToken, req.appId, runInput(input))
 		case 'stop':
-			return stop(stopInput(req.input))
+			return stop(stopInput(input))
 		case 'menu':
-			return menu(menuInput(req.input))
+			return menu(menuInput(input))
 		case 'selectMenu':
-			return selectMenu(selectMenuInput(req.input))
+			return selectMenu(selectMenuInput(input))
 		case 'install':
-			return install(fs, getToken, req.appId, slugInput(req.input, 'install'))
+			return install(fs, getToken, req.appId, slugInput(input, 'install'))
 		case 'pack':
-			return pack(fs, req.appId, slugInput(req.input, 'pack'))
+			return pack(fs, req.appId, slugInput(input, 'pack'))
 		default:
 			throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', req.method)
 	}

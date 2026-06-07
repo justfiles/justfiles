@@ -87,7 +87,7 @@ export const app = defineApp({
 				const path = `${SAVE_DIR}/${name}`
 				return [
 					{ ...state, lastSavedPath: path, lastError: null },
-					t.cmd('volume', 'writeFile', { path, data: base64ToBytes(pngBase64) }, 'saved')
+					t.cmd('volume', 'writeFile', path, base64ToBytes(pngBase64)).to('saved')
 				]
 			},
 			{ description: 'Save the current canvas as PNG to /Paint/.' }
@@ -109,18 +109,15 @@ export const app = defineApp({
 			schema: v.object({ docId: v.string() }),
 			async run({ docId }, app): Promise<PaintDoc | null> {
 				const path = draftPath(docId)
-				if (!(await app.invoke('volume', 'exists', { path }))) return null
-				return decode(await app.invoke('volume', 'readFile', { path }))
+				if (!(await app.invoke('volume', 'exists', path))) return null
+				return decode(await app.invoke('volume', 'readFile', path))
 			}
 		}),
 		saveDraft: p.procedure({
 			description: 'Autosave the working draft document to the app data volume.',
 			schema: v.object({ docId: v.string(), doc: docSchema }),
 			async run({ docId, doc }, app): Promise<boolean> {
-				await app.invoke('volume', 'writeFile', {
-					path: draftPath(docId),
-					data: encode(doc as PaintDoc)
-				})
+				await app.invoke('volume', 'writeFile', draftPath(docId), encode(doc as PaintDoc))
 				return true
 			}
 		})

@@ -20,7 +20,7 @@ type WorkerMessage =
 			callId: string
 			capability: string
 			method: string
-			input: unknown
+			args: readonly unknown[]
 	  }
 
 type Pending = {
@@ -163,7 +163,7 @@ class WorkerClient {
 				} else if (message.type === 'invoke') {
 					reply(
 						'hostResult',
-						await handleOf(pending).invoke(message.capability, message.method, message.input)
+						await handleOf(pending).invoke(message.capability, message.method, ...message.args)
 					)
 				} else {
 					reply('hostResult', undefined)
@@ -231,8 +231,8 @@ self.onmessage = async (event) => {
 				state: msg.state,
 				dispatch: (message) => hostCall(msg.id, 'dispatch', { message }),
 				settled: (seq, opts) => hostCall(msg.id, 'settled', { seq, opts }),
-				invoke: (capability, method, input) =>
-					hostCall(msg.id, 'invoke', { capability, method, input })
+				invoke: (capability, method, ...args) =>
+					hostCall(msg.id, 'invoke', { capability, method, args })
 			}
 			self.postMessage({
 				type: 'result',

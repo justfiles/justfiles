@@ -11,7 +11,7 @@ import { type Subscriptions, subscriptionRuntime } from './kernel.subscription.t
 const sub = (path: string, to = 'changed'): Subscription => ({
 	capability: 'volume',
 	method: 'watch',
-	input: { path },
+	args: [{ path }],
 	to
 })
 
@@ -28,7 +28,7 @@ type Opened = {
 	appId: string
 	capability: string
 	method: string
-	input: unknown
+	args: readonly unknown[]
 	scopes: readonly string[]
 	emit: (event: unknown) => void
 	stopped: boolean
@@ -46,7 +46,7 @@ function fakeStream() {
 		}
 	}
 	const live = () => opened.filter((o) => !o.stopped)
-	const pathOf = (o: Opened) => (o.input as { path: string }).path
+	const pathOf = (o: Opened) => (o.args[0] as { path: string }).path
 	return { opened, subscribe, live, pathOf }
 }
 
@@ -79,7 +79,7 @@ test('reconcile starts a declared stream and its events re-enter via dispatch', 
 		appId: 'app',
 		capability: 'volume',
 		method: 'watch',
-		input: { path: '/a' },
+		args: [{ path: '/a' }],
 		scopes: ['system']
 	})
 

@@ -79,7 +79,7 @@ export function defineProviderBackedCapability<
 				}
 				const scope = (config.methodScopes as Record<string, string | undefined>)[req.method]
 				if (!scope) throw failed(capabilityId, req.method, `unknown method: ${req.method}`)
-				const accountId = accountIdFrom(req.input)
+				const accountId = accountIdFrom(req.args[0])
 				if (!hasGrant(ctx.grants, capabilityId, scope, accountId)) {
 					await ctx.audit?.({
 						capability: capabilityId,
@@ -94,7 +94,7 @@ export function defineProviderBackedCapability<
 				const resolved = await ctx.resolveAccount({
 					capability: capabilityId,
 					method: req.method,
-					input: req.input,
+					input: req.args[0],
 					accountId
 				})
 				if (!resolved) throw denied(capabilityId, req.method, 'no account available')
@@ -115,7 +115,7 @@ export function defineProviderBackedCapability<
 					if (typeof method !== 'function') {
 						throw new Error(`provider ${provider.id} does not implement ${req.method}`)
 					}
-					return await method.call(impl, req.input)
+					return await method.call(impl, ...req.args)
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error)
 					await ctx.audit?.({

@@ -14,7 +14,7 @@ test('public edge validates input, updates state, and emits a command', async ()
 		kind: 'capability',
 		capability: 'volume',
 		method: 'scan',
-		input: { path: '/', recursive: true },
+		args: [{ path: '/', recursive: true }],
 		to: 'filesLoaded'
 	})
 })

@@ -16,14 +16,14 @@ const cap = (over: Partial<CapCommand> = {}): Command => ({
 	kind: 'capability',
 	capability: 'volume',
 	method: 'scan',
-	input: {},
+	args: [{}],
 	to: 'loaded',
 	...over
 })
 
 function setup(
 	opts: {
-		invoke?: (req: { input: unknown }) => Promise<unknown>
+		invoke?: (req: { args: readonly unknown[] }) => Promise<unknown>
 		dispatch?: (appId: string, message: Message) => Promise<unknown>
 	} = {}
 ) {
@@ -75,7 +75,7 @@ test('the kernel resolves trusted scopes — not the command data', async () => 
 			appId: 'app',
 			capability: 'volume',
 			method: 'scan',
-			input: {},
+			args: [{}],
 			scopes: ['system'],
 			actor: 'agent'
 		}

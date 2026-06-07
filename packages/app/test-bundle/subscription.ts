@@ -17,7 +17,9 @@ export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: ['system'] }) },
 	subscriptions: (state, sub) =>
-		state.watching ? [sub.capability('volume', 'watch', { path: state.watching }, 'changed')] : [],
+		state.watching
+			? [sub.capability('volume', 'watch', { path: state.watching }).to('changed')]
+			: [],
 	update: (t) => ({
 		open: t.on(v.object({ path: v.string() }), (state, { path }) => ({ ...state, watching: path })),
 		close: t.on(v.object({}), (state) => ({ ...state, watching: null })),

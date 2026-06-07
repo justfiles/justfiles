@@ -8,7 +8,7 @@ export const app = defineApp({
 	init: { events: 0 },
 	capabilities: { volume: volume({ scopes: ['system'] }) },
 	subscriptions: (_state, sub) => [
-		sub.capability('volume', 'watch', { path: '/fixed' }, 'changed')
+		sub.capability('volume', 'watch', { path: '/fixed' }).to('changed')
 	],
 	update: (t) => ({
 		changed: t.fromEvent('volume', 'watch', (s) => ({ ...s, events: s.events + 1 }))

@@ -23,7 +23,7 @@ export const app = defineApp({
 	update: (t) => ({
 		refresh: t.on(v.object({}), (state) => [
 			{ ...state, loading: true, error: null },
-			t.cmd('volume', 'scan', { path: '/', recursive: true }, 'filesLoaded')
+			t.cmd('volume', 'scan', { path: '/', recursive: true }).to('filesLoaded')
 		]),
 		filesLoaded: t.fromResult('volume', 'scan', (state, r) =>
 			r.ok
@@ -43,7 +43,7 @@ export const app = defineApp({
 			schema: v.object({ path: v.string() }),
 			// `invoke` is typed from the volume contract — returns Uint8Array, no cast.
 			async run({ path }, app) {
-				return decoder.decode(await app.invoke('volume', 'readFile', { path }))
+				return decoder.decode(await app.invoke('volume', 'readFile', path))
 			}
 		}),
 		// drive the reducer, then report the outcome by value (the settled count)

@@ -42,7 +42,7 @@ const toCall = (f: Frame): CapabilityCall => ({
 	appId: String(f.appId),
 	capability: String(f.capability),
 	method: String(f.method),
-	input: f.input,
+	args: Array.isArray(f.args) ? (f.args as unknown[]) : [],
 	scopes: []
 })
 
@@ -175,7 +175,7 @@ export function proxyCapabilities(open: () => Promise<Channel>): Capabilities {
 			appId: call.appId,
 			capability: call.capability,
 			method: call.method,
-			input: call.input
+			args: call.args
 		})
 
 	return {

@@ -5,8 +5,16 @@
 // ever calls `subscribe` for methods the app declared as `Stream`s; the impl
 // never thinks about routing.
 //
-//   unary  : (input, ctx) => output
-//   stream : (input, emit, ctx) => Unsubscribe   // call emit on each event
+// A method is ANY function shape `(...args) => result`; the kernel prepends the
+// trusted `ctx` (and `emit` for streams) BEFORE the contract's own arguments:
+//
+//   unary  : (ctx, ...args) => output           // e.g. (ctx, input) for 1-arg
+//   stream : (ctx, emit, ...args) => Unsubscribe // call emit on each event
+//
+// `ctx`/`emit` come FIRST so a contract method with optional or rest params
+// (e.g. `mkdir(path, opts?)`) keeps those at the tail — tupling a required `ctx`
+// AFTER an optional arg is a type error, and at runtime an omitted optional would
+// let `ctx` slide into its slot. Leading injection sidesteps both.
 //
 // Both ends are typed off the SAME contract: `Impl<C>` derives each function's
 // argument and result types from the contract's `Methods`/`Streams` surfaces.
@@ -23,12 +31,12 @@ type Ctx = { appId: string; scopes: readonly string[]; actor?: string }
 type MethodsOf<C> = C extends (...a: never[]) => { __methods?: infer M } ? M : never
 type StreamsOf<C> = C extends (...a: never[]) => { __streams?: infer S } ? S : never
 
-type MethodImpl<F> = F extends (input: infer I) => infer O
-	? (input: I, ctx: Ctx) => O | Promise<O>
+type MethodImpl<F> = F extends (...args: infer A) => infer R
+	? (ctx: Ctx, ...args: A) => Awaited<R> | Promise<Awaited<R>>
 	: never
 
-type StreamImpl<F> = F extends (input: infer I) => Stream<infer E>
-	? (input: I, emit: (event: E) => void, ctx: Ctx) => Unsubscribe | Promise<Unsubscribe>
+type StreamImpl<F> = F extends (...args: infer A) => Stream<infer E>
+	? (ctx: Ctx, emit: (event: E) => void, ...args: A) => Unsubscribe | Promise<Unsubscribe>
 	: never
 
 // ONE homomorphic mapped type over every declared method + stream key, so TS
@@ -55,7 +63,7 @@ export function implementCapability<C>(_contract: C, impl: Impl<C>): Capability 
 	}
 	const ctx = (c: CapabilityCall): Ctx => ({ appId: c.appId, scopes: c.scopes, actor: c.actor })
 	return {
-		invoke: async (c) => fn(c)(c.input, ctx(c)),
-		subscribe: async (c, emit) => (await fn(c)(c.input, emit, ctx(c))) as Unsubscribe
+		invoke: async (c) => fn(c)(ctx(c), ...c.args),
+		subscribe: async (c, emit) => (await fn(c)(ctx(c), emit, ...c.args)) as Unsubscribe
 	}
 }

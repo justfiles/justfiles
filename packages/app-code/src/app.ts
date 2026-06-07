@@ -103,17 +103,25 @@ const openedSchema = v.object({
 
 type CodeCaps = { volume: ReturnType<typeof volume>; devkit: ReturnType<typeof devkit> }
 
-// Adapt the kernel-mediated `app.invoke` into the `VolumeCapability` shape the
-// disk helpers (readSource/seed/…) expect — same trust path, typed surface.
-function volumeApi(app: AppHandle<CodeState, CodeCaps>): VolumeCapability {
+// The subset of the (now Volume-shaped) capability the disk helpers use.
+type VolumeApi = Pick<
+	VolumeCapability,
+	'readFile' | 'writeFile' | 'mkdir' | 'scan' | 'exists' | 'rm' | 'rename'
+>
+
+// Adapt the kernel-mediated `app.invoke` into the `VolumeApi` shape the disk
+// helpers (readSource/seed/…) expect — same trust path, typed surface. Args are
+// spread positionally now; only `scan` keeps an object (it is the bespoke,
+// listing-returning method, not part of `Volume`).
+function volumeApi(app: AppHandle<CodeState, CodeCaps>): VolumeApi {
 	return {
-		readFile: (input) => app.invoke('volume', 'readFile', input),
-		writeFile: (input) => app.invoke('volume', 'writeFile', input),
-		mkdir: (input) => app.invoke('volume', 'mkdir', input),
+		readFile: (path) => app.invoke('volume', 'readFile', path),
+		writeFile: (path, data) => app.invoke('volume', 'writeFile', path, data),
+		mkdir: (path, opts) => app.invoke('volume', 'mkdir', path, opts),
 		scan: (input) => app.invoke('volume', 'scan', input),
-		exists: (input) => app.invoke('volume', 'exists', input),
-		rm: (input) => app.invoke('volume', 'rm', input),
-		rename: (input) => app.invoke('volume', 'rename', input)
+		exists: (path) => app.invoke('volume', 'exists', path),
+		rm: (path, opts) => app.invoke('volume', 'rm', path, opts),
+		rename: (oldPath, newPath) => app.invoke('volume', 'rename', oldPath, newPath)
 	}
 }
 
@@ -128,12 +136,9 @@ export const app = defineApp({
 		const s = normalizeState(state)
 		return s.selectedPath
 			? [
-					sub.capability(
-						'volume',
-						'watch',
-						{ path: SRC(s.slug, `/${s.selectedPath}`) },
-						'fileChanged'
-					)
+					sub
+						.capability('volume', 'watch', { path: SRC(s.slug, `/${s.selectedPath}`) })
+						.to('fileChanged')
 				]
 			: []
 	},
@@ -198,10 +203,10 @@ export const app = defineApp({
 			async run({ slug }, app) {
 				const state = normalizeState(app.state)
 				const vol = volumeApi(app)
-				if (!(await vol.exists({ path: SRC(slug) }))) await seed(vol, slug)
+				if (!(await vol.exists(SRC(slug)))) await seed(vol, slug)
 				// Backfill the project file for projects created before it existed, so
 				// devkit always has its build contract.
-				if (!(await vol.exists({ path: PROJECT(slug) }))) await writeProjectManifest(vol, slug)
+				if (!(await vol.exists(PROJECT(slug)))) await writeProjectManifest(vol, slug)
 				const source = await readSource(vol, slug)
 				const files = Object.keys(source)
 				const selectedPath = files.includes(state.selectedPath ?? '')
@@ -232,7 +237,7 @@ export const app = defineApp({
 			async run({ path, content }, app) {
 				const state = normalizeState(app.state)
 				const vol = volumeApi(app)
-				await vol.writeFile({ path: SRC(state.slug, `/${path}`), data: encoder.encode(content) })
+				await vol.writeFile(SRC(state.slug, `/${path}`), encoder.encode(content))
 				const { seq } = await app.dispatch({
 					type: 'recordHash',
 					params: { sourceHash: hashSource(await readSource(vol, state.slug)) }
@@ -273,9 +278,7 @@ export const app = defineApp({
 			schema: v.object({ path: srcPathSchema }),
 			async run({ path }, app) {
 				const state = normalizeState(app.state)
-				return decoder.decode(
-					await app.invoke('volume', 'readFile', { path: SRC(state.slug, `/${path}`) })
-				)
+				return decoder.decode(await app.invoke('volume', 'readFile', SRC(state.slug, `/${path}`)))
 			}
 		}),
 		// The project's app icon as an image data URL, or null if unset. Drives the
@@ -285,8 +288,8 @@ export const app = defineApp({
 			schema: v.object({}),
 			async run(_, app): Promise<string | null> {
 				const path = ICON(normalizeState(app.state).slug)
-				if (!(await app.invoke('volume', 'exists', { path }))) return null
-				return decoder.decode(await app.invoke('volume', 'readFile', { path }))
+				if (!(await app.invoke('volume', 'exists', path))) return null
+				return decoder.decode(await app.invoke('volume', 'readFile', path))
 			}
 		}),
 		// Set the project's app icon from an image data URL (verbatim — no resize).
@@ -294,10 +297,12 @@ export const app = defineApp({
 			description: "Set the project's app icon from an image data URL.",
 			schema: v.object({ dataUrl: v.pipe(v.string(), v.startsWith('data:image/')) }),
 			async run({ dataUrl }, app) {
-				await app.invoke('volume', 'writeFile', {
-					path: ICON(normalizeState(app.state).slug),
-					data: encoder.encode(dataUrl)
-				})
+				await app.invoke(
+					'volume',
+					'writeFile',
+					ICON(normalizeState(app.state).slug),
+					encoder.encode(dataUrl)
+				)
 			}
 		}),
 		// The live App's declared menubar (display structure only), pulled so the
@@ -389,7 +394,7 @@ function buildRecord(hash: string, diagnostics: string[]): CodeBuild {
 	}
 }
 
-async function listFiles(volume: VolumeCapability, slug: string): Promise<string[]> {
+async function listFiles(volume: VolumeApi, slug: string): Promise<string[]> {
 	const root = SRC(slug)
 	const entries = await volume.scan({ path: root, recursive: true })
 	return entries
@@ -401,32 +406,28 @@ async function listFiles(volume: VolumeCapability, slug: string): Promise<string
 // Read every source file fresh from disk as a path→content map for the
 // compiler. Reads from the volume (not `state.files`) so a just-saved edit is
 // always included, regardless of pending state pushes.
-async function readSource(volume: VolumeCapability, slug: string): Promise<Record<string, string>> {
+async function readSource(volume: VolumeApi, slug: string): Promise<Record<string, string>> {
 	const files = await listFiles(volume, slug)
 	const entries = await Promise.all(
 		files.map(
-			async (path) =>
-				[path, decoder.decode(await volume.readFile({ path: SRC(slug, `/${path}`) }))] as const
+			async (path) => [path, decoder.decode(await volume.readFile(SRC(slug, `/${path}`)))] as const
 		)
 	)
 	return Object.fromEntries(entries)
 }
 
-async function seed(volume: VolumeCapability, slug: string): Promise<void> {
-	await volume.writeFile({ path: SRC(slug, '/app.ts'), data: encoder.encode(starterApp) })
-	await volume.writeFile({ path: SRC(slug, '/gui.tsx'), data: encoder.encode(starterGui) })
+async function seed(volume: VolumeApi, slug: string): Promise<void> {
+	await volume.writeFile(SRC(slug, '/app.ts'), encoder.encode(starterApp))
+	await volume.writeFile(SRC(slug, '/gui.tsx'), encoder.encode(starterGui))
 	await writeProjectManifest(volume, slug)
 }
 
 // Write the project file devkit builds from. id/name default to the slug (a
 // valid app id; the author edits `project.json` to claim a real reverse-DNS id);
 // the entries and icon path declare the layout explicitly.
-async function writeProjectManifest(volume: VolumeCapability, slug: string): Promise<void> {
+async function writeProjectManifest(volume: VolumeApi, slug: string): Promise<void> {
 	const manifest = { id: slug, name: slug, icon: 'icon', app: 'src/app.ts', gui: 'src/gui.tsx' }
-	await volume.writeFile({
-		path: PROJECT(slug),
-		data: encoder.encode(`${JSON.stringify(manifest, null, 2)}\n`)
-	})
+	await volume.writeFile(PROJECT(slug), encoder.encode(`${JSON.stringify(manifest, null, 2)}\n`))
 }
 
 const starterApp = `import { defineApp } from '@justfiles/app'

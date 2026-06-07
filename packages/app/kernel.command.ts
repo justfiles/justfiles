@@ -107,7 +107,7 @@ export function commandRuntime({ resolve, invoke, dispatch, onError }: CommandDe
 				appId,
 				capability: declared.id,
 				method: command.method,
-				input: command.input,
+				args: command.args,
 				scopes: declared.scopes,
 				actor
 			})

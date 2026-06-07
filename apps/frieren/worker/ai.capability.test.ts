@@ -9,7 +9,7 @@ const call = (capability: string, method: string, input: unknown): CapabilityCal
 	appId: 'app',
 	capability,
 	method,
-	input,
+	args: [input],
 	scopes: []
 })
 

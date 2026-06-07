@@ -99,7 +99,9 @@ export function defineApp<
 		commit: (schema, transition) => ({ __edge: 'commit', schema, transition }),
 		fromResult: (_capability, _method, transition) => ({ __edge: 'result', transition }),
 		fromEvent: (_capability, _method, transition) => ({ __edge: 'event', transition }),
-		cmd: (capability, method, input, to) => ({ kind: 'capability', capability, method, input, to })
+		cmd: (capability, method, ...args) => ({
+			to: (edge) => ({ kind: 'capability', capability, method, args, to: edge })
+		})
 	}
 	const edges = (spec.update?.(edgeBuilder) ?? {}) as Record<string, Edge<State>>
 
@@ -127,7 +129,9 @@ export function defineApp<
 	// streams (Part D). The `sub` builder mirrors `cmd` — it just packages the
 	// stream descriptor as data; the kernel resolves trust and keeps it alive.
 	const subBuilder: Subs<Caps> = {
-		capability: (capability, method, input, to) => ({ capability, method, input, to })
+		capability: (capability, method, ...args) => ({
+			to: (edge) => ({ capability, method, args, to: edge })
+		})
 	}
 	const computeSubs = (state: State): Subscription[] =>
 		spec.subscriptions?.(state, subBuilder) ?? []

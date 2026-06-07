@@ -55,5 +55,5 @@ export function defineCapability<Id extends string, Methods, Streams = Record<ne
  * with optional `message` so the host can map them to stable RPC errors.
  */
 export interface CapabilityBridge {
-	invoke(req: { capability: string; method: string; input: unknown }): Promise<unknown>
+	invoke(req: { capability: string; method: string; args: readonly unknown[] }): Promise<unknown>
 }

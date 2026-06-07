@@ -44,7 +44,7 @@ export const app = defineApp({
 	// clears; each on-disk change folds in via `fileChanged`.
 	subscriptions: (state, sub) =>
 		state.currentViewing
-			? [sub.capability('volume', 'watch', { path: state.currentViewing }, 'fileChanged')]
+			? [sub.capability('volume', 'watch', { path: state.currentViewing }).to('fileChanged')]
 			: [],
 	// Every state transition is a pure edge. The one effect — scanning the
 	// volume — is emitted as command data; its result folds back via `filesLoaded`.
@@ -53,7 +53,7 @@ export const app = defineApp({
 			v.object({}),
 			(state) => [
 				{ ...state, loading: true, error: null },
-				t.cmd('volume', 'scan', { path: '/', recursive: true }, 'filesLoaded')
+				t.cmd('volume', 'scan', { path: '/', recursive: true }).to('filesLoaded')
 			],
 			{ description: 'Refresh the visible file list.' }
 		),
@@ -95,7 +95,7 @@ export const app = defineApp({
 			description: 'Read a file as text, capped at the preview limit.',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
-				const bytes = await app.invoke('volume', 'readFile', { path })
+				const bytes = await app.invoke('volume', 'readFile', path)
 				const truncated = bytes.byteLength > PREVIEW_LIMIT
 				const slice = truncated ? bytes.subarray(0, PREVIEW_LIMIT) : bytes
 				return { path, content: decoder.decode(slice), truncated }

@@ -117,7 +117,7 @@ test('a failed command routes an err Result the reducer folds into state', async
 
 test('settled waits out a multi-step command cascade', async () => {
 	// Echo `run`: start(1) → stepped(value 1) emits run(2) → finished(value 2).
-	const echo: Capabilities['invoke'] = async (req) => req.input
+	const echo: Capabilities['invoke'] = async (req) => req.args[0]
 	const { k, appId } = await start(echo, chainCode)
 
 	const seqs: number[] = []

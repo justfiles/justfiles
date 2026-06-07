@@ -30,7 +30,7 @@ export const app = defineApp({
 	update: (t) => ({
 		refresh: t.on(
 			v.object({}),
-			(state) => [{ ...state, loading: true }, t.cmd('integrations', 'list', {}, 'listed')],
+			(state) => [{ ...state, loading: true }, t.cmd('integrations', 'list', {}).to('listed')],
 			{ description: 'Reload the list of integrations from the host.' }
 		),
 		listed: t.fromResult('integrations', 'list', (state, r) =>

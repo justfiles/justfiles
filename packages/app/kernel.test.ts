@@ -40,12 +40,12 @@ function sandboxFor(): GetSandbox {
 // The kernel attaches the app's declared scopes + appId before each call.
 function hostInvoke(fs: Volume): Capabilities['invoke'] {
 	return async (req) => {
-		if (req.capability === 'test' && req.method === 'echo') return req.input
+		if (req.capability === 'test' && req.method === 'echo') return req.args[0]
 		if (req.capability === 'volume' && req.method === 'writeFile') {
 			const root = `/applications/${req.appId}/data/files`
-			const input = req.input as { path: string; data: Uint8Array }
+			const [path, data] = req.args as [string, Uint8Array]
 			await fs.mkdir(root, { recursive: true })
-			await chroot(fs, root).writeFile(input.path, input.data)
+			await chroot(fs, root).writeFile(path, data)
 			return undefined
 		}
 		throw new Error('missing capability')
@@ -154,7 +154,7 @@ test('kernel attaches appId and the app-declared scopes to capability calls', as
 		clock,
 		capabilities: caps(async (req) => {
 			calls.push({ appId: req.appId, capability: req.capability, scopes: req.scopes })
-			return req.capability === 'test' ? req.input : undefined
+			return req.capability === 'test' ? req.args[0] : undefined
 		})
 	})
 	const appId = await k.install(

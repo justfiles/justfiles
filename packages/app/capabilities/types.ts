@@ -3,13 +3,15 @@
 //
 // A `CapabilityCall` is the single request type. Scopes are TRUSTED — the kernel
 // resolves them from the app's bundle and attaches them here; the isolate never
-// supplies them. `input` stays `unknown` at the seam (types live at the ends).
+// supplies them. `args` is the method's positional argument list, opaque at the
+// seam (types live at the ends): a contract method `(a, b) => r` rides as
+// `[a, b]`, a one-arg method as `[input]`, a zero-arg method as `[]`.
 
 export interface CapabilityCall {
 	appId: string
 	capability: string
 	method: string
-	input: unknown
+	args: readonly unknown[]
 	scopes: readonly string[]
 	actor?: string
 }

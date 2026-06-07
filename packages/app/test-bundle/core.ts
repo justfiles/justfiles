@@ -20,7 +20,7 @@ export const app = defineApp({
 		// public edge — has a schema, so it IS the external API
 		refresh: t.on(v.object({}), (state) => [
 			{ ...state, loading: true, error: null },
-			t.cmd('volume', 'scan', { path: '/', recursive: true }, 'filesLoaded')
+			t.cmd('volume', 'scan', { path: '/', recursive: true }).to('filesLoaded')
 		]),
 		// internal commit edge — a procedure dispatches this by name to commit a
 		// value it computed off to the side. Validated like `on`, but kept off the

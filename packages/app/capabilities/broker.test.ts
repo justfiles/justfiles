@@ -49,7 +49,7 @@ describe('provider-backed capability broker', () => {
 		})
 
 		await expect(
-			broker.invoke({ capability: 'email', method: 'listUnread', input: { accountId: 'primary' } })
+			broker.invoke({ capability: 'email', method: 'listUnread', args: [{ accountId: 'primary' }] })
 		).resolves.toEqual([
 			{
 				id: 'primary:1',
@@ -79,7 +79,7 @@ describe('provider-backed capability broker', () => {
 			}
 		})
 
-		const promise = broker.invoke({ capability: 'email', method: 'listUnread', input: {} })
+		const promise = broker.invoke({ capability: 'email', method: 'listUnread', args: [{}] })
 		await expect(promise).rejects.toMatchObject({
 			code: 'CAPABILITY_DENIED',
 			capability: 'email',
@@ -121,7 +121,7 @@ describe('provider-backed capability broker', () => {
 		})
 
 		try {
-			await broker.invoke({ capability: 'email', method: 'listUnread', input: {} })
+			await broker.invoke({ capability: 'email', method: 'listUnread', args: [{}] })
 			throw new Error('expected failure')
 		} catch (error) {
 			expect(error).toMatchObject({

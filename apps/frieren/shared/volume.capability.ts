@@ -46,24 +46,40 @@ async function bind(fs: Volume, ctx: Ctx): Promise<Volume> {
 	return vol
 }
 
+// The contract now IS `Volume` (minus the callback-shaped `scan`/`watch`), so
+// every data method is a thin scope-resolving passthrough: bind the volume the
+// app's scopes grant, then delegate with the same arguments. `writeFile` keeps
+// the one host convenience — auto-creating the parent dir — that apps rely on.
 export const volumeCapability = (fs: Volume) =>
 	implementCapability(volume, {
-		readFile: async ({ path }, ctx) => (await bind(fs, ctx)).readFile(path),
-		writeFile: async ({ path, data }, ctx) => {
+		stat: async (ctx, path) => (await bind(fs, ctx)).stat(path),
+		lstat: async (ctx, path) => (await bind(fs, ctx)).lstat(path),
+		exists: async (ctx, path) => (await bind(fs, ctx)).exists(path),
+		getXattr: async (ctx, path, name) => (await bind(fs, ctx)).getXattr(path, name),
+		setXattr: async (ctx, path, name, value) => (await bind(fs, ctx)).setXattr(path, name, value),
+		listXattr: async (ctx, path) => (await bind(fs, ctx)).listXattr(path),
+		removeXattr: async (ctx, path, name) => (await bind(fs, ctx)).removeXattr(path, name),
+		readFile: async (ctx, path) => (await bind(fs, ctx)).readFile(path),
+		writeFile: async (ctx, path, data) => {
 			const vol = await bind(fs, ctx)
 			await mkdirParent(vol, path)
 			await vol.writeFile(path, data)
 		},
-		mkdir: async ({ path, recursive }, ctx) =>
-			(await bind(fs, ctx)).mkdir(path, { recursive: recursive !== false }),
-		exists: async ({ path }, ctx) => (await bind(fs, ctx)).exists(path),
-		scan: async ({ path, recursive }, ctx) => {
+		appendFile: async (ctx, path, data) => (await bind(fs, ctx)).appendFile(path, data),
+		mkdir: async (ctx, path, opts) => (await bind(fs, ctx)).mkdir(path, opts),
+		readdir: async (ctx, path) => (await bind(fs, ctx)).readdir(path),
+		rm: async (ctx, path, opts) => (await bind(fs, ctx)).rm(path, opts),
+		rename: async (ctx, oldPath, newPath) => (await bind(fs, ctx)).rename(oldPath, newPath),
+		cp: async (ctx, src, dest, opts) => (await bind(fs, ctx)).cp(src, dest, opts),
+		symlink: async (ctx, target, path) => (await bind(fs, ctx)).symlink(target, path),
+		readlink: async (ctx, path) => (await bind(fs, ctx)).readlink(path),
+		chmod: async (ctx, path, mode) => (await bind(fs, ctx)).chmod(path, mode),
+		utimes: async (ctx, path, mtimeNs) => (await bind(fs, ctx)).utimes(path, mtimeNs),
+		scan: async (ctx, { path, recursive }) => {
 			const vol = await bind(fs, ctx)
 			return recursive === true ? scanTree(vol, path) : scanDir(vol, path)
 		},
-		rm: async ({ path, recursive }, ctx) => (await bind(fs, ctx)).rm(path, { recursive }),
-		rename: async ({ oldPath, newPath }, ctx) => (await bind(fs, ctx)).rename(oldPath, newPath),
-		watch: async ({ path }, emit, ctx) => (await bind(fs, ctx)).watch(path, emit)
+		watch: async (ctx, emit, { path }) => (await bind(fs, ctx)).watch(path, emit)
 	})
 
 async function mkdirParent(vol: Volume, path: string): Promise<void> {

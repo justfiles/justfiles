@@ -69,38 +69,62 @@ type StreamsOf<C> = C extends CapabilityRequest<string, infer _M, infer S> ? S :
 
 // A side effect described as data. `capability` names a LOCAL capability (the
 // app's declared key); the kernel resolves the trusted id + scopes and runs
-// it, routing the result to the `to` edge as a `__cmd/<to>` message.
+// it, routing the result to the `to` edge as a `__cmd/<to>` message. `args` is
+// the method's positional argument list (typed at the builder, opaque here).
 export type Command =
 	| { kind: 'none' }
 	| { kind: 'batch'; commands: Command[] }
-	| { kind: 'capability'; capability: string; method: string; input: unknown; to: string }
+	| {
+			kind: 'capability'
+			capability: string
+			method: string
+			args: readonly unknown[]
+			to: string
+	  }
+
+// A capability command awaiting its result edge. `t.cmd(cap, method, ...args)`
+// returns this so the variadic `args` stay last; `.to(edge)` names the
+// `t.fromResult` edge that receives the result, completing the `Command`.
+export interface CommandBuilder {
+	to(edge: string): Command
+}
 
 // An ongoing stream the CURRENT state declares (Part D) — the dual of a Command
 // (which a transition emits one-shot). `subscriptions(state)` returns these;
 // the kernel diffs the set on every commit, starting/stopping host streams by
-// the structural key `{capability, method, input, to}`. Each emitted event
+// the structural key `{capability, method, args, to}`. Each emitted event
 // re-enters the reducer as a `__sub/<to>` message handled by a `t.fromEvent`
 // edge. `capability` names a LOCAL capability; the kernel resolves trust.
 export interface Subscription {
 	capability: string
 	method: string
-	input: unknown
+	args: readonly unknown[]
 	to: string
+}
+
+// The streaming dual of `CommandBuilder`. `sub.capability(cap, method, ...args)`
+// returns this; `.to(edge)` names the `t.fromEvent` edge that folds each event.
+export interface SubscriptionBuilder {
+	to(edge: string): Subscription
 }
 
 // What a `fromResult` edge receives once a capability call settles.
 export type Result<T> = { ok: true; value: T } | { ok: false; error: { message: string } }
 
-// Per-capability method input/output, derived from the contract interface.
-type MethodInput<M, K extends keyof M> = M[K] extends (input: infer I) => unknown ? I : never
-type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => Promise<infer O>
-	? O
+// Per-capability method args/output, derived from the contract interface. A
+// method is ANY function `(...args) => R`; `MethodArgs` is its full positional
+// argument tuple (spread into `t.cmd`/`app.invoke`) and `MethodOutput` is
+// `Awaited<R>` — the capability boundary is always async, so a synchronous
+// contract return still arrives as a Promise (`invoke`) or Result (`fromResult`).
+type MethodArgs<M, K extends keyof M> = M[K] extends (...args: infer A) => unknown ? A : never
+type MethodOutput<M, K extends keyof M> = M[K] extends (...args: any[]) => infer R
+	? Awaited<R>
 	: never
 
-// Per-capability stream input/event, derived from the contract's `Stream` decl
-// (`name(input): Stream<Event>`). `StreamInput` types `sub.capability`'s input;
+// Per-capability stream args/event, derived from the contract's `Stream` decl
+// (`name(...args): Stream<Event>`). `StreamArgs` types `sub.capability`'s args;
 // `StreamEvent` types the `t.fromEvent` edge's payload.
-type StreamInput<S, K extends keyof S> = S[K] extends (input: infer I) => unknown ? I : never
+type StreamArgs<S, K extends keyof S> = S[K] extends (...args: infer A) => unknown ? A : never
 type StreamEvent<S, K extends keyof S> = S[K] extends (...args: any[]) => Stream<infer E>
 	? E
 	: never
@@ -156,27 +180,25 @@ export interface Edges<State, Caps extends CapabilityRequests> {
 		method: M,
 		transition: Transition<State, StreamEvent<StreamsOf<Caps[C]>, M>, Command>
 	): Edge<State, undefined>
-	// build a capability command; `input` is typed from the contract and `to`
-	// names the edge that receives the result
+	// build a capability command; `args` are typed (and spread) from the contract
+	// and the returned builder's `.to(edge)` names the edge that receives the result
 	cmd<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
 		capability: C,
 		method: M,
-		input: MethodInput<MethodsOf<Caps[C]>, M>,
-		to: string
-	): Command
+		...args: MethodArgs<MethodsOf<Caps[C]>, M>
+	): CommandBuilder
 }
 
 // The `sub` builder passed to `subscriptions(state, sub)`. Mirrors `t.cmd` but
-// declares an ONGOING stream rather than a one-shot command: `input` is typed
-// from the contract's `Stream` decl and `to` names the `t.fromEvent` edge that
-// folds each event. The kernel resolves the trusted capability id + scopes.
+// declares an ONGOING stream rather than a one-shot command: `args` are typed
+// from the contract's `Stream` decl and the builder's `.to(edge)` names the
+// `t.fromEvent` edge that folds each event. The kernel resolves trust + scopes.
 export interface Subs<Caps extends CapabilityRequests> {
 	capability<C extends keyof Caps & string, M extends keyof StreamsOf<Caps[C]> & string>(
 		capability: C,
 		method: M,
-		input: StreamInput<StreamsOf<Caps[C]>, M>,
-		to: string
-	): Subscription
+		...args: StreamArgs<StreamsOf<Caps[C]>, M>
+	): SubscriptionBuilder
 }
 
 // ----- procedures (Part C) -----
@@ -197,12 +219,12 @@ export interface AppHandle<State, Caps extends CapabilityRequests = NoCapabiliti
 	// Kernel-mediated, scope-checked capability invocation — the procedure-side
 	// parallel to the reducer's `cmd`: `cmd` routes the result back INTO state,
 	// `invoke` returns it TO the caller. `capability` is the app's LOCAL name;
-	// the kernel resolves the trusted id + scopes; `input` and the result are
+	// the kernel resolves the trusted id + scopes; `args` and the result are
 	// typed from the contract (same machinery as `cmd`).
 	invoke<C extends keyof Caps & string, M extends keyof MethodsOf<Caps[C]> & string>(
 		capability: C,
 		method: M,
-		input: MethodInput<MethodsOf<Caps[C]>, M>
+		...args: MethodArgs<MethodsOf<Caps[C]>, M>
 	): Promise<MethodOutput<MethodsOf<Caps[C]>, M>>
 }
 
@@ -215,7 +237,7 @@ export interface RawAppHandle {
 	readonly state: unknown
 	dispatch(message: Message): Promise<{ seq: number }>
 	settled(seq: number, opts?: { timeout?: number }): Promise<unknown>
-	invoke(capability: string, method: string, input: unknown): Promise<unknown>
+	invoke(capability: string, method: string, ...args: unknown[]): Promise<unknown>
 }
 
 // 'gui' procedures are hidden from the agent's tool surface; 'agent' ones are

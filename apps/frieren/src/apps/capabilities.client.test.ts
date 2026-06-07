@@ -12,11 +12,11 @@ const call = (capability: string, method: string, input: unknown): CapabilityCal
 	appId: 'app',
 	capability,
 	method,
-	input,
+	args: [input],
 	scopes: []
 })
 
-const echo: Capability = { invoke: async (c) => c.input, subscribe: async () => () => {} }
+const echo: Capability = { invoke: async (c) => c.args[0], subscribe: async () => () => {} }
 
 // A minimal in-memory WebSocket-shaped duplex — just enough for wsChannel:
 // addEventListener('message'|'close') + send. send() reaches the peer's message

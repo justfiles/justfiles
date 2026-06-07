@@ -44,7 +44,7 @@ export interface Subscriptions {
 // The subscription reconciler (Part D). `subscriptions(state)` (in the bundle)
 // declares the ongoing streams the current state wants. After every commit the
 // kernel diffs that declared set against the running one — keyed structurally by
-// {capability,method,input,to} — starting new streams and stopping gone ones.
+// {capability,method,args,to} — starting new streams and stopping gone ones.
 // Each emitted event re-enters the reducer as a `__sub/<to>` message. Recoverable
 // by construction: the set is a pure function of persisted state, rebuilt on boot.
 export function subscriptionRuntime({
@@ -64,7 +64,7 @@ export function subscriptionRuntime({
 	return { reconcile, ensure, stop }
 
 	function subKey(sub: Subscription): string {
-		return JSON.stringify([sub.capability, sub.method, sub.input, sub.to])
+		return JSON.stringify([sub.capability, sub.method, sub.args, sub.to])
 	}
 
 	function reconcile(appId: AppId, desired: Subscription[]): void {
@@ -140,7 +140,7 @@ export function subscriptionRuntime({
 				appId,
 				capability: declared.id,
 				method: sub.method,
-				input: sub.input,
+				args: sub.args,
 				scopes: declared.scopes
 			},
 			(event) => {

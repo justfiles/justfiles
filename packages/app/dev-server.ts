@@ -115,20 +115,34 @@ function devVolume(fs: Volume): Capability {
 		return vol
 	}
 	return implementCapability(volumeCap, {
-		readFile: async ({ path }, ctx) => (await bind(ctx)).readFile(path),
-		writeFile: async ({ path, data }, ctx) => {
+		stat: async (ctx, path) => (await bind(ctx)).stat(path),
+		lstat: async (ctx, path) => (await bind(ctx)).lstat(path),
+		exists: async (ctx, path) => (await bind(ctx)).exists(path),
+		getXattr: async (ctx, path, name) => (await bind(ctx)).getXattr(path, name),
+		setXattr: async (ctx, path, name, value) => (await bind(ctx)).setXattr(path, name, value),
+		listXattr: async (ctx, path) => (await bind(ctx)).listXattr(path),
+		removeXattr: async (ctx, path, name) => (await bind(ctx)).removeXattr(path, name),
+		readFile: async (ctx, path) => (await bind(ctx)).readFile(path),
+		writeFile: async (ctx, path, data) => {
 			const vol = await bind(ctx)
 			await mkdirParent(vol, path)
 			await vol.writeFile(path, data)
 		},
-		mkdir: async ({ path, recursive }, ctx) =>
-			(await bind(ctx)).mkdir(path, { recursive: recursive !== false }),
-		exists: async ({ path }, ctx) => (await bind(ctx)).exists(path),
-		scan: async ({ path, recursive }, ctx) => {
+		appendFile: async (ctx, path, data) => (await bind(ctx)).appendFile(path, data),
+		mkdir: async (ctx, path, opts) => (await bind(ctx)).mkdir(path, opts),
+		readdir: async (ctx, path) => (await bind(ctx)).readdir(path),
+		rm: async (ctx, path, opts) => (await bind(ctx)).rm(path, opts),
+		rename: async (ctx, oldPath, newPath) => (await bind(ctx)).rename(oldPath, newPath),
+		cp: async (ctx, src, dest, opts) => (await bind(ctx)).cp(src, dest, opts),
+		symlink: async (ctx, target, path) => (await bind(ctx)).symlink(target, path),
+		readlink: async (ctx, path) => (await bind(ctx)).readlink(path),
+		chmod: async (ctx, path, mode) => (await bind(ctx)).chmod(path, mode),
+		utimes: async (ctx, path, mtimeNs) => (await bind(ctx)).utimes(path, mtimeNs),
+		scan: async (ctx, { path, recursive }) => {
 			const vol = await bind(ctx)
 			return recursive === true ? scanTree(vol, path) : scanDir(vol, path)
 		},
-		watch: async ({ path }, emit, ctx) => (await bind(ctx)).watch(path, emit)
+		watch: async (ctx, emit, { path }) => (await bind(ctx)).watch(path, emit)
 	})
 }
 

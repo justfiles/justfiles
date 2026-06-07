@@ -7,9 +7,9 @@ const call = (
 	method: string,
 	input: unknown,
 	x?: Partial<CapabilityCall>
-): CapabilityCall => ({ appId: 'app', capability, method, input, scopes: [], ...x })
+): CapabilityCall => ({ appId: 'app', capability, method, args: [input], scopes: [], ...x })
 
-const echo: Capability = { invoke: async (c) => c.input, subscribe: async () => () => {} }
+const echo: Capability = { invoke: async (c) => c.args[0], subscribe: async () => () => {} }
 
 test('routes invoke to the named unit', async () => {
 	const caps = capabilityRegistry({ echo })

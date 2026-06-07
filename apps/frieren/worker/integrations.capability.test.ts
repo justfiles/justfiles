@@ -10,7 +10,7 @@ const call = (method: string, input: unknown): CapabilityCall => ({
 	appId: 'app',
 	capability: 'integrations',
 	method,
-	input,
+	args: [input],
 	scopes: []
 })
 

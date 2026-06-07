@@ -41,7 +41,7 @@ const sandbox: GetSandbox = async ({ code }) => {
 type Opened = {
 	capability: string
 	method: string
-	input: unknown
+	args: readonly unknown[]
 	scopes: readonly string[]
 	emit: (event: unknown) => void
 	stopped: boolean
@@ -56,7 +56,7 @@ function fakeStream() {
 		}
 	}
 	const live = () => opened.filter((o) => !o.stopped)
-	const pathOf = (o: Opened) => (o.input as { path: string }).path
+	const pathOf = (o: Opened) => (o.args[0] as { path: string }).path
 	return { opened, stream, live, pathOf }
 }
 

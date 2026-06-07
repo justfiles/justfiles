@@ -19,13 +19,13 @@ export const app = defineApp({
 	update: (t) => ({
 		start: t.on(v.object({ n: v.number() }), (state, { n }) => [
 			state,
-			t.cmd('stepper', 'run', { n }, 'stepped')
+			t.cmd('stepper', 'run', { n }).to('stepped')
 		]),
 		stepped: t.fromResult('stepper', 'run', (state, r) =>
 			r.ok
 				? [
 						{ ...state, value: r.value.n },
-						t.cmd('stepper', 'run', { n: r.value.n + 1 }, 'finished')
+						t.cmd('stepper', 'run', { n: r.value.n + 1 }).to('finished')
 					]
 				: { ...state, done: true }
 		),

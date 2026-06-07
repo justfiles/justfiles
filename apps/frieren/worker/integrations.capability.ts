@@ -16,7 +16,7 @@ import type { IntegrationStatus, Integrations } from './integrations/registry.ts
 export const integrationsCapability = (registry: Integrations) =>
 	implementCapability(integrations, {
 		list: async () => registry.list().map(toDescriptor),
-		connect: async ({ id, accountId, credentials }) => {
+		connect: async (_ctx, { id, accountId, credentials }) => {
 			if (typeof id !== 'string' || typeof accountId !== 'string' || !isStringRecord(credentials))
 				throw invalid('connect')
 			await registry.connect({
@@ -25,7 +25,7 @@ export const integrationsCapability = (registry: Integrations) =>
 				creds: { kind: 'static', static: credentials }
 			})
 		},
-		disconnect: async ({ id, accountId }) => {
+		disconnect: async (_ctx, { id, accountId }) => {
 			if (typeof id !== 'string' || typeof accountId !== 'string') throw invalid('disconnect')
 			await registry.disconnect(id, accountId)
 		}

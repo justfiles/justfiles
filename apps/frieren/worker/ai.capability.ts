@@ -7,7 +7,7 @@ import type { LLMText } from './llm.text.ts'
 // INVALID_INPUT rather than reaching the model.
 export const aiCapability = (text: LLMText) =>
 	implementCapability(ai, {
-		generateText: async ({ system, prompt }) => {
+		generateText: async (_ctx, { system, prompt }) => {
 			if (typeof prompt !== 'string')
 				throw new CapabilityError('CAPABILITY_INVALID_INPUT', 'ai', 'generateText')
 			return { text: await text.gen(typeof system === 'string' ? system : '', prompt) }

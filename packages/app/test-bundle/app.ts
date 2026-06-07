@@ -21,18 +21,13 @@ export const app = defineApp({
 		// then fold the (void) result back leaving state untouched.
 		write: t.on(v.object({ text: v.string() }), (state, { text }) => [
 			state,
-			t.cmd(
-				'volume',
-				'writeFile',
-				{ path: '/note.txt', data: new TextEncoder().encode(text) },
-				'written'
-			)
+			t.cmd('volume', 'writeFile', '/note.txt', new TextEncoder().encode(text)).to('written')
 		]),
 		written: t.fromResult('volume', 'writeFile', (state) => state),
 		// Echo capability: the result edge replaces count with the echoed length.
 		ask: t.on(v.object({ text: v.string() }), (state, { text }) => [
 			state,
-			t.cmd('test', 'echo', { text }, 'asked')
+			t.cmd('test', 'echo', { text }).to('asked')
 		]),
 		asked: t.fromResult('test', 'echo', (state, r) =>
 			r.ok ? { count: r.value.text.length } : state

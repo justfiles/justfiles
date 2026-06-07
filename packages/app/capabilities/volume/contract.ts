@@ -3,6 +3,7 @@
 // volume is bound: `'app'` (or missing) is the per-app chroot, `'system'`
 // is the user's root volume, and a path-like scope binds a prefix chroot.
 
+import type { Volume } from '@justfiles/fs'
 import type { Stream } from '../core.ts'
 
 export interface VolumeEntry {
@@ -10,14 +11,17 @@ export interface VolumeEntry {
 	type: 'file' | 'dir'
 }
 
-export interface VolumeCapability {
-	readFile(input: { path: string }): Promise<Uint8Array>
-	writeFile(input: { path: string; data: Uint8Array }): Promise<void>
-	mkdir(input: { path: string; recursive?: boolean }): Promise<void>
+// The capability surface IS the host filesystem interface — reused verbatim, not
+// re-declared. Multi-arg and optional-arg signatures flow straight through the
+// capability seam now (`writeFile(path, data)`, `mkdir(path, opts?)`,
+// `setXattr(path, name, value)`, …). The two methods Volume models with a
+// CALLBACK are the exceptions, since a function cannot cross the seam:
+//   - `scan(path, visitor)` → re-expressed as a one-shot that RETURNS the listing
+//   - `watch(path, listener)` → a `Stream` (see `VolumeStreams` below)
+// Note: `stat`/`lstat`/`utimes` carry `bigint` and reads carry `Uint8Array`,
+// neither of which survives a JSON wire — so volume binds as a LOCAL capability.
+export type VolumeCapability = Omit<Volume, 'watch' | 'scan'> & {
 	scan(input: { path: string; recursive?: boolean }): Promise<VolumeEntry[]>
-	exists(input: { path: string }): Promise<boolean>
-	rm(input: { path: string; recursive?: boolean }): Promise<void>
-	rename(input: { oldPath: string; newPath: string }): Promise<void>
 }
 
 // Payload delivered to a `volume.watch` subscriber. `source` is the tag the
