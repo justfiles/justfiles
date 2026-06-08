@@ -10,6 +10,7 @@ import {
 	PROJECT,
 	projectName,
 	readMeta,
+	removeProject,
 	SRC,
 	saveMeta,
 	type VolumeApi,
@@ -303,6 +304,16 @@ export const app = defineApp({
 				const { seq } = await app.dispatch({ type: 'recordName', params: { name: fields.name } })
 				return app.settled(seq)
 			}
+		}),
+		// Delete a project and its scratch. GUI-only: the GUI captures the slug then
+		// `close`s (slug → null) before removing, so it can't read the target back via
+		// `reqSlug` and must pass it. A slug param on the agent surface would let the
+		// agent delete any project, so it stays off that surface.
+		remove: p.procedure({
+			description: 'Delete a project and its scratch.',
+			audience: 'gui',
+			schema: v.object({ slug: slugSchema }),
+			run: ({ slug }, app) => removeProject(volumeApi(app), slug)
 		}),
 		// Persist the bytes and recompute `sourceHash`. Fast; no compile; does not
 		// touch `build`. Clients write as many files as they need, then `run` once.

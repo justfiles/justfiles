@@ -286,7 +286,9 @@
 .app-code-code-toggle,
 .app-code-ship-button,
 .app-code-primary-button,
-.app-code-link-button {
+.app-code-link-button,
+.app-code-ghost-button,
+.app-code-danger-button {
 	cursor: default;
 	font: inherit;
 }
@@ -496,6 +498,54 @@
 	color: #c41a16;
 	min-height: 18px;
 	margin-top: 4px;
+}
+
+.app-code-settings-divider {
+	height: 1px;
+	background: #e3e3e6;
+	margin: 20px 0;
+}
+
+.app-code-settings-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.app-code-ghost-button {
+	border: 1px solid #d2d2d7;
+	border-radius: 7px;
+	background: #ffffff;
+	color: #1d1d1f;
+	font-size: 13px;
+	font-weight: 600;
+	padding: 7px 14px;
+}
+
+.app-code-ghost-button:disabled {
+	opacity: 0.4;
+}
+
+.app-code-danger-button {
+	border: 1px solid #e6b3ad;
+	border-radius: 7px;
+	background: #ffffff;
+	color: #c41a16;
+	font-size: 13px;
+	font-weight: 600;
+	padding: 7px 14px;
+}
+
+.app-code-confirm-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.app-code-confirm-text {
+	font-size: 13px;
+	color: #6e6e73;
 }
 
 .app-code-hidden-input,

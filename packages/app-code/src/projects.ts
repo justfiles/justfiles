@@ -97,6 +97,14 @@ export async function seed(
 	await writeProjectManifest(vol, id, name)
 }
 
+// Delete a project: its folder plus the devkit scratch (best-effort — it may not
+// exist if the project was never run). Installed copies in /applications are
+// untouched. The folder is the bundle id, so one `rm` per location.
+export async function removeProject(vol: VolumeApi, slug: string): Promise<void> {
+	await vol.rm(`/projects/${slug}`, { recursive: true })
+	await vol.rm(`/.devkit/${slug}`, { recursive: true }).catch(() => {})
+}
+
 // The build contract on disk: identity + the fixed entry/icon paths. `version`
 // and `description` are optional metadata the settings screen edits.
 export type ProjectMeta = {

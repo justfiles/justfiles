@@ -47,6 +47,7 @@ type EditorController = {
 	start(): void
 	render(): void
 	update(next: CodeState): void
+	slug(): string | null
 	leave(): Promise<void>
 	destroy(): void
 }
@@ -136,8 +137,7 @@ export const gui = defineGUI<CodeApp>({
 			let split = 0.5
 			let menuView: MenuView = []
 			let openMenu: number | null = null
-			let shipping = false
-			let packLabel = 'Pack'
+			let installing = false
 			let installLabel = 'Install'
 			let iconUrl: string | null = null
 			let menubarEl: HTMLElement | null = null
@@ -199,49 +199,40 @@ export const gui = defineGUI<CodeApp>({
 					.catch(() => {})
 			}
 
-			const ship = async (
-				kind: 'pack' | 'install',
-				busyLabel: string,
-				done: string,
-				run: () => Promise<void>
-			) => {
-				if (shipping) return
-				shipping = true
-				const label = kind === 'pack' ? packLabel : installLabel
-				if (kind === 'pack') packLabel = busyLabel
-				else installLabel = busyLabel
+			const install = () => {
+				if (installing) return
+				installing = true
+				installLabel = 'Installing…'
 				patch()
-				try {
-					await run()
-					if (kind === 'pack') packLabel = done
-					else installLabel = done
-					setTimeout(() => {
-						if (!live) return
-						if (kind === 'pack') packLabel = label
-						else installLabel = label
+				void (async () => {
+					try {
+						await writer.drain()
+						await ctx.client.install({})
+						installLabel = 'Installed ✓'
+						setTimeout(() => {
+							if (!live) return
+							installLabel = 'Install'
+							patch()
+						}, 1500)
+					} catch (err) {
+						installLabel = 'Install'
+						alert(messageOf(err))
+					} finally {
+						installing = false
 						patch()
-					}, 1500)
-				} catch (err) {
-					if (kind === 'pack') packLabel = label
-					else installLabel = label
-					alert(messageOf(err))
-				} finally {
-					shipping = false
-					patch()
-				}
+					}
+				})()
 			}
 
-			const install = () =>
-				void ship('install', 'Installing…', 'Installed ✓', async () => {
-					await writer.drain()
-					await ctx.client.install({})
-				})
-			const pack = () =>
-				void ship('pack', 'Packing…', 'Packed ✓', async () => {
-					await writer.drain()
-					const { zip } = await ctx.client.pack({})
-					downloadZip(`${view.slug}.zip`, zip)
-				})
+			// Export (Pack): drain pending writes, compile fresh, hand back the .zip.
+			// The filename is the slug — display names collide and carry awkward
+			// filename chars. The Settings screen owns the busy state, so this is just
+			// the work; it throws on failure for the caller to surface.
+			const exportZip = async () => {
+				await writer.drain()
+				const { zip } = await ctx.client.pack({})
+				downloadZip(`${view.slug}.zip`, zip)
+			}
 
 			const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
 				event.preventDefault()
@@ -365,12 +356,13 @@ export const gui = defineGUI<CodeApp>({
 					client: ctx.client,
 					onSettings: openSettings,
 					onCloseSettings: closeSettings,
+					onExport: exportZip,
+					onDelete: () => void deleteEditor(),
 					localDirty,
 					split,
 					menuView,
 					openMenu,
-					shipping,
-					packLabel,
+					installing,
 					installLabel,
 					iconUrl,
 					onStart: controller.start,
@@ -384,7 +376,6 @@ export const gui = defineGUI<CodeApp>({
 					},
 					onSelectPath: selectPath,
 					onInstall: install,
-					onPack: pack,
 					onDrag: startDrag,
 					onIconFile: (file) => {
 						const reader = new FileReader()
@@ -444,6 +435,7 @@ export const gui = defineGUI<CodeApp>({
 					syncSource()
 					patch()
 				},
+				slug: () => view.slug,
 				async leave() {
 					blockRuns = true
 					if (activeRun) await activeRun.catch(() => {})
@@ -496,6 +488,29 @@ export const gui = defineGUI<CodeApp>({
 			await showGallery()
 		}
 
+		// Delete the open project: capture its slug, then tear down like `leaveEditor`
+		// (block runs → await the in-flight run + drain → stop → close) so no run
+		// re-mounts and no watch lingers, then `remove` the folder. The slug is
+		// captured before `close` nulls it (the procedure must take it as a param).
+		const deleteEditor = async () => {
+			if (busy || !editor) return
+			busy = true
+			const view = editor
+			const slug = view.slug()
+			editor = null
+			try {
+				await view.leave()
+				await ctx.client.close({}).catch(() => {})
+				if (slug) await ctx.client.remove({ slug })
+				view.destroy()
+			} catch (err) {
+				alert(messageOf(err))
+			} finally {
+				busy = false
+			}
+			await showGallery()
+		}
+
 		void (async () => {
 			await ctx.client.close({}).catch(() => {})
 			if (mounted) await showGallery()
@@ -527,12 +542,13 @@ type EditorScreenProps = {
 	client: Client<CodeApp>
 	onSettings: () => void
 	onCloseSettings: () => void
+	onExport: () => Promise<void>
+	onDelete: () => void
 	localDirty: boolean
 	split: number
 	menuView: MenuView
 	openMenu: number | null
-	shipping: boolean
-	packLabel: string
+	installing: boolean
 	installLabel: string
 	iconUrl: string | null
 	onStart: () => void
@@ -541,7 +557,6 @@ type EditorScreenProps = {
 	onRefresh: () => void
 	onSelectPath: (path: string) => void
 	onInstall: () => void
-	onPack: () => void
 	onDrag: (event: ReactPointerEvent<HTMLDivElement>) => void
 	onIconFile: (file: File) => void
 	onToggleMenu: (index: number) => void
@@ -592,14 +607,8 @@ function EditorScreen(props: EditorScreenProps) {
 					</div>
 					<div className="app-code-right-group">
 						<ShipButton
-							label={props.packLabel}
-							disabled={props.shipping}
-							primary={false}
-							onClick={props.onPack}
-						/>
-						<ShipButton
 							label={props.installLabel}
-							disabled={props.shipping}
+							disabled={props.installing}
 							primary
 							onClick={props.onInstall}
 						/>
@@ -721,6 +730,8 @@ function EditorScreen(props: EditorScreenProps) {
 					slug={props.view.slug ?? ''}
 					meta={props.settingsMeta}
 					onClose={props.onCloseSettings}
+					onExport={props.onExport}
+					onDelete={props.onDelete}
 				/>
 			) : null}
 		</>
@@ -947,12 +958,16 @@ function SettingsScreen(props: {
 	slug: string
 	meta: ProjectMeta
 	onClose: () => void
+	onExport: () => Promise<void>
+	onDelete: () => void
 }) {
 	const [name, setName] = useState(props.meta.name)
 	const [version, setVersion] = useState(props.meta.version ?? '')
 	const [description, setDescription] = useState(props.meta.description ?? '')
 	const [error, setError] = useState('')
 	const [saving, setSaving] = useState(false)
+	const [exporting, setExporting] = useState(false)
+	const [confirming, setConfirming] = useState(false)
 
 	const submit = async (event: FormEvent) => {
 		event.preventDefault()
@@ -973,6 +988,19 @@ function SettingsScreen(props: {
 		} catch (err) {
 			setSaving(false)
 			setError(messageOf(err))
+		}
+	}
+
+	const exportZip = async () => {
+		if (exporting) return
+		setExporting(true)
+		setError('')
+		try {
+			await props.onExport()
+		} catch (err) {
+			setError(messageOf(err))
+		} finally {
+			setExporting(false)
 		}
 	}
 
@@ -1000,6 +1028,34 @@ function SettingsScreen(props: {
 				</label>
 				<div className="app-code-form-error">{error}</div>
 			</form>
+			<div className="app-code-settings-divider" />
+			<div className="app-code-settings-actions">
+				<button
+					type="button"
+					className="app-code-ghost-button"
+					disabled={exporting}
+					onClick={() => void exportZip()}
+				>
+					{exporting ? 'Exporting…' : 'Export as .zip'}
+				</button>
+				{confirming ? (
+					<div className="app-code-confirm-row">
+						<span className="app-code-confirm-text">Delete this project?</span>
+						<LinkButton label="Cancel" onClick={() => setConfirming(false)} />
+						<button type="button" className="app-code-danger-button" onClick={props.onDelete}>
+							Delete
+						</button>
+					</div>
+				) : (
+					<button
+						type="button"
+						className="app-code-danger-button"
+						onClick={() => setConfirming(true)}
+					>
+						Delete Project
+					</button>
+				)}
+			</div>
 		</ScreenWrap>
 	)
 }

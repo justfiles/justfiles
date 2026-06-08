@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import {
 	createProject,
 	listProjects,
+	removeProject,
 	saveMeta,
 	slugifyName,
 	type VolumeApi,
@@ -98,4 +99,13 @@ test('saveMeta rewrites name/version/description; id + entries preserved', async
 		description: 'hi'
 	})
 	expect(m.app).toBe('src/app.ts') // entries untouched
+})
+
+test('removeProject drops the project folder and its scratch', async () => {
+	const vol = fakeVolume()
+	await createProject(vol, 'X', 'com.example.x')
+	await vol.writeFile('/.devkit/com.example.x/state/s.json', enc('{}'))
+	await removeProject(vol, 'com.example.x')
+	expect(await vol.exists('/projects/com.example.x')).toBe(false)
+	expect(await vol.exists('/.devkit/com.example.x')).toBe(false)
 })
