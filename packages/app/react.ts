@@ -14,16 +14,27 @@ export interface GUIProps<A> {
 export type GUIComponent<A> = (props: GUIProps<A>) => ReactNode
 export type GUIMenu<A> = (state: GUIState<A>, actions: Client<A>) => Menu
 
-export interface GUIOptions<A> {
+interface GUIModule<A> {
+	gui?: ReturnType<typeof defineGUI<A>>
+	default?: GUIComponent<A>
 	menu?: GUIMenu<A>
 }
 
+// Resolve the `gui` the host expects from a React GUI module's exports (see the
+// shim in react-entry.ts). An imperative module exports `gui` directly (a
+// `defineGUI` result) and is forwarded as-is; a component module default-exports
+// its component, which we wrap. Taking the namespace as a runtime value keeps
+// `default` out of the shim's static import graph, so an escape-hatch module
+// (no default export) draws no bundler warning.
+//
 // `state` is non-null to the component and menu: the host resolves the app's
 // `initialState` (the reducer's `init`) before mount and only ever pushes
 // committed state after, so the nullable `defineGUI` seam is never null here.
 // The casts bridge that wider seam to the narrower React contract.
-export function defineReactGUI<A>(Component: GUIComponent<A>, options: GUIOptions<A> = {}) {
-	const menu = options.menu
+export function reactGui<A>(mod: GUIModule<A>) {
+	if (mod.gui) return mod.gui
+	const Component = mod.default as GUIComponent<A>
+	const menu = mod.menu
 	return defineGUI<A>({
 		menu: menu ? (state, client) => menu(state as GUIState<A>, client) : undefined,
 		mount(el, state, ctx) {
