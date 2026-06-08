@@ -1,7 +1,18 @@
 import { type AppHandle, defineApp } from '@justfiles/app'
 import { devkit } from '@justfiles/app/capabilities/devkit'
-import { type VolumeCapability, volume } from '@justfiles/app/capabilities/volume'
+import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
+import {
+	bundleIdSchema,
+	createProject,
+	ICON,
+	listProjects,
+	PROJECT,
+	projectName,
+	SRC,
+	type VolumeApi,
+	writeProjectManifest
+} from './projects.ts'
 
 export type CodeView = 'source' | 'app'
 
@@ -17,8 +28,10 @@ export type CodeBuild = {
 }
 
 export type CodeState = {
-	// persisted document — open project, selected file, view
-	slug: string
+	// null → gallery (no project open); set → editor for that project. When set,
+	// slug IS the project's bundle id (folder = id); permanent once created.
+	slug: string | null
+	name: string // friendly display name of the open project ('' when none)
 	selectedPath: string | null
 	view: CodeView
 	// content identity + last build; both are honest functions of the files on disk
@@ -28,7 +41,8 @@ export type CodeState = {
 }
 
 export const initialState: CodeState = {
-	slug: 'untitled',
+	slug: null, // launch into the gallery, not a fixed project
+	name: '',
 	selectedPath: null,
 	view: 'app',
 	files: [],
@@ -49,23 +63,21 @@ export function statusOf(state: CodeState, running: boolean): CodeStatus {
 	return 'live'
 }
 
+// `name` is required so a pre-`name` persisted state is rebuilt by
+// `normalizeState` (name defaulted) rather than passed through missing the field.
 export function isCodeState(value: unknown): value is CodeState {
 	return (
-		!!value && typeof value === 'object' && 'slug' in value && 'files' in value && 'view' in value
+		!!value &&
+		typeof value === 'object' &&
+		'slug' in value &&
+		'name' in value &&
+		'files' in value &&
+		'view' in value
 	)
 }
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-
-const SRC = (slug: string, path = '') => `/projects/${slug}/src${path}`
-// The project's app icon, stored verbatim (as an image data URL) at the project
-// root — a sibling of `src/`. `project.json` declares it as the app icon, so
-// `devkit.install`/`pack` bundle it into the shipped app.
-const ICON = (slug: string) => `/projects/${slug}/icon`
-// The project file — the build contract devkit reads (identity + where the
-// entries and icon live). Lives at the project root beside `src/` and `icon`.
-const PROJECT = (slug: string) => `/projects/${slug}/project.json`
 
 const slugSchema = v.pipe(
 	v.string(),
@@ -95,6 +107,7 @@ const buildSchema = v.object({
 // The opened-project snapshot the `open` procedure commits in one transition.
 const openedSchema = v.object({
 	slug: slugSchema,
+	name: v.string(),
 	files: v.array(v.string()),
 	selectedPath: v.nullable(v.string()),
 	sourceHash: v.string(),
@@ -102,12 +115,6 @@ const openedSchema = v.object({
 })
 
 type CodeCaps = { volume: ReturnType<typeof volume>; devkit: ReturnType<typeof devkit> }
-
-// The subset of the (now Volume-shaped) capability the disk helpers use.
-type VolumeApi = Pick<
-	VolumeCapability,
-	'readFile' | 'writeFile' | 'mkdir' | 'scan' | 'exists' | 'rm' | 'rename'
->
 
 // Adapt the kernel-mediated `app.invoke` into the `VolumeApi` shape the disk
 // helpers (readSource/seed/…) expect — same trust path, typed surface. Args are
@@ -125,16 +132,23 @@ function volumeApi(app: AppHandle<CodeState, CodeCaps>): VolumeApi {
 	}
 }
 
+// Reject the no-project (gallery) state before any path is derived from the slug,
+// so no editor-only procedure builds a `/projects/null/…` path.
+function reqSlug(app: AppHandle<CodeState, CodeCaps>): string {
+	const { slug } = normalizeState(app.state)
+	if (!slug) throw new Error('no project open')
+	return slug
+}
+
 export const app = defineApp({
 	init: initialState,
 	capabilities: { volume: volume({ scopes: [] }), devkit: devkit({ scopes: [] }) },
 	// Watch the open source file (Part D) so a foreign change to it is caught
-	// instead of being silently overwritten. The kernel keeps the stream alive
-	// while a file is selected and tears it down otherwise; events fold via
-	// `fileChanged`.
+	// instead of being silently overwritten. Guarded on `slug` too: the gallery
+	// (slug null) builds no path, so it declares no watch.
 	subscriptions: (state, sub) => {
 		const s = normalizeState(state)
-		return s.selectedPath
+		return s.slug && s.selectedPath
 			? [
 					sub
 						.capability('volume', 'watch', { path: SRC(s.slug, `/${s.selectedPath}`) })
@@ -165,6 +179,18 @@ export const app = defineApp({
 				description: 'Switch between the Source and App views. Never builds.',
 				examples: [{ params: { view: 'app' } }]
 			}
+		),
+		// Close the project and return to the gallery (slug → null).
+		close: t.on(
+			v.object({}),
+			(state) => ({
+				...normalizeState(state),
+				slug: null,
+				name: '',
+				selectedPath: null,
+				build: null
+			}),
+			{ description: 'Close the project and return to the gallery.' }
 		),
 		// Commit the opened-project snapshot (dispatched by the `open` procedure).
 		opened: t.commit(openedSchema, (state, snapshot) => ({
@@ -197,33 +223,51 @@ export const app = defineApp({
 		})
 	}),
 	procedures: (p) => ({
+		// Names-only gallery listing of `/projects`.
+		listProjects: p.procedure({
+			description: 'List the projects in app-code storage.',
+			schema: v.object({}),
+			run: (_, app) => listProjects(volumeApi(app))
+		}),
+		// Create a new project by name + bundle id, then return its slug (the id).
+		// The GUI follows up with `open({ slug })`. Seeding lives here, not in `open`.
+		create: p.procedure({
+			description: 'Create a new project by name and bundle id.',
+			schema: v.object({
+				name: v.pipe(v.string(), v.trim(), v.minLength(1)),
+				id: bundleIdSchema,
+				template: v.optional(v.picklist(['react', 'vanilla']), 'react')
+			}),
+			run: ({ name, id, template }, app) => createProject(volumeApi(app), name, id, template)
+		}),
+		// Load (not build) an existing project: read its name, scan files, compute
+		// the hash, and commit the opened snapshot with `build: null`. It does NOT
+		// call `devkit.run` — gallery and editor are separate views, so at `open`
+		// time there is no `[data-preview-slot]` yet; the GUI renders the editor,
+		// then calls `run({})` for the first build. Backfills the project file for
+		// legacy projects (`untitled`) created before it existed.
 		open: p.procedure({
-			description: 'Open a project from app-code storage, seeding it on first use.',
+			description: 'Open an existing project from app-code storage.',
 			schema: v.object({ slug: slugSchema }),
 			async run({ slug }, app) {
 				const state = normalizeState(app.state)
 				const vol = volumeApi(app)
-				if (!(await vol.exists(SRC(slug)))) await seed(vol, slug)
-				// Backfill the project file for projects created before it existed, so
-				// devkit always has its build contract.
 				if (!(await vol.exists(PROJECT(slug)))) await writeProjectManifest(vol, slug)
+				const name = await projectName(vol, slug)
 				const source = await readSource(vol, slug)
 				const files = Object.keys(source)
 				const selectedPath = files.includes(state.selectedPath ?? '')
 					? state.selectedPath
 					: (files[0] ?? null)
-				// Run the initial build so the App is live on open, resuming the draft's
-				// persisted runtime state (no reset). devkit reads the source off disk.
-				const hash = hashSource(source)
-				const { diagnostics } = await app.invoke('devkit', 'run', { slug })
 				const { seq } = await app.dispatch({
 					type: 'opened',
 					params: {
 						slug,
+						name,
 						files,
 						selectedPath,
-						sourceHash: hash,
-						build: buildRecord(hash, diagnostics)
+						sourceHash: hashSource(source),
+						build: null
 					}
 				})
 				return app.settled(seq)
@@ -235,12 +279,12 @@ export const app = defineApp({
 			description: 'Persist a source file and recompute the source hash.',
 			schema: v.object({ path: srcPathSchema, content: v.string() }),
 			async run({ path, content }, app) {
-				const state = normalizeState(app.state)
+				const slug = reqSlug(app)
 				const vol = volumeApi(app)
-				await vol.writeFile(SRC(state.slug, `/${path}`), encoder.encode(content))
+				await vol.writeFile(SRC(slug, `/${path}`), encoder.encode(content))
 				const { seq } = await app.dispatch({
 					type: 'recordHash',
-					params: { sourceHash: hashSource(await readSource(vol, state.slug)) }
+					params: { sourceHash: hashSource(await readSource(vol, slug)) }
 				})
 				return app.settled(seq)
 			}
@@ -253,9 +297,9 @@ export const app = defineApp({
 			description: 'Compile the current source and run it as the live App.',
 			schema: v.object({ reset: v.optional(v.boolean()) }),
 			async run({ reset }, app) {
-				const state = normalizeState(app.state)
-				const hash = hashSource(await readSource(volumeApi(app), state.slug))
-				const { diagnostics } = await app.invoke('devkit', 'run', { slug: state.slug, reset })
+				const slug = reqSlug(app)
+				const hash = hashSource(await readSource(volumeApi(app), slug))
+				const { diagnostics } = await app.invoke('devkit', 'run', { slug, reset })
 				const { seq } = await app.dispatch({
 					type: 'recordBuild',
 					params: { build: buildRecord(hash, diagnostics) }
@@ -268,17 +312,14 @@ export const app = defineApp({
 			description: 'Tear down the running App.',
 			schema: v.object({}),
 			async run(_, app) {
-				await app.invoke('devkit', 'stop', {
-					previewId: `preview.${normalizeState(app.state).slug}`
-				})
+				await app.invoke('devkit', 'stop', { previewId: `preview.${reqSlug(app)}` })
 			}
 		}),
 		readFile: p.procedure({
 			description: 'Read a source file as text.',
 			schema: v.object({ path: srcPathSchema }),
 			async run({ path }, app) {
-				const state = normalizeState(app.state)
-				return decoder.decode(await app.invoke('volume', 'readFile', SRC(state.slug, `/${path}`)))
+				return decoder.decode(await app.invoke('volume', 'readFile', SRC(reqSlug(app), `/${path}`)))
 			}
 		}),
 		// The project's app icon as an image data URL, or null if unset. Drives the
@@ -287,7 +328,7 @@ export const app = defineApp({
 			description: "Read the project's app icon as an image data URL.",
 			schema: v.object({}),
 			async run(_, app): Promise<string | null> {
-				const path = ICON(normalizeState(app.state).slug)
+				const path = ICON(reqSlug(app))
 				if (!(await app.invoke('volume', 'exists', path))) return null
 				return decoder.decode(await app.invoke('volume', 'readFile', path))
 			}
@@ -297,12 +338,7 @@ export const app = defineApp({
 			description: "Set the project's app icon from an image data URL.",
 			schema: v.object({ dataUrl: v.pipe(v.string(), v.startsWith('data:image/')) }),
 			async run({ dataUrl }, app) {
-				await app.invoke(
-					'volume',
-					'writeFile',
-					ICON(normalizeState(app.state).slug),
-					encoder.encode(dataUrl)
-				)
+				await app.invoke('volume', 'writeFile', ICON(reqSlug(app)), encoder.encode(dataUrl))
 			}
 		}),
 		// The live App's declared menubar (display structure only), pulled so the
@@ -311,8 +347,7 @@ export const app = defineApp({
 		menu: p.procedure({
 			description: "Read the live App's declared menubar for the preview window.",
 			schema: v.object({}),
-			run: (_, app) =>
-				app.invoke('devkit', 'menu', { previewId: `preview.${normalizeState(app.state).slug}` })
+			run: (_, app) => app.invoke('devkit', 'menu', { previewId: `preview.${reqSlug(app)}` })
 		}),
 		// Fire a preview menubar item by position; devkit invokes the real action
 		// against the live App on the main thread. No state of our own changes.
@@ -321,7 +356,7 @@ export const app = defineApp({
 			schema: v.object({ menu: v.number(), item: v.number() }),
 			async run({ menu, item }, app) {
 				await app.invoke('devkit', 'selectMenu', {
-					previewId: `preview.${normalizeState(app.state).slug}`,
+					previewId: `preview.${reqSlug(app)}`,
 					menu,
 					item
 				})
@@ -333,22 +368,24 @@ export const app = defineApp({
 		install: p.procedure({
 			description: 'Compile the current source and install it as a real app.',
 			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'install', { slug: normalizeState(app.state).slug })
+			run: (_, app) => app.invoke('devkit', 'install', { slug: reqSlug(app) })
 		}),
 		// Share: compile fresh and return a downloadable `.zip` of the bundle; the
 		// gui turns the bytes into a file download.
 		pack: p.procedure({
 			description: 'Compile the current source and return a downloadable .zip bundle.',
 			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'pack', { slug: normalizeState(app.state).slug })
+			run: (_, app) => app.invoke('devkit', 'pack', { slug: reqSlug(app) })
 		})
 	})
 })
 
 // Coerce ctx.state into the current shape on every handler. New-shape state
 // passes through untouched (so a `run`'s build survives later handlers). Old
-// persisted state is migrated: `rightPane` → `view`, everything runtime reset
-// (`build` null, `sourceHash` '') — `open` recomputes the hash.
+// persisted state is migrated: `rightPane` → `view`, `name` defaulted, everything
+// runtime reset (`build` null, `sourceHash` '') — `open` recomputes the hash. A
+// persisted `slug` is preserved (not nulled here, or `open` could never set it);
+// the launch reset to the gallery lives in the GUI (a `close` on mount).
 function normalizeState(state: unknown): CodeState {
 	if (isCodeState(state)) return state
 	if (!state || typeof state !== 'object') return initialState
@@ -415,97 +452,5 @@ async function readSource(volume: VolumeApi, slug: string): Promise<Record<strin
 	)
 	return Object.fromEntries(entries)
 }
-
-async function seed(volume: VolumeApi, slug: string): Promise<void> {
-	await volume.writeFile(SRC(slug, '/app.ts'), encoder.encode(starterApp))
-	await volume.writeFile(SRC(slug, '/gui.tsx'), encoder.encode(starterGui))
-	await writeProjectManifest(volume, slug)
-}
-
-// Write the project file devkit builds from. id/name default to the slug (a
-// valid app id; the author edits `project.json` to claim a real reverse-DNS id);
-// the entries and icon path declare the layout explicitly.
-async function writeProjectManifest(volume: VolumeApi, slug: string): Promise<void> {
-	const manifest = { id: slug, name: slug, icon: 'icon', app: 'src/app.ts', gui: 'src/gui.tsx' }
-	await volume.writeFile(PROJECT(slug), encoder.encode(`${JSON.stringify(manifest, null, 2)}\n`))
-}
-
-const starterApp = `import { defineApp } from '@justfiles/app'
-import * as v from 'valibot'
-
-export type CounterState = {
-	count: number
-}
-
-export const app = defineApp({
-	init: { count: 0 } as CounterState,
-	// One update table of pure edges: (state, params) => next state. A public
-	// edge declares a schema, which makes it the validated, agent-visible app API
-	// — its description and examples are what the agent sees as a tool.
-	update: (t) => ({
-		increment: t.on(
-			v.object({ amount: v.number() }),
-			(state, { amount }) => ({ ...state, count: state.count + amount }),
-			{ description: 'Add to the counter.', examples: [{ params: { amount: 1 } }] }
-		)
-	})
-})
-
-export type CounterApp = typeof app
-`
-
-const starterGui = `import type { Client } from '@justfiles/app'
-import { defineGUI } from '@justfiles/app/browser'
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import type { CounterApp, CounterState } from './app'
-
-const stateOrInitial = (state: CounterState | null): CounterState => state ?? { count: 0 }
-
-export const gui = defineGUI<CounterApp>({
-	mount(el, state, ctx) {
-		const root = createRoot(el)
-		const render = (next: CounterState | null) =>
-			root.render(
-				<StrictMode>
-					<Counter state={stateOrInitial(next)} client={ctx.client} />
-				</StrictMode>
-			)
-		render(state)
-		return { update: render, unmount: () => root.unmount() }
-	},
-	// Declared menus show in the preview window's menubar and run against the live
-	// app. 'Even' reflects state — it re-checks as the count changes.
-	menu: (state, client) => [
-		{
-			title: 'Count',
-			items: [
-				{ title: 'Increment', shortcut: '⌘I', onSelect: () => void client.increment({ amount: 1 }) },
-				{ separator: true },
-				{ title: 'Even', checked: (state?.count ?? 0) % 2 === 0, disabled: true, onSelect: () => {} }
-			]
-		}
-	]
-})
-
-function Counter({ state, client }: { state: CounterState; client: Client<CounterApp> }) {
-	return (
-		<button
-			type="button"
-			onClick={() => void client.increment({ amount: 1 })}
-			style={{
-				border: 0,
-				borderRadius: 8,
-				background: '#2563eb',
-				color: '#fff',
-				font: '16px system-ui, sans-serif',
-				padding: '10px 14px'
-			}}
-		>
-			Count: {state.count}
-		</button>
-	)
-}
-`
 
 export type CodeApp = typeof app
