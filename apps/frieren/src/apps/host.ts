@@ -251,7 +251,9 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	// Snapshot first, then mount/subscribe for subsequent local dispatches, then
 	// release the queued mount-time dispatches. In 2a this browser is the only
 	// writer to the local kernel, so no agent update can race the snapshot.
-	const snapshot = await kernel.state(stage.id).catch(() => null)
+	// `state()` resolves to the reducer's initialState for a never-run app, so the
+	// GUI always mounts on a non-null frame; a real failure throws to `boot`.
+	const snapshot = await kernel.state(stage.id)
 	if (stage.cancelled) return
 	mountGui(stage, mod, transport, snapshot)
 	stage.unsubscribe = kernel.subscribe((event) => {

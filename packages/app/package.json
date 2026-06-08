@@ -7,6 +7,7 @@
 		"./runtime": "./kernel.ts",
 		"./browser": "./browser.ts",
 		"./react": "./react.ts",
+		"./react-entry": "./react-entry.ts",
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./capabilities": "./capabilities/index.ts",
@@ -37,6 +38,10 @@
 			"./react": {
 				"types": "./dist/react.d.ts",
 				"default": "./dist/react.js"
+			},
+			"./react-entry": {
+				"types": "./dist/react-entry.d.ts",
+				"default": "./dist/react-entry.js"
 			},
 			"./vite": {
 				"types": "./dist/vite.d.ts",

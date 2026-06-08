@@ -1,3 +1,4 @@
+import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
 
 // The Frieren build chain, run in the browser. esbuild bundles a draft's
@@ -69,40 +70,13 @@ export async function compile(
 	const app = present(entries.app) ? await one(entries.app) : ''
 	let gui = ''
 	if (present(entries.gui)) {
-		const guiSource = files[entries.gui] ?? ''
-		const wrapReactGui = shouldWrapReactGui(entries.gui, guiSource)
+		const wrapReactGui = isReactGuiEntry(entries.gui)
 		const sources = wrapReactGui
-			? {
-					...files,
-					[REACT_GUI_ENTRY]: reactGuiEntry(entries.gui, hasNamedExport(guiSource, 'menu'))
-				}
+			? { ...files, [REACT_GUI_ENTRY]: reactGuiEntry(`./${entries.gui}`) }
 			: files
 		gui = await one(wrapReactGui ? REACT_GUI_ENTRY : entries.gui, sources)
 	}
 	return { app, gui, diagnostics }
-}
-
-function reactGuiEntry(gui: string, hasMenu: boolean): string {
-	return `import Component${hasMenu ? ', { menu }' : ''} from ${JSON.stringify(`./${gui}`)}
-import { defineReactGUI } from '@justfiles/app/react'
-
-export const gui = defineReactGUI(Component${hasMenu ? ', { menu }' : ''})
-`
-}
-
-function isReactGuiEntry(entry: string): boolean {
-	return /\.[jt]sx$/.test(entry)
-}
-
-function hasNamedExport(source: string, name: string): boolean {
-	return (
-		new RegExp(`export\\s+(const|let|var|function|class)\\s+${name}\\b`).test(source) ||
-		new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`).test(source)
-	)
-}
-
-function shouldWrapReactGui(entry: string, source: string): boolean {
-	return isReactGuiEntry(entry) && !hasNamedExport(source, 'gui')
 }
 
 function vfs(files: Record<string, string>, runtime: Record<string, string>): Plugin {

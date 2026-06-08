@@ -59,7 +59,7 @@ export const menu: GUIMenu<typeof app> = (state, actions) => [
 ]
 ```
 
-`defineGUI` from `@justfiles/app/browser` remains the low-level escape hatch for non-React or custom lifecycle GUIs.
+The `.tsx`/`.jsx` extension is the whole signal — any such entry is wrapped as a component. For a non-React or custom-lifecycle GUI, use a plain `gui.ts` that exports `gui` via `defineGUI` from `@justfiles/app/browser`; it's used verbatim.
 
 ## Build
 

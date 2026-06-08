@@ -1,5 +1,6 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
+import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
 import tailwindcss from '@tailwindcss/vite'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
@@ -23,21 +24,8 @@ const DEV_STYLE_CSS = `/@fs/${new URL('./dev-server.css', import.meta.url).pathn
 //
 // Only bare specifiers + type-only imports here: the config loader
 // externalizes this plugin and resolves it with native Node, which can't
-// load relative TypeScript siblings (./dev-server goes via ssrLoadModule).
-const reactGuiEntry = (
-	gui: string,
-	hasMenu: boolean
-) => `import Component${hasMenu ? ', { menu }' : ''} from ${JSON.stringify(gui)}
-import { defineReactGUI } from '@justfiles/app/react'
-
-export const gui = defineReactGUI(Component${hasMenu ? ', { menu }' : ''})
-`
-
-const isReactGuiEntry = (entry: string) => /\.[jt]sx$/.test(entry)
-const hasNamedExport = (source: string, name: string) =>
-	new RegExp(`export\\s+(const|let|var|function|class)\\s+${name}\\b`).test(source) ||
-	new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`).test(source)
-
+// load relative TypeScript siblings (./dev-server goes via ssrLoadModule, the
+// React shim codegen via the bare @justfiles/app/react-entry specifier).
 const compile = (entry: string) => {
 	const output = buildSync({
 		entryPoints: [entry],
@@ -103,9 +91,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const root = process.cwd()
 	const appEntry = resolve(root, opts.app)
 	const guiEntry = resolve(root, opts.gui)
-	const guiSource = readFileSync(guiEntry, 'utf8')
-	const wrapReactGui = isReactGuiEntry(guiEntry) && !hasNamedExport(guiSource, 'gui')
-	const hasMenu = hasNamedExport(guiSource, 'menu')
+	const wrapReactGui = isReactGuiEntry(guiEntry)
 	const reactGuiEntryPath = resolve(root, 'node_modules/.cache/justfiles-app/react-gui-entry.js')
 	let emitted = false
 	return [
@@ -116,7 +102,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				if (env.command === 'serve') return { appType: 'custom' }
 				if (wrapReactGui) {
 					mkdirSync(dirname(reactGuiEntryPath), { recursive: true })
-					writeFileSync(reactGuiEntryPath, reactGuiEntry(guiEntry, hasMenu))
+					writeFileSync(reactGuiEntryPath, reactGuiEntry(guiEntry))
 				}
 				return {
 					base: './',

@@ -73,28 +73,7 @@ describe('devkit compile', () => {
 		expect(out.state).toEqual({ count: 1 })
 	})
 
-	test('keeps React external in gui.tsx so the preview shares the host React', async () => {
-		const guiTsx = `import { defineGUI } from '@justfiles/app/browser'
-import { createRoot } from 'react-dom/client'
-export const gui = defineGUI({
-	mount(el) {
-		const root = createRoot(el)
-		root.render(<div />)
-		return { update() {}, unmount() { root.unmount() } }
-	}
-})`
-		const { gui, diagnostics } = await compile(
-			{ 'app.ts': APP, 'gui.tsx': guiTsx },
-			{ app: 'app.ts', gui: 'gui.tsx' },
-			esbuild.build,
-			runtime
-		)
-		expect(diagnostics).toEqual([])
-		expect(gui).toMatch(/from\s*"react-dom\/client"/)
-		expect(gui).toMatch(/from\s*"react\/jsx-runtime"/)
-	})
-
-	test('wraps a default React component gui.tsx as the app GUI', async () => {
+	test('wraps a default React component gui.tsx as the app GUI, React external', async () => {
 		const guiTsx = `import type { GUIProps, GUIMenu } from '@justfiles/app/react'
 import type { app } from './app'
 export const menu: GUIMenu<typeof app> = (state, actions) => [

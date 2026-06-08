@@ -8,6 +8,7 @@ import { appBundleFromMemory, type Message } from './app.ts'
 import { type Capability, capabilityRegistry, implementCapability } from './capabilities/index.ts'
 import { type VolumeEntry, volume as volumeCap } from './capabilities/volume/index.ts'
 import { type GetSandbox, kernel } from './kernel.ts'
+import { isReactGuiEntry, reactGuiEntry } from './react-entry.ts'
 
 export interface DevServerOptions {
 	id: string
@@ -36,29 +37,15 @@ function sandboxFor(): GetSandbox {
 	}
 }
 
-const reactGuiEntry = (
-	gui: string,
-	hasMenu: boolean
-) => `import Component${hasMenu ? ', { menu }' : ''} from ${JSON.stringify(gui)}
-import { defineReactGUI } from '@justfiles/app/react'
-
-export const gui = defineReactGUI(Component${hasMenu ? ', { menu }' : ''})
-`
-
-const isReactGuiEntry = (entry: string) => /\.[jt]sx$/.test(entry)
-const hasNamedExport = (source: string, name: string) =>
-	new RegExp(`export\\s+(const|let|var|function|class)\\s+${name}\\b`).test(source) ||
-	new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`).test(source)
 const rel = (root: string, path: string) => `./${relative(root, path).split('\\').join('/')}`
 
 const compile = (entry: string, opts?: { root: string }) => {
-	const source = readFileSync(entry, 'utf8')
-	const wrapReactGui = opts && isReactGuiEntry(entry) && !hasNamedExport(source, 'gui')
+	const wrapReactGui = opts && isReactGuiEntry(entry)
 	const output = buildSync({
 		...(wrapReactGui
 			? {
 					stdin: {
-						contents: reactGuiEntry(rel(opts.root, entry), hasNamedExport(source, 'menu')),
+						contents: reactGuiEntry(rel(opts.root, entry)),
 						resolveDir: opts.root,
 						sourcefile: 'react-gui-entry.js',
 						loader: 'js' as const

@@ -11,25 +11,25 @@ export interface GUIProps<A> {
 	actions: Client<A>
 }
 
-export type GUI<A> = (props: GUIProps<A>) => ReactNode
+export type GUIComponent<A> = (props: GUIProps<A>) => ReactNode
 export type GUIMenu<A> = (state: GUIState<A>, actions: Client<A>) => Menu
 
 export interface GUIOptions<A> {
-	initial?: GUIState<A>
 	menu?: GUIMenu<A>
 }
 
-export function defineReactGUI<A>(Component: GUI<A>, options: GUIOptions<A> = {}) {
+// `state` is non-null to the component and menu: the host resolves the app's
+// `initialState` (the reducer's `init`) before mount and only ever pushes
+// committed state after, so the nullable `defineGUI` seam is never null here.
+// The casts bridge that wider seam to the narrower React contract.
+export function defineReactGUI<A>(Component: GUIComponent<A>, options: GUIOptions<A> = {}) {
 	const menu = options.menu
-	const stateOf = (state: GUIState<A> | null): GUIState<A> =>
-		(state ?? options.initial) as GUIState<A>
 	return defineGUI<A>({
-		menu: menu ? (state, client) => menu(stateOf(state), client) : undefined,
+		menu: menu ? (state, client) => menu(state as GUIState<A>, client) : undefined,
 		mount(el, state, ctx) {
 			const root = createRoot(el)
-			const render = (next: GUIState<A> | null) => {
-				root.render(createElement(Component, { state: stateOf(next), actions: ctx.client }))
-			}
+			const render = (next: GUIState<A> | null) =>
+				root.render(createElement(Component, { state: next as GUIState<A>, actions: ctx.client }))
 			render(state)
 			return { update: render, unmount: () => root.unmount() }
 		}
