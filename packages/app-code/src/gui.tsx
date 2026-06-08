@@ -2,7 +2,6 @@ import type { Client } from '@justfiles/app'
 import { defineGUI } from '@justfiles/app/browser'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
 import {
-	type CSSProperties,
 	type FormEvent,
 	type ReactNode,
 	type PointerEvent as ReactPointerEvent,
@@ -22,20 +21,19 @@ import {
 	statusOf
 } from './app'
 import { createEditor, type Editor } from './editor'
+import guiCss from './gui.css?inline'
 import { slugifyName } from './projects'
 
 const stateOrInitial = (value: unknown): CodeState => (isCodeState(value) ? value : initialState)
 
-const STATUS: Record<CodeStatus, { label: string; color: string }> = {
-	idle: { label: 'Idle', color: '#86868b' },
-	updating: { label: 'Updating', color: '#6e8efb' },
-	building: { label: 'Building', color: '#007aff' },
-	live: { label: 'Live', color: '#1aa251' },
-	'needs-fixes': { label: 'Needs fixes', color: '#d9822b' },
-	crashed: { label: 'Crashed', color: '#c41a16' }
+const STATUS: Record<CodeStatus, { label: string; className: string }> = {
+	idle: { label: 'Idle', className: 'is-idle' },
+	updating: { label: 'Updating', className: 'is-updating' },
+	building: { label: 'Building', className: 'is-building' },
+	live: { label: 'Live', className: 'is-live' },
+	'needs-fixes': { label: 'Needs fixes', className: 'is-needs-fixes' },
+	crashed: { label: 'Crashed', className: 'is-crashed' }
 }
-
-const MONO = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
 
 type Project = { slug: string; name: string }
 
@@ -67,6 +65,10 @@ const ICON_PLACEHOLDER =
 
 export const gui = defineGUI<CodeApp>({
 	mount(root, _state, ctx) {
+		const styleEl = document.createElement('style')
+		styleEl.textContent = guiCss
+		document.head.append(styleEl)
+
 		const reactRoot = createRoot(root)
 		let mounted = true
 		let editor: EditorController | null = null
@@ -479,6 +481,7 @@ export const gui = defineGUI<CodeApp>({
 				editor?.destroy()
 				editor = null
 				reactRoot.unmount()
+				styleEl.remove()
 			}
 		}
 	}
@@ -488,7 +491,7 @@ type EditorScreenProps = {
 	view: CodeState
 	source: SourceView
 	code: Editor
-	badge: { label: string; color: string }
+	badge: { label: string; className: string }
 	name: string
 	localDirty: boolean
 	split: number
@@ -527,17 +530,22 @@ function EditorScreen(props: EditorScreenProps) {
 	const build = props.view.build
 
 	return (
-		<div style={styles.shell}>
-			<div style={styles.toolbar}>
-				<div style={styles.toolbarSide}>
+		<div className="app-code-shell">
+			<div className="app-code-toolbar">
+				<div className="app-code-toolbar-side">
 					<LinkButton label="‹ Projects" onClick={props.onBack} />
-					<button type="button" onClick={props.onToggleCode} style={codeToggleStyle(showCode)}>
+					<button
+						type="button"
+						onClick={props.onToggleCode}
+						className="app-code-code-toggle"
+						data-active={showCode ? 'true' : undefined}
+					>
 						{'</> Code'}
 					</button>
-					<div style={styles.nameLabel}>{props.name}</div>
+					<div className="app-code-name-label">{props.name}</div>
 				</div>
-				<div style={{ ...styles.stateLabel, color: props.badge.color }}>● {props.badge.label}</div>
-				<div style={styles.rightGroup}>
+				<div className={`app-code-state-label ${props.badge.className}`}>● {props.badge.label}</div>
+				<div className="app-code-right-group">
 					<ShipButton
 						label={props.packLabel}
 						disabled={props.shipping}
@@ -553,17 +561,15 @@ function EditorScreen(props: EditorScreenProps) {
 				</div>
 			</div>
 
-			<div ref={props.setContent} style={styles.content}>
+			<div ref={props.setContent} className="app-code-content">
 				<div
 					ref={props.setSourceView}
-					style={{
-						...styles.sourceView,
-						display: showCode ? 'flex' : 'none',
-						width: `${props.split * 100}%`
-					}}
+					className="app-code-source-view"
+					hidden={!showCode}
+					style={{ width: `${props.split * 100}%` }}
 				>
-					<div style={styles.tabBar}>
-						<div style={styles.tabsScroll}>
+					<div className="app-code-tab-bar">
+						<div className="app-code-tabs-scroll">
 							{props.view.files.map((path) => (
 								<TabButton
 									key={path}
@@ -577,23 +583,14 @@ function EditorScreen(props: EditorScreenProps) {
 						<IconButton label="⟳" title="Rescan project files" onClick={props.onRefresh} />
 					</div>
 					<CodeMirrorHost editor={props.code} ready={ready} />
-					<pre
-						style={{
-							...styles.message,
-							display: ready ? 'none' : '',
-							color: fallback?.error ? '#c41a16' : '#86868b'
-						}}
-					>
+					<pre className={`app-code-message ${fallback?.error ? 'is-error' : ''}`} hidden={ready}>
 						{fallback?.text ?? ''}
 					</pre>
 				</div>
 
-				<div
-					style={{ ...styles.handle, display: showCode ? 'block' : 'none' }}
-					onPointerDown={props.onDrag}
-				/>
+				<div className="app-code-handle" hidden={!showCode} onPointerDown={props.onDrag} />
 
-				<div style={styles.appView}>
+				<div className="app-code-app-view">
 					<Menubar
 						name={props.name}
 						menuView={props.menuView}
@@ -603,8 +600,8 @@ function EditorScreen(props: EditorScreenProps) {
 						onSelect={props.onSelectMenu}
 						setRef={props.setMenubar}
 					/>
-					<div style={styles.desktopArea}>
-						<div className="ds-window ds-window-framed" data-focused="true" style={styles.windowEl}>
+					<div className="app-code-desktop-area">
+						<div className="ds-window ds-window-framed app-code-preview-window" data-focused="true">
 							<div className="ds-window-titlebar">
 								<div className="ds-window-controls">
 									<button
@@ -622,7 +619,7 @@ function EditorScreen(props: EditorScreenProps) {
 								<span className="ds-window-spacer" />
 							</div>
 							<div className="ds-window-body">
-								<div data-preview-slot="" style={styles.previewSlot} />
+								<div data-preview-slot="" className="app-code-preview-slot" />
 							</div>
 						</div>
 
@@ -646,22 +643,11 @@ function EditorScreen(props: EditorScreenProps) {
 				</div>
 			</div>
 
-			<div style={{ ...styles.bottomBar, display: build ? 'flex' : 'none' }}>
-				<div
-					style={{
-						fontSize: '12px',
-						whiteSpace: 'pre-wrap',
-						color: build?.result === 'ok' ? '#1aa251' : '#c41a16'
-					}}
-				>
+			<div className="app-code-bottom-bar" hidden={!build}>
+				<div className={`app-code-build-message ${build?.result === 'ok' ? 'is-ok' : 'is-error'}`}>
 					{build?.message ?? ''}
 				</div>
-				<pre
-					style={{
-						...styles.diagnostics,
-						display: build && build.diagnostics.length > 0 ? '' : 'none'
-					}}
-				>
+				<pre className="app-code-diagnostics" hidden={!build || build.diagnostics.length === 0}>
 					{build?.diagnostics.join('\n') ?? ''}
 				</pre>
 			</div>
@@ -670,7 +656,7 @@ function EditorScreen(props: EditorScreenProps) {
 				ref={iconInput}
 				type="file"
 				accept="image/*"
-				style={{ display: 'none' }}
+				className="app-code-hidden-input"
 				onChange={(event) => {
 					const input = event.currentTarget
 					const file = input.files?.[0]
@@ -692,11 +678,11 @@ function Menubar(props: {
 	setRef: (el: HTMLDivElement | null) => void
 }) {
 	return (
-		<div ref={props.setRef} className="ds-menubar" style={styles.menubar}>
-			<span style={{ fontWeight: '500', whiteSpace: 'nowrap' }}>{props.name}</span>
-			<div style={{ display: 'flex', alignItems: 'center' }}>
+		<div ref={props.setRef} className="ds-menubar app-code-menubar">
+			<span className="app-code-menubar-name">{props.name}</span>
+			<div className="app-code-menu-list">
 				{props.menuView.map((group, index) => (
-					<div key={group.title} style={{ position: 'relative' }}>
+					<div key={group.title} className="app-code-menu-wrap">
 						<button
 							type="button"
 							className="ds-menu-title"
@@ -727,7 +713,7 @@ function MenuDropdown(props: {
 		key: 'separator' in item ? `separator:${itemIndex}` : `${item.title}:${item.shortcut ?? ''}`
 	}))
 	return (
-		<div className="ds-menu" role="menu" style={styles.dropdown}>
+		<div className="ds-menu app-code-dropdown" role="menu">
 			{items.map(({ item, itemIndex, key }) => {
 				if ('separator' in item) return <div key={key} className="ds-menu-separator" />
 				return (
@@ -740,13 +726,9 @@ function MenuDropdown(props: {
 						aria-disabled={item.disabled ? 'true' : undefined}
 						onClick={item.disabled ? undefined : () => props.onSelect(props.menuIndex, itemIndex)}
 					>
-						<span style={{ width: '16px', flex: '0 0 auto' }}>{item.checked ? '✓' : ''}</span>
-						<span style={{ flex: '1 1 auto' }}>{item.title}</span>
-						{item.shortcut ? (
-							<span style={{ marginLeft: 'auto', paddingLeft: '24px', opacity: '0.6' }}>
-								{item.shortcut}
-							</span>
-						) : null}
+						<span className="app-code-menu-check">{item.checked ? '✓' : ''}</span>
+						<span className="app-code-menu-item-title">{item.title}</span>
+						{item.shortcut ? <span className="app-code-menu-shortcut">{item.shortcut}</span> : null}
 					</button>
 				)
 			})}
@@ -764,7 +746,7 @@ function CodeMirrorHost({ editor, ready }: { editor: Editor; ready: boolean }) {
 			if (editor.dom.parentElement === host) host.removeChild(editor.dom)
 		}
 	}, [editor])
-	return <div ref={ref} style={{ ...styles.editorHost, display: ready ? '' : 'none' }} />
+	return <div ref={ref} className="app-code-editor-host" hidden={!ready} />
 }
 
 function GalleryScreen(props: {
@@ -780,20 +762,18 @@ function GalleryScreen(props: {
 
 	return (
 		<ScreenWrap>
-			<div style={styles.galleryHead}>
-				<div style={{ fontSize: '20px', fontWeight: '650' }}>Projects</div>
+			<div className="app-code-gallery-head">
+				<div className="app-code-gallery-title">Projects</div>
 				<PrimaryButton label="+ New Project" onClick={props.onNew} />
 			</div>
 			{props.projects.length === 0 ? (
-				<div style={{ textAlign: 'center', padding: '48px 16px' }}>
-					<div style={{ fontSize: '16px', fontWeight: '600' }}>No projects yet</div>
-					<div style={{ color: '#6e6e73', margin: '6px 0 18px' }}>
-						Create your first app to get started.
-					</div>
+				<div className="app-code-empty-state">
+					<div className="app-code-empty-title">No projects yet</div>
+					<div className="app-code-empty-copy">Create your first app to get started.</div>
 					<PrimaryButton label="+ New Project" onClick={props.onNew} />
 				</div>
 			) : (
-				<div style={styles.projectList}>
+				<div className="app-code-project-list">
 					{props.projects.map((project, index) => (
 						<ProjectRow
 							key={project.slug}
@@ -819,30 +799,14 @@ function ProjectRow(props: {
 		<button
 			type="button"
 			onClick={() => props.onOpen(props.project.slug)}
-			onPointerEnter={(event) => {
-				event.currentTarget.style.background = '#f5f5f7'
-			}}
-			onPointerLeave={(event) => {
-				event.currentTarget.style.background = 'transparent'
-			}}
-			style={{
-				...styles.projectRow,
-				width: '100%',
-				background: 'transparent',
-				border: '0',
-				borderTop: props.first ? '0' : '1px solid #e3e3e6',
-				color: 'inherit',
-				font: 'inherit',
-				textAlign: 'left'
-			}}
+			className="app-code-project-row"
+			data-first={props.first ? 'true' : undefined}
 		>
-			<div style={{ display: 'flex', flexDirection: 'column', minWidth: '0' }}>
-				<div style={{ fontWeight: '600', fontSize: '14px' }}>{props.project.name}</div>
-				{props.duplicate ? (
-					<div style={{ fontSize: '12px', color: '#a1a1a6' }}>{props.project.slug}</div>
-				) : null}
+			<div className="app-code-project-text">
+				<div className="app-code-project-name">{props.project.name}</div>
+				{props.duplicate ? <div className="app-code-project-slug">{props.project.slug}</div> : null}
 			</div>
-			<div style={{ color: '#c7c7cc', fontSize: '16px' }}>›</div>
+			<div className="app-code-project-chevron">›</div>
 		</button>
 	)
 }
@@ -889,9 +853,9 @@ function NewProjectScreen(props: {
 	return (
 		<ScreenWrap>
 			<form onSubmit={submit}>
-				<div style={styles.galleryHead}>
+				<div className="app-code-gallery-head">
 					<LinkButton label="‹ Cancel" onClick={props.onCancel} />
-					<div style={{ fontWeight: '650', fontSize: '16px' }}>New Project</div>
+					<div className="app-code-form-title">New Project</div>
 					<PrimaryButton label="Create" type="submit" disabled={creating} />
 				</div>
 				<TextField
@@ -911,9 +875,9 @@ function NewProjectScreen(props: {
 						setId(value)
 					}}
 				>
-					<div style={styles.hint}>Folder: /projects/{id} · must be unique</div>
+					<div className="app-code-hint">Folder: /projects/{id} · must be unique</div>
 				</TextField>
-				<div style={styles.formError}>{error}</div>
+				<div className="app-code-form-error">{error}</div>
 			</form>
 		</ScreenWrap>
 	)
@@ -921,8 +885,8 @@ function NewProjectScreen(props: {
 
 function ScreenWrap({ children }: { children: ReactNode }) {
 	return (
-		<div style={styles.screenOuter}>
-			<div style={styles.screenInner}>{children}</div>
+		<div className="app-code-screen-outer">
+			<div className="app-code-screen-inner">{children}</div>
 		</div>
 	)
 }
@@ -935,14 +899,14 @@ function TextField(props: {
 	inputRef?: { current: HTMLInputElement | null }
 }) {
 	return (
-		<label style={{ margin: '0 0 16px', display: 'block' }}>
-			<span style={styles.fieldLabel}>{props.label}</span>
+		<label className="app-code-field">
+			<span className="app-code-field-label">{props.label}</span>
 			<input
 				ref={props.inputRef}
 				type="text"
 				value={props.value}
 				onChange={(event) => props.onChange(event.currentTarget.value)}
-				style={styles.input}
+				className="app-code-input"
 			/>
 			{props.children}
 		</label>
@@ -960,12 +924,8 @@ function TabButton(props: {
 			type="button"
 			title={props.path}
 			onClick={() => props.onSelect(props.path)}
-			style={{
-				...styles.tabButton,
-				background: props.active ? '#ffffff' : 'transparent',
-				color: props.active ? '#1d1d1f' : '#6e6e73',
-				fontWeight: props.active ? '600' : '400'
-			}}
+			className="app-code-tab-button"
+			data-active={props.active ? 'true' : undefined}
 		>
 			{props.dirty ? '● ' : ''}
 			{basename(props.path)}
@@ -975,7 +935,12 @@ function TabButton(props: {
 
 function IconButton(props: { label: string; title: string; onClick: () => void }) {
 	return (
-		<button type="button" title={props.title} onClick={props.onClick} style={styles.iconButton}>
+		<button
+			type="button"
+			title={props.title}
+			onClick={props.onClick}
+			className="app-code-icon-button"
+		>
 			{props.label}
 		</button>
 	)
@@ -992,10 +957,8 @@ function ShipButton(props: {
 			type="button"
 			disabled={props.disabled}
 			onClick={props.onClick}
-			style={{
-				...shipButtonStyle(props.primary),
-				opacity: props.disabled ? 0.4 : 1
-			}}
+			className="app-code-ship-button"
+			data-primary={props.primary ? 'true' : undefined}
 		>
 			{props.label}
 		</button>
@@ -1013,7 +976,7 @@ function PrimaryButton(props: {
 			type={props.type ?? 'button'}
 			disabled={props.disabled}
 			onClick={props.onClick}
-			style={styles.primaryButton}
+			className="app-code-primary-button"
 		>
 			{props.label}
 		</button>
@@ -1022,7 +985,7 @@ function PrimaryButton(props: {
 
 function LinkButton(props: { label: string; onClick: () => void }) {
 	return (
-		<button type="button" onClick={props.onClick} style={styles.linkButton}>
+		<button type="button" onClick={props.onClick} className="app-code-link-button">
 			{props.label}
 		</button>
 	)
@@ -1082,267 +1045,3 @@ function messageOf(err: unknown) {
 function basename(path: string) {
 	return path.split('/').filter(Boolean).at(-1) ?? path
 }
-
-function codeToggleStyle(active: boolean): CSSProperties {
-	return {
-		border: `1px solid ${active ? '#007aff' : '#d2d2d7'}`,
-		borderRadius: '6px',
-		background: active ? '#007aff' : '#ffffff',
-		color: active ? '#ffffff' : '#1d1d1f',
-		cursor: 'default',
-		font: 'inherit',
-		fontSize: '12px',
-		fontWeight: '600',
-		padding: '5px 12px',
-		whiteSpace: 'nowrap'
-	}
-}
-
-function shipButtonStyle(primary: boolean): CSSProperties {
-	return {
-		flex: '0 0 auto',
-		marginLeft: '8px',
-		background: primary ? '#007aff' : '#ffffff',
-		border: primary ? '0' : '1px solid #d2d2d7',
-		borderRadius: '6px',
-		color: primary ? '#ffffff' : '#1d1d1f',
-		cursor: 'default',
-		font: 'inherit',
-		fontSize: '12px',
-		fontWeight: '600',
-		padding: primary ? '5px 14px' : '5px 12px'
-	}
-}
-
-const styles = {
-	shell: {
-		display: 'flex',
-		flexDirection: 'column',
-		height: '100%',
-		width: '100%',
-		background: '#ffffff',
-		color: '#1d1d1f',
-		fontFamily: 'var(--font-ui)',
-		fontSize: 'var(--text-ui)'
-	},
-	toolbar: {
-		display: 'flex',
-		alignItems: 'center',
-		gap: '8px',
-		padding: '8px 12px',
-		background: '#f5f5f7',
-		borderBottom: '1px solid #d2d2d7'
-	},
-	toolbarSide: {
-		display: 'flex',
-		flex: '1 1 0',
-		minWidth: '0',
-		alignItems: 'center',
-		gap: '8px'
-	},
-	nameLabel: {
-		fontWeight: '600',
-		fontSize: '13px',
-		minWidth: '0',
-		overflow: 'hidden',
-		textOverflow: 'ellipsis',
-		whiteSpace: 'nowrap',
-		color: '#1d1d1f'
-	},
-	stateLabel: {
-		flex: '0 0 auto',
-		textAlign: 'center',
-		fontSize: '12px',
-		fontWeight: '600',
-		whiteSpace: 'nowrap'
-	},
-	rightGroup: {
-		display: 'flex',
-		alignItems: 'center',
-		justifyContent: 'flex-end',
-		flex: '1 1 0',
-		minWidth: '0'
-	},
-	content: { display: 'flex', flex: '1 1 auto', minHeight: '0' },
-	sourceView: {
-		flexDirection: 'column',
-		flex: '0 0 auto',
-		minWidth: '0',
-		minHeight: '0'
-	},
-	tabBar: {
-		display: 'flex',
-		flex: '0 0 auto',
-		minWidth: '0',
-		background: '#f5f5f7',
-		borderBottom: '1px solid #e3e3e6'
-	},
-	tabsScroll: { display: 'flex', flex: '1 1 0', minWidth: '0', overflowX: 'auto' },
-	editorHost: { flex: '1 1 auto', minHeight: '0', overflow: 'hidden' },
-	message: {
-		flex: '1 1 auto',
-		margin: '0',
-		minHeight: '0',
-		overflow: 'auto',
-		padding: '18px',
-		background: '#ffffff',
-		fontFamily: MONO,
-		fontSize: '13px',
-		lineHeight: '1.55',
-		whiteSpace: 'pre-wrap'
-	},
-	handle: {
-		flex: '0 0 auto',
-		width: '5px',
-		background: '#d2d2d7',
-		cursor: 'col-resize'
-	},
-	appView: {
-		display: 'flex',
-		flexDirection: 'column',
-		flex: '1 1 0',
-		minWidth: '0',
-		minHeight: '0',
-		background: '#e8e8ed'
-	},
-	menubar: { flex: '0 0 auto', position: 'relative', zIndex: 2 },
-	desktopArea: {
-		display: 'flex',
-		flex: '1 1 auto',
-		minWidth: '0',
-		minHeight: '0',
-		position: 'relative',
-		zIndex: 1,
-		padding: '24px 24px 96px'
-	},
-	windowEl: {
-		flex: '1 1 auto',
-		minWidth: '0',
-		minHeight: '0',
-		position: 'relative',
-		zIndex: 0
-	},
-	previewSlot: {
-		position: 'relative',
-		flex: '1 1 auto',
-		minWidth: '0',
-		minHeight: '0',
-		overflow: 'hidden'
-	},
-	bottomBar: {
-		flex: '0 0 auto',
-		flexDirection: 'column',
-		gap: '6px',
-		maxHeight: '40%',
-		overflow: 'auto',
-		padding: '8px 12px',
-		background: '#f5f5f7',
-		borderTop: '1px solid #d2d2d7'
-	},
-	diagnostics: {
-		margin: '0',
-		color: '#c41a16',
-		fontFamily: MONO,
-		fontSize: '12px',
-		lineHeight: '1.5',
-		whiteSpace: 'pre-wrap'
-	},
-	dropdown: {
-		position: 'absolute',
-		left: '0',
-		top: '100%',
-		marginTop: '1px',
-		zIndex: 10000
-	},
-	tabButton: {
-		flex: '0 0 auto',
-		border: '0',
-		borderRight: '1px solid #e3e3e6',
-		cursor: 'default',
-		font: `12px ${MONO}`,
-		padding: '6px 12px',
-		whiteSpace: 'nowrap'
-	},
-	iconButton: {
-		flex: '0 0 auto',
-		border: '0',
-		borderLeft: '1px solid #e3e3e6',
-		background: 'transparent',
-		color: '#6e6e73',
-		cursor: 'default',
-		font: 'inherit',
-		fontSize: '13px',
-		padding: '6px 10px'
-	},
-	primaryButton: {
-		flex: '0 0 auto',
-		border: '0',
-		borderRadius: '6px',
-		background: '#007aff',
-		color: '#ffffff',
-		cursor: 'default',
-		font: 'inherit',
-		fontSize: '13px',
-		fontWeight: '600',
-		padding: '7px 14px'
-	},
-	linkButton: {
-		flex: '0 0 auto',
-		border: '0',
-		background: 'transparent',
-		color: '#6e6e73',
-		cursor: 'default',
-		font: 'inherit',
-		fontSize: '13px',
-		fontWeight: '600',
-		padding: '5px 4px',
-		whiteSpace: 'nowrap'
-	},
-	screenOuter: {
-		flex: '1 1 auto',
-		overflow: 'auto',
-		background: '#ffffff',
-		color: '#1d1d1f',
-		fontFamily: 'var(--font-ui)',
-		padding: '32px 20px'
-	},
-	screenInner: { maxWidth: '560px', margin: '0 auto', width: '100%' },
-	galleryHead: {
-		display: 'flex',
-		alignItems: 'center',
-		justifyContent: 'space-between',
-		marginBottom: '20px'
-	},
-	projectList: { border: '1px solid #e3e3e6', borderRadius: '10px', overflow: 'hidden' },
-	projectRow: {
-		display: 'flex',
-		alignItems: 'center',
-		justifyContent: 'space-between',
-		padding: '11px 14px',
-		cursor: 'default'
-	},
-	fieldLabel: {
-		display: 'block',
-		fontSize: '12px',
-		color: '#6e6e73',
-		marginBottom: '6px'
-	},
-	input: {
-		width: '100%',
-		font: 'inherit',
-		fontSize: '14px',
-		padding: '8px 10px',
-		border: '1px solid #d2d2d7',
-		borderRadius: '7px',
-		background: '#ffffff',
-		color: '#1d1d1f',
-		boxSizing: 'border-box'
-	},
-	hint: {
-		fontFamily: MONO,
-		fontSize: '12px',
-		color: '#a1a1a6',
-		marginTop: '6px'
-	},
-	formError: { fontSize: '13px', color: '#c41a16', minHeight: '18px', marginTop: '4px' }
-} satisfies Record<string, CSSProperties>
