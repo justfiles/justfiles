@@ -9,7 +9,7 @@ export default defineConfig({
 			icon: 'icon.svg',
 			description: 'Build Frieren apps inside Frieren.',
 			app: 'src/app.ts',
-			gui: 'src/gui.ts'
+			gui: 'src/gui.tsx'
 		})
 	]
 })

@@ -450,9 +450,21 @@ importers:
         specifier: ^1.1.0
         version: 1.4.0(typescript@6.0.3)
     devDependencies:
+      '@types/react':
+        specifier: ^19
+        version: 19.2.7
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.2.3(@types/react@19.2.7)
       esbuild:
         specifier: ^0.27.0
         version: 0.27.7
+      react:
+        specifier: ^19
+        version: 19.2.5
+      react-dom:
+        specifier: ^19
+        version: 19.2.5(react@19.2.5)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

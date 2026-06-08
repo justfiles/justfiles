@@ -24,8 +24,16 @@
 		"codemirror": "^6.0.0",
 		"valibot": "^1.1.0"
 	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
 	"devDependencies": {
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
 		"esbuild": "^0.27.0",
+		"react": "^19",
+		"react-dom": "^19",
 		"typescript": "^6.0.3",
 		"vite": "^8.0.12"
 	}
