@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import {
 	createProject,
 	listProjects,
+	saveMeta,
 	slugifyName,
 	type VolumeApi,
 	type VolumeEntry
@@ -83,4 +84,18 @@ test('createProject rejects a bad id, a dup id; seeds project.json', async () =>
 test('slugifyName derives a sane id segment', () => {
 	expect(slugifyName('My Cool App!')).toBe('my-cool-app')
 	expect(slugifyName('')).toBe('app')
+})
+
+test('saveMeta rewrites name/version/description; id + entries preserved', async () => {
+	const vol = fakeVolume()
+	await createProject(vol, 'X', 'com.example.x')
+	await saveMeta(vol, 'com.example.x', { name: 'Renamed', version: '1.0.0', description: 'hi' })
+	const m = JSON.parse(vol.dump()['/projects/com.example.x/project.json']!)
+	expect(m).toMatchObject({
+		id: 'com.example.x',
+		name: 'Renamed',
+		version: '1.0.0',
+		description: 'hi'
+	})
+	expect(m.app).toBe('src/app.ts') // entries untouched
 })

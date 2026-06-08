@@ -97,6 +97,35 @@ export async function seed(
 	await writeProjectManifest(vol, id, name)
 }
 
+// The build contract on disk: identity + the fixed entry/icon paths. `version`
+// and `description` are optional metadata the settings screen edits.
+export type ProjectMeta = {
+	id: string
+	name: string
+	version?: string
+	description?: string
+	app: string
+	gui?: string
+	icon?: string
+}
+
+// Read the open project's manifest to populate the settings form.
+export async function readMeta(vol: VolumeApi, slug: string): Promise<ProjectMeta> {
+	return JSON.parse(await readText(vol, PROJECT(slug))) as ProjectMeta
+}
+
+// Rewrite name/version/description; id, entries, and icon are untouched. The
+// bundle id is immutable in v1, so the folder never moves.
+export async function saveMeta(
+	vol: VolumeApi,
+	slug: string,
+	fields: { name: string; version?: string; description?: string }
+): Promise<void> {
+	const prev = await readMeta(vol, slug)
+	const next = { ...prev, ...fields }
+	await vol.writeFile(PROJECT(slug), encoder.encode(`${JSON.stringify(next, null, 2)}\n`))
+}
+
 // The project file devkit builds from. `name` defaults to the slug — used by the
 // `open` backfill for legacy projects created before the manifest existed.
 export async function writeProjectManifest(

@@ -9,7 +9,9 @@ import {
 	listProjects,
 	PROJECT,
 	projectName,
+	readMeta,
 	SRC,
+	saveMeta,
 	type VolumeApi,
 	writeProjectManifest
 } from './projects.ts'
@@ -207,6 +209,12 @@ export const app = defineApp({
 			...normalizeState(state),
 			sourceHash
 		})),
+		// Keep CodeState.name (toolbar / window title / preview menubar) in sync
+		// after the settings screen rewrites the manifest.
+		recordName: t.commit(v.object({ name: v.string() }), (state, { name }) => ({
+			...normalizeState(state),
+			name
+		})),
 		// The open source file changed on disk (Part D). A foreign-sourced write —
 		// e.g. the agent editing the project from elsewhere — must not be silently
 		// reloaded over unsaved edits nor silently overwritten by the next save, so
@@ -270,6 +278,29 @@ export const app = defineApp({
 						build: null
 					}
 				})
+				return app.settled(seq)
+			}
+		}),
+		// Read the open project's manifest to populate the settings form.
+		readMeta: p.procedure({
+			description: "Read the open project's metadata (name, version, description).",
+			schema: v.object({}),
+			run: (_, app) => readMeta(volumeApi(app), reqSlug(app))
+		}),
+		// Rewrite name/version/description on disk, then record the name so the
+		// toolbar / window title / preview menubar refresh from the pushed state.
+		// The bundle id is immutable in v1, so the folder never moves (no reopen).
+		saveMeta: p.procedure({
+			description: "Update the open project's metadata.",
+			schema: v.object({
+				name: v.pipe(v.string(), v.trim(), v.minLength(1)),
+				version: v.optional(v.string()),
+				description: v.optional(v.string())
+			}),
+			async run(fields, app) {
+				const slug = reqSlug(app)
+				await saveMeta(volumeApi(app), slug, fields)
+				const { seq } = await app.dispatch({ type: 'recordName', params: { name: fields.name } })
 				return app.settled(seq)
 			}
 		}),

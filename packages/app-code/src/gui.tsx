@@ -22,7 +22,7 @@ import {
 } from './app'
 import { createEditor, type Editor } from './editor'
 import guiCss from './gui.css?inline'
-import { slugifyName } from './projects'
+import { type ProjectMeta, slugifyName } from './projects'
 
 const stateOrInitial = (value: unknown): CodeState => (isCodeState(value) ? value : initialState)
 
@@ -143,6 +143,10 @@ export const gui = defineGUI<CodeApp>({
 			let menubarEl: HTMLElement | null = null
 			let sourceViewEl: HTMLElement | null = null
 			let contentEl: HTMLElement | null = null
+			// Settings is a mode of the open editor, not a sibling screen — the
+			// preview slot stays mounted so the live App keeps running underneath.
+			let settings = false
+			let settingsMeta: ProjectMeta | null = null
 
 			const displayName = () => view.name || view.slug || ''
 
@@ -328,6 +332,26 @@ export const gui = defineGUI<CodeApp>({
 			window.addEventListener('pointerdown', onDocPointerDown, true)
 			window.addEventListener('keydown', onDocKey, true)
 
+			// Load the manifest first, then flip to settings in one patch — no blank
+			// flash, and the live preview keeps running behind the hidden shell.
+			const openSettings = () => {
+				if (settings) return
+				void ctx.client
+					.readMeta({})
+					.then((meta) => {
+						if (!live) return
+						settingsMeta = meta
+						settings = true
+						patch()
+					})
+					.catch((err) => live && alert(messageOf(err)))
+			}
+			const closeSettings = () => {
+				settings = false
+				settingsMeta = null
+				patch()
+			}
+
 			const props = (): EditorScreenProps => {
 				const badge = STATUS[statusOf(view, running)]
 				return {
@@ -336,6 +360,11 @@ export const gui = defineGUI<CodeApp>({
 					code,
 					badge,
 					name: displayName(),
+					settings,
+					settingsMeta,
+					client: ctx.client,
+					onSettings: openSettings,
+					onCloseSettings: closeSettings,
 					localDirty,
 					split,
 					menuView,
@@ -493,6 +522,11 @@ type EditorScreenProps = {
 	code: Editor
 	badge: { label: string; className: string }
 	name: string
+	settings: boolean
+	settingsMeta: ProjectMeta | null
+	client: Client<CodeApp>
+	onSettings: () => void
+	onCloseSettings: () => void
 	localDirty: boolean
 	split: number
 	menuView: MenuView
@@ -530,141 +564,166 @@ function EditorScreen(props: EditorScreenProps) {
 	const build = props.view.build
 
 	return (
-		<div className="app-code-shell">
-			<div className="app-code-toolbar">
-				<div className="app-code-toolbar-side">
-					<LinkButton label="‹ Projects" onClick={props.onBack} />
-					<button
-						type="button"
-						onClick={props.onToggleCode}
-						className="app-code-code-toggle"
-						data-active={showCode ? 'true' : undefined}
-					>
-						{'</> Code'}
-					</button>
-					<div className="app-code-name-label">{props.name}</div>
-				</div>
-				<div className={`app-code-state-label ${props.badge.className}`}>● {props.badge.label}</div>
-				<div className="app-code-right-group">
-					<ShipButton
-						label={props.packLabel}
-						disabled={props.shipping}
-						primary={false}
-						onClick={props.onPack}
-					/>
-					<ShipButton
-						label={props.installLabel}
-						disabled={props.shipping}
-						primary
-						onClick={props.onInstall}
-					/>
-				</div>
-			</div>
-
-			<div ref={props.setContent} className="app-code-content">
-				<div
-					ref={props.setSourceView}
-					className="app-code-source-view"
-					hidden={!showCode}
-					style={{ width: `${props.split * 100}%` }}
-				>
-					<div className="app-code-tab-bar">
-						<div className="app-code-tabs-scroll">
-							{props.view.files.map((path) => (
-								<TabButton
-									key={path}
-									path={path}
-									active={path === props.view.selectedPath}
-									dirty={props.localDirty && path === props.view.selectedPath}
-									onSelect={props.onSelectPath}
-								/>
-							))}
-						</div>
-						<IconButton label="⟳" title="Rescan project files" onClick={props.onRefresh} />
+		<>
+			<div className="app-code-shell" hidden={props.settings}>
+				<div className="app-code-toolbar">
+					<div className="app-code-toolbar-side">
+						<LinkButton label="‹ Projects" onClick={props.onBack} />
+						<button
+							type="button"
+							onClick={props.onToggleCode}
+							className="app-code-code-toggle"
+							data-active={showCode ? 'true' : undefined}
+						>
+							{'</> Code'}
+						</button>
+						<button
+							type="button"
+							onClick={props.onSettings}
+							className="app-code-code-toggle"
+							title="Project settings"
+						>
+							⚙
+						</button>
+						<div className="app-code-name-label">{props.name}</div>
 					</div>
-					<CodeMirrorHost editor={props.code} ready={ready} />
-					<pre className={`app-code-message ${fallback?.error ? 'is-error' : ''}`} hidden={ready}>
-						{fallback?.text ?? ''}
+					<div className={`app-code-state-label ${props.badge.className}`}>
+						● {props.badge.label}
+					</div>
+					<div className="app-code-right-group">
+						<ShipButton
+							label={props.packLabel}
+							disabled={props.shipping}
+							primary={false}
+							onClick={props.onPack}
+						/>
+						<ShipButton
+							label={props.installLabel}
+							disabled={props.shipping}
+							primary
+							onClick={props.onInstall}
+						/>
+					</div>
+				</div>
+
+				<div ref={props.setContent} className="app-code-content">
+					<div
+						ref={props.setSourceView}
+						className="app-code-source-view"
+						hidden={!showCode}
+						style={{ width: `${props.split * 100}%` }}
+					>
+						<div className="app-code-tab-bar">
+							<div className="app-code-tabs-scroll">
+								{props.view.files.map((path) => (
+									<TabButton
+										key={path}
+										path={path}
+										active={path === props.view.selectedPath}
+										dirty={props.localDirty && path === props.view.selectedPath}
+										onSelect={props.onSelectPath}
+									/>
+								))}
+							</div>
+							<IconButton label="⟳" title="Rescan project files" onClick={props.onRefresh} />
+						</div>
+						<CodeMirrorHost editor={props.code} ready={ready} />
+						<pre className={`app-code-message ${fallback?.error ? 'is-error' : ''}`} hidden={ready}>
+							{fallback?.text ?? ''}
+						</pre>
+					</div>
+
+					<div className="app-code-handle" hidden={!showCode} onPointerDown={props.onDrag} />
+
+					<div className="app-code-app-view">
+						<Menubar
+							name={props.name}
+							menuView={props.menuView}
+							openMenu={props.openMenu}
+							onToggle={props.onToggleMenu}
+							onEnter={props.onEnterMenu}
+							onSelect={props.onSelectMenu}
+							setRef={props.setMenubar}
+						/>
+						<div className="app-code-desktop-area">
+							<div
+								className="ds-window ds-window-framed app-code-preview-window"
+								data-focused="true"
+							>
+								<div className="ds-window-titlebar">
+									<div className="ds-window-controls">
+										<button
+											type="button"
+											className="ds-window-control ds-window-control-close"
+											aria-label="Close"
+										/>
+										<button
+											type="button"
+											className="ds-window-control ds-window-control-fullscreen"
+											aria-label="Enter fullscreen"
+										/>
+									</div>
+									<span className="ds-window-title">{props.name}</span>
+									<span className="ds-window-spacer" />
+								</div>
+								<div className="ds-window-body">
+									<div data-preview-slot="" className="app-code-preview-slot" />
+								</div>
+							</div>
+
+							<div className="ds-dock-bar">
+								<div className="ds-dock" role="toolbar" aria-label="Dock">
+									<button
+										type="button"
+										className="ds-dock-item"
+										data-editable="true"
+										title="Set app icon"
+										onClick={() => iconInput.current?.click()}
+									>
+										<span className="ds-dock-icon">
+											<img alt="" src={props.iconUrl ?? ICON_PLACEHOLDER} />
+										</span>
+										<span className="ds-dock-indicator" data-running="true" />
+									</button>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<div className="app-code-bottom-bar" hidden={!build}>
+					<div
+						className={`app-code-build-message ${build?.result === 'ok' ? 'is-ok' : 'is-error'}`}
+					>
+						{build?.message ?? ''}
+					</div>
+					<pre className="app-code-diagnostics" hidden={!build || build.diagnostics.length === 0}>
+						{build?.diagnostics.join('\n') ?? ''}
 					</pre>
 				</div>
 
-				<div className="app-code-handle" hidden={!showCode} onPointerDown={props.onDrag} />
-
-				<div className="app-code-app-view">
-					<Menubar
-						name={props.name}
-						menuView={props.menuView}
-						openMenu={props.openMenu}
-						onToggle={props.onToggleMenu}
-						onEnter={props.onEnterMenu}
-						onSelect={props.onSelectMenu}
-						setRef={props.setMenubar}
-					/>
-					<div className="app-code-desktop-area">
-						<div className="ds-window ds-window-framed app-code-preview-window" data-focused="true">
-							<div className="ds-window-titlebar">
-								<div className="ds-window-controls">
-									<button
-										type="button"
-										className="ds-window-control ds-window-control-close"
-										aria-label="Close"
-									/>
-									<button
-										type="button"
-										className="ds-window-control ds-window-control-fullscreen"
-										aria-label="Enter fullscreen"
-									/>
-								</div>
-								<span className="ds-window-title">{props.name}</span>
-								<span className="ds-window-spacer" />
-							</div>
-							<div className="ds-window-body">
-								<div data-preview-slot="" className="app-code-preview-slot" />
-							</div>
-						</div>
-
-						<div className="ds-dock-bar">
-							<div className="ds-dock" role="toolbar" aria-label="Dock">
-								<button
-									type="button"
-									className="ds-dock-item"
-									data-editable="true"
-									title="Set app icon"
-									onClick={() => iconInput.current?.click()}
-								>
-									<span className="ds-dock-icon">
-										<img alt="" src={props.iconUrl ?? ICON_PLACEHOLDER} />
-									</span>
-									<span className="ds-dock-indicator" data-running="true" />
-								</button>
-							</div>
-						</div>
-					</div>
-				</div>
+				<input
+					ref={iconInput}
+					type="file"
+					accept="image/*"
+					className="app-code-hidden-input"
+					onChange={(event) => {
+						const input = event.currentTarget
+						const file = input.files?.[0]
+						input.value = ''
+						if (file) props.onIconFile(file)
+					}}
+				/>
 			</div>
-
-			<div className="app-code-bottom-bar" hidden={!build}>
-				<div className={`app-code-build-message ${build?.result === 'ok' ? 'is-ok' : 'is-error'}`}>
-					{build?.message ?? ''}
-				</div>
-				<pre className="app-code-diagnostics" hidden={!build || build.diagnostics.length === 0}>
-					{build?.diagnostics.join('\n') ?? ''}
-				</pre>
-			</div>
-
-			<input
-				ref={iconInput}
-				type="file"
-				accept="image/*"
-				className="app-code-hidden-input"
-				onChange={(event) => {
-					const input = event.currentTarget
-					const file = input.files?.[0]
-					input.value = ''
-					if (file) props.onIconFile(file)
-				}}
-			/>
-		</div>
+			{props.settings && props.settingsMeta ? (
+				<SettingsScreen
+					client={props.client}
+					slug={props.view.slug ?? ''}
+					meta={props.settingsMeta}
+					onClose={props.onCloseSettings}
+				/>
+			) : null}
+		</>
 	)
 }
 
@@ -883,6 +942,68 @@ function NewProjectScreen(props: {
 	)
 }
 
+function SettingsScreen(props: {
+	client: Client<CodeApp>
+	slug: string
+	meta: ProjectMeta
+	onClose: () => void
+}) {
+	const [name, setName] = useState(props.meta.name)
+	const [version, setVersion] = useState(props.meta.version ?? '')
+	const [description, setDescription] = useState(props.meta.description ?? '')
+	const [error, setError] = useState('')
+	const [saving, setSaving] = useState(false)
+
+	const submit = async (event: FormEvent) => {
+		event.preventDefault()
+		const projectName = name.trim()
+		setError('')
+		if (!projectName) {
+			setError('Name is required.')
+			return
+		}
+		setSaving(true)
+		try {
+			await props.client.saveMeta({
+				name: projectName,
+				version: version.trim() || undefined,
+				description: description.trim() || undefined
+			})
+			props.onClose()
+		} catch (err) {
+			setSaving(false)
+			setError(messageOf(err))
+		}
+	}
+
+	return (
+		<ScreenWrap>
+			<form onSubmit={submit}>
+				<div className="app-code-gallery-head">
+					<LinkButton label="‹ Cancel" onClick={props.onClose} />
+					<div className="app-code-form-title">Project Settings</div>
+					<PrimaryButton label="Save" type="submit" disabled={saving} />
+				</div>
+				<TextField label="Name" value={name} onChange={setName} />
+				<TextField label="Bundle Identifier (fixed)" value={props.slug} readOnly>
+					<div className="app-code-hint">Set once at creation · the folder is the id.</div>
+				</TextField>
+				<TextField label="Version (optional)" value={version} onChange={setVersion} />
+				<label className="app-code-field">
+					<span className="app-code-field-label">Description (optional)</span>
+					<textarea
+						value={description}
+						onChange={(event) => setDescription(event.currentTarget.value)}
+						rows={3}
+						className="app-code-textarea"
+					/>
+				</label>
+				<div className="app-code-form-error">{error}</div>
+			</form>
+		</ScreenWrap>
+	)
+}
+
 function ScreenWrap({ children }: { children: ReactNode }) {
 	return (
 		<div className="app-code-screen-outer">
@@ -894,7 +1015,8 @@ function ScreenWrap({ children }: { children: ReactNode }) {
 function TextField(props: {
 	label: string
 	value: string
-	onChange: (value: string) => void
+	onChange?: (value: string) => void
+	readOnly?: boolean
 	children?: ReactNode
 	inputRef?: { current: HTMLInputElement | null }
 }) {
@@ -905,7 +1027,8 @@ function TextField(props: {
 				ref={props.inputRef}
 				type="text"
 				value={props.value}
-				onChange={(event) => props.onChange(event.currentTarget.value)}
+				readOnly={props.readOnly ?? !props.onChange}
+				onChange={(event) => props.onChange?.(event.currentTarget.value)}
 				className="app-code-input"
 			/>
 			{props.children}

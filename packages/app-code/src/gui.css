@@ -462,7 +462,8 @@
 	margin-bottom: 6px;
 }
 
-.app-code-input {
+.app-code-input,
+.app-code-textarea {
 	width: 100%;
 	font: inherit;
 	font-size: 14px;
@@ -472,6 +473,15 @@
 	background: #ffffff;
 	color: #1d1d1f;
 	box-sizing: border-box;
+}
+
+.app-code-textarea {
+	resize: vertical;
+}
+
+.app-code-input[readonly] {
+	background: #f5f5f7;
+	color: #6e6e73;
 }
 
 .app-code-hint {
@@ -489,6 +499,7 @@
 }
 
 .app-code-hidden-input,
+.app-code-shell[hidden],
 .app-code-source-view[hidden],
 .app-code-handle[hidden],
 .app-code-bottom-bar[hidden],
