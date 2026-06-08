@@ -16,47 +16,50 @@ import * as v from 'valibot'
 
 export const app = defineApp({
 	init: { count: 0 },
-	actions: (b) => ({
-		increment: b.handler({
-			description: 'Increase the counter.',
-			schema: v.object({ amount: v.number() }),
-			handler: ({ amount }, ctx) => ({ count: ctx.state.count + amount })
-		})
+	update: (t) => ({
+		increment: t.on(
+			v.object({ amount: v.number() }),
+			(state, { amount }) => ({ count: state.count + amount }),
+			{ description: 'Increase the counter.' }
+		)
 	})
 })
-
-export type CounterApp = typeof app
 ```
 
-Action schemas use Standard Schema-compatible validators. Handler return values become the next persisted app state.
+Action schemas use Standard Schema-compatible validators. Transition return values become the next persisted app state.
 
 ## GUI
 
-```ts
-import { defineGUI } from '@justfiles/app/browser'
-import type { CounterApp } from './app'
+For a React `gui.tsx`/`gui.jsx` entry, default-export a component. `kernelHost()` wraps it with the host lifecycle and injects typed props:
 
-export const gui = defineGUI<CounterApp>({
-	mount(el, state, ctx) {
-		const button = document.createElement('button')
-		const render = (s: { count: number } | null) => {
-			button.textContent = `count: ${s?.count ?? 0}`
-		}
-		render(state)
-		button.onclick = () => void ctx.client.increment({ amount: 1 })
-		el.append(button)
+```tsx
+import type { GUIProps } from '@justfiles/app/react'
+import type { app } from './app'
 
-		return {
-			update: render,
-			unmount() {
-				el.replaceChildren()
-			}
-		}
-	}
-})
+export default function Counter({ state, actions }: GUIProps<typeof app>) {
+	return (
+		<button type="button" onClick={() => void actions.increment({ amount: 1 })}>
+			count: {state.count}
+		</button>
+	)
+}
 ```
 
-`defineGUI` injects a typed client and subscribes to state updates through the host transport.
+Optional menus are a named export:
+
+```tsx
+import type { GUIMenu } from '@justfiles/app/react'
+import type { app } from './app'
+
+export const menu: GUIMenu<typeof app> = (state, actions) => [
+	{
+		title: 'Count',
+		items: [{ title: 'Increment', onSelect: () => void actions.increment({ amount: 1 }) }]
+	}
+]
+```
+
+`defineGUI` from `@justfiles/app/browser` remains the low-level escape hatch for non-React or custom lifecycle GUIs.
 
 ## Build
 
@@ -71,7 +74,7 @@ export default defineConfig({
 			name: 'Counter',
 			description: 'A tiny counter app.',
 			app: 'src/app.ts',
-			gui: 'src/gui.ts'
+			gui: 'src/gui.tsx'
 		})
 	]
 })
@@ -90,7 +93,8 @@ import { ai } from '@justfiles/app/capabilities/ai'
 ## Exports
 
 - `@justfiles/app` — platform-agnostic author SDK plus runtime types.
-- `@justfiles/app/browser` — browser GUI SDK.
+- `@justfiles/app/browser` — low-level browser GUI SDK.
+- `@justfiles/app/react` — React GUI adapter and prop types.
 - `@justfiles/app/runtime` — kernel runtime host API.
 - `@justfiles/app/vite` — Vite build/dev plugin.
 - `@justfiles/app/capabilities/*` — capability contracts and broker helpers.

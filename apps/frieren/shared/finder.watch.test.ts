@@ -23,6 +23,7 @@ const sandbox: GetSandbox = async ({ code }) => {
 	const mod = await import(`data:text/javascript,${encodeURIComponent(code)}`)
 	return {
 		run: (message, ctx) => mod.app.dispatch(message, ctx),
+		initialState: async () => mod.app.initialState,
 		actions: async () => mod.app.actions ?? {},
 		capabilities: async () => mod.app.capabilities ?? {},
 		runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle),

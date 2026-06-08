@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { dirname, extname, join, resolve } from 'node:path'
+import { dirname, extname, join, relative, resolve } from 'node:path'
 import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { buildSync } from 'esbuild'
@@ -27,6 +27,7 @@ function sandboxFor(): GetSandbox {
 		if (typeof mod.app !== 'object') throw new Error('app module must export an object named "app"')
 		return {
 			run: (action, ctx) => mod.app.dispatch(action, ctx),
+			initialState: async () => mod.app.initialState,
 			actions: async () => mod.app.actions ?? {},
 			capabilities: async () => mod.app.capabilities ?? {},
 			runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle),
@@ -35,13 +36,39 @@ function sandboxFor(): GetSandbox {
 	}
 }
 
-const compile = (entry: string) => {
+const reactGuiEntry = (
+	gui: string,
+	hasMenu: boolean
+) => `import Component${hasMenu ? ', { menu }' : ''} from ${JSON.stringify(gui)}
+import { defineReactGUI } from '@justfiles/app/react'
+
+export const gui = defineReactGUI(Component${hasMenu ? ', { menu }' : ''})
+`
+
+const isReactGuiEntry = (entry: string) => /\.[jt]sx$/.test(entry)
+const hasNamedExport = (source: string, name: string) =>
+	new RegExp(`export\\s+(const|let|var|function|class)\\s+${name}\\b`).test(source) ||
+	new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`).test(source)
+const rel = (root: string, path: string) => `./${relative(root, path).split('\\').join('/')}`
+
+const compile = (entry: string, opts?: { root: string }) => {
+	const source = readFileSync(entry, 'utf8')
+	const wrapReactGui = opts && isReactGuiEntry(entry) && !hasNamedExport(source, 'gui')
 	const output = buildSync({
-		entryPoints: [entry],
-		absWorkingDir: dirname(entry),
+		...(wrapReactGui
+			? {
+					stdin: {
+						contents: reactGuiEntry(rel(opts.root, entry), hasNamedExport(source, 'menu')),
+						resolveDir: opts.root,
+						sourcefile: 'react-gui-entry.js',
+						loader: 'js' as const
+					}
+				}
+			: { entryPoints: [entry], absWorkingDir: dirname(entry) }),
 		bundle: true,
 		write: false,
-		format: 'esm'
+		format: 'esm',
+		jsx: 'automatic'
 	}).outputFiles[0]
 	if (!output) throw new Error(`failed to compile ${entry}`)
 	return output.text
@@ -191,7 +218,7 @@ export async function createDevServer(
 			version: opts.version,
 			icon: opts.icon,
 			app: compile(resolve(root, opts.app)),
-			gui: compile(resolve(root, opts.gui)),
+			gui: compile(resolve(root, opts.gui), { root }),
 			assets: publicAssets(resolve(root, 'public'))
 		})
 	)
@@ -205,14 +232,17 @@ export async function createDevServer(
 				res.end(page(opts.name))
 				return
 			}
+			if (path === '/_state') {
+				res.setHeader('content-type', 'application/json')
+				res.end(JSON.stringify(await k.state(appId)))
+				return
+			}
 			if (path === '/_subscribe') {
 				res.setHeader('content-type', 'text/event-stream')
 				res.setHeader('cache-control', 'no-cache')
 				res.setHeader('connection', 'keep-alive')
 				const send = (state: unknown) => res.write(`data: ${JSON.stringify(state)}\n\n`)
-				// Snapshot first so the GUI reconciles immediately; an
-				// app that never dispatched has no state — the GUI keeps
-				// the bootstrap state it mounted with until the first push.
+				// Snapshot first so reconnecting subscribers reconcile immediately.
 				const initial = await k.state(appId)
 				if (initial !== undefined) send(initial)
 				const off = k.subscribe((e) => {

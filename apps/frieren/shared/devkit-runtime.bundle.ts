@@ -9,7 +9,15 @@ import { build } from 'esbuild'
 // compile hermetically with no node_modules in the browser. React is NOT here:
 // it stays external and resolves through the page importmap so the preview
 // shares the one host React instance.
-const LIBS = ['@justfiles/app', '@justfiles/app/browser', 'valibot']
+const EXTERNAL = [
+	'react',
+	'react-dom',
+	'react-dom/client',
+	'react/jsx-runtime',
+	'react/jsx-dev-runtime'
+]
+
+const LIBS = ['@justfiles/app', '@justfiles/app/browser', '@justfiles/app/react', 'valibot']
 
 export async function buildRuntime(): Promise<Record<string, string>> {
 	const require = createRequire(import.meta.url)
@@ -31,7 +39,8 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 			bundle: true,
 			write: false,
 			format: 'esm',
-			platform: 'browser'
+			platform: 'browser',
+			external: EXTERNAL
 		})
 		runtime[spec] = result.outputFiles[0].text
 	}

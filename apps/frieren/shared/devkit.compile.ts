@@ -29,6 +29,7 @@ export interface CompileEntries {
 
 const VFS = 'devkit-vfs'
 const RUNTIME = 'devkit-runtime'
+const REACT_GUI_ENTRY = '__react_gui_entry.ts'
 const EXTERNAL = [
 	'react',
 	'react-dom',
@@ -44,7 +45,7 @@ export async function compile(
 	runtime: Record<string, string>
 ): Promise<CompileResult> {
 	const diagnostics: string[] = []
-	const one = async (entry: string): Promise<string> => {
+	const one = async (entry: string, sources = files): Promise<string> => {
 		try {
 			const result = await build({
 				entryPoints: [entry],
@@ -54,7 +55,7 @@ export async function compile(
 				external: EXTERNAL,
 				jsx: 'automatic',
 				logLevel: 'silent',
-				plugins: [vfs(files, runtime)]
+				plugins: [vfs(sources, runtime)]
 			})
 			return result.outputFiles?.[0]?.text ?? ''
 		} catch (error) {
@@ -66,8 +67,42 @@ export async function compile(
 	if (!present(entries.app)) diagnostics.push(`missing entry: ${entries.app}`)
 	if (entries.gui && !present(entries.gui)) diagnostics.push(`missing entry: ${entries.gui}`)
 	const app = present(entries.app) ? await one(entries.app) : ''
-	const gui = present(entries.gui) ? await one(entries.gui) : ''
+	let gui = ''
+	if (present(entries.gui)) {
+		const guiSource = files[entries.gui] ?? ''
+		const wrapReactGui = shouldWrapReactGui(entries.gui, guiSource)
+		const sources = wrapReactGui
+			? {
+					...files,
+					[REACT_GUI_ENTRY]: reactGuiEntry(entries.gui, hasNamedExport(guiSource, 'menu'))
+				}
+			: files
+		gui = await one(wrapReactGui ? REACT_GUI_ENTRY : entries.gui, sources)
+	}
 	return { app, gui, diagnostics }
+}
+
+function reactGuiEntry(gui: string, hasMenu: boolean): string {
+	return `import Component${hasMenu ? ', { menu }' : ''} from ${JSON.stringify(`./${gui}`)}
+import { defineReactGUI } from '@justfiles/app/react'
+
+export const gui = defineReactGUI(Component${hasMenu ? ', { menu }' : ''})
+`
+}
+
+function isReactGuiEntry(entry: string): boolean {
+	return /\.[jt]sx$/.test(entry)
+}
+
+function hasNamedExport(source: string, name: string): boolean {
+	return (
+		new RegExp(`export\\s+(const|let|var|function|class)\\s+${name}\\b`).test(source) ||
+		new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`).test(source)
+	)
+}
+
+function shouldWrapReactGui(entry: string, source: string): boolean {
+	return isReactGuiEntry(entry) && !hasNamedExport(source, 'gui')
 }
 
 function vfs(files: Record<string, string>, runtime: Record<string, string>): Plugin {

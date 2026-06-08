@@ -11,5 +11,3 @@ export const app = defineApp({
 		)
 	})
 })
-
-export type ExampleApp = typeof app

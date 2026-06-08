@@ -13,6 +13,7 @@ const ENTRY = `import { WorkerEntrypoint } from 'cloudflare:workers'
 import { app } from './app.js'
 export default class extends WorkerEntrypoint {
 	dispatch(action, ctx) { return app.dispatch(action, ctx) }
+	initialState() { return app.initialState }
 	actions() { return app.actions ?? {} }
 	capabilities() { return app.capabilities ?? {} }
 	runProcedure(name, params, handle) { return app.runProcedure(name, params, handle) }
@@ -30,6 +31,7 @@ async function cacheKey(code: string): Promise<string> {
 
 type Dispatcher = {
 	dispatch: Sandbox['run']
+	initialState?: Sandbox['initialState']
 	actions?: Sandbox['actions']
 	capabilities?: Sandbox['capabilities']
 	runProcedure: NonNullable<Sandbox['runProcedure']>
@@ -64,6 +66,7 @@ export function workerSandbox(loader: Loader): GetSandbox {
 		// invoke); the isolate emits only data, so no callback rides in `ctx`.
 		return {
 			run: (action, ctx) => entry.dispatch(action, ctx),
+			initialState: () => entry.initialState?.() ?? Promise.resolve(undefined),
 			actions: () => entry.actions?.() ?? Promise.resolve({}),
 			capabilities: () => entry.capabilities?.() ?? Promise.resolve({}),
 			subscriptions: (state) => entry.subscriptions?.(state) ?? Promise.resolve([]),

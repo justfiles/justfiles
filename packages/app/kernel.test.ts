@@ -29,6 +29,7 @@ function sandboxFor(): GetSandbox {
 
 		return {
 			run: async (action, ctx) => await app.dispatch(action, ctx),
+			initialState: async () => app.initialState,
 			actions: async () => app.actions ?? {},
 			capabilities: async () => app.capabilities ?? {},
 			runProcedure: (name, params, handle) => app.runProcedure(name, params, handle)
@@ -96,6 +97,7 @@ test('smoke test kernel', async () => {
 	expect(await k.actions(appId)).toMatchObject({
 		increment: { schemaHint: { amount: 'number' } }
 	})
+	expect(await k.state(appId)).toEqual({ count: 0 })
 
 	let result = await k.dispatch(appId, {
 		type: 'increment',

@@ -94,6 +94,29 @@ export const gui = defineGUI({
 		expect(gui).toMatch(/from\s*"react\/jsx-runtime"/)
 	})
 
+	test('wraps a default React component gui.tsx as the app GUI', async () => {
+		const guiTsx = `import type { GUIProps, GUIMenu } from '@justfiles/app/react'
+import type { app } from './app'
+export const menu: GUIMenu<typeof app> = (state, actions) => [
+	{ title: 'Count', items: [{ title: String(state.count), onSelect: () => void actions.increment({}) }] }
+]
+export default function Counter({ state, actions }: GUIProps<typeof app>) {
+	return <button onClick={() => void actions.increment({})}>{state.count}</button>
+}`
+		const { gui, diagnostics } = await compile(
+			{ 'app.ts': APP, 'gui.tsx': guiTsx },
+			{ app: 'app.ts', gui: 'gui.tsx' },
+			esbuild.build,
+			runtime
+		)
+		expect(diagnostics).toEqual([])
+		expect(gui).toMatch(/from\s*"react"/)
+		expect(gui).toMatch(/from\s*"react-dom\/client"/)
+		expect(gui).toMatch(/from\s*"react\/jsx-runtime"/)
+		expect(gui).toContain('menu')
+		expect(gui).not.toContain('initialState')
+	})
+
 	test('reports diagnostics on a compile error', async () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': 'export const app = (', 'gui.ts': GUI },

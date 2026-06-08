@@ -43,6 +43,7 @@ export function browserSandbox(): GetSandbox {
 		const worker = await workerFor(key, code)
 		appWorkers.set(appId, key)
 		return {
+			initialState: () => worker.request('initialState', {}),
 			// The reduce is pure: only the current state crosses to the worker, and
 			// the edge returns its next state + command data (no host callback).
 			run: (action, ctx) =>
@@ -125,7 +126,13 @@ class WorkerClient {
 	}
 
 	request(
-		type: 'dispatch' | 'actions' | 'capabilities' | 'subscriptions' | 'runProcedure',
+		type:
+			| 'dispatch'
+			| 'initialState'
+			| 'actions'
+			| 'capabilities'
+			| 'subscriptions'
+			| 'runProcedure',
 		payload: object,
 		services?: { handle?: RawAppHandle }
 	): Promise<unknown> {
@@ -214,6 +221,10 @@ self.onmessage = async (event) => {
 		return
 	}
 	try {
+		if (msg.type === 'initialState') {
+			self.postMessage({ type: 'result', id: msg.id, result: app.initialState })
+			return
+		}
 		if (msg.type === 'actions') {
 			self.postMessage({ type: 'result', id: msg.id, result: app.actions ?? {} })
 			return

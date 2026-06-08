@@ -189,11 +189,10 @@ function subscribeState(stage: Stage): Transport['subscribe'] {
 	}
 }
 
-// Mount the app's GUI into its stage with `null` state, so it can render its
-// own bootstrap UI (spinner, empty list) before the transport delivers the
-// first snapshot. Shared by both boot paths.
-function mountGui(stage: Stage, mod: GuiModule, transport: Transport): void {
-	stage.instance = mod.gui.mount(stage.mountEl, null, {
+// Mount the app's GUI into its stage with the kernel snapshot. For a never-run
+// app, `kernel.state()` resolves to the reducer's initial state.
+function mountGui(stage: Stage, mod: GuiModule, transport: Transport, state: unknown): void {
+	stage.instance = mod.gui.mount(stage.mountEl, state, {
 		transport,
 		setMenu: (menu) => {
 			if (stage.cancelled) return
@@ -249,13 +248,12 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		subscribe: subscribeState(stage)
 	}
 
-	mountGui(stage, mod, transport)
-	// Snapshot first, then subscribe for subsequent local dispatches, then
+	// Snapshot first, then mount/subscribe for subsequent local dispatches, then
 	// release the queued mount-time dispatches. In 2a this browser is the only
 	// writer to the local kernel, so no agent update can race the snapshot.
-	const snapshot = await kernel.state(stage.id).catch(() => undefined)
+	const snapshot = await kernel.state(stage.id).catch(() => null)
 	if (stage.cancelled) return
-	pushState(stage, snapshot ?? null)
+	mountGui(stage, mod, transport, snapshot)
 	stage.unsubscribe = kernel.subscribe((event) => {
 		if (event.type === 'app.update' && event.appId === stage.id) pushState(stage, event.state)
 	})

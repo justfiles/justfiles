@@ -24,6 +24,7 @@ const sandbox: GetSandbox = async ({ code }) => {
 	const mod = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 	return {
 		run: (message, ctx) => mod.app.dispatch(message, ctx),
+		initialState: async () => mod.app.initialState,
 		actions: async () => mod.app.actions ?? {},
 		capabilities: async () => mod.app.capabilities ?? {},
 		runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle)
@@ -65,7 +66,7 @@ test('a read procedure returns a capability value to the caller, not into state'
 	expect(await k.dispatch(appId, { type: 'readFile', params: { path: '/a.txt' } })).toBe('hello')
 	// A read procedure never persists — no state push, state stays at init.
 	expect(updates).toEqual([])
-	expect(await k.state(appId)).toBeUndefined()
+	expect(await k.state(appId)).toEqual({ files: [], loading: false, error: null })
 })
 
 test('a procedure drives the reducer (dispatch + settled) and reports by value', async () => {

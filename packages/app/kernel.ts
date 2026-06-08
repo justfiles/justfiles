@@ -49,6 +49,7 @@ export type GetSandbox = (input: { appId: string; code: string }) => Promise<San
 
 export type Sandbox = {
 	run(message: Message, ctx: RuntimeContext): Promise<DispatchResult<unknown>>
+	initialState?(): Promise<unknown>
 	actions?(): Promise<Record<string, ActionMeta>>
 	// Declared capabilities (local name → { id, scopes }). The kernel reads
 	// these to attach trusted scopes; mirrors `actions()` as a bundle accessor.
@@ -78,7 +79,7 @@ export interface Kernel {
 	// every `app.update` event. This is the quiescence primitive procedures
 	// (later phases) wait on; the GUI never calls it.
 	settled: (appId: AppId, seq: number, opts?: { timeout?: number }) => Promise<unknown>
-	state: (appId: AppId) => Promise<unknown> // current persisted state (for push snapshots)
+	state: (appId: AppId) => Promise<unknown> // current persisted state, or the app initial state
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher
@@ -395,7 +396,12 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		// restart, so warm the app's streams from persisted state (Part D). Fire and
 		// forget — the snapshot itself doesn't depend on the streams being live yet.
 		subs.ensure(appId)
-		return states.current(appId)
+		const current = await states.current(appId)
+		return current === undefined ? await initialState(appId) : current
+	}
+
+	async function initialState(appId: AppId): Promise<unknown> {
+		return (await loadSandbox(appId)).initialState?.()
 	}
 
 	async function actions(appId: AppId): Promise<Record<string, ActionMeta>> {

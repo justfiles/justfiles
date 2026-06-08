@@ -7,6 +7,10 @@ import { app, type CoreState, initialState } from './test-bundle/core.ts'
 // minimal ctx — capabilities are never touched, so the seam is absent.
 const ctx = (state: CoreState): RuntimeContext<CoreState> => ({ state })
 
+test('app exposes its initial state', () => {
+	expect(app.initialState).toEqual(initialState)
+})
+
 test('public edge validates input, updates state, and emits a command', async () => {
 	const out = await app.dispatch({ type: 'refresh', params: {} }, ctx(initialState))
 	expect(out.state).toEqual({ files: [], loading: true, error: null })

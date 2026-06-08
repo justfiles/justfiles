@@ -128,49 +128,16 @@ export const app = defineApp({
 		)
 	})
 })
-
-export type CounterApp = typeof app
 `
 
-const starterGui = `import type { Client } from '@justfiles/app'
-import { defineGUI } from '@justfiles/app/browser'
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import type { CounterApp, CounterState } from './app'
+const starterGui = `import type { GUIProps } from '@justfiles/app/react'
+import type { app } from './app'
 
-const stateOrInitial = (state: CounterState | null): CounterState => state ?? { count: 0 }
-
-export const gui = defineGUI<CounterApp>({
-	mount(el, state, ctx) {
-		const root = createRoot(el)
-		const render = (next: CounterState | null) =>
-			root.render(
-				<StrictMode>
-					<Counter state={stateOrInitial(next)} client={ctx.client} />
-				</StrictMode>
-			)
-		render(state)
-		return { update: render, unmount: () => root.unmount() }
-	},
-	// Declared menus show in the preview window's menubar and run against the live
-	// app. 'Even' reflects state — it re-checks as the count changes.
-	menu: (state, client) => [
-		{
-			title: 'Count',
-			items: [
-				{ title: 'Increment', shortcut: '⌘I', onSelect: () => void client.increment({ amount: 1 }) },
-				{ separator: true },
-				{ title: 'Even', checked: (state?.count ?? 0) % 2 === 0, disabled: true, onSelect: () => {} }
-			]
-		}
-	]
-})
-
-function Counter({ state, client }: { state: CounterState; client: Client<CounterApp> }) {
+export default function Counter({ state, actions }: GUIProps<typeof app>) {
 	return (
 		<button
 			type="button"
-			onClick={() => void client.increment({ amount: 1 })}
+			onClick={() => void actions.increment({ amount: 1 })}
 			style={{
 				border: 0,
 				borderRadius: 8,

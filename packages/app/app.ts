@@ -276,6 +276,9 @@ export interface App<
 	Procs extends ProcedureDefs<State, Caps> = NoProcedures,
 	Edges_ extends Record<string, Edge<State>> = Record<string, never>
 > {
+	// The reducer's bootstrap state. GUI adapters use this to render a non-null
+	// initial frame before the host has any persisted state to push.
+	readonly initialState: State
 	// Public surface as runtime meta: public edges (kind 'handler') AND
 	// procedures (kind 'procedure'). The kernel routes a dispatch by name here.
 	actions: Record<string, ActionMeta>

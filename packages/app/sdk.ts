@@ -180,6 +180,7 @@ export function defineApp<
 		}
 	}
 	return {
+		initialState: spec.init,
 		actions: meta,
 		capabilities: declaredCapabilities,
 		// The boot/warm path: the kernel asks for the streams a persisted state

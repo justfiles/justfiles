@@ -24,6 +24,20 @@ const DEV_STYLE_CSS = `/@fs/${new URL('./dev-server.css', import.meta.url).pathn
 // Only bare specifiers + type-only imports here: the config loader
 // externalizes this plugin and resolves it with native Node, which can't
 // load relative TypeScript siblings (./dev-server goes via ssrLoadModule).
+const reactGuiEntry = (
+	gui: string,
+	hasMenu: boolean
+) => `import Component${hasMenu ? ', { menu }' : ''} from ${JSON.stringify(gui)}
+import { defineReactGUI } from '@justfiles/app/react'
+
+export const gui = defineReactGUI(Component${hasMenu ? ', { menu }' : ''})
+`
+
+const isReactGuiEntry = (entry: string) => /\.[jt]sx$/.test(entry)
+const hasNamedExport = (source: string, name: string) =>
+	new RegExp(`export\\s+(const|let|var|function|class)\\s+${name}\\b`).test(source) ||
+	new RegExp(`export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`).test(source)
+
 const compile = (entry: string) => {
 	const output = buildSync({
 		entryPoints: [entry],
@@ -87,6 +101,12 @@ function emitBuiltinBundle(out: string, manifest: AppManifest): void {
 
 export function kernelHost(opts: DevServerOptions): PluginOption[] {
 	const root = process.cwd()
+	const appEntry = resolve(root, opts.app)
+	const guiEntry = resolve(root, opts.gui)
+	const guiSource = readFileSync(guiEntry, 'utf8')
+	const wrapReactGui = isReactGuiEntry(guiEntry) && !hasNamedExport(guiSource, 'gui')
+	const hasMenu = hasNamedExport(guiSource, 'menu')
+	const reactGuiEntryPath = resolve(root, 'node_modules/.cache/justfiles-app/react-gui-entry.js')
 	let emitted = false
 	return [
 		...tailwindcss(),
@@ -94,6 +114,10 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 			name: 'kernel-host',
 			config(_, env) {
 				if (env.command === 'serve') return { appType: 'custom' }
+				if (wrapReactGui) {
+					mkdirSync(dirname(reactGuiEntryPath), { recursive: true })
+					writeFileSync(reactGuiEntryPath, reactGuiEntry(guiEntry, hasMenu))
+				}
 				return {
 					base: './',
 					build: {
@@ -102,7 +126,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 						// Library mode: preserve the entry's `export { gui }` (an app
 						// build tree-shakes it away — the sdk is sideEffects:false).
 						lib: {
-							entry: resolve(root, opts.gui),
+							entry: wrapReactGui ? reactGuiEntryPath : guiEntry,
 							formats: ['es'],
 							fileName: () => 'gui.js'
 						},
@@ -143,7 +167,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				emitted = true
 				const out = resolve(root, 'dist')
 				mkdirSync(out, { recursive: true })
-				writeFileSync(resolve(out, 'app.js'), compile(resolve(root, opts.app)))
+				writeFileSync(resolve(out, 'app.js'), compile(appEntry))
 				const manifest: AppManifest = {
 					id: opts.id,
 					name: opts.name,

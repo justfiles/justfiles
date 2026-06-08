@@ -91,6 +91,7 @@
 		<script type="module">
 			import { gui } from '/app.js'
 
+			const state = await fetch('/_state').then((r) => r.json())
 			const transport = {
 				invoke: (action) =>
 					fetch('/_dispatch', {
@@ -107,9 +108,7 @@
 					return () => es.close()
 				}
 			}
-			// Mount with `null` — the app's GUI renders its initial state
-			// until the host pushes the first frame via subscribe.
-			gui.mount(document.getElementById('app'), null, { transport })
+			gui.mount(document.getElementById('app'), state, { transport })
 		</script>
 	</body>
 </html>
