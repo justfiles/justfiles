@@ -21,6 +21,10 @@ function createLauncher(): BrowserWindow {
 		skipTaskbar: true,
 		resizable: false,
 		roundedCorners: true,
+		// macOS nonactivating NSPanel: takes keystrokes without activating our
+		// agent, so summoning shows on the *current* Space instead of yanking
+		// focus to the launcher's home Space (Sol/Raycast/Spotlight behaviour).
+		...(process.platform === 'darwin' ? { type: 'panel' } : {}),
 		...(process.platform === 'linux' ? { icon } : {}),
 		webPreferences: {
 			preload: join(__dirname, '../preload/index.js'),
