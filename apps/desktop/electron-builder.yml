@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: dsk
+appId: dev.justfiles.desktop
+productName: desktop
 directories:
   buildResources: build
 files:
@@ -20,11 +20,16 @@ nsis:
   createDesktopShortcut: always
 mac:
   entitlementsInherit: build/entitlements.mac.plist
+  # extendInfo must be a map; electron-builder silently ignores the sequence
+  # form the scaffold generated (the keys never reach Info.plist).
   extendInfo:
-    - NSCameraUsageDescription: Application requests access to the device's camera.
-    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
-    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
-    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+    # Run as a background agent: no Dock icon, no app-switcher entry. Without
+    # this the packaged app flashes a Dock icon before app.dock.hide() runs.
+    LSUIElement: true
+    NSCameraUsageDescription: Application requests access to the device's camera.
+    NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
   artifactName: ${name}-${version}.${ext}

@@ -1,5 +1,34 @@
 # desktop — notes
 
+## electron-builder `extendInfo` must be a map, not a sequence (silent no-op)
+
+The `pnpm create @quick-start/electron` scaffold writes `mac.extendInfo` as a
+YAML **sequence** of single-key maps:
+
+```yaml
+extendInfo:
+  - NSCameraUsageDescription: ...
+```
+
+electron-builder silently ignores it — the keys never reach `Info.plist`. The
+camera/microphone strings that *appear* in the built plist are Electron's own
+built-in defaults (different wording), so it looks like it worked until you add
+a key with no default (e.g. `LSUIElement`) and find it missing. Fix: make it a
+**map**:
+
+```yaml
+extendInfo:
+  LSUIElement: true
+  NSCameraUsageDescription: ...
+```
+
+Verify post-build:
+`/usr/libexec/PlistBuddy -c "Print :LSUIElement" dist/mac-arm64/desktop.app/Contents/Info.plist`.
+
+`LSUIElement: true` is what makes the packaged app a real background agent
+(`lsappinfo` → `ApplicationType="UIElement"`); `app.dock.hide()` alone still
+flashes a Dock icon at launch. Output dir is `dist/`, not `out/`.
+
 ## Electron binary fails to install on Node >= 24.16 (silent)
 
 **Symptom:** `pnpm dev` throws `Error: Electron uninstall` from electron-vite.

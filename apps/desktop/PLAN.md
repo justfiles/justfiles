@@ -191,15 +191,28 @@ file:// loads, no Dock icon, hotkey works).
 
 ```sh
 cd apps/desktop
-pnpm build           # electron-vite build
-pnpm exec electron-builder --dir   # produces a .app bundle, no installer
-open out/mac-arm64/desktop.app     # or whatever the output path is
+pnpm build                          # typecheck + electron-vite build
+pnpm exec electron-builder --dir    # produces a .app bundle, no installer
+open dist/mac-arm64/desktop.app     # output dir is dist/, not out/
 ```
 
-**Verify:** the bundled `.app` launches as a background agent (no Dock icon),
-`Option+Space` toggles the launcher, clicking an item opens a blank named
-window. Gatekeeper will warn — that's expected unsigned; right-click → Open
-to bypass for local testing. Signing/notarisation is a later slice.
+Set the production identity before building (was scaffold placeholders):
+`appId: dev.justfiles.desktop`, `productName: desktop`, and — the key change —
+`mac.extendInfo.LSUIElement: true` so the bundle is a true background agent
+(no Dock-icon flash before `app.dock.hide()` runs). See NOTES.md for the
+`extendInfo`-must-be-a-map gotcha that silently dropped these.
+
+**Verify:** the bundled `.app` launches as a background agent
+(`lsappinfo info -app dev.justfiles.desktop` → `ApplicationType="UIElement"`,
+confirmed), `Option+Space` toggles the launcher, clicking an item opens a blank
+named window. If unsigned, Gatekeeper warns — right-click → Open to bypass;
+here it signed automatically with the local Developer ID. Notarisation is a
+later slice.
+
+> Hotkey/window check is manual: this machine's automation host lacks Screen
+> Recording (can't read the window list or screenshot) and synthetic events
+> don't reach Electron's Carbon global shortcut, so press `Option+Space`
+> yourself to confirm. Everything else above is verified programmatically.
 
 ---
 
