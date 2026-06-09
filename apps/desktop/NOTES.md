@@ -35,3 +35,46 @@ short-circuit with "Already up to date" and skip re-resolving the override).
 E=node_modules/.pnpm/electron@*/node_modules/electron
 rm -rf $E/dist $E/path.txt && node $E/install.js
 ```
+
+## Launcher window: plain BrowserWindow vs. nonactivating NSPanel
+
+The launcher is modelled on [ospfranco/sol](https://github.com/ospfranco/sol),
+whose panel is a native macOS `NSPanel` with the `.nonactivatingPanel` style
+mask. A plain Electron `BrowserWindow` reproduces most of that behaviour, but
+not the nonactivating part. We use a plain `BrowserWindow` and stay dep-free.
+
+What the plain `BrowserWindow` already gives us (no deps):
+
+- Floats over fullscreen apps and on every Space
+  (`setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })`).
+- Hides on blur and on Escape; closes the moment an app is launched.
+- Frameless, transparent, vibrancy panel that resizes to fit its content.
+
+The one gap: when summoned, the launcher **activates our (dock-hidden) agent and
+deactivates whatever app you were just in**. Sol avoids this with a
+nonactivating `NSPanel`, which in Electron needs a native addon such as
+[`electron-panel-window`](https://github.com/yvbeek/electron-panel-window).
+
+### Without the addon — plain BrowserWindow (current choice)
+
+- **Pros:** zero dependencies (matches the minimal-deps rule); no native build
+  step or extra electron-builder wiring; one code path that also works on
+  Win/Linux (panels are macOS-only); less to break on Electron upgrades.
+- **Cons:** summoning steals focus — the previously focused app is deactivated,
+  so its caret/selection/inline state is lost while the launcher is open; the
+  foreground app dims behind the panel, so it's slightly less Spotlight-like.
+
+### With the addon — nonactivating NSPanel (`electron-panel-window`)
+
+- **Pros:** full Spotlight/Raycast/Sol parity — takes keystrokes **without**
+  deactivating the app underneath, so your cursor/selection stays put; more
+  robust "floats above everything" via the real panel window level.
+- **Cons:** a native macOS addon rebuilt against Electron's ABI and bundled
+  through electron-builder's native-module handling (more packaging surface);
+  macOS-only, so the code forks for Win/Linux; one more dependency to track for
+  security and Electron-upgrade breakage, against the minimal-deps rule.
+
+### Decision
+
+Keep the plain `BrowserWindow`. Revisit the addon only if focus-stealing on
+summon becomes an actual annoyance in daily use.

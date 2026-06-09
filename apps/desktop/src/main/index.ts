@@ -3,12 +3,15 @@ import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, shell } from 'electron'
 import icon from '../../resources/icon.png?asset'
 
+const LAUNCHER_WIDTH = 600
+
 let launcherWin: BrowserWindow | null = null
 
 function createLauncher(): BrowserWindow {
 	const win = new BrowserWindow({
-		width: 600,
-		height: 400,
+		width: LAUNCHER_WIDTH,
+		height: 64,
+		useContentSize: true,
 		show: false,
 		frame: false,
 		transparent: true,
@@ -28,6 +31,16 @@ function createLauncher(): BrowserWindow {
 	win.webContents.setWindowOpenHandler((details) => {
 		shell.openExternal(details.url)
 		return { action: 'deny' }
+	})
+
+	// Sol-style panel behaviour: float on every Space, even over fullscreen
+	// apps, and dismiss the moment it loses focus or on Escape (Spotlight UX).
+	win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+	win.on('blur', () => {
+		if (!win.webContents.isDevToolsOpened()) win.hide()
+	})
+	win.webContents.on('before-input-event', (_e, input) => {
+		if (input.key === 'Escape') win.hide()
 	})
 
 	// HMR for renderer based on electron-vite cli.
@@ -62,6 +75,30 @@ function toggleLauncher(): void {
 	}
 }
 
+// Open a chosen app in its own normal window. Closing it doesn't affect the
+// launcher or other app windows. The renderer branches on ?app=<name>.
+function openAppWindow(name: string): void {
+	const win = new BrowserWindow({
+		width: 800,
+		height: 600,
+		title: name,
+		show: false,
+		...(process.platform === 'linux' ? { icon } : {}),
+		webPreferences: {
+			preload: join(__dirname, '../preload/index.js'),
+			sandbox: false
+		}
+	})
+
+	win.on('ready-to-show', () => win.show())
+
+	if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+		win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?app=${encodeURIComponent(name)}`)
+	} else {
+		win.loadFile(join(__dirname, '../renderer/index.html'), { query: { app: name } })
+	}
+}
+
 app.whenReady().then(() => {
 	electronApp.setAppUserModelId('com.electron')
 
@@ -72,7 +109,17 @@ app.whenReady().then(() => {
 		optimizer.watchWindowShortcuts(window)
 	})
 
-	ipcMain.on('ping', () => console.log('pong'))
+	ipcMain.on('launcher:open-app', (_e, name: string) => {
+		openAppWindow(name)
+		// Dismiss the launcher once an app is chosen, like Spotlight.
+		launcherWin?.hide()
+	})
+
+	// The renderer reports its content height so the window fits like Raycast.
+	ipcMain.on('launcher:resize', (e, height: number) => {
+		if (!launcherWin || e.sender !== launcherWin.webContents) return
+		launcherWin.setContentSize(LAUNCHER_WIDTH, Math.max(1, Math.ceil(height)))
+	})
 
 	if (!globalShortcut.register('Alt+Space', toggleLauncher)) {
 		console.warn('Failed to register Alt+Space global shortcut')
