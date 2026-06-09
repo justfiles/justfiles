@@ -1,7 +1,7 @@
+import { buildRuntime } from '@justfiles/app/devkit-runtime'
 import type { Plugin } from 'vite'
-import { buildRuntime } from './shared/devkit-runtime.bundle.ts'
 
-// Exposes the pre-bundled devkit system libraries (see devkit-runtime.bundle)
+// Exposes the pre-bundled devkit system libraries (`@justfiles/app/devkit-runtime`)
 // as `import { runtime } from 'virtual:devkit-runtime'`. The browser devkit
 // compiler imports this lazily, so the bundled stdlib only loads when an app
 // actually compiles a draft.

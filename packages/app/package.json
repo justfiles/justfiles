@@ -10,6 +10,8 @@
 		"./react-entry": "./react-entry.ts",
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
+		"./devkit": "./devkit.ts",
+		"./devkit-runtime": "./devkit-runtime.ts",
 		"./builtins": "./builtins.ts",
 		"./capabilities": "./capabilities/index.ts",
 		"./capabilities/broker": "./capabilities/broker.ts",
@@ -52,6 +54,14 @@
 			"./dev-server": {
 				"types": "./dist/dev-server.d.ts",
 				"default": "./dist/dev-server.js"
+			},
+			"./devkit": {
+				"types": "./dist/devkit.d.ts",
+				"default": "./dist/devkit.js"
+			},
+			"./devkit-runtime": {
+				"types": "./dist/devkit-runtime.d.ts",
+				"default": "./dist/devkit-runtime.js"
 			},
 			"./builtins": {
 				"types": "./dist/builtins.d.ts",
