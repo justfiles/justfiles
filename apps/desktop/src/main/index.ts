@@ -37,9 +37,8 @@ function createLauncher(): BrowserWindow {
 		return { action: 'deny' }
 	})
 
-	// Sol-style panel behaviour: float on every Space, even over fullscreen
-	// apps, and dismiss the moment it loses focus or on Escape (Spotlight UX).
-	win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+	// Sol-style panel behaviour: dismiss the moment it loses focus or on Escape
+	// (Spotlight UX). Cross-Space visibility is (re-)applied in showLauncher.
 	win.on('blur', () => {
 		if (!win.webContents.isDevToolsOpened()) win.hide()
 	})
@@ -67,8 +66,15 @@ function showLauncher(): void {
 		Math.round(workArea.x + (workArea.width - w) / 2),
 		Math.round(workArea.y + (workArea.height - h) / 3)
 	)
+	// Re-stamp collectionBehavior on every show: macOS drops it after some
+	// Space/display transitions, which otherwise pins the panel to one Space and
+	// yanks focus back to it on summon (electron#8734).
+	launcherWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+	// show() makes the nonactivating panel key (renderer autofocuses its input on
+	// the DOM focus event) WITHOUT calling focus(): focus() runs
+	// activateIgnoringOtherApps, which activates the whole app and yanks macOS to
+	// the Space of the app's frontmost ordinary window — the actual Space jump.
 	launcherWin.show()
-	launcherWin.focus()
 }
 
 function toggleLauncher(): void {
