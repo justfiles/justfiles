@@ -1,4 +1,4 @@
-import type { Command, CommandResult } from '../../bash/registry.ts'
+import type { Command, CommandResult } from '@justfiles/agent'
 import type { EmailAddress, EmailDetails, EmailSummary, JmapClient } from './jmap.ts'
 
 const HELP = [

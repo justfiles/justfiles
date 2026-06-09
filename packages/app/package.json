@@ -10,11 +10,15 @@
 		"./react-entry": "./react-entry.ts",
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
+		"./devkit": "./devkit.ts",
+		"./devkit-runtime": "./devkit-runtime.ts",
+		"./builtins": "./builtins.ts",
 		"./capabilities": "./capabilities/index.ts",
 		"./capabilities/broker": "./capabilities/broker.ts",
 		"./capabilities/email": "./capabilities/email/index.ts",
 		"./capabilities/calendar": "./capabilities/calendar/index.ts",
 		"./capabilities/volume": "./capabilities/volume/index.ts",
+		"./capabilities/volume/host": "./capabilities/volume/host.ts",
 		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
 		"./capabilities/integrations": "./capabilities/integrations/index.ts"
@@ -51,6 +55,18 @@
 				"types": "./dist/dev-server.d.ts",
 				"default": "./dist/dev-server.js"
 			},
+			"./devkit": {
+				"types": "./dist/devkit.d.ts",
+				"default": "./dist/devkit.js"
+			},
+			"./devkit-runtime": {
+				"types": "./dist/devkit-runtime.d.ts",
+				"default": "./dist/devkit-runtime.js"
+			},
+			"./builtins": {
+				"types": "./dist/builtins.d.ts",
+				"default": "./dist/builtins.js"
+			},
 			"./capabilities": {
 				"types": "./dist/capabilities/index.d.ts",
 				"default": "./dist/capabilities/index.js"
@@ -70,6 +86,10 @@
 			"./capabilities/volume": {
 				"types": "./dist/capabilities/volume/index.d.ts",
 				"default": "./dist/capabilities/volume/index.js"
+			},
+			"./capabilities/volume/host": {
+				"types": "./dist/capabilities/volume/host.d.ts",
+				"default": "./dist/capabilities/volume/host.js"
 			},
 			"./capabilities/devkit": {
 				"types": "./dist/capabilities/devkit/index.d.ts",
@@ -124,6 +144,7 @@
 		"@standard-schema/spec": "^1.1.0",
 		"@tailwindcss/vite": "^4.3.0",
 		"capnweb": "^0.8.0",
+		"fflate": "^0.8.3",
 		"tailwindcss": "^4.3.0"
 	}
 }

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import type { Catalog, CatalogApp } from '@justfiles/app/builtins'
 import type { Plugin } from 'vite'
-import { CATALOG_SCHEMA, type Catalog, type CatalogApp } from './shared/appstore.ts'
+import { CATALOG_SCHEMA } from './shared/appstore.ts'
 
 // Built-in app packages, by workspace dir. Their `dist` (built by the monorepo
 // before frieren — they're workspace deps) is the source of truth; we copy the

@@ -1,7 +1,7 @@
+import { CommandRegistry } from '@justfiles/agent'
 import type { CapabilityCall } from '@justfiles/app/capabilities'
 import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
-import { CommandRegistry } from './bash/registry.ts'
 import { type Integration, Integrations } from './integrations/registry.ts'
 import { ConnectionStore, type KvStorage } from './integrations/storage.ts'
 import { integrationsCapability } from './integrations.capability.ts'

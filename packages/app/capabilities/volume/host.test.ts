@@ -1,7 +1,7 @@
-import type { CapabilityCall } from '@justfiles/app/capabilities'
 import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { volumeCapability } from './volume.capability.ts'
+import type { CapabilityCall } from '../types.ts'
+import { volumeCapability } from './host.ts'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -22,7 +22,7 @@ const call = (method: string, args: unknown[], x?: Partial<CapabilityCall>): Cap
 
 function setup() {
 	const fs = volume(memStorage())
-	return { fs, cap: volumeCapability(fs) }
+	return { fs, cap: volumeCapability(fs, { systemAllowlist: ['app.trusted'] }) }
 }
 
 async function seed(fs: ReturnType<typeof volume>, path: string, body: string) {
@@ -62,7 +62,7 @@ describe('volume capability', () => {
 		const { fs, cap } = setup()
 		await seed(fs, '/outside.txt', 'top-level')
 		const data = (await cap.invoke(
-			call('readFile', ['/outside.txt'], { appId: 'app.frieren.finder', scopes: ['system'] })
+			call('readFile', ['/outside.txt'], { appId: 'app.trusted', scopes: ['system'] })
 		)) as Uint8Array
 		expect(dec.decode(data)).toBe('top-level')
 	})

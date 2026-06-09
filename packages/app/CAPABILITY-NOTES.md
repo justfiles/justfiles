@@ -39,7 +39,7 @@ export type VolumeCapability = Omit<Volume, 'watch' | 'scan'> & {
   `watch(path,listener)`) — can't cross the seam. `watch` is the Stream; `scan` re-expressed
   as a one-shot returning the listing.
 - Host impls became thin passthroughs `(ctx, ...args) => bind(ctx)[m](...args)`:
-  `apps/frieren/shared/volume.capability.ts`, `packages/app/dev-server.ts`.
+  `packages/app/capabilities/volume/host.ts`, `packages/app/dev-server.ts`.
 - Behaviour changes: `mkdir` now uses Volume default (`recursive:false`, was `true`) — pass
   `{recursive:true}` explicitly. Surface widened 7→~18 methods (adds stat/xattr/symlink/
   chmod/cp/...) — a real sandbox-scope widening to review later.
@@ -47,7 +47,7 @@ export type VolumeCapability = Omit<Volume, 'watch' | 'scan'> & {
   JSON, so volume is a LOCAL-only capability (documented in contract).
 - Consumers updated to positional: `app-code` (`volumeApi` narrowed to `VolumeApi` Pick),
   `app-paint`, `app-finder`, test-bundle apps, `kernel.test.ts` hostInvoke,
-  `volume.capability.test.ts` (positional `call(method, args[], over?)` helper).
+  `capabilities/volume/host.test.ts` (positional `call(method, args[], over?)` helper).
 
 ## FINDINGS — can the serializable constraint go away? (research, no code yet)
 

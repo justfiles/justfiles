@@ -1,11 +1,11 @@
 import * as esbuild from 'esbuild'
 import { beforeAll, describe, expect, test } from 'vitest'
-import { compile } from './devkit.compile.ts'
-import { buildRuntime } from './devkit-runtime.bundle.ts'
+import { compile } from './devkit.ts'
+import { buildRuntime } from './devkit-runtime.ts'
 
 // Exercises the real toolchain with Node esbuild standing in for esbuild-wasm
-// (same API); `buildRuntime` produces the same system-library bundles the
-// browser virtual module serves.
+// (same API); `buildRuntime` produces the same system-library bundles a browser
+// host serves as a virtual module.
 
 const APP = `import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'

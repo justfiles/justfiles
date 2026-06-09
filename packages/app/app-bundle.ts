@@ -1,6 +1,8 @@
-import { type AppBundle, type AppManifest, safeBundlePath } from '@justfiles/app'
 import { unzipSync } from 'fflate'
+import { type AppBundle, type AppManifest, safeBundlePath } from './kernel.ts'
 
+// Build an `AppBundle` from a packed `.zip` (a manifest + app/gui/icon files),
+// tolerating a single top-level wrapper directory the packer may have added.
 export function bundleFromZip(zip: Uint8Array): AppBundle {
 	const rawEntries = Object.entries(unzipSync(zip))
 	const entries = rawEntries.filter(

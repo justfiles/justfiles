@@ -1,6 +1,6 @@
+import type { SessionEntry } from '@justfiles/agent'
 import { describe, expect, test } from 'vitest'
 import { sessionEntries2DisplayMessages } from './display'
-import type { SessionEntry } from './session.manager'
 
 const ts = '2026-05-23T05:02:17.578Z'
 

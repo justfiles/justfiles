@@ -2,13 +2,17 @@ import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { build } from 'esbuild'
 
-// The system libraries the devkit compiler injects into every draft bundle —
-// the "stdlib shipped with the OS." Each is pre-bundled once (here, with Node
-// esbuild at frieren build/serve time) into a self-contained ESM module, then
-// handed to the browser `esbuild-wasm` compiler as a virtual module so drafts
-// compile hermetically with no node_modules in the browser. React is NOT here:
-// it stays external and resolves through the page importmap so the preview
-// shares the one host React instance.
+// The system libraries the devkit compiler injects into every draft bundle — the
+// "stdlib shipped with the OS." Each is pre-bundled once (here, with Node esbuild
+// — at frieren build/serve time, or in the desktop main process) into a
+// self-contained ESM module, then handed to the `compile` engine as a virtual
+// runtime so drafts compile hermetically with no node_modules. React is NOT here:
+// it stays external and resolves through the host importmap so the preview shares
+// the one host React instance.
+//
+// This is the one Node-only piece of the devkit pipeline (it imports the native
+// esbuild engine), kept in its own subpath so the browser-safe `@justfiles/app/
+// devkit` (engine-injected) never pulls native esbuild into a browser host.
 const EXTERNAL = [
 	'react',
 	'react-dom',

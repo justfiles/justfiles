@@ -1,5 +1,5 @@
+import type { Command, CommandRegistry } from '@justfiles/agent'
 import type { TSchema } from 'typebox'
-import type { Command, CommandRegistry } from '../bash/registry.ts'
 import type { AuditLog } from './audit.ts'
 import type { Coalescer } from './coalescer.ts'
 import type { TokenBucket } from './rate-limit.ts'

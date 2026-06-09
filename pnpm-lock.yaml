@@ -108,6 +108,9 @@ importers:
       '@hono/clerk-auth':
         specifier: ^3.1.1
         version: 3.1.1(hono@4.11.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@justfiles/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
@@ -441,6 +444,34 @@ importers:
         specifier: ^4.71.0
         version: 4.90.1
 
+  packages/agent:
+    dependencies:
+      '@justfiles/app':
+        specifier: workspace:*
+        version: link:../app
+      '@justfiles/fs':
+        specifier: workspace:*
+        version: link:../fs
+      '@mariozechner/pi-agent-core':
+        specifier: ^0.70.2
+        version: 0.70.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
+      '@mariozechner/pi-ai':
+        specifier: ^0.70.2
+        version: 0.70.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.1)(zod@4.4.3)
+      typebox:
+        specifier: ^1.1.33
+        version: 1.1.38
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^25.7.0
+        version: 25.7.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/app:
     dependencies:
       '@justfiles/fs':
@@ -455,6 +486,9 @@ importers:
       capnweb:
         specifier: ^0.8.0
         version: 0.8.0
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
       tailwindcss:
         specifier: ^4.3.0
         version: 4.3.0

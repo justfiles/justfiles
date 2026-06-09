@@ -1,19 +1,34 @@
 import { DurableObject } from 'cloudflare:workers'
+import {
+	CommandRegistry,
+	type CompactionSettings,
+	cp,
+	createAgent,
+	createAppCommand,
+	createBashTool,
+	createFetchTool,
+	createFsTools,
+	createNowCommand,
+	createSearchTool,
+	type LLMText,
+	mv,
+	parseFrontmatter,
+	type Runtime,
+	resolveTimezone,
+	rm,
+	runtime,
+	SOUL_GENERATION_PROMPT,
+	type SoulGenerationInput,
+	text
+} from '@justfiles/agent'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import { createAppCommand } from './bash/commands/app.ts'
-import { cp, mv, rm } from './bash/commands/fs.ts'
-import { createNowCommand } from './bash/commands/now.ts'
-import { createBashTool } from './bash/index.ts'
-import { CommandRegistry } from './bash/registry.ts'
-import type { CompactionSettings } from './compaction'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
-import { type Runtime, runtime } from './frieren.runtime'
 import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { Coalescer } from './integrations/coalescer.ts'
@@ -22,12 +37,6 @@ import { icloudCalendarIntegration } from './integrations/icloud-calendar/index.
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { Integrations } from './integrations/registry.ts'
 import { ConnectionStore } from './integrations/storage.ts'
-import { createAgent } from './llm.agent'
-import { type LLMText, text } from './llm.text'
-import { parseFrontmatter } from './markdown'
-import { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts'
-import { resolveTimezone } from './timezone'
-import { createFetchTool, createFsTools, createSearchTool } from './tools.ts'
 
 interface ClientMessage {
 	type: 'prompt' | 'abort' | 'app_open' | 'app_close'

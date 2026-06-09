@@ -1,4 +1,6 @@
-import { type AppBundle, type Kernel, kernel, safeBundlePath } from '@justfiles/app'
+import type { AppController, LLMText } from '@justfiles/agent'
+import { type AppBundle, bundleFromZip, type Kernel, kernel, safeBundlePath } from '@justfiles/app'
+import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
 import {
 	type Capabilities,
 	type Capability,
@@ -7,16 +9,13 @@ import {
 	serveCapabilitiesRpc,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
-import { bundleFromZip } from '../shared/app-bundle.ts'
-import { appFileUrl, CATALOG_PATH, type Catalog, reconcileBuiltins } from '../shared/appstore.ts'
-import { volumeCapability } from '../shared/volume.capability.ts'
+import { appFileUrl, CATALOG_PATH } from '../shared/appstore.ts'
 import { aiCapability } from './ai.capability.ts'
-import type { AppController } from './bash/commands/app.ts'
 import type { Integrations } from './integrations/registry.ts'
 import { integrationsCapability } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
-import type { LLMText } from './llm.text.ts'
 
 interface DisplayApp {
 	readonly id: string
@@ -89,7 +88,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 	}
 	const capabilities: Capabilities = capabilityRegistry({
-		volume: volumeCapability(deps.fs),
+		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.frieren.finder'] }),
 		ai,
 		integrations
 	})
