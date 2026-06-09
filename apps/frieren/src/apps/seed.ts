@@ -1,6 +1,7 @@
 import type { Kernel } from '@justfiles/app'
+import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
 import type { Volume } from '@justfiles/fs'
-import { appFileUrl, CATALOG_PATH, type Catalog, reconcileBuiltins } from '../../shared/appstore'
+import { appFileUrl, CATALOG_PATH } from '../../shared/appstore'
 
 // Seed built-in apps into a LOCAL-ONLY profile's volume from the public
 // `/appstore` assets (PWA-precached), so a signed-out / offline desktop has apps

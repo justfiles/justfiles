@@ -1,7 +1,7 @@
-import type { AppBundle, AppManifest, Kernel } from '@justfiles/app'
 import type { Volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { CATALOG_SCHEMA, type Catalog, reconcileBuiltins } from './appstore'
+import { type Catalog, reconcileBuiltins } from './builtins.ts'
+import type { AppBundle, AppManifest, Kernel } from './kernel.ts'
 
 const enc = new TextEncoder()
 
@@ -32,7 +32,7 @@ async function buildCatalog(
 		}))
 	)
 	const catalog: Catalog = {
-		schema: CATALOG_SCHEMA,
+		schema: 'test/catalog/v1',
 		apps: [{ id: 'app.x', name: 'X', version: '1.0.0', icon: 'icon.svg', files: fileList }]
 	}
 	const read = async (_app: { id: string }, path: string) => enc.encode(files[path] ?? '')

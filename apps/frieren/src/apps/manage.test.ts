@@ -1,8 +1,9 @@
 import { type GetSandbox, kernel } from '@justfiles/app'
+import { type Catalog, disabledMarker } from '@justfiles/app/builtins'
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { zipSync } from 'fflate'
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { CATALOG_SCHEMA, type Catalog, disabledMarker } from '../../shared/appstore'
+import { CATALOG_SCHEMA } from '../../shared/appstore'
 import { installZipApp, uninstallLocalApp } from './manage'
 
 const enc = new TextEncoder()

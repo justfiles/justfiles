@@ -7,9 +7,9 @@ import {
 	proxyCapabilitiesRpc,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
-import { volumeCapability } from '../../shared/volume.capability.ts'
 import { flushActiveVolume } from '../fs.ts'
 
 type GetToken = () => Promise<string | null>
@@ -20,7 +20,10 @@ type GetToken = () => Promise<string | null>
 // hand-written invoke/stream routers.
 export function clientCapabilities(fs: Volume, getToken: GetToken): Capabilities {
 	return capabilityRegistry(
-		{ volume: volumeCapability(fs), devkit: devkitCapability(fs, getToken) },
+		{
+			volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }),
+			devkit: devkitCapability(fs, getToken)
+		},
 		{ fallback: networkFallback(getToken) }
 	)
 }

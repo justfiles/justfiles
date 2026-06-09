@@ -1,6 +1,6 @@
-import type { Kernel } from '@justfiles/app'
-import { bundleFromZip } from '../../shared/app-bundle'
-import { CATALOG_PATH, type Catalog, disabledMarker } from '../../shared/appstore'
+import { bundleFromZip, type Kernel } from '@justfiles/app'
+import { type Catalog, disabledMarker } from '@justfiles/app/builtins'
+import { CATALOG_PATH } from '../../shared/appstore'
 import type { Volume } from '../fs'
 
 const enc = new TextEncoder()

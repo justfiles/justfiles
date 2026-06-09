@@ -1,3 +1,4 @@
+export { bundleFromZip } from './app-bundle.ts'
 export {
 	type ActionMeta,
 	type AppBundle,

@@ -1,9 +1,9 @@
 import { appBundleFromMemory, type GetSandbox, kernel } from '@justfiles/app'
 import { type Capability, capabilityRegistry } from '@justfiles/app/capabilities'
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { memStorage, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
-import { volumeCapability } from './volume.capability.ts'
 
 // Slice 11 acceptance — the subscribe path end to end, through the REAL pieces:
 // the finder bundle declaring `volume.watch` over its open file, the package
@@ -67,7 +67,7 @@ test('finder watches the open file: one fileChanged per write, stops on clear', 
 	const fs = volume(memStorage())
 	await fs.writeFile('/notes.txt', enc.encode('hello'))
 
-	const v = probe(volumeCapability(fs))
+	const v = probe(volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }))
 	const k = kernel({ fs, sandbox, clock: {}, capabilities: capabilityRegistry({ volume: v.cap }) })
 	// Finder declares the `system` scope, allowlisted only for `app.frieren.finder`.
 	const id = await k.install(

@@ -1,7 +1,7 @@
 import { type CapabilityCall, capabilityRegistry } from '@justfiles/app/capabilities'
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { volumeCapability } from '../shared/volume.capability.ts'
 import { aiCapability } from './ai.capability.ts'
 import type { LLMText } from './llm.text.ts'
 
