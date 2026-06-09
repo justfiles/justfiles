@@ -46,12 +46,12 @@ flags are the reference. When in doubt, match Sol.
 
 Researched in chat 2026-06-09. Summary:
 
-| Option | Verdict |
-|---|---|
-| **Electron Forge (Vite template)** | Official, all-in-one, but Vite plugin still marked **experimental** in v7.5+. Pulls many `@electron-forge/*` packages. Heavier than we need. |
+| Option                                          | Verdict                                                                                                                                                                                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Electron Forge (Vite template)**              | Official, all-in-one, but Vite plugin still marked **experimental** in v7.5+. Pulls many `@electron-forge/*` packages. Heavier than we need.                                                                                                    |
 | **electron-vite (alex8088) + electron-builder** | **Chosen.** Two devDeps. Stable v5. Endorsed by the Vite team. Clean main/preload/renderer split. Reuses the Vite stack the monorepo already runs (`frieren`, `app-*`, `@tailwindcss/vite`). Multi-entry support fits the per-app-window model. |
-| **vite-plugin-electron** | A Vite plugin to bolt Electron onto an existing Vite app. We want the inverse — Electron-first with Vite inside — so skip. |
-| **electron-builder** | De-facto packager. More popular than Forge's makers, has `electron-updater` baked in for later. Standalone, no opinion on dev server. |
+| **vite-plugin-electron**                        | A Vite plugin to bolt Electron onto an existing Vite app. We want the inverse — Electron-first with Vite inside — so skip.                                                                                                                      |
+| **electron-builder**                            | De-facto packager. More popular than Forge's makers, has `electron-updater` baked in for later. Standalone, no opinion on dev server.                                                                                                           |
 
 ### pnpm monorepo gotchas (known, addressable)
 
@@ -79,8 +79,9 @@ launcherWin.show()` so it stays visible while iterating.
 ## Slice 1 — Scaffold via CLI
 
 **Goal:** a clean `apps/desktop` directory containing the electron-vite React
-+ TS scaffold, building and running with `pnpm dev` from inside the app dir.
-No customisation yet.
+
+- TS scaffold, building and running with `pnpm dev` from inside the app dir.
+  No customisation yet.
 
 **Steps** (run from repo root unless noted):
 
