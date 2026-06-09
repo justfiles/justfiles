@@ -1,5 +1,5 @@
-import type { Command, CommandResult } from '../../bash/registry.ts'
-import { DEFAULT_TIMEZONE, isoToTimezone } from '../../timezone.ts'
+import type { Command, CommandResult } from '@justfiles/agent'
+import { DEFAULT_TIMEZONE, isoToTimezone } from '@justfiles/agent'
 import type { CalDavClient, CreateEventInput } from './caldav.ts'
 
 const HELP = [

@@ -1,4 +1,4 @@
-import type { SessionEntry } from './session.manager'
+import type { SessionEntry } from '@justfiles/agent'
 
 export interface DisplayToolCall {
 	name: string

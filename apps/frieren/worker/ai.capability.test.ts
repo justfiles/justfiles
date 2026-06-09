@@ -1,9 +1,9 @@
+import type { LLMText } from '@justfiles/agent'
 import { type CapabilityCall, capabilityRegistry } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import { aiCapability } from './ai.capability.ts'
-import type { LLMText } from './llm.text.ts'
 
 const call = (capability: string, method: string, input: unknown): CapabilityCall => ({
 	appId: 'app',

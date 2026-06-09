@@ -1,7 +1,6 @@
+import { CommandRegistry, defineCommand } from '@justfiles/agent'
 import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
-import { defineCommand } from '../bash/define.ts'
-import { CommandRegistry } from '../bash/registry.ts'
 import { integrationRoutes } from './api.ts'
 import { type Integration, Integrations } from './registry.ts'
 import { ConnectionStore, type KvStorage } from './storage.ts'

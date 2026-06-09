@@ -1,6 +1,6 @@
+import type { LLMText } from '@justfiles/agent'
 import { CapabilityError, implementCapability } from '@justfiles/app/capabilities'
 import { ai } from '@justfiles/app/capabilities/ai'
-import type { LLMText } from './llm.text.ts'
 
 // Host-side `ai` capability — one unit over the LLM text service. The isolate's
 // `input` is untrusted, so a missing/non-string prompt is rejected as

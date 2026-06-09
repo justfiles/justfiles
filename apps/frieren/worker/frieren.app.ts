@@ -1,3 +1,4 @@
+import type { AppController, LLMText } from '@justfiles/agent'
 import { type AppBundle, bundleFromZip, type Kernel, kernel, safeBundlePath } from '@justfiles/app'
 import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
 import {
@@ -12,11 +13,9 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { appFileUrl, CATALOG_PATH } from '../shared/appstore.ts'
 import { aiCapability } from './ai.capability.ts'
-import type { AppController } from './bash/commands/app.ts'
 import type { Integrations } from './integrations/registry.ts'
 import { integrationsCapability } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
-import type { LLMText } from './llm.text.ts'
 
 interface DisplayApp {
 	readonly id: string

@@ -4,9 +4,9 @@ import { Agent, type AgentTool } from '@mariozechner/pi-agent-core'
 import { type AssistantMessage, createAssistantMessageEventStream } from '@mariozechner/pi-ai'
 import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
-import { runtime } from './frieren.runtime'
-import type { LLMText } from './llm.text'
-import { systemPrompt } from './prompts'
+import type { LLMText } from './llm.text.ts'
+import { systemPrompt } from './prompts.ts'
+import { runtime } from './runtime.ts'
 
 const encoder = new TextEncoder()
 

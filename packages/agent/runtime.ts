@@ -23,13 +23,12 @@ type RuntimeProps = {
 	getTimezone?: () => Promise<string> | string
 }
 
-type FrierenEvent = AgentEvent
-type FrierenEventListener = (event: FrierenEvent, signal: AbortSignal) => Promise<void> | void
+type RuntimeEventListener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void
 
 export interface Runtime {
 	prompt: (message: string, source?: 'user' | 'app') => Promise<string>
 	shutdown: () => Promise<void>
-	subscribe: (lisener: FrierenEventListener) => () => void
+	subscribe: (listener: RuntimeEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
 	consolidateMemory: (now?: Date) => Promise<void>
 	addTools: (tools: readonly AgentTool[]) => void
@@ -163,8 +162,8 @@ export async function runtime({
 		agent.state.messages = msg.map(contextMessageToAgentMessage)
 	}
 
-	function subscribe(lisener: FrierenEventListener) {
-		return agent.subscribe(lisener)
+	function subscribe(listener: RuntimeEventListener) {
+		return agent.subscribe(listener)
 	}
 
 	async function resolveSystemPrompt(): Promise<string> {
