@@ -1,4 +1,8 @@
+@import "tailwindcss";
+@import "@justfiles/design/design.css";
 @import "./base.css";
+
+@source "../../../../../../packages/app-*/src/**/*.{ts,tsx}";
 
 body {
 	min-height: 0;

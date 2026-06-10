@@ -56,6 +56,9 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
+      '@justfiles/design':
+        specifier: workspace:*
+        version: link:../../packages/design
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs
@@ -66,6 +69,9 @@ importers:
       '@electron-toolkit/tsconfig':
         specifier: ^2.0.0
         version: 2.0.0(@types/node@24.13.1)
+      '@tailwindcss/vite':
+        specifier: ^4.3.0
+        version: 4.3.0(vite@7.3.5(@types/node@24.13.1)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.47.1)(tsx@4.21.0))
       '@types/node':
         specifier: ^24.13.1
         version: 24.13.1
@@ -93,6 +99,9 @@ importers:
       react-dom:
         specifier: ^19.2.7
         version: 19.2.7(react@19.2.7)
+      tailwindcss:
+        specifier: ^4.3.0
+        version: 4.3.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -12154,6 +12163,13 @@ snapshots:
       '@tailwindcss/oxide': 4.3.0
       tailwindcss: 4.3.0
       vite: 6.4.2(@types/node@25.7.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass@1.51.0)(terser@5.47.1)(tsx@4.21.0)
+
+  '@tailwindcss/vite@4.3.0(vite@7.3.5(@types/node@24.13.1)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.47.1)(tsx@4.21.0))':
+    dependencies:
+      '@tailwindcss/node': 4.3.0
+      '@tailwindcss/oxide': 4.3.0
+      tailwindcss: 4.3.0
+      vite: 7.3.5(@types/node@24.13.1)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.47.1)(tsx@4.21.0)
 
   '@tailwindcss/vite@4.3.0(vite@8.0.12(@types/node@25.7.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0))':
     dependencies:
