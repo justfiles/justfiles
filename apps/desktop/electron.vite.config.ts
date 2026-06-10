@@ -20,7 +20,13 @@ export default defineConfig({
 			}
 		}
 	},
-	preload: {},
+	preload: {
+		// A sandboxed preload (`sandbox: true`) can only `require` electron + a few
+		// built-ins, so leaving node_modules deps as externals (the default) makes
+		// `require('@electron-toolkit/preload')` throw and `window.api` never gets
+		// exposed. Bundle them in instead — per electron-vite's sandbox guidance.
+		build: { externalizeDeps: false }
+	},
 	renderer: {
 		resolve: {
 			alias: {
