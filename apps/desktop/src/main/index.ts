@@ -9,6 +9,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen, shell } from 'electron'
 import icon from '../../resources/icon.png?asset'
+import { createDesktopAgent, type DesktopAgent } from './agent'
 import { desktopBuiltinCatalog, readDesktopBuiltin } from './builtins'
 import { nodeSandbox } from './nodeSandbox'
 
@@ -22,10 +23,12 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 let launcherWin: BrowserWindow | null = null
+let focusedAppId: string | null = null
 const appWindows = new Map<number, { appId: string; win: BrowserWindow }>()
-let hostPromise: Promise<{ fs: Volume; kernel: Kernel }> | null = null
+const agentWindows = new Set<BrowserWindow>()
+let hostPromise: Promise<{ fs: Volume; kernel: Kernel; agent: DesktopAgent }> | null = null
 
-async function getHost(): Promise<{ fs: Volume; kernel: Kernel }> {
+async function getHost(): Promise<{ fs: Volume; kernel: Kernel; agent: DesktopAgent }> {
 	if (!hostPromise) {
 		hostPromise = (async () => {
 			const root = join(app.getPath('userData'), 'volume')
@@ -47,7 +50,12 @@ async function getHost(): Promise<{ fs: Volume; kernel: Kernel }> {
 			console.info(`Volume root: ${root}`)
 			console.info(`Volume /: ${entries.map((entry) => entry.name).join(', ') || '(empty)'}`)
 			console.info(`Kernel apps: ${apps.map((entry) => entry.id).join(', ') || '(none)'}`)
-			return { fs, kernel: k }
+			const agent = await createDesktopAgent(fs, k, {
+				openApp: openAppWindow,
+				closeApp: closeAppWindow,
+				currentAppId: () => focusedAppId
+			})
+			return { fs, kernel: k, agent }
 		})()
 	}
 	return hostPromise
@@ -151,7 +159,13 @@ async function openAppWindow(id: string): Promise<void> {
 
 	const webContentsId = win.webContents.id
 	appWindows.set(webContentsId, { appId: id, win })
-	win.on('closed', () => appWindows.delete(webContentsId))
+	win.on('focus', () => {
+		focusedAppId = id
+	})
+	win.on('closed', () => {
+		appWindows.delete(webContentsId)
+		if (focusedAppId === id) focusedAppId = null
+	})
 	win.on('ready-to-show', () => win.show())
 
 	if (is.dev && process.env.ELECTRON_RENDERER_URL) {
@@ -159,6 +173,39 @@ async function openAppWindow(id: string): Promise<void> {
 	} else {
 		win.loadFile(join(__dirname, '../renderer/index.html'), { query: { appId: id } })
 	}
+}
+
+function closeAppWindow(id?: string): void {
+	for (const { appId, win } of appWindows.values()) {
+		if (id ? appId === id : win.isFocused() || appId === focusedAppId) win.close()
+	}
+}
+
+function openAgentWindow(): void {
+	const win = new BrowserWindow({
+		width: 460,
+		height: 640,
+		title: 'Agent',
+		show: false,
+		...(process.platform === 'linux' ? { icon } : {}),
+		webPreferences: {
+			preload: join(__dirname, '../preload/index.js'),
+			sandbox: false
+		}
+	})
+	agentWindows.add(win)
+	win.on('closed', () => agentWindows.delete(win))
+	win.on('ready-to-show', () => win.show())
+
+	if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+		win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?agent=1`)
+	} else {
+		win.loadFile(join(__dirname, '../renderer/index.html'), { query: { agent: '1' } })
+	}
+}
+
+function notifyAgentWindows(): void {
+	for (const win of agentWindows) win.webContents.send('agent:changed')
 }
 
 function registerAppProtocol(): void {
@@ -234,6 +281,11 @@ app.whenReady().then(async () => {
 		launcherWin?.hide()
 	})
 
+	ipcMain.on('launcher:open-agent', () => {
+		openAgentWindow()
+		launcherWin?.hide()
+	})
+
 	ipcMain.handle('kernel:list', async () => {
 		const { kernel } = await getHost()
 		return kernel.list()
@@ -252,6 +304,24 @@ app.whenReady().then(async () => {
 	ipcMain.handle('kernel:ls', async (_e, path = '/') => {
 		const { fs } = await getHost()
 		return fs.readdir(path)
+	})
+
+	ipcMain.handle('agent:history', async () => {
+		const { agent } = await getHost()
+		return agent.history()
+	})
+
+	ipcMain.handle('agent:prompt', async (_e, input: string) => {
+		const { agent } = await getHost()
+		const answer = await agent.prompt(input)
+		notifyAgentWindows()
+		return answer
+	})
+
+	ipcMain.handle('agent:abort', async () => {
+		const { agent } = await getHost()
+		await agent.abort()
+		notifyAgentWindows()
 	})
 
 	// The renderer reports its content height so the window fits like Raycast.

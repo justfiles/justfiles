@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AgentMessage } from '../../shared/agent'
 import type { LauncherApp } from '../../shared/kernel'
+
+type LauncherItem = LauncherApp | { id: '__agent'; name: 'Agent'; agent: true }
 
 type GuiModule = {
 	gui: {
@@ -25,9 +28,10 @@ function Launcher(): React.JSX.Element {
 	const inputRef = useRef<HTMLInputElement>(null)
 	const rootRef = useRef<HTMLDivElement>(null)
 
+	const items: LauncherItem[] = [{ id: '__agent', name: 'Agent', agent: true }, ...apps]
 	const matches = query
-		? apps.filter((app) => app.name.toLowerCase().includes(query.toLowerCase()))
-		: apps
+		? items.filter((app) => app.name.toLowerCase().includes(query.toLowerCase()))
+		: items
 
 	useEffect(() => {
 		void window.api.kernelList().then(setApps)
@@ -56,6 +60,11 @@ function Launcher(): React.JSX.Element {
 		return () => window.removeEventListener('focus', reset)
 	}, [])
 
+	const openItem = (item: LauncherItem): void => {
+		if ('agent' in item) window.api.openAgent()
+		else window.api.openApp(item.id)
+	}
+
 	const onKeyDown = (e: React.KeyboardEvent): void => {
 		if (e.key === 'ArrowDown') {
 			e.preventDefault()
@@ -64,7 +73,7 @@ function Launcher(): React.JSX.Element {
 			e.preventDefault()
 			setSelected((i) => Math.max(i - 1, 0))
 		} else if (e.key === 'Enter' && matches[selected]) {
-			window.api.openApp(matches[selected].id)
+			openItem(matches[selected])
 		}
 	}
 
@@ -89,13 +98,65 @@ function Launcher(): React.JSX.Element {
 							key={app.id}
 							type="button"
 							className={i === selected ? 'item selected' : 'item'}
-							onClick={() => window.api.openApp(app.id)}
+							onClick={() => openItem(app)}
 						>
 							{app.name}
 						</button>
 					))}
 				</div>
 			)}
+		</div>
+	)
+}
+
+function AgentView(): React.JSX.Element {
+	const [messages, setMessages] = useState<AgentMessage[]>([])
+	const [input, setInput] = useState('')
+	const [busy, setBusy] = useState(false)
+
+	const refresh = useCallback((): void => {
+		void window.api.agentHistory().then(setMessages)
+	}, [])
+
+	useEffect(() => {
+		refresh()
+		return window.api.agentSubscribe(refresh)
+	}, [refresh])
+
+	const submit = async (event: React.FormEvent): Promise<void> => {
+		event.preventDefault()
+		const text = input.trim()
+		if (!text || busy) return
+		setInput('')
+		setBusy(true)
+		await window.api.agentPrompt(text)
+		setBusy(false)
+		refresh()
+	}
+
+	return (
+		<div className="agent-view">
+			<div className="agent-history">
+				{messages.length === 0 ? (
+					<div className="agent-empty">Try: app list</div>
+				) : (
+					messages.map((message) => (
+						<div key={message.id} className={`agent-message ${message.role}`}>
+							{message.content}
+						</div>
+					))
+				)}
+			</div>
+			<form className="agent-form" onSubmit={submit}>
+				<input
+					value={input}
+					onChange={(event) => setInput(event.target.value)}
+					placeholder={busy ? 'Thinking…' : 'Ask or run: app list'}
+				/>
+				<button type="submit" disabled={busy || !input.trim()}>
+					Send
+				</button>
+			</form>
 		</div>
 	)
 }
@@ -136,6 +197,7 @@ function App(): React.JSX.Element {
 	const params = new URLSearchParams(window.location.search)
 	const appId = params.get('appId')
 	if (appId) return <AppWindow id={appId} />
+	if (params.get('agent')) return <AgentView />
 
 	const app = params.get('app')
 	if (app) {
