@@ -1,10 +1,13 @@
 import { electronAPI } from '@electron-toolkit/preload'
 import { contextBridge, ipcRenderer } from 'electron'
 
+type DebugDirent = { ino: string; name: string; type: number }
+
 // Custom APIs for renderer
 const api = {
 	openApp: (name: string): void => ipcRenderer.send('launcher:open-app', name),
-	resizeLauncher: (height: number): void => ipcRenderer.send('launcher:resize', height)
+	resizeLauncher: (height: number): void => ipcRenderer.send('launcher:resize', height),
+	kernelLs: (path = '/'): Promise<DebugDirent[]> => ipcRenderer.invoke('kernel:ls', path)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

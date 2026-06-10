@@ -20,7 +20,8 @@
 	},
 	"dependencies": {
 		"@electron-toolkit/preload": "^3.0.2",
-		"@electron-toolkit/utils": "^4.0.0"
+		"@electron-toolkit/utils": "^4.0.0",
+		"@justfiles/fs": "workspace:*"
 	},
 	"devDependencies": {
 		"@electron-toolkit/tsconfig": "^2.0.0",

@@ -1,11 +1,30 @@
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
+import { type Volume, volume } from '@justfiles/fs'
+import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, shell } from 'electron'
 import icon from '../../resources/icon.png?asset'
 
 const LAUNCHER_WIDTH = 600
 
 let launcherWin: BrowserWindow | null = null
+let hostFsPromise: Promise<Volume> | null = null
+
+async function getHostFs(): Promise<Volume> {
+	if (!hostFsPromise) {
+		hostFsPromise = (async () => {
+			const root = join(app.getPath('userData'), 'volume')
+			await mkdir(root, { recursive: true })
+			const fs = volume(await nativeStorage(root))
+			const entries = await fs.readdir('/')
+			console.info(`Volume root: ${root}`)
+			console.info(`Volume /: ${entries.map((entry) => entry.name).join(', ') || '(empty)'}`)
+			return fs
+		})()
+	}
+	return hostFsPromise
+}
 
 function createLauncher(): BrowserWindow {
 	const win = new BrowserWindow({
@@ -109,8 +128,9 @@ function openAppWindow(name: string): void {
 	}
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
 	electronApp.setAppUserModelId('com.electron')
+	await getHostFs()
 
 	// Run as a background agent: no Dock icon, no window on launch.
 	app.dock?.hide()
@@ -123,6 +143,11 @@ app.whenReady().then(() => {
 		openAppWindow(name)
 		// Dismiss the launcher once an app is chosen, like Spotlight.
 		launcherWin?.hide()
+	})
+
+	ipcMain.handle('kernel:ls', async (_e, path = '/') => {
+		const fs = await getHostFs()
+		return fs.readdir(path)
 	})
 
 	// The renderer reports its content height so the window fits like Raycast.
