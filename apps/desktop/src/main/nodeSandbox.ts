@@ -8,26 +8,47 @@ import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
 // only the Node transport: one worker per distinct bundle (content-addressed
 // reuse), loaded from a data: URL, with the wire glued to `parentPort`.
 
-const workers = new Map<string, Promise<Sandbox>>()
+type WorkerClient = { sandbox: Sandbox; terminate: () => void }
+
+// One worker per bundle (content hash); `appWorkers` maps an app id to its
+// current bundle key so the host can `terminateAppWorker` when the app's last
+// window closes — mirroring frieren's browserSandbox so long-running sessions
+// don't leak a live thread per bundle ever launched.
+const workers = new Map<string, WorkerClient>()
+const appWorkers = new Map<string, string>()
 
 export function nodeSandbox(): GetSandbox {
-	return async ({ code }) => workerFor(cacheKey(code), code)
+	return async ({ appId, code }) => {
+		const key = cacheKey(code)
+		appWorkers.set(appId, key)
+		return workerFor(key, code).sandbox
+	}
+}
+
+// Terminate the worker backing `appId` so its thread is reclaimed.
+export function terminateAppWorker(appId: string): void {
+	const key = appWorkers.get(appId)
+	if (!key) return
+	appWorkers.delete(appId)
+	const client = workers.get(key)
+	workers.delete(key)
+	client?.terminate()
+}
+
+function workerFor(key: string, code: string): WorkerClient {
+	let client = workers.get(key)
+	if (!client) {
+		client = createWorker(code, () => workers.delete(key))
+		workers.set(key, client)
+	}
+	return client
 }
 
 function cacheKey(code: string): string {
 	return createHash('sha256').update(code).digest('hex')
 }
 
-function workerFor(key: string, code: string): Promise<Sandbox> {
-	let sandbox = workers.get(key)
-	if (!sandbox) {
-		sandbox = Promise.resolve(createWorker(code, () => workers.delete(key)))
-		workers.set(key, sandbox)
-	}
-	return sandbox
-}
-
-function createWorker(code: string, onDead: () => void): Sandbox {
+function createWorker(code: string, onDead: () => void): WorkerClient {
 	const source = sandboxWorkerSource(dataUrl(code), 'node')
 	const worker = new Worker(new URL(dataUrl(source)))
 	const { sandbox, fail } = sandboxClient({
@@ -43,7 +64,7 @@ function createWorker(code: string, onDead: () => void): Sandbox {
 		onDead()
 		fail(new Error(`sandbox worker exited: ${exitCode}`))
 	})
-	return sandbox
+	return { sandbox, terminate: () => void worker.terminate() }
 }
 
 function dataUrl(source: string): string {

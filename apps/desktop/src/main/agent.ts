@@ -11,7 +11,6 @@ import {
 	createNowCommand,
 	createSearchTool,
 	mv,
-	type Runtime,
 	rm,
 	runtime,
 	text
@@ -51,7 +50,7 @@ export async function createDesktopAgent(
 	const fsTools = createFsTools(volume)
 	const llm = llmConfig()
 	const llmText = text(llm)
-	let rt: Runtime | null = await runtime({
+	const rt = await runtime({
 		volume,
 		agent: createAgent(llm),
 		text: llmText,
@@ -72,14 +71,7 @@ export async function createDesktopAgent(
 		messages.push({ id: crypto.randomUUID(), role: 'user', content: text })
 		let answer: string
 		try {
-			if (isDirectCommand(text)) {
-				answer = await runDirect(text)
-			} else if (rt) {
-				answer = await rt.prompt(text)
-			} else {
-				answer =
-					'Agent runtime is unavailable. Direct commands still work: app list, app launch <id>, app run --id <id> <action> key=value.'
-			}
+			answer = isDirectCommand(text) ? await runDirect(text) : await rt.prompt(text)
 		} catch (error) {
 			answer = `Agent error: ${error instanceof Error ? error.message : String(error)}`
 		}
@@ -87,9 +79,10 @@ export async function createDesktopAgent(
 		return answer
 	}
 
+	// Cancel the in-flight turn (`shutdown` only aborts the running agent), leaving
+	// the session intact so later prompts still work.
 	async function abort(): Promise<void> {
-		await rt?.shutdown()
-		rt = null
+		await rt.shutdown()
 	}
 
 	function controller(): AppController {
@@ -163,7 +156,7 @@ function isDirectCommand(input: string): boolean {
 
 type LLMConfig = Parameters<typeof createAgent>[0]
 
-function llmConfig(): LLMConfig {
+export function llmConfig(): LLMConfig {
 	return {
 		model: {
 			id: 'google/gemma-4-e4b',

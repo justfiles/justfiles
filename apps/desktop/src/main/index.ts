@@ -1,8 +1,10 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
+import { text } from '@justfiles/agent'
 import { reconcileBuiltins } from '@justfiles/app/builtins'
-import { capabilityRegistry } from '@justfiles/app/capabilities'
+import { capabilityRegistry, implementCapability } from '@justfiles/app/capabilities'
+import { ai } from '@justfiles/app/capabilities/ai'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
@@ -19,10 +21,10 @@ import {
 	type WebContentsView
 } from 'electron'
 import icon from '../../resources/icon.png?asset'
-import { createDesktopAgent, type DesktopAgent } from './agent'
+import { createDesktopAgent, type DesktopAgent, llmConfig } from './agent'
 import { desktopBuiltinCatalog, readDesktopBuiltin } from './builtins'
 import { devkitCapability } from './devkit'
-import { nodeSandbox } from './nodeSandbox'
+import { nodeSandbox, terminateAppWorker } from './nodeSandbox'
 import { createPreviewManager, preloadPath } from './preview'
 
 const LAUNCHER_WIDTH = 600
@@ -58,9 +60,17 @@ async function getHost(): Promise<Host> {
 				preload: preloadPath(__dirname),
 				load: loadAppView
 			})
+			// Back the `ai` capability with the same local model the agent uses, so a
+			// built-in that declares `ai` runs against one shared text generator.
+			const llmText = text(llmConfig())
 			const capabilities = capabilityRegistry({
 				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }),
-				devkit: devkitCapability(fs, () => k, notifyCatalog, preview)
+				devkit: devkitCapability(fs, () => k, notifyCatalog, preview),
+				ai: implementCapability(ai, {
+					generateText: async (_ctx, { system, prompt }) => ({
+						text: await llmText.gen(system ?? '', prompt)
+					})
+				})
 			})
 			k = kernel({ fs, sandbox: nodeSandbox(), capabilities, clock: {} })
 			k.subscribe((event) => {
@@ -108,7 +118,7 @@ function createLauncher(): BrowserWindow {
 		...(process.platform === 'linux' ? { icon } : {}),
 		webPreferences: {
 			preload: join(__dirname, '../preload/index.js'),
-			sandbox: false
+			sandbox: true
 		}
 	})
 
@@ -179,7 +189,7 @@ async function openAppWindow(id: string): Promise<void> {
 		...(process.platform === 'linux' ? { icon } : {}),
 		webPreferences: {
 			preload: join(__dirname, '../preload/index.js'),
-			sandbox: false
+			sandbox: true
 		}
 	})
 
@@ -191,6 +201,8 @@ async function openAppWindow(id: string): Promise<void> {
 	win.on('closed', () => {
 		appWindows.delete(webContentsId)
 		if (focusedAppId === id) focusedAppId = null
+		// Last window of this app gone — reclaim its sandbox worker thread.
+		if (![...appWindows.values()].some((w) => w.appId === id)) terminateAppWorker(id)
 	})
 	win.on('ready-to-show', () => win.show())
 
@@ -228,7 +240,7 @@ function openAgentWindow(): void {
 		...(process.platform === 'linux' ? { icon } : {}),
 		webPreferences: {
 			preload: join(__dirname, '../preload/index.js'),
-			sandbox: false
+			sandbox: true
 		}
 	})
 	agentWindows.add(win)
@@ -305,7 +317,16 @@ export const cloneElement = m.cloneElement, createContext = m.createContext, cre
 export const useActionState = m.useActionState, useCallback = m.useCallback, useContext = m.useContext, useDebugValue = m.useDebugValue, useDeferredValue = m.useDeferredValue, useEffect = m.useEffect, useId = m.useId, useImperativeHandle = m.useImperativeHandle, useInsertionEffect = m.useInsertionEffect, useLayoutEffect = m.useLayoutEffect, useMemo = m.useMemo, useOptimistic = m.useOptimistic, useReducer = m.useReducer, useRef = m.useRef, useState = m.useState, useSyncExternalStore = m.useSyncExternalStore, useTransition = m.useTransition;`
 }
 
+// Single writer: one host owns the on-disk Volume. A double-launch (or a
+// relaunch before the prior process exits) would boot a second kernel over the
+// same root and corrupt `/state` + `/applications`. The loser hands its summon
+// to the running instance instead.
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) app.quit()
+app.on('second-instance', () => showLauncher())
+
 app.whenReady().then(async () => {
+	if (!gotLock) return
 	electronApp.setAppUserModelId('com.electron')
 	await getHost()
 	registerAppProtocol()

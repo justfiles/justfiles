@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import type { DraftBuild } from '@justfiles/app/devkit'
 import { appBundleFromMemory, type Kernel } from '@justfiles/app/runtime'
 import { type BrowserWindow, type Rectangle, WebContentsView } from 'electron'
+import { terminateAppWorker } from './nodeSandbox'
 
 type PreviewRecord = {
 	ownerAppId: string
@@ -43,12 +44,17 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 		ownerAppId: string,
 		slug: string,
 		draft: DraftBuild,
-		_reset?: boolean
+		reset?: boolean
 	): Promise<{ previewId: string; diagnostics: string[] }> {
 		const previewId = `preview.${slug}`
 		if (draft.diagnostics.length === 0 && draft.app && draft.gui) {
 			const kernel = getKernel()
 			await kernel.uninstall(previewId).catch(() => {})
+			// ⟳ Run/Restart: uninstall drops the persisted `/state/<id>.json`, but a
+			// same-code rebuild reuses the content-addressed worker, which still holds
+			// the old in-memory state and re-persists it. Kill it so the next dispatch
+			// boots a fresh isolate from clean state.
+			if (reset) terminateAppWorker(previewId)
 			await kernel.install(
 				appBundleFromMemory({
 					id: previewId,
@@ -70,7 +76,7 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 				}
 				attach(preview)
 			} else {
-				const view = new WebContentsView({ webPreferences: { preload, sandbox: false } })
+				const view = new WebContentsView({ webPreferences: { preload, sandbox: true } })
 				const record: PreviewRecord = { ownerAppId, view }
 				previews.set(previewId, record)
 				load(view, previewId)
