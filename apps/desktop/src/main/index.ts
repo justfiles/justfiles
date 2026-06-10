@@ -1,29 +1,37 @@
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
+import { reconcileBuiltins } from '@justfiles/app/builtins'
+import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, shell } from 'electron'
 import icon from '../../resources/icon.png?asset'
+import { desktopBuiltinCatalog, readDesktopBuiltin } from './builtins'
+import { nodeSandbox } from './nodeSandbox'
 
 const LAUNCHER_WIDTH = 600
 
 let launcherWin: BrowserWindow | null = null
-let hostFsPromise: Promise<Volume> | null = null
+let hostPromise: Promise<{ fs: Volume; kernel: Kernel }> | null = null
 
-async function getHostFs(): Promise<Volume> {
-	if (!hostFsPromise) {
-		hostFsPromise = (async () => {
+async function getHost(): Promise<{ fs: Volume; kernel: Kernel }> {
+	if (!hostPromise) {
+		hostPromise = (async () => {
 			const root = join(app.getPath('userData'), 'volume')
 			await mkdir(root, { recursive: true })
 			const fs = volume(await nativeStorage(root))
+			const k = kernel({ fs, sandbox: nodeSandbox(), clock: {} })
+			await reconcileBuiltins(k, fs, desktopBuiltinCatalog, readDesktopBuiltin)
 			const entries = await fs.readdir('/')
+			const apps = await k.list()
 			console.info(`Volume root: ${root}`)
 			console.info(`Volume /: ${entries.map((entry) => entry.name).join(', ') || '(empty)'}`)
-			return fs
+			console.info(`Kernel apps: ${apps.map((entry) => entry.id).join(', ') || '(none)'}`)
+			return { fs, kernel: k }
 		})()
 	}
-	return hostFsPromise
+	return hostPromise
 }
 
 function createLauncher(): BrowserWindow {
@@ -106,7 +114,10 @@ function toggleLauncher(): void {
 
 // Open a chosen app in its own normal window. Closing it doesn't affect the
 // launcher or other app windows. The renderer branches on ?app=<name>.
-function openAppWindow(name: string): void {
+async function openAppWindow(id: string): Promise<void> {
+	const { kernel } = await getHost()
+	const installed = await kernel.app(id)
+	const name = installed.manifest.name
 	const win = new BrowserWindow({
 		width: 800,
 		height: 600,
@@ -130,7 +141,7 @@ function openAppWindow(name: string): void {
 
 app.whenReady().then(async () => {
 	electronApp.setAppUserModelId('com.electron')
-	await getHostFs()
+	await getHost()
 
 	// Run as a background agent: no Dock icon, no window on launch.
 	app.dock?.hide()
@@ -139,14 +150,19 @@ app.whenReady().then(async () => {
 		optimizer.watchWindowShortcuts(window)
 	})
 
-	ipcMain.on('launcher:open-app', (_e, name: string) => {
-		openAppWindow(name)
+	ipcMain.on('launcher:open-app', (_e, id: string) => {
+		void openAppWindow(id)
 		// Dismiss the launcher once an app is chosen, like Spotlight.
 		launcherWin?.hide()
 	})
 
+	ipcMain.handle('kernel:list', async () => {
+		const { kernel } = await getHost()
+		return kernel.list()
+	})
+
 	ipcMain.handle('kernel:ls', async (_e, path = '/') => {
-		const fs = await getHostFs()
+		const { fs } = await getHost()
 		return fs.readdir(path)
 	})
 

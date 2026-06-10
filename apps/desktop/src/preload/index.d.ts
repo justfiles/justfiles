@@ -1,13 +1,13 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-
-type DebugDirent = { ino: string; name: string; type: number }
+import type { DebugDirent, LauncherApp } from '../shared/kernel'
 
 declare global {
 	interface Window {
 		electron: ElectronAPI
 		api: {
-			openApp: (name: string) => void
+			openApp: (id: string) => void
 			resizeLauncher: (height: number) => void
+			kernelList: () => Promise<LauncherApp[]>
 			kernelLs: (path?: string) => Promise<DebugDirent[]>
 		}
 	}

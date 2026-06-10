@@ -1,12 +1,12 @@
 import { electronAPI } from '@electron-toolkit/preload'
 import { contextBridge, ipcRenderer } from 'electron'
-
-type DebugDirent = { ino: string; name: string; type: number }
+import type { DebugDirent, LauncherApp } from '../shared/kernel'
 
 // Custom APIs for renderer
 const api = {
-	openApp: (name: string): void => ipcRenderer.send('launcher:open-app', name),
+	openApp: (id: string): void => ipcRenderer.send('launcher:open-app', id),
 	resizeLauncher: (height: number): void => ipcRenderer.send('launcher:resize', height),
+	kernelList: (): Promise<LauncherApp[]> => ipcRenderer.invoke('kernel:list'),
 	kernelLs: (path = '/'): Promise<DebugDirent[]> => ipcRenderer.invoke('kernel:ls', path)
 }
 

@@ -1,18 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
-import { APPS } from '../../shared/apps'
+import type { LauncherApp } from '../../shared/kernel'
 
 // Spotlight/Raycast-style launch bar: type to filter, arrow keys to move the
 // selection, Enter (or click) opens the highlighted app in its own window.
 function Launcher(): React.JSX.Element {
+	const [apps, setApps] = useState<LauncherApp[]>([])
 	const [query, setQuery] = useState('')
 	const [selected, setSelected] = useState(0)
 	const inputRef = useRef<HTMLInputElement>(null)
 	const rootRef = useRef<HTMLDivElement>(null)
 
-	// Empty query shows just the search bar — no candidate list.
 	const matches = query
-		? APPS.filter((name) => name.toLowerCase().includes(query.toLowerCase()))
-		: []
+		? apps.filter((app) => app.name.toLowerCase().includes(query.toLowerCase()))
+		: apps
+
+	useEffect(() => {
+		void window.api.kernelList().then(setApps)
+	}, [])
 
 	// Grow/shrink the window to fit the content, Raycast-style.
 	useEffect(() => {
@@ -45,7 +49,7 @@ function Launcher(): React.JSX.Element {
 			e.preventDefault()
 			setSelected((i) => Math.max(i - 1, 0))
 		} else if (e.key === 'Enter' && matches[selected]) {
-			window.api.openApp(matches[selected])
+			window.api.openApp(matches[selected].id)
 		}
 	}
 
@@ -65,14 +69,14 @@ function Launcher(): React.JSX.Element {
 			/>
 			{matches.length > 0 && (
 				<div className="results">
-					{matches.map((name, i) => (
+					{matches.map((app, i) => (
 						<button
-							key={name}
+							key={app.id}
 							type="button"
 							className={i === selected ? 'item selected' : 'item'}
-							onClick={() => window.api.openApp(name)}
+							onClick={() => window.api.openApp(app.id)}
 						>
-							{name}
+							{app.name}
 						</button>
 					))}
 				</div>
