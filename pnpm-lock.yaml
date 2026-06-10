@@ -56,6 +56,21 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
+      '@justfiles/app-code':
+        specifier: workspace:*
+        version: link:../../packages/app-code
+      '@justfiles/app-counter':
+        specifier: workspace:*
+        version: link:../../packages/app-counter
+      '@justfiles/app-finder':
+        specifier: workspace:*
+        version: link:../../packages/app-finder
+      '@justfiles/app-paint':
+        specifier: workspace:*
+        version: link:../../packages/app-paint
+      '@justfiles/app-settings':
+        specifier: workspace:*
+        version: link:../../packages/app-settings
       '@justfiles/design':
         specifier: workspace:*
         version: link:../../packages/design

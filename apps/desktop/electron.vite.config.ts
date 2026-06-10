@@ -6,7 +6,18 @@ import { defineConfig } from 'electron-vite'
 export default defineConfig({
 	main: {
 		build: {
-			externalizeDeps: { exclude: ['@justfiles/agent', '@justfiles/app', '@justfiles/fs'] }
+			externalizeDeps: {
+				exclude: [
+					'@justfiles/agent',
+					'@justfiles/app',
+					'@justfiles/fs',
+					'@justfiles/app-code',
+					'@justfiles/app-counter',
+					'@justfiles/app-finder',
+					'@justfiles/app-paint',
+					'@justfiles/app-settings'
+				]
+			}
 		}
 	},
 	preload: {},

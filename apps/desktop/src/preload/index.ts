@@ -29,6 +29,11 @@ const api = {
 		ownerAppId: string,
 		rect: { x: number; y: number; width: number; height: number }
 	): void => ipcRenderer.send('preview:rect', ownerAppId, rect),
+	onPreviewReload: (onReload: () => void): (() => void) => {
+		const listener = (): void => onReload()
+		ipcRenderer.on('preview:reload', listener)
+		return () => ipcRenderer.off('preview:reload', listener)
+	},
 	agentHistory: (): Promise<AgentMessage[]> => ipcRenderer.invoke('agent:history'),
 	agentPrompt: (input: string): Promise<string> => ipcRenderer.invoke('agent:prompt', input),
 	agentAbort: (): Promise<void> => ipcRenderer.invoke('agent:abort'),

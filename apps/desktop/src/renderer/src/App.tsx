@@ -169,13 +169,19 @@ function AgentView(): React.JSX.Element {
 function AppWindow({ id }: { id: string }): React.JSX.Element {
 	const rootRef = useRef<HTMLDivElement>(null)
 	const [error, setError] = useState<string | null>(null)
+	const [rev, setRev] = useState(0)
+
+	// Live preview: main signals a rebuild; bump the rev so the gui is re-imported
+	// in place with a cache-busting query (a stable URL serves the cached module).
+	useEffect(() => window.api.onPreviewReload(() => setRev((r) => r + 1)), [])
 
 	useEffect(() => {
 		let disposed = false
 		let cleanup: (() => void | Promise<void>) | undefined
 		void (async () => {
 			const state = await window.api.kernelState(id)
-			const mod = (await import(/* @vite-ignore */ `app://${id}/gui.js`)) as GuiModule
+			const url = rev ? `app://${id}/gui.js?v=${rev}` : `app://${id}/gui.js`
+			const mod = (await import(/* @vite-ignore */ url)) as GuiModule
 			if (disposed || !rootRef.current) return
 			const instance = mod.gui.mount(rootRef.current, state, {
 				transport: {
@@ -189,7 +195,7 @@ function AppWindow({ id }: { id: string }): React.JSX.Element {
 			disposed = true
 			void cleanup?.()
 		}
-	}, [id])
+	}, [id, rev])
 
 	useEffect(() => {
 		if (id !== 'app.code') return

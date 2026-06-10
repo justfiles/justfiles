@@ -22,6 +22,10 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 	return { setSlot, push, run, stop, menu, selectMenu }
 
 	function setSlot(ownerAppId: string, win: BrowserWindow, rect: Rectangle): void {
+		// The renderer re-reports its slot rect on a timer; ignore unchanged
+		// reports so we don't re-attach the view several times a second.
+		const prev = slots.get(ownerAppId)
+		if (prev?.win === win && sameRect(prev.rect, rect)) return
 		slots.set(ownerAppId, { win, rect })
 		for (const preview of previews.values()) {
 			if (preview.ownerAppId === ownerAppId) attach(preview)
@@ -56,16 +60,22 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 					...(draft.icon ? { icon: 'icon', assets: { icon: draft.icon } } : {})
 				})
 			)
-			let preview = previews.get(previewId)
-			if (!preview) {
-				preview = {
-					ownerAppId,
-					view: new WebContentsView({ webPreferences: { preload, sandbox: false } })
+			const preview = previews.get(previewId)
+			if (preview) {
+				// Same view, same URL: tell the renderer to re-import the freshly
+				// installed gui (with a cache-busting rev) so edits show in place,
+				// rather than a full document reload that would refetch the old bytes.
+				if (!preview.view.webContents.isDestroyed()) {
+					preview.view.webContents.send('preview:reload')
 				}
-				previews.set(previewId, preview)
+				attach(preview)
+			} else {
+				const view = new WebContentsView({ webPreferences: { preload, sandbox: false } })
+				const record: PreviewRecord = { ownerAppId, view }
+				previews.set(previewId, record)
+				load(view, previewId)
+				attach(record)
 			}
-			load(preview.view, previewId)
-			attach(preview)
 		}
 		return { previewId, diagnostics: draft.diagnostics }
 	}
@@ -101,6 +111,10 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 			height: Math.round(slot.rect.height)
 		})
 	}
+}
+
+function sameRect(a: Rectangle, b: Rectangle): boolean {
+	return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 }
 
 export function preloadPath(dirname: string): string {

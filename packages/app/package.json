@@ -5,6 +5,7 @@
 	"exports": {
 		".": "./index.ts",
 		"./runtime": "./kernel.ts",
+		"./sandbox": "./sandbox.ts",
 		"./browser": "./browser.ts",
 		"./react": "./react.ts",
 		"./react-entry": "./react-entry.ts",
@@ -34,6 +35,10 @@
 			"./runtime": {
 				"types": "./dist/kernel.d.ts",
 				"default": "./dist/kernel.js"
+			},
+			"./sandbox": {
+				"types": "./dist/sandbox.d.ts",
+				"default": "./dist/sandbox.js"
 			},
 			"./browser": {
 				"types": "./dist/browser.d.ts",

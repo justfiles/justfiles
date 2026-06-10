@@ -65,6 +65,14 @@ body {
 	color: var(--ev-c-black);
 }
 
+/* The preview slot is overlaid by a native WebContentsView, so it stays empty in
+   the renderer (frieren fills it with a DOM stage; we don't). An empty flex item
+   in the block .ds-window-body collapses to 0 height, which would make the slot
+   rect we report unusable — pin it to fill its box so the preview can attach. */
+[data-preview-slot] {
+	height: 100%;
+}
+
 .app-view {
 	display: flex;
 	align-items: center;

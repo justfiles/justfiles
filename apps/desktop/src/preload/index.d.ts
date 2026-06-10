@@ -19,6 +19,7 @@ declare global {
 				ownerAppId: string,
 				rect: { x: number; y: number; width: number; height: number }
 			) => void
+			onPreviewReload: (onReload: () => void) => () => void
 			agentHistory: () => Promise<AgentMessage[]>
 			agentPrompt: (input: string) => Promise<string>
 			agentAbort: () => Promise<void>

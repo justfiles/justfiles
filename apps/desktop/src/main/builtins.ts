@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
 import type { Catalog, CatalogApp } from '@justfiles/app/builtins'
 import type { BuiltinBundle } from '@justfiles/app/runtime'
-import code from '../../../../packages/app-code/dist/bundle.js'
-import counter from '../../../../packages/app-counter/dist/bundle.js'
-import finder from '../../../../packages/app-finder/dist/bundle.js'
-import paint from '../../../../packages/app-paint/dist/bundle.js'
-import settings from '../../../../packages/app-settings/dist/bundle.js'
+import code from '@justfiles/app-code/bundle'
+import counter from '@justfiles/app-counter/bundle'
+import finder from '@justfiles/app-finder/bundle'
+import paint from '@justfiles/app-paint/bundle'
+import settings from '@justfiles/app-settings/bundle'
 
 const bundles = [counter, finder, paint, settings, code]
 const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]))

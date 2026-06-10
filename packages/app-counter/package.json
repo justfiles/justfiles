@@ -1,8 +1,15 @@
 {
-	"name": "app-counter",
+	"name": "@justfiles/app-counter",
 	"private": true,
 	"version": "0.0.0",
 	"type": "module",
+	"main": "./dist/manifest.json",
+	"exports": {
+		"./bundle": {
+			"types": "./dist/bundle.d.ts",
+			"default": "./dist/bundle.js"
+		}
+	},
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
