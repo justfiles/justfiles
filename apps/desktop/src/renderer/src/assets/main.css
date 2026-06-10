@@ -54,11 +54,15 @@ body {
 	background: rgba(120, 145, 230, 0.5);
 }
 
+.app-view,
+.app-host {
+	height: 100vh;
+	color: var(--ev-c-black);
+}
+
 .app-view {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	height: 100vh;
 	font-size: 28px;
-	color: var(--ev-c-black);
 }

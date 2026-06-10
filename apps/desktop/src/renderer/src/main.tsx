@@ -1,14 +1,17 @@
 import './assets/main.css'
 
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
+import * as React from 'react'
+import * as JsxRuntime from 'react/jsx-runtime'
+import * as ReactDomClient from 'react-dom/client'
 import App from './App'
+
+window.__desktopShared = { react: React, reactDomClient: ReactDomClient, jsxRuntime: JsxRuntime }
 
 const root = document.getElementById('root')
 if (root) {
-	createRoot(root).render(
-		<StrictMode>
+	ReactDomClient.createRoot(root).render(
+		<React.StrictMode>
 			<App />
-		</StrictMode>
+		</React.StrictMode>
 	)
 }

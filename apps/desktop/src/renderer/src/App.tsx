@@ -1,6 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LauncherApp } from '../../shared/kernel'
 
+type GuiModule = {
+	gui: {
+		mount: (
+			el: HTMLElement,
+			state: unknown,
+			ctx: {
+				transport: {
+					invoke: (message: unknown) => Promise<unknown>
+					subscribe: (onState: (state: unknown) => void) => () => void
+				}
+			}
+		) => { unmount?: () => void | Promise<void> }
+	}
+}
+
 // Spotlight/Raycast-style launch bar: type to filter, arrow keys to move the
 // selection, Enter (or click) opens the highlighted app in its own window.
 function Launcher(): React.JSX.Element {
@@ -85,9 +100,44 @@ function Launcher(): React.JSX.Element {
 	)
 }
 
+function AppWindow({ id }: { id: string }): React.JSX.Element {
+	const rootRef = useRef<HTMLDivElement>(null)
+	const [error, setError] = useState<string | null>(null)
+
+	useEffect(() => {
+		let disposed = false
+		let cleanup: (() => void | Promise<void>) | undefined
+		void (async () => {
+			const state = await window.api.kernelState(id)
+			const mod = (await import(/* @vite-ignore */ `app://${id}/gui.js`)) as GuiModule
+			if (disposed || !rootRef.current) return
+			const instance = mod.gui.mount(rootRef.current, state, {
+				transport: {
+					invoke: (message) => window.api.kernelDispatch(id, message),
+					subscribe: (onState) => window.api.kernelSubscribe(id, onState)
+				}
+			})
+			cleanup = instance.unmount
+		})().catch((error) => setError(error instanceof Error ? error.message : String(error)))
+		return () => {
+			disposed = true
+			void cleanup?.()
+		}
+	}, [id])
+
+	return (
+		<div className="app-host" ref={rootRef}>
+			{error}
+		</div>
+	)
+}
+
 function App(): React.JSX.Element {
-	// Same renderer, two views: ?app=<name> is the app-window placeholder.
-	const app = new URLSearchParams(window.location.search).get('app')
+	const params = new URLSearchParams(window.location.search)
+	const appId = params.get('appId')
+	if (appId) return <AppWindow id={appId} />
+
+	const app = params.get('app')
 	if (app) {
 		document.title = app
 		return <div className="app-view">{app}</div>
