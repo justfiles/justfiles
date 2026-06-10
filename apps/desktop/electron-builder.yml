@@ -3,12 +3,14 @@ productName: desktop
 directories:
   buildResources: build
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - out/**/*
+  - resources/**/*
+  - package.json
+  - '!node_modules/**/*'
+  - node_modules/esbuild/**/*
+  - '!node_modules/esbuild/bin/**/*'
+  - node_modules/@esbuild/darwin-arm64/**/*
+  - node_modules/@electron-toolkit/utils/**/*
 asarUnpack:
   - resources/**
 win:
@@ -19,6 +21,8 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  target:
+    - dmg
   entitlementsInherit: build/entitlements.mac.plist
   # extendInfo must be a map; electron-builder silently ignores the sequence
   # form the scaffold generated (the keys never reach Info.plist).
@@ -32,7 +36,7 @@ mac:
     NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${productName}-${version}.${ext}
 linux:
   target:
     - AppImage
