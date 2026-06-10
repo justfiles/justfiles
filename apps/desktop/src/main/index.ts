@@ -11,6 +11,7 @@ import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen, shell } 
 import icon from '../../resources/icon.png?asset'
 import { createDesktopAgent, type DesktopAgent } from './agent'
 import { desktopBuiltinCatalog, readDesktopBuiltin } from './builtins'
+import { devkitCapability } from './devkit'
 import { nodeSandbox } from './nodeSandbox'
 
 const LAUNCHER_WIDTH = 600
@@ -34,10 +35,12 @@ async function getHost(): Promise<{ fs: Volume; kernel: Kernel; agent: DesktopAg
 			const root = join(app.getPath('userData'), 'volume')
 			await mkdir(root, { recursive: true })
 			const fs = volume(await nativeStorage(root))
+			let k: Kernel
 			const capabilities = capabilityRegistry({
-				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] })
+				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }),
+				devkit: devkitCapability(fs, () => k, notifyCatalog)
 			})
-			const k = kernel({ fs, sandbox: nodeSandbox(), capabilities, clock: {} })
+			k = kernel({ fs, sandbox: nodeSandbox(), capabilities, clock: {} })
 			k.subscribe((event) => {
 				if (event.type !== 'app.update') return
 				for (const { appId, win } of appWindows.values()) {
@@ -206,6 +209,10 @@ function openAgentWindow(): void {
 
 function notifyAgentWindows(): void {
 	for (const win of agentWindows) win.webContents.send('agent:changed')
+}
+
+function notifyCatalog(): void {
+	launcherWin?.webContents.send('catalog:changed')
 }
 
 function registerAppProtocol(): void {

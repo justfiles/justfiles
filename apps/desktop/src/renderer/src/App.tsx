@@ -33,9 +33,14 @@ function Launcher(): React.JSX.Element {
 		? items.filter((app) => app.name.toLowerCase().includes(query.toLowerCase()))
 		: items
 
-	useEffect(() => {
+	const refreshApps = useCallback((): void => {
 		void window.api.kernelList().then(setApps)
 	}, [])
+
+	useEffect(() => {
+		refreshApps()
+		return window.api.catalogSubscribe(refreshApps)
+	}, [refreshApps])
 
 	// Grow/shrink the window to fit the content, Raycast-style.
 	useEffect(() => {

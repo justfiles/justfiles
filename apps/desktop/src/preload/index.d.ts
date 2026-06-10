@@ -9,6 +9,7 @@ declare global {
 			openApp: (id: string) => void
 			openAgent: () => void
 			resizeLauncher: (height: number) => void
+			catalogSubscribe: (onChange: () => void) => () => void
 			kernelList: () => Promise<LauncherApp[]>
 			kernelState: (id: string) => Promise<unknown>
 			kernelDispatch: (id: string, message: unknown) => Promise<unknown>

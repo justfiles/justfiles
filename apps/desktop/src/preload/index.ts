@@ -8,6 +8,11 @@ const api = {
 	openApp: (id: string): void => ipcRenderer.send('launcher:open-app', id),
 	openAgent: (): void => ipcRenderer.send('launcher:open-agent'),
 	resizeLauncher: (height: number): void => ipcRenderer.send('launcher:resize', height),
+	catalogSubscribe: (onChange: () => void): (() => void) => {
+		const listener = () => onChange()
+		ipcRenderer.on('catalog:changed', listener)
+		return () => ipcRenderer.off('catalog:changed', listener)
+	},
 	kernelList: (): Promise<LauncherApp[]> => ipcRenderer.invoke('kernel:list'),
 	kernelState: (id: string): Promise<unknown> => ipcRenderer.invoke('kernel:state', id),
 	kernelDispatch: (id: string, message: unknown): Promise<unknown> =>
