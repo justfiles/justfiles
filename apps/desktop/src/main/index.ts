@@ -2,6 +2,8 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { reconcileBuiltins } from '@justfiles/app/builtins'
+import { capabilityRegistry } from '@justfiles/app/capabilities'
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
@@ -29,7 +31,10 @@ async function getHost(): Promise<{ fs: Volume; kernel: Kernel }> {
 			const root = join(app.getPath('userData'), 'volume')
 			await mkdir(root, { recursive: true })
 			const fs = volume(await nativeStorage(root))
-			const k = kernel({ fs, sandbox: nodeSandbox(), clock: {} })
+			const capabilities = capabilityRegistry({
+				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] })
+			})
+			const k = kernel({ fs, sandbox: nodeSandbox(), capabilities, clock: {} })
 			k.subscribe((event) => {
 				if (event.type !== 'app.update') return
 				for (const { appId, win } of appWindows.values()) {
