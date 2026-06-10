@@ -7,12 +7,23 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { app, BrowserWindow, globalShortcut, ipcMain, protocol, screen, shell } from 'electron'
+import {
+	app,
+	BrowserWindow,
+	globalShortcut,
+	ipcMain,
+	protocol,
+	type Rectangle,
+	screen,
+	shell,
+	type WebContentsView
+} from 'electron'
 import icon from '../../resources/icon.png?asset'
 import { createDesktopAgent, type DesktopAgent } from './agent'
 import { desktopBuiltinCatalog, readDesktopBuiltin } from './builtins'
 import { devkitCapability } from './devkit'
 import { nodeSandbox } from './nodeSandbox'
+import { createPreviewManager, preloadPath } from './preview'
 
 const LAUNCHER_WIDTH = 600
 
@@ -27,18 +38,29 @@ let launcherWin: BrowserWindow | null = null
 let focusedAppId: string | null = null
 const appWindows = new Map<number, { appId: string; win: BrowserWindow }>()
 const agentWindows = new Set<BrowserWindow>()
-let hostPromise: Promise<{ fs: Volume; kernel: Kernel; agent: DesktopAgent }> | null = null
+type Host = {
+	fs: Volume
+	kernel: Kernel
+	agent: DesktopAgent
+	preview: ReturnType<typeof createPreviewManager>
+}
+let hostPromise: Promise<Host> | null = null
 
-async function getHost(): Promise<{ fs: Volume; kernel: Kernel; agent: DesktopAgent }> {
+async function getHost(): Promise<Host> {
 	if (!hostPromise) {
 		hostPromise = (async () => {
 			const root = join(app.getPath('userData'), 'volume')
 			await mkdir(root, { recursive: true })
 			const fs = volume(await nativeStorage(root))
 			let k: Kernel
+			const preview = createPreviewManager({
+				getKernel: () => k,
+				preload: preloadPath(__dirname),
+				load: loadAppView
+			})
 			const capabilities = capabilityRegistry({
 				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }),
-				devkit: devkitCapability(fs, () => k, notifyCatalog)
+				devkit: devkitCapability(fs, () => k, notifyCatalog, preview)
 			})
 			k = kernel({ fs, sandbox: nodeSandbox(), capabilities, clock: {} })
 			k.subscribe((event) => {
@@ -58,7 +80,7 @@ async function getHost(): Promise<{ fs: Volume; kernel: Kernel; agent: DesktopAg
 				closeApp: closeAppWindow,
 				currentAppId: () => focusedAppId
 			})
-			return { fs, kernel: k, agent }
+			return { fs, kernel: k, agent, preview }
 		})()
 	}
 	return hostPromise
@@ -175,6 +197,18 @@ async function openAppWindow(id: string): Promise<void> {
 		win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?appId=${encodeURIComponent(id)}`)
 	} else {
 		win.loadFile(join(__dirname, '../renderer/index.html'), { query: { appId: id } })
+	}
+}
+
+function loadAppView(view: WebContentsView, id: string): void {
+	if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+		void view.webContents.loadURL(
+			`${process.env.ELECTRON_RENDERER_URL}?appId=${encodeURIComponent(id)}`
+		)
+	} else {
+		void view.webContents.loadFile(join(__dirname, '../renderer/index.html'), {
+			query: { appId: id }
+		})
 	}
 }
 
@@ -311,6 +345,13 @@ app.whenReady().then(async () => {
 	ipcMain.handle('kernel:ls', async (_e, path = '/') => {
 		const { fs } = await getHost()
 		return fs.readdir(path)
+	})
+
+	ipcMain.on('preview:rect', async (event, ownerAppId: string, rect: Rectangle) => {
+		const window = appWindows.get(event.sender.id)
+		if (!window || window.appId !== ownerAppId) return
+		const { preview } = await getHost()
+		preview.setSlot(ownerAppId, window.win, rect)
 	})
 
 	ipcMain.handle('agent:history', async () => {

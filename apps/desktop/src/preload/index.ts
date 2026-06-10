@@ -25,6 +25,10 @@ const api = {
 		return () => ipcRenderer.off('app.update', listener)
 	},
 	kernelLs: (path = '/'): Promise<DebugDirent[]> => ipcRenderer.invoke('kernel:ls', path),
+	previewRect: (
+		ownerAppId: string,
+		rect: { x: number; y: number; width: number; height: number }
+	): void => ipcRenderer.send('preview:rect', ownerAppId, rect),
 	agentHistory: (): Promise<AgentMessage[]> => ipcRenderer.invoke('agent:history'),
 	agentPrompt: (input: string): Promise<string> => ipcRenderer.invoke('agent:prompt', input),
 	agentAbort: (): Promise<void> => ipcRenderer.invoke('agent:abort'),

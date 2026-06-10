@@ -191,6 +191,33 @@ function AppWindow({ id }: { id: string }): React.JSX.Element {
 		}
 	}, [id])
 
+	useEffect(() => {
+		if (id !== 'app.code') return
+		const report = (): void => {
+			const slot = document.querySelector('[data-preview-slot]')
+			if (!(slot instanceof HTMLElement)) return
+			const rect = slot.getBoundingClientRect()
+			window.api.previewRect(id, {
+				x: rect.x,
+				y: rect.y,
+				width: rect.width,
+				height: rect.height
+			})
+		}
+		const observer = new ResizeObserver(report)
+		observer.observe(document.body)
+		window.addEventListener('resize', report)
+		window.addEventListener('scroll', report, true)
+		const interval = window.setInterval(report, 250)
+		report()
+		return () => {
+			observer.disconnect()
+			window.removeEventListener('resize', report)
+			window.removeEventListener('scroll', report, true)
+			window.clearInterval(interval)
+		}
+	}, [id])
+
 	return (
 		<div className="app-host" ref={rootRef}>
 			{error}

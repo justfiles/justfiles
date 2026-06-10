@@ -15,6 +15,10 @@ declare global {
 			kernelDispatch: (id: string, message: unknown) => Promise<unknown>
 			kernelSubscribe: (id: string, onState: (state: unknown) => void) => () => void
 			kernelLs: (path?: string) => Promise<DebugDirent[]>
+			previewRect: (
+				ownerAppId: string,
+				rect: { x: number; y: number; width: number; height: number }
+			) => void
 			agentHistory: () => Promise<AgentMessage[]>
 			agentPrompt: (input: string) => Promise<string>
 			agentAbort: () => Promise<void>
