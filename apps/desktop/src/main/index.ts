@@ -68,6 +68,7 @@ async function getHost(): Promise<Host> {
 				for (const { appId, win } of appWindows.values()) {
 					if (appId === event.appId) win.webContents.send('app.update', event.appId, event.state)
 				}
+				preview.push(event.appId, event.state)
 			})
 			await reconcileBuiltins(k, fs, desktopBuiltinCatalog, readDesktopBuiltin)
 			const entries = await fs.readdir('/')
@@ -329,7 +330,7 @@ app.whenReady().then(async () => {
 
 	ipcMain.handle('kernel:list', async () => {
 		const { kernel } = await getHost()
-		return kernel.list()
+		return (await kernel.list()).filter((app) => !app.id.startsWith('preview.'))
 	})
 
 	ipcMain.handle('kernel:state', async (_e, id: string) => {

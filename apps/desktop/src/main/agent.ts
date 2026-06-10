@@ -95,11 +95,13 @@ export async function createDesktopAgent(
 	function controller(): AppController {
 		return {
 			list: async () =>
-				(await kernel.list()).map((app) => ({
-					id: app.id,
-					name: app.name,
-					description: app.description
-				})),
+				(await kernel.list())
+					.filter((app) => !app.id.startsWith('preview.'))
+					.map((app) => ({
+						id: app.id,
+						name: app.name,
+						description: app.description
+					})),
 			launch: async (id) => {
 				await options.openApp(id)
 				return inspect(id)

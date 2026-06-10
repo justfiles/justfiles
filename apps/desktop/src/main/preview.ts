@@ -19,12 +19,19 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 	const slots = new Map<string, { win: BrowserWindow; rect: Rectangle }>()
 	const previews = new Map<string, PreviewRecord>()
 
-	return { setSlot, run, stop, menu, selectMenu }
+	return { setSlot, push, run, stop, menu, selectMenu }
 
 	function setSlot(ownerAppId: string, win: BrowserWindow, rect: Rectangle): void {
 		slots.set(ownerAppId, { win, rect })
 		for (const preview of previews.values()) {
 			if (preview.ownerAppId === ownerAppId) attach(preview)
+		}
+	}
+
+	function push(appId: string, state: unknown): void {
+		const preview = previews.get(appId)
+		if (preview && !preview.view.webContents.isDestroyed()) {
+			preview.view.webContents.send('app.update', appId, state)
 		}
 	}
 
