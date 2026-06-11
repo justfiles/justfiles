@@ -1,10 +1,18 @@
-// The localhost socket quayd serves. Slice 5 carries a tiny JSON request/response
-// (`list` → the catalog, `ls` → a Volume listing); Slice 6 replaces it with
-// token-scoped Cap'n Web berths (and http-served assets). Every connection must
-// present the boot token.
+// The localhost server quayd serves. Two transports share one port:
+//
+//   • http — assets for a mini-app window: the HTML shell (`/app/<id>`), its
+//     `gui.js` read from the Volume (`/app/<id>/gui.js`), and the shared-React +
+//     boot vendor modules (`/vendor/*`). 127.0.0.1 is a secure context, so the
+//     importmap + ES modules in the shell work.
+//   • ws  — `/` is the launcher's JSON request/response (the catalog + a debug ls);
+//     `/berth?app=<id>` is a token-scoped Cap'n Web session (§berth.ts) for a GUI.
+//
+// Every connection and the shell route present the boot token.
 
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { type RawData, WebSocket, WebSocketServer } from 'ws'
+import { shellHtml, vendorAssets } from './assets.ts'
+import { type BerthBackend, serveBerth } from './berth.ts'
 
 export interface AppInfo {
 	id: string
@@ -12,10 +20,13 @@ export interface AppInfo {
 	glyph: string
 }
 
-export interface Backend {
+export interface Backend extends BerthBackend {
 	list(): Promise<AppInfo[]>
 	// Debug (Slice 5 verify): a directory listing of the Volume at `path`.
 	ls(path: string): Promise<unknown>
+	// The app's `gui.js` bytes, read from the Volume — the materialised `.app`s
+	// carry no code.
+	gui(id: string): Promise<Uint8Array>
 }
 
 export interface Served {
@@ -23,15 +34,17 @@ export interface Served {
 	close(): void
 }
 
-// Idle-exit window: with no clients connected, quayd shuts down (the launcher
-// re-spawns it on demand). The launcher holds a connection for as long as it runs.
+// Idle-exit window: with no clients connected (launcher socket + open app berths),
+// quayd shuts down; a client re-spawns it on demand.
 const IDLE_MS = 5 * 60_000
 
 export function serve(
 	backend: Backend,
 	opts: { token: string; onIdle?: () => void }
 ): Promise<Served> {
-	const http = createServer()
+	const http = createServer((req, res) => {
+		serveHttp(req, res, backend).catch(() => fail(res, 500))
+	})
 	const wss = new WebSocketServer({ server: http })
 	const clients = new Set<WebSocket>()
 	let idle: ReturnType<typeof setTimeout> | undefined
@@ -52,14 +65,22 @@ export function serve(
 		}
 		clients.add(ws)
 		arm()
+		ws.on('close', () => {
+			clients.delete(ws)
+			arm()
+		})
+		// A GUI window's berth: a Cap'n Web session scoped to one app.
+		if (url.pathname === '/berth') {
+			const appId = url.searchParams.get('app')
+			if (appId) serveBerth(ws, backend, appId)
+			else ws.close()
+			return
+		}
+		// The launcher's privileged JSON socket (catalog + debug ls).
 		ws.on('message', (data: RawData) => {
 			respond(ws, backend, data).catch((error) =>
 				reply(ws, { type: 'error', error: String(error) })
 			)
-		})
-		ws.on('close', () => {
-			clients.delete(ws)
-			arm()
 		})
 	})
 
@@ -77,6 +98,48 @@ export function serve(
 			})
 		})
 	})
+}
+
+async function serveHttp(
+	req: IncomingMessage,
+	res: ServerResponse,
+	backend: Backend
+): Promise<void> {
+	const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+	const path = url.pathname
+
+	if (path.startsWith('/vendor/')) {
+		const bytes = (await vendorAssets()).get(path)
+		return bytes ? send(res, 'text/javascript', bytes) : fail(res, 404)
+	}
+
+	const gui = /^\/app\/([^/]+)\/gui\.js$/.exec(path)
+	if (gui) {
+		try {
+			return send(res, 'text/javascript', await backend.gui(decodeURIComponent(gui[1] as string)))
+		} catch {
+			return fail(res, 404)
+		}
+	}
+
+	const shell = /^\/app\/([^/]+)\/?$/.exec(path)
+	if (shell) {
+		const id = decodeURIComponent(shell[1] as string)
+		const html = shellHtml(id, url.searchParams.get('token') ?? '')
+		return send(res, 'text/html; charset=utf-8', new TextEncoder().encode(html))
+	}
+
+	fail(res, 404)
+}
+
+function send(res: ServerResponse, type: string, bytes: Uint8Array): void {
+	res.writeHead(200, { 'content-type': type })
+	res.end(Buffer.from(bytes))
+}
+
+function fail(res: ServerResponse, code: number): void {
+	res.writeHead(code)
+	res.end()
 }
 
 async function respond(ws: WebSocket, backend: Backend, data: RawData): Promise<void> {

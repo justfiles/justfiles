@@ -11,8 +11,13 @@
 	"dependencies": {
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-code": "workspace:*",
+		"@justfiles/app-counter": "workspace:*",
 		"@justfiles/app-finder": "workspace:*",
 		"@justfiles/fs": "workspace:*",
+		"capnweb": "^0.8.0",
+		"esbuild": "^0.27.0",
+		"react": "^19",
+		"react-dom": "^19",
 		"ws": "^8.20.1"
 	},
 	"devDependencies": {

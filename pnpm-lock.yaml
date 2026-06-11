@@ -319,12 +319,27 @@ importers:
       '@justfiles/app-code':
         specifier: workspace:*
         version: link:../../packages/app-code
+      '@justfiles/app-counter':
+        specifier: workspace:*
+        version: link:../../packages/app-counter
       '@justfiles/app-finder':
         specifier: workspace:*
         version: link:../../packages/app-finder
       '@justfiles/fs':
         specifier: workspace:*
         version: link:../../packages/fs
+      capnweb:
+        specifier: ^0.8.0
+        version: 0.8.0
+      esbuild:
+        specifier: ^0.27.0
+        version: 0.27.7
+      react:
+        specifier: ^19
+        version: 19.2.7
+      react-dom:
+        specifier: ^19
+        version: 19.2.7(react@19.2.7)
       ws:
         specifier: ^8.20.1
         version: 8.20.1

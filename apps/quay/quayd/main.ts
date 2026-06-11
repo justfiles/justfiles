@@ -1,8 +1,9 @@
 // quayd — the Node backend daemon. Slice 5: mount the Volume, build the kernel,
 // seed the built-in catalog, and serve the real `kernel.list()` over the socket
 // (plus a debug `ls` of the Volume). Slice 6: project that catalog into the OS as
-// real `.app` bundles. Discovery + idle-exit are from Slice 4; asset serving,
-// sandbox, capabilities and agent follow.
+// real `.app` bundles. Slice 7: serve each app's assets over http and a token-
+// scoped Cap'n Web berth (dispatch/state/subscribe) so a window renders its real
+// `gui.js` and an action round-trips. Capabilities and the agent follow.
 
 import { randomBytes } from 'node:crypto'
 import { clearRuntime, writeRuntime } from './discovery.ts'
@@ -20,7 +21,16 @@ const backend: Backend = {
 			glyph: app.name.slice(0, 1).toUpperCase()
 		}))
 	},
-	ls: (path) => host.fs.readdir(path)
+	ls: (path) => host.fs.readdir(path),
+	gui: async (id) => (await host.kernel.app(id)).read('gui.js'),
+	// The berth seam: dispatch/state into the same kernel the agent drives, and a
+	// per-app subscription off `app.update` so updates fan out to the GUI live.
+	state: (id) => host.kernel.state(id),
+	dispatch: (id, message) => host.kernel.dispatch(id, message as never),
+	subscribe: (id, onState) =>
+		host.kernel.subscribe((event) => {
+			if (event.type === 'app.update' && event.appId === id) onState(event.state)
+		})
 }
 
 const token = randomBytes(16).toString('hex')

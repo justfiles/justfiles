@@ -28,6 +28,11 @@ const APPS_DIR = join(homedir(), 'Applications', 'Quay Apps')
 const BUILD_DIR = join(import.meta.dirname, '..', 'native', 'build')
 const BOOTER = join(BUILD_DIR, 'quay-shell')
 const MAKEICON = join(BUILD_DIR, 'quay-makeicon')
+// How a Spotlight-launched booter ensure-runs quayd (mirrors the launcher's
+// QuaydNode/QuaydScript): this machine's node + the quayd entrypoint, run through
+// the tsx loader. Dev wiring — a packaged quay would ship the daemon instead.
+const QUAYD_NODE = process.execPath
+const QUAYD_SCRIPT = join(import.meta.dirname, 'main.ts')
 const LSREGISTER =
 	'/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 
@@ -116,15 +121,26 @@ function plist(app: ProjectionApp, bin: string): string {
 	<key>NSHighResolutionCapable</key><true/>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>QuayAppId</key><string>${app.id}</string>
+	<key>QuaydNode</key><string>${QUAYD_NODE}</string>
+	<key>QuaydScript</key><string>${QUAYD_SCRIPT}</string>
+	<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
 `
 }
 
 // Identity of a materialised bundle: rebuild only when one of these changes (so a
-// new booter binary refreshes every bundle; a rename/version bump refreshes one).
+// new booter binary refreshes every bundle; a rename/version bump refreshes one;
+// a moved node/script path re-stamps the spawn wiring).
 function signature(app: ProjectionApp, booterMtime: number): string {
-	return JSON.stringify({ id: app.id, name: app.name, version: app.version, booter: booterMtime })
+	return JSON.stringify({
+		id: app.id,
+		name: app.name,
+		version: app.version,
+		booter: booterMtime,
+		node: QUAYD_NODE,
+		script: QUAYD_SCRIPT
+	})
 }
 
 function readSig(path: string): string {

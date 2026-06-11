@@ -175,10 +175,11 @@ token), `reactGui` Transport shim.
 (`berth.dispatch` → kernel → `app.update` → `subscribe` re-render) and state persists to
 `/state/<id>.json`. Token from another origin is rejected.
 
-## Slice 8 — `nodeSandbox` (worker_threads) + lazy eviction
+## Slice 8 — `nodeSandbox` lazy eviction
 
-**Goal:** reducers run in `worker_threads` on the shared sandbox protocol; instantiated on first
-dispatch (content-addressed), torn down after idle, re-spawned on demand.
+**Goal:** the `worker_threads` sandbox (shared protocol, content-addressed, lazy on first dispatch)
+already landed in Slice 7 — the berth round-trip needs a running reducer. Slice 8 adds the eviction
+policy on top: tear a worker down after its app's window closes + an idle window, re-spawn on demand.
 
 **Touches:** `quayd/nodeSandbox.ts`, kernel wiring, eviction policy.
 
@@ -238,5 +239,7 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
   core unchanged; the rejected alternative (the `.app` *is* the store) can't sync the whole Volume.
 - **Hotkey:** `Option+Space` (avoids Spotlight's `Cmd+Space`).
 - **Bundle ids:** `app.justfiles.quay` (launcher); `app.justfiles.quay.app.<id>` (each mini-app).
-- **Built-in seed set (v1):** `app-code` (Code) + `app-finder` (Finder).
+- **Built-in seed set (v1):** `app-code` (Code) + `app-finder` (Finder) + `app-counter` (Counter) —
+  Counter is a no-capability app, so it's the clean end-to-end target for the Slice 7 berth round-trip
+  before capabilities land (Slice 9).
 - **`apps/native/`:** removed (was empty scaffolding).

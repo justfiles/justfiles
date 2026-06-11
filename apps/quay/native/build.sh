@@ -37,6 +37,7 @@ emit_plist() { # name bundle_id [quay_id] [lsui]
 			<key>LSMinimumSystemVersion</key><string>12.0</string>
 			<key>NSHighResolutionCapable</key><true/>
 			<key>CFBundleIconFile</key><string>AppIcon</string>
+			<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 	EOF
 	[ -n "$3" ] && printf '\t<key>QuayAppId</key><string>%s</string>\n' "$3"
 	[ "$4" = "1" ] && printf '\t<key>LSUIElement</key><true/>\n'
