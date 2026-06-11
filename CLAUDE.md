@@ -1,4 +1,5 @@
 IMPORTANT: keep code minimal
+It's very important to keep the core mechanic simple and lean. We can write complex code, as long as it is contained, e.g. complex UI logic. The core of how things work should be as lean as possible.
 
 # Tools
 use pnpm for package management.
