@@ -15,18 +15,22 @@ import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { builtinCatalog, readBuiltin } from './builtins.ts'
-import { nodeSandbox } from './nodeSandbox.ts'
+import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
 
 export interface Host {
 	fs: Volume
 	kernel: Kernel
+	// The reducer-worker pool; its `retain`/`release` drive idle eviction off the
+	// berth (window) lifecycle (Slice 8).
+	sandbox: NodeSandbox
 }
 
 export async function createHost(): Promise<Host> {
 	const root = join(homedir(), 'Library', 'Application Support', 'quay', 'volume')
 	await mkdir(root, { recursive: true })
 	const fs = volume(await nativeStorage(root))
-	const k = kernel({ fs, sandbox: nodeSandbox(), clock: {} })
+	const sandbox = nodeSandbox()
+	const k = kernel({ fs, sandbox: sandbox.get, clock: {} })
 	await reconcileBuiltins(k, fs, builtinCatalog, readBuiltin)
-	return { fs, kernel: k }
+	return { fs, kernel: k, sandbox }
 }

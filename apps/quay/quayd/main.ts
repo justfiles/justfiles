@@ -3,7 +3,8 @@
 // (plus a debug `ls` of the Volume). Slice 6: project that catalog into the OS as
 // real `.app` bundles. Slice 7: serve each app's assets over http and a token-
 // scoped Cap'n Web berth (dispatch/state/subscribe) so a window renders its real
-// `gui.js` and an action round-trips. Capabilities and the agent follow.
+// `gui.js` and an action round-trips. Slice 8: a window opening/closing pins/evicts
+// that app's reducer worker. Capabilities and the agent follow.
 
 import { randomBytes } from 'node:crypto'
 import { clearRuntime, writeRuntime } from './discovery.ts'
@@ -40,7 +41,12 @@ const exit = async () => {
 	process.exit(0)
 }
 
-const { port } = await serve(backend, { token, onIdle: exit })
+const { port } = await serve(backend, {
+	token,
+	onIdle: exit,
+	// A window opening/closing pins/evicts that app's reducer worker (Slice 8).
+	windows: { open: host.sandbox.retain, close: host.sandbox.release }
+})
 await writeRuntime({ port, token, pid: process.pid })
 const apps = await host.kernel.list()
 console.log(`quayd listening on ws://127.0.0.1:${port}`)

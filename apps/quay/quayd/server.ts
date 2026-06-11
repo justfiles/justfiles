@@ -40,7 +40,13 @@ const IDLE_MS = 5 * 60_000
 
 export function serve(
 	backend: Backend,
-	opts: { token: string; onIdle?: () => void }
+	// `windows` (when wired) is told a GUI window opened/closed for an app, so the
+	// sandbox pool can pin/evict its reducer worker (§nodeSandbox, Slice 8).
+	opts: {
+		token: string
+		onIdle?: () => void
+		windows?: { open(appId: string): void; close(appId: string): void }
+	}
 ): Promise<Served> {
 	const http = createServer((req, res) => {
 		serveHttp(req, res, backend).catch(() => fail(res, 500))
@@ -69,11 +75,17 @@ export function serve(
 			clients.delete(ws)
 			arm()
 		})
-		// A GUI window's berth: a Cap'n Web session scoped to one app.
+		// A GUI window's berth: a Cap'n Web session scoped to one app. Opening it
+		// pins the app's reducer worker; closing it starts the idle countdown.
 		if (url.pathname === '/berth') {
 			const appId = url.searchParams.get('app')
-			if (appId) serveBerth(ws, backend, appId)
-			else ws.close()
+			if (!appId) {
+				ws.close()
+				return
+			}
+			opts.windows?.open(appId)
+			ws.on('close', () => opts.windows?.close(appId))
+			serveBerth(ws, backend, appId)
 			return
 		}
 		// The launcher's privileged JSON socket (catalog + debug ls).
