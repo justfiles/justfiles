@@ -220,16 +220,16 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
 
 # Phase 4 — later / deferred
 
-| Item | Note |
-|----|----|
-| **Hardening** | enforce token scoping, WKWebView CSP/navigation lockdown, `quayd` single-writer lock, idle-exit policy, booter reconnect-on-drop. Fold critical bits into earlier slices. |
-| **Sync backend** | swap `nativeStorage` for frieren's synced Volume backend — apps/state/data then sync across devices with no change to where apps live; the `.app` projection regenerates per device. |
-| **Projection drift** | watch `~/Applications/Quay Apps/` so a Trash-ed `.app` becomes a real uninstall (the one tolerated `.app` → Volume edge). v1 just re-materialises on next reconcile. |
-| **Live preview** (`devkit.run`) | the one bespoke seam — a second `WKWebView` over the code window's slot. |
-| **Multi-window** per app | `open -n` / in-shell windows, all live-syncing one kernel state. |
-| **Native-touching caps** | notifications, clipboard, reveal-in-Finder via a small native helper. |
-| **Signing / notarisation** | needs `notarytool` (full Xcode); only for public distribution. |
-| **Cross-platform** | Windows via wry/Tauri + WebView2 — see `apps/desktop/DESIGN.md` research. |
+| Item                            | Note                                                                                                                                                                                 |
+|---------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Hardening**                   | enforce token scoping, WKWebView CSP/navigation lockdown, `quayd` single-writer lock, idle-exit policy, booter reconnect-on-drop. Fold critical bits into earlier slices.            |
+| **Sync backend**                | swap `nativeStorage` for frieren's synced Volume backend — apps/state/data then sync across devices with no change to where apps live; the `.app` projection regenerates per device. |
+| **Projection drift**            | watch `~/Applications/Quay Apps/` so a Trash-ed `.app` becomes a real uninstall (the one tolerated `.app` → Volume edge). v1 just re-materialises on next reconcile.                 |
+| **Live preview** (`devkit.run`) | the one bespoke seam — a second `WKWebView` over the code window's slot.                                                                                                             |
+| **Multi-window** per app        | `open -n` / in-shell windows, all live-syncing one kernel state.                                                                                                                     |
+| **Native-touching caps**        | notifications, clipboard, reveal-in-Finder via a small native helper.                                                                                                                |
+| **Signing / notarisation**      | needs `notarytool` (full Xcode); only for public distribution.                                                                                                                       |
+| **Cross-platform**              | Windows via wry/Tauri + WebView2 — see `apps/desktop/DESIGN.md` research.                                                                                                            |
 
 ## Decisions (resolved)
 

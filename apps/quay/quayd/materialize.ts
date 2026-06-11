@@ -156,6 +156,18 @@ function exec(name: string): string {
 	return name.replace(/[^A-Za-z0-9._-]/g, '') || 'App'
 }
 
+// The materialised bundle's path, and a `pkill -f` pattern matching its running
+// booter (argv[0] is the bundle's executable path) — used by the agent to `open`
+// and quit real windows from the daemon (DESIGN §12 native-touching).
+export function bundlePath(name: string): string {
+	return join(APPS_DIR, `${exec(name)}.app`)
+}
+
+export function bundleProcessPattern(name: string): string {
+	const bin = exec(name)
+	return `${bin}.app/Contents/MacOS/${bin}`
+}
+
 // Best-effort spawn (true on exit 0). codesign/lsregister failures are tolerated —
 // locally created bundles run unsigned, and Spotlight re-indexes on its own.
 function run(cmd: string, args: string[]): Promise<boolean> {

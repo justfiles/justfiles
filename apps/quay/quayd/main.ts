@@ -5,16 +5,19 @@
 // scoped Cap'n Web berth (dispatch/state/subscribe) so a window renders its real
 // `gui.js` and an action round-trips. Slice 8: a window opening/closing pins/evicts
 // that app's reducer worker. Slice 9: the kernel carries an in-process capability
-// registry (`volume`), so a capability-using app (Finder) reaches real files. The
-// agent follows.
+// registry (`volume`), so a capability-using app (Finder) reaches real files.
+// Slice 10: `@justfiles/agent` runs here too, driving real `.app` bundles and the
+// same kernel the berths subscribe to; the launcher hosts its chat over this socket.
 
 import { randomBytes } from 'node:crypto'
+import { createQuayAgent } from './agent.ts'
 import { clearRuntime, writeRuntime } from './discovery.ts'
 import { createHost } from './host.ts'
 import { reconcileProjection } from './materialize.ts'
 import { type Backend, serve } from './server.ts'
 
 const host = await createHost()
+const agent = await createQuayAgent(host)
 
 const backend: Backend = {
 	async list() {
@@ -33,7 +36,14 @@ const backend: Backend = {
 	subscribe: (id, onState) =>
 		host.kernel.subscribe((event) => {
 			if (event.type === 'app.update' && event.appId === id) onState(event.state)
-		})
+		}),
+	// The launcher's chat: prompt/history over the privileged socket. The agent
+	// `app run`s into this same kernel, so an open window's berth re-renders live.
+	agent: {
+		history: () => agent.history(),
+		prompt: (text) => agent.prompt(text),
+		abort: () => agent.abort()
+	}
 }
 
 const token = randomBytes(16).toString('hex')

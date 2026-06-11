@@ -8,7 +8,8 @@
 // the kernel owns. Today that's `volume` over the same native-FS Volume — the
 // kernel attaches each app's DECLARED scopes (Finder's `system`, others' per-app
 // `/data/<id>`), so a reducer reaches real files without ever holding the
-// capability itself. (`ai` lands with the agent in Slice 10; `devkit` in Slice 11.)
+// capability itself. (`ai`/`devkit` are added when a built-in needs them — the
+// Slice 10 agent calls the LLM directly, not through a reducer capability.)
 
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'

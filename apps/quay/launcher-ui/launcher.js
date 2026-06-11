@@ -10,6 +10,14 @@ let retryTimer
 const grid = document.getElementById('grid')
 const search = document.getElementById('search')
 const statusEl = document.getElementById('status')
+const messagesEl = document.getElementById('messages')
+const ask = document.getElementById('ask')
+
+// The agent chat: a flat transcript the daemon owns. We echo the user turn
+// optimistically (+ a pending bubble) and replace it with the authoritative
+// transcript the server returns.
+let agentMessages = []
+let pending = false
 
 function setStatus(text) {
 	statusEl.textContent = text
@@ -45,6 +53,30 @@ function render(filter = '') {
 	)
 }
 
+function renderAgent() {
+	const bubbles = agentMessages.map((m) => bubble(m.role, m.content, false))
+	if (pending) bubbles.push(bubble('assistant', '…', true))
+	messagesEl.replaceChildren(...bubbles)
+	messagesEl.scrollTop = messagesEl.scrollHeight
+}
+
+function bubble(role, content, isPending) {
+	const li = document.createElement('li')
+	li.className = `msg ${role}${isPending ? ' pending' : ''}`
+	li.textContent = content
+	return li
+}
+
+function sendPrompt() {
+	const text = ask.value.trim()
+	if (!text || !socket || socket.readyState !== WebSocket.OPEN) return
+	agentMessages = [...agentMessages, { id: 'local', role: 'user', content: text }]
+	pending = true
+	renderAgent()
+	socket.send(JSON.stringify({ type: 'prompt', text }))
+	ask.value = ''
+}
+
 function retry() {
 	setStatus('Connecting…')
 	clearTimeout(retryTimer)
@@ -61,13 +93,20 @@ async function connect() {
 	}
 	if (!rt) return retry()
 	socket = new WebSocket(`ws://127.0.0.1:${rt.port}/?token=${encodeURIComponent(rt.token)}`)
-	socket.onopen = () => socket.send(JSON.stringify({ type: 'list' }))
+	socket.onopen = () => {
+		socket.send(JSON.stringify({ type: 'list' }))
+		socket.send(JSON.stringify({ type: 'agent.history' }))
+	}
 	socket.onmessage = (e) => {
 		const msg = JSON.parse(e.data)
 		if (msg.type === 'catalog') {
 			apps = msg.apps
 			setStatus('')
 			render(search.value)
+		} else if (msg.type === 'agent') {
+			agentMessages = msg.messages
+			pending = false
+			renderAgent()
 		}
 	}
 	socket.onerror = () => socket.close()
@@ -88,6 +127,14 @@ search.addEventListener('keydown', (e) => {
 		const first = grid.querySelector('.tile')
 		if (first) first.click()
 	}
+})
+
+ask.addEventListener('keydown', (e) => {
+	if (e.key === 'Enter') {
+		e.preventDefault()
+		sendPrompt()
+	}
+	if (e.key === 'Escape' && window.quay) window.quay.hide()
 })
 
 connect()

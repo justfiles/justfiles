@@ -27,7 +27,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	}
 
 	private func buildPanel() {
-		let rect = NSRect(x: 0, y: 0, width: 640, height: 460)
+		let rect = NSRect(x: 0, y: 0, width: 640, height: 560)
 		panel = KeyablePanel(
 			contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false
 		)
@@ -201,8 +201,11 @@ enum Quayd {
 		p.executableURL = URL(fileURLWithPath: node)
 		// `--import tsx`: the kernel/fs packages are TS source with extensionless
 		// internal imports, so quayd runs through the tsx loader (resolved from the
-		// quayd dir's node_modules) rather than bare `node`.
-		p.arguments = ["--import", "tsx", script]
+		// quayd dir's node_modules) rather than bare `node`. `rawLoader.mjs` (next to
+		// the entrypoint, loaded first) teaches node the agent's `?raw` md imports.
+		let rawLoader = URL(fileURLWithPath: script).deletingLastPathComponent()
+			.appendingPathComponent("rawLoader.mjs").path
+		p.arguments = ["--import", rawLoader, "--import", "tsx", script]
 		p.currentDirectoryURL = URL(fileURLWithPath: script).deletingLastPathComponent()
 		// Log to a file so a GUI-spawned daemon (no inherited terminal) is debuggable.
 		try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

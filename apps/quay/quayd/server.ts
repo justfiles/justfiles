@@ -4,13 +4,15 @@
 //     `gui.js` read from the Volume (`/app/<id>/gui.js`), and the shared-React +
 //     boot vendor modules (`/vendor/*`). 127.0.0.1 is a secure context, so the
 //     importmap + ES modules in the shell work.
-//   • ws  — `/` is the launcher's JSON request/response (the catalog + a debug ls);
-//     `/berth?app=<id>` is a token-scoped Cap'n Web session (§berth.ts) for a GUI.
+//   • ws  — `/` is the launcher's JSON request/response (the catalog, a debug ls,
+//     and the agent chat); `/berth?app=<id>` is a token-scoped Cap'n Web session
+//     (§berth.ts) for a GUI.
 //
 // Every connection and the shell route present the boot token.
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { type RawData, WebSocket, WebSocketServer } from 'ws'
+import type { AgentMessage } from './agent.ts'
 import { shellHtml, vendorAssets } from './assets.ts'
 import { type BerthBackend, serveBerth } from './berth.ts'
 
@@ -20,6 +22,14 @@ export interface AppInfo {
 	glyph: string
 }
 
+// The launcher's agent channel (Slice 10): non-streaming request/response. The UI
+// echoes the user turn optimistically and waits for the authoritative transcript.
+export interface AgentBridge {
+	history(): AgentMessage[]
+	prompt(text: string): Promise<AgentMessage[]>
+	abort(): void
+}
+
 export interface Backend extends BerthBackend {
 	list(): Promise<AppInfo[]>
 	// Debug (Slice 5 verify): a directory listing of the Volume at `path`.
@@ -27,6 +37,8 @@ export interface Backend extends BerthBackend {
 	// The app's `gui.js` bytes, read from the Volume — the materialised `.app`s
 	// carry no code.
 	gui(id: string): Promise<Uint8Array>
+	// Optional so tests can serve a backend with no agent (the catalog still works).
+	agent?: AgentBridge
 }
 
 export interface Served {
@@ -155,7 +167,7 @@ function fail(res: ServerResponse, code: number): void {
 }
 
 async function respond(ws: WebSocket, backend: Backend, data: RawData): Promise<void> {
-	let msg: { type?: string; path?: string }
+	let msg: { type?: string; path?: string; text?: string }
 	try {
 		msg = JSON.parse(data.toString())
 	} catch {
@@ -163,6 +175,11 @@ async function respond(ws: WebSocket, backend: Backend, data: RawData): Promise<
 	}
 	if (msg.type === 'list') reply(ws, { type: 'catalog', apps: await backend.list() })
 	else if (msg.type === 'ls') reply(ws, { type: 'ls', entries: await backend.ls(msg.path ?? '/') })
+	else if (msg.type === 'agent.history' && backend.agent)
+		reply(ws, { type: 'agent', messages: backend.agent.history() })
+	else if (msg.type === 'prompt' && backend.agent)
+		reply(ws, { type: 'agent', messages: await backend.agent.prompt(msg.text ?? '') })
+	else if (msg.type === 'abort') backend.agent?.abort()
 }
 
 function reply(ws: WebSocket, payload: unknown): void {

@@ -12,7 +12,9 @@
 		"strict": true,
 		"skipLibCheck": true,
 		"noFallthroughCasesInSwitch": true,
-		"noUncheckedIndexedAccess": true,
+		// Not enabled: `@justfiles/agent` is consumed un-built (TS source), and its
+		// internals aren't clean under noUncheckedIndexedAccess — matching how
+		// frieren/desktop typecheck the same source.
 		"noImplicitOverride": true
 	},
 	"include": ["quayd/**/*.ts"]

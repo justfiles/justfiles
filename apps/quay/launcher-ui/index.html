@@ -44,6 +44,8 @@
 				grid-template-columns: repeat(4, 1fr);
 				gap: 8px;
 				overflow: auto;
+				flex: 1;
+				min-height: 0;
 			}
 			.tile {
 				display: flex;
@@ -81,6 +83,60 @@
 				opacity: 0.5;
 				display: none;
 			}
+			#chat {
+				margin-top: 12px;
+				padding-top: 10px;
+				border-top: 1px solid rgba(255, 255, 255, 0.12);
+				display: flex;
+				flex-direction: column;
+				height: 188px;
+			}
+			#messages {
+				list-style: none;
+				margin: 0 0 8px;
+				padding: 0 2px;
+				flex: 1;
+				min-height: 0;
+				overflow: auto;
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+			}
+			.msg {
+				max-width: 85%;
+				padding: 7px 10px;
+				border-radius: 12px;
+				font-size: 13px;
+				line-height: 1.35;
+				white-space: pre-wrap;
+				word-break: break-word;
+			}
+			.msg.user {
+				align-self: flex-end;
+				background: #0a84ff;
+				color: #fff;
+			}
+			.msg.assistant {
+				align-self: flex-start;
+				background: rgba(255, 255, 255, 0.12);
+			}
+			.msg.pending {
+				opacity: 0.5;
+			}
+			#ask {
+				width: 100%;
+				box-sizing: border-box;
+				padding: 9px 12px;
+				font-size: 14px;
+				color: #fff;
+				border: 0;
+				border-radius: 10px;
+				background: rgba(255, 255, 255, 0.12);
+				outline: none;
+			}
+			#ask::placeholder {
+				color: rgba(255, 255, 255, 0.4);
+			}
 		</style>
 	</head>
 	<body>
@@ -88,6 +144,10 @@
 			<input id="search" type="search" placeholder="Search apps…" autocomplete="off" />
 			<ul id="grid"></ul>
 			<p id="status"></p>
+			<div id="chat">
+				<ul id="messages"></ul>
+				<input id="ask" type="text" placeholder="Ask the agent…" autocomplete="off" />
+			</div>
 		</div>
 		<script src="launcher.js"></script>
 	</body>
