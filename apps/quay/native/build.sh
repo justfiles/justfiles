@@ -4,13 +4,17 @@
 #
 #   ./build.sh Code        # a booter bundle ./Code.app (mock target, own identity)
 #   ./build.sh --launcher  # the launcher  ./Quay.app  (LSUIElement + hotkey panel)
-#   ./build.sh --apps      # mock mini-app bundles in ~/Applications/Quay Apps/
+#
+# The shared booter + icon tool land in ./build/ — a stable, gitignored dir where
+# quayd finds them to materialise the per-app `.app` bundles (Slice 6). The mock
+# mini-app `.app`s this used to stamp are now kernel-driven (see quayd/materialize).
 set -e
 cd "$(dirname "$0")"
 
-BIN=/tmp/quay-shell
-ICON=/tmp/quay-makeicon
-APPS_DIR="$HOME/Applications/Quay Apps"
+BUILD="$(pwd)/build"
+mkdir -p "$BUILD"
+BIN="$BUILD/quay-shell"
+ICON="$BUILD/quay-makeicon"
 
 # Shared binary + icon tool, built once.
 swiftc -O -swift-version 5 main.swift Booter.swift Launcher.swift -o "$BIN"
@@ -79,21 +83,8 @@ build_booter() { # Name
 	echo "built $app (booter, id=$id)"
 }
 
-build_mini_apps() {
-	mkdir -p "$APPS_DIR"
-	for name in Code Finder Paint; do
-		id="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
-		app="$APPS_DIR/$name.app"
-		make_bundle "$app" "$name" "app.justfiles.quay.app.$id" "$id" ""
-		/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" 2>/dev/null || true
-		echo "installed $app"
-	done
-}
-
 case "${1:-}" in
-	--launcher) build_launcher ;;
-	--apps) build_mini_apps ;;
-	--all) build_launcher; build_mini_apps ;;
-	"") echo "usage: build.sh <Name> | --launcher | --apps | --all" >&2; exit 2 ;;
+	--launcher | --all) build_launcher ;;
+	"") echo "usage: build.sh <Name> | --launcher" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
 esac
