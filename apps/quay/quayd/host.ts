@@ -4,12 +4,14 @@
 // the canonical, syncable store — apps live here, not in the macOS `.app`s (Slice 6
 // projects them out). Reducers run in a worker_thread sandbox (Slice 7).
 //
-// Capabilities run in-process (Slice 9): one `capabilityRegistry` of local units
-// the kernel owns. Today that's `volume` over the same native-FS Volume — the
-// kernel attaches each app's DECLARED scopes (Finder's `system`, others' per-app
-// `/data/<id>`), so a reducer reaches real files without ever holding the
-// capability itself. (`ai`/`devkit` are added when a built-in needs them — the
-// Slice 10 agent calls the LLM directly, not through a reducer capability.)
+// Capabilities run in-process: one `capabilityRegistry` of local units the kernel
+// owns. `volume` (Slice 9) spans the same native-FS Volume — the kernel attaches each
+// app's DECLARED scopes (Finder's `system`, others' per-app `/data/<id>`), so a
+// reducer reaches real files without ever holding the capability itself. `devkit`
+// (Slice 11) is the build pipeline Code uses to compile + install the apps you build:
+// `install` writes the new bundle into `/applications` and fires `onInstalled`, which
+// the daemon turns into a `.app` materialisation + launcher re-list. (The Slice 10
+// agent calls the LLM directly, so there's no reducer `ai` capability.)
 
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -21,6 +23,7 @@ import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 import { builtinCatalog, readBuiltin } from './builtins.ts'
+import { devkitCapability } from './devkit.ts'
 import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
 
 // Apps allowed to bind the `system` scope (the user's whole Volume) rather than a
@@ -37,13 +40,23 @@ export interface Host {
 }
 
 export async function createHost(
-	root = join(homedir(), 'Library', 'Application Support', 'quay', 'volume')
+	root = join(homedir(), 'Library', 'Application Support', 'quay', 'volume'),
+	// Fired after `devkit.install` writes a new app to `/applications`; the daemon
+	// (main.ts) re-materialises the `.app` projection and pushes the launcher a fresh
+	// catalog. Defaults to a no-op so tests can construct a host without the daemon.
+	onInstalled: () => void | Promise<void> = () => {}
 ): Promise<Host> {
 	await mkdir(root, { recursive: true })
 	const fs = volume(await nativeStorage(root))
 	const sandbox = nodeSandbox()
-	const capabilities = capabilityRegistry({ volume: volumeCapability(fs, { systemAllowlist }) })
-	const k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
+	// `devkit` needs the kernel `install` writes into, but the kernel is built with
+	// this registry already attached — so it's handed in lazily.
+	let k: Kernel
+	const capabilities = capabilityRegistry({
+		volume: volumeCapability(fs, { systemAllowlist }),
+		devkit: devkitCapability(fs, () => k, onInstalled)
+	})
+	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
 	await reconcileBuiltins(k, fs, builtinCatalog, readBuiltin)
 	return { fs, kernel: k, sandbox }
 }

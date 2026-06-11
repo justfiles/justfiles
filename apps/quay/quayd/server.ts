@@ -43,6 +43,9 @@ export interface Backend extends BerthBackend {
 
 export interface Served {
 	port: number
+	// Push the current `kernel.list()` to every connected launcher socket. The daemon
+	// calls this after an install (Slice 11) so an open launcher re-lists live.
+	broadcastCatalog(): Promise<void>
 	close(): void
 }
 
@@ -65,6 +68,9 @@ export function serve(
 	})
 	const wss = new WebSocketServer({ server: http })
 	const clients = new Set<WebSocket>()
+	// The launcher's privileged JSON sockets, tracked apart from berths (which speak
+	// Cap'n Web, not JSON) so a catalog push reaches only them.
+	const launchers = new Set<WebSocket>()
 	let idle: ReturnType<typeof setTimeout> | undefined
 
 	const arm = () => {
@@ -100,13 +106,20 @@ export function serve(
 			serveBerth(ws, backend, appId)
 			return
 		}
-		// The launcher's privileged JSON socket (catalog + debug ls).
+		// The launcher's privileged JSON socket (catalog + debug ls + agent chat).
+		launchers.add(ws)
+		ws.on('close', () => launchers.delete(ws))
 		ws.on('message', (data: RawData) => {
 			respond(ws, backend, data).catch((error) =>
 				reply(ws, { type: 'error', error: String(error) })
 			)
 		})
 	})
+
+	const broadcastCatalog = async (): Promise<void> => {
+		const payload = { type: 'catalog', apps: await backend.list() }
+		for (const ws of launchers) reply(ws, payload)
+	}
 
 	return new Promise((resolve) => {
 		http.listen(0, '127.0.0.1', () => {
@@ -115,6 +128,7 @@ export function serve(
 			arm()
 			resolve({
 				port,
+				broadcastCatalog,
 				close: () => {
 					wss.close()
 					http.close()

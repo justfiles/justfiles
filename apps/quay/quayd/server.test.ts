@@ -67,6 +67,16 @@ test('serves a Volume directory listing for a debug ls', async () => {
 	ws.close()
 })
 
+test('broadcastCatalog pushes a fresh catalog to every launcher socket', async () => {
+	const ws = await open('secret')
+	const pushed = new Promise((resolve) =>
+		ws.once('message', (data) => resolve(JSON.parse(data.toString())))
+	)
+	await served.broadcastCatalog()
+	expect(await pushed).toEqual({ type: 'catalog', apps })
+	ws.close()
+})
+
 test('rejects a client with the wrong token', async () => {
 	const ws = new WebSocket(`ws://127.0.0.1:${served.port}/?token=wrong`)
 	const code = await new Promise((resolve) => ws.once('close', resolve))

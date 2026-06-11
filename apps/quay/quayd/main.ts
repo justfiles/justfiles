@@ -8,6 +8,10 @@
 // registry (`volume`), so a capability-using app (Finder) reaches real files.
 // Slice 10: `@justfiles/agent` runs here too, driving real `.app` bundles and the
 // same kernel the berths subscribe to; the launcher hosts its chat over this socket.
+// Slice 11: Code's `devkit.install` writes a new app into the kernel and fires
+// `onInstalled`; the daemon re-materialises the `.app` projection and pushes the
+// launcher a fresh catalog, so a freshly-built app shows up in both Spotlight and the
+// launcher with no app-code change.
 
 import { randomBytes } from 'node:crypto'
 import { createQuayAgent } from './agent.ts'
@@ -16,7 +20,10 @@ import { createHost } from './host.ts'
 import { reconcileProjection } from './materialize.ts'
 import { type Backend, serve } from './server.ts'
 
-const host = await createHost()
+// Re-materialise the OS projection + re-list the launcher after an install. Bound to
+// the real `served` once the server is up (an install can only arrive over a socket).
+let onInstalled: () => Promise<void> = async () => {}
+const host = await createHost(undefined, () => onInstalled())
 const agent = await createQuayAgent(host)
 
 const backend: Backend = {
@@ -53,21 +60,32 @@ const exit = async () => {
 	process.exit(0)
 }
 
-const { port } = await serve(backend, {
+const served = await serve(backend, {
 	token,
 	onIdle: exit,
 	// A window opening/closing pins/evicts that app's reducer worker (Slice 8).
 	windows: { open: host.sandbox.retain, close: host.sandbox.release }
 })
-await writeRuntime({ port, token, pid: process.pid })
-const apps = await host.kernel.list()
-console.log(`quayd listening on ws://127.0.0.1:${port}`)
-console.log(`kernel apps: ${apps.map((app) => app.id).join(', ') || '(none)'}`)
+await writeRuntime({ port: served.port, token, pid: process.pid })
 
-// Project the catalog into ~/Applications/Quay Apps/ so the apps are real macOS
-// apps (Spotlight/Launchpad/Raycast), launchable even with the launcher closed.
-// One-way, Volume wins; failure is non-fatal (the socket catalog still works).
-await reconcileProjection(apps).catch((error) => console.error('quayd: projection failed', error))
+// Project the catalog into ~/Applications/Quay Apps/ so the apps are real macOS apps
+// (Spotlight/Launchpad/Raycast), launchable even with the launcher closed. One-way,
+// Volume wins; failure is non-fatal (the socket catalog still works). The same
+// reconcile runs after each install (`onInstalled`) so a freshly-built app projects
+// out and the launcher re-lists immediately.
+const project = async () => {
+	const apps = await host.kernel.list()
+	await reconcileProjection(apps).catch((error) => console.error('quayd: projection failed', error))
+}
+onInstalled = async () => {
+	await project()
+	await served.broadcastCatalog()
+}
+
+const apps = await host.kernel.list()
+console.log(`quayd listening on ws://127.0.0.1:${served.port}`)
+console.log(`kernel apps: ${apps.map((app) => app.id).join(', ') || '(none)'}`)
+await project()
 
 process.on('SIGINT', exit)
 process.on('SIGTERM', exit)
