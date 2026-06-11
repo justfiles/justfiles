@@ -4,7 +4,9 @@
 // real `.app` bundles. Slice 7: serve each app's assets over http and a token-
 // scoped Cap'n Web berth (dispatch/state/subscribe) so a window renders its real
 // `gui.js` and an action round-trips. Slice 8: a window opening/closing pins/evicts
-// that app's reducer worker. Capabilities and the agent follow.
+// that app's reducer worker. Slice 9: the kernel carries an in-process capability
+// registry (`volume`), so a capability-using app (Finder) reaches real files. The
+// agent follows.
 
 import { randomBytes } from 'node:crypto'
 import { clearRuntime, writeRuntime } from './discovery.ts'
