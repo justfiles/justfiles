@@ -8,6 +8,7 @@
 		{ "path": "./packages/state/tsconfig.json" },
 		{ "path": "./packages/tasks/tsconfig.json" },
 		{ "path": "./packages/ui/tsconfig.json" },
-		{ "path": "./apps/worker/tsconfig.json" }
+		{ "path": "./apps/worker/tsconfig.json" },
+		{ "path": "./apps/quay/tsconfig.json" }
 	]
 }

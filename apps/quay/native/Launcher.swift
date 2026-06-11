@@ -1,14 +1,17 @@
 import Carbon.HIToolbox
 import Cocoa
+import Darwin
 import WebKit
 
 // The launcher: an LSUIElement agent whose global hotkey (Option+Space) toggles a
 // frameless, vibrancy-blurred panel. The panel hosts the launcher web UI; picking
 // an app launches its real .app bundle via LaunchServices — by bundle, not as a
 // window of the launcher — which is what gives each app its own Dock identity.
+// It is also the privileged client of quayd: it ensures the daemon is running and
+// hands the web UI its {port, token} so the UI can pull the catalog over the socket.
 
 final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-	WKScriptMessageHandler
+	WKScriptMessageHandler, WKScriptMessageHandlerWithReply
 {
 	private var panel: NSPanel!
 	private var webView: WKWebView!
@@ -48,6 +51,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 		let cfg = WKWebViewConfiguration()
 		cfg.userContentController.add(self, name: "quay")
+		cfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "quayd")
 		cfg.userContentController.addUserScript(
 			WKUserScript(source: Self.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
 		)
@@ -77,6 +81,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		}
 		NSApp.activate(ignoringOtherApps: true)
 		panel.makeKeyAndOrderFront(nil)
+		// Reconnect now the view is visible: ensures quayd and refreshes the list
+		// even if it was killed (and our timers suspended) while we were hidden.
+		webView.evaluateJavaScript("window.quayConnect && window.quayConnect()", completionHandler: nil)
 	}
 
 	private func hide() { panel.orderOut(nil) }
@@ -98,6 +105,28 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 			hide()
 		default:
 			break
+		}
+	}
+
+	// Reply bridge (window.quay.runtime): ensure quayd is up, off the main thread,
+	// then hand the web UI its {port, token} so it can open the socket.
+	func userContentController(
+		_: WKUserContentController, didReceive message: WKScriptMessage,
+		replyHandler: @escaping (Any?, String?) -> Void
+	) {
+		guard (message.body as? [String: Any])?["action"] as? String == "runtime" else {
+			replyHandler(nil, "unknown")
+			return
+		}
+		DispatchQueue.global().async {
+			let runtime = Quayd.ensure()
+			DispatchQueue.main.async {
+				if let runtime {
+					replyHandler(["port": runtime.port, "token": runtime.token], nil)
+				} else {
+					replyHandler(nil, "quayd unavailable")
+				}
+			}
 		}
 	}
 
@@ -125,9 +154,64 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	static let bridgeJS = """
 	window.quay = {
 	  open: function (id) { window.webkit.messageHandlers.quay.postMessage({ action: 'open', id: id }) },
-	  hide: function () { window.webkit.messageHandlers.quay.postMessage({ action: 'hide' }) }
+	  hide: function () { window.webkit.messageHandlers.quay.postMessage({ action: 'hide' }) },
+	  runtime: function () { return window.webkit.messageHandlers.quayd.postMessage({ action: 'runtime' }) }
 	}
 	"""
+}
+
+// Find-or-spawn the quayd daemon. Discovery is via runtime.json ({port, token,
+// pid}); liveness via the pid. If it is absent or dead, spawn node on the quayd
+// entrypoint (paths stamped into Info.plist by build.sh) and wait for it to
+// advertise itself. A single-writer lock is deferred (Phase 4 hardening).
+enum Quayd {
+	struct Runtime: Decodable {
+		let port: Int
+		let token: String
+		let pid: Int
+	}
+
+	static let supportDir = FileManager.default.homeDirectoryForCurrentUser
+		.appendingPathComponent("Library/Application Support/quay")
+	static var runtimePath: URL { supportDir.appendingPathComponent("runtime.json") }
+
+	static func read() -> Runtime? {
+		guard let data = try? Data(contentsOf: runtimePath) else { return nil }
+		return try? JSONDecoder().decode(Runtime.self, from: data)
+	}
+
+	static func alive(_ r: Runtime) -> Bool { kill(pid_t(r.pid), 0) == 0 }
+
+	static func ensure() -> Runtime? {
+		if let r = read(), alive(r) { return r }
+		spawn()
+		for _ in 0..<50 { // up to ~5s for the daemon to advertise itself
+			usleep(100_000)
+			if let r = read(), alive(r) { return r }
+		}
+		return read()
+	}
+
+	private static func spawn() {
+		let info = Bundle.main.infoDictionary ?? [:]
+		guard let node = info["QuaydNode"] as? String,
+			let script = info["QuaydScript"] as? String
+		else { return }
+		let p = Process()
+		p.executableURL = URL(fileURLWithPath: node)
+		p.arguments = [script]
+		p.currentDirectoryURL = URL(fileURLWithPath: script).deletingLastPathComponent()
+		// Log to a file so a GUI-spawned daemon (no inherited terminal) is debuggable.
+		try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+		let log = supportDir.appendingPathComponent("quayd.log")
+		FileManager.default.createFile(atPath: log.path, contents: nil)
+		if let handle = try? FileHandle(forWritingTo: log) {
+			handle.seekToEndOfFile()
+			p.standardOutput = handle
+			p.standardError = handle
+		}
+		try? p.run()
+	}
 }
 
 // Borderless windows can't become key by default; the search field needs focus.

@@ -62,6 +62,11 @@ build_launcher() {
 	app="Quay.app"
 	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
 	cp -R ../launcher-ui "$app/Contents/Resources/launcher-ui"
+	# Dev wiring: how the launcher spawns quayd (Command Line Tools have no packaged
+	# daemon yet). Stamp this machine's absolute node + quayd entrypoint paths.
+	plist="$app/Contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Add :QuaydNode string $(command -v node)" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :QuaydScript string $(cd ../quayd && pwd)/main.ts" "$plist" 2>/dev/null || true
 	codesign --force --sign - "$app" 2>/dev/null || true # re-sign after adding assets
 	echo "built $app (launcher)"
 }
@@ -88,6 +93,7 @@ build_mini_apps() {
 case "${1:-}" in
 	--launcher) build_launcher ;;
 	--apps) build_mini_apps ;;
-	"") echo "usage: build.sh <Name> | --launcher | --apps" >&2; exit 2 ;;
+	--all) build_launcher; build_mini_apps ;;
+	"") echo "usage: build.sh <Name> | --launcher | --apps | --all" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
 esac
