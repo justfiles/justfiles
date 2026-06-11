@@ -1,9 +1,10 @@
-// The localhost socket quayd serves. Slice 4 carries a tiny JSON request/response
-// for the stub catalog; Slice 6 replaces it with token-scoped Cap'n Web berths
-// (and http-served assets). Every connection must present the boot token.
+// The localhost socket quayd serves. Slice 5 carries a tiny JSON request/response
+// (`list` → the catalog, `ls` → a Volume listing); Slice 6 replaces it with
+// token-scoped Cap'n Web berths (and http-served assets). Every connection must
+// present the boot token.
 
 import { createServer } from 'node:http'
-import { type RawData, type WebSocket, WebSocketServer } from 'ws'
+import { type RawData, WebSocket, WebSocketServer } from 'ws'
 
 export interface AppInfo {
 	id: string
@@ -12,7 +13,9 @@ export interface AppInfo {
 }
 
 export interface Backend {
-	list(): AppInfo[]
+	list(): Promise<AppInfo[]>
+	// Debug (Slice 5 verify): a directory listing of the Volume at `path`.
+	ls(path: string): Promise<unknown>
 }
 
 export interface Served {
@@ -50,15 +53,9 @@ export function serve(
 		clients.add(ws)
 		arm()
 		ws.on('message', (data: RawData) => {
-			let msg: { type?: string }
-			try {
-				msg = JSON.parse(data.toString())
-			} catch {
-				return
-			}
-			if (msg.type === 'list') {
-				ws.send(JSON.stringify({ type: 'catalog', apps: backend.list() }))
-			}
+			respond(ws, backend, data).catch((error) =>
+				reply(ws, { type: 'error', error: String(error) })
+			)
 		})
 		ws.on('close', () => {
 			clients.delete(ws)
@@ -80,4 +77,19 @@ export function serve(
 			})
 		})
 	})
+}
+
+async function respond(ws: WebSocket, backend: Backend, data: RawData): Promise<void> {
+	let msg: { type?: string; path?: string }
+	try {
+		msg = JSON.parse(data.toString())
+	} catch {
+		return
+	}
+	if (msg.type === 'list') reply(ws, { type: 'catalog', apps: await backend.list() })
+	else if (msg.type === 'ls') reply(ws, { type: 'ls', entries: await backend.ls(msg.path ?? '/') })
+}
+
+function reply(ws: WebSocket, payload: unknown): void {
+	if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload))
 }

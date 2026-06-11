@@ -199,7 +199,10 @@ enum Quayd {
 		else { return }
 		let p = Process()
 		p.executableURL = URL(fileURLWithPath: node)
-		p.arguments = [script]
+		// `--import tsx`: the kernel/fs packages are TS source with extensionless
+		// internal imports, so quayd runs through the tsx loader (resolved from the
+		// quayd dir's node_modules) rather than bare `node`.
+		p.arguments = ["--import", "tsx", script]
 		p.currentDirectoryURL = URL(fileURLWithPath: script).deletingLastPathComponent()
 		// Log to a file so a GUI-spawned daemon (no inherited terminal) is debuggable.
 		try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

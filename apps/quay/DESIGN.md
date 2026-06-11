@@ -49,6 +49,14 @@ Three forces shape the design:
 - **One trusted host.** The kernel, the app **reducers** (sandboxed), the **capabilities**, and the
   **agent** all run in the Node daemon. **Nothing trusted runs inside Safari.** The webview only renders
   `gui.js` and forwards user intents over an RPC session.
+- **Apps live in the Volume, projected to the OS.** The canonical install set is the kernel's
+  `/applications` **in the Volume** — the same syncable substrate frieren keeps. Each `.app` in
+  `~/Applications/Quay Apps/` is a per-device **projection** of that catalog, materialised locally for OS
+  identity and never synced. Today the Volume is local (`nativeStorage`); because apps stay *in* it,
+  swapping frieren's synced backend in later makes the whole catalog sync — an app built on `quay` shows
+  up on frieren and vice-versa — with no change to where apps live, and the portable core (Volume +
+  kernel) stays identical across web and native. (The alternative — making each `.app` the store — is
+  faithful to "real apps" but is fundamentally incompatible with whole-Volume sync, so it's rejected.)
 
 `quay` is, in the DESIGN.md §2 sense, just **another host**: it supplies the three seams — a **Volume**
 (native FS), a **`GetSandbox`** (`worker_threads`), and a **`Capabilities`** registry — exactly like
@@ -165,23 +173,30 @@ anything but its app.
 
 ## 5 · The app catalog & OS bundles
 
-Two distinct notions of "installed", kept in sync:
+Two notions of "installed" — a **canonical, syncable** one and a **local projection** — kept in lock-step
+by a **one-way** reconcile:
 
-- **Source of truth = the kernel.** `kernel.list()` (the Volume's `/applications`) is canonical, and
+- **Source of truth = the Volume.** `kernel.list()` (the Volume's `/applications`) is canonical, and
   always includes the **built-ins** (seeded by `reconcileBuiltins` on first run — `app-code` + `app-finder`).
-  `quay`'s own launcher lists from here.
-- **OS bundles = a materialisation.** So *other* launchers (Spotlight, Raycast, Launchpad, Alfred) can
-  find and launch apps, `quayd` writes a `.app` bundle per installed app into
+  `quay`'s own launcher lists from here. Apps stay **in the Volume** — not in the `.app`s — precisely so
+  the install set rides the same syncable substrate frieren does: swap `nativeStorage` for frieren's
+  synced backend later and the catalog syncs across devices with no change to where apps live.
+- **OS bundles = a local projection.** So *other* launchers (Spotlight, Raycast, Launchpad, Alfred) can
+  find and launch apps, `quayd` materialises a **thin** `.app` per installed app into
   `~/Applications/Quay Apps/` — Chrome's PWA-shim pattern. Each bundle is the shared booter binary + a
-  per-app `Info.plist` + the app icon, **ad-hoc signed** (`codesign -s -`; locally created ⟹ no
-  quarantine ⟹ Gatekeeper-clean) and registered with `lsregister`.
+  per-app `Info.plist` + the app icon — **no app code** (the bytes stay in the Volume; `quayd` serves
+  them over http, §6). Ad-hoc signed (`codesign -s -`; locally created ⟹ no quarantine ⟹ Gatekeeper-clean)
+  and registered with `lsregister`. The projection is **derived, never a second source of truth**, and is
+  regenerated per device — so it never needs to sync.
 
-A **reconcile** step keeps `~/Applications/Quay Apps/` in lock-step with `kernel.list()`: install →
-write bundle; uninstall → remove; update → refresh icon/name. This is the desktop analogue of frieren's
-`catalog:changed`.
+A **one-way** reconcile (Volume → OS) keeps `~/Applications/Quay Apps/` in lock-step with `kernel.list()`:
+install (local *or* synced-in) → write bundle; uninstall → remove; update → refresh icon/name. This is the
+desktop analogue of frieren's `catalog:changed`. Because it is one-directional, there is no two-store
+coherence problem — the Volume always wins.
 
-> Because apps now live in the **real OS**, a fresh install has *no* third-party apps yet — only the
-> seeded built-ins. `app-code` is the bootstrap: the built-in you use to build and install everything else.
+> A fresh device's Volume has *no* third-party apps yet — only the seeded built-ins (plus, once synced,
+> whatever your account already carries). `app-code` is the bootstrap: the built-in you use to build and
+> install everything else.
 
 <a id="transport"></a>
 
@@ -320,7 +335,7 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 - `quayd` — the daemon: server (http assets + Cap'n Web ws), discovery/lockfile, berth sessions, token scoping.
 - `nodeSandbox()` — `GetSandbox` over `worker_threads` (the same protocol frieren's sandboxes use), with idle eviction.
 - The Swift **booter/launcher** (one binary, two modes) + global hotkey + the launcher web UI.
-- **OS-bundle materialisation** — generate/sign/register `.app` bundles in `~/Applications/Quay Apps/`, reconciled to `kernel.list()`.
+- **OS-bundle materialisation** — generate/sign/register **thin** `.app` shims (no app code) in `~/Applications/Quay Apps/`, reconciled one-way to `kernel.list()`.
 - The desktop `AppController` (open/close real bundles) + a Cap'n Web `SocketLike` for the agent UI.
 - Root selection + first-run built-in seed from packaged resources.
 - *Later:* the `WKWebView` live-preview for app-code.
@@ -333,6 +348,9 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
   Who supervises it (the launcher vs a LaunchAgent)? Start with ensure-running + idle-exit; revisit.
 - **Multi-window of one app.** macOS re-`open` just activates a running `.app`. v1 = one window per app
   (activate if open); later `open -n` or in-shell multi-window, all live-syncing one kernel state.
+- **Projection drift.** A user dragging a materialised `.app` to the Trash is a delete the Volume never
+  authorised. v1: the next reconcile re-materialises it (Trash is *not* uninstall); later, optionally watch
+  `~/Applications/Quay Apps/` and treat a Trash as a real uninstall — the one tolerated `.app` → Volume edge.
 - **Native-touching capabilities.** Notifications, clipboard, "reveal in Finder", dialogs live in
   `quayd` but need a native affordance — route through a small native helper or the relevant shell when they arrive.
 - **Crash/reconnect.** Booter behaviour on `quayd` drop (reconnect UI + re-ensure). Reducer-worker crash

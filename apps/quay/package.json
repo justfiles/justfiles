@@ -4,15 +4,21 @@
 	"private": true,
 	"scripts": {
 		"typecheck": "tsc --noEmit",
+		"quayd": "node --import tsx quayd/main.ts",
 		"build": "native/build.sh --all",
 		"start": "pkill -f Quay.app/Contents/MacOS/Quay 2>/dev/null; open native/Quay.app"
 	},
 	"dependencies": {
+		"@justfiles/app": "workspace:*",
+		"@justfiles/app-code": "workspace:*",
+		"@justfiles/app-finder": "workspace:*",
+		"@justfiles/fs": "workspace:*",
 		"ws": "^8.20.1"
 	},
 	"devDependencies": {
 		"@types/node": "^25.7.0",
 		"@types/ws": "^8.5.13",
+		"tsx": "^4.21.0",
 		"typescript": "^6.0.3"
 	}
 }

@@ -3,10 +3,11 @@ import { WebSocket } from 'ws'
 import { type Served, serve } from './server.ts'
 
 const apps = [{ id: 'code', name: 'Code', glyph: 'C' }]
+const entries = [{ name: 'applications' }, { name: 'state' }]
 let served: Served
 
 beforeAll(async () => {
-	served = await serve({ list: () => apps }, { token: 'secret' })
+	served = await serve({ list: async () => apps, ls: async () => entries }, { token: 'secret' })
 })
 afterAll(() => served.close())
 
@@ -18,13 +19,23 @@ function open(token: string): Promise<WebSocket> {
 	})
 }
 
-test('serves the catalog to a client with the right token', async () => {
-	const ws = await open('secret')
-	const catalog = new Promise((resolve) =>
+function request(ws: WebSocket, message: unknown): Promise<unknown> {
+	const reply = new Promise((resolve) =>
 		ws.once('message', (data) => resolve(JSON.parse(data.toString())))
 	)
-	ws.send(JSON.stringify({ type: 'list' }))
-	expect(await catalog).toEqual({ type: 'catalog', apps })
+	ws.send(JSON.stringify(message))
+	return reply
+}
+
+test('serves the catalog to a client with the right token', async () => {
+	const ws = await open('secret')
+	expect(await request(ws, { type: 'list' })).toEqual({ type: 'catalog', apps })
+	ws.close()
+})
+
+test('serves a Volume directory listing for a debug ls', async () => {
+	const ws = await open('secret')
+	expect(await request(ws, { type: 'ls', path: '/' })).toEqual({ type: 'ls', entries })
 	ws.close()
 })
 

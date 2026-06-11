@@ -15,21 +15,35 @@ Nothing here is built from scratch; `quay` is a new **host** over existing packa
 `capnweb`), `@justfiles/agent`, `@justfiles/fs` (`volume`, `nativeStorage`), and every `@justfiles/app-*`
 bundle. The WKWebView `.app` shape is already proven in `apps/desktop/native-poc`.
 
+## Where apps live (the one architectural decision)
+
+Apps live in the **Volume's `/applications`** — the canonical, syncable store the kernel already owns,
+unchanged from frieren. Each `~/Applications/Quay Apps/<App>.app` is a **thin, code-less projection** of
+that catalog, materialised **one-way** (Volume → OS) for macOS identity (Dock/Spotlight/Cmd-Tab). The
+`.app` is never a second source of truth and never syncs; `quayd` serves the actual `gui.js`/`app.js` from
+the Volume over http. Keeping the bytes in the Volume is what lets a later swap to frieren's synced backend
+sync the whole catalog for free — and keeps the portable core identical across web and native. (Making the
+`.app` itself the store is faithful to "real apps" but is incompatible with whole-Volume sync, so it's out.)
+See `DESIGN.md` §1/§5.
+
 ## Module layout
 
 ```
 apps/quay/
-  quayd/          # Node daemon: kernel + Volume + sandbox + caps + agent + http/ws server
+  quayd/          # Node daemon: kernel + Volume + sandbox + caps + agent + http/ws + .app materialisation
   native/         # one Swift program, two modes: the booter + the launcher (+ build.sh)
   launcher-ui/    # launcher web UI (mocked first; later served by quayd)
   DESIGN.md · PLAN.md
 ```
 
-## The milestone you can watch for
+## The milestones you can watch for
 
-**End of Slice 3:** open the launcher, see a list including **Code**, click it, and a `WKWebView`
-window titled "Code" opens with its own Dock icon — all *before* any kernel/backend exists. That proves
-the native-shell idea. Everything after fills in real behaviour slice by slice.
+**End of Slice 3 (mocked):** open the launcher, see a list including **Code**, click it, and a `WKWebView`
+window titled "Code" opens with its own Dock icon — *before any backend exists*. Proves the native-shell idea.
+
+**End of Slice 6 (real):** the same apps are now **real macOS apps** — seeded from the kernel's catalog and
+indexed by Spotlight / Launchpad / Raycast, launchable even with the launcher closed. **End of Slice 7:**
+launching one renders its actual `gui.js`.
 
 ---
 
@@ -85,7 +99,7 @@ Dock icon. Close it; the launcher and other windows keep running. `Cmd+Q` on an 
 
 # Phase 1 — the daemon & the real catalog
 
-Introduce `quayd`; move the catalog from mocked HTML to the kernel.
+Introduce `quayd`; move the catalog from mocked HTML to the kernel; project it into the real OS.
 
 ## Slice 4 — `quayd` skeleton + discovery + ensure-running
 
@@ -99,7 +113,7 @@ hardcoded HTML.
 
 **Verify:**
 ```sh
-cd apps/quay/quayd && node main.ts          # logs port; writes ~/Library/Application Support/quay/runtime.json
+cd apps/quay && pnpm quayd                  # logs port; writes ~/Library/Application Support/quay/runtime.json
 ```
 Open `Quay.app`; the list renders from `quayd` (kill `quayd` → launcher shows "connecting"; relaunch via
 the launcher re-spawns it). `pnpm typecheck && pnpm test` green.
@@ -110,11 +124,36 @@ the launcher re-spawns it). `pnpm typecheck && pnpm test` green.
 seam, and seeds built-ins via `reconcileBuiltins` over packaged bundles — **app-code (Code) +
 app-finder (Finder)**. The launcher lists the real `kernel.list()`.
 
-**Touches:** `quayd/main.ts` (volume + kernel + seed), packaged built-in bundles wiring.
+The Volume's `/applications` is the **canonical, syncable** store — apps live *here*, not in the `.app`s
+(Slice 6 projects them into the OS). Keeping them in the Volume is what lets a later swap to frieren's
+synced backend sync the catalog for free. **No kernel change** — `quay` reuses the existing Volume store.
+
+> Runtime note: `@justfiles/app`/`@justfiles/fs` ship TS source with extensionless internal imports, so
+> quayd runs through the `tsx` loader (`node --import tsx`, wired into `pnpm quayd` and the launcher's
+> spawn) rather than bare `node`.
+
+**Touches:** `quayd/{main,host,builtins}.ts` (volume + kernel + seed), `package.json` (workspace deps +
+`tsx`), `native/Launcher.swift` (spawn via the tsx loader).
 
 **Verify:** `~/Library/Application Support/quay/volume/applications/<app-code id>/` exists on disk
-(open in Finder); the launcher shows the real built-in catalog including **Code** and **Finder**. A debug `kernel:ls`
-over ws returns a real directory listing.
+(open in Finder); the launcher shows the real built-in catalog including **Code** and **Finder**. A debug
+`kernel:ls` over ws returns a real directory listing.
+
+## Slice 6 — project the catalog into the OS (`.app` materialisation + Spotlight)  ⟵ **real apps in macOS**
+
+**Goal:** `quayd` materialises a **thin** signed `.app` per installed app into `~/Applications/Quay Apps/`
+— shared booter binary + per-app `Info.plist` + icon, **no app code** (the bytes stay in the Volume) —
+`codesign -s -`, `lsregister`, reconciled **one-way** to `kernel.list()` (install/sync-in → write; uninstall
+→ remove; update → refresh icon/name). This replaces the Phase-0 dev-script mock `.app`s with real,
+kernel-driven ones. Because the reconcile is one-directional, there's no two-store coherence problem — the
+Volume always wins.
+
+**Touches:** `quayd/materialize.ts` (write/sign/register/reconcile `.app`s), booter-binary packaging (where
+`quayd` finds the shared booter), `quayd/main.ts` (run reconcile on boot + on catalog change).
+
+**Verify:** built-ins appear in **Spotlight / Launchpad / Raycast** (`Cmd+Space` → "Code"). Launching
+**Code from Spotlight** with the launcher closed ensure-runs `quayd` and opens its window. (The window is a
+placeholder until Slice 7 wires real rendering.) Removing an app from the kernel removes its `.app`.
 
 ---
 
@@ -122,11 +161,12 @@ over ws returns a real directory listing.
 
 Render real `gui.js` and round-trip a dispatch.
 
-## Slice 6 — assets + Cap'n Web berths
+## Slice 7 — assets + Cap'n Web berths
 
 **Goal:** `quayd` serves `gui.js` + the shared-React importmap over localhost http; the booter loads
 `http://127.0.0.1:PORT/app/<id>?token=…`; a token-scoped **berth** (Cap'n Web) provides
-`dispatch`/`subscribe`/`state`; `reactGui` mounts the real GUI.
+`dispatch`/`subscribe`/`state`; `reactGui` mounts the real GUI. `quayd` reads the bytes **from the Volume** —
+the materialised `.app`s carry none.
 
 **Touches:** `quayd/server.ts` (http assets + importmap injection + Cap'n Web berth), booter (load URL +
 token), `reactGui` Transport shim.
@@ -135,7 +175,7 @@ token), `reactGui` Transport shim.
 (`berth.dispatch` → kernel → `app.update` → `subscribe` re-render) and state persists to
 `/state/<id>.json`. Token from another origin is rejected.
 
-## Slice 7 — `nodeSandbox` (worker_threads) + lazy eviction
+## Slice 8 — `nodeSandbox` (worker_threads) + lazy eviction
 
 **Goal:** reducers run in `worker_threads` on the shared sandbox protocol; instantiated on first
 dispatch (content-addressed), torn down after idle, re-spawned on demand.
@@ -148,25 +188,15 @@ green.
 
 ---
 
-# Phase 3 — capabilities, OS bundles, agent, install
+# Phase 3 — capabilities, agent, install
 
-## Slice 8 — capabilities in-process
+## Slice 9 — capabilities in-process
 
 **Goal:** replace the stub seam with `capabilityRegistry({ volume: volumeCapability(fs, {systemAllowlist}) })`
 (+ `ai` if a key is present). An app that uses `volume` works against real files.
 
 **Verify:** Finder/Paint (volume users) read/write real files under `/data/<id>`; edits show up in
 Finder.app on disk. Capability/scope tests green.
-
-## Slice 9 — OS bundles + Spotlight registration
-
-**Goal:** `quayd` materialises a signed `.app` per installed app into `~/Applications/Quay Apps/`
-(shared booter binary + per-app `Info.plist` + icon, `codesign -s -`, `lsregister`), reconciled to
-`kernel.list()`.
-
-**Verify:** built-ins appear in **Spotlight / Launchpad / Raycast** (`Cmd+Space` → "Code"). Launching
-**Code from Spotlight** (launcher closed) ensures-runs `quayd` and opens the app. Uninstall removes the
-bundle.
 
 ## Slice 10 — agent in `quayd` + agent UI in the launcher
 
@@ -179,8 +209,8 @@ when the agent dispatches to it. Agent/session tests green.
 ## Slice 11 — app-code build & install via devkit
 
 **Goal:** thin desktop devkit over `@justfiles/app/devkit` — native-esbuild toolchain; `installDraft`
-writes `/applications`, fires `onInstalled` → bundle materialised (Slice 9) → launcher + Spotlight
-re-list. `packDraft` for export.
+writes `/applications`, fires `onInstalled` → `.app` materialised (Slice 6's reconcile) → launcher +
+Spotlight re-list. `packDraft` for export.
 
 **Verify:** author a tiny project in **Code**, click Install → it appears in the launcher **and**
 Spotlight, launchable as its own app — with no code change to app-code's reducer.
@@ -192,6 +222,8 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
 | Item | Note |
 |----|----|
 | **Hardening** | enforce token scoping, WKWebView CSP/navigation lockdown, `quayd` single-writer lock, idle-exit policy, booter reconnect-on-drop. Fold critical bits into earlier slices. |
+| **Sync backend** | swap `nativeStorage` for frieren's synced Volume backend — apps/state/data then sync across devices with no change to where apps live; the `.app` projection regenerates per device. |
+| **Projection drift** | watch `~/Applications/Quay Apps/` so a Trash-ed `.app` becomes a real uninstall (the one tolerated `.app` → Volume edge). v1 just re-materialises on next reconcile. |
 | **Live preview** (`devkit.run`) | the one bespoke seam — a second `WKWebView` over the code window's slot. |
 | **Multi-window** per app | `open -n` / in-shell windows, all live-syncing one kernel state. |
 | **Native-touching caps** | notifications, clipboard, reveal-in-Finder via a small native helper. |
@@ -200,6 +232,10 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
 
 ## Decisions (resolved)
 
+- **App home:** apps live in the Volume's `/applications` (canonical, syncable); each
+  `~/Applications/Quay Apps/<App>.app` is a thin, code-less **projection** materialised one-way from the
+  kernel — not a second store. Keeps the catalog syncable via a later Volume-backend swap and the portable
+  core unchanged; the rejected alternative (the `.app` *is* the store) can't sync the whole Volume.
 - **Hotkey:** `Option+Space` (avoids Spotlight's `Cmd+Space`).
 - **Bundle ids:** `app.justfiles.quay` (launcher); `app.justfiles.quay.app.<id>` (each mini-app).
 - **Built-in seed set (v1):** `app-code` (Code) + `app-finder` (Finder).
