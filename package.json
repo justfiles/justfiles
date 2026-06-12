@@ -5,15 +5,16 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.6",
 		"@vitest/coverage-v8": "^4.0.18",
+		"turbo": "^2.9.18",
 		"typescript": "6.0.3",
 		"vitest": "^4.0.18"
 	},
 	"scripts": {
-		"build": "pnpm -r --if-present build",
-		"build:apps": "pnpm --filter \"./packages/app-*\" run build",
-		"dev": "pnpm run build:apps && pnpm --filter frieren run dev",
+		"build": "turbo run build",
+		"dev": "turbo run dev --filter frieren",
 		"format": "biome format --write .",
 		"lint:fix": "biome check --write .",
+		"restart": "turbo run restart --filter @justfiles/quay",
 		"typecheck": "tsc -b --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest"

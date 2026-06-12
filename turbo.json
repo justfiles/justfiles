@@ -1,0 +1,61 @@
+{
+	"$schema": "https://turborepo.com/schema.json",
+	"tasks": {
+		"transit": {
+			"dependsOn": ["^transit"]
+		},
+		"build": {
+			"dependsOn": ["transit"],
+			"outputs": ["dist/**", "out/**", "native/build/**", "native/Quay.app/**"],
+			"outputLogs": "new-only"
+		},
+		"@justfiles/desktop#build": {
+			"dependsOn": [
+				"@justfiles/app-code#build",
+				"@justfiles/app-counter#build",
+				"@justfiles/app-finder#build",
+				"@justfiles/app-paint#build",
+				"@justfiles/app-settings#build",
+				"transit"
+			],
+			"outputs": ["out/**"],
+			"outputLogs": "new-only"
+		},
+		"@justfiles/quay#build": {
+			"dependsOn": [],
+			"inputs": ["package.json", "launcher-ui/**", "native/*.swift", "native/build.sh"],
+			"outputs": ["native/build/**", "native/Quay.app/**"],
+			"outputLogs": "new-only"
+		},
+		"dev": {
+			"dependsOn": ["transit"],
+			"cache": false,
+			"persistent": true
+		},
+		"frieren#dev": {
+			"dependsOn": [
+				"@justfiles/app-code#build",
+				"@justfiles/app-finder#build",
+				"@justfiles/app-paint#build",
+				"@justfiles/app-settings#build",
+				"transit"
+			],
+			"cache": false,
+			"persistent": true
+		},
+		"@justfiles/quay#reseed": {
+			"dependsOn": [
+				"build",
+				"@justfiles/app-code#build",
+				"@justfiles/app-counter#build",
+				"@justfiles/app-finder#build",
+				"@justfiles/app-settings#build"
+			],
+			"cache": false
+		},
+		"@justfiles/quay#restart": {
+			"dependsOn": ["reseed"],
+			"cache": false
+		}
+	}
+}

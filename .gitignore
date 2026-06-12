@@ -200,6 +200,7 @@ dist
 .agent
 .claude/settings.json
 .tmp
+.turbo/
 .playwright-cli/
 .playwright-mcp/
 

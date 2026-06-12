@@ -6,7 +6,8 @@
 		"typecheck": "tsc --noEmit",
 		"quayd": "node --import ./quayd/rawLoader.mjs --import tsx quayd/main.ts",
 		"build": "native/build.sh --launcher",
-		"reseed": "node --import ./quayd/rawLoader.mjs --import tsx quayd/reseed.ts"
+		"reseed": "node --import ./quayd/rawLoader.mjs --import tsx quayd/reseed.ts",
+		"restart": "native/restart.sh"
 	},
 	"dependencies": {
 		"@justfiles/agent": "workspace:*",
