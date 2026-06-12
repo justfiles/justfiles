@@ -1,6 +1,6 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI, injectStyle } from '@justfiles/app/browser'
-import type { AgentStatus } from '@justfiles/app/capabilities/agent-setup'
+import type { AgentStatus } from '@justfiles/app/capabilities/ai/admin'
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type Category, initialState, type SettingsApp, type SettingsState } from './app.ts'

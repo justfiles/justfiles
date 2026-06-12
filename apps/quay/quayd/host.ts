@@ -10,10 +10,10 @@
 // reducer reaches real files without ever holding the capability itself. `devkit`
 // (Slice 11) is the build pipeline Code uses to compile + install the apps you build:
 // `install` writes the new bundle into `/applications` and fires `onInstalled`, which
-// the daemon turns into a `.app` materialisation + launcher re-list. `agentSetup`
-// lets the Settings app sign the user in to ChatGPT and pick a model; the credential
-// lands on the Volume and the agent reads it (the agent still calls the LLM directly,
-// so there's no reducer `ai` capability).
+// the daemon turns into a `.app` materialisation + launcher re-list. The `ai`
+// capability's ADMIN facet lets the Settings app sign the user in to ChatGPT and pick
+// a model; the credential lands on the Volume and the agent reads it (the agent still
+// calls the LLM directly, so quay serves no `ai` USE facet).
 
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -24,7 +24,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { agentSetupCapability } from './agentSetup.ts'
+import { aiAdminCapability } from './aiAdmin.ts'
 import { builtinCatalog, readBuiltin } from './builtins.ts'
 import { devkitCapability } from './devkit.ts'
 import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
@@ -33,6 +33,10 @@ import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
 // per-app `/data/<id>` chroot. Finder is the file browser, so it's the one
 // built-in that needs it — mirroring frieren and the desktop sibling.
 const systemAllowlist = ['app.frieren.finder']
+
+// Apps allowed to reach the `ai` capability's ADMIN facet (AI sign-in / model
+// pick). Settings is the only first-party app that needs it.
+const aiAdminAllowlist = ['app.frieren.settings']
 
 export interface Host {
 	fs: Volume
@@ -58,9 +62,10 @@ export async function createHost(
 	const capabilities = capabilityRegistry({
 		volume: volumeCapability(fs, { systemAllowlist }),
 		devkit: devkitCapability(fs, () => k, onInstalled),
-		// AI-agent setup: Settings signs the user in to ChatGPT and picks a model;
-		// the credential lands on the Volume (connections.ts) and the agent reads it.
-		agentSetup: agentSetupCapability(fs)
+		// AI setup: the admin facet of `ai`. Settings signs the user in to ChatGPT and
+		// picks a model; the credential lands on the Volume (connections.ts) and the
+		// agent reads it. Gated to first-party apps so only Settings can reach it.
+		ai: aiAdminCapability(fs, { firstParty: aiAdminAllowlist })
 	})
 	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
 	await reconcileBuiltins(k, fs, builtinCatalog, readBuiltin)

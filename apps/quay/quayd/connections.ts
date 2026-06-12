@@ -1,7 +1,7 @@
 // The one place a connection lives: a plaintext JSON file on the Volume. A
 // connection is data, not code — so it rides the same syncable substrate
 // everything else does (`/system`, where the agent keeps soul.md). Acquiring the
-// ChatGPT token needs a browser + loopback (agentSetup.ts, quay-only); *using*
+// ChatGPT token needs a browser + loopback (aiAdmin.ts, quay-only); *using*
 // and *refreshing* it are plain HTTPS that work anywhere, so once this file
 // syncs to frieren the cloud host drives the same subscription with no browser.
 //
