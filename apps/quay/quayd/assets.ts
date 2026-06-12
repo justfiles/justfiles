@@ -90,7 +90,6 @@ export function shellHtml(id: string, token: string, usesReact: boolean): string
 <script type="importmap">${IMPORTMAP}</script>
 <link rel="stylesheet" href="/design/mac.css">
 <link rel="modulepreload" href="/vendor/boot.js">${reactPreload}
-<style>html,body,#root{height:100%;margin:0}body{font:14px -apple-system,system-ui,sans-serif;background:var(--window-bg);color:var(--text)}</style>
 </head>
 <body>
 <div id="root"></div>

@@ -10,46 +10,55 @@ export type Editor = {
 	destroy(): void
 }
 
-// The classic Mac OS X "Xcode" light palette — the look this app is named after:
-// green comments, magenta keywords, brick-red strings, blue literals, teal types.
-const xcodeLight = HighlightStyle.define([
+// Xcode-ish syntax colours, with the actual palette supplied by CSS variables so
+// the editor follows the platform sheet's light/dark tokens.
+const xcodeSyntax = HighlightStyle.define([
 	{
 		tag: [t.comment, t.lineComment, t.blockComment, t.docComment],
-		color: '#007400',
+		color: 'var(--app-code-syntax-comment)',
 		fontStyle: 'italic'
 	},
 	{
 		tag: [t.keyword, t.controlKeyword, t.operatorKeyword, t.moduleKeyword, t.definitionKeyword],
-		color: '#aa0d91'
+		color: 'var(--app-code-syntax-keyword)'
 	},
-	{ tag: [t.string, t.special(t.string), t.regexp], color: '#c41a16' },
-	{ tag: [t.number, t.bool, t.null, t.escape], color: '#1c00cf' },
-	{ tag: [t.typeName, t.className, t.namespace], color: '#3f6e75' },
-	{ tag: [t.propertyName, t.attributeName], color: '#6c36a9' },
-	{ tag: [t.function(t.variableName), t.function(t.propertyName)], color: '#326d74' },
-	{ tag: t.meta, color: '#643820' },
-	{ tag: t.invalid, color: '#c41a16' }
+	{ tag: [t.string, t.special(t.string), t.regexp], color: 'var(--app-code-syntax-string)' },
+	{ tag: [t.number, t.bool, t.null, t.escape], color: 'var(--app-code-syntax-literal)' },
+	{ tag: [t.typeName, t.className, t.namespace], color: 'var(--app-code-syntax-type)' },
+	{ tag: [t.propertyName, t.attributeName], color: 'var(--app-code-syntax-property)' },
+	{
+		tag: [t.function(t.variableName), t.function(t.propertyName)],
+		color: 'var(--app-code-syntax-function)'
+	},
+	{ tag: t.meta, color: 'var(--app-code-syntax-meta)' },
+	{ tag: t.invalid, color: 'var(--app-code-syntax-invalid)' }
 ])
 
-const theme = EditorView.theme(
-	{
-		'&': { height: '100%', backgroundColor: '#ffffff', color: '#1d1d1f', fontSize: '13px' },
-		'&.cm-focused': { outline: 'none' },
-		'.cm-scroller': {
-			fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace',
-			lineHeight: '1.5',
-			overflow: 'auto'
-		},
-		'.cm-gutters': { backgroundColor: '#ffffff', color: '#b4b4b8', border: '0' },
-		'.cm-activeLine': { backgroundColor: '#f3f4f8' },
-		'.cm-activeLineGutter': { backgroundColor: '#f3f4f8' },
-		'.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
-			backgroundColor: '#b3d7ff'
-		},
-		'.cm-cursor': { borderLeftColor: '#1d1d1f' }
+const theme = EditorView.theme({
+	'&': {
+		height: '100%',
+		backgroundColor: 'var(--window-bg)',
+		color: 'var(--text)',
+		fontSize: '13px'
 	},
-	{ dark: false }
-)
+	'&.cm-focused': { outline: 'none' },
+	'.cm-scroller': {
+		fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace',
+		lineHeight: '1.5',
+		overflow: 'auto'
+	},
+	'.cm-gutters': {
+		backgroundColor: 'var(--window-bg)',
+		color: 'var(--app-code-subtle)',
+		border: '0'
+	},
+	'.cm-activeLine': { backgroundColor: 'var(--app-code-hover)' },
+	'.cm-activeLineGutter': { backgroundColor: 'var(--app-code-hover)' },
+	'.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
+		backgroundColor: 'color-mix(in srgb, var(--focus) 30%, transparent)'
+	},
+	'.cm-cursor': { borderLeftColor: 'var(--text)' }
+})
 
 // A CodeMirror editor driven imperatively: `setDoc` loads a freshly-read file
 // and user edits are reported through `onChange`. Programmatic `setDoc` calls
@@ -62,7 +71,7 @@ export function createEditor(onChange: (content: string) => void): Editor {
 			basicSetup,
 			javascript({ typescript: true, jsx: true }),
 			theme,
-			syntaxHighlighting(xcodeLight),
+			syntaxHighlighting(xcodeSyntax),
 			EditorView.updateListener.of((update: ViewUpdate) => {
 				if (update.docChanged && !loading) onChange(update.state.doc.toString())
 			})

@@ -255,15 +255,7 @@ function Paint({ state, client }: { state: PaintState; client: Client<PaintApp> 
 	const status = lastError ?? (lastSavedPath ? `Saved ${lastSavedPath}` : '')
 
 	return (
-		<div
-			className="flex h-full w-full flex-col"
-			style={{
-				background: '#ffffff',
-				color: 'var(--text)',
-				fontFamily: 'var(--font-ui)',
-				fontSize: 'var(--text-ui)'
-			}}
-		>
+		<div className="flex h-full w-full flex-col">
 			<header
 				className="flex flex-none items-center gap-1 px-2 py-1"
 				style={{ background: 'var(--surface)', borderBottom: '1px solid var(--rule)' }}

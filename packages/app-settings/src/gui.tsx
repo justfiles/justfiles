@@ -1,9 +1,43 @@
 import type { Client } from '@justfiles/app'
-import { defineGUI } from '@justfiles/app/browser'
+import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import type { IntegrationDescriptor } from '@justfiles/app/capabilities/integrations'
 import { type FormEvent, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { initialState, type SettingsApp, type SettingsState } from './app.ts'
+
+injectStyle(
+	`
+.settings { height: 100%; width: 100%; overflow-y: auto; }
+.settings * { box-sizing: border-box; }
+.settings-inner { display: flex; flex-direction: column; gap: 16px; max-width: 672px; margin: 0 auto; padding: 32px 24px; }
+.settings-header, .settings-card-header { display: flex; flex-direction: column; gap: 4px; }
+.settings-title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.settings-copy, .settings-muted { margin: 0; font-size: 12px; opacity: 0.6; }
+.settings-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 4px 8px; color: #b91c1c; font-size: 12px; }
+.settings-small-button { font-size: 11px; padding: 2px 8px; }
+.settings-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.settings-card-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.settings-account-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.settings-account-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--window-bg); border: 1px solid var(--rule); border-radius: 6px; }
+.settings-account-row[data-error="true"] { border-color: #fca5a5; }
+.settings-account-text { display: flex; flex-direction: column; }
+.settings-account-id { font-size: 12px; font-weight: 500; }
+.settings-account-status { font-size: 10px; }
+.settings-account-status.is-error, .settings-card-error, .settings-required { color: #b91c1c; }
+.settings-account-status.is-connected { color: #047857; }
+.settings-form { display: flex; flex-direction: column; gap: 8px; }
+.settings-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.settings-field-title { opacity: 0.6; }
+.settings-field input { width: 100%; font: inherit; font-size: 12px; }
+.settings-description { font-size: 10px; opacity: 0.5; }
+.settings-card-error { margin: 0; font-size: 11px; }
+.settings-submit-row { display: flex; justify-content: flex-end; }
+.settings-primary-button { background: var(--focus); color: var(--on-focus); border-color: var(--focus); font-size: 12px; padding: 4px 12px; }
+.settings button { font: inherit; cursor: default; }
+.settings button:disabled { opacity: 0.5; }
+`,
+	'app-settings'
+)
 
 const stateOrInitial = (value: unknown): SettingsState =>
 	value && typeof value === 'object' && 'items' in value ? (value as SettingsState) : initialState
@@ -36,33 +70,21 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 	}, [client, state.items.length])
 
 	return (
-		<div
-			className="h-full w-full overflow-y-auto"
-			style={{
-				background: '#ffffff',
-				color: 'var(--text)',
-				fontFamily: 'var(--font-ui)',
-				fontSize: 'var(--text-ui)'
-			}}
-		>
-			<div className="mx-auto flex max-w-2xl flex-col gap-4 px-6 py-8">
-				<header className="flex flex-col gap-1">
-					<h1 className="text-base font-semibold tracking-tight">Settings</h1>
-					<p className="text-xs opacity-60">Connect integrations to expose new bash commands.</p>
+		<div className="settings">
+			<div className="settings-inner">
+				<header className="settings-header">
+					<h1 className="settings-title">Settings</h1>
+					<p className="settings-copy">Connect integrations to expose new bash commands.</p>
 				</header>
 
-				{state.loading ? <p className="text-xs opacity-60">Loading…</p> : null}
+				{state.loading ? <p className="settings-muted">Loading…</p> : null}
 				{state.error ? (
-					<p
-						className="flex items-center justify-between gap-2 px-2 py-1 text-xs"
-						style={{ color: '#b91c1c' }}
-					>
+					<p className="settings-error">
 						<span>{state.error}</span>
 						<button
 							type="button"
 							onClick={() => void client.clearError({})}
-							className="rounded px-2 py-0.5 text-[11px]"
-							style={{ border: '1px solid var(--rule)', background: '#fff' }}
+							className="settings-small-button"
 						>
 							Dismiss
 						</button>
@@ -74,7 +96,7 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 				))}
 
 				{!state.loading && state.items.length === 0 && !state.error ? (
-					<p className="text-xs opacity-60">No integrations available.</p>
+					<p className="settings-muted">No integrations available.</p>
 				) : null}
 			</div>
 		</div>
@@ -128,48 +150,33 @@ function IntegrationCard({
 	}
 
 	return (
-		<section
-			className="flex flex-col gap-3 p-4"
-			style={{ background: 'var(--surface)', border: '1px solid var(--rule)' }}
-		>
-			<header className="flex flex-col gap-0.5">
-				<h2 className="text-sm font-semibold tracking-tight">{item.name}</h2>
-				<p className="text-xs opacity-60">{item.description}</p>
+		<section className="settings-card">
+			<header className="settings-card-header">
+				<h2 className="settings-card-title">{item.name}</h2>
+				<p className="settings-copy">{item.description}</p>
 			</header>
 
 			{item.connectedAccounts.length > 0 ? (
-				<ul className="flex flex-col gap-1">
+				<ul className="settings-account-list">
 					{item.connectedAccounts.map((account) => (
 						<li
 							key={account.accountId}
-							className="flex items-center justify-between gap-2 px-3 py-2"
-							style={{
-								background: '#ffffff',
-								border: `1px solid ${account.lastError ? '#fca5a5' : 'var(--rule)'}`
-							}}
+							className="settings-account-row"
+							data-error={account.lastError ? 'true' : undefined}
 						>
-							<div className="flex flex-col">
-								<span className="text-xs font-medium">{account.accountId}</span>
+							<div className="settings-account-text">
+								<span className="settings-account-id">{account.accountId}</span>
 								{account.lastError ? (
-									<span className="text-[10px]" style={{ color: '#b91c1c' }}>
-										{account.lastError}
-									</span>
+									<span className="settings-account-status is-error">{account.lastError}</span>
 								) : (
-									<span className="text-[10px]" style={{ color: '#047857' }}>
-										connected
-									</span>
+									<span className="settings-account-status is-connected">connected</span>
 								)}
 							</div>
 							<button
 								type="button"
 								disabled={busy !== null}
 								onClick={() => void disconnect(account.accountId)}
-								className="rounded px-2 py-0.5 text-[11px]"
-								style={{
-									border: '1px solid var(--rule)',
-									background: '#fff',
-									opacity: busy !== null ? 0.5 : 1
-								}}
+								className="settings-small-button"
 							>
 								{busy === account.accountId ? 'Disconnecting…' : 'Disconnect'}
 							</button>
@@ -178,23 +185,21 @@ function IntegrationCard({
 				</ul>
 			) : null}
 
-			<form className="flex flex-col gap-2" onSubmit={submit}>
-				<label className="flex flex-col gap-1 text-xs" htmlFor={`${item.id}-accountId`}>
-					<span className="opacity-60">Account ID</span>
+			<form className="settings-form" onSubmit={submit}>
+				<label className="settings-field" htmlFor={`${item.id}-accountId`}>
+					<span className="settings-field-title">Account ID</span>
 					<input
 						id={`${item.id}-accountId`}
 						value={accountId}
 						onChange={(event) => setAccountId(event.target.value)}
 						placeholder={DEFAULT_ACCOUNT}
-						className="rounded px-2 py-1 text-xs"
-						style={{ background: '#fff', border: '1px solid var(--rule)' }}
 					/>
 				</label>
 				{fields.map(([name, field]) => (
-					<label key={name} className="flex flex-col gap-1 text-xs" htmlFor={`${item.id}-${name}`}>
-						<span className="opacity-60">
+					<label key={name} className="settings-field" htmlFor={`${item.id}-${name}`}>
+						<span className="settings-field-title">
 							{name}
-							{required.has(name) ? <span style={{ color: '#b91c1c' }}> *</span> : null}
+							{required.has(name) ? <span className="settings-required"> *</span> : null}
 						</span>
 						<input
 							id={`${item.id}-${name}`}
@@ -204,31 +209,15 @@ function IntegrationCard({
 							onChange={(event) =>
 								setValues((prev) => ({ ...prev, [name]: event.target.value.trim() }))
 							}
-							className="rounded px-2 py-1 text-xs"
-							style={{ background: '#fff', border: '1px solid var(--rule)' }}
 						/>
 						{field.description ? (
-							<span className="text-[10px] opacity-50">{field.description}</span>
+							<span className="settings-description">{field.description}</span>
 						) : null}
 					</label>
 				))}
-				{error ? (
-					<p className="text-[11px]" style={{ color: '#b91c1c' }}>
-						{error}
-					</p>
-				) : null}
-				<div className="flex justify-end">
-					<button
-						type="submit"
-						disabled={busy !== null}
-						className="rounded px-3 py-1 text-xs"
-						style={{
-							background: 'var(--focus)',
-							color: 'var(--on-focus)',
-							border: '1px solid var(--rule)',
-							opacity: busy !== null ? 0.5 : 1
-						}}
-					>
+				{error ? <p className="settings-card-error">{error}</p> : null}
+				<div className="settings-submit-row">
+					<button type="submit" disabled={busy !== null} className="settings-primary-button">
 						{busy !== null ? 'Saving…' : 'Connect'}
 					</button>
 				</div>

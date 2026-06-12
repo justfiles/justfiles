@@ -6,7 +6,7 @@
 		"typecheck": "tsc --noEmit",
 		"quayd": "node --import ./quayd/rawLoader.mjs --import tsx quayd/main.ts",
 		"build": "native/build.sh --launcher",
-		"start": "pkill -f Quay.app/Contents/MacOS/Quay 2>/dev/null; open native/Quay.app"
+		"reseed": "node --import ./quayd/rawLoader.mjs --import tsx quayd/reseed.ts"
 	},
 	"dependencies": {
 		"@justfiles/agent": "workspace:*",

@@ -97,7 +97,9 @@ test('serves the app shell with the importmap, boot script, and injected config'
 test('serves the platform style and the design system it imports', async () => {
 	const mac = await fetch(`http://127.0.0.1:${served.port}/design/mac.css`)
 	expect(mac.headers.get('content-type')).toContain('text/css')
-	expect(await mac.text()).toContain(':where(button)') // the native-control layer
+	const css = await mac.text()
+	expect(css).toContain(':where(html, body, #root)') // document defaults for mini-app shells
+	expect(css).toContain(':where(button)') // the native-control layer
 	const design = await fetch(`http://127.0.0.1:${served.port}/design/design.css`)
 	expect(await design.text()).toContain('.ds-window') // a design-system component class
 })

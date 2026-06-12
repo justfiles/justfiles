@@ -9,7 +9,7 @@ import { type FinderApp, type FinderState, initialState } from './app.ts'
 // (`@justfiles/design/mac`) handles native control defaults, which the rows override.
 injectStyle(
 	`
-.finder { display: flex; height: 100%; width: 100%; background: #fff; color: var(--text); font-family: var(--font-ui); font-size: var(--text-ui); }
+.finder { display: flex; height: 100%; width: 100%; }
 .finder-sidebar { display: flex; flex-direction: column; flex: none; width: 224px; overflow: hidden; background: var(--surface); border-right: 1px solid var(--rule); }
 .finder-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; }
 .finder-main-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--rule); }
@@ -22,13 +22,13 @@ injectStyle(
 .finder-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 4px 8px; }
 .finder-hint { padding: 4px 8px; font-size: 12px; opacity: 0.6; }
 .finder-row { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 2px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; font-family: ui-monospace, Menlo, monospace; font-size: 12px; text-align: left; }
-.finder-row:hover { background: rgba(0, 0, 0, 0.06); }
+.finder-row:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
 .finder-folder { opacity: 0.7; }
 .finder-row.is-selected { background: var(--focus); color: var(--on-focus); }
 .finder-twisty { flex: none; width: 12px; opacity: 0.55; }
 .finder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.finder-main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.finder-preview { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; }
+.finder-main { display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--window-bg); color: var(--text); }
+.finder-preview { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; background: transparent; color: inherit; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; }
 .finder-truncated { display: block; padding-top: 8px; opacity: 0.5; }
 .finder-muted { opacity: 0.5; }
 .finder-empty { display: flex; height: 100%; align-items: center; justify-content: center; font-size: 12px; opacity: 0.5; }

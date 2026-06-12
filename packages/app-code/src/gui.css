@@ -1,5 +1,31 @@
 :root {
 	--app-code-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	--app-code-muted: color-mix(in srgb, var(--text) 55%, transparent);
+	--app-code-subtle: color-mix(in srgb, var(--text) 35%, transparent);
+	--app-code-hover: color-mix(in srgb, var(--text) 7%, transparent);
+	--app-code-syntax-comment: #007400;
+	--app-code-syntax-keyword: #aa0d91;
+	--app-code-syntax-string: #c41a16;
+	--app-code-syntax-literal: #1c00cf;
+	--app-code-syntax-type: #3f6e75;
+	--app-code-syntax-property: #6c36a9;
+	--app-code-syntax-function: #326d74;
+	--app-code-syntax-meta: #643820;
+	--app-code-syntax-invalid: #c41a16;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--app-code-syntax-comment: #6a9955;
+		--app-code-syntax-keyword: #c586c0;
+		--app-code-syntax-string: #ce9178;
+		--app-code-syntax-literal: #b5cea8;
+		--app-code-syntax-type: #4ec9b0;
+		--app-code-syntax-property: #9cdcfe;
+		--app-code-syntax-function: #dcdcaa;
+		--app-code-syntax-meta: #d7ba7d;
+		--app-code-syntax-invalid: #f48771;
+	}
 }
 
 .app-code-shell {
@@ -7,10 +33,6 @@
 	flex-direction: column;
 	height: 100%;
 	width: 100%;
-	background: #ffffff;
-	color: #1d1d1f;
-	font-family: var(--font-ui);
-	font-size: var(--text-ui);
 }
 
 .app-code-toolbar {
@@ -18,8 +40,8 @@
 	align-items: center;
 	gap: 8px;
 	padding: 8px 12px;
-	background: #f5f5f7;
-	border-bottom: 1px solid #d2d2d7;
+	background: var(--surface);
+	border-bottom: 1px solid var(--rule);
 }
 
 .app-code-toolbar-side,
@@ -45,7 +67,6 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	color: #1d1d1f;
 }
 
 .app-code-state-label {
@@ -57,7 +78,7 @@
 }
 
 .app-code-state-label.is-idle {
-	color: #86868b;
+	color: var(--app-code-muted);
 }
 
 .app-code-state-label.is-updating {
@@ -65,7 +86,7 @@
 }
 
 .app-code-state-label.is-building {
-	color: #007aff;
+	color: var(--focus);
 }
 
 .app-code-state-label.is-live {
@@ -98,8 +119,8 @@
 	display: flex;
 	flex: 0 0 auto;
 	min-width: 0;
-	background: #f5f5f7;
-	border-bottom: 1px solid #e3e3e6;
+	background: var(--surface);
+	border-bottom: 1px solid var(--rule);
 }
 
 .app-code-tabs-scroll {
@@ -121,8 +142,8 @@
 	min-height: 0;
 	overflow: auto;
 	padding: 18px;
-	background: #ffffff;
-	color: #86868b;
+	background: var(--window-bg);
+	color: var(--app-code-muted);
 	font-family: var(--app-code-mono);
 	font-size: 13px;
 	line-height: 1.55;
@@ -136,7 +157,7 @@
 .app-code-handle {
 	flex: 0 0 auto;
 	width: 5px;
-	background: #d2d2d7;
+	background: var(--rule);
 	cursor: col-resize;
 }
 
@@ -146,7 +167,7 @@
 	flex: 1 1 0;
 	min-width: 0;
 	min-height: 0;
-	background: #e8e8ed;
+	background: var(--desktop-bg);
 }
 
 .app-code-menubar {
@@ -224,7 +245,7 @@
 	width: 100%;
 	height: 100%;
 	border: 0;
-	background: #fff;
+	background: var(--window-bg);
 }
 
 .app-code-bottom-bar {
@@ -235,8 +256,8 @@
 	max-height: 40%;
 	overflow: auto;
 	padding: 8px 12px;
-	background: #f5f5f7;
-	border-top: 1px solid #d2d2d7;
+	background: var(--surface);
+	border-top: 1px solid var(--rule);
 }
 
 .app-code-build-message {
@@ -264,9 +285,9 @@
 .app-code-tab-button {
 	flex: 0 0 auto;
 	border: 0;
-	border-right: 1px solid #e3e3e6;
+	border-right: 1px solid var(--rule);
 	background: transparent;
-	color: #6e6e73;
+	color: var(--app-code-muted);
 	cursor: default;
 	font: 12px var(--app-code-mono);
 	font-weight: 400;
@@ -275,17 +296,17 @@
 }
 
 .app-code-tab-button[data-active="true"] {
-	background: #ffffff;
-	color: #1d1d1f;
+	background: var(--window-bg);
+	color: var(--text);
 	font-weight: 600;
 }
 
 .app-code-icon-button {
 	flex: 0 0 auto;
 	border: 0;
-	border-left: 1px solid #e3e3e6;
+	border-left: 1px solid var(--rule);
 	background: transparent;
-	color: #6e6e73;
+	color: var(--app-code-muted);
 	cursor: default;
 	font: inherit;
 	font-size: 13px;
@@ -303,10 +324,10 @@
 }
 
 .app-code-code-toggle {
-	border: 1px solid #d2d2d7;
+	border: 1px solid var(--rule);
 	border-radius: 6px;
-	background: #ffffff;
-	color: #1d1d1f;
+	background: var(--control-bg);
+	color: var(--text);
 	font-size: 12px;
 	font-weight: 600;
 	padding: 5px 12px;
@@ -314,18 +335,18 @@
 }
 
 .app-code-code-toggle[data-active="true"] {
-	border-color: #007aff;
-	background: #007aff;
-	color: #ffffff;
+	border-color: var(--focus);
+	background: var(--focus);
+	color: var(--on-focus);
 }
 
 .app-code-ship-button {
 	flex: 0 0 auto;
 	margin-left: 8px;
-	border: 1px solid #d2d2d7;
+	border: 1px solid var(--rule);
 	border-radius: 6px;
-	background: #ffffff;
-	color: #1d1d1f;
+	background: var(--control-bg);
+	color: var(--text);
 	font-size: 12px;
 	font-weight: 600;
 	padding: 5px 12px;
@@ -333,8 +354,8 @@
 
 .app-code-ship-button[data-primary="true"] {
 	border: 0;
-	background: #007aff;
-	color: #ffffff;
+	background: var(--focus);
+	color: var(--on-focus);
 	padding: 5px 14px;
 }
 
@@ -346,8 +367,8 @@
 	flex: 0 0 auto;
 	border: 0;
 	border-radius: 6px;
-	background: #007aff;
-	color: #ffffff;
+	background: var(--focus);
+	color: var(--on-focus);
 	font-size: 13px;
 	font-weight: 600;
 	padding: 7px 14px;
@@ -357,7 +378,7 @@
 	flex: 0 0 auto;
 	border: 0;
 	background: transparent;
-	color: #6e6e73;
+	color: var(--app-code-muted);
 	font-size: 13px;
 	font-weight: 600;
 	padding: 5px 4px;
@@ -365,11 +386,9 @@
 }
 
 .app-code-screen-outer {
-	flex: 1 1 auto;
+	box-sizing: border-box;
+	min-height: 100%;
 	overflow: auto;
-	background: #ffffff;
-	color: #1d1d1f;
-	font-family: var(--font-ui);
 	padding: 32px 20px;
 }
 
@@ -402,12 +421,12 @@
 }
 
 .app-code-empty-copy {
-	color: #6e6e73;
+	color: var(--app-code-muted);
 	margin: 6px 0 18px;
 }
 
 .app-code-project-list {
-	border: 1px solid #e3e3e6;
+	border: 1px solid var(--rule);
 	border-radius: 10px;
 	overflow: hidden;
 }
@@ -419,7 +438,7 @@
 	width: 100%;
 	padding: 11px 14px;
 	border: 0;
-	border-top: 1px solid #e3e3e6;
+	border-top: 1px solid var(--rule);
 	background: transparent;
 	color: inherit;
 	cursor: default;
@@ -432,7 +451,7 @@
 }
 
 .app-code-project-row:hover {
-	background: #f5f5f7;
+	background: var(--app-code-hover);
 }
 
 .app-code-project-text {
@@ -448,11 +467,11 @@
 
 .app-code-project-slug {
 	font-size: 12px;
-	color: #a1a1a6;
+	color: var(--app-code-subtle);
 }
 
 .app-code-project-chevron {
-	color: #c7c7cc;
+	color: var(--app-code-subtle);
 	font-size: 16px;
 }
 
@@ -469,7 +488,7 @@
 .app-code-field-label {
 	display: block;
 	font-size: 12px;
-	color: #6e6e73;
+	color: var(--app-code-muted);
 	margin-bottom: 6px;
 }
 
@@ -479,10 +498,10 @@
 	font: inherit;
 	font-size: 14px;
 	padding: 8px 10px;
-	border: 1px solid #d2d2d7;
+	border: 1px solid var(--rule);
 	border-radius: 7px;
-	background: #ffffff;
-	color: #1d1d1f;
+	background: var(--control-bg);
+	color: var(--text);
 	box-sizing: border-box;
 }
 
@@ -491,14 +510,14 @@
 }
 
 .app-code-input[readonly] {
-	background: #f5f5f7;
-	color: #6e6e73;
+	background: var(--surface);
+	color: var(--app-code-muted);
 }
 
 .app-code-hint {
 	font-family: var(--app-code-mono);
 	font-size: 12px;
-	color: #a1a1a6;
+	color: var(--app-code-subtle);
 	margin-top: 6px;
 }
 
@@ -511,7 +530,7 @@
 
 .app-code-settings-divider {
 	height: 1px;
-	background: #e3e3e6;
+	background: var(--rule);
 	margin: 20px 0;
 }
 
@@ -523,10 +542,10 @@
 }
 
 .app-code-ghost-button {
-	border: 1px solid #d2d2d7;
+	border: 1px solid var(--rule);
 	border-radius: 7px;
-	background: #ffffff;
-	color: #1d1d1f;
+	background: var(--control-bg);
+	color: var(--text);
 	font-size: 13px;
 	font-weight: 600;
 	padding: 7px 14px;
@@ -537,9 +556,9 @@
 }
 
 .app-code-danger-button {
-	border: 1px solid #e6b3ad;
+	border: 1px solid color-mix(in srgb, #c41a16 35%, var(--rule));
 	border-radius: 7px;
-	background: #ffffff;
+	background: var(--control-bg);
 	color: #c41a16;
 	font-size: 13px;
 	font-weight: 600;
@@ -554,7 +573,7 @@
 
 .app-code-confirm-text {
 	font-size: 13px;
-	color: #6e6e73;
+	color: var(--app-code-muted);
 }
 
 .app-code-hidden-input,
