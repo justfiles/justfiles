@@ -13,87 +13,100 @@
 				color: #f2f2f7;
 				-webkit-user-select: none;
 				user-select: none;
-				background: rgba(28, 28, 32, 0.55);
+				background: rgba(28, 28, 32, 0.24);
+				-webkit-backdrop-filter: blur(24px) saturate(140%);
+				backdrop-filter: blur(24px) saturate(140%);
 			}
 			#app {
 				height: 100%;
 				display: flex;
 				flex-direction: column;
-				padding: 16px;
+				padding: 12px;
 				box-sizing: border-box;
+				overflow: hidden;
 			}
-			#search {
+			#search,
+			#ask {
 				width: 100%;
 				box-sizing: border-box;
-				padding: 12px 14px;
-				font-size: 18px;
 				color: #fff;
 				border: 0;
-				border-radius: 12px;
-				background: rgba(255, 255, 255, 0.12);
+				background: rgba(255, 255, 255, 0.08);
 				outline: none;
+				-webkit-user-select: text;
+				user-select: text;
 			}
-			#search::placeholder {
+			#search {
+				height: 48px;
+				padding: 0 16px;
+				font-size: 18px;
+				border-radius: 14px;
+			}
+			#search::placeholder,
+			#ask::placeholder {
 				color: rgba(255, 255, 255, 0.4);
 			}
-			#grid {
+			#results {
 				list-style: none;
-				margin: 16px 0 0;
+				margin: 8px 0 0;
 				padding: 0;
-				display: grid;
-				grid-template-columns: repeat(4, 1fr);
-				gap: 8px;
-				overflow: auto;
+				display: flex;
 				flex: 1;
 				min-height: 0;
-			}
-			.tile {
-				display: flex;
 				flex-direction: column;
-				align-items: center;
-				gap: 8px;
-				padding: 14px 8px;
-				border-radius: 14px;
-				cursor: pointer;
-				outline: none;
+				gap: 4px;
+				overflow: auto;
 			}
-			.tile:hover,
-			.tile:focus {
-				background: rgba(255, 255, 255, 0.12);
+			.result {
+				height: 46px;
+				flex: 0 0 46px;
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				padding: 0 12px;
+				border-radius: 12px;
+				cursor: pointer;
+			}
+			.result.selected,
+			.result:hover {
+				background: rgba(255, 255, 255, 0.1);
 			}
 			.glyph {
-				width: 56px;
-				height: 56px;
+				width: 30px;
+				height: 30px;
+				flex: 0 0 30px;
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				font-size: 26px;
+				font-size: 15px;
 				font-weight: 700;
 				color: #fff;
-				border-radius: 14px;
+				border-radius: 8px;
 				background: linear-gradient(160deg, #0a84ff, #0040a0);
 			}
 			.label {
-				font-size: 12px;
-				opacity: 0.9;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+				font-size: 15px;
+			}
+			.ask-agent .glyph {
+				background: rgba(255, 255, 255, 0.1);
 			}
 			#status {
-				margin: 16px 4px 0;
+				margin: 8px 4px 0;
 				font-size: 13px;
 				opacity: 0.5;
-				display: none;
 			}
 			#chat {
-				margin-top: 12px;
-				padding-top: 10px;
-				border-top: 1px solid rgba(255, 255, 255, 0.12);
+				flex: 1;
+				min-height: 0;
 				display: flex;
 				flex-direction: column;
-				height: 188px;
 			}
 			#messages {
 				list-style: none;
-				margin: 0 0 8px;
+				margin: 0 0 10px;
 				padding: 0 2px;
 				flex: 1;
 				min-height: 0;
@@ -113,38 +126,42 @@
 			}
 			.msg.user {
 				align-self: flex-end;
-				background: #0a84ff;
+				background: rgba(10, 132, 255, 0.82);
 				color: #fff;
 			}
 			.msg.assistant {
 				align-self: flex-start;
-				background: rgba(255, 255, 255, 0.12);
+				background: rgba(255, 255, 255, 0.08);
 			}
 			.msg.pending {
 				opacity: 0.5;
 			}
 			#ask {
-				width: 100%;
-				box-sizing: border-box;
-				padding: 9px 12px;
+				height: 40px;
+				padding: 0 12px;
 				font-size: 14px;
-				color: #fff;
-				border: 0;
 				border-radius: 10px;
-				background: rgba(255, 255, 255, 0.12);
-				outline: none;
 			}
-			#ask::placeholder {
-				color: rgba(255, 255, 255, 0.4);
+			#search[hidden],
+			#results[hidden],
+			#status[hidden],
+			#chat[hidden] {
+				display: none;
 			}
 		</style>
 	</head>
 	<body>
 		<div id="app">
-			<input id="search" type="search" placeholder="Search apps…" autocomplete="off" />
-			<ul id="grid"></ul>
-			<p id="status"></p>
-			<div id="chat">
+			<input
+				id="search"
+				type="search"
+				placeholder="Search apps or ask agent…"
+				autocomplete="off"
+				spellcheck="false"
+			/>
+			<ul id="results" hidden></ul>
+			<p id="status" hidden></p>
+			<div id="chat" hidden>
 				<ul id="messages"></ul>
 				<input id="ask" type="text" placeholder="Ask the agent…" autocomplete="off" />
 			</div>

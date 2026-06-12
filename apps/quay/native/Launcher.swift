@@ -27,7 +27,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	}
 
 	private func buildPanel() {
-		let rect = NSRect(x: 0, y: 0, width: 640, height: 560)
+		let rect = NSRect(x: 0, y: 0, width: 640, height: 72)
 		panel = KeyablePanel(
 			contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false
 		)
@@ -41,7 +41,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		panel.delegate = self
 
 		let blur = NSVisualEffectView(frame: rect)
-		blur.material = .sidebar
+		blur.material = .hudWindow
 		blur.blendingMode = .behindWindow
 		blur.state = .active
 		blur.autoresizingMask = [.width, .height]
@@ -69,24 +69,34 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private func toggle() { panel.isVisible ? hide() : show() }
 
 	private func show() {
-		// Centre, upper-third, on whichever screen the pointer is on.
+		resizePanel(to: 72)
+		// Top-left, just below the menu bar, on whichever screen the pointer is on.
 		let screen =
 			NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
 				?? NSScreen.main ?? NSScreen.screens.first
 		if let v = screen?.visibleFrame {
 			let f = panel.frame
-			let x = v.minX + (v.width - f.width) / 2
-			let y = v.minY + (v.height - f.height) * 0.62
+			let margin: CGFloat = 24
+			let x = v.minX + margin
+			let y = v.maxY - f.height - margin
 			panel.setFrameOrigin(NSPoint(x: x, y: y))
 		}
 		NSApp.activate(ignoringOtherApps: true)
 		panel.makeKeyAndOrderFront(nil)
 		// Reconnect now the view is visible: ensures quayd and refreshes the list
 		// even if it was killed (and our timers suspended) while we were hidden.
-		webView.evaluateJavaScript("window.quayConnect && window.quayConnect()", completionHandler: nil)
+		let script =
+			"window.quayShown ? window.quayShown() : (window.quayConnect && window.quayConnect())"
+		webView.evaluateJavaScript(script, completionHandler: nil)
 	}
 
 	private func hide() { panel.orderOut(nil) }
+
+	private func resizePanel(to height: CGFloat) {
+		let f = panel.frame
+		let h = max(72, min(height, 640))
+		panel.setFrame(NSRect(x: f.minX, y: f.maxY - h, width: f.width, height: h), display: true)
+	}
 
 	// Spotlight-style: dismiss when focus leaves the panel.
 	func windowDidResignKey(_: Notification) { hide() }
@@ -103,6 +113,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 			}
 		case "hide":
 			hide()
+		case "resize":
+			if let height = body["height"] as? NSNumber { resizePanel(to: CGFloat(height.doubleValue)) }
 		default:
 			break
 		}
@@ -155,6 +167,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	window.quay = {
 	  open: function (id) { window.webkit.messageHandlers.quay.postMessage({ action: 'open', id: id }) },
 	  hide: function () { window.webkit.messageHandlers.quay.postMessage({ action: 'hide' }) },
+	  resize: function (height) { window.webkit.messageHandlers.quay.postMessage({ action: 'resize', height: height }) },
 	  runtime: function () { return window.webkit.messageHandlers.quayd.postMessage({ action: 'runtime' }) }
 	}
 	"""
