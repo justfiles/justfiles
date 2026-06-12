@@ -14,6 +14,7 @@
 		"@justfiles/app-code": "workspace:*",
 		"@justfiles/app-counter": "workspace:*",
 		"@justfiles/app-finder": "workspace:*",
+		"@justfiles/app-settings": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
 		"capnweb": "^0.8.0",

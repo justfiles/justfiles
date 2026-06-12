@@ -11,8 +11,9 @@ import type { BuiltinBundle } from '@justfiles/app/runtime'
 import code from '@justfiles/app-code/bundle'
 import counter from '@justfiles/app-counter/bundle'
 import finder from '@justfiles/app-finder/bundle'
+import settings from '@justfiles/app-settings/bundle'
 
-const bundles: BuiltinBundle[] = [code, finder, counter]
+const bundles: BuiltinBundle[] = [code, finder, counter, settings]
 const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]))
 
 export const builtinCatalog: Catalog = {

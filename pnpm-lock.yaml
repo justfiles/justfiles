@@ -328,6 +328,9 @@ importers:
       '@justfiles/app-finder':
         specifier: workspace:*
         version: link:../../packages/app-finder
+      '@justfiles/app-settings':
+        specifier: workspace:*
+        version: link:../../packages/app-settings
       '@justfiles/design':
         specifier: workspace:*
         version: link:../../packages/design
