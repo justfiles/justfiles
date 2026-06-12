@@ -26,9 +26,15 @@ let onInstalled: () => Promise<void> = async () => {}
 const host = await createHost(undefined, () => onInstalled())
 const agent = await createQuayAgent(host)
 
+// Preview apps (`preview.<slug>`) are app-code's transient live previews — installed
+// in the kernel so they serve a gui + berth, but never shown in the launcher or
+// projected to the OS.
+const visible = <T extends { id: string }>(apps: T[]): T[] =>
+	apps.filter((app) => !app.id.startsWith('preview.'))
+
 const backend: Backend = {
 	async list() {
-		return (await host.kernel.list()).map((app) => ({
+		return visible(await host.kernel.list()).map((app) => ({
 			id: app.id,
 			name: app.name,
 			glyph: app.name.slice(0, 1).toUpperCase()
@@ -74,7 +80,7 @@ await writeRuntime({ port: served.port, token, pid: process.pid })
 // reconcile runs after each install (`onInstalled`) so a freshly-built app projects
 // out and the launcher re-lists immediately.
 const project = async () => {
-	const apps = await host.kernel.list()
+	const apps = visible(await host.kernel.list())
 	await reconcileProjection(apps).catch((error) => console.error('quayd: projection failed', error))
 }
 onInstalled = async () => {
@@ -82,7 +88,7 @@ onInstalled = async () => {
 	await served.broadcastCatalog()
 }
 
-const apps = await host.kernel.list()
+const apps = visible(await host.kernel.list())
 console.log(`quayd listening on ws://127.0.0.1:${served.port}`)
 console.log(`kernel apps: ${apps.map((app) => app.id).join(', ') || '(none)'}`)
 await project()

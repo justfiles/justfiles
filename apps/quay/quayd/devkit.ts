@@ -13,6 +13,7 @@
 // mounts nothing; `stop`/`menu`/`selectMenu` stay inert until the bespoke
 // second-WKWebView preview lands.
 
+import { appBundleFromMemory } from '@justfiles/app'
 import { implementCapability } from '@justfiles/app/capabilities'
 import { devkit } from '@justfiles/app/capabilities/devkit'
 import { buildDraft, installDraft, packDraft, type Toolchain } from '@justfiles/app/devkit'
@@ -35,16 +36,32 @@ export function devkitCapability(
 			installDraft(fs, ctx.appId, slug, getKernel(), await toolchain(), { onInstalled }),
 		pack: async (ctx, { slug }) =>
 			packDraft(chroot(fs, `/data/${ctx.appId}`), slug, await toolchain()),
-		// Compile-only: surface diagnostics for the build status, mount nothing.
-		run: async (ctx, { slug }) => {
-			const { diagnostics } = await buildDraft(
+		// Live preview: compile the draft and install it as a hidden `preview.<slug>`
+		// app in the SAME kernel the booters serve from. app-code then shows it in an
+		// iframe over its preview slot, pointed at the app's normal shell — so the
+		// berth + gui mount come free, and the running reducer makes it interactive.
+		// `preview.*` is filtered from the launcher catalog + OS projection (main.ts);
+		// `stop` uninstalls it. On a compile error the last-good preview stays put.
+		run: async (ctx, { slug, reset }) => {
+			const previewId = `preview.${slug}`
+			const { manifest, app, gui, diagnostics } = await buildDraft(
 				chroot(fs, `/data/${ctx.appId}`),
 				slug,
 				await toolchain()
 			)
-			return { previewId: `preview.${slug}`, diagnostics }
+			if (diagnostics.length > 0 || !app || !gui) return { previewId, diagnostics }
+			// ⟳ Run/Restart: wipe persisted draft state for a clean boot.
+			if (reset) await fs.rm(`/state/${previewId}.json`, { force: true })
+			await getKernel().install(
+				appBundleFromMemory({ id: previewId, name: manifest.name, app, gui })
+			)
+			return { previewId, diagnostics }
 		},
-		stop: async () => {},
+		stop: async (_ctx, { previewId }) => {
+			await getKernel()
+				.uninstall(previewId)
+				.catch(() => {})
+		},
 		menu: async () => [],
 		selectMenu: async () => {}
 	})

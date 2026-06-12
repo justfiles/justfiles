@@ -13,7 +13,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { type RawData, WebSocket, WebSocketServer } from 'ws'
 import type { AgentMessage } from './agent.ts'
-import { shellHtml, vendorAssets } from './assets.ts'
+import { designAsset, shellHtml, vendorAssets } from './assets.ts'
 import { type BerthBackend, serveBerth } from './berth.ts'
 
 export interface AppInfo {
@@ -151,10 +151,24 @@ async function serveHttp(
 		return bytes ? send(res, 'text/javascript', bytes) : fail(res, 404)
 	}
 
+	const design = /^\/design\/([a-z][a-z0-9-]*\.css)$/.exec(path)
+	if (design) {
+		try {
+			return send(res, 'text/css; charset=utf-8', await designAsset(design[1] as string))
+		} catch {
+			return fail(res, 404)
+		}
+	}
+
 	const gui = /^\/app\/([^/]+)\/gui\.js$/.exec(path)
 	if (gui) {
 		try {
-			return send(res, 'text/javascript', await backend.gui(decodeURIComponent(gui[1] as string)))
+			const bytes = await backend.gui(decodeURIComponent(gui[1] as string))
+			// no-store so app-code's preview iframe re-fetches fresh gui.js on each
+			// re-run (the draft is reinstalled under the same `preview.<slug>` id).
+			res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' })
+			res.end(Buffer.from(bytes))
+			return
 		} catch {
 			return fail(res, 404)
 		}

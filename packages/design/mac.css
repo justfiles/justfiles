@@ -1,0 +1,49 @@
+/* The mac platform style: a cohesive native look, the way AppKit gives you a
+   styled control for free. Layered on top of design.css (the `ds-*` shell
+   components + tokens), it adds default styling for bare HTML controls so an app
+   that writes plain semantic markup — `<button>`, `<input>` — looks mac-native
+   with zero effort. A host loads exactly one platform sheet (`@justfiles/design/mac`);
+   other platforms get their own file later.
+
+   Every rule is wrapped in `:where()` so it carries ZERO specificity — these are
+   defaults, never overrides. Any app rule, component class, or inline style wins
+   without a fight, which keeps the platform out of user code's way. */
+
+@import "./design.css";
+
+:where(button) {
+	font: inherit;
+	color: var(--text);
+	background: #fff;
+	border: 1px solid var(--rule);
+	border-radius: 5px;
+	padding: 2px 11px;
+	cursor: default;
+}
+
+:where(button:hover) {
+	background: #fafafa;
+}
+
+:where(button:active) {
+	background: #ececec;
+}
+
+:where(button:disabled) {
+	color: var(--menu-item-disabled-fg);
+}
+
+:where(input, textarea, select) {
+	font: inherit;
+	color: var(--text);
+	background: #fff;
+	border: 1px solid var(--rule);
+	border-radius: 5px;
+	padding: 3px 7px;
+}
+
+:where(input:focus, textarea:focus, select:focus) {
+	outline: none;
+	border-color: var(--focus);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent);
+}

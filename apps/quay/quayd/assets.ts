@@ -55,8 +55,25 @@ export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 	return cache
 }
 
-// The HTML shell the booter loads. It carries the importmap, the {id, token} the
-// boot script needs to open its berth, and nothing else — no app logic, no assets.
+// The platform style quayd serves under `/design/`: `mac.css` (the native control
+// look) plus the `design.css` it `@import`s (the `ds-*` shell components + tokens).
+// frieren bundles these into its host page; here each app is its own webview, so
+// quayd serves them standalone and the shell links the platform sheet. The export
+// map is the allowlist — an unexported name fails to resolve and 404s. Read once.
+const styles = new Map<string, Promise<Uint8Array>>()
+
+export function designAsset(name: string): Promise<Uint8Array> {
+	let bytes = styles.get(name)
+	if (!bytes) {
+		bytes = readFile(require.resolve(`@justfiles/design/${name}`))
+		styles.set(name, bytes)
+	}
+	return bytes
+}
+
+// The HTML shell the booter loads. It carries the importmap, the platform stylesheet,
+// the {id, token} the boot script needs to open its berth, and nothing else — no app
+// logic, no assets.
 export function shellHtml(id: string, token: string): string {
 	return `<!doctype html>
 <html>
@@ -65,6 +82,7 @@ export function shellHtml(id: string, token: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${id.replace(/[<&]/g, '')}</title>
 <script type="importmap">${IMPORTMAP}</script>
+<link rel="stylesheet" href="/design/mac.css">
 <style>html,body,#root{height:100%;margin:0}body{font:14px -apple-system,system-ui,sans-serif}</style>
 </head>
 <body>

@@ -3,6 +3,8 @@
 	"private": true,
 	"type": "module",
 	"exports": {
-		"./design.css": "./design.css"
+		"./design.css": "./design.css",
+		"./mac.css": "./mac.css",
+		"./mac": "./mac.css"
 	}
 }

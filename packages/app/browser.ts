@@ -3,6 +3,22 @@ import { type Client, createClient, type Transport } from './sdk.ts'
 
 type GUIState<A> = A extends App<infer State, infer _C, infer _P, infer _E> ? State : never
 
+const injected = new Set<string>()
+
+// An app's scoped stylesheet, injected once into the document. A built app bundle
+// serves only `gui.js`, so an app's layout CSS rides inside it and self-applies on
+// import — identically in any host (frieren, quay), with no separate served file
+// and no host CSS plumbing. `key` dedups across remounts/HMR (defaults to the CSS
+// itself). The platform look (`@justfiles/design/mac`) is the host's job; this is
+// for an app's own layout.
+export function injectStyle(css: string, key = css): void {
+	if (typeof document === 'undefined' || injected.has(key)) return
+	injected.add(key)
+	const style = document.createElement('style')
+	style.textContent = css
+	document.head.append(style)
+}
+
 export type MenuItem =
 	| { separator: true }
 	| {

@@ -54,3 +54,22 @@ test('Code builds and installs a project into the kernel catalog', async () => {
 
 	host.sandbox.release(CODE)
 }, 60_000)
+
+test('Code runs a project as a hidden, servable preview that stop tears down', async () => {
+	host.sandbox.retain(CODE)
+	const previewId = `preview.${NEW_APP}`
+
+	// The project from the previous test is still open (its slug on the reducer), so
+	// `run` compiles it and installs it under `preview.*` in the SAME kernel.
+	await dispatch('run', {})
+	expect((await host.kernel.list()).some((app) => app.id === previewId)).toBe(true)
+	// It's a real, servable bundle — its gui.js reads, so app-code's iframe can mount
+	// it through the normal app shell.
+	expect(await (await host.kernel.app(previewId)).read('gui.js')).toBeInstanceOf(Uint8Array)
+
+	// stop uninstalls it, so a preview never lingers in the catalog or OS projection.
+	await dispatch('stop', {})
+	expect((await host.kernel.list()).some((app) => app.id === previewId)).toBe(false)
+
+	host.sandbox.release(CODE)
+}, 60_000)

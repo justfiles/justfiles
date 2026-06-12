@@ -89,8 +89,22 @@ test('serves the app shell with the importmap, boot script, and injected config'
 	const html = await res.text()
 	expect(html).toContain('importmap')
 	expect(html).toContain('/vendor/boot.js')
+	expect(html).toContain('/design/mac.css') // links the platform style
 	expect(html).toContain('"app.counter"') // injected app id
 	expect(html).toContain('"secret"') // injected token
+})
+
+test('serves the platform style and the design system it imports', async () => {
+	const mac = await fetch(`http://127.0.0.1:${served.port}/design/mac.css`)
+	expect(mac.headers.get('content-type')).toContain('text/css')
+	expect(await mac.text()).toContain(':where(button)') // the native-control layer
+	const design = await fetch(`http://127.0.0.1:${served.port}/design/design.css`)
+	expect(await design.text()).toContain('.ds-window') // a design-system component class
+})
+
+test('404s an unexported design asset', async () => {
+	const res = await fetch(`http://127.0.0.1:${served.port}/design/nope.css`)
+	expect(res.status).toBe(404)
 })
 
 test('serves gui.js bytes from the backend (the Volume)', async () => {

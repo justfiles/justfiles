@@ -1,8 +1,40 @@
 import type { Client } from '@justfiles/app'
-import { defineGUI } from '@justfiles/app/browser'
+import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type FinderApp, type FinderState, initialState } from './app.ts'
+
+// The app's own layout, scoped under `.finder` and injected on import. Colours come
+// from the platform tokens (`--surface`, `--rule`, `--focus`); the platform sheet
+// (`@justfiles/design/mac`) handles native control defaults, which the rows override.
+injectStyle(
+	`
+.finder { display: flex; height: 100%; width: 100%; background: #fff; color: var(--text); font-family: var(--font-ui); font-size: var(--text-ui); }
+.finder-sidebar { display: flex; flex-direction: column; flex: none; width: 224px; overflow: hidden; background: var(--surface); border-right: 1px solid var(--rule); }
+.finder-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; }
+.finder-main-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--rule); }
+.finder-title, .finder-main-name { font-weight: 500; }
+.finder-push { margin-left: auto; }
+.finder-path { margin-left: auto; font-size: 11px; opacity: 0.5; }
+.finder-main-name, .finder-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finder-btn { flex: none; padding: 1px 8px; font-size: 11px; }
+.finder-error { padding: 0 12px 8px; font-size: 12px; color: #b91c1c; }
+.finder-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 4px 8px; }
+.finder-hint { padding: 4px 8px; font-size: 12px; opacity: 0.6; }
+.finder-row { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 2px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; font-family: ui-monospace, Menlo, monospace; font-size: 12px; text-align: left; }
+.finder-row:hover { background: rgba(0, 0, 0, 0.06); }
+.finder-folder { opacity: 0.7; }
+.finder-row.is-selected { background: var(--focus); color: var(--on-focus); }
+.finder-twisty { flex: none; width: 12px; opacity: 0.55; }
+.finder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finder-main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.finder-preview { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; }
+.finder-truncated { display: block; padding-top: 8px; opacity: 0.5; }
+.finder-muted { opacity: 0.5; }
+.finder-empty { display: flex; height: 100%; align-items: center; justify-content: center; font-size: 12px; opacity: 0.5; }
+`,
+	'app-finder'
+)
 
 const stateOrInitial = (value: unknown): FinderState =>
 	value && typeof value === 'object' && 'files' in value ? (value as FinderState) : initialState
@@ -81,36 +113,24 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 	const showPreview = preview && preview.path === viewing ? preview : null
 
 	return (
-		<div
-			className="flex h-full w-full"
-			style={{
-				background: '#ffffff',
-				color: 'var(--text)',
-				fontFamily: 'var(--font-ui)',
-				fontSize: 'var(--text-ui)'
-			}}
-		>
-			<aside
-				className="flex w-56 flex-none flex-col overflow-hidden"
-				style={{ background: 'var(--surface)', borderRight: '1px solid var(--rule)' }}
-			>
-				<header className="flex flex-none items-center gap-2 px-3 py-2">
-					<span className="font-medium">Files</span>
+		<div className="finder">
+			<aside className="finder-sidebar">
+				<header className="finder-head">
+					<span className="finder-title">Files</span>
 					<button
 						type="button"
 						onClick={() => void client.refresh({})}
-						className="ml-auto rounded px-2 py-0.5 text-[11px]"
-						style={{ border: '1px solid var(--rule)', background: '#fff' }}
+						className="finder-btn finder-push"
 					>
 						Refresh
 					</button>
 				</header>
-				{state.error ? <p className="px-3 pb-2 text-xs text-red-700">{state.error}</p> : null}
-				<div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+				{state.error ? <p className="finder-error">{state.error}</p> : null}
+				<div className="finder-list">
 					{state.loading ? (
-						<p className="px-2 py-1 text-xs opacity-60">Loading…</p>
+						<p className="finder-hint">Loading…</p>
 					) : state.files.length === 0 ? (
-						<p className="px-2 py-1 text-xs opacity-60">No files yet</p>
+						<p className="finder-hint">No files yet</p>
 					) : (
 						<TreeNode
 							node={tree}
@@ -121,43 +141,33 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 					)}
 				</div>
 			</aside>
-			<section className="flex min-w-0 flex-1 flex-col">
+			<section className="finder-main">
 				{viewing ? (
 					<>
-						<header
-							className="flex flex-none items-center gap-2 px-3 py-2"
-							style={{ borderBottom: '1px solid var(--rule)' }}
-						>
-							<span className="truncate font-medium">{basename(viewing)}</span>
-							<span className="ml-auto truncate text-[11px] opacity-50">{viewing}</span>
-							<button
-								type="button"
-								onClick={() => void client.clear({})}
-								className="rounded px-2 py-0.5 text-[11px]"
-								style={{ border: '1px solid var(--rule)', background: '#fff' }}
-							>
+						<header className="finder-main-head">
+							<span className="finder-main-name">{basename(viewing)}</span>
+							<span className="finder-path">{viewing}</span>
+							<button type="button" onClick={() => void client.clear({})} className="finder-btn">
 								Clear
 							</button>
 						</header>
-						<pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-5">
+						<pre className="finder-preview">
 							{displayError ? (
 								<span style={{ color: '#b91c1c' }}>{displayError}</span>
 							) : showPreview ? (
 								<>
 									{showPreview.content}
 									{showPreview.truncated ? (
-										<span className="block pt-2 opacity-50">… preview truncated</span>
+										<span className="finder-truncated">… preview truncated</span>
 									) : null}
 								</>
 							) : (
-								<span className="opacity-50">Loading…</span>
+								<span className="finder-muted">Loading…</span>
 							)}
 						</pre>
 					</>
 				) : (
-					<div className="flex h-full items-center justify-center text-xs opacity-50">
-						Select a file to preview
-					</div>
+					<div className="finder-empty">Select a file to preview</div>
 				)}
 			</section>
 		</div>
@@ -232,12 +242,12 @@ function FolderRow(props: {
 			<button
 				type="button"
 				onClick={() => setOpen((value) => !value)}
-				className="flex w-full min-w-0 items-center gap-1 rounded px-2 py-0.5 text-left font-mono text-xs opacity-70"
+				className="finder-row finder-folder"
 				style={{ paddingLeft: props.depth * 12 + 8 }}
 				title={props.node.path}
 			>
-				<span className="w-3 opacity-60">{open ? '▾' : '▸'}</span>
-				<span className="truncate">{props.node.name}</span>
+				<span className="finder-twisty">{open ? '▾' : '▸'}</span>
+				<span className="finder-name">{props.node.name}</span>
 			</button>
 			{open ? <TreeNode {...props} depth={props.depth + 1} /> : null}
 		</div>
@@ -254,17 +264,12 @@ function FileRow(props: {
 		<button
 			type="button"
 			onClick={() => props.onSelect(props.path)}
-			className="flex w-full min-w-0 items-center gap-1 rounded px-2 py-1 text-left font-mono text-xs"
-			style={{
-				paddingLeft: props.depth * 12 + 8,
-				...(props.selected
-					? { background: 'var(--focus)', color: 'var(--on-focus)' }
-					: { color: 'var(--text)' })
-			}}
+			className={props.selected ? 'finder-row is-selected' : 'finder-row'}
+			style={{ paddingLeft: props.depth * 12 + 8 }}
 			title={props.path}
 		>
-			<span className="w-3 opacity-50">▹</span>
-			<span className="truncate">{basename(props.path)}</span>
+			<span className="finder-twisty">▹</span>
+			<span className="finder-name">{basename(props.path)}</span>
 		</button>
 	)
 }
