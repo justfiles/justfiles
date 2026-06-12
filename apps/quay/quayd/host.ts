@@ -10,8 +10,10 @@
 // reducer reaches real files without ever holding the capability itself. `devkit`
 // (Slice 11) is the build pipeline Code uses to compile + install the apps you build:
 // `install` writes the new bundle into `/applications` and fires `onInstalled`, which
-// the daemon turns into a `.app` materialisation + launcher re-list. (The Slice 10
-// agent calls the LLM directly, so there's no reducer `ai` capability.)
+// the daemon turns into a `.app` materialisation + launcher re-list. `agentSetup`
+// lets the Settings app sign the user in to ChatGPT and pick a model; the credential
+// lands on the Volume and the agent reads it (the agent still calls the LLM directly,
+// so there's no reducer `ai` capability).
 
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -22,6 +24,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
+import { agentSetupCapability } from './agentSetup.ts'
 import { builtinCatalog, readBuiltin } from './builtins.ts'
 import { devkitCapability } from './devkit.ts'
 import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
@@ -54,7 +57,10 @@ export async function createHost(
 	let k: Kernel
 	const capabilities = capabilityRegistry({
 		volume: volumeCapability(fs, { systemAllowlist }),
-		devkit: devkitCapability(fs, () => k, onInstalled)
+		devkit: devkitCapability(fs, () => k, onInstalled),
+		// AI-agent setup: Settings signs the user in to ChatGPT and picks a model;
+		// the credential lands on the Volume (connections.ts) and the agent reads it.
+		agentSetup: agentSetupCapability(fs)
 	})
 	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
 	await reconcileBuiltins(k, fs, builtinCatalog, readBuiltin)

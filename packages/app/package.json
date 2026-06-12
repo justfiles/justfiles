@@ -22,7 +22,8 @@
 		"./capabilities/volume/host": "./capabilities/volume/host.ts",
 		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
-		"./capabilities/integrations": "./capabilities/integrations/index.ts"
+		"./capabilities/integrations": "./capabilities/integrations/index.ts",
+		"./capabilities/agent-setup": "./capabilities/agent-setup/index.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -107,6 +108,10 @@
 			"./capabilities/integrations": {
 				"types": "./dist/capabilities/integrations/index.d.ts",
 				"default": "./dist/capabilities/integrations/index.js"
+			},
+			"./capabilities/agent-setup": {
+				"types": "./dist/capabilities/agent-setup/index.d.ts",
+				"default": "./dist/capabilities/agent-setup/index.js"
 			}
 		}
 	},

@@ -1,66 +1,87 @@
 import { defineApp } from '@justfiles/app'
-import { type IntegrationDescriptor, integrations } from '@justfiles/app/capabilities/integrations'
+import { type AgentStatus, agentSetup } from '@justfiles/app/capabilities/agent-setup'
 import * as v from 'valibot'
 
-// Settings is a thin façade over the host's integrations registry. State is
-// what survives a reload: the projected descriptors, the loading flag, and
-// an inline error string. Transient form values and per-card busy markers
-// stay in GUI-local React state — handlers are atomic, so a `busy` flag in
-// reducer state would only ever be observable as null between dispatches.
+// Settings is a thin façade over the host's `agentSetup` capability. State is
+// only what survives a reload: which category the user is looking at, the
+// projected AI connection status, a loading flag, and an inline error string.
+// Transient form/busy markers stay in GUI-local React state — handlers are
+// atomic, so a `busy` flag in reducer state would only be observable as null
+// between dispatches.
+export type Category = 'ai' | 'email'
+
 export type SettingsState = {
-	items: IntegrationDescriptor[]
+	category: Category
+	ai: AgentStatus | null
 	loading: boolean
 	error: string | null
 }
 
 export const initialState: SettingsState = {
-	items: [],
+	category: 'ai',
+	ai: null,
 	loading: true,
 	error: null
 }
 
-const idSchema = v.pipe(v.string(), v.minLength(1))
-const accountSchema = v.pipe(v.string(), v.minLength(1))
-const credentialsSchema = v.record(v.string(), v.string())
+const modelSchema = v.pipe(v.string(), v.minLength(1))
 
 export const app = defineApp({
 	init: initialState,
-	capabilities: { integrations: integrations({ scopes: [] }) },
-	// Pure edges drive state; `list` is the one effect, emitted as command data.
+	capabilities: { agentSetup: agentSetup({ scopes: [] }) },
+	// Pure edges drive state; `status` is the one effect, emitted as command data.
 	update: (t) => ({
 		refresh: t.on(
 			v.object({}),
-			(state) => [{ ...state, loading: true }, t.cmd('integrations', 'list', {}).to('listed')],
-			{ description: 'Reload the list of integrations from the host.' }
+			(state) => [
+				{ ...state, loading: true },
+				t.cmd('agentSetup', 'status', {}).to('statusLoaded')
+			],
+			{ description: 'Reload the AI agent connection status from the host.' }
 		),
-		listed: t.fromResult('integrations', 'list', (state, r) =>
+		statusLoaded: t.fromResult('agentSetup', 'status', (state, r) =>
 			r.ok
-				? { ...state, items: r.value, loading: false, error: null }
+				? { ...state, ai: r.value, loading: false, error: null }
 				: { ...state, loading: false, error: r.error.message }
+		),
+		selectCategory: t.on(
+			v.object({ category: v.picklist(['ai', 'email']) }),
+			(state, { category }) => ({ ...state, category, error: null }),
+			{ description: 'Switch the selected settings category.' }
 		),
 		clearError: t.on(v.object({}), (state) => ({ ...state, error: null }), {
 			description: 'Dismiss the current error banner.'
 		})
 	}),
-	// connect/disconnect are multi-step (mutate, then reload) and the caller
-	// awaits completion, so they live in procedures, not the pure core. Each
-	// drives the host capability then re-runs `refresh` to settle fresh items.
+	// signIn/selectModel/signOut are multi-step (mutate host, then reload) and the
+	// caller awaits completion, so they live in procedures. Each drives the host
+	// capability then re-runs `refresh` to settle fresh status.
 	procedures: (p) => ({
-		connect: p.procedure({
-			description: 'Connect an account to an integration with static credentials.',
-			schema: v.object({ id: idSchema, accountId: accountSchema, credentials: credentialsSchema }),
-			async run({ id, accountId, credentials }, app) {
-				await app.invoke('integrations', 'connect', { id, accountId, credentials })
+		signIn: p.procedure({
+			description: 'Sign in with ChatGPT so the agent uses your subscription.',
+			schema: v.object({}),
+			async run(_input, app) {
+				await app.invoke('agentSetup', 'signIn', { provider: 'chatgpt' })
 				await app.settled((await app.dispatch({ type: 'refresh', params: {} })).seq, {
 					timeout: 10_000
 				})
 			}
 		}),
-		disconnect: p.procedure({
-			description: 'Disconnect an account from an integration.',
-			schema: v.object({ id: idSchema, accountId: accountSchema }),
-			async run({ id, accountId }, app) {
-				await app.invoke('integrations', 'disconnect', { id, accountId })
+		selectModel: p.procedure({
+			description: 'Choose which model the agent uses.',
+			schema: v.object({ model: modelSchema }),
+			async run({ model }, app) {
+				await app.invoke('agentSetup', 'selectModel', { model })
+				await app.settled((await app.dispatch({ type: 'refresh', params: {} })).seq, {
+					timeout: 10_000
+				})
+			}
+		}),
+		signOut: p.procedure({
+			description: 'Disconnect the ChatGPT account.',
+			schema: v.object({}),
+			async run(_input, app) {
+				await app.invoke('agentSetup', 'signOut', {})
 				await app.settled((await app.dispatch({ type: 'refresh', params: {} })).seq, {
 					timeout: 10_000
 				})
