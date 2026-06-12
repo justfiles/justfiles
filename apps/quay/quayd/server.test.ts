@@ -118,6 +118,13 @@ test('404s an unknown app gui', async () => {
 	expect(res.status).toBe(404)
 })
 
+test('omits the React core preload for a pure-DOM app', async () => {
+	// guiSource imports no React, so the shell must not preload the ~190 KB core.
+	const html = await (await fetch(`http://127.0.0.1:${served.port}/app/app.counter`)).text()
+	expect(html).toContain('/vendor/boot.js') // boot is always preloaded
+	expect(html).not.toContain('/vendor/core.js')
+})
+
 test('builds and serves the shared-React vendor modules', async () => {
 	const core = await (await fetch(`http://127.0.0.1:${served.port}/vendor/core.js`)).text()
 	expect(core).toContain('__quayReact') // sets the shared global

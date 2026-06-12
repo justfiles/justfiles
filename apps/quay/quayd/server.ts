@@ -177,11 +177,24 @@ async function serveHttp(
 	const shell = /^\/app\/([^/]+)\/?$/.exec(path)
 	if (shell) {
 		const id = decodeURIComponent(shell[1] as string)
-		const html = shellHtml(id, url.searchParams.get('token') ?? '')
+		const html = shellHtml(id, url.searchParams.get('token') ?? '', await usesReact(backend, id))
 		return send(res, 'text/html; charset=utf-8', new TextEncoder().encode(html))
 	}
 
 	fail(res, 404)
+}
+
+// Whether an app's gui.js imports React, so the shell preloads the React core only
+// when it's used. Bundled guis emit bare `"react"`/`"react-dom"`/`"react/…"` specifiers
+// (resolved via the shell's importmap); a pure-DOM gui has none. A false positive only
+// costs an unused preload, so a cheap substring scan is enough.
+async function usesReact(backend: Backend, id: string): Promise<boolean> {
+	try {
+		const text = new TextDecoder().decode(await backend.gui(id))
+		return text.includes('"react') || text.includes("'react")
+	} catch {
+		return false
+	}
 }
 
 function send(res: ServerResponse, type: string, bytes: Uint8Array): void {

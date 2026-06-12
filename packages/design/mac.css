@@ -14,7 +14,7 @@
 :where(button) {
 	font: inherit;
 	color: var(--text);
-	background: #fff;
+	background: var(--control-bg);
 	border: 1px solid var(--rule);
 	border-radius: 5px;
 	padding: 2px 11px;
@@ -22,11 +22,11 @@
 }
 
 :where(button:hover) {
-	background: #fafafa;
+	background: var(--control-bg-hover);
 }
 
 :where(button:active) {
-	background: #ececec;
+	background: var(--control-bg-active);
 }
 
 :where(button:disabled) {
@@ -36,7 +36,7 @@
 :where(input, textarea, select) {
 	font: inherit;
 	color: var(--text);
-	background: #fff;
+	background: var(--control-bg);
 	border: 1px solid var(--rule);
 	border-radius: 5px;
 	padding: 3px 7px;

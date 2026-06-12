@@ -24,7 +24,7 @@ const CACHE_DIR = join(homedir(), 'Library', 'Application Support', 'quay', 'cac
 
 // Bump when the bundling logic here changes; the React version is folded in too,
 // so a `pnpm update react` invalidates the cache automatically.
-const REV = 1
+const REV = 3
 
 // Each shim file → the global slot it re-exports and the specifier whose export
 // names it enumerates. The core bundle (below) fills `globalThis.__quayReact`.
@@ -74,16 +74,23 @@ export function designAsset(name: string): Promise<Uint8Array> {
 // The HTML shell the booter loads. It carries the importmap, the platform stylesheet,
 // the {id, token} the boot script needs to open its berth, and nothing else — no app
 // logic, no assets.
-export function shellHtml(id: string, token: string): string {
+export function shellHtml(id: string, token: string, usesReact: boolean): string {
+	// Preload the React core up front *only for apps that import it* — otherwise boot.js
+	// discovers it four imports deep (boot → gui → react shim → core), serialising the
+	// slowest parse to the end of the launch waterfall. A pure-DOM app (e.g. counter)
+	// imports no React, so it must NOT pay to fetch+parse the ~190 KB bundle it never uses.
+	const reactPreload = usesReact ? '\n<link rel="modulepreload" href="/vendor/core.js">' : ''
 	return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>${id.replace(/[<&]/g, '')}</title>
 <script type="importmap">${IMPORTMAP}</script>
 <link rel="stylesheet" href="/design/mac.css">
-<style>html,body,#root{height:100%;margin:0}body{font:14px -apple-system,system-ui,sans-serif}</style>
+<link rel="modulepreload" href="/vendor/boot.js">${reactPreload}
+<style>html,body,#root{height:100%;margin:0}body{font:14px -apple-system,system-ui,sans-serif;background:var(--window-bg);color:var(--text)}</style>
 </head>
 <body>
 <div id="root"></div>
@@ -139,8 +146,12 @@ async function buildBoot(): Promise<string> {
 		)
 		;(async () => {
 			try {
-				const mod = await import('/app/' + encodeURIComponent(cfg.id) + '/gui.js')
-				const state = await berth.state()
+				// Overlap the gui.js module fetch+parse (which pulls in React/core)
+				// with the state round-trip rather than awaiting them in series.
+				const [mod, state] = await Promise.all([
+					import('/app/' + encodeURIComponent(cfg.id) + '/gui.js'),
+					berth.state()
+				])
 				mod.gui.mount(root, state, {
 					transport: {
 						invoke: (message) => berth.dispatch(message),
@@ -178,9 +189,12 @@ async function bundle(contents: string): Promise<string> {
 		write: false,
 		format: 'esm',
 		minify: true,
-		// Development React (dev warnings + a working jsx-dev-runtime), matching
-		// frieren; the size cost is irrelevant over localhost.
-		define: { 'process.env.NODE_ENV': '"development"' },
+		// Production React: a quay app is an installed, shipping app, not a dev
+		// session — the prod build is markedly smaller and parses/renders faster in
+		// the cold WebContent process each launch spins up, which is the dominant
+		// cost of first paint. (Dev warnings are an app-authoring concern; revisit if
+		// app-code wants them in its preview.)
+		define: { 'process.env.NODE_ENV': '"production"' },
 		logLevel: 'silent'
 	})
 	const text = result.outputFiles[0]?.text
