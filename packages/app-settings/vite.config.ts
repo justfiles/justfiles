@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => ({
 					kernelHost({
 						id: 'app.frieren.settings',
 						name: 'Settings',
-						description: 'Set up your AI agent and connections',
+						description: 'Connect accounts and choose what they power',
 						icon: 'icon.svg',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'

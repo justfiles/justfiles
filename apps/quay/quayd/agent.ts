@@ -25,9 +25,10 @@ import {
 	runtime,
 	text
 } from '@justfiles/agent'
+import type { AccountsStore } from '@justfiles/app/capabilities/accounts/host'
 import type { Volume } from '@justfiles/fs'
 import { getModels } from '@mariozechner/pi-ai'
-import { resolveChatgpt } from './connections.ts'
+import { resolveAi } from './chatgpt.ts'
 import type { Host } from './host.ts'
 import { bundlePath, bundleProcessPattern } from './materialize.ts'
 
@@ -85,15 +86,15 @@ export async function createQuayAgent(
 	const fsTools = createFsTools(host.fs)
 	const tools = [...fsTools.tools, createFetchTool(), createSearchTool(), bash]
 
-	// The LLM backend is resolved from the Volume (llmConfig), which changes when
-	// the user signs in to ChatGPT or switches models in Settings. Build the runtime
+	// The LLM backend is resolved from the accounts store (llmConfig), which changes
+	// when the user connects ChatGPT or switches models in Settings. Build the runtime
 	// lazily and rebuild it when that resolution changes (keyed on model + token),
 	// so a sign-in takes effect on the next prompt without restarting the daemon.
 	// Rebuilding is cheap and lossless: the conversation is persisted to the Volume
 	// session, which the fresh runtime reloads.
 	let active: { key: string; rt: Runtime } | null = null
 	async function ensureRuntime(): Promise<Runtime> {
-		const llm = await llmConfig(host.fs)
+		const llm = await llmConfig(host.accounts)
 		const key = `${llm.model.id} ${llm.apiKey}`
 		if (active?.key === key) return active.rt
 		const rt = await runtime({
@@ -200,14 +201,14 @@ const nativeWindows: WindowOps = {
 
 type LLMConfig = Parameters<typeof createAgent>[0]
 
-// Resolve the agent's backend from the Volume. If the user signed in to ChatGPT
-// (Settings → AI Agent), drive their subscription through pi-ai's Codex provider —
-// it derives the bearer + `chatgpt-account-id` header from the token itself, so the
-// model slots in with no extra wiring. Otherwise fall back to the local LM Studio
-// default. Resolved per prompt (see ensureRuntime), with a near-expiry refresh
-// inside resolveChatgpt.
-async function llmConfig(fs: Volume): Promise<LLMConfig> {
-	const resolved = await resolveChatgpt(fs)
+// Resolve the agent's backend from the accounts store. If the user connected
+// ChatGPT and enabled `ai` (Settings → Accounts), drive their subscription through
+// pi-ai's Codex provider — it derives the bearer + `chatgpt-account-id` header from
+// the token itself, so the model slots in with no extra wiring. Otherwise fall back
+// to the local LM Studio default. Resolved per prompt (see ensureRuntime), with a
+// near-expiry refresh inside resolveAi.
+async function llmConfig(accounts: AccountsStore): Promise<LLMConfig> {
+	const resolved = await resolveAi(accounts)
 	if (resolved) {
 		const model = getModels('openai-codex').find((m) => m.id === resolved.model)
 		if (model) return { model: model as LLMConfig['model'], apiKey: resolved.access }

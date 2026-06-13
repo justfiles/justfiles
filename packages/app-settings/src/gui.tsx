@@ -1,10 +1,13 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import type { AccountInfo, CapabilityId, ProviderInfo } from '@justfiles/app/capabilities/accounts'
-import type { AgentStatus } from '@justfiles/app/capabilities/ai/admin'
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type Category, initialState, type SettingsApp, type SettingsState } from './app.ts'
+
+// How a provider projects an `ai`-capability account's config for the picker
+// (see the host `describe`): the selected model + the list to choose from.
+type AiConfig = { model: string; models: { id: string; name: string }[] }
 
 injectStyle(
 	`
@@ -92,7 +95,6 @@ export const gui = defineGUI<SettingsApp>({
 })
 
 const CATEGORIES: { id: Category; label: string; glyph: string }[] = [
-	{ id: 'ai', label: 'AI Agent', glyph: '✦' },
 	{ id: 'accounts', label: 'Accounts', glyph: '@' }
 ]
 
@@ -107,7 +109,6 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 	useEffect(() => {
 		if (refreshed.current) return
 		refreshed.current = true
-		void client.refresh({})
 		void client.loadProviders({})
 		void client.loadAccounts({})
 	}, [client])
@@ -128,11 +129,7 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 						</button>
 					</p>
 				) : null}
-				{state.category === 'ai' ? (
-					<AiAgentPanel state={state} client={client} />
-				) : (
-					<AccountsPanel state={state} client={client} />
-				)}
+				<AccountsPanel state={state} client={client} />
 			</section>
 		</div>
 	)
@@ -174,123 +171,6 @@ function Sidebar({ category, client }: { category: Category; client: Client<Sett
 	)
 }
 
-function AiAgentPanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
-	const ai = state.ai
-	return (
-		<div className="settings-pane">
-			<header className="settings-pane-header">
-				<h1 className="settings-pane-title">AI Agent</h1>
-				<p className="settings-pane-copy">Choose the model that powers your agent.</p>
-			</header>
-			{ai === null && state.loading ? <p className="settings-muted">Loading…</p> : null}
-			{ai && !ai.connected ? <ChatgptSignIn client={client} /> : null}
-			{ai?.connected ? <ChatgptConnected ai={ai} client={client} /> : null}
-		</div>
-	)
-}
-
-function ChatgptSignIn({ client }: { client: Client<SettingsApp> }) {
-	const [busy, setBusy] = useState(false)
-	const [error, setError] = useState<string | null>(null)
-
-	const signIn = async () => {
-		setBusy(true)
-		setError(null)
-		try {
-			await client.signIn({})
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err))
-		} finally {
-			setBusy(false)
-		}
-	}
-
-	return (
-		<section className="settings-card">
-			<div className="settings-provider">
-				<div className="settings-provider-mark">GPT</div>
-				<div className="settings-provider-text">
-					<h2 className="settings-card-title">Sign in with ChatGPT</h2>
-					<p className="settings-card-copy">
-						Use your existing ChatGPT subscription to run the agent on GPT-5 models.
-					</p>
-				</div>
-			</div>
-			{busy ? <p className="settings-muted">Complete sign-in in your browser…</p> : null}
-			{error ? <p className="settings-card-error">{error}</p> : null}
-			<div className="settings-card-actions">
-				<button
-					type="button"
-					className="settings-primary-button"
-					disabled={busy}
-					onClick={() => void signIn()}
-				>
-					{busy ? 'Waiting…' : 'Sign in with ChatGPT'}
-				</button>
-			</div>
-		</section>
-	)
-}
-
-function ChatgptConnected({ ai, client }: { ai: AgentStatus; client: Client<SettingsApp> }) {
-	const [busy, setBusy] = useState(false)
-	const [error, setError] = useState<string | null>(null)
-
-	const run = async (fn: () => Promise<void>) => {
-		setBusy(true)
-		setError(null)
-		try {
-			await fn()
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err))
-		} finally {
-			setBusy(false)
-		}
-	}
-
-	const signOut = () => {
-		if (!window.confirm('Disconnect your ChatGPT account?')) return
-		void run(() => client.signOut({}))
-	}
-
-	return (
-		<section className="settings-card">
-			<div className="settings-connected-row">
-				<div className="settings-provider">
-					<div className="settings-provider-mark">GPT</div>
-					<div className="settings-provider-text">
-						<h2 className="settings-card-title">ChatGPT</h2>
-						<p className="settings-account-status is-connected">
-							Connected{ai.account ? ` · ${ai.account}` : ''}
-						</p>
-					</div>
-				</div>
-				<button type="button" className="settings-small-button" disabled={busy} onClick={signOut}>
-					Sign out
-				</button>
-			</div>
-
-			<label className="settings-field" htmlFor="settings-model">
-				<span className="settings-field-title">Model</span>
-				<select
-					id="settings-model"
-					className="settings-select"
-					value={ai.model ?? ''}
-					disabled={busy || ai.models.length === 0}
-					onChange={(event) => void run(() => client.selectModel({ model: event.target.value }))}
-				>
-					{ai.models.map((m) => (
-						<option key={m.id} value={m.id}>
-							{m.name}
-						</option>
-					))}
-				</select>
-			</label>
-			{error ? <p className="settings-card-error">{error}</p> : null}
-		</section>
-	)
-}
-
 function AccountsPanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
 	const connectedIds = new Set(state.accounts.map((a) => a.providerId))
 	const available = state.providers.filter((p) => !connectedIds.has(p.id))
@@ -300,7 +180,8 @@ function AccountsPanel({ state, client }: { state: SettingsState; client: Client
 				<h1 className="settings-pane-title">Accounts</h1>
 				<p className="settings-pane-copy">Connect an account, then choose what it powers.</p>
 			</header>
-			{state.providers.length === 0 ? (
+			{state.loading ? <p className="settings-muted">Loading…</p> : null}
+			{!state.loading && state.providers.length === 0 ? (
 				<section className="settings-card settings-card-empty">
 					<p className="settings-muted">No account providers available here.</p>
 				</section>
@@ -332,6 +213,10 @@ function ConnectedAccount({
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	const caps = provider?.capabilities ?? account.enabled
+	// `ai` carries a model picker as its per-account config (host `describe`).
+	const aiConfig = account.enabled.includes('ai')
+		? (account.config.ai as AiConfig | undefined)
+		: undefined
 
 	const run = async (fn: () => Promise<void>) => {
 		setBusy(true)
@@ -395,6 +280,33 @@ function ConnectedAccount({
 					)
 				})}
 			</div>
+			{aiConfig ? (
+				<label className="settings-field" htmlFor={`model-${account.accountId}`}>
+					<span className="settings-field-title">Model</span>
+					<select
+						id={`model-${account.accountId}`}
+						className="settings-select"
+						value={aiConfig.model}
+						disabled={busy || aiConfig.models.length === 0}
+						onChange={(e) =>
+							void run(() =>
+								client.setAccountEnabled({
+									accountId: account.accountId,
+									capability: 'ai',
+									enabled: true,
+									config: { model: e.target.value }
+								})
+							)
+						}
+					>
+						{aiConfig.models.map((m) => (
+							<option key={m.id} value={m.id}>
+								{m.name}
+							</option>
+						))}
+					</select>
+				</label>
+			) : null}
 			{account.lastError ? <p className="settings-card-error">{account.lastError}</p> : null}
 			{error ? <p className="settings-card-error">{error}</p> : null}
 		</section>

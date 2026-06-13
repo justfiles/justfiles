@@ -7,6 +7,7 @@
 // hand it back — no grants, no scopes.
 
 import type { AiCapability } from '../ai/index.ts'
+import { ai } from '../ai/index.ts'
 import type { CalendarCapability } from '../calendar/index.ts'
 import { calendar } from '../calendar/index.ts'
 import type { EmailCapability } from '../email/index.ts'
@@ -27,12 +28,18 @@ export interface Provider {
 		| { kind: 'oauth'; signIn(): Promise<{ accountId: string; creds: Creds }> }
 	// Presence of a key = "this provider can back that capability". One object
 	// expresses `google = email + calendar` — what the per-capability broker
-	// registry could not.
+	// registry could not. A factory also receives the account's per-capability
+	// config (e.g. ai → the selected model) so it can mint a configured impl;
+	// providers that don't need it (email/calendar) just ignore the second arg.
 	mint: Partial<{
 		email(creds: Creds): EmailCapability
 		calendar(creds: Creds): CalendarCapability
-		ai(creds: Creds): AiCapability
+		ai(creds: Creds, config: unknown): AiCapability
 	}>
+	// Optional per-capability projection of an account's stored config into the
+	// UI-facing config `listAccounts` returns (e.g. ai → selected + available
+	// models). Absent → the raw stored config is surfaced unchanged.
+	describe?: Partial<Record<CapabilityId, (config: unknown) => unknown>>
 }
 
 export interface Account {
@@ -67,7 +74,7 @@ async function resolveImpl<C>(
 	)
 	const mint = account && providers.get(account.providerId)?.mint[capability]
 	if (!mint) throw new CapabilityError('CAPABILITY_UNAVAILABLE', capability)
-	return (mint as (creds: Creds) => C)(account.creds)
+	return (mint as (creds: Creds, config: unknown) => C)(account.creds, account.enabled[capability])
 }
 
 // Use-facet hosts: pure delegation through `resolveImpl`. Wired into the kernel's
@@ -88,6 +95,15 @@ export const calendarHost = (providers: ProviderRegistry, accounts: AccountsStor
 			(
 				await resolveImpl<CalendarCapability>('calendar', i.accountId, providers, accounts)
 			).listToday(i)
+	})
+
+// `ai.generateText` carries no accountId, so it resolves the single ai-enabled
+// account. The minted impl is configured with that account's `enabled.ai` (the
+// selected model), so a model pick in Settings takes effect on the next call.
+export const aiHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
+	implementCapability(ai, {
+		generateText: async (_c, i) =>
+			(await resolveImpl<AiCapability>('ai', undefined, providers, accounts)).generateText(i)
 	})
 
 export interface AccountsAdminOptions {
@@ -117,7 +133,7 @@ export const accountsAdminHost = (
 		},
 		listAccounts: async (ctx) => {
 			guard(ctx)
-			return (await accounts.list()).map(toAccountInfo)
+			return (await accounts.list()).map((a) => toAccountInfo(a, providers.get(a.providerId)))
 		},
 		connect: async (ctx, { providerId, credentials }) => {
 			guard(ctx)
@@ -170,12 +186,17 @@ function toProviderInfo(p: Provider): ProviderInfo {
 	}
 }
 
-function toAccountInfo(a: Account): AccountInfo {
+function toAccountInfo(a: Account, provider?: Provider): AccountInfo {
+	const config: Partial<Record<CapabilityId, unknown>> = {}
+	for (const capability of Object.keys(a.enabled) as CapabilityId[]) {
+		const describe = provider?.describe?.[capability]
+		config[capability] = describe ? describe(a.enabled[capability]) : a.enabled[capability]
+	}
 	return {
 		accountId: a.accountId,
 		providerId: a.providerId,
 		enabled: Object.keys(a.enabled) as CapabilityId[],
-		config: a.enabled,
+		config,
 		lastError: a.lastError
 	}
 }

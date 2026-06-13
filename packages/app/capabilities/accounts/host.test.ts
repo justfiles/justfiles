@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import type { Account, AccountsStore, Provider, ProviderRegistry } from './host.ts'
-import { accountsAdminHost, calendarHost, emailHost } from './host.ts'
+import { accountsAdminHost, aiHost, calendarHost, emailHost } from './host.ts'
 
 // Minimal in-memory store; the real frieren/quay stores encrypt creds at rest.
 function memoryStore(seed: Account[] = []): AccountsStore {
@@ -67,6 +67,33 @@ function providers(): ProviderRegistry {
 		[fastmail.id, fastmail],
 		[ic.id, ic]
 	])
+}
+
+// An oauth ai provider whose mint reads the selected model from per-capability
+// config and whose `describe` projects the model picker (selected + available).
+function aiProvider(): Provider {
+	return {
+		id: 'chatgpt',
+		name: 'ChatGPT',
+		auth: {
+			kind: 'oauth',
+			signIn: async () => ({ accountId: 'u@openai', creds: { access: 'tok' } })
+		},
+		mint: {
+			ai: (creds, config) => ({
+				async generateText() {
+					const model = (config as { model?: string } | undefined)?.model ?? 'default'
+					return { text: `${creds.access as string}:${model}` }
+				}
+			})
+		},
+		describe: {
+			ai: (config) => ({
+				model: (config as { model?: string } | undefined)?.model ?? 'default',
+				models: [{ id: 'default', name: 'Default' }]
+			})
+		}
+	}
 }
 
 function call(appId: string, method: string, ...args: unknown[]): CapabilityCall {
@@ -187,5 +214,43 @@ describe('accounts use-facet dispatch', () => {
 		await expect(
 			host.invoke(useCall('calendar', 'listToday', { timezone: 'UTC' }))
 		).resolves.toEqual([{ id: 'EV', title: 'standup', startsAt: 1, endsAt: 2 }])
+	})
+
+	test('ai.generateText mints with the account config (selected model)', async () => {
+		const registry: ProviderRegistry = new Map([[aiProvider().id, aiProvider()]])
+		const store = memoryStore([
+			{
+				accountId: 'u@openai',
+				providerId: 'chatgpt',
+				creds: { access: 'tok' },
+				enabled: { ai: { model: 'gpt-x' } }
+			}
+		])
+		const host = aiHost(registry, store)
+		await expect(host.invoke(useCall('ai', 'generateText', { prompt: 'hi' }))).resolves.toEqual({
+			text: 'tok:gpt-x'
+		})
+	})
+})
+
+describe('accounts admin config projection', () => {
+	test('listAccounts projects per-capability config through provider.describe', async () => {
+		const registry: ProviderRegistry = new Map([[aiProvider().id, aiProvider()]])
+		const store = memoryStore([
+			{
+				accountId: 'u@openai',
+				providerId: 'chatgpt',
+				creds: { access: 'tok' },
+				enabled: { ai: {} }
+			}
+		])
+		const admin = accountsAdminHost(registry, store, { firstParty: [SETTINGS] })
+		const accounts = (await admin.invoke(call(SETTINGS, 'listAccounts', {}))) as Array<{
+			config: { ai?: unknown }
+		}>
+		expect(accounts[0].config.ai).toEqual({
+			model: 'default',
+			models: [{ id: 'default', name: 'Default' }]
+		})
 	})
 })

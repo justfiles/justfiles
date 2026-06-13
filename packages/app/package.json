@@ -21,7 +21,6 @@
 		"./capabilities/volume/host": "./capabilities/volume/host.ts",
 		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
-		"./capabilities/ai/admin": "./capabilities/ai/admin.ts",
 		"./capabilities/accounts": "./capabilities/accounts/index.ts",
 		"./capabilities/accounts/host": "./capabilities/accounts/host.ts"
 	},
@@ -100,10 +99,6 @@
 			"./capabilities/ai": {
 				"types": "./dist/capabilities/ai/index.d.ts",
 				"default": "./dist/capabilities/ai/index.js"
-			},
-			"./capabilities/ai/admin": {
-				"types": "./dist/capabilities/ai/admin.d.ts",
-				"default": "./dist/capabilities/ai/admin.js"
 			},
 			"./capabilities/accounts": {
 				"types": "./dist/capabilities/accounts/index.d.ts",
