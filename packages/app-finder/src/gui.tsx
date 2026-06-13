@@ -1,5 +1,6 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI, injectStyle } from '@justfiles/app/browser'
+import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type FinderApp, type FinderState, initialState } from './app.ts'
@@ -19,14 +20,20 @@ injectStyle(
 .finder-main-name, .finder-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .finder-btn { flex: none; padding: 1px 8px; font-size: 11px; }
 .finder-error { padding: 0 12px 8px; font-size: 12px; color: #b91c1c; }
-.finder-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 4px 8px; }
-.finder-hint { padding: 4px 8px; font-size: 12px; opacity: 0.6; }
-.finder-row { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 2px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; font-family: ui-monospace, Menlo, monospace; font-size: 12px; text-align: left; }
-.finder-row:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.finder-folder { opacity: 0.7; }
-.finder-row.is-selected { background: var(--focus); color: var(--on-focus); }
-.finder-twisty { flex: none; width: 12px; opacity: 0.55; }
-.finder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finder-hint { padding: 4px 12px; font-size: 12px; opacity: 0.6; }
+.finder-tree-wrap { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.finder-tree { display: block; height: 100%; width: 100%;
+	--trees-bg-override: var(--surface);
+	--trees-fg-override: var(--text);
+	--trees-fg-muted-override: color-mix(in srgb, var(--text) 55%, transparent);
+	--trees-bg-muted-override: color-mix(in srgb, var(--text) 7%, transparent);
+	--trees-border-color-override: var(--rule);
+	--trees-selected-bg-override: var(--focus);
+	--trees-selected-fg-override: var(--on-focus);
+	--trees-focus-ring-color-override: var(--focus);
+	--trees-font-family-override: ui-monospace, Menlo, monospace;
+	--trees-font-size-override: 12px;
+	--trees-padding-inline-override: 6px; }
 .finder-main { display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--window-bg); color: var(--text); }
 .finder-preview { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; background: transparent; color: inherit; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; }
 .finder-truncated { display: block; padding-top: 8px; opacity: 0.5; }
@@ -108,7 +115,7 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 			})
 	}, [client, viewing, revision])
 
-	const tree = useMemo(() => buildTree(state.files), [state.files])
+	const files = useMemo(() => state.files.map((file) => file.path), [state.files])
 	const displayError = state.error ?? readError
 	const showPreview = preview && preview.path === viewing ? preview : null
 
@@ -126,20 +133,19 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 					</button>
 				</header>
 				{state.error ? <p className="finder-error">{state.error}</p> : null}
-				<div className="finder-list">
-					{state.loading ? (
-						<p className="finder-hint">Loading…</p>
-					) : state.files.length === 0 ? (
-						<p className="finder-hint">No files yet</p>
-					) : (
-						<TreeNode
-							node={tree}
-							depth={0}
+				{state.loading ? (
+					<p className="finder-hint">Loading…</p>
+				) : files.length === 0 ? (
+					<p className="finder-hint">No files yet</p>
+				) : (
+					<div className="finder-tree-wrap">
+						<FinderFileTree
+							files={files}
 							selectedPath={viewing}
 							onSelect={(path) => void client.setView({ path })}
 						/>
-					)}
-				</div>
+					</div>
+				)}
 			</aside>
 			<section className="finder-main">
 				{viewing ? (
@@ -174,102 +180,50 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 	)
 }
 
-type FileItem = { path: string }
-type Node = { name: string; path: string; children: Node[]; files: FileItem[] }
+// The volume reports absolute paths (`/src/app.ts`); `@pierre/trees` treats a
+// leading slash as an empty first segment, so feed it slash-stripped paths and
+// re-add the slash when a selection comes back.
+const stripSlash = (path: string) => path.replace(/^\/+/, '')
 
-function buildTree(files: FileItem[]): Node {
-	const root: Node = { name: '', path: '/', children: [], files: [] }
-	const child = (node: Node, name: string, path: string) => {
-		let found = node.children.find((c) => c.name === name)
-		if (!found) {
-			found = { name, path, children: [], files: [] }
-			node.children.push(found)
-		}
-		return found
-	}
-	for (const file of files) {
-		const parts = file.path.split('/').filter(Boolean)
-		let node = root
-		let path = ''
-		for (const part of parts.slice(0, -1)) {
-			path = `${path}/${part}`
-			node = child(node, part, path)
-		}
-		node.files.push(file)
-	}
-	const sort = (node: Node) => {
-		node.children.sort((a, b) => a.name.localeCompare(b.name))
-		node.files.sort((a, b) => basename(a.path).localeCompare(basename(b.path)))
-		for (const c of node.children) sort(c)
-	}
-	sort(root)
-	return root
-}
-
-function TreeNode(props: {
-	node: Node
-	depth: number
+function FinderFileTree(props: {
+	files: string[]
 	selectedPath: string | null
 	onSelect: (path: string) => void
 }) {
-	return (
-		<>
-			{props.node.children.map((node) => (
-				<FolderRow key={node.path} {...props} node={node} depth={props.depth} />
-			))}
-			{props.node.files.map((file) => (
-				<FileRow
-					key={file.path}
-					path={file.path}
-					depth={props.depth}
-					selected={file.path === props.selectedPath}
-					onSelect={props.onSelect}
-				/>
-			))}
-		</>
-	)
-}
+	const latest = useRef(props)
+	latest.current = props
+	const paths = useMemo(() => props.files.map(stripSlash), [props.files])
+	const selectedPath = props.selectedPath ? stripSlash(props.selectedPath) : null
 
-function FolderRow(props: {
-	node: Node
-	depth: number
-	selectedPath: string | null
-	onSelect: (path: string) => void
-}) {
-	const [open, setOpen] = useState(true)
-	return (
-		<div>
-			<button
-				type="button"
-				onClick={() => setOpen((value) => !value)}
-				className="finder-row finder-folder"
-				style={{ paddingLeft: props.depth * 12 + 8 }}
-				title={props.node.path}
-			>
-				<span className="finder-twisty">{open ? '▾' : '▸'}</span>
-				<span className="finder-name">{props.node.name}</span>
-			</button>
-			{open ? <TreeNode {...props} depth={props.depth + 1} /> : null}
-		</div>
-	)
-}
+	const { model } = useFileTree({
+		paths,
+		flattenEmptyDirectories: true,
+		initialExpansion: 'open',
+		initialSelectedPaths: selectedPath ? [selectedPath] : [],
+		itemHeight: 24,
+		density: 0.85,
+		onSelectionChange: (selected) => {
+			const { files, onSelect } = latest.current
+			const path = selected.find((candidate) => files.includes(`/${candidate}`))
+			if (path) onSelect(`/${path}`)
+		}
+	})
 
-function FileRow(props: {
-	path: string
-	depth: number
-	selected: boolean
-	onSelect: (path: string) => void
-}) {
-	return (
-		<button
-			type="button"
-			onClick={() => props.onSelect(props.path)}
-			className={props.selected ? 'finder-row is-selected' : 'finder-row'}
-			style={{ paddingLeft: props.depth * 12 + 8 }}
-			title={props.path}
-		>
-			<span className="finder-twisty">▹</span>
-			<span className="finder-name">{basename(props.path)}</span>
-		</button>
-	)
+	useEffect(() => {
+		model.resetPaths(paths)
+	}, [model, paths])
+
+	useEffect(() => {
+		if (!selectedPath) return
+		const item = model.getItem(selectedPath)
+		if (!item) return
+		const selected = model.getSelectedPaths()
+		if (selected.length !== 1 || selected[0] !== selectedPath) {
+			for (const path of selected) model.getItem(path)?.deselect()
+			item.select()
+		}
+		model.scrollToPath(selectedPath, { focus: false })
+	}, [model, selectedPath])
+
+	return <PierreFileTree model={model} className="finder-tree" />
 }
