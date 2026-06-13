@@ -1,4 +1,4 @@
-* Tasks [7/15]
+* Tasks [8/16]
 
 ** DONE move window.json to state
 ** DONE active app indicator (dock?)
@@ -32,10 +32,13 @@ the first-party Settings app can reach.
 The interface is pretty chaotic, need more elegent interface
 ** TODO notification
 can notify when agent finishes work
-** TODO better title bar, maybe same color as background?
+** DONE better title bar, maybe same color as background?
 ** TODO launchbar search text auto wrap when long, should become text area?
 ** TODO modify builtin apps?
 think about emacs
+** TODO window location and size
+Investigate how macOS remember app's last open location and size, I would like the apps to remember it's last location and size. research on that, see if there's a nature way to do it on macOS, if not, what are my options? maybe we do the same as Frieren, save that info in volume. no code change, research and report back.
+
 * Bugs to fix
 
 ** TODO move onboarding
