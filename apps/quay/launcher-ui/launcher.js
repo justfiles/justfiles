@@ -34,7 +34,6 @@ const composer = document.getElementById('composer')
 
 const PAD = 12 // #app padding (top + bottom = 24)
 const GAP = 8 // gap between #app's stacked rows
-const COMPOSER_H = 48
 const STATUS_H = 18
 const ROW_HEIGHT = 46
 const ROW_GAP = 4
@@ -110,7 +109,9 @@ function resumeLabel() {
 function sizePanel() {
 	const cap = contentEl.classList.contains('apps') ? APPS_CAP : CHAT_CAP
 	const contentH = contentEl.hidden ? 0 : Math.min(contentEl.scrollHeight, cap)
-	let h = PAD * 2 + COMPOSER_H
+	// The composer auto-grows (field-sizing), so read its live height here — every
+	// render runs through sizePanel, so the panel tracks the textarea as it wraps.
+	let h = PAD * 2 + composer.offsetHeight
 	if (contentH) h += contentH + GAP
 	if (!statusEl.hidden) h += STATUS_H + GAP
 	window.quay?.resize?.(h)
@@ -310,7 +311,8 @@ composer.addEventListener('keydown', (e) => {
 		return
 	}
 
-	if (e.key === 'Enter') {
+	// Enter sends; Shift+Enter falls through to the textarea to insert a newline.
+	if (e.key === 'Enter' && !e.shiftKey) {
 		e.preventDefault()
 		const text = composer.value.trim()
 		if (chatting) {

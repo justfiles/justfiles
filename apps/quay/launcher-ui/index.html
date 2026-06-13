@@ -49,14 +49,23 @@
 				flex: none;
 				width: 100%;
 				box-sizing: border-box;
-				height: 48px;
-				padding: 0 16px;
+				min-height: 48px;
+				max-height: 160px;
+				padding: 13px 16px;
+				font-family: inherit;
 				font-size: 18px;
+				line-height: 22px;
 				color: #fff;
 				border: 0;
 				border-radius: 14px;
 				background: rgba(255, 255, 255, 0.08);
 				outline: none;
+				resize: none;
+				overflow-y: auto;
+				/* Grow with the text (iMessage/ChatGPT style): field-sizing shrink-wraps
+				   the textarea to its content, so one line stays 48px and extra lines
+				   add height up to max-height, after which it scrolls. */
+				field-sizing: content;
 				-webkit-user-select: text;
 				user-select: text;
 			}
@@ -141,13 +150,13 @@
 		<div id="app">
 			<ul id="content" hidden></ul>
 			<p id="status" hidden></p>
-			<input
+			<textarea
 				id="composer"
-				type="text"
+				rows="1"
 				placeholder="Search apps or message agent…"
 				autocomplete="off"
 				spellcheck="false"
-			/>
+			></textarea>
 		</div>
 		<script src="launcher.js"></script>
 	</body>

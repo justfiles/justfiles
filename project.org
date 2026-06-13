@@ -1,4 +1,4 @@
-* Tasks [8/16]
+* Tasks [9/16]
 
 ** DONE move window.json to state
 ** DONE active app indicator (dock?)
@@ -14,7 +14,7 @@ signOut/status) only to the first-party Settings app, gated host-side on appId
 like the volume `system` allowlist. Settings stays an app, with admin access. See
 c32a636.
 ** TODO code
-** TODO unify calendar/email onto the use/admin facet pattern
+** DONE unify calendar/email onto the use/admin facet pattern
 Apply the same use/admin split to the rest, so every capability has the same
 shape: a host-owned backing store, a use facet apps call, and an admin facet only
 the first-party Settings app can reach.
