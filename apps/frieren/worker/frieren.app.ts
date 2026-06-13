@@ -4,18 +4,27 @@ import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
 import {
 	type Capabilities,
 	type Capability,
+	type CapabilityCall,
 	CapabilityError,
 	capabilityRegistry,
 	serveCapabilitiesRpc,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
+import {
+	type AccountsStore,
+	accountsAdminHost,
+	calendarHost,
+	emailHost,
+	type ProviderRegistry
+} from '@justfiles/app/capabilities/accounts/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { appFileUrl, CATALOG_PATH } from '../shared/appstore.ts'
 import { aiCapability } from './ai.capability.ts'
-import type { Integrations } from './integrations/registry.ts'
-import { integrationsCapability } from './integrations.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
+
+// Only the first-party Settings app may reach the `accounts` admin facet.
+const ACCOUNTS_FIRST_PARTY = ['app.frieren.settings']
 
 interface DisplayApp {
 	readonly id: string
@@ -36,9 +45,10 @@ interface FrierenAppsDeps {
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
 	broadcast: (msg: AppBroadcast) => void
-	// Lazily resolved so frierenApps can be constructed before the
-	// integrations registry exists; the volume capability does not need it.
-	integrations?: () => Integrations
+	// Lazily resolved so frierenApps can be constructed before the accounts
+	// providers/store exist; the volume capability does not need it. Backs the
+	// `email`/`calendar` use facets and the `accounts` admin facet.
+	accounts?: () => { providers: ProviderRegistry; store: AccountsStore }
 }
 
 export interface FrierenApps {
@@ -72,31 +82,47 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let builtinsReady: Promise<void> | undefined
 
 	// The server kernel's capability seam: `volume` and `ai` are local units;
-	// `integrations` defers to the registry that `frierenApps` is built before, so
-	// it resolves lazily per call. One wiring line replaces the old invoke/stream
-	// `if`-chains.
+	// `email`/`calendar`/`accounts` defer to the accounts bundle that `frierenApps`
+	// is built before, so they resolve lazily per call.
 	const ai = aiCapability(deps.text)
-	const integrations: Capability = {
-		invoke: async (call) => {
-			const registry = deps.integrations?.()
-			if (!registry)
-				throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
-			return integrationsCapability(registry).invoke(call)
-		},
-		subscribe: async (call) => {
-			throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
+	// `email`/`calendar` (use) and `accounts` (admin) all resolve the accounts
+	// bundle lazily per call — frierenApps is built before the providers/store
+	// exist, and they're absent until the agent is built.
+	const lazyAccountCap = (
+		build: (p: ProviderRegistry, s: AccountsStore) => Capability
+	): Capability => {
+		const resolve = (call: CapabilityCall): Capability => {
+			const bundle = deps.accounts?.()
+			if (!bundle) throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
+			return build(bundle.providers, bundle.store)
+		}
+		return {
+			invoke: async (call) => resolve(call).invoke(call),
+			subscribe: async (call, emit) => resolve(call).subscribe(call, emit)
 		}
 	}
+	const emailCap = lazyAccountCap(emailHost)
+	const calendarCap = lazyAccountCap(calendarHost)
+	const accountsCap = lazyAccountCap((p, s) =>
+		accountsAdminHost(p, s, { firstParty: ACCOUNTS_FIRST_PARTY })
+	)
 	const capabilities: Capabilities = capabilityRegistry({
 		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.frieren.files'] }),
 		ai,
-		integrations
+		email: emailCap,
+		calendar: calendarCap,
+		accounts: accountsCap
 	})
 	// What the browser may proxy over `_caps`: everything EXCEPT `volume`, which is
 	// always served locally by the browser kernel against the synced volume and so
 	// must never be re-served here. A `volume` frame misses this registry and comes
 	// back as CAPABILITY_UNAVAILABLE — the old explicit rejection, now structural.
-	const proxied: Capabilities = capabilityRegistry({ ai, integrations })
+	const proxied: Capabilities = capabilityRegistry({
+		ai,
+		email: emailCap,
+		calendar: calendarCap,
+		accounts: accountsCap
+	})
 
 	function getKernel(): Kernel {
 		if (kernelInstance) return kernelInstance

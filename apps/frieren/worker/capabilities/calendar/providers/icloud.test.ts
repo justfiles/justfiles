@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { CalDavClient } from '../../../integrations/icloud-calendar/caldav.ts'
 import type { CalEvent } from '../../../integrations/icloud-calendar/ical.ts'
-import { calendarHost } from '../host.ts'
 import { createIcloudCalendarProvider, type IcloudCalendarCredentials } from './icloud.ts'
 
 function fakeClient(events: CalEvent[], capture?: { start?: Date; end?: Date }): CalDavClient {
@@ -221,83 +220,5 @@ describe('iCloud calendar provider — timezone/day boundaries', () => {
 		// In New York the local date is 2026-05-07: midnight = 04:00 UTC
 		expect(nyCapture.start?.toISOString()).toBe('2026-05-07T04:00:00.000Z')
 		expect(nyCapture.end?.toISOString()).toBe('2026-05-08T04:00:00.000Z')
-	})
-})
-
-describe('iCloud calendar provider — broker integration', () => {
-	test('listToday is reachable through the broker with a matching grant', async () => {
-		const events: CalEvent[] = [
-			{
-				uid: 'e1',
-				summary: 'Hi',
-				dtstart: '2026-05-07T22:00:00Z',
-				dtend: '2026-05-07T22:30:00Z'
-			}
-		]
-		const provider = freshProvider(fakeClient(events))
-		const broker = calendarHost.createBroker({
-			userId: 'u1',
-			grants: [{ capability: 'calendar', scope: 'read.today', accountId: 'icloud-1' }],
-			resolveAccount: () => ({ providerId: provider.id, credentials: creds })
-		})
-		const result = (await broker.invoke({
-			capability: 'calendar',
-			method: 'listToday',
-			args: [
-				{
-					timezone: 'Pacific/Auckland',
-					accountId: 'icloud-1',
-					now: Date.parse('2026-05-08T03:00:00Z')
-				}
-			]
-		})) as Array<{ id: string }>
-		expect(result.map((e) => e.id)).toEqual(['e1'])
-	})
-
-	test('broker normalizes provider failures into CAPABILITY_FAILED', async () => {
-		const failingClient: CalDavClient = {
-			...fakeClient([]),
-			async listEventsBetween() {
-				throw new Error('caldav unavailable')
-			}
-		}
-		const provider = freshProvider(failingClient)
-		const broker = calendarHost.createBroker({
-			userId: 'u1',
-			grants: [{ capability: 'calendar', scope: 'read.today' }],
-			resolveAccount: () => ({ providerId: provider.id, credentials: creds })
-		})
-		await expect(
-			broker.invoke({
-				capability: 'calendar',
-				method: 'listToday',
-				args: [{ timezone: 'Pacific/Auckland', now: Date.parse('2026-05-08T03:00:00Z') }]
-			})
-		).rejects.toMatchObject({
-			code: 'CAPABILITY_FAILED',
-			capability: 'calendar',
-			method: 'listToday',
-			message: 'caldav unavailable'
-		})
-	})
-
-	test('broker denies listToday without the read.today grant', async () => {
-		const provider = freshProvider(fakeClient([]))
-		const broker = calendarHost.createBroker({
-			userId: 'u1',
-			grants: [],
-			resolveAccount: () => ({ providerId: provider.id, credentials: creds })
-		})
-		await expect(
-			broker.invoke({
-				capability: 'calendar',
-				method: 'listToday',
-				args: [{ timezone: 'Pacific/Auckland' }]
-			})
-		).rejects.toMatchObject({
-			code: 'CAPABILITY_DENIED',
-			capability: 'calendar',
-			method: 'listToday'
-		})
 	})
 })

@@ -9,7 +9,6 @@ import {
 	createCalDavClient
 } from '../../../integrations/icloud-calendar/caldav.ts'
 import { type CalEvent, localToUtc } from '../../../integrations/icloud-calendar/ical.ts'
-import { calendarHost } from '../host.ts'
 
 export interface IcloudCalendarCredentials {
 	username: string
@@ -21,13 +20,15 @@ export interface IcloudCalendarProviderOptions {
 	createClient?: (credentials: IcloudCalendarCredentials) => CalDavClient
 }
 
+// A plain `{ id, create }` provider — the accounts registry mints `create(creds)`
+// per call to back the `calendar` capability. No broker.
 export function createIcloudCalendarProvider(options: IcloudCalendarProviderOptions = {}) {
 	const createClient = options.createClient ?? defaultCreateClient
-	return calendarHost.defineProvider({
+	return {
 		id: 'icloud',
 		name: 'iCloud Calendar',
 		description: 'Read iCloud Calendar events via CalDAV',
-		create(credentials): CalendarCapability {
+		create(credentials: unknown): CalendarCapability {
 			const creds = credentials as IcloudCalendarCredentials
 			const client = createClient(creds)
 			const fallbackAccountId = creds.accountId
@@ -47,7 +48,7 @@ export function createIcloudCalendarProvider(options: IcloudCalendarProviderOpti
 				}
 			}
 		}
-	})
+	}
 }
 
 function defaultCreateClient(credentials: IcloudCalendarCredentials): CalDavClient {

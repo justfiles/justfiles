@@ -1,5 +1,6 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI, injectStyle } from '@justfiles/app/browser'
+import type { AccountInfo, CapabilityId, ProviderInfo } from '@justfiles/app/capabilities/accounts'
 import type { AgentStatus } from '@justfiles/app/capabilities/ai/admin'
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -43,6 +44,10 @@ injectStyle(
 .settings-connected-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .settings-account-status { margin: 0; font-size: 11px; }
 .settings-account-status.is-connected { color: #047857; }
+
+.settings-caps { display: flex; flex-wrap: wrap; gap: 14px; }
+.settings-cap-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.settings-cap-toggle input { margin: 0; }
 
 .settings-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .settings-field-title { opacity: 0.6; }
@@ -88,16 +93,24 @@ export const gui = defineGUI<SettingsApp>({
 
 const CATEGORIES: { id: Category; label: string; glyph: string }[] = [
 	{ id: 'ai', label: 'AI Agent', glyph: '✦' },
-	{ id: 'email', label: 'Email', glyph: '✉' }
+	{ id: 'accounts', label: 'Accounts', glyph: '@' }
 ]
+
+const CAP_LABEL: Record<CapabilityId, string> = {
+	email: 'Email',
+	calendar: 'Calendar',
+	ai: 'AI'
+}
 
 function Settings({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
 	const refreshed = useRef(false)
 	useEffect(() => {
 		if (refreshed.current) return
 		refreshed.current = true
-		if (!state.ai) void client.refresh({})
-	}, [client, state.ai])
+		void client.refresh({})
+		void client.loadProviders({})
+		void client.loadAccounts({})
+	}, [client])
 
 	return (
 		<div className="settings">
@@ -115,7 +128,11 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 						</button>
 					</p>
 				) : null}
-				{state.category === 'ai' ? <AiAgentPanel state={state} client={client} /> : <EmailPanel />}
+				{state.category === 'ai' ? (
+					<AiAgentPanel state={state} client={client} />
+				) : (
+					<AccountsPanel state={state} client={client} />
+				)}
 			</section>
 		</div>
 	)
@@ -274,18 +291,186 @@ function ChatgptConnected({ ai, client }: { ai: AgentStatus; client: Client<Sett
 	)
 }
 
-function EmailPanel() {
+function AccountsPanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+	const connectedIds = new Set(state.accounts.map((a) => a.providerId))
+	const available = state.providers.filter((p) => !connectedIds.has(p.id))
 	return (
 		<div className="settings-pane">
 			<header className="settings-pane-header">
-				<h1 className="settings-pane-title">Email</h1>
-				<p className="settings-pane-copy">
-					Connect an email provider so the agent can triage your inbox.
-				</p>
+				<h1 className="settings-pane-title">Accounts</h1>
+				<p className="settings-pane-copy">Connect an account, then choose what it powers.</p>
 			</header>
-			<section className="settings-card settings-card-empty">
-				<p className="settings-muted">Email setup is coming soon.</p>
-			</section>
+			{state.providers.length === 0 ? (
+				<section className="settings-card settings-card-empty">
+					<p className="settings-muted">No account providers available here.</p>
+				</section>
+			) : null}
+			{state.accounts.map((account) => (
+				<ConnectedAccount
+					key={account.accountId}
+					account={account}
+					provider={state.providers.find((p) => p.id === account.providerId)}
+					client={client}
+				/>
+			))}
+			{available.map((provider) => (
+				<ProviderConnectForm key={provider.id} provider={provider} client={client} />
+			))}
 		</div>
+	)
+}
+
+function ConnectedAccount({
+	account,
+	provider,
+	client
+}: {
+	account: AccountInfo
+	provider?: ProviderInfo
+	client: Client<SettingsApp>
+}) {
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<string | null>(null)
+	const caps = provider?.capabilities ?? account.enabled
+
+	const run = async (fn: () => Promise<void>) => {
+		setBusy(true)
+		setError(null)
+		try {
+			await fn()
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err))
+		} finally {
+			setBusy(false)
+		}
+	}
+
+	const disconnect = () => {
+		if (!window.confirm(`Disconnect ${provider?.name ?? account.providerId}?`)) return
+		void run(() => client.disconnectAccount({ accountId: account.accountId }))
+	}
+
+	return (
+		<section className="settings-card">
+			<div className="settings-connected-row">
+				<div className="settings-provider">
+					<div className="settings-provider-mark">
+						{(provider?.name ?? account.providerId).slice(0, 2).toUpperCase()}
+					</div>
+					<div className="settings-provider-text">
+						<h2 className="settings-card-title">{provider?.name ?? account.providerId}</h2>
+						<p className="settings-account-status is-connected">Connected · {account.accountId}</p>
+					</div>
+				</div>
+				<button
+					type="button"
+					className="settings-small-button"
+					disabled={busy}
+					onClick={disconnect}
+				>
+					Disconnect
+				</button>
+			</div>
+			<div className="settings-caps">
+				{caps.map((cap) => {
+					const on = account.enabled.includes(cap)
+					return (
+						<label key={cap} className="settings-cap-toggle">
+							<input
+								type="checkbox"
+								checked={on}
+								disabled={busy}
+								onChange={() =>
+									void run(() =>
+										client.setAccountEnabled({
+											accountId: account.accountId,
+											capability: cap,
+											enabled: !on
+										})
+									)
+								}
+							/>
+							<span>{CAP_LABEL[cap]}</span>
+						</label>
+					)
+				})}
+			</div>
+			{account.lastError ? <p className="settings-card-error">{account.lastError}</p> : null}
+			{error ? <p className="settings-card-error">{error}</p> : null}
+		</section>
+	)
+}
+
+function ProviderConnectForm({
+	provider,
+	client
+}: {
+	provider: ProviderInfo
+	client: Client<SettingsApp>
+}) {
+	const fields = provider.credentialsSchema
+		? Object.entries(provider.credentialsSchema.properties)
+		: []
+	const [values, setValues] = useState<Record<string, string>>({})
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<string | null>(null)
+
+	const connect = async () => {
+		setBusy(true)
+		setError(null)
+		try {
+			await client.connectAccount(
+				provider.authKind === 'form'
+					? { providerId: provider.id, credentials: values }
+					: { providerId: provider.id }
+			)
+			setValues({})
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err))
+		} finally {
+			setBusy(false)
+		}
+	}
+
+	return (
+		<section className="settings-card">
+			<div className="settings-provider">
+				<div className="settings-provider-mark">{provider.name.slice(0, 2).toUpperCase()}</div>
+				<div className="settings-provider-text">
+					<h2 className="settings-card-title">{provider.name}</h2>
+					<p className="settings-card-copy">
+						Backs {provider.capabilities.map((c) => CAP_LABEL[c]).join(' · ')}.
+					</p>
+				</div>
+			</div>
+			{fields.map(([key, field]) => (
+				<label key={key} className="settings-field" htmlFor={`connect-${provider.id}-${key}`}>
+					<span className="settings-field-title">
+						{key}
+						{field.description ? ` — ${field.description}` : ''}
+					</span>
+					<input
+						id={`connect-${provider.id}-${key}`}
+						className="settings-select"
+						type="password"
+						autoComplete="off"
+						value={values[key] ?? ''}
+						disabled={busy}
+						onChange={(e) => setValues((prev) => ({ ...prev, [key]: e.target.value }))}
+					/>
+				</label>
+			))}
+			{error ? <p className="settings-card-error">{error}</p> : null}
+			<div className="settings-card-actions">
+				<button
+					type="button"
+					className="settings-primary-button"
+					disabled={busy}
+					onClick={() => void connect()}
+				>
+					{busy ? 'Connecting…' : `Connect ${provider.name}`}
+				</button>
+			</div>
+		</section>
 	)
 }

@@ -1,5 +1,3 @@
-import { defineProviderBackedCapability } from '@justfiles/app/capabilities/broker'
-import { email } from '@justfiles/app/capabilities/email'
 import { describe, expect, test } from 'vitest'
 import type { EmailDetails, EmailSummary, JmapClient, SendInput } from './jmap.ts'
 import { createFastmailEmailProvider, fastmailEmailProvider } from './provider.ts'
@@ -165,79 +163,5 @@ describe('fastmailEmailProvider', () => {
 		expect(typeof cap.listUnread).toBe('function')
 		expect(typeof cap.readDetail).toBe('function')
 		expect(typeof cap.markRead).toBe('function')
-	})
-})
-
-describe('Fastmail provider via capability broker', () => {
-	function emailHost() {
-		return defineProviderBackedCapability({
-			capability: email,
-			methodScopes: {
-				listUnread: 'read.unread',
-				readDetail: 'read.detail',
-				markRead: 'markRead'
-			}
-		})
-	}
-
-	test('registers via defineProvider and serves listUnread end-to-end', async () => {
-		const host = emailHost()
-		const provider = providerWith({
-			async list() {
-				return [
-					{
-						id: 'e1',
-						subject: 'Hello',
-						from: [{ name: null, email: 'sender@x.com' }],
-						receivedAt: '2026-05-04T10:00:00Z',
-						preview: 'preview'
-					}
-				]
-			}
-		})
-		host.defineProvider(provider)
-		const broker = host.createBroker({
-			userId: 'u1',
-			grants: [{ capability: 'email', scope: 'read.unread', accountId: 'primary' }],
-			resolveAccount: () => ({ providerId: provider.id, credentials: { token: 'tok' } })
-		})
-		await expect(
-			broker.invoke({
-				capability: 'email',
-				method: 'listUnread',
-				args: [{ accountId: 'primary' }]
-			})
-		).resolves.toEqual([
-			{
-				id: 'e1',
-				from: 'sender@x.com',
-				subject: 'Hello',
-				receivedAt: Date.parse('2026-05-04T10:00:00Z'),
-				unread: true
-			}
-		])
-	})
-
-	test('provider failure surfaces as CAPABILITY_FAILED through broker', async () => {
-		const host = emailHost()
-		const provider = providerWith({
-			async list() {
-				throw new Error('upstream down')
-			}
-		})
-		host.defineProvider(provider)
-		const broker = host.createBroker({
-			userId: 'u1',
-			grants: [{ capability: 'email', scope: 'read.unread' }],
-			resolveAccount: () => ({ providerId: provider.id, credentials: { token: 'tok' } })
-		})
-		await expect(
-			broker.invoke({ capability: 'email', method: 'listUnread', args: [{}] })
-		).rejects.toMatchObject({
-			code: 'CAPABILITY_FAILED',
-			capability: 'email',
-			method: 'listUnread',
-			message: 'upstream down'
-		})
 	})
 })

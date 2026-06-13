@@ -21,22 +21,21 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
+import type { AccountsStore, ProviderRegistry } from '@justfiles/app/capabilities/accounts/host'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import { activatingStore, CommandActivator } from './accounts/commands.ts'
+import { buildProviders } from './accounts/providers.ts'
+import { accountsStore } from './accounts/store.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
-import { integrationRoutes } from './integrations/api.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { Coalescer } from './integrations/coalescer.ts'
-import { fastmailIntegration } from './integrations/fastmail/index.ts'
-import { icloudCalendarIntegration } from './integrations/icloud-calendar/index.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
-import { Integrations } from './integrations/registry.ts'
-import { ConnectionStore } from './integrations/storage.ts'
 
 interface ClientMessage {
 	type: 'prompt' | 'abort' | 'app_open' | 'app_close'
@@ -79,7 +78,7 @@ export class Frieren extends DurableObject<Env> {
 	private runtime?: Runtime
 	private text?: LLMText
 	private cfTimezone?: string
-	private integrations?: Integrations
+	private accounts?: { providers: ProviderRegistry; store: AccountsStore }
 	private readonly coalescer = new Coalescer()
 	private apps?: FrierenApps
 
@@ -103,10 +102,6 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			.route(
-				'/',
-				integrationRoutes(() => this.requireIntegrations())
-			)
 			.post('/api/apps/install', async (c) => {
 				try {
 					const form = await c.req.formData()
@@ -143,9 +138,9 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
-	private requireIntegrations(): Integrations {
-		if (!this.integrations) throw new Error('integrations not initialised')
-		return this.integrations
+	private requireAccounts(): { providers: ProviderRegistry; store: AccountsStore } {
+		if (!this.accounts) throw new Error('accounts not initialised')
+		return this.accounts
 	}
 
 	private requireApps(): FrierenApps {
@@ -180,11 +175,11 @@ export class Frieren extends DurableObject<Env> {
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
 			broadcast: (msg) => this.broadcast(msg),
-			integrations: () => this.requireIntegrations()
+			accounts: () => this.requireAccounts()
 		})
-		const { agent, integrations } = this.buildAgent()
-		this.integrations = integrations
-		await integrations.hydrate()
+		const { agent, accounts, activator } = this.buildAgent()
+		this.accounts = accounts
+		await activator.hydrate(accounts.store)
 		this.runtime = await runtime({
 			volume: this.vol,
 			agent,
@@ -242,17 +237,24 @@ export class Frieren extends DurableObject<Env> {
 		const agent = createAgent(this.getBackendConfig())
 		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash]
 
-		const connections = new ConnectionStore(this.ctx.storage, this.env.INTEGRATION_KEY)
-		const integrations = new Integrations({
+		// Accounts back both the use-facet capabilities (email/calendar) and the
+		// agent's per-account commands; the activator keeps the latter in sync with
+		// the store (rate-limited + audited).
+		const { registry: providers, commands: factories } = buildProviders({
+			getTimezone: this.getTimezone
+		})
+		const activator = new CommandActivator({
 			commands: bashRegistry,
-			connections,
+			factories,
 			audit: new AuditLog(this.ctx.storage),
 			rateLimit: new TokenBucket({ capacity: 60, windowMs: 60_000 }),
 			coalescer: this.coalescer
 		})
-		integrations.define(fastmailIntegration())
-		integrations.define(icloudCalendarIntegration({ getTimezone: this.getTimezone }))
-		return { agent, integrations }
+		const store = activatingStore(
+			accountsStore(this.ctx.storage, this.env.INTEGRATION_KEY),
+			activator
+		)
+		return { agent, accounts: { providers, store }, activator }
 	}
 
 	// ── WebSocket handlers ────────────────────────────────────────────────
