@@ -8,9 +8,9 @@
 
 import type { AiCapability } from '../ai/index.ts'
 import { ai } from '../ai/index.ts'
-import type { CalendarCapability } from '../calendar/index.ts'
+import type { CalendarCapability, CalendarEvent } from '../calendar/index.ts'
 import { calendar } from '../calendar/index.ts'
-import type { EmailCapability } from '../email/index.ts'
+import type { EmailCapability, EmailSummary } from '../email/index.ts'
 import { email } from '../email/index.ts'
 import { CapabilityError } from '../error.ts'
 import { implementCapability } from '../implement.ts'
@@ -25,7 +25,22 @@ export interface Provider {
 	name: string
 	auth:
 		| { kind: 'form'; credentialsSchema: CredentialsSchema }
-		| { kind: 'oauth'; signIn(): Promise<{ accountId: string; creds: Creds }> }
+		| {
+				kind: 'oauth'
+				// OAuth scopes a capability needs, declared per capability. Enabling a
+				// capability whose scopes the account hasn't granted re-runs `signIn`
+				// for the widened set — incremental consent (one Google account starts
+				// with email, later widens to calendar).
+				scopes?: Partial<Record<CapabilityId, string[]>>
+				// `requested` is the union of scopes to ask for; the returned `scopes`
+				// (when present) records what was actually granted, tracked on the
+				// account so later widening can tell what's missing.
+				signIn(requested: string[]): Promise<{
+					accountId: string
+					creds: Creds
+					scopes?: string[]
+				}>
+		  }
 	// Presence of a key = "this provider can back that capability". One object
 	// expresses `google = email + calendar` — what the per-capability broker
 	// registry could not. A factory also receives the account's per-capability
@@ -48,6 +63,9 @@ export interface Account {
 	creds: Creds
 	// Key present = enabled; value = per-capability config (e.g. ai → { model }).
 	enabled: Partial<Record<CapabilityId, unknown>>
+	// OAuth scopes granted to this account's creds (oauth providers only). Rides in
+	// the clear like `enabled`; drives incremental consent in `setEnabled`.
+	scopes?: string[]
 	lastError?: string
 }
 
@@ -60,29 +78,70 @@ export interface AccountsStore {
 
 export type ProviderRegistry = Map<string, Provider>
 
-// Resolve the live implementation of `capability` for an optional accountId. With
-// no accountId it picks the first account that enabled the capability (single
-// account per capability today; multi-account fan-out is a later slice).
+// Every account backing `capability` (optionally narrowed to one accountId),
+// each minted into a live impl tagged with the account it came from. The whole of
+// what the old broker did, now plural: find accounts → mint provider impls.
+async function resolveTargets<C>(
+	capability: CapabilityId,
+	accountId: string | undefined,
+	providers: ProviderRegistry,
+	accounts: AccountsStore
+): Promise<{ accountId: string; impl: C }[]> {
+	const out: { accountId: string; impl: C }[] = []
+	for (const a of await accounts.list()) {
+		if (!(capability in a.enabled)) continue
+		if (accountId !== undefined && a.accountId !== accountId) continue
+		const mint = providers.get(a.providerId)?.mint[capability]
+		if (mint)
+			out.push({
+				accountId: a.accountId,
+				impl: (mint as (creds: Creds, config: unknown) => C)(a.creds, a.enabled[capability])
+			})
+	}
+	return out
+}
+
+// Single-account resolution for methods that target one account (readDetail,
+// markRead, ai.generateText): the first enabled account, or UNAVAILABLE.
 async function resolveImpl<C>(
 	capability: CapabilityId,
 	accountId: string | undefined,
 	providers: ProviderRegistry,
 	accounts: AccountsStore
 ): Promise<C> {
-	const account = (await accounts.list()).find(
-		(a) => capability in a.enabled && (accountId === undefined || a.accountId === accountId)
-	)
-	const mint = account && providers.get(account.providerId)?.mint[capability]
-	if (!mint) throw new CapabilityError('CAPABILITY_UNAVAILABLE', capability)
-	return (mint as (creds: Creds, config: unknown) => C)(account.creds, account.enabled[capability])
+	const [first] = await resolveTargets<C>(capability, accountId, providers, accounts)
+	if (!first) throw new CapabilityError('CAPABILITY_UNAVAILABLE', capability)
+	return first.impl
 }
 
-// Use-facet hosts: pure delegation through `resolveImpl`. Wired into the kernel's
-// capability registry by the host (frieren/quay).
+// Fan a list call out across every enabled account (or just `accountId` when
+// given), stamp each result with its source account, and concatenate. No enabled
+// account stays UNAVAILABLE — the "capability not configured" signal, distinct
+// from a configured-but-empty inbox.
+async function fanOut<C, R extends { accountId?: string }>(
+	capability: CapabilityId,
+	accountId: string | undefined,
+	providers: ProviderRegistry,
+	accounts: AccountsStore,
+	call: (impl: C) => Promise<R[]>
+): Promise<R[]> {
+	const targets = await resolveTargets<C>(capability, accountId, providers, accounts)
+	if (targets.length === 0) throw new CapabilityError('CAPABILITY_UNAVAILABLE', capability)
+	const lists = await Promise.all(
+		targets.map(async (t) => (await call(t.impl)).map((r) => ({ ...r, accountId: t.accountId })))
+	)
+	return lists.flat()
+}
+
+// Use-facet hosts: pure delegation. `listUnread`/`listToday` fan out across all
+// enabled accounts; `readDetail`/`markRead` target the one the summary's
+// `accountId` names. Wired into the kernel's capability registry by frieren/quay.
 export const emailHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
 	implementCapability(email, {
-		listUnread: async (_c, i) =>
-			(await resolveImpl<EmailCapability>('email', i.accountId, providers, accounts)).listUnread(i),
+		listUnread: (_c, i) =>
+			fanOut<EmailCapability, EmailSummary>('email', i.accountId, providers, accounts, (impl) =>
+				impl.listUnread(i)
+			),
 		readDetail: async (_c, i) =>
 			(await resolveImpl<EmailCapability>('email', i.accountId, providers, accounts)).readDetail(i),
 		markRead: async (_c, i) =>
@@ -91,10 +150,14 @@ export const emailHost = (providers: ProviderRegistry, accounts: AccountsStore):
 
 export const calendarHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
 	implementCapability(calendar, {
-		listToday: async (_c, i) =>
-			(
-				await resolveImpl<CalendarCapability>('calendar', i.accountId, providers, accounts)
-			).listToday(i)
+		listToday: (_c, i) =>
+			fanOut<CalendarCapability, CalendarEvent>(
+				'calendar',
+				i.accountId,
+				providers,
+				accounts,
+				(impl) => impl.listToday(i)
+			)
 	})
 
 // `ai.generateText` carries no accountId, so it resolves the single ai-enabled
@@ -142,9 +205,12 @@ export const accountsAdminHost = (
 			// Preserve an existing account's enabled toggles across a re-connect
 			// (e.g. updating a token), keyed by the resolved accountId.
 			if (provider.auth.kind === 'oauth') {
-				const { accountId, creds } = await provider.auth.signIn()
+				// Connect requests no capability scopes yet — just the identity the
+				// provider needs to derive accountId. Capability scopes widen later,
+				// when the user toggles a service on (incremental consent below).
+				const { accountId, creds, scopes } = await provider.auth.signIn([])
 				const prev = await accounts.get(accountId)
-				await accounts.put({ accountId, providerId, creds, enabled: prev?.enabled ?? {} })
+				await accounts.put({ accountId, providerId, creds, scopes, enabled: prev?.enabled ?? {} })
 				return { accountId }
 			}
 			if (!credentials) throw invalid('connect')
@@ -164,10 +230,26 @@ export const accountsAdminHost = (
 			guard(ctx)
 			const account = await accounts.get(accountId)
 			if (!account) throw invalid('setEnabled')
+			let { creds, scopes } = account
+			// Incremental consent: enabling a capability whose OAuth scopes this
+			// account hasn't granted re-runs sign-in for the widened set, then stores
+			// the rotated creds + scopes. A provider that needs no extra scope (or a
+			// form provider) skips straight to the toggle.
+			if (enabled) {
+				const auth = providers.get(account.providerId)?.auth
+				const need = auth?.kind === 'oauth' ? (auth.scopes?.[capability] ?? []) : []
+				const have = new Set(scopes ?? [])
+				if (need.some((s) => !have.has(s)) && auth?.kind === 'oauth') {
+					const widened = [...new Set([...(scopes ?? []), ...need])]
+					const res = await auth.signIn(widened)
+					creds = res.creds
+					scopes = res.scopes ?? widened
+				}
+			}
 			const next: Partial<Record<CapabilityId, unknown>> = { ...account.enabled }
 			if (enabled) next[capability] = config ?? next[capability] ?? {}
 			else delete next[capability]
-			await accounts.put({ ...account, enabled: next })
+			await accounts.put({ ...account, creds, scopes, enabled: next })
 		},
 		disconnect: async (ctx, { accountId }) => {
 			guard(ctx)

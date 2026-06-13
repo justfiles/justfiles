@@ -24,6 +24,8 @@ import {
 	type AccountsStore,
 	accountsAdminHost,
 	aiHost,
+	calendarHost,
+	emailHost,
 	type ProviderRegistry
 } from '@justfiles/app/capabilities/accounts/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
@@ -34,6 +36,7 @@ import { volumeAccountsStore } from './accounts.ts'
 import { builtinCatalog, readBuiltin } from './builtins.ts'
 import { chatgptProvider } from './chatgpt.ts'
 import { devkitCapability } from './devkit.ts'
+import { googleProvider } from './google/provider.ts'
 import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
 
 // Apps allowed to bind the `system` scope (the user's whole Volume) rather than a
@@ -66,10 +69,13 @@ export async function createHost(
 	await mkdir(root, { recursive: true })
 	const fs = volume(await nativeStorage(root))
 	const sandbox = nodeSandbox()
-	// One provider for now — ChatGPT (OAuth) backing the `ai` capability. The store
-	// persists connected accounts on the Volume; both the served `ai` use facet and
-	// the agent read it.
-	const providers: ProviderRegistry = new Map([[chatgptProvider.id, chatgptProvider]])
+	// The connectable providers: ChatGPT (OAuth → `ai`) and Google (OAuth → `email`
+	// + `calendar` from ONE account). The store persists connected accounts on the
+	// Volume; the served use facets and the agent read it.
+	const providers: ProviderRegistry = new Map([
+		[chatgptProvider.id, chatgptProvider],
+		[googleProvider.id, googleProvider]
+	])
 	const accounts = volumeAccountsStore(fs)
 	// `devkit` needs the kernel `install` writes into, but the kernel is built with
 	// this registry already attached — so it's handed in lazily.
@@ -77,9 +83,12 @@ export async function createHost(
 	const capabilities = capabilityRegistry({
 		volume: volumeCapability(fs, { systemAllowlist }),
 		devkit: devkitCapability(fs, () => k, onInstalled),
-		// `ai` USE facet served over the connected account; `accounts` admin facet
-		// (gated to Settings) connects providers and toggles what they back.
+		// USE facets served over the connected accounts (`email`/`calendar` fan out
+		// across every enabled account); `accounts` admin facet (gated to Settings)
+		// connects providers and toggles what they back.
 		ai: aiHost(providers, accounts),
+		email: emailHost(providers, accounts),
+		calendar: calendarHost(providers, accounts),
 		accounts: accountsAdminHost(providers, accounts, { firstParty: accountsFirstParty })
 	})
 	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })

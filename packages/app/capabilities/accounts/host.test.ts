@@ -190,7 +190,14 @@ describe('accounts use-facet dispatch', () => {
 		])
 		const host = emailHost(providers(), store)
 		await expect(host.invoke(useCall('email', 'listUnread', {}))).resolves.toEqual([
-			{ id: 'XYZ:1', from: 'a@example.com', subject: 'hi', receivedAt: 1, unread: true }
+			{
+				id: 'XYZ:1',
+				from: 'a@example.com',
+				subject: 'hi',
+				receivedAt: 1,
+				unread: true,
+				accountId: 'fastmail'
+			}
 		])
 	})
 
@@ -213,7 +220,9 @@ describe('accounts use-facet dispatch', () => {
 		const host = calendarHost(providers(), store)
 		await expect(
 			host.invoke(useCall('calendar', 'listToday', { timezone: 'UTC' }))
-		).resolves.toEqual([{ id: 'EV', title: 'standup', startsAt: 1, endsAt: 2 }])
+		).resolves.toEqual([
+			{ id: 'EV', title: 'standup', startsAt: 1, endsAt: 2, accountId: 'me@icloud.com' }
+		])
 	})
 
 	test('ai.generateText mints with the account config (selected model)', async () => {
@@ -230,6 +239,167 @@ describe('accounts use-facet dispatch', () => {
 		await expect(host.invoke(useCall('ai', 'generateText', { prompt: 'hi' }))).resolves.toEqual({
 			text: 'tok:gpt-x'
 		})
+	})
+})
+
+describe('multi-account fan-out', () => {
+	// A form provider backing email; `marker` distinguishes the two accounts' mail.
+	function emailProvider(id: string, marker: string): Provider {
+		return {
+			id,
+			name: id,
+			auth: { kind: 'form', credentialsSchema: { type: 'object', properties: {} } },
+			mint: {
+				email: () => ({
+					async listUnread() {
+						return [
+							{
+								id: `${marker}-1`,
+								from: `${marker}@x`,
+								subject: marker,
+								receivedAt: 1,
+								unread: true
+							}
+						]
+					},
+					async readDetail() {
+						throw new Error('unused')
+					},
+					async markRead() {
+						return { success: true } as const
+					}
+				})
+			}
+		}
+	}
+	const registry: ProviderRegistry = new Map([
+		['a', emailProvider('a', 'A')],
+		['b', emailProvider('b', 'B')]
+	])
+	const seeded = (): AccountsStore =>
+		memoryStore([
+			{ accountId: 'acc-a', providerId: 'a', creds: {}, enabled: { email: {} } },
+			{ accountId: 'acc-b', providerId: 'b', creds: {}, enabled: { email: {} } }
+		])
+	const listUnread = (accountId?: string): CapabilityCall => ({
+		appId: 'app.any',
+		capability: 'email',
+		method: 'listUnread',
+		args: [accountId ? { accountId } : {}],
+		scopes: []
+	})
+
+	test('listUnread aggregates across all enabled accounts, each stamped', async () => {
+		const res = await emailHost(registry, seeded()).invoke(listUnread())
+		expect(res).toEqual([
+			{ id: 'A-1', from: 'A@x', subject: 'A', receivedAt: 1, unread: true, accountId: 'acc-a' },
+			{ id: 'B-1', from: 'B@x', subject: 'B', receivedAt: 1, unread: true, accountId: 'acc-b' }
+		])
+	})
+
+	test('an explicit accountId narrows fan-out to that one account', async () => {
+		const res = await emailHost(registry, seeded()).invoke(listUnread('acc-b'))
+		expect(res).toEqual([
+			{ id: 'B-1', from: 'B@x', subject: 'B', receivedAt: 1, unread: true, accountId: 'acc-b' }
+		])
+	})
+})
+
+describe('incremental consent', () => {
+	// A Google-like oauth provider declaring a scope per capability; `signIns`
+	// records every requested scope set so the test can see when sign-in re-runs.
+	function googleProvider(signIns: string[][]): Provider {
+		return {
+			id: 'google',
+			name: 'Google',
+			auth: {
+				kind: 'oauth',
+				scopes: { email: ['gmail.readonly'], calendar: ['calendar.readonly'] },
+				signIn: async (requested) => {
+					signIns.push(requested)
+					return {
+						accountId: 'me@gmail.com',
+						creds: { tok: requested.join(',') },
+						scopes: requested
+					}
+				}
+			},
+			mint: {
+				email: () => ({
+					async listUnread() {
+						return []
+					},
+					async readDetail() {
+						throw new Error('unused')
+					},
+					async markRead() {
+						return { success: true } as const
+					}
+				}),
+				calendar: () => ({
+					async listToday() {
+						return []
+					}
+				})
+			}
+		}
+	}
+
+	test('connect asks for no scopes; enabling each capability widens and re-signs in', async () => {
+		const signIns: string[][] = []
+		const store = memoryStore()
+		const registry: ProviderRegistry = new Map([['google', googleProvider(signIns)]])
+		const admin = accountsAdminHost(registry, store, { firstParty: [SETTINGS] })
+
+		await admin.invoke(call(SETTINGS, 'connect', { providerId: 'google' }))
+		expect(signIns).toEqual([[]]) // identity only
+		expect((await store.get('me@gmail.com'))?.scopes).toEqual([])
+
+		await admin.invoke(
+			call(SETTINGS, 'setEnabled', {
+				accountId: 'me@gmail.com',
+				capability: 'email',
+				enabled: true
+			})
+		)
+		expect(signIns).toEqual([[], ['gmail.readonly']])
+		expect((await store.get('me@gmail.com'))?.scopes).toEqual(['gmail.readonly'])
+
+		await admin.invoke(
+			call(SETTINGS, 'setEnabled', {
+				accountId: 'me@gmail.com',
+				capability: 'calendar',
+				enabled: true
+			})
+		)
+		expect(signIns).toEqual([[], ['gmail.readonly'], ['gmail.readonly', 'calendar.readonly']])
+		const account = await store.get('me@gmail.com')
+		expect(account?.scopes).toEqual(['gmail.readonly', 'calendar.readonly'])
+		expect(account?.enabled).toEqual({ email: {}, calendar: {} })
+	})
+
+	test('re-enabling a capability whose scope is already granted skips sign-in', async () => {
+		const signIns: string[][] = []
+		const store = memoryStore([
+			{
+				accountId: 'me@gmail.com',
+				providerId: 'google',
+				creds: { tok: 'x' },
+				scopes: ['gmail.readonly'],
+				enabled: {}
+			}
+		])
+		const registry: ProviderRegistry = new Map([['google', googleProvider(signIns)]])
+		const admin = accountsAdminHost(registry, store, { firstParty: [SETTINGS] })
+		await admin.invoke(
+			call(SETTINGS, 'setEnabled', {
+				accountId: 'me@gmail.com',
+				capability: 'email',
+				enabled: true
+			})
+		)
+		expect(signIns).toEqual([]) // scope already held — no browser flow
+		expect((await store.get('me@gmail.com'))?.enabled).toEqual({ email: {} })
 	})
 })
 

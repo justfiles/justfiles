@@ -7,6 +7,9 @@ export interface EmailSummary {
 	subject: string
 	receivedAt: number
 	unread: boolean
+	// Stamped by the host when results are aggregated across accounts, so the app
+	// can route a later `readDetail`/`markRead` back to the right account.
+	accountId?: string
 }
 
 export interface EmailDetail extends EmailSummary {
