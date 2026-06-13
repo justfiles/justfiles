@@ -14,7 +14,7 @@
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-code": "workspace:*",
 		"@justfiles/app-counter": "workspace:*",
-		"@justfiles/app-finder": "workspace:*",
+		"@justfiles/app-files": "workspace:*",
 		"@justfiles/app-settings": "workspace:*",
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",

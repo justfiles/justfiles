@@ -91,7 +91,7 @@ port. No registry change.
 **At rest.** Frieren encrypts the record before it hits KV (`crypto.ts` + `INTEGRATION_KEY`).
 On the Volume the same envelope can ride along — store the ciphertext as the file body, keep a
 small plaintext header (`providerId`, `accountId`, `kind`, `lastError`) so the list view and a
-human opening Finder can see *what* is connected without seeing the secret. Whether to encrypt
+human opening Files can see *what* is connected without seeing the secret. Whether to encrypt
 in v1 is an open question (§12); the layout is the same either way.
 
 <a id="registry"></a>

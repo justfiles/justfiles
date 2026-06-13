@@ -86,7 +86,7 @@ frieren-server and `apps/desktop` do. The platform layer is already extracted in
               ws (Cap'n Web) +   │   http (assets)
         ┌──────────────────────┼──────────────────────┐
 ┌───────▼───────┐      ┌───────▼───────┐      ┌────────▼──────┐
-│ Code.app      │      │ Finder.app    │      │ Paint.app     │  ← generated bundles in
+│ Code.app      │      │ Files.app    │      │ Paint.app     │  ← generated bundles in
 │ Swift booter  │      │ Swift booter  │      │ Swift booter  │    ~/Applications/Quay Apps/
 │  WKWebView    │      │  WKWebView    │      │  WKWebView    │    own Dock icon · Spotlight-indexed
 │  gui.js only  │      │  gui.js only  │      │  gui.js only  │
@@ -177,7 +177,7 @@ Two notions of "installed" — a **canonical, syncable** one and a **local proje
 by a **one-way** reconcile:
 
 - **Source of truth = the Volume.** `kernel.list()` (the Volume's `/applications`) is canonical, and
-  always includes the **built-ins** (seeded by `reconcileBuiltins` on first run — `app-code` + `app-finder`).
+  always includes the **built-ins** (seeded by `reconcileBuiltins` on first run — `app-code` + `app-files`).
   `quay`'s own launcher lists from here. Apps stay **in the Volume** — not in the `.app`s — precisely so
   the install set rides the same syncable substrate frieren does: swap `nativeStorage` for frieren's
   synced backend later and the catalog syncs across devices with no change to where apps live.
@@ -327,7 +327,7 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 - `@justfiles/app` — kernel, SDK, `reactGui`, `kernelHost` build, `volumeCapability`, `reconcileBuiltins`, devkit; depends on `capnweb`.
 - `@justfiles/agent` — runtime, tools, bash, `createAppCommand` + `AppController`.
 - `@justfiles/fs` — `volume`, `nativeStorage`, `chroot`.
-- Every `@justfiles/app-*` bundle (counter, finder, paint, settings, code, …) — as-is.
+- Every `@justfiles/app-*` bundle (counter, files, paint, settings, code, …) — as-is.
 - The agent React UI (transport-agnostic via `SocketLike`).
 
 **New for `quay` (small):**

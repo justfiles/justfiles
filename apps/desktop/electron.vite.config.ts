@@ -13,7 +13,7 @@ export default defineConfig({
 					'@justfiles/fs',
 					'@justfiles/app-code',
 					'@justfiles/app-counter',
-					'@justfiles/app-finder',
+					'@justfiles/app-files',
 					'@justfiles/app-paint',
 					'@justfiles/app-settings'
 				]

@@ -46,7 +46,7 @@ export type VolumeCapability = Omit<Volume, 'watch' | 'scan'> & {
 - Caveat: `stat`/`lstat`/`utimes` carry `bigint`, reads carry `Uint8Array` — neither survives
   JSON, so volume is a LOCAL-only capability (documented in contract).
 - Consumers updated to positional: `app-code` (`volumeApi` narrowed to `VolumeApi` Pick),
-  `app-paint`, `app-finder`, test-bundle apps, `kernel.test.ts` hostInvoke,
+  `app-paint`, `app-files`, test-bundle apps, `kernel.test.ts` hostInvoke,
   `capabilities/volume/host.test.ts` (positional `call(method, args[], over?)` helper).
 
 ## FINDINGS — can the serializable constraint go away? (research, no code yet)

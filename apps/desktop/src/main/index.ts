@@ -64,7 +64,7 @@ async function getHost(): Promise<Host> {
 			// built-in that declares `ai` runs against one shared text generator.
 			const llmText = text(llmConfig())
 			const capabilities = capabilityRegistry({
-				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }),
+				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
 				devkit: devkitCapability(fs, () => k, notifyCatalog, preview),
 				ai: implementCapability(ai, {
 					generateText: async (_ctx, { system, prompt }) => ({

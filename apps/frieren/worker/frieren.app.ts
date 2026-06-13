@@ -88,7 +88,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 	}
 	const capabilities: Capabilities = capabilityRegistry({
-		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.frieren.finder'] }),
+		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.frieren.files'] }),
 		ai,
 		integrations
 	})

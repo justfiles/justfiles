@@ -1,12 +1,12 @@
 // The trusted host. quayd mounts a native-FS Volume under
 // ~/Library/Application Support/quay/volume, builds the kernel over it, and seeds
-// the built-in catalog (Code + Finder + Counter). The Volume's `/applications` is
+// the built-in catalog (Code + Files + Counter). The Volume's `/applications` is
 // the canonical, syncable store — apps live here, not in the macOS `.app`s (Slice 6
 // projects them out). Reducers run in a worker_thread sandbox (Slice 7).
 //
 // Capabilities run in-process: one `capabilityRegistry` of local units the kernel
 // owns. `volume` (Slice 9) spans the same native-FS Volume — the kernel attaches each
-// app's DECLARED scopes (Finder's `system`, others' per-app `/data/<id>`), so a
+// app's DECLARED scopes (Files' `system`, others' per-app `/data/<id>`), so a
 // reducer reaches real files without ever holding the capability itself. `devkit`
 // (Slice 11) is the build pipeline Code uses to compile + install the apps you build:
 // `install` writes the new bundle into `/applications` and fires `onInstalled`, which
@@ -30,9 +30,9 @@ import { devkitCapability } from './devkit.ts'
 import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
 
 // Apps allowed to bind the `system` scope (the user's whole Volume) rather than a
-// per-app `/data/<id>` chroot. Finder is the file browser, so it's the one
+// per-app `/data/<id>` chroot. Files is the file browser, so it's the one
 // built-in that needs it — mirroring frieren and the desktop sibling.
-const systemAllowlist = ['app.frieren.finder']
+const systemAllowlist = ['app.frieren.files']
 
 // Apps allowed to reach the `ai` capability's ADMIN facet (AI sign-in / model
 // pick). Settings is the only first-party app that needs it.

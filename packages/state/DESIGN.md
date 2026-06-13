@@ -14,20 +14,20 @@ Keep the package minimal. It should not become a Redux/Zustand clone.
 Existing `@justfiles/app` apps already follow a strong state discipline:
 
 - App state is durable and semantic.
-	- Finder persists `currentViewing`, `files`, `loading`, `error`.
+	- Files persists `currentViewing`, `files`, `loading`, `error`.
 	- Paint persists `tool`, `size`, `color`, save status.
 	- Crossword persists puzzle/play state.
 - Transient UI state stays outside reducer state.
-	- Finder preview text is GUI-local because file bytes can change.
+	- Files preview text is GUI-local because file bytes can change.
 	- Paint canvas pixels, drag state, undo/redo, and `busy` are GUI-local.
 	- Crossword input draft and temporary call errors are GUI-local.
 - Actions can be async.
-	- Finder `refresh` scans volume.
+	- Files `refresh` scans volume.
 	- Paint `save` writes PNG bytes.
 	- Settings talks to integrations.
 	- Crossword calls AI.
 - Queries read without persisting.
-	- Finder `readFile` returns preview bytes but does not store them.
+	- Files `readFile` returns preview bytes but does not store them.
 - Current app dispatch is atomic from the GUI's point of view.
 	- A handler receives current state, awaits capabilities, returns the next state, then the kernel persists and broadcasts it.
 

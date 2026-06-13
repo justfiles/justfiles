@@ -12,9 +12,9 @@ samples illustrate only the load-bearing logic.
 
 app-code is an **ordinary sandboxed app** — a package with `defineApp` +
 `defineGUI`, shipped and installed through the **same machinery as
-finder/settings** (no native/sandboxed split, no `defineGUI` change). Its
+files/settings** (no native/sandboxed split, no `defineGUI` change). Its
 reducer reads/writes project source through the **`volume` capability**, exactly
-like finder. The one privileged thing it does — compile a draft, run it in a
+like files. The one privileged thing it does — compile a draft, run it in a
 scoped kernel, and embed that live app in its own window — is expressed as a
 **single `devkit` capability** that app-code *declares* and the host *grants*
 (allowlist now, user-consent later). Privilege is graduated via capabilities,
@@ -37,7 +37,7 @@ tool is unsandboxed-by-grant; the product it builds is sandboxed.
 ## Slice 0 — Ship app-code as a real built-in
 
 **Goal:** the existing mock appears in the launcher and opens, shipped through
-the same pipeline as `app-paint`/`app-finder`. No behavior change yet.
+the same pipeline as `app-paint`/`app-files`. No behavior change yet.
 
 **Touches:** `packages/app-code/vite.config.ts` (identity),
 `apps/frieren/vite-appstore.ts` (`BUILTIN_DIRS`), build ordering so app-code's
@@ -50,7 +50,7 @@ kernelHost({ id: 'app.code', name: 'Code', icon: 'icon.svg',
 ```
 ```ts
 // apps/frieren/vite-appstore.ts
-const BUILTIN_DIRS = ['app-paint', 'app-finder', 'app-settings', 'app-code']
+const BUILTIN_DIRS = ['app-paint', 'app-files', 'app-settings', 'app-code']
 ```
 
 **Verify:** `pnpm --filter @justfiles/app-code build` emits
@@ -109,7 +109,7 @@ GUI: explorer lists `state.files`; selecting calls `select` + `readFile` and
 shows the text (plain `<pre>` is fine this slice).
 
 **Verify:** open app-code → seeded files appear; selecting shows content; files
-are real on disk (open the same paths in Finder).
+are real on disk (open the same paths in Files).
 
 ---
 

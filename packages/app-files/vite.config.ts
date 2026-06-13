@@ -10,8 +10,8 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.frieren.finder',
-						name: 'Finder',
+						id: 'app.frieren.files',
+						name: 'Files',
 						description: 'Browse and preview files',
 						icon: 'icon.svg',
 						app: 'src/app.ts',

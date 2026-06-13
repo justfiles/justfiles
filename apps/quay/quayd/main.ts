@@ -5,7 +5,7 @@
 // scoped Cap'n Web berth (dispatch/state/subscribe) so a window renders its real
 // `gui.js` and an action round-trips. Slice 8: a window opening/closing pins/evicts
 // that app's reducer worker. Slice 9: the kernel carries an in-process capability
-// registry (`volume`), so a capability-using app (Finder) reaches real files.
+// registry (`volume`), so a capability-using app (Files) reaches real files.
 // Slice 10: `@justfiles/agent` runs here too, driving real `.app` bundles and the
 // same kernel the berths subscribe to; the launcher hosts its chat over this socket.
 // Slice 11: Code's `devkit.install` writes a new app into the kernel and fires

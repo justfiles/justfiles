@@ -8,17 +8,17 @@ function run(actions: OsAction[], from: OsState = initialState): OsState {
 
 describe('osReducer', () => {
 	test('open creates a floating window and focuses it', () => {
-		const state = run([{ type: 'app.open', appId: 'finder', title: 'Finder' }])
-		const window = state.windows.finder
+		const state = run([{ type: 'app.open', appId: 'files', title: 'Files' }])
+		const window = state.windows.files
 		expect(window).toMatchObject({
-			id: 'finder',
-			appId: 'finder',
-			title: 'Finder',
+			id: 'files',
+			appId: 'files',
+			title: 'Files',
 			mode: 'floating'
 		})
 		expect(window?.rect).toEqual({ x: 80, y: 40, w: 720, h: 520 })
-		expect(state.openOrder).toEqual(['finder'])
-		expect(state.focusStack).toEqual(['finder'])
+		expect(state.openOrder).toEqual(['files'])
+		expect(state.focusStack).toEqual(['files'])
 	})
 
 	test('opening multiple apps appends to openOrder and focusStack', () => {

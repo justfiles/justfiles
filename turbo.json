@@ -13,7 +13,7 @@
 			"dependsOn": [
 				"@justfiles/app-code#build",
 				"@justfiles/app-counter#build",
-				"@justfiles/app-finder#build",
+				"@justfiles/app-files#build",
 				"@justfiles/app-paint#build",
 				"@justfiles/app-settings#build",
 				"transit"
@@ -35,7 +35,7 @@
 		"frieren#dev": {
 			"dependsOn": [
 				"@justfiles/app-code#build",
-				"@justfiles/app-finder#build",
+				"@justfiles/app-files#build",
 				"@justfiles/app-paint#build",
 				"@justfiles/app-settings#build",
 				"transit"
@@ -48,7 +48,7 @@
 				"build",
 				"@justfiles/app-code#build",
 				"@justfiles/app-counter#build",
-				"@justfiles/app-finder#build",
+				"@justfiles/app-files#build",
 				"@justfiles/app-settings#build"
 			],
 			"cache": false

@@ -25,7 +25,7 @@ Two storage facts drive the design:
 
 - **Kernel app state** is written to `/state/<appId>.json` on every handler
   dispatch (`kernel.ts`). The kernel deliberately keeps file *content* out of it
-  (queries don't persist — "what keeps Finder's readFile from ballooning
+  (queries don't persist — "what keeps Files' readFile from ballooning
   state"). **Drawing data must not live in `/state`.**
 - **Per-app data volume.** `volume({ scopes: [] })` — what paint already
   requests — binds the default `'app'` chroot at `/data/<appId>`
@@ -35,7 +35,7 @@ Two storage facts drive the design:
 
   (Note a current quirk to clean up separately: paint's `save` writes
   `/Paint/x.png`, which resolves under `/data/app-paint/Paint/...` — sandboxed,
-  not visible in Finder.)
+  not visible in Files.)
 
 ## 2. Why an operation log, not pixels and not an element scene
 

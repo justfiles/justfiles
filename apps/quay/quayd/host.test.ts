@@ -7,13 +7,13 @@ import { createHost, type Host } from './host.ts'
 
 // Slice 9 acceptance — capabilities in-process, end to end through quay's REAL
 // wiring: the kernel + a nodeSandbox worker_thread + `volumeCapability` over a real
-// native-FS Volume. Finder declares the `volume` capability with the `system` scope
+// native-FS Volume. Files declares the `volume` capability with the `system` scope
 // (it's quay's one systemAllowlist entry), so dispatching `refresh` scans the actual
 // volume root — proving a capability-using reducer reaches real files, not a stub.
 // The per-app `/data/<id>` chroot and non-allowlisted `system` denial are covered by
 // the package-level capability/scope tests; here we lock in quay's own wiring.
 
-const FINDER = 'app.frieren.finder'
+const FILES = 'app.frieren.files'
 let root: string
 let host: Host
 
@@ -34,16 +34,16 @@ async function poll<T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<T
 	throw new Error('poll timed out')
 }
 
-type FinderState = { loading: boolean; files: Array<{ path: string }> }
+type FilesState = { loading: boolean; files: Array<{ path: string }> }
 
-test('Finder reads the real volume through the system-scoped volume capability', async () => {
-	host.sandbox.retain(FINDER) // pin its worker the way an open window would
-	await host.kernel.dispatch(FINDER, { type: 'refresh', params: {} } as Message)
+test('Files reads the real volume through the system-scoped volume capability', async () => {
+	host.sandbox.retain(FILES) // pin its worker the way an open window would
+	await host.kernel.dispatch(FILES, { type: 'refresh', params: {} } as Message)
 
 	// refresh emits `volume.scan` over the `system` scope; its result folds back as
 	// `filesLoaded`, clearing `loading`. Poll until the scan has settled.
 	const state = await poll(
-		() => host.kernel.state(FINDER) as Promise<FinderState>,
+		() => host.kernel.state(FILES) as Promise<FilesState>,
 		(s) => !s.loading
 	)
 
@@ -52,5 +52,5 @@ test('Finder reads the real volume through the system-scoped volume capability',
 	expect(state.files.length).toBeGreaterThan(0)
 	expect(state.files.some((f) => f.path.startsWith('/applications/'))).toBe(true)
 
-	host.sandbox.release(FINDER)
+	host.sandbox.release(FILES)
 })

@@ -3,26 +3,26 @@ import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { type FinderApp, type FinderState, initialState } from './app.ts'
+import { type FilesApp, type FilesState, initialState } from './app.ts'
 
-// The app's own layout, scoped under `.finder` and injected on import. Colours come
+// The app's own layout, scoped under `.files` and injected on import. Colours come
 // from the platform tokens (`--surface`, `--rule`, `--focus`); the platform sheet
 // (`@justfiles/design/mac`) handles native control defaults, which the rows override.
 injectStyle(
 	`
-.finder { display: flex; height: 100%; width: 100%; }
-.finder-sidebar { display: flex; flex-direction: column; flex: none; width: 224px; overflow: hidden; background: var(--surface); border-right: 1px solid var(--rule); }
-.finder-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; }
-.finder-main-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--rule); }
-.finder-title, .finder-main-name { font-weight: 500; }
-.finder-push { margin-left: auto; }
-.finder-path { margin-left: auto; font-size: 11px; opacity: 0.5; }
-.finder-main-name, .finder-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.finder-btn { flex: none; padding: 1px 8px; font-size: 11px; }
-.finder-error { padding: 0 12px 8px; font-size: 12px; color: #b91c1c; }
-.finder-hint { padding: 4px 12px; font-size: 12px; opacity: 0.6; }
-.finder-tree-wrap { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.finder-tree { display: block; height: 100%; width: 100%;
+.files { display: flex; height: 100%; width: 100%; }
+.files-sidebar { display: flex; flex-direction: column; flex: none; width: 224px; overflow: hidden; background: var(--surface); border-right: 1px solid var(--rule); }
+.files-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; }
+.files-main-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--rule); }
+.files-title, .files-main-name { font-weight: 500; }
+.files-push { margin-left: auto; }
+.files-path { margin-left: auto; font-size: 11px; opacity: 0.5; }
+.files-main-name, .files-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-btn { flex: none; padding: 1px 8px; font-size: 11px; }
+.files-error { padding: 0 12px 8px; font-size: 12px; color: #b91c1c; }
+.files-hint { padding: 4px 12px; font-size: 12px; opacity: 0.6; }
+.files-tree-wrap { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.files-tree { display: block; height: 100%; width: 100%;
 	--trees-bg-override: var(--surface);
 	--trees-fg-override: var(--text);
 	--trees-fg-muted-override: color-mix(in srgb, var(--text) 55%, transparent);
@@ -34,25 +34,25 @@ injectStyle(
 	--trees-font-family-override: ui-monospace, Menlo, monospace;
 	--trees-font-size-override: 12px;
 	--trees-padding-inline-override: 6px; }
-.finder-main { display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--window-bg); color: var(--text); }
-.finder-preview { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; background: transparent; color: inherit; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; }
-.finder-truncated { display: block; padding-top: 8px; opacity: 0.5; }
-.finder-muted { opacity: 0.5; }
-.finder-empty { display: flex; height: 100%; align-items: center; justify-content: center; font-size: 12px; opacity: 0.5; }
+.files-main { display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--window-bg); color: var(--text); }
+.files-preview { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; background: transparent; color: inherit; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; }
+.files-truncated { display: block; padding-top: 8px; opacity: 0.5; }
+.files-muted { opacity: 0.5; }
+.files-empty { display: flex; height: 100%; align-items: center; justify-content: center; font-size: 12px; opacity: 0.5; }
 `,
-	'app-finder'
+	'app-files'
 )
 
-const stateOrInitial = (value: unknown): FinderState =>
-	value && typeof value === 'object' && 'files' in value ? (value as FinderState) : initialState
+const stateOrInitial = (value: unknown): FilesState =>
+	value && typeof value === 'object' && 'files' in value ? (value as FilesState) : initialState
 
-export const gui = defineGUI<FinderApp>({
+export const gui = defineGUI<FilesApp>({
 	mount(el, state, ctx) {
 		const root = createRoot(el)
-		const render = (next: FinderState | null) =>
+		const render = (next: FilesState | null) =>
 			root.render(
 				<StrictMode>
-					<Finder state={stateOrInitial(next)} client={ctx.client} />
+					<Files state={stateOrInitial(next)} client={ctx.client} />
 				</StrictMode>
 			)
 		render(state)
@@ -74,7 +74,7 @@ function basename(path: string): string {
 // content lives in React state only, never in app state.
 type Preview = { path: string; content: string; truncated: boolean }
 
-function Finder({ state, client }: { state: FinderState; client: Client<FinderApp> }) {
+function Files({ state, client }: { state: FilesState; client: Client<FilesApp> }) {
 	const refreshed = useRef(false)
 	useEffect(() => {
 		if (refreshed.current) return
@@ -120,26 +120,26 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 	const showPreview = preview && preview.path === viewing ? preview : null
 
 	return (
-		<div className="finder">
-			<aside className="finder-sidebar">
-				<header className="finder-head">
-					<span className="finder-title">Files</span>
+		<div className="files">
+			<aside className="files-sidebar">
+				<header className="files-head">
+					<span className="files-title">Files</span>
 					<button
 						type="button"
 						onClick={() => void client.refresh({})}
-						className="finder-btn finder-push"
+						className="files-btn files-push"
 					>
 						Refresh
 					</button>
 				</header>
-				{state.error ? <p className="finder-error">{state.error}</p> : null}
+				{state.error ? <p className="files-error">{state.error}</p> : null}
 				{state.loading ? (
-					<p className="finder-hint">Loading…</p>
+					<p className="files-hint">Loading…</p>
 				) : files.length === 0 ? (
-					<p className="finder-hint">No files yet</p>
+					<p className="files-hint">No files yet</p>
 				) : (
-					<div className="finder-tree-wrap">
-						<FinderFileTree
+					<div className="files-tree-wrap">
+						<FilesTree
 							files={files}
 							selectedPath={viewing}
 							onSelect={(path) => void client.setView({ path })}
@@ -147,33 +147,33 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 					</div>
 				)}
 			</aside>
-			<section className="finder-main">
+			<section className="files-main">
 				{viewing ? (
 					<>
-						<header className="finder-main-head">
-							<span className="finder-main-name">{basename(viewing)}</span>
-							<span className="finder-path">{viewing}</span>
-							<button type="button" onClick={() => void client.clear({})} className="finder-btn">
+						<header className="files-main-head">
+							<span className="files-main-name">{basename(viewing)}</span>
+							<span className="files-path">{viewing}</span>
+							<button type="button" onClick={() => void client.clear({})} className="files-btn">
 								Clear
 							</button>
 						</header>
-						<pre className="finder-preview">
+						<pre className="files-preview">
 							{displayError ? (
 								<span style={{ color: '#b91c1c' }}>{displayError}</span>
 							) : showPreview ? (
 								<>
 									{showPreview.content}
 									{showPreview.truncated ? (
-										<span className="finder-truncated">… preview truncated</span>
+										<span className="files-truncated">… preview truncated</span>
 									) : null}
 								</>
 							) : (
-								<span className="finder-muted">Loading…</span>
+								<span className="files-muted">Loading…</span>
 							)}
 						</pre>
 					</>
 				) : (
-					<div className="finder-empty">Select a file to preview</div>
+					<div className="files-empty">Select a file to preview</div>
 				)}
 			</section>
 		</div>
@@ -185,7 +185,7 @@ function Finder({ state, client }: { state: FinderState; client: Client<FinderAp
 // re-add the slash when a selection comes back.
 const stripSlash = (path: string) => path.replace(/^\/+/, '')
 
-function FinderFileTree(props: {
+function FilesTree(props: {
 	files: string[]
 	selectedPath: string | null
 	onSelect: (path: string) => void
@@ -225,5 +225,5 @@ function FinderFileTree(props: {
 		model.scrollToPath(selectedPath, { focus: false })
 	}, [model, selectedPath])
 
-	return <PierreFileTree model={model} className="finder-tree" />
+	return <PierreFileTree model={model} className="files-tree" />
 }

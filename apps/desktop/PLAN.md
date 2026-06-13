@@ -167,7 +167,7 @@ main can both import it. Initial entries match existing packages so we have
 real names on screen:
 
 ```ts
-export const APPS = ['Code', 'Finder', 'Paint', 'Settings', 'Counter']
+export const APPS = ['Code', 'Files', 'Paint', 'Settings', 'Counter']
 ```
 
 The "app window" renderer is the same Vite renderer entry with a query-param

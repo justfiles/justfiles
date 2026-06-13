@@ -6,7 +6,7 @@ import * as v from 'valibot'
 // reloads. The reliable durable fact is "what is the user looking at"; the
 // bytes at that path can change underneath us, so they belong to a query
 // that re-reads on demand (think `cat /path/to/file`).
-export type FinderState = {
+export type FilesState = {
 	currentViewing: string | null
 	// Bumped each time the watched file changes on disk (Part D). The GUI keys its
 	// preview re-read on it, so an external edit refreshes the open file.
@@ -16,7 +16,7 @@ export type FinderState = {
 	error: string | null
 }
 
-export const initialState: FinderState = {
+export const initialState: FilesState = {
 	currentViewing: null,
 	revision: 0,
 	files: [],
@@ -78,7 +78,7 @@ export const app = defineApp({
 			{ description: 'Record which file the user is currently viewing.' }
 		),
 		clear: t.on(v.object({}), (state) => ({ ...state, currentViewing: null, error: null }), {
-			description: 'Clear the current Finder selection.'
+			description: 'Clear the current Files selection.'
 		}),
 		// The watched file changed on disk — bump `revision` so the GUI re-reads it.
 		// The bytes themselves never enter state (the preview is a caller-scoped
@@ -104,4 +104,4 @@ export const app = defineApp({
 	})
 })
 
-export type FinderApp = typeof app
+export type FilesApp = typeof app

@@ -21,7 +21,7 @@ type GetToken = () => Promise<string | null>
 export function clientCapabilities(fs: Volume, getToken: GetToken): Capabilities {
 	return capabilityRegistry(
 		{
-			volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }),
+			volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
 			devkit: devkitCapability(fs, getToken)
 		},
 		{ fallback: networkFallback(getToken) }

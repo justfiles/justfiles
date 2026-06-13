@@ -2,7 +2,7 @@ import * as v from 'valibot'
 import { volume } from '../capabilities/volume/index.ts'
 import { defineApp } from '../sdk.ts'
 
-// Pure-core (Part A) sample app: the Finder `refresh` flow expressed as one
+// Pure-core (Part A) sample app: the Files `refresh` flow expressed as one
 // `update` table. Every entry is a pure edge — no `ctx`, no `await`, no
 // capabilities. The single side effect (`scan`) is emitted as command data.
 export type CoreState = {

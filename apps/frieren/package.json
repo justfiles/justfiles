@@ -25,7 +25,7 @@
 		"@justfiles/agent": "workspace:*",
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-code": "workspace:*",
-		"@justfiles/app-finder": "workspace:*",
+		"@justfiles/app-files": "workspace:*",
 		"@justfiles/app-paint": "workspace:*",
 		"@justfiles/app-settings": "workspace:*",
 		"@justfiles/core": "workspace:*",

@@ -355,7 +355,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		const out = await sb.run(message, { state: current })
 		// A public edge populates `state`; a procedure-routed read does not. Only
 		// commit + push when the transition produced a next state — that keeps
-		// caller-scoped reads (e.g. Finder's readFile) from ballooning state.
+		// caller-scoped reads (e.g. Files' readFile) from ballooning state.
 		let seq = states.seq(appId)
 		if (out.state !== undefined) {
 			// Write-through commit returns the new monotonic version.

@@ -70,7 +70,7 @@ A window titled "Code" opens rendering a placeholder page (its own Dock icon, bl
 ## Slice 2 — the launcher panel + global hotkey
 
 **Goal:** `Quay.app` — an `LSUIElement` agent (no Dock icon) whose global hotkey toggles a frameless,
-vibrancy-blurred `WKWebView` panel showing a **mocked** app list (incl. "Code", "Finder", "Paint").
+vibrancy-blurred `WKWebView` panel showing a **mocked** app list (incl. "Code", "Files", "Paint").
 
 **Touches:** `apps/quay/native/Launcher.swift` (mode of the same binary), `apps/quay/launcher-ui/`
 (static HTML/JS list, no backend), `build.sh`.
@@ -122,7 +122,7 @@ the launcher re-spawns it). `pnpm typecheck && pnpm test` green.
 
 **Goal:** `quayd` mounts `volume(nativeStorage(...))`, instantiates the kernel with a **stub** capability
 seam, and seeds built-ins via `reconcileBuiltins` over packaged bundles — **app-code (Code) +
-app-finder (Finder)**. The launcher lists the real `kernel.list()`.
+app-files (Files)**. The launcher lists the real `kernel.list()`.
 
 The Volume's `/applications` is the **canonical, syncable** store — apps live *here*, not in the `.app`s
 (Slice 6 projects them into the OS). Keeping them in the Volume is what lets a later swap to frieren's
@@ -136,7 +136,7 @@ synced backend sync the catalog for free. **No kernel change** — `quay` reuses
 `tsx`), `native/Launcher.swift` (spawn via the tsx loader).
 
 **Verify:** `~/Library/Application Support/quay/volume/applications/<app-code id>/` exists on disk
-(open in Finder); the launcher shows the real built-in catalog including **Code** and **Finder**. A debug
+(open in Finder); the launcher shows the real built-in catalog including **Code** and **Files**. A debug
 `kernel:ls` over ws returns a real directory listing.
 
 ## Slice 6 — project the catalog into the OS (`.app` materialisation + Spotlight)  ⟵ **real apps in macOS**
@@ -196,8 +196,8 @@ green.
 **Goal:** replace the stub seam with `capabilityRegistry({ volume: volumeCapability(fs, {systemAllowlist}) })`
 (+ `ai` if a key is present). An app that uses `volume` works against real files.
 
-**Verify:** Finder/Paint (volume users) read/write real files under `/data/<id>`; edits show up in
-Finder.app on disk. Capability/scope tests green.
+**Verify:** Files/Paint (volume users) read/write real files under `/data/<id>`; edits show up in
+Files.app on disk. Capability/scope tests green.
 
 ## Slice 10 — agent in `quayd` + agent UI in the launcher
 
@@ -239,7 +239,7 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
   core unchanged; the rejected alternative (the `.app` *is* the store) can't sync the whole Volume.
 - **Hotkey:** `Option+Space` (avoids Spotlight's `Cmd+Space`).
 - **Bundle ids:** `app.justfiles.quay` (launcher); `app.justfiles.quay.app.<id>` (each mini-app).
-- **Built-in seed set (v1):** `app-code` (Code) + `app-finder` (Finder) + `app-counter` (Counter) —
+- **Built-in seed set (v1):** `app-code` (Code) + `app-files` (Files) + `app-counter` (Counter) —
   Counter is a no-capability app, so it's the clean end-to-end target for the Slice 7 berth round-trip
   before capabilities land (Slice 9).
 - **`apps/native/`:** removed (was empty scaffolding).

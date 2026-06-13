@@ -6,14 +6,14 @@ import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 
 // Slice 11 acceptance — the subscribe path end to end, through the REAL pieces:
-// the finder bundle declaring `volume.watch` over its open file, the package
+// the files bundle declaring `volume.watch` over its open file, the package
 // kernel/reconciler, and the host `volumeCapability` driving a real `vol.watch`.
 // A change to the watched file reaches the app as exactly one reduced message,
 // and leaving the watch (clear) stops the stream.
 
-// Compile the real finder app (with its deps) the same way the sandbox would.
+// Compile the real files app (with its deps) the same way the sandbox would.
 const code = buildSync({
-	entryPoints: [new URL('../../../packages/app-finder/src/app.ts', import.meta.url).pathname],
+	entryPoints: [new URL('../../../packages/app-files/src/app.ts', import.meta.url).pathname],
 	bundle: true,
 	write: false,
 	format: 'esm'
@@ -63,15 +63,15 @@ async function until(cond: () => boolean | Promise<boolean>, label: string): Pro
 const tick = () => new Promise((r) => setTimeout(r, 10))
 const enc = new TextEncoder()
 
-test('finder watches the open file: one fileChanged per write, stops on clear', async () => {
+test('files watches the open file: one fileChanged per write, stops on clear', async () => {
 	const fs = volume(memStorage())
 	await fs.writeFile('/notes.txt', enc.encode('hello'))
 
-	const v = probe(volumeCapability(fs, { systemAllowlist: ['app.frieren.finder'] }))
+	const v = probe(volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }))
 	const k = kernel({ fs, sandbox, clock: {}, capabilities: capabilityRegistry({ volume: v.cap }) })
-	// Finder declares the `system` scope, allowlisted only for `app.frieren.finder`.
+	// Files declares the `system` scope, allowlisted only for `app.frieren.files`.
 	const id = await k.install(
-		appBundleFromMemory({ id: 'app.frieren.finder', name: 'Finder', app: code })
+		appBundleFromMemory({ id: 'app.frieren.files', name: 'Files', app: code })
 	)
 
 	// Viewing a file declares the watch (`subscriptions(state)`); the reconciler

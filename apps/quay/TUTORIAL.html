@@ -388,7 +388,7 @@
 							appears, listing your apps.
 						</li>
 						<li>
-							<strong>A booter</strong> (<code>Code.app</code>, <code>Finder.app</code>, …) — one
+							<strong>A booter</strong> (<code>Code.app</code>, <code>Files.app</code>, …) — one
 							per mini-app. It opens a window, points a <code>WKWebView</code> at the app's UI, and
 							gets out of the way. It has <em>no app logic and no assets of its own</em>.
 						</li>
@@ -429,7 +429,7 @@
 								<text x="125" y="397" text-anchor="middle" fill="#58a6ff" font-size="11.5" font-family="ui-monospace,monospace">mock page (Phase 0)</text>
 
 								<rect x="275" y="300" width="210" height="112" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1.5" />
-								<text x="380" y="332" text-anchor="middle" fill="#e6edf3" font-size="15" font-weight="700">Finder.app</text>
+								<text x="380" y="332" text-anchor="middle" fill="#e6edf3" font-size="15" font-weight="700">Files.app</text>
 								<text x="380" y="356" text-anchor="middle" fill="#8b949e" font-size="12">Swift booter + WKWebView</text>
 								<text x="380" y="375" text-anchor="middle" fill="#8b949e" font-size="12">own Dock identity</text>
 								<text x="380" y="397" text-anchor="middle" fill="#58a6ff" font-size="11.5" font-family="ui-monospace,monospace">mock page (Phase 0)</text>
@@ -959,7 +959,7 @@ webView.loadFileURL(dir.appendingPathComponent("index.html"), allowingReadAccess
 					</p>
 					<pre><code class="language-javascript">const apps = [
     { id: 'code', name: 'Code', glyph: 'C' },
-    { id: 'finder', name: 'Finder', glyph: 'F' },
+    { id: 'files', name: 'Files', glyph: 'F' },
     { id: 'paint', name: 'Paint', glyph: 'P' }
 ]
 
@@ -1000,7 +1000,7 @@ swiftc -O -swift-version 5 main.swift Booter.swift Launcher.swift -o "$BIN"
 
 case "${1:-}" in
     --launcher) build_launcher ;;          # Quay.app  (LSUIElement, ships launcher-ui)
-    --apps)     build_mini_apps ;;         # Code/Finder/Paint.app into ~/Applications/Quay Apps/
+    --apps)     build_mini_apps ;;         # Code/Files/Paint.app into ~/Applications/Quay Apps/
     *)          build_booter "$1" ;;       # e.g. ./build.sh Code  →  ./Code.app
 esac</code></pre>
 					<p>Assembling a bundle is just copying files into the right folders and signing:</p>
@@ -1017,7 +1017,7 @@ codesign --force --sign - "$app"                 # ad-hoc</code></pre>
 					<p>
 						The icons themselves are drawn programmatically by
 						<a href="native/makeicon.swift"><code>makeicon.swift</code></a>: a rounded square plus the
-						app's first letter, with the colour derived from the letter so Code, Finder and Paint look
+						app's first letter, with the colour derived from the letter so Code, Files and Paint look
 						distinct. It renders PNGs that <code>iconutil</code> packs into an <code>.icns</code>.
 					</p>
 				</section>
@@ -1076,7 +1076,7 @@ codesign --force --sign - "$app"                 # ad-hoc</code></pre>
 open ./Code.app
 
 ./build.sh --launcher  # → ./Quay.app — the background launcher
-./build.sh --apps      # → mock Code/Finder/Paint into ~/Applications/Quay Apps/
+./build.sh --apps      # → mock Code/Files/Paint into ~/Applications/Quay Apps/
 open ./Quay.app        # no Dock icon appears; press ⌥Space, then click Code</code></pre>
 					<p class="muted" style="color: var(--text-dim)">
 						Verify it's really system WebKit and not a bundled engine:
