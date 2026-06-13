@@ -32,11 +32,14 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 		)
 		window.center()
 		window.title = name
-		// Match the system theme: the design system carries both palettes now, so the
-		// window backing is the app's content colour in either mode. Setting it to the
-		// exact --window-bg (not the slightly-off system window grey) means the blank
-		// pre-paint frame is the same colour the web content lands on — no flash.
+		// Modern macOS chrome: the titlebar is transparent, not colour-matched. The
+		// window backing shows through, and the separator is disabled, so the traffic
+		// lights float over the same colour the web content lands on.
 		window.backgroundColor = Self.windowBgColor
+		window.titleVisibility = .hidden
+		window.titlebarAppearsTransparent = true
+		window.isMovableByWindowBackground = true
+		if #available(macOS 11.0, *) { window.titlebarSeparatorStyle = .none }
 
 		// Show the window now — before the (comparatively heavy) WKWebView init — so a
 		// themed blank frame appears as early as possible instead of waiting on WebKit.
