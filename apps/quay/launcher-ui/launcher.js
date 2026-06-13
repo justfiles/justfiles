@@ -1,114 +1,119 @@
-// The launcher list arrives from quayd over the socket. window.quay (injected by
-// Launcher.swift) ensures the daemon is running and hands us its {port, token};
-// we open a WebSocket and ask for the catalog. Picking a row asks the native
-// shell to launch that app's .app bundle.
+// quay launcher — a single bottom-anchored surface, spotlight-first. The composer
+// is pinned at the bottom; above it we show matching apps as you type. It stays a
+// launcher by default: the agent transcript is not the resting state. When you're
+// not in a conversation the bar surfaces at most one default-action row — "ask the
+// agent this text", or "resume" the last conversation — so chat is one Enter away
+// but never takes over. The full transcript appears only once you're `chatting`
+// (you sent a message, hit ⌘K, or resumed); sending just appends to it.
+//
+// window.quay (injected by Launcher.swift) ensures quayd is running and hands us
+// {port, token}; we open a WebSocket for the catalog and the agent transcript.
+// Picking an app asks the native shell to launch that app's .app bundle.
 
 let apps = []
 let socket
 let retryTimer
 let catalogReady = false
-let mode = 'launcher'
 let selectedIndex = 0
 let queuedPrompt = ''
 
-const appEl = document.getElementById('app')
-const results = document.getElementById('results')
-const search = document.getElementById('search')
-const statusEl = document.getElementById('status')
-const chat = document.getElementById('chat')
-const messagesEl = document.getElementById('messages')
-const ask = document.getElementById('ask')
+// Sticky chat intent: once you send (or hit ⌘K) typing composes a message and no
+// longer filters apps, so a follow-up like "could…" can't yank the transcript out
+// to the Code/Counter apps. ⌘K — or summoning the panel afresh — returns to apps.
+let chatting = false
 
-const BAR_HEIGHT = 72
-const CHAT_HEIGHT = 520
-const MAX_VISIBLE_RESULTS = 7
-const ROW_HEIGHT = 46
-const ROW_GAP = 4
-const RESULTS_GAP = 8
-const STATUS_HEIGHT = 26
-
-// The agent chat: a flat transcript the daemon owns. We echo the user turn
+// The agent transcript: a flat list the daemon owns. We echo the user turn
 // optimistically (+ a pending bubble) and replace it with the authoritative
 // transcript the server returns.
 let agentMessages = []
 let pending = false
 
-function setStatus(text) {
-	statusEl.textContent = text
-	statusEl.hidden = !text
-	resizePanel()
+const contentEl = document.getElementById('content')
+const statusEl = document.getElementById('status')
+const composer = document.getElementById('composer')
+
+const PAD = 12 // #app padding (top + bottom = 24)
+const GAP = 8 // gap between #app's stacked rows
+const COMPOSER_H = 48
+const STATUS_H = 18
+const ROW_HEIGHT = 46
+const ROW_GAP = 4
+const MAX_VISIBLE_RESULTS = 7
+const APPS_CAP = MAX_VISIBLE_RESULTS * ROW_HEIGHT + (MAX_VISIBLE_RESULTS - 1) * ROW_GAP
+const CHAT_CAP = 460
+
+function filteredApps(q) {
+	const needle = q.toLowerCase()
+	return apps.filter((a) => a.name.toLowerCase().includes(needle))
 }
 
-function resizePanel() {
-	const rows = visibleResultRows()
-	const height =
-		mode === 'chat'
-			? CHAT_HEIGHT
-			: BAR_HEIGHT +
-				(rows ? RESULTS_GAP + rows * ROW_HEIGHT + (rows - 1) * ROW_GAP : 0) +
-				(statusEl.hidden ? 0 : STATUS_HEIGHT)
-	window.quay?.resize?.(height)
+// We're waiting on the agent if we just sent (pending) or the transcript still
+// ends on a user turn the daemon hasn't answered yet.
+function awaitingReply() {
+	return pending || agentMessages.at(-1)?.role === 'user'
 }
 
-function visibleResultRows() {
-	if (mode !== 'launcher' || !search.value.trim()) return 0
-	const count = filteredApps().length
-	if (!count && !catalogReady) return 0
-	return Math.max(1, Math.min(count, MAX_VISIBLE_RESULTS))
+// The single render: decides what sits above the composer and resizes the panel.
+// While chatting, the transcript. Otherwise we're a launcher: app matches if the
+// query hits the catalog, else a single default-action row (ask / resume).
+function render() {
+	if (chatting) return renderTranscript()
+	const q = composer.value.trim()
+	const matches = q ? filteredApps(q) : []
+	if (matches.length) renderApps(matches)
+	else renderHint(q)
 }
 
-function filteredApps() {
-	const q = search.value.trim().toLowerCase()
-	if (!q) return []
-	return apps.filter((a) => a.name.toLowerCase().includes(q))
+function renderApps(matches) {
+	contentEl.classList.add('apps')
+	contentEl.hidden = false
+	selectedIndex = Math.max(0, Math.min(selectedIndex, matches.length - 1))
+	contentEl.replaceChildren(...matches.map(resultRow))
+	sizePanel()
+	contentEl.querySelector('.selected')?.scrollIntoView({ block: 'nearest' })
 }
 
-function launch(id) {
-	if (window.quay) window.quay.open(id)
-	else console.log('launch', id)
+function renderTranscript() {
+	contentEl.classList.remove('apps')
+	const bubbles = agentMessages.map((m) => bubble(m.role, m.content, false))
+	if (awaitingReply()) bubbles.push(bubble('assistant', '…', true))
+	contentEl.hidden = bubbles.length === 0
+	contentEl.replaceChildren(...bubbles)
+	sizePanel()
+	contentEl.scrollTop = contentEl.scrollHeight // newest sits just above the composer
 }
 
-function showLauncher(reset = false) {
-	mode = 'launcher'
-	appEl.className = ''
-	search.hidden = false
-	chat.hidden = true
-	if (reset) {
-		search.value = ''
-		selectedIndex = 0
-	}
-	renderLauncher()
-	search.focus()
+// Launcher resting state: at most one default-action row above the bar. With text
+// that matches no app, Enter asks the agent; with an empty bar and a prior
+// conversation, Enter resumes it. The full transcript stays out of the way until
+// you're actually `chatting`.
+function renderHint(q) {
+	contentEl.classList.remove('apps')
+	let row = null
+	if (q) row = hintRow(`Ask agent “${q}”`)
+	else if (agentMessages.length) row = hintRow(resumeLabel())
+	contentEl.hidden = !row
+	contentEl.replaceChildren(...(row ? [row] : []))
+	sizePanel()
 }
 
-function showChat() {
-	mode = 'chat'
-	appEl.className = 'chat'
-	search.hidden = true
-	results.hidden = true
-	chat.hidden = false
-	renderAgent()
-	resizePanel()
-	ask.focus()
+// The resume row doubles as a status peek: if we dismissed mid-reply it says so,
+// otherwise it previews the latest answer (CSS truncates it to one line).
+function resumeLabel() {
+	if (awaitingReply()) return 'Resume — agent is replying…'
+	const last = agentMessages.at(-1)?.content?.trim()
+	return last ? `Resume — ${last}` : 'Resume conversation'
 }
 
-function renderLauncher() {
-	if (mode !== 'launcher') return
-	const q = search.value.trim()
-	const items = filteredApps()
-
-	if (!q || (!items.length && !catalogReady)) {
-		results.hidden = true
-		results.replaceChildren()
-		resizePanel()
-		return
-	}
-
-	selectedIndex = Math.min(selectedIndex, Math.max(0, items.length - 1))
-	results.hidden = false
-	results.replaceChildren(...(items.length ? items.map(resultRow) : [askAgentRow(q)]))
-	results.querySelector('.selected')?.scrollIntoView({ block: 'nearest' })
-	resizePanel()
+// Grow upward to fit the content (capped, then it scrolls). The native shell keeps
+// the composer's bottom edge pinned, so the panel extends up over the desktop.
+function sizePanel() {
+	const cap = contentEl.classList.contains('apps') ? APPS_CAP : CHAT_CAP
+	const contentH = contentEl.hidden ? 0 : Math.min(contentEl.scrollHeight, cap)
+	let h = PAD * 2 + COMPOSER_H
+	if (contentH) h += contentH + GAP
+	if (!statusEl.hidden) h += STATUS_H + GAP
+	window.quay?.resize?.(h)
 }
 
 function resultRow(app, index) {
@@ -118,7 +123,7 @@ function resultRow(app, index) {
 	li.addEventListener('mouseenter', () => {
 		if (selectedIndex === index) return
 		selectedIndex = index
-		renderLauncher()
+		for (const el of contentEl.children) el.classList.toggle('selected', el === li)
 	})
 	li.addEventListener('click', () => launch(app.id))
 
@@ -132,49 +137,78 @@ function resultRow(app, index) {
 	return li
 }
 
-function askAgentRow(text) {
+function bubble(role, text, isPending) {
 	const li = document.createElement('li')
-	li.className = 'result ask-agent selected'
-	li.addEventListener('mousedown', (e) => e.preventDefault())
-	li.addEventListener('click', () => submitPrompt(text))
+	li.className = `msg ${role}${isPending ? ' pending' : ''}`
+	li.textContent = text
+	return li
+}
 
+// The default-action row (ask / resume). Reuses the app-row look so it reads as the
+// selected default; clicking or Enter acts on it. Glyph ✦ marks it as the agent.
+function hintRow(text) {
+	const li = document.createElement('li')
+	li.className = 'result hint selected'
+	li.addEventListener('mousedown', (e) => e.preventDefault())
+	li.addEventListener('click', () => {
+		if (composer.value.trim()) sendMessage(composer.value)
+		else resumeChat()
+	})
 	const glyph = document.createElement('span')
 	glyph.className = 'glyph'
-	glyph.textContent = '↵'
+	glyph.textContent = '✦'
 	const label = document.createElement('span')
 	label.className = 'label'
-	label.textContent = `Ask agent: ${text}`
+	label.textContent = text
 	li.append(glyph, label)
 	return li
 }
 
-function renderAgent() {
-	const bubbles = agentMessages.map((m) => bubble(m.role, m.content, false))
-	if (pending) bubbles.push(bubble('assistant', '…', true))
-	messagesEl.replaceChildren(...bubbles)
-	messagesEl.scrollTop = messagesEl.scrollHeight
+function setStatus(text) {
+	statusEl.textContent = text
+	statusEl.hidden = !text
+	sizePanel()
 }
 
-function bubble(role, content, isPending) {
-	const li = document.createElement('li')
-	li.className = `msg ${role}${isPending ? ' pending' : ''}`
-	li.textContent = content
-	return li
+function launch(id) {
+	if (window.quay) window.quay.open(id)
+	else console.log('launch', id)
 }
 
-function submitPrompt(text) {
+function sendMessage(text) {
 	const trimmed = text.trim()
 	if (!trimmed) return
-	showChat()
+	chatting = true // stick to the transcript for follow-ups
 	agentMessages = [...agentMessages, { id: 'local', role: 'user', content: trimmed }]
 	pending = true
-	renderAgent()
+	composer.value = ''
+	selectedIndex = 0
+	render()
 	if (socket?.readyState === WebSocket.OPEN)
 		socket.send(JSON.stringify({ type: 'prompt', text: trimmed }))
 	else {
 		queuedPrompt = trimmed
 		if (!socket || socket.readyState > WebSocket.OPEN) connect()
 	}
+}
+
+// ⌘K is the explicit switch between app-search and the conversation: leaving chat
+// so typing filters apps again, or forcing the transcript up to read/compose.
+function toggleChat() {
+	chatting = !chatting
+	selectedIndex = 0
+	render()
+	composer.focus()
+}
+
+// Step into the existing conversation (the resume default-action). No-op with an
+// empty transcript, so Enter on a truly empty bar does nothing.
+function resumeChat() {
+	if (!agentMessages.length) return
+	chatting = true
+	selectedIndex = 0
+	render()
+	composer.focus()
 }
 
 function flushQueuedPrompt() {
@@ -212,11 +246,11 @@ async function connect() {
 			apps = msg.apps
 			catalogReady = true
 			setStatus('')
-			renderLauncher()
+			render()
 		} else if (msg.type === 'agent') {
 			agentMessages = msg.messages
 			pending = false
-			renderAgent()
+			render()
 		}
 	}
 	socket.onerror = () => socket.close()
@@ -230,48 +264,68 @@ window.quayConnect = () => {
 	if (!socket || socket.readyState > WebSocket.OPEN) connect()
 }
 
+// Summon lands deterministically in app-search with a cleared composer; the last
+// conversation is still right there above it to read or continue.
 window.quayShown = () => {
-	showLauncher(true)
+	composer.value = ''
+	selectedIndex = 0
+	chatting = false
+	render()
+	composer.focus()
 	window.quayConnect()
 }
 
-search.addEventListener('input', () => {
+document.addEventListener('keydown', (e) => {
+	if (e.key === 'k' && e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+		e.preventDefault()
+		toggleChat()
+	}
+})
+
+composer.addEventListener('input', () => {
 	selectedIndex = 0
-	renderLauncher()
+	render()
 })
 
-search.addEventListener('keydown', (e) => {
+composer.addEventListener('keydown', (e) => {
 	if (e.key === 'Escape') {
-		if (window.quay) window.quay.hide()
+		window.quay?.hide?.()
 		return
 	}
-	if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-		const items = filteredApps()
-		if (!items.length) return
+
+	const showingApps = !contentEl.hidden && contentEl.classList.contains('apps')
+
+	if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
 		e.preventDefault()
-		const delta = e.key === 'ArrowDown' ? 1 : -1
-		selectedIndex = Math.max(0, Math.min(items.length - 1, selectedIndex + delta))
-		renderLauncher()
+		if (showingApps) {
+			const matches = filteredApps(composer.value.trim())
+			if (!matches.length) return
+			// index 0 (best) sits at the bottom (column-reverse), so ↑ walks up the list.
+			const delta = e.key === 'ArrowUp' ? 1 : -1
+			selectedIndex = Math.max(0, Math.min(matches.length - 1, selectedIndex + delta))
+			render()
+		} else if (!contentEl.hidden) {
+			contentEl.scrollTop += e.key === 'ArrowUp' ? -60 : 60 // scroll the transcript
+		}
 		return
 	}
+
 	if (e.key === 'Enter') {
 		e.preventDefault()
-		const text = search.value.trim()
-		if (!text) return
-		const items = filteredApps()
-		if (items.length) launch(items[selectedIndex]?.id ?? items[0].id)
-		else if (catalogReady) submitPrompt(text)
+		const text = composer.value.trim()
+		if (chatting) {
+			if (text) sendMessage(text)
+		} else if (showingApps) {
+			const matches = filteredApps(text)
+			if (matches.length) launch((matches[selectedIndex] ?? matches[0]).id)
+		} else if (text) {
+			sendMessage(text) // no app match → ask the agent
+		} else {
+			resumeChat() // empty bar → step back into the conversation
+		}
 	}
 })
 
-ask.addEventListener('keydown', (e) => {
-	if (e.key === 'Enter') {
-		e.preventDefault()
-		submitPrompt(ask.value)
-		ask.value = ''
-	}
-	if (e.key === 'Escape' && window.quay) window.quay.hide()
-})
-
-showLauncher(true)
+render()
+composer.focus()
 connect()

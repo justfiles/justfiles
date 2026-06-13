@@ -1,4 +1,4 @@
-* Tasks [7/11]
+* Tasks [7/15]
 
 ** DONE move window.json to state
 ** DONE active app indicator (dock?)
@@ -30,7 +30,12 @@ the first-party Settings app can reach.
 ** TODO htmx as framework?
 ** TODO refine the interface of packages/agent
 The interface is pretty chaotic, need more elegent interface
-
+** TODO notification
+can notify when agent finishes work
+** TODO better title bar, maybe same color as background?
+** TODO launchbar search text auto wrap when long, should become text area?
+** TODO modify builtin apps?
+think about emacs
 * Bugs to fix
 
 ** TODO move onboarding

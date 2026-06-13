@@ -69,17 +69,20 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private func toggle() { panel.isVisible ? hide() : show() }
 
 	private func show() {
-		resizePanel(to: 72)
-		// Top-left, just below the menu bar, on whichever screen the pointer is on.
+		// Bottom-centre, raised off the Dock, on whichever screen the pointer is on.
+		// The composer is pinned to the bottom edge; the panel grows upward as the
+		// content above it (app matches / agent transcript) gets taller.
+		let height: CGFloat = 72
 		let screen =
 			NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
 				?? NSScreen.main ?? NSScreen.screens.first
 		if let v = screen?.visibleFrame {
-			let f = panel.frame
-			let margin: CGFloat = 24
-			let x = v.minX + margin
-			let y = v.maxY - f.height - margin
-			panel.setFrameOrigin(NSPoint(x: x, y: y))
+			let margin: CGFloat = 96
+			let x = v.midX - panel.frame.width / 2
+			let y = v.minY + margin
+			panel.setFrame(NSRect(x: x, y: y, width: panel.frame.width, height: height), display: true)
+		} else {
+			resizePanel(to: height)
 		}
 		NSApp.activate(ignoringOtherApps: true)
 		panel.makeKeyAndOrderFront(nil)
@@ -94,8 +97,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	private func resizePanel(to height: CGFloat) {
 		let f = panel.frame
-		let h = max(72, min(height, 640))
-		panel.setFrame(NSRect(x: f.minX, y: f.maxY - h, width: f.width, height: h), display: true)
+		let h = max(72, min(height, 720))
+		// Keep the bottom edge pinned (origin y is the bottom-left corner); grow upward.
+		panel.setFrame(NSRect(x: f.minX, y: f.minY, width: f.width, height: h), display: true)
 	}
 
 	// Spotlight-style: dismiss when focus leaves the panel.

@@ -17,45 +17,51 @@
 				-webkit-backdrop-filter: blur(24px) saturate(140%);
 				backdrop-filter: blur(24px) saturate(140%);
 			}
+			/* One surface: composer pinned at the bottom, content stacked above it. */
 			#app {
 				height: 100%;
 				display: flex;
 				flex-direction: column;
+				gap: 8px;
 				padding: 12px;
 				box-sizing: border-box;
 				overflow: hidden;
 			}
-			#search,
-			#ask {
+			/* The region above the composer — app matches or the agent transcript.
+			   It fills the space the panel grows into and scrolls when it overflows. */
+			#content {
+				list-style: none;
+				margin: 0;
+				padding: 0;
+				flex: 1;
+				min-height: 0;
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+				overflow: auto;
+			}
+			/* App matches: best hit adjacent to the composer (bottom), list runs upward. */
+			#content.apps {
+				flex-direction: column-reverse;
+				gap: 4px;
+			}
+			#composer {
+				flex: none;
 				width: 100%;
 				box-sizing: border-box;
+				height: 48px;
+				padding: 0 16px;
+				font-size: 18px;
 				color: #fff;
 				border: 0;
+				border-radius: 14px;
 				background: rgba(255, 255, 255, 0.08);
 				outline: none;
 				-webkit-user-select: text;
 				user-select: text;
 			}
-			#search {
-				height: 48px;
-				padding: 0 16px;
-				font-size: 18px;
-				border-radius: 14px;
-			}
-			#search::placeholder,
-			#ask::placeholder {
+			#composer::placeholder {
 				color: rgba(255, 255, 255, 0.4);
-			}
-			#results {
-				list-style: none;
-				margin: 8px 0 0;
-				padding: 0;
-				display: flex;
-				flex: 1;
-				min-height: 0;
-				flex-direction: column;
-				gap: 4px;
-				overflow: auto;
 			}
 			.result {
 				height: 46px;
@@ -90,30 +96,14 @@
 				white-space: nowrap;
 				font-size: 15px;
 			}
-			.ask-agent .glyph {
-				background: rgba(255, 255, 255, 0.1);
+			/* The single default-action row (ask / resume) shown when we're a launcher,
+			   not chatting. Tinted glyph + dimmer label so it reads as a hint. */
+			.result.hint .glyph {
+				background: rgba(255, 255, 255, 0.12);
+				color: #cdb4ff;
 			}
-			#status {
-				margin: 8px 4px 0;
-				font-size: 13px;
-				opacity: 0.5;
-			}
-			#chat {
-				flex: 1;
-				min-height: 0;
-				display: flex;
-				flex-direction: column;
-			}
-			#messages {
-				list-style: none;
-				margin: 0 0 10px;
-				padding: 0 2px;
-				flex: 1;
-				min-height: 0;
-				overflow: auto;
-				display: flex;
-				flex-direction: column;
-				gap: 6px;
+			.result.hint .label {
+				opacity: 0.75;
 			}
 			.msg {
 				max-width: 85%;
@@ -136,35 +126,28 @@
 			.msg.pending {
 				opacity: 0.5;
 			}
-			#ask {
-				height: 40px;
-				padding: 0 12px;
-				font-size: 14px;
-				border-radius: 10px;
+			#status {
+				margin: 0 4px;
+				font-size: 13px;
+				opacity: 0.5;
 			}
-			#search[hidden],
-			#results[hidden],
-			#status[hidden],
-			#chat[hidden] {
+			#content[hidden],
+			#status[hidden] {
 				display: none;
 			}
 		</style>
 	</head>
 	<body>
 		<div id="app">
+			<ul id="content" hidden></ul>
+			<p id="status" hidden></p>
 			<input
-				id="search"
-				type="search"
-				placeholder="Search apps or ask agent…"
+				id="composer"
+				type="text"
+				placeholder="Search apps or message agent…"
 				autocomplete="off"
 				spellcheck="false"
 			/>
-			<ul id="results" hidden></ul>
-			<p id="status" hidden></p>
-			<div id="chat" hidden>
-				<ul id="messages"></ul>
-				<input id="ask" type="text" placeholder="Ask the agent…" autocomplete="off" />
-			</div>
 		</div>
 		<script src="launcher.js"></script>
 	</body>
