@@ -1,6 +1,7 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI } from '@justfiles/app/browser'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
+import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import {
 	type FormEvent,
 	type ReactNode,
@@ -135,6 +136,7 @@ export const gui = defineGUI<CodeApp>({
 			let editorPath: string | null = null
 			let localDirty = false
 			let split = 0.5
+			let fileTreeOpen = true
 			let menuView: MenuView = []
 			let openMenu: number | null = null
 			let installing = false
@@ -360,6 +362,7 @@ export const gui = defineGUI<CodeApp>({
 					onDelete: () => void deleteEditor(),
 					localDirty,
 					split,
+					fileTreeOpen,
 					menuView,
 					openMenu,
 					installing,
@@ -375,6 +378,10 @@ export const gui = defineGUI<CodeApp>({
 						if (view.slug) void ctx.client.open({ slug: view.slug }).catch(() => {})
 					},
 					onSelectPath: selectPath,
+					onToggleFileTree: () => {
+						fileTreeOpen = !fileTreeOpen
+						patch()
+					},
 					onInstall: install,
 					onDrag: startDrag,
 					onIconFile: (file) => {
@@ -546,6 +553,7 @@ type EditorScreenProps = {
 	onDelete: () => void
 	localDirty: boolean
 	split: number
+	fileTreeOpen: boolean
 	menuView: MenuView
 	openMenu: number | null
 	installing: boolean
@@ -556,6 +564,7 @@ type EditorScreenProps = {
 	onToggleCode: () => void
 	onRefresh: () => void
 	onSelectPath: (path: string) => void
+	onToggleFileTree: () => void
 	onInstall: () => void
 	onDrag: (event: ReactPointerEvent<HTMLDivElement>) => void
 	onIconFile: (file: File) => void
@@ -646,24 +655,40 @@ function EditorScreen(props: EditorScreenProps) {
 						hidden={!showCode}
 						style={{ width: `${props.split * 100}%` }}
 					>
-						<div className="app-code-tab-bar">
-							<div className="app-code-tabs-scroll">
-								{props.view.files.map((path) => (
-									<TabButton
-										key={path}
-										path={path}
-										active={path === props.view.selectedPath}
-										dirty={props.localDirty && path === props.view.selectedPath}
-										onSelect={props.onSelectPath}
-									/>
-								))}
+						<div className="app-code-source-toolbar">
+							<button
+								type="button"
+								className="app-code-tree-toggle"
+								aria-pressed={props.fileTreeOpen}
+								data-active={props.fileTreeOpen ? 'true' : undefined}
+								title={props.fileTreeOpen ? 'Hide file tree' : 'Show file tree'}
+								onClick={props.onToggleFileTree}
+							>
+								Files
+							</button>
+							<div className="app-code-source-path" title={props.view.selectedPath ?? undefined}>
+								{props.localDirty ? '● ' : ''}
+								{props.view.selectedPath ?? 'No file selected'}
 							</div>
 							<IconButton label="⟳" title="Rescan project files" onClick={props.onRefresh} />
 						</div>
-						<CodeMirrorHost editor={props.code} ready={ready} />
-						<pre className={`app-code-message ${fallback?.error ? 'is-error' : ''}`} hidden={ready}>
-							{fallback?.text ?? ''}
-						</pre>
+						<div className="app-code-source-body">
+							<SourceFileTree
+								files={props.view.files}
+								selectedPath={props.view.selectedPath}
+								hidden={!props.fileTreeOpen}
+								onSelect={props.onSelectPath}
+							/>
+							<div className="app-code-editor-pane">
+								<CodeMirrorHost editor={props.code} ready={ready} />
+								<pre
+									className={`app-code-message ${fallback?.error ? 'is-error' : ''}`}
+									hidden={ready}
+								>
+									{fallback?.text ?? ''}
+								</pre>
+							</div>
+						</div>
 					</div>
 
 					<div className="app-code-handle" hidden={!showCode} onPointerDown={props.onDrag} />
@@ -841,6 +866,51 @@ function CodeMirrorHost({ editor, ready }: { editor: Editor; ready: boolean }) {
 		}
 	}, [editor])
 	return <div ref={ref} className="app-code-editor-host" hidden={!ready} />
+}
+
+function SourceFileTree(props: {
+	files: string[]
+	selectedPath: string | null
+	hidden: boolean
+	onSelect: (path: string) => void
+}) {
+	const latest = useRef(props)
+	latest.current = props
+	const { model } = useFileTree({
+		paths: props.files,
+		flattenEmptyDirectories: true,
+		initialExpansion: 'open',
+		initialSelectedPaths: props.selectedPath ? [props.selectedPath] : [],
+		itemHeight: 24,
+		density: 0.85,
+		onSelectionChange: (paths) => {
+			const { files, onSelect } = latest.current
+			const path = paths.find((candidate) => files.includes(candidate))
+			if (path) onSelect(path)
+		}
+	})
+
+	useEffect(() => {
+		model.resetPaths(props.files)
+	}, [model, props.files])
+
+	useEffect(() => {
+		if (!props.selectedPath) return
+		const item = model.getItem(props.selectedPath)
+		if (!item) return
+		const selected = model.getSelectedPaths()
+		if (selected.length !== 1 || selected[0] !== props.selectedPath) {
+			for (const path of selected) model.getItem(path)?.deselect()
+			item.select()
+		}
+		model.scrollToPath(props.selectedPath, { focus: false })
+	}, [model, props.selectedPath])
+
+	return (
+		<div className="app-code-file-tree-wrap" hidden={props.hidden}>
+			<PierreFileTree model={model} className="app-code-file-tree" />
+		</div>
+	)
 }
 
 function GalleryScreen(props: {
@@ -1116,26 +1186,6 @@ function TextField(props: {
 	)
 }
 
-function TabButton(props: {
-	path: string
-	active: boolean
-	dirty: boolean
-	onSelect: (path: string) => void
-}) {
-	return (
-		<button
-			type="button"
-			title={props.path}
-			onClick={() => props.onSelect(props.path)}
-			className="app-code-tab-button"
-			data-active={props.active ? 'true' : undefined}
-		>
-			{props.dirty ? '● ' : ''}
-			{basename(props.path)}
-		</button>
-	)
-}
-
 function IconButton(props: { label: string; title: string; onClick: () => void }) {
 	return (
 		<button
@@ -1243,8 +1293,4 @@ function downloadZip(name: string, zip: Uint8Array) {
 
 function messageOf(err: unknown) {
 	return err instanceof Error ? err.message : String(err)
-}
-
-function basename(path: string) {
-	return path.split('/').filter(Boolean).at(-1) ?? path
 }
