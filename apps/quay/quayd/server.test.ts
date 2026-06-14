@@ -127,6 +127,22 @@ test('omits the React core preload for a pure-DOM app', async () => {
 	expect(html).not.toContain('/vendor/core.js')
 })
 
+test('serves the launcher chat shell and its pre-built bundle', async () => {
+	const shell = await fetch(`http://127.0.0.1:${served.port}/launcher/chat?token=secret`)
+	expect(shell.headers.get('content-type')).toContain('text/html')
+	const html = await shell.text()
+	expect(html).toContain('importmap')
+	expect(html).toContain('/vendor/chat.js') // mounts the chat bundle
+	expect(html).toContain('/design/mac.css') // links the platform style
+	expect(html).toContain('"secret"') // injected token for the privileged socket
+
+	const bundle = await fetch(`http://127.0.0.1:${served.port}/vendor/chat.js`)
+	expect(bundle.headers.get('content-type')).toContain('javascript')
+	const code = await bundle.text()
+	expect(code).toContain('agent.history') // the chat entry drives the agent channel
+	expect(code).toMatch(/from\s*"react"/) // React stays externalised to the importmap
+})
+
 test('builds and serves the shared-React vendor modules', async () => {
 	const core = await (await fetch(`http://127.0.0.1:${served.port}/vendor/core.js`)).text()
 	expect(core).toContain('__quayReact') // sets the shared global

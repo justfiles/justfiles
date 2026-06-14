@@ -13,7 +13,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { type RawData, WebSocket, WebSocketServer } from 'ws'
 import type { AgentMessage } from './agent.ts'
-import { designAsset, shellHtml, vendorAssets } from './assets.ts'
+import { designAsset, launcherChatHtml, shellHtml, vendorAssets } from './assets.ts'
 import { type BerthBackend, serveBerth } from './berth.ts'
 
 export interface AppInfo {
@@ -149,6 +149,14 @@ async function serveHttp(
 	if (path.startsWith('/vendor/')) {
 		const bytes = (await vendorAssets()).get(path)
 		return bytes ? send(res, 'text/javascript', bytes) : fail(res, 404)
+	}
+
+	// The launcher's chat surface: the HTML shell mounting /vendor/chat.js. The token
+	// (checked on the ws connection, not here — mirrors the /app shell) rides through
+	// to the page so it can open the privileged socket.
+	if (path === '/launcher/chat') {
+		const html = launcherChatHtml(url.searchParams.get('token') ?? '')
+		return send(res, 'text/html; charset=utf-8', new TextEncoder().encode(html))
 	}
 
 	const design = /^\/design\/([a-z][a-z0-9-]*\.css)$/.exec(path)

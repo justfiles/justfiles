@@ -20,11 +20,15 @@ import { build } from 'esbuild'
 const require = createRequire(import.meta.url)
 // react/capnweb resolve from quay's node_modules, so esbuild bundles from here.
 const RESOLVE_DIR = import.meta.dirname
+// The launcher's chat entry (../launcher-ui/chat.tsx) — bundled like a gui.js
+// (React externalised to the importmap) and served as /vendor/chat.js.
+const CHAT_ENTRY = join(RESOLVE_DIR, '..', 'launcher-ui', 'chat.tsx')
 const CACHE_DIR = join(homedir(), 'Library', 'Application Support', 'quay', 'cache', 'vendor')
 
-// Bump when the bundling logic here changes; the React version is folded in too,
-// so a `pnpm update react` invalidates the cache automatically.
-const REV = 3
+// Bump when the bundling logic OR the bundled launcher source (chat.tsx, the shared
+// @justfiles/ui Transcript) changes; the React version is folded in too, so a
+// `pnpm update react` invalidates the cache automatically.
+const REV = 4
 
 // Each shim file → the global slot it re-exports and the specifier whose export
 // names it enumerates. The core bundle (below) fills `globalThis.__quayReact`.
@@ -48,8 +52,10 @@ const IMPORTMAP = JSON.stringify({
 
 let cache: Promise<Map<string, Uint8Array>> | undefined
 
-// The vendor assets keyed by URL path (`/vendor/<file>`). Lazy + memoised: the
-// launcher never needs React, so the (~0.5s) build is paid once, on first app open.
+// The vendor assets keyed by URL path (`/vendor/<file>`). Lazy + memoised + disk-
+// cached: the React family, the boot bundle, and the launcher's chat bundle
+// (`/vendor/chat.js`). The (~0.5s) build is paid once — on first app open or first
+// chat reveal, whichever comes first.
 export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 	cache ??= loadOrBuild()
 	return cache
@@ -100,6 +106,36 @@ export function shellHtml(id: string, token: string, usesReact: boolean): string
 `
 }
 
+// The launcher chat shell quayd serves at `/launcher/chat`. Same shape as the mini-app
+// shell (importmap + platform stylesheet), but it mounts the pre-built chat bundle
+// directly (no boot.js / gui.js indirection) and always uses React, so it preloads the
+// core. The transcript paints no background: in the app it sits in a transparent
+// WKWebView over the launcher's native vibrancy, and mac.css's `:where()` defaults would
+// otherwise fill it with `--window-bg` — the plain selector below (specificity > 0)
+// overrides them.
+export function launcherChatHtml(token: string): string {
+	return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Quay Chat</title>
+<script type="importmap">${IMPORTMAP}</script>
+<link rel="stylesheet" href="/design/mac.css">
+<link rel="modulepreload" href="/vendor/core.js">
+<link rel="modulepreload" href="/vendor/chat.js">
+<style>html, body, #root { background: transparent; }</style>
+</head>
+<body>
+<div id="root"></div>
+<script>window.__quayChat=${JSON.stringify({ token })}</script>
+<script type="module" src="/vendor/chat.js"></script>
+</body>
+</html>
+`
+}
+
 async function loadOrBuild(): Promise<Map<string, Uint8Array>> {
 	const key = cacheKey()
 	const cached = await readCache(key)
@@ -117,6 +153,7 @@ async function buildAll(): Promise<Map<string, Uint8Array>> {
 		out.set(`/vendor/${file}`, bytes(shim(slot, specifier)))
 	}
 	out.set('/vendor/boot.js', bytes(await buildBoot()))
+	out.set('/vendor/chat.js', bytes(await buildChat()))
 	return out
 }
 
@@ -167,6 +204,34 @@ async function buildBoot(): Promise<string> {
 	`)
 }
 
+// The launcher's chat surface (`launcher-ui/chat.tsx`): the shared React Transcript
+// over quay's privileged ws. Bundled exactly like a mini-app gui.js — React (and the
+// jsx runtime) externalised to the importmap so it shares the one vendored React,
+// keeping this bundle tiny. Pre-built and served as static bytes; never compiled on
+// the user's machine.
+async function buildChat(): Promise<string> {
+	const result = await build({
+		entryPoints: [CHAT_ENTRY],
+		bundle: true,
+		write: false,
+		format: 'esm',
+		jsx: 'automatic',
+		minify: true,
+		external: [
+			'react',
+			'react-dom',
+			'react-dom/client',
+			'react/jsx-runtime',
+			'react/jsx-dev-runtime'
+		],
+		define: { 'process.env.NODE_ENV': '"production"' },
+		logLevel: 'silent'
+	})
+	const text = result.outputFiles?.[0]?.text
+	if (!text) throw new Error('quayd: chat bundle produced no output')
+	return text
+}
+
 // A shim re-exports its slot off the global the core bundle fills. Importing
 // `./core.js` first guarantees the global is set before the shim's body reads it.
 // `default` is the React object; named exports are its own keys (enumerated here
@@ -210,7 +275,7 @@ async function readCache(key: string): Promise<Map<string, Uint8Array> | undefin
 	try {
 		if ((await readFile(join(CACHE_DIR, '.key'), 'utf8')) !== key) return undefined
 		const out = new Map<string, Uint8Array>()
-		for (const file of ['core.js', ...Object.keys(SHIMS), 'boot.js']) {
+		for (const file of ['core.js', ...Object.keys(SHIMS), 'boot.js', 'chat.js']) {
 			out.set(`/vendor/${file}`, await readFile(join(CACHE_DIR, file)))
 		}
 		return out
