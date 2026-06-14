@@ -17,7 +17,8 @@ BIN="$BUILD/quay-shell"
 ICON="$BUILD/quay-makeicon"
 
 # Shared binary + icon tool, built once.
-swiftc -O -swift-version 5 main.swift Booter.swift Launcher.swift -o "$BIN"
+swiftc -O -swift-version 5 \
+	main.swift Booter.swift Launcher.swift Catalog.swift Composer.swift Results.swift -o "$BIN"
 swiftc -O -swift-version 5 makeicon.swift -o "$ICON" 2>/dev/null || ICON=""
 
 emit_plist() { # name bundle_id [quay_id] [lsui]
@@ -66,7 +67,8 @@ make_bundle() { # app_path name bundle_id [quay_id] [lsui]
 build_launcher() {
 	app="Quay.app"
 	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
-	cp -R ../launcher-ui "$app/Contents/Resources/launcher-ui"
+	# The chrome is native AppKit and the transcript is served by quayd, so there is no
+	# local web bundle to ship — only the dev wiring below.
 	# Dev wiring: how the launcher spawns quayd (Command Line Tools have no packaged
 	# daemon yet). Stamp this machine's absolute node + quayd entrypoint paths.
 	plist="$app/Contents/Info.plist"

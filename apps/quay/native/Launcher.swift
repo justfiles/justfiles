@@ -4,21 +4,50 @@ import Darwin
 import WebKit
 
 // The launcher: an LSUIElement agent whose global hotkey (Option+Space) toggles a
-// frameless, vibrancy-blurred panel. The panel hosts the launcher web UI; picking
-// an app launches its real .app bundle via LaunchServices — by bundle, not as a
-// window of the launcher — which is what gives each app its own Dock identity.
-// It is also the privileged client of quayd: it ensures the daemon is running and
-// hands the web UI its {port, token} so the UI can pull the catalog over the socket.
+// frameless, vibrancy-blurred panel. The chrome — composer + app results — is native
+// AppKit (no web-view resize round-trip, so no per-keystroke flash); the agent
+// transcript is a transparent WKWebView served by quayd (the shared React <Transcript/>).
+// Picking an app launches its real .app bundle via LaunchServices — by bundle, not as a
+// window of the launcher — which gives each app its own Dock identity. The launcher is
+// also quayd's privileged client: it discovers the daemon (via CatalogClient) for both
+// the native catalog socket and the transcript webview's {port, token}.
 
 final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-	WKScriptMessageHandler, WKScriptMessageHandlerWithReply
+	WKScriptMessageHandler
 {
+	private static let panelWidth: CGFloat = 640
+	private static let pad: CGFloat = 12 // inset around the panel content
+	private static let gap: CGFloat = 8 // between the content region and the composer
+	private static let baseHeight: CGFloat = pad * 2 + Composer.minHeight // collapsed bar
+	private static let chatHeight: CGFloat = 460 // the transcript region (it scrolls within)
+
+	// What sits above the composer right now. The launcher rests in `apps`/`empty`; chat
+	// is entered explicitly (⌘K) or by asking the agent (Enter on a non-matching query).
+	private enum Content { case empty, apps, hint, chat }
+
 	private var panel: NSPanel!
-	private var webView: WKWebView!
+	private var container: NSView! // holds the active content view, sized per mode
+	private var webView: WKWebView! // the transcript, kept warm (loaded at startup)
+	private let composer = Composer()
+	private let results = Results()
+	private var hintRow: Row!
+	private let stopButton = NSButton()
+	private let catalog = CatalogClient()
 	private var hotkey: Hotkey?
+
+	private var apps: [CatalogApp] = []
+	private var chatting = false
+	private var content: Content = .empty
+	private var visibleContent: NSView?
+	private var chatRuntime: (port: Int, token: String)?
 
 	func applicationDidFinishLaunching(_: Notification) {
 		buildPanel()
+		// Discover quayd now: the catalog socket fills the results list, and its onRuntime
+		// loads the transcript webview warm so entering chat is a reveal, not a cold load.
+		catalog.onCatalog = { [weak self] in self?.catalogArrived($0) }
+		catalog.onRuntime = { [weak self] port, token in self?.useRuntime(port, token) }
+		catalog.connect()
 		// Summoned by the hotkey, not shown on launch: an LSUIElement app can't take
 		// foreground at launch, and the panel is meant to be toggled like Spotlight.
 		hotkey = Hotkey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
@@ -27,7 +56,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	}
 
 	private func buildPanel() {
-		let rect = NSRect(x: 0, y: 0, width: 640, height: 72)
+		let rect = NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.baseHeight)
 		panel = KeyablePanel(
 			contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false
 		)
@@ -48,102 +77,247 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		blur.wantsLayer = true
 		blur.layer?.cornerRadius = 16
 		blur.layer?.masksToBounds = true
-
-		let cfg = WKWebViewConfiguration()
-		cfg.userContentController.add(self, name: "quay")
-		cfg.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "quayd")
-		cfg.userContentController.addUserScript(
-			WKUserScript(source: Self.bridgeJS, injectionTime: .atDocumentStart, forMainFrameOnly: true)
-		)
-		webView = WKWebView(frame: rect, configuration: cfg)
-		webView.autoresizingMask = [.width, .height]
-		webView.setValue(false, forKey: "drawsBackground") // let vibrancy show through
-		if #available(macOS 13.3, *) { webView.isInspectable = true } // dev only
-		blur.addSubview(webView)
 		panel.contentView = blur
 
-		let dir = Bundle.main.resourceURL!.appendingPathComponent("launcher-ui")
-		webView.loadFileURL(dir.appendingPathComponent("index.html"), allowingReadAccessTo: dir)
+		// The transcript webview: transparent over the native vibrancy, status-bridged,
+		// kept warm. Its agent socket and token are owned by the page (quayd injects the
+		// token); native only drives input (quaySend/quayAbort) and reads `status`.
+		let cfg = WKWebViewConfiguration()
+		cfg.userContentController.add(self, name: "status")
+		webView = WKWebView(frame: .zero, configuration: cfg)
+		webView.setValue(false, forKey: "drawsBackground")
+		if #available(macOS 13.3, *) { webView.isInspectable = true } // dev only
+
+		// One content container above the composer; its single visible child swaps per mode.
+		container = NSView()
+		results.autoresizingMask = [.width, .height]
+		webView.autoresizingMask = [.width, .height]
+		hintRow = Row(glyph: "✦", label: "", hint: true)
+		hintRow.selected = true // the hint reads as the selected default action
+		hintRow.autoresizingMask = [.width]
+		hintRow.onClick = { [weak self] in self?.submit() }
+		results.onLaunch = { [weak self] in self?.launch($0) }
+		container.addSubview(results)
+		container.addSubview(hintRow)
+		container.addSubview(webView)
+		blur.addSubview(container)
+
+		composer.onChange = { [weak self] in self?.render() }
+		composer.onSubmit = { [weak self] in self?.submit() }
+		composer.onEscape = { [weak self] in self?.hide() }
+		composer.onToggleChat = { [weak self] in self?.toggleChat() }
+		composer.onArrow = { [weak self] up in self?.results.move(up: up) }
+		// A correct width up front so the first desiredHeight measurement wraps properly.
+		composer.frame = NSRect(
+			x: Self.pad, y: Self.pad, width: Self.panelWidth - Self.pad * 2, height: Composer.minHeight
+		)
+		blur.addSubview(composer)
+
+		stopButton.title = "Stop"
+		stopButton.bezelStyle = .rounded
+		stopButton.isHidden = true
+		stopButton.target = self
+		stopButton.action = #selector(stopStreaming)
+		blur.addSubview(stopButton)
 	}
+
+	// MARK: layout & sizing — native owns the panel frame, so there is no web→native
+	// resize call: the panel grows upward from a pinned bottom edge as content changes.
+
+	private func contentHeight() -> CGFloat {
+		switch content {
+		case .empty: return 0
+		case .apps: return min(results.contentHeight, Results.cap)
+		case .hint: return Results.rowHeight
+		case .chat: return Self.chatHeight
+		}
+	}
+
+	// Resize the panel to fit the current composer + content, keeping the bottom pinned.
+	private func sizePanel() {
+		let composerH = composer.desiredHeight
+		let contentH = contentHeight()
+		var h = Self.pad * 2 + composerH
+		if contentH > 0 { h += contentH + Self.gap }
+		h = max(Self.baseHeight, min(h, 760))
+		let f = panel.frame
+		panel.setFrame(NSRect(x: f.minX, y: f.minY, width: f.width, height: h), display: true)
+		layoutSubviews()
+	}
+
+	// Position the composer (bottom), the content container (above it), and the Stop
+	// overlay within the panel's current bounds. Never calls sizePanel — no recursion.
+	private func layoutSubviews() {
+		guard let blur = panel.contentView else { return }
+		let width = blur.bounds.width
+		let innerWidth = width - Self.pad * 2
+		let composerH = composer.desiredHeight
+		composer.frame = NSRect(x: Self.pad, y: Self.pad, width: innerWidth, height: composerH)
+		let contentH = contentHeight()
+		container.isHidden = contentH == 0
+		container.frame = NSRect(
+			x: Self.pad, y: Self.pad + composerH + Self.gap, width: innerWidth, height: contentH
+		)
+		visibleContent?.frame = container.bounds
+		let s: CGFloat = 30
+		stopButton.frame = NSRect(
+			x: Self.pad + innerWidth - 8 - 52, y: Self.pad + (composerH - s) / 2, width: 52, height: s
+		)
+	}
+
+	// MARK: render — decide what sits above the composer, then size the panel.
+
+	private func render() {
+		if chatting { return present(.chat) }
+		let query = composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
+		let matches = query.isEmpty ? [] : filtered(query)
+		if !matches.isEmpty {
+			results.setApps(matches)
+			present(.apps)
+		} else if !query.isEmpty {
+			hintRow.setLabel("Ask agent “\(query)”")
+			present(.hint)
+		} else {
+			present(.empty)
+		}
+	}
+
+	private func present(_ content: Content) {
+		self.content = content
+		results.isHidden = content != .apps
+		hintRow.isHidden = content != .hint
+		webView.isHidden = content != .chat
+		visibleContent =
+			content == .apps ? results : content == .hint ? hintRow : content == .chat ? webView : nil
+		composer.navActive = content == .apps
+		sizePanel()
+	}
+
+	private func filtered(_ query: String) -> [CatalogApp] {
+		let needle = query.lowercased()
+		return apps.filter { $0.name.lowercased().contains(needle) }
+	}
+
+	private func catalogArrived(_ apps: [CatalogApp]) {
+		self.apps = apps
+		if !chatting { render() } // refresh the current filter against the new catalog
+	}
+
+	// MARK: actions
+
+	// Enter: in chat, send the draft; otherwise launch the selected app, or — when the
+	// query matches no app — ask the agent (entering chat). Empty + not chatting resumes.
+	private func submit() {
+		let text = composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
+		if chatting {
+			if !text.isEmpty { sendChat(text) }
+		} else if !text.isEmpty, !filtered(text).isEmpty {
+			results.launchSelected()
+		} else {
+			enterChat(send: text.isEmpty ? nil : text)
+		}
+	}
+
+	private func launch(_ id: String) {
+		hide()
+		openMiniApp(id)
+	}
+
+	// ⌘K: explicit switch between app-search and the conversation.
+	private func toggleChat() {
+		chatting.toggle()
+		render()
+		composer.focus()
+	}
+
+	// Reveal the warm transcript and (optionally) send an opening turn.
+	private func enterChat(send: String?) {
+		chatting = true
+		composer.string = ""
+		render()
+		composer.focus()
+		if let send { sendChat(send) }
+	}
+
+	private func sendChat(_ text: String) {
+		composer.string = ""
+		render()
+		webView.evaluateJavaScript("window.quaySend && window.quaySend(\(jsString(text)))")
+	}
+
+	@objc private func stopStreaming() {
+		webView.evaluateJavaScript("window.quayAbort && window.quayAbort()")
+	}
+
+	// MARK: quayd discovery → the transcript webview URL
+
+	// The catalog socket is the single discovery path; when it (re)connects we point the
+	// transcript webview at the live runtime. Reloading only on a real change keeps the
+	// webview warm in steady state and heals it across a quayd restart (new port/token).
+	private func useRuntime(_ port: Int, _ token: String) {
+		if let r = chatRuntime, r.port == port, r.token == token { return }
+		chatRuntime = (port, token)
+		webView.load(URLRequest(url: chatURL(port: port, token: token)))
+	}
+
+	private func chatURL(port: Int, token: String) -> URL {
+		var c = URLComponents()
+		c.scheme = "http"
+		c.host = "127.0.0.1"
+		c.port = port
+		c.path = "/launcher/chat"
+		c.queryItems = [URLQueryItem(name: "token", value: token)]
+		return c.url!
+	}
+
+	// JSON-encode a string into a JS string literal (quotes + escapes) for evaluateJavaScript.
+	private func jsString(_ s: String) -> String {
+		guard let data = try? JSONSerialization.data(withJSONObject: [s]),
+			let arr = String(data: data, encoding: .utf8)
+		else { return "''" }
+		return String(arr.dropFirst().dropLast())
+	}
+
+	// MARK: panel lifecycle
 
 	private func toggle() { panel.isVisible ? hide() : show() }
 
 	private func show() {
-		// Bottom-centre, raised off the Dock, on whichever screen the pointer is on.
-		// The composer is pinned to the bottom edge; the panel grows upward as the
-		// content above it (app matches / agent transcript) gets taller.
-		let height: CGFloat = 72
+		// Bottom-centre, raised off the Dock, on whichever screen the pointer is on. The
+		// composer is pinned to the bottom edge; the panel grows upward as content gets taller.
 		let screen =
 			NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
 				?? NSScreen.main ?? NSScreen.screens.first
 		if let v = screen?.visibleFrame {
-			let margin: CGFloat = 96
-			let x = v.midX - panel.frame.width / 2
-			let y = v.minY + margin
-			panel.setFrame(NSRect(x: x, y: y, width: panel.frame.width, height: height), display: true)
-		} else {
-			resizePanel(to: height)
+			let x = v.midX - Self.panelWidth / 2
+			let y = v.minY + 96
+			panel.setFrame(
+				NSRect(x: x, y: y, width: Self.panelWidth, height: Self.baseHeight), display: false
+			)
 		}
 		NSApp.activate(ignoringOtherApps: true)
 		panel.makeKeyAndOrderFront(nil)
-		// Reconnect now the view is visible: ensures quayd and refreshes the list
-		// even if it was killed (and our timers suspended) while we were hidden.
-		let script =
-			"window.quayShown ? window.quayShown() : (window.quayConnect && window.quayConnect())"
-		webView.evaluateJavaScript(script, completionHandler: nil)
+		// Summon lands in app-search with a cleared composer; reconnect so the catalog and
+		// the transcript runtime refresh even if quayd was killed while we were hidden.
+		composer.string = ""
+		chatting = false
+		catalog.connect()
+		render()
+		composer.focus()
 	}
 
 	private func hide() { panel.orderOut(nil) }
 
-	private func resizePanel(to height: CGFloat) {
-		let f = panel.frame
-		let h = max(72, min(height, 720))
-		// Keep the bottom edge pinned (origin y is the bottom-left corner); grow upward.
-		panel.setFrame(NSRect(x: f.minX, y: f.minY, width: f.width, height: h), display: true)
-	}
-
 	// Spotlight-style: dismiss when focus leaves the panel.
 	func windowDidResignKey(_: Notification) { hide() }
 
-	// Bridge from launcher-ui (window.quay.*).
-	func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
-		guard let body = message.body as? [String: Any], let action = body["action"] as? String
-		else { return }
-		switch action {
-		case "open":
-			if let id = body["id"] as? String {
-				hide()
-				openMiniApp(id)
-			}
-		case "hide":
-			hide()
-		case "resize":
-			if let height = body["height"] as? NSNumber { resizePanel(to: CGFloat(height.doubleValue)) }
-		default:
-			break
-		}
-	}
+	// MARK: bridge — the transcript webview's status (web → native).
 
-	// Reply bridge (window.quay.runtime): ensure quayd is up, off the main thread,
-	// then hand the web UI its {port, token} so it can open the socket.
-	func userContentController(
-		_: WKUserContentController, didReceive message: WKScriptMessage,
-		replyHandler: @escaping (Any?, String?) -> Void
-	) {
-		guard (message.body as? [String: Any])?["action"] as? String == "runtime" else {
-			replyHandler(nil, "unknown")
-			return
-		}
-		DispatchQueue.global().async {
-			let runtime = Quayd.ensure()
-			DispatchQueue.main.async {
-				if let runtime {
-					replyHandler(["port": runtime.port, "token": runtime.token], nil)
-				} else {
-					replyHandler(nil, "quayd unavailable")
-				}
-			}
-		}
+	func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
+		guard message.name == "status", let body = message.body as? [String: Any] else { return }
+		let streaming = body["isStreaming"] as? Bool ?? false
+		stopButton.isHidden = !streaming
+		layoutSubviews()
 	}
 
 	private func openMiniApp(_ id: String) {
@@ -166,15 +340,6 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 			NSSound.beep()
 		}
 	}
-
-	static let bridgeJS = """
-	window.quay = {
-	  open: function (id) { window.webkit.messageHandlers.quay.postMessage({ action: 'open', id: id }) },
-	  hide: function () { window.webkit.messageHandlers.quay.postMessage({ action: 'hide' }) },
-	  resize: function (height) { window.webkit.messageHandlers.quay.postMessage({ action: 'resize', height: height }) },
-	  runtime: function () { return window.webkit.messageHandlers.quayd.postMessage({ action: 'runtime' }) }
-	}
-	"""
 }
 
 // Find-or-spawn the quayd daemon. Discovery is via runtime.json ({port, token,
