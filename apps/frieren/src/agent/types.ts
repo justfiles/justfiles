@@ -1,22 +1,11 @@
+// The message shapes now live in @justfiles/ui (shared with quay's launcher
+// transcript); re-export them so existing imports of '../agent/types' keep
+// working. The session / connection types below stay host-specific.
+import type { AgentMessage } from '@justfiles/ui/Transcript'
+
+export type { AgentMessage, ToolCallInfo } from '@justfiles/ui/Transcript'
+
 export type ConnectionState = 'connecting' | 'ready' | 'disconnected'
-
-export interface ToolCallInfo {
-	id: string
-	name: string
-	args: unknown
-	result?: unknown
-	isError?: boolean
-	status: 'running' | 'done'
-}
-
-export interface AgentMessage {
-	id: string
-	role: 'user' | 'assistant'
-	content: string
-	source?: 'user' | 'app'
-	thinking?: string
-	toolCalls?: ToolCallInfo[]
-}
 
 export interface AgentSession {
 	messages: AgentMessage[]
