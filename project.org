@@ -39,7 +39,8 @@ think about emacs
 ** TODO window location and size
 Investigate how macOS remember app's last open location and size, I would like the apps to remember it's last location and size. research on that, see if there's a nature way to do it on macOS, if not, what are my options? maybe we do the same as Frieren, save that info in volume. no code change, research and report back.
 
+** TODO should be able to uninstall app
 * Bugs to fix
 
 ** TODO move onboarding
-** TODO first launch, no app
+** TODO quay, app-code install should reinstall

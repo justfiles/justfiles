@@ -277,11 +277,14 @@
 	z-index: 0;
 }
 
+/* `.ds-window-body` is a block, not a flex column, so `flex` here is a no-op and
+   the slot would collapse to its content height — leaving the iframe's `height:
+   100%` with no definite box to resolve against (it falls back to ~150px and the
+   app gets clipped). Pin to fill the body, which does have a flex-resolved height. */
 .app-code-preview-slot {
 	position: relative;
-	flex: 1 1 auto;
+	height: 100%;
 	min-width: 0;
-	min-height: 0;
 	overflow: hidden;
 }
 
