@@ -158,6 +158,14 @@ app logic and no assets**; it is a dumb window with an OS identity. One compiled
 every generated `.app`; bundles differ only in `Info.plist` (bundle id, name, `QuayAppId`) and icon.
 Bundle ids: the launcher is `app.justfiles.quay`; each mini-app is `app.justfiles.quay.app.<id>`.
 
+**Window geometry persists natively.** The booter gives its `NSWindow` a frame-autosave name, so macOS
+writes the window's position + size to that app's defaults on every move/resize and restores them on the
+next launch — no daemon, no Volume, no code beyond the autosave call. Because every mini-app is its own
+bundle (own `CFBundleIdentifier` ⟹ own `NSUserDefaults` domain), one constant autosave name is already
+per-app; first launch (no saved frame) falls back to a centred default-size window. Geometry is the one
+piece of state that is genuinely *device-local* (a frame from a 6K display is meaningless on a 13″
+laptop), so it deliberately lives in per-device defaults, **not** the syncable Volume.
+
 **The launcher** (`Quay.app`). An `LSUIElement` agent (no Dock icon) with a global hotkey
 (`Option+Space`) that toggles a frameless, vibrancy-blurred panel. The panel is a `WKWebView`
 showing the launcher UI: the app grid (from `quayd`'s `kernel.list()`), fuzzy search, and the agent
@@ -346,8 +354,24 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 
 - **Backend lifecycle policy.** When exactly does `quayd` exit — last client disconnect + idle timeout?
   Who supervises it (the launcher vs a LaunchAgent)? Start with ensure-running + idle-exit; revisit.
-- **Multi-window of one app.** macOS re-`open` just activates a running `.app`. v1 = one window per app
-  (activate if open); later `open -n` or in-shell multi-window, all live-syncing one kernel state.
+- **Multi-window of one app.** v1 is deliberately **one window per app**: a macOS re-`open` of a running
+  `.app` just activates the existing booter (LaunchServices' default), which maps cleanly onto the per-app
+  frame-autosave (§4) and the single per-app Dock identity. Two routes open it up later, each with a
+  trade-off:
+    - **`open -n` (a new process per window).** Each window is its own booter process, so it keeps a real
+      OS identity and crash isolation — but the windows share one bundle id, hence one `NSUserDefaults`
+      domain, so the single frame-autosave name would **collide** (every window saving/restoring the same
+      frame). Each window then needs its own autosave name (an indexed `quayWindow.<n>`) or a cascade.
+    - **In-shell multi-window (one booter, N `NSWindow`s).** Cheaper — one process, one ws connection, a
+      natural home for a "New Window" menu item — but every window shares one Dock icon and one crash
+      domain. Geometry stays per-`NSWindow` via distinct autosave names or AppKit's built-in cascade.
+
+  Either route, the windows are all **clients of the same kernel state**: each opens its own token-scoped
+  Cap'n Web berth onto the same `appId`, so an `app.update` fans out to every open window and they
+  live-sync with no extra machinery. The cost of multi-window is entirely in native window/identity
+  management, **not** in state. Likely landing: in-shell windows for a plain "New Window", reserving
+  `open -n` for the rare app that genuinely needs a separate OS identity per window; open is whether the
+  launcher or `quayd` brokers the window count.
 - **Projection drift.** A user dragging a materialised `.app` to the Trash is a delete the Volume never
   authorised. v1: the next reconcile re-materialises it (Trash is *not* uninstall); later, optionally watch
   `~/Applications/Quay Apps/` and treat a Trash as a real uninstall — the one tolerated `.app` → Volume edge.

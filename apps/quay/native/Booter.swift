@@ -23,14 +23,22 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 	func applicationDidFinishLaunching(_: Notification) {
 		installMenu()
 
-		let rect = NSRect(x: 0, y: 0, width: 480, height: 360)
+		let rect = NSRect(x: 0, y: 0, width: 1000, height: 700)
 		window = NSWindow(
 			contentRect: rect,
 			styleMask: [.titled, .closable, .miniaturizable, .resizable],
 			backing: .buffered,
 			defer: false
 		)
-		window.center()
+		// Remember position + size across launches the native AppKit way: it autosaves
+		// the frame to this app's defaults on every move/resize and restores it here.
+		// Each mini-app is its own bundle (own CFBundleIdentifier ⟹ own defaults domain),
+		// so one constant name never collides between apps. First launch (no saved frame)
+		// falls back to a centred default-size window. Restoring before makeKeyAndOrderFront
+		// means the early themed blank frame already appears at the remembered geometry.
+		let autosaveName: NSWindow.FrameAutosaveName = "quayWindow"
+		if !window.setFrameUsingName(autosaveName) { window.center() }
+		_ = window.setFrameAutosaveName(autosaveName)
 		window.title = name
 		// Modern macOS chrome: the titlebar is transparent, not colour-matched. The
 		// window backing shows through, and the separator is disabled, so the traffic
