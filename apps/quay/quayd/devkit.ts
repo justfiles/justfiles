@@ -32,8 +32,14 @@ export function devkitCapability(
 	onInstalled: () => void | Promise<void>
 ) {
 	return implementCapability(devkit, {
+		// Quay treats install as ship-or-update: a re-install overwrites the live app
+		// in place rather than rejecting the colliding id, so iterating in Code keeps
+		// updating the same installed app.
 		install: async (ctx, { slug }) =>
-			installDraft(fs, ctx.appId, slug, getKernel(), await toolchain(), { onInstalled }),
+			installDraft(fs, ctx.appId, slug, getKernel(), await toolchain(), {
+				onInstalled,
+				overwrite: true
+			}),
 		pack: async (ctx, { slug }) =>
 			packDraft(chroot(fs, `/data/${ctx.appId}`), slug, await toolchain()),
 		// Live preview: compile the draft and install it as a hidden `preview.<slug>`

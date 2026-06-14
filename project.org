@@ -1,4 +1,4 @@
-* Tasks [9/16]
+* Tasks [10/15]
 
 ** DONE move window.json to state
 ** DONE active app indicator (dock?)
@@ -13,7 +13,6 @@ use facet (generateText) is exposed to apps, the admin facet (signIn/selectModel
 signOut/status) only to the first-party Settings app, gated host-side on appId
 like the volume `system` allowlist. Settings stays an app, with admin access. See
 c32a636.
-** TODO code
 ** DONE unify calendar/email onto the use/admin facet pattern
 Apply the same use/admin split to the rest, so every capability has the same
 shape: a host-owned backing store, a use facet apps call, and an admin facet only
@@ -27,15 +26,12 @@ the first-party Settings app can reach.
   systemAllowlist + aiAdminAllowlist). As more land, consider one generic admin
   gate instead of a per-capability allowlist repeated in every host.
 
-** TODO htmx as framework?
 ** TODO refine the interface of packages/agent
 The interface is pretty chaotic, need more elegent interface
 ** TODO notification
 can notify when agent finishes work
 ** DONE better title bar, maybe same color as background?
-** TODO launchbar search text auto wrap when long, should become text area?
-** TODO modify builtin apps?
-think about emacs
+** DONE launchbar search text auto wrap when long, should become text area?
 ** TODO window location and size
 Investigate how macOS remember app's last open location and size, I would like the apps to remember it's last location and size. research on that, see if there's a nature way to do it on macOS, if not, what are my options? maybe we do the same as Frieren, save that info in volume. no code change, research and report back.
 
@@ -44,3 +40,9 @@ Investigate how macOS remember app's last open location and size, I would like t
 
 ** TODO move onboarding
 ** TODO quay, app-code install should reinstall
+
+* NEXT BIG THINGS
+** TODO code
+** TODO htmx as framework?
+** TODO modify builtin apps?
+think about emacs

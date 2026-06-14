@@ -191,22 +191,25 @@ export async function buildDraft(data: Volume, slug: string, tc: Toolchain): Pro
 }
 
 // Compile + promote the project to the REAL `/applications` via the host's
-// `kernel`. Guarded check-first on the live catalog: install only ever creates,
-// never overwrites — re-shipping an existing id is rejected. The project's icon,
-// if any, is bundled. `hooks.onInstalled` lets the host re-list its catalog.
-// Identity comes from the project file, so the installed id is the author's.
+// `kernel`. By default install only ever creates — re-shipping an existing id is
+// rejected (guarded check-first on the live catalog). `opts.overwrite` lifts the
+// guard so a re-install updates the live app in place (the store backs up and
+// atomically replaces the bundle; the kernel re-warms its streams). The
+// project's icon, if any, is bundled. `opts.onInstalled` lets the host re-list
+// its catalog. Identity comes from the project file, so the installed id is the
+// author's.
 export async function installDraft(
 	fs: Volume,
 	appId: string,
 	slug: string,
 	kernel: Kernel,
 	tc: Toolchain,
-	hooks?: { onInstalled?: () => void | Promise<void> }
+	opts?: { onInstalled?: () => void | Promise<void>; overwrite?: boolean }
 ): Promise<{ id: string }> {
 	const { manifest, app, gui, icon } = assertBuilt(
 		await buildDraft(chroot(fs, `/data/${appId}`), slug, tc)
 	)
-	if ((await kernel.list()).some((installed) => installed.id === manifest.id)) {
+	if (!opts?.overwrite && (await kernel.list()).some((installed) => installed.id === manifest.id)) {
 		throw new Error(`app id already exists: ${manifest.id}`)
 	}
 	await kernel.install(
@@ -220,7 +223,7 @@ export async function installDraft(
 			...iconBundle(icon)
 		})
 	)
-	await hooks?.onInstalled?.()
+	await opts?.onInstalled?.()
 	return { id: manifest.id }
 }
 

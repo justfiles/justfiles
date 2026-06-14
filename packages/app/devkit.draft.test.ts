@@ -78,5 +78,10 @@ describe('devkit draft pipeline', () => {
 		expect(onInstalled).toEqual(['hit'])
 		// install only ever creates — re-shipping the same id is rejected.
 		await expect(installDraft(fs, APP_ID, SLUG, k, tc)).rejects.toThrow(/already exists/)
+		// …unless `overwrite` is set, which updates the live app in place.
+		await expect(installDraft(fs, APP_ID, SLUG, k, tc, { overwrite: true })).resolves.toMatchObject(
+			{ id: 'app.example.drafted' }
+		)
+		expect((await k.list()).filter((m) => m.id === 'app.example.drafted')).toHaveLength(1)
 	})
 })

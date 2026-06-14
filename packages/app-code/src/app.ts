@@ -405,8 +405,9 @@ export const app = defineApp({
 			}
 		}),
 		// Ship: promote the project to the real `/applications` as a standalone app.
-		// devkit reads the source + icon off disk, compiles fresh, and rejects a
-		// colliding id (its guard). Returns the installed id; our own state is unchanged.
+		// devkit reads the source + icon off disk and compiles fresh; how a colliding
+		// id is handled (reject vs. overwrite-in-place) is the host's call. Returns the
+		// installed id; our own state is unchanged.
 		install: p.procedure({
 			description: 'Compile the current source and install it as a real app.',
 			schema: v.object({}),
