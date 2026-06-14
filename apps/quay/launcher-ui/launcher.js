@@ -28,6 +28,11 @@ let chatting = false
 let agentMessages = []
 let pending = false
 
+// The last height we asked the native shell for. Most keystrokes (filtering within
+// the same row count) don't change it, so we skip the resize — a native setFrame on
+// every keystroke recomposites the whole panel and flickers.
+let lastSentHeight = 0
+
 const contentEl = document.getElementById('content')
 const statusEl = document.getElementById('status')
 const composer = document.getElementById('composer')
@@ -104,16 +109,35 @@ function resumeLabel() {
 	return last ? `Resume — ${last}` : 'Resume conversation'
 }
 
+// The intrinsic height of the rows, measured as the span from the first child's
+// top to the last child's bottom. We can't use scrollHeight here: #content is a
+// flex:1 item stretched to the panel's current height, and scrollHeight never
+// reports less than that box — so it'd hold the old (taller) size when the list
+// shrinks. The child span ignores the stretched box, so the panel tracks shrink.
+function contentHeight() {
+	const kids = contentEl.children
+	if (!kids.length) return 0
+	let top = Infinity
+	let bottom = -Infinity
+	for (const k of kids) {
+		top = Math.min(top, k.offsetTop)
+		bottom = Math.max(bottom, k.offsetTop + k.offsetHeight)
+	}
+	return bottom - top
+}
+
 // Grow upward to fit the content (capped, then it scrolls). The native shell keeps
 // the composer's bottom edge pinned, so the panel extends up over the desktop.
 function sizePanel() {
 	const cap = contentEl.classList.contains('apps') ? APPS_CAP : CHAT_CAP
-	const contentH = contentEl.hidden ? 0 : Math.min(contentEl.scrollHeight, cap)
+	const contentH = contentEl.hidden ? 0 : Math.min(contentHeight(), cap)
 	// The composer auto-grows (field-sizing), so read its live height here — every
 	// render runs through sizePanel, so the panel tracks the textarea as it wraps.
 	let h = PAD * 2 + composer.offsetHeight
 	if (contentH) h += contentH + GAP
 	if (!statusEl.hidden) h += STATUS_H + GAP
+	if (h === lastSentHeight) return
+	lastSentHeight = h
 	window.quay?.resize?.(h)
 }
 
@@ -271,6 +295,7 @@ window.quayShown = () => {
 	composer.value = ''
 	selectedIndex = 0
 	chatting = false
+	lastSentHeight = 0 // native show() reset the panel to 72px without telling us
 	render()
 	composer.focus()
 	window.quayConnect()

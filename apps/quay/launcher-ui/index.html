@@ -13,9 +13,11 @@
 				color: #f2f2f7;
 				-webkit-user-select: none;
 				user-select: none;
+				/* Just a tint — the blur is the native NSVisualEffectView behind the
+				   transparent web view. A CSS backdrop-filter here would be a second,
+				   redundant blur that re-samples its backdrop on every window resize,
+				   flashing the content for a frame as the panel grows/shrinks. */
 				background: rgba(28, 28, 32, 0.24);
-				-webkit-backdrop-filter: blur(24px) saturate(140%);
-				backdrop-filter: blur(24px) saturate(140%);
 			}
 			/* One surface: composer pinned at the bottom, content stacked above it. */
 			#app {
