@@ -20,6 +20,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private static let gap: CGFloat = 8 // between the content region and the composer
 	private static let baseHeight: CGFloat = pad * 2 + Composer.minHeight // collapsed bar
 	private static let chatHeight: CGFloat = 460 // the transcript region (it scrolls within)
+	// The Settings mini-app's catalog id — the target a `settings` route opens. The route
+	// carries only `kind`/`pane`, so the launcher (which knows the host catalog) names the app.
+	private static let settingsAppId = "app.frieren.settings"
 
 	// What sits above the composer right now. The launcher rests in `apps`/`empty`; chat
 	// is entered explicitly (⌘K) or by asking the agent (Enter on a non-matching query).
@@ -217,11 +220,20 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		notifier.post(n)
 	}
 
-	// A banner click: summon the panel and resolve the route. Slice 1 wires `chat`
-	// (reveal the transcript); `app`/`settings` land in later slices.
+	// A banner click (or its Reconnect action): resolve the route. `chat` reveals the
+	// transcript; `settings` opens the Settings mini-app in its own bundle (the `pane`
+	// is a hint — the app has a single accounts pane today); anything else just summons
+	// the launcher. `app` lands in a later slice.
 	private func handleRoute(_ route: QuayNotification.Route?) {
-		show()
-		if route?.kind == "chat" { enterChat(send: nil) }
+		switch route?.kind {
+		case "settings":
+			openMiniApp(Self.settingsAppId)
+		case "chat":
+			show()
+			enterChat(send: nil)
+		default:
+			show()
+		}
 	}
 
 	// MARK: actions

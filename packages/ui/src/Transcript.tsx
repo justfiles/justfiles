@@ -16,6 +16,8 @@ export interface AgentMessage {
 	source?: 'user' | 'app'
 	thinking?: string
 	toolCalls?: ToolCallInfo[]
+	// A failed agent turn: rendered as an error-styled block, not a normal bubble.
+	error?: true
 }
 
 export interface TranscriptProps {
@@ -76,6 +78,10 @@ function MessageItem({ message, isStreaming }: { message: AgentMessage; isStream
 		return <Bubble side="right" content={message.content} streaming={false} />
 	}
 
+	if (message.error) {
+		return <ErrorBlock body={message.content} />
+	}
+
 	const showCursor = isStreaming && !message.content && !message.toolCalls?.length
 	return (
 		<div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -122,6 +128,30 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 						}}
 					/>
 				) : null}
+			</div>
+		</div>
+	)
+}
+
+// A failed agent turn: an error-tinted block in the assistant's column. Reuses the
+// same #dc2626 hue as a failed tool call so error state reads consistently on both
+// themes (it's a literal, not a token, like the traffic-light controls).
+function ErrorBlock({ body }: { body: string }) {
+	return (
+		<div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+			<div
+				style={{
+					maxWidth: '78%',
+					whiteSpace: 'pre-wrap',
+					overflowWrap: 'break-word',
+					padding: '6px 12px',
+					borderRadius: '14px',
+					background: 'color-mix(in srgb, #dc2626 14%, var(--surface))',
+					border: '1px solid color-mix(in srgb, #dc2626 40%, var(--rule))',
+					color: 'var(--text)'
+				}}
+			>
+				{body}
 			</div>
 		</div>
 	)

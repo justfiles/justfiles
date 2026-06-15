@@ -39,20 +39,32 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 		center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
 	}
 
-	// One category per notification `kind`. Empty for now (no action buttons);
-	// Slice 2/3 attach Reconnect / option buttons to error/question.
+	// One category per notification `kind`, plus an `error.reconnect` variant carrying a
+	// Reconnect button. macOS registers actions per category up front, so a variant is how
+	// we attach a button to ONLY the errors that route to Settings (Slice 2) — generic and
+	// token-limit errors stay button-less. The click handler resolves the route the same
+	// way whether the user taps the body or the action.
 	private func registerCategories() {
-		let categories = ["info", "error", "question"].map {
-			UNNotificationCategory(identifier: $0, actions: [], intentIdentifiers: [])
-		}
-		center.setNotificationCategories(Set(categories))
+		let reconnect = UNNotificationAction(
+			identifier: "reconnect", title: "Reconnect", options: [.foreground])
+		let categories: Set<UNNotificationCategory> = [
+			UNNotificationCategory(identifier: "info", actions: [], intentIdentifiers: []),
+			UNNotificationCategory(identifier: "error", actions: [], intentIdentifiers: []),
+			UNNotificationCategory(
+				identifier: "error.reconnect", actions: [reconnect], intentIdentifiers: []),
+			UNNotificationCategory(identifier: "question", actions: [], intentIdentifiers: []),
+		]
+		center.setNotificationCategories(categories)
 	}
 
 	func post(_ n: QuayNotification) {
 		let content = UNMutableNotificationContent()
 		content.title = n.title
 		content.body = n.body
-		content.categoryIdentifier = n.kind
+		// An error routed to Settings gets the Reconnect-action category; everything else
+		// uses its bare `kind` (the click handler resolves the route the same way regardless).
+		content.categoryIdentifier =
+			n.kind == "error" && n.route?.kind == "settings" ? "error.reconnect" : n.kind
 		content.sound = .default
 		// Carry the route through userInfo (JSON-encoded, plist-safe) so the click
 		// handler resolves it without re-asking quayd.

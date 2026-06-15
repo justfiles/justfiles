@@ -26,7 +26,7 @@ import {
 	text
 } from '@justfiles/agent'
 import type { AccountsStore } from '@justfiles/app/capabilities/accounts/host'
-import type { Channel } from '@justfiles/app/capabilities/notify'
+import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
 import { getModels } from '@mariozechner/pi-ai'
 import { resolveAi } from './chatgpt.ts'
@@ -46,6 +46,9 @@ export interface AgentMessage {
 	id: string
 	role: 'user' | 'assistant'
 	content: string
+	// A failed turn: the transcript renders an error block, not a normal bubble
+	// (Slice 2). One flag, not a union — only success vs. failure differs.
+	error?: true
 }
 
 export interface QuayAgent {
@@ -120,30 +123,45 @@ export async function createQuayAgent(
 		const trimmed = input.trim()
 		if (!trimmed) return messages.slice()
 		messages.push({ id: crypto.randomUUID(), role: 'user', content: trimmed })
-		let answer: string
 		try {
 			// `app`/`cp`/`mv`/`rm`/`now` short-circuit to the bash registry — no LLM
 			// call, so app control works (and tests run) without a model backend.
-			answer = isDirectCommand(trimmed)
+			const answer = isDirectCommand(trimmed)
 				? await runDirect(trimmed)
 				: await (await ensureRuntime()).prompt(trimmed)
+			messages.push({ id: crypto.randomUUID(), role: 'assistant', content: answer })
+			// The turn finished: ping the user. The native sink suppresses this when the
+			// chat surface is in front (the transcript already shows `answer`), so it only
+			// surfaces a banner when you're away. One `threadId` coalesces re-posts.
+			ping('info', summarize(answer), { kind: 'chat' })
 		} catch (error) {
-			answer = `Agent error: ${error instanceof Error ? error.message : String(error)}`
+			// A turn the user can act on: classify into a typed error + a fix-it route.
+			// The transcript shows a structured error block (`error: true`); the banner
+			// carries the route (auth → reconnect in Settings → Accounts).
+			const failure = classifyFailure(error)
+			messages.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: failure.body,
+				error: true
+			})
+			ping('error', summarize(failure.body), failure.route)
 		}
-		messages.push({ id: crypto.randomUUID(), role: 'assistant', content: answer })
-		// The turn finished: ping the user. The native sink suppresses this when the
-		// chat surface is in front (the transcript already shows `answer`), so it only
-		// surfaces a banner when you're away. One `threadId` coalesces re-posts.
+		return messages.slice()
+	}
+
+	// Emit one agent notification over the channel (trusted host service → `source:
+	// 'agent'`). A single `threadId` coalesces re-posts into one banner.
+	function ping(kind: 'info' | 'error', body: string, route: Route): void {
 		channel({
 			id: crypto.randomUUID(),
 			source: 'agent',
-			kind: 'info',
+			kind,
 			title: 'quay',
-			body: summarize(answer),
+			body,
 			threadId: 'agent',
-			route: { kind: 'chat' }
+			route
 		})
-		return messages.slice()
 	}
 
 	// Cancel the in-flight turn (`shutdown` only aborts the running agent), leaving
@@ -206,6 +224,32 @@ function isDirectCommand(input: string): boolean {
 function summarize(answer: string): string {
 	const line = answer.trim().split('\n')[0] ?? ''
 	return line.length > 140 ? `${line.slice(0, 139)}…` : line
+}
+
+// Classify a failed turn into a user-facing message + a fix-it route. pi-ai surfaces
+// provider failures as plain `Error` messages (not typed codes), so we match on the
+// message: an expired/unauthorised ChatGPT token → reconnect in Settings → Accounts;
+// a blown context window → back to chat (start fresh); anything else → a generic error
+// that opens chat. Stingy by design — two actionable cases, then a catch-all.
+function classifyFailure(error: unknown): { body: string; route: Route } {
+	const raw = error instanceof Error ? error.message : String(error)
+	if (/\b401\b|unauthor|invalid[_ ]?api[_ ]?key|authentic|expired|account[_ -]?id/i.test(raw)) {
+		return {
+			body: 'Your ChatGPT sign-in expired. Reconnect in Settings → Accounts.',
+			route: { kind: 'settings', pane: 'accounts' }
+		}
+	}
+	if (
+		/context[_ ]?(length|window)|token limit|maximum context|too many tokens|\b429\b|rate limit/i.test(
+			raw
+		)
+	) {
+		return {
+			body: 'The model hit its token limit. Start a new chat or shorten your request.',
+			route: { kind: 'chat' }
+		}
+	}
+	return { body: `Agent error: ${raw}`, route: { kind: 'chat' } }
 }
 
 // Write the default persona unless the user already has one (non-empty soul.md).
