@@ -53,32 +53,74 @@ const css = `
 // agnostic — the host owns the session, header, and composer. Styled on
 // @justfiles/design tokens (no Tailwind) so it renders in any token-aware shell.
 export function Transcript({ messages, isStreaming, onOption }: TranscriptProps) {
-	const historyRef = useRef<HTMLDivElement>(null)
+	const viewportRef = useRef<HTMLDivElement>(null)
+	const contentRef = useRef<HTMLDivElement>(null)
+	// Chat-style "stick to bottom": auto-scroll only while the user is already at
+	// the bottom. Reading back through history (scrolling up) detaches; returning
+	// to the bottom re-attaches. Starts attached so the first paint lands on the
+	// latest message.
+	const stuckRef = useRef(true)
+	// Last seen scrollTop, used to tell a user's upward scroll (the only thing that
+	// detaches) apart from the downward moves that growth and auto-scroll cause.
+	const lastTopRef = useRef(0)
 
 	useLayoutEffect(() => {
-		void messages.length
-		const el = historyRef.current
-		if (el) el.scrollTop = el.scrollHeight
-	}, [messages.length])
+		const viewport = viewportRef.current
+		const content = contentRef.current
+		if (!viewport || !content) return
+		const toBottom = () => {
+			viewport.scrollTop = viewport.scrollHeight
+		}
+		// Land at the bottom on first paint.
+		toBottom()
+		// Re-pin on any content height change — streamed text, a new bubble, an
+		// expanded tool call — but only when the user hasn't scrolled away. Tracking
+		// the content box (not message count) is what keeps streaming pinned, since
+		// the array length is stable while the last message grows.
+		const ro = new ResizeObserver(() => {
+			if (stuckRef.current) toBottom()
+		})
+		ro.observe(content)
+		return () => ro.disconnect()
+	}, [])
+
+	// Detach only on a genuine upward scroll: streamed growth and our own
+	// scroll-to-bottom only ever move scrollTop down, so inferring "scrolled away"
+	// from distance-to-bottom alone would mis-detach mid-stream when a chunk taller
+	// than the slop lands before the scroll catches up. Re-attach once the bottom
+	// is reached again (within slop, since a programmatic scroll lands just shy).
+	const onScroll = () => {
+		const el = viewportRef.current
+		if (!el) return
+		const top = el.scrollTop
+		if (top < lastTopRef.current) stuckRef.current = false
+		if (el.scrollHeight - top - el.clientHeight < 32) stuckRef.current = true
+		lastTopRef.current = top
+	}
 
 	return (
 		<div
-			ref={historyRef}
+			ref={viewportRef}
+			onScroll={onScroll}
 			className="js-transcript"
-			style={{
-				display: 'flex',
-				flexDirection: 'column',
-				gap: '8px',
-				flex: 1,
-				minHeight: 0,
-				overflowY: 'auto',
-				padding: '12px'
-			}}
+			// Disable browser scroll anchoring: we manage scrollTop ourselves, and an
+			// anchoring nudge would register as a spurious upward scroll above.
+			style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowAnchor: 'none' }}
 		>
 			<style>{css}</style>
-			{messages.map((m) => (
-				<MessageItem key={m.id} message={m} isStreaming={isStreaming} onOption={onOption} />
-			))}
+			<div
+				ref={contentRef}
+				style={{
+					display: 'flex',
+					flexDirection: 'column',
+					gap: '8px',
+					padding: '12px'
+				}}
+			>
+				{messages.map((m) => (
+					<MessageItem key={m.id} message={m} isStreaming={isStreaming} onOption={onOption} />
+				))}
+			</div>
 		</div>
 	)
 }

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Transcript harness</title>
+		<style>
+			:root {
+				--surface: #ffffff;
+				--surface-subtle: #f1f3f5;
+				--text: #1a1a1a;
+				--rule: #d7dbe0;
+				--focus: #2563eb;
+				--on-focus: #ffffff;
+				--control-bg: #f8f9fa;
+				--control-bg-hover: #eceef1;
+				--control-bg-active: #e2e5e9;
+				--font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+			}
+			html,
+			body,
+			#root {
+				height: 100%;
+				margin: 0;
+			}
+			body {
+				font-family: system-ui, sans-serif;
+				color: var(--text);
+				background: var(--surface);
+			}
+		</style>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="./playground.tsx"></script>
+	</body>
+</html>

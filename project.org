@@ -1,4 +1,4 @@
-* Tasks [11/14]
+* Tasks [12/14]
 
 ** DONE move window.json to state
 ** DONE active app indicator (dock?)
@@ -35,18 +35,22 @@ Investigate how macOS remember app's last open location and size, I would like t
 
 ** TODO should be able to uninstall app
 
-** TODO proper build script (makefile? justfile?) for quay native app
+** DONE proper build script (makefile? justfile?) for quay native app
 
 * Bugs to fix
 
 ** TODO move onboarding
 ** DONE quay, app-code install should reinstall
-** TODO better scrolling for the messages list
+** DONE better scrolling for the messages list
 * NEXT BIG THINGS
 ** TODO code
+** TODO agent maintained docs
 ** TODO htmx as framework?
 ** TODO modify builtin apps?
 think about emacs
 
-** TODO notification
+** DONE notification
 can notify when agent finishes work
+
+** TODO notification adv
+[[file:apps/quay/NOTIFICATIONS-PLAN.md][Phase 2 of notification]]

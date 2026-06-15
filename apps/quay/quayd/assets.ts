@@ -117,7 +117,7 @@ export function launcherChatHtml(token: string): string {
 <link rel="stylesheet" href="/design/mac.css">
 <link rel="modulepreload" href="/vendor/core.js">
 <link rel="modulepreload" href="/vendor/chat.js">
-<style>html, body, #root { background: transparent; }</style>
+<style>html, body, #root { background: transparent; } #root { display: flex; flex-direction: column; }</style>
 </head>
 <body>
 <div id="root"></div>
