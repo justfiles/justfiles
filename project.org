@@ -41,7 +41,7 @@ Investigate how macOS remember app's last open location and size, I would like t
 
 ** TODO move onboarding
 ** DONE quay, app-code install should reinstall
-
+** TODO better scrolling for the messages list
 * NEXT BIG THINGS
 ** TODO code
 ** TODO htmx as framework?

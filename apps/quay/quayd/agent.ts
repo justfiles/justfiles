@@ -14,6 +14,7 @@ import {
 	cp,
 	createAgent,
 	createAppCommand,
+	createAskUserTool,
 	createBashTool,
 	createFetchTool,
 	createFsTools,
@@ -49,6 +50,10 @@ export interface AgentMessage {
 	// A failed turn: the transcript renders an error block, not a normal bubble
 	// (Slice 2). One flag, not a union — only success vs. failure differs.
 	error?: true
+	// A multiple-choice question (Slice 3): the transcript renders the labels as
+	// clickable rows; a pick is just the next prompt. Set when the agent calls
+	// `ask_user`; the turn completes (no suspension).
+	options?: { label: string }[]
 }
 
 export interface QuayAgent {
@@ -92,7 +97,13 @@ export async function createQuayAgent(
 	}
 	const bash = createBashTool(registry, { vol: host.fs })
 	const fsTools = createFsTools(host.fs)
-	const tools = [...fsTools.tools, createFetchTool(), createSearchTool(), bash]
+	// `ask_user` records the question for the turn that's running; `prompt` reads it
+	// once the runtime returns and renders it as the assistant turn (no suspension).
+	let pending: { question: string; options: { label: string }[] } | null = null
+	const askUser = createAskUserTool((question, options) => {
+		pending = { question, options: options.map((label) => ({ label })) }
+	})
+	const tools = [...fsTools.tools, createFetchTool(), createSearchTool(), bash, askUser]
 
 	// The LLM backend is resolved from the accounts store (llmConfig), which changes
 	// when the user connects ChatGPT or switches models in Settings. Build the runtime
@@ -123,17 +134,27 @@ export async function createQuayAgent(
 		const trimmed = input.trim()
 		if (!trimmed) return messages.slice()
 		messages.push({ id: crypto.randomUUID(), role: 'user', content: trimmed })
+		pending = null
 		try {
 			// `app`/`cp`/`mv`/`rm`/`now` short-circuit to the bash registry — no LLM
 			// call, so app control works (and tests run) without a model backend.
 			const answer = isDirectCommand(trimmed)
 				? await runDirect(trimmed)
 				: await (await ensureRuntime()).prompt(trimmed)
-			messages.push({ id: crypto.randomUUID(), role: 'assistant', content: answer })
-			// The turn finished: ping the user. The native sink suppresses this when the
-			// chat surface is in front (the transcript already shows `answer`), so it only
-			// surfaces a banner when you're away. One `threadId` coalesces re-posts.
-			ping('info', summarize(answer), { kind: 'chat' })
+			if (pending) {
+				// The agent asked a question (it called `ask_user`): the structured question
+				// IS the assistant turn — render the options inline and ping a `question`
+				// banner instead of the answer. The pick is just the next prompt.
+				const { question, options } = pending
+				messages.push({ id: crypto.randomUUID(), role: 'assistant', content: question, options })
+				ping('question', summarize(question), { kind: 'chat' })
+			} else {
+				messages.push({ id: crypto.randomUUID(), role: 'assistant', content: answer })
+				// The turn finished: ping the user. The native sink suppresses this when the
+				// chat surface is in front (the transcript already shows `answer`), so it only
+				// surfaces a banner when you're away. One `threadId` coalesces re-posts.
+				ping('info', summarize(answer), { kind: 'chat' })
+			}
 		} catch (error) {
 			// A turn the user can act on: classify into a typed error + a fix-it route.
 			// The transcript shows a structured error block (`error: true`); the banner
@@ -152,7 +173,7 @@ export async function createQuayAgent(
 
 	// Emit one agent notification over the channel (trusted host service → `source:
 	// 'agent'`). A single `threadId` coalesces re-posts into one banner.
-	function ping(kind: 'info' | 'error', body: string, route: Route): void {
+	function ping(kind: 'info' | 'error' | 'question', body: string, route: Route): void {
 		channel({
 			id: crypto.randomUUID(),
 			source: 'agent',

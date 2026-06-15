@@ -21,8 +21,12 @@
 			"outputs": ["out/**"],
 			"outputLogs": "new-only"
 		},
+		"@justfiles/quay#assets": {
+			"cache": false,
+			"outputs": ["quayd/assets-dist/**"]
+		},
 		"@justfiles/quay#build": {
-			"dependsOn": [],
+			"dependsOn": ["assets"],
 			"inputs": ["package.json", "launcher-ui/**", "native/*.swift", "native/build.sh"],
 			"outputs": ["native/build/**", "native/Quay.app/**"],
 			"outputLogs": "new-only"

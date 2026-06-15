@@ -25,6 +25,7 @@ export {
 	resolveTimezone
 } from './timezone.ts'
 export {
+	createAskUserTool,
 	createFetchTool,
 	createFsTools,
 	createSearchTool,

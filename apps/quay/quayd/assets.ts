@@ -1,44 +1,21 @@
 // The browser-facing assets quayd serves over localhost http (Slice 7): the
-// shared-React vendor modules, the boot script, and the per-app HTML shell.
+// shared-React vendor modules, the boot script, the launcher chat bundle, and the
+// per-app HTML shell.
 //
-// A mini-app's `gui.js` emits bare React specifiers (`react`, `react-dom/client`,
-// `react/jsx-runtime`) and resolves them through the shell's importmap — one URL,
-// one React instance per window. We get that singleton without the externalise
-// dance: a single esbuild pass bundles the whole React family together (so React
-// is included exactly once and every consumer shares it) and assigns it to a
-// global; the per-specifier modules are thin shims that re-export off that global.
-// `boot.js` is a separate bundle (Cap'n Web inlined) that opens the berth and
-// mounts the GUI. All of it is built once, memoised, and cached to disk by React
-// version so a daemon restart is instant.
+// The vendor + chat bundles are NOT built here — they are compiled once at ship
+// time by `build-assets.ts` (the turbo `assets` task, a dependency of `build`) and
+// emitted to `assets-dist/`; quayd just reads those static bytes and serves them.
+// This is our shipped code that never changes at runtime, so it must never sit on
+// the critical path of a window's first paint (NATIVE-LAUNCHER-PLAN §"Build cost").
+// The per-app `gui.js` is the other static case — built at install time by devkit.
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { build } from 'esbuild'
 
 const require = createRequire(import.meta.url)
-// react/capnweb resolve from quay's node_modules, so esbuild bundles from here.
-const RESOLVE_DIR = import.meta.dirname
-// The launcher's chat entry (../launcher-ui/chat.tsx) — bundled like a gui.js
-// (React externalised to the importmap) and served as /vendor/chat.js.
-const CHAT_ENTRY = join(RESOLVE_DIR, '..', 'launcher-ui', 'chat.tsx')
-const CACHE_DIR = join(homedir(), 'Library', 'Application Support', 'quay', 'cache', 'vendor')
-
-// Bump when the bundling logic OR the bundled launcher source (chat.tsx, the shared
-// @justfiles/ui Transcript) changes; the React version is folded in too, so a
-// `pnpm update react` invalidates the cache automatically.
-const REV = 4
-
-// Each shim file → the global slot it re-exports and the specifier whose export
-// names it enumerates. The core bundle (below) fills `globalThis.__quayReact`.
-const SHIMS: Record<string, { slot: string; specifier: string }> = {
-	'react.js': { slot: 'react', specifier: 'react' },
-	'react-dom.js': { slot: 'reactDom', specifier: 'react-dom' },
-	'react-dom-client.js': { slot: 'reactDomClient', specifier: 'react-dom/client' },
-	'jsx-runtime.js': { slot: 'jsxRuntime', specifier: 'react/jsx-runtime' },
-	'jsx-dev-runtime.js': { slot: 'jsxDevRuntime', specifier: 'react/jsx-dev-runtime' }
-}
+// Where build-assets.ts emits the vendor + chat bundles. Read at runtime, never built.
+const ASSETS_DIR = join(import.meta.dirname, 'assets-dist')
 
 const IMPORTMAP = JSON.stringify({
 	imports: {
@@ -52,13 +29,28 @@ const IMPORTMAP = JSON.stringify({
 
 let cache: Promise<Map<string, Uint8Array>> | undefined
 
-// The vendor assets keyed by URL path (`/vendor/<file>`). Lazy + memoised + disk-
-// cached: the React family, the boot bundle, and the launcher's chat bundle
-// (`/vendor/chat.js`). The (~0.5s) build is paid once — on first app open or first
-// chat reveal, whichever comes first.
+// The vendor assets keyed by URL path (`/vendor/<file>`). Read once from the
+// ship-time build output and memoised for the daemon's life — no compile, no disk
+// cache, no version key. A missing dir means the build step hasn't run.
 export function vendorAssets(): Promise<Map<string, Uint8Array>> {
-	cache ??= loadOrBuild()
+	cache ??= readAssets()
 	return cache
+}
+
+async function readAssets(): Promise<Map<string, Uint8Array>> {
+	let files: string[]
+	try {
+		files = await readdir(ASSETS_DIR)
+	} catch {
+		throw new Error(
+			`quayd: launcher assets missing at ${ASSETS_DIR} — run \`pnpm --filter @justfiles/quay assets\` (or \`build\`/\`restart\`) to build them.`
+		)
+	}
+	const out = new Map<string, Uint8Array>()
+	for (const file of files) {
+		if (file.endsWith('.js')) out.set(`/vendor/${file}`, await readFile(join(ASSETS_DIR, file)))
+	}
+	return out
 }
 
 // The platform style quayd serves under `/design/`: `mac.css` (the native control
@@ -134,159 +126,4 @@ export function launcherChatHtml(token: string): string {
 </body>
 </html>
 `
-}
-
-async function loadOrBuild(): Promise<Map<string, Uint8Array>> {
-	const key = cacheKey()
-	const cached = await readCache(key)
-	if (cached) return cached
-	const built = await buildAll()
-	await writeCache(key, built).catch(() => {}) // a read-only cache dir is non-fatal
-	return built
-}
-
-async function buildAll(): Promise<Map<string, Uint8Array>> {
-	const out = new Map<string, Uint8Array>()
-	const bytes = (text: string) => new TextEncoder().encode(text)
-	out.set('/vendor/core.js', bytes(await buildCore()))
-	for (const [file, { slot, specifier }] of Object.entries(SHIMS)) {
-		out.set(`/vendor/${file}`, bytes(shim(slot, specifier)))
-	}
-	out.set('/vendor/boot.js', bytes(await buildBoot()))
-	out.set('/vendor/chat.js', bytes(await buildChat()))
-	return out
-}
-
-// One pass over the whole React family: React is bundled once and shared, then the
-// family is parked on a global the shims read.
-async function buildCore(): Promise<string> {
-	return bundle(`
-		import react from 'react'
-		import reactDom from 'react-dom'
-		import reactDomClient from 'react-dom/client'
-		import jsxRuntime from 'react/jsx-runtime'
-		import jsxDevRuntime from 'react/jsx-dev-runtime'
-		globalThis.__quayReact = { react, reactDom, reactDomClient, jsxRuntime, jsxDevRuntime }
-	`)
-}
-
-// Cap'n Web inlined; opens a token-scoped berth, imports the app's gui.js, and
-// mounts it with a transport whose invoke/subscribe forward to the berth.
-async function buildBoot(): Promise<string> {
-	return bundle(`
-		import { newWebSocketRpcSession } from 'capnweb'
-		const cfg = window.__quay
-		const root = document.getElementById('root')
-		const berth = newWebSocketRpcSession(
-			'ws://' + location.host + '/berth?app=' + encodeURIComponent(cfg.id) + '&token=' + encodeURIComponent(cfg.token)
-		)
-		;(async () => {
-			try {
-				// Overlap the gui.js module fetch+parse (which pulls in React/core)
-				// with the state round-trip rather than awaiting them in series.
-				const [mod, state] = await Promise.all([
-					import('/app/' + encodeURIComponent(cfg.id) + '/gui.js'),
-					berth.state()
-				])
-				mod.gui.mount(root, state, {
-					transport: {
-						invoke: (message) => berth.dispatch(message),
-						subscribe: (onState) => {
-							const unsub = berth.subscribe(onState)
-							return () => Promise.resolve(unsub).then((u) => u && u()).catch(() => {})
-						}
-					}
-				})
-			} catch (error) {
-				root.textContent = 'quay: ' + error
-			}
-		})()
-	`)
-}
-
-// The launcher's chat surface (`launcher-ui/chat.tsx`): the shared React Transcript
-// over quay's privileged ws. Bundled exactly like a mini-app gui.js — React (and the
-// jsx runtime) externalised to the importmap so it shares the one vendored React,
-// keeping this bundle tiny. Pre-built and served as static bytes; never compiled on
-// the user's machine.
-async function buildChat(): Promise<string> {
-	const result = await build({
-		entryPoints: [CHAT_ENTRY],
-		bundle: true,
-		write: false,
-		format: 'esm',
-		jsx: 'automatic',
-		minify: true,
-		external: [
-			'react',
-			'react-dom',
-			'react-dom/client',
-			'react/jsx-runtime',
-			'react/jsx-dev-runtime'
-		],
-		define: { 'process.env.NODE_ENV': '"production"' },
-		logLevel: 'silent'
-	})
-	const text = result.outputFiles?.[0]?.text
-	if (!text) throw new Error('quayd: chat bundle produced no output')
-	return text
-}
-
-// A shim re-exports its slot off the global the core bundle fills. Importing
-// `./core.js` first guarantees the global is set before the shim's body reads it.
-// `default` is the React object; named exports are its own keys (enumerated here
-// at build time, since a runtime value can't synthesise ESM named bindings).
-function shim(slot: string, specifier: string): string {
-	const mod = require(specifier) as Record<string, unknown>
-	const names = Object.keys(mod).filter((n) => n !== 'default' && /^[A-Za-z_$][\w$]*$/.test(n))
-	const decls = names.map((n) => `${n} = m.${n}`).join(', ')
-	return (
-		`import './core.js'\nconst m = globalThis.__quayReact.${slot}\nexport default m\n` +
-		(decls ? `export const ${decls}\n` : '')
-	)
-}
-
-async function bundle(contents: string): Promise<string> {
-	const result = await build({
-		stdin: { contents, resolveDir: RESOLVE_DIR, loader: 'js' },
-		bundle: true,
-		write: false,
-		format: 'esm',
-		minify: true,
-		// Production React: a quay app is an installed, shipping app, not a dev
-		// session — the prod build is markedly smaller and parses/renders faster in
-		// the cold WebContent process each launch spins up, which is the dominant
-		// cost of first paint. (Dev warnings are an app-authoring concern; revisit if
-		// app-code wants them in its preview.)
-		define: { 'process.env.NODE_ENV': '"production"' },
-		logLevel: 'silent'
-	})
-	const text = result.outputFiles[0]?.text
-	if (!text) throw new Error('quayd: vendor bundle produced no output')
-	return text
-}
-
-function cacheKey(): string {
-	const version = (require('react') as { version?: string }).version ?? '0'
-	return `react@${version}|rev=${REV}`
-}
-
-async function readCache(key: string): Promise<Map<string, Uint8Array> | undefined> {
-	try {
-		if ((await readFile(join(CACHE_DIR, '.key'), 'utf8')) !== key) return undefined
-		const out = new Map<string, Uint8Array>()
-		for (const file of ['core.js', ...Object.keys(SHIMS), 'boot.js', 'chat.js']) {
-			out.set(`/vendor/${file}`, await readFile(join(CACHE_DIR, file)))
-		}
-		return out
-	} catch {
-		return undefined
-	}
-}
-
-async function writeCache(key: string, assets: Map<string, Uint8Array>): Promise<void> {
-	await mkdir(CACHE_DIR, { recursive: true })
-	for (const [url, bytes] of assets)
-		await writeFile(join(CACHE_DIR, url.slice('/vendor/'.length)), bytes)
-	await writeFile(join(CACHE_DIR, '.key'), key)
 }

@@ -205,3 +205,6 @@ dist
 .playwright-mcp/
 
 .zed
+
+# quay launcher web assets — built at ship time by quayd/build-assets.ts
+apps/quay/quayd/assets-dist/

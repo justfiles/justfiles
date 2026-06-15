@@ -18,11 +18,17 @@ export interface AgentMessage {
 	toolCalls?: ToolCallInfo[]
 	// A failed agent turn: rendered as an error-styled block, not a normal bubble.
 	error?: true
+	// A multiple-choice question: rendered as clickable rows under the bubble. A pick
+	// calls `onOption` (the host sends it as the next prompt).
+	options?: { label: string }[]
 }
 
 export interface TranscriptProps {
 	messages: AgentMessage[]
 	isStreaming: boolean
+	// Invoked when the user clicks an option row. Omitted hosts render the labels
+	// as plain (non-clickable) rows.
+	onOption?: (label: string) => void
 }
 
 // Scoped CSS for the bits inline styles can't express: the streaming caret
@@ -32,13 +38,21 @@ const css = `
 .js-transcript summary { list-style: none; cursor: pointer; }
 .js-transcript summary::-webkit-details-marker { display: none; }
 @keyframes js-transcript-caret { 0%, 100% { opacity: 1 } 50% { opacity: 0 } }
+.js-transcript-option { transition: background 120ms ease, border-color 120ms ease; }
+.js-transcript-option:hover { background: var(--control-bg-hover); border-color: var(--focus); }
+.js-transcript-option:active { background: var(--control-bg-active); }
+.js-transcript-option:focus-visible {
+	outline: none;
+	border-color: var(--focus);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent);
+}
 `
 
 // Presentation-only agent transcript: a scrolling message history with bubbles,
 // collapsible thinking / tool-call rows, and a streaming caret. Transport-
 // agnostic — the host owns the session, header, and composer. Styled on
 // @justfiles/design tokens (no Tailwind) so it renders in any token-aware shell.
-export function Transcript({ messages, isStreaming }: TranscriptProps) {
+export function Transcript({ messages, isStreaming, onOption }: TranscriptProps) {
 	const historyRef = useRef<HTMLDivElement>(null)
 
 	useLayoutEffect(() => {
@@ -63,13 +77,21 @@ export function Transcript({ messages, isStreaming }: TranscriptProps) {
 		>
 			<style>{css}</style>
 			{messages.map((m) => (
-				<MessageItem key={m.id} message={m} isStreaming={isStreaming} />
+				<MessageItem key={m.id} message={m} isStreaming={isStreaming} onOption={onOption} />
 			))}
 		</div>
 	)
 }
 
-function MessageItem({ message, isStreaming }: { message: AgentMessage; isStreaming: boolean }) {
+function MessageItem({
+	message,
+	isStreaming,
+	onOption
+}: {
+	message: AgentMessage
+	isStreaming: boolean
+	onOption?: (label: string) => void
+}) {
 	if (message.source === 'app') {
 		return <SystemRow label="From app" body={message.content} />
 	}
@@ -93,6 +115,53 @@ function MessageItem({ message, isStreaming }: { message: AgentMessage; isStream
 			) : null}
 			{message.toolCalls?.map((tc) => (
 				<ToolCallRow key={tc.id} call={tc} />
+			))}
+			{message.options?.length ? (
+				<OptionRows options={message.options} onOption={onOption} />
+			) : null}
+		</div>
+	)
+}
+
+// A multiple-choice question's answers, rendered as a column of native-style push
+// buttons under the assistant bubble. They sit on the opaque control surface (not
+// the translucent bubble surface) so they read as controls, not messages; hover/
+// active/focus states come from `.js-transcript-option` in the scoped sheet above.
+// Picking one calls `onOption` (the host sends it as the next prompt); with no
+// handler the rows still render, just inert.
+function OptionRows(props: { options: { label: string }[]; onOption?: (label: string) => void }) {
+	const { options, onOption } = props
+	return (
+		<div
+			style={{
+				display: 'flex',
+				flexDirection: 'column',
+				gap: '6px',
+				alignItems: 'flex-start',
+				marginTop: '2px'
+			}}
+		>
+			{options.map((o) => (
+				<button
+					key={o.label}
+					type="button"
+					className={onOption ? 'js-transcript-option' : undefined}
+					onClick={onOption ? () => onOption(o.label) : undefined}
+					style={{
+						maxWidth: '78%',
+						textAlign: 'left',
+						cursor: 'default',
+						padding: '6px 12px',
+						borderRadius: '6px',
+						background: 'var(--control-bg)',
+						border: '1px solid var(--rule)',
+						boxShadow: '0 1px 1px rgba(0, 0, 0, 0.04)',
+						color: 'var(--text)',
+						font: 'inherit'
+					}}
+				>
+					{o.label}
+				</button>
 			))}
 		</div>
 	)

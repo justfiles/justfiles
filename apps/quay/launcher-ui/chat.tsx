@@ -102,7 +102,15 @@ function ChatApp() {
 		postStatus(isStreaming, connection)
 	}, [isStreaming, connection])
 
-	return <Transcript messages={messages} isStreaming={isStreaming} />
+	// Picking a question option is just the next prompt — reuse the same input bridge
+	// (optimistic user bubble + ws send) that the native composer drives.
+	return (
+		<Transcript
+			messages={messages}
+			isStreaming={isStreaming}
+			onOption={(label) => win.quaySend?.(label)}
+		/>
+	)
 }
 
 const root = document.getElementById('root')
