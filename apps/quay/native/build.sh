@@ -1,26 +1,33 @@
 #!/bin/sh
 # Build the quay native shell — one binary, two modes (booter + launcher).
-# Command Line Tools only (swiftc); no full Xcode.
+# Command Line Tools only (no full Xcode): SwiftPM compiles, this script bundles.
 #
-#   ./build.sh Code        # a booter bundle ./Code.app (mock target, own identity)
-#   ./build.sh --launcher  # the launcher  ./Quay.app  (LSUIElement + hotkey panel)
+#   ./build.sh Code         # a booter bundle ./Code.app (mock target, own identity)
+#   ./build.sh --launcher   # the launcher  ./Quay.app  (LSUIElement + hotkey panel)
+#   ./build.sh --release …  # optimise the binaries for shipping (default: debug)
 #
-# The shared booter + icon tool land in ./build/ — a stable, gitignored dir where
-# quayd finds them to materialise the per-app `.app` bundles (Slice 6). The mock
-# mini-app `.app`s this used to stamp are now kernel-driven (see quayd/materialize).
+# `swift build` (Package.swift) discovers the Swift sources under Sources/ and
+# produces two binaries — quay-shell (the shared booter+launcher) and quay-makeicon.
+# We copy both into ./build/, a stable, gitignored handoff dir where quayd finds
+# them to materialise the per-app `.app` bundles (Slice 6, see quayd/materialize.ts).
 set -e
 cd "$(dirname "$0")"
+
+CONFIG=debug
+case "${1:-}" in -r | --release) CONFIG=release; shift ;; esac
 
 BUILD="$(pwd)/build"
 mkdir -p "$BUILD"
 BIN="$BUILD/quay-shell"
 ICON="$BUILD/quay-makeicon"
 
-# Shared binary + icon tool, built once. `-framework UserNotifications` for the
-# launcher's OS-banner sink (Notifier.swift).
-swiftc -O -swift-version 5 -framework UserNotifications \
-	main.swift Booter.swift Launcher.swift Catalog.swift Composer.swift Results.swift Notifier.swift -o "$BIN"
-swiftc -O -swift-version 5 makeicon.swift -o "$ICON" 2>/dev/null || ICON=""
+# Compile once via SwiftPM (incremental — only changed sources recompile), then
+# publish the two binaries into ./build/. The launcher's UserNotifications link
+# lives in Package.swift now.
+swift build -c "$CONFIG"
+bin="$(swift build -c "$CONFIG" --show-bin-path)"
+cp "$bin/quay-shell" "$BIN"
+cp "$bin/quay-makeicon" "$ICON" 2>/dev/null || ICON=""
 
 emit_plist() { # name bundle_id [quay_id] [lsui]
 	cat <<-EOF
@@ -89,6 +96,6 @@ build_booter() { # Name
 
 case "${1:-}" in
 	--launcher | --all) build_launcher ;;
-	"") echo "usage: build.sh <Name> | --launcher" >&2; exit 2 ;;
+	"") echo "usage: build.sh [--release] <Name> | --launcher" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
 esac
