@@ -14,6 +14,7 @@
 // launcher with no app-code change.
 
 import { randomBytes } from 'node:crypto'
+import type { Channel } from '@justfiles/app/capabilities/notify'
 import { createQuayAgent } from './agent.ts'
 import { clearRuntime, writeRuntime } from './discovery.ts'
 import { createHost } from './host.ts'
@@ -23,8 +24,16 @@ import { type Backend, serve } from './server.ts'
 // Re-materialise the OS projection + re-list the launcher after an install. Bound to
 // the real `served` once the server is up (an install can only arrive over a socket).
 let onInstalled: () => Promise<void> = async () => {}
-const host = await createHost(undefined, () => onInstalled())
-const agent = await createQuayAgent(host)
+// The notification channel, bound deferred to `served.notify` once the server is up
+// (a notification can only reach a launcher over a socket). The closures handed to
+// the host and agent forward through this mutable binding.
+let channel: Channel = () => {}
+const host = await createHost(
+	undefined,
+	() => onInstalled(),
+	(n) => channel(n)
+)
+const agent = await createQuayAgent(host, undefined, (n) => channel(n))
 
 // Preview apps (`preview.<slug>`) are app-code's transient live previews — installed
 // in the kernel so they serve a gui + berth, but never shown in the launcher or
@@ -72,6 +81,9 @@ const served = await serve(backend, {
 	// A window opening/closing pins/evicts that app's reducer worker (Slice 8).
 	windows: { open: host.sandbox.retain, close: host.sandbox.release }
 })
+// Bind the deferred channel now the server is up: host/agent notifications fan out
+// to the launcher sockets (the native sink projects them onto the OS banner).
+channel = served.notify
 await writeRuntime({ port: served.port, token, pid: process.pid })
 
 // Project the catalog into ~/Applications/Quay Apps/ so the apps are real macOS apps

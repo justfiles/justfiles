@@ -20,6 +20,9 @@ final class CatalogClient {
 	// restart drops this socket, reconnects on a fresh runtime, and re-fires, so the
 	// launcher reloads the (otherwise stale-port) transcript webview without its own probe.
 	var onRuntime: ((Int, String) -> Void)?
+	// Fires (main thread) for each `notify`-capability notification quayd broadcasts.
+	// The launcher decides focus suppression and projects it onto the OS banner.
+	var onNotification: ((QuayNotification) -> Void)?
 
 	private var task: URLSessionWebSocketTask?
 	private var opening = false
@@ -78,12 +81,23 @@ final class CatalogClient {
 
 	private func handle(_ text: String) {
 		guard let data = text.data(using: .utf8),
-			let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-			obj["type"] as? String == "catalog",
-			let appsRaw = try? JSONSerialization.data(withJSONObject: obj["apps"] ?? []),
-			let apps = try? JSONDecoder().decode([CatalogApp].self, from: appsRaw)
+			let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
 		else { return }
-		DispatchQueue.main.async { self.onCatalog?(apps) }
+		switch obj["type"] as? String {
+		case "catalog":
+			guard let appsRaw = try? JSONSerialization.data(withJSONObject: obj["apps"] ?? []),
+				let apps = try? JSONDecoder().decode([CatalogApp].self, from: appsRaw)
+			else { return }
+			DispatchQueue.main.async { self.onCatalog?(apps) }
+		case "notification":
+			guard let raw = obj["notification"],
+				let nData = try? JSONSerialization.data(withJSONObject: raw),
+				let n = try? JSONDecoder().decode(QuayNotification.self, from: nData)
+			else { return }
+			DispatchQueue.main.async { self.onNotification?(n) }
+		default:
+			return
+		}
 	}
 
 	private func dropped() {

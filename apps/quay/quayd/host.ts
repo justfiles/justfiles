@@ -28,6 +28,8 @@ import {
 	emailHost,
 	type ProviderRegistry
 } from '@justfiles/app/capabilities/accounts/host'
+import type { Channel } from '@justfiles/app/capabilities/notify'
+import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
@@ -64,7 +66,11 @@ export async function createHost(
 	// Fired after `devkit.install` writes a new app to `/applications`; the daemon
 	// (main.ts) re-materialises the `.app` projection and pushes the launcher a fresh
 	// catalog. Defaults to a no-op so tests can construct a host without the daemon.
-	onInstalled: () => void | Promise<void> = () => {}
+	onInstalled: () => void | Promise<void> = () => {},
+	// The host's notification channel — a sandboxed app's `notify` calls land here
+	// (source kernel-stamped). Bound deferred to `served.notify` in main.ts once the
+	// server is up; a no-op default keeps tests host-only.
+	channel: Channel = () => {}
 ): Promise<Host> {
 	await mkdir(root, { recursive: true })
 	const fs = volume(await nativeStorage(root))
@@ -89,7 +95,10 @@ export async function createHost(
 		ai: aiHost(providers, accounts),
 		email: emailHost(providers, accounts),
 		calendar: calendarHost(providers, accounts),
-		accounts: accountsAdminHost(providers, accounts, { firstParty: accountsFirstParty })
+		accounts: accountsAdminHost(providers, accounts, { firstParty: accountsFirstParty }),
+		// Sandboxed apps reach the host's notification channel here; the kernel stamps
+		// `source = appId` so a banner routes back to the app that raised it.
+		notify: notifyHost(channel)
 	})
 	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
 	await reconcileBuiltins(k, fs, builtinCatalog, readBuiltin)

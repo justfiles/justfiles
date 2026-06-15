@@ -16,9 +16,10 @@ mkdir -p "$BUILD"
 BIN="$BUILD/quay-shell"
 ICON="$BUILD/quay-makeicon"
 
-# Shared binary + icon tool, built once.
-swiftc -O -swift-version 5 \
-	main.swift Booter.swift Launcher.swift Catalog.swift Composer.swift Results.swift -o "$BIN"
+# Shared binary + icon tool, built once. `-framework UserNotifications` for the
+# launcher's OS-banner sink (Notifier.swift).
+swiftc -O -swift-version 5 -framework UserNotifications \
+	main.swift Booter.swift Launcher.swift Catalog.swift Composer.swift Results.swift Notifier.swift -o "$BIN"
 swiftc -O -swift-version 5 makeicon.swift -o "$ICON" 2>/dev/null || ICON=""
 
 emit_plist() { # name bundle_id [quay_id] [lsui]

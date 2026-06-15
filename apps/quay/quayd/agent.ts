@@ -26,6 +26,7 @@ import {
 	text
 } from '@justfiles/agent'
 import type { AccountsStore } from '@justfiles/app/capabilities/accounts/host'
+import type { Channel } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
 import { getModels } from '@mariozechner/pi-ai'
 import { resolveAi } from './chatgpt.ts'
@@ -69,7 +70,11 @@ const COMPACTION: CompactionSettings = {
 
 export async function createQuayAgent(
 	host: Host,
-	windows: WindowOps = nativeWindows
+	windows: WindowOps = nativeWindows,
+	// The agent is a trusted host service, so it calls the notification channel
+	// DIRECTLY with `source: 'agent'` (sandboxed apps go through the capability). A
+	// no-op default keeps offline tests channel-free.
+	channel: Channel = () => {}
 ): Promise<QuayAgent> {
 	const { kernel } = host
 	// The most-recently launched app — the daemon's best approximation of "current"
@@ -126,6 +131,18 @@ export async function createQuayAgent(
 			answer = `Agent error: ${error instanceof Error ? error.message : String(error)}`
 		}
 		messages.push({ id: crypto.randomUUID(), role: 'assistant', content: answer })
+		// The turn finished: ping the user. The native sink suppresses this when the
+		// chat surface is in front (the transcript already shows `answer`), so it only
+		// surfaces a banner when you're away. One `threadId` coalesces re-posts.
+		channel({
+			id: crypto.randomUUID(),
+			source: 'agent',
+			kind: 'info',
+			title: 'quay',
+			body: summarize(answer),
+			threadId: 'agent',
+			route: { kind: 'chat' }
+		})
 		return messages.slice()
 	}
 
@@ -183,6 +200,12 @@ export async function createQuayAgent(
 
 function isDirectCommand(input: string): boolean {
 	return /^(app|cp|mv|rm|now)\b/.test(input)
+}
+
+// Trim an answer to a banner-sized one-liner: first line, capped, ellipsised.
+function summarize(answer: string): string {
+	const line = answer.trim().split('\n')[0] ?? ''
+	return line.length > 140 ? `${line.slice(0, 139)}…` : line
 }
 
 // Write the default persona unless the user already has one (non-empty soul.md).

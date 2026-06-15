@@ -11,6 +11,7 @@
 // Every connection and the shell route present the boot token.
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { Notification } from '@justfiles/app/capabilities/notify'
 import { type RawData, WebSocket, WebSocketServer } from 'ws'
 import type { AgentMessage } from './agent.ts'
 import { designAsset, launcherChatHtml, shellHtml, vendorAssets } from './assets.ts'
@@ -46,6 +47,10 @@ export interface Served {
 	// Push the current `kernel.list()` to every connected launcher socket. The daemon
 	// calls this after an install (Slice 11) so an open launcher re-lists live.
 	broadcastCatalog(): Promise<void>
+	// The quay notification channel: broadcast a notification to every launcher
+	// socket. The native sink (CatalogClient) projects it onto the OS banner;
+	// main.ts binds this as the host/agent channel once the server is up.
+	notify(notification: Notification): void
 	close(): void
 }
 
@@ -121,6 +126,14 @@ export function serve(
 		for (const ws of launchers) reply(ws, payload)
 	}
 
+	// The quay channel: fan a notification out to every launcher socket (mirrors
+	// broadcastCatalog). Sinks with no launcher connected simply miss it — case-1
+	// notifications are transient; durable replay is Phase 2.
+	const notify = (notification: Notification): void => {
+		const payload = { type: 'notification', notification }
+		for (const ws of launchers) reply(ws, payload)
+	}
+
 	return new Promise((resolve) => {
 		http.listen(0, '127.0.0.1', () => {
 			const addr = http.address()
@@ -129,6 +142,7 @@ export function serve(
 			resolve({
 				port,
 				broadcastCatalog,
+				notify,
 				close: () => {
 					wss.close()
 					http.close()

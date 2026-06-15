@@ -33,6 +33,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private var hintRow: Row!
 	private let stopButton = NSButton()
 	private let catalog = CatalogClient()
+	private let notifier = Notifier()
 	private var hotkey: Hotkey?
 
 	private var apps: [CatalogApp] = []
@@ -47,6 +48,10 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		// loads the transcript webview warm so entering chat is a reveal, not a cold load.
 		catalog.onCatalog = { [weak self] in self?.catalogArrived($0) }
 		catalog.onRuntime = { [weak self] port, token in self?.useRuntime(port, token) }
+		// Notifications arrive over the same socket; the launcher suppresses by focus
+		// and posts to the OS, and resolves a banner click back into a route.
+		catalog.onNotification = { [weak self] in self?.notificationArrived($0) }
+		notifier.onRoute = { [weak self] in self?.handleRoute($0) }
 		catalog.connect()
 		// Summoned by the hotkey, not shown on launch: an LSUIElement app can't take
 		// foreground at launch, and the panel is meant to be toggled like Spotlight.
@@ -201,6 +206,22 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private func catalogArrived(_ apps: [CatalogApp]) {
 		self.apps = apps
 		if !chatting { render() } // refresh the current filter against the new catalog
+	}
+
+	// MARK: notifications — project quayd's notify channel onto the OS banner.
+
+	// Suppress when the relevant surface is already in front (the panel is key and
+	// visible — the transcript already shows the result); otherwise post a banner.
+	private func notificationArrived(_ n: QuayNotification) {
+		if panel.isVisible && panel.isKeyWindow { return }
+		notifier.post(n)
+	}
+
+	// A banner click: summon the panel and resolve the route. Slice 1 wires `chat`
+	// (reveal the transcript); `app`/`settings` land in later slices.
+	private func handleRoute(_ route: QuayNotification.Route?) {
+		show()
+		if route?.kind == "chat" { enterChat(send: nil) }
 	}
 
 	// MARK: actions
