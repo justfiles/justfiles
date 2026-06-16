@@ -18,6 +18,7 @@ export { parseFrontmatter } from './markdown.ts'
 export { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
 export { type Runtime, runtime } from './runtime.ts'
 export type { SessionEntry } from './session.manager.ts'
+export type { SkillMeta } from './skills.ts'
 export {
 	DEFAULT_TIMEZONE,
 	isoToTimezone,

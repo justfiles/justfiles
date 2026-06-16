@@ -13,6 +13,13 @@ import {
 	type SessionManager,
 	session
 } from './session.manager'
+import {
+	createManifestSkillSource,
+	createReadSkillTool,
+	createSkillRegistry,
+	createVolumeSkillSource,
+	type SkillMeta
+} from './skills'
 import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
 
 type RuntimeProps = {
@@ -21,6 +28,10 @@ type RuntimeProps = {
 	text: LLMText
 	compaction: CompactionSettings
 	getTimezone?: () => Promise<string> | string
+	// Built-in skills the host ships: a manifest (resident) plus a loader that fetches a
+	// body on demand (disk read on quay, asset fetch on frieren). The Volume's own
+	// /system/skills are added automatically, so user skills work everywhere with no wiring.
+	skills?: { manifest: SkillMeta[]; load: (id: string) => Promise<string> }
 }
 
 type RuntimeEventListener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void
@@ -41,8 +52,17 @@ export async function runtime({
 	agent,
 	text,
 	compaction,
-	getTimezone
+	getTimezone,
+	skills
 }: RuntimeProps): Promise<Runtime> {
+	const builtin = skills ? [createManifestSkillSource(skills.manifest, skills.load)] : []
+	const skillRegistry = createSkillRegistry([createVolumeSkillSource(volume), ...builtin])
+	// Expose `read_skill` only when there is something to read, so a host with no skills
+	// stays exactly as before (and the agent never sees a dead tool).
+	if (await skillRegistry.index()) {
+		agent.state.tools = [...agent.state.tools, createReadSkillTool(skillRegistry)]
+	}
+
 	const agentId = 'main'
 	const session = await route({ agentId }, volume, text)
 	await initSession(session)
@@ -177,6 +197,9 @@ export async function runtime({
 			const calibration = ageCalibration(profile)
 			if (calibration) prompt.add(calibration)
 		}
+
+		const skillsBlock = await skillRegistry.index()
+		if (skillsBlock) prompt.add('# skills', skillsBlock)
 
 		const tz = (getTimezone ? await getTimezone() : DEFAULT_TIMEZONE) || DEFAULT_TIMEZONE
 		const now = new Date()
