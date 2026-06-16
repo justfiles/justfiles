@@ -6,9 +6,11 @@
  *   - the body is fetched only when the agent calls `read_skill`, never held resident.
  *
  * Two source kinds feed one registry:
- *   - createVolumeSkillSource — user/project skills under /system/skills (cross-platform);
- *   - createManifestSkillSource — built-in skills a host ships: a tiny manifest plus a
- *     loader (disk read on quay, asset fetch on frieren), so bodies stay off the heap.
+ *   - createVolumeSkillSource — user-authored skills under /system/skills (cross-platform);
+ *   - createManifestSkillSource — built-in skills (a resident manifest + a body loader).
+ *
+ * Docs are NOT skills — see docs.ts. A doc is a system-prompt line plus a `read_doc` tool,
+ * a separate, host-agnostic feature with its own hand-maintained catalogue.
  */
 
 import type { Volume } from '@justfiles/fs'
@@ -70,8 +72,8 @@ export function createVolumeSkillSource(volume: Volume): SkillSource {
 	}
 }
 
-// Built-in skills a host ships. The manifest (id/name/description) is resident; the
-// body comes from `load` only when invoked — disk read on quay, asset fetch on frieren.
+// Built-in skills the host/agent ships: a resident manifest plus a loader that fetches a body
+// on demand. The counterpart to volume (user-authored) skills.
 export function createManifestSkillSource(
 	manifest: SkillMeta[],
 	load: (id: string) => Promise<string>

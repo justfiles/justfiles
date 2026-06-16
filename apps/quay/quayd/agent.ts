@@ -31,6 +31,7 @@ import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
 import { getModels } from '@mariozechner/pi-ai'
 import { resolveAi } from './chatgpt.ts'
+import { readDoc } from './docs.ts'
 import type { Host } from './host.ts'
 import { bundlePath, bundleProcessPattern } from './materialize.ts'
 
@@ -120,7 +121,8 @@ export async function createQuayAgent(
 			volume: host.fs,
 			agent: createAgent(llm),
 			text: text(llm),
-			compaction: COMPACTION
+			compaction: COMPACTION,
+			readDoc
 		})
 		rt.addTools(tools)
 		active = { key, rt }

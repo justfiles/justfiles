@@ -57,21 +57,32 @@ describe('volume skill source', () => {
 	})
 })
 
+describe('manifest skill source', () => {
+	test('lists the manifest and loads a body by id', async () => {
+		const source = createManifestSkillSource(
+			[{ id: 'web', name: 'web', description: 'search the web' }],
+			async (id) => `body:${id}`
+		)
+		expect(await source.list()).toEqual([{ id: 'web', name: 'web', description: 'search the web' }])
+		expect(await source.load('web')).toBe('body:web')
+	})
+})
+
 describe('skill registry', () => {
-	test('lists every skill and dispatches read to the owning source', async () => {
+	test('lists every skill and routes read to the owning source', async () => {
 		const builtin = createManifestSkillSource(
 			[{ id: 'web', name: 'web', description: 'search the web' }],
-			async (id) => `builtin:${id}`
+			async (id) => `body:${id}`
 		)
 		const registry = createSkillRegistry([builtin])
 		const index = await registry.index()
 		expect(index).toContain('web')
 		expect(index).toContain('search the web')
 		expect(index).toContain('read_skill')
-		expect(await registry.read('web')).toBe('builtin:web')
+		expect(await registry.read('web')).toBe('body:web')
 	})
 
-	test('an earlier source shadows a built-in with the same id', async () => {
+	test('an earlier source shadows a built-in skill with the same id', async () => {
 		const vol = volume(memStorage())
 		await seed(
 			vol,
@@ -80,7 +91,7 @@ describe('skill registry', () => {
 		)
 		const builtin = createManifestSkillSource(
 			[{ id: 'pdf', name: 'pdf', description: 'builtin pdf' }],
-			async (id) => `builtin:${id}`
+			async () => 'builtin body'
 		)
 		const registry = createSkillRegistry([createVolumeSkillSource(vol), builtin])
 

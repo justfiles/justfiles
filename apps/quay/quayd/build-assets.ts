@@ -16,7 +16,7 @@
 // The one legitimate build that stays at runtime is devkit's per-app gui
 // (install-time, see devkit.ts) — not this.
 
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { build } from 'esbuild'
@@ -29,6 +29,10 @@ const RESOLVE_DIR = import.meta.dirname
 const CHAT_ENTRY = join(RESOLVE_DIR, '..', 'launcher-ui', 'chat.tsx')
 // Where the built bytes land; assets.ts reads this dir at runtime (gitignored).
 const OUT_DIR = join(RESOLVE_DIR, 'assets-dist')
+// The agent's project docs at the repo root (the @justfiles/agent DOCS catalogue points
+// at these). Copied whole into OUT_DIR/docs at ship time so the daemon carries them and
+// reads them with no repo at runtime (docs.ts).
+const DOCS_SRC = join(RESOLVE_DIR, '..', '..', '..', 'docs')
 
 // Each shim file → the global slot it re-exports and the specifier whose export
 // names it enumerates. The core bundle (below) fills `globalThis.__quayReact`.
@@ -52,7 +56,19 @@ async function main(): Promise<void> {
 	await rm(OUT_DIR, { recursive: true, force: true })
 	await mkdir(OUT_DIR, { recursive: true })
 	for (const [name, text] of files) await writeFile(join(OUT_DIR, name), text)
-	console.log(`quayd: built ${files.size} launcher assets → ${OUT_DIR}`)
+	const docs = await copyDocs()
+	console.log(`quayd: built ${files.size} launcher assets + ${docs} docs → ${OUT_DIR}`)
+}
+
+// Ship docs/*.md beside the daemon (OUT_DIR/docs) so quayd reads them from disk at
+// runtime without the repo. Flat copy of every .md; the agent's DOCS catalogue decides
+// which it actually surfaces, so extra files here are harmless.
+async function copyDocs(): Promise<number> {
+	const out = join(OUT_DIR, 'docs')
+	await mkdir(out, { recursive: true })
+	const names = (await readdir(DOCS_SRC)).filter((name) => name.endsWith('.md'))
+	await Promise.all(names.map((name) => copyFile(join(DOCS_SRC, name), join(out, name))))
+	return names.length
 }
 
 // One pass over the whole React family: React is bundled once and shared, then the

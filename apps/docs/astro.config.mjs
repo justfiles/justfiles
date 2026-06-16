@@ -14,19 +14,12 @@ export default defineConfig({
 					items: ['overview']
 				},
 				{
-					label: 'Apps',
-					items: [
-						{ autogenerate: { directory: 'frieren' } },
-						{ autogenerate: { directory: 'quay' } }
-					]
+					label: 'System',
+					items: ['app', 'fs', 'design']
 				},
 				{
-					label: 'Packages',
-					items: [
-						{ autogenerate: { directory: 'app' } },
-						{ autogenerate: { directory: 'fs' } },
-						{ autogenerate: { directory: 'design' } }
-					]
+					label: 'Hosts',
+					items: ['frieren', 'quay']
 				}
 			]
 		})

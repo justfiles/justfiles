@@ -3,6 +3,7 @@ import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@mariozechner/p
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
+import { createReadDocTool, docsPrompt } from './docs'
 import { file } from './file'
 import type { LLMText } from './llm.text'
 import { DEFAULT_SETUP_PROMPT, MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
@@ -13,13 +14,7 @@ import {
 	type SessionManager,
 	session
 } from './session.manager'
-import {
-	createManifestSkillSource,
-	createReadSkillTool,
-	createSkillRegistry,
-	createVolumeSkillSource,
-	type SkillMeta
-} from './skills'
+import { createReadSkillTool, createSkillRegistry, createVolumeSkillSource } from './skills'
 import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
 
 type RuntimeProps = {
@@ -28,10 +23,11 @@ type RuntimeProps = {
 	text: LLMText
 	compaction: CompactionSettings
 	getTimezone?: () => Promise<string> | string
-	// Built-in skills the host ships: a manifest (resident) plus a loader that fetches a
-	// body on demand (disk read on quay, asset fetch on frieren). The Volume's own
-	// /system/skills are added automatically, so user skills work everywhere with no wiring.
-	skills?: { manifest: SkillMeta[]; load: (id: string) => Promise<string> }
+	// How the host reads a doc body by id (disk on quay, asset fetch on frieren). WHICH docs
+	// the agent sees is the shared, hand-maintained catalogue (docs.ts); this only supplies
+	// the bytes. When provided, the docs block goes in the system prompt and a `read_doc` tool
+	// is added. Omit to disable docs. (Skills are independent — see below.)
+	readDoc?: (id: string) => Promise<string>
 }
 
 type RuntimeEventListener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void
@@ -53,14 +49,18 @@ export async function runtime({
 	text,
 	compaction,
 	getTimezone,
-	skills
+	readDoc
 }: RuntimeProps): Promise<Runtime> {
-	const builtin = skills ? [createManifestSkillSource(skills.manifest, skills.load)] : []
-	const skillRegistry = createSkillRegistry([createVolumeSkillSource(volume), ...builtin])
-	// Expose `read_skill` only when there is something to read, so a host with no skills
-	// stays exactly as before (and the agent never sees a dead tool).
+	// Skills: user-authored on the Volume (+ built-in sources later). Expose `read_skill`
+	// only when there is something to read, so a host with no skills sees no dead tool.
+	const skillRegistry = createSkillRegistry([createVolumeSkillSource(volume)])
 	if (await skillRegistry.index()) {
 		agent.state.tools = [...agent.state.tools, createReadSkillTool(skillRegistry)]
+	}
+	// Docs (independent of skills): a system-prompt block + a `read_doc` tool, only when the
+	// host supplies a reader. The block itself is added in resolveSystemPrompt.
+	if (readDoc) {
+		agent.state.tools = [...agent.state.tools, createReadDocTool(readDoc)]
 	}
 
 	const agentId = 'main'
@@ -200,6 +200,8 @@ export async function runtime({
 
 		const skillsBlock = await skillRegistry.index()
 		if (skillsBlock) prompt.add('# skills', skillsBlock)
+
+		if (readDoc) prompt.add('# docs', docsPrompt())
 
 		const tz = (getTimezone ? await getTimezone() : DEFAULT_TIMEZONE) || DEFAULT_TIMEZONE
 		const now = new Date()
