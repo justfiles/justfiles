@@ -9,6 +9,8 @@
 import { execFile } from 'node:child_process'
 import {
 	type AppController,
+	BUILTIN_COMMANDS,
+	type CommandMeta,
 	CommandRegistry,
 	type CompactionSettings,
 	cp,
@@ -80,6 +82,11 @@ export interface AgentMessage {
 export interface QuayAgent {
 	history(): AgentMessage[]
 	prompt(input: string): Promise<AgentMessage[]>
+	// The slash-command catalogue for the launcher's `/` menu (built-ins + skills).
+	commands(): Promise<CommandMeta[]>
+	// Run a slash command by name: `new` clears the session (returns an empty
+	// transcript); a skill name expands its body into a turn.
+	command(name: string): Promise<AgentMessage[]>
 	abort(): void
 }
 
@@ -167,22 +174,65 @@ export async function createQuayAgent(
 		messages.push(...sessionEntriesToMessages(await rt.history()))
 	} catch {} // no prior session / backend unavailable → start blank
 
-	return { history: () => messages.slice(), prompt, abort }
+	return { history: () => messages.slice(), prompt, commands, command, abort }
 
 	async function prompt(input: string): Promise<AgentMessage[]> {
 		const trimmed = input.trim()
 		if (!trimmed) return messages.slice()
-		messages.push({ id: crypto.randomUUID(), role: 'user', content: trimmed })
+		return runTurn(trimmed, trimmed)
+	}
+
+	// The slash-command catalogue. Falls back to the built-ins if the backend can't be
+	// built (offline) so `/new` is always available.
+	async function commands(): Promise<CommandMeta[]> {
+		try {
+			return await (await ensureRuntime()).commands()
+		} catch {
+			return [...BUILTIN_COMMANDS]
+		}
+	}
+
+	// Dispatch a slash command by name. `new` is a host action (clear the session);
+	// any other name is a skill, expanded into a turn — its body is sent to the agent
+	// while the transcript shows just the `/name` invocation.
+	async function command(name: string): Promise<AgentMessage[]> {
+		try {
+			if (name === 'new') {
+				await (await ensureRuntime()).newSession()
+				messages.length = 0
+				pending = null
+				return messages.slice()
+			}
+			const body = await (await ensureRuntime()).readSkill(name)
+			return await runTurn(`/${name}`, body)
+		} catch (error) {
+			const failure = classifyFailure(error)
+			messages.push({
+				id: crypto.randomUUID(),
+				role: 'assistant',
+				content: failure.body,
+				error: true
+			})
+			ping('error', summarize(failure.body), failure.route)
+			return messages.slice()
+		}
+	}
+
+	// Run one turn. `display` is the user bubble shown in the transcript; `send` is what
+	// the agent receives — they differ for a skill command, whose bubble is the `/name`
+	// invocation but whose input is the expanded skill body.
+	async function runTurn(display: string, send: string): Promise<AgentMessage[]> {
+		messages.push({ id: crypto.randomUUID(), role: 'user', content: display })
 		pending = null
 		try {
 			// `app`/`cp`/`mv`/`rm`/`now` short-circuit to the bash registry — no LLM
 			// call, so app control works (and tests run) without a model backend.
 			let activity: TurnActivity = {}
 			let answer: string
-			if (isDirectCommand(trimmed)) {
-				answer = await runDirect(trimmed)
+			if (isDirectCommand(send)) {
+				answer = await runDirect(send)
 			} else {
-				const turn = await runAgentTurn(await ensureRuntime(), trimmed)
+				const turn = await runAgentTurn(await ensureRuntime(), send)
 				answer = turn.answer
 				activity = { thinking: turn.thinking, toolCalls: turn.toolCalls }
 			}

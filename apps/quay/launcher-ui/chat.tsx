@@ -20,6 +20,7 @@ interface QuayChatWindow {
 	__quayChat?: { token?: string }
 	webkit?: { messageHandlers?: { status?: { postMessage(message: unknown): void } } }
 	quaySend?: (text: string) => void
+	quayCommand?: (name: string) => void
 	quayAbort?: () => void
 }
 
@@ -88,12 +89,24 @@ function ChatApp() {
 			setIsStreaming(true)
 			ws.send(JSON.stringify({ type: 'prompt', text: trimmed }))
 		}
+		// Run a slash command by name (the native composer's `/` menu picked it). Unlike
+		// quaySend there's no optimistic user bubble — the authoritative transcript carries
+		// the right shape: `/new` returns an empty list (clears the chat), a skill returns
+		// its `/name` invocation + the turn. A bare streaming placeholder bridges the wait.
+		win.quayCommand = (name) => {
+			const ws = socketRef.current
+			if (!name || ws?.readyState !== WebSocket.OPEN) return
+			setMessages((prev) => [...prev, { id: 'pending', role: 'assistant', content: '' }])
+			setIsStreaming(true)
+			ws.send(JSON.stringify({ type: 'command', name }))
+		}
 		win.quayAbort = () => {
 			socketRef.current?.send(JSON.stringify({ type: 'abort' }))
 			setIsStreaming(false)
 		}
 		return () => {
 			win.quaySend = undefined
+			win.quayCommand = undefined
 			win.quayAbort = undefined
 		}
 	}, [])

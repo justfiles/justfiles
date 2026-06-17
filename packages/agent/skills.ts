@@ -86,12 +86,19 @@ export interface SkillRegistry {
 	index(): Promise<string>
 	// Body for one skill id, dispatched to the source that owns it.
 	read(id: string): Promise<string>
+	// The merged skill metas (id + name + description), id-collisions resolved as in
+	// index(). The slash-command catalogue (commands.ts) lists each as a `/id` command.
+	list(): Promise<SkillMeta[]>
 }
 
 // Merges sources into one catalog. Earlier sources win on id collision, so a user's
 // volume skill shadows a built-in of the same id.
 export function createSkillRegistry(sources: SkillSource[]): SkillRegistry {
-	return { index, read }
+	return { index, read, list }
+
+	async function list(): Promise<SkillMeta[]> {
+		return (await collect()).map(({ meta }) => meta)
+	}
 
 	async function collect(): Promise<{ meta: SkillMeta; source: SkillSource }[]> {
 		const out: { meta: SkillMeta; source: SkillSource }[] = []

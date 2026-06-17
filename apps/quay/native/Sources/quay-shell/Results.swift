@@ -1,21 +1,32 @@
 import Cocoa
 
+// One pickable row: a stable `id` the picker dispatches on, a glyph, a label, and an
+// optional dimmed detail (used by the `/` command menu to show each command's blurb).
+struct ResultItem {
+	let id: String
+	let glyph: String
+	let label: String
+	var detail: String? = nil
+}
+
 // The native results list: a vertical, scrollable stack of icon+label rows shown above
-// the composer while searching apps. The best match sits at the BOTTOM (nearest the
-// composer, mirroring the old column-reverse web layout); ↑ walks up the list. At most
-// MAX_VISIBLE rows show before it caps and scrolls. Replaces launcher.js's app rows.
+// the composer — app search matches and the `/` command menu both render through it. The
+// best match sits at the BOTTOM (nearest the composer, mirroring the old column-reverse
+// web layout); ↑ walks up the list. At most MAX_VISIBLE rows show before it caps and
+// scrolls. Replaces launcher.js's app rows.
 final class Results: NSView {
 	static let rowHeight: CGFloat = 46
 	static let rowGap: CGFloat = 4
 	static let maxVisible = 7
 	static let cap = rowHeight * CGFloat(maxVisible) + rowGap * CGFloat(maxVisible - 1)
 
-	var onLaunch: ((String) -> Void)?
+	// Picked by id (an app id or a command name); the launcher routes by current mode.
+	var onPick: ((String) -> Void)?
 
 	private let scroll = NSScrollView()
 	private let doc = FlippedView()
 	private var rows: [Row] = []
-	private var apps: [CatalogApp] = []
+	private var items: [ResultItem] = []
 	private(set) var selectedIndex = 0
 
 	override init(frame: NSRect) {
@@ -37,32 +48,32 @@ final class Results: NSView {
 		return CGFloat(rows.count) * Self.rowHeight + CGFloat(rows.count - 1) * Self.rowGap
 	}
 
-	func setApps(_ apps: [CatalogApp]) {
-		self.apps = apps
-		selectedIndex = min(selectedIndex, max(0, apps.count - 1))
+	func setItems(_ items: [ResultItem]) {
+		self.items = items
+		selectedIndex = min(selectedIndex, max(0, items.count - 1))
 		rebuild()
 	}
 
 	// ↑/↓ within the list. index 0 (best) sits at the bottom, so ↑ increases the index.
 	func move(up: Bool) {
-		guard !apps.isEmpty else { return }
-		selectedIndex = max(0, min(apps.count - 1, selectedIndex + (up ? 1 : -1)))
+		guard !items.isEmpty else { return }
+		selectedIndex = max(0, min(items.count - 1, selectedIndex + (up ? 1 : -1)))
 		applySelection()
 		scrollSelectedIntoView()
 	}
 
-	func launchSelected() {
-		guard selectedIndex < apps.count else { return }
-		onLaunch?(apps[selectedIndex].id)
+	func pickSelected() {
+		guard selectedIndex < items.count else { return }
+		onPick?(items[selectedIndex].id)
 	}
 
 	private func rebuild() {
 		rows.forEach { $0.removeFromSuperview() }
 		// Worst→best, top→bottom, so the best match lands adjacent to the composer.
-		rows = apps.enumerated().reversed().map { appIndex, app in
-			let row = Row(glyph: app.glyph, label: app.name, hint: false)
-			row.onHover = { [weak self] in self?.select(appIndex) }
-			row.onClick = { [weak self] in self?.onLaunch?(app.id) }
+		rows = items.enumerated().reversed().map { itemIndex, item in
+			let row = Row(glyph: item.glyph, label: item.label, detail: item.detail, hint: false)
+			row.onHover = { [weak self] in self?.select(itemIndex) }
+			row.onClick = { [weak self] in self?.onPick?(item.id) }
 			doc.addSubview(row)
 			return row
 		}
@@ -80,7 +91,7 @@ final class Results: NSView {
 	private func applySelection() {
 		// rows[] is in visual order (top first), so the best match (selectedIndex 0) is last.
 		for (visual, row) in rows.enumerated() {
-			row.selected = (apps.count - 1 - visual) == selectedIndex
+			row.selected = (items.count - 1 - visual) == selectedIndex
 		}
 	}
 
@@ -94,7 +105,7 @@ final class Results: NSView {
 	}
 
 	private func scrollSelectedIntoView() {
-		let visual = apps.count - 1 - selectedIndex
+		let visual = items.count - 1 - selectedIndex
 		guard visual >= 0, visual < rows.count else { return }
 		rows[visual].scrollToVisible(rows[visual].bounds)
 	}
@@ -120,7 +131,7 @@ final class Row: NSView {
 	private var tracking: NSTrackingArea?
 	private let text = NSTextField(labelWithString: "")
 
-	init(glyph: String, label: String, hint: Bool) {
+	init(glyph: String, label: String, detail: String? = nil, hint: Bool) {
 		super.init(frame: NSRect(x: 0, y: 0, width: 320, height: Results.rowHeight))
 		wantsLayer = true
 		layer?.cornerRadius = 12
@@ -135,7 +146,22 @@ final class Row: NSView {
 		// and centre it vertically in the row (matching the glyph), rather than spanning
 		// the full row height where the text would sit at the top.
 		let lineH = ceil(font.ascender - font.descender + font.leading)
-		text.stringValue = label
+		// A command row shows its name bright and its blurb dimmed alongside; a plain row
+		// (apps, hint) is just the label.
+		if let detail, !detail.isEmpty {
+			let s = NSMutableAttributedString(
+				string: label, attributes: [.font: font, .foregroundColor: NSColor.white]
+			)
+			s.append(
+				NSAttributedString(
+					string: "  \(detail)",
+					attributes: [.font: font, .foregroundColor: NSColor(white: 1, alpha: 0.5)]
+				)
+			)
+			text.attributedStringValue = s
+		} else {
+			text.stringValue = label
+		}
 		text.font = font
 		text.textColor = .white
 		text.lineBreakMode = .byTruncatingTail

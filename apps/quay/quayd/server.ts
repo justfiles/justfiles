@@ -13,7 +13,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import { type RawData, WebSocket, WebSocketServer } from 'ws'
-import type { AgentMessage } from './agent.ts'
+import type { QuayAgent } from './agent.ts'
 import { designAsset, launcherChatHtml, shellHtml, vendorAssets } from './assets.ts'
 import { type BerthBackend, serveBerth } from './berth.ts'
 
@@ -23,14 +23,6 @@ export interface AppInfo {
 	glyph: string
 }
 
-// The launcher's agent channel (Slice 10): non-streaming request/response. The UI
-// echoes the user turn optimistically and waits for the authoritative transcript.
-export interface AgentBridge {
-	history(): AgentMessage[]
-	prompt(text: string): Promise<AgentMessage[]>
-	abort(): void
-}
-
 export interface Backend extends BerthBackend {
 	list(): Promise<AppInfo[]>
 	// Debug (Slice 5 verify): a directory listing of the Volume at `path`.
@@ -38,8 +30,10 @@ export interface Backend extends BerthBackend {
 	// The app's `gui.js` bytes, read from the Volume — the materialised `.app`s
 	// carry no code.
 	gui(id: string): Promise<Uint8Array>
+	// The launcher's agent channel (Slice 10): non-streaming request/response — the UI
+	// echoes the user turn optimistically and waits for the authoritative transcript.
 	// Optional so tests can serve a backend with no agent (the catalog still works).
-	agent?: AgentBridge
+	agent?: QuayAgent
 }
 
 export interface Served {
@@ -230,7 +224,7 @@ function fail(res: ServerResponse, code: number): void {
 }
 
 async function respond(ws: WebSocket, backend: Backend, data: RawData): Promise<void> {
-	let msg: { type?: string; path?: string; text?: string }
+	let msg: { type?: string; path?: string; text?: string; name?: string }
 	try {
 		msg = JSON.parse(data.toString())
 	} catch {
@@ -240,8 +234,12 @@ async function respond(ws: WebSocket, backend: Backend, data: RawData): Promise<
 	else if (msg.type === 'ls') reply(ws, { type: 'ls', entries: await backend.ls(msg.path ?? '/') })
 	else if (msg.type === 'agent.history' && backend.agent)
 		reply(ws, { type: 'agent', messages: backend.agent.history() })
+	else if (msg.type === 'commands' && backend.agent)
+		reply(ws, { type: 'commands', commands: await backend.agent.commands() })
 	else if (msg.type === 'prompt' && backend.agent)
 		reply(ws, { type: 'agent', messages: await backend.agent.prompt(msg.text ?? '') })
+	else if (msg.type === 'command' && backend.agent)
+		reply(ws, { type: 'agent', messages: await backend.agent.command(msg.name ?? '') })
 	else if (msg.type === 'abort') backend.agent?.abort()
 }
 

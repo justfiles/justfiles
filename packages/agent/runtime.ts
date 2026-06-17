@@ -2,6 +2,7 @@ import type { Volume } from '@justfiles/fs'
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@mariozechner/pi-agent-core'
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
+import { type CommandMeta, listCommands } from './commands'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
 import { createReadDocTool, docsPrompt } from './docs'
 import { file } from './file'
@@ -41,6 +42,14 @@ export interface Runtime {
 	addTools: (tools: readonly AgentTool[]) => void
 	removeTools: (tools: readonly AgentTool[]) => void
 	systemPrompt: () => string
+	// The slash-command catalogue (built-ins + skills) for the host's `/` menu.
+	commands: () => Promise<CommandMeta[]>
+	// Start a fresh session: mint + register a new session file (the old one stays on
+	// disk) and clear the live context. No notes are taken — a clean break (unlike the
+	// idle rollover in route(), which summarises the abandoned session first).
+	newSession: () => Promise<void>
+	// One skill's body, for a skill slash-command's prompt-expansion.
+	readSkill: (id: string) => Promise<string>
 }
 
 export async function runtime({
@@ -64,7 +73,7 @@ export async function runtime({
 	}
 
 	const agentId = 'main'
-	const session = await route({ agentId }, volume, text)
+	let session = await route({ agentId }, volume, text)
 	await initSession(session)
 
 	return {
@@ -75,11 +84,19 @@ export async function runtime({
 		consolidateMemory,
 		addTools,
 		removeTools,
-		systemPrompt: () => agent.state.systemPrompt
+		systemPrompt: () => agent.state.systemPrompt,
+		commands: () => listCommands(skillRegistry),
+		newSession,
+		readSkill: (id) => skillRegistry.read(id)
 	}
 
 	async function shutdown() {
 		agent.abort()
+	}
+
+	async function newSession() {
+		session = await createSession({ agentId }, volume)
+		await initSession(session)
 	}
 
 	function addTools(tools: readonly AgentTool[]) {
@@ -430,9 +447,21 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 		}
 	}
 
+	return createSession(ctx, volume, now)
+}
+
+// Mint + register a fresh session file (the old one stays on disk, unreferenced) and
+// return its manager. Shared by route() (after an idle rollover) and Runtime.newSession.
+async function createSession(
+	ctx: MessageContext,
+	volume: Volume,
+	now: Date = new Date()
+): Promise<SessionManager> {
+	const sessionsMap = file(volume, PATHS.sessions(ctx.agentId))
+	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
 	const sessionId = crypto.randomUUID().slice(0, 8)
 	const sessionFile = PATHS.sessionFile(ctx.agentId, sessionId)
-	sessions[sessionKey] = { sessionId, lastActive: now, sessionFile }
+	sessions[resolveSessionKey(ctx)] = { sessionId, lastActive: now, sessionFile }
 	await sessionsMap.write(JSON.stringify(sessions))
 	return session(sessionFile, volume)
 }

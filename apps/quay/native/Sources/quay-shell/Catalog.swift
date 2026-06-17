@@ -7,6 +7,13 @@ struct CatalogApp: Decodable {
 	let glyph: String
 }
 
+// One slash command for the composer's `/` menu — matches quayd's CommandMeta
+// ({name, description, kind}); `kind` is ignored natively (the daemon dispatches it).
+struct CatalogCommand: Decodable {
+	let name: String
+	let description: String
+}
+
 // The launcher's Swift ws client for quayd's privileged JSON channel. It discovers the
 // daemon (Quayd.ensure, off the main thread), opens ws://127.0.0.1:PORT/?token=…, asks
 // for the catalog ({type:'list'} → {type:'catalog'}), and reconnects on drop. `onCatalog`
@@ -15,6 +22,9 @@ struct CatalogApp: Decodable {
 // the chat webview owns its own agent socket separately.
 final class CatalogClient {
 	var onCatalog: (([CatalogApp]) -> Void)?
+	// Fires (main thread) with the slash-command catalogue (built-ins + skills),
+	// fetched once per connect — the composer renders its `/` menu from it.
+	var onCommands: (([CatalogCommand]) -> Void)?
 	// Fires (main thread) with the live {port, token} every time the socket opens — the
 	// single discovery path the launcher trusts. The chat webview rides it too: a quayd
 	// restart drops this socket, reconnects on a fresh runtime, and re-fires, so the
@@ -56,6 +66,7 @@ final class CatalogClient {
 		t.resume()
 		onRuntime?(runtime.port, runtime.token)
 		send(["type": "list"])
+		send(["type": "commands"])
 		receive()
 	}
 
@@ -89,6 +100,11 @@ final class CatalogClient {
 				let apps = try? JSONDecoder().decode([CatalogApp].self, from: appsRaw)
 			else { return }
 			DispatchQueue.main.async { self.onCatalog?(apps) }
+		case "commands":
+			guard let raw = try? JSONSerialization.data(withJSONObject: obj["commands"] ?? []),
+				let commands = try? JSONDecoder().decode([CatalogCommand].self, from: raw)
+			else { return }
+			DispatchQueue.main.async { self.onCommands?(commands) }
 		case "notification":
 			guard let raw = obj["notification"],
 				let nData = try? JSONSerialization.data(withJSONObject: raw),

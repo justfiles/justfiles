@@ -26,7 +26,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	// What sits above the composer right now. The launcher rests in `apps`/`empty`; chat
 	// is entered explicitly (⌘K) or by asking the agent (Enter on a non-matching query).
-	private enum Content { case empty, apps, hint, chat }
+	// A leading `/` opens the `commands` menu over whatever mode we were in.
+	private enum Content { case empty, apps, hint, chat, commands }
 
 	private var panel: NSPanel!
 	private var container: NSView! // holds the active content view, sized per mode
@@ -40,6 +41,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private var hotkey: Hotkey?
 
 	private var apps: [CatalogApp] = []
+	private var commands: [CatalogCommand] = []
 	private var chatting = false
 	private var content: Content = .empty
 	private var visibleContent: NSView?
@@ -50,6 +52,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		// Discover quayd now: the catalog socket fills the results list, and its onRuntime
 		// loads the transcript webview warm so entering chat is a reveal, not a cold load.
 		catalog.onCatalog = { [weak self] in self?.catalogArrived($0) }
+		catalog.onCommands = { [weak self] in self?.commands = $0 }
 		catalog.onRuntime = { [weak self] port, token in self?.useRuntime(port, token) }
 		// Notifications arrive over the same socket; the launcher suppresses by focus
 		// and posts to the OS, and resolves a banner click back into a route.
@@ -104,7 +107,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		hintRow.selected = true // the hint reads as the selected default action
 		hintRow.autoresizingMask = [.width]
 		hintRow.onClick = { [weak self] in self?.submit() }
-		results.onLaunch = { [weak self] in self?.launch($0) }
+		results.onPick = { [weak self] in self?.pick($0) }
 		container.addSubview(results)
 		container.addSubview(hintRow)
 		container.addSubview(webView)
@@ -135,7 +138,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private func contentHeight() -> CGFloat {
 		switch content {
 		case .empty: return 0
-		case .apps: return min(results.contentHeight, Results.cap)
+		case .apps, .commands: return min(results.contentHeight, Results.cap)
 		case .hint: return Results.rowHeight
 		case .chat: return Self.chatHeight
 		}
@@ -176,11 +179,27 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// MARK: render — decide what sits above the composer, then size the panel.
 
 	private func render() {
+		// A leading `/` opens the command menu over any mode; the rest is the filter.
+		if composer.string.hasPrefix("/") {
+			let matches = filteredCommands()
+			if matches.isEmpty {
+				// Nothing matches — drop back to the underlying mode; Enter clears + chats.
+				present(chatting ? .chat : .empty)
+			} else {
+				results.setItems(
+					matches.map {
+						ResultItem(id: $0.name, glyph: "/", label: $0.name, detail: $0.description)
+					}
+				)
+				present(.commands)
+			}
+			return
+		}
 		if chatting { return present(.chat) }
 		let query = composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
 		let matches = query.isEmpty ? [] : filtered(query)
 		if !matches.isEmpty {
-			results.setApps(matches)
+			results.setItems(matches.map { ResultItem(id: $0.id, glyph: $0.glyph, label: $0.name) })
 			present(.apps)
 		} else if !query.isEmpty {
 			hintRow.setLabel("Ask agent “\(query)”")
@@ -192,18 +211,27 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	private func present(_ content: Content) {
 		self.content = content
-		results.isHidden = content != .apps
+		let showsResults = content == .apps || content == .commands
+		results.isHidden = !showsResults
 		hintRow.isHidden = content != .hint
 		webView.isHidden = content != .chat
 		visibleContent =
-			content == .apps ? results : content == .hint ? hintRow : content == .chat ? webView : nil
-		composer.navActive = content == .apps
+			showsResults ? results : content == .hint ? hintRow : content == .chat ? webView : nil
+		composer.navActive = showsResults
 		sizePanel()
 	}
 
 	private func filtered(_ query: String) -> [CatalogApp] {
 		let needle = query.lowercased()
 		return apps.filter { $0.name.lowercased().contains(needle) }
+	}
+
+	// The `/` menu's matches: everything after the slash filters command names. An empty
+	// filter (just `/`) lists them all.
+	private func filteredCommands() -> [CatalogCommand] {
+		let needle = composer.string.dropFirst().lowercased()
+			.trimmingCharacters(in: .whitespacesAndNewlines)
+		return needle.isEmpty ? commands : commands.filter { $0.name.lowercased().contains(needle) }
 	}
 
 	private func catalogArrived(_ apps: [CatalogApp]) {
@@ -241,14 +269,39 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// Enter: in chat, send the draft; otherwise launch the selected app, or — when the
 	// query matches no app — ask the agent (entering chat). Empty + not chatting resumes.
 	private func submit() {
+		// In the `/` menu, Enter runs the selected command; with no match it's an escape
+		// hatch — clear the input and fall into chat (enterChat clears the composer).
+		if composer.string.hasPrefix("/") {
+			if filteredCommands().isEmpty {
+				enterChat(send: nil)
+			} else {
+				results.pickSelected()
+			}
+			return
+		}
 		let text = composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
 		if chatting {
 			if !text.isEmpty { sendChat(text) }
 		} else if !text.isEmpty, !filtered(text).isEmpty {
-			results.launchSelected()
+			results.pickSelected()
 		} else {
 			enterChat(send: text.isEmpty ? nil : text)
 		}
+	}
+
+	// A results row was picked (keyboard or click): run it as a command in the `/` menu,
+	// otherwise launch the app.
+	private func pick(_ id: String) {
+		if content == .commands { runCommand(id) } else { launch(id) }
+	}
+
+	// Run a slash command: reveal the transcript and drive it over the chat webview's own
+	// socket (window.quayCommand), so the authoritative transcript updates — `/new` clears
+	// it, a skill shows its turn. Going through the webview (not the native catalog socket)
+	// is what keeps the displayed conversation in sync.
+	private func runCommand(_ name: String) {
+		enterChat(send: nil)
+		webView.evaluateJavaScript("window.quayCommand && window.quayCommand(\(jsString(name)))")
 	}
 
 	private func launch(_ id: String) {

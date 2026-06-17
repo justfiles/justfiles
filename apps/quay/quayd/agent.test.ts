@@ -84,6 +84,50 @@ test('the transcript accumulates each turn', async () => {
 	expect(agent.history().length).toBe(before + 2)
 })
 
+test('`commands` lists the built-in /new (offline, no model backend)', async () => {
+	const commands = await agent.commands()
+	const names = commands.map((c) => c.name)
+	expect(names).toContain('new')
+	expect(commands.find((c) => c.name === 'new')?.kind).toBe('builtin')
+})
+
+test('/new starts a fresh session, clears the transcript, and keeps the old one on disk', async () => {
+	const otherRoot = await mkdtemp(join(tmpdir(), 'quayd-agent-new-'))
+	try {
+		const otherHost = await createHost(otherRoot)
+		const dir = '/system/agents/main/sessions'
+		const oldFile = `${dir}/reload01.jsonl`
+		await otherHost.fs.mkdir(dir, { recursive: true })
+		await write(otherHost.fs, `${dir}/sessions.json`, {
+			'agent:main': {
+				sessionId: 'reload01',
+				lastActive: new Date().toISOString(),
+				sessionFile: oldFile
+			}
+		})
+		await writeLines(otherHost.fs, oldFile, [
+			{ id: 'aaaa0001', parentId: null, ts: '', type: 'message', role: 'user', content: 'hello' }
+		])
+
+		const fresh = await createQuayAgent(otherHost, { open: () => {}, close: () => {} })
+		expect(fresh.history().length).toBe(1)
+
+		const cleared = await fresh.command('new')
+		expect(cleared).toEqual([])
+		expect(fresh.history()).toEqual([])
+
+		// The index now points at a brand-new session…
+		const index = JSON.parse(
+			new TextDecoder().decode(await otherHost.fs.readFile(`${dir}/sessions.json`))
+		) as { 'agent:main': { sessionId: string } }
+		expect(index['agent:main'].sessionId).not.toBe('reload01')
+		// …and the old transcript is untouched on disk (nothing deleted).
+		expect(new TextDecoder().decode(await otherHost.fs.readFile(oldFile))).toContain('hello')
+	} finally {
+		await rm(otherRoot, { recursive: true, force: true })
+	}
+})
+
 test('a fresh agent loads the previous conversation from the Volume session', async () => {
 	const otherRoot = await mkdtemp(join(tmpdir(), 'quayd-agent-reload-'))
 	try {

@@ -61,11 +61,7 @@ const backend: Backend = {
 		}),
 	// The launcher's chat: prompt/history over the privileged socket. The agent
 	// `app run`s into this same kernel, so an open window's berth re-renders live.
-	agent: {
-		history: () => agent.history(),
-		prompt: (text) => agent.prompt(text),
-		abort: () => agent.abort()
-	}
+	agent
 }
 
 const token = randomBytes(16).toString('hex')
