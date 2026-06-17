@@ -45,7 +45,6 @@ Investigate how macOS remember app's last open location and size, I would like t
 * NEXT BIG THINGS
 ** DONE code
 ** DONE agent maintained docs
-** TODO htmx as framework?
 ** TODO modify builtin apps?
 think about emacs
 
@@ -56,6 +55,6 @@ can notify when agent finishes work
 [[file:apps/quay/NOTIFICATIONS-PLAN.md][Phase 2 of notification]]
 
 
-** TODO new session
+** DONE new session
 
 ** TODO build tool for app-code to check the code
