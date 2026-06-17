@@ -24,6 +24,7 @@ import {
 	type Runtime,
 	rm,
 	runtime,
+	type SessionEntry,
 	text
 } from '@justfiles/agent'
 import type { AccountsStore } from '@justfiles/app/capabilities/accounts/host'
@@ -156,6 +157,16 @@ export async function createQuayAgent(
 	}
 
 	const messages: AgentMessage[] = []
+	// Opening the chat should show the conversation you left, not a blank panel. The
+	// runtime persists every turn to a Volume session, so on creation we build it once
+	// (which reloads that session) and project its durable entries into the launcher
+	// transcript. A fresh Volume, a rolled-over session (>6h, see route), or an
+	// unavailable backend simply yields an empty transcript.
+	try {
+		const rt = await ensureRuntime()
+		messages.push(...sessionEntriesToMessages(await rt.history()))
+	} catch {} // no prior session / backend unavailable → start blank
+
 	return { history: () => messages.slice(), prompt, abort }
 
 	async function prompt(input: string): Promise<AgentMessage[]> {
@@ -356,6 +367,102 @@ function toolResultValue(result: unknown): unknown {
 		return JSON.parse(text)
 	} catch {
 		return text
+	}
+}
+
+// Project the persisted session (a durable SessionEntry tree) into the launcher's
+// flat transcript so a reopened chat shows the previous conversation. Mirrors
+// frieren's display projection: a tool_result folds into its originating tool_call
+// row, and back-to-back tool-only assistant turns collapse into one row.
+function sessionEntriesToMessages(entries: readonly SessionEntry[]): AgentMessage[] {
+	const messages: AgentMessage[] = []
+	for (const entry of entries) {
+		if (entry.type === 'message' && entry.role === 'tool_result') {
+			const last = messages[messages.length - 1]
+			const index =
+				last?.toolCalls?.findLastIndex(
+					(call) => call.name === entry.tool_name && call.result === undefined
+				) ?? -1
+			if (last?.role === 'assistant' && last.toolCalls && index >= 0) {
+				last.toolCalls[index] = {
+					...last.toolCalls[index],
+					result: parseToolResult(entry.content),
+					status: 'done'
+				}
+				continue
+			}
+		}
+		const message = sessionEntryToMessage(entry)
+		if (!message) continue
+		const last = messages[messages.length - 1]
+		if (
+			last?.role === 'assistant' &&
+			!last.content &&
+			last.toolCalls?.length &&
+			message.role === 'assistant' &&
+			message.toolCalls?.length
+		) {
+			last.toolCalls.push(...message.toolCalls)
+			continue
+		}
+		messages.push(message)
+	}
+	return messages
+}
+
+function sessionEntryToMessage(entry: SessionEntry): AgentMessage | null {
+	const id = crypto.randomUUID()
+	switch (entry.type) {
+		case 'message':
+			switch (entry.role) {
+				case 'user':
+					return { id, role: 'user', content: entry.content }
+				case 'assistant':
+					return { id, role: 'assistant', content: entry.content }
+				case 'assistant_thinking':
+					return { id, role: 'assistant', content: '', thinking: entry.content }
+				case 'tool_call':
+					return {
+						id,
+						role: 'assistant',
+						content: '',
+						toolCalls: [
+							{ id: crypto.randomUUID(), name: entry.tool_name, args: entry.input, status: 'done' }
+						]
+					}
+				// A tool_result with no preceding tool_call to fold into: render it standalone.
+				case 'tool_result':
+					return {
+						id,
+						role: 'assistant',
+						content: '',
+						toolCalls: [
+							{
+								id: crypto.randomUUID(),
+								name: entry.tool_name,
+								args: undefined,
+								result: parseToolResult(entry.content),
+								status: 'done'
+							}
+						]
+					}
+				default:
+					throw new Error('unsupported message role')
+			}
+		case 'compaction':
+			return { id, role: 'assistant', content: entry.summary }
+		case 'branch_summary':
+			return { id, role: 'assistant', content: entry.summary }
+		case 'label':
+			return { id, role: 'assistant', content: `[${entry.label}]` }
+	}
+}
+
+function parseToolResult(content: string): unknown {
+	try {
+		return JSON.parse(content)
+	} catch {
+		return content
 	}
 }
 

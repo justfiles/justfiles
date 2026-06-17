@@ -43,8 +43,8 @@ Investigate how macOS remember app's last open location and size, I would like t
 ** DONE quay, app-code install should reinstall
 ** DONE better scrolling for the messages list
 * NEXT BIG THINGS
-** TODO code
-** TODO agent maintained docs
+** DONE code
+** DONE agent maintained docs
 ** TODO htmx as framework?
 ** TODO modify builtin apps?
 think about emacs
@@ -54,3 +54,6 @@ can notify when agent finishes work
 
 ** TODO notification adv
 [[file:apps/quay/NOTIFICATIONS-PLAN.md][Phase 2 of notification]]
+
+
+** TODO new session

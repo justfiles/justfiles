@@ -34,6 +34,15 @@ function reply(messages: { role: string; content: string }[]): string {
 	return messages.at(-1)?.content ?? ''
 }
 
+function write(fs: Host['fs'], path: string, value: unknown): Promise<void> {
+	return fs.writeFile(path, new TextEncoder().encode(JSON.stringify(value)))
+}
+
+function writeLines(fs: Host['fs'], path: string, lines: unknown[]): Promise<void> {
+	const body = `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`
+	return fs.writeFile(path, new TextEncoder().encode(body))
+}
+
 test('seeds a default soul so the agent skips frieren-style setup mode', async () => {
 	const soul = new TextDecoder().decode(await host.fs.readFile('/system/soul.md'))
 	expect(soul).toContain('quay')
@@ -73,4 +82,45 @@ test('the transcript accumulates each turn', async () => {
 	await agent.prompt('app list')
 	// One user + one assistant message per turn.
 	expect(agent.history().length).toBe(before + 2)
+})
+
+test('a fresh agent loads the previous conversation from the Volume session', async () => {
+	const otherRoot = await mkdtemp(join(tmpdir(), 'quayd-agent-reload-'))
+	try {
+		const otherHost = await createHost(otherRoot)
+		// Seed a recent session the way the runtime persists one: a sessions index
+		// pointing at a JSONL transcript of one completed turn (within the 6h reuse
+		// window so `route` reloads it rather than rolling over).
+		const dir = '/system/agents/main/sessions'
+		await otherHost.fs.mkdir(dir, { recursive: true })
+		await write(otherHost.fs, `${dir}/sessions.json`, {
+			'agent:main': {
+				sessionId: 'reload01',
+				lastActive: new Date().toISOString(),
+				sessionFile: `${dir}/reload01.jsonl`
+			}
+		})
+		await writeLines(otherHost.fs, `${dir}/reload01.jsonl`, [
+			{ id: 'aaaa0001', parentId: null, ts: '', type: 'message', role: 'user', content: 'hello' },
+			{
+				id: 'aaaa0002',
+				parentId: 'aaaa0001',
+				ts: '',
+				type: 'message',
+				role: 'assistant',
+				content: 'hi there'
+			}
+		])
+
+		const reloaded = await createQuayAgent(otherHost, {
+			open: () => {},
+			close: () => {}
+		})
+		expect(reloaded.history().map((m) => ({ role: m.role, content: m.content }))).toEqual([
+			{ role: 'user', content: 'hello' },
+			{ role: 'assistant', content: 'hi there' }
+		])
+	} finally {
+		await rm(otherRoot, { recursive: true, force: true })
+	}
 })
