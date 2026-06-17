@@ -42,6 +42,19 @@ import { bundlePath, bundleProcessPattern } from './materialize.ts'
 const SOUL_PATH = '/system/soul.md'
 const DEFAULT_SOUL = `You are the agent that lives inside quay, a macOS desktop where small apps dock at one shared backend you share with the user. You are a task-oriented, reliable assistant: brief, proactive, and direct. You can launch, inspect, and drive those apps with the \`app\` command, and you can read, write, and organise files on the shared volume with your file tools and bash. When the user asks for something, take the action rather than narrating it or asking permission for routine steps; surface a choice only when it genuinely matters. Keep replies short and concrete — the result first, a sentence or two around it. You remember what matters across sessions and lean on it quietly. You never mention setup, onboarding, or rituals; you are already here and ready to help.`
 
+// One tool call the agent made in a turn, captured for the transcript's collapsed
+// mechanical row. Mirrors @justfiles/ui's ToolCallInfo (kept separate so the wire
+// shape stays decoupled from the React UI, like AgentMessage below). quay is
+// request/response, so by the time a turn ships every call is already `done`.
+export interface ToolCallInfo {
+	id: string
+	name: string
+	args: unknown
+	result?: unknown
+	isError?: boolean
+	status: 'running' | 'done'
+}
+
 // The launcher chat's wire shape (server.ts serialises these): a flat transcript,
 // not the streaming event log — quay's launcher is a tiny plain-JS panel.
 export interface AgentMessage {
@@ -55,6 +68,12 @@ export interface AgentMessage {
 	// clickable rows; a pick is just the next prompt. Set when the agent calls
 	// `ask_user`; the turn completes (no suspension).
 	options?: { label: string }[]
+	// The agent's reasoning for this turn, collapsed in the transcript. Only set for
+	// models that emit thinking blocks (the local default doesn't).
+	thinking?: string
+	// The tool calls the agent made this turn, each a collapsed row with its args +
+	// result. Captured off the runtime event stream (runAgentTurn).
+	toolCalls?: ToolCallInfo[]
 }
 
 export interface QuayAgent {
@@ -125,6 +144,13 @@ export async function createQuayAgent(
 			readDoc
 		})
 		rt.addTools(tools)
+		// Log each tool call to stdout (→ quayd.log) so a GUI-spawned daemon's agent
+		// activity is visible. The runtime is discarded on rebuild, so the subscription
+		// goes with it — no unsubscribe needed.
+		rt.subscribe((event) => {
+			if (event.type === 'tool_execution_start')
+				console.log(`quayd: agent tool ${event.toolName} ${JSON.stringify(event.args)}`)
+		})
 		active = { key, rt }
 		return rt
 	}
@@ -140,9 +166,23 @@ export async function createQuayAgent(
 		try {
 			// `app`/`cp`/`mv`/`rm`/`now` short-circuit to the bash registry — no LLM
 			// call, so app control works (and tests run) without a model backend.
-			const answer = isDirectCommand(trimmed)
-				? await runDirect(trimmed)
-				: await (await ensureRuntime()).prompt(trimmed)
+			let activity: TurnActivity = {}
+			let answer: string
+			if (isDirectCommand(trimmed)) {
+				answer = await runDirect(trimmed)
+			} else {
+				const turn = await runAgentTurn(await ensureRuntime(), trimmed)
+				answer = turn.answer
+				activity = { thinking: turn.thinking, toolCalls: turn.toolCalls }
+			}
+			// Reasoning + tool calls happened BEFORE the answer, so they get their own
+			// assistant message ahead of the answer bubble. The shared Transcript renders a
+			// message's content before its tool rows (right when one model turn speaks then
+			// acts, wrong for a whole multi-turn loop collapsed into one message), so we
+			// split the turn's work out — only when there's anything to show.
+			if (activity.thinking || activity.toolCalls?.length) {
+				messages.push({ id: crypto.randomUUID(), role: 'assistant', content: '', ...activity })
+			}
 			if (pending) {
 				// The agent asked a question (it called `ask_user`): the structured question
 				// IS the assistant turn — render the options inline and ping a `question`
@@ -241,6 +281,82 @@ export async function createQuayAgent(
 
 function isDirectCommand(input: string): boolean {
 	return /^(app|cp|mv|rm|now)\b/.test(input)
+}
+
+// A turn's visible activity beyond its answer text: the agent's reasoning and the
+// tool calls it made.
+interface TurnActivity {
+	thinking?: string
+	toolCalls?: ToolCallInfo[]
+}
+
+// Run one LLM turn, recording its thinking + tool calls off the runtime's event
+// stream. quay doesn't stream to the launcher (request/response), so we collect the
+// whole turn and hand it back once `prompt` resolves — every call is `done` by then.
+// `ask_user` is skipped: its question is the turn's content + options, not a row.
+async function runAgentTurn(
+	rt: Runtime,
+	input: string
+): Promise<{ answer: string } & TurnActivity> {
+	const toolCalls: ToolCallInfo[] = []
+	const byId = new Map<string, ToolCallInfo>()
+	const thinking: string[] = []
+	const unsubscribe = rt.subscribe((event) => {
+		if (event.type === 'tool_execution_start' && event.toolName !== 'ask_user') {
+			const call: ToolCallInfo = {
+				id: event.toolCallId,
+				name: event.toolName,
+				args: event.args,
+				status: 'running'
+			}
+			byId.set(event.toolCallId, call)
+			toolCalls.push(call)
+		} else if (event.type === 'tool_execution_end') {
+			const call = byId.get(event.toolCallId)
+			if (call) {
+				call.result = toolResultValue(event.result)
+				call.isError = event.isError
+				call.status = 'done'
+			}
+		} else if (
+			event.type === 'message_end' &&
+			'role' in event.message &&
+			event.message.role === 'assistant'
+		) {
+			for (const block of event.message.content)
+				if (block.type === 'thinking' && block.thinking.trim()) thinking.push(block.thinking)
+		}
+	})
+	try {
+		const answer = await rt.prompt(input)
+		return {
+			answer,
+			thinking: thinking.length ? thinking.join('\n\n') : undefined,
+			toolCalls: toolCalls.length ? toolCalls : undefined
+		}
+	} finally {
+		unsubscribe()
+	}
+}
+
+// A tool result for display: the joined text of its content blocks, JSON-parsed
+// when it is JSON (so it pretty-prints as structure) and left raw otherwise —
+// matching frieren's transcript convention.
+function toolResultValue(result: unknown): unknown {
+	const content = (result as { content?: unknown }).content
+	const text = Array.isArray(content)
+		? content
+				.filter(
+					(b): b is { type: string; text: string } => (b as { type?: string }).type === 'text'
+				)
+				.map((b) => b.text)
+				.join('\n')
+		: ''
+	try {
+		return JSON.parse(text)
+	} catch {
+		return text
+	}
 }
 
 // Trim an answer to a banner-sized one-liner: first line, capped, ellipsised.
