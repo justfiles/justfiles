@@ -1,4 +1,4 @@
-import { type CSSProperties, useLayoutEffect, useRef } from 'react'
+import { type CSSProperties, useLayoutEffect, useRef, useState } from 'react'
 
 export interface ToolCallInfo {
 	id: string
@@ -45,6 +45,14 @@ const css = `
 	outline: none;
 	border-color: var(--focus);
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent);
+}
+.js-transcript-copy { opacity: 0; transition: opacity 120ms ease, background 120ms ease; }
+.js-transcript-bubble:hover .js-transcript-copy { opacity: 1; }
+.js-transcript-copy:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+.js-transcript-copy:focus-visible {
+	opacity: 1;
+	outline: none;
+	box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 30%, transparent);
 }
 `
 
@@ -215,7 +223,9 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 	return (
 		<div style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
 			<div
+				className="js-transcript-bubble"
 				style={{
+					position: 'relative',
 					maxWidth: '78%',
 					whiteSpace: 'pre-wrap',
 					overflowWrap: 'break-word',
@@ -239,8 +249,88 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 						}}
 					/>
 				) : null}
+				{content ? <CopyButton content={content} /> : null}
 			</div>
 		</div>
+	)
+}
+
+// Hover-revealed copy control in the bubble's top-right corner. Visibility is
+// driven by `.js-transcript-copy` in the scoped sheet above (hidden until the
+// bubble is hovered or the button is focused). The icon inherits the bubble's
+// text colour via currentColor, so it contrasts on both the user and assistant
+// surfaces without per-side styling.
+function CopyButton({ content }: { content: string }) {
+	const [copied, setCopied] = useState(false)
+	const copy = () => {
+		void navigator.clipboard.writeText(content).then(() => {
+			setCopied(true)
+			setTimeout(() => setCopied(false), 1200)
+		})
+	}
+	return (
+		<button
+			type="button"
+			className="js-transcript-copy"
+			onClick={copy}
+			aria-label={copied ? 'Copied' : 'Copy message'}
+			title={copied ? 'Copied' : 'Copy'}
+			style={{
+				position: 'absolute',
+				top: '4px',
+				right: '4px',
+				display: 'inline-flex',
+				alignItems: 'center',
+				justifyContent: 'center',
+				width: '20px',
+				height: '20px',
+				padding: 0,
+				borderRadius: '5px',
+				border: 'none',
+				background: 'transparent',
+				color: 'inherit',
+				cursor: 'pointer'
+			}}
+		>
+			{copied ? <CheckIcon /> : <CopyIcon />}
+		</button>
+	)
+}
+
+function CopyIcon() {
+	return (
+		<svg
+			width="12"
+			height="12"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+		>
+			<rect x="9" y="9" width="13" height="13" rx="2" />
+			<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+		</svg>
+	)
+}
+
+function CheckIcon() {
+	return (
+		<svg
+			width="12"
+			height="12"
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			aria-hidden="true"
+		>
+			<path d="M20 6L9 17l-5-5" />
+		</svg>
 	)
 }
 
