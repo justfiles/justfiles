@@ -146,6 +146,33 @@ or pointer-move. Every dispatch round-trips to kernel.
 Keep state minimal. Durable fact usually = "what is user looking at", not the bytes (re-read those on
 demand via procedure). See `app-files`.
 
+### State persistence & migrations
+
+The **whole** reducer state is JSON-persisted to `/state/<id>.json` on every commit and **rehydrated
+verbatim** on boot. `init` is used **only on first run** (when nothing is persisted yet) — it is *not*
+merged into already-persisted state. So a field you add to `init` later will be **missing** from states
+saved before the change:
+
+```ts
+// You shipped v1 with this, the user used the app (state is now persisted):
+init: { notes: [{ title: 'hi' }] }
+// v2 adds `path`. OLD persisted state still loads WITHOUT it — init is not re-applied:
+type Note = { title: string; path?: string } // ← make new fields optional
+```
+
+Tolerate old shapes — don't assume new fields exist:
+
+```ts
+// Default at the read site:
+const path = note.path ?? `/notes/${slugify(note.title)}.txt`
+
+// Or version-tag the state and normalise once, inside the first edge that touches it:
+type State = { v: 1 | 2; notes: Note[] }
+```
+
+To hard-reset during dev: clear `/state/<id>.json` (uninstalling drops it; **re-installing keeps old
+state**). In an app-code draft, the ⟳ Run/Restart button wipes draft state (`devkit.run({ reset: true })`).
+
 ---
 
 ## 4. Edges — `update: (t) => ({ ... })`
@@ -241,11 +268,10 @@ opened: t.commit(openedSchema, (state, snapshot) => ({ ...state, ...snapshot }))
 
 ## 5. Capabilities — host services
 
-App cannot invent powers. Declares host services it needs (like iOS frameworks). Kernel resolves
-trusted scopes — sandbox cannot grant itself more.
-
-**Declare every capability you touch.** Even if host grants broad access, declaring keeps agent action
-surface honest + surfaces escapes under tighter hosts.
+App cannot invent powers. It **declares** the host services it needs; the kernel resolves trusted scopes
+— a sandboxed app cannot grant itself more. A declaration is just `{ id, scopes }` (all the kernel reads).
+**Declare every capability you touch**, even under a broad host — it keeps the agent's action surface
+honest.
 
 ```ts
 import { volume } from '@justfiles/app/capabilities/volume'
@@ -255,35 +281,80 @@ export const app = defineApp({
 	capabilities: {
 		volume: volume({ scopes: [] }), // local name 'volume' → the volume capability
 		ai: ai({ scopes: [] })
-	},
+	}
 	// ...
 })
 ```
 
-**Key** (`volume`, `ai`) = app-local name passed to `t.cmd`, `t.fromResult`, `sub.capability`,
-`app.invoke`. `scopes` = access level (capability-specific).
+> **In an app-code draft** this subpath does not resolve — declare the factory inline instead (Section 12).
 
-Invoke two ways:
+**Key** (`volume`, `ai`) = the app-local name you pass to `t.cmd`, `t.fromResult`, `sub.capability`,
+`app.invoke`. **`scopes`** = access level (capability-specific; see volume below).
 
-- **Into state** — from edge via `t.cmd(...).to(resultEdge)` (result folds back through `fromResult`).
-- **To caller** — from procedure via `await app.invoke(...)` (Section 7) (returns value).
+### Invoke two ways
 
-### Available capabilities
+```ts
+// into state (from an edge): kernel runs it, result folds back via t.fromResult (Section 4)
+t.cmd('volume', 'writeFile', path, bytes).to('saved')
+// to the caller (from a procedure): app.invoke returns the value (Section 7)
+const bytes = await app.invoke('volume', 'readFile', path)
+```
 
-Import from `@justfiles/app/capabilities/<id>`. Contract files = exact method signatures.
+### volume scopes — the one capability with non-trivial scoping
 
-| Capability  | Import subpath                        | What it does                                                                 |
-| ----------- | ------------------------------------- | --------------------------------------------------------------------------- |
-| `volume`    | `.../capabilities/volume`             | Scoped filesystem: `readFile`, `writeFile`, `mkdir`, `rm`, `rename`, `exists`, `scan({path, recursive})`, `watch` (stream). Scopes: `'app'` (default per-app chroot), `'system'` (user root), or a path prefix. |
-| `ai`        | `.../capabilities/ai`                 | `generateText({ system?, prompt, temperature?, maxTokens? }) → { text }`.    |
-| `email`     | `.../capabilities/email`              | `listUnread`, `readDetail`, `markRead`.                                      |
-| `calendar`  | `.../capabilities/calendar`           | `listToday({ timezone }) → CalendarEvent[]`.                                 |
-| `notify`    | `.../capabilities/notify`             | `notify(input)` — emit a host notification (no scope needed).               |
-| `accounts`  | `.../capabilities/accounts`           | Connected-account info (providers backing ai/email/calendar).               |
-| `devkit`    | `.../capabilities/devkit`             | Build/run/install app bundles. Used by `app-code`; you rarely need it.       |
+```ts
+volume({ scopes: [] })          // per-app chroot at /data/<id> — ALWAYS available
+volume({ scopes: ['app'] })     // identical to [] (any non-special scope → per-app chroot)
+volume({ scopes: ['system'] })  // user's ROOT volume — host-ALLOWLISTED apps only
+volume({ scopes: ['/photos'] }) // chroot at an absolute prefix (/system[/...] needs 'system')
+```
 
-Method args carrying binary (`Uint8Array`) or `bigint` (e.g. `volume`) -> capability binds locally.
-Transparent to you, just call normally.
+- A **user/third-party app gets `CAPABILITY_UNAVAILABLE` for `['system']`** — only host built-ins (e.g.
+  the Files app) are on the allowlist. **Use `scopes: []`** unless you are a built-in.
+- Inside a per-app chroot the app sees `/` as its own root: `writeFile('/notes/a.txt', …)` lands at
+  `/data/<id>/notes/a.txt`. Just use plain absolute paths.
+
+### Exact volume method signatures
+
+The surface IS the `@justfiles/fs` `Volume` interface (minus the two callback-shaped methods). Every
+method is **positional** and **async**; paths are absolute. I/O is **bytes** — encode/decode text
+yourself (`TextEncoder`/`TextDecoder`).
+
+```ts
+readFile(path): Promise<Uint8Array>                        // throws ENOENT / EISDIR
+writeFile(path, data: Uint8Array): Promise<void>           // create+overwrite; AUTO-creates parent dirs
+appendFile(path, data: Uint8Array): Promise<void>
+exists(path): Promise<boolean>                             // never throws
+mkdir(path, opts?: { recursive?: boolean }): Promise<void> // default NON-recursive → EEXIST if exists
+readdir(path): Promise<Dirent[]>
+rm(path, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
+rename(oldPath, newPath): Promise<void>                    // replaces dest atomically
+cp(src, dest, opts?: { recursive?: boolean }): Promise<void>
+stat(path): Promise<Stat>
+
+// scan is the ONE object-shaped method — it RETURNS a listing (no visitor):
+scan(input: { path: string; recursive?: boolean }): Promise<VolumeEntry[]>
+//   VolumeEntry = { path: string; type: 'file' | 'dir' }
+
+// watch is a STREAM — declared via subscriptions(), folded with t.fromEvent (Section 6):
+watch(input: { path: string }): Stream<{ source?: string }>
+```
+
+Because `writeFile` auto-creates parent dirs, you usually **don't need `mkdir`** before a write. The
+file-backed Notes recipe (Section 10) shows these calls in context.
+
+### Other capabilities
+
+Unlike `volume`, these take a **single object** argument. The two common ones:
+
+```ts
+ai.generateText(input: { system?; prompt; temperature?; maxTokens? }): Promise<{ text: string }>
+notify.notify(input: { id; kind: 'info' | 'error' | 'question'; title; body; threadId?; route? }): void
+```
+
+`email` (`listUnread`/`readDetail`/`markRead`), `calendar` (`listToday({ timezone })`), `accounts`, and
+`devkit` — exact signatures in each `capabilities/<id>/contract.ts`. `ai`/`email`/`calendar`/`accounts`
+run server-side (credentialed); `volume`/`notify`/`devkit` run locally; `notify` needs no scope.
 
 ---
 
@@ -364,8 +435,17 @@ Agent never sees GUI. Entire view of app:
 
 1. **`state`** — reducer state as JSON. (Keep state semantic, legible.)
 2. **Action surface** — every public `t.on` edge (`kind: 'handler'`) + every procedure with `audience`
-   not `'gui'` (`kind: 'procedure'`). Each carries `description`, `examples`, `schemaHint` derived from
-   schema.
+   not `'gui'` (`kind: 'procedure'`). Each entry is derived from your edge:
+
+```ts
+// your edge:  rename: t.on(v.object({ from: v.string(), title: v.string() }), …,
+//               { description: 'Rename the open note.', examples: [{ params: { from: '/notes/a.txt', title: 'b' } }] })
+// the agent sees:
+{ name: 'rename', kind: 'handler',
+  description: 'Rename the open note.',
+  examples: [{ params: { from: '/notes/a.txt', title: 'b' } }],
+  schemaHint: { from: 'string', title: 'string' } } // ← derived from the schema
+```
 
 Agent dispatches with `actor: 'agent'`. State-changing agent dispatch resolves with settled state ->
 agent sees result.
@@ -466,9 +546,80 @@ GUI control calling `actions.rename({...})`.
 Add `p.procedure`. In `run`: `app.invoke('ai', 'generateText', ...)`, compute result, then `app.dispatch`
 a `t.commit` edge to land. Return `app.settled(seq)`. Declare `ai` capability.
 
-**Persist to / read from files** ("save the drawing"):
-Declare `volume`. Write *into* state flow: `t.cmd('volume','writeFile',...).to('saved')` + `t.fromResult`
-edge. Read bytes *back to GUI*: procedure with `app.invoke('volume','readFile',...)`.
+**Persist to / read from files** (a file-backed Notes app — scan, read, autosave, rename):
+The full file pattern. Declare `volume`; write *into* state via `t.cmd('volume','writeFile',…).to(edge)`
++ a `t.fromResult` edge; read bytes *back to the GUI* via a procedure (`app.invoke('volume','readFile',…)`).
+State stays semantic (the list + which note is open); body bytes are re-read on demand. `writeFile`
+auto-creates `/notes`, so there's no separate `mkdir`.
+
+```ts
+import { defineApp } from '@justfiles/app'
+import { volume } from '@justfiles/app/capabilities/volume' // declare inline in an app-code draft
+import * as v from 'valibot'
+
+const enc = new TextEncoder()
+const dec = new TextDecoder()
+const NOTES = '/notes'
+const titleToPath = (title: string) => `${NOTES}/${title.replace(/[^a-z0-9-]+/gi, '-')}.txt`
+
+type Note = { path: string; title: string }
+type State = { notes: Note[]; openPath: string | null; error: string | null }
+
+export const app = defineApp({
+	init: { notes: [], openPath: null, error: null } as State,
+	capabilities: { volume: volume({ scopes: [] }) }, // per-app private storage at /data/<id>
+	update: (t) => ({
+		// scan the folder → fold the .txt listing into state
+		refresh: t.on(v.object({}), (s) => [s, t.cmd('volume', 'scan', { path: NOTES }).to('listed')], {
+			description: 'Rescan the notes folder.'
+		}),
+		listed: t.fromResult('volume', 'scan', (s, r) => {
+			if (!r.ok) return { ...s, error: r.error.message }
+			const notes = r.value
+				.filter((e) => e.type === 'file' && e.path.endsWith('.txt'))
+				.map((e) => ({ path: e.path, title: e.path.slice(NOTES.length + 1, -4) }))
+				.sort((a, b) => a.title.localeCompare(b.title))
+			return { ...s, notes, error: null }
+		}),
+		open: t.on(v.object({ path: v.string() }), (s, { path }) => ({ ...s, openPath: path }), {
+			description: 'Open a note for editing.'
+		}),
+		// autosave — GUI dispatches on a debounced pause, not per keystroke; writeFile auto-creates /notes
+		save: t.on(
+			v.object({ path: v.string(), text: v.string() }),
+			(s, { path, text }) => [s, t.cmd('volume', 'writeFile', path, enc.encode(text)).to('saved')],
+			{ description: 'Write a note body.', examples: [{ params: { path: '/notes/a.txt', text: 'hi' } }] }
+		),
+		saved: t.fromResult('volume', 'writeFile', (s, r) =>
+			r.ok ? { ...s, error: null } : { ...s, error: r.error.message }
+		),
+		// rename the file when the title changes (move old → new path)
+		rename: t.on(
+			v.object({ from: v.string(), title: v.string() }),
+			(s, { from, title }) => {
+				const to = titleToPath(title)
+				const openPath = s.openPath === from ? to : s.openPath
+				return [{ ...s, openPath }, t.cmd('volume', 'rename', from, to).to('renamed')]
+			},
+			{ description: 'Rename a note (the title is its filename).' }
+		),
+		renamed: t.fromResult('volume', 'rename', (s, r) => (r.ok ? s : { ...s, error: r.error.message }))
+	}),
+	// read the open note's body back to the GUI on demand — bytes never enter state
+	procedures: (p) => ({
+		readNote: p.procedure({
+			description: 'Read a note body as text.',
+			schema: v.object({ path: v.string() }),
+			async run({ path }, app) {
+				if (!(await app.invoke('volume', 'exists', path))) return { path, text: '' }
+				return { path, text: dec.decode(await app.invoke('volume', 'readFile', path)) }
+			}
+		})
+	})
+})
+
+export type NotesApp = typeof app
+```
 
 **React to external file changes** ("reload when file changes on disk"):
 Declare `volume`. Add `subscriptions(state)` returning `sub.capability('volume','watch',{path}).to('changed')`
@@ -518,3 +669,67 @@ optional `export const menu: GUIMenu<typeof app>`, `injectStyle(css, key)`.
 - One dispatch per semantic event, not per keystroke.
 - `description` + `examples` on every public action — they are agent's interface.
 - Always `export type XxxApp = typeof app`; GUI + clients infer from it.
+
+---
+
+## 12. Building inside app-code (drafts)
+
+There are two ways to author an app, and the import rules differ:
+
+- **In-repo package** (`packages/app-foo/`): a full vite build via `kernelHost` (Section 2). Any package
+  in the workspace resolves normally — including every `@justfiles/app/capabilities/<id>` subpath.
+- **In an app-code draft** (built through the `app.code` authoring app): the draft compiler (esbuild)
+  bundles your sources **hermetically against a fixed stdlib** — there is no `node_modules`. This is the
+  environment most agents are editing in, and it is **stricter about imports**.
+
+### Project layout (app-code draft)
+
+A draft is a directory in the caller's data volume:
+
+```
+/projects/<slug>/
+  project.json        # { id, name, app: 'src/app.ts', gui: 'src/gui.tsx', icon?, version?, description? }
+  src/
+    app.ts            # state machine
+    gui.tsx           # React GUI
+  icon                # optional image data URL
+```
+
+`id` is a reverse-DNS bundle id (e.g. `com.example.notes`). `app.code` exposes Run (live preview),
+Install (promote to `/applications`), and Pack (download a `.zip`) — all via the `devkit` capability, so
+you never call it yourself.
+
+### What you can import in a draft
+
+Only these bare specifiers resolve (everything else fails the build):
+
+```ts
+import { defineApp } from '@justfiles/app'
+import { injectStyle, defineGUI } from '@justfiles/app/browser'
+import type { GUIProps, GUIMenu } from '@justfiles/app/react'
+import * as v from 'valibot'
+import './helpers.ts' // ✅ relative imports within src/ work
+// import { volume } from '@justfiles/app/capabilities/volume' // ❌ does NOT resolve in a draft
+```
+
+`react` / `react-dom` are provided by the host (shared instance) — emit bare `from 'react'` imports.
+
+### Declaring capabilities in a draft
+
+Because the capability subpath does not resolve, **declare the factory inline**. The kernel reads only
+`{ id, scopes }`, so this is exactly equivalent to the imported factory:
+
+```ts
+const volume = (opts: { scopes: string[] }) => ({ id: 'volume' as const, scopes: opts.scopes })
+const ai = (opts: { scopes: string[] }) => ({ id: 'ai' as const, scopes: opts.scopes })
+// usage is unchanged: capabilities: { volume: volume({ scopes: [] }) }
+```
+
+The draft build does not type-check (esbuild strips types), so a loose inline factory still builds and
+runs; `t.cmd('volume', 'writeFile', …)` just isn't method-checked. For full typing, author in-repo.
+
+### Capability limits for user apps
+
+A draft installs under the author's own id, **not** the built-in allowlist — so `volume({ scopes:
+['system'] })` returns `CAPABILITY_UNAVAILABLE`. Use `scopes: []` (per-app chroot at `/data/<id>`) for
+private storage. See Section 5 for the full scope rules.

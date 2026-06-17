@@ -57,3 +57,5 @@ can notify when agent finishes work
 
 
 ** TODO new session
+
+** TODO build tool for app-code to check the code
