@@ -4,10 +4,11 @@ import type { BuiltinBundle } from '@justfiles/app/runtime'
 import code from '@justfiles/app-code/bundle'
 import counter from '@justfiles/app-counter/bundle'
 import files from '@justfiles/app-files/bundle'
+import notes from '@justfiles/app-notes/bundle'
 import paint from '@justfiles/app-paint/bundle'
 import settings from '@justfiles/app-settings/bundle'
 
-const bundles = [counter, files, paint, settings, code]
+const bundles = [counter, files, notes, paint, settings, code]
 const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]))
 
 export const desktopBuiltinCatalog: Catalog = {

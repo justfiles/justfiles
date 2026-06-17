@@ -89,6 +89,11 @@ async function buildCore(): Promise<string> {
 async function buildBoot(): Promise<string> {
 	return bundle(`
 		import { newWebSocketRpcSession } from 'capnweb'
+		// Swallow the macOS WKWebView "no responder" beep (NSBeep) on Escape: a keydown
+		// the page doesn't preventDefault reaches AppKit's cancelOperation:, which beeps.
+		// Capture-phase + preventDefault kills the beep for every mini-app; propagation
+		// still runs, so app-level Escape handlers (e.g. closing a palette) are unaffected.
+		addEventListener('keydown', (e) => { if (e.key === 'Escape') e.preventDefault() }, true)
 		const cfg = window.__quay
 		const root = document.getElementById('root')
 		const berth = newWebSocketRpcSession(

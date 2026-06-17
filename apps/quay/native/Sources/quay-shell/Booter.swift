@@ -13,6 +13,7 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 	private let target: URL?
 	private var window: NSWindow!
 	private var webView: WKWebView!
+	private var titleObservation: NSKeyValueObservation?
 
 	init(appId: String, name: String, target: URL?) {
 		self.appId = appId
@@ -42,9 +43,11 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 		window.title = name
 		// Modern macOS chrome: the titlebar is transparent, not colour-matched. The
 		// window backing shows through, and the separator is disabled, so the traffic
-		// lights float over the same colour the web content lands on.
+		// lights float over the same colour the web content lands on. The title stays
+		// visible — it rides the traffic-light row and tracks the page's document.title
+		// (see the observer below).
 		window.backgroundColor = Self.windowBgColor
-		window.titleVisibility = .hidden
+		window.titleVisibility = .visible
 		window.titlebarAppearsTransparent = true
 		window.isMovableByWindowBackground = true
 		if #available(macOS 11.0, *) { window.titlebarSeparatorStyle = .none }
@@ -61,6 +64,16 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 		webView.setValue(false, forKey: "drawsBackground")
 		if #available(macOS 13.3, *) { webView.isInspectable = true } // dev only
 		window.contentView = webView
+
+		// Mirror the page's document.title into the native titlebar (shown on the
+		// traffic-light row). Apps that set it — e.g. Notes → the open note's filename —
+		// surface it here; otherwise the shell's <title> is the reverse-DNS app id, so
+		// fall back to the human app name.
+		titleObservation = webView.observe(\.title, options: [.initial, .new]) { [weak self] view, _ in
+			guard let self else { return }
+			let pageTitle = view.title ?? ""
+			self.window.title = pageTitle.isEmpty || pageTitle == self.appId ? self.name : pageTitle
+		}
 
 		if let target {
 			webView.load(URLRequest(url: target))

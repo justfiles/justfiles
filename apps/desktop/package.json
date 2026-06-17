@@ -26,6 +26,7 @@
 		"@justfiles/app-code": "workspace:*",
 		"@justfiles/app-counter": "workspace:*",
 		"@justfiles/app-files": "workspace:*",
+		"@justfiles/app-notes": "workspace:*",
 		"@justfiles/app-paint": "workspace:*",
 		"@justfiles/app-settings": "workspace:*",
 		"@justfiles/design": "workspace:*",

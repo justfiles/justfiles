@@ -1,0 +1,35 @@
+{
+	"name": "@justfiles/app-notes",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"main": "./dist/manifest.json",
+	"exports": {
+		"./bundle": {
+			"types": "./dist/bundle.d.ts",
+			"default": "./dist/bundle.js"
+		}
+	},
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview"
+	},
+	"dependencies": {
+		"@justfiles/app": "workspace:*",
+		"valibot": "^1.1.0"
+	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"devDependencies": {
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"@vitejs/plugin-react": "^5",
+		"react": "^19",
+		"react-dom": "^19",
+		"typescript": "~6.0.3",
+		"vite": "^8.0.0-beta.13"
+	}
+}
