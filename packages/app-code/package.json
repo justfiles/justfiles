@@ -18,6 +18,7 @@
 	"dependencies": {
 		"@codemirror/lang-javascript": "^6.2.0",
 		"@codemirror/language": "^6.10.0",
+		"@codemirror/lint": "^6.9.7",
 		"@codemirror/view": "^6.30.0",
 		"@justfiles/app": "workspace:*",
 		"@lezer/highlight": "^1.2.0",

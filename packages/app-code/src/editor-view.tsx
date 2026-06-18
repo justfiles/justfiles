@@ -41,8 +41,9 @@ export function createEditorView(
 	let fileTreeOpen = true
 	let menuView: MenuView = []
 	let openMenu: number | null = null
-	// Problems panel: type-check diagnostics, refreshed after each build. Empty
-	// where the host has no checker (typecheck → CAPABILITY_UNAVAILABLE).
+	// Type-check diagnostics, refreshed after each build and rendered inline in the
+	// editor (filtered to the open file). Empty where the host has no checker
+	// (typecheck → CAPABILITY_UNAVAILABLE).
 	let problems: Diagnostic[] = []
 	let installing = false
 	let installLabel = 'Install'
@@ -109,20 +110,33 @@ export function createEditorView(
 			.catch(() => {})
 	}
 
-	// Refresh the Problems panel from the engine type-checker. A failure (e.g. the
-	// host has no checker) just clears the panel — the build/run path is unaffected.
+	// Feed the editor the diagnostics for the file it currently shows. The engine
+	// reports project-wide, keyed relative to the project ROOT (`src/app.ts`), while
+	// the editor's `selectedPath` is relative to the `src/` dir (`app.ts`) — so match
+	// the `src/`-prefixed form (and the bare form, in case a host keys it that way).
+	const pushDiagnostics = () => {
+		code.setDiagnostics(
+			editorPath
+				? problems.filter((p) => p.file === `src/${editorPath}` || p.file === editorPath)
+				: []
+		)
+	}
+
+	// Refresh diagnostics from the engine type-checker, then render them inline in
+	// the editor. A failure (e.g. the host has no checker) just clears them — the
+	// build/run path is unaffected.
 	const refreshProblems = () => {
 		void client
 			.typecheck({})
 			.then((result) => {
 				if (!live) return
 				problems = result.diagnostics
-				patch()
+				pushDiagnostics()
 			})
 			.catch(() => {
 				if (!live) return
 				problems = []
-				patch()
+				pushDiagnostics()
 			})
 	}
 
@@ -216,6 +230,7 @@ export function createEditorView(
 			if (source.path !== null) readToken++
 			source = { path: null, content: null, error: null }
 			editorPath = null
+			pushDiagnostics()
 			return
 		}
 		if (source.path === path) return
@@ -229,6 +244,7 @@ export function createEditorView(
 				editorPath = path
 				localDirty = false
 				code.setDoc(content)
+				pushDiagnostics()
 				patch()
 			})
 			.catch((err) => {
@@ -291,7 +307,6 @@ export function createEditorView(
 			fileTreeOpen,
 			menuView,
 			openMenu,
-			problems,
 			installing,
 			installLabel,
 			iconUrl,

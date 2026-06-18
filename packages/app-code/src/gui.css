@@ -331,36 +331,6 @@
 	white-space: pre-wrap;
 }
 
-.app-code-problems {
-	margin: 0;
-	padding: 0;
-	list-style: none;
-	font-family: var(--app-code-mono);
-	font-size: 12px;
-	line-height: 1.5;
-}
-
-.app-code-problem {
-	white-space: pre-wrap;
-	color: var(--app-code-muted);
-}
-
-.app-code-problem.is-error {
-	color: #c41a16;
-}
-
-.app-code-problem.is-warning {
-	color: #b8860b;
-}
-
-.app-code-problem-loc {
-	opacity: 0.7;
-}
-
-.app-code-problem-code {
-	opacity: 0.6;
-}
-
 .app-code-icon-button {
 	flex: 0 0 auto;
 	border: 0;

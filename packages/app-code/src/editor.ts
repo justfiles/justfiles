@@ -1,12 +1,17 @@
 import { javascript } from '@codemirror/lang-javascript'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { type Diagnostic as CmDiagnostic, lintGutter, setDiagnostics } from '@codemirror/lint'
 import { EditorView, type ViewUpdate } from '@codemirror/view'
+import type { Diagnostic } from '@justfiles/app/engine'
 import { tags as t } from '@lezer/highlight'
 import { basicSetup } from 'codemirror'
 
 export type Editor = {
 	dom: HTMLElement
 	setDoc(content: string): void
+	// Replace the inline diagnostics with the engine's LSP-shaped ones (already
+	// filtered to this file). Underlines, hover tooltips and a gutter marker.
+	setDiagnostics(diagnostics: Diagnostic[]): void
 	destroy(): void
 }
 
@@ -57,8 +62,40 @@ const theme = EditorView.theme({
 	'.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
 		backgroundColor: 'color-mix(in srgb, var(--focus) 30%, transparent)'
 	},
-	'.cm-cursor': { borderLeftColor: 'var(--text)' }
+	'.cm-cursor': { borderLeftColor: 'var(--text)' },
+	// Inline diagnostics: keep the hover tooltip on the platform sheet so it
+	// reads in dark mode (CodeMirror's default tooltip is light-only).
+	'.cm-tooltip': {
+		backgroundColor: 'var(--surface)',
+		color: 'var(--text)',
+		border: '1px solid var(--rule)'
+	},
+	'.cm-diagnostic': { fontFamily: 'var(--app-code-mono)', fontSize: '12px' },
+	'.cm-diagnostic-error': { borderLeftColor: '#c41a16' },
+	'.cm-diagnostic-warning': { borderLeftColor: '#b8860b' }
 })
+
+// Map the engine's LSP positions (0-based line/character) onto CodeMirror
+// document offsets, clamped to the live doc so a stale diagnostic can never
+// throw. CodeMirror lines are 1-based; severities line up one-to-one.
+function toCmDiagnostics(view: EditorView, diagnostics: Diagnostic[]): CmDiagnostic[] {
+	const doc = view.state.doc
+	const offset = (line: number, character: number) => {
+		const row = doc.line(Math.min(Math.max(line, 0) + 1, doc.lines))
+		return Math.min(row.from + Math.max(character, 0), row.to)
+	}
+	return diagnostics.map((d) => {
+		const from = offset(d.range.start.line, d.range.start.character)
+		const to = Math.max(offset(d.range.end.line, d.range.end.character), from)
+		return {
+			from,
+			to,
+			severity: d.severity,
+			message: d.message,
+			source: d.code ? `${d.source} ${d.code}` : d.source
+		}
+	})
+}
 
 // A CodeMirror editor driven imperatively: `setDoc` loads a freshly-read file
 // and user edits are reported through `onChange`. Programmatic `setDoc` calls
@@ -69,6 +106,7 @@ export function createEditor(onChange: (content: string) => void): Editor {
 		doc: '',
 		extensions: [
 			basicSetup,
+			lintGutter(),
 			javascript({ typescript: true, jsx: true }),
 			theme,
 			syntaxHighlighting(xcodeSyntax),
@@ -83,6 +121,9 @@ export function createEditor(onChange: (content: string) => void): Editor {
 			loading = true
 			view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: content } })
 			loading = false
+		},
+		setDiagnostics(diagnostics) {
+			view.dispatch(setDiagnostics(view.state, toCmDiagnostics(view, diagnostics)))
 		},
 		destroy() {
 			view.destroy()
