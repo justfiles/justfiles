@@ -21,6 +21,7 @@ export interface AppInfo {
 	id: string
 	name: string
 	glyph: string
+	icon?: string
 }
 
 export interface Backend extends BerthBackend {

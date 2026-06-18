@@ -16,6 +16,7 @@
 import { randomBytes } from 'node:crypto'
 import type { Channel } from '@justfiles/app/capabilities/notify'
 import { createQuayAgent } from './agent.ts'
+import { launcherCatalog } from './catalog.ts'
 import { clearRuntime, writeRuntime } from './discovery.ts'
 import { createHost } from './host.ts'
 import { reconcileProjection } from './materialize.ts'
@@ -42,13 +43,7 @@ const visible = <T extends { id: string }>(apps: T[]): T[] =>
 	apps.filter((app) => !app.id.startsWith('preview.'))
 
 const backend: Backend = {
-	async list() {
-		return visible(await host.kernel.list()).map((app) => ({
-			id: app.id,
-			name: app.name,
-			glyph: app.name.slice(0, 1).toUpperCase()
-		}))
-	},
+	list: () => launcherCatalog(host.kernel),
 	ls: (path) => host.fs.readdir(path),
 	gui: async (id) => (await host.kernel.app(id)).read('gui.js'),
 	// The berth seam: dispatch/state into the same kernel the agent drives, and a

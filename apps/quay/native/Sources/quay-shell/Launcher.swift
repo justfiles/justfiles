@@ -199,7 +199,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		let query = composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
 		let matches = query.isEmpty ? [] : filtered(query)
 		if !matches.isEmpty {
-			results.setItems(matches.map { ResultItem(id: $0.id, glyph: $0.glyph, label: $0.name) })
+			results.setItems(
+				matches.map { ResultItem(id: $0.id, glyph: $0.glyph, label: $0.name, icon: $0.icon) }
+			)
 			present(.apps)
 		} else if !query.isEmpty {
 			hintRow.setLabel("Ask agent “\(query)”")

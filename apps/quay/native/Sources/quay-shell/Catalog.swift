@@ -1,10 +1,11 @@
 import Foundation
 
-// One app in the launcher catalog — matches quayd's AppInfo ({id, name, glyph}).
+// One app in the launcher catalog — matches quayd's AppInfo ({id, name, glyph, icon}).
 struct CatalogApp: Decodable {
 	let id: String
 	let name: String
 	let glyph: String
+	let icon: String?
 }
 
 // One slash command for the composer's `/` menu — matches quayd's CommandMeta

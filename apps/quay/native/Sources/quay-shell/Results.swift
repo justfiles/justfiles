@@ -7,6 +7,7 @@ struct ResultItem {
 	let glyph: String
 	let label: String
 	var detail: String? = nil
+	var icon: String? = nil
 }
 
 // The native results list: a vertical, scrollable stack of icon+label rows shown above
@@ -71,7 +72,9 @@ final class Results: NSView {
 		rows.forEach { $0.removeFromSuperview() }
 		// Worst→best, top→bottom, so the best match lands adjacent to the composer.
 		rows = items.enumerated().reversed().map { itemIndex, item in
-			let row = Row(glyph: item.glyph, label: item.label, detail: item.detail, hint: false)
+			let row = Row(
+				glyph: item.glyph, label: item.label, detail: item.detail, hint: false, icon: item.icon
+			)
 			row.onHover = { [weak self] in self?.select(itemIndex) }
 			row.onClick = { [weak self] in self?.onPick?(item.id) }
 			doc.addSubview(row)
@@ -131,15 +134,23 @@ final class Row: NSView {
 	private var tracking: NSTrackingArea?
 	private let text = NSTextField(labelWithString: "")
 
-	init(glyph: String, label: String, detail: String? = nil, hint: Bool) {
+	init(glyph: String, label: String, detail: String? = nil, hint: Bool, icon: String? = nil) {
 		super.init(frame: NSRect(x: 0, y: 0, width: 320, height: Results.rowHeight))
 		wantsLayer = true
 		layer?.cornerRadius = 12
 
-		let glyphView = GlyphView(text: glyph, hint: hint)
-		glyphView.frame = NSRect(x: 12, y: (Results.rowHeight - 30) / 2, width: 30, height: 30)
-		glyphView.autoresizingMask = [.maxYMargin, .minYMargin]
-		addSubview(glyphView)
+		if let image = icon.flatMap(imageFromDataURL) {
+			let imageView = NSImageView(frame: NSRect(x: 12, y: (Results.rowHeight - 30) / 2, width: 30, height: 30))
+			imageView.image = image
+			imageView.imageScaling = .scaleProportionallyUpOrDown
+			imageView.autoresizingMask = [.maxYMargin, .minYMargin]
+			addSubview(imageView)
+		} else {
+			let glyphView = GlyphView(text: glyph, hint: hint)
+			glyphView.frame = NSRect(x: 12, y: (Results.rowHeight - 30) / 2, width: 30, height: 30)
+			glyphView.autoresizingMask = [.maxYMargin, .minYMargin]
+			addSubview(glyphView)
+		}
 
 		let font = NSFont.systemFont(ofSize: 15)
 		// A single-line label fills its frame from the top, so size it to one line height
@@ -187,6 +198,16 @@ final class Row: NSView {
 		addTrackingArea(area)
 		tracking = area
 	}
+}
+
+private func imageFromDataURL(_ url: String) -> NSImage? {
+	guard url.hasPrefix("data:image/"), let comma = url.firstIndex(of: ",") else { return nil }
+	let meta = url[..<comma]
+	let body = url[url.index(after: comma)...]
+	let data = meta.range(of: ";base64") != nil
+		? Data(base64Encoded: String(body))
+		: String(body).removingPercentEncoding?.data(using: .utf8)
+	return data.flatMap(NSImage.init(data:))
 }
 
 // The rounded glyph square: a blue gradient for apps, a flat tint for the agent hint,
