@@ -39,6 +39,16 @@ function typecheck(input: ProjectInput, ts: typeof TS, types: TypesBundle): Chec
 	for (const [path, text] of Object.entries(types)) overlay.set(norm(path), text)
 	for (const [path, text] of Object.entries(input.files)) overlay.set(norm(path), text)
 	const draftFiles = new Set(Object.keys(input.files).map(norm))
+	// The virtual directories holding overlay files (every ancestor up to `root`).
+	// bundler/node resolution probes `directoryExists` BEFORE `fileExists`, so
+	// without these the draft's own dirs (`src/`, which never touch the real fs)
+	// look empty and a relative import like `./app` resolves to nothing.
+	const dirOf = (path: string) => path.slice(0, path.lastIndexOf('/'))
+	const dirs = new Set<string>()
+	for (const file of overlay.keys()) {
+		for (let dir = dirOf(file); dir.length >= root.length && dir.startsWith(root); dir = dirOf(dir))
+			dirs.add(dir)
+	}
 
 	const options: TS.CompilerOptions = {
 		...ts.convertCompilerOptionsFromJson(input.tsconfig.compilerOptions ?? {}, root).options,
@@ -48,9 +58,11 @@ function typecheck(input: ProjectInput, ts: typeof TS, types: TypesBundle): Chec
 	const host = ts.createCompilerHost(options, true)
 	const baseRead = host.readFile.bind(host)
 	const baseExists = host.fileExists.bind(host)
+	const baseDirExists = host.directoryExists?.bind(host)
 	const baseGetSource = host.getSourceFile.bind(host)
 	host.fileExists = (file) => overlay.has(file) || baseExists(file)
 	host.readFile = (file) => overlay.get(file) ?? baseRead(file)
+	host.directoryExists = (dir) => dirs.has(dir) || (baseDirExists?.(dir) ?? false)
 	host.getSourceFile = (file, languageVersion, onError, shouldCreate) => {
 		const text = overlay.get(file)
 		return text !== undefined

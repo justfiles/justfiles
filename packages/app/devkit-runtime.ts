@@ -23,10 +23,25 @@ const EXTERNAL = [
 
 const LIBS = ['@justfiles/app', '@justfiles/app/browser', '@justfiles/app/react', 'valibot']
 
+// The capability factories an app author declares + invokes. Each is the typed
+// `defineCapability(...)` factory (`volume({ scopes }) → { id, scopes }`): the
+// SAME `{ id, scopes }` shape the kernel reads at runtime, but carrying the
+// method/stream contract so `app.invoke('volume', 'mkdir', …)` is typed. Without
+// these a draft must hand-roll a `{ id, scopes }` stub, which has no `__methods`
+// and collapses `invoke`'s method argument to `never`. `accounts` (allowlist-gated
+// admin) and `devkit` (the build capability itself) stay off the author surface.
+const CAPS = [
+	'@justfiles/app/capabilities/volume',
+	'@justfiles/app/capabilities/notify',
+	'@justfiles/app/capabilities/email',
+	'@justfiles/app/capabilities/calendar',
+	'@justfiles/app/capabilities/ai'
+]
+
 export async function buildRuntime(): Promise<Record<string, string>> {
 	const require = createRequire(import.meta.url)
 	const runtime: Record<string, string> = {}
-	for (const spec of LIBS) {
+	for (const spec of [...LIBS, ...CAPS]) {
 		// Re-export the package from a synthetic entry rather than bundling its
 		// resolved file directly. A CommonJS package (e.g. valibot) used as the
 		// entry collapses to a lone `export default`, so a draft's

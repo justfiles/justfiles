@@ -57,6 +57,77 @@ describe('typescriptEngine', () => {
 		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	}, 30_000)
 
+	test('typecheck resolves a relative import between draft files in a subdir', async () => {
+		// The draft's own dirs (e.g. `src/`) are virtual — they exist only in the
+		// overlay, never on the real fs. Resolution must still find `./app`.
+		const app = `import { defineApp } from '@justfiles/app'
+export const app = defineApp({ init: { count: 0 }, update: () => ({}) })`
+		const gui = `import { defineGUI } from '@justfiles/app/browser'
+import { app } from './app'
+export const gui = defineGUI({ mount: (el, state) => (void app, { update() {}, unmount() {} }) })`
+		const { diagnostics } = await engine.typecheck({
+			files: { 'src/app.ts': app, 'src/gui.tsx': gui },
+			entries: { app: 'src/app.ts', gui: 'src/gui.tsx' },
+			tsconfig: tsconfigFor({ id: 'demo', name: 'Demo', app: 'src/app.ts', gui: 'src/gui.tsx' })
+		})
+		expect(diagnostics.filter((d) => d.code === 'TS2307')).toEqual([])
+		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+	}, 30_000)
+
+	test('a declared capability compiles and types its invoke methods', async () => {
+		// Authors declare a capability with the real factory, not a `{ id, scopes }`
+		// stub — so it ships in the draft runtime AND carries the method contract.
+		const src = `import { defineApp } from '@justfiles/app'
+import { volume } from '@justfiles/app/capabilities/volume'
+import * as v from 'valibot'
+export const app = defineApp({
+	init: {},
+	capabilities: { volume: volume({ scopes: ['app'] }) },
+	update: () => ({}),
+	procedures: (p) => ({
+		go: p.procedure({ description: '', schema: v.object({}), async run(_, app) {
+			await app.invoke('volume', 'mkdir', '/Notes')
+			return app.state
+		} })
+	})
+})`
+		const input: ProjectInput = {
+			files: { 'src/app.ts': src },
+			entries: { app: 'src/app.ts' },
+			tsconfig: tsconfigFor({ id: 'demo', name: 'Demo', app: 'src/app.ts' })
+		}
+		// Compiles (the factory resolves from the draft runtime, not node_modules)…
+		const compiled = await engine.compile(input)
+		expect(compiled.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+		// …and typechecks: `invoke`'s method arg resolves to the volume contract, so
+		// `'mkdir'` is valid (a stub would collapse it to `never` → TS2345).
+		const { diagnostics } = await engine.typecheck(input)
+		expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+	}, 30_000)
+
+	test('an unknown capability method is a type error', async () => {
+		const src = `import { defineApp } from '@justfiles/app'
+import { volume } from '@justfiles/app/capabilities/volume'
+import * as v from 'valibot'
+export const app = defineApp({
+	init: {},
+	capabilities: { volume: volume({ scopes: ['app'] }) },
+	update: () => ({}),
+	procedures: (p) => ({
+		go: p.procedure({ description: '', schema: v.object({}), async run(_, app) {
+			await app.invoke('volume', 'nope', '/Notes')
+			return app.state
+		} })
+	})
+})`
+		const { diagnostics } = await engine.typecheck({
+			files: { 'src/app.ts': src },
+			entries: { app: 'src/app.ts' },
+			tsconfig: tsconfigFor({ id: 'demo', name: 'Demo', app: 'src/app.ts' })
+		})
+		expect(diagnostics.some((d) => d.code === 'TS2345')).toBe(true)
+	}, 30_000)
+
 	test('typecheck reports a type error against the draft file', async () => {
 		const BAD = `export const app = { init: { count: 0 } }
 const wrong: number = 'not a number'
