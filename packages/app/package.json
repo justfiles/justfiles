@@ -12,6 +12,7 @@
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./devkit": "./devkit.ts",
+		"./engine": "./engine.ts",
 		"./devkit-runtime": "./devkit-runtime.ts",
 		"./builtins": "./builtins.ts",
 		"./capabilities": "./capabilities/index.ts",
@@ -65,6 +66,10 @@
 			"./devkit": {
 				"types": "./dist/devkit.d.ts",
 				"default": "./dist/devkit.js"
+			},
+			"./engine": {
+				"types": "./dist/engine.d.ts",
+				"default": "./dist/engine.js"
 			},
 			"./devkit-runtime": {
 				"types": "./dist/devkit-runtime.d.ts",
@@ -160,6 +165,7 @@
 		"@tailwindcss/vite": "^4.3.0",
 		"capnweb": "^0.8.0",
 		"fflate": "^0.8.3",
-		"tailwindcss": "^4.3.0"
+		"tailwindcss": "^4.3.0",
+		"type-fest": "^5.6.0"
 	}
 }
