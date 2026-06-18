@@ -1,9 +1,9 @@
-// The devkit build pipeline: compile a draft's `src/*` against the system
-// runtime, and build / install / pack it. Host-agnostic — the esbuild engine and
-// the pre-bundled system `runtime` are INJECTED (a `Toolchain`), so this module
-// has only a type-only esbuild import and is safe to pull into a browser host
-// (frieren) as well as a Node host (desktop). The matching `runtime` is produced
-// by `buildRuntime` in the Node-only `@justfiles/app/devkit-runtime` subpath.
+// The devkit build pipeline: read a draft's project off a data volume and
+// build / install / pack it. The heavy compute is the swappable `Engine`
+// (`@justfiles/app/engine*`); this module is the host layer around it — project
+// I/O (read the tree, write `/applications`, zip) plus the legacy string-diagnostic
+// `compile` adapter the preview/ship path still uses. Host-agnostic and
+// browser-safe: the esbuild/typescript engines are injected, never imported here.
 //
 // A devkit project is a directory in a caller's data volume: a `project.json`
 // build contract (an `AppManifest` whose entry paths point at the `src/*`
@@ -12,23 +12,15 @@
 
 import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
-import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
 import { strToU8, zipSync } from 'fflate'
+import type { TsConfigJson } from 'type-fest'
+import { type BuildFn, esbuildCompile, type Toolchain } from './engine.esbuild.ts'
+import type { CheckResult, CompileResult, Engine, ProjectInput } from './engine.ts'
 import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from './kernel.ts'
-import { isReactGuiEntry, reactGuiEntry } from './react-entry.ts'
 
-export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
-
-// The injected toolchain: the esbuild `build` engine (native esbuild on a Node
-// host; `esbuild-wasm` in a browser host) plus the pre-bundled system libraries
-// keyed by import specifier.
-export type Toolchain = { build: BuildFn; runtime: Record<string, string> }
-
-export interface CompileResult {
-	app: string
-	gui: string
-	diagnostics: string[]
-}
+// `BuildFn` / `Toolchain` live with the esbuild engine now; re-exported so the
+// hosts that build a toolchain (quay / frieren / desktop) keep their import.
+export type { BuildFn, Toolchain }
 
 // The entry source paths, declared by the project file (keys into `files`). The
 // project owns its layout — compile never guesses where the entries live.
@@ -36,6 +28,8 @@ export interface CompileEntries {
 	app: string
 	gui?: string
 }
+
+const PROJECT_FILE = 'project.json'
 
 // A compiled draft: its identity (from `project.json`), the two compiled entries
 // (empty on failure), the optional icon data URL, and any compile diagnostics.
@@ -47,128 +41,93 @@ export interface DraftBuild {
 	diagnostics: string[]
 }
 
-// React stays external (resolved through the host importmap) so a preview shares
-// the one host React instance. Mirrors the list `buildRuntime` keeps external.
-const EXTERNAL = [
-	'react',
-	'react-dom',
-	'react-dom/client',
-	'react/jsx-runtime',
-	'react/jsx-dev-runtime'
-]
-
-const VFS = 'devkit-vfs'
-const RUNTIME = 'devkit-runtime'
-const REACT_GUI_ENTRY = '__react_gui_entry.ts'
-const PROJECT_FILE = 'project.json'
-
-// esbuild bundles a draft's `app.ts` (headless reducer) and `gui.ts` (browser UI)
-// the same way `kernelHost` does at ship time. `compile` is pure: the caller
-// injects the esbuild engine and the `runtime` map of pre-bundled system
-// libraries. The vfs resolver serves the draft's own files plus those system
-// libs; any other bare import is left unresolved on purpose — drafts compile
-// hermetically against the provided stdlib only.
+// ── Legacy compile adapter ─────────────────────────────────────────────────
+// The preview/ship path (`buildDraft` → run/install/pack) consumes string
+// diagnostics and the two conventional `app`/`gui` bundles, so this adapts the
+// structured esbuild engine to that shape. New callers use the `Engine` directly
+// (`compileDraft`/`typecheckDraft`). Errors only — esbuild warnings stay off this
+// surface (as before); the Problems panel sees the full set via `compileDraft`.
 export async function compile(
 	files: Record<string, string>,
 	entries: CompileEntries,
 	build: BuildFn,
 	runtime: Record<string, string>
-): Promise<CompileResult> {
-	const diagnostics: string[] = []
-	const one = async (entry: string, sources = files): Promise<string> => {
-		try {
-			const result = await build({
-				entryPoints: [entry],
-				bundle: true,
-				write: false,
-				format: 'esm',
-				external: EXTERNAL,
-				jsx: 'automatic',
-				logLevel: 'silent',
-				plugins: [vfs(sources, runtime)]
-			})
-			return result.outputFiles?.[0]?.text ?? ''
-		} catch (error) {
-			diagnostics.push(...messagesOf(error))
-			return ''
-		}
+): Promise<{ app: string; gui: string; diagnostics: string[] }> {
+	const entryRecord: Record<string, string> = {
+		app: entries.app,
+		...(entries.gui ? { gui: entries.gui } : {})
 	}
-	const present = (entry: string | undefined): entry is string => !!entry && entry in files
-	if (!present(entries.app)) diagnostics.push(`missing entry: ${entries.app}`)
-	if (entries.gui && !present(entries.gui)) diagnostics.push(`missing entry: ${entries.gui}`)
-	const app = present(entries.app) ? await one(entries.app) : ''
-	let gui = ''
-	if (present(entries.gui)) {
-		const wrapReactGui = isReactGuiEntry(entries.gui)
-		const sources = wrapReactGui
-			? { ...files, [REACT_GUI_ENTRY]: reactGuiEntry(`./${entries.gui}`) }
-			: files
-		gui = await one(wrapReactGui ? REACT_GUI_ENTRY : entries.gui, sources)
-	}
-	return { app, gui, diagnostics }
+	const { outputs, diagnostics } = await esbuildCompile(
+		{ files, entries: entryRecord, tsconfig: {} },
+		build,
+		runtime
+	)
+	const text = (name: string) => outputs.find((output) => output.path === `${name}.js`)?.text ?? ''
+	const messages = diagnostics
+		.filter((diagnostic) => diagnostic.severity === 'error')
+		.map((diagnostic) =>
+			diagnostic.file
+				? `${diagnostic.message} (${diagnostic.file}:${diagnostic.range.start.line + 1})`
+				: diagnostic.message
+		)
+	return { app: text('app'), gui: text('gui'), diagnostics: messages }
 }
 
-function vfs(files: Record<string, string>, runtime: Record<string, string>): Plugin {
+// The standard tsconfig generated from a manifest — the one home for our
+// conventions (strict, react-jsx, bundler resolution, noEmit). `tsc`/`tsgo`
+// consume it whole; esbuild's resolution is plugin-driven, so it ignores this.
+// type-fest's `TsConfigJson` is the zero-runtime schema — don't hand-roll it.
+export function tsconfigFor(manifest: AppManifest): TsConfigJson {
 	return {
-		name: 'devkit-vfs',
-		setup(build) {
-			build.onResolve({ filter: /.*/ }, (args) => {
-				if (args.kind === 'entry-point') return { path: args.path, namespace: VFS }
-				if (args.path.startsWith('.')) {
-					const resolved = resolveRelative(args.importer, args.path, files)
-					return resolved ? { path: resolved, namespace: VFS } : undefined
-				}
-				// A pre-bundled system library; side-effect-free so unused exports
-				// (e.g. the kernel half of `@justfiles/app`) tree-shake away.
-				if (args.path in runtime) return { path: args.path, namespace: RUNTIME, sideEffects: false }
-				return undefined
-			})
-			build.onLoad({ filter: /.*/, namespace: VFS }, (args) => ({
-				contents: files[args.path] ?? '',
-				loader: loaderFor(args.path)
-			}))
-			build.onLoad({ filter: /.*/, namespace: RUNTIME }, (args) => ({
-				contents: runtime[args.path],
-				loader: 'js'
-			}))
-		}
+		compilerOptions: {
+			target: 'es2022',
+			lib: ['es2022', 'dom', 'dom.iterable'],
+			module: 'esnext',
+			moduleResolution: 'bundler',
+			jsx: 'react-jsx',
+			jsxImportSource: 'react',
+			strict: true,
+			esModuleInterop: true,
+			skipLibCheck: true,
+			noEmit: true,
+			types: []
+		},
+		include: [manifest.app, ...(manifest.gui ? [manifest.gui] : [])]
 	}
 }
 
-function resolveRelative(
-	importer: string,
-	spec: string,
-	files: Record<string, string>
-): string | undefined {
-	const baseDir = importer.includes('/') ? importer.slice(0, importer.lastIndexOf('/')) : ''
-	const parts = baseDir ? baseDir.split('/') : []
-	for (const seg of spec.split('/')) {
-		if (seg === '' || seg === '.') continue
-		if (seg === '..') parts.pop()
-		else parts.push(seg)
+// Read the named project off `data` and shape it as the engine's `ProjectInput`
+// (vfs map + named entries + generated tsconfig) — the shared front half of every
+// engine method. Only `readProjectFile` can throw (missing/invalid project.json).
+async function projectInput(
+	data: Volume,
+	slug: string
+): Promise<{ manifest: AppManifest; input: ProjectInput }> {
+	const manifest = await readProjectFile(data, slug)
+	const files = await projectFiles(data, slug, manifest)
+	const entries: Record<string, string> = {
+		app: manifest.app,
+		...(manifest.gui ? { gui: manifest.gui } : {})
 	}
-	const joined = parts.join('/')
-	const candidates = [joined, `${joined}.ts`, `${joined}.tsx`, `${joined}.js`, `${joined}/index.ts`]
-	return candidates.find((candidate) => candidate in files)
+	return { manifest, input: { files, entries, tsconfig: tsconfigFor(manifest) } }
 }
 
-function loaderFor(path: string): Loader {
-	if (path.endsWith('.tsx')) return 'tsx'
-	if (path.endsWith('.jsx')) return 'jsx'
-	if (path.endsWith('.js')) return 'js'
-	if (path.endsWith('.json')) return 'json'
-	return 'ts'
+// Engine `compile`/`typecheck` for a named project: read the tree, hand the
+// `ProjectInput` to the injected engine. `data` is chrooted to the caller's data
+// dir by the host (as with `buildDraft`).
+export async function compileDraft(
+	data: Volume,
+	slug: string,
+	engine: Engine
+): Promise<CompileResult> {
+	return engine.compile((await projectInput(data, slug)).input)
 }
-
-function messagesOf(error: unknown): string[] {
-	const errors = (error as { errors?: Message[] }).errors
-	if (Array.isArray(errors) && errors.length > 0) {
-		return errors.map((message) => {
-			const loc = message.location ? ` (${message.location.file}:${message.location.line})` : ''
-			return `${message.text}${loc}`
-		})
-	}
-	return [error instanceof Error ? error.message : String(error)]
+export async function typecheckDraft(
+	data: Volume,
+	slug: string,
+	engine: Engine
+): Promise<CheckResult> {
+	return engine.typecheck((await projectInput(data, slug)).input)
 }
 
 // ── Draft build / install / pack ──────────────────────────────────────────

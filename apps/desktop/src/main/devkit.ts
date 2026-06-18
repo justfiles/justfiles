@@ -1,13 +1,15 @@
-import { implementCapability } from '@justfiles/app/capabilities'
+import { CapabilityError, implementCapability } from '@justfiles/app/capabilities'
 import { devkit } from '@justfiles/app/capabilities/devkit'
 import {
 	buildDraft,
+	compileDraft,
 	type DraftBuild,
 	installDraft,
 	packDraft,
 	type Toolchain
 } from '@justfiles/app/devkit'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
+import { esbuildEngine } from '@justfiles/app/engine/esbuild'
 import type { Kernel } from '@justfiles/app/runtime'
 import { chroot, type Volume } from '@justfiles/fs'
 import { build } from 'esbuild'
@@ -33,6 +35,12 @@ export function devkitCapability(
 	preview?: Preview
 ) {
 	return implementCapability(devkit, {
+		compile: async (ctx, { slug }) =>
+			compileDraft(chroot(fs, `/data/${ctx.appId}`), slug, esbuildEngine(await toolchain())),
+		// typecheck not wired on desktop yet — degrade like the browser host.
+		typecheck: async () => {
+			throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', 'typecheck')
+		},
 		install: async (ctx, { slug }) =>
 			installDraft(fs, ctx.appId, slug, getKernel(), await toolchain(), { onInstalled }),
 		pack: async (ctx, { slug }) =>

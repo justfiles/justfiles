@@ -1,5 +1,6 @@
 import type { Client } from '@justfiles/app'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
+import type { Diagnostic } from '@justfiles/app/engine'
 import type { ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 import { type CodeApp, type CodeState, statusOf } from './app'
 import { createEditor } from './editor'
@@ -40,6 +41,9 @@ export function createEditorView(
 	let fileTreeOpen = true
 	let menuView: MenuView = []
 	let openMenu: number | null = null
+	// Problems panel: type-check diagnostics, refreshed after each build. Empty
+	// where the host has no checker (typecheck → CAPABILITY_UNAVAILABLE).
+	let problems: Diagnostic[] = []
 	let installing = false
 	let installLabel = 'Install'
 	let iconUrl: string | null = null
@@ -103,6 +107,23 @@ export function createEditorView(
 				patch()
 			})
 			.catch(() => {})
+	}
+
+	// Refresh the Problems panel from the engine type-checker. A failure (e.g. the
+	// host has no checker) just clears the panel — the build/run path is unaffected.
+	const refreshProblems = () => {
+		void client
+			.typecheck({})
+			.then((result) => {
+				if (!live) return
+				problems = result.diagnostics
+				patch()
+			})
+			.catch(() => {
+				if (!live) return
+				problems = []
+				patch()
+			})
 	}
 
 	const install = () => {
@@ -182,6 +203,7 @@ export function createEditorView(
 				} else {
 					patch()
 					scheduleMenuRefresh()
+					refreshProblems()
 				}
 			}
 		})()
@@ -269,6 +291,7 @@ export function createEditorView(
 			fileTreeOpen,
 			menuView,
 			openMenu,
+			problems,
 			installing,
 			installLabel,
 			iconUrl,

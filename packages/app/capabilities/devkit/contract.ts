@@ -8,6 +8,8 @@
 // no file bytes cross the worker boundary. Every method is serializable in and
 // out — the app exchanges a slug and receives ids / diagnostics / zip bytes.
 
+import type { CheckResult, CompileResult } from '../../engine.ts'
+
 // A display-only mirror of `@justfiles/app/browser`'s `Menu` — the live
 // `onSelect` closures are stripped, so it stays serializable. app-code pulls
 // this to render the preview's menubar itself (using the shared design CSS) and
@@ -19,6 +21,16 @@ export type MenuItemView =
 export type MenuView = { title: string; items: MenuItemView[] }[]
 
 export interface DevkitCapability {
+	// ── engine (server / backend) ───────────────────────────────────────────
+	// Bundle the named project, returning the structured `CompileResult`
+	// (outputs + diagnostics). The host reads the source tree itself; the caller
+	// only names the project.
+	compile(input: { slug: string }): Promise<CompileResult>
+	// Type-check the named project, returning diagnostics only. Degrades to
+	// CAPABILITY_UNAVAILABLE on hosts without a type checker (browser/desktop).
+	typecheck(input: { slug: string }): Promise<CheckResult>
+
+	// ── preview (client, browser only) ──────────────────────────────────────
 	// Compile the named project + (re)mount it into the caller's preview slots.
 	// On a compile error, `diagnostics` is non-empty and the last-good preview
 	// stays mounted. `reset` wipes the draft's persisted state first, for a

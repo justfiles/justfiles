@@ -1,5 +1,6 @@
 import type { Client } from '@justfiles/app'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
+import type { Diagnostic } from '@justfiles/app/engine'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react'
 import type { CodeApp, CodeState } from './app'
@@ -27,6 +28,7 @@ export type EditorScreenProps = {
 	fileTreeOpen: boolean
 	menuView: MenuView
 	openMenu: number | null
+	problems: Diagnostic[]
 	installing: boolean
 	installLabel: string
 	iconUrl: string | null
@@ -220,15 +222,17 @@ export function EditorScreen(props: EditorScreenProps) {
 					</div>
 				</div>
 
-				<div className="app-code-bottom-bar" hidden={!build}>
+				<div className="app-code-bottom-bar" hidden={!build && props.problems.length === 0}>
 					<div
 						className={`app-code-build-message ${build?.result === 'ok' ? 'is-ok' : 'is-error'}`}
+						hidden={!build}
 					>
 						{build?.message ?? ''}
 					</div>
 					<pre className="app-code-diagnostics" hidden={!build || build.diagnostics.length === 0}>
 						{build?.diagnostics.join('\n') ?? ''}
 					</pre>
+					<ProblemsPanel problems={props.problems} />
 				</div>
 
 				<input
@@ -255,6 +259,28 @@ export function EditorScreen(props: EditorScreenProps) {
 				/>
 			) : null}
 		</>
+	)
+}
+
+// The Problems panel: engine type-check diagnostics, one row each (location +
+// message + code), coloured by severity. Empty list → renders nothing.
+function ProblemsPanel({ problems }: { problems: Diagnostic[] }) {
+	if (problems.length === 0) return null
+	return (
+		<ul className="app-code-problems" aria-label="Problems">
+			{problems.map((problem) => (
+				<li
+					key={`${problem.source}:${problem.file}:${problem.range.start.line}:${problem.range.start.character}:${problem.code ?? ''}:${problem.message}`}
+					className={`app-code-problem is-${problem.severity}`}
+				>
+					<span className="app-code-problem-loc">
+						{problem.file}:{problem.range.start.line + 1}:{problem.range.start.character + 1}
+					</span>{' '}
+					{problem.message}
+					{problem.code ? <span className="app-code-problem-code"> ({problem.code})</span> : null}
+				</li>
+			))}
+		</ul>
 	)
 }
 

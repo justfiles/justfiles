@@ -16,11 +16,21 @@
 import { appBundleFromMemory } from '@justfiles/app'
 import { implementCapability } from '@justfiles/app/capabilities'
 import { devkit } from '@justfiles/app/capabilities/devkit'
-import { buildDraft, installDraft, packDraft, type Toolchain } from '@justfiles/app/devkit'
+import {
+	buildDraft,
+	compileDraft,
+	installDraft,
+	packDraft,
+	type Toolchain,
+	typecheckDraft
+} from '@justfiles/app/devkit'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
+import type { Engine } from '@justfiles/app/engine'
+import { typescriptEngine } from '@justfiles/app/engine/typescript'
 import type { Kernel } from '@justfiles/app/runtime'
 import { chroot, type Volume } from '@justfiles/fs'
 import { build } from 'esbuild'
+import * as ts from 'typescript'
 
 let runtimePromise: Promise<Record<string, string>> | null = null
 
@@ -32,6 +42,13 @@ export function devkitCapability(
 	onInstalled: () => void | Promise<void>
 ) {
 	return implementCapability(devkit, {
+		// Engine methods (in-process: native esbuild + the TypeScript compiler API).
+		// quay has node_modules, so the checker resolves the system libs from the
+		// same source the runtime is bundled from — no baked TypesBundle needed.
+		compile: async (ctx, { slug }) =>
+			compileDraft(chroot(fs, `/data/${ctx.appId}`), slug, await engine()),
+		typecheck: async (ctx, { slug }) =>
+			typecheckDraft(chroot(fs, `/data/${ctx.appId}`), slug, await engine()),
 		// Quay treats install as ship-or-update: a re-install overwrites the live app
 		// in place rather than rejecting the colliding id, so iterating in Code keeps
 		// updating the same installed app.
@@ -77,4 +94,11 @@ export function devkitCapability(
 async function toolchain(): Promise<Toolchain> {
 	if (!runtimePromise) runtimePromise = buildRuntime()
 	return { build, runtime: await runtimePromise }
+}
+
+// The in-process engine: native esbuild for `compile`, the TypeScript compiler
+// API for `typecheck`. Shares the cached runtime with `toolchain`.
+async function engine(): Promise<Engine> {
+	if (!runtimePromise) runtimePromise = buildRuntime()
+	return typescriptEngine({ build, ts, runtime: await runtimePromise })
 }

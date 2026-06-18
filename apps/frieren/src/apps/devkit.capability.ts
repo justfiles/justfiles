@@ -1,7 +1,14 @@
 import { appBundleFromMemory } from '@justfiles/app'
 import { CapabilityError } from '@justfiles/app/capabilities'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
-import { buildDraft, installDraft, packDraft, type Toolchain } from '@justfiles/app/devkit'
+import {
+	buildDraft,
+	compileDraft,
+	installDraft,
+	packDraft,
+	type Toolchain
+} from '@justfiles/app/devkit'
+import { esbuildEngine } from '@justfiles/app/engine/esbuild'
 import { chroot, type Volume } from '@justfiles/fs'
 import * as host from './host'
 import { createClientKernel } from './kernel.client'
@@ -49,6 +56,12 @@ export async function invokeDevkit(
 			return menu(menuInput(input))
 		case 'selectMenu':
 			return selectMenu(selectMenuInput(input))
+		case 'compile':
+			return compile(fs, req.appId, slugInput(input, 'compile'))
+		case 'typecheck':
+			// Browser host: no type checker (the 8 MB dep stays off the client).
+			// Online, frieren routes typecheck to its container (engine doc §5).
+			throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', 'typecheck')
 		case 'install':
 			return install(fs, getToken, req.appId, slugInput(input, 'install'))
 		case 'pack':
@@ -56,6 +69,13 @@ export async function invokeDevkit(
 		default:
 			throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', req.method)
 	}
+}
+
+// Bundle the named project with the browser esbuild engine, returning the
+// structured `CompileResult` (outputs + diagnostics) for app-code's Problems
+// panel. No mount — that's `run`.
+async function compile(fs: Volume, appId: string, { slug }: { slug: string }) {
+	return compileDraft(chroot(fs, `/data/${appId}`), slug, esbuildEngine(await getToolchain()))
 }
 
 async function run(

@@ -349,6 +349,22 @@ export const app = defineApp({
 				return app.settled(seq)
 			}
 		}),
+		// Type-check the current source via the engine; returns diagnostics for the
+		// Problems panel (and the agent). Surfaces CAPABILITY_UNAVAILABLE where the
+		// host has no checker (browser/desktop) — the GUI treats that as "no panel".
+		typecheck: p.procedure({
+			description: 'Type-check the current app source and return diagnostics.',
+			schema: v.object({}),
+			run: (_, app) => app.invoke('devkit', 'typecheck', { slug: reqSlug(app) })
+		}),
+		// Compile the current source via the engine; returns structured outputs +
+		// diagnostics. The GUI/agent reads the diagnostics; outputs are for callers
+		// that want the bundle without mounting it.
+		compile: p.procedure({
+			description: 'Compile the current app source and return outputs + diagnostics.',
+			schema: v.object({}),
+			run: (_, app) => app.invoke('devkit', 'compile', { slug: reqSlug(app) })
+		}),
 		// Internal cleanup only (unmount); `previewId` is a pure function of the slug.
 		stop: p.procedure({
 			description: 'Tear down the running App.',

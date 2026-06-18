@@ -13,6 +13,8 @@
 		"./dev-server": "./dev-server.ts",
 		"./devkit": "./devkit.ts",
 		"./engine": "./engine.ts",
+		"./engine/esbuild": "./engine.esbuild.ts",
+		"./engine/typescript": "./engine.typescript.ts",
 		"./devkit-runtime": "./devkit-runtime.ts",
 		"./builtins": "./builtins.ts",
 		"./capabilities": "./capabilities/index.ts",
@@ -70,6 +72,14 @@
 			"./engine": {
 				"types": "./dist/engine.d.ts",
 				"default": "./dist/engine.js"
+			},
+			"./engine/esbuild": {
+				"types": "./dist/engine.esbuild.d.ts",
+				"default": "./dist/engine.esbuild.js"
+			},
+			"./engine/typescript": {
+				"types": "./dist/engine.typescript.d.ts",
+				"default": "./dist/engine.typescript.js"
 			},
 			"./devkit-runtime": {
 				"types": "./dist/devkit-runtime.d.ts",
