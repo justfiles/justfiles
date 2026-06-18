@@ -669,6 +669,8 @@ optional `export const menu: GUIMenu<typeof app>`, `injectStyle(css, key)`.
 - One dispatch per semantic event, not per keystroke.
 - `description` + `examples` on every public action — they are agent's interface.
 - Always `export type XxxApp = typeof app`; GUI + clients infer from it.
+- Verify before done: when a change is complete, `typecheck` + `compile` (or `run`) the draft and clear
+  every error. A final gate — not after every intermediate edit (Section 12).
 
 ---
 
@@ -695,9 +697,44 @@ A draft is a directory in the caller's data volume:
   icon                # optional image data URL
 ```
 
-`id` is a reverse-DNS bundle id (e.g. `com.example.notes`). `app.code` exposes Run (live preview),
-Install (promote to `/applications`), and Pack (download a `.zip`) — all via the `devkit` capability, so
-you never call it yourself.
+`id` is a reverse-DNS bundle id (e.g. `com.example.notes`). You never declare or import `devkit`
+yourself — `app.code` owns it and surfaces it as the **dev tools** below, which you drive while a
+project is open.
+
+### Dev tools (the `devkit` surface)
+
+While a draft is open you have these tools. They all act on the **currently open project** and read the
+freshest source **off disk**, so `write` your edits first, then call them.
+
+| Tool        | Params                | Returns                      | Use it to…                                                               |
+| ----------- | --------------------- | ---------------------------- | ------------------------------------------------------------------------ |
+| `typecheck` | —                     | `{ diagnostics }`            | **Full TypeScript type-check** — the ONLY tool that catches type errors. |
+| `compile`   | —                     | `{ outputs, diagnostics }`   | esbuild bundle — catches syntax errors + unresolved/bad imports.         |
+| `run`       | `{ reset?: boolean }` | `{ previewId, diagnostics }` | Compile + mount the live App preview. `reset: true` wipes draft state.   |
+| `install`   | —                     | `{ id }`                     | Promote the draft to a real app under `/applications` (rejects a clash). |
+| `pack`      | —                     | `{ zip }`                    | Compile fresh + return a downloadable `.zip` of the bundle.              |
+| `stop`      | —                     | —                            | Tear down the running preview.                                           |
+
+`typecheck` and `compile` return **structured diagnostics** — each one is LSP-shaped: `{ file, range: {
+start, end }, severity: 'error' | 'warning' | 'info', source: 'ts' | 'esbuild' | …, code?, message }`
+(`range` line/character are 0-based). "Clean" = no diagnostic with `severity: 'error'`. (`run`'s
+`diagnostics` are plain message strings for the build banner.)
+
+> `typecheck` may return `CAPABILITY_UNAVAILABLE` on a host with no type checker (desktop, offline
+> browser). When it does, skip it and rely on `compile` + `run` — those always run.
+
+### Verify before you call a change done
+
+**After you finish editing — and only once you believe the change is complete and correct — `typecheck`
+then `compile` (or `run`) the draft, fix every error, and re-run until clean.** That clean pass IS the
+bar for "done"; never report a change finished without it.
+
+- **Why both:** the draft compiler (esbuild) **strips types without checking them**, so a type error
+  builds and runs fine until it explodes at runtime — `typecheck` is the only tool that catches it.
+  `compile`/`run` then catch syntax errors and bad imports that types alone won't surface.
+- **Not every edit:** these are a **final gate, not a per-keystroke check**. Make the whole change across
+  as many `write`s as it takes, *then* verify once. Running them after every intermediate edit is wasted
+  work — a half-written change is expected to fail.
 
 ### What you can import in a draft
 
