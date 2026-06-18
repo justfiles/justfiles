@@ -1,0 +1,186 @@
+#    -*- mode: org -*-
+
+
+Archived entries from file /Users/xiaoxing/workspace/ghostore/project.org
+
+
+* DONE move window.json to state
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE active app indicator (dock?)
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE global menubar
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE local-first with fs sync
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE first render is slow
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE start script always fail frist try
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE setup shouldn't be a capability
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+now we have ai capability and ai setup capability? that sounds wrong. each capability should have two sides: setup and usage. the usage side should be exposed to apps, and the setup side should only be accessible to the main app, settings app should be part of the main app? or should it be an app with admin access or something.
+Resolved: one capability id, two facets. Folded agentSetup into ai/admin — the
+use facet (generateText) is exposed to apps, the admin facet (signIn/selectModel/
+signOut/status) only to the first-party Settings app, gated host-side on appId
+like the volume `system` allowlist. Settings stays an app, with admin access. See
+c32a636.
+
+* DONE unify calendar/email onto the use/admin facet pattern
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+Apply the same use/admin split to the rest, so every capability has the same
+shape: a host-owned backing store, a use facet apps call, and an admin facet only
+the first-party Settings app can reach.
+- integrations (list/connect/disconnect accounts) is today a standalone setup
+  capability — make it the admin facet over the accounts that back calendar + email.
+- note it is 1-admin-to-many-use, not 1:1: one accounts/admin surface feeds both
+  calendar.listToday and email.*, so likely one shared accounts/admin facet rather
+  than calendar/admin + email/admin duplicated.
+- gate: each admin facet is gated on a first-party allowlist host-side (today
+  systemAllowlist + aiAdminAllowlist). As more land, consider one generic admin
+  gate instead of a per-capability allowlist repeated in every host.
+
+* DONE better title bar, maybe same color as background?
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE launchbar search text auto wrap when long, should become text area?
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE window location and size
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+Investigate how macOS remember app's last open location and size, I would like the apps in @apps/quay to remember it's last location and size. research on that, see if there's a nature way to do it on macOS, if not, what are my options? maybe we do the same as Frieren, save that info in volume. no code change, research and report back.
+
+* DONE proper build script (makefile? justfile?) for quay native app
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:45
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE quay, app-code install should reinstall
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:46
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Bugs to fix
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE better scrolling for the messages list
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:46
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: Bugs to fix
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE code
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:46
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: NEXT BIG THINGS
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE agent maintained docs
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:46
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: NEXT BIG THINGS
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE notification
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:46
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: NEXT BIG THINGS
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+can notify when agent finishes work
+
+* DONE new session
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-06-18 Thu 20:46
+:ARCHIVE_FILE: ~/workspace/ghostore/project.org
+:ARCHIVE_OLPATH: NEXT BIG THINGS
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
