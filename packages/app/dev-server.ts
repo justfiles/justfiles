@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, extname, join, relative, resolve } from 'node:path'
 import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
@@ -39,6 +40,24 @@ function sandboxFor(): GetSandbox {
 
 const rel = (root: string, path: string) => `./${relative(root, path).split('\\').join('/')}`
 
+const REACT_EXTERNAL = [
+	'react',
+	'react-dom',
+	'react-dom/client',
+	'react/jsx-runtime',
+	'react/jsx-dev-runtime'
+]
+
+const REACT_GLOBAL = '__justfilesAppDevReact'
+const REACT_VENDOR: Record<string, { slot: string; specifier: string }> = {
+	'react.js': { slot: 'react', specifier: 'react' },
+	'react-dom.js': { slot: 'reactDom', specifier: 'react-dom' },
+	'react-dom-client.js': { slot: 'reactDomClient', specifier: 'react-dom/client' },
+	'jsx-runtime.js': { slot: 'jsxRuntime', specifier: 'react/jsx-runtime' },
+	'jsx-dev-runtime.js': { slot: 'jsxDevRuntime', specifier: 'react/jsx-dev-runtime' }
+}
+const isValidIdent = (name: string) => /^[A-Za-z_$][\w$]*$/.test(name)
+
 const compile = (entry: string, opts?: { root: string }) => {
 	const wrapReactGui = opts && isReactGuiEntry(entry)
 	const output = buildSync({
@@ -55,10 +74,56 @@ const compile = (entry: string, opts?: { root: string }) => {
 		bundle: true,
 		write: false,
 		format: 'esm',
-		jsx: 'automatic'
+		jsx: 'automatic',
+		...(opts ? { external: REACT_EXTERNAL } : {})
 	}).outputFiles[0]
 	if (!output) throw new Error(`failed to compile ${entry}`)
 	return output.text
+}
+
+function reactVendor(root: string): Map<string, string> {
+	const files = new Map<string, string>()
+	files.set('core.js', reactCore(root))
+	for (const [file, { slot, specifier }] of Object.entries(REACT_VENDOR)) {
+		files.set(file, reactShim(root, slot, specifier))
+	}
+	return files
+}
+
+function reactCore(root: string): string {
+	const output = buildSync({
+		stdin: {
+			contents: `
+import react from 'react'
+import reactDom from 'react-dom'
+import reactDomClient from 'react-dom/client'
+import jsxRuntime from 'react/jsx-runtime'
+import jsxDevRuntime from 'react/jsx-dev-runtime'
+globalThis.${REACT_GLOBAL} = { react, reactDom, reactDomClient, jsxRuntime, jsxDevRuntime }
+`,
+			resolveDir: root,
+			loader: 'js'
+		},
+		bundle: true,
+		write: false,
+		format: 'esm',
+		define: { 'process.env.NODE_ENV': JSON.stringify('development') }
+	}).outputFiles[0]
+	if (!output) throw new Error('failed to compile React dev vendor')
+	return output.text
+}
+
+function reactShim(root: string, slot: string, specifier: string): string {
+	const requireFromRoot = createRequire(resolve(root, 'package.json'))
+	const mod = requireFromRoot(specifier) as Record<string, unknown>
+	const names = Object.keys(mod)
+		.filter((name) => name !== 'default' && isValidIdent(name))
+		.sort()
+	const decls = names.map((name) => `${name} = m.${name}`).join(', ')
+	return (
+		`import './core.js'\nconst m = globalThis.${REACT_GLOBAL}.${slot}\nexport default m\n` +
+		(decls ? `export const ${decls}\n` : '')
+	)
 }
 
 const MIME: Record<string, string> = {
@@ -210,6 +275,8 @@ export async function createDevServer(
 		})
 	)
 	const installed = await k.app(appId)
+	let vendor: Map<string, string> | undefined
+	const vendorFiles = () => (vendor ??= reactVendor(root))
 
 	return async (req, res, next) => {
 		try {
@@ -217,6 +284,15 @@ export async function createDevServer(
 			if (path === '/') {
 				res.setHeader('content-type', 'text/html')
 				res.end(page(opts.name))
+				return
+			}
+			const vendorMatch = /^\/vendor\/([^/]+\.js)$/.exec(path)
+			if (vendorMatch) {
+				const file = vendorFiles().get(vendorMatch[1] as string)
+				if (!file) return next()
+				res.setHeader('content-type', 'application/javascript; charset=utf-8')
+				res.setHeader('cache-control', 'no-cache')
+				res.end(file)
 				return
 			}
 			if (path === '/_state') {
