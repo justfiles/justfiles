@@ -9,7 +9,7 @@ import {
 	type Toolchain
 } from '@justfiles/app/devkit'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
-import { esbuildEngine } from '@justfiles/app/engine/esbuild'
+import { esbuildCompile, esbuildEngine } from '@justfiles/app/engine/esbuild'
 import type { Kernel } from '@justfiles/app/runtime'
 import { chroot, type Volume } from '@justfiles/fs'
 import { build } from 'esbuild'
@@ -64,5 +64,6 @@ function fallbackRun(
 
 async function toolchain(): Promise<Toolchain> {
 	if (!runtimePromise) runtimePromise = buildRuntime()
-	return { build, runtime: await runtimePromise }
+	const runtime = await runtimePromise
+	return { compile: (input) => esbuildCompile(input, build, runtime) }
 }

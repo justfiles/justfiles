@@ -80,11 +80,17 @@ export interface ProjectInput {
 	tsconfig: TsConfigJson // generated from the manifest; type-fest's zero-runtime type
 }
 
+// The bundler-agnostic compile seam (= `Engine['compile']`): a `ProjectInput →
+// CompileResult` step with the system `runtime` already closed into the closure.
+// This is what the host injects — the esbuild adapter (native / wasm) and the Bun
+// adapter both produce one — so the build/pack pipeline never names a bundler.
+export type Compile = (input: ProjectInput) => Promise<CompileResult>
+
 // The heavy-compute primitives the engine exposes; the host composes the rest
 // (pack = compile + zip; install = compile + kernel write; run = compile + the
 // client preview mount) around them. lint/test slot in later with no change.
 export interface Engine {
-	compile(input: ProjectInput): Promise<CompileResult>
+	compile: Compile
 	typecheck(input: ProjectInput): Promise<CheckResult>
 	// lint(input): Promise<CheckResult>   — later
 	// test(input): Promise<TestResult>    — later

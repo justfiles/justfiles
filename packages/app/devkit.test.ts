@@ -2,6 +2,8 @@ import * as esbuild from 'esbuild'
 import { beforeAll, describe, expect, test } from 'vitest'
 import { compile } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
+import { esbuildCompile } from './engine.esbuild.ts'
+import type { Compile } from './engine.ts'
 
 // Exercises the real toolchain with Node esbuild standing in for esbuild-wasm
 // (same API); `buildRuntime` produces the same system-library bundles a browser
@@ -26,6 +28,9 @@ export const gui = defineGUI({
 
 describe('devkit compile', () => {
 	let runtime: Record<string, string>
+	// Node esbuild bound into the bundler-agnostic compile seam (stands in for the
+	// browser's esbuild-wasm; same API).
+	const backend: Compile = (input) => esbuildCompile(input, esbuild.build, runtime)
 	beforeAll(async () => {
 		runtime = await buildRuntime()
 	}, 30_000)
@@ -34,8 +39,7 @@ describe('devkit compile', () => {
 		const { app, gui, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
 			{ app: 'app.ts', gui: 'gui.ts' },
-			esbuild.build,
-			runtime
+			backend
 		)
 		expect(diagnostics).toEqual([])
 		expect(app).toContain('dispatch') // the reducer surface is bundled in
@@ -55,8 +59,7 @@ describe('devkit compile', () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
 			{ app: 'app.ts', gui: 'gui.ts' },
-			esbuild.build,
-			runtime
+			backend
 		)
 		expect(diagnostics).toEqual([])
 		expect(app).not.toContain('(void 0)(')
@@ -85,8 +88,7 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 		const { gui, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.tsx': guiTsx },
 			{ app: 'app.ts', gui: 'gui.tsx' },
-			esbuild.build,
-			runtime
+			backend
 		)
 		expect(diagnostics).toEqual([])
 		expect(gui).toMatch(/from\s*"react"/)
@@ -100,8 +102,7 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': 'export const app = (', 'gui.ts': GUI },
 			{ app: 'app.ts', gui: 'gui.ts' },
-			esbuild.build,
-			runtime
+			backend
 		)
 		expect(diagnostics.length).toBeGreaterThan(0)
 		expect(app).toBe('')

@@ -11,17 +11,27 @@
 // passes a baked `TypesBundle` instead; same code, no fs reliance.
 
 import type * as TS from 'typescript'
-import { type BuildFn, esbuildCompile } from './engine.esbuild.ts'
-import type { CheckResult, Diagnostic, Engine, ProjectInput, Range, TypesBundle } from './engine.ts'
+import type {
+	CheckResult,
+	Compile,
+	Diagnostic,
+	Engine,
+	ProjectInput,
+	Range,
+	TypesBundle
+} from './engine.ts'
 
+// The in-process Node/quay engine: an injected `compile` backend (native esbuild
+// under node, `Bun.build` under bun — selected by the host) paired with the
+// TypeScript compiler API for `typecheck`. The bundler is no longer named here, so
+// the same engine serves both runtimes; only `compile` swaps.
 export function typescriptEngine(opts: {
-	build: BuildFn // esbuild engine (compile)
+	compile: Compile // bundler-agnostic compile backend (runtime closed in)
 	ts: typeof import('typescript') // typecheck
-	runtime: Record<string, string> // JS stdlib (esbuild)
 	types?: TypesBundle // .d.ts stdlib overlay (tsc); quay falls back to node_modules
 }): Engine {
 	return {
-		compile: (input) => esbuildCompile(input, opts.build, opts.runtime),
+		compile: opts.compile,
 		typecheck: async (input) => typecheck(input, opts.ts, opts.types ?? {})
 	}
 }

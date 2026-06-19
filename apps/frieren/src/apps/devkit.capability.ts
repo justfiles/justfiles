@@ -8,7 +8,7 @@ import {
 	packDraft,
 	type Toolchain
 } from '@justfiles/app/devkit'
-import { esbuildEngine } from '@justfiles/app/engine/esbuild'
+import { esbuildCompile, esbuildEngine } from '@justfiles/app/engine/esbuild'
 import { chroot, type Volume } from '@justfiles/fs'
 import * as host from './host'
 import { createClientKernel } from './kernel.client'
@@ -36,7 +36,10 @@ function getToolchain(): Promise<Toolchain> {
 		const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
 		await esbuild.initialize({ wasmURL })
 		const { runtime } = await import('virtual:devkit-runtime')
-		return { build: esbuild.build, runtime }
+		// The browser fallback: esbuild-wasm bound into the bundler-agnostic compile
+		// seam. typecheck stays unavailable (esbuildEngine throws) — the container
+		// backend owns it online.
+		return { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
 	})()
 	return toolchain
 }

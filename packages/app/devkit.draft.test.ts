@@ -4,6 +4,7 @@ import { unzipSync } from 'fflate'
 import { beforeAll, describe, expect, test } from 'vitest'
 import { buildDraft, installDraft, packDraft, type Toolchain } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
+import { esbuildCompile } from './engine.esbuild.ts'
 import { type GetSandbox, kernel } from './kernel.ts'
 
 // End-to-end coverage of the draft pipeline against the REAL toolchain: write a
@@ -45,7 +46,8 @@ async function seedProject(): Promise<ReturnType<typeof volume>> {
 describe('devkit draft pipeline', () => {
 	let tc: Toolchain
 	beforeAll(async () => {
-		tc = { build: esbuild.build, runtime: await buildRuntime() }
+		const runtime = await buildRuntime()
+		tc = { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
 	}, 30_000)
 
 	test('buildDraft compiles the project from its data volume', async () => {

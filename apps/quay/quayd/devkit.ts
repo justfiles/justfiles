@@ -1,8 +1,9 @@
 // Slice 11: the `devkit` capability in quayd — the one privileged surface app-code
 // (Code) uses to compile, install, and pack the apps you build everything else with.
 // It's the same host-agnostic pipeline frieren and the desktop sibling drive
-// (`@justfiles/app/devkit`), wired to quay's Node toolchain: native esbuild + the
-// pre-bundled system `runtime` (`buildRuntime`, built once and cached). `installDraft`
+// (`@justfiles/app/devkit`), wired to quay's runtime-selected compile backend
+// (`#engine`: native esbuild under node, `Bun.build` under bun) + the pre-bundled
+// system `runtime` (`buildRuntime`, built once and cached). `installDraft`
 // writes the finished bundle into the SAME `/applications` the launcher lists, then
 // fires `onInstalled` so quayd materialises its `.app` (Slice 6's reconcile) and the
 // launcher re-lists — no change to app-code's reducer.
@@ -25,12 +26,15 @@ import {
 	typecheckDraft
 } from '@justfiles/app/devkit'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
-import type { Engine } from '@justfiles/app/engine'
+import type { Compile, Engine } from '@justfiles/app/engine'
 import { typescriptEngine } from '@justfiles/app/engine/typescript'
 import type { Kernel } from '@justfiles/app/runtime'
 import { chroot, type Volume } from '@justfiles/fs'
-import { build } from 'esbuild'
 import * as ts from 'typescript'
+// The devkit compile backend, selected by the runtime: native esbuild under node,
+// Bun.build under bun (package.json `imports` → `quayd/devkitEngine.{node,bun}.ts`).
+// typecheck stays on tsc for both — only `compile` swaps.
+import { compile as backendCompile } from '#engine'
 
 let runtimePromise: Promise<Record<string, string>> | null = null
 
@@ -42,9 +46,9 @@ export function devkitCapability(
 	onInstalled: () => void | Promise<void>
 ) {
 	return implementCapability(devkit, {
-		// Engine methods (in-process: native esbuild + the TypeScript compiler API).
-		// quay has node_modules, so the checker resolves the system libs from the
-		// same source the runtime is bundled from — no baked TypesBundle needed.
+		// Engine methods (in-process: the `#engine` compile backend + the TypeScript
+		// compiler API). quay has node_modules, so the checker resolves the system libs
+		// from the same source the runtime is bundled from — no baked TypesBundle needed.
 		compile: async (ctx, { slug }) =>
 			compileDraft(chroot(fs, `/data/${ctx.appId}`), slug, await engine()),
 		typecheck: async (ctx, { slug }) =>
@@ -90,15 +94,23 @@ export function devkitCapability(
 	})
 }
 
-// Native esbuild + the system runtime, built once and cached for the daemon's life.
-async function toolchain(): Promise<Toolchain> {
+// The compile backend (`#engine`) with the system runtime closed in — built once
+// and cached for the daemon's life. The bundler is the runtime's choice; this
+// module never names it.
+async function compileBackend(): Promise<Compile> {
 	if (!runtimePromise) runtimePromise = buildRuntime()
-	return { build, runtime: await runtimePromise }
+	const runtime = await runtimePromise
+	return (input) => backendCompile(input, runtime)
 }
 
-// The in-process engine: native esbuild for `compile`, the TypeScript compiler
-// API for `typecheck`. Shares the cached runtime with `toolchain`.
+// The build/pack toolchain: just the compile backend (run/install/pack don't
+// typecheck).
+async function toolchain(): Promise<Toolchain> {
+	return { compile: await compileBackend() }
+}
+
+// The in-process engine: the `#engine` compile backend for `compile`, the
+// TypeScript compiler API for `typecheck`. Shares the cached runtime.
 async function engine(): Promise<Engine> {
-	if (!runtimePromise) runtimePromise = buildRuntime()
-	return typescriptEngine({ build, ts, runtime: await runtimePromise })
+	return typescriptEngine({ compile: await compileBackend(), ts })
 }

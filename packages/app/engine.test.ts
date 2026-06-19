@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, test } from 'vitest'
 import type { AppManifest } from './app.ts'
 import { tsconfigFor } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
+import { esbuildCompile } from './engine.esbuild.ts'
 import type { Engine, ProjectInput } from './engine.ts'
 import { typescriptEngine } from './engine.typescript.ts'
 
@@ -40,7 +41,11 @@ const project = (files: Record<string, string>, gui?: string): ProjectInput => (
 describe('typescriptEngine', () => {
 	let engine: Engine
 	beforeAll(async () => {
-		engine = typescriptEngine({ build: esbuild.build, ts, runtime: await buildRuntime() })
+		const runtime = await buildRuntime()
+		engine = typescriptEngine({
+			compile: (input) => esbuildCompile(input, esbuild.build, runtime),
+			ts
+		})
 	}, 30_000)
 
 	test('compile produces named outputs with no errors', async () => {

@@ -7,15 +7,15 @@
 // `engine.bun.ts` behind the same vfs rules.
 
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
-import type { CompileResult, Diagnostic, Engine, ProjectInput, Range } from './engine.ts'
+import type { Compile, CompileResult, Diagnostic, Engine, ProjectInput, Range } from './engine.ts'
 import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './engine.vfs.ts'
 
 export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 
-// The injected toolchain: the esbuild `build` engine (native esbuild on a Node
-// host; `esbuild-wasm` in a browser host) plus the pre-bundled system libraries
-// keyed by import specifier (`devkit-runtime`).
-export type Toolchain = { build: BuildFn; runtime: Record<string, string> }
+// The injected build backend for the build/pack pipeline: a bundler-agnostic
+// `Compile` closure (the host binds its bundler + the system `runtime` into it —
+// native esbuild here, `esbuild-wasm` in a browser host, `Bun.build` under bun).
+export type Toolchain = { compile: Compile }
 
 // Bundle each named entry of a draft against the system `runtime`. Pure: the
 // caller injects the esbuild engine + the runtime map. The shared `compileVfs`
@@ -53,7 +53,7 @@ export function esbuildCompile(
 // CAPABILITY_UNAVAILABLE before delegating — so it throws if called directly.
 export function esbuildEngine(tc: Toolchain): Engine {
 	return {
-		compile: (input) => esbuildCompile(input, tc.build, tc.runtime),
+		compile: tc.compile,
 		typecheck: () => {
 			throw new Error('typecheck is unavailable in the esbuild engine')
 		}

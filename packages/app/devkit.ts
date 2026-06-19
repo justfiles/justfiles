@@ -14,8 +14,8 @@ import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { strToU8, zipSync } from 'fflate'
 import type { TsConfigJson } from 'type-fest'
-import { type BuildFn, esbuildCompile, type Toolchain } from './engine.esbuild.ts'
-import type { CheckResult, CompileResult, Engine, ProjectInput } from './engine.ts'
+import type { BuildFn, Toolchain } from './engine.esbuild.ts'
+import type { CheckResult, Compile, CompileResult, Engine, ProjectInput } from './engine.ts'
 import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from './kernel.ts'
 
 // `BuildFn` / `Toolchain` live with the esbuild engine now; re-exported so the
@@ -50,18 +50,13 @@ export interface DraftBuild {
 export async function compile(
 	files: Record<string, string>,
 	entries: CompileEntries,
-	build: BuildFn,
-	runtime: Record<string, string>
+	backend: Compile
 ): Promise<{ app: string; gui: string; diagnostics: string[] }> {
 	const entryRecord: Record<string, string> = {
 		app: entries.app,
 		...(entries.gui ? { gui: entries.gui } : {})
 	}
-	const { outputs, diagnostics } = await esbuildCompile(
-		{ files, entries: entryRecord, tsconfig: {} },
-		build,
-		runtime
-	)
+	const { outputs, diagnostics } = await backend({ files, entries: entryRecord, tsconfig: {} })
 	const text = (name: string) => outputs.find((output) => output.path === `${name}.js`)?.text ?? ''
 	const messages = diagnostics
 		.filter((diagnostic) => diagnostic.severity === 'error')
@@ -144,7 +139,7 @@ export async function typecheckDraft(
 export async function buildDraft(data: Volume, slug: string, tc: Toolchain): Promise<DraftBuild> {
 	const manifest = await readProjectFile(data, slug)
 	const files = await projectFiles(data, slug, manifest)
-	const { app, gui, diagnostics } = await compile(files, entriesOf(manifest), tc.build, tc.runtime)
+	const { app, gui, diagnostics } = await compile(files, entriesOf(manifest), tc.compile)
 	const icon = await projectIcon(data, slug, manifest.icon)
 	return { manifest, app, gui, icon, diagnostics }
 }
