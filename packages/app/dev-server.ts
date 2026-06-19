@@ -1,8 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { dirname, extname, join, resolve } from 'node:path'
+import { extname, join, relative, resolve } from 'node:path'
 import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
-import { buildSync } from 'esbuild'
 import type { Connect, ViteDevServer } from 'vite'
 import { appBundleFromMemory, type Message } from './app.ts'
 import { type Capability, capabilityRegistry, implementCapability } from './capabilities/index.ts'
@@ -19,34 +18,40 @@ export interface DevServerOptions {
 	gui: string // browser bundle entry, relative to vite root
 }
 
-function sandboxFor(): GetSandbox {
-	return async ({ code }) => {
-		const mod = await import(
-			/* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
-		)
-		if (typeof mod.app !== 'object') throw new Error('app module must export an object named "app"')
+// In dev the headless app is not pre-bundled: Vite transforms and serves the
+// real `src/app.ts` (and its workspace deps) through its SSR module graph. Each
+// load re-reads the live module — Vite invalidates the graph on file change — so
+// app edits take effect on the next dispatch without a restart. The kernel still
+// owns trust: capabilities are scoped by the app's DECLARED capabilities, never
+// by what this module claims at runtime.
+function viteSandbox(server: ViteDevServer, appUrl: string): GetSandbox {
+	return async () => {
+		const { app } = await server.ssrLoadModule(appUrl)
+		if (typeof app !== 'object' || app === null)
+			throw new Error('app module must export an object named "app"')
 		return {
-			run: (action, ctx) => mod.app.dispatch(action, ctx),
-			initialState: async () => mod.app.initialState,
-			actions: async () => mod.app.actions ?? {},
-			capabilities: async () => mod.app.capabilities ?? {},
-			runProcedure: (name, params, handle) => mod.app.runProcedure(name, params, handle),
-			subscriptions: async (state) => mod.app.subscriptions?.(state) ?? []
+			run: (action, ctx) => app.dispatch(action, ctx),
+			initialState: async () => app.initialState,
+			actions: async () => app.actions ?? {},
+			capabilities: async () => app.capabilities ?? {},
+			runProcedure: (name, params, handle) => app.runProcedure(name, params, handle),
+			subscriptions: async (state) => app.subscriptions?.(state) ?? []
 		}
 	}
 }
 
-const compile = (entry: string) => {
-	const output = buildSync({
-		entryPoints: [entry],
-		absWorkingDir: dirname(entry),
-		bundle: true,
-		write: false,
-		format: 'esm',
-		jsx: 'automatic'
-	}).outputFiles[0]
-	if (!output) throw new Error(`failed to compile ${entry}`)
-	return output.text
+// The on-disk files in the app's SSR module graph (entry + its inlined workspace
+// deps). Used to scope the dev reload to changes that affect the headless
+// module, ignoring GUI/browser-only edits.
+function ssrGraphFiles(server: ViteDevServer, entry: string): Set<string> {
+	const files = new Set<string>()
+	const queue = [...(server.moduleGraph.getModulesByFile(entry) ?? [])]
+	for (let node = queue.pop(); node; node = queue.pop()) {
+		if (!node.file || files.has(node.file)) continue
+		files.add(node.file)
+		queue.push(...node.ssrImportedModules)
+	}
+	return files
 }
 
 const MIME: Record<string, string> = {
@@ -179,25 +184,39 @@ export async function createDevServer(
 	opts: DevServerOptions
 ): Promise<Connect.NextHandleFunction> {
 	const root = server.config.root
+	const appEntry = resolve(root, opts.app)
+	const appUrl = `/${relative(root, appEntry).split('\\').join('/')}`
 	const fs = volume(memStorage())
 	const k = kernel({
 		fs,
-		sandbox: sandboxFor(),
+		sandbox: viteSandbox(server, appUrl),
 		clock: {},
 		capabilities: capabilityRegistry({ volume: devVolume(fs) })
 	})
-	const appId = await k.install(
-		appBundleFromMemory({
-			id: opts.id,
-			name: opts.name,
-			description: opts.description,
-			version: opts.version,
-			icon: opts.icon,
-			app: compile(resolve(root, opts.app)),
-			assets: publicAssets(resolve(root, 'public'))
-		})
-	)
+	const bundle = appBundleFromMemory({
+		id: opts.id,
+		name: opts.name,
+		description: opts.description,
+		version: opts.version,
+		icon: opts.icon,
+		// Placeholder: the real headless module is served by Vite (viteSandbox);
+		// the kernel just needs an `app.js` entry to exist in the bundle.
+		app: '// served by vite in dev\n',
+		assets: publicAssets(resolve(root, 'public'))
+	})
+	const appId = await k.install(bundle)
 	const installed = await k.app(appId)
+
+	// Headless-app HMR. Vite re-evaluates the module on the next sandbox load, but
+	// the kernel memoizes the procedure set + declared capabilities per install —
+	// re-install on a change within the app's SSR graph to drop those caches and
+	// re-warm subscriptions. State is keyed by appId, so it survives the reload.
+	// Chained + deferred past the sync watcher batch so Vite invalidates first.
+	let reload: Promise<unknown> = Promise.resolve()
+	server.watcher.on('change', (file) => {
+		if (!ssrGraphFiles(server, appEntry).has(file)) return
+		reload = reload.then(() => k.install(bundle)).catch(() => {})
+	})
 
 	return async (req, res, next) => {
 		try {
