@@ -103,17 +103,25 @@ import { ai } from '@justfiles/app/capabilities/ai'
 
 ### Shared runtime
 
-`kernelHost` externalises `react`, `react-dom`, `react-dom/client`,
-`react/jsx-runtime`, and `react/jsx-dev-runtime`. Apps emit bare imports
-like `from "react"`; the host resolves them through its importmap to a
-single set of `/vendor/*.js` URLs, so every app and the host share one
-React module instance. The standalone app dev server does the same with
-its own `/vendor/*.js` importmap, resolved from the app package's dev
-dependencies. Keep React/ReactDOM as app peer + dev dependencies for
-app-local typechecking and dev resolution, but don't bundle them into
-`gui.js`. Don't override the externals or add another React-based
-library to the shared stdlib without coordinating with the host —
-duplicating React breaks hooks and context.
+In production, `kernelHost` externalises `react`, `react-dom`,
+`react-dom/client`, `react/jsx-runtime`, and `react/jsx-dev-runtime`.
+Apps emit bare imports like `from "react"`; the host resolves them
+through its importmap to a single set of `/vendor/*.js` URLs, so every
+app and the host share one React module instance.
+
+In standalone dev (`pnpm dev`), the GUI is served as ordinary Vite
+browser modules — Vite owns the TSX transform, React Refresh, source
+maps, and CSS — and React is deduped through Vite's `resolve.dedupe`
+(resolved from the app package's own dev dependencies), so dev keeps a
+single React instance without a hand-built importmap. The headless
+`app.ts` runs through Vite's `kernel` server environment, so app edits
+hot-reload without restarting the dev server.
+
+Keep React/ReactDOM as app peer + dev dependencies for app-local
+typechecking and dev resolution, but don't bundle them into `gui.js`.
+Don't override the externals or add another React-based library to the
+shared stdlib without coordinating with the host — duplicating React
+breaks hooks and context.
 
 ### State discipline
 
