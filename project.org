@@ -1,11 +1,11 @@
-* Tasks [1/3]
+* Tasks [0/3]
+
+** TODO should be able to uninstall app
+** TODO streamline design system
+* Bugs to fix
 
 ** TODO refine the interface of packages/agent
 The interface is pretty chaotic, need more elegent interface
-** TODO should be able to uninstall app
-
-* Bugs to fix
-
 ** TODO move onboarding
 * NEXT BIG THINGS
 ** TODO modify builtin apps?

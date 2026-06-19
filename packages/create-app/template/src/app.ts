@@ -11,3 +11,6 @@ export const app = defineApp({
 		)
 	})
 })
+
+// ALWAYS export the type — the GUI and clients infer everything from it.
+export type CounterApp = typeof app

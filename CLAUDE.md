@@ -40,3 +40,15 @@ Minimum code that solves the problem. No speculative features. No abstractions f
 
 ## Be Very Stingy on interfaces
 Keep the module surface to the absolutely minimal. think: do we absolutely have to expose this? Only add to interface when it will break the design otherwise.
+
+# Building an app
+
+The app should follow this path convention: packages/app-<name>. see existing apps as example.
+If trying to create a new app, use the packages/create-app/ template.
+```
+node packages/create-app/index.js packages/app-<name>
+```
+
+Before making changes to the app, read docs/app.md to learn how to make an app.
+ONLY read the doc when you are asked to create/modify an app.
+If new app is added, remember to add it to the typecheck list at tsconfig.json
