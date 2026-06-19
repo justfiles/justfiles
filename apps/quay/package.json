@@ -2,9 +2,17 @@
 	"name": "@justfiles/quay",
 	"type": "module",
 	"private": true,
+	"imports": {
+		"#sandbox-url": {
+			"bun": "./quayd/sandboxUrl.bun.ts",
+			"node": "./quayd/sandboxUrl.node.ts",
+			"default": "./quayd/sandboxUrl.node.ts"
+		}
+	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"quayd": "node --import ./quayd/rawLoader.mjs --import tsx quayd/main.ts",
+		"quayd:bun": "bun quayd/main.ts",
 		"assets": "node --import tsx quayd/build-assets.ts",
 		"build": "native/build.sh --launcher",
 		"reseed": "node --import ./quayd/rawLoader.mjs --import tsx quayd/reseed.ts",
@@ -31,6 +39,7 @@
 		"ws": "^8.20.1"
 	},
 	"devDependencies": {
+		"@types/bun": "^1.3.0",
 		"@types/node": "^25.7.0",
 		"@types/ws": "^8.5.13",
 		"tsx": "^4.21.0"

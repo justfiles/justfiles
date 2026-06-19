@@ -147,6 +147,69 @@ Docs: [Bun bundler (`Bun.build`)](https://bun.com/docs/bundler) ·
 
 ---
 
+## Spike results — GATE: GREEN (Bun 1.3.10, macOS arm64)
+
+Both spikes pass. The real divergence set is **one** `.bun`/`.node` split — far smaller
+than the plan budgeted for. Probe scripts lived in `apps/quay/.spike/` (throwaway).
+
+### Spike A — `quayd` runs on Bun ✅
+
+The daemon **boots clean under `bun quayd/main.ts`**: reaches `listening`, seeds the
+full kernel catalog, host/agent/server/materialize all construct without error.
+
+Per-surface (the "two lists" Spike A asks for):
+
+| # | Surface | Result |
+|---|---|---|
+| 2 | capnweb berth over `ws` (`RpcSession` + `newWebSocketRpcSession`) | **compat-clean** — state/dispatch/subscribe round-trips |
+| 3 | `node:crypto` (`randomBytes`, `createHash`) | **compat-clean** |
+| 4 | `child_process.execFile` (codesign/lsregister/iconutil) | **compat-clean** |
+| 5 | `node:http` `createServer` + asset routes | **compat-clean** |
+| 6 | `node:fs/promises` (read/write/readdir/rm) | **compat-clean** |
+| 7 | `?raw` markdown imports (`@justfiles/agent/prompts`) | **compat-clean — Bun native.** No `rawLoader.mjs`, no `bunfig` preload, **no `#raw` split** |
+| 1 | `worker_threads` sandbox | **needs `#sandbox` split** (below) |
+
+**The one split — `#sandbox`, and it's tiny.** Only the worker *module URL scheme*
+diverges; the shared protocol (`sandbox.ts`) and the whole `nodeSandbox` lifecycle
+(content-addressing, retain/release, idle eviction) are single-source, and Bun's
+`node:worker_threads` provides `parentPort`/`postMessage` so the `'node'` transport in
+`sandboxWorkerSource` is reused unchanged.
+
+- **Node** accepts only `file:`/`data:`/`node:` worker URLs → keep today's `data:` URLs.
+- **Bun** throws `ENAMETOOLONG` resolving a large `data:` worker URL (it routes data:
+  URLs through a path that blows `PATH_MAX` ≈ 1 KB). A real bundle is many KB, so this
+  always fails. **`blob:` URLs work at any size** and resolve cross-thread (a blob made
+  on the main thread imports fine inside the worker). Verified with the *real*
+  `sandboxClient` + `sandboxWorkerSource` driving an off-thread reduce on a >5 KB bundle.
+
+So the divergence is the worker-URL builder: `data:` (node) vs `blob:` (bun), behind
+`#sandbox`. Everything else stays single-source.
+
+### Spike B — `Bun.build` in-memory devkit compile ✅
+
+Ported the esbuild `vfs` plugin to a `Bun.build` plugin and compiled `app.ts` + `gui.tsx`
+**entirely from an in-memory `files` map**, diffed against the real esbuild engine:
+
+1. **Virtual entrypoint + virtual modules** — `onResolve`/`onLoad` intercept the entry
+   (no `kind` check needed: the entry path is in `files`) and all vfs/runtime modules. ✅
+2. **External bare specifiers** — `react`/`react/jsx-runtime` stay bare in the output
+   (importmap resolves at load); React is not inlined. Matches esbuild. ✅
+3. **In-memory output** — bytes read back via `result.outputs[n].text()`, no temp dir. ✅
+4. **CSS (bonus)** — `gui.tsx` importing `./styles.css` bundles to a separate `.css`
+   artifact **and Bun optimizes it** (`hotpink` → `#ff69b4`). The esbuild path lacks this. ✅
+5. **Inside a standalone** — `Bun.build` with a vfs plugin runs inside a
+   `bun build --compile` binary, so install-time compile works in the shipped `.app`
+   with no external toolchain. ✅
+
+Shape parity with esbuild: same `app.js`/`gui.js` outputs, reducer present, `valibot`
+pulled from the injected runtime virtual module (not node_modules / not external).
+
+**Implication for the split surface:** the only `.bun`/`.node` pair the migration needs
+is `#sandbox`. `#engine` is a planned *addition* (the new Bun backend beside esbuild),
+not a compat divergence. No `#raw`, no `#server`.
+
+---
+
 The three sections below are the **areas of change** in this one migration — not alternative
 directions to pick between. They are ordered (and interleaved with the scaffolding step) in
 **Sequencing**, below; note the devkit backend lands before the runtime flip.

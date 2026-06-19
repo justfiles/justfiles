@@ -1,24 +1,14 @@
-// The esbuild half of the devkit engine: a pure `ProjectInput → CompileResult`
-// bundle step, the one home for the vfs resolver + the system-runtime injection.
-// `typescriptEngine` (Node/quay) and a future `nativeEngine` (container) both
-// reuse `esbuildCompile`; `esbuildEngine` is the standalone compile-only `Engine`
-// the browser (frieren) and desktop hosts wrap — they get `compile`, and
-// `typecheck` degrades to CAPABILITY_UNAVAILABLE at the host (see the engine doc).
-//
-// This generalises the legacy `devkit.compile` to N named entries + structured
-// `Diagnostic`s; `devkit.compile` now adapts over it for the string-diagnostic
-// preview/ship path.
+// The esbuild adapter of the devkit engine: a thin esbuild plugin + build options
+// over the bundler-agnostic vfs rules in `engine.vfs.ts`. `typescriptEngine`
+// (Node/quay) reuses `esbuildCompile`; `esbuildEngine` is the standalone
+// compile-only `Engine` the browser (frieren) and desktop hosts wrap — they get
+// `compile`, and `typecheck` degrades to CAPABILITY_UNAVAILABLE at the host. The
+// browser esbuild-wasm path injects its own `build`; the Bun sibling lives in
+// `engine.bun.ts` behind the same vfs rules.
 
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
-import type {
-	CompileResult,
-	Diagnostic,
-	Engine,
-	OutputFile,
-	ProjectInput,
-	Range
-} from './engine.ts'
-import { isReactGuiEntry, reactGuiEntry } from './react-entry.ts'
+import type { CompileResult, Diagnostic, Engine, ProjectInput, Range } from './engine.ts'
+import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './engine.vfs.ts'
 
 export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 
@@ -27,59 +17,35 @@ export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 // keyed by import specifier (`devkit-runtime`).
 export type Toolchain = { build: BuildFn; runtime: Record<string, string> }
 
-// React stays external (resolved through the host importmap) so a preview shares
-// the one host React instance. Mirrors the list `buildRuntime` keeps external.
-const EXTERNAL = [
-	'react',
-	'react-dom',
-	'react-dom/client',
-	'react/jsx-runtime',
-	'react/jsx-dev-runtime'
-]
-
-const VFS = 'devkit-vfs'
-const RUNTIME = 'devkit-runtime'
-const REACT_GUI_ENTRY = '__react_gui_entry.ts'
-
 // Bundle each named entry of a draft against the system `runtime`. Pure: the
-// caller injects the esbuild engine + the runtime map. Each entry is bundled in
-// its own pass so one bad entry doesn't sink the others; a `.tsx`/`.jsx` entry is
-// wrapped by the React GUI shim first. Output paths are `<entryName>.js`; the
-// preview/host picks bundles by those conventional names.
-export async function esbuildCompile(
+// caller injects the esbuild engine + the runtime map. The shared `compileVfs`
+// orchestrates the entries + the React-GUI wrap; this only supplies the esbuild
+// pass (one bad entry's error stays its own diagnostics, never sinks the others).
+export function esbuildCompile(
 	input: ProjectInput,
 	build: BuildFn,
 	runtime: Record<string, string>
 ): Promise<CompileResult> {
-	const outputs: OutputFile[] = []
-	const diagnostics: Diagnostic[] = []
-	for (const [name, entry] of Object.entries(input.entries)) {
-		if (!(entry in input.files)) {
-			diagnostics.push(plain(entry, `missing entry: ${entry}`))
-			continue
-		}
-		const wrap = isReactGuiEntry(entry)
-		const sources = wrap
-			? { ...input.files, [REACT_GUI_ENTRY]: reactGuiEntry(`./${entry}`) }
-			: input.files
+	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
 		try {
 			const result = await build({
-				entryPoints: [wrap ? REACT_GUI_ENTRY : entry],
+				entryPoints: [entry],
 				bundle: true,
 				write: false,
 				format: 'esm',
 				external: EXTERNAL,
 				jsx: 'automatic',
 				logLevel: 'silent',
-				plugins: [vfs(sources, runtime)]
+				plugins: [vfs(sources, rt)]
 			})
-			for (const warning of result.warnings) diagnostics.push(messageDiagnostic(warning, 'warning'))
-			outputs.push({ path: `${name}.js`, text: result.outputFiles?.[0]?.text ?? '' })
+			return {
+				js: result.outputFiles?.[0]?.text ?? '',
+				diagnostics: result.warnings.map((warning) => messageDiagnostic(warning, 'warning'))
+			}
 		} catch (error) {
-			diagnostics.push(...errorDiagnostics(error))
+			return { diagnostics: errorDiagnostics(error) }
 		}
-	}
-	return { outputs, diagnostics }
+	})
 }
 
 // Compile-only `Engine` for hosts without a type checker (browser / desktop).
@@ -111,7 +77,7 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 			})
 			build.onLoad({ filter: /.*/, namespace: VFS }, (args) => ({
 				contents: files[args.path] ?? '',
-				loader: loaderFor(args.path)
+				loader: loaderFor(args.path) as Loader
 			}))
 			build.onLoad({ filter: /.*/, namespace: RUNTIME }, (args) => ({
 				contents: runtime[args.path],
@@ -119,31 +85,6 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 			}))
 		}
 	}
-}
-
-function resolveRelative(
-	importer: string,
-	spec: string,
-	files: Record<string, string>
-): string | undefined {
-	const baseDir = importer.includes('/') ? importer.slice(0, importer.lastIndexOf('/')) : ''
-	const parts = baseDir ? baseDir.split('/') : []
-	for (const seg of spec.split('/')) {
-		if (seg === '' || seg === '.') continue
-		if (seg === '..') parts.pop()
-		else parts.push(seg)
-	}
-	const joined = parts.join('/')
-	const candidates = [joined, `${joined}.ts`, `${joined}.tsx`, `${joined}.js`, `${joined}/index.ts`]
-	return candidates.find((candidate) => candidate in files)
-}
-
-function loaderFor(path: string): Loader {
-	if (path.endsWith('.tsx')) return 'tsx'
-	if (path.endsWith('.jsx')) return 'jsx'
-	if (path.endsWith('.js')) return 'js'
-	if (path.endsWith('.json')) return 'json'
-	return 'ts'
 }
 
 const ZERO: Range = { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }
@@ -180,9 +121,13 @@ function errorDiagnostics(error: unknown): Diagnostic[] {
 	const errors = (error as { errors?: Message[] }).errors
 	if (Array.isArray(errors) && errors.length > 0)
 		return errors.map((message) => messageDiagnostic(message, 'error'))
-	return [plain('', error instanceof Error ? error.message : String(error))]
-}
-
-function plain(file: string, message: string): Diagnostic {
-	return { file, range: ZERO, severity: 'error', source: 'esbuild', message }
+	return [
+		{
+			file: '',
+			range: ZERO,
+			severity: 'error',
+			source: 'esbuild',
+			message: error instanceof Error ? error.message : String(error)
+		}
+	]
 }

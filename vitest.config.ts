@@ -12,6 +12,13 @@ export default defineConfig({
 			'packages/*/**/*.test.ts',
 			'packages/*/**/*.test.tsx'
 		],
-		exclude: ['**/node_modules/**', '**/dist/**', 'apps/frieren/src/!(os|apps)/**']
+		// `*.bun.test.ts` runs under `bun test` (it needs the Bun runtime: `Bun.build`,
+		// `bun:test`) — the CI matrix's Bun half. The node vitest run skips it.
+		exclude: [
+			'**/node_modules/**',
+			'**/dist/**',
+			'**/*.bun.test.ts',
+			'apps/frieren/src/!(os|apps)/**'
+		]
 	}
 })

@@ -18,6 +18,10 @@ import { createHash } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import type { GetSandbox, Sandbox } from '@justfiles/app/runtime'
 import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
+// The worker module-URL scheme is the one runtime divergence (data: on node,
+// blob: on bun) — resolved by the runtime via package.json `imports`. See
+// `quayd/sandboxUrl.{node,bun}.ts`.
+import { moduleUrl } from '#sandbox-url'
 
 export interface NodeSandbox {
 	// The kernel's `GetSandbox`: load-or-reuse the worker for these bytes.
@@ -101,7 +105,7 @@ export function nodeSandbox(opts: { idleMs?: number } = {}): NodeSandbox {
 	}
 
 	function spawn(code: string, onDead: () => void): Cell {
-		const worker = new Worker(new URL(dataUrl(sandboxWorkerSource(dataUrl(code), 'node'))))
+		const worker = new Worker(new URL(moduleUrl(sandboxWorkerSource(moduleUrl(code), 'node'))))
 		const { sandbox, fail } = sandboxClient({
 			post: (message) => worker.postMessage(message),
 			onMessage: (handler) => worker.on('message', handler)
@@ -118,8 +122,4 @@ export function nodeSandbox(opts: { idleMs?: number } = {}): NodeSandbox {
 		})
 		return cell
 	}
-}
-
-function dataUrl(source: string): string {
-	return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
 }
