@@ -7,8 +7,8 @@ import Cocoa
 // search — Results now only backs the `/` command menu.
 final class AppGrid: NSView {
 	static let columns = 5
-	static let cellHeight: CGFloat = 96
-	static let iconSize: CGFloat = 56
+	static let cellHeight: CGFloat = 104
+	static let iconSize: CGFloat = 64
 
 	// Picked by app id; the launcher launches its real `.app` bundle.
 	var onPick: ((String) -> Void)?
@@ -117,7 +117,8 @@ final class AppGrid: NSView {
 }
 
 // One springboard cell: a large rounded app icon with the name beneath. Selectable
-// (keyboard/hover) and clickable; selection shows a soft rounded highlight behind it.
+// (keyboard/hover) and clickable; selection draws a Spotlight-style accent outline
+// hugging the icon.
 final class GridCell: NSView {
 	var onHover: (() -> Void)?
 	var onClick: (() -> Void)?
@@ -132,8 +133,8 @@ final class GridCell: NSView {
 	private let label = NSTextField(labelWithString: "")
 
 	init(app: CatalogApp) {
-		// The app's rendered icon, or the blue gradient glyph square as a fallback.
-		if let image = app.icon.flatMap(imageFromDataURL) {
+		// The grid mirrors macOS: icon pixels come from the materialised .app bundle.
+		if let image = nativeAppIcon(app) {
 			let v = NSImageView()
 			v.image = image
 			v.imageScaling = .scaleProportionallyUpOrDown
@@ -148,8 +149,10 @@ final class GridCell: NSView {
 		wantsLayer = true
 
 		highlight.wantsLayer = true
-		highlight.layer?.cornerRadius = 16
-		highlight.layer?.backgroundColor = NSColor(white: 1, alpha: 0.1).cgColor
+		highlight.layer?.cornerRadius = 18
+		highlight.layer?.borderWidth = 3
+		highlight.layer?.borderColor = NSColor.controlAccentColor.cgColor
+		highlight.layer?.backgroundColor = NSColor(white: 1, alpha: 0.12).cgColor
 		highlight.isHidden = true
 		addSubview(highlight)
 		addSubview(iconView)
@@ -168,12 +171,13 @@ final class GridCell: NSView {
 	override func layout() {
 		super.layout()
 		let size = AppGrid.iconSize
-		let top: CGFloat = 8
+		let top: CGFloat = 12
 		iconView.frame = NSRect(x: (bounds.width - size) / 2, y: top, width: size, height: size)
-		label.frame = NSRect(x: 4, y: top + size + 4, width: bounds.width - 8, height: 16)
-		// A pill hugging the icon + name, a touch wider than the icon.
-		let hw = size + 24
-		highlight.frame = NSRect(x: (bounds.width - hw) / 2, y: 2, width: hw, height: bounds.height - 4)
+		label.frame = NSRect(x: 4, y: top + size + 6, width: bounds.width - 8, height: 16)
+		// A rounded square hugging just the icon (6px padding), so the accent outline tracks
+		// the icon the way Spotlight's selection does — not the whole cell.
+		let sel = size + 12
+		highlight.frame = NSRect(x: (bounds.width - sel) / 2, y: top - 6, width: sel, height: sel)
 	}
 
 	override func mouseDown(with _: NSEvent) { onClick?() }
@@ -189,4 +193,25 @@ final class GridCell: NSView {
 		addTrackingArea(area)
 		tracking = area
 	}
+}
+
+private func nativeAppIcon(_ app: CatalogApp) -> NSImage? {
+	let ws = NSWorkspace.shared
+	if let url = ws.urlForApplication(withBundleIdentifier: "app.justfiles.quay.app.\(app.id)"), hasAppIcon(url) {
+		return ws.icon(forFile: url.path)
+	}
+	let path = FileManager.default.homeDirectoryForCurrentUser
+		.appendingPathComponent("Applications/Quay Apps/\(execName(app.name)).app")
+	return hasAppIcon(path) ? ws.icon(forFile: path.path) : nil
+}
+
+private func hasAppIcon(_ app: URL) -> Bool {
+	FileManager.default.fileExists(
+		atPath: app.appendingPathComponent("Contents/Resources/AppIcon.icns").path
+	)
+}
+
+private func execName(_ name: String) -> String {
+	let safe = name.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-" }
+	return safe.isEmpty ? "App" : safe
 }

@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => ({
 						id: 'app.frieren.notes',
 						name: 'Notes',
 						description: 'A freeform knowledge base shared with the agent',
-						icon: 'icon.svg',
+						icon: 'icon.png',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})

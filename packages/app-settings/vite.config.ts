@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => ({
 						id: 'app.frieren.settings',
 						name: 'Settings',
 						description: 'Connect accounts and choose what they power',
-						icon: 'icon.svg',
+						icon: 'icon.png',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})

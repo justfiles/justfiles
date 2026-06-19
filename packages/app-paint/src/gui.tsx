@@ -1,5 +1,5 @@
 import type { Client } from '@justfiles/app'
-import { defineGUI } from '@justfiles/app/browser'
+import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import type { Store } from '@justfiles/state'
 import { StrictMode, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -13,6 +13,49 @@ import {
 	type PaintStoreState,
 	type PersistController
 } from './store.ts'
+
+// Layout only — every colour reads a platform token (`--surface`, `--rule`,
+// `--focus`, `--window-bg`), so the app matches the native chrome and gets dark
+// mode for free. The previous version leaned on Tailwind utility classes + a few
+// hardcoded greys; Tailwind isn't served outside the standalone dev server, so in
+// the OS shell those classes were dead and the layout collapsed. `--paint-paper`
+// is the white drawing sheet (the exported PNG background, a document fact, not a
+// theme colour); `--paint-mat` is the shaded workspace behind it.
+injectStyle(
+	`
+.paint { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--window-bg); color: var(--text); --paint-paper: #ffffff; --paint-mat: color-mix(in srgb, var(--text) 12%, var(--window-bg)); }
+
+.paint-bar { display: flex; flex: none; align-items: center; gap: 6px; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--rule); }
+.paint-btn { flex: none; padding: 1px 10px; font-size: 12px; }
+.paint-status { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; opacity: 0.6; }
+.paint-status[data-error="true"] { color: #b91c1c; opacity: 1; }
+
+.paint-body { display: flex; flex: 1; min-height: 0; }
+
+.paint-tools { display: flex; flex: none; flex-direction: column; align-items: center; gap: 8px; width: 72px; padding: 10px 0; background: var(--surface); border-right: 1px solid var(--rule); }
+.paint-tool-group { display: flex; flex-direction: column; gap: 4px; }
+.paint-tool { width: 56px; padding: 4px 0; font-size: 11px; text-align: center; }
+.paint-tool[data-active="true"] { background: var(--focus); color: var(--on-focus); border-color: var(--focus); }
+.paint-sep { height: 1px; width: 60%; background: var(--rule); margin: 2px 0; }
+.paint-sizes { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.paint-size { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 22px; padding: 0; }
+.paint-size[data-active="true"] { background: var(--focus); border-color: var(--focus); }
+.paint-size-dot { border-radius: 50%; background: var(--text); }
+.paint-size[data-active="true"] .paint-size-dot { background: var(--on-focus); }
+
+.paint-mat { flex: 1; min-height: 0; min-width: 0; overflow: auto; padding: 16px; background: var(--paint-mat); }
+.paint-canvas { display: block; background: var(--paint-paper); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25); image-rendering: pixelated; touch-action: none; cursor: crosshair; }
+
+.paint-colors { display: flex; flex: none; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface); border-top: 1px solid var(--rule); }
+.paint-current { flex: none; width: 28px; height: 28px; border: 1px solid var(--rule); border-radius: 4px; }
+.paint-swatches { display: flex; gap: 4px; }
+.paint-swatch { width: 18px; height: 18px; padding: 0; border: 1px solid var(--rule); border-radius: 3px; }
+.paint-swatch[data-active="true"] { border: 2px solid var(--focus); }
+.paint-custom { margin-left: 4px; display: flex; align-items: center; gap: 6px; font-size: 11px; opacity: 0.75; }
+.paint-custom input { width: 24px; height: 24px; padding: 0; border: none; background: transparent; }
+`,
+	'app-paint'
+)
 
 const TOOLS: { id: Tool; label: string }[] = [
 	{ id: 'pencil', label: 'Pencil' },
@@ -255,31 +298,33 @@ function Paint({ state, client }: { state: PaintState; client: Client<PaintApp> 
 	const status = lastError ?? (lastSavedPath ? `Saved ${lastSavedPath}` : '')
 
 	return (
-		<div className="flex h-full w-full flex-col">
-			<header
-				className="flex flex-none items-center gap-1 px-2 py-1"
-				style={{ background: 'var(--surface)', borderBottom: '1px solid var(--rule)' }}
-			>
-				<MenuButton label="New" onClick={handleNew} />
-				<MenuButton label="Save" onClick={handleSave} disabled={busy} />
-				<MenuButton label="Undo" onClick={handleUndo} disabled={!canUndo} />
-				<MenuButton label="Redo" onClick={handleRedo} disabled={!canRedo} />
-				<span
-					className="ml-auto truncate text-[11px]"
-					style={{ color: lastError ? '#c93030' : 'var(--text)', opacity: lastError ? 1 : 0.6 }}
-				>
+		<div className="paint">
+			<header className="paint-bar">
+				<button type="button" className="paint-btn" onClick={handleNew}>
+					New
+				</button>
+				<button type="button" className="paint-btn" onClick={handleSave} disabled={busy}>
+					Save
+				</button>
+				<button type="button" className="paint-btn" onClick={handleUndo} disabled={!canUndo}>
+					Undo
+				</button>
+				<button type="button" className="paint-btn" onClick={handleRedo} disabled={!canRedo}>
+					Redo
+				</button>
+				<span className="paint-status" data-error={Boolean(lastError)}>
 					{busy ? 'Saving…' : status}
 				</span>
 			</header>
 
-			<div className="flex min-h-0 flex-1">
+			<div className="paint-body">
 				<Toolbar
 					tool={tool}
 					size={size}
 					onTool={(t) => void client.setTool({ tool: t })}
 					onSize={(s) => void client.setSize({ size: s })}
 				/>
-				<div className="min-h-0 flex-1 overflow-auto p-4" style={{ background: '#8a8a86' }}>
+				<div className="paint-mat">
 					<canvas
 						ref={canvasRef}
 						width={CANVAS_W}
@@ -288,48 +333,13 @@ function Paint({ state, client }: { state: PaintState; client: Client<PaintApp> 
 						onPointerMove={handlePointerMove}
 						onPointerUp={handlePointerUp}
 						onPointerCancel={handlePointerUp}
-						className="block"
-						style={{
-							background: '#ffffff',
-							boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
-							imageRendering: 'pixelated',
-							touchAction: 'none',
-							cursor: 'crosshair'
-						}}
+						className="paint-canvas"
 					/>
 				</div>
 			</div>
 
 			<ColorStrip color={color} onColor={(c) => void client.setColor({ color: c })} />
 		</div>
-	)
-}
-
-function MenuButton(props: { label: string; onClick: () => void; disabled?: boolean }) {
-	return (
-		<button
-			type="button"
-			onClick={props.onClick}
-			disabled={props.disabled}
-			className="inline-flex items-center gap-1 px-2 py-[3px]"
-			style={{
-				background: 'transparent',
-				border: '1px solid transparent',
-				borderRadius: 3,
-				color: 'var(--text)',
-				font: 'inherit',
-				cursor: 'default',
-				opacity: props.disabled ? 0.4 : 1
-			}}
-			onMouseEnter={(e) => {
-				if (!props.disabled) e.currentTarget.style.background = 'rgba(0,0,0,0.06)'
-			}}
-			onMouseLeave={(e) => {
-				e.currentTarget.style.background = 'transparent'
-			}}
-		>
-			{props.label}
-		</button>
 	)
 }
 
@@ -340,74 +350,40 @@ function Toolbar(props: {
 	onSize: (s: Size) => void
 }) {
 	return (
-		<aside
-			className="flex flex-none flex-col items-center gap-2 py-2"
-			style={{
-				width: 64,
-				background: 'var(--surface)',
-				borderRight: '1px solid var(--rule)'
-			}}
-		>
-			<div className="grid grid-cols-1 gap-1">
-				{TOOLS.map(({ id, label }) => {
-					const active = props.tool === id
-					return (
-						<button
-							key={id}
-							type="button"
-							title={label}
-							aria-pressed={active}
-							onClick={() => props.onTool(id)}
-							className="inline-flex items-center justify-center px-2 py-1 text-[11px]"
-							style={{
-								width: 52,
-								background: active ? 'var(--focus)' : '#ffffff',
-								color: active ? 'var(--on-focus)' : 'var(--text)',
-								border: '1px solid var(--rule)',
-								borderRadius: 3,
-								cursor: 'default'
-							}}
-						>
-							{label}
-						</button>
-					)
-				})}
+		<aside className="paint-tools">
+			<div className="paint-tool-group">
+				{TOOLS.map(({ id, label }) => (
+					<button
+						key={id}
+						type="button"
+						className="paint-tool"
+						title={label}
+						aria-pressed={props.tool === id}
+						data-active={props.tool === id}
+						onClick={() => props.onTool(id)}
+					>
+						{label}
+					</button>
+				))}
 			</div>
-			<div
-				style={{ height: 1, width: '70%', background: 'var(--rule)', margin: '4px 0' }}
-				aria-hidden
-			/>
-			<div className="flex flex-col items-center gap-1">
-				{SIZES.map((value) => {
-					const active = props.size === value
-					return (
-						<button
-							key={value}
-							type="button"
-							title={`Size ${value}`}
-							aria-pressed={active}
-							onClick={() => props.onSize(value)}
-							className="inline-flex items-center justify-center"
-							style={{
-								width: 28,
-								height: 18,
-								background: active ? 'var(--focus)' : '#ffffff',
-								border: '1px solid var(--rule)',
-								borderRadius: 3,
-								cursor: 'default'
-							}}
-						>
-							<span
-								style={{
-									width: value * 2 + 2,
-									height: value * 2 + 2,
-									background: active ? 'var(--on-focus)' : 'var(--text)',
-									borderRadius: '50%'
-								}}
-							/>
-						</button>
-					)
-				})}
+			<div className="paint-sep" aria-hidden />
+			<div className="paint-sizes">
+				{SIZES.map((value) => (
+					<button
+						key={value}
+						type="button"
+						className="paint-size"
+						title={`Size ${value}`}
+						aria-pressed={props.size === value}
+						data-active={props.size === value}
+						onClick={() => props.onSize(value)}
+					>
+						<span
+							className="paint-size-dot"
+							style={{ width: value * 2 + 2, height: value * 2 + 2 }}
+						/>
+					</button>
+				))}
 			</div>
 		</aside>
 	)
@@ -415,50 +391,29 @@ function Toolbar(props: {
 
 function ColorStrip(props: { color: string; onColor: (c: string) => void }) {
 	return (
-		<footer
-			className="flex flex-none items-center gap-2 px-3 py-2"
-			style={{ background: 'var(--surface)', borderTop: '1px solid var(--rule)' }}
-		>
+		<footer className="paint-colors">
 			<div
+				className="paint-current"
 				title={`Current color ${props.color}`}
-				style={{
-					width: 28,
-					height: 28,
-					background: props.color,
-					border: '1px solid var(--rule)',
-					borderRadius: 3
-				}}
+				style={{ background: props.color }}
 			/>
-			<div className="flex gap-1">
-				{PALETTE.map((c) => {
-					const active = props.color.toLowerCase() === c
-					return (
-						<button
-							key={c}
-							type="button"
-							title={c}
-							aria-pressed={active}
-							onClick={() => props.onColor(c)}
-							style={{
-								width: 18,
-								height: 18,
-								background: c,
-								border: active ? '2px solid var(--focus)' : '1px solid var(--rule)',
-								borderRadius: 2,
-								cursor: 'default'
-							}}
-						/>
-					)
-				})}
+			<div className="paint-swatches">
+				{PALETTE.map((c) => (
+					<button
+						key={c}
+						type="button"
+						className="paint-swatch"
+						title={c}
+						aria-pressed={props.color.toLowerCase() === c}
+						data-active={props.color.toLowerCase() === c}
+						onClick={() => props.onColor(c)}
+						style={{ background: c }}
+					/>
+				))}
 			</div>
-			<label className="ml-2 flex items-center gap-1 text-[11px]" style={{ color: 'var(--text)' }}>
-				<span className="opacity-60">Custom</span>
-				<input
-					type="color"
-					value={props.color}
-					onChange={(e) => props.onColor(e.target.value)}
-					style={{ width: 22, height: 22, padding: 0, border: 'none', background: 'transparent' }}
-				/>
+			<label className="paint-custom">
+				<span>Custom</span>
+				<input type="color" value={props.color} onChange={(e) => props.onColor(e.target.value)} />
 			</label>
 		</footer>
 	)

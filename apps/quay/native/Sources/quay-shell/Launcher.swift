@@ -92,7 +92,19 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		blur.wantsLayer = true
 		blur.layer?.cornerRadius = 16
 		blur.layer?.masksToBounds = true
+		// A hairline light edge for a crisp, defined boundary (Spotlight has one).
+		blur.layer?.borderWidth = 1
+		blur.layer?.borderColor = NSColor(white: 1, alpha: 0.1).cgColor
 		panel.contentView = blur
+
+		// A dark tint over the vibrancy: the bare HUD blur reads washed-out/too see-through,
+		// so this firms the glass up into Spotlight's more solid, less-blurry look. Sits
+		// below all content (added before container/composer), clipped to the rounded corners.
+		let tint = NSView(frame: rect)
+		tint.wantsLayer = true
+		tint.layer?.backgroundColor = NSColor(white: 0, alpha: 0.22).cgColor
+		tint.autoresizingMask = [.width, .height]
+		blur.addSubview(tint)
 
 		// The transcript webview: transparent over the native vibrancy, status-bridged,
 		// kept warm. Its agent socket and token are owned by the page (quayd injects the

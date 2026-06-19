@@ -83,8 +83,24 @@ await writeRuntime({ port: served.port, token, pid: process.pid })
 // reconcile runs after each install (`onInstalled`) so a freshly-built app projects
 // out and the launcher re-lists immediately.
 const project = async () => {
-	const apps = visible(await host.kernel.list())
+	const apps = await Promise.all(
+		visible(await host.kernel.list()).map(async (app) => ({
+			id: app.id,
+			name: app.name,
+			version: app.version,
+			iconPath: app.icon,
+			iconBytes: app.icon ? await readIcon(app.id, app.icon) : undefined
+		}))
+	)
 	await reconcileProjection(apps).catch((error) => console.error('quayd: projection failed', error))
+}
+
+async function readIcon(id: string, path: string): Promise<Uint8Array | undefined> {
+	try {
+		return await (await host.kernel.app(id)).read(path)
+	} catch {
+		return undefined
+	}
 }
 onInstalled = async () => {
 	await project()

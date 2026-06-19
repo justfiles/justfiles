@@ -6,7 +6,7 @@ export default defineConfig({
 		kernelHost({
 			id: 'app.code',
 			name: 'Code',
-			icon: 'icon.svg',
+			icon: 'icon.png',
 			description: 'Build Frieren apps inside Frieren.',
 			app: 'src/app.ts',
 			gui: 'src/gui.tsx'

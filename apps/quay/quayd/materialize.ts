@@ -9,6 +9,7 @@
 // two-store coherence problem.
 
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -19,6 +20,8 @@ export interface ProjectionApp {
 	id: string
 	name: string
 	version?: string
+	iconPath?: string
+	iconBytes?: Uint8Array
 }
 
 const APPS_DIR = join(homedir(), 'Applications', 'Quay Apps')
@@ -59,7 +62,7 @@ export async function reconcileProjection(apps: ProjectionApp[]): Promise<void> 
 	// Write or refresh each desired bundle whose signature changed.
 	for (const [dir, app] of desired) {
 		const path = join(APPS_DIR, dir)
-		const sig = signature(app, booterMtime)
+		const sig = projectionSignature(app, booterMtime)
 		if (readSig(path) === sig) continue
 		await writeBundle(path, app, sig)
 		await run('codesign', ['--force', '--sign', '-', path])
@@ -77,7 +80,7 @@ async function writeBundle(path: string, app: ProjectionApp, sig: string): Promi
 	await copyFile(BOOTER, join(macos, bin))
 	await chmod(join(macos, bin), 0o755)
 	await writeFile(join(path, 'Contents', 'Info.plist'), plist(app, bin))
-	await makeIcon(res, app.name)
+	await makeIcon(res, app)
 	await writeFile(join(res, '.quay'), sig)
 }
 
@@ -87,19 +90,95 @@ async function remove(path: string): Promise<void> {
 	await rm(path, { recursive: true, force: true })
 }
 
-// A per-letter glyph icon, matching the launcher's tiles (real per-app SVG icons
-// from the Volume are a later refinement). Best-effort: a missing tool or failure
-// just leaves the bundle with the system default icon.
-async function makeIcon(res: string, name: string): Promise<void> {
+// Use the bundle's own icon when present; otherwise draw the legacy glyph icon.
+// Best-effort: a missing tool or failure just leaves the bundle with the system
+// default icon.
+async function makeIcon(res: string, app: ProjectionApp): Promise<void> {
 	if (!existsSync(MAKEICON)) return
-	const letter = (name.charAt(0) || 'Q').toUpperCase()
+	const letter = (app.name.charAt(0) || 'Q').toUpperCase()
 	const tmp = await mkdtemp(join(tmpdir(), 'quay-icon-'))
-	const set = join(tmp, 'AppIcon.iconset')
-	await mkdir(set, { recursive: true })
-	const ok = await run(MAKEICON, ['512', join(set, 'icon_512x512.png'), letter])
-	await run(MAKEICON, ['1024', join(set, 'icon_512x512@2x.png'), letter])
-	if (ok) await run('iconutil', ['-c', 'icns', set, '-o', join(res, 'AppIcon.icns')])
-	await rm(tmp, { recursive: true, force: true })
+	try {
+		const set = join(tmp, 'AppIcon.iconset')
+		await mkdir(set, { recursive: true })
+		const source = await writeIconSource(tmp, app)
+		let ok = source ? await renderIconset(set, letter, source) : false
+		if (!ok) ok = await renderIconset(set, letter)
+		if (ok) await run('iconutil', ['-c', 'icns', set, '-o', join(res, 'AppIcon.icns')])
+	} finally {
+		await rm(tmp, { recursive: true, force: true })
+	}
+}
+
+async function writeIconSource(tmp: string, app: ProjectionApp): Promise<string | undefined> {
+	const source = iconSource(app)
+	if (!source) return undefined
+	const path = join(tmp, `source${source.ext}`)
+	await writeFile(path, source.bytes)
+	return path
+}
+
+function iconSource(app: ProjectionApp): { ext: string; bytes: Uint8Array } | undefined {
+	const bytes = app.iconBytes
+	if (!bytes?.byteLength) return undefined
+	const text = new TextDecoder().decode(bytes).trim()
+	if (text.startsWith('data:image/')) return dataUrlImage(text)
+	return { ext: iconExt(app.iconPath, bytes), bytes }
+}
+
+function dataUrlImage(text: string): { ext: string; bytes: Uint8Array } | undefined {
+	try {
+		const comma = text.indexOf(',')
+		if (comma < 0) return undefined
+		const meta = text.slice(0, comma)
+		const body = text.slice(comma + 1)
+		const bytes = meta.includes(';base64')
+			? Buffer.from(body, 'base64')
+			: new TextEncoder().encode(decodeURIComponent(body))
+		return bytes.byteLength ? { ext: extFromMime(meta), bytes } : undefined
+	} catch {
+		return undefined
+	}
+}
+
+function extFromMime(meta: string): string {
+	if (meta.includes('image/png')) return '.png'
+	if (meta.includes('image/jpeg')) return '.jpg'
+	if (meta.includes('image/svg+xml')) return '.svg'
+	return '.img'
+}
+
+function iconExt(path = '', bytes: Uint8Array): string {
+	const p = path.toLowerCase()
+	if (p.endsWith('.png') || (bytes[0] === 0x89 && bytes[1] === 0x50)) return '.png'
+	if (p.endsWith('.jpg') || p.endsWith('.jpeg') || (bytes[0] === 0xff && bytes[1] === 0xd8)) {
+		return '.jpg'
+	}
+	if (p.endsWith('.svg') || new TextDecoder().decode(bytes.slice(0, 128)).includes('<svg')) {
+		return '.svg'
+	}
+	return '.img'
+}
+
+const MACOS_ICONSET: [size: number, file: string][] = [
+	[16, 'icon_16x16.png'],
+	[32, 'icon_16x16@2x.png'],
+	[32, 'icon_32x32.png'],
+	[64, 'icon_32x32@2x.png'],
+	[128, 'icon_128x128.png'],
+	[256, 'icon_128x128@2x.png'],
+	[256, 'icon_256x256.png'],
+	[512, 'icon_256x256@2x.png'],
+	[512, 'icon_512x512.png'],
+	[1024, 'icon_512x512@2x.png']
+]
+
+async function renderIconset(set: string, letter: string, source?: string): Promise<boolean> {
+	const image = source ? [source] : []
+	let ok = true
+	for (const [size, file] of MACOS_ICONSET) {
+		ok = (await run(MAKEICON, [String(size), join(set, file), letter, ...image])) && ok
+	}
+	return ok
 }
 
 // Bundle ids match the booter's launch path (Launcher.swift) and the Phase-0
@@ -132,15 +211,22 @@ function plist(app: ProjectionApp, bin: string): string {
 // Identity of a materialised bundle: rebuild only when one of these changes (so a
 // new booter binary refreshes every bundle; a rename/version bump refreshes one;
 // a moved node/script path re-stamps the spawn wiring).
-function signature(app: ProjectionApp, booterMtime: number): string {
+export function projectionSignature(app: ProjectionApp, booterMtime: number): string {
 	return JSON.stringify({
 		id: app.id,
 		name: app.name,
 		version: app.version,
+		icon: iconSignature(app),
+		iconFormat: MACOS_ICONSET.map(([size, file]) => `${size}:${file}`),
 		booter: booterMtime,
 		node: QUAYD_NODE,
 		script: QUAYD_SCRIPT
 	})
+}
+
+function iconSignature(app: ProjectionApp): { path?: string; hash: string } | undefined {
+	if (!app.iconBytes) return undefined
+	return { path: app.iconPath, hash: createHash('sha256').update(app.iconBytes).digest('hex') }
 }
 
 function readSig(path: string): string {

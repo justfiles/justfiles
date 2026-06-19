@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => ({
 						id: 'app.frieren.paint',
 						name: 'Paint',
 						description: 'Pixel drawing',
-						icon: 'icon.svg',
+						icon: 'icon.png',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})

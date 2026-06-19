@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => ({
 						id: 'app.frieren.files',
 						name: 'Files',
 						description: 'Browse and preview files',
-						icon: 'icon.svg',
+						icon: 'icon.png',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})
