@@ -2,7 +2,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, relative, resolve } from 'node:path'
 import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
-import type { Connect, ViteDevServer } from 'vite'
+import type { Connect, RunnableDevEnvironment, ViteDevServer } from 'vite'
+import { isRunnableDevEnvironment } from 'vite'
 import { appBundleFromMemory, type Message } from './app.ts'
 import { type Capability, capabilityRegistry, implementCapability } from './capabilities/index.ts'
 import { type VolumeEntry, volume as volumeCap } from './capabilities/volume/index.ts'
@@ -19,14 +20,15 @@ export interface DevServerOptions {
 }
 
 // In dev the headless app is not pre-bundled: Vite transforms and serves the
-// real `src/app.ts` (and its workspace deps) through its SSR module graph. Each
-// load re-reads the live module — Vite invalidates the graph on file change — so
-// app edits take effect on the next dispatch without a restart. The kernel still
-// owns trust: capabilities are scoped by the app's DECLARED capabilities, never
-// by what this module claims at runtime.
-function viteSandbox(server: ViteDevServer, appUrl: string): GetSandbox {
+// real `src/app.ts` (and its workspace deps) through the `kernel` server
+// environment's module graph (Vite Environment API). Each load re-reads the live
+// module — Vite invalidates the graph on file change — so app edits take effect
+// on the next dispatch without a restart. The kernel still owns trust:
+// capabilities are scoped by the app's DECLARED capabilities, never by what this
+// module claims at runtime.
+function viteSandbox(env: RunnableDevEnvironment, appUrl: string): GetSandbox {
 	return async () => {
-		const { app } = await server.ssrLoadModule(appUrl)
+		const { app } = await env.runner.import(appUrl)
 		if (typeof app !== 'object' || app === null)
 			throw new Error('app module must export an object named "app"')
 		return {
@@ -40,16 +42,17 @@ function viteSandbox(server: ViteDevServer, appUrl: string): GetSandbox {
 	}
 }
 
-// The on-disk files in the app's SSR module graph (entry + its inlined workspace
-// deps). Used to scope the dev reload to changes that affect the headless
-// module, ignoring GUI/browser-only edits.
-function ssrGraphFiles(server: ViteDevServer, entry: string): Set<string> {
+// The on-disk files in the app's kernel module graph (entry + its inlined
+// workspace deps). Used to scope the dev reload to changes that affect the
+// headless module, ignoring GUI/browser-only edits. The graph is the `kernel`
+// environment's own, so it never sees client modules.
+function kernelGraphFiles(env: RunnableDevEnvironment, entry: string): Set<string> {
 	const files = new Set<string>()
-	const queue = [...(server.moduleGraph.getModulesByFile(entry) ?? [])]
+	const queue = [...(env.moduleGraph.getModulesByFile(entry) ?? [])]
 	for (let node = queue.pop(); node; node = queue.pop()) {
 		if (!node.file || files.has(node.file)) continue
 		files.add(node.file)
-		queue.push(...node.ssrImportedModules)
+		queue.push(...node.importedModules)
 	}
 	return files
 }
@@ -186,10 +189,13 @@ export async function createDevServer(
 	const root = server.config.root
 	const appEntry = resolve(root, opts.app)
 	const appUrl = `/${relative(root, appEntry).split('\\').join('/')}`
+	const env = server.environments.kernel
+	if (!env || !isRunnableDevEnvironment(env))
+		throw new Error('kernel environment is not runnable (Vite Environment API)')
 	const fs = volume(memStorage())
 	const k = kernel({
 		fs,
-		sandbox: viteSandbox(server, appUrl),
+		sandbox: viteSandbox(env, appUrl),
 		clock: {},
 		capabilities: capabilityRegistry({ volume: devVolume(fs) })
 	})
@@ -209,12 +215,12 @@ export async function createDevServer(
 
 	// Headless-app HMR. Vite re-evaluates the module on the next sandbox load, but
 	// the kernel memoizes the procedure set + declared capabilities per install —
-	// re-install on a change within the app's SSR graph to drop those caches and
+	// re-install on a change within the kernel graph to drop those caches and
 	// re-warm subscriptions. State is keyed by appId, so it survives the reload.
 	// Chained + deferred past the sync watcher batch so Vite invalidates first.
 	let reload: Promise<unknown> = Promise.resolve()
 	server.watcher.on('change', (file) => {
-		if (!ssrGraphFiles(server, appEntry).has(file)) return
+		if (!kernelGraphFiles(env, appEntry).has(file)) return
 		reload = reload.then(() => k.install(bundle)).catch(() => {})
 	})
 

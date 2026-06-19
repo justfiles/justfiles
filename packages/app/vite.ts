@@ -4,6 +4,7 @@ import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
 import tailwindcss from '@tailwindcss/vite'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
+import { createRunnableDevEnvironment } from 'vite'
 import type { AppManifest } from './app.ts'
 import type { createDevServer, DevServerOptions } from './dev-server.ts'
 
@@ -211,7 +212,23 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 			name: 'kernel-host',
 			config(_, env) {
 				if (env.command === 'serve') {
-					return { appType: 'custom', resolve: { dedupe: REACT_SPECIFIERS } }
+					// The headless reducer runs in its own `kernel` server
+					// environment (Vite Environment API): a RunnableDevEnvironment
+					// with a module graph distinct from the browser `client` one.
+					// dev-server loads src/app.ts via environments.kernel.runner.
+					return {
+						appType: 'custom',
+						resolve: { dedupe: REACT_SPECIFIERS },
+						environments: {
+							kernel: {
+								consumer: 'server',
+								// Custom envs aren't runnable by default — supply the factory.
+								dev: {
+									createEnvironment: (name, config) => createRunnableDevEnvironment(name, config)
+								}
+							}
+						}
+					}
 				}
 				if (wrapReactGui) {
 					mkdirSync(dirname(reactGuiEntryPath), { recursive: true })
