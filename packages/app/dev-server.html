@@ -4,17 +4,6 @@
 		<meta charset="utf-8" />
 		<title>{{title}}</title>
 		<script type="module" src="/_kernel-host/dev-style.js"></script>
-		<script type="importmap">
-			{
-				"imports": {
-					"react": "/vendor/react.js",
-					"react-dom": "/vendor/react-dom.js",
-					"react-dom/client": "/vendor/react-dom-client.js",
-					"react/jsx-runtime": "/vendor/jsx-runtime.js",
-					"react/jsx-dev-runtime": "/vendor/jsx-dev-runtime.js"
-				}
-			}
-		</script>
 	</head>
 	<body>
 		<div class="ds-desktop">
@@ -100,7 +89,7 @@
 			}
 		</script>
 		<script type="module">
-			import { gui } from '/app.js'
+			import { gui } from 'virtual:justfiles-app/gui'
 
 			const state = await fetch('/_state').then((r) => r.json())
 			const transport = {

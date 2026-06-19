@@ -10,6 +10,15 @@ import type { createDevServer, DevServerOptions } from './dev-server.ts'
 const DEV_STYLE_URL = '/_kernel-host/dev-style.js'
 const DEV_STYLE_ID = '\0kernel-host:dev-style'
 const DEV_STYLE_CSS = `/@fs/${new URL('./dev-server.css', import.meta.url).pathname}`
+const VIRTUAL_GUI_ID = 'virtual:justfiles-app/gui'
+const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
+const REACT_SPECIFIERS = [
+	'react',
+	'react-dom',
+	'react-dom/client',
+	'react/jsx-runtime',
+	'react/jsx-dev-runtime'
+]
 
 // `kernelHost` is the app package's only build wiring. It has two modes:
 //
@@ -99,7 +108,9 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 		{
 			name: 'kernel-host',
 			config(_, env) {
-				if (env.command === 'serve') return { appType: 'custom' }
+				if (env.command === 'serve') {
+					return { appType: 'custom', resolve: { dedupe: REACT_SPECIFIERS } }
+				}
 				if (wrapReactGui) {
 					mkdirSync(dirname(reactGuiEntryPath), { recursive: true })
 					writeFileSync(reactGuiEntryPath, reactGuiEntry(guiEntry))
@@ -121,23 +132,24 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 							// (see apps/frieren importmap). Apps emit bare specifiers
 							// and the browser resolves them through the importmap —
 							// one URL, one React instance across host and every app.
-							external: [
-								'react',
-								'react-dom',
-								'react-dom/client',
-								'react/jsx-runtime',
-								'react/jsx-dev-runtime'
-							]
+							external: REACT_SPECIFIERS
 						}
 					}
 				}
 			},
 			resolveId(id) {
 				if (id === DEV_STYLE_URL) return DEV_STYLE_ID
+				if (id === VIRTUAL_GUI_ID) return RESOLVED_VIRTUAL_GUI_ID
 				return null
 			},
 			load(id) {
 				if (id === DEV_STYLE_ID) return `import ${JSON.stringify(DEV_STYLE_CSS)}`
+				if (id === RESOLVED_VIRTUAL_GUI_ID) {
+					const guiSpecifier = `/${relative(root, guiEntry).split('\\').join('/')}`
+					return wrapReactGui
+						? reactGuiEntry(guiSpecifier)
+						: `export { gui } from ${JSON.stringify(guiSpecifier)}\n`
+				}
 				return null
 			},
 			configureServer(server) {
@@ -145,7 +157,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					const mod = (await server.ssrLoadModule('@justfiles/app/dev-server')) as {
 						createDevServer: typeof createDevServer
 					}
-					server.middlewares.use(await mod.createDevServer(server.config.root, opts))
+					server.middlewares.use(await mod.createDevServer(server, opts))
 				}
 			},
 			closeBundle() {
