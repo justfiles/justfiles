@@ -10,6 +10,8 @@ import type { createDevServer, DevServerOptions } from './dev-server.ts'
 const DEV_STYLE_URL = '/_kernel-host/dev-style.js'
 const DEV_STYLE_ID = '\0kernel-host:dev-style'
 const DEV_STYLE_CSS = `/@fs/${new URL('./dev-server.css', import.meta.url).pathname}`
+const DEV_BOOTSTRAP_URL = '/_kernel-host/bootstrap.js'
+const DEV_BOOTSTRAP_ID = '\0kernel-host:bootstrap'
 const VIRTUAL_GUI_ID = 'virtual:justfiles-app/gui'
 const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
 const REACT_SPECIFIERS = [
@@ -65,6 +67,106 @@ function walkDist(base: string, dir: string, into: Map<string, Uint8Array>): voi
 		if (statSync(abs).isDirectory()) walkDist(base, abs, into)
 		else into.set(relative(base, abs).split('\\').join('/'), readFileSync(abs))
 	}
+}
+
+function reactDevGuiEntry(specifier: string): string {
+	return `import * as mod from ${JSON.stringify(specifier)}
+import { createElement } from 'react'
+import { createRoot } from 'react-dom/client'
+import { defineGUI } from '@justfiles/app/browser'
+
+const componentMode = !mod.gui
+const hotState = import.meta.hot?.data.reactGui ?? { current: mod, instances: new Set() }
+hotState.current = mod
+if (import.meta.hot) import.meta.hot.data.reactGui = hotState
+
+function HotComponent(props) {
+	const Component = hotState.current.default
+	return Component(props)
+}
+
+const componentSpec = {
+	mount(el, state, ctx) {
+		const root = createRoot(el)
+		const instance = {
+			state,
+			update(next) {
+				instance.state = next
+				root.render(createElement(HotComponent, { state: next, actions: ctx.client }))
+			},
+			unmount() {
+				hotState.instances.delete(instance)
+				root.unmount()
+			}
+		}
+		hotState.instances.add(instance)
+		instance.update(state)
+		return instance
+	}
+}
+if (mod.menu) componentSpec.menu = (state, client) => hotState.current.menu?.(state, client) ?? []
+const componentGui = defineGUI(componentSpec)
+
+export const gui = mod.gui ?? componentGui
+export const __hmr = { preserve: componentMode && !!mod.default }
+
+function replace(next) {
+	hotState.current = next
+	for (const instance of hotState.instances) instance.update(instance.state)
+}
+
+if (__hmr.preserve) replace(mod)
+
+if (import.meta.hot && __hmr.preserve) {
+	import.meta.hot.accept(${JSON.stringify(specifier)}, (next) => {
+		if (!next || next.gui || !next.default) {
+			import.meta.hot.invalidate('GUI module shape changed')
+			return
+		}
+		replace(next)
+	})
+}
+`
+}
+
+function devBootstrapEntry(): string {
+	return `import { gui as initialGui } from ${JSON.stringify(VIRTUAL_GUI_ID)}
+
+const root = document.getElementById('app')
+if (!root) throw new Error('missing app root')
+let latestState = await fetch('/_state').then((r) => r.json())
+const transport = {
+	invoke: (action) =>
+		fetch('/_dispatch', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(action)
+		}).then(async (r) => {
+			if (!r.ok) throw new Error(await r.text())
+			return r.json()
+		}),
+	subscribe: (onState) => {
+		const es = new EventSource('/_subscribe')
+		es.onmessage = (e) => {
+			latestState = JSON.parse(e.data)
+			onState(latestState)
+		}
+		return () => es.close()
+	}
+}
+let instance = initialGui.mount(root, latestState, { transport })
+
+if (import.meta.hot) {
+	import.meta.hot.accept(${JSON.stringify(VIRTUAL_GUI_ID)}, async (next) => {
+		if (!next?.gui || next.__hmr?.preserve) return
+		await instance.unmount()
+		instance = next.gui.mount(root, latestState, { transport })
+	})
+	import.meta.hot.dispose(() => {
+		void instance.unmount()
+	})
+}
+`
 }
 
 function emitBuiltinBundle(out: string, manifest: AppManifest): void {
@@ -139,15 +241,17 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 			},
 			resolveId(id) {
 				if (id === DEV_STYLE_URL) return DEV_STYLE_ID
+				if (id === DEV_BOOTSTRAP_URL) return DEV_BOOTSTRAP_ID
 				if (id === VIRTUAL_GUI_ID) return RESOLVED_VIRTUAL_GUI_ID
 				return null
 			},
 			load(id) {
 				if (id === DEV_STYLE_ID) return `import ${JSON.stringify(DEV_STYLE_CSS)}`
+				if (id === DEV_BOOTSTRAP_ID) return devBootstrapEntry()
 				if (id === RESOLVED_VIRTUAL_GUI_ID) {
 					const guiSpecifier = `/${relative(root, guiEntry).split('\\').join('/')}`
 					return wrapReactGui
-						? reactGuiEntry(guiSpecifier)
+						? reactDevGuiEntry(guiSpecifier)
 						: `export { gui } from ${JSON.stringify(guiSpecifier)}\n`
 				}
 				return null

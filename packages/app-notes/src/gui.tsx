@@ -1,33 +1,7 @@
-import { injectStyle } from '@justfiles/app/browser'
 import type { GUIMenu, GUIProps } from '@justfiles/app/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Note, NotesApp } from './app.ts'
-
-// Layout only — colours, controls, and the palette rows lean on the platform
-// sheet (`@justfiles/design/mac`) and its tokens, so the app reads as native and
-// gets dark mode for free (DESIGN.md §5). The editor is a full-bleed `<textarea>`
-// with its native chrome stripped; the palette rows reuse `.ds-menu` /
-// `.ds-menu-item`, which already carry the macOS selection highlight.
-injectStyle(
-	`
-.notes { display: flex; flex-direction: column; height: 100%; width: 100%; background: var(--window-bg); color: var(--text); }
-.notes-error { flex: none; padding: 4px 12px; font-size: 12px; color: #b91c1c; }
-/* Search bar: a top strip in normal flow, so opening it pushes the editor down
-   onto the same surface (no overlay). Only the results list floats (below). */
-.notes-search { flex: none; padding: 6px 10px; border-bottom: 1px solid var(--rule); background: var(--surface); }
-.notes-search input { width: 100%; box-sizing: border-box; }
-.notes-body { position: relative; flex: 1; min-height: 0; display: flex; }
-.notes-editor { flex: 1; min-height: 0; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: none; box-shadow: none; background: transparent; color: inherit; padding: 16px 18px; font-family: var(--font-ui); font-size: 14px; line-height: 1.5; }
-/* The candidate list is the ONLY thing that overlays the editor — a dropdown
-   anchored under the search bar (top of the editor body). */
-.notes-results { position: absolute; top: 0; left: 0; right: 0; z-index: 10; max-height: min(60%, 360px); overflow-y: auto; border-radius: 0 0 var(--menu-radius) var(--menu-radius); }
-.notes-palette-item { justify-content: space-between; gap: 12px; }
-.notes-palette-mtime { font-size: 11px; opacity: 0.5; }
-.notes-palette-item[data-active="true"] .notes-palette-mtime { opacity: 0.8; }
-.notes-palette-empty { padding: 8px 18px; font-size: 12px; opacity: 0.5; }
-`,
-	'app-notes'
-)
+import './style.css'
 
 const AUTOSAVE_MS = 800
 
