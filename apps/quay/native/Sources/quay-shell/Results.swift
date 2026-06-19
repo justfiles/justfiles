@@ -11,10 +11,9 @@ struct ResultItem {
 }
 
 // The native results list: a vertical, scrollable stack of icon+label rows shown above
-// the composer — app search matches and the `/` command menu both render through it. The
-// best match sits at the BOTTOM (nearest the composer, mirroring the old column-reverse
-// web layout); ↑ walks up the list. At most MAX_VISIBLE rows show before it caps and
-// scrolls. Replaces launcher.js's app rows.
+// the composer — the `/` command menu renders through it (app search uses the AppGrid).
+// The best match sits at the BOTTOM (nearest the composer, mirroring the old column-reverse
+// web layout); ↑ walks up the list. At most MAX_VISIBLE rows show before it caps and scrolls.
 final class Results: NSView {
 	static let rowHeight: CGFloat = 46
 	static let rowGap: CGFloat = 4
@@ -129,8 +128,6 @@ final class Row: NSView {
 		didSet { layer?.backgroundColor = selected ? NSColor(white: 1, alpha: 0.1).cgColor : .clear }
 	}
 
-	func setLabel(_ s: String) { text.stringValue = s }
-
 	private var tracking: NSTrackingArea?
 	private let text = NSTextField(labelWithString: "")
 
@@ -200,7 +197,7 @@ final class Row: NSView {
 	}
 }
 
-private func imageFromDataURL(_ url: String) -> NSImage? {
+func imageFromDataURL(_ url: String) -> NSImage? {
 	guard url.hasPrefix("data:image/"), let comma = url.firstIndex(of: ",") else { return nil }
 	let meta = url[..<comma]
 	let body = url[url.index(after: comma)...]
@@ -213,8 +210,8 @@ private func imageFromDataURL(_ url: String) -> NSImage? {
 // The rounded glyph square: a blue gradient for apps, a flat tint for the agent hint,
 // with a centered letter/emoji.
 final class GlyphView: NSView {
-	init(text: String, hint: Bool) {
-		super.init(frame: NSRect(x: 0, y: 0, width: 30, height: 30))
+	init(text: String, hint: Bool, size: CGFloat = 30) {
+		super.init(frame: NSRect(x: 0, y: 0, width: size, height: size))
 		if hint {
 			let solid = CALayer()
 			solid.backgroundColor = NSColor(white: 1, alpha: 0.12).cgColor
@@ -229,16 +226,18 @@ final class GlyphView: NSView {
 			gradient.endPoint = CGPoint(x: 1, y: 0)
 			layer = gradient
 		}
-		layer?.cornerRadius = 8
+		layer?.cornerRadius = size >= 48 ? 14 : 8
 		wantsLayer = true
 
 		let letter = NSTextField(labelWithString: text)
-		letter.font = .systemFont(ofSize: 15, weight: .bold)
+		let fontSize = size * 0.5
+		letter.font = .systemFont(ofSize: fontSize, weight: .bold)
 		letter.textColor = hint
 			? NSColor(srgbRed: 0xCD / 255, green: 0xB4 / 255, blue: 1, alpha: 1)
 			: .white
 		letter.alignment = .center
-		letter.frame = NSRect(x: 0, y: (30 - 18) / 2, width: 30, height: 18)
+		let lineH = ceil(fontSize * 1.25)
+		letter.frame = NSRect(x: 0, y: (size - lineH) / 2, width: size, height: lineH)
 		addSubview(letter)
 	}
 

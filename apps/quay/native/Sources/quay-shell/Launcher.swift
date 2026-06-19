@@ -19,22 +19,26 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private static let pad: CGFloat = 12 // inset around the panel content
 	private static let gap: CGFloat = 8 // between the content region and the composer
 	private static let baseHeight: CGFloat = pad * 2 + Composer.minHeight // collapsed bar
-	private static let chatHeight: CGFloat = 460 // the transcript region (it scrolls within)
+	// The content region above the composer. Fixed and shared by the app grid and the chat
+	// transcript, so switching between them never resizes the panel (each scrolls within it).
+	// The panel's bottom edge stays pinned, so its on-screen position never shifts.
+	private static let surfaceHeight: CGFloat = 460
 	// The Settings mini-app's catalog id — the target a `settings` route opens. The route
 	// carries only `kind`/`pane`, so the launcher (which knows the host catalog) names the app.
 	private static let settingsAppId = "app.frieren.settings"
 
-	// What sits above the composer right now. The launcher rests in `apps`/`empty`; chat
-	// is entered explicitly (⌘K) or by asking the agent (Enter on a non-matching query).
-	// A leading `/` opens the `commands` menu over whatever mode we were in.
-	private enum Content { case empty, apps, hint, chat, commands }
+	// What sits above the composer right now. The launcher rests in `grid` (the app
+	// springboard — every app on summon, filtered as you type); when a query matches no app
+	// we switch straight to `chat`. ⌘K also enters chat. A leading `/` opens the `commands`
+	// menu over whatever mode we were in.
+	private enum Content { case grid, chat, commands }
 
 	private var panel: NSPanel!
 	private var container: NSView! // holds the active content view, sized per mode
 	private var webView: WKWebView! // the transcript, kept warm (loaded at startup)
 	private let composer = Composer()
-	private let results = Results()
-	private var hintRow: Row!
+	private let results = Results() // the `/` command menu
+	private let grid = AppGrid() // the app springboard
 	private let stopButton = NSButton()
 	private let catalog = CatalogClient()
 	private let notifier = Notifier()
@@ -43,7 +47,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private var apps: [CatalogApp] = []
 	private var commands: [CatalogCommand] = []
 	private var chatting = false
-	private var content: Content = .empty
+	private var content: Content = .grid
 	private var visibleContent: NSView?
 	private var chatRuntime: (port: Int, token: String)?
 
@@ -102,14 +106,12 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		// One content container above the composer; its single visible child swaps per mode.
 		container = NSView()
 		results.autoresizingMask = [.width, .height]
+		grid.autoresizingMask = [.width, .height]
 		webView.autoresizingMask = [.width, .height]
-		hintRow = Row(glyph: "✦", label: "", hint: true)
-		hintRow.selected = true // the hint reads as the selected default action
-		hintRow.autoresizingMask = [.width]
-		hintRow.onClick = { [weak self] in self?.submit() }
-		results.onPick = { [weak self] in self?.pick($0) }
+		results.onPick = { [weak self] in self?.runCommand($0) }
+		grid.onPick = { [weak self] in self?.launch($0) }
 		container.addSubview(results)
-		container.addSubview(hintRow)
+		container.addSubview(grid)
 		container.addSubview(webView)
 		blur.addSubview(container)
 
@@ -117,7 +119,15 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		composer.onSubmit = { [weak self] in self?.submit() }
 		composer.onEscape = { [weak self] in self?.hide() }
 		composer.onToggleChat = { [weak self] in self?.toggleChat() }
-		composer.onArrow = { [weak self] up in self?.results.move(up: up) }
+		// Arrows browse the active surface: the grid in 2-D, the `/` menu vertically.
+		composer.onArrow = { [weak self] dx, dy in
+			guard let self else { return }
+			if self.content == .commands {
+				if dy != 0 { self.results.move(up: dy < 0) }
+			} else {
+				self.grid.move(dx: dx, dy: dy)
+			}
+		}
 		// A correct width up front so the first desiredHeight measurement wraps properly.
 		composer.frame = NSRect(
 			x: Self.pad, y: Self.pad, width: Self.panelWidth - Self.pad * 2, height: Composer.minHeight
@@ -137,10 +147,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	private func contentHeight() -> CGFloat {
 		switch content {
-		case .empty: return 0
-		case .apps, .commands: return min(results.contentHeight, Results.cap)
-		case .hint: return Results.rowHeight
-		case .chat: return Self.chatHeight
+		case .grid, .chat: return Self.surfaceHeight
+		case .commands: return min(results.contentHeight, Results.cap)
 		}
 	}
 
@@ -182,44 +190,45 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		// A leading `/` opens the command menu over any mode; the rest is the filter.
 		if composer.string.hasPrefix("/") {
 			let matches = filteredCommands()
-			if matches.isEmpty {
-				// Nothing matches — drop back to the underlying mode; Enter clears + chats.
-				present(chatting ? .chat : .empty)
-			} else {
+			if !matches.isEmpty {
 				results.setItems(
 					matches.map {
 						ResultItem(id: $0.name, glyph: "/", label: $0.name, detail: $0.description)
 					}
 				)
-				present(.commands)
+				return present(.commands)
 			}
-			return
+			// Nothing matches — fall through to the underlying mode (the full grid, or chat);
+			// Enter clears + chats.
 		}
 		if chatting { return present(.chat) }
-		let query = composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
-		let matches = query.isEmpty ? [] : filtered(query)
-		if !matches.isEmpty {
-			results.setItems(
-				matches.map { ResultItem(id: $0.id, glyph: $0.glyph, label: $0.name, icon: $0.icon) }
-			)
-			present(.apps)
-		} else if !query.isEmpty {
-			hintRow.setLabel("Ask agent “\(query)”")
-			present(.hint)
+		// A bare `/` with no command match shows the full springboard, not a filter.
+		let query =
+			composer.string.hasPrefix("/")
+			? "" : composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
+		if query.isEmpty {
+			grid.setItems(apps, selectFirst: false)
+			return present(.grid)
+		}
+		let matches = filtered(query)
+		if matches.isEmpty {
+			// No app matches — switch straight to chat (same-size surface) so Enter asks the agent.
+			present(.chat)
 		} else {
-			present(.empty)
+			grid.setItems(matches, selectFirst: true)
+			present(.grid)
 		}
 	}
 
 	private func present(_ content: Content) {
 		self.content = content
-		let showsResults = content == .apps || content == .commands
-		results.isHidden = !showsResults
-		hintRow.isHidden = content != .hint
+		grid.isHidden = content != .grid
+		results.isHidden = content != .commands
 		webView.isHidden = content != .chat
 		visibleContent =
-			showsResults ? results : content == .hint ? hintRow : content == .chat ? webView : nil
-		composer.navActive = showsResults
+			content == .grid ? grid : content == .commands ? results : content == .chat ? webView : nil
+		// Arrows drive selection only when a pickable surface (grid or `/` menu) is up.
+		composer.navActive = content == .grid || content == .commands
 		sizePanel()
 	}
 
@@ -268,8 +277,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	// MARK: actions
 
-	// Enter: in chat, send the draft; otherwise launch the selected app, or — when the
-	// query matches no app — ask the agent (entering chat). Empty + not chatting resumes.
+	// Enter: in chat, send the draft; in the grid, launch the selected app; when the query
+	// matches no app, ask the agent. Empty query + Enter is a no-op (nothing is selected).
 	private func submit() {
 		// In the `/` menu, Enter runs the selected command; with no match it's an escape
 		// hatch — clear the input and fall into chat (enterChat clears the composer).
@@ -284,17 +293,13 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		let text = composer.string.trimmingCharacters(in: .whitespacesAndNewlines)
 		if chatting {
 			if !text.isEmpty { sendChat(text) }
-		} else if !text.isEmpty, !filtered(text).isEmpty {
-			results.pickSelected()
+		} else if !text.isEmpty, filtered(text).isEmpty {
+			// The query matches no app — ask the agent (chat is already on screen).
+			enterChat(send: text)
 		} else {
-			enterChat(send: text.isEmpty ? nil : text)
+			// Launch the selected app (a no-op when nothing is selected, e.g. an empty query).
+			grid.pickSelected()
 		}
-	}
-
-	// A results row was picked (keyboard or click): run it as a command in the `/` menu,
-	// otherwise launch the app.
-	private func pick(_ id: String) {
-		if content == .commands { runCommand(id) } else { launch(id) }
 	}
 
 	// Run a slash command: reveal the transcript and drive it over the chat webview's own

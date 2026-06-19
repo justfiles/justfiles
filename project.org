@@ -16,6 +16,8 @@ think about emacs
 
 
 ** TODO build tool for app-code to check the code
-*** TODO render diagnostics inline in codemirror
-*** TODO relative import doesn't work
+finished 1,2,3, quay is working
+
+*** DONE render diagnostics inline in codemirror
+*** DONE relative import doesn't work
 src/gui.tsx:2:26 Cannot find module './app' or its corresponding type declarations. (TS2307)

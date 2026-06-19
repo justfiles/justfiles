@@ -12,11 +12,11 @@ final class Composer: NSView {
 	var onSubmit: (() -> Void)?
 	var onEscape: (() -> Void)?
 	var onToggleChat: (() -> Void)?
-	var onArrow: ((_ up: Bool) -> Void)?
+	var onArrow: ((_ dx: Int, _ dy: Int) -> Void)?
 	var onChange: (() -> Void)?
 
-	// When true (apps mode with matches), ↑/↓ drive result selection; otherwise they fall
-	// through to move the insertion point in the text as usual.
+	// When true (the grid or the `/` menu is up), the arrow keys drive selection; otherwise
+	// they fall through to move the insertion point in the text as usual.
 	var navActive = false
 
 	private let scroll = NSScrollView()
@@ -93,10 +93,16 @@ final class Composer: NSView {
 			onSubmit?()
 			return true
 		case 126: // ↑
-			if navActive { onArrow?(true); return true }
+			if navActive { onArrow?(0, -1); return true }
 			return false
 		case 125: // ↓
-			if navActive { onArrow?(false); return true }
+			if navActive { onArrow?(0, 1); return true }
+			return false
+		case 123: // ←
+			if navActive { onArrow?(-1, 0); return true }
+			return false
+		case 124: // →
+			if navActive { onArrow?(1, 0); return true }
 			return false
 		case 40 where mods == .command: // ⌘K
 			onToggleChat?()
