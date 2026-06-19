@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest'
 import { apiStorage, createFsClient } from './fs.client.ts'
 import { createFsApi } from './fs.ts'
 
-function meta(type = FileType.Regular): InodeMeta {
+function meta(type: FileType = FileType.Regular): InodeMeta {
 	return { type, size: 0n, mode: 0o644, mtimeNs: 0n, ctimeNs: 0n }
 }
 

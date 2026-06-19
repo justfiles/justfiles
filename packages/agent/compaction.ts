@@ -29,7 +29,7 @@ export function prepareCompaction(
 	let boundaryStart = 0
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const e = branch[i]
-		if (e.type === 'compaction') {
+		if (e?.type === 'compaction') {
 			const keptIdx = branch.findIndex((entry) => entry.id === e.firstKeptEntryId)
 			boundaryStart = keptIdx >= 0 ? keptIdx : i + 1
 			break
@@ -53,7 +53,7 @@ export function prepareCompaction(
 	let splitIdx = window.length
 	for (let i = window.length - 1; i >= 0; i--) {
 		const e = window[i]
-		if (e.type === 'message' && (e.role === 'user' || e.role === 'assistant')) {
+		if (e?.type === 'message' && (e.role === 'user' || e.role === 'assistant')) {
 			const t = Math.ceil(e.content.length / 4)
 			if (keptTokens + t > settings.keepRecentTokens) {
 				splitIdx = i + 1
@@ -66,7 +66,9 @@ export function prepareCompaction(
 
 	// firstKeptEntryId is the ID of the branch entry at splitIdx — direct lookup,
 	// no counting or cross-referencing needed.
-	const firstKeptEntryId = window[splitIdx].id
+	const splitEntry = window[splitIdx]
+	if (!splitEntry) throw new Error('compaction window too small to split')
+	const firstKeptEntryId = splitEntry.id
 
 	const content = window
 		.slice(0, splitIdx)

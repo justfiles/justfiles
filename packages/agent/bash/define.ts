@@ -74,8 +74,7 @@ export function parseArgs<A extends readonly ArgSpec[], F extends readonly FlagS
 		}
 	}
 
-	for (let i = 0; i < argSpecs.length; i++) {
-		const argSpec = argSpecs[i]
+	for (const [i, argSpec] of argSpecs.entries()) {
 		const value = positionals[i]
 		if (value === undefined) {
 			if (argSpec.required) {
@@ -125,9 +124,10 @@ export function renderHelp(spec: CommandSpec): string {
 	return lines.join('\n')
 }
 
-export function defineCommand<A extends readonly ArgSpec[], F extends readonly FlagSpec[]>(
-	spec: CommandSpec<A, F>
-): Command {
+export function defineCommand<
+	const A extends readonly ArgSpec[],
+	const F extends readonly FlagSpec[]
+>(spec: CommandSpec<A, F>): Command {
 	return {
 		name: spec.name,
 		summary: spec.summary,

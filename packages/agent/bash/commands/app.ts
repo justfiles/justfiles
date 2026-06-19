@@ -109,6 +109,7 @@ function parseTarget(argv: string[]): { id?: string; rest: string[] } {
 	let id: string | undefined
 	for (let i = 0; i < argv.length; i++) {
 		const token = argv[i]
+		if (token === undefined) continue
 		if (token === '--id') id = argv[++i]
 		else if (token.startsWith('--id=')) id = token.slice('--id='.length)
 		else rest.push(token)
@@ -120,6 +121,7 @@ function parseParams(tokens: string[]): Record<string, unknown> {
 	const out: Record<string, unknown> = {}
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]
+		if (token === undefined) continue
 		if (token === '--params-json') return JSON.parse(tokens[++i] ?? '{}') as Record<string, unknown>
 		const eq = token.indexOf('=')
 		if (eq < 1) throw new Error(`expected key=value, got: ${token}`)

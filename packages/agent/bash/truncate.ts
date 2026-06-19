@@ -20,7 +20,7 @@ export function truncateTail(input: string, options: TruncateOptions = {}): Trun
 		return { text: input, truncated: false, droppedBytes: 0 }
 	}
 	let start = buf.byteLength - maxBytes
-	while (start < buf.byteLength && (buf[start] & 0xc0) === 0x80) start++
+	while (start < buf.byteLength && ((buf[start] ?? 0) & 0xc0) === 0x80) start++
 	const tail = decoder.decode(buf.subarray(start))
 	const droppedBytes = start
 	return {

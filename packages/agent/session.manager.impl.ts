@@ -1,7 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import { file } from './file'
 import {
-	type CompactionEntry,
 	type ContextMessage,
 	type EntryId,
 	type SessionEntry,
@@ -39,9 +38,8 @@ export function session(path: string, volume: Volume): SessionManager {
 		if (initialized) return
 		initialized = true
 		const entries = await sessionFile.jsonl(SessionEntrySchema)
-		if (entries.length > 0) {
-			activeLeafId = entries[entries.length - 1].id
-		}
+		const last = entries.at(-1)
+		if (last) activeLeafId = last.id
 	}
 
 	async function appendEntries(entries: SessionEntry[]): Promise<void> {
@@ -69,7 +67,8 @@ export function session(path: string, volume: Volume): SessionManager {
 			}
 
 			await appendEntries(newEntries)
-			activeLeafId = newEntries[newEntries.length - 1].id
+			const lastEntry = newEntries.at(-1)
+			if (lastEntry) activeLeafId = lastEntry.id
 			return { compacted: false }
 		},
 
@@ -81,8 +80,8 @@ export function session(path: string, volume: Volume): SessionManager {
 
 			let startIdx = 0
 			for (let i = branch.length - 1; i >= 0; i--) {
-				if (branch[i].type === 'compaction') {
-					const c = branch[i] as CompactionEntry
+				const c = branch[i]
+				if (c?.type === 'compaction') {
 					messages.push({ role: 'assistant', content: c.summary, timestamp: Date.parse(c.ts) })
 					const keptIdx = branch.findIndex((e) => e.id === c.firstKeptEntryId)
 					startIdx = keptIdx >= 0 ? keptIdx : i + 1
@@ -92,7 +91,7 @@ export function session(path: string, volume: Volume): SessionManager {
 
 			for (let i = startIdx; i < branch.length; i++) {
 				const e = branch[i]
-				if (e.type !== 'message') continue
+				if (e?.type !== 'message') continue
 				if (e.role === 'user')
 					messages.push({ role: 'user', content: e.content, timestamp: Date.parse(e.ts) })
 				else if (e.role === 'assistant')

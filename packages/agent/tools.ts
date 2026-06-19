@@ -198,11 +198,11 @@ function parseDuckDuckGoResults(html: string): SearchResult[] {
 		/<a rel="nofollow" class="result__a" href="([^"]+)">([\s\S]*?)<\/a>[\s\S]*?<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
 	let match = blockRe.exec(html)
 	while (match !== null) {
-		const rawUrl = decodeHtmlEntities(match[1])
+		const rawUrl = decodeHtmlEntities(match[1] ?? '')
 		results.push({
 			url: unwrapDuckDuckGoUrl(rawUrl),
-			title: stripTags(match[2]),
-			snippet: stripTags(match[3])
+			title: stripTags(match[2] ?? ''),
+			snippet: stripTags(match[3] ?? '')
 		})
 		match = blockRe.exec(html)
 	}
@@ -228,7 +228,7 @@ function decodeHtmlEntities(s: string): string {
 function unwrapDuckDuckGoUrl(url: string): string {
 	// DDG wraps outbound links like //duckduckgo.com/l/?uddg=<encoded>&rut=...
 	const match = url.match(/[?&]uddg=([^&]+)/)
-	if (match) return decodeURIComponent(match[1])
+	if (match) return decodeURIComponent(match[1] ?? '')
 	if (url.startsWith('//')) return `https:${url}`
 	return url
 }

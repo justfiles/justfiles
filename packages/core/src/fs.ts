@@ -1,6 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import { FsCursorExpiredError, type FsOp, type Storage } from '@justfiles/fs/storage'
+import type { FileType } from '@justfiles/fs/types'
 import { Hono } from 'hono'
 import { z } from 'zod'
 
@@ -11,7 +12,12 @@ type InodeMetaPatch = Partial<InodeMeta>
 // JSON cannot represent bigint natively; transmit them as decimal strings.
 
 const BigIntStr = z.string().regex(/^\d+$/).transform(BigInt)
-const FileTypeNum = z.number().int().min(0).max(2)
+const FileTypeNum = z
+	.number()
+	.int()
+	.min(0)
+	.max(2)
+	.transform((n) => n as FileType)
 
 const WireMetaSchema = z.object({
 	type: FileTypeNum,

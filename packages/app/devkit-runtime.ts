@@ -61,7 +61,9 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 			platform: 'browser',
 			external: EXTERNAL
 		})
-		runtime[spec] = result.outputFiles[0].text
+		const output = result.outputFiles[0]
+		if (!output) throw new Error(`devkit-runtime: no output for ${spec}`)
+		runtime[spec] = output.text
 	}
 	return runtime
 }

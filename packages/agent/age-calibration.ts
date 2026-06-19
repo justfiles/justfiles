@@ -45,11 +45,13 @@ export function ageCalibration(profile: string, today: Date = new Date()): strin
 	const fm = parseFrontmatter(profile)
 	if (!fm.birth_date) return null
 	const age = ageOf(fm.birth_date, today)
-	if (age == null || age < BANDS[0].min) return null
+	const first = BANDS[0]
+	if (age == null || !first || age < first.min) return null
 	const shift = Number.parseInt(fm.grade_level_override ?? '0', 10) || 0
 	const idx = BANDS.findIndex((b) => age >= b.min && age <= b.max)
 	if (idx < 0) return null
 	const band = BANDS[Math.max(0, Math.min(BANDS.length - 1, idx + shift))]
+	if (!band) return null
 	return `The user is ${age} years old. ${band.instruction}`
 }
 

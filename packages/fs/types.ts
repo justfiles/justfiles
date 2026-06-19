@@ -16,12 +16,14 @@ export type Off = bigint
  */
 export type DirCursor = string
 
-/** File type — kept minimal */
-export enum FileType {
-	Regular,
-	Directory,
-	Symlink
-}
+/** File type — kept minimal. Numeric values are the wire format; do not reorder. */
+export const FileType = {
+	Regular: 0,
+	Directory: 1,
+	Symlink: 2
+} as const
+
+export type FileType = (typeof FileType)[keyof typeof FileType]
 
 /** Minimal stat — what the FS actually stores per inode */
 export interface Stat {

@@ -346,12 +346,13 @@ function transform(
 						input: block.arguments as Record<string, unknown>
 					})
 			}
-			if (toolCalls.length > 0)
+			const firstToolCall = toolCalls[0]
+			if (firstToolCall)
 				return {
 					type: 'message',
 					role: 'tool_call',
-					tool_name: toolCalls[0].tool_name,
-					input: toolCalls[0].input
+					tool_name: firstToolCall.tool_name,
+					input: firstToolCall.input
 				}
 			const content = texts.join('\n')
 			if (!content.trim() && turnHasToolCall) return null

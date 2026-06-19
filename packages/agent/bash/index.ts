@@ -38,10 +38,10 @@ async function dispatch(
 		const message = error instanceof ParseError ? error.message : String(error)
 		return { stdout: '', stderr: `parse error: ${message}`, exitCode: 2 }
 	}
-	if (argv.length === 0) {
+	const [name, ...rest] = argv
+	if (name === undefined) {
 		return { stdout: '', stderr: notFoundMessage(registry, ''), exitCode: 127 }
 	}
-	const [name, ...rest] = argv
 	const command = registry.lookup(name)
 	if (!command) {
 		return { stdout: '', stderr: notFoundMessage(registry, name), exitCode: 127 }
