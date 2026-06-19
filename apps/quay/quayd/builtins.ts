@@ -1,9 +1,6 @@
-// The built-in catalog quayd seeds on first run: Code (the app you build others
-// with) + Files, plus Counter — a no-capability app that exercises the full berth
-// round-trip end-to-end before capabilities land (Slice 9). Mirrors the desktop
-// sibling's packaging — each bundle's bytes live in its generated `dist/bundle.js`,
-// hashed into a `Catalog` so `reconcileBuiltins` reinstalls only the apps whose
-// bytes actually changed.
+// The built-in catalog quayd seeds on first run. Mirrors the desktop sibling's
+// packaging — each bundle's bytes live in its generated `dist/bundle.js`, hashed
+// into a `Catalog` so `reconcileBuiltins` reinstalls only changed apps.
 
 import { createHash } from 'node:crypto'
 import type { Catalog, CatalogApp } from '@justfiles/app/builtins'
@@ -12,9 +9,10 @@ import code from '@justfiles/app-code/bundle'
 import counter from '@justfiles/app-counter/bundle'
 import files from '@justfiles/app-files/bundle'
 import notes from '@justfiles/app-notes/bundle'
+import paint from '@justfiles/app-paint/bundle'
 import settings from '@justfiles/app-settings/bundle'
 
-const bundles: BuiltinBundle[] = [code, files, counter, notes, settings]
+const bundles: BuiltinBundle[] = [code, files, counter, notes, paint, settings]
 const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]))
 
 export const builtinCatalog: Catalog = {
