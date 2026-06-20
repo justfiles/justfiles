@@ -12,6 +12,11 @@
 			"bun": "./quayd/devkitEngine.bun.ts",
 			"node": "./quayd/devkitEngine.node.ts",
 			"default": "./quayd/devkitEngine.node.ts"
+		},
+		"#assets": {
+			"bun": "./quayd/assetsBundler.bun.ts",
+			"node": "./quayd/assetsBundler.node.ts",
+			"default": "./quayd/assetsBundler.node.ts"
 		}
 	},
 	"scripts": {
@@ -20,6 +25,7 @@
 		"quayd:bun": "bun quayd/main.ts",
 		"build:exe": "bun quayd/build-exe.ts",
 		"assets": "node --import tsx quayd/build-assets.ts",
+		"assets:bun": "bun quayd/build-assets.ts",
 		"build": "native/build.sh --launcher",
 		"reseed": "node --import ./quayd/rawLoader.mjs --import tsx quayd/reseed.ts",
 		"restart": "native/restart.sh"

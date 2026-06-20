@@ -19,7 +19,10 @@
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
-import { build } from 'esbuild'
+// The bundler is runtime-selected (`#assets`): native esbuild under node, Bun.build
+// under bun — so `bun quayd/build-assets.ts` builds these with zero esbuild. The React
+// shim shape (a single core bundle + thin re-export shims) is identical either way.
+import { bundleAsset } from '#assets'
 
 const require = createRequire(import.meta.url)
 // react/capnweb resolve from quay's node_modules, so esbuild bundles from here.
@@ -128,26 +131,18 @@ async function buildBoot(): Promise<string> {
 // jsx runtime) externalised to the importmap so it shares the one vendored React,
 // keeping this bundle tiny.
 async function buildChat(): Promise<string> {
-	const result = await build({
-		entryPoints: [CHAT_ENTRY],
-		bundle: true,
-		write: false,
-		format: 'esm',
-		jsx: 'automatic',
-		minify: true,
+	return bundleAsset({
+		entry: CHAT_ENTRY,
+		resolveDir: RESOLVE_DIR,
+		jsx: true,
 		external: [
 			'react',
 			'react-dom',
 			'react-dom/client',
 			'react/jsx-runtime',
 			'react/jsx-dev-runtime'
-		],
-		define: { 'process.env.NODE_ENV': '"production"' },
-		logLevel: 'silent'
+		]
 	})
-	const text = result.outputFiles?.[0]?.text
-	if (!text) throw new Error('quayd: chat bundle produced no output')
-	return text
 }
 
 // A shim re-exports its slot off the global the core bundle fills. Importing
@@ -164,23 +159,12 @@ function shim(slot: string, specifier: string): string {
 	)
 }
 
-async function bundle(contents: string): Promise<string> {
-	const result = await build({
-		stdin: { contents, resolveDir: RESOLVE_DIR, loader: 'js' },
-		bundle: true,
-		write: false,
-		format: 'esm',
-		minify: true,
-		// Production React: a quay app is an installed, shipping app, not a dev
-		// session — the prod build is markedly smaller and parses/renders faster in
-		// the cold WebContent process each launch spins up, which is the dominant
-		// cost of first paint.
-		define: { 'process.env.NODE_ENV': '"production"' },
-		logLevel: 'silent'
-	})
-	const text = result.outputFiles[0]?.text
-	if (!text) throw new Error('quayd: vendor bundle produced no output')
-	return text
+// Production React: a quay app is an installed, shipping app, not a dev session — the
+// prod build is markedly smaller and parses/renders faster in the cold WebContent
+// process each launch spins up, which is the dominant cost of first paint. (NODE_ENV
+// production is set by the bundler seam.)
+function bundle(contents: string): Promise<string> {
+	return bundleAsset({ contents, resolveDir: RESOLVE_DIR })
 }
 
 await main()
