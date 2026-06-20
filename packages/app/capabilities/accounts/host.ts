@@ -6,6 +6,7 @@
 // old broker did: find the account backing a capability, mint the provider impl,
 // hand it back — no grants, no scopes.
 
+import type { Volume } from '@justfiles/fs'
 import type { AiCapability } from '../ai/index.ts'
 import { ai } from '../ai/index.ts'
 import type { CalendarCapability, CalendarEvent } from '../calendar/index.ts'
@@ -17,6 +18,7 @@ import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import type { AccountInfo, CapabilityId, CredentialsSchema, ProviderInfo } from './contract.ts'
 import { accountsAdmin } from './index.ts'
+import { volumeAccountsStore } from './store.ts'
 
 export type Creds = Record<string, unknown>
 
@@ -256,6 +258,54 @@ export const accountsAdminHost = (
 			await accounts.delete(accountId)
 		}
 	})
+}
+
+// A short-lived borrow of the ai-enabled account, for building the agent's own LLM
+// runtime — the one consumer that legitimately needs the token (to *construct* a
+// runtime), so it gets a lease, not the store. `creds` stay inside the caller's
+// `mint` closure; `persist` is the only writeback (rotated tokens on refresh). The
+// generic `T` keeps @justfiles/app free of any agent/pi-ai dependency; `providerId`
+// lets the caller branch when more than one `ai` provider is connected.
+export interface AiAccountLease {
+	creds: Creds
+	config: unknown // account.enabled.ai (e.g. { model })
+	providerId: string
+	persist(creds: Creds): Promise<void>
+}
+
+export async function resolveAiAccount<T>(
+	volume: Volume,
+	mint: (lease: AiAccountLease) => T | Promise<T>
+): Promise<T | null> {
+	const store = volumeAccountsStore(volume)
+	const account = (await store.list()).find((a) => 'ai' in a.enabled)
+	if (!account) return null
+	return mint({
+		creds: account.creds,
+		config: account.enabled.ai,
+		providerId: account.providerId,
+		persist: async (creds) => {
+			await store.put({ ...account, creds })
+		}
+	})
+}
+
+// One factory: the credential-bearing store is built once internally from the
+// Volume and never crosses the package boundary — hosts pass a Volume and hold
+// capabilities. Hosts wire the subset they need (frieren keeps its own env-keyed
+// `ai`).
+export function accountsCapabilities(
+	providers: ProviderRegistry,
+	volume: Volume,
+	opts: AccountsAdminOptions = {}
+): { ai: Capability; email: Capability; calendar: Capability; accounts: Capability } {
+	const store = volumeAccountsStore(volume)
+	return {
+		ai: aiHost(providers, store),
+		email: emailHost(providers, store),
+		calendar: calendarHost(providers, store),
+		accounts: accountsAdminHost(providers, store, opts)
+	}
 }
 
 function toProviderInfo(p: Provider): ProviderInfo {

@@ -1,7 +1,15 @@
+import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import type { Account, AccountsStore, Provider, ProviderRegistry } from './host.ts'
-import { accountsAdminHost, aiHost, calendarHost, emailHost } from './host.ts'
+import {
+	accountsAdminHost,
+	accountsCapabilities,
+	aiHost,
+	calendarHost,
+	emailHost,
+	resolveAiAccount
+} from './host.ts'
 
 // Minimal in-memory store; the real frieren/quay stores encrypt creds at rest.
 function memoryStore(seed: Account[] = []): AccountsStore {
@@ -400,6 +408,75 @@ describe('incremental consent', () => {
 		)
 		expect(signIns).toEqual([]) // scope already held — no browser flow
 		expect((await store.get('me@gmail.com'))?.enabled).toEqual({ email: {} })
+	})
+})
+
+// The Volume-backed entry points: the credential-bearing store stays internal —
+// these drive everything through a real in-memory Volume, never touching the store.
+describe('accountsCapabilities (Volume entry point)', () => {
+	test('wires all four facets over one Volume; admin writes, email reads', async () => {
+		const caps = accountsCapabilities(providers(), volume(memStorage()), { firstParty: [SETTINGS] })
+		await caps.accounts.invoke(
+			call(SETTINGS, 'connect', { providerId: 'fastmail', credentials: { token: 'XYZ' } })
+		)
+		await caps.accounts.invoke(
+			call(SETTINGS, 'setEnabled', { accountId: 'fastmail', capability: 'email', enabled: true })
+		)
+		const emailList: CapabilityCall = {
+			appId: 'app.any',
+			capability: 'email',
+			method: 'listUnread',
+			args: [{}],
+			scopes: []
+		}
+		await expect(caps.email.invoke(emailList)).resolves.toEqual([
+			{
+				id: 'XYZ:1',
+				from: 'a@example.com',
+				subject: 'hi',
+				receivedAt: 1,
+				unread: true,
+				accountId: 'fastmail'
+			}
+		])
+	})
+})
+
+describe('resolveAiAccount (agent-backend borrow)', () => {
+	const aiRegistry = (): ProviderRegistry => new Map([[aiProvider().id, aiProvider()]])
+	// Seed one ai-enabled account onto a real Volume via the admin facet (the store
+	// is internal, so this is the only way in).
+	async function seededVolume() {
+		const vol = volume(memStorage())
+		const caps = accountsCapabilities(aiRegistry(), vol, { firstParty: [SETTINGS] })
+		await caps.accounts.invoke(call(SETTINGS, 'connect', { providerId: 'chatgpt' }))
+		await caps.accounts.invoke(
+			call(SETTINGS, 'setEnabled', {
+				accountId: 'u@openai',
+				capability: 'ai',
+				enabled: true,
+				config: { model: 'gpt-x' }
+			})
+		)
+		return vol
+	}
+
+	test('returns null when no ai-enabled account exists', async () => {
+		expect(await resolveAiAccount(volume(memStorage()), () => 'x')).toBeNull()
+	})
+
+	test('leases the ai account: creds, config, providerId', async () => {
+		const lease = await resolveAiAccount(await seededVolume(), (l) => l)
+		expect(lease?.creds).toEqual({ access: 'tok' })
+		expect(lease?.config).toEqual({ model: 'gpt-x' })
+		expect(lease?.providerId).toBe('chatgpt')
+	})
+
+	test('persist writes rotated creds back to the Volume', async () => {
+		const vol = await seededVolume()
+		await resolveAiAccount(vol, (l) => l.persist({ access: 'rotated' }))
+		const lease = await resolveAiAccount(vol, (l) => l)
+		expect(lease?.creds).toEqual({ access: 'rotated' })
 	})
 })
 

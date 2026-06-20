@@ -22,26 +22,9 @@ const chatgpt = (over: Partial<Account> = {}): Account => ({
 	...over
 })
 
-describe('volumeAccountsStore', () => {
-	test('round-trips accounts and lists them; delete removes one', async () => {
-		const store = volumeAccountsStore(volume(memStorage()))
-		expect(await store.list()).toEqual([])
-
-		const account = chatgpt({ enabled: { ai: { model: 'gpt-x' } } })
-		await store.put(account)
-		expect(await store.get('u@openai.com')).toEqual(account)
-		expect(await store.list()).toEqual([account])
-
-		await store.delete('u@openai.com')
-		expect(await store.get('u@openai.com')).toBeUndefined()
-		expect(await store.list()).toEqual([])
-	})
-
-	test('get is undefined for an unknown account', async () => {
-		const store = volumeAccountsStore(volume(memStorage()))
-		expect(await store.get('nobody')).toBeUndefined()
-	})
-})
+// The store's own unit tests now live with the canonical store in @justfiles/app
+// (`capabilities/accounts/store.test.ts`); here it's just the fixture for the agent
+// backend.
 
 describe('resolveAgentBackend', () => {
 	test('returns null when no ChatGPT account has ai enabled', async () => {
