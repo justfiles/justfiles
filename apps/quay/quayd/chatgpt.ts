@@ -11,7 +11,7 @@
 // a chatgpt-only connection record.
 
 import { execFile } from 'node:child_process'
-import { text } from '@justfiles/agent'
+import { type AgentBackend, apiKeyBackend, text } from '@justfiles/agent'
 import type { AccountsStore, Creds, Provider } from '@justfiles/app/capabilities/accounts/host'
 import type { AiCapability } from '@justfiles/app/capabilities/ai'
 import { getModels } from '@mariozechner/pi-ai'
@@ -94,14 +94,14 @@ export const chatgptProvider: Provider = {
 	}
 }
 
-// Resolve the ai-enabled ChatGPT account for the agent's direct LLM runtime
-// (the agent builds a full pi-agent runtime, not just text, so it reads the store
-// rather than the `ai` use facet). Refreshes a near-expiry token (a plain POST, no
+// Resolve the ai-enabled ChatGPT account into a backend for the daemon's own LLM
+// runtime (the agent builds a full pi-agent runtime, not just text). The access
+// token is sealed inside the backend's `streamFn` via `apiKeyBackend` — the agent
+// drives the model but never holds the credential, exactly as apps reach `ai` only
+// through the minted use facet. Refreshes a near-expiry token (a plain POST, no
 // browser) and writes the rotated creds back so the next host to sync gets them; a
 // refresh failure falls through with the stale token (the request 401s → re-auth).
-export async function resolveAi(
-	store: AccountsStore
-): Promise<{ access: string; model: string } | null> {
+export async function resolveAgentBackend(store: AccountsStore): Promise<AgentBackend | null> {
 	const account = (await store.list()).find(
 		(a) => a.providerId === CHATGPT_PROVIDER_ID && 'ai' in a.enabled
 	)
@@ -122,5 +122,9 @@ export async function resolveAi(
 		}
 	}
 	const config = account.enabled.ai as { model?: string } | undefined
-	return { access: creds.access, model: config?.model ?? defaultModel() }
+	// Configured model if it still exists, else the default; null only if the
+	// provider lists no codex models at all.
+	const model = resolveModel(config?.model) ?? resolveModel(undefined)
+	if (!model) return null
+	return apiKeyBackend({ model: model as AgentBackend['model'], apiKey: creds.access })
 }

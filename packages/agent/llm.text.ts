@@ -1,27 +1,23 @@
-import { completeSimple } from '@mariozechner/pi-ai'
-import type { LLMConfig } from './llm'
+import { type AgentBackend, type LLMConfig, toBackend } from './llm'
 import { NOTE_TAKING_PROMPT } from './prompts'
 
 export type LLMText = ReturnType<typeof text>
 
-export function text({ model, apiKey }: LLMConfig) {
+export function text(config: LLMConfig | AgentBackend) {
+	const { model, completeFn } = toBackend(config)
 	return { gen, takeNotes, summarise }
 
 	async function gen(systemPrompt: string, userPrompt: string) {
-		const response = await completeSimple(
-			model,
-			{
-				systemPrompt,
-				messages: [
-					{
-						role: 'user',
-						content: userPrompt,
-						timestamp: Date.now()
-					}
-				]
-			},
-			{ apiKey }
-		)
+		const response = await completeFn(model, {
+			systemPrompt,
+			messages: [
+				{
+					role: 'user',
+					content: userPrompt,
+					timestamp: Date.now()
+				}
+			]
+		})
 
 		return response.content
 			.filter((block) => block.type === 'text')

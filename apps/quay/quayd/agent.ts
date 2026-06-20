@@ -8,7 +8,9 @@
 
 import { execFile } from 'node:child_process'
 import {
+	type AgentBackend,
 	type AppController,
+	apiKeyBackend,
 	BUILTIN_COMMANDS,
 	type CommandMeta,
 	CommandRegistry,
@@ -22,6 +24,7 @@ import {
 	createFsTools,
 	createNowCommand,
 	createSearchTool,
+	type LLMConfig,
 	mv,
 	type Runtime,
 	rm,
@@ -32,8 +35,7 @@ import {
 import type { AccountsStore } from '@justfiles/app/capabilities/accounts/host'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
-import { getModels } from '@mariozechner/pi-ai'
-import { resolveAi } from './chatgpt.ts'
+import { resolveAgentBackend } from './chatgpt.ts'
 import { readDoc } from './docs.ts'
 import type { Host } from './host.ts'
 import { bundlePath, bundleProcessPattern } from './materialize.ts'
@@ -142,7 +144,9 @@ export async function createQuayAgent(
 	let active: { key: string; rt: Runtime } | null = null
 	async function ensureRuntime(): Promise<Runtime> {
 		const llm = await llmConfig(host.accounts)
-		const key = `${llm.model.id} ${llm.apiKey}`
+		// Rebuild when the model changes or the credential rotates; `revision`
+		// tracks the token without exposing it.
+		const key = `${llm.model.id} ${llm.revision}`
 		if (active?.key === key) return active.rt
 		const rt = await runtime({
 			volume: host.fs,
@@ -562,21 +566,14 @@ const nativeWindows: WindowOps = {
 	close: (name) => void execFile('pkill', ['-f', bundleProcessPattern(name)], () => {})
 }
 
-type LLMConfig = Parameters<typeof createAgent>[0]
-
 // Resolve the agent's backend from the accounts store. If the user connected
-// ChatGPT and enabled `ai` (Settings → Accounts), drive their subscription through
-// pi-ai's Codex provider — it derives the bearer + `chatgpt-account-id` header from
-// the token itself, so the model slots in with no extra wiring. Otherwise fall back
-// to the local LM Studio default. Resolved per prompt (see ensureRuntime), with a
-// near-expiry refresh inside resolveAi.
-async function llmConfig(accounts: AccountsStore): Promise<LLMConfig> {
-	const resolved = await resolveAi(accounts)
-	if (resolved) {
-		const model = getModels('openai-codex').find((m) => m.id === resolved.model)
-		if (model) return { model: model as LLMConfig['model'], apiKey: resolved.access }
-	}
-	return localLlmStudio()
+// ChatGPT and enabled `ai` (Settings → Accounts), `resolveAgentBackend` mints a
+// backend whose `streamFn`/`completeFn` carry the token internally — the agent
+// drives the model without ever holding the credential. Otherwise fall back to the
+// local LM Studio default (wrapped through the same backend seam). Resolved per
+// prompt (see ensureRuntime), with a near-expiry refresh inside resolveAgentBackend.
+async function llmConfig(accounts: AccountsStore): Promise<AgentBackend> {
+	return (await resolveAgentBackend(accounts)) ?? apiKeyBackend(localLlmStudio())
 }
 
 // Mirrors the desktop sibling: a local LM Studio backend by default (no secret, no

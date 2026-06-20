@@ -1,21 +1,17 @@
 import { Agent, type AgentMessage } from '@mariozechner/pi-agent-core'
-import { type Message, streamSimple } from '@mariozechner/pi-ai'
-import type { LLMConfig } from './llm'
+import type { Message } from '@mariozechner/pi-ai'
+import { type AgentBackend, type LLMConfig, toBackend } from './llm'
 
-export function createAgent({ model, apiKey }: LLMConfig): Agent {
+export function createAgent(config: LLMConfig | AgentBackend): Agent {
+	const backend = toBackend(config)
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: '', // set dynamically each turn in webSocketMessage
-			model
+			model: backend.model
 		},
 		convertToLlm: (messages: AgentMessage[]): Message[] => buildModelVisibleMessages(messages),
-		getApiKey: () => apiKey,
-		streamFn: (model, context, options) => {
-			return streamSimple(model, context, {
-				...options,
-				apiKey
-			})
-		}
+		// No `getApiKey`: `streamFn` is the sole auth seam, so the agent holds no token.
+		streamFn: backend.streamFn
 	})
 
 	// TODO: cut off line threads
