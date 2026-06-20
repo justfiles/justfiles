@@ -32,7 +32,6 @@ import {
 	type SessionEntry,
 	text
 } from '@justfiles/agent'
-import type { AccountsStore } from '@justfiles/app/capabilities/accounts/host'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
 import { resolveAgentBackend } from './chatgpt.ts'
@@ -143,7 +142,7 @@ export async function createQuayAgent(
 	// session, which the fresh runtime reloads.
 	let active: { key: string; rt: Runtime } | null = null
 	async function ensureRuntime(): Promise<Runtime> {
-		const llm = await llmConfig(host.accounts)
+		const llm = await llmConfig(host.fs)
 		// Rebuild when the model changes or the credential rotates; `revision`
 		// tracks the token without exposing it.
 		const key = `${llm.model.id} ${llm.revision}`
@@ -566,14 +565,15 @@ const nativeWindows: WindowOps = {
 	close: (name) => void execFile('pkill', ['-f', bundleProcessPattern(name)], () => {})
 }
 
-// Resolve the agent's backend from the accounts store. If the user connected
-// ChatGPT and enabled `ai` (Settings → Accounts), `resolveAgentBackend` mints a
-// backend whose `streamFn`/`completeFn` carry the token internally — the agent
-// drives the model without ever holding the credential. Otherwise fall back to the
-// local LM Studio default (wrapped through the same backend seam). Resolved per
-// prompt (see ensureRuntime), with a near-expiry refresh inside resolveAgentBackend.
-async function llmConfig(accounts: AccountsStore): Promise<AgentBackend> {
-	return (await resolveAgentBackend(accounts)) ?? apiKeyBackend(localLlmStudio())
+// Resolve the agent's backend from the connected accounts on the Volume. If the
+// user connected ChatGPT and enabled `ai` (Settings → Accounts),
+// `resolveAgentBackend` borrows the account and mints a backend whose
+// `streamFn`/`completeFn` carry the token internally — the agent drives the model
+// without ever holding the credential. Otherwise fall back to the local LM Studio
+// default (wrapped through the same backend seam). Resolved per prompt (see
+// ensureRuntime), with a near-expiry refresh inside resolveAgentBackend.
+async function llmConfig(fs: Volume): Promise<AgentBackend> {
+	return (await resolveAgentBackend(fs)) ?? apiKeyBackend(localLlmStudio())
 }
 
 // Mirrors the desktop sibling: a local LM Studio backend by default (no secret, no

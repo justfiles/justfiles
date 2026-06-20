@@ -12,8 +12,9 @@
 // (Slice 11) is the build pipeline Code uses to compile + install the apps you build.
 // The `accounts` capability is the macOS "Internet Accounts" model: Settings (first-
 // party, gated) connects a provider — here ChatGPT via OAuth — and toggles which
-// capabilities it backs. The `ai` USE facet is served over that store, and the agent
-// reads the same store directly for its own LLM runtime.
+// capabilities it backs. The `ai` USE facet is served over that store; the agent's
+// own LLM runtime borrows the ai-enabled account through the same store (the store
+// itself stays internal to @justfiles/app — the host only ever passes a Volume).
 
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -21,11 +22,7 @@ import { join } from 'node:path'
 import { reconcileBuiltins } from '@justfiles/app/builtins'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
-	type AccountsStore,
-	accountsAdminHost,
-	aiHost,
-	calendarHost,
-	emailHost,
+	accountsCapabilities,
 	type ProviderRegistry
 } from '@justfiles/app/capabilities/accounts/host'
 import type { Channel } from '@justfiles/app/capabilities/notify'
@@ -34,7 +31,6 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { volumeAccountsStore } from './accounts.ts'
 import { builtinCatalog, readBuiltin } from './builtins.ts'
 import { chatgptProvider } from './chatgpt.ts'
 import { devkitCapability } from './devkit.ts'
@@ -53,9 +49,6 @@ const accountsFirstParty = ['app.frieren.settings']
 export interface Host {
 	fs: Volume
 	kernel: Kernel
-	// The connected-accounts store, shared between the served `ai` use facet and the
-	// agent's direct LLM runtime (resolveAi).
-	accounts: AccountsStore
 	// The reducer-worker pool; its `retain`/`release` drive idle eviction off the
 	// berth (window) lifecycle (Slice 8).
 	sandbox: NodeSandbox
@@ -82,25 +75,30 @@ export async function createHost(
 		[chatgptProvider.id, chatgptProvider],
 		[googleProvider.id, googleProvider]
 	])
-	const accounts = volumeAccountsStore(fs)
+	// One factory builds the credential-bearing store internally from the Volume and
+	// returns the wired capabilities — quay holds the Volume, never the store. The
+	// USE facets (`email`/`calendar` fan out across every enabled account, `ai`
+	// resolves the ai-enabled one); the `accounts` admin facet (gated to Settings)
+	// connects providers and toggles what they back. The agent's own LLM runtime
+	// borrows the ai account separately via `resolveAgentBackend` (resolveAiAccount).
+	const { ai, email, calendar, accounts } = accountsCapabilities(providers, fs, {
+		firstParty: accountsFirstParty
+	})
 	// `devkit` needs the kernel `install` writes into, but the kernel is built with
 	// this registry already attached — so it's handed in lazily.
 	let k: Kernel
 	const capabilities = capabilityRegistry({
 		volume: volumeCapability(fs, { systemAllowlist }),
 		devkit: devkitCapability(fs, () => k, onInstalled),
-		// USE facets served over the connected accounts (`email`/`calendar` fan out
-		// across every enabled account); `accounts` admin facet (gated to Settings)
-		// connects providers and toggles what they back.
-		ai: aiHost(providers, accounts),
-		email: emailHost(providers, accounts),
-		calendar: calendarHost(providers, accounts),
-		accounts: accountsAdminHost(providers, accounts, { firstParty: accountsFirstParty }),
+		ai,
+		email,
+		calendar,
+		accounts,
 		// Sandboxed apps reach the host's notification channel here; the kernel stamps
 		// `source = appId` so a banner routes back to the app that raised it.
 		notify: notifyHost(channel)
 	})
 	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
 	await reconcileBuiltins(k, fs, builtinCatalog, readBuiltin)
-	return { fs, kernel: k, accounts, sandbox }
+	return { fs, kernel: k, sandbox }
 }
