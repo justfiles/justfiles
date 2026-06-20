@@ -66,7 +66,7 @@
 	font-size: 11px;
 	opacity: 0.5;
 }
-.notes-palette-item[data-active='true'] .notes-palette-mtime {
+.notes-palette-item[data-active="true"] .notes-palette-mtime {
 	opacity: 0.8;
 }
 .notes-palette-empty {
