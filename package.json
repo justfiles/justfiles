@@ -14,7 +14,6 @@
 		"dev": "turbo run dev --filter frieren",
 		"format": "biome format --write .",
 		"lint:fix": "biome check --write .",
-		"restart": "turbo run restart --filter @justfiles/quay",
 		"typecheck": "tsc -b --noEmit",
 		"test": "vitest run",
 		"test:watch": "vitest"

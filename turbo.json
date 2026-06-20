@@ -22,13 +22,16 @@
 			"outputs": ["out/**"],
 			"outputLogs": "new-only"
 		},
-		"@justfiles/quay#assets": {
-			"cache": false,
-			"outputs": ["quayd/assets-dist/**"]
-		},
 		"@justfiles/quay#build": {
-			"dependsOn": ["assets"],
-			"inputs": ["package.json", "launcher-ui/**", "native/Package.swift", "native/Sources/**", "native/build.sh"],
+			"dependsOn": ["^build"],
+			"inputs": [
+				"package.json",
+				"quayd/**",
+				"launcher-ui/**",
+				"native/Package.swift",
+				"native/Sources/**",
+				"native/build.sh"
+			],
 			"outputs": ["native/build/**", "native/Quay.app/**"],
 			"outputLogs": "new-only"
 		},
@@ -47,22 +50,6 @@
 			],
 			"cache": false,
 			"persistent": true
-		},
-		"@justfiles/quay#reseed": {
-			"dependsOn": [
-				"build",
-				"@justfiles/app-code#build",
-				"@justfiles/app-counter#build",
-				"@justfiles/app-files#build",
-				"@justfiles/app-notes#build",
-				"@justfiles/app-paint#build",
-				"@justfiles/app-settings#build"
-			],
-			"cache": false
-		},
-		"@justfiles/quay#restart": {
-			"dependsOn": ["reseed"],
-			"cache": false
 		}
 	}
 }

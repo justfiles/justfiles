@@ -21,14 +21,11 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"quayd": "node --import ./quayd/rawLoader.mjs --import tsx quayd/main.ts",
-		"quayd:bun": "bun quayd/main.ts",
-		"build:exe": "bun quayd/build-exe.ts",
-		"assets": "node --import tsx quayd/build-assets.ts",
-		"assets:bun": "bun quayd/build-assets.ts",
-		"build": "native/build.sh --launcher",
-		"reseed": "node --import ./quayd/rawLoader.mjs --import tsx quayd/reseed.ts",
-		"restart": "native/restart.sh"
+		"dev": "turbo run build --filter=@justfiles/quay^... && native/build.sh --launcher && native/relaunch.sh",
+		"build": "turbo run build --filter=@justfiles/quay^... && native/build.sh --ship",
+		"start": "open -n native/Quay.app",
+		"install:app": "pnpm build && native/install.sh",
+		"quayd": "node --import ./quayd/rawLoader.mjs --import tsx quayd/main.ts"
 	},
 	"dependencies": {
 		"@justfiles/agent": "workspace:*",

@@ -3,9 +3,14 @@
 # Command Line Tools only (no full Xcode): SwiftPM compiles, this script bundles.
 #
 #   ./build.sh Code         # a booter bundle ./Code.app (mock target, own identity)
-#   ./build.sh --launcher   # the launcher  ./Quay.app  (LSUIElement + hotkey panel)
+#   ./build.sh --launcher   # dev launcher ./Quay.app — spawns quayd from source
+#   ./build.sh --ship       # prod ./Quay.app — self-contained bun exe + bundled assets
 #   ./build.sh --release …  # optimise the binaries for shipping (default: debug)
-#   ./build.sh --runtime bun … # stamp the launcher to spawn quayd under bun (default: node)
+#   ./build.sh --runtime bun … # stamp the dev launcher to spawn quayd under bun (default: node)
+#
+# Both --launcher and --ship build the web assets (quayd/build-assets.ts) as part of the
+# build — there is no separate `assets` step. The pnpm scripts (dev/build) build quay's
+# workspace app deps via turbo first; this script only does the native shell + assets.
 #
 # `swift build` (Package.swift) discovers the Swift sources under Sources/ and
 # produces two binaries — quay-shell (the shared booter+launcher) and quay-makeicon.
@@ -109,11 +114,12 @@ stamp_quayd() { # plist
 build_launcher() {
 	app="Quay.app"
 	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
-	# The chrome is native AppKit and the transcript is served by quayd, so there is no
-	# local web bundle to ship — only the dev wiring below.
-	# Dev wiring: how the launcher spawns quayd (Command Line Tools have no packaged
-	# daemon yet). Stamp generic runtime keys; Quayd.spawn() execs them verbatim, so the
-	# node-vs-bun choice lives here, not in Swift (the reversibility hinge).
+	# The launcher web assets land in quayd/assets-dist, where the dev daemon reads them
+	# (resources.ts). Built with node/esbuild so the dev path needs no bun.
+	(cd .. && node --import tsx quayd/build-assets.ts)
+	# Dev wiring: how the launcher spawns quayd from source (Command Line Tools have no
+	# packaged daemon). Stamp generic runtime keys; Quayd.spawn() execs them verbatim, so
+	# the node-vs-bun choice lives here, not in Swift (the reversibility hinge).
 	stamp_quayd "$app/Contents/Info.plist"
 	codesign --force --sign - "$app" 2>/dev/null || true # re-sign after adding assets
 	echo "built $app (launcher, runtime=$RUNTIME)"
@@ -141,7 +147,8 @@ build_ship() {
 	# 1. The self-contained quayd exe (arm64) → Contents/MacOS/quayd.
 	(cd .. && bun quayd/build-exe.ts --outfile "$exe" --target bun-darwin-arm64)
 	# 2. Launcher assets (vendor/boot/chat bundles + agent docs) → Resources/assets-dist.
-	(cd .. && pnpm assets:bun >/dev/null)
+	#    Built with bun so the prod path is esbuild-free (the #assets seam picks Bun.build).
+	(cd .. && bun quayd/build-assets.ts >/dev/null)
 	mkdir -p "$res/assets-dist" && cp -R ../quayd/assets-dist/. "$res/assets-dist/"
 	# 3. The shared booter binary + icon tool (materialize copies these per app) → Resources/build.
 	mkdir -p "$res/build" && cp "$BIN" "$res/build/quay-shell"
@@ -161,7 +168,7 @@ build_ship() {
 }
 
 case "${1:-}" in
-	--launcher | --all) build_launcher ;;
+	--launcher) build_launcher ;;
 	--ship) build_ship ;;
 	"") echo "usage: build.sh [--release] [--runtime node|bun] <Name> | --launcher | --ship" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
