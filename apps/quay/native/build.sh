@@ -5,16 +5,31 @@
 #   ./build.sh Code         # a booter bundle ./Code.app (mock target, own identity)
 #   ./build.sh --launcher   # the launcher  ./Quay.app  (LSUIElement + hotkey panel)
 #   ./build.sh --release …  # optimise the binaries for shipping (default: debug)
+#   ./build.sh --runtime bun … # stamp the launcher to spawn quayd under bun (default: node)
 #
 # `swift build` (Package.swift) discovers the Swift sources under Sources/ and
 # produces two binaries — quay-shell (the shared booter+launcher) and quay-makeicon.
 # We copy both into ./build/, a stable, gitignored handoff dir where quayd finds
 # them to materialise the per-app `.app` bundles (Slice 6, see quayd/materialize.ts).
+#
+# --runtime is the reversibility hinge: it picks which runtime the launcher stamps
+# into Info.plist for spawning quayd (Quayd.spawn() execs it verbatim). node is the
+# default (the escape hatch); bun is the migration target. No Swift edits either way.
 set -e
 cd "$(dirname "$0")"
 
 CONFIG=debug
-case "${1:-}" in -r | --release) CONFIG=release; shift ;; esac
+RUNTIME=node
+# Consume leading option flags (--release, --runtime X); leave the positional
+# (Name | --launcher | --all) in "$1" for the dispatch case at the bottom.
+while :; do
+	case "${1:-}" in
+		-r | --release) CONFIG=release; shift ;;
+		--runtime) RUNTIME="$2"; shift 2 ;;
+		*) break ;;
+	esac
+done
+case "$RUNTIME" in node | bun) ;; *) echo "build.sh: --runtime must be node|bun" >&2; exit 2 ;; esac
 
 BUILD="$(pwd)/build"
 mkdir -p "$BUILD"
@@ -72,18 +87,36 @@ make_bundle() { # app_path name bundle_id [quay_id] [lsui]
 	codesign --force --sign - "$app" 2>/dev/null || true
 }
 
+# Stamp the generic spawn keys into the launcher plist for the selected --runtime.
+# QuaydRuntime is the executable, QuaydArgs the args before the script, QuaydScript
+# the entrypoint. node needs the rawLoader (?raw md) + tsx loaders; bun runs both
+# TS and ?raw natively, so its args are empty.
+stamp_quayd() { # plist
+	plist="$1"
+	quayd="$(cd ../quayd && pwd)"
+	/usr/libexec/PlistBuddy -c "Add :QuaydScript string $quayd/main.ts" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :QuaydArgs array" "$plist" 2>/dev/null || true
+	if [ "$RUNTIME" = bun ]; then
+		/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string $(command -v bun)" "$plist" 2>/dev/null || true
+	else
+		/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string $(command -v node)" "$plist" 2>/dev/null || true
+		for arg in "--import" "$quayd/rawLoader.mjs" "--import" "tsx"; do
+			/usr/libexec/PlistBuddy -c "Add :QuaydArgs: string $arg" "$plist" 2>/dev/null || true
+		done
+	fi
+}
+
 build_launcher() {
 	app="Quay.app"
 	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
 	# The chrome is native AppKit and the transcript is served by quayd, so there is no
 	# local web bundle to ship — only the dev wiring below.
 	# Dev wiring: how the launcher spawns quayd (Command Line Tools have no packaged
-	# daemon yet). Stamp this machine's absolute node + quayd entrypoint paths.
-	plist="$app/Contents/Info.plist"
-	/usr/libexec/PlistBuddy -c "Add :QuaydNode string $(command -v node)" "$plist" 2>/dev/null || true
-	/usr/libexec/PlistBuddy -c "Add :QuaydScript string $(cd ../quayd && pwd)/main.ts" "$plist" 2>/dev/null || true
+	# daemon yet). Stamp generic runtime keys; Quayd.spawn() execs them verbatim, so the
+	# node-vs-bun choice lives here, not in Swift (the reversibility hinge).
+	stamp_quayd "$app/Contents/Info.plist"
 	codesign --force --sign - "$app" 2>/dev/null || true # re-sign after adding assets
-	echo "built $app (launcher)"
+	echo "built $app (launcher, runtime=$RUNTIME)"
 }
 
 build_booter() { # Name

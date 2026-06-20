@@ -31,11 +31,16 @@ const APPS_DIR = join(homedir(), 'Applications', 'Quay Apps')
 const BUILD_DIR = join(import.meta.dirname, '..', 'native', 'build')
 const BOOTER = join(BUILD_DIR, 'quay-shell')
 const MAKEICON = join(BUILD_DIR, 'quay-makeicon')
-// How a Spotlight-launched booter ensure-runs quayd (mirrors the launcher's
-// QuaydNode/QuaydScript): this machine's node + the quayd entrypoint, run through
-// the tsx loader. Dev wiring — a packaged quay would ship the daemon instead.
-const QUAYD_NODE = process.execPath
+// How a Spotlight-launched booter cold-spawns quayd when no daemon is running yet
+// (mirrors the launcher's generic QuaydRuntime/QuaydArgs/QuaydScript keys, stamped by
+// build.sh). The daemon stamps booters with ITS OWN runtime, so a cold booter respawns
+// the daemon exactly as it runs now: bun (no extra args — TS + ?raw native) or node
+// (rawLoader for ?raw + tsx for TS). Dev wiring — a packaged quay ships the daemon instead.
+const QUAYD_RUNTIME = process.execPath
 const QUAYD_SCRIPT = join(import.meta.dirname, 'main.ts')
+const QUAYD_ARGS = process.versions.bun
+	? []
+	: ['--import', join(import.meta.dirname, 'rawLoader.mjs'), '--import', 'tsx']
 const LSREGISTER =
 	'/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 
@@ -200,7 +205,8 @@ function plist(app: ProjectionApp, bin: string): string {
 	<key>NSHighResolutionCapable</key><true/>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>QuayAppId</key><string>${app.id}</string>
-	<key>QuaydNode</key><string>${QUAYD_NODE}</string>
+	<key>QuaydRuntime</key><string>${QUAYD_RUNTIME}</string>
+	<key>QuaydArgs</key><array>${QUAYD_ARGS.map((a) => `<string>${a}</string>`).join('')}</array>
 	<key>QuaydScript</key><string>${QUAYD_SCRIPT}</string>
 	<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
@@ -219,7 +225,8 @@ export function projectionSignature(app: ProjectionApp, booterMtime: number): st
 		icon: iconSignature(app),
 		iconFormat: MACOS_ICONSET.map(([size, file]) => `${size}:${file}`),
 		booter: booterMtime,
-		node: QUAYD_NODE,
+		runtime: QUAYD_RUNTIME,
+		args: QUAYD_ARGS,
 		script: QUAYD_SCRIPT
 	})
 }

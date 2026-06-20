@@ -448,9 +448,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 }
 
 // Find-or-spawn the quayd daemon. Discovery is via runtime.json ({port, token,
-// pid}); liveness via the pid. If it is absent or dead, spawn node on the quayd
-// entrypoint (paths stamped into Info.plist by build.sh) and wait for it to
-// advertise itself. A single-writer lock is deferred (Phase 4 hardening).
+// pid}); liveness via the pid. If it is absent or dead, spawn the daemon from the
+// runtime + args + entrypoint stamped into Info.plist by build.sh (node or bun) and
+// wait for it to advertise itself. A single-writer lock is deferred (Phase 4 hardening).
 enum Quayd {
 	struct Runtime: Decodable {
 		let port: Int
@@ -480,19 +480,20 @@ enum Quayd {
 	}
 
 	private static func spawn() {
+		// Runtime-agnostic spawn: the node-vs-bun decision lives entirely in the plist
+		// (stamped by build.sh --runtime), never in this Swift. We exec `QuaydRuntime`
+		// + `QuaydArgs` + `QuaydScript` verbatim — so flipping --runtime and rebuilding
+		// the shell switches runtimes with zero edits here (the reversibility hinge).
+		//   node: QuaydRuntime=<node>, QuaydArgs=[--import,<rawLoader>,--import,tsx]
+		//   bun:  QuaydRuntime=<bun>,  QuaydArgs=[]   (Bun runs TS + ?raw natively)
 		let info = Bundle.main.infoDictionary ?? [:]
-		guard let node = info["QuaydNode"] as? String,
+		guard let runtime = info["QuaydRuntime"] as? String,
 			let script = info["QuaydScript"] as? String
 		else { return }
+		let args = info["QuaydArgs"] as? [String] ?? []
 		let p = Process()
-		p.executableURL = URL(fileURLWithPath: node)
-		// `--import tsx`: the kernel/fs packages are TS source with extensionless
-		// internal imports, so quayd runs through the tsx loader (resolved from the
-		// quayd dir's node_modules) rather than bare `node`. `rawLoader.mjs` (next to
-		// the entrypoint, loaded first) teaches node the agent's `?raw` md imports.
-		let rawLoader = URL(fileURLWithPath: script).deletingLastPathComponent()
-			.appendingPathComponent("rawLoader.mjs").path
-		p.arguments = ["--import", rawLoader, "--import", "tsx", script]
+		p.executableURL = URL(fileURLWithPath: runtime)
+		p.arguments = args + [script]
 		p.currentDirectoryURL = URL(fileURLWithPath: script).deletingLastPathComponent()
 		// Log to a file so a GUI-spawned daemon (no inherited terminal) is debuggable.
 		try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

@@ -18,6 +18,7 @@
 		"typecheck": "tsc --noEmit",
 		"quayd": "node --import ./quayd/rawLoader.mjs --import tsx quayd/main.ts",
 		"quayd:bun": "bun quayd/main.ts",
+		"build:exe": "bun quayd/build-exe.ts",
 		"assets": "node --import tsx quayd/build-assets.ts",
 		"build": "native/build.sh --launcher",
 		"reseed": "node --import ./quayd/rawLoader.mjs --import tsx quayd/reseed.ts",
