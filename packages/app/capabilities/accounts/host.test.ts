@@ -1,28 +1,29 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
-import type { Account, AccountsStore, Provider, ProviderRegistry } from './host.ts'
 import {
-	accountsAdminHost,
 	accountsCapabilities,
-	aiHost,
-	calendarHost,
-	emailHost,
+	type Provider,
+	type ProviderRegistry,
 	resolveAiAccount
 } from './host.ts'
+import { volumeAccountsStore } from './store.ts'
 
-// Minimal in-memory store; the real frieren/quay stores encrypt creds at rest.
-function memoryStore(seed: Account[] = []): AccountsStore {
-	const map = new Map(seed.map((a) => [a.accountId, a]))
-	return {
-		list: async () => [...map.values()],
-		get: async (id) => map.get(id),
-		put: async (a) => void map.set(a.accountId, a),
-		delete: async (id) => void map.delete(id)
-	}
-}
+// The credential-bearing store is internal, so every test drives the four facets
+// through `accountsCapabilities` over a real in-memory Volume. Seeds that the admin
+// facet can't express (pre-granted scopes, a connected-but-disabled account) are
+// written straight to the store — the same Volume the capabilities read. The seed
+// shape is borrowed from the store's own `put` so no internal type is imported.
+type SeedAccount = Parameters<ReturnType<typeof volumeAccountsStore>['put']>[0]
 
 const SETTINGS = 'app.frieren.settings'
+
+async function setup(reg: ProviderRegistry, seed: SeedAccount[] = []) {
+	const vol = volume(memStorage())
+	const store = volumeAccountsStore(vol)
+	for (const a of seed) await store.put(a)
+	return { caps: accountsCapabilities(reg, vol, { firstParty: [SETTINGS] }), store }
+}
 
 // A form provider that backs email, and an oauth provider that backs calendar —
 // enough to exercise both auth kinds and the use-facet dispatch.
@@ -110,13 +111,12 @@ function call(appId: string, method: string, ...args: unknown[]): CapabilityCall
 
 describe('accounts admin host', () => {
 	test('connect (form) stores an account with no capabilities enabled', async () => {
-		const store = memoryStore()
-		const admin = accountsAdminHost(providers(), store, { firstParty: [SETTINGS] })
-		const res = await admin.invoke(
+		const { caps } = await setup(providers())
+		const res = await caps.accounts.invoke(
 			call(SETTINGS, 'connect', { providerId: 'fastmail', credentials: { token: 't' } })
 		)
 		expect(res).toEqual({ accountId: 'fastmail' })
-		const accounts = await admin.invoke(call(SETTINGS, 'listAccounts', {}))
+		const accounts = await caps.accounts.invoke(call(SETTINGS, 'listAccounts', {}))
 		expect(accounts).toEqual([
 			{
 				accountId: 'fastmail',
@@ -129,15 +129,14 @@ describe('accounts admin host', () => {
 	})
 
 	test('connect (oauth) derives accountId from the sign-in identity', async () => {
-		const store = memoryStore()
-		const admin = accountsAdminHost(providers(), store, { firstParty: [SETTINGS] })
-		const res = await admin.invoke(call(SETTINGS, 'connect', { providerId: 'icloud' }))
+		const { caps } = await setup(providers())
+		const res = await caps.accounts.invoke(call(SETTINGS, 'connect', { providerId: 'icloud' }))
 		expect(res).toEqual({ accountId: 'me@icloud.com' })
 	})
 
 	test('listProviders projects auth kind, capabilities, and form schema only', async () => {
-		const admin = accountsAdminHost(providers(), memoryStore(), { firstParty: [SETTINGS] })
-		const infos = await admin.invoke(call(SETTINGS, 'listProviders', {}))
+		const { caps } = await setup(providers())
+		const infos = await caps.accounts.invoke(call(SETTINGS, 'listProviders', {}))
 		expect(infos).toEqual([
 			{
 				id: 'fastmail',
@@ -160,23 +159,22 @@ describe('accounts admin host', () => {
 	})
 
 	test('setEnabled toggles a capability and preserves config across re-enable', async () => {
-		const store = memoryStore([
+		const { caps, store } = await setup(providers(), [
 			{ accountId: 'fastmail', providerId: 'fastmail', creds: { token: 't' }, enabled: {} }
 		])
-		const admin = accountsAdminHost(providers(), store, { firstParty: [SETTINGS] })
-		await admin.invoke(
+		await caps.accounts.invoke(
 			call(SETTINGS, 'setEnabled', { accountId: 'fastmail', capability: 'email', enabled: true })
 		)
 		expect((await store.get('fastmail'))?.enabled).toEqual({ email: {} })
-		await admin.invoke(
+		await caps.accounts.invoke(
 			call(SETTINGS, 'setEnabled', { accountId: 'fastmail', capability: 'email', enabled: false })
 		)
 		expect((await store.get('fastmail'))?.enabled).toEqual({})
 	})
 
 	test('non-first-party app cannot tell the facet exists', async () => {
-		const admin = accountsAdminHost(providers(), memoryStore(), { firstParty: [SETTINGS] })
-		await expect(admin.invoke(call('app.evil', 'listAccounts', {}))).rejects.toMatchObject({
+		const { caps } = await setup(providers())
+		await expect(caps.accounts.invoke(call('app.evil', 'listAccounts', {}))).rejects.toMatchObject({
 			code: 'CAPABILITY_UNAVAILABLE'
 		})
 	})
@@ -188,7 +186,7 @@ describe('accounts use-facet dispatch', () => {
 	}
 
 	test('email.listUnread resolves through the enabled account to its provider', async () => {
-		const store = memoryStore([
+		const { caps } = await setup(providers(), [
 			{
 				accountId: 'fastmail',
 				providerId: 'fastmail',
@@ -196,8 +194,7 @@ describe('accounts use-facet dispatch', () => {
 				enabled: { email: {} }
 			}
 		])
-		const host = emailHost(providers(), store)
-		await expect(host.invoke(useCall('email', 'listUnread', {}))).resolves.toEqual([
+		await expect(caps.email.invoke(useCall('email', 'listUnread', {}))).resolves.toEqual([
 			{
 				id: 'XYZ:1',
 				from: 'a@example.com',
@@ -210,14 +207,14 @@ describe('accounts use-facet dispatch', () => {
 	})
 
 	test('a capability with no enabled account is UNAVAILABLE', async () => {
-		const host = calendarHost(providers(), memoryStore())
+		const { caps } = await setup(providers())
 		await expect(
-			host.invoke(useCall('calendar', 'listToday', { timezone: 'UTC' }))
+			caps.calendar.invoke(useCall('calendar', 'listToday', { timezone: 'UTC' }))
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
 	})
 
 	test('calendar.listToday resolves through an oauth-connected account', async () => {
-		const store = memoryStore([
+		const { caps } = await setup(providers(), [
 			{
 				accountId: 'me@icloud.com',
 				providerId: 'icloud',
@@ -225,9 +222,8 @@ describe('accounts use-facet dispatch', () => {
 				enabled: { calendar: {} }
 			}
 		])
-		const host = calendarHost(providers(), store)
 		await expect(
-			host.invoke(useCall('calendar', 'listToday', { timezone: 'UTC' }))
+			caps.calendar.invoke(useCall('calendar', 'listToday', { timezone: 'UTC' }))
 		).resolves.toEqual([
 			{ id: 'EV', title: 'standup', startsAt: 1, endsAt: 2, accountId: 'me@icloud.com' }
 		])
@@ -235,7 +231,7 @@ describe('accounts use-facet dispatch', () => {
 
 	test('ai.generateText mints with the account config (selected model)', async () => {
 		const registry: ProviderRegistry = new Map([[aiProvider().id, aiProvider()]])
-		const store = memoryStore([
+		const { caps } = await setup(registry, [
 			{
 				accountId: 'u@openai',
 				providerId: 'chatgpt',
@@ -243,8 +239,7 @@ describe('accounts use-facet dispatch', () => {
 				enabled: { ai: { model: 'gpt-x' } }
 			}
 		])
-		const host = aiHost(registry, store)
-		await expect(host.invoke(useCall('ai', 'generateText', { prompt: 'hi' }))).resolves.toEqual({
+		await expect(caps.ai.invoke(useCall('ai', 'generateText', { prompt: 'hi' }))).resolves.toEqual({
 			text: 'tok:gpt-x'
 		})
 	})
@@ -284,11 +279,10 @@ describe('multi-account fan-out', () => {
 		['a', emailProvider('a', 'A')],
 		['b', emailProvider('b', 'B')]
 	])
-	const seeded = (): AccountsStore =>
-		memoryStore([
-			{ accountId: 'acc-a', providerId: 'a', creds: {}, enabled: { email: {} } },
-			{ accountId: 'acc-b', providerId: 'b', creds: {}, enabled: { email: {} } }
-		])
+	const seed: SeedAccount[] = [
+		{ accountId: 'acc-a', providerId: 'a', creds: {}, enabled: { email: {} } },
+		{ accountId: 'acc-b', providerId: 'b', creds: {}, enabled: { email: {} } }
+	]
 	const listUnread = (accountId?: string): CapabilityCall => ({
 		appId: 'app.any',
 		capability: 'email',
@@ -298,16 +292,16 @@ describe('multi-account fan-out', () => {
 	})
 
 	test('listUnread aggregates across all enabled accounts, each stamped', async () => {
-		const res = await emailHost(registry, seeded()).invoke(listUnread())
-		expect(res).toEqual([
+		const { caps } = await setup(registry, seed)
+		expect(await caps.email.invoke(listUnread())).toEqual([
 			{ id: 'A-1', from: 'A@x', subject: 'A', receivedAt: 1, unread: true, accountId: 'acc-a' },
 			{ id: 'B-1', from: 'B@x', subject: 'B', receivedAt: 1, unread: true, accountId: 'acc-b' }
 		])
 	})
 
 	test('an explicit accountId narrows fan-out to that one account', async () => {
-		const res = await emailHost(registry, seeded()).invoke(listUnread('acc-b'))
-		expect(res).toEqual([
+		const { caps } = await setup(registry, seed)
+		expect(await caps.email.invoke(listUnread('acc-b'))).toEqual([
 			{ id: 'B-1', from: 'B@x', subject: 'B', receivedAt: 1, unread: true, accountId: 'acc-b' }
 		])
 	})
@@ -355,15 +349,14 @@ describe('incremental consent', () => {
 
 	test('connect asks for no scopes; enabling each capability widens and re-signs in', async () => {
 		const signIns: string[][] = []
-		const store = memoryStore()
 		const registry: ProviderRegistry = new Map([['google', googleProvider(signIns)]])
-		const admin = accountsAdminHost(registry, store, { firstParty: [SETTINGS] })
+		const { caps, store } = await setup(registry)
 
-		await admin.invoke(call(SETTINGS, 'connect', { providerId: 'google' }))
+		await caps.accounts.invoke(call(SETTINGS, 'connect', { providerId: 'google' }))
 		expect(signIns).toEqual([[]]) // identity only
 		expect((await store.get('me@gmail.com'))?.scopes).toEqual([])
 
-		await admin.invoke(
+		await caps.accounts.invoke(
 			call(SETTINGS, 'setEnabled', {
 				accountId: 'me@gmail.com',
 				capability: 'email',
@@ -373,7 +366,7 @@ describe('incremental consent', () => {
 		expect(signIns).toEqual([[], ['gmail.readonly']])
 		expect((await store.get('me@gmail.com'))?.scopes).toEqual(['gmail.readonly'])
 
-		await admin.invoke(
+		await caps.accounts.invoke(
 			call(SETTINGS, 'setEnabled', {
 				accountId: 'me@gmail.com',
 				capability: 'calendar',
@@ -388,7 +381,8 @@ describe('incremental consent', () => {
 
 	test('re-enabling a capability whose scope is already granted skips sign-in', async () => {
 		const signIns: string[][] = []
-		const store = memoryStore([
+		const registry: ProviderRegistry = new Map([['google', googleProvider(signIns)]])
+		const { caps, store } = await setup(registry, [
 			{
 				accountId: 'me@gmail.com',
 				providerId: 'google',
@@ -397,9 +391,7 @@ describe('incremental consent', () => {
 				enabled: {}
 			}
 		])
-		const registry: ProviderRegistry = new Map([['google', googleProvider(signIns)]])
-		const admin = accountsAdminHost(registry, store, { firstParty: [SETTINGS] })
-		await admin.invoke(
+		await caps.accounts.invoke(
 			call(SETTINGS, 'setEnabled', {
 				accountId: 'me@gmail.com',
 				capability: 'email',
@@ -411,11 +403,9 @@ describe('incremental consent', () => {
 	})
 })
 
-// The Volume-backed entry points: the credential-bearing store stays internal —
-// these drive everything through a real in-memory Volume, never touching the store.
 describe('accountsCapabilities (Volume entry point)', () => {
 	test('wires all four facets over one Volume; admin writes, email reads', async () => {
-		const caps = accountsCapabilities(providers(), volume(memStorage()), { firstParty: [SETTINGS] })
+		const { caps } = await setup(providers())
 		await caps.accounts.invoke(
 			call(SETTINGS, 'connect', { providerId: 'fastmail', credentials: { token: 'XYZ' } })
 		)
@@ -483,7 +473,7 @@ describe('resolveAiAccount (agent-backend borrow)', () => {
 describe('accounts admin config projection', () => {
 	test('listAccounts projects per-capability config through provider.describe', async () => {
 		const registry: ProviderRegistry = new Map([[aiProvider().id, aiProvider()]])
-		const store = memoryStore([
+		const { caps } = await setup(registry, [
 			{
 				accountId: 'u@openai',
 				providerId: 'chatgpt',
@@ -491,8 +481,7 @@ describe('accounts admin config projection', () => {
 				enabled: { ai: {} }
 			}
 		])
-		const admin = accountsAdminHost(registry, store, { firstParty: [SETTINGS] })
-		const accounts = (await admin.invoke(call(SETTINGS, 'listAccounts', {}))) as Array<{
+		const accounts = (await caps.accounts.invoke(call(SETTINGS, 'listAccounts', {}))) as Array<{
 			config: { ai?: unknown }
 		}>
 		expect(accounts[0].config.ai).toEqual({

@@ -12,7 +12,31 @@
 // codec swap, not a store rewrite.
 
 import type { Volume } from '@justfiles/fs'
-import type { Account, AccountsStore, Creds } from './host.ts'
+import type { CapabilityId } from './contract.ts'
+import type { Creds } from './host.ts'
+
+// A connected provider plus the capabilities the user has enabled on it — the
+// persisted unit. `creds` is the single encryptable lane (see `secretCodec`);
+// `enabled` keys are the enabled capabilities, each mapped to its per-capability
+// config (e.g. ai → { model }); `scopes` records OAuth grants. These shapes live
+// here, in the internal store, so they never cross the package boundary.
+export interface Account {
+	accountId: string
+	providerId: string
+	creds: Creds
+	enabled: Partial<Record<CapabilityId, unknown>>
+	// OAuth scopes granted to this account's creds (oauth providers only). Rides in
+	// the clear like `enabled`; drives incremental consent in `setEnabled`.
+	scopes?: string[]
+	lastError?: string
+}
+
+export interface AccountsStore {
+	list(): Promise<Account[]>
+	get(accountId: string): Promise<Account | undefined>
+	put(account: Account): Promise<void>
+	delete(accountId: string): Promise<void>
+}
 
 const DIR = '/system/accounts'
 const enc = new TextEncoder()

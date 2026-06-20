@@ -12,7 +12,6 @@ declare namespace Cloudflare {
 		CLERK_PUBLISHABLE_KEY: "pk_test_Y2FwYWJsZS1zcGlkZXItNzkuY2xlcmsuYWNjb3VudHMuZGV2JA";
 		CLERK_SECRET_KEY: string;
 		OPENAI_API_KEY: string;
-		INTEGRATION_KEY: string;
 		FRIEREN: DurableObjectNamespace<import("./worker/index").Frieren>;
 	}
 	interface Env {
@@ -21,7 +20,6 @@ declare namespace Cloudflare {
 		CLERK_PUBLISHABLE_KEY: "pk_test_Y2FwYWJsZS1zcGlkZXItNzkuY2xlcmsuYWNjb3VudHMuZGV2JA" | "pk_live_Y2xlcmsuanVzdGJ1ZGR5LmFwcCQ";
 		CLERK_SECRET_KEY: string;
 		OPENAI_API_KEY: string;
-		INTEGRATION_KEY: string;
 		FRIEREN: DurableObjectNamespace<import("./worker/index").Frieren>;
 		LOADER?: WorkerLoader;
 	}
@@ -31,7 +29,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "CLERK_PUBLISHABLE_KEY" | "CLERK_SECRET_KEY" | "OPENAI_API_KEY" | "INTEGRATION_KEY">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "CLERK_PUBLISHABLE_KEY" | "CLERK_SECRET_KEY" | "OPENAI_API_KEY">> {}
 }
 
 // Begin runtime types

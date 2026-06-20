@@ -271,10 +271,11 @@ calendar/inbox; confirm one account row, not two.
 
 ## Residual / out of scope
 
-- **Agent commands vs capability calls.** Slice 1 keeps the agent's bespoke
-  `email`/`calendar` CLI commands (re-sourced from accounts). Retiring them so the agent
-  calls the use-facet capabilities directly needs an agent→kernel-capability bridge — a
-  separate investigation, not required for 1→many.
+- **Agent commands vs capability calls.** ✅ Done (see `ACCOUNTS-MIGRATION.md` Phase 3).
+  The agent's bespoke `email`/`calendar` CLI commands are retired; it now reaches the
+  use-facet capabilities directly through an agent→capability bridge
+  (`apps/frieren/worker/accounts/agent-tools.ts`), with audit + rate-limit re-homed onto
+  the capability boundary (`accounts/guard.ts`).
 - **Per-app / per-method authorization.** The broker's `grants` + `methodScopes`
   (read-vs-write, account-scoped per app) were never live; dropped. When a real consumer
   appears, they reattach as a thin check inside `resolveImpl`, fed by manifest grants —

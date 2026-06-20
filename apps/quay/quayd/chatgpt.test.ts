@@ -1,4 +1,3 @@
-import type { Account } from '@justfiles/app/capabilities/accounts/host'
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { getModels } from '@mariozechner/pi-ai'
 import { describe, expect, test } from 'vitest'
@@ -7,9 +6,16 @@ import { resolveAgentBackend } from './chatgpt.ts'
 // `resolveAgentBackend` borrows the ai-enabled account from the Volume-backed store
 // (internal to @justfiles/app) and mints a token-sealed backend. We seed the account
 // the way the store persists it — one JSON file per account, in the clear — and drive
-// resolution against a real in-memory Volume.
+// resolution against a real in-memory Volume. The account type is internal to the
+// store, so we restate just the persisted fields this fixture writes.
+interface SeedAccount {
+	accountId: string
+	providerId: string
+	creds: Record<string, unknown>
+	enabled: Record<string, unknown>
+}
 
-const chatgpt = (over: Partial<Account> = {}): Account => ({
+const chatgpt = (over: Partial<SeedAccount> = {}): SeedAccount => ({
 	accountId: 'u@openai.com',
 	providerId: 'chatgpt',
 	creds: {
@@ -22,7 +28,7 @@ const chatgpt = (over: Partial<Account> = {}): Account => ({
 	...over
 })
 
-async function seed(account: Account): Promise<Volume> {
+async function seed(account: SeedAccount): Promise<Volume> {
 	const fs = volume(memStorage())
 	await fs.mkdir('/system/accounts', { recursive: true })
 	await fs.writeFile(

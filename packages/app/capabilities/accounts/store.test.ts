@@ -1,7 +1,6 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import type { Account } from './host.ts'
-import { type SecretCodec, volumeAccountsStore } from './store.ts'
+import { type Account, type SecretCodec, volumeAccountsStore } from './store.ts'
 
 // The canonical store rides a real in-memory Volume (one JSON file per account).
 

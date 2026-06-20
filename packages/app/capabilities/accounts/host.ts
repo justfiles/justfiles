@@ -18,7 +18,7 @@ import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import type { AccountInfo, CapabilityId, CredentialsSchema, ProviderInfo } from './contract.ts'
 import { accountsAdmin } from './index.ts'
-import { volumeAccountsStore } from './store.ts'
+import { type Account, type AccountsStore, volumeAccountsStore } from './store.ts'
 
 export type Creds = Record<string, unknown>
 
@@ -57,25 +57,6 @@ export interface Provider {
 	// UI-facing config `listAccounts` returns (e.g. ai → selected + available
 	// models). Absent → the raw stored config is surfaced unchanged.
 	describe?: Partial<Record<CapabilityId, (config: unknown) => unknown>>
-}
-
-export interface Account {
-	accountId: string
-	providerId: string
-	creds: Creds
-	// Key present = enabled; value = per-capability config (e.g. ai → { model }).
-	enabled: Partial<Record<CapabilityId, unknown>>
-	// OAuth scopes granted to this account's creds (oauth providers only). Rides in
-	// the clear like `enabled`; drives incremental consent in `setEnabled`.
-	scopes?: string[]
-	lastError?: string
-}
-
-export interface AccountsStore {
-	list(): Promise<Account[]>
-	get(accountId: string): Promise<Account | undefined>
-	put(account: Account): Promise<void>
-	delete(accountId: string): Promise<void>
 }
 
 export type ProviderRegistry = Map<string, Provider>
@@ -138,7 +119,7 @@ async function fanOut<C, R extends { accountId?: string }>(
 // Use-facet hosts: pure delegation. `listUnread`/`listToday` fan out across all
 // enabled accounts; `readDetail`/`markRead` target the one the summary's
 // `accountId` names. Wired into the kernel's capability registry by frieren/quay.
-export const emailHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
+const emailHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
 	implementCapability(email, {
 		listUnread: (_c, i) =>
 			fanOut<EmailCapability, EmailSummary>('email', i.accountId, providers, accounts, (impl) =>
@@ -150,7 +131,7 @@ export const emailHost = (providers: ProviderRegistry, accounts: AccountsStore):
 			(await resolveImpl<EmailCapability>('email', i.accountId, providers, accounts)).markRead(i)
 	})
 
-export const calendarHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
+const calendarHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
 	implementCapability(calendar, {
 		listToday: (_c, i) =>
 			fanOut<CalendarCapability, CalendarEvent>(
@@ -165,7 +146,7 @@ export const calendarHost = (providers: ProviderRegistry, accounts: AccountsStor
 // `ai.generateText` carries no accountId, so it resolves the single ai-enabled
 // account. The minted impl is configured with that account's `enabled.ai` (the
 // selected model), so a model pick in Settings takes effect on the next call.
-export const aiHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
+const aiHost = (providers: ProviderRegistry, accounts: AccountsStore): Capability =>
 	implementCapability(ai, {
 		generateText: async (_c, i) =>
 			(await resolveImpl<AiCapability>('ai', undefined, providers, accounts)).generateText(i)
@@ -179,7 +160,7 @@ export interface AccountsAdminOptions {
 // Admin-facet host. Every method is privileged, so one identity check covers them
 // all; reported as UNAVAILABLE (not DENIED) so a non-first-party app can't even
 // tell the facet exists — same posture as the volume `system` allowlist.
-export const accountsAdminHost = (
+const accountsAdminHost = (
 	providers: ProviderRegistry,
 	accounts: AccountsStore,
 	opts: AccountsAdminOptions = {}
