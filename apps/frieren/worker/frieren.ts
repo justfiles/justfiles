@@ -21,12 +21,18 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import type { AccountsStore, ProviderRegistry } from '@justfiles/app/capabilities/accounts/host'
+import {
+	type AccountsStore,
+	calendarHost,
+	emailHost,
+	type ProviderRegistry
+} from '@justfiles/app/capabilities/accounts/host'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import { accountTools } from './accounts/agent-tools.ts'
 import { activatingStore, CommandActivator } from './accounts/commands.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { accountsStore } from './accounts/store.ts'
@@ -235,7 +241,6 @@ export class Frieren extends DurableObject<Env> {
 			bashRegistry.register(command)
 		const bash = createBashTool(bashRegistry, { vol: this.vol })
 		const agent = createAgent(this.getBackendConfig())
-		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash]
 
 		// Accounts back both the use-facet capabilities (email/calendar) and the
 		// agent's per-account commands; the activator keeps the latter in sync with
@@ -254,6 +259,15 @@ export class Frieren extends DurableObject<Env> {
 			accountsStore(this.ctx.storage, this.env.INTEGRATION_KEY),
 			activator
 		)
+		// The agent reaches email/calendar as an app does — through the use-facet
+		// capabilities (creds minted host-side, multi-account fan-out in the host) —
+		// alongside the legacy creds-bearing CLI commands until the storage cut-over.
+		const tools = accountTools({
+			email: emailHost(providers, store),
+			calendar: calendarHost(providers, store),
+			getTimezone: this.getTimezone
+		})
+		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash, ...tools]
 		return { agent, accounts: { providers, store }, activator }
 	}
 
