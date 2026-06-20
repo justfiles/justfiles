@@ -4,27 +4,15 @@ import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
 import {
 	type Capabilities,
 	type Capability,
-	type CapabilityCall,
-	CapabilityError,
 	capabilityRegistry,
 	serveCapabilitiesRpc,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
-import {
-	type AccountsStore,
-	accountsAdminHost,
-	calendarHost,
-	emailHost,
-	type ProviderRegistry
-} from '@justfiles/app/capabilities/accounts/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { appFileUrl, CATALOG_PATH } from '../shared/appstore.ts'
 import { aiCapability } from './ai.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
-
-// Only the first-party Settings app may reach the `accounts` admin facet.
-const ACCOUNTS_FIRST_PARTY = ['app.frieren.settings']
 
 interface DisplayApp {
 	readonly id: string
@@ -45,10 +33,12 @@ interface FrierenAppsDeps {
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
 	broadcast: (msg: AppBroadcast) => void
-	// Lazily resolved so frierenApps can be constructed before the accounts
-	// providers/store exist; the volume capability does not need it. Backs the
-	// `email`/`calendar` use facets and the `accounts` admin facet.
-	accounts?: () => { providers: ProviderRegistry; store: AccountsStore }
+	// The account-backed capabilities, built from the Volume store by the DO (which
+	// also guards email/calendar with audit + rate-limit) and shared with the agent.
+	// The volume + ai capabilities are local to this kernel; these are the rest.
+	email: Capability
+	calendar: Capability
+	accounts: Capability
 }
 
 export interface FrierenApps {
@@ -81,37 +71,16 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let subscribed = false
 	let builtinsReady: Promise<void> | undefined
 
-	// The server kernel's capability seam: `volume` and `ai` are local units;
-	// `email`/`calendar`/`accounts` defer to the accounts bundle that `frierenApps`
-	// is built before, so they resolve lazily per call.
+	// The server kernel's capability seam: `volume` and `ai` are local units; the
+	// account-backed `email`/`calendar`/`accounts` are handed in ready (built over
+	// the Volume store, guarded with audit + rate-limit).
 	const ai = aiCapability(deps.text)
-	// `email`/`calendar` (use) and `accounts` (admin) all resolve the accounts
-	// bundle lazily per call — frierenApps is built before the providers/store
-	// exist, and they're absent until the agent is built.
-	const lazyAccountCap = (
-		build: (p: ProviderRegistry, s: AccountsStore) => Capability
-	): Capability => {
-		const resolve = (call: CapabilityCall): Capability => {
-			const bundle = deps.accounts?.()
-			if (!bundle) throw new CapabilityError('CAPABILITY_UNAVAILABLE', call.capability, call.method)
-			return build(bundle.providers, bundle.store)
-		}
-		return {
-			invoke: async (call) => resolve(call).invoke(call),
-			subscribe: async (call, emit) => resolve(call).subscribe(call, emit)
-		}
-	}
-	const emailCap = lazyAccountCap(emailHost)
-	const calendarCap = lazyAccountCap(calendarHost)
-	const accountsCap = lazyAccountCap((p, s) =>
-		accountsAdminHost(p, s, { firstParty: ACCOUNTS_FIRST_PARTY })
-	)
 	const capabilities: Capabilities = capabilityRegistry({
 		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.frieren.files'] }),
 		ai,
-		email: emailCap,
-		calendar: calendarCap,
-		accounts: accountsCap
+		email: deps.email,
+		calendar: deps.calendar,
+		accounts: deps.accounts
 	})
 	// What the browser may proxy over `_caps`: everything EXCEPT `volume`, which is
 	// always served locally by the browser kernel against the synced volume and so
@@ -119,9 +88,9 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// back as CAPABILITY_UNAVAILABLE — the old explicit rejection, now structural.
 	const proxied: Capabilities = capabilityRegistry({
 		ai,
-		email: emailCap,
-		calendar: calendarCap,
-		accounts: accountsCap
+		email: deps.email,
+		calendar: deps.calendar,
+		accounts: deps.accounts
 	})
 
 	function getKernel(): Kernel {

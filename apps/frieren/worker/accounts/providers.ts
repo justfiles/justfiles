@@ -1,21 +1,15 @@
 // The frieren provider registry: which providers exist, how each authenticates,
-// and how each mints a use-facet impl from stored creds. A provider also declares
-// the agent commands its capabilities register (kept working alongside the use
-// facets until the agent calls capabilities directly — see ACCOUNTS-PLAN.md).
+// and how each mints a use-facet impl from stored creds. The agent and apps reach
+// email/calendar only through those minted capabilities — the creds never leave the
+// provider.
 //
-// Provider client code (JMAP, CalDAV) and the agent command builders are reused
-// verbatim from `worker/integrations/*`; this module only re-expresses them in the
-// accounts shape.
+// Provider client code (JMAP, CalDAV) is reused verbatim from
+// `worker/integrations/*`; this module only re-expresses it in the accounts shape.
 
-import type { Command } from '@justfiles/agent'
-import type { CapabilityId, CredentialsSchema } from '@justfiles/app/capabilities/accounts'
-import type { Creds, Provider, ProviderRegistry } from '@justfiles/app/capabilities/accounts/host'
+import type { CredentialsSchema } from '@justfiles/app/capabilities/accounts'
+import type { Provider, ProviderRegistry } from '@justfiles/app/capabilities/accounts/host'
 import { createIcloudCalendarProvider } from '../capabilities/calendar/providers/icloud.ts'
-import { createFastmailCommand } from '../integrations/fastmail/commands.ts'
-import { createJmapClient } from '../integrations/fastmail/jmap.ts'
 import { fastmailEmailProvider } from '../integrations/fastmail/provider.ts'
-import { createCalDavClient } from '../integrations/icloud-calendar/caldav.ts'
-import { createIcloudCalendarCommand } from '../integrations/icloud-calendar/commands.ts'
 
 // Plain credential forms for the Settings connect UI (descriptions preserved from
 // the old typebox integration schemas).
@@ -50,17 +44,7 @@ const icloudSchema: CredentialsSchema = {
 	required: ['username', 'password']
 }
 
-export type CommandFactory = (creds: Creds, accountId: string) => Command[]
-export type CommandFactories = Map<string, Partial<Record<CapabilityId, CommandFactory>>>
-
-export interface ProviderBundle {
-	registry: ProviderRegistry
-	commands: CommandFactories
-}
-
-export function buildProviders(opts: {
-	getTimezone: () => Promise<string> | string
-}): ProviderBundle {
+export function buildProviders(): ProviderRegistry {
 	const icloudCalendar = createIcloudCalendarProvider()
 
 	const fastmail: Provider = {
@@ -76,33 +60,8 @@ export function buildProviders(opts: {
 		mint: { calendar: (creds) => icloudCalendar.create(creds) }
 	}
 
-	const registry: ProviderRegistry = new Map([
+	return new Map([
 		[fastmail.id, fastmail],
 		[icloud.id, icloud]
 	])
-	const commands: CommandFactories = new Map([
-		[
-			'fastmail',
-			{
-				email: (creds) => [
-					createFastmailCommand(createJmapClient({ token: creds.token as string }))
-				]
-			}
-		],
-		[
-			'icloud',
-			{
-				calendar: (creds) => [
-					createIcloudCalendarCommand(
-						createCalDavClient({
-							username: creds.username as string,
-							password: creds.password as string
-						}),
-						{ getTimezone: opts.getTimezone }
-					)
-				]
-			}
-		]
-	])
-	return { registry, commands }
 }

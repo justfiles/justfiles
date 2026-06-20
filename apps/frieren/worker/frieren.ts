@@ -21,27 +21,25 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import {
-	type AccountsStore,
-	calendarHost,
-	emailHost,
-	type ProviderRegistry
-} from '@justfiles/app/capabilities/accounts/host'
+import type { Capability } from '@justfiles/app/capabilities'
+import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import { accountTools } from './accounts/agent-tools.ts'
-import { activatingStore, CommandActivator } from './accounts/commands.ts'
+import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
-import { accountsStore } from './accounts/store.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { Coalescer } from './integrations/coalescer.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
+
+// Only the first-party Settings app may reach the `accounts` admin facet.
+const ACCOUNTS_FIRST_PARTY = ['app.frieren.settings']
 
 interface ClientMessage {
 	type: 'prompt' | 'abort' | 'app_open' | 'app_close'
@@ -84,7 +82,6 @@ export class Frieren extends DurableObject<Env> {
 	private runtime?: Runtime
 	private text?: LLMText
 	private cfTimezone?: string
-	private accounts?: { providers: ProviderRegistry; store: AccountsStore }
 	private readonly coalescer = new Coalescer()
 	private apps?: FrierenApps
 
@@ -144,11 +141,6 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
-	private requireAccounts(): { providers: ProviderRegistry; store: AccountsStore } {
-		if (!this.accounts) throw new Error('accounts not initialised')
-		return this.accounts
-	}
-
 	private requireApps(): FrierenApps {
 		if (!this.apps) throw new Error('apps not initialised')
 		return this.apps
@@ -173,6 +165,16 @@ export class Frieren extends DurableObject<Env> {
 		await migrateCF(this.ctx.storage)
 		this.runtime?.shutdown()
 		this.text = text({ model, apiKey })
+		// Accounts live on the Volume (store internal to @justfiles/app); the factory
+		// hands back the capabilities. frieren keeps its own env-keyed `ai`, so the
+		// factory's `ai` is ignored. email/calendar are guarded with audit + rate-limit
+		// — one set of buckets shared by the agent's tools and every app's calls.
+		const providers = buildProviders()
+		const caps = accountsCapabilities(providers, this.vol, { firstParty: ACCOUNTS_FIRST_PARTY })
+		const audit = new AuditLog(this.ctx.storage)
+		const rateLimit = new TokenBucket({ capacity: 60, windowMs: 60_000 })
+		const email = guardCapability(caps.email, { capability: 'email', audit, rateLimit })
+		const calendar = guardCapability(caps.calendar, { capability: 'calendar', audit, rateLimit })
 		this.apps = frierenApps({
 			fs: this.vol,
 			loader: this.env.LOADER,
@@ -181,11 +183,11 @@ export class Frieren extends DurableObject<Env> {
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
 			broadcast: (msg) => this.broadcast(msg),
-			accounts: () => this.requireAccounts()
+			email,
+			calendar,
+			accounts: caps.accounts
 		})
-		const { agent, accounts, activator } = this.buildAgent()
-		this.accounts = accounts
-		await activator.hydrate(accounts.store)
+		const agent = this.buildAgent({ email, calendar })
 		this.runtime = await runtime({
 			volume: this.vol,
 			agent,
@@ -228,7 +230,7 @@ export class Frieren extends DurableObject<Env> {
 		return { model: openaiModel, apiKey }
 	}
 
-	private buildAgent() {
+	private buildAgent(caps: { email: Capability; calendar: Capability }) {
 		const fs = createFsTools(this.vol)
 		const bashRegistry = new CommandRegistry()
 		for (const command of [
@@ -242,33 +244,16 @@ export class Frieren extends DurableObject<Env> {
 		const bash = createBashTool(bashRegistry, { vol: this.vol })
 		const agent = createAgent(this.getBackendConfig())
 
-		// Accounts back both the use-facet capabilities (email/calendar) and the
-		// agent's per-account commands; the activator keeps the latter in sync with
-		// the store (rate-limited + audited).
-		const { registry: providers, commands: factories } = buildProviders({
-			getTimezone: this.getTimezone
-		})
-		const activator = new CommandActivator({
-			commands: bashRegistry,
-			factories,
-			audit: new AuditLog(this.ctx.storage),
-			rateLimit: new TokenBucket({ capacity: 60, windowMs: 60_000 }),
-			coalescer: this.coalescer
-		})
-		const store = activatingStore(
-			accountsStore(this.ctx.storage, this.env.INTEGRATION_KEY),
-			activator
-		)
-		// The agent reaches email/calendar as an app does — through the use-facet
-		// capabilities (creds minted host-side, multi-account fan-out in the host) —
-		// alongside the legacy creds-bearing CLI commands until the storage cut-over.
+		// The agent reaches email/calendar exactly as an app does — through the
+		// guarded use-facet capabilities (creds minted host-side, fan-out in the host,
+		// audit + rate-limit at the boundary). No creds, no per-account CLI commands.
 		const tools = accountTools({
-			email: emailHost(providers, store),
-			calendar: calendarHost(providers, store),
+			email: caps.email,
+			calendar: caps.calendar,
 			getTimezone: this.getTimezone
 		})
 		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash, ...tools]
-		return { agent, accounts: { providers, store }, activator }
+		return agent
 	}
 
 	// ── WebSocket handlers ────────────────────────────────────────────────
