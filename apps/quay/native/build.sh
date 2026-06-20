@@ -127,8 +127,42 @@ build_booter() { # Name
 	echo "built $app (booter, id=$id)"
 }
 
+# A self-contained, shippable Quay.app: the launcher binary + an embedded bun-compiled
+# quayd exe (arm64) + every on-disk resource the daemon reads, flat under Resources/.
+# No system node/bun, no tsx, no repo, no esbuild — resources.ts resolves these next to
+# the exe (QUAY_SHIPPED). The node escape hatch is unaffected: this is build:bun, and a
+# build:node target can sit beside it (deferred).
+build_ship() {
+	app="Quay.app"
+	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
+	res="$app/Contents/Resources"
+	exe="$(pwd)/$app/Contents/MacOS/quayd"
+
+	# 1. The self-contained quayd exe (arm64) → Contents/MacOS/quayd.
+	(cd .. && bun quayd/build-exe.ts --outfile "$exe" --target bun-darwin-arm64)
+	# 2. Launcher assets (vendor/boot/chat bundles + agent docs) → Resources/assets-dist.
+	(cd .. && pnpm assets:bun >/dev/null)
+	mkdir -p "$res/assets-dist" && cp -R ../quayd/assets-dist/. "$res/assets-dist/"
+	# 3. The shared booter binary + icon tool (materialize copies these per app) → Resources/build.
+	mkdir -p "$res/build" && cp "$BIN" "$res/build/quay-shell"
+	[ -n "$ICON" ] && cp "$ICON" "$res/build/quay-makeicon"
+	# 4. @justfiles/design stylesheets quayd serves under /design → Resources/design.
+	mkdir -p "$res/design"
+	designdir="$(cd .. && node -e "console.log(require('path').dirname(require.resolve('@justfiles/design/mac.css')))")"
+	cp "$designdir"/*.css "$res/design/"
+	# 5. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
+	#    bundle-relative ("quayd"), resolved by Quayd.spawn against the launcher's MacOS dir,
+	#    so the app stays relocatable.
+	plist="$app/Contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string quayd" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :QuaydArgs array" "$plist" 2>/dev/null || true
+	codesign --force --deep --sign - "$app" 2>/dev/null || true
+	echo "built $app (ship, self-contained bun exe, arm64)"
+}
+
 case "${1:-}" in
 	--launcher | --all) build_launcher ;;
-	"") echo "usage: build.sh [--release] <Name> | --launcher" >&2; exit 2 ;;
+	--ship) build_ship ;;
+	"") echo "usage: build.sh [--release] [--runtime node|bun] <Name> | --launcher | --ship" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
 esac

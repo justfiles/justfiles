@@ -7,9 +7,9 @@
 
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-
-// import.meta.dirname is apps/quay/quayd; docs are built into assets-dist/docs (gitignored).
-const DOCS_DIR = join(import.meta.dirname, 'assets-dist', 'docs')
+// docs are built into assets-dist/docs (gitignored) in dev, Resources/assets-dist/docs
+// when shipped — the resource seam resolves both.
+import { DOCS_DIR } from './resources.ts'
 
 export function readDoc(id: string): Promise<string> {
 	return readFile(join(DOCS_DIR, `${id}.md`), 'utf8')

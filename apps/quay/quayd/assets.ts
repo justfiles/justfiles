@@ -10,12 +10,10 @@
 // The per-app `gui.js` is the other static case — built at install time by devkit.
 
 import { readdir, readFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { join } from 'node:path'
-
-const require = createRequire(import.meta.url)
-// Where build-assets.ts emits the vendor + chat bundles. Read at runtime, never built.
-const ASSETS_DIR = join(import.meta.dirname, 'assets-dist')
+// Where build-assets.ts emits the vendor + chat bundles, and where the design styles
+// live — resolved for dev vs. a shipped Quay.app by the one resource seam.
+import { ASSETS_DIR, designPath } from './resources.ts'
 
 const IMPORTMAP = JSON.stringify({
 	imports: {
@@ -63,7 +61,7 @@ const styles = new Map<string, Promise<Uint8Array>>()
 export function designAsset(name: string): Promise<Uint8Array> {
 	let bytes = styles.get(name)
 	if (!bytes) {
-		bytes = readFile(require.resolve(`@justfiles/design/${name}`))
+		bytes = readFile(designPath(name))
 		styles.set(name, bytes)
 	}
 	return bytes

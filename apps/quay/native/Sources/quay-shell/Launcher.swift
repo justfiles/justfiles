@@ -487,14 +487,24 @@ enum Quayd {
 		//   node: QuaydRuntime=<node>, QuaydArgs=[--import,<rawLoader>,--import,tsx]
 		//   bun:  QuaydRuntime=<bun>,  QuaydArgs=[]   (Bun runs TS + ?raw natively)
 		let info = Bundle.main.infoDictionary ?? [:]
-		guard let runtime = info["QuaydRuntime"] as? String,
-			let script = info["QuaydScript"] as? String
-		else { return }
+		guard let runtime = info["QuaydRuntime"] as? String else { return }
 		let args = info["QuaydArgs"] as? [String] ?? []
+		// A shipped self-contained quayd is the runtime itself — no script. Dev runs a
+		// runtime (node/bun) on QuaydScript; cwd is the script's dir, else the exe's.
+		let script = info["QuaydScript"] as? String ?? ""
+		// QuaydRuntime is absolute in dev (a system node/bun); shipped it is bundle-relative
+		// (the embedded "quayd" beside the launcher binary), resolved against the launcher's
+		// MacOS dir so the shipped app stays relocatable.
+		let exeDir = Bundle.main.executableURL?.deletingLastPathComponent() ?? URL(fileURLWithPath: "/")
+		let runtimeURL =
+			runtime.hasPrefix("/") ? URL(fileURLWithPath: runtime) : exeDir.appendingPathComponent(runtime)
 		let p = Process()
-		p.executableURL = URL(fileURLWithPath: runtime)
-		p.arguments = args + [script]
-		p.currentDirectoryURL = URL(fileURLWithPath: script).deletingLastPathComponent()
+		p.executableURL = runtimeURL
+		p.arguments = script.isEmpty ? args : args + [script]
+		p.currentDirectoryURL =
+			script.isEmpty
+			? runtimeURL.deletingLastPathComponent()
+			: URL(fileURLWithPath: script).deletingLastPathComponent()
 		// Log to a file so a GUI-spawned daemon (no inherited terminal) is debuggable.
 		try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
 		let log = supportDir.appendingPathComponent("quayd.log")

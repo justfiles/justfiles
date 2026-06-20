@@ -14,6 +14,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { BUILD_DIR, QUAYD_ARGS, QUAYD_RUNTIME, QUAYD_SCRIPT } from './resources.ts'
 
 // What the projection needs from a kernel manifest (structurally a subset of it).
 export interface ProjectionApp {
@@ -25,22 +26,11 @@ export interface ProjectionApp {
 }
 
 const APPS_DIR = join(homedir(), 'Applications', 'Quay Apps')
-// The shared booter binary + icon tool, emitted by native/build.sh. Both are dev
-// artifacts here (Command Line Tools only); a packaged quay would ship them inside
-// Quay.app instead.
-const BUILD_DIR = join(import.meta.dirname, '..', 'native', 'build')
+// The shared booter binary + icon tool, and how a cold booter respawns quayd (the
+// daemon stamps booters with ITS OWN runtime, so a cold booter spawns the daemon
+// exactly as it runs now). Dev vs. shipped-Quay.app layout lives in resources.ts.
 const BOOTER = join(BUILD_DIR, 'quay-shell')
 const MAKEICON = join(BUILD_DIR, 'quay-makeicon')
-// How a Spotlight-launched booter cold-spawns quayd when no daemon is running yet
-// (mirrors the launcher's generic QuaydRuntime/QuaydArgs/QuaydScript keys, stamped by
-// build.sh). The daemon stamps booters with ITS OWN runtime, so a cold booter respawns
-// the daemon exactly as it runs now: bun (no extra args — TS + ?raw native) or node
-// (rawLoader for ?raw + tsx for TS). Dev wiring — a packaged quay ships the daemon instead.
-const QUAYD_RUNTIME = process.execPath
-const QUAYD_SCRIPT = join(import.meta.dirname, 'main.ts')
-const QUAYD_ARGS = process.versions.bun
-	? []
-	: ['--import', join(import.meta.dirname, 'rawLoader.mjs'), '--import', 'tsx']
 const LSREGISTER =
 	'/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 

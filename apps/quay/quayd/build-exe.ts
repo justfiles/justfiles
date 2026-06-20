@@ -46,6 +46,9 @@ const result = await Bun.build({
 	entrypoints: ['./quayd/main.ts'],
 	target: 'bun',
 	plugins: [rawText],
+	// Tell the standalone it is shipped, so resources.ts resolves assets/docs/design/
+	// booter from Quay.app/Contents/Resources next to the exe — not the bunfs root.
+	define: { 'process.env.QUAY_SHIPPED': '"1"' },
 	compile: (target ? { outfile, target } : { outfile }) as { outfile: string }
 })
 
