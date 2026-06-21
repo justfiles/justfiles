@@ -78,7 +78,7 @@ packages/app-foo/
 - **`.tsx`/`.jsx` extension = only signal** GUI is React component (default-export component). Plain
   `.ts` GUI must export `gui` via `defineGUI` (imperative DOM).
 
-Build (`kernelHost`) emits `manifest.json`, `app.js`, `gui.js`, importable `bundle.js`, copied public
+Build (`kernelHost`) emits `manifest.json`, `app.js`, `gui.js`, copied public
 assets.
 
 ### vite.config.ts

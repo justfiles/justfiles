@@ -36,7 +36,7 @@ pnpm dev
 ```
 
 The launcher spawns `quayd` from source — no packaging. The daemon re-seeds the built-in
-apps from their freshly built `dist/bundle.js` on every boot, so `pnpm dev` (which rebuilds
+apps from their freshly built `dist` files on every boot, so `pnpm dev` (which rebuilds
 the app deps, then kills + relaunches) always shows current code. Editing only `quayd/*`
 needs just a relaunch; `quayd` runs under node via tsx, no build.
 

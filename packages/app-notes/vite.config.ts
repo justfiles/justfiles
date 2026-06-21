@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => ({
 						name: 'Notes',
 						description: 'A freeform knowledge base shared with the agent',
 						icon: 'icon.png',
+						include: ['*.css'],
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})

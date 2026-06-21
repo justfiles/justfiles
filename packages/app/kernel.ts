@@ -22,7 +22,6 @@ export type {
 	AppBundle,
 	AppHandle,
 	AppManifest,
-	BuiltinBundle,
 	Message,
 	RawAppHandle
 } from './app.ts'

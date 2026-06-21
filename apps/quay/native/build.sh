@@ -133,6 +133,28 @@ build_booter() { # Name
 	echo "built $app (booter, id=$id)"
 }
 
+copy_builtin() { # resources_dir app_id package_dir
+	dst="$1/builtins/$2"
+	src="../../../packages/$3/dist"
+	[ -f "$src/manifest.json" ] || {
+		echo "build.sh: missing $src/manifest.json (build workspace apps first)" >&2
+		exit 1
+	}
+	rm -rf "$dst"
+	mkdir -p "$dst"
+	cp -R "$src/." "$dst/"
+	rm -f "$dst/bundle.js" "$dst/bundle.d.ts"
+}
+
+copy_builtins() { # resources_dir
+	copy_builtin "$1" app.code app-code
+	copy_builtin "$1" app.frieren.files app-files
+	copy_builtin "$1" app.justfiles.counter app-counter
+	copy_builtin "$1" app.frieren.notes app-notes
+	copy_builtin "$1" app.frieren.paint app-paint
+	copy_builtin "$1" app.frieren.settings app-settings
+}
+
 # A self-contained, shippable Quay.app: the launcher binary + an embedded bun-compiled
 # quayd exe (arm64) + every on-disk resource the daemon reads, flat under Resources/.
 # No system node/bun, no tsx, no repo, no esbuild — resources.ts resolves these next to
@@ -157,7 +179,9 @@ build_ship() {
 	mkdir -p "$res/design"
 	designdir="$(cd .. && node -e "console.log(require('path').dirname(require.resolve('@justfiles/design/mac.css')))")"
 	cp "$designdir"/*.css "$res/design/"
-	# 5. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
+	# 5. Built-in app bundle roots → Resources/builtins.
+	copy_builtins "$res"
+	# 6. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
 	#    bundle-relative ("quayd"), resolved by Quayd.spawn against the launcher's MacOS dir,
 	#    so the app stays relocatable.
 	plist="$app/Contents/Info.plist"

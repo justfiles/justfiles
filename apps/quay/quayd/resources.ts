@@ -12,7 +12,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 
 const require = createRequire(import.meta.url)
-const SHIPPED = process.env.QUAY_SHIPPED === '1'
+export const SHIPPED = process.env.QUAY_SHIPPED === '1'
 
 // Shipped: Contents/MacOS/quayd -> ../Resources. Dev: the quayd source dir.
 const ROOT = SHIPPED ? join(dirname(process.execPath), '..', 'Resources') : import.meta.dirname
@@ -20,6 +20,7 @@ const ROOT = SHIPPED ? join(dirname(process.execPath), '..', 'Resources') : impo
 // Launcher vendor/boot/chat bundles (build-assets.ts) + the agent docs copied beside them.
 export const ASSETS_DIR = join(ROOT, 'assets-dist')
 export const DOCS_DIR = join(ASSETS_DIR, 'docs')
+export const BUILTINS_DIR = join(ROOT, 'builtins')
 
 // The shared booter binary + icon tool (native/build.sh): dev reads native/build,
 // ship reads Resources/build.

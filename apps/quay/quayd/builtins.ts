@@ -1,43 +1,21 @@
-// The built-in catalog quayd seeds on first run. Mirrors the desktop sibling's
-// packaging — each bundle's bytes live in its generated `dist/bundle.js`, hashed
-// into a `Catalog` so `reconcileBuiltins` reinstalls only changed apps.
+import { join } from 'node:path'
+import { type BuiltinSource, builtinSourceFromFs } from '@justfiles/app/builtins/fs'
+import { BUILTINS_DIR, SHIPPED } from './resources.ts'
 
-import { createHash } from 'node:crypto'
-import type { Catalog, CatalogApp } from '@justfiles/app/builtins'
-import type { BuiltinBundle } from '@justfiles/app/runtime'
-import code from '@justfiles/app-code/bundle'
-import counter from '@justfiles/app-counter/bundle'
-import files from '@justfiles/app-files/bundle'
-import notes from '@justfiles/app-notes/bundle'
-import paint from '@justfiles/app-paint/bundle'
-import settings from '@justfiles/app-settings/bundle'
+const BUILTINS = [
+	{ id: 'app.code', packageDir: 'app-code' },
+	{ id: 'app.frieren.files', packageDir: 'app-files' },
+	{ id: 'app.justfiles.counter', packageDir: 'app-counter' },
+	{ id: 'app.frieren.notes', packageDir: 'app-notes' },
+	{ id: 'app.frieren.paint', packageDir: 'app-paint' },
+	{ id: 'app.frieren.settings', packageDir: 'app-settings' }
+]
 
-const bundles: BuiltinBundle[] = [code, files, counter, notes, paint, settings]
-const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]))
-
-export const builtinCatalog: Catalog = {
-	schema: 'justfiles.appstore.v1',
-	apps: bundles.map(toCatalogApp)
+export function builtinSource(): Promise<BuiltinSource> {
+	return builtinSourceFromFs(BUILTINS.map((app) => rootFor(app)))
 }
 
-export async function readBuiltin(app: CatalogApp, path: string): Promise<Uint8Array> {
-	const bytes = byId.get(app.id)?.files[path]
-	if (!bytes) throw new Error(`builtin not found: ${app.id}/${path}`)
-	return bytes
-}
-
-function toCatalogApp(bundle: BuiltinBundle): CatalogApp {
-	return {
-		id: bundle.id,
-		name: bundle.manifest.name,
-		version: bundle.version,
-		icon: bundle.manifest.icon,
-		files: Object.entries(bundle.files)
-			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-			.map(([path, bytes]) => ({
-				path,
-				hash: `sha256-${createHash('sha256').update(bytes).digest('hex')}`,
-				size: bytes.byteLength
-			}))
-	}
+function rootFor(app: (typeof BUILTINS)[number]): string {
+	if (SHIPPED) return join(BUILTINS_DIR, app.id)
+	return join(import.meta.dirname, '..', '..', '..', 'packages', app.packageDir, 'dist')
 }

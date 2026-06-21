@@ -1,40 +1,21 @@
-import { createHash } from 'node:crypto'
-import type { Catalog, CatalogApp } from '@justfiles/app/builtins'
-import type { BuiltinBundle } from '@justfiles/app/runtime'
-import code from '@justfiles/app-code/bundle'
-import counter from '@justfiles/app-counter/bundle'
-import files from '@justfiles/app-files/bundle'
-import notes from '@justfiles/app-notes/bundle'
-import paint from '@justfiles/app-paint/bundle'
-import settings from '@justfiles/app-settings/bundle'
+import { join } from 'node:path'
+import { type BuiltinSource, builtinSourceFromFs } from '@justfiles/app/builtins/fs'
+import { app } from 'electron'
 
-const bundles = [counter, files, notes, paint, settings, code]
-const byId = new Map(bundles.map((bundle) => [bundle.id, bundle]))
+const BUILTINS = [
+	{ id: 'app.justfiles.counter', packageDir: 'app-counter' },
+	{ id: 'app.frieren.files', packageDir: 'app-files' },
+	{ id: 'app.frieren.notes', packageDir: 'app-notes' },
+	{ id: 'app.frieren.paint', packageDir: 'app-paint' },
+	{ id: 'app.frieren.settings', packageDir: 'app-settings' },
+	{ id: 'app.code', packageDir: 'app-code' }
+]
 
-export const desktopBuiltinCatalog: Catalog = {
-	schema: 'justfiles.appstore.v1',
-	apps: bundles.map(toCatalogApp)
+export function desktopBuiltinSource(): Promise<BuiltinSource> {
+	return builtinSourceFromFs(BUILTINS.map((builtin) => rootFor(builtin)))
 }
 
-export async function readDesktopBuiltin(app: CatalogApp, path: string): Promise<Uint8Array> {
-	const bundle = byId.get(app.id)
-	const bytes = bundle?.files[path]
-	if (!bytes) throw new Error(`builtin not found: ${app.id}/${path}`)
-	return bytes
-}
-
-function toCatalogApp(bundle: BuiltinBundle): CatalogApp {
-	return {
-		id: bundle.id,
-		name: bundle.manifest.name,
-		version: bundle.version,
-		icon: bundle.manifest.icon,
-		files: Object.entries(bundle.files)
-			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-			.map(([path, bytes]) => ({
-				path,
-				hash: `sha256-${createHash('sha256').update(bytes).digest('hex')}`,
-				size: bytes.byteLength
-			}))
-	}
+function rootFor(builtin: (typeof BUILTINS)[number]): string {
+	if (app.isPackaged) return join(process.resourcesPath, 'builtins', builtin.id)
+	return join(process.cwd(), '..', '..', 'packages', builtin.packageDir, 'dist')
 }

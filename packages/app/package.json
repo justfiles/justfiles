@@ -12,6 +12,7 @@
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./devkit": "./devkit.ts",
+		"./builtins/fs": "./builtins.fs.ts",
 		"./toolchain/esbuild": "./toolchain.esbuild.ts",
 		"./toolchain/bun": "./toolchain.bun.ts",
 		"./toolchain/typescript": "./toolchain.typescript.ts",
@@ -69,6 +70,10 @@
 			"./devkit": {
 				"types": "./dist/devkit.d.ts",
 				"default": "./dist/devkit.js"
+			},
+			"./builtins/fs": {
+				"types": "./dist/builtins.fs.d.ts",
+				"default": "./dist/builtins.fs.js"
 			},
 			"./toolchain/esbuild": {
 				"types": "./dist/toolchain.esbuild.d.ts",

@@ -22,7 +22,7 @@ import {
 } from 'electron'
 import icon from '../../resources/icon.png?asset'
 import { createDesktopAgent, type DesktopAgent, llmConfig } from './agent'
-import { desktopBuiltinCatalog, readDesktopBuiltin } from './builtins'
+import { desktopBuiltinSource } from './builtins'
 import { devkitCapability } from './devkit'
 import { nodeSandbox, terminateAppWorker } from './nodeSandbox'
 import { createPreviewManager, preloadPath } from './preview'
@@ -80,7 +80,8 @@ async function getHost(): Promise<Host> {
 				}
 				preview.push(event.appId, event.state)
 			})
-			await reconcileBuiltins(k, fs, desktopBuiltinCatalog, readDesktopBuiltin)
+			const builtins = await desktopBuiltinSource()
+			await reconcileBuiltins(k, fs, builtins.catalog, builtins.read)
 			const entries = await fs.readdir('/')
 			const apps = await k.list()
 			console.info(`Volume root: ${root}`)

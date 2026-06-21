@@ -4,12 +4,6 @@
 	"private": true,
 	"type": "module",
 	"main": "./dist/manifest.json",
-	"exports": {
-		"./bundle": {
-			"types": "./dist/bundle.d.ts",
-			"default": "./dist/bundle.js"
-		}
-	},
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",

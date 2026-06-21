@@ -13,6 +13,43 @@ files:
   - node_modules/@electron-toolkit/utils/**/*
 asarUnpack:
   - resources/**
+extraResources:
+  - from: ../../packages/app-code/dist
+    to: builtins/app.code
+    filter:
+      - '**/*'
+      - '!bundle.js'
+      - '!bundle.d.ts'
+  - from: ../../packages/app-counter/dist
+    to: builtins/app.justfiles.counter
+    filter:
+      - '**/*'
+      - '!bundle.js'
+      - '!bundle.d.ts'
+  - from: ../../packages/app-files/dist
+    to: builtins/app.frieren.files
+    filter:
+      - '**/*'
+      - '!bundle.js'
+      - '!bundle.d.ts'
+  - from: ../../packages/app-notes/dist
+    to: builtins/app.frieren.notes
+    filter:
+      - '**/*'
+      - '!bundle.js'
+      - '!bundle.d.ts'
+  - from: ../../packages/app-paint/dist
+    to: builtins/app.frieren.paint
+    filter:
+      - '**/*'
+      - '!bundle.js'
+      - '!bundle.d.ts'
+  - from: ../../packages/app-settings/dist
+    to: builtins/app.frieren.settings
+    filter:
+      - '**/*'
+      - '!bundle.js'
+      - '!bundle.d.ts'
 win:
   executableName: dsk
 nsis:

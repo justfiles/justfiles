@@ -80,7 +80,7 @@ export default defineConfig({
 })
 ```
 
-Build output contains `manifest.json`, `app.js`, `gui.js`, an importable `bundle.js`, and copied public assets. Manifest fields include `id`, `name`, optional metadata, and bundle entry paths.
+Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
 
 ## Capabilities
 

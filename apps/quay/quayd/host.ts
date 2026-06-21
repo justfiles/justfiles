@@ -31,7 +31,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { builtinCatalog, readBuiltin } from './builtins.ts'
+import { builtinSource } from './builtins.ts'
 import { chatgptProvider } from './chatgpt.ts'
 import { devkitCapability } from './devkit.ts'
 import { googleProvider } from './google/provider.ts'
@@ -99,6 +99,7 @@ export async function createHost(
 		notify: notifyHost(channel)
 	})
 	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
-	await reconcileBuiltins(k, fs, builtinCatalog, readBuiltin)
+	const builtins = await builtinSource()
+	await reconcileBuiltins(k, fs, builtins.catalog, builtins.read)
 	return { fs, kernel: k, sandbox }
 }

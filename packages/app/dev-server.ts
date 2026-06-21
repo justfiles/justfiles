@@ -15,6 +15,7 @@ export interface DevServerOptions {
 	description?: string
 	version?: string
 	icon?: string
+	include?: string[]
 	app: string // headless bundle entry, relative to vite root
 	gui: string // browser bundle entry, relative to vite root
 }

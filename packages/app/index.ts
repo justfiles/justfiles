@@ -5,7 +5,6 @@ export {
 	type AppHandle,
 	type AppManifest,
 	appBundleFromMemory,
-	type BuiltinBundle,
 	type GetSandbox,
 	type Kernel,
 	kernel,
