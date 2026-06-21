@@ -101,8 +101,10 @@ export function tsconfigFor(manifest: AppManifest): TsConfigJson {
 
 // Read the named project off `data` and shape it as the engine's `ProjectInput`
 // (vfs map + named entries + generated tsconfig) — the shared front half of every
-// engine method. Only `readProjectFile` can throw (missing/invalid project.json).
-async function projectInput(
+// engine method. Exported so the devkit host factory's `compile`/`typecheck` can
+// feed a `Toolchain` directly. Only `readProjectFile` can throw (missing/invalid
+// project.json).
+export async function readProject(
 	data: Volume,
 	slug: string
 ): Promise<{ manifest: AppManifest; input: ProjectInput }> {
@@ -123,14 +125,14 @@ export async function compileDraft(
 	slug: string,
 	engine: Engine
 ): Promise<CompileResult> {
-	return engine.compile((await projectInput(data, slug)).input)
+	return engine.compile((await readProject(data, slug)).input)
 }
 export async function typecheckDraft(
 	data: Volume,
 	slug: string,
 	engine: Engine
 ): Promise<CheckResult> {
-	return engine.typecheck((await projectInput(data, slug)).input)
+	return engine.typecheck((await readProject(data, slug)).input)
 }
 
 // ── Draft build / install / pack ──────────────────────────────────────────
