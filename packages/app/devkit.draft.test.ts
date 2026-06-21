@@ -4,9 +4,9 @@ import { unzipSync } from 'fflate'
 import { beforeAll, describe, expect, test } from 'vitest'
 import { buildDraft, installDraft, packDraft } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
-import { esbuildCompile } from './engine.esbuild.ts'
-import type { Toolchain } from './engine.ts'
 import { type GetSandbox, kernel } from './kernel.ts'
+import { esbuildCompile } from './toolchain.esbuild.ts'
+import type { Toolchain } from './toolchain.ts'
 
 // End-to-end coverage of the draft pipeline against the REAL toolchain: write a
 // project into a data volume, then buildDraft / packDraft / installDraft it. The

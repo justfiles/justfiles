@@ -13,14 +13,14 @@
 // reducer.
 
 import { appBundleFromMemory } from '@justfiles/app'
+import type { Compile, Toolchain } from '@justfiles/app/capabilities/devkit/host'
 import {
 	devkitCapability as makeDevkit,
 	type Runner
 } from '@justfiles/app/capabilities/devkit/host'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
-import type { Compile, Toolchain } from '@justfiles/app/engine'
-import { typescriptToolchain } from '@justfiles/app/engine/typescript'
 import type { Kernel } from '@justfiles/app/runtime'
+import { typescriptToolchain } from '@justfiles/app/toolchain/typescript'
 import type { Volume } from '@justfiles/fs'
 import * as ts from 'typescript'
 // The devkit compile backend, selected by the runtime: native esbuild under node,

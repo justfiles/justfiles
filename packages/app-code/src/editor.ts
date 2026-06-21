@@ -2,7 +2,7 @@ import { javascript } from '@codemirror/lang-javascript'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { type Diagnostic as CmDiagnostic, lintGutter, setDiagnostics } from '@codemirror/lint'
 import { EditorView, type ViewUpdate } from '@codemirror/view'
-import type { Diagnostic } from '@justfiles/app/engine'
+import type { Diagnostic } from '@justfiles/app/capabilities/devkit'
 import { tags as t } from '@lezer/highlight'
 import { basicSetup } from 'codemirror'
 

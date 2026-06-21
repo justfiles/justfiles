@@ -12,10 +12,9 @@
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./devkit": "./devkit.ts",
-		"./engine": "./engine.ts",
-		"./engine/esbuild": "./engine.esbuild.ts",
-		"./engine/bun": "./engine.bun.ts",
-		"./engine/typescript": "./engine.typescript.ts",
+		"./toolchain/esbuild": "./toolchain.esbuild.ts",
+		"./toolchain/bun": "./toolchain.bun.ts",
+		"./toolchain/typescript": "./toolchain.typescript.ts",
 		"./devkit-runtime": "./devkit-runtime.ts",
 		"./builtins": "./builtins.ts",
 		"./capabilities": "./capabilities/index.ts",
@@ -71,21 +70,17 @@
 				"types": "./dist/devkit.d.ts",
 				"default": "./dist/devkit.js"
 			},
-			"./engine": {
-				"types": "./dist/engine.d.ts",
-				"default": "./dist/engine.js"
+			"./toolchain/esbuild": {
+				"types": "./dist/toolchain.esbuild.d.ts",
+				"default": "./dist/toolchain.esbuild.js"
 			},
-			"./engine/esbuild": {
-				"types": "./dist/engine.esbuild.d.ts",
-				"default": "./dist/engine.esbuild.js"
+			"./toolchain/bun": {
+				"types": "./dist/toolchain.bun.d.ts",
+				"default": "./dist/toolchain.bun.js"
 			},
-			"./engine/bun": {
-				"types": "./dist/engine.bun.d.ts",
-				"default": "./dist/engine.bun.js"
-			},
-			"./engine/typescript": {
-				"types": "./dist/engine.typescript.d.ts",
-				"default": "./dist/engine.typescript.js"
+			"./toolchain/typescript": {
+				"types": "./dist/toolchain.typescript.d.ts",
+				"default": "./dist/toolchain.typescript.js"
 			},
 			"./devkit-runtime": {
 				"types": "./dist/devkit-runtime.d.ts",

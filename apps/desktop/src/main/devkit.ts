@@ -1,12 +1,12 @@
+import type { Toolchain } from '@justfiles/app/capabilities/devkit/host'
 import {
 	devkitCapability as makeDevkit,
 	noopRunner,
 	type Runner
 } from '@justfiles/app/capabilities/devkit/host'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
-import type { Toolchain } from '@justfiles/app/engine'
-import { esbuildCompile } from '@justfiles/app/engine/esbuild'
 import type { Kernel } from '@justfiles/app/runtime'
+import { esbuildCompile } from '@justfiles/app/toolchain/esbuild'
 import type { Volume } from '@justfiles/fs'
 import { build } from 'esbuild'
 

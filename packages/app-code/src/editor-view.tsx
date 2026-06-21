@@ -1,6 +1,5 @@
 import type { Client } from '@justfiles/app'
-import type { MenuView } from '@justfiles/app/capabilities/devkit'
-import type { Diagnostic } from '@justfiles/app/engine'
+import type { Diagnostic, MenuView } from '@justfiles/app/capabilities/devkit'
 import type { ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 import { type CodeApp, type CodeState, statusOf } from './app'
 import { createEditor } from './editor'

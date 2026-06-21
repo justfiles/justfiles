@@ -1,13 +1,13 @@
-// The bundler-agnostic half of the devkit compile engine: the `files`-map
+// The bundler-agnostic half of the devkit compile toolchain: the `files`-map
 // resolve/load rules, the externalised-React list, the React-GUI entry wrap, and
 // the per-entry orchestration that shapes a `ProjectInput` into a `CompileResult`.
-// No esbuild/Bun types live here — `engine.esbuild.ts` and `engine.bun.ts` are
+// No esbuild/Bun types live here — `toolchain.esbuild.ts` and `toolchain.bun.ts` are
 // thin adapters that plug their bundler's `onResolve`/`onLoad` into these rules and
 // hand `compileVfs` a single `buildOne` strategy. One home for the substance; the
 // per-bundler glue stays tens of lines each.
 
-import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './engine.ts'
 import { isReactGuiEntry, reactGuiEntry } from './react-entry.ts'
+import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
 // React stays external (resolved through the host importmap) so a preview shares
 // the one host React instance. Mirrors the list `buildRuntime` keeps external.

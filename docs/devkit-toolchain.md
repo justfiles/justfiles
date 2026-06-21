@@ -1,30 +1,52 @@
 ---
-title: 'Devkit Engine'
+title: 'Devkit Toolchain'
 description: One home for every devkit build/transform function (compile, typecheck, pack, install, lint, test) — a container on the server, the local backend on quay — with the live preview as the only client-side remainder.
 ---
 
-# Devkit Engine
+# Devkit Toolchain
 
 Devkit's functions split cleanly by one question: **is it a file transform, or is it
 the running browser?**
 
 - **File transforms** — `compile` (esbuild), `typecheck`, `pack`, `install`, later
   `lint` / `test` — are pure `files → artifact/diagnostics`. They all live in **one
-  engine**: a **Container** on the server (frieren), the **local backend** on quay.
+  toolchain**: a **Container** on the server (frieren), the **local backend** on quay.
   The browser ships *none* of the toolchain — no esbuild-wasm, no TypeScript.
 - **The running browser** — mounting the live preview, plus `stop` / `menu` /
   `selectMenu` — runs the actual interactive app GUI in the user's DOM. It **cannot**
   leave the browser. It only *receives* a compiled bundle and mounts it.
 
-This document specifies that engine. The motivating need was the agent's **typecheck**
+This document specifies that toolchain. The motivating need was the agent's **typecheck**
 (it edits draft code with no way to check its work — esbuild only strips types), but
-the same engine owns the whole build/transform surface so the toolchain has **one
+the same toolchain owns the whole build/transform surface so the toolchain has **one
 home per host**.
 
 The hard constraint is **portability**: the agent runs server-side in a Cloudflare
-**Durable Object** (frieren) with the Code app possibly closed, so the engine must run
-without the browser. quay is easier (real Node backend). Both reach the *same* engine
+**Durable Object** (frieren) with the Code app possibly closed, so the toolchain must run
+without the browser. quay is easier (real Node backend). Both reach the *same* toolchain
 behind the *same* interface.
+
+## Implemented shape: `Toolchain` + `Runner` + a generic factory
+
+In code this is two injected seams and one generic factory
+(`packages/app/capabilities/devkit/host.ts`):
+
+- **`Toolchain`** — the file-transform seam: `{ compile, typecheck? }`
+  (`packages/app/toolchain.ts`). `typecheck` is optional; a host without a checker
+  (browser esbuild-wasm, desktop) omits it and the factory degrades `typecheck` to
+  `CAPABILITY_UNAVAILABLE`. Impls: `toolchain.esbuild.ts`, `toolchain.typescript.ts`,
+  `toolchain.bun.ts`.
+- **`Runner`** — the running-browser remainder: `{ mount, stop, menu?, selectMenu? }`.
+  The factory builds the draft and only ever calls `mount` with a clean build, so a
+  Runner never re-checks diagnostics. `noopRunner` mounts nothing (compile-only hosts).
+- **`devkitCapability({ fs, toolchain, runner, kernel, onInstalled?, overwrite? })`** —
+  wires both seams into the full app-facing contract. A host supplies a Toolchain + a
+  Runner and nothing else; the read-project / build / pack / install glue lives here once.
+
+These types are **not** a separate package entry point: hosts reach them through
+`@justfiles/app/capabilities/devkit/host` (the implementer surface) and app-facing
+consumers through `@justfiles/app/capabilities/devkit` — the toolchain is internal to
+the devkit capability, not a standalone module.
 
 ---
 
@@ -32,13 +54,13 @@ behind the *same* interface.
 
 | devkit function                                           | Home                                             | Why                                                      |
 |-----------------------------------------------------------|--------------------------------------------------|----------------------------------------------------------|
-| `compile`, `typecheck`, `pack`, `install`, `lint`, `test` | **engine** — container (server) / backend (quay) | file transform: heavy deps, must run agent-in-background |
+| `compile`, `typecheck`, `pack`, `install`, `lint`, `test` | **toolchain** — container (server) / backend (quay) | file transform: heavy deps, must run agent-in-background |
 | preview `mount` / `stop` / `menu` / `selectMenu`          | **client** (browser)                             | runs the live app GUI in the DOM — irreducible           |
 
 `run` is the only function that spans both, so it **decomposes**:
 
 ```
-run(slug)  =  engine.compile(slug) → outputs {app, gui}    // server (container / backend)
+run(slug)  =  toolchain.compile(slug) → outputs {app, gui}    // server (container / backend)
               then preview.mount(previewId, outputs)        // client (DOM, unchanged)
 ```
 
@@ -46,18 +68,18 @@ The compiled bundle (`app.js` + `gui.js`) is small, so shipping it to the client
 mount is cheap; the preview kernel still runs client-side from that bundle — only the
 *compile step* moved off the browser. On quay both halves are one local process.
 
-### The seam: one `Engine` interface, swappable impls
+### The seam: one `Toolchain` interface, swappable impls
 
 The swappable part is the **pure-transform sub-interface** — `compile` / `typecheck`
 / `lint` / `test`: `ProjectInput → result`, no fs, no DOM. Everything else composes
 over it and is already client-capable: `pack` = `compile` + zip (fflate), `install` =
 `compile` + a kernel write, `run` = `compile` + the client **preview mount** (outside
-the seam entirely). So swapping the `Engine` changes the locus of *only*
+the seam entirely). So swapping the `Toolchain` changes the locus of *only*
 `compile`/`typecheck`; the rest stay put.
 
 That makes three impls behind one seam:
 
-| `Engine` impl                  | `compile` / `pack` / `install` / `run` / `test` | `typecheck`                 | `lint`                   |
+| `Toolchain` impl                  | `compile` / `pack` / `install` / `run` / `test` | `typecheck`                 | `lint`                   |
 |--------------------------------|-------------------------------------------------|-----------------------------|--------------------------|
 | **container** (frieren server) | ✅ native esbuild                               | ✅ `tsgo`                   | ✅ Biome                 |
 | **node** (quay backend)        | ✅ esbuild                                      | ✅ `typescript`             | ✅ Biome                 |
@@ -65,14 +87,14 @@ That makes three impls behind one seam:
 
 **The offline door stays open by construction.** Moving compile server-side is the
 *default* (lean browser), but the browser esbuild path we have today is retained as a
-valid **partial impl** behind the seam — online you wire the container-backed engine,
-offline you fall back to the browser engine. The only function genuinely lost offline
+valid **partial impl** behind the seam — online you wire the container-backed toolchain,
+offline you fall back to the browser toolchain. The only function genuinely lost offline
 is **`typecheck`** (the one 8 MB dep); it degrades via the existing
 `CAPABILITY_UNAVAILABLE` mechanism (same as volume `system` scope), so the agent skips
 it offline and the GUI grays out the Problems panel — no all-or-nothing cliff. (See
 `apps/frieren/LOCAL_FIRST_PLAN.md`.)
 
-**Discipline that keeps the seam clean:** the `Engine` interface stays
+**Discipline that keeps the seam clean:** the `Toolchain` interface stays
 implementation-agnostic — pure data in/out, no fs, no subprocess, no slug-reading
 (that's the host layer). The moment a method assumes a filesystem the browser impl
 can't satisfy it and the seam leaks.
@@ -91,21 +113,21 @@ We compared running the toolchain (TypeScript ~8 MB + esbuild) in a **Worker** v
   with the **1 s startup limit**.
 - **Containers** give **up to 12 GiB** (`standard-4`), run **native `tsgo`** (TS 7,
   ~10× faster) + native esbuild, no 8 MB JS parse, **scale to zero**, and `tsgo` is
-  the **same binary quay's backend can run** → one engine, two hosts. Bursty agent
+  the **same binary quay's backend can run** → one toolchain, two hosts. Bursty agent
   cost is ~$0–2/mo (tunable via instance size + idle timeout); the only downside is a
   1–3 s cold start after idle, fine for a background agent.
 
-So: **the engine's heavy compute lives in a Container**, the Durable Object calls it
+So: **the toolchain's heavy compute lives in a Container**, the Durable Object calls it
 over HTTP, the browser carries none of it. quay runs the same logic in-process.
 
 ---
 
 ## Architecture
 
-The **engine** is the devkit host implementation (quay backend; frieren DO). It owns
+The **toolchain** is the devkit host implementation (quay backend; frieren DO). It owns
 every method. For heavy compute (esbuild bundle, tsc/tsgo check) it delegates to a
 **stateless Container service**; the fs-touching parts (read the slug tree, write
-`/applications`, zip) happen in the engine *around* that call.
+`/applications`, zip) happen in the toolchain *around* that call.
 
 ```
 ┌─ agent tool ───────────┐   ┌─ app-code GUI ─────────────┐
@@ -114,7 +136,7 @@ every method. For heavy compute (esbuild bundle, tsc/tsgo check) it delegates to
            │                            │
            ▼                            ▼
    ┌──────────────────────────────────────────────────────┐
-   │  devkit ENGINE  (host impl: quay backend / frieren DO)│
+   │  devkit TOOLCHAIN  (host impl: quay backend / frieren DO)│
    │  reads slug tree off the data Volume, orchestrates fs │
    │   compile · typecheck · pack · install · lint · test  │
    └───────────────┬───────────────────────┬──────────────┘
@@ -131,15 +153,15 @@ every method. For heavy compute (esbuild bundle, tsc/tsgo check) it delegates to
    └──────────────────────────────────────────────┘
 ```
 
-The **interface** (below) is the contract every layer agrees on. The **engine** is
+The **interface** (below) is the contract every layer agrees on. The **toolchain** is
 the only thing that differs per host. The **agent adapter** is identical everywhere.
 
 ---
 
 ## 1. The interface (priority 1)
 
-A new module, e.g. `packages/app/engine.ts`, sibling to `devkit.ts`. Pure types + the
-`Engine` interface — no engine impl, no host. (Mirrors how `compile()` is already a
+A new module, e.g. `packages/app/toolchain.ts`, sibling to `devkit.ts`. Pure types + the
+`Toolchain` interface — no toolchain impl, no host. (Mirrors how `compile()` is already a
 pure function with an injected `Toolchain`.)
 
 ```ts
@@ -194,9 +216,9 @@ export interface ProjectInput {
 	tsconfig: TsConfigJson // generated from the manifest; type-fest's zero-runtime type
 }
 
-// The heavy-compute primitives the Container exposes; the host engine composes the
+// The heavy-compute primitives the Container exposes; the host toolchain composes the
 // rest (pack = compile + zip; install = compile + kernel write) around them.
-export interface Engine {
+export interface Toolchain {
 	compile(input: ProjectInput): Promise<CompileResult>
 	typecheck(input: ProjectInput): Promise<CheckResult>
 	// lint(input): Promise<CheckResult>   — later
@@ -207,7 +229,7 @@ export interface Engine {
 ### Project shape: files + entries + a generated tsconfig
 
 A draft is expressed the way the whole TS ecosystem expresses a project — a **file
-tree + a `tsconfig.json`** — so every engine consumes it natively and nothing is
+tree + a `tsconfig.json`** — so every toolchain consumes it natively and nothing is
 reinvented:
 
 - **`files`** — the virtual source tree (a vfs map). **`entries`** — esbuild's named
@@ -225,7 +247,7 @@ the generated tsconfig is the machine truth, and a future in-editor `tsserver` /
 would consume the very same config. (`TsConfigJson` is `type-fest`'s zero-runtime
 type — don't hand-roll the schema.)
 
-### The draft stdlib (one source of truth for both engines)
+### The draft stdlib (one source of truth for both toolchains)
 
 A draft lives in the user's Volume, **not** the workspace `node_modules`, so both the
 bundler and the checker must be handed the stdlib the draft compiles against. esbuild
@@ -246,13 +268,13 @@ export type TypesBundle = Record<string, string>
 
 ### The host methods (so apps + the GUI can call them too)
 
-Reshape `packages/app/capabilities/devkit/contract.ts`. Engine methods become
+Reshape `packages/app/capabilities/devkit/contract.ts`. Toolchain methods become
 serializable (slug in, result out); the preview methods stay as-is but are understood
 as the **client-only** remainder:
 
 ```ts
 export interface DevkitCapability {
-	// ── engine (server / backend) ────────────────────────────────────────────
+	// ── toolchain (server / backend) ────────────────────────────────────────────
 	compile(input: { slug: string }): Promise<CompileResult>
 	typecheck(input: { slug: string }): Promise<CheckResult>
 	pack(input: { slug: string }): Promise<{ zip: Uint8Array }> // compile + zip
@@ -261,15 +283,15 @@ export interface DevkitCapability {
 
 	// ── preview (client, browser only) ───────────────────────────────────────
 	run(input: { slug: string; reset?: boolean }): Promise<{ previewId: string; diagnostics: Diagnostic[] }>
-	// run = engine.compile(slug) → mount({ app, gui }); only `mount` is client-bound.
+	// run = toolchain.compile(slug) → mount({ app, gui }); only `mount` is client-bound.
 	stop(input: { previewId: string }): Promise<void>
 	menu(input: { previewId: string }): Promise<MenuView>
 	selectMenu(input: { previewId: string; menu: number; item: number }): Promise<void>
 }
 ```
 
-The host engine reads the project tree like `buildDraft` does (`projectFiles` +
-`entriesOf`), calls the `Engine`, and does the fs work (zip for `pack`,
+The host toolchain reads the project tree like `buildDraft` does (`projectFiles` +
+`entriesOf`), calls the `Toolchain`, and does the fs work (zip for `pack`,
 `kernel.install` for `install`). The app-code GUI gets `actions.typecheck` /
 `actions.compile` for a Problems panel; the agent gets them via the adapter (§3).
 
@@ -278,30 +300,30 @@ The host engine reads the project tree like `buildDraft` does (`projectFiles` +
 ## 2. quay implementation (priority 2 — straightforward, Node backend)
 
 quayd is real Node with `node_modules`, no portability limit and plenty of RAM, so
-the engine runs **in-process**: the existing esbuild for `compile`, and the
+the toolchain runs **in-process**: the existing esbuild for `compile`, and the
 **`typescript` compiler API** for `typecheck` — the minimal path, no subprocess.
 
 ```ts
-// packages/app/engine.typescript.ts — portable JS checker. Runs in Node (quay) and,
+// packages/app/toolchain.typescript.ts — portable JS checker. Runs in Node (quay) and,
 // if ever needed, a Worker. createProgram over an in-memory CompilerHost backed by
 // ProjectInput.files + the TypesBundle; map ts.Diagnostic → Diagnostic.
-export function typescriptEngine(opts: {
-	build: BuildFn // existing esbuild engine (compile)
+export function typescriptToolchain(opts: {
+	build: BuildFn // existing esbuild toolchain (compile)
 	ts: typeof import('typescript') // typecheck
 	runtime: Record<string, string> // JS stdlib (esbuild)
 	types: TypesBundle // .d.ts stdlib (tsc)
-}): Engine
+}): Toolchain
 ```
 
 Wire in quayd:
 
 1. Build the `TypesBundle` (a `verify-runtime` step beside `devkit-runtime`, from the
    same source).
-2. Implement the `devkit` engine methods (`compile`/`typecheck`/`pack`/`install`)
-   against `typescriptEngine`.
+2. Implement the `devkit` toolchain methods (`compile`/`typecheck`/`pack`/`install`)
+   against `typescriptToolchain`.
 3. Wire the app-code GUI to `actions.typecheck` / `actions.compile` (a Problems panel).
 
-This lands the **engine + GUI path on a real backend** — the toolchain works and a
+This lands the **toolchain + GUI path on a real backend** — the toolchain works and a
 human sees diagnostics. quay is RAM-safe in-process, so it never needs tsgo (it *may*
 adopt tsgo later for parity with the container — noted, not required). §3 then makes
 the **agent** able to call it, which is what completes quay end-to-end.
@@ -310,7 +332,7 @@ the **agent** able to call it, which is what completes quay end-to-end.
 
 ## 3. Making capabilities available to agents (priority 3 — completes quay)
 
-With the engine in place (§2), the agent gets to call it. This is the last piece for a
+With the toolchain in place (§2), the agent gets to call it. This is the last piece for a
 **complete quay**: the GUI already shows diagnostics; now the agent can typecheck its
 own edits. The same adapter serves the container (§4) and frieren (§5) unchanged.
 
@@ -341,7 +363,7 @@ export interface CapabilityToolSpec<I> {
 	description: string // what it does + when to use it — the agent's UI
 	parameters: TSchema // TypeBox; becomes the tool's param schema
 	examples?: { params: I }[]
-	invoke(input: I): Promise<unknown> // bound to the real host engine method
+	invoke(input: I): Promise<unknown> // bound to the real host toolchain method
 }
 
 export function capabilityTool<I>(spec: CapabilityToolSpec<I>): AgentTool
@@ -368,7 +390,7 @@ const tools = [
 ]
 ```
 
-With §2's engine + this adapter, **quay is complete end-to-end**: the GUI shows
+With §2's toolchain + this adapter, **quay is complete end-to-end**: the GUI shows
 diagnostics and the agent can typecheck its own edits before calling a change done.
 
 ### Why this shape
@@ -393,15 +415,15 @@ wrapped set stingy.
 
 ---
 
-## 4. The Container (priority 4 — native engine)
+## 4. The Container (priority 4 — native toolchain)
 
-One small image = the shared compute service. Inside it runs the **native engine**:
+One small image = the shared compute service. Inside it runs the **native toolchain**:
 
 ```ts
-// packages/app/engine.native.ts — esbuild (native) for compile; tsgo for typecheck.
+// packages/app/toolchain.native.ts — esbuild (native) for compile; tsgo for typecheck.
 // Write ProjectInput.files into a tmp workdir beside the baked TypesBundle + a
 // generated tsconfig, spawn the tools, parse output → CompileResult / CheckResult.
-export function nativeEngine(opts: { esbuild: BuildFn; tsgoBin: string; typesDir: string; spawn; tmp }): Engine
+export function nativeToolchain(opts: { esbuild: BuildFn; tsgoBin: string; typesDir: string; spawn; tmp }): Toolchain
 ```
 
 Image contents:
@@ -428,16 +450,16 @@ Deployment:
 
 frieren's `devkit` routes by the boundary above:
 
-- **engine methods** (`compile` / `typecheck` / `pack` / `install`) → **DO → container**.
+- **toolchain methods** (`compile` / `typecheck` / `pack` / `install`) → **DO → container**.
 - **preview methods** (`run`'s mount, `stop` / `menu` / `selectMenu`) → **client**.
 
 The agent tool from §3 is reused unchanged — only its `invoke` now reaches the DO's
-container instead of an in-process engine.
+container instead of an in-process toolchain.
 
 Agent `typecheck` flow (entirely server-side):
 
 1. Agent (in the DO) edits files in the mirrored fs via its `write` tool.
-2. Agent calls the `typecheck` tool → engine `devkit.typecheck({ slug })`.
+2. Agent calls the `typecheck` tool → toolchain `devkit.typecheck({ slug })`.
 3. The DO reads the slug tree off the **already-mirrored** Volume (files leave the DO
    only to its container) and `POST`s `{ files, entries }` to the container.
 4. Container runs `tsgo`, returns `CheckResult`.
@@ -457,12 +479,12 @@ Interactive `run` flow:
 
 ## 6. Future: lint and unit test
 
-Both slot into the same engine with no architectural change:
+Both slot into the same toolchain with no architectural change:
 
-- **lint** — `Engine.lint(input): CheckResult` (reuses `Diagnostic`). Native **Biome**
+- **lint** — `Toolchain.lint(input): CheckResult` (reuses `Diagnostic`). Native **Biome**
   in the container (rule parity with `pnpm lint`), exposed as `devkit.lint` + a
   `capabilityTool`. Optional; esbuild + typecheck already catch most real problems.
-- **test** — `Engine.test(input): TestResult`. App `app.ts` is a pure state machine, so
+- **test** — `Toolchain.test(input): TestResult`. App `app.ts` is a pure state machine, so
   a unit test = dispatch actions → assert state. Run the compiled app in the existing
   isolate/kernel with a tiny injected `test()`/`expect()` shim; no vitest (Node-only)
   in the portable path. Exposed as `devkit.test` + a `capabilityTool`.
@@ -471,22 +493,22 @@ Both slot into the same engine with no architectural change:
 
 ## Build order (recap)
 
-1. **Interface** — `engine.ts` (`Engine`, `ProjectInput`, `CompileResult`,
+1. **Interface** — `toolchain.ts` (`Toolchain`, `ProjectInput`, `CompileResult`,
    `CheckResult`, `Diagnostic`, `TypesBundle`) + the reshaped `devkit` contract
-   (engine methods vs preview).
-2. **quay engine + GUI** — `typescriptEngine` in-process + the `TypesBundle` build +
-   the engine host methods + the app-code Problems panel.
+   (toolchain methods vs preview).
+2. **quay toolchain + GUI** — `typescriptToolchain` in-process + the `TypesBundle` build +
+   the toolchain host methods + the app-code Problems panel.
 3. **Agent adapter (completes quay)** — the `capabilityTool` adapter in
    `packages/agent` + wire `typecheck` as a quay agent tool. quay now works end-to-end.
 4. **Container** — image with native esbuild + `tsgo` + baked `TypesBundle` +
-   `POST /compile /typecheck`; `nativeEngine`; DO-managed scale-to-zero.
-5. **frieren** — route engine methods DO → container; `run` = container compile +
+   `POST /compile /typecheck`; `nativeToolchain`; DO-managed scale-to-zero.
+5. **frieren** — route toolchain methods DO → container; `run` = container compile +
    client mount; reuse the §3 agent tool; diagnostics into state → client via sync.
 
 ## Open questions
 
-- **Offline browser engine** — *decided* to keep the door open: the browser
-  esbuild path is retained as a partial `Engine` impl (everything but `typecheck`).
+- **Offline browser toolchain** — *decided* to keep the door open: the browser
+  esbuild path is retained as a partial `Toolchain` impl (everything but `typecheck`).
   Open: do we wire it as an automatic offline fallback now, or leave the code in
   place and wire it only if offline proves desirable? Lean: leave it, wire later.
 - **Diagnostic parity** quay (`typescript`) vs container (`tsgo`, ~TS 6.0 semantics) —

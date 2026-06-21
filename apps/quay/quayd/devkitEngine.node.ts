@@ -4,8 +4,8 @@
 // (`devkitEngine.bun.ts`) swaps `Bun.build` in with no other change; typecheck
 // stays on tsc either way (devkit.ts).
 
-import type { CompileResult, ProjectInput } from '@justfiles/app/engine'
-import { esbuildCompile } from '@justfiles/app/engine/esbuild'
+import type { CompileResult, ProjectInput } from '@justfiles/app/capabilities/devkit/host'
+import { esbuildCompile } from '@justfiles/app/toolchain/esbuild'
 import { build } from 'esbuild'
 
 export function compile(

@@ -1,5 +1,5 @@
-// The Bun adapter of the devkit engine: a `Bun.build` plugin + options over the
-// same bundler-agnostic vfs rules as `engine.esbuild.ts`. Runs only under Bun
+// The Bun adapter of the devkit toolchain: a `Bun.build` plugin + options over the
+// same bundler-agnostic vfs rules as `toolchain.esbuild.ts`. Runs only under Bun
 // (`Bun.build` is in the runtime — see the migration spike), so it's selected via
 // the `#engine` runtime condition and never imported under Node. Same externalised
 // React, same virtual `runtime` injection, same `app.js`/`gui.js` output shape;
@@ -9,8 +9,8 @@
 // below); Node-side modules never import this one, so they don't see it.
 /// <reference types="bun" />
 
-import type { CompileResult, Diagnostic, ProjectInput, Range } from './engine.ts'
-import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './engine.vfs.ts'
+import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
+import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
 
 // Bundle each named entry of a draft with `Bun.build`, reading bytes back from the
 // in-memory `result.outputs` (no temp dir). `throw: false` so a failed pass

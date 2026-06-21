@@ -1,18 +1,19 @@
-// The devkit ENGINE interface: the pure file-transform surface (compile,
-// typecheck — later lint/test) shared by every host. It is the swappable seam
-// of the build pipeline (see `docs/devkit-engine.md`): `ProjectInput → result`,
-// no fs, no DOM, no subprocess, no slug-reading. Hosts compose the rest (pack =
-// compile + zip, install = compile + kernel write, the live-preview mount) AROUND
-// this interface, so swapping the engine moves only `compile`/`typecheck` and the
-// browser-bound preview stays put.
+// The devkit TOOLCHAIN types: the pure file-transform surface (compile, typecheck
+// — later lint/test) shared by every host. It is the swappable source→artifact
+// seam of the build pipeline (see `docs/devkit-toolchain.md`): `ProjectInput →
+// result`, no fs, no DOM, no subprocess, no slug-reading. Hosts compose the rest
+// (pack = compile + zip, install = compile + kernel write, the live-preview mount)
+// AROUND this seam, so swapping the toolchain moves only `compile`/`typecheck` and
+// the browser-bound preview stays put.
 //
 // Three impls live behind the seam: a Container running native esbuild + `tsgo`
 // (frieren server), the `typescript` compiler API in-process (quay Node backend),
-// and the existing browser esbuild path as a partial impl (no `typecheck`).
+// and the browser esbuild-wasm path as a partial impl (no `typecheck`).
 //
-// Pure types only — no engine impl, no host. The discipline that keeps the seam
-// clean: the moment a method assumes a filesystem, the browser impl can't satisfy
-// it and the seam leaks.
+// Pure types only — no impl, no host; and not its own package entry point: hosts
+// reach these through `@justfiles/app/capabilities/devkit/host`. The discipline
+// that keeps the seam clean: the moment a method assumes a filesystem, the browser
+// impl can't satisfy it and the seam leaks.
 
 import type { TsConfigJson } from 'type-fest'
 
@@ -73,36 +74,28 @@ export type TypesBundle = Record<string, string>
 // ── the project: a virtual file tree + named bundle entries + a standard
 //    tsconfig generated from the manifest. `files`/`entries` mirror esbuild
 //    (entryPoints can be a Record); `tsconfig` is the TS-ecosystem project
-//    definition. Every engine consumes this natively — nothing is reinvented.
+//    definition. Every toolchain consumes this natively — nothing is reinvented.
 export interface ProjectInput {
 	files: Record<string, string> // path → source (the vfs map)
 	entries: Record<string, string> // outputName → entry path (esbuild entryPoints record)
 	tsconfig: TsConfigJson // generated from the manifest; type-fest's zero-runtime type
 }
 
-// The bundler-agnostic compile seam (= `Engine['compile']`): a `ProjectInput →
+// The bundler-agnostic compile seam (= `Toolchain['compile']`): a `ProjectInput →
 // CompileResult` step with the system `runtime` already closed into the closure.
 // This is what the host injects — the esbuild adapter (native / wasm) and the Bun
 // adapter both produce one — so the build/pack pipeline never names a bundler.
 export type Compile = (input: ProjectInput) => Promise<CompileResult>
 
-// The build/compile seam every host injects — the canonical name going forward,
-// and the single home for the type (it used to be duplicated as a build-only
-// `Toolchain` in `engine.esbuild.ts`). `typecheck` is OPTIONAL: a host with no
-// type checker (browser esbuild-wasm, desktop) omits it and the devkit factory
-// degrades `typecheck` to CAPABILITY_UNAVAILABLE; a Node host (quay) supplies it.
-// lint/test slot in later with no change.
+// The build/compile seam every host injects — the swappable source→artifact end of
+// the devkit pipeline. `typecheck` is OPTIONAL: a host with no type checker
+// (browser esbuild-wasm, desktop) omits it and the devkit factory degrades
+// `typecheck` to CAPABILITY_UNAVAILABLE; a Node host (quay) supplies it. lint/test
+// slot in later with no change. This type is not exported from the package as its
+// own entry point — it reaches hosts via `@justfiles/app/capabilities/devkit/host`.
 export interface Toolchain {
 	compile: Compile
 	typecheck?(input: ProjectInput): Promise<CheckResult>
 	// lint(input): Promise<CheckResult>   — later
 	// test(input): Promise<TestResult>    — later
-}
-
-// Legacy strict engine (typecheck REQUIRED). Kept only as a bridge while the
-// hosts still construct `esbuildEngine`/`typescriptEngine`; deleted in the final
-// rename step. New code injects a `Toolchain` instead.
-export interface Engine {
-	compile: Compile
-	typecheck(input: ProjectInput): Promise<CheckResult>
 }

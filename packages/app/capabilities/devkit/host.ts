@@ -1,7 +1,7 @@
 // The generic devkit host: how a host implements the `devkit` capability. It
 // injects two seams and nothing else —
 //
-//   • a `Toolchain` (how to compile/typecheck — `../../engine.ts`), and
+//   • a `Toolchain` (how to compile/typecheck — `../../toolchain.ts`), and
 //   • a `Runner`   (how to make a built draft live — mount/stop/menu).
 //
 // — and `devkitCapability` wires them through `implementCapability` into the
@@ -13,13 +13,30 @@
 
 import { chroot, type Volume } from '@justfiles/fs'
 import { buildDraft, type DraftBuild, installDraft, packDraft, readProject } from '../../devkit.ts'
-import type { Toolchain } from '../../engine.ts'
 import type { Kernel } from '../../kernel.ts'
+import type { Toolchain } from '../../toolchain.ts'
 import { CapabilityError } from '../error.ts'
 import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import type { MenuView } from './contract.ts'
 import { devkit } from './index.ts'
+
+// The toolchain type vocabulary, re-exported so a host implements `devkit` from
+// this one surface — the seam types it injects (`Toolchain`, `Compile`,
+// `ProjectInput`, `TypesBundle`) plus the result types those produce — with no
+// separate engine/toolchain entry point.
+export type {
+	CheckResult,
+	Compile,
+	CompileResult,
+	Diagnostic,
+	OutputFile,
+	Position,
+	ProjectInput,
+	Range,
+	Toolchain,
+	TypesBundle
+} from '../../toolchain.ts'
 
 // What the factory hands a `Runner` when it mounts a draft: the build's identity
 // plus the `preview.<slug>` id the factory computed. The factory only ever calls

@@ -1,8 +1,8 @@
 import * as esbuild from 'esbuild'
 import { beforeAll, describe, expect, test } from 'vitest'
 import { buildRuntime } from './devkit-runtime.ts'
-import { esbuildCompile } from './engine.esbuild.ts'
-import type { Compile } from './engine.ts'
+import { esbuildCompile } from './toolchain.esbuild.ts'
+import type { Compile } from './toolchain.ts'
 
 // Exercises the real toolchain with Node esbuild standing in for esbuild-wasm
 // (same API); `buildRuntime` produces the same system-library bundles a browser

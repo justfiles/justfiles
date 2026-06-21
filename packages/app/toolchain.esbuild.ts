@@ -1,19 +1,19 @@
-// The esbuild adapter of the devkit engine: a thin esbuild plugin + build options
-// over the bundler-agnostic vfs rules in `engine.vfs.ts`. `typescriptEngine`
-// (Node/quay) reuses `esbuildCompile`; `esbuildEngine` is the standalone
-// compile-only `Engine` the browser (frieren) and desktop hosts wrap — they get
-// `compile`, and `typecheck` degrades to CAPABILITY_UNAVAILABLE at the host. The
-// browser esbuild-wasm path injects its own `build`; the Bun sibling lives in
-// `engine.bun.ts` behind the same vfs rules.
+// The esbuild adapter of the devkit toolchain: a thin esbuild plugin + build
+// options over the bundler-agnostic vfs rules in `toolchain.vfs.ts`. The browser
+// (frieren) and desktop hosts inject `esbuildCompile` as their `Toolchain.compile`
+// (no `typecheck` — the devkit factory degrades it to CAPABILITY_UNAVAILABLE);
+// `typescriptToolchain` (Node/quay) reuses it too. The browser esbuild-wasm path
+// injects its own `build`; the Bun sibling lives in `toolchain.bun.ts` behind the
+// same vfs rules.
 
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
-import type { CompileResult, Diagnostic, Engine, ProjectInput, Range, Toolchain } from './engine.ts'
-import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './engine.vfs.ts'
+import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
+import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
 
 export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 
 // Bundle each named entry of a draft against the system `runtime`. Pure: the
-// caller injects the esbuild engine + the runtime map. The shared `compileVfs`
+// caller injects the esbuild toolchain + the runtime map. The shared `compileVfs`
 // orchestrates the entries + the React-GUI wrap; this only supplies the esbuild
 // pass (one bad entry's error stays its own diagnostics, never sinks the others).
 export function esbuildCompile(
@@ -41,18 +41,6 @@ export function esbuildCompile(
 			return { diagnostics: errorDiagnostics(error) }
 		}
 	})
-}
-
-// Compile-only `Engine` for hosts without a type checker (browser / desktop).
-// `typecheck` is never reached — those hosts answer the capability with
-// CAPABILITY_UNAVAILABLE before delegating — so it throws if called directly.
-export function esbuildEngine(tc: Toolchain): Engine {
-	return {
-		compile: tc.compile,
-		typecheck: () => {
-			throw new Error('typecheck is unavailable in the esbuild engine')
-		}
-	}
 }
 
 function vfs(files: Record<string, string>, runtime: Record<string, string>): Plugin {

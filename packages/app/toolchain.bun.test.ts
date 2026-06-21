@@ -1,15 +1,15 @@
-// The Bun engine, run under `bun test` (needs `Bun.build` + `bun:test`) — the Bun
-// half of the engine CI matrix. Mirrors `engine.test.ts`'s compile assertions and
-// adds a shape diff against the esbuild engine (both run in one Bun process): same
+// The Bun toolchain, run under `bun test` (needs `Bun.build` + `bun:test`) — the Bun
+// half of the toolchain CI matrix. Mirrors `toolchain.test.ts`'s compile assertions and
+// adds a shape diff against the esbuild toolchain (both run in one Bun process): same
 // `app.js`/`gui.js` outputs, React kept external, the system runtime injected.
 // Excluded from the node vitest run (see vitest.config.ts).
 
 import { expect, test } from 'bun:test'
 import * as esbuild from 'esbuild'
 import { buildRuntime } from './devkit-runtime.ts'
-import { bunCompile } from './engine.bun.ts'
-import { esbuildCompile } from './engine.esbuild.ts'
-import type { ProjectInput } from './engine.ts'
+import { bunCompile } from './toolchain.bun.ts'
+import { esbuildCompile } from './toolchain.esbuild.ts'
+import type { ProjectInput } from './toolchain.ts'
 
 const APP = `import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'
@@ -62,7 +62,7 @@ test('keeps React external and bundles valibot from the injected runtime', async
 	expect(app).not.toMatch(/from\s*["']valibot["']/) // valibot pulled from runtime, not bare
 })
 
-test('shape parity with the esbuild engine', async () => {
+test('shape parity with the esbuild toolchain', async () => {
 	const input = project({ 'app.ts': APP, 'gui.tsx': GUI }, 'gui.tsx')
 	const es = await esbuildCompile(input, esbuild.build, runtime)
 	const bun = await bunCompile(input, runtime)

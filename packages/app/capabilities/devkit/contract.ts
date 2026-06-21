@@ -8,7 +8,7 @@
 // no file bytes cross the worker boundary. Every method is serializable in and
 // out — the app exchanges a slug and receives ids / diagnostics / zip bytes.
 
-import type { CheckResult, CompileResult } from '../../engine.ts'
+import type { CheckResult, CompileResult } from '../../toolchain.ts'
 
 // A display-only mirror of `@justfiles/app/browser`'s `Menu` — the live
 // `onSelect` closures are stripped, so it stays serializable. app-code pulls
@@ -21,7 +21,7 @@ export type MenuItemView =
 export type MenuView = { title: string; items: MenuItemView[] }[]
 
 export interface DevkitCapability {
-	// ── engine (server / backend) ───────────────────────────────────────────
+	// ── toolchain (server / backend) ───────────────────────────────────────────
 	// Bundle the named project, returning the structured `CompileResult`
 	// (outputs + diagnostics). The host reads the source tree itself; the caller
 	// only names the project.

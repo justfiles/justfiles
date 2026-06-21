@@ -1,6 +1,6 @@
 // The devkit build pipeline: read a draft's project off a data volume and
 // build / install / pack it. The heavy compute is the swappable `Toolchain`
-// (`@justfiles/app/engine`); this module is the generic host layer around it —
+// (`@justfiles/app/toolchain/*`); this module is the generic host layer around it —
 // project I/O (read the tree, write `/applications`, zip) and the diagnostics →
 // string adaptation `buildDraft` produces for the preview/ship path. Host-agnostic
 // and browser-safe: the esbuild/typescript toolchains are injected, never imported
@@ -15,8 +15,8 @@ import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { strToU8, zipSync } from 'fflate'
 import type { TsConfigJson } from 'type-fest'
-import type { ProjectInput, Toolchain } from './engine.ts'
 import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from './kernel.ts'
+import type { ProjectInput, Toolchain } from './toolchain.ts'
 
 const PROJECT_FILE = 'project.json'
 
@@ -53,9 +53,9 @@ export function tsconfigFor(manifest: AppManifest): TsConfigJson {
 	}
 }
 
-// Read the named project off `data` and shape it as the engine's `ProjectInput`
+// Read the named project off `data` and shape it as the toolchain's `ProjectInput`
 // (vfs map + named entries + generated tsconfig) — the shared front half of every
-// engine method. Exported so the devkit host factory's `compile`/`typecheck` can
+// toolchain method. Exported so the devkit host factory's `compile`/`typecheck` can
 // feed a `Toolchain` directly. Only `readProjectFile` can throw (missing/invalid
 // project.json).
 export async function readProject(

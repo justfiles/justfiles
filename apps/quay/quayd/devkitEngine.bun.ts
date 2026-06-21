@@ -3,4 +3,4 @@
 // → CompileResult` shape as the Node sibling. Selected by the `bun` import condition;
 // never resolved under Node.
 
-export { bunCompile as compile } from '@justfiles/app/engine/bun'
+export { bunCompile as compile } from '@justfiles/app/toolchain/bun'
