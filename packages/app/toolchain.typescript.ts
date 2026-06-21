@@ -72,7 +72,14 @@ function typecheck(input: ProjectInput, ts: typeof TS, types: TypesBundle): Chec
 	const baseGetSource = host.getSourceFile.bind(host)
 	host.fileExists = (file) => overlay.has(file) || baseExists(file)
 	host.readFile = (file) => overlay.get(file) ?? baseRead(file)
-	host.directoryExists = (dir) => dirs.has(dir) || (baseDirExists?.(dir) ?? false)
+	// A directory import (`import … from "./"`, e.g. @types/react's jsx-runtime) probes
+	// `directoryExists` WITH a trailing slash; `dirs` holds the slash-free form, so
+	// normalise before the lookup or the no-fs (baked TypesBundle) path can't resolve
+	// the package's own index and JSX collapses to an empty namespace.
+	host.directoryExists = (dir) => {
+		const d = dir.endsWith('/') ? dir.slice(0, -1) : dir
+		return dirs.has(d) || (baseDirExists?.(dir) ?? false)
+	}
 	host.getSourceFile = (file, languageVersion, onError, shouldCreate) => {
 		const text = overlay.get(file)
 		return text !== undefined

@@ -27,6 +27,19 @@ export function bunCompile(
 			target: 'browser',
 			external: EXTERNAL,
 			throw: false,
+			// Our entries are virtual (the vfs plugin resolves them), and a directory-
+			// prefixed one like `src/app.ts` makes Bun derive `src` as the build root and
+			// try to OPEN it on the real fs — which throws `failed to open root directory`
+			// before the plugin ever runs (and before `throw: false` can swallow it). Pin
+			// the root to a real, always-present dir so that probe succeeds; outputs are
+			// read back by their `.js`/`.css` suffix, so the relativised path is moot.
+			root: process.cwd(),
+			// Emit PRODUCTION automatic JSX (`jsx`/`jsxs` from `react/jsx-runtime`) like
+			// the esbuild path. Bun defaults to the dev runtime (`jsxDEV` from
+			// `react/jsx-dev-runtime`) when NODE_ENV isn't production — but the vendored
+			// React is a production build with no `jsxDEV` export, so a dev-JSX draft mounts
+			// to `jsxDEV is not a function`. NODE_ENV drives Bun's JSX runtime choice.
+			define: { 'process.env.NODE_ENV': '"production"' },
 			plugins: [vfs(sources, rt)]
 		})
 		if (!result.success) {

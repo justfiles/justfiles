@@ -12,8 +12,11 @@
 // `.app` (Slice 6's reconcile) and the launcher re-lists — no change to app-code's
 // reducer.
 
+import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { appBundleFromMemory } from '@justfiles/app'
-import type { Compile, Toolchain } from '@justfiles/app/capabilities/devkit/host'
+import type { Compile, Toolchain, TypesBundle } from '@justfiles/app/capabilities/devkit/host'
 import {
 	devkitCapability as makeDevkit,
 	type Runner
@@ -27,8 +30,10 @@ import * as ts from 'typescript'
 // Bun.build under bun (package.json `imports` → `quayd/devkitEngine.{node,bun}.ts`).
 // typecheck stays on tsc for both — only `compile` swaps.
 import { compile as backendCompile } from '#engine'
+import { ASSETS_DIR } from './resources.ts'
 
 let runtimePromise: Promise<Record<string, string>> | null = null
+let typesPromise: Promise<TypesBundle | undefined> | null = null
 
 // `getKernel` is lazy because the kernel is built with this capability already in its
 // registry (host.ts) — the kernel reference only exists after construction.
@@ -79,18 +84,43 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 }
 
 // The in-process toolchain: the `#engine` compile backend for `compile`, the
-// TypeScript compiler API for `typecheck`. quay has node_modules, so the checker
-// resolves the system libs from the same source the runtime is bundled from — no
-// baked TypesBundle needed. Shares the cached runtime.
+// TypeScript compiler API for `typecheck`. In dev the checker resolves the system
+// libs from node_modules; shipped (no node_modules) it reads the baked TypesBundle
+// (`loadTypes`). Shares the cached runtime.
 async function toolchain(): Promise<Toolchain> {
-	return typescriptToolchain({ compile: await compileBackend(), ts })
+	return typescriptToolchain({ compile: await compileBackend(), ts, types: await loadTypes() })
+}
+
+// The `.d.ts` overlay for typecheck. Shipped, the exe has no node_modules, so read the
+// bundle baked at ship time (build-assets.ts → assets-dist/types.json) and the checker
+// resolves the SDK/React types from it. In dev (no baked file) it stays undefined and
+// typecheck falls through to node_modules. Cached for the daemon's life.
+async function loadTypes(): Promise<TypesBundle | undefined> {
+	if (!typesPromise)
+		typesPromise = (async () => {
+			const baked = join(ASSETS_DIR, 'types.json')
+			return existsSync(baked)
+				? JSON.parse(new TextDecoder().decode(await readFile(baked)))
+				: undefined
+		})()
+	return typesPromise
 }
 
 // The compile backend (`#engine`) with the system runtime closed in — built once
 // and cached for the daemon's life. The bundler is the runtime's choice; this
 // module never names it.
 async function compileBackend(): Promise<Compile> {
-	if (!runtimePromise) runtimePromise = buildRuntime()
+	if (!runtimePromise) runtimePromise = loadRuntime()
 	const runtime = await runtimePromise
 	return (input) => backendCompile(input, runtime)
+}
+
+// The devkit system runtime. Shipped, the self-contained exe has no node_modules for
+// buildRuntime's esbuild pass, so read the copy baked at ship time (build-assets.ts →
+// assets-dist/runtime.json). In dev (no baked file yet) build it from node_modules on
+// first use. Cached for the daemon's life either way.
+async function loadRuntime(): Promise<Record<string, string>> {
+	const baked = join(ASSETS_DIR, 'runtime.json')
+	if (existsSync(baked)) return JSON.parse(new TextDecoder().decode(await readFile(baked)))
+	return buildRuntime()
 }

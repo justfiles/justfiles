@@ -19,6 +19,12 @@
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
+// The devkit system runtime + type-checker overlay (the libs the compiler injects
+// into every draft, and the `.d.ts` the type-checker resolves against). Baked here, at
+// ship time, because both read node_modules — which the self-contained exe doesn't
+// carry — so the daemon reads the baked bytes instead (devkit.ts). Build-time only;
+// never pulled into the shipped exe's runtime path.
+import { bakeTypes, buildRuntime } from '@justfiles/app/devkit-runtime'
 // The bundler is runtime-selected (`#assets`): native esbuild under node, Bun.build
 // under bun — so `bun quayd/build-assets.ts` builds these with zero esbuild. The React
 // shim shape (a single core bundle + thin re-export shims) is identical either way.
@@ -59,8 +65,14 @@ async function main(): Promise<void> {
 	await rm(OUT_DIR, { recursive: true, force: true })
 	await mkdir(OUT_DIR, { recursive: true })
 	for (const [name, text] of files) await writeFile(join(OUT_DIR, name), text)
+	// The devkit system runtime + type overlay, baked beside the launcher assets. Not
+	// `.js` vendor assets (assets.ts won't serve them); devkit.ts reads them off disk.
+	await writeFile(join(OUT_DIR, 'runtime.json'), JSON.stringify(await buildRuntime()))
+	await writeFile(join(OUT_DIR, 'types.json'), JSON.stringify(await bakeTypes()))
 	const docs = await copyDocs()
-	console.log(`quayd: built ${files.size} launcher assets + ${docs} docs → ${OUT_DIR}`)
+	console.log(
+		`quayd: built ${files.size} launcher assets + runtime + types + ${docs} docs → ${OUT_DIR}`
+	)
 }
 
 // Ship docs/*.md beside the daemon (OUT_DIR/docs) so quayd reads them from disk at

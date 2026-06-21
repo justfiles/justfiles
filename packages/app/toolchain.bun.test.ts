@@ -62,6 +62,20 @@ test('keeps React external and bundles valibot from the injected runtime', async
 	expect(app).not.toMatch(/from\s*["']valibot["']/) // valibot pulled from runtime, not bare
 })
 
+test('emits production automatic JSX (jsx-runtime, not the dev runtime)', async () => {
+	// The preview's vendored React is a production build with no `jsxDEV`, so a draft
+	// must compile to `jsx`/`jsxs` from `react/jsx-runtime` — Bun's default dev runtime
+	// (`jsxDEV` from `react/jsx-dev-runtime`) would mount to "jsxDEV is not a function".
+	const { outputs } = await bunCompile(
+		project({ 'app.ts': APP, 'gui.tsx': GUI }, 'gui.tsx'),
+		runtime
+	)
+	const gui = outputs.find((o) => o.path === 'gui.js')!.text
+	expect(gui).toContain('react/jsx-runtime')
+	expect(gui).not.toContain('jsx-dev-runtime')
+	expect(gui).not.toContain('jsxDEV')
+})
+
 test('shape parity with the esbuild toolchain', async () => {
 	const input = project({ 'app.ts': APP, 'gui.tsx': GUI }, 'gui.tsx')
 	const es = await esbuildCompile(input, esbuild.build, runtime)
@@ -92,6 +106,25 @@ export default function App() {
 	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	const css = outputs.find((o) => o.path === 'gui.css')
 	expect(css?.text).toContain('#ff69b4') // bundled AND optimized (hotpink → #ff69b4)
+})
+
+// Real projects (quay's `readProject`) declare entries under `src/` — a directory-
+// prefixed entrypoint makes Bun derive `src` as the build root and try to open it on
+// the real fs, throwing `failed to open root directory`. Pinning `root` (toolchain.bun.ts)
+// keeps the virtual `src/*` entry buildable; the `app` entry is the one that broke
+// (the `gui` shim is already top-level), so assert both still produce output.
+test('directory-prefixed (src/) entries build (no real-fs root probe)', async () => {
+	const { outputs, diagnostics } = await bunCompile(
+		{
+			files: { 'src/app.ts': APP, 'src/gui.tsx': GUI },
+			entries: { app: 'src/app.ts', gui: 'src/gui.tsx' },
+			tsconfig: {}
+		},
+		runtime
+	)
+	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+	expect(outputs.find((o) => o.path === 'app.js')?.text).toContain('dispatch')
+	expect(bareReact(outputs.find((o) => o.path === 'gui.js')!.text)).toBe(true)
 })
 
 test('a missing entry is a diagnostic, not a throw', async () => {
