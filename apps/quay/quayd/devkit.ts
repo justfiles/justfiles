@@ -1,35 +1,27 @@
 // Slice 11: the `devkit` capability in quayd — the one privileged surface app-code
 // (Code) uses to compile, install, and pack the apps you build everything else with.
-// It's the same host-agnostic pipeline frieren and the desktop sibling drive
-// (`@justfiles/app/devkit`), wired to quay's runtime-selected compile backend
-// (`#engine`: native esbuild under node, `Bun.build` under bun) + the pre-bundled
-// system `runtime` (`buildRuntime`, built once and cached). `installDraft`
-// writes the finished bundle into the SAME `/applications` the launcher lists, then
-// fires `onInstalled` so quayd materialises its `.app` (Slice 6's reconcile) and the
-// launcher re-lists — no change to app-code's reducer.
+// quay supplies the two seams the shared `devkitCapability` factory needs: a
+// `Toolchain` (quay's runtime-selected compile backend + the TypeScript compiler
+// API for typecheck) and a `Runner` (live preview as a hidden `preview.<slug>` app
+// installed into the SAME kernel the booters serve from). Everything between — read
+// the project, build, pack, install — is the factory's generic pipeline.
 //
-// Live preview is deferred (DESIGN §9): the kernel lives in quayd while the Code
-// window is a separate webview, so there is no in-process DOM to mount a draft into.
-// `run` therefore compiles-only — it surfaces diagnostics for the build status but
-// mounts nothing; `stop`/`menu`/`selectMenu` stay inert until the bespoke
-// second-WKWebView preview lands.
+// The compile backend is runtime-selected (`#engine`: native esbuild under node,
+// `Bun.build` under bun) over the pre-bundled system `runtime` (`buildRuntime`,
+// built once and cached). `install` fires `onInstalled` so quayd materialises its
+// `.app` (Slice 6's reconcile) and the launcher re-lists — no change to app-code's
+// reducer.
 
 import { appBundleFromMemory } from '@justfiles/app'
-import { implementCapability } from '@justfiles/app/capabilities'
-import { devkit } from '@justfiles/app/capabilities/devkit'
 import {
-	buildDraft,
-	compileDraft,
-	installDraft,
-	packDraft,
-	type Toolchain,
-	typecheckDraft
-} from '@justfiles/app/devkit'
+	devkitCapability as makeDevkit,
+	type Runner
+} from '@justfiles/app/capabilities/devkit/host'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
-import type { Compile, Engine } from '@justfiles/app/engine'
-import { typescriptEngine } from '@justfiles/app/engine/typescript'
+import type { Compile, Toolchain } from '@justfiles/app/engine'
+import { typescriptToolchain } from '@justfiles/app/engine/typescript'
 import type { Kernel } from '@justfiles/app/runtime'
-import { chroot, type Volume } from '@justfiles/fs'
+import type { Volume } from '@justfiles/fs'
 import * as ts from 'typescript'
 // The devkit compile backend, selected by the runtime: native esbuild under node,
 // Bun.build under bun (package.json `imports` → `quayd/devkitEngine.{node,bun}.ts`).
@@ -45,53 +37,53 @@ export function devkitCapability(
 	getKernel: () => Kernel,
 	onInstalled: () => void | Promise<void>
 ) {
-	return implementCapability(devkit, {
-		// Engine methods (in-process: the `#engine` compile backend + the TypeScript
-		// compiler API). quay has node_modules, so the checker resolves the system libs
-		// from the same source the runtime is bundled from — no baked TypesBundle needed.
-		compile: async (ctx, { slug }) =>
-			compileDraft(chroot(fs, `/data/${ctx.appId}`), slug, await engine()),
-		typecheck: async (ctx, { slug }) =>
-			typecheckDraft(chroot(fs, `/data/${ctx.appId}`), slug, await engine()),
+	return makeDevkit({
+		fs,
+		toolchain,
+		runner: quayRunner(fs, getKernel),
+		kernel: getKernel,
+		onInstalled,
 		// Quay treats install as ship-or-update: a re-install overwrites the live app
 		// in place rather than rejecting the colliding id, so iterating in Code keeps
 		// updating the same installed app.
-		install: async (ctx, { slug }) =>
-			installDraft(fs, ctx.appId, slug, getKernel(), await toolchain(), {
-				onInstalled,
-				overwrite: true
-			}),
-		pack: async (ctx, { slug }) =>
-			packDraft(chroot(fs, `/data/${ctx.appId}`), slug, await toolchain()),
-		// Live preview: compile the draft and install it as a hidden `preview.<slug>`
-		// app in the SAME kernel the booters serve from. app-code then shows it in an
-		// iframe over its preview slot, pointed at the app's normal shell — so the
-		// berth + gui mount come free, and the running reducer makes it interactive.
-		// `preview.*` is filtered from the launcher catalog + OS projection (main.ts);
-		// `stop` uninstalls it. On a compile error the last-good preview stays put.
-		run: async (ctx, { slug, reset }) => {
-			const previewId = `preview.${slug}`
-			const { manifest, app, gui, diagnostics } = await buildDraft(
-				chroot(fs, `/data/${ctx.appId}`),
-				slug,
-				await toolchain()
-			)
-			if (diagnostics.length > 0 || !app || !gui) return { previewId, diagnostics }
+		overwrite: true
+	})
+}
+
+// Live preview: install the built draft as a hidden `preview.<slug>` app in the
+// SAME kernel the booters serve from. app-code shows it in an iframe over its
+// preview slot, pointed at the app's normal shell — so the berth + gui mount come
+// free, and the running reducer makes it interactive. `preview.*` is filtered from
+// the launcher catalog + OS projection (main.ts); `stop` uninstalls it. The factory
+// only mounts a clean build, so there's no diagnostics guard here.
+function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
+	return {
+		mount: async (draft, { previewId, reset }) => {
 			// ⟳ Run/Restart: wipe persisted draft state for a clean boot.
 			if (reset) await fs.rm(`/state/${previewId}.json`, { force: true })
 			await getKernel().install(
-				appBundleFromMemory({ id: previewId, name: manifest.name, app, gui })
+				appBundleFromMemory({
+					id: previewId,
+					name: draft.manifest.name,
+					app: draft.app,
+					gui: draft.gui
+				})
 			)
-			return { previewId, diagnostics }
 		},
-		stop: async (_ctx, { previewId }) => {
+		stop: async ({ previewId }) => {
 			await getKernel()
 				.uninstall(previewId)
 				.catch(() => {})
-		},
-		menu: async () => [],
-		selectMenu: async () => {}
-	})
+		}
+	}
+}
+
+// The in-process toolchain: the `#engine` compile backend for `compile`, the
+// TypeScript compiler API for `typecheck`. quay has node_modules, so the checker
+// resolves the system libs from the same source the runtime is bundled from — no
+// baked TypesBundle needed. Shares the cached runtime.
+async function toolchain(): Promise<Toolchain> {
+	return typescriptToolchain({ compile: await compileBackend(), ts })
 }
 
 // The compile backend (`#engine`) with the system runtime closed in — built once
@@ -101,16 +93,4 @@ async function compileBackend(): Promise<Compile> {
 	if (!runtimePromise) runtimePromise = buildRuntime()
 	const runtime = await runtimePromise
 	return (input) => backendCompile(input, runtime)
-}
-
-// The build/pack toolchain: just the compile backend (run/install/pack don't
-// typecheck).
-async function toolchain(): Promise<Toolchain> {
-	return { compile: await compileBackend() }
-}
-
-// The in-process engine: the `#engine` compile backend for `compile`, the
-// TypeScript compiler API for `typecheck`. Shares the cached runtime.
-async function engine(): Promise<Engine> {
-	return typescriptEngine({ compile: await compileBackend(), ts })
 }

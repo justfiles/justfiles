@@ -1,6 +1,5 @@
 import * as esbuild from 'esbuild'
 import { beforeAll, describe, expect, test } from 'vitest'
-import { compile } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
 import { esbuildCompile } from './engine.esbuild.ts'
 import type { Compile } from './engine.ts'
@@ -31,6 +30,19 @@ describe('devkit compile', () => {
 	// Node esbuild bound into the bundler-agnostic compile seam (stands in for the
 	// browser's esbuild-wasm; same API).
 	const backend: Compile = (input) => esbuildCompile(input, esbuild.build, runtime)
+	// The structured-result → { app, gui, diagnostics } adaptation `buildDraft`
+	// does internally, reproduced here so these unit tests can drive the bundler
+	// with bare file maps (no data volume).
+	const compile = async (files: Record<string, string>, entries: Record<string, string>) => {
+		const { outputs, diagnostics } = await backend({ files, entries, tsconfig: {} })
+		const text = (name: string) =>
+			outputs.find((output) => output.path === `${name}.js`)?.text ?? ''
+		return {
+			app: text('app'),
+			gui: text('gui'),
+			diagnostics: diagnostics.filter((diagnostic) => diagnostic.severity === 'error')
+		}
+	}
 	beforeAll(async () => {
 		runtime = await buildRuntime()
 	}, 30_000)
@@ -38,8 +50,7 @@ describe('devkit compile', () => {
 	test('bundles app.ts + gui.ts against the system runtime', async () => {
 		const { app, gui, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
-			{ app: 'app.ts', gui: 'gui.ts' },
-			backend
+			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics).toEqual([])
 		expect(app).toContain('dispatch') // the reducer surface is bundled in
@@ -58,8 +69,7 @@ describe('devkit compile', () => {
 	test('compiled app dispatches actions (valibot named exports resolve)', async () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
-			{ app: 'app.ts', gui: 'gui.ts' },
-			backend
+			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics).toEqual([])
 		expect(app).not.toContain('(void 0)(')
@@ -87,8 +97,7 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 }`
 		const { gui, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.tsx': guiTsx },
-			{ app: 'app.ts', gui: 'gui.tsx' },
-			backend
+			{ app: 'app.ts', gui: 'gui.tsx' }
 		)
 		expect(diagnostics).toEqual([])
 		expect(gui).toMatch(/from\s*"react"/)
@@ -101,8 +110,7 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 	test('reports diagnostics on a compile error', async () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': 'export const app = (', 'gui.ts': GUI },
-			{ app: 'app.ts', gui: 'gui.ts' },
-			backend
+			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics.length).toBeGreaterThan(0)
 		expect(app).toBe('')

@@ -1,9 +1,10 @@
 // The devkit build pipeline: read a draft's project off a data volume and
-// build / install / pack it. The heavy compute is the swappable `Engine`
-// (`@justfiles/app/engine*`); this module is the host layer around it — project
-// I/O (read the tree, write `/applications`, zip) plus the legacy string-diagnostic
-// `compile` adapter the preview/ship path still uses. Host-agnostic and
-// browser-safe: the esbuild/typescript engines are injected, never imported here.
+// build / install / pack it. The heavy compute is the swappable `Toolchain`
+// (`@justfiles/app/engine`); this module is the generic host layer around it —
+// project I/O (read the tree, write `/applications`, zip) and the diagnostics →
+// string adaptation `buildDraft` produces for the preview/ship path. Host-agnostic
+// and browser-safe: the esbuild/typescript toolchains are injected, never imported
+// here.
 //
 // A devkit project is a directory in a caller's data volume: a `project.json`
 // build contract (an `AppManifest` whose entry paths point at the `src/*`
@@ -14,28 +15,8 @@ import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { strToU8, zipSync } from 'fflate'
 import type { TsConfigJson } from 'type-fest'
-import type { BuildFn } from './engine.esbuild.ts'
-import type {
-	CheckResult,
-	Compile,
-	CompileResult,
-	Engine,
-	ProjectInput,
-	Toolchain
-} from './engine.ts'
+import type { ProjectInput, Toolchain } from './engine.ts'
 import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from './kernel.ts'
-
-// `Toolchain` is the canonical compile seam (`./engine.ts`); `BuildFn` is the
-// esbuild backend shape. Re-exported so the hosts that build a toolchain
-// (quay / frieren / desktop) keep their `@justfiles/app/devkit` import.
-export type { BuildFn, Toolchain }
-
-// The entry source paths, declared by the project file (keys into `files`). The
-// project owns its layout — compile never guesses where the entries live.
-export interface CompileEntries {
-	app: string
-	gui?: string
-}
 
 const PROJECT_FILE = 'project.json'
 
@@ -47,33 +28,6 @@ export interface DraftBuild {
 	gui: string
 	icon?: string
 	diagnostics: string[]
-}
-
-// ── Legacy compile adapter ─────────────────────────────────────────────────
-// The preview/ship path (`buildDraft` → run/install/pack) consumes string
-// diagnostics and the two conventional `app`/`gui` bundles, so this adapts the
-// structured esbuild engine to that shape. New callers use the `Engine` directly
-// (`compileDraft`/`typecheckDraft`). Errors only — esbuild warnings stay off this
-// surface (as before); the Problems panel sees the full set via `compileDraft`.
-export async function compile(
-	files: Record<string, string>,
-	entries: CompileEntries,
-	backend: Compile
-): Promise<{ app: string; gui: string; diagnostics: string[] }> {
-	const entryRecord: Record<string, string> = {
-		app: entries.app,
-		...(entries.gui ? { gui: entries.gui } : {})
-	}
-	const { outputs, diagnostics } = await backend({ files, entries: entryRecord, tsconfig: {} })
-	const text = (name: string) => outputs.find((output) => output.path === `${name}.js`)?.text ?? ''
-	const messages = diagnostics
-		.filter((diagnostic) => diagnostic.severity === 'error')
-		.map((diagnostic) =>
-			diagnostic.file
-				? `${diagnostic.message} (${diagnostic.file}:${diagnostic.range.start.line + 1})`
-				: diagnostic.message
-		)
-	return { app: text('app'), gui: text('gui'), diagnostics: messages }
 }
 
 // The standard tsconfig generated from a manifest — the one home for our
@@ -117,24 +71,6 @@ export async function readProject(
 	return { manifest, input: { files, entries, tsconfig: tsconfigFor(manifest) } }
 }
 
-// Engine `compile`/`typecheck` for a named project: read the tree, hand the
-// `ProjectInput` to the injected engine. `data` is chrooted to the caller's data
-// dir by the host (as with `buildDraft`).
-export async function compileDraft(
-	data: Volume,
-	slug: string,
-	engine: Engine
-): Promise<CompileResult> {
-	return engine.compile((await readProject(data, slug)).input)
-}
-export async function typecheckDraft(
-	data: Volume,
-	slug: string,
-	engine: Engine
-): Promise<CheckResult> {
-	return engine.typecheck((await readProject(data, slug)).input)
-}
-
 // ── Draft build / install / pack ──────────────────────────────────────────
 //
 // `buildDraft` reads + compiles a project from a caller's data volume (`data`,
@@ -147,11 +83,21 @@ export async function typecheckDraft(
 // preview can keep its last-good mount; only a missing/invalid `project.json`
 // throws.
 export async function buildDraft(data: Volume, slug: string, tc: Toolchain): Promise<DraftBuild> {
-	const manifest = await readProjectFile(data, slug)
-	const files = await projectFiles(data, slug, manifest)
-	const { app, gui, diagnostics } = await compile(files, entriesOf(manifest), tc.compile)
+	const { manifest, input } = await readProject(data, slug)
+	// Adapt the structured compile result to the preview/ship shape: pick the two
+	// conventional named bundles, flatten error diagnostics to strings (warnings
+	// stay off this surface; the Problems panel reads the full set via `compile`).
+	const { outputs, diagnostics } = await tc.compile(input)
+	const text = (name: string) => outputs.find((output) => output.path === `${name}.js`)?.text ?? ''
+	const messages = diagnostics
+		.filter((diagnostic) => diagnostic.severity === 'error')
+		.map((diagnostic) =>
+			diagnostic.file
+				? `${diagnostic.message} (${diagnostic.file}:${diagnostic.range.start.line + 1})`
+				: diagnostic.message
+		)
 	const icon = await projectIcon(data, slug, manifest.icon)
-	return { manifest, app, gui, icon, diagnostics }
+	return { manifest, app: text('app'), gui: text('gui'), icon, diagnostics: messages }
 }
 
 // Compile + promote the project to the REAL `/applications` via the host's
@@ -262,11 +208,6 @@ function optionalPath(value: unknown, field: string): string | undefined {
 	if (typeof value !== 'string') throw new Error(`${PROJECT_FILE} "${field}" must be a path string`)
 	return safeBundlePath(value)
 }
-
-const entriesOf = (manifest: AppManifest): CompileEntries => ({
-	app: manifest.app,
-	gui: manifest.gui
-})
 
 // Read the project's source tree into the path→content map the compiler wants,
 // keyed by project-relative path (matching the entry paths the manifest

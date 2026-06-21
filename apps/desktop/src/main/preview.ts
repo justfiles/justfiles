@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import type { RunContext } from '@justfiles/app/capabilities/devkit/host'
 import type { DraftBuild } from '@justfiles/app/devkit'
 import { appBundleFromMemory, type Kernel } from '@justfiles/app/runtime'
 import { type BrowserWindow, type Rectangle, WebContentsView } from 'electron'
@@ -20,7 +21,7 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 	const slots = new Map<string, { win: BrowserWindow; rect: Rectangle }>()
 	const previews = new Map<string, PreviewRecord>()
 
-	return { setSlot, push, run, stop, menu, selectMenu }
+	return { setSlot, push, mount, stop }
 
 	function setSlot(ownerAppId: string, win: BrowserWindow, rect: Rectangle): void {
 		// The renderer re-reports its slot rect on a timer; ignore unchanged
@@ -40,50 +41,44 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 		}
 	}
 
-	async function run(
-		ownerAppId: string,
-		slug: string,
-		draft: DraftBuild,
-		reset?: boolean
-	): Promise<{ previewId: string; diagnostics: string[] }> {
-		const previewId = `preview.${slug}`
-		if (draft.diagnostics.length === 0 && draft.app && draft.gui) {
-			const kernel = getKernel()
-			await kernel.uninstall(previewId).catch(() => {})
-			// ⟳ Run/Restart: uninstall drops the persisted `/state/<id>.json`, but a
-			// same-code rebuild reuses the content-addressed worker, which still holds
-			// the old in-memory state and re-persists it. Kill it so the next dispatch
-			// boots a fresh isolate from clean state.
-			if (reset) terminateAppWorker(previewId)
-			await kernel.install(
-				appBundleFromMemory({
-					id: previewId,
-					name: draft.manifest.name,
-					description: draft.manifest.description,
-					version: draft.manifest.version,
-					app: draft.app,
-					gui: draft.gui,
-					...(draft.icon ? { icon: 'icon', assets: { icon: draft.icon } } : {})
-				})
-			)
-			const preview = previews.get(previewId)
-			if (preview) {
-				// Same view, same URL: tell the renderer to re-import the freshly
-				// installed gui (with a cache-busting rev) so edits show in place,
-				// rather than a full document reload that would refetch the old bytes.
-				if (!preview.view.webContents.isDestroyed()) {
-					preview.view.webContents.send('preview:reload')
-				}
-				attach(preview)
-			} else {
-				const view = new WebContentsView({ webPreferences: { preload, sandbox: true } })
-				const record: PreviewRecord = { ownerAppId, view }
-				previews.set(previewId, record)
-				load(view, previewId)
-				attach(record)
+	// The Runner mount: the factory hands us a clean build (diagnostics already
+	// guarded) plus the computed `preview.<slug>` id, so we just (re)install the
+	// bundle and (re)attach its WebContentsView.
+	async function mount(draft: DraftBuild, { appId, previewId, reset }: RunContext): Promise<void> {
+		const kernel = getKernel()
+		await kernel.uninstall(previewId).catch(() => {})
+		// ⟳ Run/Restart: uninstall drops the persisted `/state/<id>.json`, but a
+		// same-code rebuild reuses the content-addressed worker, which still holds
+		// the old in-memory state and re-persists it. Kill it so the next dispatch
+		// boots a fresh isolate from clean state.
+		if (reset) terminateAppWorker(previewId)
+		await kernel.install(
+			appBundleFromMemory({
+				id: previewId,
+				name: draft.manifest.name,
+				description: draft.manifest.description,
+				version: draft.manifest.version,
+				app: draft.app,
+				gui: draft.gui,
+				...(draft.icon ? { icon: 'icon', assets: { icon: draft.icon } } : {})
+			})
+		)
+		const preview = previews.get(previewId)
+		if (preview) {
+			// Same view, same URL: tell the renderer to re-import the freshly
+			// installed gui (with a cache-busting rev) so edits show in place,
+			// rather than a full document reload that would refetch the old bytes.
+			if (!preview.view.webContents.isDestroyed()) {
+				preview.view.webContents.send('preview:reload')
 			}
+			attach(preview)
+		} else {
+			const view = new WebContentsView({ webPreferences: { preload, sandbox: true } })
+			const record: PreviewRecord = { ownerAppId: appId, view }
+			previews.set(previewId, record)
+			load(view, previewId)
+			attach(record)
 		}
-		return { previewId, diagnostics: draft.diagnostics }
 	}
 
 	async function stop({ previewId }: { previewId: string }): Promise<void> {
@@ -95,12 +90,6 @@ export function createPreviewManager({ getKernel, preload, load }: PreviewManage
 			.uninstall(previewId)
 			.catch(() => {})
 	}
-
-	async function menu(): Promise<[]> {
-		return []
-	}
-
-	async function selectMenu(): Promise<void> {}
 
 	function attach(preview: PreviewRecord): void {
 		const slot = slots.get(preview.ownerAppId)

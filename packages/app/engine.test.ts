@@ -6,7 +6,7 @@ import { tsconfigFor } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
 import { esbuildCompile } from './engine.esbuild.ts'
 import type { Engine, ProjectInput } from './engine.ts'
-import { typescriptEngine } from './engine.typescript.ts'
+import { typescriptToolchain } from './engine.typescript.ts'
 
 // Exercises the real Node engine: native esbuild for `compile` and the
 // TypeScript compiler API for `typecheck`, both over the in-memory `ProjectInput`.
@@ -38,11 +38,11 @@ const project = (files: Record<string, string>, gui?: string): ProjectInput => (
 	tsconfig: tsconfigFor(manifest(gui))
 })
 
-describe('typescriptEngine', () => {
+describe('typescriptToolchain', () => {
 	let engine: Engine
 	beforeAll(async () => {
 		const runtime = await buildRuntime()
-		engine = typescriptEngine({
+		engine = typescriptToolchain({
 			compile: (input) => esbuildCompile(input, esbuild.build, runtime),
 			ts
 		})

@@ -15,24 +15,24 @@ import type {
 	CheckResult,
 	Compile,
 	Diagnostic,
-	Engine,
 	ProjectInput,
 	Range,
 	TypesBundle
 } from './engine.ts'
 
-// The in-process Node/quay engine: an injected `compile` backend (native esbuild
-// under node, `Bun.build` under bun — selected by the host) paired with the
-// TypeScript compiler API for `typecheck`. The bundler is no longer named here, so
-// the same engine serves both runtimes; only `compile` swaps.
-export function typescriptEngine(opts: {
+// The in-process Node/quay toolchain: an injected `compile` backend (native
+// esbuild under node, `Bun.build` under bun — selected by the host) paired with
+// the TypeScript compiler API for `typecheck`. The bundler is no longer named
+// here, so the same toolchain serves both runtimes; only `compile` swaps. Returns
+// a `Toolchain` with `typecheck` present (the optional method is supplied).
+export function typescriptToolchain(opts: {
 	compile: Compile // bundler-agnostic compile backend (runtime closed in)
 	ts: typeof import('typescript') // typecheck
 	types?: TypesBundle // .d.ts stdlib overlay (tsc); quay falls back to node_modules
-}): Engine {
+}) {
 	return {
 		compile: opts.compile,
-		typecheck: async (input) => typecheck(input, opts.ts, opts.types ?? {})
+		typecheck: async (input: ProjectInput) => typecheck(input, opts.ts, opts.types ?? {})
 	}
 }
 

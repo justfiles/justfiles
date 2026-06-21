@@ -7,10 +7,14 @@ import {
 	proxyCapabilitiesRpc,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
+import { devkitCapability as makeDevkit } from '@justfiles/app/capabilities/devkit/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { flushActiveVolume } from '../fs.ts'
+import { frierenRunner, getToolchain } from './devkit.client.ts'
+import * as host from './host'
+import { createClientKernel } from './kernel.client'
 
 type GetToken = () => Promise<string | null>
 
@@ -29,17 +33,24 @@ export function clientCapabilities(fs: Volume, getToken: GetToken): Capabilities
 }
 
 // devkit runs locally (it compiles + mounts on this thread, never the server) and
-// is grant-gated: only allowlisted apps may reach the impl. Its module — and the
-// esbuild toolchain it pulls — is imported lazily on first use, so a session that
-// never opens devkit pays nothing.
+// is grant-gated: only allowlisted apps may reach the impl. The shared factory is
+// built eagerly — its runner closures are cheap and the esbuild-wasm toolchain
+// stays lazy inside `getToolchain` — so a session that never opens devkit still
+// pays nothing.
 function devkitCapability(fs: Volume, getToken: GetToken): Capability {
 	const reject = (method: string): Promise<never> =>
 		Promise.reject(new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', method))
+	const impl = makeDevkit({
+		fs,
+		toolchain: getToolchain,
+		runner: frierenRunner(fs, getToken),
+		kernel: () => createClientKernel({ fs, getToken }),
+		onInstalled: () => host.notifyCatalog()
+	})
 	return {
 		invoke: async (call) => {
 			if (!DEVKIT_ALLOWLIST.has(call.appId)) return reject(call.method)
-			const { invokeDevkit } = await import('./devkit.capability.ts')
-			return invokeDevkit(fs, getToken, call)
+			return impl.invoke(call)
 		},
 		subscribe: (call) => reject(call.method)
 	}
