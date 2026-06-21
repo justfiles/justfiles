@@ -14,12 +14,20 @@ import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { strToU8, zipSync } from 'fflate'
 import type { TsConfigJson } from 'type-fest'
-import type { BuildFn, Toolchain } from './engine.esbuild.ts'
-import type { CheckResult, Compile, CompileResult, Engine, ProjectInput } from './engine.ts'
+import type { BuildFn } from './engine.esbuild.ts'
+import type {
+	CheckResult,
+	Compile,
+	CompileResult,
+	Engine,
+	ProjectInput,
+	Toolchain
+} from './engine.ts'
 import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from './kernel.ts'
 
-// `BuildFn` / `Toolchain` live with the esbuild engine now; re-exported so the
-// hosts that build a toolchain (quay / frieren / desktop) keep their import.
+// `Toolchain` is the canonical compile seam (`./engine.ts`); `BuildFn` is the
+// esbuild backend shape. Re-exported so the hosts that build a toolchain
+// (quay / frieren / desktop) keep their `@justfiles/app/devkit` import.
 export type { BuildFn, Toolchain }
 
 // The entry source paths, declared by the project file (keys into `files`). The

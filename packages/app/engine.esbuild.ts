@@ -7,15 +7,10 @@
 // `engine.bun.ts` behind the same vfs rules.
 
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
-import type { Compile, CompileResult, Diagnostic, Engine, ProjectInput, Range } from './engine.ts'
+import type { CompileResult, Diagnostic, Engine, ProjectInput, Range, Toolchain } from './engine.ts'
 import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './engine.vfs.ts'
 
 export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
-
-// The injected build backend for the build/pack pipeline: a bundler-agnostic
-// `Compile` closure (the host binds its bundler + the system `runtime` into it —
-// native esbuild here, `esbuild-wasm` in a browser host, `Bun.build` under bun).
-export type Toolchain = { compile: Compile }
 
 // Bundle each named entry of a draft against the system `runtime`. Pure: the
 // caller injects the esbuild engine + the runtime map. The shared `compileVfs`

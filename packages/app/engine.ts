@@ -86,12 +86,23 @@ export interface ProjectInput {
 // adapter both produce one — so the build/pack pipeline never names a bundler.
 export type Compile = (input: ProjectInput) => Promise<CompileResult>
 
-// The heavy-compute primitives the engine exposes; the host composes the rest
-// (pack = compile + zip; install = compile + kernel write; run = compile + the
-// client preview mount) around them. lint/test slot in later with no change.
+// The build/compile seam every host injects — the canonical name going forward,
+// and the single home for the type (it used to be duplicated as a build-only
+// `Toolchain` in `engine.esbuild.ts`). `typecheck` is OPTIONAL: a host with no
+// type checker (browser esbuild-wasm, desktop) omits it and the devkit factory
+// degrades `typecheck` to CAPABILITY_UNAVAILABLE; a Node host (quay) supplies it.
+// lint/test slot in later with no change.
+export interface Toolchain {
+	compile: Compile
+	typecheck?(input: ProjectInput): Promise<CheckResult>
+	// lint(input): Promise<CheckResult>   — later
+	// test(input): Promise<TestResult>    — later
+}
+
+// Legacy strict engine (typecheck REQUIRED). Kept only as a bridge while the
+// hosts still construct `esbuildEngine`/`typescriptEngine`; deleted in the final
+// rename step. New code injects a `Toolchain` instead.
 export interface Engine {
 	compile: Compile
 	typecheck(input: ProjectInput): Promise<CheckResult>
-	// lint(input): Promise<CheckResult>   — later
-	// test(input): Promise<TestResult>    — later
 }
