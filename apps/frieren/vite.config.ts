@@ -13,7 +13,6 @@ import react from '@vitejs/plugin-react'
 import { rollup } from 'rollup'
 import { defineConfig, type Plugin, type ResolvedConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
-import { devkitRuntime } from './devkit-runtime.ts'
 import { appstore } from './vite-appstore.ts'
 
 // Resolve the React stdlib to /vendor/*.js URLs in BOTH dev and prod.
@@ -272,7 +271,6 @@ export default defineConfig({
 	plugins: [
 		vendorReact(),
 		appstore(),
-		devkitRuntime(),
 		// NOTE: VitePWA conflicts with @cloudflare/vite-plugin when vitest resolves
 		// THIS config (e.g. `cd apps/frieren && vitest`); the canonical root
 		// `vitest.config.ts` has no plugins and is unaffected. Run tests from root.

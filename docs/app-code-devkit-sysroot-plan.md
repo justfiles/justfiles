@@ -839,14 +839,67 @@ useful error; the app-code UI surfaces the message.
 
 </details>
 
-### 9. Update app-code UI and docs
+### 9. Update app-code UI and docs (DONE ✅)
+
+**Done (2026-06-23).** The app-code UI and the author guide now state the built-in-SDK-only contract;
+the starter was already clean.
+
+- **UI** (`packages/app-code/src/screens.tsx`): the gallery **empty state** and the **New Project**
+  form each carry one line — "Apps build against the platform SDK only — external npm packages aren't
+  supported." (reusing the existing `app-code-empty-copy` / `app-code-hint` styles, no new CSS). The
+  Project Settings screen edits identity/metadata only, so the note rides the creation surfaces an
+  author actually reads before writing code; no test asserts the copy, so nothing broke.
+- **docs/app.md** (Section 12): the draft-build bullet now says the compiler bundles **only your own
+  sources** (no `node_modules`, arbitrary npm **not supported**) and that the SDK (`@justfiles/app` +
+  subpaths, `valibot`) and React are **host-provided at runtime** — an installed app links the host's
+  *current* SDK at launch, not a copy frozen at build — pointing package authors to
+  `packages/create-app/`. The "What you can import in a draft" note was widened from React-only to the
+  whole SDK, and spells out that any other bare import is an unsupported npm package that fails the
+  build with a clear message (Step 8).
+- **starter** (`projects.ts` `starterApp`/`starterGui`): already imports only `@justfiles/app` +
+  `valibot` with no comment implying npm packages can be added — left as-is (the requirement was a
+  check, already satisfied).
+
+Verified: `pnpm format`/`typecheck`/`lint:fix`/`test` (708) all green.
+
+<details><summary>Original Step 9 spec</summary>
 
 - project settings / empty state says app-code supports the built-in SDK only;
 - docs/app.md: app-code drafts don't support arbitrary npm deps and the SDK is host-provided
   (apps link the host SDK version at runtime); point package authors to `packages/create-app/`;
 - starter comments don't imply npm packages can be added.
 
-### 10. Keep the browser path deliberately small
+</details>
+
+### 10. Keep the browser path deliberately small (DONE ✅)
+
+**Done (2026-06-23).** frieren no longer bakes the SDK runtime into its client JS; the served
+`/vendor` modules (Step 1) are now the *only* SDK source for the browser path.
+
+- **`virtual:devkit-runtime` retired.** Deleted `apps/frieren/devkit-runtime.ts` +
+  `apps/frieren/src/devkit-runtime.d.ts` and dropped the `devkitRuntime()` plugin registration (and
+  its import) from `apps/frieren/vite.config.ts`. That virtual module ran `buildRuntime()` and baked
+  the whole SDK into the client bundle at build time; with the SDK externalized it's dead weight, so
+  the client JS shrinks. (`vite.config.ts` keeps its separate `buildRuntime` import — that's the
+  Step 1 `/vendor` *serving*, not the baked runtime.)
+- **`getToolchain` (`devkit.client.ts`) injects no runtime.** It now calls
+  `esbuildCompile(input, esbuild.build, {})` — the now-inert RUNTIME namespace threaded empty, exactly
+  like quay's `backendCompile(input, {})`. The gui's bare specifiers resolve via the document
+  importmap; the reducer's sentinels are rewritten at spawn (Step 3) to the served
+  `${location.origin}/vendor/<spec>.js`, which the blob worker fetches at load (prior spike) — no
+  in-memory `data:` injection, no `file://`.
+- **the anticipated `fs`/`appId` wiring was already paid.** `getToolchain` already takes
+  `ctx: { appId }` and keys its cache by `appId` (Steps 5–6). frieren stays **compile-only** (offline
+  `typecheck` degrades to `CAPABILITY_UNAVAILABLE`; the online container owns the checker + header
+  overlay), so the browser toolchain needs no `Volume`/types — leaving Step 10 as just the deletion.
+  No package install, registry access, or arbitrary dependency resolution was added.
+
+Verified: no code references `virtual:devkit-runtime` / the deleted files remain (grep-clean; the
+surviving `*devkit-runtime.ts*` hits are the host SDK builder in `packages/app` + historical docs).
+`pnpm format`/`typecheck`/`lint:fix`/`test` (708) all green. Live browser smoke (first paint + a
+reducer dispatch through both link seams) is folded into the Step 11 end-to-end pass.
+
+<details><summary>Original Step 10 spec</summary>
 
 frieren keeps esbuild-wasm for compile and the installed headers for typecheck overlay (where
 applicable). The SDK comes from the host-served vendor modules (Step 1): the **gui** resolves them
@@ -859,6 +912,8 @@ time, which the served vendor modules now replace — the client JS shrinks. The
 `getToolchain()` in `devkit.client.ts` is a module singleton with no `appId`/Volume in scope, so
 thread `fs` + `appId` in from `capabilities.client.ts` and key its cache by `appId`. No package
 install, registry access, or arbitrary dependency resolution.
+
+</details>
 
 ### 11. End-to-end regression coverage
 

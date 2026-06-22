@@ -15,12 +15,15 @@ import { createClientKernel } from './kernel.client'
 
 type GetToken = () => Promise<string | null>
 
-// esbuild-wasm initialises once per page; the system runtime bundle loads with
-// it. Both are pulled lazily so a session that never runs a draft pays nothing.
-// No `typecheck` on the returned `Toolchain` — the factory degrades it to
-// CAPABILITY_UNAVAILABLE (the 8 MB checker stays off the client; the container
-// backend owns it online). Keyed by the calling app's id so a future per-app
-// types sysroot (Step 6) caches per caller — today every caller gets the same
+// esbuild-wasm initialises once per page, pulled lazily so a session that never
+// runs a draft pays nothing. The SDK is externalized (the dylib model): the gui's
+// bare specifiers resolve via the document importmap, and the reducer's sentinels
+// are rewritten at spawn to the served `/vendor/<spec>.js` modules — so the
+// compiler injects NO runtime map (the now-inert RUNTIME namespace is threaded
+// empty, like quay). No `typecheck` on the returned `Toolchain` — the factory
+// degrades it to CAPABILITY_UNAVAILABLE (the 8 MB checker stays off the client;
+// the container backend owns it online). Keyed by the calling app's id so a future
+// per-app types sysroot caches per caller — today every caller gets the same
 // compile-only toolchain.
 const toolchains = new Map<string, Promise<Toolchain>>()
 export function getToolchain(ctx: { appId: string }): Promise<Toolchain> {
@@ -30,8 +33,7 @@ export function getToolchain(ctx: { appId: string }): Promise<Toolchain> {
 			const esbuild = await import('esbuild-wasm')
 			const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
 			await esbuild.initialize({ wasmURL })
-			const { runtime } = await import('virtual:devkit-runtime')
-			return { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
+			return { compile: (input) => esbuildCompile(input, esbuild.build, {}) }
 		})()
 		toolchains.set(ctx.appId, toolchain)
 	}

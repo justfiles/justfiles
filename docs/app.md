@@ -681,8 +681,12 @@ There are two ways to author an app, and the import rules differ:
 - **In-repo package** (`packages/app-foo/`): a full vite build via `kernelHost` (Section 2). Any package
   in the workspace resolves normally — including every `@justfiles/app/capabilities/<id>` subpath.
 - **In an app-code draft** (built through the `app.code` authoring app): the draft compiler (esbuild)
-  bundles your sources **hermetically against a fixed stdlib** — there is no `node_modules`. This is the
-  environment most agents are editing in, and it is **stricter about imports**.
+  bundles **only your own sources** — there is no `node_modules`, and arbitrary npm packages are **not
+  supported**. The platform SDK (`@justfiles/app` + its capability subpaths, `valibot`) and React are
+  **provided by the host at runtime** (externalized, not bundled): an installed app links the host's
+  *current* SDK at launch, not a copy frozen at build. This is the environment most agents are editing
+  in, and it is **stricter about imports**. Need an arbitrary package? Author an in-repo package with
+  `packages/create-app/` instead.
 
 ### Project layout (app-code draft)
 
@@ -749,7 +753,10 @@ import './helpers.ts' // ✅ relative imports within src/ work
 // import { volume } from '@justfiles/app/capabilities/volume' // ❌ does NOT resolve in a draft
 ```
 
-`react` / `react-dom` are provided by the host (shared instance) — emit bare `from 'react'` imports.
+The SDK (`@justfiles/app` + subpaths, `valibot`) and `react` / `react-dom` are **provided by the host**,
+not bundled — emit bare specifiers (`from '@justfiles/app'`, `from 'react'`); the host resolves them to
+its current shared instance at runtime. Any **other** bare import is an unsupported npm package and fails
+the build with a clear message — author an in-repo package with `packages/create-app/` if you need one.
 
 ### Declaring capabilities in a draft
 

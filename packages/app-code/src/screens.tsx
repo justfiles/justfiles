@@ -26,6 +26,9 @@ export function GalleryScreen(props: {
 				<div className="app-code-empty-state">
 					<div className="app-code-empty-title">No projects yet</div>
 					<div className="app-code-empty-copy">Create your first app to get started.</div>
+					<div className="app-code-empty-copy">
+						Apps build against the platform SDK only — external npm packages aren't supported.
+					</div>
 					<PrimaryButton label="+ New Project" onClick={props.onNew} />
 				</div>
 			) : (
@@ -133,6 +136,9 @@ export function NewProjectScreen(props: {
 				>
 					<div className="app-code-hint">Folder: /projects/{id} · must be unique</div>
 				</TextField>
+				<div className="app-code-hint">
+					Apps build against the platform SDK only — external npm packages aren't supported.
+				</div>
 				<div className="app-code-form-error">{error}</div>
 			</form>
 		</ScreenWrap>
