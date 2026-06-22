@@ -19,16 +19,22 @@ type GetToken = () => Promise<string | null>
 // it. Both are pulled lazily so a session that never runs a draft pays nothing.
 // No `typecheck` on the returned `Toolchain` — the factory degrades it to
 // CAPABILITY_UNAVAILABLE (the 8 MB checker stays off the client; the container
-// backend owns it online).
-let toolchain: Promise<Toolchain> | undefined
-export function getToolchain(): Promise<Toolchain> {
-	toolchain ??= (async () => {
-		const esbuild = await import('esbuild-wasm')
-		const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
-		await esbuild.initialize({ wasmURL })
-		const { runtime } = await import('virtual:devkit-runtime')
-		return { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
-	})()
+// backend owns it online). Keyed by the calling app's id so a future per-app
+// types sysroot (Step 6) caches per caller — today every caller gets the same
+// compile-only toolchain.
+const toolchains = new Map<string, Promise<Toolchain>>()
+export function getToolchain(ctx: { appId: string }): Promise<Toolchain> {
+	let toolchain = toolchains.get(ctx.appId)
+	if (!toolchain) {
+		toolchain = (async () => {
+			const esbuild = await import('esbuild-wasm')
+			const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
+			await esbuild.initialize({ wasmURL })
+			const { runtime } = await import('virtual:devkit-runtime')
+			return { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
+		})()
+		toolchains.set(ctx.appId, toolchain)
+	}
 	return toolchain
 }
 

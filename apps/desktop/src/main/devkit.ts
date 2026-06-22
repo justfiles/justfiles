@@ -33,8 +33,18 @@ export function devkitCapability(
 }
 
 // esbuild over the cached system runtime — compile only (no typecheck on desktop).
-async function toolchain(): Promise<Toolchain> {
-	if (!runtimePromise) runtimePromise = buildRuntime()
-	const runtime = await runtimePromise
-	return { compile: (input) => esbuildCompile(input, build, runtime) }
+// Keyed by the calling app's id so a future per-app types sysroot (Step 6) caches
+// per caller — today every caller gets the same compile-only toolchain.
+const toolchains = new Map<string, Promise<Toolchain>>()
+function toolchain(ctx: { appId: string }): Promise<Toolchain> {
+	let tc = toolchains.get(ctx.appId)
+	if (!tc) {
+		tc = (async () => {
+			if (!runtimePromise) runtimePromise = buildRuntime()
+			const runtime = await runtimePromise
+			return { compile: (input) => esbuildCompile(input, build, runtime) }
+		})()
+		toolchains.set(ctx.appId, tc)
+	}
+	return tc
 }

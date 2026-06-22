@@ -68,12 +68,14 @@ export const noopRunner: Runner = {
 }
 
 // Implement the `devkit` capability from a toolchain + a runner. `toolchain` is
-// lazy (a session that never builds pays nothing); `kernel` is the SHIP kernel
-// for install/pack (a Runner owns its own preview kernel). `overwrite` lets quay
-// ship-or-update; frieren/desktop create-only.
+// lazy (a session that never builds pays nothing) and caller-aware: it receives
+// the calling app's id (`ctx.appId`, e.g. Code = `app.code`) so the host can load
+// THAT app's own types sysroot — never a hardcoded `'app.code'`. `kernel` is the
+// SHIP kernel for install/pack (a Runner owns its own preview kernel). `overwrite`
+// lets quay ship-or-update; frieren/desktop create-only.
 export function devkitCapability(opts: {
 	fs: Volume
-	toolchain: () => Promise<Toolchain>
+	toolchain: (ctx: { appId: string }) => Promise<Toolchain>
 	runner: Runner
 	kernel: () => Kernel
 	onInstalled?: () => void | Promise<void>
@@ -84,19 +86,19 @@ export function devkitCapability(opts: {
 	const data = (ctx: { appId: string }) => chroot(fs, `/data/${ctx.appId}`)
 	return implementCapability(devkit, {
 		compile: async (ctx, { slug }) =>
-			(await toolchain()).compile((await readProject(data(ctx), slug)).input),
+			(await toolchain(ctx)).compile((await readProject(data(ctx), slug)).input),
 		typecheck: async (ctx, { slug }) => {
-			const tc = await toolchain()
+			const tc = await toolchain(ctx)
 			if (!tc.typecheck) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', 'typecheck')
 			return tc.typecheck((await readProject(data(ctx), slug)).input)
 		},
 		install: async (ctx, { slug }) =>
-			installDraft(fs, ctx.appId, slug, kernel(), await toolchain(), { onInstalled, overwrite }),
-		pack: async (ctx, { slug }) => packDraft(data(ctx), slug, await toolchain()),
+			installDraft(fs, ctx.appId, slug, kernel(), await toolchain(ctx), { onInstalled, overwrite }),
+		pack: async (ctx, { slug }) => packDraft(data(ctx), slug, await toolchain(ctx)),
 		// Compile, then (only on a clean build) hand the draft to the runner. On a
 		// compile error the last-good mount stays put — one uniform rule, here.
 		run: async (ctx, { slug, reset }) => {
-			const draft = await buildDraft(data(ctx), slug, await toolchain())
+			const draft = await buildDraft(data(ctx), slug, await toolchain(ctx))
 			const previewId = `preview.${slug}`
 			if (draft.diagnostics.length > 0 || !draft.app || !draft.gui)
 				return { previewId, diagnostics: draft.diagnostics }

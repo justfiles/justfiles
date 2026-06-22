@@ -86,9 +86,18 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 // The in-process toolchain: the `#engine` compile backend for `compile`, the
 // TypeScript compiler API for `typecheck`. In dev the checker resolves the system
 // libs from node_modules; shipped (no node_modules) it reads the baked TypesBundle
-// (`loadTypes`). Shares the cached runtime.
-async function toolchain(): Promise<Toolchain> {
-	return typescriptToolchain({ compile: await compileBackend(), ts, types: await loadTypes() })
+// (`loadTypes`). Shares the cached runtime. Keyed by the calling app's id so a
+// future per-app types sysroot (Step 6) caches per caller — today every caller
+// gets the same toolchain over the one shared runtime.
+const toolchains = new Map<string, Promise<Toolchain>>()
+function toolchain(ctx: { appId: string }): Promise<Toolchain> {
+	let tc = toolchains.get(ctx.appId)
+	if (!tc) {
+		tc = (async () =>
+			typescriptToolchain({ compile: await compileBackend(), ts, types: await loadTypes() }))()
+		toolchains.set(ctx.appId, tc)
+	}
+	return tc
 }
 
 // The `.d.ts` overlay for typecheck. Shipped, the exe has no node_modules, so read the

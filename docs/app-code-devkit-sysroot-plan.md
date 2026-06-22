@@ -605,7 +605,33 @@ Verification: `pnpm --filter @justfiles/app-code build`; `dist/manifest.json` in
 
 </details>
 
-### 5. Make devkit toolchain resolution caller-aware (by app id, not by path)
+### 5. Make devkit toolchain resolution caller-aware (by app id, not by path) (DONE ✅)
+
+**Done (2026-06-22).** The shared devkit factory now resolves the toolchain per calling app; every
+host threads the caller's `appId` into its `toolchain` factory.
+
+- **shared factory** (`packages/app/capabilities/devkit/host.ts`): the `toolchain` seam is now
+  `(ctx: { appId: string }) => Promise<Toolchain>`, and every method (`compile`, `typecheck`,
+  `install`, `pack`, `run`) passes its existing `ctx` through to `toolchain(ctx)`. No new lookup —
+  `ctx.appId` is the caller's identity (Code = `app.code`), the same `ctx` already used for the
+  caller's data dir. The `/applications/<id>` convention stays in `kernel.app.ts`; devkit only ever
+  holds the **app id**, so a path-based variant (which wouldn't fit frieren's `Volume`/handle) is
+  avoided entirely. The per-app header READ rides on this in Step 6.
+- **per-host caches keyed by `appId`** — each host's toolchain memo became a
+  `Map<string, Promise<Toolchain>>`: quay (`quayd/devkit.ts`, fresh `typescriptToolchain` per
+  caller over the shared runtime/types), frieren (`devkit.client.ts`, the esbuild-wasm singleton →
+  a per-caller map; `capabilities.client.ts` passes `getToolchain` straight through, signature
+  already matches), desktop (`main/devkit.ts`, esbuild-only over the cached runtime). Today every
+  caller resolves the same toolchain (runtime + types are still global); the Map is the seam Step 6
+  diverges per caller.
+
+Verified: the new `packages/app/capabilities/devkit/host.test.ts` drives the factory with a spy
+toolchain and asserts `ctx.appId` reaches the seam per caller (`compile` as `app.code`; distinct
+callers `app.code` / `app.other` resolve their own toolchain — no hardcoded id). quay's real-host
+`devkit.test.ts` (build + install + run a project as `app.code` through the caller-aware toolchain)
+still passes. `pnpm format`/`typecheck`/`lint:fix`/`test` (703) all green.
+
+<details><summary>Original Step 5 spec</summary>
 
 Change the devkit host factory (`packages/app/capabilities/devkit/host.ts`) so the toolchain depends
 on the calling app:
@@ -627,6 +653,8 @@ guard) and doesn't fit frieren (a `Volume`/handle, not an fs path).
 
 Verification: existing devkit tests pass; a test installs a fake app with `devkit/index.json`, calls
 devkit as that app, and asserts the host reads the caller's headers.
+
+</details>
 
 ### 6. Load the types from installed app assets (no node_modules fallback)
 
