@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import type { GetSandbox, Sandbox } from '@justfiles/app/runtime'
 import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
+import { resolveSdkExternals, SDK_SENTINEL } from '@justfiles/app/sdk-externals'
 
 // `GetSandbox` over `node:worker_threads`. The host↔isolate protocol lives in
 // `@justfiles/app/sandbox` (shared with frieren's Web-Worker sandbox); this is
@@ -16,13 +17,33 @@ type WorkerClient = { sandbox: Sandbox; terminate: () => void }
 // don't leak a live thread per bundle ever launched.
 const workers = new Map<string, WorkerClient>()
 const appWorkers = new Map<string, string>()
+// One data: module URL per SDK spec, built on first use and reused for the process life.
+const sdkUrls = new Map<string, string>()
 
-export function nodeSandbox(): GetSandbox {
+export function nodeSandbox(sdk?: () => Promise<Map<string, string>>): GetSandbox {
 	return async ({ appId, code }) => {
 		const key = cacheKey(code)
 		appWorkers.set(appId, key)
-		return workerFor(key, code).sandbox
+		return workerFor(key, await link(code, sdk)).sandbox
 	}
+}
+
+// Rewrite the reducer's `justfiles-sdk:` sentinels to data: URLs of the host's in-memory
+// SDK (the worker has no importmap). No sentinel → no SDK load. Desktop's vendor-source
+// wiring is deferred (Step 1), so today `sdk` is unset and this passes code through.
+async function link(code: string, sdk?: () => Promise<Map<string, string>>): Promise<string> {
+	if (!sdk || !code.includes(SDK_SENTINEL)) return code
+	const sources = await sdk()
+	return resolveSdkExternals(code, (spec) => {
+		let url = sdkUrls.get(spec)
+		if (!url) {
+			const src = sources.get(spec)
+			if (src === undefined) throw new Error(`sandbox: no SDK module for "${spec}"`)
+			url = dataUrl(src)
+			sdkUrls.set(spec, url)
+		}
+		return url
+	})
 }
 
 // Terminate the worker backing `appId` so its thread is reclaimed.

@@ -190,6 +190,7 @@
 		"@standard-schema/spec": "^1.1.0",
 		"@tailwindcss/vite": "^4.3.0",
 		"capnweb": "^0.8.0",
+		"es-module-lexer": "^2.1.0",
 		"fflate": "^0.8.3",
 		"tailwindcss": "^4.3.0",
 		"type-fest": "^5.6.0"

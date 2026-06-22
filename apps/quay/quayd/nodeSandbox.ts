@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import type { GetSandbox, Sandbox } from '@justfiles/app/runtime'
 import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
+import { resolveSdkExternals, SDK_SENTINEL } from '@justfiles/app/sdk-externals'
 // The worker module-URL scheme is the one runtime divergence (data: on node,
 // blob: on bun) — resolved by the runtime via package.json `imports`. See
 // `quayd/sandboxUrl.{node,bun}.ts`.
@@ -49,12 +50,35 @@ interface Cell {
 // (server.ts), so a closed app's worker is reclaimed before the daemon itself.
 const IDLE_MS = 3 * 60_000
 
-export function nodeSandbox(opts: { idleMs?: number } = {}): NodeSandbox {
+export function nodeSandbox(
+	opts: { idleMs?: number; sdk?: () => Promise<Map<string, string>> } = {}
+): NodeSandbox {
 	const idleMs = opts.idleMs ?? IDLE_MS
 	const cells = new Map<string, Cell>() // code SHA → worker
 	const windows = new Map<string, number>() // appId → open-window count
+	// One data:/blob: module URL per SDK spec, built on first use and reused for the
+	// daemon's life — so two apps importing the same SDK module share its URL.
+	const sdkUrls = new Map<string, string>()
 
 	const open = (appId: string): number => windows.get(appId) ?? 0
+
+	// Rewrite the reducer's `justfiles-sdk:` sentinels to data:/blob: URLs of the
+	// host's in-memory SDK. No sentinel → no SDK load (keeps a pure-DOM app and the
+	// tests off the vendor assets entirely).
+	const link = async (code: string): Promise<string> => {
+		if (!opts.sdk || !code.includes(SDK_SENTINEL)) return code
+		const sources = await opts.sdk()
+		return resolveSdkExternals(code, (spec) => {
+			let url = sdkUrls.get(spec)
+			if (!url) {
+				const src = sources.get(spec)
+				if (src === undefined) throw new Error(`sandbox: no SDK module for "${spec}"`)
+				url = moduleUrl(src)
+				sdkUrls.set(spec, url)
+			}
+			return url
+		})
+	}
 
 	const evict = (key: string): void => {
 		const cell = cells.get(key)
@@ -79,10 +103,12 @@ export function nodeSandbox(opts: { idleMs?: number } = {}): NodeSandbox {
 
 	return {
 		get: async ({ appId, code }) => {
+			// The cache key is over the SENTINEL `code` — host-agnostic and deterministic, so
+			// a byte-identical app reuses its worker (a resolved blob: URL must NOT enter it).
 			const key = createHash('sha256').update(code).digest('hex')
 			let cell = cells.get(key)
 			if (!cell) {
-				cell = spawn(code, () => cells.delete(key))
+				cell = spawn(await link(code), () => cells.delete(key))
 				cells.set(key, cell)
 			}
 			cell.appId = appId

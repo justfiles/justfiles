@@ -31,6 +31,7 @@ const IMPORTMAP = JSON.stringify({
 })
 
 let cache: Promise<Map<string, Uint8Array>> | undefined
+let sdkCache: Promise<Map<string, string>> | undefined
 
 // The vendor assets keyed by URL path (`/vendor/<file>`). Read once from the
 // ship-time build output and memoised for the daemon's life — no compile, no disk
@@ -38,6 +39,26 @@ let cache: Promise<Map<string, Uint8Array>> | undefined
 export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 	cache ??= readAssets()
 	return cache
+}
+
+// The host's in-memory SDK vendor sources keyed by SPEC (not URL) — the reducer-
+// injection half of the SDK link model. Reuses the same `vendorAssets()` bytes the
+// http server serves (no new cache/staging), decoded to source text; nodeSandbox
+// wraps each as a data:/blob: module URL to resolve a reducer's `justfiles-sdk:`
+// sentinels at spawn. Loaded lazily — only an SDK-importing reducer triggers it.
+export function sdkSources(): Promise<Map<string, string>> {
+	sdkCache ??= readSdkSources()
+	return sdkCache
+}
+
+async function readSdkSources(): Promise<Map<string, string>> {
+	const vendor = await vendorAssets()
+	const out = new Map<string, string>()
+	for (const { spec } of sdkExternals) {
+		const bytes = vendor.get(vendorUrl(spec))
+		if (bytes) out.set(spec, new TextDecoder().decode(bytes))
+	}
+	return out
 }
 
 async function readAssets(): Promise<Map<string, Uint8Array>> {

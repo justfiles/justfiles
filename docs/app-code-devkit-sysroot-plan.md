@@ -350,9 +350,9 @@ existing flat `/vendor/react-dom-client.js` names can stay as-is.
 
 **Invariant guard — reducer-reachable SDK modules must be react-free.** `buildRuntime` leaves
 `react` a **bare external** in the built vendor modules; the reducer worker has no importmap to
-resolve a bare `react`. Today this holds (`@justfiles/app` core = `index.ts` and all five capability entries
+resolve a bare `react`. Today this holds (`@justfiles/app` core = `index.ts` and all capability entries
 import no react — verified), but it is unguarded. Add a build-time assertion that the
-reducer-reachable SDK modules (`@justfiles/app`, the five capability subpaths, `valibot`) contain no
+reducer-reachable SDK modules (`@justfiles/app`, the capability subpaths, `valibot`) contain no
 bare `react`/`react-dom`/`react/*` import after bundling. If one ever does, the reducer breaks with
 the same opaque worker error the prior spike hit.
 
@@ -369,8 +369,9 @@ resolves in the webview via the importmap.
 
 - **shared rules** (`packages/app/sdk-externals.ts`): `SDK_SENTINEL = 'justfiles-sdk:'`,
   `isSdkSpec(spec)` (the bare-externalize predicate), and `sentinelizeReducer(js)` (rewrites a
-  compiled reducer's bare SDK imports → sentinel; anchored on `from`/`import(` + an exact
-  SDK-spec match). One home both compile paths import.
+  compiled reducer's bare SDK imports → sentinel). One home both compile paths import. (Step 3
+  reworked `sentinelizeReducer` from a regex to an `es-module-lexer` walk — a regex corrupted
+  import-like substrings inside string literals, e.g. Code's embedded starter template; see Step 3.)
 - **bare-externalize-then-rewrite, not in-resolve.** The original plan assumed each resolver
   rewrites to the sentinel in `onResolve`. That works for esbuild but **Bun keeps the original
   specifier for `external` imports** — it ignores both `path` and `namespace` in an `onResolve`
@@ -435,7 +436,61 @@ compiled `app.js` emits `justfiles-sdk:@justfiles/app` (no inlined SDK); a built
 
 </details>
 
-### 3. Resolve the reducer sentinel at spawn (the one seam, all channels)
+### 3. Resolve the reducer sentinel at spawn (the one seam, all channels) (DONE ✅)
+
+**Done (2026-06-22).** One shared `resolveSdkExternals` helper rewrites each reducer's
+`justfiles-sdk:` sentinel at spawn; all three hosts call it through their `GetSandbox`, and
+the content-address key stays over the sentinel `code` (host-agnostic, deterministic).
+
+- **shared rewrites — `es-module-lexer`, not regex** (`packages/app/sdk-externals.ts`). The
+  forward (`sentinelizeReducer`) and reverse (`resolveSdkExternals`) rewrites are inverse
+  operations, so they live together over one private lexer walk (`rewriteImports`). We adopted
+  `es-module-lexer/js` (the sync asm build — **no WASM, no `await init`**, so both stay
+  synchronous; ~7 KB gzip; lexer-only, no `magic-string` since we don't consume sourcemaps).
+  **Why a tokenizer, not regex:** the app system will open to 3rd-party apps, so a reducer
+  bundle is untrusted source — a regex rewrites import-like substrings inside string literals,
+  a real tokenizer never does. This is not hypothetical: the original regex `sentinelizeReducer`
+  **corrupted Code's embedded starter template** (`import { defineApp } from '@justfiles/app'`,
+  shipped as a string literal in the reducer) into `'justfiles-sdk:@justfiles/app'`, which broke
+  every project created from the starter. Both rewrites now also gate on the SDK allowlist
+  (`isSdkSpec`), so an adversarial `justfiles-sdk:<bogus>` is left untouched (fails to load
+  cleanly; can never be coerced into a `/vendor/...` fetch URL). The lexer handles the two range
+  conventions (static `[s,e)` excludes quotes, dynamic `import()` includes them) by re-wrapping
+  on the char at `s`.
+- **allowlist completed.** `sdkExternals` was missing two reducer-reachable capability clients
+  — `@justfiles/app/capabilities/devkit` (Code) and `.../accounts` (Settings). esbuild's
+  `external` matches a package AND all subpaths, so the reducer compile externalized them, but
+  they were neither sentinelized nor served nor resolved → a bare unresolvable import in the
+  worker. They're `defineCapability(…)` factories (react-free, gated at the host), so adding
+  them with `reducer: true` is correct and uniform; `buildRuntime`, the importmap, `sdkSources`,
+  and the react-free guard all derive from the one list, so the addition flows everywhere.
+- **quay** (`nodeSandbox.ts` + `assets.ts` + `host.ts`): `nodeSandbox` takes a lazy
+  `sdk: () => Promise<Map<spec, source>>` provider; `host.ts` passes `assets.ts`'s new
+  `sdkSources()` (decodes the SAME `vendorAssets()` bytes the http server serves — no new cache).
+  `link(code)` fast-paths a sentinel-free bundle (so a pure-DOM app and the tests never touch the
+  vendor assets), else resolves each sentinel to `moduleUrl(src)` (data: on node, blob: on bun),
+  one URL per spec reused for the daemon's life. Spawn runs on `await link(code)`; the cache key
+  is unchanged (`sha256(code)` over the sentinel form).
+- **frieren** (`sandbox.worker.ts`): `createWorker` rewrites the sentinel to the served
+  `${location.origin}${vendorUrl(spec)}` URL the blob worker fetches same-origin (prior spike); the
+  cache key is still taken over the sentinel `code`. No in-memory injection — the browser fetches.
+- **desktop (POC)** (`nodeSandbox.ts`): same shape (optional `sdk` provider, `link` fast-path).
+  Its vendor-source wiring rides on Step 1's deferred desktop vendor work, so today `sdk` is unset
+  and `link` passes code through.
+
+**SDK-refresh timing** is as designed: the key is the sentinel `code`, so a byte-identical app
+keeps its resident/idle-cached worker across an SDK change and picks up the new SDK on the next
+spawn (daemon restart / idle eviction) — no live hot-swap.
+
+Verified: the rewrites touch only real imports (string-literal lookalikes, relative imports,
+and bogus sentinels untouched) and leave a non-matching bundle byte-identical
+(`sdk-externals.test.ts`); a `data:` reducer importing a `data:` SDK module round-trips with
+named exports intact (`sandbox.test.ts`); and end-to-end, the **real quay host** both runs a
+kernelHost-built counter (`{count:0}` → `{count:2}`, valibot validating inside the reducer) and
+builds+installs a project via Code (`devkit.test.ts`). `pnpm format`/`typecheck`/`lint:fix`/
+`test` (701) + the bun toolchain/sandbox/engine tests all green.
+
+<details><summary>Original Step 3 spec (regex; superseded — see "es-module-lexer, not regex" above)</summary>
 
 All channels reach `GetSandbox({ appId, code })`. Add a shared helper in `packages/app/sandbox.ts`:
 
@@ -482,6 +537,8 @@ Verification: dispatch a reducer for a built-in, an installed app, and a devkit 
 resolve the SDK through this one helper; the worker cache still reuses byte-identical apps; named SDK
 exports work in the reducer.
 
+</details>
+
 ### 4. App-code owns a types-only sysroot
 
 Move the supported-import list + type bake out of `packages/app/devkit-runtime.ts` into an
@@ -505,7 +562,7 @@ in `vite.ts` would fail to resolve at config load.
 
 The allowlist contents (for reference — they live in the constant, not in `index.json`): the React
 family (`react`, `react-dom`, `react-dom/client`, `react/jsx-runtime`, `react/jsx-dev-runtime`),
-`@justfiles/app` + `@justfiles/app/react` + `@justfiles/app/browser`, the five capability subpaths
+`@justfiles/app` + `@justfiles/app/react` + `@justfiles/app/browser`, the capability subpaths
 (`volume`, `notify`, `email`, `calendar`, `ai`), and `valibot`.
 
 `packages/app` keeps the devkit capability contracts, the generic `Toolchain`/`Diagnostic` types,

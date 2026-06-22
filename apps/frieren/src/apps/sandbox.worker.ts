@@ -1,5 +1,6 @@
 import type { GetSandbox, Sandbox } from '@justfiles/app'
 import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
+import { resolveSdkExternals, vendorUrl } from '@justfiles/app/sdk-externals'
 
 // Browser-side `GetSandbox`. It runs the same volume-backed app.js bytes as the
 // server kernel, but in a module Web Worker. The host↔isolate protocol lives in
@@ -53,7 +54,11 @@ async function cacheKey(code: string): Promise<string> {
 // `onDead` evicts this client from the worker cache so a crashed worker is never
 // handed back out; the next dispatch rebuilds a fresh one.
 function createWorker(code: string, onDead: () => void): WorkerClient {
-	const appUrl = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
+	// The reducer worker has no importmap, so its `justfiles-sdk:` sentinels are rewritten
+	// at spawn to the served `${origin}/vendor/<spec>.js` URL the blob worker fetches
+	// same-origin. The cache key was already taken over the sentinel `code` above.
+	const linked = resolveSdkExternals(code, (spec) => `${location.origin}${vendorUrl(spec)}`)
+	const appUrl = URL.createObjectURL(new Blob([linked], { type: 'application/javascript' }))
 	const workerUrl = URL.createObjectURL(
 		new Blob([sandboxWorkerSource(appUrl, 'web')], { type: 'application/javascript' })
 	)
