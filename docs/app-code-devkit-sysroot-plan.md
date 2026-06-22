@@ -539,7 +539,36 @@ exports work in the reducer.
 
 </details>
 
-### 4. App-code owns a types-only sysroot
+### 4. App-code owns a types-only sysroot (DONE ✅)
+
+**Done (2026-06-22).** App-code now emits its own types-only devkit sysroot at build; the
+host owns the SDK runtime + allowlist.
+
+- **`packages/app-code/devkit-sysroot.ts`** (new) — a `apply: 'build'` Vite plugin. In
+  `closeBundle` it calls `bakeTypes()` (from `@justfiles/app/devkit-runtime`), writes every
+  overlay file to `dist/devkit/types/<pkg>/…` (dropping the `node_modules/` key prefix so no
+  literal `node_modules` dir ships — the loader re-prepends it), and writes
+  `dist/devkit/index.json` = `{ schema: 'justfiles.devkit.v1', hash }` where `hash` is a
+  sha256 over the sorted `(path, content)` of every header. **No** `external` array, **no**
+  `runtime/` dir — the SDK allowlist is the host's compiled-in `sdkExternals` and the runtime
+  is the served `/vendor` modules.
+- **`packages/app-code/vite.config.ts`** — registers `devkitSysroot()` and sets
+  `include: ['devkit/**']` (threaded into the manifest by `DevServerOptions.include`), so the
+  fs builtin-seed (`builtinSourceFromFs` glob) carries `devkit/**` into the bundle.
+- The `@justfiles/app/sdk-externals` + `@justfiles/app/devkit-runtime` export subpaths the
+  plugin/resolvers need already exist (added in Steps 1–2); `bakeTypes` stays in
+  `packages/app` (plugin impl + `devkit-types.test.ts` fixture), `buildRuntime` stays as the
+  host SDK builder.
+
+Verified: `pnpm --filter @justfiles/app-code build` emits `dist/manifest.json` with
+`include: ["devkit/**"]`, `dist/devkit/index.json` with only `schema` + `hash`, and
+`dist/devkit/types/**` (326 files: `@justfiles/app|fs`, `@types/react|react-dom`, `valibot`,
+`csstype`, `type-fest`, … each with its `package.json`) — no `node_modules/` dir, no
+`runtime/`. `pnpm format`/`typecheck`/`lint:fix`/`test` (701) all green (re-emitting quay's
+`assets-dist` SDK vendor was needed so the freshly-rebuilt Code reducer's sentinels resolve —
+the Step 2 caveat, not a Step 4 change).
+
+<details><summary>Original Step 4 spec</summary>
 
 Move the supported-import list + type bake out of `packages/app/devkit-runtime.ts` into an
 app-code-owned build plugin (`packages/app-code/devkit-sysroot.ts`) that:
@@ -573,6 +602,8 @@ output is served for the gui and held in memory / served for the reducer — Ste
 Verification: `pnpm --filter @justfiles/app-code build`; `dist/manifest.json` includes `devkit/**`;
 `dist/devkit/index.json` exists with `schema` + `hash` and no `external` and no `runtime`; no
 `runtime/` directory is emitted.
+
+</details>
 
 ### 5. Make devkit toolchain resolution caller-aware (by app id, not by path)
 
