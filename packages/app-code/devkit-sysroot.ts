@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { bakeTypes } from '@justfiles/app/devkit-runtime'
+import { DEVKIT_SCHEMA, type DevkitIndex } from '@justfiles/app/devkit-sysroot'
 import type { Plugin, ResolvedConfig } from 'vite'
 
 // App-code owns the types-only devkit sysroot — the "headers" a draft compiles and
@@ -14,8 +15,6 @@ import type { Plugin, ResolvedConfig } from 'vite'
 // There is deliberately NO `external` array and NO `runtime/` here: the SDK allowlist +
 // the runtime are the host's (the compiled-in `sdkExternals` constant + the served vendor
 // modules). Shipping a copy per-draft would just reintroduce the drift it prevents.
-
-const SCHEMA = 'justfiles.devkit.v1'
 
 // `bakeTypes` keys the overlay as `node_modules/<pkg>/…` (the key tsc resolution needs),
 // but we DON'T ship a literal `node_modules` dir (npm/pnpm publish strip it, some tooling
@@ -36,14 +35,22 @@ export function devkitSysroot(): Plugin {
 			await rm(root, { recursive: true, force: true })
 			const types = await bakeTypes()
 			const digest = createHash('sha256')
+			// `files` (sorted, `node_modules/`-stripped) is the loader's read manifest —
+			// it reads each header by path without scanning the bundle dir.
+			const files: string[] = []
 			for (const [key, content] of Object.entries(types).sort(([a], [b]) => (a < b ? -1 : 1))) {
 				const rel = key.startsWith(NM) ? key.slice(NM.length) : key
 				const file = join(root, 'types', rel)
 				await mkdir(dirname(file), { recursive: true })
 				await writeFile(file, content)
+				files.push(rel)
 				digest.update(rel).update('\0').update(content).update('\0')
 			}
-			const index = { schema: SCHEMA, hash: `sha256-${digest.digest('hex')}` }
+			const index: DevkitIndex = {
+				schema: DEVKIT_SCHEMA,
+				hash: `sha256-${digest.digest('hex')}`,
+				files
+			}
 			await writeFile(join(root, 'index.json'), JSON.stringify(index, null, '\t'))
 		}
 	}

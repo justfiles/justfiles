@@ -16,12 +16,13 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { appBundleFromMemory } from '@justfiles/app'
-import type { Compile, Toolchain, TypesBundle } from '@justfiles/app/capabilities/devkit/host'
+import type { Compile, Toolchain } from '@justfiles/app/capabilities/devkit/host'
 import {
 	devkitCapability as makeDevkit,
 	type Runner
 } from '@justfiles/app/capabilities/devkit/host'
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
+import { loadTypes } from '@justfiles/app/devkit-sysroot'
 import type { Kernel } from '@justfiles/app/runtime'
 import { typescriptToolchain } from '@justfiles/app/toolchain/typescript'
 import type { Volume } from '@justfiles/fs'
@@ -33,7 +34,6 @@ import { compile as backendCompile } from '#engine'
 import { ASSETS_DIR } from './resources.ts'
 
 let runtimePromise: Promise<Record<string, string>> | null = null
-let typesPromise: Promise<TypesBundle | undefined> | null = null
 
 // `getKernel` is lazy because the kernel is built with this capability already in its
 // registry (host.ts) — the kernel reference only exists after construction.
@@ -42,6 +42,28 @@ export function devkitCapability(
 	getKernel: () => Kernel,
 	onInstalled: () => void | Promise<void>
 ) {
+	// The in-process toolchain, keyed by the calling app's id: the `#engine` compile
+	// backend (shared) for `compile`, the TypeScript compiler API for `typecheck`,
+	// with the `.d.ts` overlay read from THAT app's installed types sysroot
+	// (`devkit/**`, shipped by app-code). No node_modules/baked fallback — a host
+	// always has app-code installed, so the headers are always present. Cached for
+	// the daemon's life.
+	const toolchains = new Map<string, Promise<Toolchain>>()
+	const toolchain = (ctx: { appId: string }): Promise<Toolchain> => {
+		let tc = toolchains.get(ctx.appId)
+		if (!tc) {
+			tc = (async () => {
+				const installed = await getKernel().app(ctx.appId)
+				return typescriptToolchain({
+					compile: await compileBackend(),
+					ts,
+					types: await loadTypes((path) => installed.read(path))
+				})
+			})()
+			toolchains.set(ctx.appId, tc)
+		}
+		return tc
+	}
 	return makeDevkit({
 		fs,
 		toolchain,
@@ -81,38 +103,6 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 				.catch(() => {})
 		}
 	}
-}
-
-// The in-process toolchain: the `#engine` compile backend for `compile`, the
-// TypeScript compiler API for `typecheck`. In dev the checker resolves the system
-// libs from node_modules; shipped (no node_modules) it reads the baked TypesBundle
-// (`loadTypes`). Shares the cached runtime. Keyed by the calling app's id so a
-// future per-app types sysroot (Step 6) caches per caller — today every caller
-// gets the same toolchain over the one shared runtime.
-const toolchains = new Map<string, Promise<Toolchain>>()
-function toolchain(ctx: { appId: string }): Promise<Toolchain> {
-	let tc = toolchains.get(ctx.appId)
-	if (!tc) {
-		tc = (async () =>
-			typescriptToolchain({ compile: await compileBackend(), ts, types: await loadTypes() }))()
-		toolchains.set(ctx.appId, tc)
-	}
-	return tc
-}
-
-// The `.d.ts` overlay for typecheck. Shipped, the exe has no node_modules, so read the
-// bundle baked at ship time (build-assets.ts → assets-dist/types.json) and the checker
-// resolves the SDK/React types from it. In dev (no baked file) it stays undefined and
-// typecheck falls through to node_modules. Cached for the daemon's life.
-async function loadTypes(): Promise<TypesBundle | undefined> {
-	if (!typesPromise)
-		typesPromise = (async () => {
-			const baked = join(ASSETS_DIR, 'types.json')
-			return existsSync(baked)
-				? JSON.parse(new TextDecoder().decode(await readFile(baked)))
-				: undefined
-		})()
-	return typesPromise
 }
 
 // The compile backend (`#engine`) with the system runtime closed in — built once

@@ -551,7 +551,8 @@ host owns the SDK runtime + allowlist.
   `dist/devkit/index.json` = `{ schema: 'justfiles.devkit.v1', hash }` where `hash` is a
   sha256 over the sorted `(path, content)` of every header. **No** `external` array, **no**
   `runtime/` dir — the SDK allowlist is the host's compiled-in `sdkExternals` and the runtime
-  is the served `/vendor` modules.
+  is the served `/vendor` modules. (Step 6 added a `files: string[]` manifest to `index.json`
+  so the loader can read each header via a bare `read` with no directory scan.)
 - **`packages/app-code/vite.config.ts`** — registers `devkitSysroot()` and sets
   `include: ['devkit/**']` (threaded into the manifest by `DevServerOptions.include`), so the
   fs builtin-seed (`builtinSourceFromFs` glob) carries `devkit/**` into the bundle.
@@ -656,7 +657,44 @@ devkit as that app, and asserts the host reads the caller's headers.
 
 </details>
 
-### 6. Load the types from installed app assets (no node_modules fallback)
+### 6. Load the types from installed app assets (no node_modules fallback) (DONE ✅)
+
+**Done (2026-06-22).** One shared `loadTypes(read)` reassembles app-code's installed `devkit/**`
+sysroot into the tsc overlay; quay reads it from the installed app via the caller-aware toolchain
+(Step 5). No `node_modules`/baked-`types.json` fallback.
+
+- **shared loader** — `packages/app/devkit-sysroot.ts` (new, exported as
+  `@justfiles/app/devkit-sysroot`): `loadTypes(read)`, `DEVKIT_SCHEMA`, and the `DevkitIndex` shape.
+  Deliberately a **tiny, dependency-free** module (imports only the `TypesBundle` TYPE, erased at
+  runtime) — because app-code's build PLUGIN imports `DEVKIT_SCHEMA`/`DevkitIndex` from it in Vite's
+  **config context**, where pulling the kernel/fs graph (as `@justfiles/app/devkit` does) blows up
+  (`@justfiles/fs/storage` can't resolve there). So the reader/writer constants live here, not in
+  `devkit.ts`.
+- **the `read`-only signature needs a file manifest.** An installed app exposes only `read` (no
+  lister — `InstalledApp = { manifest, read }`), so the loader can't scan `devkit/types/**`. The
+  sysroot `index.json` therefore now carries **`files: string[]`** (the sorted, `node_modules/`-stripped
+  header paths) — `devkit-sysroot.ts` (app-code) writes it; `loadTypes` reads `index.json`, then reads
+  each `devkit/types/<rel>` and keys it `node_modules/<rel>`. (This extends Step 4's `index.json`,
+  which was `schema` + `hash` only.)
+- **quay** (`quayd/devkit.ts`): the per-`appId` toolchain (Step 5's Map, now closed over `getKernel`)
+  builds `typescriptToolchain({ compile, ts, types: await loadTypes((p) => installed.read(p)) })`
+  where `installed = await getKernel().app(ctx.appId)`. The old baked-`types.json` `loadTypes` +
+  `typesPromise` are gone (the build still *writes* `types.json` until Step 7 retires it; nothing
+  reads it). A host always has app-code installed, so the headers are always present — a missing
+  sysroot throws a clear error, never a silent `node_modules` read.
+- **desktop** is compile-only (no `typecheck`), so it loads no types; **frieren** offline degrades
+  `typecheck` to `CAPABILITY_UNAVAILABLE` (the online container path reads via this same loader) — both
+  unchanged here. `TypesBundle` stays `Record<string, string>`, eager + fully in-memory, cached by the
+  Step 5 toolchain Map (per `appId`; the install-time `hash` is the content version).
+
+Verified: `packages/app/devkit-sysroot.test.ts` — `loadTypes` over an in-memory bundle reassembles the
+**exact** overlay `bakeTypes` produced (round-trip equality), that loaded overlay type-checks the
+starter with no `node_modules` in it, and a missing `devkit/index.json` throws a clear error. quay's
+real-host `devkit.test.ts` now exercises `loadTypes` reading the installed `app.code` headers for free
+(toolchain construction loads them before the first `compile`). `pnpm format`/`typecheck`/`lint:fix`/
+`test` (706) + the bun toolchain/engine tests all green.
+
+<details><summary>Original Step 6 spec</summary>
 
 One shared loader takes a `read` function and assembles the types overlay:
 
@@ -698,6 +736,8 @@ so the 8 MB checker stays off the client.
 
 Verification: load types from an in-memory installed bundle; missing `devkit/index.json` → clear
 error; the starter typechecks with no `node_modules` available.
+
+</details>
 
 ### 7. Retire quay's baked `runtime.json` / `types.json`
 
