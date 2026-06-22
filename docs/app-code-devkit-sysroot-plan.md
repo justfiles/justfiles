@@ -739,7 +739,34 @@ error; the starter typechecks with no `node_modules` available.
 
 </details>
 
-### 7. Retire quay's baked `runtime.json` / `types.json`
+### 7. Retire quay's baked `runtime.json` / `types.json` (DONE ✅)
+
+**Done (2026-06-22).** Both baked artifacts are gone — quay neither writes nor reads
+`runtime.json`/`types.json`. The SDK is no longer compile-injected, and the headers come from the
+installed app-code sysroot (Step 6).
+
+- **`runtime.json` → gone.** `quayd/devkit.ts`'s `loadRuntime()` (+ its `runtimePromise` cache and
+  the `existsSync`/`readFile`/`join`/`ASSETS_DIR` it pulled in) is removed. The SDK is externalized
+  (gui importmap; reducer sentinel→host module at spawn), so the compile backend injects **no**
+  runtime map — `compileBackend()` is now a one-liner closing the empty (now-inert) RUNTIME namespace
+  in: `(input) => backendCompile(input, {})`. `build-assets.ts` no longer writes
+  `assets-dist/runtime.json`.
+- **`types.json` → gone.** `build-assets.ts` no longer writes it and drops `bakeTypes`; the type
+  overlay is the installed app-code headers, already read via the Step 6 `loadTypes` loader (Step 6
+  retired `quayd/devkit.ts`'s baked `loadTypes`).
+- **`quayd/devkit.ts` stops importing `@justfiles/app/devkit-runtime` entirely** — grep-clean.
+  `build-assets.ts` keeps the single `buildRuntime` import: that is the **host SDK vendor builder**
+  (Step 1's `emitSdkVendor`), not the baked runtime — the plan calls for exactly this
+  ("`buildRuntime()` output lives only as the Step 1 vendor modules"). `discovery.ts`'s `runtime.json`
+  is the unrelated daemon discovery socket and is untouched.
+
+Verified: `pnpm --filter @justfiles/quay build` emits all 11 SDK vendor modules
+(`@justfiles/…` + `valibot.js`) and **no** `assets-dist/runtime.json` / `types.json`; quay's real-host
+`devkit.test.ts` (build + install + run a reducer through the caller-aware toolchain) still passes, so
+the reducer resolves the SDK via the spawn rewrite with no baked runtime. `pnpm format`/`typecheck`/
+`lint:fix`/`test` (706) + the bun devkit/sandbox/toolchain tests (10) all green.
+
+<details><summary>Original Step 7 spec</summary>
 
 Both baked artifacts go — the SDK is no longer inlined at compile, and the headers come from the
 installed sysroot:
@@ -758,6 +785,8 @@ Verification: `pnpm --filter @justfiles/quay build`; the reducer still runs (res
 spawn rewrite); no `assets-dist/runtime.json` / `types.json` is written; `rg "devkit-runtime"
 apps/quay/quayd/{build-assets,devkit}.ts` shows no dependency (scope the grep — `quayd/discovery.ts`
 has its OWN unrelated `runtime.json`, the daemon discovery socket).
+
+</details>
 
 ### 8. Make unsupported npm imports explicit
 

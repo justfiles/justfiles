@@ -19,12 +19,13 @@
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-// The devkit system runtime + type-checker overlay (the libs the compiler injects
-// into every draft, and the `.d.ts` the type-checker resolves against). Baked here, at
-// ship time, because both read node_modules — which the self-contained exe doesn't
-// carry — so the daemon reads the baked bytes instead (devkit.ts). Build-time only;
-// never pulled into the shipped exe's runtime path.
-import { bakeTypes, buildRuntime } from '@justfiles/app/devkit-runtime'
+// The host SDK builder: `buildRuntime` bundles each SDK/valibot spec into a self-contained
+// ESM module, emitted below as served `/vendor/<spec>.js` (the gui importmap + the reducer's
+// fetched/injected SDK). Build-time only — it imports native esbuild and reads node_modules,
+// which the self-contained exe doesn't carry — so it never sits on the shipped exe's runtime
+// path. The SDK is externalized now, so there is no longer a baked `runtime.json` (compile-time
+// injection) or `types.json` (the type overlay ships with app-code's installed sysroot).
+import { buildRuntime } from '@justfiles/app/devkit-runtime'
 // The bundler is runtime-selected (`#assets`): native esbuild under node, Bun.build
 // under bun — so `bun quayd/build-assets.ts` builds these with zero esbuild. The React
 // shim shape (a single core bundle + thin re-export shims) is identical either way.
@@ -65,18 +66,15 @@ async function main(): Promise<void> {
 	await rm(OUT_DIR, { recursive: true, force: true })
 	await mkdir(OUT_DIR, { recursive: true })
 	for (const [name, text] of files) await writeFile(join(OUT_DIR, name), text)
-	// The devkit system runtime + type overlay, baked beside the launcher assets. Not
-	// `.js` vendor assets (assets.ts won't serve them); devkit.ts reads them off disk.
-	const runtime = await buildRuntime()
-	await writeFile(join(OUT_DIR, 'runtime.json'), JSON.stringify(runtime))
-	await writeFile(join(OUT_DIR, 'types.json'), JSON.stringify(await bakeTypes()))
-	// The same SDK build, also emitted as served `/vendor/<spec>.js` modules so the gui
-	// importmap (and the browser reducer's fetched URL) resolve the SDK to the host's copy.
-	// Vendor URLs mirror the specifier, so nested `@justfiles/…` paths need their dirs made.
-	const sdk = await emitSdkVendor(runtime)
+	// The host SDK build, emitted as served `/vendor/<spec>.js` modules so the gui importmap
+	// (and the browser reducer's fetched URL) resolve the SDK to the host's copy. Vendor URLs
+	// mirror the specifier, so nested `@justfiles/…` paths need their dirs made. No more baked
+	// `runtime.json`/`types.json`: the SDK is externalized (not compile-injected) and the type
+	// overlay ships with app-code's installed sysroot.
+	const sdk = await emitSdkVendor(await buildRuntime())
 	const docs = await copyDocs()
 	console.log(
-		`quayd: built ${files.size} launcher assets + ${sdk} SDK vendor + runtime + types + ${docs} docs → ${OUT_DIR}`
+		`quayd: built ${files.size} launcher assets + ${sdk} SDK vendor + ${docs} docs → ${OUT_DIR}`
 	)
 }
 

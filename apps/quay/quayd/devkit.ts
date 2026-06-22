@@ -7,21 +7,19 @@
 // the project, build, pack, install — is the factory's generic pipeline.
 //
 // The compile backend is runtime-selected (`#engine`: native esbuild under node,
-// `Bun.build` under bun) over the pre-bundled system `runtime` (`buildRuntime`,
-// built once and cached). `install` fires `onInstalled` so quayd materialises its
-// `.app` (Slice 6's reconcile) and the launcher re-lists — no change to app-code's
-// reducer.
+// `Bun.build` under bun). The SDK is externalized now — not bundled into a compile-time
+// `runtime` map — so there is no baked `runtime.json` to load; the gui resolves the SDK
+// via the importmap and the reducer's `justfiles-sdk:` sentinel is rewritten at spawn to
+// the host's served/in-memory vendor module. `install` fires `onInstalled` so quayd
+// materialises its `.app` (Slice 6's reconcile) and the launcher re-lists — no change to
+// app-code's reducer.
 
-import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 import { appBundleFromMemory } from '@justfiles/app'
 import type { Compile, Toolchain } from '@justfiles/app/capabilities/devkit/host'
 import {
 	devkitCapability as makeDevkit,
 	type Runner
 } from '@justfiles/app/capabilities/devkit/host'
-import { buildRuntime } from '@justfiles/app/devkit-runtime'
 import { loadTypes } from '@justfiles/app/devkit-sysroot'
 import type { Kernel } from '@justfiles/app/runtime'
 import { typescriptToolchain } from '@justfiles/app/toolchain/typescript'
@@ -31,9 +29,6 @@ import * as ts from 'typescript'
 // Bun.build under bun (package.json `imports` → `quayd/devkitEngine.{node,bun}.ts`).
 // typecheck stays on tsc for both — only `compile` swaps.
 import { compile as backendCompile } from '#engine'
-import { ASSETS_DIR } from './resources.ts'
-
-let runtimePromise: Promise<Record<string, string>> | null = null
 
 // `getKernel` is lazy because the kernel is built with this capability already in its
 // registry (host.ts) — the kernel reference only exists after construction.
@@ -55,7 +50,7 @@ export function devkitCapability(
 			tc = (async () => {
 				const installed = await getKernel().app(ctx.appId)
 				return typescriptToolchain({
-					compile: await compileBackend(),
+					compile: compileBackend(),
 					ts,
 					types: await loadTypes((path) => installed.read(path))
 				})
@@ -105,21 +100,10 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 	}
 }
 
-// The compile backend (`#engine`) with the system runtime closed in — built once
-// and cached for the daemon's life. The bundler is the runtime's choice; this
-// module never names it.
-async function compileBackend(): Promise<Compile> {
-	if (!runtimePromise) runtimePromise = loadRuntime()
-	const runtime = await runtimePromise
-	return (input) => backendCompile(input, runtime)
-}
-
-// The devkit system runtime. Shipped, the self-contained exe has no node_modules for
-// buildRuntime's esbuild pass, so read the copy baked at ship time (build-assets.ts →
-// assets-dist/runtime.json). In dev (no baked file yet) build it from node_modules on
-// first use. Cached for the daemon's life either way.
-async function loadRuntime(): Promise<Record<string, string>> {
-	const baked = join(ASSETS_DIR, 'runtime.json')
-	if (existsSync(baked)) return JSON.parse(new TextDecoder().decode(await readFile(baked)))
-	return buildRuntime()
+// The compile backend (`#engine`) — esbuild under node, Bun.build under bun. The SDK is
+// externalized (gui importmap; reducer sentinel → host module at spawn), so the backend
+// injects NO runtime map: the once-baked `runtime.json` is gone and the now-inert RUNTIME
+// namespace is threaded empty. The bundler is the runtime's choice; this module never names it.
+function compileBackend(): Compile {
+	return (input) => backendCompile(input, {})
 }
