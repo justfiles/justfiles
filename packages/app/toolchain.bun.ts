@@ -9,8 +9,9 @@
 // below); Node-side modules never import this one, so they don't see it.
 /// <reference types="bun" />
 
+import { isSdkSpec, reactExternals } from './sdk-externals.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
-import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
+import { compileVfs, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
 
 // Bundle each named entry of a draft with `Bun.build`, reading bytes back from the
 // in-memory `result.outputs` (no temp dir). `throw: false` so a failed pass
@@ -25,7 +26,7 @@ export function bunCompile(
 			entrypoints: [entry],
 			format: 'esm',
 			target: 'browser',
-			external: EXTERNAL,
+			external: reactExternals,
 			throw: false,
 			// Our entries are virtual (the vfs plugin resolves them), and a directory-
 			// prefixed one like `src/app.ts` makes Bun derive `src` as the build root and
@@ -69,6 +70,10 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Bu
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
+				// SDK: externalized as a bare specifier (the reducer's are sentinelized in
+				// `compileVfs`; the gui's stay bare for the host importmap). Bun keeps the
+				// original specifier for externals, so the rewrite can't happen here.
+				if (isSdkSpec(args.path)) return { path: args.path, external: true }
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME }
 				return undefined // react → external
 			})

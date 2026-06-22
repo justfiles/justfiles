@@ -52,7 +52,11 @@ describe('typescriptToolchain', () => {
 		const result = await toolchain.compile(project({ 'app.ts': APP, 'gui.ts': GUI }, 'gui.ts'))
 		expect(result.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 		expect(result.outputs.map((o) => o.path).sort()).toEqual(['app.js', 'gui.js'])
-		expect(result.outputs.find((o) => o.path === 'app.js')?.text).toContain('dispatch')
+		// app.js externalizes the SDK to the `justfiles-sdk:` sentinel (resolved at spawn),
+		// not inlined.
+		expect(result.outputs.find((o) => o.path === 'app.js')?.text).toMatch(
+			/from\s*["']justfiles-sdk:@justfiles\/app["']/
+		)
 	})
 
 	test('typecheck passes a valid project (system imports resolve)', async () => {

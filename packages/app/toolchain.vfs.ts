@@ -1,23 +1,24 @@
 // The bundler-agnostic half of the devkit compile toolchain: the `files`-map
-// resolve/load rules, the externalised-React list, the React-GUI entry wrap, and
-// the per-entry orchestration that shapes a `ProjectInput` into a `CompileResult`.
+// resolve/load rules, the SDK externalization + reducer-sentinel rewrite, the
+// React-GUI entry wrap, and the per-entry orchestration that shapes a
+// `ProjectInput` into a `CompileResult`.
 // No esbuild/Bun types live here — `toolchain.esbuild.ts` and `toolchain.bun.ts` are
 // thin adapters that plug their bundler's `onResolve`/`onLoad` into these rules and
 // hand `compileVfs` a single `buildOne` strategy. One home for the substance; the
 // per-bundler glue stays tens of lines each.
 
 import { isReactGuiEntry, reactGuiEntry } from './react-entry.ts'
+import { sentinelizeReducer } from './sdk-externals.ts'
 import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
-// React stays external (resolved through the host importmap) so a preview shares
-// the one host React instance. Mirrors the list `buildRuntime` keeps external.
-export const EXTERNAL = [
-	'react',
-	'react-dom',
-	'react-dom/client',
-	'react/jsx-runtime',
-	'react/jsx-dev-runtime'
-]
+// The SDK is externalized in both compile paths (the dylib model): the React family stays
+// external via each bundler's top-level `external` (it also catches the auto-injected JSX
+// runtime import), and the SDK is externalized as a BARE specifier by the adapters'
+// `onResolve` (see `isSdkSpec`). The gui keeps those bare specifiers — the host importmap
+// resolves them in the document; the reducer's are rewritten to the `justfiles-sdk:`
+// sentinel here in `compileVfs` (a Worker has no importmap), which the host resolves at
+// spawn. The rewrite is a post-build pass because Bun keeps the original specifier for
+// externals (esbuild could rewrite in-resolve, but one shared pass works for both).
 
 // The two virtual namespaces a bundler plugin tags resolved paths with: draft
 // sources from the `files` map, and pre-bundled system libraries from `runtime`.
@@ -105,7 +106,11 @@ export async function compileVfs(
 			: input.files
 		const result = await buildOne({ name, entry: wrap ? REACT_GUI_ENTRY : entry, sources }, runtime)
 		diagnostics.push(...result.diagnostics)
-		if (result.js !== undefined) outputs.push({ path: `${name}.js`, text: result.js })
+		// The reducer (`app`) carries the SDK to a Worker, which has no importmap — rewrite its
+		// bare SDK imports to the `justfiles-sdk:` sentinel the host resolves at spawn. The gui
+		// (`name === 'gui'`) keeps its bare specifiers (the document importmap resolves them).
+		const js = result.js !== undefined && name !== 'gui' ? sentinelizeReducer(result.js) : result.js
+		if (js !== undefined) outputs.push({ path: `${name}.js`, text: js })
 		if (result.css !== undefined) outputs.push({ path: `${name}.css`, text: result.css })
 	}
 	return { outputs, diagnostics }

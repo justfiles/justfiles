@@ -39,6 +39,35 @@ export const sdkExternals: readonly { spec: string; reducer: boolean }[] = [
 // Every externalized specifier — the allowlist both compile-path resolvers mark external.
 export const externals = [...reactExternals, ...sdkExternals.map((s) => s.spec)]
 
+// The reducer sentinel prefix. A reducer worker has no importmap, so the compiler can't
+// leave a bare SDK specifier — it emits `justfiles-sdk:<spec>` and the host rewrites each
+// at spawn to a module URL the worker can load. Shared by BOTH compile paths (Step 2) and
+// the spawn resolver (Step 3) so the emitted sentinel and the rewrite can't drift.
+export const SDK_SENTINEL = 'justfiles-sdk:'
+
+const SDK_SPECS = new Set(sdkExternals.map((s) => s.spec))
+
+// Is `spec` a platform SDK specifier? Both compile paths externalize these as BARE
+// specifiers (the gui keeps them for the host importmap; the reducer's are then rewritten
+// by `sentinelizeReducer`). React is handled separately via the bundler's top-level
+// `external`, so it's deliberately not in this set.
+export function isSdkSpec(spec: string): boolean {
+	return SDK_SPECS.has(spec)
+}
+
+// Rewrite each bare SDK import in a compiled REDUCER to the `justfiles-sdk:` sentinel the
+// host resolves at spawn (a Worker has no importmap, so it can't carry a bare specifier).
+// Applied only to the reducer output — the gui keeps its bare specifiers for the importmap.
+// Both bundlers externalize the SDK as a bare specifier (esbuild can rewrite in-resolve but
+// Bun keeps the original specifier for externals, so a post-build rewrite is the one path
+// that works for both). Anchored on `from`/`import(` + an EXACT SDK-spec match, so it never
+// touches a same-named string literal; the reducer's SDK imports are static today, so exact.
+export function sentinelizeReducer(js: string): string {
+	return js.replace(/(from\s*|import\s*\(\s*)(["'])([^"']+)\2/g, (match, pre, quote, spec) =>
+		SDK_SPECS.has(spec) ? `${pre}${quote}${SDK_SENTINEL}${spec}${quote}` : match
+	)
+}
+
 // The `/vendor/<spec>.js` URL a specifier resolves to (importmap value + the reducer's
 // served-URL form). React keeps its existing mangled vendor names, so this is the SDK
 // half of the importmap; callers merge it with the React entries.

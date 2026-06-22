@@ -7,8 +7,9 @@
 // same vfs rules.
 
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
+import { isSdkSpec, reactExternals } from './sdk-externals.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
-import { compileVfs, EXTERNAL, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
+import { compileVfs, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
 
 export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 
@@ -28,7 +29,7 @@ export function esbuildCompile(
 				bundle: true,
 				write: false,
 				format: 'esm',
-				external: EXTERNAL,
+				external: reactExternals,
 				jsx: 'automatic',
 				logLevel: 'silent',
 				plugins: [vfs(sources, rt)]
@@ -53,6 +54,9 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
+				// SDK: externalized as a bare specifier (the reducer's are sentinelized in
+				// `compileVfs`; the gui's stay bare for the host importmap).
+				if (isSdkSpec(args.path)) return { path: args.path, external: true }
 				// A pre-bundled system library; side-effect-free so unused exports
 				// (e.g. the kernel half of `@justfiles/app`) tree-shake away.
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME, sideEffects: false }

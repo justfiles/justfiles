@@ -362,7 +362,46 @@ resolves in the webview via the importmap.
 
 </details>
 
-### 2. Externalize the SDK in BOTH compile paths (entry-kind-aware)
+### 2. Externalize the SDK in BOTH compile paths (entry-kind-aware) (DONE ✅)
+
+**Done (2026-06-22).** Both compile paths externalize the SDK; the reducer carries the
+`justfiles-sdk:` sentinel.
+
+- **shared rules** (`packages/app/sdk-externals.ts`): `SDK_SENTINEL = 'justfiles-sdk:'`,
+  `isSdkSpec(spec)` (the bare-externalize predicate), and `sentinelizeReducer(js)` (rewrites a
+  compiled reducer's bare SDK imports → sentinel; anchored on `from`/`import(` + an exact
+  SDK-spec match). One home both compile paths import.
+- **bare-externalize-then-rewrite, not in-resolve.** The original plan assumed each resolver
+  rewrites to the sentinel in `onResolve`. That works for esbuild but **Bun keeps the original
+  specifier for `external` imports** — it ignores both `path` and `namespace` in an `onResolve`
+  result (verified with a throwaway on bun 1.3.7). So both bundlers externalize the SDK as a
+  **bare** specifier and the **reducer** output is rewritten in one shared post-build pass
+  (`sentinelizeReducer`), which works uniformly. React stays external via each bundler's
+  top-level `external: reactExternals` (it also catches the auto-injected JSX-runtime import).
+- **devkit toolchain** (`toolchain.vfs.ts` + esbuild/bun adapters): the adapters mark SDK specs
+  external bare (`isSdkSpec`); `compileVfs` sentinelizes the reducer entry (`name !== 'gui'`).
+  The gui keeps bare specifiers for the importmap.
+- **kernelHost** (`vite.ts`): the gui lib build's `rollupOptions.external` is now `externals`
+  (React + SDK bare, importmap-resolved); the reducer `compile()` uses esbuild `external:
+  externals` + `sentinelizeReducer`. (Serve-mode `resolve.dedupe` → `reactExternals`.)
+- **`runtime` map kept threaded for now.** SDK externalization takes precedence over the
+  (now-inert) `runtime` injection in the adapters; the host-side `runtime`/`runtime.json` /
+  `virtual:devkit-runtime` removal stays Steps 7/10.
+
+Verified: the esbuild and Bun toolchains emit gui-bare / app-sentinel; the externalized reducer
+dispatches once its sentinels are resolved to `data:` URLs of the host SDK (valibot named
+exports intact, multi-module no-singleton) — `packages/app/devkit.test.ts`; a `kernelHost`-built
+`app-counter` emits `justfiles-sdk:@justfiles/app` + `justfiles-sdk:valibot` in `app.js` and bare
+`@justfiles/app/browser` in `gui.js` (`defineGUI` not inlined → shrinks); the react-free guard
+still passes. `pnpm format`/`typecheck`/`lint:fix`/`test` (696) + the bun toolchain tests all green.
+
+**Caveat — Step 3 is required to RUN a rebuilt reducer.** A reducer now emits sentinels that
+nothing resolves until Step 3's spawn rewrite. `pnpm test` stays green only because it runs the
+kernel against the PRE-BUILT (bundled) built-in dists — it never rebuilds them. A full `turbo
+build` (which rebuilds built-ins with sentinels) + test needs Step 3, since quay's `agent.test.ts`
+and `devkit.test.ts` dispatch into a built-in reducer.
+
+<details><summary>Original Step 2 spec</summary>
 
 Today only React is external, and only in some paths. Make **both** compile paths externalize the
 SDK + React, driven by the one shared constant, per entry-kind:
@@ -393,6 +432,8 @@ given the no-singleton property.)
 Verification: a compiled `gui.js` emits bare `@justfiles/app` (no inlined SDK) and shrinks; a
 compiled `app.js` emits `justfiles-sdk:@justfiles/app` (no inlined SDK); a built-in built via
 `kernelHost` emits the same shapes (not a bundled SDK).
+
+</details>
 
 ### 3. Resolve the reducer sentinel at spawn (the one seam, all channels)
 

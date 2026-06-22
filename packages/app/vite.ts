@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
+import { externals, reactExternals, sentinelizeReducer } from '@justfiles/app/sdk-externals'
 import tailwindcss from '@tailwindcss/vite'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
@@ -15,13 +16,6 @@ const DEV_BOOTSTRAP_URL = '/_kernel-host/bootstrap.js'
 const DEV_BOOTSTRAP_ID = '\0kernel-host:bootstrap'
 const VIRTUAL_GUI_ID = 'virtual:justfiles-app/gui'
 const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
-const REACT_SPECIFIERS = [
-	'react',
-	'react-dom',
-	'react-dom/client',
-	'react/jsx-runtime',
-	'react/jsx-dev-runtime'
-]
 
 // `kernelHost` is the app package's only build wiring. It has two modes:
 //
@@ -35,6 +29,10 @@ const REACT_SPECIFIERS = [
 // externalizes this plugin and resolves it with native Node, which can't
 // load relative TypeScript siblings (./dev-server goes via ssrLoadModule, the
 // React shim codegen via the bare @justfiles/app/react-entry specifier).
+// Compile the reducer (`app.js`). The SDK + React are externalized (not bundled): the host
+// owns the SDK runtime, so the reducer links it at launch, not a copy frozen at build. A
+// reducer Worker has no importmap, so its bare SDK imports are rewritten to the
+// `justfiles-sdk:` sentinel the host resolves at spawn (`sentinelizeReducer`).
 const compile = (entry: string) => {
 	const output = buildSync({
 		entryPoints: [entry],
@@ -42,10 +40,11 @@ const compile = (entry: string) => {
 		bundle: true,
 		write: false,
 		format: 'esm',
-		minify: true
+		minify: true,
+		external: externals
 	}).outputFiles[0]
 	if (!output) throw new Error(`failed to compile ${entry}`)
-	return output.text
+	return sentinelizeReducer(output.text)
 }
 
 function readPackageVersion(root: string): string | undefined {
@@ -178,7 +177,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					// dev-server loads src/app.ts via environments.kernel.runner.
 					return {
 						appType: 'custom',
-						resolve: { dedupe: REACT_SPECIFIERS },
+						resolve: { dedupe: reactExternals },
 						environments: {
 							kernel: {
 								consumer: 'server',
@@ -207,11 +206,11 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 							fileName: () => 'gui.js'
 						},
 						rollupOptions: {
-							// The host serves a single shared React via /vendor/*.js
-							// (see apps/frieren importmap). Apps emit bare specifiers
-							// and the browser resolves them through the importmap —
-							// one URL, one React instance across host and every app.
-							external: REACT_SPECIFIERS
+							// The host serves a single shared React + the SDK via /vendor/*.js
+							// (see the importmap). The gui emits bare specifiers and the browser
+							// resolves them through the importmap — one URL per library across the
+							// host and every app, and the app links the host's SDK at runtime.
+							external: externals
 						}
 					}
 				}

@@ -53,27 +53,35 @@ describe('devkit compile', () => {
 			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics).toEqual([])
-		expect(app).toContain('dispatch') // the reducer surface is bundled in
-		expect(gui.length).toBeGreaterThan(0)
-		// @justfiles/app is bundled in, not left as a bare import — app.js is a
-		// self-contained module the sandbox worker can run with no importmap.
-		expect(app).not.toMatch(/from\s*["']@justfiles\/app["']/)
+		// app.js (reducer): the SDK is externalized to the `justfiles-sdk:` sentinel the host
+		// resolves at spawn, NOT inlined — so the reducer links the host's current SDK.
+		expect(app).toMatch(/from\s*["']justfiles-sdk:@justfiles\/app["']/)
+		expect(app).not.toContain('dispatch') // the SDK impl is not bundled in
+		// gui.js: the SDK stays a bare specifier the host importmap resolves in the document.
+		expect(gui).toMatch(/from\s*["']@justfiles\/app\/browser["']/)
 	})
 
 	// Regression: the system runtime must expose valibot's *named* exports, not
 	// a lone default. Bundling valibot's CJS file as an entry collapsed it to
 	// `export default`, so a draft's `import * as v` left `v.object` undefined
 	// and the bundle compiled `schema: (void 0)({})` — every dispatch then threw
-	// `(void 0) is not a function`. Compile + actually dispatch to prove the
-	// reducer runs end to end.
-	test('compiled app dispatches actions (valibot named exports resolve)', async () => {
+	// `(void 0) is not a function`. The reducer now externalizes both the SDK and
+	// valibot to sentinels; resolve each to a data: URL of the host's in-memory SDK
+	// (mirroring the spawn rewrite) and actually dispatch, proving named exports survive
+	// AND the externalized reducer runs once its sentinels are resolved.
+	test('compiled app dispatches actions (externalized SDK + valibot named exports)', async () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
 			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics).toEqual([])
 		expect(app).not.toContain('(void 0)(')
-		const url = `data:text/javascript;base64,${Buffer.from(app).toString('base64')}`
+		const resolved = app.replace(
+			/justfiles-sdk:([^"']+)/g,
+			(_, spec) =>
+				`data:text/javascript;base64,${Buffer.from(runtime[spec] ?? '').toString('base64')}`
+		)
+		const url = `data:text/javascript;base64,${Buffer.from(resolved).toString('base64')}`
 		const mod = (await import(/* @vite-ignore */ url)) as {
 			app: {
 				dispatch(
@@ -100,9 +108,12 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 			{ app: 'app.ts', gui: 'gui.tsx' }
 		)
 		expect(diagnostics).toEqual([])
-		expect(gui).toMatch(/from\s*"react"/)
-		expect(gui).toMatch(/from\s*"react-dom\/client"/)
-		expect(gui).toMatch(/from\s*"react\/jsx-runtime"/)
+		// The `.tsx` default export is wrapped via the React GUI entry, which is now
+		// EXTERNALIZED (a bare `@justfiles/app/react` the host importmap resolves) rather
+		// than bundled — so `react`/`react-dom` live in that vendor module, not inlined here.
+		expect(gui).toMatch(/from\s*["']@justfiles\/app\/react["']/)
+		expect(gui).toMatch(/from\s*["']react\/jsx-runtime["']/) // JSX runtime stays bare
+		expect(gui).not.toContain('react-dom') // the wrapper's React isn't inlined
 		expect(gui).toContain('menu')
 		expect(gui).not.toContain('initialState')
 	})

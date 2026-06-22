@@ -47,10 +47,12 @@ test('compile produces named outputs with no errors', async () => {
 			.filter((p) => p.endsWith('.js'))
 			.sort()
 	).toEqual(['app.js', 'gui.js'])
-	expect(result.outputs.find((o) => o.path === 'app.js')?.text).toContain('dispatch')
+	expect(result.outputs.find((o) => o.path === 'app.js')?.text).toMatch(
+		/from\s*["']justfiles-sdk:@justfiles\/app["']/
+	)
 })
 
-test('keeps React external and bundles valibot from the injected runtime', async () => {
+test('externalizes React (gui, bare) and the SDK (reducer sentinel)', async () => {
 	const { outputs } = await bunCompile(
 		project({ 'app.ts': APP, 'gui.tsx': GUI }, 'gui.tsx'),
 		runtime
@@ -59,7 +61,9 @@ test('keeps React external and bundles valibot from the injected runtime', async
 	const app = outputs.find((o) => o.path === 'app.js')!.text
 	expect(bareReact(gui)).toBe(true) // resolved by the shell importmap at load
 	expect(gui).not.toContain('function useState') // React not inlined
-	expect(app).not.toMatch(/from\s*["']valibot["']/) // valibot pulled from runtime, not bare
+	// reducer: the SDK + valibot are externalized to the spawn-resolved sentinel, not inlined.
+	expect(app).toMatch(/from\s*["']justfiles-sdk:@justfiles\/app["']/)
+	expect(app).toMatch(/from\s*["']justfiles-sdk:valibot["']/)
 })
 
 test('emits production automatic JSX (jsx-runtime, not the dev runtime)', async () => {
@@ -123,7 +127,9 @@ test('directory-prefixed (src/) entries build (no real-fs root probe)', async ()
 		runtime
 	)
 	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
-	expect(outputs.find((o) => o.path === 'app.js')?.text).toContain('dispatch')
+	expect(outputs.find((o) => o.path === 'app.js')?.text).toMatch(
+		/from\s*["']justfiles-sdk:@justfiles\/app["']/
+	)
 	expect(bareReact(outputs.find((o) => o.path === 'gui.js')!.text)).toBe(true)
 })
 
@@ -132,6 +138,8 @@ test('a missing entry is a diagnostic, not a throw', async () => {
 		{ files: { 'app.ts': APP }, entries: { app: 'app.ts', gui: 'nope.tsx' }, tsconfig: {} },
 		runtime
 	)
-	expect(outputs.find((o) => o.path === 'app.js')?.text).toContain('dispatch')
+	expect(outputs.find((o) => o.path === 'app.js')?.text).toMatch(
+		/from\s*["']justfiles-sdk:@justfiles\/app["']/
+	)
 	expect(diagnostics.some((d) => d.message.includes('missing entry'))).toBe(true)
 })
