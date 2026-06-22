@@ -21,3 +21,8 @@ finished 1,2,3, quay is working
 *** DONE render diagnostics inline in codemirror
 *** DONE relative import doesn't work
 src/gui.tsx:2:26 Cannot find module './app' or its corresponding type declarations. (TS2307)
+** TODO better Files app
+- [ ] render image
+- [ ] add file size to status bar
+- [ ] movable spliter
+- [ ] auto-refresh?
