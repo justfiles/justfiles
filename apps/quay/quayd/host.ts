@@ -69,8 +69,9 @@ export async function createHost(
 	await mkdir(root, { recursive: true })
 	const fs = volume(await nativeStorage(root))
 	// The reducer worker has no importmap, so its `justfiles-sdk:` sentinels are resolved
-	// at spawn to data:/blob: URLs of the host's in-memory SDK — served from the same
-	// vendor bytes (lazily, only for an SDK-importing reducer).
+	// from the host's in-memory SDK at spawn — on node via an in-thread loader hook, on
+	// bun rewritten to blob: URLs. Both read the same vendor bytes (lazily, only for an
+	// SDK-importing reducer).
 	const sandbox = nodeSandbox({ sdk: sdkSources })
 	// The connectable providers: ChatGPT (OAuth → `ai`) and Google (OAuth → `email`
 	// + `calendar` from ONE account). The store persists connected accounts on the

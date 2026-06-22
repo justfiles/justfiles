@@ -946,7 +946,98 @@ dispatches. Both link seams are new — the gui importmap must resolve the SDK i
 the reducer worker must resolve the spawn-rewritten module. Exercise first paint AND a dispatch.
 Desktop is a POC on the same node/bun path; `pnpm typecheck` covers it.
 
-### 12. (Optional, later) node/bun memory loader-hook
+### 12. node memory loader-hook (DONE ✅ — node-only; bun keeps the rewrite)
+
+**Done (2026-06-23).** The node reducer worker now resolves its `justfiles-sdk:` sentinels from the
+host's in-memory SDK via an **in-thread loader hook** — the SDK bytes never enter the per-spawn worker
+URL. The refinement is **node-only**: bun can't do it today, so it keeps the `blob:` sentinel rewrite.
+
+**Spike result (the load-bearing unknown, same role as Step 0).** Probed in throwaways on node 26.2.0
+and bun 1.3.10:
+
+| Mechanism | node 26.2.0 | bun 1.3.10 (installed) | bun 1.3.14 (latest) |
+|---|---|---|---|
+| `module.registerHooks` (in-thread, sync) | ✅ resolves `justfiles-sdk:` from a `workerData` map | ❌ not exported | ❌ still not exported (the bun docs list it, but the shipped binary doesn't — docs ahead of reality) |
+| `module.register` (async, hooks thread) | ✅ (but `register()` is deprecated in node 26) | ❌ present but a no-op | ❌ no-op — bun docs explicitly say "not implemented (use Bun plugins)" |
+| `Bun.plugin` (runtime, in the worker) | n/a | ❌ never consulted (also via a file preload) | ✅ **works** — intercepts the worker's dynamic import of the custom `justfiles-sdk:` scheme |
+
+**The state is version-specific — and bun is closing the gap.** The relevant fact (confirmed by running
+both binaries side by side on the same throwaway): bun's *native* runtime hook — `Bun.plugin` registered
+in the worker before a **dynamic** import of the app — was **broken in 1.3.10** (our installed version,
+which is why we hit it) but is **fixed in 1.3.14**. So the in-memory hook IS achievable on bun, just via
+`Bun.plugin` (bun's own mechanism), not via node's `module.register*` — those remain unimplemented even
+in 1.3.14 (`register` explicitly so; `registerHooks` documented but absent from the binary).
+
+This is a known, reported compat gap, not something unique to us: oven-sh/bun
+[#11905](https://github.com/oven-sh/bun/issues/11905) (`node:module.register` does not exist — open),
+[#9446](https://github.com/oven-sh/bun/issues/9446) (runtime plugin `onLoad` not called — the class of
+worker-plugin bug fixed by 1.3.14), and [#5520](https://github.com/oven-sh/bun/issues/5520) /
+[#5519](https://github.com/oven-sh/bun/issues/5519) (preload/inline-loader requests).
+
+So the split is about *when* resolution happens AND *which version*:
+
+- **node** defers to load time — install a `registerHooks` hook (the non-deprecated, in-thread API: no
+  separate hooks thread, no clone of the map, the hook just closes over `workerData.sdk`) and let the
+  sentinel resolve live.
+- **bun** on the installed 1.3.10 has no working runtime worker hook, so it resolves the sentinel *ahead
+  of load* — we rewrite it to a blob: URL ourselves at spawn (the implemented path). This works on every
+  bun version.
+
+The original "node/bun" framing is therefore corrected to **node-only** (bun keeps the rewrite).
+
+#### Viability of the bun `Bun.plugin` hook (evaluated 2026-06-23) — not worth shipping
+
+We can raise the shipped bun version freely (we bundle the runtime), so the question is purely robustness
+vs payoff. Verdict: **keep the blob: rewrite on bun; do not switch to the plugin hook.** Two independent
+reasons, either sufficient:
+
+1. **There is no payoff on bun.** Step 12's only goal is a smaller per-spawn worker URL. On node that
+   matters because the SDK is inlined as `data:` base64. On bun the rewrite already produces a *short*
+   `blob:<uuid>` reference (the SDK bytes live in the blob store, not in the import string) — so the
+   per-spawn URL is already small. The plugin hook would save nothing measurable (one deduped blob: per
+   spec for the process life, plus a sub-millisecond lexer walk at spawn). And it wouldn't even unify the
+   code: bun would use `Bun.plugin` while node uses `module.registerHooks` — two different registrations,
+   so the per-runtime seam stays either way.
+2. **The API isn't solid enough for a load-bearing, untrusted-code path.** Bun's docs state the plugin
+   APIs are **"experimental and subject to change."** The capability we'd depend on (runtime plugin,
+   in a worker, custom `:` scheme, dynamic import) is the most bug-prone corner: the enabling fix —
+   dynamic-import `onResolve` ([#9862](https://github.com/oven-sh/bun/issues/9862), PRs #22144/#22076) —
+   landed only **between 1.3.10 and 1.3.14** (it was literally broken in the version we had), and adjacent
+   issues are still **open**: custom-protocol `onResolve` ([#9863](https://github.com/oven-sh/bun/issues/9863))
+   and worker `preload` ([#12608](https://github.com/oven-sh/bun/issues/12608), which is why a preload
+   couldn't keep the shared static-import bootstrap — we'd need a bun-only dynamic-import variant).
+
+A focused 1.3.14 stress test (3 sentinels = core + capability + valibot, a relative import left
+untouched, 5 repeated spawns) passed 5/5, so the path *functions* today — but "freshly fixed one patch
+ago + officially experimental + zero payoff" fails the robustness bar for running untrusted reducer code.
+Revisit only if bun's plugin APIs leave "experimental" AND a real per-spawn-size problem is measured on
+bun (neither is true today).
+
+- **install before the static import — via `--import`.** The shared worker bootstrap
+  (`sandboxWorkerSource`) is **unchanged**: it still `import { app } from <appUrl>` statically. A static
+  import hoists, so the hook must already be active when it resolves — installed as a `--import` preload
+  (a `data:` module) on the `Worker`'s `execArgv`, which runs before the worker's main module. The
+  preload reads the SDK source map from `workerData` and serves each `justfiles-sdk:<spec>` from memory
+  (`{ format: 'module', source, shortCircuit: true }`). `execArgv` is `[...process.execArgv, '--import',
+  hook]` so the inherited args aren't dropped.
+- **the one runtime seam widened, not a new one** (`#sandbox-url`). It went from `moduleUrl(source)` to
+  `sandboxWorker(code, sdk) → { url, options? }`, which owns ALL the divergence: node returns the data:
+  worker URL + `{ execArgv, workerData }`; bun returns the blob: worker URL with the SDK rewritten into
+  it (deduped per spec for the process life). `nodeSandbox.ts` is now **runtime-agnostic** — its `link`
+  helper, `sdkUrls` cache, and direct `moduleUrl`/`resolveSdkExternals` use all moved behind the seam,
+  so the file shrank. The cache key is still `sha256(code)` over the **sentinel** form (host-agnostic).
+- **scope.** Implemented in quay (`sandboxUrl.{node,bun}.ts` + `nodeSandbox.ts`), the live node/bun path
+  with the SDK wired. Desktop is node-only with `sdk` still unset (its vendor wiring is deferred), so it
+  keeps its inline data: passthrough — no behavior change there.
+
+Verified: a reducer importing `justfiles-sdk:valibot` runs with the named export intact through the real
+`nodeSandbox` — node via the loader hook (`nodeSandbox.test.ts`), bun via the blob: rewrite
+(`nodeSandbox.bun.test.ts`). End-to-end, quay's real-host `devkit.test.ts`/`agent.test.ts` dispatch the
+Code/counter reducers (which carry `justfiles-sdk:@justfiles/app` + `…/devkit` + `valibot` sentinels),
+loading the real SDK through the node hook. `pnpm format`/`typecheck`/`lint:fix`/`test` (709) + the quay
+(6) and app (8) bun tests all green.
+
+<details><summary>Original Step 12 spec</summary>
 
 An optional refinement for node/bun only. Instead of rewriting the sentinel to a `data:`/`blob:` URL,
 register a module customization hook (node `module.register()` / a bun plugin) in the worker that
@@ -955,6 +1046,8 @@ later: it avoids embedding the SDK bytes into each spawn's `data:` URL (smaller 
 is the same mechanism VS Code uses for `vscode`. Reason it's not the baseline: more per-runtime
 machinery (a registered hook + data channel into the worker), and the `data:`/`blob:` rewrite already
 works uniformly and is diskless. Revisit only if per-spawn `data:` size becomes a measured problem.
+
+</details>
 
 ## Version skew (accepted tradeoff)
 

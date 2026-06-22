@@ -17,12 +17,12 @@
 import { createHash } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import type { GetSandbox, Sandbox } from '@justfiles/app/runtime'
-import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
-import { resolveSdkExternals, SDK_SENTINEL } from '@justfiles/app/sdk-externals'
-// The worker module-URL scheme is the one runtime divergence (data: on node,
-// blob: on bun) — resolved by the runtime via package.json `imports`. See
-// `quayd/sandboxUrl.{node,bun}.ts`.
-import { moduleUrl } from '#sandbox-url'
+import { sandboxClient } from '@justfiles/app/sandbox'
+import { SDK_SENTINEL } from '@justfiles/app/sdk-externals'
+// How a reducer bundle becomes a Worker — the one runtime divergence: a data: URL + an
+// in-memory loader hook on node, a blob: URL + sentinel rewrite on bun. Resolved by the
+// runtime via package.json `imports`. See `quayd/sandboxUrl.{node,bun}.ts`.
+import { sandboxWorker } from '#sandbox-url'
 
 export interface NodeSandbox {
 	// The kernel's `GetSandbox`: load-or-reuse the worker for these bytes.
@@ -56,29 +56,8 @@ export function nodeSandbox(
 	const idleMs = opts.idleMs ?? IDLE_MS
 	const cells = new Map<string, Cell>() // code SHA → worker
 	const windows = new Map<string, number>() // appId → open-window count
-	// One data:/blob: module URL per SDK spec, built on first use and reused for the
-	// daemon's life — so two apps importing the same SDK module share its URL.
-	const sdkUrls = new Map<string, string>()
 
 	const open = (appId: string): number => windows.get(appId) ?? 0
-
-	// Rewrite the reducer's `justfiles-sdk:` sentinels to data:/blob: URLs of the
-	// host's in-memory SDK. No sentinel → no SDK load (keeps a pure-DOM app and the
-	// tests off the vendor assets entirely).
-	const link = async (code: string): Promise<string> => {
-		if (!opts.sdk || !code.includes(SDK_SENTINEL)) return code
-		const sources = await opts.sdk()
-		return resolveSdkExternals(code, (spec) => {
-			let url = sdkUrls.get(spec)
-			if (!url) {
-				const src = sources.get(spec)
-				if (src === undefined) throw new Error(`sandbox: no SDK module for "${spec}"`)
-				url = moduleUrl(src)
-				sdkUrls.set(spec, url)
-			}
-			return url
-		})
-	}
 
 	const evict = (key: string): void => {
 		const cell = cells.get(key)
@@ -108,7 +87,10 @@ export function nodeSandbox(
 			const key = createHash('sha256').update(code).digest('hex')
 			let cell = cells.get(key)
 			if (!cell) {
-				cell = spawn(await link(code), () => cells.delete(key))
+				// Fetch the in-memory SDK only for a reducer that actually links it — a
+				// pure-DOM app (no sentinel) never touches the vendor assets.
+				const sdk = opts.sdk && code.includes(SDK_SENTINEL) ? await opts.sdk() : undefined
+				cell = spawn(code, sdk, () => cells.delete(key))
 				cells.set(key, cell)
 			}
 			cell.appId = appId
@@ -130,8 +112,9 @@ export function nodeSandbox(
 		resident: () => cells.size
 	}
 
-	function spawn(code: string, onDead: () => void): Cell {
-		const worker = new Worker(new URL(moduleUrl(sandboxWorkerSource(moduleUrl(code), 'node'))))
+	function spawn(code: string, sdk: Map<string, string> | undefined, onDead: () => void): Cell {
+		const { url, options } = sandboxWorker(code, sdk)
+		const worker = new Worker(url, options)
 		const { sandbox, fail } = sandboxClient({
 			post: (message) => worker.postMessage(message),
 			onMessage: (handler) => worker.on('message', handler)

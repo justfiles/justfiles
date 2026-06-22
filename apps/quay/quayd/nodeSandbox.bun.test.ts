@@ -55,3 +55,23 @@ test('evicts an idle worker, then transparently re-spawns on demand', async () =
 	ns.release('app.a')
 	await waitFor(() => ns.resident() === 0)
 })
+
+// Bun has no `registerHooks`, so a reducer's `justfiles-sdk:` sentinel is rewritten to a
+// blob: URL of the in-memory SDK source (the node path uses a loader hook instead). This
+// guards that the blob: rewrite still runs the reducer with the SDK export intact.
+test('resolves a reducer SDK sentinel by rewriting it to a blob: SDK module', async () => {
+	const SDK = `export const greet = (name) => 'hi ' + name`
+	const REDUCER = `import { greet } from 'justfiles-sdk:valibot'
+export const app = {
+	initialState: { msg: '' },
+	dispatch(action, ctx) { return { state: { msg: greet(action.type) }, result: 'ok' } }
+}`
+	const ns = nodeSandbox({ idleMs, sdk: async () => new Map([['valibot', SDK]]) })
+	ns.retain('app.sdk')
+	const a = await ns.get({ appId: 'app.sdk', code: REDUCER })
+	expect(await a.run({ type: 'world' } as Message, { state: { msg: '' } })).toMatchObject({
+		state: { msg: 'hi world' }
+	})
+	ns.release('app.sdk')
+	await waitFor(() => ns.resident() === 0)
+})
