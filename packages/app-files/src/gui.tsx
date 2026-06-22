@@ -12,6 +12,9 @@ injectStyle(
 	`
 .files { display: flex; height: 100%; width: 100%; }
 .files-sidebar { display: flex; flex-direction: column; flex: none; width: 224px; overflow: hidden; background: var(--surface); border-right: 1px solid var(--rule); }
+.files-resizer { position: relative; flex: none; width: 6px; margin-left: -3px; z-index: 1; padding: 0; border: 0; appearance: none; background: transparent; cursor: col-resize; touch-action: none; }
+.files-resizer::after { content: ''; position: absolute; inset: 0 2px; transition: background 0.1s; }
+.files-resizer:hover::after, .files-resizer.dragging::after { background: var(--focus); }
 .files-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; }
 .files-main-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--rule); }
 .files-title, .files-main-name { font-weight: 500; }
@@ -119,9 +122,16 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 	const displayError = state.error ?? readError
 	const showPreview = preview && preview.path === viewing ? preview : null
 
+	// Draggable splitter: the sidebar width lives in GUI-only state. Pointer
+	// capture keeps the drag alive even when the cursor outruns the thin handle.
+	const [sidebarWidth, setSidebarWidth] = useState(224)
+	const [dragging, setDragging] = useState(false)
+	const drag = useRef<{ startX: number; startWidth: number } | null>(null)
+	const clampWidth = (w: number) => Math.min(560, Math.max(160, w))
+
 	return (
 		<div className="files">
-			<aside className="files-sidebar">
+			<aside className="files-sidebar" style={{ width: sidebarWidth }}>
 				<header className="files-head">
 					<span className="files-title">Files</span>
 					<button
@@ -147,6 +157,29 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 					</div>
 				)}
 			</aside>
+			<button
+				type="button"
+				className={dragging ? 'files-resizer dragging' : 'files-resizer'}
+				aria-label="Resize sidebar"
+				onPointerDown={(e) => {
+					drag.current = { startX: e.clientX, startWidth: sidebarWidth }
+					setDragging(true)
+					e.currentTarget.setPointerCapture(e.pointerId)
+				}}
+				onPointerMove={(e) => {
+					if (!drag.current) return
+					setSidebarWidth(clampWidth(drag.current.startWidth + (e.clientX - drag.current.startX)))
+				}}
+				onPointerUp={(e) => {
+					drag.current = null
+					setDragging(false)
+					e.currentTarget.releasePointerCapture(e.pointerId)
+				}}
+				onKeyDown={(e) => {
+					if (e.key === 'ArrowLeft') setSidebarWidth((w) => clampWidth(w - 16))
+					else if (e.key === 'ArrowRight') setSidebarWidth((w) => clampWidth(w + 16))
+				}}
+			/>
 			<section className="files-main">
 				{viewing ? (
 					<>
