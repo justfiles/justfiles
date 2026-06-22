@@ -9,7 +9,7 @@
 // below); Node-side modules never import this one, so they don't see it.
 /// <reference types="bun" />
 
-import { isSdkSpec, reactExternals } from './sdk-externals.ts'
+import { isSdkSpec, reactExternals } from '../../sdk-externals.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
 import { compileVfs, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
 

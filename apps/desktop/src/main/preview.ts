@@ -1,6 +1,5 @@
 import { join } from 'node:path'
-import type { RunContext } from '@justfiles/app/capabilities/devkit/host'
-import type { DraftBuild } from '@justfiles/app/devkit'
+import type { DraftBuild, RunContext } from '@justfiles/app/capabilities/devkit/host'
 import { appBundleFromMemory, type Kernel } from '@justfiles/app/runtime'
 import { type BrowserWindow, type Rectangle, WebContentsView } from 'electron'
 import { terminateAppWorker } from './nodeSandbox'

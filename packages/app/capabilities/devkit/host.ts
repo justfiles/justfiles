@@ -12,15 +12,19 @@
 // with a manifest-driven orchestrator that knows neither in between.
 
 import { chroot, type Volume } from '@justfiles/fs'
-import { buildDraft, type DraftBuild, installDraft, packDraft, readProject } from '../../devkit.ts'
 import type { Kernel } from '../../kernel.ts'
-import type { Toolchain } from '../../toolchain.ts'
 import { CapabilityError } from '../error.ts'
 import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import type { MenuView } from './contract.ts'
+import { buildDraft, type DraftBuild, installDraft, packDraft, readProject } from './devkit.ts'
 import { devkit } from './index.ts'
+import type { Toolchain } from './toolchain.ts'
 
+// The compiled-draft shape a `Runner` receives at `mount` — re-exported here so a
+// host implements `devkit` (and types its Runner) from this one surface, with no
+// separate `@justfiles/app/devkit` import.
+export type { DraftBuild } from './devkit.ts'
 // The toolchain type vocabulary, re-exported so a host implements `devkit` from
 // this one surface — the seam types it injects (`Toolchain`, `Compile`,
 // `ProjectInput`, `TypesBundle`) plus the result types those produce — with no
@@ -36,7 +40,7 @@ export type {
 	Range,
 	Toolchain,
 	TypesBundle
-} from '../../toolchain.ts'
+} from './toolchain.ts'
 
 // What the factory hands a `Runner` when it mounts a draft: the build's identity
 // plus the `preview.<slug>` id the factory computed. The factory only ever calls

@@ -7,8 +7,8 @@
 // hand `compileVfs` a single `buildOne` strategy. One home for the substance; the
 // per-bundler glue stays tens of lines each.
 
-import { isReactGuiEntry, reactGuiEntry } from './react-entry.ts'
-import { sentinelizeReducer } from './sdk-externals.ts'
+import { isReactGuiEntry, reactGuiEntry } from '../../react-entry.ts'
+import { sentinelizeReducer } from '../../sdk-externals.ts'
 import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
 // The SDK is externalized in both compile paths (the dylib model): the React family stays

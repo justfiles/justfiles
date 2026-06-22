@@ -8,7 +8,7 @@
 // no file bytes cross the worker boundary. Every method is serializable in and
 // out — the app exchanges a slug and receives ids / diagnostics / zip bytes.
 
-import type { CheckResult, CompileResult } from '../../toolchain.ts'
+import type { CheckResult, CompileResult } from './toolchain.ts'
 
 // A display-only mirror of `@justfiles/app/browser`'s `Menu` — the live
 // `onSelect` closures are stripped, so it stays serializable. app-code pulls

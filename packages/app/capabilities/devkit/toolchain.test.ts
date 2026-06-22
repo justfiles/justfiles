@@ -1,7 +1,7 @@
 import * as esbuild from 'esbuild'
 import * as ts from 'typescript'
 import { beforeAll, describe, expect, test } from 'vitest'
-import type { AppManifest } from './app.ts'
+import type { AppManifest } from '../../app.ts'
 import { tsconfigFor } from './devkit.ts'
 import { buildRuntime } from './devkit-runtime.ts'
 import { esbuildCompile } from './toolchain.esbuild.ts'

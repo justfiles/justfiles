@@ -5,7 +5,7 @@
 // reducer worker has no importmap to resolve a bare `react`).
 
 import { expect, test } from 'vitest'
-import { buildRuntime } from './devkit-runtime.ts'
+import { buildRuntime } from './capabilities/devkit/devkit-runtime.ts'
 import {
 	externals,
 	reactExternals,

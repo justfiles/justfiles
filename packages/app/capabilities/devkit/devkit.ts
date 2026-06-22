@@ -15,7 +15,7 @@ import { chroot, type Volume } from '@justfiles/fs'
 import { FileType } from '@justfiles/fs/types'
 import { strToU8, zipSync } from 'fflate'
 import type { TsConfigJson } from 'type-fest'
-import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from './kernel.ts'
+import { type AppManifest, appBundleFromMemory, type Kernel, safeBundlePath } from '../../kernel.ts'
 import type { ProjectInput, Toolchain } from './toolchain.ts'
 
 const PROJECT_FILE = 'project.json'

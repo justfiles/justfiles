@@ -3,7 +3,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { build } from 'esbuild'
-import { reactExternals, sdkExternals } from './sdk-externals.ts'
+import { reactExternals, sdkExternals } from '../../sdk-externals.ts'
 import type { TypesBundle } from './toolchain.ts'
 
 // The system libraries the host pre-bundles into self-contained vendor modules — the
