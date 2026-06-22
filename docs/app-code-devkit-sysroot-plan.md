@@ -788,7 +788,44 @@ has its OWN unrelated `runtime.json`, the daemon discovery socket).
 
 </details>
 
-### 8. Make unsupported npm imports explicit
+### 8. Make unsupported npm imports explicit (DONE ✅)
+
+**Done (2026-06-22).** One shared classifier in the VFS resolver rejects an unsupported npm import
+with a clear message in BOTH compile paths (and the browser esbuild-wasm fallback, which IS the
+esbuild adapter).
+
+- **shared classifier** — `toolchain.vfs.ts` `unsupportedImport(spec)`: called by each adapter's
+  `onResolve` in its terminal branch (after the draft-file / relative / SDK / runtime checks). The
+  React family + the SDK allowlist (`isSdkSpec`) are supported externals → pass through (`undefined`);
+  anything else returns the message
+  `External npm package "<spec>" is not supported in app-code. Use packages/create-app for a full package project.`
+  The React predicate matches **subpaths** (`react/*`, `react-dom/*`) because esbuild/Bun externalize
+  a listed package AND its subpaths (verified) — without subpath matching the classifier would error
+  on a `react/jsx-runtime` import the bundler legitimately externalizes.
+- **esbuild adapter** (`toolchain.esbuild.ts`): the terminal branch returns
+  `{ errors: [{ text: message }] }`, which fails the build → the existing `catch` → `errorDiagnostics`
+  maps it to an `error` Diagnostic (esbuild auto-fills the import-site location). The browser
+  esbuild-wasm path is the same adapter, so it's covered for free.
+- **Bun adapter** (`toolchain.bun.ts`): `OnResolveResult` has **no** `errors` field (verified against
+  `@types/bun`), so the terminal branch `throw`s the message — with `throw: false` Bun captures it into
+  `result.logs` as an error-level `BuildMessage` at the import site (verified empirically), mapped by
+  the existing `logDiagnostic`. Same shape as esbuild's error.
+- **relative imports are unchanged** — an unresolved relative import (`./missing`) still falls through
+  to the bundler's own clear "Could not resolve", which is accurate and points at the file; only the
+  misleading bare-npm case (where the bundler would otherwise probe node_modules) gets the new message.
+- **typecheck** already reports `TS2307` ("cannot find module") for a missing package — the useful,
+  specific signal — so no change there; the new diagnostic is the *compile*-side half.
+- **UI**: the message rides the existing pipeline unchanged — `devkit.run`/`compile` flatten error
+  diagnostics (including `.message`) to strings, the Code reducer stores them in the build record, and
+  `editor-screen.tsx` renders them in the diagnostics `<pre>`.
+
+Verified: `toolchain.test.ts` (esbuild/Node) — a draft importing `lodash` yields an `error` diagnostic
+containing `"lodash" is not supported in app-code`, and a draft importing a missing package yields
+`TS2307` from `typecheck`; `toolchain.bun.test.ts` (Bun) — the same `lodash` draft yields the same
+message. `pnpm format`/`typecheck`/`lint:fix`/`test` (708) + the Bun toolchain (9) / engine / sandbox
+tests all green.
+
+<details><summary>Original Step 8 spec</summary>
 
 Add a clear diagnostic for bare imports outside the `external` allowlist + relative imports, in the
 shared VFS resolver so Bun, esbuild, and browser fallback behave consistently:
@@ -799,6 +836,8 @@ External npm package "lodash" is not supported in app-code. Use packages/create-
 
 Verification: a draft importing `lodash` produces the diagnostic in `compile`; `typecheck` reports a
 useful error; the app-code UI surfaces the message.
+
+</details>
 
 ### 9. Update app-code UI and docs
 

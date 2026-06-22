@@ -11,7 +11,14 @@
 
 import { isSdkSpec, reactExternals } from '../../sdk-externals.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
-import { compileVfs, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
+import {
+	compileVfs,
+	loaderFor,
+	RUNTIME,
+	resolveRelative,
+	unsupportedImport,
+	VFS
+} from './toolchain.vfs.ts'
 
 // Bundle each named entry of a draft with `Bun.build`, reading bytes back from the
 // in-memory `result.outputs` (no temp dir). `throw: false` so a failed pass
@@ -75,6 +82,12 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Bu
 				// original specifier for externals, so the rewrite can't happen here.
 				if (isSdkSpec(args.path)) return { path: args.path, external: true }
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME }
+				// React passes through to the top-level `external`; any other bare specifier
+				// is an unsupported npm package. Bun's `OnResolveResult` has no `errors`
+				// field, so THROW — with `throw: false` Bun captures it into `result.logs`
+				// (an error-level BuildMessage at the import site), same as esbuild's error.
+				const message = unsupportedImport(args.path)
+				if (message) throw new Error(message)
 				return undefined // react → external
 			})
 			build.onLoad({ filter: /.*/, namespace: VFS }, (args) => ({

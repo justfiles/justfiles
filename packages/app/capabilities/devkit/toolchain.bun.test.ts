@@ -143,3 +143,17 @@ test('a missing entry is a diagnostic, not a throw', async () => {
 	)
 	expect(diagnostics.some((d) => d.message.includes('missing entry'))).toBe(true)
 })
+
+test('an unsupported npm import is a clear compile error', async () => {
+	// Same as the esbuild path: a bare npm package fails with the shared message
+	// (Bun throws in onResolve; `throw: false` captures it into result.logs).
+	const src = `import { defineApp } from '@justfiles/app'
+import _ from 'lodash'
+export const app = defineApp({ init: {}, update: () => (void _, {}) })`
+	const { diagnostics } = await bunCompile(
+		{ files: { 'app.ts': src }, entries: { app: 'app.ts' }, tsconfig: {} },
+		runtime
+	)
+	const errors = diagnostics.filter((d) => d.severity === 'error')
+	expect(errors.some((d) => d.message.includes('"lodash" is not supported in app-code'))).toBe(true)
+})

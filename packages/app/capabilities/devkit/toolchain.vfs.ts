@@ -8,7 +8,7 @@
 // per-bundler glue stays tens of lines each.
 
 import { isReactGuiEntry, reactGuiEntry } from '../../react-entry.ts'
-import { sentinelizeReducer } from '../../sdk-externals.ts'
+import { isSdkSpec, reactExternals, sentinelizeReducer } from '../../sdk-externals.ts'
 import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
 // The SDK is externalized in both compile paths (the dylib model): the React family stays
@@ -57,6 +57,26 @@ export function resolveRelative(
 	const joined = parts.join('/')
 	const candidates = [joined, `${joined}.ts`, `${joined}.tsx`, `${joined}.js`, `${joined}/index.ts`]
 	return candidates.find((candidate) => candidate in files)
+}
+
+// True for the React family — the bundlers' one top-level `external` (esbuild/Bun
+// `external: reactExternals`). esbuild/Bun externalize a listed package AND all its
+// subpaths (verified), so this matches subpaths too — otherwise `unsupportedImport`
+// would error on a `react/*` import the bundler legitimately externalizes.
+function isReactExternal(spec: string): boolean {
+	return reactExternals.some((r) => spec === r || spec.startsWith(`${r}/`))
+}
+
+// Classify a BARE specifier the resolver couldn't satisfy as a draft file or a system
+// runtime module (both compile paths call this in their `onResolve` terminal branch).
+// The React family + the SDK allowlist are supported externals → pass through
+// (undefined). Anything else is an external npm package: app-code is a built-in
+// authoring tool, not an npm dev environment, so we reject it with a clear message in
+// BOTH compile paths (and the browser esbuild-wasm fallback) instead of the bundler's
+// opaque "Could not resolve". Authors who need arbitrary packages use create-app.
+export function unsupportedImport(spec: string): string | undefined {
+	if (isReactExternal(spec) || isSdkSpec(spec)) return undefined
+	return `External npm package "${spec}" is not supported in app-code. Use packages/create-app for a full package project.`
 }
 
 export const ZERO: Range = { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }

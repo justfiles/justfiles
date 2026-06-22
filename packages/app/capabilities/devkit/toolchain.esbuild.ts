@@ -9,7 +9,14 @@
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
 import { isSdkSpec, reactExternals } from '../../sdk-externals.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
-import { compileVfs, loaderFor, RUNTIME, resolveRelative, VFS } from './toolchain.vfs.ts'
+import {
+	compileVfs,
+	loaderFor,
+	RUNTIME,
+	resolveRelative,
+	unsupportedImport,
+	VFS
+} from './toolchain.vfs.ts'
 
 export type BuildFn = (options: BuildOptions) => Promise<BuildResult>
 
@@ -60,7 +67,11 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 				// A pre-bundled system library; side-effect-free so unused exports
 				// (e.g. the kernel half of `@justfiles/app`) tree-shake away.
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME, sideEffects: false }
-				return undefined
+				// React passes through to the top-level `external`; any other bare
+				// specifier is an unsupported npm package — a clear error, not esbuild's
+				// opaque "Could not resolve".
+				const message = unsupportedImport(args.path)
+				return message ? { errors: [{ text: message }] } : undefined
 			})
 			build.onLoad({ filter: /.*/, namespace: VFS }, (args) => ({
 				contents: files[args.path] ?? '',

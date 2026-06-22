@@ -147,4 +147,26 @@ void wrong`
 		expect(errors[0]?.file).toBe('app.ts')
 		expect(errors.some((d) => d.code === 'TS2322')).toBe(true)
 	}, 30_000)
+
+	test('an unsupported npm import is a clear compile error', async () => {
+		// app-code links only the host SDK; an external npm package is unsupported and
+		// must fail with a clear message, not esbuild's opaque "Could not resolve".
+		const src = `import { defineApp } from '@justfiles/app'
+import _ from 'lodash'
+export const app = defineApp({ init: {}, update: () => (void _, {}) })`
+		const { diagnostics } = await toolchain.compile(project({ 'app.ts': src }))
+		const errors = diagnostics.filter((d) => d.severity === 'error')
+		expect(errors.some((d) => d.message.includes('"lodash" is not supported in app-code'))).toBe(
+			true
+		)
+	})
+
+	test('typecheck reports a useful error for an unsupported npm import', async () => {
+		const src = `import { defineApp } from '@justfiles/app'
+import x from 'not-a-real-package-xyz'
+export const app = defineApp({ init: {}, update: () => (void x, {}) })`
+		const { diagnostics } = await toolchain.typecheck(project({ 'app.ts': src }))
+		// TS's "cannot find module" — the useful, specific signal alongside the compile error.
+		expect(diagnostics.some((d) => d.code === 'TS2307')).toBe(true)
+	}, 30_000)
 })
