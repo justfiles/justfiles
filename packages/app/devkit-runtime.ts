@@ -3,48 +3,40 @@ import { readdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { build } from 'esbuild'
+import { reactExternals, sdkExternals } from './sdk-externals.ts'
 import type { TypesBundle } from './toolchain.ts'
 
-// The system libraries the devkit compiler injects into every draft bundle — the
-// "stdlib shipped with the OS." Each is pre-bundled once (here, with Node esbuild
-// — at frieren build/serve time, or in the desktop main process) into a
-// self-contained ESM module, then handed to the `compile` engine as a virtual
-// runtime so drafts compile hermetically with no node_modules. React is NOT here:
-// it stays external and resolves through the host importmap so the preview shares
-// the one host React instance.
+// The system libraries the host pre-bundles into self-contained vendor modules — the
+// "stdlib shipped with the OS." Each spec in `sdkExternals` is built once (here, with
+// Node esbuild — at quay ship time, frieren build/serve time, or the desktop main
+// process), with React left external (`reactExternals`) so the one host React is
+// shared. The host serves the output at `/vendor/<spec>.js` and (node/bun) holds it in
+// memory for the reducer. React itself is vendored separately by each host.
 //
 // This is the one Node-only piece of the devkit pipeline (it imports the native
 // esbuild engine), kept in its own subpath so the browser-safe `@justfiles/app/
 // devkit` (engine-injected) never pulls native esbuild into a browser host.
-const EXTERNAL = [
-	'react',
-	'react-dom',
-	'react-dom/client',
-	'react/jsx-runtime',
-	'react/jsx-dev-runtime'
-]
 
-const LIBS = ['@justfiles/app', '@justfiles/app/browser', '@justfiles/app/react', 'valibot']
-
-// The capability factories an app author declares + invokes. Each is the typed
-// `defineCapability(...)` factory (`volume({ scopes }) → { id, scopes }`): the
-// SAME `{ id, scopes }` shape the kernel reads at runtime, but carrying the
-// method/stream contract so `app.invoke('volume', 'mkdir', …)` is typed. Without
-// these a draft must hand-roll a `{ id, scopes }` stub, which has no `__methods`
-// and collapses `invoke`'s method argument to `never`. `accounts` (allowlist-gated
-// admin) and `devkit` (the build capability itself) stay off the author surface.
-const CAPS = [
-	'@justfiles/app/capabilities/volume',
-	'@justfiles/app/capabilities/notify',
-	'@justfiles/app/capabilities/email',
-	'@justfiles/app/capabilities/calendar',
-	'@justfiles/app/capabilities/ai'
-]
+// A reducer-reachable SDK module must contain no bare React import: the reducer worker
+// has no importmap to resolve one, so it would fail with an opaque worker error. React
+// is the only external in the build below, so any react-family import here is a real bug.
+const REACT_FAMILY = /^react(-dom)?(\/|$)/
+function assertReducerReactFree(spec: string, source: string): void {
+	for (const m of source.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)) {
+		const dep = m[1] as string
+		if (REACT_FAMILY.test(dep))
+			throw new Error(
+				`devkit-runtime: reducer-reachable SDK module "${spec}" imports "${dep}" — a reducer ` +
+					`worker has no importmap to resolve a bare React specifier. Keep React out of ` +
+					`@justfiles/app core, the capability subpaths, and valibot.`
+			)
+	}
+}
 
 export async function buildRuntime(): Promise<Record<string, string>> {
 	const require = createRequire(import.meta.url)
 	const runtime: Record<string, string> = {}
-	for (const spec of [...LIBS, ...CAPS]) {
+	for (const { spec, reducer } of sdkExternals) {
 		// Re-export the package from a synthetic entry rather than bundling its
 		// resolved file directly. A CommonJS package (e.g. valibot) used as the
 		// entry collapses to a lone `export default`, so a draft's
@@ -62,10 +54,11 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 			write: false,
 			format: 'esm',
 			platform: 'browser',
-			external: EXTERNAL
+			external: reactExternals
 		})
 		const output = result.outputFiles[0]
 		if (!output) throw new Error(`devkit-runtime: no output for ${spec}`)
+		if (reducer) assertReducerReactFree(spec, output.text)
 		runtime[spec] = output.text
 	}
 	return runtime

@@ -2,6 +2,8 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { cloudflare } from '@cloudflare/vite-plugin'
+import { buildRuntime } from '@justfiles/app/devkit-runtime'
+import { sdkExternals, vendorUrl } from '@justfiles/app/sdk-externals'
 import commonjs from '@rollup/plugin-commonjs'
 import { nodeResolve } from '@rollup/plugin-node-resolve'
 import replace from '@rollup/plugin-replace'
@@ -32,6 +34,18 @@ const VENDOR_URLS: Record<string, string> = {
 	'react/jsx-runtime': '/vendor/jsx-runtime.js',
 	'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js'
 }
+
+// The host importmap a mini-app's gui.js resolves bare specifiers through: the shared
+// React (above) plus the SDK half generated from the externals constant (URLs mirror the
+// specifier), so a new capability needs no edit. Injected into index.html (transformIndexHtml).
+// This is the document seam ONLY — frieren's own bundle resolves @justfiles/app normally;
+// the SDK vendor is for blob-imported guis (and the served URL the reducer fetches, Step 3).
+const IMPORTMAP = JSON.stringify({
+	imports: {
+		...VENDOR_URLS,
+		...Object.fromEntries(sdkExternals.map(({ spec }) => [spec, vendorUrl(spec)]))
+	}
+})
 
 interface VendorTarget {
 	specifier: string
@@ -126,6 +140,19 @@ async function buildVendorBundles(logger?: ResolvedConfig['logger']): Promise<vo
 	}
 }
 
+// The SDK vendor modules (the host's `buildRuntime` output) written beside the React
+// ones, served at `/vendor/<spec>.js`. Built every Vite invocation (not cached on React's
+// version key) so editing @justfiles/app source reflects in dev; it's a few fast esbuild
+// passes. Nested `@justfiles/…` specifiers need their dirs made.
+async function buildSdkVendor(): Promise<void> {
+	mkdirSync(VENDOR_DIR, { recursive: true })
+	for (const [spec, text] of Object.entries(await buildRuntime())) {
+		const file = path.join(VENDOR_DIR, `${spec}.js`)
+		mkdirSync(path.dirname(file), { recursive: true })
+		writeFileSync(file, text)
+	}
+}
+
 function vendorReact(): Plugin {
 	let mode: 'serve' | 'build' = 'serve'
 	let logger: ResolvedConfig['logger'] | undefined
@@ -140,20 +167,34 @@ function vendorReact(): Plugin {
 			logger = resolved.logger
 		},
 		async buildStart() {
-			// One sub-build per Vite invocation, memoised. Cache key folds in
-			// React's version + a manual revision number; warm starts skip
-			// straight to a stat check.
+			// One sub-build per Vite invocation, memoised. The React stdlib is cached on
+			// React's version + a manual revision; the SDK vendor is rebuilt every start
+			// (cheap esbuild) so live @justfiles/app edits reflect in dev.
 			if (buildPromise) return buildPromise
-			const key = vendorCacheKey()
-			if (vendorCacheIsCurrent(key)) return
 			buildPromise = (async () => {
-				const t0 = Date.now()
-				logger?.info(`[vendor-react] building React stdlib (${key})…`)
-				await buildVendorBundles(logger)
-				writeFileSync(VENDOR_CACHE_KEY_FILE, key)
-				logger?.info(`[vendor-react] done in ${Date.now() - t0}ms`)
+				const key = vendorCacheKey()
+				if (!vendorCacheIsCurrent(key)) {
+					const t0 = Date.now()
+					logger?.info(`[vendor-react] building React stdlib (${key})…`)
+					await buildVendorBundles(logger)
+					writeFileSync(VENDOR_CACHE_KEY_FILE, key)
+					logger?.info(`[vendor-react] done in ${Date.now() - t0}ms`)
+				}
+				await buildSdkVendor()
 			})()
 			return buildPromise
+		},
+		// Inject the host importmap (React + SDK) ahead of every module script so a
+		// blob-imported gui.js resolves its bare specifiers to the shared /vendor modules.
+		transformIndexHtml() {
+			return [
+				{
+					tag: 'script',
+					attrs: { type: 'importmap' },
+					children: IMPORTMAP,
+					injectTo: 'head-prepend'
+				}
+			]
 		},
 		resolveId(id) {
 			const url = VENDOR_URLS[id]
@@ -193,12 +234,18 @@ function vendorReact(): Plugin {
 			// copy here is simpler and runs once after the client bundle.
 			if (mode !== 'build') return
 			const out = path.resolve(__dirname, 'dist/client/vendor')
-			mkdirSync(out, { recursive: true })
-			const { copyFileSync, readdirSync } = await import('node:fs')
-			for (const name of readdirSync(VENDOR_DIR)) {
-				if (!name.endsWith('.js')) continue
-				copyFileSync(path.join(VENDOR_DIR, name), path.join(out, name))
+			const { copyFileSync, mkdirSync: mkdir, readdirSync } = await import('node:fs')
+			// Recursive copy so nested SDK vendor modules (`@justfiles/….js`) land too.
+			const copyTree = (from: string, to: string): void => {
+				mkdir(to, { recursive: true })
+				for (const entry of readdirSync(from, { withFileTypes: true })) {
+					const src = path.join(from, entry.name)
+					const dst = path.join(to, entry.name)
+					if (entry.isDirectory()) copyTree(src, dst)
+					else if (entry.name.endsWith('.js')) copyFileSync(src, dst)
+				}
 			}
+			copyTree(VENDOR_DIR, out)
 		}
 	}
 }

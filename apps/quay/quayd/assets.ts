@@ -11,6 +11,7 @@
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { sdkExternals, vendorUrl } from '@justfiles/app/sdk-externals'
 // Where build-assets.ts emits the vendor + chat bundles, and where the design styles
 // live — resolved for dev vs. a shipped Quay.app by the one resource seam.
 import { ASSETS_DIR, designPath } from './resources.ts'
@@ -21,7 +22,11 @@ const IMPORTMAP = JSON.stringify({
 		'react-dom': '/vendor/react-dom.js',
 		'react-dom/client': '/vendor/react-dom-client.js',
 		'react/jsx-runtime': '/vendor/jsx-runtime.js',
-		'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js'
+		'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js',
+		// The SDK half is generated from the shared externals constant (URLs mirror the
+		// specifier), so a new capability resolves with no manual edit here. React keeps its
+		// existing mangled vendor names above.
+		...Object.fromEntries(sdkExternals.map(({ spec }) => [spec, vendorUrl(spec)]))
 	}
 })
 
@@ -36,17 +41,25 @@ export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 }
 
 async function readAssets(): Promise<Map<string, Uint8Array>> {
-	let files: string[]
-	try {
-		files = await readdir(ASSETS_DIR)
-	} catch {
-		throw new Error(
-			`quayd: launcher assets missing at ${ASSETS_DIR} — run \`pnpm --filter @justfiles/quay assets\` (or \`build\`/\`restart\`) to build them.`
-		)
-	}
 	const out = new Map<string, Uint8Array>()
-	for (const file of files) {
-		if (file.endsWith('.js')) out.set(`/vendor/${file}`, await readFile(join(ASSETS_DIR, file)))
+	// Recursive walk so nested SDK vendor modules (`/vendor/@justfiles/….js`) serve too;
+	// the URL key mirrors the path under assets-dist. React's flat names come along free.
+	const walk = async (dir: string, prefix: string): Promise<void> => {
+		for (const entry of await readdir(dir, { withFileTypes: true })) {
+			const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+			const abs = join(dir, entry.name)
+			if (entry.isDirectory()) await walk(abs, rel)
+			else if (entry.name.endsWith('.js')) out.set(`/vendor/${rel}`, await readFile(abs))
+		}
+	}
+	try {
+		await walk(ASSETS_DIR, '')
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT')
+			throw new Error(
+				`quayd: launcher assets missing at ${ASSETS_DIR} — run \`pnpm --filter @justfiles/quay assets\` (or \`build\`/\`restart\`) to build them.`
+			)
+		throw err
 	}
 	return out
 }

@@ -9,6 +9,7 @@
 		"./browser": "./browser.ts",
 		"./react": "./react.ts",
 		"./react-entry": "./react-entry.ts",
+		"./sdk-externals": "./sdk-externals.ts",
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./devkit": "./devkit.ts",
@@ -58,6 +59,10 @@
 			"./react-entry": {
 				"types": "./dist/react-entry.d.ts",
 				"default": "./dist/react-entry.js"
+			},
+			"./sdk-externals": {
+				"types": "./dist/sdk-externals.d.ts",
+				"default": "./dist/sdk-externals.js"
 			},
 			"./vite": {
 				"types": "./dist/vite.d.ts",

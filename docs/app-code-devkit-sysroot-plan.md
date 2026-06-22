@@ -231,7 +231,28 @@ or the reducer entry, since `app.js` and `gui.js` are separate `compile` calls):
 
 ## Implementation Steps
 
-### 0. Spike: in-memory SDK injection into the reducer worker (DO THIS FIRST)
+### 0. Spike: in-memory SDK injection into the reducer worker (DONE ✅)
+
+**Result (2026-06-22, node 26.2.0 / bun 1.3.7):** the in-memory leg works on both runtimes. A
+worker bootstrap → `data:`/`blob:` app module → `data:`/`blob:` SDK module resolves with named
+exports intact, *and* one app module importing three separate self-contained SDK modules (core +
+capability + valibot, each its own URL) round-trips — confirming the no-singleton assumption holds
+with no `file://` and no disk.
+
+| Runtime | Worker bootstrap | App module | SDK module(s) | Result |
+|---|---|---|---|---|
+| node 26.2.0 | `data:` | `data:` | `data:` (single) | ✅ named exports intact |
+| node 26.2.0 | `data:` | `data:` | `data:` ×3 (core+cap+valibot) | ✅ all three resolve |
+| bun 1.3.7 | `blob:` | `blob:` | `blob:` (single) | ✅ named exports intact |
+| bun 1.3.7 | `blob:` | `blob:` | `blob:` ×3 (core+cap+valibot) | ✅ all three resolve |
+
+The throwaway mirrored each runtime's `#sandbox-url` `moduleUrl` (data: on node, blob: on bun) and
+the real `Worker(new URL(...))` spawn. **No per-runtime fallback needed** — node/bun can inject the
+SDK in-memory as `data:`/`blob:` modules, so the diskless model in this doc stands as designed. The
+browser leg stays optional (frieren's baseline is the served `${origin}/vendor/...` URL, already
+proven by the prior spike).
+
+<details><summary>Original spike spec (kept for provenance)</summary>
 
 The load-bearing unknown for the in-memory model. **Prove, in a throwaway, that a `data:`/`blob:`
 app module can `import` from a `data:`/`blob:` SDK module** — i.e. the reducer chain with no
@@ -247,7 +268,9 @@ app module can `import` from a `data:`/`blob:` SDK module** — i.e. the reducer
 If a runtime can't import a `data:`/`blob:` SDK URL from a `data:`/`blob:` app module, the fallback
 is per-runtime: **browser** → the served-URL form (its baseline anyway); **node/bun** → the Step 12
 loader-hook *only* (they have no server to serve from, and `file://` is ruled out — see "No on-disk
-SDK cache"). Record the result in this doc.
+SDK cache").
+
+</details> Record the result in this doc.
 
 **Prior spike (DONE ✅) — established the worker-URL resolution this builds on.** A throwaway
 mirrored each runtime's worker chain (worker bootstrap → app module → SDK module) and proved:
@@ -263,7 +286,37 @@ So worker→external-URL resolution works; the browser **must** use a fully-qual
 root-absolute). What's left to prove is the **`data:`/`blob:` SDK target** (this step), which is what
 lets node/bun inject in-memory instead of from `file://`.
 
-### 1. Build the host SDK once and expose it (no disk cache)
+### 1. Build the host SDK once and expose it (no disk cache) (DONE ✅)
+
+**Done (2026-06-22).** A shared externals constant now drives both hosts; the SDK is served
+as `/vendor/<spec>.js` and the gui importmap is generated from it.
+
+- **`packages/app/sdk-externals.ts`** (new, exported as `@justfiles/app/sdk-externals`) is the
+  single source of truth: `reactExternals`, `sdkExternals` (`{ spec, reducer }` — `reducer:false`
+  marks the GUI-only React entry + `/browser` bindings), `externals` (the union for Step 2), and
+  `vendorUrl(spec)` (mirrors the specifier, no mangling). `devkit-runtime.ts` now imports these
+  instead of its own `EXTERNAL`/`LIBS`/`CAPS`.
+- **react-free guard** lives in `buildRuntime` (`devkit-runtime.ts`): after each module is built it
+  asserts no reducer-reachable spec imports a `react`/`react-dom`/`react/*` specifier (the only
+  external in the build), throwing a clear error otherwise. Covered by `sdk-externals.test.ts`.
+- **quay:** `build-assets.ts` emits each `buildRuntime` module to `assets-dist/<spec>.js` (nested
+  `@`-paths via `mkdir`); `assets.ts` `readAssets()` is now a recursive walk keyed `/vendor/<rel>`,
+  and `IMPORTMAP` adds the SDK half from `sdkExternals`. (`runtime.json`/`types.json` still written —
+  Step 7 retires them.) Verified: 9 SDK vendor modules served at `/vendor/@justfiles/…` + `valibot`,
+  importmap carries React (mangled) + SDK (mirrored).
+- **frieren:** `vite.config.ts` builds the SDK vendor via `buildRuntime` into the vendor cache dir
+  every start (live-source edits reflect), the `/vendor` middleware + recursive `writeBundle` serve
+  nested paths, and `transformIndexHtml` injects the React+SDK importmap (the static one in
+  `index.html` is gone). Verified live: dev server injects the importmap and serves
+  `/vendor/@justfiles/app.js` + nested `…/capabilities/volume.js`.
+- **desktop (POC):** unchanged `buildRuntime` usage; the guard applies for free. Vendor-serving
+  wiring deferred (typecheck covers it).
+
+The full Step 1 per-step verification (React vendor works; SDK vendor served incl. nested `@`-paths;
+react-free guard passes; importmap resolves `@justfiles/app`) passed on both quay and frieren.
+`pnpm format`/`typecheck`/`lint:fix`/`test` (696 passed) all green.
+
+<details><summary>Original Step 1 spec</summary>
 
 `buildRuntime()` (in `packages/app`) stays the single SDK builder. Its one output is exposed two
 ways for the *same* runtime — never staged to a per-app disk cache:
@@ -306,6 +359,8 @@ the same opaque worker error the prior spike hit.
 Verification: React vendor still works; SDK vendor modules served at `/vendor/…` (including nested
 `@`-paths); the react-free guard passes; a hand-written app with a bare `@justfiles/app` import
 resolves in the webview via the importmap.
+
+</details>
 
 ### 2. Externalize the SDK in BOTH compile paths (entry-kind-aware)
 
@@ -613,12 +668,11 @@ Those belong to normal package projects created with `packages/create-app/`.
 
 ## Open Questions
 
-The only open gate is **Step 0** (the in-memory injection spike): confirm a `data:`/`blob:` app
-module can import a `data:`/`blob:` SDK module on node/bun. The prior spike already proved
-worker→external-URL resolution (including that the browser needs a fully-qualified origin URL), so if
-the in-memory leg fails, the fallback is per-runtime — **browser** stays on its served-URL baseline,
-**node/bun** fall back to the Step 12 loader-hook (no server, no `file://`). No design blocker, only a
-mechanism swap. Everything else is implementation.
+**Resolved.** The only open gate was **Step 0** (the in-memory injection spike): it is now **proven**
+on node 26.2.0 (`data:`) and bun 1.3.7 (`blob:`) — a `data:`/`blob:` app module imports a
+`data:`/`blob:` SDK module with named exports intact, including the multi-module (core + capability +
+valibot) no-singleton case (see Step 0's result table). No per-runtime fallback is needed: the
+diskless in-memory model holds. Everything else is implementation.
 
 ## Review notes (verified against the codebase)
 

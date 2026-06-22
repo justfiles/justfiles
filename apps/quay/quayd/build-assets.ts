@@ -18,7 +18,7 @@
 
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 // The devkit system runtime + type-checker overlay (the libs the compiler injects
 // into every draft, and the `.d.ts` the type-checker resolves against). Baked here, at
 // ship time, because both read node_modules — which the self-contained exe doesn't
@@ -67,12 +67,28 @@ async function main(): Promise<void> {
 	for (const [name, text] of files) await writeFile(join(OUT_DIR, name), text)
 	// The devkit system runtime + type overlay, baked beside the launcher assets. Not
 	// `.js` vendor assets (assets.ts won't serve them); devkit.ts reads them off disk.
-	await writeFile(join(OUT_DIR, 'runtime.json'), JSON.stringify(await buildRuntime()))
+	const runtime = await buildRuntime()
+	await writeFile(join(OUT_DIR, 'runtime.json'), JSON.stringify(runtime))
 	await writeFile(join(OUT_DIR, 'types.json'), JSON.stringify(await bakeTypes()))
+	// The same SDK build, also emitted as served `/vendor/<spec>.js` modules so the gui
+	// importmap (and the browser reducer's fetched URL) resolve the SDK to the host's copy.
+	// Vendor URLs mirror the specifier, so nested `@justfiles/…` paths need their dirs made.
+	const sdk = await emitSdkVendor(runtime)
 	const docs = await copyDocs()
 	console.log(
-		`quayd: built ${files.size} launcher assets + runtime + types + ${docs} docs → ${OUT_DIR}`
+		`quayd: built ${files.size} launcher assets + ${sdk} SDK vendor + runtime + types + ${docs} docs → ${OUT_DIR}`
 	)
+}
+
+// Each `buildRuntime` module written to `assets-dist/<spec>.js` (mirroring the specifier),
+// which assets.ts serves at `/vendor/<spec>.js` and lists in the importmap.
+async function emitSdkVendor(runtime: Record<string, string>): Promise<number> {
+	for (const [spec, text] of Object.entries(runtime)) {
+		const file = join(OUT_DIR, `${spec}.js`)
+		await mkdir(dirname(file), { recursive: true })
+		await writeFile(file, text)
+	}
+	return Object.keys(runtime).length
 }
 
 // Ship docs/*.md beside the daemon (OUT_DIR/docs) so quayd reads them from disk at

@@ -6,17 +6,9 @@
     <meta name="theme-color" content="#020617" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>frieren</title>
-    <script type="importmap">
-      {
-        "imports": {
-          "react": "/vendor/react.js",
-          "react-dom": "/vendor/react-dom.js",
-          "react-dom/client": "/vendor/react-dom-client.js",
-          "react/jsx-runtime": "/vendor/jsx-runtime.js",
-          "react/jsx-dev-runtime": "/vendor/jsx-dev-runtime.js"
-        }
-      }
-    </script>
+    <!-- The host importmap (React + SDK /vendor modules) is injected by the
+         frieren:vendor-react plugin (transformIndexHtml) from the shared externals
+         constant, so a new capability needs no edit here. -->
   </head>
   <body>
     <div id="root"></div>
