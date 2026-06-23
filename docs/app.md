@@ -502,10 +502,16 @@ export const menu: GUIMenu<typeof app> = (state, actions) => [
 
 ### App-scoped CSS
 
-Inject layout CSS once, scoped under root class. Platform look/colors from host design tokens
+Layout CSS, scoped under a root class. Platform look/colors from host design tokens
 (`var(--surface)`, `var(--text)`, `var(--rule)`, `var(--focus)`, …) — use those, don't hardcode.
+Two ways, both ending up as one `<style>` inside `gui.js` (the only file the host loads):
 
 ```ts
+// 1. A real stylesheet — import it for its side effect. The build folds it into gui.js
+//    (in-repo via vite, drafts via the devkit compiler), so it works in dev and prod alike.
+import './gui.css'
+
+// 2. An inline string — handy for a few rules. Dedups on the key.
 import { injectStyle } from '@justfiles/app/browser'
 injectStyle(`.foo { display: flex; height: 100%; }`, 'app-foo')
 ```
@@ -657,7 +663,8 @@ export type FooApp = typeof app
 ```
 
 GUI (`gui.tsx`): `export default ({ state, actions }: GUIProps<typeof app>) => ReactNode`,
-optional `export const menu: GUIMenu<typeof app>`, `injectStyle(css, key)`.
+optional `export const menu: GUIMenu<typeof app>`, CSS via `import './x.css'` or
+`injectStyle(css, key)`.
 
 ### Hard rules
 
@@ -750,6 +757,7 @@ import { injectStyle, defineGUI } from '@justfiles/app/browser'
 import type { GUIProps, GUIMenu } from '@justfiles/app/react'
 import * as v from 'valibot'
 import './helpers.ts' // ✅ relative imports within src/ work
+import './gui.css' // ✅ folded into gui.js by the devkit compiler (Section 9)
 // import { volume } from '@justfiles/app/capabilities/volume' // ❌ does NOT resolve in a draft
 ```
 

@@ -59,6 +59,21 @@ describe('typescriptToolchain', () => {
 		)
 	})
 
+	test('CSS: a draft import folds into gui.js (no sidecar)', async () => {
+		const gui = `import { defineGUI } from '@justfiles/app/browser'
+import './styles.css'
+export const gui = defineGUI({ mount: (el) => ((el.textContent = 'x'), { update() {}, unmount() {} }) })`
+		const result = await toolchain.compile(
+			project({ 'app.ts': APP, 'gui.ts': gui, 'styles.css': '.box { color: hotpink; }' }, 'gui.ts')
+		)
+		expect(result.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
+		// No sidecar — the host loads only gui.js, and the CSS rides inside it.
+		expect(result.outputs.map((o) => o.path).sort()).toEqual(['app.js', 'gui.js'])
+		const js = result.outputs.find((o) => o.path === 'gui.js')?.text
+		expect(js).toContain('hotpink')
+		expect(js).toContain('injectStyle')
+	})
+
 	test('typecheck passes a valid project (system imports resolve)', async () => {
 		const { diagnostics } = await toolchain.typecheck(project({ 'app.ts': APP }))
 		// No "cannot find module" — the system stdlib resolves — and no real errors.

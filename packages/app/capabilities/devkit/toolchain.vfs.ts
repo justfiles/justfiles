@@ -40,6 +40,16 @@ export function loaderFor(path: string): VfsLoader {
 	return 'ts'
 }
 
+// Compile a `.css` import into a JS side-effect module that injects the CSS at
+// runtime. The host loads only `gui.js`, so a real CSS file (esbuild would drop
+// it; Bun would emit an unlinked sidecar) never applies — folding it into the JS
+// via the SDK's `injectStyle` is exactly what an author would hand-write, and the
+// same end state the kernelHost build reaches for in-repo packages (vite.ts).
+// `injectStyle` dedups on the CSS text, so a re-mount won't stack <style> tags.
+export function cssModule(css: string): string {
+	return `import { injectStyle } from '@justfiles/app/browser'\ninjectStyle(${JSON.stringify(css)})\n`
+}
+
 // Resolve a relative import against the `files` map (the both-bundlers vfs rule):
 // join `spec` onto the importer's dir, then probe the conventional extensions.
 export function resolveRelative(
@@ -85,12 +95,12 @@ export function plain(file: string, message: string): Diagnostic {
 	return { file, range: ZERO, severity: 'error', source: 'esbuild', message }
 }
 
-// What a single entry's bundle produced: its JS (omitted on a hard build error,
-// so the entry contributes no output), an optional CSS sidecar (Bun bundles
-// `import './x.css'`; the esbuild path doesn't), and this entry's diagnostics.
+// What a single entry's bundle produced: its JS (omitted on a hard build error, so
+// the entry contributes no output) and this entry's diagnostics. CSS never appears
+// here — `.css` imports fold into the JS as `injectStyle` calls (`cssModule`), since
+// no host links a separate stylesheet.
 export interface VfsBuildResult {
 	js?: string
-	css?: string
 	diagnostics: Diagnostic[]
 }
 
@@ -131,7 +141,6 @@ export async function compileVfs(
 		// (`name === 'gui'`) keeps its bare specifiers (the document importmap resolves them).
 		const js = result.js !== undefined && name !== 'gui' ? sentinelizeReducer(result.js) : result.js
 		if (js !== undefined) outputs.push({ path: `${name}.js`, text: js })
-		if (result.css !== undefined) outputs.push({ path: `${name}.css`, text: result.css })
 	}
 	return { outputs, diagnostics }
 }

@@ -11,6 +11,7 @@ import { isSdkSpec, reactExternals } from '../../sdk-externals.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
 import {
 	compileVfs,
+	cssModule,
 	loaderFor,
 	RUNTIME,
 	resolveRelative,
@@ -73,10 +74,17 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 				const message = unsupportedImport(args.path)
 				return message ? { errors: [{ text: message }] } : undefined
 			})
-			build.onLoad({ filter: /.*/, namespace: VFS }, (args) => ({
-				contents: files[args.path] ?? '',
-				loader: loaderFor(args.path) as Loader
-			}))
+			build.onLoad({ filter: /.*/, namespace: VFS }, (args) => {
+				// `.css` becomes a runtime-injecting JS module (the css loader's sidecar
+				// is dropped at outputFiles[0] and never linked by the host) — so a plain
+				// `import './x.css'` folds into gui.js, same as an in-repo build.
+				if (args.path.endsWith('.css'))
+					return { contents: cssModule(files[args.path] ?? ''), loader: 'js' }
+				return {
+					contents: files[args.path] ?? '',
+					loader: loaderFor(args.path) as Loader
+				}
+			})
 			build.onLoad({ filter: /.*/, namespace: RUNTIME }, (args) => ({
 				contents: runtime[args.path],
 				loader: 'js'
