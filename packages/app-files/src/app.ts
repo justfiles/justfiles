@@ -98,7 +98,9 @@ export const app = defineApp({
 				const bytes = await app.invoke('volume', 'readFile', path)
 				const truncated = bytes.byteLength > PREVIEW_LIMIT
 				const slice = truncated ? bytes.subarray(0, PREVIEW_LIMIT) : bytes
-				return { path, content: decoder.decode(slice), truncated }
+				// `size` is the full byte length on disk, not the (possibly capped)
+				// preview slice — so the status bar reports the real file size.
+				return { path, content: decoder.decode(slice), truncated, size: bytes.byteLength }
 			}
 		})
 	})

@@ -1,50 +1,13 @@
 import type { Client } from '@justfiles/app'
-import { defineGUI, injectStyle } from '@justfiles/app/browser'
+import { defineGUI } from '@justfiles/app/browser'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type FilesApp, type FilesState, initialState } from './app.ts'
-
-// The app's own layout, scoped under `.files` and injected on import. Colours come
-// from the platform tokens (`--surface`, `--rule`, `--focus`); the platform sheet
-// (`@justfiles/design/mac`) handles native control defaults, which the rows override.
-injectStyle(
-	`
-.files { display: flex; height: 100%; width: 100%; }
-.files-sidebar { display: flex; flex-direction: column; flex: none; width: 224px; overflow: hidden; background: var(--surface); border-right: 1px solid var(--rule); }
-.files-resizer { position: relative; flex: none; width: 6px; margin-left: -3px; z-index: 1; padding: 0; border: 0; appearance: none; background: transparent; cursor: col-resize; touch-action: none; }
-.files-resizer::after { content: ''; position: absolute; inset: 0 2px; transition: background 0.1s; }
-.files-resizer:hover::after, .files-resizer.dragging::after { background: var(--focus); }
-.files-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; }
-.files-main-head { display: flex; flex: none; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--rule); }
-.files-title, .files-main-name { font-weight: 500; }
-.files-push { margin-left: auto; }
-.files-path { margin-left: auto; font-size: 11px; opacity: 0.5; }
-.files-main-name, .files-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.files-btn { flex: none; padding: 1px 8px; font-size: 11px; }
-.files-error { padding: 0 12px 8px; font-size: 12px; color: #b91c1c; }
-.files-hint { padding: 4px 12px; font-size: 12px; opacity: 0.6; }
-.files-tree-wrap { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.files-tree { display: block; height: 100%; width: 100%;
-	--trees-bg-override: var(--surface);
-	--trees-fg-override: var(--text);
-	--trees-fg-muted-override: color-mix(in srgb, var(--text) 55%, transparent);
-	--trees-bg-muted-override: color-mix(in srgb, var(--text) 7%, transparent);
-	--trees-border-color-override: var(--rule);
-	--trees-selected-bg-override: var(--focus);
-	--trees-selected-fg-override: var(--on-focus);
-	--trees-focus-ring-color-override: var(--focus);
-	--trees-font-family-override: ui-monospace, Menlo, monospace;
-	--trees-font-size-override: 12px;
-	--trees-padding-inline-override: 6px; }
-.files-main { display: flex; flex-direction: column; flex: 1; min-width: 0; background: var(--window-bg); color: var(--text); }
-.files-preview { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 12px; background: transparent; color: inherit; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.45; }
-.files-truncated { display: block; padding-top: 8px; opacity: 0.5; }
-.files-muted { opacity: 0.5; }
-.files-empty { display: flex; height: 100%; align-items: center; justify-content: center; font-size: 12px; opacity: 0.5; }
-`,
-	'app-files'
-)
+// Plain side-effect CSS import. `vite dev` injects it; the production build folds
+// it into gui.js as a runtime <style> (see the kernel-host-css plugin in
+// packages/app/vite.ts), so the bundle stays self-contained in every host.
+import './gui.css'
 
 const stateOrInitial = (value: unknown): FilesState =>
 	value && typeof value === 'object' && 'files' in value ? (value as FilesState) : initialState
@@ -73,9 +36,23 @@ function basename(path: string): string {
 	return parts[parts.length - 1] ?? path
 }
 
+const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
+function formatSize(bytes: number): string {
+	let size = bytes
+	let unit = 0
+	while (size >= 1024 && unit < SIZE_UNITS.length - 1) {
+		size /= 1024
+		unit++
+	}
+	// Whole bytes; one decimal under 10 of a larger unit (2.5 KB), else rounded.
+	const value = unit === 0 || size >= 10 ? Math.round(size) : Math.round(size * 10) / 10
+	return `${value} ${SIZE_UNITS[unit]}`
+}
+
 // Preview shape returned by the `readFile` query. Kept local to the GUI —
-// content lives in React state only, never in app state.
-type Preview = { path: string; content: string; truncated: boolean }
+// content lives in React state only, never in app state. `size` is the file's
+// full byte length on disk (not the capped preview slice).
+type Preview = { path: string; content: string; truncated: boolean; size: number }
 
 function Files({ state, client }: { state: FilesState; client: Client<FilesApp> }) {
 	const refreshed = useRef(false)
@@ -185,10 +162,14 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 					<>
 						<header className="files-main-head">
 							<span className="files-main-name">{basename(viewing)}</span>
-							<span className="files-path">{viewing}</span>
-							<button type="button" onClick={() => void client.clear({})} className="files-btn">
-								Clear
-							</button>
+							<div className="files-meta">
+								<span className="files-path" title={viewing}>
+									{viewing}
+								</span>
+								{showPreview ? (
+									<span className="files-size">{formatSize(showPreview.size)}</span>
+								) : null}
+							</div>
 						</header>
 						<pre className="files-preview">
 							{displayError ? (
