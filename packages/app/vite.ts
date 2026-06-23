@@ -260,6 +260,36 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 				}
 				writeFileSync(resolve(out, 'manifest.json'), JSON.stringify(manifest, null, '\t'))
 			}
+		},
+		{
+			// `import './x.css'` in a GUI is extracted by the lib build into a side
+			// asset the host never links. Fold every CSS asset back into gui.js as a
+			// runtime <style> so the bundle stays self-contained (browser.ts) and the
+			// authored import reads like any web project. Build-only — `vite dev`
+			// injects CSS itself.
+			name: 'kernel-host-css',
+			apply: 'build',
+			enforce: 'post',
+			generateBundle(_, bundle) {
+				let css = ''
+				for (const [file, output] of Object.entries(bundle)) {
+					if (output.type === 'asset' && file.endsWith('.css')) {
+						css +=
+							typeof output.source === 'string'
+								? output.source
+								: new TextDecoder().decode(output.source)
+						delete bundle[file]
+					}
+				}
+				if (!css) return
+				const entry = Object.values(bundle).find((o) => o.type === 'chunk' && o.isEntry)
+				if (entry?.type !== 'chunk') return
+				const selector = JSON.stringify(`style[data-app-style="${opts.id}"]`)
+				entry.code =
+					`(function(){if(typeof document==="undefined"||document.querySelector(${selector}))return;` +
+					`var s=document.createElement("style");s.setAttribute("data-app-style",${JSON.stringify(opts.id)});` +
+					`s.textContent=${JSON.stringify(css)};document.head.appendChild(s)})();\n${entry.code}`
+			}
 		}
 	]
 }
