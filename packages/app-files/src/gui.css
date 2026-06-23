@@ -57,9 +57,6 @@
 .files-main-name {
 	font-weight: 500;
 }
-.files-push {
-	margin-left: auto;
-}
 /* Right-hand metadata cluster: pushed to the far edge, it owns the leftover
    width so the long path truncates here instead of crowding the name. The path
    shrinks; the fixed-width size never does. */
@@ -93,12 +90,6 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-.files-btn {
-	flex: none;
-	align-self: center;
-	padding: 1px 8px;
-	font-size: 11px;
 }
 .files-error {
 	padding: 0 12px 8px;

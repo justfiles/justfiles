@@ -178,10 +178,22 @@ export interface Volume {
 	 * writes carry none). The path need not exist yet — once a dentry binds it,
 	 * the watch picks it up.
 	 *
+	 * With `{ recursive: true }` the watch instead reports STRUCTURAL changes
+	 * — entries created/removed/renamed — anywhere in the volume's storage,
+	 * coalesced per microtask. `path` is ignored (the signal is storage-wide);
+	 * pair it with a scoped `scan` to rebuild a subtree listing. Content/meta
+	 * edits to existing files do NOT fire — watch the concrete file for those.
+	 * This is the substrate for a directory browser's auto-refresh; see the
+	 * `Volume` capability contract for the chroot scoping caveat.
+	 *
 	 * Requires `Storage.caps.subscribe`; without it the watch is inert and the
 	 * returned unsubscribe is a no-op. Returns a promise of the unsubscribe.
 	 */
-	watch(path: string, listener: (event: WatchEvent) => void): Promise<() => void>
+	watch(
+		path: string,
+		listener: (event: WatchEvent) => void,
+		opts?: { recursive?: boolean }
+	): Promise<() => void>
 }
 
 /** Payload delivered to a `volume.watch` listener. */
@@ -736,9 +748,28 @@ export function volume(storage: Storage): Volume {
 			await walk(ino, path)
 		},
 
-		async watch(path, listener) {
+		async watch(path, listener, opts) {
 			const subscribe = storage.caps?.subscribe
 			if (!subscribe) return () => {}
+
+			// Recursive: a storage-wide STRUCTURAL change signal. Only dirent
+			// mutations (create/remove/rename) reshape a tree's entry set; content
+			// edits to existing files keep the listing identical, so they don't fire.
+			// Coalesce the several ops of one logical write into a single event.
+			if (opts?.recursive) {
+				let scheduled = false
+				let pendingSource: string | undefined
+				return subscribe((change) => {
+					if (change.kind !== 'dirent') return
+					pendingSource = change.source
+					if (scheduled) return
+					scheduled = true
+					queueMicrotask(() => {
+						scheduled = false
+						listener({ source: pendingSource })
+					})
+				})
+			}
 
 			// Track the resolved inode (content/meta edits) and the parent dentry
 			// (rebinds). The path need not exist yet — dirIno/name bind it once the
@@ -850,6 +881,6 @@ export function chroot(fs: Volume, root: string): Volume {
 			fs.scan(at(path), async (realPath, stat) => {
 				await visitor(realPath.slice(root.length) || '/', stat)
 			}),
-		watch: (path, listener) => fs.watch(at(path), listener)
+		watch: (path, listener, opts) => fs.watch(at(path), listener, opts)
 	}
 }

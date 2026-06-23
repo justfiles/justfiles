@@ -74,24 +74,28 @@ test('files watches the open file: one fileChanged per write, stops on clear', a
 		appBundleFromMemory({ id: 'app.frieren.files', name: 'Files', app: code })
 	)
 
-	// Viewing a file declares the watch (`subscriptions(state)`); the reconciler
-	// opens it. No watch until then.
-	expect(v.live()).toBe(0)
+	// The recursive tree watch is always declared (it drives auto-refresh); the
+	// reconciler opens it on install. Viewing a file declares a SECOND, single-path
+	// watch over the open file (`subscriptions(state)`).
+	await until(() => v.live() === 1, 'recursive tree watch established')
 	await k.dispatch(id, { type: 'setView', params: { path: '/notes.txt' } })
-	await until(() => v.live() === 1, 'watch established')
+	await until(() => v.live() === 2, 'file watch established')
 
 	const rev = async () => ((await k.state(id)) as { revision: number }).revision
 	expect(await rev()).toBe(0)
 
-	// An external write to the watched file folds in as exactly one `fileChanged`.
+	// An external CONTENT edit to the watched file folds in as exactly one
+	// `fileChanged`. It doesn't reshape the tree, so the recursive watch stays
+	// silent and the revision lands at exactly 1.
 	await fs.writeFile('/notes.txt', enc.encode('changed'))
 	await until(async () => (await rev()) === 1, 'one fileChanged delivered')
 	await tick()
 	expect(await rev()).toBe(1)
 
-	// Leaving the watch (clear) tears the stream down — further writes deliver nothing.
+	// Leaving the file (clear) tears down the single-path watch; the recursive
+	// tree watch persists, so further content writes deliver no `fileChanged`.
 	await k.dispatch(id, { type: 'clear', params: {} })
-	await until(() => v.live() === 0, 'watch stopped on clear')
+	await until(() => v.live() === 1, 'file watch stopped on clear')
 	await fs.writeFile('/notes.txt', enc.encode('again'))
 	await tick()
 	expect(await rev()).toBe(1)

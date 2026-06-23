@@ -153,7 +153,8 @@ function devVolume(fs: Volume): Capability {
 			const vol = await bind(ctx)
 			return recursive === true ? scanTree(vol, path) : scanDir(vol, path)
 		},
-		watch: async (ctx, emit, { path }) => (await bind(ctx)).watch(path, emit)
+		watch: async (ctx, emit, { path, recursive }) =>
+			(await bind(ctx)).watch(path, emit, { recursive })
 	})
 }
 

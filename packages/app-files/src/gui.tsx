@@ -111,13 +111,6 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 			<aside className="files-sidebar" style={{ width: sidebarWidth }}>
 				<header className="files-head">
 					<span className="files-title">Files</span>
-					<button
-						type="button"
-						onClick={() => void client.refresh({})}
-						className="files-btn files-push"
-					>
-						Refresh
-					</button>
 				</header>
 				{state.error ? <p className="files-error">{state.error}</p> : null}
 				{state.loading ? (

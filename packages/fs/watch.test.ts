@@ -223,6 +223,48 @@ describe('volume.watch', () => {
 	})
 })
 
+describe('volume.watch recursive', () => {
+	it('fires on a structural change anywhere in the tree, not on content edits', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/deep/nested', { recursive: true })
+		await vol.writeFile('/a.txt', enc.encode('1'))
+
+		let fired = 0
+		let lastSource: string | undefined = 'sentinel'
+		await vol.watch(
+			'/',
+			(e) => {
+				fired++
+				lastSource = e.source
+			},
+			{ recursive: true }
+		)
+
+		// A nested create fires — a single-path watch on '/' never would.
+		await vol.writeFile('/deep/nested/b.txt', enc.encode('1'))
+		await flush()
+		expect(fired).toBe(1)
+		expect(lastSource).toBeUndefined()
+
+		// A content edit to an existing file keeps the entry set identical → no fire.
+		// (The exact no-op assertion is the heart of "structural changes only".)
+		await vol.writeFile('/a.txt', enc.encode('2'))
+		await flush()
+		expect(fired).toBe(1)
+
+		// Remove and rename reshape the tree → fire (counts coalesce per write).
+		await vol.rm('/deep/nested/b.txt')
+		await flush()
+		expect(fired).toBeGreaterThan(1)
+
+		const settled = fired
+		await vol.writeFile('/c.txt', enc.encode('1'))
+		await vol.rename('/c.txt', '/d.txt')
+		await flush()
+		expect(fired).toBeGreaterThan(settled)
+	})
+})
+
 describe('volume.watch over the atomic-cap backend (nativeStorage)', () => {
 	let dir: string
 	afterEach(() => {
