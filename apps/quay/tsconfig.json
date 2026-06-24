@@ -6,6 +6,10 @@
 		"module": "Preserve",
 		"moduleDetection": "force",
 		"moduleResolution": "bundler",
+		// The daemon runs under Bun (`bun daemon/main.ts`); resolve the `bun` export
+		// condition so capnweb's Bun helpers and the `#`-import bun variants type-check
+		// against what actually runs.
+		"customConditions": ["bun"],
 		"allowImportingTsExtensions": true,
 		"verbatimModuleSyntax": true,
 		"noEmit": true,

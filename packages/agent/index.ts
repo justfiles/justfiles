@@ -34,3 +34,5 @@ export {
 	createTakeNoteTool,
 	type FsToolset
 } from './tools.ts'
+
+export type { Agent } from '@mariozechner/pi-agent-core'
