@@ -4,9 +4,9 @@ import { Agent, type AgentTool } from '@mariozechner/pi-agent-core'
 import { type AssistantMessage, createAssistantMessageEventStream } from '@mariozechner/pi-ai'
 import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
+import { createAssistant } from './assistant.ts'
 import type { LLMText } from './llm.text.ts'
 import { systemPrompt } from './prompts.ts'
-import { runtime } from './runtime.ts'
 
 const encoder = new TextEncoder()
 
@@ -69,9 +69,9 @@ function scriptedAgent(messages: AssistantMessage[]): Agent {
 	})
 }
 
-describe('runtime prompt', () => {
+describe('assistant prompt', () => {
 	test('retries an empty assistant response before persisting', async () => {
-		const rt = await runtime({
+		const rt = await createAssistant({
 			volume: volume(memStorage()),
 			agent: scriptedAgent([assistant([]), assistant([{ type: 'text', text: 'Recovered' }])]),
 			text: testText(),
@@ -86,10 +86,10 @@ describe('runtime prompt', () => {
 	})
 })
 
-describe('runtime tool API', () => {
-	test('adds and removes tools on the agent tool list', async () => {
+describe('assistant tool API', () => {
+	test('adds tools to the agent tool list', async () => {
 		const agent = new Agent()
-		const rt = await runtime({
+		const rt = await createAssistant({
 			volume: volume(memStorage()),
 			agent,
 			text: testText(),
@@ -100,9 +100,6 @@ describe('runtime tool API', () => {
 		const second = testTool('second')
 		rt.addTools([first, second])
 		expect(agent.state.tools).toEqual([first, second])
-
-		rt.removeTools([first])
-		expect(agent.state.tools).toEqual([second])
 	})
 
 	test('returns the composed system prompt', async () => {
@@ -116,7 +113,7 @@ describe('runtime tool API', () => {
 		await vol.writeFile(`/system/memory/daily/${today}.md`, encoder.encode('daily'))
 
 		const agent = new Agent()
-		const rt = await runtime({
+		const rt = await createAssistant({
 			volume: vol,
 			agent,
 			text: testText(),

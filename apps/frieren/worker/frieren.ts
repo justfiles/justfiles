@@ -1,10 +1,13 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
+	type Assistant,
 	CommandRegistry,
 	type CompactionSettings,
+	consolidateMemory,
 	cp,
 	createAgent,
 	createAppCommand,
+	createAssistant,
 	createBashTool,
 	createFetchTool,
 	createFsTools,
@@ -13,10 +16,8 @@ import {
 	type LLMText,
 	mv,
 	parseFrontmatter,
-	type Runtime,
 	resolveTimezone,
 	rm,
-	runtime,
 	SOUL_GENERATION_PROMPT,
 	type SoulGenerationInput,
 	text
@@ -79,7 +80,7 @@ const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly vol: Volume
-	private runtime?: Runtime
+	private assistant?: Assistant
 	private text?: LLMText
 	private cfTimezone?: string
 	private readonly coalescer = new Coalescer()
@@ -163,7 +164,7 @@ export class Frieren extends DurableObject<Env> {
 	private async reset() {
 		const { model, apiKey } = this.getBackendConfig()
 		await migrateCF(this.ctx.storage)
-		this.runtime?.shutdown()
+		this.assistant?.abort()
 		this.text = text({ model, apiKey })
 		// Accounts live on the Volume (store internal to @justfiles/app); the factory
 		// hands back the capabilities. frieren keeps its own env-keyed `ai`, so the
@@ -188,7 +189,7 @@ export class Frieren extends DurableObject<Env> {
 			accounts: caps.accounts
 		})
 		const agent = this.buildAgent({ email, calendar })
-		this.runtime = await runtime({
+		this.assistant = await createAssistant({
 			volume: this.vol,
 			agent,
 			text: this.text,
@@ -284,7 +285,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'abort') {
-			this.runtime?.shutdown()
+			this.assistant?.abort()
 			return
 		}
 
@@ -299,7 +300,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'prompt' && parsed.text) {
-			const sp = this.runtime?.systemPrompt()
+			const sp = this.assistant?.systemPrompt()
 			const trimmed = parsed.text.trim()
 			if (trimmed === DEBUG_COMMAND) {
 				ws.send(
@@ -311,7 +312,7 @@ export class Frieren extends DurableObject<Env> {
 				return
 			}
 
-			const unsubscribe = this.runtime?.subscribe((event, _signal) => {
+			const unsubscribe = this.assistant?.subscribe((event, _signal) => {
 				ws.send(
 					JSON.stringify({
 						type: 'event',
@@ -322,7 +323,7 @@ export class Frieren extends DurableObject<Env> {
 			try {
 				const promptText = parsed.text
 				await this.coalescer.during(async () => {
-					await this.runtime?.prompt(promptText, 'user')
+					await this.assistant?.prompt(promptText, 'user')
 				})
 			} catch (error) {
 				ws.send(
@@ -358,7 +359,7 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
-		await this.runtime?.consolidateMemory()
+		if (this.text) await consolidateMemory(this.vol, this.text)
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -379,7 +380,7 @@ export class Frieren extends DurableObject<Env> {
 			await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
 
 			const participants = await this.loadParticipants()
-			const history = sessionEntries2DisplayMessages((await this.runtime?.history()) ?? [])
+			const history = sessionEntries2DisplayMessages((await this.assistant?.history()) ?? [])
 			if (history.length > 0) {
 				server.send(
 					JSON.stringify({

@@ -4,6 +4,13 @@
 // host injects the model (via `createAgent` / `text`) and an `AppController`;
 // the persona/memory are data on the Volume (`/system/soul.md`, …).
 
+export type { Agent } from '@mariozechner/pi-agent-core'
+export {
+	type Assistant,
+	consolidateMemory,
+	createAssistant,
+	type PromptSource
+} from './assistant.ts'
 export type { AppController } from './bash/commands/app.ts'
 export { createAppCommand } from './bash/commands/app.ts'
 export { cp, mv, rm } from './bash/commands/fs.ts'
@@ -18,7 +25,6 @@ export { type LLMText, text } from './llm.text.ts'
 export { type AgentBackend, apiKeyBackend, type LLMConfig } from './llm.ts'
 export { parseFrontmatter } from './markdown.ts'
 export { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
-export { type Runtime, runtime } from './runtime.ts'
 export type { SessionEntry } from './session.manager.ts'
 export {
 	DEFAULT_TIMEZONE,
@@ -34,5 +40,3 @@ export {
 	createTakeNoteTool,
 	type FsToolset
 } from './tools.ts'
-
-export type { Agent } from '@mariozechner/pi-agent-core'

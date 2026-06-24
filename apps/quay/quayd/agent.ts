@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process'
 import {
 	type AgentBackend,
 	type AppController,
+	type Assistant,
 	apiKeyBackend,
 	BUILTIN_COMMANDS,
 	type CommandMeta,
@@ -19,6 +20,7 @@ import {
 	createAgent,
 	createAppCommand,
 	createAskUserTool,
+	createAssistant,
 	createBashTool,
 	createFetchTool,
 	createFsTools,
@@ -26,9 +28,7 @@ import {
 	createSearchTool,
 	type LLMConfig,
 	mv,
-	type Runtime,
 	rm,
-	runtime,
 	type SessionEntry,
 	text
 } from '@justfiles/agent'
@@ -140,14 +140,14 @@ export async function createQuayAgent(
 	// so a sign-in takes effect on the next prompt without restarting the daemon.
 	// Rebuilding is cheap and lossless: the conversation is persisted to the Volume
 	// session, which the fresh runtime reloads.
-	let active: { key: string; rt: Runtime } | null = null
-	async function ensureRuntime(): Promise<Runtime> {
+	let active: { key: string; rt: Assistant } | null = null
+	async function ensureRuntime(): Promise<Assistant> {
 		const llm = await llmConfig(host.fs)
 		// Rebuild when the model changes or the credential rotates; `revision`
 		// tracks the token without exposing it.
 		const key = `${llm.model.id} ${llm.revision}`
 		if (active?.key === key) return active.rt
-		const rt = await runtime({
+		const rt = await createAssistant({
 			volume: host.fs,
 			agent: createAgent(llm),
 			text: text(llm),
@@ -291,10 +291,10 @@ export async function createQuayAgent(
 		})
 	}
 
-	// Cancel the in-flight turn (`shutdown` only aborts the running agent), leaving
+	// Cancel the in-flight turn, leaving
 	// the session intact so later prompts still work.
 	function abort(): void {
-		void active?.rt.shutdown()
+		void active?.rt.abort()
 	}
 
 	function controller(): AppController {
@@ -359,7 +359,7 @@ interface TurnActivity {
 // whole turn and hand it back once `prompt` resolves — every call is `done` by then.
 // `ask_user` is skipped: its question is the turn's content + options, not a row.
 async function runAgentTurn(
-	rt: Runtime,
+	rt: Assistant,
 	input: string
 ): Promise<{ answer: string } & TurnActivity> {
 	const toolCalls: ToolCallInfo[] = []

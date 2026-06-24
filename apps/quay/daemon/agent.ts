@@ -1,10 +1,10 @@
-import { createAgent, type Runtime, runtime, text } from '@justfiles/agent'
+import { type Assistant, createAgent, createAssistant, text } from '@justfiles/agent'
+import type { Volume } from '@justfiles/fs'
 import { RpcTarget } from 'capnweb'
 import { resolveAgentBackend } from '../quayd/chatgpt'
-import type { Volume } from '@justfiles/fs'
 
 class AgentImpl extends RpcTarget {
-	constructor(private agent: Runtime) {
+	constructor(private agent: Assistant) {
 		super()
 	}
 
@@ -30,7 +30,7 @@ export async function agentRpcTarget(fs: Volume) {
 	const llm = await resolveAgentBackend(fs)
 	if (!llm) throw new Error('failed to get llm config')
 
-	const rt = await runtime({
+	const rt = await createAssistant({
 		volume: fs,
 		agent: createAgent(llm),
 		text: text(llm),

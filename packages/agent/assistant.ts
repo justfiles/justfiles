@@ -18,7 +18,7 @@ import {
 import { createReadSkillTool, createSkillRegistry, createVolumeSkillSource } from './skills'
 import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
 
-type RuntimeProps = {
+type AssistantProps = {
 	volume: Volume
 	agent: Agent
 	text: LLMText
@@ -31,35 +31,48 @@ type RuntimeProps = {
 	readDoc?: (id: string) => Promise<string>
 }
 
-type RuntimeEventListener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void
+// Who authored a turn: the user typing, or an app acting on their behalf.
+export type PromptSource = 'user' | 'app'
 
-export interface Runtime {
-	prompt: (message: string, source?: 'user' | 'app') => Promise<string>
-	shutdown: () => Promise<void>
-	subscribe: (listener: RuntimeEventListener) => () => void
+type AssistantEventListener = (event: AgentEvent, signal: AbortSignal) => Promise<void> | void
+
+// The host-agnostic agent: the raw pi-agent-core loop (the `Agent`) wrapped with
+// persona, memory, sessions, skills and docs. Created via `createAssistant`.
+export interface Assistant {
+	// --- conversation ---
+	prompt: (message: string, source?: PromptSource) => Promise<string>
+	subscribe: (listener: AssistantEventListener) => () => void
 	history: () => Promise<readonly SessionEntry[]>
-	consolidateMemory: (now?: Date) => Promise<void>
-	addTools: (tools: readonly AgentTool[]) => void
-	removeTools: (tools: readonly AgentTool[]) => void
-	systemPrompt: () => string
-	// The slash-command catalogue (built-ins + skills) for the host's `/` menu.
-	commands: () => Promise<CommandMeta[]>
+
+	// --- session lifecycle ---
 	// Start a fresh session: mint + register a new session file (the old one stays on
 	// disk) and clear the live context. No notes are taken — a clean break (unlike the
 	// idle rollover in route(), which summarises the abandoned session first).
 	newSession: () => Promise<void>
+	// Cancel the in-flight turn. Leaves the session intact so later prompts still work.
+	abort: () => Promise<void>
+
+	// --- tools ---
+	addTools: (tools: readonly AgentTool[]) => void
+
+	// --- slash-command palette (host's `/` menu) ---
+	// The slash-command catalogue (built-ins + skills).
+	commands: () => Promise<CommandMeta[]>
 	// One skill's body, for a skill slash-command's prompt-expansion.
 	readSkill: (id: string) => Promise<string>
+
+	// --- introspection (debug) ---
+	systemPrompt: () => string
 }
 
-export async function runtime({
+export async function createAssistant({
 	volume,
 	agent,
 	text,
 	compaction,
 	getTimezone,
 	readDoc
-}: RuntimeProps): Promise<Runtime> {
+}: AssistantProps): Promise<Assistant> {
 	// Skills: user-authored on the Volume (+ built-in sources later). Expose `read_skill`
 	// only when there is something to read, so a host with no skills sees no dead tool.
 	const skillRegistry = createSkillRegistry([createVolumeSkillSource(volume)])
@@ -77,20 +90,18 @@ export async function runtime({
 	await initSession(session)
 
 	return {
-		shutdown,
 		prompt,
 		subscribe,
 		history: () => session.walkActiveBranch(),
-		consolidateMemory,
-		addTools,
-		removeTools,
-		systemPrompt: () => agent.state.systemPrompt,
-		commands: () => listCommands(skillRegistry),
 		newSession,
-		readSkill: (id) => skillRegistry.read(id)
+		abort,
+		addTools,
+		commands: () => listCommands(skillRegistry),
+		readSkill: (id) => skillRegistry.read(id),
+		systemPrompt: () => agent.state.systemPrompt
 	}
 
-	async function shutdown() {
+	async function abort() {
 		agent.abort()
 	}
 
@@ -103,11 +114,7 @@ export async function runtime({
 		agent.state.tools = [...agent.state.tools, ...tools]
 	}
 
-	function removeTools(tools: readonly AgentTool[]) {
-		agent.state.tools = agent.state.tools.filter((tool) => !tools.includes(tool))
-	}
-
-	async function prompt(message: string, source: 'user' | 'app' = 'user') {
+	async function prompt(message: string, source: PromptSource = 'user') {
 		const offset = agent.state.messages.length
 		let promptError: unknown
 		try {
@@ -173,33 +180,13 @@ export async function runtime({
 		await agent.continue()
 	}
 
-	async function consolidateMemory(now: Date = new Date()) {
-		const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
-		const dateStr = yesterday.toISOString().slice(0, 10)
-		const daily = await file(volume, PATHS.daily(yesterday)).text()
-		if (!daily?.trim()) return
-		const existing = (await file(volume, PATHS.memory).text()) ?? ''
-		const userPrompt = [
-			'# Current MEMORY.md (read-only)',
-			'',
-			existing.trim() || '(empty)',
-			'',
-			`# Yesterday's daily notes (${dateStr})`,
-			'',
-			daily
-		].join('\n')
-		const additions = (await text.gen(MEMORY_CONSOLIDATION_PROMPT, userPrompt)).trim()
-		if (!additions) return
-		await file(volume, PATHS.memory).append(`\n\n## ${dateStr}\n${additions}\n`)
-	}
-
 	async function initSession(session: SessionManager) {
 		agent.state.systemPrompt = await resolveSystemPrompt()
 		const msg = await session.buildSessionContext()
 		agent.state.messages = msg.map(contextMessageToAgentMessage)
 	}
 
-	function subscribe(listener: RuntimeEventListener) {
+	function subscribe(listener: AssistantEventListener) {
 		return agent.subscribe(listener)
 	}
 
@@ -249,6 +236,33 @@ export async function runtime({
 
 		return prompt.build()
 	}
+}
+
+// Roll yesterday's daily notes into permanent memory (MEMORY.md). A maintenance/cron
+// job — it touches none of the live Assistant's state, so it takes the Volume + LLMText
+// directly. The host schedules it (e.g. a daily alarm).
+export async function consolidateMemory(
+	volume: Volume,
+	text: LLMText,
+	now: Date = new Date()
+): Promise<void> {
+	const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+	const dateStr = yesterday.toISOString().slice(0, 10)
+	const daily = await file(volume, PATHS.daily(yesterday)).text()
+	if (!daily?.trim()) return
+	const existing = (await file(volume, PATHS.memory).text()) ?? ''
+	const userPrompt = [
+		'# Current MEMORY.md (read-only)',
+		'',
+		existing.trim() || '(empty)',
+		'',
+		`# Yesterday's daily notes (${dateStr})`,
+		'',
+		daily
+	].join('\n')
+	const additions = (await text.gen(MEMORY_CONSOLIDATION_PROMPT, userPrompt)).trim()
+	if (!additions) return
+	await file(volume, PATHS.memory).append(`\n\n## ${dateStr}\n${additions}\n`)
 }
 
 function errorMessage(error: unknown): string {
@@ -311,7 +325,7 @@ function isEmptyAssistant(message: AgentMessage | undefined): boolean {
 
 function transform(
 	message: AgentMessage,
-	source: 'user' | 'app',
+	source: PromptSource,
 	turnHasToolCall = false
 ): AppendPayload | null {
 	if (!('role' in message)) throw new Error(`unsupported message: ${JSON.stringify(message)}`)

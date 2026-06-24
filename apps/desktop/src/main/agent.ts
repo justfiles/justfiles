@@ -5,6 +5,7 @@ import {
 	cp,
 	createAgent,
 	createAppCommand,
+	createAssistant,
 	createBashTool,
 	createFetchTool,
 	createFsTools,
@@ -12,7 +13,6 @@ import {
 	createSearchTool,
 	mv,
 	rm,
-	runtime,
 	text
 } from '@justfiles/agent'
 import type { Kernel } from '@justfiles/app/runtime'
@@ -50,7 +50,7 @@ export async function createDesktopAgent(
 	const fsTools = createFsTools(volume)
 	const llm = llmConfig()
 	const llmText = text(llm)
-	const rt = await runtime({
+	const rt = await createAssistant({
 		volume,
 		agent: createAgent(llm),
 		text: llmText,
@@ -79,10 +79,10 @@ export async function createDesktopAgent(
 		return answer
 	}
 
-	// Cancel the in-flight turn (`shutdown` only aborts the running agent), leaving
+	// Cancel the in-flight turn, leaving
 	// the session intact so later prompts still work.
 	async function abort(): Promise<void> {
-		await rt.shutdown()
+		await rt.abort()
 	}
 
 	function controller(): AppController {
