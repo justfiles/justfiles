@@ -21,6 +21,7 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
+		"daemon": "bun daemon/main.ts",
 		"dev": "turbo run build --filter=@justfiles/quay^... && native/build.sh --launcher && native/relaunch.sh",
 		"build": "turbo run build --filter=@justfiles/quay^... && native/build.sh --ship",
 		"start": "open -n native/Quay.app",
@@ -42,6 +43,7 @@
 		"@mariozechner/pi-ai": "^0.70.2",
 		"capnweb": "^0.8.0",
 		"esbuild": "^0.27.0",
+		"hono": "4.11.1",
 		"react": "^19",
 		"react-dom": "^19",
 		"typescript": "^6.0.3",

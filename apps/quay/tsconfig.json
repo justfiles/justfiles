@@ -17,5 +17,5 @@
 		// frieren/desktop typecheck the same source.
 		"noImplicitOverride": true
 	},
-	"include": ["quayd/**/*.ts"]
+	"include": ["quayd/**/*.ts", "daemon/**/*.ts"]
 }
