@@ -1,7 +1,7 @@
 import { type Assistant, createAgent, createAssistant, text } from '@justfiles/agent'
-import type { Volume } from '@justfiles/fs'
 import { RpcTarget } from 'capnweb'
 import { resolveAgentBackend } from '../quayd/chatgpt'
+import { getVolume } from './fs'
 
 class AgentImpl extends RpcTarget {
 	constructor(private agent: Assistant) {
@@ -26,7 +26,8 @@ class AgentImpl extends RpcTarget {
 	}
 }
 
-export async function agentRpcTarget(fs: Volume) {
+export async function agentRpcTarget() {
+	const fs = await getVolume()
 	const llm = await resolveAgentBackend(fs)
 	if (!llm) throw new Error('failed to get llm config')
 

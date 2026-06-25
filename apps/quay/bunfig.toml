@@ -1,0 +1,4 @@
+# Plugins applied while Bun bundles HTML imports served by Bun.serve (daemon/main.ts).
+# htmlImportmap.ts injects the shared vendor import map into shell.html at serve time.
+[serve.static]
+plugins = ["./daemon/htmlImportmap.ts"]
