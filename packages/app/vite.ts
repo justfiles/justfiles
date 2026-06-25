@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
-import { externals, reactExternals, sentinelizeReducer } from '@justfiles/app/sdk-externals'
+import { externals, reactExternals } from '@justfiles/app/sdk-externals'
 import tailwindcss from '@tailwindcss/vite'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
@@ -29,10 +29,10 @@ const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
 // externalizes this plugin and resolves it with native Node, which can't
 // load relative TypeScript siblings (./dev-server goes via ssrLoadModule, the
 // React shim codegen via the bare @justfiles/app/react-entry specifier).
-// Compile the reducer (`app.js`). The SDK + React are externalized (not bundled): the host
-// owns the SDK runtime, so the reducer links it at launch, not a copy frozen at build. A
-// reducer Worker has no importmap, so its bare SDK imports are rewritten to the
-// `justfiles-sdk:` sentinel the host resolves at spawn (`sentinelizeReducer`).
+// Compile the reducer (`app.js`). The SDK is BUNDLED in — a reducer Worker has no importmap,
+// so every module the reducer references is inlined into `app.js` (resolved natively from
+// node_modules at this in-repo build). Only React stays external: it never appears in a
+// reducer-reachable module (the `buildRuntime` guard), so this is belt-and-suspenders.
 const compile = (entry: string) => {
 	const output = buildSync({
 		entryPoints: [entry],
@@ -41,10 +41,10 @@ const compile = (entry: string) => {
 		write: false,
 		format: 'esm',
 		minify: true,
-		external: externals
+		external: reactExternals
 	}).outputFiles[0]
 	if (!output) throw new Error(`failed to compile ${entry}`)
-	return sentinelizeReducer(output.text)
+	return output.text
 }
 
 function readPackageVersion(root: string): string | undefined {

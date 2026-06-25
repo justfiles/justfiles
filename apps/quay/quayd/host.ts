@@ -31,7 +31,6 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { type Kernel, kernel } from '@justfiles/app/runtime'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
-import { sdkSources } from './assets.ts'
 import { builtinSource } from './builtins.ts'
 import { chatgptProvider } from './chatgpt.ts'
 import { devkitCapability } from './devkit.ts'
@@ -68,11 +67,9 @@ export async function createHost(
 ): Promise<Host> {
 	await mkdir(root, { recursive: true })
 	const fs = volume(await nativeStorage(root))
-	// The reducer worker has no importmap, so its `justfiles-sdk:` sentinels are resolved
-	// from the host's in-memory SDK at spawn — on node via an in-thread loader hook, on
-	// bun rewritten to blob: URLs. Both read the same vendor bytes (lazily, only for an
-	// SDK-importing reducer).
-	const sandbox = nodeSandbox({ sdk: sdkSources })
+	// Each app bundle is self-contained — the reducer compile bundles its SDK into `app.js` —
+	// so the sandbox just spawns a worker from the bundle; no SDK injection at spawn.
+	const sandbox = nodeSandbox()
 	// The connectable providers: ChatGPT (OAuth → `ai`) and Google (OAuth → `email`
 	// + `calendar` from ONE account). The store persists connected accounts on the
 	// Volume; the served use facets and the agent read it.

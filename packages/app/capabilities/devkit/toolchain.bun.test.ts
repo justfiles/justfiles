@@ -37,6 +37,12 @@ const project = (files: Record<string, string>, gui?: string): ProjectInput => (
 const runtime = await buildRuntime()
 const bareReact = (s: string) =>
 	/from\s*["']react["']/.test(s) || /from\s*["']react\/jsx-runtime["']/.test(s)
+// The reducer BUNDLES the SDK (a Worker has no importmap): no external/sentinel SDK import
+// survives in app.js — the source is inlined from the `runtime` map.
+const bundlesSdk = (app: string) =>
+	!/from\s*["']@justfiles\/app/.test(app) &&
+	!/from\s*["']valibot["']/.test(app) &&
+	!app.includes('justfiles-sdk:')
 
 test('compile produces named outputs with no errors', async () => {
 	const result = await bunCompile(project({ 'app.ts': APP, 'gui.tsx': GUI }, 'gui.tsx'), runtime)
@@ -47,12 +53,10 @@ test('compile produces named outputs with no errors', async () => {
 			.filter((p) => p.endsWith('.js'))
 			.sort()
 	).toEqual(['app.js', 'gui.js'])
-	expect(result.outputs.find((o) => o.path === 'app.js')?.text).toMatch(
-		/from\s*["']justfiles-sdk:@justfiles\/app["']/
-	)
+	expect(bundlesSdk(result.outputs.find((o) => o.path === 'app.js')!.text)).toBe(true)
 })
 
-test('externalizes React (gui, bare) and the SDK (reducer sentinel)', async () => {
+test('externalizes React (gui, bare) but bundles the SDK (reducer)', async () => {
 	const { outputs } = await bunCompile(
 		project({ 'app.ts': APP, 'gui.tsx': GUI }, 'gui.tsx'),
 		runtime
@@ -61,9 +65,8 @@ test('externalizes React (gui, bare) and the SDK (reducer sentinel)', async () =
 	const app = outputs.find((o) => o.path === 'app.js')!.text
 	expect(bareReact(gui)).toBe(true) // resolved by the shell importmap at load
 	expect(gui).not.toContain('function useState') // React not inlined
-	// reducer: the SDK + valibot are externalized to the spawn-resolved sentinel, not inlined.
-	expect(app).toMatch(/from\s*["']justfiles-sdk:@justfiles\/app["']/)
-	expect(app).toMatch(/from\s*["']justfiles-sdk:valibot["']/)
+	// reducer: the SDK + valibot are bundled into app.js, not externalized.
+	expect(bundlesSdk(app)).toBe(true)
 })
 
 test('emits production automatic JSX (jsx-runtime, not the dev runtime)', async () => {
@@ -127,9 +130,7 @@ test('directory-prefixed (src/) entries build (no real-fs root probe)', async ()
 		runtime
 	)
 	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
-	expect(outputs.find((o) => o.path === 'app.js')?.text).toMatch(
-		/from\s*["']justfiles-sdk:@justfiles\/app["']/
-	)
+	expect(bundlesSdk(outputs.find((o) => o.path === 'app.js')!.text)).toBe(true)
 	expect(bareReact(outputs.find((o) => o.path === 'gui.js')!.text)).toBe(true)
 })
 
@@ -138,9 +139,7 @@ test('a missing entry is a diagnostic, not a throw', async () => {
 		{ files: { 'app.ts': APP }, entries: { app: 'app.ts', gui: 'nope.tsx' }, tsconfig: {} },
 		runtime
 	)
-	expect(outputs.find((o) => o.path === 'app.js')?.text).toMatch(
-		/from\s*["']justfiles-sdk:@justfiles\/app["']/
-	)
+	expect(bundlesSdk(outputs.find((o) => o.path === 'app.js')!.text)).toBe(true)
 	expect(diagnostics.some((d) => d.message.includes('missing entry'))).toBe(true)
 })
 

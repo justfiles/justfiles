@@ -1,0 +1,20 @@
+{
+	// The daemon's one browser entry (`daemon/app/main.ts`, loaded by shell.html and
+	// bundled by Bun for the webview) runs in the DOM, not under Bun — so it gets DOM
+	// globals and NO node/bun ambient types, kept apart from the server tsconfig.json
+	// whose `Response`/etc. are Bun's. Mirrors frieren's tsconfig.app.json split.
+	"compilerOptions": {
+		"lib": ["ESNext", "DOM"],
+		"types": [],
+		"target": "ESNext",
+		"module": "Preserve",
+		"moduleDetection": "force",
+		"moduleResolution": "bundler",
+		"allowImportingTsExtensions": true,
+		"verbatimModuleSyntax": true,
+		"noEmit": true,
+		"strict": true,
+		"skipLibCheck": true
+	},
+	"include": ["daemon/app/**/*.ts"]
+}

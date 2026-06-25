@@ -1,8 +1,8 @@
-// The sandbox under Bun (run with `bun test` — the Bun half of the matrix). Same
-// pool as `nodeSandbox.test.ts`, but here `#sandbox-url` resolves to the `blob:`
-// side: this is the regression guard for the one runtime divergence the migration
-// has. A padded (>PATH_MAX) bundle is the case that fails with `data:` URLs under
-// Bun — proving the blob path is load-bearing. Excluded from the node vitest run.
+// The sandbox under Bun (run with `bun test` — the Bun half of the matrix). Here
+// `#sandbox-url` resolves to the `blob:` side: this is the regression guard for the one
+// runtime divergence. A padded (>PATH_MAX) self-contained bundle is the case that fails with
+// `data:` URLs under Bun — proving the blob path is load-bearing. Excluded from the node
+// vitest run.
 
 import { expect, test } from 'bun:test'
 import type { Message } from '@justfiles/app/runtime'
@@ -53,25 +53,5 @@ test('evicts an idle worker, then transparently re-spawns on demand', async () =
 		state: { count: 1 }
 	})
 	ns.release('app.a')
-	await waitFor(() => ns.resident() === 0)
-})
-
-// Bun has no `registerHooks`, so a reducer's `justfiles-sdk:` sentinel is rewritten to a
-// blob: URL of the in-memory SDK source (the node path uses a loader hook instead). This
-// guards that the blob: rewrite still runs the reducer with the SDK export intact.
-test('resolves a reducer SDK sentinel by rewriting it to a blob: SDK module', async () => {
-	const SDK = `export const greet = (name) => 'hi ' + name`
-	const REDUCER = `import { greet } from 'justfiles-sdk:valibot'
-export const app = {
-	initialState: { msg: '' },
-	dispatch(action, ctx) { return { state: { msg: greet(action.type) }, result: 'ok' } }
-}`
-	const ns = nodeSandbox({ idleMs, sdk: async () => new Map([['valibot', SDK]]) })
-	ns.retain('app.sdk')
-	const a = await ns.get({ appId: 'app.sdk', code: REDUCER })
-	expect(await a.run({ type: 'world' } as Message, { state: { msg: '' } })).toMatchObject({
-		state: { msg: 'hi world' }
-	})
-	ns.release('app.sdk')
 	await waitFor(() => ns.resident() === 0)
 })

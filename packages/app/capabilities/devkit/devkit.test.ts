@@ -53,10 +53,10 @@ describe('devkit compile', () => {
 			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics).toEqual([])
-		// app.js (reducer): the SDK is externalized to the `justfiles-sdk:` sentinel the host
-		// resolves at spawn, NOT inlined — so the reducer links the host's current SDK.
-		expect(app).toMatch(/from\s*["']justfiles-sdk:@justfiles\/app["']/)
-		expect(app).not.toContain('dispatch') // the SDK impl is not bundled in
+		// app.js (reducer): the SDK is BUNDLED — no external/sentinel import remains (a Worker
+		// has no importmap), so the SDK impl is inlined into the bundle.
+		expect(app).not.toMatch(/from\s*["']@justfiles\/app/)
+		expect(app).not.toContain('justfiles-sdk:')
 		// gui.js: the SDK stays a bare specifier the host importmap resolves in the document.
 		expect(gui).toMatch(/from\s*["']@justfiles\/app\/browser["']/)
 	})
@@ -65,23 +65,17 @@ describe('devkit compile', () => {
 	// a lone default. Bundling valibot's CJS file as an entry collapsed it to
 	// `export default`, so a draft's `import * as v` left `v.object` undefined
 	// and the bundle compiled `schema: (void 0)({})` — every dispatch then threw
-	// `(void 0) is not a function`. The reducer now externalizes both the SDK and
-	// valibot to sentinels; resolve each to a data: URL of the host's in-memory SDK
-	// (mirroring the spawn rewrite) and actually dispatch, proving named exports survive
-	// AND the externalized reducer runs once its sentinels are resolved.
-	test('compiled app dispatches actions (externalized SDK + valibot named exports)', async () => {
+	// `(void 0) is not a function`. The reducer now BUNDLES both the SDK and valibot, so
+	// import the self-contained app.js directly and dispatch — proving named exports survive
+	// AND the bundled reducer runs with no spawn-time link step.
+	test('compiled app dispatches actions (bundled SDK + valibot named exports)', async () => {
 		const { app, diagnostics } = await compile(
 			{ 'app.ts': APP, 'gui.ts': GUI },
 			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics).toEqual([])
 		expect(app).not.toContain('(void 0)(')
-		const resolved = app.replace(
-			/justfiles-sdk:([^"']+)/g,
-			(_, spec) =>
-				`data:text/javascript;base64,${Buffer.from(runtime[spec] ?? '').toString('base64')}`
-		)
-		const url = `data:text/javascript;base64,${Buffer.from(resolved).toString('base64')}`
+		const url = `data:text/javascript;base64,${Buffer.from(app).toString('base64')}`
 		const mod = (await import(/* @vite-ignore */ url)) as {
 			app: {
 				dispatch(

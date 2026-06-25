@@ -56,8 +56,9 @@ describe('devkit draft pipeline', () => {
 		const draft = await buildDraft(chroot(fs, `/data/${APP_ID}`), SLUG, tc)
 		expect(draft.diagnostics).toEqual([])
 		expect(draft.manifest.id).toBe('app.example.drafted')
-		// The reducer externalizes the SDK to the `justfiles-sdk:` sentinel (resolved at spawn).
-		expect(draft.app).toMatch(/from\s*["']justfiles-sdk:@justfiles\/app["']/)
+		// The reducer BUNDLES the SDK — no external/sentinel import remains in app.js.
+		expect(draft.app).not.toMatch(/from\s*["']@justfiles\/app/)
+		expect(draft.app).not.toContain('justfiles-sdk:')
 		expect(draft.gui.length).toBeGreaterThan(0)
 	})
 

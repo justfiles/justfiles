@@ -1,6 +1,7 @@
 import { appBundleFromMemory } from '@justfiles/app'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
 import type { Runner, Toolchain } from '@justfiles/app/capabilities/devkit/host'
+import { sdkExternals, vendorUrl } from '@justfiles/app/sdk-externals'
 import { esbuildCompile } from '@justfiles/app/toolchain/esbuild'
 import { chroot, type Volume } from '@justfiles/fs'
 import * as host from './host'
@@ -15,12 +16,25 @@ import { createClientKernel } from './kernel.client'
 
 type GetToken = () => Promise<string | null>
 
+// The reducer bundles the SDK, so the compile needs the SDK source as its `runtime` map. In
+// the browser there's no node_modules — read the pre-built modules the host already serves
+// at `/vendor/<spec>.js` (the `buildRuntime` output). Only reducer-reachable specs are
+// needed (the gui externalizes the rest via the document importmap). Fetched once per page.
+let sdkRuntime: Promise<Record<string, string>> | undefined
+function loadSdkRuntime(): Promise<Record<string, string>> {
+	sdkRuntime ??= (async () => {
+		const entries = await Promise.all(
+			sdkExternals
+				.filter((s) => s.reducer)
+				.map(async ({ spec }) => [spec, await (await fetch(vendorUrl(spec))).text()] as const)
+		)
+		return Object.fromEntries(entries)
+	})()
+	return sdkRuntime
+}
+
 // esbuild-wasm initialises once per page, pulled lazily so a session that never
-// runs a draft pays nothing. The SDK is externalized (the dylib model): the gui's
-// bare specifiers resolve via the document importmap, and the reducer's sentinels
-// are rewritten at spawn to the served `/vendor/<spec>.js` modules — so the
-// compiler injects NO runtime map (the now-inert RUNTIME namespace is threaded
-// empty, like quay). No `typecheck` on the returned `Toolchain` — the factory
+// runs a draft pays nothing. No `typecheck` on the returned `Toolchain` — the factory
 // degrades it to CAPABILITY_UNAVAILABLE (the 8 MB checker stays off the client;
 // the container backend owns it online). Keyed by the calling app's id so a future
 // per-app types sysroot caches per caller — today every caller gets the same
@@ -33,7 +47,8 @@ export function getToolchain(ctx: { appId: string }): Promise<Toolchain> {
 			const esbuild = await import('esbuild-wasm')
 			const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
 			await esbuild.initialize({ wasmURL })
-			return { compile: (input) => esbuildCompile(input, esbuild.build, {}) }
+			const runtime = await loadSdkRuntime()
+			return { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
 		})()
 		toolchains.set(ctx.appId, toolchain)
 	}

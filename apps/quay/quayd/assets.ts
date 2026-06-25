@@ -41,11 +41,11 @@ export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 	return cache
 }
 
-// The host's in-memory SDK vendor sources keyed by SPEC (not URL) — the reducer-
-// injection half of the SDK link model. Reuses the same `vendorAssets()` bytes the
-// http server serves (no new cache/staging), decoded to source text; nodeSandbox
-// wraps each as a data:/blob: module URL to resolve a reducer's `justfiles-sdk:`
-// sentinels at spawn. Loaded lazily — only an SDK-importing reducer triggers it.
+// The host's in-memory SDK vendor sources keyed by SPEC (not URL) — the reducer-compile
+// `runtime` map. Reuses the same `vendorAssets()` bytes the http server serves (no new
+// cache/staging), decoded to source text; the devkit compile backend inlines each into a
+// reducer's `app.js` (the worker has no importmap, so the SDK is bundled, not externalized).
+// Loaded lazily — only a devkit compile triggers it.
 export function sdkSources(): Promise<Map<string, string>> {
 	sdkCache ??= readSdkSources()
 	return sdkCache

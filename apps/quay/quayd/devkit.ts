@@ -7,12 +7,11 @@
 // the project, build, pack, install — is the factory's generic pipeline.
 //
 // The compile backend is runtime-selected (`#engine`: native esbuild under node,
-// `Bun.build` under bun). The SDK is externalized now — not bundled into a compile-time
-// `runtime` map — so there is no baked `runtime.json` to load; the gui resolves the SDK
-// via the importmap and the reducer's `justfiles-sdk:` sentinel is rewritten at spawn to
-// the host's served/in-memory vendor module. `install` fires `onInstalled` so quayd
-// materialises its `.app` (Slice 6's reconcile) and the launcher re-lists — no change to
-// app-code's reducer.
+// `Bun.build` under bun). The gui resolves the SDK via the importmap (externalized); the
+// reducer BUNDLES it, so the backend is fed the host's in-memory SDK source (`sdkSources`,
+// the same `/vendor/<spec>.js` bytes) as its `runtime` map and inlines each referenced
+// module into `app.js`. `install` fires `onInstalled` so quayd materialises its `.app`
+// (Slice 6's reconcile) and the launcher re-lists — no change to app-code's reducer.
 
 import { appBundleFromMemory } from '@justfiles/app'
 import type { Compile, Toolchain } from '@justfiles/app/capabilities/devkit/host'
@@ -29,6 +28,7 @@ import * as ts from 'typescript'
 // Bun.build under bun (package.json `imports` → `quayd/devkitEngine.{node,bun}.ts`).
 // typecheck stays on tsc for both — only `compile` swaps.
 import { compile as backendCompile } from '#engine'
+import { sdkSources } from './assets.ts'
 
 // `getKernel` is lazy because the kernel is built with this capability already in its
 // registry (host.ts) — the kernel reference only exists after construction.
@@ -100,10 +100,11 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 	}
 }
 
-// The compile backend (`#engine`) — esbuild under node, Bun.build under bun. The SDK is
-// externalized (gui importmap; reducer sentinel → host module at spawn), so the backend
-// injects NO runtime map: the once-baked `runtime.json` is gone and the now-inert RUNTIME
-// namespace is threaded empty. The bundler is the runtime's choice; this module never names it.
+// The compile backend (`#engine`) — esbuild under node, Bun.build under bun. The reducer
+// bundles the SDK, so the backend is fed the host's in-memory SDK source as its `runtime`
+// map (the gui still externalizes via the importmap and ignores it). `sdkSources` is the
+// same `/vendor/<spec>.js` bytes, decoded and keyed by spec; memoised there. The bundler is
+// the runtime's choice; this module never names it.
 function compileBackend(): Compile {
-	return (input) => backendCompile(input, {})
+	return async (input) => backendCompile(input, Object.fromEntries(await sdkSources()))
 }

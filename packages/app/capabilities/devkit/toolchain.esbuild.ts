@@ -30,7 +30,7 @@ export function esbuildCompile(
 	build: BuildFn,
 	runtime: Record<string, string>
 ): Promise<CompileResult> {
-	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
+	return compileVfs(input, runtime, async ({ entry, sources, externalizeSdk }, rt) => {
 		try {
 			const result = await build({
 				entryPoints: [entry],
@@ -40,7 +40,7 @@ export function esbuildCompile(
 				external: reactExternals,
 				jsx: 'automatic',
 				logLevel: 'silent',
-				plugins: [vfs(sources, rt)]
+				plugins: [vfs(sources, rt, externalizeSdk)]
 			})
 			return {
 				js: result.outputFiles?.[0]?.text ?? '',
@@ -52,7 +52,11 @@ export function esbuildCompile(
 	})
 }
 
-function vfs(files: Record<string, string>, runtime: Record<string, string>): Plugin {
+function vfs(
+	files: Record<string, string>,
+	runtime: Record<string, string>,
+	externalizeSdk: boolean
+): Plugin {
 	return {
 		name: 'devkit-vfs',
 		setup(build) {
@@ -62,9 +66,9 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Pl
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
-				// SDK: externalized as a bare specifier (the reducer's are sentinelized in
-				// `compileVfs`; the gui's stay bare for the host importmap).
-				if (isSdkSpec(args.path)) return { path: args.path, external: true }
+				// SDK: the gui externalizes it as a bare specifier (the host importmap resolves
+				// it); the reducer bundles it from the pre-built `runtime` source below.
+				if (isSdkSpec(args.path) && externalizeSdk) return { path: args.path, external: true }
 				// A pre-bundled system library; side-effect-free so unused exports
 				// (e.g. the kernel half of `@justfiles/app`) tree-shake away.
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME, sideEffects: false }

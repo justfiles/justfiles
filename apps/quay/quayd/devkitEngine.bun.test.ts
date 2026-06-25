@@ -24,8 +24,8 @@ test('#engine compiles a project via Bun.build under bun', async () => {
 	)
 	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 	const app = outputs.find((o) => o.path === 'app.js')?.text ?? ''
-	// the reducer externalizes the SDK + valibot to the spawn-resolved `justfiles-sdk:`
-	// sentinel, not bundled.
-	expect(app).toMatch(/from\s*["']justfiles-sdk:@justfiles\/app["']/)
-	expect(app).toMatch(/from\s*["']justfiles-sdk:valibot["']/)
+	// the reducer BUNDLES the SDK + valibot into app.js — no external/sentinel import remains.
+	expect(app).not.toMatch(/from\s*["']@justfiles\/app/)
+	expect(app).not.toMatch(/from\s*["']valibot["']/)
+	expect(app).not.toContain('justfiles-sdk:')
 })

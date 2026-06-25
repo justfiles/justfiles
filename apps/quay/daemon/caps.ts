@@ -1,3 +1,12 @@
 import { capabilityRegistry } from '@justfiles/app/capabilities'
-// FIXME: replace with better impl
-export const capabilities = capabilityRegistry({})
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
+import { getVolume } from './fs'
+
+const systemAllowlist = ['app.frieren.files']
+
+export async function capabilities() {
+	const fs = await getVolume()
+	return capabilityRegistry({
+		volume: volumeCapability(fs, { systemAllowlist })
+	})
+}

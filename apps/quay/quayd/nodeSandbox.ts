@@ -18,10 +18,9 @@ import { createHash } from 'node:crypto'
 import { Worker } from 'node:worker_threads'
 import type { GetSandbox, Sandbox } from '@justfiles/app/runtime'
 import { sandboxClient } from '@justfiles/app/sandbox'
-import { SDK_SENTINEL } from '@justfiles/app/sdk-externals'
-// How a reducer bundle becomes a Worker — the one runtime divergence: a data: URL + an
-// in-memory loader hook on node, a blob: URL + sentinel rewrite on bun. Resolved by the
-// runtime via package.json `imports`. See `quayd/sandboxUrl.{node,bun}.ts`.
+// How a self-contained app bundle becomes a Worker — the one runtime divergence: a data:
+// URL on node, a blob: URL on bun (Bun's loader throws ENAMETOOLONG on a large data: URL).
+// Resolved by the runtime via package.json `imports`. See `quayd/sandboxUrl.{node,bun}.ts`.
 import { sandboxWorker } from '#sandbox-url'
 
 export interface NodeSandbox {
@@ -50,9 +49,7 @@ interface Cell {
 // (server.ts), so a closed app's worker is reclaimed before the daemon itself.
 const IDLE_MS = 3 * 60_000
 
-export function nodeSandbox(
-	opts: { idleMs?: number; sdk?: () => Promise<Map<string, string>> } = {}
-): NodeSandbox {
+export function nodeSandbox(opts: { idleMs?: number } = {}): NodeSandbox {
 	const idleMs = opts.idleMs ?? IDLE_MS
 	const cells = new Map<string, Cell>() // code SHA → worker
 	const windows = new Map<string, number>() // appId → open-window count
@@ -82,15 +79,12 @@ export function nodeSandbox(
 
 	return {
 		get: async ({ appId, code }) => {
-			// The cache key is over the SENTINEL `code` — host-agnostic and deterministic, so
-			// a byte-identical app reuses its worker (a resolved blob: URL must NOT enter it).
+			// The cache key is over the self-contained bundle `code` — deterministic, so a
+			// byte-identical app reuses its worker (a resolved blob: URL must NOT enter it).
 			const key = createHash('sha256').update(code).digest('hex')
 			let cell = cells.get(key)
 			if (!cell) {
-				// Fetch the in-memory SDK only for a reducer that actually links it — a
-				// pure-DOM app (no sentinel) never touches the vendor assets.
-				const sdk = opts.sdk && code.includes(SDK_SENTINEL) ? await opts.sdk() : undefined
-				cell = spawn(code, sdk, () => cells.delete(key))
+				cell = spawn(code, () => cells.delete(key))
 				cells.set(key, cell)
 			}
 			cell.appId = appId
@@ -112,8 +106,8 @@ export function nodeSandbox(
 		resident: () => cells.size
 	}
 
-	function spawn(code: string, sdk: Map<string, string> | undefined, onDead: () => void): Cell {
-		const { url, options } = sandboxWorker(code, sdk)
+	function spawn(code: string, onDead: () => void): Cell {
+		const { url, options } = sandboxWorker(code)
 		const worker = new Worker(url, options)
 		const { sandbox, fail } = sandboxClient({
 			post: (message) => worker.postMessage(message),

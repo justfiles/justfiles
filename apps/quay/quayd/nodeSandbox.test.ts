@@ -81,23 +81,3 @@ test('a worker stays resident while its app has an open window', async () => {
 	ns.release('app.a')
 	await waitFor(() => ns.resident() === 0) // window closed → evicted
 })
-
-// The Step 12 node path: a reducer keeps its short `justfiles-sdk:` sentinel, and the
-// worker's `--import` loader hook serves the SDK module from the in-memory map (handed in
-// over `workerData`) — the SDK bytes never enter the per-spawn worker URL.
-test('resolves a reducer SDK sentinel from the in-memory map via the loader hook', async () => {
-	const SDK = `export const greet = (name) => 'hi ' + name`
-	const REDUCER = `import { greet } from 'justfiles-sdk:valibot'
-export const app = {
-	initialState: { msg: '' },
-	dispatch(action, ctx) { return { state: { msg: greet(action.type) }, result: 'ok' } }
-}`
-	const ns = nodeSandbox({ idleMs, sdk: async () => new Map([['valibot', SDK]]) })
-	ns.retain('app.sdk')
-	const a = await ns.get({ appId: 'app.sdk', code: REDUCER })
-	expect(await a.run({ type: 'world' } as Message, { state: { msg: '' } })).toMatchObject({
-		state: { msg: 'hi world' }
-	})
-	ns.release('app.sdk')
-	await waitFor(() => ns.resident() === 0)
-})

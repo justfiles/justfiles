@@ -52,11 +52,12 @@ describe('typescriptToolchain', () => {
 		const result = await toolchain.compile(project({ 'app.ts': APP, 'gui.ts': GUI }, 'gui.ts'))
 		expect(result.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
 		expect(result.outputs.map((o) => o.path).sort()).toEqual(['app.js', 'gui.js'])
-		// app.js externalizes the SDK to the `justfiles-sdk:` sentinel (resolved at spawn),
-		// not inlined.
-		expect(result.outputs.find((o) => o.path === 'app.js')?.text).toMatch(
-			/from\s*["']justfiles-sdk:@justfiles\/app["']/
-		)
+		// app.js BUNDLES the SDK — a Worker has no importmap, so no external/sentinel SDK
+		// import remains (the SDK source is inlined from the `runtime` map).
+		const appJs = result.outputs.find((o) => o.path === 'app.js')?.text ?? ''
+		expect(appJs).not.toMatch(/from\s*["']@justfiles\/app/)
+		expect(appJs).not.toMatch(/from\s*["']valibot["']/)
+		expect(appJs).not.toContain('justfiles-sdk:')
 	})
 
 	test('CSS: a draft import folds into gui.js (no sidecar)', async () => {

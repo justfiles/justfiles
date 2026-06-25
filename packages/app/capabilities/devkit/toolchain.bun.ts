@@ -30,7 +30,7 @@ export function bunCompile(
 	input: ProjectInput,
 	runtime: Record<string, string>
 ): Promise<CompileResult> {
-	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
+	return compileVfs(input, runtime, async ({ entry, sources, externalizeSdk }, rt) => {
 		const result = await Bun.build({
 			entrypoints: [entry],
 			format: 'esm',
@@ -50,7 +50,7 @@ export function bunCompile(
 			// React is a production build with no `jsxDEV` export, so a dev-JSX draft mounts
 			// to `jsxDEV is not a function`. NODE_ENV drives Bun's JSX runtime choice.
 			define: { 'process.env.NODE_ENV': '"production"' },
-			plugins: [vfs(sources, rt)]
+			plugins: [vfs(sources, rt, externalizeSdk)]
 		})
 		if (!result.success) {
 			return { diagnostics: result.logs.map((log) => logDiagnostic(log, 'error')) }
@@ -65,7 +65,11 @@ export function bunCompile(
 	})
 }
 
-function vfs(files: Record<string, string>, runtime: Record<string, string>): BunPlugin {
+function vfs(
+	files: Record<string, string>,
+	runtime: Record<string, string>,
+	externalizeSdk: boolean
+): BunPlugin {
 	return {
 		name: 'devkit-vfs',
 		setup(build) {
@@ -77,10 +81,9 @@ function vfs(files: Record<string, string>, runtime: Record<string, string>): Bu
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
-				// SDK: externalized as a bare specifier (the reducer's are sentinelized in
-				// `compileVfs`; the gui's stay bare for the host importmap). Bun keeps the
-				// original specifier for externals, so the rewrite can't happen here.
-				if (isSdkSpec(args.path)) return { path: args.path, external: true }
+				// SDK: the gui externalizes it as a bare specifier (the host importmap resolves
+				// it); the reducer bundles it from the pre-built `runtime` source below.
+				if (isSdkSpec(args.path) && externalizeSdk) return { path: args.path, external: true }
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME }
 				// React passes through to the top-level `external`; any other bare specifier
 				// is an unsupported npm package. Bun's `OnResolveResult` has no `errors`

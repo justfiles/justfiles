@@ -6,14 +6,7 @@
 
 import { expect, test } from 'vitest'
 import { buildRuntime } from './capabilities/devkit/devkit-runtime.ts'
-import {
-	externals,
-	reactExternals,
-	resolveSdkExternals,
-	sdkExternals,
-	sentinelizeReducer,
-	vendorUrl
-} from './sdk-externals.ts'
+import { externals, reactExternals, sdkExternals, vendorUrl } from './sdk-externals.ts'
 
 const REACT_FAMILY = /^react(-dom)?(\/|$)/
 const importSpecifiers = (source: string): string[] =>
@@ -42,42 +35,3 @@ test('buildRuntime builds every SDK spec and keeps reducer-reachable modules rea
 		expect(react, `reducer-reachable ${spec} must import no React`).toEqual([])
 	}
 }, 30_000)
-
-// The rewrites are lexer-based, not regex: they must rewrite REAL imports but never an
-// import-like substring inside a STRING LITERAL. Code embeds a starter template
-// (`import { defineApp } from '@justfiles/app'`) as a string in its reducer; a regex
-// sentinelizer corrupted that string, which broke every project created from the starter.
-test('sentinelizeReducer rewrites real SDK imports but never a string-literal lookalike', () => {
-	const code = [
-		`import{defineApp as L}from"@justfiles/app";`,
-		`const STARTER="import { defineApp } from '@justfiles/app'";`,
-		`const x=await import("valibot");`,
-		`import{x}from"./local";`
-	].join('')
-	const out = sentinelizeReducer(code)
-	expect(out).toContain('from"justfiles-sdk:@justfiles/app"') // real import sentinelized
-	expect(out).toContain('import("justfiles-sdk:valibot")') // real dynamic import sentinelized
-	expect(out).toContain(`"import { defineApp } from '@justfiles/app'"`) // string literal untouched
-	expect(out).toContain('from"./local"') // relative import untouched
-})
-
-test('resolveSdkExternals round-trips sentinelizeReducer for allowlisted specs', () => {
-	const code = `import{a}from"@justfiles/app";const d=await import("valibot");import{b}from"./x"`
-	const resolved = resolveSdkExternals(sentinelizeReducer(code), (spec) => `/vendor/${spec}.js`)
-	expect(resolved).toContain('from"/vendor/@justfiles/app.js"')
-	expect(resolved).toContain('import("/vendor/valibot.js")')
-	expect(resolved).toContain('from"./x"')
-})
-
-test('resolveSdkExternals ignores a bogus (non-allowlisted) sentinel', () => {
-	const code = `const e=await import("justfiles-sdk:../../evil");import{a}from"justfiles-sdk:@justfiles/app"`
-	const out = resolveSdkExternals(code, (spec) => `/vendor/${spec}.js`)
-	expect(out).toContain('import("justfiles-sdk:../../evil")') // left untouched, no fetch URL
-	expect(out).toContain('from"/vendor/@justfiles/app.js"') // allowlisted one resolved
-})
-
-test('both rewrites leave a bundle with no matching imports byte-identical', () => {
-	const code = `import{x}from"./local";const s="import a from '@justfiles/app'";export const y=1`
-	expect(sentinelizeReducer(code)).toBe(code)
-	expect(resolveSdkExternals(code, () => 'unused')).toBe(code)
-})

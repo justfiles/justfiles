@@ -1,21 +1,69 @@
-import { newWebSocketRpcSession } from 'capnweb'
+// `export {}` makes this a module (it has no imports), so the top-level `await`
+// below is allowed.
+export {}
 
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root')
 
 const appId = decodeURIComponent(location.pathname.split('/').at(-1) ?? '')
 
-const berth = newWebSocketRpcSession(`ws://${location.host}/app/${appId}/connect`)
+// A minimal request/response + state-push channel over one WebSocket. The GUI's
+// generated client only ever does flat `invoke({type,params})` and `subscribe`,
+// so there's no RPC framework here: calls are correlated by `id`, and the server
+// pushes authoritative state frames (the initial snapshot on connect, then every
+// update via Bun pub/sub) which we hand to the subscriber.
+type Pending = { resolve: (value: unknown) => void; reject: (error: unknown) => void }
 
-const app = await import(`/app/${appId}/gui.js`)
+function connect(appId: string) {
+	const ws = new WebSocket(`ws://${location.host}/app/${appId}/connect`)
+	const pending = new Map<number, Pending>()
+	let seq = 0
+	let onState: ((state: unknown) => void) | undefined
+	let last: unknown
+	let got = false
+	let resolveFirst!: (state: unknown) => void
+	const first = new Promise<unknown>((r) => (resolveFirst = r))
+	const opened = new Promise<void>((r) => (ws.onopen = () => r()))
 
-const state = await berth.state()
+	ws.onmessage = (e) => {
+		const msg = JSON.parse(e.data)
+		if ('id' in msg) {
+			const p = pending.get(msg.id)
+			if (!p) return
+			pending.delete(msg.id)
+			if (msg.ok) p.resolve(msg.value)
+			else p.reject(new Error(msg.error))
+			return
+		}
+		last = msg.state
+		if (!got) {
+			got = true
+			resolveFirst(msg.state)
+		}
+		onState?.(msg.state)
+	}
 
-app.gui.mount(root, state, {
-	transport: {
-		invoke: (message) => berth.dispatch(message),
-		subscribe: (onState) => {
-			berth.subscribe(onState)
+	const transport = {
+		async invoke(message: { type: string; params: unknown }) {
+			await opened
+			const id = ++seq
+			return new Promise<unknown>((resolve, reject) => {
+				pending.set(id, { resolve, reject })
+				ws.send(JSON.stringify({ id, ...message }))
+			})
+		},
+		subscribe(cb: (state: unknown) => void) {
+			onState = cb
+			if (got) cb(last) // flush the snapshot received before mount
+			return () => {
+				if (onState === cb) onState = undefined
+			}
 		}
 	}
-})
+
+	return { transport, first }
+}
+
+const { transport, first } = connect(appId)
+const [app, state] = await Promise.all([import(`/app/${appId}/gui.js`), first])
+app.gui.mount(root, state, { transport })

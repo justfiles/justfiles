@@ -2,7 +2,6 @@ import { Worker } from 'node:worker_threads'
 import { expect, test } from 'vitest'
 import type { Message, RawAppHandle } from './index.ts'
 import { sandboxClient, sandboxWorkerSource } from './sandbox.ts'
-import { resolveSdkExternals } from './sdk-externals.ts'
 
 // Boots a real `node:worker_thread` from `sandboxWorkerSource(..., 'node')` and
 // drives it through `sandboxClient` — the exact desktop path — so the shared
@@ -64,25 +63,15 @@ test('node worker sandbox: procedure host-call bridge', async () => {
 	}
 })
 
-// resolveSdkExternals (unit-tested in sdk-externals.test.ts) is the one spawn seam: it
-// rewrites a reducer's `justfiles-sdk:` sentinels to loadable module URLs. Here we exercise
-// it through the live worker chain.
-//
-// The in-memory reducer chain (Step 0 spike, now through the real helper): a data: app
-// module imports a data: SDK module whose sentinel was resolved by `resolveSdkExternals`,
-// and the reducer runs with the SDK's named export intact.
-test('reducer resolves a data: SDK module via resolveSdkExternals', async () => {
-	const SDK = `export const greet = (name) => 'hi ' + name`
-	const REDUCER = `import { greet } from 'justfiles-sdk:valibot'
+// A self-contained reducer bundle (the SDK already inlined by the compile) loads and runs
+// off a data: URL — no spawn-time link step. Mirrors what the compile now emits.
+test('self-contained reducer with an inlined SDK helper runs in the worker', async () => {
+	const REDUCER = `const greet = (name) => 'hi ' + name
 export const app = {
 	initialState: { msg: '' },
 	dispatch(action, ctx) { return { state: { msg: greet(action.type) }, result: 'ok' } }
 }`
-	const linked = resolveSdkExternals(REDUCER, (spec) => {
-		expect(spec).toBe('valibot')
-		return dataUrl(SDK)
-	})
-	const worker = new Worker(new URL(dataUrl(sandboxWorkerSource(dataUrl(linked), 'node'))))
+	const worker = new Worker(new URL(dataUrl(sandboxWorkerSource(dataUrl(REDUCER), 'node'))))
 	const { sandbox, fail } = sandboxClient({
 		post: (message) => worker.postMessage(message),
 		onMessage: (handler) => worker.on('message', handler)

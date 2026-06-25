@@ -21,5 +21,8 @@
 		// frieren/desktop typecheck the same source.
 		"noImplicitOverride": true
 	},
-	"include": ["quayd/**/*.ts", "daemon/**/*.ts"]
+	"include": ["quayd/**/*.ts", "daemon/**/*.ts"],
+	// `daemon/app/**` is browser code (DOM globals, no bun) — typechecked by
+	// tsconfig.browser.json instead; nothing in the server build imports it.
+	"exclude": ["daemon/app/**"]
 }

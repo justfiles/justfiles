@@ -8,7 +8,7 @@ let kernelOnce: Promise<Kernel> | undefined
 export async function getKernel() {
 	kernelOnce ??= (async () => {
 		const fs = await getVolume()
-		return kernel({ fs, sandbox: getSandbox, capabilities, clock: {} })
+		return kernel({ fs, sandbox: getSandbox, capabilities: await capabilities(), clock: {} })
 	})()
 	return kernelOnce
 }
