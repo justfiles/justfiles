@@ -15,16 +15,18 @@ import type { TypePaths, TypesBundle } from './toolchain.ts'
 export const DEVKIT_SCHEMA = 'justfiles.devkit.v1'
 
 // `devkit/index.json`: the sysroot manifest. `hash` is the content version + cache key
-// (sha256 over every sysroot file); `files` lists each header's path UNDER
-// `devkit/types/`, `runtime` lists each SDK module path UNDER `devkit/runtime/`, and
-// `paths` is the tsc import-map (SDK specifier → entry `.d.ts`) the typecheck overlay
-// injects. Loaders assemble the maps with bare `read` calls and no directory scan (an
-// installed app only exposes `read`, not a lister).
+// (sha256 over the manifest); `files` maps each header's logical path (UNDER
+// `node_modules/`) to its blob id, `runtime` maps each SDK module path to its blob id,
+// and `paths` is the tsc import-map (SDK specifier → entry `.d.ts`) the typecheck overlay
+// injects. Every blob lives content-addressed at `devkit/store/<id>` (id = `sha256-…`),
+// so identical content is stored once and reads are integrity-checkable. Loaders
+// assemble the maps with bare `read` calls and no directory scan (an installed app only
+// exposes `read`, not a lister).
 export interface DevkitIndex {
 	schema: string
 	hash: string
-	files: string[]
-	runtime?: string[]
+	files: Record<string, string>
+	runtime?: Record<string, string>
 	paths?: TypePaths
 }
 
@@ -35,7 +37,8 @@ const NODE_MODULES = 'node_modules/'
 
 // Load an app's type sysroot (shipped at `devkit/**`): the `.d.ts` overlay (keyed
 // `node_modules/<pkg>/…`) plus the `paths` import-map tsc resolves our SDK through.
-// `read` is host-supplied — quay/desktop/frieren read the installed app's bytes
+// `index.files` maps each logical path to a `devkit/store/<id>` blob the loader reads
+// back. `read` is host-supplied — quay/desktop/frieren read the installed app's bytes
 // (`kernel.app(appId).read`), tests an in-memory map — so the loader never touches a
 // real fs or `node_modules`. Eager + fully in-memory (the tree is small); callers cache
 // it by `{ appId, hash }`. A missing/invalid `index.json` is a clear error, never a
@@ -45,8 +48,8 @@ export async function loadTypes(
 ): Promise<{ files: TypesBundle; paths: TypePaths }> {
 	const index = await loadIndex(read)
 	const files: TypesBundle = {}
-	for (const rel of index.files)
-		files[`${NODE_MODULES}${rel}`] = new TextDecoder().decode(await read(`devkit/types/${rel}`))
+	for (const [rel, id] of Object.entries(index.files))
+		files[`${NODE_MODULES}${rel}`] = new TextDecoder().decode(await read(`devkit/store/${id}`))
 	return { files, paths: index.paths ?? {} }
 }
 
@@ -59,9 +62,9 @@ export async function loadRuntime(
 	const index = await loadIndex(read)
 	if (!index.runtime) throw new Error('devkit: missing runtime list in devkit/index.json')
 	const runtime: Record<string, string> = {}
-	for (const rel of index.runtime) {
+	for (const [rel, id] of Object.entries(index.runtime)) {
 		const spec = rel.endsWith('.js') ? rel.slice(0, -3) : rel
-		runtime[spec] = new TextDecoder().decode(await read(`devkit/runtime/${rel}`))
+		runtime[spec] = new TextDecoder().decode(await read(`devkit/store/${id}`))
 	}
 	return runtime
 }

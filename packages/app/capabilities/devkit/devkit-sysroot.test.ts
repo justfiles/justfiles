@@ -4,6 +4,7 @@
 // types/runtime produced at build time, so compile/typecheck need NO node_modules) and
 // the no-fallback error contract.
 
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,32 +18,34 @@ import { typescriptToolchain } from './toolchain.typescript.ts'
 const enc = new TextEncoder()
 const NM = 'node_modules/'
 
-// Emit baked sysroot maps into the on-disk shape `devkit-sysroot.ts` ships
-// (index.json + stripped `devkit/types/<rel>` + `devkit/runtime/<spec>.js`), as an
-// in-memory `read` the loaders can replay — exactly the bytes an installed bundle exposes.
+// Emit baked sysroot maps into the on-disk shape `devkit-sysroot.ts` ships (index.json +
+// content-addressed `devkit/store/<id>` blobs, files/runtime mapping logical path → id),
+// as an in-memory `read` the loaders can replay — exactly the bytes an installed bundle
+// exposes.
 function sysroot(
 	types: TypesBundle,
 	runtime: Record<string, string> = {},
 	paths: Record<string, string[]> = {}
 ): (path: string) => Promise<Uint8Array> {
 	const files: Record<string, Uint8Array> = {}
-	const typeManifest: string[] = []
-	const runtimeManifest: string[] = []
+	const typeManifest: Record<string, string> = {}
+	const runtimeManifest: Record<string, string> = {}
+	const put = (content: string): string => {
+		const id = `sha256-${createHash('sha256').update(content).digest('hex')}`
+		files[`devkit/store/${id}`] = enc.encode(content)
+		return id
+	}
 	for (const [key, content] of Object.entries(types)) {
 		const rel = key.startsWith(NM) ? key.slice(NM.length) : key
-		files[`devkit/types/${rel}`] = enc.encode(content)
-		typeManifest.push(rel)
+		typeManifest[rel] = put(content)
 	}
-	for (const [spec, content] of Object.entries(runtime)) {
-		const rel = `${spec}.js`
-		files[`devkit/runtime/${rel}`] = enc.encode(content)
-		runtimeManifest.push(rel)
-	}
+	for (const [spec, content] of Object.entries(runtime))
+		runtimeManifest[`${spec}.js`] = put(content)
 	const index: DevkitIndex = {
 		schema: DEVKIT_SCHEMA,
 		hash: 'sha256-test',
-		files: typeManifest.sort(),
-		runtime: runtimeManifest.sort(),
+		files: typeManifest,
+		runtime: runtimeManifest,
 		paths
 	}
 	files['devkit/index.json'] = enc.encode(JSON.stringify(index))

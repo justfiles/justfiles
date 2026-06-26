@@ -130,10 +130,18 @@ Still vendored via the existing `packageDir`/`collectDts`/BFS walk (third-party 
 copied from `node_modules`): react/`@types/react(-dom)`, `csstype`, `valibot`,
 `@standard-schema/spec`, `type-fest`.
 
-### Phase B — content-addressed store
+### Phase B — content-addressed store ✅ DONE
 
-- Replace readable paths with `store/<sha256>` blobs; `index.json` maps each file/specifier to a
-  hash. Integrity + dedup + the existing whole-sysroot hash fall out naturally; the `read`-by-key
-  model fits the host seam.
-- Drop-in: only the string *values* in `index.json` change (path → `sha256-…`); the manifest
-  shape and the loader's two derived maps stay the same.
+- Every sysroot file (types + runtime) is stored once at `devkit/store/<sha256-…>`, keyed by
+  content. `index.json`'s `files`/`runtime` change from path *lists* to *maps* (logical path →
+  blob id); `paths` is unchanged, and the loaders' two derived maps (`spec → .d.ts`, `spec → js`)
+  are byte-for-byte identical to before.
+- The whole-sysroot `hash` digests the `(kind, logical path, blob id)` manifest in sorted order;
+  blob ids already capture content, so it versions the whole tree. Integrity + dedup fall out,
+  and the flat `read('devkit/store/<id>')`-by-key model fits the host seam.
+- Blast radius: `writeSysroot` (`devkit-runtime.ts`), the loaders + `DevkitIndex`
+  (`devkit-sysroot.ts`), and the sysroot test's in-memory `read`. Consumers
+  (`quayd`/`desktop`/`frieren`) are untouched — they only call `loadTypes`/`loadRuntime`.
+- Verified: deterministic hash across rebuilds; the parallel `types/` + `runtime/` trees
+  collapse to one flat `store/` (262 blobs from 267 logical files — 5 deduped); full build 18/18,
+  full suite 708/708.

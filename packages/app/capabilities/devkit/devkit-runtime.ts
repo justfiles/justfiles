@@ -80,32 +80,42 @@ export async function buildSdk(): Promise<SdkBuild> {
 
 // Write the app-code devkit sysroot (`devkit/**`) from a built SDK map. Kept with the
 // Node-only builders so the Vite plugin stays a tiny packaging hook, while browser hosts
-// keep importing only the dependency-free loader (`devkit-sysroot.ts`).
+// keep importing only the dependency-free loader (`devkit-sysroot.ts`). Every file is
+// stored content-addressed at `store/<sha256-…>` (deduped); `index.json` maps each
+// logical path to its blob id, and the whole-sysroot `hash` digests that manifest.
 const NODE_MODULES = 'node_modules/'
 export async function writeSysroot(root: string, sdk?: SdkBuild): Promise<void> {
 	const built = sdk ?? (await buildSdk())
 	await rm(root, { recursive: true, force: true })
-	const digest = createHash('sha256')
-	const files: string[] = []
+	const store = join(root, 'store')
+	await mkdir(store, { recursive: true })
+	const seen = new Set<string>()
+	const put = async (content: string): Promise<string> => {
+		const id = `sha256-${createHash('sha256').update(content).digest('hex')}`
+		if (!seen.has(id)) {
+			seen.add(id)
+			await writeFile(join(store, id), content)
+		}
+		return id
+	}
+	const files: Record<string, string> = {}
 	for (const [key, content] of Object.entries(built.types).sort(([a], [b]) => (a < b ? -1 : 1))) {
 		const rel = key.startsWith(NODE_MODULES) ? key.slice(NODE_MODULES.length) : key
-		const file = join(root, 'types', rel)
-		await mkdir(dirname(file), { recursive: true })
-		await writeFile(file, content)
-		files.push(rel)
-		digest.update('types').update('\0').update(rel).update('\0').update(content).update('\0')
+		files[rel] = await put(content)
 	}
-	const runtime: string[] = []
+	const runtime: Record<string, string> = {}
 	for (const [spec, content] of Object.entries(built.runtime).sort(([a], [b]) =>
 		a < b ? -1 : 1
 	)) {
-		const rel = `${spec}.js`
-		const file = join(root, 'runtime', rel)
-		await mkdir(dirname(file), { recursive: true })
-		await writeFile(file, content)
-		runtime.push(rel)
-		digest.update('runtime').update('\0').update(rel).update('\0').update(content).update('\0')
+		runtime[`${spec}.js`] = await put(content)
 	}
+	// Whole-sysroot hash: digest the (kind, logical path, blob id) manifest in sorted
+	// order. Blob ids already capture content, so this versions the entire tree.
+	const digest = createHash('sha256')
+	for (const [rel, id] of Object.entries(files))
+		digest.update('types').update('\0').update(rel).update('\0').update(id).update('\0')
+	for (const [rel, id] of Object.entries(runtime))
+		digest.update('runtime').update('\0').update(rel).update('\0').update(id).update('\0')
 	const index: DevkitIndex = {
 		schema: DEVKIT_SCHEMA,
 		hash: `sha256-${digest.digest('hex')}`,
