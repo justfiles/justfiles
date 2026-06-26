@@ -11,8 +11,8 @@ export default defineConfig({
 			description: 'Build Frieren apps inside Frieren.',
 			app: 'src/app.ts',
 			gui: 'src/gui.tsx',
-			// Carry the types-only devkit sysroot (`devkit-sysroot.ts` emits dist/devkit/**)
-			// into the seeded bundle so the host can load the draft headers.
+			// Carry the devkit sysroot (`devkit-sysroot.ts` emits dist/devkit/**) into
+			// the seeded bundle so the host can load draft SDK runtime + headers.
 			include: ['devkit/**']
 		}),
 		devkitSysroot()

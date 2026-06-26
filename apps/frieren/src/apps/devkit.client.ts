@@ -1,7 +1,7 @@
 import { appBundleFromMemory } from '@justfiles/app'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
 import type { Runner, Toolchain } from '@justfiles/app/capabilities/devkit/host'
-import { sdkExternals, vendorUrl } from '@justfiles/app/sdk-externals'
+import { loadRuntime } from '@justfiles/app/devkit-sysroot'
 import { esbuildCompile } from '@justfiles/app/toolchain/esbuild'
 import { chroot, type Volume } from '@justfiles/fs'
 import * as host from './host'
@@ -16,38 +16,25 @@ import { createClientKernel } from './kernel.client'
 
 type GetToken = () => Promise<string | null>
 
-// Devkit bundles the SDK into both reducer and GUI outputs, so the compile needs the SDK
-// source as its `runtime` map. In the browser there's no node_modules — read the pre-built
-// modules the host already serves at `/vendor/<spec>.js` (the `buildRuntime` output).
-// Fetched once per page.
-let sdkRuntime: Promise<Record<string, string>> | undefined
-function loadSdkRuntime(): Promise<Record<string, string>> {
-	sdkRuntime ??= (async () => {
-		const entries = await Promise.all(
-			sdkExternals.map(
-				async ({ spec }) => [spec, await (await fetch(vendorUrl(spec))).text()] as const
-			)
-		)
-		return Object.fromEntries(entries)
-	})()
-	return sdkRuntime
-}
-
 // esbuild-wasm initialises once per page, pulled lazily so a session that never
 // runs a draft pays nothing. No `typecheck` on the returned `Toolchain` — the factory
 // degrades it to CAPABILITY_UNAVAILABLE (the 8 MB checker stays off the client;
-// the container backend owns it online). Keyed by the calling app's id so a future
-// per-app types sysroot caches per caller — today every caller gets the same
-// compile-only toolchain.
+// the container backend owns it online). Keyed by the calling app's id so each caller
+// gets its own installed `devkit/runtime/**` sysroot.
 const toolchains = new Map<string, Promise<Toolchain>>()
-export function getToolchain(ctx: { appId: string }): Promise<Toolchain> {
+export function getToolchain(
+	fs: Volume,
+	getToken: GetToken,
+	ctx: { appId: string }
+): Promise<Toolchain> {
 	let toolchain = toolchains.get(ctx.appId)
 	if (!toolchain) {
 		toolchain = (async () => {
 			const esbuild = await import('esbuild-wasm')
 			const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
 			await esbuild.initialize({ wasmURL })
-			const runtime = await loadSdkRuntime()
+			const installed = await createClientKernel({ fs, getToken }).app(ctx.appId)
+			const runtime = await loadRuntime((path) => installed.read(path))
 			return { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
 		})()
 		toolchains.set(ctx.appId, toolchain)

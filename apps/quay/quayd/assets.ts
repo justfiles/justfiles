@@ -23,14 +23,13 @@ const IMPORTMAP = JSON.stringify({
 		'react-dom/client': '/vendor/react-dom-client.js',
 		'react/jsx-runtime': '/vendor/jsx-runtime.js',
 		'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js',
-		// SDK entries are transitional and double as devkit runtime source URLs. React keeps
-		// its existing mangled vendor names above.
+		// SDK entries are transitional for older host-linked bundles. React keeps its existing
+		// mangled vendor names above.
 		...Object.fromEntries(sdkExternals.map(({ spec }) => [spec, vendorUrl(spec)]))
 	}
 })
 
 let cache: Promise<Map<string, Uint8Array>> | undefined
-let sdkCache: Promise<Map<string, string>> | undefined
 
 // The vendor assets keyed by URL path (`/vendor/<file>`). Read once from the
 // ship-time build output and memoised for the daemon's life — no compile, no disk
@@ -38,25 +37,6 @@ let sdkCache: Promise<Map<string, string>> | undefined
 export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 	cache ??= readAssets()
 	return cache
-}
-
-// The host's in-memory SDK vendor sources keyed by SPEC (not URL) — the devkit `runtime`
-// map. Reuses the same `vendorAssets()` bytes the http server serves (no new cache/staging),
-// decoded to source text; the devkit compile backend inlines each referenced SDK module
-// into the output. Loaded lazily — only a devkit compile triggers it.
-export function sdkSources(): Promise<Map<string, string>> {
-	sdkCache ??= readSdkSources()
-	return sdkCache
-}
-
-async function readSdkSources(): Promise<Map<string, string>> {
-	const vendor = await vendorAssets()
-	const out = new Map<string, string>()
-	for (const { spec } of sdkExternals) {
-		const bytes = vendor.get(vendorUrl(spec))
-		if (bytes) out.set(spec, new TextDecoder().decode(bytes))
-	}
-	return out
 }
 
 async function readAssets(): Promise<Map<string, Uint8Array>> {

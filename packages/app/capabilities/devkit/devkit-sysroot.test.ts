@@ -1,31 +1,48 @@
-// Step 6: the shared `loadTypes` loader reassembles app-code's types-only sysroot
-// (shipped at `devkit/**`) into the tsc overlay from a bare `read` — quay reads the
-// installed app's bytes, frieren the seeded Volume, here an in-memory map. These
-// pin the round-trip (emit → load yields the SAME overlay `bakeTypes` produced, so
-// the starter typechecks with NO node_modules) and the no-fallback error contract.
+// The shared devkit sysroot loaders reassemble app-code's shipped `devkit/**` into
+// compiler inputs from a bare `read` — quay/frieren/desktop read the installed app's
+// bytes, here an in-memory map. These pin the round-trip (emit → load yields the SAME
+// types/runtime produced at build time, so compile/typecheck need NO node_modules) and
+// the no-fallback error contract.
 
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as ts from 'typescript'
 import { expect, test } from 'vitest'
-import { bakeTypes } from './devkit-runtime.ts'
-import { DEVKIT_SCHEMA, type DevkitIndex, loadTypes } from './devkit-sysroot.ts'
+import { bakeTypes, buildRuntime, buildSdk, writeSysroot } from './devkit-runtime.ts'
+import { DEVKIT_SCHEMA, type DevkitIndex, loadRuntime, loadTypes } from './devkit-sysroot.ts'
 import type { ProjectInput, TypesBundle } from './toolchain.ts'
 import { typescriptToolchain } from './toolchain.typescript.ts'
 
 const enc = new TextEncoder()
 const NM = 'node_modules/'
 
-// Emit a baked `TypesBundle` into the on-disk shape `devkit-sysroot.ts` ships
-// (index.json + `node_modules/`-stripped `devkit/types/<rel>`), as an in-memory
-// `read` the loader can replay — exactly the bytes an installed bundle exposes.
-function sysroot(bundle: TypesBundle): (path: string) => Promise<Uint8Array> {
+// Emit baked sysroot maps into the on-disk shape `devkit-sysroot.ts` ships
+// (index.json + stripped `devkit/types/<rel>` + `devkit/runtime/<spec>.js`), as an
+// in-memory `read` the loaders can replay — exactly the bytes an installed bundle exposes.
+function sysroot(
+	types: TypesBundle,
+	runtime: Record<string, string> = {}
+): (path: string) => Promise<Uint8Array> {
 	const files: Record<string, Uint8Array> = {}
-	const manifest: string[] = []
-	for (const [key, content] of Object.entries(bundle)) {
+	const typeManifest: string[] = []
+	const runtimeManifest: string[] = []
+	for (const [key, content] of Object.entries(types)) {
 		const rel = key.startsWith(NM) ? key.slice(NM.length) : key
 		files[`devkit/types/${rel}`] = enc.encode(content)
-		manifest.push(rel)
+		typeManifest.push(rel)
 	}
-	const index: DevkitIndex = { schema: DEVKIT_SCHEMA, hash: 'sha256-test', files: manifest.sort() }
+	for (const [spec, content] of Object.entries(runtime)) {
+		const rel = `${spec}.js`
+		files[`devkit/runtime/${rel}`] = enc.encode(content)
+		runtimeManifest.push(rel)
+	}
+	const index: DevkitIndex = {
+		schema: DEVKIT_SCHEMA,
+		hash: 'sha256-test',
+		files: typeManifest.sort(),
+		runtime: runtimeManifest.sort()
+	}
 	files['devkit/index.json'] = enc.encode(JSON.stringify(index))
 	return async (path) => {
 		const data = files[path]
@@ -38,6 +55,25 @@ test('loadTypes reassembles the exact overlay bakeTypes produced', async () => {
 	const baked = await bakeTypes()
 	const loaded = await loadTypes(sysroot(baked))
 	expect(loaded).toEqual(baked)
+})
+
+test('loadRuntime reassembles the exact runtime buildRuntime produced', async () => {
+	const baked = await buildRuntime()
+	const loaded = await loadRuntime(sysroot({}, baked))
+	expect(loaded).toEqual(baked)
+})
+
+test('writeSysroot emits loadable types and runtime', async () => {
+	const root = await mkdtemp(join(tmpdir(), 'devkit-sysroot-'))
+	try {
+		const sdk = await buildSdk()
+		await writeSysroot(join(root, 'devkit'), sdk)
+		const read = (path: string) => readFile(join(root, path))
+		expect(await loadTypes(read)).toEqual(sdk.types)
+		expect(await loadRuntime(read)).toEqual(sdk.runtime)
+	} finally {
+		await rm(root, { recursive: true, force: true })
+	}
 })
 
 test('the loaded sysroot type-checks the starter with no node_modules in the overlay', async () => {
@@ -85,7 +121,7 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 })
 
 test('a missing devkit/index.json is a clear error, not a silent node_modules read', async () => {
-	await expect(loadTypes(async () => Promise.reject(new Error('absent')))).rejects.toThrow(
-		/devkit\/index\.json/
-	)
+	const missing = async () => Promise.reject(new Error('absent'))
+	await expect(loadTypes(missing)).rejects.toThrow(/devkit\/index\.json/)
+	await expect(loadRuntime(missing)).rejects.toThrow(/devkit\/index\.json/)
 })

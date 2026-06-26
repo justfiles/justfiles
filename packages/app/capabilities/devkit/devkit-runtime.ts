@@ -1,17 +1,18 @@
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { build } from 'esbuild'
 import { reactExternals, sdkExternals } from '../../sdk-externals.ts'
+import { DEVKIT_SCHEMA, type DevkitIndex } from './devkit-sysroot.ts'
 import type { TypesBundle } from './toolchain.ts'
 
-// The system libraries the host pre-bundles into self-contained runtime modules — the
-// "stdlib shipped with the OS." Each spec in `sdkExternals` is built once (here, with
-// Node esbuild — at quay ship time, frieren build/serve time, or the desktop main
-// process), with React left external (`reactExternals`) so the one host React is
-// shared. Devkit feeds these modules to the bundler as source and inlines SDK imports
-// into both `app.js` and `gui.js`. React itself is vendored separately by each host.
+// The system libraries app-code bakes into self-contained runtime modules — the "stdlib
+// shipped with the OS." Each spec in `sdkExternals` is built once (here, with Node
+// esbuild), with React left external (`reactExternals`) so the one host React is shared.
+// Devkit feeds these modules to the bundler as source and inlines SDK imports into both
+// `app.js` and `gui.js`. React itself is vendored separately by each host.
 //
 // This is the one Node-only piece of the devkit pipeline (it imports the native
 // esbuild engine), kept in its own subpath so the browser-safe `@justfiles/app/
@@ -62,6 +63,53 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 		runtime[spec] = output.text
 	}
 	return runtime
+}
+
+export interface SdkBuild {
+	runtime: Record<string, string>
+	types: TypesBundle
+}
+
+export async function buildSdk(): Promise<SdkBuild> {
+	const [runtime, types] = await Promise.all([buildRuntime(), bakeTypes()])
+	return { runtime, types }
+}
+
+// Write the app-code devkit sysroot (`devkit/**`) from a built SDK map. Kept with the
+// Node-only builders so the Vite plugin stays a tiny packaging hook, while browser hosts
+// keep importing only the dependency-free loader (`devkit-sysroot.ts`).
+const NODE_MODULES = 'node_modules/'
+export async function writeSysroot(root: string, sdk?: SdkBuild): Promise<void> {
+	const built = sdk ?? (await buildSdk())
+	await rm(root, { recursive: true, force: true })
+	const digest = createHash('sha256')
+	const files: string[] = []
+	for (const [key, content] of Object.entries(built.types).sort(([a], [b]) => (a < b ? -1 : 1))) {
+		const rel = key.startsWith(NODE_MODULES) ? key.slice(NODE_MODULES.length) : key
+		const file = join(root, 'types', rel)
+		await mkdir(dirname(file), { recursive: true })
+		await writeFile(file, content)
+		files.push(rel)
+		digest.update('types').update('\0').update(rel).update('\0').update(content).update('\0')
+	}
+	const runtime: string[] = []
+	for (const [spec, content] of Object.entries(built.runtime).sort(([a], [b]) =>
+		a < b ? -1 : 1
+	)) {
+		const rel = `${spec}.js`
+		const file = join(root, 'runtime', rel)
+		await mkdir(dirname(file), { recursive: true })
+		await writeFile(file, content)
+		runtime.push(rel)
+		digest.update('runtime').update('\0').update(rel).update('\0').update(content).update('\0')
+	}
+	const index: DevkitIndex = {
+		schema: DEVKIT_SCHEMA,
+		hash: `sha256-${digest.digest('hex')}`,
+		files,
+		runtime
+	}
+	await writeFile(join(root, 'index.json'), JSON.stringify(index, null, '\t'))
 }
 
 // ── Type-checker overlay (the `.d.ts` mirror of `buildRuntime`) ──────────────

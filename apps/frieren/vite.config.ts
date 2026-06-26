@@ -35,9 +35,9 @@ const VENDOR_URLS: Record<string, string> = {
 }
 
 // The host importmap a mini-app's gui.js resolves bare React specifiers through. The SDK
-// half is transitional and also gives the browser devkit a URL to fetch as bundle-able
-// runtime source. Injected into index.html (transformIndexHtml). Frieren's own bundle
-// resolves @justfiles/app normally.
+// half is transitional for older host-linked bundles; current app/devkit artifacts bundle
+// the SDK. Injected into index.html (transformIndexHtml). Frieren's own bundle resolves
+// @justfiles/app normally.
 const IMPORTMAP = JSON.stringify({
 	imports: {
 		...VENDOR_URLS,
@@ -138,10 +138,10 @@ async function buildVendorBundles(logger?: ResolvedConfig['logger']): Promise<vo
 	}
 }
 
-// The SDK vendor modules (the host's `buildRuntime` output) written beside the React
-// ones, served at `/vendor/<spec>.js`. Built every Vite invocation (not cached on React's
-// version key) so editing @justfiles/app source reflects in dev; it's a few fast esbuild
-// passes. Nested `@justfiles/…` specifiers need their dirs made.
+// Transitional SDK vendor modules written beside the React ones and served at
+// `/vendor/<spec>.js` for older host-linked bundles. Built every Vite invocation (not
+// cached on React's version key) so editing @justfiles/app source reflects in dev; it's a
+// few fast esbuild passes. Nested `@justfiles/…` specifiers need their dirs made.
 async function buildSdkVendor(): Promise<void> {
 	mkdirSync(VENDOR_DIR, { recursive: true })
 	for (const [spec, text] of Object.entries(await buildRuntime())) {
@@ -183,7 +183,7 @@ function vendorReact(): Plugin {
 			return buildPromise
 		},
 		// Inject the host importmap ahead of every module script. React uses it at runtime;
-		// SDK entries are transitional/devkit-runtime source URLs.
+		// SDK entries are transitional for older host-linked bundles.
 		transformIndexHtml() {
 			return [
 				{

@@ -7,19 +7,18 @@
 // the project, build, pack, install — is the factory's generic pipeline.
 //
 // The compile backend is runtime-selected (`#engine`: native esbuild under node,
-// `Bun.build` under bun). Devkit bundles the SDK into both outputs, so the backend is fed
-// the host's in-memory SDK source (`sdkSources`, the same `/vendor/<spec>.js` bytes) as its
-// `runtime` map and inlines each referenced module. `install` fires `onInstalled` so quayd
+// `Bun.build` under bun). Devkit bundles the SDK into both outputs from the calling app's
+// installed `devkit/runtime/**` sysroot. `install` fires `onInstalled` so quayd
 // materialises its `.app` (Slice 6's reconcile) and the launcher re-lists — no change to
 // app-code's reducer.
 
 import { appBundleFromMemory } from '@justfiles/app'
-import type { Compile, Toolchain } from '@justfiles/app/capabilities/devkit/host'
+import type { Toolchain } from '@justfiles/app/capabilities/devkit/host'
 import {
 	devkitCapability as makeDevkit,
 	type Runner
 } from '@justfiles/app/capabilities/devkit/host'
-import { loadTypes } from '@justfiles/app/devkit-sysroot'
+import { loadRuntime, loadTypes } from '@justfiles/app/devkit-sysroot'
 import type { Kernel } from '@justfiles/app/runtime'
 import { typescriptToolchain } from '@justfiles/app/toolchain/typescript'
 import type { Volume } from '@justfiles/fs'
@@ -28,7 +27,6 @@ import * as ts from 'typescript'
 // Bun.build under bun (package.json `imports` → `quayd/devkitEngine.{node,bun}.ts`).
 // typecheck stays on tsc for both — only `compile` swaps.
 import { compile as backendCompile } from '#engine'
-import { sdkSources } from './assets.ts'
 
 // `getKernel` is lazy because the kernel is built with this capability already in its
 // registry (host.ts) — the kernel reference only exists after construction.
@@ -39,20 +37,21 @@ export function devkitCapability(
 ) {
 	// The in-process toolchain, keyed by the calling app's id: the `#engine` compile
 	// backend (shared) for `compile`, the TypeScript compiler API for `typecheck`,
-	// with the `.d.ts` overlay read from THAT app's installed types sysroot
-	// (`devkit/**`, shipped by app-code). No node_modules/baked fallback — a host
-	// always has app-code installed, so the headers are always present. Cached for
-	// the daemon's life.
+	// with SDK runtime + `.d.ts` overlay read from THAT app's installed devkit sysroot.
+	// No node_modules/baked fallback — a host always has app-code installed, so the
+	// sysroot is always present. Cached for the daemon's life.
 	const toolchains = new Map<string, Promise<Toolchain>>()
 	const toolchain = (ctx: { appId: string }): Promise<Toolchain> => {
 		let tc = toolchains.get(ctx.appId)
 		if (!tc) {
 			tc = (async () => {
 				const installed = await getKernel().app(ctx.appId)
+				const read = (path: string) => installed.read(path)
+				const [runtime, types] = await Promise.all([loadRuntime(read), loadTypes(read)])
 				return typescriptToolchain({
-					compile: compileBackend(),
+					compile: (input) => backendCompile(input, runtime),
 					ts,
-					types: await loadTypes((path) => installed.read(path))
+					types
 				})
 			})()
 			toolchains.set(ctx.appId, tc)
@@ -98,12 +97,4 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 				.catch(() => {})
 		}
 	}
-}
-
-// The compile backend (`#engine`) — esbuild under node, Bun.build under bun. Devkit
-// bundles the SDK, so the backend is fed the host's in-memory SDK source as its `runtime`
-// map. `sdkSources` is the same `/vendor/<spec>.js` bytes, decoded and keyed by spec;
-// memoised there. The bundler is the runtime's choice; this module never names it.
-function compileBackend(): Compile {
-	return async (input) => backendCompile(input, Object.fromEntries(await sdkSources()))
 }

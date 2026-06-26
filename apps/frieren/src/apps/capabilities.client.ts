@@ -42,7 +42,7 @@ function devkitCapability(fs: Volume, getToken: GetToken): Capability {
 		Promise.reject(new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', method))
 	const impl = makeDevkit({
 		fs,
-		toolchain: getToolchain,
+		toolchain: (ctx) => getToolchain(fs, getToken, ctx),
 		runner: frierenRunner(fs, getToken),
 		kernel: () => createClientKernel({ fs, getToken }),
 		onInstalled: () => host.notifyCatalog()
