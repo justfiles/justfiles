@@ -40,12 +40,12 @@ function harness() {
 		if (path === 'devkit/index.json') return index
 		throw new Error(`not found: ${path}`)
 	}
-	const kernel = (() => ({
+	const kernel = {
 		app: async (appId: string) => {
 			seen.push(appId)
 			return { read }
 		}
-	})) as unknown as () => Kernel
+	} as unknown as Kernel
 	const impl = devkitCapability({
 		fs,
 		kernel,

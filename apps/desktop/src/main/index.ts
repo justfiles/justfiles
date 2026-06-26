@@ -63,16 +63,24 @@ async function getHost(): Promise<Host> {
 			// Back the `ai` capability with the same local model the agent uses, so a
 			// built-in that declares `ai` runs against one shared text generator.
 			const llmText = text(llmConfig())
-			const capabilities = capabilityRegistry({
-				volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
-				devkit: devkitCapability(fs, () => k, notifyCatalog, preview),
-				ai: implementCapability(ai, {
-					generateText: async (_ctx, { system, prompt }) => ({
-						text: await llmText.gen(system ?? '', prompt)
+			// The kernel injects ITSELF into this capability factory, so `devkit` gets
+			// the exact instance it lives in. `preview` keeps a thunk: it's a host
+			// subsystem (also used by `k.subscribe` below), not a registered capability.
+			k = kernel({
+				fs,
+				sandbox: nodeSandbox(),
+				clock: {},
+				capabilities: (self) =>
+					capabilityRegistry({
+						volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
+						devkit: devkitCapability(fs, self, notifyCatalog, preview),
+						ai: implementCapability(ai, {
+							generateText: async (_ctx, { system, prompt }) => ({
+								text: await llmText.gen(system ?? '', prompt)
+							})
+						})
 					})
-				})
 			})
-			k = kernel({ fs, sandbox: nodeSandbox(), capabilities, clock: {} })
 			k.subscribe((event) => {
 				if (event.type !== 'app.update') return
 				for (const { appId, win } of appWindows.values()) {

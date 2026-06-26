@@ -87,16 +87,18 @@ export const noopRunner: Runner = {
 // per-app toolchain is built lazily and cached — a session that never builds loads
 // no sysroot. `compile(input, runtime)` is required; `typecheck(input, types,
 // paths)` is optional (omit it → the factory degrades typecheck to
-// CAPABILITY_UNAVAILABLE and never loads the `.d.ts` overlay). `kernel` is the SHIP
-// kernel — used for BOTH the per-app sysroot reads and install/pack (a Runner owns
-// its own preview kernel). `overwrite` lets quay ship-or-update; frieren/desktop
+// CAPABILITY_UNAVAILABLE and never loads the `.d.ts` overlay). `kernel` is the
+// kernel this capability is registered in — the SYSTEM injects it (kernel.ts calls
+// the host's capability factory with itself), so it's always the right instance,
+// used for BOTH the per-app sysroot reads and install/pack (a Runner owns its own
+// preview kernel). `overwrite` lets quay ship-or-update; frieren/desktop
 // create-only.
 export function devkitCapability(opts: {
 	fs: Volume
 	compile: (input: ProjectInput, runtime: Record<string, string>) => Promise<CompileResult>
 	typecheck?: (input: ProjectInput, types: TypesBundle, paths: TypePaths) => Promise<CheckResult>
 	runner: Runner
-	kernel: () => Kernel
+	kernel: Kernel
 	onInstalled?: () => void | Promise<void>
 	overwrite?: boolean
 }): Capability {
@@ -112,7 +114,7 @@ export function devkitCapability(opts: {
 		let tc = toolchains.get(ctx.appId)
 		if (!tc) {
 			tc = (async () => {
-				const installed = await kernel().app(ctx.appId)
+				const installed = await kernel.app(ctx.appId)
 				const read = (path: string) => installed.read(path)
 				const runtime = await loadRuntime(read)
 				const compileStep: Compile = (input) => compile(input, runtime)
@@ -133,7 +135,7 @@ export function devkitCapability(opts: {
 			return tc.typecheck((await readProject(data(ctx), slug)).input)
 		},
 		install: async (ctx, { slug }) =>
-			installDraft(fs, ctx.appId, slug, kernel(), await toolchain(ctx), { onInstalled, overwrite }),
+			installDraft(fs, ctx.appId, slug, kernel, await toolchain(ctx), { onInstalled, overwrite }),
 		pack: async (ctx, { slug }) => packDraft(data(ctx), slug, await toolchain(ctx)),
 		// Compile, then (only on a clean build) hand the draft to the runner. On a
 		// compile error the last-good mount stays put — one uniform rule, here.

@@ -36,12 +36,15 @@ interface System {
 	fs: Volume
 	sandbox: GetSandbox
 	clock: Clock
-	// The host's capability seam. The kernel owns it — apps never receive it
-	// directly. Before each call the kernel attaches the app's DECLARED scopes
-	// (not what the isolate claims) and its appId, so a compromised isolate
-	// cannot escalate scope or reach an undeclared capability. Absent → commands
-	// fail "unavailable" and subscriptions are inert.
-	capabilities?: Capabilities
+	// The host's capability seam. Either a built registry, or a FACTORY the kernel
+	// calls with ITSELF — so a kernel-reflective capability (devkit, which reads
+	// installed bundles and installs drafts) gets the exact kernel it lives in, never
+	// a hand-passed instance. The kernel owns the seam; apps never receive it
+	// directly. Before each call the kernel attaches the app's DECLARED scopes (not
+	// what the isolate claims) and its appId, so a compromised isolate cannot
+	// escalate scope or reach an undeclared capability. Absent → commands fail
+	// "unavailable" and subscriptions are inert.
+	capabilities?: Capabilities | ((kernel: Kernel) => Capabilities)
 }
 
 export type GetSandbox = (input: { appId: string; code: string }) => Promise<Sandbox>
@@ -125,12 +128,30 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 	const resolver = capabilityResolver(
 		async (appId) => (await loadSandbox(appId)).capabilities?.() ?? {}
 	)
+	// Resolve the capability seam against THIS kernel. A factory is called with the
+	// kernel itself, so a kernel-reflective capability (devkit) gets the exact
+	// instance it lives in — and the kernel↔capability cycle is broken HERE, once,
+	// instead of by a forward-ref in every host. `self` is for LATER use (invoke
+	// time); a factory must not call it during construction — the runtimes below
+	// aren't wired yet. `return self` so host and capability share ONE identity.
+	const self: Kernel = {
+		install,
+		uninstall,
+		dispatch,
+		settled,
+		state,
+		actions,
+		subscribe,
+		app,
+		list
+	}
+	const caps = typeof capabilities === 'function' ? capabilities(self) : capabilities
 	// The command runtime (Part B) runs an edge's emitted Command off-queue and
 	// re-enters its Result via `dispatch`. It owns the in-flight count `settled`
 	// waits on (via `commands.pending`).
 	const commands = commandRuntime({
 		resolve: resolver.resolve,
-		invoke: capabilities?.invoke,
+		invoke: caps?.invoke,
 		dispatch,
 		onError: (appId, error) => emit({ type: 'app.error', appId, error })
 	})
@@ -139,7 +160,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 	// the set from persisted state when warming from boot.
 	const subs = subscriptionRuntime({
 		resolve: resolver.resolve,
-		subscribe: capabilities?.subscribe,
+		subscribe: caps?.subscribe,
 		dispatch,
 		enqueue,
 		loadDesired: async (appId) => {
@@ -163,17 +184,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 	// the queue without an `actions()` RPC per dispatch. Memoized in-memory,
 	// recomputed on boot, dropped on (re)install/uninstall.
 	const procNames = new Map<AppId, Promise<Set<string>>>()
-	return {
-		install,
-		uninstall,
-		dispatch,
-		settled,
-		state,
-		actions,
-		subscribe,
-		app,
-		list
-	}
+	return self
 
 	// Chain `task` after the app's current tail so per-app work is strictly
 	// serialized. The stored tail always resolves (errors are swallowed there)
@@ -233,8 +244,8 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 	): Promise<unknown> {
 		const declared = await resolver.resolve(appId, capability)
 		if (!declared) throw new Error(`undeclared capability: ${capability}`)
-		if (!capabilities) throw new Error('capability execution unavailable')
-		return capabilities.invoke({
+		if (!caps) throw new Error('capability execution unavailable')
+		return caps.invoke({
 			appId,
 			capability: declared.id,
 			method,

@@ -11,6 +11,6 @@ export function createClientKernel(options: {
 		fs: options.fs,
 		sandbox: browserSandbox(),
 		clock: {},
-		capabilities: clientCapabilities(options.fs, options.getToken)
+		capabilities: (self) => clientCapabilities(options.fs, options.getToken, self)
 	})
 }

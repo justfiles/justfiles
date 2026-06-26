@@ -86,21 +86,26 @@ export async function createHost(
 	const { ai, email, calendar, accounts } = accountsCapabilities(providers, fs, {
 		firstParty: accountsFirstParty
 	})
-	// `devkit` needs the kernel `install` writes into, but the kernel is built with
-	// this registry already attached — so it's handed in lazily.
-	let k: Kernel
-	const capabilities = capabilityRegistry({
-		volume: volumeCapability(fs, { systemAllowlist }),
-		devkit: devkitCapability(fs, () => k, onInstalled),
-		ai,
-		email,
-		calendar,
-		accounts,
-		// Sandboxed apps reach the host's notification channel here; the kernel stamps
-		// `source = appId` so a banner routes back to the app that raised it.
-		notify: notifyHost(channel)
+	// `devkit` needs the kernel `install` writes into. The kernel injects ITSELF into
+	// this capability factory, so devkit gets the exact instance it lives in — no
+	// forward-ref needed.
+	const k = kernel({
+		fs,
+		sandbox: sandbox.get,
+		clock: {},
+		capabilities: (self) =>
+			capabilityRegistry({
+				volume: volumeCapability(fs, { systemAllowlist }),
+				devkit: devkitCapability(fs, self, onInstalled),
+				ai,
+				email,
+				calendar,
+				accounts,
+				// Sandboxed apps reach the host's notification channel here; the kernel stamps
+				// `source = appId` so a banner routes back to the app that raised it.
+				notify: notifyHost(channel)
+			})
 	})
-	k = kernel({ fs, sandbox: sandbox.get, capabilities, clock: {} })
 	const builtins = await builtinSource()
 	await reconcileBuiltins(k, fs, builtins.catalog, builtins.read)
 	return { fs, kernel: k, sandbox }

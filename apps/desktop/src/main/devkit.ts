@@ -16,13 +16,13 @@ import { build } from 'esbuild'
 // factory loads each caller's installed devkit runtime sysroot itself.
 export function devkitCapability(
 	fs: Volume,
-	getKernel: () => Kernel,
+	kernel: Kernel,
 	onInstalled: () => void,
 	preview?: Runner
 ) {
 	return makeDevkit({
 		fs,
-		kernel: getKernel,
+		kernel,
 		compile: (input, runtime) => esbuildCompile(input, build, runtime),
 		runner: preview ?? noopRunner,
 		onInstalled

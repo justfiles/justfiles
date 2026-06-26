@@ -23,23 +23,23 @@ import * as ts from 'typescript'
 // typecheck stays on tsc for both — only `compile` swaps.
 import { compile as backendCompile } from '#engine'
 
-// `getKernel` is lazy because the kernel is built with this capability already in its
-// registry (host.ts) — the kernel reference only exists after construction.
+// `kernel` is the kernel this capability is registered in — the system injects it
+// (the host passes a capability factory `(k) => …` to `kernel(…)`; see host.ts).
 export function devkitCapability(
 	fs: Volume,
-	getKernel: () => Kernel,
+	kernel: Kernel,
 	onInstalled: () => void | Promise<void>
 ) {
 	return makeDevkit({
 		fs,
-		kernel: getKernel,
+		kernel,
 		// `#engine` (native esbuild under node, Bun.build under bun) for `compile`; the
 		// TypeScript compiler API for `typecheck`. The factory loads each calling app's
 		// installed devkit sysroot (runtime + `.d.ts` overlay) and threads it in here —
 		// no node_modules/baked fallback, since a host always has app-code installed.
 		compile: backendCompile,
 		typecheck: async (input, types, paths) => tsTypecheck(input, ts, types, paths),
-		runner: quayRunner(fs, getKernel),
+		runner: quayRunner(fs, kernel),
 		onInstalled,
 		// Quay treats install as ship-or-update: a re-install overwrites the live app
 		// in place rather than rejecting the colliding id, so iterating in Code keeps
@@ -54,12 +54,12 @@ export function devkitCapability(
 // free, and the running reducer makes it interactive. `preview.*` is filtered from
 // the launcher catalog + OS projection (main.ts); `stop` uninstalls it. The factory
 // only mounts a clean build, so there's no diagnostics guard here.
-function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
+function quayRunner(fs: Volume, kernel: Kernel): Runner {
 	return {
 		mount: async (draft, { previewId, reset }) => {
 			// ⟳ Run/Restart: wipe persisted draft state for a clean boot.
 			if (reset) await fs.rm(`/state/${previewId}.json`, { force: true })
-			await getKernel().install(
+			await kernel.install(
 				appBundleFromMemory({
 					id: previewId,
 					name: draft.manifest.name,
@@ -69,9 +69,7 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 			)
 		},
 		stop: async ({ previewId }) => {
-			await getKernel()
-				.uninstall(previewId)
-				.catch(() => {})
+			await kernel.uninstall(previewId).catch(() => {})
 		}
 	}
 }

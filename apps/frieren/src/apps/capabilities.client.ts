@@ -9,24 +9,25 @@ import {
 } from '@justfiles/app/capabilities'
 import { devkitCapability as makeDevkit } from '@justfiles/app/capabilities/devkit/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
+import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { flushActiveVolume } from '../fs.ts'
 import { frierenCompile, frierenRunner } from './devkit.client.ts'
 import * as host from './host'
-import { createClientKernel } from './kernel.client'
 
 type GetToken = () => Promise<string | null>
 
 // The browser kernel's capability seam. `volume` and `devkit` run locally on this
 // thread; everything else (ai/integrations) proxies to the server through the
 // network fallback over ONE shared WebSocket. One wiring line replaces the old
-// hand-written invoke/stream routers.
-export function clientCapabilities(fs: Volume, getToken: GetToken): Capabilities {
+// hand-written invoke/stream routers. The kernel injects ITSELF (`self`) so the
+// local `devkit` reads sysroots + installs into the exact kernel it lives in.
+export function clientCapabilities(fs: Volume, getToken: GetToken, self: Kernel): Capabilities {
 	return capabilityRegistry(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
-			devkit: devkitCapability(fs, getToken)
+			devkit: devkitCapability(fs, getToken, self)
 		},
 		{ fallback: networkFallback(getToken) }
 	)
@@ -37,12 +38,12 @@ export function clientCapabilities(fs: Volume, getToken: GetToken): Capabilities
 // built eagerly — its runner closures are cheap and the esbuild-wasm backend stays
 // lazy inside `frierenCompile` — so a session that never opens devkit still pays
 // nothing.
-function devkitCapability(fs: Volume, getToken: GetToken): Capability {
+function devkitCapability(fs: Volume, getToken: GetToken, kernel: Kernel): Capability {
 	const reject = (method: string): Promise<never> =>
 		Promise.reject(new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', method))
 	const impl = makeDevkit({
 		fs,
-		kernel: () => createClientKernel({ fs, getToken }),
+		kernel,
 		compile: frierenCompile,
 		runner: frierenRunner(fs, getToken),
 		onInstalled: () => host.notifyCatalog()
