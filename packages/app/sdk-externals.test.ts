@@ -1,8 +1,7 @@
-// Step 1 guard: the host builds ONE SDK (`buildRuntime`) served at `/vendor/<spec>.js`
-// and the externals constant is the single source both compile paths + the importmap
-// read. These lock the two invariants Step 1 introduces: vendor URLs mirror the
-// specifier (no mangling), and every reducer-reachable SDK module stays react-free (a
-// reducer worker has no importmap to resolve a bare `react`).
+// The host builds ONE SDK runtime (`buildRuntime`) for devkit to bundle into draft
+// outputs. These lock the invariants: Vite app GUI externals are React-only, vendor URLs
+// mirror the specifier (no mangling), and every reducer-reachable SDK module stays
+// react-free (a reducer worker has no importmap to resolve a bare `react`).
 
 import { expect, test } from 'vitest'
 import { buildRuntime } from './capabilities/devkit/devkit-runtime.ts'
@@ -12,8 +11,8 @@ const REACT_FAMILY = /^react(-dom)?(\/|$)/
 const importSpecifiers = (source: string): string[] =>
 	[...source.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/g)].map((m) => m[1] as string)
 
-test('externals = react family + every SDK spec, deduped, no react in the SDK list', () => {
-	expect(externals).toEqual([...reactExternals, ...sdkExternals.map((s) => s.spec)])
+test('Vite app GUI externals are React-only; SDK specs are runtime inputs', () => {
+	expect(externals).toEqual(reactExternals)
 	expect(new Set(externals).size).toBe(externals.length)
 	expect(sdkExternals.some((s) => REACT_FAMILY.test(s.spec))).toBe(false)
 })

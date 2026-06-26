@@ -7,11 +7,11 @@
 // the project, build, pack, install — is the factory's generic pipeline.
 //
 // The compile backend is runtime-selected (`#engine`: native esbuild under node,
-// `Bun.build` under bun). The gui resolves the SDK via the importmap (externalized); the
-// reducer BUNDLES it, so the backend is fed the host's in-memory SDK source (`sdkSources`,
-// the same `/vendor/<spec>.js` bytes) as its `runtime` map and inlines each referenced
-// module into `app.js`. `install` fires `onInstalled` so quayd materialises its `.app`
-// (Slice 6's reconcile) and the launcher re-lists — no change to app-code's reducer.
+// `Bun.build` under bun). Devkit bundles the SDK into both outputs, so the backend is fed
+// the host's in-memory SDK source (`sdkSources`, the same `/vendor/<spec>.js` bytes) as its
+// `runtime` map and inlines each referenced module. `install` fires `onInstalled` so quayd
+// materialises its `.app` (Slice 6's reconcile) and the launcher re-lists — no change to
+// app-code's reducer.
 
 import { appBundleFromMemory } from '@justfiles/app'
 import type { Compile, Toolchain } from '@justfiles/app/capabilities/devkit/host'
@@ -100,11 +100,10 @@ function quayRunner(fs: Volume, getKernel: () => Kernel): Runner {
 	}
 }
 
-// The compile backend (`#engine`) — esbuild under node, Bun.build under bun. The reducer
+// The compile backend (`#engine`) — esbuild under node, Bun.build under bun. Devkit
 // bundles the SDK, so the backend is fed the host's in-memory SDK source as its `runtime`
-// map (the gui still externalizes via the importmap and ignores it). `sdkSources` is the
-// same `/vendor/<spec>.js` bytes, decoded and keyed by spec; memoised there. The bundler is
-// the runtime's choice; this module never names it.
+// map. `sdkSources` is the same `/vendor/<spec>.js` bytes, decoded and keyed by spec;
+// memoised there. The bundler is the runtime's choice; this module never names it.
 function compileBackend(): Compile {
 	return async (input) => backendCompile(input, Object.fromEntries(await sdkSources()))
 }

@@ -53,12 +53,11 @@ describe('devkit compile', () => {
 			{ app: 'app.ts', gui: 'gui.ts' }
 		)
 		expect(diagnostics).toEqual([])
-		// app.js (reducer): the SDK is BUNDLED — no external/sentinel import remains (a Worker
-		// has no importmap), so the SDK impl is inlined into the bundle.
+		// Both outputs bundle the SDK — no external/sentinel SDK import remains.
 		expect(app).not.toMatch(/from\s*["']@justfiles\/app/)
 		expect(app).not.toContain('justfiles-sdk:')
-		// gui.js: the SDK stays a bare specifier the host importmap resolves in the document.
-		expect(gui).toMatch(/from\s*["']@justfiles\/app\/browser["']/)
+		expect(gui).not.toMatch(/from\s*["']@justfiles\/app/)
+		expect(gui).not.toContain('justfiles-sdk:')
 	})
 
 	// Regression: the system runtime must expose valibot's *named* exports, not
@@ -102,12 +101,12 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 			{ app: 'app.ts', gui: 'gui.tsx' }
 		)
 		expect(diagnostics).toEqual([])
-		// The `.tsx` default export is wrapped via the React GUI entry, which is now
-		// EXTERNALIZED (a bare `@justfiles/app/react` the host importmap resolves) rather
-		// than bundled — so `react`/`react-dom` live in that vendor module, not inlined here.
-		expect(gui).toMatch(/from\s*["']@justfiles\/app\/react["']/)
-		expect(gui).toMatch(/from\s*["']react\/jsx-runtime["']/) // JSX runtime stays bare
-		expect(gui).not.toContain('react-dom') // the wrapper's React isn't inlined
+		// The `.tsx` default export is wrapped via the React GUI entry, which is bundled
+		// from the SDK runtime; React itself stays external for the host singleton.
+		expect(gui).not.toMatch(/from\s*["']@justfiles\/app\/react["']/)
+		expect(gui).toMatch(/from\s*["']react["']/)
+		expect(gui).toMatch(/from\s*["']react-dom\/client["']/)
+		expect(gui).toMatch(/from\s*["']react\/jsx-runtime["']/)
 		expect(gui).toContain('menu')
 		expect(gui).not.toContain('initialState')
 	})

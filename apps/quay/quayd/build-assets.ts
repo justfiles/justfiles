@@ -20,11 +20,10 @@ import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 // The host SDK builder: `buildRuntime` bundles each SDK/valibot spec into a self-contained
-// ESM module, emitted below as served `/vendor/<spec>.js` (the gui importmap + the reducer's
-// fetched/injected SDK). Build-time only — it imports native esbuild and reads node_modules,
-// which the self-contained exe doesn't carry — so it never sits on the shipped exe's runtime
-// path. The SDK is externalized now, so there is no longer a baked `runtime.json` (compile-time
-// injection) or `types.json` (the type overlay ships with app-code's installed sysroot).
+// ESM module, emitted below as served `/vendor/<spec>.js` for the devkit runtime map (and
+// the transitional SDK importmap). Build-time only — it imports native esbuild and reads
+// node_modules, which the self-contained exe doesn't carry — so it never sits on the shipped
+// exe's runtime path. The type overlay ships with app-code's installed sysroot.
 import { buildRuntime } from '@justfiles/app/devkit-runtime'
 // The bundler is runtime-selected (`#assets`): native esbuild under node, Bun.build
 // under bun — so `bun quayd/build-assets.ts` builds these with zero esbuild. The React
@@ -66,11 +65,9 @@ async function main(): Promise<void> {
 	await rm(OUT_DIR, { recursive: true, force: true })
 	await mkdir(OUT_DIR, { recursive: true })
 	for (const [name, text] of files) await writeFile(join(OUT_DIR, name), text)
-	// The host SDK build, emitted as served `/vendor/<spec>.js` modules so the gui importmap
-	// (and the browser reducer's fetched URL) resolve the SDK to the host's copy. Vendor URLs
-	// mirror the specifier, so nested `@justfiles/…` paths need their dirs made. No more baked
-	// `runtime.json`/`types.json`: the SDK is externalized (not compile-injected) and the type
-	// overlay ships with app-code's installed sysroot.
+	// The host SDK build, emitted as served `/vendor/<spec>.js` modules for the devkit runtime
+	// map. Vendor URLs mirror the specifier, so nested `@justfiles/…` paths need their dirs
+	// made. The type overlay ships with app-code's installed sysroot.
 	const sdk = await emitSdkVendor(await buildRuntime())
 	const docs = await copyDocs()
 	console.log(

@@ -6,12 +6,12 @@ import { build } from 'esbuild'
 import { reactExternals, sdkExternals } from '../../sdk-externals.ts'
 import type { TypesBundle } from './toolchain.ts'
 
-// The system libraries the host pre-bundles into self-contained vendor modules — the
+// The system libraries the host pre-bundles into self-contained runtime modules — the
 // "stdlib shipped with the OS." Each spec in `sdkExternals` is built once (here, with
 // Node esbuild — at quay ship time, frieren build/serve time, or the desktop main
 // process), with React left external (`reactExternals`) so the one host React is
-// shared. The host serves the output at `/vendor/<spec>.js` and (node/bun) holds it in
-// memory for the reducer. React itself is vendored separately by each host.
+// shared. Devkit feeds these modules to the bundler as source and inlines SDK imports
+// into both `app.js` and `gui.js`. React itself is vendored separately by each host.
 //
 // This is the one Node-only piece of the devkit pipeline (it imports the native
 // esbuild engine), kept in its own subpath so the browser-safe `@justfiles/app/

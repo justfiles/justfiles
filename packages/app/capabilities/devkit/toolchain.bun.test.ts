@@ -37,8 +37,8 @@ const project = (files: Record<string, string>, gui?: string): ProjectInput => (
 const runtime = await buildRuntime()
 const bareReact = (s: string) =>
 	/from\s*["']react["']/.test(s) || /from\s*["']react\/jsx-runtime["']/.test(s)
-// The reducer BUNDLES the SDK (a Worker has no importmap): no external/sentinel SDK import
-// survives in app.js — the source is inlined from the `runtime` map.
+// Every devkit output bundles the SDK: no external/sentinel SDK import survives — the
+// source is inlined from the `runtime` map.
 const bundlesSdk = (app: string) =>
 	!/from\s*["']@justfiles\/app/.test(app) &&
 	!/from\s*["']valibot["']/.test(app) &&
@@ -54,9 +54,10 @@ test('compile produces named outputs with no errors', async () => {
 			.sort()
 	).toEqual(['app.js', 'gui.js'])
 	expect(bundlesSdk(result.outputs.find((o) => o.path === 'app.js')!.text)).toBe(true)
+	expect(bundlesSdk(result.outputs.find((o) => o.path === 'gui.js')!.text)).toBe(true)
 })
 
-test('externalizes React (gui, bare) but bundles the SDK (reducer)', async () => {
+test('externalizes React (gui, bare) but bundles the SDK', async () => {
 	const { outputs } = await bunCompile(
 		project({ 'app.ts': APP, 'gui.tsx': GUI }, 'gui.tsx'),
 		runtime
@@ -65,8 +66,9 @@ test('externalizes React (gui, bare) but bundles the SDK (reducer)', async () =>
 	const app = outputs.find((o) => o.path === 'app.js')!.text
 	expect(bareReact(gui)).toBe(true) // resolved by the shell importmap at load
 	expect(gui).not.toContain('function useState') // React not inlined
-	// reducer: the SDK + valibot are bundled into app.js, not externalized.
+	// SDK imports are bundled into both outputs, not externalized.
 	expect(bundlesSdk(app)).toBe(true)
+	expect(bundlesSdk(gui)).toBe(true)
 })
 
 test('emits production automatic JSX (jsx-runtime, not the dev runtime)', async () => {
@@ -99,7 +101,7 @@ test('shape parity with the esbuild toolchain', async () => {
 	expect(bareReact(bun.outputs.find((o) => o.path === 'gui.js')!.text)).toBe(true)
 })
 
-test('CSS: import bundles to a .css sidecar (the esbuild path lacks this)', async () => {
+test('CSS: import folds into gui.js (no sidecar)', async () => {
 	const gui = `import './styles.css'
 import { useState } from 'react'
 export default function App() {
@@ -111,8 +113,10 @@ export default function App() {
 		runtime
 	)
 	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])
-	const css = outputs.find((o) => o.path === 'gui.css')
-	expect(css?.text).toContain('#ff69b4') // bundled AND optimized (hotpink → #ff69b4)
+	expect(outputs.find((o) => o.path === 'gui.css')).toBeUndefined()
+	const js = outputs.find((o) => o.path === 'gui.js')?.text ?? ''
+	expect(js).toContain('hotpink')
+	expect(js).toContain('injectStyle')
 })
 
 // Real projects (quay's `readProject`) declare entries under `src/` — a directory-

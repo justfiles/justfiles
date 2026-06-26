@@ -16,17 +16,17 @@ import { createClientKernel } from './kernel.client'
 
 type GetToken = () => Promise<string | null>
 
-// The reducer bundles the SDK, so the compile needs the SDK source as its `runtime` map. In
-// the browser there's no node_modules — read the pre-built modules the host already serves
-// at `/vendor/<spec>.js` (the `buildRuntime` output). Only reducer-reachable specs are
-// needed (the gui externalizes the rest via the document importmap). Fetched once per page.
+// Devkit bundles the SDK into both reducer and GUI outputs, so the compile needs the SDK
+// source as its `runtime` map. In the browser there's no node_modules — read the pre-built
+// modules the host already serves at `/vendor/<spec>.js` (the `buildRuntime` output).
+// Fetched once per page.
 let sdkRuntime: Promise<Record<string, string>> | undefined
 function loadSdkRuntime(): Promise<Record<string, string>> {
 	sdkRuntime ??= (async () => {
 		const entries = await Promise.all(
-			sdkExternals
-				.filter((s) => s.reducer)
-				.map(async ({ spec }) => [spec, await (await fetch(vendorUrl(spec))).text()] as const)
+			sdkExternals.map(
+				async ({ spec }) => [spec, await (await fetch(vendorUrl(spec))).text()] as const
+			)
 		)
 		return Object.fromEntries(entries)
 	})()

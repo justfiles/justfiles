@@ -206,10 +206,8 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 							fileName: () => 'gui.js'
 						},
 						rollupOptions: {
-							// The host serves a single shared React + the SDK via /vendor/*.js
-							// (see the importmap). The gui emits bare specifiers and the browser
-							// resolves them through the importmap — one URL per library across the
-							// host and every app, and the app links the host's SDK at runtime.
+							// Only React stays external so every GUI shares the host document's React
+							// singleton. SDK imports are bundled into gui.js, matching app.js.
 							external: externals
 						}
 					}

@@ -23,9 +23,8 @@ const IMPORTMAP = JSON.stringify({
 		'react-dom/client': '/vendor/react-dom-client.js',
 		'react/jsx-runtime': '/vendor/jsx-runtime.js',
 		'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js',
-		// The SDK half is generated from the shared externals constant (URLs mirror the
-		// specifier), so a new capability resolves with no manual edit here. React keeps its
-		// existing mangled vendor names above.
+		// SDK entries are transitional and double as devkit runtime source URLs. React keeps
+		// its existing mangled vendor names above.
 		...Object.fromEntries(sdkExternals.map(({ spec }) => [spec, vendorUrl(spec)]))
 	}
 })
@@ -41,11 +40,10 @@ export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 	return cache
 }
 
-// The host's in-memory SDK vendor sources keyed by SPEC (not URL) — the reducer-compile
-// `runtime` map. Reuses the same `vendorAssets()` bytes the http server serves (no new
-// cache/staging), decoded to source text; the devkit compile backend inlines each into a
-// reducer's `app.js` (the worker has no importmap, so the SDK is bundled, not externalized).
-// Loaded lazily — only a devkit compile triggers it.
+// The host's in-memory SDK vendor sources keyed by SPEC (not URL) — the devkit `runtime`
+// map. Reuses the same `vendorAssets()` bytes the http server serves (no new cache/staging),
+// decoded to source text; the devkit compile backend inlines each referenced SDK module
+// into the output. Loaded lazily — only a devkit compile triggers it.
 export function sdkSources(): Promise<Map<string, string>> {
 	sdkCache ??= readSdkSources()
 	return sdkCache

@@ -34,11 +34,10 @@ const VENDOR_URLS: Record<string, string> = {
 	'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js'
 }
 
-// The host importmap a mini-app's gui.js resolves bare specifiers through: the shared
-// React (above) plus the SDK half generated from the externals constant (URLs mirror the
-// specifier), so a new capability needs no edit. Injected into index.html (transformIndexHtml).
-// This is the document seam ONLY — frieren's own bundle resolves @justfiles/app normally;
-// the SDK vendor is for blob-imported guis (and the served URL the reducer fetches, Step 3).
+// The host importmap a mini-app's gui.js resolves bare React specifiers through. The SDK
+// half is transitional and also gives the browser devkit a URL to fetch as bundle-able
+// runtime source. Injected into index.html (transformIndexHtml). Frieren's own bundle
+// resolves @justfiles/app normally.
 const IMPORTMAP = JSON.stringify({
 	imports: {
 		...VENDOR_URLS,
@@ -183,8 +182,8 @@ function vendorReact(): Plugin {
 			})()
 			return buildPromise
 		},
-		// Inject the host importmap (React + SDK) ahead of every module script so a
-		// blob-imported gui.js resolves its bare specifiers to the shared /vendor modules.
+		// Inject the host importmap ahead of every module script. React uses it at runtime;
+		// SDK entries are transitional/devkit-runtime source URLs.
 		transformIndexHtml() {
 			return [
 				{

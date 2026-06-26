@@ -30,7 +30,7 @@ export function bunCompile(
 	input: ProjectInput,
 	runtime: Record<string, string>
 ): Promise<CompileResult> {
-	return compileVfs(input, runtime, async ({ entry, sources, externalizeSdk }, rt) => {
+	return compileVfs(input, runtime, async ({ entry, sources }, rt) => {
 		const result = await Bun.build({
 			entrypoints: [entry],
 			format: 'esm',
@@ -50,7 +50,7 @@ export function bunCompile(
 			// React is a production build with no `jsxDEV` export, so a dev-JSX draft mounts
 			// to `jsxDEV is not a function`. NODE_ENV drives Bun's JSX runtime choice.
 			define: { 'process.env.NODE_ENV': '"production"' },
-			plugins: [vfs(sources, rt, externalizeSdk)]
+			plugins: [vfs(sources, rt)]
 		})
 		if (!result.success) {
 			return { diagnostics: result.logs.map((log) => logDiagnostic(log, 'error')) }
@@ -65,11 +65,7 @@ export function bunCompile(
 	})
 }
 
-function vfs(
-	files: Record<string, string>,
-	runtime: Record<string, string>,
-	externalizeSdk: boolean
-): BunPlugin {
+function vfs(files: Record<string, string>, runtime: Record<string, string>): BunPlugin {
 	return {
 		name: 'devkit-vfs',
 		setup(build) {
@@ -81,10 +77,9 @@ function vfs(
 					const resolved = resolveRelative(args.importer, args.path, files)
 					return resolved ? { path: resolved, namespace: VFS } : undefined
 				}
-				// SDK: the gui externalizes it as a bare specifier (the host importmap resolves
-				// it); the reducer bundles it from the pre-built `runtime` source below.
-				if (isSdkSpec(args.path) && externalizeSdk) return { path: args.path, external: true }
 				if (args.path in runtime) return { path: args.path, namespace: RUNTIME }
+				if (isSdkSpec(args.path))
+					throw new Error(`devkit runtime is missing SDK module "${args.path}"`)
 				// React passes through to the top-level `external`; any other bare specifier
 				// is an unsupported npm package. Bun's `OnResolveResult` has no `errors`
 				// field, so THROW — with `throw: false` Bun captures it into `result.logs`
