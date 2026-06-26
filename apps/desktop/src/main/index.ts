@@ -63,23 +63,23 @@ async function getHost(): Promise<Host> {
 			// Back the `ai` capability with the same local model the agent uses, so a
 			// built-in that declares `ai` runs against one shared text generator.
 			const llmText = text(llmConfig())
-			// The kernel injects ITSELF into this capability factory, so `devkit` gets
-			// the exact instance it lives in. `preview` keeps a thunk: it's a host
-			// subsystem (also used by `k.subscribe` below), not a registered capability.
+			// Only `devkit` needs the kernel: a per-entry factory the kernel resolves with
+			// ITSELF, so it gets the exact instance it lives in. `preview` keeps a thunk —
+			// it's a host subsystem (also used by `k.subscribe` below), not a registered
+			// capability.
 			k = kernel({
 				fs,
 				sandbox: nodeSandbox(),
 				clock: {},
-				capabilities: (self) =>
-					capabilityRegistry({
-						volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
-						devkit: devkitCapability(fs, self, notifyCatalog, preview),
-						ai: implementCapability(ai, {
-							generateText: async (_ctx, { system, prompt }) => ({
-								text: await llmText.gen(system ?? '', prompt)
-							})
+				capabilities: capabilityRegistry({
+					volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
+					devkit: (self) => devkitCapability(fs, self, notifyCatalog, preview),
+					ai: implementCapability(ai, {
+						generateText: async (_ctx, { system, prompt }) => ({
+							text: await llmText.gen(system ?? '', prompt)
 						})
 					})
+				})
 			})
 			k.subscribe((event) => {
 				if (event.type !== 'app.update') return

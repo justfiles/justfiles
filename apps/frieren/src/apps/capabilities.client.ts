@@ -20,14 +20,17 @@ type GetToken = () => Promise<string | null>
 
 // The browser kernel's capability seam. `volume` and `devkit` run locally on this
 // thread; everything else (ai/integrations) proxies to the server through the
-// network fallback over ONE shared WebSocket. One wiring line replaces the old
-// hand-written invoke/stream routers. The kernel injects ITSELF (`self`) so the
-// local `devkit` reads sysroots + installs into the exact kernel it lives in.
-export function clientCapabilities(fs: Volume, getToken: GetToken, self: Kernel): Capabilities {
+// network fallback over ONE shared WebSocket. Only `devkit` needs the kernel — a
+// per-entry factory the kernel resolves with ITSELF, so it reads sysroots +
+// installs into the exact kernel it lives in (no whole-map wrapper).
+export function clientCapabilities(
+	fs: Volume,
+	getToken: GetToken
+): (kernel: Kernel) => Capabilities {
 	return capabilityRegistry(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
-			devkit: devkitCapability(fs, getToken, self)
+			devkit: (kernel) => devkitCapability(fs, getToken, kernel)
 		},
 		{ fallback: networkFallback(getToken) }
 	)
