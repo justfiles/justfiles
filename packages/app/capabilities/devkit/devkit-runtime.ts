@@ -141,7 +141,10 @@ export async function bakeTypes(): Promise<TypesBundle> {
 	for (const name of TYPE_WORKSPACE) {
 		const dir = packageDir(import.meta.dirname, name)
 		const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-		await collectDts(join(dir, 'dist'), `node_modules/${name}/dist`, bundle)
+		const dist = join(dir, 'dist')
+		const copied = await collectDts(dist, `node_modules/${name}/dist`, bundle)
+		if (copied === 0)
+			throw new Error(`devkit-runtime: missing ${name} declaration build at ${dist}`)
 		bundle[`node_modules/${name}/package.json`] = JSON.stringify({
 			name,
 			version: pkg.version,
@@ -194,12 +197,17 @@ function packageDir(fromDir: string, name: string): string {
 // `<prefix>/<rel>`. Includes `.d.mts`/`.d.cts` (valibot ships those, not `.d.ts`) and
 // skips nested `node_modules` (pnpm hoists; each package is listed in its own right).
 const DTS = /\.d\.[mc]?ts$/
-async function collectDts(dir: string, prefix: string, bundle: TypesBundle): Promise<void> {
-	if (!existsSync(dir)) return
+async function collectDts(dir: string, prefix: string, bundle: TypesBundle): Promise<number> {
+	if (!existsSync(dir)) return 0
+	let copied = 0
 	for (const entry of await readdir(dir, { withFileTypes: true })) {
 		if (entry.name === 'node_modules') continue
 		const abs = join(dir, entry.name)
-		if (entry.isDirectory()) await collectDts(abs, `${prefix}/${entry.name}`, bundle)
-		else if (DTS.test(entry.name)) bundle[`${prefix}/${entry.name}`] = await readFile(abs, 'utf8')
+		if (entry.isDirectory()) copied += await collectDts(abs, `${prefix}/${entry.name}`, bundle)
+		else if (DTS.test(entry.name)) {
+			bundle[`${prefix}/${entry.name}`] = await readFile(abs, 'utf8')
+			copied += 1
+		}
 	}
+	return copied
 }

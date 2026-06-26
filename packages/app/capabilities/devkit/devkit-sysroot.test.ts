@@ -57,6 +57,12 @@ test('loadTypes reassembles the exact overlay bakeTypes produced', async () => {
 	expect(loaded).toEqual(baked)
 })
 
+test('bakeTypes includes @justfiles/app declarations', async () => {
+	const baked = await bakeTypes()
+	expect(baked['node_modules/@justfiles/app/dist/index.d.ts']).toBeDefined()
+	expect(baked['node_modules/@justfiles/app/dist/capabilities/volume/index.d.ts']).toBeDefined()
+})
+
 test('loadRuntime reassembles the exact runtime buildRuntime produced', async () => {
 	const baked = await buildRuntime()
 	const loaded = await loadRuntime(sysroot({}, baked))
