@@ -53,15 +53,18 @@ function sysroot(
 	}
 }
 
+// Baked once at module load (a cold tsdown dts rollup is ~seconds) and reused — paid
+// at import, outside any per-test timeout.
+const baked = await bakeTypes()
+const sdk = await buildSdk()
+
 test('loadTypes reassembles the exact overlay bakeTypes produced', async () => {
-	const baked = await bakeTypes()
 	const loaded = await loadTypes(sysroot(baked.files, {}, baked.paths))
 	expect(loaded.files).toEqual(baked.files)
 	expect(loaded.paths).toEqual(baked.paths)
 })
 
 test('bakeTypes maps @justfiles/app subpaths through the paths import-map', async () => {
-	const baked = await bakeTypes()
 	// SDK headers are tsdown rollups (no /dist/ tree), resolved via the paths import-map.
 	expect(baked.files['node_modules/@justfiles/app/index.d.ts']).toBeDefined()
 	expect(baked.files['node_modules/@justfiles/app/capabilities/volume.d.ts']).toBeDefined()
@@ -72,15 +75,14 @@ test('bakeTypes maps @justfiles/app subpaths through the paths import-map', asyn
 })
 
 test('loadRuntime reassembles the exact runtime buildRuntime produced', async () => {
-	const baked = await buildRuntime()
-	const loaded = await loadRuntime(sysroot({}, baked))
-	expect(loaded).toEqual(baked)
+	const built = await buildRuntime()
+	const loaded = await loadRuntime(sysroot({}, built))
+	expect(loaded).toEqual(built)
 })
 
 test('writeSysroot emits loadable types and runtime', async () => {
 	const root = await mkdtemp(join(tmpdir(), 'devkit-sysroot-'))
 	try {
-		const sdk = await buildSdk()
 		await writeSysroot(join(root, 'devkit'), sdk)
 		const read = (path: string) => readFile(join(root, path))
 		const loaded = await loadTypes(read)
@@ -93,7 +95,6 @@ test('writeSysroot emits loadable types and runtime', async () => {
 })
 
 test('the loaded sysroot type-checks the starter with no node_modules in the overlay', async () => {
-	const baked = await bakeTypes()
 	const loaded = await loadTypes(sysroot(baked.files, {}, baked.paths))
 	const APP = `import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'

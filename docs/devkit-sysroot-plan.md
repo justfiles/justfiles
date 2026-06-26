@@ -109,19 +109,22 @@ the rolled `.d.ts` back — **straight from source, no `@justfiles/app/dist` dep
 
 What the spike changed from the original sketch:
 
-- **`@justfiles/fs` is NOT inlined.** Forcing it inline (`noExternal`) makes rolldown reject the
-  value import of its type-only `Volume` in `kernel.ts` (`Missing export`). So fs stays external
-  and is baked from its own (tsdown-rolled) dist + a `paths` entry — unchanged from Phase A.
-- The external surface of our rollups is exactly `{@justfiles/fs, @standard-schema/spec, react}`;
-  `core`/internal files collapse into a couple of shared rolled chunks (flat, relative refs that
-  resolve under the baked dir). `@justfiles/app`'s baked headers went from a ~50-file loose tree
-  to **12 rolled files**.
+- **`@justfiles/fs` is inlined** via `noExternal: ['@justfiles/fs']` + `dts: { eager: true }`.
+  tsdown (a *library* bundler) auto-externalizes `dependencies`, so fs needs `noExternal` to be
+  force-bundled; and rolldown-plugin-dts's default *lazy* emit can't follow fs's type-only
+  barrel re-export (`export { type Volume } from './volume'`), so `eager` emits the full program
+  declarations upfront. fs's types land in a shared rolled chunk — it vanishes as a sysroot entry,
+  needs no `paths` entry, and (built from source) needs no `@justfiles/fs#build`.
+- The external surface of our rollups is then `{react, valibot, @standard-schema/spec}` (all
+  vendored). `@justfiles/app`'s baked headers are ~12 rolled files.
 - Determinism guards: pin `tsconfig` to `@justfiles/app`'s own (the repo-root tsconfig has
   project `references`, which rolldown-dts rejects) and force `outExtensions` to `.d.ts`/`.js`
   (tsdown otherwise picks `.d.mts` from the CWD `package.json` `type`). Verified two builds
   produce an identical sysroot `hash`.
-- `turbo.json`: `@justfiles/app-code#build` no longer depends on `@justfiles/app#build` (types
-  built from source) — only on `@justfiles/fs#build`.
+- `turbo.json`: the `@justfiles/app-code#build` override is **deleted** — with types built from
+  source, app-code has no workspace `dist` dependency and uses the generic `build` task.
+- Cost: `eager` runs a full tsc program, so a cold `bakeTypes` is ~3.5s (then ~90ms warm in the
+  same process). app-code builds it once; tests bake once at module load.
 
 Still vendored via the existing `packageDir`/`collectDts`/BFS walk (third-party types must be
 copied from `node_modules`): react/`@types/react(-dom)`, `csstype`, `valibot`,

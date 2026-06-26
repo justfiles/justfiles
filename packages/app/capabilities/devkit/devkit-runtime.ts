@@ -129,10 +129,11 @@ export async function writeSysroot(root: string, sdk?: SdkBuild): Promise<void> 
 // Our SDK headers are ROLLED UP from source with tsdown (the `.d.ts` twin of
 // `buildRuntime`'s esbuild pass): each `@justfiles/app` subpath in `sdkRuntimeSpecs`
 // becomes one self-contained `.d.ts` (plus a couple of shared chunks), built straight
-// from `.ts` SOURCE — no dependency on a prior `@justfiles/app` `tsc` build. React,
-// valibot and `@standard-schema/spec` stay EXTERNAL (vendored, resolved via node
-// resolution); `@justfiles/fs` stays external too and is baked from its rolled dist
-// below. `paths[spec]` points at the rolled entry.
+// from `.ts` SOURCE — no dependency on any prior workspace `tsc`/`tsdown` build. The
+// workspace `@justfiles/fs` types are INLINED (`noExternal` + `dts.eager`, which lets
+// rolldown follow fs's type-only barrel re-exports); react, valibot and
+// `@standard-schema/spec` stay external (vendored, resolved via node resolution).
+// `paths[spec]` points at the rolled entry.
 async function buildTypes(): Promise<{ files: TypesBundle; paths: TypePaths }> {
 	const appDir = packageDir(import.meta.dirname, '@justfiles/app')
 	const exportsMap = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8'))
@@ -156,14 +157,19 @@ async function buildTypes(): Promise<{ files: TypesBundle; paths: TypePaths }> {
 			outDir: out,
 			format: ['esm'],
 			platform: 'neutral',
-			dts: true,
+			// `eager` emits the full program declarations upfront so rolldown can follow
+			// `@justfiles/fs`'s type-only barrel re-exports when inlining it.
+			dts: { eager: true },
 			// Pin to @justfiles/app's own tsconfig: cwd-independent (a caller at the repo
 			// root would otherwise pick up the root tsconfig's project `references`).
 			tsconfig: join(appDir, 'tsconfig.json'),
 			// Force `.d.ts`/`.js` so the baked paths are deterministic — tsdown otherwise
 			// picks `.d.mts` based on the CWD package.json `type`, which varies by caller.
 			outExtensions: () => ({ js: '.js', dts: '.d.ts' }),
-			external: [...reactExternals, 'valibot', '@standard-schema/spec', '@justfiles/fs'],
+			// `@justfiles/fs` is force-INLINED (tsdown auto-externalizes deps; this overrides).
+			// react / valibot / @standard-schema stay external (vendored, node resolution).
+			external: [...reactExternals, 'valibot', '@standard-schema/spec'],
+			noExternal: ['@justfiles/fs'],
 			clean: true,
 			logLevel: 'silent',
 			config: false
@@ -176,10 +182,6 @@ async function buildTypes(): Promise<{ files: TypesBundle; paths: TypePaths }> {
 	}
 }
 
-// `@justfiles/fs` is baked from its own (tsdown-rolled) dist `.d.ts` + a `paths` entry —
-// it can't be inlined into our rollups (its type-only exports make rolldown reject the
-// value import in `kernel.ts`). One workspace entry, resolved like the rest.
-const TYPE_WORKSPACE = ['@justfiles/fs']
 // External type roots the draft surface needs. React's types live in `@types/*` only
 // — we deliberately DON'T bake the runtime `react`/`react-dom` packages: their
 // `exports` map would resolve `react/jsx-runtime` to a `.js` absent from the overlay
@@ -193,25 +195,6 @@ export async function bakeTypes(): Promise<{ files: TypesBundle; paths: TypePath
 	const app = await buildTypes()
 	const bundle: TypesBundle = { ...app.files }
 	const paths: TypePaths = { ...app.paths }
-	// `@justfiles/fs`: bake its built dist `.d.ts` + a `paths` entry per published subpath
-	// (the dev `exports` point at `.ts` source skipLibCheck can't skip).
-	for (const name of TYPE_WORKSPACE) {
-		const dir = packageDir(import.meta.dirname, name)
-		const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-		const dist = join(dir, 'dist')
-		const copied = await collectDts(dist, `node_modules/${name}/dist`, bundle)
-		if (copied === 0)
-			throw new Error(`devkit-runtime: missing ${name} declaration build at ${dist}`)
-		for (const [key, entry] of Object.entries(
-			pkg.publishConfig.exports as Record<string, unknown>
-		)) {
-			const types =
-				typeof entry === 'object' && entry ? (entry as { types?: string }).types : undefined
-			if (!types) continue
-			const spec = key === '.' ? name : `${name}${key.slice(1)}`
-			paths[spec] = [`node_modules/${name}/${types.replace(/^\.\//, '')}`]
-		}
-	}
 	// External packages + their transitive `dependencies` (BFS), each resolved by
 	// walking node_modules up from its dependent's own dir so pnpm's nesting is
 	// followed. Flat `node_modules/<pkg>` keys — pnpm hoists to one version, and node
