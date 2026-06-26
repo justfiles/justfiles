@@ -10,7 +10,7 @@
 			"outputLogs": "new-only"
 		},
 		"@justfiles/app-code#build": {
-			"dependsOn": ["@justfiles/app#build", "@justfiles/fs#build", "transit"],
+			"dependsOn": ["@justfiles/fs#build", "transit"],
 			"outputs": ["dist/**"],
 			"outputLogs": "new-only"
 		},

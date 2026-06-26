@@ -22,7 +22,8 @@ const NM = 'node_modules/'
 // in-memory `read` the loaders can replay — exactly the bytes an installed bundle exposes.
 function sysroot(
 	types: TypesBundle,
-	runtime: Record<string, string> = {}
+	runtime: Record<string, string> = {},
+	paths: Record<string, string[]> = {}
 ): (path: string) => Promise<Uint8Array> {
 	const files: Record<string, Uint8Array> = {}
 	const typeManifest: string[] = []
@@ -41,7 +42,8 @@ function sysroot(
 		schema: DEVKIT_SCHEMA,
 		hash: 'sha256-test',
 		files: typeManifest.sort(),
-		runtime: runtimeManifest.sort()
+		runtime: runtimeManifest.sort(),
+		paths
 	}
 	files['devkit/index.json'] = enc.encode(JSON.stringify(index))
 	return async (path) => {
@@ -53,14 +55,20 @@ function sysroot(
 
 test('loadTypes reassembles the exact overlay bakeTypes produced', async () => {
 	const baked = await bakeTypes()
-	const loaded = await loadTypes(sysroot(baked))
-	expect(loaded).toEqual(baked)
+	const loaded = await loadTypes(sysroot(baked.files, {}, baked.paths))
+	expect(loaded.files).toEqual(baked.files)
+	expect(loaded.paths).toEqual(baked.paths)
 })
 
-test('bakeTypes includes @justfiles/app declarations', async () => {
+test('bakeTypes maps @justfiles/app subpaths through the paths import-map', async () => {
 	const baked = await bakeTypes()
-	expect(baked['node_modules/@justfiles/app/dist/index.d.ts']).toBeDefined()
-	expect(baked['node_modules/@justfiles/app/dist/capabilities/volume/index.d.ts']).toBeDefined()
+	// SDK headers are tsdown rollups (no /dist/ tree), resolved via the paths import-map.
+	expect(baked.files['node_modules/@justfiles/app/index.d.ts']).toBeDefined()
+	expect(baked.files['node_modules/@justfiles/app/capabilities/volume.d.ts']).toBeDefined()
+	expect(baked.paths['@justfiles/app']).toEqual(['node_modules/@justfiles/app/index.d.ts'])
+	expect(baked.paths['@justfiles/app/capabilities/volume']).toEqual([
+		'node_modules/@justfiles/app/capabilities/volume.d.ts'
+	])
 })
 
 test('loadRuntime reassembles the exact runtime buildRuntime produced', async () => {
@@ -75,7 +83,9 @@ test('writeSysroot emits loadable types and runtime', async () => {
 		const sdk = await buildSdk()
 		await writeSysroot(join(root, 'devkit'), sdk)
 		const read = (path: string) => readFile(join(root, path))
-		expect(await loadTypes(read)).toEqual(sdk.types)
+		const loaded = await loadTypes(read)
+		expect(loaded.files).toEqual(sdk.types)
+		expect(loaded.paths).toEqual(sdk.paths)
 		expect(await loadRuntime(read)).toEqual(sdk.runtime)
 	} finally {
 		await rm(root, { recursive: true, force: true })
@@ -83,7 +93,8 @@ test('writeSysroot emits loadable types and runtime', async () => {
 })
 
 test('the loaded sysroot type-checks the starter with no node_modules in the overlay', async () => {
-	const loaded = await loadTypes(sysroot(await bakeTypes()))
+	const baked = await bakeTypes()
+	const loaded = await loadTypes(sysroot(baked.files, {}, baked.paths))
 	const APP = `import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'
 export const app = defineApp({
@@ -120,7 +131,8 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 	const tc = typescriptToolchain({
 		compile: async () => ({ outputs: [], diagnostics: [] }),
 		ts,
-		types: loaded
+		types: loaded.files,
+		paths: loaded.paths
 	})
 	const { diagnostics } = await tc.typecheck!(input)
 	expect(diagnostics.filter((d) => d.severity === 'error')).toEqual([])

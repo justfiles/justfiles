@@ -51,7 +51,8 @@ export function devkitCapability(
 				return typescriptToolchain({
 					compile: (input) => backendCompile(input, runtime),
 					ts,
-					types
+					types: types.files,
+					paths: types.paths
 				})
 			})()
 			toolchains.set(ctx.appId, tc)

@@ -53,22 +53,26 @@ const project = (files: Record<string, string>, entries: Record<string, string>)
 	tsconfig
 })
 
-const bundle = await bakeTypes()
+const baked = await bakeTypes()
 const errors = (input: ProjectInput) =>
 	typescriptToolchain({
 		compile: async () => ({ outputs: [], diagnostics: [] }),
 		ts,
-		types: bundle
+		types: baked.files,
+		paths: baked.paths
 	}).typecheck!(input).then((r) => r.diagnostics.filter((d) => d.severity === 'error'))
 
 test('bakes the SDK + React type surface (incl. transitive deps)', () => {
-	const keys = Object.keys(bundle)
-	expect(keys).toContain('node_modules/@justfiles/app/dist/index.d.ts')
-	expect(keys).toContain('node_modules/@justfiles/app/dist/react.d.ts')
+	const keys = Object.keys(baked.files)
+	// our SDK headers are tsdown rollups (no /dist/ tree), resolved via paths.
+	expect(keys).toContain('node_modules/@justfiles/app/index.d.ts')
+	expect(keys).toContain('node_modules/@justfiles/app/react.d.ts')
 	expect(keys.some((k) => k.startsWith('node_modules/valibot/'))).toBe(true)
 	// csstype is a transitive dep of @types/react — only present if the BFS walked deps.
 	expect(keys.some((k) => k.startsWith('node_modules/csstype/'))).toBe(true)
-	expect(bundle['node_modules/@types/react/index.d.ts']).toMatch(/button\??:/)
+	expect(baked.files['node_modules/@types/react/index.d.ts']).toMatch(/button\??:/)
+	// our SDK resolves through the paths import-map, not a synthesized package.json.
+	expect(baked.paths['@justfiles/app/react']).toEqual(['node_modules/@justfiles/app/react.d.ts'])
 })
 
 test('type-checks the starter project cleanly from the baked bundle', async () => {

@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { build } from 'esbuild'
+import { build as bundleDts } from 'tsdown'
 import { reactExternals, sdkRuntimeSpecs } from '../../runtime-specs.ts'
 import { DEVKIT_SCHEMA, type DevkitIndex } from './devkit-sysroot.ts'
-import type { TypesBundle } from './toolchain.ts'
+import type { TypePaths, TypesBundle } from './toolchain.ts'
 
 // The system libraries app-code bakes into self-contained runtime modules — the "stdlib
 // shipped with the OS." Each spec in `sdkRuntimeSpecs` is built once (here, with Node
@@ -68,11 +70,12 @@ export async function buildRuntime(): Promise<Record<string, string>> {
 export interface SdkBuild {
 	runtime: Record<string, string>
 	types: TypesBundle
+	paths: TypePaths
 }
 
 export async function buildSdk(): Promise<SdkBuild> {
-	const [runtime, types] = await Promise.all([buildRuntime(), bakeTypes()])
-	return { runtime, types }
+	const [runtime, baked] = await Promise.all([buildRuntime(), bakeTypes()])
+	return { runtime, types: baked.files, paths: baked.paths }
 }
 
 // Write the app-code devkit sysroot (`devkit/**`) from a built SDK map. Kept with the
@@ -107,37 +110,91 @@ export async function writeSysroot(root: string, sdk?: SdkBuild): Promise<void> 
 		schema: DEVKIT_SCHEMA,
 		hash: `sha256-${digest.digest('hex')}`,
 		files,
-		runtime
+		runtime,
+		paths: built.paths
 	}
 	await writeFile(join(root, 'index.json'), JSON.stringify(index, null, '\t'))
 }
 
 // ── Type-checker overlay (the `.d.ts` mirror of `buildRuntime`) ──────────────
 //
-// `typecheck` overlays a draft on an in-memory host that, in dev, falls through to
-// the real `node_modules` for the SDK/React `.d.ts`. A shipped host (quay's bun exe,
-// the browser container) has no `node_modules`, so `bakeTypes` collects those `.d.ts`
-// ONCE at build time into a `TypesBundle` keyed as a `node_modules/<pkg>/…` tree.
-// Overlaid beside the draft's `src/`, normal node/bundler resolution finds it — so
-// the same `typecheck` code runs hermetically, no fs, with `types` supplied.
+// `typecheck` overlays a draft on an in-memory host. A shipped host (quay's bun exe,
+// the browser container) has no `node_modules`, so `bakeTypes` collects the SDK + React
+// `.d.ts` ONCE at build time into a `TypesBundle` plus a `TypePaths` import-map. The
+// files are overlaid beside the draft's `src/`; tsc resolves our SDK specifiers through
+// `paths` (explicit lookup, mirroring the runtime `spec → js` map) and the vendored
+// externals through their own real `package.json` — so the same `typecheck` code runs
+// hermetically, no fs, with `types` + `paths` supplied.
 
-// Workspace packages expose types through their built `dist/*.d.ts` — their dev
-// `exports` point at `.ts` SOURCE, which `skipLibCheck` can't skip, so we bake dist
-// under a package.json whose `exports` (from publishConfig) resolve to those `.d.ts`.
-const TYPE_WORKSPACE = ['@justfiles/app', '@justfiles/fs']
+// Our SDK headers are ROLLED UP from source with tsdown (the `.d.ts` twin of
+// `buildRuntime`'s esbuild pass): each `@justfiles/app` subpath in `sdkRuntimeSpecs`
+// becomes one self-contained `.d.ts` (plus a couple of shared chunks), built straight
+// from `.ts` SOURCE — no dependency on a prior `@justfiles/app` `tsc` build. React,
+// valibot and `@standard-schema/spec` stay EXTERNAL (vendored, resolved via node
+// resolution); `@justfiles/fs` stays external too and is baked from its rolled dist
+// below. `paths[spec]` points at the rolled entry.
+async function buildTypes(): Promise<{ files: TypesBundle; paths: TypePaths }> {
+	const appDir = packageDir(import.meta.dirname, '@justfiles/app')
+	const exportsMap = JSON.parse(readFileSync(join(appDir, 'package.json'), 'utf8'))
+		.exports as Record<string, string>
+	const PREFIX = 'node_modules/@justfiles/app'
+	const entry: Record<string, string> = {}
+	const paths: TypePaths = {}
+	for (const { spec } of sdkRuntimeSpecs) {
+		if (spec !== '@justfiles/app' && !spec.startsWith('@justfiles/app/')) continue
+		const sub = spec === '@justfiles/app' ? '.' : `.${spec.slice('@justfiles/app'.length)}`
+		const src = exportsMap[sub]
+		if (typeof src !== 'string') throw new Error(`devkit-runtime: no source export for ${spec}`)
+		const name = sub === '.' ? 'index' : sub.slice(2)
+		entry[name] = join(appDir, src)
+		paths[spec] = [`${PREFIX}/${name}.d.ts`]
+	}
+	const out = await mkdtemp(join(tmpdir(), 'devkit-types-'))
+	try {
+		await bundleDts({
+			entry,
+			outDir: out,
+			format: ['esm'],
+			platform: 'neutral',
+			dts: true,
+			// Pin to @justfiles/app's own tsconfig: cwd-independent (a caller at the repo
+			// root would otherwise pick up the root tsconfig's project `references`).
+			tsconfig: join(appDir, 'tsconfig.json'),
+			// Force `.d.ts`/`.js` so the baked paths are deterministic — tsdown otherwise
+			// picks `.d.mts` based on the CWD package.json `type`, which varies by caller.
+			outExtensions: () => ({ js: '.js', dts: '.d.ts' }),
+			external: [...reactExternals, 'valibot', '@standard-schema/spec', '@justfiles/fs'],
+			clean: true,
+			logLevel: 'silent',
+			config: false
+		})
+		const files: TypesBundle = {}
+		await collectDts(out, PREFIX, files)
+		return { files, paths }
+	} finally {
+		await rm(out, { recursive: true, force: true })
+	}
+}
+
+// `@justfiles/fs` is baked from its own (tsdown-rolled) dist `.d.ts` + a `paths` entry —
+// it can't be inlined into our rollups (its type-only exports make rolldown reject the
+// value import in `kernel.ts`). One workspace entry, resolved like the rest.
+const TYPE_WORKSPACE = ['@justfiles/fs']
 // External type roots the draft surface needs. React's types live in `@types/*` only
 // — we deliberately DON'T bake the runtime `react`/`react-dom` packages: their
 // `exports` map would resolve `react/jsx-runtime` to a `.js` absent from the overlay
 // and shadow the `@types` fallback, leaving JSX without its intrinsic elements. Their
 // own transitive `dependencies` (csstype under @types/react, @standard-schema/spec
-// under valibot, …) are pulled in automatically below.
+// under valibot, …) are pulled in automatically below. Externals keep their REAL
+// `package.json` and resolve by node resolution (no `paths` entry).
 const TYPE_EXTERNAL = ['valibot', '@types/react', '@types/react-dom', 'type-fest']
 
-export async function bakeTypes(): Promise<TypesBundle> {
-	const bundle: TypesBundle = {}
-	// Workspace SDK packages: bake built dist `.d.ts` under a synthesized package.json
-	// whose `exports` (from publishConfig) resolve to them — the dev `exports` point at
-	// `.ts` source, which `skipLibCheck` can't skip.
+export async function bakeTypes(): Promise<{ files: TypesBundle; paths: TypePaths }> {
+	const app = await buildTypes()
+	const bundle: TypesBundle = { ...app.files }
+	const paths: TypePaths = { ...app.paths }
+	// `@justfiles/fs`: bake its built dist `.d.ts` + a `paths` entry per published subpath
+	// (the dev `exports` point at `.ts` source skipLibCheck can't skip).
 	for (const name of TYPE_WORKSPACE) {
 		const dir = packageDir(import.meta.dirname, name)
 		const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
@@ -145,11 +202,15 @@ export async function bakeTypes(): Promise<TypesBundle> {
 		const copied = await collectDts(dist, `node_modules/${name}/dist`, bundle)
 		if (copied === 0)
 			throw new Error(`devkit-runtime: missing ${name} declaration build at ${dist}`)
-		bundle[`node_modules/${name}/package.json`] = JSON.stringify({
-			name,
-			version: pkg.version,
-			exports: pkg.publishConfig.exports
-		})
+		for (const [key, entry] of Object.entries(
+			pkg.publishConfig.exports as Record<string, unknown>
+		)) {
+			const types =
+				typeof entry === 'object' && entry ? (entry as { types?: string }).types : undefined
+			if (!types) continue
+			const spec = key === '.' ? name : `${name}${key.slice(1)}`
+			paths[spec] = [`node_modules/${name}/${types.replace(/^\.\//, '')}`]
+		}
 	}
 	// External packages + their transitive `dependencies` (BFS), each resolved by
 	// walking node_modules up from its dependent's own dir so pnpm's nesting is
@@ -167,7 +228,7 @@ export async function bakeTypes(): Promise<TypesBundle> {
 		for (const dep of Object.keys(JSON.parse(manifest).dependencies ?? {}))
 			queue.push({ name: dep, from: dir })
 	}
-	return bundle
+	return { files: bundle, paths }
 }
 
 // A package's root dir. First an fs walk up `node_modules` from `fromDir` (resolving

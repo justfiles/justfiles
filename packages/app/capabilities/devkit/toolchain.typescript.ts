@@ -17,6 +17,7 @@ import type {
 	Diagnostic,
 	ProjectInput,
 	Range,
+	TypePaths,
 	TypesBundle
 } from './toolchain.ts'
 
@@ -29,14 +30,21 @@ export function typescriptToolchain(opts: {
 	compile: Compile // bundler-agnostic compile backend (runtime closed in)
 	ts: typeof import('typescript') // typecheck
 	types?: TypesBundle // .d.ts stdlib overlay (tsc); quay falls back to node_modules
+	paths?: TypePaths // tsc import-map for the SDK specifiers (from the sysroot)
 }) {
 	return {
 		compile: opts.compile,
-		typecheck: async (input: ProjectInput) => typecheck(input, opts.ts, opts.types ?? {})
+		typecheck: async (input: ProjectInput) =>
+			typecheck(input, opts.ts, opts.types ?? {}, opts.paths ?? {})
 	}
 }
 
-function typecheck(input: ProjectInput, ts: typeof TS, types: TypesBundle): CheckResult {
+function typecheck(
+	input: ProjectInput,
+	ts: typeof TS,
+	types: TypesBundle,
+	paths: TypePaths
+): CheckResult {
 	// Root the virtual draft inside this package's own dir, so node resolution
 	// reaches `@justfiles/app` (self-reference) + its deps (`valibot`, `react`,
 	// `@types/react`) regardless of the host's cwd. The container (Phase 4) passes
@@ -63,7 +71,14 @@ function typecheck(input: ProjectInput, ts: typeof TS, types: TypesBundle): Chec
 	const options: TS.CompilerOptions = {
 		...ts.convertCompilerOptionsFromJson(input.tsconfig.compilerOptions ?? {}, root).options,
 		noEmit: true,
-		skipLibCheck: true
+		skipLibCheck: true,
+		// The SDK import-map: tsc resolves `@justfiles/app/*` through these paths (vendored
+		// externals still resolve via their own package.json). The sysroot stores them
+		// overlay-root-relative; we absolutize against `root` so no `baseUrl` is needed
+		// (it's deprecated in TS 6 / removed in TS 7).
+		paths: Object.fromEntries(
+			Object.entries(paths).map(([spec, targets]) => [spec, targets.map((t) => `${root}/${t}`)])
+		)
 	}
 	const host = ts.createCompilerHost(options, true)
 	const baseRead = host.readFile.bind(host)

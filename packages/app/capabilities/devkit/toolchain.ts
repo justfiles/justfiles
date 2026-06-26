@@ -71,6 +71,13 @@ export type TypesBundle = Record<string, string>
 //   '@justfiles/app/index.d.ts', '@justfiles/app/browser.d.ts',
 //   'valibot/index.d.ts', 'react/index.d.ts', ...
 
+// The tsc import-map (`compilerOptions.paths`): an SDK specifier → its entry `.d.ts`
+// in the type overlay. The type analog of the runtime `spec → js` map, built from the
+// SAME source — so tsc resolves our SDK by explicit lookup instead of walking a faked
+// `node_modules`. Values are overlay-root-relative (the typecheck host sets `baseUrl`).
+export type TypePaths = Record<string, string[]>
+//   '@justfiles/app': ['node_modules/@justfiles/app/dist/index.d.ts'], ...
+
 // ── the project: a virtual file tree + named bundle entries + a standard
 //    tsconfig generated from the manifest. `files`/`entries` mirror esbuild
 //    (entryPoints can be a Record); `tsconfig` is the TS-ecosystem project
