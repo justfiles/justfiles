@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
-import { externals, reactExternals } from '@justfiles/app/sdk-externals'
+import { reactExternals } from '@justfiles/app/runtime-specs'
 import tailwindcss from '@tailwindcss/vite'
 import { buildSync } from 'esbuild'
 import type { PluginOption } from 'vite'
@@ -27,8 +27,8 @@ const RESOLVED_VIRTUAL_GUI_ID = `\0${VIRTUAL_GUI_ID}`
 //
 // Only bare specifiers + type-only imports here: the config loader
 // externalizes this plugin and resolves it with native Node, which can't
-// load relative TypeScript siblings (./dev-server goes via ssrLoadModule, the
-// React shim codegen via the bare @justfiles/app/react-entry specifier).
+// load relative TypeScript siblings (./dev-server goes via ssrLoadModule;
+// React shim codegen/runtime specs use bare @justfiles/app/* specifiers).
 // Compile the reducer (`app.js`). The SDK is BUNDLED in — a reducer Worker has no importmap,
 // so every module the reducer references is inlined into `app.js` (resolved natively from
 // node_modules at this in-repo build). Only React stays external: it never appears in a
@@ -208,7 +208,7 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 						rollupOptions: {
 							// Only React stays external so every GUI shares the host document's React
 							// singleton. SDK imports are bundled into gui.js, matching app.js.
-							external: externals
+							external: reactExternals
 						}
 					}
 				}

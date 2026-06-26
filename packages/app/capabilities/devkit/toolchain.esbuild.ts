@@ -7,7 +7,7 @@
 // same vfs rules.
 
 import type { BuildOptions, BuildResult, Loader, Message, Plugin } from 'esbuild'
-import { isSdkSpec, reactExternals } from '../../sdk-externals.ts'
+import { isSdkSpec, reactExternals } from '../../runtime-specs.ts'
 import type { CompileResult, Diagnostic, ProjectInput, Range } from './toolchain.ts'
 import {
 	compileVfs,

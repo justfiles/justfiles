@@ -4,12 +4,12 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { build } from 'esbuild'
-import { reactExternals, sdkExternals } from '../../sdk-externals.ts'
+import { reactExternals, sdkRuntimeSpecs } from '../../runtime-specs.ts'
 import { DEVKIT_SCHEMA, type DevkitIndex } from './devkit-sysroot.ts'
 import type { TypesBundle } from './toolchain.ts'
 
 // The system libraries app-code bakes into self-contained runtime modules — the "stdlib
-// shipped with the OS." Each spec in `sdkExternals` is built once (here, with Node
+// shipped with the OS." Each spec in `sdkRuntimeSpecs` is built once (here, with Node
 // esbuild), with React left external (`reactExternals`) so the one host React is shared.
 // Devkit feeds these modules to the bundler as source and inlines SDK imports into both
 // `app.js` and `gui.js`. React itself is vendored separately by each host.
@@ -37,7 +37,7 @@ function assertReducerReactFree(spec: string, source: string): void {
 export async function buildRuntime(): Promise<Record<string, string>> {
 	const require = createRequire(import.meta.url)
 	const runtime: Record<string, string> = {}
-	for (const { spec, reducer } of sdkExternals) {
+	for (const { spec, reducer } of sdkRuntimeSpecs) {
 		// Re-export the package from a synthetic entry rather than bundling its
 		// resolved file directly. A CommonJS package (e.g. valibot) used as the
 		// entry collapses to a lone `export default`, so a draft's

@@ -9,7 +9,7 @@
 		"./browser": "./browser.ts",
 		"./react": "./react.ts",
 		"./react-entry": "./react-entry.ts",
-		"./sdk-externals": "./sdk-externals.ts",
+		"./runtime-specs": "./runtime-specs.ts",
 		"./vite": "./vite.ts",
 		"./dev-server": "./dev-server.ts",
 		"./devkit-sysroot": "./capabilities/devkit/devkit-sysroot.ts",
@@ -60,9 +60,9 @@
 				"types": "./dist/react-entry.d.ts",
 				"default": "./dist/react-entry.js"
 			},
-			"./sdk-externals": {
-				"types": "./dist/sdk-externals.d.ts",
-				"default": "./dist/sdk-externals.js"
+			"./runtime-specs": {
+				"types": "./dist/runtime-specs.d.ts",
+				"default": "./dist/runtime-specs.js"
 			},
 			"./vite": {
 				"types": "./dist/vite.d.ts",
@@ -154,7 +154,7 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "tsc",
+		"build": "rm -rf dist && tsc",
 		"typecheck": "tsc --noEmit"
 	},
 	"peerDependencies": {

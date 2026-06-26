@@ -18,13 +18,7 @@
 
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
-// The host SDK builder: `buildRuntime` bundles each SDK/valibot spec into a self-contained
-// ESM module, emitted below as served `/vendor/<spec>.js` for the transitional SDK
-// importmap. Build-time only — it imports native esbuild and reads node_modules, which the
-// self-contained exe doesn't carry — so it never sits on the shipped exe's runtime path.
-// Devkit loads its SDK runtime from app-code's installed sysroot.
-import { buildRuntime } from '@justfiles/app/devkit-runtime'
+import { join } from 'node:path'
 // The bundler is runtime-selected (`#assets`): native esbuild under node, Bun.build
 // under bun — so `bun quayd/build-assets.ts` builds these with zero esbuild. The React
 // shim shape (a single core bundle + thin re-export shims) is identical either way.
@@ -65,25 +59,8 @@ async function main(): Promise<void> {
 	await rm(OUT_DIR, { recursive: true, force: true })
 	await mkdir(OUT_DIR, { recursive: true })
 	for (const [name, text] of files) await writeFile(join(OUT_DIR, name), text)
-	// The host SDK build, emitted as served `/vendor/<spec>.js` modules for the transitional
-	// SDK importmap. Vendor URLs mirror the specifier, so nested `@justfiles/…` paths need
-	// their dirs made. Devkit's runtime ships with app-code's installed sysroot.
-	const sdk = await emitSdkVendor(await buildRuntime())
 	const docs = await copyDocs()
-	console.log(
-		`quayd: built ${files.size} launcher assets + ${sdk} SDK vendor + ${docs} docs → ${OUT_DIR}`
-	)
-}
-
-// Each `buildRuntime` module written to `assets-dist/<spec>.js` (mirroring the specifier),
-// which assets.ts serves at `/vendor/<spec>.js` and lists in the importmap.
-async function emitSdkVendor(runtime: Record<string, string>): Promise<number> {
-	for (const [spec, text] of Object.entries(runtime)) {
-		const file = join(OUT_DIR, `${spec}.js`)
-		await mkdir(dirname(file), { recursive: true })
-		await writeFile(file, text)
-	}
-	return Object.keys(runtime).length
+	console.log(`quayd: built ${files.size} launcher assets + ${docs} docs → ${OUT_DIR}`)
 }
 
 // Ship docs/*.md beside the daemon (OUT_DIR/docs) so quayd reads them from disk at

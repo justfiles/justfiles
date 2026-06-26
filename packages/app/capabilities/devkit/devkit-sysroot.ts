@@ -1,8 +1,8 @@
 // The devkit sysroot — the fixed SDK a host injects into draft compiles. app-code ships
 // it at `devkit/**` (`packages/app-code/devkit-sysroot.ts`): `.d.ts` headers for
 // typecheck plus SDK runtime JS for bundle input, indexed by `index.json`. Hosts load it
-// from the calling app's installed bundle, so devkit needs no node_modules or host SDK
-// resolver.
+// from the calling app's installed bundle, so devkit needs no node_modules or host
+// package resolver.
 //
 // Deliberately tiny + dependency-free (only the `TypesBundle` TYPE from toolchain.ts,
 // erased at runtime): the app-code build PLUGIN imports `DEVKIT_SCHEMA`/`DevkitIndex`

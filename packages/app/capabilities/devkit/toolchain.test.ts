@@ -167,8 +167,8 @@ void wrong`
 	}, 30_000)
 
 	test('an unsupported npm import is a clear compile error', async () => {
-		// app-code links only the host SDK; an external npm package is unsupported and
-		// must fail with a clear message, not esbuild's opaque "Could not resolve".
+		// app-code bundles only its fixed SDK sysroot; an external npm package is unsupported
+		// and must fail with a clear message, not esbuild's opaque "Could not resolve".
 		const src = `import { defineApp } from '@justfiles/app'
 import _ from 'lodash'
 export const app = defineApp({ init: {}, update: () => (void _, {}) })`

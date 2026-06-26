@@ -80,7 +80,7 @@ export default defineConfig({
 })
 ```
 
-Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
+Build output contains `manifest.json`, `app.js`, `gui.js`, and copied public assets. SDK imports are bundled into `app.js`/`gui.js`; React stays external for the host singleton. Manifest fields include `id`, `name`, optional metadata, bundle entry paths, and optional `include` globs for extra installed files.
 
 ## Capabilities
 

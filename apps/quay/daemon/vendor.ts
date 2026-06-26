@@ -1,9 +1,7 @@
-// The browser-shared framework layer — the "stdlib shipped with the OS." Each
-// specifier below is bundled ONCE into a self-contained ESM module, served at
-// `/vendor/<spec>.js`, and resolved through the page import map. So every app's
-// `gui.js` links against a single shared instance (the dylib model) instead of
-// bundling its own copy — letting us upgrade React/etc. independently of the
-// (potentially third-party) apps, and keeping one cacheable copy across all of them.
+// The browser-shared React layer. Each specifier below is bundled ONCE into a
+// self-contained ESM module, served at `/vendor/<spec>.js`, and resolved through the
+// page import map. So every app's `gui.js` links against a single shared React instance
+// instead of bundling its own copy.
 //
 // Run `pnpm --filter @justfiles/quay vendor` to (re)generate `./vendor/*`. The
 // output is a build artifact (gitignored); the daemon serves it (and inlines it
@@ -18,30 +16,20 @@ import { dirname, join } from 'node:path'
 import type { BunPlugin } from 'bun'
 
 // ── The vendor allowlist ─────────────────────────────────────────────────────
-// Grow this freely. To add a framework, append its bare specifiers — one entry per
-// subpath an app may import without bundling (e.g. add `solid-js`, `solid-js/web`,
-// `solid-js/store`, or `svelte`, `svelte/internal`). Nothing else needs editing:
-// the build externalizes every OTHER spec in this list (exact match), so any
-// cross-reference (react-dom → react, solid-js/web → solid-js) collapses to the one
-// shared module via the import map rather than a second inlined copy.
+// One entry per React subpath an app may import without bundling. The build
+// externalizes every OTHER spec in this list (exact match), so cross-references
+// (react-dom → react) collapse to the one shared module via the import map rather
+// than a second inlined copy.
 //
 // Note on dev JSX: `react/jsx-dev-runtime` only has a real impl in React's
 // DEVELOPMENT build. Apps are compiled with the production automatic runtime
 // (`jsx`/`jsxs` from `react/jsx-runtime`), so it's intentionally omitted and MODE is
 // 'production'. If you later serve dev/devkit-compiled apps, add it here and flip MODE.
-export const vendorSpecs = [
-	'react',
-	'react-dom',
-	'react-dom/client',
-	'react/jsx-runtime',
-	'@justfiles/app',
-	'@justfiles/app/react',
-	'@justfiles/app/browser'
-] as const
+export const vendorSpecs = ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'] as const
 
-// The URL a specifier is served at — mirrors the specifier verbatim (a path with
-// `@`/`/` is a valid URL), so the import-map value and the on-disk file path share
-// one shape and `@justfiles/app/react` needs no name-mangling.
+// The URL a specifier is served at — mirrors the specifier verbatim, so the import-map
+// value and the on-disk file path share one shape (`react-dom/client` →
+// `/vendor/react-dom/client.js`).
 export const vendorUrl = (spec: string): string => `/vendor/${spec}.js`
 
 // The import map the shell HTML serves so the browser resolves each bare specifier to

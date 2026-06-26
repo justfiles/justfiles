@@ -11,7 +11,6 @@
 
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { sdkExternals, vendorUrl } from '@justfiles/app/sdk-externals'
 // Where build-assets.ts emits the vendor + chat bundles, and where the design styles
 // live — resolved for dev vs. a shipped Quay.app by the one resource seam.
 import { ASSETS_DIR, designPath } from './resources.ts'
@@ -22,10 +21,7 @@ const IMPORTMAP = JSON.stringify({
 		'react-dom': '/vendor/react-dom.js',
 		'react-dom/client': '/vendor/react-dom-client.js',
 		'react/jsx-runtime': '/vendor/jsx-runtime.js',
-		'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js',
-		// SDK entries are transitional for older host-linked bundles. React keeps its existing
-		// mangled vendor names above.
-		...Object.fromEntries(sdkExternals.map(({ spec }) => [spec, vendorUrl(spec)]))
+		'react/jsx-dev-runtime': '/vendor/jsx-dev-runtime.js'
 	}
 })
 
@@ -41,18 +37,12 @@ export function vendorAssets(): Promise<Map<string, Uint8Array>> {
 
 async function readAssets(): Promise<Map<string, Uint8Array>> {
 	const out = new Map<string, Uint8Array>()
-	// Recursive walk so nested SDK vendor modules (`/vendor/@justfiles/….js`) serve too;
-	// the URL key mirrors the path under assets-dist. React's flat names come along free.
-	const walk = async (dir: string, prefix: string): Promise<void> => {
-		for (const entry of await readdir(dir, { withFileTypes: true })) {
-			const rel = prefix ? `${prefix}/${entry.name}` : entry.name
-			const abs = join(dir, entry.name)
-			if (entry.isDirectory()) await walk(abs, rel)
-			else if (entry.name.endsWith('.js')) out.set(`/vendor/${rel}`, await readFile(abs))
-		}
-	}
 	try {
-		await walk(ASSETS_DIR, '')
+		for (const entry of await readdir(ASSETS_DIR, { withFileTypes: true })) {
+			if (entry.isFile() && entry.name.endsWith('.js')) {
+				out.set(`/vendor/${entry.name}`, await readFile(join(ASSETS_DIR, entry.name)))
+			}
+		}
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === 'ENOENT')
 			throw new Error(

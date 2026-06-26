@@ -7,7 +7,7 @@
 // per-bundler glue stays tens of lines each.
 
 import { isReactGuiEntry, reactGuiEntry } from '../../react-entry.ts'
-import { isSdkSpec, reactExternals } from '../../sdk-externals.ts'
+import { isSdkSpec, reactExternals } from '../../runtime-specs.ts'
 import type { CompileResult, Diagnostic, OutputFile, ProjectInput, Range } from './toolchain.ts'
 
 // Devkit bundles the SDK into every emitted entry from the pre-built `runtime` source

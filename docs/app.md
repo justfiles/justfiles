@@ -687,12 +687,12 @@ There are two ways to author an app, and the import rules differ:
 
 - **In-repo package** (`packages/app-foo/`): a full vite build via `kernelHost` (Section 2). Any package
   in the workspace resolves normally — including every `@justfiles/app/capabilities/<id>` subpath.
-- **In an app-code draft** (built through the `app.code` authoring app): the draft compiler (esbuild)
-  bundles **only your own sources** — there is no `node_modules`, and arbitrary npm packages are **not
-  supported**. The platform SDK (`@justfiles/app` + its capability subpaths, `valibot`) and React are
-  **provided by the host at runtime** (externalized, not bundled): an installed app links the host's
-  *current* SDK at launch, not a copy frozen at build. This is the environment most agents are editing
-  in, and it is **stricter about imports**. Need an arbitrary package? Author an in-repo package with
+- **In an app-code draft** (built through the `app.code` authoring app): the draft compiler bundles
+  your sources plus the fixed platform SDK runtime shipped in app-code's `devkit/**` sysroot. There is no
+  `node_modules`, and arbitrary npm packages are **not supported**. SDK imports (`@justfiles/app` + its
+  capability subpaths, `valibot`) are inlined into the installed `app.js`/`gui.js`; React stays external
+  so the GUI shares the host's React singleton. This is the environment most agents are editing in, and
+  it is **stricter about imports**. Need an arbitrary package? Author an in-repo package with
   `packages/create-app/` instead.
 
 ### Project layout (app-code draft)
@@ -755,30 +755,21 @@ Only these bare specifiers resolve (everything else fails the build):
 import { defineApp } from '@justfiles/app'
 import { injectStyle, defineGUI } from '@justfiles/app/browser'
 import type { GUIProps, GUIMenu } from '@justfiles/app/react'
+import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 import './helpers.ts' // ✅ relative imports within src/ work
 import './gui.css' // ✅ folded into gui.js by the devkit compiler (Section 9)
-// import { volume } from '@justfiles/app/capabilities/volume' // ❌ does NOT resolve in a draft
 ```
 
-The SDK (`@justfiles/app` + subpaths, `valibot`) and `react` / `react-dom` are **provided by the host**,
-not bundled — emit bare specifiers (`from '@justfiles/app'`, `from 'react'`); the host resolves them to
-its current shared instance at runtime. Any **other** bare import is an unsupported npm package and fails
-the build with a clear message — author an in-repo package with `packages/create-app/` if you need one.
+The SDK (`@justfiles/app` + subpaths, `valibot`) is bundled into the draft outputs from app-code's
+sysroot. `react` / `react-dom` stay bare and are resolved by the host importmap. Any **other** bare
+import is an unsupported npm package and fails the build with a clear message — author an in-repo package
+with `packages/create-app/` if you need one.
 
 ### Declaring capabilities in a draft
 
-Because the capability subpath does not resolve, **declare the factory inline**. The kernel reads only
-`{ id, scopes }`, so this is exactly equivalent to the imported factory:
-
-```ts
-const volume = (opts: { scopes: string[] }) => ({ id: 'volume' as const, scopes: opts.scopes })
-const ai = (opts: { scopes: string[] }) => ({ id: 'ai' as const, scopes: opts.scopes })
-// usage is unchanged: capabilities: { volume: volume({ scopes: [] }) }
-```
-
-The draft build does not type-check (esbuild strips types), so a loose inline factory still builds and
-runs; `t.cmd('volume', 'writeFile', …)` just isn't method-checked. For full typing, author in-repo.
+Use the real capability factories from `@justfiles/app/capabilities/*`; they resolve in app-code drafts
+and preserve method typing for `app.invoke` / `t.cmd`.
 
 ### Capability limits for user apps
 
