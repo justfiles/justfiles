@@ -1,15 +1,16 @@
-// The generic devkit host: how a host implements the `devkit` capability. It
-// injects two seams and nothing else —
+// The generic devkit host: how a host implements the `devkit` capability. A host
+// injects only the backend-specific pieces —
 //
-//   • a `Toolchain` (how to compile/typecheck — `../../toolchain.ts`), and
-//   • a `Runner`   (how to make a built draft live — mount/stop/menu).
+//   • `compile(input, runtime)`         (its bundler: esbuild native / wasm / Bun),
+//   • `typecheck?(input, types, paths)`  (its type checker: tsc — optional), and
+//   • a `Runner`                         (how to make a built draft live).
 //
-// — and `devkitCapability` wires them through `implementCapability` into the
-// full app-facing contract. Everything in between (read the project, build,
-// guard diagnostics, pack/zip, install into the kernel) is generic pipeline,
-// owned here once. This mirrors a real platform: a swappable toolchain (clang /
-// d8 / tsc) and a swappable loader/runtime (dyld / ART / a WebContentsView),
-// with a manifest-driven orchestrator that knows neither in between.
+// — and `devkitCapability` does the rest: for each calling app it loads THAT app's
+// installed devkit sysroot (`devkit/**`) through the kernel, binds the backends to
+// it, and wires the full contract (read the project, build, guard diagnostics,
+// pack/zip, install into the kernel). This mirrors a real platform: a swappable
+// toolchain (clang / d8 / tsc) and a swappable loader/runtime (dyld / ART / a
+// WebContentsView), with a manifest-driven orchestrator that knows neither between.
 
 import { chroot, type Volume } from '@justfiles/fs'
 import type { Kernel } from '../../kernel.ts'
@@ -18,8 +19,17 @@ import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import type { MenuView } from './contract.ts'
 import { buildDraft, type DraftBuild, installDraft, packDraft, readProject } from './devkit.ts'
+import { loadRuntime, loadTypes } from './devkit-sysroot.ts'
 import { devkit } from './index.ts'
-import type { Toolchain } from './toolchain.ts'
+import type {
+	CheckResult,
+	Compile,
+	CompileResult,
+	ProjectInput,
+	Toolchain,
+	TypePaths,
+	TypesBundle
+} from './toolchain.ts'
 
 // The compiled-draft shape a `Runner` receives at `mount` — re-exported here so a
 // host implements `devkit` (and types its Runner) from this one surface, with no
@@ -71,23 +81,49 @@ export const noopRunner: Runner = {
 	stop: async () => {}
 }
 
-// Implement the `devkit` capability from a toolchain + a runner. `toolchain` is
-// lazy (a session that never builds pays nothing) and caller-aware: it receives
-// the calling app's id (`ctx.appId`, e.g. Code = `app.code`) so the host can load
-// THAT app's own types sysroot — never a hardcoded `'app.code'`. `kernel` is the
-// SHIP kernel for install/pack (a Runner owns its own preview kernel). `overwrite`
-// lets quay ship-or-update; frieren/desktop create-only.
+// Implement the `devkit` capability from two backend functions + a runner. The
+// factory is caller-aware: every method threads the calling app's id (`ctx.appId`,
+// e.g. Code = `app.code`, never hardcoded) so the right app's sysroot loads. The
+// per-app toolchain is built lazily and cached — a session that never builds loads
+// no sysroot. `compile(input, runtime)` is required; `typecheck(input, types,
+// paths)` is optional (omit it → the factory degrades typecheck to
+// CAPABILITY_UNAVAILABLE and never loads the `.d.ts` overlay). `kernel` is the SHIP
+// kernel — used for BOTH the per-app sysroot reads and install/pack (a Runner owns
+// its own preview kernel). `overwrite` lets quay ship-or-update; frieren/desktop
+// create-only.
 export function devkitCapability(opts: {
 	fs: Volume
-	toolchain: (ctx: { appId: string }) => Promise<Toolchain>
+	compile: (input: ProjectInput, runtime: Record<string, string>) => Promise<CompileResult>
+	typecheck?: (input: ProjectInput, types: TypesBundle, paths: TypePaths) => Promise<CheckResult>
 	runner: Runner
 	kernel: () => Kernel
 	onInstalled?: () => void | Promise<void>
 	overwrite?: boolean
 }): Capability {
-	const { fs, toolchain, runner, kernel, onInstalled, overwrite } = opts
+	const { fs, compile, typecheck, runner, kernel, onInstalled, overwrite } = opts
 	// The caller's own data dir — where `projects/<slug>` lives.
 	const data = (ctx: { appId: string }) => chroot(fs, `/data/${ctx.appId}`)
+	// Per-app toolchain: load THAT caller's installed devkit sysroot through the
+	// kernel + `ctx.appId`, then bind the injected backends to it. Runtime always;
+	// the `.d.ts` overlay + import-map only when a `typecheck` backend is wired.
+	// Cached for the capability's life (the pipeline below calls it per method).
+	const toolchains = new Map<string, Promise<Toolchain>>()
+	const toolchain = (ctx: { appId: string }): Promise<Toolchain> => {
+		let tc = toolchains.get(ctx.appId)
+		if (!tc) {
+			tc = (async () => {
+				const installed = await kernel().app(ctx.appId)
+				const read = (path: string) => installed.read(path)
+				const runtime = await loadRuntime(read)
+				const compileStep: Compile = (input) => compile(input, runtime)
+				if (!typecheck) return { compile: compileStep }
+				const { files, paths } = await loadTypes(read)
+				return { compile: compileStep, typecheck: (input) => typecheck(input, files, paths) }
+			})()
+			toolchains.set(ctx.appId, tc)
+		}
+		return tc
+	}
 	return implementCapability(devkit, {
 		compile: async (ctx, { slug }) =>
 			(await toolchain(ctx)).compile((await readProject(data(ctx), slug)).input),

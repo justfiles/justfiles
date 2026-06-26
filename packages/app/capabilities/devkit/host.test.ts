@@ -1,13 +1,15 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
-import type { CompileResult, Toolchain } from '../../toolchain.ts'
+import type { Kernel } from '../../kernel.ts'
+import type { CompileResult } from '../../toolchain.ts'
+import { DEVKIT_SCHEMA } from './devkit-sysroot.ts'
 import { devkitCapability, noopRunner } from './host.ts'
 
-// Step 5: the toolchain factory is caller-aware. The shared `devkitCapability`
-// pipeline threads the calling app's id (`ctx.appId`) into the `toolchain`
-// factory on every method, so a host can load THAT caller's own types sysroot
-// rather than a hardcoded one. These tests pin the threading — the per-app header
-// READ is Step 6; here we only prove the right appId reaches the seam.
+// Step 5: the devkit factory is caller-aware. The shared `devkitCapability`
+// pipeline threads the calling app's id (`ctx.appId`) into every method, so it
+// loads THAT caller's own sysroot via `kernel().app(ctx.appId)` rather than a
+// hardcoded one. These tests pin the threading — we only prove the right appId
+// reaches the kernel resolution.
 
 const enc = new TextEncoder()
 const empty: CompileResult = { outputs: [], diagnostics: [] }
@@ -24,21 +26,32 @@ async function seed(fs: ReturnType<typeof volume>, appId: string, slug: string):
 	await fs.writeFile(`${root}/app.ts`, enc.encode('export const app = {}'))
 }
 
-// A devkit capability whose toolchain factory records every caller it sees.
+// A devkit capability whose fake kernel records every app id the factory resolves a
+// sysroot for. `read` serves a minimal (empty) devkit sysroot so loadRuntime/
+// loadTypes succeed; the compile/typecheck backends return empty results — we only
+// care which appId reaches `kernel().app()`.
 function harness() {
 	const fs = volume(memStorage())
 	const seen: string[] = []
-	const tc: Toolchain = { compile: async () => empty, typecheck: async () => ({ diagnostics: [] }) }
+	const index = enc.encode(
+		JSON.stringify({ schema: DEVKIT_SCHEMA, hash: 'x', files: {}, runtime: {}, paths: {} })
+	)
+	const read = async (path: string) => {
+		if (path === 'devkit/index.json') return index
+		throw new Error(`not found: ${path}`)
+	}
+	const kernel = (() => ({
+		app: async (appId: string) => {
+			seen.push(appId)
+			return { read }
+		}
+	})) as unknown as () => Kernel
 	const impl = devkitCapability({
 		fs,
-		toolchain: async (ctx) => {
-			seen.push(ctx.appId)
-			return tc
-		},
-		runner: noopRunner,
-		kernel: () => {
-			throw new Error('kernel not needed')
-		}
+		kernel,
+		compile: async () => empty,
+		typecheck: async () => ({ diagnostics: [] }),
+		runner: noopRunner
 	})
 	const call = (appId: string, method: string, args: readonly unknown[]) =>
 		impl.invoke({ appId, capability: 'devkit', method, args, scopes: [] })

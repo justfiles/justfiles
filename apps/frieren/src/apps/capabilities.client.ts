@@ -12,7 +12,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { flushActiveVolume } from '../fs.ts'
-import { frierenRunner, getToolchain } from './devkit.client.ts'
+import { frierenCompile, frierenRunner } from './devkit.client.ts'
 import * as host from './host'
 import { createClientKernel } from './kernel.client'
 
@@ -34,17 +34,17 @@ export function clientCapabilities(fs: Volume, getToken: GetToken): Capabilities
 
 // devkit runs locally (it compiles + mounts on this thread, never the server) and
 // is grant-gated: only allowlisted apps may reach the impl. The shared factory is
-// built eagerly — its runner closures are cheap and the esbuild-wasm toolchain
-// stays lazy inside `getToolchain` — so a session that never opens devkit still
-// pays nothing.
+// built eagerly — its runner closures are cheap and the esbuild-wasm backend stays
+// lazy inside `frierenCompile` — so a session that never opens devkit still pays
+// nothing.
 function devkitCapability(fs: Volume, getToken: GetToken): Capability {
 	const reject = (method: string): Promise<never> =>
 		Promise.reject(new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', method))
 	const impl = makeDevkit({
 		fs,
-		toolchain: (ctx) => getToolchain(fs, getToken, ctx),
-		runner: frierenRunner(fs, getToken),
 		kernel: () => createClientKernel({ fs, getToken }),
+		compile: frierenCompile,
+		runner: frierenRunner(fs, getToken),
 		onInstalled: () => host.notifyCatalog()
 	})
 	return {

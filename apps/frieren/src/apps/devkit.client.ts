@@ -1,45 +1,44 @@
 import { appBundleFromMemory } from '@justfiles/app'
 import type { MenuView } from '@justfiles/app/capabilities/devkit'
-import type { Runner, Toolchain } from '@justfiles/app/capabilities/devkit/host'
-import { loadRuntime } from '@justfiles/app/devkit-sysroot'
+import type { CompileResult, ProjectInput, Runner } from '@justfiles/app/capabilities/devkit/host'
 import { esbuildCompile } from '@justfiles/app/toolchain/esbuild'
 import { chroot, type Volume } from '@justfiles/fs'
 import * as host from './host'
 import { createClientKernel } from './kernel.client'
 
-// frieren's two devkit seams for the shared `devkitCapability` factory: the
-// browser `Toolchain` (esbuild-wasm + the system runtime virtual module) and the
-// `Runner` that owns the one thing that can't be shared — mounting the live
-// preview into the caller's own `[data-preview-slot]`, same document, same thread.
-// The caller only ever names the project (`slug`); the generic pipeline reads its
+// frieren's two devkit seams for the shared `devkitCapability` factory: the browser
+// `compile` backend (esbuild-wasm over the factory-loaded system runtime) and the
+// `Runner` that owns the one thing that can't be shared — mounting the live preview
+// into the caller's own `[data-preview-slot]`, same document, same thread. The
+// caller only ever names the project (`slug`); the generic pipeline reads its
 // `project.json` + source tree straight off the caller's data dir.
 
 type GetToken = () => Promise<string | null>
 
-// esbuild-wasm initialises once per page, pulled lazily so a session that never
-// runs a draft pays nothing. No `typecheck` on the returned `Toolchain` — the factory
-// degrades it to CAPABILITY_UNAVAILABLE (the 8 MB checker stays off the client;
-// the container backend owns it online). Keyed by the calling app's id so each caller
-// gets its own installed `devkit/runtime/**` sysroot.
-const toolchains = new Map<string, Promise<Toolchain>>()
-export function getToolchain(
-	fs: Volume,
-	getToken: GetToken,
-	ctx: { appId: string }
-): Promise<Toolchain> {
-	let toolchain = toolchains.get(ctx.appId)
-	if (!toolchain) {
-		toolchain = (async () => {
+// esbuild-wasm initialises ONCE per page (calling `initialize` twice throws),
+// pulled lazily so a session that never runs a draft pays nothing — and the 8 MB
+// checker never ships: frieren wires no `typecheck`, so the factory degrades it to
+// CAPABILITY_UNAVAILABLE (the container backend owns typecheck online).
+let esbuildReady: Promise<typeof import('esbuild-wasm')> | undefined
+function getEsbuild(): Promise<typeof import('esbuild-wasm')> {
+	if (!esbuildReady)
+		esbuildReady = (async () => {
 			const esbuild = await import('esbuild-wasm')
 			const { default: wasmURL } = await import('esbuild-wasm/esbuild.wasm?url')
 			await esbuild.initialize({ wasmURL })
-			const installed = await createClientKernel({ fs, getToken }).app(ctx.appId)
-			const runtime = await loadRuntime((path) => installed.read(path))
-			return { compile: (input) => esbuildCompile(input, esbuild.build, runtime) }
+			return esbuild
 		})()
-		toolchains.set(ctx.appId, toolchain)
-	}
-	return toolchain
+	return esbuildReady
+}
+
+// The browser `compile` backend: esbuild-wasm over the runtime the factory loaded
+// from the caller's installed sysroot.
+export async function frierenCompile(
+	input: ProjectInput,
+	runtime: Record<string, string>
+): Promise<CompileResult> {
+	const esbuild = await getEsbuild()
+	return esbuildCompile(input, esbuild.build, runtime)
 }
 
 // The frieren Runner. The factory hands `mount` a clean build (diagnostics already

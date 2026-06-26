@@ -1,26 +1,21 @@
 // Slice 11: the `devkit` capability in quayd — the one privileged surface app-code
 // (Code) uses to compile, install, and pack the apps you build everything else with.
-// quay supplies the two seams the shared `devkitCapability` factory needs: a
-// `Toolchain` (quay's runtime-selected compile backend + the TypeScript compiler
-// API for typecheck) and a `Runner` (live preview as a hidden `preview.<slug>` app
-// installed into the SAME kernel the booters serve from). Everything between — read
-// the project, build, pack, install — is the factory's generic pipeline.
-//
-// The compile backend is runtime-selected (`#engine`: native esbuild under node,
-// `Bun.build` under bun). Devkit bundles the SDK into both outputs from the calling app's
-// installed `devkit/runtime/**` sysroot. `install` fires `onInstalled` so quayd
-// materialises its `.app` (Slice 6's reconcile) and the launcher re-lists — no change to
-// app-code's reducer.
+// quay supplies the backends the shared `devkitCapability` factory needs: a
+// runtime-selected `compile` (`#engine`: native esbuild under node, `Bun.build`
+// under bun), a tsc-backed `typecheck`, and a `Runner` (live preview as a hidden
+// `preview.<slug>` app installed into the SAME kernel the booters serve from). The
+// factory does everything between — load the calling app's installed devkit sysroot,
+// read the project, build, pack, install. `install` fires `onInstalled` so quayd
+// materialises its `.app` (Slice 6's reconcile) and the launcher re-lists — no change
+// to app-code's reducer.
 
 import { appBundleFromMemory } from '@justfiles/app'
-import type { Toolchain } from '@justfiles/app/capabilities/devkit/host'
 import {
 	devkitCapability as makeDevkit,
 	type Runner
 } from '@justfiles/app/capabilities/devkit/host'
-import { loadRuntime, loadTypes } from '@justfiles/app/devkit-sysroot'
 import type { Kernel } from '@justfiles/app/runtime'
-import { typescriptToolchain } from '@justfiles/app/toolchain/typescript'
+import { tsTypecheck } from '@justfiles/app/toolchain/typescript'
 import type { Volume } from '@justfiles/fs'
 import * as ts from 'typescript'
 // The devkit compile backend, selected by the runtime: native esbuild under node,
@@ -35,35 +30,16 @@ export function devkitCapability(
 	getKernel: () => Kernel,
 	onInstalled: () => void | Promise<void>
 ) {
-	// The in-process toolchain, keyed by the calling app's id: the `#engine` compile
-	// backend (shared) for `compile`, the TypeScript compiler API for `typecheck`,
-	// with SDK runtime + `.d.ts` overlay read from THAT app's installed devkit sysroot.
-	// No node_modules/baked fallback — a host always has app-code installed, so the
-	// sysroot is always present. Cached for the daemon's life.
-	const toolchains = new Map<string, Promise<Toolchain>>()
-	const toolchain = (ctx: { appId: string }): Promise<Toolchain> => {
-		let tc = toolchains.get(ctx.appId)
-		if (!tc) {
-			tc = (async () => {
-				const installed = await getKernel().app(ctx.appId)
-				const read = (path: string) => installed.read(path)
-				const [runtime, types] = await Promise.all([loadRuntime(read), loadTypes(read)])
-				return typescriptToolchain({
-					compile: (input) => backendCompile(input, runtime),
-					ts,
-					types: types.files,
-					paths: types.paths
-				})
-			})()
-			toolchains.set(ctx.appId, tc)
-		}
-		return tc
-	}
 	return makeDevkit({
 		fs,
-		toolchain,
-		runner: quayRunner(fs, getKernel),
 		kernel: getKernel,
+		// `#engine` (native esbuild under node, Bun.build under bun) for `compile`; the
+		// TypeScript compiler API for `typecheck`. The factory loads each calling app's
+		// installed devkit sysroot (runtime + `.d.ts` overlay) and threads it in here —
+		// no node_modules/baked fallback, since a host always has app-code installed.
+		compile: backendCompile,
+		typecheck: async (input, types, paths) => tsTypecheck(input, ts, types, paths),
+		runner: quayRunner(fs, getKernel),
 		onInstalled,
 		// Quay treats install as ship-or-update: a re-install overwrites the live app
 		// in place rather than rejecting the colliding id, so iterating in Code keeps

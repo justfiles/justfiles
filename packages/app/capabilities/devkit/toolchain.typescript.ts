@@ -35,11 +35,15 @@ export function typescriptToolchain(opts: {
 	return {
 		compile: opts.compile,
 		typecheck: async (input: ProjectInput) =>
-			typecheck(input, opts.ts, opts.types ?? {}, opts.paths ?? {})
+			tsTypecheck(input, opts.ts, opts.types ?? {}, opts.paths ?? {})
 	}
 }
 
-function typecheck(
+// The typecheck backend hosts inject into `devkitCapability` (which loads `types`
+// + `paths` from the calling app's sysroot and threads them in). Building a
+// `ts.Program` over an in-memory `CompilerHost`; `ts` is the injected compiler so
+// no host bundles the 8 MB checker unless it opts in.
+export function tsTypecheck(
 	input: ProjectInput,
 	ts: typeof TS,
 	types: TypesBundle,
