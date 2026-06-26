@@ -9,6 +9,11 @@
 			"outputs": ["dist/**", "out/**", "native/build/**", "native/Quay.app/**"],
 			"outputLogs": "new-only"
 		},
+		"@justfiles/app-code#build": {
+			"dependsOn": ["@justfiles/app#build", "@justfiles/fs#build", "transit"],
+			"outputs": ["dist/**"],
+			"outputLogs": "new-only"
+		},
 		"@justfiles/desktop#build": {
 			"dependsOn": [
 				"@justfiles/app-code#build",
