@@ -1,17 +1,30 @@
-// Serve-time injector for the shell's import map. Registered via bunfig.toml's
-// `[serve.static].plugins`, this `onLoad` hook runs while Bun bundles `shell.html`
-// for the `/app/:id` route (so `./main.ts` and the design CSS are still bundled as
-// usual — we only rewrite the HTML string passing through). It fills the empty
-// `<script type="importmap">{}</script>` placeholder with `vendorImportMap()`, the
-// same source the vendor modules are generated from, so the map can never drift
-// from what `/vendor/*` actually serves.
+// Serve-time HTML bundler plugin. Registered via bunfig.toml's
+// `[serve.static].plugins`, it runs while Bun bundles `shell.html` and the
+// launcher. It fills the empty `<script type="importmap">{}</script>` placeholder
+// with `vendorImportMap()`, and aliases React imports to one physical copy so
+// workspace UI packages don't bundle their own React singleton.
 
+import { createRequire } from 'node:module'
 import type { BunPlugin } from 'bun'
 import { vendorImportMap } from './vendor'
+
+const require = createRequire(import.meta.url)
+const reactSingletons = new Map(
+	['react', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'react-dom', 'react-dom/client'].map(
+		(spec) => [spec, require.resolve(spec)]
+	)
+)
 
 const htmlImportmap: BunPlugin = {
 	name: 'quay-html-importmap',
 	setup(build) {
+		build.onResolve(
+			{ filter: /^react(?:\/jsx-runtime|\/jsx-dev-runtime)?$|^react-dom(?:\/client)?$/ },
+			(args) => ({
+				path: reactSingletons.get(args.path) ?? args.path
+			})
+		)
+
 		const rewriter = new HTMLRewriter().on('script[type="importmap"]', {
 			element(el) {
 				// `html: true` inserts the JSON verbatim; the map's values are URL paths
