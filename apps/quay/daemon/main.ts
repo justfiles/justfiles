@@ -5,6 +5,7 @@ import { agentRpcTarget } from './agent'
 import app from './app/shell.html'
 import { getKernel } from './kernel'
 import type { ServerMessage } from './protocol'
+import launcher from './launcher/index.html'
 
 // `type: 'text'` loads the raw HTML string (no Bun HTML bundling); inlined under `--compile`.
 
@@ -29,6 +30,7 @@ const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
 
 const server = Bun.serve({
 	routes: {
+		'/': launcher,
 		'/app/:id': app,
 		'/app/:id/gui.js': async (req) => {
 			const id = req.params.id

@@ -1,6 +1,5 @@
 {
-	// The daemon's one browser entry (`daemon/app/main.ts`, loaded by shell.html and
-	// bundled by Bun for the webview) runs in the DOM, not under Bun — so it gets DOM
+	// The daemon's browser entries run in the DOM, not under Bun — so they get DOM
 	// globals and NO node/bun ambient types, kept apart from the server tsconfig.json
 	// whose `Response`/etc. are Bun's. Mirrors frieren's tsconfig.app.json split.
 	"compilerOptions": {
@@ -11,10 +10,11 @@
 		"moduleDetection": "force",
 		"moduleResolution": "bundler",
 		"allowImportingTsExtensions": true,
+		"jsx": "react-jsx",
 		"verbatimModuleSyntax": true,
 		"noEmit": true,
 		"strict": true,
 		"skipLibCheck": true
 	},
-	"include": ["daemon/app/**/*.ts"]
+	"include": ["daemon/app/**/*.ts", "daemon/launcher/**/*.tsx"]
 }
