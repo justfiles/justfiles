@@ -1,8 +1,10 @@
+import { randomBytes } from 'node:crypto'
 import { resolve, sep } from 'node:path'
 import type { ServerWebSocket } from 'bun'
 import { BunWebSocketTransport, RpcSession } from 'capnweb'
 import { agentRpcTarget } from './agent'
 import app from './app/shell.html'
+import { clearRuntime, writeRuntime } from './fs'
 import { getKernel } from './kernel'
 import launcher from './launcher/index.html'
 import type { ServerMessage } from './protocol'
@@ -17,6 +19,28 @@ import type { ServerMessage } from './protocol'
 // NOTE: disk reads are correct for `bun [run] daemon/main.ts`. If the daemon ever moves to
 // `bun build --compile`, embed the bundles via a glob and serve them from Bun.embeddedFiles.
 const VENDOR_DIR = resolve(import.meta.dirname, 'vendor')
+const token = randomBytes(16).toString('hex')
+let runtimeWritten = false
+let runtimeCleared = false
+
+async function cleanupRuntime(): Promise<void> {
+	if (runtimeCleared || !runtimeWritten) return
+	runtimeCleared = true
+	try {
+		await clearRuntime()
+	} catch (error) {
+		console.error('quay daemon: failed to clear runtime file', error)
+	}
+}
+
+async function exit(): Promise<void> {
+	await cleanupRuntime()
+	process.exit(0)
+}
+
+process.on('SIGINT', () => void exit())
+process.on('SIGTERM', () => void exit())
+process.on('beforeExit', () => void cleanupRuntime())
 
 function imageContentType(path: string, bytes: Uint8Array): string {
 	const lower = path.toLowerCase()
@@ -159,6 +183,11 @@ const server = Bun.serve({
 		}
 	}
 })
+
+const port = server.port
+if (port === undefined) throw new Error('quay daemon: server has no TCP port')
+await writeRuntime({ port, token, pid: process.pid })
+runtimeWritten = true
 
 // One kernel subscription fans every app's state push out over Bun's native
 // pub/sub: an app window subscribes to its `app:<id>` topic on connect (above)

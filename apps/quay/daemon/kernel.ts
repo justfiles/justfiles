@@ -1,5 +1,9 @@
 import { reconcileBuiltins } from '@justfiles/app/builtins'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
+import {
+	accountsCapabilities,
+	type ProviderRegistry
+} from '@justfiles/app/capabilities/accounts/host'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
@@ -8,14 +12,10 @@ import { tsTypecheck } from '@justfiles/app/toolchain/typescript'
 import type { Volume } from '@justfiles/fs'
 import * as ts from 'typescript'
 import { builtinSource } from '../quayd/builtins'
-import { getVolume } from './fs'
-import { getSandbox } from './sandbox'
-import {
-	accountsCapabilities,
-	type ProviderRegistry
-} from '@justfiles/app/capabilities/accounts/host'
 import { chatgptProvider } from '../quayd/chatgpt'
 import { googleProvider } from '../quayd/google/provider'
+import { getVolume } from './fs'
+import { getSandbox } from './sandbox'
 
 let kernelOnce: Promise<Kernel> | undefined
 
