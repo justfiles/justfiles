@@ -124,7 +124,15 @@ function filterApps(apps: App[], query: string): App[] {
 }
 
 function AppIcon({ app }: { app: App }) {
-	if (app.icon?.startsWith('data:')) return <img alt="" className="app-icon" src={app.icon} />
+	if (app.icon) {
+		return (
+			<img
+				alt=""
+				className="app-icon"
+				src={app.icon.startsWith('data:') ? app.icon : iconUrl(app.id)}
+			/>
+		)
+	}
 	return <span className="app-icon app-glyph">{glyph(app)}</span>
 }
 
@@ -134,6 +142,10 @@ function glyph(app: App): string {
 
 function appUrl(id: string): string {
 	return `/app/${encodeURIComponent(id)}`
+}
+
+function iconUrl(id: string): string {
+	return `/app/${encodeURIComponent(id)}/icon`
 }
 
 const styles = `

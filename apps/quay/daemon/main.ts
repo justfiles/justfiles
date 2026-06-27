@@ -4,8 +4,8 @@ import { BunWebSocketTransport, RpcSession } from 'capnweb'
 import { agentRpcTarget } from './agent'
 import app from './app/shell.html'
 import { getKernel } from './kernel'
-import type { ServerMessage } from './protocol'
 import launcher from './launcher/index.html'
+import type { ServerMessage } from './protocol'
 
 // `type: 'text'` loads the raw HTML string (no Bun HTML bundling); inlined under `--compile`.
 
@@ -17,6 +17,16 @@ import launcher from './launcher/index.html'
 // NOTE: disk reads are correct for `bun [run] daemon/main.ts`. If the daemon ever moves to
 // `bun build --compile`, embed the bundles via a glob and serve them from Bun.embeddedFiles.
 const VENDOR_DIR = resolve(import.meta.dirname, 'vendor')
+
+function imageContentType(path: string, bytes: Uint8Array): string {
+	const lower = path.toLowerCase()
+	if (lower.endsWith('.svg') || new TextDecoder().decode(bytes.slice(0, 128)).includes('<svg')) {
+		return 'image/svg+xml'
+	}
+	if (lower.endsWith('.png') || (bytes[0] === 0x89 && bytes[1] === 0x50)) return 'image/png'
+	if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg'
+	return 'application/octet-stream'
+}
 
 type Context =
 	| { type: 'system' }
@@ -40,6 +50,22 @@ const server = Bun.serve({
 			return new Response(gui, {
 				headers: { 'content-type': 'text/javascript', 'cache-control': 'no-store' }
 			})
+		},
+		'/app/:id/icon': async (req) => {
+			try {
+				const k = await getKernel()
+				const app = await k.app(req.params.id)
+				if (!app.manifest.icon) return new Response('Not Found', { status: 404 })
+				const icon = await app.read(app.manifest.icon)
+				return new Response(icon, {
+					headers: {
+						'content-type': imageContentType(app.manifest.icon, icon),
+						'cache-control': 'no-store'
+					}
+				})
+			} catch {
+				return new Response('Not Found', { status: 404 })
+			}
 		},
 		'/app/:id/connect': (req) => {
 			if (server.upgrade(req, { data: { type: 'app', id: req.params.id } })) return undefined
