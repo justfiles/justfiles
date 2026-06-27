@@ -10,14 +10,30 @@ import * as ts from 'typescript'
 import { builtinSource } from '../quayd/builtins'
 import { getVolume } from './fs'
 import { getSandbox } from './sandbox'
+import {
+	accountsCapabilities,
+	type ProviderRegistry
+} from '@justfiles/app/capabilities/accounts/host'
+import { chatgptProvider } from '../quayd/chatgpt'
+import { googleProvider } from '../quayd/google/provider'
 
 let kernelOnce: Promise<Kernel> | undefined
 
 const systemAllowlist = ['app.frieren.files']
 
+const providers: ProviderRegistry = new Map([
+	[chatgptProvider.id, chatgptProvider],
+	[googleProvider.id, googleProvider]
+])
+
 export async function getKernel(): Promise<Kernel> {
 	kernelOnce ??= (async () => {
 		const fs = await getVolume()
+
+		const { ai, email, calendar, accounts } = accountsCapabilities(providers, fs, {
+			firstParty: ['app.frieren.settings']
+		})
+
 		const k = kernel({
 			fs,
 			sandbox: getSandbox,
@@ -31,7 +47,11 @@ export async function getKernel(): Promise<Kernel> {
 						typecheck: async (input, types, paths) => tsTypecheck(input, ts, types, paths),
 						runner: quayRunner(fs, k),
 						overwrite: true
-					})
+					}),
+				accounts,
+				email,
+				calendar,
+				ai
 			}),
 			clock: {}
 		})
