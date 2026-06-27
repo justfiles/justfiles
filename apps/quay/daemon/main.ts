@@ -36,7 +36,7 @@ const server = Bun.serve({
 			const app = await k.app(id)
 			const gui = await app.read('gui.js')
 			return new Response(gui, {
-				headers: { 'content-type': 'text/javascript' }
+				headers: { 'content-type': 'text/javascript', 'cache-control': 'no-store' }
 			})
 		},
 		'/app/:id/connect': (req) => {

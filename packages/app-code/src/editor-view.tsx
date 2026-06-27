@@ -1,5 +1,5 @@
 import type { Client } from '@justfiles/app'
-import type { Diagnostic, MenuView } from '@justfiles/app/capabilities/devkit'
+import type { DevkitPreview, Diagnostic, MenuView } from '@justfiles/app/capabilities/devkit'
 import type { ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 import { type CodeApp, type CodeState, statusOf } from './app'
 import { createEditor } from './editor'
@@ -39,6 +39,8 @@ export function createEditorView(
 	let split = 0.5
 	let fileTreeOpen = true
 	let menuView: MenuView = []
+	let previewSrc: string | null = null
+	let previewSeq = 0
 	let openMenu: number | null = null
 	// Type-check diagnostics, refreshed after each build and rendered inline in the
 	// editor (filtered to the open file). Empty where the host has no checker
@@ -206,7 +208,12 @@ export function createEditorView(
 		patch()
 		run.active = (async () => {
 			try {
-				await client.run({})
+				const result = await client.run({})
+				if (result.preview?.kind === 'url') {
+					const version = `${result.state.build?.hash ?? 'run'}-${++previewSeq}`
+					previewSrc = versionedPreviewSrc(result.preview, version)
+					patch()
+				}
 			} catch {
 			} finally {
 				run.running = false
@@ -309,6 +316,7 @@ export function createEditorView(
 			installing,
 			installLabel,
 			iconUrl,
+			previewSrc,
 			onStart: controller.start,
 			onBack: nav.onLeave,
 			onToggleCode: () =>
@@ -399,4 +407,15 @@ export function createEditorView(
 	}
 
 	return controller
+}
+
+function versionedPreviewSrc(preview: DevkitPreview, version?: string): string {
+	if (!version) return preview.src
+	try {
+		const url = new URL(preview.src, location.href)
+		url.searchParams.set('v', version)
+		return url.href
+	} catch {
+		return `${preview.src}${preview.src.includes('?') ? '&' : '?'}v=${encodeURIComponent(version)}`
+	}
 }

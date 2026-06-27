@@ -20,6 +20,10 @@ export type MenuItemView =
 	| { title: string; disabled?: boolean; checked?: boolean; shortcut?: string }
 export type MenuView = { title: string; items: MenuItemView[] }[]
 
+// Host-owned preview presentation. Quay returns a URL that app-code embeds in its
+// preview slot; Frieren mounts the preview itself and returns nothing.
+export type DevkitPreview = { kind: 'url'; src: string }
+
 export interface DevkitCapability {
 	// ── toolchain (server / backend) ───────────────────────────────────────────
 	// Bundle the named project, returning the structured `CompileResult`
@@ -38,7 +42,7 @@ export interface DevkitCapability {
 	run(input: {
 		slug: string
 		reset?: boolean
-	}): Promise<{ previewId: string; diagnostics: string[] }>
+	}): Promise<{ previewId: string; diagnostics: string[]; preview?: DevkitPreview }>
 	// Tear down a running preview.
 	stop(input: { previewId: string }): Promise<void>
 	// Read the running preview's declared menubar as display structure only — the

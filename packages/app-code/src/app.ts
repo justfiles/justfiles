@@ -1,5 +1,5 @@
 import { type AppHandle, defineApp } from '@justfiles/app'
-import { devkit } from '@justfiles/app/capabilities/devkit'
+import { type DevkitPreview, devkit } from '@justfiles/app/capabilities/devkit'
 import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 import {
@@ -29,6 +29,8 @@ export type CodeBuild = {
 	message: string
 	at: number
 }
+
+export type CodeRunResult = { state: CodeState; preview?: DevkitPreview }
 
 export type CodeState = {
 	// null → gallery (no project open); set → editor for that project. When set,
@@ -338,15 +340,15 @@ export const app = defineApp({
 		run: p.procedure({
 			description: 'Compile the current source and run it as the live App.',
 			schema: v.object({ reset: v.optional(v.boolean()) }),
-			async run({ reset }, app) {
+			async run({ reset }, app): Promise<CodeRunResult> {
 				const slug = reqSlug(app)
 				const hash = hashSource(await readSource(volumeApi(app), slug))
-				const { diagnostics } = await app.invoke('devkit', 'run', { slug, reset })
+				const { diagnostics, preview } = await app.invoke('devkit', 'run', { slug, reset })
 				const { seq } = await app.dispatch({
 					type: 'recordBuild',
 					params: { build: buildRecord(hash, diagnostics) }
 				})
-				return app.settled(seq)
+				return { state: await app.settled(seq), ...(preview ? { preview } : {}) }
 			}
 		}),
 		// Type-check the current source via the engine; returns diagnostics for the

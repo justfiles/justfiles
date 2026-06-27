@@ -28,7 +28,8 @@ import { compile as backendCompile } from '#engine'
 export function devkitCapability(
 	fs: Volume,
 	kernel: Kernel,
-	onInstalled: () => void | Promise<void>
+	onInstalled: () => void | Promise<void>,
+	previewUrl: (previewId: string) => string = (id) => `/app/${encodeURIComponent(id)}`
 ) {
 	return makeDevkit({
 		fs,
@@ -39,7 +40,7 @@ export function devkitCapability(
 		// no node_modules/baked fallback, since a host always has app-code installed.
 		compile: backendCompile,
 		typecheck: async (input, types, paths) => tsTypecheck(input, ts, types, paths),
-		runner: quayRunner(fs, kernel),
+		runner: quayRunner(fs, kernel, previewUrl),
 		onInstalled,
 		// Quay treats install as ship-or-update: a re-install overwrites the live app
 		// in place rather than rejecting the colliding id, so iterating in Code keeps
@@ -54,7 +55,7 @@ export function devkitCapability(
 // free, and the running reducer makes it interactive. `preview.*` is filtered from
 // the launcher catalog + OS projection (main.ts); `stop` uninstalls it. The factory
 // only mounts a clean build, so there's no diagnostics guard here.
-function quayRunner(fs: Volume, kernel: Kernel): Runner {
+function quayRunner(fs: Volume, kernel: Kernel, previewUrl: (previewId: string) => string): Runner {
 	return {
 		mount: async (draft, { previewId, reset }) => {
 			// ⟳ Run/Restart: wipe persisted draft state for a clean boot.
@@ -67,6 +68,7 @@ function quayRunner(fs: Volume, kernel: Kernel): Runner {
 					gui: draft.gui
 				})
 			)
+			return { kind: 'url', src: previewUrl(previewId) }
 		},
 		stop: async ({ previewId }) => {
 			await kernel.uninstall(previewId).catch(() => {})

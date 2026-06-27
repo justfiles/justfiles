@@ -29,10 +29,12 @@ let onInstalled: () => Promise<void> = async () => {}
 // (a notification can only reach a launcher over a socket). The closures handed to
 // the host and agent forward through this mutable binding.
 let channel: Channel = () => {}
+const token = randomBytes(16).toString('hex')
 const host = await createHost(
 	undefined,
 	() => onInstalled(),
-	(n) => channel(n)
+	(n) => channel(n),
+	(id) => `/app/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`
 )
 const agent = await createQuayAgent(host, undefined, (n) => channel(n))
 
@@ -58,8 +60,6 @@ const backend: Backend = {
 	// `app run`s into this same kernel, so an open window's berth re-renders live.
 	agent
 }
-
-const token = randomBytes(16).toString('hex')
 
 const exit = async () => {
 	await clearRuntime()

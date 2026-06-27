@@ -61,7 +61,8 @@ test('Code runs a project as a hidden, servable preview that stop tears down', a
 
 	// The project from the previous test is still open (its slug on the reducer), so
 	// `run` compiles it and installs it under `preview.*` in the SAME kernel.
-	await dispatch('run', {})
+	const run = (await dispatch('run', {})) as { preview?: { kind: string; src: string } }
+	expect(run.preview).toEqual({ kind: 'url', src: `/app/${encodeURIComponent(previewId)}` })
 	expect((await host.kernel.list()).some((app) => app.id === previewId)).toBe(true)
 	// It's a real, servable bundle — its gui.js reads, so app-code's iframe can mount
 	// it through the normal app shell.

@@ -63,7 +63,8 @@ export async function createHost(
 	// The host's notification channel — a sandboxed app's `notify` calls land here
 	// (source kernel-stamped). Bound deferred to `served.notify` in main.ts once the
 	// server is up; a no-op default keeps tests host-only.
-	channel: Channel = () => {}
+	channel: Channel = () => {},
+	previewUrl: (previewId: string) => string = (id) => `/app/${encodeURIComponent(id)}`
 ): Promise<Host> {
 	await mkdir(root, { recursive: true })
 	const fs = volume(await nativeStorage(root))
@@ -95,7 +96,7 @@ export async function createHost(
 		clock: {},
 		capabilities: capabilityRegistry({
 			volume: volumeCapability(fs, { systemAllowlist }),
-			devkit: (self) => devkitCapability(fs, self, onInstalled),
+			devkit: (self) => devkitCapability(fs, self, onInstalled, previewUrl),
 			ai,
 			email,
 			calendar,

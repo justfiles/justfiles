@@ -1,7 +1,7 @@
 import { defineCapability } from '../core.ts'
 import type { DevkitCapability } from './contract.ts'
 
-export type { DevkitCapability, MenuItemView, MenuView } from './contract.ts'
+export type { DevkitCapability, DevkitPreview, MenuItemView, MenuView } from './contract.ts'
 // The app-facing toolchain data types — what `compile`/`typecheck` return and
 // what app-code renders (the Problems panel). Re-exported here so a capability
 // consumer needs only the devkit surface, never a separate engine import.

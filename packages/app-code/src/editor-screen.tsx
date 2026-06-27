@@ -30,6 +30,7 @@ export type EditorScreenProps = {
 	installing: boolean
 	installLabel: string
 	iconUrl: string | null
+	previewSrc: string | null
 	onStart: () => void
 	onBack: () => void
 	onToggleCode: () => void
@@ -57,30 +58,6 @@ export function EditorScreen(props: EditorScreenProps) {
 		props.source.content !== null
 	const fallback = ready ? null : fallbackText(props.view, props.source)
 	const build = props.view.build
-
-	// quay live preview: the kernel runs in quayd, not this webview, so the draft
-	// can't mount in-process the way it does in frieren. quayd installs it as a
-	// hidden `preview.<slug>` app; we show it in an iframe over the slot, pointed at
-	// the app's normal shell — quayd's boot script opens the berth and mounts the
-	// gui, so it's fully interactive. A no-op in frieren (its devkit capability fills
-	// the slot itself). `v=<hash>` reloads the frame on each fresh compile.
-	const slug = props.view.slug
-	const buildHash = build?.result === 'ok' ? build.hash : null
-	useEffect(() => {
-		const quay = (globalThis as { __quay?: { token?: string } }).__quay
-		if (!quay || !slug || !buildHash) return
-		const slot = document.querySelector('[data-preview-slot]')
-		if (!slot) return
-		let frame = slot.querySelector<HTMLIFrameElement>('iframe.app-code-preview-frame')
-		if (!frame) {
-			frame = document.createElement('iframe')
-			frame.className = 'app-code-preview-frame'
-			slot.replaceChildren(frame)
-		}
-		const token = encodeURIComponent(quay.token ?? '')
-		const id = encodeURIComponent(`preview.${slug}`)
-		frame.src = `/app/${id}?token=${token}&v=${encodeURIComponent(buildHash)}`
-	}, [slug, buildHash])
 
 	return (
 		<>
@@ -196,7 +173,16 @@ export function EditorScreen(props: EditorScreenProps) {
 									<span className="ds-window-spacer" />
 								</div>
 								<div className="ds-window-body">
-									<div data-preview-slot="" className="app-code-preview-slot" />
+									<div data-preview-slot="" className="app-code-preview-slot">
+										{props.previewSrc ? (
+											<iframe
+												key={props.previewSrc}
+												className="app-code-preview-frame"
+												title="Live preview"
+												src={props.previewSrc}
+											/>
+										) : null}
+									</div>
 								</div>
 							</div>
 

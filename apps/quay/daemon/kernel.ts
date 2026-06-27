@@ -1,13 +1,15 @@
-import { type Kernel, kernel, appBundleFromMemory } from '@justfiles/app/runtime'
+import { reconcileBuiltins } from '@justfiles/app/builtins'
+import { capabilityRegistry } from '@justfiles/app/capabilities'
+import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
+import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
+import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
+import { bunCompile } from '@justfiles/app/toolchain/bun'
+import { tsTypecheck } from '@justfiles/app/toolchain/typescript'
+import type { Volume } from '@justfiles/fs'
+import * as ts from 'typescript'
+import { builtinSource } from '../quayd/builtins'
 import { getVolume } from './fs'
 import { getSandbox } from './sandbox'
-import { capabilityRegistry } from '@justfiles/app/capabilities'
-import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
-import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
-import { bunCompile } from '@justfiles/app/toolchain/bun'
-import type { Volume } from '@justfiles/fs'
-import { tsTypecheck } from '@justfiles/app/toolchain/typescript'
-import * as ts from 'typescript'
 
 let kernelOnce: Promise<Kernel> | undefined
 
@@ -16,7 +18,7 @@ const systemAllowlist = ['app.frieren.files']
 export async function getKernel(): Promise<Kernel> {
 	kernelOnce ??= (async () => {
 		const fs = await getVolume()
-		return kernel({
+		const k = kernel({
 			fs,
 			sandbox: getSandbox,
 			capabilities: capabilityRegistry({
@@ -33,6 +35,9 @@ export async function getKernel(): Promise<Kernel> {
 			}),
 			clock: {}
 		})
+		const builtins = await builtinSource()
+		await reconcileBuiltins(k, fs, builtins.catalog, builtins.read)
+		return k
 	})()
 	return kernelOnce
 }
@@ -50,6 +55,7 @@ function quayRunner(fs: Volume, kernel: Kernel): Runner {
 					gui: draft.gui
 				})
 			)
+			return { kind: 'url', src: `/app/${encodeURIComponent(previewId)}` }
 		},
 		stop: async ({ previewId }) => {
 			await kernel.uninstall(previewId).catch(() => {})
