@@ -4,8 +4,10 @@ packages:
 allowBuilds:
   '@clerk/shared': true
   '@google/genai': true
+  '@mongodb-js/zstd': false
   esbuild: true
   msw: true
+  node-liblzma: false
   protobufjs: true
   sharp: true
   workerd: true

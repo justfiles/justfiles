@@ -15,9 +15,15 @@ import type { IFileSystem } from 'just-bash'
  *
  * Two IFileSystem methods have no clean Volume counterpart and are the only real
  * gaps to decide at implementation time:
+ *
  *   - getAllPaths() is SYNCHRONOUS (it drives glob `*` expansion) but Volume.scan
- *     is async — so glob runs off a lazily-refreshed path snapshot, or returns []
- *     (no expansion) until one exists.
+ *     is async, so we can't read the tree on demand. RECOMMENDED: keep an
+ *     in-memory path snapshot — seed it once with scan('/'), keep it live with a
+ *     recursive Volume.watch, and return it synchronously here. A glob is at
+ *     worst one watch-tick stale, which is fine. Alternatives: (a) return []
+ *     — simplest, but `*` never expands; (b) re-scan the whole tree before each
+ *     exec — always correct but O(tree) per call, too slow on a large volume.
+ *
  *   - link() (hard links) — Volume has no hard links; throw ENOSYS.
  */
 export function volumeFs(vol: Volume): IFileSystem {
