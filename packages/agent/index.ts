@@ -20,6 +20,14 @@ export { createBashTool } from './bash/index.ts'
 export { type Command, CommandRegistry, type CommandResult } from './bash/registry.ts'
 export { BUILTIN_COMMANDS, type CommandMeta } from './commands.ts'
 export type { CompactionSettings } from './compaction.ts'
+// just-bash-backed shell (replaces createBashTool). On migration the root
+// `createAppCommand` export above switches to ./justbash/app.ts.
+export {
+	createJustBashTool,
+	type JustBashToolOptions,
+	type ShellCommand
+} from './justbash/index.ts'
+export { volumeFs } from './justbash/volume-fs.ts'
 export { createAgent } from './llm.agent.ts'
 export { type LLMText, text } from './llm.text.ts'
 export { type AgentBackend, apiKeyBackend, type LLMConfig } from './llm.ts'

@@ -27,3 +27,4 @@ src/gui.tsx:2:26 Cannot find module './app' or its corresponding type declaratio
 - [X] movable spliter
 - [ ] auto-refresh?
 - [ ] do not save file list in state
+** TODO /reboot
