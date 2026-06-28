@@ -1,6 +1,6 @@
 // The shared devkit sysroot loaders reassemble app-code's shipped `devkit/**` into
-// compiler inputs from a bare `read` — quay/frieren/desktop read the installed app's
-// bytes, here an in-memory map. These pin the round-trip (emit → load yields the SAME
+// compiler inputs from a bare `read` — quay/frieren read the installed app's bytes,
+// here an in-memory map. These pin the round-trip (emit → load yields the SAME
 // types/runtime produced at build time, so compile/typecheck need NO node_modules) and
 // the no-fallback error contract.
 

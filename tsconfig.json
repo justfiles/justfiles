@@ -2,7 +2,6 @@
 	"files": [],
 	"references": [
 		{ "path": "./apps/cli/tsconfig.json" },
-		{ "path": "./apps/desktop/tsconfig.json" },
 		{ "path": "./apps/frieren/tsconfig.json" },
 		{ "path": "./apps/quay/tsconfig.json" },
 		{ "path": "./apps/quay/tsconfig.browser.json" },

@@ -38,7 +38,7 @@ const NODE_MODULES = 'node_modules/'
 // Load an app's type sysroot (shipped at `devkit/**`): the `.d.ts` overlay (keyed
 // `node_modules/<pkg>/…`) plus the `paths` import-map tsc resolves our SDK through.
 // `index.files` maps each logical path to a `devkit/store/<id>` blob the loader reads
-// back. `read` is host-supplied — quay/desktop/frieren read the installed app's bytes
+// back. `read` is host-supplied — quay/frieren read the installed app's bytes
 // (`kernel.app(appId).read`), tests an in-memory map — so the loader never touches a
 // real fs or `node_modules`. Eager + fully in-memory (the tree is small); callers cache
 // it by `{ appId, hash }`. A missing/invalid `index.json` is a clear error, never a

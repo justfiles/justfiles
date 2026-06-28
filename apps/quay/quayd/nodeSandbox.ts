@@ -1,6 +1,6 @@
 // `GetSandbox` over `node:worker_threads`, with idle eviction (Slice 8). The
 // host↔isolate protocol lives in `@justfiles/app/sandbox` (shared with frieren's
-// Web-Worker sandbox and the desktop sibling); this is the Node transport plus the
+// Web-Worker sandbox); this is the Node transport plus the
 // lifecycle policy:
 //
 //   • Lazy + content-addressed — one worker per distinct app bundle (keyed by code

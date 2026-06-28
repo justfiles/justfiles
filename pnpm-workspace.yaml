@@ -4,15 +4,8 @@ packages:
 allowBuilds:
   '@clerk/shared': true
   '@google/genai': true
-  electron: true
-  electron-winstaller: false
   esbuild: true
   msw: true
   protobufjs: true
   sharp: true
   workerd: true
-overrides:
-  # extract-zip@2.0.1 (electron's install.js) ships yauzl@2, whose classic-stream
-  # backpressure stalls on Node >=24.16 (nodejs/node#63487), silently truncating
-  # the Electron binary extraction. yauzl@3.3.1 fixes it.
-  'extract-zip>yauzl': '3.3.1'

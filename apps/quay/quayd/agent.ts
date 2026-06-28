@@ -587,8 +587,8 @@ async function llmConfig(fs: Volume): Promise<AgentBackend> {
 	return (await resolveAgentBackend(fs)) ?? apiKeyBackend(localLlmStudio())
 }
 
-// Mirrors the desktop sibling: a local LM Studio backend by default (no secret, no
-// network at construction — only a real prompt reaches it). App control runs
+// Local LM Studio backend by default (no secret, no network at construction — only
+// a real prompt reaches it). App control runs
 // without any backend at all (direct commands).
 function localLlmStudio(): LLMConfig {
 	return {

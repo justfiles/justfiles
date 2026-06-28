@@ -39,7 +39,7 @@ import { type NodeSandbox, nodeSandbox } from './nodeSandbox.ts'
 
 // Apps allowed to bind the `system` scope (the user's whole Volume) rather than a
 // per-app `/data/<id>` chroot. Files is the file browser, so it's the one
-// built-in that needs it — mirroring frieren and the desktop sibling.
+// built-in that needs it — mirroring frieren.
 const systemAllowlist = ['app.frieren.files']
 
 // Apps allowed to reach the `accounts` admin facet (connect/toggle providers).

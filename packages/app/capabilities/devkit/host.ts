@@ -91,8 +91,7 @@ export const noopRunner: Runner = {
 // kernel this capability is registered in — the SYSTEM injects it (kernel.ts calls
 // the host's capability factory with itself), so it's always the right instance,
 // used for BOTH the per-app sysroot reads and install/pack (a Runner owns its own
-// preview kernel). `overwrite` lets quay ship-or-update; frieren/desktop
-// create-only.
+// preview kernel). `overwrite` lets quay ship-or-update; frieren is create-only.
 export function devkitCapability(opts: {
 	fs: Volume
 	compile: (input: ProjectInput, runtime: Record<string, string>) => Promise<CompileResult>

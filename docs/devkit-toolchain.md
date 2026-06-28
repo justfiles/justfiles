@@ -33,7 +33,7 @@ In code this is two injected seams and one generic factory
 
 - **`Toolchain`** — the file-transform seam: `{ compile, typecheck? }`
   (`packages/app/toolchain.ts`). `typecheck` is optional; a host without a checker
-  (browser esbuild-wasm, desktop) omits it and the factory degrades `typecheck` to
+  (browser esbuild-wasm) omits it and the factory degrades `typecheck` to
   `CAPABILITY_UNAVAILABLE`. Impls: `toolchain.esbuild.ts`, `toolchain.typescript.ts`,
   `toolchain.bun.ts`.
 - **`Runner`** — the running-browser remainder: `{ mount, stop, menu?, selectMenu? }`.

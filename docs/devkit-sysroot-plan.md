@@ -141,7 +141,7 @@ copied from `node_modules`): react/`@types/react(-dom)`, `csstype`, `valibot`,
   and the flat `read('devkit/store/<id>')`-by-key model fits the host seam.
 - Blast radius: `writeSysroot` (`devkit-runtime.ts`), the loaders + `DevkitIndex`
   (`devkit-sysroot.ts`), and the sysroot test's in-memory `read`. Consumers
-  (`quayd`/`desktop`/`frieren`) are untouched — they only call `loadTypes`/`loadRuntime`.
+  (`quayd`/`frieren`) are untouched — they only call `loadTypes`/`loadRuntime`.
 - Verified: deterministic hash across rebuilds; the parallel `types/` + `runtime/` trees
   collapse to one flat `store/` (262 blobs from 267 logical files — 5 deduped); full build 18/18,
   full suite 708/708.

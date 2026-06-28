@@ -4,7 +4,7 @@ import type { Message, RawAppHandle } from './index.ts'
 import { sandboxClient, sandboxWorkerSource } from './sandbox.ts'
 
 // Boots a real `node:worker_thread` from `sandboxWorkerSource(..., 'node')` and
-// drives it through `sandboxClient` — the exact desktop path — so the shared
+// drives it through `sandboxClient` — the exact Node-host path — so the shared
 // host↔isolate protocol (request/reply + the procedure host-call bridge) is
 // exercised end-to-end, not just typechecked.
 

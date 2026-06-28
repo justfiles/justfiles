@@ -8,7 +8,7 @@ rendering in a **system-WebKit `WKWebView`** — with **no bundled browser engin
 **one shared Node backend** that owns the kernel, the Volume, the capabilities, and the agent.
 
 - Research + design only — no code in this document.
-- macOS only (cross-platform deferred; see `apps/desktop/DESIGN.md` §Windows research for the wry/Tauri path).
+- macOS only (cross-platform deferred).
 - Reuses `@justfiles/app`, `@justfiles/agent`, `@justfiles/fs`, every `@justfiles/app-*` bundle, and `capnweb` — unchanged.
 - The native shell is a tiny Swift "booter"; the backend is Node. **No Electron, no full Xcode** (Command Line Tools only).
 
@@ -31,10 +31,9 @@ rendering in a **system-WebKit `WKWebView`** — with **no bundled browser engin
 
 ## 1 · The reframe
 
-frieren is two kernels over a synced volume (browser tab + Durable Object). `apps/desktop` collapses
-that into **one Electron process** with main↔renderer IPC. `quay` keeps the single-host idea but moves
-the boundary again: the host is a **standalone Node daemon**, and each app GUI is a **separate native
-process** hosting a `WKWebView`. That separation is the whole point — it buys each mini-app a **real OS
+frieren is two kernels over a synced volume (browser tab + Durable Object). `quay` keeps the
+single-host idea but moves the boundary again: the host is a **standalone Node daemon**, and each app GUI
+is a **separate native process** hosting a `WKWebView`. That separation is the whole point — it buys each mini-app a **real OS
 identity** (Dock icon, Spotlight entry, Cmd-Tab) that Electron cannot give per-window, while the daemon
 keeps everything singular and trusted.
 
@@ -60,7 +59,7 @@ Three forces shape the design:
 
 `quay` is, in the DESIGN.md §2 sense, just **another host**: it supplies the three seams — a **Volume**
 (native FS), a **`GetSandbox`** (`worker_threads`), and a **`Capabilities`** registry — exactly like
-frieren-server and `apps/desktop` do. The platform layer is already extracted into shared packages
+frieren-server does. The platform layer is already extracted into shared packages
 (`@justfiles/app`, `@justfiles/agent`, `capnweb`), so `quay` is mostly assembly.
 
 <a id="process"></a>
@@ -147,9 +146,8 @@ guarantees only one `quayd`. The daemon idle-exits when nothing is connected.
 
 ## 4 · The native shells: booter + launcher
 
-Both are the **same ~100-line Swift program** in two modes. Validated by the POC in
-`apps/desktop/native-poc` (an 84 KB `.app`, recognised as a real Application, spawning the system
-`com.apple.WebKit.WebContent` process — zero bundled engine).
+Both are the **same ~100-line Swift program** in two modes, validated by an earlier 84 KB `.app` POC
+(recognised as a real Application, spawning the system `com.apple.WebKit.WebContent` process — zero bundled engine).
 
 **The booter** (per mini-app). Reads its own app id from a custom `Info.plist` key (`QuayAppId`),
 finds-or-spawns `quayd`, opens a window, and loads
@@ -386,5 +384,4 @@ the worker may evict, but `/state/<id>.json` persists; reopening rehydrates.
 ------------------------------------------------------------------------
 
 Cross-references: `packages/fs/{volume,storage.fs}.ts` · `packages/app/{kernel,react,vite}.ts` +
-`capnweb` · `packages/agent/*` · `packages/app-code/src/app.ts` · `apps/desktop/DESIGN.md` (the Electron
-sibling; this shares its host contract and Phase-A reuse) · `apps/desktop/native-poc` (the WKWebView `.app` POC).
+`capnweb` · `packages/agent/*` · `packages/app-code/src/app.ts`.

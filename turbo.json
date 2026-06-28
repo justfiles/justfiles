@@ -9,19 +9,6 @@
 			"outputs": ["dist/**", "out/**", "native/build/**", "native/Quay.app/**"],
 			"outputLogs": "new-only"
 		},
-		"@justfiles/desktop#build": {
-			"dependsOn": [
-				"@justfiles/app-code#build",
-				"@justfiles/app-counter#build",
-				"@justfiles/app-files#build",
-				"@justfiles/app-notes#build",
-				"@justfiles/app-paint#build",
-				"@justfiles/app-settings#build",
-				"transit"
-			],
-			"outputs": ["out/**"],
-			"outputLogs": "new-only"
-		},
 		"@justfiles/quay#build": {
 			"dependsOn": ["^build"],
 			"inputs": [

@@ -96,8 +96,8 @@ export type Compile = (input: ProjectInput) => Promise<CompileResult>
 
 // The build/compile seam every host injects — the swappable source→artifact end of
 // the devkit pipeline. `typecheck` is OPTIONAL: a host with no type checker
-// (browser esbuild-wasm, desktop) omits it and the devkit factory degrades
-// `typecheck` to CAPABILITY_UNAVAILABLE; a Node host (quay) supplies it. lint/test
+// (browser esbuild-wasm) omits it and the devkit factory degrades `typecheck` to
+// CAPABILITY_UNAVAILABLE; a Node host (quay) supplies it. lint/test
 // slot in later with no change. This type is not exported from the package as its
 // own entry point — it reaches hosts via `@justfiles/app/capabilities/devkit/host`.
 export interface Toolchain {

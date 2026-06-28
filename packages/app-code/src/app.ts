@@ -353,7 +353,7 @@ export const app = defineApp({
 		}),
 		// Type-check the current source via the engine; returns diagnostics for the
 		// Problems panel (and the agent). Surfaces CAPABILITY_UNAVAILABLE where the
-		// host has no checker (browser/desktop) — the GUI treats that as "no panel".
+		// host has no checker (browser) — the GUI treats that as "no panel".
 		typecheck: p.procedure({
 			description: 'Type-check the current app source and return diagnostics.',
 			schema: v.object({}),

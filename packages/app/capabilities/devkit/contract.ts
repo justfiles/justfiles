@@ -31,7 +31,7 @@ export interface DevkitCapability {
 	// only names the project.
 	compile(input: { slug: string }): Promise<CompileResult>
 	// Type-check the named project, returning diagnostics only. Degrades to
-	// CAPABILITY_UNAVAILABLE on hosts without a type checker (browser/desktop).
+	// CAPABILITY_UNAVAILABLE on hosts without a type checker (browser).
 	typecheck(input: { slug: string }): Promise<CheckResult>
 
 	// ── preview (client, browser only) ──────────────────────────────────────

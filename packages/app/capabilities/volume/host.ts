@@ -15,7 +15,7 @@ import { volume } from './index.ts'
 //   'app' / any → per-app chroot at /data/<id>
 //
 // The frieren-specific value — which apps may bind the `system` scope — is a host
-// parameter (`systemAllowlist`), so each host (frieren, desktop) passes its own.
+// parameter (`systemAllowlist`), so each host passes its own.
 
 export function resolveVolume(
 	fs: Volume,

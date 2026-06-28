@@ -13,7 +13,7 @@ rendering in a `WKWebView`, all docking at one shared Node daemon (`quayd`). See
 Nothing here is built from scratch; `quay` is a new **host** over existing packages:
 `@justfiles/app` (kernel, `reactGui`, `volumeCapability`, `reconcileBuiltins`, devkit; depends on
 `capnweb`), `@justfiles/agent`, `@justfiles/fs` (`volume`, `nativeStorage`), and every `@justfiles/app-*`
-bundle. The WKWebView `.app` shape is already proven in `apps/desktop/native-poc`.
+bundle. The WKWebView `.app` shape has already been proven by a small native POC.
 
 ## Where apps live (the one architectural decision)
 
@@ -229,7 +229,7 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
 | **Multi-window** per app        | `open -n` / in-shell windows, all live-syncing one kernel state.                                                                                                                     |
 | **Native-touching caps**        | notifications, clipboard, reveal-in-Finder via a small native helper.                                                                                                                |
 | **Signing / notarisation**      | needs `notarytool` (full Xcode); only for public distribution.                                                                                                                       |
-| **Cross-platform**              | Windows via wry/Tauri + WebView2 — see `apps/desktop/DESIGN.md` research.                                                                                                            |
+| **Cross-platform**              | Windows via wry/Tauri + WebView2 — deferred.                                                                                                                                         |
 
 ## Decisions (resolved)
 

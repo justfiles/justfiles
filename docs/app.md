@@ -731,8 +731,8 @@ start, end }, severity: 'error' | 'warning' | 'info', source: 'ts' | 'esbuild' |
 (`range` line/character are 0-based). "Clean" = no diagnostic with `severity: 'error'`. (`run`'s
 `diagnostics` are plain message strings for the build banner.)
 
-> `typecheck` may return `CAPABILITY_UNAVAILABLE` on a host with no type checker (desktop, offline
-> browser). When it does, skip it and rely on `compile` + `run` — those always run.
+> `typecheck` may return `CAPABILITY_UNAVAILABLE` on a host with no type checker (offline browser).
+> When it does, skip it and rely on `compile` + `run` — those always run.
 
 ### Verify before you call a change done
 

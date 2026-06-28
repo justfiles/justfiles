@@ -1,5 +1,5 @@
 // `@justfiles/agent` authors its system prompts as markdown and imports them as
-// strings via the bundler's `?raw` suffix (vite / electron-vite). quayd runs that
+// strings via the bundler's `?raw` suffix (vite). quayd runs that
 // source un-bundled under `node --import tsx`, which has no notion of `?raw`, so
 // these synchronous module hooks supply it: resolve the base file, then load it as
 // a default-exported string. Registered ahead of tsx (plain `.mjs` so it needs no

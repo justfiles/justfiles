@@ -3,7 +3,7 @@ import { sandboxClient, sandboxWorkerSource } from '@justfiles/app/sandbox'
 
 // Browser-side `GetSandbox`. It runs the same volume-backed app.js bytes as the
 // server kernel, but in a module Web Worker. The host↔isolate protocol lives in
-// `@justfiles/app/sandbox` (shared with the desktop Node sandbox); this is only
+// `@justfiles/app/sandbox` (shared with the quay Node sandbox); this is only
 // the Web-Worker transport plus the content-addressed worker cache.
 
 type WorkerClient = { sandbox: Sandbox; terminate: () => void }
