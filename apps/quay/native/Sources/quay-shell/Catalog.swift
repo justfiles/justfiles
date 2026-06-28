@@ -1,10 +1,13 @@
 import Foundation
 
-// One app in the launcher catalog — matches quayd's AppInfo ({id, name, glyph}).
+// One app in the launcher catalog. The daemon's /system frame carries app manifests
+// ({id, name, …}); we decode the two fields the springboard needs and derive the fallback
+// glyph. The grid prefers the materialised .app icon (see Grid.swift), so the glyph only
+// shows before a bundle exists.
 struct CatalogApp: Decodable {
 	let id: String
 	let name: String
-	let glyph: String
+	var glyph: String { (name.first ?? id.first).map { String($0).uppercased() } ?? "?" }
 }
 
 // One slash command for the composer's `/` menu — matches quayd's CommandMeta
@@ -14,12 +17,16 @@ struct CatalogCommand: Decodable {
 	let description: String
 }
 
-// The launcher's Swift ws client for quayd's privileged JSON channel. It discovers the
-// daemon (Quayd.ensure, off the main thread), opens ws://127.0.0.1:PORT/?token=…, asks
-// for the catalog ({type:'list'} → {type:'catalog'}), and reconnects on drop. `onCatalog`
-// fires on the main thread for every catalog frame — including the daemon's post-install
-// broadcast — so the native results list stays live. This replaces launcher.js's socket;
-// the chat webview owns its own agent socket separately.
+// The launcher's Swift ws client for the daemon's catalog channel. It discovers the daemon
+// (Quayd.ensure, off the main thread), opens ws://127.0.0.1:PORT/system, and reconnects on
+// drop. The daemon pushes the catalog frame ({type:'apps', apps}) on connect (and re-pushes
+// on catalog changes), so there is no request to send. `onCatalog` fires on the main thread
+// for every frame, keeping the native springboard live. The chat webview owns its own agent
+// socket (the daemon's /agent RPC) separately.
+//
+// Commands (the `/` menu) and notifications are not yet on /system — they ride their own
+// daemon-parity items; `onCommands`/`onNotification` stay wired so they light up for free
+// once the daemon emits those frames.
 final class CatalogClient {
 	var onCatalog: (([CatalogApp]) -> Void)?
 	// Fires (main thread) with the slash-command catalogue (built-ins + skills),
@@ -59,22 +66,16 @@ final class CatalogClient {
 		c.scheme = "ws"
 		c.host = "127.0.0.1"
 		c.port = runtime.port
-		c.path = "/"
+		c.path = "/system"
+		// The daemon doesn't enforce the token yet; we still carry it so discovery and the
+		// privileged channel converge once it does.
 		c.queryItems = [URLQueryItem(name: "token", value: runtime.token)]
 		let t = session.webSocketTask(with: c.url!)
 		task = t
 		t.resume()
 		onRuntime?(runtime.port, runtime.token)
-		send(["type": "list"])
-		send(["type": "commands"])
+		// No request to send: /system pushes the catalog ({type:'apps'}) on open.
 		receive()
-	}
-
-	private func send(_ payload: [String: Any]) {
-		guard let data = try? JSONSerialization.data(withJSONObject: payload),
-			let text = String(data: data, encoding: .utf8)
-		else { return }
-		task?.send(.string(text)) { _ in }
 	}
 
 	private func receive() {
@@ -95,16 +96,12 @@ final class CatalogClient {
 			let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
 		else { return }
 		switch obj["type"] as? String {
-		case "catalog":
+		case "apps":
+			// The daemon's catalog frame: app manifests, decoded down to {id, name}.
 			guard let appsRaw = try? JSONSerialization.data(withJSONObject: obj["apps"] ?? []),
 				let apps = try? JSONDecoder().decode([CatalogApp].self, from: appsRaw)
 			else { return }
 			DispatchQueue.main.async { self.onCatalog?(apps) }
-		case "commands":
-			guard let raw = try? JSONSerialization.data(withJSONObject: obj["commands"] ?? []),
-				let commands = try? JSONDecoder().decode([CatalogCommand].self, from: raw)
-			else { return }
-			DispatchQueue.main.async { self.onCommands?(commands) }
 		case "notification":
 			guard let raw = obj["notification"],
 				let nData = try? JSONSerialization.data(withJSONObject: raw),

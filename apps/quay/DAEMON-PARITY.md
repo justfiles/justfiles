@@ -9,15 +9,19 @@
 	- Clear it on daemon exit.
 	- Match the native Swift `Quayd.ensure()` discovery path.
 
-- [ ] **Native protocol compatibility**
-	- Support the native launcher's expected privileged WebSocket:
-		- `ws://127.0.0.1:<port>/?token=...`
-		- request: `{ type: "list" }`
-		- response: `{ type: "catalog", apps }`
-		- request: `{ type: "commands" }`
-		- response: `{ type: "commands", commands }`
-		- push: `{ type: "notification", notification }`
-	- Or update the Swift launcher to the daemon's `/system` + `/agent` protocol.
+- [x] **Native protocol compatibility**
+	- Chose: update the Swift launcher to the daemon's `/system` + `/agent` protocol
+	  (rather than re-emulate quayd's legacy `/?token` JSON channel on the daemon).
+	- Catalog: `CatalogClient` now opens `ws://127.0.0.1:<port>/system` and decodes the
+	  pushed `{ type: "apps", apps }` frame (no `list`/`commands` request). `CatalogApp`
+	  decodes `AppManifest` down to `{ id, name }` and derives the fallback glyph.
+	- Chat: added a daemon `/launcher/chat` surface (`daemon/launcher/chat.tsx` + `.html`)
+	  that renders the shared `<Transcript/>` over the daemon's `/agent` Cap'n Web RPC and
+	  exposes the `window.quaySend/quayCommand/quayAbort` + `webkit.messageHandlers.status`
+	  native bridge. The Swift webview path (`/launcher/chat`) is unchanged.
+	- Deferred to their own items (native already wired, daemon side pending): slash
+	  `commands`/`command` + `abort`, `notification` pushes, post-install catalog
+	  re-broadcast, and token enforcement.
 
 - [ ] **`.app` projection**
 	- Materialize installed apps into `~/Applications/Quay Apps/*.app`.
@@ -58,12 +62,21 @@
 	- Broadcast fresh launcher catalog after install.
 	- Ensure live previews remain hidden from launcher and OS projection.
 
-- [ ] **Build and packaging wiring**
-	- Update `package.json` scripts if daemon becomes the default.
-	- Update `native/build.sh` to stamp daemon paths instead of `quayd` paths.
-	- Add daemon production build/ship resource handling.
-	- Ensure shipped `Quay.app` is self-contained.
-	- Stop importing implementation pieces from `../quayd/*` where daemon should stand alone.
+- [~] **Build and packaging wiring**
+	- [x] `daemon/build-exe.ts`: compile `daemon/main.ts` into one self-contained Bun exe
+	  (`--compile`) — HTML surfaces + CSS embedded; `rawText` + `htmlImportmap` build plugins.
+	- [x] `native/build.sh --ship-daemon`: embed the daemon exe at `Contents/MacOS/quay-daemon`,
+	  copy `/vendor/*` → `Resources/vendor` and builtin roots → `Resources/builtins`, stamp
+	  `QuaydRuntime=quay-daemon`. `daemon/main.ts` resolves `Resources/vendor` via `QUAY_SHIPPED`.
+	- [x] `pnpm build` now ships the daemon (`--ship-daemon`); `pnpm build:quayd` keeps the
+	  legacy quayd ship as a fallback.
+	- [x] Shipped `Quay.app` is self-contained (no system node/bun, no repo) and the launcher
+	  spawns the embedded daemon on launch (verified: `/system`, `/agent`, `/launcher/chat`,
+	  `/vendor/*`, `/app/<id>` all serve from the bundle).
+	- [ ] Still pending: `pnpm dev` / `--launcher` spawns quayd-from-source, not the daemon;
+	  the daemon listens on a fixed port (Bun default 3000) rather than an ephemeral one; and
+	  the daemon still imports `../quayd/*` (resources, builtins, chatgpt, google) — decouple
+	  so it stands alone.
 
 - [ ] **Tests**
 	- Add/port tests equivalent to quayd's:

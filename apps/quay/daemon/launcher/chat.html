@@ -1,0 +1,30 @@
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="light dark" />
+		<script type="importmap">
+			{}
+		</script>
+		<link rel="stylesheet" href="@justfiles/design/design.css" />
+		<link rel="stylesheet" href="@justfiles/design/mac.css" />
+		<!-- The transcript sits in a transparent WKWebView over the launcher's native
+		     vibrancy; override mac.css's :where() --window-bg fill (zero specificity). -->
+		<style>
+			html,
+			body,
+			#root {
+				background: transparent;
+			}
+			#root {
+				display: flex;
+				flex-direction: column;
+				height: 100vh;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="./chat.tsx"></script>
+	</body>
+</html>

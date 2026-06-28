@@ -2,10 +2,11 @@
 # Build the quay native shell — one binary, two modes (booter + launcher).
 # Command Line Tools only (no full Xcode): SwiftPM compiles, this script bundles.
 #
-#   ./build.sh Code         # a booter bundle ./Code.app (mock target, own identity)
-#   ./build.sh --launcher   # dev launcher ./Quay.app — spawns quayd from source
-#   ./build.sh --ship       # prod ./Quay.app — self-contained bun exe + bundled assets
-#   ./build.sh --release …  # optimise the binaries for shipping (default: debug)
+#   ./build.sh Code          # a booter bundle ./Code.app (mock target, own identity)
+#   ./build.sh --launcher    # dev launcher ./Quay.app — spawns quayd from source
+#   ./build.sh --ship        # prod ./Quay.app — self-contained quayd exe + bundled assets
+#   ./build.sh --ship-daemon # prod ./Quay.app — self-contained NEW daemon exe + vendor
+#   ./build.sh --release …   # optimise the binaries for shipping (default: debug)
 #   ./build.sh --runtime bun … # stamp the dev launcher to spawn quayd under bun (default: node)
 #
 # Both --launcher and --ship build the web assets (quayd/build-assets.ts) as part of the
@@ -191,9 +192,39 @@ build_ship() {
 	echo "built $app (ship, self-contained bun exe, arm64)"
 }
 
+# A self-contained, shippable Quay.app backed by the NEW daemon (apps/quay/daemon): the
+# launcher binary + an embedded bun-compiled daemon exe (arm64) + the on-disk resources the
+# daemon reads, under Resources/. The HTML surfaces (launcher / chat / app shell) and their
+# CSS are bundled into the exe by --compile (build-exe.ts); only the shared `/vendor/*` React
+# bundles and the builtin app roots ride on disk beside the exe, resolved via QUAY_SHIPPED.
+build_ship_daemon() {
+	app="Quay.app"
+	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
+	res="$app/Contents/Resources"
+	exe="$(pwd)/$app/Contents/MacOS/quay-daemon"
+
+	# 1. The self-contained daemon exe (arm64) → Contents/MacOS/quay-daemon.
+	(cd .. && bun daemon/build-exe.ts --outfile "$exe" --target bun-darwin-arm64)
+	# 2. Shared React vendor bundles served at /vendor/* → Resources/vendor. Regenerate
+	#    first (clean rebuild) so a stale or absent folder can never ship.
+	(cd .. && bun daemon/vendor.ts >/dev/null)
+	mkdir -p "$res/vendor" && cp -R ../daemon/vendor/. "$res/vendor/"
+	# 3. Built-in app bundle roots (the daemon seeds these into the Volume) → Resources/builtins.
+	copy_builtins "$res"
+	# 4. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
+	#    bundle-relative ("quay-daemon"), resolved by Quayd.spawn against the launcher's MacOS
+	#    dir, so the app stays relocatable.
+	plist="$app/Contents/Info.plist"
+	/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string quay-daemon" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :QuaydArgs array" "$plist" 2>/dev/null || true
+	codesign --force --deep --sign - "$app" 2>/dev/null || true
+	echo "built $app (ship-daemon, self-contained bun exe, arm64)"
+}
+
 case "${1:-}" in
 	--launcher) build_launcher ;;
 	--ship) build_ship ;;
-	"") echo "usage: build.sh [--release] [--runtime node|bun] <Name> | --launcher | --ship" >&2; exit 2 ;;
+	--ship-daemon) build_ship_daemon ;;
+	"") echo "usage: build.sh [--release] [--runtime node|bun] <Name> | --launcher | --ship | --ship-daemon" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
 esac
