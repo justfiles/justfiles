@@ -53,6 +53,10 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 	func applicationDidFinishLaunching(_: Notification) {
 		buildPanel()
+		// Own the daemon: a daemon we spawn (below, via the catalog client) watches this
+		// PID and exits when the app quits or is killed, so it never lingers in the
+		// background. Set before connect() so the spawn picks it up.
+		Quayd.ownerPid = Int(ProcessInfo.processInfo.processIdentifier)
 		// Discover quayd now: the catalog socket fills the results list, and its onRuntime
 		// loads the transcript webview warm so entering chat is a reveal, not a cold load.
 		catalog.onCatalog = { [weak self] in self?.catalogArrived($0) }
@@ -458,6 +462,11 @@ enum Quayd {
 		let pid: Int
 	}
 
+	// The launcher sets this to its own PID at startup so a daemon WE spawn binds its
+	// lifetime to the app (it polls this PID and exits when we're gone — see spawn).
+	// Booters leave it nil: a daemon they spawn is ownerless and survives the window.
+	static var ownerPid: Int?
+
 	static let supportDir = FileManager.default.homeDirectoryForCurrentUser
 		.appendingPathComponent("Library/Application Support/quay")
 	static var runtimePath: URL { supportDir.appendingPathComponent("runtime.json") }
@@ -501,6 +510,14 @@ enum Quayd {
 		let p = Process()
 		p.executableURL = runtimeURL
 		p.arguments = script.isEmpty ? args : args + [script]
+		// Hand the daemon our PID so it dies with the app (only the launcher claims
+		// ownership; booters spawn ownerless). Process inherits our env when left nil, so
+		// copy-and-extend rather than replace it.
+		if let owner = ownerPid {
+			var env = ProcessInfo.processInfo.environment
+			env["QUAY_OWNER_PID"] = String(owner)
+			p.environment = env
+		}
 		p.currentDirectoryURL =
 			script.isEmpty
 			? runtimeURL.deletingLastPathComponent()

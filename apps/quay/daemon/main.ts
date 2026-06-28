@@ -9,6 +9,7 @@ import { clearRuntime, writeRuntime } from './fs'
 import { getKernel } from './kernel'
 import chat from './launcher/chat.html'
 import launcher from './launcher/index.html'
+import { type ProjectionApp, reconcileProjection } from './materialize'
 import type { ServerMessage } from './protocol'
 
 // The HTML routes (launcher / chat / app shell) and their CSS are bundled into the binary
@@ -47,6 +48,28 @@ async function exit(): Promise<void> {
 process.on('SIGINT', () => void exit())
 process.on('SIGTERM', () => void exit())
 process.on('beforeExit', () => void cleanupRuntime())
+
+// Bind our lifetime to the owning app. The launcher passes its PID as QUAY_OWNER_PID
+// when it spawns us (booters don't, so a Spotlight-launched window's daemon outlives
+// it). macOS has no parent-death signal, so we poll: kill(pid,0) is a cheap liveness
+// probe, and when the owner is gone — quit OR hard kill — we exit too, so the
+// background daemon never outlives the app. ESRCH ⟹ gone; EPERM ⟹ alive but not ours.
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'EPERM'
+	}
+}
+
+const ownerPid = Number(process.env.QUAY_OWNER_PID)
+if (Number.isInteger(ownerPid) && ownerPid > 0) {
+	const watchdog = setInterval(() => {
+		if (!alive(ownerPid)) void exit()
+	}, 1000)
+	watchdog.unref()
+}
 
 function imageContentType(path: string, bytes: Uint8Array): string {
 	const lower = path.toLowerCase()
@@ -197,6 +220,40 @@ const port = server.port
 if (port === undefined) throw new Error('quay daemon: server has no TCP port')
 await writeRuntime({ port, token, pid: process.pid })
 runtimeWritten = true
+
+// Project the kernel catalog into ~/Applications/Quay Apps/*.app so installed apps are
+// real macOS apps (Spotlight/Launchpad), launchable with the launcher closed. One-way,
+// the Volume wins; preview apps (app-code's transient live previews) stay out of the OS
+// projection. Fire-and-forget: a projection failure must never take the daemon down —
+// the in-app catalog and `/app/<id>` routes keep working regardless.
+async function project(): Promise<void> {
+	const kernel = await getKernel()
+	const installed = (await kernel.list()).filter((app) => !app.id.startsWith('preview.'))
+	const apps: ProjectionApp[] = await Promise.all(
+		installed.map(async (app) => ({
+			id: app.id,
+			name: app.name,
+			version: app.version,
+			iconPath: app.icon,
+			iconBytes: app.icon ? await readIcon(kernel, app.id, app.icon) : undefined
+		}))
+	)
+	await reconcileProjection(apps)
+}
+
+async function readIcon(
+	kernel: Awaited<ReturnType<typeof getKernel>>,
+	id: string,
+	path: string
+): Promise<Uint8Array | undefined> {
+	try {
+		return await (await kernel.app(id)).read(path)
+	} catch {
+		return undefined
+	}
+}
+
+void project().catch((error) => console.error('quay daemon: projection failed', error))
 
 // One kernel subscription fans every app's state push out over Bun's native
 // pub/sub: an app window subscribes to its `app:<id>` topic on connect (above)

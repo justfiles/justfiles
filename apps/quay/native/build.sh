@@ -211,7 +211,13 @@ build_ship_daemon() {
 	mkdir -p "$res/vendor" && cp -R ../daemon/vendor/. "$res/vendor/"
 	# 3. Built-in app bundle roots (the daemon seeds these into the Volume) → Resources/builtins.
 	copy_builtins "$res"
-	# 4. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
+	# 4. The shared booter binary + icon tool → Resources/build. materialize.ts copies the
+	#    booter into each projected ~/Applications/Quay Apps/*.app; without it the daemon logs
+	#    "booter missing" and skips projection entirely (resources.ts resolves BUILD_DIR here
+	#    when shipped).
+	mkdir -p "$res/build" && cp "$BIN" "$res/build/quay-shell"
+	[ -n "$ICON" ] && cp "$ICON" "$res/build/quay-makeicon"
+	# 5. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
 	#    bundle-relative ("quay-daemon"), resolved by Quayd.spawn against the launcher's MacOS
 	#    dir, so the app stays relocatable.
 	plist="$app/Contents/Info.plist"

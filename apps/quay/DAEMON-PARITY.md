@@ -23,12 +23,20 @@
 	  `commands`/`command` + `abort`, `notification` pushes, post-install catalog
 	  re-broadcast, and token enforcement.
 
-- [ ] **`.app` projection**
-	- Materialize installed apps into `~/Applications/Quay Apps/*.app`.
-	- Stamp `Info.plist`, app id, icon, and daemon spawn keys.
-	- Ad-hoc sign and register bundles with LaunchServices.
-	- Reconcile one-way from kernel catalog to OS projection.
-	- Re-run projection after app install/update/uninstall.
+- [x] **`.app` projection** (`daemon/materialize.ts`, wired in `daemon/main.ts`)
+	- [x] Materialize installed apps into `~/Applications/Quay Apps/*.app` — shared booter
+	  binary + per-app `Info.plist` + generated icon, no app code (bytes stay in the Volume,
+	  served over http). Preview apps (`preview.*`) are filtered out.
+	- [x] Stamp `Info.plist`, app id, icon, and daemon spawn keys — `QuaydRuntime` is the
+	  absolute daemon path (shipped `quay-daemon`, dev bun on `daemon/main.ts`); `QuaydScript`
+	  and `QuaydArgs` are empty when shipped, so a cold-launched bundle respawns the daemon.
+	- [x] Ad-hoc sign (`codesign -s -`) and register bundles with LaunchServices (`lsregister`).
+	- [x] Reconcile one-way from kernel catalog to OS projection — Volume wins; idempotent via
+	  a `.quay` signature marker, so unchanged bundles skip the re-sign/re-register churn.
+	- [x] `native/build.sh --ship-daemon` ships the booter + icon tool to `Resources/build`,
+	  so the shipped daemon can project (without it, projection logged "booter missing").
+	- [ ] Re-run projection after app install/update/uninstall — runs on daemon boot only for
+	  now; install-time re-projection lands with **Devkit install integration** below.
 
 - [ ] **Full launcher catalog behavior**
 	- Filter hidden preview apps from the launcher catalog.

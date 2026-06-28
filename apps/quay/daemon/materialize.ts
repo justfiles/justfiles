@@ -1,20 +1,19 @@
-// Slice 6: project the kernel catalog into the OS. For each app the kernel lists,
-// quayd materialises a thin `.app` into ~/Applications/Quay Apps/ — the shared
-// booter binary + a per-app Info.plist + a generated icon, and *no app code* (the
-// bytes stay in the Volume; quayd serves them over http from Slice 7). The bundle
-// is ad-hoc signed (`codesign -s -`, locally created ⟹ no quarantine ⟹
-// Gatekeeper-clean) and registered with `lsregister` so Spotlight/Launchpad/Raycast
-// find it. The reconcile is strictly one-way (Volume → OS): install → write,
-// uninstall → remove, change → refresh — the Volume always wins, so there is no
-// two-store coherence problem.
+// Project the kernel catalog into the OS. For each app the kernel lists, the daemon
+// materialises a thin `.app` into ~/Applications/Quay Apps/ — the shared booter binary
+// + a per-app Info.plist + a generated icon, and *no app code* (the bytes stay in the
+// Volume; the daemon serves them over http). The bundle is ad-hoc signed (`codesign -s
+// -`, locally created ⟹ no quarantine ⟹ Gatekeeper-clean) and registered with
+// `lsregister` so Spotlight/Launchpad/Raycast find it. The reconcile is strictly one-way
+// (Volume → OS): install → write, uninstall → remove, change → refresh — the Volume
+// always wins, so there is no two-store coherence problem.
 
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { BUILD_DIR, QUAYD_ARGS, QUAYD_RUNTIME, QUAYD_SCRIPT } from './resources.ts'
+import { dirname, join } from 'node:path'
+import { SHIPPED } from '../quayd/resources'
 
 // What the projection needs from a kernel manifest (structurally a subset of it).
 export interface ProjectionApp {
@@ -26,13 +25,26 @@ export interface ProjectionApp {
 }
 
 const APPS_DIR = join(homedir(), 'Applications', 'Quay Apps')
-// The shared booter binary + icon tool, and how a cold booter respawns quayd (the
-// daemon stamps booters with ITS OWN runtime, so a cold booter spawns the daemon
-// exactly as it runs now). Dev vs. shipped-Quay.app layout lives in resources.ts.
+// The shared booter binary + icon tool that materialize stamps into each .app. Dev reads
+// the SwiftPM build output (native/build); shipped reads the copies build.sh drops beside
+// the exe (Quay.app/Contents/Resources/build).
+const BUILD_DIR = SHIPPED
+	? join(dirname(process.execPath), '..', 'Resources', 'build')
+	: join(import.meta.dirname, '..', 'native', 'build')
 const BOOTER = join(BUILD_DIR, 'quay-shell')
 const MAKEICON = join(BUILD_DIR, 'quay-makeicon')
 const LSREGISTER =
 	'/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+
+// How a cold-launched .app respawns the daemon: when no daemon is running, the booter
+// (quay-shell) reads these from the projected bundle's OWN plist (Quayd.ensure → spawn
+// in Launcher.swift) and execs them, so the bundle spawns the daemon exactly as it runs
+// now. The runtime path must be ABSOLUTE — a projected bundle under ~/Applications/Quay
+// Apps holds only the booter, so the keys point back at the real daemon. Shipped:
+// process.execPath is Quay.app/Contents/MacOS/quay-daemon, run verbatim (no script). Dev:
+// the current bun on daemon/main.ts. Bun runs TS natively, so there are never any args.
+const DAEMON_RUNTIME = process.execPath
+const DAEMON_SCRIPT = SHIPPED ? '' : join(import.meta.dirname, 'main.ts')
 
 // Reconcile ~/Applications/Quay Apps/ to exactly the kernel's catalog. Idempotent:
 // each bundle carries a signature marker, so an unchanged app is skipped (no
@@ -40,7 +52,7 @@ const LSREGISTER =
 export async function reconcileProjection(apps: ProjectionApp[]): Promise<void> {
 	if (!existsSync(BOOTER)) {
 		console.warn(
-			`quayd: booter missing (${BOOTER}); skipping .app projection — run native/build.sh`
+			`quay daemon: booter missing (${BOOTER}); skipping .app projection — run native/build.sh`
 		)
 		return
 	}
@@ -195,9 +207,9 @@ function plist(app: ProjectionApp, bin: string): string {
 	<key>NSHighResolutionCapable</key><true/>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>QuayAppId</key><string>${app.id}</string>
-	<key>QuaydRuntime</key><string>${QUAYD_RUNTIME}</string>
-	<key>QuaydArgs</key><array>${QUAYD_ARGS.map((a) => `<string>${a}</string>`).join('')}</array>
-	<key>QuaydScript</key><string>${QUAYD_SCRIPT}</string>
+	<key>QuaydRuntime</key><string>${DAEMON_RUNTIME}</string>
+	<key>QuaydArgs</key><array/>
+	<key>QuaydScript</key><string>${DAEMON_SCRIPT}</string>
 	<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
@@ -206,7 +218,7 @@ function plist(app: ProjectionApp, bin: string): string {
 
 // Identity of a materialised bundle: rebuild only when one of these changes (so a
 // new booter binary refreshes every bundle; a rename/version bump refreshes one;
-// a moved node/script path re-stamps the spawn wiring).
+// a moved runtime/script path re-stamps the spawn wiring).
 export function projectionSignature(app: ProjectionApp, booterMtime: number): string {
 	return JSON.stringify({
 		id: app.id,
@@ -215,9 +227,8 @@ export function projectionSignature(app: ProjectionApp, booterMtime: number): st
 		icon: iconSignature(app),
 		iconFormat: MACOS_ICONSET.map(([size, file]) => `${size}:${file}`),
 		booter: booterMtime,
-		runtime: QUAYD_RUNTIME,
-		args: QUAYD_ARGS,
-		script: QUAYD_SCRIPT
+		runtime: DAEMON_RUNTIME,
+		script: DAEMON_SCRIPT
 	})
 }
 
@@ -237,18 +248,6 @@ function readSig(path: string): string {
 // Filesystem-safe executable + bundle-dir name from the display name.
 function exec(name: string): string {
 	return name.replace(/[^A-Za-z0-9._-]/g, '') || 'App'
-}
-
-// The materialised bundle's path, and a `pkill -f` pattern matching its running
-// booter (argv[0] is the bundle's executable path) — used by the agent to `open`
-// and quit real windows from the daemon (DESIGN §12 native-touching).
-export function bundlePath(name: string): string {
-	return join(APPS_DIR, `${exec(name)}.app`)
-}
-
-export function bundleProcessPattern(name: string): string {
-	const bin = exec(name)
-	return `${bin}.app/Contents/MacOS/${bin}`
 }
 
 // Best-effort spawn (true on exit 0). codesign/lsregister failures are tolerated —

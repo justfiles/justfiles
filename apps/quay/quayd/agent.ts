@@ -7,6 +7,8 @@
 // server.ts carries the prompt/history frames over its privileged socket.
 
 import { execFile } from 'node:child_process'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import {
 	type AgentBackend,
 	type AppController,
@@ -37,7 +39,6 @@ import type { Volume } from '@justfiles/fs'
 import { resolveAgentBackend } from './chatgpt.ts'
 import { readDoc } from './docs.ts'
 import type { Host } from './host.ts'
-import { bundlePath, bundleProcessPattern } from './materialize.ts'
 
 // quay has no onboarding ritual (frieren's "summoning"), so the agent would sit in
 // setup mode forever — `resolveSystemPrompt` falls back to the setup prompt whenever
@@ -559,6 +560,16 @@ async function seedSoul(fs: Volume): Promise<void> {
 	await fs.mkdir('/system', { recursive: true })
 	await fs.writeFile(SOUL_PATH, new TextEncoder().encode(DEFAULT_SOUL))
 }
+
+// The materialised bundle (in ~/Applications/Quay Apps, projected by the daemon) and a
+// `pkill -f` pattern matching its running booter (argv[0] is the bundle's executable
+// path) — used to `open`/quit real windows. The filesystem-safe name mirrors the
+// daemon's exec() in materialize.ts.
+const execName = (name: string): string => name.replace(/[^A-Za-z0-9._-]/g, '') || 'App'
+const bundlePath = (name: string): string =>
+	join(homedir(), 'Applications', 'Quay Apps', `${execName(name)}.app`)
+const bundleProcessPattern = (name: string): string =>
+	`${execName(name)}.app/Contents/MacOS/${execName(name)}`
 
 const nativeWindows: WindowOps = {
 	open: (_id, name) => void execFile('open', [bundlePath(name)], () => {}),

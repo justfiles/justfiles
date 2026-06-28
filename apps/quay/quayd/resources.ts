@@ -22,25 +22,8 @@ export const ASSETS_DIR = join(ROOT, 'assets-dist')
 export const DOCS_DIR = join(ASSETS_DIR, 'docs')
 export const BUILTINS_DIR = join(ROOT, 'builtins')
 
-// The shared booter binary + icon tool (native/build.sh): dev reads native/build,
-// ship reads Resources/build.
-export const BUILD_DIR = SHIPPED
-	? join(ROOT, 'build')
-	: join(import.meta.dirname, '..', 'native', 'build')
-
 // @justfiles/design stylesheets quayd serves under /design: dev resolves from
 // node_modules, ship reads the copies under Resources/design.
 export function designPath(name: string): string {
 	return SHIPPED ? join(ROOT, 'design', name) : require.resolve(`@justfiles/design/${name}`)
 }
-
-// How a cold booter (or the launcher) respawns quayd, by runtime — the same generic
-// trio the launcher stamps (Quayd.spawn / build.sh). Shipped: run the exe verbatim.
-// Dev: the current runtime + its loaders (node needs rawLoader for ?raw + tsx for TS;
-// bun runs both natively) on main.ts.
-export const QUAYD_RUNTIME = process.execPath
-export const QUAYD_SCRIPT = SHIPPED ? '' : join(import.meta.dirname, 'main.ts')
-export const QUAYD_ARGS =
-	SHIPPED || process.versions.bun
-		? []
-		: ['--import', join(import.meta.dirname, 'rawLoader.mjs'), '--import', 'tsx']

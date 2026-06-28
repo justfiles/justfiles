@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { projectionSignature } from './materialize.ts'
+import { projectionSignature } from './materialize'
 
 test('projection signature changes when icon bytes change', () => {
 	const base = { id: 'app.x', name: 'X', version: '1', iconPath: 'icon.png' }
