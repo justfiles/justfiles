@@ -21,7 +21,10 @@ export { type Command, CommandRegistry, type CommandResult } from './bash/regist
 export { BUILTIN_COMMANDS, type CommandMeta } from './commands.ts'
 export type { CompactionSettings } from './compaction.ts'
 // just-bash-backed shell (replaces createBashTool). On migration the root
-// `createAppCommand` export above switches to ./justbash/app.ts.
+// `createAppCommand` export above switches to ./justbash/app.ts; until then the
+// just-bash `app` command is exported as `createAppShellCommand` so the legacy
+// (CommandRegistry) and just-bash consumers can coexist.
+export { createAppCommand as createAppShellCommand } from './justbash/app.ts'
 export {
 	createJustBashTool,
 	type JustBashToolOptions,

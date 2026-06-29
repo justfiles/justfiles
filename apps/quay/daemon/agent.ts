@@ -4,6 +4,7 @@ import {
 	type AppController,
 	type Assistant,
 	createAgent,
+	createAppShellCommand,
 	createAssistant,
 	createJustBashTool,
 	text
@@ -12,6 +13,7 @@ import type { Kernel } from '@justfiles/app/runtime'
 import { RpcTarget } from 'capnweb'
 import { resolveAgentBackend } from '../quayd/chatgpt'
 import { getVolume } from './fs'
+import { getKernel } from './kernel'
 
 // Opening/closing a window is native-touching: from the daemon we `open` the
 // materialised bundle and `pkill` its booter. Injectable so tests drive the
@@ -131,8 +133,12 @@ export async function agentRpcTarget() {
 		}
 	})
 
+	// The agent drives apps through the SAME kernel the windows subscribe to, so
+	// `app launch`/`app run` update live windows the moment they run.
+	const controller = createAppController(await getKernel())
 	const bash = createJustBashTool({
-		volume: fs
+		volume: fs,
+		commands: [createAppShellCommand(controller)]
 	})
 
 	rt.addTools([bash])
