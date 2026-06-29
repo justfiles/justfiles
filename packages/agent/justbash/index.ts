@@ -1,7 +1,9 @@
 import type { Volume } from '@justfiles/fs'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
-import type { Command } from 'just-bash'
+import { Bash, type Command, type CommandName, type ExecResult, getCommandNames } from 'just-bash'
 import Type from 'typebox'
+import { truncateTail } from '../bash/truncate.ts'
+import { volumeFs } from './volume-fs.ts'
 
 /**
  * A command added to the shell on top of just-bash's ~70 built-ins. It IS a
@@ -50,6 +52,70 @@ const bashParams = Type.Object({
  * custom commands' summaries plus a note that standard unix commands work.
  */
 export function createJustBashTool(options: JustBashToolOptions): AgentTool<typeof bashParams> {
-	void options
-	throw new Error('createJustBashTool: not implemented')
+	const { volume, commands = [], disable, cwd = '/', env } = options
+	// `disable` is a deny-list over the built-ins; just-bash takes an allow-list,
+	// so we hand it every built-in minus the disabled names. Omitting it entirely
+	// (no deny-list) keeps all built-ins, which is the just-bash default.
+	const allow = disable?.length
+		? (getCommandNames().filter((name) => !disable.includes(name)) as CommandName[])
+		: undefined
+	// One Bash per tool, reused across calls: the volume (and thus cwd, env, and
+	// any files written) persists between turns. Custom commands override built-ins
+	// of the same name; a ShellCommand is structurally a just-bash Command.
+	const bash = new Bash({
+		fs: volumeFs(volume),
+		cwd,
+		env,
+		commands: allow,
+		customCommands: commands
+	})
+	const description = describe(commands)
+	return {
+		name: 'bash',
+		label: 'Bash',
+		description,
+		parameters: bashParams,
+		async execute(_toolCallId, params, signal) {
+			return formatResult(await run(bash, params.command, signal))
+		}
+	}
+}
+
+async function run(bash: Bash, command: string, signal?: AbortSignal): Promise<ExecResult> {
+	try {
+		return await bash.exec(command, { signal })
+	} catch (error) {
+		// A non-zero exit is normal output; only an unexpected throw lands here.
+		return {
+			stdout: '',
+			stderr: error instanceof Error ? error.message : String(error),
+			exitCode: 1
+		}
+	}
+}
+
+function describe(commands: ShellCommand[]): string {
+	const intro =
+		'Run a command line in a real in-process bash shell over your filesystem: pipes, redirects, globs, variables, and control flow all work, alongside the standard unix commands (cat, ls, grep, sed, awk, find, jq, sort, …). Use "<command> --help" for usage.'
+	if (commands.length === 0) return intro
+	const lines = commands.map((c) => `- ${c.name}: ${c.summary}`).join('\n')
+	return `${intro}\n\nAlso available:\n${lines}`
+}
+
+function formatResult(result: ExecResult) {
+	const parts: string[] = []
+	if (result.stdout) parts.push(result.stdout)
+	if (result.stderr) parts.push(result.stderr)
+	const merged = parts.join(parts.length > 1 ? '\n' : '') || '(no output)'
+	const truncated = truncateTail(merged)
+	const text =
+		result.exitCode === 0 ? truncated.text : `${truncated.text}\n[exit code ${result.exitCode}]`
+	return {
+		content: [{ type: 'text' as const, text }],
+		details: {
+			exitCode: result.exitCode,
+			truncated: truncated.truncated,
+			droppedBytes: truncated.droppedBytes
+		}
+	}
 }

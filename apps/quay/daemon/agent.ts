@@ -1,4 +1,10 @@
-import { type Assistant, createAgent, createAssistant, text } from '@justfiles/agent'
+import {
+	type Assistant,
+	createAgent,
+	createAssistant,
+	createJustBashTool,
+	text
+} from '@justfiles/agent'
 import { RpcTarget } from 'capnweb'
 import { resolveAgentBackend } from '../quayd/chatgpt'
 import { getVolume } from './fs'
@@ -41,6 +47,12 @@ export async function agentRpcTarget() {
 			keepRecentTokens: 20000
 		}
 	})
+
+	const bash = createJustBashTool({
+		volume: fs
+	})
+
+	rt.addTools([bash])
 
 	return new AgentImpl(rt)
 }
