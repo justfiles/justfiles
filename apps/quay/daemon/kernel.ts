@@ -17,7 +17,7 @@ import { chatgptProvider } from '../quayd/chatgpt'
 import { googleProvider } from '../quayd/google/provider'
 import { getVolume } from './fs'
 import { notificationChannel } from './notify'
-import { getSandbox } from './sandbox'
+import { sandboxes } from './sandbox'
 
 let kernelOnce: Promise<Kernel> | undefined
 
@@ -38,7 +38,7 @@ export async function getKernel(): Promise<Kernel> {
 
 		const k = kernel({
 			fs,
-			sandbox: getSandbox,
+			sandbox: sandboxes.get,
 			capabilities: capabilityRegistry({
 				volume: volumeCapability(fs, { systemAllowlist }),
 				devkit: (k) =>

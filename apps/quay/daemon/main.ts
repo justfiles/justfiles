@@ -9,6 +9,7 @@ import { getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
 import { setNotificationChannel } from './notify'
 import type { ServerMessage } from './protocol'
+import { sandboxes } from './sandbox'
 
 // The browser surfaces (launcher, chat, app shell, their hashed assets, and the shared
 // React import-map vendor bundles) are built by Vite into ui/dist/client and served
@@ -170,6 +171,10 @@ const server = Bun.serve({
 				return
 			}
 			if (ws.data.type === 'app') {
+				// Pin the app's reducer worker for the lifetime of this window (sync,
+				// before any await) — `close` releases it, and once the last window
+				// closes the sandbox pool reaps the worker after its idle grace.
+				sandboxes.retain(ws.data.id)
 				// Subscribe first so no state update is missed, then push the current
 				// state as the first frame — the GUI mounts on it. Every later update
 				// arrives on the same `app:<id>` topic via the kernel bridge below.
@@ -218,6 +223,8 @@ const server = Bun.serve({
 			// Only the agent socket runs a Cap'n Web session; app sockets are auto-
 			// unsubscribed from their topic by Bun on close.
 			if (ws.data.type === 'agent') ws.data.transport?.dispatchClose(code, reason)
+			// A GUI window closed — unpin its reducer worker so it's reaped once idle.
+			else if (ws.data.type === 'app') sandboxes.release(ws.data.id)
 		}
 	}
 })

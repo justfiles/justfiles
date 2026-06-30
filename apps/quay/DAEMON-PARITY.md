@@ -5,8 +5,8 @@ daemon/main.ts` + Vite) and `pnpm build` ships it (`native/build.sh --ship-daemo
 self-contained Bun exe + Vite client). `apps/quay/quayd/` is the mature reference and the
 fallback ship (`pnpm build:quayd` → `--ship`). The daemon reaches structural parity for
 launch/catalog/app-shell/projection but still trails quayd on agent feature-completeness,
-notifications, sandbox eviction, install-time hooks, and tests — and it still imports a few
-modules out of `../quayd/`, so the two aren't yet decoupled.
+install-time hooks, and tests — and it still imports a few modules out of `../quayd/`, so
+the two aren't yet decoupled. (Notifications and sandbox lifecycle are now at parity.)
 
 > Note: the browser surfaces (launcher, chat, app shell, shared React vendor) moved to Vite
 > under `ui/` — built into `ui/dist/client` and served verbatim by the daemon (zero
@@ -112,12 +112,17 @@ modules out of `../quayd/`, so the two aren't yet decoupled.
 	- Remaining: agent pings use a fixed `route: { kind: 'chat' }` — auth/token-limit
 	  routing into Settings/chat lands with agent **error classification** above.
 
-- [~] **Sandbox lifecycle** (`daemon/sandbox.ts`)
+- [x] **Sandbox lifecycle** (`daemon/sandbox.ts`)
 	- [x] Content-addressed worker reuse: one cell per `appId`, keyed on `code`; replaced
 	  (and the old worker stopped) when the code changes; transparent respawn on next dispatch.
-	- [ ] Track window open/close retain/release.
-	- [ ] Evict idle reducer workers after the last window closes (today a cell lives until
-	  its code changes — nothing reaps it when all windows close).
+	- [x] Track window open/close retain/release: `sandboxPool` exposes `retain`/`release`,
+	  driven from `main.ts` — an `/app/:id/connect` socket pins the worker on open and
+	  unpins it on close (Bun fires `close` for every opened socket, so the count balances).
+	- [x] Evict idle reducer workers after the last window closes: a `rearm`ed idle timer
+	  (`IDLE_MS`, reset on any dispatch as activity) terminates the worker once the app has
+	  no open window; the kernel's persisted state means the next dispatch transparently
+	  re-spawns it. A stale-timer guard (`cells.get(appId) !== cell`) keeps a replaced cell
+	  safe. Covered by `daemon/sandbox.bun.test.ts` (real Bun workers, small `idleMs`).
 
 - [ ] **Devkit install integration**
 	- Fire `onInstalled` after app-code installs an app.
@@ -135,11 +140,11 @@ modules out of `../quayd/`, so the two aren't yet decoupled.
 - [~] **Tests**
 	- [x] Controller test (`daemon/agent.test.ts`).
 	- [x] Projection signature test (`daemon/materialize.test.ts`).
+	- [x] Sandbox lifecycle/eviction test (`daemon/sandbox.bun.test.ts`).
 	- [ ] server/protocol tests
 	- [ ] host/capability tests
 	- [ ] fuller materialize/projection tests
 	- [ ] devkit install/preview tests
-	- [ ] sandbox eviction tests
 
 ## Already present in daemon
 
@@ -160,6 +165,6 @@ The daemon is now the default dev and shipped runtime (`pnpm dev`, `pnpm build`)
 retained as the reference and fallback ship (`pnpm build:quayd`). Structural parity —
 launch, catalog, app shell, projection, agent app-control — is in place. The remaining work
 to fully retire quayd is agent feature-completeness (slash commands, abort, fs/fetch/search/
-ask_user tools, soul seeding, LM Studio fallback, error classification), sandbox eviction,
+ask_user tools, soul seeding, LM Studio fallback, error classification),
 install-time projection/catalog hooks, decoupling the daemon from `../quayd/*`, and broader
-tests. Notifications are now at parity.
+tests. Notifications and the sandbox lifecycle (retain/release + idle eviction) are now at parity.

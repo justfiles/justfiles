@@ -5,21 +5,77 @@ type Cell = {
 	code: string
 	sandbox: Sandbox
 	stop: (error?: Error) => void
+	// Idle-eviction timer, armed only while the app has no open window.
+	timer?: ReturnType<typeof setTimeout>
 }
 
-const cells = new Map<string, Cell>()
+export interface SandboxPool {
+	// The kernel's `GetSandbox`: load-or-reuse the worker for these bytes.
+	get: GetSandbox
+	// A window opened/closed for `appId` — pins/unpins its worker against idle eviction.
+	retain(appId: string): void
+	release(appId: string): void
+	// Live worker count (for eviction tests).
+	resident(): number
+}
 
-export const getSandbox: GetSandbox = async ({ appId, code }) => {
-	let cell = cells.get(appId)
-	if (cell?.code !== code) {
-		cell?.stop(new Error('sandbox worker replaced'))
-		cell = spawn(code, () => {
-			if (cells.get(appId) === cell) cells.delete(appId)
-		})
-		cells.set(appId, cell)
+// Idle grace after an app's last window closes before its reducer worker is reaped.
+// The kernel persists state to disk, so the next dispatch transparently re-spawns it.
+const IDLE_MS = 3 * 60_000
+
+export function sandboxPool({ idleMs = IDLE_MS }: { idleMs?: number } = {}): SandboxPool {
+	const cells = new Map<string, Cell>() // appId → reducer worker
+	const windows = new Map<string, number>() // appId → open-window count
+
+	const open = (appId: string): number => windows.get(appId) ?? 0
+
+	const evict = (appId: string, cell: Cell): void => {
+		// Guard against a stale timer firing after the cell was replaced or already gone.
+		if (cells.get(appId) !== cell) return
+		cells.delete(appId)
+		cell.stop(new Error('sandbox worker evicted (idle)'))
 	}
-	return cell.sandbox
+
+	// (Re)arm the idle timer: cleared while a window is open or on activity, restarted
+	// once the app has no open window so an idle worker is reaped after `idleMs`.
+	const rearm = (appId: string): void => {
+		const cell = cells.get(appId)
+		if (!cell) return
+		if (cell.timer) clearTimeout(cell.timer)
+		cell.timer = open(appId) === 0 ? setTimeout(() => evict(appId, cell), idleMs) : undefined
+	}
+
+	return {
+		get: async ({ appId, code }) => {
+			let cell = cells.get(appId)
+			if (cell?.code !== code) {
+				cell?.stop(new Error('sandbox worker replaced'))
+				cell = spawn(code, () => {
+					if (cells.get(appId) === cell) cells.delete(appId)
+				})
+				cells.set(appId, cell)
+			}
+			rearm(appId) // a dispatch counts as activity → push the idle countdown out
+			return cell.sandbox
+		},
+		retain: (appId) => {
+			windows.set(appId, open(appId) + 1)
+			rearm(appId) // a window reopened before eviction re-pins the live worker
+		},
+		release: (appId) => {
+			const next = open(appId) - 1
+			if (next > 0) windows.set(appId, next)
+			else {
+				windows.delete(appId)
+				rearm(appId) // last window gone → start the idle countdown
+			}
+		},
+		resident: () => cells.size
+	}
 }
+
+// The shared pool the kernel loads sandboxes from and the server pins windows against.
+export const sandboxes = sandboxPool()
 
 function spawn(code: string, onDead: () => void): Cell {
 	const appUrl = blobUrl(code)
