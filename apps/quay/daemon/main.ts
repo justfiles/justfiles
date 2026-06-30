@@ -97,6 +97,13 @@ const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
 	ws.send(JSON.stringify(message))
 
 const server = Bun.serve({
+	// Loopback only — never 0.0.0.0 (Bun's default), which would expose the daemon to the
+	// LAN. Shipped, take an OS-assigned ephemeral port (0) so two installs/versions never
+	// fight over a fixed number and "port in use" can't happen; the native shell discovers
+	// it via runtime.json (browser surfaces are same-origin, so they don't care). In dev a
+	// fixed 3000 (overridable via PORT) keeps the open tab alive across `bun --watch` restarts.
+	hostname: '127.0.0.1',
+	port: process.env.PORT ? Number(process.env.PORT) : SHIPPED ? 0 : 3000,
 	routes: {
 		'/': () => serveClient('launcher/index.html'),
 		// The native launcher embeds this chat-only surface in a transparent WKWebView;
