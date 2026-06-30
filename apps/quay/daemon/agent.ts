@@ -9,11 +9,13 @@ import {
 	createJustBashTool,
 	text
 } from '@justfiles/agent'
+import type { Channel } from '@justfiles/app/capabilities/notify'
 import type { Kernel } from '@justfiles/app/runtime'
 import { RpcTarget } from 'capnweb'
 import { resolveAgentBackend } from '../quayd/chatgpt'
 import { getVolume } from './fs'
 import { getKernel } from './kernel'
+import { notificationChannel } from './notify'
 
 // Opening/closing a window is native-touching: from the daemon we `open` the
 // materialised bundle and `pkill` its booter. Injectable so tests drive the
@@ -95,15 +97,25 @@ const nativeWindows: WindowOps = {
 }
 
 class AgentImpl extends RpcTarget {
-	constructor(private agent: Assistant) {
+	// The agent is a trusted host service, so it pings the channel DIRECTLY with
+	// `source: 'agent'` (sandboxed apps go through the capability). The native sink
+	// suppresses the banner while the chat surface is in front, so it only surfaces
+	// when you're away; one `threadId` coalesces re-posts into a single banner.
+	constructor(
+		private agent: Assistant,
+		private channel: Channel
+	) {
 		super()
 	}
 
 	async prompt(message: string) {
 		try {
-			return await this.agent.prompt(message)
+			const answer = await this.agent.prompt(message)
+			this.ping('info', answer)
+			return answer
 		} catch (err) {
 			console.error('[agent] prompt failed:', err)
+			this.ping('error', err instanceof Error ? err.message : String(err))
 			throw err
 		}
 	}
@@ -115,6 +127,24 @@ class AgentImpl extends RpcTarget {
 			throw err
 		}
 	}
+
+	private ping(kind: 'info' | 'error', body: string): void {
+		this.channel({
+			id: crypto.randomUUID(),
+			source: 'agent',
+			kind,
+			title: 'quay',
+			body: summarize(body),
+			threadId: 'agent',
+			route: { kind: 'chat' }
+		})
+	}
+}
+
+// Trim an answer to a banner-sized one-liner: first line, capped, ellipsised.
+function summarize(text: string): string {
+	const line = text.trim().split('\n')[0] ?? ''
+	return line.length > 140 ? `${line.slice(0, 139)}…` : line
 }
 
 export async function agentRpcTarget() {
@@ -143,5 +173,5 @@ export async function agentRpcTarget() {
 
 	rt.addTools([bash])
 
-	return new AgentImpl(rt)
+	return new AgentImpl(rt, notificationChannel)
 }

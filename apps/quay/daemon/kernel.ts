@@ -5,6 +5,7 @@ import {
 	type ProviderRegistry
 } from '@justfiles/app/capabilities/accounts/host'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
+import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import { bunCompile } from '@justfiles/app/toolchain/bun'
@@ -15,6 +16,7 @@ import { builtinSource } from '../quayd/builtins'
 import { chatgptProvider } from '../quayd/chatgpt'
 import { googleProvider } from '../quayd/google/provider'
 import { getVolume } from './fs'
+import { notificationChannel } from './notify'
 import { getSandbox } from './sandbox'
 
 let kernelOnce: Promise<Kernel> | undefined
@@ -51,7 +53,10 @@ export async function getKernel(): Promise<Kernel> {
 				accounts,
 				email,
 				calendar,
-				ai
+				ai,
+				// Sandboxed apps reach the host's notification channel here; the kernel stamps
+				// `source = appId` so a banner routes back to the app that raised it.
+				notify: notifyHost(notificationChannel)
 			}),
 			clock: {}
 		})

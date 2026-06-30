@@ -7,6 +7,7 @@ import { agentRpcTarget } from './agent'
 import { clearRuntime, writeRuntime } from './fs'
 import { getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
+import { setNotificationChannel } from './notify'
 import type { ServerMessage } from './protocol'
 
 // The browser surfaces (launcher, chat, app shell, their hashed assets, and the shared
@@ -180,6 +181,9 @@ const server = Bun.serve({
 
 			if (ws.data.type === 'system') {
 				ws.subscribe('catalog')
+				// Notifications fan out to the same launcher audience on their own topic
+				// (app `notify` calls + agent pings); the native sink projects them to banners.
+				ws.subscribe('notify')
 				const kernel = await getKernel()
 				const apps = await kernel.list()
 				server.publish('catalog', JSON.stringify({ type: 'apps', apps } satisfies ServerMessage))
@@ -222,6 +226,17 @@ const port = server.port
 if (port === undefined) throw new Error('quay daemon: server has no TCP port')
 await writeRuntime({ port, token, pid: process.pid })
 runtimeWritten = true
+
+// Bind the notification sink now the server is up: an app's `notify` capability call
+// and the agent's pings fan out to every launcher `/system` socket. A notification
+// raised before this point (or with no launcher connected) is simply dropped — case-1
+// notifications are transient (durable replay is a later phase).
+setNotificationChannel((notification) =>
+	server.publish(
+		'notify',
+		JSON.stringify({ type: 'notification', notification } satisfies ServerMessage)
+	)
+)
 
 // Project the kernel catalog into ~/Applications/Quay Apps/*.app so installed apps are
 // real macOS apps (Spotlight/Launchpad), launchable with the launcher closed. One-way,
