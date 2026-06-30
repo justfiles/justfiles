@@ -11,8 +11,10 @@
 // map (`import { vendorImportMap } from './vendor'`), so the served modules and the
 // map are generated from the same list and can never drift.
 
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
 import type { BunPlugin } from 'bun'
 
 // ── The vendor allowlist ─────────────────────────────────────────────────────
@@ -52,16 +54,16 @@ const OUT_DIR = join(import.meta.dirname, 'vendor')
 // never drift — this generator just emits the `/vendor/*` bundles below.
 
 // A synthetic entry that re-exposes a package as clean ESM with EXPLICIT named
-// exports — emitting `export const <name> = __ns[<name>]` for every name. We can't
-// use the obvious `export * from spec`, because `Bun.build` does NOT carry a CJS
-// module's named exports through to ESM output — it emits only `export default`, so a
-// browser `import { createRoot } from 'react-dom/client'` throws "does not provide an
-// export named 'createRoot'". That's an open Bun bug (oven-sh/bun#12463), and the
-// per-name re-export below is the workaround the bug thread itself lands on. Note this
-// is a *bundler* gap: Bun's (and Node's) RUNTIME interop resolves these names fine —
-// which is exactly why `exportNames` can recover them by importing the package. esbuild
-// has the same `export *`-from-CJS limitation, so switching bundlers wouldn't help.
-// The namespace re-export hands back the default (a CJS module's `module.exports`) so
+// exports — emitting `export const <name> = __ns[<name>]` for every name. We can't use
+// the obvious `export * from spec`: no bundler carries a CJS module's named exports
+// through a re-export to ESM output (Bun.build, esbuild, Rollup and Rolldown all emit
+// only `export default` — see oven-sh/bun#12463, evanw/esbuild#442), and more decisively
+// the browser's NATIVE ESM import — which is what resolves `/vendor/*.js` through the
+// page import map at runtime — does no CJS interop at all, so the served module MUST
+// physically declare each name or `import { createRoot } from 'react-dom/client'` throws
+// "does not provide an export named 'createRoot'". The per-name re-export is the robust
+// fix; `exportNames` (below) supplies the list by static analysis. The namespace
+// re-export also hands back the default (a CJS module's `module.exports`) so
 // `import X from "react"` keeps working too. Same shape for every spec.
 const entrySource = (spec: string, names: readonly string[]): string =>
 	`import * as __star from ${JSON.stringify(spec)}\n` +
@@ -69,23 +71,39 @@ const entrySource = (spec: string, names: readonly string[]): string =>
 	`export default __ns\n` +
 	names.map((n) => `export const ${n} = __ns[${JSON.stringify(n)}]\n`).join('')
 
-// The export names a spec exposes, recovered from Bun's (working) runtime interop by
-// importing the package in THIS process — the generator runs under the same Bun +
-// resolution as the bundler (from apps/quay/daemon), so every spec resolves to the
-// exact copy we bundle. We union the ES namespace with a CJS `module.exports` (its
-// `default`) and keep only valid-identifier keys; `generate()` pins `NODE_ENV` to MODE
-// first so we read the same production build we bundle. Caveat of importing-to-discover:
-// a vendored spec must be import-safe under Bun (no `window`/`document` at module top
-// level). True for the current list; a browser-only lib would need static discovery
-// (e.g. cjs-module-lexer) instead.
+// cjs-module-lexer can't evaluate react's `if (NODE_ENV === "production")` guard, so it
+// always reports the dev branch of a reexport (`module.exports = require("./cjs/x.dev")`);
+// swap to the `.production.` sibling that Bun.build actually inlines (MODE is 'production')
+// when it exists. react's dev build re-exports two dev-only names (act, captureOwnerStack)
+// the production build omits, so this keeps the declared exports matched to the values the
+// bundle resolves them to.
+const toBundled = (file: string): string => {
+	const prod = file.replace('.development.', '.production.')
+	return prod !== file && existsSync(prod) ? prod : file
+}
+
+// The export names a spec exposes, recovered by STATICALLY lexing the package's CJS source
+// with cjs-module-lexer — the same lexer Node.js core uses to predict a CJS module's named
+// exports for `import { x } from "pkg"` interop. Nothing executes, so (unlike the old
+// import-to-discover approach) a browser-only lib with `window` at module top level lexes
+// fine, and the names can't drift from a differently-resolved copy. We follow
+// `module.exports = require("./cjs/…")` reexports the way Node does, resolving from the same
+// place Bun.build does (this file's dir) so we read the exact copy we bundle.
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/
 async function exportNames(spec: string): Promise<string[]> {
-	const mod: Record<string, unknown> = await import(spec)
+	const { init, parse } = await import('cjs-module-lexer')
+	const require = createRequire(import.meta.url)
+	await init()
 	const names = new Set<string>()
-	for (const obj of [mod, mod.default]) {
-		if (obj && typeof obj === 'object')
-			for (const key of Object.keys(obj)) if (key !== 'default' && IDENT.test(key)) names.add(key)
+	const walk = (file: string, seen: Set<string>): void => {
+		if (seen.has(file)) return
+		seen.add(file)
+		const { exports, reexports } = parse(readFileSync(file, 'utf8'))
+		for (const name of exports) if (name !== 'default' && IDENT.test(name)) names.add(name)
+		for (const re of reexports)
+			walk(toBundled(re.startsWith('.') ? resolve(dirname(file), re) : require.resolve(re)), seen)
 	}
+	walk(toBundled(require.resolve(spec)), new Set())
 	return [...names]
 }
 
@@ -145,10 +163,9 @@ async function buildOne(spec: string): Promise<string> {
 }
 
 async function generate(): Promise<void> {
-	// Pin NODE_ENV before any spec import so `exportNames` loads the same production
-	// build the bundler does (React's facades branch on this at require time).
-	process.env.NODE_ENV = MODE
-	// Clean rebuild so a removed spec leaves no stale file behind.
+	// Clean rebuild so a removed spec leaves no stale file behind. (Bun.build pins
+	// NODE_ENV via `define` below, and `exportNames` reads the production build by
+	// path — see `toBundled` — so no ambient `process.env.NODE_ENV` is needed.)
 	await rm(OUT_DIR, { recursive: true, force: true })
 	for (const spec of vendorSpecs) {
 		const code = await buildOne(spec)
