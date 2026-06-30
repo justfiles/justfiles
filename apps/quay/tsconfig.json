@@ -20,8 +20,7 @@
 		// internals aren't clean under noUncheckedIndexedAccess — matching frieren.
 		"noImplicitOverride": true
 	},
-	"include": ["quayd/**/*.ts", "daemon/**/*.ts"],
-	// `daemon/app/**` is browser code (DOM globals, no bun) — typechecked by
-	// tsconfig.browser.json instead; nothing in the server build imports it.
-	"exclude": ["daemon/app/**"]
+	// ui/vendor.ts + ui/vite.config.ts are node-side (esbuild/vite build tooling); the
+	// browser entries under ui/ are typechecked by tsconfig.browser.json instead.
+	"include": ["quayd/**/*.ts", "daemon/**/*.ts", "ui/vendor.ts", "ui/vite.config.ts"]
 }

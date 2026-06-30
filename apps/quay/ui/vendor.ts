@@ -3,13 +3,14 @@
 // page import map. So every app's `gui.js` links against a single shared React instance
 // instead of bundling its own copy.
 //
-// Run `pnpm --filter @justfiles/quay vendor` to (re)generate `./vendor/*`. The
-// output is a build artifact (gitignored); the daemon serves it (and inlines it
-// under `bun build --compile`, like the CSS/HTML in main.ts).
-//
-// This file is BOTH the generator (run it) and the source of truth for the import
-// map (`import { vendorImportMap } from './vendor'`), so the served modules and the
-// map are generated from the same list and can never drift.
+// This file is BOTH the generator and the source of truth for the import map
+// (`import { vendorImportMap } from './vendor'`), so the served modules and the map are
+// generated from the same list and can never drift. Run it directly to (re)generate the
+// bundles — `bun ui/vendor.ts [outDir]` — or call `generate(outDir)`. The Vite plugin
+// (vite.config.ts) spawns it from `closeBundle` to emit into dist/client/vendor (it must
+// run under Bun, not Vite's Node process: Bun's bundler hoists react-dom's CJS
+// `require("react")` to an ESM import, whereas esbuild emits a throwing __require shim for
+// a browser external). The output is a build artifact (gitignored under dist/).
 
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -45,13 +46,6 @@ export const vendorImportMap = (): { imports: Record<string, string> } => ({
 // React (and much of the npm ecosystem) ships as CJS with `NODE_ENV`-gated builds.
 // 'production' strips dev warnings and is what shipped apps compile against.
 const MODE = 'production'
-
-const OUT_DIR = join(import.meta.dirname, 'vendor')
-
-// The shell HTML (app/shell.html) is a hand-maintained source file with an empty
-// import-map placeholder; daemon/htmlImportmap.ts injects `vendorImportMap()` at serve
-// time, so the served modules and the map are still built from this one list and can
-// never drift — this generator just emits the `/vendor/*` bundles below.
 
 // A synthetic entry that re-exposes a package as clean ESM with EXPLICIT named
 // exports — emitting `export const <name> = __ns[<name>]` for every name. We can't use
@@ -162,14 +156,16 @@ async function buildOne(spec: string): Promise<string> {
 	return out.text()
 }
 
-async function generate(): Promise<void> {
-	// Clean rebuild so a removed spec leaves no stale file behind. (Bun.build pins
-	// NODE_ENV via `define` below, and `exportNames` reads the production build by
-	// path — see `toBundled` — so no ambient `process.env.NODE_ENV` is needed.)
-	await rm(OUT_DIR, { recursive: true, force: true })
+// Clean rebuild so a removed spec leaves no stale file behind. (Bun.build pins NODE_ENV
+// via `define`, and `exportNames` reads the production build by path — see `toBundled` —
+// so no ambient `process.env.NODE_ENV` is needed.)
+export async function generate(
+	outDir = join(import.meta.dirname, 'dist/client/vendor')
+): Promise<void> {
+	await rm(outDir, { recursive: true, force: true })
 	for (const spec of vendorSpecs) {
 		const code = await buildOne(spec)
-		const file = join(OUT_DIR, `${spec}.js`)
+		const file = join(outDir, `${spec}.js`)
 		await mkdir(dirname(file), { recursive: true })
 		await writeFile(file, code)
 		console.log(`  ${vendorUrl(spec).padEnd(28)} ${(code.length / 1024).toFixed(1)} KB`)
@@ -178,4 +174,4 @@ async function generate(): Promise<void> {
 	console.log(JSON.stringify(vendorImportMap(), null, 2))
 }
 
-if (import.meta.main) await generate()
+if (import.meta.main) await generate(process.argv[2])

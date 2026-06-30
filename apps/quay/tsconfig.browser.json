@@ -16,5 +16,8 @@
 		"strict": true,
 		"skipLibCheck": true
 	},
-	"include": ["daemon/app/**/*.ts", "daemon/launcher/**/*.tsx"]
+	// The browser entries (DOM, no node/bun). vendor.ts + vite.config.ts are node-side
+	// (typechecked by the server tsconfig.json) so they're excluded here.
+	"include": ["ui/**/*.ts", "ui/**/*.tsx"],
+	"exclude": ["ui/vendor.ts", "ui/vite.config.ts"]
 }

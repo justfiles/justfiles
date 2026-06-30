@@ -1,6 +1,5 @@
-// `export {}` makes this a module (it has no imports), so the top-level `await`
-// below is allowed.
-export {}
+import '@justfiles/design/design.css'
+import '@justfiles/design/mac.css'
 
 const root = document.getElementById('root')
 if (!root) throw new Error('Missing #root')
@@ -65,5 +64,7 @@ function connect(appId: string) {
 }
 
 const { transport, first } = connect(appId)
-const [app, state] = await Promise.all([import(`/app/${appId}/gui.js`), first])
+// The gui.js is served by the daemon at this absolute URL at runtime; @vite-ignore stops
+// Vite from trying to statically analyze (and warn about) the dynamic specifier.
+const [app, state] = await Promise.all([import(/* @vite-ignore */ `/app/${appId}/gui.js`), first])
 app.gui.mount(root, state, { transport })

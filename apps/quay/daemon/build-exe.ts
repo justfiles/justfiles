@@ -1,25 +1,21 @@
 // Production build: compile the daemon into ONE self-contained Bun executable. The exe
-// embeds Bun + the bundled daemon graph (server/kernel/capabilities/agent) AND the bundled
-// HTML surfaces (launcher, chat, app shell, with their CSS + the injected vendor import
-// map). The `/vendor/*` React bundles are NOT embedded — they ship beside the exe under
-// Quay.app/Contents/Resources/vendor (native/build.sh copies them) and are read from disk
-// at request time; QUAY_SHIPPED tells the runtime to resolve resources next to the exe
-// rather than the bunfs root (see ../quayd/resources.ts and daemon/main.ts VENDOR_DIR).
+// embeds Bun + the bundled daemon graph (server/kernel/capabilities/agent). The browser
+// surfaces are NOT embedded — Vite builds them into ui/dist/client and they ship beside the
+// exe under Quay.app/Contents/Resources/client (native/build.sh copies them; see Step 2 of
+// the migration), read from disk at request time. QUAY_SHIPPED tells the runtime to resolve
+// resources next to the exe rather than the bunfs root (see ../quayd/resources.ts and
+// daemon/main.ts CLIENT_DIR).
 //
 // Run from apps/quay:
 //   bun daemon/build-exe.ts [--outfile <path>] [--target bun-darwin-arm64|bun-darwin-x64]
 // `--target` cross-compiles per arch; omit it to build for the host.
 //
-// Two bundler plugins, both needed only at build time:
-//   • raw-text      — `import x from './y.md?raw'`: the agent imports its prompts as ?raw,
-//                     and Bun's BUNDLER (unlike its runtime) has no native ?raw loader.
-//   • htmlImportmap — fills the shell HTML's empty `<script type="importmap">` with the
-//                     shared vendor map and pins one physical React copy. This is the same
-//                     plugin bunfig.toml registers for serve-time HTML bundling.
+// One bundler plugin, needed only at build time:
+//   • raw-text — `import x from './y.md?raw'`: the agent imports its prompts as ?raw,
+//                and Bun's BUNDLER (unlike its runtime) has no native ?raw loader.
 
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
-import htmlImportmap from './htmlImportmap.ts'
 
 type BunPlugin = import('bun').BunPlugin
 
@@ -49,7 +45,7 @@ const target = flag('--target') // bun-darwin-arm64 / bun-darwin-x64; undefined 
 const result = await Bun.build({
 	entrypoints: ['./daemon/main.ts'],
 	target: 'bun',
-	plugins: [rawText, htmlImportmap],
+	plugins: [rawText],
 	// Tell the standalone it is shipped, so resources resolve from
 	// Quay.app/Contents/Resources next to the exe — not the bunfs root.
 	define: { 'process.env.QUAY_SHIPPED': '"1"' },

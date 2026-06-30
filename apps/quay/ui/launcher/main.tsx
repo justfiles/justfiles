@@ -1,3 +1,5 @@
+import '@justfiles/design/design.css'
+import '@justfiles/design/mac.css'
 import { Transcript } from '@justfiles/ui/Transcript'
 import { StrictMode, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'

@@ -21,9 +21,11 @@
 	},
 	"scripts": {
 		"typecheck": "tsc --noEmit",
+		"dev": "pnpm ui:build && concurrently -k -n ui,daemon 'pnpm ui:watch' 'pnpm daemon'",
 		"daemon": "bun --watch daemon/main.ts",
-		"vendor": "bun daemon/vendor.ts",
-		"dev": "turbo run build --filter=@justfiles/quay^... && native/build.sh --launcher && native/relaunch.sh",
+		"ui:build": "vite build -c ui/vite.config.ts",
+		"ui:watch": "vite build -c ui/vite.config.ts --watch",
+		"vendor": "bun ui/vendor.ts",
 		"build": "turbo run build --filter=@justfiles/quay^... && native/build.sh --ship-daemon",
 		"build:quayd": "turbo run build --filter=@justfiles/quay^... && native/build.sh --ship",
 		"start": "open -n native/Quay.app",
@@ -57,7 +59,10 @@
 		"@types/react": "^19.2.17",
 		"@types/react-dom": "^19.2.3",
 		"@types/ws": "^8.5.13",
+		"@vitejs/plugin-react": "^6.0.2",
 		"cjs-module-lexer": "^2.2.0",
-		"tsx": "^4.21.0"
+		"concurrently": "^9.2.0",
+		"tsx": "^4.21.0",
+		"vite": "^8.0.16"
 	}
 }
