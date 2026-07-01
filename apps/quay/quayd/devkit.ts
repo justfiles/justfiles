@@ -5,9 +5,8 @@
 // under bun), a tsc-backed `typecheck`, and a `Runner` (live preview as a hidden
 // `preview.<slug>` app installed into the SAME kernel the booters serve from). The
 // factory does everything between — load the calling app's installed devkit sysroot,
-// read the project, build, pack, install. `install` fires `onInstalled` so quayd
-// materialises its `.app` (Slice 6's reconcile) and the launcher re-lists — no change
-// to app-code's reducer.
+// read the project, build, pack, install. (This legacy daemon doesn't react to
+// installs; the current daemon re-lists off the kernel's `app.installed` event.)
 
 import { appBundleFromMemory } from '@justfiles/app'
 import {
@@ -28,7 +27,6 @@ import { compile as backendCompile } from '#engine'
 export function devkitCapability(
 	fs: Volume,
 	kernel: Kernel,
-	onInstalled: () => void | Promise<void>,
 	previewUrl: (previewId: string) => string = (id) => `/app/${encodeURIComponent(id)}`
 ) {
 	return makeDevkit({
@@ -41,7 +39,6 @@ export function devkitCapability(
 		compile: backendCompile,
 		typecheck: async (input, types, paths) => tsTypecheck(input, ts, types, paths),
 		runner: quayRunner(fs, kernel, previewUrl),
-		onInstalled,
 		// Quay treats install as ship-or-update: a re-install overwrites the live app
 		// in place rather than rejecting the colliding id, so iterating in Code keeps
 		// updating the same installed app.

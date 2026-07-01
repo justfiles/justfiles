@@ -29,7 +29,9 @@ export interface Catalog {
 // "Uninstalling" a built-in writes a disabled marker so a version bump can't
 // resurrect it (the host writes these; reconcile only reads them).
 export function disabledMarker(id: string): string {
-	if (!/^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(id)) throw new Error(`invalid app id: ${id}`)
+	// Same path-safe id grammar as the app store (kernel.app.ts), including the
+	// optional leading-dot hidden marker.
+	if (!/^\.?[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(id)) throw new Error(`invalid app id: ${id}`)
 	return `/system/apps/disabled/${id}.json`
 }
 

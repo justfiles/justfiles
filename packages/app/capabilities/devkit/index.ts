@@ -18,3 +18,12 @@ export type {
 // runs code and can write `/applications`, so the host only routes it for
 // allowlisted apps.
 export const devkit = defineCapability<'devkit', DevkitCapability>('devkit')
+
+// The kernel id a live preview is served under — a pure function of the slug, so
+// app-code can address `stop`/`menu`/`selectMenu` without threading the run
+// result back. The leading dot makes it a HIDDEN kernel id (off the launcher
+// catalog; see `hidden` in kernel.ts). Both sides of the capability MUST agree on
+// this exact string, so it lives here, once.
+export function previewIdFor(slug: string): string {
+	return `.preview.${slug}`
+}

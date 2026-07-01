@@ -4,6 +4,7 @@ import type { ServerWebSocket } from 'bun'
 import { BunWebSocketTransport, RpcSession } from 'capnweb'
 import { SHIPPED } from '../quayd/resources'
 import { agentRpcTarget } from './agent'
+import { coalesce } from './coalesce'
 import { clearRuntime, writeRuntime } from './fs'
 import { getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
@@ -189,9 +190,9 @@ const server = Bun.serve({
 				// Notifications fan out to the same launcher audience on their own topic
 				// (app `notify` calls + agent pings); the native sink projects them to banners.
 				ws.subscribe('notify')
-				const kernel = await getKernel()
-				const apps = await kernel.list()
-				server.publish('catalog', JSON.stringify({ type: 'apps', apps } satisfies ServerMessage))
+				// Send the freshly-connected launcher the current catalog (publish reaches
+				// this socket too — it just subscribed above).
+				await refreshCatalog()
 			}
 		},
 		async message(ws, message) {
@@ -277,15 +278,32 @@ async function readIcon(
 	}
 }
 
+// Push the current catalog to every connected launcher (`/system` sockets). Called
+// on connect and whenever the installed set changes.
+async function refreshCatalog(): Promise<void> {
+	const kernel = await getKernel()
+	const apps = await kernel.list()
+	server.publish('catalog', JSON.stringify({ type: 'apps', apps } satisfies ServerMessage))
+}
+
+// A catalog mutation (a devkit ship, an uninstall) fans out two ways: refresh every
+// launcher's list and re-project the OS `.app` bundles. Coalesced so a burst
+// collapses to a single pass and two reconciles never race the filesystem. Preview
+// churn never reaches here — hidden ids raise no lifecycle event.
+const reconcile = coalesce(async () => {
+	await refreshCatalog()
+	await project()
+})
+
 void project().catch((error) => console.error('quay daemon: projection failed', error))
 
-// One kernel subscription fans every app's state push out over Bun's native
-// pub/sub: an app window subscribes to its `app:<id>` topic on connect (above)
-// and Bun owns the socket set. This replaces the per-connection Cap'n Web
-// callback that otherwise had to be kept alive by hand.
+// One kernel subscription drives both live-state fan-out and catalog reconcile: an
+// app window subscribes to its `app:<id>` topic on connect (above) and Bun owns the
+// socket set, while install/uninstall events trigger the coalesced `reconcile`.
 getKernel().then((kernel) =>
 	kernel.subscribe((event) => {
 		if (event.type === 'app.update')
 			server.publish(`app:${event.appId}`, JSON.stringify({ state: event.state }))
+		else if (event.type === 'app.installed' || event.type === 'app.uninstalled') reconcile()
 	})
 )

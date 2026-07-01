@@ -309,3 +309,26 @@ test('failed reinstall preserves the existing app', async () => {
 	expect(await fs.exists('/applications/com.example.app/app.js')).toBe(true)
 	expect((await k.list()).map((app) => app.id)).toEqual(['com.example.app'])
 })
+
+test('install/uninstall emit catalog events; hidden ids stay off the catalog surface', async () => {
+	const k = testKernel()
+	const events: string[] = []
+	k.subscribe((e) => {
+		if (e.type === 'app.installed' || e.type === 'app.uninstalled')
+			events.push(`${e.type}:${e.appId}`)
+	})
+
+	await k.install(appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code }))
+	// A hidden id (leading dot) installs and stays addressable by exact id, but is
+	// omitted from `list()` and raises no lifecycle event — like a live preview.
+	await k.install(appBundleFromMemory({ id: '.preview.demo', name: 'Preview', app: code }))
+
+	expect((await k.list()).map((m) => m.id)).toEqual(['com.example.app'])
+	expect((await k.app('.preview.demo')).manifest.id).toBe('.preview.demo')
+
+	await k.uninstall('com.example.app')
+	await k.uninstall('.preview.demo')
+
+	// Only the visible app produced events; the hidden one never does.
+	expect(events).toEqual(['app.installed:com.example.app', 'app.uninstalled:com.example.app'])
+})

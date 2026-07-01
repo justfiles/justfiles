@@ -7,9 +7,9 @@
 // carries an in-process capability registry (`volume`), so a capability-using app (Files)
 // reaches real files. Slice 10: `@justfiles/agent` runs here too, driving real `.app`
 // bundles and the same kernel the berths subscribe to; the launcher hosts its chat over
-// this socket. Slice 11: Code's `devkit.install` writes a new app into the kernel and
-// fires `onInstalled`; quayd pushes the launcher a fresh catalog. (The OS `.app`
-// projection moved to daemon/materialize.ts.)
+// this socket. Slice 11: Code's `devkit.install` writes a new app into the kernel. (This
+// legacy daemon no longer reacts to installs — the current daemon re-lists off the
+// kernel's `app.installed` event; the OS `.app` projection moved to daemon/materialize.ts.)
 
 import { randomBytes } from 'node:crypto'
 import type { Channel } from '@justfiles/app/capabilities/notify'
@@ -19,9 +19,6 @@ import { clearRuntime, writeRuntime } from './discovery.ts'
 import { createHost } from './host.ts'
 import { type Backend, serve } from './server.ts'
 
-// Re-list the launcher after an install. Bound to the real `served` once the server is
-// up (an install can only arrive over a socket).
-let onInstalled: () => Promise<void> = async () => {}
 // The notification channel, bound deferred to `served.notify` once the server is up
 // (a notification can only reach a launcher over a socket). The closures handed to
 // the host and agent forward through this mutable binding.
@@ -29,7 +26,6 @@ let channel: Channel = () => {}
 const token = randomBytes(16).toString('hex')
 const host = await createHost(
 	undefined,
-	() => onInstalled(),
 	(n) => channel(n),
 	(id) => `/app/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`
 )
@@ -89,12 +85,6 @@ const served = await serve(backend, {
 // to the launcher sockets (the native sink projects them onto the OS banner).
 channel = served.notify
 await writeRuntime({ port: served.port, token, pid: process.pid })
-
-// `.app` projection now lives in the daemon (daemon/materialize.ts); quayd no longer
-// materialises the OS bundles. After an install we just re-list the launcher catalog.
-onInstalled = async () => {
-	await served.broadcastCatalog()
-}
 
 const apps = visible(await host.kernel.list())
 console.log(`quayd listening on ws://127.0.0.1:${served.port}`)

@@ -84,7 +84,7 @@ export interface Kernel {
 	state: (appId: AppId) => Promise<unknown> // current persisted state, or the app initial state
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
-	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher
+	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher (hidden ids omitted)
 }
 
 type AppState = object
@@ -107,6 +107,20 @@ type Event =
 			appId: string
 			error: string
 	  }
+	// Catalog lifecycle — the SET of installed apps changed (a bundle was created,
+	// overwritten, or removed). Distinct from `app.update`, which is a running app's
+	// STATE advancing. Consumers that render the catalog (a launcher, an OS
+	// projection) subscribe and re-read `list()`. Never emitted for hidden ids (a
+	// hidden app is off the catalog surface — see `hidden`); overwrite reuses
+	// `app.installed`, since no consumer distinguishes create from replace.
+	| {
+			type: 'app.installed'
+			appId: string
+	  }
+	| {
+			type: 'app.uninstalled'
+			appId: string
+	  }
 	| {
 			type: 'system.error'
 			error: string
@@ -116,6 +130,16 @@ type Event =
 
 function text(data: Uint8Array): string {
 	return new TextDecoder().decode(data)
+}
+
+// A hidden app is off the CATALOG surface: not enumerated by `list()`, and its
+// install/uninstall raises no lifecycle event. It stays fully addressable by
+// exact id (`app`/`state`/`dispatch`/`subscribe`) and still emits `app.update` —
+// exactly the dotfile convention (`ls` hides `.foo`, `cat .foo` works). The one
+// generic rule the kernel enforces so it never learns caller conventions like
+// "preview": devkit names live previews `.preview.<slug>` to opt into it.
+function hidden(id: string): boolean {
+	return id.startsWith('.')
 }
 
 export function kernel({ fs, sandbox, capabilities }: System): Kernel {
@@ -296,6 +320,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		procNames.delete(appId)
 		subs.stop(appId)
 		subs.ensure(appId)
+		if (!hidden(appId)) emit({ type: 'app.installed', appId })
 		return appId
 	}
 
@@ -309,6 +334,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		subs.stop(appId)
 		resolver.forget(appId)
 		procNames.delete(appId)
+		if (!hidden(appId)) emit({ type: 'app.uninstalled', appId })
 	}
 
 	// Public dispatch. The queue is occupied SYNCHRONOUSLY (before any await) so a
@@ -444,7 +470,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		return installed
 	}
 
-	function list(): Promise<AppManifest[]> {
-		return store.list()
+	async function list(): Promise<AppManifest[]> {
+		return (await store.list()).filter((manifest) => !hidden(manifest.id))
 	}
 }

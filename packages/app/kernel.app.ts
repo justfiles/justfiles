@@ -13,9 +13,12 @@ function text(data: Uint8Array): string {
 }
 
 // An app id maps to `/applications/<id>`. The id is validated here — it becomes
-// a path segment, so a crafted id must not escape the applications root.
+// a path segment, so a crafted id must not escape the applications root. A single
+// leading dot is allowed as the "hidden" marker (see `hidden` in kernel.ts) — the
+// required alphanumeric after it keeps `.`, `..`, and `../escape` rejected.
 function appRoot(appId: AppId): string {
-	if (!/^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(appId)) throw new Error(`invalid app id: ${appId}`)
+	if (!/^\.?[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$/.test(appId))
+		throw new Error(`invalid app id: ${appId}`)
 	return `/applications/${appId}`
 }
 

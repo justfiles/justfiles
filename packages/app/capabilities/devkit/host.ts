@@ -20,7 +20,7 @@ import type { Capability } from '../types.ts'
 import type { DevkitPreview, MenuView } from './contract.ts'
 import { buildDraft, type DraftBuild, installDraft, packDraft, readProject } from './devkit.ts'
 import { loadRuntime, loadTypes } from './devkit-sysroot.ts'
-import { devkit } from './index.ts'
+import { devkit, previewIdFor } from './index.ts'
 import type {
 	CheckResult,
 	Compile,
@@ -53,13 +53,13 @@ export type {
 } from './toolchain.ts'
 
 // What the factory hands a `Runner` when it mounts a draft: the build's identity
-// plus the `preview.<slug>` id the factory computed. The factory only ever calls
+// plus the `.preview.<slug>` id the factory computed. The factory only ever calls
 // `mount` with a GOOD build (it guards diagnostics itself), so a Runner never
 // re-checks them.
 export interface RunContext {
 	appId: string
 	slug: string
-	previewId: string // `preview.${slug}`
+	previewId: string // `.preview.${slug}` — hidden id, see below
 	reset?: boolean
 }
 
@@ -98,10 +98,9 @@ export function devkitCapability(opts: {
 	typecheck?: (input: ProjectInput, types: TypesBundle, paths: TypePaths) => Promise<CheckResult>
 	runner: Runner
 	kernel: Kernel
-	onInstalled?: () => void | Promise<void>
 	overwrite?: boolean
 }): Capability {
-	const { fs, compile, typecheck, runner, kernel, onInstalled, overwrite } = opts
+	const { fs, compile, typecheck, runner, kernel, overwrite } = opts
 	// The caller's own data dir — where `projects/<slug>` lives.
 	const data = (ctx: { appId: string }) => chroot(fs, `/data/${ctx.appId}`)
 	// Per-app toolchain: load THAT caller's installed devkit sysroot through the
@@ -133,14 +132,20 @@ export function devkitCapability(opts: {
 			if (!tc.typecheck) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'devkit', 'typecheck')
 			return tc.typecheck((await readProject(data(ctx), slug)).input)
 		},
+		// Promote the draft to the real `/applications`. The kernel emits
+		// `app.installed` on success; a host that must react (re-list a launcher,
+		// re-materialise an OS bundle) subscribes to that, off this call path.
 		install: async (ctx, { slug }) =>
-			installDraft(fs, ctx.appId, slug, kernel, await toolchain(ctx), { onInstalled, overwrite }),
+			installDraft(fs, ctx.appId, slug, kernel, await toolchain(ctx), { overwrite }),
 		pack: async (ctx, { slug }) => packDraft(data(ctx), slug, await toolchain(ctx)),
 		// Compile, then (only on a clean build) hand the draft to the runner. On a
 		// compile error the last-good mount stays put — one uniform rule, here.
 		run: async (ctx, { slug, reset }) => {
 			const draft = await buildDraft(data(ctx), slug, await toolchain(ctx))
-			const previewId = `preview.${slug}`
+			// A hidden kernel id (leading dot): the preview installs + serves like any
+			// app but stays off the catalog surface, so preview churn on every ⟳ Run
+			// never wakes a launcher.
+			const previewId = previewIdFor(slug)
 			if (draft.diagnostics.length > 0 || !draft.app || !draft.gui)
 				return { previewId, diagnostics: draft.diagnostics }
 			const preview = await runner.mount(draft, { appId: ctx.appId, slug, previewId, reset })

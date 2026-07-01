@@ -1,5 +1,5 @@
 import { type AppHandle, defineApp } from '@justfiles/app'
-import { type DevkitPreview, devkit } from '@justfiles/app/capabilities/devkit'
+import { type DevkitPreview, devkit, previewIdFor } from '@justfiles/app/capabilities/devkit'
 import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 import {
@@ -372,7 +372,7 @@ export const app = defineApp({
 			description: 'Tear down the running App.',
 			schema: v.object({}),
 			async run(_, app) {
-				await app.invoke('devkit', 'stop', { previewId: `preview.${reqSlug(app)}` })
+				await app.invoke('devkit', 'stop', { previewId: previewIdFor(reqSlug(app)) })
 			}
 		}),
 		readFile: p.procedure({
@@ -407,7 +407,7 @@ export const app = defineApp({
 		menu: p.procedure({
 			description: "Read the live App's declared menubar for the preview window.",
 			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'menu', { previewId: `preview.${reqSlug(app)}` })
+			run: (_, app) => app.invoke('devkit', 'menu', { previewId: previewIdFor(reqSlug(app)) })
 		}),
 		// Fire a preview menubar item by position; devkit invokes the real action
 		// against the live App on the main thread. No state of our own changes.
@@ -416,7 +416,7 @@ export const app = defineApp({
 			schema: v.object({ menu: v.number(), item: v.number() }),
 			async run({ menu, item }, app) {
 				await app.invoke('devkit', 'selectMenu', {
-					previewId: `preview.${reqSlug(app)}`,
+					previewId: previewIdFor(reqSlug(app)),
 					menu,
 					item
 				})

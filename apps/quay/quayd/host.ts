@@ -56,10 +56,6 @@ export interface Host {
 
 export async function createHost(
 	root = join(homedir(), 'Library', 'Application Support', 'quay', 'volume'),
-	// Fired after `devkit.install` writes a new app to `/applications`; the daemon
-	// (main.ts) re-materialises the `.app` projection and pushes the launcher a fresh
-	// catalog. Defaults to a no-op so tests can construct a host without the daemon.
-	onInstalled: () => void | Promise<void> = () => {},
 	// The host's notification channel — a sandboxed app's `notify` calls land here
 	// (source kernel-stamped). Bound deferred to `served.notify` in main.ts once the
 	// server is up; a no-op default keeps tests host-only.
@@ -96,7 +92,7 @@ export async function createHost(
 		clock: {},
 		capabilities: capabilityRegistry({
 			volume: volumeCapability(fs, { systemAllowlist }),
-			devkit: (self) => devkitCapability(fs, self, onInstalled, previewUrl),
+			devkit: (self) => devkitCapability(fs, self, previewUrl),
 			ai,
 			email,
 			calendar,

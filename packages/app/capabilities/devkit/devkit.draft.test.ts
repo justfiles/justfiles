@@ -74,13 +74,9 @@ describe('devkit draft pipeline', () => {
 	test('installDraft promotes to /applications and rejects a colliding id', async () => {
 		const fs = await seedProject()
 		const k = kernel({ fs, sandbox: stubSandbox, clock: {} })
-		const onInstalled: string[] = []
-		const { id } = await installDraft(fs, APP_ID, SLUG, k, tc, {
-			onInstalled: () => void onInstalled.push('hit')
-		})
+		const { id } = await installDraft(fs, APP_ID, SLUG, k, tc)
 		expect(id).toBe('app.example.drafted')
 		expect((await k.list()).map((m) => m.id)).toContain('app.example.drafted')
-		expect(onInstalled).toEqual(['hit'])
 		// install only ever creates — re-shipping the same id is rejected.
 		await expect(installDraft(fs, APP_ID, SLUG, k, tc)).rejects.toThrow(/already exists/)
 		// …unless `overwrite` is set, which updates the live app in place.

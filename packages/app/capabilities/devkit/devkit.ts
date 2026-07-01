@@ -105,16 +105,17 @@ export async function buildDraft(data: Volume, slug: string, tc: Toolchain): Pro
 // rejected (guarded check-first on the live catalog). `opts.overwrite` lifts the
 // guard so a re-install updates the live app in place (the store backs up and
 // atomically replaces the bundle; the kernel re-warms its streams). The
-// project's icon, if any, is bundled. `opts.onInstalled` lets the host re-list
-// its catalog. Identity comes from the project file, so the installed id is the
-// author's.
+// project's icon, if any, is bundled. Identity comes from the project file, so
+// the installed id is the author's. Any post-install host work (re-list a
+// catalog, re-materialise an OS bundle) is sequenced by the caller after this
+// resolves — it's privileged host code, off the guest's call path.
 export async function installDraft(
 	fs: Volume,
 	appId: string,
 	slug: string,
 	kernel: Kernel,
 	tc: Toolchain,
-	opts?: { onInstalled?: () => void | Promise<void>; overwrite?: boolean }
+	opts?: { overwrite?: boolean }
 ): Promise<{ id: string }> {
 	const { manifest, app, gui, icon } = assertBuilt(
 		await buildDraft(chroot(fs, `/data/${appId}`), slug, tc)
@@ -133,7 +134,6 @@ export async function installDraft(
 			...iconBundle(icon)
 		})
 	)
-	await opts?.onInstalled?.()
 	return { id: manifest.id }
 }
 

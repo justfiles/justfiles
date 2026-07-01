@@ -14,7 +14,6 @@ import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { flushActiveVolume } from '../fs.ts'
 import { frierenCompile, frierenRunner } from './devkit.client.ts'
-import * as host from './host'
 
 type GetToken = () => Promise<string | null>
 
@@ -48,8 +47,7 @@ function devkitCapability(fs: Volume, getToken: GetToken, kernel: Kernel): Capab
 		fs,
 		kernel,
 		compile: frierenCompile,
-		runner: frierenRunner(fs, getToken),
-		onInstalled: () => host.notifyCatalog()
+		runner: frierenRunner(fs, getToken)
 	})
 	return {
 		invoke: async (call) => {
