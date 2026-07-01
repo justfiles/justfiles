@@ -29,7 +29,7 @@ const host = await createHost(
 	(n) => channel(n),
 	(id) => `/app/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`
 )
-const agent = await createQuayAgent(host, undefined, (n) => channel(n))
+const agent = await createQuayAgent(host, (n) => channel(n))
 
 // Preview apps (`preview.<slug>`) are app-code's transient live previews — installed
 // in the kernel so they serve a gui + berth, but never shown in the launcher or

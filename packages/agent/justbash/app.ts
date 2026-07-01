@@ -1,15 +1,23 @@
 import type { ActionMeta } from '@justfiles/app'
 import type { ExecResult } from 'just-bash'
-import type { AppController } from '../bash/commands/app.ts'
 import type { ShellCommand } from './index.ts'
 
-// The agent↔kernel bridge is unchanged — only the command wrapper is reshaped:
-// the existing `run(controller, argv)` dispatch logic is reusable verbatim, it
-// just returns an ExecResult ({ stdout, stderr, exitCode }) to just-bash now
-// instead of our old CommandResult (same fields).
-export type { AppController }
+type AppSummary = { id: string; name: string; description?: string }
+type AppInspection = AppSummary & { state: unknown; actions: Record<string, ActionMeta> }
 
-type AppInspection = Awaited<ReturnType<AppController['inspect']>>
+// The agent↔kernel bridge the `app` command drives: list/launch/inspect/close/
+// state/run against the kernel. Hosts implement it (the daemon over real macOS
+// bundles, frieren over its DO-backed apps); the command wrapper below is the
+// only shape just-bash sees.
+export interface AppController {
+	list(): Promise<AppSummary[]>
+	launch(id: string): Promise<AppInspection>
+	close(id?: string): Promise<void>
+	current(): Promise<AppInspection | undefined>
+	inspect(id: string): Promise<AppInspection>
+	state(id: string): Promise<unknown>
+	run(id: string, action: string, params: unknown): Promise<unknown>
+}
 
 /**
  * The `app` command as a ShellCommand: list, launch, inspect, and drive apps over

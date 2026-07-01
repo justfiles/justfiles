@@ -5,34 +5,23 @@ import { afterAll, beforeAll, expect, test } from 'vitest'
 import { createQuayAgent, type QuayAgent } from './agent.ts'
 import { createHost, type Host } from './host.ts'
 
-// Slice 10 acceptance — the agent in quayd, through quay's REAL wiring (kernel +
-// nodeSandbox + native-FS Volume + the bash `app` command over the quay
-// AppController). We exercise the controller via DIRECT commands (`app …`), which
-// short-circuit the bash registry — no model backend, so this runs offline. Window
-// ops are injected so `launch`/`close` don't touch LaunchServices.
+// Legacy quayd agent (Slice 10). App control, shell, and file tools were removed
+// when the daemon became the real agent host, so these cover only what survives
+// offline (no model backend): the seeded soul, the slash-command catalogue, `/new`
+// session reset, and reloading a prior conversation from the Volume.
 
-const COUNTER = 'app.justfiles.counter'
 let root: string
 let host: Host
 let agent: QuayAgent
-const opened: Array<{ id: string; name: string }> = []
-const closed: string[] = []
 
 beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), 'quayd-agent-'))
 	host = await createHost(root)
-	agent = await createQuayAgent(host, {
-		open: (id, name) => opened.push({ id, name }),
-		close: (name) => closed.push(name)
-	})
+	agent = await createQuayAgent(host)
 })
 afterAll(async () => {
 	await rm(root, { recursive: true, force: true })
 })
-
-function reply(messages: { role: string; content: string }[]): string {
-	return messages.at(-1)?.content ?? ''
-}
 
 function write(fs: Host['fs'], path: string, value: unknown): Promise<void> {
 	return fs.writeFile(path, new TextEncoder().encode(JSON.stringify(value)))
@@ -47,41 +36,6 @@ test('seeds a default soul so the agent skips frieren-style setup mode', async (
 	const soul = new TextDecoder().decode(await host.fs.readFile('/system/soul.md'))
 	expect(soul).toContain('quay')
 	expect(soul.length).toBeGreaterThan(100)
-})
-
-test('`app list` reports the seeded built-ins without a model backend', async () => {
-	const messages = await agent.prompt('app list')
-	const last = messages.at(-1)
-	expect(last?.role).toBe('assistant')
-	expect(reply(messages)).toContain(COUNTER)
-})
-
-test('`app launch` opens the real bundle and becomes the current app', async () => {
-	await agent.prompt(`app launch ${COUNTER}`)
-	expect(opened.at(-1)?.id).toBe(COUNTER)
-
-	// `current` now resolves to the launched app — `app run` with no --id targets it.
-	const out = reply(await agent.prompt('app current'))
-	expect(out).toContain(COUNTER)
-})
-
-test('`app run` dispatches into the same kernel a window subscribes to', async () => {
-	await agent.prompt(`app run --id ${COUNTER} increment amount=2`)
-	await agent.prompt(`app run --id ${COUNTER} increment amount=3`)
-	expect((await host.kernel.state(COUNTER)) as { count: number }).toEqual({ count: 5 })
-})
-
-test('`app close` quits the current window by its bundle name', async () => {
-	await agent.prompt('app close')
-	// close targets the same app `launch` opened, addressed by its bundle name.
-	expect(closed.at(-1)).toBe(opened.at(-1)?.name)
-})
-
-test('the transcript accumulates each turn', async () => {
-	const before = agent.history().length
-	await agent.prompt('app list')
-	// One user + one assistant message per turn.
-	expect(agent.history().length).toBe(before + 2)
 })
 
 test('`commands` lists the built-in /new (offline, no model backend)', async () => {
@@ -109,7 +63,7 @@ test('/new starts a fresh session, clears the transcript, and keeps the old one 
 			{ id: 'aaaa0001', parentId: null, ts: '', type: 'message', role: 'user', content: 'hello' }
 		])
 
-		const fresh = await createQuayAgent(otherHost, { open: () => {}, close: () => {} })
+		const fresh = await createQuayAgent(otherHost)
 		expect(fresh.history().length).toBe(1)
 
 		const cleared = await fresh.command('new')
@@ -156,10 +110,7 @@ test('a fresh agent loads the previous conversation from the Volume session', as
 			}
 		])
 
-		const reloaded = await createQuayAgent(otherHost, {
-			open: () => {},
-			close: () => {}
-		})
+		const reloaded = await createQuayAgent(otherHost)
 		expect(reloaded.history().map((m) => ({ role: m.role, content: m.content }))).toEqual([
 			{ role: 'user', content: 'hello' },
 			{ role: 'assistant', content: 'hi there' }

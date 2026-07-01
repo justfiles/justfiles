@@ -9,8 +9,11 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
 
 ## Agent feature-completeness (`daemon/agent.ts` vs `quayd/agent.ts`)
 
-- [ ] fs / search / `ask_user` tools (quayd registers all four; the daemon now wires bash +
-  fetch).
+- [ ] `search` + `ask_user` tools. The daemon wires just-bash (a full shell over the
+  Volume) + `fetch`; it still lacks the `search` and `ask_user` tools that quayd wires.
+  (The old `fs` read/write/ls/mkdir/rm tools were retired — just-bash's shell built-ins
+  replace them — so they're no longer a parity gap; quayd's agent is now `fetch` +
+  `search` + `ask_user` only, no shell/app-control.)
 - [ ] Slash commands + `/new` (`commands()` / `command()` are not exposed; the daemon's RPC
   surface is just `prompt`/`history`).
 - [ ] `abort` support.

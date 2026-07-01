@@ -1,36 +1,22 @@
-// The agent in quayd (Slice 10). @justfiles/agent runs in the daemon: the
-// pi-agent-core runtime + its fs/fetch/search tools + the bash registry, and the
-// `app` command over a quay AppController whose launch/close drive REAL macOS
-// bundles (`open` / `pkill` the materialised .app). The agent dispatches into the
-// SAME kernel the berths subscribe to, so an open window updates live the moment
-// the agent runs an action — no sync, no watch. The chat lives in the launcher;
-// server.ts carries the prompt/history frames over its privileged socket.
+// The agent in quayd (Slice 10, legacy). It runs @justfiles/agent's pi-agent-core
+// runtime with the fetch/search/ask_user tools. App control, shell, and file tools
+// were dropped when the daemon (apps/quay/daemon) became the real agent host — this
+// path is kept only for the legacy quayd/main.ts entrypoint. The chat lives in the
+// launcher; server.ts carries the prompt/history frames over its privileged socket.
 
-import { execFile } from 'node:child_process'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import {
 	type AgentBackend,
-	type AppController,
 	type Assistant,
 	apiKeyBackend,
 	BUILTIN_COMMANDS,
 	type CommandMeta,
-	CommandRegistry,
 	type CompactionSettings,
-	cp,
 	createAgent,
-	createAppCommand,
 	createAskUserTool,
 	createAssistant,
-	createBashTool,
 	createFetchTool,
-	createFsTools,
-	createNowCommand,
 	createSearchTool,
 	type LLMConfig,
-	mv,
-	rm,
 	type SessionEntry,
 	text
 } from '@justfiles/agent'
@@ -45,7 +31,7 @@ import type { Host } from './host.ts'
 // `/system/soul.md` is missing. We seed a default persona on first run so the agent
 // is ready to work; a user editing soul.md later is never overwritten.
 const SOUL_PATH = '/system/soul.md'
-const DEFAULT_SOUL = `You are the agent that lives inside quay, a macOS desktop where small apps dock at one shared backend you share with the user. You are a task-oriented, reliable assistant: brief, proactive, and direct. You can launch, inspect, and drive those apps with the \`app\` command, and you can read, write, and organise files on the shared volume with your file tools and bash. When the user asks for something, take the action rather than narrating it or asking permission for routine steps; surface a choice only when it genuinely matters. Keep replies short and concrete — the result first, a sentence or two around it. You remember what matters across sessions and lean on it quietly. You never mention setup, onboarding, or rituals; you are already here and ready to help.`
+const DEFAULT_SOUL = `You are the agent that lives inside quay, a macOS desktop where small apps dock at one shared backend you share with the user. You are a task-oriented, reliable assistant: brief, proactive, and direct. You can search the web and fetch pages to answer questions and stay current. When the user asks for something, take the action rather than narrating it or asking permission for routine steps; surface a choice only when it genuinely matters. Keep replies short and concrete — the result first, a sentence or two around it. You remember what matters across sessions and lean on it quietly. You never mention setup, onboarding, or rituals; you are already here and ready to help.`
 
 // One tool call the agent made in a turn, captured for the transcript's collapsed
 // mechanical row. Mirrors @justfiles/ui's ToolCallInfo (kept separate so the wire
@@ -92,14 +78,6 @@ export interface QuayAgent {
 	abort(): void
 }
 
-// Opening/closing a window is native-touching (DESIGN §12): from the daemon we
-// `open` the materialised bundle and `pkill` its booter. Injectable so tests drive
-// the controller without touching LaunchServices.
-export interface WindowOps {
-	open(id: string, name: string): void
-	close(name: string): void
-}
-
 const COMPACTION: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
@@ -108,32 +86,20 @@ const COMPACTION: CompactionSettings = {
 
 export async function createQuayAgent(
 	host: Host,
-	windows: WindowOps = nativeWindows,
 	// The agent is a trusted host service, so it calls the notification channel
 	// DIRECTLY with `source: 'agent'` (sandboxed apps go through the capability). A
 	// no-op default keeps offline tests channel-free.
 	channel: Channel = () => {}
 ): Promise<QuayAgent> {
-	const { kernel } = host
-	// The most-recently launched app — the daemon's best approximation of "current"
-	// (true focus is a native concept; revisit with a window helper, DESIGN §12).
-	let currentId: string | null = null
-
 	await seedSoul(host.fs)
 
-	const registry = new CommandRegistry()
-	for (const command of [cp, mv, rm, createNowCommand({}), createAppCommand(controller())]) {
-		registry.register(command)
-	}
-	const bash = createBashTool(registry, { vol: host.fs })
-	const fsTools = createFsTools(host.fs)
 	// `ask_user` records the question for the turn that's running; `prompt` reads it
 	// once the runtime returns and renders it as the assistant turn (no suspension).
 	let pending: { question: string; options: { label: string }[] } | null = null
 	const askUser = createAskUserTool((question, options) => {
 		pending = { question, options: options.map((label) => ({ label })) }
 	})
-	const tools = [...fsTools.tools, createFetchTool(), createSearchTool(), bash, askUser]
+	const tools = [createFetchTool(), createSearchTool(), askUser]
 
 	// The LLM backend is resolved from the accounts store (llmConfig), which changes
 	// when the user connects ChatGPT or switches models in Settings. Build the runtime
@@ -229,17 +195,10 @@ export async function createQuayAgent(
 		messages.push({ id: crypto.randomUUID(), role: 'user', content: display })
 		pending = null
 		try {
-			// `app`/`cp`/`mv`/`rm`/`now` short-circuit to the bash registry — no LLM
-			// call, so app control works (and tests run) without a model backend.
 			let activity: TurnActivity = {}
-			let answer: string
-			if (isDirectCommand(send)) {
-				answer = await runDirect(send)
-			} else {
-				const turn = await runAgentTurn(await ensureRuntime(), send)
-				answer = turn.answer
-				activity = { thinking: turn.thinking, toolCalls: turn.toolCalls }
-			}
+			const turn = await runAgentTurn(await ensureRuntime(), send)
+			const answer = turn.answer
+			activity = { thinking: turn.thinking, toolCalls: turn.toolCalls }
 			// Reasoning + tool calls happened BEFORE the answer, so they get their own
 			// assistant message ahead of the answer bubble. The shared Transcript renders a
 			// message's content before its tool rows (right when one model turn speaks then
@@ -297,55 +256,6 @@ export async function createQuayAgent(
 	function abort(): void {
 		void active?.rt.abort()
 	}
-
-	function controller(): AppController {
-		return {
-			list: async () =>
-				(await kernel.list())
-					.filter((app) => !app.id.startsWith('preview.'))
-					.map((app) => ({ id: app.id, name: app.name, description: app.description })),
-			launch: async (id) => {
-				const app = await inspect(id)
-				windows.open(id, app.name)
-				currentId = id
-				return app
-			},
-			close: async (id) => {
-				const targetId = id ?? currentId
-				if (!targetId) return
-				windows.close((await kernel.app(targetId)).manifest.name)
-				if (targetId === currentId) currentId = null
-			},
-			current: async () => (currentId ? inspect(currentId) : undefined),
-			inspect,
-			state: (id) => kernel.state(id),
-			run: (id, action, params) =>
-				kernel.dispatch(id, { type: action, params, actor: 'agent' } as never)
-		}
-	}
-
-	async function inspect(id: string) {
-		const installed = await kernel.app(id)
-		return {
-			id,
-			name: installed.manifest.name,
-			description: installed.manifest.description,
-			state: await kernel.state(id),
-			actions: await kernel.actions(id)
-		}
-	}
-
-	async function runDirect(command: string): Promise<string> {
-		const result = await bash.execute('quay', { command })
-		return result.content
-			.filter((block) => block.type === 'text')
-			.map((block) => block.text)
-			.join('\n')
-	}
-}
-
-function isDirectCommand(input: string): boolean {
-	return /^(app|cp|mv|rm|now)\b/.test(input)
 }
 
 // A turn's visible activity beyond its answer text: the agent's reasoning and the
@@ -559,21 +469,6 @@ async function seedSoul(fs: Volume): Promise<void> {
 	} catch {} // missing file → seed it
 	await fs.mkdir('/system', { recursive: true })
 	await fs.writeFile(SOUL_PATH, new TextEncoder().encode(DEFAULT_SOUL))
-}
-
-// The materialised bundle (in ~/Applications/Quay Apps, projected by the daemon) and a
-// `pkill -f` pattern matching its running booter (argv[0] is the bundle's executable
-// path) — used to `open`/quit real windows. The filesystem-safe name mirrors the
-// daemon's exec() in materialize.ts.
-const execName = (name: string): string => name.replace(/[^A-Za-z0-9._-]/g, '') || 'App'
-const bundlePath = (name: string): string =>
-	join(homedir(), 'Applications', 'Quay Apps', `${execName(name)}.app`)
-const bundleProcessPattern = (name: string): string =>
-	`${execName(name)}.app/Contents/MacOS/${execName(name)}`
-
-const nativeWindows: WindowOps = {
-	open: (_id, name) => void execFile('open', [bundlePath(name)], () => {}),
-	close: (name) => void execFile('pkill', ['-f', bundleProcessPattern(name)], () => {})
 }
 
 // Resolve the agent's backend from the connected accounts on the Volume. If the

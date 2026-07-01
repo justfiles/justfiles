@@ -1,23 +1,17 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
 	type Assistant,
-	CommandRegistry,
 	type CompactionSettings,
 	consolidateMemory,
-	cp,
 	createAgent,
-	createAppCommand,
+	createAppShellCommand,
 	createAssistant,
-	createBashTool,
 	createFetchTool,
-	createFsTools,
-	createNowCommand,
+	createJustBashTool,
 	createSearchTool,
 	type LLMText,
-	mv,
 	parseFrontmatter,
 	resolveTimezone,
-	rm,
 	SOUL_GENERATION_PROMPT,
 	type SoulGenerationInput,
 	text
@@ -232,17 +226,13 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private buildAgent(caps: { email: Capability; calendar: Capability }) {
-		const fs = createFsTools(this.vol)
-		const bashRegistry = new CommandRegistry()
-		for (const command of [
-			cp,
-			mv,
-			rm,
-			createNowCommand({ getTimezone: this.getTimezone }),
-			createAppCommand(this.requireApps().controller)
-		])
-			bashRegistry.register(command)
-		const bash = createBashTool(bashRegistry, { vol: this.vol })
+		// just-bash gives the agent a real shell over the Volume (~70 unix built-ins:
+		// cat/ls/mkdir/rm/cp/mv/grep/…), so the old fs tools and CommandRegistry are gone.
+		// The only custom command is `app`, which drives apps over the kernel.
+		const bash = createJustBashTool({
+			volume: this.vol,
+			commands: [createAppShellCommand(this.requireApps().controller)]
+		})
 		const agent = createAgent(this.getBackendConfig())
 
 		// The agent reaches email/calendar exactly as an app does — through the
@@ -253,7 +243,7 @@ export class Frieren extends DurableObject<Env> {
 			calendar: caps.calendar,
 			getTimezone: this.getTimezone
 		})
-		agent.state.tools = [...fs.tools, createFetchTool(), createSearchTool(), bash, ...tools]
+		agent.state.tools = [createFetchTool(), createSearchTool(), bash, ...tools]
 		return agent
 	}
 

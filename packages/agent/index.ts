@@ -1,8 +1,9 @@
 // @justfiles/agent — the host-agnostic agent: the pi-agent-core runtime loop
-// (sessions + compaction + memory), its fs/fetch/search/takeNote tools, the bash
-// command registry + commands, and the agent↔kernel `AppController` bridge. The
-// host injects the model (via `createAgent` / `text`) and an `AppController`;
-// the persona/memory are data on the Volume (`/system/soul.md`, …).
+// (sessions + compaction + memory), its fetch/search/takeNote/ask_user tools, the
+// just-bash shell over the Volume (plus a custom `app` command), and the
+// agent↔kernel `AppController` bridge. The host injects the model (via
+// `createAgent` / `text`) and an `AppController`; the persona/memory are data on
+// the Volume (`/system/soul.md`, …).
 
 export type { Agent } from '@mariozechner/pi-agent-core'
 export {
@@ -11,19 +12,10 @@ export {
 	createAssistant,
 	type PromptSource
 } from './assistant.ts'
-export type { AppController } from './bash/commands/app.ts'
-export { createAppCommand } from './bash/commands/app.ts'
-export { cp, mv, rm } from './bash/commands/fs.ts'
-export { createNowCommand } from './bash/commands/now.ts'
-export { defineCommand } from './bash/define.ts'
-export { createBashTool } from './bash/index.ts'
-export { type Command, CommandRegistry, type CommandResult } from './bash/registry.ts'
 export { BUILTIN_COMMANDS, type CommandMeta } from './commands.ts'
 export type { CompactionSettings } from './compaction.ts'
-// just-bash-backed shell (replaces createBashTool). On migration the root
-// `createAppCommand` export above switches to ./justbash/app.ts; until then the
-// just-bash `app` command is exported as `createAppShellCommand` so the legacy
-// (CommandRegistry) and just-bash consumers can coexist.
+export type { AppController } from './justbash/app.ts'
+// The `app` command — drives apps over the kernel — as a just-bash ShellCommand.
 export { createAppCommand as createAppShellCommand } from './justbash/app.ts'
 export {
 	createJustBashTool,
@@ -46,8 +38,6 @@ export {
 export {
 	createAskUserTool,
 	createFetchTool,
-	createFsTools,
 	createSearchTool,
-	createTakeNoteTool,
-	type FsToolset
+	createTakeNoteTool
 } from './tools/index.ts'
