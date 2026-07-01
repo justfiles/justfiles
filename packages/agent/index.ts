@@ -50,4 +50,4 @@ export {
 	createSearchTool,
 	createTakeNoteTool,
 	type FsToolset
-} from './tools.ts'
+} from './tools/index.ts'

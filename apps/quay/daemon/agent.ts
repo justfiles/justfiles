@@ -6,6 +6,7 @@ import {
 	createAgent,
 	createAppShellCommand,
 	createAssistant,
+	createFetchTool,
 	createJustBashTool,
 	text
 } from '@justfiles/agent'
@@ -171,7 +172,7 @@ export async function agentRpcTarget() {
 		commands: [createAppShellCommand(controller)]
 	})
 
-	rt.addTools([bash])
+	rt.addTools([bash, createFetchTool()])
 
 	return new AgentImpl(rt, notificationChannel)
 }
