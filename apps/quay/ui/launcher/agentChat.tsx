@@ -101,6 +101,9 @@ function sessionEntriesToMessages(entries: readonly SessionEntry[]): AgentMessag
 	const messages: AgentMessage[] = []
 	for (const entry of entries) {
 		if (entry.type !== 'message') continue
+		// An ask_user call renders as a question bubble with clickable options (below),
+		// so its paired result carries no user-facing content — drop it.
+		if (entry.role === 'tool_result' && entry.tool_name === 'ask_user') continue
 		if (entry.role === 'tool_result') {
 			const call = findPendingToolCall(messages, entry.tool_name)
 			if (call) {
@@ -126,6 +129,18 @@ function sessionEntryToMessage(
 		case 'assistant_thinking':
 			return { id: entry.id, role: 'assistant', content: '', thinking: entry.content }
 		case 'tool_call':
+			// ask_user is a question, not mechanical work: render the agent's question as
+			// an assistant bubble whose options are clickable rows (a pick is the next
+			// prompt), rather than a collapsed tool row.
+			if (entry.tool_name === 'ask_user') {
+				const input = entry.input as { question?: string; options?: string[] }
+				return {
+					id: entry.id,
+					role: 'assistant',
+					content: input.question ?? '',
+					options: (input.options ?? []).map((label) => ({ label }))
+				}
+			}
 			return {
 				id: entry.id,
 				role: 'assistant',
