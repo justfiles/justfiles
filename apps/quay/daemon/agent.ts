@@ -5,9 +5,11 @@ import {
 	type Assistant,
 	createAgent,
 	createAppShellCommand,
+	createAskUserTool,
 	createAssistant,
 	createFetchTool,
 	createJustBashTool,
+	createSearchTool,
 	text
 } from '@justfiles/agent'
 import type { Channel } from '@justfiles/app/capabilities/notify'
@@ -97,21 +99,39 @@ const nativeWindows: WindowOps = {
 		})
 }
 
+// A multiple-choice question the agent posed via `ask_user`, captured for the
+// turn that's running so `prompt` can surface it once the runtime returns.
+interface PendingQuestion {
+	question: string
+	options: string[]
+}
+
 class AgentImpl extends RpcTarget {
 	// The agent is a trusted host service, so it pings the channel DIRECTLY with
 	// `source: 'agent'` (sandboxed apps go through the capability). The native sink
 	// suppresses the banner while the chat surface is in front, so it only surfaces
 	// when you're away; one `threadId` coalesces re-posts into a single banner.
+	// `takePending` reads-and-clears the question `ask_user` recorded this turn.
 	constructor(
 		private agent: Assistant,
-		private channel: Channel
+		private channel: Channel,
+		private takePending: () => PendingQuestion | null
 	) {
 		super()
 	}
 
 	async prompt(message: string) {
 		try {
+			this.takePending() // drop any stale question before the turn
 			const answer = await this.agent.prompt(message)
+			// The agent called `ask_user` and ended its turn: the question IS the turn's
+			// result, so surface it (and ping a `question` banner) instead of the answer.
+			// The user's pick arrives as the next prompt — no suspension.
+			const asked = this.takePending()
+			if (asked) {
+				this.ping('question', asked.question)
+				return asked.question
+			}
 			this.ping('info', answer)
 			return answer
 		} catch (err) {
@@ -129,7 +149,7 @@ class AgentImpl extends RpcTarget {
 		}
 	}
 
-	private ping(kind: 'info' | 'error', body: string): void {
+	private ping(kind: 'info' | 'error' | 'question', body: string): void {
 		this.channel({
 			id: crypto.randomUUID(),
 			source: 'agent',
@@ -172,7 +192,19 @@ export async function agentRpcTarget() {
 		commands: [createAppShellCommand(controller)]
 	})
 
-	rt.addTools([bash, createFetchTool()])
+	// `ask_user` records the question the agent poses; `takePending` hands it to the
+	// RPC target's `prompt`, which surfaces it once the turn returns.
+	let pending: PendingQuestion | null = null
+	const askUser = createAskUserTool((question, options) => {
+		pending = { question, options }
+	})
+	const takePending = (): PendingQuestion | null => {
+		const p = pending
+		pending = null
+		return p
+	}
 
-	return new AgentImpl(rt, notificationChannel)
+	rt.addTools([bash, createFetchTool(), createSearchTool(), askUser])
+
+	return new AgentImpl(rt, notificationChannel, takePending)
 }
