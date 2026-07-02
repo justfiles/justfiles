@@ -1,6 +1,6 @@
 import type { Kernel } from '@justfiles/app/runtime'
 import { expect, test } from 'vitest'
-import { createAppController, type WindowOps } from './agent'
+import { abortAgent, createAppController, type WindowOps } from './agent'
 
 // The AppController is a thin bridge over the kernel + native window ops. The
 // behaviour worth protecting lives here: preview apps are hidden, `current`
@@ -81,4 +81,11 @@ test('run dispatches into the kernel stamped as the agent', async () => {
 	expect(dispatched).toEqual([
 		{ appId: COUNTER, message: { type: 'increment', params: { amount: 2 }, actor: 'agent' } }
 	])
+})
+
+// Abort guards on the memoised shared session: with no session ever built (a cold daemon),
+// it must be a no-op rather than building an agent (which needs a backend) just to cancel
+// nothing. The "session exists" branch runs the real assistant, so it's exercised live.
+test('abort with no built session is a no-op', () => {
+	expect(() => abortAgent()).not.toThrow()
 })

@@ -18,6 +18,7 @@ import { CommandOutput } from './CommandOutput'
 interface QuayChatWindow {
 	webkit?: { messageHandlers?: { status?: { postMessage(message: unknown): void } } }
 	quaySend?: (text: string) => void
+	quayAbort?: () => void
 	quayShowOutput?: (body: string) => void
 }
 
@@ -30,18 +31,21 @@ function ChatApp() {
 	const [output, setOutput] = useState<string | null>(null)
 
 	// Wire the native input bridge to the live chat hook. `quaySend` sends a prompt (and
-	// drops any command output); `quayShowOutput` shows a command's text result.
+	// drops any command output); `quayAbort` (the native Stop button) cancels the in-flight
+	// turn; `quayShowOutput` shows a command's text result.
 	useEffect(() => {
 		win.quaySend = (text) => {
 			setOutput(null)
 			chat.send(String(text ?? ''))
 		}
+		win.quayAbort = () => chat.abort()
 		win.quayShowOutput = (body) => setOutput(String(body ?? ''))
 		return () => {
 			win.quaySend = undefined
+			win.quayAbort = undefined
 			win.quayShowOutput = undefined
 		}
-	}, [chat.send])
+	}, [chat.send, chat.abort])
 
 	// Mirror streaming + connection state to native.
 	useEffect(() => {

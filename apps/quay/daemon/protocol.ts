@@ -29,4 +29,4 @@ export type AgentEvent =
 	| { type: 'error'; message: string }
 
 /** Messages an `/agent` client sends to the daemon. */
-export type AgentRequest = { type: 'prompt'; text: string }
+export type AgentRequest = { type: 'prompt'; text: string } | { type: 'abort' }

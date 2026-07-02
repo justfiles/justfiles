@@ -208,6 +208,17 @@ export function promptAgent(message: string): void {
 	void runTurn((assistant) => assistant.prompt(message))
 }
 
+// Cancel the in-flight turn on the shared session, leaving the session intact so later
+// prompts still work. Guards on the memoised session so an abort never builds an agent just
+// to cancel nothing; `abort()` on an idle assistant is a harmless no-op. Fire-and-forget,
+// mirroring `promptAgent` — the aborted turn's outcome reaches the chat via the broadcast.
+export function abortAgent(): void {
+	if (!sessionPromise) return
+	void getAgent()
+		.then(({ assistant }) => assistant.abort())
+		.catch((err) => console.error('[agent] abort failed:', err))
+}
+
 // Dispatch a slash command by name. Commands are a DAEMON concept (see commands.ts) — the
 // agent only ever gets skill/session primitives (`applySkill` / `newSession`), never a
 // command. The result tells the launcher what to show; command output never touches the

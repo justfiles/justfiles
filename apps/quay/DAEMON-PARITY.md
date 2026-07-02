@@ -37,7 +37,13 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   in every open chat naturally — no deliberate daemon→UI push per action, just the session
   the transcript observes. `AgentImpl`/`agentRpcTarget` are gone; the daemon keeps one
   memoised session (`getAgent`, reset on failure) driven by `promptAgent`/`dispatchCommand`.
-- [ ] `abort` support.
+- [x] `abort` support. The `/agent` socket now carries an `{ type: 'abort' }` request
+  (`AgentRequest`) alongside `prompt`; `main.ts` routes it to `abortAgent`, which cancels the
+  in-flight turn on the shared session via `Assistant.abort` (guarded on the memoised session
+  so a cold daemon never builds an agent just to cancel nothing). The native Stop button
+  already called `window.quayAbort` — `chat.tsx` now defines it, wired to `useAgentChat.abort`,
+  which sends the frame. The aborted turn's `busy:false`/`error` push flows back over the
+  socket as usual.
 - [ ] Seed a default `soul.md` on first run (without it the agent falls back to the setup
   prompt — quayd's `seedSoul` writes a persona).
 - [ ] Local LM Studio fallback — the daemon throws when no ChatGPT account is configured

@@ -3,6 +3,7 @@ import { dirname, resolve, sep } from 'node:path'
 import type { ServerWebSocket } from 'bun'
 import { SHIPPED } from '../quayd/resources'
 import {
+	abortAgent,
 	agentCommands,
 	agentHistory,
 	dispatchCommand,
@@ -208,6 +209,7 @@ const server = Bun.serve({
 					typeof message === 'string' ? message : message.toString()
 				) as AgentRequest
 				if (req.type === 'prompt') promptAgent(req.text)
+				else if (req.type === 'abort') abortAgent()
 				return
 			}
 			if (ws.data.type === 'app') {
