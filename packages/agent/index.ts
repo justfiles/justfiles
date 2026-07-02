@@ -12,7 +12,6 @@ export {
 	createAssistant,
 	type PromptSource
 } from './assistant.ts'
-export { BUILTIN_COMMANDS, type CommandMeta } from './commands.ts'
 export type { CompactionSettings } from './compaction.ts'
 export type { AppController } from './justbash/app.ts'
 // The `app` command — drives apps over the kernel — as a just-bash ShellCommand.
@@ -29,6 +28,7 @@ export { type AgentBackend, apiKeyBackend, type LLMConfig } from './llm.ts'
 export { parseFrontmatter } from './markdown.ts'
 export { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
 export type { SessionEntry } from './session.manager.ts'
+export { listSkills, type SkillMeta } from './skills.ts'
 export {
 	DEFAULT_TIMEZONE,
 	isoToTimezone,

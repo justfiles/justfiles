@@ -16,8 +16,27 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   (The old `fs` read/write/ls/mkdir/rm tools were retired — just-bash's shell built-ins
   replace them — so they're no longer a parity gap; quayd's agent is now `fetch` +
   `search` + `ask_user` only, no shell/app-control.)
-- [ ] Slash commands + `/new` (`commands()` / `command()` are not exposed; the daemon's RPC
-  surface is just `prompt`/`history`).
+- [x] Slash commands + `/new`. Commands are a **daemon** concept (`daemon/commands.ts`),
+- [x] Slash commands + `/new`. Commands are a **daemon** concept (`daemon/commands.ts`),
+  fully off the agent: `@justfiles/agent` exposes only skill primitives (`listSkills` for
+  LLM-free enumeration + `Assistant.applySkill`/`readSkill`) and has no `command` concept.
+  The daemon owns the registry (`SYSTEM_COMMANDS` = `/new` + `/debug`, projected alongside
+  one entry per skill via `buildCommands`) and dispatch (`dispatchCommand`), handled over
+  the **`/system`** socket (request/reply), not the agent socket. `dispatchCommand` returns
+  a `CommandResult` (`{ show: 'chat' }` | `{ show: 'text', body }` | `undefined`) so the
+  return drives the launcher: `/new` clears the session + reveals chat, a skill runs on the
+  shared agent via `applySkill` (its turn streams into the live transcript), `/debug`
+  renders a one-off text panel (also logged to quayd.log). Command output never touches the
+  session. The catalogue is pushed on the `/system` `commands` frame (built from
+  `listSkills`, no assistant/backend — works offline); native `Launcher` dispatches over
+  `CatalogClient.runCommand` and acts on the `CommandResult`.
+- [x] Subscription-based chat. The `/agent` socket is a **live view of one shared session**
+  (plain WebSocket + Bun `agent` pub/sub topic, no capnweb): every turn broadcasts the full
+  transcript (`history`) plus `busy`/`error`; the client only sends `{ prompt }`. Because a
+  `/skill` dispatched over `/system` runs on the same shared `Assistant`, its turn surfaces
+  in every open chat naturally — no deliberate daemon→UI push per action, just the session
+  the transcript observes. `AgentImpl`/`agentRpcTarget` are gone; the daemon keeps one
+  memoised session (`getAgent`, reset on failure) driven by `promptAgent`/`dispatchCommand`.
 - [ ] `abort` support.
 - [ ] Seed a default `soul.md` on first run (without it the agent falls back to the setup
   prompt — quayd's `seedSoul` writes a persona).

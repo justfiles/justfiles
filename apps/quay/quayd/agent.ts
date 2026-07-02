@@ -8,8 +8,6 @@ import {
 	type AgentBackend,
 	type Assistant,
 	apiKeyBackend,
-	BUILTIN_COMMANDS,
-	type CommandMeta,
 	type CompactionSettings,
 	createAgent,
 	createAskUserTool,
@@ -17,7 +15,9 @@ import {
 	createFetchTool,
 	createSearchTool,
 	type LLMConfig,
+	listSkills,
 	type SessionEntry,
+	type SkillMeta,
 	text
 } from '@justfiles/agent'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
@@ -76,6 +76,28 @@ export interface QuayAgent {
 	// transcript); a skill name expands its body into a turn.
 	command(name: string): Promise<AgentMessage[]>
 	abort(): void
+}
+
+// Slash commands are a host concept — the agent knows only skills. quayd's `/` menu is
+// its built-ins plus one entry projected per Volume skill.
+export interface CommandMeta {
+	name: string
+	description: string
+	kind: 'builtin' | 'skill'
+}
+const BUILTIN_COMMANDS: readonly CommandMeta[] = [
+	{ name: 'new', description: 'Start a fresh chat session', kind: 'builtin' }
+]
+function buildCommands(skills: SkillMeta[]): CommandMeta[] {
+	const taken = new Set(BUILTIN_COMMANDS.map((command) => command.name))
+	return [
+		...BUILTIN_COMMANDS,
+		...skills
+			.filter((skill) => !taken.has(skill.id))
+			.map(
+				(skill): CommandMeta => ({ name: skill.id, description: skill.description, kind: 'skill' })
+			)
+	]
 }
 
 const COMPACTION: CompactionSettings = {
@@ -152,11 +174,12 @@ export async function createQuayAgent(
 		return runTurn(trimmed, trimmed)
 	}
 
-	// The slash-command catalogue. Falls back to the built-ins if the backend can't be
-	// built (offline) so `/new` is always available.
+	// The slash-command catalogue: the built-ins plus one entry per Volume skill, from the
+	// agent's LLM-free `listSkills` (so it works offline, no runtime build). `/new` always
+	// shows even if the Volume read fails.
 	async function commands(): Promise<CommandMeta[]> {
 		try {
-			return await (await ensureRuntime()).commands()
+			return buildCommands(await listSkills(host.fs))
 		} catch {
 			return [...BUILTIN_COMMANDS]
 		}

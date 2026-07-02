@@ -2,7 +2,6 @@ import type { Volume } from '@justfiles/fs'
 import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@mariozechner/pi-agent-core'
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
-import { type CommandMeta, listCommands } from './commands'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
 import { createReadDocTool, docsPrompt } from './docs'
 import { file } from './file'
@@ -15,7 +14,7 @@ import {
 	type SessionManager,
 	session
 } from './session.manager'
-import { createReadSkillTool, createSkillRegistry, createVolumeSkillSource } from './skills'
+import { createReadSkillTool, createVolumeSkillRegistry } from './skills'
 import { DEFAULT_TIMEZONE, formatInTimezone } from './timezone'
 
 type AssistantProps = {
@@ -55,10 +54,12 @@ export interface Assistant {
 	// --- tools ---
 	addTools: (tools: readonly AgentTool[]) => void
 
-	// --- slash-command palette (host's `/` menu) ---
-	// The slash-command catalogue (built-ins + skills).
-	commands: () => Promise<CommandMeta[]>
-	// One skill's body, for a skill slash-command's prompt-expansion.
+	// --- skills ---
+	// Apply a skill by id: load its body and run it as a normal turn, so the result lands
+	// in the session like any other turn. A host maps its own `/skill`-style command to this
+	// — the agent has no `command` concept. Enumeration is separate + LLM-free (`listSkills`).
+	applySkill: (id: string) => Promise<string>
+	// Read one skill's body by id, without running it.
 	readSkill: (id: string) => Promise<string>
 
 	// --- introspection (debug) ---
@@ -75,7 +76,7 @@ export async function createAssistant({
 }: AssistantProps): Promise<Assistant> {
 	// Skills: user-authored on the Volume (+ built-in sources later). Expose `read_skill`
 	// only when there is something to read, so a host with no skills sees no dead tool.
-	const skillRegistry = createSkillRegistry([createVolumeSkillSource(volume)])
+	const skillRegistry = createVolumeSkillRegistry(volume)
 	if (await skillRegistry.index()) {
 		agent.state.tools = [...agent.state.tools, createReadSkillTool(skillRegistry)]
 	}
@@ -96,7 +97,7 @@ export async function createAssistant({
 		newSession,
 		abort,
 		addTools,
-		commands: () => listCommands(skillRegistry),
+		applySkill: (id) => applySkill(id),
 		readSkill: (id) => skillRegistry.read(id),
 		systemPrompt: () => agent.state.systemPrompt
 	}
@@ -112,6 +113,11 @@ export async function createAssistant({
 
 	function addTools(tools: readonly AgentTool[]) {
 		agent.state.tools = [...agent.state.tools, ...tools]
+	}
+
+	// Load a skill body and run it as a normal turn (its result lands in the session).
+	async function applySkill(id: string): Promise<string> {
+		return prompt(await skillRegistry.read(id))
 	}
 
 	async function prompt(message: string, source: PromptSource = 'user') {

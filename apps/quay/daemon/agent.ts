@@ -10,15 +10,17 @@ import {
 	createFetchTool,
 	createJustBashTool,
 	createSearchTool,
+	listSkills,
+	type SessionEntry,
 	text
 } from '@justfiles/agent'
-import type { Channel } from '@justfiles/app/capabilities/notify'
 import type { Kernel } from '@justfiles/app/runtime'
-import { RpcTarget } from 'capnweb'
 import { resolveAgentBackend } from '../quayd/chatgpt'
+import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
 import { getKernel } from './kernel'
 import { notificationChannel } from './notify'
+import type { AgentEvent } from './protocol'
 
 // Opening/closing a window is native-touching: from the daemon we `open` the
 // materialised bundle and `pkill` its booter. Injectable so tests drive the
@@ -99,101 +101,52 @@ const nativeWindows: WindowOps = {
 		})
 }
 
-// A multiple-choice question the agent posed via `ask_user`, captured for the
-// turn that's running so `prompt` can surface it once the runtime returns.
+// A multiple-choice question the agent posed via `ask_user`, captured for the turn that's
+// running so a turn can swap its banner ping to `question` once the runtime returns. The
+// question itself lands in the session, so the transcript renders it without extra help.
 interface PendingQuestion {
 	question: string
 	options: string[]
 }
 
-class AgentImpl extends RpcTarget {
-	// The agent is a trusted host service, so it pings the channel DIRECTLY with
-	// `source: 'agent'` (sandboxed apps go through the capability). The native sink
-	// suppresses the banner while the chat surface is in front, so it only surfaces
-	// when you're away; one `threadId` coalesces re-posts into a single banner.
-	// `takePending` reads-and-clears the question `ask_user` recorded this turn.
-	constructor(
-		private agent: Assistant,
-		private channel: Channel,
-		private takePending: () => PendingQuestion | null
-	) {
-		super()
-	}
-
-	async prompt(message: string) {
-		try {
-			this.takePending() // drop any stale question before the turn
-			const answer = await this.agent.prompt(message)
-			// The agent called `ask_user` and ended its turn: the question IS the turn's
-			// result, so surface it (and ping a `question` banner) instead of the answer.
-			// The user's pick arrives as the next prompt — no suspension.
-			const asked = this.takePending()
-			if (asked) {
-				this.ping('question', asked.question)
-				return asked.question
-			}
-			this.ping('info', answer)
-			return answer
-		} catch (err) {
-			console.error('[agent] prompt failed:', err)
-			this.ping('error', err instanceof Error ? err.message : String(err))
+// The daemon runs ONE shared agent session (unlike a per-connection build): every chat
+// subscribes to its transcript and the `/system` command handler drives the same session,
+// so a `/skill` turn shows up live in an open chat. Built lazily and reset on failure so a
+// sign-in after an offline start retries on the next use.
+interface AgentSession {
+	assistant: Assistant
+	takePending: () => PendingQuestion | null
+}
+let sessionPromise: Promise<AgentSession> | null = null
+function getAgent(): Promise<AgentSession> {
+	if (!sessionPromise) {
+		sessionPromise = buildAgent().catch((err) => {
+			sessionPromise = null
 			throw err
-		}
-	}
-	async history() {
-		try {
-			return await this.agent.history()
-		} catch (err) {
-			console.error('[agent] history failed:', err)
-			throw err
-		}
-	}
-
-	private ping(kind: 'info' | 'error' | 'question', body: string): void {
-		this.channel({
-			id: crypto.randomUUID(),
-			source: 'agent',
-			kind,
-			title: 'quay',
-			body: summarize(body),
-			threadId: 'agent',
-			route: { kind: 'chat' }
 		})
 	}
+	return sessionPromise
 }
 
-// Trim an answer to a banner-sized one-liner: first line, capped, ellipsised.
-function summarize(text: string): string {
-	const line = text.trim().split('\n')[0] ?? ''
-	return line.length > 140 ? `${line.slice(0, 139)}…` : line
-}
-
-export async function agentRpcTarget() {
+async function buildAgent(): Promise<AgentSession> {
 	const fs = await getVolume()
 	const llm = await resolveAgentBackend(fs)
 	if (!llm) throw new Error('failed to get llm config')
 
-	const rt = await createAssistant({
+	const assistant = await createAssistant({
 		volume: fs,
 		agent: createAgent(llm),
 		text: text(llm),
-		compaction: {
-			enabled: true,
-			reserveTokens: 16384,
-			keepRecentTokens: 20000
-		}
+		compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }
 	})
 
 	// The agent drives apps through the SAME kernel the windows subscribe to, so
 	// `app launch`/`app run` update live windows the moment they run.
 	const controller = createAppController(await getKernel())
-	const bash = createJustBashTool({
-		volume: fs,
-		commands: [createAppShellCommand(controller)]
-	})
+	const bash = createJustBashTool({ volume: fs, commands: [createAppShellCommand(controller)] })
 
-	// `ask_user` records the question the agent poses; `takePending` hands it to the
-	// RPC target's `prompt`, which surfaces it once the turn returns.
+	// `ask_user` records the question the agent poses; `takePending` reads-and-clears it so a
+	// turn can ping a `question` banner instead of `info`.
 	let pending: PendingQuestion | null = null
 	const askUser = createAskUserTool((question, options) => {
 		pending = { question, options }
@@ -204,7 +157,129 @@ export async function agentRpcTarget() {
 		return p
 	}
 
-	rt.addTools([bash, createFetchTool(), createSearchTool(), askUser])
+	assistant.addTools([bash, createFetchTool(), createSearchTool(), askUser])
+	return { assistant, takePending }
+}
 
-	return new AgentImpl(rt, notificationChannel, takePending)
+// The daemon injects a sink that publishes `/agent` events to every connected chat (main.ts
+// wires it to the `agent` pub/sub topic). Turns broadcast their transcript + busy/error
+// through it, so the transcript is a live view of the session with no polling.
+let broadcast: (event: AgentEvent) => void = () => {}
+export function setAgentBroadcast(sink: (event: AgentEvent) => void): void {
+	broadcast = sink
+}
+
+// Run one turn on the shared agent, publishing busy + the resulting transcript (or an
+// error) to the chat subscribers and pinging the notification channel. `ask_user` ends a
+// turn with a question that already lands in the session (the transcript renders it); we
+// only swap the banner ping to `question`.
+async function runTurn(run: (assistant: Assistant) => Promise<string>): Promise<void> {
+	broadcast({ type: 'busy', value: true })
+	try {
+		const { assistant, takePending } = await getAgent()
+		takePending() // drop any stale question before the turn
+		const answer = await run(assistant)
+		const asked = takePending()
+		broadcast({ type: 'history', entries: [...(await assistant.history())] })
+		ping(asked ? 'question' : 'info', asked ? asked.question : answer)
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err)
+		console.error('[agent] turn failed:', err)
+		broadcast({ type: 'error', message })
+		ping('error', message)
+	} finally {
+		broadcast({ type: 'busy', value: false })
+	}
+}
+
+// The current transcript, for the snapshot a chat gets on connect. Empty when the agent
+// can't build (no backend) so the chat shows an empty transcript rather than erroring.
+export async function agentHistory(): Promise<readonly SessionEntry[]> {
+	try {
+		return await (await getAgent()).assistant.history()
+	} catch {
+		return []
+	}
+}
+
+// A chat message from the user. Fire-and-observe: the turn runs and its result reaches the
+// chat through the broadcast, so callers don't await it.
+export function promptAgent(message: string): void {
+	void runTurn((assistant) => assistant.prompt(message))
+}
+
+// Dispatch a slash command by name. Commands are a DAEMON concept (see commands.ts) — the
+// agent only ever gets skill/session primitives (`applySkill` / `newSession`), never a
+// command. The result tells the launcher what to show; command output never touches the
+// session, and a skill's turn is recorded by the agent as normal conversation.
+export async function dispatchCommand(name: string): Promise<CommandResult> {
+	if (name === 'new') {
+		try {
+			const { assistant, takePending } = await getAgent()
+			takePending()
+			await assistant.newSession()
+		} catch (err) {
+			console.error('[agent] /new failed:', err)
+		}
+		broadcast({ type: 'history', entries: [] })
+		return { show: 'chat' }
+	}
+	if (name === 'debug') return { show: 'text', body: await debugReport() }
+	// A skill: expand it into a turn on the shared agent. The transcript updates live via
+	// the subscription, so reveal the chat now instead of awaiting the turn.
+	void runTurn((assistant) => assistant.applySkill(name))
+	return { show: 'chat' }
+}
+
+// A snapshot of what the agent runs with: session length + the resolved system prompt
+// (persona + memory + docs). Logged to quayd.log and returned for the `/debug` text panel.
+async function debugReport(): Promise<string> {
+	try {
+		const { assistant } = await getAgent()
+		const history = await assistant.history()
+		const report = [
+			'agent diagnostics',
+			`session entries: ${history.length}`,
+			'',
+			'system prompt:',
+			assistant.systemPrompt()
+		].join('\n')
+		console.log(`[agent] /debug\n${report}`)
+		return report
+	} catch (err) {
+		return `agent unavailable: ${err instanceof Error ? err.message : String(err)}`
+	}
+}
+
+// Ping the notification channel as the trusted `agent` source (the native sink suppresses
+// the banner while the chat is in front). One `threadId` coalesces re-posts.
+function ping(kind: 'info' | 'error' | 'question', body: string): void {
+	notificationChannel({
+		id: crypto.randomUUID(),
+		source: 'agent',
+		kind,
+		title: 'quay',
+		body: summarize(body),
+		threadId: 'agent',
+		route: { kind: 'chat' }
+	})
+}
+
+// Trim an answer to a banner-sized one-liner: first line, capped, ellipsised.
+function summarize(value: string): string {
+	const line = value.trim().split('\n')[0] ?? ''
+	return line.length > 140 ? `${line.slice(0, 139)}…` : line
+}
+
+// The slash-command catalogue for the daemon's `/system` frame (the native launcher's
+// `/` menu reads it): the daemon's built-ins plus one entry per Volume skill. Sourced from
+// the agent's LLM-free `listSkills`, so it needs no assistant/backend and works offline; a
+// read failure still yields the built-ins.
+export async function agentCommands(): Promise<CommandMeta[]> {
+	try {
+		return buildCommands(await listSkills(await getVolume()))
+	} catch (err) {
+		console.error('[agent] commands catalogue failed:', err)
+		return [...SYSTEM_COMMANDS]
+	}
 }

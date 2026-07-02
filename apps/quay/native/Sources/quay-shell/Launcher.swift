@@ -111,8 +111,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		blur.addSubview(tint)
 
 		// The transcript webview: transparent over the native vibrancy, status-bridged,
-		// kept warm. Its agent socket and token are owned by the page (quayd injects the
-		// token); native only drives input (quaySend/quayAbort) and reads `status`.
+		// kept warm. It subscribes to the daemon's /agent socket (a live view of the session);
+		// native drives input (quaySend / quayShowOutput) and reads `status`. Commands ride the
+		// separate /system socket, not the webview.
 		let cfg = WKWebViewConfiguration()
 		cfg.userContentController.add(self, name: "status")
 		webView = WKWebView(frame: .zero, configuration: cfg)
@@ -318,13 +319,25 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		}
 	}
 
-	// Run a slash command: reveal the transcript and drive it over the chat webview's own
-	// socket (window.quayCommand), so the authoritative transcript updates — `/new` clears
-	// it, a skill shows its turn. Going through the webview (not the native catalog socket)
-	// is what keeps the displayed conversation in sync.
+	// Run a slash command by dispatching it over the daemon's /system socket (commands are a
+	// daemon concept — not the agent's), then act on the result: `.chat` reveals the warm
+	// transcript (a `/new` clears it, a skill turn streams in live via the /agent
+	// subscription); `.text` reveals it and shows the one-off output; `nil` is fire-and-forget
+	// (dismiss). The chat webview no longer handles commands — it only renders + sends prompts.
 	private func runCommand(_ name: String) {
-		enterChat(send: nil)
-		webView.evaluateJavaScript("window.quayCommand && window.quayCommand(\(jsString(name)))")
+		catalog.runCommand(name) { [weak self] result in
+			guard let self else { return }
+			switch result {
+			case .chat:
+				self.enterChat(send: nil)
+			case .text(let body):
+				self.enterChat(send: nil)
+				self.webView.evaluateJavaScript(
+					"window.quayShowOutput && window.quayShowOutput(\(self.jsString(body)))")
+			case nil:
+				self.hide()
+			}
+		}
 	}
 
 	private func launch(_ id: String) {

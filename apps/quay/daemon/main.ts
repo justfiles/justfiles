@@ -1,15 +1,20 @@
 import { randomBytes } from 'node:crypto'
 import { dirname, resolve, sep } from 'node:path'
 import type { ServerWebSocket } from 'bun'
-import { BunWebSocketTransport, RpcSession } from 'capnweb'
 import { SHIPPED } from '../quayd/resources'
-import { agentRpcTarget } from './agent'
+import {
+	agentCommands,
+	agentHistory,
+	dispatchCommand,
+	promptAgent,
+	setAgentBroadcast
+} from './agent'
 import { coalesce } from './coalesce'
 import { clearRuntime, writeRuntime } from './fs'
 import { getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
 import { setNotificationChannel } from './notify'
-import type { ServerMessage } from './protocol'
+import type { AgentEvent, AgentRequest, ClientMessage, ServerMessage } from './protocol'
 import { sandboxes } from './sandbox'
 
 // The browser surfaces (launcher, chat, app shell, their hashed assets, and the shared
@@ -89,15 +94,15 @@ function imageContentType(path: string, bytes: Uint8Array): string {
 	return 'application/octet-stream'
 }
 
-type Context =
-	| { type: 'system' }
-	| { type: 'agent'; transport?: BunWebSocketTransport<Context> }
-	| { type: 'app'; id: string }
+type Context = { type: 'system' } | { type: 'agent' } | { type: 'app'; id: string }
 
 // Single typed exit point for client-bound messages; routing every send through
 // the `ServerMessage` union is what makes the wire protocol checked at compile time.
 const send = (ws: ServerWebSocket<Context>, message: ServerMessage) =>
 	ws.send(JSON.stringify(message))
+// The `/agent` socket carries its own union (a live view of the session).
+const sendAgent = (ws: ServerWebSocket<Context>, event: AgentEvent) =>
+	ws.send(JSON.stringify(event))
 
 const server = Bun.serve({
 	// Loopback only — never 0.0.0.0 (Bun's default), which would expose the daemon to the
@@ -109,8 +114,8 @@ const server = Bun.serve({
 	port: process.env.PORT ? Number(process.env.PORT) : SHIPPED ? 0 : 3000,
 	routes: {
 		'/': () => serveClient('launcher/index.html'),
-		// The native launcher embeds this chat-only surface in a transparent WKWebView;
-		// it drives the daemon's /agent RPC and exposes the window.quay* native bridge.
+		// The native launcher embeds this chat-only surface in a transparent WKWebView; it
+		// subscribes to the daemon's /agent socket (live transcript) and sends prompts.
 		'/launcher/chat': () => serveClient('launcher/chat.html'),
 		'/app/:id': () => serveClient('app/shell.html'),
 		'/app/:id/gui.js': async (req) => {
@@ -160,15 +165,12 @@ const server = Bun.serve({
 
 		async open(ws) {
 			if (ws.data.type === 'agent') {
-				// Stash the transport SYNCHRONOUSLY, before any await: the client sends
-				// its first RPC frame the instant the socket opens, and `message` feeds
-				// frames into `ws.data.transport`. If we awaited first, that frame would
-				// hit an undefined transport and be dropped — desyncing the Cap'n Web
-				// protocol and breaking the session. The transport buffers frames in its
-				// receive queue until the session below starts reading them.
-				const transport = new BunWebSocketTransport(ws)
-				ws.data.transport = transport
-				new RpcSession(transport, await agentRpcTarget())
+				// The chat is a live view of the shared session: subscribe to the `agent` topic
+				// (every turn broadcasts the transcript there), then send this socket the current
+				// snapshot so it mounts on it. No per-connection agent build — one shared session.
+				ws.subscribe('agent')
+				sendAgent(ws, { type: 'history', entries: [...(await agentHistory())] })
+				sendAgent(ws, { type: 'busy', value: false })
 				return
 			}
 			if (ws.data.type === 'app') {
@@ -193,11 +195,19 @@ const server = Bun.serve({
 				// Send the freshly-connected launcher the current catalog (publish reaches
 				// this socket too — it just subscribed above).
 				await refreshCatalog()
+				// Push the slash-command catalogue (built-ins + skills) so the launcher's `/`
+				// menu populates; dispatch rides this same /system socket (see message()).
+				send(ws, { type: 'commands', commands: await agentCommands() })
 			}
 		},
 		async message(ws, message) {
 			if (ws.data.type === 'agent') {
-				ws.data.transport?.dispatchMessage(message)
+				// The chat only ever sends prompts; the turn's result comes back on the `agent`
+				// topic (a fresh transcript), not as a reply to this frame.
+				const req = JSON.parse(
+					typeof message === 'string' ? message : message.toString()
+				) as AgentRequest
+				if (req.type === 'prompt') promptAgent(req.text)
 				return
 			}
 			if (ws.data.type === 'app') {
@@ -218,14 +228,21 @@ const server = Bun.serve({
 				return
 			}
 			const text = typeof message === 'string' ? message : message.toString()
+			// The launcher dispatches slash commands over /system (commands are a daemon
+			// concept): parse, dispatch, and reply with what the launcher should show.
+			const parsed = JSON.parse(text) as ClientMessage
+			if (parsed.type === 'command') {
+				const result = await dispatchCommand(parsed.name)
+				send(ws, { type: 'commandResult', id: parsed.id, result })
+				return
+			}
 			send(ws, { type: 'error', message: `Unknown command: ${text}` })
 		},
-		close(ws, code, reason) {
-			// Only the agent socket runs a Cap'n Web session; app sockets are auto-
-			// unsubscribed from their topic by Bun on close.
-			if (ws.data.type === 'agent') ws.data.transport?.dispatchClose(code, reason)
-			// A GUI window closed — unpin its reducer worker so it's reaped once idle.
-			else if (ws.data.type === 'app') sandboxes.release(ws.data.id)
+		close(ws) {
+			// App sockets are auto-unsubscribed from their topic by Bun on close; unpin the
+			// reducer worker so it's reaped once idle. The agent socket is a plain subscriber
+			// (also auto-unsubscribed), so nothing to tear down.
+			if (ws.data.type === 'app') sandboxes.release(ws.data.id)
 		}
 	}
 })
@@ -245,6 +262,11 @@ setNotificationChannel((notification) =>
 		JSON.stringify({ type: 'notification', notification } satisfies ServerMessage)
 	)
 )
+
+// Bind the agent broadcast sink: every turn publishes its transcript + busy/error to the
+// `agent` topic, which each connected chat subscribes to. This is what makes the chat a
+// live view of the shared session — a daemon-driven `/skill` turn surfaces without polling.
+setAgentBroadcast((event) => server.publish('agent', JSON.stringify(event satisfies AgentEvent)))
 
 // Project the kernel catalog into ~/Applications/Quay Apps/*.app so installed apps are
 // real macOS apps (Spotlight/Launchpad), launchable with the launcher closed. One-way,

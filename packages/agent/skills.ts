@@ -87,7 +87,7 @@ export interface SkillRegistry {
 	// Body for one skill id, dispatched to the source that owns it.
 	read(id: string): Promise<string>
 	// The merged skill metas (id + name + description), id-collisions resolved as in
-	// index(). The slash-command catalogue (commands.ts) lists each as a `/id` command.
+	// index(). A host projects these into its own menu — skills are not commands.
 	list(): Promise<SkillMeta[]>
 }
 
@@ -134,6 +134,21 @@ export function createSkillRegistry(sources: SkillSource[]): SkillRegistry {
 const readSkillParams = Type.Object({
 	id: Type.String({ description: 'The skill id, exactly as shown in the skills list.' })
 })
+
+// The skill registry a Volume-backed host exposes: the ONE place that names the sources
+// (user skills on the Volume today; built-in manifest sources later), so `createAssistant`
+// and `listSkills` never drift. Package-internal — hosts use `createAssistant` / `listSkills`.
+export function createVolumeSkillRegistry(volume: Volume): SkillRegistry {
+	return createSkillRegistry([createVolumeSkillSource(volume)])
+}
+
+// Cheap, LLM-free enumeration of the user's Volume skills, so a host can render its `/`
+// menu (or any picker) WITHOUT building the full Assistant. Reuses the shared registry
+// factory so it can't drift from what the agent reads. Skills are not commands: the host
+// decides how to project these metas into whatever surface it owns.
+export async function listSkills(volume: Volume): Promise<SkillMeta[]> {
+	return createVolumeSkillRegistry(volume).list()
+}
 
 export function createReadSkillTool(registry: SkillRegistry): AgentTool<typeof readSkillParams> {
 	return {

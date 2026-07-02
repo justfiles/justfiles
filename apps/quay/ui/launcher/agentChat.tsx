@@ -1,19 +1,20 @@
 import type { AgentMessage } from '@justfiles/ui/Transcript'
-import { newWebSocketRpcSession } from 'capnweb'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-// The launcher's agent transport: a Cap'n Web RPC session to the daemon's `/agent`
-// socket (prompt/history). Shared by the in-page launcher chat (main.tsx) and the
-// native chat surface (chat.tsx) so both drive the agent identically. The agent is
-// request/response, so a turn shows an optimistic user bubble + a streaming-caret
-// placeholder until the authoritative transcript returns.
+// The launcher's agent transport: a plain WebSocket to the daemon's `/agent` socket, which
+// is a LIVE VIEW of the shared session. The daemon pushes the whole transcript on every
+// change (its own turns, or a `/skill` dispatched over `/system`), plus a busy flag and
+// turn errors; the client only sends prompts. Shared by the in-page launcher chat
+// (main.tsx) and the native chat surface (chat.tsx). Commands are NOT sent here — they ride
+// `/system` and reach the agent (if at all) as a skill, surfacing naturally in the push.
 
 type Connection = 'connecting' | 'ready' | 'disconnected'
 
-type AgentApi = {
-	prompt(message: string): Promise<string>
-	history(): Promise<SessionEntry[]>
-}
+// Server→client on `/agent` (mirrors the daemon's AgentEvent).
+type AgentEvent =
+	| { type: 'history'; entries: SessionEntry[] }
+	| { type: 'busy'; value: boolean }
+	| { type: 'error'; message: string }
 
 type SessionEntry =
 	| { id: string; type: 'message'; role: 'user'; content: string; source?: 'user' | 'app' }
@@ -28,70 +29,63 @@ export function useAgentChat() {
 	const [isStreaming, setIsStreaming] = useState(false)
 	const [connection, setConnection] = useState<Connection>('connecting')
 	const [error, setError] = useState<string | null>(null)
-	const apiRef = useRef<AgentApi | null>(null)
+	const socketRef = useRef<WebSocket | null>(null)
 
+	// Subscribe to the live session, reconnecting on drop (a daemon restart re-pushes the
+	// snapshot on the new socket). Every `history` frame is the authoritative transcript, so
+	// it replaces local state — including any optimistic bubble `send` added.
 	useEffect(() => {
 		let stopped = false
-		const api = newWebSocketRpcSession<AgentApi>(
-			`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/agent`
-		)
-		apiRef.current = api
-		void api
-			.history()
-			.then((history) => {
+		let retry: ReturnType<typeof setTimeout> | undefined
+		let socket: WebSocket | undefined
+		const connect = () => {
+			setConnection('connecting')
+			socket = new WebSocket(
+				`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/agent`
+			)
+			socketRef.current = socket
+			socket.onmessage = (ev) => {
+				const event = JSON.parse(String(ev.data)) as AgentEvent
+				if (event.type === 'history') {
+					setMessages(sessionEntriesToMessages(event.entries))
+					setConnection('ready')
+					setError(null)
+				} else if (event.type === 'busy') {
+					setIsStreaming(event.value)
+				} else if (event.type === 'error') {
+					setError(event.message)
+				}
+			}
+			socket.onerror = () => socket?.close()
+			socket.onclose = () => {
 				if (stopped) return
-				setMessages(sessionEntriesToMessages(history))
-				setConnection('ready')
-				setError(null)
-			})
-			.catch((err) => {
-				if (stopped) return
+				socketRef.current = null
 				setConnection('disconnected')
-				setError(errorMessage(err))
-			})
+				retry = setTimeout(connect, 1000)
+			}
+		}
+		connect()
 		return () => {
 			stopped = true
-			apiRef.current = null
-			api[Symbol.dispose]?.()
+			clearTimeout(retry)
+			socket?.close()
 		}
 	}, [])
 
-	const send = useCallback(async (text: string) => {
+	// Send a chat message. Optimistic user bubble + empty assistant placeholder (which shows
+	// the streaming caret) until the turn's `history` push replaces the whole transcript.
+	const send = useCallback((text: string) => {
 		const trimmed = text.trim()
-		const api = apiRef.current
-		if (!trimmed || !api) return
-
-		const pendingId = `pending-${crypto.randomUUID()}`
+		const socket = socketRef.current
+		if (!trimmed || !socket || socket.readyState !== WebSocket.OPEN) return
 		setMessages((prev) => [
 			...prev,
 			{ id: crypto.randomUUID(), role: 'user', content: trimmed },
-			{ id: pendingId, role: 'assistant', content: '' }
+			{ id: crypto.randomUUID(), role: 'assistant', content: '' }
 		])
 		setIsStreaming(true)
 		setError(null)
-
-		try {
-			const answer = await api.prompt(trimmed)
-			try {
-				setMessages(sessionEntriesToMessages(await api.history()))
-			} catch {
-				setMessages((prev) =>
-					prev.map((message) =>
-						message.id === pendingId ? { ...message, content: answer } : message
-					)
-				)
-			}
-			setConnection('ready')
-		} catch (err) {
-			const message = errorMessage(err)
-			setError(message)
-			setMessages((prev) => [
-				...prev.filter((entry) => entry.id !== pendingId),
-				{ id: crypto.randomUUID(), role: 'assistant', content: message, error: true }
-			])
-		} finally {
-			setIsStreaming(false)
-		}
+		socket.send(JSON.stringify({ type: 'prompt', text: trimmed }))
 	}, [])
 
 	return { messages, isStreaming, connection, error, send }
@@ -181,8 +175,4 @@ function parseToolResult(content: string): unknown {
 	} catch {
 		return content
 	}
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error)
 }
