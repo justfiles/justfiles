@@ -43,7 +43,14 @@ const outfile = flag('--outfile') ?? './dist/quay-daemon'
 const target = flag('--target') // bun-darwin-arm64 / bun-darwin-x64; undefined = host
 
 const result = await Bun.build({
-	entrypoints: ['./daemon/main.ts'],
+	// The daemon is the main entry; the toolchain worker is a SECOND entrypoint so its
+	// graph (bunCompile + tsc) is embedded in the standalone too. Bun's static
+	// `new Worker(new URL(...))` tracing doesn't reach a worker spawned indirectly
+	// (via the lazy `toolchain()` handle), so we list it explicitly — otherwise the
+	// worker script is missing at runtime in the shipped exe and devkit typecheck/
+	// compile break (dev via `bun --watch` is unaffected). Both land at the bunfs
+	// root, so `new URL('./toolchainWorker.ts', import.meta.url)` resolves as siblings.
+	entrypoints: ['./daemon/main.ts', './daemon/toolchainWorker.ts'],
 	target: 'bun',
 	plugins: [rawText],
 	// Tell the standalone it is shipped, so resources resolve from

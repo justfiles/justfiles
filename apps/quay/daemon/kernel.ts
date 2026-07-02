@@ -8,16 +8,14 @@ import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devki
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
-import { bunCompile } from '@justfiles/app/toolchain/bun'
-import { tsTypecheck } from '@justfiles/app/toolchain/typescript'
 import type { Volume } from '@justfiles/fs'
-import * as ts from 'typescript'
 import { builtinSource } from '../quayd/builtins'
 import { chatgptProvider } from '../quayd/chatgpt'
 import { googleProvider } from '../quayd/google/provider'
 import { getVolume } from './fs'
 import { notificationChannel } from './notify'
 import { sandboxes } from './sandbox'
+import { toolchain } from './toolchain'
 
 let kernelOnce: Promise<Kernel> | undefined
 
@@ -41,15 +39,22 @@ export async function getKernel(): Promise<Kernel> {
 			sandbox: sandboxes.get,
 			capabilities: capabilityRegistry({
 				volume: volumeCapability(fs, { systemAllowlist }),
-				devkit: (k) =>
-					devkitCapability({
+				devkit: (k) => {
+					// Compile + typecheck run in a warm worker thread (see ./toolchain.ts),
+					// not on the daemon's event loop — so tsc's multi-second synchronous
+					// pass never freezes UI requests or app sockets. The client presents the
+					// same `(input, runtime)` / `(input, types, paths)` backend signatures
+					// the factory expects, so this is a drop-in for the in-process backends.
+					const tc = toolchain()
+					return devkitCapability({
 						fs,
 						kernel: k,
-						compile: bunCompile,
-						typecheck: async (input, types, paths) => tsTypecheck(input, ts, types, paths),
+						compile: tc.compile,
+						typecheck: tc.typecheck,
 						runner: quayRunner(fs, k),
 						overwrite: true
-					}),
+					})
+				},
 				accounts,
 				email,
 				calendar,

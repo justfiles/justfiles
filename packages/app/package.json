@@ -17,6 +17,7 @@
 		"./toolchain/esbuild": "./capabilities/devkit/toolchain.esbuild.ts",
 		"./toolchain/bun": "./capabilities/devkit/toolchain.bun.ts",
 		"./toolchain/typescript": "./capabilities/devkit/toolchain.typescript.ts",
+		"./toolchain/worker": "./capabilities/devkit/toolchain.worker.ts",
 		"./devkit-runtime": "./capabilities/devkit/devkit-runtime.ts",
 		"./builtins": "./builtins.ts",
 		"./capabilities": "./capabilities/index.ts",
@@ -91,6 +92,10 @@
 			"./toolchain/typescript": {
 				"types": "./dist/capabilities/devkit/toolchain.typescript.d.ts",
 				"default": "./dist/capabilities/devkit/toolchain.typescript.js"
+			},
+			"./toolchain/worker": {
+				"types": "./dist/capabilities/devkit/toolchain.worker.d.ts",
+				"default": "./dist/capabilities/devkit/toolchain.worker.js"
 			},
 			"./devkit-runtime": {
 				"types": "./dist/capabilities/devkit/devkit-runtime.d.ts",
