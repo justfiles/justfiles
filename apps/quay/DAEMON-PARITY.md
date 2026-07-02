@@ -44,10 +44,6 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   already called `window.quayAbort` — `chat.tsx` now defines it, wired to `useAgentChat.abort`,
   which sends the frame. The aborted turn's `busy:false`/`error` push flows back over the
   socket as usual.
-- [ ] Seed a default `soul.md` on first run (without it the agent falls back to the setup
-  prompt — quayd's `seedSoul` writes a persona).
-- [ ] Local LM Studio fallback — the daemon throws when no ChatGPT account is configured
-  (`resolveAgentBackend` → null); quayd falls back to `apiKeyBackend(localLlmStudio())`.
 - [ ] User-facing error classification (auth-expired / token-limit routes). The Vite client
   currently shows the raw error string; quayd's `classifyFailure` is not ported. This also
   fixes agent notification pings, which use a fixed `route: { kind: 'chat' }`.

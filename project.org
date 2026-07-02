@@ -28,3 +28,9 @@ src/gui.tsx:2:26 Cannot find module './app' or its corresponding type declaratio
 - [ ] auto-refresh?
 - [ ] do not save file list in state
 ** TODO /reboot
+** TODO better agent states
+
+- streaming messages
+- realtime state of agent (fetching, searching, calling tools etc..)
+-
+** TODO better Agent setup
