@@ -17,7 +17,6 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   replace them — so they're no longer a parity gap; quayd's agent is now `fetch` +
   `search` + `ask_user` only, no shell/app-control.)
 - [x] Slash commands + `/new`. Commands are a **daemon** concept (`daemon/commands.ts`),
-- [x] Slash commands + `/new`. Commands are a **daemon** concept (`daemon/commands.ts`),
   fully off the agent: `@justfiles/agent` exposes only skill primitives (`listSkills` for
   LLM-free enumeration + `Assistant.applySkill`/`readSkill`) and has no `command` concept.
   The daemon owns the registry (`SYSTEM_COMMANDS` = `/new` + `/debug`, projected alongside
@@ -44,9 +43,12 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   already called `window.quayAbort` — `chat.tsx` now defines it, wired to `useAgentChat.abort`,
   which sends the frame. The aborted turn's `busy:false`/`error` push flows back over the
   socket as usual.
-- [ ] User-facing error classification (auth-expired / token-limit routes). The Vite client
-  currently shows the raw error string; quayd's `classifyFailure` is not ported. This also
-  fixes agent notification pings, which use a fixed `route: { kind: 'chat' }`.
+- [ ] User-facing error classification (auth-expired / token-limit routes). The Vite
+  client's in-page launcher (`ui/launcher/main.tsx`) shows the raw error string and the
+  native chat surface (`ui/launcher/chat.tsx`) drops it entirely; quayd's `classifyFailure`
+  (mapping 401/expired → “reconnect in Settings → Accounts”, token-limit → “new chat”) is
+  not ported. This also fixes agent notification pings, which hardcode `route: { kind:
+  'chat' }` (`daemon/agent.ts` `ping`), so an auth-expired banner can't route to Accounts.
 - [x] Runtime rebuild on credential/model change (quayd's `ensureRuntime` keys on
   `model + revision`; the daemon now does the same). `getAgent` re-resolves the backend on
   every call and caches the built session keyed on `${model.id} ${revision}` (the token's
@@ -69,7 +71,9 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
 
 ## Tests
 
-- [ ] server/protocol tests
-- [ ] host/capability tests
-- [ ] fuller materialize/projection tests
-- [ ] devkit install/preview tests
+- [ ] server/protocol tests (`main.ts` Bun.serve routing + `/system`/`/agent` sockets,
+  `protocol.ts`)
+- [ ] kernel/capability wiring tests (`kernel.ts` — the daemon has no `host.ts`)
+- [ ] fuller materialize/projection tests (`materialize.test.ts` only covers
+  `projectionSignature` today)
+- [ ] devkit install/preview tests (`kernel.ts` `devkitCapability` + toolchain worker)
