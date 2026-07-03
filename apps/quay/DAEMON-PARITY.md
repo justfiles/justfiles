@@ -83,9 +83,42 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
 
 ## Tests
 
-- [ ] server/protocol tests (`main.ts` Bun.serve routing + `/system`/`/agent` sockets,
-  `protocol.ts`)
-- [ ] kernel/capability wiring tests (`kernel.ts` — the daemon has no `host.ts`)
-- [ ] fuller materialize/projection tests (`materialize.test.ts` only covers
-  `projectionSignature` today)
-- [ ] devkit install/preview tests (`kernel.ts` `devkitCapability` + toolchain worker)
+- [x] server/protocol tests (`main.ts` Bun.serve routing + `/system`/`/agent` sockets,
+  `protocol.ts`). `main.ts` now exports `createServer(options)` — the Bun.serve routing +
+  the three sockets, wired to the module singletons — while the process lifecycle
+  (runtime.json handshake, owner watchdog, SIGINT/SIGTERM) moved behind an
+  `if (import.meta.main) void main()` guard, so importing the module for a test has zero
+  process-level side effects. `createServer` takes an injectable `projectApps` (default
+  `reconcileProjection`) so a test passes a no-op and never touches ~/Applications or runs
+  codesign/lsregister. `daemon/server.bun.test.ts` (Bun — Bun.serve + pub/sub) stands one up
+  over a temp Volume (`QUAY_SUPPORT_DIR`, ephemeral port) and drives the HTTP routes
+  (per-app `gui.js`/`icon` + their 404s + the serveClient guard) and the wire protocol on
+  every socket: `/system` (catalog + command menu on connect, `/debug`+`/new` dispatch),
+  `/agent` (empty-transcript snapshot + a prompt turn surfacing a classified error offline),
+  and `/app/:id` (initial state push + an increment dispatch round-trip with the state
+  fan-out). This drove out a parity bug: the `gui.js` route 500'd on an unknown app id where
+  the icon route (and quayd) 404 — now fixed to 404.
+- [x] kernel/capability wiring tests (`kernel.ts` — the daemon has no `host.ts`). `getKernel`
+  was split into a `buildKernel(fs)` seam (the memoised singleton just wraps
+  `getVolume().then(buildKernel)`), so a test builds a throwaway kernel over a temp Volume
+  without the singleton. `daemon/kernel.bun.test.ts` (Bun — the reducer sandbox uses blob-URL
+  Workers) mirrors quayd's `host.test.ts`: it asserts `buildKernel` seeds the builtin catalog
+  and that Files, dispatching `refresh`, reads the REAL volume through the system-scoped
+  `volume` capability (the scan walks `/applications/*`) — proving a capability-using reducer
+  reaches real files through the daemon's own wiring, not a stub. (`getVolume` also gained a
+  lazy `QUAY_SUPPORT_DIR` override + a `mkdir` of the volume root, so a run over a fresh
+  support dir — tests, or a truly first-ever boot — no longer ENOENTs on `nativeStorage`.)
+- [x] fuller materialize/projection tests (`materialize.test.ts` only covered
+  `projectionSignature` today). `daemon/materialize.test.ts` now exhaustively pins the
+  signature — the reconcile's entire rebuild-vs-skip story: identical inputs → identical
+  signature (the skip-unchanged path), and a distinct signature on every rebuild trigger
+  (rename, version bump, id, a fresh booter mtime that refreshes every bundle, icon-bytes or
+  icon-path change, gaining an icon), plus that a bundle with no icon ignores its `iconPath`.
+- [x] devkit install/preview tests (`kernel.ts` `devkitCapability` + toolchain worker).
+  `daemon/devkit.bun.test.ts` (Bun — reducer sandbox + `Bun.build` in the toolchain worker)
+  mirrors quayd's `devkit.test.ts` over a `buildKernel` temp Volume: it drives Code
+  (`app.code`) the way its GUI does — create → open → install — and asserts the freshly-built
+  app lands in the catalog `kernel.list()` serves, then that `run` installs a hidden,
+  servable `.preview.*` app (off the catalog, gui.js reads, runner returns the app-shell URL)
+  that `stop` uninstalls. This exercises the daemon's devkit wiring end to end: the toolchain
+  worker's `compile`/`typecheck` and the `quayRunner` preview mount/stop.
