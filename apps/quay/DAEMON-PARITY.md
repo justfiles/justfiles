@@ -70,8 +70,16 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   `daemon/resources.ts` — SHIPPED + builtins root only, since the daemon serves its client
   from Vite and needs none of quayd's assets/docs/design roots — plus `daemon/builtins.ts`,
   `daemon/chatgpt.ts`, and `daemon/google/`). The quayd originals stay for later cleanup.
-- [ ] The native dev launcher (`native/build.sh --launcher`) still spawns quayd-from-source,
-  not the daemon — only `pnpm dev` and the shipped build run the daemon.
+- [x] The native dev launcher (`native/build.sh --launcher`) now spawns the daemon from
+  source, not quayd. `build_launcher` builds the Vite client (`pnpm run ui:build` →
+  `ui/dist/client`, the daemon's browser surfaces) instead of quayd's `build-assets.ts`, and
+  `stamp_daemon` stamps `QuaydRuntime=<bun>` / `QuaydScript=daemon/main.ts` / `QuaydArgs=[]`
+  into the launcher plist (the daemon is Bun-only — `Bun.serve`/pub-sub/`Bun.file` — so
+  quayd's node escape hatch and the `--runtime node|bun` flag are gone; the launcher always
+  spawns under bun). `Quayd.spawn()` (Launcher.swift) is unchanged — it execs the stamped
+  keys verbatim. Projected `.app` booters already re-stamp to the daemon
+  (`materialize.ts` keys on `process.execPath` + `daemon/main.ts`), so a Spotlight-cold app
+  respawns the daemon too. `native/relaunch.sh` already kills `daemon/main.ts`.
 
 ## Tests
 

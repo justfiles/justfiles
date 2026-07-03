@@ -3,39 +3,32 @@
 # Command Line Tools only (no full Xcode): SwiftPM compiles, this script bundles.
 #
 #   ./build.sh Code          # a booter bundle ./Code.app (mock target, own identity)
-#   ./build.sh --launcher    # dev launcher ./Quay.app — spawns quayd from source
+#   ./build.sh --launcher    # dev launcher ./Quay.app — spawns the daemon from source
 #   ./build.sh --ship        # prod ./Quay.app — self-contained quayd exe + bundled assets
-#   ./build.sh --ship-daemon # prod ./Quay.app — self-contained NEW daemon exe + Vite client
+#   ./build.sh --ship-daemon # prod ./Quay.app — self-contained daemon exe + Vite client
 #   ./build.sh --release …   # optimise the binaries for shipping (default: debug)
-#   ./build.sh --runtime bun … # stamp the dev launcher to spawn quayd under bun (default: node)
 #
-# Both --launcher and --ship build the web assets (quayd/build-assets.ts) as part of the
-# build — there is no separate `assets` step. The pnpm scripts (dev/build) build quay's
-# workspace app deps via turbo first; this script only does the native shell + assets.
+# --launcher builds the Vite client (ui/dist/client, the daemon's browser surfaces); --ship
+# builds quayd's web assets (quayd/build-assets.ts) — there is no separate `assets` step. The
+# pnpm scripts (dev/build) build quay's workspace app deps via turbo first; this script only
+# does the native shell + assets.
 #
 # `swift build` (Package.swift) discovers the Swift sources under Sources/ and
 # produces two binaries — quay-shell (the shared booter+launcher) and quay-makeicon.
-# We copy both into ./build/, a stable, gitignored handoff dir where quayd finds
-# them to materialise the per-app `.app` bundles (Slice 6, see quayd/materialize.ts).
-#
-# --runtime is the reversibility hinge: it picks which runtime the launcher stamps
-# into Info.plist for spawning quayd (Quayd.spawn() execs it verbatim). node is the
-# default (the escape hatch); bun is the migration target. No Swift edits either way.
+# We copy both into ./build/, a stable, gitignored handoff dir where the daemon finds
+# them to materialise the per-app `.app` bundles (see daemon/materialize.ts).
 set -e
 cd "$(dirname "$0")"
 
 CONFIG=debug
-RUNTIME=node
-# Consume leading option flags (--release, --runtime X); leave the positional
-# (Name | --launcher | --all) in "$1" for the dispatch case at the bottom.
+# Consume leading option flags (--release); leave the positional
+# (Name | --launcher | --ship | --ship-daemon) in "$1" for the dispatch case at the bottom.
 while :; do
 	case "${1:-}" in
 		-r | --release) CONFIG=release; shift ;;
-		--runtime) RUNTIME="$2"; shift 2 ;;
 		*) break ;;
 	esac
 done
-case "$RUNTIME" in node | bun) ;; *) echo "build.sh: --runtime must be node|bun" >&2; exit 2 ;; esac
 
 BUILD="$(pwd)/build"
 mkdir -p "$BUILD"
@@ -93,37 +86,29 @@ make_bundle() { # app_path name bundle_id [quay_id] [lsui]
 	codesign --force --sign - "$app" 2>/dev/null || true
 }
 
-# Stamp the generic spawn keys into the launcher plist for the selected --runtime.
-# QuaydRuntime is the executable, QuaydArgs the args before the script, QuaydScript
-# the entrypoint. node needs the rawLoader (?raw md) + tsx loaders; bun runs both
-# TS and ?raw natively, so its args are empty.
-stamp_quayd() { # plist
+# Stamp the daemon spawn keys into the launcher plist. The daemon is Bun-only (Bun.serve,
+# pub/sub, Bun.file), so — unlike quayd's old node escape hatch — the launcher always spawns
+# it under bun: QuaydRuntime=<bun>, QuaydArgs=[] (Bun runs TS + ?raw natively), QuaydScript is
+# the daemon entrypoint. Quayd.spawn() (Launcher.swift) execs these verbatim.
+stamp_daemon() { # plist
 	plist="$1"
-	quayd="$(cd ../quayd && pwd)"
-	/usr/libexec/PlistBuddy -c "Add :QuaydScript string $quayd/main.ts" "$plist" 2>/dev/null || true
+	daemon="$(cd ../daemon && pwd)"
+	/usr/libexec/PlistBuddy -c "Add :QuaydScript string $daemon/main.ts" "$plist" 2>/dev/null || true
 	/usr/libexec/PlistBuddy -c "Add :QuaydArgs array" "$plist" 2>/dev/null || true
-	if [ "$RUNTIME" = bun ]; then
-		/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string $(command -v bun)" "$plist" 2>/dev/null || true
-	else
-		/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string $(command -v node)" "$plist" 2>/dev/null || true
-		for arg in "--import" "$quayd/rawLoader.mjs" "--import" "tsx"; do
-			/usr/libexec/PlistBuddy -c "Add :QuaydArgs: string $arg" "$plist" 2>/dev/null || true
-		done
-	fi
+	/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string $(command -v bun)" "$plist" 2>/dev/null || true
 }
 
 build_launcher() {
 	app="Quay.app"
 	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
-	# The launcher web assets land in quayd/assets-dist, where the dev daemon reads them
-	# (resources.ts). Built with node/esbuild so the dev path needs no bun.
-	(cd .. && node --import tsx quayd/build-assets.ts)
-	# Dev wiring: how the launcher spawns quayd from source (Command Line Tools have no
-	# packaged daemon). Stamp generic runtime keys; Quayd.spawn() execs them verbatim, so
-	# the node-vs-bun choice lives here, not in Swift (the reversibility hinge).
-	stamp_quayd "$app/Contents/Info.plist"
+	# The daemon serves its browser surfaces straight from Vite's ui/dist/client (no ship-time
+	# bundling), so build that tree — the dev daemon reads it via CLIENT_DIR (main.ts).
+	(cd .. && pnpm run ui:build >/dev/null)
+	# Dev wiring: how the launcher spawns the daemon from source (Command Line Tools have no
+	# packaged exe). Stamp the runtime keys; Quayd.spawn() execs them verbatim.
+	stamp_daemon "$app/Contents/Info.plist"
 	codesign --force --sign - "$app" 2>/dev/null || true # re-sign after adding assets
-	echo "built $app (launcher, runtime=$RUNTIME)"
+	echo "built $app (launcher, daemon from source)"
 }
 
 build_booter() { # Name
@@ -234,6 +219,6 @@ case "${1:-}" in
 	--launcher) build_launcher ;;
 	--ship) build_ship ;;
 	--ship-daemon) build_ship_daemon ;;
-	"") echo "usage: build.sh [--release] [--runtime node|bun] <Name> | --launcher | --ship | --ship-daemon" >&2; exit 2 ;;
+	"") echo "usage: build.sh [--release] <Name> | --launcher | --ship | --ship-daemon" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
 esac

@@ -20,7 +20,7 @@ command leaves you with a runnable app — there is no separate `assets`/`reseed
 
 | Command            | What it does                                                                                                                     |
 |--------------------|----------------------------------------------------------------------------------------------------------------------------------|
-| `pnpm dev`         | Build a **dev** `native/Quay.app` that runs `quayd` from source (node), then kill any running quay and relaunch. The inner loop. |
+| `pnpm dev`         | Vite watch (`ui/dist/client`) + `bun --watch daemon/main.ts` — the daemon headless on `:3000`, no native window. The inner loop; open a browser, or run the launcher (below). |
 | `pnpm build`       | Build the **production** self-contained `native/Quay.app` (bun exe + bundled assets).                                            |
 | `pnpm start`       | `open` the built `native/Quay.app` (no rebuild, no kill).                                                                        |
 | `pnpm install:app` | `build`, then replace `/Applications/Quay.app` and open it. Kills the running copy first.                                        |
@@ -35,22 +35,21 @@ command leaves you with a runnable app — there is no separate `assets`/`reseed
 pnpm dev
 ```
 
-The launcher spawns `quayd` from source — no packaging. The daemon re-seeds the built-in
-apps from their freshly built `dist` files on every boot, so `pnpm dev` (which rebuilds
-the app deps, then kills + relaunches) always shows current code. Editing only `quayd/*`
-needs just a relaunch; `quayd` runs under node via tsx, no build.
-
-By default the dev launcher spawns `quayd` under **node** (`node --import rawLoader --import
-tsx quayd/main.ts`) — the escape hatch. To spawn it under **bun** (`bun quayd/main.ts`),
-re-stamp the bundle and relaunch:
+This runs the **daemon** from source (`bun --watch daemon/main.ts`) alongside a Vite watch
+that rebuilds its browser surfaces into `ui/dist/client` — both hot-reload on edit, served
+headless on `:3000`. For the native window, build + relaunch the dev launcher:
 
 ```sh
-native/build.sh --runtime bun --launcher && native/relaunch.sh
+native/build.sh --launcher && native/relaunch.sh
 ```
 
-`--runtime` is the only knob — Swift never changes. The launcher stamps `QuaydRuntime` /
-`QuaydArgs` / `QuaydScript` into its `Info.plist` and `Quayd.spawn()` execs them verbatim
-(the reversibility hinge).
+`--launcher` builds `ui/dist/client` once (the daemon serves it via `CLIENT_DIR`) and stamps
+the launcher's `Info.plist` to spawn the daemon from source under **bun** (`bun
+daemon/main.ts`). The daemon is Bun-only (`Bun.serve` / pub-sub / `Bun.file`), so there is no
+node escape hatch here. `Quayd.spawn()` (Launcher.swift) execs the stamped `QuaydRuntime` /
+`QuaydArgs` / `QuaydScript` verbatim — the runtime choice lives in the plist, never in Swift.
+The daemon re-seeds the built-in apps from their freshly built `dist` files on every boot, so
+a relaunch always shows current code; editing only `daemon/*` needs just the relaunch.
 
 ### Production build & install
 
