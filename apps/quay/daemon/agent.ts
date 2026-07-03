@@ -24,6 +24,7 @@ import { getVolume } from './fs'
 import { getKernel } from './kernel'
 import { notificationChannel } from './notify'
 import type { AgentEvent } from './protocol'
+import { DOCS_DIR } from './resources'
 
 // Opening/closing a window is native-touching: from the daemon we `open` the
 // materialised bundle and `pkill` its booter. Injectable so tests drive the
@@ -150,7 +151,11 @@ async function buildAgent(fs: Volume, llm: AgentBackend): Promise<AgentSession> 
 		volume: fs,
 		agent: createAgent(llm),
 		text: text(llm),
-		compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }
+		compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+		// The `read_doc` tool + the docs system-prompt block: the @justfiles/agent DOCS
+		// catalogue lists the ids, this supplies the bytes (repo-root docs/*.md, resolved
+		// via DOCS_DIR). Bun reads the file at tool-call time.
+		readDoc: (id) => Bun.file(join(DOCS_DIR, `${id}.md`)).text()
 	})
 
 	// The agent drives apps through the SAME kernel the windows subscribe to, so

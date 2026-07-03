@@ -1,4 +1,4 @@
-// Devkit install/preview parity with quayd's devkit.test.ts — build & install through the
+// Devkit install/preview coverage — build & install through the
 // daemon's REAL wiring: `buildKernel` (kernel + reducer sandbox pool + the `devkit`
 // capability whose compile/typecheck run in the daemon's toolchain worker) over a throwaway
 // temp Volume. We drive Code (`app.code`) the way its GUI does — create a project, open it,

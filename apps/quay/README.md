@@ -1,7 +1,7 @@
 # quay
 
-The native macOS shell + the `quayd` daemon. The AppKit launcher (`native/`) spawns
-`quayd`, which serves every app's UI over http and projects each installed app into a
+The native macOS shell + the quay daemon (`daemon/`). The AppKit launcher (`native/`) spawns
+the daemon, which serves every app's UI over http and projects each installed app into a
 thin `.app` under `~/Applications/Quay Apps/`. Architecture lives in [DESIGN.md](./DESIGN.md);
 the Node→Bun runtime migration in [BUN-MIGRATION-PLAN.md](./BUN-MIGRATION-PLAN.md).
 
@@ -15,16 +15,15 @@ the Node→Bun runtime migration in [BUN-MIGRATION-PLAN.md](./BUN-MIGRATION-PLAN
 ## Scripts
 
 Run from `apps/quay`. Each `dev`/`build` first builds quay's workspace app dependencies
-(`turbo run build --filter=@justfiles/quay^...`, cached) and the web assets, so a single
+(`turbo run build --filter=@justfiles/quay^...`, cached) and the browser surfaces, so a single
 command leaves you with a runnable app — there is no separate `assets`/`reseed` step.
 
 | Command            | What it does                                                                                                                     |
 |--------------------|----------------------------------------------------------------------------------------------------------------------------------|
 | `pnpm dev`         | Vite watch (`ui/dist/client`) + `bun --watch daemon/main.ts` — the daemon headless on `:3000`, no native window. The inner loop; open a browser, or run the launcher (below). |
-| `pnpm build`       | Build the **production** self-contained `native/Quay.app` (bun exe + bundled assets).                                            |
+| `pnpm build`       | Build the **production** self-contained `native/Quay.app` (bun exe + Vite client).                                            |
 | `pnpm start`       | `open` the built `native/Quay.app` (no rebuild, no kill).                                                                        |
 | `pnpm install:app` | `build`, then replace `/Applications/Quay.app` and open it. Kills the running copy first.                                        |
-| `pnpm quayd`       | Run the daemon headless (node), no native window — e.g. for a browser client.                                                    |
 
 > `install:app`, not `install`: a script named `install` is an npm/pnpm lifecycle hook and
 > would fire on every `pnpm install`.
@@ -58,33 +57,33 @@ pnpm build          # → native/Quay.app (self-contained, arm64)
 pnpm install:app    # build + install to /Applications
 
 # For an actual release, optimise the native shell too:
-native/build.sh --release --ship
+native/build.sh --release --ship-daemon
 ```
 
 `pnpm build` produces a **self-contained, relocatable** `Quay.app` that needs no system
-node/bun, no tsx, no repo, and no esbuild. It assembles:
+node/bun and no repo. It assembles:
 
-- **`Contents/MacOS/quayd`** — `quayd` compiled into one ~74MB Mach-O exe that embeds Bun +
-  the whole daemon graph (`bun quayd/build-exe.ts --target bun-darwin-arm64`, via the
+- **`Contents/MacOS/quay-daemon`** — the daemon compiled into one Mach-O exe that embeds Bun +
+  the whole daemon graph (`bun daemon/build-exe.ts --target bun-darwin-arm64`, via the
   `Bun.build` JS API so the agent's `*.md?raw` prompts get a text-loader plugin). Because
   `Bun.build` is in-process, install-time devkit compiles need no external toolchain.
-- **`Contents/Resources/assets-dist/`** — the vendor/boot/chat bundles + agent docs.
-- **`Contents/Resources/design/`** — the `@justfiles/design` stylesheets served at `/design`.
-- **`Contents/Resources/build/`** — the shared booter binary + icon tool that `quayd` copies
+- **`Contents/Resources/client/`** — the Vite-built browser surfaces (launcher / chat / app
+  shell + hashed `/assets/*` + the shared React `/vendor/*` bundles), served via `CLIENT_DIR`.
+- **`Contents/Resources/builtins/`** — the built-in app bundle roots the daemon seeds.
+- **`Contents/Resources/build/`** — the shared booter binary + icon tool that the daemon copies
   per app when projecting `.app`s.
 
-The exe is built with `define: process.env.QUAY_SHIPPED='1'`, so `quayd/resources.ts`
+The exe is built with `define: process.env.QUAY_SHIPPED='1'`, so `daemon/resources.ts`
 resolves every on-disk path from `Contents/Resources` next to `process.execPath` instead of
 the repo. That one file is the only dev-vs-shipped seam. The launcher stamps a
-bundle-relative `QuaydRuntime=quayd` (no args, no script), so the bundle stays relocatable.
+bundle-relative `QuaydRuntime=quay-daemon` (no args, no script), so the bundle stays relocatable.
 
 **Notes**
 
-- **arm64 only.** `--ship` hardcodes `--target bun-darwin-arm64` (x64 / universal not wired
-  up yet).
-- **Bun only.** A reversible **node** production target (esbuild-bundle `quayd` + an embedded
-  node binary) is the planned counterpart but is **deferred** — see BUN-MIGRATION-PLAN.md.
-  The node *dev* path is unaffected and remains the escape hatch.
+- **arm64 only.** `--ship-daemon` hardcodes `--target bun-darwin-arm64` (x64 / universal not
+  wired up yet).
+- **Bun only.** The daemon is Bun-native (`Bun.serve` / pub-sub / `Bun.file`); there is no
+  node production target. The node *dev* path is gone too — dev runs under bun.
 
 Prove the bundle is self-contained by relocating it away from the repo and node/bun:
 

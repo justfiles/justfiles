@@ -11,7 +11,7 @@ import { typescriptToolchain } from './toolchain.typescript.ts'
 // Exercises the real Node toolchain: native esbuild for `compile` and the
 // TypeScript compiler API for `typecheck`, both over the in-memory `ProjectInput`.
 // `typecheck` resolves the system libs (`@justfiles/app`, `valibot`) from the
-// workspace node_modules, the way quayd does.
+// workspace node_modules, the way the daemon does.
 
 const APP = `import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'

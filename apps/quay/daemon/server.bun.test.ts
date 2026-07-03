@@ -1,4 +1,4 @@
-// Server/protocol parity — the daemon has no quayd-style `serve()`, so main.ts now exports
+// Server/protocol coverage — main.ts exports
 // `createServer` (the Bun.serve routing + the three sockets); this stands one up over a
 // throwaway temp Volume (QUAY_SUPPORT_DIR) with a no-op `projectApps` so the run never
 // touches ~/Applications. It exercises the HTTP routes (per-app gui.js/icon + their 404s +

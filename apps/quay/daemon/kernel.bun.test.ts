@@ -1,4 +1,4 @@
-// Kernel/capability wiring parity with quayd's host.test.ts — the daemon has no host.ts,
+// Kernel/capability wiring coverage — the daemon has no host.ts,
 // so this drives `buildKernel` over a throwaway temp Volume: the kernel + the shared
 // reducer sandbox pool + `volumeCapability` over a real native-FS Volume. Files declares
 // the `volume` capability with the `system` scope (quay's one systemAllowlist entry), so

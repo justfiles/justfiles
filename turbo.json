@@ -13,8 +13,8 @@
 			"dependsOn": ["^build"],
 			"inputs": [
 				"package.json",
-				"quayd/**",
-				"launcher-ui/**",
+				"daemon/**",
+				"ui/**",
 				"native/Package.swift",
 				"native/Sources/**",
 				"native/build.sh"

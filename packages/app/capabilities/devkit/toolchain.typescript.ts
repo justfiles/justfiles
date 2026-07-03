@@ -1,6 +1,6 @@
 // The Node (quay) toolchain: esbuild for `compile`, the TypeScript compiler API for
 // `typecheck` — the minimal in-process path, no subprocess. Portable JS: it runs
-// in quayd today and, unchanged, in a Worker if ever needed. `ts` is injected
+// in the quay daemon today and, unchanged, in a Worker if ever needed. `ts` is injected
 // (`typeof import('typescript')`) so this module keeps only a type-only TS
 // import and never pulls the 8 MB compiler into a host that doesn't want it.
 //

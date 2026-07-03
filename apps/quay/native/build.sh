@@ -4,12 +4,11 @@
 #
 #   ./build.sh Code          # a booter bundle ./Code.app (mock target, own identity)
 #   ./build.sh --launcher    # dev launcher ./Quay.app — spawns the daemon from source
-#   ./build.sh --ship        # prod ./Quay.app — self-contained quayd exe + bundled assets
 #   ./build.sh --ship-daemon # prod ./Quay.app — self-contained daemon exe + Vite client
 #   ./build.sh --release …   # optimise the binaries for shipping (default: debug)
 #
-# --launcher builds the Vite client (ui/dist/client, the daemon's browser surfaces); --ship
-# builds quayd's web assets (quayd/build-assets.ts) — there is no separate `assets` step. The
+# --launcher and --ship-daemon build the Vite client (ui/dist/client, the daemon's browser
+# surfaces) — there is no separate `assets` step. The
 # pnpm scripts (dev/build) build quay's workspace app deps via turbo first; this script only
 # does the native shell + assets.
 #
@@ -22,7 +21,7 @@ cd "$(dirname "$0")"
 
 CONFIG=debug
 # Consume leading option flags (--release); leave the positional
-# (Name | --launcher | --ship | --ship-daemon) in "$1" for the dispatch case at the bottom.
+# (Name | --launcher | --ship-daemon) in "$1" for the dispatch case at the bottom.
 while :; do
 	case "${1:-}" in
 		-r | --release) CONFIG=release; shift ;;
@@ -87,9 +86,9 @@ make_bundle() { # app_path name bundle_id [quay_id] [lsui]
 }
 
 # Stamp the daemon spawn keys into the launcher plist. The daemon is Bun-only (Bun.serve,
-# pub/sub, Bun.file), so — unlike quayd's old node escape hatch — the launcher always spawns
-# it under bun: QuaydRuntime=<bun>, QuaydArgs=[] (Bun runs TS + ?raw natively), QuaydScript is
-# the daemon entrypoint. Quayd.spawn() (Launcher.swift) execs these verbatim.
+# pub/sub, Bun.file), so the launcher always spawns it under bun: QuaydRuntime=<bun>,
+# QuaydArgs=[] (Bun runs TS + ?raw natively), QuaydScript is the daemon entrypoint.
+# Quayd.spawn() (Launcher.swift) execs these verbatim.
 stamp_daemon() { # plist
 	plist="$1"
 	daemon="$(cd ../daemon && pwd)"
@@ -141,43 +140,7 @@ copy_builtins() { # resources_dir
 	copy_builtin "$1" app.frieren.settings app-settings
 }
 
-# A self-contained, shippable Quay.app: the launcher binary + an embedded bun-compiled
-# quayd exe (arm64) + every on-disk resource the daemon reads, flat under Resources/.
-# No system node/bun, no tsx, no repo, no esbuild — resources.ts resolves these next to
-# the exe (QUAY_SHIPPED). The node escape hatch is unaffected: this is build:bun, and a
-# build:node target can sit beside it (deferred).
-build_ship() {
-	app="Quay.app"
-	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
-	res="$app/Contents/Resources"
-	exe="$(pwd)/$app/Contents/MacOS/quayd"
-
-	# 1. The self-contained quayd exe (arm64) → Contents/MacOS/quayd.
-	(cd .. && bun quayd/build-exe.ts --outfile "$exe" --target bun-darwin-arm64)
-	# 2. Launcher assets (vendor/boot/chat bundles + agent docs) → Resources/assets-dist.
-	#    Built with bun so the prod path is esbuild-free (the #assets seam picks Bun.build).
-	(cd .. && bun quayd/build-assets.ts >/dev/null)
-	mkdir -p "$res/assets-dist" && cp -R ../quayd/assets-dist/. "$res/assets-dist/"
-	# 3. The shared booter binary + icon tool (materialize copies these per app) → Resources/build.
-	mkdir -p "$res/build" && cp "$BIN" "$res/build/quay-shell"
-	[ -n "$ICON" ] && cp "$ICON" "$res/build/quay-makeicon"
-	# 4. @justfiles/design stylesheets quayd serves under /design → Resources/design.
-	mkdir -p "$res/design"
-	designdir="$(cd .. && node -e "console.log(require('path').dirname(require.resolve('@justfiles/design/mac.css')))")"
-	cp "$designdir"/*.css "$res/design/"
-	# 5. Built-in app bundle roots → Resources/builtins.
-	copy_builtins "$res"
-	# 6. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
-	#    bundle-relative ("quayd"), resolved by Quayd.spawn against the launcher's MacOS dir,
-	#    so the app stays relocatable.
-	plist="$app/Contents/Info.plist"
-	/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string quayd" "$plist" 2>/dev/null || true
-	/usr/libexec/PlistBuddy -c "Add :QuaydArgs array" "$plist" 2>/dev/null || true
-	codesign --force --deep --sign - "$app" 2>/dev/null || true
-	echo "built $app (ship, self-contained bun exe, arm64)"
-}
-
-# A self-contained, shippable Quay.app backed by the NEW daemon (apps/quay/daemon): the
+# A self-contained, shippable Quay.app backed by the daemon (apps/quay/daemon): the
 # launcher binary + an embedded bun-compiled daemon exe (arm64) + the on-disk resources the
 # daemon reads, under Resources/. The daemon does zero frontend bundling: Vite builds the
 # browser surfaces (launcher / chat / app shell + assets + `/vendor/*` React) into
@@ -205,7 +168,11 @@ build_ship_daemon() {
 	#    when shipped).
 	mkdir -p "$res/build" && cp "$BIN" "$res/build/quay-shell"
 	[ -n "$ICON" ] && cp "$ICON" "$res/build/quay-makeicon"
-	# 5. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
+	# 5. The agent's project docs (repo-root docs/*.md) → Resources/docs, where the daemon's
+	#    DOCS_DIR resolves them for the `read_doc` tool with no repo at runtime. Flat copy of
+	#    every .md; the @justfiles/agent DOCS catalogue decides which ids are surfaced.
+	mkdir -p "$res/docs" && cp ../../../docs/*.md "$res/docs/"
+	# 6. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
 	#    bundle-relative ("quay-daemon"), resolved by Quayd.spawn against the launcher's MacOS
 	#    dir, so the app stays relocatable.
 	plist="$app/Contents/Info.plist"
@@ -217,8 +184,7 @@ build_ship_daemon() {
 
 case "${1:-}" in
 	--launcher) build_launcher ;;
-	--ship) build_ship ;;
 	--ship-daemon) build_ship_daemon ;;
-	"") echo "usage: build.sh [--release] <Name> | --launcher | --ship | --ship-daemon" >&2; exit 2 ;;
+	"") echo "usage: build.sh [--release] <Name> | --launcher | --ship-daemon" >&2; exit 2 ;;
 	*) build_booter "$1" ;;
 esac

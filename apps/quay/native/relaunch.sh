@@ -5,13 +5,12 @@ set -e
 cd "$(dirname "$0")"
 
 # The launcher and the per-app booter windows both ensure-the-backend-is-up, so kill (and
-# wait out) those first — otherwise they'd respawn the backend we're about to stop. A
+# wait out) those first — otherwise they'd respawn the daemon we're about to stop. A
 # launcher-owned daemon self-exits ~1s after the launcher dies (QUAY_OWNER_PID watchdog),
-# but kill the backend directly anyway: it's immediate, and catches a booter-spawned
-# ownerless daemon (or the legacy quayd) that would otherwise keep serving stale code
-# across a rebuild. Two backends, each with two process shapes: dev runs the script
-# (`bun …/{daemon,quayd}/main.ts`), the shipped bundle runs the embedded exe
-# (Quay.app/Contents/MacOS/{quay-daemon,quayd}) with no script arg — kill them all.
+# but kill the daemon directly anyway: it's immediate, and catches a booter-spawned
+# ownerless daemon that would otherwise keep serving stale code across a rebuild. Two
+# process shapes: dev runs the script (`bun …/daemon/main.ts`), the shipped bundle runs the
+# embedded exe (Quay.app/Contents/MacOS/quay-daemon) with no script arg — kill them all.
 kill_wait() {
 	pkill -f "$1" 2>/dev/null || true
 	while pgrep -f "$1" >/dev/null; do
@@ -23,7 +22,5 @@ kill_wait 'Quay.app/Contents/MacOS/Quay'
 kill_wait 'Quay Apps/.*/Contents/MacOS/'
 kill_wait 'daemon/main.ts'
 kill_wait 'Quay.app/Contents/MacOS/quay-daemon'
-kill_wait 'quayd/main.ts'
-kill_wait 'Quay.app/Contents/MacOS/quayd'
 
 open -n Quay.app
