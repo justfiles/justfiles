@@ -20,7 +20,7 @@
 // the existing SHIPPED build-time define instead.
 
 import { type ToolchainClient, toolchainClient } from '@justfiles/app/toolchain/worker'
-import { SHIPPED } from '../quayd/resources'
+import { SHIPPED } from './resources'
 
 const WORKER_SPEC = SHIPPED
 	? './toolchainWorker.ts'

@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { dirname, resolve, sep } from 'node:path'
 import type { ServerWebSocket } from 'bun'
-import { SHIPPED } from '../quayd/resources'
 import {
 	abortAgent,
 	agentCommands,
@@ -16,6 +15,7 @@ import { getKernel } from './kernel'
 import { type ProjectionApp, reconcileProjection } from './materialize'
 import { setNotificationChannel } from './notify'
 import type { AgentEvent, AgentRequest, ClientMessage, ServerMessage } from './protocol'
+import { SHIPPED } from './resources'
 import { sandboxes } from './sandbox'
 
 // The browser surfaces (launcher, chat, app shell, their hashed assets, and the shared

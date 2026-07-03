@@ -17,7 +17,7 @@ import {
 } from '@justfiles/agent'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
-import { resolveAgentBackend } from '../quayd/chatgpt'
+import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
 import { getKernel } from './kernel'

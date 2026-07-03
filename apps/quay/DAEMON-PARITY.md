@@ -59,9 +59,11 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
 
 ## Decouple from `quayd/`
 
-- [ ] The daemon still imports out of `../quayd/`: `resources` (`SHIPPED`, in `main.ts` +
-  `materialize.ts`), `builtins` (`kernel.ts`), `chatgpt` (`kernel.ts` + `agent.ts`), and
-  `google/provider` (`kernel.ts`). Move/duplicate these so the daemon stands alone.
+- [x] The daemon no longer imports out of `../quayd/`: `resources` (`SHIPPED`),
+  `builtins`, `chatgpt`, and `google/provider` were copied into `daemon/` (a slimmed
+  `daemon/resources.ts` — SHIPPED + builtins root only, since the daemon serves its client
+  from Vite and needs none of quayd's assets/docs/design roots — plus `daemon/builtins.ts`,
+  `daemon/chatgpt.ts`, and `daemon/google/`). The quayd originals stay for later cleanup.
 - [ ] The native dev launcher (`native/build.sh --launcher`) still spawns quayd-from-source,
   not the daemon — only `pnpm dev` and the shipped build run the daemon.
 

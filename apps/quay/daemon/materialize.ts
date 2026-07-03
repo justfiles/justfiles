@@ -13,7 +13,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { SHIPPED } from '../quayd/resources'
+import { SHIPPED } from './resources'
 
 // What the projection needs from a kernel manifest (structurally a subset of it).
 export interface ProjectionApp {

@@ -3,7 +3,7 @@
 // surfaces are NOT embedded — Vite builds them into ui/dist/client and they ship beside the
 // exe under Quay.app/Contents/Resources/client (native/build.sh copies them; see Step 2 of
 // the migration), read from disk at request time. QUAY_SHIPPED tells the runtime to resolve
-// resources next to the exe rather than the bunfs root (see ../quayd/resources.ts and
+// resources next to the exe rather than the bunfs root (see daemon/resources.ts and
 // daemon/main.ts CLIENT_DIR).
 //
 // Run from apps/quay:
