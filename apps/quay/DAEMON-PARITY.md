@@ -47,8 +47,15 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
 - [ ] User-facing error classification (auth-expired / token-limit routes). The Vite client
   currently shows the raw error string; quayd's `classifyFailure` is not ported. This also
   fixes agent notification pings, which use a fixed `route: { kind: 'chat' }`.
-- [ ] Runtime rebuild on credential/model change (quayd's `ensureRuntime` keys on
-  `model + revision`; the daemon builds the assistant once per connection).
+- [x] Runtime rebuild on credential/model change (quayd's `ensureRuntime` keys on
+  `model + revision`; the daemon now does the same). `getAgent` re-resolves the backend on
+  every call and caches the built session keyed on `${model.id} ${revision}` (the token's
+  opaque fingerprint), rebuilding when the user switches models, reconnects an account, or
+  `resolveAgentBackend` rotates a near-expiry OAuth token. A built-once assistant sealed the
+  token in its `streamFn` closure and 401'd forever once it expired (turn failures don't
+  reset the cache) — now the refreshed token changes the `revision`, so the next prompt
+  rebuilds. Lossless: the conversation persists to the Volume session, which the fresh
+  assistant reloads. `abortAgent` guards on the cached session (cold daemon = no-op).
 
 ## Decouple from `quayd/`
 

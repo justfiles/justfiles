@@ -1,6 +1,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
+	type AgentBackend,
 	type AppController,
 	type Assistant,
 	createAgent,
@@ -15,6 +16,7 @@ import {
 	text
 } from '@justfiles/agent'
 import type { Kernel } from '@justfiles/app/runtime'
+import type { Volume } from '@justfiles/fs'
 import { resolveAgentBackend } from '../quayd/chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
@@ -117,22 +119,32 @@ interface AgentSession {
 	assistant: Assistant
 	takePending: () => PendingQuestion | null
 }
-let sessionPromise: Promise<AgentSession> | null = null
-function getAgent(): Promise<AgentSession> {
-	if (!sessionPromise) {
-		sessionPromise = buildAgent().catch((err) => {
-			sessionPromise = null
-			throw err
-		})
-	}
-	return sessionPromise
-}
 
-async function buildAgent(): Promise<AgentSession> {
+// Re-resolve the backend on every call and cache the built session keyed on `model +
+// revision` (the token's opaque fingerprint, see AgentBackend). This makes a model switch,
+// an account reconnect, or an OAuth token refresh (resolveAgentBackend rotates a near-expiry
+// token) take effect on the next prompt without restarting the daemon — a built-once
+// assistant seals the token in its streamFn closure and would 401 forever once it expires.
+// Rebuilds are lossless: the conversation persists to the Volume session, which the fresh
+// assistant reloads. The per-key promise dedupes concurrent builds; a build failure clears
+// the cache so an offline start retries on the next use.
+let active: { key: string; session: Promise<AgentSession> } | null = null
+async function getAgent(): Promise<AgentSession> {
 	const fs = await getVolume()
 	const llm = await resolveAgentBackend(fs)
 	if (!llm) throw new Error('failed to get llm config')
+	const key = `${llm.model.id} ${llm.revision}`
+	if (!active || active.key !== key) {
+		const session = buildAgent(fs, llm).catch((err) => {
+			if (active?.key === key) active = null
+			throw err
+		})
+		active = { key, session }
+	}
+	return active.session
+}
 
+async function buildAgent(fs: Volume, llm: AgentBackend): Promise<AgentSession> {
 	const assistant = await createAssistant({
 		volume: fs,
 		agent: createAgent(llm),
@@ -209,12 +221,12 @@ export function promptAgent(message: string): void {
 }
 
 // Cancel the in-flight turn on the shared session, leaving the session intact so later
-// prompts still work. Guards on the memoised session so an abort never builds an agent just
+// prompts still work. Guards on the cached session so an abort never builds an agent just
 // to cancel nothing; `abort()` on an idle assistant is a harmless no-op. Fire-and-forget,
 // mirroring `promptAgent` — the aborted turn's outcome reaches the chat via the broadcast.
 export function abortAgent(): void {
-	if (!sessionPromise) return
-	void getAgent()
+	if (!active) return
+	void active.session
 		.then(({ assistant }) => assistant.abort())
 		.catch((err) => console.error('[agent] abort failed:', err))
 }
