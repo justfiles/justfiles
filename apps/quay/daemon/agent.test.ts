@@ -1,6 +1,6 @@
 import type { Kernel } from '@justfiles/app/runtime'
 import { expect, test } from 'vitest'
-import { abortAgent, createAppController, type WindowOps } from './agent'
+import { abortAgent, classifyFailure, createAppController, type WindowOps } from './agent'
 
 // The AppController is a thin bridge over the kernel + native window ops. The
 // behaviour worth protecting lives here: preview apps are hidden, `current`
@@ -88,4 +88,30 @@ test('run dispatches into the kernel stamped as the agent', async () => {
 // nothing. The "session exists" branch runs the real assistant, so it's exercised live.
 test('abort with no built session is a no-op', () => {
 	expect(() => abortAgent()).not.toThrow()
+})
+
+// Turn failures reach the user classified, not raw: an expired/unauthorised token routes to
+// Settings → Accounts, a blown context window / rate limit sends them back to chat, and
+// everything else is a generic error that opens chat. This is what the chat error block and
+// the notification banner both key off.
+test('classifyFailure routes auth errors to Accounts', () => {
+	for (const raw of ['401 Unauthorized', 'token expired', 'invalid_api_key']) {
+		const failure = classifyFailure(new Error(raw))
+		expect(failure.route).toEqual({ kind: 'settings', pane: 'accounts' })
+		expect(failure.body).toMatch(/Accounts/)
+	}
+})
+
+test('classifyFailure routes token-limit errors to a fresh chat', () => {
+	for (const raw of ['context length exceeded', '429 rate limit']) {
+		const failure = classifyFailure(new Error(raw))
+		expect(failure.route).toEqual({ kind: 'chat' })
+		expect(failure.body).toMatch(/new chat/)
+	}
+})
+
+test('classifyFailure falls back to a generic chat error', () => {
+	const failure = classifyFailure(new Error('kernel exploded'))
+	expect(failure.route).toEqual({ kind: 'chat' })
+	expect(failure.body).toBe('Agent error: kernel exploded')
 })

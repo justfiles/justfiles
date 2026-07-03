@@ -56,12 +56,19 @@ function ChatApp() {
 	}, [chat.isStreaming, chat.connection])
 
 	// A command's text output shows in place of the transcript; otherwise render the live
-	// transcript. Picking a question option is just the next prompt (which clears output).
-	return output != null ? (
-		<CommandOutput body={output} />
-	) : (
+	// transcript. A turn error (classified by the daemon — e.g. auth-expired) rides in as a
+	// trailing error block so the native surface surfaces it instead of dropping it. Picking a
+	// question option is just the next prompt (which clears output).
+	if (output != null) return <CommandOutput body={output} />
+	const messages = chat.error
+		? [
+				...chat.messages,
+				{ id: 'agent-error', role: 'assistant' as const, content: chat.error, error: true as const }
+			]
+		: chat.messages
+	return (
 		<Transcript
-			messages={chat.messages}
+			messages={messages}
 			isStreaming={chat.isStreaming}
 			onOption={(label) => void chat.send(label)}
 		/>

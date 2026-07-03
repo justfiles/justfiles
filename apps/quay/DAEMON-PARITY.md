@@ -43,12 +43,16 @@ install-time catalog/projection reconcile — is in place. What's left to fully 
   already called `window.quayAbort` — `chat.tsx` now defines it, wired to `useAgentChat.abort`,
   which sends the frame. The aborted turn's `busy:false`/`error` push flows back over the
   socket as usual.
-- [ ] User-facing error classification (auth-expired / token-limit routes). The Vite
-  client's in-page launcher (`ui/launcher/main.tsx`) shows the raw error string and the
-  native chat surface (`ui/launcher/chat.tsx`) drops it entirely; quayd's `classifyFailure`
-  (mapping 401/expired → “reconnect in Settings → Accounts”, token-limit → “new chat”) is
-  not ported. This also fixes agent notification pings, which hardcode `route: { kind:
-  'chat' }` (`daemon/agent.ts` `ping`), so an auth-expired banner can't route to Accounts.
+- [x] User-facing error classification (auth-expired / token-limit routes). `daemon/agent.ts`
+  now ports quayd's `classifyFailure`: a failed turn's raw error is mapped to a user-facing
+  body + a fix-it `Route` (401/expired → “reconnect in Settings → Accounts”, context/token-
+  limit/429 → “start a new chat”, else a generic chat error). `runTurn`'s catch broadcasts the
+  classified body on the `/agent` `error` frame (the raw error still hits `quayd.log`) and
+  pings the notification channel with it — so the in-page launcher (`ui/launcher/main.tsx`)
+  status line already shows the friendly message, and the native chat surface
+  (`ui/launcher/chat.tsx`), which used to drop the error, now appends it as a trailing error
+  block in the transcript. `ping` takes the `Route` (info/question stay `{ kind: 'chat' }`),
+  so an auth-expired banner routes to Accounts instead of the hardcoded chat.
 - [x] Runtime rebuild on credential/model change (quayd's `ensureRuntime` keys on
   `model + revision`; the daemon now does the same). `getAgent` re-resolves the backend on
   every call and caches the built session keyed on `${model.id} ${revision}` (the token's

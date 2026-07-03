@@ -15,6 +15,7 @@ import {
 	type SessionEntry,
 	text
 } from '@justfiles/agent'
+import type { Route } from '@justfiles/app/capabilities/notify'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { resolveAgentBackend } from './chatgpt'
@@ -193,12 +194,15 @@ async function runTurn(run: (assistant: Assistant) => Promise<string>): Promise<
 		const answer = await run(assistant)
 		const asked = takePending()
 		broadcast({ type: 'history', entries: [...(await assistant.history())] })
-		ping(asked ? 'question' : 'info', asked ? asked.question : answer)
+		ping(asked ? 'question' : 'info', asked ? asked.question : answer, { kind: 'chat' })
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err)
+		// pi-ai surfaces provider failures as plain Error messages, so we classify the raw
+		// text into a user-facing body + a fix-it route (auth → Accounts, token-limit → new
+		// chat). The classified body is what the chat shows; the raw error still hits the log.
+		const failure = classifyFailure(err)
 		console.error('[agent] turn failed:', err)
-		broadcast({ type: 'error', message })
-		ping('error', message)
+		broadcast({ type: 'error', message: failure.body })
+		ping('error', failure.body, failure.route)
 	} finally {
 		broadcast({ type: 'busy', value: false })
 	}
@@ -275,8 +279,10 @@ async function debugReport(): Promise<string> {
 }
 
 // Ping the notification channel as the trusted `agent` source (the native sink suppresses
-// the banner while the chat is in front). One `threadId` coalesces re-posts.
-function ping(kind: 'info' | 'error' | 'question', body: string): void {
+// the banner while the chat is in front). One `threadId` coalesces re-posts. The route
+// carries where a click goes — usually the chat, but an auth-expired error routes to
+// Settings → Accounts so the banner is actionable (see classifyFailure).
+function ping(kind: 'info' | 'error' | 'question', body: string, route: Route): void {
 	notificationChannel({
 		id: crypto.randomUUID(),
 		source: 'agent',
@@ -284,8 +290,34 @@ function ping(kind: 'info' | 'error' | 'question', body: string): void {
 		title: 'quay',
 		body: summarize(body),
 		threadId: 'agent',
-		route: { kind: 'chat' }
+		route
 	})
+}
+
+// Classify a failed turn into a user-facing message + a fix-it route. pi-ai surfaces
+// provider failures as plain `Error` messages (not typed codes), so we match on the
+// message: an expired/unauthorised ChatGPT token → reconnect in Settings → Accounts; a
+// blown context window → back to chat (start fresh); anything else → a generic error that
+// opens chat. Stingy by design — two actionable cases, then a catch-all.
+export function classifyFailure(error: unknown): { body: string; route: Route } {
+	const raw = error instanceof Error ? error.message : String(error)
+	if (/\b401\b|unauthor|invalid[_ ]?api[_ ]?key|authentic|expired|account[_ -]?id/i.test(raw)) {
+		return {
+			body: 'Your ChatGPT sign-in expired. Reconnect in Settings → Accounts.',
+			route: { kind: 'settings', pane: 'accounts' }
+		}
+	}
+	if (
+		/context[_ ]?(length|window)|token limit|maximum context|too many tokens|\b429\b|rate limit/i.test(
+			raw
+		)
+	) {
+		return {
+			body: 'The model hit its token limit. Start a new chat or shorten your request.',
+			route: { kind: 'chat' }
+		}
+	}
+	return { body: `Agent error: ${raw}`, route: { kind: 'chat' } }
 }
 
 // Trim an answer to a banner-sized one-liner: first line, capped, ellipsised.
