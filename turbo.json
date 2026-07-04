@@ -6,10 +6,10 @@
 		},
 		"build": {
 			"dependsOn": ["transit"],
-			"outputs": ["dist/**", "out/**", "native/build/**", "native/Quay.app/**"],
+			"outputs": ["dist/**", "out/**", "native/build/**", "native/Spud.app/**"],
 			"outputLogs": "new-only"
 		},
-		"@justfiles/quay#build": {
+		"@justfiles/spud-macos#build": {
 			"dependsOn": ["^build"],
 			"inputs": [
 				"package.json",
@@ -19,7 +19,7 @@
 				"native/Sources/**",
 				"native/build.sh"
 			],
-			"outputs": ["native/build/**", "native/Quay.app/**"],
+			"outputs": ["native/build/**", "native/Spud.app/**"],
 			"outputLogs": "new-only"
 		},
 		"dev": {

@@ -88,7 +88,7 @@ export function useAgentChat() {
 		socket.send(JSON.stringify({ type: 'prompt', text: trimmed }))
 	}, [])
 
-	// Cancel the in-flight turn (the native Stop button, via chat.tsx's `quayAbort`). The
+	// Cancel the in-flight turn (the native Stop button, via chat.tsx's `native.abort`). The
 	// daemon aborts the shared session; the turn's outcome (a `busy:false` + `error` push)
 	// flows back over the socket, so we don't touch local state here.
 	const abort = useCallback(() => {

@@ -6,10 +6,10 @@ import WebKit
 // The launcher: an LSUIElement agent whose global hotkey (Option+Space) toggles a
 // frameless, vibrancy-blurred panel. The chrome — composer + app results — is native
 // AppKit (no web-view resize round-trip, so no per-keystroke flash); the agent
-// transcript is a transparent WKWebView served by quayd (the shared React <Transcript/>).
+// transcript is a transparent WKWebView served by daemon (the shared React <Transcript/>).
 // Picking an app launches its real .app bundle via LaunchServices — by bundle, not as a
 // window of the launcher — which gives each app its own Dock identity. The launcher is
-// also quayd's privileged client: it discovers the daemon (via CatalogClient) for both
+// also daemon's privileged client: it discovers the daemon (via CatalogClient) for both
 // the native catalog socket and the transcript webview's {port, token}.
 
 final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
@@ -56,8 +56,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		// Own the daemon: a daemon we spawn (below, via the catalog client) watches this
 		// PID and exits when the app quits or is killed, so it never lingers in the
 		// background. Set before connect() so the spawn picks it up.
-		Quayd.ownerPid = Int(ProcessInfo.processInfo.processIdentifier)
-		// Discover quayd now: the catalog socket fills the results list, and its onRuntime
+		Daemon.ownerPid = Int(ProcessInfo.processInfo.processIdentifier)
+		// Discover daemon now: the catalog socket fills the results list, and its onRuntime
 		// loads the transcript webview warm so entering chat is a reveal, not a cold load.
 		catalog.onCatalog = { [weak self] in self?.catalogArrived($0) }
 		catalog.onCommands = { [weak self] in self?.commands = $0 }
@@ -112,7 +112,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
 		// The transcript webview: transparent over the native vibrancy, status-bridged,
 		// kept warm. It subscribes to the daemon's /agent socket (a live view of the session);
-		// native drives input (quaySend / quayShowOutput) and reads `status`. Commands ride the
+		// native drives input (native.send / native.showOutput) and reads `status`. Commands ride the
 		// separate /system socket, not the webview.
 		let cfg = WKWebViewConfiguration()
 		cfg.userContentController.add(self, name: "status")
@@ -267,11 +267,11 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		if !chatting { render() } // refresh the current filter against the new catalog
 	}
 
-	// MARK: notifications — project quayd's notify channel onto the OS banner.
+	// MARK: notifications — project daemon's notify channel onto the OS banner.
 
 	// Suppress when the relevant surface is already in front (the panel is key and
 	// visible — the transcript already shows the result); otherwise post a banner.
-	private func notificationArrived(_ n: QuayNotification) {
+	private func notificationArrived(_ n: NotifyMessage) {
 		if panel.isVisible && panel.isKeyWindow { return }
 		notifier.post(n)
 	}
@@ -280,7 +280,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	// transcript; `settings` opens the Settings mini-app in its own bundle (the `pane`
 	// is a hint — the app has a single accounts pane today); anything else just summons
 	// the launcher. `app` lands in a later slice.
-	private func handleRoute(_ route: QuayNotification.Route?) {
+	private func handleRoute(_ route: NotifyMessage.Route?) {
 		switch route?.kind {
 		case "settings":
 			openMiniApp(Self.settingsAppId)
@@ -333,7 +333,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 			case .text(let body):
 				self.enterChat(send: nil)
 				self.webView.evaluateJavaScript(
-					"window.quayShowOutput && window.quayShowOutput(\(self.jsString(body)))")
+					"window.native && window.native.showOutput && window.native.showOutput(\(self.jsString(body)))")
 			case nil:
 				self.hide()
 			}
@@ -364,18 +364,18 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private func sendChat(_ text: String) {
 		composer.string = ""
 		render()
-		webView.evaluateJavaScript("window.quaySend && window.quaySend(\(jsString(text)))")
+		webView.evaluateJavaScript("window.native && window.native.send && window.native.send(\(jsString(text)))")
 	}
 
 	@objc private func stopStreaming() {
-		webView.evaluateJavaScript("window.quayAbort && window.quayAbort()")
+		webView.evaluateJavaScript("window.native && window.native.abort && window.native.abort()")
 	}
 
-	// MARK: quayd discovery → the transcript webview URL
+	// MARK: daemon discovery → the transcript webview URL
 
 	// The catalog socket is the single discovery path; when it (re)connects we point the
 	// transcript webview at the live runtime. Reloading only on a real change keeps the
-	// webview warm in steady state and heals it across a quayd restart (new port/token).
+	// webview warm in steady state and heals it across a daemon restart (new port/token).
 	private func useRuntime(_ port: Int, _ token: String) {
 		if let r = chatRuntime, r.port == port, r.token == token { return }
 		chatRuntime = (port, token)
@@ -420,7 +420,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		NSApp.activate(ignoringOtherApps: true)
 		panel.makeKeyAndOrderFront(nil)
 		// Summon lands in app-search with a cleared composer; reconnect so the catalog and
-		// the transcript runtime refresh even if quayd was killed while we were hidden.
+		// the transcript runtime refresh even if daemon was killed while we were hidden.
 		composer.string = ""
 		chatting = false
 		catalog.connect()
@@ -448,14 +448,14 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		cfg.activates = true
 
 		// Launch by bundle id (LaunchServices) — its own process, own Dock identity.
-		let bundleId = "app.justfiles.quay.app.\(id)"
+		let bundleId = "app.justfiles.spud.app.\(id)"
 		if let url = ws.urlForApplication(withBundleIdentifier: bundleId) {
 			ws.openApplication(at: url, configuration: cfg)
 			return
 		}
 		// Dev fallback: the generated bundle on disk if it isn't registered yet.
 		let path = FileManager.default.homeDirectoryForCurrentUser
-			.appendingPathComponent("Applications/Quay Apps/\(id.capitalized).app")
+			.appendingPathComponent("Applications/Spud Apps/\(id.capitalized).app")
 		if FileManager.default.fileExists(atPath: path.path) {
 			ws.openApplication(at: path, configuration: cfg)
 		} else {
@@ -464,11 +464,11 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	}
 }
 
-// Find-or-spawn the quayd daemon. Discovery is via runtime.json ({port, token,
+// Find-or-spawn the daemon daemon. Discovery is via runtime.json ({port, token,
 // pid}); liveness via the pid. If it is absent or dead, spawn the daemon from the
 // runtime + args + entrypoint stamped into Info.plist by build.sh (node or bun) and
 // wait for it to advertise itself. A single-writer lock is deferred (Phase 4 hardening).
-enum Quayd {
+enum Daemon {
 	struct Runtime: Decodable {
 		let port: Int
 		let token: String
@@ -481,7 +481,7 @@ enum Quayd {
 	static var ownerPid: Int?
 
 	static let supportDir = FileManager.default.homeDirectoryForCurrentUser
-		.appendingPathComponent("Library/Application Support/quay")
+		.appendingPathComponent("Library/Application Support/spud")
 	static var runtimePath: URL { supportDir.appendingPathComponent("runtime.json") }
 
 	static func read() -> Runtime? {
@@ -503,19 +503,19 @@ enum Quayd {
 
 	private static func spawn() {
 		// Runtime-agnostic spawn: the node-vs-bun decision lives entirely in the plist
-		// (stamped by build.sh --runtime), never in this Swift. We exec `QuaydRuntime`
-		// + `QuaydArgs` + `QuaydScript` verbatim — so flipping --runtime and rebuilding
+		// (stamped by build.sh --runtime), never in this Swift. We exec `DaemonRuntime`
+		// + `DaemonArgs` + `DaemonScript` verbatim — so flipping --runtime and rebuilding
 		// the shell switches runtimes with zero edits here (the reversibility hinge).
-		//   node: QuaydRuntime=<node>, QuaydArgs=[--import,<rawLoader>,--import,tsx]
-		//   bun:  QuaydRuntime=<bun>,  QuaydArgs=[]   (Bun runs TS + ?raw natively)
+		//   node: DaemonRuntime=<node>, DaemonArgs=[--import,<rawLoader>,--import,tsx]
+		//   bun:  DaemonRuntime=<bun>,  DaemonArgs=[]   (Bun runs TS + ?raw natively)
 		let info = Bundle.main.infoDictionary ?? [:]
-		guard let runtime = info["QuaydRuntime"] as? String else { return }
-		let args = info["QuaydArgs"] as? [String] ?? []
-		// A shipped self-contained quayd is the runtime itself — no script. Dev runs a
-		// runtime (node/bun) on QuaydScript; cwd is the script's dir, else the exe's.
-		let script = info["QuaydScript"] as? String ?? ""
-		// QuaydRuntime is absolute in dev (a system node/bun); shipped it is bundle-relative
-		// (the embedded "quayd" beside the launcher binary), resolved against the launcher's
+		guard let runtime = info["DaemonRuntime"] as? String else { return }
+		let args = info["DaemonArgs"] as? [String] ?? []
+		// A shipped self-contained daemon is the runtime itself — no script. Dev runs a
+		// runtime (node/bun) on DaemonScript; cwd is the script's dir, else the exe's.
+		let script = info["DaemonScript"] as? String ?? ""
+		// DaemonRuntime is absolute in dev (a system node/bun); shipped it is bundle-relative
+		// (the embedded "daemon" beside the launcher binary), resolved against the launcher's
 		// MacOS dir so the shipped app stays relocatable.
 		let exeDir = Bundle.main.executableURL?.deletingLastPathComponent() ?? URL(fileURLWithPath: "/")
 		let runtimeURL =
@@ -528,7 +528,7 @@ enum Quayd {
 		// copy-and-extend rather than replace it.
 		if let owner = ownerPid {
 			var env = ProcessInfo.processInfo.environment
-			env["QUAY_OWNER_PID"] = String(owner)
+			env["SPUD_OWNER_PID"] = String(owner)
 			p.environment = env
 		}
 		p.currentDirectoryURL =
@@ -537,7 +537,7 @@ enum Quayd {
 			: URL(fileURLWithPath: script).deletingLastPathComponent()
 		// Log to a file so a GUI-spawned daemon (no inherited terminal) is debuggable.
 		try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
-		let log = supportDir.appendingPathComponent("quayd.log")
+		let log = supportDir.appendingPathComponent("daemon.log")
 		FileManager.default.createFile(atPath: log.path, contents: nil)
 		if let handle = try? FileHandle(forWritingTo: log) {
 			handle.seekToEndOfFile()
@@ -572,7 +572,7 @@ final class Hotkey {
 				return noErr
 			}, 1, &spec, this, nil
 		)
-		let hkId = EventHotKeyID(signature: 0x5155_4159 /* 'QUAY' */, id: 1)
+		let hkId = EventHotKeyID(signature: 0x5350_5544 /* 'SPUD' */, id: 1)
 		RegisterEventHotKey(keyCode, modifiers, hkId, GetApplicationEventTarget(), 0, &ref)
 	}
 }

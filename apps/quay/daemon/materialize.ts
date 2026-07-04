@@ -1,5 +1,5 @@
 // Project the kernel catalog into the OS. For each app the kernel lists, the daemon
-// materialises a thin `.app` into ~/Applications/Quay Apps/ — the shared booter binary
+// materialises a thin `.app` into ~/Applications/Spud Apps/ — the shared booter binary
 // + a per-app Info.plist + a generated icon, and *no app code* (the bytes stay in the
 // Volume; the daemon serves them over http). The bundle is ad-hoc signed (`codesign -s
 // -`, locally created ⟹ no quarantine ⟹ Gatekeeper-clean) and registered with
@@ -24,35 +24,35 @@ export interface ProjectionApp {
 	iconBytes?: Uint8Array
 }
 
-const APPS_DIR = join(homedir(), 'Applications', 'Quay Apps')
+const APPS_DIR = join(homedir(), 'Applications', 'Spud Apps')
 // The shared booter binary + icon tool that materialize stamps into each .app. Dev reads
 // the SwiftPM build output (native/build); shipped reads the copies build.sh drops beside
-// the exe (Quay.app/Contents/Resources/build).
+// the exe (Spud.app/Contents/Resources/build).
 const BUILD_DIR = SHIPPED
 	? join(dirname(process.execPath), '..', 'Resources', 'build')
 	: join(import.meta.dirname, '..', 'native', 'build')
-const BOOTER = join(BUILD_DIR, 'quay-shell')
-const MAKEICON = join(BUILD_DIR, 'quay-makeicon')
+const BOOTER = join(BUILD_DIR, 'shell')
+const MAKEICON = join(BUILD_DIR, 'makeicon')
 const LSREGISTER =
 	'/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 
 // How a cold-launched .app respawns the daemon: when no daemon is running, the booter
-// (quay-shell) reads these from the projected bundle's OWN plist (Quayd.ensure → spawn
+// (shell) reads these from the projected bundle's OWN plist (Daemon.ensure → spawn
 // in Launcher.swift) and execs them, so the bundle spawns the daemon exactly as it runs
-// now. The runtime path must be ABSOLUTE — a projected bundle under ~/Applications/Quay
+// now. The runtime path must be ABSOLUTE — a projected bundle under ~/Applications/Spud
 // Apps holds only the booter, so the keys point back at the real daemon. Shipped:
-// process.execPath is Quay.app/Contents/MacOS/quay-daemon, run verbatim (no script). Dev:
+// process.execPath is Spud.app/Contents/MacOS/daemon, run verbatim (no script). Dev:
 // the current bun on daemon/main.ts. Bun runs TS natively, so there are never any args.
 const DAEMON_RUNTIME = process.execPath
 const DAEMON_SCRIPT = SHIPPED ? '' : join(import.meta.dirname, 'main.ts')
 
-// Reconcile ~/Applications/Quay Apps/ to exactly the kernel's catalog. Idempotent:
+// Reconcile ~/Applications/Spud Apps/ to exactly the kernel's catalog. Idempotent:
 // each bundle carries a signature marker, so an unchanged app is skipped (no
 // re-sign/re-register churn on every boot).
 export async function reconcileProjection(apps: ProjectionApp[]): Promise<void> {
 	if (!existsSync(BOOTER)) {
 		console.warn(
-			`quay daemon: booter missing (${BOOTER}); skipping .app projection — run native/build.sh`
+			`spud daemon: booter missing (${BOOTER}); skipping .app projection — run native/build.sh`
 		)
 		return
 	}
@@ -88,7 +88,7 @@ async function writeBundle(path: string, app: ProjectionApp, sig: string): Promi
 	await chmod(join(macos, bin), 0o755)
 	await writeFile(join(path, 'Contents', 'Info.plist'), plist(app, bin))
 	await makeIcon(res, app)
-	await writeFile(join(res, '.quay'), sig)
+	await writeFile(join(res, '.sig'), sig)
 }
 
 // Drop the bundle and unregister it so it leaves Spotlight/Launchpad promptly.
@@ -103,7 +103,7 @@ async function remove(path: string): Promise<void> {
 async function makeIcon(res: string, app: ProjectionApp): Promise<void> {
 	if (!existsSync(MAKEICON)) return
 	const letter = (app.name.charAt(0) || 'Q').toUpperCase()
-	const tmp = await mkdtemp(join(tmpdir(), 'quay-icon-'))
+	const tmp = await mkdtemp(join(tmpdir(), 'icon-'))
 	try {
 		const set = join(tmp, 'AppIcon.iconset')
 		await mkdir(set, { recursive: true })
@@ -189,7 +189,7 @@ async function renderIconset(set: string, letter: string, source?: string): Prom
 }
 
 // Bundle ids match the booter's launch path (Launcher.swift) and the Phase-0
-// convention: `app.justfiles.quay.app.<id>`, QuayAppId tells the booter who it is.
+// convention: `app.justfiles.spud.app.<id>`, AppId tells the booter who it is.
 function plist(app: ProjectionApp, bin: string): string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -197,7 +197,7 @@ function plist(app: ProjectionApp, bin: string): string {
 <dict>
 	<key>CFBundleName</key><string>${app.name}</string>
 	<key>CFBundleDisplayName</key><string>${app.name}</string>
-	<key>CFBundleIdentifier</key><string>app.justfiles.quay.app.${app.id}</string>
+	<key>CFBundleIdentifier</key><string>app.justfiles.spud.app.${app.id}</string>
 	<key>CFBundleExecutable</key><string>${bin}</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleVersion</key><string>${app.version ?? '1'}</string>
@@ -206,10 +206,10 @@ function plist(app: ProjectionApp, bin: string): string {
 	<key>LSMinimumSystemVersion</key><string>12.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
-	<key>QuayAppId</key><string>${app.id}</string>
-	<key>QuaydRuntime</key><string>${DAEMON_RUNTIME}</string>
-	<key>QuaydArgs</key><array/>
-	<key>QuaydScript</key><string>${DAEMON_SCRIPT}</string>
+	<key>AppId</key><string>${app.id}</string>
+	<key>DaemonRuntime</key><string>${DAEMON_RUNTIME}</string>
+	<key>DaemonArgs</key><array/>
+	<key>DaemonScript</key><string>${DAEMON_SCRIPT}</string>
 	<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
@@ -239,7 +239,7 @@ function iconSignature(app: ProjectionApp): { path?: string; hash: string } | un
 
 function readSig(path: string): string {
 	try {
-		return readFileSync(join(path, 'Contents', 'Resources', '.quay'), 'utf8')
+		return readFileSync(join(path, 'Contents', 'Resources', '.sig'), 'utf8')
 	} catch {
 		return ''
 	}

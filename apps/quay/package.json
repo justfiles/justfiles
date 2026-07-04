@@ -1,5 +1,5 @@
 {
-	"name": "@justfiles/quay",
+	"name": "@justfiles/spud-macos",
 	"type": "module",
 	"private": true,
 	"scripts": {
@@ -9,8 +9,8 @@
 		"ui:build": "vite build -c ui/vite.config.ts",
 		"ui:watch": "vite build -c ui/vite.config.ts --watch",
 		"vendor": "bun ui/vendor.ts",
-		"build": "turbo run build --filter=@justfiles/quay^... && native/build.sh --ship-daemon",
-		"start": "open -n native/Quay.app",
+		"build": "turbo run build --filter=@justfiles/spud-macos^... && native/build.sh --ship-daemon",
+		"start": "open -n native/Spud.app",
 		"install:app": "pnpm build && native/install.sh"
 	},
 	"dependencies": {

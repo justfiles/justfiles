@@ -1,8 +1,8 @@
 // Production build: compile the daemon into ONE self-contained Bun executable. The exe
 // embeds Bun + the bundled daemon graph (server/kernel/capabilities/agent). The browser
 // surfaces are NOT embedded — Vite builds them into ui/dist/client and they ship beside the
-// exe under Quay.app/Contents/Resources/client (native/build.sh copies them; see Step 2 of
-// the migration), read from disk at request time. QUAY_SHIPPED tells the runtime to resolve
+// exe under Spud.app/Contents/Resources/client (native/build.sh copies them; see Step 2 of
+// the migration), read from disk at request time. SPUD_SHIPPED tells the runtime to resolve
 // resources next to the exe rather than the bunfs root (see daemon/resources.ts and
 // daemon/main.ts CLIENT_DIR).
 //
@@ -39,7 +39,7 @@ function flag(name: string): string | undefined {
 	return i >= 0 ? process.argv[i + 1] : undefined
 }
 
-const outfile = flag('--outfile') ?? './dist/quay-daemon'
+const outfile = flag('--outfile') ?? './dist/daemon'
 const target = flag('--target') // bun-darwin-arm64 / bun-darwin-x64; undefined = host
 
 const result = await Bun.build({
@@ -54,8 +54,8 @@ const result = await Bun.build({
 	target: 'bun',
 	plugins: [rawText],
 	// Tell the standalone it is shipped, so resources resolve from
-	// Quay.app/Contents/Resources next to the exe — not the bunfs root.
-	define: { 'process.env.QUAY_SHIPPED': '"1"' },
+	// Spud.app/Contents/Resources next to the exe — not the bunfs root.
+	define: { 'process.env.SPUD_SHIPPED': '"1"' },
 	compile: (target ? { outfile, target } : { outfile }) as { outfile: string }
 })
 
@@ -63,4 +63,4 @@ if (!result.success) {
 	for (const log of result.logs) console.error(log)
 	process.exit(1)
 }
-console.log(`quay-daemon: compiled standalone exe → ${outfile}${target ? ` (${target})` : ''}`)
+console.log(`daemon: compiled standalone exe → ${outfile}${target ? ` (${target})` : ''}`)

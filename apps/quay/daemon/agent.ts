@@ -81,13 +81,13 @@ export function createAppController(
 	}
 }
 
-// The materialised bundle (in ~/Applications/Quay Apps, projected by the daemon)
+// The materialised bundle (in ~/Applications/Spud Apps, projected by the daemon)
 // and a `pkill -f` pattern matching its running booter (argv[0] is the bundle's
 // executable path) — used to `open`/quit real windows. The filesystem-safe name
 // mirrors the daemon's exec() in materialize.ts.
 const execName = (name: string): string => name.replace(/[^A-Za-z0-9._-]/g, '') || 'App'
 const bundlePath = (name: string): string =>
-	join(homedir(), 'Applications', 'Quay Apps', `${execName(name)}.app`)
+	join(homedir(), 'Applications', 'Spud Apps', `${execName(name)}.app`)
 const bundleProcessPattern = (name: string): string =>
 	`${execName(name)}.app/Contents/MacOS/${execName(name)}`
 
@@ -264,7 +264,7 @@ export async function dispatchCommand(name: string): Promise<CommandResult> {
 }
 
 // A snapshot of what the agent runs with: session length + the resolved system prompt
-// (persona + memory + docs). Logged to quayd.log and returned for the `/debug` text panel.
+// (persona + memory + docs). Logged to daemon.log and returned for the `/debug` text panel.
 async function debugReport(): Promise<string> {
 	try {
 		const { assistant } = await getAgent()
@@ -292,7 +292,7 @@ function ping(kind: 'info' | 'error' | 'question', body: string, route: Route): 
 		id: crypto.randomUUID(),
 		source: 'agent',
 		kind,
-		title: 'quay',
+		title: 'Spud',
 		body: summarize(body),
 		threadId: 'agent',
 		route

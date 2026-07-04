@@ -10,19 +10,23 @@ import { CommandOutput } from './CommandOutput'
 // transparent WKWebView over its own AppKit chrome. The view is a LIVE VIEW of the shared
 // session (useAgentChat subscribes to /agent), so any turn — a typed prompt, or a `/skill`
 // the daemon dispatched over /system — shows up here without the webview doing anything.
-// The native composer owns input: `quaySend` sends a prompt; `quayShowOutput` renders a
-// one-off command result (e.g. `/debug`) in place of the transcript. Streaming + connection
-// state flow back over `webkit.messageHandlers.status` (drives the native Stop button).
+// The native composer owns input via `window.native`: `send` sends a prompt; `showOutput`
+// renders a one-off command result (e.g. `/debug`) in place of the transcript. Streaming +
+// connection state flow back over `webkit.messageHandlers.status` (drives the native Stop button).
 // Commands are NOT handled here — the launcher dispatches them over /system.
 
-interface QuayChatWindow {
-	webkit?: { messageHandlers?: { status?: { postMessage(message: unknown): void } } }
-	quaySend?: (text: string) => void
-	quayAbort?: () => void
-	quayShowOutput?: (body: string) => void
+interface NativeBridge {
+	send?: (text: string) => void
+	abort?: () => void
+	showOutput?: (body: string) => void
 }
 
-const win = window as unknown as QuayChatWindow
+interface ChatWindow {
+	webkit?: { messageHandlers?: { status?: { postMessage(message: unknown): void } } }
+	native?: NativeBridge
+}
+
+const win = window as unknown as ChatWindow
 
 function ChatApp() {
 	const chat = useAgentChat()
@@ -30,20 +34,20 @@ function ChatApp() {
 	// dispatch. Shown in place of the transcript; cleared when the user sends a message.
 	const [output, setOutput] = useState<string | null>(null)
 
-	// Wire the native input bridge to the live chat hook. `quaySend` sends a prompt (and
-	// drops any command output); `quayAbort` (the native Stop button) cancels the in-flight
-	// turn; `quayShowOutput` shows a command's text result.
+	// Wire the native input bridge to the live chat hook. `send` sends a prompt (and
+	// drops any command output); `abort` (the native Stop button) cancels the in-flight
+	// turn; `showOutput` shows a command's text result.
 	useEffect(() => {
-		win.quaySend = (text) => {
-			setOutput(null)
-			chat.send(String(text ?? ''))
+		win.native = {
+			send: (text) => {
+				setOutput(null)
+				chat.send(String(text ?? ''))
+			},
+			abort: () => chat.abort(),
+			showOutput: (body) => setOutput(String(body ?? ''))
 		}
-		win.quayAbort = () => chat.abort()
-		win.quayShowOutput = (body) => setOutput(String(body ?? ''))
 		return () => {
-			win.quaySend = undefined
-			win.quayAbort = undefined
-			win.quayShowOutput = undefined
+			win.native = undefined
 		}
 	}, [chat.send, chat.abort])
 

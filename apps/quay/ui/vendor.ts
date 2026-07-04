@@ -107,20 +107,20 @@ async function exportNames(spec: string): Promise<string[]> {
 // trying to build); an `onResolve` exact check externalizes only the precise siblings,
 // so each module reaches the others through the import map — one shared React internals
 // dispatcher, never a second copy (which is the classic "Invalid hook call" two-Reacts bug).
-const ENTRY = 'quay-vendor:entry'
+const ENTRY = 'vendor:entry'
 function vendorPlugin(
 	spec: string,
 	externals: ReadonlySet<string>,
 	names: readonly string[]
 ): BunPlugin {
 	return {
-		name: 'quay-vendor',
+		name: 'vendor',
 		setup(build) {
 			build.onResolve({ filter: new RegExp(`^${ENTRY}$`) }, () => ({
 				path: ENTRY,
-				namespace: 'quay-vendor'
+				namespace: 'vendor'
 			}))
-			build.onLoad({ filter: /.*/, namespace: 'quay-vendor' }, () => ({
+			build.onLoad({ filter: /.*/, namespace: 'vendor' }, () => ({
 				contents: entrySource(spec, names),
 				loader: 'js',
 				resolveDir: import.meta.dirname
@@ -140,7 +140,7 @@ async function buildOne(spec: string): Promise<string> {
 		target: 'browser',
 		format: 'esm',
 		minify: true,
-		// `quay-vendor:entry` has no slash, but pin the root anyway so Bun never probes
+		// `vendor:entry` has no slash, but pin the root anyway so Bun never probes
 		// a derived directory on the real fs before the plugin resolves the virtual entry.
 		root: import.meta.dirname,
 		define: { 'process.env.NODE_ENV': JSON.stringify(MODE) },

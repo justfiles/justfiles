@@ -5,16 +5,16 @@ import PackageDescription
 // the sources under Sources/ — so there's no hand-maintained file list — and links
 // the launcher's UserNotifications framework declaratively. build.sh stamps the
 // .app bundles around the binaries this produces; the daemon materialises per-app
-// bundles from the same quay-shell binary (see daemon/materialize.ts).
+// bundles from the same shell binary (see daemon/materialize.ts).
 let package = Package(
-	name: "quay",
+	name: "spud",
 	platforms: [.macOS(.v12)],
 	targets: [
 		.executableTarget(
-			name: "quay-shell",
+			name: "shell",
 			linkerSettings: [.linkedFramework("UserNotifications")]
 		),
-		.executableTarget(name: "quay-makeicon"),
+		.executableTarget(name: "makeicon"),
 	],
 	swiftLanguageVersions: [.v5]
 )

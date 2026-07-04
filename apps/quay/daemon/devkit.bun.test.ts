@@ -23,7 +23,7 @@ let root: string
 let kernel: Kernel
 
 beforeAll(async () => {
-	root = await mkdtemp(join(tmpdir(), 'quay-daemon-devkit-'))
+	root = await mkdtemp(join(tmpdir(), 'daemon-devkit-'))
 	kernel = await buildKernel(volume(await nativeStorage(root)))
 })
 afterAll(async () => {

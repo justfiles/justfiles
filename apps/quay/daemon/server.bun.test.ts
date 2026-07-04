@@ -1,6 +1,6 @@
 // Server/protocol coverage — main.ts exports
 // `createServer` (the Bun.serve routing + the three sockets); this stands one up over a
-// throwaway temp Volume (QUAY_SUPPORT_DIR) with a no-op `projectApps` so the run never
+// throwaway temp Volume (SPUD_SUPPORT_DIR) with a no-op `projectApps` so the run never
 // touches ~/Applications. It exercises the HTTP routes (per-app gui.js/icon + their 404s +
 // the serveClient guard) and the wire protocol on all three sockets: `/system` (catalog +
 // command dispatch), `/agent` (live transcript + a prompt turn), and `/app/:id` (initial
@@ -21,17 +21,17 @@ let server: ReturnType<typeof createServer>
 let port: number
 
 beforeAll(async () => {
-	root = await mkdtemp(join(tmpdir(), 'quay-daemon-server-'))
+	root = await mkdtemp(join(tmpdir(), 'daemon-server-'))
 	// Sandbox the daemon's Volume/agent singletons to the temp dir before the first use.
-	process.env.QUAY_SUPPORT_DIR = root
-	// Ephemeral port; a no-op projection so the run never writes ~/Applications/Quay Apps.
+	process.env.SPUD_SUPPORT_DIR = root
+	// Ephemeral port; a no-op projection so the run never writes ~/Applications/Spud Apps.
 	server = createServer({ port: 0, projectApps: async () => {} })
 	if (server.port === undefined) throw new Error('server has no TCP port')
 	port = server.port
 })
 afterAll(async () => {
 	server.stop(true)
-	delete process.env.QUAY_SUPPORT_DIR
+	delete process.env.SPUD_SUPPORT_DIR
 	await rm(root, { recursive: true, force: true })
 })
 

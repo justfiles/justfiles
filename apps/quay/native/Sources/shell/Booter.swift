@@ -2,10 +2,10 @@ import Cocoa
 import WebKit
 
 // The booter: a dumb window with an OS identity. It holds no app logic and no
-// assets — it ensures quayd is running, then opens a WKWebView at
-// http://127.0.0.1:PORT/app/<id>?token=… (Slice 7), where quayd serves the shell +
-// the app's real gui.js and a token-scoped Cap'n Web berth. A `--url`/QuayTargetURL
-// override is kept for dev; without quayd it shows a placeholder.
+// assets — it ensures daemon is running, then opens a WKWebView at
+// http://127.0.0.1:PORT/app/<id>?token=… (Slice 7), where daemon serves the shell +
+// the app's real gui.js and a token-scoped Cap'n Web berth. A `--url`/TargetURL
+// override is kept for dev; without daemon it shows a placeholder.
 
 final class BooterDelegate: NSObject, NSApplicationDelegate {
 	private let appId: String
@@ -37,7 +37,7 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 		// so one constant name never collides between apps. First launch (no saved frame)
 		// falls back to a centred default-size window. Restoring before makeKeyAndOrderFront
 		// means the early themed blank frame already appears at the remembered geometry.
-		let autosaveName: NSWindow.FrameAutosaveName = "quayWindow"
+		let autosaveName: NSWindow.FrameAutosaveName = "mainWindow"
 		if !window.setFrameUsingName(autosaveName) { window.center() }
 		_ = window.setFrameAutosaveName(autosaveName)
 		window.title = name
@@ -77,14 +77,14 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 
 		if let target {
 			webView.load(URLRequest(url: target))
-		} else if let runtime = Quayd.read(), Quayd.alive(runtime) {
+		} else if let runtime = Daemon.read(), Daemon.alive(runtime) {
 			// Warm daemon (the common case): navigate straight to the app URL — no
 			// placeholder and no thread hop, so launch is a single navigation rather
 			// than a throwaway paint followed by a redirect. read()/alive() are a tiny
 			// file read + a kill(pid,0) probe, cheap enough for the main thread.
 			webView.load(URLRequest(url: Self.appURL(runtime, appId: appId)))
 		} else {
-			// Cold: spawn quayd off the main thread, showing a neutral splash meanwhile.
+			// Cold: spawn daemon off the main thread, showing a neutral splash meanwhile.
 			webView.loadHTMLString(Self.placeholderHTML(note: "Starting…"), baseURL: nil)
 			loadFromDaemon()
 		}
@@ -92,24 +92,24 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 
 	// The window backing, following the system appearance so the blank frame matches
 	// the design system's `--window-bg` in both modes (#ffffff / #1e1e1e).
-	private static let windowBgColor = NSColor(name: "quayWindowBg") { appearance in
+	private static let windowBgColor = NSColor(name: "windowBg") { appearance in
 		appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
 			? NSColor(srgbRed: 30 / 255, green: 30 / 255, blue: 30 / 255, alpha: 1)
 			: .white
 	}
 
-	// Find-or-spawn quayd off the main thread, then load this app's window. The
-	// shared Quayd discovery (Launcher.swift) reads runtime.json and, if it's
+	// Find-or-spawn daemon off the main thread, then load this app's window. The
+	// shared Daemon discovery (Launcher.swift) reads runtime.json and, if it's
 	// absent/dead, spawns the daemon — so launching from Spotlight with the launcher
 	// closed still works.
 	private func loadFromDaemon() {
 		DispatchQueue.global().async { [weak self] in
 			guard let self else { return }
-			let runtime = Quayd.ensure()
+			let runtime = Daemon.ensure()
 			DispatchQueue.main.async {
 				guard let runtime else {
 					self.webView.loadHTMLString(
-						Self.placeholderHTML(note: "quayd unavailable"), baseURL: nil
+						Self.placeholderHTML(note: "daemon unavailable"), baseURL: nil
 					)
 					return
 				}
@@ -119,7 +119,7 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 	}
 
 	// The localhost shell URL for this app on a running daemon: token-scoped to one app.
-	private static func appURL(_ runtime: Quayd.Runtime, appId: String) -> URL {
+	private static func appURL(_ runtime: Daemon.Runtime, appId: String) -> URL {
 		var components = URLComponents()
 		components.scheme = "http"
 		components.host = "127.0.0.1"
@@ -147,7 +147,7 @@ final class BooterDelegate: NSObject, NSApplicationDelegate {
 		NSApp.mainMenu = main
 	}
 
-	// A neutral splash for the cold path (while quayd spawns). The `Canvas`/`GrayText`
+	// A neutral splash for the cold path (while daemon spawns). The `Canvas`/`GrayText`
 	// system colours follow `color-scheme`, so it matches the themed window backing
 	// and the app shell that replaces it — a cold launch transitions without a flash.
 	private static func placeholderHTML(note: String) -> String {

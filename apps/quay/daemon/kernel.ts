@@ -57,7 +57,7 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 					kernel: k,
 					compile: tc.compile,
 					typecheck: tc.typecheck,
-					runner: quayRunner(fs, k),
+					runner: makeRunner(fs, k),
 					overwrite: true
 				})
 			},
@@ -76,7 +76,7 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 	return k
 }
 
-function quayRunner(fs: Volume, kernel: Kernel): Runner {
+function makeRunner(fs: Volume, kernel: Kernel): Runner {
 	return {
 		mount: async (draft, { previewId, reset }) => {
 			// ⟳ Run/Restart: wipe persisted draft state for a clean boot.

@@ -212,7 +212,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 	// subscribes to — so a daemon-driven `/skill` turn surfaces live without polling.
 	setAgentBroadcast((event) => server.publish('agent', JSON.stringify(event satisfies AgentEvent)))
 
-	// Project the catalog into ~/Applications/Quay Apps/*.app (real macOS apps). One-way, the
+	// Project the catalog into ~/Applications/Spud Apps/*.app (real macOS apps). One-way, the
 	// Volume wins; previews stay out. Fire-and-forget — a projection failure never takes the
 	// daemon down.
 	async function project(): Promise<void> {
@@ -256,7 +256,7 @@ export function createServer(options: ServerOptions = {}): Server<Context> {
 		await project()
 	})
 
-	void project().catch((error) => console.error('quay daemon: projection failed', error))
+	void project().catch((error) => console.error('spud daemon: projection failed', error))
 
 	// One kernel subscription drives both: live-state fan-out per window, and the coalesced
 	// reconcile on install/uninstall.
@@ -283,7 +283,7 @@ function alive(pid: number): boolean {
 }
 
 // Process entry: start the server, write the runtime.json handshake, and bind our lifetime
-// to the owning app (QUAY_OWNER_PID watchdog + SIGINT/SIGTERM cleanup). Runs only as the
+// to the owning app (SPUD_OWNER_PID watchdog + SIGINT/SIGTERM cleanup). Runs only as the
 // entry, so an `import` of `createServer` for tests has no process-level side effects.
 async function main(): Promise<void> {
 	const token = randomBytes(16).toString('hex')
@@ -296,7 +296,7 @@ async function main(): Promise<void> {
 		try {
 			await clearRuntime()
 		} catch (error) {
-			console.error('quay daemon: failed to clear runtime file', error)
+			console.error('spud daemon: failed to clear runtime file', error)
 		}
 	}
 	const exit = async (): Promise<void> => {
@@ -308,7 +308,7 @@ async function main(): Promise<void> {
 	process.on('SIGTERM', () => void exit())
 	process.on('beforeExit', () => void cleanupRuntime())
 
-	const ownerPid = Number(process.env.QUAY_OWNER_PID)
+	const ownerPid = Number(process.env.SPUD_OWNER_PID)
 	if (Number.isInteger(ownerPid) && ownerPid > 0) {
 		const watchdog = setInterval(() => {
 			if (!alive(ownerPid)) void exit()
@@ -318,7 +318,7 @@ async function main(): Promise<void> {
 
 	const server = createServer()
 	const port = server.port
-	if (port === undefined) throw new Error('quay daemon: server has no TCP port')
+	if (port === undefined) throw new Error('spud daemon: server has no TCP port')
 	await writeRuntime({ port, token, pid: process.pid })
 	runtimeWritten = true
 }

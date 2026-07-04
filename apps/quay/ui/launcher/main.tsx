@@ -58,7 +58,7 @@ export function Launcher() {
 	return (
 		<main className="launcher-page">
 			<style>{styles}</style>
-			<section className="launcher-panel" aria-label="Quay launcher">
+			<section className="launcher-panel" aria-label="Spud launcher">
 				<div className="app-surface">
 					{showChat ? (
 						<ChatSurface chat={chat} />
@@ -73,7 +73,7 @@ export function Launcher() {
 						</div>
 					) : (
 						<div className="empty-state">
-							{connection === 'ready' ? 'No apps found' : 'Connecting to Quay…'}
+							{connection === 'ready' ? 'No apps found' : 'Connecting to Spud…'}
 						</div>
 					)}
 				</div>

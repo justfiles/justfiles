@@ -1,7 +1,7 @@
 // Kernel/capability wiring coverage — the daemon has no host.ts,
 // so this drives `buildKernel` over a throwaway temp Volume: the kernel + the shared
 // reducer sandbox pool + `volumeCapability` over a real native-FS Volume. Files declares
-// the `volume` capability with the `system` scope (quay's one systemAllowlist entry), so
+// the `volume` capability with the `system` scope (spud's one systemAllowlist entry), so
 // dispatching `refresh` scans the actual volume root — proving a capability-using reducer
 // reaches real files, not a stub. The per-app `/data/<id>` chroot and non-allowlisted
 // `system` denial live in the package-level capability tests; here we lock in the daemon's
@@ -22,7 +22,7 @@ let root: string
 let kernel: Kernel
 
 beforeAll(async () => {
-	root = await mkdtemp(join(tmpdir(), 'quay-daemon-kernel-'))
+	root = await mkdtemp(join(tmpdir(), 'daemon-kernel-'))
 	kernel = await buildKernel(volume(await nativeStorage(root)))
 })
 afterAll(async () => {

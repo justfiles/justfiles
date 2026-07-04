@@ -33,7 +33,7 @@ test('a different app id has a distinct signature', () => {
 })
 
 test('a new booter binary (mtime) refreshes every bundle', () => {
-	// build.sh drops a fresh quay-shell → every projected bundle must be rewritten.
+	// build.sh drops a fresh shell → every projected bundle must be rewritten.
 	expect(projectionSignature(base, 100)).not.toBe(projectionSignature(base, 200))
 })
 

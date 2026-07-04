@@ -1,19 +1,19 @@
 #!/bin/sh
-# Build the quay native shell — one binary, two modes (booter + launcher).
+# Build the spud native shell — one binary, two modes (booter + launcher).
 # Command Line Tools only (no full Xcode): SwiftPM compiles, this script bundles.
 #
 #   ./build.sh Code          # a booter bundle ./Code.app (mock target, own identity)
-#   ./build.sh --launcher    # dev launcher ./Quay.app — spawns the daemon from source
-#   ./build.sh --ship-daemon # prod ./Quay.app — self-contained daemon exe + Vite client
+#   ./build.sh --launcher    # dev launcher ./Spud.app — spawns the daemon from source
+#   ./build.sh --ship-daemon # prod ./Spud.app — self-contained daemon exe + Vite client
 #   ./build.sh --release …   # optimise the binaries for shipping (default: debug)
 #
 # --launcher and --ship-daemon build the Vite client (ui/dist/client, the daemon's browser
 # surfaces) — there is no separate `assets` step. The
-# pnpm scripts (dev/build) build quay's workspace app deps via turbo first; this script only
+# pnpm scripts (dev/build) build spud's workspace app deps via turbo first; this script only
 # does the native shell + assets.
 #
 # `swift build` (Package.swift) discovers the Swift sources under Sources/ and
-# produces two binaries — quay-shell (the shared booter+launcher) and quay-makeicon.
+# produces two binaries — shell (the shared booter+launcher) and makeicon.
 # We copy both into ./build/, a stable, gitignored handoff dir where the daemon finds
 # them to materialise the per-app `.app` bundles (see daemon/materialize.ts).
 set -e
@@ -31,18 +31,18 @@ done
 
 BUILD="$(pwd)/build"
 mkdir -p "$BUILD"
-BIN="$BUILD/quay-shell"
-ICON="$BUILD/quay-makeicon"
+BIN="$BUILD/shell"
+ICON="$BUILD/makeicon"
 
 # Compile once via SwiftPM (incremental — only changed sources recompile), then
 # publish the two binaries into ./build/. The launcher's UserNotifications link
 # lives in Package.swift now.
 swift build -c "$CONFIG"
 bin="$(swift build -c "$CONFIG" --show-bin-path)"
-cp "$bin/quay-shell" "$BIN"
-cp "$bin/quay-makeicon" "$ICON" 2>/dev/null || ICON=""
+cp "$bin/shell" "$BIN"
+cp "$bin/makeicon" "$ICON" 2>/dev/null || ICON=""
 
-emit_plist() { # name bundle_id [quay_id] [lsui]
+emit_plist() { # name bundle_id [app_id] [lsui]
 	cat <<-EOF
 		<?xml version="1.0" encoding="UTF-8"?>
 		<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -61,7 +61,7 @@ emit_plist() { # name bundle_id [quay_id] [lsui]
 			<key>CFBundleIconFile</key><string>AppIcon</string>
 			<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 	EOF
-	[ -n "$3" ] && printf '\t<key>QuayAppId</key><string>%s</string>\n' "$3"
+	[ -n "$3" ] && printf '\t<key>AppId</key><string>%s</string>\n' "$3"
 	[ "$4" = "1" ] && printf '\t<key>LSUIElement</key><true/>\n'
 	printf '</dict>\n</plist>\n'
 }
@@ -75,7 +75,7 @@ make_icon() { # app_path letter
 	iconutil -c icns "$set" -o "$1/Contents/Resources/AppIcon.icns" 2>/dev/null || true
 }
 
-make_bundle() { # app_path name bundle_id [quay_id] [lsui]
+make_bundle() { # app_path name bundle_id [app_id] [lsui]
 	app="$1"
 	rm -rf "$app"
 	mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -86,25 +86,25 @@ make_bundle() { # app_path name bundle_id [quay_id] [lsui]
 }
 
 # Stamp the daemon spawn keys into the launcher plist. The daemon is Bun-only (Bun.serve,
-# pub/sub, Bun.file), so the launcher always spawns it under bun: QuaydRuntime=<bun>,
-# QuaydArgs=[] (Bun runs TS + ?raw natively), QuaydScript is the daemon entrypoint.
-# Quayd.spawn() (Launcher.swift) execs these verbatim.
+# pub/sub, Bun.file), so the launcher always spawns it under bun: DaemonRuntime=<bun>,
+# DaemonArgs=[] (Bun runs TS + ?raw natively), DaemonScript is the daemon entrypoint.
+# Daemon.spawn() (Launcher.swift) execs these verbatim.
 stamp_daemon() { # plist
 	plist="$1"
 	daemon="$(cd ../daemon && pwd)"
-	/usr/libexec/PlistBuddy -c "Add :QuaydScript string $daemon/main.ts" "$plist" 2>/dev/null || true
-	/usr/libexec/PlistBuddy -c "Add :QuaydArgs array" "$plist" 2>/dev/null || true
-	/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string $(command -v bun)" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :DaemonScript string $daemon/main.ts" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :DaemonArgs array" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :DaemonRuntime string $(command -v bun)" "$plist" 2>/dev/null || true
 }
 
 build_launcher() {
-	app="Quay.app"
-	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
+	app="Spud.app"
+	make_bundle "$app" "Spud" "app.justfiles.spud" "" "1"
 	# The daemon serves its browser surfaces straight from Vite's ui/dist/client (no ship-time
 	# bundling), so build that tree — the dev daemon reads it via CLIENT_DIR (main.ts).
 	(cd .. && pnpm run ui:build >/dev/null)
 	# Dev wiring: how the launcher spawns the daemon from source (Command Line Tools have no
-	# packaged exe). Stamp the runtime keys; Quayd.spawn() execs them verbatim.
+	# packaged exe). Stamp the runtime keys; Daemon.spawn() execs them verbatim.
 	stamp_daemon "$app/Contents/Info.plist"
 	codesign --force --sign - "$app" 2>/dev/null || true # re-sign after adding assets
 	echo "built $app (launcher, daemon from source)"
@@ -114,7 +114,7 @@ build_booter() { # Name
 	name="$1"
 	id="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
 	app="$name.app"
-	make_bundle "$app" "$name" "app.justfiles.quay.app.$id" "$id" ""
+	make_bundle "$app" "$name" "app.justfiles.spud.app.$id" "$id" ""
 	echo "built $app (booter, id=$id)"
 }
 
@@ -140,19 +140,19 @@ copy_builtins() { # resources_dir
 	copy_builtin "$1" app.frieren.settings app-settings
 }
 
-# A self-contained, shippable Quay.app backed by the daemon (apps/quay/daemon): the
+# A self-contained, shippable Spud.app backed by the daemon (apps/quay/daemon): the
 # launcher binary + an embedded bun-compiled daemon exe (arm64) + the on-disk resources the
 # daemon reads, under Resources/. The daemon does zero frontend bundling: Vite builds the
 # browser surfaces (launcher / chat / app shell + assets + `/vendor/*` React) into
 # ui/dist/client, which rides on disk beside the exe as Resources/client; the builtin app
-# roots ride alongside it. All are resolved via QUAY_SHIPPED.
+# roots ride alongside it. All are resolved via SPUD_SHIPPED.
 build_ship_daemon() {
-	app="Quay.app"
-	make_bundle "$app" "Quay" "app.justfiles.quay" "" "1"
+	app="Spud.app"
+	make_bundle "$app" "Spud" "app.justfiles.spud" "" "1"
 	res="$app/Contents/Resources"
-	exe="$(pwd)/$app/Contents/MacOS/quay-daemon"
+	exe="$(pwd)/$app/Contents/MacOS/daemon"
 
-	# 1. The self-contained daemon exe (arm64) → Contents/MacOS/quay-daemon.
+	# 1. The self-contained daemon exe (arm64) → Contents/MacOS/daemon.
 	(cd .. && bun daemon/build-exe.ts --outfile "$exe" --target bun-darwin-arm64)
 	# 2. Browser surfaces (launcher / chat / app shell + hashed /assets/* + the shared React
 	#    /vendor/* bundles) built by Vite into ui/dist/client → Resources/client, where the
@@ -163,21 +163,21 @@ build_ship_daemon() {
 	# 3. Built-in app bundle roots (the daemon seeds these into the Volume) → Resources/builtins.
 	copy_builtins "$res"
 	# 4. The shared booter binary + icon tool → Resources/build. materialize.ts copies the
-	#    booter into each projected ~/Applications/Quay Apps/*.app; without it the daemon logs
+	#    booter into each projected ~/Applications/Spud Apps/*.app; without it the daemon logs
 	#    "booter missing" and skips projection entirely (resources.ts resolves BUILD_DIR here
 	#    when shipped).
-	mkdir -p "$res/build" && cp "$BIN" "$res/build/quay-shell"
-	[ -n "$ICON" ] && cp "$ICON" "$res/build/quay-makeicon"
+	mkdir -p "$res/build" && cp "$BIN" "$res/build/shell"
+	[ -n "$ICON" ] && cp "$ICON" "$res/build/makeicon"
 	# 5. The agent's project docs (repo-root docs/*.md) → Resources/docs, where the daemon's
 	#    DOCS_DIR resolves them for the `read_doc` tool with no repo at runtime. Flat copy of
 	#    every .md; the @justfiles/agent DOCS catalogue decides which ids are surfaced.
 	mkdir -p "$res/docs" && cp ../../../docs/*.md "$res/docs/"
-	# 6. Spawn the embedded exe verbatim — no runtime, no args, no script. QuaydRuntime is
-	#    bundle-relative ("quay-daemon"), resolved by Quayd.spawn against the launcher's MacOS
+	# 6. Spawn the embedded exe verbatim — no runtime, no args, no script. DaemonRuntime is
+	#    bundle-relative ("daemon"), resolved by Daemon.spawn against the launcher's MacOS
 	#    dir, so the app stays relocatable.
 	plist="$app/Contents/Info.plist"
-	/usr/libexec/PlistBuddy -c "Add :QuaydRuntime string quay-daemon" "$plist" 2>/dev/null || true
-	/usr/libexec/PlistBuddy -c "Add :QuaydArgs array" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :DaemonRuntime string daemon" "$plist" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Add :DaemonArgs array" "$plist" 2>/dev/null || true
 	codesign --force --deep --sign - "$app" 2>/dev/null || true
 	echo "built $app (ship-daemon, self-contained bun exe, arm64)"
 }

@@ -101,7 +101,7 @@ export const chatgptProvider: Provider = {
 
 // Resolve the ai-enabled account into a backend for the daemon's own LLM runtime
 // (the agent builds a full pi-agent runtime, not just text). `resolveAiAccount`
-// borrows the account from the internal store; quay never holds the store or the
+// borrows the account from the internal store; spud never holds the store or the
 // creds outside this closure. The access token is sealed inside the backend's
 // `streamFn` via `apiKeyBackend` — the agent drives the model but never holds the
 // credential, exactly as apps reach `ai` only through the minted use facet.

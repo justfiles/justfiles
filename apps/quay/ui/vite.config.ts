@@ -13,7 +13,7 @@ const ROOT = import.meta.dirname
 // runtime), and regenerates the vendor bundles into the build output.
 function vendor(): Plugin {
 	return {
-		name: 'quay-vendor',
+		name: 'vendor',
 		// `pre` so this resolveId runs before Vite's core resolver — otherwise Vite
 		// resolves `react` to node_modules and bundles a second copy into the launcher/shell
 		// chunks (the classic two-Reacts bug) before we get to externalize it.

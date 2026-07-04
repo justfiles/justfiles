@@ -1,9 +1,9 @@
 import Cocoa
 
 // One binary, two modes. Mode is decided by configuration:
-//   • a QuayAppId (Info.plist / env / --app) ⟹ booter  — one mini-app window.
+//   • an AppId (Info.plist / env / --app) ⟹ booter  — one mini-app window.
 //   • otherwise (or --launcher)              ⟹ launcher — the agent + hotkey panel.
-// The launcher bundle ships without QuayAppId; each mini-app bundle ships with one.
+// The launcher bundle ships without AppId; each mini-app bundle ships with one.
 
 struct Config {
 	let appId: String?
@@ -22,11 +22,11 @@ struct Config {
 
 		let raw = args.contains("--launcher")
 			? nil
-			: (arg("--app") ?? env["QUAY_APP_ID"] ?? info["QuayAppId"] as? String)
+			: (arg("--app") ?? env["SPUD_APP_ID"] ?? info["AppId"] as? String)
 		let id = (raw?.isEmpty == false) ? raw : nil
 
-		let urlStr = arg("--url") ?? env["QUAY_TARGET_URL"] ?? (info["QuayTargetURL"] as? String)
-		let name = (info["CFBundleName"] as? String) ?? id?.capitalized ?? "Quay"
+		let urlStr = arg("--url") ?? env["SPUD_TARGET_URL"] ?? (info["TargetURL"] as? String)
+		let name = (info["CFBundleName"] as? String) ?? id?.capitalized ?? "Spud"
 		return Config(appId: id, appName: name, targetURL: urlStr.flatMap { URL(string: $0) })
 	}
 }

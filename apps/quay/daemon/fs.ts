@@ -4,11 +4,11 @@ import { join } from 'node:path'
 import { type Volume, volume } from '@justfiles/fs'
 import { nativeStorage } from '@justfiles/fs/storage/fs'
 
-// Where quay keeps its Volume + runtime.json. Overridable via QUAY_SUPPORT_DIR so a test
+// Where spud keeps its Volume + runtime.json. Overridable via SPUD_SUPPORT_DIR so a test
 // can point it at a temp dir and never touch the real support tree; read lazily (a
 // function, not a const) so a test can set the env before the first getVolume/writeRuntime.
 const supportDir = (): string =>
-	process.env.QUAY_SUPPORT_DIR ?? join(homedir(), 'Library', 'Application Support', 'quay')
+	process.env.SPUD_SUPPORT_DIR ?? join(homedir(), 'Library', 'Application Support', 'spud')
 const runtimePath = (): string => join(supportDir(), 'runtime.json')
 
 export interface Runtime {

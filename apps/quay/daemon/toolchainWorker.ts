@@ -1,5 +1,5 @@
-// The quay toolchain worker ENTRY — the one file that runs on the worker thread.
-// It binds quay's real backends (`Bun.build` compile + the tsc typecheck) to the
+// The spud toolchain worker ENTRY — the one file that runs on the worker thread.
+// It binds spud's real backends (`Bun.build` compile + the tsc typecheck) to the
 // portable `serveToolchain` loop, so every devkit compile/typecheck the agent
 // triggers runs HERE instead of on the daemon's event loop. `tsTypecheck`'s
 // multi-second synchronous `ts.createProgram` now blocks only this thread; the

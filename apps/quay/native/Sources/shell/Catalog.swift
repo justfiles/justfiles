@@ -25,7 +25,7 @@ enum CommandResult {
 }
 
 // The launcher's Swift ws client for the daemon's catalog channel. It discovers the daemon
-// (Quayd.ensure, off the main thread), opens ws://127.0.0.1:PORT/system, and reconnects on
+// (Daemon.ensure, off the main thread), opens ws://127.0.0.1:PORT/system, and reconnects on
 // drop. The daemon pushes the catalog frame ({type:'apps', apps}) on connect (and re-pushes
 // on catalog changes), so there is no request to send. `onCatalog` fires on the main thread
 // for every frame, keeping the native springboard live. The chat webview owns its own agent
@@ -39,13 +39,13 @@ final class CatalogClient {
 	// fetched once per connect — the composer renders its `/` menu from it.
 	var onCommands: (([CatalogCommand]) -> Void)?
 	// Fires (main thread) with the live {port, token} every time the socket opens — the
-	// single discovery path the launcher trusts. The chat webview rides it too: a quayd
+	// single discovery path the launcher trusts. The chat webview rides it too: a daemon
 	// restart drops this socket, reconnects on a fresh runtime, and re-fires, so the
 	// launcher reloads the (otherwise stale-port) transcript webview without its own probe.
 	var onRuntime: ((Int, String) -> Void)?
-	// Fires (main thread) for each `notify`-capability notification quayd broadcasts.
+	// Fires (main thread) for each `notify`-capability notification daemon broadcasts.
 	// The launcher decides focus suppression and projects it onto the OS banner.
-	var onNotification: ((QuayNotification) -> Void)?
+	var onNotification: ((NotifyMessage) -> Void)?
 
 	private var task: URLSessionWebSocketTask?
 	private var opening = false
@@ -74,7 +74,7 @@ final class CatalogClient {
 		if task != nil || opening { return }
 		opening = true
 		DispatchQueue.global().async { [weak self] in
-			let runtime = Quayd.ensure()
+			let runtime = Daemon.ensure()
 			DispatchQueue.main.async {
 				guard let self else { return }
 				self.opening = false
@@ -84,7 +84,7 @@ final class CatalogClient {
 		}
 	}
 
-	private func open(_ runtime: Quayd.Runtime) {
+	private func open(_ runtime: Daemon.Runtime) {
 		var c = URLComponents()
 		c.scheme = "ws"
 		c.host = "127.0.0.1"
@@ -139,7 +139,7 @@ final class CatalogClient {
 		case "notification":
 			guard let raw = obj["notification"],
 				let nData = try? JSONSerialization.data(withJSONObject: raw),
-				let n = try? JSONDecoder().decode(QuayNotification.self, from: nData)
+				let n = try? JSONDecoder().decode(NotifyMessage.self, from: nData)
 			else { return }
 			DispatchQueue.main.async { self.onNotification?(n) }
 		default:
