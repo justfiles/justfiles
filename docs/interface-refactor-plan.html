@@ -509,60 +509,62 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	<h2>Narrow the <code>@justfiles/agent</code> export surface</h2>
 </div>
 <div class="meta-row">
+	<span class="pill add">shipped</span>
 	<span class="pill rm">breaking (internal only)</span>
-	<span class="small">safe once Step 2 removed the low-level importers</span>
+	<span class="small">no external caller relied on the demoted symbols — workspace typecheck stayed green</span>
 </div>
 
 <p>
-	With both hosts on <code>createAgentSession</code>, the primitives have no external callers left. Demote
-	them to package-internal. The surface now reads as <strong>one product + a small backend/text seam +
-	value types</strong>.
+	With both hosts on <code>createAgentSession</code>, the low-level primitives have no external callers left —
+	demote them to package-internal (the files stay; they just leave <code>index.ts</code>). The surface now
+	reads as <strong>one product + a small backend/text seam + the value types that cross the boundary</strong>.
+	A handful of onboarding/maintenance helpers stay exported <em>for now</em>, because the host still calls them
+	directly (see the keep-row below).
 </p>
 
-<div class="ba-label after">packages/agent/index.ts — reads like a framework</div>
-<pre><code><span class="c-com">// ── The agent product ──────────────────────────────────────────</span>
-<span class="c-kw">export</span> { <span class="c-fn">createAgentSession</span> }
-<span class="c-kw">export type</span> { AgentSession, AgentSessionOptions, SessionEvent, PromptSource }
-<span class="c-kw">export type</span> { SessionEntry }              <span class="c-com">// the transcript element (wire/UI)</span>
-<span class="c-kw">export type</span> { SkillMeta }                <span class="c-com">// the UI builds its "/" menu from listSkills() — NOT a "command" type</span>
+<div class="ba-label after">packages/agent/index.ts — reads like a product (as shipped)</div>
+<pre><code><span class="c-com">// ── The agent product ──────────────────────────────────────────────</span>
+<span class="c-kw">export</span> { <span class="c-fn">createAgentSession</span>, <span class="c-fn">classifyFailure</span> }
+<span class="c-kw">export type</span> { AgentSession, AgentSessionOptions, SessionEvent }
+<span class="c-kw">export type</span> { SessionEntry }   <span class="c-com">// the transcript element (wire/UI)</span>
+<span class="c-kw">export type</span> { SkillMeta }     <span class="c-com">// the UI builds its "/" menu from session.listSkills()</span>
 
-<span class="c-com">// ── The seam a host implements: how apps are driven ────────────</span>
+<span class="c-com">// ── The seam a host implements: how apps are driven ────────────────</span>
 <span class="c-kw">export type</span> { AppController }
 
-<span class="c-com">// ── The credential/model seam + one-shot text generation ──────</span>
-<span class="c-kw">export</span> { <span class="c-fn">apiKeyBackend</span> }
-<span class="c-kw">export type</span> { AgentBackend, LLMConfig }
+<span class="c-com">// ── The credential/model seam + one-shot text generation ──────────</span>
+<span class="c-kw">export</span> { <span class="c-fn">apiKeyBackend</span> }; <span class="c-kw">export type</span> { AgentBackend }
 <span class="c-kw">export</span> { <span class="c-fn">text</span> }; <span class="c-kw">export type</span> { LLMText }   <span class="c-com">// powers soul-gen &amp; the `ai` capability</span>
 
-<span class="c-com">// ── Lifecycle jobs (onboarding) ────────────────────────────────</span>
-<span class="c-kw">export</span> { <span class="c-fn">generateSoul</span> }; <span class="c-kw">export type</span> { SoulGenerationInput }
-<span class="c-kw">export</span> { <span class="c-fn">readIdentity</span> }              <span class="c-com">// { userName, agentName } from the Volume</span>
+<span class="c-com">// ── Onboarding / maintenance building blocks (host-owned, for now) ──</span>
+<span class="c-kw">export</span> { <span class="c-fn">parseFrontmatter</span>, SOUL_GENERATION_PROMPT }; <span class="c-kw">export type</span> { SoulGenerationInput }
+<span class="c-kw">export</span> { <span class="c-fn">resolveTimezone</span>, <span class="c-fn">nextFourAmInTimezone</span> }
 </code></pre>
 
 <h4>Surface diff</h4>
 <table>
 	<tr><th></th><th>Symbol</th><th>Rationale</th></tr>
-	<tr><td><span class="pill rm">internal</span></td><td><code>createAgent</code>, <code>createAssistant</code>, <code>Assistant</code></td><td>ingredients of <code>createAgentSession</code></td></tr>
-	<tr><td><span class="pill rm">internal</span></td><td>all <code>create*Tool</code>, <code>createAppShellCommand</code>, <code>createJustBashTool</code>, <code>volumeFs</code>, <code>ShellCommand</code></td><td>the host no longer assembles tools</td></tr>
-	<tr><td><span class="pill keep">keep</span></td><td><code>listSkills</code> (now a session method), <code>SkillMeta</code></td><td>the UI needs them to build its slash-command menu — skills are the only "named" commands</td></tr>
-	<tr><td><span class="pill rm">internal</span></td><td><code>consolidateMemory</code>, timezone helpers, <code>parseFrontmatter</code>, <code>SOUL_GENERATION_PROMPT</code>, <code>*_PROMPT</code></td><td>behind <code>runMaintenance</code>, <code>nextMaintenanceAt</code>, <code>generateSoul</code>, <code>readIdentity</code></td></tr>
-	<tr><td><span class="pill keep">keep</span></td><td><code>AgentBackend</code>, <code>apiKeyBackend</code>, <code>LLMConfig</code>, <code>text</code>, <code>LLMText</code></td><td>the backend seam + the one-shot text primitive (real secondary product)</td></tr>
-	<tr><td><span class="pill rm">removed</span></td><td><code>CommandMeta</code>, <code>CommandResult</code>, <code>runCommand</code>, <code>commands()</code></td><td>"command" is a UI concept — never enters the package (see the correction above)</td></tr>
-	<tr><td><span class="pill keep">keep</span></td><td><code>SessionEntry</code>, <code>AppController</code></td><td>value/port types crossing the boundary</td></tr>
-	<tr><td><span class="pill add">new</span></td><td><code>createAgentSession</code>, <code>AgentSession</code>, <code>SessionEvent</code>, <code>generateSoul</code>, <code>readIdentity</code></td><td>the product</td></tr>
+	<tr><td><span class="pill add">new</span></td><td><code>createAgentSession</code>, <code>AgentSession</code>, <code>AgentSessionOptions</code>, <code>SessionEvent</code>, <code>classifyFailure</code></td><td>the product surface (Steps 1–2)</td></tr>
+	<tr><td><span class="pill rm">internal</span></td><td><code>createAgent</code>, <code>createAssistant</code>, <code>Assistant</code>, <code>consolidateMemory</code>, <code>CompactionSettings</code>, <code>PromptSource</code></td><td>ingredients of <code>createAgentSession</code> — assembled inside now</td></tr>
+	<tr><td><span class="pill rm">internal</span></td><td>all <code>create*Tool</code>, <code>createAppShellCommand</code>, <code>createJustBashTool</code>, <code>JustBashToolOptions</code>, <code>ShellCommand</code>, <code>volumeFs</code></td><td>the host no longer assembles tools</td></tr>
+	<tr><td><span class="pill rm">internal</span></td><td><code>listSkills</code>, <code>TurnListener</code>, <code>LLMConfig</code>, <code>DEFAULT_TIMEZONE</code>, <code>isoToTimezone</code>, <code>Agent</code></td><td>reached via a session method, or covered by structural typing — no consumer names them</td></tr>
+	<tr><td><span class="pill keep">keep</span></td><td><code>SkillMeta</code>, <code>SessionEntry</code>, <code>AppController</code></td><td>value/port types that cross the boundary (UI menu, transcript, app seam)</td></tr>
+	<tr><td><span class="pill keep">keep</span></td><td><code>AgentBackend</code>, <code>apiKeyBackend</code>, <code>text</code>, <code>LLMText</code></td><td>the backend seam + the one-shot text primitive (a real secondary product)</td></tr>
+	<tr><td><span class="pill keep">keep</span></td><td><code>parseFrontmatter</code>, <code>SOUL_GENERATION_PROMPT</code>, <code>SoulGenerationInput</code>, <code>resolveTimezone</code>, <code>nextFourAmInTimezone</code></td><td>soul-gen + daily-alarm still run in the host; fold into <code>generateSoul</code> / <code>nextMaintenanceAt</code> later</td></tr>
+	<tr><td><span class="pill rm">n/a</span></td><td><code>CommandMeta</code>, <code>CommandResult</code>, <code>runCommand</code>, <code>commands()</code></td><td>never entered the package — "command" is a UI concept (see the correction above)</td></tr>
 </table>
 
 <p class="small">
-	Net: ~30 fragmented exports → ~14, organized under four clear headings. The <code>./tools</code> and
-	<code>./justbash</code> internals stay files, just not exports.
+	Net: ~38 fragmented exports → 17, under four clear headings. The <code>./tools</code>, <code>./justbash</code>,
+	<code>assistant.ts</code> and <code>llm.agent.ts</code> internals stay as files — just not exports.
 </p>
 
-<div class="callout break"><span class="k">Breakage &amp; test</span>
-	Removing the demoted exports breaks any lingering deep import. Grep first
-	(<code>grep -rn "@justfiles/agent'" apps</code>); by now only the product/seam symbols should remain.
-	<code>pnpm typecheck</code> across the workspace is the gate — it's a compile-time surface, so a green
-	typecheck <em>is</em> the proof. Keep <code>text</code>/<code>LLMText</code> exported — frieren's
-	<code>ai.capability.ts</code> still needs it.
+<div class="callout break"><span class="k">Breakage &amp; test — shipped</span>
+	Demoting an export breaks any lingering deep import; a grep first
+	(<code>grep -rn "@justfiles/agent'" apps packages</code>) confirmed only product/seam symbols remained.
+	Because it's a compile-time surface, <strong>workspace <code>pnpm typecheck</code> is the gate — a green build
+	<em>is</em> the proof</strong>. <strong>Verified:</strong> typecheck clean · node suite <code>672 / 87</code> ·
+	lint 0. <code>text</code>/<code>LLMText</code> stay exported — frieren's <code>ai.capability.ts</code> needs them.
 </div>
 
 <!-- ==================================================================== -->
