@@ -28,6 +28,15 @@ export { type AgentBackend, apiKeyBackend, type LLMConfig } from './llm.ts'
 export { parseFrontmatter } from './markdown.ts'
 export { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
 export type { SessionEntry } from './session.manager.ts'
+// The agent product: one composed session (turn runner + tools + notify + classified
+// errors). Built on top of createAssistant; hosts should prefer this over hand-assembly.
+export {
+	type AgentSession,
+	type AgentSessionOptions,
+	classifyFailure,
+	createAgentSession,
+	type SessionEvent
+} from './session.ts'
 export { listSkills, type SkillMeta } from './skills.ts'
 export {
 	DEFAULT_TIMEZONE,
