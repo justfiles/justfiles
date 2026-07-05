@@ -1,14 +1,8 @@
 import { DurableObject } from 'cloudflare:workers'
 import {
-	type Assistant,
-	type CompactionSettings,
-	consolidateMemory,
-	createAgent,
-	createAppShellCommand,
-	createAssistant,
-	createFetchTool,
-	createJustBashTool,
-	createSearchTool,
+	type AgentSession,
+	apiKeyBackend,
+	createAgentSession,
 	type LLMText,
 	parseFrontmatter,
 	resolveTimezone,
@@ -16,21 +10,18 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import type { Capability } from '@justfiles/app/capabilities'
 import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
 import { createFsApi } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import { accountTools } from './accounts/agent-tools.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
-import { Coalescer } from './integrations/coalescer.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
@@ -65,19 +56,12 @@ type ServerMessage =
 
 const DEBUG_COMMAND = '/debug'
 
-const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
-	enabled: true,
-	reserveTokens: 16384,
-	keepRecentTokens: 20000
-}
-
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly vol: Volume
-	private assistant?: Assistant
+	private session?: AgentSession
 	private text?: LLMText
 	private cfTimezone?: string
-	private readonly coalescer = new Coalescer()
 	private apps?: FrierenApps
 
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -158,12 +142,13 @@ export class Frieren extends DurableObject<Env> {
 	private async reset() {
 		const { model, apiKey } = this.getBackendConfig()
 		await migrateCF(this.ctx.storage)
-		this.assistant?.abort()
+		this.session?.abort()
 		this.text = text({ model, apiKey })
-		// Accounts live on the Volume (store internal to @justfiles/app); the factory
-		// hands back the capabilities. frieren keeps its own env-keyed `ai`, so the
-		// factory's `ai` is ignored. email/calendar are guarded with audit + rate-limit
-		// — one set of buckets shared by the agent's tools and every app's calls.
+		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps
+		// its own env-keyed `ai` (agent backend + soul generation), so the factory's `ai` is
+		// ignored. email/calendar are guarded (audit + rate-limit) and wired into the APPS —
+		// the agent no longer reaches them directly (that returns as capability-provided agent
+		// tools; see the plan's Step 3.5).
 		const providers = buildProviders()
 		const caps = accountsCapabilities(providers, this.vol, { firstParty: ACCOUNTS_FIRST_PARTY })
 		const audit = new AuditLog(this.ctx.storage)
@@ -182,13 +167,19 @@ export class Frieren extends DurableObject<Env> {
 			calendar,
 			accounts: caps.accounts
 		})
-		const agent = this.buildAgent({ email, calendar })
-		this.assistant = await createAssistant({
+		// The agent PRODUCT: turn runner + tools (bash/fetch/search/ask_user + the `app`
+		// command over the kernel) + compaction + classified errors. frieren's backend is
+		// env-keyed (no rotation), so a static `apiKeyBackend` suffices.
+		this.session = createAgentSession({
 			volume: this.vol,
-			agent,
-			text: this.text,
-			compaction: DEFAULT_COMPACTION_SETTINGS,
-			getTimezone: this.getTimezone
+			backend: apiKeyBackend({ model, apiKey }),
+			apps: this.requireApps().controller,
+			timezone: this.getTimezone
+		})
+		// Surface classified turn errors to every open tab (the raw stream carries the tokens;
+		// this carries the failure body and resets the client's streaming flag).
+		this.session.subscribe((event) => {
+			if (event.type === 'error') this.broadcast({ type: 'error', message: event.message })
 		})
 	}
 
@@ -225,28 +216,6 @@ export class Frieren extends DurableObject<Env> {
 		return { model: openaiModel, apiKey }
 	}
 
-	private buildAgent(caps: { email: Capability; calendar: Capability }) {
-		// just-bash gives the agent a real shell over the Volume (~70 unix built-ins:
-		// cat/ls/mkdir/rm/cp/mv/grep/…), so the old fs tools and CommandRegistry are gone.
-		// The only custom command is `app`, which drives apps over the kernel.
-		const bash = createJustBashTool({
-			volume: this.vol,
-			commands: [createAppShellCommand(this.requireApps().controller)]
-		})
-		const agent = createAgent(this.getBackendConfig())
-
-		// The agent reaches email/calendar exactly as an app does — through the
-		// guarded use-facet capabilities (creds minted host-side, fan-out in the host,
-		// audit + rate-limit at the boundary). No creds, no per-account CLI commands.
-		const tools = accountTools({
-			email: caps.email,
-			calendar: caps.calendar,
-			getTimezone: this.getTimezone
-		})
-		agent.state.tools = [createFetchTool(), createSearchTool(), bash, ...tools]
-		return agent
-	}
-
 	// ── WebSocket handlers ────────────────────────────────────────────────
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -275,7 +244,7 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'abort') {
-			this.assistant?.abort()
+			this.session?.abort()
 			return
 		}
 
@@ -290,41 +259,23 @@ export class Frieren extends DurableObject<Env> {
 		}
 
 		if (parsed.type === 'prompt' && parsed.text) {
-			const sp = this.assistant?.systemPrompt()
 			const trimmed = parsed.text.trim()
 			if (trimmed === DEBUG_COMMAND) {
 				ws.send(
 					JSON.stringify({
 						type: 'debug',
-						message: sp ?? ''
+						message: (await this.session?.systemPrompt()) ?? ''
 					} satisfies ServerMessage)
 				)
 				return
 			}
 
-			const unsubscribe = this.assistant?.subscribe((event, _signal) => {
-				ws.send(
-					JSON.stringify({
-						type: 'event',
-						event
-					} satisfies ServerMessage)
-				)
-			})
-			try {
-				const promptText = parsed.text
-				await this.coalescer.during(async () => {
-					await this.assistant?.prompt(promptText, 'user')
-				})
-			} catch (error) {
-				ws.send(
-					JSON.stringify({
-						type: 'error',
-						message: error instanceof Error ? error.message : String(error)
-					} satisfies ServerMessage)
-				)
-			} finally {
-				unsubscribe?.()
-			}
+			// Stream the raw turn events (live token/tool deltas) to this socket. The session's
+			// turn runner catches + classifies failures (surfaced via the `error` subscription
+			// wired in reset), so this never rejects.
+			await this.session?.prompt(parsed.text, 'user', (event) =>
+				ws.send(JSON.stringify({ type: 'event', event } satisfies ServerMessage))
+			)
 		}
 	}
 
@@ -349,7 +300,7 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
-		if (this.text) await consolidateMemory(this.vol, this.text)
+		await this.session?.runMaintenance()
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -370,7 +321,7 @@ export class Frieren extends DurableObject<Env> {
 			await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
 
 			const participants = await this.loadParticipants()
-			const history = sessionEntries2DisplayMessages((await this.assistant?.history()) ?? [])
+			const history = sessionEntries2DisplayMessages((await this.session?.history()) ?? [])
 			if (history.length > 0) {
 				server.send(
 					JSON.stringify({
