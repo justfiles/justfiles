@@ -1,23 +1,8 @@
-import type { ActionMeta } from '@justfiles/app'
+import type { ActionMeta, AppController, AppInspection } from '@justfiles/app'
 import type { ExecResult } from 'just-bash'
 import type { ShellCommand } from './index.ts'
 
-type AppSummary = { id: string; name: string; description?: string }
-type AppInspection = AppSummary & { state: unknown; actions: Record<string, ActionMeta> }
-
-// The agent↔kernel bridge the `app` command drives: list/launch/inspect/close/
-// state/run against the kernel. Hosts implement it (the daemon over real macOS
-// bundles, frieren over its DO-backed apps); the command wrapper below is the
-// only shape just-bash sees.
-export interface AppController {
-	list(): Promise<AppSummary[]>
-	launch(id: string): Promise<AppInspection>
-	close(id?: string): Promise<void>
-	current(): Promise<AppInspection | undefined>
-	inspect(id: string): Promise<AppInspection>
-	state(id: string): Promise<unknown>
-	run(id: string, action: string, params: unknown): Promise<unknown>
-}
+export type { AppController } from '@justfiles/app'
 
 /**
  * The `app` command as a ShellCommand: list, launch, inspect, and drive apps over

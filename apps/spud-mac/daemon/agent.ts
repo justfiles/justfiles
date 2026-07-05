@@ -2,12 +2,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
 	type AgentSession,
-	type AppController,
 	createAgentSession,
 	type SessionEntry,
 	type SessionEvent
 } from '@justfiles/agent'
-import type { Kernel } from '@justfiles/app/runtime'
+import { type AppControllerPorts, createAppController } from '@justfiles/app'
 import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
@@ -22,59 +21,9 @@ import { DOCS_DIR } from './resources'
 export { classifyFailure } from '@justfiles/agent'
 
 // Opening/closing a window is native-touching: from the daemon we `open` the
-// materialised bundle and `pkill` its booter. Injectable so tests drive the
-// controller without touching LaunchServices.
-export interface WindowOps {
-	open(id: string, name: string): void
-	close(name: string): void
-}
-
-// The agent↔kernel bridge: an AppController over the daemon's kernel whose
-// launch/close drive REAL macOS bundles (`open` / `pkill` the materialised .app).
-// The agent dispatches into the SAME kernel the windows subscribe to, so an open
-// window updates live the moment the agent runs an action. `current` tracks the
-// most-recently launched app — the daemon's best approximation of focus.
-export function createAppController(
-	kernel: Kernel,
-	windows: WindowOps = nativeWindows
-): AppController {
-	let currentId: string | null = null
-
-	const inspect = async (id: string) => {
-		const installed = await kernel.app(id)
-		return {
-			id,
-			name: installed.manifest.name,
-			description: installed.manifest.description,
-			state: await kernel.state(id),
-			actions: await kernel.actions(id)
-		}
-	}
-
-	return {
-		list: async () =>
-			(await kernel.list())
-				.filter((app) => !app.id.startsWith('preview.'))
-				.map((app) => ({ id: app.id, name: app.name, description: app.description })),
-		launch: async (id) => {
-			const app = await inspect(id)
-			windows.open(id, app.name)
-			currentId = id
-			return app
-		},
-		close: async (id) => {
-			const targetId = id ?? currentId
-			if (!targetId) return
-			windows.close((await kernel.app(targetId)).manifest.name)
-			if (targetId === currentId) currentId = null
-		},
-		current: async () => (currentId ? inspect(currentId) : undefined),
-		inspect,
-		state: (id) => kernel.state(id),
-		run: (id, action, params) =>
-			kernel.dispatch(id, { type: action, params, actor: 'agent' } as never)
-	}
-}
+// materialised bundle and `pkill` its booter. The agent drives apps through the
+// SAME kernel the windows subscribe to (createAppController lives in @justfiles/app),
+// so an open window updates live the moment the agent runs an action.
 
 // The materialised bundle (in ~/Applications/Spud Apps, projected by the daemon)
 // and a `pkill -f` pattern matching its running booter (argv[0] is the bundle's
@@ -90,10 +39,10 @@ const bundleProcessPattern = (name: string): string =>
 // the Bun-native stand-in for node:child_process. Fire-and-forget: we don't await
 // `.exited`, and `stdio: ignore` keeps `pkill`'s "no match" (exit 1) and `open`'s
 // output from touching the daemon's streams.
-const nativeWindows: WindowOps = {
+const nativeWindows: AppControllerPorts['windows'] = {
 	open: (_id, name) =>
 		void Bun.spawn(['open', bundlePath(name)], { stdout: 'ignore', stderr: 'ignore' }),
-	close: (name) =>
+	close: (_id, name) =>
 		void Bun.spawn(['pkill', '-f', bundleProcessPattern(name)], {
 			stdout: 'ignore',
 			stderr: 'ignore'
@@ -130,7 +79,7 @@ async function buildSession(): Promise<AgentSession> {
 		},
 		// The agent drives apps through the SAME kernel the windows subscribe to, so
 		// `app launch`/`app run` update live windows the moment they run.
-		apps: createAppController(await getKernel()),
+		apps: createAppController(await getKernel(), { windows: nativeWindows }),
 		notify: notificationChannel,
 		title: 'Spud',
 		// The `read_doc` tool + docs system-prompt block: repo-root docs/*.md, resolved via

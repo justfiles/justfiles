@@ -1,5 +1,12 @@
 import type { AppController, LLMText } from '@justfiles/agent'
-import { type AppBundle, bundleFromZip, type Kernel, kernel, safeBundlePath } from '@justfiles/app'
+import {
+	type AppBundle,
+	bundleFromZip,
+	createAppController,
+	type Kernel,
+	kernel,
+	safeBundlePath
+} from '@justfiles/app'
 import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
 import {
 	type Capabilities,
@@ -151,19 +158,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		})
 	}
 
-	async function inspect(id: string) {
-		const k = await kernelReady()
-		const installed = await k.app(id)
-		const [state, actions] = await Promise.all([k.state(id).catch(() => undefined), k.actions(id)])
-		return {
-			id: installed.manifest.id,
-			name: installed.manifest.name,
-			description: '',
-			state: state ?? null,
-			actions
-		}
-	}
-
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {
 			const manifests = await (await kernelReady()).list()
@@ -305,28 +299,23 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		linkFor(ws).feed(message)
 	}
 
-	const controller: AppController = {
-		list: async () =>
-			(await list()).map(({ id, name, description }) => ({ id, name, description })),
-		launch: async (id) => {
-			const app = await inspect(id)
-			await open(id)
-			return app
-		},
-		close: async (id?: string) => {
-			await close(id)
-		},
-		current: async () => {
-			const id = await currentAppId()
-			return id ? await inspect(id).catch(() => undefined) : undefined
-		},
-		inspect,
-		state: async (id) => await (await kernelReady()).state(id),
-		run: async (id, action, params) => {
+	// The agent↔kernel bridge (@justfiles/app). frieren's ports: apps surface as
+	// broadcasts to the tabs (not native windows), "current" comes from the persisted
+	// OS state, and the kernel accessor also arms the caps-socket nudge (ensureSubscribed)
+	// so the agent's server-side dispatches push a pull to open browsers.
+	const controller: AppController = createAppController(
+		async () => {
 			ensureSubscribed()
-			return await (await kernelReady()).dispatch(id, { type: action, params, actor: 'agent' })
+			return kernelReady()
+		},
+		{
+			windows: {
+				open: (id) => deps.broadcast({ type: 'app_open', id }),
+				close: (id) => deps.broadcast({ type: 'app_close', id })
+			},
+			focus: currentAppId
 		}
-	}
+	)
 
 	return {
 		get kernel() {

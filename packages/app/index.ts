@@ -1,5 +1,12 @@
 export { bundleFromZip } from './app-bundle.ts'
 export {
+	type AppController,
+	type AppControllerPorts,
+	type AppInspection,
+	type AppSummary,
+	createAppController
+} from './app-controller.ts'
+export {
 	type ActionMeta,
 	type AppBundle,
 	type AppHandle,
