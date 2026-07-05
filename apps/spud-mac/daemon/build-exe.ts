@@ -6,7 +6,7 @@
 // resources next to the exe rather than the bunfs root (see daemon/resources.ts and
 // daemon/main.ts CLIENT_DIR).
 //
-// Run from apps/quay:
+// Run from apps/spud-mac:
 //   bun daemon/build-exe.ts [--outfile <path>] [--target bun-darwin-arm64|bun-darwin-x64]
 // `--target` cross-compiles per arch; omit it to build for the host.
 //

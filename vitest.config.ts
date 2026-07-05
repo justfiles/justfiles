@@ -8,7 +8,7 @@ export default defineConfig({
 			'apps/frieren/src/os/**/*.test.ts',
 			'apps/frieren/src/apps/**/*.test.ts',
 			'apps/worker/**/*.test.ts',
-			'apps/quay/**/*.test.ts',
+			'apps/spud-mac/**/*.test.ts',
 			'packages/*/**/*.test.ts',
 			'packages/*/**/*.test.tsx'
 		],

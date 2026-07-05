@@ -140,7 +140,7 @@ copy_builtins() { # resources_dir
 	copy_builtin "$1" app.frieren.settings app-settings
 }
 
-# A self-contained, shippable Spud.app backed by the daemon (apps/quay/daemon): the
+# A self-contained, shippable Spud.app backed by the daemon (apps/spud-mac/daemon): the
 # launcher binary + an embedded bun-compiled daemon exe (arm64) + the on-disk resources the
 # daemon reads, under Resources/. The daemon does zero frontend bundling: Vite builds the
 # browser surfaces (launcher / chat / app shell + assets + `/vendor/*` React) into

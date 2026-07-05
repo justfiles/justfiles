@@ -238,7 +238,7 @@ importers:
         specifier: ^4.81.1
         version: 4.90.1
 
-  apps/quay:
+  apps/spud-mac:
     dependencies:
       '@justfiles/agent':
         specifier: workspace:*

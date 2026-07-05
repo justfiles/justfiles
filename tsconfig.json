@@ -3,8 +3,8 @@
 	"references": [
 		{ "path": "./apps/cli/tsconfig.json" },
 		{ "path": "./apps/frieren/tsconfig.json" },
-		{ "path": "./apps/quay/tsconfig.json" },
-		{ "path": "./apps/quay/tsconfig.browser.json" },
+		{ "path": "./apps/spud-mac/tsconfig.json" },
+		{ "path": "./apps/spud-mac/tsconfig.browser.json" },
 		{ "path": "./apps/worker/tsconfig.json" },
 		{ "path": "./packages/agent/tsconfig.json" },
 		{ "path": "./packages/app/tsconfig.json" },

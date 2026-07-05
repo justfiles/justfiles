@@ -20,7 +20,7 @@ export const BUILTINS_DIR = join(ROOT, 'builtins')
 // The agent's project docs — the @justfiles/agent DOCS catalogue points at repo-root
 // docs/*.md, which the `read_doc` tool loads by id. Shipped: copied flat under
 // Resources/docs (build.sh --ship-daemon). Dev: read straight from the repo root
-// (daemon/ -> apps/quay -> apps -> repo root).
+// (daemon/ -> apps/spud-mac -> apps -> repo root).
 export const DOCS_DIR = SHIPPED
 	? join(ROOT, 'docs')
 	: join(import.meta.dirname, '..', '..', '..', 'docs')
