@@ -35,7 +35,8 @@ export {
 	type AgentSessionOptions,
 	classifyFailure,
 	createAgentSession,
-	type SessionEvent
+	type SessionEvent,
+	type TurnListener
 } from './session.ts'
 export { listSkills, type SkillMeta } from './skills.ts'
 export {

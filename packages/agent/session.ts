@@ -1,5 +1,6 @@
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
+import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import {
 	type Assistant,
 	consolidateMemory,
@@ -55,9 +56,17 @@ export type SessionEvent =
 	| { type: 'transcript'; entries: SessionEntry[] }
 	| { type: 'error'; message: string; route?: Route }
 
+// A per-turn observer of the RAW agent event stream (token/tool deltas), for a host that
+// renders live streaming (frieren) rather than transcript snapshots (spud-mac). Subscribed
+// only for the turn's duration (see `prompt`); matches the Assistant's listener shape.
+export type TurnListener = (event: AgentEvent, signal: AbortSignal) => void
+
 export interface AgentSession {
 	// --- conversation ---
-	prompt(message: string, source?: PromptSource): Promise<string>
+	// `onEvent` streams the raw agent events (token/tool deltas) for THIS turn only — a host
+	// that renders live streaming passes it; one that renders transcript snapshots omits it and
+	// reads `subscribe` instead. Either way the turn's outcome also lands on `subscribe`.
+	prompt(message: string, source?: PromptSource, onEvent?: TurnListener): Promise<string>
 	abort(): void
 	history(): Promise<readonly SessionEntry[]>
 	subscribe(fn: (event: SessionEvent) => void): () => void
@@ -108,7 +117,8 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	let active: { key: string; built: Promise<Built> } | null = null
 
 	return {
-		prompt: (message, source) => runTurn((assistant) => assistant.prompt(message, source)),
+		prompt: (message, source, onEvent) =>
+			runTurn((assistant) => assistant.prompt(message, source), onEvent),
 		abort,
 		history,
 		subscribe,
@@ -179,16 +189,26 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 	// ends a turn with a question that already lands in the session (the transcript renders
 	// it); we only swap the banner ping to `question`. Never rejects — a failed turn surfaces
 	// through the event stream + notification, so a host can `void session.prompt(...)`.
-	async function runTurn(run: (assistant: Assistant) => Promise<string>): Promise<string> {
+	async function runTurn(
+		run: (assistant: Assistant) => Promise<string>,
+		onEvent?: TurnListener
+	): Promise<string> {
 		emit({ type: 'busy', value: true })
 		try {
 			const built = await getBuilt()
+			// Stream the raw turn events to a streaming host for this turn only; unsubscribed in
+			// the inner `finally` so events never leak across turns.
+			const unsubscribe = onEvent ? built.assistant.subscribe(onEvent) : undefined
 			built.takePending() // drop any stale question before the turn
-			const answer = await run(built.assistant)
-			const asked = built.takePending()
-			emit({ type: 'transcript', entries: [...(await built.assistant.history())] })
-			ping(asked ? 'question' : 'info', asked ? asked.question : answer, { kind: 'chat' })
-			return answer
+			try {
+				const answer = await run(built.assistant)
+				const asked = built.takePending()
+				emit({ type: 'transcript', entries: [...(await built.assistant.history())] })
+				ping(asked ? 'question' : 'info', asked ? asked.question : answer, { kind: 'chat' })
+				return answer
+			} finally {
+				unsubscribe?.()
+			}
 		} catch (error) {
 			const failure = classifyFailure(error)
 			console.error('[agent] turn failed:', error)
