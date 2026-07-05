@@ -236,8 +236,9 @@
 	<h4 style="margin-top:14px">Plan</h4>
 	<ol>
 		<li><a href="#s1">Reshape <code>@justfiles/agent</code> around <code>createAgentSession</code></a> — move host-owned orchestration into the package</li>
-		<li><a href="#s2">Migrate both hosts onto <code>createAgentSession</code></a> — frieren gains the missing features for free</li>
+		<li><a href="#s2">Migrate both hosts onto <code>createAgentSession</code></a> — <strong>shipped</strong>; frieren keeps streaming, loses account tools (temporarily)</li>
 		<li><a href="#s3">Narrow the <code>@justfiles/agent</code> export surface</a> — parts become internal</li>
+		<li><a href="#s35">Capability-provided agent tools</a> — a capability contributes its own tools; re-adds email/calendar generically</li>
 		<li><a href="#s4">Add <code>createAppEngine</code> to <code>@justfiles/app</code></a> — collapse the duplicated kernel/controller/asset wiring</li>
 		<li><a href="#s5">Design a shared UI↔backend wire</a> — proposal + example to think through</li>
 	</ol>
@@ -441,8 +442,8 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	types). Either way <code>createAgentSession</code> grows a generic capability-tools seam (roughly
 	<code>capabilities?: Capabilities</code>) — <em>not</em> the bespoke <code>accounts?: {email,calendar}</code>
 	list — coexisting with <code>apps</code> (apps drive stateful mini-apps; capability-tools give direct
-	read/action reach). Deferred until it's ported to spud-mac as part of Step 2/beyond (CLAUDE.md: no
-	speculative interface until there's a shared consumer).
+	read/action reach). This is now <a href="#s35">Step 3.5</a>, where the shapes are spelled out (realization
+	A); Step 2 shipped first, making frieren the concrete consumer that justifies building it.
 </div>
 
 <!-- ==================================================================== -->
@@ -451,8 +452,9 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	<h2>Migrate both hosts onto <code>createAgentSession</code></h2>
 </div>
 <div class="meta-row">
-	<span class="pill keep">behavior-changing for frieren (gains features)</span>
-	<span class="small">deletes host orchestration; no external API change</span>
+	<span class="pill add">shipped</span>
+	<span class="pill keep">behavior-changing for frieren</span>
+	<span class="small">deletes host orchestration; adds a per-turn streaming seam to the session</span>
 </div>
 
 <div class="ba-label before">apps/frieren/worker/frieren.ts — ~120 lines of hand-wiring (abridged)</div>
@@ -467,36 +469,38 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 <span class="c-com">// … + /debug special-case, + generateSoul() prompt lines, + loadParticipants()</span>
 </code></pre>
 
-<div class="ba-label after">apps/frieren/worker/frieren.ts — declare what you have</div>
-<pre><code><span class="c-kw">this</span>.agent = <span class="c-kw">await</span> <span class="c-fn">createAgentSession</span>({
+<div class="ba-label after">apps/frieren/worker/frieren.ts — what actually shipped</div>
+<pre><code><span class="c-kw">this</span>.session = <span class="c-fn">createAgentSession</span>({
 	volume: <span class="c-kw">this</span>.vol,
-	backend: () => <span class="c-kw">this</span>.<span class="c-fn">resolveBackend</span>(),        <span class="c-com">// env key today; OAuth later, no host change</span>
-	apps: <span class="c-kw">this</span>.apps.controller,
-	accounts: { email, calendar },              <span class="c-add">// spud-mac can pass this too now → converges</span>
-	notify: <span class="c-kw">this</span>.notifyChannel,                  <span class="c-add">// implement the frieren Channel (toast/push)</span>
-	readDoc: (id) => <span class="c-kw">this</span>.<span class="c-fn">readDocAsset</span>(id),      <span class="c-add">// serve docs/*.md via ASSETS</span>
+	backend: <span class="c-fn">apiKeyBackend</span>({ model, apiKey }),   <span class="c-com">// env key today; a resolver later, no host change</span>
+	apps: <span class="c-kw">this</span>.<span class="c-fn">requireApps</span>().controller,          <span class="c-com">// the `app` command → apps reach accounts</span>
 	timezone: <span class="c-kw">this</span>.getTimezone,
 })
-<span class="c-com">// Wս handler shrinks to: on 'prompt' → agent.prompt; on 'abort' → agent.abort;</span>
-<span class="c-com">// subscribe(agent) → forward SessionEvent frames. alarm() → agent.runMaintenance().</span>
+<span class="c-com">// prompt → session.prompt(text, 'user', onEvent)   ← onEvent streams raw token/tool deltas</span>
+<span class="c-com">// abort → session.abort · /debug → session.systemPrompt · alarm → session.runMaintenance</span>
+<span class="c-kw">this</span>.session.<span class="c-fn">subscribe</span>((e) =&gt; { <span class="c-kw">if</span> (e.type === <span class="c-str">'error'</span>) <span class="c-kw">this</span>.<span class="c-fn">broadcast</span>({ type: <span class="c-str">'error'</span>, message: e.message }) })
 </code></pre>
 
-<div class="callout why"><span class="k">Why this is better</span>
-	The five HIGH/MEDIUM gaps from the audit (<code>ask_user</code>, <code>read_doc</code>, error
-	classification, skills/commands, rebuild-on-rotate) close as a <em>side effect of migration</em> — frieren
-	inherits them because they now live in the shared product. spud-mac deletes its bespoke copy. Convergence
-	runs the <em>other</em> way on accounts: frieren drops its agent-level <code>email</code>/<code>calendar</code>
-	tools and reaches accounts the way spud-mac does — the <code>ai</code> credential via <code>backend</code>, and
-	use-facet capabilities through <em>apps</em> (the <code>app</code> command).
+<div class="callout why"><span class="k">What shipped</span>
+	<strong>spud-mac</strong>: a pure refactor onto the product — <code>−191 / +85</code> lines (turn runner,
+	backend cache, tool wiring, <code>ping</code>, local <code>classifyFailure</code>/<code>summarize</code> deleted);
+	the native window plumbing stays. <strong>frieren</strong>: the Durable Object now drives
+	<code>createAgentSession</code> and <em>keeps live token streaming</em> — the session grew a per-turn
+	<code>onEvent</code>/<code>TurnListener</code> seam so a streaming host observes the raw agent events for one
+	turn, while spud-mac keeps reading transcript snapshots via <code>subscribe</code>. frieren gains
+	<code>ask_user</code> + classified error bodies + the rebuild-on-rotate machinery; it does <em>not</em> yet
+	gain <code>read_doc</code> (needs an ASSETS reader — still open). The dead <code>Coalescer</code> and the
+	bespoke <code>accountTools</code> were deleted.
 </div>
 
-<div class="callout break"><span class="k">Breakage &amp; test</span>
-	This step <em>changes behavior</em> (intentionally) but not any package API. Do spud-mac first (it already
-	has the features, so it's a pure refactor — verify parity with its existing daemon tests
-	<code>server.bun.test.ts</code> / <code>agent.test.ts</code>). Then frieren: the worker still compiles and
-	runs; new behavior (notify channel, docs) needs the small adapters noted in green above. Verify with
-	<code>pnpm --filter frieren verify:ui</code> and a manual <code>ask_user</code> / <code>/new</code> / doc
-	prompt. Frieren is fully repaired and testable at the end of this step.
+<div class="callout break"><span class="k">Accepted regression → closed by Step 3.5</span>
+	frieren <em>lost</em> its agent-level <code>email</code>/<code>calendar</code> tools: the session has no
+	capability-tools seam yet and the speculative <code>tools?</code> escape hatch was removed. A deliberate call —
+	<a href="#s35">Step 3.5</a> re-adds them the right way (a capability contributes its own tools), which also
+	gives spud-mac email/calendar for the first time. Streaming was <em>not</em> sacrificed.
+	<br><br>
+	<strong>Verified:</strong> workspace <code>typecheck</code> clean · node suite <code>672 / 87</code> ·
+	spud-mac Bun <code>server.bun.test.ts</code> <code>7/7</code> · lint 0. Both hosts compile and run.
 </div>
 
 <!-- ==================================================================== -->
@@ -559,6 +563,134 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	<code>pnpm typecheck</code> across the workspace is the gate — it's a compile-time surface, so a green
 	typecheck <em>is</em> the proof. Keep <code>text</code>/<code>LLMText</code> exported — frieren's
 	<code>ai.capability.ts</code> still needs it.
+</div>
+
+<!-- ==================================================================== -->
+<div class="step-head" id="s35">
+	<span class="step-num">3.5</span>
+	<h2>Capability-provided agent tools</h2>
+</div>
+<div class="meta-row">
+	<span class="pill add">re-adds email/calendar</span>
+	<span class="pill keep">generic seam</span>
+	<span class="small">closes the Step 2 regression; spud-mac gains them for the first time — same code</span>
+</div>
+
+<p>
+	Step 2 dropped frieren's agent-level <code>email</code>/<code>calendar</code> tools. This step brings them
+	back the right way — <strong>a capability contributes its own agent tools</strong>, and
+	<code>createAgentSession</code> gathers them generically. Add a capability to a host's kernel and its agent
+	tools appear on <em>every</em> host by construction; the agent becomes just another <em>trusted capability
+	consumer</em> (like an app's reducer, but calling tools).
+</p>
+
+<div class="ba-label before">the pattern being replaced — bespoke, per-host, per-capability</div>
+<pre><code><span class="c-com">// frieren/worker/accounts/agent-tools.ts (deleted in Step 2) — hand-written email+calendar</span>
+<span class="c-com">// tools; spud-mac had NONE. Two hosts, two divergent answers, both owned by the consumer.</span>
+<span class="c-fn">accountTools</span>({ email, calendar, getTimezone })  <span class="c-rm">// lives in the host, knows the caps by name</span>
+</code></pre>
+
+<div class="callout break"><span class="k">The constraint that dictates the shape</span>
+	<code>@justfiles/app</code> is <strong>pi-free</strong> — the dependency edge is <code>agent → app</code>,
+	never back (only <code>@justfiles/agent</code> imports <code>AgentTool</code>). So a capability <em>cannot</em>
+	export a pi <code>AgentTool</code>. The fix: the capability ships a <strong>runtime-neutral tool
+	descriptor</strong> beside its contract, and <code>@justfiles/agent</code> holds the <em>one</em> adapter that
+	turns descriptors into pi tools. This is realization <strong>(A)</strong> from the Step 1 forward-note; it also
+	future-proofs against ever swapping the agent runtime.
+</div>
+
+<div class="ba-label after">packages/app/capabilities/core.ts — beside <code>defineCapability</code> (no pi types)</div>
+<pre><code><span class="c-com">// A capability's AGENT-facing surface, described neutrally so it lives in the pi-free app layer.</span>
+<span class="c-kw">export interface</span> CapabilityTool&lt;Params = unknown&gt; {
+	name: string           <span class="c-com">// agent-visible, e.g. 'email_list_unread'</span>
+	description: string    <span class="c-com">// when/why to call it (LLM-facing)</span>
+	parameters: JSONSchema <span class="c-com">// input schema — app already carries @standard-schema/spec</span>
+	<span class="c-fn">execute</span>(invoke: ScopedInvoke, params: Params): Promise&lt;unknown&gt;
+}
+<span class="c-com">// The capability's own invoke, pre-bound to the agent actor + this one capability.</span>
+<span class="c-kw">export type</span> ScopedInvoke = (method: string, ...args: unknown[]) =&gt; Promise&lt;unknown&gt;
+</code></pre>
+
+<div class="ba-label after">packages/app/capabilities/email/agent.ts — colocated with <code>contract.ts</code></div>
+<pre><code><span class="c-kw">export const</span> emailAgentTools: CapabilityTool[] = [
+	{
+		name: <span class="c-str">'email_list_unread'</span>,
+		description: <span class="c-str">'List the user’s unread emails, most recent first.'</span>,
+		parameters: { type: <span class="c-str">'object'</span>, properties: { limit: { type: <span class="c-str">'number'</span> } } },
+		execute: (invoke, { limit }) =&gt; <span class="c-fn">invoke</span>(<span class="c-str">'listUnread'</span>, { limit }),
+	},
+	{
+		name: <span class="c-str">'email_read'</span>,
+		description: <span class="c-str">'Read one email’s full body by id.'</span>,
+		parameters: { type: <span class="c-str">'object'</span>, properties: { id: { type: <span class="c-str">'string'</span> } }, required: [<span class="c-str">'id'</span>] },
+		execute: (invoke, { id }) =&gt; <span class="c-fn">invoke</span>(<span class="c-str">'readDetail'</span>, { id, purpose: <span class="c-str">'briefing-detail'</span> }),
+	},
+	<span class="c-com">// markRead is a WRITE tool → gated behind the read-only decision; add it when that lands.</span>
+]
+</code></pre>
+
+<div class="ba-label after">packages/agent/capability-tools.ts — the ONE pi↔capability seam</div>
+<pre><code><span class="c-kw">import type</span> { Capabilities, CapabilityTool } <span class="c-kw">from</span> <span class="c-str">'@justfiles/app/capabilities'</span>
+
+<span class="c-com">// Turn a capability's neutral descriptors into pi AgentTools, binding each invoke to the</span>
+<span class="c-com">// AGENT actor. One function — the single place pi-agent-core meets the capability layer.</span>
+<span class="c-kw">export function</span> <span class="c-fn">capabilityTools</span>(
+	caps: Pick&lt;Capabilities, <span class="c-str">'invoke'</span>&gt;,
+	entries: { capability: string; tools: CapabilityTool[] }[]
+): AgentTool[] {
+	<span class="c-kw">return</span> entries.<span class="c-fn">flatMap</span>(({ capability, tools }) =&gt;
+		tools.<span class="c-fn">map</span>((t) =&gt; <span class="c-fn">toAgentTool</span>(t, (method, ...args) =&gt;
+			caps.<span class="c-fn">invoke</span>({ appId: <span class="c-str">'agent'</span>, capability, method, args, scopes: [] }))))
+}
+<span class="c-com">// toAgentTool: wrap { name, description, parameters, execute } into pi's tool object,</span>
+<span class="c-com">// validating params against `parameters` before execute(scopedInvoke, params).</span>
+</code></pre>
+
+<div class="ba-label after">createAgentSession — grows ONE option; both hosts wire it identically</div>
+<pre><code><span class="c-com">// AgentSessionOptions gains ONE field — NOT accounts?:{email,calendar} (that shape is gone):</span>
+capabilities?: {
+	invoke: Capabilities[<span class="c-str">'invoke'</span>]
+	tools: { capability: string; tools: CapabilityTool[] }[]
+}
+<span class="c-com">// …build() appends them next to the always-on tools:</span>
+<span class="c-kw">const</span> capTools = capabilities ? <span class="c-fn">capabilityTools</span>(capabilities, capabilities.tools) : []
+assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFetchTool</span>(), <span class="c-fn">createSearchTool</span>(), askUser, ...capTools])
+
+<span class="c-com">// Host wiring — spud-mac gains email/calendar for the FIRST time; frieren gets Step 2's loss</span>
+<span class="c-com">// back; ONE code path feeds both:</span>
+<span class="c-fn">createAgentSession</span>({ <span class="c-com">/* … */</span> capabilities: {
+	invoke: caps.invoke,
+	tools: [{ capability: <span class="c-str">'email'</span>, tools: emailAgentTools },
+	        { capability: <span class="c-str">'calendar'</span>, tools: calendarAgentTools }],
+} })
+</code></pre>
+
+<div class="callout why"><span class="k">Why this shape</span>
+	<strong>Ownership:</strong> the <code>email</code> capability owns both its app-facing contract and its
+	agent tools, colocated — one source of truth, no per-host copies. <strong>One seam:</strong>
+	<code>capabilityTools()</code> is the <em>only</em> place pi meets the capability layer, so the app package
+	stays pi-free. <strong>Propagation:</strong> the session gathers generically — a new capability (reminders,
+	contacts, files) extends the agent on every host with no session/agent change. <strong>Trust:</strong> the
+	agent invokes as <code>appId:'agent'</code> with empty scopes — a privileged actor, exactly as frieren's old
+	<code>accountTools</code> did, now generic and audited at the same capability boundary apps use.
+</div>
+
+<div class="callout"><span class="k">One decision left</span>
+	How the session learns which capabilities expose tools: <strong>(a)</strong> the host passes the list
+	explicitly (shown above — stingy, no magic), or <strong>(b)</strong> the capability registry carries each
+	capability's <code>CapabilityTool[]</code> and the session auto-discovers (zero host lines, more machinery).
+	Start with <strong>(a)</strong>; promote to (b) only if a third capability makes the per-host line annoying.
+	Also still open: the <code>parameters</code> representation (raw JSON Schema vs <code>@standard-schema/spec</code>
+	vs the agent runtime's typebox) — the adapter owns that conversion, so it's an impl detail, not an interface one.
+</div>
+
+<div class="callout break"><span class="k">Breakage &amp; test</span>
+	Additive: a new <code>CapabilityTool</code> type + <code>capabilityTools()</code> adapter + one optional
+	<code>capabilities?</code> option — nothing existing breaks. Unit-test the adapter with a fake
+	<code>Capabilities</code> + one descriptor (assert it invokes with <code>appId:'agent'</code> and returns the
+	result); then wire <code>email</code>/<code>calendar</code> into both hosts and confirm the agent lists unread
+	mail / today's events. This <em>closes</em> the frieren Step 2 regression and gives spud-mac email/calendar
+	reach for the first time — from the same code.
 </div>
 
 <!-- ==================================================================== -->
