@@ -1,53 +1,31 @@
-// @justfiles/agent — the host-agnostic agent: the pi-agent-core runtime loop
-// (sessions + compaction + memory), its fetch/search/takeNote/ask_user tools, the
-// just-bash shell over the Volume (plus a custom `app` command), and the
-// agent↔kernel `AppController` bridge. The host injects the model (via
-// `createAgent` / `text`) and an `AppController`; the persona/memory are data on
-// the Volume (`/system/soul.md`, …).
+// @justfiles/agent — the host-agnostic agent PRODUCT. `createAgentSession` composes the
+// pi-agent-core turn runner, its tools (a just-bash shell over the Volume plus fetch/
+// search/ask_user and an `app` command that drives apps over the kernel), compaction +
+// memory, notify pings, and classified errors. A host injects ports (volume, backend,
+// apps, notify, readDoc, timezone); the persona/memory are data on the Volume
+// (`/system/soul.md`, …). The tool/assistant/shell primitives are internal — hosts
+// declare what they have and let the product assemble the rest.
 
-export type { Agent } from '@mariozechner/pi-agent-core'
-export {
-	type Assistant,
-	consolidateMemory,
-	createAssistant,
-	type PromptSource
-} from './assistant.ts'
-export type { CompactionSettings } from './compaction.ts'
+// ── The seam a host implements: how apps are driven ─────────────────
 export type { AppController } from './justbash/app.ts'
-// The `app` command — drives apps over the kernel — as a just-bash ShellCommand.
-export { createAppCommand as createAppShellCommand } from './justbash/app.ts'
-export {
-	createJustBashTool,
-	type JustBashToolOptions,
-	type ShellCommand
-} from './justbash/index.ts'
-export { volumeFs } from './justbash/volume-fs.ts'
-export { createAgent } from './llm.agent.ts'
+// Powers soul generation and the `ai` capability.
 export { type LLMText, text } from './llm.text.ts'
-export { type AgentBackend, apiKeyBackend, type LLMConfig } from './llm.ts'
+// ── The credential/model seam + one-shot text generation ────────────
+export { type AgentBackend, apiKeyBackend } from './llm.ts'
+// ── Onboarding / maintenance building blocks (host-owned, for now) ──
+// Soul generation and the daily-alarm timezone math still run in the host until they
+// fold into product methods (generateSoul / nextMaintenanceAt).
 export { parseFrontmatter } from './markdown.ts'
 export { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
 export type { SessionEntry } from './session.manager.ts'
-// The agent product: one composed session (turn runner + tools + notify + classified
-// errors). Built on top of createAssistant; hosts should prefer this over hand-assembly.
+// ── The agent product ──────────────────────────────────────────────
 export {
 	type AgentSession,
 	type AgentSessionOptions,
 	classifyFailure,
 	createAgentSession,
-	type SessionEvent,
-	type TurnListener
+	type SessionEvent
 } from './session.ts'
-export { listSkills, type SkillMeta } from './skills.ts'
-export {
-	DEFAULT_TIMEZONE,
-	isoToTimezone,
-	nextFourAmInTimezone,
-	resolveTimezone
-} from './timezone.ts'
-export {
-	createAskUserTool,
-	createFetchTool,
-	createSearchTool,
-	createTakeNoteTool
-} from './tools/index.ts'
+// The UI builds its "/" menu from session.listSkills() — a skill, never a "command".
+export type { SkillMeta } from './skills.ts'
+export { nextFourAmInTimezone, resolveTimezone } from './timezone.ts'
