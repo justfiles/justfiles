@@ -162,7 +162,7 @@
 </p>
 <p>
 	The fix is not more utilities — it is to <strong>raise the abstraction one level</strong>: expose the
-	composed product (<code>createAgentSession</code>, <code>createAppEngine</code>) and hide the parts. The
+	composed product (<code>createAgentSession</code>, <code>createAppController</code>) and hide the parts. The
 	test for what belongs on the surface: <em>"is this a concern of the outside world, or an internal
 	ingredient?"</em> A host should declare <em>what it has</em> (a Volume, a backend, an app
 	controller, a doc reader) and receive a working agent — it should never hand-assemble a tool list.
@@ -190,7 +190,7 @@
 	<text class="tg" x="192" y="74">createAgentSession()</text>
 	<text class="ts" x="192" y="92">@justfiles/agent</text>
 	<rect class="b" x="448" y="52" width="240" height="50" rx="8"/>
-	<text class="tg" x="468" y="74">createAppEngine()</text>
+	<text class="tg" x="468" y="74">createAppController()</text>
 	<text class="ts" x="468" y="92">@justfiles/app</text>
 
 	<!-- ports -->
@@ -239,7 +239,7 @@
 		<li><a href="#s2">Migrate both hosts onto <code>createAgentSession</code></a> — <strong>shipped</strong>; frieren keeps streaming, loses account tools (temporarily)</li>
 		<li><a href="#s3">Narrow the <code>@justfiles/agent</code> export surface</a> — parts become internal</li>
 		<li><a href="#s35">Capability-provided agent tools</a> — a capability contributes its own tools; re-adds email/calendar generically</li>
-		<li><a href="#s4">Add <code>createAppEngine</code> to <code>@justfiles/app</code></a> — collapse the duplicated kernel/controller/asset wiring</li>
+		<li><a href="#s4">Extract <code>createAppController</code> into <code>@justfiles/app</code></a> — <strong>shipped</strong>; the one duplicated, platform-true piece</li>
 		<li><a href="#s5">Design a shared UI↔backend wire</a> — proposal + example to think through</li>
 	</ol>
 </div>
@@ -698,28 +698,32 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 <!-- ==================================================================== -->
 <div class="step-head" id="s4">
 	<span class="step-num">04</span>
-	<h2>Add <code>createAppEngine</code> to <code>@justfiles/app</code></h2>
+	<h2>Extract <code>createAppController</code> into <code>@justfiles/app</code></h2>
 </div>
 <div class="meta-row">
-	<span class="pill add">additive</span>
-	<span class="small">then migrate hosts; app subpaths already well-factored</span>
+	<span class="pill add">shipped</span>
+	<span class="small">scoped down from a full "AppEngine" to the one duplicated, platform-true piece</span>
 </div>
 
 <p>
-	<code>@justfiles/app</code> is in better shape — the capability factories, sandbox contract, devkit,
-	and builtins are already clean subpaths. What's still duplicated is the <em>assembly</em>:
-	<code>frieren.app.ts</code> and <code>daemon/kernel.ts</code>+<code>main.ts</code> both build a kernel,
-	compose a capability registry, reconcile builtins, implement a near-identical
-	<code>AppController</code>, serve asset bytes, and coalesce catalog events. Extract that into an engine.
+	The plan here was a broad <code>createAppEngine</code> (kernel + registry + builtins + controller + asset
+	reader + catalog fan-out). Measuring against the two real hosts changed the shape: <strong>most of that
+	isn't actually duplicated</strong>. Kernel construction is one <code>kernel(…)</code> call;
+	<code>reconcileBuiltins</code> is <em>already</em> a shared package function (only the byte-source differs —
+	packaged fs on spud-mac, an <code>ASSETS</code> fetch on frieren); asset serving and catalog fan-out are
+	genuinely platform-specific (HTTP <code>Response</code>s + cache headers, native <code>.app</code>
+	projection, a Cap'n Web <code>_caps</code> socket). The <em>one</em> thing written twice, near-verbatim, and
+	platform-true is the <strong><code>AppController</code></strong> — and it's exactly what
+	<code>createAgentSession({ apps })</code> consumes. So per "simplicity first / be very stingy on
+	interfaces", we extract just that, not a speculative mega-engine.
 </p>
 
 <figure>
-<svg viewBox="0 0 820 250" role="img" aria-label="AppEngine composition">
+<svg viewBox="0 0 820 210" role="img" aria-label="createAppController composition">
 	<defs>
 		<style>
 			.eb { fill:#161a21; stroke:#262c37; }
 			.eb2 { fill:#1b2029; stroke:#2d3543; }
-			.et { fill:#e6e9ef; font:600 13px var(--sans, sans-serif); }
 			.ets { fill:#a7b0bd; font:11px monospace; }
 			.etg { fill:#86c98d; font:600 13px monospace; }
 			.elbl { fill:#737d8c; font:11px monospace; }
@@ -727,103 +731,89 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 		<marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#5b6675"/></marker>
 	</defs>
 	<!-- ports in -->
-	<rect class="eb" x="20" y="40" width="200" height="170" rx="9"/>
-	<text class="elbl" x="36" y="62">host supplies (ports)</text>
-	<text class="ets" x="36" y="88">volume: Volume</text>
-	<text class="ets" x="36" y="108">sandbox: GetSandbox</text>
-	<text class="ets" x="36" y="128">capabilities: Capabilities</text>
-	<text class="ets" x="36" y="148">builtins: BuiltinSource</text>
-	<text class="ets" x="36" y="168">windows / focus</text>
-	<text class="ets" x="36" y="188">onCatalogChange()</text>
-	<!-- engine -->
-	<rect class="eb2" x="300" y="40" width="220" height="170" rx="9"/>
-	<text class="etg" x="322" y="64">createAppEngine()</text>
-	<text class="ets" x="322" y="90">kernel(...)</text>
-	<text class="ets" x="322" y="110">capabilityRegistry(...)</text>
-	<text class="ets" x="322" y="130">reconcileBuiltins(...)</text>
-	<text class="ets" x="322" y="150">AppController impl</text>
-	<text class="ets" x="322" y="170">coalesced catalog fan-out</text>
-	<text class="ets" x="322" y="190">asset byte reader</text>
+	<rect class="eb" x="20" y="34" width="230" height="140" rx="9"/>
+	<text class="elbl" x="36" y="56">host supplies</text>
+	<text class="ets" x="36" y="82">kernel: Kernel</text>
+	<text class="ets" x="36" y="100">&#160;&#160;| () =&gt; Promise&lt;Kernel&gt;</text>
+	<text class="ets" x="36" y="126">windows.open / .close</text>
+	<text class="ets" x="36" y="150">focus?()  (else last-launched)</text>
+	<!-- factory -->
+	<rect class="eb2" x="310" y="34" width="200" height="140" rx="9"/>
+	<text class="etg" x="330" y="58">createAppController()</text>
+	<text class="ets" x="330" y="86">hide preview.* apps</text>
+	<text class="ets" x="330" y="106">stamp run as 'agent'</text>
+	<text class="ets" x="330" y="126">resolve current / close</text>
+	<text class="ets" x="330" y="150">kernel-or-accessor</text>
 	<!-- out -->
-	<rect class="eb" x="600" y="40" width="200" height="170" rx="9"/>
-	<text class="elbl" x="616" y="62">host consumes</text>
-	<text class="ets" x="616" y="88">engine.kernel</text>
-	<text class="ets" x="616" y="108">engine.controller</text>
-	<text class="ets" x="616" y="128">engine.list()</text>
-	<text class="ets" x="616" y="148">engine.state()/dispatch()</text>
-	<text class="ets" x="616" y="168">engine.asset()</text>
-	<text class="ets" x="616" y="188">engine.ready()</text>
-	<line x1="220" y1="125" x2="298" y2="125" stroke="#5b6675" stroke-width="1.5" marker-end="url(#a2)"/>
-	<line x1="520" y1="125" x2="598" y2="125" stroke="#5b6675" stroke-width="1.5" marker-end="url(#a2)"/>
+	<rect class="eb" x="570" y="34" width="230" height="140" rx="9"/>
+	<text class="elbl" x="586" y="56">AppController</text>
+	<text class="ets" x="586" y="82">list · launch · close</text>
+	<text class="ets" x="586" y="102">current · inspect</text>
+	<text class="ets" x="586" y="122">state · run</text>
+	<text class="ets" x="586" y="150">→ createAgentSession({apps})</text>
+	<line x1="250" y1="104" x2="308" y2="104" stroke="#5b6675" stroke-width="1.5" marker-end="url(#a2)"/>
+	<line x1="510" y1="104" x2="568" y2="104" stroke="#5b6675" stroke-width="1.5" marker-end="url(#a2)"/>
 </svg>
-<figcaption>The capability <em>registry</em> stays host-built (it's the most variable part) and is passed in — the engine composes everything around it.</figcaption>
+<figcaption>Everything platform-specific (kernel wiring, builtins source, asset Responses, catalog projection, the caps socket) stays in the host; only the controller — and its window/focus seam — is shared.</figcaption>
 </figure>
 
-<div class="ba-label after">packages/app/engine.ts → exported as "@justfiles/app/engine"</div>
-<pre><code><span class="c-kw">export interface</span> AppEngineOptions {
-	volume: Volume
-	sandbox: GetSandbox
-	capabilities: Capabilities        <span class="c-com">// host-built registry (volume/ai/devkit/accounts/notify…)</span>
-	builtins?: BuiltinSource          <span class="c-com">// fs (quay) | asset-fetch (frieren); omit to skip seeding</span>
-	windows?: { open(id: <span class="c-kw">string</span>, name: <span class="c-kw">string</span>): <span class="c-kw">void</span>; close(name: <span class="c-kw">string</span>): <span class="c-kw">void</span> }
-	focus?: () => <span class="c-kw">Promise</span>&lt;<span class="c-kw">string</span> | <span class="c-kw">undefined</span>&gt;   <span class="c-com">// resolve the "current" app for the agent</span>
-	onCatalogChange?: () => <span class="c-kw">void</span>          <span class="c-com">// coalesced; project .app / refresh launcher / notifyCatalog</span>
-}
-
-<span class="c-kw">export interface</span> AppEngine {
-	<span class="c-kw">readonly</span> kernel: Kernel
-	<span class="c-kw">readonly</span> controller: AppController          <span class="c-com">// the exact bridge the agent host wants</span>
-	ready(): <span class="c-kw">Promise</span>&lt;<span class="c-kw">void</span>&gt;                       <span class="c-com">// builtins reconciled</span>
-	list(): <span class="c-kw">Promise</span>&lt;AppSummary[]&gt;
-	state(id: <span class="c-kw">string</span>): <span class="c-kw">Promise</span>&lt;<span class="c-kw">unknown</span>&gt;
-	dispatch(id: <span class="c-kw">string</span>, action: Message): <span class="c-kw">Promise</span>&lt;<span class="c-kw">unknown</span>&gt;
-	asset(id: <span class="c-kw">string</span>, path: <span class="c-kw">string</span>): <span class="c-kw">Promise</span>&lt;<span class="c-kw">Uint8Array</span> | <span class="c-kw">undefined</span>&gt;  <span class="c-com">// gui.js / icon</span>
-	subscribe(fn: (e: KernelEvent) => <span class="c-kw">void</span>): () => <span class="c-kw">void</span>
-}
-
-<span class="c-kw">export function</span> <span class="c-fn">createAppEngine</span>(o: AppEngineOptions): AppEngine
-</code></pre>
-
-<div class="ba-label before">frieren.app.ts + daemon/kernel.ts — the same AppController written twice</div>
-<pre><code><span class="c-com">// both hosts hand-write this near-verbatim:</span>
+<div class="ba-label before">frieren.app.ts + spud-mac/daemon/agent.ts — the same controller written twice</div>
+<pre><code><span class="c-com">// both hosts hand-wrote this near-verbatim:</span>
 <span class="c-kw">const</span> controller = {
 	list: <span class="c-kw">async</span> () => (<span class="c-kw">await</span> list()).filter(<span class="c-com">/* previews */</span>).map(<span class="c-com">/* id,name,desc */</span>),
-	launch: <span class="c-kw">async</span> (id) => { <span class="c-kw">const</span> a = <span class="c-kw">await</span> inspect(id); <span class="c-kw">await</span> open(id); <span class="c-kw">return</span> a },
+	launch: <span class="c-kw">async</span> (id) => { <span class="c-kw">const</span> a = <span class="c-kw">await</span> inspect(id); <span class="c-fn">open</span>(id); <span class="c-kw">return</span> a },
 	close, current, inspect, state, run: (id,a,p) => kernel.dispatch(id, {type:a, params:p, actor:<span class="c-str">'agent'</span>}),
 }
 </code></pre>
 
-<div class="ba-label after">both hosts</div>
-<pre><code><span class="c-kw">const</span> engine = <span class="c-fn">createAppEngine</span>({
-	volume, sandbox, capabilities,
-	builtins,                        <span class="c-com">// fsSource(...) | assetSource(...)</span>
-	windows: nativeWindows,          <span class="c-com">// frieren: broadcast open/close instead</span>
-	focus: () => readCurrentApp(),
-	onCatalogChange: reconcileProjection,   <span class="c-com">// frieren: notifyCatalog / refresh</span>
+<div class="ba-label after">packages/app/app-controller.ts → exported from "@justfiles/app"</div>
+<pre><code><span class="c-kw">export interface</span> AppController {
+	list(): <span class="c-kw">Promise</span>&lt;AppSummary[]&gt;; launch(id): <span class="c-kw">Promise</span>&lt;AppInspection&gt;; close(id?): <span class="c-kw">Promise</span>&lt;<span class="c-kw">void</span>&gt;
+	current(): <span class="c-kw">Promise</span>&lt;AppInspection | <span class="c-kw">undefined</span>&gt;; inspect(id): <span class="c-kw">Promise</span>&lt;AppInspection&gt;
+	state(id): <span class="c-kw">Promise</span>&lt;<span class="c-kw">unknown</span>&gt;; run(id, action, params): <span class="c-kw">Promise</span>&lt;<span class="c-kw">unknown</span>&gt;
+}
+<span class="c-kw">export interface</span> AppControllerPorts {
+	windows: { open(id, name): <span class="c-kw">void</span>; close(id, name): <span class="c-kw">void</span> }
+	focus?: () => <span class="c-kw">Promise</span>&lt;<span class="c-kw">string</span> | <span class="c-kw">undefined</span>&gt;   <span class="c-com">// else track last-launched in memory</span>
+}
+<span class="c-com">// kernel may be a ready instance OR a lazy accessor (frieren builds it on first use).</span>
+<span class="c-kw">export function</span> <span class="c-fn">createAppController</span>(kernel: Kernel | (() => <span class="c-kw">Promise</span>&lt;Kernel&gt;), ports: AppControllerPorts): AppController
+</code></pre>
+
+<div class="ba-label after">both hosts wire only their platform seam</div>
+<pre><code><span class="c-com">// spud-mac — native windows (open / pkill the materialised bundle):</span>
+apps: <span class="c-fn">createAppController</span>(<span class="c-kw">await</span> <span class="c-fn">getKernel</span>(), { windows: nativeWindows })
+
+<span class="c-com">// frieren — broadcast to tabs + focus from persisted OS state; the accessor also</span>
+<span class="c-com">// arms the caps-socket nudge (ensureSubscribed) before every kernel touch:</span>
+<span class="c-fn">createAppController</span>(<span class="c-kw">async</span> () => { <span class="c-fn">ensureSubscribed</span>(); <span class="c-kw">return</span> <span class="c-fn">kernelReady</span>() }, {
+	windows: { open: (id) => <span class="c-fn">broadcast</span>({ type: <span class="c-str">'app_open'</span>, id }), close: (id) => <span class="c-fn">broadcast</span>({ type: <span class="c-str">'app_close'</span>, id }) },
+	focus: currentAppId,
 })
-<span class="c-com">// engine.controller → straight into createAgentSession({ apps: engine.controller })</span>
 </code></pre>
 
 <div class="callout why"><span class="k">Why this is better</span>
 	<ul>
-		<li>The ~80-line controller + asset reader + builtins reconcile + coalesce logic exists once. The
-			<code>coalesce</code> helper (Step-4-local, per your "as-needed" rule) lives in
-			<code>@justfiles/app</code> because that's its only consumer — no premature sharing.</li>
-		<li><strong>Frieren's split-brain becomes one factory, two port-sets:</strong> the browser makes an
-			engine with a Web-Worker sandbox + local caps + network fallback; the DO makes one with a
-			Worker-Loader sandbox + server caps. Same composition, different adapters — exactly the property
-			we want.</li>
-		<li>The registry stays host-built and passed in — we don't force frieren's <code>proxied</code>-subset
-			+ <code>_caps</code> fallback into a shape that fits quay. Honest ports.</li>
+		<li>The controller exists once; the <code>AppController</code> <em>type</em> moves here too (it
+			references <code>ActionMeta</code>, an app type — and <code>@justfiles/app</code> is pi-free, so
+			<code>@justfiles/agent</code> imports it over the existing <code>agent → app</code> edge and
+			re-exports it unchanged, so no consumer breaks).</li>
+		<li>Divergence is captured as honest ports: spud-mac keeps its native open/pkill; frieren keeps its
+			broadcast + OS-state focus. The <code>kernel</code> argument accepts a lazy accessor, so frieren's
+			build-on-first-use + caps-nudge slots in without a bespoke hook.</li>
+		<li>Everything genuinely platform-specific (kernel wiring, builtins source, asset Responses, catalog
+			projection, the Cap'n Web socket) <em>stays in the host</em> — no premature "engine" abstraction
+			wrapped around single-use code.</li>
 	</ul>
 </div>
 
-<div class="callout break"><span class="k">Breakage &amp; test</span>
-	Additive first (ship <code>createAppEngine</code> with tests in <code>packages/app</code> mirroring the
-	existing <code>host.test.ts</code>/<code>kernel.test.ts</code>: builtins seeded, a capability-using
-	reducer reaching real files, catalog events coalesced). Then migrate spud-mac (covered by
-	<code>kernel.bun.test.ts</code>), then frieren client + DO. Each host migration is independently
-	shippable; nothing external to <code>@justfiles/app</code> changes.
+<div class="callout break"><span class="k">Breakage &amp; test — shipped</span>
+	Additive in <code>@justfiles/app</code> (new <code>app-controller.ts</code> + <code>app-controller.test.ts</code>,
+	7 cases: previews hidden, agent-stamped <code>run</code>, name-resolving <code>close</code>, memory vs
+	host-supplied <code>focus</code>, lazy accessor). Both hosts migrated; spud-mac's controller tests moved to
+	<code>packages/app</code>. A couple of frieren deltas came free (real app descriptions in
+	<code>inspect</code>; a failed state read → <code>null</code> instead of throwing). <strong>Verified:</strong>
+	typecheck clean · node suite <code>674 / 88</code> · spud-mac Bun <code>9/9</code> · lint 0.
 </div>
 
 <!-- ==================================================================== -->
@@ -863,7 +853,7 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	<rect class="wb" x="620" y="40" width="180" height="220" rx="9"/>
 	<text class="wt" x="650" y="30">backend (host)</text>
 	<text class="wts" x="640" y="80">AgentSession</text>
-	<text class="wts" x="640" y="100">AppEngine</text>
+	<text class="wts" x="640" y="100">AppController</text>
 	<text class="wts" x="640" y="120">createHostRouter</text>
 
 	<!-- channels -->
@@ -911,7 +901,7 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	| { ch: <span class="c-str">'app'</span>;    id: <span class="c-kw">string</span>; type: <span class="c-str">'reply'</span>; rid: <span class="c-kw">string</span>; ok: <span class="c-kw">boolean</span>; value?: <span class="c-kw">unknown</span>; error?: <span class="c-kw">string</span> }
 
 <span class="c-com">// Pure: no sockets. Maps frames ⇆ the two products. Each platform owns the transport.</span>
-<span class="c-kw">export function</span> <span class="c-fn">createHostRouter</span>(deps: { agent: AgentSession; engine: AppEngine }) {
+<span class="c-kw">export function</span> <span class="c-fn">createHostRouter</span>(deps: { agent: AgentSession; apps: AppController }) {
 	<span class="c-kw">return</span> {
 		<span class="c-com">// Push initial snapshots + wire product subscriptions to `send`; returns unsubscribe.</span>
 		onOpen(ch: Channel, send: (f: ServerFrame) => <span class="c-kw">void</span>): () => <span class="c-kw">void</span>,
@@ -982,7 +972,7 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	<tr><td>1 — <code>createAgentSession</code> exists</td><td>additive</td><td>no</td><td>new <code>packages/agent</code> tests; both apps still build</td></tr>
 	<tr><td>2 — hosts migrate</td><td>behavior</td><td>changes frieren behavior (gains features)</td><td>quay parity tests, then <code>frieren verify:ui</code></td></tr>
 	<tr><td>3 — narrow agent surface</td><td>breaking (internal)</td><td>lingering deep imports</td><td>workspace <code>pnpm typecheck</code></td></tr>
-	<tr><td>4 — <code>createAppEngine</code> + migrate</td><td>additive → migrate</td><td>no external change</td><td><code>packages/app</code> + per-host kernel tests</td></tr>
+	<tr><td>4 — <code>createAppController</code> extracted + migrate</td><td>additive → migrate</td><td>no external change</td><td><code>packages/app</code> <code>app-controller.test.ts</code> + per-host kernel tests</td></tr>
 	<tr><td>5 — shared wire</td><td>proposal</td><td>adopt incrementally</td><td>router unit test + one host adapter at a time</td></tr>
 </table>
 
