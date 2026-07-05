@@ -1,23 +1,13 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
-	type AgentBackend,
+	type AgentSession,
 	type AppController,
-	type Assistant,
-	createAgent,
-	createAppShellCommand,
-	createAskUserTool,
-	createAssistant,
-	createFetchTool,
-	createJustBashTool,
-	createSearchTool,
-	listSkills,
+	createAgentSession,
 	type SessionEntry,
-	text
+	type SessionEvent
 } from '@justfiles/agent'
-import type { Route } from '@justfiles/app/capabilities/notify'
 import type { Kernel } from '@justfiles/app/runtime'
-import type { Volume } from '@justfiles/fs'
 import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
@@ -25,6 +15,11 @@ import { getKernel } from './kernel'
 import { notificationChannel } from './notify'
 import type { AgentEvent } from './protocol'
 import { DOCS_DIR } from './resources'
+
+// The turn runner, tool wiring, backend rebuild-on-rotate, error classification, and
+// notification pings all live in `createAgentSession` now; re-export its classifier so the
+// daemon's chat/banner still key off the same fix-it routes.
+export { classifyFailure } from '@justfiles/agent'
 
 // Opening/closing a window is native-touching: from the daemon we `open` the
 // materialised bundle and `pkill` its booter. Injectable so tests drive the
@@ -105,161 +100,108 @@ const nativeWindows: WindowOps = {
 		})
 }
 
-// A multiple-choice question the agent posed via `ask_user`, captured for the turn that's
-// running so a turn can swap its banner ping to `question` once the runtime returns. The
-// question itself lands in the session, so the transcript renders it without extra help.
-interface PendingQuestion {
-	question: string
-	options: string[]
+// ── The shared agent session ──────────────────────────────────────────────
+//
+// The daemon runs ONE agent session (built lazily, memoised): every chat subscribes to its
+// transcript and the `/system` command handler drives the same session, so a `/skill` turn
+// shows up live in an open chat. The turn runner, tool wiring, backend rebuild-on-rotate,
+// error classification, and notification pings all live in `createAgentSession`
+// (@justfiles/agent) — the daemon supplies only its ports (a Volume, the ChatGPT-resolved
+// backend, the native AppController, the notify channel, a docs reader) and maps its own
+// slash commands onto the session's semantic methods (`newSession` / `applySkill`).
+let sessionPromise: Promise<AgentSession> | null = null
+
+function getSession(): Promise<AgentSession> {
+	if (!sessionPromise) sessionPromise = buildSession()
+	return sessionPromise
 }
 
-// The daemon runs ONE shared agent session (unlike a per-connection build): every chat
-// subscribes to its transcript and the `/system` command handler drives the same session,
-// so a `/skill` turn shows up live in an open chat. Built lazily and reset on failure so a
-// sign-in after an offline start retries on the next use.
-interface AgentSession {
-	assistant: Assistant
-	takePending: () => PendingQuestion | null
-}
-
-// Re-resolve the backend on every call and cache the built session keyed on `model +
-// revision` (the token's opaque fingerprint, see AgentBackend). This makes a model switch,
-// an account reconnect, or an OAuth token refresh (resolveAgentBackend rotates a near-expiry
-// token) take effect on the next prompt without restarting the daemon — a built-once
-// assistant seals the token in its streamFn closure and would 401 forever once it expires.
-// Rebuilds are lossless: the conversation persists to the Volume session, which the fresh
-// assistant reloads. The per-key promise dedupes concurrent builds; a build failure clears
-// the cache so an offline start retries on the next use.
-let active: { key: string; session: Promise<AgentSession> } | null = null
-async function getAgent(): Promise<AgentSession> {
+async function buildSession(): Promise<AgentSession> {
 	const fs = await getVolume()
-	const llm = await resolveAgentBackend(fs)
-	if (!llm) throw new Error('failed to get llm config')
-	const key = `${llm.model.id} ${llm.revision}`
-	if (!active || active.key !== key) {
-		const session = buildAgent(fs, llm).catch((err) => {
-			if (active?.key === key) active = null
-			throw err
-		})
-		active = { key, session }
-	}
-	return active.session
-}
-
-async function buildAgent(fs: Volume, llm: AgentBackend): Promise<AgentSession> {
-	const assistant = await createAssistant({
+	const session = createAgentSession({
 		volume: fs,
-		agent: createAgent(llm),
-		text: text(llm),
-		compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
-		// The `read_doc` tool + the docs system-prompt block: the @justfiles/agent DOCS
-		// catalogue lists the ids, this supplies the bytes (repo-root docs/*.md, resolved
-		// via DOCS_DIR). Bun reads the file at tool-call time.
+		// Re-resolve every turn so a model switch / reconnect / OAuth refresh takes effect on
+		// the next prompt without restarting the daemon (resolveAgentBackend rotates near-expiry
+		// tokens; the session keys its build on model + revision and rebuilds losslessly).
+		backend: async () => {
+			const llm = await resolveAgentBackend(fs)
+			if (!llm) throw new Error('failed to get llm config')
+			return llm
+		},
+		// The agent drives apps through the SAME kernel the windows subscribe to, so
+		// `app launch`/`app run` update live windows the moment they run.
+		apps: createAppController(await getKernel()),
+		notify: notificationChannel,
+		title: 'Spud',
+		// The `read_doc` tool + docs system-prompt block: repo-root docs/*.md, resolved via
+		// DOCS_DIR; Bun reads the file at tool-call time.
 		readDoc: (id) => Bun.file(join(DOCS_DIR, `${id}.md`)).text()
 	})
+	// Fan the session's events out to every connected chat via the sink main.ts wired (the
+	// `agent` pub/sub topic). `transcript` becomes the daemon's `history` frame.
+	session.subscribe((event) => broadcast(toAgentEvent(event)))
+	return session
+}
 
-	// The agent drives apps through the SAME kernel the windows subscribe to, so
-	// `app launch`/`app run` update live windows the moment they run.
-	const controller = createAppController(await getKernel())
-	const bash = createJustBashTool({ volume: fs, commands: [createAppShellCommand(controller)] })
-
-	// `ask_user` records the question the agent poses; `takePending` reads-and-clears it so a
-	// turn can ping a `question` banner instead of `info`.
-	let pending: PendingQuestion | null = null
-	const askUser = createAskUserTool((question, options) => {
-		pending = { question, options }
-	})
-	const takePending = (): PendingQuestion | null => {
-		const p = pending
-		pending = null
-		return p
+// The session's broad event union → the daemon's `/agent` wire (protocol.ts). An error's
+// fix-it `route` is consumed by the session's own notification ping, so the wire drops it.
+function toAgentEvent(event: SessionEvent): AgentEvent {
+	switch (event.type) {
+		case 'transcript':
+			return { type: 'history', entries: event.entries }
+		case 'busy':
+			return { type: 'busy', value: event.value }
+		case 'error':
+			return { type: 'error', message: event.message }
 	}
-
-	assistant.addTools([bash, createFetchTool(), createSearchTool(), askUser])
-	return { assistant, takePending }
 }
 
 // The daemon injects a sink that publishes `/agent` events to every connected chat (main.ts
-// wires it to the `agent` pub/sub topic). Turns broadcast their transcript + busy/error
-// through it, so the transcript is a live view of the session with no polling.
+// wires it to the `agent` pub/sub topic). The no-op default keeps the session usable before
+// the server binds it.
 let broadcast: (event: AgentEvent) => void = () => {}
 export function setAgentBroadcast(sink: (event: AgentEvent) => void): void {
 	broadcast = sink
 }
 
-// Run one turn on the shared agent, publishing busy + the resulting transcript (or an
-// error) to the chat subscribers and pinging the notification channel. `ask_user` ends a
-// turn with a question that already lands in the session (the transcript renders it); we
-// only swap the banner ping to `question`.
-async function runTurn(run: (assistant: Assistant) => Promise<string>): Promise<void> {
-	broadcast({ type: 'busy', value: true })
-	try {
-		const { assistant, takePending } = await getAgent()
-		takePending() // drop any stale question before the turn
-		const answer = await run(assistant)
-		const asked = takePending()
-		broadcast({ type: 'history', entries: [...(await assistant.history())] })
-		ping(asked ? 'question' : 'info', asked ? asked.question : answer, { kind: 'chat' })
-	} catch (err) {
-		// pi-ai surfaces provider failures as plain Error messages, so we classify the raw
-		// text into a user-facing body + a fix-it route (auth → Accounts, token-limit → new
-		// chat). The classified body is what the chat shows; the raw error still hits the log.
-		const failure = classifyFailure(err)
-		console.error('[agent] turn failed:', err)
-		broadcast({ type: 'error', message: failure.body })
-		ping('error', failure.body, failure.route)
-	} finally {
-		broadcast({ type: 'busy', value: false })
-	}
-}
-
-// The current transcript, for the snapshot a chat gets on connect. Empty when the agent
-// can't build (no backend) so the chat shows an empty transcript rather than erroring.
+// The current transcript, for the snapshot a chat gets on connect. Empty when the session
+// can't build (no backend), so the chat shows an empty transcript rather than erroring.
 export async function agentHistory(): Promise<readonly SessionEntry[]> {
-	try {
-		return await (await getAgent()).assistant.history()
-	} catch {
-		return []
-	}
+	return (await getSession()).history()
 }
 
 // A chat message from the user. Fire-and-observe: the turn runs and its result reaches the
 // chat through the broadcast, so callers don't await it.
 export function promptAgent(message: string): void {
-	void runTurn((assistant) => assistant.prompt(message))
+	void getSession()
+		.then((session) => session.prompt(message))
+		.catch((err) => console.error('[agent] prompt failed:', err))
 }
 
-// Cancel the in-flight turn on the shared session, leaving the session intact so later
-// prompts still work. Guards on the cached session so an abort never builds an agent just
-// to cancel nothing; `abort()` on an idle assistant is a harmless no-op. Fire-and-forget,
-// mirroring `promptAgent` — the aborted turn's outcome reaches the chat via the broadcast.
+// Cancel the in-flight turn, leaving the session intact so later prompts still work. Guards
+// on the memoised session so a cold daemon never builds an agent just to cancel nothing.
 export function abortAgent(): void {
-	if (!active) return
-	void active.session
-		.then(({ assistant }) => assistant.abort())
+	if (!sessionPromise) return
+	void sessionPromise
+		.then((session) => session.abort())
 		.catch((err) => console.error('[agent] abort failed:', err))
 }
 
 // Dispatch a slash command by name. Commands are a DAEMON concept (see commands.ts) — the
-// agent only ever gets skill/session primitives (`applySkill` / `newSession`), never a
-// command. The result tells the launcher what to show; command output never touches the
-// session, and a skill's turn is recorded by the agent as normal conversation.
+// session only ever gets skill/session primitives (`applySkill` / `newSession`), never a
+// command. The result tells the launcher what to show; a skill's turn is recorded by the
+// session as normal conversation, surfacing live via the broadcast.
 export async function dispatchCommand(name: string): Promise<CommandResult> {
-	if (name === 'new') {
-		try {
-			const { assistant, takePending } = await getAgent()
-			takePending()
-			await assistant.newSession()
-		} catch (err) {
-			console.error('[agent] /new failed:', err)
-		}
-		broadcast({ type: 'history', entries: [] })
-		return { show: 'chat' }
-	}
 	if (name === 'debug') return { show: 'text', body: await debugReport() }
-	// A skill: expand it into a turn on the shared agent. The transcript updates live via
-	// the subscription, so reveal the chat now instead of awaiting the turn.
-	void runTurn((assistant) => assistant.applySkill(name))
+	try {
+		const session = await getSession()
+		if (name === 'new')
+			await session.newSession() // re-emits an empty transcript → clears chats
+		else void session.applySkill(name)
+	} catch (err) {
+		console.error(`[agent] /${name} failed:`, err)
+		if (name === 'new') broadcast({ type: 'history', entries: [] })
+	}
 	return { show: 'chat' }
 }
 
@@ -267,14 +209,14 @@ export async function dispatchCommand(name: string): Promise<CommandResult> {
 // (persona + memory + docs). Logged to daemon.log and returned for the `/debug` text panel.
 async function debugReport(): Promise<string> {
 	try {
-		const { assistant } = await getAgent()
-		const history = await assistant.history()
+		const session = await getSession()
+		const history = await session.history()
 		const report = [
 			'agent diagnostics',
 			`session entries: ${history.length}`,
 			'',
 			'system prompt:',
-			assistant.systemPrompt()
+			await session.systemPrompt()
 		].join('\n')
 		console.log(`[agent] /debug\n${report}`)
 		return report
@@ -283,61 +225,13 @@ async function debugReport(): Promise<string> {
 	}
 }
 
-// Ping the notification channel as the trusted `agent` source (the native sink suppresses
-// the banner while the chat is in front). One `threadId` coalesces re-posts. The route
-// carries where a click goes — usually the chat, but an auth-expired error routes to
-// Settings → Accounts so the banner is actionable (see classifyFailure).
-function ping(kind: 'info' | 'error' | 'question', body: string, route: Route): void {
-	notificationChannel({
-		id: crypto.randomUUID(),
-		source: 'agent',
-		kind,
-		title: 'Spud',
-		body: summarize(body),
-		threadId: 'agent',
-		route
-	})
-}
-
-// Classify a failed turn into a user-facing message + a fix-it route. pi-ai surfaces
-// provider failures as plain `Error` messages (not typed codes), so we match on the
-// message: an expired/unauthorised ChatGPT token → reconnect in Settings → Accounts; a
-// blown context window → back to chat (start fresh); anything else → a generic error that
-// opens chat. Stingy by design — two actionable cases, then a catch-all.
-export function classifyFailure(error: unknown): { body: string; route: Route } {
-	const raw = error instanceof Error ? error.message : String(error)
-	if (/\b401\b|unauthor|invalid[_ ]?api[_ ]?key|authentic|expired|account[_ -]?id/i.test(raw)) {
-		return {
-			body: 'Your ChatGPT sign-in expired. Reconnect in Settings → Accounts.',
-			route: { kind: 'settings', pane: 'accounts' }
-		}
-	}
-	if (
-		/context[_ ]?(length|window)|token limit|maximum context|too many tokens|\b429\b|rate limit/i.test(
-			raw
-		)
-	) {
-		return {
-			body: 'The model hit its token limit. Start a new chat or shorten your request.',
-			route: { kind: 'chat' }
-		}
-	}
-	return { body: `Agent error: ${raw}`, route: { kind: 'chat' } }
-}
-
-// Trim an answer to a banner-sized one-liner: first line, capped, ellipsised.
-function summarize(value: string): string {
-	const line = value.trim().split('\n')[0] ?? ''
-	return line.length > 140 ? `${line.slice(0, 139)}…` : line
-}
-
 // The slash-command catalogue for the daemon's `/system` frame (the native launcher's
-// `/` menu reads it): the daemon's built-ins plus one entry per Volume skill. Sourced from
-// the agent's LLM-free `listSkills`, so it needs no assistant/backend and works offline; a
+// `/` menu reads it): the daemon's built-ins plus one entry per Volume skill. The session's
+// `listSkills` is LLM-free (reads the Volume, no backend), so the menu builds offline; a
 // read failure still yields the built-ins.
 export async function agentCommands(): Promise<CommandMeta[]> {
 	try {
-		return buildCommands(await listSkills(await getVolume()))
+		return buildCommands(await (await getSession()).listSkills())
 	} catch (err) {
 		console.error('[agent] commands catalogue failed:', err)
 		return [...SYSTEM_COMMANDS]
