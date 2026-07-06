@@ -143,9 +143,11 @@ function createStage(id: string): Stage {
 	// The GUI lives in an opaque-origin sandboxed iframe: `allow-scripts` runs the
 	// app but withholds `allow-same-origin`, so it gets no cookies, no host DOM,
 	// and cannot read the token. Its only authority is the port handed off at boot.
+	// `allow-forms` lets an app use plain `<form>`s (app-code's project/settings
+	// forms) — it permits submission only, never same-origin, so isolation holds.
 	const frame = document.createElement('iframe')
 	frame.className = 'frn-stage-frame'
-	frame.setAttribute('sandbox', 'allow-scripts')
+	frame.setAttribute('sandbox', 'allow-scripts allow-forms')
 	frame.srcdoc = FRAME_SRCDOC
 	wrapper.appendChild(frame)
 

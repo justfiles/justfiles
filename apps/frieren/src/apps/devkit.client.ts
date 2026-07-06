@@ -7,10 +7,11 @@ import { createClientKernel } from './kernel.client'
 
 // frieren's two devkit seams for the shared `devkitCapability` factory: the browser
 // `compile` backend (esbuild-wasm over the factory-loaded system runtime) and the
-// `Runner` that owns the one thing that can't be shared — mounting the live preview
-// into the caller's own `[data-preview-slot]`, same document, same thread. The
-// caller only ever names the project (`slug`); the generic pipeline reads its
-// `project.json` + source tree straight off the caller's data dir.
+// `Runner` that owns the one thing that can't be shared — launching the live
+// preview. frieren mounts the draft in a scoped kernel and frames it as its own
+// sandboxed OS window (`kind: 'window'`). The caller only ever names the project
+// (`slug`); the generic pipeline reads its `project.json` + source tree straight
+// off the caller's data dir.
 
 type GetToken = () => Promise<string | null>
 
