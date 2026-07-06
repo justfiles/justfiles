@@ -33,7 +33,7 @@ async function catalogApp(id: string, files: Record<string, string>): Promise<Ca
 }
 
 // A store carrying one built-in whose pinned hashes match the bytes `read`
-// returns — so the integrity check passes and `assetsMatch` compares real digests.
+// returns — so the integrity check passes and reconcile compares real digests.
 async function builtinStore(files: Record<string, string>): Promise<AppStore> {
 	const app = await catalogApp('app.x', files)
 	return {

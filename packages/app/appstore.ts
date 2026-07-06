@@ -47,13 +47,19 @@ export interface AppStore {
 	read(app: CatalogApp, path: string): Promise<Uint8Array>
 }
 
+// The marker file `sync` writes into each installed bundle recording the
+// whole-app hash of the release it came from. Boot compares it against the hash
+// the catalog currently yields to decide whether to reinstall. A dotfile so it
+// stays off every bundle-listing surface (see `hidden` in kernel.ts).
+const INSTALL_HASH_PATH = '.apphash'
+
 // Reconcile a volume against a store on boot. Two passes, neither enumerating the
 // store: (1) every built-in this release ships is installed and current — so a
 // new built-in from a major release lands on an existing volume; (2) every other
 // installed app is updated to the store's `latest`, queried one id at a time (the
-// same check an app runs on itself at launch). Change is decided by hash
-// (`assetsMatch`) and reinstall is atomic (`kernel.install`). Built-ins always
-// reinstall when missing — users can't permanently uninstall them.
+// same check an app runs on itself at launch). Change is decided by the
+// whole-app hash (`appHash`) and reinstall is atomic (`kernel.install`).
+// Built-ins always reinstall when missing — users can't permanently uninstall them.
 export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
 	const builtins = await store.builtins()
@@ -66,8 +72,10 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 	}
 }
 
-// Install `app` from the store unless it's already present with matching bytes.
-// Verifies each file's pinned hash before it reaches the volume.
+// Install `app` from the store unless the installed bundle already carries this
+// release's whole-app hash. Verifies each file's pinned hash before it reaches
+// the volume, then records the release's hash so the next boot can skip an
+// unchanged app (and reinstall a changed one) with a single comparison.
 async function sync(
 	kernel: Kernel,
 	fs: Volume,
@@ -75,52 +83,43 @@ async function sync(
 	app: CatalogApp,
 	installed: boolean
 ): Promise<void> {
-	if (installed && (await assetsMatch(fs, app))) return
+	const hash = await appHash(app)
+	if (installed && (await installedHash(fs, app.id)) === hash) return
 	const files = new Map<string, Uint8Array>()
 	for (const file of app.files) {
 		const bytes = await store.read(app, file.path)
 		await verifyHash(app, file, bytes)
 		files.set(safeBundlePath(file.path), bytes)
 	}
+	files.set(INSTALL_HASH_PATH, new TextEncoder().encode(hash))
 	await kernel.install(bundleFromFiles(files))
 }
 
-// True when the installed app already matches the catalog entry. Two signals:
-// (1) the version, compared against the installed manifest — a release that only
-// bumps the version (or any other manifest-only field) leaves every other asset
-// byte-identical, so without this a `latest` version would never land; and
-// (2) each asset's sha256 `contentHash` (recorded on write), catching content
-// edits that don't bump the version (dev iteration). manifest.json itself is not
-// hash-compared: the kernel re-serialises it on install (normalised entry paths),
-// so its installed bytes never match the catalog's verbatim copy — the version
-// read covers it instead.
-async function assetsMatch(fs: Volume, app: CatalogApp): Promise<boolean> {
-	if ((await installedVersion(fs, app.id)) !== app.version) return false
-	for (const file of app.files) {
-		if (file.path === 'manifest.json') continue
-		let contentHash: string | undefined
-		try {
-			const stat = await fs.stat(`/applications/${app.id}/${safeBundlePath(file.path)}`)
-			contentHash = stat.contentHash
-		} catch {
-			return false // asset missing locally → (re)install
-		}
-		if (`sha256-${contentHash ?? ''}` !== file.hash) return false
-	}
-	return true
+// The whole-app hash: one sha256 folding every file's pinned hash together
+// (paths sorted, so it's independent of catalog order). Because manifest.json is
+// itself a hashed file, this covers ALL of an app's metadata — version, name,
+// icon, declared capabilities — alongside its code and assets, and it moves when
+// any file is added or removed. It is the single signal the update path
+// compares: a manifest-only edit that never touches the version still changes
+// the digest (so it reinstalls), and an unchanged app never does.
+async function appHash(app: CatalogApp): Promise<string> {
+	const input = [...app.files]
+		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+		.map((file) => `${file.path}\u0000${file.hash}`)
+		.join('\n')
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-// The installed app's declared version, normalised to the store's `0.0.0`
-// default so a versionless app matches its versionless catalog entry (and
-// doesn't reinstall on every launch). Missing/corrupt manifest → `0.0.0` too,
-// which won't match a real version and so triggers a (re)install.
-async function installedVersion(fs: Volume, id: string): Promise<string> {
+// The whole-app hash recorded when this app was last installed (the marker
+// `sync` writes). Null when absent — an app installed before this marker
+// existed, or a partial/corrupt bundle — which forces a (re)install.
+async function installedHash(fs: Volume, id: string): Promise<string | null> {
 	try {
-		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
-		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { version?: string }
-		return manifest.version ?? '0.0.0'
+		const bytes = await fs.readFile(`/applications/${id}/${INSTALL_HASH_PATH}`)
+		return new TextDecoder().decode(bytes)
 	} catch {
-		return '0.0.0'
+		return null
 	}
 }
 
