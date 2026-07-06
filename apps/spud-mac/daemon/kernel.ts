@@ -1,4 +1,4 @@
-import { reconcile } from '@justfiles/app/builtins'
+import { reconcile } from '@justfiles/app/appstore'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,

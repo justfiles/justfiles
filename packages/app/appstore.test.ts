@@ -1,6 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { type AppStore, type CatalogApp, reconcile } from './builtins.ts'
+import { type AppStore, type CatalogApp, reconcile } from './appstore.ts'
 import type { AppBundle, AppManifest, Kernel } from './kernel.ts'
 
 const enc = new TextEncoder()

@@ -1,5 +1,5 @@
 import type { Kernel } from '@justfiles/app'
-import { reconcile } from '@justfiles/app/builtins'
+import { reconcile } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
 import { httpAppStore } from '../../shared/appstore'
 

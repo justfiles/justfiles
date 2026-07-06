@@ -1,10 +1,10 @@
 // frieren's app-store glue: built-in apps ship as static assets under
 // `/appstore` (emitted by `vite-appstore.ts`), and the `AppStore` reconcile +
-// catalog types live in `@justfiles/app/builtins`. This module keeps only the
+// catalog types live in `@justfiles/app/appstore`. This module keeps only the
 // frieren-specific asset addressing: the catalog schema tag, its served path, the
 // version-pathed per-file URL, and an `AppStore` over those assets.
 
-import type { AppStore, Catalog } from '@justfiles/app/builtins'
+import type { AppStore, Catalog } from '@justfiles/app/appstore'
 
 export const CATALOG_SCHEMA = 'frieren/appstore-catalog/v1'
 export const CATALOG_PATH = '/appstore/catalog.json'

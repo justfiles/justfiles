@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { type AppStore, builtinStoreFromFs } from '@justfiles/app/builtins/fs'
+import { type AppStore, builtinStoreFromFs } from '@justfiles/app/appstore/fs'
 import { BUILTINS_DIR, SHIPPED } from './resources'
 
 const BUILTINS = [

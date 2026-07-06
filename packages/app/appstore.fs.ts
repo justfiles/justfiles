@@ -3,10 +3,10 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { AppManifest } from './app.ts'
 import { safeBundlePath } from './app.ts'
-import type { AppStore, CatalogApp } from './builtins.ts'
+import type { AppStore, CatalogApp } from './appstore.ts'
 
-// Re-exported so `/builtins/fs` consumers get the abstraction from one import.
-export type { AppStore } from './builtins.ts'
+// Re-exported so `/appstore/fs` consumers get the abstraction from one import.
+export type { AppStore } from './appstore.ts'
 
 const SKIP = new Set(['bundle.js', 'bundle.d.ts'])
 

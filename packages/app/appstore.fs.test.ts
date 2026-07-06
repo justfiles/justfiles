@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { builtinStoreFromFs } from './builtins.fs.ts'
+import { builtinStoreFromFs } from './appstore.fs.ts'
 
 const roots: string[] = []
 

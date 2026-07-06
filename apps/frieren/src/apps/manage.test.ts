@@ -1,5 +1,5 @@
 import { type GetSandbox, kernel } from '@justfiles/app'
-import type { Catalog } from '@justfiles/app/builtins'
+import type { Catalog } from '@justfiles/app/appstore'
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { zipSync } from 'fflate'
 import { afterEach, describe, expect, test, vi } from 'vitest'

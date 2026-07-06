@@ -1,6 +1,6 @@
 import type { AppController, LLMText } from '@justfiles/agent'
 import { createAppController, type Kernel, kernel } from '@justfiles/app'
-import { reconcile } from '@justfiles/app/builtins'
+import { reconcile } from '@justfiles/app/appstore'
 import {
 	type Capabilities,
 	type Capability,
