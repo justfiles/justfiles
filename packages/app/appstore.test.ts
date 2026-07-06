@@ -27,7 +27,9 @@ async function catalogApp(id: string, files: Record<string, string>): Promise<Ca
 			size: enc.encode(content).byteLength
 		}))
 	)
-	return { id, name: id, version: '1.0.0', icon: 'icon.svg', files: fileList }
+	// Mirror the store: the catalog version is the app's declared manifest version.
+	const version = (JSON.parse(files['manifest.json'] ?? '{}') as { version?: string }).version
+	return { id, name: id, version: version ?? '1.0.0', icon: 'icon.svg', files: fileList }
 }
 
 // A store carrying one built-in whose pinned hashes match the bytes `read`
@@ -45,6 +47,15 @@ async function builtinStore(files: Record<string, string>): Promise<AppStore> {
 			return enc.encode(files[path] ?? '')
 		}
 	}
+}
+
+// A store for `app.x` at `version` with byte-identical app.js across versions —
+// so only manifest.json (which carries the version) differs between releases.
+async function versionedStore(version: string): Promise<AppStore> {
+	return builtinStore({
+		'manifest.json': JSON.stringify({ id: 'app.x', name: 'X', version, app: 'app.js' }),
+		'app.js': '// code'
+	})
 }
 
 // A tiny in-memory app bundle, for pre-seeding an "already installed" app.
@@ -87,6 +98,11 @@ function fakeWorld() {
 			const bytes = blobs.get(path)
 			if (!bytes) throw new Error(`ENOENT: ${path}`)
 			return { contentHash: await sha256Hex(bytes) }
+		},
+		readFile: async (path: string) => {
+			const bytes = blobs.get(path)
+			if (!bytes) throw new Error(`ENOENT: ${path}`)
+			return bytes
 		}
 	} as unknown as Volume
 	return { kernel, fs, installs }
@@ -115,6 +131,14 @@ describe('reconcile', () => {
 		await reconcile(kernel, fs, v1)
 		await reconcile(kernel, fs, v2)
 		expect(installs).toEqual(['app.x', 'app.x']) // changed bytes → reinstalled
+	})
+
+	test('reinstalls a built-in whose version bumped even if other assets are identical', async () => {
+		// A pure version bump: app.js is byte-identical, only manifest.json changes.
+		const { kernel, fs, installs } = fakeWorld()
+		await reconcile(kernel, fs, await versionedStore('1.0.0'))
+		await reconcile(kernel, fs, await versionedStore('1.1.0'))
+		expect(installs).toEqual(['app.x', 'app.x']) // version bump → reinstalled
 	})
 
 	test('rejects bytes that do not match the pinned hash, before installing', async () => {

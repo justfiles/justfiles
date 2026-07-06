@@ -85,12 +85,17 @@ async function sync(
 	await kernel.install(bundleFromFiles(files))
 }
 
-// True when every catalog asset is already installed with identical bytes,
-// compared via the sha256 `contentHash` storage records on write. manifest.json
-// is excluded: the kernel re-serialises it on install (normalised entry paths),
-// so its installed bytes never match the catalog's verbatim copy — the other
-// assets (app.js / gui.js / icon) fully capture whether the app changed.
+// True when the installed app already matches the catalog entry. Two signals:
+// (1) the version, compared against the installed manifest — a release that only
+// bumps the version (or any other manifest-only field) leaves every other asset
+// byte-identical, so without this a `latest` version would never land; and
+// (2) each asset's sha256 `contentHash` (recorded on write), catching content
+// edits that don't bump the version (dev iteration). manifest.json itself is not
+// hash-compared: the kernel re-serialises it on install (normalised entry paths),
+// so its installed bytes never match the catalog's verbatim copy — the version
+// read covers it instead.
 async function assetsMatch(fs: Volume, app: CatalogApp): Promise<boolean> {
+	if ((await installedVersion(fs, app.id)) !== app.version) return false
 	for (const file of app.files) {
 		if (file.path === 'manifest.json') continue
 		let contentHash: string | undefined
@@ -103,6 +108,20 @@ async function assetsMatch(fs: Volume, app: CatalogApp): Promise<boolean> {
 		if (`sha256-${contentHash ?? ''}` !== file.hash) return false
 	}
 	return true
+}
+
+// The installed app's declared version, normalised to the store's `0.0.0`
+// default so a versionless app matches its versionless catalog entry (and
+// doesn't reinstall on every launch). Missing/corrupt manifest → `0.0.0` too,
+// which won't match a real version and so triggers a (re)install.
+async function installedVersion(fs: Volume, id: string): Promise<string> {
+	try {
+		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
+		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { version?: string }
+		return manifest.version ?? '0.0.0'
+	} catch {
+		return '0.0.0'
+	}
 }
 
 // Integrity check: the catalog pins each file's `sha256-<hex>` digest (emitted
