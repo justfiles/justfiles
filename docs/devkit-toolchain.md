@@ -12,8 +12,8 @@ the running browser?**
   `lint` / `test` — are pure `files → artifact/diagnostics`. They all live in **one
   toolchain**: a **Container** on the server (frieren), the **local backend** on quay.
   The browser ships *none* of the toolchain — no esbuild-wasm, no TypeScript.
-- **The running browser** — mounting the live preview, plus `stop` / `menu` /
-  `selectMenu` — runs the actual interactive app GUI in the user's DOM. It **cannot**
+- **The running browser** — mounting the live preview, plus `stop` —
+  runs the actual interactive app GUI in the user's DOM. It **cannot**
   leave the browser. It only *receives* a compiled bundle and mounts it.
 
 This document specifies that toolchain. The motivating need was the agent's **typecheck**
@@ -36,7 +36,7 @@ In code this is two injected seams and one generic factory
   (browser esbuild-wasm) omits it and the factory degrades `typecheck` to
   `CAPABILITY_UNAVAILABLE`. Impls: `toolchain.esbuild.ts`, `toolchain.typescript.ts`,
   `toolchain.bun.ts`.
-- **`Runner`** — the running-browser remainder: `{ mount, stop, menu?, selectMenu? }`.
+- **`Runner`** — the running-browser remainder: `{ mount, stop }`.
   The factory builds the draft and only ever calls `mount` with a clean build, so a
   Runner never re-checks diagnostics. `noopRunner` mounts nothing (compile-only hosts).
 - **`devkitCapability({ fs, toolchain, runner, kernel, onInstalled?, overwrite? })`** —
@@ -55,7 +55,7 @@ the devkit capability, not a standalone module.
 | devkit function                                           | Home                                             | Why                                                      |
 |-----------------------------------------------------------|--------------------------------------------------|----------------------------------------------------------|
 | `compile`, `typecheck`, `pack`, `install`, `lint`, `test` | **toolchain** — container (server) / backend (quay) | file transform: heavy deps, must run agent-in-background |
-| preview `mount` / `stop` / `menu` / `selectMenu`          | **client** (browser)                             | runs the live app GUI in the DOM — irreducible           |
+| preview `mount` / `stop`                                  | **client** (browser)                             | runs the live app GUI in the DOM — irreducible           |
 
 `run` is the only function that spans both, so it **decomposes**:
 
@@ -149,7 +149,7 @@ every method. For heavy compute (esbuild bundle, tsc/tsgo check) it delegates to
 
    ┌──────────────────────────────────────────────┐
    │  PREVIEW host  (client, browser only)         │   receives { app, gui },
-   │  mount · stop · menu · selectMenu             │   mounts the isolate in the DOM
+   │  mount · stop                                 │   mounts the isolate in the DOM
    └──────────────────────────────────────────────┘
 ```
 
@@ -285,8 +285,6 @@ export interface DevkitCapability {
 	run(input: { slug: string; reset?: boolean }): Promise<{ previewId: string; diagnostics: Diagnostic[] }>
 	// run = toolchain.compile(slug) → mount({ app, gui }); only `mount` is client-bound.
 	stop(input: { previewId: string }): Promise<void>
-	menu(input: { previewId: string }): Promise<MenuView>
-	selectMenu(input: { previewId: string; menu: number; item: number }): Promise<void>
 }
 ```
 
@@ -451,7 +449,7 @@ Deployment:
 frieren's `devkit` routes by the boundary above:
 
 - **toolchain methods** (`compile` / `typecheck` / `pack` / `install`) → **DO → container**.
-- **preview methods** (`run`'s mount, `stop` / `menu` / `selectMenu`) → **client**.
+- **preview methods** (`run`'s mount, `stop`) → **client**.
 
 The agent tool from §3 is reused unchanged — only its `invoke` now reaches the DO's
 container instead of an in-process toolchain.

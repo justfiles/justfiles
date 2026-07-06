@@ -17,7 +17,7 @@ import type { Kernel } from '../../kernel.ts'
 import { CapabilityError } from '../error.ts'
 import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
-import type { DevkitPreview, MenuView } from './contract.ts'
+import type { DevkitPreview } from './contract.ts'
 import { buildDraft, type DraftBuild, installDraft, packDraft, readProject } from './devkit.ts'
 import { loadRuntime, loadTypes } from './devkit-sysroot.ts'
 import { devkit, previewIdFor } from './index.ts'
@@ -63,15 +63,10 @@ export interface RunContext {
 	reset?: boolean
 }
 
-// The launch seam: make a built draft live, and tear it down. `menu`/`selectMenu`
-// are OPTIONAL and provisional — only frieren drives a live-preview menubar
-// today, and we may drop them entirely; a host that omits them gets the factory's
-// safe defaults (empty menu / no-op).
+// The launch seam: make a built draft live, and tear it down.
 export interface Runner {
 	mount(draft: DraftBuild, ctx: RunContext): Promise<DevkitPreview | undefined>
 	stop(input: { previewId: string }): Promise<void>
-	menu?(input: { previewId: string }): Promise<MenuView>
-	selectMenu?(input: { previewId: string; menu: number; item: number }): Promise<void>
 }
 
 // A Runner that mounts nothing — for compile-only hosts (and tests). `run` still
@@ -151,8 +146,6 @@ export function devkitCapability(opts: {
 			const preview = await runner.mount(draft, { appId: ctx.appId, slug, previewId, reset })
 			return { previewId, diagnostics: [], ...(preview ? { preview } : {}) }
 		},
-		stop: (_ctx, input) => runner.stop(input),
-		menu: async (_ctx, input) => (await runner.menu?.(input)) ?? [],
-		selectMenu: async (_ctx, input) => void (await runner.selectMenu?.(input))
+		stop: (_ctx, input) => runner.stop(input)
 	})
 }

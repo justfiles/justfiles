@@ -1,7 +1,7 @@
 import { createElement, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { App } from './app.ts'
-import { defineGUI, type Menu } from './browser.ts'
+import { defineGUI } from './browser.ts'
 import type { Client } from './sdk.ts'
 
 type GUIState<A> = A extends App<infer State, infer _C, infer _P, infer _E> ? State : never
@@ -12,12 +12,10 @@ export interface GUIProps<A> {
 }
 
 export type GUIComponent<A> = (props: GUIProps<A>) => ReactNode
-export type GUIMenu<A> = (state: GUIState<A>, actions: Client<A>) => Menu
 
 interface GUIModule<A> {
 	gui?: ReturnType<typeof defineGUI<A>>
 	default?: GUIComponent<A>
-	menu?: GUIMenu<A>
 }
 
 // Resolve the `gui` the host expects from a React GUI module's exports (see the
@@ -27,16 +25,14 @@ interface GUIModule<A> {
 // `default` out of the shim's static import graph, so an escape-hatch module
 // (no default export) draws no bundler warning.
 //
-// `state` is non-null to the component and menu: the host resolves the app's
+// `state` is non-null to the component: the host resolves the app's
 // `initialState` (the reducer's `init`) before mount and only ever pushes
 // committed state after, so the nullable `defineGUI` seam is never null here.
 // The casts bridge that wider seam to the narrower React contract.
 export function reactGui<A>(mod: GUIModule<A>) {
 	if (mod.gui) return mod.gui
 	const Component = mod.default as GUIComponent<A>
-	const menu = mod.menu
 	return defineGUI<A>({
-		menu: menu ? (state, client) => menu(state as GUIState<A>, client) : undefined,
 		mount(el, state, ctx) {
 			const root = createRoot(el)
 			const render = (next: GUIState<A> | null) =>

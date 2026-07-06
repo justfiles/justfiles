@@ -1,7 +1,6 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
 import { useMemo, useSyncExternalStore } from 'react'
-import { AppMenus } from '@/components/AppMenus'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Dock } from '@/components/Dock'
 import { Menubar } from '@/components/Menubar'
@@ -11,7 +10,6 @@ import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
 import { resolveAppTitle } from '../apps/catalog'
 import { useAppCommands, useInstalledApps } from '../apps/hooks'
-import { menuOf, subscribeMenus } from '../apps/host'
 import type { InstalledApp } from '../apps/types'
 import { activeStatus, onActiveStatusChange, type SyncStatus } from '../fs'
 import { AppWindow } from '../os/AppWindow'
@@ -19,7 +17,6 @@ import { useOsDispatch, useOsStore } from '../os/hooks'
 import {
 	selectAgentOpen,
 	selectFocusedAppId,
-	selectFocusedWindowId,
 	selectOpenWindows,
 	selectVisibleFullscreenId
 } from '../os/selectors'
@@ -82,18 +79,6 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 	return a.length === b.length && a.every((w, i) => w.id === b[i]?.id)
 }
 
-// The focused app's published menus, kept live via the app-host menu channel.
-// Window id === app id, so the focused window id is the stage key. The stage's
-// menu reference is stable between pushes, so useSyncExternalStore won't churn.
-function useFocusedMenu() {
-	const focusedId = useOsStore(selectFocusedWindowId)
-	return useSyncExternalStore(
-		subscribeMenus,
-		() => (focusedId ? menuOf(focusedId) : null),
-		() => null
-	)
-}
-
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const { isSignedIn } = useAuth()
 	const installedApps = useInstalledApps()
@@ -101,7 +86,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const connection = useAgentConnection()
 	const dispatch = useOsDispatch()
 	const menu = useContextMenu()
-	const appMenu = useFocusedMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
 
 	const windows = useOsStore(
@@ -148,7 +132,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 								<span className="font-normal text-white/40">{focusedApp.version}</span>
 							) : null}
 						</span>
-						{appMenu ? <AppMenus menu={appMenu} /> : null}
 					</div>
 					<div className="flex items-center gap-3">
 						<BackendStatus />

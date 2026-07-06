@@ -11,7 +11,6 @@
 // panel.dispose model).
 
 import type { Kernel, Message } from '@justfiles/app'
-import type { Menu } from '@justfiles/app/browser'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
 import { ensureCapabilitySocket } from './capabilities.client'
@@ -29,11 +28,7 @@ interface GuiInstance {
 
 interface GuiModule {
 	gui: {
-		mount(
-			el: HTMLElement,
-			state: unknown,
-			ctx: { transport: Transport; setMenu(menu: Menu | null): void }
-		): GuiInstance
+		mount(el: HTMLElement, state: unknown, ctx: { transport: Transport }): GuiInstance
 	}
 }
 
@@ -45,7 +40,6 @@ interface Stage {
 	unsubscribe?: () => void
 	unwatch?: () => void
 	instance?: GuiInstance
-	menu?: Menu
 	local?: boolean
 	cancelled: boolean
 	subscribers: Set<(state: unknown) => void>
@@ -61,26 +55,6 @@ export interface OpenOptions {
 }
 
 const stages = new Map<string, Stage>()
-
-// Universal-menubar channel. Each stage's GUI publishes its current menus via
-// the `setMenu` injected into mount; the shell reads the *focused* stage's menu
-// and re-renders when any stage republishes (state change) or focus moves.
-const menuSubscribers = new Set<() => void>()
-
-function notifyMenus(): void {
-	for (const fn of [...menuSubscribers]) fn()
-}
-
-export function subscribeMenus(fn: () => void): () => void {
-	menuSubscribers.add(fn)
-	return () => {
-		menuSubscribers.delete(fn)
-	}
-}
-
-export function menuOf(id: string): Menu | null {
-	return stages.get(id)?.menu ?? null
-}
 
 // Installed-app catalog channel. `devkit.install` writes a new app to
 // `/applications` through its own kernel instance, so the OS launcher (which
@@ -122,8 +96,6 @@ export function close(id: string): void {
 	if (stage.local) terminateAppWorker(id)
 	stage.wrapper.remove()
 	stages.delete(id)
-	// The focused app may have just closed — drop its menu from the bar.
-	notifyMenus()
 }
 
 // Tear down every open stage. Called on OS teardown (sign-out / user switch /
@@ -192,14 +164,7 @@ function subscribeState(stage: Stage): Transport['subscribe'] {
 // Mount the app's GUI into its stage with the kernel snapshot. For a never-run
 // app, `kernel.state()` resolves to the reducer's initial state.
 function mountGui(stage: Stage, mod: GuiModule, transport: Transport, state: unknown): void {
-	stage.instance = mod.gui.mount(stage.mountEl, state, {
-		transport,
-		setMenu: (menu) => {
-			if (stage.cancelled) return
-			stage.menu = menu ?? undefined
-			notifyMenus()
-		}
-	})
+	stage.instance = mod.gui.mount(stage.mountEl, state, { transport })
 }
 
 // Browser-kernel path: dispatch locally, load gui.js from the synced volume

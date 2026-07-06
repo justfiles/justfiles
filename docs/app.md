@@ -491,15 +491,6 @@ export default function Foo({ state, actions }: GUIProps<typeof app>) {
 - Fire-and-forget with `void actions.foo({...})`. State flows back via re-render; rarely read action's
   return value.
 
-Optional menubar — named export:
-
-```tsx
-import type { GUIMenu } from '@justfiles/app/react'
-export const menu: GUIMenu<typeof app> = (state, actions) => [
-	{ title: 'File', items: [{ title: 'Save', onSelect: () => void actions.save({}) }] }
-]
-```
-
 ### App-scoped CSS
 
 Layout CSS, scoped under a root class. Platform look/colors from host design tokens
@@ -663,7 +654,7 @@ export type FooApp = typeof app
 ```
 
 GUI (`gui.tsx`): `export default ({ state, actions }: GUIProps<typeof app>) => ReactNode`,
-optional `export const menu: GUIMenu<typeof app>`, CSS via `import './x.css'` or
+CSS via `import './x.css'` or
 `injectStyle(css, key)`.
 
 ### Hard rules
@@ -754,7 +745,7 @@ Only these bare specifiers resolve (everything else fails the build):
 ```ts
 import { defineApp } from '@justfiles/app'
 import { injectStyle, defineGUI } from '@justfiles/app/browser'
-import type { GUIProps, GUIMenu } from '@justfiles/app/react'
+import type { GUIProps } from '@justfiles/app/react'
 import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 import './helpers.ts' // ✅ relative imports within src/ work

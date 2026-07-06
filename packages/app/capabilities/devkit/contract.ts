@@ -10,16 +10,6 @@
 
 import type { CheckResult, CompileResult } from './toolchain.ts'
 
-// A display-only mirror of `@justfiles/app/browser`'s `Menu` — the live
-// `onSelect` closures are stripped, so it stays serializable. app-code pulls
-// this to render the preview's menubar itself (using the shared design CSS) and
-// fires items back by position via `selectMenu`. Single-directional: the app
-// asks, the host answers; the host never reaches into the app.
-export type MenuItemView =
-	| { separator: true }
-	| { title: string; disabled?: boolean; checked?: boolean; shortcut?: string }
-export type MenuView = { title: string; items: MenuItemView[] }[]
-
 // Host-owned preview presentation. Quay returns a URL that app-code embeds in its
 // preview slot; Frieren mounts the preview itself and returns nothing.
 export type DevkitPreview = { kind: 'url'; src: string }
@@ -45,13 +35,6 @@ export interface DevkitCapability {
 	}): Promise<{ previewId: string; diagnostics: string[]; preview?: DevkitPreview }>
 	// Tear down a running preview.
 	stop(input: { previewId: string }): Promise<void>
-	// Read the running preview's declared menubar as display structure only — the
-	// live `onSelect` closures stay on the main thread and never serialize. Empty
-	// before the preview mounts or when it declares no menus.
-	menu(input: { previewId: string }): Promise<MenuView>
-	// Fire a preview menu item by position; the host invokes its real `onSelect`
-	// on the main thread, so the action runs against the live preview app.
-	selectMenu(input: { previewId: string; menu: number; item: number }): Promise<void>
 	// Promote the named project to the real `/applications` as a standalone app.
 	// Compiles fresh and rejects a colliding id (check-first guard) — install only
 	// creates, never overwrites. The project's `icon`, if any, is bundled so the

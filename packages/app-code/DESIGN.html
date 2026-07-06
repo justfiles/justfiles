@@ -378,7 +378,7 @@
 		<h3>Apps already run in dedicated, isolated workers</h3>
 		<p><code>worker/kernel.sandbox.ts</code> (<code>workerSandbox</code>) uses the <strong>Cloudflare Worker Loader</strong>: it spins a dynamic isolate from <code>modules: { 'entry.js': ENTRY, 'app.js': code }</code>, <strong>content-addressed by SHA-256 of the code</strong>, with <code>globalOutbound: null</code> (no network; capabilities only via <code>ctx</code>). A mirror <strong>browser</strong> sandbox (<code>src/apps/sandbox.worker.ts</code>, <code>browserSandbox</code>) runs the same bytes for local-first. → The “dedicated worker to run user code” you imagined <strong>already exists</strong>, sandboxed and cached per code-hash.</p>
 		<h3>The GUI is mounted by a tiny host shim</h3>
-		<p><code>src/apps/host.ts:179</code> → <code>mod.gui.mount(stageEl, null, { transport, setMenu })</code>. That is the exact seam to embed a live preview: mount a child app’s gui into a <code>&lt;div&gt;</code> in app-code’s right pane instead of a floating <code>Window</code>.</p>
+		<p><code>src/apps/host.ts:179</code> → <code>mod.gui.mount(stageEl, null, { transport })</code>. That is the exact seam to embed a live preview: mount a child app’s gui into a <code>&lt;div&gt;</code> in app-code’s right pane instead of a floating <code>Window</code>.</p>
 	</div>
 	<p>Install/catalog plumbing exists too: built-ins (<code>app-paint</code>, <code>app-files</code>, <code>app-settings</code>) are listed in <code>vite-appstore.ts</code> <code>BUILTIN_DIRS</code>, cataloged with file hashes, and hydrated into the kernel (<code>src/apps/{catalog,manage,hydrate,seed}.ts</code>).</p>
 

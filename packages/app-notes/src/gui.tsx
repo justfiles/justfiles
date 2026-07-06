@@ -1,4 +1,4 @@
-import type { GUIMenu, GUIProps } from '@justfiles/app/react'
+import type { GUIProps } from '@justfiles/app/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Note, NotesApp } from './app.ts'
 import './style.css'
@@ -188,18 +188,6 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		return () => window.removeEventListener('keydown', onKey)
 	}, [openPalette, startNewNote, paletteOpen])
 
-	// Bridge the File menu (a separate render surface) to the flush-aware handlers.
-	useEffect(() => {
-		const onNew = () => void startNewNote()
-		const onOpen = () => void openPalette()
-		window.addEventListener('app-notes:new', onNew)
-		window.addEventListener('app-notes:open', onOpen)
-		return () => {
-			window.removeEventListener('app-notes:new', onNew)
-			window.removeEventListener('app-notes:open', onOpen)
-		}
-	}, [startNewNote, openPalette])
-
 	// Webview flush gotcha (DESIGN.md §4): the window can tear down before a save
 	// lands. Best-effort flush as the page hides; the host's windowShouldClose path
 	// awaits the real final flush.
@@ -296,23 +284,3 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		</div>
 	)
 }
-
-// Optional File menu (DESIGN.md §5). Items route through window events to the
-// component's flush-aware handlers, so a menu click saves before it transitions.
-export const menu: GUIMenu<NotesApp> = () => [
-	{
-		title: 'File',
-		items: [
-			{
-				title: 'New Note',
-				shortcut: '⌘N',
-				onSelect: () => window.dispatchEvent(new Event('app-notes:new'))
-			},
-			{
-				title: 'Open…',
-				shortcut: '⌘K',
-				onSelect: () => window.dispatchEvent(new Event('app-notes:open'))
-			}
-		]
-	}
-]

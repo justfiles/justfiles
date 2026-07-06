@@ -1,5 +1,4 @@
 import { appBundleFromMemory } from '@justfiles/app'
-import type { MenuView } from '@justfiles/app/capabilities/devkit'
 import type { CompileResult, ProjectInput, Runner } from '@justfiles/app/capabilities/devkit/host'
 import { esbuildCompile } from '@justfiles/app/toolchain/esbuild'
 import { chroot, type Volume } from '@justfiles/fs'
@@ -76,34 +75,6 @@ export function frierenRunner(fs: Volume, getToken: GetToken): Runner {
 		},
 		stop: async ({ previewId }) => {
 			host.close(previewId)
-		},
-		// Mirror the preview stage's live menu into a display-only structure — the
-		// `onSelect` closures stay here on the main thread, only titles/state cross
-		// the boundary, so the app draws the real declared menus itself.
-		menu: async ({ previewId }) => menuView(previewId),
-		// Fire a preview menu item by position by invoking its real closure here on
-		// the main thread — the action runs against the live preview's typed client.
-		selectMenu: async ({ previewId, menu, item }) => {
-			const entry = host.menuOf(previewId)?.[menu]?.items?.[item]
-			if (entry && !('separator' in entry) && !entry.disabled) entry.onSelect()
 		}
 	}
-}
-
-function menuView(previewId: string): MenuView {
-	const menus = host.menuOf(previewId)
-	if (!menus) return []
-	return menus.map((group) => ({
-		title: group.title,
-		items: group.items.map((item) =>
-			'separator' in item
-				? { separator: true }
-				: {
-						title: item.title,
-						disabled: item.disabled,
-						checked: item.checked,
-						shortcut: item.shortcut
-					}
-		)
-	}))
 }

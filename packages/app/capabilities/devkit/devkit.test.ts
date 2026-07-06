@@ -88,11 +88,8 @@ describe('devkit compile', () => {
 	})
 
 	test('wraps a default React component gui.tsx as the app GUI, React external', async () => {
-		const guiTsx = `import type { GUIProps, GUIMenu } from '@justfiles/app/react'
+		const guiTsx = `import type { GUIProps } from '@justfiles/app/react'
 import type { app } from './app'
-export const menu: GUIMenu<typeof app> = (state, actions) => [
-	{ title: 'Count', items: [{ title: String(state.count), onSelect: () => void actions.increment({}) }] }
-]
 export default function Counter({ state, actions }: GUIProps<typeof app>) {
 	return <button onClick={() => void actions.increment({})}>{state.count}</button>
 }`
@@ -107,7 +104,6 @@ export default function Counter({ state, actions }: GUIProps<typeof app>) {
 		expect(gui).toMatch(/from\s*["']react["']/)
 		expect(gui).toMatch(/from\s*["']react-dom\/client["']/)
 		expect(gui).toMatch(/from\s*["']react\/jsx-runtime["']/)
-		expect(gui).toContain('menu')
 		expect(gui).not.toContain('initialState')
 	})
 

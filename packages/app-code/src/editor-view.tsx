@@ -1,5 +1,5 @@
 import type { Client } from '@justfiles/app'
-import type { DevkitPreview, Diagnostic, MenuView } from '@justfiles/app/capabilities/devkit'
+import type { DevkitPreview, Diagnostic } from '@justfiles/app/capabilities/devkit'
 import type { ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 import { type CodeApp, type CodeState, statusOf } from './app'
 import { createEditor } from './editor'
@@ -38,10 +38,8 @@ export function createEditorView(
 	let localDirty = false
 	let split = 0.5
 	let fileTreeOpen = true
-	let menuView: MenuView = []
 	let previewSrc: string | null = null
 	let previewSeq = 0
-	let openMenu: number | null = null
 	// Type-check diagnostics, refreshed after each build and rendered inline in the
 	// editor (filtered to the open file). Empty where the host has no checker
 	// (typecheck → CAPABILITY_UNAVAILABLE).
@@ -51,7 +49,6 @@ export function createEditorView(
 	let iconUrl: string | null = null
 	// The layout elements the controller measures/toggles imperatively.
 	const els = {
-		menubar: null as HTMLElement | null,
 		sourceView: null as HTMLElement | null,
 		content: null as HTMLElement | null
 	}
@@ -77,28 +74,6 @@ export function createEditorView(
 		}
 		writer.push(editorPath, content)
 	})
-
-	const setOpenMenu = (next: number | null) => {
-		openMenu = next
-		patch()
-	}
-	const refreshMenu = () => {
-		void client
-			.menu({})
-			.then((next) => {
-				if (!live) return
-				menuView = Array.isArray(next) ? next : []
-				if (openMenu !== null && openMenu >= menuView.length) openMenu = null
-				patch()
-			})
-			.catch(() => {})
-	}
-	const scheduleMenuRefresh = () => {
-		refreshMenu()
-		setTimeout(() => {
-			if (live) refreshMenu()
-		}, 400)
-	}
 
 	const refreshIcon = () => {
 		void client
@@ -222,7 +197,6 @@ export function createEditorView(
 					await runBuild()
 				} else {
 					patch()
-					scheduleMenuRefresh()
 					refreshProblems()
 				}
 			}
@@ -259,19 +233,6 @@ export function createEditorView(
 				patch()
 			})
 	}
-
-	const onDocPointerDown = (event: PointerEvent) => {
-		if (openMenu === null || els.menubar?.contains(event.target as Node)) return
-		openMenu = null
-		patch()
-	}
-	const onDocKey = (event: KeyboardEvent) => {
-		if (openMenu === null || event.key !== 'Escape') return
-		openMenu = null
-		patch()
-	}
-	window.addEventListener('pointerdown', onDocPointerDown, true)
-	window.addEventListener('keydown', onDocKey, true)
 
 	// Load the manifest first, then flip to settings in one patch — no blank
 	// flash, and the live preview keeps running behind the hidden shell.
@@ -311,8 +272,6 @@ export function createEditorView(
 			localDirty,
 			split,
 			fileTreeOpen,
-			menuView,
-			openMenu,
 			installing,
 			installLabel,
 			iconUrl,
@@ -341,25 +300,6 @@ export function createEditorView(
 				}
 				reader.readAsDataURL(file)
 			},
-			onToggleMenu: (index) => {
-				openMenu = openMenu === index ? null : index
-				if (openMenu !== null) refreshMenu()
-				patch()
-			},
-			onEnterMenu: (index) => {
-				if (openMenu !== null && openMenu !== index) setOpenMenu(index)
-			},
-			onSelectMenu: (menu, item) => {
-				openMenu = null
-				patch()
-				void client
-					.selectMenu({ menu, item })
-					.then(() => setTimeout(() => live && refreshMenu(), 50))
-					.catch(() => {})
-			},
-			setMenubar: (el) => {
-				els.menubar = el
-			},
 			setSourceView: (el) => {
 				els.sourceView = el
 			},
@@ -381,7 +321,6 @@ export function createEditorView(
 			syncSource()
 			refreshIcon()
 			void runBuild()
-			scheduleMenuRefresh()
 		},
 		render: patch,
 		update(next) {
@@ -399,8 +338,6 @@ export function createEditorView(
 		destroy() {
 			live = false
 			readToken++
-			window.removeEventListener('pointerdown', onDocPointerDown, true)
-			window.removeEventListener('keydown', onDocKey, true)
 			writer.flush()
 			code.destroy()
 		}

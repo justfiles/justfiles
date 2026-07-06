@@ -401,27 +401,6 @@ export const app = defineApp({
 				await app.invoke('volume', 'writeFile', ICON(reqSlug(app)), encoder.encode(dataUrl))
 			}
 		}),
-		// The live App's declared menubar (display structure only), pulled so the
-		// preview window can draw it on top with the shared design CSS. Empty until
-		// the App mounts or if it declares no menus.
-		menu: p.procedure({
-			description: "Read the live App's declared menubar for the preview window.",
-			schema: v.object({}),
-			run: (_, app) => app.invoke('devkit', 'menu', { previewId: previewIdFor(reqSlug(app)) })
-		}),
-		// Fire a preview menubar item by position; devkit invokes the real action
-		// against the live App on the main thread. No state of our own changes.
-		selectMenu: p.procedure({
-			description: 'Fire a preview menubar item against the live App.',
-			schema: v.object({ menu: v.number(), item: v.number() }),
-			async run({ menu, item }, app) {
-				await app.invoke('devkit', 'selectMenu', {
-					previewId: previewIdFor(reqSlug(app)),
-					menu,
-					item
-				})
-			}
-		}),
 		// Ship: promote the project to the real `/applications` as a standalone app.
 		// devkit reads the source + icon off disk and compiles fresh; how a colliding
 		// id is handled (reject vs. overwrite-in-place) is the host's call. Returns the

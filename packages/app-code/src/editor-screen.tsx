@@ -1,5 +1,4 @@
 import type { Client } from '@justfiles/app'
-import type { MenuView } from '@justfiles/app/capabilities/devkit'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react'
 import type { CodeApp, CodeState } from './app'
@@ -25,8 +24,6 @@ export type EditorScreenProps = {
 	localDirty: boolean
 	split: number
 	fileTreeOpen: boolean
-	menuView: MenuView
-	openMenu: number | null
 	installing: boolean
 	installLabel: string
 	iconUrl: string | null
@@ -40,10 +37,6 @@ export type EditorScreenProps = {
 	onInstall: () => void
 	onDrag: (event: ReactPointerEvent<HTMLDivElement>) => void
 	onIconFile: (file: File) => void
-	onToggleMenu: (index: number) => void
-	onEnterMenu: (index: number) => void
-	onSelectMenu: (menu: number, item: number) => void
-	setMenubar: (el: HTMLDivElement | null) => void
 	setSourceView: (el: HTMLDivElement | null) => void
 	setContent: (el: HTMLDivElement | null) => void
 }
@@ -142,15 +135,9 @@ export function EditorScreen(props: EditorScreenProps) {
 					<div className="app-code-handle" hidden={!showCode} onPointerDown={props.onDrag} />
 
 					<div className="app-code-app-view">
-						<Menubar
-							name={props.name}
-							menuView={props.menuView}
-							openMenu={props.openMenu}
-							onToggle={props.onToggleMenu}
-							onEnter={props.onEnterMenu}
-							onSelect={props.onSelectMenu}
-							setRef={props.setMenubar}
-						/>
+						<div className="ds-menubar app-code-menubar">
+							<span className="app-code-menubar-name">{props.name}</span>
+						</div>
 						<div className="app-code-desktop-area">
 							<div
 								className="ds-window ds-window-framed app-code-preview-window"
@@ -242,74 +229,6 @@ export function EditorScreen(props: EditorScreenProps) {
 				/>
 			) : null}
 		</>
-	)
-}
-
-function Menubar(props: {
-	name: string
-	menuView: MenuView
-	openMenu: number | null
-	onToggle: (index: number) => void
-	onEnter: (index: number) => void
-	onSelect: (menu: number, item: number) => void
-	setRef: (el: HTMLDivElement | null) => void
-}) {
-	return (
-		<div ref={props.setRef} className="ds-menubar app-code-menubar">
-			<span className="app-code-menubar-name">{props.name}</span>
-			<div className="app-code-menu-list">
-				{props.menuView.map((group, index) => (
-					<div key={group.title} className="app-code-menu-wrap">
-						<button
-							type="button"
-							className="ds-menu-title"
-							data-active={props.openMenu === index ? 'true' : undefined}
-							onClick={() => props.onToggle(index)}
-							onPointerEnter={() => props.onEnter(index)}
-						>
-							{group.title}
-						</button>
-						{props.openMenu === index ? (
-							<MenuDropdown group={group} menuIndex={index} onSelect={props.onSelect} />
-						) : null}
-					</div>
-				))}
-			</div>
-		</div>
-	)
-}
-
-function MenuDropdown(props: {
-	group: MenuView[number]
-	menuIndex: number
-	onSelect: (menu: number, item: number) => void
-}) {
-	const items = props.group.items.map((item, itemIndex) => ({
-		item,
-		itemIndex,
-		key: 'separator' in item ? `separator:${itemIndex}` : `${item.title}:${item.shortcut ?? ''}`
-	}))
-	return (
-		<div className="ds-menu app-code-dropdown" role="menu">
-			{items.map(({ item, itemIndex, key }) => {
-				if ('separator' in item) return <div key={key} className="ds-menu-separator" />
-				return (
-					<button
-						key={key}
-						type="button"
-						className="ds-menu-item"
-						role="menuitem"
-						disabled={item.disabled}
-						aria-disabled={item.disabled ? 'true' : undefined}
-						onClick={item.disabled ? undefined : () => props.onSelect(props.menuIndex, itemIndex)}
-					>
-						<span className="app-code-menu-check">{item.checked ? '✓' : ''}</span>
-						<span className="app-code-menu-item-title">{item.title}</span>
-						{item.shortcut ? <span className="app-code-menu-shortcut">{item.shortcut}</span> : null}
-					</button>
-				)
-			})}
-		</div>
 	)
 }
 
