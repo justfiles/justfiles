@@ -10,7 +10,6 @@ const base: CodeState = {
 	slug: 'demo',
 	name: 'Demo',
 	selectedPath: 'app.ts',
-	view: 'app',
 	files: ['app.ts'],
 	sourceHash: 'h',
 	build: null
@@ -49,5 +48,5 @@ test('no watch subscription when no project is open', () => {
 })
 
 test('isCodeState requires name, so a pre-name persisted state is rebuilt', () => {
-	expect(isCodeState({ slug: 'x', files: [], view: 'app' })).toBe(false)
+	expect(isCodeState({ slug: 'x', files: [] })).toBe(false)
 })

@@ -207,108 +207,24 @@
 	cursor: col-resize;
 }
 
-.app-code-app-view {
-	display: flex;
-	flex-direction: column;
+/* Live preview pane — quay only (`kind: 'url'`): the draft app in a bare iframe
+   beside the editor. Frieren (`kind: 'window'`) renders no pane; its preview is
+   a separate OS window. */
+.app-code-preview-pane {
 	flex: 1 1 0;
 	min-width: 0;
 	min-height: 0;
-	background: var(--desktop-bg);
-}
-
-.app-code-menubar {
-	flex: 0 0 auto;
 	position: relative;
-	z-index: 2;
-}
-
-.app-code-menubar-name {
-	font-weight: 500;
-	white-space: nowrap;
-}
-
-.app-code-menu-list {
-	display: flex;
-	align-items: center;
-}
-
-.app-code-menu-wrap {
-	position: relative;
-}
-
-.app-code-dropdown {
-	position: absolute;
-	left: 0;
-	top: 100%;
-	margin-top: 1px;
-	z-index: 10000;
-}
-
-.app-code-menu-check {
-	width: 16px;
-	flex: 0 0 auto;
-}
-
-.app-code-menu-item-title {
-	flex: 1 1 auto;
-}
-
-.app-code-menu-shortcut {
-	margin-left: auto;
-	padding-left: 24px;
-	opacity: 0.6;
-}
-
-.app-code-desktop-area {
-	display: flex;
-	flex: 1 1 auto;
-	min-width: 0;
-	min-height: 0;
-	position: relative;
-	z-index: 1;
-	padding: 24px 24px 96px;
-}
-
-.app-code-preview-window {
-	flex: 1 1 auto;
-	min-width: 0;
-	min-height: 0;
-	position: relative;
-	z-index: 0;
-}
-
-/* `.ds-window-body` is a block, not a flex column, so `flex` here is a no-op and
-   the slot would collapse to its content height — leaving the iframe's `height:
-   100%` with no definite box to resolve against (it falls back to ~150px and the
-   app gets clipped). Pin to fill the body, which does have a flex-resolved height. */
-.app-code-preview-slot {
-	position: relative;
-	height: 100%;
-	min-width: 0;
 	overflow: hidden;
+	background: var(--window-bg);
 }
 
-/* quay live preview: the draft app, loaded in an iframe over the slot. */
 .app-code-preview-frame {
 	display: block;
 	width: 100%;
 	height: 100%;
 	border: 0;
 	background: var(--window-bg);
-}
-
-/* frieren live preview: the draft runs in its own window, so the slot just
-   notes where it went. */
-.app-code-preview-hint {
-	display: flex;
-	height: 100%;
-	align-items: center;
-	justify-content: center;
-	padding: 16px;
-	text-align: center;
-	color: var(--text);
-	opacity: 0.6;
-	font-size: 12px;
 }
 
 .app-code-bottom-bar {
@@ -360,6 +276,7 @@
 .app-code-code-toggle,
 .app-code-tree-toggle,
 .app-code-ship-button,
+.app-code-run-button,
 .app-code-primary-button,
 .app-code-link-button,
 .app-code-ghost-button,
@@ -379,10 +296,41 @@
 	white-space: nowrap;
 }
 
-.app-code-code-toggle[data-active="true"] {
-	border-color: var(--focus);
-	background: var(--focus);
-	color: var(--on-focus);
+.app-code-run-button {
+	flex: 0 0 auto;
+	border: 1px solid var(--rule);
+	border-radius: 6px;
+	background: var(--control-bg);
+	color: var(--text);
+	font-size: 12px;
+	font-weight: 600;
+	padding: 5px 14px;
+	white-space: nowrap;
+}
+
+.app-code-run-button[data-running="true"] {
+	border-color: color-mix(in srgb, #c41a16 40%, var(--rule));
+	color: #c41a16;
+}
+
+.app-code-icon-tile {
+	flex: 0 0 auto;
+	display: inline-flex;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: 1px solid var(--rule);
+	border-radius: 7px;
+	background: var(--control-bg);
+	overflow: hidden;
+	cursor: default;
+}
+
+.app-code-icon-tile img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
 }
 
 .app-code-tree-toggle {
@@ -639,8 +587,6 @@
 
 .app-code-hidden-input,
 .app-code-shell[hidden],
-.app-code-source-view[hidden],
-.app-code-handle[hidden],
 .app-code-bottom-bar[hidden],
 .app-code-file-tree-wrap[hidden],
 .app-code-editor-host[hidden],

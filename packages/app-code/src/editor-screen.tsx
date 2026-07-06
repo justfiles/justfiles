@@ -28,10 +28,10 @@ export type EditorScreenProps = {
 	installLabel: string
 	iconUrl: string | null
 	previewSrc: string | null
-	previewInWindow: boolean
+	launched: boolean
 	onStart: () => void
 	onBack: () => void
-	onToggleCode: () => void
+	onToggleRun: () => void
 	onRefresh: () => void
 	onSelectPath: (path: string) => void
 	onToggleFileTree: () => void
@@ -45,7 +45,6 @@ export type EditorScreenProps = {
 export function EditorScreen(props: EditorScreenProps) {
 	const iconInput = useRef<HTMLInputElement>(null)
 	useEffect(() => props.onStart(), [props.onStart])
-	const showCode = props.view.view === 'source'
 	const ready =
 		!!props.view.selectedPath &&
 		props.source.path === props.view.selectedPath &&
@@ -61,19 +60,19 @@ export function EditorScreen(props: EditorScreenProps) {
 						<LinkButton label="‹ Projects" onClick={props.onBack} />
 						<button
 							type="button"
-							onClick={props.onToggleCode}
-							className="app-code-code-toggle"
-							data-active={showCode ? 'true' : undefined}
-						>
-							{'</> Code'}
-						</button>
-						<button
-							type="button"
 							onClick={props.onSettings}
 							className="app-code-code-toggle"
 							title="Project settings"
 						>
 							⚙
+						</button>
+						<button
+							type="button"
+							className="app-code-icon-tile"
+							title="Set app icon"
+							onClick={() => iconInput.current?.click()}
+						>
+							<img alt="" src={props.iconUrl ?? ICON_PLACEHOLDER} />
 						</button>
 						<div className="app-code-name-label">{props.name}</div>
 					</div>
@@ -81,6 +80,14 @@ export function EditorScreen(props: EditorScreenProps) {
 						● {props.badge.label}
 					</div>
 					<div className="app-code-right-group">
+						<button
+							type="button"
+							onClick={props.onToggleRun}
+							className="app-code-run-button"
+							data-running={props.launched ? 'true' : undefined}
+						>
+							{props.launched ? '■ Stop' : '▶ Run'}
+						</button>
 						<ShipButton
 							label={props.installLabel}
 							disabled={props.installing}
@@ -94,8 +101,11 @@ export function EditorScreen(props: EditorScreenProps) {
 					<div
 						ref={props.setSourceView}
 						className="app-code-source-view"
-						hidden={!showCode}
-						style={{ width: `${props.split * 100}%` }}
+						style={
+							props.previewSrc
+								? { flex: '0 0 auto', width: `${props.split * 100}%` }
+								: { flex: '1 1 auto' }
+						}
 					>
 						<div className="app-code-source-toolbar">
 							<button
@@ -133,67 +143,19 @@ export function EditorScreen(props: EditorScreenProps) {
 						</div>
 					</div>
 
-					<div className="app-code-handle" hidden={!showCode} onPointerDown={props.onDrag} />
-
-					<div className="app-code-app-view">
-						<div className="ds-menubar app-code-menubar">
-							<span className="app-code-menubar-name">{props.name}</span>
-						</div>
-						<div className="app-code-desktop-area">
-							<div
-								className="ds-window ds-window-framed app-code-preview-window"
-								data-focused="true"
-							>
-								<div className="ds-window-titlebar">
-									<div className="ds-window-controls">
-										<button
-											type="button"
-											className="ds-window-control ds-window-control-close"
-											aria-label="Close"
-										/>
-										<button
-											type="button"
-											className="ds-window-control ds-window-control-fullscreen"
-											aria-label="Enter fullscreen"
-										/>
-									</div>
-									<span className="ds-window-title">{props.name}</span>
-									<span className="ds-window-spacer" />
-								</div>
-								<div className="ds-window-body">
-									<div data-preview-slot="" className="app-code-preview-slot">
-										{props.previewSrc ? (
-											<iframe
-												key={props.previewSrc}
-												className="app-code-preview-frame"
-												title="Live preview"
-												src={props.previewSrc}
-											/>
-										) : props.previewInWindow ? (
-											<div className="app-code-preview-hint">Preview running in its own window</div>
-										) : null}
-									</div>
-								</div>
+					{props.previewSrc ? (
+						<>
+							<div className="app-code-handle" onPointerDown={props.onDrag} />
+							<div className="app-code-preview-pane">
+								<iframe
+									key={props.previewSrc}
+									className="app-code-preview-frame"
+									title="Live preview"
+									src={props.previewSrc}
+								/>
 							</div>
-
-							<div className="ds-dock-bar">
-								<div className="ds-dock" role="toolbar" aria-label="Dock">
-									<button
-										type="button"
-										className="ds-dock-item"
-										data-editable="true"
-										title="Set app icon"
-										onClick={() => iconInput.current?.click()}
-									>
-										<span className="ds-dock-icon">
-											<img alt="" src={props.iconUrl ?? ICON_PLACEHOLDER} />
-										</span>
-										<span className="ds-dock-indicator" data-running="true" />
-									</button>
-								</div>
-							</div>
-						</div>
-					</div>
+						</>
+					) : null}
 				</div>
 
 				<div className="app-code-bottom-bar" hidden={!build}>

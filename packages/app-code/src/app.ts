@@ -17,8 +17,6 @@ import {
 	writeProjectManifest
 } from './projects.ts'
 
-export type CodeView = 'source' | 'app'
-
 // The last build, tagged with the hash of the source it compiled. `result`
 // covers a runtime crash too (Phase 5) — a crash is still a fact about the
 // version that was built.
@@ -38,7 +36,6 @@ export type CodeState = {
 	slug: string | null
 	name: string // friendly display name of the open project ('' when none)
 	selectedPath: string | null
-	view: CodeView
 	// content identity + last build; both are honest functions of the files on disk
 	files: string[] // cache of the disk scan, refreshed by open
 	sourceHash: string // hash of the current source on disk
@@ -49,7 +46,6 @@ export const initialState: CodeState = {
 	slug: null, // launch into the gallery, not a fixed project
 	name: '',
 	selectedPath: null,
-	view: 'app',
 	files: [],
 	sourceHash: '',
 	build: null
@@ -72,12 +68,7 @@ export function statusOf(state: CodeState, running: boolean): CodeStatus {
 // `normalizeState` (name defaulted) rather than passed through missing the field.
 export function isCodeState(value: unknown): value is CodeState {
 	return (
-		!!value &&
-		typeof value === 'object' &&
-		'slug' in value &&
-		'name' in value &&
-		'files' in value &&
-		'view' in value
+		!!value && typeof value === 'object' && 'slug' in value && 'name' in value && 'files' in value
 	)
 }
 
@@ -174,17 +165,6 @@ export const app = defineApp({
 			},
 			{ description: 'Open a source file for editing.', examples: [{ params: { path: 'app.ts' } }] }
 		),
-		setView: t.on(
-			v.object({ view: v.picklist(['source', 'app']) }),
-			(state, { view }) => {
-				const s = normalizeState(state)
-				return s.view === view ? s : { ...s, view }
-			},
-			{
-				description: 'Switch between the Source and App views. Never builds.',
-				examples: [{ params: { view: 'app' } }]
-			}
-		),
 		// Close the project and return to the gallery (slug → null).
 		close: t.on(
 			v.object({}),
@@ -253,10 +233,10 @@ export const app = defineApp({
 		}),
 		// Load (not build) an existing project: read its name, scan files, compute
 		// the hash, and commit the opened snapshot with `build: null`. It does NOT
-		// call `devkit.run` — gallery and editor are separate views, so at `open`
-		// time there is no `[data-preview-slot]` yet; the GUI renders the editor,
-		// then calls `run({})` for the first build. Backfills the project file for
-		// legacy projects (`untitled`) created before it existed.
+		// call `devkit.run`: opening a project only loads its source into the editor.
+		// The user launches the live preview explicitly (the GUI's Run button, which
+		// calls `run({})`). Backfills the project file for legacy projects
+		// (`untitled`) created before it existed.
 		open: p.procedure({
 			description: 'Open an existing project from app-code storage.',
 			schema: v.object({ slug: slugSchema }),
@@ -422,24 +402,18 @@ export const app = defineApp({
 
 // Coerce ctx.state into the current shape on every handler. New-shape state
 // passes through untouched (so a `run`'s build survives later handlers). Old
-// persisted state is migrated: `rightPane` → `view`, `name` defaulted, everything
-// runtime reset (`build` null, `sourceHash` '') — `open` recomputes the hash. A
-// persisted `slug` is preserved (not nulled here, or `open` could never set it);
-// the launch reset to the gallery lives in the GUI (a `close` on mount).
+// persisted state is migrated: `name` defaulted, everything runtime reset
+// (`build` null, `sourceHash` '') — `open` recomputes the hash. A persisted
+// `slug` is preserved (not nulled here, or `open` could never set it); the launch
+// reset to the gallery lives in the GUI (a `close` on mount).
 function normalizeState(state: unknown): CodeState {
 	if (isCodeState(state)) return state
 	if (!state || typeof state !== 'object') return initialState
-	const old = state as { slug?: unknown; selectedPath?: unknown; rightPane?: unknown }
+	const old = state as { slug?: unknown; selectedPath?: unknown }
 	return {
 		...initialState,
 		slug: typeof old.slug === 'string' ? old.slug : initialState.slug,
-		selectedPath: typeof old.selectedPath === 'string' ? old.selectedPath : null,
-		view:
-			old.rightPane === 'preview'
-				? 'app'
-				: old.rightPane === 'editor'
-					? 'source'
-					: initialState.view
+		selectedPath: typeof old.selectedPath === 'string' ? old.selectedPath : null
 	}
 }
 

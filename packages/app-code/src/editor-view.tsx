@@ -39,8 +39,10 @@ export function createEditorView(
 	let split = 0.5
 	let fileTreeOpen = true
 	let previewSrc: string | null = null
-	let previewInWindow = false
 	let previewSeq = 0
+	// Whether the live preview is currently running. The Run/Stop button toggles
+	// it; only while running does saving a file hot-rebuild the preview.
+	let launched = false
 	// Type-check diagnostics, refreshed after each build and rendered inline in the
 	// editor (filtered to the open file). Empty where the host has no checker
 	// (typecheck → CAPABILITY_UNAVAILABLE).
@@ -64,7 +66,7 @@ export function createEditorView(
 		localDirty = false
 		try {
 			await client.write({ path, content })
-			await runBuild()
+			if (launched) await runBuild()
 		} catch {}
 	}, 1000)
 	const code = createEditor((content) => {
@@ -185,17 +187,14 @@ export function createEditorView(
 		run.active = (async () => {
 			try {
 				const result = await client.run({})
-				if (result.preview?.kind === 'url') {
+				// A late run that resolves after Stop must not resurrect the preview.
+				if (launched && result.preview?.kind === 'url') {
 					const version = `${result.state.build?.hash ?? 'run'}-${++previewSeq}`
 					previewSrc = versionedPreviewSrc(result.preview, version)
 					patch()
-				} else if (result.preview?.kind === 'window') {
-					// The host opened the preview in its own window; drop the embedded pane.
-					if (!previewInWindow) {
-						previewInWindow = true
-						patch()
-					}
 				}
+				// `kind: 'window'` needs nothing here — the host opened the preview in its
+				// own window, so app-code stays a plain editor.
 			} catch {
 			} finally {
 				run.running = false
@@ -209,6 +208,27 @@ export function createEditorView(
 			}
 		})()
 		return run.active
+	}
+
+	// Run/Stop. Run launches the live preview (compile + mount: a separate OS
+	// window on frieren, an embedded url pane on quay). Stop tears it down. Stop
+	// waits out any in-flight run so the mount can't re-open behind the teardown.
+	const runPreview = () => {
+		if (launched) return
+		launched = true
+		patch()
+		void runBuild()
+	}
+	const stopPreview = () => {
+		if (!launched) return
+		launched = false
+		previewSrc = null
+		run.rerun = false
+		patch()
+		void (async () => {
+			if (run.active) await run.active.catch(() => {})
+			await client.stop({}).catch(() => {})
+		})()
 	}
 
 	const syncSource = () => {
@@ -262,7 +282,7 @@ export function createEditorView(
 	}
 
 	const props = (): EditorScreenProps => {
-		const badge = STATUS[statusOf(view, run.running)]
+		const badge = STATUS[launched ? statusOf(view, run.running) : 'idle']
 		return {
 			view,
 			source,
@@ -283,11 +303,10 @@ export function createEditorView(
 			installLabel,
 			iconUrl,
 			previewSrc,
-			previewInWindow,
+			launched,
 			onStart: controller.start,
 			onBack: nav.onLeave,
-			onToggleCode: () =>
-				void client.setView({ view: view.view === 'source' ? 'app' : 'source' }).catch(() => {}),
+			onToggleRun: launched ? stopPreview : runPreview,
 			onRefresh: () => {
 				if (view.slug) void client.open({ slug: view.slug }).catch(() => {})
 			},
@@ -328,7 +347,6 @@ export function createEditorView(
 			patch()
 			syncSource()
 			refreshIcon()
-			void runBuild()
 		},
 		render: patch,
 		update(next) {
@@ -338,6 +356,7 @@ export function createEditorView(
 		},
 		slug: () => view.slug,
 		async leave() {
+			launched = false
 			run.blocked = true
 			if (run.active) await run.active.catch(() => {})
 			await writer.drain()
