@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { type BuiltinSource, builtinSourceFromFs } from '@justfiles/app/builtins/fs'
+import { type AppStore, builtinStoreFromFs } from '@justfiles/app/builtins/fs'
 import { BUILTINS_DIR, SHIPPED } from './resources'
 
 const BUILTINS = [
@@ -11,8 +11,8 @@ const BUILTINS = [
 	{ id: 'app.frieren.settings', packageDir: 'app-settings' }
 ]
 
-export function builtinSource(): Promise<BuiltinSource> {
-	return builtinSourceFromFs(BUILTINS.map((app) => rootFor(app)))
+export function builtinStore(): Promise<AppStore> {
+	return builtinStoreFromFs(BUILTINS.map((app) => rootFor(app)))
 }
 
 function rootFor(app: (typeof BUILTINS)[number]): string {

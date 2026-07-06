@@ -42,7 +42,7 @@ type FilesState = { loading: boolean; files: Array<{ path: string }> }
 
 test('seeds the builtin catalog into the fresh Volume', async () => {
 	const ids = (await kernel.list()).map((app) => app.id)
-	// reconcileBuiltins ran during buildKernel — the launcher's catalog is populated.
+	// reconcile ran during buildKernel — the launcher's catalog is populated.
 	expect(ids).toContain(FILES)
 	expect(ids).toContain('app.code')
 	expect(ids).toContain('app.justfiles.counter')

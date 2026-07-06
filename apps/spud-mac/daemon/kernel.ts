@@ -1,4 +1,4 @@
-import { reconcileBuiltins } from '@justfiles/app/builtins'
+import { reconcile } from '@justfiles/app/builtins'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
@@ -9,7 +9,7 @@ import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
-import { builtinSource } from './builtins'
+import { builtinStore } from './builtins'
 import { chatgptProvider } from './chatgpt'
 import { getVolume } from './fs'
 import { googleProvider } from './google/provider'
@@ -71,8 +71,8 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 		}),
 		clock: {}
 	})
-	const builtins = await builtinSource()
-	await reconcileBuiltins(k, fs, builtins.catalog, builtins.read)
+	const builtins = await builtinStore()
+	await reconcile(k, fs, builtins)
 	return k
 }
 

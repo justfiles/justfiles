@@ -1,6 +1,6 @@
 import type { AppController, LLMText } from '@justfiles/agent'
 import { createAppController, type Kernel, kernel } from '@justfiles/app'
-import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
+import { reconcile } from '@justfiles/app/builtins'
 import {
 	type Capabilities,
 	type Capability,
@@ -10,7 +10,7 @@ import {
 } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
-import { appFileUrl, CATALOG_PATH } from '../shared/appstore.ts'
+import { appFileUrl, httpAppStore } from '../shared/appstore.ts'
 import { aiCapability } from './ai.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 
@@ -104,7 +104,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	// Built-in apps live as static `/appstore` assets and are seeded into the
 	// user's volume on kernel use (this DO is the sole materializer for the synced
-	// profile — see shared/appstore.ts). reconcileBuiltins reinstalls only the apps
+	// profile — see shared/appstore.ts). reconcile reinstalls only the apps
 	// whose bytes changed, so dev re-checks on every kernel use to pick up local
 	// edits (cheap — unchanged apps are skipped); prod runs it once per instance.
 	async function ensureBuiltinsInstalled(k: Kernel): Promise<void> {
@@ -114,14 +114,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	}
 
 	async function reconcileFromAssets(k: Kernel): Promise<void> {
-		const res = await deps.assets.fetch(assetRequest(CATALOG_PATH))
-		if (!res.ok) return
-		const catalog = (await res.json()) as Catalog
-		await reconcileBuiltins(k, deps.fs, catalog, async (app, path) => {
-			const file = await deps.assets.fetch(assetRequest(appFileUrl(app, path)))
-			if (!file.ok) throw new Error(`appstore: ${app.id}/${path} ${file.status}`)
-			return new Uint8Array(await file.arrayBuffer())
-		})
+		const store = await httpAppStore((path) => deps.assets.fetch(assetRequest(path)))
+		if (store) await reconcile(k, deps.fs, store)
 	}
 
 	async function kernelReady(): Promise<Kernel> {

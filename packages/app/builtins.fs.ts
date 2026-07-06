@@ -3,23 +3,20 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { AppManifest } from './app.ts'
 import { safeBundlePath } from './app.ts'
-import type { Catalog, CatalogApp } from './builtins.ts'
+import type { AppStore, CatalogApp } from './builtins.ts'
 
-const DEFAULT_SCHEMA = 'justfiles.appstore.v1'
+// Re-exported so `/builtins/fs` consumers get the abstraction from one import.
+export type { AppStore } from './builtins.ts'
+
 const SKIP = new Set(['bundle.js', 'bundle.d.ts'])
 
-export interface BuiltinSource {
-	catalog: Catalog
-	read(app: CatalogApp, path: string): Promise<Uint8Array>
-}
-
-export async function builtinSourceFromFs(
-	roots: readonly string[],
-	opts: { schema?: string } = {}
-): Promise<BuiltinSource> {
+// A packaged built-in AppStore: reads app files straight off disk (Node/Bun
+// hosts — spud-mac's bundled resources, or the dev `dist` dirs). It carries only
+// built-ins, so `latest(id)` resolves to a built-in or null.
+export async function builtinStoreFromFs(roots: readonly string[]): Promise<AppStore> {
 	const rootById = new Map<string, string>()
 	const filesById = new Map<string, Set<string>>()
-	const apps: CatalogApp[] = []
+	const byId = new Map<string, CatalogApp>()
 
 	for (const root of roots) {
 		const manifest = await readManifest(root)
@@ -27,11 +24,16 @@ export async function builtinSourceFromFs(
 		const files = await bundleFiles(root, manifest)
 		rootById.set(manifest.id, root)
 		filesById.set(manifest.id, new Set(files.keys()))
-		apps.push(toCatalogApp(manifest, files))
+		byId.set(manifest.id, toCatalogApp(manifest, files))
 	}
 
 	return {
-		catalog: { schema: opts.schema ?? DEFAULT_SCHEMA, apps },
+		async builtins() {
+			return [...byId.values()]
+		},
+		async latest(id) {
+			return byId.get(id) ?? null
+		},
 		async read(app, path) {
 			const root = rootById.get(app.id)
 			const rel = safeBundlePath(path)

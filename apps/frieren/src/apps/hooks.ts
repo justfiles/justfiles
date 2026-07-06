@@ -33,7 +33,7 @@ export interface AppCommands {
 export function useAppCommands(): AppCommands {
 	const client = useOsClient()
 	const dispatch = useOsDispatch()
-	const { localKernel, volume } = useOsRuntime()
+	const { localKernel } = useOsRuntime()
 	const installingRef = useRef(false)
 
 	return useMemo<AppCommands>(() => {
@@ -47,11 +47,7 @@ export function useAppCommands(): AppCommands {
 			try {
 				const zip = await pickZipFile()
 				if (!zip) return
-				await installZipApp(
-					await localKernel(),
-					await volume,
-					new Uint8Array(await zip.arrayBuffer())
-				)
+				await installZipApp(await localKernel(), new Uint8Array(await zip.arrayBuffer()))
 				client.refresh()
 			} catch (e) {
 				alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -69,7 +65,7 @@ export function useAppCommands(): AppCommands {
 			dispatch({ type: 'window.close', id })
 			client.removeApp(id)
 			try {
-				await uninstallLocalApp(await localKernel(), await volume, id)
+				await uninstallLocalApp(await localKernel(), id)
 				client.refresh()
 			} catch (e) {
 				// The volume still has it — refresh restores the optimistic removal.
@@ -79,5 +75,5 @@ export function useAppCommands(): AppCommands {
 		}
 
 		return { launchApp, installApp, uninstallApp }
-	}, [client, dispatch, localKernel, volume])
+	}, [client, dispatch, localKernel])
 }

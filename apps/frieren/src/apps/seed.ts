@@ -1,7 +1,7 @@
 import type { Kernel } from '@justfiles/app'
-import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
+import { reconcile } from '@justfiles/app/builtins'
 import type { Volume } from '@justfiles/fs'
-import { appFileUrl, CATALOG_PATH } from '../../shared/appstore'
+import { httpAppStore } from '../../shared/appstore'
 
 // Seed built-in apps into a LOCAL-ONLY profile's volume from the public
 // `/appstore` assets (PWA-precached), so a signed-out / offline desktop has apps
@@ -10,12 +10,6 @@ import { appFileUrl, CATALOG_PATH } from '../../shared/appstore'
 // would double-seed. The boot path gates on "local-only" (Phase 4d wires that
 // once the OS can boot without auth).
 export async function seedBuiltins(kernel: Kernel, fs: Volume): Promise<void> {
-	const res = await fetch(CATALOG_PATH)
-	if (!res.ok) return
-	const catalog = (await res.json()) as Catalog
-	await reconcileBuiltins(kernel, fs, catalog, async (app, path) => {
-		const file = await fetch(appFileUrl(app, path))
-		if (!file.ok) throw new Error(`appstore: ${app.id}/${path} ${file.status}`)
-		return new Uint8Array(await file.arrayBuffer())
-	})
+	const store = await httpAppStore((path) => fetch(path))
+	if (store) await reconcile(kernel, fs, store)
 }

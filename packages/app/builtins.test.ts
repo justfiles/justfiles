@@ -1,6 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { type Catalog, reconcileBuiltins } from './builtins.ts'
+import { type AppStore, type CatalogApp, reconcile } from './builtins.ts'
 import type { AppBundle, AppManifest, Kernel } from './kernel.ts'
 
 const enc = new TextEncoder()
@@ -19,11 +19,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-// Build a catalog whose pinned hashes match the bytes `read` returns — so the
-// integrity check passes and `assetsMatch` compares against the real digests.
-async function buildCatalog(
-	files: Record<string, string>
-): Promise<{ catalog: Catalog; read: (app: { id: string }, path: string) => Promise<Uint8Array> }> {
+async function catalogApp(id: string, files: Record<string, string>): Promise<CatalogApp> {
 	const fileList = await Promise.all(
 		Object.entries(files).map(async ([path, content]) => ({
 			path,
@@ -31,18 +27,41 @@ async function buildCatalog(
 			size: enc.encode(content).byteLength
 		}))
 	)
-	const catalog: Catalog = {
-		schema: 'test/catalog/v1',
-		apps: [{ id: 'app.x', name: 'X', version: '1.0.0', icon: 'icon.svg', files: fileList }]
+	return { id, name: id, version: '1.0.0', icon: 'icon.svg', files: fileList }
+}
+
+// A store carrying one built-in whose pinned hashes match the bytes `read`
+// returns — so the integrity check passes and `assetsMatch` compares real digests.
+async function builtinStore(files: Record<string, string>): Promise<AppStore> {
+	const app = await catalogApp('app.x', files)
+	return {
+		async builtins() {
+			return [app]
+		},
+		async latest(id) {
+			return id === app.id ? app : null
+		},
+		async read(_app, path) {
+			return enc.encode(files[path] ?? '')
+		}
 	}
-	const read = async (_app: { id: string }, path: string) => enc.encode(files[path] ?? '')
-	return { catalog, read }
+}
+
+// A tiny in-memory app bundle, for pre-seeding an "already installed" app.
+function bundle(files: Record<string, string>): AppBundle {
+	return {
+		manifest: async () => JSON.parse(files['manifest.json'] ?? '{}'),
+		list: async function* () {
+			yield* Object.keys(files)
+		},
+		read: async (path: string) => enc.encode(files[path] ?? '')
+	}
 }
 
 // One in-memory world: kernel.install writes the bundle's files into the volume
 // (verbatim, like the real kernel), and volume.stat reports each file's sha256 —
 // so reconcile's content comparison sees exactly what was installed.
-function fakeWorld(opts: { disabled?: boolean } = {}) {
+function fakeWorld() {
 	const blobs = new Map<string, Uint8Array>() // /applications/<id>/<path> -> bytes
 	const installs: string[] = []
 	const kernel = {
@@ -54,18 +73,16 @@ function fakeWorld(opts: { disabled?: boolean } = {}) {
 			}
 			return [...ids].map((id) => ({ id, name: id, version: '1.0.0', app: 'app.js' }))
 		},
-		install: async (bundle: AppBundle): Promise<string> => {
-			const manifest = await bundle.manifest()
-			installs.push(manifest.version ?? '')
-			for await (const path of bundle.list()) {
-				blobs.set(`/applications/${manifest.id}/${path}`, await bundle.read(path))
+		install: async (b: AppBundle): Promise<string> => {
+			const manifest = await b.manifest()
+			installs.push(manifest.id)
+			for await (const path of b.list()) {
+				blobs.set(`/applications/${manifest.id}/${path}`, await b.read(path))
 			}
 			return manifest.id
 		}
 	} as unknown as Kernel
 	const fs = {
-		exists: async (path: string) =>
-			path.includes('/disabled/') ? !!opts.disabled : blobs.has(path),
 		stat: async (path: string) => {
 			const bytes = blobs.get(path)
 			if (!bytes) throw new Error(`ENOENT: ${path}`)
@@ -75,44 +92,61 @@ function fakeWorld(opts: { disabled?: boolean } = {}) {
 	return { kernel, fs, installs }
 }
 
-describe('reconcileBuiltins', () => {
-	test('seeds a missing app', async () => {
-		const { catalog, read } = await buildCatalog(FILES)
+describe('reconcile', () => {
+	test('seeds a missing built-in', async () => {
+		const store = await builtinStore(FILES)
 		const { kernel, fs, installs } = fakeWorld()
-		await reconcileBuiltins(kernel, fs, catalog, read)
-		expect(installs).toEqual(['1.0.0'])
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x'])
 	})
 
-	test('skips an app whose assets already match', async () => {
-		const { catalog, read } = await buildCatalog(FILES)
+	test('skips a built-in whose assets already match', async () => {
+		const store = await builtinStore(FILES)
 		const { kernel, fs, installs } = fakeWorld()
-		await reconcileBuiltins(kernel, fs, catalog, read)
-		await reconcileBuiltins(kernel, fs, catalog, read)
-		expect(installs).toEqual(['1.0.0']) // installed once, then skipped
+		await reconcile(kernel, fs, store)
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x']) // installed once, then skipped
 	})
 
-	test('reinstalls an app whose assets changed', async () => {
-		const v1 = await buildCatalog(FILES)
-		const v2 = await buildCatalog({ ...FILES, 'app.js': '// code v2' })
+	test('reinstalls a built-in whose assets changed', async () => {
+		const v1 = await builtinStore(FILES)
+		const v2 = await builtinStore({ ...FILES, 'app.js': '// code v2' })
 		const { kernel, fs, installs } = fakeWorld()
-		await reconcileBuiltins(kernel, fs, v1.catalog, v1.read)
-		await reconcileBuiltins(kernel, fs, v2.catalog, v2.read)
-		expect(installs).toEqual(['1.0.0', '1.0.0']) // changed bytes → reinstalled
-	})
-
-	test('does not resurrect a disabled app', async () => {
-		const { catalog, read } = await buildCatalog(FILES)
-		const { kernel, fs, installs } = fakeWorld({ disabled: true })
-		await reconcileBuiltins(kernel, fs, catalog, read)
-		expect(installs).toEqual([])
+		await reconcile(kernel, fs, v1)
+		await reconcile(kernel, fs, v2)
+		expect(installs).toEqual(['app.x', 'app.x']) // changed bytes → reinstalled
 	})
 
 	test('rejects bytes that do not match the pinned hash, before installing', async () => {
-		const { catalog } = await buildCatalog(FILES)
+		const store = await builtinStore(FILES)
 		const { kernel, fs, installs } = fakeWorld()
-		const tampered = async (_app: { id: string }, path: string) =>
+		store.read = async (_app, path) =>
 			enc.encode(path === 'app.js' ? '// tampered' : (FILES[path] ?? ''))
-		await expect(reconcileBuiltins(kernel, fs, catalog, tampered)).rejects.toThrow(/hash/)
+		await expect(reconcile(kernel, fs, store)).rejects.toThrow(/hash/)
 		expect(installs).toEqual([])
+	})
+
+	test('updates an installed non-built-in app via latest(id)', async () => {
+		const { kernel, fs, installs } = fakeWorld()
+		// A third-party app is already on the volume (older bytes) and NOT a built-in.
+		const old = {
+			'manifest.json': JSON.stringify({ id: 'app.z', name: 'Z', version: '1.0.0', app: 'app.js' }),
+			'app.js': '// z v1'
+		}
+		await kernel.install(bundle(old))
+		const next = await catalogApp('app.z', { ...old, 'app.js': '// z v2' })
+		const store: AppStore = {
+			async builtins() {
+				return []
+			},
+			async latest(id) {
+				return id === 'app.z' ? next : null
+			},
+			async read(_app, path) {
+				return enc.encode(path === 'app.js' ? '// z v2' : (old[path] ?? ''))
+			}
+		}
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.z', 'app.z']) // seeded, then updated via latest()
 	})
 })

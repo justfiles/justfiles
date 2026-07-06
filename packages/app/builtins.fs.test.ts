@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { builtinSourceFromFs } from './builtins.fs.ts'
+import { builtinStoreFromFs } from './builtins.fs.ts'
 
 const roots: string[] = []
 
@@ -11,7 +11,7 @@ afterEach(async () => {
 	roots.length = 0
 })
 
-describe('builtinSourceFromFs', () => {
+describe('builtinStoreFromFs', () => {
 	test('builds a catalog from manifest entries and include globs', async () => {
 		const root = await tempRoot()
 		await write(root, 'manifest.json', {
@@ -31,8 +31,8 @@ describe('builtinSourceFromFs', () => {
 		await write(root, 'bundle.js', 'generated')
 		await write(root, 'extra.js', 'extra')
 
-		const source = await builtinSourceFromFs([root])
-		const [app] = source.catalog.apps
+		const store = await builtinStoreFromFs([root])
+		const [app] = await store.builtins()
 
 		expect(app?.id).toBe('app.test')
 		expect(app?.files.map((file) => file.path)).toEqual([
@@ -43,14 +43,16 @@ describe('builtinSourceFromFs', () => {
 			'icon.png',
 			'manifest.json'
 		])
-		const bytes = await source.read(app!, 'devkit/types/index.d.ts')
+		expect(await store.latest('app.test')).toEqual(app)
+		expect(await store.latest('app.missing')).toBeNull()
+		const bytes = await store.read(app!, 'devkit/types/index.d.ts')
 		expect(new TextDecoder().decode(bytes)).toBe('types')
-		await expect(source.read(app!, 'extra.js')).rejects.toThrow(/builtin not found/)
+		await expect(store.read(app!, 'extra.js')).rejects.toThrow(/builtin not found/)
 	})
 
 	test('fails clearly when a root is not built', async () => {
 		const root = await tempRoot()
-		await expect(builtinSourceFromFs([root])).rejects.toThrow(/build the app first/)
+		await expect(builtinStoreFromFs([root])).rejects.toThrow(/build the app first/)
 	})
 })
 

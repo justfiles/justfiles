@@ -1,5 +1,5 @@
 import { type GetSandbox, kernel } from '@justfiles/app'
-import { type Catalog, disabledMarker } from '@justfiles/app/builtins'
+import type { Catalog } from '@justfiles/app/builtins'
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { zipSync } from 'fflate'
 import { afterEach, describe, expect, test, vi } from 'vitest'
@@ -50,7 +50,7 @@ afterEach(() => {
 describe('local app management', () => {
 	test('installs a zipped app into the local volume', async () => {
 		const { fs, k } = setup()
-		const id = await installZipApp(k, fs, appZip())
+		const id = await installZipApp(k, appZip())
 
 		expect(id).toBe('com.example.local')
 		expect((await k.list()).map((app) => app.id)).toEqual(['com.example.local'])
@@ -59,30 +59,29 @@ describe('local app management', () => {
 
 	test('uninstalls user apps with state and data', async () => {
 		const { fs, k } = setup()
-		const id = await installZipApp(k, fs, appZip())
+		const id = await installZipApp(k, appZip())
 		await seedState(fs, id)
 		vi.stubGlobal(
 			'fetch',
 			vi.fn(async () => new Response(null, { status: 404 }))
 		)
 
-		await uninstallLocalApp(k, fs, id)
+		await uninstallLocalApp(k, id)
 
 		expect(await fs.exists('/applications/com.example.local')).toBe(false)
 		expect(await fs.exists('/state/com.example.local.json')).toBe(false)
 		expect(await fs.exists('/data/com.example.local')).toBe(false)
 	})
 
-	test('uninstalls built-ins by writing a disabled marker and preserving data', async () => {
+	test('refuses to uninstall built-ins (reconcile reinstalls them on launch)', async () => {
 		const { fs, k } = setup()
-		const id = await installZipApp(k, fs, appZip('app.frieren.paint'))
+		const id = await installZipApp(k, appZip('app.frieren.paint'))
 		await seedState(fs, id)
 		stubCatalog(id)
 
-		await uninstallLocalApp(k, fs, id)
+		await expect(uninstallLocalApp(k, id)).rejects.toThrow(/cannot be uninstalled/)
 
-		expect(await fs.exists('/applications/app.frieren.paint')).toBe(false)
-		expect(await fs.exists(disabledMarker(id))).toBe(true)
+		expect(await fs.exists('/applications/app.frieren.paint')).toBe(true)
 		expect(await fs.exists('/state/app.frieren.paint.json')).toBe(true)
 		expect(await fs.exists('/data/app.frieren.paint')).toBe(true)
 	})
