@@ -39,6 +39,7 @@ export function createEditorView(
 	let split = 0.5
 	let fileTreeOpen = true
 	let previewSrc: string | null = null
+	let previewInWindow = false
 	let previewSeq = 0
 	// Type-check diagnostics, refreshed after each build and rendered inline in the
 	// editor (filtered to the open file). Empty where the host has no checker
@@ -188,6 +189,12 @@ export function createEditorView(
 					const version = `${result.state.build?.hash ?? 'run'}-${++previewSeq}`
 					previewSrc = versionedPreviewSrc(result.preview, version)
 					patch()
+				} else if (result.preview?.kind === 'window') {
+					// The host opened the preview in its own window; drop the embedded pane.
+					if (!previewInWindow) {
+						previewInWindow = true
+						patch()
+					}
 				}
 			} catch {
 			} finally {
@@ -276,6 +283,7 @@ export function createEditorView(
 			installLabel,
 			iconUrl,
 			previewSrc,
+			previewInWindow,
 			onStart: controller.start,
 			onBack: nav.onLeave,
 			onToggleCode: () =>
@@ -346,7 +354,10 @@ export function createEditorView(
 	return controller
 }
 
-function versionedPreviewSrc(preview: DevkitPreview, version?: string): string {
+function versionedPreviewSrc(
+	preview: Extract<DevkitPreview, { kind: 'url' }>,
+	version?: string
+): string {
 	if (!version) return preview.src
 	try {
 		const url = new URL(preview.src, location.href)

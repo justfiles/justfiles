@@ -98,6 +98,15 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	}, [client])
 
 	useEffect(() => {
+		// A host capability (devkit's live preview) frames its scoped stage as a
+		// window by asking the shell to dispatch the matching window action.
+		return appHost.subscribeWindows((req) => {
+			if (req.type === 'open') store.dispatch({ type: 'app.open', appId: req.id, title: req.title })
+			else store.dispatch({ type: 'window.close', id: req.id })
+		})
+	}, [store])
+
+	useEffect(() => {
 		let cancelled = false
 		let running = false
 		let pending = false

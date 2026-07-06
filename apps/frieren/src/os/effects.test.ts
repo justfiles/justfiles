@@ -6,7 +6,10 @@ import { makeKernelHostEffect, makePersistEffect } from './effects'
 import { saveSnapshot } from './persistence'
 import { initialState, type OsAction, type OsState, type OsWindow } from './state'
 
-vi.mock('./persistence', () => ({ saveSnapshot: vi.fn() }))
+vi.mock('./persistence', async (importOriginal) => ({
+	...(await importOriginal<typeof import('./persistence')>()),
+	saveSnapshot: vi.fn()
+}))
 
 function ctx(state: OsState): EffectContext<OsState, OsAction> {
 	return { getState: () => state, dispatch: () => {} }

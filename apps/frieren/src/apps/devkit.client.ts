@@ -42,7 +42,9 @@ export async function frierenCompile(
 
 // The frieren Runner. The factory hands `mount` a clean build (diagnostics already
 // guarded) + the computed `preview.<slug>` id; we install it into a scoped client
-// kernel and parent its live stage at the caller's content slot.
+// kernel, open its stage, and ask the OS shell to frame it as its own window. The
+// preview is a normal sandboxed app window beside app-code — no host-DOM reach, so
+// app-code stays fully sandboxed like every other app.
 export function frierenRunner(fs: Volume, getToken: GetToken): Runner {
 	return {
 		mount: async (draft, { appId, slug, previewId, reset }) => {
@@ -65,16 +67,14 @@ export function frierenRunner(fs: Volume, getToken: GetToken): Runner {
 				localKernel: async () => kernel,
 				volume: Promise.resolve(scoped)
 			})
-			// Parent the preview's stage at the caller's own content slot — same
-			// document, same thread. The host created the wrapper synchronously in
-			// open(); its async boot then mounts the gui into it. The app draws its own
-			// window/menubar chrome around this slot (using the shared design CSS).
-			const slot = host.wrapperOf(appId)?.querySelector('[data-preview-slot]')
-			const child = host.wrapperOf(previewId)
-			if (slot && child) slot.replaceChildren(child)
+			// Frame the preview stage as its own window. Idempotent across ⟳ Run
+			// (the window persists; only the stage is recreated, and the window's
+			// viewport re-attaches the fresh wrapper via subscribeStage).
+			host.requestWindow({ type: 'open', id: previewId, title: draft.manifest.name })
+			return { kind: 'window' }
 		},
 		stop: async ({ previewId }) => {
-			host.close(previewId)
+			host.requestWindow({ type: 'close', id: previewId })
 		}
 	}
 }

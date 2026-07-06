@@ -11,8 +11,9 @@
 import type { CheckResult, CompileResult } from './toolchain.ts'
 
 // Host-owned preview presentation. Quay returns a URL that app-code embeds in its
-// preview slot; Frieren mounts the preview itself and returns nothing.
-export type DevkitPreview = { kind: 'url'; src: string }
+// preview slot; Frieren opens the preview in its own OS window (`kind: 'window'`)
+// so every app — the preview included — renders in the same sandboxed frame.
+export type DevkitPreview = { kind: 'url'; src: string } | { kind: 'window' }
 
 export interface DevkitCapability {
 	// ── toolchain (server / backend) ───────────────────────────────────────────

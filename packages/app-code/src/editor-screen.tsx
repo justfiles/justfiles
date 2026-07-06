@@ -28,6 +28,7 @@ export type EditorScreenProps = {
 	installLabel: string
 	iconUrl: string | null
 	previewSrc: string | null
+	previewInWindow: boolean
 	onStart: () => void
 	onBack: () => void
 	onToggleCode: () => void
@@ -168,6 +169,8 @@ export function EditorScreen(props: EditorScreenProps) {
 												title="Live preview"
 												src={props.previewSrc}
 											/>
+										) : props.previewInWindow ? (
+											<div className="app-code-preview-hint">Preview running in its own window</div>
 										) : null}
 									</div>
 								</div>

@@ -2,7 +2,7 @@ import type { Kernel } from '@justfiles/app'
 import type { Effect } from '@justfiles/state'
 import type * as appHostModule from '../apps/host'
 import type { Volume } from '../fs'
-import { saveSnapshot } from './persistence'
+import { saveSnapshot, serializeOsState } from './persistence'
 import type { OsAction, OsState } from './state'
 
 // Coalesce a burst of streaming geometry writes; every other durable change
@@ -30,20 +30,24 @@ export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsActi
 			// Restore the GUI for every persisted window by opening its host stage
 			// directly. This is client-driven restoration, so it must not echo
 			// `app_open` back to the server. The GUI loads from the local volume,
-			// so restoration need not wait on the catalog.
+			// so restoration need not wait on the catalog. Ephemeral (`.`-prefixed)
+			// windows are never persisted, so none appear here.
 			for (const id of next.openOrder) {
 				const window = next.windows[id]
-				if (!window) continue
+				if (!window || id.startsWith('.')) continue
 				env.appHost.open(window.id, openOptions)
 			}
 			return
 		}
 		if (action.type === 'app.open') {
 			env.appHost.open(action.appId, openOptions)
-			if (!action.remote) env.send({ type: 'app_open', id: action.appId })
+			// Ephemeral preview windows are host-local; never tell the server.
+			if (!action.remote && !action.appId.startsWith('.'))
+				env.send({ type: 'app_open', id: action.appId })
 		} else if (action.type === 'window.close') {
 			env.appHost.close(action.id)
-			if (!action.remote) env.send({ type: 'app_close', id: action.id })
+			if (!action.remote && !action.id.startsWith('.'))
+				env.send({ type: 'app_close', id: action.id })
 		}
 	}
 }
@@ -72,7 +76,7 @@ export function makePersistEffect(env: PersistEnv): PersistController {
 	}
 
 	const write = (state: OsState) => {
-		const serialized = JSON.stringify(state)
+		const serialized = serializeOsState(state)
 		if (serialized === lastWritten) return
 		lastWritten = serialized
 		void env.volume
@@ -93,7 +97,7 @@ export function makePersistEffect(env: PersistEnv): PersistController {
 		// The boot snapshot is already on disk — record it as written so the
 		// hydration dispatch doesn't round-trip the bytes we just read.
 		if (action.type === 'boot/loaded') {
-			lastWritten = JSON.stringify(next)
+			lastWritten = serializeOsState(next)
 			return
 		}
 		if (!next.booted) return

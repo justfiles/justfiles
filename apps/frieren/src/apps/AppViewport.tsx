@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { wrapperOf } from './host'
+import { subscribeStage, wrapperOf } from './host'
 
 // Thin React adapter that hands its DOM slot to an app-owned wrapper.
 // Mounting/unmounting this component only attaches/detaches the wrapper;
@@ -12,11 +12,18 @@ export function AppViewport({ id }: { id: string }) {
 	useEffect(() => {
 		const slot = slotRef.current
 		if (!slot) return
-		const wrapper = wrapperOf(id)
-		if (!wrapper) return
-		slot.appendChild(wrapper)
+		const attach = () => {
+			const wrapper = wrapperOf(id)
+			if (wrapper && wrapper.parentNode !== slot) slot.appendChild(wrapper)
+		}
+		attach()
+		// Re-attach if the host recreates this id's stage (e.g. a devkit preview
+		// window across a ⟳ Run) so the fresh wrapper lands back in this slot.
+		const unsubscribe = subscribeStage(id, attach)
 		return () => {
-			if (wrapper.parentNode === slot) slot.removeChild(wrapper)
+			unsubscribe()
+			const wrapper = wrapperOf(id)
+			if (wrapper && wrapper.parentNode === slot) slot.removeChild(wrapper)
 		}
 	}, [id])
 

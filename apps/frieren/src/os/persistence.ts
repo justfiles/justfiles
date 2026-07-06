@@ -34,3 +34,19 @@ export async function saveSnapshot(volume: Volume, serialized: string): Promise<
 	await volume.mkdir('/system', { recursive: true })
 	await volume.writeFile(PATH, new TextEncoder().encode(serialized))
 }
+
+// Serialize OS state for persistence, dropping ephemeral windows — ids with a
+// leading dot (e.g. devkit's `.preview.<slug>`) back a scoped, off-catalog stage
+// that can't be restored on a fresh boot, so they must not persist or sync.
+export function serializeOsState(state: OsState): string {
+	const persistable = (id: string) => !id.startsWith('.')
+	const windows: OsState['windows'] = {}
+	for (const [id, window] of Object.entries(state.windows))
+		if (persistable(id)) windows[id] = window
+	return JSON.stringify({
+		...state,
+		windows,
+		openOrder: state.openOrder.filter(persistable),
+		focusStack: state.focusStack.filter(persistable)
+	})
+}

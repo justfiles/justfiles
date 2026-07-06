@@ -1,18 +1,14 @@
-// A GUI talks to the host kernel only through a MessagePort: the host holds one
-// port and dispatches; the guest holds the other, builds the app's typed client
-// from it, and mounts. Every message is structured-clone data (an action in, a
-// result/state out) — no closures cross. Two guest hosts share this protocol:
+// A GUI talks to the host kernel only through a MessagePort inside a
+// `sandbox="allow-scripts"` opaque-origin iframe. It gets no cookies, no host
+// DOM, and cannot read the token; its only authority is the port. Every message
+// is structured-clone data (an action in, a result/state out), so no closures
+// cross. The reducer Worker always runs on the host (Topology A).
 //
-//   • in-realm (trusted built-ins): `bootGui` mounts the GUI in the host document
-//     with `guiClient` as its transport. Full host-DOM access (needed by devkit's
-//     live preview), shared React, no cold start.
-//   • sandboxed iframe (untrusted apps): `FRAME_SRCDOC` runs the same guest logic
-//     inside an opaque-origin `allow-scripts` frame whose only authority is the
-//     port. It gets no cookies, no host DOM, and cannot read the token.
-//
-// The reducer Worker always runs on the host (Topology A).
+// Every app renders this way — built-ins included — so first-party developers hit
+// the same sandbox limits their users will. The one thing that needed host-DOM
+// access, app-code's live preview, is now a separate window (see devkit.client).
 
-import type { Message, Transport } from '@justfiles/app'
+import type { Message } from '@justfiles/app'
 
 // guest→host: one request. host→guest: its reply, plus authoritative state pushes.
 type GuestMessage = { type: 'invoke'; id: string; action: Message }
@@ -20,15 +16,6 @@ type HostMessage =
 	| { type: 'invoked'; id: string; result: unknown }
 	| { type: 'invokeError'; id: string; error: { message: string } }
 	| { type: 'state'; state: unknown }
-
-export interface GuiInstance {
-	update(state: unknown): Promise<void> | void
-	unmount(): Promise<void> | void
-}
-
-interface GuiModule {
-	gui: { mount(el: HTMLElement, state: unknown, ctx: { transport: Transport }): GuiInstance }
-}
 
 // The five React specifiers the GUI bundle externalises (see runtime-specs.ts),
 // mapped to the host-served vendor bytes. The frame's importmap and this list
@@ -111,57 +98,6 @@ export function guiHost(
 		)
 	}
 	return (state) => port.postMessage({ type: 'state', state } satisfies HostMessage)
-}
-
-// Guest side (in-realm): a Transport over the port. `invoke` correlates
-// request/reply by id (mirrors sandboxClient); `subscribe` fans state pushes.
-// The iframe carries a source-text twin of this in FRAME_SRCDOC.
-function guiClient(port: MessagePort): Transport {
-	let nextId = 0
-	const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
-	const subscribers = new Set<(state: unknown) => void>()
-	port.onmessage = (e) => {
-		const msg = e.data as HostMessage
-		if (msg.type === 'state') {
-			for (const fn of subscribers) fn(msg.state)
-			return
-		}
-		const p = pending.get(msg.id)
-		if (!p) return
-		pending.delete(msg.id)
-		if (msg.type === 'invokeError') p.reject(new Error(msg.error.message))
-		else p.resolve(msg.result)
-	}
-	return {
-		invoke: (action) =>
-			new Promise((resolve, reject) => {
-				const id = String(nextId++)
-				pending.set(id, { resolve, reject })
-				port.postMessage({ type: 'invoke', id, action } satisfies GuestMessage)
-			}),
-		subscribe: (onState) => {
-			subscribers.add(onState)
-			return () => void subscribers.delete(onState)
-		}
-	}
-}
-
-// In-realm guest bootstrap: load the GUI bytes and mount them in the host
-// document against a port-backed client.
-export async function bootGui(input: {
-	el: HTMLElement
-	port: MessagePort
-	guiCode: string
-	state: unknown
-}): Promise<GuiInstance> {
-	const url = URL.createObjectURL(new Blob([input.guiCode], { type: 'application/javascript' }))
-	let mod: GuiModule
-	try {
-		mod = (await import(/* @vite-ignore */ url)) as GuiModule
-	} finally {
-		URL.revokeObjectURL(url)
-	}
-	return mod.gui.mount(input.el, input.state, { transport: guiClient(input.port) })
 }
 
 // The frame document (a classic inline script, so a runtime-added importmap is
