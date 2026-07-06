@@ -1,36 +1,53 @@
-// Imperative lifecycle store for apps. The host React tree must NOT
-// own the guest's mount node — when React reorders/unmounts a window for
-// any reason (StrictMode, list reorder, parent re-render quirks), it would
-// destroy the guest's DOM and wipe in-element state like canvas bitmaps.
+// Imperative lifecycle store for apps. The host React tree must NOT own the
+// guest's mount node — when React reorders/unmounts a window for any reason
+// (StrictMode, list reorder, parent re-render quirks), it would destroy the
+// guest's surface and wipe in-element state like canvas bitmaps.
 //
-// So: each app's wrapper <div> lives in this module-level Map, gets created
-// once on open(), and is just appendChild'd into whichever React slot is
-// currently presenting it. React detach/reattach doesn't destroy the canvas.
-// True teardown only happens via close(), called from the launcher's
-// explicit close/uninstall paths (mirroring VS Code's createWebviewPanel /
-// panel.dispose model).
+// So: each app's wrapper <div> lives in this module-level Map, gets created once
+// on open(), and is just appendChild'd into whichever React slot is currently
+// presenting it. React detach/reattach doesn't destroy an in-realm mount's DOM.
+// A sandboxed iframe *is* discarded on detach, so its guest re-boots from the
+// persisted snapshot on every load. True teardown only happens via close().
 
 import type { Kernel } from '@justfiles/app'
 import { REMOTE_SOURCE } from '@justfiles/fs'
+import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import type { Volume } from '../fs'
 import { ensureCapabilitySocket } from './capabilities.client'
-import { FRAME_SRCDOC, guiHost, readHostStyles, readVendor } from './gui-channel'
+import {
+	bootGui,
+	FRAME_SRCDOC,
+	type GuiInstance,
+	guiHost,
+	hostTheme,
+	readHostStyles,
+	readVendor
+} from './gui-channel'
 import { terminateAppWorker } from './sandbox.worker'
 
 interface Stage {
 	id: string
 	wrapper: HTMLDivElement
-	frame: HTMLIFrameElement
 	errorEl: HTMLDivElement
+	frame?: HTMLIFrameElement
+	instance?: GuiInstance
 	unsubscribe?: () => void
 	unwatch?: () => void
 	unlisten?: () => void
 	port?: MessagePort
 	postState?: (state: unknown) => void
 	boot?: () => void
-	loaded?: boolean
 	local?: boolean
 	cancelled: boolean
+}
+
+// Trusted, first-party apps mount in-realm: shared React, native styling, and
+// host-DOM access (devkit's live preview reparents a stage into app-code's own
+// slot, which must be in this document). Everything else runs in the isolation
+// iframe. Built-ins are the `app.frieren.*` family plus the devkit-allowlisted
+// apps (`app.code`); a third-party install falls through to the sandbox.
+function sandboxed(id: string): boolean {
+	return !(id.startsWith('app.frieren.') || DEVKIT_ALLOWLIST.has(id))
 }
 
 export interface OpenOptions {
@@ -72,12 +89,16 @@ export function close(id: string): void {
 	const stage = stages.get(id)
 	if (!stage) return
 	stage.cancelled = true
+	// An in-realm GUI owns a React root; defer its unmount to a microtask so it
+	// never runs synchronously inside a host commit phase. An iframe guest needs
+	// no unmount — removing the wrapper discards its browsing context.
+	const inst = stage.instance
+	if (inst) queueMicrotask(() => void inst.unmount())
 	stage.unsubscribe?.()
 	stage.unwatch?.()
 	stage.unlisten?.()
 	stage.port?.close()
-	// Last window of a local app closed — reclaim its Web Worker. Removing the
-	// wrapper discards the iframe's browsing context, tearing down the GUI realm.
+	// Last window of a local app closed — reclaim its Web Worker.
 	if (stage.local) terminateAppWorker(id)
 	stage.wrapper.remove()
 	stages.delete(id)
@@ -98,31 +119,13 @@ function createStage(id: string): Stage {
 	wrapper.dataset.appId = id
 	wrapper.className = 'relative h-full w-full'
 
-	// The GUI lives in an opaque-origin sandboxed iframe: `allow-scripts` runs the
-	// app but withholds `allow-same-origin`, so it gets no cookies, no host DOM,
-	// and cannot read the token. Its only authority is the port handed off at boot.
-	const frame = document.createElement('iframe')
-	frame.className = 'h-full w-full'
-	frame.style.border = '0'
-	frame.setAttribute('sandbox', 'allow-scripts')
-	frame.srcdoc = FRAME_SRCDOC
-	wrapper.appendChild(frame)
-
 	const errorEl = document.createElement('div')
 	errorEl.className =
 		'absolute inset-0 flex items-center justify-center bg-slate-950/95 p-6 text-center text-sm text-rose-200'
 	errorEl.style.display = 'none'
 	wrapper.appendChild(errorEl)
 
-	const stage: Stage = { id, wrapper, frame, errorEl, cancelled: false }
-	// Detaching the iframe (window minimize → AppViewport unmount) discards its
-	// browsing context; reattaching reloads `srcdoc`. So (re)boot the GUI from the
-	// current persisted snapshot on every load, not just the first.
-	frame.addEventListener('load', () => {
-		stage.loaded = true
-		stage.boot?.()
-	})
-	return stage
+	return { id, wrapper, errorEl, cancelled: false }
 }
 
 function setError(stage: Stage, message: string | null): void {
@@ -158,37 +161,10 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	}
 	const guiCode = new TextDecoder().decode(await installed.read(guiPath))
 	if (stage.cancelled) return
-	const vendor = await readVendor()
-	if (stage.cancelled) return
-	const styles = readHostStyles()
-
-	// (Re)mount the GUI into the frame from the current snapshot. A fresh channel
-	// per boot: the host keeps `port1` and dispatches; the frame receives `port2`
-	// and mounts. `state()` resolves to the reducer's initialState for a never-run
-	// app, so the GUI always mounts on a non-null frame.
-	stage.boot = () => {
-		void (async () => {
-			try {
-				const snapshot = await kernel.state(stage.id)
-				if (stage.cancelled) return
-				stage.port?.close()
-				const { port1, port2 } = new MessageChannel()
-				stage.port = port1
-				stage.postState = guiHost(port1, (action) => kernel.dispatch(stage.id, action))
-				stage.frame.contentWindow?.postMessage(
-					{ type: 'boot', guiCode, vendor, styles, state: snapshot },
-					'*',
-					[port2]
-				)
-			} catch (e) {
-				if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
-			}
-		})()
-	}
 
 	// State pushes go to whichever port the current guest holds. Registered before
-	// the first boot so a mount-time dispatch's `app.update` is never missed (the
-	// GUI re-renders from state pushes, not action returns).
+	// mount so a mount-time dispatch's `app.update` is never missed (the GUI
+	// re-renders from state pushes, not action returns).
 	stage.unsubscribe = kernel.subscribe((event) => {
 		if (event.type === 'app.update' && event.appId === stage.id) stage.postState?.(event.state)
 	})
@@ -209,20 +185,84 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 			.catch(() => {})
 	})
 
-	// A guest boot failure (gui import/mount inside the frame) reports back here.
-	const onMessage = (e: MessageEvent) => {
-		if (e.source === stage.frame.contentWindow && (e.data as { type?: string })?.type === 'error')
-			setError(stage, String((e.data as { message?: unknown }).message))
-	}
-	window.addEventListener('message', onMessage)
-	stage.unlisten = () => window.removeEventListener('message', onMessage)
-
 	// Open the caps socket eagerly so the server's `dirty` push reaches this app
 	// even if it never invokes a network capability (e.g. paint); pull-on-dirty
 	// then lands the agent's writes at once via the watch above.
 	ensureCapabilitySocket(opts.getToken)
 
-	// The frame may have loaded during the awaits above; if so, boot now. Later
-	// (re)loads fire boot through the load listener in createStage.
-	if (stage.loaded) stage.boot()
+	if (sandboxed(stage.id)) mountInFrame(stage, kernel, guiCode, await readVendor())
+	else await mountInRealm(stage, kernel, guiCode)
+}
+
+// Trusted path: mount the GUI directly in the host document — shared React, no
+// cold start, full host-DOM access. The mount node is a plain <div> that
+// survives React detach/reattach with its in-element state (canvas) intact.
+async function mountInRealm(stage: Stage, kernel: Kernel, guiCode: string): Promise<void> {
+	const el = document.createElement('div')
+	el.className = 'h-full w-full overflow-hidden'
+	el.style.contain = 'paint'
+	stage.wrapper.insertBefore(el, stage.errorEl)
+
+	const { port1, port2 } = new MessageChannel()
+	stage.port = port1
+	stage.postState = guiHost(port1, (action) => kernel.dispatch(stage.id, action))
+
+	const snapshot = await kernel.state(stage.id)
+	if (stage.cancelled) return
+	stage.instance = await bootGui({ el, port: port2, guiCode, state: snapshot })
+	if (stage.cancelled) void stage.instance.unmount()
+}
+
+// Untrusted path: mount the GUI in an opaque-origin `allow-scripts` iframe — no
+// cookies, no host DOM, no token; its only authority is the port. Detaching the
+// iframe (window minimize) discards its realm, so (re)boot from the current
+// snapshot on every load. A fresh channel per boot: the host keeps `port1` and
+// dispatches; the frame receives `port2` and mounts.
+function mountInFrame(
+	stage: Stage,
+	kernel: Kernel,
+	guiCode: string,
+	vendor: Record<string, string>
+): void {
+	const styles = readHostStyles()
+	const theme = hostTheme()
+	const frame = document.createElement('iframe')
+	frame.className = 'h-full w-full'
+	frame.style.border = '0'
+	frame.setAttribute('sandbox', 'allow-scripts')
+	frame.srcdoc = FRAME_SRCDOC
+	stage.frame = frame
+
+	stage.boot = () => {
+		void (async () => {
+			try {
+				const snapshot = await kernel.state(stage.id)
+				if (stage.cancelled) return
+				stage.port?.close()
+				const { port1, port2 } = new MessageChannel()
+				stage.port = port1
+				stage.postState = guiHost(port1, (action) => kernel.dispatch(stage.id, action))
+				frame.contentWindow?.postMessage(
+					{ type: 'boot', guiCode, vendor, styles, theme, state: snapshot },
+					'*',
+					[port2]
+				)
+			} catch (e) {
+				if (!stage.cancelled) setError(stage, e instanceof Error ? e.message : String(e))
+			}
+		})()
+	}
+	frame.addEventListener('load', () => stage.boot?.())
+
+	// A guest boot failure (gui import/mount inside the frame) reports back here.
+	const onMessage = (e: MessageEvent) => {
+		if (e.source === frame.contentWindow && (e.data as { type?: string })?.type === 'error')
+			setError(stage, String((e.data as { message?: unknown }).message))
+	}
+	window.addEventListener('message', onMessage)
+	stage.unlisten = () => window.removeEventListener('message', onMessage)
+
+	// The load listener (set above) fires boot once the frame's srcdoc loads —
+	// now if the wrapper is already in the document, or on attach otherwise.
+	stage.wrapper.insertBefore(frame, stage.errorEl)
 }

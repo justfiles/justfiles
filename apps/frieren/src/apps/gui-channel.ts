@@ -1,13 +1,18 @@
-// The GUI runs inside a `sandbox="allow-scripts"` iframe — an opaque origin with
-// no credentials, no cookies, and no reach into the host DOM. Its only authority
-// is one MessagePort to the host kernel. The host stays trusted: it holds the
-// other port and dispatches. Every message across the port is structured-clone
-// data (an action in, a result/state out), so no closures cross the boundary.
+// A GUI talks to the host kernel only through a MessagePort: the host holds one
+// port and dispatches; the guest holds the other, builds the app's typed client
+// from it, and mounts. Every message is structured-clone data (an action in, a
+// result/state out) — no closures cross. Two guest hosts share this protocol:
 //
-// The reducer Worker still runs on the host in this step (Topology A); only the
-// GUI moves into the frame. Step 4 relocates the reducer too.
+//   • in-realm (trusted built-ins): `bootGui` mounts the GUI in the host document
+//     with `guiClient` as its transport. Full host-DOM access (needed by devkit's
+//     live preview), shared React, no cold start.
+//   • sandboxed iframe (untrusted apps): `FRAME_SRCDOC` runs the same guest logic
+//     inside an opaque-origin `allow-scripts` frame whose only authority is the
+//     port. It gets no cookies, no host DOM, and cannot read the token.
+//
+// The reducer Worker always runs on the host (Topology A).
 
-import type { Message } from '@justfiles/app'
+import type { Message, Transport } from '@justfiles/app'
 
 // guest→host: one request. host→guest: its reply, plus authoritative state pushes.
 type GuestMessage = { type: 'invoke'; id: string; action: Message }
@@ -15,6 +20,15 @@ type HostMessage =
 	| { type: 'invoked'; id: string; result: unknown }
 	| { type: 'invokeError'; id: string; error: { message: string } }
 	| { type: 'state'; state: unknown }
+
+export interface GuiInstance {
+	update(state: unknown): Promise<void> | void
+	unmount(): Promise<void> | void
+}
+
+interface GuiModule {
+	gui: { mount(el: HTMLElement, state: unknown, ctx: { transport: Transport }): GuiInstance }
+}
 
 // The five React specifiers the GUI bundle externalises (see runtime-specs.ts),
 // mapped to the host-served vendor bytes. The frame's importmap and this list
@@ -68,9 +82,17 @@ export function readHostStyles(): string {
 	return css
 }
 
+// The host root's theme (frieren forces `class="dark" color-scheme:dark`). The
+// frame's document doesn't inherit it, so `.dark`-scoped tokens (shadcn's
+// --background/--foreground) would resolve light; the frame re-applies it.
+export function hostTheme(): { className: string; colorScheme: string } {
+	const el = document.documentElement
+	return { className: el.className, colorScheme: el.style.colorScheme }
+}
+
 // Host side: service the guest's invokes against `invoke` (a kernel dispatch)
 // and return a `postState` the host's state sources call to push authoritative
-// state to the guest. Fresh per frame load (a new port each boot).
+// state to the guest.
 export function guiHost(
 	port: MessagePort,
 	invoke: (action: Message) => Promise<unknown>
@@ -91,12 +113,63 @@ export function guiHost(
 	return (state) => port.postMessage({ type: 'state', state } satisfies HostMessage)
 }
 
+// Guest side (in-realm): a Transport over the port. `invoke` correlates
+// request/reply by id (mirrors sandboxClient); `subscribe` fans state pushes.
+// The iframe carries a source-text twin of this in FRAME_SRCDOC.
+function guiClient(port: MessagePort): Transport {
+	let nextId = 0
+	const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
+	const subscribers = new Set<(state: unknown) => void>()
+	port.onmessage = (e) => {
+		const msg = e.data as HostMessage
+		if (msg.type === 'state') {
+			for (const fn of subscribers) fn(msg.state)
+			return
+		}
+		const p = pending.get(msg.id)
+		if (!p) return
+		pending.delete(msg.id)
+		if (msg.type === 'invokeError') p.reject(new Error(msg.error.message))
+		else p.resolve(msg.result)
+	}
+	return {
+		invoke: (action) =>
+			new Promise((resolve, reject) => {
+				const id = String(nextId++)
+				pending.set(id, { resolve, reject })
+				port.postMessage({ type: 'invoke', id, action } satisfies GuestMessage)
+			}),
+		subscribe: (onState) => {
+			subscribers.add(onState)
+			return () => void subscribers.delete(onState)
+		}
+	}
+}
+
+// In-realm guest bootstrap: load the GUI bytes and mount them in the host
+// document against a port-backed client.
+export async function bootGui(input: {
+	el: HTMLElement
+	port: MessagePort
+	guiCode: string
+	state: unknown
+}): Promise<GuiInstance> {
+	const url = URL.createObjectURL(new Blob([input.guiCode], { type: 'application/javascript' }))
+	let mod: GuiModule
+	try {
+		mod = (await import(/* @vite-ignore */ url)) as GuiModule
+	} finally {
+		URL.revokeObjectURL(url)
+	}
+	return mod.gui.mount(input.el, input.state, { transport: guiClient(input.port) })
+}
+
 // The frame document (a classic inline script, so a runtime-added importmap is
 // legal — no module load has been triggered yet). On `boot` it receives the
-// port, vendor bytes, host styles, gui bytes, and initial state; it injects the
-// styles, stands up a blob-URL importmap, imports gui.js, and mounts it against
-// a port-backed transport (`guiClient`, the guest twin of `guiHost`). Boot
-// failures are reported to the host for the error overlay.
+// port, vendor bytes, host styles + theme, gui bytes, and initial state; it
+// applies the theme, injects the styles, stands up a blob-URL importmap, imports
+// gui.js, and mounts it against a port-backed transport (the guest twin of
+// `guiHost`). Boot failures are reported to the host for the error overlay.
 export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 <style>html,body{margin:0;height:100%}#root{height:100%;overflow:hidden}</style>
 <div id="root"></div>
@@ -135,6 +208,10 @@ export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 		if (!e.data || e.data.type !== 'boot') return
 		var port = e.ports[0]
 		try {
+			if (e.data.theme) {
+				document.documentElement.className = e.data.theme.className
+				document.documentElement.style.colorScheme = e.data.theme.colorScheme
+			}
 			if (e.data.styles) {
 				var st = document.createElement('style'); st.textContent = e.data.styles
 				document.head.appendChild(st)
