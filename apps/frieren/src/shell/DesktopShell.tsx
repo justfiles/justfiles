@@ -18,6 +18,7 @@ import { AppWindow } from '../os/AppWindow'
 import { useOsDispatch, useOsStore } from '../os/hooks'
 import {
 	selectAgentOpen,
+	selectFocusedAppId,
 	selectFocusedWindowId,
 	selectOpenWindows,
 	selectVisibleFullscreenId
@@ -101,6 +102,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const dispatch = useOsDispatch()
 	const menu = useContextMenu()
 	const appMenu = useFocusedMenu()
+	const focusedAppId = useOsStore(selectFocusedAppId)
 
 	const windows = useOsStore(
 		(state) => (state.booted ? selectOpenWindows(state) : []),
@@ -131,12 +133,21 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		}
 	]
 
+	// The focused app labels the menubar (macOS-style); the desktop falls back to
+	// the shell name. Version rides alongside in muted text when the app declares one.
+	const focusedApp = focusedAppId ? installedApps.find((app) => app.id === focusedAppId) : undefined
+
 	return (
 		<div className="flex h-screen flex-col">
 			{fullscreenId ? null : (
 				<Menubar>
 					<div className="flex items-center gap-2">
-						<span className="font-medium">Frieren</span>
+						<span className="flex items-baseline gap-1.5 font-medium">
+							{focusedApp?.name ?? 'Frieren'}
+							{focusedApp?.version ? (
+								<span className="font-normal text-white/40">{focusedApp.version}</span>
+							) : null}
+						</span>
 						{appMenu ? <AppMenus menu={appMenu} /> : null}
 					</div>
 					<div className="flex items-center gap-3">

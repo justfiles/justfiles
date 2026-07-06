@@ -14,6 +14,13 @@ export function selectFocusedWindowId(state: OsState): string | null {
 	return state.focusStack[state.focusStack.length - 1] ?? null
 }
 
+// The app id backing the focused window, for menubar labelling. `null` when the
+// desktop itself holds focus.
+export function selectFocusedAppId(state: OsState): string | null {
+	const id = selectFocusedWindowId(state)
+	return id ? (state.windows[id]?.appId ?? null) : null
+}
+
 export function selectWindow(state: OsState, id: string): OsWindow | undefined {
 	return state.windows[id]
 }

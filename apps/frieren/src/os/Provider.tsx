@@ -48,7 +48,13 @@ export function OSProvider({ children }: { children: ReactNode }) {
 								if (text.startsWith('data:')) iconUrl = text
 							} catch {}
 						}
-						return { id: m.id, name: m.name, description: m.description ?? '', iconUrl }
+						return {
+							id: m.id,
+							name: m.name,
+							description: m.description ?? '',
+							version: m.version,
+							iconUrl
+						}
 					})
 				)
 			}
