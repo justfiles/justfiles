@@ -10,27 +10,12 @@
 // explicit close/uninstall paths (mirroring VS Code's createWebviewPanel /
 // panel.dispose model).
 
-import type { Kernel, Message } from '@justfiles/app'
+import type { Kernel } from '@justfiles/app'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
 import { ensureCapabilitySocket } from './capabilities.client'
+import { bootGui, type GuiInstance, guiHost } from './gui-channel'
 import { terminateAppWorker } from './sandbox.worker'
-
-interface Transport {
-	invoke(message: Message): Promise<unknown>
-	subscribe(onState: (state: unknown) => void): () => void
-}
-
-interface GuiInstance {
-	update(state: unknown): Promise<void> | void
-	unmount(): Promise<void> | void
-}
-
-interface GuiModule {
-	gui: {
-		mount(el: HTMLElement, state: unknown, ctx: { transport: Transport }): GuiInstance
-	}
-}
 
 interface Stage {
 	id: string
@@ -40,9 +25,9 @@ interface Stage {
 	unsubscribe?: () => void
 	unwatch?: () => void
 	instance?: GuiInstance
+	port?: MessagePort
 	local?: boolean
 	cancelled: boolean
-	subscribers: Set<(state: unknown) => void>
 }
 
 export interface OpenOptions {
@@ -92,6 +77,7 @@ export function close(id: string): void {
 	if (inst) queueMicrotask(() => void inst.unmount())
 	stage.unsubscribe?.()
 	stage.unwatch?.()
+	stage.port?.close()
 	// Last window of a local app closed — reclaim its Web Worker.
 	if (stage.local) terminateAppWorker(id)
 	stage.wrapper.remove()
@@ -129,8 +115,7 @@ function createStage(id: string): Stage {
 		wrapper,
 		mountEl,
 		errorEl,
-		cancelled: false,
-		subscribers: new Set()
+		cancelled: false
 	}
 }
 
@@ -144,28 +129,8 @@ function setError(stage: Stage, message: string | null): void {
 	}
 }
 
-function pushState(stage: Stage, state: unknown): void {
-	if (stage.cancelled) return
-	void stage.instance?.update(state)
-	for (const fn of stage.subscribers) fn(state)
-}
-
-// Both transports expose the same subscribe channel — extra consumers (beyond
-// the GUI's own `update`) registering for state pushes.
-function subscribeState(stage: Stage): Transport['subscribe'] {
-	return (onState) => {
-		stage.subscribers.add(onState)
-		return () => {
-			stage.subscribers.delete(onState)
-		}
-	}
-}
-
-// Mount the app's GUI into its stage with the kernel snapshot. For a never-run
-// app, `kernel.state()` resolves to the reducer's initial state.
-function mountGui(stage: Stage, mod: GuiModule, transport: Transport, state: unknown): void {
-	stage.instance = mod.gui.mount(stage.mountEl, state, { transport })
-}
+// Push authoritative state to the guest GUI over its port. The guest re-renders
+// on the `state` message; the host never touches the guest's mount node.
 
 // Browser-kernel path: dispatch locally, load gui.js from the synced volume
 // (no token, works offline once hydrated), push state via kernel events.
@@ -189,29 +154,25 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		return
 	}
 	const code = new TextDecoder().decode(await installed.read(guiPath))
-	const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
-	let mod: GuiModule
-	try {
-		mod = (await import(/* @vite-ignore */ url)) as GuiModule
-	} finally {
-		URL.revokeObjectURL(url)
-	}
 	if (stage.cancelled) return
 
-	// Hold the GUI's mount-time dispatches until the initial snapshot is
-	// pushed, so a query/handler fired from mount can't have its result
-	// clobbered by the snapshot that lands after it.
+	// Hold the GUI's mount-time dispatches until the initial snapshot is mounted
+	// and the state subscriptions are live, so a mount-time dispatch's `app.update`
+	// can't be missed (the GUI re-renders from state pushes, not action returns).
 	let openGate = () => {}
 	const gate = new Promise<void>((resolve) => {
 		openGate = resolve
 	})
-	const transport: Transport = {
-		invoke: async (action) => {
-			await gate
-			return kernel.dispatch(stage.id, action)
-		},
-		subscribe: subscribeState(stage)
-	}
+
+	// The GUI talks to the kernel only through this channel: the host holds
+	// `port1` and dispatches; the guest holds `port2` and mounts. In Step 2 both
+	// ports live in this realm — Step 3 moves `port2` into a sandboxed iframe.
+	const { port1, port2 } = new MessageChannel()
+	stage.port = port1
+	const postState = guiHost(port1, async (action) => {
+		await gate
+		return kernel.dispatch(stage.id, action)
+	})
 
 	// Snapshot first, then mount/subscribe for subsequent local dispatches, then
 	// release the queued mount-time dispatches. In 2a this browser is the only
@@ -220,9 +181,13 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	// GUI always mounts on a non-null frame; a real failure throws to `boot`.
 	const snapshot = await kernel.state(stage.id)
 	if (stage.cancelled) return
-	mountGui(stage, mod, transport, snapshot)
+	stage.instance = await bootGui({ el: stage.mountEl, port: port2, guiCode: code, state: snapshot })
+	if (stage.cancelled) {
+		void stage.instance.unmount()
+		return
+	}
 	stage.unsubscribe = kernel.subscribe((event) => {
-		if (event.type === 'app.update' && event.appId === stage.id) pushState(stage, event.state)
+		if (event.type === 'app.update' && event.appId === stage.id) postState(event.state)
 	})
 
 	// Local dispatches push state via the kernel events above. The agent runs on
@@ -236,7 +201,7 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		void kernel
 			.state(stage.id)
 			.then((state) => {
-				if (!stage.cancelled) pushState(stage, state ?? null)
+				if (!stage.cancelled) postState(state ?? null)
 			})
 			.catch(() => {})
 	})
