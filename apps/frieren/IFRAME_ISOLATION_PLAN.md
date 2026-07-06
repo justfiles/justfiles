@@ -477,11 +477,86 @@ cross-origin SW caching for offline and versioned URLs.)*
 
 ---
 
+## Appendix — URL-served apps, the app origin, and Service Workers
+
+A recurring question: quay/spud-mac serve each app by **URL** (`quayd` HTTP-serves
+`gui.js` + a shared-React importmap; the WKWebView loads `http://127.0.0.1:PORT/app/<id>`),
+and a URL is a natural fit for an iframe `src`. `DevkitPreview {kind:'url'}` exists
+*because* quay has a server to serve that URL. Could frieren-web do the same, using a
+Service Worker as the "server" (it already ships one via VitePWA, and has all app
+bytes offline in the Volume/IDB)?
+
+**It's technically possible, but on a single origin it doesn't beat today's opaque
+`srcdoc`, because isolation and SW-serving pull in opposite directions:**
+
+| Approach | Isolated (no token/DOM reach)? | SW can serve it offline? |
+|---|---|---|
+| `iframe src="/apps/x/"`, same-origin | ❌ same-origin reaches parent + token | ✅ |
+| `iframe sandbox src="/apps/x/"` (opaque) | ✅ | ⚠️ SW serves the *navigation*, but the opaque document is **not a SW-controlled client**, so its subresources (`gui.js`, `/vendor/*`) **bypass the SW** offline |
+| dedicated **cross-origin** app domain, its own SW | ✅ (and process-isolatable) | ✅ |
+
+A same-origin document can always reach its same-origin parent (a `CSP: sandbox`
+header only reproduces the opaque case), so there is no header/blob/`data:` trick that
+gives same-origin SW-serving **and** isolation. To keep isolation on one origin you
+must inline `gui.js`+vendor+styles into the boot document — which is exactly what
+`srcdoc` already is. Serving that same inlined payload via `iframe src` + a SW
+navigation response instead of `srcdoc` + `postMessage` is a plumbing swap, not a
+different isolation model.
+
+### Do we need a real second domain in production, or a made-up one served by the SW?
+
+**You cannot make a SW serve a fabricated origin.** A Service Worker is bound to one
+*real* origin (the one it registered on) and only controls clients on that origin. The
+browser resolves a host to a real registrable domain; a request to any other origin
+never reaches the host origin's SW — it hits the network, or a SW registered on *that*
+origin. There is no "virtual origin the SW conjures."
+
+Consequences:
+
+- **The only domain-less distinct origins are opaque** (`sandbox` / `blob:` / `data:`).
+  Those are exactly *not* SW-controllable, and are unique per instance (no shared SW or
+  persistent storage). That's what `srcdoc` uses today — no domain, and no SW needed for
+  the iframe (bytes are inlined).
+- **A SW-controllable isolated origin requires a real second origin to *exist*** (a
+  subdomain or a separate domain: DNS + TLS). But it needs **no dynamic backend** — after
+  a one-time load that registers its SW, that origin serves everything from its own SW
+  cache offline. In production that's a backend-free static shell + `sw.js` (on Cloudflare,
+  a subdomain/route returning that shell). So "the SW is the server" is true — it just has
+  to be the SW *of that origin*, reached via a domain that genuinely resolves.
+- **Origin vs site.** A subdomain (`apps.frieren.app`) gives origin isolation
+  (token/cookies/DOM) and is SW-servable, but it is *same-site* (same registrable domain),
+  so browsers may keep it in the host's process — weaker against Spectre-class cross-frame
+  reads. Process-level isolation wants a *separate registrable domain* (a different site),
+  which the browser can put in its own process.
+
+### Decision
+
+Keep the **same-process opaque `srcdoc` + `postMessage`** model for now: it delivers
+isolation + offline with zero extra origins, domains, or SW routing, and the byte-inlining
+it requires is unavoidable for any single-origin isolated approach.
+
+Adopt **URL-served apps from a dedicated app origin, backed by that origin's own
+(backend-free) Service Worker for offline** as the shape of the future cross-origin
+isolation upgrade (decision 2 below / `LOCAL_FIRST_PLAN.md` Phase 5). That is the point
+where a URL model pays for its infra, and where frieren **converges with quay/spud-mac**
+(`DevkitPreview {kind:'url'}` would then apply to frieren too). Use a subdomain for
+origin isolation, or a separate registrable domain if process/Spectre isolation is in
+scope.
+
+**Trigger to revisit:** cross-frame memory reads enter the threat model, OR we want to
+unify frieren's app-delivery with quay's URL model. Independent of delivery, a URL never
+carries the live kernel bridge — the capability **port is always handed over
+`postMessage`**, and the devkit preview always needs its scoped-kernel port.
+
 ## Open decisions
 
-1. **All-apps-iframe vs trust-gated (Step 5a).** Trust-gating keeps the fast path for
-   built-ins; all-iframe is one code path. Recommend trust-gated once Step 3/4 are proven.
+1. **All-apps-iframe vs trust-gated (Step 5a).** Now leaning **all-apps-iframe** (one code
+   path, first-party devs hit the sandbox limits their users will); the devkit preview,
+   the one host-DOM dependency, moves to its own window instead. Trust-gating remains the
+   fallback if a built-in genuinely needs the host realm.
 2. **Same-process opaque origin vs dedicated cross-origin domain (Step 3).** Start
-   same-process; escalate only if cross-frame memory reads enter the threat model.
+   same-process; escalate only if cross-frame memory reads enter the threat model. When we
+   escalate, serve apps by URL from that origin with its own SW for offline — see the
+   "URL-served apps" appendix above.
 3. **Reducer-in-iframe vs host Worker + SES (Step 4 risk gate).** Depends on whether a
    module Worker spawns in a no-`allow-same-origin` iframe across target browsers.
