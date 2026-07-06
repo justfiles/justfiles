@@ -27,5 +27,5 @@ export function AppViewport({ id }: { id: string }) {
 		}
 	}, [id])
 
-	return <div ref={slotRef} className="h-full w-full" />
+	return <div ref={slotRef} className="frn-viewport" />
 }

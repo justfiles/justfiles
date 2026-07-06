@@ -23,8 +23,11 @@ export function MessagesPanel() {
 
 	return (
 		<div
-			className="flex h-full w-full flex-col"
 			style={{
+				display: 'flex',
+				flexDirection: 'column',
+				height: '100%',
+				width: '100%',
 				background: 'transparent',
 				color: 'var(--text)',
 				fontFamily: 'var(--font-ui)',
@@ -32,32 +35,46 @@ export function MessagesPanel() {
 			}}
 		>
 			<header
-				className="flex flex-none flex-col items-center gap-1 px-3 py-3"
-				style={{ borderBottom: '1px solid rgba(0,0,0,0.07)' }}
+				style={{
+					display: 'flex',
+					flex: 'none',
+					flexDirection: 'column',
+					alignItems: 'center',
+					gap: 4,
+					padding: '12px',
+					borderBottom: '1px solid rgba(0,0,0,0.07)'
+				}}
 			>
 				<img
 					src={agentAvatarUrl}
 					alt=""
 					width={48}
 					height={48}
-					className="rounded-full"
-					style={{ imageRendering: 'pixelated' }}
+					style={{ borderRadius: '50%', imageRendering: 'pixelated' }}
 				/>
-				<span className="font-medium">{agentName}</span>
-				<span className="text-[11px] opacity-50">
+				<span style={{ fontWeight: 500 }}>{agentName}</span>
+				<span style={{ fontSize: 11, opacity: 0.5 }}>
 					{ready ? 'Online' : connection.state === 'connecting' ? 'Connecting…' : 'Offline'}
 				</span>
 			</header>
 
 			{messages.length === 0 ? (
-				<div className="m-auto text-xs opacity-50">Say something to {agentName}.</div>
+				<div style={{ margin: 'auto', fontSize: 12, opacity: 0.5 }}>
+					Say something to {agentName}.
+				</div>
 			) : (
 				<Transcript messages={messages} isStreaming={isStreaming} />
 			)}
 
 			<form
-				className="flex flex-none items-end gap-2 px-3 py-2"
-				style={{ borderTop: '1px solid rgba(0,0,0,0.07)' }}
+				style={{
+					display: 'flex',
+					flex: 'none',
+					alignItems: 'flex-end',
+					gap: 8,
+					padding: '8px 12px',
+					borderTop: '1px solid rgba(0,0,0,0.07)'
+				}}
 				onSubmit={(event) => {
 					event.preventDefault()
 					submit()
@@ -76,8 +93,14 @@ export function MessagesPanel() {
 					}}
 					placeholder={ready ? 'iMessage' : 'Connecting…'}
 					disabled={!ready}
-					className="min-h-7 max-h-32 flex-1 resize-none rounded-full px-3 py-1 outline-none disabled:opacity-50"
 					style={{
+						flex: 1,
+						minHeight: 28,
+						maxHeight: 128,
+						resize: 'none',
+						borderRadius: 999,
+						padding: '4px 12px',
+						outline: 'none',
 						background: 'rgba(255,255,255,0.6)',
 						border: '1px solid rgba(255,255,255,0.7)',
 						color: 'var(--text)',
@@ -89,8 +112,7 @@ export function MessagesPanel() {
 					<button
 						type="button"
 						onClick={abort}
-						className="rounded px-3 py-1 text-white"
-						style={{ background: '#d33' }}
+						style={{ borderRadius: 5, padding: '4px 12px', color: '#fff', background: '#d33' }}
 					>
 						Stop
 					</button>
@@ -98,8 +120,12 @@ export function MessagesPanel() {
 					<button
 						type="submit"
 						disabled={!input.trim() || !ready}
-						className="rounded px-3 py-1 disabled:opacity-40"
-						style={{ background: 'var(--focus)', color: 'var(--on-focus)' }}
+						style={{
+							borderRadius: 5,
+							padding: '4px 12px',
+							background: 'var(--focus)',
+							color: 'var(--on-focus)'
+						}}
 					>
 						Send
 					</button>

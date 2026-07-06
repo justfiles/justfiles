@@ -4,7 +4,6 @@ import { useMemo, useSyncExternalStore } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Dock } from '@/components/Dock'
 import { Menubar } from '@/components/Menubar'
-import { Button } from '@/components/ui/button'
 import { useAgentConnection } from '../agent/hooks'
 import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
@@ -67,7 +66,7 @@ function BackendStatus() {
 	)
 	const label = !isSignedIn ? 'Signed out' : !online ? 'Offline' : syncLabel(status)
 	return (
-		<span className="text-white/55" title={`Backend: ${label}`}>
+		<span className="frn-menubar-status" title={`Backend: ${label}`}>
 			{label}
 		</span>
 	)
@@ -122,51 +121,49 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const focusedApp = focusedAppId ? installedApps.find((app) => app.id === focusedAppId) : undefined
 
 	return (
-		<div className="flex h-screen flex-col">
+		<div className="frn-shell">
 			{fullscreenId ? null : (
 				<Menubar>
-					<div className="flex items-center gap-2">
-						<span className="flex items-baseline gap-1.5 font-medium">
+					<div className="frn-menubar-group">
+						<span className="frn-menubar-title">
 							{focusedApp?.name ?? 'Frieren'}
 							{focusedApp?.version ? (
-								<span className="font-normal text-white/40">{focusedApp.version}</span>
+								<span className="frn-menubar-version">{focusedApp.version}</span>
 							) : null}
 						</span>
 					</div>
-					<div className="flex items-center gap-3">
+					<div className="frn-menubar-group">
 						<BackendStatus />
 						<span
-							className="inline-block size-1.5 rounded-full"
+							className="frn-status-dot"
 							style={{ background: statusDotColor[connection.state] }}
 							title={connection.state}
 						/>
-						<Button
+						<button
 							type="button"
-							variant="ghost"
-							size="sm"
+							className="frn-menubar-btn"
 							onClick={() => void installApp()}
 							title="Install app from zip"
 						>
 							Install
-						</Button>
-						<Button
+						</button>
+						<button
 							type="button"
-							variant="ghost"
-							size="icon-sm"
+							className="frn-menubar-btn"
 							onClick={() => dispatch({ type: 'agent.setOpen', open: !agentOpen })}
 							title={agentOpen ? 'Close Messages' : 'Open Messages'}
 							aria-label="Toggle Messages"
 							aria-pressed={agentOpen}
 						>
 							<ChatTeardropDotsIcon weight={agentOpen ? 'fill' : 'regular'} />
-						</Button>
+						</button>
 						{isSignedIn ? (
 							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 						) : (
 							<SignInButton>
-								<Button type="button" variant="ghost" size="sm">
+								<button type="button" className="frn-menubar-btn">
 									Sign in
-								</Button>
+								</button>
 							</SignInButton>
 						)}
 					</div>
@@ -174,11 +171,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 			)}
 
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
-			<div
-				className="relative flex flex-1 overflow-hidden"
-				style={{ background: 'var(--desktop-bg)' }}
-				onContextMenu={(event) => menu.open(event, desktopMenuItems)}
-			>
+			<div className="frn-desktop" onContextMenu={(event) => menu.open(event, desktopMenuItems)}>
 				{windows.map((window) => (
 					<AppWindow
 						key={window.id}

@@ -6,7 +6,6 @@ import commonjs from '@rollup/plugin-commonjs'
 import { nodeResolve } from '@rollup/plugin-node-resolve'
 import replace from '@rollup/plugin-replace'
 import terser from '@rollup/plugin-terser'
-import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { rollup } from 'rollup'
 import { defineConfig, type Plugin, type ResolvedConfig } from 'vite'
@@ -276,7 +275,6 @@ export default defineConfig({
 				]
 			}
 		}),
-		tailwindcss(),
 		react(),
 		cloudflare()
 	]

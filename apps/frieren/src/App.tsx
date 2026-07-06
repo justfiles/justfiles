@@ -2,7 +2,6 @@ import { useAuth } from '@clerk/clerk-react'
 import { useCallback, useEffect, useState } from 'react'
 import { AuthWall } from './AuthWall'
 import { AgentProvider } from './agent/Provider'
-import { Spinner } from './components/ui/spinner'
 import {
 	activeProfileHasRemoteUser,
 	activeProfileId,
@@ -18,15 +17,9 @@ import { DesktopShell } from './shell/DesktopShell'
 
 function LoadingScreen({ label }: { label: string }) {
 	return (
-		<div
-			className="flex min-h-dvh flex-col items-center justify-center gap-3 px-6 text-center text-white"
-			style={{
-				background:
-					'radial-gradient(ellipse at 50% 30%, rgba(255,255,255,0.12), transparent 60%), var(--desktop-bg)'
-			}}
-		>
-			<Spinner className="size-5 text-white/80" />
-			<p className="text-xs tracking-wide text-white/65">{label}</p>
+		<div className="frn-backdrop">
+			<span className="frn-spinner" role="status" aria-label="Loading" />
+			<p className="frn-backdrop-note">{label}</p>
 		</div>
 	)
 }

@@ -21,8 +21,17 @@ export function AgentSidebar({ open, onClose }: { open: boolean; onClose: () => 
 
 	return (
 		<aside
-			className="absolute top-3 right-3 bottom-3 z-[9500] flex flex-col overflow-hidden transition-[transform,opacity] duration-300 ease-out"
+			className="frn-agent-panel"
 			style={{
+				position: 'absolute',
+				top: 12,
+				right: 12,
+				bottom: 12,
+				zIndex: 9500,
+				display: 'flex',
+				flexDirection: 'column',
+				overflow: 'hidden',
+				transition: 'transform 0.3s ease-out, opacity 0.3s ease-out',
 				width: PANEL_WIDTH,
 				transform: open ? 'translateX(0)' : 'translateX(calc(100% + 0.75rem))',
 				opacity: open ? 1 : 0,
@@ -40,8 +49,17 @@ export function AgentSidebar({ open, onClose }: { open: boolean; onClose: () => 
 				type="button"
 				onClick={onClose}
 				aria-label="Close Messages"
-				className="absolute right-2 top-2 z-10 rounded p-1 opacity-40 hover:opacity-90"
-				style={{ color: 'var(--text)' }}
+				style={{
+					position: 'absolute',
+					right: 8,
+					top: 8,
+					zIndex: 10,
+					padding: 4,
+					border: 'none',
+					background: 'transparent',
+					color: 'var(--text)',
+					opacity: 0.4
+				}}
 			>
 				<XIcon />
 			</button>

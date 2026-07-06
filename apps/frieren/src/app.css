@@ -1,0 +1,434 @@
+/* Frieren shell + full-page flows, styled purely from the design tokens in
+   @justfiles/design (mac.css). Apps render in their own sandboxed iframes, so
+   these class names only ever touch host DOM — no collision with app CSS.
+   Bare <button>/<input>/<textarea>/<select> already inherit the mac look. */
+
+/* ── Full-page backdrops (auth / loading) ───────────────────────────────── */
+.frn-backdrop {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	min-height: 100dvh;
+	gap: 12px;
+	padding: 0 24px;
+	text-align: center;
+	color: #fff;
+	background:
+		radial-gradient(ellipse at 50% 32%, rgba(255, 255, 255, 0.1), transparent 62%),
+		var(--desktop-bg);
+}
+.frn-backdrop-note {
+	font-size: 12px;
+	letter-spacing: 0.02em;
+	color: rgba(255, 255, 255, 0.65);
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────────── */
+.frn-spinner {
+	display: inline-block;
+	width: 20px;
+	height: 20px;
+	border: 2px solid currentColor;
+	border-top-color: transparent;
+	border-radius: 50%;
+	animation: frn-spin 0.7s linear infinite;
+}
+@keyframes frn-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* ── AuthWall (login / user chooser) ────────────────────────────────────── */
+.frn-auth-grid {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: center;
+	gap: 24px 40px;
+}
+.frn-auth-user {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	width: 112px;
+}
+.frn-auth-avatar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 96px;
+	height: 96px;
+	overflow: hidden;
+	border-radius: 50%;
+	border: 1px solid rgba(255, 255, 255, 0.3);
+	background: rgba(255, 255, 255, 0.05);
+	font-size: 30px;
+	font-weight: 300;
+	color: #fff;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+	transition:
+		background 0.15s,
+		border-color 0.15s;
+}
+.frn-auth-avatar:hover:not(:disabled) {
+	border-color: rgba(255, 255, 255, 0.8);
+	background: rgba(255, 255, 255, 0.15);
+}
+.frn-auth-avatar:disabled {
+	opacity: 0.6;
+}
+.frn-auth-avatar-add {
+	border-style: dashed;
+	background: rgba(255, 255, 255, 0.03);
+	color: rgba(255, 255, 255, 0.6);
+}
+.frn-auth-avatar img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+.frn-auth-name {
+	width: 100%;
+	text-align: center;
+	font-size: 14px;
+	font-weight: 500;
+	color: #fff;
+	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.frn-auth-name-muted {
+	color: rgba(255, 255, 255, 0.7);
+}
+.frn-auth-cancel {
+	margin-top: 48px;
+	font-size: 12px;
+	color: rgba(255, 255, 255, 0.55);
+}
+.frn-auth-cancel:hover {
+	color: rgba(255, 255, 255, 0.9);
+}
+.frn-auth-signedout {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 24px;
+}
+.frn-auth-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+/* ── Buttons (bare <button> gets the mac look; these are variants) ──────── */
+.frn-btn-primary {
+	background: var(--focus);
+	color: var(--on-focus);
+	border-color: var(--focus);
+	padding: 4px 14px;
+}
+.frn-btn-primary:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--focus) 88%, black);
+}
+.frn-btn-block {
+	width: 100%;
+	justify-content: center;
+	padding-top: 5px;
+	padding-bottom: 5px;
+}
+.frn-btn-row {
+	display: flex;
+	gap: 8px;
+}
+
+/* ── Onboarding ─────────────────────────────────────────────────────────── */
+.frn-onb-page {
+	min-height: 100dvh;
+	background:
+		radial-gradient(circle at top, rgba(255, 255, 255, 0.06), transparent 50%), var(--window-bg);
+}
+.frn-onb-form {
+	width: 100%;
+	max-width: 640px;
+	margin: 0 auto;
+	padding: 24px;
+}
+
+.frn-card {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	padding: 16px 0;
+	background: var(--surface);
+	border: 1px solid var(--rule);
+	border-radius: 8px;
+	overflow: hidden;
+}
+.frn-card > * {
+	padding-left: 16px;
+	padding-right: 16px;
+}
+.frn-card-title {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 600;
+}
+.frn-card-desc {
+	margin: 0;
+	font-size: 12px;
+	color: color-mix(in srgb, var(--text) 60%, transparent);
+}
+.frn-card-footer {
+	display: flex;
+	gap: 8px;
+	border-top: 1px solid var(--rule);
+	padding-top: 16px;
+}
+
+.frn-badge {
+	align-self: flex-start;
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 8px;
+	border: 1px solid var(--rule);
+	border-radius: 4px;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.2em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, var(--text) 70%, transparent);
+}
+
+.frn-field-group {
+	display: flex;
+	flex-direction: column;
+	gap: 20px;
+}
+.frn-field {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.frn-field > input,
+.frn-field > select,
+.frn-field > textarea {
+	width: 100%;
+}
+.frn-field-label {
+	font-size: 12px;
+	font-weight: 500;
+}
+.frn-field-desc {
+	margin: 0;
+	font-size: 12px;
+	color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+.frn-field-error {
+	font-size: 12px;
+	color: #d33;
+}
+.frn-muted {
+	color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+
+.frn-review {
+	display: grid;
+	gap: 12px;
+	grid-template-columns: 8rem 1fr;
+	padding: 16px;
+	border: 1px solid var(--rule);
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+	margin: 0;
+	font-size: 13px;
+}
+.frn-review dt {
+	color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+.frn-review dd {
+	margin: 0;
+	font-weight: 500;
+}
+
+/* Archetype picker */
+.frn-archetype-grid {
+	display: grid;
+	gap: 12px;
+	grid-template-columns: repeat(3, 1fr);
+}
+.frn-archetype-card {
+	position: relative;
+	overflow: hidden;
+	border: 1px solid var(--rule);
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--text) 6%, transparent);
+	cursor: pointer;
+	transition: border-color 0.15s;
+}
+.frn-archetype-card:hover {
+	border-color: color-mix(in srgb, var(--text) 25%, transparent);
+}
+.frn-archetype-card[data-selected="true"] {
+	border-color: var(--focus);
+	box-shadow: 0 0 0 1px var(--focus);
+}
+.frn-archetype-card img {
+	display: block;
+	width: 100%;
+	aspect-ratio: 3 / 4;
+	object-fit: cover;
+	filter: grayscale(1) contrast(1.1);
+	transition: filter 0.3s;
+}
+.frn-archetype-card[data-selected="true"] img {
+	filter: none;
+}
+.frn-archetype-dot {
+	position: absolute;
+	top: 10px;
+	right: 10px;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	border: 1px solid color-mix(in srgb, var(--text) 40%, transparent);
+	background: color-mix(in srgb, var(--window-bg) 80%, transparent);
+}
+.frn-archetype-card[data-selected="true"] .frn-archetype-dot {
+	border-color: var(--focus);
+	background: var(--focus);
+}
+
+.frn-summoning {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	min-height: 288px;
+	padding: 40px 24px;
+	text-align: center;
+	border: 1px dashed var(--rule);
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+	font-size: 12px;
+	color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+.frn-summoning-dots {
+	display: flex;
+	gap: 8px;
+}
+.frn-summoning-dots span {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: currentColor;
+	animation: frn-pulse 1s ease-in-out infinite;
+}
+.frn-summoning-dots span:nth-child(2) {
+	animation-delay: 0.12s;
+}
+.frn-summoning-dots span:nth-child(3) {
+	animation-delay: 0.24s;
+}
+@keyframes frn-pulse {
+	0%,
+	100% {
+		opacity: 0.3;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+.frn-soul-textarea {
+	min-height: 288px;
+	font-family: var(--font-mono);
+	line-height: 1.6;
+}
+
+/* ── Desktop shell chrome ───────────────────────────────────────────────── */
+.frn-shell {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+}
+.frn-menubar {
+	justify-content: space-between;
+}
+.frn-menubar-group {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+.frn-menubar-title {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	font-weight: 500;
+}
+.frn-menubar-version {
+	font-weight: 400;
+	color: rgba(255, 255, 255, 0.4);
+}
+.frn-menubar-status {
+	color: rgba(255, 255, 255, 0.55);
+}
+.frn-status-dot {
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+}
+/* Menubar action buttons: quiet, borderless, on the dark strip. */
+.frn-menubar-btn {
+	background: transparent;
+	border: none;
+	color: inherit;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 2px 6px;
+	border-radius: 4px;
+	cursor: default;
+}
+.frn-menubar-btn:hover {
+	background: rgba(255, 255, 255, 0.12);
+}
+.frn-desktop {
+	position: relative;
+	display: flex;
+	flex: 1;
+	overflow: hidden;
+	background: var(--desktop-bg);
+}
+
+/* ── App stage: the durable wrapper + its sandboxed iframe fill the window ── */
+.frn-viewport {
+	height: 100%;
+	width: 100%;
+}
+.frn-stage {
+	position: relative;
+	height: 100%;
+	width: 100%;
+}
+.frn-stage-frame {
+	display: block;
+	height: 100%;
+	width: 100%;
+	border: 0;
+}
+.frn-stage-error {
+	position: absolute;
+	inset: 0;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	text-align: center;
+	font-size: 13px;
+	color: #ffb4b4;
+	background: rgba(2, 6, 23, 0.95);
+}

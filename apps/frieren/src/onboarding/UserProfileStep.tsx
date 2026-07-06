@@ -1,25 +1,4 @@
 import { type FormEvent, useState } from 'react'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import {
-	Card,
-	CardContent,
-	CardDescription,
-	CardFooter,
-	CardHeader,
-	CardTitle
-} from '@/components/ui/card'
-import {
-	Field,
-	FieldDescription,
-	FieldError,
-	FieldGroup,
-	FieldLabel,
-	FieldLegend,
-	FieldSet
-} from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import type { Volume } from '../fs'
 import { PATHS } from './state'
 
@@ -98,142 +77,118 @@ export function UserProfileStep({ volume, onDone }: { volume: Volume; onDone: ()
 	if (reviewing) {
 		const gender = resolveGender(draft)
 		return (
-			<div className="mx-auto w-full max-w-lg p-6">
-				<Card>
-					<CardHeader>
-						<Badge variant="outline" className="mb-2 tracking-[0.2em] uppercase">
-							The Rite of Naming
-						</Badge>
-						<CardTitle>Is this you?</CardTitle>
-						<CardDescription>Confirm what will be etched into the record.</CardDescription>
-					</CardHeader>
+			<div className="frn-onb-form">
+				<div className="frn-card">
+					<span className="frn-badge">The Rite of Naming</span>
+					<h2 className="frn-card-title">Is this you?</h2>
+					<p className="frn-card-desc">Confirm what will be etched into the record.</p>
 
-					<CardContent className="space-y-4">
-						<dl className="grid gap-3 rounded-none border border-border bg-muted/20 p-4 sm:grid-cols-[8rem_1fr] sm:gap-x-4">
-							<dt className="text-muted-foreground">Name</dt>
-							<dd className="font-medium text-foreground">{draft.name}</dd>
-							<dt className="text-muted-foreground">Birth date</dt>
-							<dd className="font-medium text-foreground">{draft.birthDate}</dd>
-							{gender ? (
-								<>
-									<dt className="text-muted-foreground">Gender</dt>
-									<dd className="font-medium text-foreground">{gender}</dd>
-								</>
-							) : null}
-						</dl>
+					<dl className="frn-review">
+						<dt>Name</dt>
+						<dd>{draft.name}</dd>
+						<dt>Birth date</dt>
+						<dd>{draft.birthDate}</dd>
+						{gender ? (
+							<>
+								<dt>Gender</dt>
+								<dd>{gender}</dd>
+							</>
+						) : null}
+					</dl>
 
-						<FieldError>{error}</FieldError>
-					</CardContent>
+					{error ? <p className="frn-field-error">{error}</p> : null}
 
-					<CardFooter className="flex-col gap-2 sm:flex-row">
-						<Button
+					<div className="frn-card-footer">
+						<button
 							type="button"
-							variant="outline"
-							className="w-full flex-1"
+							className="frn-btn-block"
 							onClick={() => setReviewing(false)}
 							disabled={saving}
 						>
 							Edit
-						</Button>
-						<Button
+						</button>
+						<button
 							type="button"
-							className="w-full flex-1"
+							className="frn-btn-primary frn-btn-block"
 							onClick={() => void confirm()}
 							disabled={saving}
 						>
 							{saving ? 'Inscribing…' : 'Confirm'}
-						</Button>
-					</CardFooter>
-				</Card>
+						</button>
+					</div>
+				</div>
 			</div>
 		)
 	}
 
 	return (
-		<form className="mx-auto w-full max-w-lg p-6" onSubmit={toReview}>
-			<Card>
-				<CardHeader>
-					<Badge variant="outline" className="mb-2 tracking-[0.2em] uppercase">
-						The Rite of Naming
-					</Badge>
-					<CardTitle>Who walks these halls?</CardTitle>
-					<CardDescription>
-						A few details, so we know who you are when we meet again.
-					</CardDescription>
-				</CardHeader>
+		<form className="frn-onb-form" onSubmit={toReview}>
+			<div className="frn-card">
+				<span className="frn-badge">The Rite of Naming</span>
+				<h2 className="frn-card-title">Who walks these halls?</h2>
+				<p className="frn-card-desc">A few details, so we know who you are when we meet again.</p>
 
-				<CardContent>
-					<FieldGroup>
-						<Field>
-							<FieldLabel htmlFor="user-profile-name">Name</FieldLabel>
-							<Input
-								id="user-profile-name"
+				<div className="frn-field-group">
+					<div className="frn-field">
+						<label className="frn-field-label" htmlFor="user-profile-name">
+							Name
+						</label>
+						<input
+							id="user-profile-name"
+							type="text"
+							value={draft.name}
+							onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+							required
+						/>
+					</div>
+
+					<div className="frn-field">
+						<label className="frn-field-label" htmlFor="user-profile-birth-date">
+							Birth date
+						</label>
+						<input
+							id="user-profile-birth-date"
+							type="date"
+							value={draft.birthDate}
+							onChange={(e) => setDraft({ ...draft, birthDate: e.target.value })}
+							required
+						/>
+						<p className="frn-field-desc">Stored as a date, not an age.</p>
+					</div>
+
+					<div className="frn-field">
+						<span className="frn-field-label">
+							Gender <span className="frn-muted">(optional)</span>
+						</span>
+						<select
+							value={draft.genderChoice}
+							onChange={(e) => setDraft({ ...draft, genderChoice: e.target.value })}
+							aria-label="Gender"
+						>
+							<option value="">—</option>
+							{GENDER_OPTIONS.map((option) => (
+								<option key={option.value} value={option.value}>
+									{option.label}
+								</option>
+							))}
+						</select>
+						{draft.genderChoice === 'custom' ? (
+							<input
 								type="text"
-								value={draft.name}
-								onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-								autoFocus
-								required
+								placeholder="Describe in your own words"
+								value={draft.genderCustom}
+								onChange={(e) => setDraft({ ...draft, genderCustom: e.target.value })}
 							/>
-						</Field>
+						) : null}
+					</div>
+				</div>
 
-						<Field>
-							<FieldLabel htmlFor="user-profile-birth-date">Birth date</FieldLabel>
-							<Input
-								id="user-profile-birth-date"
-								type="date"
-								value={draft.birthDate}
-								onChange={(e) => setDraft({ ...draft, birthDate: e.target.value })}
-								required
-							/>
-							<FieldDescription>Stored as a date, not an age.</FieldDescription>
-						</Field>
-
-						<FieldSet>
-							<FieldLegend variant="label" className="mb-0">
-								Gender <span className="text-muted-foreground">(optional)</span>
-							</FieldLegend>
-							<FieldGroup className="gap-3">
-								<Field>
-									<NativeSelect
-										value={draft.genderChoice}
-										onChange={(e) => setDraft({ ...draft, genderChoice: e.target.value })}
-										aria-label="Gender"
-										className="w-full"
-									>
-										<NativeSelectOption value="">—</NativeSelectOption>
-										{GENDER_OPTIONS.map((option) => (
-											<NativeSelectOption key={option.value} value={option.value}>
-												{option.label}
-											</NativeSelectOption>
-										))}
-									</NativeSelect>
-								</Field>
-
-								{draft.genderChoice === 'custom' ? (
-									<Field>
-										<FieldLabel htmlFor="user-profile-gender-custom">
-											Describe in your own words
-										</FieldLabel>
-										<Input
-											id="user-profile-gender-custom"
-											type="text"
-											placeholder="Describe in your own words"
-											value={draft.genderCustom}
-											onChange={(e) => setDraft({ ...draft, genderCustom: e.target.value })}
-										/>
-									</Field>
-								) : null}
-							</FieldGroup>
-						</FieldSet>
-					</FieldGroup>
-				</CardContent>
-
-				<CardFooter>
-					<Button type="submit" className="w-full" disabled={!canReview}>
+				<div className="frn-card-footer">
+					<button type="submit" className="frn-btn-primary frn-btn-block" disabled={!canReview}>
 						Review
-					</Button>
-				</CardFooter>
-			</Card>
+					</button>
+				</div>
+			</div>
 		</form>
 	)
 }

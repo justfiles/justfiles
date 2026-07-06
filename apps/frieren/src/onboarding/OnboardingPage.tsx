@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Spinner } from '@/components/ui/spinner'
 import { openProfile, type ProfileVolume } from '../fs'
 import { AgentStep } from './AgentStep'
 import { type OnboardingState, readUserProfile, resolveOnboardingState } from './state'
@@ -64,26 +62,40 @@ export function OnboardingPage({ onComplete }: { onComplete: () => void }) {
 
 	if (error) {
 		return (
-			<div className="flex min-h-dvh items-center justify-center bg-background p-6">
-				<Alert variant="destructive" className="max-w-lg">
-					<AlertTitle>Onboarding failed</AlertTitle>
-					<AlertDescription>{error}</AlertDescription>
-				</Alert>
+			<div
+				className="frn-onb-page"
+				style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+			>
+				<div className="frn-card" role="alert" style={{ maxWidth: 512 }}>
+					<strong className="frn-card-title">Onboarding failed</strong>
+					<p className="frn-card-desc">{error}</p>
+				</div>
 			</div>
 		)
 	}
 
 	if (!volume || state === null) {
 		return (
-			<div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-background p-6 text-center">
-				<Spinner className="size-5" />
-				<p className="text-sm text-muted-foreground">Preparing your workspace…</p>
+			<div
+				className="frn-onb-page"
+				style={{
+					display: 'flex',
+					flexDirection: 'column',
+					alignItems: 'center',
+					justifyContent: 'center',
+					gap: 12,
+					padding: 24,
+					textAlign: 'center'
+				}}
+			>
+				<span className="frn-spinner" role="status" aria-label="Loading" />
+				<p className="frn-muted">Preparing your workspace…</p>
 			</div>
 		)
 	}
 
 	return (
-		<div className="min-h-dvh bg-[radial-gradient(circle_at_top,rgba(0,0,0,0.05),transparent_50%)] bg-background dark:bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.08),transparent_50%)]">
+		<div className="frn-onb-page">
 			{state === 'user' ? (
 				<UserProfileStep volume={volume} onDone={() => void refresh(volume)} />
 			) : null}
