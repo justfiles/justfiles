@@ -1,12 +1,5 @@
 import type { AppController, LLMText } from '@justfiles/agent'
-import {
-	type AppBundle,
-	bundleFromZip,
-	createAppController,
-	type Kernel,
-	kernel,
-	safeBundlePath
-} from '@justfiles/app'
+import { createAppController, type Kernel, kernel } from '@justfiles/app'
 import { type Catalog, reconcileBuiltins } from '@justfiles/app/builtins'
 import {
 	type Capabilities,
@@ -49,13 +42,10 @@ interface FrierenAppsDeps {
 }
 
 export interface FrierenApps {
-	readonly kernel: Kernel
 	readonly controller: AppController
-	bundleFromZip(zip: Uint8Array): AppBundle
 	list(): Promise<readonly DisplayApp[]>
 	open(id: string): Promise<void>
 	close(id?: string): Promise<void>
-	asset(appId: string, path: string, version?: string): Promise<Response>
 	acceptWebSocket(appId: string): Promise<Response>
 	handleMessage(
 		ws: WebSocket,
@@ -208,34 +198,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		deps.broadcast({ type: 'app_close', id: target })
 	}
 
-	async function asset(appId: string, path: string, version?: string): Promise<Response> {
-		let safe: string
-		try {
-			safe = safeBundlePath(path)
-		} catch {
-			return new Response(null, { status: 404 })
-		}
-		try {
-			const installed = await (await kernelReady()).app(appId)
-			const data = await installed.read(safe)
-			const body = new ArrayBuffer(data.byteLength)
-			new Uint8Array(body).set(data)
-			const headers: Record<string, string> = { 'content-type': mimeFor(safe) }
-			if (DEV_BUILTINS) {
-				headers['cache-control'] = 'no-store'
-			} else if (version && installed.manifest.version && version === installed.manifest.version) {
-				// When the URL pins the manifest version, the byte stream is
-				// immutable for that URL — browsers re-use the cached entry on
-				// re-launch within the token's lifetime, and a version bump in
-				// list() drives a fresh fetch via a different URL.
-				headers['cache-control'] = 'private, max-age=31536000, immutable'
-			}
-			return new Response(body, { headers })
-		} catch {
-			return new Response(null, { status: 404 })
-		}
-	}
-
 	// ── Capability proxy transport ──────────────────────────────────────
 	//
 	// The browser kernel opens ONE caps socket (`/api/apps/_caps/ws`) per session
@@ -318,15 +280,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	)
 
 	return {
-		get kernel() {
-			return getKernel()
-		},
 		controller,
-		bundleFromZip,
 		list,
 		open,
 		close,
-		asset,
 		acceptWebSocket,
 		handleMessage
 	}
@@ -335,25 +292,4 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 // The `ASSETS` binding ignores the host; only the path matters.
 function assetRequest(path: string): Request {
 	return new Request(`https://assets.invalid${path}`)
-}
-
-const MIME: Record<string, string> = {
-	html: 'text/html; charset=utf-8',
-	js: 'application/javascript; charset=utf-8',
-	mjs: 'application/javascript; charset=utf-8',
-	css: 'text/css; charset=utf-8',
-	json: 'application/json; charset=utf-8',
-	svg: 'image/svg+xml',
-	wasm: 'application/wasm',
-	wad: 'application/octet-stream',
-	cfg: 'text/plain; charset=utf-8',
-	png: 'image/png',
-	jpg: 'image/jpeg',
-	jpeg: 'image/jpeg',
-	webp: 'image/webp'
-}
-
-function mimeFor(path: string): string {
-	const ext = path.split('.').pop()?.toLowerCase() ?? ''
-	return MIME[ext] ?? 'application/octet-stream'
 }

@@ -34,11 +34,8 @@ const tokenWs = async (c: Ctx) => {
 	}
 }
 app.get('/ws', tokenWs)
-app.get('/api/apps/:appId/ws', tokenWs)
-// App GUI assets are fetched by dynamic import/runtime code, which can't set an
-// Authorization header, so the token rides the URL. (Built-in icons no longer
-// route here — the launcher loads them from the public `/appstore` assets.)
-app.get('/api/apps/:appId/*', tokenWs)
+// The one browser-opened socket per session: the shared capability-proxy (`_caps`).
+app.get('/api/apps/_caps/ws', tokenWs)
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())

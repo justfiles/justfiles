@@ -71,11 +71,6 @@ export class Frieren extends DurableObject<Env> {
 		this.vol = volume(fs)
 
 		this.app = new Hono()
-			.post('/api/nuke', async (c) => {
-				await ctx.storage.deleteAll()
-				await ctx.blockConcurrencyWhile(() => this.reset())
-				return c.body(null, 204)
-			})
 			.post('/api/onboarding/soul', async (c) => {
 				const body = await c.req.json<SoulGenerationInput>()
 				if (!body?.agentName || !body?.archetype) {
@@ -84,35 +79,6 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			.post('/api/apps/install', async (c) => {
-				try {
-					const form = await c.req.formData()
-					const bundle = form.get('bundle')
-					if (!(bundle instanceof File)) throw new Error('bundle file is required')
-					const apps = this.requireApps()
-					const id = await apps.kernel.install(
-						apps.bundleFromZip(new Uint8Array(await bundle.arrayBuffer()))
-					)
-					return c.json({ id, apps: await apps.list() })
-				} catch (error) {
-					return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
-				}
-			})
-			.delete('/api/apps/:id', async (c) => {
-				try {
-					await this.requireApps().kernel.uninstall(c.req.param('id'))
-					return c.body(null, 204)
-				} catch (error) {
-					return c.json({ error: error instanceof Error ? error.message : String(error) }, 400)
-				}
-			})
-			.get('/api/apps/:appId/*', (c) =>
-				this.requireApps().asset(
-					c.req.param('appId'),
-					c.req.path.split('/').slice(4).join('/'),
-					c.req.query('v')
-				)
-			)
 			.route('/fs', createFsApi(fs))
 
 		ctx.blockConcurrencyWhile(async () => {
