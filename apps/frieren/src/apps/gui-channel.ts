@@ -47,11 +47,12 @@ export function readVendor(): Promise<Record<string, string>> {
 }
 
 // Serialize the host's stylesheets once. Apps render with their own injected
-// layout CSS but read the host's design tokens (design.css), which the opaque
-// frame doesn't inherit — so we clone the host cascade in. Cross-origin sheets
-// (Clerk) throw on `cssRules` and are skipped; `@font-face` rules are dropped
-// since a null origin can't fetch host fonts (they only ever 404 CORS — the
-// frame falls back to system fonts).
+// layout CSS but read the host's design tokens (design.css / mac.css), which the
+// opaque frame doesn't inherit — so we clone the host cascade in. Dark mode rides
+// along via design.css's `@media (prefers-color-scheme)`, which works in the
+// frame with no extra plumbing. Cross-origin sheets (Clerk) throw on `cssRules`
+// and are skipped; `@font-face` rules are dropped since a null origin can't fetch
+// host fonts (they only ever 404 CORS — the frame falls back to system fonts).
 export function readHostStyles(): string {
 	if (stylesCache !== undefined) return stylesCache
 	let css = ''
@@ -67,14 +68,6 @@ export function readHostStyles(): string {
 	}
 	stylesCache = css
 	return css
-}
-
-// The host root's theme (frieren forces `class="dark" color-scheme:dark`). The
-// frame's document doesn't inherit it, so `.dark`-scoped tokens (shadcn's
-// --background/--foreground) would resolve light; the frame re-applies it.
-export function hostTheme(): { className: string; colorScheme: string } {
-	const el = document.documentElement
-	return { className: el.className, colorScheme: el.style.colorScheme }
 }
 
 // Host side: service the guest's invokes against `invoke` (a kernel dispatch)
@@ -111,6 +104,7 @@ export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 <div id="root"></div>
 <script>
 (function () {
+	var booted = false
 	function guiClient(port) {
 		var nextId = 0, pending = new Map(), subs = new Set()
 		port.onmessage = function (e) {
@@ -141,13 +135,10 @@ export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 		document.head.appendChild(el)
 	}
 	window.addEventListener('message', async function (e) {
-		if (!e.data || e.data.type !== 'boot') return
+		if (!e.data || e.data.type !== 'boot' || booted) return
+		booted = true
 		var port = e.ports[0]
 		try {
-			if (e.data.theme) {
-				document.documentElement.className = e.data.theme.className
-				document.documentElement.style.colorScheme = e.data.theme.colorScheme
-			}
 			if (e.data.styles) {
 				var st = document.createElement('style'); st.textContent = e.data.styles
 				document.head.appendChild(st)

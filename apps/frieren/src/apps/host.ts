@@ -11,7 +11,7 @@ import type { Kernel } from '@justfiles/app'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
 import { ensureCapabilitySocket } from './capabilities.client'
-import { FRAME_SRCDOC, guiHost, hostTheme, readHostStyles, readVendor } from './gui-channel'
+import { FRAME_SRCDOC, guiHost, readHostStyles, readVendor } from './gui-channel'
 import { terminateAppWorker } from './sandbox.worker'
 
 interface Stage {
@@ -25,7 +25,7 @@ interface Stage {
 	port?: MessagePort
 	postState?: (state: unknown) => void
 	boot?: () => void
-	loaded?: boolean
+	pendingBoot?: boolean
 	local?: boolean
 	cancelled: boolean
 }
@@ -138,30 +138,31 @@ export function wrapperOf(id: string): HTMLDivElement | undefined {
 function createStage(id: string): Stage {
 	const wrapper = document.createElement('div')
 	wrapper.dataset.appId = id
-	wrapper.className = 'relative h-full w-full'
+	wrapper.className = 'frn-stage'
 
 	// The GUI lives in an opaque-origin sandboxed iframe: `allow-scripts` runs the
 	// app but withholds `allow-same-origin`, so it gets no cookies, no host DOM,
 	// and cannot read the token. Its only authority is the port handed off at boot.
 	const frame = document.createElement('iframe')
-	frame.className = 'h-full w-full'
-	frame.style.border = '0'
+	frame.className = 'frn-stage-frame'
 	frame.setAttribute('sandbox', 'allow-scripts')
 	frame.srcdoc = FRAME_SRCDOC
 	wrapper.appendChild(frame)
 
 	const errorEl = document.createElement('div')
-	errorEl.className =
-		'absolute inset-0 flex items-center justify-center bg-slate-950/95 p-6 text-center text-sm text-rose-200'
+	errorEl.className = 'frn-stage-error'
 	errorEl.style.display = 'none'
 	wrapper.appendChild(errorEl)
 
 	const stage: Stage = { id, wrapper, frame, errorEl, cancelled: false }
 	// Detaching the iframe (window minimize → AppViewport unmount) discards its
 	// browsing context; reattaching reloads `srcdoc`. So (re)boot the GUI from the
-	// current persisted snapshot on every load, not just the first.
+	// current persisted snapshot on every load, not just the first. `pendingBoot`
+	// latches the load so `boot()` runs exactly once per load — whether the load
+	// fires here or is caught by the tail of `bootLocal` — never both (a double boot
+	// would open two channels and close the live one, freezing the mounted GUI).
 	frame.addEventListener('load', () => {
-		stage.loaded = true
+		stage.pendingBoot = true
 		stage.boot?.()
 	})
 	return stage
@@ -203,13 +204,14 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	const vendor = await readVendor()
 	if (stage.cancelled) return
 	const styles = readHostStyles()
-	const theme = hostTheme()
 
 	// (Re)mount the GUI into the frame from the current snapshot. A fresh channel
 	// per boot: the host keeps `port1` and dispatches; the frame receives `port2`
 	// and mounts. `state()` resolves to the reducer's initialState for a never-run
 	// app, so the GUI always mounts on a non-null frame.
 	stage.boot = () => {
+		if (!stage.pendingBoot) return
+		stage.pendingBoot = false
 		void (async () => {
 			try {
 				const snapshot = await kernel.state(stage.id)
@@ -219,7 +221,7 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 				stage.port = port1
 				stage.postState = guiHost(port1, (action) => kernel.dispatch(stage.id, action))
 				stage.frame.contentWindow?.postMessage(
-					{ type: 'boot', guiCode, vendor, styles, theme, state: snapshot },
+					{ type: 'boot', guiCode, vendor, styles, state: snapshot },
 					'*',
 					[port2]
 				)
@@ -265,7 +267,8 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	// then lands the agent's writes at once via the watch above.
 	ensureCapabilitySocket(opts.getToken)
 
-	// The frame may have loaded during the awaits above; if so, boot now. Later
-	// (re)loads fire boot through the load listener in createStage.
-	if (stage.loaded) stage.boot()
+	// The frame may have loaded during the awaits above; `boot()` is a no-op until
+	// a load has latched `pendingBoot`, and self-guards so a load caught here and
+	// one caught by the listener never double-boot the same document.
+	stage.boot()
 }
