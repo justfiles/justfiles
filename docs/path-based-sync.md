@@ -172,17 +172,28 @@ export interface SyncReplica {
 	// Stable snapshot for bootstrap; captures the high-water cursor at scan start.
 	pathScan(cursor: string): Promise<{ changes: PathChange[]; next: string; syncCursor?: string }>
 	// Apply remote changes locally; fetch blobs by hash for regular-file puts.
-	applyPathChanges(changes: PathChange[], getBlobByHash: (h: string) => Promise<Uint8Array>): Promise<void>
+	// `opts.source` tags the LOCAL write (e.g. REMOTE_SOURCE) for echo suppression
+	// and volume.watch — distinct from PathChange.source, which is the ORIGIN
+	// client-id used for pull-side filtering (feedback R2.3).
+	applyPathChanges(
+		changes: PathChange[],
+		getBlobByHash: (h: string) => Promise<Uint8Array>,
+		opts?: { source?: string }
+	): Promise<void>
 	// Content, addressed by hash (R2 already is).
 	getBlobByHash(hash: string): Promise<Uint8Array>
+	hasBlobByHash(hash: string): Promise<boolean>  // local presence check (see Lazy content)
 	putBlobByHash?(hash: string, data: Uint8Array): Promise<void>  // remote only; see Blob push
 }
 ```
 
 - **Local adapter** wraps a `Storage`/`Volume`: `applyPathChanges` resolves paths
-  to local inos (reusing existing ones — in-place — or minting fresh ones);
-  `pathDeltas` comes from the path journal below.
+  to local inos (reusing existing ones — in-place — or minting fresh ones) and
+  tags writes with `opts.source`; `pathDeltas` comes from the path journal below.
 - **Remote adapter** is the HTTP client to `packages/core/src/fs.ts` new endpoints.
+- `synced.ts` pulls with `applyPathChanges(changes, getBlobByHash, { source:
+  REMOTE_SOURCE })` so `volume.watch` and echo suppression keep working, while
+  `PathChange.source` (origin client-id) still drives `pathDeltas` filtering.
 
 ### Journaling: path-correct, with tombstones (feedback #1)
 
@@ -191,16 +202,22 @@ export interface SyncReplica {
 directory moves (all descendant paths change), and replaced paths (current path
 points at a different ino than the historical op).
 
-Two acceptable mechanisms; **we prefer (A)**:
+**Invariant (feedback R2.2): the journal must live at/below `Storage`, not only
+in a `Volume` wrapper.** Today's change feed (`Storage.subscribe`) sits below the
+Volume API precisely so direct-`Storage` writes and sync-applied writes are both
+observed. A path journal in `volume.ts` alone would be **bypassed** by another
+`volume(storage)` instance or a direct backend mutation → missed writes. So:
 
-- **(A) Record path-addressed changes at mutation time.** The VFS
-  (`volume.ts`) already resolves paths → inos on every write, so it knows both the
-  old and new path at the moment of a `mv`/`rm`/`writeFile`. Emit `PathChange`s
-  into a path journal there. A directory move emits `delete`+`put` for the moved
-  subtree (blobs are content-addressed, so no re-transfer).
-- **(B) Stateful sequential translation.** Replay the ino journal **in order**,
-  maintaining an `ino → path` map plus a tombstone set, deriving `PathChange`s as
-  you go. Correct, but the translator must persist its map across cycles.
+- **(B) Stateful sequential translation — preferred.** The path-delta source in
+  the local `SyncReplica` consumes the existing `Storage` change feed/journal
+  (which observes *all* mutations) and replays it **in order**, maintaining an
+  `ino → path` map plus a tombstone set, deriving `PathChange`s as it goes. A
+  directory move (parent repoint) walks the moved subtree to emit `delete(old
+  subtree)` + `put(new subtree)`. The translator persists its map across cycles.
+- **(A) Path journal at mutation time** is only acceptable if the invariant holds
+  — i.e. *all* syncable mutations are forced through a single journaled wrapper
+  and direct `Storage` mutation is internal-only. We reject this for now because
+  it's easy to bypass; (B) is safer.
 
 Either way, `pathDeltas` yields an **ordered** change list where a delete carries
 the path being removed and a rename appears as `delete(old)` + `put(new)`.
@@ -221,20 +238,32 @@ The server **must verify `sha256(bytes) === hash`** before accepting a blob, and
 reject a `put` whose `contentHash` has no stored blob. Small files may inline as
 an optimisation; large files upload first.
 
+**Orphaned-blob GC (feedback nit):** a `PUT /blob/:hash` whose follow-up `POST
+/path-ops` never lands leaves an unreferenced blob. Because blobs are content-
+addressed, a periodic sweep can drop any stored hash not referenced by a live
+path `contentHash` (mark-and-sweep against the tree). Define it as best-effort;
+no correctness dependency.
+
 ### Conflicts & versioning (feedback #3)
 
-- **Generic files:** per-path `version` (Lamport-style counter carried in a
-  path-keyed sync-state record). Conflict (both changed since baseline) →
-  **last-writer-wins** by version; tie-break by content hash. Conflict-copies
-  (`name (conflict <ts>).ext`) are a later option.
+- **Generic files:** per-path `version` (a Lamport-style counter in a path-keyed
+  sync-state record). Conflict (both changed since baseline) → a **deterministic
+  winner**, not strictly "last write": highest `version`, tie-broken by
+  `(mtimeNs, contentHash)`. (For true LWW under concurrent equal-version writes,
+  widen the key to a `(version, mtimeNs, actorId)` tuple — deferred; v1 only needs
+  determinism, feedback nit.) Losing never-pushed local *user* content is
+  preserved as a conflict-copy (see First-bootstrap policy). 
 - **App bundles (`/applications/**`): downgrade prevention does NOT live in the
   sync layer.** A scalar Lamport version cannot prevent it (a stale write gets
   `max(local,remote)+1` and would win). Instead, the **app-materialiser owns app
-  paths**: its launch/sweep reconcile is **idempotent and monotonic by semantic
-  app version** (see [`docs/app-materialization.md`](./app-materialization.md),
-  rule R3). After any sync — even one that transiently LWW-downgraded an app — the
-  next materialiser pass re-asserts the newest version. So sync stays generic
-  (lean), and "never downgrade" is guaranteed where semantic version is known.
+  paths** with an idempotent, semver-monotonic reconcile
+  (see [`docs/app-materialization.md`](./app-materialization.md), rules R3/R4).
+  **Prompt correction (feedback R2.1):** a sync pull that touches
+  `/applications/<id>/*` (a `REMOTE_SOURCE` change) fires the materialiser
+  reconcile for that app *immediately* — not only on launch/sweep — so any
+  transient LWW-downgrade is corrected at once, and this doc's "never downgrade"
+  is a real guarantee rather than "eventually on next launch". The launch/sweep
+  passes remain as the backstop.
 
 ### Path-keyed sync state + tombstones (feedback #4)
 
@@ -274,6 +303,27 @@ are **idempotent** (put path=meta+hash), so re-applying a write that landed both
 in the scan and the post-scan delta is harmless. If a backend can't provide a
 stable snapshot, document the fallback: capture cursor first, scan, then replay
 deltas-from-cursor (idempotency covers overlap).
+
+**Post-scan reconcile is by PATH, not ino (feedback nit):** after applying a full
+`pathScan`, delete local paths **absent from the remote path snapshot** (the
+adoption guard still gates whether reconcile runs at all — see First-bootstrap
+policy). Today's `reconcileLocal` walks by ino; the path version deletes by path.
+
+### First-bootstrap same-path policy (feedback R2.5)
+
+The adoption guard preserves a never-pushed profile's local work when it first
+adopts a non-empty remote. Path identity makes the **same-path collision**
+explicit: local (never-pushed) has `/x`, the remote snapshot also has `/x`. Policy:
+
+- **User paths:** treat as a conflict. Keep local (adoption intent) and preserve
+  the remote as a **conflict-copy** (`x (conflict <ts>)`) if content differs, so
+  no unpushed local work is lost. The next push ships the local up.
+- **App paths (`/applications/**`):** no conflict-copy. Let the deterministic
+  winner land, then the materialiser's monotonic reconcile (fired on the app-path
+  change, per Conflicts) resolves to the newest version. This is exactly the
+  incident: the server's newer `app.code` wins, the stale local is dropped.
+
+This must be tested (RED 7 below).
 
 ### Renames
 
@@ -346,29 +396,35 @@ fails against today's ino-based sync; must pass (GREEN) after the change. Run
 Helper `twoPeers()` builds two independent `Storage` backends (each mints its own
 inos) behind local+remote `SyncReplica`s and a sync pump.
 
-### RED 1 — the fork heals, with explicit authority (feedback: set version)
+### RED 1 — the fork heals (generic path identity, no app semantics; feedback R2.4)
+
+Keep fs-sync tests free of app-materialiser policy. Seed **explicit path
+versions** in the fake `SyncReplica` harness; app-version/no-downgrade lives in
+`docs/app-materialization.md`.
 
 ```ts
-test('same path independently created on both sides converges to the authority', async () => {
+test('same path independently created on both sides converges by path version', async () => {
 	const { client, server, syncBoth } = twoPeers()
-	// Both independently create the SAME path with DIFFERENT local inos.
-	// App path ⇒ resolved by the materialiser's monotonic version, not "both v1".
-	await server.writeApp('/applications/app.code/manifest.json', 'v0.1.1', { appVersion: '0.1.1' })
-	await client.writeApp('/applications/app.code/manifest.json', 'v0.1.0', { appVersion: '0.1.0' })
+	// Same PATH, DIFFERENT local inos, DIFFERENT explicit path versions.
+	await server.write('/x/f', bytes('S'), { version: 2 })
+	await client.write('/x/f', bytes('C'), { version: 1 })
 	await syncBoth()
-	expect(text(await client.readFile('/applications/app.code/manifest.json'))).toBe('v0.1.1')
-	expect((await client.readdir('/applications/app.code')).map((e) => e.name)).toEqual(['manifest.json'])
+	// Deterministic winner = higher path version, on both replicas. One entry.
+	expect(text(await client.readFile('/x/f'))).toBe('S')
+	expect((await client.readdir('/x')).map((e) => e.name)).toEqual(['f'])
 })
 ```
-RED today: client keeps its own ino/content; server's op lands on a phantom
-parent. (Without explicit authority, two fresh creates would both be version 1 —
-hence the app-version authority.)
+RED today: client keeps its own ino/content; the server's op lands on a phantom
+parent and never converges.
 
 ### RED 2 — heterogeneous ino spaces sync (unblocks spud-mac)
 
 ```ts
-test('syncs between numeric-ino (native-like) and uuid-ino backends', async () => {
-	const native = memStorage({ mintIno: numericIno })  // "2","3",… like real OS inodes
+test('syncs between a numeric-ino and a uuid-ino backend, both behind SyncReplica', async () => {
+	// Two backends implementing SyncReplica; inos are backend-local and disjoint.
+	// (Real nativeStorage still needs content hashing + a path delta source first
+	// — see Native backend nit; here we use a numeric-ino mem backend.)
+	const native = memStorage({ mintIno: numericIno })  // "2","3",… like OS inodes
 	const uuid   = memStorage({ mintIno: uuidIno })
 	const { syncBoth } = wire(native, uuid)
 	await native.writeFile('/data/note.txt', bytes('hello'))
@@ -427,6 +483,26 @@ test('pulled file is a stub carrying the desired hash; first read hydrates by ha
 })
 ```
 
+### RED 7 — first-bootstrap same-path policy (feedback R2.5)
+
+```ts
+test('adoption bootstrap: user path keeps local + conflict-copies remote; app path takes newest', async () => {
+	// Never-pushed local profile already has both paths; remote snapshot differs.
+	const { local, remote, bootstrapLocalFromRemote } = adoptionPeers()
+	await local.writeFile('/notes/todo.md', bytes('LOCAL'))            // unpushed user work
+	await remote.writeFile('/notes/todo.md', bytes('REMOTE'))
+	await local.writeApp('/applications/app.code/manifest.json', '0.1.0')
+	await remote.writeApp('/applications/app.code/manifest.json', '0.1.1')  // server newer
+	await bootstrapLocalFromRemote()
+	// User path: local preserved, remote kept as a conflict-copy (no data loss).
+	expect(text(await local.readFile('/notes/todo.md'))).toBe('LOCAL')
+	expect(await local.exists('/notes/todo.md (conflict)')).toBe(true)
+	// App path: materialiser reconcile lands the newest; no conflict-copy.
+	expect(text(await local.readFile('/applications/app.code/manifest.json'))).toBe('0.1.1')
+	expect((await local.readdir('/applications/app.code')).some((e) => e.name.includes('conflict'))).toBe(false)
+})
+```
+
 ### GREEN — guardrails to keep
 
 - Existing `synced.test.ts` cases (push/pull/bootstrap/adoption/lazy) still pass,
@@ -445,17 +521,27 @@ Before implementation is considered ready:
 - Path changes are **journaled or translated with historical path/tombstone
   correctness** — not resolved against final tree state.
 - Push **uploads blobs by hash and the server verifies** them.
-- **App downgrade policy is explicit and lives in the materialiser**; RED 5 tests
-  that policy, not a Lamport rule.
+- **App downgrade policy is explicit and lives in the materialiser**, with a
+  **sync-pull hook** that reconciles touched app paths promptly (not just on
+  launch/sweep); RED 5 tests that policy, not a Lamport rule.
 - **Baselines/tombstones are stored by path** (`PathSyncState`), not inode xattrs.
+- **`applyPathChanges` carries a local-apply `source`** (e.g. `REMOTE_SOURCE`),
+  distinct from `PathChange.source` (origin client-id) — echo suppression and
+  `volume.watch` preserved.
+- **The path journal lives at/below `Storage`** (not a bypassable `Volume`
+  wrapper), translated to path-correct deltas with tombstones.
+- **First-bootstrap same-path policy defined & tested** (user: keep local +
+  conflict-copy; app: newest via materialiser).
 - **Lazy stubs retain the remote content hash** while separately tracking local
-  blob presence.
+  blob presence (`hasBlobByHash`).
 - **`pathScan` cursor semantics documented and tested** (high-water at scan start,
-  idempotent apply).
+  idempotent apply; post-scan reconcile deletes by **path**, not ino).
 - **Migration forces a `/.state/sync-v2` bootstrap.**
 - **Spec nits resolved** (normalization, apply ordering, type replacement, echo
-  suppression, native caveats, hard links).
-- RED 1–6 pass (RED 5 in the materialiser doc), plus the deterministic property
+  suppression, native caveats, hard links, orphaned-blob GC).
+- Conflict resolution documented as a **deterministic winner** (not strict LWW for
+  concurrent equal-version writes).
+- RED 1–7 pass (RED 5 in the materialiser doc), plus the deterministic property
   test.
 
 ---

@@ -92,13 +92,19 @@ Two defects to fix alongside the model change:
 
 ### R3 — Updates are client-initiated and monotonic
 
-- Trigger: on app launch (check that one app) and a system "check for updates"
-  sweep (all apps). No server-initiated updates.
+- Trigger: on app launch (check that one app), a system "check for updates"
+  sweep (all apps), **and a sync-pull hook** — a `REMOTE_SOURCE` change to
+  `/applications/<id>/*` reconciles *that* app immediately. No server-initiated
+  updates. The sync-pull hook is what makes the path-based-sync doc's
+  "never downgrade" a *prompt* guarantee (a transient LWW-downgrade from sync is
+  corrected at once, not only on the next launch/sweep).
 - Decision uses `.apphash` (whole-app hash) for "changed", **plus a monotonic
   guard**: apply only if the store's version `>=` the installed version. Never
   downgrade (protects against a stale client build re-writing a newer app).
 - Repair (self-heal) is exempt from the monotonic guard: a *missing/corrupt*
   file reinstalls the same version.
+- The reconcile is **idempotent**, so the launch/sweep/sync-pull triggers can all
+  run freely without double-installing.
 - Applies via the **client** kernel; the write syncs up.
 
 ### R4 — Quiesce on bundle change
@@ -106,7 +112,9 @@ Two defects to fix alongside the model change:
 When `/applications/<id>/*` changes — from a local update **or** a
 `REMOTE_SOURCE` sync pull — close/reboot the app: stop dispatches, tear down the
 GUI stage + drop the cached sandbox, then reboot from the new bundle (reset or
-migrate state if the version changed).
+migrate state if the version changed). The same `REMOTE_SOURCE` bundle-change
+detection drives the R3 sync-pull reconcile hook, so quiesce and monotonic
+re-assert happen together.
 
 ### R5 — Built-ins are uninstallable
 
