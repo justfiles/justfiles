@@ -167,12 +167,35 @@ filesystem primitive. A separate adapter owns the path wire protocol; the local
 and remote (HTTP) sides both implement it:
 
 ```ts
-export interface SyncReplica {
-	// Path-correct change source (see "Journaling"). Ordered, with tombstones.
-	pathDeltas(cursor: string, opts?: { source?: string; sourceMode?: 'only' | 'exclude' })
-		: Promise<{ changes: PathChange[]; cursor: string }>
-	// Stable snapshot for bootstrap; captures the high-water cursor at scan start.
-	pathScan(cursor: string): Promise<{ changes: PathChange[]; next: string; syncCursor?: string }>
+// A cursor is an opaque, monotonically increasing position in one replica's
+// change stream: a SQLite/IDB journal `seq`, an NTFS USN, an FSEvents eventId,
+// or a Syncthing `sequence`. Compared only for ordering.
+export type SyncCursor = string
+
+// The journaling seam every backend implements — how a replica reports what
+// changed. The sync engine calls ONLY these two; it never learns the technique
+// (write-intercept journal, OS change feed, or scan+diff — see Journaling).
+export interface ChangeSource {
+	// Path-changes strictly after `cursor` (empty = from the start), ordered,
+	// capped at `limit`. `to` = cursor to persist; `done` = false if more pages
+	// remain. `exclude` drops changes whose PathChange.source matches (echoes).
+	// Deletes carry the removed path; a rename is delete(old) + put(new).
+	pathDeltas(
+		cursor: SyncCursor,
+		opts?: { exclude?: string; limit?: number }
+	): Promise<{ changes: PathChange[]; to: SyncCursor; done: boolean }>
+	// A consistent full snapshot as `put`s (bootstrap), paged the same way. `to`
+	// is the high-water cursor captured at snapshot START, so a later
+	// pathDeltas(to) resumes without gaps (idempotent overlap; see Scan/cursor).
+	pathScan(
+		cursor?: SyncCursor,
+		opts?: { limit?: number }
+	): Promise<{ changes: PathChange[]; to: SyncCursor; done: boolean }>
+}
+
+// The full replica: a ChangeSource + apply + content transfer. Local (over a
+// Storage/Volume) and remote (HTTP client) both implement it.
+export interface SyncReplica extends ChangeSource {
 	// Apply remote changes locally; fetch blobs by hash for regular-file puts.
 	// `opts.source` tags the LOCAL write (e.g. REMOTE_SOURCE) for echo suppression
 	// and volume.watch — distinct from PathChange.source, which is the ORIGIN
@@ -197,54 +220,220 @@ export interface SyncReplica {
   REMOTE_SOURCE })` so `volume.watch` and echo suppression keep working, while
   `PathChange.source` (origin client-id) still drives `pathDeltas` filtering.
 
-### Journaling: path-correct, with tombstones (feedback #1)
+### Journaling / change detection (per-backend, behind `ChangeSource`)
 
-**Do not resolve journal inos against the final tree state.** That loses deletes
-(inode gone), renames (need the old path for the delete side), parent-dir deletes,
-directory moves (all descendant paths change), and replaced paths (current path
-points at a different ino than the historical op).
+Cross-replica identity is the **path**; each replica must report "what changed
+since `cursor`" as ordered `PathChange`s. *How* it detects that is backend-
+specific and hidden behind `ChangeSource`. Prior art gives three techniques (see
+References — NTFS USN, macOS FSEvents, Syncthing BEP):
 
-**Invariant (feedback R2.2): the journal must live at/below `Storage`, not only
-in a `Volume` wrapper.** Today's change feed (`Storage.subscribe`) sits below the
-Volume API precisely so direct-`Storage` writes and sync-applied writes are both
-observed. A path journal in `volume.ts` alone would be **bypassed** by another
-`volume(storage)` instance or a direct backend mutation → missed writes. So:
+| technique | prior art | how | our backends |
+|---|---|---|---|
+| write-intercept journal | NTFS USN, Drive | append a durable, path-stamped row per mutation; cursor = `seq` | **SQLite (DO) + IDB (browser)** |
+| OS change feed | FSEvents, USN | consume the platform's durable event stream; cursor = eventId | native (option) |
+| scan + diff index | Syncthing | watch + scan, diff vs a persisted index; cursor = eventId/gen | **native (spud-mac)** |
 
-- **(B) Stateful sequential translation — preferred.** The path-delta source in
-  the local `SyncReplica` consumes the existing `Storage` change feed/journal
-  (which observes *all* mutations) and replays it **in order**, maintaining an
-  `ino → path` map plus a tombstone set, deriving `PathChange`s as it goes. A
-  directory move (parent repoint) walks the moved subtree to emit `delete(old
-  subtree)` + `put(new subtree)`. The translator persists its map across cycles.
-- **(A) Path journal at mutation time** is only acceptable if the invariant holds
-  — i.e. *all* syncable mutations are forced through a single journaled wrapper
-  and direct `Storage` mutation is internal-only. We reject this for now because
-  it's easy to bypass; (B) is safer.
+**Invariant:** the change source lives **at/below `Storage`**, never only in a
+`Volume` wrapper — otherwise a second `volume(storage)` or a direct backend/OS
+write bypasses it. For owned backends the journal append is part of the mutation
+transaction; for native the detector observes the real directory (watch + scan),
+which external writers cannot bypass. Do **not** resolve inos against the *final*
+tree — that loses deletes, renames, moves, and reused paths.
 
-Either way, `pathDeltas` yields an **ordered** change list where a delete carries
-the path being removed and a rename appears as `delete(old)` + `put(new)`.
+#### Owned backends — SQLite + IDB (identical strategy)
 
-Apply ordering (feedback nit): **puts parent-before-child; deletes
-child-before-parent.**
+Both are engines we fully own: every mutation goes through our API, so we append
+one **durable, append-only, path-stamped journal row per change, in the same
+transaction** as the mutation. They differ only in the storage primitive, so the
+logic is shared and each backend supplies a tiny `JournalStore`.
+
+```ts
+// A journal row = a PathChange plus its monotonic position. `seq` IS this
+// backend's SyncCursor.
+interface JournalRow { seq: number; change: PathChange }
+
+// The only primitive a backend implements for the shared journal logic.
+interface JournalStore {
+	append(changes: PathChange[]): Promise<void>                 // within the mutation's txn
+	readFrom(seq: number, limit: number): Promise<JournalRow[]>  // ordered by seq asc
+	head(): Promise<number>                                      // latest seq (snapshot resume)
+}
+
+// Shared by SQLite + IDB — this is the whole ChangeSource for owned backends.
+function journaledChangeSource(store: Storage, journal: JournalStore): ChangeSource {
+	return {
+		async pathDeltas(cursor, opts) {
+			const limit = opts?.limit ?? PAGE
+			const rows = await journal.readFrom(Number(cursor || '0'), limit)
+			const changes = coalesceByPath(
+				rows.map((r) => r.change).filter((c) => !opts?.exclude || c.source !== opts.exclude),
+			)
+			return { changes, to: String(rows.at(-1)?.seq ?? cursor ?? '0'), done: rows.length < limit }
+		},
+		async pathScan(cursor, opts) {
+			const to = String(await journal.head())      // capture head BEFORE walking the tree
+			return walkTreeAsPuts(store, cursor, opts?.limit ?? PAGE, to)  // parent-before-child
+		},
+	}
+}
+```
+
+The two primitives are trivially different:
+
+```ts
+// SQLite (DO): a table + PK index; append inside the fs mutation transaction.
+//   CREATE TABLE journal (
+//     seq INTEGER PRIMARY KEY AUTOINCREMENT,
+//     path TEXT NOT NULL, kind TEXT NOT NULL,          -- 'put' | 'delete'
+//     version INTEGER NOT NULL, source TEXT,
+//     content_hash TEXT, meta_json TEXT);              -- meta/hash NULL for delete
+//   append   -> INSERT ... (same txn as the mutation)
+//   readFrom -> SELECT * FROM journal WHERE seq > ? ORDER BY seq LIMIT ?
+//   head     -> SELECT COALESCE(MAX(seq), 0) FROM journal
+
+// IDB (browser): an autoIncrement object store; append in the same IDB txn.
+//   db.createObjectStore('journal', { keyPath: 'seq', autoIncrement: true })
+//   append   -> for (row of rows) tx.objectStore('journal').add(row)
+//   readFrom -> openCursor(IDBKeyRange.lowerBound(seq, /*open*/ true)), take limit
+//   head     -> openCursor(null, 'prev').key ?? 0
+```
+
+**Path stamping is O(depth), in-transaction.** When the mutation runs the tree is
+consistent, so the backend resolves the path cheaply and stamps it into the row —
+no in-memory tree index, no O(N) recompute on a cold Worker:
+
+```ts
+// putDirent(dir, name):    path = pathOf(dir) + '/' + name
+// deleteDirent(dir, name): path = pathOf(dir) + '/' + name   (resolve BEFORE unlink)
+// setMeta(ino) [content]:  path = pathOf(ino)
+// pathOf walks parent dirents up to root — depth (~<20), not breadth.
+```
+
+This is the reviewer's option (A), but at the **storage layer** (not a bypassable
+`Volume` wrapper), which is what makes it safe here.
+
+#### Native fs (spud-mac) — scan + diff
+
+A real directory can be written by other processes, so a write-intercept journal
+would miss changes. Instead keep a **persisted local index** and detect changes by
+watching + scanning (the Syncthing model):
+
+```ts
+// path -> last-agreed identity. Persisted (sidecar SQLite/LevelDB), NOT an in-RAM tree.
+interface NativeIndexRow { path: string; contentHash: string; mtimeNs: bigint; size: bigint; version: number }
+
+function nativeChangeSource(root: string, index: NativeIndex, watch: FsWatcher): ChangeSource {
+	return {
+		async pathDeltas(cursor, opts) {
+			// cursor = last FSEvents/inotify eventId. Candidate paths = events since it.
+			// For each: stat; if (mtimeNs,size) unchanged vs index -> skip (no re-hash);
+			// else hash, emit put{path, meta, contentHash, version: ++}, update index.
+			// In index but absent on disk -> emit delete (tombstone), drop from index.
+			// `to` = latest eventId; `done` pages large bursts.
+		},
+		async pathScan(cursor, opts) {
+			// full walk of `root` -> put[] (parent-before-child); `to` = current eventId
+			// so a later pathDeltas(to) resumes. Hash cache keyed by (path, mtimeNs, size).
+		},
+	}
+}
+```
+
+Content hashing reads file bytes, so cache the hash by `(path, mtimeNs, size)` to
+avoid re-hashing unchanged files. A periodic full scan is the backstop when the
+watcher drops events.
+
+#### Composition with `fs` / `Volume`
+
+`Volume` (path API + `watch`) and `Storage` (ino-keyed primitive) are unchanged.
+The journal/detector sits at the `Storage` layer; `synced()` drives a
+`SyncReplica` built over it:
+
+```
+Volume  (readFile/writeFile/rename/watch)  ─uses─▶  Storage  (ino-keyed ops)
+                                                     └─ owned backends: append JournalRow (same txn)
+SyncReplica (path wire)  ─wraps─▶  Storage + ChangeSource(journal | scan-diff)
+synced()  ─drives─▶  replica.pathDeltas / pathScan / applyPathChanges / *BlobByHash
+```
+
+`synced()` keeps two cursors under `/.state/sync-v2`: a **push** cursor over the
+local `ChangeSource`, and a **pull** cursor over the remote's (the path-based
+successors of today's `localCursor`/`remoteCursor`).
+
+**Apply ordering & coalescing:** within a batch apply `put`s parent-before-child
+and `delete`s child-before-parent; `coalesceByPath` collapses multiple ops on one
+path to its final state. **Directory move** = `delete(old subtree)` + `put(new
+subtree)` in v1 (owned backends enumerate the subtree at rename time → disk-bound
+journal rows; a first-class `move` op is a later optimisation).
 
 ### Blob push protocol (feedback #2)
 
 Pull can `getBlobByHash` from the server. **Push cannot** — the server can't fetch
 bytes from a browser by hash. Choose explicitly (this doc picks the second):
 
-- inline changed-file bytes inside `POST /path-ops` (like today's `/ops` which
-  inlines regular-file content — `fs.client.ts:94`/`:296`), **or**
-- **`PUT /blob/:hash` first, then `POST /path-ops`** referencing hashes.
+- inline changed-file bytes inside `POST /fs/path/changes` (like today's `/ops`
+  which inlines regular-file content — `fs.client.ts:94`/`:296`), **or**
+- **`PUT /fs/blob/:hash` first, then `POST /fs/path/changes`** referencing hashes.
 
 The server **must verify `sha256(bytes) === hash`** before accepting a blob, and
 reject a `put` whose `contentHash` has no stored blob. Small files may inline as
 an optimisation; large files upload first.
 
-**Orphaned-blob GC (feedback nit):** a `PUT /blob/:hash` whose follow-up `POST
-/path-ops` never lands leaves an unreferenced blob. Because blobs are content-
-addressed, a periodic sweep can drop any stored hash not referenced by a live
-path `contentHash` (mark-and-sweep against the tree). Define it as best-effort;
-no correctness dependency.
+**Orphaned-blob GC (feedback nit):** a `PUT /fs/blob/:hash` whose follow-up `POST
+/fs/path/changes` never lands leaves an unreferenced blob. Because blobs are
+content-addressed, a periodic sweep can drop any stored hash not referenced by a
+live path `contentHash` (mark-and-sweep against the tree). Best-effort; no
+correctness dependency.
+
+### `/fs` transport (path-based endpoints)
+
+The remote `SyncReplica` is the HTTP client for these; the DO serves them over its
+local `SyncReplica`. Wire encoding: `bigint` (`mtimeNs`/`size`) as strings, xattr
+bytes as base64, `version` as a number.
+
+```ts
+// packages/core/src/fs.ts
+const SyncMetaWire = z.object({
+	type: z.number(), mode: z.number(),
+	mtimeNs: z.string(), size: z.string(),          // bigint as string
+	symlinkTarget: z.string().optional(),
+	xattrs: z.record(z.string()).optional(),        // name -> base64
+})
+const PathChangeWire = z.discriminatedUnion('kind', [
+	z.object({ kind: z.literal('put'), path: z.string(), version: z.number(),
+	           source: z.string().optional(), contentHash: z.string().optional(),
+	           meta: SyncMetaWire }),
+	z.object({ kind: z.literal('delete'), path: z.string(), version: z.number(),
+	           source: z.string().optional() }),
+])
+type ChangesPage = { changes: z.infer<typeof PathChangeWire>[]; to: string; done: boolean }
+```
+
+Endpoints (each maps to one `SyncReplica` method):
+
+```
+# PULL  (client reads the server's ChangeSource)
+GET  /fs/path/changes?cursor=&exclude=&limit=   -> ChangesPage   # pathDeltas
+GET  /fs/path/snapshot?cursor=&limit=           -> ChangesPage   # pathScan (all puts)
+
+# PUSH  (client writes path-changes; server applies to its Storage)
+PUT  /fs/blob/:hash        body: raw bytes       -> 204          # putBlobByHash (verify sha256==hash)
+POST /fs/path/changes      body: { changes }     -> 200          # applyPathChanges
+
+# CONTENT  (hydration, both directions)
+HEAD /fs/blob/:hash                              -> 200 | 404    # hasBlobByHash
+GET  /fs/blob/:hash                              -> raw bytes    # getBlobByHash
+```
+
+- **Pull:** `GET /fs/path/changes?cursor` (bootstrap: `/fs/path/snapshot`); for each
+  `put`, hydrate content via `GET /fs/blob/:hash` (lazy on first read — see Lazy
+  content). `exclude=<actorId>` drops the caller's own echoes.
+- **Push:** `PUT /fs/blob/:hash` for new content (server verifies the hash), then
+  `POST /fs/path/changes`; the handler applies to the DO's `Storage` and **rejects
+  a `put` whose `contentHash` has no stored blob**.
+
+These replace the ino-keyed `/updates`, `/scan`, `/ops`, `/inodes/:ino/blob` for
+sync (retain those for admin/debug).
 
 ### Conflicts & versioning
 
@@ -369,10 +558,10 @@ untouched**.
 2. `packages/fs/synced.ts` — `push`/`pull`/`bootstrap` operate on `PathChange`
    via `SyncReplica`; state under `/.state/sync-v2`, keyed by path
    (`PathSyncState` + tombstones); lazy `readFile` hydrates by `contentHash`.
-3. `packages/core/src/fs.ts` — new endpoints: `GET /path-updates`, `GET
-   /path-scan`, `POST /path-ops` (inline or hash-ref), `PUT /blob/:hash`
-   (verified), `GET /blob/:hash`. Deprecate ino-keyed `/updates`,`/scan`,`/ops`,
-   `/inodes/:ino/blob` for sync (keep for admin/debug only).
+3. `packages/core/src/fs.ts` — path-based endpoints per **`/fs` transport** above
+   (`GET /fs/path/changes`, `GET /fs/path/snapshot`, `POST /fs/path/changes`,
+   `PUT`/`GET`/`HEAD /fs/blob/:hash`). Deprecate ino-keyed `/updates`,`/scan`,
+   `/ops`,`/inodes/:ino/blob` for sync (keep for admin/debug only).
 4. `storage.fs.ts` (native) — reference backend proving ino stays a real-OS
    concept. Full participation needs content hashing + a path journal/delta source
    (future; see nits).
