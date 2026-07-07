@@ -93,17 +93,19 @@ Two defects to fix alongside the model change:
 ### R3 — Updates are client-initiated and monotonic
 
 - Trigger: on app launch (check that one app), a system "check for updates"
-  sweep (all apps), **and a sync-pull hook** — a `REMOTE_SOURCE` change to
-  `/applications/<id>/*` reconciles *that* app immediately. No server-initiated
-  updates. The sync-pull hook is what makes the path-based-sync doc's
-  "never downgrade" a *prompt* guarantee (a transient LWW-downgrade from sync is
-  corrected at once, not only on the next launch/sweep).
+  sweep (all apps), **and an app-bundle watcher** — a layer on top of the
+  filesystem that subscribes to `volume.watch('/applications/**')` and, on **any**
+  change (a local edit or a synced-down `REMOTE_SOURCE` write), recomputes that
+  app's whole-bundle `.apphash` and reconciles if it drifts. This is where all
+  app knowledge lives; the **sync engine stays uniform and app-agnostic** (see
+  `docs/path-based-sync.md` — "Out of scope"). The watcher is what makes
+  no-downgrade *prompt* rather than "eventually on next launch".
 - Decision uses `.apphash` (whole-app hash) for "changed", **plus a monotonic
   guard**: apply only if the store's version `>=` the installed version. Never
   downgrade (protects against a stale client build re-writing a newer app).
 - Repair (self-heal) is exempt from the monotonic guard: a *missing/corrupt*
   file reinstalls the same version.
-- The reconcile is **idempotent**, so the launch/sweep/sync-pull triggers can all
+- The reconcile is **idempotent**, so the launch/sweep/watcher triggers can all
   run freely without double-installing.
 - Applies via the **client** kernel; the write syncs up.
 
@@ -112,9 +114,9 @@ Two defects to fix alongside the model change:
 When `/applications/<id>/*` changes — from a local update **or** a
 `REMOTE_SOURCE` sync pull — close/reboot the app: stop dispatches, tear down the
 GUI stage + drop the cached sandbox, then reboot from the new bundle (reset or
-migrate state if the version changed). The same `REMOTE_SOURCE` bundle-change
-detection drives the R3 sync-pull reconcile hook, so quiesce and monotonic
-re-assert happen together.
+migrate state if the version changed). The same `volume.watch('/applications/**')`
+subscription drives both R3's monotonic re-check and this quiesce — all as logic
+**on top of** the filesystem, never inside the sync engine.
 
 ### R5 — Built-ins are uninstallable
 

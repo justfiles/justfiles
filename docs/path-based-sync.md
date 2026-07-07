@@ -3,12 +3,14 @@
 Status: proposal / design. No code yet. This doc is the artifact to pressure-test
 before implementation.
 
-> Revised per review feedback in **issue #141** ("Tighten path-based sync design
-> before implementation"). Changes: correct path-journaling with tombstones (not
-> final-state resolution); explicit blob-push protocol; downgrade prevention moved
-> out of the sync layer; path-keyed sync state; lazy = desired-hash vs
-> blob-presence; scan/cursor semantics; a lean `SyncReplica` adapter instead of
-> bloating `Storage`; `sync-v2` migration; a spec-nits section; tightened tests.
+> Revised per review feedback in **issue #141**. Round 1: correct path-journaling
+> with tombstones (not final-state resolution); explicit blob-push protocol;
+> path-keyed sync state; lazy = desired-hash vs blob-presence; scan/cursor
+> semantics; a lean `SyncReplica` adapter instead of bloating `Storage`;
+> `sync-v2` migration; spec-nits; tightened tests. Round 2 refinements folded in.
+> **Round 3: the sync engine is uniform and app-agnostic** — one conflict policy
+> for all paths, zero knowledge of `/applications/**`; app update / no-downgrade
+> is a layer on top that watches file changes (`docs/app-materialization.md`).
 
 ## TL;DR
 
@@ -244,26 +246,38 @@ addressed, a periodic sweep can drop any stored hash not referenced by a live
 path `contentHash` (mark-and-sweep against the tree). Define it as best-effort;
 no correctness dependency.
 
-### Conflicts & versioning (feedback #3)
+### Conflicts & versioning
 
-- **Generic files:** per-path `version` (a Lamport-style counter in a path-keyed
-  sync-state record). Conflict (both changed since baseline) → a **deterministic
-  winner**, not strictly "last write": highest `version`, tie-broken by
-  `(mtimeNs, contentHash)`. (For true LWW under concurrent equal-version writes,
-  widen the key to a `(version, mtimeNs, actorId)` tuple — deferred; v1 only needs
-  determinism, feedback nit.) Losing never-pushed local *user* content is
-  preserved as a conflict-copy (see First-bootstrap policy). 
-- **App bundles (`/applications/**`): downgrade prevention does NOT live in the
-  sync layer.** A scalar Lamport version cannot prevent it (a stale write gets
-  `max(local,remote)+1` and would win). Instead, the **app-materialiser owns app
-  paths** with an idempotent, semver-monotonic reconcile
-  (see [`docs/app-materialization.md`](./app-materialization.md), rules R3/R4).
-  **Prompt correction (feedback R2.1):** a sync pull that touches
-  `/applications/<id>/*` (a `REMOTE_SOURCE` change) fires the materialiser
-  reconcile for that app *immediately* — not only on launch/sweep — so any
-  transient LWW-downgrade is corrected at once, and this doc's "never downgrade"
-  is a real guarantee rather than "eventually on next launch". The launch/sweep
-  passes remain as the backstop.
+**One uniform policy for every path. The sync engine has no notion of app files
+vs. user files — it never inspects paths like `/applications/**`.**
+
+- Per-path `version` (a Lamport-style counter in a path-keyed sync-state record).
+- Conflict (both sides changed since baseline) → a **deterministic winner**, not
+  strictly "last write": highest `version`, tie-broken by `(mtimeNs, contentHash)`.
+  (For true LWW under concurrent equal-version writes, widen the key to a
+  `(version, mtimeNs, actorId)` tuple — deferred; v1 only needs determinism.)
+- The losing side is preserved as a **conflict-copy** so no local work is lost
+  (uniform for all paths; may be deferred to a later version — v1 could log +
+  keep the winner).
+
+That's the whole conflict story at this layer.
+
+### Out of scope: app-update / no-downgrade is a layer on top
+
+The sync engine must **not** know that `/applications/**` are apps or that they
+have a whole-bundle hash or a monotonic version. Deciding "this app has an update
+/ don't downgrade / reinstall a changed bundle" is **higher-level logic that
+observes file changes** and reconciles against the app catalog — it does not live
+in, and is not called by, the sync loop.
+
+Concretely (see [`docs/app-materialization.md`](./app-materialization.md)): a
+materaliser/app-update watcher subscribes to `volume.watch` for changes under
+`/applications/<id>/*` (from *any* source — a local edit or a synced-down pull),
+recomputes the app's whole-bundle `.apphash`, and if it differs from the catalog
+it reconciles **monotonically** (never downgrade) and quiesces the running app.
+So if sync's uniform policy transiently lands a stale app bundle, this watcher
+corrects it — the fix is *on top of* sync, using the file-change feed sync already
+emits, never a special case *inside* sync.
 
 ### Path-keyed sync state + tombstones (feedback #4)
 
@@ -309,21 +323,22 @@ deltas-from-cursor (idempotency covers overlap).
 adoption guard still gates whether reconcile runs at all — see First-bootstrap
 policy). Today's `reconcileLocal` walks by ino; the path version deletes by path.
 
-### First-bootstrap same-path policy (feedback R2.5)
+### First-bootstrap same-path policy
 
 The adoption guard preserves a never-pushed profile's local work when it first
 adopts a non-empty remote. Path identity makes the **same-path collision**
-explicit: local (never-pushed) has `/x`, the remote snapshot also has `/x`. Policy:
+explicit: local (never-pushed) has `/x`, the remote snapshot also has `/x`.
 
-- **User paths:** treat as a conflict. Keep local (adoption intent) and preserve
-  the remote as a **conflict-copy** (`x (conflict <ts>)`) if content differs, so
-  no unpushed local work is lost. The next push ships the local up.
-- **App paths (`/applications/**`):** no conflict-copy. Let the deterministic
-  winner land, then the materialiser's monotonic reconcile (fired on the app-path
-  change, per Conflicts) resolves to the newest version. This is exactly the
-  incident: the server's newer `app.code` wins, the stale local is dropped.
+**Uniform policy for every path** (no app/user distinction): treat it as a
+conflict — keep local (adoption intent), and if content differs preserve the
+remote as a **conflict-copy** (`x (conflict <ts>)`) so nothing is lost; the next
+push ships local up. This is the same conflict rule as steady-state, applied at
+bootstrap.
 
-This must be tested (RED 7 below).
+App bundles are not special-cased here. If this leaves a stale local app bundle,
+the app-update watcher (a layer on top — see Out-of-scope above) recomputes the
+whole-bundle hash against the catalog and reconciles monotonically. The sync
+engine neither knows nor cares.
 
 ### Renames
 
@@ -462,12 +477,12 @@ test('deleting a path removes it on a peer that had a DIVERGENT local subtree', 
 })
 ```
 
-### RED 5 — no-downgrade is the materialiser's job (feedback: policy first)
+### RED 5 — no-downgrade is NOT a sync test
 
-Moved to the materialiser: see `docs/app-materialization.md` RED 2 ("never
-downgrade"). Sync provides generic LWW; the idempotent monotonic reconcile
-re-asserts the newest app version after any sync. Add here only a guard that sync
-does not *reorder* deltas out of causal order.
+The sync engine has no downgrade concept — it's uniform LWW. "Never downgrade an
+app" is a **materialiser** test: see `docs/app-materialization.md` RED 2. The only
+sync-level guard is that deltas apply in causal order (covered by the property
+test); there is no app logic here.
 
 ### RED 6 — lazy content hydrates by hash, stub retains desired hash (feedback #5)
 
@@ -483,25 +498,22 @@ test('pulled file is a stub carrying the desired hash; first read hydrates by ha
 })
 ```
 
-### RED 7 — first-bootstrap same-path policy (feedback R2.5)
+### RED 7 — first-bootstrap same-path policy (uniform, app-agnostic)
 
 ```ts
-test('adoption bootstrap: user path keeps local + conflict-copies remote; app path takes newest', async () => {
-	// Never-pushed local profile already has both paths; remote snapshot differs.
+test('adoption bootstrap: keep local + conflict-copy the divergent remote (any path)', async () => {
+	// Never-pushed local profile already has the path; remote snapshot differs.
 	const { local, remote, bootstrapLocalFromRemote } = adoptionPeers()
-	await local.writeFile('/notes/todo.md', bytes('LOCAL'))            // unpushed user work
+	await local.writeFile('/notes/todo.md', bytes('LOCAL'))   // unpushed local work
 	await remote.writeFile('/notes/todo.md', bytes('REMOTE'))
-	await local.writeApp('/applications/app.code/manifest.json', '0.1.0')
-	await remote.writeApp('/applications/app.code/manifest.json', '0.1.1')  // server newer
 	await bootstrapLocalFromRemote()
-	// User path: local preserved, remote kept as a conflict-copy (no data loss).
-	expect(text(await local.readFile('/notes/todo.md'))).toBe('LOCAL')
-	expect(await local.exists('/notes/todo.md (conflict)')).toBe(true)
-	// App path: materialiser reconcile lands the newest; no conflict-copy.
-	expect(text(await local.readFile('/applications/app.code/manifest.json'))).toBe('0.1.1')
-	expect((await local.readdir('/applications/app.code')).some((e) => e.name.includes('conflict'))).toBe(false)
+	expect(text(await local.readFile('/notes/todo.md'))).toBe('LOCAL')      // adoption keeps local
+	expect(await local.exists('/notes/todo.md (conflict)')).toBe(true)      // remote preserved
 })
 ```
+App bundles are not tested here — they follow the same uniform rule. "Stale app
+bundle gets reconciled to newest" is a **materialiser** test
+(`docs/app-materialization.md`), driven by the app-update watcher on top of sync.
 
 ### GREEN — guardrails to keep
 
@@ -521,17 +533,18 @@ Before implementation is considered ready:
 - Path changes are **journaled or translated with historical path/tombstone
   correctness** — not resolved against final tree state.
 - Push **uploads blobs by hash and the server verifies** them.
-- **App downgrade policy is explicit and lives in the materialiser**, with a
-  **sync-pull hook** that reconciles touched app paths promptly (not just on
-  launch/sweep); RED 5 tests that policy, not a Lamport rule.
+- **The sync engine is uniform and app-agnostic** — one conflict policy for every
+  path; it never inspects `/applications/**` or app versions. App update /
+  no-downgrade is explicitly a **layer on top** that watches file changes
+  (`docs/app-materialization.md`), not a special case inside sync.
 - **Baselines/tombstones are stored by path** (`PathSyncState`), not inode xattrs.
 - **`applyPathChanges` carries a local-apply `source`** (e.g. `REMOTE_SOURCE`),
   distinct from `PathChange.source` (origin client-id) — echo suppression and
   `volume.watch` preserved.
 - **The path journal lives at/below `Storage`** (not a bypassable `Volume`
   wrapper), translated to path-correct deltas with tombstones.
-- **First-bootstrap same-path policy defined & tested** (user: keep local +
-  conflict-copy; app: newest via materialiser).
+- **First-bootstrap same-path policy defined & tested** — uniform (keep local +
+  conflict-copy the divergent remote), no app/user split.
 - **Lazy stubs retain the remote content hash** while separately tracking local
   blob presence (`hasBlobByHash`).
 - **`pathScan` cursor semantics documented and tested** (high-water at scan start,
@@ -558,6 +571,7 @@ Before implementation is considered ready:
 ## Open questions
 
 - `version`: scalar Lamport (simple, generic LWW) vs. version vector (detects true
-  concurrency). Recommend scalar for v1; app paths use materialiser authority.
+  concurrency). Recommend scalar for v1. (No app awareness — app update policy is
+  entirely the materialiser layer's concern.)
 - User-file conflict policy: LWW-by-version + log vs. `.sync-conflict` copies.
 - Keep ino-keyed HTTP endpoints for debug/admin, or remove entirely?
