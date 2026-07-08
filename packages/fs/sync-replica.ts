@@ -190,11 +190,25 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 		return journal
 	}
 	return {
-		async pathDeltas(_cursor, _opts) {
-			// TODO(path-sync): requireJournal().readFrom + dual echo-filter + coalesceByPath.
-			void requireJournal
-			void coalesceByPath
-			throw new Error('not implemented')
+		async pathDeltas(cursor, opts) {
+			const journal = requireJournal()
+			const limit = opts?.limit ?? PAGE
+			const rows = await journal.readFrom(Number(cursor || '0'), limit)
+			// Two independent echo filters (see ChangeSource): origin client-id for
+			// pull, local apply source for push. Both applied here; neither stalls the
+			// cursor — `to` advances to the last RAW row so a fully-filtered page still
+			// makes progress.
+			const kept = rows.filter(
+				(r) =>
+					(!opts?.excludeOrigin || r.change.source !== opts.excludeOrigin) &&
+					(!opts?.excludeLocalSource || r.localSource !== opts.excludeLocalSource)
+			)
+			const changes = coalesceByPath(kept.map((r) => r.change))
+			return {
+				changes,
+				to: String(rows[rows.length - 1]?.seq ?? cursor ?? '0'),
+				done: rows.length < limit
+			}
 		},
 		async pathScan(_page, _opts) {
 			// TODO(path-sync): freeze syncCursor=head() at start; walk tree as puts.
