@@ -232,7 +232,18 @@ export async function changeDigest(change: PathChange): Promise<string> {
 }
 
 /** Collapse multiple changes on one path to its final state, preserving order. */
-export function coalesceByPath(_changes: PathChange[]): PathChange[] {
-	// TODO(path-sync): last-writer-per-path within a page, keeping tree ordering.
-	throw new Error('not implemented')
+export function coalesceByPath(changes: PathChange[]): PathChange[] {
+	// Last write per path wins, but keep each path at its FIRST-seen position so a
+	// parent's put still precedes its child's (the apply layer re-sorts anyway).
+	const final = new Map<string, PathChange>()
+	for (const c of changes) final.set(c.path, c)
+	const seen = new Set<string>()
+	const out: PathChange[] = []
+	for (const c of changes) {
+		if (seen.has(c.path)) continue
+		seen.add(c.path)
+		const f = final.get(c.path)
+		if (f) out.push(f)
+	}
+	return out
 }
