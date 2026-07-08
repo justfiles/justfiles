@@ -139,26 +139,43 @@ local-first stance and heterogeneous backends, **path** is the right identity.
 
 ### Wire shape (path-keyed)
 
+The wire types are the **`/fs` sync-service contract**, so define them **schema-
+first** (one canonical Zod schema) and `z.infer` the TS types the code uses — no
+hand-written interface to drift from the schema. This lives once with the fs sync
+service and is shared by both the local `SyncReplica` and the `/fs` HTTP layer.
+
 ```ts
-// The subset of InodeMeta that syncs. Note: NO ino.
-export interface SyncMeta {
-	type: FileType            // Regular | Directory | Symlink
-	mode: number
-	mtimeNs: bigint
-	size: bigint
-	symlinkTarget?: string
-	xattrs?: Record<string, Uint8Array>   // excluding trusted.sync.* (local)
-}
+// packages/fs (sync-wire contract) — the single source of truth.
+// JSON-friendly encodings: bigint (mtimeNs/size) as strings, xattr bytes as base64.
+export const SyncMeta = z.object({
+	type: z.number(),                       // FileType: Regular | Directory | Symlink
+	mode: z.number(),
+	mtimeNs: z.string(),                    // bigint as string
+	size: z.string(),                       // bigint as string
+	symlinkTarget: z.string().optional(),
+	xattrs: z.record(z.string()).optional() // name -> base64 (excludes trusted.sync.*)
+})
 
 // A change to the tree, addressed by path. `contentHash` references a blob
 // (undefined for dirs/symlinks). `version` drives generic LWW (see Conflicts).
-export type PathChange =
-	| { kind: 'put'; path: string; meta: SyncMeta; contentHash?: string; version: number; source?: string }
-	| { kind: 'delete'; path: string; version: number; source?: string }
+// `source` = origin client-id, so a replica filters its own echoes on pull
+// (same role as today's `MutationOptions.source` / `REMOTE_SOURCE`).
+export const PathChange = z.discriminatedUnion('kind', [
+	z.object({ kind: z.literal('put'), path: z.string(), version: z.number(),
+	           source: z.string().optional(), contentHash: z.string().optional(),
+	           meta: SyncMeta }),
+	z.object({ kind: z.literal('delete'), path: z.string(), version: z.number(),
+	           source: z.string().optional() })
+])
+
+// Types the code uses are inferred, never re-declared.
+export type SyncMeta = z.infer<typeof SyncMeta>
+export type PathChange = z.infer<typeof PathChange>
 ```
 
-`source` carries the client-id so a replica filters its own echoes on pull (same
-role as today's `MutationOptions.source` / `REMOTE_SOURCE`).
+The local `Storage` boundary converts between its native `InodeMeta` (`bigint`
+sizes/times, `Uint8Array` xattrs) and this JSON-encoded `SyncMeta` — the same
+encode/decode the HTTP layer needs, done once.
 
 ### The `SyncReplica` adapter (keep `Storage` lean — feedback #7)
 
@@ -388,25 +405,18 @@ correctness dependency.
 ### `/fs` transport (path-based endpoints)
 
 The remote `SyncReplica` is the HTTP client for these; the DO serves them over its
-local `SyncReplica`. Wire encoding: `bigint` (`mtimeNs`/`size`) as strings, xattr
-bytes as base64, `version` as a number.
+local `SyncReplica`. The request/response bodies reuse the canonical `PathChange`
+/ `SyncMeta` schema from **Wire shape** above (schema-first; the service just
+imports it) — no separate wire types are declared here.
 
 ```ts
-// packages/core/src/fs.ts
-const SyncMetaWire = z.object({
-	type: z.number(), mode: z.number(),
-	mtimeNs: z.string(), size: z.string(),          // bigint as string
-	symlinkTarget: z.string().optional(),
-	xattrs: z.record(z.string()).optional(),        // name -> base64
+// packages/core/src/fs.ts — imports { PathChange } from the fs sync-wire contract.
+const ChangesPage = z.object({
+	changes: z.array(PathChange),
+	to: z.string(),          // SyncCursor to persist
+	done: z.boolean()        // false => more pages remain
 })
-const PathChangeWire = z.discriminatedUnion('kind', [
-	z.object({ kind: z.literal('put'), path: z.string(), version: z.number(),
-	           source: z.string().optional(), contentHash: z.string().optional(),
-	           meta: SyncMetaWire }),
-	z.object({ kind: z.literal('delete'), path: z.string(), version: z.number(),
-	           source: z.string().optional() }),
-])
-type ChangesPage = { changes: z.infer<typeof PathChangeWire>[]; to: string; done: boolean }
+type ChangesPage = z.infer<typeof ChangesPage>
 ```
 
 Endpoints (each maps to one `SyncReplica` method):
