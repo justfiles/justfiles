@@ -135,6 +135,14 @@ function toBase64(b: Uint8Array): string {
 	return btoa(s)
 }
 
+/** Portable (browser + node) base64 decode back to raw bytes. */
+function fromBase64(s: string): Uint8Array {
+	const bin = atob(s)
+	const out = new Uint8Array(bin.length)
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+	return out
+}
+
 /**
  * Convert a backend `InodeMeta` (bigint sizes/times, no wire encoding) plus its
  * user-xattr snapshot into the JSON-encoded `SyncMeta`. Excludes `ctimeNs` and
@@ -165,12 +173,23 @@ export function syncMetaFromInode(meta: InodeMeta, xattrs?: Record<string, Uint8
  * Convert a wire `SyncMeta` back into a backend `InodeMeta` patch (ctime is set
  * locally at apply time, never from the wire) plus the decoded xattr snapshot.
  */
-export function inodeMetaFromSync(_meta: SyncMeta): {
+export function inodeMetaFromSync(sm: SyncMeta): {
 	meta: Partial<InodeMeta>
 	xattrs: Record<string, Uint8Array>
 } {
-	// TODO(path-sync): decode into InodeMeta patch + Uint8Array xattr map.
-	throw new Error('not implemented')
+	const meta: Partial<InodeMeta> = {
+		type: sm.type,
+		mode: sm.mode,
+		mtimeNs: BigInt(sm.mtimeNs),
+		size: BigInt(sm.size)
+		// ctimeNs is intentionally absent — set locally at apply time, never wired.
+	}
+	if (sm.symlinkTarget !== undefined) meta.symlinkTarget = sm.symlinkTarget
+	const xattrs: Record<string, Uint8Array> = {}
+	if (sm.xattrs) {
+		for (const [name, value] of Object.entries(sm.xattrs)) xattrs[name] = fromBase64(value)
+	}
+	return { meta, xattrs }
 }
 
 // ── Conflict tie-break + coalescing ───────────────────────────────────────────
