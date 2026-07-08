@@ -201,9 +201,34 @@ export function inodeMetaFromSync(sm: SyncMeta): {
  * any echo-suppression metadata so the same logical change digests identically
  * before vs after a server stamps its origin.
  */
-export function changeDigest(_change: PathChange): Promise<string> {
-	// TODO(path-sync): stable canonical serialization -> sha256 hex.
-	throw new Error('not implemented')
+export async function changeDigest(change: PathChange): Promise<string> {
+	// Canonical over DURABLE state only — never `source`, `path`, or `version`
+	// (those are separate key terms / echo-suppression). xattrs are sorted so the
+	// digest is order-independent. A delete carries only its `kind`, so two deletes
+	// tie and a put vs delete at equal version still order.
+	let canonical: unknown
+	if (change.kind === 'delete') {
+		canonical = { kind: 'delete' }
+	} else {
+		const m = change.meta
+		canonical = {
+			kind: 'put',
+			type: m.type,
+			mode: m.mode,
+			mtimeNs: m.mtimeNs,
+			size: m.size,
+			symlinkTarget: m.symlinkTarget ?? null,
+			xattrs: m.xattrs
+				? Object.keys(m.xattrs)
+						.sort()
+						.map((k) => [k, m.xattrs?.[k]])
+				: [],
+			contentHash: change.contentHash ?? null
+		}
+	}
+	const bytes = new TextEncoder().encode(JSON.stringify(canonical))
+	const digest = await crypto.subtle.digest('SHA-256', bytes)
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** Collapse multiple changes on one path to its final state, preserving order. */
