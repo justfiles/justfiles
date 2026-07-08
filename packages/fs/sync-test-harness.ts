@@ -154,6 +154,9 @@ export interface Peer {
 	rm(path: string, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
 	rename(oldPath: string, newPath: string): Promise<void>
 	mkdir(path: string, opts?: StageOpts & { recursive?: boolean }): Promise<void>
+	symlink(target: string, path: string): Promise<void>
+	lstat(path: string): Promise<Stat>
+	readlink(path: string): Promise<string>
 
 	// staging seam: create a regular file with a pinned version/meta
 	write(path: string, data: Uint8Array, opts?: StageOpts): Promise<void>
@@ -197,6 +200,9 @@ function makePeer(
 		exists: (path) => vol.exists(path),
 		rm: (path, o) => vol.rm(path, o),
 		rename: (a, b) => vol.rename(a, b),
+		symlink: (target, path) => vol.symlink(target, path),
+		lstat: (path) => vol.lstat(path),
+		readlink: (path) => vol.readlink(path),
 		orphanCount,
 		hasLocalBlob: (hash) => replica.hasBlobByHash(hash),
 
@@ -274,7 +280,11 @@ export interface TwoPeers {
 	/** Drive push+pull both directions to quiescence (timer disabled). */
 	syncBoth(opts?: { limit?: number }): Promise<void>
 	/** Page a full snapshot from server->client; returns the frozen high-water. */
-	bootstrap(opts?: { limit?: number }): Promise<{ syncCursor: string }>
+	bootstrap(opts?: {
+		limit?: number
+		/** Called after each page is applied (lets a test mutate the remote mid-snapshot). */
+		onPage?: (page: { syncCursor: string; done: boolean }) => Promise<void>
+	}): Promise<{ syncCursor: string; pageCursors: string[] }>
 	/** Every change that crossed the client->server push direction. */
 	pushedChanges(): PathChange[]
 }
@@ -340,20 +350,26 @@ export function wire(
 		}
 	}
 
-	async function bootstrap(o?: { limit?: number }): Promise<{ syncCursor: string }> {
+	async function bootstrap(o?: {
+		limit?: number
+		onPage?: (page: { syncCursor: string; done: boolean }) => Promise<void>
+	}): Promise<{ syncCursor: string; pageCursors: string[] }> {
 		const limit = o?.limit ?? PAGE
 		let page: string | undefined
 		let syncCursor = ''
+		const pageCursors: string[] = []
 		do {
 			const res = await server.replica.pathScan(page, { limit })
 			syncCursor = res.syncCursor
+			pageCursors.push(res.syncCursor)
 			await uploadBlobs(res.changes, server.replica, client.replica)
 			await client.replica.applyPathChanges(res.changes, (h) => server.replica.getBlobByHash(h), {
 				source: REMOTE_SOURCE
 			})
+			if (o?.onPage) await o.onPage({ syncCursor: res.syncCursor, done: res.done })
 			page = res.done ? undefined : res.next
 		} while (page)
-		return { syncCursor }
+		return { syncCursor, pageCursors }
 	}
 
 	client.pullFrom = async (cursor: string): Promise<void> => {

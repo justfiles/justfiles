@@ -16,9 +16,10 @@ import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
 import { isLocalOnlyPath, journaledChangeSource, localSyncReplica } from './sync-replica'
-import { bytes, sha256 } from './sync-test-harness'
+import { bytes, sha256, text } from './sync-test-harness'
 import type { PathChange, SyncMeta } from './sync-wire'
 import {
+	ContentHash,
 	changeDigest,
 	coalesceByPath,
 	compareVersion,
@@ -27,7 +28,8 @@ import {
 	isCanonicalPath,
 	PathChange as PathChangeSchema,
 	parseVersion,
-	syncMetaFromInode
+	syncMetaFromInode,
+	Version
 } from './sync-wire'
 import { REMOTE_SOURCE } from './synced'
 import { FileType } from './types'
@@ -65,6 +67,34 @@ function dir(path: string, version: string, meta?: Partial<SyncMeta>): PathChang
 
 function del(path: string, version: string): PathChange {
 	return { kind: 'delete', path, version }
+}
+
+function symlink(
+	path: string,
+	version: string,
+	target: string,
+	meta?: Partial<SyncMeta>
+): PathChange {
+	return {
+		kind: 'put',
+		path,
+		version,
+		meta: {
+			type: FileType.Symlink,
+			mode: 0o777,
+			mtimeNs: '0',
+			size: String(bytes(target).length),
+			symlinkTarget: target,
+			...meta
+		}
+	}
+}
+
+function makeReplica(store: Storage, lazyContent = false) {
+	return localSyncReplica(store, journaledChangeSource(store), {
+		lazyContent,
+		localActorId: 'me'
+	})
 }
 
 function fakeJournalStore(rows: JournalRow[]): Storage {
@@ -325,13 +355,6 @@ describe('memStorage caps.pathApply.applyJournaled', () => {
 // ── localSyncReplica (RED) ────────────────────────────────────────────────────
 
 describe('localSyncReplica', () => {
-	function makeReplica(store: Storage, lazyContent = false) {
-		return localSyncReplica(store, journaledChangeSource(store), {
-			lazyContent,
-			localActorId: 'me'
-		})
-	}
-
 	it('never emits /.state or /.state/** from pathDeltas', async () => {
 		const store = fakeJournalStore([
 			{ seq: 1, change: put('/notes/a', '1', 'x') },
@@ -370,5 +393,214 @@ describe('localSyncReplica', () => {
 		await replica.putBlobByHash(hash, data)
 		expect(await replica.hasBlobByHash(hash)).toBe(true)
 		expect(await replica.getBlobByHash(hash)).toEqual(data)
+	})
+})
+
+// ── ContentHash / Version schema breadth (GREEN) — issue #144 item 6 ──────────
+
+describe('ContentHash / Version schema', () => {
+	it('ContentHash accepts lowercase 64-hex and rejects everything else', () => {
+		expect(() => ContentHash.parse(sha256('x'))).not.toThrow()
+		expect(() => ContentHash.parse('A'.repeat(64))).toThrow() // uppercase
+		expect(() => ContentHash.parse('a'.repeat(63))).toThrow() // too short
+		expect(() => ContentHash.parse('a'.repeat(65))).toThrow() // too long
+		expect(() => ContentHash.parse(`sha256-${'a'.repeat(64)}`)).toThrow() // prefixed
+	})
+
+	it('Version accepts 0 and positive decimals, rejects leading zeros / signs / empties', () => {
+		expect(() => Version.parse('0')).not.toThrow()
+		expect(() => Version.parse('10')).not.toThrow()
+		expect(() => Version.parse('01')).toThrow() // leading zero
+		expect(() => Version.parse('')).toThrow()
+		expect(() => Version.parse('-1')).toThrow()
+		expect(() => Version.parse('1.0')).toThrow()
+	})
+
+	it('PathChange accepts a symlink put (target, no contentHash)', () => {
+		expect(() => PathChangeSchema.parse(symlink('/l', '1', '/target'))).not.toThrow()
+	})
+})
+
+// ── symlink + xattr wire encode/decode (RED) — issue #144 item 6 ──────────────
+
+describe('syncMetaFromInode (symlink + xattr exclusion)', () => {
+	it('encodes a symlink target and carries no contentHash', () => {
+		const sm = syncMetaFromInode({
+			type: FileType.Symlink,
+			size: 7n,
+			mode: 0o777,
+			mtimeNs: 0n,
+			ctimeNs: 0n,
+			symlinkTarget: '/target'
+		})
+		expect(sm.type).toBe(FileType.Symlink)
+		expect(sm.symlinkTarget).toBe('/target')
+		expect(sm).not.toHaveProperty('contentHash')
+	})
+
+	it('excludes trusted.sync.* xattrs from the wire snapshot', () => {
+		const sm = syncMetaFromInode(
+			{
+				type: FileType.Regular,
+				size: 0n,
+				mode: 0o644,
+				mtimeNs: 0n,
+				ctimeNs: 0n,
+				contentHash: sha256('')
+			},
+			{ 'user.keep': bytes('k'), 'trusted.sync.baseline': bytes('secret') }
+		)
+		expect(sm.xattrs && Object.keys(sm.xattrs)).toEqual(['user.keep'])
+	})
+})
+
+// ── changeDigest: sorted xattrs + symlink target (RED) — issue #144 item 6 ────
+
+describe('changeDigest (xattrs + symlink)', () => {
+	it('is order-independent over xattrs (canonically sorted)', async () => {
+		const a = put('/f', '1', 'x', { xattrs: { 'user.a': 'AA', 'user.b': 'BB' } })
+		const b = put('/f', '1', 'x', { xattrs: { 'user.b': 'BB', 'user.a': 'AA' } })
+		expect(await changeDigest(a)).toBe(await changeDigest(b))
+	})
+
+	it('is sensitive to the symlink target', async () => {
+		expect(await changeDigest(symlink('/l', '1', '/a'))).not.toBe(
+			await changeDigest(symlink('/l', '1', '/b'))
+		)
+	})
+})
+
+// ── Filtered delta cursor progress (RED) — issue #144 item 2 ──────────────────
+
+describe('journaledChangeSource.pathDeltas cursor progress', () => {
+	it('advances the cursor and stays not-done when a full page is entirely filtered', async () => {
+		const cs = journaledChangeSource(
+			fakeJournalStore([
+				{ seq: 1, change: { ...put('/a', '1', 'x'), source: 'me' } },
+				{ seq: 2, change: { ...put('/b', '1', 'y'), source: 'me' } }
+			])
+		)
+		const res = await cs.pathDeltas('', { excludeOrigin: 'me', limit: 2 })
+		expect(res.changes).toEqual([]) // everything filtered
+		expect(res.to).toBe('2') // advance to the last RAW row, not stall at 0
+		expect(res.done).toBe(false) // a full raw page => maybe more; never stall
+	})
+})
+
+// ── PathMutationStore version/tombstone generator (RED) — issue #144 item 3 ───
+
+describe('memStorage caps.pathApply version/tombstone generator', () => {
+	async function lastRow(store: Storage, pred: (r: JournalRow) => boolean) {
+		const rows = (await store.caps?.journal?.readFrom(0, 100)) ?? []
+		return rows.findLast(pred)
+	}
+
+	it('journals the incoming change verbatim (version + origin source preserved)', async () => {
+		const store = memStorage()
+		await store.caps?.pathApply?.applyJournaled([{ ...put('/a', '5', 'x'), source: 'origin' }], {
+			localSource: REMOTE_SOURCE
+		})
+		const row = await lastRow(store, (r) => r.change.path === '/a')
+		expect(row?.change.version).toBe('5')
+		expect(row?.change.source).toBe('origin')
+		expect(row?.localSource).toBe(REMOTE_SOURCE)
+	})
+
+	it('fast-forwards path_version so a later local edit exceeds the applied version', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		await store.caps?.pathApply?.applyJournaled([put('/a', '5', 'x')], {
+			localSource: REMOTE_SOURCE
+		})
+		await vol.writeFile('/a', bytes('local-edit'))
+		const local = await lastRow(store, (r) => r.change.path === '/a' && !r.localSource)
+		expect(Number(local?.change.version)).toBe(6)
+	})
+
+	it('versions a recreate above the tombstone of a prior delete', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		await store.caps?.pathApply?.applyJournaled([put('/a', '5', 'x')], {
+			localSource: REMOTE_SOURCE
+		})
+		await store.caps?.pathApply?.applyJournaled([del('/a', '7')], { localSource: REMOTE_SOURCE })
+		await vol.writeFile('/a', bytes('recreated'))
+		const recreate = await lastRow(
+			store,
+			(r) => r.change.path === '/a' && r.change.kind === 'put' && !r.localSource
+		)
+		expect(Number(recreate?.change.version)).toBeGreaterThan(7)
+	})
+})
+
+// ── Apply / journal ordering invariants (RED) — issue #144 item 5 ─────────────
+
+describe('ordering invariants', () => {
+	it('applies an unsorted batch parent-before-child so no child is orphaned', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		await makeReplica(store).applyPathChanges(
+			[put('/a/b/c', '1', 'x'), dir('/a/b', '1'), dir('/a', '1')],
+			async () => bytes('x')
+		)
+		expect((await vol.stat('/a/b')).type).toBe(FileType.Directory)
+		expect(text(await vol.readFile('/a/b/c'))).toBe('x')
+	})
+
+	it('type replacement orders the recursive delete before the new put', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		const r = makeReplica(store)
+		await r.applyPathChanges([put('/p', '1', 'file')], async () => bytes('file'))
+		await r.applyPathChanges(
+			[del('/p', '2'), dir('/p', '3'), put('/p/child', '3', 'c')],
+			async () => bytes('c')
+		)
+		expect((await vol.stat('/p')).type).toBe(FileType.Directory)
+		expect(text(await vol.readFile('/p/child'))).toBe('c')
+	})
+
+	it('journals a directory rename as delete(child-first) then put(parent-first)', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		await vol.mkdir('/old/sub', { recursive: true })
+		await vol.writeFile('/old/sub/f', bytes('x'))
+		const head = (await store.caps?.journal?.head()) ?? 0
+		await vol.rename('/old', '/new')
+		const rows = (await store.caps?.journal?.readFrom(head, 100)) ?? []
+		const seq = rows.map((r) => `${r.change.kind} ${r.change.path}`)
+		const at = (s: string) => seq.indexOf(s)
+		// deletes: child before parent
+		expect(at('delete /old/sub/f')).toBeLessThan(at('delete /old/sub'))
+		expect(at('delete /old/sub')).toBeLessThan(at('delete /old'))
+		// puts: parent before child
+		expect(at('put /new')).toBeLessThan(at('put /new/sub'))
+		expect(at('put /new/sub')).toBeLessThan(at('put /new/sub/f'))
+		// all deletes precede all puts
+		expect(
+			Math.max(at('delete /old'), at('delete /old/sub'), at('delete /old/sub/f'))
+		).toBeLessThan(Math.min(at('put /new'), at('put /new/sub'), at('put /new/sub/f')))
+	})
+})
+
+// ── Complete xattr snapshot on apply (RED) — issue #144 item 6 ────────────────
+
+describe('localSyncReplica xattr snapshot', () => {
+	it('replaces the whole user-xattr set and never touches trusted.sync.*', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		const r = makeReplica(store)
+		await r.applyPathChanges(
+			[put('/f', '1', 'x', { xattrs: { 'user.a': 'QQ', 'user.b': 'RR' } })],
+			async () => bytes('x')
+		)
+		await vol.setXattr('/f', 'trusted.sync.local', bytes('keep'))
+		await r.applyPathChanges([put('/f', '2', 'x', { xattrs: { 'user.a': 'SS' } })], async () =>
+			bytes('x')
+		)
+		const names = (await vol.listXattr('/f')).sort()
+		expect(names).toContain('user.a')
+		expect(names).not.toContain('user.b') // absent from the snapshot => deleted
+		expect(await vol.getXattr('/f', 'trusted.sync.local')).toEqual(bytes('keep')) // local-only
 	})
 })

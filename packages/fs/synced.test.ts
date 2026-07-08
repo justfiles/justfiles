@@ -12,6 +12,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 import { memStorage } from './storage.mem'
+import type { SyncReplica } from './sync-replica'
 import { REMOTE_SOURCE, synced } from './synced'
 import { volume } from './volume'
 
@@ -219,5 +220,76 @@ describe('synced (lifecycle)', () => {
 		vol.onStatusChange((s) => seen.push(s))
 		await vol.flush()
 		expect(seen).toContain('synced')
+	})
+
+	// ── Post-scan reconcile (#144 item 4) ─────────────────────────────────────
+	it('re-bootstrap on an already-pushed profile reconciles local paths absent from remote, preserving /.state', async () => {
+		const remote = memStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/keep.txt', enc.encode('keep'))
+
+		const local = memStorage()
+		const vol1 = await synced({ local, remote, interval: 99_999 })
+		await vol1.flush() // bootstrap sets pullCursor
+		await vol1.writeFile('/pushed.txt', enc.encode('mine'))
+		await vol1.flush() // push sets pushCursor (everPushed) + pull
+		vol1.destroy()
+
+		// A stray local path the remote never had:
+		await volume(local).mkdir('/stray')
+		await volume(local).writeFile('/stray/f', enc.encode('x'))
+
+		// Force a re-bootstrap: clear pullCursor but keep pushCursor so everPushed
+		// stays true and reconcile runs (deletes local paths absent from remote).
+		const lv = volume(local)
+		const state = JSON.parse(dec.decode(await lv.readFile('/.state/sync'))) as {
+			pullCursor?: string
+		}
+		delete state.pullCursor
+		await lv.writeFile('/.state/sync', enc.encode(JSON.stringify(state)))
+
+		const vol2 = track(await synced({ local, remote, interval: 99_999 }))
+		await vol2.flush()
+		expect(await vol2.exists('/stray')).toBe(false) // reconciled away by path
+		expect(await vol2.exists('/stray/f')).toBe(false)
+		expect(await vol2.exists('/keep.txt')).toBe(true) // still on remote => kept
+		expect(await volume(local).exists('/.state')).toBe(true) // local-only preserved
+	})
+
+	// ── Dual-source wiring, client<->server factory (#144 item 7) ─────────────
+	// Asserts synced() drives PULL with excludeOrigin=clientId and stamps PUSH
+	// applies with source=REMOTE_SOURCE. excludeLocalSource (local deltas) is
+	// covered at the unit level (journaledChangeSource) since the local replica is
+	// internal to synced(). RED now: negotiate()/bootstrap throw so push/pull never
+	// run and nothing is recorded.
+	it('client<->server push uses REMOTE_SOURCE and pull uses excludeOrigin=clientId', async () => {
+		const deltaOpts: Array<Record<string, unknown> | undefined> = []
+		const applyOpts: Array<Record<string, unknown> | undefined> = []
+		const blobs = new Map<string, Uint8Array>()
+		let clientId = ''
+		const factory = (ctx: { clientId: string }): SyncReplica => {
+			clientId = ctx.clientId
+			return {
+				pathScan: async () => ({ changes: [], syncCursor: '0', done: true }),
+				pathDeltas: async (cursor, opts) => {
+					deltaOpts.push(opts)
+					return { changes: [], to: cursor || '0', done: true }
+				},
+				applyPathChanges: async (_changes, _getBlob, opts) => {
+					applyOpts.push(opts)
+				},
+				getBlobByHash: async (h) => blobs.get(h) ?? new Uint8Array(),
+				hasBlobByHash: async (h) => blobs.has(h),
+				putBlobByHash: async (h, d) => {
+					blobs.set(h, d)
+				}
+			}
+		}
+		const vol = track(await synced({ local: memStorage(), remote: factory, interval: 99_999 }))
+		await vol.writeFile('/a.txt', enc.encode('hi'))
+		await vol.flush() // negotiate + bootstrap
+		await vol.flush() // push + pull
+		expect(applyOpts.some((o) => o?.source === REMOTE_SOURCE)).toBe(true)
+		expect(deltaOpts.some((o) => o?.excludeOrigin === clientId)).toBe(true)
 	})
 })

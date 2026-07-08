@@ -199,6 +199,37 @@ describe('path-sync semantics', () => {
 		expect(text(await server.readFile('/f'))).toBe('SAME')
 	})
 
+	// #144 item 6 — symlinks sync by target
+	test('symlinks sync by target across replicas', async () => {
+		const { client, server, syncBoth } = twoPeers()
+		await server.writeFile('/target.txt', bytes('data'))
+		await server.symlink('/target.txt', '/link')
+		await syncBoth()
+		expect((await client.lstat('/link')).type).toBe(FileType.Symlink)
+		expect(await client.readlink('/link')).toBe('/target.txt')
+	})
+
+	// #144 item 1 — snapshot paging race + idempotent scan/delta overlap
+	test('snapshot pages share one frozen syncCursor; delta resume overlaps idempotently', async () => {
+		const { client, server, bootstrap } = twoPeers()
+		for (let i = 0; i < 250; i++) await server.writeFile(`/d/f${i}`, bytes(String(i)))
+		let mutated = false
+		const { syncCursor, pageCursors } = await bootstrap({
+			limit: 100,
+			// Mutate the remote MID-snapshot: a correct impl freezes syncCursor at scan
+			// start, so this write only surfaces on the post-scan delta resume.
+			onPage: async () => {
+				if (mutated) return
+				mutated = true
+				await server.writeFile('/d/f0', bytes('CHANGED'))
+			}
+		})
+		expect(new Set(pageCursors).size).toBe(1) // one frozen high-water across pages
+		await client.pullFrom!(syncCursor) // resume deltas at the frozen cursor
+		expect((await client.readdir('/d')).length).toBe(250) // no gaps, no dupes
+		expect(text(await client.readFile('/d/f0'))).toBe('CHANGED') // delta overlaps snapshot idempotently
+	})
+
 	// Property test — random ops converge byte-identical with zero orphans
 	test('random ops on two peers converge byte-identical with zero orphaned inodes', async () => {
 		const { client, server, syncBoth } = twoPeers()
