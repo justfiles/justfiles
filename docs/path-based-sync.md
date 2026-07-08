@@ -442,8 +442,9 @@ GET  /fs/blob/:hash                              -> raw bytes    # getBlobByHash
   `POST /fs/path/changes`; the handler applies to the DO's `Storage` and **rejects
   a `put` whose `contentHash` has no stored blob**.
 
-These replace the ino-keyed `/updates`, `/scan`, `/ops`, `/inodes/:ino/blob` for
-sync (retain those for admin/debug).
+These **replace and remove** the ino-keyed `/updates`, `/scan`, `/ops`,
+`/inodes/:ino/blob` — deleted, not kept for debug (they only served ino-based
+sync, which no longer exists).
 
 ### Conflicts & versioning
 
@@ -455,9 +456,9 @@ vs. user files — it never inspects paths like `/applications/**`.**
   strictly "last write": highest `version`, tie-broken by `(mtimeNs, contentHash)`.
   (For true LWW under concurrent equal-version writes, widen the key to a
   `(version, mtimeNs, actorId)` tuple — deferred; v1 only needs determinism.)
-- The losing side is preserved as a **conflict-copy** so no local work is lost
-  (uniform for all paths; may be deferred to a later version — v1 could log +
-  keep the winner).
+- **v1 (decided): LWW-by-version wins; the overwrite is logged.** `.sync-conflict`
+  copies (preserve the loser, Syncthing-style, zero data loss) are the planned
+  follow-up. Uniform for all paths.
 
 That's the whole conflict story at this layer.
 
@@ -570,8 +571,8 @@ untouched**.
    (`PathSyncState` + tombstones); lazy `readFile` hydrates by `contentHash`.
 3. `packages/core/src/fs.ts` — path-based endpoints per **`/fs` transport** above
    (`GET /fs/path/changes`, `GET /fs/path/snapshot`, `POST /fs/path/changes`,
-   `PUT`/`GET`/`HEAD /fs/blob/:hash`). Deprecate ino-keyed `/updates`,`/scan`,
-   `/ops`,`/inodes/:ino/blob` for sync (keep for admin/debug only).
+   `PUT`/`GET`/`HEAD /fs/blob/:hash`). **Remove** the ino-keyed `/updates`,`/scan`,
+   `/ops`,`/inodes/:ino/blob` entirely (they only served ino-based sync).
 4. `storage.fs.ts` (native) — reference backend proving ino stays a real-OS
    concept. Full participation needs content hashing + a path journal/delta source
    (future; see nits).
@@ -767,10 +768,12 @@ Before implementation is considered ready:
    heterogeneous-backend sync (spud-mac ↔ frieren). It is a prerequisite for that
    roadmap, not gold-plating.
 
-## Open questions
+## Decisions (resolved)
 
-- `version`: scalar Lamport (simple, generic LWW) vs. version vector (detects true
-  concurrency). Recommend scalar for v1. (No app awareness — app update policy is
-  entirely the materialiser layer's concern.)
-- User-file conflict policy: LWW-by-version + log vs. `.sync-conflict` copies.
-- Keep ino-keyed HTTP endpoints for debug/admin, or remove entirely?
+- **Version = scalar Lamport for v1.** Version vectors (true concurrency
+  detection) are a later upgrade. App-update policy stays entirely in the
+  materialiser layer, not the sync engine.
+- **User-file conflict = LWW-by-version + log for v1.** `.sync-conflict` copies
+  (zero data loss, Syncthing-style) are the planned follow-up.
+- **Remove the ino-keyed HTTP sync endpoints** (`/updates`, `/scan`, `/ops`,
+  `/inodes/:ino/blob`) — deleted, not retained for debug.
