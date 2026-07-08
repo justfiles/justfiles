@@ -13,7 +13,10 @@ import { FileType } from './types'
  */
 export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 	const metas = new Map<Ino, InodeMeta>()
-	const blobs = new Map<Ino, Uint8Array>()
+	// Content is hash-addressed (matching R2): the inode holds a `contentHash` ref,
+	// the bytes live here keyed by that hash. Dedupes and lets pulled content be
+	// materialised out-of-band by the SyncReplica's BlobStore.
+	const hashBlobs = new Map<string, Uint8Array>()
 	const dirs = new Map<string, DirentMin>() // key: `${dirIno}\0${name}`
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
@@ -62,6 +65,12 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 
 	function mint(): Ino {
 		return mintIno ? mintIno() : crypto.randomUUID()
+	}
+
+	async function sha256Hex(data: Uint8Array): Promise<string> {
+		const buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+		const digest = await crypto.subtle.digest('SHA-256', buf)
+		return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 	}
 
 	/** Split a canonical absolute path into { parentPath, name }. */
@@ -144,7 +153,6 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 						if (dirs.has(key)) throw new Error(`EEXIST: ${name}`)
 						const ino = mintIno()
 						metas.set(ino, { ...meta })
-						if (meta.type === FileType.Regular) blobs.set(ino, new Uint8Array())
 						dirs.set(key, { ino, type: meta.type })
 						emit({ ino, kind: 'meta', source: options?.source })
 						emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
@@ -163,6 +171,17 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 			},
 			async head() {
 				return journalRows[journalRows.length - 1]?.seq ?? 0
+			}
+		},
+		content: {
+			async getByHash(hash) {
+				return hashBlobs.get(hash)?.slice() ?? null
+			},
+			async hasByHash(hash) {
+				return hashBlobs.has(hash)
+			},
+			async putByHash(hash, data) {
+				hashBlobs.set(hash, data.slice())
 			}
 		},
 		pathApply: {
@@ -211,7 +230,6 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 						if (parentIno) dirs.delete(dirKey(parentIno, name))
 						if (ino && !hasDirentReference(ino)) {
 							metas.delete(ino)
-							blobs.delete(ino)
 							xattrs.delete(ino)
 						}
 						tombstone.set(p, Math.max(tombstone.get(p) ?? 0, Number(change.version)))
@@ -250,27 +268,34 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 				symlinkTarget: patch.symlinkTarget
 			}
 			metas.set(ino, full)
-			if (patch.type === FileType.Regular) blobs.set(ino, new Uint8Array())
 			emit({ ino, kind: 'meta', source: options?.source })
 		},
 
 		async deleteInode(ino) {
 			if (hasDirentReference(ino)) return
 			metas.delete(ino)
-			blobs.delete(ino)
+			// Content is hash-addressed and shared; leave the blob for GC (a hash with
+			// no referencing path is a harmless orphan).
 			xattrs.delete(ino)
 			emit({ ino, kind: 'meta' })
 		},
 
 		async getBlob(ino) {
-			return blobs.get(ino)?.slice() ?? new Uint8Array()
+			const hash = metas.get(ino)?.contentHash
+			if (!hash) return new Uint8Array()
+			return hashBlobs.get(hash)?.slice() ?? new Uint8Array()
 		},
 
 		async putBlob(ino, data, options) {
-			blobs.set(ino, data.slice())
-			const meta = metas.get(ino)
-			if (meta) metas.set(ino, { ...meta, size: BigInt(data.length) })
+			// Emit synchronously (before the async content hash) so several storage ops
+			// in one turn coalesce into a single watch event. The signal is a
+			// change-notification only; `putBlob` resolves after the store commits, and
+			// its awaiting caller (writeFile) sees the new content/hash.
 			emit({ ino, kind: 'content', source: options?.source })
+			const hash = await sha256Hex(data)
+			hashBlobs.set(hash, data.slice())
+			const meta = metas.get(ino)
+			if (meta) metas.set(ino, { ...meta, contentHash: hash, size: BigInt(data.length) })
 		},
 
 		async getDirent(dirIno, name) {

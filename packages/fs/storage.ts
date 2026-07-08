@@ -190,6 +190,23 @@ export interface StorageCapabilities {
 	 * txn; blob bytes are materialised out-of-band.
 	 */
 	pathApply?: PathMutationStore
+
+	/**
+	 * The backend's hash-addressed content store. Blobs are keyed by content hash
+	 * (matching R2), so the inode holds a `contentHash` reference and the bytes live
+	 * here. The local `SyncReplica.BlobStore` reads/writes it directly to materialise
+	 * pulled content out-of-band and to hydrate lazy stubs; `getBlob` resolves an
+	 * inode's bytes through it. A stored hash with no referencing path is a harmless
+	 * orphan (GC reclaims it); a referenced hash with no blob is a lazy stub.
+	 */
+	content?: ContentStore
+}
+
+/** Hash-addressed content store (see `StorageCapabilities.content`). */
+export interface ContentStore {
+	getByHash(hash: string): Promise<Uint8Array | null>
+	hasByHash(hash: string): Promise<boolean>
+	putByHash(hash: string, data: Uint8Array): Promise<void>
 }
 
 /**

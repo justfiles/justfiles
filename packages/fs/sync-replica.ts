@@ -9,7 +9,7 @@
  * (in `@justfiles/core`) is the HTTP client to the `/fs` path endpoints.
  */
 
-import type { Storage } from './storage'
+import type { ContentStore, Storage } from './storage'
 import type { PathChange } from './sync-wire'
 import { coalesceByPath } from './sync-wire'
 
@@ -247,10 +247,15 @@ export function nativeChangeSource(
  * rule) on top of the delegated `changes`.
  */
 export function localSyncReplica(
-	_storage: Storage,
+	storage: Storage,
 	changes: ChangeSource,
 	_opts: { lazyContent: boolean; localActorId: string }
 ): SyncReplica {
+	const requireContent = (): ContentStore => {
+		const content = storage.caps?.content
+		if (!content) throw new Error('backend exposes no content store (caps.content)')
+		return content
+	}
 	return {
 		async pathDeltas(cursor, opts) {
 			// Hard /.state exclusion (see isLocalOnlyPath): local-only state never
@@ -267,17 +272,16 @@ export function localSyncReplica(
 			// PathMutationStore.applyJournaled; resolve paths to inos (reuse/mint).
 			throw new Error('not implemented')
 		},
-		async getBlobByHash(_hash) {
-			// TODO(path-sync): read the hash-addressed content store.
-			throw new Error('not implemented')
+		async getBlobByHash(hash) {
+			const blob = await requireContent().getByHash(hash)
+			if (!blob) throw new Error(`ENOENT: blob ${hash}`)
+			return blob
 		},
-		async hasBlobByHash(_hash) {
-			// TODO(path-sync): local presence check against the content store.
-			throw new Error('not implemented')
+		async hasBlobByHash(hash) {
+			return requireContent().hasByHash(hash)
 		},
-		async putBlobByHash(_hash, _data) {
-			// TODO(path-sync): write the hash-addressed content store.
-			throw new Error('not implemented')
+		async putBlobByHash(hash, data) {
+			await requireContent().putByHash(hash, data)
 		}
 	}
 }
