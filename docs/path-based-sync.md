@@ -33,6 +33,15 @@ before implementation.
 > make lazy hydration explicit on the local replica; exclude `/.state` **and**
 > `/.state/**`; reject `delete('/')`; keep the generic ino CRUD endpoints for
 > `apiStorage` (remove only the sync-specific `/updates`,`/scan`,`/ops`).
+> **Round 6 (issue #143 re-review):** add the transactional path-apply seam
+> (`PathMutationStore.applyJournaled`) so remote apply writes the incoming
+> version/origin verbatim in one txn (public primitives can't); make the conflict
+> digest **source-independent** and total (`(version, changeDigest)` over durable
+> state, excluding server-stamped `source`, deletes well-defined); encode
+> `version` as a decimal string (not `z.number()`); add the `GET /fs` handshake
+> (`protocolVersion`/`schemaVersion`); define journal `origin`/`localSource`
+> sourcing for generic ino-CRUD writes; and tighten the schema (`FileType` enum,
+> reject `put('/')`/`delete('/')`).
 
 ## TL;DR
 
@@ -180,9 +189,15 @@ export const SyncPath = z.string().refine(isCanonicalPath, 'non-canonical path')
 // the hash itself is bare hex, NOT prefixed 'sha256-…'. Reject anything else.
 export const ContentHash = z.string().regex(/^[0-9a-f]{64}$/)
 
+// Per-path Lamport version. Encoded as a DECIMAL STRING on the wire (like
+// mtimeNs/size), NOT z.number() (re-review): versions are long-lived protocol
+// data, and a string can widen to bigint later without a wire change or a 2^53
+// ceiling. Internally a replica may keep it as a JS integer today.
+export const Version = z.string().regex(/^(0|[1-9][0-9]*)$/)
+
 export const SyncMeta = z.object({
-	type: z.number(),                       // FileType: Regular | Directory | Symlink
-	mode: z.number(),
+	type: z.nativeEnum(FileType),           // Regular | Directory | Symlink — enum, not any number
+	mode: z.number().int(),
 	mtimeNs: z.string(),                    // bigint as string
 	size: z.string(),                       // bigint as string
 	// NO ctimeNs (intentional): ctime is POSIX-local — it records when THIS
@@ -205,14 +220,17 @@ export const SyncMeta = z.object({
 // `contentHash` invariants are SCHEMA-ENFORCED (#143.4): a regular-file put MUST
 // carry a hash (empty files included — the SHA-256 of empty bytes,
 // e3b0c442…b855) so every regular file is hydratable; dirs/symlinks MUST NOT
-// carry one. `.superRefine` rejects a hashless regular put or a hashed dir/symlink.
+// carry one. The root `/` is never a change subject (re-review): `put('/')` and
+// `delete('/')` are both rejected here.
 export const PathChange = z.discriminatedUnion('kind', [
-	z.object({ kind: z.literal('put'), path: SyncPath, version: z.number(),
+	z.object({ kind: z.literal('put'), path: SyncPath, version: Version,
 	           source: z.string().optional(), contentHash: ContentHash.optional(),
 	           meta: SyncMeta }),
-	z.object({ kind: z.literal('delete'), path: SyncPath, version: z.number(),
+	z.object({ kind: z.literal('delete'), path: SyncPath, version: Version,
 	           source: z.string().optional() })
 ]).superRefine((c, ctx) => {
+	if (c.path === '/')
+		ctx.addIssue({ code: 'custom', message: 'root / is never a PathChange subject' })
 	if (c.kind !== 'put') return
 	const isRegular = c.meta.type === FileType.Regular
 	if (isRegular && !c.contentHash)
@@ -303,15 +321,44 @@ export interface SyncReplica extends ChangeSource {
 ```
 
 - **Local adapter** wraps a `Storage`/`Volume`, constructed with a fixed
-  `lazyContent` flag (#143.5): `applyPathChanges` resolves paths to local inos
-  (reusing existing ones — in-place — or minting fresh ones), tags writes with
-  `opts.source` (→ journal `localSource`), and either fetches+stores blobs (eager)
-  or writes hash-retaining stubs (lazy); `pathDeltas` comes from the path journal
-  below.
+  `lazyContent` flag (#143.5). Crucially, its `applyPathChanges` does **not** call
+  the public `setMeta`/`putBlob`/`putDirent` primitives — those would treat each
+  write as a fresh local mutation, bump the version generator, and stamp a LOCAL
+  origin, discarding the incoming `version`/`source`. Instead it calls the
+  backend's **transactional path-apply seam** `PathMutationStore.applyJournaled`
+  (below), which mutates the tree, appends the journal row with the EXACT incoming
+  `(version, origin source)`, records `localSource`, and advances `path_version`
+  — all in one transaction. It resolves paths to local inos (reusing existing ones
+  — in-place — or minting fresh), and per `lazyContent` either fetches+stores
+  blobs (eager) or writes hash-retaining stubs (lazy). `pathDeltas` comes from the
+  path journal below.
 - **Remote adapter** is the HTTP client to `packages/core/src/fs.ts` new endpoints.
 - `synced.ts` pulls with `applyPathChanges(changes, getBlobByHash, { source:
   REMOTE_SOURCE })` so `volume.watch` and echo suppression keep working, while
   `PathChange.source` (origin client-id) still drives `excludeOrigin` filtering.
+
+**The transactional path-apply seam (re-review #1).** Owned backends (SQLite + IDB)
+implement one extra primitive so the local `SyncReplica` can apply remote changes
+atomically without the generator clobbering the incoming version/origin:
+
+```ts
+// Below `Storage`, beside the journal — SQLite + IDB implement it. Applies
+// remote-authored PathChanges in ONE mutation transaction each: mutate tree +
+// content, then append the journal row with the incoming change VERBATIM
+// (its exact `version` and origin `source`) plus `localSource`, and set
+// path_version[path] = max(path_version[path], change.version) (never bump).
+export interface PathMutationStore {
+	applyJournaled(
+		changes: PathChange[],
+		opts: { localSource?: string; lazyContent?: boolean }
+	): Promise<void>
+}
+```
+
+This is the seam Phase 0 must scaffold; without it `applyPathChanges` has no way
+to write “this exact version, authored by that origin, applied-by-us” atomically.
+`Storage` itself stays lean (no path methods); `PathMutationStore` is a separate,
+small backend capability alongside the `JournalStore`.
 
 ### Journaling / change detection (per-backend, behind `ChangeSource`)
 
@@ -399,7 +446,7 @@ The two primitives are trivially different:
 //   CREATE TABLE journal (
 //     seq INTEGER PRIMARY KEY AUTOINCREMENT,
 //     path TEXT NOT NULL, kind TEXT NOT NULL,          -- 'put' | 'delete'
-//     version INTEGER NOT NULL,
+//     version INTEGER NOT NULL,                     -- internal; wire-encoded as decimal string
 //     source TEXT,                                     -- ORIGIN client-id (wire)
 //     local_source TEXT,                               -- LOCAL apply source (#143.1)
 //     content_hash TEXT, meta_json TEXT);              -- meta/hash NULL for delete
@@ -421,27 +468,37 @@ The two primitives are trivially different:
 //   O(depth) index hops, not an O(N) scan (#142.5).
 ```
 
-**Scalar `version` ownership (#142.4).** The per-path Lamport `version` lives
-in the backend's `path_version` table and is bumped **transactionally with the
-journal row**, so the journal is the single source of truth for what version each
-change carries:
+**Scalar `version` ownership + `origin`/`localSource` population (#142.4, re-review).**
+There are exactly **two write paths** into an owned backend, and the journal fills
+its three sync fields (`version`, `source`=origin, `local_source`) differently for
+each. `MutationOptions.source` maps to **origin only** — it never doubles as
+`localSource` (the bug the re-review warns against):
 
-- **Local mutation** at path `p`: `v = COALESCE(path_version[p], 0) + 1`; write
-  `path_version[p] = v` and the journal row `version = v` in the mutation txn.
-- **Remote apply** (`applyPathChanges`, tagged `source = REMOTE_SOURCE`): set
-  `path_version[p] = max(path_version[p], incoming.version)` (fast-forward the
-  generator — never lower it, even if a stale/losing remote change arrives — so a
-  later local edit yields `incoming.version + 1`, never restarts at 1). The row is
-  still journaled but excluded from push by `source`.
+- **Local mutation** — any write through the public `Storage` primitives: a user
+  `Volume` write, *and* a generic ino-CRUD write via `apiStorage` (the endpoints
+  we keep). The journal stamps `origin = MutationOptions.source ?? localActorId`
+  (a browser/native backend uses its own client-id; the DO uses the pushing
+  client-id from `SOURCE_HEADER`), `local_source = NULL`, and
+  `version = COALESCE(path_version[p], 0) + 1` written to `path_version[p]` in the
+  same txn.
+- **Remote apply** — the transactional seam `PathMutationStore.applyJournaled`,
+  used only by `SyncReplica.applyPathChanges` on pull. It journals the incoming
+  change VERBATIM: `origin = change.source` (preserved, not re-stamped),
+  `version = change.version` (not bumped), `local_source = REMOTE_SOURCE`, and sets
+  `path_version[p] = max(path_version[p], change.version)` (fast-forward only —
+  never lower it, even for a stale/losing change — so a later local edit yields
+  `change.version + 1`, never restarts at 1). Excluded from push by
+  `excludeLocalSource: REMOTE_SOURCE`.
 - **Delete**: bump the version like any mutation and record it as the path's
   `tombstoneVersion` in `PathSyncState`; a later **recreate** at `p` starts from
   `max(path_version[p], tombstoneVersion) + 1`, so a resurrected path never sorts
   below its own tombstone.
 
-`PathSyncState` (below) keeps the *agreed* `baselineVersion` for conflict
-detection; `path_version` is the *generator*. They are distinct: the generator is
-storage-internal and stamps outgoing changes; the baseline is engine-internal
-(`/.state/sync`) and decides winners on pull.
+`localActorId` is the backend's configured client-id. `PathSyncState` (below)
+keeps the *agreed* `baselineVersion` for conflict detection; `path_version` is the
+*generator*. They are distinct: the generator is storage-internal and stamps
+outgoing changes; the baseline is engine-internal (`/.state/sync`) and decides
+winners on pull.
 
 **Path stamping is O(depth), in-transaction.** When the mutation runs the tree is
 consistent, so the backend resolves the path cheaply and stamps it into the row —
@@ -604,6 +661,15 @@ const ScanPage = z.object({
 	syncCursor: z.string(),       // delta high-water frozen at scan start; resume here
 	done: z.boolean()
 })
+// Handshake (re-review forward-compat): the existing `GET /` (returns rootIno) is
+// extended so a client can negotiate before syncing. `protocolVersion` = wire
+// contract; `schemaVersion` = /.state/sync shape. A future breaking change bumps
+// one of these; endpoints and paths stay stable.
+const Handshake = z.object({
+	rootIno: z.string(),
+	protocolVersion: z.number().int(),
+	schemaVersion: z.number().int()
+})
 type DeltaPage = z.infer<typeof DeltaPage>
 type ScanPage = z.infer<typeof ScanPage>
 ```
@@ -611,6 +677,9 @@ type ScanPage = z.infer<typeof ScanPage>
 Endpoints (each maps to one `SyncReplica` method):
 
 ```
+# HANDSHAKE
+GET  /fs                                         -> Handshake     # { rootIno, protocolVersion, schemaVersion }
+
 # PULL  (client reads the server's ChangeSource)
 GET  /fs/path/changes?cursor=&excludeOrigin=&limit=  -> DeltaPage   # pathDeltas
 GET  /fs/path/snapshot?page=&limit=                  -> ScanPage    # pathScan (all puts)
@@ -658,15 +727,25 @@ vs. user files — it never inspects paths like `/applications/**`.**
   `path_version` table — see Scalar `version` ownership above — and its last-agreed
   value tracked per path in `PathSyncState.baselineVersion`).
 - Conflict (both sides changed since baseline) → a **deterministic winner**, not
-  strictly "last write". The comparison key is a **total order for every node
-  type** (#143.3): `(version, mtimeNs, changeDigest)`, where `changeDigest` is a
-  canonical SHA-256 over the whole candidate change — `type, mode, mtimeNs, size,
-  symlinkTarget, sorted xattrs, contentHash` (and `source` as a final
-  discriminator). This breaks the residual ties the old `(mtimeNs, contentHash)`
-  key left: two dirs/symlinks at the same path (no `contentHash`), or two files
-  with equal `contentHash` but differing `mode`/xattrs. Both replicas compute the
-  same digest and pick the same winner. (True concurrency detection via version
-  vectors is a later upgrade; v1 only needs this deterministic total order.)
+  strictly "last write". The comparison key is a **total order over STABLE fields**
+  (#143.3, re-review): `(version, changeDigest)`, where `changeDigest` is a
+  canonical SHA-256 over the change's durable file-state, and **nothing else**:
+  - `kind` (`put` | `delete`), so an equal-version `put` vs `delete` is still
+    ordered (deletes carry only `kind` + `path` + `version`; no meta);
+  - for a `put`: `type, mode, mtimeNs, size, symlinkTarget, sorted xattrs,
+    contentHash`.
+
+  It deliberately **excludes `source`** and any echo-suppression metadata: push
+  `source` is server-stamped, so the same logical change would otherwise digest
+  differently before vs after upload and two replicas could disagree. Two changes
+  with identical full state are simply **equal** (no winner needed) rather than
+  force-discriminated. `mtimeNs` folds into the digest for puts (it is not a
+  separate key term, so deletes — which have no `mtimeNs` — stay well-defined).
+  This breaks the residual ties the old key left: two dirs/symlinks at the same
+  path (no `contentHash`), or two files with equal `contentHash` but differing
+  `mode`/xattrs. Both replicas compute the same digest and pick the same winner.
+  (True concurrency detection via version vectors is a later upgrade; v1 only
+  needs this deterministic total order.)
 - **v1 conflict = LWW-by-version + log, everywhere. No conflict copies in v1.**
   The deterministic winner overwrites the loser and the overwrite is logged;
   `.sync-conflict` copies (preserve the loser, Syncthing-style, zero data loss)
@@ -811,9 +890,11 @@ That removes the reason `/.state/sync-v2` existed — this path design *is* v1.
   sense as a backward-compat reset, which we don't need). It is local-only per the
   `/.state/**` exclusion.
 - **Forward compat via an explicit version field, not the path name.** The sync
-  state and the `/fs` handshake carry a `schemaVersion` (state shape) and
-  `protocolVersion` (wire contract). A future breaking change bumps the field and
-  branches on it — the stable path `/.state/sync` never changes:
+  state carries a `schemaVersion` (state shape) and the `GET /fs` handshake returns
+  `protocolVersion` (wire contract) alongside `schemaVersion` (see `/fs`
+  transport). A client reads the handshake before syncing; a future breaking
+  change bumps the field and branches on it — the stable path `/.state/sync` and
+  the endpoint routes never change:
 
   ```ts
   type SyncState = {
@@ -838,8 +919,8 @@ untouched**.
 1. `packages/fs` — add `SyncMeta` / `PathChange` types and the **`SyncReplica`**
    interface. Add a **local `SyncReplica`** over `Volume`/`Storage`
    (`applyPathChanges`, `pathScan`, path journal per "Journaling"). `Storage`
-   itself gains only a minimal ordered **path-delta source** (the journal), not
-   the wire protocol.
+   itself gains a minimal ordered **path-delta source** (the journal) and a
+   **transactional path-apply seam** (`PathMutationStore`), not the wire protocol.
 2. `packages/fs/synced.ts` — `push`/`pull`/`bootstrap` operate on `PathChange`
    via `SyncReplica`; state under `/.state/sync`, keyed by path
    (`PathSyncState` + tombstones); lazy `readFile` hydrates by `contentHash`.
@@ -869,9 +950,11 @@ before writing code.
 Write **only** the surface, no working bodies:
 
 - All **types + Zod schemas** (`SyncMeta` / `PathChange` / `SyncPath` /
-  `ContentHash` / `DeltaPage` / `ScanPage`, `SyncCursor`, `JournalRow`
-  (with `localSource`), `PathSyncState`, `SyncState` (with `schemaVersion`)).
-- All **interfaces** (`ChangeSource`, `SyncReplica`, `JournalStore`, the native
+  `ContentHash` / `Version` / `DeltaPage` / `ScanPage` / `Handshake`,
+  `SyncCursor`, `JournalRow` (with `localSource`), `PathSyncState`, `SyncState`
+  (with `schemaVersion`)).
+- All **interfaces** (`ChangeSource`, `SyncReplica`, `JournalStore`,
+  `PathMutationStore` (the transactional path-apply seam), the native
   index/watcher seams).
 - Every concrete implementation body **throws `Error('not implemented')` and is
   marked `// TODO(path-sync): …`**. Nothing actually works.
@@ -891,7 +974,7 @@ Exit criteria: it typechecks; every seam is wired; every unimplemented body is a
 This change is unusually unit-test-friendly *and* complex/error-prone, so we want
 **maximum coverage before implementing**:
 
-- Write the RED tests from **Verification** below (RED 1–15) plus the
+- Write the RED tests from **Verification** below (RED 1–16) plus the
   deterministic property test.
 - Cover the **major edge cases** explicitly: rename, directory move (subtree
   delete+put across a page boundary), parent-dir delete + concurrent descendant
@@ -914,7 +997,7 @@ right reason (`not implemented`), not from harness bugs.
 ### Phase 2 — implement until green
 
 Bring the system online **one `TODO` at a time**, turning red tests green, until
-the whole suite (RED 1–15 + property test) and the **Definition of done** pass.
+the whole suite (RED 1–16 + property test) and the **Definition of done** pass.
 No new surface area here — only filling in the bodies agreed in Phase 0 against the
 tests written in Phase 1.
 
@@ -945,9 +1028,31 @@ reproduced-then-fixed.
   authenticated request context, not the body, on `POST /fs/path/changes` (#142.8)
   — robustness within a user's own device fleet (each DO is per-user), not a
   cross-tenant boundary.
-- **Conflict tie-break is total (#143.3):** `(version, mtimeNs, changeDigest)`
-  where `changeDigest` is a canonical SHA-256 over the full change; no residual
-  ties for dirs/symlinks or equal-content-different-mode files.
+- **Conflict tie-break is total AND stable (#143.3, re-review):**
+  `(version, changeDigest)` where `changeDigest` is a canonical SHA-256 over the
+  change's durable state only — `kind`, and for a put `type, mode, mtimeNs, size,
+  symlinkTarget, sorted xattrs, contentHash`. It **excludes `source`** (server-
+  stamped, hence unstable) and treats identical full-state changes as equal;
+  `mtimeNs` is folded into the digest (not a separate key term) so deletes, which
+  carry no meta, stay well-defined.
+- **Version encoding (re-review):** `PathChange.version` is a **decimal string**
+  (the `Version` schema), like `mtimeNs`/`size` — not `z.number()`. Avoids the
+  2^53 ceiling and lets the value widen to bigint later with no wire change.
+- **`SyncMeta.type`:** the `FileType` enum (`z.nativeEnum(FileType)`), not an
+  arbitrary number.
+- **Root path in schema:** `PathChange`'s refine rejects both `put('/')` and
+  `delete('/')`; `/` is never a change subject.
+- **Protocol handshake:** `GET /fs` returns `{ rootIno, protocolVersion,
+  schemaVersion }` so clients negotiate before syncing (re-review forward-compat).
+- **Generic ino-CRUD write sourcing (re-review):** writes through the retained
+  `/inodes/*` endpoints journal `origin = MutationOptions.source ?? localActorId`
+  and `localSource = NULL`; only the `PathMutationStore.applyJournaled` seam sets
+  `localSource = REMOTE_SOURCE` and preserves a foreign origin. `MutationOptions.
+  source` maps to **origin only**, never to `localSource`.
+- **Transactional path-apply seam (re-review):** `applyPathChanges` goes through
+  `PathMutationStore.applyJournaled`, not the public primitives, so tree mutation +
+  journal row (exact incoming `version`/origin) + `localSource` + `path_version`
+  fast-forward all commit in ONE backend transaction.
 - **Ancestor delete vs descendant edit (#143.2):** per-path LWW decides each node;
   a surviving descendant then resurrects its ancestor directories (tree-repair
   pass) so the tree never has an orphan under a deleted dir.
@@ -1165,8 +1270,10 @@ test('replacing a file with a dir (and back) converges with correct delete order
 ```ts
 test('concurrent equal-version, equal-mtime writes pick the SAME winner on both sides', async () => {
 	const { client, server, syncBoth } = twoPeers()
-	// Equal version AND equal mtime: the tie-break must be TOTAL (canonical digest
-	// of the whole change), so it resolves even where the old key tied:
+	// Equal version AND equal mtime: the tie-break must be TOTAL and STABLE — a
+	// canonical digest of the change's DURABLE state (kind + meta + contentHash),
+	// explicitly EXCLUDING the server-stamped `source` — so it resolves even where
+	// the old key tied, and both replicas agree regardless of upload order:
 	//  - two dirs at the same path (no contentHash),
 	//  - two files with EQUAL content but DIFFERENT mode.
 	await server.write('/f', bytes('X'), { version: 5, mtimeNs: '100', mode: 0o644 })
@@ -1196,19 +1303,44 @@ test('a winning descendant edit resurrects its deleted ancestor directory', asyn
 })
 ```
 
-### RED 15 — regular-file put without a hash is rejected (#143.4)
+### RED 15 — schema invariants: hash, version encoding, type, root (#143.4, re-review)
 
 ```ts
-test('a regular-file PathChange missing contentHash is rejected by the schema', () => {
+test('PathChange schema enforces hash/version/type/root invariants', () => {
+	const dirMeta = { type: FileType.Directory, mode: 0o755, mtimeNs: '0', size: '0' }
+	// regular-file put with no contentHash -> reject
 	expect(() => PathChange.parse({
-		kind: 'put', path: '/f', version: 1,
-		meta: { type: FileType.Regular, mode: 0o644, mtimeNs: '0', size: '0' }, // no contentHash
+		kind: 'put', path: '/f', version: '1',
+		meta: { type: FileType.Regular, mode: 0o644, mtimeNs: '0', size: '0' },
 	})).toThrow()
-	// dirs/symlinks with a hash are likewise rejected.
+	// dir/symlink put carrying a contentHash -> reject
 	expect(() => PathChange.parse({
-		kind: 'put', path: '/d', version: 1, contentHash: 'a'.repeat(64),
-		meta: { type: FileType.Directory, mode: 0o755, mtimeNs: '0', size: '0' },
+		kind: 'put', path: '/d', version: '1', contentHash: 'a'.repeat(64), meta: dirMeta,
 	})).toThrow()
+	// version must be a decimal STRING, not a number
+	expect(() => PathChange.parse({ kind: 'put', path: '/d', version: 1, meta: dirMeta })).toThrow()
+	// type must be a FileType enum value, not an arbitrary number
+	expect(() => PathChange.parse({
+		kind: 'put', path: '/d', version: '1', meta: { ...dirMeta, type: 99 },
+	})).toThrow()
+	// root is never a change subject
+	expect(() => PathChange.parse({ kind: 'delete', path: '/', version: '1' })).toThrow()
+})
+```
+
+### RED 16 — the conflict digest is source-independent (re-review)
+
+```ts
+test('the same durable change wins identically regardless of stamped source', async () => {
+	// Two identical file states at the same path+version but different origin source
+	// (e.g. pre-upload undefined vs server-stamped clientId) must digest the SAME,
+	// so both replicas pick the same winner and converge (no source in the digest).
+	const { client, server, syncBoth } = twoPeers()
+	await server.write('/f', bytes('SAME'), { version: 7, mtimeNs: '5', source: undefined })
+	await client.write('/f', bytes('SAME'), { version: 7, mtimeNs: '5', source: 'clientA' })
+	await syncBoth()
+	expect(text(await client.readFile('/f'))).toBe('SAME')
+	expect(text(await server.readFile('/f'))).toBe('SAME') // identical state => equal, converged
 })
 ```
 
@@ -1244,6 +1376,13 @@ Before implementation is considered ready:
 - **Two `source` concepts are split in the journal (#143.1)** — wire `origin`
   (`PathChange.source`) vs local `localSource`; `pathDeltas` exposes
   `excludeOrigin` (pull) and `excludeLocalSource` (push). No `sourceMode` flag.
+  `MutationOptions.source` maps to **origin only**; generic ino-CRUD writes journal
+  `origin = source ?? localActorId`, `localSource = NULL` (re-review).
+- **Remote apply goes through a transactional path-apply seam** —
+  `PathMutationStore.applyJournaled` (owned by SQLite+IDB, alongside the journal),
+  NOT the public primitives — so tree mutation, the journal row with the incoming
+  `version`/origin verbatim, `localSource`, and the `path_version` fast-forward all
+  commit in one backend transaction (re-review #1).
 - **The path journal lives at/below `Storage`** (not a bypassable `Volume`
   wrapper), translated to path-correct deltas with tombstones. **Directory move =
   ordered subtree delete+put in one txn**, needing a child→parent index for
@@ -1266,21 +1405,26 @@ Before implementation is considered ready:
   high-water frozen at scan start; documented and tested (paged bootstrap resumes
   `pathDeltas(syncCursor)` with no gaps; idempotent apply; post-scan reconcile
   deletes by **path**, not ino) (#142.1).
-- **State lives at `/.state/sync` with an explicit `schemaVersion`** for forward
-  compat; no auto-migration (unreleased product; old replicas are wiped) (#143).
-- **Generic ino CRUD endpoints stay for `apiStorage`** (non-sync direct access);
-  only sync-specific `/updates`,`/scan`,`/ops` are removed (#143).
+- **State lives at `/.state/sync` with an explicit `schemaVersion`**, and the
+  `GET /fs` handshake returns `{ protocolVersion, schemaVersion, rootIno }` for
+  forward compat; no auto-migration (unreleased product; old replicas are wiped)
+  (#143, re-review).
+- **Generic ino CRUD endpoints stay for `apiStorage`** (non-sync direct access),
+  with defined journal sourcing (above); only sync-specific `/updates`,`/scan`,
+  `/ops` are removed (#143).
 - **Wire schema locked** — `SyncPath`/`ContentHash` schemas (not bare strings),
-  `ctimeNs` intentionally omitted (synthesised on apply), `xattrs` a complete
+  `version` a **decimal string** not `z.number()`, `SyncMeta.type` a `FileType`
+  enum, `ctimeNs` intentionally omitted (synthesised on apply), `xattrs` a complete
   snapshot not a patch, **regular-file puts require a hash / dirs+symlinks forbid
-  it**, and `delete('/')` is rejected (#142.7/#143.4).
-- **Spec nits resolved** (normalization, root path, content-hash format, apply
-  ordering, type replacement, echo suppression, native caveats, hard links,
-  orphaned-blob GC).
-- Conflict resolution documented as a **deterministic winner** with a **total
-  tie-break for every node type** — `(version, mtimeNs, changeDigest)` where
-  `changeDigest` is a canonical hash of the whole change (#143.3).
-- RED 1–15 pass (RED 5 in the materialiser doc), plus the deterministic property
+  it**, and both `put('/')`/`delete('/')` are rejected (#142.7/#143.4, re-review).
+- **Spec nits resolved** (normalization, root path, content-hash format, version
+  encoding, apply ordering, type replacement, echo suppression, native caveats,
+  hard links, orphaned-blob GC).
+- Conflict resolution documented as a **deterministic winner** with a **total,
+  source-independent tie-break** — `(version, changeDigest)` where `changeDigest`
+  is a canonical hash of the change's durable state (`kind` + put meta), excluding
+  the server-stamped `source` (#143.3, re-review).
+- RED 1–16 pass (RED 5 in the materialiser doc), plus the deterministic property
   test.
 
 ---
