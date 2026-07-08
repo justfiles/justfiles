@@ -253,12 +253,14 @@ export function localSyncReplica(
 ): SyncReplica {
 	return {
 		async pathDeltas(cursor, opts) {
-			// TODO(path-sync): drop /.state and /.state/** from the delegated changes.
-			return changes.pathDeltas(cursor, opts)
+			// Hard /.state exclusion (see isLocalOnlyPath): local-only state never
+			// crosses the wire, enforced here so a second volume(storage) can't bypass it.
+			const res = await changes.pathDeltas(cursor, opts)
+			return { ...res, changes: res.changes.filter((c) => !isLocalOnlyPath(c.path)) }
 		},
 		async pathScan(page, opts) {
-			// TODO(path-sync): drop /.state and /.state/** from the delegated changes.
-			return changes.pathScan(page, opts)
+			const res = await changes.pathScan(page, opts)
+			return { ...res, changes: res.changes.filter((c) => !isLocalOnlyPath(c.path)) }
 		},
 		async applyPathChanges(_changes, _getBlobByHash, _opts2) {
 			// TODO(path-sync): refuse /.state/**; materialise blobs (eager) then
