@@ -16,6 +16,11 @@
 			"release-type": "node",
 			"package-name": "@spud-computer/code",
 			"bump-minor-pre-major": true
+		},
+		"packages/app-draw": {
+			"release-type": "node",
+			"package-name": "@spud-computer/draw",
+			"bump-minor-pre-major": true
 		}
 	},
 	"plugins": ["node-workspace"]

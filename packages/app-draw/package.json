@@ -1,0 +1,41 @@
+{
+	"name": "@spud-computer/draw",
+	"version": "0.1.0",
+	"type": "module",
+	"main": "./dist/manifest.json",
+	"keywords": [
+		"spud-app"
+	],
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "pnpm build"
+	},
+	"dependencies": {
+		"@excalidraw/excalidraw": "^0.18.0",
+		"@justfiles/app": "workspace:*",
+		"valibot": "^1.1.0"
+	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"devDependencies": {
+		"@justfiles/tsconfig": "workspace:*",
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"@vitejs/plugin-react": "^5",
+		"react": "^19",
+		"react-dom": "^19",
+		"typescript": "catalog:",
+		"vite": "^8.0.12"
+	}
+}

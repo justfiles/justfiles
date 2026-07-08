@@ -1,0 +1,116 @@
+/* Layout only — colours read platform tokens (@justfiles/design), so Draw reads
+   as native chrome and gets dark mode for free. Excalidraw provides its own
+   canvas UI; this file only styles the thin file-management bar on top. */
+.draw {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	width: 100%;
+	background: var(--window-bg);
+	color: var(--text);
+}
+
+.draw-bar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	background: var(--surface);
+	border-bottom: 1px solid var(--rule);
+}
+.draw-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 13px;
+	font-weight: 600;
+}
+.draw-name[data-draft="true"] {
+	font-weight: 400;
+	opacity: 0.6;
+}
+.draw-spacer {
+	flex: 1;
+}
+.draw-bar input {
+	flex: 1;
+	min-width: 0;
+	box-sizing: border-box;
+}
+.draw-error {
+	flex: none;
+	max-width: 40%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	color: #b91c1c;
+}
+
+/* The canvas host. Excalidraw fills it. */
+.draw-body {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+.draw-canvas {
+	flex: 1;
+	min-height: 0;
+	position: relative;
+}
+
+/* Gallery view — replaces the canvas; a simple responsive tile grid. */
+.draw-gallery {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 16px;
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 16px;
+	align-content: start;
+	background: var(--window-bg);
+}
+.draw-gallery-empty {
+	padding: 24px;
+	opacity: 0.5;
+	font-size: 13px;
+}
+.draw-tile {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px;
+	border: 1px solid var(--rule);
+	border-radius: 8px;
+	background: var(--surface);
+	color: inherit;
+	cursor: pointer;
+}
+.draw-tile:hover {
+	border-color: var(--text);
+}
+.draw-thumb {
+	aspect-ratio: 4 / 3;
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+	background: #fff;
+	border-radius: 4px;
+}
+.draw-thumb svg {
+	max-width: 100%;
+	max-height: 100%;
+}
+.draw-tile-name {
+	font-size: 12px;
+	text-align: center;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
