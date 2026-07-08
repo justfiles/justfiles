@@ -1,6 +1,7 @@
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
+import { inodeMetaFromSync } from './sync-wire'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -58,6 +59,52 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 	function defaultMode(type: FileType): number {
 		return type === FileType.Directory ? 0o755 : type === FileType.Symlink ? 0o777 : 0o644
 	}
+
+	function mint(): Ino {
+		return mintIno ? mintIno() : crypto.randomUUID()
+	}
+
+	/** Split a canonical absolute path into { parentPath, name }. */
+	function parentAndName(p: string): { parentPath: string; name: string } {
+		const idx = p.lastIndexOf('/')
+		return { parentPath: idx === 0 ? '/' : p.slice(0, idx), name: p.slice(idx + 1) }
+	}
+
+	/** Resolve a canonical path to an ino by walking dirents; null if absent. */
+	function resolveIno(p: string): Ino | null {
+		if (p === '/') return rootIno
+		let cur: Ino = rootIno
+		for (const seg of p.slice(1).split('/')) {
+			const entry = dirs.get(dirKey(cur, seg))
+			if (!entry) return null
+			cur = entry.ino
+		}
+		return cur
+	}
+
+	/** Ensure every segment of a directory path exists; return the deepest ino. */
+	function ensureDir(p: string): Ino {
+		if (p === '/') return rootIno
+		let cur: Ino = rootIno
+		for (const seg of p.slice(1).split('/')) {
+			const key = dirKey(cur, seg)
+			const entry = dirs.get(key)
+			if (entry) {
+				cur = entry.ino
+				continue
+			}
+			const ino = mint()
+			metas.set(ino, { type: FileType.Directory, size: 0n, mode: 0o755, mtimeNs: 0n, ctimeNs: 0n })
+			dirs.set(key, { ino, type: FileType.Directory })
+			cur = ino
+		}
+		return cur
+	}
+
+	// The per-path scalar version generator (outgoing versions) + tombstones. This
+	// is the backend's generator, distinct from the engine's PathSyncState baseline.
+	const pathVersion = new Map<string, number>()
+	const tombstone = new Map<string, number>()
 
 	const caps: StorageCapabilities = {
 		async getXattr(ino, name) {
@@ -119,9 +166,59 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 			}
 		},
 		pathApply: {
-			async applyJournaled(_changes, _opts) {
-				// TODO(path-sync): tree meta + contentHash ref + journal row + version.
-				throw new Error('not implemented')
+			async applyJournaled(changes, opts) {
+				// Remote-authored apply: install tree metadata + contentHash REFERENCE
+				// (blob bytes are materialised out-of-band by applyPathChanges), journal
+				// the change VERBATIM (its version + origin source) plus localSource, and
+				// fast-forward path_version (never lower it). NEVER writes blob bytes.
+				for (const change of changes) {
+					const p = change.path
+					if (change.kind === 'put') {
+						const { parentPath, name } = parentAndName(p)
+						const parentIno = ensureDir(parentPath)
+						const key = dirKey(parentIno, name)
+						const ino = dirs.get(key)?.ino ?? mint()
+						const { meta, xattrs: snapshot } = inodeMetaFromSync(change.meta)
+						const type = meta.type ?? FileType.Regular
+						metas.set(ino, {
+							type,
+							size: meta.size ?? 0n,
+							mode: meta.mode ?? defaultMode(type),
+							mtimeNs: meta.mtimeNs ?? 0n,
+							ctimeNs: 0n, // ctime is set locally at apply time, never wired
+							contentHash: change.contentHash,
+							symlinkTarget: meta.symlinkTarget
+						})
+						dirs.set(key, { ino, type })
+						// Replace the whole USER-xattr set with the snapshot; keep local-only
+						// trusted.sync.* untouched.
+						const existing = xattrs.get(ino)
+						if (existing)
+							for (const k of [...existing.keys()])
+								if (!k.startsWith('trusted.sync.')) existing.delete(k)
+						if (Object.keys(snapshot).length > 0) {
+							let m = xattrs.get(ino)
+							if (!m) {
+								m = new Map()
+								xattrs.set(ino, m)
+							}
+							for (const [k, v] of Object.entries(snapshot)) m.set(k, v)
+						}
+					} else {
+						const ino = resolveIno(p)
+						const { parentPath, name } = parentAndName(p)
+						const parentIno = resolveIno(parentPath)
+						if (parentIno) dirs.delete(dirKey(parentIno, name))
+						if (ino && !hasDirentReference(ino)) {
+							metas.delete(ino)
+							blobs.delete(ino)
+							xattrs.delete(ino)
+						}
+						tombstone.set(p, Math.max(tombstone.get(p) ?? 0, Number(change.version)))
+					}
+					pathVersion.set(p, Math.max(pathVersion.get(p) ?? 0, Number(change.version)))
+					appendJournal([change], opts.localSource)
+				}
 			}
 		}
 	}
