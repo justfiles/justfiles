@@ -485,6 +485,19 @@ describe('journaledChangeSource.pathDeltas cursor progress', () => {
 		expect(res.to).toBe('2') // advance to the last RAW row, not stall at 0
 		expect(res.done).toBe(false) // a full raw page => maybe more; never stall
 	})
+
+	it('advances the cursor and stays not-done when a full page is filtered by excludeLocalSource', async () => {
+		const cs = journaledChangeSource(
+			fakeJournalStore([
+				{ seq: 1, change: put('/a', '1', 'x'), localSource: REMOTE_SOURCE },
+				{ seq: 2, change: put('/b', '1', 'y'), localSource: REMOTE_SOURCE }
+			])
+		)
+		const res = await cs.pathDeltas('', { excludeLocalSource: REMOTE_SOURCE, limit: 2 })
+		expect(res.changes).toEqual([]) // everything filtered
+		expect(res.to).toBe('2') // advance to the last RAW row, not stall at 0
+		expect(res.done).toBe(false) // a full raw page => maybe more; never stall
+	})
 })
 
 // ── PathMutationStore version/tombstone generator (RED) — issue #144 item 3 ───
