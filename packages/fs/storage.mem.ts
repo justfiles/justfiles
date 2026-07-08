@@ -1,4 +1,6 @@
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type { JournalRow } from './sync-replica'
+import type { PathChange } from './sync-wire'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -15,6 +17,18 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
 	const mintIno = opts?.mintIno
+
+	// Path journal (write-intercept): an append-only, path-stamped, seq-ordered log.
+	// Shared by the `caps.journal` primitive, the per-mutation stamping, and
+	// `caps.pathApply.applyJournaled`. `seq` is this backend's SyncCursor.
+	const journalRows: JournalRow[] = []
+	let journalSeq = 0
+	function appendJournal(changes: PathChange[], localSource?: string): void {
+		for (const change of changes) {
+			journalSeq += 1
+			journalRows.push({ seq: journalSeq, change, localSource })
+		}
+	}
 
 	const listeners = new Set<(change: StorageChange) => void>()
 	function emit(change: StorageChange): void {
@@ -94,17 +108,14 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 
 		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
 		journal: {
-			async append(_changes, _localSource) {
-				// TODO(path-sync): append path rows in the mutation's txn.
-				throw new Error('not implemented')
+			async append(changes, localSource) {
+				appendJournal(changes, localSource)
 			},
-			async readFrom(_seq, _limit) {
-				// TODO(path-sync): ordered rows after seq.
-				throw new Error('not implemented')
+			async readFrom(seq, limit) {
+				return journalRows.filter((r) => r.seq > seq).slice(0, limit)
 			},
 			async head() {
-				// TODO(path-sync): latest seq.
-				throw new Error('not implemented')
+				return journalRows[journalRows.length - 1]?.seq ?? 0
 			}
 		},
 		pathApply: {
