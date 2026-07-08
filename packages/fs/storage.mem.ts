@@ -359,6 +359,12 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 							}
 							for (const [k, v] of Object.entries(snapshot)) m.set(k, v)
 						}
+						// Emit so volume caches invalidate and volume.watch fires on the pull
+						// (tagged with localSource for echo suppression) — applyJournaled
+						// writes the maps directly, so it must signal the change feed itself.
+						emit({ ino, kind: 'meta', source: opts.localSource })
+						emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
+						if (type === FileType.Regular) emit({ ino, kind: 'content', source: opts.localSource })
 					} else {
 						const ino = resolveIno(p)
 						const { parentPath, name } = parentAndName(p)
@@ -371,6 +377,9 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 								xattrs.delete(ino)
 							}
 						}
+						if (ino !== null && parentIno !== null)
+							emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
+						if (ino !== null) emit({ ino, kind: 'meta', source: opts.localSource })
 						tombstone.set(p, Math.max(tombstone.get(p) ?? 0, Number(change.version)))
 					}
 					pathVersion.set(p, Math.max(pathVersion.get(p) ?? 0, Number(change.version)))
