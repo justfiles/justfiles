@@ -249,12 +249,17 @@ export function nativeChangeSource(
 export function localSyncReplica(
 	storage: Storage,
 	changes: ChangeSource,
-	_opts: { lazyContent: boolean; localActorId: string }
+	opts: { lazyContent: boolean; localActorId: string }
 ): SyncReplica {
 	const requireContent = (): ContentStore => {
 		const content = storage.caps?.content
 		if (!content) throw new Error('backend exposes no content store (caps.content)')
 		return content
+	}
+	const requirePathApply = (): PathMutationStore => {
+		const pathApply = storage.caps?.pathApply
+		if (!pathApply) throw new Error('backend exposes no path-apply seam (caps.pathApply)')
+		return pathApply
 	}
 	return {
 		async pathDeltas(cursor, opts) {
@@ -267,10 +272,30 @@ export function localSyncReplica(
 			const res = await changes.pathScan(page, opts)
 			return { ...res, changes: res.changes.filter((c) => !isLocalOnlyPath(c.path)) }
 		},
-		async applyPathChanges(_changes, _getBlobByHash, _opts2) {
-			// TODO(path-sync): refuse /.state/**; materialise blobs (eager) then
-			// PathMutationStore.applyJournaled; resolve paths to inos (reuse/mint).
-			throw new Error('not implemented')
+		async applyPathChanges(incoming, getBlobByHash, opts2) {
+			// Hard /.state exclusion (see isLocalOnlyPath): a peer can never inject
+			// local-only state, enforced here so a second volume(storage) can't bypass it.
+			const admissible = incoming.filter((c) => !isLocalOnlyPath(c.path))
+			// Collapse to the final state per path, then order for safe apply: deletes
+			// child-before-parent (never orphan a live child under a deleted dir), puts
+			// parent-before-child (the dir exists before its entries), all deletes first.
+			const ordered = orderForApply(coalesceByPath(admissible))
+			// Content ownership is out-of-band (blob store is hash-addressed, separate
+			// from the tree). Eager: ensure each regular-file put's blob is present
+			// locally BEFORE the tree references it (durable before the path points at
+			// it). Lazy: skip the fetch — applyJournaled installs the contentHash stub
+			// and readFile hydrates on first access.
+			if (!opts.lazyContent) {
+				const content = requireContent()
+				for (const c of ordered) {
+					if (c.kind !== 'put' || !c.contentHash) continue
+					if (await content.hasByHash(c.contentHash)) continue
+					await content.putByHash(c.contentHash, await getBlobByHash(c.contentHash))
+				}
+			}
+			// One transactional seam per change: tree meta + contentHash ref + journal
+			// row (incoming version/origin verbatim) + path_version fast-forward.
+			await requirePathApply().applyJournaled(ordered, { localSource: opts2?.source })
 		},
 		async getBlobByHash(hash) {
 			const blob = await requireContent().getByHash(hash)
@@ -314,4 +339,24 @@ export type SyncState = {
 /** The `/.state/**` hard exclusion (local-only subtree; never crosses the wire). */
 export function isLocalOnlyPath(p: string): boolean {
 	return p === '/.state' || p.startsWith('/.state/')
+}
+
+/** Path depth (segment count); '/' is 0, '/a' is 1, '/a/b' is 2. */
+function pathDepth(p: string): number {
+	return p === '/' ? 0 : p.slice(1).split('/').length
+}
+
+/**
+ * Order a coalesced batch for a safe apply: all `delete`s first, child-before-
+ * parent (deeper paths first, so a live child is never orphaned under a deleted
+ * dir), then all `put`s, parent-before-child (the dir exists before its entries).
+ */
+function orderForApply(changes: PathChange[]): PathChange[] {
+	const deletes = changes
+		.filter((c) => c.kind === 'delete')
+		.sort((a, b) => pathDepth(b.path) - pathDepth(a.path))
+	const puts = changes
+		.filter((c) => c.kind === 'put')
+		.sort((a, b) => pathDepth(a.path) - pathDepth(b.path))
+	return [...deletes, ...puts]
 }
