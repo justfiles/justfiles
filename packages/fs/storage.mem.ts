@@ -2,12 +2,19 @@ import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './s
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
-export function memStorage(): Storage {
+/**
+ * `mintIno` lets a caller control inode identity — e.g. a numeric-ino backend
+ * (like real OS inodes) vs a UUID one — so heterogeneous ino spaces can be
+ * exercised. When provided, an `atomicCreate` cap mints via it; otherwise the
+ * VFS mints its own UUIDs. Root is always `'1'`.
+ */
+export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 	const metas = new Map<Ino, InodeMeta>()
 	const blobs = new Map<Ino, Uint8Array>()
 	const dirs = new Map<string, DirentMin>() // key: `${dirIno}\0${name}`
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
+	const mintIno = opts?.mintIno
 
 	const listeners = new Set<(change: StorageChange) => void>()
 	function emit(change: StorageChange): void {
@@ -66,6 +73,24 @@ export function memStorage(): Storage {
 				listeners.delete(listener)
 			}
 		},
+
+		// Atomic alloc + dirAdd using the caller-supplied minter. Only present when
+		// `mintIno` is set; otherwise the VFS mints UUIDs via setMeta + putDirent.
+		...(mintIno
+			? {
+					async atomicCreate(dirIno, name, meta, options) {
+						const key = dirKey(dirIno, name)
+						if (dirs.has(key)) throw new Error(`EEXIST: ${name}`)
+						const ino = mintIno()
+						metas.set(ino, { ...meta })
+						if (meta.type === FileType.Regular) blobs.set(ino, new Uint8Array())
+						dirs.set(key, { ino, type: meta.type })
+						emit({ ino, kind: 'meta', source: options?.source })
+						emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
+						return ino
+					}
+				}
+			: {}),
 
 		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
 		journal: {
