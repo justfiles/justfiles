@@ -128,17 +128,37 @@ export function compareVersion(a: string, b: string): number {
 
 // ── Meta encode/decode (the one place InodeMeta <-> SyncMeta is converted) ─────
 
+/** Portable (browser + node) base64 encode of raw bytes — standard alphabet. */
+function toBase64(b: Uint8Array): string {
+	let s = ''
+	for (const byte of b) s += String.fromCharCode(byte)
+	return btoa(s)
+}
+
 /**
  * Convert a backend `InodeMeta` (bigint sizes/times, no wire encoding) plus its
  * user-xattr snapshot into the JSON-encoded `SyncMeta`. Excludes `ctimeNs` and
  * `trusted.sync.*` xattrs.
  */
-export function syncMetaFromInode(
-	_meta: InodeMeta,
-	_xattrs?: Record<string, Uint8Array>
-): SyncMeta {
-	// TODO(path-sync): encode type/mode/mtimeNs/size/symlinkTarget + base64 xattrs.
-	throw new Error('not implemented')
+export function syncMetaFromInode(meta: InodeMeta, xattrs?: Record<string, Uint8Array>): SyncMeta {
+	const sm: SyncMeta = {
+		type: meta.type,
+		mode: meta.mode,
+		mtimeNs: String(meta.mtimeNs),
+		size: String(meta.size)
+	}
+	if (meta.symlinkTarget !== undefined) sm.symlinkTarget = meta.symlinkTarget
+	// Complete user-xattr snapshot, base64-encoded; `trusted.sync.*` is local-only
+	// and never crosses the wire. Omit the field entirely when there are none.
+	if (xattrs) {
+		const encoded: Record<string, string> = {}
+		for (const [name, value] of Object.entries(xattrs)) {
+			if (name.startsWith('trusted.sync.')) continue
+			encoded[name] = toBase64(value)
+		}
+		if (Object.keys(encoded).length > 0) sm.xattrs = encoded
+	}
+	return sm
 }
 
 /**
