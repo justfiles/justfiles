@@ -21,6 +21,18 @@ before implementation.
 > (`ctimeNs`, xattr snapshot semantics, `contentHash` format, normalized path
 > schema); make push `source` server-stamped from the authenticated request
 > context (robustness within one user's device fleet, not a security boundary).
+> **Round 5 (issue #143):** the product is unreleased, so **no backward compat /
+> no auto-migration** — old replicas are wiped, state lives at `/.state/sync` (this
+> IS v1), and forward-compat is handled by an explicit `schemaVersion` in the sync
+> state, not a versioned path name. Also: split the journal's two `source`
+> concepts (`origin` on the wire vs local `localSource`) with explicit
+> `excludeOrigin` / `excludeLocalSource` filters; add an ancestor-delete-vs-
+> descendant-edit tree policy (surviving puts resurrect ancestors); make the
+> equal-version tie-break **total** (canonical hash of the whole change); require
+> `contentHash` for regular-file puts and forbid it for dirs/symlinks (schema);
+> make lazy hydration explicit on the local replica; exclude `/.state` **and**
+> `/.state/**`; reject `delete('/')`; keep the generic ino CRUD endpoints for
+> `apiStorage` (remove only the sync-specific `/updates`,`/scan`,`/ops`).
 
 ## TL;DR
 
@@ -184,19 +196,30 @@ export const SyncMeta = z.object({
 	xattrs: z.record(z.string()).optional()
 })
 
-// A change to the tree, addressed by path. `contentHash` references a blob
-// (undefined for dirs/symlinks). `version` drives generic LWW (see Conflicts).
-// `source` = origin client-id, so a replica filters its own echoes on pull
-// (same role as today's `MutationOptions.source` / `REMOTE_SOURCE`). On the PUSH
-// endpoint `source` is NOT read from the body — the server stamps it from the
-// authenticated request context (see /fs transport, #142.8).
+// A change to the tree, addressed by path. `version` drives generic LWW (see
+// Conflicts). `source` = origin client-id, so a replica filters its own echoes on
+// pull (same role as today's `MutationOptions.source` / `REMOTE_SOURCE`). On the
+// PUSH endpoint `source` is NOT read from the body — the server stamps it from
+// the authenticated request context (see /fs transport, #142.8).
+//
+// `contentHash` invariants are SCHEMA-ENFORCED (#143.4): a regular-file put MUST
+// carry a hash (empty files included — the SHA-256 of empty bytes,
+// e3b0c442…b855) so every regular file is hydratable; dirs/symlinks MUST NOT
+// carry one. `.superRefine` rejects a hashless regular put or a hashed dir/symlink.
 export const PathChange = z.discriminatedUnion('kind', [
 	z.object({ kind: z.literal('put'), path: SyncPath, version: z.number(),
 	           source: z.string().optional(), contentHash: ContentHash.optional(),
 	           meta: SyncMeta }),
 	z.object({ kind: z.literal('delete'), path: SyncPath, version: z.number(),
 	           source: z.string().optional() })
-])
+]).superRefine((c, ctx) => {
+	if (c.kind !== 'put') return
+	const isRegular = c.meta.type === FileType.Regular
+	if (isRegular && !c.contentHash)
+		ctx.addIssue({ code: 'custom', message: 'regular-file put requires contentHash' })
+	if (!isRegular && c.contentHash)
+		ctx.addIssue({ code: 'custom', message: 'dir/symlink put must not carry contentHash' })
+})
 
 // Types the code uses are inferred, never re-declared.
 export type SyncMeta = z.infer<typeof SyncMeta>
@@ -225,11 +248,18 @@ export type SyncCursor = string
 export interface ChangeSource {
 	// Path-changes strictly after `cursor` (empty = from the start), ordered,
 	// capped at `limit`. `to` = cursor to persist; `done` = false if more pages
-	// remain. `exclude` drops changes whose PathChange.source matches (echoes).
-	// Deletes carry the removed path; a rename is delete(old) + put(new).
+	// remain. Deletes carry the removed path; a rename is delete(old) + put(new).
+	//
+	// TWO independent echo filters, because a journal row has TWO source concepts
+	// (#143.1): `excludeOrigin` drops changes whose ORIGIN client-id (the
+	// cross-replica `PathChange.source`) matches — used by REMOTE pull to skip this
+	// client's own authored changes; `excludeLocalSource` drops rows whose LOCAL
+	// apply source matches (e.g. `REMOTE_SOURCE`) — used by LOCAL push to skip
+	// changes the sync layer itself applied from a pull. They are not
+	// interchangeable and both are needed.
 	pathDeltas(
 		cursor: SyncCursor,
-		opts?: { exclude?: string; limit?: number }
+		opts?: { excludeOrigin?: string; excludeLocalSource?: string; limit?: number }
 	): Promise<{ changes: PathChange[]; to: SyncCursor; done: boolean }>
 	// A consistent full snapshot as `put`s (bootstrap). A snapshot's PAGINATION
 	// position is NOT its sync high-water, so it returns BOTH (#142.1):
@@ -249,10 +279,17 @@ export interface ChangeSource {
 // The full replica: a ChangeSource + apply + content transfer. Local (over a
 // Storage/Volume) and remote (HTTP client) both implement it.
 export interface SyncReplica extends ChangeSource {
-	// Apply remote changes locally; fetch blobs by hash for regular-file puts.
-	// `opts.source` tags the LOCAL write (e.g. REMOTE_SOURCE) for echo suppression
-	// and volume.watch — distinct from PathChange.source, which is the ORIGIN
-	// client-id used for pull-side filtering (feedback R2.3).
+	// Apply remote changes locally. `opts.source` tags the LOCAL write (e.g.
+	// REMOTE_SOURCE) — it becomes the journal row's `localSource` for push
+	// suppression and drives volume.watch. It is distinct from PathChange.source,
+	// the ORIGIN client-id used for pull-side `excludeOrigin` filtering (#143.1).
+	//
+	// Content handling is explicit (#143.5): a regular-file put either
+	//   - EAGER: `getBlobByHash(contentHash)` now and store it, or
+	//   - LAZY:  write a stub that RETAINS `contentHash` and skip the fetch;
+	//            readFile hydrates on first access (see Lazy content).
+	// The mode is fixed per local replica at construction (`lazyContent`), not per
+	// call, so `getBlobByHash` is only invoked in eager mode.
 	applyPathChanges(
 		changes: PathChange[],
 		getBlobByHash: (h: string) => Promise<Uint8Array>,
@@ -265,13 +302,16 @@ export interface SyncReplica extends ChangeSource {
 }
 ```
 
-- **Local adapter** wraps a `Storage`/`Volume`: `applyPathChanges` resolves paths
-  to local inos (reusing existing ones — in-place — or minting fresh ones) and
-  tags writes with `opts.source`; `pathDeltas` comes from the path journal below.
+- **Local adapter** wraps a `Storage`/`Volume`, constructed with a fixed
+  `lazyContent` flag (#143.5): `applyPathChanges` resolves paths to local inos
+  (reusing existing ones — in-place — or minting fresh ones), tags writes with
+  `opts.source` (→ journal `localSource`), and either fetches+stores blobs (eager)
+  or writes hash-retaining stubs (lazy); `pathDeltas` comes from the path journal
+  below.
 - **Remote adapter** is the HTTP client to `packages/core/src/fs.ts` new endpoints.
 - `synced.ts` pulls with `applyPathChanges(changes, getBlobByHash, { source:
   REMOTE_SOURCE })` so `volume.watch` and echo suppression keep working, while
-  `PathChange.source` (origin client-id) still drives `pathDeltas` filtering.
+  `PathChange.source` (origin client-id) still drives `excludeOrigin` filtering.
 
 ### Journaling / change detection (per-backend, behind `ChangeSource`)
 
@@ -301,15 +341,20 @@ transaction** as the mutation. They differ only in the storage primitive, so the
 logic is shared and each backend supplies a tiny `JournalStore`.
 
 ```ts
-// A journal row = a PathChange plus its monotonic position. `seq` IS this
-// backend's SyncCursor.
-interface JournalRow { seq: number; change: PathChange }
+// A journal row = a PathChange plus its monotonic position, PLUS the local apply
+// source. `seq` IS this backend's SyncCursor.
+//   - change.source = ORIGIN client-id (cross-replica; travels the wire).
+//   - localSource   = who applied this write LOCALLY (undefined for a user's own
+//     write; REMOTE_SOURCE when the sync layer applied it from a pull). Local-only;
+//     never leaves this replica. (#143.1)
+interface JournalRow { seq: number; change: PathChange; localSource?: string }
 
-// The only primitive a backend implements for the shared journal logic.
+// The only primitive a backend implements for the shared journal logic. `append`
+// records the local apply source alongside each change.
 interface JournalStore {
-	append(changes: PathChange[]): Promise<void>                 // within the mutation's txn
-	readFrom(seq: number, limit: number): Promise<JournalRow[]>  // ordered by seq asc
-	head(): Promise<number>                                      // latest seq (snapshot resume)
+	append(changes: PathChange[], localSource?: string): Promise<void>  // within the mutation's txn
+	readFrom(seq: number, limit: number): Promise<JournalRow[]>         // ordered by seq asc
+	head(): Promise<number>                                             // latest seq (snapshot resume)
 }
 
 // Shared by SQLite + IDB — this is the whole ChangeSource for owned backends.
@@ -318,9 +363,12 @@ function journaledChangeSource(store: Storage, journal: JournalStore): ChangeSou
 		async pathDeltas(cursor, opts) {
 			const limit = opts?.limit ?? PAGE
 			const rows = await journal.readFrom(Number(cursor || '0'), limit)
-			const changes = coalesceByPath(
-				rows.map((r) => r.change).filter((c) => !opts?.exclude || c.source !== opts.exclude),
+			const kept = rows.filter(
+				(r) =>
+					(!opts?.excludeOrigin || r.change.source !== opts.excludeOrigin) &&
+					(!opts?.excludeLocalSource || r.localSource !== opts.excludeLocalSource),
 			)
+			const changes = coalesceByPath(kept.map((r) => r.change))
 			return { changes, to: String(rows.at(-1)?.seq ?? cursor ?? '0'), done: rows.length < limit }
 		},
 		async pathScan(page, opts) {
@@ -351,7 +399,9 @@ The two primitives are trivially different:
 //   CREATE TABLE journal (
 //     seq INTEGER PRIMARY KEY AUTOINCREMENT,
 //     path TEXT NOT NULL, kind TEXT NOT NULL,          -- 'put' | 'delete'
-//     version INTEGER NOT NULL, source TEXT,
+//     version INTEGER NOT NULL,
+//     source TEXT,                                     -- ORIGIN client-id (wire)
+//     local_source TEXT,                               -- LOCAL apply source (#143.1)
 //     content_hash TEXT, meta_json TEXT);              -- meta/hash NULL for delete
 //   -- the per-path scalar version generator (#142.4), bumped in the SAME txn:
 //   CREATE TABLE path_version (path TEXT PRIMARY KEY, version INTEGER NOT NULL);
@@ -391,7 +441,7 @@ change carries:
 `PathSyncState` (below) keeps the *agreed* `baselineVersion` for conflict
 detection; `path_version` is the *generator*. They are distinct: the generator is
 storage-internal and stamps outgoing changes; the baseline is engine-internal
-(`/.state/sync-v2`) and decides winners on pull.
+(`/.state/sync`) and decides winners on pull.
 
 **Path stamping is O(depth), in-transaction.** When the mutation runs the tree is
 consistent, so the backend resolves the path cheaply and stamps it into the row —
@@ -469,19 +519,37 @@ SyncReplica (path wire)  ─wraps─▶  Storage + ChangeSource(journal | scan-d
 synced()  ─drives─▶  replica.pathDeltas / pathScan / applyPathChanges / *BlobByHash
 ```
 
-`synced()` keeps two cursors under `/.state/sync-v2`: a **push** cursor over the
+`synced()` keeps two cursors under `/.state/sync`: a **push** cursor over the
 local `ChangeSource`, and a **pull** cursor over the remote's (the path-based
 successors of today's `localCursor`/`remoteCursor`).
 
-**Local-only paths (#142.6).** With the journal below `Storage`, writes to
-`/.state/**` (sync cursors, client-id, `PathSyncState`) are themselves journaled.
-The path model replaces today's `trusted.sync.local-only` xattr with a single
-**hard path-prefix exclusion enforced in the local `SyncReplica`**:
+**Echo suppression uses the two filters (#143.1), mirroring today's `synced.ts`:**
 
-- `pathDeltas` / `pathScan` **drop any change whose path is under `/.state/**`** so
-  it is never pushed, and `applyPathChanges` **refuses to write under `/.state/**`**
-  so a peer can never inject local state. This is a hard, path-level rule — not a
-  per-inode flag — so it cannot be bypassed by a second `volume(storage)`.
+- **push** reads local deltas with `pathDeltas(pushCursor, { excludeLocalSource:
+  REMOTE_SOURCE })` — skip changes the sync layer itself applied from a pull, so
+  we never bounce the server's own writes back. Surviving changes keep their
+  `PathChange.source` (origin) as they go up.
+- **pull** reads remote deltas with `pathDeltas(pullCursor, { excludeOrigin:
+  clientId })` — skip changes this client authored (the server stamped our
+  client-id as origin on push), then `applyPathChanges(…, { source: REMOTE_SOURCE })`
+  which records `localSource = REMOTE_SOURCE` on the resulting local journal rows.
+
+**Local-only paths (#142.6).** With the journal below `Storage`, writes to
+`/.state` and everything under it (sync cursors, client-id, `PathSyncState`) are
+themselves journaled. The path model replaces today's `trusted.sync.local-only`
+xattr with a single **hard path-prefix exclusion enforced in the local
+`SyncReplica`**:
+
+- The exclusion matches **`/.state` itself AND `/.state/**`** — i.e.
+  `p === '/.state' || p.startsWith('/.state/')`. A bare `startsWith('/.state/')`
+  misses the directory node itself, which would leak an empty `/.state` dirent
+  (#143 cleanup).
+- `pathDeltas` / `pathScan` **drop any change** matching that predicate so it is
+  never pushed; `applyPathChanges` **refuses to write** matching paths so a peer
+  can never inject local state; and **post-scan reconcile ignores the same prefix**
+  (never deletes local `/.state` because the remote snapshot lacks it). This is a
+  hard, path-level rule — not a per-inode flag — so a second `volume(storage)`
+  cannot bypass it.
 
 That is the whole local-only story for v1: `/.state/**` is the only local-only
 subtree the code actually has (today's marker is applied to `/.state` only). A
@@ -544,8 +612,8 @@ Endpoints (each maps to one `SyncReplica` method):
 
 ```
 # PULL  (client reads the server's ChangeSource)
-GET  /fs/path/changes?cursor=&exclude=&limit=   -> DeltaPage    # pathDeltas
-GET  /fs/path/snapshot?page=&limit=             -> ScanPage     # pathScan (all puts)
+GET  /fs/path/changes?cursor=&excludeOrigin=&limit=  -> DeltaPage   # pathDeltas
+GET  /fs/path/snapshot?page=&limit=                  -> ScanPage    # pathScan (all puts)
 
 # PUSH  (client writes path-changes; server applies to its Storage)
 PUT  /fs/blob/:hash        body: raw bytes       -> 204          # putBlobByHash (verify sha256==hash)
@@ -559,7 +627,7 @@ GET  /fs/blob/:hash                              -> raw bytes    # getBlobByHash
 - **Pull:** `GET /fs/path/changes?cursor` (bootstrap: `/fs/path/snapshot`, paged
   via `next`; on the final page persist `syncCursor` and resume `pathDeltas`
   there); for each `put`, hydrate content via `GET /fs/blob/:hash` (lazy on first
-  read — see Lazy content). `exclude=<actorId>` drops the caller's own echoes.
+  read — see Lazy content). `excludeOrigin=<clientId>` drops the caller's own echoes.
 - **Push:** `PUT /fs/blob/:hash` for new content (server verifies the hash), then
   `POST /fs/path/changes`; the handler applies to the DO's `Storage` and **rejects
   a `put` whose `contentHash` has no stored blob**. The handler **takes the origin
@@ -569,12 +637,17 @@ GET  /fs/blob/:hash                              -> raw bytes    # getBlobByHash
   boundary: each DO is per-authenticated-user, so all callers are that user's own
   devices — a forged `source` could only make the user's own fleet mis-suppress
   echoes. The device id still originates client-side; the server just refuses to
-  trust it per-change. `exclude=<actorId>` on pull is trusted because the server
-  itself stamped that id on the way in.
+  trust it per-change. `excludeOrigin=<clientId>` on pull is trusted because the
+  server itself stamped that id on the way in.
 
-These **replace and remove** the ino-keyed `/updates`, `/scan`, `/ops`,
-`/inodes/:ino/blob` — deleted, not kept for debug (they only served ino-based
-sync, which no longer exists).
+These **replace and remove only the sync-specific ino endpoints** `/updates`,
+`/scan`, `/ops` — deleted, not kept for debug (they only served ino-based sync,
+which no longer exists). **The generic ino CRUD endpoints stay** (`/inodes/:ino`,
+`/inodes/:ino/blob`, `/inodes/:dirIno/entries/*`, `/inodes/:ino/xattrs/*`): they
+back the general `apiStorage` Storage-over-HTTP client (used by the CLI, worker,
+frieren `remote`, auth scripts) for **non-sync** direct remote access, where ino
+identity within one authoritative server is consistent (#143 cleanup). Path sync's
+hash-addressed `/fs/blob/:hash` coexists with the ino-addressed `/inodes/:ino/blob`.
 
 ### Conflicts & versioning
 
@@ -585,17 +658,39 @@ vs. user files — it never inspects paths like `/applications/**`.**
   `path_version` table — see Scalar `version` ownership above — and its last-agreed
   value tracked per path in `PathSyncState.baselineVersion`).
 - Conflict (both sides changed since baseline) → a **deterministic winner**, not
-  strictly "last write": highest `version`, tie-broken by `(mtimeNs, contentHash)`
-  (and for dirs/symlinks, which have no `contentHash`, by `(mtimeNs, path)` — the
-  tie-break must be total for every node type). (For true LWW under concurrent
-  equal-version writes, widen the key to a `(version, mtimeNs, actorId)` tuple —
-  deferred; v1 only needs determinism.)
+  strictly "last write". The comparison key is a **total order for every node
+  type** (#143.3): `(version, mtimeNs, changeDigest)`, where `changeDigest` is a
+  canonical SHA-256 over the whole candidate change — `type, mode, mtimeNs, size,
+  symlinkTarget, sorted xattrs, contentHash` (and `source` as a final
+  discriminator). This breaks the residual ties the old `(mtimeNs, contentHash)`
+  key left: two dirs/symlinks at the same path (no `contentHash`), or two files
+  with equal `contentHash` but differing `mode`/xattrs. Both replicas compute the
+  same digest and pick the same winner. (True concurrency detection via version
+  vectors is a later upgrade; v1 only needs this deterministic total order.)
 - **v1 conflict = LWW-by-version + log, everywhere. No conflict copies in v1.**
   The deterministic winner overwrites the loser and the overwrite is logged;
   `.sync-conflict` copies (preserve the loser, Syncthing-style, zero data loss)
   are the planned follow-up. This is uniform across steady-state **and** first
   bootstrap — bootstrap does not special-case a copy (see First-bootstrap policy),
   so v1 never has to build the conflict-copy machinery.
+
+**Ancestor delete vs. descendant edit — tree-level rule (#143.2).** Per-path LWW
+alone can leave an inconsistent tree: if the server recursively deletes `/a` while
+a client raises `/a/b` to a higher version, a naive per-path resolution could keep
+`/a/b` while dropping its parent `/a`. Policy: **a surviving descendant resurrects
+its ancestor directories.**
+
+- A recursive delete journals a `delete` row per descendant path (child-before-
+  parent), so each path — including `/a/b` — gets its own per-path LWW decision
+  against the concurrent `put`.
+- After per-path LWW settles a batch, a single **tree-repair pass** ensures every
+  *surviving* path's ancestors exist: any missing ancestor dir is (re)created with
+  `version = max(childVersion, ancestorTombstoneVersion) + 1`, so the resurrected
+  dir dominates the delete that removed it and is not re-deleted next cycle.
+- If instead the delete wins at the leaf (`/a/b` delete-version > put-version), no
+  descendant survives and `/a` stays deleted. So the rule composes with per-path
+  LWW rather than overriding it: LWW decides each node; resurrection only repairs
+  ancestors of nodes that already won.
 
 That's the whole conflict story at this layer.
 
@@ -620,7 +715,7 @@ emits, never a special case *inside* sync.
 
 Baselines **cannot** live in inode xattrs — they vanish on delete/recreate, which
 is exactly when tombstone conflict detection matters. Store sync state **by path**
-(in `/.state/sync-v2`, itself local-only per the `/.state/**` exclusion above):
+(in `/.state/sync`, itself local-only per the `/.state/**` exclusion above):
 
 ```ts
 type PathSyncState = {
@@ -706,13 +801,32 @@ v1: **delete + put** (correct under path identity). Rename *detection* (match a
 delete+put by identical `contentHash` to preserve local ino) is a later
 optimisation; the blob is content-addressed so it isn't re-uploaded regardless.
 
-### Migration / self-heal (feedback #8)
+### State layout & forward compatibility (no migration — #143)
 
-- **New state key.** Do not reuse the ino cursors under `/.state/sync`. Persist
-  path sync state under **`/.state/sync-v2`** so the first path-based release
-  forces a fresh `pathScan` bootstrap instead of trusting stale ino cursors.
-- Existing forked replicas converge on that first bootstrap (path is now the
-  identity; the server's `/applications/*` wins by path).
+The product is **unreleased**, so there is **no backward-compat / auto-migration**
+story: any pre-existing local or test replicas are simply **wiped and recreated**.
+That removes the reason `/.state/sync-v2` existed — this path design *is* v1.
+
+- **State path is `/.state/sync`** (not `sync-v2`; the versioned name only made
+  sense as a backward-compat reset, which we don't need). It is local-only per the
+  `/.state/**` exclusion.
+- **Forward compat via an explicit version field, not the path name.** The sync
+  state and the `/fs` handshake carry a `schemaVersion` (state shape) and
+  `protocolVersion` (wire contract). A future breaking change bumps the field and
+  branches on it — the stable path `/.state/sync` never changes:
+
+  ```ts
+  type SyncState = {
+  	schemaVersion: number        // 1 for this design; future migrations branch on it
+  	pushCursor?: SyncCursor      // over the local ChangeSource
+  	pullCursor?: SyncCursor      // over the remote's ChangeSource
+  	// PathSyncState records are stored per-path under the same /.state/sync tree
+  }
+  ```
+
+- **No self-heal claims.** We do **not** rely on old ino-forked replicas
+  converging automatically; there are none to converge. A fresh install does one
+  `pathScan` bootstrap and proceeds.
 
 ---
 
@@ -727,12 +841,14 @@ untouched**.
    itself gains only a minimal ordered **path-delta source** (the journal), not
    the wire protocol.
 2. `packages/fs/synced.ts` — `push`/`pull`/`bootstrap` operate on `PathChange`
-   via `SyncReplica`; state under `/.state/sync-v2`, keyed by path
+   via `SyncReplica`; state under `/.state/sync`, keyed by path
    (`PathSyncState` + tombstones); lazy `readFile` hydrates by `contentHash`.
 3. `packages/core/src/fs.ts` — path-based endpoints per **`/fs` transport** above
    (`GET /fs/path/changes`, `GET /fs/path/snapshot`, `POST /fs/path/changes`,
-   `PUT`/`GET`/`HEAD /fs/blob/:hash`). **Remove** the ino-keyed `/updates`,`/scan`,
-   `/ops`,`/inodes/:ino/blob` entirely (they only served ino-based sync).
+   `PUT`/`GET`/`HEAD /fs/blob/:hash`). **Remove only the sync-specific** ino
+   endpoints `/updates`, `/scan`, `/ops`. **Keep** the generic ino CRUD endpoints
+   (`/inodes/:ino`, `/inodes/:ino/blob`, entries, xattrs) that back the general
+   `apiStorage` Storage-over-HTTP client for non-sync direct access (#143 cleanup).
 4. `storage.fs.ts` (native) — reference backend proving ino stays a real-OS
    concept. Full participation needs content hashing + a path journal/delta source
    (future; see nits).
@@ -753,8 +869,8 @@ before writing code.
 Write **only** the surface, no working bodies:
 
 - All **types + Zod schemas** (`SyncMeta` / `PathChange` / `SyncPath` /
-  `ContentHash` / `DeltaPage` / `ScanPage`, `SyncCursor`, `JournalRow`,
-  `PathSyncState`).
+  `ContentHash` / `DeltaPage` / `ScanPage`, `SyncCursor`, `JournalRow`
+  (with `localSource`), `PathSyncState`, `SyncState` (with `schemaVersion`)).
 - All **interfaces** (`ChangeSource`, `SyncReplica`, `JournalStore`, the native
   index/watcher seams).
 - Every concrete implementation body **throws `Error('not implemented')` and is
@@ -775,16 +891,18 @@ Exit criteria: it typechecks; every seam is wired; every unimplemented body is a
 This change is unusually unit-test-friendly *and* complex/error-prone, so we want
 **maximum coverage before implementing**:
 
-- Write the RED tests from **Verification** below (RED 1–13) plus the
+- Write the RED tests from **Verification** below (RED 1–15) plus the
   deterministic property test.
 - Cover the **major edge cases** explicitly: rename, directory move (subtree
-  delete+put across a page boundary), parent-dir delete, path reuse/replacement,
-  type replacement (file↔dir with recursive delete ordering), tombstone then
-  recreate, echo suppression, snapshot paging + `pathDeltas(syncCursor)` resume
-  with no gaps, idempotent scan/delta overlap, adoption same-path (incl.
-  higher-remote-version), `/.state/**` never crossing the wire, equal-version
-  concurrent writes with equal/near-equal mtimes (deterministic tie-break for
-  dirs/symlinks too), bigint/base64 wire round-trip, lazy hydrate-by-hash.
+  delete+put across a page boundary), parent-dir delete + concurrent descendant
+  edit (ancestor resurrection), path reuse/replacement, type replacement (file↔dir
+  with recursive delete ordering), tombstone then recreate, **dual-source echo
+  suppression** (push `excludeLocalSource` vs pull `excludeOrigin`), snapshot
+  paging + `pathDeltas(syncCursor)` resume with no gaps, idempotent scan/delta
+  overlap, adoption same-path (incl. higher-remote-version), `/.state` **and**
+  `/.state/**` never crossing the wire, total equal-version tie-break for
+  dirs/symlinks and equal-content-different-mode files, `contentHash` schema
+  invariants, bigint/base64 wire round-trip, lazy hydrate-by-hash.
 - **Build test infra** where it helps: an in-memory `SyncReplica` harness,
   `twoPeers()` / `adoptionPeers()`, a numeric-ino backend, a seedable
   deterministic op generator.
@@ -796,7 +914,7 @@ right reason (`not implemented`), not from harness bugs.
 ### Phase 2 — implement until green
 
 Bring the system online **one `TODO` at a time**, turning red tests green, until
-the whole suite (RED 1–13 + property test) and the **Definition of done** pass.
+the whole suite (RED 1–15 + property test) and the **Definition of done** pass.
 No new surface area here — only filling in the bodies agreed in Phase 0 against the
 tests written in Phase 1.
 
@@ -810,9 +928,15 @@ reproduced-then-fixed.
 - **Path normalization:** absolute paths only; normalise slashes; reject `..`;
   define Unicode normalisation + case sensitivity (recommend: NFC, case-
   sensitive, matching POSIX). Encoded once as the `SyncPath` schema (Wire shape).
+- **Root path:** `/` is never the subject of a `PathChange` — it always exists and
+  has no parent/name. `SyncPath` still accepts `/` (it is canonical), but the
+  local `SyncReplica` **never emits a put/delete for `/` and rejects `delete('/')`
+  on apply** (#143 cleanup); child paths under `/` are addressed normally.
 - **Content hash format:** one canonical form — lowercase hex SHA-256 (64 chars),
   the `ContentHash` schema; blob store addresses it under `…/fs/blobs/sha256/`.
-  Reject `sha256-`-prefixed or non-hex values.
+  Reject `sha256-`-prefixed or non-hex values. **Regular-file puts require a hash**
+  (empty file = SHA-256 of empty bytes); **dirs/symlinks forbid it** — enforced by
+  the `PathChange` schema refine (#143.4).
 - **`SyncMeta.ctimeNs`:** intentionally omitted — ctime is POSIX-local; the
   applying replica sets it to apply-time and it never crosses the wire.
 - **xattr semantics:** `SyncMeta.xattrs` is a COMPLETE snapshot, not a patch;
@@ -821,15 +945,23 @@ reproduced-then-fixed.
   authenticated request context, not the body, on `POST /fs/path/changes` (#142.8)
   — robustness within a user's own device fleet (each DO is per-user), not a
   cross-tenant boundary.
-- **Local-only paths:** one hard `/.state/**` path-prefix exclusion in the local
-  `SyncReplica` (never pushed, never applied) (#142.6) — replaces the
-  `trusted.sync.local-only` xattr. No general user local-only feature in v1.
+- **Conflict tie-break is total (#143.3):** `(version, mtimeNs, changeDigest)`
+  where `changeDigest` is a canonical SHA-256 over the full change; no residual
+  ties for dirs/symlinks or equal-content-different-mode files.
+- **Ancestor delete vs descendant edit (#143.2):** per-path LWW decides each node;
+  a surviving descendant then resurrects its ancestor directories (tree-repair
+  pass) so the tree never has an orphan under a deleted dir.
+- **Local-only paths:** one hard exclusion matching `/.state` **and** `/.state/**`
+  in the local `SyncReplica` — never pushed, never applied, and reconcile ignores
+  the prefix (#142.6, #143 cleanup) — replacing the `trusted.sync.local-only`
+  xattr. No general user local-only feature in v1.
 - **Apply ordering:** puts parent-before-child; deletes child-before-parent.
 - **Type replacement:** define file↔dir replacement at a path (delete subtree
   then put) and recursive delete behaviour.
-- **Echo suppression:** `PathChange.source` carries client-id; `pathDeltas`
-  supports `sourceMode: 'exclude'` so a replica skips its own echoes (parity with
-  today's source filtering).
+- **Echo suppression:** journal rows carry both the ORIGIN `PathChange.source` and
+  a local `localSource`; `pathDeltas` exposes `excludeOrigin` (pull skips this
+  client's authored changes) and `excludeLocalSource` (push skips sync-applied
+  writes, e.g. `REMOTE_SOURCE`) (#143.1). There is no `sourceMode` flag.
 - **Native backend:** path identity unblocks the model, but native still needs
   content hashing and a path journal/delta source before it can push (it has no
   journal today). Track as a follow-up.
@@ -983,15 +1115,16 @@ test('adoption keeps local over a higher-version remote and the next push wins',
 })
 ```
 
-### RED 10 — `/.state/**` never crosses the wire (#142.6)
+### RED 10 — `/.state` and `/.state/**` never cross the wire (#142.6, #143)
 
 ```ts
-test('local state under /.state is never pushed or applied', async () => {
+test('local state at /.state and under it is never pushed or applied', async () => {
 	const { client, server, syncBoth, pushedChanges } = twoPeers()
 	await client.writeFile('/notes/a', bytes('hi')); await syncBoth()
-	// clientid + sync-v2 cursors were written to /.state during the cycle:
-	expect(pushedChanges().some((c) => c.path.startsWith('/.state/'))).toBe(false)
-	expect(await server.exists('/.state')).toBe(false)       // server never got it
+	// clientid + sync cursors were written to /.state during the cycle:
+	const pushed = pushedChanges().map((c) => c.path)
+	expect(pushed.some((p) => p === '/.state' || p.startsWith('/.state/'))).toBe(false)
+	expect(await server.exists('/.state')).toBe(false)       // not even the dir node leaked
 })
 ```
 
@@ -1027,20 +1160,55 @@ test('replacing a file with a dir (and back) converges with correct delete order
 })
 ```
 
-### RED 13 — equal-version tie-break is deterministic for every node type
+### RED 13 — equal-version tie-break is deterministic for every node type (#143.3)
 
 ```ts
-test('concurrent equal-version writes pick the SAME deterministic winner on both sides', async () => {
+test('concurrent equal-version, equal-mtime writes pick the SAME winner on both sides', async () => {
 	const { client, server, syncBoth } = twoPeers()
-	// equal version, equal mtime: tie-break must be total (contentHash for files,
-	// path for dirs/symlinks) so both replicas independently agree.
-	await server.write('/f', bytes('S'), { version: 5, mtimeNs: '100' })
-	await client.write('/f', bytes('C'), { version: 5, mtimeNs: '100' })
-	await server.mkdir('/d', { version: 5, mtimeNs: '100' })
-	await client.mkdir('/d', { version: 5, mtimeNs: '100' })
+	// Equal version AND equal mtime: the tie-break must be TOTAL (canonical digest
+	// of the whole change), so it resolves even where the old key tied:
+	//  - two dirs at the same path (no contentHash),
+	//  - two files with EQUAL content but DIFFERENT mode.
+	await server.write('/f', bytes('X'), { version: 5, mtimeNs: '100', mode: 0o644 })
+	await client.write('/f', bytes('X'), { version: 5, mtimeNs: '100', mode: 0o600 })
+	await server.mkdir('/d', { version: 5, mtimeNs: '100', mode: 0o755 })
+	await client.mkdir('/d', { version: 5, mtimeNs: '100', mode: 0o700 })
 	await syncBoth()
-	expect(text(await client.readFile('/f'))).toBe(text(await server.readFile('/f')))
-	expect((await client.stat('/d')).ino !== undefined).toBe(true) // dir tie also resolves
+	expect((await client.stat('/f')).mode).toBe((await server.stat('/f')).mode) // same file winner
+	expect((await client.stat('/d')).mode).toBe((await server.stat('/d')).mode) // same dir winner
+})
+```
+
+### RED 14 — ancestor delete vs concurrent descendant edit (#143.2)
+
+```ts
+test('a winning descendant edit resurrects its deleted ancestor directory', async () => {
+	const { client, server, syncBoth } = twoPeers()
+	await server.writeFile('/a/b', bytes('v1')); await syncBoth()      // converge
+	// Concurrent: server recursively deletes /a; client raises /a/b to a higher version.
+	await server.rm('/a', { recursive: true })
+	await client.writeFile('/a/b', bytes('v2'))                        // higher per-path version
+	await syncBoth()
+	// /a/b wins per-path, so its ancestor /a is resurrected on both replicas.
+	expect((await client.stat('/a')).type).toBe(FileType.Directory)
+	expect(text(await client.readFile('/a/b'))).toBe('v2')
+	expect((await server.stat('/a')).type).toBe(FileType.Directory)   // no orphan under a deleted dir
+})
+```
+
+### RED 15 — regular-file put without a hash is rejected (#143.4)
+
+```ts
+test('a regular-file PathChange missing contentHash is rejected by the schema', () => {
+	expect(() => PathChange.parse({
+		kind: 'put', path: '/f', version: 1,
+		meta: { type: FileType.Regular, mode: 0o644, mtimeNs: '0', size: '0' }, // no contentHash
+	})).toThrow()
+	// dirs/symlinks with a hash are likewise rejected.
+	expect(() => PathChange.parse({
+		kind: 'put', path: '/d', version: 1, contentHash: 'a'.repeat(64),
+		meta: { type: FileType.Directory, mode: 0o755, mtimeNs: '0', size: '0' },
+	})).toThrow()
 })
 ```
 
@@ -1073,34 +1241,46 @@ Before implementation is considered ready:
   distinct from `PathChange.source` (origin client-id) — echo suppression and
   `volume.watch` preserved. On push the server takes `source` from the
   authenticated request context, not the body (#142.8).
+- **Two `source` concepts are split in the journal (#143.1)** — wire `origin`
+  (`PathChange.source`) vs local `localSource`; `pathDeltas` exposes
+  `excludeOrigin` (pull) and `excludeLocalSource` (push). No `sourceMode` flag.
 - **The path journal lives at/below `Storage`** (not a bypassable `Volume`
   wrapper), translated to path-correct deltas with tombstones. **Directory move =
   ordered subtree delete+put in one txn**, needing a child→parent index for
   `pathOf` (#142.5).
-- **Local-only state is excluded by path** — one hard `/.state/**` prefix rule in
-  the local `SyncReplica`, replacing the `trusted.sync.local-only` xattr (#142.6);
-  never pushed, never applied. No general user local-only feature in v1.
+- **Ancestor delete vs descendant edit has a tree policy (#143.2)** — per-path LWW
+  then resurrect ancestors of surviving paths; tested.
+- **Local-only state is excluded by path** — one hard rule matching `/.state`
+  **and** `/.state/**` in the local `SyncReplica`, replacing the
+  `trusted.sync.local-only` xattr (#142.6/#143); never pushed/applied, reconcile
+  ignores it. No general user local-only feature in v1.
 - **First-bootstrap same-path policy defined & tested** — keep local **and bump
   kept-local version above the remote** so the next push wins (#142.2/#142.3); the
   remote loser is overwritten, not copied — uniform with steady-state LWW.
 - **Conflict = LWW-by-version + log everywhere in v1; no conflict copies** (steady
   state or bootstrap). `.sync-conflict` copies are the deferred follow-up (#142.2).
-- **Lazy stubs retain the remote content hash** while separately tracking local
-  blob presence (`hasBlobByHash`).
+- **Lazy hydration is explicit on the local replica (#143.5)** — stubs retain the
+  remote content hash and skip the blob fetch; eager mode fetches. Local blob
+  presence is tracked separately (`hasBlobByHash`).
 - **`pathScan` returns split cursors** — a `next` page token AND a `syncCursor`
   high-water frozen at scan start; documented and tested (paged bootstrap resumes
   `pathDeltas(syncCursor)` with no gaps; idempotent apply; post-scan reconcile
   deletes by **path**, not ino) (#142.1).
-- **Migration forces a `/.state/sync-v2` bootstrap.**
+- **State lives at `/.state/sync` with an explicit `schemaVersion`** for forward
+  compat; no auto-migration (unreleased product; old replicas are wiped) (#143).
+- **Generic ino CRUD endpoints stay for `apiStorage`** (non-sync direct access);
+  only sync-specific `/updates`,`/scan`,`/ops` are removed (#143).
 - **Wire schema locked** — `SyncPath`/`ContentHash` schemas (not bare strings),
   `ctimeNs` intentionally omitted (synthesised on apply), `xattrs` a complete
-  snapshot not a patch (#142.7).
-- **Spec nits resolved** (normalization, content-hash format, apply ordering, type
-  replacement, echo suppression, native caveats, hard links, orphaned-blob GC).
-- Conflict resolution documented as a **deterministic winner** (not strict LWW for
-  concurrent equal-version writes), with a **total tie-break for every node type**
-  (files by `contentHash`, dirs/symlinks by `path`).
-- RED 1–13 pass (RED 5 in the materialiser doc), plus the deterministic property
+  snapshot not a patch, **regular-file puts require a hash / dirs+symlinks forbid
+  it**, and `delete('/')` is rejected (#142.7/#143.4).
+- **Spec nits resolved** (normalization, root path, content-hash format, apply
+  ordering, type replacement, echo suppression, native caveats, hard links,
+  orphaned-blob GC).
+- Conflict resolution documented as a **deterministic winner** with a **total
+  tie-break for every node type** — `(version, mtimeNs, changeDigest)` where
+  `changeDigest` is a canonical hash of the whole change (#143.3).
+- RED 1–15 pass (RED 5 in the materialiser doc), plus the deterministic property
   test.
 
 ---
@@ -1125,5 +1305,11 @@ Before implementation is considered ready:
   builds the copy machinery (#142.2).
 - **Adoption bumps kept-local version above the remote** so the next push wins,
   and records `baselineVersion = remoteVersion` (#142.3).
-- **Remove the ino-keyed HTTP sync endpoints** (`/updates`, `/scan`, `/ops`,
-  `/inodes/:ino/blob`) — deleted, not retained for debug.
+- **No backward compat / no auto-migration (#143).** The product is unreleased;
+  old replicas are wiped and recreated. State lives at the stable path
+  `/.state/sync` (this design IS v1), with an explicit `schemaVersion` field
+  carrying forward-compat rather than a versioned path name.
+- **Remove only the sync-specific ino endpoints** (`/updates`, `/scan`, `/ops`) —
+  deleted, not retained for debug. **Keep the generic ino CRUD endpoints**
+  (`/inodes/:ino`, `/inodes/:ino/blob`, entries, xattrs) that back the general
+  `apiStorage` Storage-over-HTTP client for non-sync direct access (#143).
