@@ -1,3 +1,4 @@
+import type { JournalStore, PathMutationStore } from './sync-replica'
 import type { FileType, Ino } from './types'
 
 export interface InodeMeta {
@@ -174,6 +175,21 @@ export interface StorageCapabilities {
 	 * Returns an unsubscribe function.
 	 */
 	subscribe?(listener: (change: StorageChange) => void): () => void
+
+	/**
+	 * The write-intercept path journal (owned backends: SQLite + IDB). Appended in
+	 * the same transaction as each mutation; feeds the path `ChangeSource` and the
+	 * local `SyncReplica`. Absent on non-owned backends (native uses scan+diff).
+	 */
+	journal?: JournalStore
+
+	/**
+	 * The transactional path-apply seam used by `SyncReplica.applyPathChanges` on
+	 * pull (owned backends). Installs tree metadata + `contentHash` ref + journal
+	 * row (incoming version/origin verbatim) + `path_version` fast-forward in ONE
+	 * txn; blob bytes are materialised out-of-band.
+	 */
+	pathApply?: PathMutationStore
 }
 
 /**

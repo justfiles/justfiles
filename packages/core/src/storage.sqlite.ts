@@ -6,6 +6,7 @@ import {
 	type Storage,
 	type UpdateQueryOptions
 } from '@justfiles/fs/storage'
+import type { PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import type { DbAdapter } from './db'
@@ -1051,6 +1052,28 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			return {
 				ops,
 				cursor: rows.length > 0 ? String(rows[rows.length - 1].seq) : headCursor
+			}
+		},
+
+		// ── Path-sync seams (Phase 0: shape only) ─────────────────────────────
+		journal: {
+			async append(_changes: PathChange[], _localSource?: string) {
+				// TODO(path-sync): INSERT journal rows in the mutation txn.
+				throw new Error('not implemented')
+			},
+			async readFrom(_seq: number, _limit: number) {
+				// TODO(path-sync): SELECT * FROM journal WHERE seq > ? ORDER BY seq LIMIT ?.
+				throw new Error('not implemented')
+			},
+			async head() {
+				// TODO(path-sync): SELECT COALESCE(MAX(seq), 0) FROM journal.
+				throw new Error('not implemented')
+			}
+		},
+		pathApply: {
+			async applyJournaled(_changes: PathChange[], _opts: { localSource?: string }) {
+				// TODO(path-sync): tree meta + contentHash ref + journal row + path_version, one txn.
+				throw new Error('not implemented')
 			}
 		}
 	}

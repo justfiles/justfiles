@@ -5,6 +5,8 @@ import {
 	type MutationOptions,
 	type Storage
 } from '@justfiles/fs/storage'
+import type { SyncReplica } from '@justfiles/fs/sync-replica'
+import { PathChange } from '@justfiles/fs/sync-wire'
 import { FileType } from '@justfiles/fs/types'
 import { hc, type InferResponseType } from 'hono/client'
 import type { createFsApi } from './fs'
@@ -344,4 +346,97 @@ export async function apiStorage(
 	}
 
 	return backend
+}
+
+// ── Remote path-sync adapter (HTTP client for the /fs path endpoints) ─────────
+// The remote `SyncReplica`: the client active, server passive. Blob transfer is
+// asymmetric — pull reads blobs from the server, push uploads first. `clientId`
+// identifies this device once per request via SOURCE_HEADER; the server stamps
+// it as the origin `source` on every applied change (never read from the body).
+
+export interface RemoteSyncReplicaOptions {
+	clientId: string
+}
+
+export function remoteSyncReplica(
+	client: FsClient,
+	options: RemoteSyncReplicaOptions
+): SyncReplica {
+	const { clientId } = options
+	return {
+		async pathDeltas(cursor, opts) {
+			// Note: `excludeLocalSource` is a LOCAL push concept; the remote only
+			// supports `excludeOrigin`.
+			const res = await client.path.changes.$get(
+				{
+					query: {
+						cursor,
+						excludeOrigin: opts?.excludeOrigin,
+						limit: opts?.limit !== undefined ? String(opts.limit) : undefined
+					}
+				},
+				{ init: { cache: 'no-store' } }
+			)
+			if (!res.ok) throw new Error(`pathDeltas failed: ${res.status}`)
+			const data = await res.json()
+			return {
+				changes: data.changes.map((c) => PathChange.parse(c)),
+				to: data.to,
+				done: data.done
+			}
+		},
+
+		async pathScan(page, opts) {
+			const res = await client.path.snapshot.$get({
+				query: {
+					page,
+					limit: opts?.limit !== undefined ? String(opts.limit) : undefined
+				}
+			})
+			if (!res.ok) throw new Error(`pathScan failed: ${res.status}`)
+			const data = await res.json()
+			return {
+				changes: data.changes.map((c) => PathChange.parse(c)),
+				next: data.next,
+				syncCursor: data.syncCursor,
+				done: data.done
+			}
+		},
+
+		async applyPathChanges(changes, _getBlobByHash) {
+			// Push: blobs are uploaded first (see synced()'s uploadBlobs), then the
+			// tree changes POST. `_getBlobByHash` is unused here — the server
+			// hydrates from its own store after the blob upload.
+			const res = await client.path.changes.$post({
+				json: { changes },
+				header: { [FS_SOURCE_HEADER]: clientId }
+			} as Parameters<typeof client.path.changes.$post>[0])
+			if (!res.ok) throw new Error(`applyPathChanges failed: ${res.status}`)
+		},
+
+		async getBlobByHash(hash) {
+			const res = await client.blob[':hash'].$get({ param: { hash } })
+			if (!res.ok) throw new Error(`getBlobByHash failed: ${res.status}`)
+			return new Uint8Array(await res.arrayBuffer())
+		},
+
+		async hasBlobByHash(hash) {
+			const res = await client.blob[':hash'].$head({ param: { hash } })
+			return res.ok
+		},
+
+		async putBlobByHash(hash, data) {
+			const res = await client.blob[':hash'].$put(
+				{
+					param: { hash },
+					header: {
+						'Content-Type': 'application/octet-stream',
+						[FS_SOURCE_HEADER]: clientId
+					}
+				} as Parameters<(typeof client.blob)[':hash']['$put']>[0],
+				{ init: { body: toArrayBuffer(data) } }
+			)
+			if (!res.ok) throw new Error(`putBlobByHash failed: ${res.status}`)
+		}
+	}
 }

@@ -617,6 +617,28 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			return () => {
 				listeners.delete(listener)
 			}
+		},
+
+		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
+		journal: {
+			async append(_changes, _localSource) {
+				// TODO(path-sync): add rows to the `journal` object store in the mutation txn.
+				throw new Error('not implemented')
+			},
+			async readFrom(_seq, _limit) {
+				// TODO(path-sync): openCursor(lowerBound(seq, open)), take limit.
+				throw new Error('not implemented')
+			},
+			async head() {
+				// TODO(path-sync): openCursor(null, 'prev').key ?? 0.
+				throw new Error('not implemented')
+			}
+		},
+		pathApply: {
+			async applyJournaled(_changes, _opts) {
+				// TODO(path-sync): tree meta + contentHash ref + journal row + path_version.
+				throw new Error('not implemented')
+			}
 		}
 	}
 

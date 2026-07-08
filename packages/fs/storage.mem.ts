@@ -65,6 +65,28 @@ export function memStorage(): Storage {
 			return () => {
 				listeners.delete(listener)
 			}
+		},
+
+		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
+		journal: {
+			async append(_changes, _localSource) {
+				// TODO(path-sync): append path rows in the mutation's txn.
+				throw new Error('not implemented')
+			},
+			async readFrom(_seq, _limit) {
+				// TODO(path-sync): ordered rows after seq.
+				throw new Error('not implemented')
+			},
+			async head() {
+				// TODO(path-sync): latest seq.
+				throw new Error('not implemented')
+			}
+		},
+		pathApply: {
+			async applyJournaled(_changes, _opts) {
+				// TODO(path-sync): tree meta + contentHash ref + journal row + version.
+				throw new Error('not implemented')
+			}
 		}
 	}
 

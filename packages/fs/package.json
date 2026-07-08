@@ -5,6 +5,8 @@
 	"exports": {
 		".": "./index.ts",
 		"./storage": "./storage.ts",
+		"./sync-wire": "./sync-wire.ts",
+		"./sync-replica": "./sync-replica.ts",
 		"./storage/mem": "./storage.mem.ts",
 		"./storage/idb": "./storage.idb.ts",
 		"./storage/fs": "./storage.fs.ts",
@@ -25,6 +27,16 @@
 				"types": "./dist/storage.d.ts",
 				"import": "./dist/storage.js",
 				"default": "./dist/storage.js"
+			},
+			"./sync-wire": {
+				"types": "./dist/sync-wire.d.ts",
+				"import": "./dist/sync-wire.js",
+				"default": "./dist/sync-wire.js"
+			},
+			"./sync-replica": {
+				"types": "./dist/sync-replica.d.ts",
+				"import": "./dist/sync-replica.js",
+				"default": "./dist/sync-replica.js"
 			},
 			"./storage/mem": {
 				"types": "./dist/storage.mem.d.ts",
@@ -61,7 +73,8 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"idb": "^8.0.3"
+		"idb": "^8.0.3",
+		"zod": "^4.3.6"
 	},
 	"devDependencies": {
 		"@types/node": "^25.5.0",

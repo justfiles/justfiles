@@ -1,13 +1,35 @@
 import { persistedState } from './persistedState'
-import type { FsOp, MutationOptions, Storage } from './storage'
-import { isFsCursorExpiredError } from './storage'
-import type { Ino } from './types'
+import type { Storage } from './storage'
+import {
+	type BlobStore,
+	journaledChangeSource,
+	localSyncReplica,
+	PAGE,
+	type SyncReplica,
+	type SyncState
+} from './sync-replica'
+import type { PathChange } from './sync-wire'
 import { FileType } from './types'
 import { type Volume, volume } from './volume'
 
+/**
+ * The peer this volume syncs against. Two topologies:
+ *
+ * - `Storage` — a second LOCAL backend => two-folder P2P. Wrapped here in a
+ *   local `SyncReplica` (composing a journaled `ChangeSource`). Origins
+ *   self-stamp, blobs are read directly, no handshake.
+ * - `(ctx) => SyncReplica` — the CLIENT<->SERVER case. The app injects an HTTP
+ *   `remoteSyncReplica(client, { clientId })` (from `@justfiles/core`, which
+ *   `packages/fs` must NOT import — core depends on fs). It is built with the
+ *   `clientId` THIS volume owns, so the server stamps a matching origin and
+ *   pull's `excludeOrigin` lines up. This factory seam is exactly why `Storage`
+ *   stayed lean and the wire lives in a separate adapter.
+ */
+type RemotePeer = Storage | ((ctx: { clientId: string }) => SyncReplica)
+
 type Props = {
 	local: Storage
-	remote: Storage
+	remote: RemotePeer
 	interval?: number
 	lazyContent?: boolean
 	// Local-first boot: return the local volume immediately and run the first
@@ -15,21 +37,17 @@ type Props = {
 	localFirst?: boolean
 }
 
-type SyncState = {
-	remoteCursor?: string
-	localCursor?: string
-}
-
 // What the sync loop knows about replication. Network/auth states (offline,
 // unauthenticated) are layered on top by the app, which holds those signals.
 export type SyncStatus = 'connecting' | 'syncing' | 'synced' | 'error'
 
-const SYNC_XATTR_PREFIX = 'trusted.sync.'
-const SYNC_LOCAL_ONLY_XATTR = `${SYNC_XATTR_PREFIX}local-only`
-// Tag applied to every op the sync layer writes to local — lets push filter them
-// out, and lets `volume.watch` listeners tell remote-applied pulls (the agent's
-// changes, synced down) from their own local writes.
+// Tag applied to every change the sync layer applies locally from a pull — lets
+// push filter them out (excludeLocalSource), and lets `volume.watch` listeners
+// tell remote-applied pulls from their own local writes.
 export const REMOTE_SOURCE = 'remote'
+
+// This design is v1; future breaking changes bump SyncState.schemaVersion.
+const SCHEMA_VERSION = 1
 
 interface SyncLifecycle {
 	flush(): Promise<void>
@@ -42,247 +60,143 @@ interface SyncLifecycle {
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const localVol = volume(props.local)
-
 	const syncInterval = props.interval ?? 30_000
-
-	// Cached xattr lookups — true means the inode is local-only and excluded from sync.
-	const _localOnlyCache = new Map<Ino, boolean>()
-
-	async function isLocalOnly(ino: Ino): Promise<boolean> {
-		const cached = _localOnlyCache.get(ino)
-		if (cached !== undefined) return cached
-		const marked = (await props.local.caps?.getXattr?.(ino, SYNC_LOCAL_ONLY_XATTR)) !== null
-		_localOnlyCache.set(ino, marked ?? false)
-		return marked ?? false
-	}
-
-	async function markLocalOnly(ino: Ino): Promise<void> {
-		if (await isLocalOnly(ino)) return
-		await props.local.caps?.setXattr?.(ino, SYNC_LOCAL_ONLY_XATTR, new Uint8Array(0), {
-			source: REMOTE_SOURCE
-		})
-		_localOnlyCache.set(ino, true)
-	}
-
-	// Mark the .state directory and all its children as local-only.
-	// Idempotent — safe to call on every sync cycle, no-ops after first run.
-	async function initStateMarkers(): Promise<void> {
-		if (!(await localVol.exists('/.state'))) return
-		const { ino: stateIno } = await localVol.stat('/.state')
-		await markLocalOnly(stateIno)
-		let cursor = ''
-		do {
-			const { entries, next } = await props.local.listDirents(stateIno, cursor)
-			await Promise.all(entries.map((e) => markLocalOnly(e.ino)))
-			cursor = next
-		} while (cursor)
-	}
-
-	// Returns true if any inode involved in the op is marked local-only.
-	async function shouldSkipOp(op: FsOp): Promise<boolean> {
-		if (op.kind === 'upsert-inode') return isLocalOnly(op.ino)
-		if (await isLocalOnly(op.dirIno)) return true
-		if (op.kind === 'set-dirent') return isLocalOnly(op.ino)
-		return op.ino != null && isLocalOnly(op.ino)
-	}
-
-	// True when local and remote both changed the same inode independently since
-	// the last agreed baseline — a genuine conflict requiring resolution.
-	async function hasConflict(ino: Ino, remoteHash: string | undefined): Promise<boolean> {
-		if (!remoteHash) return false
-		const [localMeta, baseline] = await Promise.all([
-			props.local.getMeta(ino),
-			getHashBaseline(ino)
-		])
-		const localHash = localMeta?.contentHash
-		if (!localHash || !baseline) return false
-		return localHash !== baseline && remoteHash !== baseline && localHash !== remoteHash
-	}
-
-	/**
-	 * Push local changes since localCursor to remote.
-	 * Tags outgoing ops with clientId as source.
-	 * Returns the new localCursor to persist.
-	 */
-	async function push(localCursor: string, clientId: string): Promise<string> {
-		const remote = props.remote
-		if (!props.local.caps?.deltaUpdates) return localCursor
-		const [{ ops, cursor }] = await Promise.all([
-			// Exclude ops the sync layer wrote to local (tagged REMOTE_SOURCE) — only push user-originated writes.
-			props.local.caps.deltaUpdates(localCursor, { source: REMOTE_SOURCE, sourceMode: 'exclude' }),
-			initStateMarkers()
-		])
-		// Tag remote writes with clientId so other clients can filter out our echoes in their pull.
-		const opts: MutationOptions = { source: clientId }
-		const toSend: FsOp[] = []
-		for (const op of ops) {
-			if (!(await shouldSkipOp(op))) toSend.push(op)
-		}
-		if (toSend.length === 0) return cursor
-		// Fast path: one round-trip if the remote can apply a batch; the helper
-		// inlines blob content for regular-file upserts. Otherwise fall back to
-		// the per-op path (one or more requests each).
-		if (remote.caps?.applyBatch) {
-			await remote.caps.applyBatch(toSend, (ino) => props.local.getBlob(ino), opts)
-		} else {
-			for (const op of toSend) await applyOp(op, props.local, remote, opts)
-		}
-		for (const op of toSend) {
-			if (op.kind === 'upsert-inode' && op.meta?.contentHash) {
-				await setHashBaseline(op.ino, op.meta.contentHash)
-			}
-		}
-		return cursor
-	}
-
-	/**
-	 * Pull updates from remote since remoteCursor.
-	 * Skips ops originating from clientId (our own echoed writes).
-	 * Returns the new remoteCursor to persist.
-	 */
-	async function pull(remoteCursor: string, clientId: string): Promise<string> {
-		const remote = props.remote
-		if (!remote.caps?.deltaUpdates) return remoteCursor
-		const { ops, cursor } = await remote.caps.deltaUpdates(remoteCursor, {
-			source: clientId,
-			sourceMode: 'exclude'
-		})
-		// Tag as REMOTE_SOURCE so push knows not to re-send these back.
-		const opts: MutationOptions = { source: REMOTE_SOURCE }
-		for (const op of ops) {
-			if (op.kind === 'upsert-inode' && (await hasConflict(op.ino, op.meta?.contentHash))) {
-				const localMeta = await props.local.getMeta(op.ino)
-				if ((localMeta?.mtimeNs ?? 0n) >= (op.meta?.mtimeNs ?? 0n)) continue // local wins
-			}
-			await applyOp(op, remote, props.local, opts, props.lazyContent)
-			if (op.kind === 'upsert-inode' && op.meta?.contentHash) {
-				await setHashBaseline(op.ino, op.meta.contentHash)
-			}
-		}
-		return cursor
-	}
-
-	/**
-	 * Full download from remote via scan.
-	 * Applies every remote inode and directory entry to local, sets baselines,
-	 * and captures the update cursor from the scan so the next pull is incremental.
-	 * After applying, reconciles by deleting local entries absent from the remote snapshot.
-	 */
-	async function bootstrap(): Promise<void> {
-		const remote = props.remote
-		if (!remote.caps?.fullScan)
-			throw new Error('remote backend does not support scan — bootstrap unavailable')
-		// Adoption guard: only reconcile (delete local entries absent from remote)
-		// once this profile has pushed at least once. A never-pushed profile is
-		// either empty (nothing to reconcile) or holds un-pushed local work that a
-		// destructive reconcile would silently destroy — so we merge the remote in
-		// and let the next push ship the local-only files up instead.
-		const everPushed = (await syncState.get()).localCursor !== undefined
-		const opts: MutationOptions = { source: REMOTE_SOURCE }
-		const remoteInos = new Set<Ino>()
-		let scanCursor = ''
-		let remoteCursor: string | undefined
-		do {
-			const result = await remote.caps.fullScan(scanCursor)
-			if (result.syncCursor !== undefined) remoteCursor = result.syncCursor
-			for (const entry of result.entries) {
-				remoteInos.add(entry.ino)
-				await applyOp(
-					{ kind: 'upsert-inode', ino: entry.ino, meta: entry.meta, xattrs: entry.xattrs },
-					remote,
-					props.local,
-					opts,
-					props.lazyContent
-				)
-				await applyOp(
-					{
-						kind: 'set-dirent',
-						dirIno: entry.dirIno,
-						name: entry.name,
-						ino: entry.ino,
-						type: entry.meta.type
-					},
-					remote,
-					props.local,
-					opts,
-					props.lazyContent
-				)
-				if (entry.meta.contentHash) await setHashBaseline(entry.ino, entry.meta.contentHash)
-			}
-			scanCursor = result.next
-		} while (scanCursor)
-		if (everPushed) await reconcileLocal(remoteInos, opts)
-		await syncState.patch({ remoteCursor: remoteCursor ?? '' })
-	}
-
-	/**
-	 * Walk local dirents and delete any entries whose ino is not in the remote
-	 * snapshot. Skips local-only entries (e.g. /.state). Processes children
-	 * before parents so directory removals succeed.
-	 */
-	async function reconcileLocal(remoteInos: Set<Ino>, opts: MutationOptions): Promise<void> {
-		await initStateMarkers()
-		const toDelete: Array<{ dirIno: Ino; name: string; ino: Ino }> = []
-
-		async function walk(dirIno: Ino): Promise<void> {
-			let cur = ''
-			do {
-				const { entries, next } = await props.local.listDirents(dirIno, cur)
-				for (const e of entries) {
-					if (await isLocalOnly(e.ino)) continue
-					if (remoteInos.has(e.ino)) {
-						if (e.type === FileType.Directory) await walk(e.ino)
-					} else {
-						// Recurse into directories first so children are deleted before parent.
-						if (e.type === FileType.Directory) await walk(e.ino)
-						toDelete.push({ dirIno, name: e.name, ino: e.ino })
-					}
-				}
-				cur = next
-			} while (cur)
-		}
-
-		await walk(props.local.rootIno)
-		for (const { dirIno, name, ino } of toDelete) {
-			await props.local.deleteDirent(dirIno, name, opts)
-			await props.local.deleteInode(ino)
-		}
-	}
+	const lazyContent = props.lazyContent ?? false
 
 	const clientId = persistedState(localVol, '/.state/clientid', () => crypto.randomUUID())
-	const syncState = persistedState<SyncState>(localVol, '/.state/sync', {})
+	const syncState = persistedState<SyncState>(localVol, '/.state/sync', {
+		schemaVersion: SCHEMA_VERSION
+	})
 
-	async function getHashBaseline(ino: Ino): Promise<string | null> {
-		const raw = await props.local.caps?.getXattr?.(ino, `${SYNC_XATTR_PREFIX}baseline`)
-		return raw ? new TextDecoder().decode(raw) : null
+	const id = await clientId.get()
+
+	// The local replica always wraps props.local (a journaled backend).
+	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
+		lazyContent,
+		localActorId: id
+	})
+
+	// Topology selection — the ONE place client<->server differs from P2P. Both
+	// yield a `SyncReplica`, so push/pull/bootstrap below are topology-agnostic.
+	//   - factory  => CLIENT<->SERVER: an HTTP replica speaking the /fs path wire
+	//     (GET /fs/path/changes, PUT /fs/blob/:hash, POST /fs/path/changes, ...),
+	//     built with the clientId we own so the server-stamped origin matches
+	//     pull's `excludeOrigin`.
+	//   - Storage  => TWO-FOLDER P2P: wrap the local backend in a local replica.
+	const clientServer = typeof props.remote === 'function'
+	const remoteReplica: SyncReplica =
+		typeof props.remote === 'function'
+			? props.remote({ clientId: id })
+			: localSyncReplica(props.remote, journaledChangeSource(props.remote), {
+					lazyContent,
+					localActorId: id
+				})
+
+	// The client<->server handshake, run ONCE before the first sync. A local peer
+	// shares this build so P2P skips it (see `sync()`).
+	let negotiated = false
+	async function negotiate(): Promise<void> {
+		// TODO(path-sync): GET /fs -> { rootIno, protocolVersion, schemaVersion };
+		// verify wire/state compatibility and branch on a future schema bump before
+		// syncing. Needs a handshake seam on the remote replica (or a `Handshake`
+		// probe passed alongside the factory). Endpoints/paths stay stable across
+		// versions; only this negotiation branches.
+		throw new Error('not implemented')
 	}
 
-	async function setHashBaseline(ino: Ino, hash: string): Promise<void> {
-		await props.local.caps?.setXattr?.(
-			ino,
-			`${SYNC_XATTR_PREFIX}baseline`,
-			new TextEncoder().encode(hash),
-			{ source: REMOTE_SOURCE }
-		)
+	/**
+	 * Push local path-changes since pushCursor to the remote.
+	 *
+	 * CLIENT<->SERVER protocol (the server can't be fetched from, so content goes
+	 * up first): `uploadBlobs` does `PUT /fs/blob/:hash` for each new hash, THEN
+	 * `applyPathChanges` does `POST /fs/path/changes`; the server verifies each
+	 * hash exists before accepting the put. `excludeLocalSource: REMOTE_SOURCE`
+	 * skips changes the sync layer itself applied from a pull. Returns the new
+	 * pushCursor to persist. (For P2P the same calls hit a local replica.)
+	 */
+	async function push(pushCursor: string): Promise<string> {
+		const { changes, to } = await localReplica.pathDeltas(pushCursor, {
+			excludeLocalSource: REMOTE_SOURCE,
+			limit: PAGE
+		})
+		await uploadBlobs(changes, localReplica, remoteReplica)
+		// Origin (PathChange.source) is stamped server-side from our clientId header
+		// (the HTTP replica sends it); `source: REMOTE_SOURCE` is the LOCAL-apply tag
+		// the remote records so it never bounces our write back.
+		await remoteReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
+			source: REMOTE_SOURCE
+		})
+		return to
+	}
+
+	/**
+	 * Pull remote path-changes since pullCursor and apply them locally.
+	 * `excludeOrigin: id` skips changes this client authored (the server stamped
+	 * our client-id as origin on push). Returns the new pullCursor to persist.
+	 */
+	async function pull(pullCursor: string): Promise<string> {
+		const { changes, to } = await remoteReplica.pathDeltas(pullCursor, {
+			excludeOrigin: id,
+			limit: PAGE
+		})
+		await localReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
+			source: REMOTE_SOURCE
+		})
+		return to
+	}
+
+	/**
+	 * Full download from the remote via pathScan. Pages through the snapshot,
+	 * applying each page locally, then resumes deltas from the frozen syncCursor.
+	 * The adoption guard only reconciles (deletes local paths absent from the
+	 * remote snapshot) once this profile has pushed at least once.
+	 */
+	async function bootstrap(): Promise<void> {
+		const everPushed = (await syncState.get()).pushCursor !== undefined
+		const remotePaths = new Set<string>()
+		let page: string | undefined
+		let syncCursor = ''
+		do {
+			const result = await remoteReplica.pathScan(page, { limit: PAGE })
+			syncCursor = result.syncCursor
+			for (const c of result.changes) remotePaths.add(c.path)
+			await localReplica.applyPathChanges(result.changes, (h) => remoteReplica.getBlobByHash(h), {
+				source: REMOTE_SOURCE
+			})
+			page = result.done ? undefined : result.next
+		} while (page)
+		if (everPushed) await reconcileLocal(remotePaths)
+		// Resume deltas at the frozen high-water — idempotent overlap covers gaps.
+		await syncState.patch({ pullCursor: syncCursor })
+	}
+
+	/**
+	 * Delete local paths absent from the remote snapshot (child-before-parent),
+	 * skipping the local-only `/.state` subtree. Path-keyed (today's ino-based
+	 * reconcile is replaced).
+	 */
+	async function reconcileLocal(_remotePaths: Set<string>): Promise<void> {
+		// TODO(path-sync): walk localVol, diff against remotePaths, delete absent
+		// paths by path (child-before-parent), ignoring /.state and /.state/**.
+		throw new Error('not implemented')
 	}
 
 	async function sync() {
+		// CLIENT<->SERVER: negotiate the wire/state versions once, before the first
+		// sync. P2P (a local peer sharing this build) skips it.
+		if (clientServer && !negotiated) {
+			await negotiate()
+			negotiated = true
+		}
 		const state = await syncState.get()
-		if (state.remoteCursor === undefined) {
+		if (state.pullCursor === undefined) {
 			await bootstrap()
 			return
 		}
-		const id = await clientId.get()
-		try {
-			const localCursor = await push(state.localCursor ?? '', id)
-			await syncState.patch({ localCursor })
-			const remoteCursor = await pull(state.remoteCursor, id)
-			await syncState.patch({ remoteCursor })
-		} catch (e) {
-			if (!isFsCursorExpiredError(e)) throw e
-			await syncState.patch({ remoteCursor: undefined })
-			await bootstrap()
-		}
+		const pushCursor = await push(state.pushCursor ?? '')
+		await syncState.patch({ pushCursor })
+		const pullCursor = await pull(state.pullCursor)
+		await syncState.patch({ pullCursor })
 	}
 
 	const RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000]
@@ -385,20 +299,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	if (props.localFirst) run()
 	else await flush()
 
-	if (props.lazyContent) {
-		// Stub inodes (created by bootstrap or pull) have no local contentHash.
-		// On first read, fetch the blob from remote and cache it — putBlob then
-		// sets the contentHash on the IDB inode.
+	if (lazyContent) {
+		// Stubs created by bootstrap/pull retain the desired remote contentHash but
+		// no local blob. On first read, hydrate by hash and store it locally.
 		const readFile = async (path: string): Promise<Uint8Array> => {
 			const stat = await localVol.stat(path)
 			if (stat.type !== FileType.Regular || stat.size === 0n) return localVol.readFile(path)
-			if (stat.contentHash) return localVol.readFile(path)
-			// metaCache may be stale — verify against storage before fetching.
-			const storedMeta = await props.local.getMeta(stat.ino)
-			if (storedMeta?.contentHash) return localVol.readFile(path)
-			// Genuinely not hydrated — fetch from remote.
-			const data = await props.remote.getBlob(stat.ino)
-			if (data.length > 0) await props.local.putBlob(stat.ino, data, { source: REMOTE_SOURCE })
+			if (!stat.contentHash) return localVol.readFile(path)
+			if (await localReplica.hasBlobByHash(stat.contentHash)) return localVol.readFile(path)
+			const data = await remoteReplica.getBlobByHash(stat.contentHash)
+			await localReplica.putBlobByHash(stat.contentHash, data)
 			return data
 		}
 		return { ...localVol, readFile, ...lifecycle }
@@ -407,53 +317,19 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	return { ...localVol, ...lifecycle }
 }
 
-// Apply one FsOp to target, reading file content from source when needed.
-// Pass skipContent=true during bootstrap/pull to create stub inodes without
-// downloading blobs — content is fetched lazily on first read instead.
-async function applyOp(
-	op: FsOp,
-	source: Storage,
-	target: Storage,
-	opts: MutationOptions,
-	skipContent = false
+/**
+ * Ensure the target replica holds a blob for every regular-file put's
+ * contentHash — upload from the source replica when missing. Content is durable
+ * before the tree points at it.
+ */
+async function uploadBlobs(
+	changes: PathChange[],
+	source: BlobStore,
+	target: BlobStore
 ): Promise<void> {
-	switch (op.kind) {
-		case 'upsert-inode': {
-			let meta = op.meta
-			if (skipContent && meta && 'contentHash' in meta) {
-				const existing = meta.contentHash ? await target.getMeta(op.ino) : null
-				meta = {
-					...meta,
-					contentHash: existing?.contentHash === meta.contentHash ? meta.contentHash : undefined
-				}
-			}
-			if (meta) await target.setMeta(op.ino, meta, opts)
-			if (!skipContent && op.meta?.type === FileType.Regular) {
-				const data = await source.getBlob(op.ino)
-				await target.putBlob(op.ino, data, opts)
-			}
-			for (const [name, value] of Object.entries(op.xattrs ?? {})) {
-				if (name.startsWith('trusted.sync.')) continue
-				if (value === null) await target.caps?.removeXattr?.(op.ino, name, opts)
-				else await target.caps?.setXattr?.(op.ino, name, value, opts)
-			}
-			break
-		}
-		case 'set-dirent': {
-			const existing = await target.getDirent(op.dirIno, op.name)
-			await target.putDirent(op.dirIno, op.name, { ino: op.ino, type: op.type }, opts)
-			if (existing && existing.ino !== op.ino) {
-				await target.deleteInode(existing.ino)
-			}
-			break
-		}
-		case 'unset-dirent': {
-			const existing = await target.getDirent(op.dirIno, op.name)
-			if (existing) {
-				await target.deleteDirent(op.dirIno, op.name, opts)
-				await target.deleteInode(existing.ino)
-			}
-			break
-		}
+	for (const c of changes) {
+		if (c.kind !== 'put' || !c.contentHash) continue
+		if (await target.hasBlobByHash(c.contentHash)) continue
+		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
 	}
 }

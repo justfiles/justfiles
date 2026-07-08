@@ -99,7 +99,7 @@ export const ContentHash = z.string().regex(/^[0-9a-f]{64}$/)
 export const Version = z.string().regex(/^(0|[1-9][0-9]*)$/)
 
 export const SyncMeta = z.object({
-	type: z.nativeEnum(FileType),           // Regular | Directory | Symlink — enum, not any number
+	type: z.enum(FileType),                  // Regular | Directory | Symlink — enum, not any number
 	mode: z.number().int(),
 	mtimeNs: z.string(),                    // bigint as string
 	size: z.string(),                       // bigint as string
@@ -192,13 +192,22 @@ export interface ChangeSource {
 	): Promise<{ changes: PathChange[]; next?: SyncCursor; syncCursor: SyncCursor; done: boolean }>
 }
 
-// The full replica: a ChangeSource + apply + content transfer. Local (over a
-// Storage/Volume) and remote (HTTP client) both implement it.
-export interface SyncReplica extends ChangeSource {
-	// Apply remote changes locally. `opts.source` tags the LOCAL write (e.g.
-	// REMOTE_SOURCE) — it becomes the journal row's `localSource` for push
-	// suppression and drives volume.watch. It is distinct from PathChange.source,
-	// the ORIGIN client-id used for pull-side `excludeOrigin` filtering.
+// SyncReplica is a COMPOSITION of three orthogonal role interfaces, NOT an
+// inheritance hierarchy. ChangeSource (detection) has several concrete strategies
+// (journaled | native | OS-feed) and can stand alone (e.g. a read-only change
+// observer / indexer). A local replica COMPOSES an injected ChangeSource and adds
+// ChangeApplier + BlobStore over its Storage; the remote HTTP replica implements
+// all three facets inline. The split follows the source/target asymmetry: on push
+// the SOURCE side needs ChangeSource + BlobStore.get, the TARGET side needs
+// ChangeApplier + BlobStore.put — blobs (content-addressed, both directions)
+// belong to neither exclusively, hence their own role.
+
+// Apply remote path-changes locally (the write/target side of a replica).
+export interface ChangeApplier {
+	// `opts.source` tags the LOCAL write (e.g. REMOTE_SOURCE) — it becomes the
+	// journal row's `localSource` for push suppression and drives volume.watch. It
+	// is distinct from PathChange.source, the ORIGIN client-id used for pull-side
+	// `excludeOrigin` filtering.
 	//
 	// Content handling is explicit: a regular-file put either
 	//   - EAGER: `getBlobByHash(contentHash)` now and store it, or
@@ -211,7 +220,10 @@ export interface SyncReplica extends ChangeSource {
 		getBlobByHash: (h: string) => Promise<Uint8Array>,
 		opts?: { source?: string }
 	): Promise<void>
-	// Content, addressed by hash (R2 already is).
+}
+
+// Hash-addressed content transfer, both directions (R2 already is).
+export interface BlobStore {
 	getBlobByHash(hash: string): Promise<Uint8Array>
 	hasBlobByHash(hash: string): Promise<boolean>  // local presence check (see Lazy content)
 	// Store a blob in THIS replica's hash-addressed blob store. Local adapter: writes
@@ -219,11 +231,20 @@ export interface SyncReplica extends ChangeSource {
 	// /fs/blob/:hash (push). Content is materialised HERE, never inside applyJournaled.
 	putBlobByHash(hash: string, data: Uint8Array): Promise<void>
 }
+
+// The full replica: detection + apply + content, COMPOSED (not inherited). Local
+// (over a Storage/Volume, composing an injected ChangeSource) and remote (HTTP
+// client, implementing all facets inline) both satisfy it.
+export type SyncReplica = ChangeSource & ChangeApplier & BlobStore
 ```
 
-- **Local adapter** wraps a `Storage`/`Volume`, constructed with a fixed
-  `lazyContent` flag. Its `applyPathChanges` does **not** call the public
-  `setMeta`/`putBlob`/`putDirent` primitives — those treat each write as a fresh
+- **Local adapter** (`localSyncReplica(storage, changes, { lazyContent, localActorId })`)
+  wraps a `Storage`/`Volume`, a fixed `lazyContent` flag, and an **injected
+  `ChangeSource`** (composition, not sniffing) — `journaledChangeSource(storage)`
+  for owned backends, `nativeChangeSource(…)` for scan+diff — which it composes to
+  serve `pathDeltas`/`pathScan` (applying the `/.state/**` exclusion on top). Its
+  `applyPathChanges` does **not** call the public `setMeta`/`putBlob`/`putDirent`
+  primitives — those treat each write as a fresh
   local mutation, bump the version generator, and stamp a LOCAL origin, discarding
   the incoming `version`/`source`. Instead, for each regular-file put it first
   materialises content out-of-band (eager: `putBlobByHash` the bytes fetched via
@@ -233,7 +254,20 @@ export interface SyncReplica extends ChangeSource {
   incoming `(version, origin source)`, records `localSource`, and advances
   `path_version` — all in one transaction. It resolves paths to local inos (reusing
   existing ones — in-place — or minting fresh). `pathDeltas` comes from the journal.
-- **Remote adapter** is the HTTP client to `packages/core/src/fs.ts`.
+- **Remote adapter** is the HTTP client to `packages/core/src/fs.ts`
+  (`remoteSyncReplica(client, { clientId })`): it implements `ChangeSource` +
+  `ChangeApplier` + `BlobStore` **inline** over the `/fs` path endpoints rather
+  than composing a local `ChangeSource`.
+- **Topology selection lives in `synced()`**, whose `remote` prop is
+  `Storage | ((ctx: { clientId }) => SyncReplica)`. A `Storage` is wrapped in a
+  local adapter (two-folder P2P); a **factory** is the CLIENT↔SERVER case — the
+  app injects `remoteSyncReplica(client, { clientId })` (from `@justfiles/core`,
+  which `packages/fs` must **not** import, so it is injected). `synced()` passes
+  the `clientId` it owns (`/.state/clientid`) into the factory, so the
+  server-stamped origin matches pull's `excludeOrigin`. `push`/`pull`/`bootstrap`
+  are topology-agnostic — they drive the abstract `SyncReplica` either way. The
+  client↔server first sync runs a one-time `negotiate()` handshake (`GET /fs`);
+  P2P shares the build and skips it.
 - `synced.ts` pulls with `applyPathChanges(changes, getBlobByHash, { source:
   REMOTE_SOURCE })` so `volume.watch` and echo suppression keep working, while
   `PathChange.source` (origin client-id) still drives `excludeOrigin` filtering.
@@ -321,8 +355,12 @@ interface JournalStore {
 	head(): Promise<number>                                             // latest seq (snapshot resume)
 }
 
-// Shared by SQLite + IDB — this is the whole ChangeSource for owned backends.
-function journaledChangeSource(store: Storage, journal: JournalStore): ChangeSource {
+// Shared by SQLite + IDB. The journal is intrinsic to the store, so this reads
+// `store.caps.journal` rather than taking it as a parameter (composed by
+// `localSyncReplica`, which injects the resulting ChangeSource).
+function journaledChangeSource(store: Storage): ChangeSource {
+	const journal = store.caps?.journal
+	if (!journal) throw new Error('backend exposes no path journal (caps.journal)')
 	return {
 		async pathDeltas(cursor, opts) {
 			const limit = opts?.limit ?? PAGE
@@ -863,14 +901,19 @@ Contained to `packages/fs` + the `packages/core` fs transport; **kernel/apps
 untouched**.
 
 1. `packages/fs` — add `SyncMeta` / `PathChange` types and the **`SyncReplica`**
-   interface. Add a **local `SyncReplica`** over `Volume`/`Storage`
-   (`applyPathChanges`, `pathScan`, path journal per "Journaling"). `Storage` gains
-   a minimal ordered **path-delta source** (the journal) and a **transactional
-   path-apply seam** (`PathMutationStore`), not the wire protocol.
+   composition (`ChangeSource & ChangeApplier & BlobStore` role interfaces). Add a
+   **local `SyncReplica`** (`localSyncReplica(storage, changes, opts)`) over
+   `Volume`/`Storage` that composes an injected `ChangeSource`
+   (`journaledChangeSource(storage)`), plus `applyPathChanges`, `pathScan`, and the
+   path journal per "Journaling". `Storage` gains a minimal ordered **path-delta
+   source** (the journal) and a **transactional path-apply seam**
+   (`PathMutationStore`), not the wire protocol.
 2. `packages/fs/synced.ts` — `push`/`pull`/`bootstrap` operate on `PathChange` via
    `SyncReplica`; state under `/.state/sync`, keyed by path (`PathSyncState` +
    tombstones); lazy `readFile` hydrates by `contentHash`.
-3. `packages/core/src/fs.ts` — path-based endpoints per **`/fs` transport** above.
+3. `packages/core/src/fs.ts` — path-based endpoints per **`/fs` transport** above,
+   served over the DO's own **local `SyncReplica`**; the remote adapter
+   (`remoteSyncReplica(client, { clientId })` in `fs.client.ts`) is the HTTP client.
    **Delete** `/updates` + `/ops` (ino-sync only); **keep** `/scan` (also backs
    `volume.scan` over `apiStorage`) and the generic ino CRUD endpoints
    (`/inodes/:ino`, `/inodes/:ino/blob`, entries, xattrs) for non-sync access.
@@ -897,7 +940,8 @@ Write **only** the surface, no working bodies:
   `ContentHash` / `Version` / `DeltaPage` / `ScanPage` / `Handshake`, `SyncCursor`,
   `JournalRow` (with `localSource`), `PathSyncState`, `SyncState` (with
   `schemaVersion`)).
-- All **interfaces** (`ChangeSource`, `SyncReplica`, `JournalStore`,
+- All **interfaces** (`ChangeSource`, `ChangeApplier`, `BlobStore`, the composed
+  `SyncReplica = ChangeSource & ChangeApplier & BlobStore`, `JournalStore`,
   `PathMutationStore`, the native index/watcher seams).
 - Every concrete implementation body **throws `Error('not implemented')`**, marked
   `// TODO(path-sync): …`.

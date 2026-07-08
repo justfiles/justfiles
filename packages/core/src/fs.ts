@@ -1,6 +1,8 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import { FsCursorExpiredError, type FsOp, type Storage } from '@justfiles/fs/storage'
+import { journaledChangeSource, localSyncReplica } from '@justfiles/fs/sync-replica'
+import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -95,6 +97,50 @@ const DirInoNameParam = z.object({ dirIno: z.string(), name: z.string() })
 const CursorQuery = z.object({ cursor: z.string().default('') })
 const SOURCE_HEADER = 'x-fs-source'
 
+// ── Path-sync (/fs) transport contract ──────────────────────────────────────
+// Wire schema is imported from @justfiles/fs/sync-wire (PathChange); the page
+// shapes below reuse it schema-first. `protocolVersion` = wire contract;
+// `schemaVersion` = /.state/sync shape. Both are 1 for this design.
+const PROTOCOL_VERSION = 1
+const SCHEMA_VERSION = 1
+
+const Handshake = z.object({
+	rootIno: z.string(),
+	protocolVersion: z.number().int(),
+	schemaVersion: z.number().int()
+})
+// Deltas are one monotonic stream, so the page token IS the resume cursor.
+const DeltaPage = z.object({
+	changes: z.array(PathChange),
+	to: z.string(), // SyncCursor to persist AND next-page token (same seq)
+	done: z.boolean() // false => more pages remain
+})
+// Snapshot: pagination position and sync high-water are DISTINCT.
+const ScanPage = z.object({
+	changes: z.array(PathChange),
+	next: z.string().optional(), // opaque next-page token; absent when done
+	syncCursor: z.string(), // delta high-water frozen at scan start; resume here
+	done: z.boolean()
+})
+const PathChangesBody = z.object({ changes: z.array(PathChange) })
+const DeltaQuery = z.object({
+	cursor: z.string().default(''),
+	excludeOrigin: z.string().optional(),
+	limit: z.coerce.number().int().positive().optional()
+})
+const SnapshotQuery = z.object({
+	page: z.string().optional(),
+	limit: z.coerce.number().int().positive().optional()
+})
+const HashParam = z.object({ hash: z.string().regex(/^[0-9a-f]{64}$/) })
+
+async function sha256Hex(data: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', data as unknown as ArrayBuffer)
+	return Array.from(new Uint8Array(digest))
+		.map((b) => b.toString(16).padStart(2, '0'))
+		.join('')
+}
+
 // Batch apply payload — the sync push fast-path. Mirrors FsOp; upsert carries
 // optional inlined blob content (base64) so one request replaces the per-op
 // setMeta + putBlob + xattr round-trips.
@@ -131,6 +177,13 @@ export function createFsApi(backend: Storage) {
 	const errorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : String(error)
 	const vol = volume(backend)
+	// The server serves the path endpoints over its own local SyncReplica. Origin
+	// is stamped per-request from SOURCE_HEADER (see POST /path/changes), so the
+	// construction-time localActorId is only a fallback.
+	const replica = localSyncReplica(backend, journaledChangeSource(backend), {
+		lazyContent: false,
+		localActorId: 'server'
+	})
 	const mutationOptions = (request: Request): { source?: string } => {
 		const source = request.headers.get(SOURCE_HEADER) ?? undefined
 		return source ? { source } : {}
@@ -140,7 +193,75 @@ export function createFsApi(backend: Storage) {
 		new Hono()
 
 			// ── Root ─────────────────────────────────────────────────────────────
-			.get('/', (c) => c.json({ rootIno: backend.rootIno }))
+			.get('/', (c) =>
+				c.json(
+					Handshake.parse({
+						rootIno: backend.rootIno,
+						protocolVersion: PROTOCOL_VERSION,
+						schemaVersion: SCHEMA_VERSION
+					})
+				)
+			)
+
+			// Path sync: PULL (client reads the server's ChangeSource)
+			.get('/path/changes', zValidator('query', DeltaQuery), async (c) => {
+				const { cursor, excludeOrigin, limit } = c.req.valid('query')
+				const { changes, to, done } = await replica.pathDeltas(cursor, { excludeOrigin, limit })
+				c.header('Cache-Control', 'no-store')
+				return c.json(DeltaPage.parse({ changes, to, done }))
+			})
+
+			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
+				const { page, limit } = c.req.valid('query')
+				const { changes, next, syncCursor, done } = await replica.pathScan(page, { limit })
+				return c.json(ScanPage.parse({ changes, next, syncCursor, done }))
+			})
+
+			// Path sync: PUSH (client writes path-changes; server applies to its Storage)
+			.put('/blob/:hash', zValidator('param', HashParam), async (c) => {
+				const { hash } = c.req.valid('param')
+				const data = new Uint8Array(await c.req.arrayBuffer())
+				// The server MUST verify sha256(bytes) === hash before accepting a blob.
+				if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
+				await replica.putBlobByHash(hash, data)
+				return c.body(null, 204)
+			})
+
+			.post('/path/changes', zValidator('json', PathChangesBody), async (c) => {
+				const { changes } = c.req.valid('json')
+				// SERVER-AUTHORITATIVE origin: ignore any `source` in the body, stamp the
+				// authenticated caller's client-id on every applied change.
+				const callerId = c.req.header(SOURCE_HEADER) ?? undefined
+				const stamped: PathChange[] = changes.map((ch) => ({ ...ch, source: callerId }))
+				// The server rejects a `put` whose contentHash has no stored blob.
+				for (const ch of stamped) {
+					if (
+						ch.kind === 'put' &&
+						ch.contentHash &&
+						!(await replica.hasBlobByHash(ch.contentHash))
+					) {
+						return c.json({ error: `missing blob ${ch.contentHash}` }, 409)
+					}
+				}
+				await replica.applyPathChanges(stamped, (h) => replica.getBlobByHash(h), {
+					source: 'remote'
+				})
+				return c.json({ ok: true })
+			})
+
+			// Path sync: CONTENT (hydration, both directions)
+			.on('HEAD', '/blob/:hash', zValidator('param', HashParam), async (c) => {
+				const { hash } = c.req.valid('param')
+				return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
+			})
+
+			.get('/blob/:hash', zValidator('param', HashParam), async (c) => {
+				const { hash } = c.req.valid('param')
+				const data = await replica.getBlobByHash(hash)
+				return new Response(data.buffer as ArrayBuffer, {
+					headers: { 'Content-Type': 'application/octet-stream' }
+				})
+			})
 
 			// ── Sync primitives ───────────────────────────────────────────────────
 
@@ -196,13 +317,20 @@ export function createFsApi(backend: Storage) {
 						}
 					} else if (op.kind === 'set-dirent') {
 						// Self-heal: a diverged replica can re-push a set-dirent whose target
-						// inode the server no longer has. Applying it throws ENOENT, which
-						// 500s the whole batch — and since the push never advances its cursor,
-						// every future sync re-sends the same op and stays wedged. Skip-and-log
-						// the dangling entry instead so sync recovers on its own.
+						// inode — or whose parent directory — the server no longer has.
+						// Applying it throws ENOENT, which 500s the whole batch — and since
+						// the push never advances its cursor, every future sync re-sends the
+						// same op and stays wedged. Skip-and-log the dangling entry instead so
+						// sync recovers on its own.
 						if (!(await backend.getMeta(op.ino))) {
 							console.warn(
 								`fs/ops: skipped dangling set-dirent ${op.dirIno}/${op.name} → missing inode ${op.ino}`
+							)
+							continue
+						}
+						if (!(await backend.getMeta(op.dirIno))) {
+							console.warn(
+								`fs/ops: skipped dangling set-dirent ${op.dirIno}/${op.name} → missing parent ${op.dirIno}`
 							)
 							continue
 						}
