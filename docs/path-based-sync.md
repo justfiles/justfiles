@@ -582,6 +582,64 @@ partial-block transfer (whole blobs, keyed by hash; R2 dedupes).
 
 ---
 
+## Development phases
+
+This change is built in three deliberate phases. Do **not** collapse them — the
+point is to lock the *shape* before implementing, and to have failing tests
+before writing code.
+
+### Phase 0 — shape only (scaffold, fully wired, deliberately broken)
+
+Write **only** the surface, no working bodies:
+
+- All **types + Zod schemas** (`SyncMeta` / `PathChange` / `ChangesPage`,
+  `SyncCursor`, `JournalRow`, `PathSyncState`).
+- All **interfaces** (`ChangeSource`, `SyncReplica`, `JournalStore`, the native
+  index/watcher seams).
+- Every concrete implementation body **throws `Error('not implemented')` and is
+  marked `// TODO(path-sync): …`**. Nothing actually works.
+- **Hook it up completely** — wire the new `SyncReplica`/`ChangeSource` into
+  `synced.ts`, the backends, and the `/fs` endpoints as if they were done.
+
+This **breaks the running system, and that's expected.** The goal is to review
+the *shape in situ* — how the new concepts are actually called and composed — so
+we can spot awkward seams and tweak the design before any real code. **Phase 0 is
+done only when we all agree on the shape.** No behaviour, no tests yet.
+
+Exit criteria: it typechecks; every seam is wired; every unimplemented body is a
+`TODO` that throws; a design review sign-off.
+
+### Phase 1 — tests first (all red)
+
+This change is unusually unit-test-friendly *and* complex/error-prone, so we want
+**maximum coverage before implementing**:
+
+- Write the RED tests from **Verification** below (RED 1–7) plus the
+  deterministic property test.
+- Cover the **major edge cases** explicitly: rename, directory move (subtree
+  delete+put), parent-dir delete, path reuse/replacement, tombstone then recreate,
+  echo suppression, cursor paging/idempotent overlap, adoption same-path,
+  bigint/base64 wire round-trip, lazy hydrate-by-hash.
+- **Build test infra** where it helps: an in-memory `SyncReplica` harness,
+  `twoPeers()` / `adoptionPeers()`, a numeric-ino backend, a seedable
+  deterministic op generator.
+
+At this stage **every test fails (red), and that's expected** — the Phase 0 bodies
+still throw. Exit criteria: the suite is comprehensive and agreed; all red for the
+right reason (`not implemented`), not from harness bugs.
+
+### Phase 2 — implement until green
+
+Bring the system online **one `TODO` at a time**, turning red tests green, until
+the whole suite (RED 1–7 + property test) and the **Definition of done** pass.
+No new surface area here — only filling in the bodies agreed in Phase 0 against the
+tests written in Phase 1.
+
+Exit criteria: all tests green; DoD satisfied; the incident (RED 1) is
+reproduced-then-fixed.
+
+---
+
 ## Spec nits to lock before coding (feedback)
 
 - **Path normalization:** absolute paths only; normalise slashes; reject `..`;
