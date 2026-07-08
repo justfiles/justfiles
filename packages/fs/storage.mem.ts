@@ -1,7 +1,13 @@
-import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type {
+	InodeMeta,
+	MutationOptions,
+	Storage,
+	StorageCapabilities,
+	StorageChange
+} from './storage'
 import type { JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
-import { inodeMetaFromSync } from './sync-wire'
+import { inodeMetaFromSync, syncMetaFromInode } from './sync-wire'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -9,9 +15,10 @@ import { FileType } from './types'
  * `mintIno` lets a caller control inode identity — e.g. a numeric-ino backend
  * (like real OS inodes) vs a UUID one — so heterogeneous ino spaces can be
  * exercised. When provided, an `atomicCreate` cap mints via it; otherwise the
- * VFS mints its own UUIDs. Root is always `'1'`.
+ * VFS mints its own UUIDs. Root is always `'1'`. `localActorId` is the backend's
+ * client-id, stamped as the ORIGIN (`PathChange.source`) on local mutations.
  */
-export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
+export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }): Storage {
 	const metas = new Map<Ino, InodeMeta>()
 	// Content is hash-addressed (matching R2): the inode holds a `contentHash` ref,
 	// the bytes live here keyed by that hash. Dedupes and lets pulled content be
@@ -21,6 +28,14 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 	const xattrs = new Map<Ino, Map<string, Uint8Array>>()
 	const rootIno = '1'
 	const mintIno = opts?.mintIno
+	const localActorId = opts?.localActorId ?? 'local'
+	// Reverse index child ino -> { parent, name } (one dirent per ino; hard links
+	// unsupported). Powers O(depth) `pathOf(ino)` for in-transaction path stamping.
+	const parentOf = new Map<Ino, { parent: Ino; name: string }>()
+	// The per-path scalar version generator (outgoing versions) + tombstones. This
+	// is the backend's generator, distinct from the engine's PathSyncState baseline.
+	const pathVersion = new Map<string, number>()
+	const tombstone = new Map<string, number>()
 
 	// Path journal (write-intercept): an append-only, path-stamped, seq-ordered log.
 	// Shared by the `caps.journal` primitive, the per-mutation stamping, and
@@ -105,15 +120,95 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 			const ino = mint()
 			metas.set(ino, { type: FileType.Directory, size: 0n, mode: 0o755, mtimeNs: 0n, ctimeNs: 0n })
 			dirs.set(key, { ino, type: FileType.Directory })
+			parentOf.set(ino, { parent: cur, name: seg })
 			cur = ino
 		}
 		return cur
 	}
 
-	// The per-path scalar version generator (outgoing versions) + tombstones. This
-	// is the backend's generator, distinct from the engine's PathSyncState baseline.
-	const pathVersion = new Map<string, number>()
-	const tombstone = new Map<string, number>()
+	/** Join a canonical directory path and a name into a child path. */
+	function joinPath(dirPath: string, name: string): string {
+		return dirPath === '/' ? `/${name}` : `${dirPath}/${name}`
+	}
+
+	/** Path depth (segment count); '/' is 0, '/a' is 1, '/a/b' is 2. */
+	function depth(p: string): number {
+		return p === '/' ? 0 : p.slice(1).split('/').length
+	}
+
+	/** Resolve ino -> canonical path by walking `parentOf` up to root; null if unlinked. */
+	function pathOf(ino: Ino): string | null {
+		if (ino === rootIno) return '/'
+		const segs: string[] = []
+		let cur: Ino = ino
+		while (cur !== rootIno) {
+			const p = parentOf.get(cur)
+			if (!p) return null
+			segs.unshift(p.name)
+			cur = p.parent
+		}
+		return `/${segs.join('/')}`
+	}
+
+	// The per-path scalar version generator: the next outgoing version for a local
+	// mutation is one past the higher of the current version and any tombstone (so a
+	// resurrected path never sorts below its own tombstone). Fast-forward only.
+	function bumpVersion(path: string): number {
+		const next = Math.max(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0) + 1
+		pathVersion.set(path, next)
+		return next
+	}
+
+	/** User-xattr snapshot for an inode (base64/`trusted.sync.*` handling in wire). */
+	function xattrRecord(ino: Ino): Record<string, Uint8Array> {
+		const m = xattrs.get(ino)
+		if (!m) return {}
+		return Object.fromEntries(m)
+	}
+
+	// ── Local-mutation journaling (write-intercept, path-stamped) ────────────────
+	// Every mutation through the public Storage primitives appends a path-stamped
+	// journal row with an auto-generated version and ORIGIN = options.source ??
+	// localActorId (localSource stays undefined — that tag is set only by the remote
+	// apply seam). Feeds `pathDeltas` for the local `SyncReplica`.
+
+	/** Journal a `put` for a linked path from the inode's current state. */
+	function journalPut(path: string, ino: Ino, options?: MutationOptions): void {
+		const meta = metas.get(ino)
+		if (!meta) return
+		// A fresh regular file has no content yet (no hash); putBlob journals it.
+		if (meta.type === FileType.Regular && !meta.contentHash) return
+		const sm = syncMetaFromInode(meta, xattrRecord(ino))
+		const version = String(bumpVersion(path))
+		const source = options?.source ?? localActorId
+		const change: PathChange =
+			meta.type === FileType.Regular
+				? { kind: 'put', path, version, source, contentHash: meta.contentHash, meta: sm }
+				: { kind: 'put', path, version, source, meta: sm }
+		appendJournal([change])
+	}
+
+	/** Journal a `delete` for a path and record its tombstone version. */
+	function journalDelete(path: string, options?: MutationOptions): void {
+		const version = bumpVersion(path)
+		tombstone.set(path, Math.max(tombstone.get(path) ?? 0, version))
+		appendJournal([
+			{ kind: 'delete', path, version: String(version), source: options?.source ?? localActorId }
+		])
+	}
+
+	/** All paths in the subtree rooted at `ino`, as `{ ino, rel }` (root rel = ''). */
+	function enumerateSubtree(ino: Ino): { ino: Ino; rel: string }[] {
+		const out: { ino: Ino; rel: string }[] = [{ ino, rel: '' }]
+		const prefix = `${ino}\0`
+		for (const [key, entry] of dirs) {
+			if (!key.startsWith(prefix)) continue
+			const name = key.slice(prefix.length)
+			for (const child of enumerateSubtree(entry.ino))
+				out.push({ ino: child.ino, rel: `/${name}${child.rel}` })
+		}
+		return out
+	}
 
 	const caps: StorageCapabilities = {
 		async getXattr(ino, name) {
@@ -154,12 +249,52 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 						const ino = mintIno()
 						metas.set(ino, { ...meta })
 						dirs.set(key, { ino, type: meta.type })
+						parentOf.set(ino, { parent: dirIno, name })
 						emit({ ino, kind: 'meta', source: options?.source })
 						emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
+						// Regular files are journaled by the following putBlob (once hashed).
+						const dirPath = pathOf(dirIno)
+						if (dirPath) journalPut(joinPath(dirPath, name), ino, options)
 						return ino
 					}
 				}
 			: {}),
+
+		// Atomic rename — moves a name (and its whole subtree) in one step. Journals
+		// the move as an ordered subtree delete+put: deletes child-before-parent (never
+		// orphan a live child under a deleted dir), then puts parent-before-child.
+		async atomicMove(oldDir, oldName, newDir, newName, options) {
+			const oldKey = dirKey(oldDir, oldName)
+			const src = dirs.get(oldKey)
+			if (!src) throw new Error(`ENOENT: ${oldName}`)
+			const oldDirPath = pathOf(oldDir)
+			const newDirPath = pathOf(newDir)
+			if (oldDirPath === null || newDirPath === null) throw new Error('ENOENT: parent')
+			const oldBase = joinPath(oldDirPath, oldName)
+			const newBase = joinPath(newDirPath, newName)
+			// Enumerate BEFORE mutating (paths are prefix-rewritten, children keep their
+			// parent-ino-keyed dirents — only the top entry rebinds).
+			const subtree = enumerateSubtree(src.ino)
+			const newKey = dirKey(newDir, newName)
+			const displaced = dirs.get(newKey) ?? null
+			dirs.delete(oldKey)
+			parentOf.delete(src.ino)
+			dirs.set(newKey, src)
+			parentOf.set(src.ino, { parent: newDir, name: newName })
+			// Free the displaced inode (the new put at `newBase` supersedes it).
+			if (displaced && displaced.ino !== src.ino && !hasDirentReference(displaced.ino)) {
+				metas.delete(displaced.ino)
+				xattrs.delete(displaced.ino)
+				parentOf.delete(displaced.ino)
+			}
+			const deletes = subtree.map((n) => oldBase + n.rel).sort((a, b) => depth(b) - depth(a)) // child-before-parent
+			for (const p of deletes) journalDelete(p, options)
+			const puts = [...subtree].sort((a, b) => depth(a.rel) - depth(b.rel)) // parent-before-child
+			for (const n of puts) journalPut(newBase + n.rel, n.ino, options)
+			emit({ ino: src.ino, kind: 'dirent', dirIno: newDir, name: newName, source: options?.source })
+			emit({ ino: src.ino, kind: 'dirent', dirIno: oldDir, name: oldName, source: options?.source })
+			return displaced && displaced.ino !== src.ino ? displaced.ino : null
+		},
 
 		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
 		journal: {
@@ -209,6 +344,7 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 							symlinkTarget: meta.symlinkTarget
 						})
 						dirs.set(key, { ino, type })
+						parentOf.set(ino, { parent: parentIno, name })
 						// Replace the whole USER-xattr set with the snapshot; keep local-only
 						// trusted.sync.* untouched.
 						const existing = xattrs.get(ino)
@@ -228,9 +364,12 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 						const { parentPath, name } = parentAndName(p)
 						const parentIno = resolveIno(parentPath)
 						if (parentIno) dirs.delete(dirKey(parentIno, name))
-						if (ino && !hasDirentReference(ino)) {
-							metas.delete(ino)
-							xattrs.delete(ino)
+						if (ino) {
+							parentOf.delete(ino)
+							if (!hasDirentReference(ino)) {
+								metas.delete(ino)
+								xattrs.delete(ino)
+							}
 						}
 						tombstone.set(p, Math.max(tombstone.get(p) ?? 0, Number(change.version)))
 					}
@@ -254,6 +393,10 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 			if (existing) {
 				metas.set(ino, { ...existing, ...patch })
 				emit({ ino, kind: 'meta', source: options?.source })
+				// A linked inode's metadata changed (chmod/utimes/…) — journal it. An
+				// unlinked inode (createNode's setMeta before putDirent) has no path yet.
+				const path = pathOf(ino)
+				if (path) journalPut(path, ino, options)
 				return
 			}
 			if (patch.type === undefined) return
@@ -295,7 +438,11 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 			const hash = await sha256Hex(data)
 			hashBlobs.set(hash, data.slice())
 			const meta = metas.get(ino)
-			if (meta) metas.set(ino, { ...meta, contentHash: hash, size: BigInt(data.length) })
+			if (meta) {
+				metas.set(ino, { ...meta, contentHash: hash, size: BigInt(data.length) })
+				const path = pathOf(ino)
+				if (path) journalPut(path, ino, options)
+			}
 		},
 
 		async getDirent(dirIno, name) {
@@ -304,14 +451,23 @@ export function memStorage(opts?: { mintIno?: () => Ino }): Storage {
 
 		async putDirent(dirIno, name, entry, options) {
 			dirs.set(dirKey(dirIno, name), entry)
+			parentOf.set(entry.ino, { parent: dirIno, name })
 			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
+			// Non-regular puts journal here; regular files wait for putBlob (once hashed).
+			const dirPath = pathOf(dirIno)
+			if (dirPath) journalPut(joinPath(dirPath, name), entry.ino, options)
 		},
 
 		async deleteDirent(dirIno, name, options) {
 			const existing = dirs.get(dirKey(dirIno, name))
+			// Resolve the path BEFORE unlinking so the delete is stamped correctly.
+			const dirPath = pathOf(dirIno)
 			dirs.delete(dirKey(dirIno, name))
-			if (existing)
+			if (existing) {
+				if (parentOf.get(existing.ino)?.parent === dirIno) parentOf.delete(existing.ino)
 				emit({ ino: existing.ino, kind: 'dirent', dirIno, name, source: options?.source })
+				if (dirPath) journalDelete(joinPath(dirPath, name), options)
+			}
 		},
 
 		async listDirents(dirIno, cursor) {
