@@ -42,6 +42,12 @@ before implementation.
 > (`protocolVersion`/`schemaVersion`); define journal `origin`/`localSource`
 > sourcing for generic ino-CRUD writes; and tighten the schema (`FileType` enum,
 > reject `put('/')`/`delete('/')`).
+> **Round 7 (issue #143 re-review):** make blob content an **explicit seam** —
+> `applyJournaled` writes metadata + `contentHash` ref only, `applyPathChanges`
+> owns byte materialisation (eager `putBlobByHash` before apply, lazy on read);
+> state one version representation — decimal string on the wire, v1-bounded integer
+> when persisted, **compared numerically not lexicographically**; and give a
+> resurrected ancestor directory **deterministic synthetic metadata**.
 
 ## TL;DR
 
@@ -192,7 +198,15 @@ export const ContentHash = z.string().regex(/^[0-9a-f]{64}$/)
 // Per-path Lamport version. Encoded as a DECIMAL STRING on the wire (like
 // mtimeNs/size), NOT z.number() (re-review): versions are long-lived protocol
 // data, and a string can widen to bigint later without a wire change or a 2^53
-// ceiling. Internally a replica may keep it as a JS integer today.
+// ceiling.
+//
+// v1 REPRESENTATION (re-review): the wire is the only place version is a string.
+// PERSISTED/INTERNAL versions — `path_version`, `PathSyncState.baselineVersion` /
+// `tombstoneVersion`, `NativeIndexRow.version` — are bounded to SQLite/JS-safe
+// integers for v1 (encode->string only at the wire boundary; parse->integer on
+// the way in). Widening to bigint is a future migration. COMPARISONS ARE ALWAYS
+// NUMERIC (parse then compare), never lexicographic — else "10" would sort below
+// "9".
 export const Version = z.string().regex(/^(0|[1-9][0-9]*)$/)
 
 export const SyncMeta = z.object({
@@ -316,7 +330,10 @@ export interface SyncReplica extends ChangeSource {
 	// Content, addressed by hash (R2 already is).
 	getBlobByHash(hash: string): Promise<Uint8Array>
 	hasBlobByHash(hash: string): Promise<boolean>  // local presence check (see Lazy content)
-	putBlobByHash?(hash: string, data: Uint8Array): Promise<void>  // remote only; see Blob push
+	// Store a blob in THIS replica's hash-addressed blob store. Local adapter: writes
+	// the backend content store (eager pull + lazy hydration). Remote adapter: PUT
+	// /fs/blob/:hash (push). Content is materialised HERE, never inside applyJournaled.
+	putBlobByHash(hash: string, data: Uint8Array): Promise<void>
 }
 ```
 
@@ -324,13 +341,14 @@ export interface SyncReplica extends ChangeSource {
   `lazyContent` flag (#143.5). Crucially, its `applyPathChanges` does **not** call
   the public `setMeta`/`putBlob`/`putDirent` primitives — those would treat each
   write as a fresh local mutation, bump the version generator, and stamp a LOCAL
-  origin, discarding the incoming `version`/`source`. Instead it calls the
-  backend's **transactional path-apply seam** `PathMutationStore.applyJournaled`
-  (below), which mutates the tree, appends the journal row with the EXACT incoming
-  `(version, origin source)`, records `localSource`, and advances `path_version`
-  — all in one transaction. It resolves paths to local inos (reusing existing ones
-  — in-place — or minting fresh), and per `lazyContent` either fetches+stores
-  blobs (eager) or writes hash-retaining stubs (lazy). `pathDeltas` comes from the
+  origin, discarding the incoming `version`/`source`. Instead, for each
+  regular-file put it first materialises content out-of-band (eager: `putBlobByHash`
+  the bytes fetched via `getBlobByHash`; lazy: skip), **then** calls the backend's
+  **transactional path-apply seam** `PathMutationStore.applyJournaled` (below),
+  which installs the tree metadata + `contentHash` ref, appends the journal row
+  with the EXACT incoming `(version, origin source)`, records `localSource`, and
+  advances `path_version` — all in one transaction. It resolves paths to local inos
+  (reusing existing ones — in-place — or minting fresh). `pathDeltas` comes from the
   path journal below.
 - **Remote adapter** is the HTTP client to `packages/core/src/fs.ts` new endpoints.
 - `synced.ts` pulls with `applyPathChanges(changes, getBlobByHash, { source:
@@ -343,14 +361,17 @@ atomically without the generator clobbering the incoming version/origin:
 
 ```ts
 // Below `Storage`, beside the journal — SQLite + IDB implement it. Applies
-// remote-authored PathChanges in ONE mutation transaction each: mutate tree +
-// content, then append the journal row with the incoming change VERBATIM
-// (its exact `version` and origin `source`) plus `localSource`, and set
-// path_version[path] = max(path_version[path], change.version) (never bump).
+// remote-authored PathChanges in ONE mutation transaction each, and touches ONLY
+// the tree + journal + version, NEVER blob bytes (re-review #1): it sets the
+// inode's metadata + `contentHash` REFERENCE, appends the journal row with the
+// incoming change VERBATIM (its exact `version` and origin `source`) plus
+// `localSource`, and sets path_version[path] = max(path_version[path],
+// change.version) (never bump). Content lives in the separate hash-addressed blob
+// store; `applyPathChanges` owns materialising it (below), out-of-band.
 export interface PathMutationStore {
 	applyJournaled(
 		changes: PathChange[],
-		opts: { localSource?: string; lazyContent?: boolean }
+		opts: { localSource?: string }
 	): Promise<void>
 }
 ```
@@ -359,6 +380,27 @@ This is the seam Phase 0 must scaffold; without it `applyPathChanges` has no way
 to write “this exact version, authored by that origin, applied-by-us” atomically.
 `Storage` itself stays lean (no path methods); `PathMutationStore` is a separate,
 small backend capability alongside the `JournalStore`.
+
+**Content ownership is an explicit seam (re-review #1).** `applyJournaled` writes
+only the `contentHash` reference; the bytes are handled by `applyPathChanges`
+*around* it, because the blob store is **hash-addressed and separate from the
+tree**, so blob writes are idempotent and need no shared transaction (a stored
+blob with no referencing path is a harmless orphan the GC reclaims; a referenced
+hash with no local blob is exactly the lazy-stub state that `readFile` hydrates):
+
+- **Eager** (`lazyContent: false`): for each regular-file `put`, `applyPathChanges`
+  first ensures the blob is present locally — `if (!await hasBlobByHash(hash)) await
+  putBlobByHash(hash, await getBlobByHash(hash))` — **then** calls `applyJournaled`
+  to install the metadata/ref. So content is durable before the path points at it.
+- **Lazy** (`lazyContent: true`): skip the fetch entirely; `applyJournaled` still
+  installs the `contentHash` ref (stub). First `readFile` hydrates via
+  `getBlobByHash` + `putBlobByHash` (see Lazy content).
+
+Here `putBlobByHash(hash, data)` stores into **this replica's** hash-addressed blob
+store: on the local adapter that is the backend content store (used by eager pull
+and lazy hydration); on the remote adapter it is `PUT /fs/blob/:hash` (used by
+push). This makes lazy/eager materialisation — and a future partial/block content
+scheme — a single, explicit place, not a hidden side effect of `applyJournaled`.
 
 ### Journaling / change detection (per-backend, behind `ChangeSource`)
 
@@ -539,7 +581,7 @@ watching + scanning (the Syncthing model):
 
 ```ts
 // path -> last-agreed identity. Persisted (sidecar SQLite/LevelDB), NOT an in-RAM tree.
-interface NativeIndexRow { path: string; contentHash: string; mtimeNs: bigint; size: bigint; version: number }
+interface NativeIndexRow { path: string; contentHash: string; mtimeNs: bigint; size: bigint; version: number /* v1-bounded int; compared numerically */ }
 
 function nativeChangeSource(root: string, index: NativeIndex, watch: FsWatcher): ChangeSource {
 	return {
@@ -728,8 +770,10 @@ vs. user files — it never inspects paths like `/applications/**`.**
   value tracked per path in `PathSyncState.baselineVersion`).
 - Conflict (both sides changed since baseline) → a **deterministic winner**, not
   strictly "last write". The comparison key is a **total order over STABLE fields**
-  (#143.3, re-review): `(version, changeDigest)`, where `changeDigest` is a
-  canonical SHA-256 over the change's durable file-state, and **nothing else**:
+  (#143.3, re-review): `(version, changeDigest)`, compared **numerically on
+  `version` first** (parse the decimal wire string to an integer; never a
+  lexicographic string compare), then by `changeDigest` — a canonical SHA-256 over
+  the change's durable file-state, and **nothing else**:
   - `kind` (`put` | `delete`), so an equal-version `put` vs `delete` is still
     ordered (deletes carry only `kind` + `path` + `version`; no meta);
   - for a `put`: `type, mode, mtimeNs, size, symlinkTarget, sorted xattrs,
@@ -766,6 +810,12 @@ its ancestor directories.**
   *surviving* path's ancestors exist: any missing ancestor dir is (re)created with
   `version = max(childVersion, ancestorTombstoneVersion) + 1`, so the resurrected
   dir dominates the delete that removed it and is not re-deleted next cycle.
+- **A resurrected dir gets DETERMINISTIC synthetic metadata** (re-review), so both
+  replicas compute an identical node from the same converged surviving set:
+  `type = Directory`, `mode = 0o755`, `xattrs = {}` (none),
+  `mtimeNs = max(mtimeNs of its surviving direct children)`, `contentHash` = none.
+  No implementation-specific defaults. (If the same path is later re-created by a
+  real `put`, that put wins by version and replaces these synthetic values.)
 - If instead the delete wins at the leaf (`/a/b` delete-version > put-version), no
   descendant survives and `/a` stays deleted. So the rule composes with per-path
   LWW rather than overriding it: LWW decides each node; resurrection only repairs
@@ -797,6 +847,7 @@ is exactly when tombstone conflict detection matters. Store sync state **by path
 (in `/.state/sync`, itself local-only per the `/.state/**` exclusion above):
 
 ```ts
+// Versions are v1-bounded integers (see Version note); compared numerically.
 type PathSyncState = {
 	path: string
 	baselineVersion: number      // last version BOTH replicas agreed on at this path
@@ -1038,6 +1089,17 @@ reproduced-then-fixed.
 - **Version encoding (re-review):** `PathChange.version` is a **decimal string**
   (the `Version` schema), like `mtimeNs`/`size` — not `z.number()`. Avoids the
   2^53 ceiling and lets the value widen to bigint later with no wire change.
+  **Persisted/internal versions are v1-bounded integers** (`path_version`,
+  `PathSyncState`, `NativeIndexRow`); string is the wire boundary only. **Compare
+  numerically, never lexicographically** (re-review 2).
+- **Content materialisation is an explicit seam (re-review 1):** `applyJournaled`
+  writes only tree metadata + `contentHash` ref, never bytes; `applyPathChanges`
+  owns blobs out-of-band — eager `putBlobByHash` before apply, lazy defers to
+  `readFile` hydration. Blob store is hash-addressed, so writes are idempotent and
+  need no shared txn (orphans are GC'd; a missing blob is the lazy-stub state).
+- **Ancestor resurrection metadata (re-review 3):** a resurrected synthetic dir is
+  deterministic — `type=Directory, mode=0o755, xattrs={}, mtimeNs=max(surviving
+  children), contentHash=none` — identical on every replica.
 - **`SyncMeta.type`:** the `FileType` enum (`z.nativeEnum(FileType)`), not an
   arbitrary number.
 - **Root path in schema:** `PathChange`'s refine rejects both `put('/')` and
@@ -1300,6 +1362,9 @@ test('a winning descendant edit resurrects its deleted ancestor directory', asyn
 	expect((await client.stat('/a')).type).toBe(FileType.Directory)
 	expect(text(await client.readFile('/a/b'))).toBe('v2')
 	expect((await server.stat('/a')).type).toBe(FileType.Directory)   // no orphan under a deleted dir
+	// resurrected dir has DETERMINISTIC synthetic metadata, identical on both sides
+	expect((await client.stat('/a')).mode).toBe(0o755)
+	expect((await client.stat('/a')).mode).toBe((await server.stat('/a')).mode)
 })
 ```
 
@@ -1382,13 +1447,17 @@ Before implementation is considered ready:
   `PathMutationStore.applyJournaled` (owned by SQLite+IDB, alongside the journal),
   NOT the public primitives — so tree mutation, the journal row with the incoming
   `version`/origin verbatim, `localSource`, and the `path_version` fast-forward all
-  commit in one backend transaction (re-review #1).
+  commit in one backend transaction. It writes **metadata + `contentHash` ref
+  only**; `applyPathChanges` materialises blobs out-of-band (eager `putBlobByHash`
+  before apply, lazy on `readFile`) into the hash-addressed blob store (re-review 1).
 - **The path journal lives at/below `Storage`** (not a bypassable `Volume`
   wrapper), translated to path-correct deltas with tombstones. **Directory move =
   ordered subtree delete+put in one txn**, needing a child→parent index for
   `pathOf` (#142.5).
 - **Ancestor delete vs descendant edit has a tree policy (#143.2)** — per-path LWW
-  then resurrect ancestors of surviving paths; tested.
+  then resurrect ancestors of surviving paths, with **deterministic synthetic dir
+  metadata** (`mode 0o755`, empty xattrs, `mtimeNs = max(surviving children)`);
+  tested (re-review 3).
 - **Local-only state is excluded by path** — one hard rule matching `/.state`
   **and** `/.state/**` in the local `SyncReplica`, replacing the
   `trusted.sync.local-only` xattr (#142.6/#143); never pushed/applied, reconcile
@@ -1413,8 +1482,10 @@ Before implementation is considered ready:
   with defined journal sourcing (above); only sync-specific `/updates`,`/scan`,
   `/ops` are removed (#143).
 - **Wire schema locked** — `SyncPath`/`ContentHash` schemas (not bare strings),
-  `version` a **decimal string** not `z.number()`, `SyncMeta.type` a `FileType`
-  enum, `ctimeNs` intentionally omitted (synthesised on apply), `xattrs` a complete
+  `version` a **decimal string** not `z.number()` (persisted internally as a
+  v1-bounded integer; **compared numerically, never lexicographically**),
+  `SyncMeta.type` a `FileType` enum, `ctimeNs` intentionally omitted (synthesised
+  on apply), `xattrs` a complete
   snapshot not a patch, **regular-file puts require a hash / dirs+symlinks forbid
   it**, and both `put('/')`/`delete('/')` are rejected (#142.7/#143.4, re-review).
 - **Spec nits resolved** (normalization, root path, content-hash format, version
