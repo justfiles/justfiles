@@ -10,6 +10,7 @@
  */
 
 import type { ContentStore, Storage } from './storage'
+import { orderForApply } from './storage.shared'
 import type { PathChange } from './sync-wire'
 import { coalesceByPath } from './sync-wire'
 
@@ -339,24 +340,4 @@ export type SyncState = {
 /** The `/.state/**` hard exclusion (local-only subtree; never crosses the wire). */
 export function isLocalOnlyPath(p: string): boolean {
 	return p === '/.state' || p.startsWith('/.state/')
-}
-
-/** Path depth (segment count); '/' is 0, '/a' is 1, '/a/b' is 2. */
-function pathDepth(p: string): number {
-	return p === '/' ? 0 : p.slice(1).split('/').length
-}
-
-/**
- * Order a coalesced batch for a safe apply: all `delete`s first, child-before-
- * parent (deeper paths first, so a live child is never orphaned under a deleted
- * dir), then all `put`s, parent-before-child (the dir exists before its entries).
- */
-function orderForApply(changes: PathChange[]): PathChange[] {
-	const deletes = changes
-		.filter((c) => c.kind === 'delete')
-		.sort((a, b) => pathDepth(b.path) - pathDepth(a.path))
-	const puts = changes
-		.filter((c) => c.kind === 'put')
-		.sort((a, b) => pathDepth(a.path) - pathDepth(b.path))
-	return [...deletes, ...puts]
 }

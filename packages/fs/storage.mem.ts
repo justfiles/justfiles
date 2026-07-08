@@ -5,9 +5,18 @@ import type {
 	StorageCapabilities,
 	StorageChange
 } from './storage'
+import {
+	buildDeleteChange,
+	buildPutChange,
+	joinPath,
+	nextVersion,
+	sortChildFirst,
+	sortParentFirst,
+	splitPath
+} from './storage.shared'
 import type { JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
-import { inodeMetaFromSync, syncMetaFromInode } from './sync-wire'
+import { inodeMetaFromSync } from './sync-wire'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -89,10 +98,7 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 	}
 
 	/** Split a canonical absolute path into { parentPath, name }. */
-	function parentAndName(p: string): { parentPath: string; name: string } {
-		const idx = p.lastIndexOf('/')
-		return { parentPath: idx === 0 ? '/' : p.slice(0, idx), name: p.slice(idx + 1) }
-	}
+	const parentAndName = splitPath
 
 	/** Resolve a canonical path to an ino by walking dirents; null if absent. */
 	function resolveIno(p: string): Ino | null {
@@ -126,16 +132,6 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		return cur
 	}
 
-	/** Join a canonical directory path and a name into a child path. */
-	function joinPath(dirPath: string, name: string): string {
-		return dirPath === '/' ? `/${name}` : `${dirPath}/${name}`
-	}
-
-	/** Path depth (segment count); '/' is 0, '/a' is 1, '/a/b' is 2. */
-	function depth(p: string): number {
-		return p === '/' ? 0 : p.slice(1).split('/').length
-	}
-
 	/** Resolve ino -> canonical path by walking `parentOf` up to root; null if unlinked. */
 	function pathOf(ino: Ino): string | null {
 		if (ino === rootIno) return '/'
@@ -150,15 +146,6 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		return `/${segs.join('/')}`
 	}
 
-	// The per-path scalar version generator: the next outgoing version for a local
-	// mutation is one past the higher of the current version and any tombstone (so a
-	// resurrected path never sorts below its own tombstone). Fast-forward only.
-	function bumpVersion(path: string): number {
-		const next = Math.max(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0) + 1
-		pathVersion.set(path, next)
-		return next
-	}
-
 	/** User-xattr snapshot for an inode (base64/`trusted.sync.*` handling in wire). */
 	function xattrRecord(ino: Ino): Record<string, Uint8Array> {
 		const m = xattrs.get(ino)
@@ -168,33 +155,35 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 
 	// ── Local-mutation journaling (write-intercept, path-stamped) ────────────────
 	// Every mutation through the public Storage primitives appends a path-stamped
-	// journal row with an auto-generated version and ORIGIN = options.source ??
-	// localActorId (localSource stays undefined — that tag is set only by the remote
-	// apply seam). Feeds `pathDeltas` for the local `SyncReplica`.
+	// journal row via the shared pure builders, with a version from the shared
+	// generator and ORIGIN = options.source ?? localActorId (localSource stays
+	// undefined — that tag is set only by the remote apply seam). Feeds `pathDeltas`.
 
 	/** Journal a `put` for a linked path from the inode's current state. */
 	function journalPut(path: string, ino: Ino, options?: MutationOptions): void {
 		const meta = metas.get(ino)
 		if (!meta) return
-		// A fresh regular file has no content yet (no hash); putBlob journals it.
-		if (meta.type === FileType.Regular && !meta.contentHash) return
-		const sm = syncMetaFromInode(meta, xattrRecord(ino))
-		const version = String(bumpVersion(path))
-		const source = options?.source ?? localActorId
-		const change: PathChange =
-			meta.type === FileType.Regular
-				? { kind: 'put', path, version, source, contentHash: meta.contentHash, meta: sm }
-				: { kind: 'put', path, version, source, meta: sm }
+		const version = nextVersion(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0)
+		const change = buildPutChange(
+			path,
+			meta,
+			xattrRecord(ino),
+			version,
+			options?.source ?? localActorId
+		)
+		// null = a fresh regular file with no content yet; putBlob will journal it.
+		// Only consume the version when we actually journal.
+		if (!change) return
+		pathVersion.set(path, version)
 		appendJournal([change])
 	}
 
 	/** Journal a `delete` for a path and record its tombstone version. */
 	function journalDelete(path: string, options?: MutationOptions): void {
-		const version = bumpVersion(path)
+		const version = nextVersion(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0)
+		pathVersion.set(path, version)
 		tombstone.set(path, Math.max(tombstone.get(path) ?? 0, version))
-		appendJournal([
-			{ kind: 'delete', path, version: String(version), source: options?.source ?? localActorId }
-		])
+		appendJournal([buildDeleteChange(path, version, options?.source ?? localActorId)])
 	}
 
 	/** All paths in the subtree rooted at `ino`, as `{ ino, rel }` (root rel = ''). */
@@ -287,10 +276,16 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				xattrs.delete(displaced.ino)
 				parentOf.delete(displaced.ino)
 			}
-			const deletes = subtree.map((n) => oldBase + n.rel).sort((a, b) => depth(b) - depth(a)) // child-before-parent
-			for (const p of deletes) journalDelete(p, options)
-			const puts = [...subtree].sort((a, b) => depth(a.rel) - depth(b.rel)) // parent-before-child
-			for (const n of puts) journalPut(newBase + n.rel, n.ino, options)
+			// Journal the move as ordered subtree changes: deletes child-before-parent
+			// (never orphan a live child under a deleted dir), then puts parent-before-
+			// child (the dir exists before its entries) — ordering shared with apply.
+			const deletePaths = sortChildFirst(
+				subtree.map((n) => oldBase + n.rel),
+				(p) => p
+			)
+			for (const p of deletePaths) journalDelete(p, options)
+			const putNodes = sortParentFirst(subtree, (n) => newBase + n.rel)
+			for (const n of putNodes) journalPut(newBase + n.rel, n.ino, options)
 			emit({ ino: src.ino, kind: 'dirent', dirIno: newDir, name: newName, source: options?.source })
 			emit({ ino: src.ino, kind: 'dirent', dirIno: oldDir, name: oldName, source: options?.source })
 			return displaced && displaced.ino !== src.ino ? displaced.ino : null
