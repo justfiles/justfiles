@@ -34,8 +34,8 @@ import { volume } from './volume'
  * Constructs a backend for the harness. `memStorage` is the default; the
  * conformance suite passes an `idbStorage`/`sqliteStorage` factory so the SAME
  * path-sync semantics run against every owned backend. Must be synchronous (both
- * mem and idb construct synchronously; sqlite migrates synchronously under
- * `bun:sqlite`).
+ * mem and idb construct synchronously; sqlite migrates synchronously via
+ * `node:sqlite`).
  */
 export type BackendFactory = (opts?: { mintIno?: () => Ino; localActorId?: string }) => Storage
 
@@ -539,12 +539,12 @@ export async function treeSnapshot(peer: Peer): Promise<Record<string, string>> 
 // ── Backend conformance suite ─────────────────────────────────────────────────
 // The same path-sync semantics, run against EVERY owned backend (mem, IDB,
 // SQLite/DO) so the SHIPPING backends — not just this memStorage-based harness —
-// are proven against identical specs. Cases are framework-agnostic (no vitest /
-// bun:test import): each is `{ name, run(makeBackend) }`, and every runner (vitest
-// for mem+idb, `bun:test` for sqlite) registers them with its own `test()`. They
-// live here, in the test harness, rather than a prod-looking module — and cannot
-// live in a `*.test.ts`, since the bun runner imports them and importing a vitest
-// test file (top-level `describe`) under `bun test` would fail.
+// are proven against identical specs. Cases are plain data (`{ name, run(makeBackend) }`),
+// registered by two separate vitest files: packages/fs/sync-conformance.test.ts
+// (mem + idb) and packages/core/src/storage.sqlite.conformance.test.ts (sqlite via
+// node:sqlite). They live here in the harness — not a prod-looking module, and not
+// a `*.test.ts` — because both test files import them, and a test file that also
+// registers its own `describe`/`test` can't be cleanly imported by another.
 //
 // A case throws on failure. A backend that has not implemented the path-sync seams
 // (`caps.journal` / `caps.pathApply` / `caps.content` + local-mutation journaling)

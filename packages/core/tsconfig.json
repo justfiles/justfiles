@@ -2,6 +2,7 @@
 	"compilerOptions": {
 		"target": "ES2022",
 		"lib": ["ES2023", "DOM"],
+		"types": ["node"],
 		"module": "ESNext",
 		"moduleResolution": "bundler",
 		"allowImportingTsExtensions": true,
@@ -15,8 +16,5 @@
 		"noFallthroughCasesInSwitch": true,
 		"noUncheckedSideEffectImports": true
 	},
-	"include": ["src"],
-	// `*.bun.test.ts` runs under `bun test` (needs bun:sqlite/bun:test) — the CI
-	// Bun half. tsc has no @types/bun, so skip it here (mirrors vitest's exclude).
-	"exclude": ["**/*.bun.test.ts"]
+	"include": ["src"]
 }

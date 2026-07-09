@@ -1,15 +1,14 @@
 /**
  * Runs the backend conformance suite (`pathSyncConformanceCases`, in
- * `sync-test-harness.ts`) under vitest for the
- * backends reachable in Node:
+ * `sync-test-harness.ts`) under vitest for the backends reachable in Node:
  *   - `memStorage`  — GREEN (implements the path-sync seams).
  *   - `idbStorage`  — RED until it implements `caps.journal` / `caps.pathApply` /
  *     `caps.content` + local-mutation journaling. It CONSTRUCTS fine (via
  *     `fake-indexeddb`), so these fail for the RIGHT reason (`not implemented`),
  *     turning GREEN when the backend lands.
  *
- * `sqlite` runs the SAME cases under `bun:test` (it needs `bun:sqlite`); see
- * `packages/core/src/storage.sqlite.conformance.bun.test.ts`.
+ * `sqlite` runs the SAME cases under vitest via `node:sqlite`; see
+ * `packages/core/src/storage.sqlite.conformance.test.ts`.
  *
  * `fake-indexeddb/auto` MUST be imported before `storage.idb` (its module-load
  * `IDBKeyRange` capture reads the global), so it is the first import here.
