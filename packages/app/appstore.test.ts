@@ -1,6 +1,6 @@
 import type { Volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { type AppStore, type CatalogApp, reconcile } from './appstore.ts'
+import { type AppStore, type CatalogApp, materialise, reconcile, semverGte } from './appstore.ts'
 import type { AppBundle, AppManifest, Kernel } from './kernel.ts'
 
 const enc = new TextEncoder()
@@ -70,8 +70,10 @@ function bundle(files: Record<string, string>): AppBundle {
 }
 
 // One in-memory world: kernel.install writes the bundle's files into the volume
-// (verbatim, like the real kernel), and volume.stat reports each file's sha256 —
-// so reconcile's content comparison sees exactly what was installed.
+// (verbatim, like the real kernel), kernel.uninstall drops an app's files, and
+// volume.stat reports each file's sha256 — so reconcile's content comparison
+// sees exactly what was installed. `blobs` is exposed so a test can simulate a
+// lost/un-hydrated file.
 function fakeWorld() {
 	const blobs = new Map<string, Uint8Array>() // /applications/<id>/<path> -> bytes
 	const installs: string[] = []
@@ -91,6 +93,11 @@ function fakeWorld() {
 				blobs.set(`/applications/${manifest.id}/${path}`, await b.read(path))
 			}
 			return manifest.id
+		},
+		uninstall: async (id: string): Promise<void> => {
+			for (const path of [...blobs.keys()]) {
+				if (path.startsWith(`/applications/${id}/`)) blobs.delete(path)
+			}
 		}
 	} as unknown as Kernel
 	const fs = {
@@ -105,49 +112,101 @@ function fakeWorld() {
 			return bytes
 		}
 	} as unknown as Volume
-	return { kernel, fs, installs }
+	return { kernel, fs, installs, blobs }
 }
 
-describe('reconcile', () => {
+describe('materialise', () => {
 	test('seeds a missing built-in', async () => {
 		const store = await builtinStore(FILES)
-		const { kernel, fs, installs } = fakeWorld()
-		await reconcile(kernel, fs, store)
+		const { kernel, installs } = fakeWorld()
+		await materialise(kernel, store)
 		expect(installs).toEqual(['app.x'])
 	})
 
-	test('skips a built-in whose assets already match', async () => {
+	test('skips a built-in that is already installed (idempotent)', async () => {
 		const store = await builtinStore(FILES)
-		const { kernel, fs, installs } = fakeWorld()
-		await reconcile(kernel, fs, store)
-		await reconcile(kernel, fs, store)
-		expect(installs).toEqual(['app.x']) // installed once, then skipped
-	})
-
-	test('reinstalls a built-in whose assets changed', async () => {
-		const v1 = await builtinStore(FILES)
-		const v2 = await builtinStore({ ...FILES, 'app.js': '// code v2' })
-		const { kernel, fs, installs } = fakeWorld()
-		await reconcile(kernel, fs, v1)
-		await reconcile(kernel, fs, v2)
-		expect(installs).toEqual(['app.x', 'app.x']) // changed bytes → reinstalled
-	})
-
-	test('reinstalls a built-in whose version bumped even if other assets are identical', async () => {
-		// A pure version bump: app.js is byte-identical, only manifest.json changes.
-		const { kernel, fs, installs } = fakeWorld()
-		await reconcile(kernel, fs, await versionedStore('1.0.0'))
-		await reconcile(kernel, fs, await versionedStore('1.1.0'))
-		expect(installs).toEqual(['app.x', 'app.x']) // version bump → reinstalled
+		const { kernel, installs } = fakeWorld()
+		await materialise(kernel, store)
+		await materialise(kernel, store)
+		expect(installs).toEqual(['app.x']) // installed once, then left alone
 	})
 
 	test('rejects bytes that do not match the pinned hash, before installing', async () => {
 		const store = await builtinStore(FILES)
-		const { kernel, fs, installs } = fakeWorld()
+		const { kernel, installs } = fakeWorld()
 		store.read = async (_app, path) =>
 			enc.encode(path === 'app.js' ? '// tampered' : (FILES[path] ?? ''))
-		await expect(reconcile(kernel, fs, store)).rejects.toThrow(/hash/)
+		await expect(materialise(kernel, store)).rejects.toThrow(/hash/)
 		expect(installs).toEqual([])
+	})
+})
+
+describe('reconcile', () => {
+	test('skips a built-in whose assets already match', async () => {
+		const store = await builtinStore(FILES)
+		const { kernel, fs, installs } = fakeWorld()
+		await materialise(kernel, store)
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x']) // seeded once, then skipped (unchanged)
+	})
+
+	test('upgrades a built-in whose assets changed', async () => {
+		const v1 = await builtinStore(FILES)
+		const v2 = await builtinStore({ ...FILES, 'app.js': '// code v2' })
+		const { kernel, fs, installs } = fakeWorld()
+		await materialise(kernel, v1)
+		await reconcile(kernel, fs, v2)
+		expect(installs).toEqual(['app.x', 'app.x']) // changed bytes → reinstalled
+	})
+
+	test('upgrades a built-in whose version bumped even if other assets are identical', async () => {
+		// A pure version bump: app.js is byte-identical, only manifest.json changes.
+		const { kernel, fs, installs } = fakeWorld()
+		await materialise(kernel, await versionedStore('1.0.0'))
+		await reconcile(kernel, fs, await versionedStore('1.1.0'))
+		expect(installs).toEqual(['app.x', 'app.x']) // version bump → reinstalled
+	})
+
+	test('reinstalls when a file is missing even if .apphash matches', async () => {
+		const store = await builtinStore(FILES)
+		const { kernel, fs, installs, blobs } = fakeWorld()
+		await materialise(kernel, store) // installs, writes .apphash
+		blobs.delete('/applications/app.x/app.js') // a lost / un-hydrated file
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x', 'app.x']) // self-healed
+	})
+
+	test('does not reinstall when the store version is older than installed', async () => {
+		const { kernel, fs, installs } = fakeWorld()
+		await materialise(kernel, await versionedStore('0.1.1')) // installed 0.1.1
+		await reconcile(kernel, fs, await versionedStore('0.1.0')) // stale build offers 0.1.0
+		expect(installs).toEqual(['app.x']) // no downgrade
+	})
+
+	test('does not downgrade via repair when an older store also changed the files', async () => {
+		// The repair path is monotonic too: a stale store whose files differ must not
+		// masquerade as a self-heal and reinstall its OLDER bytes over a newer install.
+		const newer = await builtinStore({
+			'manifest.json': JSON.stringify({ id: 'app.x', name: 'X', version: '2.0.0', app: 'app.js' }),
+			'app.js': '// code v2'
+		})
+		const older = await builtinStore({
+			'manifest.json': JSON.stringify({ id: 'app.x', name: 'X', version: '1.0.0', app: 'app.js' }),
+			'app.js': '// code v1'
+		})
+		const { kernel, fs, installs } = fakeWorld()
+		await materialise(kernel, newer)
+		await reconcile(kernel, fs, older)
+		expect(installs).toEqual(['app.x']) // no downgrade
+	})
+
+	test('a deleted built-in is not force-reinstalled', async () => {
+		const store = await builtinStore(FILES)
+		const { kernel, fs, installs } = fakeWorld()
+		await materialise(kernel, store)
+		await kernel.uninstall('app.x') // user removes it
+		await reconcile(kernel, fs, store)
+		expect(installs).toEqual(['app.x']) // NOT reinstalled
 	})
 
 	test('updates an installed non-built-in app via latest(id)', async () => {
@@ -172,5 +231,16 @@ describe('reconcile', () => {
 		}
 		await reconcile(kernel, fs, store)
 		expect(installs).toEqual(['app.z', 'app.z']) // seeded, then updated via latest()
+	})
+})
+
+describe('semverGte', () => {
+	test('compares numerically, not lexicographically', () => {
+		expect(semverGte('0.10.0', '0.9.0')).toBe(true) // 10 > 9
+		expect(semverGte('1.0.0', '1.0.0')).toBe(true) // equal is >=
+		expect(semverGte('1.0.0', '1.0.1')).toBe(false)
+		expect(semverGte('2.0.0', '1.9.9')).toBe(true)
+		expect(semverGte('1.2', '1.2.0')).toBe(true) // missing segment = 0
+		expect(semverGte('0.0.0', '1.0.0')).toBe(false) // versionless install is oldest
 	})
 })

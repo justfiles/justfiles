@@ -1,4 +1,4 @@
-import { reconcile } from '@justfiles/app/appstore'
+import { materialise, reconcile } from '@justfiles/app/appstore'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
@@ -72,6 +72,8 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 		clock: {}
 	})
 	const builtins = await builtinStore()
+	// Install any missing built-in (first run), then update whatever is installed.
+	await materialise(k, builtins)
 	await reconcile(k, fs, builtins)
 	return k
 }

@@ -149,34 +149,55 @@ refresh is its first consumer (see Concepts → Launcher watcher).
 
 ## Concepts in code
 
-### Update decision (proposed shape for `packages/app/appstore.ts`)
+### Update decision (as implemented in `packages/app/appstore.ts`)
 
 ```ts
-// Decide what reconcile does for one app. Split "repair" from "upgrade" so the
-// monotonic guard only governs version changes, and a missing file is always
-// repaired.
+// Decide what reconcile does for one INSTALLED app. Split "repair" from
+// "upgrade" so a missing/corrupt file self-heals even when the whole-app hash
+// matches, while a version change is governed by the monotonic guard.
 type SyncAction = 'skip' | 'repair' | 'upgrade'
 
 async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
-	if (!(await filesPresentAndMatch(fs, app))) return 'repair'   // self-heal (restored)
+	const gte = semverGte(app.version, await installedVersion(fs, app.id))
+	if (!(await filesPresentAndMatch(fs, app))) return gte ? 'repair' : 'skip'
 	if ((await installedHash(fs, app.id)) === (await appHash(app))) return 'skip'
-	// Whole-app hash differs → an upgrade, but never downgrade.
-	return semverGte(app.version, await installedVersion(fs, app.id)) ? 'upgrade' : 'skip'
+	return gte ? 'upgrade' : 'skip'
 }
 ```
 
 - `appHash` / `installedHash` (the `.apphash` marker) — already implemented.
-- `filesPresentAndMatch` — **restore** the per-file `fs.stat().contentHash` loop
-  I removed (excluding `manifest.json`, which is re-serialised on install).
-- `installedVersion` — **restore** the manifest-version read for the monotonic
-  guard.
+- `filesPresentAndMatch` — the per-file `fs.stat().contentHash` loop (excluding
+  `manifest.json`, which is re-serialised on install), restored.
+- `installedVersion` — the manifest-version read, restored, for the guard.
+- **Deviation from the earlier sketch:** repair is **also** gated by the
+  monotonic `semverGte`, not exempt. The exemption assumed "repair reinstalls the
+  *same* version", but a store older than what's installed has no such version —
+  reinstalling its files would be a downgrade dressed as a self-heal. Gating
+  repair by `gte` realises the stated intent (never downgrade) and closes that
+  hole; a same-or-newer store still repairs a missing/corrupt file.
 
-### Client is the sole entry point
+### Two entry points: `materialise` (seed) + `reconcile` (update)
 
-- Remove the worker's reconcile call. `reconcile` (renamed intent: "materialise
-  if empty + update installed") is invoked only by the client:
-  - first-run materialise (R1/R2), and
-  - launch/sweep updates (R3).
+The old single `reconcile` both seeded missing built-ins and updated installed
+ones. That conflates two decisions and makes R5 impossible statelessly: a
+stateless reconcile can't tell a *never-installed* built-in (seed it) from a
+*user-deleted* one (leave it). So the two are **split**:
+
+- **`materialise(kernel, store)`** — install every built-in that isn't installed.
+  The ONLY path that installs a missing built-in. Idempotent.
+- **`reconcile(kernel, fs, store)`** — update the apps that ARE installed
+  (built-in via the catalog entry, others via `latest(id)`); never seeds.
+
+RED 3 (a deleted built-in stays gone) then holds trivially: `reconcile` never
+reinstalls it. **The split deliberately avoids a persistent "was materialised"
+marker** — a synced marker file would be new cross-replica state and reintroduce
+exactly the two-authority fork the incident is about. Instead, *when* to seed is
+the caller's decision (Phase 2 gates `materialise` on empty-volume/new-account;
+Phase 1 keeps every caller seeding on boot: `materialise` then `reconcile`).
+
+Callers today (`apps/frieren/src/apps/seed.ts`,
+`apps/frieren/worker/frieren.app.ts`, `apps/spud-mac/daemon/kernel.ts`) call both
+in sequence, so boot behaviour is unchanged until Phase 2 gates the seed.
 
 ### Quiesce signal (host)
 
@@ -259,30 +280,34 @@ the change. Run `pnpm vitest run packages/app/appstore.test.ts`.
 test('reinstalls when a file is missing even if .apphash matches', async () => {
 	const store = await builtinStore(FILES)
 	const { kernel, fs, installs, blobs } = fakeWorld()
-	await reconcile(kernel, fs, store)                 // installs, writes .apphash
-	blobs.delete('/applications/app.x/icon.png')       // simulate a lost/un-hydrated file
+	await materialise(kernel, store)                   // installs, writes .apphash
+	blobs.delete('/applications/app.x/app.js')         // simulate a lost/un-hydrated file
 	await reconcile(kernel, fs, store)
 	expect(installs).toEqual(['app.x', 'app.x'])        // repaired
 })
 ```
-RED today: `.apphash` matches ⇒ skipped ⇒ the missing file is never repaired.
+RED before the change: `.apphash` matches ⇒ skipped ⇒ the missing file is never
+repaired.
 
 ### RED 2 — never downgrade
 
 ```ts
 test('does not reinstall when the store version is older than installed', async () => {
 	const { kernel, fs, installs } = fakeWorld()
-	await reconcile(kernel, fs, await versionedStore('0.1.1'))  // installed 0.1.1
+	await materialise(kernel, await versionedStore('0.1.1'))    // installed 0.1.1
 	await reconcile(kernel, fs, await versionedStore('0.1.0'))  // stale build offers 0.1.0
 	expect(installs).toEqual(['app.x'])                          // no downgrade
 })
 ```
+Plus a companion: an older store that *also* changed the files must not
+downgrade via the repair path (the monotonic-repair guard).
 
 ### GREEN-keep — existing upgrade/skip cases
 
 ```ts
 // still pass: upgrade on newer version, skip when unchanged, content-change at
-// same version still upgrades (dev iteration), hash-mismatch is rejected.
+// same version still reinstalls (dev iteration), hash-mismatch is rejected.
+// The seed-dependent cases now call materialise() for the install step.
 ```
 
 ### RED 3 — built-in stays uninstalled
@@ -291,13 +316,14 @@ test('does not reinstall when the store version is older than installed', async 
 test('a deleted built-in is not force-reinstalled', async () => {
 	const store = await builtinStore(FILES)
 	const { kernel, fs, installs } = fakeWorld()
-	await reconcile(kernel, fs, store)
+	await materialise(kernel, store)
 	await kernel.uninstall('app.x')                    // user removes it
 	await reconcile(kernel, fs, store)
 	expect(installs).toEqual(['app.x'])                 // NOT reinstalled
 })
 ```
-RED today: reconcile reinstalls every missing built-in.
+Green because `reconcile` no longer seeds; only `materialise` installs a missing
+built-in, and the caller decides whether to call it.
 
 ### Integration / UI checks (not unit tests)
 
@@ -325,19 +351,23 @@ one change. Risk is unevenly distributed and Phase 2 carries open questions the
 other two don't; landing Phase 1 first shrinks Phase 2 to "call `reconcile` from
 one place at the right time" against already-correct logic.
 
-### Phase 1 — `appstore.ts` logic (R3 `decide` + R5 + self-heal)
+### Phase 1 — `appstore.ts` logic (R3 `decide` + R5 + self-heal) — DONE
 
-Contained entirely in `packages/app/appstore.ts`: split `decide()` into
-`repair | upgrade | skip`, restore `filesPresentAndMatch` + `installedVersion`,
-add the monotonic guard, drop the "always reinstall a deleted built-in" rule.
+Contained to `packages/app/appstore.ts` (+ the three boot callers, kept seeding):
+split into `materialise` (seed missing) + `reconcile` (update installed), restore
+`filesPresentAndMatch` + `installedVersion`, add `semverGte` + the monotonic
+guard (governing repair too), drop the "always reinstall a deleted built-in"
+rule.
 
-- Unit-testable today against the existing `fakeWorld()` harness — RED 1–3 above
-  are ready. No wiring touched, no open questions.
+- Unit-tested against the existing `fakeWorld()` harness — RED 1–3 pass; the
+  seed-dependent GREEN cases now install via `materialise`. No open questions.
 - Fixes the active self-heal regression regardless of the rest.
 - Makes Phase 2 safe: a monotonic, idempotent `decide()` can't downgrade a
   synced-down app.
-
-Land first, alone.
+- **Deviations from the original sketch** (both to keep the incident fix safe):
+  (1) `reconcile` split from a new `materialise` instead of one "materialise if
+  empty + update" function — avoids a new synced marker; (2) repair is monotonic,
+  not exempt — closes a downgrade-via-repair hole.
 
 ### Phase 2 — single-origin materialisation (R1 + R2) — the incident fix
 

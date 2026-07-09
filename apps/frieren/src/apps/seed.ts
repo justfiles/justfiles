@@ -1,5 +1,5 @@
 import type { Kernel } from '@justfiles/app'
-import { reconcile } from '@justfiles/app/appstore'
+import { materialise, reconcile } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
 import { httpAppStore } from '../../shared/appstore'
 
@@ -11,5 +11,8 @@ import { httpAppStore } from '../../shared/appstore'
 // once the OS can boot without auth).
 export async function seedBuiltins(kernel: Kernel, fs: Volume): Promise<void> {
 	const store = await httpAppStore((path) => fetch(path))
-	if (store) await reconcile(kernel, fs, store)
+	if (!store) return
+	// Install any missing built-in (first run), then update whatever is installed.
+	await materialise(kernel, store)
+	await reconcile(kernel, fs, store)
 }

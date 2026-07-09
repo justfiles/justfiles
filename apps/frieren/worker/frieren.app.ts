@@ -1,6 +1,6 @@
 import type { AppController, LLMText } from '@justfiles/agent'
 import { createAppController, type Kernel, kernel } from '@justfiles/app'
-import { reconcile } from '@justfiles/app/appstore'
+import { materialise, reconcile } from '@justfiles/app/appstore'
 import {
 	type Capabilities,
 	type Capability,
@@ -115,7 +115,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	async function reconcileFromAssets(k: Kernel): Promise<void> {
 		const store = await httpAppStore((path) => deps.assets.fetch(assetRequest(path)))
-		if (store) await reconcile(k, deps.fs, store)
+		if (!store) return
+		// Install any missing built-in (first run), then update whatever is installed.
+		await materialise(k, store)
+		await reconcile(k, deps.fs, store)
 	}
 
 	async function kernelReady(): Promise<Kernel> {

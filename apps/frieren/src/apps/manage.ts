@@ -5,9 +5,10 @@ export async function installZipApp(kernel: Kernel, zip: Uint8Array): Promise<st
 	return kernel.install(bundleFromZip(zip))
 }
 
-// Built-in apps can't be uninstalled: reconcile reinstalls every built-in on each
-// launch, so removing one is pointless — it would just reappear. Guard here so
-// the user can't. User apps uninstall normally.
+// Built-in apps can't be uninstalled: `materialise` re-seeds every built-in on
+// each launch, so removing one is pointless — it would just reappear. Guard here
+// so the user can't. User apps uninstall normally. (When materialisation becomes
+// gated — docs/app-materialization.md R1/R5 — this guard can relax.)
 export async function uninstallLocalApp(kernel: Kernel, id: string): Promise<void> {
 	if (await isBuiltin(id)) throw new Error(`built-in apps cannot be uninstalled: ${id}`)
 	await kernel.uninstall(id)
