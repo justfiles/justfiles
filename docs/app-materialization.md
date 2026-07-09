@@ -30,7 +30,8 @@ inodes via sync-up. (The path-based sync doc is still the robust general fix for
 multi-device concurrent updates; this change removes the common-case failure.)
 
 Also folded in: **restore the per-file self-heal** that the `.apphash` change
-regressed, and **quiesce a running app when its bundle changes**.
+regressed, **quiesce a running app when its bundle changes**, and **refresh the
+launcher when apps arrive by sync** (the empty-dock-on-first-sign-in bug).
 
 ---
 
@@ -58,13 +59,23 @@ regressed, and **quiesce a running app when its bundle changes**.
 - `packages/app/kernel.ts` — `install()` emits `app.installed`; host re-lists the
   launcher but doesn't quiesce the open app.
 
-Two defects to fix alongside the model change:
+Three defects to fix alongside the model change:
 
 - **Self-heal regressed.** My `.apphash` change made `reconcile` trust the
   `.apphash` marker alone; it no longer verifies each file is present. A missing
   file (partial install / un-hydrated stub) is not repaired.
 - **No quiesce.** A bundle change under a running app ⇒ old GUI ↔ new reducer,
   possible state-shape mismatch, torn reads mid-swap.
+- **Launcher doesn't refresh when apps arrive via sync (the empty-dock bug).**
+  The dock's catalog is derived from the local volume's `/applications/*`
+  (client `listLocalApps` → `kernel.list()`), but nothing subscribes to changes
+  there. When built-ins arrive by **sync-down** — the server materialises on
+  first sign-in, or the agent / another device installs an app — the local
+  files land as `REMOTE_SOURCE` writes with **no notification**, so the dock
+  stays empty until a manual reload re-boots and re-lists. Only two paths notify
+  today: `devkit.install` (`notifyCatalog`) and the local-only seed (an explicit
+  `client.refresh()`). Sync-down (and `ready`'s `data.apps`, used only as a
+  throw-fallback) has no path, so the first-sign-in dock is empty until refresh.
 
 ---
 
@@ -124,6 +135,16 @@ Drop reconcile's "always reinstall a deleted built-in". Deleting is the user's
 choice. A "restore default apps" affordance can come later; the update sweep may
 *offer* a missing app but never forces it.
 
+### R6 — The launcher re-lists on any `/applications` change
+
+The dock's catalog is a **projection of the local volume**, so it must re-list
+whenever `/applications` gains or loses an app from *any* source — not just the
+two that notify today. A single OS-level watcher on the volume's structural
+change feed drives `client.refresh()`, so apps that arrive by sync-down (server
+materialise on first sign-in, agent/other-device install) appear without a
+reload. This is the same `/applications` watcher R3/R4 build on; the launcher
+refresh is its first consumer (see Concepts → Launcher watcher).
+
 ---
 
 ## Concepts in code
@@ -176,6 +197,31 @@ stage.unwatchBundle = await vol.watch(`/applications/${stage.id}/manifest.json`,
 Local updates (R3) go through `kernel.install` → `app.installed`; the host's
 existing catalog subscription plus a close/reopen on that event covers them.
 
+### Launcher watcher (OS shell) — R6
+
+The dock's catalog comes from the **local volume** (`listLocalApps` →
+`kernel.list()` over `/applications/*`), so it must re-list whenever that tree
+gains or loses an app from *any* source. `volume.watch` has **no globbed-subtree
+mode**; its recursive form is a **storage-wide STRUCTURAL signal** (dirent
+create/remove/rename only — content edits to existing files don't fire),
+coalesced per microtask. Subscribe once in `OSProvider` and refresh:
+
+```ts
+// OSProvider: re-list the launcher when apps appear/disappear (server
+// materialise synced down, agent/other-device install, local reconcile).
+const off = await (await volumePromise).watch('/', () => client.refresh(), { recursive: true })
+```
+
+The signal fires on **any** structural change (a new file/dir anywhere), not
+only under `/applications`, so `refresh()` may run on unrelated creations. It's
+cheap (`kernel.list()` = a `readdir` + manifest reads) and coalesced; add a
+shallow equality guard to the client's `setApps` (skip the emit when the id /
+version / icon set is unchanged) so an unrelated create doesn't churn downstream
+`subscribeApps` consumers (bundle hydration). A scoped subtree watch is a
+possible `packages/fs` follow-up. `devkit.install`'s `notifyCatalog` stays
+(optimistic, immediate); the watch is the catch-all for sync-down / agent
+installs that never call it.
+
 ---
 
 ## Where the changes land (focused)
@@ -191,6 +237,11 @@ existing catalog subscription plus a close/reopen on that event covers them.
    updates.
 4. `apps/frieren/src/apps/host.ts` — R4 quiesce: watch the bundle for
    `REMOTE_SOURCE` changes; close+reboot on local update events too.
+5. `apps/frieren/src/os/Provider.tsx` — R6 launcher watcher: one recursive
+   `volume.watch` → `client.refresh()` so apps arriving by sync-down (or agent
+   install) appear in the dock without a reload; add a shallow equality guard to
+   the client's `setApps` (`apps/frieren/src/os/client.ts`) so unrelated
+   structural changes don't churn hydration.
 
 Not touched: the sync engine itself (that's the path-based-sync doc).
 
@@ -266,6 +317,54 @@ Definition of done: RED 1–3 pass; existing appstore tests still pass; the
 incident is reproduced-then-fixed by the R1/R2 integration check.
 
 ---
+
+## Phased delivery plan
+
+Ship in three slices with clean seams and a strict order — do **not** land it as
+one change. Risk is unevenly distributed and Phase 2 carries open questions the
+other two don't; landing Phase 1 first shrinks Phase 2 to "call `reconcile` from
+one place at the right time" against already-correct logic.
+
+### Phase 1 — `appstore.ts` logic (R3 `decide` + R5 + self-heal)
+
+Contained entirely in `packages/app/appstore.ts`: split `decide()` into
+`repair | upgrade | skip`, restore `filesPresentAndMatch` + `installedVersion`,
+add the monotonic guard, drop the "always reinstall a deleted built-in" rule.
+
+- Unit-testable today against the existing `fakeWorld()` harness — RED 1–3 above
+  are ready. No wiring touched, no open questions.
+- Fixes the active self-heal regression regardless of the rest.
+- Makes Phase 2 safe: a monotonic, idempotent `decide()` can't downgrade a
+  synced-down app.
+
+Land first, alone.
+
+### Phase 2 — single-origin materialisation (R1 + R2) — the incident fix
+
+Remove the server's `ensureBuiltinsInstalled` / `reconcileFromAssets`; gate
+client materialisation on "first bootstrap done **and** volume still empty".
+
+- The change that actually kills the fork. Highest risk / most subtle.
+- Resolve the open questions first: the empty signal (emptiness check vs a
+  `trusted.materialised` marker — lean marker) and agent-before-first-sync.
+- Verify with the R1/R2 integration smoke checks, not just unit tests.
+
+Depends on Phase 1.
+
+### Phase 3 — the `/applications` watcher (R6 launcher refresh + R3 reconcile + R4 quiesce)
+
+One recursive `volume.watch` (structural, storage-wide — no globbed subtree
+watch; see Concepts → Launcher watcher) feeding three app-layer consumers:
+
+- **3a — R6 launcher catalog refresh (the empty-dock bug).** On any structural
+  change, `client.refresh()` re-lists `/applications`. **Independent of R1/R2 and
+  a live today-bug — it can ship first, ahead of Phases 1–2.**
+- **3b — R3 monotonic app-update reconcile** on whole-bundle `.apphash` drift.
+- **3c — R4 quiesce**: reboot a running app whose bundle changed.
+
+After Phase 2 the fork is already gone, so 3b/3c are robustness/UX and needn't
+gate the ship-now fix. 3a fixes a visible bug and should land as soon as
+convenient — before or alongside Phase 1.
 
 ## Sequencing & relationship to path-based sync
 
