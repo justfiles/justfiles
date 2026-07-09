@@ -1,12 +1,13 @@
 import type { InodeMeta, MutationOptions, Storage, StorageChange } from '@justfiles/fs/storage'
+import type { PathStorePort } from '@justfiles/fs/storage.shared'
 import {
-	buildDeleteChange,
-	buildPutChange,
+	applyJournaledOver,
 	joinPath,
-	nextVersion,
+	journalDeleteOver,
+	journalPutOver,
+	localChangeOver,
 	sortChildFirst,
-	sortParentFirst,
-	splitPath
+	sortParentFirst
 } from '@justfiles/fs/storage.shared'
 import { inodeMetaFromSync, type PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
@@ -482,37 +483,23 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		])
 	}
 
-	/** Journal a `put` for a linked path; self-skips a fresh regular file (no contentHash yet). */
+	/** Journal a local `put` for a linked path (shared driver over the sqlite port). */
 	async function journalPut(
 		tx: DbAdapter,
 		path: string,
 		ino: Ino,
 		options?: MutationOptions
 	): Promise<void> {
-		const row = await getInode(tx, ino)
-		if (!row) return
-		const meta = metaFromRow(row)
-		const xattrs = await listAllXattrs(tx, ino)
-		const cur = await readPathVersion(tx, path)
-		// An explicit options.version pins the outgoing version exactly (up OR down);
-		// otherwise generate the next one. See MutationOptions.
-		const version = options?.version ?? nextVersion(cur.version, cur.tombstone)
-		const change = buildPutChange(path, meta, xattrs, version, options?.source ?? localActorId)
-		if (!change) return
-		await setPathVersion(tx, path, version, cur.tombstone)
-		await appendJournalRow(tx, change)
+		await journalPutOver(makePathPort(tx).port, path, ino, localActorId, options)
 	}
 
-	/** Journal a `delete` for a path and fast-forward its tombstone high-water mark. */
+	/** Journal a local `delete` for a path (shared driver over the sqlite port). */
 	async function journalDelete(
 		tx: DbAdapter,
 		path: string,
 		options?: MutationOptions
 	): Promise<void> {
-		const cur = await readPathVersion(tx, path)
-		const version = nextVersion(cur.version, cur.tombstone)
-		await setPathVersion(tx, path, version, Math.max(cur.tombstone, version))
-		await appendJournalRow(tx, buildDeleteChange(path, version, options?.source ?? localActorId))
+		await journalDeleteOver(makePathPort(tx).port, path, localActorId, options)
 	}
 
 	// ── Path-sync apply (remote pull; epic slice 4) ──────────────────────────────
@@ -635,6 +622,48 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				ino,
 				type
 			])
+	}
+
+	// The storage-independent seam the shared apply driver (storage.shared.ts) calls,
+	// bound to one transaction (or `db` for read-only localChange). `emit` is buffered
+	// so a transactional apply can flush AFTER commit. pathOf / enumerateSubtree stay
+	// out of the port — they are per-backend (recursive CTE) and used by the mutators.
+	function makePathPort(tx: DbAdapter): { port: PathStorePort; emits: StorageChange[] } {
+		const emits: StorageChange[] = []
+		const port: PathStorePort = {
+			mintIno: randomId,
+			resolveIno: (path) => resolveIno(tx, path),
+			ensureDirPath: (path) => ensureDirPath(tx, path),
+			async getDirentIno(dirIno, name) {
+				const d = await getDirent(tx, dirIno, name)
+				return d ? String(d.ino) : null
+			},
+			async readMetaXattrs(ino) {
+				const row = await getInode(tx, ino)
+				if (!row) return null
+				return { meta: metaFromRow(row), xattrs: await listAllXattrs(tx, ino) }
+			},
+			upsertInodeFromSync: (ino, change) => upsertInodeFromSync(tx, ino, change),
+			setDirent: (dirIno, name, ino, type) => setDirent(tx, dirIno, name, ino, type),
+			async deleteDirent(dirIno, name) {
+				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
+			},
+			async deleteInodeIfUnreferenced(ino) {
+				// Delete tree metadata + xattrs, but NEVER the blob content: a later put in
+				// the same batch may re-reference the bytes (rename applies deletes first).
+				// Blob GC is out-of-band (storage.shared.ts ROADMAP item 4).
+				if (await hasDirentReference(tx, ino)) return
+				await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
+				await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
+			},
+			readPathVersion: (path) => readPathVersion(tx, path),
+			setPathVersion: (path, version, tombstone) => setPathVersion(tx, path, version, tombstone),
+			appendJournalRow: (change, localSource) => appendJournalRow(tx, change, localSource),
+			emit(change) {
+				emits.push(change)
+			}
+		}
+		return { port, emits }
 	}
 
 	async function updateInodeContent(
@@ -1089,91 +1118,22 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		},
 		pathApply: {
 			async localChange(path: string): Promise<PathChange | null> {
-				// Current local durable state at `path`, for the engine's LWW compare: a
-				// linked path -> its put at the live path_version; else a tombstone -> its
-				// delete; else null. `source` is excluded from the digest, so any id works.
+				// Current local durable state at `path`, for the engine's LWW compare (a
+				// linked path's put, else a tombstone's delete, else null). Reads only, so
+				// it binds the port to `db` rather than opening a transaction.
 				await ensureBootstrapped()
-				const ino = await resolveIno(db, path)
-				if (ino !== null) {
-					const row = await getInode(db, ino)
-					if (row) {
-						const cur = await readPathVersion(db, path)
-						return buildPutChange(
-							path,
-							metaFromRow(row),
-							await listAllXattrs(db, ino),
-							cur.version,
-							localActorId
-						)
-					}
-				}
-				const cur = await readPathVersion(db, path)
-				return cur.tombstone > 0 ? buildDeleteChange(path, cur.tombstone, localActorId) : null
+				return localChangeOver(makePathPort(db).port, path, localActorId)
 			},
 			async applyJournaled(changes: PathChange[], opts: { localSource?: string }): Promise<void> {
-				// Remote-authored apply in ONE txn: install tree metadata + contentHash
-				// REFERENCE, journal the change VERBATIM (its version + origin source) plus
-				// localSource, and fast-forward path_version (never lower it). NEVER writes
-				// blob bytes — those are materialised out-of-band by applyPathChanges. emit()
-				// after commit so a volume over sqlite invalidates its cache on the pull.
+				// Remote-authored apply in ONE txn (shared driver over the sqlite port).
+				// emit() fires AFTER commit so a volume over sqlite invalidates its cache on
+				// the pull; NEVER writes blob bytes; NEVER GCs blob content on delete.
 				await ensureBootstrapped()
-				const pendingEmits: StorageChange[] = []
+				let pendingEmits: StorageChange[] = []
 				await db.transaction(async (tx) => {
-					for (const change of changes) {
-						const p = change.path
-						const changeVersion = Number(change.version)
-						if (change.kind === 'put') {
-							const { parentPath, name } = splitPath(p)
-							const parentIno = await ensureDirPath(tx, parentPath)
-							const existing = await getDirent(tx, parentIno, name)
-							const ino = existing ? String(existing.ino) : randomId()
-							const type = change.meta.type
-							await upsertInodeFromSync(tx, ino, change)
-							await setDirent(tx, parentIno, name, ino, type)
-							pendingEmits.push({ ino, kind: 'meta', source: opts.localSource })
-							pendingEmits.push({
-								ino,
-								kind: 'dirent',
-								dirIno: parentIno,
-								name,
-								source: opts.localSource
-							})
-							if (type === FileType.Regular)
-								pendingEmits.push({ ino, kind: 'content', source: opts.localSource })
-						} else {
-							const ino = await resolveIno(tx, p)
-							const { parentPath, name } = splitPath(p)
-							const parentIno = await resolveIno(tx, parentPath)
-							if (parentIno !== null)
-								await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [
-									parentIno,
-									name
-								])
-							// Delete the inode's tree metadata, but NOT its blob content: the
-							// same bytes may be re-referenced by a put later in this batch (a
-							// rename moves content between paths, and deletes are applied before
-							// puts). Blob GC is out-of-band (storage.shared.ts ROADMAP item 4),
-							// matching the mem reference.
-							if (ino !== null && !(await hasDirentReference(tx, ino))) {
-								await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
-								await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
-							}
-							if (ino !== null && parentIno !== null)
-								pendingEmits.push({
-									ino,
-									kind: 'dirent',
-									dirIno: parentIno,
-									name,
-									source: opts.localSource
-								})
-							if (ino !== null) pendingEmits.push({ ino, kind: 'meta', source: opts.localSource })
-						}
-						const cur = await readPathVersion(tx, p)
-						const tombstone =
-							change.kind === 'delete' ? Math.max(cur.tombstone, changeVersion) : cur.tombstone
-						await setPathVersion(tx, p, Math.max(cur.version, changeVersion), tombstone)
-						await appendJournalRow(tx, change, opts.localSource)
-					}
+					const bound = makePathPort(tx)
+					pendingEmits = bound.emits
+					await applyJournaledOver(bound.port, changes, opts)
 				})
 				for (const change of pendingEmits) emit(change)
 			}

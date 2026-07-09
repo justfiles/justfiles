@@ -1,18 +1,13 @@
-import type {
-	InodeMeta,
-	MutationOptions,
-	Storage,
-	StorageCapabilities,
-	StorageChange
-} from './storage'
+import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type { PathStorePort } from './storage.shared'
 import {
-	buildDeleteChange,
-	buildPutChange,
+	applyJournaledOver,
 	joinPath,
-	nextVersion,
+	journalDeleteOver,
+	journalPutOver,
+	localChangeOver,
 	sortChildFirst,
-	sortParentFirst,
-	splitPath
+	sortParentFirst
 } from './storage.shared'
 import type { JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
@@ -97,9 +92,6 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 	}
 
-	/** Split a canonical absolute path into { parentPath, name }. */
-	const parentAndName = splitPath
-
 	/** Resolve a canonical path to an ino by walking dirents; null if absent. */
 	function resolveIno(p: string): Ino | null {
 		if (p === '/') return rootIno
@@ -153,40 +145,76 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		return Object.fromEntries(m)
 	}
 
-	// ── Local-mutation journaling (write-intercept, path-stamped) ────────────────
-	// Every mutation through the public Storage primitives appends a path-stamped
-	// journal row via the shared pure builders, with a version from the shared
-	// generator and ORIGIN = options.source ?? localActorId (localSource stays
-	// undefined — that tag is set only by the remote apply seam). Feeds `pathDeltas`.
-
-	/** Journal a `put` for a linked path from the inode's current state. */
-	function journalPut(path: string, ino: Ino, options?: MutationOptions): void {
-		const meta = metas.get(ino)
-		if (!meta) return
-		// An explicit `options.version` pins the outgoing version exactly (and thus
-		// path_version, up OR down); otherwise generate the next one. See MutationOptions.
-		const version =
-			options?.version ?? nextVersion(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0)
-		const change = buildPutChange(
-			path,
-			meta,
-			xattrRecord(ino),
-			version,
-			options?.source ?? localActorId
-		)
-		// null = a fresh regular file with no content yet; putBlob will journal it.
-		// Only consume the version when we actually journal.
-		if (!change) return
-		pathVersion.set(path, version)
-		appendJournal([change])
-	}
-
-	/** Journal a `delete` for a path and record its tombstone version. */
-	function journalDelete(path: string, options?: MutationOptions): void {
-		const version = nextVersion(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0)
-		pathVersion.set(path, version)
-		tombstone.set(path, Math.max(tombstone.get(path) ?? 0, version))
-		appendJournal([buildDeleteChange(path, version, options?.source ?? localActorId)])
+	// ── Path-sync port (the storage-independent seam for the shared apply driver) ─
+	// mem is synchronous + atomic (single-threaded JS), so there is no transaction
+	// and emits fire inline. The shared driver (storage.shared.ts) owns the
+	// orchestration; this port is just the minimal per-backend primitives.
+	const pathPort: PathStorePort = {
+		mintIno: mint,
+		async resolveIno(path) {
+			return resolveIno(path)
+		},
+		async ensureDirPath(path) {
+			return ensureDir(path)
+		},
+		async getDirentIno(dirIno, name) {
+			return dirs.get(dirKey(dirIno, name))?.ino ?? null
+		},
+		async readMetaXattrs(ino) {
+			const meta = metas.get(ino)
+			return meta ? { meta, xattrs: xattrRecord(ino) } : null
+		},
+		async upsertInodeFromSync(ino, change) {
+			if (change.kind !== 'put') return
+			const { meta, xattrs: snapshot } = inodeMetaFromSync(change.meta)
+			const type = meta.type ?? FileType.Regular
+			metas.set(ino, {
+				type,
+				size: meta.size ?? 0n,
+				mode: meta.mode ?? defaultMode(type),
+				mtimeNs: meta.mtimeNs ?? 0n,
+				ctimeNs: 0n, // ctime is set locally at apply time, never wired
+				contentHash: change.contentHash,
+				symlinkTarget: meta.symlinkTarget
+			})
+			// Replace the whole USER-xattr set with the snapshot; keep trusted.sync.*.
+			const existing = xattrs.get(ino)
+			if (existing)
+				for (const k of [...existing.keys()]) if (!k.startsWith('trusted.sync.')) existing.delete(k)
+			if (Object.keys(snapshot).length > 0) {
+				let m = xattrs.get(ino)
+				if (!m) {
+					m = new Map()
+					xattrs.set(ino, m)
+				}
+				for (const [k, v] of Object.entries(snapshot)) m.set(k, v)
+			}
+		},
+		async setDirent(dirIno, name, ino, type) {
+			dirs.set(dirKey(dirIno, name), { ino, type })
+			parentOf.set(ino, { parent: dirIno, name })
+		},
+		async deleteDirent(dirIno, name) {
+			const existing = dirs.get(dirKey(dirIno, name))
+			dirs.delete(dirKey(dirIno, name))
+			if (existing) parentOf.delete(existing.ino)
+		},
+		async deleteInodeIfUnreferenced(ino) {
+			if (hasDirentReference(ino)) return
+			metas.delete(ino)
+			xattrs.delete(ino)
+		},
+		async readPathVersion(path) {
+			return { version: pathVersion.get(path) ?? 0, tombstone: tombstone.get(path) ?? 0 }
+		},
+		async setPathVersion(path, version, tomb) {
+			pathVersion.set(path, version)
+			tombstone.set(path, tomb)
+		},
+		async appendJournalRow(change, localSource) {
+			appendJournal([change], localSource)
+		},
+		emit
 	}
 
 	/** All paths in the subtree rooted at `ino`, as `{ ino, rel }` (root rel = ''). */
@@ -246,7 +274,8 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 						emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
 						// Regular files are journaled by the following putBlob (once hashed).
 						const dirPath = pathOf(dirIno)
-						if (dirPath) journalPut(joinPath(dirPath, name), ino, options)
+						if (dirPath)
+							await journalPutOver(pathPort, joinPath(dirPath, name), ino, localActorId, options)
 						return ino
 					}
 				}
@@ -286,9 +315,10 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				subtree.map((n) => oldBase + n.rel),
 				(p) => p
 			)
-			for (const p of deletePaths) journalDelete(p, options)
+			for (const p of deletePaths) await journalDeleteOver(pathPort, p, localActorId, options)
 			const putNodes = sortParentFirst(subtree, (n) => newBase + n.rel)
-			for (const n of putNodes) journalPut(newBase + n.rel, n.ino, options)
+			for (const n of putNodes)
+				await journalPutOver(pathPort, newBase + n.rel, n.ino, localActorId, options)
 			emit({ ino: src.ino, kind: 'dirent', dirIno: newDir, name: newName, source: options?.source })
 			emit({ ino: src.ino, kind: 'dirent', dirIno: oldDir, name: oldName, source: options?.source })
 			return displaced && displaced.ino !== src.ino ? displaced.ino : null
@@ -319,87 +349,10 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		},
 		pathApply: {
 			async localChange(path) {
-				// Current local durable state at `path`, for the engine's LWW compare. A
-				// linked path -> its put at the live pathVersion; else a tombstone -> its
-				// delete; else null. `source` is excluded from the digest, so any id works.
-				const ino = resolveIno(path)
-				const meta = ino !== null ? metas.get(ino) : undefined
-				if (ino !== null && meta)
-					return buildPutChange(
-						path,
-						meta,
-						xattrRecord(ino),
-						pathVersion.get(path) ?? 0,
-						localActorId
-					)
-				const tomb = tombstone.get(path)
-				return tomb !== undefined ? buildDeleteChange(path, tomb, localActorId) : null
+				return localChangeOver(pathPort, path, localActorId)
 			},
 			async applyJournaled(changes, opts) {
-				// Remote-authored apply: install tree metadata + contentHash REFERENCE
-				// (blob bytes are materialised out-of-band by applyPathChanges), journal
-				// the change VERBATIM (its version + origin source) plus localSource, and
-				// fast-forward path_version (never lower it). NEVER writes blob bytes.
-				for (const change of changes) {
-					const p = change.path
-					if (change.kind === 'put') {
-						const { parentPath, name } = parentAndName(p)
-						const parentIno = ensureDir(parentPath)
-						const key = dirKey(parentIno, name)
-						const ino = dirs.get(key)?.ino ?? mint()
-						const { meta, xattrs: snapshot } = inodeMetaFromSync(change.meta)
-						const type = meta.type ?? FileType.Regular
-						metas.set(ino, {
-							type,
-							size: meta.size ?? 0n,
-							mode: meta.mode ?? defaultMode(type),
-							mtimeNs: meta.mtimeNs ?? 0n,
-							ctimeNs: 0n, // ctime is set locally at apply time, never wired
-							contentHash: change.contentHash,
-							symlinkTarget: meta.symlinkTarget
-						})
-						dirs.set(key, { ino, type })
-						parentOf.set(ino, { parent: parentIno, name })
-						// Replace the whole USER-xattr set with the snapshot; keep local-only
-						// trusted.sync.* untouched.
-						const existing = xattrs.get(ino)
-						if (existing)
-							for (const k of [...existing.keys()])
-								if (!k.startsWith('trusted.sync.')) existing.delete(k)
-						if (Object.keys(snapshot).length > 0) {
-							let m = xattrs.get(ino)
-							if (!m) {
-								m = new Map()
-								xattrs.set(ino, m)
-							}
-							for (const [k, v] of Object.entries(snapshot)) m.set(k, v)
-						}
-						// Emit so volume caches invalidate and volume.watch fires on the pull
-						// (tagged with localSource for echo suppression) — applyJournaled
-						// writes the maps directly, so it must signal the change feed itself.
-						emit({ ino, kind: 'meta', source: opts.localSource })
-						emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
-						if (type === FileType.Regular) emit({ ino, kind: 'content', source: opts.localSource })
-					} else {
-						const ino = resolveIno(p)
-						const { parentPath, name } = parentAndName(p)
-						const parentIno = resolveIno(parentPath)
-						if (parentIno) dirs.delete(dirKey(parentIno, name))
-						if (ino) {
-							parentOf.delete(ino)
-							if (!hasDirentReference(ino)) {
-								metas.delete(ino)
-								xattrs.delete(ino)
-							}
-						}
-						if (ino !== null && parentIno !== null)
-							emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
-						if (ino !== null) emit({ ino, kind: 'meta', source: opts.localSource })
-						tombstone.set(p, Math.max(tombstone.get(p) ?? 0, Number(change.version)))
-					}
-					pathVersion.set(p, Math.max(pathVersion.get(p) ?? 0, Number(change.version)))
-					appendJournal([change], opts.localSource)
-				}
+				await applyJournaledOver(pathPort, changes, opts)
 			}
 		}
 	}
@@ -420,7 +373,7 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				// A linked inode's metadata changed (chmod/utimes/…) — journal it. An
 				// unlinked inode (createNode's setMeta before putDirent) has no path yet.
 				const path = pathOf(ino)
-				if (path) journalPut(path, ino, options)
+				if (path) await journalPutOver(pathPort, path, ino, localActorId, options)
 				return
 			}
 			if (patch.type === undefined) return
@@ -465,7 +418,7 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			if (meta) {
 				metas.set(ino, { ...meta, contentHash: hash, size: BigInt(data.length) })
 				const path = pathOf(ino)
-				if (path) journalPut(path, ino, options)
+				if (path) await journalPutOver(pathPort, path, ino, localActorId, options)
 			}
 		},
 
@@ -479,7 +432,8 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
 			// Non-regular puts journal here; regular files wait for putBlob (once hashed).
 			const dirPath = pathOf(dirIno)
-			if (dirPath) journalPut(joinPath(dirPath, name), entry.ino, options)
+			if (dirPath)
+				await journalPutOver(pathPort, joinPath(dirPath, name), entry.ino, localActorId, options)
 		},
 
 		async deleteDirent(dirIno, name, options) {
@@ -490,7 +444,8 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			if (existing) {
 				if (parentOf.get(existing.ino)?.parent === dirIno) parentOf.delete(existing.ino)
 				emit({ ino: existing.ino, kind: 'dirent', dirIno, name, source: options?.source })
-				if (dirPath) journalDelete(joinPath(dirPath, name), options)
+				if (dirPath)
+					await journalDeleteOver(pathPort, joinPath(dirPath, name), localActorId, options)
 			}
 		},
 

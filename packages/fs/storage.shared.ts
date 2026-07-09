@@ -7,17 +7,19 @@
  * functions so they are written once, tested directly, and SHIP in every
  * backend (rather than living only in the `memStorage` test double).
  *
- * Deliberately NOT an abstraction (yet): no port, no transaction interface. Each
- * backend keeps its own storage access + atomicity and CALLS these helpers. The
- * `pathOf(ino)` walk and subtree enumeration stay per-backend (they touch the
- * backend's own index/tables), because backends legitimately differ there (a
- * Map walk vs a set-based SQL query). See PATH-SYNC ROADMAP item 2 below for the
- * planned apply-driver port, to be introduced once IDB validates the shape.
+ * Deliberately minimal: the PURE leaf rules are free functions, and the apply
+ * ORCHESTRATION (`applyJournaledOver` / `localChangeOver` / `journalPutOver` /
+ * `journalDeleteOver`) runs over a tiny per-backend `PathStorePort`. Each backend
+ * still owns its storage access, atomicity, `pathOf(ino)` walk, and subtree
+ * enumeration (a Map walk vs a set-based SQL query vs an IDB cursor) — the port
+ * is only the storage-independent seam the shared driver needs. See PATH-SYNC
+ * ROADMAP item 2 below.
  */
 
-import type { InodeMeta } from './storage'
+import type { InodeMeta, MutationOptions, StorageChange } from './storage'
 import type { PathChange } from './sync-wire'
 import { changeDigest, compareVersion, encodeVersion, syncMetaFromInode } from './sync-wire'
+import type { Ino } from './types'
 import { FileType } from './types'
 
 // ── PATH-SYNC ROADMAP (ordered; post-SQLite epic) ─────────────────────────────
@@ -199,4 +201,157 @@ export function orderForApply(changes: PathChange[]): PathChange[] {
 		(c) => c.path
 	)
 	return [...deletes, ...puts]
+}
+
+// ── Shared apply driver (the orchestration, over a tiny per-backend port) ──────
+//
+// `applyJournaled` / `localChange` / per-mutation journaling were IDENTICAL
+// control flow in every owned backend, differing only in storage-primitive
+// access (Map vs SQL vs IDB), tx wrapping, and emit timing. The orchestration
+// now lives ONCE here, driven through `PathStorePort`; each backend supplies a
+// thin port bound to its own store (and, where relevant, its own transaction).
+//
+// What STAYS per-backend (cannot be shared): pathOf(ino), subtree enumeration,
+// and atomicity/transaction boundaries — a Map walk vs a recursive CTE vs an IDB
+// cursor are legitimately different. The port methods below are the minimal
+// storage-independent seam the shared driver needs.
+
+/**
+ * The minimal per-backend storage seam the shared apply driver calls. Every
+ * method is a small primitive over the backend's own store (bound to its
+ * transaction where the backend is transactional). `emit` may defer until after
+ * the backend's txn commits.
+ */
+export interface PathStorePort {
+	/** Mint a fresh inode id (UUID, numeric, …) for a pulled path with no local inode. */
+	mintIno(): Ino
+	/** Resolve a canonical path to an ino by walking dirents; null if absent. */
+	resolveIno(path: string): Promise<Ino | null>
+	/** Ensure every segment of a directory path exists (tree repair); return the deepest ino. */
+	ensureDirPath(path: string): Promise<Ino>
+	/** The ino currently linked at `(dirIno, name)`, or null. */
+	getDirentIno(dirIno: Ino, name: string): Promise<Ino | null>
+	/** Current metadata + user-xattr snapshot for an inode; null if it has no metadata. */
+	readMetaXattrs(ino: Ino): Promise<{ meta: InodeMeta; xattrs: Record<string, Uint8Array> } | null>
+	/** Install a remote put's tree metadata + contentHash REFERENCE (never writes blob bytes). */
+	upsertInodeFromSync(ino: Ino, change: PathChange): Promise<void>
+	/** Link `(dirIno, name) -> ino` (insert or rebind). */
+	setDirent(dirIno: Ino, name: string, ino: Ino, type: FileType): Promise<void>
+	/** Unlink `(dirIno, name)`. */
+	deleteDirent(dirIno: Ino, name: string): Promise<void>
+	/** Delete the inode's tree metadata + xattrs IF no dirent still references it. NEVER GCs blob content. */
+	deleteInodeIfUnreferenced(ino: Ino): Promise<void>
+	/** The path's `{ version, tombstone }` scalars ({0,0} when unknown). */
+	readPathVersion(path: string): Promise<{ version: number; tombstone: number }>
+	/** Persist the path's version + tombstone scalars. */
+	setPathVersion(path: string, version: number, tombstone: number): Promise<void>
+	/** Append one row to the path journal (the outbound sync source of truth). */
+	appendJournalRow(change: PathChange, localSource?: string): Promise<void>
+	/** Signal the change feed (volume cache + watch). Backends may defer past commit. */
+	emit(change: StorageChange): void
+}
+
+/**
+ * The path's current local durable state, for the engine's LWW compare: a linked
+ * path -> its put at the live version; else a tombstone -> its delete; else null.
+ * `source` is excluded from the digest, so `actorId` is arbitrary.
+ */
+export async function localChangeOver(
+	port: PathStorePort,
+	path: string,
+	actorId: string
+): Promise<PathChange | null> {
+	const ino = await port.resolveIno(path)
+	if (ino !== null) {
+		const mx = await port.readMetaXattrs(ino)
+		if (mx) {
+			const cur = await port.readPathVersion(path)
+			return buildPutChange(path, mx.meta, mx.xattrs, cur.version, actorId)
+		}
+	}
+	const cur = await port.readPathVersion(path)
+	return cur.tombstone > 0 ? buildDeleteChange(path, cur.tombstone, actorId) : null
+}
+
+/**
+ * Journal a local `put` for a linked path from the inode's current state. An
+ * explicit `options.version` pins the outgoing version exactly (up OR down);
+ * otherwise the next version is generated. Self-skips (journals nothing, consumes
+ * no version) a fresh regular file with no content yet — its put is journaled by
+ * the following content write once hashed (see `buildPutChange` / ROADMAP item 3).
+ */
+export async function journalPutOver(
+	port: PathStorePort,
+	path: string,
+	ino: Ino,
+	actorId: string,
+	options?: MutationOptions
+): Promise<void> {
+	const mx = await port.readMetaXattrs(ino)
+	if (!mx) return
+	const cur = await port.readPathVersion(path)
+	const version = options?.version ?? nextVersion(cur.version, cur.tombstone)
+	const change = buildPutChange(path, mx.meta, mx.xattrs, version, options?.source ?? actorId)
+	if (!change) return
+	await port.setPathVersion(path, version, cur.tombstone)
+	await port.appendJournalRow(change)
+}
+
+/** Journal a local `delete` for a path and fast-forward its tombstone high-water. */
+export async function journalDeleteOver(
+	port: PathStorePort,
+	path: string,
+	actorId: string,
+	options?: MutationOptions
+): Promise<void> {
+	const cur = await port.readPathVersion(path)
+	const version = nextVersion(cur.version, cur.tombstone)
+	await port.setPathVersion(path, version, Math.max(cur.tombstone, version))
+	await port.appendJournalRow(buildDeleteChange(path, version, options?.source ?? actorId))
+}
+
+/**
+ * Remote-authored apply: for each change (already coalesced + ordered by the
+ * engine), install tree metadata + contentHash REFERENCE (blob bytes are
+ * materialised out-of-band), journal the change VERBATIM (its version + origin
+ * source) tagged with `localSource`, and fast-forward path_version (never lower
+ * it). NEVER writes blob bytes; NEVER GCs blob content on delete (a later put in
+ * the same batch may re-reference the same bytes — see ROADMAP item 4). Emits are
+ * routed through `port.emit`, so a transactional backend can defer them to after
+ * commit.
+ */
+export async function applyJournaledOver(
+	port: PathStorePort,
+	changes: PathChange[],
+	opts: { localSource?: string }
+): Promise<void> {
+	for (const change of changes) {
+		const p = change.path
+		const changeVersion = Number(change.version)
+		if (change.kind === 'put') {
+			const { parentPath, name } = splitPath(p)
+			const parentIno = await port.ensureDirPath(parentPath)
+			const ino = (await port.getDirentIno(parentIno, name)) ?? port.mintIno()
+			const type = change.meta.type
+			await port.upsertInodeFromSync(ino, change)
+			await port.setDirent(parentIno, name, ino, type)
+			port.emit({ ino, kind: 'meta', source: opts.localSource })
+			port.emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
+			if (type === FileType.Regular) port.emit({ ino, kind: 'content', source: opts.localSource })
+		} else {
+			const ino = await port.resolveIno(p)
+			const { parentPath, name } = splitPath(p)
+			const parentIno = await port.resolveIno(parentPath)
+			if (parentIno !== null) await port.deleteDirent(parentIno, name)
+			if (ino !== null) await port.deleteInodeIfUnreferenced(ino)
+			if (ino !== null && parentIno !== null)
+				port.emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
+			if (ino !== null) port.emit({ ino, kind: 'meta', source: opts.localSource })
+		}
+		const cur = await port.readPathVersion(p)
+		const tombstone =
+			change.kind === 'delete' ? Math.max(cur.tombstone, changeVersion) : cur.tombstone
+		await port.setPathVersion(p, Math.max(cur.version, changeVersion), tombstone)
+		await port.appendJournalRow(change, opts.localSource)
+	}
 }
