@@ -1507,7 +1507,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 							// Delete the inode's tree metadata, but NOT its blob content: the
 							// same bytes may be re-referenced by a put later in this batch (a
 							// rename moves content between paths, and deletes are applied before
-							// puts). Blob GC is out-of-band, matching the mem reference.
+							// puts). Blob GC is out-of-band (storage.shared.ts ROADMAP item 4),
+							// matching the mem reference.
 							if (ino !== null && !(await hasDirentReference(tx, ino))) {
 								await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
 								await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])

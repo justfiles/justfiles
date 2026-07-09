@@ -7,17 +7,90 @@
  * functions so they are written once, tested directly, and SHIP in every
  * backend (rather than living only in the `memStorage` test double).
  *
- * Deliberately NOT an abstraction: no port, no transaction interface. Each
+ * Deliberately NOT an abstraction (yet): no port, no transaction interface. Each
  * backend keeps its own storage access + atomicity and CALLS these helpers. The
  * `pathOf(ino)` walk and subtree enumeration stay per-backend (they touch the
  * backend's own index/tables), because backends legitimately differ there (a
- * Map walk vs a set-based SQL query).
+ * Map walk vs a set-based SQL query). See PATH-SYNC ROADMAP item 2 below for the
+ * planned apply-driver port, to be introduced once IDB validates the shape.
  */
 
 import type { InodeMeta } from './storage'
 import type { PathChange } from './sync-wire'
 import { changeDigest, compareVersion, encodeVersion, syncMetaFromInode } from './sync-wire'
 import { FileType } from './types'
+
+// ── PATH-SYNC ROADMAP (ordered; post-SQLite epic) ─────────────────────────────
+//
+// SQLite is the first fully-proven owned backend (conformance 5/5). The work
+// below is QUEUED in dependency order — do it top-to-bottom, each a separate
+// commit / small epic. Recorded HERE (the shared center every backend imports)
+// so the plan survives session breaks. Grep `TODO(path-sync)`.
+//
+//   1. [TODO(path-sync)] REMOVE THE LEGACY FsOp DELTA PROTOCOL. It has no
+//      production consumer — `synced()` (path-sync) is the live driver in the
+//      frieren + worker apps, and mem never even implemented it. Delete:
+//      caps.deltaUpdates + caps.applyBatch (storage.ts + sqlite/idb impls),
+//      FsOp / UpdateQueryOptions / encodeOp, the fs_updates table + appendOps +
+//      pruneUpdates (and their per-mutation call sites), the /delta + /ops routes
+//      in fs.ts, and fs.client's deltaUpdates/applyBatch. KEEP caps.fullScan
+//      (volume.scan tree-walk needs entries/next) but drop its sync-only
+//      `syncCursor` field. Do this FIRST — it de-clutters every mutator before
+//      the extraction below.
+//
+//   2. [TODO(path-sync)] EXTRACT THE SHARED APPLY DRIVER. Do this as the FIRST
+//      step of the IDB epic, using idb as the third impl that validates the port
+//      shape — NOT before (a port shaped by only mem + sqlite risks baking in
+//      SQLite quirks). Today applyJournaled / localChange / journalPut /
+//      journalDelete are copy-pasted between storage.mem.ts and storage.sqlite.ts
+//      as IDENTICAL control flow over storage-specific primitives. Introduce a
+//      tiny per-backend port and move the orchestration into this module:
+//
+//        interface PathStore {          // per backend; stays minimal
+//          resolveIno(p): Ino|null;  ensureDirPath(p): Ino;  mintIno(): Ino
+//          readMetaXattrs(ino): { meta, xattrs } | null
+//          upsertInodeFromSync(ino, change);  setDirent(dir, name, ino, type)
+//          deleteInode(ino) /* NO blob GC */;  deleteDirent(dir, name)
+//          readPathVersion(p): { version, tombstone };  setPathVersion(p, v, t)
+//          appendJournalRow(change, localSource?);  emit(change)
+//        }
+//        applyJournaledOver(port, changes, opts)
+//        localChangeOver(port, path, actorId)
+//        journalMutationOver(port, kind, path, ino?, actorId, options)
+//
+//      Deletes ~120-150 duplicated lines PER backend and makes idb's apply nearly
+//      free. pathOf / resolveIno / ensureDirPath / enumerateSubtree stay
+//      per-backend (Map-walk vs recursive CTE) — they cannot be shared. While
+//      here, set ctime = nowNs() at apply (not 0 — ctime is a local attr, never
+//      compared for convergence).
+//
+//   3. [TODO(path-sync)] ADR: UNIFY THE TWO CHANGE MECHANISMS + LOGICAL-OPERATION
+//      JOURNALING. After the legacy protocol is gone (item 1), two remain: the
+//      durable journal (sync source of truth) and the ephemeral emit()/subscribe
+//      feed (volume cache + watch). Collapse to "one change, two consumption
+//      modes": every committed mutation appends to the journal AND broadcasts
+//      in-process; subscribe = tail the journal. Blocker: the journal is
+//      PATH-keyed, volume caches are INO/DIRINO-keyed — the unified record must
+//      carry both (or volume invalidates by path). Fold in logical-operation
+//      journaling: journal a path's SETTLED state at the VFS-operation boundary
+//      rather than per-store-op. This removes the putBlob self-skip hack (a
+//      regular-file create currently journals on the FOLLOWING putBlob once
+//      hashed — see buildPutChange returning null) WHILE keeping content a
+//      separate hash-addressed resource, so meta-first / blob-on-demand stays
+//      cheap (a rename ships ZERO bytes because the moved paths reuse existing
+//      contentHashes). Do AFTER idb (two owned backends validate the record
+//      shape). Add a conformance case first: "create an EMPTY regular file (no
+//      putBlob), then sync" — the self-skip predicts it is currently never
+//      journaled.
+//
+//   4. [TODO(path-sync)] CONTENT GC. applyJournaled deliberately does NOT reclaim
+//      orphaned blobs (a rename's delete would otherwise drop the bytes its own
+//      put re-references, since orderForApply applies deletes before puts). All
+//      owned backends now leak orphaned content on delete-heavy sync. Add an
+//      explicit out-of-band sweep (sqlite: DELETE FROM fs_contents WHERE
+//      content_hash NOT IN (SELECT content_hash FROM fs_inodes WHERE content_hash
+//      IS NOT NULL)), never in the apply path. Also: caps.content.putByHash TRUSTS
+//      the caller's hash — document the trust boundary / add a dev-only verify.
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -54,8 +127,9 @@ export function nextVersion(currentVersion: number, tombstoneVersion: number): n
  * Build a `put` `PathChange` from a resolved inode's current state. Returns
  * `null` for a fresh regular file that has no content yet (no `contentHash`):
  * its put is journaled later by the content write, so there is nothing to
- * journal now. Encapsulates the schema invariant that a regular-file put carries
- * a `contentHash` while dirs/symlinks must not.
+ * journal now (the putBlob self-skip — ROADMAP item 3 replaces this with
+ * logical-operation journaling). Encapsulates the schema invariant that a
+ * regular-file put carries a `contentHash` while dirs/symlinks must not.
  */
 export function buildPutChange(
 	path: string,
