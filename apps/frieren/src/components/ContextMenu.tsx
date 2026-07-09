@@ -83,8 +83,9 @@ export function ContextMenu({
 		<div
 			ref={ref}
 			role="menu"
-			className="ds-menu fixed"
+			className="ds-menu"
 			style={{
+				position: 'fixed',
 				left: pos?.x ?? state.x,
 				top: pos?.y ?? state.y,
 				zIndex: 10000,
