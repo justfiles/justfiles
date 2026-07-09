@@ -11,6 +11,7 @@ import type { InodeMeta } from './storage'
 import {
 	buildDeleteChange,
 	buildPutChange,
+	incomingWins,
 	joinPath,
 	nextVersion,
 	orderForApply,
@@ -196,5 +197,40 @@ describe('orderForApply', () => {
 		const lastDelete = Math.max(seq.indexOf('delete /a'), seq.indexOf('delete /a/b'))
 		const firstPut = Math.min(seq.indexOf('put /a'), seq.indexOf('put /a/b/c'))
 		expect(lastDelete).toBeLessThan(firstPut)
+	})
+})
+
+// ── Deterministic conflict resolution ─────────────────────────────────────────
+
+describe('incomingWins (deterministic LWW)', () => {
+	const putAt = (version: number, mode: number, source?: string): PathChange => ({
+		kind: 'put',
+		path: '/f',
+		version: String(version),
+		source,
+		contentHash: sha256('same'),
+		meta: { type: FileType.Regular, mode, mtimeNs: '0', size: '4' }
+	})
+
+	it('incoming with no local state always wins', async () => {
+		expect(await incomingWins(putAt(1, 0o644), null)).toBe(true)
+	})
+
+	it('higher numeric version wins (never compared lexically)', async () => {
+		// numeric 10 > 9, though '9' > '10' lexically.
+		expect(await incomingWins(putAt(10, 0o644), putAt(9, 0o600))).toBe(true)
+		expect(await incomingWins(putAt(9, 0o644), putAt(10, 0o600))).toBe(false)
+	})
+
+	it('breaks an exact version tie by durable-state digest, deterministically', async () => {
+		const a = putAt(5, 0o644)
+		const b = putAt(5, 0o600)
+		// Exactly one direction wins, so both replicas pick the SAME winner.
+		expect(await incomingWins(b, a)).toBe(!(await incomingWins(a, b)))
+	})
+
+	it('a tie with identical durable state is a no-op (source excluded from the digest)', async () => {
+		// Same content/mode/mtime; only `source` differs -> equal digests -> keep local.
+		expect(await incomingWins(putAt(7, 0o644, 'A'), putAt(7, 0o644, undefined))).toBe(false)
 	})
 })

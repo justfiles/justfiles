@@ -635,6 +635,11 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			}
 		},
 		pathApply: {
+			async localChange(_path) {
+				// TODO(path-sync): read path_version + reconstruct the path's current
+				// PathChange (put/delete) for the engine's LWW compare.
+				throw new Error('not implemented')
+			},
 			async applyJournaled(_changes, _opts) {
 				// TODO(path-sync): tree meta + contentHash ref + journal row + path_version.
 				throw new Error('not implemented')

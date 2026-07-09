@@ -10,7 +10,7 @@
  */
 
 import type { ContentStore, Storage } from './storage'
-import { orderForApply } from './storage.shared'
+import { incomingWins, orderForApply } from './storage.shared'
 import type { PathChange } from './sync-wire'
 import { coalesceByPath } from './sync-wire'
 
@@ -144,8 +144,15 @@ export interface JournalStore {
  * VERBATIM (its exact `version` and origin `source`) plus `localSource`, and sets
  * `path_version[path] = max(path_version[path], change.version)` (fast-forward
  * only). Content is materialised out-of-band by `applyPathChanges`.
+ *
+ * `localChange` is the LWW read side: the current local durable state at a path
+ * (a `put` at its live version + meta, a `delete` at its tombstone version, or
+ * `null` when the path was never touched here). `applyPathChanges` reads it
+ * BEFORE applying so a lower-version (or digest-losing) incoming change never
+ * clobbers a local winner.
  */
 export interface PathMutationStore {
+	localChange(path: string): Promise<PathChange | null>
 	applyJournaled(changes: PathChange[], opts: { localSource?: string }): Promise<void>
 }
 
@@ -277,10 +284,19 @@ export function localSyncReplica(
 			// Hard /.state exclusion (see isLocalOnlyPath): a peer can never inject
 			// local-only state, enforced here so a second volume(storage) can't bypass it.
 			const admissible = incoming.filter((c) => !isLocalOnlyPath(c.path))
-			// Collapse to the final state per path, then order for safe apply: deletes
-			// child-before-parent (never orphan a live child under a deleted dir), puts
-			// parent-before-child (the dir exists before its entries), all deletes first.
-			const ordered = orderForApply(coalesceByPath(admissible))
+			const pathApply = requirePathApply()
+			// Deterministic LWW against the CURRENT local state, read before applying:
+			// keep only changes that beat their local path (numeric version, then a
+			// source-independent digest tie-break). Without this, concurrent equal-
+			// version writes swap (each side applies the other's last) instead of
+			// converging to the SAME winner on both replicas.
+			const winners: PathChange[] = []
+			for (const c of coalesceByPath(admissible))
+				if (await incomingWins(c, await pathApply.localChange(c.path))) winners.push(c)
+			// Order the winners for safe apply: deletes child-before-parent (never orphan
+			// a live child under a deleted dir), puts parent-before-child (the dir exists
+			// before its entries), all deletes first.
+			const ordered = orderForApply(winners)
 			// Content ownership is out-of-band (blob store is hash-addressed, separate
 			// from the tree). Eager: ensure each regular-file put's blob is present
 			// locally BEFORE the tree references it (durable before the path points at
@@ -296,7 +312,7 @@ export function localSyncReplica(
 			}
 			// One transactional seam per change: tree meta + contentHash ref + journal
 			// row (incoming version/origin verbatim) + path_version fast-forward.
-			await requirePathApply().applyJournaled(ordered, { localSource: opts2?.source })
+			await pathApply.applyJournaled(ordered, { localSource: opts2?.source })
 		},
 		async getBlobByHash(hash) {
 			const blob = await requireContent().getByHash(hash)

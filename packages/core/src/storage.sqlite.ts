@@ -1071,6 +1071,11 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			}
 		},
 		pathApply: {
+			async localChange(_path: string) {
+				// TODO(path-sync): SELECT path_version + reconstruct the path's current
+				// PathChange (put/delete) for the engine's LWW compare.
+				throw new Error('not implemented')
+			},
 			async applyJournaled(_changes: PathChange[], _opts: { localSource?: string }) {
 				// TODO(path-sync): tree meta + contentHash ref + journal row + path_version, one txn.
 				throw new Error('not implemented')

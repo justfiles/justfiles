@@ -16,7 +16,7 @@
 
 import type { InodeMeta } from './storage'
 import type { PathChange } from './sync-wire'
-import { encodeVersion, syncMetaFromInode } from './sync-wire'
+import { changeDigest, compareVersion, encodeVersion, syncMetaFromInode } from './sync-wire'
 import { FileType } from './types'
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
@@ -87,6 +87,27 @@ export function sortChildFirst<T>(items: T[], pathOf: (t: T) => string): T[] {
 /** Order items shallowest-path-first (parent before child) — for puts. */
 export function sortParentFirst<T>(items: T[], pathOf: (t: T) => string): T[] {
 	return [...items].sort((a, b) => pathDepth(pathOf(a)) - pathDepth(pathOf(b)))
+}
+
+// ── Deterministic conflict resolution (last-writer-wins) ──────────────────────
+
+/**
+ * Does `incoming` beat the current `local` state at the same path? The generic
+ * LWW rule shared by every backend's apply: higher numeric `version` wins; on an
+ * EXACT version tie, the higher source-independent `changeDigest` wins — so both
+ * replicas pick the SAME winner and converge instead of swapping. `local === null`
+ * (path never touched here) => incoming always wins. Digests are computed only on
+ * a tie.
+ */
+export async function incomingWins(
+	incoming: PathChange,
+	local: PathChange | null
+): Promise<boolean> {
+	if (!local) return true
+	const dv = compareVersion(incoming.version, local.version)
+	if (dv !== 0) return dv > 0
+	const [di, dl] = await Promise.all([changeDigest(incoming), changeDigest(local)])
+	return di > dl
 }
 
 /**

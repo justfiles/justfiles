@@ -315,6 +315,23 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			}
 		},
 		pathApply: {
+			async localChange(path) {
+				// Current local durable state at `path`, for the engine's LWW compare. A
+				// linked path -> its put at the live pathVersion; else a tombstone -> its
+				// delete; else null. `source` is excluded from the digest, so any id works.
+				const ino = resolveIno(path)
+				const meta = ino !== null ? metas.get(ino) : undefined
+				if (ino !== null && meta)
+					return buildPutChange(
+						path,
+						meta,
+						xattrRecord(ino),
+						pathVersion.get(path) ?? 0,
+						localActorId
+					)
+				const tomb = tombstone.get(path)
+				return tomb !== undefined ? buildDeleteChange(path, tomb, localActorId) : null
+			},
 			async applyJournaled(changes, opts) {
 				// Remote-authored apply: install tree metadata + contentHash REFERENCE
 				// (blob bytes are materialised out-of-band by applyPathChanges), journal
