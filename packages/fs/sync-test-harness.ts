@@ -19,6 +19,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { BlobStore, SyncReplica } from './sync-replica'
 import { journaledChangeSource, localSyncReplica, PAGE } from './sync-replica'
@@ -28,6 +29,15 @@ import type { Ino, Stat } from './types'
 import { FileType } from './types'
 import type { Volume } from './volume'
 import { volume } from './volume'
+
+/**
+ * Constructs a backend for the harness. `memStorage` is the default; the
+ * conformance suite passes an `idbStorage`/`sqliteStorage` factory so the SAME
+ * path-sync semantics run against every owned backend. Must be synchronous (both
+ * mem and idb construct synchronously; sqlite migrates synchronously under
+ * `bun:sqlite`).
+ */
+export type BackendFactory = (opts?: { mintIno?: () => Ino; localActorId?: string }) => Storage
 
 // ── Byte / hash helpers ───────────────────────────────────────────────────────
 
@@ -69,11 +79,14 @@ export type StageOpts = {
  * assert there are zero orphaned inodes (an ino minted but unreachable from the
  * tree — the classic ino-fork failure this design fixes).
  */
-function trackedStorage(opts?: { mintIno?: () => Ino }): {
-	storage: ReturnType<typeof memStorage>
+function trackedStorage(
+	makeBackend: BackendFactory,
+	opts?: { mintIno?: () => Ino; localActorId?: string }
+): {
+	storage: Storage
 	orphanCount: () => Promise<number>
 } {
-	const base = memStorage(opts)
+	const base = makeBackend(opts)
 	const live = new Set<Ino>([base.rootIno])
 	const baseCaps = base.caps
 	const atomicCreate = baseCaps?.atomicCreate
@@ -390,11 +403,12 @@ export function wire(
 }
 
 /** Two fresh backends (UUID inos) wired bidirectionally. */
-export function twoPeers(opts?: { lazyContent?: boolean }): TwoPeers {
-	const c = trackedStorage()
-	const s = trackedStorage()
+export function twoPeers(opts?: { lazyContent?: boolean; makeBackend?: BackendFactory }): TwoPeers {
+	const make = opts?.makeBackend ?? memStorage
+	const c = trackedStorage(make)
+	const s = trackedStorage(make)
 	return wire(c.storage, s.storage, {
-		...opts,
+		lazyContent: opts?.lazyContent,
 		clientOrphans: c.orphanCount,
 		serverOrphans: s.orphanCount
 	})
@@ -418,8 +432,8 @@ export interface AdoptionPeers {
  * policy (keep local, version it to win) is exercised, not re-implemented.
  */
 export function adoptionPeers(): AdoptionPeers {
-	const localT = trackedStorage()
-	const remoteT = trackedStorage()
+	const localT = trackedStorage(memStorage)
+	const remoteT = trackedStorage(memStorage)
 	// `remote` is the shared backend (the star-topology server).
 	const remote = makePeer(remoteT.storage, remoteT.orphanCount, { id: 'remote' })
 	let syncedVol: Awaited<ReturnType<typeof synced>> | null = null

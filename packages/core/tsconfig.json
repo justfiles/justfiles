@@ -15,5 +15,8 @@
 		"noFallthroughCasesInSwitch": true,
 		"noUncheckedSideEffectImports": true
 	},
-	"include": ["src"]
+	"include": ["src"],
+	// `*.bun.test.ts` runs under `bun test` (needs bun:sqlite/bun:test) — the CI
+	// Bun half. tsc has no @types/bun, so skip it here (mirrors vitest's exclude).
+	"exclude": ["**/*.bun.test.ts"]
 }

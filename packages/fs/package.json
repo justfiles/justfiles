@@ -78,6 +78,7 @@
 	},
 	"devDependencies": {
 		"@types/node": "^25.5.0",
+		"fake-indexeddb": "^6.2.5",
 		"tsdown": "^0.21.5",
 		"typescript": "^5"
 	},
