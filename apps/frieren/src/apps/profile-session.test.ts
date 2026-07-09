@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 vi.mock('@justfiles/core', () => ({
-	apiStorage: async () => ({}),
+	remoteSyncReplica: () => ({}),
 	createFsClient: () => ({})
 }))
 

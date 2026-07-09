@@ -1,4 +1,8 @@
-import { apiStorage, createFsClient as createCoreFsClient, type FsClient } from '@justfiles/core'
+import {
+	createFsClient as createCoreFsClient,
+	type FsClient,
+	remoteSyncReplica
+} from '@justfiles/core'
 import { type SyncStatus as FsSyncStatus, synced, type Volume, volume } from '@justfiles/fs'
 import { idbStorage } from '@justfiles/fs/storage/idb'
 
@@ -157,10 +161,14 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	entry.sync?.destroy()
 	entry.sync = null
 	setActiveStatus(entry, 'connecting')
-	const remote = await apiStorage(createFsClient(getToken))
+	// CLIENT<->SERVER: inject a factory that builds the HTTP `SyncReplica` speaking
+	// the /fs path wire, bound to the clientId `synced()` owns (so the server-stamped
+	// origin matches pull's excludeOrigin). Passing a `Storage` here would be read as
+	// a two-folder P2P peer and fail (no path journal).
+	const client = createFsClient(getToken)
 	const syncVolume = await synced({
 		local: entry.local,
-		remote,
+		remote: ({ clientId }) => remoteSyncReplica(client, { clientId }),
 		lazyContent: true,
 		localFirst: true
 	})

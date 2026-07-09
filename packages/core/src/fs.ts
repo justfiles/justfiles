@@ -206,14 +206,16 @@ export function createFsApi(backend: Storage) {
 				return c.json({ ok: true })
 			})
 
-			// Path sync: CONTENT (hydration, both directions)
-			.on('HEAD', '/blob/:hash', zValidator('param', HashParam), async (c) => {
+			// ── Path sync: CONTENT (hydration, both directions) ───────────────────
+			// GET and HEAD share ONE handler: Hono auto-routes HEAD to GET handlers, so
+			// a separate `.on('HEAD', …)` would run the GET body for HEAD too and 500 on
+			// an absent blob (getBlobByHash throws) instead of reporting 404. Branch on
+			// the method here; a missing blob is a 404, never a 500.
+			.on(['GET', 'HEAD'], '/blob/:hash', zValidator('param', HashParam), async (c) => {
 				const { hash } = c.req.valid('param')
-				return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
-			})
-
-			.get('/blob/:hash', zValidator('param', HashParam), async (c) => {
-				const { hash } = c.req.valid('param')
+				if (c.req.method === 'HEAD')
+					return c.body(null, (await replica.hasBlobByHash(hash)) ? 200 : 404)
+				if (!(await replica.hasBlobByHash(hash))) return c.body(null, 404)
 				const data = await replica.getBlobByHash(hash)
 				return new Response(data.buffer as ArrayBuffer, {
 					headers: { 'Content-Type': 'application/octet-stream' }
