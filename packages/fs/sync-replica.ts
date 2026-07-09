@@ -187,6 +187,30 @@ export interface FsWatcher {
 // ── Constructors (Phase 0: shape only, bodies throw) ──────────────────────────
 
 /**
+ * Reconstruct a consistent snapshot from the journal, FROZEN at `head`: coalesce
+ * every row with `seq <= head` into the latest state per path, keeping the live
+ * puts (a path whose last op at/below head is a delete is gone). Deterministic
+ * across calls — rows after `head` are ignored — so a paged bootstrap can slice it
+ * by a stable offset and a mid-scan mutation surfaces only on the delta resume.
+ */
+async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<PathChange[]> {
+	const rows: PathChange[] = []
+	let cursor = 0
+	while (cursor < head) {
+		const batch = await journal.readFrom(cursor, PAGE)
+		if (batch.length === 0) break
+		for (const r of batch) {
+			if (r.seq > head) break
+			rows.push(r.change)
+		}
+		const last = batch[batch.length - 1]
+		if (!last || last.seq >= head || batch.length < PAGE) break
+		cursor = last.seq
+	}
+	return coalesceByPath(rows).filter((c) => c.kind === 'put')
+}
+
+/**
  * The `ChangeSource` for owned backends (SQLite + IDB): reads the write-intercept
  * `JournalStore` the backend exposes via `caps.journal`. The journal is intrinsic
  * to the store, so it is read from the store rather than passed separately.
@@ -218,9 +242,28 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 				done: rows.length < limit
 			}
 		},
-		async pathScan(_page, _opts) {
-			// TODO(path-sync): freeze syncCursor=head() at start; walk tree as puts.
-			throw new Error('not implemented')
+		async pathScan(page, opts) {
+			const journal = requireJournal()
+			const limit = opts?.limit ?? PAGE
+			// Freeze the delta high-water at snapshot START and carry it (+ the page
+			// offset) in the opaque page token, so every page is cut at the SAME frozen
+			// cursor. The returned `syncCursor` is just that frozen head (echoed on every
+			// page); after the last page the caller resumes pathDeltas(syncCursor).
+			let head: string
+			let offset: number
+			if (page) {
+				const i = page.lastIndexOf(':')
+				head = page.slice(0, i)
+				offset = Number(page.slice(i + 1))
+			} else {
+				head = String(await journal.head())
+				offset = 0
+			}
+			const snapshot = await snapshotPutsUpTo(journal, Number(head))
+			const changes = snapshot.slice(offset, offset + limit)
+			const nextOffset = offset + changes.length
+			const done = nextOffset >= snapshot.length
+			return { changes, next: done ? undefined : `${head}:${nextOffset}`, syncCursor: head, done }
 		}
 	}
 }
