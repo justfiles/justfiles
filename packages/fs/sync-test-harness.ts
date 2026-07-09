@@ -605,6 +605,25 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 		}
 	},
 	{
+		name: 'converges an empty regular file (zero-byte content)',
+		run: async (makeBackend) => {
+			// Diagnostic for the buildPutChange self-skip (ROADMAP item 3): a fresh
+			// regular file journals nothing until its content write. writeFile always
+			// ends in putBlob (empty content hashes to sha256('')), so an empty file
+			// MUST still converge — proving the self-skip is benign via the public VFS.
+			const { client, server, syncBoth } = twoPeers({ makeBackend })
+			await server.writeFile('/empty.txt', bytes(''))
+			await syncBoth()
+			assertEq(await client.exists('/empty.txt'), true, 'empty file did not converge')
+			assertEq(
+				(await client.stat('/empty.txt')).type,
+				FileType.Regular,
+				'empty file is not a regular file'
+			)
+			assertEq(text(await client.readFile('/empty.txt')), '', 'empty file content wrong')
+		}
+	},
+	{
 		name: 'gcUnreferenced reclaims orphaned blobs, keeps referenced ones',
 		run: async (makeBackend) => {
 			const s = makeBackend()
