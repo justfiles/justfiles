@@ -11,9 +11,10 @@ import {
 	buildDeleteChange,
 	buildPutChange,
 	joinPath,
-	nextVersion
+	nextVersion,
+	splitPath
 } from '@justfiles/fs/storage.shared'
-import type { PathChange } from '@justfiles/fs/sync-wire'
+import { inodeMetaFromSync, type PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import type { DbAdapter } from './db'
@@ -700,6 +701,111 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		await appendJournalRow(tx, buildDeleteChange(path, version, options?.source ?? localActorId))
 	}
 
+	// ── Path-sync apply (remote pull; epic slice 4) ──────────────────────────────
+	// Resolve a canonical path to an ino by walking dirents; null if absent.
+	async function resolveIno(tx: DbAdapter, path: string): Promise<Ino | null> {
+		if (path === '/') return ROOT_INO
+		let cur: Ino = ROOT_INO
+		for (const seg of path.slice(1).split('/')) {
+			const dirent = await getDirent(tx, cur, seg)
+			if (!dirent) return null
+			cur = String(dirent.ino)
+		}
+		return cur
+	}
+
+	// Ensure every segment of a directory path exists, creating missing dirs; return
+	// the deepest ino. This is the tree-repair / ancestor-resurrection path: a
+	// winning descendant put recreates a deleted ancestor directory.
+	async function ensureDirPath(tx: DbAdapter, path: string): Promise<Ino> {
+		if (path === '/') return ROOT_INO
+		let cur: Ino = ROOT_INO
+		for (const seg of path.slice(1).split('/')) {
+			const dirent = await getDirent(tx, cur, seg)
+			if (dirent) {
+				cur = String(dirent.ino)
+				continue
+			}
+			const ino = randomId()
+			const stamp = nowNs()
+			await tx.run(
+				`INSERT INTO fs_inodes(ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind)
+				 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
+				[ino, FileType.Directory, 0o755, 0, stamp, stamp, STORAGE_NONE]
+			)
+			await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
+				cur,
+				seg,
+				ino,
+				FileType.Directory
+			])
+			cur = ino
+		}
+		return cur
+	}
+
+	// Upsert an inode from a remote put's SyncMeta: tree metadata + the contentHash
+	// REFERENCE (bytes are materialised out-of-band by applyPathChanges), and REPLACE
+	// the user-xattr set with the wire snapshot (local-only trusted.sync.* untouched).
+	// ctime is set locally (0, matching the mem reference), never wired.
+	async function upsertInodeFromSync(tx: DbAdapter, ino: Ino, change: PathChange): Promise<void> {
+		if (change.kind !== 'put') return
+		const { meta, xattrs: snapshot } = inodeMetaFromSync(change.meta)
+		const type = meta.type ?? FileType.Regular
+		await tx.run(
+			`INSERT INTO fs_inodes(ino, type, mode, size, mtime_ns, ctime_ns, content_hash, symlink_target, mime_type, storage_kind)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+			 ON CONFLICT(ino) DO UPDATE SET
+			   type = excluded.type, mode = excluded.mode, size = excluded.size,
+			   mtime_ns = excluded.mtime_ns, ctime_ns = excluded.ctime_ns,
+			   content_hash = excluded.content_hash, symlink_target = excluded.symlink_target`,
+			[
+				ino,
+				type,
+				meta.mode ?? defaultModeForType(type),
+				Number(meta.size ?? 0n),
+				meta.mtimeNs ?? 0n,
+				0n,
+				change.contentHash ?? null,
+				meta.symlinkTarget ?? null,
+				STORAGE_NONE
+			]
+		)
+		// Replace the whole USER-xattr set with the snapshot; keep trusted.sync.*.
+		await tx.run("DELETE FROM fs_xattrs WHERE ino = ? AND name NOT LIKE 'trusted.sync.%'", [ino])
+		for (const [name, value] of Object.entries(snapshot)) {
+			await tx.run(
+				`INSERT INTO fs_xattrs(ino, name, value) VALUES (?, ?, ?)
+				 ON CONFLICT(ino, name) DO UPDATE SET value = excluded.value`,
+				[ino, name, value]
+			)
+		}
+	}
+
+	async function setDirent(
+		tx: DbAdapter,
+		dirIno: Ino,
+		name: string,
+		ino: Ino,
+		type: FileType
+	): Promise<void> {
+		const existing = await getDirent(tx, dirIno, name)
+		if (existing)
+			await tx.run('UPDATE fs_dirents SET ino = ?, type = ? WHERE dir_ino = ? AND name = ?', [
+				ino,
+				type,
+				dirIno,
+				name
+			])
+		else
+			await tx.run('INSERT INTO fs_dirents(dir_ino, name, ino, type) VALUES (?, ?, ?, ?)', [
+				dirIno,
+				name,
+				ino,
+				type
+			])
+	}
+
 	async function updateInodeContent(
 		ino: Ino,
 		data: Uint8Array,
@@ -1215,12 +1321,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		//      single-file mutation's txn (atomicCreate, putDirent, putBlob, setMeta,
 		//      deleteDirent) + the journal store (append/readFrom/head) below. Regular
 		//      files journal on putBlob once hashed (buildPutChange returns null before).
-		//   4. [TODO(path-sync)] pathApply.applyJournaled + localChange (below): apply
-		//      remote changes in ONE txn (ensure parent dirs, upsert inode meta +
-		//      contentHash ref, set/delete dirent, replace user xattrs, append journal row
-		//      VERBATIM + localSource, fast-forward fs_path_version), emit() per change so
-		//      the volume cache invalidates; localChange reconstructs the path's current
-		//      PathChange for the engine's LWW. => turns 4/5 sqlite conformance GREEN.
+		//   4. [DONE] pathApply.applyJournaled + localChange (below): apply remote
+		//      changes in ONE txn (ensure parent dirs — resurrecting deleted ancestors,
+		//      upsert inode meta + contentHash ref, set/delete dirent, replace user
+		//      xattrs, append the journal row VERBATIM + localSource, fast-forward
+		//      fs_path_version), emit() per change so the volume cache invalidates;
+		//      localChange reconstructs the path's current PathChange for the LWW.
 		//   5. [TODO(path-sync)] atomicMove subtree journaling: ordered delete(old subtree,
 		//      child-first) + put(new subtree, parent-first), enumerated via a CTE.
 		//      => rename conformance GREEN (5/5).
@@ -1299,14 +1405,88 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			}
 		},
 		pathApply: {
-			async localChange(_path: string) {
-				// TODO(path-sync): SELECT path_version + reconstruct the path's current
-				// PathChange (put/delete) for the engine's LWW compare.
-				throw new Error('not implemented')
+			async localChange(path: string): Promise<PathChange | null> {
+				// Current local durable state at `path`, for the engine's LWW compare: a
+				// linked path -> its put at the live path_version; else a tombstone -> its
+				// delete; else null. `source` is excluded from the digest, so any id works.
+				await ensureBootstrapped()
+				const ino = await resolveIno(db, path)
+				if (ino !== null) {
+					const row = await getInode(db, ino)
+					if (row) {
+						const cur = await readPathVersion(db, path)
+						return buildPutChange(
+							path,
+							metaFromRow(row),
+							await listAllXattrs(db, ino),
+							cur.version,
+							localActorId
+						)
+					}
+				}
+				const cur = await readPathVersion(db, path)
+				return cur.tombstone > 0 ? buildDeleteChange(path, cur.tombstone, localActorId) : null
 			},
-			async applyJournaled(_changes: PathChange[], _opts: { localSource?: string }) {
-				// TODO(path-sync): tree meta + contentHash ref + journal row + path_version, one txn.
-				throw new Error('not implemented')
+			async applyJournaled(changes: PathChange[], opts: { localSource?: string }): Promise<void> {
+				// Remote-authored apply in ONE txn: install tree metadata + contentHash
+				// REFERENCE, journal the change VERBATIM (its version + origin source) plus
+				// localSource, and fast-forward path_version (never lower it). NEVER writes
+				// blob bytes — those are materialised out-of-band by applyPathChanges. emit()
+				// after commit so a volume over sqlite invalidates its cache on the pull.
+				await ensureBootstrapped()
+				const pendingEmits: StorageChange[] = []
+				const orphanedR2Keys: string[] = []
+				await db.transaction(async (tx) => {
+					for (const change of changes) {
+						const p = change.path
+						const changeVersion = Number(change.version)
+						if (change.kind === 'put') {
+							const { parentPath, name } = splitPath(p)
+							const parentIno = await ensureDirPath(tx, parentPath)
+							const existing = await getDirent(tx, parentIno, name)
+							const ino = existing ? String(existing.ino) : randomId()
+							const type = change.meta.type
+							await upsertInodeFromSync(tx, ino, change)
+							await setDirent(tx, parentIno, name, ino, type)
+							pendingEmits.push({ ino, kind: 'meta', source: opts.localSource })
+							pendingEmits.push({
+								ino,
+								kind: 'dirent',
+								dirIno: parentIno,
+								name,
+								source: opts.localSource
+							})
+							if (type === FileType.Regular)
+								pendingEmits.push({ ino, kind: 'content', source: opts.localSource })
+						} else {
+							const ino = await resolveIno(tx, p)
+							const { parentPath, name } = splitPath(p)
+							const parentIno = await resolveIno(tx, parentPath)
+							if (parentIno !== null)
+								await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [
+									parentIno,
+									name
+								])
+							if (ino !== null) await deleteInodeInTx(tx, ino, orphanedR2Keys)
+							if (ino !== null && parentIno !== null)
+								pendingEmits.push({
+									ino,
+									kind: 'dirent',
+									dirIno: parentIno,
+									name,
+									source: opts.localSource
+								})
+							if (ino !== null) pendingEmits.push({ ino, kind: 'meta', source: opts.localSource })
+						}
+						const cur = await readPathVersion(tx, p)
+						const tombstone =
+							change.kind === 'delete' ? Math.max(cur.tombstone, changeVersion) : cur.tombstone
+						await setPathVersion(tx, p, Math.max(cur.version, changeVersion), tombstone)
+						await appendJournalRow(tx, change, opts.localSource)
+					}
+				})
+				if (blobStore?.delete) for (const key of orphanedR2Keys) await blobStore.delete(key)
+				for (const change of pendingEmits) emit(change)
 			}
 		}
 	}
