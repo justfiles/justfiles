@@ -1,5 +1,6 @@
 /**
- * Runs the backend conformance suite (`sync-conformance.ts`) under vitest for the
+ * Runs the backend conformance suite (`pathSyncConformanceCases`, in
+ * `sync-test-harness.ts`) under vitest for the
  * backends reachable in Node:
  *   - `memStorage`  — GREEN (implements the path-sync seams).
  *   - `idbStorage`  — RED until it implements `caps.journal` / `caps.pathApply` /
@@ -18,8 +19,8 @@ import 'fake-indexeddb/auto'
 import { describe, test } from 'vitest'
 import { idbStorage } from './storage.idb'
 import { memStorage } from './storage.mem'
-import { pathSyncConformanceCases } from './sync-conformance'
 import type { BackendFactory } from './sync-test-harness'
+import { pathSyncConformanceCases } from './sync-test-harness'
 
 const backends: { label: string; make: BackendFactory }[] = [
 	{ label: 'memStorage', make: (opts) => memStorage(opts) },

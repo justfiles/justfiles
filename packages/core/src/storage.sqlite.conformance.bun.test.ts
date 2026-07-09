@@ -1,4 +1,5 @@
-// Runs the shared path-sync backend conformance suite (`packages/fs/sync-conformance`)
+// Runs the shared path-sync backend conformance suite (`pathSyncConformanceCases`,
+// in `packages/fs/sync-test-harness.ts`)
 // against the SQLite/DO backend under `bun test` (it needs `bun:sqlite`). This is the
 // same suite vitest runs against `memStorage` (GREEN) and `idbStorage` (RED) — proving
 // the SHIPPING backends against identical specs, not just the memStorage test double.
@@ -14,7 +15,7 @@
 import { Database } from 'bun:sqlite'
 import { describe, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
-import { pathSyncConformanceCases } from '../../fs/sync-conformance'
+import { pathSyncConformanceCases } from '../../fs/sync-test-harness'
 import { createSqliteAdapter } from './db.sqlite'
 import { storage as sqliteStorage } from './storage.sqlite'
 
