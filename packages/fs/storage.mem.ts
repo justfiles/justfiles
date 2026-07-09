@@ -350,6 +350,17 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			},
 			async putByHash(hash, data) {
 				hashBlobs.set(hash, data.slice())
+			},
+			async gcUnreferenced() {
+				const live = new Set<string>()
+				for (const m of metas.values()) if (m.contentHash) live.add(m.contentHash)
+				let count = 0
+				for (const hash of [...hashBlobs.keys()])
+					if (!live.has(hash)) {
+						hashBlobs.delete(hash)
+						count++
+					}
+				return count
 			}
 		},
 		pathApply: {

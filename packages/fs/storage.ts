@@ -148,7 +148,20 @@ export interface StorageCapabilities {
 export interface ContentStore {
 	getByHash(hash: string): Promise<Uint8Array | null>
 	hasByHash(hash: string): Promise<boolean>
+	/**
+	 * Store `data` under `hash`. TRUSTS the caller — the backend does NOT verify
+	 * `sha256(data) === hash`. The sync engine supplies a hash it already computed
+	 * (re-hashing every pulled blob would be wasteful), so a lying caller corrupts
+	 * the store: any non-sync caller MUST pass a hash computed from exactly these bytes.
+	 */
 	putByHash(hash: string, data: Uint8Array): Promise<void>
+	/**
+	 * Reclaim every stored blob that no inode's `contentHash` references. Out-of-band
+	 * ONLY — NEVER call from the apply path: `applyJournaled` applies a rename's
+	 * deletes before its puts, so a mid-apply sweep would drop bytes the same batch
+	 * re-references. Returns the number of blobs reclaimed.
+	 */
+	gcUnreferenced(): Promise<number>
 }
 
 /**

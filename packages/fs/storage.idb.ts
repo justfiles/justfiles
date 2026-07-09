@@ -755,6 +755,31 @@ export function idbStorage(
 				const tx = db.transaction(['content', 'meta'], 'readwrite') as FullTx
 				await storeContentByHashTx(tx, hash, bytes)
 				await tx.done
+			},
+			async gcUnreferenced() {
+				const db = await getDb()
+				const tx = db.transaction(['content', 'inodes', 'meta'], 'readwrite') as FullTx
+				const live = new Set<string>()
+				for (const inode of await tx.objectStore('inodes').getAll())
+					if (inode.contentHash) live.add(inode.contentHash)
+				let count = 0
+				let freed = 0
+				let cursor = await tx.objectStore('content').openCursor()
+				while (cursor) {
+					if (!live.has(cursor.value.contentHash)) {
+						freed += cursor.value.sizeBytes
+						await cursor.delete()
+						count++
+					}
+					cursor = await cursor.continue()
+				}
+				if (freed > 0) {
+					const total =
+						((await tx.objectStore('meta').get('totalContentBytes')) as number | undefined) ?? 0
+					await tx.objectStore('meta').put(Math.max(0, total - freed), 'totalContentBytes')
+				}
+				await tx.done
+				return count
 			}
 		},
 		pathApply: {

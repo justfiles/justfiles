@@ -122,14 +122,19 @@ import { FileType } from './types'
 //      over a generic store (flattens sqlite/idb to a dumb KV, discarding their
 //      CTE / secondary-index strengths for ~150 mechanical lines — not worth it).
 //
-//   4. [TODO(path-sync)] CONTENT GC. applyJournaled deliberately does NOT reclaim
+//   4. [DONE(path-sync)] CONTENT GC. applyJournaled deliberately does NOT reclaim
 //      orphaned blobs (a rename's delete would otherwise drop the bytes its own
-//      put re-references, since orderForApply applies deletes before puts). All
-//      owned backends now leak orphaned content on delete-heavy sync. Add an
-//      explicit out-of-band sweep (sqlite: DELETE FROM fs_contents WHERE
-//      content_hash NOT IN (SELECT content_hash FROM fs_inodes WHERE content_hash
-//      IS NOT NULL)), never in the apply path. Also: caps.content.putByHash TRUSTS
-//      the caller's hash — document the trust boundary / add a dev-only verify.
+//      put re-references, since orderForApply applies deletes before puts), so
+//      owned backends leak orphaned content on delete-heavy sync. Fixed via
+//      ContentStore.gcUnreferenced() — an out-of-band sweep reclaiming every stored
+//      blob no inode's contentHash references (sqlite: one `NOT IN` delete reusing
+//      maybeDeleteOrphanedContent for FTS + R2-key cleanup; mem/idb: build the live
+//      set from inodes, drop the rest), NEVER in the apply path. Triggering is the
+//      app/host's call (reachable via storage.caps.content) — NOT auto-wired into
+//      the sync loop (a full content scan every sync would be wasteful). And
+//      caps.content.putByHash's hash-trust is now documented at the interface (the
+//      sync engine supplies a pre-computed hash; re-hashing every pulled blob is
+//      wasteful) — documentation over a dev-only verify, to stay minimal.
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 

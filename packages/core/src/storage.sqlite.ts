@@ -1090,6 +1090,23 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				await db.transaction(async (tx) => {
 					await storeContentIfMissing(tx, hash, data)
 				})
+			},
+			async gcUnreferenced(): Promise<number> {
+				await ensureBootstrapped()
+				const orphanedR2Keys: string[] = []
+				let count = 0
+				await db.transaction(async (tx) => {
+					const rows = await tx.query<{ content_hash: unknown }>(
+						`SELECT content_hash FROM fs_contents
+						 WHERE content_hash NOT IN (SELECT content_hash FROM fs_inodes WHERE content_hash IS NOT NULL)`
+					)
+					for (const row of rows) {
+						await maybeDeleteOrphanedContent(tx, String(row.content_hash), orphanedR2Keys)
+						count++
+					}
+				})
+				if (blobStore?.delete) for (const key of orphanedR2Keys) await blobStore.delete(key)
+				return count
 			}
 		},
 		journal: {

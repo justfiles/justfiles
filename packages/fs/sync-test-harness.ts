@@ -603,5 +603,30 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 			assertEq((await client.lstat('/link')).type, FileType.Symlink, '/link is not a symlink')
 			assertEq(await client.readlink('/link'), '/target.txt', 'symlink target wrong')
 		}
+	},
+	{
+		name: 'gcUnreferenced reclaims orphaned blobs, keeps referenced ones',
+		run: async (makeBackend) => {
+			const s = makeBackend()
+			const content = s.caps?.content
+			if (!content?.gcUnreferenced) throw new Error('conformance: backend exposes no content GC')
+			const vol = volume(s)
+			await vol.writeFile('/keep.txt', bytes('keep'))
+			const keepHash = (await vol.stat('/keep.txt')).contentHash
+			if (!keepHash) throw new Error('conformance: written file has no contentHash')
+			// An orphan: bytes no inode references (never written through the tree).
+			const orphanHash = sha256('orphan-bytes')
+			await content.putByHash(orphanHash, bytes('orphan-bytes'))
+			assertEq(await content.hasByHash(orphanHash), true, 'orphan blob not stored')
+			const reclaimed = await content.gcUnreferenced()
+			assertEq(reclaimed >= 1, true, 'gc reclaimed no orphan')
+			assertEq(await content.hasByHash(orphanHash), false, 'orphan blob not reclaimed')
+			assertEq(await content.hasByHash(keepHash), true, 'referenced blob wrongly reclaimed')
+			assertEq(
+				text((await content.getByHash(keepHash)) ?? new Uint8Array()),
+				'keep',
+				'kept blob corrupted'
+			)
+		}
 	}
 ]
