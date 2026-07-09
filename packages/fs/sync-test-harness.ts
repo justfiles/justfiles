@@ -21,7 +21,7 @@
 import { createHash } from 'node:crypto'
 import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
-import type { BlobStore, SyncReplica } from './sync-replica'
+import type { SyncReplica } from './sync-replica'
 import { journaledChangeSource, localSyncReplica, PAGE } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { REMOTE_SOURCE, synced } from './synced'
@@ -268,21 +268,6 @@ function makePeer(
 	return peer
 }
 
-// ── Push/pull pump (harness plumbing over the real replica methods) ───────────
-
-/** Ensure `target` holds a blob for every put's hash; upload from `source`. */
-async function uploadBlobs(
-	changes: PathChange[],
-	source: BlobStore,
-	target: BlobStore
-): Promise<void> {
-	for (const c of changes) {
-		if (c.kind !== 'put' || !c.contentHash) continue
-		if (await target.hasBlobByHash(c.contentHash)) continue
-		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
-	}
-}
-
 // ── twoPeers / wire ───────────────────────────────────────────────────────────
 
 export interface TwoPeers {
@@ -341,7 +326,9 @@ export function wire(
 				any = true
 				if (record) pushedC2S.push(...res.changes)
 			}
-			await uploadBlobs(res.changes, source.replica, target.replica)
+			// No pre-upload: like synced()'s pull, applyPathChanges owns content — an
+			// eager target fetches each winner's blob via the callback, a lazy target
+			// skips and hydrates on first read (RED 6).
 			await target.replica.applyPathChanges(res.changes, (h) => source.replica.getBlobByHash(h), {
 				source: REMOTE_SOURCE
 			})
@@ -373,7 +360,6 @@ export function wire(
 			const res = await server.replica.pathScan(page, { limit })
 			syncCursor = res.syncCursor
 			pageCursors.push(res.syncCursor)
-			await uploadBlobs(res.changes, server.replica, client.replica)
 			await client.replica.applyPathChanges(res.changes, (h) => server.replica.getBlobByHash(h), {
 				source: REMOTE_SOURCE
 			})
@@ -388,7 +374,6 @@ export function wire(
 		let done = false
 		while (!done) {
 			const res = await server.replica.pathDeltas(c, { excludeOrigin: client.id, limit: PAGE })
-			await uploadBlobs(res.changes, server.replica, client.replica)
 			await client.replica.applyPathChanges(res.changes, (h) => server.replica.getBlobByHash(h), {
 				source: REMOTE_SOURCE
 			})
