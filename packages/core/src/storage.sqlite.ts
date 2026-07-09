@@ -12,6 +12,8 @@ import {
 	buildPutChange,
 	joinPath,
 	nextVersion,
+	sortChildFirst,
+	sortParentFirst,
 	splitPath
 } from '@justfiles/fs/storage.shared'
 import { inodeMetaFromSync, type PathChange } from '@justfiles/fs/sync-wire'
@@ -744,6 +746,23 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		return cur
 	}
 
+	// All paths in the subtree rooted at `ino`, as { ino, rel } (root rel = ''), via
+	// a recursive walk DOWN the dirent tree. Used to journal a rename as an ordered
+	// subtree delete + put.
+	async function enumerateSubtree(tx: DbAdapter, ino: Ino): Promise<{ ino: Ino; rel: string }[]> {
+		const rows = await tx.query<{ ino: unknown; rel: unknown }>(
+			`WITH RECURSIVE subtree(ino, rel) AS (
+				SELECT ?, ''
+				UNION ALL
+				SELECT d.ino, subtree.rel || '/' || d.name
+				FROM fs_dirents d JOIN subtree ON d.dir_ino = subtree.ino
+			)
+			SELECT ino, rel FROM subtree`,
+			[ino]
+		)
+		return rows.map((r) => ({ ino: String(r.ino), rel: toStringOrNull(r.rel) ?? '' }))
+	}
+
 	// Upsert an inode from a remote put's SyncMeta: tree metadata + the contentHash
 	// REFERENCE (bytes are materialised out-of-band by applyPathChanges), and REPLACE
 	// the user-xattr set with the wire snapshot (local-only trusted.sync.* untouched).
@@ -1021,6 +1040,15 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				const destination = await getDirent(tx, newDirIno, newName)
 				if (destination && String(destination.ino) === String(source.ino)) return
 
+				// Enumerate the moving subtree + resolve both parents' paths BEFORE the
+				// rebind, so we can journal an ordered delete(old) + put(new) below.
+				const oldDirPath = await pathOf(tx, oldDirIno)
+				const newDirPath = await pathOf(tx, newDirIno)
+				if (oldDirPath === null || newDirPath === null) throw new Error('ENOENT: parent')
+				const oldBase = joinPath(oldDirPath, oldName)
+				const newBase = joinPath(newDirPath, newName)
+				const subtree = await enumerateSubtree(tx, String(source.ino))
+
 				if (destination) {
 					displaced = String(destination.ino)
 					await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [
@@ -1037,10 +1065,18 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					oldName
 				])
 				movedIno = String(source.ino)
-				// TODO(path-sync) [epic slice 5]: journal the move as an ordered
-				// delete(old subtree, child-first) + put(new subtree, parent-first),
-				// enumerated via a recursive CTE. Single-file mutations journal in
-				// slice 3; rename subtree journaling lands in slice 5.
+				// Journal the move as ordered subtree changes: delete child-before-parent
+				// (never orphan a live child under a deleted dir), then put parent-before-
+				// child (the dir exists before its entries). A moved regular file keeps its
+				// contentHash, so journalPut re-emits a put referencing the already-present
+				// bytes — only the dirent rebinds.
+				for (const p of sortChildFirst(
+					subtree.map((n) => oldBase + n.rel),
+					(x) => x
+				))
+					await journalDelete(tx, p, options)
+				for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
+					await journalPut(tx, newBase + n.rel, n.ino, options)
 
 				await appendOps(
 					tx,
@@ -1327,9 +1363,11 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		//      xattrs, append the journal row VERBATIM + localSource, fast-forward
 		//      fs_path_version), emit() per change so the volume cache invalidates;
 		//      localChange reconstructs the path's current PathChange for the LWW.
-		//   5. [TODO(path-sync)] atomicMove subtree journaling: ordered delete(old subtree,
-		//      child-first) + put(new subtree, parent-first), enumerated via a CTE.
-		//      => rename conformance GREEN (5/5).
+		//   5. [DONE] atomicMove subtree journaling (above): ordered delete(old subtree,
+		//      child-first) + put(new subtree, parent-first), enumerated via a recursive
+		//      CTE (enumerateSubtree). Moved regular files re-emit a put referencing the
+		//      already-present bytes. => rename conformance GREEN; sqlite is the first
+		//      fully-proven shipping backend for path-based sync (5/5).
 		//
 		// caps.subscribe: the change feed fires after each mutation's txn commits.
 		subscribe(listener: (change: StorageChange) => void): () => void {
@@ -1435,7 +1473,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				// after commit so a volume over sqlite invalidates its cache on the pull.
 				await ensureBootstrapped()
 				const pendingEmits: StorageChange[] = []
-				const orphanedR2Keys: string[] = []
 				await db.transaction(async (tx) => {
 					for (const change of changes) {
 						const p = change.path
@@ -1467,7 +1504,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 									parentIno,
 									name
 								])
-							if (ino !== null) await deleteInodeInTx(tx, ino, orphanedR2Keys)
+							// Delete the inode's tree metadata, but NOT its blob content: the
+							// same bytes may be re-referenced by a put later in this batch (a
+							// rename moves content between paths, and deletes are applied before
+							// puts). Blob GC is out-of-band, matching the mem reference.
+							if (ino !== null && !(await hasDirentReference(tx, ino))) {
+								await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
+								await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
+							}
 							if (ino !== null && parentIno !== null)
 								pendingEmits.push({
 									ino,
@@ -1485,7 +1529,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						await appendJournalRow(tx, change, opts.localSource)
 					}
 				})
-				if (blobStore?.delete) for (const key of orphanedR2Keys) await blobStore.delete(key)
 				for (const change of pendingEmits) emit(change)
 			}
 		}
