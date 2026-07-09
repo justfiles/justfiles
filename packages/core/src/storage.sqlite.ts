@@ -1055,7 +1055,41 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			}
 		},
 
-		// ── Path-sync seams (Phase 0: shape only) ─────────────────────────────
+		// ── Path-sync seams ───────────────────────────────────────────────────
+		// Hash-addressed content store (matching R2 / the mem backend): the inode
+		// holds a `contentHash` reference and the bytes live in `fs_contents`, keyed
+		// by that hash. Thin wrapper over the already-content-addressed table — the
+		// local SyncReplica's BlobStore reads/writes it to materialise pulled content
+		// out-of-band. The caller supplies the hash (it is content-addressed by their
+		// digest); we trust it, exactly as `mem` does.
+		content: {
+			async hasByHash(hash: string): Promise<boolean> {
+				await ensureBootstrapped()
+				const rows = await db.query<{ present: unknown }>(
+					'SELECT 1 AS present FROM fs_contents WHERE content_hash = ? LIMIT 1',
+					[hash]
+				)
+				return rows.length > 0
+			},
+			async getByHash(hash: string): Promise<Uint8Array | null> {
+				await ensureBootstrapped()
+				const content = await loadContentRow(db, hash)
+				if (!content) return null
+				if (toNumber(content.storage_kind) === STORAGE_INLINE)
+					return toUint8Array(content.inline_bytes)
+				if (!blobStore) throw new Error(`Blob store not configured for hash: ${hash}`)
+				const key = toStringOrNull(content.r2_key)
+				if (!key) throw new Error(`Missing R2 key for hash: ${hash}`)
+				const object = await blobStore.get(key)
+				return object ? new Uint8Array(await object.arrayBuffer()) : null
+			},
+			async putByHash(hash: string, data: Uint8Array): Promise<void> {
+				await ensureBootstrapped()
+				await db.transaction(async (tx) => {
+					await storeContentIfMissing(tx, hash, data)
+				})
+			}
+		},
 		journal: {
 			async append(_changes: PathChange[], _localSource?: string) {
 				// TODO(path-sync): INSERT journal rows in the mutation txn.
