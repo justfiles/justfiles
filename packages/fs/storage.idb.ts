@@ -498,6 +498,10 @@ export function idbStorage(
 				const xkeys = await tx.objectStore('xattrs').index('by-ino').getAllKeys(ino)
 				for (const k of xkeys) await tx.objectStore('xattrs').delete(k)
 			},
+			async dirHasLiveChildren(ino) {
+				const child = await tx.objectStore('dirs').index('by-dir').get(ino)
+				return child !== undefined
+			},
 			async readPathVersion(path) {
 				const rec = await tx.objectStore('pathver').get(path)
 				return { version: rec?.version ?? 0, tombstone: rec?.tombstone ?? 0 }

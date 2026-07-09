@@ -656,6 +656,13 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ?', [ino])
 				await tx.run('DELETE FROM fs_inodes WHERE ino = ?', [ino])
 			},
+			async dirHasLiveChildren(ino) {
+				const rows = await tx.query<{ present: unknown }>(
+					'SELECT 1 AS present FROM fs_dirents WHERE dir_ino = ? LIMIT 1',
+					[ino]
+				)
+				return rows.length > 0
+			},
 			readPathVersion: (path) => readPathVersion(tx, path),
 			setPathVersion: (path, version, tombstone) => setPathVersion(tx, path, version, tombstone),
 			appendJournalRow: (change, localSource) => appendJournalRow(tx, change, localSource),

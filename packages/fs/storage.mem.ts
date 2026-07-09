@@ -204,6 +204,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			metas.delete(ino)
 			xattrs.delete(ino)
 		},
+		async dirHasLiveChildren(ino) {
+			const prefix = `${ino}\0`
+			for (const key of dirs.keys()) if (key.startsWith(prefix)) return true
+			return false
+		},
 		async readPathVersion(path) {
 			return { version: pathVersion.get(path) ?? 0, tombstone: tombstone.get(path) ?? 0 }
 		},

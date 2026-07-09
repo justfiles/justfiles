@@ -292,6 +292,8 @@ export interface PathStorePort {
 	deleteDirent(dirIno: Ino, name: string): Promise<void>
 	/** Delete the inode's tree metadata + xattrs IF no dirent still references it. NEVER GCs blob content. */
 	deleteInodeIfUnreferenced(ino: Ino): Promise<void>
+	/** True if `ino` is a directory that still has at least one live child dirent. */
+	dirHasLiveChildren(ino: Ino): Promise<boolean>
 	/** The path's `{ version, tombstone }` scalars ({0,0} when unknown). */
 	readPathVersion(path: string): Promise<{ version: number; tombstone: number }>
 	/** Persist the path's version + tombstone scalars. */
@@ -391,6 +393,16 @@ export async function applyJournaledOver(
 			if (type === FileType.Regular) port.emit({ ino, kind: 'content', source: opts.localSource })
 		} else {
 			const ino = await port.resolveIno(p)
+			// Tree-integrity invariant: a delete NEVER removes a directory that still
+			// has live children. A descendant whose own higher-version put beat this
+			// subtree delete must stay reachable, so the ancestor delete loses here —
+			// the peer that instead applies the surviving child's put resurrects the
+			// ancestor via ensureDirPath (RED 14: a winning descendant edit vs a
+			// deleted ancestor). Skip entirely: no unlink, no tombstone, no journal row.
+			if (ino !== null) {
+				const mx = await port.readMetaXattrs(ino)
+				if (mx?.meta.type === FileType.Directory && (await port.dirHasLiveChildren(ino))) continue
+			}
 			const { parentPath, name } = splitPath(p)
 			const parentIno = await port.resolveIno(parentPath)
 			if (parentIno !== null) await port.deleteDirent(parentIno, name)
