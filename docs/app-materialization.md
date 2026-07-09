@@ -369,15 +369,34 @@ rule.
   empty + update" function — avoids a new synced marker; (2) repair is monotonic,
   not exempt — closes a downgrade-via-repair hole.
 
-### Phase 2 — single-origin materialisation (R1 + R2) — the incident fix
+### Phase 2 — single-origin materialisation (R1 + R2) — the incident fix — DONE
 
-Remove the server's `ensureBuiltinsInstalled` / `reconcileFromAssets`; gate
-client materialisation on "first bootstrap done **and** volume still empty".
+Removed the server's `ensureBuiltinsInstalled` / `reconcileFromAssets` (and the
+now-unused `assets` dep on `frierenApps`); the client is the sole materialiser.
+Client materialisation is gated on "first bootstrap done **and** volume still
+empty":
 
-- The change that actually kills the fork. Highest risk / most subtle.
-- Resolve the open questions first: the empty signal (emptiness check vs a
-  `trusted.materialised` marker — lean marker) and agent-before-first-sync.
-- Verify with the R1/R2 integration smoke checks, not just unit tests.
+- `apps/frieren/worker/frieren.app.ts` / `worker/frieren.ts` — the DO no longer
+  seeds/reconciles `/applications/*`; it holds whatever the client syncs up.
+- `apps/frieren/src/apps/seed.ts` — `seedBuiltins` now: (1) short-circuits on a
+  local-only marker (already seeded this replica), (2) awaits the caller's
+  `waitForBootstrap` barrier, (3) `materialise` only when `kernel.list()` is
+  empty, (4) writes the marker, then (5) `reconcile` on every boot (updates).
+- `apps/frieren/src/os/Provider.tsx` — the seed effect runs for ALL profiles;
+  synced profiles pass `waitForBootstrap: () => fs.flush()` (R2 barrier).
+  `ensureAgentDefaults` stays client-side for local-only only (synced profiles
+  are still server-seeded — unchanged, out of scope here).
+
+- The change that actually kills the fork: `/applications` now has a single
+  authority (the client). The server never writes it and syncs it down.
+- **Open questions resolved:** (1) the empty signal is a **local-only marker**
+  at `/.state/materialised` (never crosses the wire — a per-replica fact, not
+  synced account state) *combined with* the post-bootstrap emptiness check. The
+  marker is written once so seeding can't re-run — including for a returning
+  user whose pre-marker volume already has apps (migration: not empty ⇒ no
+  re-seed); a synced marker was deliberately avoided (it would reintroduce the
+  two-authority fork). (2) Agent-before-first-sync is **accepted**: the DO has
+  no apps until the client materialises and syncs up.
 
 Depends on Phase 1.
 
@@ -409,10 +428,13 @@ convenient — before or alongside Phase 1.
 
 ## Open questions
 
-- First-run "empty" signal: check `/applications` empty, or a dedicated
-  `trusted.materialised` marker written once? A marker is more robust against the
-  bootstrap race than an emptiness check.
+- First-run "empty" signal: **RESOLVED (Phase 2)** — a local-only marker at
+  `/.state/materialised` (written once, never synced) gates seeding, combined
+  with a post-`flush()` emptiness check. More robust against the bootstrap race
+  than emptiness alone, and a *local* (not synced) marker avoids reintroducing
+  cross-replica state.
 - Update UX: silent auto-update on launch vs. an explicit "Updates available (N)"
   affordance + system sweep. Recommend auto for built-ins, surfaced for the sweep.
-- Agent before first sync: the DO has no apps until the client materialises and
-  syncs up — acceptable? (Agent-only flows on a brand-new account would wait.)
+- Agent before first sync: **RESOLVED (Phase 2) — accepted.** The DO has no apps
+  until the client materialises and syncs up. (Agent-only flows on a brand-new
+  account would wait.)

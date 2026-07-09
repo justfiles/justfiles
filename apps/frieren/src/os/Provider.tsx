@@ -78,23 +78,25 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		let cancelled = false
 		void (async () => {
-			// Anonymous profiles can seed immediately. Profiles already associated with
-			// an account should wait until Clerk resolves: signed-in profiles are
-			// materialized by the server; signed-out ones need local built-ins.
-			const hasRemoteUser = activeProfileHasRemoteUser()
-			if (hasRemoteUser && (!isLoaded || isSignedIn)) return
 			const fs = await volumePromise
-			await seedBuiltins(await localKernel(), fs)
+			// The client is the sole materialiser of built-in apps (the server no
+			// longer seeds — docs/app-materialization.md R1). A synced profile waits
+			// for the first bootstrap before deciding, so an account that already has
+			// apps isn't re-seeded; a local-only profile seeds immediately.
+			const synced = activeProfileHasRemoteUser()
+			await seedBuiltins(await localKernel(), fs, {
+				waitForBootstrap: synced ? () => fs.flush() : undefined
+			})
 			// Local-only profiles have no server to seed the agent's identity files, so
 			// give them the same default soul + empty profile the server writes for
 			// synced ones. Idempotent, so it never clobbers a personalized soul.
-			await ensureAgentDefaults(fs)
+			if (!synced) await ensureAgentDefaults(fs)
 			if (!cancelled) client.refresh()
 		})().catch(() => {})
 		return () => {
 			cancelled = true
 		}
-	}, [client, isLoaded, isSignedIn, localKernel, volumePromise])
+	}, [client, localKernel, volumePromise])
 
 	useEffect(() => {
 		// app-code's `devkit.install` writes a new app straight to `/applications`
@@ -104,11 +106,11 @@ export function OSProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		// The dock's catalog is a projection of the local volume's `/applications/*`.
-		// Apps that arrive by sync-down (server materialise on first sign-in, or an
-		// agent/other-device install) land as REMOTE_SOURCE writes that no explicit
-		// refresh covers, so re-list on the volume's structural change feed. Recursive
-		// watch is storage-wide + structural-only (dirent create/remove/rename), so
-		// content edits don't churn it; the client's setApps drops no-op re-lists.
+		// Apps that arrive by sync-down (an agent or another device installs one)
+		// land as REMOTE_SOURCE writes that no explicit refresh covers, so re-list on
+		// the volume's structural change feed. Recursive watch is storage-wide +
+		// structural-only (dirent create/remove/rename), so content edits don't churn
+		// it; the client's setApps drops no-op re-lists.
 		let off: (() => void) | undefined
 		let cancelled = false
 		void volumePromise.then((fs) => {
