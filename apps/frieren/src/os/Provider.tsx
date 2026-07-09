@@ -1,5 +1,6 @@
 import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { ensureAgentDefaults } from '../../shared/agent-defaults'
 import { appFileUrl } from '../../shared/appstore'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
@@ -84,6 +85,10 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			if (hasRemoteUser && (!isLoaded || isSignedIn)) return
 			const fs = await volumePromise
 			await seedBuiltins(await localKernel(), fs)
+			// Local-only profiles have no server to seed the agent's identity files, so
+			// give them the same default soul + empty profile the server writes for
+			// synced ones. Idempotent, so it never clobbers a personalized soul.
+			await ensureAgentDefaults(fs)
 			if (!cancelled) client.refresh()
 		})().catch(() => {})
 		return () => {

@@ -97,7 +97,7 @@ export function AgentStep({
 		setError(null)
 		try {
 			const token = await getToken()
-			const res = await fetch('/api/onboarding/soul', {
+			const res = await fetch('/api/agent/soul', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',

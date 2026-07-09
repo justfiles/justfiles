@@ -16,6 +16,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
+import { ensureAgentDefaults } from '../shared/agent-defaults.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
@@ -71,7 +72,7 @@ export class Frieren extends DurableObject<Env> {
 		this.vol = volume(fs)
 
 		this.app = new Hono()
-			.post('/api/onboarding/soul', async (c) => {
+			.post('/api/agent/soul', async (c) => {
 				const body = await c.req.json<SoulGenerationInput>()
 				if (!body?.agentName || !body?.archetype) {
 					return c.json({ error: 'agentName and archetype are required' }, 400)
@@ -108,6 +109,9 @@ export class Frieren extends DurableObject<Env> {
 	private async reset() {
 		const { model, apiKey } = this.getBackendConfig()
 		await migrateCF(this.ctx.storage)
+		// Seed a default soul + empty profile so the agent works with no onboarding.
+		// Idempotent — a personalized soul (synced from the client) is left untouched.
+		await ensureAgentDefaults(this.vol)
 		this.session?.abort()
 		this.text = text({ model, apiKey })
 		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps

@@ -41,7 +41,7 @@ function buildProfile(draft: Draft): string {
 	return lines.join('\n')
 }
 
-export function UserProfileStep({ volume, onDone }: { volume: Volume; onDone: () => void }) {
+export function ProfileStep({ volume, onDone }: { volume: Volume; onDone: () => void }) {
 	const [draft, setDraft] = useState<Draft>(EMPTY)
 	const [reviewing, setReviewing] = useState(false)
 	const [saving, setSaving] = useState(false)

@@ -1,19 +1,12 @@
+import { PROFILE_PATH, SOUL_PATH } from '../../shared/agent-defaults'
 import type { Volume } from '../fs'
 
+// The identity files the personalize flow edits. Seeded with defaults at boot
+// (see shared/agent-defaults.ts); this UI only overwrites them on demand.
 export const PATHS = {
-	profile: '/system/profiles/user.md',
-	soul: '/system/soul.md'
+	profile: PROFILE_PATH,
+	soul: SOUL_PATH
 } as const
-
-export type OnboardingState = 'user' | 'agent' | 'done'
-
-export async function resolveOnboardingState(volume: Volume): Promise<OnboardingState> {
-	const hasProfile = await volume.exists(PATHS.profile)
-	if (!hasProfile) return 'user'
-	const hasSoul = await volume.exists(PATHS.soul)
-	if (!hasSoul) return 'agent'
-	return 'done'
-}
 
 const decoder = new TextDecoder()
 
@@ -35,4 +28,15 @@ export async function readUserProfile(volume: Volume): Promise<Record<string, st
 	if (!(await volume.exists(PATHS.profile))) return null
 	const text = decoder.decode(await volume.readFile(PATHS.profile))
 	return parseFrontmatter(text)
+}
+
+export function deriveAge(birthDate?: string): number | undefined {
+	if (!birthDate) return undefined
+	const birth = new Date(birthDate)
+	if (Number.isNaN(birth.getTime())) return undefined
+	const now = new Date()
+	let age = now.getFullYear() - birth.getFullYear()
+	const monthDiff = now.getMonth() - birth.getMonth()
+	if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birth.getDate())) age -= 1
+	return age
 }

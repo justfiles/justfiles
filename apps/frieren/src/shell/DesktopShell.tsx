@@ -1,6 +1,6 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
 import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
-import { useMemo, useSyncExternalStore } from 'react'
+import { useMemo, useState, useSyncExternalStore } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Dock } from '@/components/Dock'
 import { Menubar } from '@/components/Menubar'
@@ -20,6 +20,7 @@ import {
 	selectVisibleFullscreenId
 } from '../os/selectors'
 import type { OsWindow } from '../os/state'
+import { PersonalizePanel } from '../personalize/PersonalizePanel'
 import { AgentSidebar } from './AgentSidebar'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -93,11 +94,13 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	)
 	const agentOpen = useOsStore(selectAgentOpen)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
+	const [personalizeOpen, setPersonalizeOpen] = useState(false)
 	// `windows` only changes identity when the open set/order changes, so the
 	// running set stays stable across rect/mode edits.
 	const openAppIds = useMemo(() => new Set(windows.map((w) => w.appId)), [windows])
 
 	const desktopMenuItems: ContextMenuItem[] = [
+		{ label: 'Personalize…', onSelect: () => setPersonalizeOpen(true) },
 		{ label: 'Switch User…', onSelect: onSwitchUser },
 		{ separator: true },
 		{ label: 'Change Wallpaper…', disabled: true, onSelect: () => {} },
@@ -197,6 +200,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				/>
 			</div>
 			<ContextMenu state={menu.state} onClose={menu.close} />
+			{personalizeOpen ? <PersonalizePanel onClose={() => setPersonalizeOpen(false)} /> : null}
 		</div>
 	)
 }

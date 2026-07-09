@@ -10,8 +10,6 @@ import {
 	openProfile,
 	switchToLocalProfile
 } from './fs'
-import { OnboardingPage } from './onboarding/OnboardingPage'
-import { resolveOnboardingState } from './onboarding/state'
 import { OSProvider } from './os/Provider'
 import { DesktopShell } from './shell/DesktopShell'
 
@@ -28,7 +26,6 @@ function App() {
 	const { isLoaded, isSignedIn, userId, getToken } = useAuth()
 
 	const [profileId, setProfileId] = useState<string | null>(null)
-	const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null)
 	const [chooserForUserId, setChooserForUserId] = useState<string | null>(null)
 	const showChooser = chooserForUserId !== null && chooserForUserId === userId
 
@@ -37,15 +34,8 @@ function App() {
 	useEffect(() => {
 		let cancelled = false
 		void (async () => {
-			const vol = await openProfile()
-			let cachedOnboardingDone = false
-			if (activeProfileHasRemoteUser()) {
-				try {
-					cachedOnboardingDone = (await resolveOnboardingState(vol)) === 'done'
-				} catch {}
-			}
+			await openProfile()
 			if (cancelled) return
-			if (cachedOnboardingDone) setOnboardingDone(true)
 			setProfileId(activeProfileId())
 		})().catch(() => {})
 		return () => {
@@ -54,12 +44,13 @@ function App() {
 	}, [])
 
 	// Auth starts sync for the current account profile. It only switches profiles
-	// when Clerk resolves to signed-out or a different signed-in user.
+	// when Clerk resolves to signed-out or a different signed-in user. There is no
+	// onboarding gate: defaults are seeded (server for synced profiles, client for
+	// local ones), so every user lands straight on the desktop.
 	useEffect(() => {
 		if (!isLoaded) return
 		let cancelled = false
 		if (!isSignedIn || !userId) {
-			setOnboardingDone(null)
 			if (activeProfileId() && !activeProfileHasRemoteUser()) return
 			setProfileId(null)
 			void switchToLocalProfile()
@@ -73,20 +64,10 @@ function App() {
 		}
 		void (async () => {
 			try {
-				const vol = await attachRemoteUser(userId, () => getToken())
-				if (cancelled) return
-				setProfileId(activeProfileId())
-				// localFirst returns before the first sync settles; wait for it so a
-				// returning user's onboarding state reflects the backend, not an empty
-				// local replica. Resolves even offline (flush swallows sync errors).
-				await vol.flush()
-				const state = await resolveOnboardingState(vol)
-				if (!cancelled) setOnboardingDone(state === 'done')
+				await attachRemoteUser(userId, () => getToken())
+				if (!cancelled) setProfileId(activeProfileId())
 			} catch {
-				if (!cancelled) {
-					setProfileId(activeProfileId())
-					setOnboardingDone(false)
-				}
+				if (!cancelled) setProfileId(activeProfileId())
 			}
 		})()
 		return () => {
@@ -94,7 +75,6 @@ function App() {
 		}
 	}, [isLoaded, isSignedIn, userId, getToken])
 
-	const handleOnboardingComplete = useCallback(() => setOnboardingDone(true), [])
 	const requestSwitchUser = useCallback(() => {
 		if (userId) setChooserForUserId(userId)
 	}, [userId])
@@ -106,11 +86,6 @@ function App() {
 	if (isLoaded && isSignedIn && userId && remoteUserId !== userId)
 		return <LoadingScreen label="Loading workspace…" />
 	if (showChooser) return <AuthWall onDismiss={dismissChooser} />
-	// Signed-in users finish setup once auth resolves; anonymous users go straight in.
-	if (isLoaded && isSignedIn && onboardingDone === null)
-		return <LoadingScreen label="Loading workspace…" />
-	if (isSignedIn && onboardingDone === false)
-		return <OnboardingPage onComplete={handleOnboardingComplete} />
 
 	return (
 		<OSProvider key={profileId}>
