@@ -1,6 +1,18 @@
 import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
 import { openDB } from 'idb'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type { PathStorePort } from './storage.shared'
+import {
+	applyJournaledOver,
+	joinPath,
+	journalDeleteOver,
+	journalPutOver,
+	localChangeOver,
+	sortChildFirst,
+	sortParentFirst
+} from './storage.shared'
+import type { JournalRow } from './sync-replica'
+import { inodeMetaFromSync, type PathChange } from './sync-wire'
 import type { Ino } from './types'
 import { FileType } from './types'
 
@@ -21,7 +33,7 @@ interface InodeRecord {
 }
 
 interface ContentRecord {
-	ino: Ino
+	contentHash: string
 	data: Uint8Array
 	sizeBytes: number
 	lastAccessedAt: number
@@ -45,6 +57,18 @@ interface DirtyRecord {
 	markedAt: number
 }
 
+interface JournalRecord {
+	seq?: number
+	change: PathChange
+	localSource?: string
+}
+
+interface PathVerRecord {
+	path: string
+	version: number
+	tombstone: number
+}
+
 interface GhostoreFsSchema extends DBSchema {
 	inodes: { key: string; value: InodeRecord }
 	content: {
@@ -55,7 +79,7 @@ interface GhostoreFsSchema extends DBSchema {
 	dirs: {
 		key: [string, string]
 		value: DirRecord
-		indexes: { 'by-dir': string }
+		indexes: { 'by-dir': string; 'by-ino': string }
 	}
 	xattrs: {
 		key: [string, string]
@@ -64,10 +88,21 @@ interface GhostoreFsSchema extends DBSchema {
 	}
 	dirty: { key: string; value: DirtyRecord }
 	meta: { key: string; value: unknown }
+	journal: { key: number; value: JournalRecord }
+	pathver: { key: string; value: PathVerRecord }
 }
 
 type Db = IDBPDatabase<GhostoreFsSchema>
-type AllStores = ('inodes' | 'content' | 'dirs' | 'xattrs' | 'dirty' | 'meta')[]
+type AllStores = (
+	| 'inodes'
+	| 'content'
+	| 'dirs'
+	| 'xattrs'
+	| 'dirty'
+	| 'meta'
+	| 'journal'
+	| 'pathver'
+)[]
 type FullTx = IDBPTransaction<GhostoreFsSchema, AllStores, 'readwrite'>
 type KeyRangeLike = NonNullable<Parameters<Db['getAll']>[1]>
 const KeyRange = (
@@ -89,7 +124,7 @@ const KeyRange = (
 // Constants
 // ---------------------------------------------------------------------------
 
-const DB_VERSION = 4
+const DB_VERSION = 5
 const DEFAULT_CONTENT_CAP = 50 * 1024 * 1024 // 50 MB
 const ROOT_INO: Ino = '1'
 const DIR_PAGE = 100
@@ -121,18 +156,26 @@ export type IdbStorage = Storage & {
 /**
  * IndexedDB-backed Storage with LRU content eviction.
  *
- * Uses seven object stores:
+ * Uses eight object stores:
  *   inodes   — inode metadata (no nlink)
- *   content  — file data (subject to LRU eviction up to contentCapBytes)
- *   dirs     — directory entries keyed by [dirIno, name]
+ *   content  — file data, HASH-addressed by contentHash (dedup + blob-by-hash
+ *              sync), subject to LRU eviction up to contentCapBytes
+ *   dirs     — directory entries keyed by [dirIno, name]; by-ino reverse index
  *   xattrs   — extended attributes keyed by [ino, name]
- *   dirty    — inodes with unflushed writes (for the sync layer)
+ *   dirty    — inodes with unflushed local writes (protected from LRU eviction)
  *   meta     — key-value bootstrap state (rootIno, totalContentBytes, etc.)
+ *   journal  — append-only path-stamped change log (outbound sync source of truth)
+ *   pathver  — per-path { version, tombstone } scalars
  *
  * The root inode is always '1' (matching the memStorage convention).
  */
-export function idbStorage(dbName: string, options?: { contentCapBytes?: number }): IdbStorage {
+export function idbStorage(
+	dbName: string,
+	options?: { contentCapBytes?: number; localActorId?: string }
+): IdbStorage {
 	const cap = options?.contentCapBytes ?? DEFAULT_CONTENT_CAP
+	// The backend's client-id, stamped as ORIGIN (PathChange.source) on local writes.
+	const localActorId = options?.localActorId ?? 'local'
 	let dbPromise: Promise<Db> | null = null
 
 	// Change feed — the substrate for volume.watch. Listeners fire after a
@@ -150,7 +193,7 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 	function getDb(): Promise<Db> {
 		if (!dbPromise) {
 			dbPromise = openDB<GhostoreFsSchema>(dbName, DB_VERSION, {
-				upgrade(db, oldVersion) {
+				upgrade(db, oldVersion, _newVersion, transaction) {
 					if (oldVersion < 1) {
 						db.createObjectStore('inodes', { keyPath: 'ino' })
 
@@ -178,6 +221,20 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 						// Drop the legacy FsOp delta log — replaced by the path journal
 						// (owned by the SyncReplica), which the outbound sync now reads.
 						;(db as IDBPDatabase).deleteObjectStore('updates')
+					}
+					if (oldVersion < 5) {
+						// Content becomes HASH-addressed (dedup + blob-by-hash sync). Recreate
+						// the store keyed by contentHash; cached local bytes re-materialise via
+						// sync (matching the inodes recreation above).
+						if (db.objectStoreNames.contains('content')) db.deleteObjectStore('content')
+						const content = db.createObjectStore('content', { keyPath: 'contentHash' })
+						content.createIndex('by-lru', 'lastAccessedAt')
+						// pathOf(ino) walks UP the tree via a reverse dirent index.
+						const dirs = transaction.objectStore('dirs')
+						if (!dirs.indexNames.contains('by-ino')) dirs.createIndex('by-ino', 'ino')
+						// Path journal (outbound sync source of truth) + per-path version scalars.
+						db.createObjectStore('journal', { keyPath: 'seq', autoIncrement: true })
+						db.createObjectStore('pathver', { keyPath: 'path' })
 					}
 				},
 				blocked() {
@@ -217,23 +274,26 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 	// LRU helpers
 	// ---------------------------------------------------------------------------
 
-	async function evictContent(db: Db, addingBytes: number, skipIno: Ino): Promise<void> {
+	async function evictContent(db: Db, addingBytes: number, keepHash: string): Promise<void> {
 		const total = ((await db.get('meta', 'totalContentBytes')) as number | undefined) ?? 0
 		if (total + addingBytes <= cap) return
 
-		const tx = db.transaction(['content', 'dirty', 'meta'], 'readwrite')
-		const lruIndex = tx.objectStore('content').index('by-lru')
+		const tx = db.transaction(['content', 'dirty', 'inodes', 'meta'], 'readwrite')
+		// Never evict content still referenced by a DIRTY (unsynced) inode — those
+		// bytes cannot be re-fetched. Synced/pulled content is safely re-fetchable.
+		const dirtyHashes = new Set<string>()
+		for (const ino of await tx.objectStore('dirty').getAllKeys()) {
+			const inode = await tx.objectStore('inodes').get(ino)
+			if (inode?.contentHash) dirtyHashes.add(inode.contentHash)
+		}
 
 		let running = total
-		let cursor = await lruIndex.openCursor()
+		let cursor = await tx.objectStore('content').index('by-lru').openCursor()
 		while (cursor && running + addingBytes > cap) {
-			const { ino, sizeBytes } = cursor.value
-			if (ino !== skipIno) {
-				const isDirty = await tx.objectStore('dirty').get(ino)
-				if (!isDirty) {
-					running -= sizeBytes
-					await cursor.delete()
-				}
+			const { contentHash, sizeBytes } = cursor.value
+			if (contentHash !== keepHash && !dirtyHashes.has(contentHash)) {
+				running -= sizeBytes
+				await cursor.delete()
 			}
 			cursor = await cursor.continue()
 		}
@@ -248,29 +308,22 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 	}
 
 	/**
-	 * Atomically write content, update inode size and contentHash, mark dirty, update total.
-	 * Caller must call evictContent first if needed.
+	 * Store content HASH-addressed (dedup): the first writer of a hash pays the
+	 * bytes, later references just bump LRU. Caller must call evictContent first.
 	 */
-	async function writeContent(db: Db, ino: Ino, data: Uint8Array, oldSize: number): Promise<void> {
+	async function storeContentByHashTx(tx: FullTx, hash: string, data: Uint8Array): Promise<void> {
 		const now = Date.now()
-		const newSize = data.length
-		const contentHash = await sha256Hex(data)
-		const tx = db.transaction(['content', 'inodes', 'dirty', 'meta'], 'readwrite')
-
-		await tx.objectStore('content').put({ ino, data, sizeBytes: newSize, lastAccessedAt: now })
-
-		const inode = await tx.objectStore('inodes').get(ino)
-		if (inode) {
-			const nextInode = { ...inode, size: BigInt(newSize), contentHash }
-			await tx.objectStore('inodes').put(nextInode)
+		const existing = await tx.objectStore('content').get(hash)
+		if (existing) {
+			await tx.objectStore('content').put({ ...existing, lastAccessedAt: now })
+			return
 		}
-
-		await tx.objectStore('dirty').put({ ino, markedAt: now })
-
+		await tx
+			.objectStore('content')
+			.put({ contentHash: hash, data, sizeBytes: data.length, lastAccessedAt: now })
 		const total =
 			((await tx.objectStore('meta').get('totalContentBytes')) as number | undefined) ?? 0
-		await tx.objectStore('meta').put(total - oldSize + newSize, 'totalContentBytes')
-		await tx.done
+		await tx.objectStore('meta').put(total + data.length, 'totalContentBytes')
 	}
 
 	function defaultModeForType(type: FileType): number {
@@ -304,25 +357,162 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 		}
 	}
 
-	async function freeIno(tx: FullTx, ino: Ino, type: FileType): Promise<void> {
+	async function freeIno(tx: FullTx, ino: Ino): Promise<void> {
+		// Free tree metadata + xattrs, but NOT blob content: content is hash-addressed
+		// and may be shared / re-referenced (orphans reclaimed by eviction / GC).
 		await tx.objectStore('inodes').delete(ino)
 		await tx.objectStore('dirty').delete(ino)
 
-		if (type === FileType.Regular) {
-			const rec = await tx.objectStore('content').get(ino)
-			if (rec) {
-				const total =
-					((await tx.objectStore('meta').get('totalContentBytes')) as number | undefined) ?? 0
-				await tx.objectStore('meta').put(Math.max(0, total - rec.sizeBytes), 'totalContentBytes')
-				await tx.objectStore('content').delete(ino)
-			}
-		}
-
-		// Delete all xattrs
 		const xkeys = await tx.objectStore('xattrs').index('by-ino').getAllKeys(ino)
 		for (const k of xkeys) {
 			await tx.objectStore('xattrs').delete(k)
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Path-sync helpers (per-backend: pathOf walk-up, tree ops, apply port)
+	// ---------------------------------------------------------------------------
+
+	/** Resolve ino -> canonical path by walking UP the by-ino dirent index; null if unlinked. */
+	async function pathOfTx(tx: FullTx, ino: Ino): Promise<string | null> {
+		if (ino === ROOT_INO) return '/'
+		const segs: string[] = []
+		let cur: Ino = ino
+		while (cur !== ROOT_INO) {
+			const dirent = await tx.objectStore('dirs').index('by-ino').get(cur)
+			if (!dirent) return null
+			segs.unshift(dirent.name)
+			cur = dirent.dirIno
+		}
+		return `/${segs.join('/')}`
+	}
+
+	/** Resolve a canonical path to an ino by walking dirents; null if absent. */
+	async function resolveInoTx(tx: FullTx, path: string): Promise<Ino | null> {
+		if (path === '/') return ROOT_INO
+		let cur: Ino = ROOT_INO
+		for (const seg of path.slice(1).split('/')) {
+			const dirent = await tx.objectStore('dirs').get([cur, seg])
+			if (!dirent) return null
+			cur = dirent.ino
+		}
+		return cur
+	}
+
+	/** Ensure every segment of a directory path exists (tree repair); return the deepest ino. */
+	async function ensureDirPathTx(tx: FullTx, path: string): Promise<Ino> {
+		if (path === '/') return ROOT_INO
+		let cur: Ino = ROOT_INO
+		for (const seg of path.slice(1).split('/')) {
+			const dirent = await tx.objectStore('dirs').get([cur, seg])
+			if (dirent) {
+				cur = dirent.ino
+				continue
+			}
+			const ino = crypto.randomUUID()
+			const stamp = BigInt(Date.now()) * 1_000_000n
+			await tx.objectStore('inodes').put({
+				ino,
+				type: FileType.Directory,
+				size: 0n,
+				mode: 0o755,
+				mtimeNs: stamp,
+				ctimeNs: stamp,
+				lastAccessedAt: Date.now()
+			})
+			await tx.objectStore('dirs').put({ dirIno: cur, name: seg, ino, type: FileType.Directory })
+			cur = ino
+		}
+		return cur
+	}
+
+	/** All paths in the subtree rooted at `ino`, as { ino, rel } (root rel = ''). */
+	async function enumerateSubtreeTx(tx: FullTx, ino: Ino): Promise<{ ino: Ino; rel: string }[]> {
+		const out: { ino: Ino; rel: string }[] = [{ ino, rel: '' }]
+		const children = await tx.objectStore('dirs').index('by-dir').getAll(ino)
+		for (const child of children) {
+			for (const d of await enumerateSubtreeTx(tx, child.ino))
+				out.push({ ino: d.ino, rel: `/${child.name}${d.rel}` })
+		}
+		return out
+	}
+
+	/** Install a remote put's tree metadata + contentHash REFERENCE; replace user xattrs. */
+	async function upsertInodeFromSyncTx(tx: FullTx, ino: Ino, change: PathChange): Promise<void> {
+		if (change.kind !== 'put') return
+		const { meta, xattrs: snapshot } = inodeMetaFromSync(change.meta)
+		const type = meta.type ?? FileType.Regular
+		const existing = await tx.objectStore('inodes').get(ino)
+		await tx.objectStore('inodes').put({
+			ino,
+			type,
+			size: meta.size ?? 0n,
+			mode: meta.mode ?? defaultModeForType(type),
+			mtimeNs: meta.mtimeNs ?? 0n,
+			ctimeNs: 0n, // ctime is set locally at apply time, never wired
+			contentHash: change.contentHash,
+			symlinkTarget: meta.symlinkTarget,
+			lastAccessedAt: existing?.lastAccessedAt ?? Date.now()
+		})
+		// Replace the whole USER-xattr set with the snapshot; keep trusted.sync.*.
+		const xrecs = await tx.objectStore('xattrs').index('by-ino').getAll(ino)
+		for (const x of xrecs)
+			if (!x.name.startsWith('trusted.sync.')) await tx.objectStore('xattrs').delete([ino, x.name])
+		for (const [name, value] of Object.entries(snapshot))
+			await tx.objectStore('xattrs').put({ ino, name, value })
+	}
+
+	// The storage-independent seam the shared apply driver (storage.shared.ts) calls,
+	// bound to one transaction. `emit` is buffered so applyJournaled can flush AFTER
+	// the txn commits (idb fires change events post-commit). pathOf / enumerateSubtree
+	// stay out of the port — they are per-backend (dirent walks) and used by mutators.
+	function makePathPort(tx: FullTx): { port: PathStorePort; emits: StorageChange[] } {
+		const emits: StorageChange[] = []
+		const port: PathStorePort = {
+			mintIno: () => crypto.randomUUID(),
+			resolveIno: (path) => resolveInoTx(tx, path),
+			ensureDirPath: (path) => ensureDirPathTx(tx, path),
+			async getDirentIno(dirIno, name) {
+				const d = await tx.objectStore('dirs').get([dirIno, name])
+				return d ? d.ino : null
+			},
+			async readMetaXattrs(ino) {
+				const rec = await tx.objectStore('inodes').get(ino)
+				if (!rec) return null
+				const xrecs = await tx.objectStore('xattrs').index('by-ino').getAll(ino)
+				const xattrs = Object.fromEntries(xrecs.map((x) => [x.name, x.value.slice()]))
+				return { meta: metaFromRecord(rec), xattrs }
+			},
+			upsertInodeFromSync: (ino, change) => upsertInodeFromSyncTx(tx, ino, change),
+			async setDirent(dirIno, name, ino, type) {
+				await tx.objectStore('dirs').put({ dirIno, name, ino, type })
+			},
+			async deleteDirent(dirIno, name) {
+				await tx.objectStore('dirs').delete([dirIno, name])
+			},
+			async deleteInodeIfUnreferenced(ino) {
+				// NEVER GC blob content: a later put in the batch may re-reference the hash.
+				const ref = await tx.objectStore('dirs').index('by-ino').get(ino)
+				if (ref) return
+				await tx.objectStore('inodes').delete(ino)
+				const xkeys = await tx.objectStore('xattrs').index('by-ino').getAllKeys(ino)
+				for (const k of xkeys) await tx.objectStore('xattrs').delete(k)
+			},
+			async readPathVersion(path) {
+				const rec = await tx.objectStore('pathver').get(path)
+				return { version: rec?.version ?? 0, tombstone: rec?.tombstone ?? 0 }
+			},
+			async setPathVersion(path, version, tombstone) {
+				await tx.objectStore('pathver').put({ path, version, tombstone })
+			},
+			async appendJournalRow(change, localSource) {
+				await tx.objectStore('journal').add({ change, localSource })
+			},
+			emit(change) {
+				emits.push(change)
+			}
+		}
+		return { port, emits }
 	}
 
 	// ---------------------------------------------------------------------------
@@ -358,7 +548,10 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 
 		async atomicCreate(dirIno, name, meta, options) {
 			const db = await getDb()
-			const tx = db.transaction(['inodes', 'content', 'dirs'], 'readwrite')
+			const tx = db.transaction(
+				['inodes', 'dirs', 'xattrs', 'pathver', 'journal'],
+				'readwrite'
+			) as FullTx
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
 			if (existing) {
 				await tx.done
@@ -367,12 +560,17 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			const ino = crypto.randomUUID()
 			const now = Date.now()
 			await tx.objectStore('inodes').put({ ino, ...meta, lastAccessedAt: now })
-			if (meta.type === FileType.Regular) {
-				await tx
-					.objectStore('content')
-					.put({ ino, data: new Uint8Array(), sizeBytes: 0, lastAccessedAt: now })
-			}
 			await tx.objectStore('dirs').put({ dirIno, name, ino, type: meta.type })
+			// Regular files are journaled by the following putBlob (once hashed).
+			const dirPath = await pathOfTx(tx, dirIno)
+			if (dirPath !== null)
+				await journalPutOver(
+					makePathPort(tx).port,
+					joinPath(dirPath, name),
+					ino,
+					localActorId,
+					options
+				)
 			await tx.done
 			emit({ ino, kind: 'meta', source: options?.source })
 			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
@@ -382,22 +580,33 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 		async atomicMove(oldDir, oldName, newDir, newName, options) {
 			const db = await getDb()
 			const tx = db.transaction(
-				['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'meta'],
+				['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'meta', 'pathver', 'journal'],
 				'readwrite'
-			)
+			) as FullTx
 
 			const source = await tx.objectStore('dirs').get([oldDir, oldName])
 			if (!source) {
 				await tx.done
 				throw new Error(`ENOENT: ${oldName}`)
 			}
+			const oldDirPath = await pathOfTx(tx, oldDir)
+			const newDirPath = await pathOfTx(tx, newDir)
+			if (oldDirPath === null || newDirPath === null) {
+				await tx.done
+				throw new Error('ENOENT: parent')
+			}
+			const oldBase = joinPath(oldDirPath, oldName)
+			const newBase = joinPath(newDirPath, newName)
+			// Enumerate BEFORE mutating (children keep their parent-ino-keyed dirents;
+			// only the top entry rebinds).
+			const subtree = await enumerateSubtreeTx(tx, source.ino)
 
 			const destination = await tx.objectStore('dirs').get([newDir, newName])
 			let displaced: Ino | null = null
 
 			if (destination && destination.ino !== source.ino) {
 				displaced = destination.ino
-				await freeIno(tx as FullTx, destination.ino, destination.type)
+				await freeIno(tx, destination.ino)
 				await tx.objectStore('dirs').delete([newDir, newName])
 			}
 
@@ -405,6 +614,17 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			await tx
 				.objectStore('dirs')
 				.put({ dirIno: newDir, name: newName, ino: source.ino, type: source.type })
+
+			// Journal the move as ordered subtree changes: deletes child-before-parent,
+			// then puts parent-before-child (ordering shared with apply).
+			const port = makePathPort(tx).port
+			for (const p of sortChildFirst(
+				subtree.map((n) => oldBase + n.rel),
+				(x) => x
+			))
+				await journalDeleteOver(port, p, localActorId, options)
+			for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
+				await journalPutOver(port, newBase + n.rel, n.ino, localActorId, options)
 
 			await tx.done
 			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
@@ -481,30 +701,78 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			}
 		},
 
-		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
 		journal: {
-			async append(_changes, _localSource) {
-				// TODO(path-sync): add rows to the `journal` object store in the mutation txn.
-				throw new Error('not implemented')
+			async append(changes, localSource) {
+				const db = await getDb()
+				const tx = db.transaction(['journal'], 'readwrite')
+				for (const change of changes) await tx.objectStore('journal').add({ change, localSource })
+				await tx.done
 			},
-			async readFrom(_seq, _limit) {
-				// TODO(path-sync): openCursor(lowerBound(seq, open)), take limit.
-				throw new Error('not implemented')
+			async readFrom(seq, limit) {
+				const db = await getDb()
+				const out: JournalRow[] = []
+				let cursor = await db
+					.transaction('journal')
+					.objectStore('journal')
+					.openCursor(KeyRange.lowerBound(seq + 1) as never)
+				while (cursor && out.length < limit) {
+					out.push({
+						seq: cursor.key,
+						change: cursor.value.change,
+						localSource: cursor.value.localSource
+					})
+					cursor = await cursor.continue()
+				}
+				return out
 			},
 			async head() {
-				// TODO(path-sync): openCursor(null, 'prev').key ?? 0.
-				throw new Error('not implemented')
+				const db = await getDb()
+				const cursor = await db
+					.transaction('journal')
+					.objectStore('journal')
+					.openCursor(null, 'prev')
+				return cursor ? cursor.key : 0
+			}
+		},
+		content: {
+			async getByHash(hash) {
+				const db = await getDb()
+				const rec = await db.get('content', hash)
+				return rec ? rec.data.slice() : null
+			},
+			async hasByHash(hash) {
+				const db = await getDb()
+				return (await db.getKey('content', hash)) !== undefined
+			},
+			async putByHash(hash, data) {
+				const db = await getDb()
+				const bytes = data.slice()
+				await evictContent(db, bytes.length, hash)
+				const tx = db.transaction(['content', 'meta'], 'readwrite') as FullTx
+				await storeContentByHashTx(tx, hash, bytes)
+				await tx.done
 			}
 		},
 		pathApply: {
-			async localChange(_path) {
-				// TODO(path-sync): read path_version + reconstruct the path's current
-				// PathChange (put/delete) for the engine's LWW compare.
-				throw new Error('not implemented')
+			async localChange(path) {
+				const db = await getDb()
+				// Reads only; the port needs a readwrite-typed tx but writes nothing here.
+				const tx = db.transaction(['dirs', 'inodes', 'xattrs', 'pathver'], 'readwrite') as FullTx
+				const change = await localChangeOver(makePathPort(tx).port, path, localActorId)
+				await tx.done
+				return change
 			},
-			async applyJournaled(_changes, _opts) {
-				// TODO(path-sync): tree meta + contentHash ref + journal row + path_version.
-				throw new Error('not implemented')
+			async applyJournaled(changes, opts) {
+				const db = await getDb()
+				const tx = db.transaction(
+					['dirs', 'inodes', 'xattrs', 'pathver', 'journal'],
+					'readwrite'
+				) as FullTx
+				const bound = makePathPort(tx)
+				await applyJournaledOver(bound.port, changes, opts)
+				await tx.done
+				// emit AFTER commit so a volume over idb invalidates its cache on the pull.
+				for (const change of bound.emits) emit(change)
 			}
 		}
 	}
@@ -531,29 +799,28 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 
 		async setMeta(ino, partial, options) {
 			const db = await getDb()
-			const tx = db.transaction(['inodes', 'content'], 'readwrite')
+			const tx = db.transaction(
+				['inodes', 'dirs', 'xattrs', 'pathver', 'journal'],
+				'readwrite'
+			) as FullTx
 			const rec = await tx.objectStore('inodes').get(ino)
 			if (!rec) {
+				// Unlinked inode (createNode's setMeta before putDirent) — no path to journal.
 				const next = buildMissingInodeRecord(ino, partial)
 				if (!next) {
 					await tx.done
 					return
 				}
 				await tx.objectStore('inodes').put(next)
-				if (next.type === FileType.Regular) {
-					await tx.objectStore('content').put({
-						ino,
-						data: new Uint8Array(),
-						sizeBytes: 0,
-						lastAccessedAt: next.lastAccessedAt
-					})
-				}
 				await tx.done
 				emit({ ino, kind: 'meta', source: options?.source })
 				return
 			}
-			const next = { ...rec, ...partial }
-			await tx.objectStore('inodes').put(next)
+			await tx.objectStore('inodes').put({ ...rec, ...partial })
+			// A linked inode's metadata changed (chmod/utimes/…) — journal it.
+			const path = await pathOfTx(tx, ino)
+			if (path !== null)
+				await journalPutOver(makePathPort(tx).port, path, ino, localActorId, options)
 			await tx.done
 			emit({ ino, kind: 'meta', source: options?.source })
 		},
@@ -563,20 +830,10 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 			const inode = await db.get('inodes', ino)
 			if (!inode) return
 			if (await hasDirentReference(db, ino)) return
-			const tx = db.transaction(['inodes', 'content', 'xattrs', 'dirty', 'meta'], 'readwrite')
+			// Content is hash-addressed and shared; leave the blob for eviction / GC.
+			const tx = db.transaction(['inodes', 'xattrs', 'dirty'], 'readwrite')
 			await tx.objectStore('inodes').delete(ino)
 			await tx.objectStore('dirty').delete(ino)
-
-			if (inode.type === FileType.Regular) {
-				const rec = await tx.objectStore('content').get(ino)
-				if (rec) {
-					const total =
-						((await tx.objectStore('meta').get('totalContentBytes')) as number | undefined) ?? 0
-					await tx.objectStore('meta').put(Math.max(0, total - rec.sizeBytes), 'totalContentBytes')
-					await tx.objectStore('content').delete(ino)
-				}
-			}
-
 			const xkeys = await tx.objectStore('xattrs').index('by-ino').getAllKeys(ino)
 			for (const k of xkeys) {
 				await tx.objectStore('xattrs').delete(k)
@@ -587,8 +844,10 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 
 		async getBlob(ino) {
 			const db = await getDb()
+			const hash = (await db.get('inodes', ino))?.contentHash
+			if (!hash) return new Uint8Array()
 			const tx = db.transaction(['content'], 'readwrite')
-			const rec = await tx.objectStore('content').get(ino)
+			const rec = await tx.objectStore('content').get(hash)
 			if (!rec) {
 				await tx.done
 				return new Uint8Array()
@@ -600,11 +859,25 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 
 		async putBlob(ino, data, options) {
 			const db = await getDb()
-			const existing = await db.get('content', ino)
-			const oldSize = existing?.sizeBytes ?? 0
-			const delta = data.length - oldSize
-			if (delta > 0) await evictContent(db, delta, ino)
-			await writeContent(db, ino, data.slice(), oldSize)
+			const bytes = data.slice()
+			const hash = await sha256Hex(bytes)
+			await evictContent(db, bytes.length, hash)
+			const tx = db.transaction(
+				['content', 'inodes', 'dirty', 'meta', 'dirs', 'xattrs', 'pathver', 'journal'],
+				'readwrite'
+			) as FullTx
+			await storeContentByHashTx(tx, hash, bytes)
+			const inode = await tx.objectStore('inodes').get(ino)
+			if (inode) {
+				await tx
+					.objectStore('inodes')
+					.put({ ...inode, size: BigInt(bytes.length), contentHash: hash })
+				await tx.objectStore('dirty').put({ ino, markedAt: Date.now() })
+				const path = await pathOfTx(tx, ino)
+				if (path !== null)
+					await journalPutOver(makePathPort(tx).port, path, ino, localActorId, options)
+			}
+			await tx.done
 			emit({ ino, kind: 'content', source: options?.source })
 		},
 
@@ -616,21 +889,46 @@ export function idbStorage(dbName: string, options?: { contentCapBytes?: number 
 
 		async putDirent(dirIno, name, entry, options) {
 			const db = await getDb()
-			const tx = db.transaction(['dirs'], 'readwrite')
+			const tx = db.transaction(
+				['dirs', 'inodes', 'xattrs', 'pathver', 'journal'],
+				'readwrite'
+			) as FullTx
 			await tx.objectStore('dirs').put({ dirIno, name, ino: entry.ino, type: entry.type })
+			// Non-regular puts journal here; regular files wait for putBlob (once hashed).
+			const dirPath = await pathOfTx(tx, dirIno)
+			if (dirPath !== null)
+				await journalPutOver(
+					makePathPort(tx).port,
+					joinPath(dirPath, name),
+					entry.ino,
+					localActorId,
+					options
+				)
 			await tx.done
 			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
 		async deleteDirent(dirIno, name, options) {
 			const db = await getDb()
-			const tx = db.transaction(['dirs'], 'readwrite')
+			const tx = db.transaction(
+				['dirs', 'inodes', 'xattrs', 'pathver', 'journal'],
+				'readwrite'
+			) as FullTx
 			const existing = await tx.objectStore('dirs').get([dirIno, name])
 			if (!existing) {
 				await tx.done
 				return
 			}
+			// Resolve the parent path BEFORE unlinking so the delete is stamped correctly.
+			const dirPath = await pathOfTx(tx, dirIno)
 			await tx.objectStore('dirs').delete([dirIno, name])
+			if (dirPath !== null)
+				await journalDeleteOver(
+					makePathPort(tx).port,
+					joinPath(dirPath, name),
+					localActorId,
+					options
+				)
 			await tx.done
 			emit({ ino: existing.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
