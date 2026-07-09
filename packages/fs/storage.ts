@@ -44,49 +44,6 @@ export interface StorageChange {
 	name?: string
 }
 
-export type UpdateQueryOptions = {
-	source?: string
-	sourceMode?: 'only' | 'exclude'
-}
-
-export type FsOp =
-	| {
-			kind: 'upsert-inode'
-			source?: string
-			ino: Ino
-			meta?: Partial<InodeMeta>
-			xattrs?: Record<string, Uint8Array | null>
-	  }
-	| {
-			kind: 'set-dirent'
-			source?: string
-			dirIno: Ino
-			name: string
-			ino: Ino
-			type: FileType
-	  }
-	| {
-			kind: 'unset-dirent'
-			source?: string
-			dirIno: Ino
-			name: string
-			ino?: Ino
-	  }
-
-export class FsCursorExpiredError extends Error {
-	constructor(message = 'FS sync cursor expired') {
-		super(message)
-		this.name = 'FsCursorExpiredError'
-	}
-}
-
-export function isFsCursorExpiredError(error: unknown): error is FsCursorExpiredError {
-	return (
-		error instanceof FsCursorExpiredError ||
-		(error instanceof Error && error.name === 'FsCursorExpiredError')
-	)
-}
-
 export type ScanEntry = {
 	ino: Ino
 	dirIno: Ino
@@ -143,33 +100,10 @@ export interface StorageCapabilities {
 	removeXattr?(ino: Ino, name: string, options?: MutationOptions): Promise<void>
 
 	/**
-	 * Full filesystem scan in parent-before-child order.
-	 * `syncCursor` is the deltaUpdates cursor captured at scan time —
-	 * callers store it as the starting point for subsequent incremental pulls.
+	 * Full filesystem scan in parent-before-child order — the substrate for
+	 * `volume.scan` (whole-tree walk). If absent the VFS walks via `listDirents`.
 	 */
-	fullScan?(cursor: string): Promise<{ entries: ScanEntry[]; next: string; syncCursor?: string }>
-
-	/**
-	 * Return filesystem updates since the position encoded in `cursor`.
-	 * Empty string means "from the beginning".
-	 */
-	deltaUpdates?(
-		cursor: string,
-		options?: UpdateQueryOptions
-	): Promise<{ ops: FsOp[]; cursor: string }>
-
-	/**
-	 * Apply a batch of ops in a single round-trip — the sync push fast-path.
-	 * `getBlob` supplies content for regular-file upserts so the implementation
-	 * can inline bytes instead of fetching each blob separately. If absent, the
-	 * sync layer falls back to applying ops one at a time. Callers must not rely
-	 * on atomicity.
-	 */
-	applyBatch?(
-		ops: FsOp[],
-		getBlob: (ino: Ino) => Promise<Uint8Array>,
-		options?: MutationOptions
-	): Promise<void>
+	fullScan?(cursor: string): Promise<{ entries: ScanEntry[]; next: string }>
 
 	/**
 	 * Subscribe to a change feed of committed mutations — the substrate for

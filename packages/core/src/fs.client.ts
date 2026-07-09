@@ -1,13 +1,7 @@
-import {
-	FsCursorExpiredError,
-	type FsOp,
-	type InodeMeta,
-	type MutationOptions,
-	type Storage
-} from '@justfiles/fs/storage'
+import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
 import type { SyncReplica } from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
-import { FileType } from '@justfiles/fs/types'
+import type { FileType } from '@justfiles/fs/types'
 import { hc, type InferResponseType } from 'hono/client'
 import type { createFsApi } from './fs'
 
@@ -52,23 +46,6 @@ function parseMeta(wire: FsMetaResponse): InodeMeta {
 	}
 }
 
-function parseMetaPatch(wire: unknown): Partial<InodeMeta> {
-	const meta = wire as Record<string, unknown>
-	const patch: Partial<InodeMeta> = {}
-
-	if (meta.type !== undefined) patch.type = Number(meta.type) as FileType
-	if (meta.size !== undefined) patch.size = BigInt(String(meta.size))
-	if (meta.mode !== undefined) patch.mode = Number(meta.mode)
-	if (meta.mtimeNs !== undefined) patch.mtimeNs = BigInt(String(meta.mtimeNs))
-	if (meta.ctimeNs !== undefined) patch.ctimeNs = BigInt(String(meta.ctimeNs))
-	if (typeof meta.contentHash === 'string') patch.contentHash = meta.contentHash
-	if ('contentHash' in meta && meta.contentHash === null) patch.contentHash = undefined
-	if (typeof meta.symlinkTarget === 'string') patch.symlinkTarget = meta.symlinkTarget
-	if ('symlinkTarget' in meta && meta.symlinkTarget === null) patch.symlinkTarget = undefined
-
-	return patch
-}
-
 function wireFromMeta(meta: InodeMeta) {
 	return {
 		...meta,
@@ -85,36 +62,6 @@ function decodeBase64(b64: string): Uint8Array {
 		bytes[index] = binary.charCodeAt(index)
 	}
 	return bytes
-}
-
-function encodeBase64(data: Uint8Array): string {
-	let binary = ''
-	for (const byte of data) binary += String.fromCharCode(byte)
-	return btoa(binary)
-}
-
-// Encode one op for the /ops batch wire: stringify meta bigints, base64 xattrs,
-// and inline regular-file content fetched via getBlob. set-/unset-dirent ops are
-// already JSON-safe and pass through unchanged.
-async function encodeBatchOp(
-	op: FsOp,
-	getBlob: (ino: string) => Promise<Uint8Array>
-): Promise<unknown> {
-	if (op.kind !== 'upsert-inode') return op
-	const meta = op.meta
-		? (() => {
-				const out: Record<string, unknown> = { ...op.meta }
-				if (op.meta.size !== undefined) out.size = op.meta.size.toString()
-				if (op.meta.mtimeNs !== undefined) out.mtimeNs = op.meta.mtimeNs.toString()
-				if (op.meta.ctimeNs !== undefined) out.ctimeNs = op.meta.ctimeNs.toString()
-				return out
-			})()
-		: undefined
-	const xattrs = op.xattrs
-		? Object.fromEntries(Object.entries(op.xattrs).map(([k, v]) => [k, v ? encodeBase64(v) : null]))
-		: undefined
-	const data = op.meta?.type === FileType.Regular ? encodeBase64(await getBlob(op.ino)) : undefined
-	return { kind: op.kind, ino: op.ino, meta, xattrs, data }
 }
 
 function toArrayBuffer(data: Uint8Array): ArrayBuffer {
@@ -290,56 +237,7 @@ export async function apiStorage(
 								)
 							: undefined
 					})),
-					next: data.next,
-					syncCursor: typeof data.syncCursor === 'string' ? data.syncCursor : ''
-				}
-			},
-
-			async applyBatch(ops, getBlob, options) {
-				const wire = await Promise.all(ops.map((op) => encodeBatchOp(op, getBlob)))
-				const res = await client.ops.$post(
-					withSource({ json: { ops: wire } }, options) as Parameters<typeof client.ops.$post>[0]
-				)
-				if (!res.ok) throw new Error(`applyBatch failed: ${res.status}`)
-			},
-
-			async deltaUpdates(cursor, options) {
-				const res = await client.updates.$get(withSource({ query: { cursor } }, options), {
-					init: { cache: 'no-store' }
-				})
-
-				if (res.status === 501) return { ops: [], cursor }
-				if (res.status === 409) {
-					const data = await res.json().catch(() => null)
-					if (
-						data &&
-						typeof data === 'object' &&
-						'code' in data &&
-						data.code === 'cursor_expired'
-					) {
-						const message = typeof data.error === 'string' ? data.error : 'FS sync cursor expired'
-						throw new FsCursorExpiredError(message)
-					}
-				}
-				if (!res.ok) throw new Error(`deltaUpdates failed: ${res.status}`)
-
-				const data = await res.json()
-				return {
-					ops: data.ops.map((op) => {
-						if (op.kind !== 'upsert-inode') return op
-						return {
-							...op,
-							meta: op.meta ? parseMetaPatch(op.meta) : undefined,
-							xattrs: op.xattrs
-								? Object.fromEntries(
-										Object.entries(op.xattrs as Record<string, string | null>).map(
-											([key, value]) => [key, value !== null ? decodeBase64(value) : null]
-										)
-									)
-								: undefined
-						}
-					}),
-					cursor: data.cursor
+					next: data.next
 				}
 			}
 		}

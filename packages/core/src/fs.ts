@@ -1,6 +1,6 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
-import { FsCursorExpiredError, type FsOp, type Storage } from '@justfiles/fs/storage'
+import type { Storage } from '@justfiles/fs/storage'
 import { journaledChangeSource, localSyncReplica } from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
@@ -60,19 +60,6 @@ function decodeBytes(b64: string): Uint8Array {
 	const arr = new Uint8Array(binary.length)
 	for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
 	return arr
-}
-
-function encodeOp(op: FsOp) {
-	if (op.kind !== 'upsert-inode') return op
-	return {
-		...op,
-		meta: op.meta ? encodeMeta(op.meta) : undefined,
-		xattrs: op.xattrs
-			? Object.fromEntries(
-					Object.entries(op.xattrs).map(([k, v]) => [k, v ? encodeBytes(v) : null])
-				)
-			: undefined
-	}
 }
 
 function inferContentType(filename: string): string {
@@ -140,36 +127,6 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 		.map((b) => b.toString(16).padStart(2, '0'))
 		.join('')
 }
-
-// Batch apply payload — the sync push fast-path. Mirrors FsOp; upsert carries
-// optional inlined blob content (base64) so one request replaces the per-op
-// setMeta + putBlob + xattr round-trips.
-const BatchOpsSchema = z.object({
-	ops: z.array(
-		z.discriminatedUnion('kind', [
-			z.object({
-				kind: z.literal('upsert-inode'),
-				ino: z.string(),
-				meta: WireMetaPartialSchema.optional(),
-				xattrs: z.record(z.string(), z.string().nullable()).optional(),
-				data: z.string().optional()
-			}),
-			z.object({
-				kind: z.literal('set-dirent'),
-				dirIno: z.string(),
-				name: z.string(),
-				ino: z.string(),
-				type: FileTypeNum
-			}),
-			z.object({
-				kind: z.literal('unset-dirent'),
-				dirIno: z.string(),
-				name: z.string(),
-				ino: z.string().optional()
-			})
-		])
-	)
-})
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
@@ -263,27 +220,7 @@ export function createFsApi(backend: Storage) {
 				})
 			})
 
-			// ── Sync primitives ───────────────────────────────────────────────────
-
-			.get('/updates', zValidator('query', CursorQuery), async (c) => {
-				if (!backend.caps?.deltaUpdates) return c.json({ error: 'not supported' }, 501)
-				const { cursor } = c.req.valid('query')
-				const source = c.req.header(SOURCE_HEADER) ?? undefined
-				let result: Awaited<ReturnType<NonNullable<typeof backend.caps.deltaUpdates>>>
-				try {
-					result = await backend.caps.deltaUpdates(
-						cursor,
-						source ? { source, sourceMode: 'exclude' } : undefined
-					)
-				} catch (error) {
-					if (error instanceof FsCursorExpiredError) {
-						return c.json({ error: error.message, code: 'cursor_expired' }, 409)
-					}
-					throw error
-				}
-				c.header('Cache-Control', 'no-store')
-				return c.json({ ops: result.ops.map(encodeOp), cursor: result.cursor })
-			})
+			// ── Whole-tree scan (volume.scan fast-path) ────────────────────────────
 
 			.get('/scan', zValidator('query', CursorQuery), async (c) => {
 				if (!backend.caps?.fullScan) return c.json({ error: 'not supported' }, 501)
@@ -297,55 +234,8 @@ export function createFsApi(backend: Storage) {
 							? Object.fromEntries(Object.entries(e.xattrs).map(([k, v]) => [k, encodeBytes(v)]))
 							: undefined
 					})),
-					next: result.next,
-					syncCursor: result.syncCursor
+					next: result.next
 				})
-			})
-
-			// Batch apply — one request applies many ops (sync push).
-			.post('/ops', zValidator('json', BatchOpsSchema), async (c) => {
-				const { ops } = c.req.valid('json')
-				const opts = mutationOptions(c.req.raw)
-				for (const op of ops) {
-					if (op.kind === 'upsert-inode') {
-						if (op.meta) await backend.setMeta(op.ino, op.meta, opts)
-						if (op.data !== undefined) await backend.putBlob(op.ino, decodeBytes(op.data), opts)
-						for (const [name, value] of Object.entries(op.xattrs ?? {})) {
-							if (name.startsWith('trusted.sync.')) continue
-							if (value === null) await backend.caps?.removeXattr?.(op.ino, name, opts)
-							else await backend.caps?.setXattr?.(op.ino, name, decodeBytes(value), opts)
-						}
-					} else if (op.kind === 'set-dirent') {
-						// Self-heal: a diverged replica can re-push a set-dirent whose target
-						// inode — or whose parent directory — the server no longer has.
-						// Applying it throws ENOENT, which 500s the whole batch — and since
-						// the push never advances its cursor, every future sync re-sends the
-						// same op and stays wedged. Skip-and-log the dangling entry instead so
-						// sync recovers on its own.
-						if (!(await backend.getMeta(op.ino))) {
-							console.warn(
-								`fs/ops: skipped dangling set-dirent ${op.dirIno}/${op.name} → missing inode ${op.ino}`
-							)
-							continue
-						}
-						if (!(await backend.getMeta(op.dirIno))) {
-							console.warn(
-								`fs/ops: skipped dangling set-dirent ${op.dirIno}/${op.name} → missing parent ${op.dirIno}`
-							)
-							continue
-						}
-						const existing = await backend.getDirent(op.dirIno, op.name)
-						await backend.putDirent(op.dirIno, op.name, { ino: op.ino, type: op.type }, opts)
-						if (existing && existing.ino !== op.ino) await backend.deleteInode(existing.ino)
-					} else {
-						const existing = await backend.getDirent(op.dirIno, op.name)
-						if (existing) {
-							await backend.deleteDirent(op.dirIno, op.name, opts)
-							await backend.deleteInode(existing.ino)
-						}
-					}
-				}
-				return c.json({ ok: true })
 			})
 
 			// ── Inode metadata ────────────────────────────────────────────────────

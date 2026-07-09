@@ -1,12 +1,4 @@
-import {
-	FsCursorExpiredError,
-	type FsOp,
-	type InodeMeta,
-	type MutationOptions,
-	type Storage,
-	type StorageChange,
-	type UpdateQueryOptions
-} from '@justfiles/fs/storage'
+import type { InodeMeta, MutationOptions, Storage, StorageChange } from '@justfiles/fs/storage'
 import {
 	buildDeleteChange,
 	buildPutChange,
@@ -42,7 +34,6 @@ type StorageOptions = {
 	blobStore?: BlobStore
 	namespace?: string
 	inlineTextLimitBytes?: number
-	maxRetainedUpdates?: number
 	/** Default ORIGIN for local writes without an explicit `options.source`. */
 	localActorId?: string
 }
@@ -78,26 +69,10 @@ type ContentRow = {
 	text_encoding: unknown
 }
 
-type UpdateRow = {
-	seq: unknown
-	op_kind: unknown
-	source: unknown
-	ino: unknown
-	dir_ino: unknown
-	name: unknown
-	entry_ino: unknown
-	entry_type: unknown
-	meta_json: unknown
-	xattrs_json: unknown
-	content_changed: unknown
-}
-
 const ROOT_INO: Ino = '1'
 const DIR_PAGE_SIZE = 200
 const SCAN_PAGE_SIZE = 200
 const INLINE_TEXT_LIMIT_BYTES = 256 * 1024
-const DEFAULT_MAX_RETAINED_UPDATES = 20_000
-const FS_STATE_UPDATES_PRUNED_THROUGH_SEQ = 'updates_pruned_through_seq'
 const STORAGE_NONE = 0
 const STORAGE_INLINE = 1
 const STORAGE_R2 = 2
@@ -134,24 +109,6 @@ function toUint8Array(value: unknown): Uint8Array {
 	}
 	if (typeof value === 'string') return new TextEncoder().encode(value)
 	throw new Error(`Unsupported blob value: ${typeof value}`)
-}
-
-function encodeBytes(value: Uint8Array): string {
-	let str = ''
-	for (const byte of value) str += String.fromCharCode(byte)
-	return btoa(str)
-}
-
-function decodeBytes(value: string): Uint8Array {
-	let binary = ''
-	try {
-		binary = atob(value)
-	} catch {
-		throw new Error('Invalid base64 payload in fs_updates')
-	}
-	const bytes = new Uint8Array(binary.length)
-	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-	return bytes
 }
 
 function toArrayBuffer(value: Uint8Array): ArrayBuffer {
@@ -197,66 +154,6 @@ function metaFromRow(row: InodeRow): InodeMeta {
 	}
 }
 
-function serializeMeta(meta: Partial<InodeMeta>): string {
-	const encoded: Record<string, unknown> = {}
-	if (meta.type !== undefined) encoded.type = meta.type
-	if (meta.size !== undefined) encoded.size = meta.size.toString()
-	if (meta.mode !== undefined) encoded.mode = meta.mode
-	if (meta.mtimeNs !== undefined) encoded.mtimeNs = meta.mtimeNs.toString()
-	if (meta.ctimeNs !== undefined) encoded.ctimeNs = meta.ctimeNs.toString()
-	if ('contentHash' in meta) encoded.contentHash = meta.contentHash ?? null
-	if ('symlinkTarget' in meta) encoded.symlinkTarget = meta.symlinkTarget ?? null
-	return JSON.stringify(encoded)
-}
-
-function parseMetaJson(raw: string): Partial<InodeMeta> {
-	const parsed = JSON.parse(raw) as Record<string, unknown>
-	const meta: Partial<InodeMeta> = {}
-	if (parsed.type !== undefined) meta.type = Number(parsed.type) as FileType
-	if (parsed.size !== undefined) meta.size = BigInt(String(parsed.size))
-	if (parsed.mode !== undefined) meta.mode = Number(parsed.mode)
-	if (parsed.mtimeNs !== undefined) meta.mtimeNs = BigInt(String(parsed.mtimeNs))
-	if (parsed.ctimeNs !== undefined) meta.ctimeNs = BigInt(String(parsed.ctimeNs))
-	if ('contentHash' in parsed)
-		meta.contentHash = parsed.contentHash == null ? undefined : String(parsed.contentHash)
-	if ('symlinkTarget' in parsed)
-		meta.symlinkTarget = parsed.symlinkTarget == null ? undefined : String(parsed.symlinkTarget)
-	return meta
-}
-
-function withSource(ops: FsOp[], options?: MutationOptions): FsOp[] {
-	if (!options?.source) return ops
-	return ops.map((op) => ({ ...op, source: options.source }))
-}
-
-function filterOpsBySource(ops: FsOp[], options?: UpdateQueryOptions): FsOp[] {
-	const source = options?.source
-	const mode = options?.sourceMode ?? 'only'
-	if (!source) return ops
-	return ops.filter((op) => (mode === 'exclude' ? op.source !== source : op.source === source))
-}
-
-function serializeXattrs(xattrs: Record<string, Uint8Array | null>): string {
-	return JSON.stringify(
-		Object.fromEntries(
-			Object.entries(xattrs).map(([name, value]) => [
-				name,
-				value === null ? null : encodeBytes(value)
-			])
-		)
-	)
-}
-
-function parseXattrsJson(raw: string): Record<string, Uint8Array | null> {
-	const parsed = JSON.parse(raw) as Record<string, string | null>
-	return Object.fromEntries(
-		Object.entries(parsed).map(([name, value]) => [
-			name,
-			value === null ? null : decodeBytes(value)
-		])
-	)
-}
-
 async function listAllXattrs(tx: DbAdapter, ino: Ino): Promise<Record<string, Uint8Array>> {
 	const rows = await tx.query<{ name: unknown; value: unknown }>(
 		'SELECT name, value FROM fs_xattrs WHERE ino = ? ORDER BY name',
@@ -298,7 +195,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	const blobStore = options.blobStore
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
-	const maxRetainedUpdates = options.maxRetainedUpdates ?? DEFAULT_MAX_RETAINED_UPDATES
 	const localActorId = options.localActorId ?? 'local'
 
 	let bootstrapPromise: Promise<void> | null = null
@@ -338,23 +234,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			bootstrapPromise = null
 			throw error
 		}
-	}
-
-	async function getStateNumber(tx: DbAdapter, key: string): Promise<number> {
-		const [row] = await tx.query<{ value: unknown }>(
-			'SELECT value FROM fs_state WHERE key = ? LIMIT 1',
-			[key]
-		)
-		const parsed = row?.value == null ? 0 : Number.parseInt(String(row.value), 10)
-		return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
-	}
-
-	async function setStateNumber(tx: DbAdapter, key: string, value: number): Promise<void> {
-		await tx.run(
-			`INSERT INTO fs_state(key, value) VALUES(?, ?)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-			[key, String(value)]
-		)
 	}
 
 	async function getInode(tx: DbAdapter, ino: Ino): Promise<InodeRow | null> {
@@ -525,73 +404,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		const object = await blobStore.get(key)
 		if (!object) throw new Error(`Blob not found for inode: ${ino}`)
 		return new Uint8Array(await object.arrayBuffer())
-	}
-
-	async function appendOps(tx: DbAdapter, ops: FsOp[]): Promise<void> {
-		if (ops.length === 0) return
-		const txId = randomId()
-		const atNs = nowNs()
-		for (let i = 0; i < ops.length; i++) {
-			const op = ops[i]
-			switch (op.kind) {
-				case 'upsert-inode':
-					await tx.run(
-						`INSERT INTO fs_updates(
-							tx_id, op_index, at_ns, op_kind, source, ino, meta_json, xattrs_json, content_changed
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[
-							txId,
-							i,
-							atNs,
-							op.kind,
-							op.source ?? null,
-							op.ino,
-							op.meta ? serializeMeta(op.meta) : null,
-							op.xattrs ? serializeXattrs(op.xattrs) : null,
-							0
-						]
-					)
-					break
-				case 'set-dirent':
-					await tx.run(
-						`INSERT INTO fs_updates(
-							tx_id, op_index, at_ns, op_kind, source, dir_ino, name, entry_ino, entry_type
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-						[txId, i, atNs, op.kind, op.source ?? null, op.dirIno, op.name, op.ino, op.type]
-					)
-					break
-				case 'unset-dirent':
-					await tx.run(
-						`INSERT INTO fs_updates(
-							tx_id, op_index, at_ns, op_kind, source, dir_ino, name, entry_ino
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-						[txId, i, atNs, op.kind, op.source ?? null, op.dirIno, op.name, op.ino ?? null]
-					)
-					break
-			}
-		}
-		await pruneUpdates(tx)
-	}
-
-	async function pruneUpdates(tx: DbAdapter): Promise<void> {
-		if (maxRetainedUpdates <= 0) return
-
-		const [cutoff] = await tx.query<{ seq: unknown }>(
-			'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1 OFFSET ?',
-			[maxRetainedUpdates - 1]
-		)
-		if (!cutoff?.seq) return
-
-		const keepFromSeq = toNumber(cutoff.seq)
-		if (!Number.isFinite(keepFromSeq) || keepFromSeq <= 1) return
-
-		const prunedThrough = keepFromSeq - 1
-		await tx.run('DELETE FROM fs_updates WHERE seq < ?', [keepFromSeq])
-
-		const previous = await getStateNumber(tx, FS_STATE_UPDATES_PRUNED_THROUGH_SEQ)
-		if (prunedThrough > previous) {
-			await setStateNumber(tx, FS_STATE_UPDATES_PRUNED_THROUGH_SEQ, prunedThrough)
-		}
 	}
 
 	/**
@@ -837,7 +649,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			const inode = await ensureRegularFile(tx, ino)
 			const contentHash = await sha256Hex(data)
 			const { storageKind, mimeType } = await storeContentIfMissing(tx, contentHash, data)
-			const currentMeta = metaFromRow(inode)
 			const stamp = nowNs()
 
 			await tx.run(
@@ -849,26 +660,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 			await maybeDeleteOrphanedContent(tx, toStringOrNull(inode.content_hash), orphanedR2Keys)
 
-			const nextMeta: InodeMeta = {
-				...currentMeta,
-				size: BigInt(data.length),
-				mtimeNs: stamp,
-				ctimeNs: stamp,
-				contentHash
-			}
-			await appendOps(
-				tx,
-				withSource(
-					[
-						{
-							kind: 'upsert-inode',
-							ino,
-							meta: nextMeta
-						}
-					],
-					options
-				)
-			)
 			const path = await pathOf(tx, ino)
 			if (path !== null) await journalPut(tx, path, ino, options)
 		})
@@ -894,12 +685,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			return toUint8Array(rows[0].value)
 		},
 
-		async setXattr(
-			ino: Ino,
-			name: string,
-			value: Uint8Array,
-			options?: MutationOptions
-		): Promise<void> {
+		async setXattr(ino: Ino, name: string, value: Uint8Array): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
@@ -908,21 +694,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					`INSERT INTO fs_xattrs(ino, name, value) VALUES (?, ?, ?)
 					 ON CONFLICT(ino, name) DO UPDATE SET value = excluded.value`,
 					[ino, name, value]
-				)
-				const xattrs = await listAllXattrs(tx, ino)
-				await appendOps(
-					tx,
-					withSource(
-						[
-							{
-								kind: 'upsert-inode',
-								ino,
-								meta: metaFromRow(inode),
-								xattrs
-							} as FsOp
-						],
-						options
-					)
 				)
 			})
 		},
@@ -936,27 +707,12 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			return rows.map((row) => String(row.name))
 		},
 
-		async removeXattr(ino: Ino, name: string, options?: MutationOptions): Promise<void> {
+		async removeXattr(ino: Ino, name: string): Promise<void> {
 			await ensureBootstrapped()
 			await db.transaction(async (tx) => {
 				const inode = await getInode(tx, ino)
 				if (!inode) throw new Error(`ENOENT: ${ino}`)
 				await tx.run('DELETE FROM fs_xattrs WHERE ino = ? AND name = ?', [ino, name])
-				const xattrs = await listAllXattrs(tx, ino)
-				await appendOps(
-					tx,
-					withSource(
-						[
-							{
-								kind: 'upsert-inode',
-								ino,
-								meta: metaFromRow(inode),
-								xattrs
-							} as FsOp
-						],
-						options
-					)
-				)
 			})
 		},
 
@@ -997,16 +753,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					ino,
 					meta.type
 				])
-				await appendOps(
-					tx,
-					withSource(
-						[
-							{ kind: 'upsert-inode', ino, meta } as FsOp,
-							{ kind: 'set-dirent', dirIno, name, ino, type: meta.type } as FsOp
-						],
-						options
-					)
-				)
 				const dirPath = await pathOf(tx, dirIno)
 				if (dirPath !== null) await journalPut(tx, joinPath(dirPath, name), ino, options)
 			})
@@ -1077,28 +823,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					await journalDelete(tx, p, options)
 				for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
 					await journalPut(tx, newBase + n.rel, n.ino, options)
-
-				await appendOps(
-					tx,
-					withSource(
-						[
-							{
-								kind: 'set-dirent',
-								dirIno: newDirIno,
-								name: newName,
-								ino: String(source.ino),
-								type: toNumber(source.type) as FileType
-							},
-							{
-								kind: 'unset-dirent',
-								dirIno: oldDirIno,
-								name: oldName,
-								ino: String(source.ino)
-							}
-						],
-						options
-					)
-				)
 			})
 
 			if (blobStore?.delete) {
@@ -1129,10 +853,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 		async fullScan(cursor: string) {
 			await ensureBootstrapped()
-			const [headRow] = await db.query<{ seq: unknown }>(
-				'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1'
-			)
-			const headCursor = headRow?.seq == null ? undefined : String(headRow.seq)
 			const rows =
 				cursor === ''
 					? await db.query<{
@@ -1262,82 +982,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						...(xattrs && Object.keys(xattrs).length > 0 ? { xattrs } : {})
 					}
 				}),
-				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : '',
-				syncCursor: rows.length === SCAN_PAGE_SIZE ? undefined : headCursor
-			}
-		},
-
-		async deltaUpdates(cursor: string, options?: UpdateQueryOptions) {
-			await ensureBootstrapped()
-			const parsedCursor = cursor === '' ? 0 : Number.parseInt(cursor, 10)
-			const since = Number.isFinite(parsedCursor) && parsedCursor > 0 ? parsedCursor : 0
-			const prunedThroughSeq = await getStateNumber(db, FS_STATE_UPDATES_PRUNED_THROUGH_SEQ)
-			if (since > 0 && since < prunedThroughSeq) {
-				throw new FsCursorExpiredError(`FS sync cursor expired: ${cursor}`)
-			}
-
-			const rows = await db.query<UpdateRow>(
-				`SELECT
-					seq,
-					op_kind,
-					source,
-					ino,
-					dir_ino,
-					name,
-					entry_ino,
-					entry_type,
-					meta_json,
-					xattrs_json,
-					content_changed
-				FROM fs_updates
-				WHERE seq > ?
-				ORDER BY seq ASC`,
-				[since]
-			)
-			const [headRow] = await db.query<{ seq: unknown }>(
-				'SELECT seq FROM fs_updates ORDER BY seq DESC LIMIT 1'
-			)
-			const headCursor = headRow?.seq == null ? cursor : String(headRow.seq)
-
-			const ops = filterOpsBySource(
-				rows.map((row) => {
-					const opKind = String(row.op_kind)
-					switch (opKind) {
-						case 'upsert-inode':
-							return {
-								kind: 'upsert-inode',
-								source: toStringOrNull(row.source) ?? undefined,
-								ino: String(row.ino),
-								meta: row.meta_json ? parseMetaJson(String(row.meta_json)) : undefined,
-								xattrs: row.xattrs_json ? parseXattrsJson(String(row.xattrs_json)) : undefined
-							}
-						case 'set-dirent':
-							return {
-								kind: 'set-dirent',
-								source: toStringOrNull(row.source) ?? undefined,
-								dirIno: String(row.dir_ino),
-								name: String(row.name),
-								ino: String(row.entry_ino),
-								type: toNumber(row.entry_type) as FileType
-							}
-						case 'unset-dirent':
-							return {
-								kind: 'unset-dirent',
-								source: toStringOrNull(row.source) ?? undefined,
-								dirIno: String(row.dir_ino),
-								name: String(row.name),
-								ino: toStringOrNull(row.entry_ino) ?? undefined
-							}
-						default:
-							throw new Error(`Unknown fs update op: ${opKind}`)
-					}
-				}),
-				options
-			)
-
-			return {
-				ops,
-				cursor: rows.length > 0 ? String(rows[rows.length - 1].seq) : headCursor
+				next: rows.length === SCAN_PAGE_SIZE ? String(rows[rows.length - 1].path) : ''
 			}
 		},
 
@@ -1571,10 +1216,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 							STORAGE_NONE
 						]
 					)
-					await appendOps(
-						tx,
-						withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options)
-					)
 					changed = true
 					return
 				}
@@ -1594,10 +1235,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						next.symlinkTarget ?? null,
 						ino
 					]
-				)
-				await appendOps(
-					tx,
-					withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options)
 				)
 				changed = true
 				const path = await pathOf(tx, ino)
@@ -1671,21 +1308,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						entry.type
 					])
 				}
-				await appendOps(
-					tx,
-					withSource(
-						[
-							{
-								kind: 'set-dirent',
-								dirIno,
-								name,
-								ino: entry.ino,
-								type: entry.type
-							} as FsOp
-						],
-						options
-					)
-				)
 				const dirPath = await pathOf(tx, dirIno)
 				if (dirPath !== null) await journalPut(tx, joinPath(dirPath, name), entry.ino, options)
 			})
@@ -1700,20 +1322,6 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				if (!existing) return
 				removedIno = String(existing.ino)
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
-				await appendOps(
-					tx,
-					withSource(
-						[
-							{
-								kind: 'unset-dirent',
-								dirIno,
-								name,
-								ino: String(existing.ino)
-							} as FsOp
-						],
-						options
-					)
-				)
 				const dirPath = await pathOf(tx, dirIno)
 				if (dirPath !== null) await journalDelete(tx, joinPath(dirPath, name), options)
 			})

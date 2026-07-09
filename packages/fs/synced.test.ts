@@ -7,7 +7,7 @@
  * engine's push/pull/bootstrap call `SyncReplica` bodies that throw.
  *
  * The ino-sync-only cases (applyBatch fast-path, FsCursorExpiredError recovery)
- * are intentionally dropped — Phase 3 deletes that surface.
+ * were dropped when the legacy FsOp delta protocol was removed (roadmap item 1).
  */
 
 import { afterEach, describe, expect, it } from 'vitest'

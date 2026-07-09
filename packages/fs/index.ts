@@ -1,15 +1,11 @@
-export {
-	FsCursorExpiredError,
-	type FsOp,
-	type InodeMeta,
-	isFsCursorExpiredError,
-	type MutationOptions,
-	type ScanEntry,
-	type Storage,
-	type StorageCapabilities,
-	type StorageChange,
-	type StorageChangeKind,
-	type UpdateQueryOptions
+export type {
+	InodeMeta,
+	MutationOptions,
+	ScanEntry,
+	Storage,
+	StorageCapabilities,
+	StorageChange,
+	StorageChangeKind
 } from './storage'
 export { memStorage } from './storage.mem'
 export { REMOTE_SOURCE, type SyncStatus, synced } from './synced'
