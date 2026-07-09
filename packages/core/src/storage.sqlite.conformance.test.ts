@@ -13,14 +13,21 @@
 // `caps.pathApply` / `caps.content` + local-mutation journaling): base writes work,
 // then each case fails for the RIGHT reason (`not implemented`).
 
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, test } from 'vitest'
 import { pathSyncConformanceCases } from '../../fs/sync-test-harness'
 import { createSqliteAdapter } from './db.sqlite'
 import { storage as sqliteStorage } from './storage.sqlite'
 
-const schema = readFileSync(new URL('./migrations/0001_schema.sql', import.meta.url), 'utf8')
+// Apply every migration in order (0001, 0002, …) exactly as the DO does via
+// coreMigrations — so path-sync tables are present in the test DB too.
+const migrationsDir = new URL('./migrations/', import.meta.url)
+const schema = readdirSync(migrationsDir)
+	.filter((f) => f.endsWith('.sql'))
+	.sort()
+	.map((f) => readFileSync(new URL(f, migrationsDir), 'utf8'))
+	.join('\n')
 
 /** Fresh in-memory SQLite backend per call (node:sqlite is synchronous). */
 const makeSqlite = () => {

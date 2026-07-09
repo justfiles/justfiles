@@ -4,30 +4,45 @@ export function parseSqlStatements(sql: string): string[] {
 	const statements: string[] = []
 	let depth = 0
 	let start = 0
+	let inLineComment = false
+
+	const pushStatement = (end: number) => {
+		const stmt = sql
+			.slice(start, end)
+			.trim()
+			.replace(/^(--[^\n]*\n\s*)+/, '')
+			.trim()
+		if (stmt) statements.push(stmt)
+	}
 
 	for (let i = 0; i < sql.length; i++) {
-		const word = sql.slice(i).match(/^(BEGIN|END)\b/i)
-		if (word) {
-			if (word[1].toUpperCase() === 'BEGIN') depth++
-			else depth--
+		// Skip `--` line comments entirely: their prose must never affect BEGIN/END
+		// depth or statement splitting. Otherwise a stray word ("backend", "append")
+		// or a `;` inside a comment would merge or mis-split real statements.
+		if (inLineComment) {
+			if (sql[i] === '\n') inLineComment = false
+			continue
+		}
+		if (sql[i] === '-' && sql[i + 1] === '-') {
+			inLineComment = true
+			continue
+		}
+		// Only treat BEGIN/END as trigger-body tokens at a word boundary — never
+		// inside an identifier (`append_log`) or a word (`backend`, `sender`).
+		const atWordStart = i === 0 || !/\w/.test(sql[i - 1])
+		if (atWordStart) {
+			const word = sql.slice(i).match(/^(BEGIN|END)\b/i)
+			if (word) {
+				if (word[1].toUpperCase() === 'BEGIN') depth++
+				else depth = Math.max(0, depth - 1)
+			}
 		}
 		if (sql[i] === ';' && depth === 0) {
-			const stmt = sql
-				.slice(start, i)
-				.trim()
-				.replace(/^(--[^\n]*\n\s*)+/, '')
-				.trim()
-			if (stmt) statements.push(stmt)
+			pushStatement(i)
 			start = i + 1
 		}
 	}
-
-	const last = sql
-		.slice(start)
-		.trim()
-		.replace(/^(--[^\n]*\n\s*)+/, '')
-		.trim()
-	if (last) statements.push(last)
+	pushStatement(sql.length)
 
 	return statements.filter(Boolean)
 }

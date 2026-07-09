@@ -7,6 +7,12 @@ import {
 	type StorageChange,
 	type UpdateQueryOptions
 } from '@justfiles/fs/storage'
+import {
+	buildDeleteChange,
+	buildPutChange,
+	joinPath,
+	nextVersion
+} from '@justfiles/fs/storage.shared'
 import type { PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
@@ -34,6 +40,8 @@ type StorageOptions = {
 	namespace?: string
 	inlineTextLimitBytes?: number
 	maxRetainedUpdates?: number
+	/** Default ORIGIN for local writes without an explicit `options.source`. */
+	localActorId?: string
 }
 
 type InodeRow = {
@@ -288,6 +296,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	const namespace = options.namespace ?? 'default'
 	const inlineTextLimit = options.inlineTextLimitBytes ?? INLINE_TEXT_LIMIT_BYTES
 	const maxRetainedUpdates = options.maxRetainedUpdates ?? DEFAULT_MAX_RETAINED_UPDATES
+	const localActorId = options.localActorId ?? 'local'
 
 	let bootstrapPromise: Promise<void> | null = null
 
@@ -597,6 +606,100 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		await maybeDeleteOrphanedContent(tx, oldHash, orphanedR2Keys)
 	}
 
+	// ── Path-sync journaling (write-intercept, path-stamped; epic slice 3) ────────
+	// Every mutation through the public primitives appends a path-stamped journal
+	// row — via the shared PURE builders (storage.shared.ts) — inside its OWN
+	// transaction, with a version from fs_path_version and ORIGIN =
+	// options.source ?? localActorId. Mirrors the memStorage reference impl.
+
+	/** Resolve ino -> canonical path via a recursive walk up the dirent chain; null if unlinked. */
+	async function pathOf(tx: DbAdapter, ino: Ino): Promise<string | null> {
+		if (ino === ROOT_INO) return '/'
+		const rows = await tx.query<{ name: unknown; depth: unknown }>(
+			`WITH RECURSIVE up(ino, name, dir_ino, depth) AS (
+				SELECT ino, name, dir_ino, 0 FROM fs_dirents WHERE ino = ?
+				UNION ALL
+				SELECT d.ino, d.name, d.dir_ino, up.depth + 1
+				FROM fs_dirents d JOIN up ON d.ino = up.dir_ino
+			)
+			SELECT name, depth FROM up ORDER BY depth DESC`,
+			[ino]
+		)
+		if (rows.length === 0) return null
+		return `/${rows.map((r) => String(r.name)).join('/')}`
+	}
+
+	async function readPathVersion(
+		tx: DbAdapter,
+		path: string
+	): Promise<{ version: number; tombstone: number }> {
+		const [row] = await tx.query<{ version: unknown; tombstone_version: unknown }>(
+			'SELECT version, tombstone_version FROM fs_path_version WHERE path = ? LIMIT 1',
+			[path]
+		)
+		return {
+			version: toNumber(row?.version ?? 0),
+			tombstone: toNumber(row?.tombstone_version ?? 0)
+		}
+	}
+
+	async function setPathVersion(
+		tx: DbAdapter,
+		path: string,
+		version: number,
+		tombstone: number
+	): Promise<void> {
+		await tx.run(
+			`INSERT INTO fs_path_version(path, version, tombstone_version) VALUES (?, ?, ?)
+			 ON CONFLICT(path) DO UPDATE SET version = excluded.version, tombstone_version = excluded.tombstone_version`,
+			[path, version, tombstone]
+		)
+	}
+
+	async function appendJournalRow(
+		tx: DbAdapter,
+		change: PathChange,
+		localSource?: string
+	): Promise<void> {
+		await tx.run('INSERT INTO fs_path_journal(local_source, change_json) VALUES (?, ?)', [
+			localSource ?? null,
+			JSON.stringify(change)
+		])
+	}
+
+	/** Journal a `put` for a linked path; self-skips a fresh regular file (no contentHash yet). */
+	async function journalPut(
+		tx: DbAdapter,
+		path: string,
+		ino: Ino,
+		options?: MutationOptions
+	): Promise<void> {
+		const row = await getInode(tx, ino)
+		if (!row) return
+		const meta = metaFromRow(row)
+		const xattrs = await listAllXattrs(tx, ino)
+		const cur = await readPathVersion(tx, path)
+		// An explicit options.version pins the outgoing version exactly (up OR down);
+		// otherwise generate the next one. See MutationOptions.
+		const version = options?.version ?? nextVersion(cur.version, cur.tombstone)
+		const change = buildPutChange(path, meta, xattrs, version, options?.source ?? localActorId)
+		if (!change) return
+		await setPathVersion(tx, path, version, cur.tombstone)
+		await appendJournalRow(tx, change)
+	}
+
+	/** Journal a `delete` for a path and fast-forward its tombstone high-water mark. */
+	async function journalDelete(
+		tx: DbAdapter,
+		path: string,
+		options?: MutationOptions
+	): Promise<void> {
+		const cur = await readPathVersion(tx, path)
+		const version = nextVersion(cur.version, cur.tombstone)
+		await setPathVersion(tx, path, version, Math.max(cur.tombstone, version))
+		await appendJournalRow(tx, buildDeleteChange(path, version, options?.source ?? localActorId))
+	}
+
 	async function updateInodeContent(
 		ino: Ino,
 		data: Uint8Array,
@@ -641,6 +744,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					options
 				)
 			)
+			const path = await pathOf(tx, ino)
+			if (path !== null) await journalPut(tx, path, ino, options)
 		})
 
 		emit({ ino, kind: 'content', source: options?.source })
@@ -777,6 +882,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						options
 					)
 				)
+				const dirPath = await pathOf(tx, dirIno)
+				if (dirPath !== null) await journalPut(tx, joinPath(dirPath, name), ino, options)
 			})
 
 			emit({ ino, kind: 'meta', source: options?.source })
@@ -824,6 +931,10 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					oldName
 				])
 				movedIno = String(source.ino)
+				// TODO(path-sync) [epic slice 5]: journal the move as an ordered
+				// delete(old subtree, child-first) + put(new subtree, parent-first),
+				// enumerated via a recursive CTE. Single-file mutations journal in
+				// slice 3; rename subtree journaling lands in slice 5.
 
 				await appendOps(
 					tx,
@@ -1099,19 +1210,11 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		//      mutation (below + emit() in setMeta/putBlob/putDirent/deleteDirent/
 		//      atomicCreate/atomicMove/deleteInode), so a volume over sqlite invalidates
 		//      its cache when applyJournaled writes directly (the 1edbd53d stale-cache fix).
-		//   3. [TODO(path-sync)] schema + journal store + local-mutation journaling:
-		//      - migrations/0001_schema.sql: add `fs_path_journal` (seq PK AUTOINCREMENT,
-		//        local_source, change_json) + `fs_path_version` (path PK, version,
-		//        tombstone_version).
-		//      - pathOf(tx, ino): ino -> canonical path via a recursive CTE up the
-		//        fs_dirents parent chain (mirror the fullScan CTE, reversed).
-		//      - journalPut/journalDelete (in-tx) via the shared builders
-		//        (buildPutChange/buildDeleteChange/nextVersion, honouring options.version)
-		//        + fs_path_version upsert; append a journal row inside EACH mutation's txn
-		//        (atomicCreate, putDirent, putBlob/updateInodeContent, setMeta,
-		//        deleteDirent). Regular-file puts journal on putBlob once hashed
-		//        (buildPutChange returns null before then).
-		//      - journal store append/readFrom/head over fs_path_journal (below).
+		//   3. [DONE] schema (0002_path_sync.sql: fs_path_journal + fs_path_version) +
+		//      pathOf (recursive CTE) + journalPut/journalDelete wired into each
+		//      single-file mutation's txn (atomicCreate, putDirent, putBlob, setMeta,
+		//      deleteDirent) + the journal store (append/readFrom/head) below. Regular
+		//      files journal on putBlob once hashed (buildPutChange returns null before).
 		//   4. [TODO(path-sync)] pathApply.applyJournaled + localChange (below): apply
 		//      remote changes in ONE txn (ensure parent dirs, upsert inode meta +
 		//      contentHash ref, set/delete dirent, replace user xattrs, append journal row
@@ -1165,17 +1268,34 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			}
 		},
 		journal: {
-			async append(_changes: PathChange[], _localSource?: string) {
-				// TODO(path-sync): INSERT journal rows in the mutation txn.
-				throw new Error('not implemented')
+			async append(changes: PathChange[], localSource?: string) {
+				await ensureBootstrapped()
+				await db.transaction(async (tx) => {
+					for (const change of changes) await appendJournalRow(tx, change, localSource)
+				})
 			},
-			async readFrom(_seq: number, _limit: number) {
-				// TODO(path-sync): SELECT * FROM journal WHERE seq > ? ORDER BY seq LIMIT ?.
-				throw new Error('not implemented')
+			async readFrom(seq: number, limit: number) {
+				await ensureBootstrapped()
+				const rows = await db.query<{
+					seq: unknown
+					local_source: unknown
+					change_json: unknown
+				}>(
+					'SELECT seq, local_source, change_json FROM fs_path_journal WHERE seq > ? ORDER BY seq LIMIT ?',
+					[seq, limit]
+				)
+				return rows.map((row) => ({
+					seq: toNumber(row.seq),
+					change: JSON.parse(String(row.change_json)) as PathChange,
+					localSource: toStringOrNull(row.local_source) ?? undefined
+				}))
 			},
 			async head() {
-				// TODO(path-sync): SELECT COALESCE(MAX(seq), 0) FROM journal.
-				throw new Error('not implemented')
+				await ensureBootstrapped()
+				const [row] = await db.query<{ head: unknown }>(
+					'SELECT COALESCE(MAX(seq), 0) AS head FROM fs_path_journal'
+				)
+				return toNumber(row?.head ?? 0)
 			}
 		},
 		pathApply: {
@@ -1256,6 +1376,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options)
 				)
 				changed = true
+				const path = await pathOf(tx, ino)
+				if (path !== null) await journalPut(tx, path, ino, options)
 			})
 			if (changed) emit({ ino, kind: 'meta', source: options?.source })
 		},
@@ -1340,6 +1462,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						options
 					)
 				)
+				const dirPath = await pathOf(tx, dirIno)
+				if (dirPath !== null) await journalPut(tx, joinPath(dirPath, name), entry.ino, options)
 			})
 			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
@@ -1366,6 +1490,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						options
 					)
 				)
+				const dirPath = await pathOf(tx, dirIno)
+				if (dirPath !== null) await journalDelete(tx, joinPath(dirPath, name), options)
 			})
 			if (removedIno !== null)
 				emit({ ino: removedIno, kind: 'dirent', dirIno, name, source: options?.source })

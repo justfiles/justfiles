@@ -96,16 +96,3 @@ CREATE TABLE IF NOT EXISTS fs_state (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
-
--- TODO(path-sync) [epic slice 3]: add the path-sync journal + version tables:
---   CREATE TABLE fs_path_journal (
---     seq INTEGER PRIMARY KEY AUTOINCREMENT,
---     local_source TEXT,          -- who applied it locally (REMOTE_SOURCE on pull); NULL for own writes
---     change_json TEXT NOT NULL   -- the wire PathChange (put/delete), verbatim
---   );
---   CREATE TABLE fs_path_version (
---     path TEXT PRIMARY KEY,
---     version INTEGER NOT NULL,
---     tombstone_version INTEGER NOT NULL DEFAULT 0
---   );
--- See the SQLITE PATH-SYNC EPIC roadmap in storage.sqlite.ts.

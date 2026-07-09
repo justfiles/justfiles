@@ -5,6 +5,7 @@
 	"exports": {
 		".": "./index.ts",
 		"./storage": "./storage.ts",
+		"./storage.shared": "./storage.shared.ts",
 		"./sync-wire": "./sync-wire.ts",
 		"./sync-replica": "./sync-replica.ts",
 		"./storage/mem": "./storage.mem.ts",
@@ -27,6 +28,11 @@
 				"types": "./dist/storage.d.ts",
 				"import": "./dist/storage.js",
 				"default": "./dist/storage.js"
+			},
+			"./storage.shared": {
+				"types": "./dist/storage.shared.d.ts",
+				"import": "./dist/storage.shared.js",
+				"default": "./dist/storage.shared.js"
 			},
 			"./sync-wire": {
 				"types": "./dist/sync-wire.d.ts",
