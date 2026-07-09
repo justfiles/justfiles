@@ -247,25 +247,23 @@ function makePeer(
 		}
 	}
 
-	// Pin staged meta/version directly on the backend. `version` is captured as
-	// intent for the path (Phase 2 wires this to the backend `path_version`
-	// generator so a staged write ships that exact version).
+	// Stage meta directly on the backend, journaling a put. A pinned `version` is
+	// threaded to setMeta -> journalPut (see MutationOptions.version), so a staged
+	// write ships that EXACT version and sets the backend path_version to match —
+	// which is what LWW compares on both replicas.
 	async function applyStageMeta(
 		path: string,
 		o?: StageOpts & { contentHash?: string }
 	): Promise<void> {
+		if (!o) return
 		const st = await vol.stat(path)
 		const patch: Parameters<typeof storage.setMeta>[1] = {}
-		if (o?.mtimeNs !== undefined) patch.mtimeNs = BigInt(o.mtimeNs.toString())
-		if (o?.mode !== undefined) patch.mode = o.mode
-		if (o?.contentHash !== undefined) patch.contentHash = o.contentHash
-		if (Object.keys(patch).length > 0) await storage.setMeta(st.ino, patch)
-		if (o?.version !== undefined) staged.set(st.ino, { version: o.version, source: o?.source })
+		if (o.mtimeNs !== undefined) patch.mtimeNs = BigInt(o.mtimeNs.toString())
+		if (o.mode !== undefined) patch.mode = o.mode
+		if (o.contentHash !== undefined) patch.contentHash = o.contentHash
+		if (Object.keys(patch).length === 0 && o.version === undefined && o.source === undefined) return
+		await storage.setMeta(st.ino, patch, { version: o.version, source: o.source })
 	}
-
-	// Intent captured by the staging seam; consumed by Phase 2's path_version.
-	const staged = new Map<Ino, { version: number; source?: string }>()
-	Object.defineProperty(peer, '_staged', { value: staged, enumerable: false })
 
 	return peer
 }

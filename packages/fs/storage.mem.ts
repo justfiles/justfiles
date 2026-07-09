@@ -163,7 +163,10 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 	function journalPut(path: string, ino: Ino, options?: MutationOptions): void {
 		const meta = metas.get(ino)
 		if (!meta) return
-		const version = nextVersion(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0)
+		// An explicit `options.version` pins the outgoing version exactly (and thus
+		// path_version, up OR down); otherwise generate the next one. See MutationOptions.
+		const version =
+			options?.version ?? nextVersion(pathVersion.get(path) ?? 0, tombstone.get(path) ?? 0)
 		const change = buildPutChange(
 			path,
 			meta,

@@ -15,6 +15,14 @@ export interface InodeMeta {
 
 export type MutationOptions = {
 	source?: string
+	/**
+	 * Pin this mutation's outgoing path version to an EXACT value instead of the
+	 * auto-incremented generator value (which also SETS the backend `path_version`,
+	 * so it can move down as well as up). For applying a mutation at a known version
+	 * — deterministic import/replay, and the test harness's concurrent-version
+	 * staging. Omitted => the backend generates the next version.
+	 */
+	version?: number
 }
 
 /** Kind of change reported by the Storage change feed (see `subscribe`). */
