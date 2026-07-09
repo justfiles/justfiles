@@ -55,14 +55,16 @@ import { FileType } from './types'
 //      backend's port.upsertInodeFromSync) — ctime is a local attr, never compared
 //      for convergence; deferred to keep 2a a pure refactor.
 //
-//   2b. [TODO(path-sync)] IMPLEMENT IDB PATH-SYNC. Provide idb's `PathStorePort` +
-//      per-backend primitives (pathOf via a new dirs `by-ino` index, resolveIno,
-//      ensureDirPath, enumerateSubtree) + new object stores (`journal`,
-//      `pathver`), and wire the shared driver into idb's mutations. BIG sub-task:
-//      idb's content store is INO-keyed but caps.content is HASH-addressed — idb
-//      must re-key content by contentHash (getBlob resolves ino->hash->bytes;
-//      putBlob hashes then stores by hash) so pulled blobs materialise by hash.
-//      Turns idb conformance (5 RED stubs today) GREEN.
+//   2b. [DONE 95c5b6c2] IMPLEMENT IDB PATH-SYNC. idbStorage now implements
+//      caps.journal / caps.content / caps.pathApply + per-mutation journaling via
+//      the shared driver + a per-txn PathStorePort (conformance 5/5). The port
+//      shape (from 2a) needed NO reshaping for IndexedDB — idb is the third proven
+//      backend. Content was re-keyed from ino-addressed to HASH-addressed
+//      (DB_VERSION 4->5): getBlob resolves ino->contentHash->bytes, putBlob hashes
+//      then stores by hash, caps.content operates directly; LRU eviction re-keyed
+//      to hashes (skips DIRTY inodes' content); unlink no longer GCs shared bytes.
+//      New primitives: pathOf via a dirs 'by-ino' index, resolveIno, ensureDirPath,
+//      enumerateSubtree, upsertInodeFromSync; new journal + pathver object stores.
 //
 //   3. [TODO(path-sync)] ADR: UNIFY THE TWO CHANGE MECHANISMS + LOGICAL-OPERATION
 //      JOURNALING. After the legacy protocol is gone (item 1), two remain: the
