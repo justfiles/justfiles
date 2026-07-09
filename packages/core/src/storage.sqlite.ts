@@ -4,6 +4,7 @@ import {
 	type InodeMeta,
 	type MutationOptions,
 	type Storage,
+	type StorageChange,
 	type UpdateQueryOptions
 } from '@justfiles/fs/storage'
 import type { PathChange } from '@justfiles/fs/sync-wire'
@@ -289,6 +290,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 	const maxRetainedUpdates = options.maxRetainedUpdates ?? DEFAULT_MAX_RETAINED_UPDATES
 
 	let bootstrapPromise: Promise<void> | null = null
+
+	// Change feed — the substrate for volume.watch and, critically, cache
+	// invalidation when the sync layer applies remote pulls straight to Storage
+	// (applyJournaled bypasses the volume mutators). Listeners fire AFTER a
+	// mutation's transaction commits; near-zero cost when nobody is listening.
+	const listeners = new Set<(change: StorageChange) => void>()
+	function emit(change: StorageChange): void {
+		if (listeners.size === 0) return
+		for (const fn of [...listeners]) fn(change)
+	}
 
 	async function ensureBootstrapped(): Promise<void> {
 		if (bootstrapPromise) return bootstrapPromise
@@ -632,6 +643,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			)
 		})
 
+		emit({ ino, kind: 'content', source: options?.source })
 		if (blobStore?.delete) {
 			for (const key of orphanedR2Keys) {
 				await blobStore.delete(key)
@@ -767,6 +779,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				)
 			})
 
+			emit({ ino, kind: 'meta', source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
 			return ino
 		},
 
@@ -779,6 +793,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		): Promise<Ino | null> {
 			await ensureBootstrapped()
 			let displaced: Ino | null = null
+			let movedIno: Ino | null = null
 			const orphanedR2Keys: string[] = []
 
 			await db.transaction(async (tx) => {
@@ -808,6 +823,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					oldDirIno,
 					oldName
 				])
+				movedIno = String(source.ino)
 
 				await appendOps(
 					tx,
@@ -838,6 +854,23 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				}
 			}
 
+			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+			if (movedIno !== null) {
+				emit({
+					ino: movedIno,
+					kind: 'dirent',
+					dirIno: newDirIno,
+					name: newName,
+					source: options?.source
+				})
+				emit({
+					ino: movedIno,
+					kind: 'dirent',
+					dirIno: oldDirIno,
+					name: oldName,
+					source: options?.source
+				})
+			}
 			return displaced
 		},
 
@@ -1056,6 +1089,47 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 		},
 
 		// ── Path-sync seams ───────────────────────────────────────────────────
+		//
+		// SQLITE PATH-SYNC EPIC — remaining slices (one commit each; reference impl in
+		// storage.mem.ts + storage.shared.ts + sync-replica.ts, specs in
+		// packages/fs/sync-test-harness.ts `pathSyncConformanceCases`):
+		//
+		//   1. [DONE] caps.content — hash-addressed blob store (below).
+		//   2. [DONE] caps.subscribe — in-memory change feed + emit() on every committed
+		//      mutation (below + emit() in setMeta/putBlob/putDirent/deleteDirent/
+		//      atomicCreate/atomicMove/deleteInode), so a volume over sqlite invalidates
+		//      its cache when applyJournaled writes directly (the 1edbd53d stale-cache fix).
+		//   3. [TODO(path-sync)] schema + journal store + local-mutation journaling:
+		//      - migrations/0001_schema.sql: add `fs_path_journal` (seq PK AUTOINCREMENT,
+		//        local_source, change_json) + `fs_path_version` (path PK, version,
+		//        tombstone_version).
+		//      - pathOf(tx, ino): ino -> canonical path via a recursive CTE up the
+		//        fs_dirents parent chain (mirror the fullScan CTE, reversed).
+		//      - journalPut/journalDelete (in-tx) via the shared builders
+		//        (buildPutChange/buildDeleteChange/nextVersion, honouring options.version)
+		//        + fs_path_version upsert; append a journal row inside EACH mutation's txn
+		//        (atomicCreate, putDirent, putBlob/updateInodeContent, setMeta,
+		//        deleteDirent). Regular-file puts journal on putBlob once hashed
+		//        (buildPutChange returns null before then).
+		//      - journal store append/readFrom/head over fs_path_journal (below).
+		//   4. [TODO(path-sync)] pathApply.applyJournaled + localChange (below): apply
+		//      remote changes in ONE txn (ensure parent dirs, upsert inode meta +
+		//      contentHash ref, set/delete dirent, replace user xattrs, append journal row
+		//      VERBATIM + localSource, fast-forward fs_path_version), emit() per change so
+		//      the volume cache invalidates; localChange reconstructs the path's current
+		//      PathChange for the engine's LWW. => turns 4/5 sqlite conformance GREEN.
+		//   5. [TODO(path-sync)] atomicMove subtree journaling: ordered delete(old subtree,
+		//      child-first) + put(new subtree, parent-first), enumerated via a CTE.
+		//      => rename conformance GREEN (5/5).
+		//
+		// caps.subscribe: the change feed fires after each mutation's txn commits.
+		subscribe(listener: (change: StorageChange) => void): () => void {
+			listeners.add(listener)
+			return () => {
+				listeners.delete(listener)
+			}
+		},
+
 		// Hash-addressed content store (matching R2 / the mem backend): the inode
 		// holds a `contentHash` reference and the bytes live in `fs_contents`, keyed
 		// by that hash. Thin wrapper over the already-content-addressed table — the
@@ -1131,6 +1205,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 
 		async setMeta(ino: Ino, partial: Partial<InodeMeta>, options?: MutationOptions) {
 			await ensureBootstrapped()
+			let changed = false
 			await db.transaction(async (tx) => {
 				const row = await getInode(tx, ino)
 				if (!row) {
@@ -1156,6 +1231,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 						tx,
 						withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options)
 					)
+					changed = true
 					return
 				}
 				const current = metaFromRow(row)
@@ -1179,20 +1255,27 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					tx,
 					withSource([{ kind: 'upsert-inode', ino, meta: partial } as FsOp], options)
 				)
+				changed = true
 			})
+			if (changed) emit({ ino, kind: 'meta', source: options?.source })
 		},
 
 		async deleteInode(ino: Ino) {
 			await ensureBootstrapped()
 			const orphanedR2Keys: string[] = []
+			let deleted = false
 			await db.transaction(async (tx) => {
+				const inode = await getInode(tx, ino)
+				if (!inode || (await hasDirentReference(tx, ino))) return
 				await deleteInodeInTx(tx, ino, orphanedR2Keys)
+				deleted = true
 			})
 			if (blobStore?.delete) {
 				for (const key of orphanedR2Keys) {
 					await blobStore.delete(key)
 				}
 			}
+			if (deleted) emit({ ino, kind: 'meta' })
 		},
 
 		async getBlob(ino: Ino) {
@@ -1258,13 +1341,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					)
 				)
 			})
+			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
 		async deleteDirent(dirIno: Ino, name: string, options?: MutationOptions) {
 			await ensureBootstrapped()
+			let removedIno: Ino | null = null
 			await db.transaction(async (tx) => {
 				const existing = await getDirent(tx, dirIno, name)
 				if (!existing) return
+				removedIno = String(existing.ino)
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
 				await appendOps(
 					tx,
@@ -1281,6 +1367,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					)
 				)
 			})
+			if (removedIno !== null)
+				emit({ ino: removedIno, kind: 'dirent', dirIno, name, source: options?.source })
 		},
 
 		async listDirents(dirIno: Ino, cursor: string) {
