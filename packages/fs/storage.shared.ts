@@ -66,24 +66,61 @@ import { FileType } from './types'
 //      New primitives: pathOf via a dirs 'by-ino' index, resolveIno, ensureDirPath,
 //      enumerateSubtree, upsertInodeFromSync; new journal + pathver object stores.
 //
-//   3. [TODO(path-sync)] ADR: UNIFY THE TWO CHANGE MECHANISMS + LOGICAL-OPERATION
-//      JOURNALING. After the legacy protocol is gone (item 1), two remain: the
-//      durable journal (sync source of truth) and the ephemeral emit()/subscribe
-//      feed (volume cache + watch). Collapse to "one change, two consumption
-//      modes": every committed mutation appends to the journal AND broadcasts
-//      in-process; subscribe = tail the journal. Blocker: the journal is
-//      PATH-keyed, volume caches are INO/DIRINO-keyed — the unified record must
-//      carry both (or volume invalidates by path). Fold in logical-operation
-//      journaling: journal a path's SETTLED state at the VFS-operation boundary
-//      rather than per-store-op. This removes the putBlob self-skip hack (a
-//      regular-file create currently journals on the FOLLOWING putBlob once
-//      hashed — see buildPutChange returning null) WHILE keeping content a
-//      separate hash-addressed resource, so meta-first / blob-on-demand stays
-//      cheap (a rename ships ZERO bytes because the moved paths reuse existing
-//      contentHashes). Do AFTER idb (two owned backends validate the record
-//      shape). Add a conformance case first: "create an EMPTY regular file (no
-//      putBlob), then sync" — the self-skip predicts it is currently never
-//      journaled.
+//   3. [TODO(path-sync)] ADR: JOURNALING AS A COMPOSABLE, IN-TXN CHANGE STREAM.
+//      Today journaling is BAKED INTO each backend: every mutator calls
+//      journalPutOver/journalDeleteOver, owns journal + pathver stores, and imports
+//      the driver. Target (composition, not coupling): backends become journaling-
+//      AGNOSTIC — at each mutation they merely announce "path P now has this
+//      meta/hash" / "path P deleted", and an ATTACHED journaling extension turns
+//      that into durable rows. This also unifies the two change mechanisms that
+//      coexist after item 1 — the durable journal (sync source of truth) and the
+//      ephemeral emit()/subscribe feed (volume cache + watch) — into "one change,
+//      two subscribers": the journal builds PathChange rows; the volume invalidates
+//      its cache / fires watch. So the unified record must carry BOTH the path (for
+//      the journal) AND ino/dirIno (for the volume).
+//
+//      THE ONE HARD CONSTRAINT (established in design discussion): to KEEP
+//      atomicity, the mutation event must fire INSIDE the backend's transaction
+//      and hand the handler a tx-scoped toolset (pathOf, readMeta, readPathVersion,
+//      setPathVersion, appendJournalRow). A vanilla AFTER-COMMIT `on('event')` (=
+//      today's emit/subscribe) CANNOT journal: it is not atomic, and on a delete the
+//      inode/dirent is already gone so the handler cannot reconstruct the change.
+//      That tx-scoped toolset IS a PathStorePort delivered by callback instead of
+//      via a `transact(fn)` wrapper — the hook RELOCATES who calls the port, it does
+//      not remove it. Upside over a withJournaling wrapper: the backend does its
+//      OWN byte/tree write and only fires the hook, so the hook's port is SMALLER
+//      (no raw write ops — just the journal-building reads/writes).
+//
+//      OUTBOUND HALF ONLY. applyJournaled (writing REMOTE tree state without
+//      re-journaling) is not an observation problem — it still needs tree-write
+//      access, so keep caps.pathApply per-backend (or suppress hooks during apply).
+//      Hooks make local-mutation journaling clean; inbound apply stays as-is.
+//
+//      ATOMICITY IS A PER-BACKEND CAPABILITY, NOT A FORK: sqlite/idb fire the hook
+//      in their real txn (atomic). native-fs — the backend that most wants "attach
+//      journaling by composition" — CANNOT (its sidecar journal is not in the fs
+//      txn), so it degrades to an after-commit hook + a reconcile scan on open (walk
+//      the tree via caps.fullScan, diff against last-journaled path_version, emit
+//      missing rows). Path-sync is LWW-convergent + idempotent, so a re-derived-late
+//      entry is harmless. Design the event contract to serve BOTH the atomic and
+//      best-effort consumers — validate WITH native-fs in hand, not frozen against
+//      DB backends only. (Handlers must be txn-safe: no foreign await mid-idb-txn.)
+//
+//      FOLD IN LOGICAL-OPERATION JOURNALING: journal a path's SETTLED state at the
+//      VFS-operation boundary, not per-store-op. This removes the putBlob self-skip
+//      hack (a regular-file create currently journals on the FOLLOWING putBlob once
+//      hashed — see buildPutChange returning null) WHILE keeping content a separate
+//      hash-addressed resource (a rename ships ZERO bytes — moved paths reuse
+//      existing contentHashes). FIRST STEP before any refactor: add a conformance
+//      case "create an EMPTY regular file (no putBlob), then sync" — the self-skip
+//      predicts it is currently never journaled.
+//
+//      TIMING: journaling already works atomically (baked-in), so this is a
+//      separation-of-concerns refactor, not a new capability — no urgency; do it
+//      deliberately, ideally with native-fs near to validate the degradation path.
+//      Rejected alongside: a `treeOverOrderedKv` engine that implements the tree
+//      over a generic store (flattens sqlite/idb to a dumb KV, discarding their
+//      CTE / secondary-index strengths for ~150 mechanical lines — not worth it).
 //
 //   4. [TODO(path-sync)] CONTENT GC. applyJournaled deliberately does NOT reclaim
 //      orphaned blobs (a rename's delete would otherwise drop the bytes its own
@@ -221,6 +258,20 @@ export function orderForApply(changes: PathChange[]): PathChange[] {
  * method is a small primitive over the backend's own store (bound to its
  * transaction where the backend is transactional). `emit` may defer until after
  * the backend's txn commits.
+ *
+ * Layer note: this is the RAW, un-journaled, txn-scoped storage layer — distinct
+ * from `Storage`/`caps`, the JOURNALED, emitting, public layer above it (whose
+ * mutators mint a new version + append to the journal as a side effect). The
+ * apply driver deliberately uses this raw layer so it can journal the remote
+ * change VERBATIM instead of minting a fresh local version.
+ *
+ * Scope note (@internal): a deliberately NARROW seam shared only by owned
+ * journaling backends (mem, sqlite/DO, idb; future postgres). It is NOT a general
+ * Storage seam and NOT part of the package's public API (kept off index.ts).
+ * Non-journaling backends legitimately do not implement it — e.g. nativeStorage
+ * (storage.fs.ts) has no journal/pathApply at all. ROADMAP item 3 may relocate
+ * WHO calls this port (an in-txn mutation hook the backend fires, rather than the
+ * driver pulling) — the seam persists either way; do not widen it.
  */
 export interface PathStorePort {
 	/** Mint a fresh inode id (UUID, numeric, …) for a pulled path with no local inode. */
