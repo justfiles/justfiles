@@ -27,16 +27,16 @@ import { FileType } from './types'
 // commit / small epic. Recorded HERE (the shared center every backend imports)
 // so the plan survives session breaks. Grep `TODO(path-sync)`.
 //
-//   1. [TODO(path-sync)] REMOVE THE LEGACY FsOp DELTA PROTOCOL. It has no
+//   1. [DONE 799cac9c] REMOVE THE LEGACY FsOp DELTA PROTOCOL. It had no
 //      production consumer — `synced()` (path-sync) is the live driver in the
-//      frieren + worker apps, and mem never even implemented it. Delete:
+//      frieren + worker apps, and mem never even implemented it. Deleted:
 //      caps.deltaUpdates + caps.applyBatch (storage.ts + sqlite/idb impls),
 //      FsOp / UpdateQueryOptions / encodeOp, the fs_updates table + appendOps +
 //      pruneUpdates (and their per-mutation call sites), the /delta + /ops routes
-//      in fs.ts, and fs.client's deltaUpdates/applyBatch. KEEP caps.fullScan
-//      (volume.scan tree-walk needs entries/next) but drop its sync-only
-//      `syncCursor` field. Do this FIRST — it de-clutters every mutator before
-//      the extraction below.
+//      in fs.ts, and fs.client's deltaUpdates/applyBatch. KEPT caps.fullScan
+//      (volume.scan tree-walk needs entries/next) but dropped its sync-only
+//      `syncCursor` field. IDB dropped its 'updates' store (DB_VERSION 3->4);
+//      SQLite dropped fs_updates + fs_state via 0003_drop_legacy_delta.sql.
 //
 //   2. [TODO(path-sync)] EXTRACT THE SHARED APPLY DRIVER. Do this as the FIRST
 //      step of the IDB epic, using idb as the third impl that validates the port
