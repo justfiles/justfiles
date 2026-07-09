@@ -66,7 +66,8 @@ import { FileType } from './types'
 //      New primitives: pathOf via a dirs 'by-ino' index, resolveIno, ensureDirPath,
 //      enumerateSubtree, upsertInodeFromSync; new journal + pathver object stores.
 //
-//   3. [TODO(path-sync)] ADR: JOURNALING AS A COMPOSABLE, IN-TXN CHANGE STREAM.
+//   3. [BLOCKED ON item 5 · path-sync] ADR: JOURNALING AS A COMPOSABLE, IN-TXN
+//      CHANGE STREAM. (Do NOT start before native-fs exists — see TIMING.)
 //      Today journaling is BAKED INTO each backend: every mutator calls
 //      journalPutOver/journalDeleteOver, owns journal + pathver stores, and imports
 //      the driver. Target (composition, not coupling): backends become journaling-
@@ -111,16 +112,25 @@ import { FileType } from './types'
 //      hack (a regular-file create currently journals on the FOLLOWING putBlob once
 //      hashed — see buildPutChange returning null) WHILE keeping content a separate
 //      hash-addressed resource (a rename ships ZERO bytes — moved paths reuse
-//      existing contentHashes). FIRST STEP before any refactor: add a conformance
-//      case "create an EMPTY regular file (no putBlob), then sync" — the self-skip
-//      predicts it is currently never journaled.
+//      existing contentHashes). FIRST STEP — DONE: the "converges an empty regular
+//      file" conformance case (green on mem/sqlite/idb) proves the self-skip is
+//      BENIGN via the public VFS — writeFile/appendFile ALWAYS end in a putBlob
+//      (empty content hashes to sha256(''), which journals the put), and the only
+//      no-putBlob creators are the sync-apply path (journals verbatim). So there is
+//      no reachable "regular file that never journals": logical-op journaling here
+//      is a CLEANLINESS refactor (collapse the two-step create-then-content
+//      journaling), NOT a correctness fix.
 //
 //      TIMING: journaling already works atomically (baked-in), so this is a
-//      separation-of-concerns refactor, not a new capability — no urgency; do it
-//      deliberately, ideally with native-fs near to validate the degradation path.
-//      Rejected alongside: a `treeOverOrderedKv` engine that implements the tree
-//      over a generic store (flattens sqlite/idb to a dumb KV, discarding their
-//      CTE / secondary-index strengths for ~150 mechanical lines — not worth it).
+//      separation-of-concerns refactor, not a new capability — NO urgency. HARD
+//      DEPENDENCY: do it TOGETHER with item 5 (native-fs), the only consumer that
+//      exercises the after-commit-hook + reconcile degradation path (mem/sqlite/idb
+//      are all transact-atomic). Starting now would freeze the event contract
+//      against one strategy and force a redo — the exact over-fit we avoided when
+//      idb validated PathStorePort. Rejected alongside: a `treeOverOrderedKv` engine
+//      that implements the tree over a generic store (flattens sqlite/idb to a dumb
+//      KV, discarding their CTE / secondary-index strengths for ~150 mechanical
+//      lines — not worth it).
 //
 //   4. [DONE(path-sync)] CONTENT GC. applyJournaled deliberately does NOT reclaim
 //      orphaned blobs (a rename's delete would otherwise drop the bytes its own
@@ -135,6 +145,21 @@ import { FileType } from './types'
 //      caps.content.putByHash's hash-trust is now documented at the interface (the
 //      sync engine supplies a pre-computed hash; re-hashing every pulled blob is
 //      wasteful) — documentation over a dev-only verify, to stay minimal.
+//
+//   5. [TODO(path-sync)] NATIVE-FS SYNC — THE PREREQUISITE FOR ITEM 3. spud-mac's
+//      quay host runs the Volume over nativeStorage (a real Node fs). All access
+//      routes through our Storage API (DESIGN.md rejects "each .app is the store"),
+//      so journaling-by-interception works — BUT the journal is a sidecar (external
+//      sqlite / a .git-style folder) that CANNOT be made atomic with the fs write.
+//      So native-fs is the SECOND journaling strategy: best-effort in-line journal
+//      + a reconcile-on-open scan (walk via caps.fullScan, diff last-journaled
+//      path_version, emit missing rows) — already scaffolded as nativeChangeSource
+//      + NativeIndex + FsWatcher in sync-replica.ts (bodies throw 'not implemented').
+//      This is the ONLY consumer that exercises item 3's after-commit-hook +
+//      reconcile degradation path (mem/sqlite/idb are all transact-atomic), so
+//      item 3's event contract must be designed AND validated with it in hand. Out
+//      of scope until spud-mac sync is picked up; when it is, do item 5 + item 3
+//      together, co-validated.
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
