@@ -40,31 +40,29 @@ import { FileType } from './types'
 //      `syncCursor` field. IDB dropped its 'updates' store (DB_VERSION 3->4);
 //      SQLite dropped fs_updates + fs_state via 0003_drop_legacy_delta.sql.
 //
-//   2. [TODO(path-sync)] EXTRACT THE SHARED APPLY DRIVER. Do this as the FIRST
-//      step of the IDB epic, using idb as the third impl that validates the port
-//      shape — NOT before (a port shaped by only mem + sqlite risks baking in
-//      SQLite quirks). Today applyJournaled / localChange / journalPut /
-//      journalDelete are copy-pasted between storage.mem.ts and storage.sqlite.ts
-//      as IDENTICAL control flow over storage-specific primitives. Introduce a
-//      tiny per-backend port and move the orchestration into this module:
+//   2a. [DONE d5f1d5b9] EXTRACT THE SHARED APPLY DRIVER. applyJournaled /
+//      localChange / per-mutation journaling were IDENTICAL control flow in mem +
+//      sqlite, differing only in storage-primitive access, txn wrapping, and emit
+//      timing. The orchestration now lives ONCE here (`applyJournaledOver` /
+//      `localChangeOver` / `journalPutOver` / `journalDeleteOver`), driven through
+//      the per-backend `PathStorePort` (below). mem + sqlite were retrofitted and
+//      stay green (sqlite conformance 5/5). pathOf / resolveIno-walk /
+//      ensureDirPath / enumerateSubtree stay per-backend (Map-walk vs recursive
+//      CTE) — they cannot be shared. NOTE: the port was shaped from mem + sqlite
+//      only; idb (2b) is the third impl that VALIDATES it — reshape the port there
+//      if idb needs it (mem + sqlite conformance guard against regressions).
+//      STILL TODO (micro): set ctime = nowNs() at apply (currently 0n in each
+//      backend's port.upsertInodeFromSync) — ctime is a local attr, never compared
+//      for convergence; deferred to keep 2a a pure refactor.
 //
-//        interface PathStore {          // per backend; stays minimal
-//          resolveIno(p): Ino|null;  ensureDirPath(p): Ino;  mintIno(): Ino
-//          readMetaXattrs(ino): { meta, xattrs } | null
-//          upsertInodeFromSync(ino, change);  setDirent(dir, name, ino, type)
-//          deleteInode(ino) /* NO blob GC */;  deleteDirent(dir, name)
-//          readPathVersion(p): { version, tombstone };  setPathVersion(p, v, t)
-//          appendJournalRow(change, localSource?);  emit(change)
-//        }
-//        applyJournaledOver(port, changes, opts)
-//        localChangeOver(port, path, actorId)
-//        journalMutationOver(port, kind, path, ino?, actorId, options)
-//
-//      Deletes ~120-150 duplicated lines PER backend and makes idb's apply nearly
-//      free. pathOf / resolveIno / ensureDirPath / enumerateSubtree stay
-//      per-backend (Map-walk vs recursive CTE) — they cannot be shared. While
-//      here, set ctime = nowNs() at apply (not 0 — ctime is a local attr, never
-//      compared for convergence).
+//   2b. [TODO(path-sync)] IMPLEMENT IDB PATH-SYNC. Provide idb's `PathStorePort` +
+//      per-backend primitives (pathOf via a new dirs `by-ino` index, resolveIno,
+//      ensureDirPath, enumerateSubtree) + new object stores (`journal`,
+//      `pathver`), and wire the shared driver into idb's mutations. BIG sub-task:
+//      idb's content store is INO-keyed but caps.content is HASH-addressed — idb
+//      must re-key content by contentHash (getBlob resolves ino->hash->bytes;
+//      putBlob hashes then stores by hash) so pulled blobs materialise by hash.
+//      Turns idb conformance (5 RED stubs today) GREEN.
 //
 //   3. [TODO(path-sync)] ADR: UNIFY THE TWO CHANGE MECHANISMS + LOGICAL-OPERATION
 //      JOURNALING. After the legacy protocol is gone (item 1), two remain: the
