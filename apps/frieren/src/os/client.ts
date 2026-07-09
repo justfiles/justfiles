@@ -139,7 +139,28 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		for (const listener of appsListeners) listener(apps)
 	}
 
+	// Re-listing the local catalog (e.g. the `/applications` watcher firing on an
+	// unrelated structural write) yields fresh objects with identical values.
+	// Skip the emit when nothing changed so a churny watch doesn't restart bundle
+	// hydration on every downstream `subscribeApps` consumer.
+	function sameApps(a: InstalledApp[], b: InstalledApp[]): boolean {
+		return (
+			a.length === b.length &&
+			a.every((app, i) => {
+				const other = b[i]
+				return (
+					app.id === other.id &&
+					app.name === other.name &&
+					app.description === other.description &&
+					app.version === other.version &&
+					app.iconUrl === other.iconUrl
+				)
+			})
+		)
+	}
+
 	function setApps(next: InstalledApp[]): void {
+		if (sameApps(apps, next)) return
 		apps = next
 		emitApps()
 	}

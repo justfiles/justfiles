@@ -103,6 +103,29 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	}, [client])
 
 	useEffect(() => {
+		// The dock's catalog is a projection of the local volume's `/applications/*`.
+		// Apps that arrive by sync-down (server materialise on first sign-in, or an
+		// agent/other-device install) land as REMOTE_SOURCE writes that no explicit
+		// refresh covers, so re-list on the volume's structural change feed. Recursive
+		// watch is storage-wide + structural-only (dirent create/remove/rename), so
+		// content edits don't churn it; the client's setApps drops no-op re-lists.
+		let off: (() => void) | undefined
+		let cancelled = false
+		void volumePromise.then((fs) => {
+			void fs
+				.watch('/', () => client.refresh(), { recursive: true })
+				.then((unwatch) => {
+					if (cancelled) unwatch()
+					else off = unwatch
+				})
+		})
+		return () => {
+			cancelled = true
+			off?.()
+		}
+	}, [client, volumePromise])
+
+	useEffect(() => {
 		// A host capability (devkit's live preview) frames its scoped stage as a
 		// window by asking the shell to dispatch the matching window action.
 		return appHost.subscribeWindows((req) => {
