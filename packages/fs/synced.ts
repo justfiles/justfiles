@@ -2,6 +2,7 @@ import { persistedState } from './persistedState'
 import type { Storage } from './storage'
 import {
 	type BlobStore,
+	isLocalOnlyPath,
 	journaledChangeSource,
 	localSyncReplica,
 	PAGE,
@@ -9,6 +10,7 @@ import {
 	type SyncState
 } from './sync-replica'
 import type { PathChange } from './sync-wire'
+import { parseVersion } from './sync-wire'
 import { FileType } from './types'
 import { type Volume, volume } from './volume'
 
@@ -96,12 +98,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// shares this build so P2P skips it (see `sync()`).
 	let negotiated = false
 	async function negotiate(): Promise<void> {
-		// TODO(path-sync): GET /fs -> { rootIno, protocolVersion, schemaVersion };
-		// verify wire/state compatibility and branch on a future schema bump before
-		// syncing. Needs a handshake seam on the remote replica (or a `Handshake`
-		// probe passed alongside the factory). Endpoints/paths stay stable across
-		// versions; only this negotiation branches.
-		throw new Error('not implemented')
+		// Forward-compat placeholder. There is no handshake seam on SyncReplica yet and
+		// endpoints/paths are stable across versions, so there is nothing to negotiate.
+		// When a protocol/schema bump needs a probe (GET /fs -> { rootIno,
+		// protocolVersion, schemaVersion }), add a handshake seam and branch here.
 	}
 
 	/**
@@ -159,8 +159,22 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		do {
 			const result = await remoteReplica.pathScan(page, { limit: PAGE })
 			syncCursor = result.syncCursor
-			for (const c of result.changes) remotePaths.add(c.path)
-			await localReplica.applyPathChanges(result.changes, (h) => remoteReplica.getBlobByHash(h), {
+			// Adoption keep-local: on a FIRST bootstrap (never pushed), a path that
+			// already exists locally WINS — keep its content and re-stamp it above the
+			// remote version (via the version seam) so our next push overwrites the
+			// remote loser. Skip applying the remote change for it; remote-only paths
+			// are adopted normally.
+			const toApply: PathChange[] = []
+			for (const c of result.changes) {
+				remotePaths.add(c.path)
+				if (!everPushed && (await localVol.exists(c.path))) {
+					const st = await localVol.stat(c.path)
+					await props.local.setMeta(st.ino, {}, { version: parseVersion(c.version) + 1 })
+					continue
+				}
+				toApply.push(c)
+			}
+			await localReplica.applyPathChanges(toApply, (h) => remoteReplica.getBlobByHash(h), {
 				source: REMOTE_SOURCE
 			})
 			page = result.done ? undefined : result.next
@@ -175,10 +189,23 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * skipping the local-only `/.state` subtree. Path-keyed (today's ino-based
 	 * reconcile is replaced).
 	 */
-	async function reconcileLocal(_remotePaths: Set<string>): Promise<void> {
-		// TODO(path-sync): walk localVol, diff against remotePaths, delete absent
-		// paths by path (child-before-parent), ignoring /.state and /.state/**.
-		throw new Error('not implemented')
+	async function reconcileLocal(remotePaths: Set<string>): Promise<void> {
+		// Delete local paths absent from the remote snapshot, child-before-parent,
+		// skipping the local-only /.state subtree.
+		const localPaths: string[] = []
+		async function walk(dir: string): Promise<void> {
+			for (const e of await localVol.readdir(dir)) {
+				const p = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
+				if (isLocalOnlyPath(p)) continue
+				localPaths.push(p)
+				if (e.type === FileType.Directory) await walk(p)
+			}
+		}
+		await walk('/')
+		const absent = localPaths
+			.filter((p) => !remotePaths.has(p))
+			.sort((a, b) => b.split('/').length - a.split('/').length)
+		for (const p of absent) await localVol.rm(p, { recursive: true, force: true })
 	}
 
 	async function sync() {
