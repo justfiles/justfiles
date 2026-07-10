@@ -211,18 +211,36 @@ guarantee:
 
 - **One atomic SQLite transaction.** The generation lives as a **SQLite row** (a
   small meta row), NOT DO KV, and the whole reset — CAS check, truncate the tree
-  (`fs_inodes`/`fs_dirents`/`fs_xattrs`) + journal, **recreate the root inode**,
-  bump `generation`, store the new `resetId` — runs in a single `db.transaction`.
-  Splitting truncate (SQLite) from the bump (DO KV) lets a crash leave a
-  half-reset volume; one transaction leaves either the old lineage or the new one,
-  never a mix. **Caveat: the DO adapter's `transaction()` is currently a no-op**
-  (`apps/frieren/worker/db.do.ts` just does `await fn(adapter)` — no
-  `BEGIN`/`COMMIT`), so this atomicity does not exist yet: it must be made real
-  (issue `BEGIN`/`COMMIT`, or use `ctx.storage.transactionSync`, or wrap the reset
-  in `blockConcurrencyWhile`) before the plan's atomicity claims hold. Note
-  `ensureBootstrapped` seeds the root inode only once per DO lifetime and caches
-  that it ran, so the reset must recreate root `ino=1` itself (and invalidate that
-  cache) — otherwise the wiped volume has no root.
+  (`fs_inodes`/`fs_dirents`/`fs_xattrs`) + **both sync tables**
+  (`fs_path_journal` AND `fs_path_version` — the latter holds the per-path version
+  generator *and* `tombstone_version`, so a surviving tombstone would make a
+  re-published put lose the LWW check), **recreate the root inode**, bump
+  `generation`, store the new `resetId` — runs in a single real SQLite
+  transaction. Splitting truncate (SQLite) from the bump (DO KV) lets a crash
+  leave a half-reset volume; one transaction leaves either the old lineage or the
+  new one, never a mix. **This atomicity does not exist yet** and needs real work
+  on two axes, which are NOT the same thing:
+  - *Crash-atomicity* requires a real SQLite transaction — the DO adapter's
+    `transaction()` is currently a no-op (`apps/frieren/worker/db.do.ts` just does
+    `await fn(adapter)`, no `BEGIN`/`COMMIT`), so it must issue `BEGIN`/`COMMIT` or
+    use `ctx.storage.transactionSync`. `blockConcurrencyWhile` does **not** give
+    this — it serializes event delivery but a crash mid-sequence still tears.
+  - *Serialization* (ensuring no other mutation interleaves the reset) is a
+    separate concern, handled by the same-transaction generation check (see Push
+    fencing) and/or `blockConcurrencyWhile` — don't conflate it with crash-
+    atomicity.
+  Note `ensureBootstrapped` seeds the root inode only once per DO lifetime and
+  caches that it ran, so the reset must recreate root `ino=1` itself (and
+  invalidate that cache) — otherwise the wiped volume has no root.
+- **Quiesce the server's own writers.** Fencing `/fs` only stops *HTTP* mutations;
+  the DO also writes the volume directly through `this.vol` (the agent session,
+  app capabilities, `ensureAgentDefaults`, the daily-alarm maintenance). Those
+  bypass every `/fs` route, so a reset/publish must also **pause or reject them**
+  for its window — abort/hold the agent session + app writes (the same quiesce the
+  `/applications` watcher uses), or enforce the generation/`publishing` check down
+  in the storage mutators so even a direct `this.vol` write is gated. Without this,
+  a mid-turn agent write races the truncate or lands in the half-published
+  baseline.
 - **`resetId` disambiguates racing resets.** The client mints a random `resetId`,
   persists it (`pendingReset`) *before* the CAS, and sends it. The DO stores the
   winning `resetId` and echoes it in the handshake. Two devices that both guessed
@@ -237,7 +255,10 @@ guarantee:
   `x-fs-reset-id: <resetId>` and everyone else is blocked. **Pull is gated too**:
   `pathDeltas` / `pathScan` return not-ready (or echo `publishing`) while the lock
   is held, so a client that was mid-scan when publishing began doesn't consume the
-  truncated/partial tree.
+  truncated/partial tree. **`wipe` sets no lock** (its initiator discards +
+  re-bootstraps rather than publishing), so `resetId` is optional for `wipe` — the
+  DO may mint one for handshake consistency, but the client keeps no
+  `pendingReset` for it (there is nothing to preserve).
 - **Finalize is its own CAS route.** The initiator calls `POST /fs/reset/finalize
   { generation:N+1, resetId }` once the snapshot publish is durable; the DO clears
   `publishing` only if `generation === current` and `resetId === owner`. No
@@ -325,16 +346,18 @@ Let the current server generation be `N`.
     publish. For the debug-gated phase the
     "close other devices first" note is the interim mitigation; the lock is
     required before prod.
-  - **Crash recovery, keyed on `resetId`.** If the client crashes after the CAS
-    (server at `N+1`) but before the republish completes, the next boot sees
-    `stored(N) ≠ server(N+1)` and would otherwise discard-reset the very data it
-    meant to publish. `pendingReset` overrides that — but **only when its
-    `resetId` matches the server's current `resetId`**: then resume the snapshot
-    publish; otherwise (a different reset won in the meantime) clear it and
+  - **Crash recovery, keyed on `resetId` *and* `publishing`.** If the client
+    crashes after the CAS (server at `N+1`) but before the republish completes,
+    the next boot sees `stored(N) ≠ server(N+1)` and would otherwise discard-reset
+    the very data it meant to publish. `pendingReset` overrides that — but the
+    resume condition is **`resetId` matches the server's current `resetId` AND the
+    server is still `publishing`**: only then resume the snapshot publish. If the
+    server already **finalized** (`publishing=false`) the publish is done, so a
+    stale `pendingReset` must **clear and adopt** `N+1` normally, not republish a
+    second time. If a *different* reset won (`resetId` mismatch), clear it and
     client-reset to the winner. Using `resetId` rather than the number `N+1` is
     what stops a *losing* racer — who also persisted target `N+1` — from clobbering
-    the winner. Clear `pendingReset` only once the publish is durable and
-    finalized.
+    the winner. Clear `pendingReset` once the publish is finalized (or on adopt).
 
 - **Factory reset ("wipe both")** — `POST /fs/reset { mode:'wipe',
   fromGeneration:N }`. The DO truncates the volume and bumps to `N+1`. The
@@ -352,18 +375,23 @@ treats the volume uniformly, so reset does too. Consequences to be explicit
 about:
 
 - **Blobs (R2)** are content-addressed; on a server wipe we **truncate the tree +
-  journal, bump the generation counter (never truncate it), and leave blobs
-  orphaned** (GC later). Leaving the bytes is safe and even helps — a re-push can
-  find a hash already present and skip the upload.
-  - **Keep the `fs_contents` rows, not just the R2 bytes.** `hasBlobByHash` /
-    `content.hasByHash` checks for a `fs_contents` DB row (that row holds the
-    hash → inline-bytes-or-`r2_key` mapping), not R2 directly. If the wipe deletes
-    those rows, a re-push sees "blob absent" and re-uploads everything — the
-    skip-upload optimization is lost even though the R2 bytes survive. So the wipe
-    truncates the **tree** (`fs_inodes` / `fs_dirents` / `fs_xattrs`) and the
-    **journal**, but leaves `fs_contents` (later reclaimed by the existing
-    `gcUnreferenced`), then recreates the root inode (see Reset endpoint).
-    Deleting bytes is riskier (shared hashes) and unnecessary.
+  sync tables, bump the generation counter (never truncate it), and leave the R2
+  bytes orphaned** (GC later). Deleting R2 bytes inline is riskier (shared hashes)
+  and unnecessary — GC reclaims them.
+  - **Delete the `fs_contents` rows on wipe (privacy wins over the upload-skip).**
+    `/fs/blob/:hash` serves content straight from a `fs_contents` row (the row
+    holds the hash → inline-bytes-or-`r2_key` mapping); if the wipe *keeps*
+    orphaned rows, then wiped content is **still fetchable by hash** by any stale
+    client that knows the hash — unacceptable for a factory reset whose whole point
+    is to destroy the data. So the wipe drops `fs_contents` too. The cost is that
+    a later re-push can't short-circuit on `hasBlobByHash` and re-uploads (R2 just
+    overwrites identical content-addressed bytes) — an acceptable trade. (If we
+    ever want the upload-skip back without the leak, gate `GET`/`HEAD /fs/blob` on
+    a *live inode reference* so orphaned content is non-readable while its row
+    survives; deferred.)
+  - So the wipe truncates the **tree** (`fs_inodes` / `fs_dirents` / `fs_xattrs`),
+    **both sync tables** (`fs_path_journal` / `fs_path_version`), and
+    **`fs_contents`**, then recreates the root inode (see Reset endpoint).
 - **Server-seeded agent defaults are reseeded, so "empty" is short-lived.**
   `Frieren`'s DO constructor runs `reset()` → `ensureAgentDefaults()`, which
   (idempotently) writes `/system/soul.md` + `/system/profiles/user.md` when
@@ -426,13 +454,13 @@ profile only offers factory-reset-local.
    transaction*, not just a pre-check; `generation_stale` rejection → reset; reset
    route exempt).
 3. **`POST /fs/reset` + `POST /fs/reset/finalize`** (`adopt-mine`, `wipe`) as one
-   atomic SQLite transaction (CAS + truncate + recreate root inode + bump
-   generation + store `resetId`), with the `publishing` lock for adopt-mine
-   (owner-only `x-fs-reset-id` writes, pulls gated, explicit finalize CAS); wire
-   "take theirs" (client-only) too. **Prerequisite:** make the DO SQLite adapter's
-   `transaction()` real (`BEGIN`/`COMMIT`, `ctx.storage.transactionSync`, or a
-   `blockConcurrencyWhile` critical section) — today it's a no-op `await
-   fn(adapter)`, so none of the atomicity above actually holds yet.
+   **real** SQLite transaction (`BEGIN`/`COMMIT` or `transactionSync`, NOT just
+   `blockConcurrencyWhile`): CAS + truncate tree + `fs_path_journal` +
+   `fs_path_version` + `fs_contents` + recreate root inode + bump generation +
+   store `resetId`. Quiesce the DO's own `this.vol` writers (agent/apps/alarm) for
+   the reset+publish window. adopt-mine adds the `publishing` lock (owner-only
+   `x-fs-reset-id` writes, pulls gated, explicit finalize CAS); wire "take theirs"
+   (client-only) too.
 4. **Shell UI** (debug-gated panel + confirmations).
 
 Not touched: the path-sync wire itself beyond the additive `generation` field;
