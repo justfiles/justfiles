@@ -705,6 +705,16 @@ export function idbStorage(
 			}
 		},
 
+		// Drop local sync state (journal + version generator) for a client reset —
+		// see StorageCapabilities.clearSyncState. Tree + content are left intact.
+		async clearSyncState() {
+			const db = await getDb()
+			const tx = db.transaction(['journal', 'pathver'], 'readwrite')
+			await tx.objectStore('journal').clear()
+			await tx.objectStore('pathver').clear()
+			await tx.done
+		},
+
 		journal: {
 			async append(changes, localSource) {
 				const db = await getDb()

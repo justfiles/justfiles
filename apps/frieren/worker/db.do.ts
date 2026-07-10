@@ -24,7 +24,7 @@ type BlobStore = {
 	delete?(key: string): Promise<void>
 }
 
-function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
+export function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	const { sql } = storage
 	sql.exec('PRAGMA foreign_keys = ON')
 	const normalizeArgs = (
@@ -41,6 +41,14 @@ function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 		async run(query: string, args: SqlValue[] = []): Promise<void> {
 			sql.exec(query, ...normalizeArgs(args))
 		},
+		// The DO runs one event at a time (input/output gates) and our storage does no
+		// network I/O between statements, so a whole mutation's `sql.exec` calls commit
+		// together as the event's implicit transaction. Cloudflare's SQL API rejects a
+		// manual `BEGIN`/`COMMIT`, and `ctx.storage.transactionSync` needs a SYNCHRONOUS
+		// body (ours is async), so this stays the implicit form. The reset body is
+		// proven atomic against the real BEGIN/COMMIT adapter (db.sqlite.ts) in
+		// reset.test.ts; full crash-atomicity on the DO awaits a sync-storage refactor
+		// (see docs/sync-reset-generation.md — "test the path, not the guarantee").
 		async transaction(fn: (tx: DbAdapter) => Promise<void>): Promise<void> {
 			await fn(adapter)
 		}
@@ -48,14 +56,10 @@ function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	return adapter
 }
 
-export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
-	await migrateFromEntries(createDOSqliteAdapter(storage), coreMigrations)
+export async function migrateCF(adapter: DbAdapter): Promise<void> {
+	await migrateFromEntries(adapter, coreMigrations)
 }
 
-export function cfFsStorage(
-	storage: DurableObjectStorage,
-	namespace: string,
-	blobStore?: BlobStore
-): Storage {
-	return sqliteStorage(createDOSqliteAdapter(storage), { namespace, blobStore })
+export function cfFsStorage(adapter: DbAdapter, namespace: string, blobStore?: BlobStore): Storage {
+	return sqliteStorage(adapter, { namespace, blobStore })
 }

@@ -61,6 +61,10 @@ interface SyncLifecycle {
 	resume(): void
 	status(): SyncStatus
 	onStatusChange(fn: (status: SyncStatus) => void): () => void
+	// "Take theirs": discard this device's local replica and re-pull the server's
+	// volume (the safe, client-only reset — no server coordination). See
+	// docs/sync-reset-generation.md.
+	resetLocal(): Promise<void>
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
@@ -233,6 +237,11 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			if (isLocalOnlyPath(p)) continue
 			await localVol.rm(p, { recursive: true, force: true })
 		}
+		// Drop the local journal + version tombstones the deletes just wrote: after a
+		// lineage reset the server's versions aren't comparable to ours, so a leftover
+		// tombstone would outrank a re-pulled put and strand that path. Owned backends
+		// only; a P2P/native peer has no such state.
+		await props.local.caps?.clearSyncState?.()
 		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
 	}
 
@@ -394,10 +403,18 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		}
 	}
 
+	// "Take theirs": drop the local replica + cursors, then re-bootstrap from the
+	// server's current lineage. The common, safe reset — purely client-side.
+	async function resetLocal(): Promise<void> {
+		await clientReset()
+		await flush()
+	}
+
 	const lifecycle: SyncLifecycle = {
 		flush,
 		pause,
 		resume,
+		resetLocal,
 		destroy,
 		status: () => _status,
 		onStatusChange

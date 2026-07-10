@@ -11,16 +11,23 @@ import {
 	text
 } from '@justfiles/agent'
 import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
-import { createFsApi } from '@justfiles/core'
+import {
+	createFsApi,
+	type DbAdapter,
+	finalizeReset,
+	type ResetMode,
+	readGeneration,
+	resetVolume
+} from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
-import { Hono } from 'hono'
+import { type Context, Hono } from 'hono'
 import { ensureAgentDefaults } from '../shared/agent-defaults.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
-import { cfFsStorage, migrateCF } from './db.do.ts'
+import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
@@ -59,7 +66,9 @@ const DEBUG_COMMAND = '/debug'
 
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
-	private readonly vol: Volume
+	private readonly db: DbAdapter
+	private readonly fs: ReturnType<typeof cfFsStorage>
+	private vol: Volume
 	private session?: AgentSession
 	private text?: LLMText
 	private cfTimezone?: string
@@ -68,7 +77,10 @@ export class Frieren extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
 		const namespace = ctx.id.toString()
-		const fs = cfFsStorage(ctx.storage, namespace, env.FS_BLOBS)
+		const adapter = createDOSqliteAdapter(ctx.storage)
+		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)
+		this.db = adapter
+		this.fs = fs
 		this.vol = volume(fs)
 
 		this.app = new Hono()
@@ -80,11 +92,45 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			.route('/fs', createFsApi(fs))
+			// Server-coordinated volume reset (docs/sync-reset-generation.md). These
+			// live OUTSIDE createFsApi (DO-level truncate powers) and BEFORE the /fs
+			// mount, so they never hit the push-fence middleware — reset routes
+			// self-guard via the fromGeneration CAS.
+			.post('/fs/reset', (c) => this.handleReset(c))
+			.post('/fs/reset/finalize', (c) => this.handleFinalize(c))
+			.route('/fs', createFsApi(fs, { generation: () => readGeneration(this.db) }))
 
 		ctx.blockConcurrencyWhile(async () => {
 			await this.reset()
 		})
+	}
+
+	// POST /fs/reset { mode, fromGeneration, resetId? } — CAS + truncate + bump.
+	private async handleReset(c: Context) {
+		const body = await c.req.json<{ mode: ResetMode; fromGeneration: number; resetId?: string }>()
+		if (body?.mode !== 'adopt-mine' && body?.mode !== 'wipe')
+			return c.json({ error: 'invalid mode' }, 400)
+		const decision = await resetVolume(this.db, body)
+		if (!decision.ok) return c.json({ error: decision.error, generation: decision.generation }, 409)
+		// The reset wrote the DB directly, so the cached volume is stale — rebuild it.
+		// `wipe` reseeds agent defaults + rebuilds the session now; `adopt-mine` defers
+		// that to finalize (the initiator republishes /system/* under the publishing
+		// lock; reseeding here would race it).
+		this.vol = volume(this.fs)
+		if (body.mode === 'wipe') await this.reset()
+		return c.json({ generation: decision.next.generation, resetId: decision.next.resetId })
+	}
+
+	// POST /fs/reset/finalize { generation, resetId } — GC the discarded baseline,
+	// then clear the adopt-mine publishing lock (owner + CAS checked).
+	private async handleFinalize(c: Context) {
+		const body = await c.req.json<{ generation: number; resetId: string }>()
+		await this.fs.caps?.content?.gcUnreferenced?.()
+		const decision = await finalizeReset(this.db, body)
+		if (!decision.ok) return c.json({ error: decision.error }, 409)
+		this.vol = volume(this.fs)
+		await this.reset()
+		return c.json({ ok: true })
 	}
 
 	private requireApps(): FrierenApps {
@@ -108,7 +154,7 @@ export class Frieren extends DurableObject<Env> {
 
 	private async reset() {
 		const { model, apiKey } = this.getBackendConfig()
-		await migrateCF(this.ctx.storage)
+		await migrateCF(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
 		await ensureAgentDefaults(this.vol)

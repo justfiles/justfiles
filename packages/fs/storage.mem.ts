@@ -330,6 +330,12 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		},
 
 		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
+		async clearSyncState() {
+			pathVersion.clear()
+			tombstone.clear()
+			journalRows.length = 0
+			journalSeq = 0
+		},
 		journal: {
 			async append(changes, localSource) {
 				appendJournal(changes, localSource)

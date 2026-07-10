@@ -1058,6 +1058,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			}
 		},
 
+		// Drop local sync state (journal + version generator) for a client reset —
+		// see StorageCapabilities.clearSyncState. Tree + content are left intact.
+		async clearSyncState(): Promise<void> {
+			await ensureBootstrapped()
+			await db.transaction(async (tx) => {
+				await tx.run('DELETE FROM fs_path_journal')
+				await tx.run('DELETE FROM fs_path_version')
+			})
+		},
+
 		// Hash-addressed content store (matching R2 / the mem backend): the inode
 		// holds a `contentHash` reference and the bytes live in `fs_contents`, keyed
 		// by that hash. Thin wrapper over the already-content-addressed table — the

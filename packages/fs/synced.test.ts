@@ -480,6 +480,18 @@ describe('synced (generation / client-reset)', () => {
 		expect(state.pullCursor).toBeUndefined() // cursors cleared → re-bootstrap next cycle
 	})
 
+	// resetLocal() ("take theirs"): discard unpushed local work + re-pull server.
+	it('resetLocal() discards local and re-pulls the server', async () => {
+		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/server.txt')).toBe(true)
+		await vol.writeFile('/mine.txt', enc.encode('unpushed work')) // never flushed
+		await vol.resetLocal()
+		expect(await vol.exists('/mine.txt')).toBe(false) // discarded before any push
+		expect(await vol.exists('/server.txt')).toBe(true) // re-pulled from the server
+	})
+
 	// A server that omits `generation` (legacy / not opted in) leaves the machinery
 	// inert: normal sync, nothing recorded.
 	it('ignores generation when the server omits it (legacy server)', async () => {
