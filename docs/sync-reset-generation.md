@@ -375,7 +375,14 @@ factory-reset-local.
    `gcUnreferenced()` at finalize. Quiesce the DO's own `this.vol` writers for the
    window; adopt-mine adds the `publishing` lock (owner-only `x-fs-reset-id`
    writes, pulls gated). Wire "take theirs" (client-only) too.
-4. **Shell UI** — debug-gated panel + confirmations.
+4. **Shell UI + re-materialisation** — debug-gated panel + confirmations, and wire
+   the `/.state/materialised` marker per mode so built-ins reseed correctly (see
+   Wipe scope): **factory reset** leaves it unset (client reseeds built-ins + pushes
+   them); **take theirs** sets it after bootstrap (adopt the server verbatim — no
+   reseed, so an intentionally-emptied server stays empty); **take mine** keeps
+   local intact, so its republished snapshot already carries `/applications/*` and
+   other devices pull them on client-reset. No new materialisation code — it is the
+   existing `seedBuiltins` boot path; only the marker handling is new.
 
 Not touched: the path-sync wire beyond the additive `generation` field; per-file
 identity is `path-based-sync.md`'s job. This doc is the volume-level lineage
