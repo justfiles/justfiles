@@ -1,5 +1,6 @@
 import {
 	createFsClient as createCoreFsClient,
+	decideResume,
 	type FsClient,
 	remoteSyncReplica
 } from '@justfiles/core'
@@ -181,6 +182,10 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	entry.unsubscribeSyncStatus = syncVolume.onStatusChange((next) => {
 		if (active === entry) setActiveStatus(entry, next)
 	})
+	// Resume an interrupted "take mine" (a crash after the reset CAS but before
+	// finalize) so the boot handshake doesn't discard the snapshot it meant to
+	// publish. Fire-and-forget: synced() defers its own cycles while we publish.
+	void resumePendingTakeMine(getToken).catch(() => {})
 }
 
 function setActive(
@@ -373,12 +378,17 @@ export async function resetTakeMine(getToken: GetToken): Promise<void> {
 	const fromGeneration = sync.generation()
 	if (fromGeneration === undefined) throw new Error('“take mine” requires a server generation')
 	const resetId = crypto.randomUUID()
+	// Persist the intent BEFORE the CAS so a crash mid-publish resumes on reboot.
+	await sync.beginTakeMine(resetId)
 	const res = await postReset(getToken, '/fs/reset', {
 		mode: 'adopt-mine',
 		fromGeneration,
 		resetId
 	})
-	if (!res.ok) throw new Error(`reset failed: ${res.status}`)
+	if (!res.ok) {
+		await sync.clearPendingReset() // the CAS lost the race — nothing to resume
+		throw new Error(`reset failed: ${res.status}`)
+	}
 	const applied = (await res.json()) as { generation: number; resetId?: string }
 	await sync.publishSnapshot(resetId, applied.generation)
 	const fin = await postReset(getToken, '/fs/reset/finalize', {
@@ -386,6 +396,39 @@ export async function resetTakeMine(getToken: GetToken): Promise<void> {
 		resetId
 	})
 	if (!fin.ok) throw new Error(`finalize failed: ${fin.status}`)
+	await sync.clearPendingReset()
+}
+
+// Resume (or retire) an interrupted "take mine" on boot. Reads the server's
+// current lineage and, per decideResume: RESUME the publish + finalize if we
+// still own the publishing lock; otherwise ADOPT (it already finalized) or drop
+// the intent so synced() client-resets to whichever reset won.
+export async function resumePendingTakeMine(getToken: GetToken): Promise<void> {
+	const sync = active?.sync
+	const pending = sync?.pendingReset()
+	if (!sync || !pending) return
+	const token = await getToken()
+	const res = await fetch('/fs', { headers: { Authorization: `Bearer ${token ?? ''}` } })
+	if (!res.ok) return // can't reach the server now — retry on the next start
+	const hs = (await res.json()) as { generation?: number; resetId?: string; publishing?: boolean }
+	const server = {
+		generation: hs.generation ?? 1,
+		resetId: hs.resetId,
+		publishing: Boolean(hs.publishing)
+	}
+	if (decideResume(pending, server) !== 'resume') {
+		// 'adopt' (already finalized) or 'reset-to-winner' (a different reset won):
+		// drop the intent and let synced()'s handshake adopt / client-reset.
+		await sync.clearPendingReset()
+		return
+	}
+	await sync.publishSnapshot(pending.resetId, server.generation)
+	const fin = await postReset(getToken, '/fs/reset/finalize', {
+		generation: server.generation,
+		resetId: pending.resetId
+	})
+	if (!fin.ok) throw new Error(`finalize failed: ${fin.status}`)
+	await sync.clearPendingReset()
 }
 
 // "Factory reset" — wipe server + local, then reseed built-ins. A synced profile

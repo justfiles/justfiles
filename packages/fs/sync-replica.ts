@@ -46,7 +46,15 @@ export interface ChangeSource {
 	pathDeltas(
 		cursor: SyncCursor,
 		opts?: { excludeOrigin?: string; excludeLocalSource?: string; limit?: number }
-	): Promise<{ changes: PathChange[]; to: SyncCursor; done: boolean; generation?: number }>
+	): Promise<{
+		changes: PathChange[]
+		to: SyncCursor
+		done: boolean
+		generation?: number
+		// Echoed while an adopt-mine republish holds the server's publishing lock:
+		// a non-owner puller defers rather than consuming a half-published tree.
+		publishing?: boolean
+	}>
 
 	/**
 	 * A consistent full snapshot as `put`s (bootstrap). Returns BOTH a `next` page
@@ -67,6 +75,7 @@ export interface ChangeSource {
 		syncCursor: SyncCursor
 		done: boolean
 		generation?: number
+		publishing?: boolean
 	}>
 }
 
@@ -119,9 +128,11 @@ export interface BlobStore {
  * remote-only: the HTTP replica implements it; local/P2P replicas omit it (there
  * is no server lineage to report). `generation` is the server volume's epoch —
  * `synced()` compares it against the stored one to detect a server-side reset.
+ * `resetId` + `publishing` surface the adopt-mine publishing lock: while held,
+ * only the owning `resetId` may write and everyone else defers (see synced()).
  */
 export interface Handshaker {
-	handshake?(): Promise<{ generation?: number }>
+	handshake?(): Promise<{ generation?: number; resetId?: string; publishing?: boolean }>
 }
 
 /**
@@ -412,6 +423,10 @@ export type PathSyncState = {
 export type SyncState = {
 	schemaVersion: number // 1 for this design; future migrations branch on it
 	generation?: number // server volume lineage this replica is synced against
+	// In-flight "take mine" (adopt-mine) publish, persisted BEFORE the reset CAS so
+	// a crash mid-publish resumes/adopts instead of discarding the snapshot it meant
+	// to publish (docs/sync-reset-generation.md — crash recovery).
+	pendingReset?: { resetId: string; mode: 'adopt-mine' }
 	pushCursor?: SyncCursor // over the local ChangeSource
 	pullCursor?: SyncCursor // over the remote's ChangeSource
 	// PathSyncState records are stored per-path under the same /.state/sync tree.

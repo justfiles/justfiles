@@ -203,3 +203,22 @@ export async function finalizeReset(
 	if (!result) throw new Error('finalizeReset: transaction did not resolve')
 	return result
 }
+
+/**
+ * Finalize an adopt-mine reset together with its blob GC, in the ONLY safe order:
+ * validate owner + CAS FIRST, THEN run `gc`, THEN commit the lock clear. The
+ * ownership check must precede the destructive GC — otherwise a stale/non-owner
+ * finalize could reclaim the kept lazy blobs and only then be rejected. `gc` is
+ * the storage content cap (`gcUnreferenced`) that drops the discarded baseline's
+ * now-orphaned blobs; it runs only for the confirmed owner.
+ */
+export async function finalizeResetWithGc(
+	db: DbAdapter,
+	req: FinalizeRequest,
+	gc: () => Promise<void>
+): Promise<FinalizeDecision> {
+	const check = decideFinalize(await readGenerationState(db), req)
+	if (!check.ok) return check
+	await gc()
+	return finalizeReset(db, req)
+}

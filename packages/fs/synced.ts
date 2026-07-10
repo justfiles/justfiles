@@ -73,6 +73,14 @@ interface SyncLifecycle {
 	// write stamped with `resetId` (the publishing-lock owner token). A full
 	// pathScan, NOT a pushCursor replay, so pulled files are preserved.
 	publishSnapshot(resetId: string, newGeneration: number): Promise<void>
+	// Persist the "take mine" intent BEFORE the reset CAS (crash recovery): the
+	// caller mints `resetId`, calls this, then runs CAS + publish + finalize. On a
+	// crash mid-publish the next boot resumes/adopts instead of discarding local.
+	beginTakeMine(resetId: string): Promise<void>
+	// Drop the "take mine" intent once the publish finalized (or was superseded).
+	clearPendingReset(): Promise<void>
+	// The persisted in-flight "take mine" intent, if any (drives crash-resume).
+	pendingReset(): { resetId: string; mode: 'adopt-mine' } | undefined
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
@@ -91,6 +99,11 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// the remote replica can stamp `x-fs-generation` on every mutating write (push
 	// fencing). Kept in sync with `SyncState.generation` by `recordGeneration`.
 	let knownGeneration = (await syncState.get()).generation
+
+	// The in-flight "take mine" intent, mirrored in memory. Persisted BEFORE the
+	// reset CAS so a crash mid-publish resumes/adopts (via the boot handshake)
+	// instead of discarding the snapshot it meant to publish; cleared on finalize.
+	let knownPending = (await syncState.get()).pendingReset
 
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
@@ -278,6 +291,50 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		await syncState.patch({ generation })
 	}
 
+	async function beginTakeMine(resetId: string): Promise<void> {
+		knownPending = { resetId, mode: 'adopt-mine' }
+		await syncState.patch({ pendingReset: knownPending })
+	}
+
+	async function clearPendingReset(): Promise<void> {
+		knownPending = undefined
+		await syncState.patch({ pendingReset: undefined })
+	}
+
+	/**
+	 * Lineage + publishing-lock reconcile (client<->server only), run each cycle
+	 * BEFORE touching data. Returns false to DEFER the whole cycle: a publish is in
+	 * flight and we must not consume or clobber the half-published baseline.
+	 *
+	 * With our own persisted `pendingReset` ("take mine" in flight):
+	 *  - still publishing under our resetId → defer (the resumer finishes the
+	 *    publish), keeping local intact so a crash can't discard the snapshot we
+	 *    meant to push;
+	 *  - finalized under our resetId (publishing=false) → adopt + drop the intent;
+	 *  - a different reset won (resetId mismatch) → abandon the intent, then fall
+	 *    through (defer if it is still publishing, else client-reset to the winner).
+	 * Without a pendingReset: defer while ANYONE is publishing; else run the plain
+	 * generation reconcile.
+	 */
+	async function reconcileLineage(server: {
+		generation?: number
+		resetId?: string
+		publishing?: boolean
+	}): Promise<boolean> {
+		if (knownPending) {
+			if (server.resetId === knownPending.resetId) {
+				if (server.publishing) return false // our publish still in flight — defer
+				if (server.generation !== undefined) await recordGeneration(server.generation)
+				await clearPendingReset() // finalized — adopt, keep local
+				return true
+			}
+			await clearPendingReset() // a different reset won — our intent is void
+		}
+		if (server.publishing) return false // a publish is in flight — defer
+		await reconcileGeneration(server.generation)
+		return true
+	}
+
 	/**
 	 * Mid-session guard: a pull/scan page echoes the server's live `generation`. If
 	 * it changed since our handshake (server reset mid-cycle), discard now; the next
@@ -297,10 +354,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			negotiated = true
 		}
 		// Volume-lineage reconcile (client<->server only): read the server's
-		// generation each cycle and adopt / client-reset before touching data.
+		// generation + publishing lock each cycle and adopt / defer / client-reset
+		// before touching data. A false return defers this cycle (a publish is live).
 		if (clientServer && remoteReplica.handshake) {
-			const { generation } = await remoteReplica.handshake()
-			await reconcileGeneration(generation)
+			if (!(await reconcileLineage(await remoteReplica.handshake()))) return
 		}
 		try {
 			const state = await syncState.get()
@@ -456,6 +513,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		resetLocal,
 		generation: () => knownGeneration,
 		publishSnapshot,
+		beginTakeMine,
+		clearPendingReset,
+		pendingReset: () => knownPending,
 		destroy,
 		status: () => _status,
 		onStatusChange

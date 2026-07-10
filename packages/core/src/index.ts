@@ -10,6 +10,7 @@ export {
 	decideResume,
 	type FinalizeDecision,
 	finalizeReset,
+	finalizeResetWithGc,
 	type GenerationState,
 	type ResetDecision,
 	type ResetMode,

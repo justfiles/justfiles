@@ -314,12 +314,14 @@ export function remoteSyncReplica(
 	return {
 		async handshake() {
 			// GET /fs — the volume-lineage probe. Returns the server's `generation`
-			// (undefined on a server that has not opted in). `synced()` calls this once
-			// per cycle to detect a server-side volume reset.
+			// (undefined on a server that has not opted in) plus the adopt-mine
+			// publishing lock (`resetId` owner + `publishing`). `synced()` calls this
+			// once per cycle to detect a server-side volume reset or defer during a
+			// half-publish.
 			const res = await client.index.$get()
 			if (!res.ok) throw new Error(`handshake failed: ${res.status}`)
 			const data = await res.json()
-			return { generation: data.generation }
+			return { generation: data.generation, resetId: data.resetId, publishing: data.publishing }
 		},
 
 		async pathDeltas(cursor, opts) {
@@ -341,7 +343,8 @@ export function remoteSyncReplica(
 				changes: data.changes.map((c) => PathChange.parse(c)),
 				to: data.to,
 				done: data.done,
-				generation: data.generation
+				generation: data.generation,
+				publishing: data.publishing
 			}
 		},
 
@@ -359,7 +362,8 @@ export function remoteSyncReplica(
 				next: data.next,
 				syncCursor: data.syncCursor,
 				done: data.done,
-				generation: data.generation
+				generation: data.generation,
+				publishing: data.publishing
 			}
 		},
 

@@ -312,6 +312,9 @@ type LocalBackend = ReturnType<typeof memStorage>
 interface FakeServer {
 	replica: SyncReplica
 	generation: number | undefined
+	/** The adopt-mine publishing-lock owner + flag surfaced on the handshake. */
+	resetId: string | undefined
+	publishing: boolean
 	/** Override the generation echoed on pull pages (default: `generation`). */
 	deltaGeneration: number | undefined
 	/** How many times the client ran a full bootstrap (pathScan) against us. */
@@ -330,6 +333,8 @@ function fakeServer(
 	const puts = new Map<string, PathChange>()
 	const server: FakeServer = {
 		generation: init.generation,
+		resetId: undefined,
+		publishing: false,
 		deltaGeneration: undefined,
 		scanCalls: 0,
 		pushError: undefined,
@@ -350,7 +355,11 @@ function fakeServer(
 	}
 	for (const [p, content] of Object.entries(init.files ?? {})) server.seed(p, content)
 	server.replica = {
-		handshake: async () => ({ generation: server.generation }),
+		handshake: async () => ({
+			generation: server.generation,
+			resetId: server.resetId,
+			publishing: server.publishing
+		}),
 		pathScan: async () => {
 			server.scanCalls++
 			return {
@@ -393,9 +402,12 @@ async function seedSyncState(local: LocalBackend, state: Record<string, unknown>
 	await vol.writeFile('/.state/sync', enc.encode(JSON.stringify({ schemaVersion: 1, ...state })))
 }
 
-async function readSyncState(
-	local: LocalBackend
-): Promise<{ generation?: number; pullCursor?: string; pushCursor?: string }> {
+async function readSyncState(local: LocalBackend): Promise<{
+	generation?: number
+	pullCursor?: string
+	pushCursor?: string
+	pendingReset?: { resetId: string; mode: string }
+}> {
 	return JSON.parse(dec.decode(await volume(local).readFile('/.state/sync')))
 }
 
@@ -528,5 +540,89 @@ describe('synced (generation / client-reset)', () => {
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		expect(dec.decode(await vol.readFile('/server.txt'))).toBe('hi')
 		expect((await readSyncState(local)).generation).toBeUndefined()
+	})
+
+	// Finding 1 (gh#147): while another device holds the publishing lock, defer the
+	// whole cycle — do NOT client-reset or consume the half-published baseline, even
+	// though the server's generation already bumped.
+	it('defers (no client-reset) while another device is mid-publish', async () => {
+		const server = fakeServer({ generation: 6, files: { '/server.txt': 'theirs' } })
+		server.publishing = true
+		server.resetId = 'other-device'
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		await seedSyncState(local, { generation: 5, pullCursor: '0', pushCursor: '0' })
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.flush()
+		expect(await vol.exists('/keep.txt')).toBe(true) // preserved — deferred, not reset
+		expect(await vol.exists('/server.txt')).toBe(false) // partial tree not consumed
+		expect(server.scanCalls).toBe(0)
+		expect((await readSyncState(local)).generation).toBe(5) // not adopted yet
+	})
+
+	// Finding 5 (gh#147): a crash mid-"take mine" persists `pendingReset`. On reboot,
+	// while our own publish is still in flight, keep local + defer — never discard
+	// the snapshot we meant to publish, despite the generation mismatch.
+	it('crash-resume: keeps local + defers while our own publish is still in flight', async () => {
+		const server = fakeServer({ generation: 6 })
+		server.publishing = true
+		server.resetId = 'mine-1'
+		const local = memStorage()
+		await volume(local).writeFile('/mine.txt', enc.encode('to publish'))
+		await seedSyncState(local, {
+			generation: 5,
+			pullCursor: '0',
+			pushCursor: '0',
+			pendingReset: { resetId: 'mine-1', mode: 'adopt-mine' }
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.flush()
+		expect(await vol.exists('/mine.txt')).toBe(true) // NOT discarded despite gen mismatch
+		expect(server.scanCalls).toBe(0)
+	})
+
+	// Once our publish finalized (lock released, resetId still ours), adopt the new
+	// generation, keep local, and drop the intent.
+	it('crash-resume: adopts + clears pending once our publish has finalized', async () => {
+		const server = fakeServer({ generation: 6 })
+		server.publishing = false
+		server.resetId = 'mine-1'
+		const local = memStorage()
+		await volume(local).writeFile('/mine.txt', enc.encode('published'))
+		await seedSyncState(local, {
+			generation: 5,
+			pullCursor: '0',
+			pushCursor: '0',
+			pendingReset: { resetId: 'mine-1', mode: 'adopt-mine' }
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.flush()
+		expect(await vol.exists('/mine.txt')).toBe(true) // kept — we authored this baseline
+		const state = await readSyncState(local)
+		expect(state.generation).toBe(6) // adopted
+		expect(state.pendingReset).toBeUndefined() // intent dropped
+	})
+
+	// If a DIFFERENT reset won (resetId mismatch), abandon our intent and client-
+	// reset to the winner's baseline (losing the race discards our local work).
+	it('crash-resume: a different reset won → abandon intent + client-reset to the winner', async () => {
+		const server = fakeServer({ generation: 7, files: { '/winner.txt': 'won' } })
+		server.publishing = false
+		server.resetId = 'someone-else'
+		const local = memStorage()
+		await volume(local).writeFile('/mine.txt', enc.encode('lost the race'))
+		await seedSyncState(local, {
+			generation: 5,
+			pullCursor: '0',
+			pushCursor: '0',
+			pendingReset: { resetId: 'mine-1', mode: 'adopt-mine' }
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.flush()
+		expect(await vol.exists('/mine.txt')).toBe(false) // discarded — winner's baseline wins
+		expect(await vol.exists('/winner.txt')).toBe(true)
+		const state = await readSyncState(local)
+		expect(state.generation).toBe(7)
+		expect(state.pendingReset).toBeUndefined()
 	})
 })

@@ -15,6 +15,7 @@ import {
 	decideReset,
 	decideResume,
 	finalizeReset,
+	finalizeResetWithGc,
 	type GenerationState,
 	readGenerationState,
 	resetVolume
@@ -213,5 +214,42 @@ describe('reset — transaction body', () => {
 		// Old generation + old tree survive (rolled back).
 		expect((await readGenerationState(db)).generation).toBe(1)
 		expect(await vol.exists('/a.txt')).toBe(true)
+	})
+
+	// Finding 2 (gh#147): the ownership check MUST precede the destructive GC, so a
+	// stale/non-owner finalize can't reclaim the kept lazy blobs and only then be
+	// rejected. finalizeResetWithGc enforces check → gc → clear.
+	it('finalizeResetWithGc runs gc only for the confirmed owner, before clearing the lock', async () => {
+		const { db } = makeDb()
+		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
+
+		// Non-owner: rejected WITHOUT running gc; the lock stays held.
+		let gcRuns = 0
+		const notOwner = await finalizeResetWithGc(
+			db,
+			{ generation: 2, resetId: 'other' },
+			async () => {
+				gcRuns++
+			}
+		)
+		expect(notOwner).toEqual({ ok: false, error: 'not_owner' })
+		expect(gcRuns).toBe(0)
+		expect((await readGenerationState(db)).publishing).toBe(true)
+
+		// Stale generation: also rejected without gc.
+		const stale = await finalizeResetWithGc(db, { generation: 99, resetId: 'r1' }, async () => {
+			gcRuns++
+		})
+		expect(stale).toEqual({ ok: false, error: 'generation_stale' })
+		expect(gcRuns).toBe(0)
+
+		// Owner: gc runs exactly once, THEN the lock clears.
+		const order: string[] = []
+		const ok = await finalizeResetWithGc(db, { generation: 2, resetId: 'r1' }, async () => {
+			order.push('gc')
+		})
+		expect(ok.ok).toBe(true)
+		expect(order).toEqual(['gc'])
+		expect((await readGenerationState(db)).publishing).toBe(false)
 	})
 })

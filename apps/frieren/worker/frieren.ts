@@ -14,9 +14,9 @@ import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
 import {
 	createFsApi,
 	type DbAdapter,
-	finalizeReset,
+	finalizeResetWithGc,
 	type ResetMode,
-	readGeneration,
+	readGenerationState,
 	resetVolume
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
@@ -98,7 +98,7 @@ export class Frieren extends DurableObject<Env> {
 			// self-guard via the fromGeneration CAS.
 			.post('/fs/reset', (c) => this.handleReset(c))
 			.post('/fs/reset/finalize', (c) => this.handleFinalize(c))
-			.route('/fs', createFsApi(fs, { generation: () => readGeneration(this.db) }))
+			.route('/fs', createFsApi(fs, { lineage: () => readGenerationState(this.db) }))
 
 		ctx.blockConcurrencyWhile(async () => {
 			await this.reset()
@@ -121,12 +121,14 @@ export class Frieren extends DurableObject<Env> {
 		return c.json({ generation: decision.next.generation, resetId: decision.next.resetId })
 	}
 
-	// POST /fs/reset/finalize { generation, resetId } — GC the discarded baseline,
-	// then clear the adopt-mine publishing lock (owner + CAS checked).
+	// POST /fs/reset/finalize { generation, resetId } — validate owner + CAS, GC the
+	// discarded baseline, THEN clear the adopt-mine publishing lock (finalizeResetWithGc
+	// enforces that order so a stale/non-owner finalize can't reclaim kept blobs).
 	private async handleFinalize(c: Context) {
 		const body = await c.req.json<{ generation: number; resetId: string }>()
-		await this.fs.caps?.content?.gcUnreferenced?.()
-		const decision = await finalizeReset(this.db, body)
+		const decision = await finalizeResetWithGc(this.db, body, async () => {
+			await this.fs.caps?.content?.gcUnreferenced?.()
+		})
 		if (!decision.ok) return c.json({ error: decision.error }, 409)
 		this.vol = volume(this.fs)
 		await this.reset()
