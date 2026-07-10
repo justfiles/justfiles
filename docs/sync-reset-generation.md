@@ -195,11 +195,13 @@ One auth-guarded DO route (not inside `createFsApi` — it needs DO-level powers
 truncate the volume, bump the counter):
 
 ```
-POST /fs/reset           { mode: 'adopt-mine' | 'wipe', fromGeneration: N, resetId }
-  -> 200 { generation: N+1, resetId }        # applied (publishing set for adopt-mine)
+POST /fs/reset           { mode, fromGeneration: N, resetId? }   # mode: 'adopt-mine' | 'wipe'
+  -> 200 { generation: N+1, resetId? }       # applied (publishing set for adopt-mine)
   -> 409 { error: 'generation_stale', generation: <current> }   # CAS failed
+  # resetId REQUIRED for adopt-mine (owner of the publishing lock); optional for
+  # wipe (no lock, no publish phase)
 
-POST /fs/reset/finalize  { generation: N+1, resetId }   # adopt-mine: publish done
+POST /fs/reset/finalize  { generation: N+1, resetId }   # adopt-mine only: publish done
   -> 200 { ok: true }                        # publishing cleared
   -> 409 { error: 'generation_stale' | 'not_owner' }            # CAS failed
 ```
@@ -315,7 +317,8 @@ Let the current server generation be `N`.
 
 - **Reset server ("take mine")** — mint a `resetId`, persist `pendingReset`, then
   `POST /fs/reset { mode:'adopt-mine', fromGeneration:N, resetId }`. The DO
-  **truncates the whole server volume**, bumps to `N+1`, marks the volume
+  **truncates the server tree + sync tables** (keeping content blobs — see
+  below), bumps to `N+1`, marks the volume
   `publishing` (owner = `resetId`), and returns. The initiator then **republishes
   its full local volume** as the new baseline (stamped `N+1`, each write carrying
   `x-fs-reset-id` so the lock lets it through), then calls `POST
@@ -324,7 +327,7 @@ Let the current server generation be `N`.
   next handshake → client-reset to the new baseline; any of them still on `N` that
   tries to push is fenced. (Git force-push + others `reset --hard`, made safe.)
 
-  Three things this must get right:
+  Four things this must get right:
 
   - **Republish is a full `pathScan()` snapshot, NOT a `pushCursor` replay.**
     Normal push filters `excludeLocalSource: REMOTE_SOURCE` (`synced.ts`) — every
@@ -334,6 +337,20 @@ Let the current server generation be `N`.
     (`localReplica.pathScan()` → puts) instead; it reflects true local state
     regardless of who authored each file, then resume deltas from the frozen
     high-water (the same wind-forward bootstrap uses).
+  - **Keep server content for adopt-mine — do NOT delete `fs_contents` here (lazy
+    blobs).** Frieren syncs with `lazyContent: true`, so the local replica often
+    holds only a `contentHash` stub for files the user never opened — the bytes
+    live on the server. `uploadBlobs` skips a hash the server already has and
+    otherwise reads it from the LOCAL store, which for a lazy stub is empty. If
+    adopt-mine deleted server content the way `wipe` does, the initiator could
+    neither skip nor upload those hashes and **the bytes would be lost**. So
+    adopt-mine truncates only the tree + sync tables and **leaves `fs_contents`
+    intact**: every hash the republished snapshot references stays resolvable
+    (server-resident for pulled files, uploaded-from-local for locally-authored
+    ones), and old now-unreferenced blobs are GC'd after finalize. (`wipe` is the
+    opposite — it *must* drop content for privacy; see Wipe scope. A pre-CAS
+    "hydrate every local blob" walk would also work but is a full download and
+    unnecessary once we keep the content.)
   - **Don't expose a half-published baseline.** Between the bump and the last
     publish page the server holds the new generation but only *part* of the
     volume. Without a guard, another device sees `N+1`, bootstraps that partial
@@ -383,15 +400,18 @@ about:
     holds the hash → inline-bytes-or-`r2_key` mapping); if the wipe *keeps*
     orphaned rows, then wiped content is **still fetchable by hash** by any stale
     client that knows the hash — unacceptable for a factory reset whose whole point
-    is to destroy the data. So the wipe drops `fs_contents` too. The cost is that
-    a later re-push can't short-circuit on `hasBlobByHash` and re-uploads (R2 just
+    is to destroy the data. So the wipe drops `fs_contents` **and its FTS index
+    `fs_content_fts`** — that FTS5 table retains extracted searchable text, so
+    dropping content rows alone would leave the text queryable. The cost is that a
+    later re-push can't short-circuit on `hasBlobByHash` and re-uploads (R2 just
     overwrites identical content-addressed bytes) — an acceptable trade. (If we
     ever want the upload-skip back without the leak, gate `GET`/`HEAD /fs/blob` on
     a *live inode reference* so orphaned content is non-readable while its row
     survives; deferred.)
   - So the wipe truncates the **tree** (`fs_inodes` / `fs_dirents` / `fs_xattrs`),
     **both sync tables** (`fs_path_journal` / `fs_path_version`), and
-    **`fs_contents`**, then recreates the root inode (see Reset endpoint).
+    **`fs_contents` + `fs_content_fts`**, then recreates the root inode (see Reset
+    endpoint). (adopt-mine keeps `fs_contents`/`fs_content_fts` — see "take mine".)
 - **Server-seeded agent defaults are reseeded, so "empty" is short-lived.**
   `Frieren`'s DO constructor runs `reset()` → `ensureAgentDefaults()`, which
   (idempotently) writes `/system/soul.md` + `/system/profiles/user.md` when
@@ -403,6 +423,19 @@ about:
   `app-materialization.md` describes). Factory reset therefore converges to
   *seeded defaults*, not a literally bare volume — read the "starts empty" wording
   above with that caveat.
+- **The `/.state/materialised` app-seed marker is mode-sensitive.** `seedBuiltins`
+  seeds the built-in apps at most once per replica, gated by the local-only
+  `/.state/materialised` marker (and only when `kernel.list()` is empty after
+  bootstrap). A client-reset that wipes local IDB deletes that marker, so the
+  modes must set it deliberately:
+  - **Factory reset (wipe)** — leave the marker unset: the server is intentionally
+    empty and we *want* the client to reseed built-ins and push them as the `N+1`
+    baseline.
+  - **Take-theirs / client-reset-on-mismatch** — **set the marker after
+    bootstrap**, adopting the server verbatim. Otherwise a server the user
+    intentionally emptied of apps looks "genuinely new" post-bootstrap and gets
+    built-ins reseeded and pushed back — clobbering the user's intent. (The marker
+    is per-replica and never synced; see `app-materialization.md`.)
 - **Non-volume DO state** (the `AuditLog` in `ctx.storage`, in-memory rate-limit
   buckets) is **not part of the volume and is out of scope** — it never syncs, so
   a volume reset neither reads nor clears it. If we later want audit to reset too,
@@ -442,6 +475,11 @@ profile only offers factory-reset-local.
   idempotently on their own schedule (no cross-device transaction). The
   `publishing` lock covers the one remaining multi-step case (adopt-mine's
   snapshot publish after the bump).
+- **Stuck `publishing` lock** — if an adopt-mine owner dies after the CAS and
+  never finalizes, other devices defer forever. Needs a liveness escape: stamp the
+  lock with a lease/timestamp so a stale lock expires (or can be superseded by a
+  newer `resetId`), plus a debug/admin cancel route. For the debug-gated phase a
+  manual cancel suffices; a lease is required before prod.
 
 ## Suggested build order
 
