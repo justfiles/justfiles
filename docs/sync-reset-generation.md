@@ -120,10 +120,10 @@ that clients drain — is worse on every axis:
 
 ### The generation
 
-- A single **monotonic integer** persisted in the DO (a SQLite row or DO KV),
-  initialised once (e.g. `1`) and **bumped only by a reset**. It identifies the
-  server volume's *lineage*, not its content — a bump means "the volume you knew
-  is gone; re-establish from scratch".
+- A single **monotonic integer** persisted in the DO as a **SQLite row** (see the
+  Reset endpoint for why not DO KV), initialised once (e.g. `1`) and **bumped only
+  by a reset**. It identifies the server volume's *lineage*, not its content — a
+  bump means "the volume you knew is gone; re-establish from scratch".
 - The client persists the generation it last agreed with in `/.state/sync`:
 
   ```ts
@@ -195,14 +195,18 @@ One auth-guarded DO route (not inside `createFsApi` — it needs DO-level powers
 truncate the volume, bump the counter):
 
 ```
-POST /fs/reset  { mode: 'adopt-mine' | 'wipe', fromGeneration: N, resetId }
-  -> 200 { generation: N+1, resetId }        # applied
+POST /fs/reset           { mode: 'adopt-mine' | 'wipe', fromGeneration: N, resetId }
+  -> 200 { generation: N+1, resetId }        # applied (publishing set for adopt-mine)
   -> 409 { error: 'generation_stale', generation: <current> }   # CAS failed
+
+POST /fs/reset/finalize  { generation: N+1, resetId }   # adopt-mine: publish done
+  -> 200 { ok: true }                        # publishing cleared
+  -> 409 { error: 'generation_stale' | 'not_owner' }            # CAS failed
 ```
 
 `fromGeneration` makes the bump a **compare-and-swap**: the DO only applies if
 `N === current`, so two devices racing a reset can't interleave or double-bump.
-"Take theirs" needs no endpoint (it's client-only). Three properties the DO must
+"Take theirs" needs no endpoint (it's client-only). Properties the DO must
 guarantee:
 
 - **One atomic SQLite transaction.** The generation lives as a **SQLite row** (a
@@ -211,17 +215,34 @@ guarantee:
   bump `generation`, store the new `resetId` — runs in a single `db.transaction`.
   Splitting truncate (SQLite) from the bump (DO KV) lets a crash leave a
   half-reset volume; one transaction leaves either the old lineage or the new one,
-  never a mix. Note `ensureBootstrapped` seeds the root inode only once per DO
-  lifetime and caches that it ran, so the reset must recreate root `ino=1` itself
-  (and invalidate that cache) — otherwise the wiped volume has no root.
+  never a mix. **Caveat: the DO adapter's `transaction()` is currently a no-op**
+  (`apps/frieren/worker/db.do.ts` just does `await fn(adapter)` — no
+  `BEGIN`/`COMMIT`), so this atomicity does not exist yet: it must be made real
+  (issue `BEGIN`/`COMMIT`, or use `ctx.storage.transactionSync`, or wrap the reset
+  in `blockConcurrencyWhile`) before the plan's atomicity claims hold. Note
+  `ensureBootstrapped` seeds the root inode only once per DO lifetime and caches
+  that it ran, so the reset must recreate root `ino=1` itself (and invalidate that
+  cache) — otherwise the wiped volume has no root.
 - **`resetId` disambiguates racing resets.** The client mints a random `resetId`,
   persists it (`pendingReset`) *before* the CAS, and sends it. The DO stores the
   winning `resetId` and echoes it in the handshake. Two devices that both guessed
   target `N+1` are told apart by their distinct `resetId`s — the loser's won't
   match, so it never resumes a publish over the winner (see below).
-- **`adopt-mine` sets a `publishing` lock.** The bump also marks the volume
-  `publishing` (owner = the winning `resetId`) so other devices don't bootstrap a
-  half-published baseline (see "take mine" below).
+- **`adopt-mine` sets a `publishing` lock with an owner.** The bump also marks the
+  volume `publishing` (owner = the winning `resetId`) so other devices don't
+  bootstrap a half-published baseline (see "take mine" below). While
+  `publishing=true` the DO **rejects every mutation whose `x-fs-reset-id` ≠ the
+  owner** — `x-fs-generation` alone can't tell the owner apart from a device that
+  already advanced to `N+1`, so the initiator's publish writes carry
+  `x-fs-reset-id: <resetId>` and everyone else is blocked. **Pull is gated too**:
+  `pathDeltas` / `pathScan` return not-ready (or echo `publishing`) while the lock
+  is held, so a client that was mid-scan when publishing began doesn't consume the
+  truncated/partial tree.
+- **Finalize is its own CAS route.** The initiator calls `POST /fs/reset/finalize
+  { generation:N+1, resetId }` once the snapshot publish is durable; the DO clears
+  `publishing` only if `generation === current` and `resetId === owner`. No
+  implicit "last page clears the lock" — an explicit, idempotent call so a retried
+  finalize is a no-op and a non-owner can't clear it.
 
 ### Interface changes (the minimal seam)
 
@@ -242,13 +263,15 @@ handshake/generation notion and `remoteSyncReplica()` only receives `clientId`:
   `x-fs-generation` (`apiStorage` already threads a per-request header via
   `withSource`), and have both surface the `generation_stale` 409 up so the caller
   refetches the generation / resets. Fencing all `/fs` routes *without* plumbing
-  the inode client would just 409 every CLI mutation.
+  the inode client would just 409 every CLI mutation. During an `adopt-mine`
+  publish the initiator additionally stamps `x-fs-reset-id: <resetId>` on its
+  writes (the owner credential the `publishing` lock checks).
 - **Persist it** beside the cursors in `/.state/sync` (`generation`, plus the
   `pendingReset` intent from take-mine).
 
 Keep the surface minimal: a `generation` field on the pull payloads + a
-generation getter on the remote replica is enough — no new RPCs beyond the
-existing `GET /fs` handshake and `POST /fs/reset`.
+generation getter on the remote replica + the two reset routes (`POST /fs/reset`,
+`POST /fs/reset/finalize`) — no other new RPCs.
 
 ### Client-reset policy
 
@@ -273,11 +296,12 @@ Let the current server generation be `N`.
   `POST /fs/reset { mode:'adopt-mine', fromGeneration:N, resetId }`. The DO
   **truncates the whole server volume**, bumps to `N+1`, marks the volume
   `publishing` (owner = `resetId`), and returns. The initiator then **republishes
-  its full local volume** as the new baseline (stamped `N+1`), then **finalizes**
-  (clears `publishing`) and stores `N+1`. It does **not** re-bootstrap, so no
-  local data is lost. Every other device sees `N+1 ≠ N` on its next handshake →
-  client-reset to the new baseline; any of them still on `N` that tries to push is
-  fenced. (Git force-push + others `reset --hard`, made safe.)
+  its full local volume** as the new baseline (stamped `N+1`, each write carrying
+  `x-fs-reset-id` so the lock lets it through), then calls `POST
+  /fs/reset/finalize` to **clear `publishing`** and stores `N+1`. It does **not**
+  re-bootstrap, so no local data is lost. Every other device sees `N+1 ≠ N` on its
+  next handshake → client-reset to the new baseline; any of them still on `N` that
+  tries to push is fenced. (Git force-push + others `reset --hard`, made safe.)
 
   Three things this must get right:
 
@@ -293,10 +317,12 @@ Let the current server generation be `N`.
     publish page the server holds the new generation but only *part* of the
     volume. Without a guard, another device sees `N+1`, bootstraps that partial
     (or empty) snapshot, and may materialise built-ins and push them — racing the
-    initiator and corrupting the baseline. The `publishing` lock closes this:
-    while it is set the handshake reports the volume as not-yet-ready, so other
-    devices **defer** their client-reset/bootstrap (and their stale-`N` pushes are
-    fenced anyway) until the initiator finalizes. For the debug-gated phase the
+    initiator and corrupting the baseline. The `publishing` lock closes this on
+    **both channels**: while it is set the handshake *and* the pull endpoints
+    (`pathDeltas` / `pathScan`) report not-ready, so other devices **defer** their
+    client-reset/bootstrap (and don't consume a partial tree mid-scan), while
+    writes are owner-only (`x-fs-reset-id` must match) so only the initiator can
+    publish. For the debug-gated phase the
     "close other devices first" note is the interim mitigation; the lock is
     required before prod.
   - **Crash recovery, keyed on `resetId`.** If the client crashes after the CAS
@@ -383,9 +409,11 @@ profile only offers factory-reset-local.
   the winner's baseline (and can retry the reset from there if the user still
   wants it).
 - **Partial failure** — the reset (CAS + truncate + root inode + bump) is a single
-  atomic SQLite transaction, so it can't tear; other devices converge idempotently
-  on their own schedule (no cross-device transaction). The `publishing` lock covers
-  the one remaining multi-step case (adopt-mine's snapshot publish after the bump).
+  atomic SQLite transaction, so it can't tear (once the DO adapter's
+  `transaction()` is made real — see Reset endpoint); other devices converge
+  idempotently on their own schedule (no cross-device transaction). The
+  `publishing` lock covers the one remaining multi-step case (adopt-mine's
+  snapshot publish after the bump).
 
 ## Suggested build order
 
@@ -397,10 +425,14 @@ profile only offers factory-reset-local.
    *and* the inode `apiStorage` client — enforced *inside the mutation's SQLite
    transaction*, not just a pre-check; `generation_stale` rejection → reset; reset
    route exempt).
-3. **`POST /fs/reset` modes** (`adopt-mine`, `wipe`) as one atomic SQLite
-   transaction (CAS + truncate + recreate root inode + bump generation + store
-   `resetId`), with the `publishing` lock for adopt-mine; wire "take theirs"
-   (client-only) too.
+3. **`POST /fs/reset` + `POST /fs/reset/finalize`** (`adopt-mine`, `wipe`) as one
+   atomic SQLite transaction (CAS + truncate + recreate root inode + bump
+   generation + store `resetId`), with the `publishing` lock for adopt-mine
+   (owner-only `x-fs-reset-id` writes, pulls gated, explicit finalize CAS); wire
+   "take theirs" (client-only) too. **Prerequisite:** make the DO SQLite adapter's
+   `transaction()` real (`BEGIN`/`COMMIT`, `ctx.storage.transactionSync`, or a
+   `blockConcurrencyWhile` critical section) — today it's a no-op `await
+   fn(adapter)`, so none of the atomicity above actually holds yet.
 4. **Shell UI** (debug-gated panel + confirmations).
 
 Not touched: the path-sync wire itself beyond the additive `generation` field;
