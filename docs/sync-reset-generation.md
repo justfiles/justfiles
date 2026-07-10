@@ -380,3 +380,110 @@ factory-reset-local.
 Not touched: the path-sync wire beyond the additive `generation` field; per-file
 identity is `path-based-sync.md`'s job. This doc is the volume-level lineage
 identity on top of it.
+
+## Testing
+
+Most of this is unit-testable, and the sync test infra already has the seams for
+it. The rule of thumb: **the engine logic and the reset transaction body are unit
+tests; the concurrency/crash *guarantees*, the agent-turn race, and the UI are
+not.** Test the code path everywhere; where a property only holds under true
+concurrency or a real crash, cover it by construction (single-threaded DO, atomic
+transaction) plus a fault-injection path test, not by reproducing the race.
+
+### Seams to build on (already in-tree)
+
+- **`packages/fs/synced.test.ts`** drives the REAL `synced()` engine over
+  `memStorage`, and already has a fake `SyncReplica` factory that asserts on wire
+  options (`excludeOrigin`, apply `source`). This is the home for handshake,
+  client-reset, and fencing-decision tests — extend the fake to return/echo a
+  `generation` and a `409 generation_stale`.
+- **`packages/fs/sync-test-harness.ts`** — `twoPeers`/`wire` (two real local
+  replicas), orphan counting, and `bootstrap({ onPage })` which lets a test mutate
+  the remote mid-snapshot. `onPage` is exactly the hook for the half-published
+  window and mid-scan generation bumps. Extend `wire` to N fake replicas over one
+  server for multi-device convergence (A publishes, B defers, C is fenced).
+- **`pathSyncConformanceCases`** (in `sync-test-harness.ts`) runs the same specs
+  across mem/idb/sqlite. Add a generation/reset seam case here and it is exercised
+  on every backend (it already has a `gcUnreferenced` case for the GC path).
+- **`packages/core/src/db.sqlite.ts`** is a REAL transactional adapter
+  (`BEGIN`/`COMMIT`/`ROLLBACK`); `storage.sqlite.conformance.test.ts` runs it under
+  vitest via `node:sqlite`. So the fence-in-transaction and reset-atomicity code
+  paths can be tested against a genuinely transactional store today — no bun, no
+  Cloudflare runtime.
+
+### Unit-testable, by build step
+
+1. **Handshake + client-reset (step 1).**
+   - The three-way branch as a table test: `equal` → normal; `stored undefined`
+     split by cursors (no cursors → bootstrap+record; **has cursors → adopt, NOT
+     reset** — the migration case that must not reset every existing device);
+     `stored ≠ server` → client-reset then record. The has-cursors-no-generation
+     case reuses the existing "poke `/.state/sync` directly then re-boot `synced()`"
+     technique from the re-bootstrap-reconcile test.
+   - Mismatch mid-session: a pull payload echoing a different `generation` triggers
+     a reset without an extra handshake.
+   - Discard-only reset: assert the local replica + cursors are dropped, re-bootstrap
+     runs against the new generation, and the new generation is persisted.
+2. **Push fencing (step 2).**
+   - Decision logic via the fake replica: every mutating call carries
+     `x-fs-generation`; a `409 { error: 'generation_stale', generation }` is treated
+     like a handshake mismatch (reset, then retry). Cover BOTH client paths —
+     path-sync `remoteSyncReplica()` and the inode `apiStorage()` (`withSource`
+     header threading) — since fencing only path-sync leaves the inode routes an
+     unfenced back door.
+   - Server-side compare against a real transactional adapter: a write stamped with
+     a stale generation is rejected and **does not land**; a write at the current
+     generation commits. Reset routes are exempt (self-guard via CAS).
+3. **Reset transaction + state machine (step 3).**
+   - Reset body against `db.sqlite.ts`: CAS on `fromGeneration` (applies only at
+     `N`, rejects otherwise), truncate tree + `fs_path_journal` + `fs_path_version`,
+     recreate root `ino=1` and invalidate the `ensureBootstrapped` cache, bump,
+     store `resetId`. Assert a post-reset op still finds a root (regression for the
+     cache-invalidation bug).
+   - Mode-specific content: `wipe` drops `fs_contents` + `fs_content_fts` (assert a
+     `/fs/blob/:hash` and FTS lookup miss afterward); `adopt-mine` keeps them and
+     `gcUnreferenced()` at finalize drops exactly the now-unreferenced old blobs
+     (extends the existing GC conformance case).
+   - State machine as a pure module (factor it out of the DO): `fromGeneration` CAS,
+     `resetId` ownership, `publishing` gate (owner-only `x-fs-reset-id` writes,
+     pulls report not-ready), finalize idempotency (retry is a no-op; non-owner
+     can't clear), and the crash-resume decision tree (resume iff `resetId` matches
+     AND still `publishing`; adopt if finalized; reset to winner on `resetId`
+     mismatch).
+   - Multi-device convergence via N fake replicas: the initiator publishes a full
+     `pathScan()` snapshot (NOT a `pushCursor` replay — assert pulled/`REMOTE_SOURCE`
+     files survive), stragglers on `N` are fenced, others client-reset to `N+1`.
+   - Half-published window via `bootstrap({ onPage })`: while `publishing`, a second
+     device's pull sees not-ready and defers rather than consuming a partial tree.
+
+### Test the path, not the guarantee
+
+These properties only hold under conditions a unit test can't reproduce; cover the
+code path and rely on construction for the rest.
+
+- **"Compare folded into the same transaction, not a pre-check."** Testable as the
+  path (stale generation ⇒ 409, mutation absent) against `db.sqlite.ts`. The race it
+  defends against (a bump interleaving between a pre-check and COMMIT) is only
+  meaningful under true concurrency; single-threaded vitest / synchronous
+  `node:sqlite` can't interleave two in-flight transactions. The DO guarantees it by
+  single-threading, not by anything a test observes.
+- **Crash-atomicity ("old or new lineage, never a mix").** Testable as *throw
+  mid-reset ⇒ full rollback* against a real `BEGIN`/`COMMIT` adapter. An actual
+  process death mid-COMMIT is not reproducible in a unit test.
+- **Prerequisite:** `apps/frieren/worker/db.do.ts`'s `transaction()` is a **no-op**
+  (`await fn(adapter)` — no `BEGIN`/`COMMIT`). Until it issues a real
+  `BEGIN`/`COMMIT` (or uses `ctx.storage.transactionSync`), the atomicity story is
+  untested *on the shipping DO adapter* even though it is proven on the core one.
+  Make `transaction()` real first, then the fence/reset tests carry over.
+
+### Integration / manual (not unit)
+
+- **Quiescing the DO's own `this.vol` writers** (agent session, app caps,
+  `ensureAgentDefaults`, daily alarm) vs. an in-flight agent turn racing the
+  truncate — DO lifecycle + `blockConcurrencyWhile` + a live turn. Only becomes a
+  unit assertion if the generation/`publishing` check is pushed *into* the storage
+  mutators (then it is a per-mutator test).
+- **Stuck-`publishing`-lock liveness** (lease/expiry, supersede-by-newer-`resetId`)
+  — timing-based; fake timers help but it is really integration.
+- **Shell UI panel** — per `AGENTS.md`, Frieren UI changes get LLM-driven
+  `verify:ui` smoke checks, not unit/e2e tests.
