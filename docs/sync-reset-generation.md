@@ -261,11 +261,16 @@ guarantee:
   re-bootstraps rather than publishing), so `resetId` is optional for `wipe` — the
   DO may mint one for handshake consistency, but the client keeps no
   `pendingReset` for it (there is nothing to preserve).
-- **Finalize is its own CAS route.** The initiator calls `POST /fs/reset/finalize
-  { generation:N+1, resetId }` once the snapshot publish is durable; the DO clears
-  `publishing` only if `generation === current` and `resetId === owner`. No
-  implicit "last page clears the lock" — an explicit, idempotent call so a retried
-  finalize is a no-op and a non-owner can't clear it.
+- **Finalize is its own CAS route, and it GCs before unlocking.** The initiator
+  calls `POST /fs/reset/finalize { generation:N+1, resetId }` once the snapshot
+  publish is durable; the DO clears `publishing` only if `generation === current`
+  and `resetId === owner`. No implicit "last page clears the lock" — an explicit,
+  idempotent call so a retried finalize is a no-op and a non-owner can't clear it.
+  Because `adopt-mine` *kept* the old content rows (for lazy blobs), finalize
+  **runs `gcUnreferenced()` first** — the newly-published tree now references the
+  live hashes, so GC drops exactly the discarded old content (`fs_contents` +
+  `fs_content_fts` + orphaned R2) — *then* clears the lock, so no stale hash can
+  fetch discarded content once reads reopen.
 
 ### Interface changes (the minimal seam)
 
@@ -321,13 +326,14 @@ Let the current server generation be `N`.
   below), bumps to `N+1`, marks the volume
   `publishing` (owner = `resetId`), and returns. The initiator then **republishes
   its full local volume** as the new baseline (stamped `N+1`, each write carrying
-  `x-fs-reset-id` so the lock lets it through), then calls `POST
-  /fs/reset/finalize` to **clear `publishing`** and stores `N+1`. It does **not**
+  `x-fs-reset-id` so the lock lets it through), runs `gcUnreferenced()` to drop
+  the now-orphaned old content, then calls `POST /fs/reset/finalize` to **clear
+  `publishing`** and stores `N+1`. It does **not**
   re-bootstrap, so no local data is lost. Every other device sees `N+1 ≠ N` on its
   next handshake → client-reset to the new baseline; any of them still on `N` that
   tries to push is fenced. (Git force-push + others `reset --hard`, made safe.)
 
-  Four things this must get right:
+  Five things this must get right:
 
   - **Republish is a full `pathScan()` snapshot, NOT a `pushCursor` replay.**
     Normal push filters `excludeLocalSource: REMOTE_SOURCE` (`synced.ts`) — every
@@ -347,10 +353,19 @@ Let the current server generation be `N`.
     adopt-mine truncates only the tree + sync tables and **leaves `fs_contents`
     intact**: every hash the republished snapshot references stays resolvable
     (server-resident for pulled files, uploaded-from-local for locally-authored
-    ones), and old now-unreferenced blobs are GC'd after finalize. (`wipe` is the
+    ones), and old now-unreferenced blobs are GC'd at finalize (before the lock
+    clears — so discarded content isn't fetchable by a stale hash once reads
+    reopen). (`wipe` is the
     opposite — it *must* drop content for privacy; see Wipe scope. A pre-CAS
     "hydrate every local blob" walk would also work but is a full download and
     unnecessary once we keep the content.)
+  - **Preflight lazy-blob resolvability before the destructive CAS (recommended).**
+    A hash referenced by the snapshot must be resolvable at publish time — present
+    locally OR already on the server. Since adopt-mine keeps server content this
+    holds in the normal case, but a cheap pre-CAS check (local `hasBlobByHash` else
+    a server `HEAD /fs/blob/:hash` for each snapshot hash) fails *before* the
+    server is reset, rather than stranding a half-published baseline if some hash
+    is unexpectedly missing.
   - **Don't expose a half-published baseline.** Between the bump and the last
     publish page the server holds the new generation but only *part* of the
     volume. Without a guard, another device sees `N+1`, bootstraps that partial
@@ -494,11 +509,13 @@ profile only offers factory-reset-local.
 3. **`POST /fs/reset` + `POST /fs/reset/finalize`** (`adopt-mine`, `wipe`) as one
    **real** SQLite transaction (`BEGIN`/`COMMIT` or `transactionSync`, NOT just
    `blockConcurrencyWhile`): CAS + truncate tree + `fs_path_journal` +
-   `fs_path_version` + `fs_contents` + recreate root inode + bump generation +
-   store `resetId`. Quiesce the DO's own `this.vol` writers (agent/apps/alarm) for
-   the reset+publish window. adopt-mine adds the `publishing` lock (owner-only
-   `x-fs-reset-id` writes, pulls gated, explicit finalize CAS); wire "take theirs"
-   (client-only) too.
+   `fs_path_version` + recreate root inode + bump generation + store `resetId`.
+   **Content is mode-specific**: `wipe` also drops `fs_contents` +
+   `fs_content_fts` (privacy); `adopt-mine` keeps them (lazy blobs) and instead
+   runs `gcUnreferenced()` at finalize, before clearing the lock. Quiesce the DO's
+   own `this.vol` writers (agent/apps/alarm) for the reset+publish window.
+   adopt-mine adds the `publishing` lock (owner-only `x-fs-reset-id` writes, pulls
+   gated, explicit finalize CAS); wire "take theirs" (client-only) too.
 4. **Shell UI** (debug-gated panel + confirmations).
 
 Not touched: the path-sync wire itself beyond the additive `generation` field;
