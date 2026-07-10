@@ -130,7 +130,10 @@ that clients drain — is worse on every axis:
   type SyncState = {
     schemaVersion: number
     generation?: number    // server lineage this replica is synced against
-    pendingAdopt?: number  // in-flight "take mine" target (crash recovery)
+    pendingReset?: {        // in-flight "take mine" (crash recovery)
+      resetId: string       // client-minted id, matched against the server's
+      mode: 'adopt-mine'
+    }
     pushCursor?: SyncCursor
     pullCursor?: SyncCursor
   }
@@ -138,9 +141,10 @@ that clients drain — is worse on every axis:
 
 ### Handshake check (correctness, pulled)
 
-- `GET /fs` returns `generation` alongside the existing fields; pull responses
-  (`DeltaPage` / `ScanPage`) **echo it** so a mismatch is caught mid-session
-  without an extra round-trip.
+- `GET /fs` returns `generation` (plus the current `resetId` and a `publishing`
+  flag — see the reset endpoint) alongside the existing fields; pull responses
+  (`DeltaPage` / `ScanPage`) **echo `generation`** so a mismatch is caught
+  mid-session without an extra round-trip.
 - Each sync cycle compares the server's `generation` to the stored one:
   - **equal** → normal push/pull.
   - **stored is undefined** → *split by the cursors, because undefined ≠ fresh*:
@@ -166,6 +170,16 @@ that clients drain — is worse on every axis:
 - Implement the check as **one guard at the `/fs` mount** (a middleware over the
   `POST`/`PUT`/`PATCH`/`DELETE` methods) rather than per-route plumbing: the DO
   owns the generation, so the mount is the single natural place to compare it.
+- The check must be **atomic with the mutation, not a standalone pre-check.** A
+  middleware that reads the generation and *then* hands off to the route handler
+  is a TOCTOU hole: the request can pass at `N`, a reset can bump to `N+1` and
+  truncate, and the mutation can then commit into the *new* volume. Fold the
+  generation compare into the **same SQLite transaction** as the write (the
+  `applyJournaled` transaction for path-sync; each inode op's transaction for the
+  inode routes) — read the generation row, abort on mismatch. The mount-level
+  middleware may still fast-reject cheaply, but correctness lives in the
+  transactional check. (Equivalently: run mutation and reset under one serialized
+  critical section.)
 - The server **rejects** any mutating request whose generation ≠ current, with a
   distinct status (`409 { error: 'generation_stale', generation: <current> }`).
   The client treats that exactly like a handshake mismatch: reset, then retry.
@@ -181,14 +195,33 @@ One auth-guarded DO route (not inside `createFsApi` — it needs DO-level powers
 truncate the volume, bump the counter):
 
 ```
-POST /fs/reset  { mode: 'adopt-mine' | 'wipe', fromGeneration: N }
-  -> 200 { generation: N+1 }               # applied
+POST /fs/reset  { mode: 'adopt-mine' | 'wipe', fromGeneration: N, resetId }
+  -> 200 { generation: N+1, resetId }        # applied
   -> 409 { error: 'generation_stale', generation: <current> }   # CAS failed
 ```
 
-`fromGeneration` makes the bump a **compare-and-swap**: the DO only truncates +
-bumps if `N === current`, so two devices racing a reset can't interleave or
-double-bump. "Take theirs" needs no endpoint (it's client-only).
+`fromGeneration` makes the bump a **compare-and-swap**: the DO only applies if
+`N === current`, so two devices racing a reset can't interleave or double-bump.
+"Take theirs" needs no endpoint (it's client-only). Three properties the DO must
+guarantee:
+
+- **One atomic SQLite transaction.** The generation lives as a **SQLite row** (a
+  small meta row), NOT DO KV, and the whole reset — CAS check, truncate the tree
+  (`fs_inodes`/`fs_dirents`/`fs_xattrs`) + journal, **recreate the root inode**,
+  bump `generation`, store the new `resetId` — runs in a single `db.transaction`.
+  Splitting truncate (SQLite) from the bump (DO KV) lets a crash leave a
+  half-reset volume; one transaction leaves either the old lineage or the new one,
+  never a mix. Note `ensureBootstrapped` seeds the root inode only once per DO
+  lifetime and caches that it ran, so the reset must recreate root `ino=1` itself
+  (and invalidate that cache) — otherwise the wiped volume has no root.
+- **`resetId` disambiguates racing resets.** The client mints a random `resetId`,
+  persists it (`pendingReset`) *before* the CAS, and sends it. The DO stores the
+  winning `resetId` and echoes it in the handshake. Two devices that both guessed
+  target `N+1` are told apart by their distinct `resetId`s — the loser's won't
+  match, so it never resumes a publish over the winner (see below).
+- **`adopt-mine` sets a `publishing` lock.** The bump also marks the volume
+  `publishing` (owner = the winning `resetId`) so other devices don't bootstrap a
+  half-published baseline (see "take mine" below).
 
 ### Interface changes (the minimal seam)
 
@@ -200,13 +233,18 @@ handshake/generation notion and `remoteSyncReplica()` only receives `clientId`:
   handshake) — so `pathDeltas` / `pathScan` results carry it and a mismatch is
   caught mid-session without an extra round-trip. This is the one new field on the
   `ChangeSource` return types.
-- **Stamp the generation on writes.** The client must send its known generation
-  on every mutating call. Give `remoteSyncReplica()` a generation source (e.g.
-  `remoteSyncReplica(client, { clientId, generation: () => number })`) so it can
-  set `x-fs-generation` on push / blob-put / inode routes, and surface the
-  `generation_stale` 409 to the sync loop.
+- **Stamp the generation on writes — on both client paths.** Every mutating call
+  must carry the client's known generation, and that is *two* code paths, not one:
+  the path-sync `remoteSyncReplica()` (push / blob-put), AND `apiStorage()` over
+  `createFsClient()`, the inode-level HTTP backend the CLI and scripts use. Give
+  both a generation source (e.g. `remoteSyncReplica(client, { clientId,
+  generation })` and `apiStorage(client, { generation })`) that stamps
+  `x-fs-generation` (`apiStorage` already threads a per-request header via
+  `withSource`), and have both surface the `generation_stale` 409 up so the caller
+  refetches the generation / resets. Fencing all `/fs` routes *without* plumbing
+  the inode client would just 409 every CLI mutation.
 - **Persist it** beside the cursors in `/.state/sync` (`generation`, plus the
-  `pendingAdopt` intent from take-mine).
+  `pendingReset` intent from take-mine).
 
 Keep the surface minimal: a `generation` field on the pull payloads + a
 generation getter on the remote replica is enough — no new RPCs beyond the
@@ -231,15 +269,17 @@ Let the current server generation be `N`.
   common, safe case. (For a local-only profile with no server, this is just "wipe
   local IDB + reload".)
 
-- **Reset server ("take mine")** — `POST /fs/reset { mode:'adopt-mine',
-  fromGeneration:N }`. The DO **truncates the whole server volume**, bumps to
-  `N+1`, returns it. The initiator then **republishes its full local volume** as
-  the new baseline (stamped `N+1`) and stores `N+1`. It does **not** re-bootstrap,
-  so no local data is lost. Every other device sees `N+1 ≠ N` on its next
-  handshake → client-reset to the new baseline; any of them still on `N` that
-  tries to push is fenced. (Git force-push + others `reset --hard`, made safe.)
+- **Reset server ("take mine")** — mint a `resetId`, persist `pendingReset`, then
+  `POST /fs/reset { mode:'adopt-mine', fromGeneration:N, resetId }`. The DO
+  **truncates the whole server volume**, bumps to `N+1`, marks the volume
+  `publishing` (owner = `resetId`), and returns. The initiator then **republishes
+  its full local volume** as the new baseline (stamped `N+1`), then **finalizes**
+  (clears `publishing`) and stores `N+1`. It does **not** re-bootstrap, so no
+  local data is lost. Every other device sees `N+1 ≠ N` on its next handshake →
+  client-reset to the new baseline; any of them still on `N` that tries to push is
+  fenced. (Git force-push + others `reset --hard`, made safe.)
 
-  Two things this must get right:
+  Three things this must get right:
 
   - **Republish is a full `pathScan()` snapshot, NOT a `pushCursor` replay.**
     Normal push filters `excludeLocalSource: REMOTE_SOURCE` (`synced.ts`) — every
@@ -249,14 +289,26 @@ Let the current server generation be `N`.
     (`localReplica.pathScan()` → puts) instead; it reflects true local state
     regardless of who authored each file, then resume deltas from the frozen
     high-water (the same wind-forward bootstrap uses).
-  - **Crash recovery.** Persist a local *pending "adopt-mine" intent*
-    (`pendingAdopt: N+1` in `/.state/sync`) **before** the CAS. If the client
-    crashes after the server bumped to `N+1` but before the republish completes,
-    the next boot sees `stored(N) ≠ server(N+1)` and would otherwise discard-reset
-    the very local data it meant to publish. The pending intent overrides that:
-    while it is set and matches the server generation, **continue the snapshot
-    publish** rather than discarding, and clear it only once the publish is
-    durable.
+  - **Don't expose a half-published baseline.** Between the bump and the last
+    publish page the server holds the new generation but only *part* of the
+    volume. Without a guard, another device sees `N+1`, bootstraps that partial
+    (or empty) snapshot, and may materialise built-ins and push them — racing the
+    initiator and corrupting the baseline. The `publishing` lock closes this:
+    while it is set the handshake reports the volume as not-yet-ready, so other
+    devices **defer** their client-reset/bootstrap (and their stale-`N` pushes are
+    fenced anyway) until the initiator finalizes. For the debug-gated phase the
+    "close other devices first" note is the interim mitigation; the lock is
+    required before prod.
+  - **Crash recovery, keyed on `resetId`.** If the client crashes after the CAS
+    (server at `N+1`) but before the republish completes, the next boot sees
+    `stored(N) ≠ server(N+1)` and would otherwise discard-reset the very data it
+    meant to publish. `pendingReset` overrides that — but **only when its
+    `resetId` matches the server's current `resetId`**: then resume the snapshot
+    publish; otherwise (a different reset won in the meantime) clear it and
+    client-reset to the winner. Using `resetId` rather than the number `N+1` is
+    what stops a *losing* racer — who also persisted target `N+1` — from clobbering
+    the winner. Clear `pendingReset` only once the publish is durable and
+    finalized.
 
 - **Factory reset ("wipe both")** — `POST /fs/reset { mode:'wipe',
   fromGeneration:N }`. The DO truncates the volume and bumps to `N+1`. The
@@ -284,7 +336,8 @@ about:
     skip-upload optimization is lost even though the R2 bytes survive. So the wipe
     truncates the **tree** (`fs_inodes` / `fs_dirents` / `fs_xattrs`) and the
     **journal**, but leaves `fs_contents` (later reclaimed by the existing
-    `gcUnreferenced`). Deleting bytes is riskier (shared hashes) and unnecessary.
+    `gcUnreferenced`), then recreates the root inode (see Reset endpoint).
+    Deleting bytes is riskier (shared hashes) and unnecessary.
 - **Server-seeded agent defaults are reseeded, so "empty" is short-lived.**
   `Frieren`'s DO constructor runs `reset()` → `ensureAgentDefaults()`, which
   (idempotently) writes `/system/soul.md` + `/system/profiles/user.md` when
@@ -324,11 +377,15 @@ profile only offers factory-reset-local.
   Client-reset policy.
 - **Generation granularity** — one per account/DO (the sync unit). Per-subtree
   generations are overkill and not planned.
-- **Concurrent resets** — resolved by the `fromGeneration` CAS; the loser is told
-  it's stale and resets to the winner's baseline (it can retry the reset from
-  there if the user still wants it).
-- **Partial failure** — the bump is a single serial DO mutation; other devices
-  converge idempotently on their own schedule (no cross-device transaction).
+- **Concurrent resets** — resolved by the `fromGeneration` CAS *and* the per-reset
+  `resetId`: the loser is told it's stale, and its `pendingReset.resetId` won't
+  match the server's, so it never resumes a publish over the winner — it resets to
+  the winner's baseline (and can retry the reset from there if the user still
+  wants it).
+- **Partial failure** — the reset (CAS + truncate + root inode + bump) is a single
+  atomic SQLite transaction, so it can't tear; other devices converge idempotently
+  on their own schedule (no cross-device transaction). The `publishing` lock covers
+  the one remaining multi-step case (adopt-mine's snapshot publish after the bump).
 
 ## Suggested build order
 
@@ -336,10 +393,14 @@ profile only offers factory-reset-local.
    (discard-only), including the migration case (has-cursors-no-generation →
    adopt, don't reset).** Cheap, and it also hardens the *normal* path against a
    server restore-from-backup — introduce it even before the buttons.
-2. **Push fencing** (`x-fs-generation` on every mutating `/fs` route via a
-   mount-level guard + `generation_stale` rejection → reset; reset route exempt).
-3. **`POST /fs/reset` modes** (`adopt-mine`, `wipe`) with the `fromGeneration`
-   CAS; wire "take theirs" (client-only) too.
+2. **Push fencing** (`x-fs-generation` on every mutating `/fs` route — path-sync
+   *and* the inode `apiStorage` client — enforced *inside the mutation's SQLite
+   transaction*, not just a pre-check; `generation_stale` rejection → reset; reset
+   route exempt).
+3. **`POST /fs/reset` modes** (`adopt-mine`, `wipe`) as one atomic SQLite
+   transaction (CAS + truncate + recreate root inode + bump generation + store
+   `resetId`), with the `publishing` lock for adopt-mine; wire "take theirs"
+   (client-only) too.
 4. **Shell UI** (debug-gated panel + confirmations).
 
 Not touched: the path-sync wire itself beyond the additive `generation` field;
