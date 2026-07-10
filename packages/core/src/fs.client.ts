@@ -7,6 +7,9 @@ import type { createFsApi } from './fs'
 
 const FS_SOURCE_HEADER = 'x-fs-source'
 const FS_GENERATION_HEADER = 'x-fs-generation'
+// Owner token for an adopt-mine republish: stamped so the server's publishing
+// lock admits only the initiator's writes (docs/sync-reset-generation.md).
+const FS_RESET_ID_HEADER = 'x-fs-reset-id'
 
 // Detect the server's push-fence rejection. A mutating write stamped with a stale
 // `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`;
@@ -360,16 +363,18 @@ export function remoteSyncReplica(
 			}
 		},
 
-		async applyPathChanges(changes, _getBlobByHash) {
+		async applyPathChanges(changes, _getBlobByHash, opts) {
 			// Push: blobs are uploaded first (see synced()'s uploadBlobs), then the
 			// tree changes POST. `_getBlobByHash` is unused here — the server
-			// hydrates from its own store after the blob upload.
+			// hydrates from its own store after the blob upload. `opts.resetId` (an
+			// adopt-mine republish) stamps the publishing-lock owner token.
 			const gen = generation?.()
 			const res = await client.path.changes.$post({
 				json: { changes },
 				header: {
 					[FS_SOURCE_HEADER]: clientId,
-					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
+					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {}),
+					...(opts?.resetId ? { [FS_RESET_ID_HEADER]: opts.resetId } : {})
 				}
 			} as Parameters<typeof client.path.changes.$post>[0])
 			await throwIfStale(res)

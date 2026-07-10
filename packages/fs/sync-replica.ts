@@ -96,7 +96,7 @@ export interface ChangeApplier {
 	applyPathChanges(
 		changes: PathChange[],
 		getBlobByHash: (h: string) => Promise<Uint8Array>,
-		opts?: { source?: string }
+		opts?: { source?: string; resetId?: string }
 	): Promise<void>
 }
 

@@ -340,3 +340,68 @@ function deleteIdb(name: string): Promise<void> {
 		req.onsuccess = req.onerror = req.onblocked = () => resolve()
 	})
 }
+
+// ── Server-coordinated volume reset (docs/sync-reset-generation.md) ───────────
+// Debug-gated shell affordances (see ResetPanel). "Take theirs" is client-only;
+// "take mine" and "factory reset" coordinate through the DO reset routes, which
+// live outside createFsApi at `/fs/reset` and `/fs/reset/finalize`.
+
+async function postReset(getToken: GetToken, path: string, body: unknown): Promise<Response> {
+	const token = await getToken()
+	return fetch(path, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}` },
+		body: JSON.stringify(body)
+	})
+}
+
+// "Take theirs" — discard this device's local replica and re-pull the server's
+// volume. Purely client-side (the marker under /.state survives, so the server is
+// adopted verbatim without reseeding built-ins). Synced profiles only.
+export async function resetTakeTheirs(): Promise<void> {
+	const sync = active?.sync
+	if (!sync) throw new Error('“take theirs” requires a synced profile')
+	await sync.resetLocal()
+}
+
+// "Take mine" — republish this device's volume as the new server baseline; every
+// other device client-resets to it on its next handshake. Local stays intact, so
+// its republished /applications/* carries the apps to the other devices.
+export async function resetTakeMine(getToken: GetToken): Promise<void> {
+	const sync = active?.sync
+	if (!sync) throw new Error('“take mine” requires a synced profile')
+	const fromGeneration = sync.generation()
+	if (fromGeneration === undefined) throw new Error('“take mine” requires a server generation')
+	const resetId = crypto.randomUUID()
+	const res = await postReset(getToken, '/fs/reset', {
+		mode: 'adopt-mine',
+		fromGeneration,
+		resetId
+	})
+	if (!res.ok) throw new Error(`reset failed: ${res.status}`)
+	const applied = (await res.json()) as { generation: number; resetId?: string }
+	await sync.publishSnapshot(resetId, applied.generation)
+	const fin = await postReset(getToken, '/fs/reset/finalize', {
+		generation: applied.generation,
+		resetId
+	})
+	if (!fin.ok) throw new Error(`finalize failed: ${fin.status}`)
+}
+
+// "Factory reset" — wipe server + local, then reseed built-ins. A synced profile
+// wipes the server first; both paths delete local IDB (dropping the materialised
+// marker) and reload, so `seedBuiltins` re-materialises the built-ins against the
+// now-empty server and pushes them as the new baseline.
+export async function factoryReset(getToken: GetToken): Promise<void> {
+	const prev = active
+	if (!prev) return
+	if (prev.remoteUserId) {
+		const fromGeneration = prev.sync?.generation() ?? 1
+		const res = await postReset(getToken, '/fs/reset', { mode: 'wipe', fromGeneration })
+		if (!res.ok) throw new Error(`reset failed: ${res.status}`)
+	}
+	const name = prev.dbName
+	await releaseFsVolume({ flush: false })
+	await deleteIdb(name)
+	location.reload()
+}

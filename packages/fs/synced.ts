@@ -65,6 +65,14 @@ interface SyncLifecycle {
 	// volume (the safe, client-only reset — no server coordination). See
 	// docs/sync-reset-generation.md.
 	resetLocal(): Promise<void>
+	// The volume lineage this replica is synced against — the `fromGeneration` a
+	// server-coordinated reset ("take mine" / factory reset) CAS-checks against.
+	generation(): number | undefined
+	// "Take mine" publish step: after the server bumped to `newGeneration` (adopt-
+	// mine), republish this device's full local snapshot as the new baseline, each
+	// write stamped with `resetId` (the publishing-lock owner token). A full
+	// pathScan, NOT a pushCursor replay, so pulled files are preserved.
+	publishSnapshot(resetId: string, newGeneration: number): Promise<void>
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
@@ -410,11 +418,44 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		await flush()
 	}
 
+	// "Take mine": republish this device's full local snapshot as the `newGeneration`
+	// baseline. A coalesced `pathScan()` (NOT a pushCursor replay — that would drop
+	// pulled/REMOTE_SOURCE files), each write stamped with `resetId`. Server content
+	// is kept across the reset, so uploads short-circuit on `hasBlobByHash`.
+	async function publishSnapshot(resetId: string, newGeneration: number): Promise<void> {
+		await recordGeneration(newGeneration)
+		let page: string | undefined
+		do {
+			const res = await localReplica.pathScan(page, { limit: PAGE })
+			await uploadBlobs(res.changes, localReplica, remoteReplica)
+			await remoteReplica.applyPathChanges(res.changes, (h) => localReplica.getBlobByHash(h), {
+				source: REMOTE_SOURCE,
+				resetId
+			})
+			page = res.done ? undefined : res.next
+		} while (page)
+		// Advance pushCursor past the republished journal so a later delta push won't
+		// re-send the snapshot; reset pullCursor so deltas re-establish against the new
+		// lineage (excludeOrigin skips our own republished writes).
+		let pushCursor = (await syncState.get()).pushCursor ?? ''
+		for (;;) {
+			const { to, done } = await localReplica.pathDeltas(pushCursor, {
+				excludeLocalSource: REMOTE_SOURCE,
+				limit: PAGE
+			})
+			pushCursor = to
+			if (done) break
+		}
+		await syncState.patch({ pushCursor, pullCursor: '0' })
+	}
+
 	const lifecycle: SyncLifecycle = {
 		flush,
 		pause,
 		resume,
 		resetLocal,
+		generation: () => knownGeneration,
+		publishSnapshot,
 		destroy,
 		status: () => _status,
 		onStatusChange

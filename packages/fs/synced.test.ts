@@ -318,6 +318,8 @@ interface FakeServer {
 	scanCalls: number
 	/** If set, the next push (applyPathChanges) throws it — simulates a fence 409. */
 	pushError: Error | undefined
+	/** Every push received, with the resetId opt (for adopt-mine republish tests). */
+	pushes: Array<{ changes: PathChange[]; resetId?: string }>
 	seed(path: string, content: string): void
 }
 
@@ -331,6 +333,7 @@ function fakeServer(
 		deltaGeneration: undefined,
 		scanCalls: 0,
 		pushError: undefined,
+		pushes: [],
 		seed(path, content) {
 			const data = enc.encode(content)
 			const hash = sha256Hex(data)
@@ -363,12 +366,13 @@ function fakeServer(
 			done: true,
 			generation: server.deltaGeneration ?? server.generation
 		}),
-		applyPathChanges: async (changes) => {
+		applyPathChanges: async (changes, _get, opts) => {
 			if (server.pushError) {
 				const e = server.pushError
 				server.pushError = undefined
 				throw e
 			}
+			server.pushes.push({ changes, resetId: opts?.resetId })
 			for (const c of changes) {
 				if (c.kind === 'put') puts.set(c.path, c)
 				else puts.delete(c.path)
@@ -490,6 +494,30 @@ describe('synced (generation / client-reset)', () => {
 		await vol.resetLocal()
 		expect(await vol.exists('/mine.txt')).toBe(false) // discarded before any push
 		expect(await vol.exists('/server.txt')).toBe(true) // re-pulled from the server
+	})
+
+	// publishSnapshot() ("take mine"): republish the full local snapshot as the new
+	// baseline, keeping local intact, each write stamped with the resetId.
+	it('publishSnapshot republishes the full local snapshot stamped with resetId', async () => {
+		const server = fakeServer({ generation: 1, files: { '/server.txt': 'orig' } })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/server.txt')).toBe(true) // bootstrapped (REMOTE_SOURCE)
+		await vol.writeFile('/mine.txt', enc.encode('local'))
+		server.pushes.length = 0 // ignore any pre-publish pushes
+
+		server.generation = 2 // the server bumped via adopt-mine
+		await vol.publishSnapshot('reset-1', 2)
+
+		// The republish is a full snapshot (both the pulled and the local file), and
+		// every stamped push carries the resetId.
+		const withChanges = server.pushes.filter((p) => p.changes.length > 0)
+		const paths = withChanges.flatMap((p) => p.changes.map((c) => c.path))
+		expect(paths).toContain('/server.txt') // pulled file preserved (not a cursor replay)
+		expect(paths).toContain('/mine.txt')
+		expect(withChanges.every((p) => p.resetId === 'reset-1')).toBe(true)
+		expect(await vol.exists('/mine.txt')).toBe(true) // local kept intact
+		expect((await readSyncState(local)).generation).toBe(2)
 	})
 
 	// A server that omits `generation` (legacy / not opted in) leaves the machinery
