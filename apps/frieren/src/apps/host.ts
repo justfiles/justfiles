@@ -21,6 +21,7 @@ interface Stage {
 	errorEl: HTMLDivElement
 	unsubscribe?: () => void
 	unwatch?: () => void
+	unwatchBundle?: () => void
 	unlisten?: () => void
 	port?: MessagePort
 	postState?: (state: unknown) => void
@@ -116,6 +117,7 @@ export function close(id: string): void {
 	stage.cancelled = true
 	stage.unsubscribe?.()
 	stage.unwatch?.()
+	stage.unwatchBundle?.()
 	stage.unlisten?.()
 	stage.port?.close()
 	// Last window of a local app closed — reclaim its Web Worker. Removing the
@@ -133,6 +135,17 @@ export function closeAll(): void {
 
 export function wrapperOf(id: string): HTMLDivElement | undefined {
 	return stages.get(id)?.wrapper
+}
+
+// R4 quiesce (docs/app-materialization.md): swap a running app to its new
+// bundle. Tear the stage down first — that stops dispatches, drops the cached
+// sandbox and discards the GUI realm — so an old GUI never pairs with the new
+// reducer, then reopen from the freshly-installed bundle. A viewport presenting
+// this id re-attaches the fresh wrapper via `notifyStage` (same path as the
+// devkit ⟳ Run reboot).
+function reboot(id: string, opts: OpenOptions): void {
+	close(id)
+	open(id, opts)
 }
 
 function createStage(id: string): Stage {
@@ -238,6 +251,11 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	// GUI re-renders from state pushes, not action returns).
 	stage.unsubscribe = kernel.subscribe((event) => {
 		if (event.type === 'app.update' && event.appId === stage.id) stage.postState?.(event.state)
+		// A LOCAL reinstall of this app (a reconcile update or a devkit publish) swaps
+		// the bundle under the open GUI; reboot into it (R4). A synced-down bundle
+		// swap arrives as a REMOTE_SOURCE write instead — it doesn't emit
+		// `app.installed` on this kernel, so the manifest watch below covers it.
+		else if (event.type === 'app.installed' && event.appId === stage.id) reboot(stage.id, opts)
 	})
 
 	// Local dispatches push state via the kernel events above. The agent runs on
@@ -254,6 +272,18 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 				if (!stage.cancelled) stage.postState?.(state ?? null)
 			})
 			.catch(() => {})
+	})
+
+	// R4 quiesce: a bundle change under the open app that arrives by SYNC (another
+	// device or the agent updated it, applied as a REMOTE_SOURCE write to
+	// /applications/<id>/*) must reboot the GUI. Watch the manifest — the atomic
+	// tmp→rename install rebinds it, which the concrete-path watch reports. Local
+	// installs carry no source and go through `app.installed` above, so filtering
+	// on REMOTE_SOURCE here avoids a double reboot.
+	if (stage.cancelled) return
+	stage.unwatchBundle = await vol.watch(`/applications/${stage.id}/manifest.json`, (event) => {
+		if (event.source !== REMOTE_SOURCE || stage.cancelled) return
+		reboot(stage.id, opts)
 	})
 
 	// A guest boot failure (gui import/mount inside the frame) reports back here.

@@ -6,7 +6,7 @@ import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { createClientKernel } from '../apps/kernel.client'
-import { seedBuiltins } from '../apps/seed'
+import { reconcileInstalled, seedBuiltins } from '../apps/seed'
 import type { InstalledApp } from '../apps/types'
 import { activeProfileHasRemoteUser, openProfile } from '../fs'
 import { createFrierenClient } from './client'
@@ -113,9 +113,40 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		// it; the client's setApps drops no-op re-lists.
 		let off: (() => void) | undefined
 		let cancelled = false
+		// R3 (docs/app-materialization.md): the same structural feed also makes app
+		// UPDATES prompt. A synced-down bundle drift updates the installed set against
+		// the store without waiting for the next boot/launch. Monotonic + idempotent,
+		// so it's safe to re-run; coalesce overlapping bursts (one more if a change
+		// lands mid-run) so a churny feed doesn't stack reconciles.
+		let reconciling = false
+		let again = false
+		const reconcileNow = () => {
+			if (cancelled) return
+			if (reconciling) {
+				again = true
+				return
+			}
+			reconciling = true
+			void (async () => reconcileInstalled(await localKernel(), await volumePromise))()
+				.catch(() => {})
+				.finally(() => {
+					reconciling = false
+					if (again && !cancelled) {
+						again = false
+						reconcileNow()
+					}
+				})
+		}
 		void volumePromise.then((fs) => {
 			void fs
-				.watch('/', () => client.refresh(), { recursive: true })
+				.watch(
+					'/',
+					() => {
+						client.refresh()
+						reconcileNow()
+					},
+					{ recursive: true }
+				)
 				.then((unwatch) => {
 					if (cancelled) unwatch()
 					else off = unwatch
@@ -125,7 +156,7 @@ export function OSProvider({ children }: { children: ReactNode }) {
 			cancelled = true
 			off?.()
 		}
-	}, [client, volumePromise])
+	}, [client, localKernel, volumePromise])
 
 	useEffect(() => {
 		// A host capability (devkit's live preview) frames its scoped stage as a

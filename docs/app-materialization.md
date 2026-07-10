@@ -400,16 +400,26 @@ empty":
 
 Depends on Phase 1.
 
-### Phase 3 — the `/applications` watcher (R6 launcher refresh + R3 reconcile + R4 quiesce)
+### Phase 3 — the `/applications` watcher (R6 launcher refresh + R3 reconcile + R4 quiesce) — DONE
 
 One recursive `volume.watch` (structural, storage-wide — no globbed subtree
 watch; see Concepts → Launcher watcher) feeding three app-layer consumers:
 
 - **3a — R6 launcher catalog refresh (the empty-dock bug).** On any structural
   change, `client.refresh()` re-lists `/applications`. **Independent of R1/R2 and
-  a live today-bug — it can ship first, ahead of Phases 1–2.**
+  a live today-bug — it can ship first, ahead of Phases 1–2.** (Landed ahead in
+  `eec5a626`.)
 - **3b — R3 monotonic app-update reconcile** on whole-bundle `.apphash` drift.
-- **3c — R4 quiesce**: reboot a running app whose bundle changed.
+  The same structural watch in `OSProvider` now also calls a coalesced
+  `reconcileInstalled` (`src/apps/seed.ts`) so a synced-down bundle updates the
+  installed set against the store promptly, not just on next boot/launch;
+  monotonic + idempotent, so re-running on the churny feed is safe.
+- **3c — R4 quiesce**: reboot a running app whose bundle changed. `host.ts`
+  `bootLocal` watches `/applications/<id>/manifest.json` for `REMOTE_SOURCE`
+  writes (synced-down swap) and reboots via `close`+`open`; a LOCAL reinstall
+  (reconcile/devkit publish) arrives as `app.installed` on the kernel and reboots
+  the same way. Filtering the manifest watch on `REMOTE_SOURCE` avoids a double
+  reboot (local installs carry no source).
 
 After Phase 2 the fork is already gone, so 3b/3c are robustness/UX and needn't
 gate the ship-now fix. 3a fixes a visible bug and should land as soon as

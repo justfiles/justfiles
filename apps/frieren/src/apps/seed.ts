@@ -43,3 +43,12 @@ async function mark(fs: Volume): Promise<void> {
 	await fs.mkdir('/.state', { recursive: true })
 	await fs.writeFile(MATERIALISED_MARKER, new Uint8Array([49]))
 }
+
+// Re-run the update pass when the `/applications` tree changes — a synced-down
+// bundle from another device/the agent, or a local install (R3). Monotonic and
+// idempotent, so the launcher's structural watch can fire it freely without
+// downgrading or double-installing. No-ops offline / before any catalog exists.
+export async function reconcileInstalled(kernel: Kernel, fs: Volume): Promise<void> {
+	const store = await httpAppStore((path) => fetch(path))
+	if (store) await reconcile(kernel, fs, store)
+}
