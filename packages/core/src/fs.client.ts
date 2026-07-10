@@ -262,6 +262,16 @@ export function remoteSyncReplica(
 ): SyncReplica {
 	const { clientId } = options
 	return {
+		async handshake() {
+			// GET /fs — the volume-lineage probe. Returns the server's `generation`
+			// (undefined on a server that has not opted in). `synced()` calls this once
+			// per cycle to detect a server-side volume reset.
+			const res = await client.index.$get()
+			if (!res.ok) throw new Error(`handshake failed: ${res.status}`)
+			const data = await res.json()
+			return { generation: data.generation }
+		},
+
 		async pathDeltas(cursor, opts) {
 			// Note: `excludeLocalSource` is a LOCAL push concept; the remote only
 			// supports `excludeOrigin`.
@@ -280,7 +290,8 @@ export function remoteSyncReplica(
 			return {
 				changes: data.changes.map((c) => PathChange.parse(c)),
 				to: data.to,
-				done: data.done
+				done: data.done,
+				generation: data.generation
 			}
 		},
 
@@ -297,7 +308,8 @@ export function remoteSyncReplica(
 				changes: data.changes.map((c) => PathChange.parse(c)),
 				next: data.next,
 				syncCursor: data.syncCursor,
-				done: data.done
+				done: data.done,
+				generation: data.generation
 			}
 		},
 

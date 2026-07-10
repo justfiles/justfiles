@@ -46,18 +46,28 @@ export interface ChangeSource {
 	pathDeltas(
 		cursor: SyncCursor,
 		opts?: { excludeOrigin?: string; excludeLocalSource?: string; limit?: number }
-	): Promise<{ changes: PathChange[]; to: SyncCursor; done: boolean }>
+	): Promise<{ changes: PathChange[]; to: SyncCursor; done: boolean; generation?: number }>
 
 	/**
 	 * A consistent full snapshot as `put`s (bootstrap). Returns BOTH a `next` page
 	 * token (undefined when done) AND a `syncCursor` — the delta high-water frozen
 	 * at snapshot START and echoed on every page, so after the final page the
 	 * caller resumes `pathDeltas(syncCursor)` without gaps (idempotent overlap).
+	 *
+	 * `generation` (client<->server only) is the server volume's lineage epoch,
+	 * echoed on every page so `synced()` catches a reset mid-scan without a second
+	 * handshake. Local/P2P sources leave it undefined.
 	 */
 	pathScan(
 		page?: SyncCursor,
 		opts?: { limit?: number }
-	): Promise<{ changes: PathChange[]; next?: SyncCursor; syncCursor: SyncCursor; done: boolean }>
+	): Promise<{
+		changes: PathChange[]
+		next?: SyncCursor
+		syncCursor: SyncCursor
+		done: boolean
+		generation?: number
+	}>
 }
 
 // ── SyncReplica = composition of three orthogonal role interfaces ─────────────
@@ -105,11 +115,21 @@ export interface BlobStore {
 }
 
 /**
+ * The client<->server volume-lineage handshake (`GET /fs`). Optional and
+ * remote-only: the HTTP replica implements it; local/P2P replicas omit it (there
+ * is no server lineage to report). `generation` is the server volume's epoch —
+ * `synced()` compares it against the stored one to detect a server-side reset.
+ */
+export interface Handshaker {
+	handshake?(): Promise<{ generation?: number }>
+}
+
+/**
  * The full replica: detection + apply + content, composed (not inherited). Local
  * (over a `Storage`/`Volume`, composing an injected `ChangeSource`) and remote
  * (HTTP client, implementing all facets inline) both satisfy it.
  */
-export type SyncReplica = ChangeSource & ChangeApplier & BlobStore
+export type SyncReplica = ChangeSource & ChangeApplier & BlobStore & Handshaker
 
 // ── JournalStore — the owned-backend write-intercept journal ──────────────────
 
@@ -391,6 +411,7 @@ export type PathSyncState = {
  */
 export type SyncState = {
 	schemaVersion: number // 1 for this design; future migrations branch on it
+	generation?: number // server volume lineage this replica is synced against
 	pushCursor?: SyncCursor // over the local ChangeSource
 	pullCursor?: SyncCursor // over the remote's ChangeSource
 	// PathSyncState records are stored per-path under the same /.state/sync tree.

@@ -98,10 +98,11 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// shares this build so P2P skips it (see `sync()`).
 	let negotiated = false
 	async function negotiate(): Promise<void> {
-		// Forward-compat placeholder. There is no handshake seam on SyncReplica yet and
-		// endpoints/paths are stable across versions, so there is nothing to negotiate.
-		// When a protocol/schema bump needs a probe (GET /fs -> { rootIno,
-		// protocolVersion, schemaVersion }), add a handshake seam and branch here.
+		// Forward-compat placeholder for a one-time protocol/schema probe. The
+		// volume-lineage `generation` rides the per-cycle `handshake()` seam below
+		// (it must be re-checked every sync, not once), so it is handled there, not
+		// here. Endpoints/paths are otherwise stable, so there is nothing to
+		// negotiate yet; branch here when a protocol/schema bump needs it.
 	}
 
 	/**
@@ -134,15 +135,15 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * `excludeOrigin: id` skips changes this client authored (the server stamped
 	 * our client-id as origin on push). Returns the new pullCursor to persist.
 	 */
-	async function pull(pullCursor: string): Promise<string> {
-		const { changes, to } = await remoteReplica.pathDeltas(pullCursor, {
+	async function pull(pullCursor: string): Promise<{ to: string; generation?: number }> {
+		const { changes, to, generation } = await remoteReplica.pathDeltas(pullCursor, {
 			excludeOrigin: id,
 			limit: PAGE
 		})
 		await localReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
-		return to
+		return { to, generation }
 	}
 
 	/**
@@ -151,14 +152,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * The adoption guard only reconciles (deletes local paths absent from the
 	 * remote snapshot) once this profile has pushed at least once.
 	 */
-	async function bootstrap(): Promise<void> {
+	async function bootstrap(): Promise<number | undefined> {
 		const everPushed = (await syncState.get()).pushCursor !== undefined
 		const remotePaths = new Set<string>()
 		let page: string | undefined
 		let syncCursor = ''
+		let generation: number | undefined
 		do {
 			const result = await remoteReplica.pathScan(page, { limit: PAGE })
 			syncCursor = result.syncCursor
+			generation = result.generation
 			// Adoption keep-local: on a FIRST bootstrap (never pushed), a path that
 			// already exists locally WINS — keep its content and re-stamp it above the
 			// remote version (via the version seam) so our next push overwrites the
@@ -182,6 +185,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		if (everPushed) await reconcileLocal(remotePaths)
 		// Resume deltas at the frozen high-water — idempotent overlap covers gaps.
 		await syncState.patch({ pullCursor: syncCursor })
+		return generation
 	}
 
 	/**
@@ -208,6 +212,52 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		for (const p of absent) await localVol.rm(p, { recursive: true, force: true })
 	}
 
+	/**
+	 * "Take theirs": discard this device's local replica and re-pull. Delete every
+	 * synced path (keeping the local-only `/.state` subtree), then clear the cursors
+	 * so the next cycle re-bootstraps fresh against the current server lineage. The
+	 * cleared `pushCursor` also resets `everPushed`, so the re-bootstrap adopts the
+	 * server verbatim (nothing local left to keep).
+	 */
+	async function clientReset(): Promise<void> {
+		for (const entry of await localVol.readdir('/')) {
+			const p = `/${entry.name}`
+			if (isLocalOnlyPath(p)) continue
+			await localVol.rm(p, { recursive: true, force: true })
+		}
+		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
+	}
+
+	/**
+	 * The volume-lineage handshake check (client<->server only). Compares the
+	 * server's `generation` to the one this replica last agreed with:
+	 * - `serverGen` undefined → legacy server, no lineage signal → normal sync.
+	 * - equal → in-lineage → normal push/pull.
+	 * - stored undefined → adopt the server's generation (a fresh replica bootstraps
+	 *   normally; a replica that synced BEFORE `generation` existed is a MIGRATION,
+	 *   not a reset — it keeps its cursors and continues).
+	 * - stored ≠ server (both defined) → the lineage was reset → `clientReset` then
+	 *   adopt the new generation.
+	 */
+	async function reconcileGeneration(serverGen?: number): Promise<void> {
+		if (serverGen === undefined) return
+		const state = await syncState.get()
+		if (state.generation === serverGen) return
+		if (state.generation !== undefined) await clientReset()
+		await syncState.patch({ generation: serverGen })
+	}
+
+	/**
+	 * Mid-session guard: a pull/scan page echoes the server's live `generation`. If
+	 * it changed since our handshake (server reset mid-cycle), discard now; the next
+	 * handshake records the new lineage and re-bootstraps. No extra round-trip.
+	 */
+	async function checkMidSessionReset(observed?: number): Promise<void> {
+		if (observed === undefined) return
+		const stored = (await syncState.get()).generation
+		if (stored !== undefined && observed !== stored) await clientReset()
+	}
+
 	async function sync() {
 		// CLIENT<->SERVER: negotiate the wire/state versions once, before the first
 		// sync. P2P (a local peer sharing this build) skips it.
@@ -215,15 +265,23 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			await negotiate()
 			negotiated = true
 		}
+		// Volume-lineage reconcile (client<->server only): read the server's
+		// generation each cycle and adopt / client-reset before touching data.
+		if (clientServer && remoteReplica.handshake) {
+			const { generation } = await remoteReplica.handshake()
+			await reconcileGeneration(generation)
+		}
 		const state = await syncState.get()
 		if (state.pullCursor === undefined) {
-			await bootstrap()
+			const generation = await bootstrap()
+			await checkMidSessionReset(generation)
 			return
 		}
 		const pushCursor = await push(state.pushCursor ?? '')
 		await syncState.patch({ pushCursor })
-		const pullCursor = await pull(state.pullCursor)
-		await syncState.patch({ pullCursor })
+		const { to, generation } = await pull(state.pullCursor)
+		await syncState.patch({ pullCursor: to })
+		await checkMidSessionReset(generation)
 	}
 
 	const RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000]

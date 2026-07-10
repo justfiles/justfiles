@@ -91,23 +91,31 @@ const SOURCE_HEADER = 'x-fs-source'
 const PROTOCOL_VERSION = 1
 const SCHEMA_VERSION = 1
 
+// `generation` = the server volume's lineage epoch (sync-reset-generation.md).
+// Optional: absent unless the host injects a generation source, so a server that
+// has not opted in reads as "no lineage signal" and the client stays on the
+// legacy path. Surfaced on the handshake AND echoed on every pull/scan page so a
+// mid-cycle reset is caught without a second round-trip.
 const Handshake = z.object({
 	rootIno: z.string(),
 	protocolVersion: z.number().int(),
-	schemaVersion: z.number().int()
+	schemaVersion: z.number().int(),
+	generation: z.number().int().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
 	changes: z.array(PathChange),
 	to: z.string(), // SyncCursor to persist AND next-page token (same seq)
-	done: z.boolean() // false => more pages remain
+	done: z.boolean(), // false => more pages remain
+	generation: z.number().int().optional()
 })
 // Snapshot: pagination position and sync high-water are DISTINCT.
 const ScanPage = z.object({
 	changes: z.array(PathChange),
 	next: z.string().optional(), // opaque next-page token; absent when done
 	syncCursor: z.string(), // delta high-water frozen at scan start; resume here
-	done: z.boolean()
+	done: z.boolean(),
+	generation: z.number().int().optional()
 })
 const PathChangesBody = z.object({ changes: z.array(PathChange) })
 const DeltaQuery = z.object({
@@ -130,9 +138,20 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
-export function createFsApi(backend: Storage) {
+export function createFsApi(
+	backend: Storage,
+	opts?: {
+		// The server volume's lineage epoch (see sync-reset-generation.md). Injected
+		// by the host (e.g. the DO's SQLite generation row); omitted here so callers
+		// that haven't opted in report no generation and clients stay on the legacy
+		// path. Surfaced on the handshake and echoed on every pull/scan page.
+		generation?: () => number | Promise<number>
+	}
+) {
 	const errorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : String(error)
+	const readGeneration = async (): Promise<number | undefined> =>
+		opts?.generation ? await opts.generation() : undefined
 	const vol = volume(backend)
 	// The server serves the path endpoints over its own local SyncReplica. Origin
 	// is stamped per-request from SOURCE_HEADER (see POST /path/changes), so the
@@ -150,12 +169,13 @@ export function createFsApi(backend: Storage) {
 		new Hono()
 
 			// ── Root ─────────────────────────────────────────────────────────────
-			.get('/', (c) =>
+			.get('/', async (c) =>
 				c.json(
 					Handshake.parse({
 						rootIno: backend.rootIno,
 						protocolVersion: PROTOCOL_VERSION,
-						schemaVersion: SCHEMA_VERSION
+						schemaVersion: SCHEMA_VERSION,
+						generation: await readGeneration()
 					})
 				)
 			)
@@ -165,13 +185,15 @@ export function createFsApi(backend: Storage) {
 				const { cursor, excludeOrigin, limit } = c.req.valid('query')
 				const { changes, to, done } = await replica.pathDeltas(cursor, { excludeOrigin, limit })
 				c.header('Cache-Control', 'no-store')
-				return c.json(DeltaPage.parse({ changes, to, done }))
+				return c.json(DeltaPage.parse({ changes, to, done, generation: await readGeneration() }))
 			})
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
 				const { page, limit } = c.req.valid('query')
 				const { changes, next, syncCursor, done } = await replica.pathScan(page, { limit })
-				return c.json(ScanPage.parse({ changes, next, syncCursor, done }))
+				return c.json(
+					ScanPage.parse({ changes, next, syncCursor, done, generation: await readGeneration() })
+				)
 			})
 
 			// Path sync: PUSH (client writes path-changes; server applies to its Storage)
