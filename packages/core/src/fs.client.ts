@@ -1,11 +1,29 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
-import type { SyncReplica } from '@justfiles/fs/sync-replica'
+import { GenerationStaleError, type SyncReplica } from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { hc, type InferResponseType } from 'hono/client'
 import type { createFsApi } from './fs'
 
 const FS_SOURCE_HEADER = 'x-fs-source'
+const FS_GENERATION_HEADER = 'x-fs-generation'
+
+// Detect the server's push-fence rejection. A mutating write stamped with a stale
+// `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`;
+// surface it as a typed error so `synced()` can client-reset (and other callers
+// re-sync). 409 is also used for EEXIST/ENOTEMPTY, so match the body, not the
+// status — cloned so the original response body stays readable by callers.
+async function throwIfStale(res: {
+	status: number
+	clone(): { json(): Promise<unknown> }
+}): Promise<void> {
+	if (res.status !== 409) return
+	const body = (await res
+		.clone()
+		.json()
+		.catch(() => null)) as { error?: string; generation?: number } | null
+	if (body?.error === 'generation_stale') throw new GenerationStaleError(body.generation)
+}
 
 export type FsApiType = ReturnType<typeof createFsApi>
 export type FsClient = ReturnType<typeof hc<FsApiType>>
@@ -19,19 +37,13 @@ export interface FsClientOptions {
 
 export interface ApiStorageOptions {
 	rootIno?: string
+	// The client's known volume lineage, stamped as `x-fs-generation` on every
+	// mutating request so the server can fence a stale write (push fencing). Omitted
+	// = unfenced (legacy) — the caller opts in when it tracks a generation.
+	generation?: () => number | undefined
 }
 
 type FsMetaResponse = InferResponseType<FsClient['inodes'][':ino']['$get'], 200>
-
-// Attach the sync `source` as a request header on the Hono request object
-// (args[0].header) rather than via ClientRequestOptions (args[1].headers): the
-// latter is an object that replaces the client-level `headers` function, which
-// would drop the Authorization callback and 401 any Bearer-authed mutation. The
-// cast back to T hides the extra `header` key from the route's input type while
-// the client still sends it at runtime (same trick as putBlob below).
-function withSource<T extends Record<string, unknown>>(req: T, options?: MutationOptions): T {
-	return options?.source ? ({ ...req, header: { [FS_SOURCE_HEADER]: options.source } } as T) : req
-}
 
 function parseMeta(wire: FsMetaResponse): InodeMeta {
 	const meta = wire as Record<string, unknown>
@@ -83,6 +95,24 @@ export async function apiStorage(
 ): Promise<Storage> {
 	const rootIno = options.rootIno ?? '1'
 
+	// Attach the sync `source` and (when known) `x-fs-generation` as request headers
+	// on the Hono request object (args[0].header) rather than via
+	// ClientRequestOptions (args[1].headers): the latter is an object that replaces
+	// the client-level `headers` function, which would drop the Authorization
+	// callback and 401 any Bearer-authed mutation. The cast back to T hides the
+	// extra `header` key from the route's input type while the client still sends it
+	// at runtime (same trick as putBlob below).
+	// Read at request time (method params shadow the outer `options`, so route it
+	// through this closure defined at apiStorage scope).
+	const currentGeneration = (): number | undefined => options.generation?.()
+	const withHeaders = <T extends Record<string, unknown>>(req: T, mopts?: MutationOptions): T => {
+		const header: Record<string, string> = {}
+		if (mopts?.source) header[FS_SOURCE_HEADER] = mopts.source
+		const gen = currentGeneration()
+		if (gen !== undefined) header[FS_GENERATION_HEADER] = String(gen)
+		return Object.keys(header).length > 0 ? ({ ...req, header } as T) : req
+	}
+
 	const backend: Storage = {
 		rootIno,
 
@@ -100,8 +130,9 @@ export async function apiStorage(
 			if (partial.ctimeNs !== undefined) wire.ctimeNs = partial.ctimeNs.toString()
 
 			const res = await client.inodes[':ino'].$patch(
-				withSource({ param: { ino }, json: wire }, options)
+				withHeaders({ param: { ino }, json: wire }, options)
 			)
+			await throwIfStale(res)
 			if (!res.ok) throw new Error(`setMeta failed: ${res.status}`)
 		},
 
@@ -121,16 +152,19 @@ export async function apiStorage(
 			// would deep-merge-replace that function (it's not an object), so
 			// the client-level Authorization callback would be dropped — fine
 			// when a session cookie is present, 401 without one.
+			const gen = currentGeneration()
 			const res = await client.inodes[':ino'].blob.$put(
 				{
 					param: { ino },
 					header: {
 						'Content-Type': 'application/octet-stream',
-						...(options?.source ? { [FS_SOURCE_HEADER]: options.source } : {})
+						...(options?.source ? { [FS_SOURCE_HEADER]: options.source } : {}),
+						...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
 					}
 				} as Parameters<(typeof client.inodes)[':ino']['blob']['$put']>[0],
 				{ init: { body: toArrayBuffer(data) } }
 			)
+			await throwIfStale(res)
 			if (!res.ok) throw new Error(`putBlob failed: ${res.status}`)
 		},
 
@@ -154,15 +188,20 @@ export async function apiStorage(
 
 		async putDirent(dirIno, name, entry, options) {
 			const res = await client.inodes[':dirIno'].entries[':name'].$put(
-				withSource({ param: { dirIno, name }, json: { ino: entry.ino, type: entry.type } }, options)
+				withHeaders(
+					{ param: { dirIno, name }, json: { ino: entry.ino, type: entry.type } },
+					options
+				)
 			)
+			await throwIfStale(res)
 			if (!res.ok) throw new Error(`putDirent failed: ${res.status}`)
 		},
 
 		async deleteDirent(dirIno, name, options) {
 			const res = await client.inodes[':dirIno'].entries[':name'].$delete(
-				withSource({ param: { dirIno, name } }, options)
+				withHeaders({ param: { dirIno, name } }, options)
 			)
+			await throwIfStale(res)
 			if (res.status === 404) return
 			if (!res.ok) throw new Error(`deleteDirent failed: ${res.status}`)
 		},
@@ -170,8 +209,9 @@ export async function apiStorage(
 		caps: {
 			async atomicCreate(dirIno, name, meta, options) {
 				const res = await client.inodes.$post(
-					withSource({ json: { dirIno, name, meta: wireFromMeta(meta) } }, options)
+					withHeaders({ json: { dirIno, name, meta: wireFromMeta(meta) } }, options)
 				)
+				await throwIfStale(res)
 				if (res.status === 409) throw new Error(`EEXIST: ${name}`)
 				if (!res.ok) throw new Error(`atomicCreate failed: ${res.status}`)
 				const data = await res.json()
@@ -180,8 +220,9 @@ export async function apiStorage(
 
 			async atomicMove(oldDirIno, oldName, newDirIno, newName, options) {
 				const res = await client.rename.$post(
-					withSource({ json: { oldDirIno, oldName, newDirIno, newName } }, options)
+					withHeaders({ json: { oldDirIno, oldName, newDirIno, newName } }, options)
 				)
+				await throwIfStale(res)
 				if (res.status === 404) return null
 				if (!res.ok) throw new Error(`atomicMove failed: ${res.status}`)
 				const data = await res.json()
@@ -201,8 +242,9 @@ export async function apiStorage(
 			async setXattr(ino, name, value, options) {
 				const b64 = btoa(String.fromCharCode(...value))
 				const res = await client.inodes[':ino'].xattrs[':name'].$put(
-					withSource({ param: { ino, name }, json: { value: b64 } }, options)
+					withHeaders({ param: { ino, name }, json: { value: b64 } }, options)
 				)
+				await throwIfStale(res)
 				if (!res.ok) throw new Error(`setXattr failed: ${res.status}`)
 			},
 
@@ -215,8 +257,9 @@ export async function apiStorage(
 
 			async removeXattr(ino, name, options) {
 				const res = await client.inodes[':ino'].xattrs[':name'].$delete(
-					withSource({ param: { ino, name } }, options)
+					withHeaders({ param: { ino, name } }, options)
 				)
+				await throwIfStale(res)
 				if (!res.ok) throw new Error(`removeXattr failed: ${res.status}`)
 			},
 
@@ -254,13 +297,17 @@ export async function apiStorage(
 
 export interface RemoteSyncReplicaOptions {
 	clientId: string
+	// The volume lineage `synced()` last agreed with, stamped as `x-fs-generation`
+	// on push so the server fences a stale write (a `409 generation_stale` surfaces
+	// as `GenerationStaleError`, which `synced()` turns into a client reset).
+	generation?: () => number | undefined
 }
 
 export function remoteSyncReplica(
 	client: FsClient,
 	options: RemoteSyncReplicaOptions
 ): SyncReplica {
-	const { clientId } = options
+	const { clientId, generation } = options
 	return {
 		async handshake() {
 			// GET /fs — the volume-lineage probe. Returns the server's `generation`
@@ -317,10 +364,15 @@ export function remoteSyncReplica(
 			// Push: blobs are uploaded first (see synced()'s uploadBlobs), then the
 			// tree changes POST. `_getBlobByHash` is unused here — the server
 			// hydrates from its own store after the blob upload.
+			const gen = generation?.()
 			const res = await client.path.changes.$post({
 				json: { changes },
-				header: { [FS_SOURCE_HEADER]: clientId }
+				header: {
+					[FS_SOURCE_HEADER]: clientId,
+					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
+				}
 			} as Parameters<typeof client.path.changes.$post>[0])
+			await throwIfStale(res)
 			if (!res.ok) throw new Error(`applyPathChanges failed: ${res.status}`)
 		},
 
@@ -336,16 +388,19 @@ export function remoteSyncReplica(
 		},
 
 		async putBlobByHash(hash, data) {
+			const gen = generation?.()
 			const res = await client.blob[':hash'].$put(
 				{
 					param: { hash },
 					header: {
 						'Content-Type': 'application/octet-stream',
-						[FS_SOURCE_HEADER]: clientId
+						[FS_SOURCE_HEADER]: clientId,
+						...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
 					}
 				} as Parameters<(typeof client.blob)[':hash']['$put']>[0],
 				{ init: { body: toArrayBuffer(data) } }
 			)
+			await throwIfStale(res)
 			if (!res.ok) throw new Error(`putBlobByHash failed: ${res.status}`)
 		}
 	}

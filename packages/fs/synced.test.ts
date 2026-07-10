@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { memStorage } from './storage.mem'
-import type { SyncReplica } from './sync-replica'
+import { GenerationStaleError, type SyncReplica } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { REMOTE_SOURCE, synced } from './synced'
 import { FileType } from './types'
@@ -316,6 +316,8 @@ interface FakeServer {
 	deltaGeneration: number | undefined
 	/** How many times the client ran a full bootstrap (pathScan) against us. */
 	scanCalls: number
+	/** If set, the next push (applyPathChanges) throws it — simulates a fence 409. */
+	pushError: Error | undefined
 	seed(path: string, content: string): void
 }
 
@@ -328,6 +330,7 @@ function fakeServer(
 		generation: init.generation,
 		deltaGeneration: undefined,
 		scanCalls: 0,
+		pushError: undefined,
 		seed(path, content) {
 			const data = enc.encode(content)
 			const hash = sha256Hex(data)
@@ -361,6 +364,11 @@ function fakeServer(
 			generation: server.deltaGeneration ?? server.generation
 		}),
 		applyPathChanges: async (changes) => {
+			if (server.pushError) {
+				const e = server.pushError
+				server.pushError = undefined
+				throw e
+			}
 			for (const c of changes) {
 				if (c.kind === 'put') puts.set(c.path, c)
 				else puts.delete(c.path)
@@ -455,6 +463,21 @@ describe('synced (generation / client-reset)', () => {
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		expect(await vol.exists('/keep.txt')).toBe(false) // discarded by the echo mismatch
 		expect((await readSyncState(local)).pullCursor).toBeUndefined() // cursors cleared
+	})
+
+	// A fenced push (409 generation_stale surfaced as GenerationStaleError) is
+	// treated like a handshake mismatch: adopt the server's generation + reset.
+	it('client-resets when a push is fenced with generation_stale', async () => {
+		const server = fakeServer({ generation: 1 })
+		server.pushError = new GenerationStaleError(2) // server bumped between handshake and push
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		await seedSyncState(local, { generation: 1, pullCursor: '0', pushCursor: '0' })
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/keep.txt')).toBe(false) // discarded on the fence
+		const state = await readSyncState(local)
+		expect(state.generation).toBe(2) // adopted the fenced generation
+		expect(state.pullCursor).toBeUndefined() // cursors cleared → re-bootstrap next cycle
 	})
 
 	// A server that omits `generation` (legacy / not opted in) leaves the machinery

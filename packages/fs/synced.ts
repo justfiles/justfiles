@@ -2,6 +2,7 @@ import { persistedState } from './persistedState'
 import type { Storage } from './storage'
 import {
 	type BlobStore,
+	GenerationStaleError,
 	isLocalOnlyPath,
 	journaledChangeSource,
 	localSyncReplica,
@@ -27,7 +28,9 @@ import { type Volume, volume } from './volume'
  *   pull's `excludeOrigin` lines up. This factory seam is exactly why `Storage`
  *   stayed lean and the wire lives in a separate adapter.
  */
-type RemotePeer = Storage | ((ctx: { clientId: string }) => SyncReplica)
+type RemotePeer =
+	| Storage
+	| ((ctx: { clientId: string; generation: () => number | undefined }) => SyncReplica)
 
 type Props = {
 	local: Storage
@@ -72,6 +75,11 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	const id = await clientId.get()
 
+	// The server volume lineage this replica last agreed with, mirrored in memory so
+	// the remote replica can stamp `x-fs-generation` on every mutating write (push
+	// fencing). Kept in sync with `SyncState.generation` by `recordGeneration`.
+	let knownGeneration = (await syncState.get()).generation
+
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
 		lazyContent,
@@ -88,7 +96,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const clientServer = typeof props.remote === 'function'
 	const remoteReplica: SyncReplica =
 		typeof props.remote === 'function'
-			? props.remote({ clientId: id })
+			? props.remote({ clientId: id, generation: () => knownGeneration })
 			: localSyncReplica(props.remote, journaledChangeSource(props.remote), {
 					lazyContent,
 					localActorId: id
@@ -244,7 +252,13 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		const state = await syncState.get()
 		if (state.generation === serverGen) return
 		if (state.generation !== undefined) await clientReset()
-		await syncState.patch({ generation: serverGen })
+		await recordGeneration(serverGen)
+	}
+
+	/** Persist the agreed generation and mirror it for write-time stamping. */
+	async function recordGeneration(generation: number): Promise<void> {
+		knownGeneration = generation
+		await syncState.patch({ generation })
 	}
 
 	/**
@@ -271,17 +285,28 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			const { generation } = await remoteReplica.handshake()
 			await reconcileGeneration(generation)
 		}
-		const state = await syncState.get()
-		if (state.pullCursor === undefined) {
-			const generation = await bootstrap()
+		try {
+			const state = await syncState.get()
+			if (state.pullCursor === undefined) {
+				const generation = await bootstrap()
+				await checkMidSessionReset(generation)
+				return
+			}
+			const pushCursor = await push(state.pushCursor ?? '')
+			await syncState.patch({ pushCursor })
+			const { to, generation } = await pull(state.pullCursor)
+			await syncState.patch({ pullCursor: to })
 			await checkMidSessionReset(generation)
-			return
+		} catch (e) {
+			// A mutating write was fenced (409 generation_stale): the server lineage
+			// advanced under us. Adopt it and client-reset (reconcileGeneration does
+			// both); the next cycle re-bootstraps the new baseline.
+			if (e instanceof GenerationStaleError) {
+				await reconcileGeneration(e.generation)
+				return
+			}
+			throw e
 		}
-		const pushCursor = await push(state.pushCursor ?? '')
-		await syncState.patch({ pushCursor })
-		const { to, generation } = await pull(state.pullCursor)
-		await syncState.patch({ pullCursor: to })
-		await checkMidSessionReset(generation)
 	}
 
 	const RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000]

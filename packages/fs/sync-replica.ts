@@ -421,3 +421,19 @@ export type SyncState = {
 export function isLocalOnlyPath(p: string): boolean {
 	return p === '/.state' || p.startsWith('/.state/')
 }
+
+/**
+ * A mutating `/fs` write was fenced: the client's `x-fs-generation` no longer
+ * matches the server's volume lineage (the server was reset). Thrown by the
+ * remote replicas (`remoteSyncReplica` / `apiStorage`) on a `409
+ * generation_stale`; `synced()` catches it and runs the client-reset policy.
+ * Carries the server's current generation so the reset can adopt it directly.
+ */
+export class GenerationStaleError extends Error {
+	readonly generation?: number
+	constructor(generation?: number) {
+		super('generation_stale')
+		this.name = 'GenerationStaleError'
+		this.generation = generation
+	}
+}

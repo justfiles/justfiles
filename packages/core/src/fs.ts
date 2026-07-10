@@ -83,6 +83,10 @@ const DirInoParam = z.object({ dirIno: z.string() })
 const DirInoNameParam = z.object({ dirIno: z.string(), name: z.string() })
 const CursorQuery = z.object({ cursor: z.string().default('') })
 const SOURCE_HEADER = 'x-fs-source'
+// Push fencing (sync-reset-generation.md): a mutating request carries the
+// client's known volume lineage here; a present-but-stale value is rejected.
+const GENERATION_HEADER = 'x-fs-generation'
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // ── Path-sync (/fs) transport contract ──────────────────────────────────────
 // Wire schema is imported from @justfiles/fs/sync-wire (PathChange); the page
@@ -167,6 +171,29 @@ export function createFsApi(
 
 	return (
 		new Hono()
+
+			// ── Push fencing (anti-clobber) ────────────────────────────────────────
+			// Every MUTATING /fs request may carry `x-fs-generation` = the client's
+			// known volume lineage. When the host injects a generation source and the
+			// header is present but stale, reject with 409 so the client resets instead
+			// of clobbering a fresh reset baseline. An ABSENT header (legacy/unaware
+			// client) is allowed — backward compatible. GET/HEAD are reads; the reset
+			// routes live outside createFsApi and self-guard via their CAS.
+			//
+			// This is the cheap mount-level fast-reject; step 3 folds the authoritative
+			// compare into the reset's SQLite transaction (the generation source will
+			// read the transactional row), so a bump can't interleave with a commit.
+			.use('*', async (c, next) => {
+				if (opts?.generation && MUTATING_METHODS.has(c.req.method)) {
+					const header = c.req.header(GENERATION_HEADER)
+					if (header !== undefined) {
+						const current = await readGeneration()
+						if (current !== undefined && Number(header) !== current)
+							return c.json({ error: 'generation_stale', generation: current }, 409)
+					}
+				}
+				return next()
+			})
 
 			// ── Root ─────────────────────────────────────────────────────────────
 			.get('/', async (c) =>
