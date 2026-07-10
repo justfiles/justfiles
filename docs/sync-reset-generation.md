@@ -3,521 +3,380 @@
 Status: proposal / design. No code yet. Companion to
 [`docs/path-based-sync.md`](./path-based-sync.md) (the sync engine) and
 [`docs/app-materialization.md`](./app-materialization.md) (single-origin
-materialisation). Those two make sync *identity* correct; **this doc adds a
-server-coordinated way to deliberately throw a volume away and re-establish it**
-— "take theirs", "take mine", and "factory reset" — without forking replicas or
+materialisation). Those make sync *identity* correct; this doc adds a
+server-coordinated way to deliberately throw a volume away and re-establish it —
+"take theirs", "take mine", and "factory reset" — without forking replicas or
 racing other devices.
 
 ## TL;DR
 
-The unit of sync is the **whole volume**. Everything durable lives in it as
-files: apps under `/applications/*`, agent soul/profile/sessions under
-`/system/*`, user data everywhere else. There is **no special treatment** — a
-reset targets the entire volume.
+The unit of sync is the **whole volume**: apps under `/applications/*`, agent
+soul/profile/sessions under `/system/*`, user data everywhere else — all files,
+no carve-outs. A reset targets the entire volume.
 
-We need three destructive actions, initially **debug-gated**, eventually
-shippable behind heavy confirmation:
+Three destructive actions, initially **debug-gated**, eventually shippable behind
+heavy confirmation:
 
 1. **Reset local ("take theirs")** — discard this device's local replica, re-pull
-   the server's volume from scratch.
+   the server's volume.
 2. **Reset server ("take mine")** — discard the server's volume, republish this
-   device's local as the new baseline; every *other* device re-pulls it.
+   device's local as the new baseline; every other device re-pulls it.
 3. **Factory reset ("wipe both")** — discard server *and* local; start empty
    (client re-materialises built-ins per `app-materialization.md`).
 
-The naïve version of this (three buttons that stop sync, mutate a side, resume)
-is **unsafe on more than one device**: there is no coordination point, so a
-stale device silently re-pushes deleted data and clobbers the reset, and a
-device pulling a wiped server can't tell "empty" from "not yet loaded".
+The naïve version (three buttons that stop sync, mutate a side, resume) is unsafe
+on more than one device: with no coordination point, a stale device re-pushes
+deleted data and clobbers the reset, and a device pulling a wiped server can't
+tell "empty" from "not yet loaded".
 
-**The fix, straight out of prior art: a monotonic `generation` (epoch) owned by
-the server, surfaced in the sync handshake, and used as a fencing token on
-push.** The server is the single organiser (for a Frieren account it is literally
-a single Durable Object — a free serialization point). A reset **bumps the
-generation**; every other device notices the mismatch on its next handshake and
-performs a **client reset** (discard-local, re-bootstrap); a device still on the
-old generation is **rejected on push** so it can't clobber the new baseline.
-
-Crucially this is **pull/handshake-driven, not an out-of-band command queue**:
-the client re-derives "I must reset" every sync until its stored generation
-matches the server's. Idempotent, offline-safe, no per-device server outbox.
+The fix is a monotonic **`generation`** (epoch) owned by the server, surfaced in
+the handshake and used as a **fencing token** on writes. A reset bumps the
+generation; every other device notices the mismatch on its next handshake and
+runs a **client reset** (discard-local, re-bootstrap); a device still on the old
+generation is **rejected on write** so it can't clobber the new baseline. This is
+**pull/handshake-driven, not a command queue**: the client re-derives "I must
+reset" every sync until its stored generation matches the server's — idempotent,
+offline-safe, no per-device server state.
 
 ## Prior art
 
-Every mature multi-device sync system converges on "instance/lineage identity +
-resync-on-mismatch", and separates the *correctness* signal (pulled) from the
+Mature multi-device sync converges on "instance/lineage identity +
+resync-on-mismatch", separating the *correctness* signal (pulled) from the
 *promptness* signal (pushed).
 
-- **Microsoft Graph delta query** — pull `deltaToken`; server returns
-  `410 Gone` / `syncStateNotFound` ⇒ client **restarts a full sync**. Change
-  *notifications* are an explicitly separate push channel. "Delta = pull for
-  correctness; notifications = push for promptness."
-- **CouchDB replication** — the peer **Server UUID** feeds the *Replication ID*;
-  progress is saved as checkpoints. Recreate the DB (new UUID) or lose common
-  ancestry ⇒ **Full Replication**. Instance identity + checkpoint.
-- **Litestream** — a **generation** (random hex) names a contiguous
-  snapshot+WAL lineage; **any break starts a new generation**. Two writers on one
-  destination don't clobber because their generations differ. This is our
-  `generation` almost verbatim.
-- **Replicache / Zero** — a server-controlled **cookie** = "a global version of
-  the backend state"; a **poke** = a contentless "pull now" hint;
-  `ClientStateNotFound` ⇒ the client resets. Closest to Frieren's browser model
-  (poke == our caps-socket `dirty` nudge).
-- **MongoDB Atlas Device Sync** — first-class **"client reset"** when the server
-  can't reconcile a client (backup restore, history truncation, schema change),
-  with modes **DiscardUnsyncedChanges / RecoverUnsyncedChanges /
-  RecoverOrDiscard / Manual** — precisely the take-theirs / merge / take-mine
-  menu.
+- **Microsoft Graph delta query** — pull `deltaToken`; `410 Gone` ⇒ client
+  restarts a full sync. Notifications are a separate push channel.
+- **CouchDB** — the peer **Server UUID** feeds the *Replication ID*; a new UUID or
+  lost ancestry ⇒ full replication.
+- **Litestream** — a **generation** (random hex) names a snapshot+WAL lineage; any
+  break starts a new one. Our `generation` almost verbatim.
+- **Replicache / Zero** — a server-controlled **cookie** = a global version of the
+  backend state; a **poke** = a contentless "pull now"; `ClientStateNotFound` ⇒
+  the client resets. (Poke == our caps-socket `dirty` nudge.)
+- **MongoDB Atlas Device Sync** — first-class **client reset** with modes
+  DiscardUnsyncedChanges / RecoverUnsyncedChanges / RecoverOrDiscard / Manual —
+  the take-theirs / merge / take-mine menu.
 - **Kafka** — `OffsetOutOfRange` ⇒ offset reset; **leader-epoch fencing** stops
   stale actors after truncation.
 - **Fencing tokens** (Chubby / ZooKeeper; Kleppmann, *DDIA*) — a monotonic token
-  the resource checks so **stale holders are rejected**. This is the anti-clobber
-  primitive.
-- **Dropbox / Git** — `list_folder/continue` can return `reset: true`; git
-  rejects non-fast-forward, `--force` rewrites and everyone else `reset --hard`.
-  "Take mine = force-push; others reset."
+  the resource checks so stale holders are rejected. The anti-clobber primitive.
+- **Git** — non-fast-forward is rejected; `--force` rewrites and everyone else
+  `reset --hard`. "Take mine = force-push; others reset."
 
-In-repo precedent: `path-based-sync.md` keeps a `negotiate()` handshake seam
-(`GET /fs`) "for when a schema/protocol bump needs a probe", and notes the
-*removed* legacy `FsCursorExpiredError` ("re-introduce an equivalent only if the
-cursor can be pruned"). A `generation` is the cleaner, volume-level form of that
-same "your cursor is invalid — resync" signal.
+In-repo, `path-based-sync.md` already keeps a `negotiate()` handshake seam
+(`GET /fs`) for schema/protocol bumps; `generation` is the volume-level form of
+that "your cursor is invalid — resync" signal.
 
 ## Why pull/handshake beats a command queue
 
-The tempting alternative — the server keeps a per-device "you must wipe" outbox
-that clients drain — is worse on every axis:
+A per-device "you must wipe" outbox the client drains is worse on every axis:
 
-- **Idempotent & self-healing.** With a generation the client re-derives the
-  reset decision on *every* handshake until it matches. No acks, ordering, dedup,
-  or redelivery.
-- **Offline-safe.** A device dark for a month just learns on reconnect. A queue
+- **Idempotent & self-healing** — the client re-derives the decision every
+  handshake until it matches; no acks, ordering, dedup, or redelivery.
+- **Offline-safe** — a device dark for a month just learns on reconnect; a queue
   needs TTLs, expiry, replay.
-- **No per-device server state.** The server keeps *one number*, not an outbox
-  per device.
-- **Fencing falls out for free.** The same generation that triggers a reset also
-  rejects stale-generation pushes — killing the multi-device clobber race.
-- A queue re-introduces exactly the multi-authority coordination mess the
-  single-origin work (`app-materialization.md`, `ship-preview-incident.md`) is
-  removing.
+- **No per-device server state** — the server keeps one number, not an outbox.
+- **Fencing is free** — the same generation that triggers a reset also rejects
+  stale-generation writes, killing the clobber race.
 
 ## Why this fits Frieren
 
-- **The account's server is a single Durable Object.** DOs are single-threaded
-  (`blockConcurrencyWhile`), so the generation is one counter mutated serially —
-  **no distributed consensus needed**. Most prior art works hard for a
-  coordination point we get for free.
-- **The handshake exists.** `GET /fs` already returns
-  `{ rootIno, protocolVersion, schemaVersion }` — add `generation`.
-- **The seam exists.** `synced.ts`'s `negotiate()` is a placeholder whose comment
-  says "add a handshake seam and branch here."
-- **The poke exists.** The caps-socket `dirty` → `flushActiveVolume()` is
-  Replicache's poke; it just makes the next pull prompt.
-- **The state slot exists.** Cursors live in `/.state/sync` (local-only,
-  `isLocalOnlyPath`). Add `generation` beside `pushCursor` / `pullCursor`.
+- **The account's server is a single Durable Object.** DOs are single-threaded, so
+  the generation is one counter mutated serially — no distributed consensus.
+- **The handshake and its seam exist.** `GET /fs` returns `{ rootIno,
+  protocolVersion, schemaVersion }` and `synced.ts`'s `negotiate()` is a ready
+  placeholder — add `generation`.
+- **The poke exists.** The caps-socket `dirty` → `flushActiveVolume()` makes the
+  next pull prompt.
+- **The state slot exists.** Cursors live in `/.state/sync` (local-only); add
+  `generation` beside them.
 
 ## The model
 
 ### The generation
 
-- A single **monotonic integer** persisted in the DO as a **SQLite row** (see the
-  Reset endpoint for why not DO KV), initialised once (e.g. `1`) and **bumped only
-  by a reset**. It identifies the server volume's *lineage*, not its content — a
-  bump means "the volume you knew is gone; re-establish from scratch".
-- The client persists the generation it last agreed with in `/.state/sync`:
+A single **monotonic integer**, persisted in the DO as a **SQLite row** (see Reset
+endpoints for why a row and not DO KV), initialised once (e.g. `1`) and **bumped
+only by a reset**. It names the server volume's *lineage*, not its content: a bump
+means "the volume you knew is gone; re-establish from scratch". The client
+persists the generation it last agreed with in `/.state/sync`:
 
-  ```ts
-  type SyncState = {
-    schemaVersion: number
-    generation?: number    // server lineage this replica is synced against
-    pendingReset?: {        // in-flight "take mine" (crash recovery)
-      resetId: string       // client-minted id, matched against the server's
-      mode: 'adopt-mine'
-    }
-    pushCursor?: SyncCursor
-    pullCursor?: SyncCursor
+```ts
+type SyncState = {
+  schemaVersion: number
+  generation?: number    // server lineage this replica is synced against
+  pendingReset?: {        // in-flight "take mine" (crash recovery)
+    resetId: string       // client-minted id, matched against the server's
+    mode: 'adopt-mine'
   }
-  ```
+  pushCursor?: SyncCursor
+  pullCursor?: SyncCursor
+}
+```
 
 ### Handshake check (correctness, pulled)
 
-- `GET /fs` returns `generation` (plus the current `resetId` and a `publishing`
-  flag — see the reset endpoint) alongside the existing fields; pull responses
-  (`DeltaPage` / `ScanPage`) **echo `generation`** so a mismatch is caught
-  mid-session without an extra round-trip.
-- Each sync cycle compares the server's `generation` to the stored one:
-  - **equal** → normal push/pull.
-  - **stored is undefined** → *split by the cursors, because undefined ≠ fresh*:
-    - **no cursors** (truly fresh replica) → bootstrap, then record the server's
-      generation.
-    - **has cursors** (a replica that already synced before `generation`
-      existed) → **migration, not reset**: it is already in step with the current
-      server lineage, so just **adopt the server's generation** and continue
-      normal push/pull. Do NOT discard — the code upgrade that introduces
-      `generation` must not trigger a client-reset on every existing device.
-  - **stored ≠ server** (both defined, differ) → the server lineage changed under
-    us → run the **client-reset policy** (below), then record the new generation.
+`GET /fs` returns `generation` plus the current `resetId` and a `publishing` flag;
+pull payloads (`DeltaPage` / `ScanPage`) echo `generation` so a mismatch is caught
+mid-session without an extra round-trip. Each sync cycle compares the server's
+`generation` to the stored one:
+
+- **equal** → normal push/pull.
+- **stored undefined** — split by the cursors, since undefined ≠ fresh:
+  - **no cursors** (truly fresh replica) → bootstrap, then record the generation.
+  - **has cursors** (a replica that synced before `generation` existed) →
+    **migration, not reset**: adopt the server's generation and continue.
+    Introducing `generation` must not client-reset every existing device.
+- **stored ≠ server** (both defined) → the server lineage changed → run the
+  client-reset policy (below), then record the new generation.
 
 ### Push fencing (anti-clobber, pushed)
 
-- **Every mutating `/fs` request** carries the client's known generation (e.g. an
-  `x-fs-generation` header) — not just path-sync push. `createFsApi` still
-  exposes inode/xattr/rename/dirent/blob mutation routes, and real consumers use
-  them: the CLI and the `frieren-auth` script build a volume over `apiStorage`,
-  the inode-level HTTP backend. Fencing only `POST /fs/path/changes` + blob puts
-  would leave those routes as an unfenced back door — a stale writer could clobber
-  the new baseline through them after a reset.
-- Implement the check as **one guard at the `/fs` mount** (a middleware over the
-  `POST`/`PUT`/`PATCH`/`DELETE` methods) rather than per-route plumbing: the DO
-  owns the generation, so the mount is the single natural place to compare it.
-- The check must be **atomic with the mutation, not a standalone pre-check.** A
-  middleware that reads the generation and *then* hands off to the route handler
-  is a TOCTOU hole: the request can pass at `N`, a reset can bump to `N+1` and
-  truncate, and the mutation can then commit into the *new* volume. Fold the
-  generation compare into the **same SQLite transaction** as the write (the
-  `applyJournaled` transaction for path-sync; each inode op's transaction for the
-  inode routes) — read the generation row, abort on mismatch. The mount-level
-  middleware may still fast-reject cheaply, but correctness lives in the
-  transactional check. (Equivalently: run mutation and reset under one serialized
-  critical section.)
-- The server **rejects** any mutating request whose generation ≠ current, with a
-  distinct status (`409 { error: 'generation_stale', generation: <current> }`).
-  The client treats that exactly like a handshake mismatch: reset, then retry.
-- **Exempt the reset route itself** (`POST /fs/reset`) from this guard — it
-  carries `fromGeneration` and self-guards via the CAS below. Fencing it too
-  would deadlock a device that legitimately needs to bump the generation.
-- This is the fencing token: a device that missed the bump **cannot** write the
-  old volume's data back over the new baseline, through any route.
+Every **mutating `/fs` request** carries the client's known generation
+(`x-fs-generation`) — not just path-sync push. `createFsApi` also exposes
+inode/xattr/rename/dirent/blob mutation routes, used by the CLI and `frieren-auth`
+via `apiStorage` (the inode-level HTTP backend); fencing only path-sync would
+leave those as an unfenced back door.
 
-### Reset endpoint (compare-and-swap)
+The check must be **atomic with the mutation**, not a standalone middleware
+pre-check: a pre-check can pass at `N`, a reset can bump to `N+1` and truncate, and
+the mutation can still commit into the new volume. Fold the generation compare into
+the **same SQLite transaction** as the write (`applyJournaled` for path-sync; each
+inode op's transaction otherwise) — read the generation row, abort on mismatch. A
+mount-level middleware may fast-reject cheaply, but correctness lives in the
+transactional check.
 
-One auth-guarded DO route (not inside `createFsApi` — it needs DO-level powers:
-truncate the volume, bump the counter):
+The server rejects a stale write with `409 { error: 'generation_stale',
+generation: <current> }`; the client treats it like a handshake mismatch (reset,
+then retry). The reset routes themselves are exempt — they self-guard via the CAS.
+
+### Reset endpoints
+
+Auth-guarded DO routes, outside `createFsApi` (they need DO-level powers: truncate
+the volume, bump the counter):
 
 ```
 POST /fs/reset           { mode, fromGeneration: N, resetId? }   # mode: 'adopt-mine' | 'wipe'
   -> 200 { generation: N+1, resetId? }       # applied (publishing set for adopt-mine)
-  -> 409 { error: 'generation_stale', generation: <current> }   # CAS failed
-  # resetId REQUIRED for adopt-mine (owner of the publishing lock); optional for
-  # wipe (no lock, no publish phase)
+  -> 409 { error: 'generation_stale', generation: <current> }
+  # resetId required for adopt-mine (owner of the publishing lock); optional for wipe
 
-POST /fs/reset/finalize  { generation: N+1, resetId }   # adopt-mine only: publish done
+POST /fs/reset/finalize  { generation: N+1, resetId }   # adopt-mine only
   -> 200 { ok: true }                        # publishing cleared
-  -> 409 { error: 'generation_stale' | 'not_owner' }            # CAS failed
+  -> 409 { error: 'generation_stale' | 'not_owner' }
 ```
 
-`fromGeneration` makes the bump a **compare-and-swap**: the DO only applies if
-`N === current`, so two devices racing a reset can't interleave or double-bump.
-"Take theirs" needs no endpoint (it's client-only). Properties the DO must
-guarantee:
+`fromGeneration` makes the bump a **compare-and-swap** — the DO applies only if
+`N === current`, so racing resets can't interleave or double-bump. "Take theirs"
+needs no endpoint (client-only). The DO must guarantee:
 
-- **One atomic SQLite transaction.** The generation lives as a **SQLite row** (a
-  small meta row), NOT DO KV, and the whole reset — CAS check, truncate the tree
-  (`fs_inodes`/`fs_dirents`/`fs_xattrs`) + **both sync tables**
-  (`fs_path_journal` AND `fs_path_version` — the latter holds the per-path version
-  generator *and* `tombstone_version`, so a surviving tombstone would make a
-  re-published put lose the LWW check), **recreate the root inode**, bump
-  `generation`, store the new `resetId` — runs in a single real SQLite
-  transaction. Splitting truncate (SQLite) from the bump (DO KV) lets a crash
-  leave a half-reset volume; one transaction leaves either the old lineage or the
-  new one, never a mix. **This atomicity does not exist yet** and needs real work
-  on two axes, which are NOT the same thing:
-  - *Crash-atomicity* requires a real SQLite transaction — the DO adapter's
-    `transaction()` is currently a no-op (`apps/frieren/worker/db.do.ts` just does
-    `await fn(adapter)`, no `BEGIN`/`COMMIT`), so it must issue `BEGIN`/`COMMIT` or
-    use `ctx.storage.transactionSync`. `blockConcurrencyWhile` does **not** give
-    this — it serializes event delivery but a crash mid-sequence still tears.
-  - *Serialization* (ensuring no other mutation interleaves the reset) is a
-    separate concern, handled by the same-transaction generation check (see Push
-    fencing) and/or `blockConcurrencyWhile` — don't conflate it with crash-
-    atomicity.
-  Note `ensureBootstrapped` seeds the root inode only once per DO lifetime and
-  caches that it ran, so the reset must recreate root `ino=1` itself (and
-  invalidate that cache) — otherwise the wiped volume has no root.
-- **Quiesce the server's own writers.** Fencing `/fs` only stops *HTTP* mutations;
-  the DO also writes the volume directly through `this.vol` (the agent session,
-  app capabilities, `ensureAgentDefaults`, the daily-alarm maintenance). Those
-  bypass every `/fs` route, so a reset/publish must also **pause or reject them**
-  for its window — abort/hold the agent session + app writes (the same quiesce the
-  `/applications` watcher uses), or enforce the generation/`publishing` check down
-  in the storage mutators so even a direct `this.vol` write is gated. Without this,
-  a mid-turn agent write races the truncate or lands in the half-published
-  baseline.
+- **One atomic SQLite transaction.** The reset — CAS check, truncate the tree
+  (`fs_inodes` / `fs_dirents` / `fs_xattrs`) and **both sync tables**
+  (`fs_path_journal` and `fs_path_version`; the latter's `tombstone_version` would
+  otherwise make a re-published put lose its LWW check), recreate the root inode,
+  bump `generation`, store `resetId` — runs in one real SQLite transaction, so a
+  crash leaves either the old lineage or the new one, never a mix. The generation
+  is a SQLite row precisely so its bump commits with the truncate; a separate
+  DO-KV counter couldn't share the transaction. This needs the DO adapter's
+  `transaction()` to issue `BEGIN`/`COMMIT` (or use `ctx.storage.transactionSync`)
+  — it is currently a no-op `await fn(adapter)`. `blockConcurrencyWhile` only
+  serializes event delivery; it is not crash-atomic. `ensureBootstrapped` seeds
+  the root inode once per DO lifetime and caches that it ran, so the reset must
+  recreate root `ino=1` and invalidate that cache, or the wiped volume has no
+  root. Content tables are mode-specific (see Wipe scope).
+- **Quiesce the server's own writers.** Fencing `/fs` stops only HTTP mutations;
+  the DO also writes `this.vol` directly (agent session, app capabilities,
+  `ensureAgentDefaults`, daily-alarm maintenance), bypassing every `/fs` route. A
+  reset/publish must pause or reject those for its window — quiesce the agent + app
+  writes, or enforce the generation/`publishing` check in the storage mutators —
+  or a mid-turn write races the truncate.
 - **`resetId` disambiguates racing resets.** The client mints a random `resetId`,
-  persists it (`pendingReset`) *before* the CAS, and sends it. The DO stores the
-  winning `resetId` and echoes it in the handshake. Two devices that both guessed
-  target `N+1` are told apart by their distinct `resetId`s — the loser's won't
-  match, so it never resumes a publish over the winner (see below).
-- **`adopt-mine` sets a `publishing` lock with an owner.** The bump also marks the
-  volume `publishing` (owner = the winning `resetId`) so other devices don't
-  bootstrap a half-published baseline (see "take mine" below). While
-  `publishing=true` the DO **rejects every mutation whose `x-fs-reset-id` ≠ the
-  owner** — `x-fs-generation` alone can't tell the owner apart from a device that
-  already advanced to `N+1`, so the initiator's publish writes carry
-  `x-fs-reset-id: <resetId>` and everyone else is blocked. **Pull is gated too**:
-  `pathDeltas` / `pathScan` return not-ready (or echo `publishing`) while the lock
-  is held, so a client that was mid-scan when publishing began doesn't consume the
-  truncated/partial tree. **`wipe` sets no lock** (its initiator discards +
-  re-bootstraps rather than publishing), so `resetId` is optional for `wipe` — the
-  DO may mint one for handshake consistency, but the client keeps no
-  `pendingReset` for it (there is nothing to preserve).
-- **Finalize is its own CAS route, and it GCs before unlocking.** The initiator
-  calls `POST /fs/reset/finalize { generation:N+1, resetId }` once the snapshot
-  publish is durable; the DO clears `publishing` only if `generation === current`
-  and `resetId === owner`. No implicit "last page clears the lock" — an explicit,
-  idempotent call so a retried finalize is a no-op and a non-owner can't clear it.
-  Because `adopt-mine` *kept* the old content rows (for lazy blobs), finalize
-  **runs `gcUnreferenced()` first** — the newly-published tree now references the
-  live hashes, so GC drops exactly the discarded old content (`fs_contents` +
-  `fs_content_fts` + orphaned R2) — *then* clears the lock, so no stale hash can
-  fetch discarded content once reads reopen.
+  persists it before the CAS, and sends it; the DO stores the winner and echoes it
+  in the handshake. Two devices that both target `N+1` are told apart by their
+  distinct `resetId`s.
+- **`adopt-mine` sets a `publishing` lock** owned by the winning `resetId`. While
+  held, the DO rejects any mutation whose `x-fs-reset-id` ≠ owner (so only the
+  initiator's publish writes land), and pull endpoints return not-ready so other
+  devices defer their client-reset and don't consume a partial tree. `wipe` sets
+  no lock (its initiator discards + re-bootstraps rather than publishing), so
+  `resetId` is optional there.
+- **Finalize is an explicit CAS that GCs before unlocking.** The initiator calls
+  `/fs/reset/finalize` once the publish is durable; the DO clears `publishing`
+  only if `generation === current` and `resetId === owner` (idempotent — a retried
+  finalize is a no-op, a non-owner can't clear it). Because `adopt-mine` kept the
+  old content rows for lazy blobs, finalize runs `gcUnreferenced()` first — the new
+  tree now references the live hashes, so GC drops exactly the discarded old
+  content (`fs_contents` + `fs_content_fts` + orphaned R2) — then clears the lock,
+  so no stale hash can fetch discarded content once reads reopen.
 
 ### Interface changes (the minimal seam)
 
-`generation` needs three small additions — today `SyncReplica` has no
-handshake/generation notion and `remoteSyncReplica()` only receives `clientId`:
+Today `SyncReplica` has no generation notion and `remoteSyncReplica()` takes only
+`clientId`. Three additions:
 
-- **Read the server generation.** Echo it on the pull payloads the remote already
-  returns — add `generation` to `DeltaPage` / `ScanPage` (and the `GET /fs`
-  handshake) — so `pathDeltas` / `pathScan` results carry it and a mismatch is
-  caught mid-session without an extra round-trip. This is the one new field on the
-  `ChangeSource` return types.
-- **Stamp the generation on writes — on both client paths.** Every mutating call
-  must carry the client's known generation, and that is *two* code paths, not one:
-  the path-sync `remoteSyncReplica()` (push / blob-put), AND `apiStorage()` over
-  `createFsClient()`, the inode-level HTTP backend the CLI and scripts use. Give
-  both a generation source (e.g. `remoteSyncReplica(client, { clientId,
-  generation })` and `apiStorage(client, { generation })`) that stamps
-  `x-fs-generation` (`apiStorage` already threads a per-request header via
-  `withSource`), and have both surface the `generation_stale` 409 up so the caller
-  refetches the generation / resets. Fencing all `/fs` routes *without* plumbing
-  the inode client would just 409 every CLI mutation. During an `adopt-mine`
-  publish the initiator additionally stamps `x-fs-reset-id: <resetId>` on its
-  writes (the owner credential the `publishing` lock checks).
-- **Persist it** beside the cursors in `/.state/sync` (`generation`, plus the
-  `pendingReset` intent from take-mine).
+- **Read the generation** — add it to the pull payloads (`DeltaPage` / `ScanPage`)
+  and the `GET /fs` handshake; one new field on the `ChangeSource` return types.
+- **Stamp it on writes, on both client paths** — the path-sync
+  `remoteSyncReplica()` and `apiStorage()` (the inode backend the CLI/scripts use).
+  Give both a generation source that sets `x-fs-generation` (`apiStorage` already
+  threads a per-request header via `withSource`) and surfaces the
+  `generation_stale` 409. During an `adopt-mine` publish the initiator also stamps
+  `x-fs-reset-id`.
+- **Persist it** in `/.state/sync` (`generation` + the `pendingReset` intent).
 
-Keep the surface minimal: a `generation` field on the pull payloads + a
-generation getter on the remote replica + the two reset routes (`POST /fs/reset`,
-`POST /fs/reset/finalize`) — no other new RPCs.
+No other new RPCs beyond the two reset routes.
 
 ### Client-reset policy
 
-Start with **discard-only** ("take theirs"): on a detected mismatch the client
-drops its local replica + cursors and re-bootstraps against the current
-generation (Atlas's `DiscardUnsyncedChanges`). This is the safe, simple default.
+Start **discard-only** ("take theirs"): on a mismatch, drop the local replica +
+cursors and re-bootstrap against the current generation (Atlas's
+`DiscardUnsyncedChanges`). `RecoverUnsyncedChanges` (re-apply this device's
+local-only edits onto the new baseline) is the hard, CRDT-ish path — deferred;
+ship discard + a clear warning first.
 
-Deliberately **deferred**: `RecoverUnsyncedChanges` (re-apply this device's
-local-only edits on top of the new baseline). That is the hard, CRDT-ish path;
-we ship discard + a clear warning first, exactly as Atlas recommends.
-
-## The three operations in terms of generation
+## The three operations
 
 Let the current server generation be `N`.
 
-- **Reset local ("take theirs")** — *no bump.* Client discards its local replica
-  + cursors and re-bootstraps against generation `N`. Purely client-side; the
-  common, safe case. (For a local-only profile with no server, this is just "wipe
-  local IDB + reload".)
+**Reset local ("take theirs")** — no bump. The client discards its local replica +
+cursors and re-bootstraps against `N`. Purely client-side; the common, safe case.
+(For a local-only profile with no server, just wipe local IDB + reload.)
 
-- **Reset server ("take mine")** — mint a `resetId`, persist `pendingReset`, then
-  `POST /fs/reset { mode:'adopt-mine', fromGeneration:N, resetId }`. The DO
-  **truncates the server tree + sync tables** (keeping content blobs — see
-  below), bumps to `N+1`, marks the volume
-  `publishing` (owner = `resetId`), and returns. The initiator then **republishes
-  its full local volume** as the new baseline (stamped `N+1`, each write carrying
-  `x-fs-reset-id` so the lock lets it through), runs `gcUnreferenced()` to drop
-  the now-orphaned old content, then calls `POST /fs/reset/finalize` to **clear
-  `publishing`** and stores `N+1`. It does **not**
-  re-bootstrap, so no local data is lost. Every other device sees `N+1 ≠ N` on its
-  next handshake → client-reset to the new baseline; any of them still on `N` that
-  tries to push is fenced. (Git force-push + others `reset --hard`, made safe.)
+**Reset server ("take mine")** — mint a `resetId`, persist `pendingReset`, then
+`POST /fs/reset { mode:'adopt-mine', fromGeneration:N, resetId }`. The DO truncates
+the server tree + sync tables (keeping content blobs), bumps to `N+1`, and sets the
+`publishing` lock. The initiator republishes its full local volume as the new
+baseline (each write carrying `x-fs-reset-id`), then finalizes. It does not
+re-bootstrap, so no local data is lost. Other devices see `N+1` and client-reset to
+the new baseline; stragglers on `N` are fenced. (Git force-push, others
+`reset --hard`, made safe.) Five things this must get right:
 
-  Five things this must get right:
+- **Republish is a full `pathScan()` snapshot, not a `pushCursor` replay.** Push
+  filters `excludeLocalSource: REMOTE_SOURCE`, so every file this device *pulled*
+  from the old server is tagged `REMOTE_SOURCE` and a cursor-replay would omit
+  exactly the data we mean to preserve. Publish the coalesced local snapshot
+  (`localReplica.pathScan()` → puts), then resume deltas from the frozen
+  high-water.
+- **Keep server content — do not delete `fs_contents` here.** With
+  `lazyContent: true` the local replica often holds only a `contentHash` stub for
+  files the user never opened; the bytes live on the server. `uploadBlobs` skips a
+  hash the server already has and otherwise reads from the (empty) local store — so
+  deleting server content the way `wipe` does would lose those bytes. Keep
+  `fs_contents` intact so every referenced hash resolves (server-resident, or
+  uploaded-from-local for locally-authored files); GC the now-unreferenced old
+  blobs at finalize.
+- **Preflight blob resolvability before the destructive CAS** (recommended). A
+  cheap per-hash check (local `hasBlobByHash`, else server `HEAD /fs/blob/:hash`)
+  fails *before* the reset, rather than stranding a half-published baseline if a
+  hash is unexpectedly missing.
+- **Don't expose a half-published baseline.** Between the bump and the last publish
+  page the server holds `N+1` but only part of the volume. The `publishing` lock
+  closes this: the handshake and pull endpoints report not-ready so others defer,
+  and writes are owner-only so only the initiator publishes. (Debug phase: "close
+  other devices first" is the interim mitigation.)
+- **Crash recovery, keyed on `resetId` and `publishing`.** If the client crashes
+  after the CAS but before the publish completes, the next boot sees `N ≠ N+1` and
+  would otherwise discard-reset the data it meant to publish. Resume the publish
+  only when `resetId` matches the server's current `resetId` **and** the server is
+  still `publishing`. If it already finalized (`publishing=false`) the publish is
+  done, so clear `pendingReset` and adopt `N+1` rather than republishing; if a
+  different reset won (`resetId` mismatch), client-reset to the winner.
 
-  - **Republish is a full `pathScan()` snapshot, NOT a `pushCursor` replay.**
-    Normal push filters `excludeLocalSource: REMOTE_SOURCE` (`synced.ts`) — every
-    file this device originally *pulled* from the old server is tagged
-    `REMOTE_SOURCE` in its journal, so a cursor-replay would silently omit exactly
-    the data we mean to preserve. Publish the coalesced local snapshot
-    (`localReplica.pathScan()` → puts) instead; it reflects true local state
-    regardless of who authored each file, then resume deltas from the frozen
-    high-water (the same wind-forward bootstrap uses).
-  - **Keep server content for adopt-mine — do NOT delete `fs_contents` here (lazy
-    blobs).** Frieren syncs with `lazyContent: true`, so the local replica often
-    holds only a `contentHash` stub for files the user never opened — the bytes
-    live on the server. `uploadBlobs` skips a hash the server already has and
-    otherwise reads it from the LOCAL store, which for a lazy stub is empty. If
-    adopt-mine deleted server content the way `wipe` does, the initiator could
-    neither skip nor upload those hashes and **the bytes would be lost**. So
-    adopt-mine truncates only the tree + sync tables and **leaves `fs_contents`
-    intact**: every hash the republished snapshot references stays resolvable
-    (server-resident for pulled files, uploaded-from-local for locally-authored
-    ones), and old now-unreferenced blobs are GC'd at finalize (before the lock
-    clears — so discarded content isn't fetchable by a stale hash once reads
-    reopen). (`wipe` is the
-    opposite — it *must* drop content for privacy; see Wipe scope. A pre-CAS
-    "hydrate every local blob" walk would also work but is a full download and
-    unnecessary once we keep the content.)
-  - **Preflight lazy-blob resolvability before the destructive CAS (recommended).**
-    A hash referenced by the snapshot must be resolvable at publish time — present
-    locally OR already on the server. Since adopt-mine keeps server content this
-    holds in the normal case, but a cheap pre-CAS check (local `hasBlobByHash` else
-    a server `HEAD /fs/blob/:hash` for each snapshot hash) fails *before* the
-    server is reset, rather than stranding a half-published baseline if some hash
-    is unexpectedly missing.
-  - **Don't expose a half-published baseline.** Between the bump and the last
-    publish page the server holds the new generation but only *part* of the
-    volume. Without a guard, another device sees `N+1`, bootstraps that partial
-    (or empty) snapshot, and may materialise built-ins and push them — racing the
-    initiator and corrupting the baseline. The `publishing` lock closes this on
-    **both channels**: while it is set the handshake *and* the pull endpoints
-    (`pathDeltas` / `pathScan`) report not-ready, so other devices **defer** their
-    client-reset/bootstrap (and don't consume a partial tree mid-scan), while
-    writes are owner-only (`x-fs-reset-id` must match) so only the initiator can
-    publish. For the debug-gated phase the
-    "close other devices first" note is the interim mitigation; the lock is
-    required before prod.
-  - **Crash recovery, keyed on `resetId` *and* `publishing`.** If the client
-    crashes after the CAS (server at `N+1`) but before the republish completes,
-    the next boot sees `stored(N) ≠ server(N+1)` and would otherwise discard-reset
-    the very data it meant to publish. `pendingReset` overrides that — but the
-    resume condition is **`resetId` matches the server's current `resetId` AND the
-    server is still `publishing`**: only then resume the snapshot publish. If the
-    server already **finalized** (`publishing=false`) the publish is done, so a
-    stale `pendingReset` must **clear and adopt** `N+1` normally, not republish a
-    second time. If a *different* reset won (`resetId` mismatch), clear it and
-    client-reset to the winner. Using `resetId` rather than the number `N+1` is
-    what stops a *losing* racer — who also persisted target `N+1` — from clobbering
-    the winner. Clear `pendingReset` once the publish is finalized (or on adopt).
-
-- **Factory reset ("wipe both")** — `POST /fs/reset { mode:'wipe',
-  fromGeneration:N }`. The DO truncates the volume and bumps to `N+1`. The
-  initiator discards local + re-bootstraps into the now-empty server → local ends
-  empty → Phase-2 materialisation reseeds built-ins (and the server reseeds its
-  `/system` agent defaults on its next restart — see Wipe scope) and syncs them
-  up as the `N+1` baseline. Other devices reset to the (initially empty, then
-  seeded) baseline on their next handshake.
+**Factory reset ("wipe both")** — `POST /fs/reset { mode:'wipe', fromGeneration:N
+}`. The DO truncates the volume (including content tables — see Wipe scope) and
+bumps to `N+1`. The initiator discards local + re-bootstraps into the now-empty
+server; materialisation reseeds built-ins and pushes them as the `N+1` baseline.
+Other devices reset to that baseline on their next handshake.
 
 ## Wipe scope
 
-**The entire volume — a factory reset, no carve-outs.** Apps, agent
-soul/profile/sessions, and user data are all just files in the volume; sync
-treats the volume uniformly, so reset does too. Consequences to be explicit
-about:
+The entire volume — no carve-outs. Apps, agent soul/profile/sessions, and user
+data are all files; sync treats the volume uniformly, so reset does too. Points to
+be explicit about:
 
-- **Blobs (R2)** are content-addressed; on a server wipe we **truncate the tree +
-  sync tables, bump the generation counter (never truncate it), and leave the R2
-  bytes orphaned** (GC later). Deleting R2 bytes inline is riskier (shared hashes)
-  and unnecessary — GC reclaims them.
-  - **Delete the `fs_contents` rows on wipe (privacy wins over the upload-skip).**
-    `/fs/blob/:hash` serves content straight from a `fs_contents` row (the row
-    holds the hash → inline-bytes-or-`r2_key` mapping); if the wipe *keeps*
-    orphaned rows, then wiped content is **still fetchable by hash** by any stale
-    client that knows the hash — unacceptable for a factory reset whose whole point
-    is to destroy the data. So the wipe drops `fs_contents` **and its FTS index
-    `fs_content_fts`** — that FTS5 table retains extracted searchable text, so
-    dropping content rows alone would leave the text queryable. The cost is that a
-    later re-push can't short-circuit on `hasBlobByHash` and re-uploads (R2 just
-    overwrites identical content-addressed bytes) — an acceptable trade. (If we
-    ever want the upload-skip back without the leak, gate `GET`/`HEAD /fs/blob` on
-    a *live inode reference* so orphaned content is non-readable while its row
-    survives; deferred.)
-  - So the wipe truncates the **tree** (`fs_inodes` / `fs_dirents` / `fs_xattrs`),
-    **both sync tables** (`fs_path_journal` / `fs_path_version`), and
-    **`fs_contents` + `fs_content_fts`**, then recreates the root inode (see Reset
-    endpoint). (adopt-mine keeps `fs_contents`/`fs_content_fts` — see "take mine".)
-- **Server-seeded agent defaults are reseeded, so "empty" is short-lived.**
-  `Frieren`'s DO constructor runs `reset()` → `ensureAgentDefaults()`, which
-  (idempotently) writes `/system/soul.md` + `/system/profiles/user.md` when
-  absent. A `POST /fs/reset` truncates in place and does **not** re-run the
-  constructor, so the server volume is momentarily empty; but the next DO restart
-  reseeds those two files and they sync down as part of the `N+1` baseline. This
-  is a deliberate exception to "no special treatment": the *wipe* is uniform, but
-  the server owns a tiny built-in seed (the same server-vs-client seeding split
-  `app-materialization.md` describes). Factory reset therefore converges to
-  *seeded defaults*, not a literally bare volume — read the "starts empty" wording
-  above with that caveat.
+- **Blobs & content tables are mode-specific.** Both modes leave the R2 bytes
+  orphaned (GC reclaims them; deleting inline is riskier with shared hashes).
+  `wipe` also drops the `fs_contents` rows **and the `fs_content_fts` index** —
+  `/fs/blob/:hash` serves straight from a `fs_contents` row and FTS5 retains
+  extracted text, so keeping them would leave wiped content fetchable/searchable by
+  any client that knows a hash, defeating a factory reset. The cost is that a
+  re-push can't short-circuit on `hasBlobByHash` and re-uploads (R2 overwrites
+  identical bytes). `adopt-mine` keeps both (lazy blobs) and GCs orphans at
+  finalize instead. (To recover the upload-skip without the leak, we could gate
+  `GET`/`HEAD /fs/blob` on a live inode reference; deferred.)
+- **Server-seeded agent defaults reseed, so "empty" is short-lived.** The DO
+  constructor runs `reset()` → `ensureAgentDefaults()`, seeding `/system/soul.md` +
+  `/system/profiles/user.md` when absent. `POST /fs/reset` truncates in place and
+  doesn't re-run the constructor, so the volume is momentarily empty, but the next
+  DO restart reseeds those two files into the `N+1` baseline. Factory reset
+  converges to *seeded defaults*, not a literally bare volume — the same
+  server-vs-client seeding split `app-materialization.md` describes.
 - **The `/.state/materialised` app-seed marker is mode-sensitive.** `seedBuiltins`
-  seeds the built-in apps at most once per replica, gated by the local-only
-  `/.state/materialised` marker (and only when `kernel.list()` is empty after
-  bootstrap). A client-reset that wipes local IDB deletes that marker, so the
-  modes must set it deliberately:
-  - **Factory reset (wipe)** — leave the marker unset: the server is intentionally
-    empty and we *want* the client to reseed built-ins and push them as the `N+1`
-    baseline.
-  - **Take-theirs / client-reset-on-mismatch** — **set the marker after
-    bootstrap**, adopting the server verbatim. Otherwise a server the user
-    intentionally emptied of apps looks "genuinely new" post-bootstrap and gets
-    built-ins reseeded and pushed back — clobbering the user's intent. (The marker
-    is per-replica and never synced; see `app-materialization.md`.)
+  seeds built-in apps at most once per replica, gated by this local-only marker and
+  only when the volume is empty of apps after bootstrap. A client-reset that wipes
+  IDB deletes the marker, so:
+  - **Factory reset** leaves it unset — the server is intentionally empty and we
+    *want* the client to reseed built-ins and push them.
+  - **Take-theirs / client-reset** sets it after bootstrap — adopt the server
+    verbatim, or a server the user intentionally emptied of apps looks "new" and
+    gets built-ins reseeded and pushed back.
 - **Non-volume DO state** (the `AuditLog` in `ctx.storage`, in-memory rate-limit
-  buckets) is **not part of the volume and is out of scope** — it never syncs, so
-  a volume reset neither reads nor clears it. If we later want audit to reset too,
-  that's a separate, explicit step.
+  buckets) is out of scope — it never syncs, so a volume reset neither reads nor
+  clears it.
 
 ## Rollout
 
-- **Now:** debug-gated (a dev-only affordance in a shell panel). The point is to
-  reproduce/repair forked or wedged replicas during development.
-- **Later:** shippable to prod behind heavy confirmation (typed-to-confirm,
-  explicit "this deletes everything on all your devices" warning for take-mine /
-  factory reset, and a "close other devices first" note).
+- **Now:** debug-gated (a dev-only shell affordance) to reproduce/repair forked or
+  wedged replicas during development.
+- **Later:** prod behind heavy confirmation — typed-to-confirm, a "this deletes
+  everything on all your devices" warning for take-mine / factory reset, and a
+  "close other devices first" note.
 
 ## Where the UI lives
 
-Shell-level, **not** the sandboxed Settings app (`app.frieren.settings`) — that
-app is capability-sandboxed and can't reach IDB, the sync lifecycle, or
-`location.reload()`. Put it in a small shell panel (like `PersonalizePanel`),
-launched from the desktop context menu next to "Personalize…" / "Switch User…".
-"Take theirs" / "take mine" are gated to **synced** profiles; a local-only
-profile only offers factory-reset-local.
+Shell-level, not the sandboxed Settings app (`app.frieren.settings`), which can't
+reach IDB, the sync lifecycle, or `location.reload()`. A small shell panel (like
+`PersonalizePanel`), launched from the desktop context menu. "Take theirs" / "take
+mine" are gated to **synced** profiles; a local-only profile only offers
+factory-reset-local.
 
 ## Non-goals / open questions
 
 - **Recover mode** (merge local-only edits onto the new baseline) — deferred; see
   Client-reset policy.
-- **Generation granularity** — one per account/DO (the sync unit). Per-subtree
-  generations are overkill and not planned.
-- **Concurrent resets** — resolved by the `fromGeneration` CAS *and* the per-reset
-  `resetId`: the loser is told it's stale, and its `pendingReset.resetId` won't
-  match the server's, so it never resumes a publish over the winner — it resets to
-  the winner's baseline (and can retry the reset from there if the user still
-  wants it).
-- **Partial failure** — the reset (CAS + truncate + root inode + bump) is a single
-  atomic SQLite transaction, so it can't tear (once the DO adapter's
-  `transaction()` is made real — see Reset endpoint); other devices converge
-  idempotently on their own schedule (no cross-device transaction). The
-  `publishing` lock covers the one remaining multi-step case (adopt-mine's
-  snapshot publish after the bump).
-- **Stuck `publishing` lock** — if an adopt-mine owner dies after the CAS and
-  never finalizes, other devices defer forever. Needs a liveness escape: stamp the
-  lock with a lease/timestamp so a stale lock expires (or can be superseded by a
-  newer `resetId`), plus a debug/admin cancel route. For the debug-gated phase a
-  manual cancel suffices; a lease is required before prod.
+- **Generation granularity** — one per account/DO. Per-subtree generations are
+  overkill and not planned.
+- **Concurrent resets** — resolved by the `fromGeneration` CAS and the per-reset
+  `resetId`: the loser is told it's stale and its `pendingReset.resetId` won't
+  match, so it resets to the winner's baseline (and can retry from there).
+- **Partial failure** — the reset is one atomic SQLite transaction, so it can't
+  tear (once `transaction()` is real); devices converge idempotently. The
+  `publishing` lock covers the one remaining multi-step case (adopt-mine's publish
+  after the bump).
+- **Stuck `publishing` lock** — if an adopt-mine owner dies after the CAS and never
+  finalizes, others defer forever. Needs a liveness escape: a lease/timestamp so a
+  stale lock expires or can be superseded by a newer `resetId`, plus a debug/admin
+  cancel route. Manual cancel for the debug phase; a lease before prod.
 
 ## Suggested build order
 
 1. **`generation` in the handshake + `/.state/sync`; client-reset-on-mismatch
    (discard-only), including the migration case (has-cursors-no-generation →
-   adopt, don't reset).** Cheap, and it also hardens the *normal* path against a
-   server restore-from-backup — introduce it even before the buttons.
-2. **Push fencing** (`x-fs-generation` on every mutating `/fs` route — path-sync
-   *and* the inode `apiStorage` client — enforced *inside the mutation's SQLite
-   transaction*, not just a pre-check; `generation_stale` rejection → reset; reset
-   route exempt).
-3. **`POST /fs/reset` + `POST /fs/reset/finalize`** (`adopt-mine`, `wipe`) as one
-   **real** SQLite transaction (`BEGIN`/`COMMIT` or `transactionSync`, NOT just
-   `blockConcurrencyWhile`): CAS + truncate tree + `fs_path_journal` +
-   `fs_path_version` + recreate root inode + bump generation + store `resetId`.
-   **Content is mode-specific**: `wipe` also drops `fs_contents` +
-   `fs_content_fts` (privacy); `adopt-mine` keeps them (lazy blobs) and instead
-   runs `gcUnreferenced()` at finalize, before clearing the lock. Quiesce the DO's
-   own `this.vol` writers (agent/apps/alarm) for the reset+publish window.
-   adopt-mine adds the `publishing` lock (owner-only `x-fs-reset-id` writes, pulls
-   gated, explicit finalize CAS); wire "take theirs" (client-only) too.
-4. **Shell UI** (debug-gated panel + confirmations).
+   adopt).** Cheap, and it hardens the normal path against a server
+   restore-from-backup — worth doing even before the buttons.
+2. **Push fencing** — `x-fs-generation` on every mutating `/fs` route (path-sync
+   and the inode `apiStorage` client), enforced inside the mutation's SQLite
+   transaction; `generation_stale` → reset; reset routes exempt.
+3. **`POST /fs/reset` + `/fs/reset/finalize`** as one real SQLite transaction
+   (`BEGIN`/`COMMIT` or `transactionSync`, not just `blockConcurrencyWhile`): CAS +
+   truncate tree + `fs_path_journal` + `fs_path_version` + recreate root inode +
+   bump + store `resetId`. Content is mode-specific — `wipe` also drops
+   `fs_contents` + `fs_content_fts`; `adopt-mine` keeps them and runs
+   `gcUnreferenced()` at finalize. Quiesce the DO's own `this.vol` writers for the
+   window; adopt-mine adds the `publishing` lock (owner-only `x-fs-reset-id`
+   writes, pulls gated). Wire "take theirs" (client-only) too.
+4. **Shell UI** — debug-gated panel + confirmations.
 
-Not touched: the path-sync wire itself beyond the additive `generation` field;
-per-file identity is `path-based-sync.md`'s job. This doc is the volume-level
-lineage identity that sits on top of it.
+Not touched: the path-sync wire beyond the additive `generation` field; per-file
+identity is `path-based-sync.md`'s job. This doc is the volume-level lineage
+identity on top of it.
