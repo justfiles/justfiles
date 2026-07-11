@@ -46,15 +46,7 @@ export interface ChangeSource {
 	pathDeltas(
 		cursor: SyncCursor,
 		opts?: { excludeOrigin?: string; excludeLocalSource?: string; limit?: number }
-	): Promise<{
-		changes: PathChange[]
-		to: SyncCursor
-		done: boolean
-		generation?: number
-		// Echoed while an adopt-mine republish holds the server's publishing lock:
-		// a non-owner puller defers rather than consuming a half-published tree.
-		publishing?: boolean
-	}>
+	): Promise<{ changes: PathChange[]; to: SyncCursor; done: boolean; generation?: number }>
 
 	/**
 	 * A consistent full snapshot as `put`s (bootstrap). Returns BOTH a `next` page
@@ -75,7 +67,6 @@ export interface ChangeSource {
 		syncCursor: SyncCursor
 		done: boolean
 		generation?: number
-		publishing?: boolean
 	}>
 }
 
@@ -105,7 +96,7 @@ export interface ChangeApplier {
 	applyPathChanges(
 		changes: PathChange[],
 		getBlobByHash: (h: string) => Promise<Uint8Array>,
-		opts?: { source?: string; resetId?: string }
+		opts?: { source?: string }
 	): Promise<void>
 }
 
@@ -128,11 +119,12 @@ export interface BlobStore {
  * remote-only: the HTTP replica implements it; local/P2P replicas omit it (there
  * is no server lineage to report). `generation` is the server volume's epoch —
  * `synced()` compares it against the stored one to detect a server-side reset.
- * `resetId` + `publishing` surface the adopt-mine publishing lock: while held,
- * only the owning `resetId` may write and everyone else defers (see synced()).
+ * `resetId` is the advisory "a reset/republish is in progress" flag (set by the
+ * reset that created this generation, cleared when its republish drains) — it is
+ * NOT a lock; it drives crash-resume identity and UI legibility.
  */
 export interface Handshaker {
-	handshake?(): Promise<{ generation?: number; resetId?: string; publishing?: boolean }>
+	handshake?(): Promise<{ generation?: number; resetId?: string }>
 }
 
 /**
@@ -164,6 +156,14 @@ export interface JournalStore {
 	readFrom(seq: number, limit: number): Promise<JournalRow[]>
 	/** Latest seq (snapshot resume). */
 	head(): Promise<number>
+	/**
+	 * Re-tag every journal row as locally-authored (clear `localSource`). After a
+	 * "take mine" reset the server is empty, so every local file IS now mine — this
+	 * makes the ordinary push (`excludeLocalSource: REMOTE_SOURCE`) republish the
+	 * whole volume, pulled files included, over the normal resilient loop instead of
+	 * a bespoke snapshot push (docs/sync-reset-generation.md). Owned backends only.
+	 */
+	adoptAllAsLocal(): Promise<void>
 }
 
 /**
@@ -423,10 +423,12 @@ export type PathSyncState = {
 export type SyncState = {
 	schemaVersion: number // 1 for this design; future migrations branch on it
 	generation?: number // server volume lineage this replica is synced against
-	// In-flight "take mine" (adopt-mine) publish, persisted BEFORE the reset CAS so
-	// a crash mid-publish resumes/adopts instead of discarding the snapshot it meant
-	// to publish (docs/sync-reset-generation.md — crash recovery).
-	pendingReset?: { resetId: string; mode: 'adopt-mine' }
+	// In-flight "take mine" (adopt-mine), persisted BEFORE the reset CAS so a crash
+	// mid-republish resumes/adopts instead of discarding the volume it meant to
+	// publish (docs/sync-reset-generation.md — crash recovery). `fromGeneration` is
+	// the lineage the reset started from; `toGeneration` is the one it produced,
+	// set once the reset is confirmed (also marks local prep done).
+	pendingReset?: { resetId: string; fromGeneration: number; toGeneration?: number }
 	pushCursor?: SyncCursor // over the local ChangeSource
 	pullCursor?: SyncCursor // over the remote's ChangeSource
 	// PathSyncState records are stored per-path under the same /.state/sync tree.

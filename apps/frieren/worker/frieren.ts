@@ -12,10 +12,9 @@ import {
 } from '@justfiles/agent'
 import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
 import {
+	clearReset,
 	createFsApi,
 	type DbAdapter,
-	finalizeResetWithGc,
-	type ResetMode,
 	readGenerationState,
 	resetVolume
 } from '@justfiles/core'
@@ -92,12 +91,11 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			// Server-coordinated volume reset (docs/sync-reset-generation.md). These
-			// live OUTSIDE createFsApi (DO-level truncate powers) and BEFORE the /fs
-			// mount, so they never hit the push-fence middleware — reset routes
-			// self-guard via the fromGeneration CAS.
+			// Server-coordinated volume reset (docs/sync-reset-generation.md). Lives
+			// OUTSIDE createFsApi (DO-level truncate powers) and BEFORE the /fs mount, so
+			// it never hits the push-fence middleware — reset self-guards via the
+			// fromGeneration CAS.
 			.post('/fs/reset', (c) => this.handleReset(c))
-			.post('/fs/reset/finalize', (c) => this.handleFinalize(c))
 			.route('/fs', createFsApi(fs, { lineage: () => readGenerationState(this.db) }))
 
 		ctx.blockConcurrencyWhile(async () => {
@@ -105,34 +103,36 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
-	// POST /fs/reset { mode, fromGeneration, resetId? } — CAS + truncate + bump.
+	// POST /fs/reset. `adopt-mine`/`wipe` { fromGeneration, resetId? } — CAS +
+	// truncate + bump. `complete` { resetId } — advisory: the initiator's republish
+	// drained, so clear the in-progress flag.
 	private async handleReset(c: Context) {
-		const body = await c.req.json<{ mode: ResetMode; fromGeneration: number; resetId?: string }>()
+		const body = await c.req.json<{ mode: string; fromGeneration?: number; resetId?: string }>()
+		if (body?.mode === 'complete') {
+			if (!body.resetId) return c.json({ error: 'resetId required' }, 400)
+			const state = await clearReset(this.db, body.resetId)
+			// The republish is durable — rebuild the volume + agent session against it.
+			this.vol = volume(this.fs)
+			await this.reset()
+			return c.json({ generation: state.generation })
+		}
 		if (body?.mode !== 'adopt-mine' && body?.mode !== 'wipe')
 			return c.json({ error: 'invalid mode' }, 400)
-		const decision = await resetVolume(this.db, body)
+		if (typeof body.fromGeneration !== 'number')
+			return c.json({ error: 'fromGeneration required' }, 400)
+		const decision = await resetVolume(this.db, {
+			mode: body.mode,
+			fromGeneration: body.fromGeneration,
+			resetId: body.resetId
+		})
 		if (!decision.ok) return c.json({ error: decision.error, generation: decision.generation }, 409)
 		// The reset wrote the DB directly, so the cached volume is stale — rebuild it.
-		// `wipe` reseeds agent defaults + rebuilds the session now; `adopt-mine` defers
-		// that to finalize (the initiator republishes /system/* under the publishing
-		// lock; reseeding here would race it).
+		// `wipe` reseeds agent defaults + rebuilds the session now; `adopt-mine` leaves
+		// the empty volume for the initiator to republish over ordinary sync (the next
+		// DO restart reseeds any still-missing defaults).
 		this.vol = volume(this.fs)
 		if (body.mode === 'wipe') await this.reset()
-		return c.json({ generation: decision.next.generation, resetId: decision.next.resetId })
-	}
-
-	// POST /fs/reset/finalize { generation, resetId } — validate owner + CAS, GC the
-	// discarded baseline, THEN clear the adopt-mine publishing lock (finalizeResetWithGc
-	// enforces that order so a stale/non-owner finalize can't reclaim kept blobs).
-	private async handleFinalize(c: Context) {
-		const body = await c.req.json<{ generation: number; resetId: string }>()
-		const decision = await finalizeResetWithGc(this.db, body, async () => {
-			await this.fs.caps?.content?.gcUnreferenced?.()
-		})
-		if (!decision.ok) return c.json({ error: decision.error }, 409)
-		this.vol = volume(this.fs)
-		await this.reset()
-		return c.json({ ok: true })
+		return c.json({ generation: decision.next.generation })
 	}
 
 	private requireApps(): FrierenApps {

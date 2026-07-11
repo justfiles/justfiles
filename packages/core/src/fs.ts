@@ -87,9 +87,6 @@ const SOURCE_HEADER = 'x-fs-source'
 // Push fencing (sync-reset-generation.md): a mutating request carries the
 // client's known volume lineage here; a present-but-stale value is rejected.
 const GENERATION_HEADER = 'x-fs-generation'
-// Owner token for an adopt-mine republish: while the publishing lock is held,
-// only a mutation stamped with the owning resetId is admitted (anti-clobber).
-const RESET_ID_HEADER = 'x-fs-reset-id'
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // ── Path-sync (/fs) transport contract ──────────────────────────────────────
@@ -103,23 +100,22 @@ const SCHEMA_VERSION = 1
 // Optional: absent unless the host injects a lineage source, so a server that
 // has not opted in reads as "no lineage signal" and the client stays on the
 // legacy path. Surfaced on the handshake AND echoed on every pull/scan page so a
-// mid-cycle reset is caught without a second round-trip. `resetId`/`publishing`
-// expose the adopt-mine publishing lock so non-owner devices defer.
+// mid-cycle reset is caught without a second round-trip. `resetId` is the
+// advisory "a reset/republish is in progress" flag (crash-resume + UI), not a
+// lock.
 const Handshake = z.object({
 	rootIno: z.string(),
 	protocolVersion: z.number().int(),
 	schemaVersion: z.number().int(),
 	generation: z.number().int().optional(),
-	resetId: z.string().optional(),
-	publishing: z.boolean().optional()
+	resetId: z.string().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
 	changes: z.array(PathChange),
 	to: z.string(), // SyncCursor to persist AND next-page token (same seq)
 	done: z.boolean(), // false => more pages remain
-	generation: z.number().int().optional(),
-	publishing: z.boolean().optional()
+	generation: z.number().int().optional()
 })
 // Snapshot: pagination position and sync high-water are DISTINCT.
 const ScanPage = z.object({
@@ -127,8 +123,7 @@ const ScanPage = z.object({
 	next: z.string().optional(), // opaque next-page token; absent when done
 	syncCursor: z.string(), // delta high-water frozen at scan start; resume here
 	done: z.boolean(),
-	generation: z.number().int().optional(),
-	publishing: z.boolean().optional()
+	generation: z.number().int().optional()
 })
 const PathChangesBody = z.object({ changes: z.array(PathChange) })
 const DeltaQuery = z.object({
@@ -187,26 +182,19 @@ export function createFsApi(
 			// Every MUTATING /fs request may carry `x-fs-generation` = the client's
 			// known volume lineage. When the host injects a lineage source and the
 			// header is present but stale, reject with 409 so the client resets instead
-			// of clobbering a fresh reset baseline. While the adopt-mine publishing lock
-			// is held, ONLY the owning `resetId` (via `x-fs-reset-id`) may mutate — every
-			// other writer is rejected so it can't clobber the half-published baseline.
-			// An ABSENT generation header (legacy/unaware client) is allowed — backward
-			// compatible. GET/HEAD are reads; the reset routes live outside createFsApi
-			// and self-guard via their CAS.
+			// of clobbering a fresh reset baseline. An ABSENT header (legacy/unaware
+			// client) is allowed — backward compatible. GET/HEAD are reads; the reset
+			// routes live outside createFsApi and self-guard via their CAS.
 			//
-			// This is the cheap mount-level fast-reject; step 3 folds the authoritative
-			// compare into the reset's SQLite transaction (the lineage source will read
-			// the transactional row), so a bump can't interleave with a commit.
+			// There is no publishing lock: a "take mine" republish rides ordinary sync
+			// at the new generation, so it passes this same stale check with no special
+			// header. Other devices converge eventually (eventual consistency).
 			.use('*', async (c, next) => {
 				if (opts?.lineage && MUTATING_METHODS.has(c.req.method)) {
+					const header = c.req.header(GENERATION_HEADER)
 					const lineage = await readLineage()
-					if (lineage) {
-						const header = c.req.header(GENERATION_HEADER)
-						if (header !== undefined && Number(header) !== lineage.generation)
-							return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
-						if (lineage.publishing && c.req.header(RESET_ID_HEADER) !== lineage.resetId)
-							return c.json({ error: 'publishing', generation: lineage.generation }, 409)
-					}
+					if (header !== undefined && lineage && Number(header) !== lineage.generation)
+						return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
 				}
 				return next()
 			})
@@ -220,8 +208,7 @@ export function createFsApi(
 						protocolVersion: PROTOCOL_VERSION,
 						schemaVersion: SCHEMA_VERSION,
 						generation: lineage?.generation,
-						resetId: lineage?.resetId,
-						publishing: lineage?.publishing
+						resetId: lineage?.resetId
 					})
 				)
 			})
@@ -232,15 +219,7 @@ export function createFsApi(
 				const { changes, to, done } = await replica.pathDeltas(cursor, { excludeOrigin, limit })
 				const lineage = await readLineage()
 				c.header('Cache-Control', 'no-store')
-				return c.json(
-					DeltaPage.parse({
-						changes,
-						to,
-						done,
-						generation: lineage?.generation,
-						publishing: lineage?.publishing
-					})
-				)
+				return c.json(DeltaPage.parse({ changes, to, done, generation: lineage?.generation }))
 			})
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
@@ -248,14 +227,7 @@ export function createFsApi(
 				const { changes, next, syncCursor, done } = await replica.pathScan(page, { limit })
 				const lineage = await readLineage()
 				return c.json(
-					ScanPage.parse({
-						changes,
-						next,
-						syncCursor,
-						done,
-						generation: lineage?.generation,
-						publishing: lineage?.publishing
-					})
+					ScanPage.parse({ changes, next, syncCursor, done, generation: lineage?.generation })
 				)
 			})
 

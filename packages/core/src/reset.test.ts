@@ -1,8 +1,11 @@
-// Volume reset (docs/sync-reset-generation.md, step 3). The pure state machine
-// (CAS / ownership / publishing / finalize idempotency / crash-resume) plus the
-// transactional reset body, driven against a REAL BEGIN/COMMIT adapter over
-// node:sqlite — the same transport the sqlite conformance suite uses, so the
+// Volume reset (docs/sync-reset-generation.md). The pure CAS decision plus the
+// transactional reset/clear bodies, driven against a REAL BEGIN/COMMIT adapter
+// over node:sqlite — the same transport the sqlite conformance suite uses, so the
 // reset-atomicity code path runs under vitest with no bun / Cloudflare runtime.
+//
+// The take-mine republish rides ordinary sync (no publishing lock, no finalize),
+// so this file covers only the server-side reset primitives; the client-side
+// resume/adopt/republish logic lives in packages/fs/synced.test.ts.
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -11,11 +14,8 @@ import { describe, expect, it } from 'vitest'
 import type { DbAdapter } from './db'
 import { createSqliteAdapter } from './db.sqlite'
 import {
-	decideFinalize,
+	clearReset,
 	decideReset,
-	decideResume,
-	finalizeReset,
-	finalizeResetWithGc,
 	type GenerationState,
 	readGenerationState,
 	resetVolume
@@ -46,55 +46,18 @@ function makeDb(): { db: DbAdapter; storage: ReturnType<typeof sqliteStorage> } 
 
 const enc = new TextEncoder()
 
-describe('reset — pure state machine', () => {
-	const at = (o: Partial<GenerationState> = {}): GenerationState => ({
-		generation: 5,
-		publishing: false,
-		...o
-	})
+describe('reset — pure CAS decision', () => {
+	const at = (o: Partial<GenerationState> = {}): GenerationState => ({ generation: 5, ...o })
 
-	it('decideReset CAS: applies only at fromGeneration, bumps + sets publishing for adopt-mine', () => {
+	it('decideReset CAS: applies only at fromGeneration, bumps + records resetId', () => {
 		const ok = decideReset(at(), { mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })
-		expect(ok).toEqual({ ok: true, next: { generation: 6, resetId: 'r1', publishing: true } })
+		expect(ok).toEqual({ ok: true, next: { generation: 6, resetId: 'r1' } })
 
 		const wipe = decideReset(at(), { mode: 'wipe', fromGeneration: 5 })
-		expect(wipe).toEqual({
-			ok: true,
-			next: { generation: 6, resetId: undefined, publishing: false }
-		})
+		expect(wipe).toEqual({ ok: true, next: { generation: 6, resetId: undefined } })
 
 		const stale = decideReset(at(), { mode: 'wipe', fromGeneration: 4 })
 		expect(stale).toEqual({ ok: false, error: 'generation_stale', generation: 5 })
-	})
-
-	it('decideFinalize: owner clears the lock; idempotent; non-owner + stale rejected', () => {
-		const held = at({ generation: 6, resetId: 'r1', publishing: true })
-		expect(decideFinalize(held, { generation: 6, resetId: 'r1' })).toEqual({
-			ok: true,
-			next: { generation: 6, resetId: 'r1', publishing: false }
-		})
-		// idempotent no-op after already cleared
-		const cleared = at({ generation: 6, resetId: 'r1', publishing: false })
-		expect(decideFinalize(cleared, { generation: 6, resetId: 'r1' })).toEqual({
-			ok: true,
-			next: cleared
-		})
-		expect(decideFinalize(held, { generation: 6, resetId: 'other' })).toEqual({
-			ok: false,
-			error: 'not_owner'
-		})
-		expect(decideFinalize(held, { generation: 7, resetId: 'r1' })).toEqual({
-			ok: false,
-			error: 'generation_stale'
-		})
-	})
-
-	it('decideResume: resume while publishing, adopt once finalized, reset to a different winner', () => {
-		expect(decideResume({ resetId: 'r1' }, at({ resetId: 'r1', publishing: true }))).toBe('resume')
-		expect(decideResume({ resetId: 'r1' }, at({ resetId: 'r1', publishing: false }))).toBe('adopt')
-		expect(decideResume({ resetId: 'r1' }, at({ resetId: 'r2', publishing: false }))).toBe(
-			'reset-to-winner'
-		)
 	})
 })
 
@@ -104,7 +67,7 @@ describe('reset — transaction body', () => {
 		expect((await readGenerationState(db)).generation).toBe(1)
 
 		const ok = await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
-		expect(ok).toEqual({ ok: true, next: { generation: 2, resetId: undefined, publishing: false } })
+		expect(ok).toEqual({ ok: true, next: { generation: 2, resetId: undefined } })
 		expect((await readGenerationState(db)).generation).toBe(2)
 
 		const stale = await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
@@ -152,7 +115,7 @@ describe('reset — transaction body', () => {
 		expect(Number((fts[0] as { n: unknown }).n)).toBe(0)
 	})
 
-	it('adopt-mine keeps content (lazy blobs) and sets the publishing lock', async () => {
+	it('adopt-mine keeps content (lazy blobs) and records the in-progress resetId', async () => {
 		const { db, storage } = makeDb()
 		const vol = volume(storage)
 		await vol.writeFile('/keep.txt', enc.encode('bytes'))
@@ -160,37 +123,11 @@ describe('reset — transaction body', () => {
 
 		const res = await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
 		expect(res.ok).toBe(true)
-		const state = await readGenerationState(db)
-		expect(state).toEqual({ generation: 2, resetId: 'r1', publishing: true })
+		expect(await readGenerationState(db)).toEqual({ generation: 2, resetId: 'r1' })
 		// Tree gone (fresh volume — the pre-reset cache is stale), but the content
 		// blob is retained for the republish.
 		expect(await volume(storage).exists('/keep.txt')).toBe(false)
 		expect(await storage.caps?.content?.hasByHash(hash)).toBe(true)
-	})
-
-	it('finalize (adopt-mine): GC drops the orphaned baseline, then the lock clears', async () => {
-		const { db, storage } = makeDb()
-		const vol = volume(storage)
-		await vol.writeFile('/keep.txt', enc.encode('old-baseline'))
-		const hash = (await vol.stat('/keep.txt')).contentHash as string
-
-		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
-		expect((await readGenerationState(db)).publishing).toBe(true)
-
-		// The new tree references nothing yet, so GC reclaims the discarded blob.
-		await storage.caps?.content?.gcUnreferenced?.()
-		expect(await storage.caps?.content?.hasByHash(hash)).toBe(false)
-
-		const fin = await finalizeReset(db, { generation: 2, resetId: 'r1' })
-		expect(fin.ok).toBe(true)
-		expect((await readGenerationState(db)).publishing).toBe(false)
-
-		// A retried finalize is a no-op ok; a non-owner is rejected.
-		expect((await finalizeReset(db, { generation: 2, resetId: 'r1' })).ok).toBe(true)
-		expect(await finalizeReset(db, { generation: 2, resetId: 'other' })).toEqual({
-			ok: false,
-			error: 'not_owner'
-		})
 	})
 
 	it('rolls back the whole reset if the transaction throws (atomicity path)', async () => {
@@ -215,41 +152,25 @@ describe('reset — transaction body', () => {
 		expect((await readGenerationState(db)).generation).toBe(1)
 		expect(await vol.exists('/a.txt')).toBe(true)
 	})
+})
 
-	// Finding 2 (gh#147): the ownership check MUST precede the destructive GC, so a
-	// stale/non-owner finalize can't reclaim the kept lazy blobs and only then be
-	// rejected. finalizeResetWithGc enforces check → gc → clear.
-	it('finalizeResetWithGc runs gc only for the confirmed owner, before clearing the lock', async () => {
+describe('reset — clearReset (advisory in-progress flag)', () => {
+	it('clears the flag only for the matching reset; a stale/duplicate clear is a no-op', async () => {
 		const { db } = makeDb()
 		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
+		expect((await readGenerationState(db)).resetId).toBe('r1')
 
-		// Non-owner: rejected WITHOUT running gc; the lock stays held.
-		let gcRuns = 0
-		const notOwner = await finalizeResetWithGc(
-			db,
-			{ generation: 2, resetId: 'other' },
-			async () => {
-				gcRuns++
-			}
-		)
-		expect(notOwner).toEqual({ ok: false, error: 'not_owner' })
-		expect(gcRuns).toBe(0)
-		expect((await readGenerationState(db)).publishing).toBe(true)
+		// A non-matching resetId leaves the flag untouched.
+		const other = await clearReset(db, 'someone-else')
+		expect(other).toEqual({ generation: 2, resetId: 'r1' })
+		expect((await readGenerationState(db)).resetId).toBe('r1')
 
-		// Stale generation: also rejected without gc.
-		const stale = await finalizeResetWithGc(db, { generation: 99, resetId: 'r1' }, async () => {
-			gcRuns++
-		})
-		expect(stale).toEqual({ ok: false, error: 'generation_stale' })
-		expect(gcRuns).toBe(0)
+		// The owner clears it; the generation is unchanged.
+		const owner = await clearReset(db, 'r1')
+		expect(owner).toEqual({ generation: 2 })
+		expect((await readGenerationState(db)).resetId).toBeUndefined()
 
-		// Owner: gc runs exactly once, THEN the lock clears.
-		const order: string[] = []
-		const ok = await finalizeResetWithGc(db, { generation: 2, resetId: 'r1' }, async () => {
-			order.push('gc')
-		})
-		expect(ok.ok).toBe(true)
-		expect(order).toEqual(['gc'])
-		expect((await readGenerationState(db)).publishing).toBe(false)
+		// Idempotent — a retried clear after it's already cleared is a harmless no-op.
+		expect(await clearReset(db, 'r1')).toEqual({ generation: 2 })
 	})
 })

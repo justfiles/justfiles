@@ -5,12 +5,8 @@ export type { FsApiType, FsClient, FsClientOptions, RemoteSyncReplicaOptions } f
 export { apiStorage, createFsClient, remoteSyncReplica } from './fs.client'
 export { migrateFromEntries, parseSqlStatements } from './migrations/utils'
 export {
-	decideFinalize,
+	clearReset,
 	decideReset,
-	decideResume,
-	type FinalizeDecision,
-	finalizeReset,
-	finalizeResetWithGc,
 	type GenerationState,
 	type ResetDecision,
 	type ResetMode,

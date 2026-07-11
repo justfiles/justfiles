@@ -39,7 +39,7 @@ const dirPut = (path: string): PathChange => ({
 
 describe('/fs push fencing — server', () => {
 	it('surfaces the generation on the handshake', async () => {
-		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 5, publishing: false }) })
+		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 5 }) })
 		const res = await app.request('/', { method: 'GET' })
 		expect(res.status).toBe(200)
 		expect((await res.json()).generation).toBe(5)
@@ -47,7 +47,7 @@ describe('/fs push fencing — server', () => {
 
 	it('rejects a stale mutating write and does not apply it', async () => {
 		const backend = memStorage()
-		const app = createFsApi(backend, { lineage: () => ({ generation: 5, publishing: false }) })
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5 }) })
 		const data = new Uint8Array([1, 2, 3])
 		const hash = await sha256Hex(data)
 		const res = await app.request(`/blob/${hash}`, {
@@ -64,7 +64,7 @@ describe('/fs push fencing — server', () => {
 
 	it('accepts a mutating write at the current generation', async () => {
 		const backend = memStorage()
-		const app = createFsApi(backend, { lineage: () => ({ generation: 5, publishing: false }) })
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5 }) })
 		const data = new Uint8Array([9])
 		const hash = await sha256Hex(data)
 		const res = await app.request(`/blob/${hash}`, {
@@ -78,7 +78,7 @@ describe('/fs push fencing — server', () => {
 
 	it('allows a mutating write with no generation header (legacy client)', async () => {
 		const backend = memStorage()
-		const app = createFsApi(backend, { lineage: () => ({ generation: 5, publishing: false }) })
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5 }) })
 		const data = new Uint8Array([7])
 		const hash = await sha256Hex(data)
 		const res = await app.request(`/blob/${hash}`, {
@@ -103,71 +103,34 @@ describe('/fs push fencing — server', () => {
 	})
 
 	it('does not fence reads', async () => {
-		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 5, publishing: false }) })
+		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 5 }) })
 		const res = await app.request('/', { method: 'GET', headers: { 'x-fs-generation': '1' } })
 		expect(res.status).toBe(200)
 	})
 })
 
-// Finding 1 (gh#147): the adopt-mine publishing lock must be exposed on the
-// handshake AND enforced — while held, only the owning resetId may mutate; every
-// other writer is fenced so it can't clobber the half-published baseline.
-describe('/fs publishing lock — server', () => {
-	const locked = { generation: 6, resetId: 'owner-1', publishing: true }
-
-	it('surfaces resetId + publishing on the handshake', async () => {
-		const app = createFsApi(memStorage(), { lineage: () => locked })
+// The advisory "reset in progress" flag (resetId) is exposed on the handshake so
+// other devices can show status / gate their own reset UI. It is NOT a write lock
+// (a take-mine republish rides ordinary sync at the new generation).
+describe('/fs reset flag — server', () => {
+	it('surfaces resetId on the handshake', async () => {
+		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 6, resetId: 'r1' }) })
 		const data = await (await app.request('/', { method: 'GET' })).json()
-		expect(data).toMatchObject({ generation: 6, resetId: 'owner-1', publishing: true })
+		expect(data).toMatchObject({ generation: 6, resetId: 'r1' })
 	})
 
-	it('echoes publishing on pull + snapshot pages', async () => {
-		const app = createFsApi(memStorage(), { lineage: () => locked })
-		const delta = await (await app.request('/path/changes?cursor=0', { method: 'GET' })).json()
-		expect(delta.publishing).toBe(true)
-		const scan = await (await app.request('/path/snapshot', { method: 'GET' })).json()
-		expect(scan.publishing).toBe(true)
-	})
-
-	it('rejects a non-owner mutation while publishing and admits the owner', async () => {
+	it('does not fence a write while a reset is in progress (no publishing lock)', async () => {
 		const backend = memStorage()
-		const app = createFsApi(backend, { lineage: () => locked })
+		const app = createFsApi(backend, { lineage: () => ({ generation: 6, resetId: 'r1' }) })
 		const data = new Uint8Array([4, 2])
 		const hash = await sha256Hex(data)
-
-		// No reset-id header -> not the owner -> fenced (does not land).
-		const nonOwner = await app.request(`/blob/${hash}`, {
+		// A write at the current generation is admitted even though resetId is set.
+		const res = await app.request(`/blob/${hash}`, {
 			method: 'PUT',
 			body: data,
 			headers: { 'Content-Type': 'application/octet-stream', 'x-fs-generation': '6' }
 		})
-		expect(nonOwner.status).toBe(409)
-		expect((await nonOwner.json()).error).toBe('publishing')
-		expect((await app.request(`/blob/${hash}`, { method: 'HEAD' })).status).toBe(404)
-
-		// Wrong reset-id -> still fenced.
-		const wrongOwner = await app.request(`/blob/${hash}`, {
-			method: 'PUT',
-			body: data,
-			headers: {
-				'Content-Type': 'application/octet-stream',
-				'x-fs-generation': '6',
-				'x-fs-reset-id': 'someone-else'
-			}
-		})
-		expect(wrongOwner.status).toBe(409)
-
-		// Owner's write (matching x-fs-reset-id) is admitted.
-		const owner = await app.request(`/blob/${hash}`, {
-			method: 'PUT',
-			body: data,
-			headers: {
-				'Content-Type': 'application/octet-stream',
-				'x-fs-generation': '6',
-				'x-fs-reset-id': 'owner-1'
-			}
-		})
-		expect(owner.status).toBe(204)
+		expect(res.status).toBe(204)
 		expect((await app.request(`/blob/${hash}`, { method: 'HEAD' })).status).toBe(200)
 	})
 })
@@ -175,7 +138,7 @@ describe('/fs publishing lock — server', () => {
 describe('/fs push fencing — client paths', () => {
 	it('remoteSyncReplica stamps the generation; a stale push throws GenerationStaleError', async () => {
 		const backend = memStorage()
-		const app = createFsApi(backend, { lineage: () => ({ generation: 5, publishing: false }) })
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5 }) })
 		const client = wireClient(app)
 		const noBlob = async () => new Uint8Array()
 
@@ -192,7 +155,7 @@ describe('/fs push fencing — client paths', () => {
 
 	it('apiStorage stamps the generation; a stale inode mutation throws GenerationStaleError', async () => {
 		const backend = memStorage()
-		const app = createFsApi(backend, { lineage: () => ({ generation: 5, publishing: false }) })
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5 }) })
 		const client = wireClient(app)
 
 		const fresh = await apiStorage(client, { generation: () => 5 })

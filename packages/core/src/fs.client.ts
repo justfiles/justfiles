@@ -7,9 +7,6 @@ import type { createFsApi } from './fs'
 
 const FS_SOURCE_HEADER = 'x-fs-source'
 const FS_GENERATION_HEADER = 'x-fs-generation'
-// Owner token for an adopt-mine republish: stamped so the server's publishing
-// lock admits only the initiator's writes (docs/sync-reset-generation.md).
-const FS_RESET_ID_HEADER = 'x-fs-reset-id'
 
 // Detect the server's push-fence rejection. A mutating write stamped with a stale
 // `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`;
@@ -314,14 +311,13 @@ export function remoteSyncReplica(
 	return {
 		async handshake() {
 			// GET /fs — the volume-lineage probe. Returns the server's `generation`
-			// (undefined on a server that has not opted in) plus the adopt-mine
-			// publishing lock (`resetId` owner + `publishing`). `synced()` calls this
-			// once per cycle to detect a server-side volume reset or defer during a
-			// half-publish.
+			// (undefined on a server that has not opted in) plus the advisory `resetId`
+			// ("a reset/republish is in progress"). `synced()` calls this once per cycle
+			// to detect a server-side volume reset and to drive crash-resume.
 			const res = await client.index.$get()
 			if (!res.ok) throw new Error(`handshake failed: ${res.status}`)
 			const data = await res.json()
-			return { generation: data.generation, resetId: data.resetId, publishing: data.publishing }
+			return { generation: data.generation, resetId: data.resetId }
 		},
 
 		async pathDeltas(cursor, opts) {
@@ -343,8 +339,7 @@ export function remoteSyncReplica(
 				changes: data.changes.map((c) => PathChange.parse(c)),
 				to: data.to,
 				done: data.done,
-				generation: data.generation,
-				publishing: data.publishing
+				generation: data.generation
 			}
 		},
 
@@ -362,23 +357,21 @@ export function remoteSyncReplica(
 				next: data.next,
 				syncCursor: data.syncCursor,
 				done: data.done,
-				generation: data.generation,
-				publishing: data.publishing
+				generation: data.generation
 			}
 		},
 
-		async applyPathChanges(changes, _getBlobByHash, opts) {
+		async applyPathChanges(changes, _getBlobByHash) {
 			// Push: blobs are uploaded first (see synced()'s uploadBlobs), then the
-			// tree changes POST. `_getBlobByHash` is unused here — the server
-			// hydrates from its own store after the blob upload. `opts.resetId` (an
-			// adopt-mine republish) stamps the publishing-lock owner token.
+			// tree changes POST. `_getBlobByHash` is unused here — the server hydrates
+			// from its own store after the blob upload. A "take mine" republish is just
+			// an ordinary push at the new generation (no special header).
 			const gen = generation?.()
 			const res = await client.path.changes.$post({
 				json: { changes },
 				header: {
 					[FS_SOURCE_HEADER]: clientId,
-					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {}),
-					...(opts?.resetId ? { [FS_RESET_ID_HEADER]: opts.resetId } : {})
+					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
 				}
 			} as Parameters<typeof client.path.changes.$post>[0])
 			await throwIfStale(res)

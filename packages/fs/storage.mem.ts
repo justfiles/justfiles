@@ -345,6 +345,9 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			},
 			async head() {
 				return journalRows[journalRows.length - 1]?.seq ?? 0
+			},
+			async adoptAllAsLocal() {
+				for (const r of journalRows) r.localSource = undefined
 			}
 		},
 		content: {

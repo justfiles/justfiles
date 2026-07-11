@@ -106,6 +106,9 @@ function fakeJournalStore(rows: JournalRow[]): Storage {
 		},
 		async head() {
 			return rows.at(-1)?.seq ?? 0
+		},
+		async adoptAllAsLocal() {
+			for (const r of rows) r.localSource = undefined
 		}
 	}
 	return { ...base, caps: { ...base.caps, journal } }

@@ -1,6 +1,5 @@
 import {
 	createFsClient as createCoreFsClient,
-	decideResume,
 	type FsClient,
 	remoteSyncReplica
 } from '@justfiles/core'
@@ -171,7 +170,11 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 		local: entry.local,
 		remote: ({ clientId, generation }) => remoteSyncReplica(client, { clientId, generation }),
 		lazyContent: true,
-		localFirst: true
+		localFirst: true,
+		// When a "take mine" republish drains, clear the server's advisory reset flag.
+		// Also fires for a republish resumed after a crash (synced() re-derives it from
+		// the persisted pendingReset on boot).
+		onResetComplete: (resetId) => postComplete(getToken, resetId)
 	})
 	if (active !== entry) {
 		syncVolume.destroy()
@@ -182,10 +185,6 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	entry.unsubscribeSyncStatus = syncVolume.onStatusChange((next) => {
 		if (active === entry) setActiveStatus(entry, next)
 	})
-	// Resume an interrupted "take mine" (a crash after the reset CAS but before
-	// finalize) so the boot handshake doesn't discard the snapshot it meant to
-	// publish. Fire-and-forget: synced() defers its own cycles while we publish.
-	void resumePendingTakeMine(getToken).catch(() => {})
 }
 
 function setActive(
@@ -348,8 +347,9 @@ function deleteIdb(name: string): Promise<void> {
 
 // ── Server-coordinated volume reset (docs/sync-reset-generation.md) ───────────
 // Debug-gated shell affordances (see ResetPanel). "Take theirs" is client-only;
-// "take mine" and "factory reset" coordinate through the DO reset routes, which
-// live outside createFsApi at `/fs/reset` and `/fs/reset/finalize`.
+// "take mine" and "factory reset" coordinate through the DO reset route
+// (`POST /fs/reset`, outside createFsApi). The reset is a small atomic server op;
+// the take-mine republish then rides ordinary sync (eventual consistency).
 
 async function postReset(getToken: GetToken, path: string, body: unknown): Promise<Response> {
 	const token = await getToken()
@@ -358,6 +358,12 @@ async function postReset(getToken: GetToken, path: string, body: unknown): Promi
 		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}` },
 		body: JSON.stringify(body)
 	})
+}
+
+// Clear the server's advisory "reset in progress" flag once our republish drained.
+async function postComplete(getToken: GetToken, resetId: string): Promise<void> {
+	const res = await postReset(getToken, '/fs/reset', { mode: 'complete', resetId })
+	if (!res.ok) throw new Error(`reset complete failed: ${res.status}`)
 }
 
 // "Take theirs" — discard this device's local replica and re-pull the server's
@@ -369,17 +375,18 @@ export async function resetTakeTheirs(): Promise<void> {
 	await sync.resetLocal()
 }
 
-// "Take mine" — republish this device's volume as the new server baseline; every
-// other device client-resets to it on its next handshake. Local stays intact, so
-// its republished /applications/* carries the apps to the other devices.
+// "Take mine" — make this device's volume the new server baseline; every other
+// device converges to it over ordinary sync. The reset is a small atomic server
+// op (truncate + bump); the republish then rides the normal resilient loop — so a
+// closed tab / dropped network just resumes, and it can take as long as it needs.
 export async function resetTakeMine(getToken: GetToken): Promise<void> {
 	const sync = active?.sync
 	if (!sync) throw new Error('“take mine” requires a synced profile')
 	const fromGeneration = sync.generation()
 	if (fromGeneration === undefined) throw new Error('“take mine” requires a server generation')
 	const resetId = crypto.randomUUID()
-	// Persist the intent BEFORE the CAS so a crash mid-publish resumes on reboot.
-	await sync.beginTakeMine(resetId)
+	// Persist the intent BEFORE the CAS so a crash mid-republish resumes on reboot.
+	await sync.beginTakeMine(resetId, fromGeneration)
 	const res = await postReset(getToken, '/fs/reset', {
 		mode: 'adopt-mine',
 		fromGeneration,
@@ -389,46 +396,11 @@ export async function resetTakeMine(getToken: GetToken): Promise<void> {
 		await sync.clearPendingReset() // the CAS lost the race — nothing to resume
 		throw new Error(`reset failed: ${res.status}`)
 	}
-	const applied = (await res.json()) as { generation: number; resetId?: string }
-	await sync.publishSnapshot(resetId, applied.generation)
-	const fin = await postReset(getToken, '/fs/reset/finalize', {
-		generation: applied.generation,
-		resetId
-	})
-	if (!fin.ok) throw new Error(`finalize failed: ${fin.status}`)
-	await sync.clearPendingReset()
-}
-
-// Resume (or retire) an interrupted "take mine" on boot. Reads the server's
-// current lineage and, per decideResume: RESUME the publish + finalize if we
-// still own the publishing lock; otherwise ADOPT (it already finalized) or drop
-// the intent so synced() client-resets to whichever reset won.
-export async function resumePendingTakeMine(getToken: GetToken): Promise<void> {
-	const sync = active?.sync
-	const pending = sync?.pendingReset()
-	if (!sync || !pending) return
-	const token = await getToken()
-	const res = await fetch('/fs', { headers: { Authorization: `Bearer ${token ?? ''}` } })
-	if (!res.ok) return // can't reach the server now — retry on the next start
-	const hs = (await res.json()) as { generation?: number; resetId?: string; publishing?: boolean }
-	const server = {
-		generation: hs.generation ?? 1,
-		resetId: hs.resetId,
-		publishing: Boolean(hs.publishing)
-	}
-	if (decideResume(pending, server) !== 'resume') {
-		// 'adopt' (already finalized) or 'reset-to-winner' (a different reset won):
-		// drop the intent and let synced()'s handshake adopt / client-reset.
-		await sync.clearPendingReset()
-		return
-	}
-	await sync.publishSnapshot(pending.resetId, server.generation)
-	const fin = await postReset(getToken, '/fs/reset/finalize', {
-		generation: server.generation,
-		resetId: pending.resetId
-	})
-	if (!fin.ok) throw new Error(`finalize failed: ${fin.status}`)
-	await sync.clearPendingReset()
+	const applied = (await res.json()) as { generation: number }
+	// Adopt the new lineage locally (re-tag as mine + rewind the push cursor); the
+	// sync loop republishes from here and signals completion via onResetComplete.
+	await sync.adoptTakeMine(applied.generation)
+	await sync.flush()
 }
 
 // "Factory reset" — wipe server + local, then reseed built-ins. A synced profile
