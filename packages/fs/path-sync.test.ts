@@ -1,10 +1,7 @@
 /**
- * Layer 2 — path-sync semantics (RED 1–16 + property test).
- *
- * Each test fails today for the RIGHT reason: the harness drives the REAL
- * `SyncReplica` methods, whose bodies throw `not implemented`. After Phase 2 they
- * turn GREEN. RED 5 lives in `docs/app-materialization.md` (a materialiser test,
- * not a sync test) and RED 15 lives in `sync-units.test.ts` (a schema test).
+ * Layer 2 — path-sync semantics, plus a property test. The harness drives the
+ * REAL `SyncReplica` methods end to end. The related schema test lives in
+ * `sync-units.test.ts`.
  */
 
 import { afterEach, describe, expect, test } from 'vitest'
@@ -31,7 +28,7 @@ describe('path-sync semantics', () => {
 		for (const c of cleanups.splice(0)) c()
 	})
 
-	// RED 1 — the fork heals (generic path identity, no app semantics)
+	// The fork heals (generic path identity, no app semantics)
 	test('same path independently created on both sides converges by path version', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.write('/x/f', bytes('S'), { version: 2 })
@@ -42,7 +39,7 @@ describe('path-sync semantics', () => {
 		expect(text(await server.readFile('/x/f'))).toBe('S')
 	})
 
-	// RED 2 — heterogeneous ino spaces sync
+	// Heterogeneous ino spaces sync
 	test('syncs between a numeric-ino and a uuid-ino backend, both behind SyncReplica', async () => {
 		const native = memStorage({ mintIno: numericIno })
 		const uuid = memStorage({ mintIno: uuidIno })
@@ -52,7 +49,7 @@ describe('path-sync semantics', () => {
 		expect(text(await u.readFile('/data/note.txt'))).toBe('hello')
 	})
 
-	// RED 3 — in-place update keeps the local ino
+	// In-place update keeps the local ino
 	test('updating content at a path reuses the local inode and converges', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.writeFile('/applications/app.code/gui.js', bytes('v1'))
@@ -65,7 +62,7 @@ describe('path-sync semantics', () => {
 		expect(await orphanCount(client)).toBe(0)
 	})
 
-	// RED 4 — delete propagates by path, across a divergent tree
+	// Delete propagates by path, across a divergent tree
 	test('deleting a path removes it on a peer that had a DIVERGENT local subtree', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.writeFile('/applications/x/app.js', bytes('S'))
@@ -76,7 +73,7 @@ describe('path-sync semantics', () => {
 		expect(await client.exists('/applications/x')).toBe(false)
 	})
 
-	// RED 6 — lazy content hydrates by hash, stub retains desired hash
+	// Lazy content hydrates by hash, stub retains desired hash
 	test('pulled file is a stub carrying the desired hash; first read hydrates by hash', async () => {
 		const BIG = 'x'.repeat(4096)
 		const { client, server, syncBoth } = twoPeers({ lazyContent: true })
@@ -89,7 +86,7 @@ describe('path-sync semantics', () => {
 		expect(await client.hasLocalBlob(st.contentHash!)).toBe(true)
 	})
 
-	// RED 7 — first-bootstrap same-path policy (uniform, app-agnostic)
+	// First-bootstrap same-path policy (uniform, app-agnostic)
 	test('adoption bootstrap: keep local and version it to win; remote loser overwritten', async () => {
 		const peers = adoptionPeers()
 		cleanups.push(() => peers.destroy())
@@ -101,7 +98,7 @@ describe('path-sync semantics', () => {
 		expect(text(await peers.remote.readFile('/notes/todo.md'))).toBe('LOCAL')
 	})
 
-	// RED 8 — snapshot pages, then pathDeltas(syncCursor) resumes with no gaps
+	// Snapshot pages, then pathDeltas(syncCursor) resumes with no gaps
 	test('bootstrap pages through pathScan then resumes deltas from syncCursor', async () => {
 		const { client, server, bootstrap } = twoPeers()
 		for (let i = 0; i < 250; i++) await server.writeFile(`/d/f${i}`, bytes(String(i)))
@@ -112,7 +109,7 @@ describe('path-sync semantics', () => {
 		expect(text(await client.readFile('/d/f0'))).toBe('changed-after-snapshot-start')
 	})
 
-	// RED 9 — adoption where remote version is higher: local kept, then pushes and wins
+	// Adoption where remote version is higher: local kept, then pushes and wins
 	test('adoption keeps local over a higher-version remote and the next push wins', async () => {
 		const peers = adoptionPeers()
 		cleanups.push(() => peers.destroy())
@@ -123,7 +120,7 @@ describe('path-sync semantics', () => {
 		expect(text(await peers.remote.readFile('/x'))).toBe('LOCAL')
 	})
 
-	// RED 10 — /.state and /.state/** never cross the wire
+	// /.state and /.state/** never cross the wire
 	test('local state at /.state and under it is never pushed or applied', async () => {
 		const { client, syncBoth, pushedChanges } = twoPeers()
 		await client.writeFile('/notes/a', bytes('hi'))
@@ -132,7 +129,7 @@ describe('path-sync semantics', () => {
 		expect(pushed.some((p) => p === '/.state' || p.startsWith('/.state/'))).toBe(false)
 	})
 
-	// RED 11 — directory rename with children across a page boundary
+	// Directory rename with children across a page boundary
 	test('renaming a directory moves every descendant, even across delta pages', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		for (let i = 0; i < 150; i++) await server.writeFile(`/old/f${i}`, bytes(String(i)))
@@ -144,7 +141,7 @@ describe('path-sync semantics', () => {
 		expect(text(await client.readFile('/new/f42'))).toBe('42')
 	})
 
-	// RED 12 — type replacement at a path (file<->dir), recursive delete ordering
+	// Type replacement at a path (file<->dir), recursive delete ordering
 	test('replacing a file with a dir (and back) converges with correct delete ordering', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.writeFile('/p', bytes('file'))
@@ -162,7 +159,7 @@ describe('path-sync semantics', () => {
 		expect(text(await client.readFile('/p'))).toBe('file2')
 	})
 
-	// RED 13 — equal-version tie-break is deterministic for every node type
+	// Equal-version tie-break is deterministic for every node type
 	test('concurrent equal-version, equal-mtime writes pick the SAME winner on both sides', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.write('/f', bytes('X'), { version: 5, mtimeNs: '100', mode: 0o644 })
@@ -174,7 +171,7 @@ describe('path-sync semantics', () => {
 		expect((await client.stat('/d')).mode).toBe((await server.stat('/d')).mode)
 	})
 
-	// RED 14 — ancestor delete vs concurrent descendant edit
+	// Ancestor delete vs concurrent descendant edit
 	test('a winning descendant edit resurrects its deleted ancestor directory', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.writeFile('/a/b', bytes('v1'))
@@ -189,7 +186,7 @@ describe('path-sync semantics', () => {
 		expect((await client.stat('/a')).mode).toBe((await server.stat('/a')).mode)
 	})
 
-	// RED 16 — the conflict digest is source-independent
+	// The conflict digest is source-independent
 	test('the same durable change wins identically regardless of stamped source', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.write('/f', bytes('SAME'), { version: 7, mtimeNs: '5', source: undefined })

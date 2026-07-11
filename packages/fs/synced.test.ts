@@ -2,12 +2,10 @@
  * Layer 3 — `synced()` orchestration / lifecycle (ported to the path API).
  *
  * Drives the REAL `synced()` engine over two `memStorage` backends (two-folder
- * P2P: the `remote` backend is the shared store). These are the GREEN guardrails
- * that must keep passing after Phase 2; in Phase 1 they are RED because the
- * engine's push/pull/bootstrap call `SyncReplica` bodies that throw.
+ * P2P: the `remote` backend is the shared store).
  *
  * The ino-sync-only cases (applyBatch fast-path, FsCursorExpiredError recovery)
- * were dropped when the legacy FsOp delta protocol was removed (roadmap item 1).
+ * were dropped when the legacy FsOp delta protocol was removed.
  */
 
 import { createHash } from 'node:crypto'
@@ -263,8 +261,7 @@ describe('synced (lifecycle)', () => {
 	// Asserts synced() drives PULL with excludeOrigin=clientId and stamps PUSH
 	// applies with source=REMOTE_SOURCE. excludeLocalSource (local deltas) is
 	// covered at the unit level (journaledChangeSource) since the local replica is
-	// internal to synced(). RED now: negotiate()/bootstrap throw so push/pull never
-	// run and nothing is recorded.
+	// internal to synced().
 	it('client<->server push uses REMOTE_SOURCE and pull uses excludeOrigin=clientId', async () => {
 		const deltaOpts: Array<Record<string, unknown> | undefined> = []
 		const applyOpts: Array<Record<string, unknown> | undefined> = []
@@ -297,7 +294,7 @@ describe('synced (lifecycle)', () => {
 	})
 })
 
-// ── Sync reset / generations (docs/sync-reset-generation.md) ──────────────────
+// ── Sync reset / generations ──────────────────────────────────────────────────
 // A controllable fake SERVER replica: it reports a `generation` + advisory
 // `resetId` on its handshake and echoes the generation on pull/scan pages, so the
 // tests drive the handshake branch (equal / adopt / migrate / client-reset), the

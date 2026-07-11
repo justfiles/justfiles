@@ -6,7 +6,7 @@
 // `materialise` installs any built-in that isn't present (first-run seeding),
 // and `reconcile` updates the apps that ARE installed (built-in or not). They
 // are split so a built-in the user deleted is NOT force-reinstalled by the
-// update path (R5) — seeding is a deliberate, separate step. The store is
+// update path — seeding is a deliberate, separate step. The store is
 // host-supplied (HTTP assets, packaged FS bundles, future remote stores), so
 // this layer is host-agnostic.
 
@@ -55,11 +55,10 @@ export interface AppStore {
 // it stays off every bundle-listing surface (see `hidden` in kernel.ts).
 const INSTALL_HASH_PATH = '.apphash'
 
-// First-run seeding: install every built-in that isn't already installed. This
-// is the ONLY path that installs a missing built-in — `reconcile` never does, so
-// a built-in the user deleted stays gone (R5). Idempotent: an installed built-in
-// is left to `reconcile` for updates. Callers decide WHEN to seed (e.g. only on
-// an empty volume / genuinely new account — see docs/app-materialization.md R1).
+// First-run seeding: install every built-in that isn't already installed. The
+// ONLY path that installs a missing built-in — `reconcile` never does, so a
+// built-in the user deleted stays gone. Callers decide WHEN to seed (e.g. only
+// into an empty volume / genuinely new account).
 export async function materialise(kernel: Kernel, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
 	for (const app of await store.builtins()) {
@@ -85,12 +84,10 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 }
 
 // What reconcile should do for one INSTALLED app. Split "repair" from "upgrade"
-// so a missing/corrupt file is self-healed even when the whole-app hash matches
-// (the regression the `.apphash`-only check introduced), while a version change
-// is governed by the monotonic guard. `skip` when nothing drifted OR the store
-// is older than what's installed (never downgrade — protects against a stale
-// client build re-writing a newer app). Repair is monotonic too: a stale store
-// can't "repair" a newer install down to its older files.
+// so a missing/corrupt file is self-healed even when the whole-app hash matches,
+// while a version change stays governed by the monotonic guard. Both are
+// monotonic: `skip` when the store is older than what's installed, so a stale
+// client build can never downgrade a newer app (repair included).
 type SyncAction = 'skip' | 'repair' | 'upgrade'
 
 async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {

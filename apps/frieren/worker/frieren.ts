@@ -91,10 +91,9 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			// Server-coordinated volume reset (docs/sync-reset-generation.md). Lives
-			// OUTSIDE createFsApi (DO-level truncate powers) and BEFORE the /fs mount, so
-			// it never hits the push-fence middleware — reset self-guards via the
-			// fromGeneration CAS.
+			// Server-coordinated volume reset. Lives OUTSIDE createFsApi (DO-level
+			// truncate powers) and BEFORE the /fs mount, so it never hits the push-fence
+			// middleware — reset self-guards via the fromGeneration CAS.
 			.post('/fs/reset', (c) => this.handleReset(c))
 			.route('/fs', createFsApi(fs, { lineage: () => readGenerationState(this.db) }))
 

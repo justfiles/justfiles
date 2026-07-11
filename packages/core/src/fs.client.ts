@@ -95,15 +95,12 @@ export async function apiStorage(
 ): Promise<Storage> {
 	const rootIno = options.rootIno ?? '1'
 
-	// Attach the sync `source` and (when known) `x-fs-generation` as request headers
-	// on the Hono request object (args[0].header) rather than via
-	// ClientRequestOptions (args[1].headers): the latter is an object that replaces
-	// the client-level `headers` function, which would drop the Authorization
-	// callback and 401 any Bearer-authed mutation. The cast back to T hides the
-	// extra `header` key from the route's input type while the client still sends it
-	// at runtime (same trick as putBlob below).
-	// Read at request time (method params shadow the outer `options`, so route it
-	// through this closure defined at apiStorage scope).
+	// Attach the sync `source` and (when known) `x-fs-generation` on the Hono
+	// request object (args[0].header), NOT via ClientRequestOptions (args[1].headers)
+	// — that would replace the client-level `headers` function and drop the
+	// Authorization callback, 401ing any Bearer-authed mutation. The cast back to T
+	// hides the extra `header` key from the route's input type (same trick as
+	// putBlob below). `generation` is read at request time via this closure.
 	const currentGeneration = (): number | undefined => options.generation?.()
 	const withHeaders = <T extends Record<string, unknown>>(req: T, mopts?: MutationOptions): T => {
 		const header: Record<string, string> = {}

@@ -96,11 +96,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return kernelInstance
 	}
 
-	// Built-in apps are materialised CLIENT-side only (see
-	// docs/app-materialization.md R1): the browser seeds an empty volume once and
-	// syncs the bundle up. This DO never materialises `/applications/*` — it holds
-	// whatever the client synced up and serves it to the agent. So the kernel is
-	// used as-is; there is no server-side seed/reconcile step.
+	// Built-in apps are materialised client-side only: the browser seeds an empty
+	// volume once and syncs the bundle up. This DO never materialises
+	// `/applications/*` — it holds whatever the client synced up and serves it to
+	// the agent, so the kernel is used as-is with no server-side seed/reconcile.
 
 	// kernel.subscribe's handler is in-memory, so it dies with the DO on
 	// hibernation. Re-registered lazily per instance. On the server kernel

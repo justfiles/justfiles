@@ -3,12 +3,10 @@ import { XIcon } from '@phosphor-icons/react'
 import { useState } from 'react'
 import { activeProfileHasRemoteUser, factoryReset, resetTakeMine, resetTakeTheirs } from '../fs'
 
-// Debug-gated shell panel for the three destructive volume resets
-// (docs/sync-reset-generation.md). Shell-level, not the sandboxed Settings app —
-// these reach IDB, the sync lifecycle, and location.reload(). "Take theirs" /
-// "take mine" need a synced profile; a local-only workspace only offers factory
-// reset (wipe local + reload). Confirmations are the debug-phase mitigation; the
-// prod UI adds typed-to-confirm and a "close other devices first" note.
+// Debug-gated shell panel for the three destructive volume resets. Shell-level,
+// not the sandboxed Settings app, because these reach IDB, the sync lifecycle, and
+// location.reload(). "Take theirs" / "take mine" need a synced profile; a
+// local-only workspace only offers factory reset (wipe local + reload).
 export function ResetPanel({ onClose }: { onClose: () => void }) {
 	const { getToken } = useAuth()
 	const synced = activeProfileHasRemoteUser()

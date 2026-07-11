@@ -84,8 +84,8 @@ const DirInoParam = z.object({ dirIno: z.string() })
 const DirInoNameParam = z.object({ dirIno: z.string(), name: z.string() })
 const CursorQuery = z.object({ cursor: z.string().default('') })
 const SOURCE_HEADER = 'x-fs-source'
-// Push fencing (sync-reset-generation.md): a mutating request carries the
-// client's known volume lineage here; a present-but-stale value is rejected.
+// Push fencing: a mutating request carries the client's known volume lineage
+// here; a present-but-stale value is rejected.
 const GENERATION_HEADER = 'x-fs-generation'
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
@@ -96,13 +96,12 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const PROTOCOL_VERSION = 1
 const SCHEMA_VERSION = 1
 
-// `generation` = the server volume's lineage epoch (sync-reset-generation.md).
-// Optional: absent unless the host injects a lineage source, so a server that
-// has not opted in reads as "no lineage signal" and the client stays on the
-// legacy path. Surfaced on the handshake AND echoed on every pull/scan page so a
-// mid-cycle reset is caught without a second round-trip. `resetId` is the
-// advisory "a reset/republish is in progress" flag (crash-resume + UI), not a
-// lock.
+// `generation` = the server volume's lineage epoch. Optional: absent unless the
+// host injects a lineage source, so a server that has not opted in reads as "no
+// lineage signal" and the client stays on the legacy path. Surfaced on the
+// handshake AND echoed on every pull/scan page so a mid-cycle reset is caught
+// without a second round-trip. `resetId` is the advisory "a reset/republish is in
+// progress" flag (crash-resume + UI), not a lock.
 const Handshake = z.object({
 	rootIno: z.string(),
 	protocolVersion: z.number().int(),
@@ -149,12 +148,11 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 export function createFsApi(
 	backend: Storage,
 	opts?: {
-		// The server volume's lineage (see sync-reset-generation.md): the epoch
-		// `generation` plus the adopt-mine publishing lock (`resetId` owner +
-		// `publishing` flag). Injected by the host (e.g. the DO's SQLite generation
-		// row); omitted here so callers that haven't opted in report no lineage and
-		// clients stay on the legacy path. Surfaced on the handshake, echoed on every
-		// pull/scan page, and enforced on every mutating write.
+		// The server volume's lineage: the epoch `generation` plus the advisory
+		// `resetId`. Injected by the host (e.g. the DO's SQLite generation row);
+		// omitted here so callers that haven't opted in report no lineage and clients
+		// stay on the legacy path. Surfaced on the handshake, echoed on every pull/scan
+		// page, and enforced on every mutating write.
 		lineage?: () => GenerationState | Promise<GenerationState>
 	}
 ) {
@@ -179,16 +177,13 @@ export function createFsApi(
 		new Hono()
 
 			// ── Push fencing (anti-clobber) ────────────────────────────────────────
-			// Every MUTATING /fs request may carry `x-fs-generation` = the client's
-			// known volume lineage. When the host injects a lineage source and the
-			// header is present but stale, reject with 409 so the client resets instead
-			// of clobbering a fresh reset baseline. An ABSENT header (legacy/unaware
-			// client) is allowed — backward compatible. GET/HEAD are reads; the reset
-			// routes live outside createFsApi and self-guard via their CAS.
-			//
-			// There is no publishing lock: a "take mine" republish rides ordinary sync
-			// at the new generation, so it passes this same stale check with no special
-			// header. Other devices converge eventually (eventual consistency).
+			// A mutating /fs request may carry `x-fs-generation` = the client's known
+			// lineage; a present-but-stale value is rejected with 409 so the client
+			// resets instead of clobbering a fresh reset baseline. An absent header
+			// (legacy client) is allowed. GET/HEAD are reads; the reset routes live
+			// outside createFsApi and self-guard via their CAS. There is no publishing
+			// lock — a "take mine" republish rides ordinary sync at the new generation
+			// and passes this same check, and other devices converge eventually.
 			.use('*', async (c, next) => {
 				if (opts?.lineage && MUTATING_METHODS.has(c.req.method)) {
 					const header = c.req.header(GENERATION_HEADER)

@@ -329,7 +329,7 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			return displaced && displaced.ino !== src.ino ? displaced.ino : null
 		},
 
-		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
+		// ── Path-sync seams ──────────────────────────────────────────────────────
 		async clearSyncState() {
 			pathVersion.clear()
 			tombstone.clear()

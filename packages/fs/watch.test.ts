@@ -1,6 +1,6 @@
 /**
  * Tests for the change-feed `subscribe` cap and the inotify-style
- * `volume.watch` primitive built on top of it (Phase 2b).
+ * `volume.watch` primitive built on top of it.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs'

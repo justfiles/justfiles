@@ -1,7 +1,7 @@
-// Volume reset (docs/sync-reset-generation.md). The pure CAS decision plus the
-// transactional reset/clear bodies, driven against a REAL BEGIN/COMMIT adapter
-// over node:sqlite — the same transport the sqlite conformance suite uses, so the
-// reset-atomicity code path runs under vitest with no bun / Cloudflare runtime.
+// Volume reset. The pure CAS decision plus the transactional reset/clear bodies,
+// driven against a REAL BEGIN/COMMIT adapter over node:sqlite — the same transport
+// the sqlite conformance suite uses, so the reset-atomicity code path runs under
+// vitest with no bun / Cloudflare runtime.
 //
 // The take-mine republish rides ordinary sync (no publishing lock, no finalize),
 // so this file covers only the server-side reset primitives; the client-side

@@ -1,13 +1,9 @@
--- Volume lineage epoch (docs/sync-reset-generation.md). A single row (id = 1)
--- names the server volume's lineage: a `POST /fs/reset` bumps `generation`,
--- which fences stale writers (push fencing) and drives every other device to
--- re-bootstrap on its next handshake. `reset_id` is an ADVISORY "a reset /
--- republish is in progress" flag: set by the reset that produced this
--- generation, cleared once the initiator's republish drains. It is NOT a write
--- lock (the republish rides ordinary sync) -- it drives crash-resume identity
--- and UI legibility. It is a SQLite ROW, not DO-KV, so the bump commits in the
--- SAME transaction as the truncate -- a crash leaves the old lineage or the new
--- one, never a mix.
+-- Volume lineage epoch. A single row (id = 1): a `POST /fs/reset` bumps
+-- `generation`, which fences stale writers and drives every other device to
+-- re-bootstrap on its next handshake. `reset_id` is an
+-- advisory "reset in progress" flag (crash-resume identity + UI), not a write
+-- lock. A SQLite row, not DO-KV, so the bump commits in the SAME transaction as
+-- the truncate — a crash leaves the old lineage or the new one, never a mix.
 CREATE TABLE IF NOT EXISTS fs_generation (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	generation INTEGER NOT NULL,

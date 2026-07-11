@@ -35,10 +35,9 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	let seedCancelled = false
 	void (async () => {
 		const fs = await volume
-		// The client is the sole materialiser of built-in apps (the server no
-		// longer seeds — docs/app-materialization.md R1). A synced profile waits
-		// for the first bootstrap before deciding, so an account that already has
-		// apps isn't re-seeded; a local-only profile seeds immediately.
+		// The client is the sole materialiser of built-in apps. A synced profile waits
+		// for the first bootstrap before deciding, so an account that already has apps
+		// isn't re-seeded; a local-only profile seeds immediately.
 		const synced = activeProfileHasRemoteUser()
 		await seedBuiltins(await localKernel(), fs, {
 			waitForBootstrap: synced ? () => fs.flush() : undefined
@@ -58,19 +57,17 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	disposers.push(appHost.subscribeCatalog(() => client.refresh()))
 
 	// The dock's catalog is a projection of the local volume's `/applications/*`.
-	// Apps that arrive by sync-down (an agent or another device installs one)
-	// land as REMOTE_SOURCE writes that no explicit refresh covers, so re-list on
-	// the volume's structural change feed. Recursive watch is storage-wide +
-	// structural-only (dirent create/remove/rename), so content edits don't churn
-	// it; the client's setApps drops no-op re-lists.
+	// Apps that arrive by sync-down land as REMOTE_SOURCE writes that no explicit
+	// refresh covers, so re-list on the volume's structural change feed. The
+	// recursive watch is structural-only (dirent create/remove/rename), so content
+	// edits don't churn it; the client's setApps drops no-op re-lists.
 	{
 		let off: (() => void) | undefined
 		let cancelled = false
-		// R3 (docs/app-materialization.md): the same structural feed also makes app
-		// UPDATES prompt. A synced-down bundle drift updates the installed set against
-		// the store without waiting for the next boot/launch. Monotonic + idempotent,
-		// so it's safe to re-run; coalesce overlapping bursts (one more if a change
-		// lands mid-run) so a churny feed doesn't stack reconciles.
+		// The same feed also makes app UPDATES prompt (a synced-down bundle drift
+		// reconciles without waiting for the next boot). Monotonic + idempotent, so
+		// coalesce overlapping bursts (one more if a change lands mid-run) rather than
+		// stacking reconciles.
 		let reconciling = false
 		let again = false
 		const reconcileNow = () => {

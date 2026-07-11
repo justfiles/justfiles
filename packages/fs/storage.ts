@@ -146,10 +146,10 @@ export interface StorageCapabilities {
 	/**
 	 * Drop this replica's local sync state — the path journal + the per-path version
 	 * generator (versions + tombstones) — WITHOUT touching the tree or content. Used
-	 * by a client reset ("take theirs", docs/sync-reset-generation.md): after a
-	 * server lineage reset, local version tombstones from deleting the old tree would
-	 * outrank the re-pulled server puts (versions aren't comparable across lineages),
-	 * so the discard must clear them for a clean re-bootstrap. Owned backends only.
+	 * by a client reset ("take theirs"): after a server lineage reset, local version
+	 * tombstones from deleting the old tree would outrank the re-pulled server puts
+	 * (versions aren't comparable across lineages), so the discard must clear them for
+	 * a clean re-bootstrap. Owned backends only.
 	 */
 	clearSyncState?(): Promise<void>
 }

@@ -98,7 +98,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const [personalizeOpen, setPersonalizeOpen] = useState(false)
 	const [resetOpen, setResetOpen] = useState(false)
 	// Debug-gated: the reset affordances are dev-only for now (dev build, or opt in
-	// via `localStorage.frieren-debug = 1`). See docs/sync-reset-generation.md.
+	// via `localStorage.frieren-debug = 1`).
 	const resetDebugEnabled =
 		import.meta.env.DEV ||
 		(typeof localStorage !== 'undefined' && localStorage.getItem('frieren-debug') === '1')

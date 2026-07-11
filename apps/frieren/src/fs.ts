@@ -171,9 +171,8 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 		remote: ({ clientId, generation }) => remoteSyncReplica(client, { clientId, generation }),
 		lazyContent: true,
 		localFirst: true,
-		// When a "take mine" republish drains, clear the server's advisory reset flag.
-		// Also fires for a republish resumed after a crash (synced() re-derives it from
-		// the persisted pendingReset on boot).
+		// When a "take mine" republish drains (including one resumed after a crash),
+		// clear the server's advisory reset flag.
 		onResetComplete: (resetId) => postComplete(getToken, resetId)
 	})
 	if (active !== entry) {
@@ -345,7 +344,7 @@ function deleteIdb(name: string): Promise<void> {
 	})
 }
 
-// ── Server-coordinated volume reset (docs/sync-reset-generation.md) ───────────
+// ── Server-coordinated volume reset ──────────────────────────────────────────
 // Debug-gated shell affordances (see ResetPanel). "Take theirs" is client-only;
 // "take mine" and "factory reset" coordinate through the DO reset route
 // (`POST /fs/reset`, outside createFsApi). The reset is a small atomic server op;

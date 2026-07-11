@@ -116,12 +116,10 @@ export interface BlobStore {
 
 /**
  * The client<->server volume-lineage handshake (`GET /fs`). Optional and
- * remote-only: the HTTP replica implements it; local/P2P replicas omit it (there
- * is no server lineage to report). `generation` is the server volume's epoch —
- * `synced()` compares it against the stored one to detect a server-side reset.
- * `resetId` is the advisory "a reset/republish is in progress" flag (set by the
- * reset that created this generation, cleared when its republish drains) — it is
- * NOT a lock; it drives crash-resume identity and UI legibility.
+ * remote-only: local/P2P replicas omit it (no server lineage to report).
+ * `generation` is the server volume's epoch, which `synced()` compares against the
+ * stored one to detect a reset; `resetId` is the advisory "reset in progress" flag
+ * (not a lock — drives crash-resume identity and UI legibility).
  */
 export interface Handshaker {
 	handshake?(): Promise<{ generation?: number; resetId?: string }>
@@ -161,7 +159,7 @@ export interface JournalStore {
 	 * "take mine" reset the server is empty, so every local file IS now mine — this
 	 * makes the ordinary push (`excludeLocalSource: REMOTE_SOURCE`) republish the
 	 * whole volume, pulled files included, over the normal resilient loop instead of
-	 * a bespoke snapshot push (docs/sync-reset-generation.md). Owned backends only.
+	 * a bespoke snapshot push. Owned backends only.
 	 */
 	adoptAllAsLocal(): Promise<void>
 }
@@ -215,7 +213,7 @@ export interface FsWatcher {
 	head(): Promise<SyncCursor>
 }
 
-// ── Constructors (Phase 0: shape only, bodies throw) ──────────────────────────
+// ── Constructors ──────────────────────────────────────────────────────────────
 
 /**
  * Reconstruct a consistent snapshot from the journal, FROZEN at `head`: coalesce
@@ -425,9 +423,8 @@ export type SyncState = {
 	generation?: number // server volume lineage this replica is synced against
 	// In-flight "take mine" (adopt-mine), persisted BEFORE the reset CAS so a crash
 	// mid-republish resumes/adopts instead of discarding the volume it meant to
-	// publish (docs/sync-reset-generation.md — crash recovery). `fromGeneration` is
-	// the lineage the reset started from; `toGeneration` is the one it produced,
-	// set once the reset is confirmed (also marks local prep done).
+	// publish. `fromGeneration` is the lineage the reset started from; `toGeneration`
+	// is the one it produced, set once the reset is confirmed (also marks local prep done).
 	pendingReset?: { resetId: string; fromGeneration: number; toGeneration?: number }
 	pushCursor?: SyncCursor // over the local ChangeSource
 	pullCursor?: SyncCursor // over the remote's ChangeSource

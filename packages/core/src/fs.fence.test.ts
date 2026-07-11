@@ -1,8 +1,8 @@
-// Push fencing (docs/sync-reset-generation.md, step 2). A mutating /fs request
-// carries the client's `x-fs-generation`; a present-but-stale value is rejected
-// with `409 generation_stale` and the write does NOT land. Covers the server
-// enforcement AND both client paths (path-sync `remoteSyncReplica` + the inode
-// `apiStorage`), which stamp the header and surface the 409 as a typed error.
+// Push fencing. A mutating /fs request carries the client's `x-fs-generation`; a
+// present-but-stale value is rejected with `409 generation_stale` and the write
+// does NOT land. Covers the server enforcement AND both client paths (path-sync
+// `remoteSyncReplica` + the inode `apiStorage`), which stamp the header and
+// surface the 409 as a typed error.
 
 import { memStorage, volume } from '@justfiles/fs'
 import { GenerationStaleError } from '@justfiles/fs/sync-replica'

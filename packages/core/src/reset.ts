@@ -1,28 +1,20 @@
 /**
- * Server-coordinated volume reset (docs/sync-reset-generation.md).
+ * Server-coordinated volume reset.
  *
- * Two halves, deliberately split so the decision logic is a PURE, testable module
- * and the IO is a thin transactional body:
+ * Split so the decision logic is a pure, testable module and the IO is a thin
+ * transactional body:
  *
- * - **State machine** (`decideReset`) — a pure function over the `fs_generation`
- *   row. `fromGeneration` is a compare-and-swap so racing resets can't
- *   double-bump; `resetId` names the reset that produced this lineage.
- * - **Transaction body** (`resetVolume`) — one SQLite transaction that CAS-checks,
- *   truncates the tree + sync tables (+ content for `wipe`), recreates the root
- *   inode, bumps `generation`, and stores `resetId`. Runs on any `DbAdapter`;
- *   against a real BEGIN/COMMIT adapter it is genuinely atomic.
+ * - `decideReset` — a pure CAS over the `fs_generation` row: `fromGeneration` must
+ *   match, so racing resets can't double-bump; `resetId` names the winner.
+ * - `resetVolume` — one SQLite transaction that CAS-checks, truncates the tree +
+ *   sync tables (+ content for `wipe`), recreates the root inode, and bumps
+ *   `generation`. Atomic against a real BEGIN/COMMIT adapter.
  *
- * The republish that follows a "take mine" is NOT a special server operation \u2014 it
- * is ordinary sync (the initiator re-tags its local journal as mine and lets the
- * push loop drain), so there is no publishing lock and no finalize. `resetId` is
- * an ADVISORY "a reset/republish is in progress" flag: set by the reset, cleared
- * by `clearReset` when the initiator's republish drains. A stale/never-sent clear
- * is a harmless no-op \u2014 clients converge regardless. `gcUnreferenced` (dropping
- * the discarded baseline's orphaned blobs on adopt-mine) is now a lazy/scheduled
- * sweep, decoupled from the reset.
- *
- * The reset endpoints live OUTSIDE `createFsApi` (they need DO-level powers); this
- * module is the shared body they call.
+ * The republish after a "take mine" is ordinary sync, not a special server op, so
+ * there is no publishing lock or finalize. `resetId` is an advisory "reset in
+ * progress" flag, cleared by `clearReset` when the republish drains; a
+ * stale/never-sent clear is a harmless no-op. The reset endpoints live outside
+ * `createFsApi` (they need DO-level powers); this module is the body they call.
  */
 
 import type { DbAdapter } from './db'
@@ -113,8 +105,7 @@ async function writeGenerationState(db: DbAdapter, next: GenerationState): Promi
  * Apply a reset in ONE transaction: CAS, truncate the tree + sync tables (+ the
  * content tables for `wipe`, so no client can fetch/search discarded bytes),
  * recreate the root inode, bump the generation, and store `resetId`. `adopt-mine`
- * KEEPS the content tables (lazy blobs the republish reuses); the discarded
- * baseline's orphaned blobs are reclaimed later by a lazy `gcUnreferenced` sweep.
+ * keeps the content tables — lazy blobs the republish reuses.
  */
 export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<ResetDecision> {
 	let result: ResetDecision | undefined
@@ -145,11 +136,10 @@ export async function resetVolume(db: DbAdapter, req: ResetRequest): Promise<Res
 }
 
 /**
- * Clear the advisory "reset in progress" flag once the initiator's republish has
- * drained \u2014 IFF `resetId` still names the current reset. No CAS/owner rigor: a
- * stale or duplicate clear is a harmless no-op, and a never-sent clear just leaves
- * the flag lingering (cosmetic; clients still converge). Returns the resulting
- * state so the caller can echo the current generation.
+ * Clear the advisory "reset in progress" flag once the republish drained, iff
+ * `resetId` still names the current reset. No CAS rigor: a stale/duplicate clear
+ * is a harmless no-op, a never-sent one just leaves the flag lingering (cosmetic).
+ * Returns the resulting state so the caller can echo the current generation.
  */
 export async function clearReset(db: DbAdapter, resetId: string): Promise<GenerationState> {
 	let result: GenerationState | undefined

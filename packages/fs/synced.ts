@@ -66,8 +66,7 @@ interface SyncLifecycle {
 	status(): SyncStatus
 	onStatusChange(fn: (status: SyncStatus) => void): () => void
 	// "Take theirs": discard this device's local replica and re-pull the server's
-	// volume (the safe, client-only reset — no server coordination). See
-	// docs/sync-reset-generation.md.
+	// volume (the safe, client-only reset — no server coordination).
 	resetLocal(): Promise<void>
 	// The volume lineage this replica is synced against — the `fromGeneration` a
 	// server-coordinated reset ("take mine" / factory reset) CAS-checks against.
@@ -305,13 +304,12 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	/**
-	 * "Take mine" local prep, run after the server CAS bumped to `toGeneration`
-	 * (directly via `adoptTakeMine`, or on crash-resume). Idempotent: adopt the new
-	 * generation, re-tag the whole local journal as mine (the server is empty, so
-	 * every local file IS now mine), and rewind the push cursor so the ORDINARY loop
-	 * republishes the whole volume — pulled files included, no bespoke snapshot push.
-	 * `pullCursor` stays defined ('0') so the loop republishes rather than
-	 * bootstrapping. `toGeneration` on the pending marker records that prep is done.
+	 * "Take mine" local prep, after the server CAS bumped to `toGeneration` (via
+	 * `adoptTakeMine` or crash-resume). Idempotent: adopt the generation, re-tag the
+	 * whole journal as mine (the server is now empty), and rewind the push cursor so
+	 * the ORDINARY loop republishes the whole volume — pulled files included, no
+	 * bespoke snapshot push. `pullCursor` stays '0' to republish rather than
+	 * bootstrap; `toGeneration` on the marker records prep is done.
 	 */
 	async function applyTakeMinePrep(toGeneration: number): Promise<void> {
 		if (!knownPending) return
@@ -344,13 +342,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * The volume-lineage handshake check (client<->server only), run each cycle
-	 * BEFORE touching data. Eventual-consistency: never blocks — it adopts, resumes
-	 * a take-mine, or client-resets.
-	 *
-	 * With our own persisted `pendingReset` ("take mine" in flight): `resume` → ensure
-	 * local prep is applied (idempotent) and let the push drain; `adopt` → keep local
-	 * + record the generation + drop the intent; `reset-to-winner` → client-reset to
-	 * the winner. Without a pending: the plain generation reconcile.
+	 * BEFORE touching data. Eventual-consistency: never blocks — with an in-flight
+	 * `pendingReset` it resumes/adopts/resets-to-winner (see `resumeAction`);
+	 * otherwise it runs the plain generation reconcile.
 	 */
 	async function reconcileLineage(server: {
 		generation?: number

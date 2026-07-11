@@ -410,8 +410,8 @@ export async function applyJournaledOver(
 			// has live children. A descendant whose own higher-version put beat this
 			// subtree delete must stay reachable, so the ancestor delete loses here —
 			// the peer that instead applies the surviving child's put resurrects the
-			// ancestor via ensureDirPath (RED 14: a winning descendant edit vs a
-			// deleted ancestor). Skip entirely: no unlink, no tombstone, no journal row.
+			// ancestor via ensureDirPath (a winning descendant edit vs a deleted
+			// ancestor). Skip entirely: no unlink, no tombstone, no journal row.
 			if (ino !== null) {
 				const mx = await port.readMetaXattrs(ino)
 				if (mx?.meta.type === FileType.Directory && (await port.dirHasLiveChildren(ino))) continue
