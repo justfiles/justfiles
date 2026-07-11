@@ -1,17 +1,15 @@
 import { useAuth } from '@clerk/clerk-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import { ensureAgentDefaults } from '../../shared/agent-defaults'
 import { appFileUrl } from '../../shared/appstore'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
-import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { createClientKernel } from '../apps/kernel.client'
-import { reconcileInstalled, seedBuiltins } from '../apps/seed'
 import type { InstalledApp } from '../apps/types'
-import { activeProfileHasRemoteUser, openProfile } from '../fs'
+import { openProfile } from '../fs'
 import { createFrierenClient } from './client'
 import { OsContext } from './hooks'
-import { bootOsStore, createOsStore } from './store'
+import { startOsRuntime } from './runtime'
+import { createOsStore } from './store'
 
 export function OSProvider({ children }: { children: ReactNode }) {
 	const { getToken, isLoaded, isSignedIn, userId } = useAuth()
@@ -71,178 +69,13 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		})
 	)
 
-	useEffect(() => {
-		void bootOsStore(store, volumePromise)
-	}, [store, volumePromise])
-
-	useEffect(() => {
-		let cancelled = false
-		void (async () => {
-			const fs = await volumePromise
-			// The client is the sole materialiser of built-in apps (the server no
-			// longer seeds — docs/app-materialization.md R1). A synced profile waits
-			// for the first bootstrap before deciding, so an account that already has
-			// apps isn't re-seeded; a local-only profile seeds immediately.
-			const synced = activeProfileHasRemoteUser()
-			await seedBuiltins(await localKernel(), fs, {
-				waitForBootstrap: synced ? () => fs.flush() : undefined
-			})
-			// Local-only profiles have no server to seed the agent's identity files, so
-			// give them the same default soul + empty profile the server writes for
-			// synced ones. Idempotent, so it never clobbers a personalized soul.
-			if (!synced) await ensureAgentDefaults(fs)
-			if (!cancelled) client.refresh()
-		})().catch(() => {})
-		return () => {
-			cancelled = true
-		}
-	}, [client, localKernel, volumePromise])
-
-	useEffect(() => {
-		// app-code's `devkit.install` writes a new app straight to `/applications`
-		// via its own kernel; re-list so it appears in the launcher right away.
-		return appHost.subscribeCatalog(() => client.refresh())
-	}, [client])
-
-	useEffect(() => {
-		// The dock's catalog is a projection of the local volume's `/applications/*`.
-		// Apps that arrive by sync-down (an agent or another device installs one)
-		// land as REMOTE_SOURCE writes that no explicit refresh covers, so re-list on
-		// the volume's structural change feed. Recursive watch is storage-wide +
-		// structural-only (dirent create/remove/rename), so content edits don't churn
-		// it; the client's setApps drops no-op re-lists.
-		let off: (() => void) | undefined
-		let cancelled = false
-		// R3 (docs/app-materialization.md): the same structural feed also makes app
-		// UPDATES prompt. A synced-down bundle drift updates the installed set against
-		// the store without waiting for the next boot/launch. Monotonic + idempotent,
-		// so it's safe to re-run; coalesce overlapping bursts (one more if a change
-		// lands mid-run) so a churny feed doesn't stack reconciles.
-		let reconciling = false
-		let again = false
-		const reconcileNow = () => {
-			if (cancelled) return
-			if (reconciling) {
-				again = true
-				return
-			}
-			reconciling = true
-			void (async () => reconcileInstalled(await localKernel(), await volumePromise))()
-				.catch(() => {})
-				.finally(() => {
-					reconciling = false
-					if (again && !cancelled) {
-						again = false
-						reconcileNow()
-					}
-				})
-		}
-		void volumePromise.then((fs) => {
-			void fs
-				.watch(
-					'/',
-					() => {
-						client.refresh()
-						reconcileNow()
-					},
-					{ recursive: true }
-				)
-				.then((unwatch) => {
-					if (cancelled) unwatch()
-					else off = unwatch
-				})
-		})
-		return () => {
-			cancelled = true
-			off?.()
-		}
-	}, [client, localKernel, volumePromise])
-
-	useEffect(() => {
-		// A host capability (devkit's live preview) frames its scoped stage as a
-		// window by asking the shell to dispatch the matching window action.
-		return appHost.subscribeWindows((req) => {
-			if (req.type === 'open') store.dispatch({ type: 'app.open', appId: req.id, title: req.title })
-			else store.dispatch({ type: 'window.close', id: req.id })
-		})
-	}, [store])
-
-	useEffect(() => {
-		let cancelled = false
-		let running = false
-		let pending = false
-		const hydrate = () => {
-			if (cancelled) return
-			// Coalesce overlapping requests, but remember a catalog change that
-			// arrived mid-run so a newly-installed app still gets prefetched.
-			if (running) {
-				pending = true
-				return
-			}
-			running = true
-			void hydrateInstalledAppBundles(localKernel)
-				.catch(() => {})
-				.finally(() => {
-					running = false
-					if (pending && !cancelled) {
-						pending = false
-						hydrate()
-					}
-				})
-		}
-		hydrate()
-		const unsubscribe = client.subscribeApps(hydrate)
-		return () => {
-			cancelled = true
-			unsubscribe()
-		}
-	}, [client, localKernel])
-
-	useEffect(() => {
-		// OS state is authoritative client-side shell state, so don't rely on
-		// unload alone: prompt writes happen on commit, and this flushes any
-		// pending geometry write before the tab goes away or the provider unmounts.
-		const onHidden = () => {
-			if (document.visibilityState === 'hidden') flushPersist()
-		}
-		window.addEventListener('pagehide', flushPersist)
-		document.addEventListener('visibilitychange', onHidden)
-		return () => {
-			window.removeEventListener('pagehide', flushPersist)
-			document.removeEventListener('visibilitychange', onHidden)
-			flushPersist()
-		}
-	}, [flushPersist])
-
-	useEffect(() => {
-		// Server-echoed app open/close drive the OS store as remote actions. Wire
-		// the handler before connecting so an early live open isn't missed. Queue
-		// it until local OS state has booted; otherwise server opens briefly create
-		// default-rect windows before the persisted rects load.
-		const pending: Parameters<typeof store.dispatch>[0][] = []
-		const flushPending = () => {
-			if (!store.getState().booted) return
-			for (const action of pending.splice(0)) store.dispatch(action)
-		}
-		const unsubscribeRemote = client.onRemoteWindow((action) => {
-			if (!store.getState().booted) {
-				pending.push(action)
-				return
-			}
-			store.dispatch(action)
-		})
-		const unsubscribeStore = store.subscribe(flushPending)
-		return () => {
-			unsubscribeRemote()
-			unsubscribeStore()
-			client.close()
-			// App GUI hosting is part of OS lifecycle: drop every stage so a
-			// previous session's DOM doesn't survive sign-out / user switch.
-			appHost.closeAll()
-			// Drop the shared capability-proxy socket for the same reason.
-			resetCapabilitySocket()
-		}
-	}, [client, store])
+	// All boot/subscription wiring is mount-once (its deps are stable singletons),
+	// so it lives in the runtime rather than a fan of effects. Only the auth effect
+	// below is genuinely reactive to Clerk state.
+	useEffect(
+		() => startOsRuntime({ store, client, flushPersist, volume: volumePromise, localKernel }),
+		[store, client, flushPersist, volumePromise, localKernel]
+	)
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: backend sockets must reconnect when Clerk's session changes.
 	useEffect(() => {

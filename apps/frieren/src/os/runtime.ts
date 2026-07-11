@@ -1,0 +1,208 @@
+import type { Kernel } from '@justfiles/app'
+import type { Store } from '@justfiles/state'
+import { ensureAgentDefaults } from '../../shared/agent-defaults'
+import { resetCapabilitySocket } from '../apps/capabilities.client'
+import * as appHost from '../apps/host'
+import { hydrateInstalledAppBundles } from '../apps/hydrate'
+import { reconcileInstalled, seedBuiltins } from '../apps/seed'
+import { activeProfileHasRemoteUser, type ProfileVolume } from '../fs'
+import type { FrierenClient } from './client'
+import type { OsAction, OsState } from './state'
+import { bootOsStore } from './store'
+
+export interface OsRuntimeEnv {
+	store: Store<OsState, OsAction>
+	client: FrierenClient
+	// Flush pending debounced persistence (page hide / provider unmount).
+	flushPersist: () => void
+	// The active profile volume; `flush()` gates the synced seed on bootstrap.
+	volume: Promise<ProfileVolume>
+	localKernel: () => Promise<Kernel>
+}
+
+// Wire the OS store to the client, app host, volume, and browser lifecycle.
+// Everything here is boot-once/unmount-once orchestration — not reactive to
+// React state — so it lives outside the component tree and the Provider drives
+// it from a single effect. Returns a disposer that unwinds every subscription.
+export function startOsRuntime(env: OsRuntimeEnv): () => void {
+	const { store, client, flushPersist, volume, localKernel } = env
+	const disposers: (() => void)[] = []
+
+	// --- boot: hydrate persisted OS state; the reducer lifts the loading gate ---
+	void bootOsStore(store, volume)
+
+	// --- boot: materialise built-in apps ---
+	let seedCancelled = false
+	void (async () => {
+		const fs = await volume
+		// The client is the sole materialiser of built-in apps (the server no
+		// longer seeds — docs/app-materialization.md R1). A synced profile waits
+		// for the first bootstrap before deciding, so an account that already has
+		// apps isn't re-seeded; a local-only profile seeds immediately.
+		const synced = activeProfileHasRemoteUser()
+		await seedBuiltins(await localKernel(), fs, {
+			waitForBootstrap: synced ? () => fs.flush() : undefined
+		})
+		// Local-only profiles have no server to seed the agent's identity files, so
+		// give them the same default soul + empty profile the server writes for
+		// synced ones. Idempotent, so it never clobbers a personalized soul.
+		if (!synced) await ensureAgentDefaults(fs)
+		if (!seedCancelled) client.refresh()
+	})().catch(() => {})
+	disposers.push(() => {
+		seedCancelled = true
+	})
+
+	// app-code's `devkit.install` writes a new app straight to `/applications`
+	// via its own kernel; re-list so it appears in the launcher right away.
+	disposers.push(appHost.subscribeCatalog(() => client.refresh()))
+
+	// The dock's catalog is a projection of the local volume's `/applications/*`.
+	// Apps that arrive by sync-down (an agent or another device installs one)
+	// land as REMOTE_SOURCE writes that no explicit refresh covers, so re-list on
+	// the volume's structural change feed. Recursive watch is storage-wide +
+	// structural-only (dirent create/remove/rename), so content edits don't churn
+	// it; the client's setApps drops no-op re-lists.
+	{
+		let off: (() => void) | undefined
+		let cancelled = false
+		// R3 (docs/app-materialization.md): the same structural feed also makes app
+		// UPDATES prompt. A synced-down bundle drift updates the installed set against
+		// the store without waiting for the next boot/launch. Monotonic + idempotent,
+		// so it's safe to re-run; coalesce overlapping bursts (one more if a change
+		// lands mid-run) so a churny feed doesn't stack reconciles.
+		let reconciling = false
+		let again = false
+		const reconcileNow = () => {
+			if (cancelled) return
+			if (reconciling) {
+				again = true
+				return
+			}
+			reconciling = true
+			void (async () => reconcileInstalled(await localKernel(), await volume))()
+				.catch(() => {})
+				.finally(() => {
+					reconciling = false
+					if (again && !cancelled) {
+						again = false
+						reconcileNow()
+					}
+				})
+		}
+		void volume.then((fs) => {
+			void fs
+				.watch(
+					'/',
+					() => {
+						client.refresh()
+						reconcileNow()
+					},
+					{ recursive: true }
+				)
+				.then((unwatch) => {
+					if (cancelled) unwatch()
+					else off = unwatch
+				})
+		})
+		disposers.push(() => {
+			cancelled = true
+			off?.()
+		})
+	}
+
+	// A host capability (devkit's live preview) frames its scoped stage as a
+	// window by asking the shell to dispatch the matching window action.
+	disposers.push(
+		appHost.subscribeWindows((req) => {
+			if (req.type === 'open') store.dispatch({ type: 'app.open', appId: req.id, title: req.title })
+			else store.dispatch({ type: 'window.close', id: req.id })
+		})
+	)
+
+	// --- prefetch installed app bundles, re-running as the catalog changes ---
+	{
+		let cancelled = false
+		let running = false
+		let pending = false
+		const hydrate = () => {
+			if (cancelled) return
+			// Coalesce overlapping requests, but remember a catalog change that
+			// arrived mid-run so a newly-installed app still gets prefetched.
+			if (running) {
+				pending = true
+				return
+			}
+			running = true
+			void hydrateInstalledAppBundles(localKernel)
+				.catch(() => {})
+				.finally(() => {
+					running = false
+					if (pending && !cancelled) {
+						pending = false
+						hydrate()
+					}
+				})
+		}
+		hydrate()
+		const unsubscribe = client.subscribeApps(hydrate)
+		disposers.push(() => {
+			cancelled = true
+			unsubscribe()
+		})
+	}
+
+	// OS state is authoritative client-side shell state, so don't rely on
+	// unload alone: prompt writes happen on commit, and this flushes any
+	// pending geometry write before the tab goes away or the provider unmounts.
+	{
+		const onHidden = () => {
+			if (document.visibilityState === 'hidden') flushPersist()
+		}
+		window.addEventListener('pagehide', flushPersist)
+		document.addEventListener('visibilitychange', onHidden)
+		disposers.push(() => {
+			window.removeEventListener('pagehide', flushPersist)
+			document.removeEventListener('visibilitychange', onHidden)
+			flushPersist()
+		})
+	}
+
+	// Server-echoed app open/close drive the OS store as remote actions. Wire
+	// the handler before connecting so an early live open isn't missed. Queue
+	// it until local OS state has booted; otherwise server opens briefly create
+	// default-rect windows before the persisted rects load.
+	{
+		const pending: Parameters<typeof store.dispatch>[0][] = []
+		const flushPending = () => {
+			if (!store.getState().booted) return
+			for (const action of pending.splice(0)) store.dispatch(action)
+		}
+		const unsubscribeRemote = client.onRemoteWindow((action) => {
+			if (!store.getState().booted) {
+				pending.push(action)
+				return
+			}
+			store.dispatch(action)
+		})
+		const unsubscribeStore = store.subscribe(flushPending)
+		disposers.push(() => {
+			unsubscribeRemote()
+			unsubscribeStore()
+			client.close()
+			// App GUI hosting is part of OS lifecycle: drop every stage so a
+			// previous session's DOM doesn't survive sign-out / user switch.
+			appHost.closeAll()
+			// Drop the shared capability-proxy socket for the same reason.
+			resetCapabilitySocket()
+		})
+	}
+
+	let disposed = false
+	return () => {
+		if (disposed) return
+		disposed = true
+		// Unwind in reverse so teardown mirrors setup order.
+		for (const off of disposers.reverse()) off()
+	}
+}
