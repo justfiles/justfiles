@@ -66,10 +66,11 @@ capability mirrors one optional `LineagePeer` method:
 
 ---
 
-## Change B — `SyncLifecycle`: collapse the take-mine cluster into one method
+## Change B — `SyncLifecycle`: collapse the take-mine cluster, rename `resetLocal` → `takeTheirs`
 
 **Before** (`synced.ts:61-86`)
 ```ts
+	resetLocal(): Promise<void>         // "take theirs" — reads as unrelated to take mine
 	generation(): number | undefined
 	beginTakeMine(resetId: string, fromGeneration: number): Promise<void>
 	adoptTakeMine(toGeneration: number): Promise<void>
@@ -78,11 +79,20 @@ capability mirrors one optional `LineagePeer` method:
 ```
 **After**
 ```ts
+	takeTheirs(): Promise<void>         // client-only re-pull  ┐ the conflict-resolution pair,
+	takeMine(): Promise<void>           // server CAS + republish ┘ named as siblings
 	generation(): number | undefined   // kept — factory reset's CAS body reads it
-	takeMine(): Promise<void>           // one intent-level op; state machine hidden inside
 ```
 12 → 9 members. Removed `beginTakeMine` / `adoptTakeMine` / `clearPendingReset` / `pendingReset`
-(the last had zero callers); added `takeMine`.
+(the last had zero callers); added `takeMine`; renamed `resetLocal` → `takeTheirs`.
+
+Rationale for the rename (not a merge): the two are conceptually the git/Dropbox "keep theirs / keep
+mine" pair, but their mechanics/contracts/durations are wildly asymmetric (client-only re-pull vs.
+server CAS + a possibly-hours-long resilient republish). Merging them into `reset(to: …)` would be a
+flag-argument smell — one method with a union contract, an ambiguous destructive-op argument, and no
+dynamic-dispatch benefit (call sites always statically know which they want). `factoryReset` ("wipe
+both") stays app-level; it can't live here (it nukes IndexedDB + `location.reload()`). So: symmetric
+*names*, separate *methods*, each keeping its precise contract.
 
 ---
 
@@ -126,7 +136,9 @@ Drain signal inside `sync()` (`synced.ts:404-409`):
 // After:
 await remoteReplica.reset?.({ mode: 'complete', resetId: knownPending.resetId })
 ```
-The `lifecycle` object drops the four removed methods, adds `takeMine`. `generation()` stays.
+The `lifecycle` object drops the four removed methods, adds `takeMine`, and renames the public
+`resetLocal` → `takeTheirs` (the internal `clientReset()` helper it wraps is unchanged).
+`generation()` stays.
 
 ---
 
@@ -238,6 +250,7 @@ export async function resetTakeMine(): Promise<void> {
 - Delete `postComplete` (`fs.ts:363-366`) — the drain now calls `remoteReplica.reset({complete})`.
 - Drop the `onResetComplete` wiring in `startSync` (`fs.ts:174-176`).
 - Update the ResetPanel caller to drop the now-unused `getToken` arg on `resetTakeMine`.
+- Point `resetTakeTheirs` (`fs.ts:371-375`) at `sync.takeTheirs()` (was `sync.resetLocal()`).
 - `factoryReset` (`fs.ts:409`) still needs `wipe`. Two options: keep its raw `postReset`, or route
   it through the typed `client.reset.$post({ mode:'wipe', ... })`. Prefer the typed route for
   consistency (removes `postReset` entirely), but it's optional and `generation()` stays either way.
@@ -282,6 +295,9 @@ inside `synced()` via `remoteReplica.reset`), and the reset route's *home* (DO s
    `generation===2`, `pendingReset` cleared.
 3. **New guards** replacing the old app-level checks: `takeMine()` rejects on a no-generation peer;
    rolls back (`pendingReset` cleared, local intact) when `reset` throws.
+   - The existing "take theirs" test (`synced.test.ts:492/498`) just renames its call
+     `vol.resetLocal()` → `vol.takeTheirs()` — a mechanical, behavior-preserving edit; every
+     assertion stays.
 
 **Server / `createFsApi` — the route relocation:**
 4. **`fs.fence.test.ts` must stay green.** It guards that mutating `/path` and `/blob` (and
@@ -307,12 +323,14 @@ that changes is the take-mine happy path.
    `handleReset` to take a `ResetRequest` and return a `ResetResult`; delete the sibling route.
 3. `packages/fs/sync-replica.ts`: `Handshaker` → `LineagePeer` + `ResetRequest` + `reset?()`.
 4. `packages/core/src/fs.client.ts`: implement `reset` on `remoteSyncReplica` via `client.reset`.
-5. `packages/fs/synced.ts`: privatize helpers, delete `adoptTakeMine`, add `takeMine`, swap the
-   drain signal, drop `onResetComplete` from `Props`, update the `lifecycle` object.
-6. `apps/frieren/src/fs.ts`: collapse `resetTakeMine`; delete `postComplete`; drop the
-   `onResetComplete` wiring; (optional) route `factoryReset`'s `wipe` through the typed client.
-7. Tests: `fakeServer.reset`; rewrite the take-mine happy path; add client guards + server route
-   tests; confirm `fs.fence.test.ts` unchanged-green.
+5. `packages/fs/synced.ts`: privatize helpers, delete `adoptTakeMine`, add `takeMine`, rename
+   `resetLocal` → `takeTheirs`, swap the drain signal, drop `onResetComplete` from `Props`, update
+   the `lifecycle` object.
+6. `apps/frieren/src/fs.ts`: collapse `resetTakeMine`; point `resetTakeTheirs` at `sync.takeTheirs()`;
+   delete `postComplete`; drop the `onResetComplete` wiring; (optional) route `factoryReset`'s
+   `wipe` through the typed client.
+7. Tests: `fakeServer.reset`; rewrite the take-mine happy path; rename the take-theirs test call;
+   add client guards + server route tests; confirm `fs.fence.test.ts` unchanged-green.
 8. Gates: `pnpm format && pnpm typecheck && pnpm lint:fix && pnpm test`.
 
 ## Open decisions
