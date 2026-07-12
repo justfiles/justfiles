@@ -29,4 +29,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+      # Three devkit tests each load the full TypeScript compiler, and vitest runs
+      # them in parallel workers — together they exceed the runner's ~2GB default
+      # heap and die with "Ineffective mark-compacts near heap limit".
       - run: pnpm test
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
