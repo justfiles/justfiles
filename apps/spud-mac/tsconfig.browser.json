@@ -2,19 +2,11 @@
 	// The daemon's browser entries run in the DOM, not under Bun — so they get DOM
 	// globals and NO node/bun ambient types, kept apart from the server tsconfig.json
 	// whose `Response`/etc. are Bun's. Mirrors frieren's tsconfig.app.json split.
+	"extends": "@justfiles/tsconfig/base.json",
 	"compilerOptions": {
-		"lib": ["ESNext", "DOM"],
+		"lib": ["ES2023", "DOM"],
 		"types": [],
-		"target": "ESNext",
-		"module": "Preserve",
-		"moduleDetection": "force",
-		"moduleResolution": "bundler",
-		"allowImportingTsExtensions": true,
-		"jsx": "react-jsx",
-		"verbatimModuleSyntax": true,
-		"noEmit": true,
-		"strict": true,
-		"skipLibCheck": true
+		"jsx": "react-jsx"
 	},
 	// The browser entries (DOM, no node/bun). vendor.ts + vite.config.ts are node-side
 	// (typechecked by the server tsconfig.json) so they're excluded here.

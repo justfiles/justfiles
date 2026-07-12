@@ -1,22 +1,8 @@
 {
+	"extends": "@justfiles/tsconfig/library.json",
 	"compilerOptions": {
-		"target": "ES2023",
-		"lib": ["ES2023"],
-		"module": "Preserve",
-		"moduleResolution": "bundler",
-		"allowImportingTsExtensions": true,
-		"rewriteRelativeImportExtensions": true,
 		"outDir": "./dist",
-		"rootDir": ".",
-		"declaration": true,
-		"declarationMap": true,
-		"sourceMap": true,
-		"strict": true,
-		"skipLibCheck": true,
-		"verbatimModuleSyntax": true,
-		"isolatedModules": true,
-		"noUncheckedIndexedAccess": true,
-		"types": ["node"]
+		"rootDir": "."
 	},
 	"include": ["*.ts", "bash/**/*.ts", "raw.d.ts"],
 	"exclude": ["node_modules", "dist", "**/*.test.ts"]

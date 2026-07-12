@@ -4,6 +4,13 @@
 		"transit": {
 			"dependsOn": ["^transit"]
 		},
+		// Internal packages export source `.ts`, so a consumer type-checks its
+		// dependencies' source too — no `^build` needed. Depending on the transit
+		// node keeps the cache correct (a dep's source change busts us) while still
+		// letting every package check in parallel.
+		"typecheck": {
+			"dependsOn": ["transit"]
+		},
 		"build": {
 			"dependsOn": ["transit"],
 			"outputs": ["dist/**", "out/**", "native/build/**", "native/Spud.app/**"],

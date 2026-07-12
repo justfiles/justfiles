@@ -1,6 +1,10 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+# One compiler for the whole repo. A version skew here means `typecheck` and a
+# package's own `build` can disagree about the same file.
+catalog:
+  typescript: 6.0.3
 allowBuilds:
   '@clerk/shared': true
   '@google/genai': true

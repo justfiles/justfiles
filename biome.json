@@ -49,6 +49,14 @@
 	},
 	"overrides": [
 		{
+			"includes": ["packages/tsconfig/*.json"],
+			"json": {
+				"parser": {
+					"allowComments": true
+				}
+			}
+		},
+		{
 			"includes": ["**/*.test.ts", "**/*.test.js"],
 			"linter": {
 				"rules": {

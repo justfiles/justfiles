@@ -1,0 +1,17 @@
+{
+	"$schema": "https://json-schema.org/draft-07/schema",
+	"display": "Library",
+	"extends": "./base.json",
+	// For packages that ship a `tsc`-emitted `dist/` (declarations + maps). `outDir`
+	// and `rootDir` stay in the package's own tsconfig: path-valued options resolve
+	// relative to the file they're written in, so they cannot live here.
+	"compilerOptions": {
+		"noEmit": false,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"rewriteRelativeImportExtensions": true,
+		"noUncheckedIndexedAccess": true,
+		"types": ["node"]
+	}
+}

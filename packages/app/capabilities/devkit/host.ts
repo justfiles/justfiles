@@ -72,7 +72,7 @@ export interface Runner {
 // A Runner that mounts nothing — for compile-only hosts (and tests). `run` still
 // compiles + reports diagnostics; it just never makes a draft live.
 export const noopRunner: Runner = {
-	mount: async () => {},
+	mount: async () => undefined,
 	stop: async () => {}
 }
 

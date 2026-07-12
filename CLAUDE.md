@@ -51,4 +51,23 @@ node packages/create-app/index.js packages/app-<name>
 
 Before making changes to the app, read docs/app.md to learn how to make an app.
 ONLY read the doc when you are asked to create/modify an app.
-If new app is added, remember to add it to the typecheck list at tsconfig.json
+
+# TypeScript config
+
+Every package extends a shared base from `packages/tsconfig`, and gets its own
+`typecheck` script — turbo runs them all (`pnpm typecheck`), so a new package is
+covered automatically. There is no root tsconfig to register it in.
+
+A new package needs three things:
+- `"extends": "@justfiles/tsconfig/base.json"` — or `dom.json` (browser/React) or
+  `library.json` (ships a `tsc`-emitted `dist/`). Only override what genuinely differs.
+- `"typecheck": "tsc --noEmit"` in `scripts`.
+- `"typescript": "catalog:"` + `"@justfiles/tsconfig": "workspace:*"` in `devDependencies`.
+
+Never pin a `typescript` version in a package. The whole repo shares ONE compiler via
+the pnpm catalog (`pnpm-workspace.yaml`) — a skew means `typecheck` and a package's own
+`build` can disagree about the same file.
+
+Note `include`/`exclude` and path-valued options (`outDir`, `rootDir`, `paths`) resolve
+relative to the file they are written in, so they must live in the package's own
+tsconfig — never in a shared base.

@@ -1,24 +1,4 @@
 {
-	"compilerOptions": {
-		"target": "es2023",
-		"module": "esnext",
-		"lib": ["ES2023", "DOM"],
-		"jsx": "react-jsx",
-		"types": ["vite/client"],
-		"skipLibCheck": true,
-
-		"moduleResolution": "bundler",
-		"allowImportingTsExtensions": true,
-		"verbatimModuleSyntax": true,
-		"moduleDetection": "force",
-		"noEmit": true,
-
-		"strict": true,
-		"noUnusedLocals": true,
-		"noUnusedParameters": true,
-		"erasableSyntaxOnly": true,
-		"noFallthroughCasesInSwitch": true,
-		"noUncheckedIndexedAccess": true
-	},
+	"extends": "@justfiles/tsconfig/dom.json",
 	"include": ["src"]
 }
