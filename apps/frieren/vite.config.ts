@@ -53,10 +53,14 @@ interface VendorTarget {
 // would also match react/jsx-runtime against the `react` glob — there is
 // no precise-match form. Rollup's function-form external is exact.
 //
-// All targets are bundled with NODE_ENV=development. The dev JSX runtime
-// only ships its real implementation in the development CJS file (the
-// production file sets jsxDEV = void 0). Splitting per-env is a v2 task;
-// current cost is ~150KB of dev React in prod builds.
+// Targets are bundled against the env Vite itself resolved: a prod build gets
+// production React (smaller, and no per-render dev validation), dev gets the
+// development one for its warnings and component stacks. In production React
+// stubs out `jsxDEV` (jsx-dev-runtime.js exports it as undefined), which is
+// fine because nothing emits dev JSX into a shipped artifact: the GUI lib build
+// and both devkit toolchains pin the production automatic runtime (`jsx`/`jsxs`
+// from react/jsx-runtime) — see toolchain.bun.ts, which forces NODE_ENV for
+// exactly this reason.
 const VENDOR_TARGETS: Record<string, VendorTarget> = {
 	'react.js': { specifier: 'react', external: [] },
 	'react-dom.js': { specifier: 'react-dom', external: ['react'] },
@@ -65,14 +69,17 @@ const VENDOR_TARGETS: Record<string, VendorTarget> = {
 	'jsx-dev-runtime.js': { specifier: 'react/jsx-dev-runtime', external: ['react'] }
 }
 
-const VENDOR_DIR = path.resolve(__dirname, 'node_modules/.cache/vendor')
-const VENDOR_CACHE_KEY_FILE = path.join(VENDOR_DIR, '.cache-key')
+type VendorEnv = 'development' | 'production'
+
+// One cache dir per env: the two builds are different bytes under the same React
+// version, so they must not evict (or worse, be mistaken for) each other.
+const vendorDir = (env: VendorEnv) => path.resolve(__dirname, 'node_modules/.cache/vendor', env)
 const isValidIdent = (name: string) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)
 
 // Cache key folds in the resolved React version so a `pnpm update react`
 // invalidates the cache automatically. Bump VENDOR_BUILD_REV when the
 // bundling logic itself changes (e.g. swap of plugins).
-const VENDOR_BUILD_REV = 1
+const VENDOR_BUILD_REV = 2
 function vendorCacheKey(): string {
 	const reactPkg = createRequire(path.join(__dirname, 'package.json'))('react/package.json') as {
 		version: string
@@ -80,22 +87,30 @@ function vendorCacheKey(): string {
 	return `react@${reactPkg.version}|rev=${VENDOR_BUILD_REV}`
 }
 
-function vendorCacheIsCurrent(key: string): boolean {
+function vendorCacheIsCurrent(env: VendorEnv, key: string): boolean {
 	try {
-		if (readFileSync(VENDOR_CACHE_KEY_FILE, 'utf8') !== key) return false
-		for (const name of Object.keys(VENDOR_TARGETS)) statSync(path.join(VENDOR_DIR, name))
+		if (readFileSync(path.join(vendorDir(env), '.cache-key'), 'utf8') !== key) return false
+		for (const name of Object.keys(VENDOR_TARGETS)) statSync(path.join(vendorDir(env), name))
 		return true
 	} catch {
 		return false
 	}
 }
 
-async function buildVendorBundles(logger?: ResolvedConfig['logger']): Promise<void> {
+async function buildVendorBundles(
+	env: VendorEnv,
+	logger?: ResolvedConfig['logger']
+): Promise<void> {
 	const require_ = createRequire(path.join(__dirname, 'package.json'))
-	mkdirSync(VENDOR_DIR, { recursive: true })
+	const out = vendorDir(env)
+	mkdirSync(out, { recursive: true })
 	const tmp = path.resolve(__dirname, 'node_modules/.cache/vendor-entries')
 	mkdirSync(tmp, { recursive: true })
 	for (const [file, target] of Object.entries(VENDOR_TARGETS)) {
+		// React's package entry picks its dev/prod CJS build off process.env.NODE_ENV at
+		// require time, and Vite keeps NODE_ENV in step with the `isProduction` we derive
+		// `env` from — so these names describe the same build `replace` bundles below.
+		// They are not interchangeable: dev React also exports `act`/`captureOwnerStack`.
 		const mod = require_(target.specifier) as Record<string, unknown>
 		const names = Object.keys(mod).filter(isValidIdent).sort()
 		const entry = path.join(tmp, file.replace(/\.js$/, '.entry.js'))
@@ -114,7 +129,7 @@ async function buildVendorBundles(logger?: ResolvedConfig['logger']): Promise<vo
 				nodeResolve({ browser: true, exportConditions: ['default'] }),
 				replace({
 					preventAssignment: true,
-					values: { 'process.env.NODE_ENV': JSON.stringify('development') }
+					values: { 'process.env.NODE_ENV': JSON.stringify(env) }
 				}),
 				commonjs(),
 				terser()
@@ -124,35 +139,40 @@ async function buildVendorBundles(logger?: ResolvedConfig['logger']): Promise<vo
 				logger?.warn(`[vendor-react] ${warning.message}`)
 			}
 		})
-		await bundle.write({ file: path.join(VENDOR_DIR, file), format: 'es', sourcemap: false })
+		await bundle.write({ file: path.join(out, file), format: 'es', sourcemap: false })
 		await bundle.close()
 	}
 }
 
 function vendorReact(): Plugin {
 	let mode: 'serve' | 'build' = 'serve'
+	let env: VendorEnv = 'development'
 	let logger: ResolvedConfig['logger'] | undefined
 	let buildPromise: Promise<void> | undefined
 	return {
 		name: 'frieren:vendor-react',
 		enforce: 'pre',
-		config(_, env) {
-			mode = env.command
+		config(_, configEnv) {
+			mode = configEnv.command
 		},
 		configResolved(resolved) {
 			logger = resolved.logger
+			// Vite's own notion of the env, so `vite build --mode development` (and an
+			// explicit NODE_ENV) get the React build they asked for rather than one
+			// inferred from the command.
+			env = resolved.isProduction ? 'production' : 'development'
 		},
 		async buildStart() {
 			// One sub-build per Vite invocation, memoised. The React stdlib is cached on
-			// React's version + a manual revision.
+			// React's version + a manual revision, per env.
 			if (buildPromise) return buildPromise
 			buildPromise = (async () => {
 				const key = vendorCacheKey()
-				if (!vendorCacheIsCurrent(key)) {
+				if (!vendorCacheIsCurrent(env, key)) {
 					const t0 = Date.now()
-					logger?.info(`[vendor-react] building React stdlib (${key})…`)
-					await buildVendorBundles(logger)
-					writeFileSync(VENDOR_CACHE_KEY_FILE, key)
+					logger?.info(`[vendor-react] building ${env} React stdlib (${key})…`)
+					await buildVendorBundles(env, logger)
+					writeFileSync(path.join(vendorDir(env), '.cache-key'), key)
 					logger?.info(`[vendor-react] done in ${Date.now() - t0}ms`)
 				}
 			})()
@@ -186,7 +206,7 @@ function vendorReact(): Plugin {
 			server.middlewares.use('/vendor', (req, res, next) => {
 				const name = ((req.url ?? '').split('?')[0] ?? '').replace(/^\//, '')
 				if (!(name in VENDOR_TARGETS)) return next()
-				const file = path.join(VENDOR_DIR, name)
+				const file = path.join(vendorDir(env), name)
 				let stat: ReturnType<typeof statSync>
 				try {
 					stat = statSync(file)
@@ -212,7 +232,7 @@ function vendorReact(): Plugin {
 			rmSync(out, { recursive: true, force: true })
 			mkdir(out, { recursive: true })
 			for (const file of Object.keys(VENDOR_TARGETS)) {
-				copyFileSync(path.join(VENDOR_DIR, file), path.join(out, file))
+				copyFileSync(path.join(vendorDir(env), file), path.join(out, file))
 			}
 		}
 	}
