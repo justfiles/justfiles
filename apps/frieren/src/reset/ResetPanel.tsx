@@ -98,7 +98,7 @@ export function ResetPanel({ onClose }: { onClose: () => void }) {
 							onClick={run(
 								'mine',
 								'Take mine: overwrite the server with THIS device’s volume. Every other device will discard its copy. Continue?',
-								() => resetTakeMine(token)
+								() => resetTakeMine()
 							)}
 						>
 							{busy === 'mine' ? 'Publishing…' : 'Take mine (republish to server)'}

@@ -115,14 +115,28 @@ export interface BlobStore {
 }
 
 /**
- * The client<->server volume-lineage handshake (`GET /fs`). Optional and
- * remote-only: local/P2P replicas omit it (no server lineage to report).
- * `generation` is the server volume's epoch, which `synced()` compares against the
- * stored one to detect a reset; `resetId` is the advisory "reset in progress" flag
- * (not a lock — drives crash-resume identity and UI legibility).
+ * A lineage-mutation request. The wire shape is duplicated across the fs<->core
+ * boundary on purpose (`packages/fs` must NOT import core; core validates its own
+ * zod copy on the route). `wipe` is app-level (factory reset), so it is not here.
  */
-export interface Handshaker {
+export type ResetRequest =
+	| { mode: 'adopt-mine'; fromGeneration: number; resetId: string }
+	| { mode: 'complete'; resetId: string }
+
+/**
+ * Server-lineage coordination (`GET /fs` + `POST /fs/reset`) — read the epoch and
+ * mutate it. Optional and remote-only: local/P2P replicas omit both (no server
+ * lineage to report or reset).
+ *
+ * `handshake().generation` is the server volume's epoch, which `synced()` compares
+ * against the stored one to detect a reset; `resetId` is the advisory "reset in
+ * progress" flag (not a lock — drives crash-resume identity and UI legibility).
+ * `reset` mutates it: `adopt-mine` CASes on `fromGeneration` and returns the new
+ * epoch; `complete` clears the advisory flag and returns nothing.
+ */
+export interface LineagePeer {
 	handshake?(): Promise<{ generation?: number; resetId?: string }>
+	reset?(body: ResetRequest): Promise<{ generation?: number }>
 }
 
 /**
@@ -130,7 +144,7 @@ export interface Handshaker {
  * (over a `Storage`/`Volume`, composing an injected `ChangeSource`) and remote
  * (HTTP client, implementing all facets inline) both satisfy it.
  */
-export type SyncReplica = ChangeSource & ChangeApplier & BlobStore & Handshaker
+export type SyncReplica = ChangeSource & ChangeApplier & BlobStore & LineagePeer
 
 // ── JournalStore — the owned-backend write-intercept journal ──────────────────
 

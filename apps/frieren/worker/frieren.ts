@@ -15,13 +15,15 @@ import {
 	clearReset,
 	createFsApi,
 	type DbAdapter,
+	type ResetBody,
+	type ResetResult,
 	readGenerationState,
 	resetVolume
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
-import { type Context, Hono } from 'hono'
+import { Hono } from 'hono'
 import { ensureAgentDefaults } from '../shared/agent-defaults.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
@@ -91,47 +93,47 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			// Server-coordinated volume reset. Lives OUTSIDE createFsApi (DO-level
-			// truncate powers) and BEFORE the /fs mount, so it never hits the push-fence
-			// middleware — reset self-guards via the fromGeneration CAS.
-			.post('/fs/reset', (c) => this.handleReset(c))
-			.route('/fs', createFsApi(fs, { lineage: () => readGenerationState(this.db) }))
+			.route(
+				'/fs',
+				createFsApi(fs, {
+					// The two sides of the server volume's lineage: read the epoch, and
+					// mutate it. Both need the DO's raw store (and, for reset, a cache
+					// rebuild), so they are injected; createFsApi owns the routes.
+					lineage: () => readGenerationState(this.db),
+					reset: (req) => this.handleReset(req)
+				})
+			)
 
 		ctx.blockConcurrencyWhile(async () => {
 			await this.reset()
 		})
 	}
 
-	// POST /fs/reset. `adopt-mine`/`wipe` { fromGeneration, resetId? } — CAS +
-	// truncate + bump. `complete` { resetId } — advisory: the initiator's republish
-	// drained, so clear the in-progress flag.
-	private async handleReset(c: Context) {
-		const body = await c.req.json<{ mode: string; fromGeneration?: number; resetId?: string }>()
-		if (body?.mode === 'complete') {
-			if (!body.resetId) return c.json({ error: 'resetId required' }, 400)
-			const state = await clearReset(this.db, body.resetId)
+	// The lineage-mutation capability behind POST /fs/reset (createFsApi validates
+	// the body and owns the HTTP envelope; this is the DO-level body it calls).
+	// `adopt-mine`/`wipe` — CAS + truncate + bump. `complete` — advisory: the
+	// initiator's republish drained, so clear the in-progress flag.
+	private async handleReset(req: ResetBody): Promise<ResetResult> {
+		if (req.mode === 'complete') {
+			const state = await clearReset(this.db, req.resetId)
 			// The republish is durable — rebuild the volume + agent session against it.
 			this.vol = volume(this.fs)
 			await this.reset()
-			return c.json({ generation: state.generation })
+			return { ok: true, generation: state.generation }
 		}
-		if (body?.mode !== 'adopt-mine' && body?.mode !== 'wipe')
-			return c.json({ error: 'invalid mode' }, 400)
-		if (typeof body.fromGeneration !== 'number')
-			return c.json({ error: 'fromGeneration required' }, 400)
 		const decision = await resetVolume(this.db, {
-			mode: body.mode,
-			fromGeneration: body.fromGeneration,
-			resetId: body.resetId
+			mode: req.mode,
+			fromGeneration: req.fromGeneration,
+			resetId: req.resetId
 		})
-		if (!decision.ok) return c.json({ error: decision.error, generation: decision.generation }, 409)
+		if (!decision.ok) return decision
 		// The reset wrote the DB directly, so the cached volume is stale — rebuild it.
 		// `wipe` reseeds agent defaults + rebuilds the session now; `adopt-mine` leaves
 		// the empty volume for the initiator to republish over ordinary sync (the next
 		// DO restart reseeds any still-missing defaults).
 		this.vol = volume(this.fs)
-		if (body.mode === 'wipe') await this.reset()
-		return c.json({ generation: decision.next.generation })
+		if (req.mode === 'wipe') await this.reset()
+		return { ok: true, generation: decision.next.generation }
 	}
 
 	private requireApps(): FrierenApps {

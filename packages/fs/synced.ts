@@ -40,10 +40,6 @@ type Props = {
 	// Local-first boot: return the local volume immediately and run the first
 	// sync in the background, instead of blocking boot until it settles.
 	localFirst?: boolean
-	// Called once when a "take mine" republish has drained (client<->server only),
-	// so the app can clear the server's advisory "reset in progress" flag (POST
-	// /fs/reset { mode:'complete' }). Advisory: a failure just retries next cycle.
-	onResetComplete?: (resetId: string) => Promise<void> | void
 }
 
 // What the sync loop knows about replication. Network/auth states (offline,
@@ -65,24 +61,23 @@ interface SyncLifecycle {
 	resume(): void
 	status(): SyncStatus
 	onStatusChange(fn: (status: SyncStatus) => void): () => void
+	// The conflict-resolution pair — "keep theirs" / "keep mine" over the whole
+	// volume. Their mechanics are asymmetric (see each), so they stay separate
+	// methods: a client-only re-pull vs. a server CAS + a resilient republish.
+	//
 	// "Take theirs": discard this device's local replica and re-pull the server's
 	// volume (the safe, client-only reset — no server coordination).
-	resetLocal(): Promise<void>
-	// The volume lineage this replica is synced against — the `fromGeneration` a
-	// server-coordinated reset ("take mine" / factory reset) CAS-checks against.
+	takeTheirs(): Promise<void>
+	// "Take mine": make this device's volume the new server baseline. Persists the
+	// intent, CASes the server's lineage, then re-tags the journal as mine and
+	// rewinds the push cursor so the ORDINARY sync loop republishes the whole
+	// volume (resilient + resumable, no bespoke snapshot push) — it may take a
+	// while, and a crash mid-republish resumes rather than discarding local. Other
+	// devices converge as it drains. Client<->server only.
+	takeMine(): Promise<void>
+	// The volume lineage this replica is synced against — the `fromGeneration` an
+	// app-level factory reset CAS-checks against.
 	generation(): number | undefined
-	// "Take mine" step 1: persist the intent BEFORE the reset CAS, so a crash mid-
-	// republish resumes/adopts on reboot instead of discarding local.
-	beginTakeMine(resetId: string, fromGeneration: number): Promise<void>
-	// "Take mine" step 2: after the server CAS bumped to `toGeneration`, adopt the
-	// new lineage locally — re-tag the journal as mine + rewind the push cursor so
-	// the ORDINARY sync loop republishes the whole volume (resilient + resumable,
-	// no bespoke snapshot push). Other devices converge as it drains.
-	adoptTakeMine(toGeneration: number): Promise<void>
-	// Drop the "take mine" intent (e.g. the CAS lost the race — nothing to resume).
-	clearPendingReset(): Promise<void>
-	// The persisted in-flight "take mine" intent, if any.
-	pendingReset(): { resetId: string; fromGeneration: number; toGeneration?: number } | undefined
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
@@ -293,11 +288,6 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		await syncState.patch({ generation })
 	}
 
-	async function beginTakeMine(resetId: string, fromGeneration: number): Promise<void> {
-		knownPending = { resetId, fromGeneration }
-		await syncState.patch({ pendingReset: knownPending })
-	}
-
 	async function clearPendingReset(): Promise<void> {
 		knownPending = undefined
 		await syncState.patch({ pendingReset: undefined })
@@ -305,7 +295,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * "Take mine" local prep, after the server CAS bumped to `toGeneration` (via
-	 * `adoptTakeMine` or crash-resume). Idempotent: adopt the generation, re-tag the
+	 * `takeMine` or crash-resume). Idempotent: adopt the generation, re-tag the
 	 * whole journal as mine (the server is now empty), and rewind the push cursor so
 	 * the ORDINARY loop republishes the whole volume — pulled files included, no
 	 * bespoke snapshot push. `pullCursor` stays '0' to republish rather than
@@ -317,10 +307,6 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		await props.local.caps?.journal?.adoptAllAsLocal?.()
 		knownPending = { ...knownPending, toGeneration }
 		await syncState.patch({ pendingReset: knownPending, pushCursor: '0', pullCursor: '0' })
-	}
-
-	async function adoptTakeMine(toGeneration: number): Promise<void> {
-		await applyTakeMinePrep(toGeneration)
 	}
 
 	/**
@@ -403,7 +389,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			// reset flag, then drop our marker. Advisory — a failure just retries next cycle.
 			if (knownPending?.toGeneration !== undefined && pushDone) {
 				try {
-					await props.onResetComplete?.(knownPending.resetId)
+					await remoteReplica.reset?.({ mode: 'complete', resetId: knownPending.resetId })
 					await clearPendingReset()
 				} catch {}
 			}
@@ -509,8 +495,39 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	// "Take theirs": drop the local replica + cursors, then re-bootstrap from the
 	// server's current lineage. The common, safe reset — purely client-side.
-	async function resetLocal(): Promise<void> {
+	async function takeTheirs(): Promise<void> {
 		await clientReset()
+		await flush()
+	}
+
+	/**
+	 * "Take mine": publish THIS volume as the new server baseline. The intent is
+	 * persisted BEFORE the CAS, so a crash anywhere after it resumes on reboot (the
+	 * handshake's `resumeAction`) instead of discarding the volume it meant to
+	 * publish. After the CAS the republish is just the ordinary push at the new
+	 * lineage — resilient, resumable, and drained by the sync loop, which then
+	 * clears the server's advisory flag.
+	 */
+	async function takeMine(): Promise<void> {
+		const fromGeneration = knownGeneration
+		if (fromGeneration === undefined) throw new Error('take mine requires a server generation')
+		if (!remoteReplica.reset) throw new Error('take mine requires a client<->server peer')
+		const resetId = crypto.randomUUID()
+		knownPending = { resetId, fromGeneration }
+		await syncState.patch({ pendingReset: knownPending })
+		let toGeneration: number | undefined
+		try {
+			;({ generation: toGeneration } = await remoteReplica.reset({
+				mode: 'adopt-mine',
+				fromGeneration,
+				resetId
+			}))
+		} catch (e) {
+			await clearPendingReset() // the CAS failed/lost the race — nothing to resume
+			throw e
+		}
+		if (toGeneration === undefined) throw new Error('reset did not return a generation')
+		await applyTakeMinePrep(toGeneration)
 		await flush()
 	}
 
@@ -518,12 +535,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		flush,
 		pause,
 		resume,
-		resetLocal,
+		takeTheirs,
+		takeMine,
 		generation: () => knownGeneration,
-		beginTakeMine,
-		adoptTakeMine,
-		clearPendingReset,
-		pendingReset: () => knownPending,
 		destroy,
 		status: () => _status,
 		onStatusChange

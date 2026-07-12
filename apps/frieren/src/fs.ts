@@ -170,10 +170,7 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 		local: entry.local,
 		remote: ({ clientId, generation }) => remoteSyncReplica(client, { clientId, generation }),
 		lazyContent: true,
-		localFirst: true,
-		// When a "take mine" republish drains (including one resumed after a crash),
-		// clear the server's advisory reset flag.
-		onResetComplete: (resetId) => postComplete(getToken, resetId)
+		localFirst: true
 	})
 	if (active !== entry) {
 		syncVolume.destroy()
@@ -345,25 +342,10 @@ function deleteIdb(name: string): Promise<void> {
 }
 
 // ── Server-coordinated volume reset ──────────────────────────────────────────
-// Debug-gated shell affordances (see ResetPanel). "Take theirs" is client-only;
-// "take mine" and "factory reset" coordinate through the DO reset route
-// (`POST /fs/reset`, outside createFsApi). The reset is a small atomic server op;
-// the take-mine republish then rides ordinary sync (eventual consistency).
-
-async function postReset(getToken: GetToken, path: string, body: unknown): Promise<Response> {
-	const token = await getToken()
-	return fetch(path, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token ?? ''}` },
-		body: JSON.stringify(body)
-	})
-}
-
-// Clear the server's advisory "reset in progress" flag once our republish drained.
-async function postComplete(getToken: GetToken, resetId: string): Promise<void> {
-	const res = await postReset(getToken, '/fs/reset', { mode: 'complete', resetId })
-	if (!res.ok) throw new Error(`reset complete failed: ${res.status}`)
-}
+// Debug-gated shell affordances (see ResetPanel). "Take theirs" and "take mine"
+// are intents on the synced volume — the state machine (and the POST /fs/reset it
+// drives) lives in `synced()`. Only "factory reset" is app-level: it wipes the
+// server AND nukes local IDB, which no library-level reset can do.
 
 // "Take theirs" — discard this device's local replica and re-pull the server's
 // volume. Purely client-side (the marker under /.state survives, so the server is
@@ -371,35 +353,17 @@ async function postComplete(getToken: GetToken, resetId: string): Promise<void> 
 export async function resetTakeTheirs(): Promise<void> {
 	const sync = active?.sync
 	if (!sync) throw new Error('“take theirs” requires a synced profile')
-	await sync.resetLocal()
+	await sync.takeTheirs()
 }
 
 // "Take mine" — make this device's volume the new server baseline; every other
 // device converges to it over ordinary sync. The reset is a small atomic server
 // op (truncate + bump); the republish then rides the normal resilient loop — so a
 // closed tab / dropped network just resumes, and it can take as long as it needs.
-export async function resetTakeMine(getToken: GetToken): Promise<void> {
+export async function resetTakeMine(): Promise<void> {
 	const sync = active?.sync
 	if (!sync) throw new Error('“take mine” requires a synced profile')
-	const fromGeneration = sync.generation()
-	if (fromGeneration === undefined) throw new Error('“take mine” requires a server generation')
-	const resetId = crypto.randomUUID()
-	// Persist the intent BEFORE the CAS so a crash mid-republish resumes on reboot.
-	await sync.beginTakeMine(resetId, fromGeneration)
-	const res = await postReset(getToken, '/fs/reset', {
-		mode: 'adopt-mine',
-		fromGeneration,
-		resetId
-	})
-	if (!res.ok) {
-		await sync.clearPendingReset() // the CAS lost the race — nothing to resume
-		throw new Error(`reset failed: ${res.status}`)
-	}
-	const applied = (await res.json()) as { generation: number }
-	// Adopt the new lineage locally (re-tag as mine + rewind the push cursor); the
-	// sync loop republishes from here and signals completion via onResetComplete.
-	await sync.adoptTakeMine(applied.generation)
-	await sync.flush()
+	await sync.takeMine()
 }
 
 // "Factory reset" — wipe server + local, then reseed built-ins. A synced profile
@@ -410,9 +374,12 @@ export async function factoryReset(getToken: GetToken): Promise<void> {
 	const prev = active
 	if (!prev) return
 	if (prev.remoteUserId) {
-		const fromGeneration = prev.sync?.generation() ?? 1
-		const res = await postReset(getToken, '/fs/reset', { mode: 'wipe', fromGeneration })
-		if (!res.ok) throw new Error(`reset failed: ${res.status}`)
+		// `wipe` is not part of the sync layer's reset (it discards content too), so
+		// it goes over the same typed /fs/reset route directly.
+		const res = await createFsClient(getToken).reset.$post({
+			json: { mode: 'wipe', fromGeneration: prev.sync?.generation() ?? 1 }
+		})
+		if (!res.ok) throw new Error(`factory reset failed: ${res.status}`)
 	}
 	const name = prev.dbName
 	await releaseFsVolume({ flush: false })

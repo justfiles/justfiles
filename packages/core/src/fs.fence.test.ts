@@ -9,7 +9,7 @@ import { GenerationStaleError } from '@justfiles/fs/sync-replica'
 import type { PathChange } from '@justfiles/fs/sync-wire'
 import { FileType } from '@justfiles/fs/types'
 import { describe, expect, it } from 'vitest'
-import { createFsApi } from './fs'
+import { createFsApi, type ResetBody, type ResetResult } from './fs'
 import { apiStorage, createFsClient, remoteSyncReplica } from './fs.client'
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
@@ -132,6 +132,87 @@ describe('/fs reset flag — server', () => {
 		})
 		expect(res.status).toBe(204)
 		expect((await app.request(`/blob/${hash}`, { method: 'HEAD' })).status).toBe(200)
+	})
+})
+
+// Reset is a first-class /fs route over a HOST-INJECTED capability (the CAS +
+// truncate needs the host's raw store). The library only owns the envelope: it
+// validates the body, delegates, and maps the result to 200/409 — and registers
+// the route AHEAD of the fence, so a stale client (exactly the one that needs to
+// reset) still reaches the capability's own CAS.
+describe('/fs reset route — server', () => {
+	const capability = (generation: number) => ({
+		lineage: () => ({ generation }),
+		reset: async (req: ResetBody): Promise<ResetResult> =>
+			req.mode === 'complete' || req.fromGeneration === generation
+				? { ok: true, generation: generation + 1 }
+				: { ok: false, error: 'generation_stale' as const, generation }
+	})
+
+	it('delegates to the injected capability and returns the new generation', async () => {
+		const app = createFsApi(memStorage(), capability(5))
+		const res = await app.request('/reset', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ generation: 6 })
+	})
+
+	it('409s when the capability rejects the CAS', async () => {
+		const app = createFsApi(memStorage(), capability(5))
+		const res = await app.request('/reset', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ mode: 'adopt-mine', fromGeneration: 4, resetId: 'r1' })
+		})
+		expect(res.status).toBe(409)
+		expect(await res.json()).toEqual({ error: 'generation_stale', generation: 5 })
+	})
+
+	it('501s when the host injects no reset capability', async () => {
+		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 5 }) })
+		const res = await app.request('/reset', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ mode: 'complete', resetId: 'r1' })
+		})
+		expect(res.status).toBe(501)
+	})
+
+	// The fence-exemption guard: reset is registered before the push fence, so a
+	// STALE generation header does not 409 it — the capability's CAS decides.
+	it('is exempt from the push fence (a stale header still reaches the capability)', async () => {
+		const app = createFsApi(memStorage(), capability(5))
+		const res = await app.request('/reset', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'x-fs-generation': '1' },
+			body: JSON.stringify({ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })
+		})
+		expect(res.status).toBe(200) // NOT the fence's 409
+		expect(await res.json()).toEqual({ generation: 6 })
+	})
+
+	it('remoteSyncReplica.reset drives the route (adopt-mine → generation, complete → {})', async () => {
+		const calls: ResetBody[] = []
+		const app = createFsApi(memStorage(), {
+			lineage: () => ({ generation: 5 }),
+			reset: async (req) => {
+				calls.push(req)
+				return { ok: true, generation: 6 }
+			}
+		})
+		// Stale on purpose: the replica stamps x-fs-generation, and reset must not be fenced.
+		const replica = remoteSyncReplica(wireClient(app), { clientId: 'c1', generation: () => 1 })
+		expect(await replica.reset?.({ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })).toEqual(
+			{ generation: 6 }
+		)
+		await replica.reset?.({ mode: 'complete', resetId: 'r1' })
+		expect(calls).toEqual([
+			{ mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' },
+			{ mode: 'complete', resetId: 'r1' }
+		])
 	})
 })
 

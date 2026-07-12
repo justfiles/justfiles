@@ -136,6 +136,30 @@ const SnapshotQuery = z.object({
 })
 const HashParam = z.object({ hash: z.string().regex(/^[0-9a-f]{64}$/) })
 
+// The lineage-mutation request (POST /fs/reset). `adopt-mine` / `wipe` CAS on
+// `fromGeneration` (truncate + bump); `complete` is advisory — the initiator's
+// republish drained, so clear the in-progress flag. The client's copy of this
+// shape lives in @justfiles/fs (LineagePeer.ResetRequest, minus `wipe`, which is
+// app-level factory reset); this is the server's validated one.
+export const ResetBody = z.discriminatedUnion('mode', [
+	z.object({
+		mode: z.literal('adopt-mine'),
+		fromGeneration: z.number().int(),
+		resetId: z.string()
+	}),
+	z.object({
+		mode: z.literal('wipe'),
+		fromGeneration: z.number().int(),
+		resetId: z.string().optional()
+	}),
+	z.object({ mode: z.literal('complete'), resetId: z.string() })
+])
+export type ResetBody = z.infer<typeof ResetBody>
+
+export type ResetResult =
+	| { ok: true; generation: number }
+	| { ok: false; error: 'generation_stale'; generation: number }
+
 async function sha256Hex(data: Uint8Array): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', data as unknown as ArrayBuffer)
 	return Array.from(new Uint8Array(digest))
@@ -154,6 +178,11 @@ export function createFsApi(
 		// stay on the legacy path. Surfaced on the handshake, echoed on every pull/scan
 		// page, and enforced on every mutating write.
 		lineage?: () => GenerationState | Promise<GenerationState>
+		// The write side of that lineage, behind POST /reset: CAS on `fromGeneration`,
+		// truncate, bump. Injected because it needs the host's raw transactional store
+		// (and, for a DO, a cache rebuild) — the library only owns the HTTP envelope.
+		// Omitted => /reset answers 501.
+		reset?: (req: ResetBody) => Promise<ResetResult>
 	}
 ) {
 	const errorMessage = (error: unknown): string =>
@@ -176,14 +205,27 @@ export function createFsApi(
 	return (
 		new Hono()
 
+			// ── Lineage mutation ───────────────────────────────────────────────────
+			// Registered BEFORE the fence below, so it is exempt from it: a stale client
+			// is exactly the one that needs to reset. It self-guards via the injected
+			// capability's own CAS. Always in the chain (so the typed client carries it);
+			// 501 when the host injects no reset capability.
+			.post('/reset', zValidator('json', ResetBody), async (c) => {
+				if (!opts?.reset) return c.json({ error: 'reset not supported' }, 501)
+				const result = await opts.reset(c.req.valid('json'))
+				return result.ok
+					? c.json({ generation: result.generation })
+					: c.json({ error: result.error, generation: result.generation }, 409)
+			})
+
 			// ── Push fencing (anti-clobber) ────────────────────────────────────────
 			// A mutating /fs request may carry `x-fs-generation` = the client's known
 			// lineage; a present-but-stale value is rejected with 409 so the client
 			// resets instead of clobbering a fresh reset baseline. An absent header
-			// (legacy client) is allowed. GET/HEAD are reads; the reset routes live
-			// outside createFsApi and self-guard via their CAS. There is no publishing
-			// lock — a "take mine" republish rides ordinary sync at the new generation
-			// and passes this same check, and other devices converge eventually.
+			// (legacy client) is allowed. GET/HEAD are reads; /reset is registered above
+			// this fence and self-guards via its CAS. There is no publishing lock — a
+			// "take mine" republish rides ordinary sync at the new generation and passes
+			// this same check, and other devices converge eventually.
 			.use('*', async (c, next) => {
 				if (opts?.lineage && MUTATING_METHODS.has(c.req.method)) {
 					const header = c.req.header(GENERATION_HEADER)

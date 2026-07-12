@@ -317,6 +317,17 @@ export function remoteSyncReplica(
 			return { generation: data.generation, resetId: data.resetId }
 		},
 
+		async reset(body) {
+			// POST /fs/reset — the lineage MUTATION (the handshake's write side).
+			// `adopt-mine` CASes the server's epoch and returns the new one; `complete`
+			// clears its advisory reset flag once our republish drained. Fence-exempt
+			// server-side (it is registered ahead of the fence), so a stale client can
+			// still reset. A host without a reset capability answers 501.
+			const res = await client.reset.$post({ json: body })
+			if (!res.ok) throw new Error(`reset ${body.mode} failed: ${res.status}`)
+			return { generation: (await res.json()).generation }
+		},
+
 		async pathDeltas(cursor, opts) {
 			// Note: `excludeLocalSource` is a LOCAL push concept; the remote only
 			// supports `excludeOrigin`.

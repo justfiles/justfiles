@@ -318,6 +318,8 @@ interface FakeServer {
 	scanCalls: number
 	/** If set, the next push (applyPathChanges) throws it — simulates a fence 409. */
 	pushError: Error | undefined
+	/** If set, `reset` throws it — simulates a lost CAS / offline server. */
+	resetError: Error | undefined
 	/** Every push received (for take-mine republish tests). */
 	pushes: Array<{ changes: PathChange[] }>
 	seed(path: string, content: string): void
@@ -334,6 +336,7 @@ function fakeServer(
 		deltaGeneration: undefined,
 		scanCalls: 0,
 		pushError: undefined,
+		resetError: undefined,
 		pushes: [],
 		seed(path, content) {
 			const data = enc.encode(content)
@@ -352,6 +355,19 @@ function fakeServer(
 	for (const [p, content] of Object.entries(init.files ?? {})) server.seed(p, content)
 	server.replica = {
 		handshake: async () => ({ generation: server.generation, resetId: server.resetId }),
+		// The real CAS, in miniature: `adopt-mine` bumps the epoch and raises the
+		// advisory flag; `complete` lowers it. (`fromGeneration` matching is the real
+		// server's job — `resetError` stands in for a lost race.)
+		reset: async (body) => {
+			if (server.resetError) throw server.resetError
+			if (body.mode === 'complete') {
+				server.resetId = undefined
+				return {}
+			}
+			server.generation = (server.generation ?? 0) + 1
+			server.resetId = body.resetId
+			return { generation: server.generation }
+		},
 		pathScan: async () => {
 			server.scanCalls++
 			return {
@@ -488,46 +504,31 @@ describe('synced (generation / client-reset)', () => {
 		expect(state.pullCursor).toBeUndefined() // cursors cleared → re-bootstrap next cycle
 	})
 
-	// resetLocal() ("take theirs"): discard unpushed local work + re-pull server.
-	it('resetLocal() discards local and re-pulls the server', async () => {
+	// takeTheirs(): discard unpushed local work + re-pull server.
+	it('takeTheirs() discards local and re-pulls the server', async () => {
 		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
 		const local = memStorage()
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		expect(await vol.exists('/server.txt')).toBe(true)
 		await vol.writeFile('/mine.txt', enc.encode('unpushed work')) // never flushed
-		await vol.resetLocal()
+		await vol.takeTheirs()
 		expect(await vol.exists('/mine.txt')).toBe(false) // discarded before any push
 		expect(await vol.exists('/server.txt')).toBe(true) // re-pulled from the server
 	})
 
-	// "Take mine": adoptTakeMine re-tags local as mine + rewinds the push cursor, so
-	// the ORDINARY push republishes the whole volume (pulled files included), and the
-	// drain signals completion via onResetComplete.
+	// takeMine(): CAS the server's lineage, then re-tag local as mine + rewind the
+	// push cursor, so the ORDINARY push republishes the whole volume (pulled files
+	// included). The drain then clears the server's advisory reset flag.
 	it('take mine republishes the whole volume over ordinary push and signals completion', async () => {
 		const server = fakeServer({ generation: 1, files: { '/server.txt': 'orig' } })
 		const local = memStorage()
-		const completed: string[] = []
-		const vol = track(
-			await synced({
-				local,
-				remote: () => server.replica,
-				interval: 99_999,
-				onResetComplete: (id) => {
-					completed.push(id)
-				}
-			})
-		)
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		expect(await vol.exists('/server.txt')).toBe(true) // bootstrapped (tagged REMOTE_SOURCE)
 		await vol.writeFile('/mine.txt', enc.encode('local'))
 		await vol.flush()
 		server.pushes.length = 0 // ignore the pre-reset pushes
 
-		// The server bumped to generation 2 and flagged the reset in progress.
-		server.generation = 2
-		server.resetId = 'reset-1'
-		await vol.beginTakeMine('reset-1', 1)
-		await vol.adoptTakeMine(2)
-		await vol.flush()
+		await vol.takeMine() // CAS bumps the server 1 → 2 and raises its reset flag
 
 		// The republish is the whole volume — both the pulled and the locally-authored
 		// file (re-tagged as mine), NOT a delta that would drop the pulled one.
@@ -536,8 +537,32 @@ describe('synced (generation / client-reset)', () => {
 		expect(paths).toContain('/mine.txt')
 		expect(await vol.exists('/mine.txt')).toBe(true) // local kept intact
 		expect((await readSyncState(local)).generation).toBe(2)
-		expect(completed).toContain('reset-1') // completion signaled after the drain
+		expect(server.resetId).toBeUndefined() // drained → the server's flag was cleared
 		expect((await readSyncState(local)).pendingReset).toBeUndefined() // cleared on completion
+	})
+
+	// The intent is persisted BEFORE the CAS, so a CAS that never lands must roll it
+	// back — there is nothing to resume, and local must survive untouched.
+	it('take mine rolls the intent back when the reset fails', async () => {
+		const server = fakeServer({ generation: 1 })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.writeFile('/mine.txt', enc.encode('local'))
+		server.resetError = new Error('lost the CAS')
+
+		await expect(vol.takeMine()).rejects.toThrow('lost the CAS')
+		expect(await vol.exists('/mine.txt')).toBe(true) // untouched
+		expect((await readSyncState(local)).pendingReset).toBeUndefined() // nothing to resume
+		expect((await readSyncState(local)).generation).toBe(1) // lineage unchanged
+	})
+
+	// A peer with no lineage (P2P, or a legacy server): "take mine" has nothing to
+	// CAS against, so it refuses rather than silently republishing.
+	it('take mine refuses without a server generation', async () => {
+		const server = fakeServer({ files: { '/server.txt': 'hi' } }) // generation undefined
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await expect(vol.takeMine()).rejects.toThrow('take mine requires a server generation')
 	})
 
 	// A server that omits `generation` (legacy / not opted in) leaves the machinery
