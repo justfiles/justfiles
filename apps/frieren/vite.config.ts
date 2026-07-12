@@ -8,7 +8,7 @@ import replace from '@rollup/plugin-replace'
 import terser from '@rollup/plugin-terser'
 import react from '@vitejs/plugin-react'
 import { rollup } from 'rollup'
-import { defineConfig, type Plugin, type ResolvedConfig } from 'vite'
+import { defineConfig, esmExternalRequirePlugin, type Plugin, type ResolvedConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { appstore } from './vite-appstore.ts'
 
@@ -239,6 +239,10 @@ export default defineConfig({
 	},
 	plugins: [
 		vendorReact(),
+		// CJS deps (use-sync-external-store, via swr/@clerk/shared + @justfiles/state)
+		// do `require('react')`. Rolldown emits `__require()` for an external, which
+		// throws in the browser; this rewrites those requires to ESM imports.
+		esmExternalRequirePlugin({ external: Object.keys(VENDOR_URLS) }),
 		appstore(),
 		// NOTE: VitePWA conflicts with @cloudflare/vite-plugin when vitest resolves
 		// THIS config (e.g. `cd apps/frieren && vitest`); the canonical root
