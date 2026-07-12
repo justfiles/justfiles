@@ -329,7 +329,13 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			return displaced && displaced.ino !== src.ino ? displaced.ino : null
 		},
 
-		// ── Path-sync seams (Phase 0: shape only) ────────────────────────────────
+		// ── Path-sync seams ──────────────────────────────────────────────────────
+		async clearSyncState() {
+			pathVersion.clear()
+			tombstone.clear()
+			journalRows.length = 0
+			journalSeq = 0
+		},
 		journal: {
 			async append(changes, localSource) {
 				appendJournal(changes, localSource)
@@ -339,6 +345,9 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			},
 			async head() {
 				return journalRows[journalRows.length - 1]?.seq ?? 0
+			},
+			async adoptAllAsLocal() {
+				for (const r of journalRows) r.localSource = undefined
 			}
 		},
 		content: {

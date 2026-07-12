@@ -1,6 +1,5 @@
 import type { AppController, LLMText } from '@justfiles/agent'
 import { createAppController, type Kernel, kernel } from '@justfiles/app'
-import { reconcile } from '@justfiles/app/appstore'
 import {
 	type Capabilities,
 	type Capability,
@@ -10,7 +9,7 @@ import {
 } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
-import { appFileUrl, httpAppStore } from '../shared/appstore.ts'
+import { appFileUrl } from '../shared/appstore.ts'
 import { aiCapability } from './ai.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 
@@ -26,9 +25,6 @@ type AppBroadcast = { type: 'app_open'; id: string } | { type: 'app_close'; id: 
 interface FrierenAppsDeps {
 	fs: Volume
 	loader: Parameters<typeof workerSandbox>[0] | undefined
-	// Static assets binding — serves the `/appstore` built-in app files seeded
-	// into the volume on boot.
-	assets: Fetcher
 	sockets: () => Iterable<WebSocket>
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
@@ -55,7 +51,6 @@ export interface FrierenApps {
 }
 
 const OS_STATE_PATH = '/system/os-state.json'
-const DEV_BUILTINS = import.meta.env.DEV
 
 // Reserved pseudo-app id for the single shared capability-proxy socket. Not a
 // valid app id (underscore is disallowed by the kernel), so it can't collide
@@ -66,7 +61,6 @@ const CAPS_SOCKET = '_caps'
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
 	let subscribed = false
-	let builtinsReady: Promise<void> | undefined
 
 	// The server kernel's capability seam: `volume` and `ai` are local units; the
 	// account-backed `email`/`calendar`/`accounts` are handed in ready (built over
@@ -102,27 +96,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return kernelInstance
 	}
 
-	// Built-in apps live as static `/appstore` assets and are seeded into the
-	// user's volume on kernel use (this DO is the sole materializer for the synced
-	// profile — see shared/appstore.ts). reconcile reinstalls only the apps
-	// whose bytes changed, so dev re-checks on every kernel use to pick up local
-	// edits (cheap — unchanged apps are skipped); prod runs it once per instance.
-	async function ensureBuiltinsInstalled(k: Kernel): Promise<void> {
-		if (DEV_BUILTINS) return reconcileFromAssets(k)
-		if (!builtinsReady) builtinsReady = reconcileFromAssets(k)
-		return builtinsReady
-	}
-
-	async function reconcileFromAssets(k: Kernel): Promise<void> {
-		const store = await httpAppStore((path) => deps.assets.fetch(assetRequest(path)))
-		if (store) await reconcile(k, deps.fs, store)
-	}
-
-	async function kernelReady(): Promise<Kernel> {
-		const k = getKernel()
-		await ensureBuiltinsInstalled(k)
-		return k
-	}
+	// Built-in apps are materialised client-side only: the browser seeds an empty
+	// volume once and syncs the bundle up. This DO never materialises
+	// `/applications/*` — it holds whatever the client synced up and serves it to
+	// the agent, so the kernel is used as-is with no server-side seed/reconcile.
 
 	// kernel.subscribe's handler is in-memory, so it dies with the DO on
 	// hibernation. Re-registered lazily per instance. On the server kernel
@@ -144,7 +121,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {
-			const manifests = await (await kernelReady()).list()
+			const manifests = await getKernel().list()
 			return manifests.map((m) => ({
 				id: m.id,
 				name: m.name,
@@ -262,7 +239,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	const controller: AppController = createAppController(
 		async () => {
 			ensureSubscribed()
-			return kernelReady()
+			return getKernel()
 		},
 		{
 			windows: {
@@ -281,9 +258,4 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		acceptWebSocket,
 		handleMessage
 	}
-}
-
-// The `ASSETS` binding ignores the host; only the path matters.
-function assetRequest(path: string): Request {
-	return new Request(`https://assets.invalid${path}`)
 }

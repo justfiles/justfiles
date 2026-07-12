@@ -142,6 +142,16 @@ export interface StorageCapabilities {
 	 * orphan (GC reclaims it); a referenced hash with no blob is a lazy stub.
 	 */
 	content?: ContentStore
+
+	/**
+	 * Drop this replica's local sync state — the path journal + the per-path version
+	 * generator (versions + tombstones) — WITHOUT touching the tree or content. Used
+	 * by a client reset ("take theirs"): after a server lineage reset, local version
+	 * tombstones from deleting the old tree would outrank the re-pulled server puts
+	 * (versions aren't comparable across lineages), so the discard must clear them for
+	 * a clean re-bootstrap. Owned backends only.
+	 */
+	clearSyncState?(): Promise<void>
 }
 
 /** Hash-addressed content store (see `StorageCapabilities.content`). */

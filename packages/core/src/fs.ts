@@ -6,6 +6,7 @@ import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { Hono } from 'hono'
 import { z } from 'zod'
+import type { GenerationState } from './reset'
 
 type InodeMeta = NonNullable<Awaited<ReturnType<Storage['getMeta']>>>
 type InodeMetaPatch = Partial<InodeMeta>
@@ -83,6 +84,10 @@ const DirInoParam = z.object({ dirIno: z.string() })
 const DirInoNameParam = z.object({ dirIno: z.string(), name: z.string() })
 const CursorQuery = z.object({ cursor: z.string().default('') })
 const SOURCE_HEADER = 'x-fs-source'
+// Push fencing: a mutating request carries the client's known volume lineage
+// here; a present-but-stale value is rejected.
+const GENERATION_HEADER = 'x-fs-generation'
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // ── Path-sync (/fs) transport contract ──────────────────────────────────────
 // Wire schema is imported from @justfiles/fs/sync-wire (PathChange); the page
@@ -91,23 +96,33 @@ const SOURCE_HEADER = 'x-fs-source'
 const PROTOCOL_VERSION = 1
 const SCHEMA_VERSION = 1
 
+// `generation` = the server volume's lineage epoch. Optional: absent unless the
+// host injects a lineage source, so a server that has not opted in reads as "no
+// lineage signal" and the client stays on the legacy path. Surfaced on the
+// handshake AND echoed on every pull/scan page so a mid-cycle reset is caught
+// without a second round-trip. `resetId` is the advisory "a reset/republish is in
+// progress" flag (crash-resume + UI), not a lock.
 const Handshake = z.object({
 	rootIno: z.string(),
 	protocolVersion: z.number().int(),
-	schemaVersion: z.number().int()
+	schemaVersion: z.number().int(),
+	generation: z.number().int().optional(),
+	resetId: z.string().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
 	changes: z.array(PathChange),
 	to: z.string(), // SyncCursor to persist AND next-page token (same seq)
-	done: z.boolean() // false => more pages remain
+	done: z.boolean(), // false => more pages remain
+	generation: z.number().int().optional()
 })
 // Snapshot: pagination position and sync high-water are DISTINCT.
 const ScanPage = z.object({
 	changes: z.array(PathChange),
 	next: z.string().optional(), // opaque next-page token; absent when done
 	syncCursor: z.string(), // delta high-water frozen at scan start; resume here
-	done: z.boolean()
+	done: z.boolean(),
+	generation: z.number().int().optional()
 })
 const PathChangesBody = z.object({ changes: z.array(PathChange) })
 const DeltaQuery = z.object({
@@ -121,6 +136,30 @@ const SnapshotQuery = z.object({
 })
 const HashParam = z.object({ hash: z.string().regex(/^[0-9a-f]{64}$/) })
 
+// The lineage-mutation request (POST /fs/reset). `adopt-mine` / `wipe` CAS on
+// `fromGeneration` (truncate + bump); `complete` is advisory — the initiator's
+// republish drained, so clear the in-progress flag. The client's copy of this
+// shape lives in @justfiles/fs (LineagePeer.ResetRequest, minus `wipe`, which is
+// app-level factory reset); this is the server's validated one.
+export const ResetBody = z.discriminatedUnion('mode', [
+	z.object({
+		mode: z.literal('adopt-mine'),
+		fromGeneration: z.number().int(),
+		resetId: z.string()
+	}),
+	z.object({
+		mode: z.literal('wipe'),
+		fromGeneration: z.number().int(),
+		resetId: z.string().optional()
+	}),
+	z.object({ mode: z.literal('complete'), resetId: z.string() })
+])
+export type ResetBody = z.infer<typeof ResetBody>
+
+export type ResetResult =
+	| { ok: true; generation: number }
+	| { ok: false; error: 'generation_stale'; generation: number }
+
 async function sha256Hex(data: Uint8Array): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', data as unknown as ArrayBuffer)
 	return Array.from(new Uint8Array(digest))
@@ -130,9 +169,26 @@ async function sha256Hex(data: Uint8Array): Promise<string> {
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
-export function createFsApi(backend: Storage) {
+export function createFsApi(
+	backend: Storage,
+	opts?: {
+		// The server volume's lineage: the epoch `generation` plus the advisory
+		// `resetId`. Injected by the host (e.g. the DO's SQLite generation row);
+		// omitted here so callers that haven't opted in report no lineage and clients
+		// stay on the legacy path. Surfaced on the handshake, echoed on every pull/scan
+		// page, and enforced on every mutating write.
+		lineage?: () => GenerationState | Promise<GenerationState>
+		// The write side of that lineage, behind POST /reset: CAS on `fromGeneration`,
+		// truncate, bump. Injected because it needs the host's raw transactional store
+		// (and, for a DO, a cache rebuild) — the library only owns the HTTP envelope.
+		// Omitted => /reset answers 501.
+		reset?: (req: ResetBody) => Promise<ResetResult>
+	}
+) {
 	const errorMessage = (error: unknown): string =>
 		error instanceof Error ? error.message : String(error)
+	const readLineage = async (): Promise<GenerationState | undefined> =>
+		opts?.lineage ? await opts.lineage() : undefined
 	const vol = volume(backend)
 	// The server serves the path endpoints over its own local SyncReplica. Origin
 	// is stamped per-request from SOURCE_HEADER (see POST /path/changes), so the
@@ -149,29 +205,67 @@ export function createFsApi(backend: Storage) {
 	return (
 		new Hono()
 
+			// ── Lineage mutation ───────────────────────────────────────────────────
+			// Registered BEFORE the fence below, so it is exempt from it: a stale client
+			// is exactly the one that needs to reset. It self-guards via the injected
+			// capability's own CAS. Always in the chain (so the typed client carries it);
+			// 501 when the host injects no reset capability.
+			.post('/reset', zValidator('json', ResetBody), async (c) => {
+				if (!opts?.reset) return c.json({ error: 'reset not supported' }, 501)
+				const result = await opts.reset(c.req.valid('json'))
+				return result.ok
+					? c.json({ generation: result.generation })
+					: c.json({ error: result.error, generation: result.generation }, 409)
+			})
+
+			// ── Push fencing (anti-clobber) ────────────────────────────────────────
+			// A mutating /fs request may carry `x-fs-generation` = the client's known
+			// lineage; a present-but-stale value is rejected with 409 so the client
+			// resets instead of clobbering a fresh reset baseline. An absent header
+			// (legacy client) is allowed. GET/HEAD are reads; /reset is registered above
+			// this fence and self-guards via its CAS. There is no publishing lock — a
+			// "take mine" republish rides ordinary sync at the new generation and passes
+			// this same check, and other devices converge eventually.
+			.use('*', async (c, next) => {
+				if (opts?.lineage && MUTATING_METHODS.has(c.req.method)) {
+					const header = c.req.header(GENERATION_HEADER)
+					const lineage = await readLineage()
+					if (header !== undefined && lineage && Number(header) !== lineage.generation)
+						return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
+				}
+				return next()
+			})
+
 			// ── Root ─────────────────────────────────────────────────────────────
-			.get('/', (c) =>
-				c.json(
+			.get('/', async (c) => {
+				const lineage = await readLineage()
+				return c.json(
 					Handshake.parse({
 						rootIno: backend.rootIno,
 						protocolVersion: PROTOCOL_VERSION,
-						schemaVersion: SCHEMA_VERSION
+						schemaVersion: SCHEMA_VERSION,
+						generation: lineage?.generation,
+						resetId: lineage?.resetId
 					})
 				)
-			)
+			})
 
 			// Path sync: PULL (client reads the server's ChangeSource)
 			.get('/path/changes', zValidator('query', DeltaQuery), async (c) => {
 				const { cursor, excludeOrigin, limit } = c.req.valid('query')
 				const { changes, to, done } = await replica.pathDeltas(cursor, { excludeOrigin, limit })
+				const lineage = await readLineage()
 				c.header('Cache-Control', 'no-store')
-				return c.json(DeltaPage.parse({ changes, to, done }))
+				return c.json(DeltaPage.parse({ changes, to, done, generation: lineage?.generation }))
 			})
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
 				const { page, limit } = c.req.valid('query')
 				const { changes, next, syncCursor, done } = await replica.pathScan(page, { limit })
-				return c.json(ScanPage.parse({ changes, next, syncCursor, done }))
+				const lineage = await readLineage()
+				return c.json(
+					ScanPage.parse({ changes, next, syncCursor, done, generation: lineage?.generation })
+				)
 			})
 
 			// Path sync: PUSH (client writes path-changes; server applies to its Storage)

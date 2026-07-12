@@ -11,7 +11,15 @@ import {
 	text
 } from '@justfiles/agent'
 import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
-import { createFsApi } from '@justfiles/core'
+import {
+	clearReset,
+	createFsApi,
+	type DbAdapter,
+	type ResetBody,
+	type ResetResult,
+	readGenerationState,
+	resetVolume
+} from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
@@ -20,7 +28,7 @@ import { ensureAgentDefaults } from '../shared/agent-defaults.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
-import { cfFsStorage, migrateCF } from './db.do.ts'
+import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
@@ -59,7 +67,9 @@ const DEBUG_COMMAND = '/debug'
 
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
-	private readonly vol: Volume
+	private readonly db: DbAdapter
+	private readonly fs: ReturnType<typeof cfFsStorage>
+	private vol: Volume
 	private session?: AgentSession
 	private text?: LLMText
 	private cfTimezone?: string
@@ -68,7 +78,10 @@ export class Frieren extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
 		const namespace = ctx.id.toString()
-		const fs = cfFsStorage(ctx.storage, namespace, env.FS_BLOBS)
+		const adapter = createDOSqliteAdapter(ctx.storage)
+		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)
+		this.db = adapter
+		this.fs = fs
 		this.vol = volume(fs)
 
 		this.app = new Hono()
@@ -80,11 +93,47 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json({ text: generated })
 			})
-			.route('/fs', createFsApi(fs))
+			.route(
+				'/fs',
+				createFsApi(fs, {
+					// The two sides of the server volume's lineage: read the epoch, and
+					// mutate it. Both need the DO's raw store (and, for reset, a cache
+					// rebuild), so they are injected; createFsApi owns the routes.
+					lineage: () => readGenerationState(this.db),
+					reset: (req) => this.handleReset(req)
+				})
+			)
 
 		ctx.blockConcurrencyWhile(async () => {
 			await this.reset()
 		})
+	}
+
+	// The lineage-mutation capability behind POST /fs/reset (createFsApi validates
+	// the body and owns the HTTP envelope; this is the DO-level body it calls).
+	// `adopt-mine`/`wipe` — CAS + truncate + bump. `complete` — advisory: the
+	// initiator's republish drained, so clear the in-progress flag.
+	private async handleReset(req: ResetBody): Promise<ResetResult> {
+		if (req.mode === 'complete') {
+			const state = await clearReset(this.db, req.resetId)
+			// The republish is durable — rebuild the volume + agent session against it.
+			this.vol = volume(this.fs)
+			await this.reset()
+			return { ok: true, generation: state.generation }
+		}
+		const decision = await resetVolume(this.db, {
+			mode: req.mode,
+			fromGeneration: req.fromGeneration,
+			resetId: req.resetId
+		})
+		if (!decision.ok) return decision
+		// The reset wrote the DB directly, so the cached volume is stale — rebuild it.
+		// `wipe` reseeds agent defaults + rebuilds the session now; `adopt-mine` leaves
+		// the empty volume for the initiator to republish over ordinary sync (the next
+		// DO restart reseeds any still-missing defaults).
+		this.vol = volume(this.fs)
+		if (req.mode === 'wipe') await this.reset()
+		return { ok: true, generation: decision.next.generation }
 	}
 
 	private requireApps(): FrierenApps {
@@ -108,7 +157,7 @@ export class Frieren extends DurableObject<Env> {
 
 	private async reset() {
 		const { model, apiKey } = this.getBackendConfig()
-		await migrateCF(this.ctx.storage)
+		await migrateCF(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
 		await ensureAgentDefaults(this.vol)
@@ -128,7 +177,6 @@ export class Frieren extends DurableObject<Env> {
 		this.apps = frierenApps({
 			fs: this.vol,
 			loader: this.env.LOADER,
-			assets: this.env.ASSETS,
 			sockets: () => this.ctx.getWebSockets(),
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,

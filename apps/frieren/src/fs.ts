@@ -168,7 +168,7 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	const client = createFsClient(getToken)
 	const syncVolume = await synced({
 		local: entry.local,
-		remote: ({ clientId }) => remoteSyncReplica(client, { clientId }),
+		remote: ({ clientId, generation }) => remoteSyncReplica(client, { clientId, generation }),
 		lazyContent: true,
 		localFirst: true
 	})
@@ -339,4 +339,50 @@ function deleteIdb(name: string): Promise<void> {
 		const req = indexedDB.deleteDatabase(name)
 		req.onsuccess = req.onerror = req.onblocked = () => resolve()
 	})
+}
+
+// ── Server-coordinated volume reset ──────────────────────────────────────────
+// Debug-gated shell affordances (see ResetPanel). "Take theirs" and "take mine"
+// are intents on the synced volume — the state machine (and the POST /fs/reset it
+// drives) lives in `synced()`. Only "factory reset" is app-level: it wipes the
+// server AND nukes local IDB, which no library-level reset can do.
+
+// "Take theirs" — discard this device's local replica and re-pull the server's
+// volume. Purely client-side (the marker under /.state survives, so the server is
+// adopted verbatim without reseeding built-ins). Synced profiles only.
+export async function resetTakeTheirs(): Promise<void> {
+	const sync = active?.sync
+	if (!sync) throw new Error('“take theirs” requires a synced profile')
+	await sync.takeTheirs()
+}
+
+// "Take mine" — make this device's volume the new server baseline; every other
+// device converges to it over ordinary sync. The reset is a small atomic server
+// op (truncate + bump); the republish then rides the normal resilient loop — so a
+// closed tab / dropped network just resumes, and it can take as long as it needs.
+export async function resetTakeMine(): Promise<void> {
+	const sync = active?.sync
+	if (!sync) throw new Error('“take mine” requires a synced profile')
+	await sync.takeMine()
+}
+
+// "Factory reset" — wipe server + local, then reseed built-ins. A synced profile
+// wipes the server first; both paths delete local IDB (dropping the materialised
+// marker) and reload, so `seedBuiltins` re-materialises the built-ins against the
+// now-empty server and pushes them as the new baseline.
+export async function factoryReset(getToken: GetToken): Promise<void> {
+	const prev = active
+	if (!prev) return
+	if (prev.remoteUserId) {
+		// `wipe` is not part of the sync layer's reset (it discards content too), so
+		// it goes over the same typed /fs/reset route directly.
+		const res = await createFsClient(getToken).reset.$post({
+			json: { mode: 'wipe', fromGeneration: prev.sync?.generation() ?? 1 }
+		})
+		if (!res.ok) throw new Error(`factory reset failed: ${res.status}`)
+	}
+	const name = prev.dbName
+	await releaseFsVolume({ flush: false })
+	await deleteIdb(name)
+	location.reload()
 }

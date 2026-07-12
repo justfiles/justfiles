@@ -21,6 +21,7 @@ import {
 } from '../os/selectors'
 import type { OsWindow } from '../os/state'
 import { PersonalizePanel } from '../personalize/PersonalizePanel'
+import { ResetPanel } from '../reset/ResetPanel'
 import { AgentSidebar } from './AgentSidebar'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -95,6 +96,12 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const agentOpen = useOsStore(selectAgentOpen)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
 	const [personalizeOpen, setPersonalizeOpen] = useState(false)
+	const [resetOpen, setResetOpen] = useState(false)
+	// Debug-gated: the reset affordances are dev-only for now (dev build, or opt in
+	// via `localStorage.frieren-debug = 1`).
+	const resetDebugEnabled =
+		import.meta.env.DEV ||
+		(typeof localStorage !== 'undefined' && localStorage.getItem('frieren-debug') === '1')
 	// `windows` only changes identity when the open set/order changes, so the
 	// running set stays stable across rect/mode edits.
 	const openAppIds = useMemo(() => new Set(windows.map((w) => w.appId)), [windows])
@@ -102,6 +109,9 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Personalize…', onSelect: () => setPersonalizeOpen(true) },
 		{ label: 'Switch User…', onSelect: onSwitchUser },
+		...(resetDebugEnabled
+			? ([{ label: 'Reset sync…', onSelect: () => setResetOpen(true) }] as ContextMenuItem[])
+			: []),
 		{ separator: true },
 		{ label: 'Change Wallpaper…', disabled: true, onSelect: () => {} },
 		{ separator: true },
@@ -201,6 +211,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 			</div>
 			<ContextMenu state={menu.state} onClose={menu.close} />
 			{personalizeOpen ? <PersonalizePanel onClose={() => setPersonalizeOpen(false)} /> : null}
+			{resetOpen ? <ResetPanel onClose={() => setResetOpen(false)} /> : null}
 		</div>
 	)
 }

@@ -200,6 +200,25 @@ describe('FrierenClient apps + windows', () => {
 		expect(seen.at(-1)).toEqual(['local'])
 	})
 
+	test('refresh does not re-notify when the local catalog is unchanged', async () => {
+		const client = createFrierenClient({
+			getToken: async () => null,
+			// Fresh objects each call, identical values — mirrors the `/applications`
+			// watcher firing on an unrelated structural write and re-listing the kernel.
+			listLocalApps: async () => [{ id: 'paint', name: 'Paint', description: '', version: '1.0.0' }]
+		})
+		const seen: string[][] = []
+		client.subscribeApps((apps) => seen.push(apps.map((a) => a.id))) // replay: []
+
+		client.refresh()
+		await flush()
+		client.refresh()
+		await flush()
+
+		// First load emits ['paint']; the unchanged re-list is dropped.
+		expect(seen).toEqual([[], ['paint']])
+	})
+
 	test('removeApp drops the app from the catalog and notifies subscribers', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()

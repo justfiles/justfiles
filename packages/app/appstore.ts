@@ -2,11 +2,13 @@
 // `builtins()` returns the small, bounded set this release ships, and
 // `latest(id)` returns one app's newest entry. Nothing enumerates the whole
 // store — a public catalog won't fit in one call, and its browse listing will be
-// paginated later. `reconcile` makes a kernel's volume match the store: it
-// installs any missing built-in (a new built-in from a major release lands on an
-// existing volume, and a built-in a user deleted comes back next launch) and
-// updates changed apps. The store is host-supplied (HTTP assets, packaged FS
-// bundles, future remote stores), so this layer is host-agnostic.
+// paginated later. Two entry points make a kernel's volume match the store:
+// `materialise` installs any built-in that isn't present (first-run seeding),
+// and `reconcile` updates the apps that ARE installed (built-in or not). They
+// are split so a built-in the user deleted is NOT force-reinstalled by the
+// update path — seeding is a deliberate, separate step. The store is
+// host-supplied (HTTP assets, packaged FS bundles, future remote stores), so
+// this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
 import { type AppBundle, type Kernel, safeBundlePath } from './kernel.ts'
@@ -47,52 +49,116 @@ export interface AppStore {
 	read(app: CatalogApp, path: string): Promise<Uint8Array>
 }
 
-// The marker file `sync` writes into each installed bundle recording the
-// whole-app hash of the release it came from. Boot compares it against the hash
-// the catalog currently yields to decide whether to reinstall. A dotfile so it
-// stays off every bundle-listing surface (see `hidden` in kernel.ts).
+// The marker file `install` writes into each installed bundle recording the
+// whole-app hash of the release it came from. Reconcile compares it against the
+// hash the catalog currently yields to decide whether to reinstall. A dotfile so
+// it stays off every bundle-listing surface (see `hidden` in kernel.ts).
 const INSTALL_HASH_PATH = '.apphash'
 
-// Reconcile a volume against a store on boot. Two passes, neither enumerating the
-// store: (1) every built-in this release ships is installed and current — so a
-// new built-in from a major release lands on an existing volume; (2) every other
-// installed app is updated to the store's `latest`, queried one id at a time (the
-// same check an app runs on itself at launch). Change is decided by the
-// whole-app hash (`appHash`) and reinstall is atomic (`kernel.install`).
-// Built-ins always reinstall when missing — users can't permanently uninstall them.
-export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Promise<void> {
+// First-run seeding: install every built-in that isn't already installed. The
+// ONLY path that installs a missing built-in — `reconcile` never does, so a
+// built-in the user deleted stays gone. Callers decide WHEN to seed (e.g. only
+// into an empty volume / genuinely new account).
+export async function materialise(kernel: Kernel, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
-	const builtins = await store.builtins()
-	const builtinIds = new Set(builtins.map((app) => app.id))
-	for (const app of builtins) await sync(kernel, fs, store, app, installed.has(app.id))
-	for (const id of installed) {
-		if (builtinIds.has(id)) continue
-		const app = await store.latest(id)
-		if (app) await sync(kernel, fs, store, app, true)
+	for (const app of await store.builtins()) {
+		if (!installed.has(app.id)) await install(kernel, store, app)
 	}
 }
 
-// Install `app` from the store unless the installed bundle already carries this
-// release's whole-app hash. Verifies each file's pinned hash before it reaches
-// the volume, then records the release's hash so the next boot can skip an
-// unchanged app (and reinstall a changed one) with a single comparison.
-async function sync(
-	kernel: Kernel,
-	fs: Volume,
-	store: AppStore,
-	app: CatalogApp,
-	installed: boolean
-): Promise<void> {
-	const hash = await appHash(app)
-	if (installed && (await installedHash(fs, app.id)) === hash) return
+// Update the apps that are INSTALLED against the store — never installs a missing
+// one. One pass over the installed set: a built-in resolves to this release's
+// catalog entry, any other app to the store's `latest(id)` (queried one id at a
+// time — the store is never enumerated). `decide` chooses repair/upgrade/skip;
+// reinstall is atomic (`kernel.install`) and idempotent, so launch/sweep/watcher
+// triggers can all run freely.
+export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Promise<void> {
+	const installed = (await kernel.list()).map((m) => m.id)
+	const builtins = await store.builtins()
+	const builtinById = new Map(builtins.map((app) => [app.id, app]))
+	for (const id of installed) {
+		const app = builtinById.get(id) ?? (await store.latest(id))
+		if (!app) continue
+		if ((await decide(fs, app)) !== 'skip') await install(kernel, store, app)
+	}
+}
+
+// What reconcile should do for one INSTALLED app. Split "repair" from "upgrade"
+// so a missing/corrupt file is self-healed even when the whole-app hash matches,
+// while a version change stays governed by the monotonic guard. Both are
+// monotonic: `skip` when the store is older than what's installed, so a stale
+// client build can never downgrade a newer app (repair included).
+type SyncAction = 'skip' | 'repair' | 'upgrade'
+
+async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
+	const gte = semverGte(app.version, await installedVersion(fs, app.id))
+	if (!(await filesPresentAndMatch(fs, app))) return gte ? 'repair' : 'skip'
+	if ((await installedHash(fs, app.id)) === (await appHash(app))) return 'skip'
+	return gte ? 'upgrade' : 'skip'
+}
+
+// Install `app` from the store: verify each file's pinned hash before it reaches
+// the volume, then record the release's whole-app hash so a later reconcile can
+// skip an unchanged app (and reinstall a changed one) with a single comparison.
+async function install(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
 	const files = new Map<string, Uint8Array>()
 	for (const file of app.files) {
 		const bytes = await store.read(app, file.path)
 		await verifyHash(app, file, bytes)
 		files.set(safeBundlePath(file.path), bytes)
 	}
-	files.set(INSTALL_HASH_PATH, new TextEncoder().encode(hash))
+	files.set(INSTALL_HASH_PATH, new TextEncoder().encode(await appHash(app)))
 	await kernel.install(bundleFromFiles(files))
+}
+
+// Every catalog file is present locally with its pinned content (self-heal
+// signal). Excludes manifest.json — the kernel re-serialises it on install
+// (normalised entry paths), so its installed bytes never match the catalog's
+// verbatim copy; the whole-app hash / version read cover manifest changes
+// instead. A missing file (partial install / un-hydrated stub) or a content
+// mismatch (corruption) returns false so `decide` repairs it.
+async function filesPresentAndMatch(fs: Volume, app: CatalogApp): Promise<boolean> {
+	for (const file of app.files) {
+		if (file.path === 'manifest.json') continue
+		let contentHash: string | undefined
+		try {
+			const stat = await fs.stat(`/applications/${app.id}/${safeBundlePath(file.path)}`)
+			contentHash = stat.contentHash
+		} catch {
+			return false // missing locally → (re)install
+		}
+		if (`sha256-${contentHash ?? ''}` !== file.hash) return false
+	}
+	return true
+}
+
+// The installed app's declared version, normalised to `0.0.0` when the manifest
+// is missing/corrupt — so a never-versioned install always sorts below a real
+// store version (the monotonic guard then allows the upgrade).
+async function installedVersion(fs: Volume, id: string): Promise<string> {
+	try {
+		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
+		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as { version?: string }
+		return manifest.version ?? '0.0.0'
+	} catch {
+		return '0.0.0'
+	}
+}
+
+// `a >= b` over dot-separated numeric versions (leading integer of each
+// segment; missing segments = 0). Deliberately simple — built-ins use plain
+// semver; pre-release/build suffixes are ignored, which is safe for the
+// no-downgrade guard (it only ever needs a coarse ordering).
+export function semverGte(a: string, b: string): boolean {
+	const parse = (v: string) => v.split('.').map((s) => Number.parseInt(s, 10) || 0)
+	const as = parse(a)
+	const bs = parse(b)
+	const len = Math.max(as.length, bs.length)
+	for (let i = 0; i < len; i++) {
+		const d = (as[i] ?? 0) - (bs[i] ?? 0)
+		if (d !== 0) return d > 0
+	}
+	return true
 }
 
 // The whole-app hash: one sha256 folding every file's pinned hash together
@@ -112,7 +178,7 @@ async function appHash(app: CatalogApp): Promise<string> {
 }
 
 // The whole-app hash recorded when this app was last installed (the marker
-// `sync` writes). Null when absent — an app installed before this marker
+// `install` writes). Null when absent — an app installed before this marker
 // existed, or a partial/corrupt bundle — which forces a (re)install.
 async function installedHash(fs: Volume, id: string): Promise<string | null> {
 	try {

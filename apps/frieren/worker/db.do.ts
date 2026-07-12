@@ -24,7 +24,7 @@ type BlobStore = {
 	delete?(key: string): Promise<void>
 }
 
-function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
+export function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	const { sql } = storage
 	sql.exec('PRAGMA foreign_keys = ON')
 	const normalizeArgs = (
@@ -41,6 +41,12 @@ function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 		async run(query: string, args: SqlValue[] = []): Promise<void> {
 			sql.exec(query, ...normalizeArgs(args))
 		},
+		// The DO runs one event at a time and does no network I/O between statements,
+		// so a mutation's `sql.exec` calls commit together as the event's implicit
+		// transaction. Cloudflare rejects a manual `BEGIN`/`COMMIT` and
+		// `transactionSync` needs a synchronous body (ours is async), so this stays the
+		// implicit form — reset.test.ts proves the reset body atomic against the real
+		// BEGIN/COMMIT adapter. Full crash-atomicity awaits a sync-storage refactor.
 		async transaction(fn: (tx: DbAdapter) => Promise<void>): Promise<void> {
 			await fn(adapter)
 		}
@@ -48,14 +54,10 @@ function createDOSqliteAdapter(storage: DurableObjectStorage): DbAdapter {
 	return adapter
 }
 
-export async function migrateCF(storage: DurableObjectStorage): Promise<void> {
-	await migrateFromEntries(createDOSqliteAdapter(storage), coreMigrations)
+export async function migrateCF(adapter: DbAdapter): Promise<void> {
+	await migrateFromEntries(adapter, coreMigrations)
 }
 
-export function cfFsStorage(
-	storage: DurableObjectStorage,
-	namespace: string,
-	blobStore?: BlobStore
-): Storage {
-	return sqliteStorage(createDOSqliteAdapter(storage), { namespace, blobStore })
+export function cfFsStorage(adapter: DbAdapter, namespace: string, blobStore?: BlobStore): Storage {
+	return sqliteStorage(adapter, { namespace, blobStore })
 }

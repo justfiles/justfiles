@@ -1,9 +1,9 @@
 /**
- * Test infrastructure for path-based sync (Phase 1).
+ * Test infrastructure for path-based sync.
  *
- * Everything here is HARNESS — it must be correct and bug-free so the RED tests
- * fail for the RIGHT reason (`not implemented` in the code under test), never
- * from harness bugs. The code under test is:
+ * Everything here is HARNESS — it must be correct and bug-free so a failing test
+ * fails for a reason in the code under test, never from harness bugs. The code
+ * under test is:
  *   - the `sync-wire` helpers (`syncMetaFromInode`, `changeDigest`, …),
  *   - the `sync-replica` adapters (`journaledChangeSource`, `localSyncReplica`),
  *   - the backend seams (`memStorage().caps.journal` / `.caps.pathApply`),
@@ -11,9 +11,9 @@
  *
  * `twoPeers()` builds two REAL local `SyncReplica`s over independent backends
  * (each mints its own inos). `syncBoth()`/`bootstrap()`/`pullFrom()` drive the
- * REAL replica methods directly (a flush-style pump with no timer), so the RED
- * tests exercise the engine, not the harness. Steady-state convergence relies on
- * the deterministic LWW that `applyPathChanges` performs on the target; adoption
+ * REAL replica methods directly (a flush-style pump with no timer), so the tests
+ * exercise the engine, not the harness. Steady-state convergence relies on the
+ * deterministic LWW that `applyPathChanges` performs on the target; adoption
  * (never-pushed keep-local) is engine state, so `adoptionPeers()` drives the real
  * `synced()` bootstrap.
  */
@@ -174,13 +174,13 @@ export interface Peer {
 	// staging seam: create a regular file with a pinned version/meta
 	write(path: string, data: Uint8Array, opts?: StageOpts): Promise<void>
 
-	// content-hash presence (RED 6)
+	// content-hash presence
 	hasLocalBlob(hash: string): Promise<boolean>
 
-	// count inodes minted but unreachable from the tree (RED 3, property test)
+	// count inodes minted but unreachable from the tree (property test)
 	orphanCount(): Promise<number>
 
-	// harness pull-from-cursor (RED 8); assigned by twoPeers
+	// harness pull-from-cursor; assigned by twoPeers
 	pullFrom?(cursor: string): Promise<void>
 }
 
@@ -328,7 +328,7 @@ export function wire(
 			}
 			// No pre-upload: like synced()'s pull, applyPathChanges owns content — an
 			// eager target fetches each winner's blob via the callback, a lazy target
-			// skips and hydrates on first read (RED 6).
+			// skips and hydrates on first read.
 			await target.replica.applyPathChanges(res.changes, (h) => source.replica.getBlobByHash(h), {
 				source: REMOTE_SOURCE
 			})
@@ -445,7 +445,7 @@ export function adoptionPeers(): AdoptionPeers {
 	}
 }
 
-/** Free-function orphan probe matching the RED test snippets. */
+/** Free-function orphan probe used by the path-sync tests. */
 export function orphanCount(peer: Peer): Promise<number> {
 	return peer.orphanCount()
 }
@@ -531,8 +531,8 @@ export async function treeSnapshot(peer: Peer): Promise<Record<string, string>> 
 //
 // A case throws on failure. A backend that has not implemented the path-sync seams
 // (`caps.journal` / `caps.pathApply` / `caps.content` + local-mutation journaling)
-// fails these for the RIGHT reason (`not implemented`) — the RED that turns GREEN
-// as each backend lands.
+// fails these for the right reason (`not implemented`), and passes them once it
+// lands the seams.
 
 function assertEq<T>(actual: T, expected: T, msg: string): void {
 	if (actual !== expected)

@@ -1,17 +1,13 @@
 // Runs the shared path-sync backend conformance suite (`pathSyncConformanceCases`,
 // in `packages/fs/sync-test-harness.ts`) against the SQLite/DO backend under vitest.
-// This is the same suite that runs against `memStorage` (GREEN) and `idbStorage`
-// (RED) in `packages/fs/sync-conformance.test.ts` — proving the SHIPPING backends
-// against identical specs, not just the memStorage test double.
+// This is the same suite that runs against `memStorage` and `idbStorage` in
+// `packages/fs/sync-conformance.test.ts` — proving the SHIPPING backends against
+// identical specs, not just the memStorage test double.
 //
 // The backend takes an abstract `DbAdapter`; here we back it with node's built-in
 // `node:sqlite` (`DatabaseSync`), so it runs under the normal `pnpm test` (vitest /
 // node) — no bun. `createSqliteAdapter`'s minimal db surface (`prepare().all/.run`
 // + `exec`) is structurally satisfied by `DatabaseSync`.
-//
-// RED until the SQLite backend implements the path-sync seams (`caps.journal` /
-// `caps.pathApply` / `caps.content` + local-mutation journaling): base writes work,
-// then each case fails for the RIGHT reason (`not implemented`).
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'

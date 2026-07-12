@@ -3,12 +3,11 @@
  *
  * These target the code under test directly:
  *   - wire helpers (`syncMetaFromInode` / `inodeMetaFromSync` / `changeDigest` /
- *     `coalesceByPath`) — RED (bodies throw `not implemented`);
- *   - the adapter seams (`journaledChangeSource` / `localSyncReplica`) — RED;
- *   - the backend seams (`memStorage().caps.journal` / `.caps.pathApply`) — RED;
+ *     `coalesceByPath`);
+ *   - the adapter seams (`journaledChangeSource` / `localSyncReplica`);
+ *   - the backend seams (`memStorage().caps.journal` / `.caps.pathApply`);
  *   - the LOCKED wire schema (`PathChange` / `SyncMeta` / `Version`) + numeric
- *     version helpers + `isCanonicalPath` — these are pure Phase-0 helpers and are
- *     GREEN guardrails that pin the contract.
+ *     version helpers + `isCanonicalPath`, which pin the contract.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -106,12 +105,15 @@ function fakeJournalStore(rows: JournalRow[]): Storage {
 		},
 		async head() {
 			return rows.at(-1)?.seq ?? 0
+		},
+		async adoptAllAsLocal() {
+			for (const r of rows) r.localSource = undefined
 		}
 	}
 	return { ...base, caps: { ...base.caps, journal } }
 }
 
-// ── Wire schema (locked; GREEN) — RED 15 ──────────────────────────────────────
+// ── Wire schema (locked) ──────────────────────────────────────────────────────
 
 describe('wire schema (PathChange)', () => {
 	const PathChange = PathChangeSchema
@@ -167,7 +169,7 @@ describe('wire schema (PathChange)', () => {
 	})
 })
 
-// ── Version helpers (compare numerically, never lexically; GREEN) ─────────────
+// ── Version helpers (compare numerically, never lexically) ────────────────────
 
 describe('version helpers', () => {
 	it('compares numerically, not lexicographically', () => {
@@ -197,7 +199,7 @@ describe('isLocalOnlyPath', () => {
 	})
 })
 
-// ── Meta encode/decode (RED) ──────────────────────────────────────────────────
+// ── Meta encode/decode ────────────────────────────────────────────────────────
 
 describe('syncMetaFromInode / inodeMetaFromSync', () => {
 	it('encodes bigint as decimal string, xattrs as base64, drops ctimeNs', () => {
@@ -234,10 +236,10 @@ describe('syncMetaFromInode / inodeMetaFromSync', () => {
 	})
 })
 
-// ── changeDigest (RED) — total, source-independent tie-break ──────────────────
+// ── changeDigest — total, source-independent tie-break ────────────────────────
 
 describe('changeDigest', () => {
-	it('is identical for equal durable state regardless of stamped source (RED 16)', async () => {
+	it('is identical for equal durable state regardless of stamped source', async () => {
 		const a = { ...put('/f', '7', 'SAME'), source: undefined }
 		const b = { ...put('/f', '7', 'SAME'), source: 'clientA' }
 		expect(await changeDigest(a)).toBe(await changeDigest(b))
@@ -260,7 +262,7 @@ describe('changeDigest', () => {
 	})
 })
 
-// ── coalesceByPath (RED) ──────────────────────────────────────────────────────
+// ── coalesceByPath ────────────────────────────────────────────────────────────
 
 describe('coalesceByPath', () => {
 	it('collapses multiple ops on one path to its final state', () => {
@@ -271,7 +273,7 @@ describe('coalesceByPath', () => {
 	})
 })
 
-// ── journaledChangeSource (RED) ───────────────────────────────────────────────
+// ── journaledChangeSource ─────────────────────────────────────────────────────
 
 describe('journaledChangeSource.pathDeltas', () => {
 	it('coalesces multiple journal rows for one path to its final state', async () => {
@@ -322,7 +324,7 @@ describe('journaledChangeSource.pathDeltas', () => {
 	})
 })
 
-// ── backend seams: memStorage journal + pathApply (RED) ───────────────────────
+// ── backend seams: memStorage journal + pathApply ─────────────────────────────
 
 describe('memStorage caps.journal', () => {
 	it('append then readFrom returns rows in seq order with localSource', async () => {
@@ -352,7 +354,7 @@ describe('memStorage caps.pathApply.applyJournaled', () => {
 	})
 })
 
-// ── localSyncReplica (RED) ────────────────────────────────────────────────────
+// ── localSyncReplica ──────────────────────────────────────────────────────────
 
 describe('localSyncReplica', () => {
 	it('never emits /.state or /.state/** from pathDeltas', async () => {
@@ -396,7 +398,7 @@ describe('localSyncReplica', () => {
 	})
 })
 
-// ── ContentHash / Version schema breadth (GREEN) — issue #144 item 6 ──────────
+// ── ContentHash / Version schema breadth — issue #144 item 6 ──────────────────
 
 describe('ContentHash / Version schema', () => {
 	it('ContentHash accepts lowercase 64-hex and rejects everything else', () => {
@@ -421,7 +423,7 @@ describe('ContentHash / Version schema', () => {
 	})
 })
 
-// ── symlink + xattr wire encode/decode (RED) — issue #144 item 6 ──────────────
+// ── symlink + xattr wire encode/decode — issue #144 item 6 ────────────────────
 
 describe('syncMetaFromInode (symlink + xattr exclusion)', () => {
 	it('encodes a symlink target and carries no contentHash', () => {
@@ -454,7 +456,7 @@ describe('syncMetaFromInode (symlink + xattr exclusion)', () => {
 	})
 })
 
-// ── changeDigest: sorted xattrs + symlink target (RED) — issue #144 item 6 ────
+// ── changeDigest: sorted xattrs + symlink target — issue #144 item 6 ──────────
 
 describe('changeDigest (xattrs + symlink)', () => {
 	it('is order-independent over xattrs (canonically sorted)', async () => {
@@ -470,7 +472,7 @@ describe('changeDigest (xattrs + symlink)', () => {
 	})
 })
 
-// ── Filtered delta cursor progress (RED) — issue #144 item 2 ──────────────────
+// ── Filtered delta cursor progress — issue #144 item 2 ────────────────────────
 
 describe('journaledChangeSource.pathDeltas cursor progress', () => {
 	it('advances the cursor and stays not-done when a full page is entirely filtered', async () => {
@@ -500,7 +502,7 @@ describe('journaledChangeSource.pathDeltas cursor progress', () => {
 	})
 })
 
-// ── PathMutationStore version/tombstone generator (RED) — issue #144 item 3 ───
+// ── PathMutationStore version/tombstone generator — issue #144 item 3 ─────────
 
 describe('memStorage caps.pathApply version/tombstone generator', () => {
 	async function lastRow(store: Storage, pred: (r: JournalRow) => boolean) {
@@ -546,7 +548,7 @@ describe('memStorage caps.pathApply version/tombstone generator', () => {
 	})
 })
 
-// ── Apply / journal ordering invariants (RED) — issue #144 item 5 ─────────────
+// ── Apply / journal ordering invariants — issue #144 item 5 ───────────────────
 
 describe('ordering invariants', () => {
 	it('applies an unsorted batch parent-before-child so no child is orphaned', async () => {
@@ -596,7 +598,7 @@ describe('ordering invariants', () => {
 	})
 })
 
-// ── Complete xattr snapshot on apply (RED) — issue #144 item 6 ────────────────
+// ── Complete xattr snapshot on apply — issue #144 item 6 ──────────────────────
 
 describe('localSyncReplica xattr snapshot', () => {
 	it('replaces the whole user-xattr set and never touches trusted.sync.*', async () => {

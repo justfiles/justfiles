@@ -705,6 +705,16 @@ export function idbStorage(
 			}
 		},
 
+		// Drop local sync state (journal + version generator) for a client reset —
+		// see StorageCapabilities.clearSyncState. Tree + content are left intact.
+		async clearSyncState() {
+			const db = await getDb()
+			const tx = db.transaction(['journal', 'pathver'], 'readwrite')
+			await tx.objectStore('journal').clear()
+			await tx.objectStore('pathver').clear()
+			await tx.done
+		},
+
 		journal: {
 			async append(changes, localSource) {
 				const db = await getDb()
@@ -736,6 +746,20 @@ export function idbStorage(
 					.objectStore('journal')
 					.openCursor(null, 'prev')
 				return cursor ? cursor.key : 0
+			},
+			// Re-tag every row as locally-authored (drop localSource) so a "take mine"
+			// republish rides the ordinary push — see JournalStore.adoptAllAsLocal.
+			async adoptAllAsLocal() {
+				const db = await getDb()
+				const tx = db.transaction(['journal'], 'readwrite')
+				let cursor = await tx.objectStore('journal').openCursor()
+				while (cursor) {
+					if (cursor.value.localSource !== undefined) {
+						await cursor.update({ ...cursor.value, localSource: undefined })
+					}
+					cursor = await cursor.continue()
+				}
+				await tx.done
 			}
 		},
 		content: {

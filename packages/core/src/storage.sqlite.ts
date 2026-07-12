@@ -1058,6 +1058,16 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			}
 		},
 
+		// Drop local sync state (journal + version generator) for a client reset —
+		// see StorageCapabilities.clearSyncState. Tree + content are left intact.
+		async clearSyncState(): Promise<void> {
+			await ensureBootstrapped()
+			await db.transaction(async (tx) => {
+				await tx.run('DELETE FROM fs_path_journal')
+				await tx.run('DELETE FROM fs_path_version')
+			})
+		},
+
 		// Hash-addressed content store (matching R2 / the mem backend): the inode
 		// holds a `contentHash` reference and the bytes live in `fs_contents`, keyed
 		// by that hash. Thin wrapper over the already-content-addressed table — the
@@ -1138,6 +1148,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					'SELECT COALESCE(MAX(seq), 0) AS head FROM fs_path_journal'
 				)
 				return toNumber(row?.head ?? 0)
+			},
+			// Re-tag every row as locally-authored (NULL local_source) so a "take mine"
+			// republish rides the ordinary push — see JournalStore.adoptAllAsLocal.
+			async adoptAllAsLocal() {
+				await ensureBootstrapped()
+				await db.run(
+					'UPDATE fs_path_journal SET local_source = NULL WHERE local_source IS NOT NULL'
+				)
 			}
 		},
 		pathApply: {

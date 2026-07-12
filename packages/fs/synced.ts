@@ -2,6 +2,7 @@ import { persistedState } from './persistedState'
 import type { Storage } from './storage'
 import {
 	type BlobStore,
+	GenerationStaleError,
 	isLocalOnlyPath,
 	journaledChangeSource,
 	localSyncReplica,
@@ -27,7 +28,9 @@ import { type Volume, volume } from './volume'
  *   pull's `excludeOrigin` lines up. This factory seam is exactly why `Storage`
  *   stayed lean and the wire lives in a separate adapter.
  */
-type RemotePeer = Storage | ((ctx: { clientId: string }) => SyncReplica)
+type RemotePeer =
+	| Storage
+	| ((ctx: { clientId: string; generation: () => number | undefined }) => SyncReplica)
 
 type Props = {
 	local: Storage
@@ -58,6 +61,23 @@ interface SyncLifecycle {
 	resume(): void
 	status(): SyncStatus
 	onStatusChange(fn: (status: SyncStatus) => void): () => void
+	// The conflict-resolution pair — "keep theirs" / "keep mine" over the whole
+	// volume. Their mechanics are asymmetric (see each), so they stay separate
+	// methods: a client-only re-pull vs. a server CAS + a resilient republish.
+	//
+	// "Take theirs": discard this device's local replica and re-pull the server's
+	// volume (the safe, client-only reset — no server coordination).
+	takeTheirs(): Promise<void>
+	// "Take mine": make this device's volume the new server baseline. Persists the
+	// intent, CASes the server's lineage, then re-tags the journal as mine and
+	// rewinds the push cursor so the ORDINARY sync loop republishes the whole
+	// volume (resilient + resumable, no bespoke snapshot push) — it may take a
+	// while, and a crash mid-republish resumes rather than discarding local. Other
+	// devices converge as it drains. Client<->server only.
+	takeMine(): Promise<void>
+	// The volume lineage this replica is synced against — the `fromGeneration` an
+	// app-level factory reset CAS-checks against.
+	generation(): number | undefined
 }
 
 export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
@@ -71,6 +91,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	})
 
 	const id = await clientId.get()
+
+	// The server volume lineage this replica last agreed with, mirrored in memory so
+	// the remote replica can stamp `x-fs-generation` on every mutating write (push
+	// fencing). Kept in sync with `SyncState.generation` by `recordGeneration`.
+	let knownGeneration = (await syncState.get()).generation
+
+	// The in-flight "take mine" intent, mirrored in memory. Persisted BEFORE the
+	// reset CAS so a crash mid-publish resumes/adopts (via the boot handshake)
+	// instead of discarding the snapshot it meant to publish; cleared on finalize.
+	let knownPending = (await syncState.get()).pendingReset
 
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
@@ -88,7 +118,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const clientServer = typeof props.remote === 'function'
 	const remoteReplica: SyncReplica =
 		typeof props.remote === 'function'
-			? props.remote({ clientId: id })
+			? props.remote({ clientId: id, generation: () => knownGeneration })
 			: localSyncReplica(props.remote, journaledChangeSource(props.remote), {
 					lazyContent,
 					localActorId: id
@@ -98,10 +128,11 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// shares this build so P2P skips it (see `sync()`).
 	let negotiated = false
 	async function negotiate(): Promise<void> {
-		// Forward-compat placeholder. There is no handshake seam on SyncReplica yet and
-		// endpoints/paths are stable across versions, so there is nothing to negotiate.
-		// When a protocol/schema bump needs a probe (GET /fs -> { rootIno,
-		// protocolVersion, schemaVersion }), add a handshake seam and branch here.
+		// Forward-compat placeholder for a one-time protocol/schema probe. The
+		// volume-lineage `generation` rides the per-cycle `handshake()` seam below
+		// (it must be re-checked every sync, not once), so it is handled there, not
+		// here. Endpoints/paths are otherwise stable, so there is nothing to
+		// negotiate yet; branch here when a protocol/schema bump needs it.
 	}
 
 	/**
@@ -114,8 +145,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * skips changes the sync layer itself applied from a pull. Returns the new
 	 * pushCursor to persist. (For P2P the same calls hit a local replica.)
 	 */
-	async function push(pushCursor: string): Promise<string> {
-		const { changes, to } = await localReplica.pathDeltas(pushCursor, {
+	async function push(pushCursor: string): Promise<{ to: string; done: boolean }> {
+		const { changes, to, done } = await localReplica.pathDeltas(pushCursor, {
 			excludeLocalSource: REMOTE_SOURCE,
 			limit: PAGE
 		})
@@ -126,7 +157,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		await remoteReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
-		return to
+		return { to, done }
 	}
 
 	/**
@@ -134,15 +165,15 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * `excludeOrigin: id` skips changes this client authored (the server stamped
 	 * our client-id as origin on push). Returns the new pullCursor to persist.
 	 */
-	async function pull(pullCursor: string): Promise<string> {
-		const { changes, to } = await remoteReplica.pathDeltas(pullCursor, {
+	async function pull(pullCursor: string): Promise<{ to: string; generation?: number }> {
+		const { changes, to, generation } = await remoteReplica.pathDeltas(pullCursor, {
 			excludeOrigin: id,
 			limit: PAGE
 		})
 		await localReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
-		return to
+		return { to, generation }
 	}
 
 	/**
@@ -151,14 +182,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * The adoption guard only reconciles (deletes local paths absent from the
 	 * remote snapshot) once this profile has pushed at least once.
 	 */
-	async function bootstrap(): Promise<void> {
+	async function bootstrap(): Promise<number | undefined> {
 		const everPushed = (await syncState.get()).pushCursor !== undefined
 		const remotePaths = new Set<string>()
 		let page: string | undefined
 		let syncCursor = ''
+		let generation: number | undefined
 		do {
 			const result = await remoteReplica.pathScan(page, { limit: PAGE })
 			syncCursor = result.syncCursor
+			generation = result.generation
 			// Adoption keep-local: on a FIRST bootstrap (never pushed), a path that
 			// already exists locally WINS — keep its content and re-stamp it above the
 			// remote version (via the version seam) so our next push overwrites the
@@ -182,6 +215,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		if (everPushed) await reconcileLocal(remotePaths)
 		// Resume deltas at the frozen high-water — idempotent overlap covers gaps.
 		await syncState.patch({ pullCursor: syncCursor })
+		return generation
 	}
 
 	/**
@@ -208,6 +242,126 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		for (const p of absent) await localVol.rm(p, { recursive: true, force: true })
 	}
 
+	/**
+	 * "Take theirs": discard this device's local replica and re-pull. Delete every
+	 * synced path (keeping the local-only `/.state` subtree), then clear the cursors
+	 * so the next cycle re-bootstraps fresh against the current server lineage. The
+	 * cleared `pushCursor` also resets `everPushed`, so the re-bootstrap adopts the
+	 * server verbatim (nothing local left to keep).
+	 */
+	async function clientReset(): Promise<void> {
+		for (const entry of await localVol.readdir('/')) {
+			const p = `/${entry.name}`
+			if (isLocalOnlyPath(p)) continue
+			await localVol.rm(p, { recursive: true, force: true })
+		}
+		// Drop the local journal + version tombstones the deletes just wrote: after a
+		// lineage reset the server's versions aren't comparable to ours, so a leftover
+		// tombstone would outrank a re-pulled put and strand that path. Owned backends
+		// only; a P2P/native peer has no such state.
+		await props.local.caps?.clearSyncState?.()
+		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
+	}
+
+	/**
+	 * The volume-lineage handshake check (client<->server only). Compares the
+	 * server's `generation` to the one this replica last agreed with:
+	 * - `serverGen` undefined → legacy server, no lineage signal → normal sync.
+	 * - equal → in-lineage → normal push/pull.
+	 * - stored undefined → adopt the server's generation (a fresh replica bootstraps
+	 *   normally; a replica that synced BEFORE `generation` existed is a MIGRATION,
+	 *   not a reset — it keeps its cursors and continues).
+	 * - stored ≠ server (both defined) → the lineage was reset → `clientReset` then
+	 *   adopt the new generation.
+	 */
+	async function reconcileGeneration(serverGen?: number): Promise<void> {
+		if (serverGen === undefined) return
+		const state = await syncState.get()
+		if (state.generation === serverGen) return
+		if (state.generation !== undefined) await clientReset()
+		await recordGeneration(serverGen)
+	}
+
+	/** Persist the agreed generation and mirror it for write-time stamping. */
+	async function recordGeneration(generation: number): Promise<void> {
+		knownGeneration = generation
+		await syncState.patch({ generation })
+	}
+
+	async function clearPendingReset(): Promise<void> {
+		knownPending = undefined
+		await syncState.patch({ pendingReset: undefined })
+	}
+
+	/**
+	 * "Take mine" local prep, after the server CAS bumped to `toGeneration` (via
+	 * `takeMine` or crash-resume). Idempotent: adopt the generation, re-tag the
+	 * whole journal as mine (the server is now empty), and rewind the push cursor so
+	 * the ORDINARY loop republishes the whole volume — pulled files included, no
+	 * bespoke snapshot push. `pullCursor` stays '0' to republish rather than
+	 * bootstrap; `toGeneration` on the marker records prep is done.
+	 */
+	async function applyTakeMinePrep(toGeneration: number): Promise<void> {
+		if (!knownPending) return
+		await recordGeneration(toGeneration)
+		await props.local.caps?.journal?.adoptAllAsLocal?.()
+		knownPending = { ...knownPending, toGeneration }
+		await syncState.patch({ pendingReset: knownPending, pushCursor: '0', pullCursor: '0' })
+	}
+
+	/**
+	 * Crash-resume classifier for an in-flight "take mine" (pure). `resume` = our
+	 * reset is the current lineage and its republish should continue; `adopt` = it
+	 * completed (or never landed) so keep local + adopt the server generation;
+	 * `reset-to-winner` = a newer/other reset is current, so take theirs.
+	 */
+	function resumeAction(
+		pending: { resetId: string; fromGeneration: number; toGeneration?: number },
+		server: { generation?: number; resetId?: string }
+	): 'resume' | 'adopt' | 'reset-to-winner' {
+		if (server.resetId === pending.resetId) return 'resume'
+		if (pending.toGeneration !== undefined && server.generation === pending.toGeneration)
+			return 'adopt' // ours, republish completed (flag cleared)
+		if (server.generation === pending.fromGeneration) return 'adopt' // never landed — keep local
+		return 'reset-to-winner'
+	}
+
+	/**
+	 * The volume-lineage handshake check (client<->server only), run each cycle
+	 * BEFORE touching data. Eventual-consistency: never blocks — with an in-flight
+	 * `pendingReset` it resumes/adopts/resets-to-winner (see `resumeAction`);
+	 * otherwise it runs the plain generation reconcile.
+	 */
+	async function reconcileLineage(server: {
+		generation?: number
+		resetId?: string
+	}): Promise<void> {
+		if (server.generation === undefined) return // legacy server — no lineage signal
+		if (knownPending) {
+			const action = resumeAction(knownPending, server)
+			if (action === 'resume') {
+				if (knownPending.toGeneration === undefined) await applyTakeMinePrep(server.generation)
+				return // our republish continues via the ordinary push
+			}
+			if (action === 'reset-to-winner') await clientReset()
+			await recordGeneration(server.generation)
+			await clearPendingReset()
+			return
+		}
+		await reconcileGeneration(server.generation)
+	}
+
+	/**
+	 * Mid-session guard: a pull/scan page echoes the server's live `generation`. If
+	 * it changed since our handshake (server reset mid-cycle), discard now; the next
+	 * handshake records the new lineage and re-bootstraps. No extra round-trip.
+	 */
+	async function checkMidSessionReset(observed?: number): Promise<void> {
+		if (observed === undefined) return
+		const stored = (await syncState.get()).generation
+		if (stored !== undefined && observed !== stored) await clientReset()
+	}
+
 	async function sync() {
 		// CLIENT<->SERVER: negotiate the wire/state versions once, before the first
 		// sync. P2P (a local peer sharing this build) skips it.
@@ -215,15 +369,43 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			await negotiate()
 			negotiated = true
 		}
-		const state = await syncState.get()
-		if (state.pullCursor === undefined) {
-			await bootstrap()
-			return
+		// Volume-lineage reconcile (client<->server only): read the server's
+		// generation + reset flag each cycle and adopt / resume-take-mine / client-
+		// reset before touching data. Eventual-consistency: it never defers.
+		if (clientServer && remoteReplica.handshake) {
+			await reconcileLineage(await remoteReplica.handshake())
 		}
-		const pushCursor = await push(state.pushCursor ?? '')
-		await syncState.patch({ pushCursor })
-		const pullCursor = await pull(state.pullCursor)
-		await syncState.patch({ pullCursor })
+		try {
+			const state = await syncState.get()
+			if (state.pullCursor === undefined) {
+				const generation = await bootstrap()
+				await checkMidSessionReset(generation)
+				return
+			}
+			const { to: pushCursor, done: pushDone } = await push(state.pushCursor ?? '')
+			await syncState.patch({ pushCursor })
+			// A "take mine" republish drains over the ordinary push; when it reaches the
+			// journal head (nothing left to push), signal the server to clear its advisory
+			// reset flag, then drop our marker. Advisory — a failure just retries next cycle.
+			if (knownPending?.toGeneration !== undefined && pushDone) {
+				try {
+					await remoteReplica.reset?.({ mode: 'complete', resetId: knownPending.resetId })
+					await clearPendingReset()
+				} catch {}
+			}
+			const { to, generation } = await pull(state.pullCursor)
+			await syncState.patch({ pullCursor: to })
+			await checkMidSessionReset(generation)
+		} catch (e) {
+			// A mutating write was fenced (409 generation_stale): the server lineage
+			// advanced under us. Adopt it and client-reset (reconcileGeneration does
+			// both); the next cycle re-bootstraps the new baseline.
+			if (e instanceof GenerationStaleError) {
+				await reconcileGeneration(e.generation)
+				return
+			}
+			throw e
+		}
 	}
 
 	const RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 60_000]
@@ -311,10 +493,51 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		}
 	}
 
+	// "Take theirs": drop the local replica + cursors, then re-bootstrap from the
+	// server's current lineage. The common, safe reset — purely client-side.
+	async function takeTheirs(): Promise<void> {
+		await clientReset()
+		await flush()
+	}
+
+	/**
+	 * "Take mine": publish THIS volume as the new server baseline. The intent is
+	 * persisted BEFORE the CAS, so a crash anywhere after it resumes on reboot (the
+	 * handshake's `resumeAction`) instead of discarding the volume it meant to
+	 * publish. After the CAS the republish is just the ordinary push at the new
+	 * lineage — resilient, resumable, and drained by the sync loop, which then
+	 * clears the server's advisory flag.
+	 */
+	async function takeMine(): Promise<void> {
+		const fromGeneration = knownGeneration
+		if (fromGeneration === undefined) throw new Error('take mine requires a server generation')
+		if (!remoteReplica.reset) throw new Error('take mine requires a client<->server peer')
+		const resetId = crypto.randomUUID()
+		knownPending = { resetId, fromGeneration }
+		await syncState.patch({ pendingReset: knownPending })
+		let toGeneration: number | undefined
+		try {
+			;({ generation: toGeneration } = await remoteReplica.reset({
+				mode: 'adopt-mine',
+				fromGeneration,
+				resetId
+			}))
+		} catch (e) {
+			await clearPendingReset() // the CAS failed/lost the race — nothing to resume
+			throw e
+		}
+		if (toGeneration === undefined) throw new Error('reset did not return a generation')
+		await applyTakeMinePrep(toGeneration)
+		await flush()
+	}
+
 	const lifecycle: SyncLifecycle = {
 		flush,
 		pause,
 		resume,
+		takeTheirs,
+		takeMine,
+		generation: () => knownGeneration,
 		destroy,
 		status: () => _status,
 		onStatusChange
