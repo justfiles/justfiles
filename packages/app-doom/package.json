@@ -8,13 +8,15 @@
 		"dev": "vite",
 		"build": "vite build",
 		"pack": "pnpm run build && rm -f dist.zip && cd dist && zip -qr ../dist.zip .",
-		"preview": "vite preview"
+		"preview": "vite preview",
+		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@justfiles/app": "workspace:*"
 	},
 	"devDependencies": {
-		"typescript": "^6.0.3",
+		"@justfiles/tsconfig": "workspace:*",
+		"typescript": "catalog:",
 		"vite": "^8.0.0-beta.13"
 	}
 }

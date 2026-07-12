@@ -14,7 +14,8 @@
 		"verify:ui": "tsx scripts/frieren-auth.ts ui",
 		"preview": "pnpm run build && vite preview",
 		"deploy": "pnpm run build && wrangler deploy",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types",
+		"typecheck": "tsc -b --noEmit"
 	},
 	"dependencies": {
 		"@clerk/backend": "^3.2.9",
@@ -48,6 +49,7 @@
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.31.2",
 		"@eslint/js": "^9.39.1",
+		"@justfiles/tsconfig": "workspace:*",
 		"@playwright/cli": "^0.1.13",
 		"@playwright/test": "^1.59.1",
 		"@rollup/plugin-commonjs": "^29.0.2",
@@ -65,7 +67,7 @@
 		"globals": "^16.5.0",
 		"rollup": "^4.60.4",
 		"tsx": "^4.21.0",
-		"typescript": "~5.9.3",
+		"typescript": "catalog:",
 		"typescript-eslint": "^8.48.0",
 		"vite": "^8.0.0-beta.13",
 		"vite-plugin-pwa": "^1.3.0",

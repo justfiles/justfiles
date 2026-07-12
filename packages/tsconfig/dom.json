@@ -1,0 +1,14 @@
+{
+	"$schema": "https://json-schema.org/draft-07/schema",
+	"display": "DOM",
+	"extends": "./base.json",
+	"compilerOptions": {
+		"lib": ["ES2023", "DOM"],
+		"jsx": "react-jsx",
+		"types": ["vite/client"],
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noUncheckedIndexedAccess": true,
+		"erasableSyntaxOnly": true
+	}
+}

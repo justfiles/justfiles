@@ -6,15 +6,16 @@
 		"@biomejs/biome": "^2.4.6",
 		"@vitest/coverage-v8": "^4.0.18",
 		"turbo": "^2.9.18",
-		"typescript": "6.0.3",
+		"typescript": "catalog:",
 		"vitest": "^4.0.18"
 	},
 	"scripts": {
 		"build": "turbo run build",
 		"dev": "turbo run dev --filter frieren",
 		"format": "biome format --write .",
+		"lint": "biome ci .",
 		"lint:fix": "biome check --write .",
-		"typecheck": "tsc -b --noEmit",
+		"typecheck": "turbo run typecheck",
 		"test": "vitest run",
 		"test:watch": "vitest"
 	}

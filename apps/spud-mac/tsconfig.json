@@ -1,21 +1,12 @@
 {
+	"extends": "@justfiles/tsconfig/base.json",
 	"compilerOptions": {
-		"lib": ["ESNext"],
+		"lib": ["ES2023"],
 		"types": ["node", "bun"],
-		"target": "ESNext",
-		"module": "Preserve",
-		"moduleDetection": "force",
-		"moduleResolution": "bundler",
 		// The daemon runs under Bun (`bun daemon/main.ts`); resolve the `bun` export
 		// condition so the `#`-import bun variants and Bun-specific helpers type-check
 		// against what actually runs.
 		"customConditions": ["bun"],
-		"allowImportingTsExtensions": true,
-		"verbatimModuleSyntax": true,
-		"noEmit": true,
-		"strict": true,
-		"skipLibCheck": true,
-		"noFallthroughCasesInSwitch": true,
 		// Not enabled: `@justfiles/agent` is consumed un-built (TS source), and its
 		// internals aren't clean under noUncheckedIndexedAccess — matching frieren.
 		"noImplicitOverride": true
