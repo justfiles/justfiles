@@ -16,7 +16,11 @@ function ctx(state: OsState): EffectContext<OsState, OsAction> {
 }
 
 function makeWindow(id: string): OsWindow {
-	return { id, appId: id, rect: { x: 0, y: 0, w: 100, h: 100 }, mode: 'floating' }
+	return { id, kind: 'app', appId: id, rect: { x: 0, y: 0, w: 100, h: 100 }, mode: 'floating' }
+}
+
+function makeAgentWindow(): OsWindow {
+	return { id: 'agent', kind: 'agent', rect: { x: 0, y: 0, w: 100, h: 100 }, mode: 'floating' }
 }
 
 function setup() {
@@ -54,9 +58,15 @@ describe('makeKernelHostEffect', () => {
 
 	test('window.close tears down the stage and notifies the server', () => {
 		const { appHost, send, effect } = setup()
+		const previous: OsState = {
+			...initialState,
+			windows: { notes: makeWindow('notes') },
+			openOrder: ['notes'],
+			focusStack: ['notes']
+		}
 		const action: OsAction = { type: 'window.close', id: 'notes' }
 
-		effect(action, initialState, initialState, ctx(initialState))
+		effect(action, previous, initialState, ctx(initialState))
 
 		expect(appHost.close).toHaveBeenCalledWith('notes')
 		expect(send).toHaveBeenCalledWith({ type: 'app_close', id: 'notes' })
@@ -64,11 +74,32 @@ describe('makeKernelHostEffect', () => {
 
 	test('remote window.close tears down the stage without echoing to the server', () => {
 		const { appHost, send, effect } = setup()
+		const previous: OsState = {
+			...initialState,
+			windows: { notes: makeWindow('notes') },
+			openOrder: ['notes'],
+			focusStack: ['notes']
+		}
 		const action: OsAction = { type: 'window.close', id: 'notes', remote: true }
 
-		effect(action, initialState, initialState, ctx(initialState))
+		effect(action, previous, initialState, ctx(initialState))
 
 		expect(appHost.close).toHaveBeenCalledWith('notes')
+		expect(send).not.toHaveBeenCalled()
+	})
+
+	test('closing the agent window touches neither the app host nor the server', () => {
+		const { appHost, send, effect } = setup()
+		const previous: OsState = {
+			...initialState,
+			windows: { agent: makeAgentWindow() },
+			openOrder: ['agent'],
+			focusStack: ['agent']
+		}
+
+		effect({ type: 'window.close', id: 'agent' }, previous, initialState, ctx(initialState))
+
+		expect(appHost.close).not.toHaveBeenCalled()
 		expect(send).not.toHaveBeenCalled()
 	})
 
@@ -77,13 +108,14 @@ describe('makeKernelHostEffect', () => {
 		const restored: OsState = {
 			...initialState,
 			booted: true,
-			windows: { notes: makeWindow('notes'), paint: makeWindow('paint') },
-			openOrder: ['notes', 'paint'],
-			focusStack: ['notes', 'paint']
+			windows: { notes: makeWindow('notes'), paint: makeWindow('paint'), agent: makeAgentWindow() },
+			openOrder: ['notes', 'paint', 'agent'],
+			focusStack: ['notes', 'paint', 'agent']
 		}
 
 		effect({ type: 'boot/loaded', state: restored }, initialState, restored, ctx(restored))
 
+		// The agent window has no stage: only the two app windows open one.
 		expect(appHost.open).toHaveBeenCalledTimes(2)
 		expect(appHost.open).toHaveBeenCalledWith('notes', opts)
 		expect(appHost.open).toHaveBeenCalledWith('paint', opts)
@@ -128,9 +160,13 @@ describe('makePersistEffect', () => {
 
 	test('writes a discrete durable change promptly, without waiting on a timer', async () => {
 		const { effect } = makePersistEffect({ volume })
-		const next = booted({ agentOpen: true })
+		const next = booted({
+			windows: { agent: makeAgentWindow() },
+			openOrder: ['agent'],
+			focusStack: ['agent']
+		})
 
-		effect({ type: 'agent.setOpen', open: true }, initialState, next, ctx(next))
+		effect({ type: 'agent.openWindow' }, initialState, next, ctx(next))
 		await tick()
 
 		expect(saveSnapshot).toHaveBeenCalledTimes(1)
@@ -173,11 +209,15 @@ describe('makePersistEffect', () => {
 
 	test('does not rewrite identical state', async () => {
 		const { effect } = makePersistEffect({ volume })
-		const next = booted({ agentOpen: true })
+		const next = booted({
+			windows: { agent: makeAgentWindow() },
+			openOrder: ['agent'],
+			focusStack: ['agent']
+		})
 
-		effect({ type: 'agent.setOpen', open: true }, initialState, next, ctx(next))
+		effect({ type: 'agent.openWindow' }, initialState, next, ctx(next))
 		await tick()
-		effect({ type: 'agent.setOpen', open: true }, next, next, ctx(next))
+		effect({ type: 'agent.openWindow' }, next, next, ctx(next))
 		await tick()
 
 		expect(saveSnapshot).toHaveBeenCalledTimes(1)

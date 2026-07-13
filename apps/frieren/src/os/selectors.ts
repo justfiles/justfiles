@@ -15,7 +15,7 @@ export function selectFocusedWindowId(state: OsState): string | null {
 }
 
 // The app id backing the focused window, for menubar labelling. `null` when the
-// desktop itself holds focus.
+// desktop itself holds focus or the focused window is not an app (e.g. agent).
 export function selectFocusedAppId(state: OsState): string | null {
 	const id = selectFocusedWindowId(state)
 	return id ? (state.windows[id]?.appId ?? null) : null
@@ -38,8 +38,4 @@ export function selectVisibleFullscreenId(state: OsState): string | null {
 		if (id && state.windows[id]?.mode === 'fullscreen') return id
 	}
 	return null
-}
-
-export function selectAgentOpen(state: OsState): boolean {
-	return state.agentOpen
 }

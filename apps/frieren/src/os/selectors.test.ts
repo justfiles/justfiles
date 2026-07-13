@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'vitest'
 import { osReducer } from './reducer'
 import {
-	selectAgentOpen,
+	selectFocusedAppId,
 	selectFocusedWindowId,
 	selectOpenWindows,
 	selectVisibleFullscreenId,
 	selectWindowZIndex
 } from './selectors'
-import { initialState, type OsAction, type OsState } from './state'
+import { AGENT_WINDOW_ID, initialState, type OsAction, type OsState } from './state'
 
 function run(actions: OsAction[], from: OsState = initialState): OsState {
 	return actions.reduce(osReducer, from)
@@ -42,9 +42,13 @@ describe('selectors', () => {
 		expect(selectWindowZIndex(state, 'missing')).toBe(0)
 	})
 
-	test('selectAgentOpen reflects the flag', () => {
-		expect(selectAgentOpen(initialState)).toBe(false)
-		expect(selectAgentOpen(run([{ type: 'agent.setOpen', open: true }]))).toBe(true)
+	test('selectFocusedAppId is null when the agent window holds focus', () => {
+		const state = run([{ type: 'app.open', appId: 'a' }, { type: 'agent.openWindow' }])
+		expect(selectFocusedWindowId(state)).toBe(AGENT_WINDOW_ID)
+		expect(selectFocusedAppId(state)).toBeNull()
+
+		const refocused = osReducer(state, { type: 'window.focus', id: 'a' })
+		expect(selectFocusedAppId(refocused)).toBe('a')
 	})
 
 	test('selectVisibleFullscreenId returns the top fullscreen window, else null', () => {

@@ -1,22 +1,26 @@
 # 1 · The omnibar
 
-> Status: **v1.1 shipped.** Replaces the dock (`src/components/Dock.tsx`, now
+> Status: **v1.3 shipped.** Replaces the dock (`src/components/Dock.tsx`, now
 > deleted) and the menubar's agent button with a single intent surface
-> (`src/shell/Omnibar.tsx`). Additive and low-risk: it reuses
-> `useInstalledApps()` / `useAppCommands()` and the agent session, and does not
-> touch the window model. v1.1 adds the **engagement model** (see below): at
-> rest the omnibar is just the pill; the sheet (grid / list / chat) exists only
-> while engaged, and the desktop dims + recedes behind it.
+> (`src/shell/Omnibar.tsx`). v1.1 added the **engagement model** (see below):
+> at rest the omnibar is just the pill; the sheet (grid / list / chat) exists
+> only while engaged, and the desktop dims + recedes behind it. v1.2 added the
+> first **presence** slice: the pill glows while the agent works, and pulses +
+> shows the pending question when the agent needs the user. v1.3 ships the
+> **conversation window**: a real `OsWindow` (drag, resize, z-order,
+> fullscreen) replacing the `AgentSidebar` overlay (now deleted), with the
+> window layer made kind-generic (`kind: 'app' | 'agent'`) along the way.
 >
 > **Deviations / deferred:** the menubar **Install** button stays (it's a
 > *special command* — Future, not v1, so there's nothing to fold it into yet).
-> The `AgentSidebar` is kept as the **expand-to-window** escape hatch, opened
-> from the omnibar's chat header (`agent.setOpen`); the standalone Messages
-> toggle is gone. The earlier "recede-to-corner" idea is **superseded** by the
-> engagement model (the sheet collapses to the pill; nothing shrinks to a
-> corner). Not yet built: the first-run coach mark, recents/frequency ordering
-> of the idle grid, the `⌘Tab` switcher (phase 2), **graduation** and
-> **presence / answers-as-actions** (designed below, deliberately unbuilt).
+> The earlier "recede-to-corner" idea is **superseded** by the engagement
+> model (the sheet collapses to the pill; nothing shrinks to a corner), and
+> the earlier "graduation" idea is **superseded** by the conversation-window
+> model (one session, two views; no auto-expand). Not yet built: the first-run
+> coach mark, recents/frequency ordering of the idle grid, the `⌘Tab`
+> switcher, the conversation window's **tail cap + "Open in window"
+> invitation** and the **new-session command**, and the rest of **presence /
+> answers-as-actions**.
 
 ## The idea
 
@@ -160,9 +164,10 @@ gets its own permanence budget:
    to the agent when windows cover everything?" dissolves: just start typing.
    One exception keeps the sheet up without focus: a **streaming reply**, so an
    in-flight answer is never lost to a stray click.
-3. **Durable (minutes) — graduation.** A working *session* with the agent
-   deserves negotiated screen space like any other work — a real window, not a
-   floating occluder. Designed below; **not built yet.**
+3. **Durable (minutes) — the conversation window.** A working *session* with
+   the agent deserves negotiated screen space like any other work — a real
+   window, not a floating occluder. Opened by the user, never automatically.
+   Shipped in v1.3 (see below).
 
 Implementation notes (v1.1): the omnibar root carries `data-expanded`;
 `.frn-desktop:has(.frn-omnibar[data-expanded='true'])` dims/scales the
@@ -173,32 +178,64 @@ selection in the transcript is knowingly sacrificed; expand-to-window is the
 copy escape hatch. Conversation state (`chatOpen`) survives collapse: click
 the pill again and the transcript is still there.
 
-## Graduation — conversations become windows *(designed, not built)*
+## The conversation window — one session, two views *(window shipped in v1.3)*
 
-The sheet is for **commands** (launch, one-shot ask): seconds long, transient
-is correct. The moment an exchange becomes a **conversation**, it should stop
-being an overlay and get real estate that participates in normal window
-management — place it, tile it, minimize it. The bottom overlay never hosts a
-200-message transcript; graduation is the *automatic* enforcement of that
-rule, replacing today's manual expand button.
+*(This replaces the earlier "graduation" design. Nothing graduates — there is
+no state transition at all. The session has one durable home the user can open
+on demand, and one quick-access view. Auto-graduation triggers were considered
+and **dropped**: with the engagement model, a long transcript in the sheet is
+no longer a standing occlusion problem, just a cramped reading choice — and
+auto-spawning a window mid-conversation changes the world while the user is
+mid-thought, exactly the surprise the rest of the design avoids.)*
 
-- **Triggers** (any one graduates the conversation):
-  1. the user sends a **second turn** into the same conversation;
-  2. the agent starts a **long-running task** (multi-step tool use rather than
-     a direct answer);
-  3. the user hits the explicit **expand** affordance (kept as manual door).
-- **Target surface:** today's `AgentSidebar`; eventually a normal `OsWindow`
-  so the conversation is just a window like everything else. Graduation opens
-  it **without stealing focus** — the user is mid-thought in the omnibar.
-- **After graduation** the sheet stops showing the full transcript. It shows a
-  one-exchange **peek** (latest user turn + reply) with a "continue in
-  window →" affordance. Division of labour: the omnibar stays the fastest way
-  to *send* to the conversation; the window is where you *read* it.
-- **Open questions:** one conversation or many (leaning: one, it's a partner,
-  not a chat app)? Does closing the window end the session or just hide it
-  (leaning: hide — the session is kernel state, not window state)?
+**Invariants:**
 
-## Presence & answers-as-actions *(north star, not built)*
+- **One current session per workspace, at all times.** The session is kernel
+  state, not window state. The UI never manages sessions; it *shows* the
+  current one. (A multi-workspace setup with per-workspace sessions may come
+  later; not now.)
+- **Session refresh is a dedicated command**, not a side effect of any window
+  action — a *special command* in the omnibar ("new session") plus a button in
+  the conversation window header. Being kernel-level, the same command is
+  naturally available to both GUI and TUI.
+
+**The two views:**
+
+- **The sheet (quick access):** renders only the **recent tail** of the
+  transcript — the last few exchanges, lightly scrollable. The "no 200-message
+  overlay" rule is enforced in the *rendering cap*, not by window-spawning
+  behavior. When the transcript grows past the cap, an **"Open in window ↗"**
+  affordance appears *at the top of the tail* — precisely where the eye lands
+  when scrolling up for history, which is exactly the moment a window is
+  wanted. The invitation escalates; the behavior never does.
+- **The window (durable home)** *(✅ shipped, v1.3)*: opened **only by explicit
+  user action** — the expand affordance, never automatically. A normal
+  `OsWindow` (`kind: 'agent'`, singleton id) that participates fully in window
+  management: drag, resize, z-order, fullscreen, persisted rect. It defaults
+  to a right-docked position (the old sidebar's one virtue, kept as the
+  starting rect, not a constraint). Closing it just closes the view — the
+  session persists (there is always a current session), and the pill is the
+  way back in. The `AgentSidebar` overlay is deleted.
+
+**Coexistence rule** *(✅ shipped, v1.3)*: while the window is open, the sheet
+stays in **launcher mode** — no duplicated live transcript. The pill still
+*sends* to the session (it is the universal input, never dead); replies land
+in the window, and a needs-you focus lands on the window instead of the sheet.
+Division of labour: the omnibar is the fastest way to **send**, the window is
+where you **read**.
+
+**The window layer went kind-generic to make this fit** *(v1.3)*: `OsWindow`
+gained `kind: 'app' | 'agent'` (the shell picks the body renderer by kind) and
+`appId` became a property rather than the window's identity — one window per
+app is now a *policy* in `app.open` (lookup by `appId`), not an identity
+constraint. App windows still use the app id as their window id because it
+doubles as the app-host stage key and the server sync key; multi-window per
+app later is an additive change (a new action + an app-model answer to "what
+does a second window show"), not a window-layer rework. Non-app windows are
+invisible to the app host and the server (no stage, no `app_open`/`app_close`
+echo) — the agent window is pure shell state.
+
+## Presence & answers-as-actions *(first slice shipped in v1.2)*
 
 The co-op framing — one core, GUI for the human, TUI for the agent — points
 past "where do we put the chat panel." In a co-op game you don't read a text
@@ -206,22 +243,43 @@ log of your partner; you **watch them play**. The agent acts through the same
 reducers whose state the windows already render, so the transcript is not the
 interface — it's the audit log.
 
-- **Presence chip.** The pill carries a small agent-state indicator:
-  `idle / thinking / working / needs-you`. `needs-you` pulses the pill; typing
-  anywhere answers it. This replaces a resident transcript as the ambient
-  signal that your partner is alive and busy.
-- **Activity glow.** Windows the agent is currently acting on get a subtle
-  highlight — the agent's "cursor" in the shared world. The kernel already
-  knows which app an agent-originated dispatch targets; surfacing
-  `appId → window chrome` is the whole mechanism. You always know *where* the
-  agent is working without any panel being open.
+Presence on the pill has **two channels**, layered rather than either/or:
+
+- **Glow is the state channel** (✅ shipped, v1.2). A Siri-style rotating
+  conic-gradient ring on the pill's border: glanceable, non-verbal, and it
+  never competes with the input. States: no glow = `idle`; steady spin =
+  `working` (a reply is streaming); spin + breathing pulse = `needs-you` (the
+  last message is an unanswered multiple-choice question). `needs-you` earns
+  the stronger treatment because it's a *request*, not a status.
+- **Text is the detail channel** (shipped only for `needs-you`, v1.2). Status
+  text lives in the placeholder slot, which is only visible when the input is
+  empty and unfocused — so it never *functionally* blocks the launcher; the
+  first keystroke replaces it, and focusing reverts to the teaching
+  placeholder. v1.2 ships the highest-value slice: the pending **question**
+  shows in the pill ("Frieren: which folder?"), and focusing lands on the
+  transcript with the options ready — typing anywhere answers it. Routine
+  activity narration ("editing Trip Plan…") is future.
+
+**Rules for the text channel** (when narration comes): update on **action
+boundaries**, never character-by-character — churning text at the bottom of
+the screen is a permanent attention magnet, worse than the resident grid we
+killed. And the narration can be **derived, not reported**: agent dispatches
+carry the action registry's `description` fields, so the TUI's own vocabulary
+narrates the agent's play with no new status system.
+
+The rest of the north star, still unbuilt:
+
+- **Activity glow on windows.** Windows the agent is currently acting on get a
+  subtle highlight — the agent's "cursor" in the shared world. The kernel
+  already knows which app an agent-originated dispatch targets; surfacing
+  `appId → window chrome` is the whole mechanism.
 - **Answers-as-app-actions.** "What's on my calendar?" should not be three
   paragraphs in a bubble — it's the calendar window opening/focusing with
   today highlighted, plus a one-line caption above the pill. The GUI *is* the
   reply. Chat bubbles become the fallback for answers with no app-shaped home.
 - **Consequence:** the transcript demotes over time to a summonable audit log,
-  and the graduation window becomes less necessary, not more. This is the real
-  payoff of `reducer + GUI + TUI`: both users share one world, and each
+  and the conversation window becomes less necessary, not more. This is the
+  real payoff of `reducer + GUI + TUI`: both users share one world, and each
   watches the other through it.
 
 ## What the dock leaves behind
@@ -313,15 +371,22 @@ with the same ranking / pinned-default rules.
    types (apps, ask). Deletes the dock.
 2. **v1.1 — engagement model** ✅ **shipped** — pill at rest, sheet only while
    engaged, desktop dim + recede behind the sheet, streaming keeps the sheet up.
-3. **Graduation** — multi-turn / long-running conversations auto-graduate to a
-   window; the sheet keeps a one-exchange peek (see Graduation above).
-4. **Switcher** — running-window switcher over `focusStack` to fully replace the
+3. **v1.2 — presence glow** ✅ **shipped** — pill glows while a reply streams;
+   pulses + shows the pending question when the agent waits on the user;
+   focusing then lands on the question.
+4. **v1.3 — conversation window** ✅ **shipped** — a real `OsWindow` replaces
+   the `AgentSidebar`; window layer goes kind-generic; coexistence rule
+   (window open ⇒ sheet stays in launcher mode). Still pending from this
+   design: the sheet's capped tail + escalating "Open in window" invitation,
+   and the dedicated "new session" command.
+5. **Switcher** — running-window switcher over `focusStack` to fully replace the
    dock's indicators.
-5. **Growth** — new item types in the list: commands, special commands, agent
+6. **Growth** — new item types in the list: commands, special commands, agent
    skills (see Future). Additive; the pinned-default layout already accommodates
    them.
-6. **Presence & answers-as-actions** — the north star; incremental (chip first,
-   glow second, app-shaped answers last).
+7. **Presence & answers-as-actions, the rest** — activity narration in the pill
+   (action-boundary updates, derived from action descriptions), activity glow
+   on windows, app-shaped answers.
 
 ## Open questions
 
@@ -333,4 +398,5 @@ with the same ranking / pinned-default rules.
   the desktop surface itself? (Leaning: omnibar grid, to keep the desktop clean
   and the omnibar the single home.)
 - Does the persistent bar host **status** too (sync/connection, currently in the
-  menubar), or stay purely an input?
+  menubar), or stay purely an input? (*Partially decided by v1.2: agent
+  presence lives on the pill. System status — sync/connection — still open.*)

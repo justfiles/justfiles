@@ -2,7 +2,8 @@ import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
 import { useState, useSyncExternalStore } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
-import { useAgentConnection } from '../agent/hooks'
+import { useAgentConnection, useAgentSession } from '../agent/hooks'
+import { MessagesPanel } from '../agent/MessagesPanel'
 import type { ConnectionState } from '../agent/types'
 import { AppViewport } from '../apps/AppViewport'
 import { resolveAppTitle } from '../apps/catalog'
@@ -10,17 +11,11 @@ import { useAppCommands, useInstalledApps } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import { activeStatus, onActiveStatusChange, type SyncStatus } from '../fs'
 import { AppWindow } from '../os/AppWindow'
-import { useOsDispatch, useOsStore } from '../os/hooks'
-import {
-	selectAgentOpen,
-	selectFocusedAppId,
-	selectOpenWindows,
-	selectVisibleFullscreenId
-} from '../os/selectors'
+import { useOsStore } from '../os/hooks'
+import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow } from '../os/state'
 import { PersonalizePanel } from '../personalize/PersonalizePanel'
 import { ResetPanel } from '../reset/ResetPanel'
-import { AgentSidebar } from './AgentSidebar'
 import { Omnibar } from './Omnibar'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -84,7 +79,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const installedApps = useInstalledApps()
 	const { launchApp, installApp, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
-	const dispatch = useOsDispatch()
+	const { agentName } = useAgentSession()
 	const menu = useContextMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
 
@@ -92,7 +87,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		(state) => (state.booted ? selectOpenWindows(state) : []),
 		sameWindowIds
 	)
-	const agentOpen = useOsStore(selectAgentOpen)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
 	const [personalizeOpen, setPersonalizeOpen] = useState(false)
 	const [resetOpen, setResetOpen] = useState(false)
@@ -172,27 +166,27 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
 			<div className="frn-desktop" onContextMenu={(event) => menu.open(event, desktopMenuItems)}>
 				{/* Windows live in their own layer so the desktop can dim + recede behind
-				    the omnibar's expanded sheet without transforming the omnibar itself. */}
+				    the omnibar's expanded sheet without transforming the omnibar itself.
+				    The body is picked by window kind: app windows present their stage,
+				    the agent window views the conversation session. */}
 				<div className="frn-desktop-windows">
 					{windows.map((window) => (
 						<AppWindow
 							key={window.id}
 							id={window.id}
-							title={resolveAppTitle(installedApps, window.appId, window.title)}
+							title={
+								window.appId
+									? resolveAppTitle(installedApps, window.appId, window.title)
+									: agentName
+							}
 						>
-							<AppViewport id={window.id} />
+							{window.appId ? <AppViewport id={window.id} /> : <MessagesPanel />}
 						</AppWindow>
 					))}
 				</div>
 				{fullscreenId ? null : (
 					<Omnibar onAppMenu={(event, app) => menu.open(event, appMenuItems(app))} />
 				)}
-				{/* Overlay on the right of the desktop, below the menubar. It covers
-					    whatever is underneath rather than squishing the desktop. */}
-				<AgentSidebar
-					open={agentOpen}
-					onClose={() => dispatch({ type: 'agent.setOpen', open: false })}
-				/>
 			</div>
 			<ContextMenu state={menu.state} onClose={menu.close} />
 			{personalizeOpen ? <PersonalizePanel onClose={() => setPersonalizeOpen(false)} /> : null}

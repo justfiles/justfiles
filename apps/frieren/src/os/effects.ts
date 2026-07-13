@@ -25,17 +25,18 @@ export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsActi
 		localKernel: env.localKernel,
 		volume: env.volume
 	}
-	return (action, _previous, next) => {
+	return (action, previous, next) => {
 		if (action.type === 'boot/loaded') {
-			// Restore the GUI for every persisted window by opening its host stage
-			// directly. This is client-driven restoration, so it must not echo
+			// Restore the GUI for every persisted app window by opening its host
+			// stage directly. This is client-driven restoration, so it must not echo
 			// `app_open` back to the server. The GUI loads from the local volume,
 			// so restoration need not wait on the catalog. Ephemeral (`.`-prefixed)
-			// windows are never persisted, so none appear here.
+			// windows are never persisted, so none appear here. Non-app windows
+			// (agent) have no stage to restore.
 			for (const id of next.openOrder) {
 				const window = next.windows[id]
-				if (!window || id.startsWith('.')) continue
-				env.appHost.open(window.id, openOptions)
+				if (!window?.appId || id.startsWith('.')) continue
+				env.appHost.open(window.appId, openOptions)
 			}
 			return
 		}
@@ -45,6 +46,9 @@ export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsActi
 			if (!action.remote && !action.appId.startsWith('.'))
 				env.send({ type: 'app_open', id: action.appId })
 		} else if (action.type === 'window.close') {
+			// Only app windows have a host stage and a server-side open record;
+			// closing the agent window is purely a shell-state change.
+			if (!previous.windows[action.id]?.appId) return
 			env.appHost.close(action.id)
 			if (!action.remote && !action.id.startsWith('.'))
 				env.send({ type: 'app_close', id: action.id })

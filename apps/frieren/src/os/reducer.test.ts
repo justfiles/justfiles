@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { osReducer } from './reducer'
-import { initialState, type OsAction, type OsState } from './state'
+import { AGENT_WINDOW_ID, initialState, type OsAction, type OsState } from './state'
 
 function run(actions: OsAction[], from: OsState = initialState): OsState {
 	return actions.reduce(osReducer, from)
@@ -125,21 +125,45 @@ describe('osReducer', () => {
 		const snapshot: OsState = {
 			version: 1,
 			booted: false,
-			windows: { a: { id: 'a', appId: 'a', rect: { x: 1, y: 2, w: 3, h: 4 }, mode: 'floating' } },
+			windows: {
+				a: { id: 'a', kind: 'app', appId: 'a', rect: { x: 1, y: 2, w: 3, h: 4 }, mode: 'floating' }
+			},
 			openOrder: ['a'],
-			focusStack: ['a'],
-			agentOpen: true
+			focusStack: ['a']
 		}
 		const state = osReducer(initialState, { type: 'boot/loaded', state: snapshot })
 		expect(state.booted).toBe(true)
 		expect(state.openOrder).toEqual(['a'])
-		expect(state.agentOpen).toBe(true)
 	})
 
-	test('agent.setOpen flips the flag; a repeat is a no-op reference', () => {
-		const open = osReducer(initialState, { type: 'agent.setOpen', open: true })
-		expect(open.agentOpen).toBe(true)
-		expect(osReducer(open, { type: 'agent.setOpen', open: true })).toBe(open)
+	test('agent.openWindow creates the singleton conversation window', () => {
+		const state = osReducer(initialState, { type: 'agent.openWindow' })
+		const window = state.windows[AGENT_WINDOW_ID]
+		expect(window).toMatchObject({ id: AGENT_WINDOW_ID, kind: 'agent', mode: 'floating' })
+		expect(window?.appId).toBeUndefined()
+		expect(state.openOrder).toEqual([AGENT_WINDOW_ID])
+		expect(state.focusStack).toEqual([AGENT_WINDOW_ID])
+	})
+
+	test('agent.openWindow on an open window refocuses, never duplicates', () => {
+		const state = run([
+			{ type: 'agent.openWindow' },
+			{ type: 'app.open', appId: 'a' },
+			{ type: 'agent.openWindow' }
+		])
+		expect(state.openOrder).toEqual([AGENT_WINDOW_ID, 'a'])
+		expect(state.focusStack).toEqual(['a', AGENT_WINDOW_ID])
+	})
+
+	test('agent.openWindow on the focused window is a no-op reference', () => {
+		const opened = osReducer(initialState, { type: 'agent.openWindow' })
+		expect(osReducer(opened, { type: 'agent.openWindow' })).toBe(opened)
+	})
+
+	test('window.close closes the agent window like any other', () => {
+		const state = run([{ type: 'agent.openWindow' }, { type: 'window.close', id: AGENT_WINDOW_ID }])
+		expect(state.windows[AGENT_WINDOW_ID]).toBeUndefined()
+		expect(state.openOrder).toEqual([])
 	})
 
 	test('invariant: openOrder and focusStack ids always resolve to a window, no dups', () => {

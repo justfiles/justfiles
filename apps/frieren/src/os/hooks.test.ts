@@ -42,10 +42,10 @@ describe('OS hooks', () => {
 
 	test('useOsStore reads through context without prop-drilling the store', () => {
 		function Consumer() {
-			const agentOpen = useOsStore((state) => state.agentOpen)
+			const booted = useOsStore((state) => state.booted)
 			const dispatch = useOsDispatch()
 			const client = useOsClient()
-			return createElement('span', null, `${agentOpen}:${typeof dispatch}:${typeof client.send}`)
+			return createElement('span', null, `${booted}:${typeof dispatch}:${typeof client.send}`)
 		}
 
 		expect(render(createElement(OSProvider, null, createElement(Consumer)))).toContain(

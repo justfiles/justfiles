@@ -475,6 +475,74 @@
 .frn-omnibar:focus-within {
 	border-color: color-mix(in srgb, var(--focus) 45%, var(--rule));
 }
+/* Presence glow (Siri-style): a rotating conic ring hugging the pill's border,
+   masked to the edge so content stays untouched, plus a soft outer aura via
+   box-shadow (which overflow:hidden can't clip). `working` spins steadily;
+   `needs-you` adds a breathing pulse — it's a request, not a status. */
+@property --frn-glow {
+	syntax: "<angle>";
+	inherits: false;
+	initial-value: 0deg;
+}
+.frn-omnibar::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	padding: 2px;
+	pointer-events: none;
+	background: conic-gradient(
+		from var(--frn-glow),
+		#0a84ff,
+		#bf5af2,
+		#ff375f,
+		#ff9f0a,
+		#bf5af2,
+		#0a84ff
+	);
+	mask:
+		linear-gradient(#000 0 0) content-box,
+		linear-gradient(#000 0 0);
+	mask-composite: exclude;
+	-webkit-mask:
+		linear-gradient(#000 0 0) content-box,
+		linear-gradient(#000 0 0);
+	-webkit-mask-composite: xor;
+	opacity: 0;
+	transition: opacity 0.4s ease;
+}
+.frn-omnibar[data-agent="working"]::after,
+.frn-omnibar[data-agent="needs-you"]::after {
+	opacity: 1;
+	animation: frn-glow-spin 3s linear infinite;
+}
+.frn-omnibar[data-agent="needs-you"]::after {
+	animation:
+		frn-glow-spin 3s linear infinite,
+		frn-glow-pulse 1.6s ease-in-out infinite;
+}
+.frn-omnibar[data-agent="working"],
+.frn-omnibar[data-agent="needs-you"] {
+	box-shadow:
+		0 16px 48px rgba(0, 0, 0, 0.32),
+		0 0 28px rgba(146, 92, 247, 0.4);
+}
+@keyframes frn-glow-spin {
+	to {
+		--frn-glow: 360deg;
+	}
+}
+@keyframes frn-glow-pulse {
+	50% {
+		opacity: 0.45;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.frn-omnibar[data-agent="working"]::after,
+	.frn-omnibar[data-agent="needs-you"]::after {
+		animation: none;
+	}
+}
 /* Content region: the divider to the input only exists when there's content
    (hidden when empty), so the bare bar stays a clean pill. */
 .frn-omnibar-surface {
