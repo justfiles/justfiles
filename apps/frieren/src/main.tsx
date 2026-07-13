@@ -3,7 +3,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { registerServiceWorker } from './pwa.ts'
+import { PWAToast } from './PWAToast.tsx'
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 if (!publishableKey) {
@@ -20,7 +20,6 @@ createRoot(rootElement).render(
 		<ClerkProvider publishableKey={publishableKey}>
 			<App />
 		</ClerkProvider>
+		<PWAToast />
 	</StrictMode>
 )
-
-registerServiceWorker()

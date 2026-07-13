@@ -761,3 +761,21 @@
 	outline: none;
 	box-shadow: none;
 }
+
+/* ── PWA update toast ───────────────────────────────────────────────────── */
+.frn-toast {
+	position: fixed;
+	left: 50%;
+	bottom: 24px;
+	transform: translateX(-50%);
+	z-index: 9500;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 14px;
+	font-size: 13px;
+	background: var(--surface);
+	border: 1px solid var(--rule);
+	border-radius: 10px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}

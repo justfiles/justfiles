@@ -268,9 +268,11 @@ export default defineConfig({
 		// THIS config (e.g. `cd apps/frieren && vitest`); the canonical root
 		// `vitest.config.ts` has no plugins and is unaffected. Run tests from root.
 		VitePWA({
-			// We register the SW ourselves in pwa.ts (PROD only), so no injected
-			// registration and no dev SW; skipWaiting/clientsClaim drive updates.
-			registerType: 'autoUpdate',
+			// We register the SW ourselves via registerSW() in pwa.ts, so no injected
+			// registration and no dev SW. `prompt` lets a new SW install and wait; usePWA
+			// surfaces a toast and the user opts into the reload — safer than reloading
+			// automatically over unsaved editor state.
+			registerType: 'prompt',
 			injectRegister: false,
 			manifest: {
 				name: 'Frieren',
@@ -286,8 +288,6 @@ export default defineConfig({
 				icons: [{ src: '/pwa-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]
 			},
 			workbox: {
-				skipWaiting: true,
-				clientsClaim: true,
 				cleanupOutdatedCaches: true,
 				navigateFallback: '/index.html',
 				navigateFallbackDenylist: [/^\/api\//, /^\/fs\//, /^\/ws$/],
