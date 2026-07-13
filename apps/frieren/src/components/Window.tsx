@@ -68,18 +68,18 @@ export function Window({
 		setLive(clampToViewport(rect))
 	}, [rect])
 
+	// Escape exits fullscreen only — it never closes a window.
 	useEffect(() => {
-		if (!focused) return
+		if (!focused || !fullscreen || !onFullscreenToggle) return
 		const handler = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') {
 				event.preventDefault()
-				if (fullscreen && onFullscreenToggle) onFullscreenToggle()
-				else onClose()
+				onFullscreenToggle()
 			}
 		}
 		window.addEventListener('keydown', handler, { capture: true })
 		return () => window.removeEventListener('keydown', handler, { capture: true })
-	}, [focused, onClose, fullscreen, onFullscreenToggle])
+	}, [focused, fullscreen, onFullscreenToggle])
 
 	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
 		if (fullscreen) return
