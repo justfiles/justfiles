@@ -3,7 +3,7 @@ name: Deploy Frieren Production
 on:
   push:
     tags:
-      - 'frieren-v*'
+      - 'spud-v*'
   workflow_dispatch:
     inputs:
       ref:
@@ -35,8 +35,8 @@ jobs:
             deploy_ref="${{ inputs.ref }}"
           fi
 
-          [[ "${deploy_ref}" == frieren-v* ]] || {
-            echo "Deploy ref must be a frieren-v* tag" >&2
+          [[ "${deploy_ref}" == spud-v* ]] || {
+            echo "Deploy ref must be a spud-v* tag" >&2
             exit 1
           }
 

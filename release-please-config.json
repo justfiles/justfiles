@@ -8,7 +8,8 @@
 			"release-type": "node"
 		},
 		"apps/frieren": {
-			"release-type": "node"
+			"release-type": "node",
+			"component": "spud"
 		},
 		"packages/fs": {
 			"release-type": "node",
