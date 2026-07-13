@@ -42,7 +42,7 @@ export function MessagesPanel() {
 					alignItems: 'center',
 					gap: 4,
 					padding: '12px',
-					borderBottom: '1px solid rgba(0,0,0,0.07)'
+					borderBottom: '1px solid var(--rule)'
 				}}
 			>
 				<img
@@ -73,7 +73,7 @@ export function MessagesPanel() {
 					alignItems: 'flex-end',
 					gap: 8,
 					padding: '8px 12px',
-					borderTop: '1px solid rgba(0,0,0,0.07)'
+					borderTop: '1px solid var(--rule)'
 				}}
 				onSubmit={(event) => {
 					event.preventDefault()
@@ -93,19 +93,16 @@ export function MessagesPanel() {
 					}}
 					placeholder={ready ? 'iMessage' : 'Connecting…'}
 					disabled={!ready}
+					// Colors come from the design tokens (mac.css styles bare textareas);
+					// only the pill shape and layout are local. Height comes from
+					// rows=1 line-height + padding, so a single line sits centered.
 					style={{
 						flex: 1,
-						minHeight: 28,
 						maxHeight: 128,
 						resize: 'none',
 						borderRadius: 999,
 						padding: '4px 12px',
-						outline: 'none',
-						background: 'rgba(255,255,255,0.6)',
-						border: '1px solid rgba(255,255,255,0.7)',
-						color: 'var(--text)',
-						fontFamily: 'var(--font-ui)',
-						fontSize: 'var(--text-ui)'
+						lineHeight: '20px'
 					}}
 				/>
 				{isStreaming ? (
