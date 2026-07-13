@@ -46,7 +46,7 @@
 	],
 	"routes": [
 		{
-			"pattern": "justbuddy.app",
+			"pattern": "spud.computer",
 			"custom_domain": true
 		}
 	],
@@ -64,7 +64,7 @@
 			},
 			"routes": [
 				{
-					"pattern": "staging.justbuddy.app",
+					"pattern": "staging.spud.computer",
 					"custom_domain": true
 				}
 			],
