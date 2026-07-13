@@ -652,6 +652,17 @@
 	font-style: normal;
 	opacity: 0.75;
 }
+/* When the conversation window owns the transcript, the ask row can't slide
+   into it — this trailing hint implies the send lands over in the window. */
+.frn-omnibar-row-hint {
+	margin-left: auto;
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+	opacity: 0.6;
+}
 /* Inline chat: the omnibar is the agent surface. Given a comfortable resting
    height so a fresh conversation doesn't open as a cramped sliver. */
 .frn-omnibar-chat {
@@ -683,6 +694,29 @@
 	opacity: 1;
 	background: color-mix(in srgb, var(--text) 10%, transparent);
 }
+/* The escalating "Open in window" invitation, pinned to the top of the capped
+   tail. It scrolls with the content, so it's off-screen at rest and met only
+   when the user scrolls up for history — exactly when a window is wanted. */
+.frn-omnibar-tail-more {
+	align-self: center;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 4px;
+	padding: 4px 12px;
+	font: inherit;
+	font-size: 12px;
+	color: var(--text);
+	opacity: 0.6;
+	border: 1px solid var(--rule);
+	border-radius: 999px;
+	background: var(--control-bg);
+	cursor: default;
+}
+.frn-omnibar-tail-more:hover {
+	opacity: 1;
+	border-color: var(--focus);
+}
 /* The bar itself: fixed at the bottom of the container, always present. */
 .frn-omnibar-bar {
 	display: flex;
@@ -696,6 +730,23 @@
 	flex: none;
 	opacity: 0.45;
 	font-size: 18px;
+}
+/* Persistent affordance back into the conversation, shown once a session exists. */
+.frn-omnibar-chat-toggle {
+	flex: none;
+	display: inline-flex;
+	padding: 5px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	opacity: 0.55;
+	font-size: 18px;
+	cursor: default;
+}
+.frn-omnibar-chat-toggle:hover {
+	opacity: 1;
+	background: color-mix(in srgb, var(--text) 10%, transparent);
 }
 .frn-omnibar-bar input {
 	flex: 1;

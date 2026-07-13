@@ -1,4 +1,4 @@
-import { type CSSProperties, useLayoutEffect, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useLayoutEffect, useRef, useState } from 'react'
 
 export interface ToolCallInfo {
 	id: string
@@ -29,6 +29,10 @@ export interface TranscriptProps {
 	// Invoked when the user clicks an option row. Omitted hosts render the labels
 	// as plain (non-clickable) rows.
 	onOption?: (label: string) => void
+	// Rendered above the oldest message, inside the scroll. Off-screen at rest
+	// (the view sticks to the bottom) and revealed only when scrolling up for
+	// history — the natural spot for a "showing the tail; see the rest" affordance.
+	leading?: ReactNode
 }
 
 // Scoped CSS for the bits inline styles can't express: the streaming caret
@@ -60,7 +64,7 @@ const css = `
 // collapsible thinking / tool-call rows, and a streaming caret. Transport-
 // agnostic — the host owns the session, header, and composer. Styled on
 // @justfiles/design tokens (no Tailwind) so it renders in any token-aware shell.
-export function Transcript({ messages, isStreaming, onOption }: TranscriptProps) {
+export function Transcript({ messages, isStreaming, onOption, leading }: TranscriptProps) {
 	const viewportRef = useRef<HTMLDivElement>(null)
 	const contentRef = useRef<HTMLDivElement>(null)
 	// Chat-style "stick to bottom": auto-scroll only while the user is already at
@@ -125,6 +129,7 @@ export function Transcript({ messages, isStreaming, onOption }: TranscriptProps)
 					padding: '12px'
 				}}
 			>
+				{leading}
 				{messages.map((m) => (
 					<MessageItem key={m.id} message={m} isStreaming={isStreaming} onOption={onOption} />
 				))}

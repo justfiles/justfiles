@@ -1,5 +1,10 @@
 import { Transcript } from '@justfiles/ui/Transcript'
-import { ArrowsOutIcon, MagnifyingGlassIcon, SparkleIcon } from '@phosphor-icons/react'
+import {
+	ArrowsOutIcon,
+	ChatCircleIcon,
+	MagnifyingGlassIcon,
+	SparkleIcon
+} from '@phosphor-icons/react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
@@ -15,6 +20,13 @@ import { AGENT_WINDOW_ID } from '../os/state'
 // grid it shows at rest is where launching now lives.
 
 type Row = { kind: 'app'; app: InstalledApp } | { kind: 'ask' }
+
+// The sheet is the quick-access view: it renders only the recent tail of the
+// transcript, never the whole thing. Older history lives in the conversation
+// window — the "no 200-message overlay" rule is enforced here, in the render
+// cap, not by spawning a window. Past the cap, an escalating "Open in window"
+// invitation appears at the top of the tail (see design/01-omnibar.md).
+const SHEET_TAIL = 8
 
 function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
 	const needle = query.toLowerCase()
@@ -77,9 +89,38 @@ export function Omnibar({
 		if (hadWindow.current && !agentWindowOpen && session.messages.length > 0) setChatOpen(true)
 		hadWindow.current = agentWindowOpen
 	}, [agentWindowOpen, session.messages.length])
+	// spud-mac's fall-through: a query that matches no app means you're talking to
+	// the agent, so the sheet slides straight into the transcript instead of a lone
+	// "Ask" row. The conversation window preempts it (coexistence rule) — there the
+	// row stays and just implies the send lands over in the window.
+	const noAppMatch = text !== '' && matches.length === 0
 	const expanded = focused || (chatOpen && session.isStreaming && !agentWindowOpen)
-	const showTranscript = chatOpen && text === '' && !agentWindowOpen
-	const showList = text !== ''
+	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
+	const showList = text !== '' && !showTranscript
+
+	// Cap the sheet to the last few exchanges; the window is where the full
+	// history is read.
+	const tail = useMemo(() => session.messages.slice(-SHEET_TAIL), [session.messages])
+	const truncated = session.messages.length > SHEET_TAIL
+
+	// Opening the window is the one explicit hand-off from sheet to durable home:
+	// collapse the sheet and hand focus over so replies land in the window.
+	const openWindow = () => {
+		dispatch({ type: 'agent.openWindow' })
+		setChatOpen(false)
+		inputRef.current?.blur()
+	}
+
+	// The conversation is reachable on demand, not only as a fall-through: the
+	// pill's chat button opens the transcript (or focuses the window when it owns
+	// the conversation), so a dismissed session is never stranded with no way back.
+	const openConversation = () => {
+		if (agentWindowOpen) dispatch({ type: 'window.focus', id: AGENT_WINDOW_ID })
+		else {
+			setChatOpen(true)
+			inputRef.current?.focus()
+		}
+	}
 
 	// Presence: the pill is the ambient signal that the agent is doing something.
 	// Two derivable states — `working` while a reply streams (glow), and
@@ -177,19 +218,22 @@ export function Omnibar({
 									className="frn-omnibar-expand"
 									title="Expand conversation"
 									aria-label="Expand conversation"
-									onClick={() => {
-										dispatch({ type: 'agent.openWindow' })
-										setChatOpen(false)
-										inputRef.current?.blur()
-									}}
+									onClick={openWindow}
 								>
 									<ArrowsOutIcon />
 								</button>
 							</div>
 							<Transcript
-								messages={session.messages}
+								messages={tail}
 								isStreaming={session.isStreaming}
 								onOption={(label) => ask(label)}
+								leading={
+									truncated ? (
+										<button type="button" className="frn-omnibar-tail-more" onClick={openWindow}>
+											Earlier messages · Open in window <ArrowsOutIcon />
+										</button>
+									) : undefined
+								}
 							/>
 						</div>
 					) : showList ? (
@@ -233,6 +277,11 @@ export function Omnibar({
 											<span className="frn-omnibar-row-label">
 												Ask {session.agentName}: <em>“{text}”</em>
 											</span>
+											{agentWindowOpen ? (
+												<span className="frn-omnibar-row-hint">
+													in conversation <ArrowsOutIcon />
+												</span>
+											) : null}
 										</button>
 									</li>
 								)
@@ -291,6 +340,20 @@ export function Omnibar({
 					autoComplete="off"
 					spellCheck={false}
 				/>
+				{session.messages.length > 0 ? (
+					/* Discoverable way back into the conversation — mousedown-preventDefault
+					   keeps the input focused so the click doesn't collapse the sheet. */
+					<button
+						type="button"
+						className="frn-omnibar-chat-toggle"
+						title={`Open conversation with ${session.agentName}`}
+						aria-label="Open conversation"
+						onMouseDown={(event) => event.preventDefault()}
+						onClick={openConversation}
+					>
+						<ChatCircleIcon />
+					</button>
+				) : null}
 			</form>
 		</div>
 	)

@@ -18,9 +18,8 @@
 > the earlier "graduation" idea is **superseded** by the conversation-window
 > model (one session, two views; no auto-expand). Not yet built: the first-run
 > coach mark, recents/frequency ordering of the idle grid, the `⌘Tab`
-> switcher, the conversation window's **tail cap + "Open in window"
-> invitation** and the **new-session command**, and the rest of **presence /
-> answers-as-actions**.
+> switcher, the conversation window's **new-session command**, and the rest of
+> **presence / answers-as-actions**.
 
 ## The idea
 
@@ -201,13 +200,13 @@ mid-thought, exactly the surprise the rest of the design avoids.)*
 
 **The two views:**
 
-- **The sheet (quick access):** renders only the **recent tail** of the
-  transcript — the last few exchanges, lightly scrollable. The "no 200-message
-  overlay" rule is enforced in the *rendering cap*, not by window-spawning
-  behavior. When the transcript grows past the cap, an **"Open in window ↗"**
-  affordance appears *at the top of the tail* — precisely where the eye lands
-  when scrolling up for history, which is exactly the moment a window is
-  wanted. The invitation escalates; the behavior never does.
+- **The sheet (quick access)** *(✅ shipped)*: renders only the **recent tail**
+  of the transcript — the last few exchanges, lightly scrollable. The "no
+  200-message overlay" rule is enforced in the *rendering cap*, not by
+  window-spawning behavior. When the transcript grows past the cap, an **"Open
+  in window ↗"** affordance appears *at the top of the tail* — precisely where
+  the eye lands when scrolling up for history, which is exactly the moment a
+  window is wanted. The invitation escalates; the behavior never does.
 - **The window (durable home)** *(✅ shipped, v1.3)*: opened **only by explicit
   user action** — the expand affordance, never automatically. A normal
   `OsWindow` (`kind: 'agent'`, singleton id) that participates fully in window
@@ -221,8 +220,20 @@ mid-thought, exactly the surprise the rest of the design avoids.)*
 stays in **launcher mode** — no duplicated live transcript. The pill still
 *sends* to the session (it is the universal input, never dead); replies land
 in the window, and a needs-you focus lands on the window instead of the sheet.
-Division of labour: the omnibar is the fastest way to **send**, the window is
-where you **read**.
+When a query matches no app while the window is open, the pinned ask row stays
+put and gains an *“in conversation ↗”* hint — implying the send lands over in
+the window rather than sliding the sheet into a second transcript. Division of
+labour: the omnibar is the fastest way to **send**, the window is where you
+**read**.
+
+**Reaching the conversation on demand** *(✅ shipped)*: two paths keep a
+dismissed session from ever being stranded. (1) Following spud-mac, a query
+that matches **no app** is read as intent to talk — the sheet slides straight
+into the transcript (this realises the “only that row remains, sliding
+seamlessly into the transcript” line above), unless the window owns it. (2) A
+persistent **chat button** on the pill (shown once a session exists) opens the
+transcript, or focuses the conversation window when it owns the transcript —
+the discoverable, always-visible way back in.
 
 **The window layer went kind-generic to make this fit** *(v1.3)*: `OsWindow`
 gained `kind: 'app' | 'agent'` (the shell picks the body renderer by kind) and
@@ -376,9 +387,9 @@ with the same ranking / pinned-default rules.
    focusing then lands on the question.
 4. **v1.3 — conversation window** ✅ **shipped** — a real `OsWindow` replaces
    the `AgentSidebar`; window layer goes kind-generic; coexistence rule
-   (window open ⇒ sheet stays in launcher mode). Still pending from this
-   design: the sheet's capped tail + escalating "Open in window" invitation,
-   and the dedicated "new session" command.
+   (window open ⇒ sheet stays in launcher mode). The sheet's **capped tail +
+   escalating "Open in window" invitation** shipped too. Still pending from
+   this design: the dedicated "new session" command.
 5. **Switcher** — running-window switcher over `focusStack` to fully replace the
    dock's indicators.
 6. **Growth** — new item types in the list: commands, special commands, agent
