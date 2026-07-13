@@ -404,6 +404,20 @@
 	overflow: hidden;
 	background: var(--desktop-bg);
 }
+/* Windows layer: same box as the desktop, so window coordinates are unchanged.
+   While the omnibar sheet is up, this layer dims and recedes ("turn to talk"):
+   occlusion reads as a mode you invoked, not as theft. */
+.frn-desktop-windows {
+	position: absolute;
+	inset: 0;
+	transition:
+		transform 0.25s ease,
+		filter 0.25s ease;
+}
+.frn-desktop:has(.frn-omnibar[data-expanded="true"]) .frn-desktop-windows {
+	transform: scale(0.985);
+	filter: brightness(0.65) saturate(0.85);
+}
 
 /* ── App stage: the durable wrapper + its sandboxed iframe fill the window ── */
 .frn-viewport {
@@ -431,4 +445,200 @@
 	font-size: 13px;
 	color: #ffb4b4;
 	background: rgba(2, 6, 23, 0.95);
+}
+
+/* ── Omnibar: bottom-anchored intent surface (launch ∪ ask) ─────────────── */
+/* One unified, frosted container. The content region (grid / list / chat) sits
+   directly on top of the input, joined by a single divider — anchored at the
+   screen bottom, it grows upward as content appears. */
+.frn-omnibar {
+	position: absolute;
+	left: 50%;
+	bottom: 20px;
+	transform: translateX(-50%);
+	z-index: 9000;
+	display: flex;
+	flex-direction: column;
+	width: min(640px, 92vw);
+	max-height: min(70vh, 620px);
+	overflow: hidden;
+	color: var(--text);
+	font-family: var(--font-ui);
+	font-size: var(--text-ui);
+	border-radius: 16px;
+	border: 1px solid var(--rule);
+	background: color-mix(in srgb, var(--surface) 92%, transparent);
+	backdrop-filter: blur(30px) saturate(180%);
+	-webkit-backdrop-filter: blur(30px) saturate(180%);
+	box-shadow: 0 16px 48px rgba(0, 0, 0, 0.32);
+}
+.frn-omnibar:focus-within {
+	border-color: color-mix(in srgb, var(--focus) 45%, var(--rule));
+}
+/* Content region: the divider to the input only exists when there's content
+   (hidden when empty), so the bare bar stays a clean pill. */
+.frn-omnibar-surface {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	overflow: hidden;
+	border-bottom: 1px solid var(--rule);
+}
+.frn-omnibar-surface:empty {
+	display: none;
+}
+/* Idle: a glanceable grid of installed apps — the home screen. */
+.frn-omnibar-grid {
+	display: grid;
+	grid-template-columns: repeat(5, minmax(0, 1fr));
+	gap: 4px;
+	padding: 12px;
+	max-height: 360px;
+	overflow-y: auto;
+}
+.frn-omnibar-tile {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: 10px 4px;
+	border: 0;
+	border-radius: 12px;
+	background: transparent;
+	color: inherit;
+	cursor: default;
+}
+.frn-omnibar-tile:hover {
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.frn-omnibar-tile-name {
+	max-width: 100%;
+	font-size: 12px;
+	text-align: center;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.frn-omnibar-icon {
+	display: grid;
+	place-items: center;
+	width: 52px;
+	height: 52px;
+	border-radius: 12px;
+	background: linear-gradient(
+		145deg,
+		color-mix(in srgb, var(--text) 22%, transparent),
+		color-mix(in srgb, var(--text) 6%, transparent)
+	);
+	font-size: 22px;
+	font-weight: 650;
+	overflow: hidden;
+}
+.frn-omnibar-icon img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+.frn-omnibar-icon-sm {
+	width: 26px;
+	height: 26px;
+	border-radius: 7px;
+	font-size: 13px;
+}
+/* Active: a ranked list, best match nearest the input, weaker stacking upward. */
+.frn-omnibar-list {
+	list-style: none;
+	margin: 0;
+	padding: 6px;
+	max-height: 360px;
+	overflow-y: auto;
+}
+.frn-omnibar-list li[data-divider="true"] {
+	border-top: 1px solid var(--rule);
+	margin-top: 6px;
+	padding-top: 6px;
+}
+.frn-omnibar-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	padding: 7px 10px;
+	border: 0;
+	border-radius: 9px;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	cursor: default;
+}
+.frn-omnibar-row[data-selected="true"] {
+	background: var(--focus);
+	color: var(--on-focus);
+}
+.frn-omnibar-row-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.frn-omnibar-row-label em {
+	font-style: normal;
+	opacity: 0.75;
+}
+/* Inline chat: the omnibar is the agent surface. Given a comfortable resting
+   height so a fresh conversation doesn't open as a cramped sliver. */
+.frn-omnibar-chat {
+	display: flex;
+	flex-direction: column;
+	min-height: 260px;
+	height: min(52vh, 460px);
+}
+.frn-omnibar-chat-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex: none;
+	padding: 8px 12px;
+	font-weight: 500;
+	border-bottom: 1px solid var(--rule);
+}
+.frn-omnibar-expand {
+	display: inline-flex;
+	padding: 3px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: inherit;
+	opacity: 0.5;
+	cursor: default;
+}
+.frn-omnibar-expand:hover {
+	opacity: 1;
+	background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+/* The bar itself: fixed at the bottom of the container, always present. */
+.frn-omnibar-bar {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex: none;
+	padding: 0 14px;
+	height: 48px;
+}
+.frn-omnibar-search {
+	flex: none;
+	opacity: 0.45;
+	font-size: 18px;
+}
+.frn-omnibar-bar input {
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+	border: 0;
+	padding: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 16px;
+	outline: none;
+	box-shadow: none;
 }

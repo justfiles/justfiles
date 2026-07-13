@@ -1,8 +1,6 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
-import { ChatTeardropDotsIcon } from '@phosphor-icons/react'
-import { useMemo, useState, useSyncExternalStore } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
-import { Dock } from '@/components/Dock'
 import { Menubar } from '@/components/Menubar'
 import { useAgentConnection } from '../agent/hooks'
 import type { ConnectionState } from '../agent/types'
@@ -23,6 +21,7 @@ import type { OsWindow } from '../os/state'
 import { PersonalizePanel } from '../personalize/PersonalizePanel'
 import { ResetPanel } from '../reset/ResetPanel'
 import { AgentSidebar } from './AgentSidebar'
+import { Omnibar } from './Omnibar'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -102,9 +101,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const resetDebugEnabled =
 		import.meta.env.DEV ||
 		(typeof localStorage !== 'undefined' && localStorage.getItem('frieren-debug') === '1')
-	// `windows` only changes identity when the open set/order changes, so the
-	// running set stays stable across rect/mode edits.
-	const openAppIds = useMemo(() => new Set(windows.map((w) => w.appId)), [windows])
 
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Personalize…', onSelect: () => setPersonalizeOpen(true) },
@@ -160,16 +156,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						>
 							Install
 						</button>
-						<button
-							type="button"
-							className="frn-menubar-btn"
-							onClick={() => dispatch({ type: 'agent.setOpen', open: !agentOpen })}
-							title={agentOpen ? 'Close Messages' : 'Open Messages'}
-							aria-label="Toggle Messages"
-							aria-pressed={agentOpen}
-						>
-							<ChatTeardropDotsIcon weight={agentOpen ? 'fill' : 'regular'} />
-						</button>
 						{isSignedIn ? (
 							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 						) : (
@@ -185,22 +171,21 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
 			<div className="frn-desktop" onContextMenu={(event) => menu.open(event, desktopMenuItems)}>
-				{windows.map((window) => (
-					<AppWindow
-						key={window.id}
-						id={window.id}
-						title={resolveAppTitle(installedApps, window.appId, window.title)}
-					>
-						<AppViewport id={window.id} />
-					</AppWindow>
-				))}
+				{/* Windows live in their own layer so the desktop can dim + recede behind
+				    the omnibar's expanded sheet without transforming the omnibar itself. */}
+				<div className="frn-desktop-windows">
+					{windows.map((window) => (
+						<AppWindow
+							key={window.id}
+							id={window.id}
+							title={resolveAppTitle(installedApps, window.appId, window.title)}
+						>
+							<AppViewport id={window.id} />
+						</AppWindow>
+					))}
+				</div>
 				{fullscreenId ? null : (
-					<Dock
-						apps={installedApps}
-						openAppIds={openAppIds}
-						onLaunch={launchApp}
-						onContextMenu={(event, app) => menu.open(event, appMenuItems(app))}
-					/>
+					<Omnibar onAppMenu={(event, app) => menu.open(event, appMenuItems(app))} />
 				)}
 				{/* Overlay on the right of the desktop, below the menubar. It covers
 					    whatever is underneath rather than squishing the desktop. */}
