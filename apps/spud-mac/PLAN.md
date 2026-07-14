@@ -239,7 +239,7 @@ Spotlight, launchable as its own app — with no code change to app-code's reduc
   core unchanged; the rejected alternative (the `.app` *is* the store) can't sync the whole Volume.
 - **Hotkey:** `Option+Space` (avoids Spotlight's `Cmd+Space`).
 - **Bundle ids:** `app.justfiles.quay` (launcher); `app.justfiles.quay.app.<id>` (each mini-app).
-- **Built-in seed set (v1):** `app-code` (Code) + `app-files` (Files) + `app-counter` (Counter) —
-  Counter is a no-capability app, so it's the clean end-to-end target for the Slice 7 berth round-trip
-  before capabilities land (Slice 9).
+- **Built-in seed set:** `app-code` (Code) + `app-files` (Files) + `app-notes` (Notes) +
+  `app-paint` (Paint) + `app-settings` (Settings). (The original `app-counter` no-capability
+  end-to-end target has been removed.)
 - **`apps/native/`:** removed (was empty scaffolding).

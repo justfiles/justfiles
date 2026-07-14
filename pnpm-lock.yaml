@@ -261,9 +261,6 @@ importers:
       '@mariozechner/pi-ai':
         specifier: ^0.70.2
         version: 0.70.6(ws@8.20.1)(zod@4.4.3)
-      '@spud-computer/counter':
-        specifier: workspace:*
-        version: link:../../packages/app-counter
       react:
         specifier: ^19
         version: 19.2.7
@@ -623,28 +620,6 @@ importers:
       react-dom:
         specifier: ^19
         version: 19.2.5(react@19.2.5)
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-      vite:
-        specifier: ^8.0.12
-        version: 8.0.12(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
-
-  packages/app-counter:
-    dependencies:
-      '@justfiles/app':
-        specifier: workspace:*
-        version: link:../app
-      valibot:
-        specifier: ^1.1.0
-        version: 1.4.0(typescript@6.0.3)
-    devDependencies:
-      '@justfiles/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      esbuild:
-        specifier: ^0.27.0
-        version: 0.27.7
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

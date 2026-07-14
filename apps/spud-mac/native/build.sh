@@ -132,12 +132,11 @@ copy_builtin() { # resources_dir app_id package_dir
 }
 
 copy_builtins() { # resources_dir
-	copy_builtin "$1" app.code app-code
-	copy_builtin "$1" app.frieren.files app-files
-	copy_builtin "$1" app.justfiles.counter app-counter
-	copy_builtin "$1" app.frieren.notes app-notes
-	copy_builtin "$1" app.frieren.paint app-paint
-	copy_builtin "$1" app.frieren.settings app-settings
+	copy_builtin "$1" computer.spud.code app-code
+	copy_builtin "$1" computer.spud.files app-files
+	copy_builtin "$1" computer.spud.notes app-notes
+	copy_builtin "$1" computer.spud.paint app-paint
+	copy_builtin "$1" computer.spud.settings app-settings
 }
 
 # A self-contained, shippable Spud.app backed by the daemon (apps/spud-mac/daemon): the

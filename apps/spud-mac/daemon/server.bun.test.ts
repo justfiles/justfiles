@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from './main.ts'
 
-const COUNTER = 'computer.spud.counter'
+const NOTES = 'computer.spud.notes'
 const FILES = 'computer.spud.files'
 let root: string
 let server: ReturnType<typeof createServer>
@@ -48,7 +48,7 @@ interface Frame {
 	entries?: unknown[]
 	value?: boolean
 	message?: string
-	state?: { count: number }
+	state?: { count?: number; openPath?: string | null; revision?: number; error?: string | null }
 }
 
 interface Client {
@@ -106,12 +106,12 @@ test('serves gui.js bytes for an installed app, 404s an unknown one', async () =
 	expect(missing.status).toBe(404)
 })
 
-test('serves an app icon, 404s an app with none', async () => {
+test('serves an app icon, 404s an unknown app', async () => {
 	const icon = await fetch(`http://127.0.0.1:${port}/app/${FILES}/icon`) // Files ships icon.png
 	expect(icon.status).toBe(200)
 	expect(icon.headers.get('content-type')).toContain('image/')
 
-	const none = await fetch(`http://127.0.0.1:${port}/app/${COUNTER}/icon`) // counter has no icon
+	const none = await fetch(`http://127.0.0.1:${port}/app/does.not.exist/icon`)
 	expect(none.status).toBe(404)
 })
 
@@ -168,15 +168,15 @@ test('/agent snapshots history + busy on connect, and a prompt runs a turn', asy
 })
 
 test('/app socket pushes initial state and round-trips a dispatch', async () => {
-	const client = await connect(`/app/${COUNTER}/connect`)
+	const client = await connect(`/app/${NOTES}/connect`)
 	const initial = await client.waitFor((m) => m.state !== undefined)
-	expect(initial.state).toEqual({ count: 0 })
+	expect(initial.state).toEqual({ openPath: null, revision: 0, error: null })
 
-	client.send({ id: 'r1', type: 'increment', params: { amount: 2 } })
+	client.send({ id: 'r1', type: 'open', params: { path: '/hello.txt' } })
 	const reply = await client.waitFor((m) => m.id === 'r1')
 	expect(reply.ok).toBe(true)
 	// The mutation fans back out on the app's topic as a fresh state push.
-	const pushed = await client.waitFor((m) => m.state?.count === 2)
-	expect(pushed.state).toEqual({ count: 2 })
+	const pushed = await client.waitFor((m) => m.state?.openPath === '/hello.txt')
+	expect(pushed.state).toMatchObject({ openPath: '/hello.txt' })
 	client.close()
 })
