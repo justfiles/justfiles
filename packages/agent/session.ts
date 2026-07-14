@@ -293,6 +293,12 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 // by design — two actionable cases, then a catch-all.
 export function classifyFailure(error: unknown): { body: string; route: Route } {
 	const raw = error instanceof Error ? error.message : String(error)
+	if (/no ai (backend|provider)|ai is turned off|enable an ai provider/i.test(raw)) {
+		return {
+			body: 'No AI is turned on. Enable an AI provider in Settings → Accounts to start chatting.',
+			route: { kind: 'settings', pane: 'accounts' }
+		}
+	}
 	if (/\b401\b|unauthor|invalid[_ ]?api[_ ]?key|authentic|expired|account[_ -]?id/i.test(raw)) {
 		return {
 			body: 'Your sign-in expired. Reconnect in Settings → Accounts.',

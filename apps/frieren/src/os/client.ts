@@ -308,7 +308,13 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		if (data.type === 'error') {
 			console.error('Server error:', data.message)
 			isStreaming = false
-			emitAgent()
+			// Surface the failure in the transcript (an error-styled block), not just the
+			// console — e.g. "turn on an AI provider in Settings" when no AI is enabled.
+			const body = typeof data.message === 'string' ? data.message : 'Something went wrong.'
+			setMessages([
+				...messages,
+				{ id: crypto.randomUUID(), role: 'assistant', content: body, error: true }
+			])
 			return
 		}
 
