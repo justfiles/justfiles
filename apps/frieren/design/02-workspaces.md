@@ -90,7 +90,9 @@ Either way: **the agent session must not be a hard singleton.** Key it by
 `agentThreadId` so a room carries its own thread. (This is the one thing doc 1's
 "ship the global agent first" must not foreclose — see README principle 3.)
 
-- The **soul** (`/system/soul.md`) stays shared — same persona everywhere.
+- The **soul** (`/system/agents/main/soul.md`) stays shared — same persona
+  everywhere. (If rooms ever get distinct personas, each becomes its own
+  `/system/agents/<id>/` — see doc 4's layout.)
 - The **working context/thread** is per-room. Where threads persist and how they
   relate to the synced volume is an open question below.
 
