@@ -65,13 +65,6 @@ export async function httpAppStore(
 	}
 }
 
-// The dev flag gating the (unreviewed) community store. Default OFF — the public
-// flip waits on the Track B sandbox gate. A zero-UI localStorage toggle for now.
-export const COMMUNITY_STORE_FLAG = 'spud-community-store'
-export function communityStoreEnabled(): boolean {
-	return typeof localStorage !== 'undefined' && localStorage.getItem(COMMUNITY_STORE_FLAG) === '1'
-}
-
 const JSDELIVR = 'https://cdn.jsdelivr.net/npm'
 
 // An AppStore over the community catalog (`/store/catalog.json`). The catalog
@@ -104,15 +97,15 @@ export async function communityAppStore(
 	}
 }
 
-// The store the boot/reconcile paths use: the co-shipped built-in store, plus the
-// community store when its flag is on. Built-ins are authoritative (they alone
-// seed and win `latest`); everything else resolves from the community catalog.
-// `read` routes by the community entry's `npm` field — built-in entries lack one.
+// The store the boot/reconcile paths use: the co-shipped built-in store merged
+// with the community store. Built-ins are authoritative (they alone seed and win
+// `latest`); everything else resolves from the community catalog. `read` routes
+// by the community entry's `npm` field — built-in entries lack one. Degrades to
+// built-ins alone when the community catalog is empty/unpublished.
 export async function bootAppStore(
 	fetcher: (path: string) => Promise<Response>
 ): Promise<AppStore | null> {
 	const builtin = await httpAppStore(fetcher)
-	if (!communityStoreEnabled()) return builtin
 	const community = await communityAppStore(fetcher)
 	if (!builtin) return community
 	if (!community) return builtin

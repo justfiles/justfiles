@@ -5,7 +5,6 @@ import {
 	CATALOG_SCHEMA,
 	COMMUNITY_CATALOG_PATH,
 	COMMUNITY_CATALOG_SCHEMA,
-	COMMUNITY_STORE_FLAG,
 	communityAppStore
 } from './appstore.ts'
 
@@ -42,12 +41,6 @@ const fetcher = (path: string): Promise<Response> => {
 	return Promise.resolve(new Response(null, { status: 404 }))
 }
 
-function flag(on: boolean): void {
-	vi.stubGlobal('localStorage', {
-		getItem: (k: string) => (on && k === COMMUNITY_STORE_FLAG ? '1' : null)
-	})
-}
-
 afterEach(() => vi.unstubAllGlobals())
 
 describe('communityAppStore', () => {
@@ -76,15 +69,7 @@ describe('communityAppStore', () => {
 })
 
 describe('bootAppStore', () => {
-	test('flag off: built-ins only, community not consulted', async () => {
-		flag(false)
-		const store = await bootAppStore(fetcher)
-		expect((await store?.builtins())?.map((a) => a.id)).toEqual(['computer.spud.files'])
-		expect(await store?.latest('com.example.notes')).toBeNull()
-	})
-
-	test('flag on: built-ins win latest, community fills the rest', async () => {
-		flag(true)
+	test('merges built-ins with the community catalog; built-ins win latest', async () => {
 		const store = await bootAppStore(fetcher)
 		expect((await store?.builtins())?.map((a) => a.id)).toEqual(['computer.spud.files'])
 		expect((await store?.latest('computer.spud.files'))?.version).toBe('0.1.0')
