@@ -237,9 +237,6 @@ importers:
       '@justfiles/app-code':
         specifier: workspace:*
         version: link:../../packages/app-code
-      '@justfiles/app-counter':
-        specifier: workspace:*
-        version: link:../../packages/app-counter
       '@justfiles/app-files':
         specifier: workspace:*
         version: link:../../packages/app-files
@@ -264,6 +261,9 @@ importers:
       '@mariozechner/pi-ai':
         specifier: ^0.70.2
         version: 0.70.6(ws@8.20.1)(zod@4.4.3)
+      '@spud-computer/counter':
+        specifier: workspace:*
+        version: link:../../packages/app-counter
       react:
         specifier: ^19
         version: 19.2.7

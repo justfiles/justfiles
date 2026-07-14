@@ -1,14 +1,23 @@
 {
-	"name": "@justfiles/app-counter",
-	"private": true,
-	"version": "0.0.0",
+	"name": "@spud-computer/counter",
+	"version": "0.1.0",
 	"type": "module",
 	"main": "./dist/manifest.json",
+	"keywords": [
+		"spud-app"
+	],
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
 		"pack": "rm -f app.zip && cd dist && zip -r ../app.zip .",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "pnpm build"
 	},
 	"dependencies": {
 		"@justfiles/app": "workspace:*",
