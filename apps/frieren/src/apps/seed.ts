@@ -1,7 +1,7 @@
 import type { Kernel } from '@justfiles/app'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
-import { httpAppStore } from '../../shared/appstore'
+import { bootAppStore } from '../../shared/appstore'
 
 // Per-replica marker: this replica has already run its one-time built-in seed.
 // Under `/.state/**` so it never crosses the wire — a synced marker would
@@ -19,7 +19,7 @@ export async function seedBuiltins(
 	fs: Volume,
 	opts: { waitForBootstrap?: () => Promise<void> } = {}
 ): Promise<void> {
-	const store = await httpAppStore((path) => fetch(path))
+	const store = await bootAppStore((path) => fetch(path))
 	if (!store) return
 	if (!(await fs.exists(MATERIALISED_MARKER))) {
 		// On a synced profile, block on the first bootstrap so the emptiness check
@@ -40,6 +40,6 @@ async function mark(fs: Volume): Promise<void> {
 // bundle or a local install. Monotonic + idempotent, so the launcher's structural
 // watch can fire it freely. No-ops offline / before any catalog exists.
 export async function reconcileInstalled(kernel: Kernel, fs: Volume): Promise<void> {
-	const store = await httpAppStore((path) => fetch(path))
+	const store = await bootAppStore((path) => fetch(path))
 	if (store) await reconcile(kernel, fs, store)
 }

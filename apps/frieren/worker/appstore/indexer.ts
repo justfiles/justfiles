@@ -42,6 +42,7 @@ interface Manifest {
 	name: string
 	icon?: string
 	app?: string
+	capabilities?: Record<string, { id: string; scopes: string[] }>
 }
 
 export function isReverseDns(id: string): boolean {
@@ -136,6 +137,7 @@ export function buildCatalog(
 			name: manifest.name,
 			version: input.version,
 			icon: manifest.icon,
+			capabilities: manifest.capabilities,
 			npm: input.npm,
 			publisher: input.publisher,
 			repository: input.repository,

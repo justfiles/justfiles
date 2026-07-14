@@ -311,6 +311,12 @@ export interface RuntimeContext<State = unknown> {
 	readonly state: State
 }
 
+// Declared capabilities as static metadata: local name -> { id, scopes }. Mirrors
+// the runtime `App.capabilities`; the build emits it into the manifest so the
+// store can show capabilities on the consent sheet and gate escalation on update
+// WITHOUT running the app.
+export type CapabilityDecl = Record<string, { id: string; scopes: string[] }>
+
 export interface AppManifest {
 	id: string
 	name: string
@@ -321,6 +327,7 @@ export interface AppManifest {
 	gui?: string
 	cli?: string
 	include?: string[]
+	capabilities?: CapabilityDecl
 }
 
 export interface AppBundle {

@@ -64,3 +64,64 @@ export async function httpAppStore(
 		}
 	}
 }
+
+// The dev flag gating the (unreviewed) community store. Default OFF — the public
+// flip waits on the Track B sandbox gate. A zero-UI localStorage toggle for now.
+export const COMMUNITY_STORE_FLAG = 'spud-community-store'
+export function communityStoreEnabled(): boolean {
+	return typeof localStorage !== 'undefined' && localStorage.getItem(COMMUNITY_STORE_FLAG) === '1'
+}
+
+const JSDELIVR = 'https://cdn.jsdelivr.net/npm'
+
+// An AppStore over the community catalog (`/store/catalog.json`). The catalog
+// comes through `fetcher` (worker/browser); bytes come straight from npm's CDN
+// (jsDelivr — CORS-open, immutable), verified against the pinned hash by the
+// installer. It ships no built-ins, so `builtins()` is empty and everything
+// resolves through `latest(id)`.
+export async function communityAppStore(
+	fetcher: (path: string) => Promise<Response>
+): Promise<AppStore | null> {
+	const res = await fetcher(COMMUNITY_CATALOG_PATH)
+	if (!res.ok) return null
+	const catalog = (await res.json()) as CommunityCatalog
+	const byId = new Map(catalog.apps.map((app) => [app.id, app]))
+	return {
+		async builtins() {
+			return []
+		},
+		async latest(id) {
+			return byId.get(id) ?? null
+		},
+		async read(app, path) {
+			const entry = byId.get(app.id)
+			if (!entry) throw new Error(`community: ${app.id} not in catalog`)
+			const file = await fetch(`${JSDELIVR}/${entry.npm}@${entry.version}/dist/${path}`)
+			if (!file.ok)
+				throw new Error(`community: ${entry.npm}@${entry.version}/${path} ${file.status}`)
+			return new Uint8Array(await file.arrayBuffer())
+		}
+	}
+}
+
+// The store the boot/reconcile paths use: the co-shipped built-in store, plus the
+// community store when its flag is on. Built-ins are authoritative (they alone
+// seed and win `latest`); everything else resolves from the community catalog.
+// `read` routes by the community entry's `npm` field — built-in entries lack one.
+export async function bootAppStore(
+	fetcher: (path: string) => Promise<Response>
+): Promise<AppStore | null> {
+	const builtin = await httpAppStore(fetcher)
+	if (!communityStoreEnabled()) return builtin
+	const community = await communityAppStore(fetcher)
+	if (!builtin) return community
+	if (!community) return builtin
+	return {
+		builtins: () => builtin.builtins(),
+		async latest(id) {
+			return (await builtin.latest(id)) ?? (await community.latest(id))
+		},
+		read: (app, path) =>
+			(app as CommunityCatalogApp).npm ? community.read(app, path) : builtin.read(app, path)
+	}
+}
