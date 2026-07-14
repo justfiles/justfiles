@@ -16,7 +16,7 @@ export const CATALOG_PATH = '/appstore/catalog.json'
 // show provenance on the consent sheet. `files[].path` is relative to the
 // package's `dist/`, matching the built-in catalog.
 export const COMMUNITY_CATALOG_SCHEMA = 'spud/community-catalog/v1'
-export const COMMUNITY_CATALOG_PATH = '/appstore/community.json'
+export const COMMUNITY_CATALOG_PATH = '/appstore.json'
 
 export interface CommunityCatalogApp extends CatalogApp {
 	npm: string // npm package name; bytes resolve via jsDelivr
