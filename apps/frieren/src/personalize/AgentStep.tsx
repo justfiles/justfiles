@@ -7,7 +7,7 @@ import companionImage from '../assets/companion.png'
 import teacherImage from '../assets/teacher.png'
 import type { Volume } from '../fs'
 import { RitualCircle } from './RitualCircle'
-import { type IdentityFile, PATHS } from './state'
+import { type IdentityFile, PATHS, readAvatarUrl } from './state'
 
 const encoder = new TextEncoder()
 
@@ -169,17 +169,18 @@ export function AgentStep({
 	useEffect(() => {
 		if (!initialSoul) return
 		void (async () => {
-			if (!(await volume.exists(PATHS.avatar))) return
-			const dataUrl = await blobToDataUrl(
-				new Blob([(await volume.readFile(PATHS.avatar)) as BlobPart], { type: 'image/png' })
-			)
+			const dataUrl = await readAvatarUrl(volume)
+			if (!dataUrl) return
 			setUploadedFace(dataUrl)
 			setFace('upload')
 		})().catch(() => {})
 	}, [initialSoul, volume])
 
 	const generate = async () => {
-		if (!draft.name.trim()) return
+		if (!draft.name.trim()) {
+			setError('Give them a name first.')
+			return
+		}
 		setGenerating(true)
 		setError(null)
 		try {
@@ -226,7 +227,10 @@ export function AgentStep({
 	}
 
 	const bind = async () => {
-		if (!soulText.trim()) return
+		if (!soulText.trim()) {
+			setError('The soul is empty — write something before you bind it.')
+			return
+		}
 		setSaving(true)
 		setError(null)
 		try {
@@ -401,11 +405,7 @@ export function AgentStep({
 				</fieldset>
 				{error ? <p className="frn-ritual-error">{error}</p> : null}
 				<div className="frn-summoning-actions">
-					<button
-						type="submit"
-						className="frn-ritual-primary"
-						disabled={!draft.name.trim() || generating}
-					>
+					<button type="submit" className="frn-ritual-primary" disabled={generating}>
 						{generating ? 'Summoning…' : 'Begin the summoning'}
 					</button>
 					<button type="button" onClick={onBack} disabled={generating}>

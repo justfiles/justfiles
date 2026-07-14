@@ -2,10 +2,12 @@ import agentAvatarUrl from '../agent/agent-avatar.png'
 
 export function RitualCircle({
 	complete = false,
-	fast = false
+	fast = false,
+	src
 }: {
 	complete?: boolean
 	fast?: boolean
+	src?: string
 }) {
 	return (
 		<div className="frn-ritual-circle" data-complete={complete} data-fast={fast} aria-hidden="true">
@@ -22,7 +24,7 @@ export function RitualCircle({
 				</text>
 			</svg>
 			<div className="frn-ritual-spirit">
-				<img src={agentAvatarUrl} alt="" />
+				<img src={src ?? agentAvatarUrl} alt="" data-pixel={!src} />
 			</div>
 		</div>
 	)

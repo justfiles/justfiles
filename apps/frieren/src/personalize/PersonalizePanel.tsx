@@ -4,7 +4,13 @@ import { openProfile, type ProfileVolume } from '../fs'
 import { AgentStep } from './AgentStep'
 import { ProfileStep } from './ProfileStep'
 import { RitualCircle } from './RitualCircle'
-import { deriveAge, type IdentityFile, readAgentSoul, readUserProfile } from './state'
+import {
+	deriveAge,
+	type IdentityFile,
+	readAgentSoul,
+	readAvatarUrl,
+	readUserProfile
+} from './state'
 
 type View = 'landing' | 'profile' | 'agent'
 type UserCtx = { userAge?: number; userGender?: string }
@@ -20,12 +26,18 @@ export function PersonalizePanel({
 	const [view, setView] = useState<View>('landing')
 	const [soul, setSoul] = useState<IdentityFile | null>(null)
 	const [profile, setProfile] = useState<Record<string, string> | null>(null)
+	const [avatar, setAvatar] = useState<string | null>(null)
 	const [userCtx, setUserCtx] = useState<UserCtx>({})
 
 	const load = useCallback(async (vol: ProfileVolume) => {
-		const [nextSoul, nextProfile] = await Promise.all([readAgentSoul(vol), readUserProfile(vol)])
+		const [nextSoul, nextProfile, nextAvatar] = await Promise.all([
+			readAgentSoul(vol),
+			readUserProfile(vol),
+			readAvatarUrl(vol)
+		])
 		setSoul(nextSoul)
 		setProfile(nextProfile)
+		setAvatar(nextAvatar)
 		setUserCtx({
 			userAge: deriveAge(nextProfile?.birth_date),
 			userGender: nextProfile?.gender
@@ -74,11 +86,6 @@ export function PersonalizePanel({
 	return (
 		<div className="frn-ritual" role="dialog" aria-modal="true" aria-label="Personalize">
 			<div className="frn-ritual-topbar">
-				<span className="frn-ritual-lights" aria-hidden="true">
-					<i />
-					<i />
-					<i />
-				</span>
 				<span>
 					Ritual ·{' '}
 					{view === 'landing' ? 'Landing' : view === 'agent' ? 'The Summoning' : 'The Traveler'}
@@ -110,7 +117,7 @@ export function PersonalizePanel({
 				/>
 			) : (
 				<main className="frn-ritual-landing">
-					<RitualCircle complete={soulBound} />
+					<RitualCircle complete={soulBound} src={avatar ?? undefined} />
 					<h1>{soulBound ? 'Your companion is bound.' : 'Someone waits to be summoned.'}</h1>
 					<p>
 						{soulBound

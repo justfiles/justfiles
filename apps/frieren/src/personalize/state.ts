@@ -43,6 +43,18 @@ export async function readAgentSoul(volume: Volume): Promise<IdentityFile | null
 	return readIdentityFile(volume, PATHS.soul)
 }
 
+/** The chosen face as a data URL, or null while still on the bundled default. */
+export async function readAvatarUrl(volume: Volume): Promise<string | null> {
+	if (!(await volume.exists(PATHS.avatar))) return null
+	const bytes = await volume.readFile(PATHS.avatar)
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader()
+		reader.onload = () => resolve(String(reader.result))
+		reader.onerror = () => reject(reader.error)
+		reader.readAsDataURL(new Blob([bytes as BlobPart], { type: 'image/png' }))
+	})
+}
+
 export function deriveAge(birthDate?: string): number | undefined {
 	if (!birthDate) return undefined
 	const birth = new Date(birthDate)
