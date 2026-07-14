@@ -65,7 +65,7 @@ const INSTALL_HASH_PATH = '.apphash'
 export async function materialise(kernel: Kernel, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
 	for (const app of await store.builtins()) {
-		if (!installed.has(app.id)) await install(kernel, store, app)
+		if (!installed.has(app.id)) await installApp(kernel, store, app)
 	}
 }
 
@@ -89,15 +89,8 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 		// (Step 5). `escalates` is true only on real capability growth, so a same-
 		// version self-heal (caps unchanged) still proceeds. Built-ins are trusted.
 		if (!builtinById.has(id) && (await escalates(fs, app))) continue
-		await install(kernel, store, app)
+		await installApp(kernel, store, app)
 	}
-}
-
-// Install one catalog app on demand: the first-time install of a store app (the
-// reconcile paths above only touch already-installed apps). Verifies every pinned
-// hash before bytes land, like reconcile.
-export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
-	await install(kernel, store, app)
 }
 
 // What reconcile should do for one INSTALLED app. Split "repair" from "upgrade"
@@ -117,7 +110,9 @@ async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 // Install `app` from the store: verify each file's pinned hash before it reaches
 // the volume, then record the release's whole-app hash so a later reconcile can
 // skip an unchanged app (and reinstall a changed one) with a single comparison.
-async function install(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
+// The on-demand install entry point (first-time install of a store app) and the
+// path `materialise`/`reconcile` use internally.
+export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
 	const files = new Map<string, Uint8Array>()
 	for (const file of app.files) {
 		const bytes = await store.read(app, file.path)
