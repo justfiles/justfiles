@@ -83,7 +83,7 @@ describe('volume capability', () => {
 		const { cap } = setup()
 		await expect(
 			cap.invoke(
-				call('readFile', ['/profiles/user.md'], {
+				call('readFile', ['/user.md'], {
 					appId: 'com.example.snooper',
 					scopes: ['/system']
 				})
@@ -91,9 +91,9 @@ describe('volume capability', () => {
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
 		await expect(
 			cap.invoke(
-				call('readFile', ['/user.md'], {
+				call('readFile', ['/main/soul.md'], {
 					appId: 'com.example.snooper',
-					scopes: ['/system/profiles']
+					scopes: ['/system/agents']
 				})
 			)
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })

@@ -197,7 +197,7 @@ export async function createAssistant({
 	}
 
 	async function resolveSystemPrompt(): Promise<string> {
-		const soul = await file(volume, PATHS.soul).text()
+		const soul = await file(volume, PATHS.soul(agentId)).text()
 		if (!soul) return DEFAULT_SETUP_PROMPT
 
 		const prompt = systemPrompt(soul)
@@ -244,7 +244,7 @@ export async function createAssistant({
 	}
 }
 
-// Roll yesterday's daily notes into permanent memory (MEMORY.md). A maintenance/cron
+// Roll yesterday's daily notes into durable shared memory. A maintenance/cron
 // job — it touches none of the live Assistant's state, so it takes the Volume + LLMText
 // directly. The host schedules it (e.g. a daily alarm).
 export async function consolidateMemory(
@@ -258,7 +258,7 @@ export async function consolidateMemory(
 	if (!daily?.trim()) return
 	const existing = (await file(volume, PATHS.memory).text()) ?? ''
 	const userPrompt = [
-		'# Current MEMORY.md (read-only)',
+		'# Current durable memory (read-only)',
 		'',
 		existing.trim() || '(empty)',
 		'',
@@ -420,9 +420,9 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 }
 
 const PATHS = {
-	soul: '/system/soul.md',
-	profile: '/system/profiles/user.md',
-	memory: '/system/MEMORY.md',
+	soul: (agentId: string) => `/system/agents/${agentId}/soul.md`,
+	profile: '/system/user.md',
+	memory: '/system/memory/core.md',
 	daily: (date: Date = new Date()) => `/system/memory/daily/${date.toISOString().slice(0, 10)}.md`,
 	sessions: (agentId: string) => `/system/agents/${agentId}/sessions/sessions.json`,
 	sessionFile: (agentId: string, sessionId: string) =>

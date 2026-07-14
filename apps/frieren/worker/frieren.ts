@@ -24,7 +24,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
-import { ensureAgentDefaults } from '../shared/agent-defaults.ts'
+import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '../shared/agent-defaults.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
@@ -370,8 +370,8 @@ export class Frieren extends DurableObject<Env> {
 
 	private async loadParticipants(): Promise<DisplayParticipants> {
 		const [profile, soul] = await Promise.all([
-			readFrontmatter(this.vol, '/system/profiles/user.md'),
-			readFrontmatter(this.vol, '/system/soul.md')
+			readFrontmatter(this.vol, PROFILE_PATH),
+			readFrontmatter(this.vol, SOUL_PATH)
 		])
 
 		return {

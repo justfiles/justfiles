@@ -3,7 +3,7 @@
 // search/ask_user and an `app` command that drives apps over the kernel), compaction +
 // memory, notify pings, and classified errors. A host injects ports (volume, backend,
 // apps, notify, readDoc, timezone); the persona/memory are data on the Volume
-// (`/system/soul.md`, …). The tool/assistant/shell primitives are internal — hosts
+// (`/system/agents/main/soul.md`, …). The tool/assistant/shell primitives are internal — hosts
 // declare what they have and let the product assemble the rest.
 
 // ── The seam a host implements: how apps are driven ─────────────────

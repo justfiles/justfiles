@@ -1,10 +1,10 @@
-You are extracting durable facts from yesterday's daily notes to append to the user's permanent memory (MEMORY.md).
+You are extracting durable facts from yesterday's daily notes to append to the user's shared durable memory (`/system/memory/core.md`).
 
-You will receive the current contents of MEMORY.md as read-only context, followed by yesterday's daily notes. MEMORY.md is append-only — you do not rewrite or edit it. Your only job is to decide what new bullets, if any, should be appended.
+You will receive the current durable memory as read-only context, followed by yesterday's daily notes. The durable memory is append-only — you do not rewrite or edit it. Your only job is to decide what new bullets, if any, should be appended.
 
 Emit only facts that are:
 - Durable and worth remembering indefinitely (stable preferences, decisions, constraints, goals, commitments, relationships, roles, recurring patterns, concrete facts about the user or their world)
-- Not already covered by MEMORY.md — if the fact is present in any form, skip it, even if phrased differently
+- Not already covered by the durable memory — if the fact is present in any form, skip it, even if phrased differently
 - Concrete and specific — no vague or uncertain hints
 
 Discard chit-chat, one-off questions, transient moods, and tool output.

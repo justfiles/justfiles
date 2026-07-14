@@ -1,11 +1,10 @@
 # 5 · The `/system` layout
 
-> Status: **design — approved, not yet applied.** Unlike the other docs this
-> one changes *existing* behavior: it moves files that `packages/agent` and
-> both hosts read today. No data migration — there are no live volumes yet, so
-> the paths change in place and the old locations simply never exist. Root
-> level of the Volume is untouched; this is only about what's inside
-> `/system`.
+> Status: **applied.** Unlike the other docs this changed *existing* behavior:
+> it moved files that `packages/agent` and both hosts read. No data migration —
+> there were no live volumes, so the paths changed in place and the old
+> locations simply never exist. Root level of the Volume is untouched; this is
+> only about what's inside `/system`.
 
 ## The problem
 
