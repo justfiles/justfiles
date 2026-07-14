@@ -99,7 +99,7 @@ stamp_daemon() { # plist
 
 build_launcher() {
 	app="Spud.app"
-	make_bundle "$app" "Spud" "app.justfiles.spud" "" "1"
+	make_bundle "$app" "Spud" "computer.spud.host" "" "1"
 	# The daemon serves its browser surfaces straight from Vite's ui/dist/client (no ship-time
 	# bundling), so build that tree — the dev daemon reads it via CLIENT_DIR (main.ts).
 	(cd .. && pnpm run ui:build >/dev/null)
@@ -114,7 +114,7 @@ build_booter() { # Name
 	name="$1"
 	id="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
 	app="$name.app"
-	make_bundle "$app" "$name" "app.justfiles.spud.app.$id" "$id" ""
+	make_bundle "$app" "$name" "computer.spud.app.$id" "$id" ""
 	echo "built $app (booter, id=$id)"
 }
 
@@ -147,7 +147,7 @@ copy_builtins() { # resources_dir
 # roots ride alongside it. All are resolved via SPUD_SHIPPED.
 build_ship_daemon() {
 	app="Spud.app"
-	make_bundle "$app" "Spud" "app.justfiles.spud" "" "1"
+	make_bundle "$app" "Spud" "computer.spud.host" "" "1"
 	res="$app/Contents/Resources"
 	exe="$(pwd)/$app/Contents/MacOS/daemon"
 

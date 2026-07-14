@@ -188,8 +188,11 @@ async function renderIconset(set: string, letter: string, source?: string): Prom
 	return ok
 }
 
-// The bundle id IS the reverse-DNS app id (already a valid CFBundleIdentifier),
-// so Launcher.swift/Grid.swift look each mini-app up by `app.id` directly.
+// Materialized mini-apps live under a reserved macOS bundle-id namespace
+// (`computer.spud.app.<id>`), so a spud app whose id matches a real native app
+// (e.g. `com.company.todo`) never collides with it in LaunchServices. The spud
+// app id itself stays the storage identity; this prefix is only the CFBundle id.
+// Launcher.swift/Grid.swift look each mini-app up by the same prefixed id.
 function plist(app: ProjectionApp, bin: string): string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -197,7 +200,7 @@ function plist(app: ProjectionApp, bin: string): string {
 <dict>
 	<key>CFBundleName</key><string>${app.name}</string>
 	<key>CFBundleDisplayName</key><string>${app.name}</string>
-	<key>CFBundleIdentifier</key><string>${app.id}</string>
+	<key>CFBundleIdentifier</key><string>computer.spud.app.${app.id}</string>
 	<key>CFBundleExecutable</key><string>${bin}</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleVersion</key><string>${app.version ?? '1'}</string>

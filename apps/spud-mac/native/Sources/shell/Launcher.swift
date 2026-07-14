@@ -448,8 +448,9 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		cfg.activates = true
 
 		// Launch by bundle id (LaunchServices) — its own process, own Dock identity.
-		// The reverse-DNS app id IS the bundle id (see daemon/materialize.ts).
-		let bundleId = id
+		// Mini-apps live under the reserved `computer.spud.app.*` namespace (see
+		// daemon/materialize.ts) so they never collide with a real native app.
+		let bundleId = "computer.spud.app.\(id)"
 		if let url = ws.urlForApplication(withBundleIdentifier: bundleId) {
 			ws.openApplication(at: url, configuration: cfg)
 			return
