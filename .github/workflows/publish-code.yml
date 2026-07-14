@@ -1,0 +1,18 @@
+name: publish-code
+
+on:
+  push:
+    tags:
+      - 'code-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    uses: ./.github/workflows/publish-package.yml
+    with:
+      package_name: Code
+      working_directory: packages/app-code
