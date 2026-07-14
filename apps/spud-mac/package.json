@@ -17,7 +17,6 @@
 		"@justfiles/agent": "workspace:*",
 		"@justfiles/app": "workspace:*",
 		"@justfiles/app-code": "workspace:*",
-		"@spud-computer/counter": "workspace:*",
 		"@justfiles/app-files": "workspace:*",
 		"@justfiles/app-notes": "workspace:*",
 		"@justfiles/app-paint": "workspace:*",

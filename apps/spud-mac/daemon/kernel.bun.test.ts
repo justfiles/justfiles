@@ -45,7 +45,6 @@ test('seeds the builtin catalog into the fresh Volume', async () => {
 	// reconcile ran during buildKernel — the launcher's catalog is populated.
 	expect(ids).toContain(FILES)
 	expect(ids).toContain('computer.spud.code')
-	expect(ids).toContain('computer.spud.counter')
 })
 
 test('Files reads the real volume through the system-scoped volume capability', async () => {

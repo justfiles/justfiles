@@ -25,7 +25,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 	private static let surfaceHeight: CGFloat = 460
 	// The Settings mini-app's catalog id — the target a `settings` route opens. The route
 	// carries only `kind`/`pane`, so the launcher (which knows the host catalog) names the app.
-	private static let settingsAppId = "app.frieren.settings"
+	private static let settingsAppId = "computer.spud.settings"
 
 	// What sits above the composer right now. The launcher rests in `grid` (the app
 	// springboard — every app on summon, filtered as you type); when a query matches no app
@@ -448,7 +448,8 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		cfg.activates = true
 
 		// Launch by bundle id (LaunchServices) — its own process, own Dock identity.
-		let bundleId = "app.justfiles.spud.app.\(id)"
+		// The reverse-DNS app id IS the bundle id (see daemon/materialize.ts).
+		let bundleId = id
 		if let url = ws.urlForApplication(withBundleIdentifier: bundleId) {
 			ws.openApplication(at: url, configuration: cfg)
 			return

@@ -188,8 +188,8 @@ async function renderIconset(set: string, letter: string, source?: string): Prom
 	return ok
 }
 
-// Bundle ids match the booter's launch path (Launcher.swift) and the Phase-0
-// convention: `app.justfiles.spud.app.<id>`, AppId tells the booter who it is.
+// The bundle id IS the reverse-DNS app id (already a valid CFBundleIdentifier),
+// so Launcher.swift/Grid.swift look each mini-app up by `app.id` directly.
 function plist(app: ProjectionApp, bin: string): string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -197,7 +197,7 @@ function plist(app: ProjectionApp, bin: string): string {
 <dict>
 	<key>CFBundleName</key><string>${app.name}</string>
 	<key>CFBundleDisplayName</key><string>${app.name}</string>
-	<key>CFBundleIdentifier</key><string>app.justfiles.spud.app.${app.id}</string>
+	<key>CFBundleIdentifier</key><string>${app.id}</string>
 	<key>CFBundleExecutable</key><string>${bin}</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleVersion</key><string>${app.version ?? '1'}</string>

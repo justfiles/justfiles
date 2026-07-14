@@ -10,7 +10,7 @@ to concrete change (edge, procedure, capability, GUI tweak) without reading runt
 
 **Author-facing API only** (UIKit-style). No kernel/sandbox/RPC. You never call those.
 
-Framework src: `packages/app`. Examples: `packages/app-counter` (minimal), `packages/app-files`,
+Framework src: `packages/app`. Examples: `packages/create-app/template` (minimal), `packages/app-files`,
 `packages/app-paint`, `packages/app-crossword`, `packages/app-code` (most complex).
 
 ---
@@ -510,7 +510,7 @@ injectStyle(`.foo { display: flex; height: 100%; }`, 'app-foo')
 ### Imperative / non-React GUI
 
 Plain `gui.ts` exporting `gui` via `defineGUI`. Here `state` **nullable** (host may mount before first
-state push — own bootstrap default). See `app-counter`/`app-doom`.
+state push — own bootstrap default). See `app-doom`.
 
 ```ts
 import { defineGUI } from '@justfiles/app/browser'
