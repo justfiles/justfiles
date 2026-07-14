@@ -19,12 +19,38 @@ export function OSProvider({ children }: { children: ReactNode }) {
 
 	// The signed-in user for the local `user` capability. Held in a ref (like
 	// getToken) so the kernel — created once — always reads the CURRENT Clerk session.
-	const { user } = useUser()
+	const { user, isLoaded: userLoaded } = useUser()
 	const getUserRef = useRef<() => UserProfile | null>(() => null)
 	getUserRef.current = () =>
 		user
 			? { id: user.id, name: user.fullName ?? user.username ?? undefined, avatarUrl: user.imageUrl }
 			: null
+
+	// frieren boots the OS before Clerk resolves (local-first), so a resumed window's
+	// first capability calls can race auth: `getToken`/`getUser` would return null and
+	// the app would latch a signed-out view (Settings showing "Local user", a socket
+	// CAPABILITY_UNAVAILABLE). Gate both on Clerk being loaded so those reads WAIT for
+	// the resolved session instead of capturing a null. Signed-out then resolves to a
+	// real null (not a race), which is correct.
+	const clerkReadyRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null)
+	if (!clerkReadyRef.current) {
+		let resolve!: () => void
+		const promise = new Promise<void>((r) => {
+			resolve = r
+		})
+		clerkReadyRef.current = { promise, resolve }
+	}
+	useEffect(() => {
+		if (isLoaded && userLoaded) clerkReadyRef.current?.resolve()
+	}, [isLoaded, userLoaded])
+	const readyGetToken = async (): Promise<string | null> => {
+		await clerkReadyRef.current?.promise
+		return getTokenRef.current()
+	}
+	const readyGetUser = async (): Promise<UserProfile | null> => {
+		await clerkReadyRef.current?.promise
+		return getUserRef.current()
+	}
 
 	// The current profile volume is opened at boot (App); the singleton hands back
 	// the same replica. getToken is only needed by network capabilities.
@@ -33,16 +59,12 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		let kernelPromise: Promise<ReturnType<typeof createClientKernel>> | undefined
 		return () =>
 			(kernelPromise ??= volumePromise.then((fs) =>
-				createClientKernel({
-					fs,
-					getToken: () => getTokenRef.current(),
-					getUser: () => getUserRef.current()
-				})
+				createClientKernel({ fs, getToken: readyGetToken, getUser: readyGetUser })
 			))
 	})
 	const [client] = useState(() =>
 		createFrierenClient({
-			getToken: () => getTokenRef.current(),
+			getToken: readyGetToken,
 			listLocalApps: async (): Promise<InstalledApp[]> => {
 				const kernel = await localKernel()
 				return Promise.all(
@@ -76,7 +98,7 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	const [{ store, flushPersist }] = useState(() =>
 		createOsStore({
 			appHost,
-			getToken: () => getTokenRef.current(),
+			getToken: readyGetToken,
 			send: client.send,
 			volume: volumePromise,
 			localKernel
