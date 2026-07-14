@@ -38,9 +38,10 @@ app.get('/ws', tokenWs)
 // The one browser-opened socket per session: the shared capability-proxy (`_caps`).
 app.get('/api/apps/_caps/ws', tokenWs)
 
-// The community app-store catalog is public (no auth) and R2-backed, served by the
-// worker rather than the static ASSETS (which carry only the built-in catalog).
-app.get('/appstore.json', (c) => serveCommunityCatalog(c.env))
+// `/store/*` is the reserved app-store namespace: the community catalog is public
+// (no auth) and R2-backed, served by the worker rather than the static ASSETS
+// (which carry only the built-in catalog). Per-app pages/search can layer on here.
+app.get('/store/catalog.json', (c) => serveCommunityCatalog(c.env))
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())
