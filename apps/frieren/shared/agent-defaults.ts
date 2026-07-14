@@ -32,6 +32,9 @@ const encoder = new TextEncoder()
 // local-only ones — the same split as built-in app seeding.
 export async function ensureAgentDefaults(volume: Volume): Promise<void> {
 	if (!(await volume.exists(PROFILE_PATH))) {
+		// After a `wipe` the whole volume is empty, so `/system` may not exist yet and
+		// `writeFile` does not create parents — ensure it before writing the profile.
+		await volume.mkdir('/system', { recursive: true })
 		await volume.writeFile(PROFILE_PATH, encoder.encode(DEFAULT_PROFILE))
 	}
 	if (!(await volume.exists(SOUL_PATH))) {

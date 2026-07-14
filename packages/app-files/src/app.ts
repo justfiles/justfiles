@@ -6,17 +6,30 @@ import * as v from 'valibot'
 // reloads. The reliable durable fact is "what is the user looking at"; the
 // bytes at that path can change underneath us, so they belong to a query
 // that re-reads on demand (think `cat /path/to/file`).
+//
+// The whole blob is persisted verbatim (kernel.state.ts), but the fields split
+// into two kinds. DURABLE facts (`currentViewing`, `revision`, `files`) are
+// worth carrying across a reload. The rest are TRANSIENT runtime state: they
+// describe a scan that is currently in flight, and a scan runs off-queue in
+// memory only — never replayed on boot (kernel.command.ts). So a persisted
+// `loading:true`/`rescanPending`/`error` is a runtime fact that is definitionally
+// false after a restart. The framework has no transient partition, so the GUI
+// neutralizes them on mount by re-kicking a scan (see gui.tsx). Nothing else may
+// assume these survive a reload.
 export type FilesState = {
 	currentViewing: string | null
 	// Bumped each time the watched file changes on disk (Part D). The GUI keys its
 	// preview re-read on it, so an external edit refreshes the open file.
 	revision: number
 	files: Array<{ path: string }>
+	// Transient: "a scan command is in flight". Coordinates single-flight in the
+	// core; reset on boot by the GUI (never trusted from persistence).
 	loading: boolean
-	// Single-flight trailing edge: a structural change arrived while a scan was in
-	// flight, so re-scan once the current one lands. Collapses bursts into one
-	// extra pass rather than a scan per event.
+	// Transient single-flight trailing edge: a structural change arrived while a
+	// scan was in flight, so re-scan once the current one lands. Collapses bursts
+	// into one extra pass rather than a scan per event.
 	rescanPending: boolean
+	// Transient: last scan failure, shown until the next scan clears it.
 	error: string | null
 }
 

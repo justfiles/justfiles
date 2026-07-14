@@ -376,6 +376,18 @@
 .frn-menubar-status {
 	color: rgba(255, 255, 255, 0.55);
 }
+/* Clickable status: same quiet look as the strip buttons, opens the sync-reset menu. */
+.frn-menubar-status-btn {
+	background: transparent;
+	border: none;
+	font: inherit;
+	padding: 2px 6px;
+	border-radius: 4px;
+	cursor: default;
+}
+.frn-menubar-status-btn:hover {
+	background: rgba(255, 255, 255, 0.12);
+}
 .frn-status-dot {
 	display: inline-block;
 	width: 6px;

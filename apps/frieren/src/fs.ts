@@ -337,7 +337,15 @@ export function flushActiveVolume(): void {
 function deleteIdb(name: string): Promise<void> {
 	return new Promise((resolve) => {
 		const req = indexedDB.deleteDatabase(name)
-		req.onsuccess = req.onerror = req.onblocked = () => resolve()
+		// Resolve only once the delete TRULY completes. Resolving on `onblocked` (the
+		// previous behaviour) let the caller's `location.reload()` race ahead and abort
+		// the still-pending delete, so the local replica survived a factory reset — its
+		// `/.state/materialised` marker then suppressed re-materialisation (empty desktop)
+		// and its stale sync state stalled the next bootstrap. `releaseFsVolume`'s
+		// destroy() already closed the connection, so a transient block clears itself.
+		req.onsuccess = req.onerror = () => resolve()
+		req.onblocked = () =>
+			console.warn(`[factoryReset] IndexedDB "${name}" delete blocked — close other tabs`)
 	})
 }
 

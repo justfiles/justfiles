@@ -1,5 +1,5 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
-import { useState, useSyncExternalStore } from 'react'
+import { type MouseEvent as ReactMouseEvent, useState, useSyncExternalStore } from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
@@ -9,7 +9,15 @@ import { AppViewport } from '../apps/AppViewport'
 import { resolveAppTitle } from '../apps/catalog'
 import { useAppCommands, useInstalledApps } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
-import { activeStatus, onActiveStatusChange, type SyncStatus } from '../fs'
+import {
+	activeProfileHasRemoteUser,
+	activeStatus,
+	factoryReset,
+	onActiveStatusChange,
+	resetTakeMine,
+	resetTakeTheirs,
+	type SyncStatus
+} from '../fs'
 import { AppWindow } from '../os/AppWindow'
 import { useOsStore } from '../os/hooks'
 import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
@@ -47,8 +55,10 @@ function subscribeOnline(onChange: () => void): () => void {
 }
 
 // Backend status: auth is optional, so this reflects the sync state when signed
-// in and "Signed out" otherwise. The desktop boots and runs regardless.
-function BackendStatus() {
+// in and "Signed out" otherwise. The desktop boots and runs regardless. When
+// `onOpenMenu` is given (debug builds) it becomes a button that opens the
+// sync-reset menu; otherwise it stays a plain label.
+function BackendStatus({ onOpenMenu }: { onOpenMenu?: (event: ReactMouseEvent) => void }) {
 	const { isSignedIn } = useAuth()
 	const status = useSyncExternalStore(
 		onActiveStatusChange,
@@ -61,6 +71,17 @@ function BackendStatus() {
 		() => true
 	)
 	const label = !isSignedIn ? 'Signed out' : !online ? 'Offline' : syncLabel(status)
+	if (onOpenMenu)
+		return (
+			<button
+				type="button"
+				className="frn-menubar-status frn-menubar-status-btn"
+				title={`Backend: ${label} · reset sync`}
+				onClick={onOpenMenu}
+			>
+				{label}
+			</button>
+		)
 	return (
 		<span className="frn-menubar-status" title={`Backend: ${label}`}>
 			{label}
@@ -75,7 +96,7 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 }
 
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
-	const { isSignedIn } = useAuth()
+	const { isSignedIn, getToken } = useAuth()
 	const installedApps = useInstalledApps()
 	const { launchApp, installApp, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
@@ -119,6 +140,43 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 		}
 	]
 
+	// Sync-status menu: the three destructive volume resets (see fs.ts / synced.ts).
+	// Each confirms first — all three throw data away and can't be undone. "Keep
+	// mine"/"Keep server" need a synced profile; "Reset everything" always works.
+	const syncedProfile = activeProfileHasRemoteUser()
+	const runReset = (confirmMsg: string, op: () => Promise<void>) => () => {
+		if (!confirm(confirmMsg)) return
+		op().catch((e: unknown) => alert(e instanceof Error ? e.message : String(e)))
+	}
+	const syncMenuItems: ContextMenuItem[] = [
+		{
+			label: 'Keep this device (overwrite server & others)',
+			disabled: !syncedProfile,
+			onSelect: runReset(
+				'Keep this device: overwrite the server with THIS device’s data. Every other device will discard its copy. This can’t be undone. Continue?',
+				() => resetTakeMine()
+			)
+		},
+		{
+			label: 'Keep server (discard this device’s changes)',
+			disabled: !syncedProfile,
+			onSelect: runReset(
+				'Keep server: discard THIS device’s local changes and re-download from the server. This can’t be undone. Continue?',
+				() => resetTakeTheirs()
+			)
+		},
+		{ separator: true },
+		{
+			label: 'Reset everything (wipe all devices)',
+			onSelect: runReset(
+				syncedProfile
+					? 'Reset everything: wipe the server AND every device, then reseed the built-in apps. This deletes everything and can’t be undone. Continue?'
+					: 'Reset everything: wipe this local workspace and reload. This deletes everything and can’t be undone. Continue?',
+				() => factoryReset(() => getToken())
+			)
+		}
+	]
+
 	// The focused app labels the menubar (macOS-style); the desktop falls back to
 	// the shell name. Version rides alongside in muted text when the app declares one.
 	const focusedApp = focusedAppId ? installedApps.find((app) => app.id === focusedAppId) : undefined
@@ -136,7 +194,11 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						</span>
 					</div>
 					<div className="frn-menubar-group">
-						<BackendStatus />
+						<BackendStatus
+							onOpenMenu={
+								resetDebugEnabled ? (event) => menu.open(event, syncMenuItems) : undefined
+							}
+						/>
 						<span
 							className="frn-status-dot"
 							style={{ background: statusDotColor[connection.state] }}

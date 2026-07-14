@@ -55,12 +55,19 @@ function formatSize(bytes: number): string {
 type Preview = { path: string; content: string; truncated: boolean; size: number }
 
 function Files({ state, client }: { state: FilesState; client: Client<FilesApp> }) {
+	// Kick a scan on first mount when the tree is empty OR the persisted state is
+	// stuck at `loading`. A scan runs off-queue in memory only and is never replayed
+	// on boot (see kernel.command.ts), so a session that ended mid-scan rehydrates as
+	// `loading: true` with a stale (possibly non-empty) file list and no scan in
+	// flight — a permanent "Loading…". A fresh mount can't have a scan running, so a
+	// lingering `loading` is always stale; re-kicking clears it. The reducer
+	// single-flights scans, so the extra call is safe.
 	const refreshed = useRef(false)
 	useEffect(() => {
 		if (refreshed.current) return
 		refreshed.current = true
-		if (state.files.length === 0) void client.refresh({})
-	}, [client, state.files.length])
+		if (state.loading || state.files.length === 0) void client.refresh({})
+	}, [client, state.loading, state.files.length])
 
 	// Re-read the file whenever `currentViewing` changes — or when `revision`
 	// bumps, which the app does each time the watched file changes on disk (Part
