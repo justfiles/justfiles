@@ -39,6 +39,7 @@ function spudProvider(generate: (system: string, prompt: string) => Promise<stri
 	return {
 		id: 'spud',
 		name: 'Spud AI',
+		builtin: true,
 		auth: { kind: 'form', credentialsSchema: { type: 'object', properties: {} } },
 		mint: {
 			ai: () => ({

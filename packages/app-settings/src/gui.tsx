@@ -269,14 +269,16 @@ function ConnectedAccount({
 						<p className="settings-account-status is-connected">Connected · {account.accountId}</p>
 					</div>
 				</div>
-				<button
-					type="button"
-					className="settings-small-button"
-					disabled={busy}
-					onClick={disconnect}
-				>
-					Disconnect
-				</button>
+				{provider?.builtin ? null : (
+					<button
+						type="button"
+						className="settings-small-button"
+						disabled={busy}
+						onClick={disconnect}
+					>
+						Disconnect
+					</button>
+				)}
 			</div>
 			<div className="settings-caps">
 				{caps.map((cap) => {

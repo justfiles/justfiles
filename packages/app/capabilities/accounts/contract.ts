@@ -26,6 +26,9 @@ export interface ProviderInfo {
 	id: string
 	name: string
 	authKind: 'form' | 'oauth'
+	// Platform-managed (e.g. Spud AI): the UI offers no connect/disconnect, only its
+	// capability toggles.
+	builtin?: boolean
 	// Capabilities an account from this provider can back.
 	capabilities: CapabilityId[]
 	// Present iff authKind === 'form' — the fields the connect form renders.

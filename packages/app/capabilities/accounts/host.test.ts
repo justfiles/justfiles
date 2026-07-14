@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import {
 	accountsCapabilities,
+	ensureAccount,
 	type Provider,
 	type ProviderRegistry,
 	resolveAiAccount
@@ -170,6 +171,30 @@ describe('accounts admin host', () => {
 			call(SETTINGS, 'setEnabled', { accountId: 'fastmail', capability: 'email', enabled: false })
 		)
 		expect((await store.get('fastmail'))?.enabled).toEqual({})
+	})
+
+	test('ai is single-active: enabling it on one account turns it off on the others', async () => {
+		const ai = aiProvider()
+		const { caps, store } = await setup(new Map([[ai.id, ai]]), [
+			{ accountId: 'a1', providerId: 'chatgpt', creds: { access: 'x' }, enabled: { ai: {} } },
+			{ accountId: 'a2', providerId: 'chatgpt', creds: { access: 'y' }, enabled: {} }
+		])
+		await caps.accounts.invoke(
+			call(SETTINGS, 'setEnabled', { accountId: 'a2', capability: 'ai', enabled: true })
+		)
+		expect('ai' in ((await store.get('a1'))?.enabled ?? {})).toBe(false)
+		expect('ai' in ((await store.get('a2'))?.enabled ?? {})).toBe(true)
+	})
+
+	test('ensureAccount seeds a default once, then leaves the stored toggle alone', async () => {
+		const vol = volume(memStorage())
+		const store = volumeAccountsStore(vol)
+		await ensureAccount(vol, { accountId: 'spud', providerId: 'spud', enabled: ['ai'] })
+		expect((await store.get('spud'))?.enabled).toEqual({ ai: {} })
+		// A returning user turned it off; a later ensure must not re-enable it.
+		await store.put({ accountId: 'spud', providerId: 'spud', creds: {}, enabled: {} })
+		await ensureAccount(vol, { accountId: 'spud', providerId: 'spud', enabled: ['ai'] })
+		expect((await store.get('spud'))?.enabled).toEqual({})
 	})
 
 	test('non-first-party app cannot tell the facet exists', async () => {

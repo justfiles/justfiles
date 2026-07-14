@@ -57,6 +57,9 @@ export interface Provider {
 	// UI-facing config `listAccounts` returns (e.g. ai → selected + available
 	// models). Absent → the raw stored config is surfaced unchanged.
 	describe?: Partial<Record<CapabilityId, (config: unknown) => unknown>>
+	// Platform-managed provider (e.g. Spud AI): seeded and always present, so the UI
+	// offers no connect/disconnect — only its capability toggles.
+	builtin?: boolean
 }
 
 export type ProviderRegistry = Map<string, Provider>
@@ -232,12 +235,40 @@ const accountsAdminHost = (
 			const next: Partial<Record<CapabilityId, unknown>> = { ...account.enabled }
 			if (enabled) next[capability] = config ?? next[capability] ?? {}
 			else delete next[capability]
+			// `ai` is single-active: only one account backs the agent/apps at a time, so
+			// enabling it here turns `ai` off on every other account (the "choose which
+			// AI" radio). email/calendar stay multi-account (they fan out).
+			if (enabled && capability === 'ai') {
+				for (const other of await accounts.list()) {
+					if (other.accountId === accountId || !('ai' in other.enabled)) continue
+					const { ai: _drop, ...rest } = other.enabled
+					await accounts.put({ ...other, enabled: rest })
+				}
+			}
 			await accounts.put({ ...account, creds, scopes, enabled: next })
 		},
 		disconnect: async (ctx, { accountId }) => {
 			guard(ctx)
 			await accounts.delete(accountId)
 		}
+	})
+}
+
+// Seed a credential-less account once, if it doesn't already exist — for a
+// platform-managed provider (Spud AI) that should be present and enabled by
+// default. Idempotent: a returning user's stored toggles (they may have turned it
+// off, or enabled a different AI) are left untouched.
+export async function ensureAccount(
+	volume: Volume,
+	input: { accountId: string; providerId: string; enabled: CapabilityId[] }
+): Promise<void> {
+	const store = volumeAccountsStore(volume)
+	if (await store.get(input.accountId)) return
+	await store.put({
+		accountId: input.accountId,
+		providerId: input.providerId,
+		creds: {},
+		enabled: Object.fromEntries(input.enabled.map((c) => [c, {}]))
 	})
 }
 
@@ -294,6 +325,7 @@ function toProviderInfo(p: Provider): ProviderInfo {
 		id: p.id,
 		name: p.name,
 		authKind: p.auth.kind,
+		builtin: p.builtin,
 		capabilities: Object.keys(p.mint) as CapabilityId[],
 		credentialsSchema: p.auth.kind === 'form' ? p.auth.credentialsSchema : undefined
 	}

@@ -10,7 +10,11 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
-import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
+import {
+	accountsCapabilities,
+	ensureAccount,
+	resolveAiAccount
+} from '@justfiles/app/capabilities/accounts/host'
 import {
 	clearReset,
 	createFsApi,
@@ -161,6 +165,10 @@ export class Frieren extends DurableObject<Env> {
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
 		await ensureAgentDefaults(this.vol)
+		// Spud AI: the platform-provided, always-on default backend. Seed it once with
+		// `ai` enabled so a fresh user has a working agent; a returning user's toggle
+		// (they may have turned it off or switched to another AI) is left untouched.
+		await ensureAccount(this.vol, { accountId: 'spud', providerId: 'spud', enabled: ['ai'] })
 		this.session?.abort()
 		this.text = text({ model, apiKey })
 		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps
@@ -185,12 +193,19 @@ export class Frieren extends DurableObject<Env> {
 			calendar,
 			accounts: caps.accounts
 		})
-		// The agent PRODUCT: turn runner + tools (bash/fetch/search/ask_user + the `app`
-		// command over the kernel) + compaction + classified errors. frieren's backend is
-		// env-keyed (no rotation), so a static `apiKeyBackend` suffices.
+		// The agent's LLM backend resolves from the enabled `ai` account (single-active):
+		// Spud AI → the platform env backend; nothing enabled → no backend, so a turn
+		// fails with a clear "turn on AI in Settings" the chat surfaces. Re-resolved per
+		// turn, so toggling AI in Settings takes effect on the next prompt.
 		this.session = createAgentSession({
 			volume: this.vol,
-			backend: apiKeyBackend({ model, apiKey }),
+			backend: async () => {
+				const backend = await resolveAiAccount(this.vol, ({ providerId }) =>
+					providerId === 'spud' ? apiKeyBackend({ model, apiKey }) : null
+				)
+				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
+				return backend
+			},
 			apps: this.requireApps().controller,
 			timezone: this.getTimezone
 		})
