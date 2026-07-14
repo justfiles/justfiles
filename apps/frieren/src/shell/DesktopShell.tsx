@@ -100,7 +100,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const installedApps = useInstalledApps()
 	const { launchApp, installApp, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
-	const { agentName } = useAgentSession()
+	const { agentName, refreshIdentity } = useAgentSession()
 	const menu = useContextMenu()
 	const focusedAppId = useOsStore(selectFocusedAppId)
 
@@ -242,16 +242,28 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 									: agentName
 							}
 						>
-							{window.appId ? <AppViewport id={window.id} /> : <MessagesPanel />}
+							{window.appId ? (
+								<AppViewport id={window.id} />
+							) : (
+								<MessagesPanel onPersonalize={() => setPersonalizeOpen(true)} />
+							)}
 						</AppWindow>
 					))}
 				</div>
 				{fullscreenId ? null : (
-					<Omnibar onAppMenu={(event, app) => menu.open(event, appMenuItems(app))} />
+					<Omnibar
+						onAppMenu={(event, app) => menu.open(event, appMenuItems(app))}
+						onPersonalize={() => setPersonalizeOpen(true)}
+					/>
 				)}
 			</div>
 			<ContextMenu state={menu.state} onClose={menu.close} />
-			{personalizeOpen ? <PersonalizePanel onClose={() => setPersonalizeOpen(false)} /> : null}
+			{personalizeOpen ? (
+				<PersonalizePanel
+					onClose={() => setPersonalizeOpen(false)}
+					onIdentityChange={refreshIdentity}
+				/>
+			) : null}
 			{resetOpen ? <ResetPanel onClose={() => setResetOpen(false)} /> : null}
 		</div>
 	)

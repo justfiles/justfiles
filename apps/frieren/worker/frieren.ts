@@ -95,7 +95,7 @@ export class Frieren extends DurableObject<Env> {
 					return c.json({ error: 'agentName and archetype are required' }, 400)
 				}
 				const generated = await this.generateSoul(body)
-				return c.json({ text: generated })
+				return c.json(generated)
 			})
 			.route(
 				'/fs',
@@ -147,7 +147,9 @@ export class Frieren extends DurableObject<Env> {
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
-	private async generateSoul(input: SoulGenerationInput): Promise<string> {
+	private async generateSoul(
+		input: SoulGenerationInput
+	): Promise<{ text: string; firstWords: string }> {
 		if (!this.text) {
 			const { model, apiKey } = this.getBackendConfig()
 			this.text = text({ model, apiKey })
@@ -156,7 +158,13 @@ export class Frieren extends DurableObject<Env> {
 		if (input.agentGender) lines.push(`agent gender: ${input.agentGender}`)
 		if (input.userAge !== undefined) lines.push(`user age: ${input.userAge}`)
 		if (input.userGender) lines.push(`user gender: ${input.userGender}`)
-		return this.text.gen(SOUL_GENERATION_PROMPT, lines.join('\n'))
+		const context = lines.join('\n')
+		const soul = await this.text.gen(SOUL_GENERATION_PROMPT, context)
+		const firstWords = await this.text.gen(
+			'Return one short opening sentence spoken by this agent. No label, explanation, or quotation marks.',
+			`${context}\n\nsoul:\n${soul}`
+		)
+		return { text: soul, firstWords: firstWords.trim() }
 	}
 
 	private async reset() {

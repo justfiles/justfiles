@@ -5,6 +5,7 @@ import type { Volume } from '@justfiles/fs'
 // open; now these are SEEDED with sensible defaults so the agent works out of the
 // box and personalization is opt-in (see PersonalizePanel).
 export const SOUL_PATH = '/system/agents/main/soul.md'
+export const AVATAR_PATH = '/system/agents/main/avatar.png'
 export const PROFILE_PATH = '/system/user.md'
 
 // A neutral, working persona so a brand-new user gets a capable agent with no
@@ -13,6 +14,7 @@ const DEFAULT_SOUL = `---
 schema: frieren/agent-soul/v1
 agent_name: Frieren
 archetype: assistant
+seeded: true
 ---
 
 You are Frieren, a calm and capable desktop companion. You help with whatever the user is working on — organising files, drafting text, answering questions, and getting things done on their machine. You are concise and clear, proactive without being pushy, and you never pretend to know something you don't. You adapt to how the user likes to work and remember what matters to them over time.
@@ -21,6 +23,7 @@ You are Frieren, a calm and capable desktop companion. You help with whatever th
 // An empty profile — no personal facts until the user chooses to share them.
 const DEFAULT_PROFILE = `---
 schema: frieren/user-profile/v1
+seeded: true
 ---
 `
 

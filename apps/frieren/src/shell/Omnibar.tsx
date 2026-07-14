@@ -8,6 +8,7 @@ import {
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
+import { Whisper } from '../agent/Whisper'
 import { useAppCommands, useInstalledApps } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import { useAgentClient, useOsDispatch, useOsStore } from '../os/hooks'
@@ -40,11 +41,13 @@ function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
 }
 
 export function Omnibar({
-	onAppMenu
+	onAppMenu,
+	onPersonalize
 }: {
 	// Right-click on an app tile reuses the desktop's shared context menu
 	// (Open / Uninstall), so deleting the dock doesn't strand uninstall.
 	onAppMenu?: (event: ReactMouseEvent, app: InstalledApp) => void
+	onPersonalize: () => void
 }) {
 	const apps = useInstalledApps()
 	const { launchApp } = useAppCommands()
@@ -212,7 +215,20 @@ export function Omnibar({
 					{showTranscript ? (
 						<div className="frn-omnibar-chat">
 							<div className="frn-omnibar-chat-head">
-								<span>{session.agentName}</span>
+								<button
+									type="button"
+									className="frn-omnibar-chat-identity"
+									title="Personalize"
+									onClick={onPersonalize}
+								>
+									<img
+										src={session.avatarUrl}
+										alt=""
+										className="frn-agent-avatar"
+										data-personalized={session.personalized}
+									/>
+									<span>{session.agentName}</span>
+								</button>
 								<button
 									type="button"
 									className="frn-omnibar-expand"
@@ -235,6 +251,7 @@ export function Omnibar({
 									) : undefined
 								}
 							/>
+							{session.personalized ? null : <Whisper onPersonalize={onPersonalize} />}
 						</div>
 					) : showList ? (
 						<ul className="frn-omnibar-list">
