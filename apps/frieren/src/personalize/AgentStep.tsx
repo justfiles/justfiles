@@ -1,103 +1,190 @@
 import { useAuth } from '@clerk/clerk-react'
-import { type FormEvent, useState } from 'react'
-import teacherImage from '../assets/frieren.avif'
-import assistantImage from '../assets/heiter.avif'
-import companionImage from '../assets/himmel.jpg'
+import { PencilSimpleIcon, PlusIcon } from '@phosphor-icons/react'
+import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
+import agentAvatarUrl from '../agent/agent-avatar.png'
+import assistantImage from '../assets/assistant.png'
+import companionImage from '../assets/companion.png'
+import teacherImage from '../assets/teacher.png'
 import type { Volume } from '../fs'
-import { PATHS } from './state'
+import { RitualCircle } from './RitualCircle'
+import { type IdentityFile, PATHS } from './state'
 
 const encoder = new TextEncoder()
 
 type Archetype = 'teacher' | 'companion' | 'assistant'
+type Face = 'spirit' | 'archetype' | 'upload'
 
-const ARCHETYPES: {
+type ArchetypeInfo = {
 	id: Archetype
 	title: string
 	tagline: string
-	blurb: string
 	image: string
-}[] = [
+	disposition: [number, number, number]
+}
+
+const ARCHETYPES: ArchetypeInfo[] = [
 	{
 		id: 'teacher',
 		title: 'Teacher',
 		tagline: 'Leads you to your own answers.',
-		blurb:
-			'Patient and knowledgeable. Guides through questions rather than giving answers. Celebrates the moment of realisation.',
-		image: teacherImage
+		image: teacherImage,
+		disposition: [4, 2, 2]
 	},
 	{
 		id: 'companion',
 		title: 'Companion',
 		tagline: 'Beside you, not above you.',
-		blurb:
-			'A peer. Warm, attentive, loyal. Faces things alongside you rather than solving them for you. Remembers what matters.',
-		image: companionImage
+		image: companionImage,
+		disposition: [4, 2, 3]
 	},
 	{
 		id: 'assistant',
 		title: 'Assistant',
 		tagline: 'Gets things done.',
-		blurb:
-			'Task-oriented and reliable. Organised and proactive. Anticipates what you need. Clear, brief, on-point.',
-		image: assistantImage
+		image: assistantImage,
+		disposition: [2, 5, 5]
 	}
 ]
 
-const GENDER_OPTIONS = [
-	{ value: 'female', label: 'Female' },
-	{ value: 'male', label: 'Male' },
-	{ value: 'nonbinary', label: 'Non-binary' },
+const FORMS = [
+	{ value: 'female', label: 'She' },
+	{ value: 'male', label: 'He' },
+	{ value: 'nonbinary', label: 'They' },
 	{ value: 'none', label: 'None' }
 ] as const
 
 type Draft = {
 	name: string
 	gender: string
-	archetype: Archetype | null
+	archetype: Archetype
 }
-
-const EMPTY: Draft = { name: '', gender: '', archetype: null }
 
 type UserCtx = { userAge?: number; userGender?: string }
 
+function isArchetype(value?: string): value is Archetype {
+	return ARCHETYPES.some((archetype) => archetype.id === value)
+}
+
+function initialDraft(soul: IdentityFile | null): Draft {
+	const archetype = soul?.frontmatter.archetype
+	return {
+		name: soul?.frontmatter.agent_name ?? '',
+		gender: soul?.frontmatter.agent_gender ?? 'none',
+		archetype: isArchetype(archetype) ? archetype : 'companion'
+	}
+}
+
+function safeLine(value: string): string {
+	return value.trim().replace(/[\r\n]+/g, ' ')
+}
+
 function buildSoulFile(draft: Draft, body: string): string {
-	const lines = ['---', 'schema: frieren/agent-soul/v1', `agent_name: ${draft.name.trim()}`]
-	if (draft.gender && draft.gender !== 'none') lines.push(`agent_gender: ${draft.gender}`)
+	const lines = ['---', 'schema: frieren/agent-soul/v1', `agent_name: ${safeLine(draft.name)}`]
+	if (draft.gender !== 'none') lines.push(`agent_gender: ${draft.gender}`)
 	lines.push(`archetype: ${draft.archetype}`, '---', '', body.trim(), '')
 	return lines.join('\n')
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader()
+		reader.onload = () => resolve(String(reader.result))
+		reader.onerror = () => reject(reader.error)
+		reader.readAsDataURL(blob)
+	})
+}
+
+async function squarePng(source: string): Promise<Uint8Array> {
+	const image = new Image()
+	image.src = source
+	await image.decode()
+	const size = Math.min(image.naturalWidth, image.naturalHeight)
+	const x = (image.naturalWidth - size) / 2
+	const y = (image.naturalHeight - size) / 2
+	const canvas = document.createElement('canvas')
+	canvas.width = 256
+	canvas.height = 256
+	canvas.getContext('2d')?.drawImage(image, x, y, size, size, 0, 0, 256, 256)
+	const blob = await new Promise<Blob>((resolve, reject) =>
+		canvas.toBlob(
+			(value) => (value ? resolve(value) : reject(new Error('Could not create avatar'))),
+			'image/png'
+		)
+	)
+	return new Uint8Array(await blob.arrayBuffer())
+}
+
+const PIPS = ['one', 'two', 'three', 'four', 'five'] as const
+
+function Disposition({ values }: { values: [number, number, number] }) {
+	return (
+		<dl className="frn-disposition">
+			{['Warmth', 'Initiative', 'Directness'].map((label, row) => (
+				<div key={label}>
+					<dt>{label}</dt>
+					<dd title={`${values[row]} of 5`}>
+						{PIPS.map((pip, index) => (
+							<i key={pip} data-lit={index < (values[row] ?? 0)} />
+						))}
+					</dd>
+				</div>
+			))}
+		</dl>
+	)
 }
 
 export function AgentStep({
 	volume,
 	userCtx,
+	initialSoul,
+	onBack,
 	onDone
 }: {
 	volume: Volume
 	userCtx: UserCtx
+	initialSoul: IdentityFile | null
+	onBack: () => void
 	onDone: () => void
 }) {
 	const { getToken } = useAuth()
-	const [draft, setDraft] = useState<Draft>(EMPTY)
-	const [soulText, setSoulText] = useState('')
+	const [draft, setDraft] = useState(() => initialDraft(initialSoul))
+	const [stage, setStage] = useState<'summoning' | 'binding'>(initialSoul ? 'binding' : 'summoning')
+	const [soulText, setSoulText] = useState(initialSoul?.body ?? '')
+	const [firstWords, setFirstWords] = useState('“I’m here. What should we start with?”')
 	const [generating, setGenerating] = useState(false)
 	const [saving, setSaving] = useState(false)
+	const [editing, setEditing] = useState(false)
 	const [error, setError] = useState<string | null>(null)
+	const [face, setFace] = useState<Face>('archetype')
+	const [uploadedFace, setUploadedFace] = useState<string | null>(null)
+	const uploadRef = useRef<HTMLInputElement>(null)
+	const selectedArchetype = ARCHETYPES.find((item) => item.id === draft.archetype) ?? ARCHETYPES[1]
+	const faceUrl =
+		face === 'spirit'
+			? agentAvatarUrl
+			: face === 'upload' && uploadedFace
+				? uploadedFace
+				: selectedArchetype.image
 
-	const canSubmit = draft.name.trim().length > 0 && draft.archetype !== null
-	const selectedArchetype =
-		draft.archetype === null
-			? null
-			: (ARCHETYPES.find((archetype) => archetype.id === draft.archetype) ?? null)
+	useEffect(() => {
+		if (!initialSoul) return
+		void (async () => {
+			if (!(await volume.exists(PATHS.avatar))) return
+			const dataUrl = await blobToDataUrl(
+				new Blob([(await volume.readFile(PATHS.avatar)) as BlobPart], { type: 'image/png' })
+			)
+			setUploadedFace(dataUrl)
+			setFace('upload')
+		})().catch(() => {})
+	}, [initialSoul, volume])
 
-	const generate = async (archetype: Archetype) => {
+	const generate = async () => {
 		if (!draft.name.trim()) return
-		setDraft({ ...draft, archetype })
 		setGenerating(true)
-		setSoulText('')
 		setError(null)
 		try {
 			const token = await getToken()
-			const res = await fetch('/api/agent/soul', {
+			const response = await fetch('/api/agent/soul', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -105,15 +192,17 @@ export function AgentStep({
 				},
 				body: JSON.stringify({
 					agentName: draft.name.trim(),
-					agentGender: draft.gender && draft.gender !== 'none' ? draft.gender : undefined,
-					archetype,
+					agentGender: draft.gender === 'none' ? undefined : draft.gender,
+					archetype: draft.archetype,
 					userAge: userCtx.userAge,
 					userGender: userCtx.userGender
 				})
 			})
-			if (!res.ok) throw new Error(`Summoning failed: ${res.status}`)
-			const data = (await res.json()) as { text: string }
+			if (!response.ok) throw new Error(`Summoning failed: ${response.status}`)
+			const data = (await response.json()) as { text: string; firstWords?: string }
 			setSoulText(data.text)
+			if (data.firstWords) setFirstWords(data.firstWords)
+			setStage('binding')
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause))
 		} finally {
@@ -121,179 +210,210 @@ export function AgentStep({
 		}
 	}
 
-	const pickArchetype = (event: FormEvent) => {
-		event.preventDefault()
-		if (!canSubmit || !draft.archetype) return
-		void generate(draft.archetype)
+	const upload = async (event: ChangeEvent<HTMLInputElement>) => {
+		const file = event.target.files?.[0]
+		if (!file) return
+		setError(null)
+		try {
+			const source = URL.createObjectURL(file)
+			const png = await squarePng(source)
+			URL.revokeObjectURL(source)
+			setUploadedFace(await blobToDataUrl(new Blob([png as BlobPart], { type: 'image/png' })))
+			setFace('upload')
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause))
+		}
 	}
 
-	const regenerate = () => {
-		if (!draft.archetype) return
-		void generate(draft.archetype)
-	}
-
-	const confirm = async () => {
-		if (!draft.archetype) return
+	const bind = async () => {
+		if (!soulText.trim()) return
 		setSaving(true)
 		setError(null)
 		try {
+			const avatar = await squarePng(faceUrl)
 			await volume.writeFile(PATHS.soul, encoder.encode(buildSoulFile(draft, soulText)))
+			await volume.writeFile(PATHS.avatar, avatar)
 			onDone()
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause))
-		} finally {
 			setSaving(false)
 		}
 	}
 
-	if (soulText || generating) {
+	if (stage === 'binding') {
 		return (
-			<div className="frn-onb-form" style={{ maxWidth: 768 }}>
-				<div className="frn-card">
-					<span className="frn-badge">The Summoning</span>
-					<h2 className="frn-card-title">{draft.name.trim()} takes shape.</h2>
-					<p className="frn-card-desc">Read their soul. Adjust anything that does not ring true.</p>
-
-					{generating ? (
-						<div className="frn-summoning">
-							<div className="frn-summoning-dots">
-								<span />
-								<span />
-								<span />
-							</div>
-							<p>Summoning…</p>
-						</div>
+			<main className="frn-binding">
+				<div className="frn-binding-circle" aria-hidden="true" />
+				<section className="frn-soul-card">
+					<small>The Soul</small>
+					<h1>
+						{draft.name.trim()} · {selectedArchetype.title}
+					</h1>
+					<button type="button" className="frn-soul-edit" onClick={() => setEditing(!editing)}>
+						<PencilSimpleIcon /> {editing ? 'Done' : 'Edit'}
+					</button>
+					{editing ? (
+						<textarea value={soulText} onChange={(event) => setSoulText(event.target.value)} />
 					) : (
-						<div className="frn-field">
-							<label className="frn-field-label" htmlFor="agent-soul-text">
-								Soul
-							</label>
-							<textarea
-								id="agent-soul-text"
-								className="frn-soul-textarea"
-								value={soulText}
-								onChange={(e) => setSoulText(e.target.value)}
-							/>
-							<p className="frn-field-desc">
-								Edit the draft directly before binding it to your companion.
-							</p>
-						</div>
+						<p className="frn-soul-prose">{soulText}</p>
 					)}
-
-					{error ? <p className="frn-field-error">{error}</p> : null}
-
-					<div className="frn-card-footer">
-						<button
-							type="button"
-							onClick={() => {
-								setSoulText('')
-								setDraft({ ...draft, archetype: null })
-							}}
-							disabled={generating || saving}
-						>
-							Back
-						</button>
-						<button type="button" onClick={regenerate} disabled={generating || saving}>
-							Regenerate
-						</button>
-						<button
-							type="button"
-							className="frn-btn-primary"
-							style={{ marginLeft: 'auto' }}
-							onClick={() => void confirm()}
-							disabled={generating || saving || !soulText.trim()}
-						>
-							{saving ? 'Binding…' : 'Bind'}
-						</button>
+					<em>
+						This is their soul. You hold the pen — press Edit to rewrite any line before you bind
+						it.
+					</em>
+					<div className="frn-soul-tags">
+						<span>{draft.name.trim()}</span>
+						<span>{draft.archetype}</span>
+						{draft.gender === 'none' ? null : (
+							<span>{FORMS.find((item) => item.value === draft.gender)?.label.toLowerCase()}</span>
+						)}
 					</div>
+				</section>
+
+				<section className="frn-face-picker">
+					<small>The Face</small>
+					<div>
+						<button
+							type="button"
+							data-selected={face === 'spirit'}
+							onClick={() => setFace('spirit')}
+						>
+							<img src={agentAvatarUrl} alt="The pixel spirit" />
+						</button>
+						<button
+							type="button"
+							data-selected={face === 'archetype'}
+							onClick={() => setFace('archetype')}
+						>
+							<img src={selectedArchetype.image} alt={`${selectedArchetype.title} portrait`} />
+						</button>
+						<button
+							type="button"
+							data-selected={face === 'upload'}
+							onClick={() => uploadRef.current?.click()}
+						>
+							{uploadedFace ? <img src={uploadedFace} alt="Uploaded portrait" /> : <PlusIcon />}
+						</button>
+						<input
+							ref={uploadRef}
+							type="file"
+							accept="image/*"
+							hidden
+							onChange={(event) => void upload(event)}
+						/>
+					</div>
+					<em>
+						the face they wear in your chat — the spirit, their portrait, or any image of yours
+					</em>
+				</section>
+
+				<section className="frn-first-words">
+					<img src={faceUrl} alt="" />
+					<div>
+						<small>{draft.name.trim()} · First words</small>
+						<p>{firstWords}</p>
+					</div>
+				</section>
+
+				{error ? <p className="frn-ritual-error">{error}</p> : null}
+				<div className="frn-binding-actions">
+					<button
+						type="button"
+						className="frn-ritual-primary"
+						onClick={() => void bind()}
+						disabled={saving}
+					>
+						{saving ? 'Binding…' : 'Bind the soul'}
+					</button>
+					<button type="button" onClick={() => void generate()} disabled={generating || saving}>
+						{generating ? 'Rewriting…' : 'Rewrite'}
+					</button>
+					<button type="button" onClick={() => setStage('summoning')} disabled={saving}>
+						Change form
+					</button>
+					<em>binding writes soul.md — the whisper falls silent</em>
 				</div>
-			</div>
+			</main>
 		)
 	}
 
 	return (
-		<form className="frn-onb-form" style={{ maxWidth: 768 }} onSubmit={pickArchetype}>
-			<div className="frn-card">
-				<span className="frn-badge">The Summoning</span>
-				<h2 className="frn-card-title">Call your companion.</h2>
-				<p className="frn-card-desc">Give them a name, a shape, and the stance they should take.</p>
-
-				<div className="frn-field-group">
-					<div className="frn-field">
-						<label className="frn-field-label" htmlFor="agent-name">
-							Name
-						</label>
-						<input
-							id="agent-name"
-							type="text"
-							value={draft.name}
-							onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-							required
-						/>
+		<main className="frn-summoning-page" data-generating={generating}>
+			<section className="frn-summoning-portrait">
+				<div className="frn-portrait-arch">
+					<img src={selectedArchetype.image} alt="" />
+					<div>
+						<strong>{draft.name.trim() || 'Nameless'}</strong>
+						<span>{selectedArchetype.title}</span>
 					</div>
-
-					<div className="frn-field">
-						<label className="frn-field-label" htmlFor="agent-gender">
-							Gender <span className="frn-muted">(optional)</span>
-						</label>
-						<select
-							id="agent-gender"
-							value={draft.gender}
-							onChange={(e) => setDraft({ ...draft, gender: e.target.value })}
-						>
-							<option value="">—</option>
-							{GENDER_OPTIONS.map((option) => (
-								<option key={option.value} value={option.value}>
-									{option.label}
-								</option>
-							))}
-						</select>
-					</div>
-
-					<div className="frn-field">
-						<span className="frn-field-label">Archetype</span>
-						<p className="frn-field-desc">
-							Choose the stance they should take when they speak to you.
-						</p>
-						<div className="frn-archetype-grid">
-							{ARCHETYPES.map((archetype) => {
-								const selected = draft.archetype === archetype.id
-								return (
-									<label key={archetype.id}>
-										<input
-											type="radio"
-											name="agent-archetype"
-											value={archetype.id}
-											checked={selected}
-											onChange={() => setDraft({ ...draft, archetype: archetype.id })}
-											style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }}
-										/>
-										<div className="frn-archetype-card" data-selected={selected}>
-											<img src={archetype.image} alt={`${archetype.title} placeholder`} />
-											<span className="frn-archetype-dot" aria-hidden="true" />
-										</div>
-									</label>
-								)
-							})}
-						</div>
-						{selectedArchetype ? (
-							<div className="frn-card" style={{ gap: 4, padding: '12px 0' }}>
-								<h3 className="frn-card-title">{selectedArchetype.title}</h3>
-								<p className="frn-card-desc">{selectedArchetype.tagline}</p>
-								<p className="frn-field-desc">{selectedArchetype.blurb}</p>
-							</div>
-						) : null}
-					</div>
-
-					{error ? <p className="frn-field-error">{error}</p> : null}
 				</div>
-
-				<div className="frn-card-footer">
-					<button type="submit" className="frn-btn-primary" disabled={!canSubmit}>
-						Summon
+				<Disposition values={selectedArchetype.disposition} />
+				{generating ? <RitualCircle fast /> : null}
+			</section>
+			<form
+				className="frn-summoning-choices"
+				onSubmit={(event: FormEvent) => {
+					event.preventDefault()
+					void generate()
+				}}
+			>
+				<label className="frn-summoning-name">
+					<small>Name</small>
+					<em>What will you call them?</em>
+					<input
+						type="text"
+						value={draft.name}
+						onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+						required
+					/>
+				</label>
+				<fieldset className="frn-nature">
+					<legend>Nature</legend>
+					<div>
+						{ARCHETYPES.map((archetype) => (
+							<button
+								key={archetype.id}
+								type="button"
+								data-selected={draft.archetype === archetype.id}
+								onClick={() => setDraft({ ...draft, archetype: archetype.id })}
+							>
+								<img src={archetype.image} alt="" />
+								<strong>{archetype.title}</strong>
+								<span>{archetype.tagline}</span>
+							</button>
+						))}
+					</div>
+				</fieldset>
+				<fieldset className="frn-form-picker">
+					<legend>Form</legend>
+					<div>
+						{FORMS.map((form) => (
+							<button
+								key={form.value}
+								type="button"
+								data-selected={draft.gender === form.value}
+								onClick={() => setDraft({ ...draft, gender: form.value })}
+							>
+								{form.label}
+							</button>
+						))}
+					</div>
+				</fieldset>
+				{error ? <p className="frn-ritual-error">{error}</p> : null}
+				<div className="frn-summoning-actions">
+					<button
+						type="submit"
+						className="frn-ritual-primary"
+						disabled={!draft.name.trim() || generating}
+					>
+						{generating ? 'Summoning…' : 'Begin the summoning'}
 					</button>
+					<button type="button" onClick={onBack} disabled={generating}>
+						Back
+					</button>
+					<em>the soul is written before your eyes — nothing is saved yet</em>
 				</div>
-			</div>
-		</form>
+			</form>
+		</main>
 	)
 }

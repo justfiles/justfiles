@@ -13,6 +13,9 @@ export interface AgentSession {
 	setInput: (value: string) => void
 	userName: string
 	agentName: string
+	avatarUrl: string
+	personalized: boolean
+	refreshIdentity: () => Promise<void>
 	isStreaming: boolean
 	sendMessage: () => void
 	abort: () => void

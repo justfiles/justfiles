@@ -1,7 +1,7 @@
 import { Transcript } from '@justfiles/ui/Transcript'
 import { useRef } from 'react'
-import agentAvatarUrl from './agent-avatar.png'
 import { useAgentConnection, useAgentSession } from './hooks'
+import { Whisper } from './Whisper'
 
 // OS-level agent surface — invoked from the menubar, not the app launcher.
 // The agent is part of the OS, not an app, so this component consumes the
@@ -9,10 +9,20 @@ import { useAgentConnection, useAgentSession } from './hooks'
 // decides) at the caller; the panel itself is presentation-only. The scrolling
 // transcript is the shared @justfiles/ui component; the header and composer
 // below are frieren's own web chrome.
-export function MessagesPanel() {
+export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) {
 	const session = useAgentSession()
 	const connection = useAgentConnection()
-	const { messages, input, setInput, agentName, isStreaming, sendMessage, abort } = session
+	const {
+		messages,
+		input,
+		setInput,
+		agentName,
+		avatarUrl,
+		personalized,
+		isStreaming,
+		sendMessage,
+		abort
+	} = session
 	const ready = connection.state === 'ready'
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -45,16 +55,33 @@ export function MessagesPanel() {
 					borderBottom: '1px solid var(--rule)'
 				}}
 			>
-				<img
-					src={agentAvatarUrl}
-					alt=""
-					width={48}
-					height={48}
-					style={{ borderRadius: '50%', imageRendering: 'pixelated' }}
-				/>
-				<span style={{ fontWeight: 500 }}>{agentName}</span>
-				<span style={{ fontSize: 11, opacity: 0.5 }}>
-					{ready ? 'Online' : connection.state === 'connecting' ? 'Connecting…' : 'Offline'}
+				<button
+					type="button"
+					className="frn-agent-identity"
+					onClick={onPersonalize}
+					title="Personalize"
+				>
+					<img
+						src={avatarUrl}
+						alt=""
+						width={48}
+						height={48}
+						className="frn-agent-avatar"
+						data-personalized={personalized}
+					/>
+					<span style={{ fontWeight: 500 }}>{agentName}</span>
+				</button>
+				<span className="frn-agent-status">
+					{ready ? (
+						<>
+							Online
+							{personalized ? null : <em> · default persona</em>}
+						</>
+					) : connection.state === 'connecting' ? (
+						'Connecting…'
+					) : (
+						'Offline'
+					)}
 				</span>
 			</header>
 
@@ -65,6 +92,8 @@ export function MessagesPanel() {
 			) : (
 				<Transcript messages={messages} isStreaming={isStreaming} />
 			)}
+
+			{personalized ? null : <Whisper onPersonalize={onPersonalize} />}
 
 			<form
 				style={{

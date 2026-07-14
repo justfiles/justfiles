@@ -19,13 +19,20 @@ type Draft = {
 	genderCustom: string
 }
 
-const EMPTY: Draft = { name: '', birthDate: '', genderChoice: '', genderCustom: '' }
+function initialDraft(initial?: Record<string, string>): Draft {
+	const gender = initial?.gender ?? ''
+	const known = GENDER_OPTIONS.some((option) => option.value === gender)
+	return {
+		name: initial?.name ?? '',
+		birthDate: initial?.birth_date ?? '',
+		genderChoice: known ? gender : gender ? 'custom' : '',
+		genderCustom: known ? '' : gender
+	}
+}
 
 function resolveGender(draft: Draft): string {
-	if (!draft.genderChoice) return ''
-	if (draft.genderChoice === 'custom') return draft.genderCustom.trim()
-	if (draft.genderChoice === 'prefer-not-to-say') return ''
-	return draft.genderChoice
+	if (!draft.genderChoice || draft.genderChoice === 'prefer-not-to-say') return ''
+	return draft.genderChoice === 'custom' ? draft.genderCustom.trim() : draft.genderChoice
 }
 
 function buildProfile(draft: Draft): string {
@@ -41,24 +48,28 @@ function buildProfile(draft: Draft): string {
 	return lines.join('\n')
 }
 
-export function ProfileStep({ volume, onDone }: { volume: Volume; onDone: () => void }) {
-	const [draft, setDraft] = useState<Draft>(EMPTY)
-	const [reviewing, setReviewing] = useState(false)
+export function ProfileStep({
+	volume,
+	initial,
+	onBack,
+	onDone
+}: {
+	volume: Volume
+	initial?: Record<string, string>
+	onBack: () => void
+	onDone: () => void
+}) {
+	const [draft, setDraft] = useState(() => initialDraft(initial))
 	const [saving, setSaving] = useState(false)
 	const [error, setError] = useState<string | null>(null)
-
-	const canReview =
+	const canSave =
 		draft.name.trim().length > 0 &&
 		/^\d{4}-\d{2}-\d{2}$/.test(draft.birthDate) &&
 		(draft.genderChoice !== 'custom' || draft.genderCustom.trim().length > 0)
 
-	const toReview = (event: FormEvent) => {
+	const save = async (event: FormEvent) => {
 		event.preventDefault()
-		if (!canReview) return
-		setReviewing(true)
-	}
-
-	const confirm = async () => {
+		if (!canSave) return
 		setSaving(true)
 		setError(null)
 		try {
@@ -66,126 +77,71 @@ export function ProfileStep({ volume, onDone }: { volume: Volume; onDone: () => 
 			onDone()
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause))
-		} finally {
 			setSaving(false)
 		}
 	}
 
-	if (reviewing) {
-		const gender = resolveGender(draft)
-		return (
-			<div className="frn-onb-form">
-				<div className="frn-card">
-					<span className="frn-badge">The Rite of Naming</span>
-					<h2 className="frn-card-title">Is this you?</h2>
-					<p className="frn-card-desc">Confirm what will be etched into the record.</p>
-
-					<dl className="frn-review">
-						<dt>Name</dt>
-						<dd>{draft.name}</dd>
-						<dt>Birth date</dt>
-						<dd>{draft.birthDate}</dd>
-						{gender ? (
-							<>
-								<dt>Gender</dt>
-								<dd>{gender}</dd>
-							</>
-						) : null}
-					</dl>
-
-					{error ? <p className="frn-field-error">{error}</p> : null}
-
-					<div className="frn-card-footer">
-						<button
-							type="button"
-							className="frn-btn-block"
-							onClick={() => setReviewing(false)}
-							disabled={saving}
-						>
-							Edit
-						</button>
-						<button
-							type="button"
-							className="frn-btn-primary frn-btn-block"
-							onClick={() => void confirm()}
-							disabled={saving}
-						>
-							{saving ? 'Inscribing…' : 'Confirm'}
-						</button>
-					</div>
-				</div>
-			</div>
-		)
-	}
-
 	return (
-		<form className="frn-onb-form" onSubmit={toReview}>
-			<div className="frn-card">
-				<span className="frn-badge">The Rite of Naming</span>
-				<h2 className="frn-card-title">Who walks these halls?</h2>
-				<p className="frn-card-desc">A few details, so we know who you are when we meet again.</p>
-
-				<div className="frn-field-group">
-					<div className="frn-field">
-						<label className="frn-field-label" htmlFor="user-profile-name">
-							Name
-						</label>
+		<main className="frn-traveler">
+			<form className="frn-traveler-card" onSubmit={(event) => void save(event)}>
+				<small>The Traveler</small>
+				<h1>Tell them who walks beside them.</h1>
+				<p>
+					Only what you choose to inscribe. These details help your companion know you over time.
+				</p>
+				<label>
+					<span>Name</span>
+					<input
+						type="text"
+						value={draft.name}
+						onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+						required
+					/>
+				</label>
+				<label>
+					<span>Birth date</span>
+					<input
+						type="date"
+						value={draft.birthDate}
+						onChange={(event) => setDraft({ ...draft, birthDate: event.target.value })}
+						required
+					/>
+					<em>Stored as a date, not an age.</em>
+				</label>
+				<label>
+					<span>Gender · optional</span>
+					<select
+						value={draft.genderChoice}
+						onChange={(event) => setDraft({ ...draft, genderChoice: event.target.value })}
+					>
+						<option value="">—</option>
+						{GENDER_OPTIONS.map((option) => (
+							<option key={option.value} value={option.value}>
+								{option.label}
+							</option>
+						))}
+					</select>
+				</label>
+				{draft.genderChoice === 'custom' ? (
+					<label>
+						<span>In your own words</span>
 						<input
-							id="user-profile-name"
 							type="text"
-							value={draft.name}
-							onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-							required
+							value={draft.genderCustom}
+							onChange={(event) => setDraft({ ...draft, genderCustom: event.target.value })}
 						/>
-					</div>
-
-					<div className="frn-field">
-						<label className="frn-field-label" htmlFor="user-profile-birth-date">
-							Birth date
-						</label>
-						<input
-							id="user-profile-birth-date"
-							type="date"
-							value={draft.birthDate}
-							onChange={(e) => setDraft({ ...draft, birthDate: e.target.value })}
-							required
-						/>
-						<p className="frn-field-desc">Stored as a date, not an age.</p>
-					</div>
-
-					<div className="frn-field">
-						<span className="frn-field-label">
-							Gender <span className="frn-muted">(optional)</span>
-						</span>
-						<select
-							value={draft.genderChoice}
-							onChange={(e) => setDraft({ ...draft, genderChoice: e.target.value })}
-							aria-label="Gender"
-						>
-							<option value="">—</option>
-							{GENDER_OPTIONS.map((option) => (
-								<option key={option.value} value={option.value}>
-									{option.label}
-								</option>
-							))}
-						</select>
-						{draft.genderChoice === 'custom' ? (
-							<input
-								type="text"
-								placeholder="Describe in your own words"
-								value={draft.genderCustom}
-								onChange={(e) => setDraft({ ...draft, genderCustom: e.target.value })}
-							/>
-						) : null}
-					</div>
-				</div>
-
-				<div className="frn-card-footer">
-					<button type="submit" className="frn-btn-primary frn-btn-block" disabled={!canReview}>
-						Review
+					</label>
+				) : null}
+				{error ? <p className="frn-ritual-error">{error}</p> : null}
+				<div className="frn-ritual-actions">
+					<button type="button" onClick={onBack} disabled={saving}>
+						Back
+					</button>
+					<button type="submit" className="frn-ritual-primary" disabled={!canSave || saving}>
+						{saving ? 'Inscribing…' : 'Inscribe the traveler'}
 					</button>
 				</div>
-			</div>
-		</form>
+			</form>
+		</main>
 	)
 }
