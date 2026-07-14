@@ -69,7 +69,18 @@ function networkFallback(getToken: GetToken): Capabilities {
 	return {
 		invoke: async (call) => {
 			guard(call)
-			return (await sharedSocket(getToken)).caps.invoke(call)
+			try {
+				return await (await sharedSocket(getToken)).caps.invoke(call)
+			} catch (error) {
+				// A hibernating DO force-closes the shared socket to reconnect a clean
+				// Cap'n Web session, dropping the in-flight frame — the settings app's
+				// first mutation after an idle window. The close handler clears `shared`,
+				// so a cleared singleton means the socket broke: reconnect and retry once.
+				// A still-live socket means a genuine capability error — rethrow it.
+				if (shared) throw error
+				guard(call)
+				return (await sharedSocket(getToken)).caps.invoke(call)
+			}
 		},
 		subscribe: async (call, emit) => {
 			guard(call)
@@ -109,6 +120,15 @@ interface CapsConn {
 }
 
 function sharedSocket(getToken: GetToken): Promise<CapsConn> {
+	// A server-side close (DO hibernation forces a fresh session) can leave the
+	// cache pointing at a socket that is already CLOSING/CLOSED before its `close`
+	// event self-heals the singleton. Drop it here so the next call reconnects
+	// rather than `send`-ing on a dead socket ("WebSocket is already in CLOSING or
+	// CLOSED state").
+	if (sharedWs && sharedWs.readyState > WebSocket.OPEN) {
+		shared = undefined
+		sharedWs = undefined
+	}
 	if (!shared) {
 		shared = openConn(getToken).catch((error) => {
 			shared = undefined
