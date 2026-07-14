@@ -5,7 +5,8 @@ import { useOsClient, useOsDispatch, useOsStore } from './hooks'
 import { OSProvider } from './Provider'
 
 vi.mock('@clerk/clerk-react', () => ({
-	useAuth: () => ({ getToken: async () => null, userId: 'user-1' })
+	useAuth: () => ({ getToken: async () => null, userId: 'user-1' }),
+	useUser: () => ({ user: null })
 }))
 
 vi.mock('../fs', () => ({

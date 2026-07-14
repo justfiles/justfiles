@@ -1,4 +1,5 @@
-import { useAuth } from '@clerk/clerk-react'
+import { useAuth, useUser } from '@clerk/clerk-react'
+import type { UserProfile } from '@justfiles/app/capabilities/user'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { appFileUrl } from '../../shared/appstore'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
@@ -16,6 +17,15 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	const getTokenRef = useRef(getToken)
 	getTokenRef.current = getToken
 
+	// The signed-in user for the local `user` capability. Held in a ref (like
+	// getToken) so the kernel — created once — always reads the CURRENT Clerk session.
+	const { user } = useUser()
+	const getUserRef = useRef<() => UserProfile | null>(() => null)
+	getUserRef.current = () =>
+		user
+			? { id: user.id, name: user.fullName ?? user.username ?? undefined, avatarUrl: user.imageUrl }
+			: null
+
 	// The current profile volume is opened at boot (App); the singleton hands back
 	// the same replica. getToken is only needed by network capabilities.
 	const [volumePromise] = useState(() => openProfile())
@@ -23,7 +33,11 @@ export function OSProvider({ children }: { children: ReactNode }) {
 		let kernelPromise: Promise<ReturnType<typeof createClientKernel>> | undefined
 		return () =>
 			(kernelPromise ??= volumePromise.then((fs) =>
-				createClientKernel({ fs, getToken: () => getTokenRef.current() })
+				createClientKernel({
+					fs,
+					getToken: () => getTokenRef.current(),
+					getUser: () => getUserRef.current()
+				})
 			))
 	})
 	const [client] = useState(() =>

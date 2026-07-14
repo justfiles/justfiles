@@ -5,6 +5,7 @@ import {
 	type CapabilityId,
 	type ProviderInfo
 } from '@justfiles/app/capabilities/accounts'
+import { type UserProfile, user } from '@justfiles/app/capabilities/user'
 import * as v from 'valibot'
 
 // Settings is a thin façade over the one `accounts` admin facet: connect a
@@ -20,6 +21,7 @@ export type Category = 'accounts'
 
 export type SettingsState = {
 	category: Category
+	user: UserProfile | null
 	providers: ProviderInfo[]
 	accounts: AccountInfo[]
 	loading: boolean
@@ -28,6 +30,7 @@ export type SettingsState = {
 
 export const initialState: SettingsState = {
 	category: 'accounts',
+	user: null,
 	providers: [],
 	accounts: [],
 	loading: true,
@@ -39,7 +42,8 @@ const capabilitySchema = v.picklist(['email', 'calendar', 'ai'] satisfies Capabi
 export const app = defineApp({
 	init: initialState,
 	capabilities: {
-		accounts: accountsAdmin({ scopes: ['admin'] })
+		accounts: accountsAdmin({ scopes: ['admin'] }),
+		user: user({ scopes: [] })
 	},
 	// Pure edges drive state; the host reads (`accounts.list*`) are the effects,
 	// each emitted as command data and folded back via `fromResult`.
@@ -61,6 +65,14 @@ export const app = defineApp({
 		),
 		accountsLoaded: t.fromResult('accounts', 'listAccounts', (state, r) =>
 			r.ok ? { ...state, accounts: r.value } : { ...state, error: r.error.message }
+		),
+		loadUser: t.on(
+			v.object({}),
+			(state) => [state, t.cmd('user', 'current', {}).to('userLoaded')],
+			{ description: 'Load the signed-in user for the account header.' }
+		),
+		userLoaded: t.fromResult('user', 'current', (state, r) =>
+			r.ok ? { ...state, user: r.value } : state
 		),
 		selectCategory: t.on(
 			v.object({ category: v.picklist(['accounts']) }),

@@ -7,6 +7,7 @@ import {
 import { buildProviders } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
+import { userCapability } from '@justfiles/app/capabilities/user/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
@@ -67,6 +68,9 @@ export async function buildKernel(fs: Volume): Promise<Kernel> {
 			email,
 			calendar,
 			ai,
+			// Identity: no native sign-in yet, so the user is null (Settings shows
+			// "Not signed in"). Swap in the real account when native auth lands.
+			user: userCapability(() => null),
 			// Sandboxed apps reach the host's notification channel here; the kernel stamps
 			// `source = appId` so a banner routes back to the app that raised it.
 			notify: notifyHost(notificationChannel)

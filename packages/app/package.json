@@ -27,6 +27,8 @@
 		"./capabilities/volume/host": "./capabilities/volume/host.ts",
 		"./capabilities/notify": "./capabilities/notify/index.ts",
 		"./capabilities/notify/host": "./capabilities/notify/host.ts",
+		"./capabilities/user": "./capabilities/user/index.ts",
+		"./capabilities/user/host": "./capabilities/user/host.ts",
 		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/devkit/host": "./capabilities/devkit/host.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",

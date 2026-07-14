@@ -1,6 +1,7 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import type { AccountInfo, CapabilityId, ProviderInfo } from '@justfiles/app/capabilities/accounts'
+import type { UserProfile } from '@justfiles/app/capabilities/user'
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type Category, initialState, type SettingsApp, type SettingsState } from './app.ts'
@@ -16,7 +17,8 @@ injectStyle(
 
 .settings-sidebar { flex: 0 0 220px; display: flex; flex-direction: column; gap: 10px; padding: 16px 12px; border-right: 1px solid var(--rule); overflow-y: auto; }
 .settings-account { display: flex; align-items: center; gap: 10px; padding: 6px 8px 12px; }
-.settings-avatar { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--rule); opacity: 0.85; }
+.settings-avatar { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--rule); opacity: 0.85; }
+.settings-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .settings-account-text { display: flex; flex-direction: column; min-width: 0; }
 .settings-account-name { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
 .settings-account-sub { font-size: 11px; opacity: 0.5; }
@@ -109,13 +111,14 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 	useEffect(() => {
 		if (refreshed.current) return
 		refreshed.current = true
+		void client.loadUser({})
 		void client.loadProviders({})
 		void client.loadAccounts({})
 	}, [client])
 
 	return (
 		<div className="settings">
-			<Sidebar category={state.category} client={client} />
+			<Sidebar category={state.category} user={state.user} client={client} />
 			<section className="settings-detail">
 				{state.error ? (
 					<p className="settings-error">
@@ -135,20 +138,33 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 	)
 }
 
-function Sidebar({ category, client }: { category: Category; client: Client<SettingsApp> }) {
+function Sidebar({
+	category,
+	user,
+	client
+}: {
+	category: Category
+	user: UserProfile | null
+	client: Client<SettingsApp>
+}) {
 	return (
 		<aside className="settings-sidebar">
 			<div className="settings-account">
 				<div className="settings-avatar" aria-hidden>
-					{/* Placeholder — auth is not implemented yet (no signed-in user). */}
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-						<title>User</title>
-						<path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5Z" />
-					</svg>
+					{user?.avatarUrl ? (
+						<img src={user.avatarUrl} alt="" />
+					) : (
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+							<title>User</title>
+							<path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5Z" />
+						</svg>
+					)}
 				</div>
 				<div className="settings-account-text">
-					<span className="settings-account-name">Local user</span>
-					<span className="settings-account-sub">Not signed in</span>
+					<span className="settings-account-name">
+						{user?.name ?? (user ? 'User' : 'Local user')}
+					</span>
+					<span className="settings-account-sub">{user ? 'Signed in' : 'Not signed in'}</span>
 				</div>
 			</div>
 			<nav className="settings-nav">

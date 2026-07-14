@@ -8,6 +8,7 @@ import {
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
 import { devkitCapability as makeDevkit } from '@justfiles/app/capabilities/devkit/host'
+import { type GetUser, userCapability } from '@justfiles/app/capabilities/user/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
@@ -17,18 +18,21 @@ import { frierenCompile, frierenRunner } from './devkit.client.ts'
 
 type GetToken = () => Promise<string | null>
 
-// The browser kernel's capability seam. `volume` and `devkit` run locally on this
-// thread; everything else (ai/integrations) proxies to the server through the
-// network fallback over ONE shared WebSocket. Only `devkit` needs the kernel — a
-// per-entry factory the kernel resolves with ITSELF, so it reads sysroots +
-// installs into the exact kernel it lives in (no whole-map wrapper).
+// The browser kernel's capability seam. `volume`, `devkit` and `user` run locally
+// on this thread; everything else (ai/accounts) proxies to the server through the
+// network fallback over ONE shared WebSocket. `user` is local because identity
+// lives where the session does (Clerk in the browser) — no round-trip, works
+// offline. Only `devkit` needs the kernel — a per-entry factory the kernel resolves
+// with ITSELF, so it reads sysroots + installs into the exact kernel it lives in.
 export function clientCapabilities(
 	fs: Volume,
-	getToken: GetToken
+	getToken: GetToken,
+	getUser: GetUser = () => null
 ): (kernel: Kernel) => Capabilities {
 	return capabilityRegistry(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
+			user: userCapability(getUser),
 			devkit: (kernel) => devkitCapability(fs, getToken, kernel)
 		},
 		{ fallback: networkFallback(getToken) }
