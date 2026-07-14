@@ -40,7 +40,7 @@ app.get('/api/apps/_caps/ws', tokenWs)
 
 // The community app-store catalog is public (no auth) and R2-backed, served by the
 // worker rather than the static ASSETS (which carry only the built-in catalog).
-app.get('/appstore/community.json', (c) => serveCommunityCatalog(c.env))
+app.get('/appstore.json', (c) => serveCommunityCatalog(c.env))
 
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())

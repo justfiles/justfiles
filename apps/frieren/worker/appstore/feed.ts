@@ -8,7 +8,7 @@ import { COMMUNITY_CATALOG_SCHEMA, type CommunityCatalog } from '../../shared/ap
 import { DENYLIST } from './denylist.ts'
 import { buildCatalog, distFiles, type IndexInput, type JsDelivrNode } from './indexer.ts'
 
-const CATALOG_KEY = 'community.json'
+const CATALOG_KEY = 'appstore.json'
 const NPM_SEARCH = 'https://registry.npmjs.org/-/v1/search'
 const JSDELIVR_DATA = 'https://data.jsdelivr.com/v1/packages/npm'
 const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm'
@@ -125,8 +125,8 @@ export async function runIndexer(env: Env): Promise<void> {
 }
 
 // Public, unauthenticated read of the community catalog (served at
-// `/appstore/community.json`). An empty catalog before the first run so clients
-// resolve cleanly.
+// `/appstore.json` — the store feed). An empty catalog before the first run so
+// clients resolve cleanly.
 export async function serveCommunityCatalog(env: Env): Promise<Response> {
 	const obj = await env.APPSTORE?.get(CATALOG_KEY)
 	const headers = { 'content-type': 'application/json', 'cache-control': 'public, max-age=300' }
