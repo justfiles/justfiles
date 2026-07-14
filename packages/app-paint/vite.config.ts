@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.frieren.paint',
+						id: 'computer.spud.paint',
 						name: 'Paint',
 						description: 'Pixel drawing',
 						icon: 'icon.png',

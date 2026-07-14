@@ -14,8 +14,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from './main.ts'
 
-const COUNTER = 'app.justfiles.counter'
-const FILES = 'app.frieren.files'
+const COUNTER = 'computer.spud.counter'
+const FILES = 'computer.spud.files'
 let root: string
 let server: ReturnType<typeof createServer>
 let port: number

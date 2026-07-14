@@ -4,7 +4,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
 	plugins: [
 		kernelHost({
-			id: 'app.justfiles.counter',
+			id: 'computer.spud.counter',
 			name: 'app-counter',
 			app: 'src/app.ts',
 			gui: 'src/gui.ts'

@@ -67,11 +67,11 @@ test('files watches the open file: one fileChanged per write, stops on clear', a
 	const fs = volume(memStorage())
 	await fs.writeFile('/notes.txt', enc.encode('hello'))
 
-	const v = probe(volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }))
+	const v = probe(volumeCapability(fs, { systemAllowlist: ['computer.spud.files'] }))
 	const k = kernel({ fs, sandbox, clock: {}, capabilities: capabilityRegistry({ volume: v.cap }) })
-	// Files declares the `system` scope, allowlisted only for `app.frieren.files`.
+	// Files declares the `system` scope, allowlisted only for `computer.spud.files`.
 	const id = await k.install(
-		appBundleFromMemory({ id: 'app.frieren.files', name: 'Files', app: code })
+		appBundleFromMemory({ id: 'computer.spud.files', name: 'Files', app: code })
 	)
 
 	// The recursive tree watch is always declared (it drives auto-refresh); the

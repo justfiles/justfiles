@@ -21,7 +21,7 @@ import { toolchain } from './toolchain'
 
 let kernelOnce: Promise<Kernel> | undefined
 
-const systemAllowlist = ['app.frieren.files']
+const systemAllowlist = ['computer.spud.files']
 
 const providers: ProviderRegistry = buildProviders({
 	chatgpt: { signIn: chatgptSignIn, mintAi: chatgptMintAi, models: codexModels, defaultModel },
@@ -40,7 +40,7 @@ export function getKernel(): Promise<Kernel> {
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
 export async function buildKernel(fs: Volume): Promise<Kernel> {
 	const { ai, email, calendar, accounts } = accountsCapabilities(providers, fs, {
-		firstParty: ['app.frieren.settings']
+		firstParty: ['computer.spud.settings']
 	})
 
 	const k = kernel({

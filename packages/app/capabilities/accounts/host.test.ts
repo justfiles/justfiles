@@ -17,7 +17,7 @@ import { volumeAccountsStore } from './store.ts'
 // shape is borrowed from the store's own `put` so no internal type is imported.
 type SeedAccount = Parameters<ReturnType<typeof volumeAccountsStore>['put']>[0]
 
-const SETTINGS = 'app.frieren.settings'
+const SETTINGS = 'computer.spud.settings'
 
 async function setup(reg: ProviderRegistry, seed: SeedAccount[] = []) {
 	const vol = volume(memStorage())
