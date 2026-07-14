@@ -197,7 +197,7 @@ final class GridCell: NSView {
 
 private func nativeAppIcon(_ app: CatalogApp) -> NSImage? {
 	let ws = NSWorkspace.shared
-	if let url = ws.urlForApplication(withBundleIdentifier: app.id), hasAppIcon(url) {
+	if let url = ws.urlForApplication(withBundleIdentifier: "computer.spud.app.\(app.id)"), hasAppIcon(url) {
 		return ws.icon(forFile: url.path)
 	}
 	let path = FileManager.default.homeDirectoryForCurrentUser

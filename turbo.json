@@ -36,7 +36,6 @@
 		},
 		"frieren#dev": {
 			"dependsOn": [
-				"@justfiles/app-code#build",
 				"@justfiles/app-files#build",
 				"@justfiles/app-paint#build",
 				"@justfiles/app-settings#build",
