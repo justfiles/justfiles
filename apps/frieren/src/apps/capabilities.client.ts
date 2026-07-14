@@ -31,7 +31,7 @@ export function clientCapabilities(
 ): (kernel: Kernel) => Capabilities {
 	return capabilityRegistry(
 		{
-			volume: volumeCapability(fs, { systemAllowlist: ['app.frieren.files'] }),
+			volume: volumeCapability(fs, { systemAllowlist: ['computer.spud.files'] }),
 			user: userCapability(getUser),
 			devkit: (kernel) => devkitCapability(fs, getToken, kernel)
 		},

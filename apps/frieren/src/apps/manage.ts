@@ -17,5 +17,5 @@ async function isBuiltin(id: string): Promise<boolean> {
 		const store = await httpAppStore((path) => fetch(path))
 		if (store) return (await store.builtins()).some((app) => app.id === id)
 	} catch {}
-	return id.startsWith('app.frieren.')
+	return id.startsWith('computer.spud.')
 }

@@ -8,7 +8,7 @@ import type { Kernel } from './kernel.ts'
 // (last launched) or resolved by a host-supplied `focus`. A fake kernel exercises it
 // all offline.
 
-const COUNTER = 'app.justfiles.counter'
+const COUNTER = 'computer.spud.counter'
 
 function fakeKernel() {
 	const dispatched: { appId: string; message: unknown }[] = []

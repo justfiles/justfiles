@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'app.justfiles.crossword',
+						id: 'computer.spud.crossword',
 						name: 'Crossword',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'

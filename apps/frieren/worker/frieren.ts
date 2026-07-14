@@ -38,7 +38,7 @@ import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
-const ACCOUNTS_FIRST_PARTY = ['app.frieren.settings']
+const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
 
 interface ClientMessage {
 	type: 'prompt' | 'abort' | 'app_open' | 'app_close'

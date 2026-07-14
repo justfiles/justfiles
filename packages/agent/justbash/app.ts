@@ -188,11 +188,11 @@ function help() {
 		usage: 'app <list|launch|close|current|inspect|state|actions|run|help>',
 		examples: [
 			'app list',
-			'app launch app.justfiles.counter',
+			'app launch computer.spud.counter',
 			'app current',
 			'app run increment amount=2',
-			'app run --id app.justfiles.counter increment amount=2',
-			'app actions --id app.justfiles.counter'
+			'app run --id computer.spud.counter increment amount=2',
+			'app actions --id computer.spud.counter'
 		]
 	}
 }

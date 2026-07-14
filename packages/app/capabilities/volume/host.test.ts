@@ -157,17 +157,23 @@ describe('volume capability', () => {
 	test('rm drops a subtree; rename moves it', async () => {
 		const { cap } = setup()
 		await cap.invoke(
-			call('writeFile', ['/projects/a/x.txt', enc.encode('hi')], { appId: 'app.code' })
+			call('writeFile', ['/projects/a/x.txt', enc.encode('hi')], { appId: 'computer.spud.code' })
 		)
-		await cap.invoke(call('rename', ['/projects/a', '/projects/b'], { appId: 'app.code' }))
-		expect(await cap.invoke(call('exists', ['/projects/a/x.txt'], { appId: 'app.code' }))).toBe(
+		await cap.invoke(
+			call('rename', ['/projects/a', '/projects/b'], { appId: 'computer.spud.code' })
+		)
+		expect(
+			await cap.invoke(call('exists', ['/projects/a/x.txt'], { appId: 'computer.spud.code' }))
+		).toBe(false)
+		expect(
+			await cap.invoke(call('exists', ['/projects/b/x.txt'], { appId: 'computer.spud.code' }))
+		).toBe(true)
+		await cap.invoke(
+			call('rm', ['/projects/b', { recursive: true }], { appId: 'computer.spud.code' })
+		)
+		expect(await cap.invoke(call('exists', ['/projects/b'], { appId: 'computer.spud.code' }))).toBe(
 			false
 		)
-		expect(await cap.invoke(call('exists', ['/projects/b/x.txt'], { appId: 'app.code' }))).toBe(
-			true
-		)
-		await cap.invoke(call('rm', ['/projects/b', { recursive: true }], { appId: 'app.code' }))
-		expect(await cap.invoke(call('exists', ['/projects/b'], { appId: 'app.code' }))).toBe(false)
 	})
 
 	test('a multi-arg method reused from Volume: cp copies a file', async () => {
