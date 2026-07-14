@@ -172,7 +172,7 @@ with the source pointer:
 Pre-installed built-ins are untouched: they still co-ship with the deploy under
 `/appstore/catalog.json` + `/appstore/apps/<id>/<version>/<path>` from the
 static `ASSETS` binding. The community catalog is a second feed (served at
-`/appstore.json`, R2-backed, worker-served) and carries everything
+`/store/catalog.json`, R2-backed, worker-served) and carries everything
 else — third-party apps **and** the first-party `computer.spud.*` apps that
 ship via npm instead of the deploy. The earlier idea of keeping canonical
 third-party bytes in R2 is **dropped** — it made us the distributor for no
@@ -309,7 +309,7 @@ catalog; never touches third-party bytes.
 **Expectation.** A scheduled job builds the catalog in R2 from the
 `spud-app` npm keyword, applying validation, the two-way id↔package binding,
 the reserved-prefix guard, and the denylist; the frieren worker serves it at
-`/appstore.json`; the canary app appears in it.
+`/store/catalog.json`; the canary app appears in it.
 
 **How.**
 - Cron trigger on the existing frieren worker (`wrangler.jsonc`; add the route
@@ -342,7 +342,7 @@ capabilities, which holds the update instead.
 
 **How.**
 - `communityAppStore()` next to `httpAppStore` (`shared/appstore.ts`): catalog
-  from `/appstore.json`; `latest(id)` from it; `read()` fetches
+  from `/store/catalog.json`; `latest(id)` from it; `read()` fetches
   `cdn.jsdelivr.net/npm/<name>@<version>/dist/<path>` (entries carry `npm`
   name/version). Existing `install()` verifies the pinned hashes — no new
   integrity code.

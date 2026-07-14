@@ -14,9 +14,10 @@ export const CATALOG_PATH = '/appstore/catalog.json'
 // `computer.spud.*` apps distributed via npm. Each entry adds the source pointer
 // (`npm` name + `publisher`) the client needs to resolve bytes from jsDelivr and
 // show provenance on the consent sheet. `files[].path` is relative to the
-// package's `dist/`, matching the built-in catalog.
+// package's `dist/`, matching the built-in catalog. The `/store/*` path space is
+// reserved for the app store (catalog now; per-app pages/search later).
 export const COMMUNITY_CATALOG_SCHEMA = 'spud/community-catalog/v1'
-export const COMMUNITY_CATALOG_PATH = '/appstore.json'
+export const COMMUNITY_CATALOG_PATH = '/store/catalog.json'
 
 export interface CommunityCatalogApp extends CatalogApp {
 	npm: string // npm package name; bytes resolve via jsDelivr
