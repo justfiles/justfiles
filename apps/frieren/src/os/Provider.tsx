@@ -88,7 +88,8 @@ export function OSProvider({ children }: { children: ReactNode }) {
 							name: m.name,
 							description: m.description ?? '',
 							version: m.version,
-							iconUrl
+							iconUrl,
+							capabilities: m.capabilities
 						}
 					})
 				)

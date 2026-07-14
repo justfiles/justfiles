@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+	COMMUNITY_CATALOG_PATH,
+	type CommunityCatalog,
+	type CommunityCatalogApp,
+	communityStoreEnabled
+} from '../../shared/appstore'
 import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
-import { installZipApp, uninstallLocalApp } from './manage'
+import { installCommunityApp, installZipApp, uninstallLocalApp } from './manage'
 import type { InstalledApp } from './types'
 
 function pickZipFile(): Promise<File | null> {
@@ -22,9 +28,31 @@ export function useInstalledApps(): InstalledApp[] {
 	return apps
 }
 
+// The community catalog (`/store/catalog.json`), flag-gated. Fetched once on
+// mount; empty when the dev flag is off, so discovery stays dark until the store
+// is enabled. Discovery only — installing still routes through the consent sheet.
+export function useCommunityCatalog(): CommunityCatalogApp[] {
+	const [apps, setApps] = useState<CommunityCatalogApp[]>([])
+	useEffect(() => {
+		if (!communityStoreEnabled()) return
+		let live = true
+		fetch(COMMUNITY_CATALOG_PATH)
+			.then((res) => (res.ok ? (res.json() as Promise<CommunityCatalog>) : null))
+			.then((cat) => {
+				if (live && cat) setApps(cat.apps)
+			})
+			.catch(() => {})
+		return () => {
+			live = false
+		}
+	}, [])
+	return apps
+}
+
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void
 	installApp: () => Promise<void>
+	installCommunity: (id: string) => Promise<void>
 	uninstallApp: (id: string) => Promise<void>
 }
 
@@ -74,6 +102,15 @@ export function useAppCommands(): AppCommands {
 			}
 		}
 
-		return { launchApp, installApp, uninstallApp }
+		const installCommunity = async (id: string) => {
+			try {
+				await installCommunityApp(await localKernel(), id)
+				client.refresh()
+			} catch (e) {
+				alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
+			}
+		}
+
+		return { launchApp, installApp, installCommunity, uninstallApp }
 	}, [client, dispatch, localKernel])
 }

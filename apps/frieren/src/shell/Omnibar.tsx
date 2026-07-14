@@ -1,18 +1,24 @@
+import { escalatesCapabilities } from '@justfiles/app/appstore'
 import { Transcript } from '@justfiles/ui/Transcript'
 import {
+	ArrowClockwiseIcon,
 	ArrowsOutIcon,
 	ChatCircleIcon,
+	DownloadSimpleIcon,
 	MagnifyingGlassIcon,
 	SparkleIcon
 } from '@phosphor-icons/react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import type { CommunityCatalogApp } from '../../shared/appstore'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
 import { Whisper } from '../agent/Whisper'
-import { useAppCommands, useInstalledApps } from '../apps/hooks'
+import { useAppCommands, useCommunityCatalog, useInstalledApps } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import { useAgentClient, useOsDispatch, useOsStore } from '../os/hooks'
 import { AGENT_WINDOW_ID } from '../os/state'
+import { ConsentSheet, type ConsentTarget } from './ConsentSheet'
 
 // The omnibar: one intent surface at the bottom of the desktop. You type, and it
 // routes — an installed app match launches, anything else asks the agent. The
@@ -20,7 +26,11 @@ import { AGENT_WINDOW_ID } from '../os/state'
 // nearest the input (see design/01-omnibar.md). This replaces the dock: the app
 // grid it shows at rest is where launching now lives.
 
-type Row = { kind: 'app'; app: InstalledApp } | { kind: 'ask' }
+type Row =
+	| { kind: 'app'; app: InstalledApp }
+	| { kind: 'store'; app: CommunityCatalogApp }
+	| { kind: 'update'; app: CommunityCatalogApp }
+	| { kind: 'ask' }
 
 // The sheet is the quick-access view: it renders only the recent tail of the
 // transcript, never the whole thing. Older history lives in the conversation
@@ -29,15 +39,14 @@ type Row = { kind: 'app'; app: InstalledApp } | { kind: 'ask' }
 // invitation appears at the top of the tail (see design/01-omnibar.md).
 const SHEET_TAIL = 8
 
-function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
+function matchesQuery(query: string, ...fields: (string | undefined)[]): boolean {
 	const needle = query.toLowerCase()
-	if (!needle) return apps
-	return apps.filter(
-		(app) =>
-			app.name.toLowerCase().includes(needle) ||
-			app.id.toLowerCase().includes(needle) ||
-			app.description.toLowerCase().includes(needle)
-	)
+	if (!needle) return true
+	return fields.some((f) => (f ?? '').toLowerCase().includes(needle))
+}
+
+function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
+	return apps.filter((app) => matchesQuery(query, app.name, app.id, app.description))
 }
 
 export function Omnibar({
@@ -50,7 +59,8 @@ export function Omnibar({
 	onPersonalize: () => void
 }) {
 	const apps = useInstalledApps()
-	const { launchApp } = useAppCommands()
+	const catalog = useCommunityCatalog()
+	const { launchApp, installCommunity } = useAppCommands()
 	const agent = useAgentClient()
 	const session = useAgentSession()
 	const connection = useAgentConnection()
@@ -70,12 +80,48 @@ export function Omnibar({
 	const text = query.trim()
 	const matches = useMemo(() => filterApps(apps, text), [apps, text])
 
+	// Community discovery (flag-gated; `catalog` is empty when off). Store rows are
+	// catalog apps not already installed; held-update rows are installed apps whose
+	// catalog version declares MORE access than what's installed (Step 4 held it).
+	// Both only appear while searching, alongside the app matches.
+	const installedById = useMemo(() => new Map(apps.map((a) => [a.id, a])), [apps])
+	const storeMatches = useMemo(
+		() =>
+			text === ''
+				? []
+				: catalog.filter(
+						(a) => !installedById.has(a.id) && matchesQuery(text, a.name, a.id, a.description)
+					),
+		[catalog, text, installedById]
+	)
+	const heldUpdates = useMemo(
+		() =>
+			text === ''
+				? []
+				: catalog.filter((a) => {
+						const installed = installedById.get(a.id)
+						return (
+							!!installed &&
+							a.version !== installed.version &&
+							escalatesCapabilities(installed.capabilities, a.capabilities) &&
+							matchesQuery(text, a.name, a.id, a.description)
+						)
+					}),
+		[catalog, text, installedById]
+	)
+	const [consent, setConsent] = useState<ConsentTarget | null>(null)
+
 	// One flat, keyboard-navigable list, laid out visually top→bottom: weaker app
 	// matches up top, the best match just above the pinned "Ask Frieren" row, which
 	// sits directly above the input as the universal fall-through.
 	const rows = useMemo<Row[]>(
-		() => [...matches.map((app): Row => ({ kind: 'app', app })).reverse(), { kind: 'ask' }],
-		[matches]
+		() => [
+			...storeMatches.map((app): Row => ({ kind: 'store', app })),
+			...heldUpdates.map((app): Row => ({ kind: 'update', app })),
+			...matches.map((app): Row => ({ kind: 'app', app })).reverse(),
+			{ kind: 'ask' }
+		],
+		[matches, storeMatches, heldUpdates]
 	)
 	// Default target: the best app match when something matched, else "Ask Frieren".
 	const defaultIndex = matches.length ? rows.length - 2 : rows.length - 1
@@ -155,6 +201,10 @@ export function Omnibar({
 			setQuery('')
 			setChatOpen(false)
 			inputRef.current?.blur()
+		} else if (row.kind === 'store') {
+			setConsent({ app: row.app, mode: 'install' })
+		} else if (row.kind === 'update') {
+			setConsent({ app: row.app, mode: 'update' })
 		} else {
 			ask(text)
 		}
@@ -279,6 +329,28 @@ export function Omnibar({
 										</li>
 									)
 								}
+								if (row.kind === 'store' || row.kind === 'update') {
+									const isUpdate = row.kind === 'update'
+									return (
+										<li key={`${row.kind}:${row.app.id}`}>
+											<button
+												type="button"
+												className="frn-omnibar-row"
+												data-selected={isSelected}
+												onMouseMove={() => setPinned(index)}
+												onClick={() => run(index)}
+											>
+												<span className="frn-omnibar-icon frn-omnibar-icon-sm">
+													{isUpdate ? <ArrowClockwiseIcon /> : <DownloadSimpleIcon />}
+												</span>
+												<span className="frn-omnibar-row-label">{row.app.name}</span>
+												<span className="frn-omnibar-row-hint">
+													{isUpdate ? 'Update · review access' : 'Install'}
+												</span>
+											</button>
+										</li>
+									)
+								}
 								return (
 									<li key="ask" data-divider={matches.length > 0}>
 										<button
@@ -372,6 +444,16 @@ export function Omnibar({
 					</button>
 				) : null}
 			</form>
+			{consent
+				? createPortal(
+						<ConsentSheet
+							target={consent}
+							onConfirm={() => installCommunity(consent.app.id)}
+							onClose={() => setConsent(null)}
+						/>,
+						document.body
+					)
+				: null}
 		</div>
 	)
 }
