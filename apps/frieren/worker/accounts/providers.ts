@@ -1,69 +1,41 @@
-// The frieren provider registry: which providers exist, how each authenticates,
-// and how each mints a use-facet impl from stored creds. The agent and apps reach
-// email/calendar/ai only through those minted capabilities — the creds never leave
-// the provider.
-//
-// Provider client code (CalDAV) is reused from `worker/integrations/*`; this module
-// only re-expresses it in the accounts shape.
+// frieren's provider set, assembled from the shared registry
+// (`@justfiles/app/capabilities/accounts/providers`). The client code (Gmail,
+// CalDAV) and provider shapes are shared with spud-mac; frieren only supplies its
+// host seams:
+//   - Spud AI mints `ai` over the host's own env-keyed LLM (the platform owns the
+//     vendor/model), and
+//   - OAuth providers (Google, ChatGPT) are *acquired on the Spud desktop app* and
+//     sync here (DESIGN §9) — the Worker has no browser/loopback to run the flow, so
+//     connecting them from the browser is refused clearly until the web-redirect
+//     flow lands.
 
 import type { LLMText } from '@justfiles/agent'
-import type { CredentialsSchema } from '@justfiles/app/capabilities/accounts'
-import type { Provider, ProviderRegistry } from '@justfiles/app/capabilities/accounts/host'
-import { createIcloudCalendarProvider } from '../capabilities/calendar/providers/icloud.ts'
+import type { ProviderRegistry } from '@justfiles/app/capabilities/accounts/host'
+import {
+	buildProviders as buildShared,
+	type OAuthSignIn
+} from '@justfiles/app/capabilities/accounts/providers'
 
-const icloudSchema: CredentialsSchema = {
-	type: 'object',
-	properties: {
-		username: {
-			type: 'string',
-			minLength: 1,
-			description: 'Apple ID email address used to sign into iCloud.'
-		},
-		password: {
-			type: 'string',
-			minLength: 1,
-			description:
-				'App-specific password generated at appleid.apple.com → Sign-In and Security → App-Specific Passwords. Not your Apple ID password.'
-		}
-	},
-	required: ['username', 'password']
-}
-
-// Providers need host-supplied runtime seams: Spud AI mints its `ai` facet over the
-// host's own LLM text service (the same env-keyed backend the agent runs on), so the
-// platform — not the user — owns the vendor/model choice.
 export interface ProviderDeps {
 	text: LLMText
 }
 
+const acquireOnDesktop: OAuthSignIn = async () => {
+	throw new Error('Sign in to this account from the Spud desktop app — it will sync here.')
+}
+
 export function buildProviders(deps: ProviderDeps): ProviderRegistry {
-	const icloudCalendar = createIcloudCalendarProvider()
-
-	// The platform-provided AI: no user credentials — "connecting" just declares the
-	// account, and the `ai` facet is served by the host's own backend (spud.computer's
-	// OpenAI key today). The alternative is a personal ChatGPT provider (later); the
-	// user picks one by enabling its `ai` capability.
-	const spud: Provider = {
-		id: 'spud',
-		name: 'Spud AI',
-		auth: { kind: 'form', credentialsSchema: { type: 'object', properties: {} } },
-		mint: {
-			ai: () => ({
-				generateText: async ({ system, prompt }) => ({
-					text: await deps.text.gen(typeof system === 'string' ? system : '', prompt)
-				})
-			})
-		}
-	}
-	const icloud: Provider = {
-		id: 'icloud',
-		name: 'iCloud',
-		auth: { kind: 'form', credentialsSchema: icloudSchema },
-		mint: { calendar: (creds) => icloudCalendar.create(creds) }
-	}
-
-	return new Map([
-		[spud.id, spud],
-		[icloud.id, icloud]
-	])
+	return buildShared({
+		chatgpt: {
+			signIn: acquireOnDesktop,
+			mintAi: () => {
+				throw new Error('ChatGPT is used from the Spud desktop app')
+			},
+			models: () => [],
+			defaultModel: () => ''
+		},
+		google: { signIn: acquireOnDesktop, refreshClient: null },
+		icloud: true,
+		spud: { generate: (system, prompt) => deps.text.gen(system, prompt) }
+	})
 }

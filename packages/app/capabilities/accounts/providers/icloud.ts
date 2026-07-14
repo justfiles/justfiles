@@ -3,12 +3,11 @@
 // VEVENT data into normalized `CalendarEvent` DTOs and never lets credentials
 // or raw iCalendar payloads leak into the result.
 
-import type { CalendarCapability, CalendarEvent } from '@justfiles/app/capabilities/calendar'
-import {
-	type CalDavClient,
-	createCalDavClient
-} from '../../../integrations/icloud-calendar/caldav.ts'
-import { type CalEvent, localToUtc } from '../../../integrations/icloud-calendar/ical.ts'
+import type { CalendarCapability, CalendarEvent } from '../../calendar/index.ts'
+import type { CredentialsSchema } from '../contract.ts'
+import type { Provider } from '../host.ts'
+import { type CalDavClient, createCalDavClient } from './icloud/caldav.ts'
+import { type CalEvent, localToUtc } from './icloud/ical.ts'
 
 export interface IcloudCalendarCredentials {
 	username: string
@@ -85,7 +84,7 @@ function formatYmdInTz(date: Date, timezone: string): Ymd {
 	}).formatToParts(date)
 	const map: Record<string, string> = {}
 	for (const p of parts) map[p.type] = p.value
-	return { y: map.year, m: map.month, d: map.day }
+	return { y: map.year ?? '', m: map.month ?? '', d: map.day ?? '' }
 }
 
 function addOneDay(date: Ymd): Ymd {
@@ -130,4 +129,35 @@ function normalize(
 	if (event.location) normalized.location = event.location
 	if (accountId !== undefined) normalized.accountId = accountId
 	return normalized
+}
+
+// ── Provider assembly ─────────────────────────────────────────────────────
+
+const icloudSchema: CredentialsSchema = {
+	type: 'object',
+	properties: {
+		username: {
+			type: 'string',
+			minLength: 1,
+			description: 'Apple ID email address used to sign into iCloud.'
+		},
+		password: {
+			type: 'string',
+			minLength: 1,
+			description:
+				'App-specific password generated at appleid.apple.com → Sign-In and Security → App-Specific Passwords. Not your Apple ID password.'
+		}
+	},
+	required: ['username', 'password']
+}
+
+// A static (form) provider backing `calendar` over CalDAV — portable across hosts.
+export function icloudProvider(): Provider {
+	const impl = createIcloudCalendarProvider()
+	return {
+		id: 'icloud',
+		name: 'iCloud',
+		auth: { kind: 'form', credentialsSchema: icloudSchema },
+		mint: { calendar: (creds) => impl.create(creds) }
+	}
 }

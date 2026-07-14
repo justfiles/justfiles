@@ -47,12 +47,12 @@ export function localToUtc(localDateStr: string, tzid: string): string {
 	const p: Record<string, string> = {}
 	for (const { type, value } of parts) p[type] = value
 
-	const tzYear = +p.year
-	const tzMonth = +p.month - 1
-	const tzDay = +p.day
-	const tzHour = p.hour === '24' ? 0 : +p.hour
-	const tzMin = +p.minute
-	const tzSec = +p.second
+	const tzYear = +(p.year ?? '0')
+	const tzMonth = +(p.month ?? '1') - 1
+	const tzDay = +(p.day ?? '1')
+	const tzHour = p.hour === '24' ? 0 : +(p.hour ?? '0')
+	const tzMin = +(p.minute ?? '0')
+	const tzSec = +(p.second ?? '0')
 
 	const tzAsUtcMs = Date.UTC(tzYear, tzMonth, tzDay, tzHour, tzMin, tzSec)
 	return new Date(2 * approxUtc - tzAsUtcMs).toISOString().replace(/\.\d{3}Z$/, 'Z')
@@ -73,7 +73,7 @@ function parseDateValue(prop: string): string {
 
 	const tzidMatch = propName.match(/TZID=([^;:]+)/)
 	if (tzidMatch) {
-		return localToUtc(value, tzidMatch[1])
+		return localToUtc(value, tzidMatch[1] ?? '')
 	}
 
 	// Floating time — no timezone specifier; treat as UTC

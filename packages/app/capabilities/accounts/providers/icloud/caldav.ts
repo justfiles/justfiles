@@ -58,7 +58,7 @@ function extractAll(xml: string, name: string): string[] {
 	const out: string[] = []
 	let m: RegExpExecArray | null = re.exec(xml)
 	while (m !== null) {
-		out.push(m[1])
+		out.push(m[1] ?? '')
 		m = re.exec(xml)
 	}
 	return out

@@ -12,17 +12,12 @@
 
 import { execFile } from 'node:child_process'
 import { type AgentBackend, apiKeyBackend, text } from '@justfiles/agent'
-import {
-	type Creds,
-	type Provider,
-	resolveAiAccount
-} from '@justfiles/app/capabilities/accounts/host'
+import { type Creds, resolveAiAccount } from '@justfiles/app/capabilities/accounts/host'
+import type { OAuthSignIn } from '@justfiles/app/capabilities/accounts/providers'
 import type { AiCapability } from '@justfiles/app/capabilities/ai'
 import type { Volume } from '@justfiles/fs'
 import { getModels } from '@mariozechner/pi-ai'
 import { loginOpenAICodex, refreshOpenAICodexToken } from '@mariozechner/pi-ai/oauth'
-
-export const CHATGPT_PROVIDER_ID = 'chatgpt'
 
 // The creds an account from this provider stores. Shaped to OAuthCredentials plus
 // the account id pulled from the id_token.
@@ -35,11 +30,11 @@ interface ChatgptCreds extends Creds {
 
 // pi-ai ships the selectable models for the ChatGPT subscription; relay id/name to
 // the picker. Default to Codex Max, falling back to the first.
-function codexModels(): { id: string; name: string }[] {
+export function codexModels(): { id: string; name: string }[] {
 	return getModels('openai-codex').map((m) => ({ id: m.id, name: m.name }))
 }
 
-function defaultModel(): string {
+export function defaultModel(): string {
 	const models = codexModels()
 	return models.find((m) => m.id === 'gpt-5.1-codex-max')?.id ?? models[0]?.id ?? ''
 }
@@ -49,52 +44,40 @@ function resolveModel(id: string | undefined) {
 	return getModels('openai-codex').find((m) => m.id === wanted)
 }
 
-export const chatgptProvider: Provider = {
-	id: CHATGPT_PROVIDER_ID,
-	name: 'ChatGPT',
-	auth: {
-		kind: 'oauth',
-		signIn: async () => {
-			const creds = await loginOpenAICodex({
-				onAuth: ({ url }) => void execFile('open', [url], () => {}),
-				// Manual-paste fallback isn't wired in the GUI yet; surface a clear
-				// error if the loopback bind fails (e.g. port 1455 already in use).
-				onPrompt: async () => {
-					throw new Error('Could not open the browser sign-in (is port 1455 in use?)')
-				}
-			})
-			const accountId = String(creds.accountId ?? '')
-			return {
-				accountId,
-				creds: {
-					access: creds.access,
-					refresh: creds.refresh,
-					expires: creds.expires,
-					accountId
-				} satisfies ChatgptCreds
-			}
+// OAuth acquisition (host-specific): open the system browser to the Codex consent
+// screen and catch the loopback redirect (PKCE, 127.0.0.1:1455) via pi-ai — the flow
+// Codex uses. Injected into the shared `chatgptProvider` factory as its `signIn`.
+export const chatgptSignIn: OAuthSignIn = async () => {
+	const creds = await loginOpenAICodex({
+		onAuth: ({ url }) => void execFile('open', [url], () => {}),
+		// Manual-paste fallback isn't wired in the GUI yet; surface a clear
+		// error if the loopback bind fails (e.g. port 1455 already in use).
+		onPrompt: async () => {
+			throw new Error('Could not open the browser sign-in (is port 1455 in use?)')
 		}
-	},
-	mint: {
-		// Build an `ai` use-facet impl over the token + selected model. No proactive
-		// refresh here (mint has no store writeback); the agent keeps the stored token
-		// fresh and a stale-token call simply 401s into a re-sign-in.
-		ai: (creds, config) => {
-			const model = resolveModel((config as { model?: string } | undefined)?.model)
-			if (!model) throw new Error('no ChatGPT model available')
-			const gen = text({ model, apiKey: (creds as ChatgptCreds).access })
-			return {
-				generateText: async ({ system, prompt }) => ({
-					text: await gen.gen(typeof system === 'string' ? system : '', prompt)
-				})
-			} satisfies AiCapability
-		}
-	},
-	describe: {
-		// The model picker: the selected model (defaulted) + the full list to choose from.
-		ai: (config) => ({
-			model: (config as { model?: string } | undefined)?.model ?? defaultModel(),
-			models: codexModels()
+	})
+	const accountId = String(creds.accountId ?? '')
+	return {
+		accountId,
+		creds: {
+			access: creds.access,
+			refresh: creds.refresh,
+			expires: creds.expires,
+			accountId
+		} satisfies ChatgptCreds
+	}
+}
+
+// Build an `ai` use-facet impl over the token + selected model. No proactive refresh
+// here (mint has no store writeback); the agent keeps the stored token fresh and a
+// stale-token call simply 401s into a re-sign-in.
+export const chatgptMintAi = (creds: Creds, config: unknown): AiCapability => {
+	const model = resolveModel((config as { model?: string } | undefined)?.model)
+	if (!model) throw new Error('no ChatGPT model available')
+	const gen = text({ model, apiKey: (creds as ChatgptCreds).access })
+	return {
+		generateText: async ({ system, prompt }) => ({
+			text: await gen.gen(typeof system === 'string' ? system : '', prompt)
 		})
 	}
 }

@@ -4,15 +4,16 @@ import {
 	accountsCapabilities,
 	type ProviderRegistry
 } from '@justfiles/app/capabilities/accounts/host'
+import { buildProviders } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { builtinStore } from './builtins'
-import { chatgptProvider } from './chatgpt'
+import { chatgptMintAi, chatgptSignIn, codexModels, defaultModel } from './chatgpt'
 import { getVolume } from './fs'
-import { googleProvider } from './google/provider'
+import { googleClient, googleSignIn } from './google/oauth'
 import { notificationChannel } from './notify'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
@@ -21,10 +22,11 @@ let kernelOnce: Promise<Kernel> | undefined
 
 const systemAllowlist = ['app.frieren.files']
 
-const providers: ProviderRegistry = new Map([
-	[chatgptProvider.id, chatgptProvider],
-	[googleProvider.id, googleProvider]
-])
+const providers: ProviderRegistry = buildProviders({
+	chatgpt: { signIn: chatgptSignIn, mintAi: chatgptMintAi, models: codexModels, defaultModel },
+	google: { signIn: googleSignIn, refreshClient: googleClient() },
+	icloud: true
+})
 
 export function getKernel(): Promise<Kernel> {
 	kernelOnce ??= getVolume().then(buildKernel)

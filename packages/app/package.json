@@ -31,7 +31,10 @@
 		"./capabilities/devkit/host": "./capabilities/devkit/host.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
 		"./capabilities/accounts": "./capabilities/accounts/index.ts",
-		"./capabilities/accounts/host": "./capabilities/accounts/host.ts"
+		"./capabilities/accounts/host": "./capabilities/accounts/host.ts",
+		"./capabilities/accounts/providers": "./capabilities/accounts/providers/index.ts",
+		"./capabilities/accounts/providers/google": "./capabilities/accounts/providers/google.ts",
+		"./capabilities/accounts/providers/icloud": "./capabilities/accounts/providers/icloud.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",

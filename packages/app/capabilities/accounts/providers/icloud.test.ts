@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import type { CalDavClient } from '../../../integrations/icloud-calendar/caldav.ts'
-import type { CalEvent } from '../../../integrations/icloud-calendar/ical.ts'
+import type { CalDavClient } from './icloud/caldav.ts'
+import type { CalEvent } from './icloud/ical.ts'
 import { createIcloudCalendarProvider, type IcloudCalendarCredentials } from './icloud.ts'
 
 function fakeClient(events: CalEvent[], capture?: { start?: Date; end?: Date }): CalDavClient {
