@@ -1,6 +1,7 @@
 import { verifyToken } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
+import { runIndexer, serveCommunityCatalog } from './appstore/feed.ts'
 
 export { Frieren } from './frieren.ts'
 
@@ -37,6 +38,10 @@ app.get('/ws', tokenWs)
 // The one browser-opened socket per session: the shared capability-proxy (`_caps`).
 app.get('/api/apps/_caps/ws', tokenWs)
 
+// The community app-store catalog is public (no auth) and R2-backed, served by the
+// worker rather than the static ASSETS (which carry only the built-in catalog).
+app.get('/appstore/community.json', (c) => serveCommunityCatalog(c.env))
+
 app.use('/fs/*', clerkMiddleware())
 app.use('/api/*', clerkMiddleware())
 app.all('/fs/*', (c) => {
@@ -50,4 +55,12 @@ app.all('/api/*', (c) => {
 	return forwardToFrieren(c, userId)
 })
 
-export default app
+// The worker is both a request handler and the app-store indexer: `scheduled`
+// runs on the cron trigger (wrangler.jsonc), rebuilding the community catalog in
+// R2 from the `spud-app` npm keyword. `waitUntil` keeps it alive past the tick.
+export default {
+	fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx),
+	scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+		ctx.waitUntil(runIndexer(env))
+	}
+}
