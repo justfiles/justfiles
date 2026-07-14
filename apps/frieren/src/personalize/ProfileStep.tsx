@@ -62,9 +62,6 @@ export function ProfileStep({ volume, onDone }: { volume: Volume; onDone: () => 
 		setSaving(true)
 		setError(null)
 		try {
-			if (!(await volume.exists('/system/profiles'))) {
-				await volume.mkdir('/system/profiles', { recursive: true })
-			}
 			await volume.writeFile(PATHS.profile, encoder.encode(buildProfile(draft)))
 			onDone()
 		} catch (cause) {

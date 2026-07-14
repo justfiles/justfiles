@@ -32,8 +32,8 @@ place where "invisibly non-breaking" is genuinely hard is called out in Phase 2.
 | `/state/<id>.json`         | kernel-persisted per-app state                              | kernel (`kernel.ts:226`)          |
 | `/data/<id>/…`             | per-app user data (chroot via `volume` cap)                 | app via `volume` capability       |
 | `/system/os-state.json`    | window layout / focus / agent-open                          | FE shell (`os/persistence.ts`)    |
-| `/system/profiles/user.md` | user profile (frontmatter)                                  | FE onboarding (`UserProfileStep`) |
-| `/system/soul.md`          | agent soul                                                  | FE onboarding (`AgentStep`)       |
+| `/system/user.md`                    | user profile (frontmatter)                                  | FE onboarding (`UserProfileStep`) |
+| `/system/agents/main/soul.md`        | main agent soul                                             | FE onboarding (`AgentStep`)       |
 
 Apps stay **files in the volume** at `/applications/<id>/`; `/state` and `/data`
 are volume-backed too. Size and distribution are handled *below* the volume by its

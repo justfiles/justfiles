@@ -5,6 +5,7 @@ import { createClerkClient } from '@clerk/backend'
 import { apiStorage, createFsClient } from '@justfiles/core'
 import { volume } from '@justfiles/fs'
 import { chromium } from '@playwright/test'
+import { PROFILE_PATH, SOUL_PATH } from '../shared/agent-defaults.ts'
 
 const DEFAULT_EMAIL = 'llm+clerk_test@example.com'
 const DEFAULT_BASE_URL = 'http://localhost:5173'
@@ -113,9 +114,8 @@ async function createAuthedVolume(token: string) {
 
 async function seedOnboarding(token: string) {
 	const vol = await createAuthedVolume(token)
-	await vol.mkdir('/system/profiles', { recursive: true })
 	await vol.writeFile(
-		'/system/profiles/user.md',
+		PROFILE_PATH,
 		encoder.encode(
 			[
 				'---',
@@ -127,8 +127,9 @@ async function seedOnboarding(token: string) {
 			].join('\n')
 		)
 	)
+	await vol.mkdir('/system/agents/main', { recursive: true })
 	await vol.writeFile(
-		'/system/soul.md',
+		SOUL_PATH,
 		encoder.encode(
 			[
 				'---',
@@ -203,7 +204,7 @@ async function main() {
 
 Commands:
   token      Print a fresh Clerk session JWT for the LLM test user.
-  seed       Seed /system/profiles/user.md and /system/soul.md through the local app.
+  seed       Seed /system/user.md and /system/agents/main/soul.md through the local app.
   bootstrap  Create user, seed onboarding, and write Playwright auth state.
   ui         Run bootstrap, then open an authenticated playwright-cli session.
 

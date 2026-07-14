@@ -1,6 +1,6 @@
 // The canonical AccountsStore — INTERNAL to @justfiles/app, never re-exported.
 // An account is data, not code, so it rides the Volume, the one syncable substrate
-// present on every platform (the same place the agent keeps `/system/soul.md`).
+// present on every platform (the same place the agent keeps `/system/agents/main/soul.md`).
 // Each native host used to re-derive this over its own storage (quay over the
 // Volume, frieren over KV); now they all share this one. One JSON file per account
 // under `/system/accounts/`, keyed by a URL-encoded accountId so any identity

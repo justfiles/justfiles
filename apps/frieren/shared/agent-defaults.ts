@@ -4,8 +4,8 @@ import type { Volume } from '@justfiles/fs'
 // the human's profile. Onboarding used to be mandatory before the desktop would
 // open; now these are SEEDED with sensible defaults so the agent works out of the
 // box and personalization is opt-in (see PersonalizePanel).
-export const SOUL_PATH = '/system/soul.md'
-export const PROFILE_PATH = '/system/profiles/user.md'
+export const SOUL_PATH = '/system/agents/main/soul.md'
+export const PROFILE_PATH = '/system/user.md'
 
 // A neutral, working persona so a brand-new user gets a capable agent with no
 // setup. Personalization overwrites this file; seeding only fills it when absent.
@@ -32,12 +32,10 @@ const encoder = new TextEncoder()
 // local-only ones — the same split as built-in app seeding.
 export async function ensureAgentDefaults(volume: Volume): Promise<void> {
 	if (!(await volume.exists(PROFILE_PATH))) {
-		if (!(await volume.exists('/system/profiles'))) {
-			await volume.mkdir('/system/profiles', { recursive: true })
-		}
 		await volume.writeFile(PROFILE_PATH, encoder.encode(DEFAULT_PROFILE))
 	}
 	if (!(await volume.exists(SOUL_PATH))) {
+		await volume.mkdir('/system/agents/main', { recursive: true })
 		await volume.writeFile(SOUL_PATH, encoder.encode(DEFAULT_SOUL))
 	}
 }

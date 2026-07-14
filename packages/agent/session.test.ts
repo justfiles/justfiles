@@ -178,7 +178,7 @@ describe('createAgentSession', () => {
 
 		await session.runMaintenance()
 
-		const memory = new TextDecoder().decode(await vol.readFile('/system/MEMORY.md'))
+		const memory = new TextDecoder().decode(await vol.readFile('/system/memory/core.md'))
 		expect(memory).toContain('user prefers tea')
 	})
 
