@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { isReactGuiEntry, reactGuiEntry } from '@justfiles/app/react-entry'
 import { reactExternals } from '@justfiles/app/runtime-specs'
 import tailwindcss from '@tailwindcss/vite'
@@ -53,6 +54,29 @@ function readPackageVersion(root: string): string | undefined {
 			version?: string
 		}
 		return pkg.version
+	} catch {
+		return undefined
+	}
+}
+
+// Read the app's declared capabilities from the freshly built reducer bundle by
+// importing it (headless, no DOM) and reading `app.capabilities`. Emitted into the
+// manifest as static metadata (AppManifest.capabilities) so the store can show
+// them and gate escalation WITHOUT running the app. Best-effort: any failure just
+// omits the field.
+async function readManifestCapabilities(
+	appJsPath: string
+): Promise<Record<string, { id: string; scopes: string[] }> | undefined> {
+	try {
+		const mod = (await import(`${pathToFileURL(appJsPath).href}?t=${Date.now()}`)) as {
+			app?: { capabilities?: Record<string, { id: string; scopes: readonly string[] }> }
+		}
+		const caps = mod.app?.capabilities
+		if (!caps || typeof caps !== 'object') return undefined
+		const out: Record<string, { id: string; scopes: string[] }> = {}
+		for (const [name, value] of Object.entries(caps))
+			out[name] = { id: value.id, scopes: [...(value.scopes ?? [])] }
+		return Object.keys(out).length ? out : undefined
 	} catch {
 		return undefined
 	}
@@ -238,12 +262,13 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					server.middlewares.use(await mod.createDevServer(server, opts))
 				}
 			},
-			closeBundle() {
+			async closeBundle() {
 				if (emitted) return
 				emitted = true
 				const out = resolve(root, 'dist')
 				mkdirSync(out, { recursive: true })
-				writeFileSync(resolve(out, 'app.js'), compile(appEntry))
+				const appJs = resolve(out, 'app.js')
+				writeFileSync(appJs, compile(appEntry))
 				const manifest: AppManifest = {
 					id: opts.id,
 					name: opts.name,
@@ -254,7 +279,8 @@ export function kernelHost(opts: DevServerOptions): PluginOption[] {
 					icon: opts.icon,
 					include: opts.include,
 					app: 'app.js',
-					gui: 'gui.js'
+					gui: 'gui.js',
+					capabilities: await readManifestCapabilities(appJs)
 				}
 				writeFileSync(resolve(out, 'manifest.json'), JSON.stringify(manifest, null, '\t'))
 			}

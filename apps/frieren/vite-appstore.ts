@@ -20,6 +20,7 @@ interface RawManifest {
 	name: string
 	version?: string
 	icon?: string
+	capabilities?: Record<string, { id: string; scopes: string[] }>
 }
 
 function walk(base: string, dir: string, into: Map<string, Uint8Array>): void {
@@ -68,6 +69,7 @@ function emit(root: string, outDir: string): void {
 			name: manifest.name,
 			version,
 			icon: manifest.icon,
+			capabilities: manifest.capabilities,
 			files: catalogFiles
 		})
 	}

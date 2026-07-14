@@ -11,7 +11,7 @@
 // this layer is host-agnostic.
 
 import type { Volume } from '@justfiles/fs'
-import { type AppBundle, type Kernel, safeBundlePath } from './kernel.ts'
+import { type AppBundle, type CapabilityDecl, type Kernel, safeBundlePath } from './kernel.ts'
 
 export interface CatalogFile {
 	path: string
@@ -24,6 +24,9 @@ export interface CatalogApp {
 	name: string
 	version: string
 	icon?: string
+	// Declared capabilities (static, from the manifest). Drives the consent sheet
+	// and the update-time escalation guard.
+	capabilities?: CapabilityDecl
 	files: CatalogFile[]
 }
 
@@ -79,8 +82,22 @@ export async function reconcile(kernel: Kernel, fs: Volume, store: AppStore): Pr
 	for (const id of installed) {
 		const app = builtinById.get(id) ?? (await store.latest(id))
 		if (!app) continue
-		if ((await decide(fs, app)) !== 'skip') await install(kernel, store, app)
+		const action = await decide(fs, app)
+		if (action === 'skip') continue
+		// Escalation guard: a non-builtin (re)install that declares more capabilities
+		// than the installed version is held (skipped) so re-consent can land first
+		// (Step 5). `escalates` is true only on real capability growth, so a same-
+		// version self-heal (caps unchanged) still proceeds. Built-ins are trusted.
+		if (!builtinById.has(id) && (await escalates(fs, app))) continue
+		await install(kernel, store, app)
 	}
+}
+
+// Install one catalog app on demand: the first-time install of a store app (the
+// reconcile paths above only touch already-installed apps). Verifies every pinned
+// hash before bytes land, like reconcile.
+export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
+	await install(kernel, store, app)
 }
 
 // What reconcile should do for one INSTALLED app. Split "repair" from "upgrade"
@@ -159,6 +176,45 @@ export function semverGte(a: string, b: string): boolean {
 		if (d !== 0) return d > 0
 	}
 	return true
+}
+
+// Capability tokens: the capability `id`, plus each scope as `id::scope`. Growth
+// is the unit the escalation guard measures.
+function capabilityTokens(caps: CapabilityDecl | undefined): Set<string> {
+	const tokens = new Set<string>()
+	for (const { id, scopes } of Object.values(caps ?? {})) {
+		tokens.add(id)
+		for (const scope of scopes) tokens.add(`${id}::${scope}`)
+	}
+	return tokens
+}
+
+// Does `next` declare MORE than `installed` — a new capability id or a broader
+// scope? Subset/equal returns false (auto-update is safe); any new token is an
+// escalation that must be re-consented before it applies.
+export function escalatesCapabilities(
+	installed: CapabilityDecl | undefined,
+	next: CapabilityDecl | undefined
+): boolean {
+	const have = capabilityTokens(installed)
+	for (const token of capabilityTokens(next)) if (!have.has(token)) return true
+	return false
+}
+
+async function escalates(fs: Volume, app: CatalogApp): Promise<boolean> {
+	return escalatesCapabilities(await installedCapabilities(fs, app.id), app.capabilities)
+}
+
+async function installedCapabilities(fs: Volume, id: string): Promise<CapabilityDecl | undefined> {
+	try {
+		const bytes = await fs.readFile(`/applications/${id}/manifest.json`)
+		const manifest = JSON.parse(new TextDecoder().decode(bytes)) as {
+			capabilities?: CapabilityDecl
+		}
+		return manifest.capabilities
+	} catch {
+		return undefined
+	}
 }
 
 // The whole-app hash: one sha256 folding every file's pinned hash together

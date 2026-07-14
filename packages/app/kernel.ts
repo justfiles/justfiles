@@ -22,6 +22,7 @@ export type {
 	AppBundle,
 	AppHandle,
 	AppManifest,
+	CapabilityDecl,
 	Message,
 	RawAppHandle
 } from './app.ts'
