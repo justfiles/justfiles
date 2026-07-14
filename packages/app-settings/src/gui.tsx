@@ -213,10 +213,14 @@ function ConnectedAccount({
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	const caps = provider?.capabilities ?? account.enabled
-	// `ai` carries a model picker as its per-account config (host `describe`).
-	const aiConfig = account.enabled.includes('ai')
-		? (account.config.ai as AiConfig | undefined)
-		: undefined
+	// `ai` may carry a model picker as its per-account config (host `describe`) — or
+	// none, when the provider owns the model choice (e.g. platform AI). Guard on the
+	// model list so a picker-less ai provider doesn't crash the card.
+	const aiConfig =
+		account.enabled.includes('ai') &&
+		Array.isArray((account.config.ai as AiConfig | undefined)?.models)
+			? (account.config.ai as AiConfig)
+			: undefined
 
 	const run = async (fn: () => Promise<void>) => {
 		setBusy(true)
@@ -231,7 +235,9 @@ function ConnectedAccount({
 	}
 
 	const disconnect = () => {
-		if (!window.confirm(`Disconnect ${provider?.name ?? account.providerId}?`)) return
+		// No `window.confirm` — the GUI runs in a sandboxed iframe that blocks modals, so
+		// a confirm() is ignored and would make Disconnect a silent no-op. Disconnect is
+		// reversible (just reconnect), so act directly.
 		void run(() => client.disconnectAccount({ accountId: account.accountId }))
 	}
 
