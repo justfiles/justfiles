@@ -6,7 +6,7 @@
 	"assets": {
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*", "/fs", "/fs/*", "/ws"]
+		"run_worker_first": ["/api/*", "/fs", "/fs/*", "/ws", "/appstore/community.json"]
 	},
 	"observability": {
 		"enabled": true
@@ -36,8 +36,15 @@
 		{
 			"binding": "FS_BLOBS",
 			"bucket_name": "frieren-fs-blobs"
+		},
+		{
+			"binding": "APPSTORE",
+			"bucket_name": "frieren-appstore"
 		}
 	],
+	"triggers": {
+		"crons": ["0 */6 * * *"]
+	},
 	"migrations": [
 		{
 			"tag": "v1",
@@ -68,10 +75,22 @@
 					"custom_domain": true
 				}
 			],
+			"assets": {
+				"binding": "ASSETS",
+				"not_found_handling": "single-page-application",
+				"run_worker_first": ["/api/*", "/fs", "/fs/*", "/ws", "/appstore/community.json"]
+			},
+			"triggers": {
+				"crons": ["0 */6 * * *"]
+			},
 			"r2_buckets": [
 				{
 					"binding": "FS_BLOBS",
 					"bucket_name": "frieren-staging-fs-blobs"
+				},
+				{
+					"binding": "APPSTORE",
+					"bucket_name": "frieren-staging-appstore"
 				}
 			],
 			"durable_objects": {

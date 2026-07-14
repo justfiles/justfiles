@@ -4,10 +4,31 @@
 // frieren-specific asset addressing: the catalog schema tag, its served path, the
 // version-pathed per-file URL, and an `AppStore` over those assets.
 
-import type { AppStore, Catalog } from '@justfiles/app/appstore'
+import type { AppStore, Catalog, CatalogApp } from '@justfiles/app/appstore'
 
 export const CATALOG_SCHEMA = 'frieren/appstore-catalog/v1'
 export const CATALOG_PATH = '/appstore/catalog.json'
+
+// The community feed: a second catalog, R2-backed and worker-served, carrying
+// everything the deploy doesn't pre-ship — third-party apps and the first-party
+// `computer.spud.*` apps distributed via npm. Each entry adds the source pointer
+// (`npm` name + `publisher`) the client needs to resolve bytes from jsDelivr and
+// show provenance on the consent sheet. `files[].path` is relative to the
+// package's `dist/`, matching the built-in catalog.
+export const COMMUNITY_CATALOG_SCHEMA = 'spud/community-catalog/v1'
+export const COMMUNITY_CATALOG_PATH = '/appstore/community.json'
+
+export interface CommunityCatalogApp extends CatalogApp {
+	npm: string // npm package name; bytes resolve via jsDelivr
+	publisher: string // `npm:<username>`, shown on the consent sheet
+	repository?: string // linkified in the UI
+	description?: string
+}
+
+export interface CommunityCatalog {
+	schema: string
+	apps: CommunityCatalogApp[]
+}
 
 // Version-pathed so a release is immutable and permanently cacheable.
 export function appFileUrl(app: { id: string; version: string }, path: string): string {
