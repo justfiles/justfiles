@@ -81,7 +81,7 @@
 				"run_worker_first": ["/api/*", "/fs", "/fs/*", "/ws", "/store/*"]
 			},
 			"triggers": {
-				"crons": ["0 */6 * * *"]
+				"crons": ["*/5 * * * *"]
 			},
 			"r2_buckets": [
 				{
