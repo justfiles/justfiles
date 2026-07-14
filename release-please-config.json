@@ -14,6 +14,10 @@
 		"packages/fs": {
 			"release-type": "node",
 			"package-name": "@justfiles/fs"
+		},
+		"packages/app-code": {
+			"release-type": "node",
+			"package-name": "@spud-computer/code"
 		}
 	},
 	"plugins": ["node-workspace"]
