@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
 	COMMUNITY_CATALOG_PATH,
 	type CommunityCatalog,
-	type CommunityCatalogApp,
-	communityStoreEnabled
+	type CommunityCatalogApp
 } from '../../shared/appstore'
 import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
 import { installCommunityApp, installZipApp, uninstallLocalApp } from './manage'
@@ -28,13 +27,12 @@ export function useInstalledApps(): InstalledApp[] {
 	return apps
 }
 
-// The community catalog (`/store/catalog.json`), flag-gated. Fetched once on
-// mount; empty when the dev flag is off, so discovery stays dark until the store
-// is enabled. Discovery only — installing still routes through the consent sheet.
+// The community catalog (`/store/catalog.json`). Fetched once on mount; an empty
+// catalog (unpublished / not yet indexed) simply yields no candidates. Discovery
+// only — installing still routes through the consent sheet.
 export function useCommunityCatalog(): CommunityCatalogApp[] {
 	const [apps, setApps] = useState<CommunityCatalogApp[]>([])
 	useEffect(() => {
-		if (!communityStoreEnabled()) return
 		let live = true
 		fetch(COMMUNITY_CATALOG_PATH)
 			.then((res) => (res.ok ? (res.json() as Promise<CommunityCatalog>) : null))
