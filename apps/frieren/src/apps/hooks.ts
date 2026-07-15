@@ -5,6 +5,13 @@ import {
 	type CommunityCatalogApp
 } from '../../shared/appstore'
 import { useOsClient, useOsDispatch, useOsRuntime } from '../os/hooks'
+import {
+	beginInstall,
+	endInstall,
+	getInstalling,
+	type InstallingApp,
+	subscribeInstalling
+} from './installing'
 import { installCommunityApp, installZipApp, uninstallLocalApp } from './manage'
 import type { InstalledApp } from './types'
 
@@ -24,6 +31,13 @@ export function useInstalledApps(): InstalledApp[] {
 	const client = useOsClient()
 	const [apps, setApps] = useState<InstalledApp[]>([])
 	useEffect(() => client.subscribeApps(setApps), [client])
+	return apps
+}
+
+// The apps currently downloading/installing in the background (launcher tiles).
+export function useInstallingApps(): InstallingApp[] {
+	const [apps, setApps] = useState<InstallingApp[]>(getInstalling)
+	useEffect(() => subscribeInstalling(setApps), [])
 	return apps
 }
 
@@ -50,7 +64,7 @@ export function useCommunityCatalog(): CommunityCatalogApp[] {
 export interface AppCommands {
 	launchApp: (app: InstalledApp) => void
 	installApp: () => Promise<void>
-	installCommunity: (id: string) => Promise<void>
+	installCommunity: (app: CommunityCatalogApp) => Promise<void>
 	uninstallApp: (id: string) => Promise<void>
 }
 
@@ -59,7 +73,7 @@ export interface AppCommands {
 export function useAppCommands(): AppCommands {
 	const client = useOsClient()
 	const dispatch = useOsDispatch()
-	const { localKernel } = useOsRuntime()
+	const { localKernel, volume } = useOsRuntime()
 	const installingRef = useRef(false)
 
 	return useMemo<AppCommands>(() => {
@@ -100,15 +114,27 @@ export function useAppCommands(): AppCommands {
 			}
 		}
 
-		const installCommunity = async (id: string) => {
-			try {
-				await installCommunityApp(await localKernel(), id)
-				client.refresh()
-			} catch (e) {
-				alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
-			}
+		// Install runs in the background: mark the intent (tile + fs marker), return so
+		// the consent sheet closes and the desktop is usable, then download. The app
+		// isn't launchable until its bundle swaps in and `refresh` lists it.
+		const installCommunity = async (app: CommunityCatalogApp): Promise<void> => {
+			const fs = await volume
+			const iconUrl = app.icon
+				? `https://cdn.jsdelivr.net/npm/${app.npm}@${app.version}/dist/${app.icon}`
+				: undefined
+			await beginInstall(fs, { id: app.id, name: app.name, iconUrl })
+			void (async () => {
+				try {
+					await installCommunityApp(await localKernel(), app.id)
+				} catch (e) {
+					alert(`Install failed: ${e instanceof Error ? e.message : String(e)}`)
+				} finally {
+					await endInstall(fs, app.id)
+					client.refresh()
+				}
+			})()
 		}
 
 		return { launchApp, installApp, installCommunity, uninstallApp }
-	}, [client, dispatch, localKernel])
+	}, [client, dispatch, localKernel, volume])
 }

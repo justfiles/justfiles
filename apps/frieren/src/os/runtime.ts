@@ -4,6 +4,7 @@ import { ensureAgentDefaults } from '../../shared/agent-defaults'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
+import { resumePendingInstalls } from '../apps/manage'
 import { reconcileInstalled, seedBuiltins } from '../apps/seed'
 import { activeProfileHasRemoteUser, type ProfileVolume } from '../fs'
 import type { FrierenClient } from './client'
@@ -51,6 +52,13 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	disposers.push(() => {
 		seedCancelled = true
 	})
+
+	// --- boot: resume installs a previous session left pending (fs markers) ---
+	// Fire-and-forget: the tiles reappear immediately (seeded from the markers) and
+	// the downloads restart in the background, exactly like a fresh install.
+	void (async () => {
+		await resumePendingInstalls(await localKernel(), await volume, () => client.refresh())
+	})().catch(() => {})
 
 	// app-code's `devkit.install` writes a new app straight to `/applications`
 	// via its own kernel; re-list so it appears in the launcher right away.

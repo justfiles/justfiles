@@ -14,7 +14,12 @@ import { createPortal } from 'react-dom'
 import type { CommunityCatalogApp } from '../../shared/appstore'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
 import { Whisper } from '../agent/Whisper'
-import { useAppCommands, useCommunityCatalog, useInstalledApps } from '../apps/hooks'
+import {
+	useAppCommands,
+	useCommunityCatalog,
+	useInstalledApps,
+	useInstallingApps
+} from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
 import { useAgentClient, useOsDispatch, useOsStore } from '../os/hooks'
 import { AGENT_WINDOW_ID } from '../os/state'
@@ -59,6 +64,7 @@ export function Omnibar({
 	onPersonalize: () => void
 }) {
 	const apps = useInstalledApps()
+	const installing = useInstallingApps()
 	const catalog = useCommunityCatalog()
 	const { launchApp, installCommunity } = useAppCommands()
 	const agent = useAgentClient()
@@ -85,14 +91,18 @@ export function Omnibar({
 	// catalog version declares MORE access than what's installed (Step 4 held it).
 	// Both only appear while searching, alongside the app matches.
 	const installedById = useMemo(() => new Map(apps.map((a) => [a.id, a])), [apps])
+	const installingById = useMemo(() => new Map(installing.map((a) => [a.id, a])), [installing])
 	const storeMatches = useMemo(
 		() =>
 			text === ''
 				? []
 				: catalog.filter(
-						(a) => !installedById.has(a.id) && matchesQuery(text, a.name, a.id, a.description)
+						(a) =>
+							!installedById.has(a.id) &&
+							!installingById.has(a.id) &&
+							matchesQuery(text, a.name, a.id, a.description)
 					),
-		[catalog, text, installedById]
+		[catalog, text, installedById, installingById]
 	)
 	const heldUpdates = useMemo(
 		() =>
@@ -377,7 +387,7 @@ export function Omnibar({
 								)
 							})}
 						</ul>
-					) : apps.length > 0 ? (
+					) : apps.length > 0 || installing.length > 0 ? (
 						<div className="frn-omnibar-grid">
 							{apps.map((app) => (
 								<button
@@ -401,6 +411,26 @@ export function Omnibar({
 									<span className="frn-omnibar-tile-name">{app.name}</span>
 								</button>
 							))}
+							{installing
+								.filter((app) => !installedById.has(app.id))
+								.map((app) => (
+									<div
+										key={`installing:${app.id}`}
+										className="frn-omnibar-tile"
+										data-installing="true"
+										title={`Installing ${app.name}…`}
+									>
+										<span className="frn-omnibar-icon">
+											{app.iconUrl ? (
+												<img src={app.iconUrl} alt="" />
+											) : (
+												app.name.slice(0, 1).toUpperCase()
+											)}
+											<span className="frn-omnibar-tile-spinner" />
+										</span>
+										<span className="frn-omnibar-tile-name">{app.name}</span>
+									</div>
+								))}
 						</div>
 					) : null}
 				</div>
@@ -449,7 +479,7 @@ export function Omnibar({
 				? createPortal(
 						<ConsentSheet
 							target={consent}
-							onConfirm={() => installCommunity(consent.app.id)}
+							onConfirm={() => installCommunity(consent.app)}
 							onClose={() => setConsent(null)}
 						/>,
 						document.body
