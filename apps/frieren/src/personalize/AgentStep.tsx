@@ -388,7 +388,7 @@ export function AgentStep({
 									data-selected={draft.archetype === archetype.id}
 									onClick={() => setDraft({ ...draft, archetype: archetype.id })}
 								>
-									<span className="frn-portrait">
+									<span className="frn-portrait frn-sunken">
 										<img src={archetype.image} alt="" />
 									</span>
 									<strong>{archetype.title}</strong>
