@@ -561,14 +561,66 @@
 .frn-ritual-circle[data-fast="true"] svg {
 	animation-duration: 3s;
 }
-.frn-ritual-circle img {
-	width: 56px;
-	height: 56px;
-	image-rendering: pixelated;
+.frn-ritual-circle[data-fast="true"] .frn-ritual-circle-ring {
+	animation-duration: 5s;
+}
+/* Ripples: rings expanding from the core — something is arriving. */
+.frn-ritual-circle::before,
+.frn-ritual-circle::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	width: 34%;
+	aspect-ratio: 1;
+	margin: auto;
+	border: 2px solid var(--focus);
+	border-radius: 50%;
+	opacity: 0;
+	animation: frn-summon-ripple 1.6s ease-out infinite;
+}
+.frn-ritual-circle::after {
+	animation-delay: 0.8s;
+}
+/* The core: a flickering diamond of raw accent, pulsing as the soul forms. */
+.frn-ritual-core {
+	position: absolute;
+	inset: 0;
+	width: 14px;
+	aspect-ratio: 1;
+	margin: auto;
+	background: var(--focus);
+	box-shadow: 0 0 10px color-mix(in srgb, var(--focus) 80%, transparent);
+	animation:
+		frn-summon-core 0.8s ease-in-out infinite alternate,
+		frn-summon-flicker 0.35s steps(2, start) infinite;
 }
 @keyframes frn-runes {
 	to {
 		transform: rotate(360deg);
+	}
+}
+@keyframes frn-summon-ripple {
+	from {
+		transform: scale(0.3);
+		opacity: 0.9;
+	}
+	to {
+		transform: scale(2.4);
+		opacity: 0;
+	}
+}
+@keyframes frn-summon-core {
+	from {
+		transform: rotate(45deg) scale(0.7);
+	}
+	to {
+		transform: rotate(225deg) scale(1.5);
+		box-shadow: 0 0 26px color-mix(in srgb, var(--focus) 90%, transparent);
+	}
+}
+@keyframes frn-summon-flicker {
+	50% {
+		opacity: 0.65;
 	}
 }
 
@@ -764,8 +816,14 @@
 @media (prefers-reduced-motion: reduce) {
 	.frn-ritual-circle svg,
 	.frn-ritual-circle-ring,
+	.frn-ritual-circle::before,
+	.frn-ritual-circle::after,
 	.frn-caret {
 		animation: none;
+	}
+	.frn-ritual-core {
+		animation: none;
+		transform: rotate(45deg);
 	}
 }
 
