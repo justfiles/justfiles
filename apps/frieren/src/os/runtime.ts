@@ -1,4 +1,4 @@
-import type { Kernel } from '@justfiles/app'
+import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
 import { ensureAgentDefaults } from '../../shared/agent-defaults'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
@@ -59,6 +59,18 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 	void (async () => {
 		await resumePendingInstalls(await localKernel(), await volume, () => client.refresh())
 	})().catch(() => {})
+
+	// --- trash retention: purge uninstalled bundles past the retention window ---
+	// Synced profiles are swept authoritatively server-side (the Frieren DO's daily
+	// alarm), reliable regardless of an open tab; the deletes sync down. A local-only
+	// (signed-out) profile has no server, so it sweeps its own trash here — cheap +
+	// idempotent, on boot and a slow interval for long-lived tabs.
+	if (!activeProfileHasRemoteUser()) {
+		const sweep = () => void volume.then((fs) => sweepTrash(fs)).catch(() => {})
+		sweep()
+		const timer = setInterval(sweep, 12 * 60 * 60 * 1000)
+		disposers.push(() => clearInterval(timer))
+	}
 
 	// app-code's `devkit.install` writes a new app straight to `/applications`
 	// via its own kernel; re-list so it appears in the launcher right away.

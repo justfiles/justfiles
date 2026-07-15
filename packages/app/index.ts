@@ -21,3 +21,4 @@ export {
 	safeBundlePath
 } from './kernel.ts'
 export { type Client, createClient, defineApp, type Transport } from './sdk.ts'
+export { DEFAULT_TRASH_RETENTION_MS, sweepTrash } from './trash.ts'
