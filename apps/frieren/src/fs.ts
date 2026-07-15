@@ -350,7 +350,7 @@ function deleteIdb(name: string): Promise<void> {
 }
 
 // ── Server-coordinated volume reset ──────────────────────────────────────────
-// Debug-gated shell affordances (see ResetPanel). "Take theirs" and "take mine"
+// Surfaced in the sync-status menu (DesktopShell). "Take theirs" and "take mine"
 // are intents on the synced volume — the state machine (and the POST /fs/reset it
 // drives) lives in `synced()`. Only "factory reset" is app-level: it wipes the
 // server AND nukes local IDB, which no library-level reset can do.
