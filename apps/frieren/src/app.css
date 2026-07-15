@@ -467,33 +467,52 @@
 	grid-template-columns: repeat(3, 1fr);
 	gap: 10px;
 }
+/* The portrait is the whole card; a shade rising from the bottom (opaque well
+   fading to transparent) keeps the name and tagline readable over the art. */
 .frn-tile {
-	display: grid;
-	gap: 6px;
-	justify-items: center;
-	padding: 10px 8px 12px;
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	gap: 2px;
+	overflow: hidden;
+	min-height: 168px;
+	padding: 10px;
 	color: inherit;
 	font: inherit;
-	text-align: center;
+	text-align: left;
 }
-.frn-tile:hover {
-	background: color-mix(in srgb, var(--well) 92%, var(--text));
+.frn-tile > img {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	filter: grayscale(1);
+	opacity: 0.75;
+}
+.frn-tile::after {
+	content: "";
+	position: absolute;
+	inset: 30% 0 0;
+	background: linear-gradient(to bottom, transparent, var(--well) 82%);
+	pointer-events: none;
+}
+.frn-tile:hover > img {
+	opacity: 0.9;
 }
 .frn-tile[data-selected="true"] {
 	outline: 2px solid var(--focus);
 	outline-offset: 1px;
 }
-.frn-tile .frn-portrait {
-	width: 72px;
-	aspect-ratio: 1;
-}
-.frn-tile img {
-	filter: grayscale(1);
-	opacity: 0.75;
-}
-.frn-tile[data-selected="true"] img {
+.frn-tile[data-selected="true"] > img {
 	filter: none;
 	opacity: 1;
+}
+.frn-tile strong,
+.frn-tile-tagline {
+	position: relative;
+	z-index: 1;
 }
 .frn-tile strong {
 	font-size: 12.5px;
