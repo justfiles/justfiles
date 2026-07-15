@@ -49,7 +49,6 @@ const ARCHETYPES: ArchetypeInfo[] = [
 const FORMS = [
 	{ value: 'female', label: 'She' },
 	{ value: 'male', label: 'He' },
-	{ value: 'nonbinary', label: 'They' },
 	{ value: 'none', label: 'None' }
 ] as const
 
