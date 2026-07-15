@@ -9,7 +9,7 @@ import {
 	SparkleIcon
 } from '@phosphor-icons/react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CommunityCatalogApp } from '../../shared/appstore'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
@@ -52,6 +52,12 @@ function matchesQuery(query: string, ...fields: (string | undefined)[]): boolean
 
 function filterApps(apps: InstalledApp[], query: string): InstalledApp[] {
 	return apps.filter((app) => matchesQuery(query, app.name, app.id, app.description))
+}
+
+function storeIconUrl(app: CommunityCatalogApp): string | undefined {
+	return app.icon
+		? `https://cdn.jsdelivr.net/npm/${app.npm}@${app.version}/dist/${app.icon}`
+		: undefined
 }
 
 export function Omnibar({
@@ -319,51 +325,84 @@ export function Omnibar({
 							{rows.map((row, index) => {
 								const isSelected = index === selected
 								if (row.kind === 'app') {
+									const startsSection = rows[index - 1]?.kind !== 'app'
 									return (
-										<li key={row.app.id}>
-											<button
-												type="button"
-												className="frn-omnibar-row"
-												data-selected={isSelected}
-												onMouseMove={() => setPinned(index)}
-												onClick={() => run(index)}
-											>
-												<span className="frn-omnibar-icon frn-omnibar-icon-sm">
-													{row.app.iconUrl ? (
-														<img src={row.app.iconUrl} alt="" />
-													) : (
-														row.app.name.slice(0, 1).toUpperCase()
-													)}
-												</span>
-												<span className="frn-omnibar-row-label">{row.app.name}</span>
-											</button>
-										</li>
+										<Fragment key={row.app.id}>
+											{startsSection ? (
+												<li className="frn-omnibar-section">On this computer</li>
+											) : null}
+											<li>
+												<button
+													type="button"
+													className="frn-omnibar-row"
+													data-selected={isSelected}
+													onMouseMove={() => setPinned(index)}
+													onClick={() => run(index)}
+												>
+													<span className="frn-omnibar-icon frn-omnibar-icon-sm">
+														{row.app.iconUrl ? (
+															<img src={row.app.iconUrl} alt="" />
+														) : (
+															row.app.name.slice(0, 1).toUpperCase()
+														)}
+													</span>
+													<span className="frn-omnibar-row-copy">
+														<span className="frn-omnibar-row-label">{row.app.name}</span>
+														{row.app.description ? (
+															<span className="frn-omnibar-row-description">
+																{row.app.description}
+															</span>
+														) : null}
+													</span>
+												</button>
+											</li>
+										</Fragment>
 									)
 								}
 								if (row.kind === 'store' || row.kind === 'update') {
 									const isUpdate = row.kind === 'update'
+									const icon = storeIconUrl(row.app)
+									const startsSection = rows[index - 1]?.kind !== row.kind
 									return (
-										<li key={`${row.kind}:${row.app.id}`}>
-											<button
-												type="button"
-												className="frn-omnibar-row"
-												data-selected={isSelected}
-												onMouseMove={() => setPinned(index)}
-												onClick={() => run(index)}
-											>
-												<span className="frn-omnibar-icon frn-omnibar-icon-sm">
-													{isUpdate ? <ArrowClockwiseIcon /> : <DownloadSimpleIcon />}
-												</span>
-												<span className="frn-omnibar-row-label">{row.app.name}</span>
-												<span className="frn-omnibar-row-hint">
-													{isUpdate ? 'Update · review access' : 'Install'}
-												</span>
-											</button>
-										</li>
+										<Fragment key={`${row.kind}:${row.app.id}`}>
+											{startsSection ? (
+												<li className="frn-omnibar-section">
+													{isUpdate ? 'Updates from the App Store' : 'App Store · Not installed'}
+												</li>
+											) : null}
+											<li>
+												<button
+													type="button"
+													className="frn-omnibar-row"
+													data-selected={isSelected}
+													onMouseMove={() => setPinned(index)}
+													onClick={() => run(index)}
+												>
+													<span className="frn-omnibar-icon frn-omnibar-icon-sm">
+														{icon ? (
+															<img src={icon} alt="" />
+														) : isUpdate ? (
+															<ArrowClockwiseIcon />
+														) : (
+															<DownloadSimpleIcon />
+														)}
+													</span>
+													<span className="frn-omnibar-row-copy">
+														<span className="frn-omnibar-row-label">{row.app.name}</span>
+														<span className="frn-omnibar-row-description">
+															{row.app.description || 'No description provided by the publisher.'}
+														</span>
+													</span>
+													<span className="frn-omnibar-row-hint" data-action="true">
+														{isUpdate ? 'Review update' : 'Install'}
+													</span>
+												</button>
+											</li>
+										</Fragment>
 									)
 								}
 								return (
-									<li key="ask" data-divider={matches.length > 0}>
+									<li key="ask" data-divider={rows.length > 1}>
 										<button
 											type="button"
 											className="frn-omnibar-row"
