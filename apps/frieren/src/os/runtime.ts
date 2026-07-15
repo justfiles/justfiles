@@ -7,6 +7,7 @@ import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { resumePendingInstalls } from '../apps/manage'
 import { reconcileInstalled, seedBuiltins } from '../apps/seed'
 import { activeProfileHasRemoteUser, type ProfileVolume } from '../fs'
+import { notificationStore } from '../notifications/store'
 import type { FrierenClient } from './client'
 import type { OsAction, OsState } from './state'
 import { bootOsStore } from './store'
@@ -202,11 +203,18 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 			}
 			store.dispatch(action)
 		})
+		// Agent / cron notification frames feed the one notification store (pill + center).
+		const unsubscribeNotify = client.onNotification((notification) =>
+			notificationStore.notify(notification)
+		)
 		const unsubscribeStore = store.subscribe(flushPending)
 		disposers.push(() => {
 			unsubscribeRemote()
+			unsubscribeNotify()
 			unsubscribeStore()
 			client.close()
+			// A fresh session (sign-out / user switch) starts with an empty center.
+			notificationStore.clear()
 			// App GUI hosting is part of OS lifecycle: drop every stage so a
 			// previous session's DOM doesn't survive sign-out / user switch.
 			appHost.closeAll()
