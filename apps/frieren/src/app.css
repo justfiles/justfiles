@@ -1330,6 +1330,22 @@
 	margin-top: 6px;
 	padding-top: 6px;
 }
+.frn-omnibar-section {
+	margin: 5px 10px 3px;
+	padding-top: 8px;
+	border-top: 1px solid var(--rule);
+	color: var(--text);
+	font-size: 11px;
+	font-weight: 650;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	opacity: 0.5;
+}
+.frn-omnibar-section:first-child {
+	margin-top: 0;
+	padding-top: 3px;
+	border-top: 0;
+}
 .frn-omnibar-row {
 	display: flex;
 	align-items: center;
@@ -1347,10 +1363,22 @@
 	background: var(--focus);
 	color: var(--on-focus);
 }
-.frn-omnibar-row-label {
+.frn-omnibar-row-copy {
+	display: flex;
+	flex: 1;
+	min-width: 0;
+	flex-direction: column;
+	gap: 1px;
+}
+.frn-omnibar-row-label,
+.frn-omnibar-row-description {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+.frn-omnibar-row-description {
+	font-size: 12px;
+	opacity: 0.58;
 }
 .frn-omnibar-row-label em {
 	font-style: normal;
@@ -1366,6 +1394,17 @@
 	gap: 4px;
 	font-size: 12px;
 	opacity: 0.6;
+}
+.frn-omnibar-row-hint[data-action] {
+	padding: 3px 8px;
+	border: 1px solid currentColor;
+	border-radius: 999px;
+	font-weight: 600;
+	opacity: 0.65;
+}
+.frn-omnibar-row[data-selected="true"] .frn-omnibar-row-description,
+.frn-omnibar-row[data-selected="true"] .frn-omnibar-row-hint[data-action] {
+	opacity: 0.85;
 }
 /* Inline chat: the omnibar is the agent surface. Given a comfortable resting
    height so a fresh conversation doesn't open as a cramped sliver. */
