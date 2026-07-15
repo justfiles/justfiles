@@ -23,7 +23,6 @@ import { useOsStore } from '../os/hooks'
 import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from '../os/selectors'
 import type { OsWindow } from '../os/state'
 import { PersonalizePanel } from '../personalize/PersonalizePanel'
-import { ResetPanel } from '../reset/ResetPanel'
 import { Omnibar } from './Omnibar'
 
 const statusDotColor: Record<ConnectionState, string> = {
@@ -110,19 +109,10 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
 	const [personalizeOpen, setPersonalizeOpen] = useState(false)
-	const [resetOpen, setResetOpen] = useState(false)
-	// Debug-gated: the reset affordances are dev-only for now (dev build, or opt in
-	// via `localStorage.frieren-debug = 1`).
-	const resetDebugEnabled =
-		import.meta.env.DEV ||
-		(typeof localStorage !== 'undefined' && localStorage.getItem('frieren-debug') === '1')
 
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Personalize…', onSelect: () => setPersonalizeOpen(true) },
 		{ label: 'Switch User…', onSelect: onSwitchUser },
-		...(resetDebugEnabled
-			? ([{ label: 'Reset sync…', onSelect: () => setResetOpen(true) }] as ContextMenuItem[])
-			: []),
 		{ separator: true },
 		{ label: 'Change Wallpaper…', disabled: true, onSelect: () => {} },
 		{ separator: true },
@@ -194,11 +184,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 						</span>
 					</div>
 					<div className="frn-menubar-group">
-						<BackendStatus
-							onOpenMenu={
-								resetDebugEnabled ? (event) => menu.open(event, syncMenuItems) : undefined
-							}
-						/>
+						<BackendStatus onOpenMenu={(event) => menu.open(event, syncMenuItems)} />
 						<span
 							className="frn-status-dot"
 							style={{ background: statusDotColor[connection.state] }}
@@ -264,7 +250,6 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 					onIdentityChange={refreshIdentity}
 				/>
 			) : null}
-			{resetOpen ? <ResetPanel onClose={() => setResetOpen(false)} /> : null}
 		</div>
 	)
 }
