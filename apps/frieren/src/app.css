@@ -391,8 +391,10 @@
 	gap: 12px;
 	padding: 12px;
 }
+/* Square, like every other portrait socket: the bound avatar is saved as a
+   256×256 square crop, so the preview should never promise a different shape. */
 .frn-plaque-portrait {
-	height: 180px;
+	aspect-ratio: 1;
 }
 .frn-plaque-name {
 	display: grid;
@@ -482,8 +484,8 @@
 	outline-offset: 1px;
 }
 .frn-tile .frn-portrait {
-	width: 100%;
-	height: 72px;
+	width: 72px;
+	aspect-ratio: 1;
 }
 .frn-tile img {
 	filter: grayscale(1);
