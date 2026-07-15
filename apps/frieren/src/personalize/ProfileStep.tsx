@@ -82,15 +82,13 @@ export function ProfileStep({
 	}
 
 	return (
-		<main className="frn-traveler">
-			<form className="frn-traveler-card" onSubmit={(event) => void save(event)}>
-				<small>The Traveler</small>
-				<h1>Tell them who walks beside them.</h1>
+		<form className="frn-traveler" onSubmit={(event) => void save(event)}>
+			<div className="frn-traveler-fields">
 				<p>
-					Only what you choose to inscribe. These details help your companion know you over time.
+					Tell them who walks beside them. These details help your companion know you over time.
 				</p>
-				<label>
-					<span>Name</span>
+				<label className="frn-field">
+					<span className="frn-sheet-label">Name</span>
 					<input
 						type="text"
 						value={draft.name}
@@ -98,8 +96,8 @@ export function ProfileStep({
 						required
 					/>
 				</label>
-				<label>
-					<span>Birth date</span>
+				<label className="frn-field">
+					<span className="frn-sheet-label">Birth date</span>
 					<input
 						type="date"
 						value={draft.birthDate}
@@ -108,8 +106,8 @@ export function ProfileStep({
 					/>
 					<em>Stored as a date, not an age.</em>
 				</label>
-				<label>
-					<span>Gender · optional</span>
+				<label className="frn-field">
+					<span className="frn-sheet-label">Gender · optional</span>
 					<select
 						value={draft.genderChoice}
 						onChange={(event) => setDraft({ ...draft, genderChoice: event.target.value })}
@@ -123,8 +121,8 @@ export function ProfileStep({
 					</select>
 				</label>
 				{draft.genderChoice === 'custom' ? (
-					<label>
-						<span>In your own words</span>
+					<label className="frn-field">
+						<span className="frn-sheet-label">In your own words</span>
 						<input
 							type="text"
 							value={draft.genderCustom}
@@ -132,16 +130,18 @@ export function ProfileStep({
 						/>
 					</label>
 				) : null}
-				{error ? <p className="frn-ritual-error">{error}</p> : null}
-				<div className="frn-ritual-actions">
-					<button type="button" onClick={onBack} disabled={saving}>
-						Back
-					</button>
-					<button type="submit" className="frn-ritual-primary" disabled={!canSave || saving}>
-						{saving ? 'Inscribing…' : 'Inscribe the traveler'}
-					</button>
-				</div>
-			</form>
-		</main>
+			</div>
+			<div className="frn-sheet-actions">
+				<button type="button" onClick={onBack} disabled={saving}>
+					Back
+				</button>
+				<button type="submit" className="frn-btn-primary" disabled={!canSave || saving}>
+					{saving ? 'Inscribing…' : 'Inscribe the traveler'}
+				</button>
+			</div>
+			<footer className="frn-sheet-status" data-error={error !== null}>
+				<span>{error ?? 'Only what you choose to inscribe — nothing else is written.'}</span>
+			</footer>
+		</form>
 	)
 }
