@@ -410,4 +410,8 @@ with the same ranking / pinned-default rules.
   and the omnibar the single home.)
 - Does the persistent bar host **status** too (sync/connection, currently in the
   menubar), or stay purely an input? (*Partially decided by v1.2: agent
-  presence lives on the pill. System status — sync/connection — still open.*)
+  presence lives on the pill. **Notifications decided** — the pill is the
+  ambient notification banner and the sheet gains a notification-center mode;
+  `needs-you` folds into the general notification model. See
+  `NOTIFICATIONS-PLAN.md`. System **toggles** (DND) and sync/connection status
+  stay in the menubar — system chrome there, intent + presence here.*)
