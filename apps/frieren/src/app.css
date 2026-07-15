@@ -1287,6 +1287,30 @@
 	height: 100%;
 	object-fit: cover;
 }
+/* Background-install tile: dimmed, un-launchable, with a spinner over the icon. */
+.frn-omnibar-tile[data-installing] {
+	opacity: 0.65;
+}
+.frn-omnibar-tile[data-installing]:hover {
+	background: transparent;
+}
+.frn-omnibar-tile[data-installing] .frn-omnibar-icon {
+	position: relative;
+}
+.frn-omnibar-tile[data-installing] .frn-omnibar-icon img {
+	opacity: 0.45;
+}
+.frn-omnibar-tile-spinner {
+	position: absolute;
+	inset: 0;
+	margin: auto;
+	width: 20px;
+	height: 20px;
+	border-radius: 50%;
+	border: 2px solid color-mix(in srgb, var(--text) 25%, transparent);
+	border-top-color: var(--text);
+	animation: frn-spin 0.8s linear infinite;
+}
 .frn-omnibar-icon-sm {
 	width: 26px;
 	height: 26px;
