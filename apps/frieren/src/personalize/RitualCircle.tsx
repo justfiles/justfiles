@@ -1,16 +1,10 @@
 import agentAvatarUrl from '../agent/agent-avatar.png'
 
-export function RitualCircle({
-	complete = false,
-	fast = false,
-	src
-}: {
-	complete?: boolean
-	fast?: boolean
-	src?: string
-}) {
+// Decorative summoning overlay: rotating rune ring + the pixel spirit, drawn in
+// currentColor so it inherits whatever theme the sheet is wearing.
+export function RitualCircle({ fast = false }: { fast?: boolean }) {
 	return (
-		<div className="frn-ritual-circle" data-complete={complete} data-fast={fast} aria-hidden="true">
+		<div className="frn-ritual-circle" data-fast={fast} aria-hidden="true">
 			<div className="frn-ritual-circle-ring" />
 			<svg viewBox="0 0 200 200">
 				<title>Summoning circle</title>
@@ -23,9 +17,7 @@ export function RitualCircle({
 					</textPath>
 				</text>
 			</svg>
-			<div className="frn-ritual-spirit">
-				<img src={src ?? agentAvatarUrl} alt="" data-pixel={!src} />
-			</div>
+			<img src={agentAvatarUrl} alt="" />
 		</div>
 	)
 }

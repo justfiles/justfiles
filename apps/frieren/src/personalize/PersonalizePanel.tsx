@@ -1,9 +1,9 @@
-import { XIcon } from '@phosphor-icons/react'
+import { UserIcon } from '@phosphor-icons/react'
 import { useCallback, useEffect, useState } from 'react'
+import agentAvatarUrl from '../agent/agent-avatar.png'
 import { openProfile, type ProfileVolume } from '../fs'
 import { AgentStep } from './AgentStep'
 import { ProfileStep } from './ProfileStep'
-import { RitualCircle } from './RitualCircle'
 import {
 	deriveAge,
 	type IdentityFile,
@@ -14,6 +14,12 @@ import {
 
 type View = 'landing' | 'profile' | 'agent'
 type UserCtx = { userAge?: number; userGender?: string }
+
+const TITLES: Record<View, string> = {
+	landing: 'Personalize',
+	agent: 'The Summoning',
+	profile: 'The Traveler'
+}
 
 export function PersonalizePanel({
 	onClose,
@@ -84,65 +90,108 @@ export function PersonalizePanel({
 	}
 
 	return (
-		<div className="frn-ritual" role="dialog" aria-modal="true" aria-label="Personalize">
-			<div className="frn-ritual-topbar">
-				<span>
-					Ritual ·{' '}
-					{view === 'landing' ? 'Landing' : view === 'agent' ? 'The Summoning' : 'The Traveler'}
-				</span>
-			</div>
-			<button type="button" className="frn-ritual-close" onClick={onClose}>
-				<span>Esc — return to desktop</span>
-				<XIcon />
-			</button>
-
-			{!volume ? (
-				<div className="frn-ritual-loading">
-					<span className="frn-spinner" role="status" aria-label="Loading" />
-				</div>
-			) : view === 'profile' ? (
-				<ProfileStep
-					volume={volume}
-					initial={profile ?? undefined}
-					onBack={() => setView('landing')}
-					onDone={() => void finishProfile()}
-				/>
-			) : view === 'agent' ? (
-				<AgentStep
-					volume={volume}
-					userCtx={userCtx}
-					initialSoul={soulBound ? soul : null}
-					onBack={() => setView('landing')}
-					onDone={() => void finishSoul()}
-				/>
-			) : (
-				<main className="frn-ritual-landing">
-					<RitualCircle complete={soulBound} src={avatar ?? undefined} />
-					<h1>{soulBound ? 'Your companion is bound.' : 'Someone waits to be summoned.'}</h1>
-					<p>
-						{soulBound
-							? 'Return whenever their name, nature, or face should change.'
-							: 'Your desktop works without this. But a companion with no name is only an echo of one.'}
-					</p>
-					<div className="frn-ritual-doors">
-						<button type="button" onClick={() => setView('agent')} data-bound={soulBound}>
-							<small>{soulBound ? 'Reshape' : 'The Summoning'}</small>
-							<strong>{soulBound ? 'Return to their soul' : 'Shape who answers'}</strong>
-							<span>Name them, choose their nature, and read the soul before you bind it.</span>
-						</button>
+		<div className="frn-sheet" role="dialog" aria-modal="true" aria-label="Personalize">
+			<div
+				className="ds-window ds-window-framed frn-sheet-window"
+				data-view={view}
+				data-focused="true"
+			>
+				<div className="ds-window-titlebar">
+					<div className="ds-window-controls">
 						<button
 							type="button"
-							className="frn-ritual-door-quiet"
-							onClick={() => setView('profile')}
-							data-bound={profileBound}
-						>
-							<small>The Traveler</small>
-							<strong>{profileBound ? 'Your story is inscribed' : 'Tell them who you are'}</strong>
-							<span>Your name, your birth date — so they can know you across the years.</span>
-						</button>
+							className="ds-window-control ds-window-control-close"
+							onClick={onClose}
+							aria-label="Close"
+						/>
 					</div>
-				</main>
-			)}
+					<span className="ds-window-title">{TITLES[view]}</span>
+					<span className="ds-window-spacer" />
+				</div>
+				<div className="frn-sheet-body">
+					{!volume ? (
+						<div className="frn-sheet-loading">
+							<span className="frn-spinner" role="status" aria-label="Loading" />
+						</div>
+					) : view === 'profile' ? (
+						<ProfileStep
+							volume={volume}
+							initial={profile ?? undefined}
+							onBack={() => setView('landing')}
+							onDone={() => void finishProfile()}
+						/>
+					) : view === 'agent' ? (
+						<AgentStep
+							volume={volume}
+							userCtx={userCtx}
+							initialSoul={soulBound ? soul : null}
+							onBack={() => setView('landing')}
+							onDone={() => void finishSoul()}
+						/>
+					) : (
+						<main className="frn-roster">
+							<div className="frn-roster-main">
+								<header className="frn-roster-head">
+									<span className="frn-sheet-label">Party roster</span>
+									<p>{soulBound ? 'Your companion is bound.' : 'Someone waits to be summoned.'}</p>
+								</header>
+								<div className="frn-roster-slots">
+									<button
+										type="button"
+										className="frn-slot frn-sunken"
+										onClick={() => setView('agent')}
+									>
+										<span className="frn-portrait frn-slot-portrait">
+											<img
+												src={avatar ?? agentAvatarUrl}
+												alt=""
+												data-pixel={!avatar}
+												data-bound={soulBound}
+											/>
+										</span>
+										<span className="frn-slot-copy">
+											<strong>The Companion</strong>
+											<span>
+												{soulBound
+													? 'Return whenever their name, nature, or face should change.'
+													: 'Name them, choose their nature, and read the soul before you bind it.'}
+											</span>
+											<small className="frn-slot-status" data-bound={soulBound}>
+												{soulBound ? 'Bound' : 'Unbound'}
+											</small>
+										</span>
+									</button>
+									<button
+										type="button"
+										className="frn-slot frn-sunken"
+										onClick={() => setView('profile')}
+									>
+										<span className="frn-portrait frn-slot-portrait" data-empty="true">
+											<UserIcon />
+										</span>
+										<span className="frn-slot-copy">
+											<strong>The Traveler</strong>
+											<span>Your name and birth date — so they can know you across the years.</span>
+											<small className="frn-slot-status" data-bound={profileBound}>
+												{profileBound ? 'Inscribed' : 'Not inscribed'}
+											</small>
+										</span>
+									</button>
+								</div>
+							</div>
+							<footer className="frn-sheet-status">
+								<span>
+									Your desktop works without this — but a companion with no name is only an echo of
+									one.
+								</span>
+								<span>
+									<kbd>Esc</kbd> Return to the desktop
+								</span>
+							</footer>
+						</main>
+					)}
+				</div>
+			</div>
 		</div>
 	)
 }

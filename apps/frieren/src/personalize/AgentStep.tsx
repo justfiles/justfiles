@@ -245,175 +245,186 @@ export function AgentStep({
 	}
 
 	if (stage === 'binding') {
+		// The frontmatter that binding will actually write, shown dimmed above the
+		// prose so the document on screen is the document on disk.
+		const frontmatter = buildSoulFile(draft, '').trimEnd()
 		return (
-			<main className="frn-binding">
-				<div className="frn-binding-circle" aria-hidden="true" />
-				<section className="frn-soul-card">
-					<small>The Soul</small>
-					<h1>
-						{draft.name.trim()} · {selectedArchetype.title}
-					</h1>
-					<button type="button" className="frn-soul-edit" onClick={() => setEditing(!editing)}>
-						<PencilSimpleIcon /> {editing ? 'Done' : 'Edit'}
-					</button>
-					{editing ? (
-						<textarea value={soulText} onChange={(event) => setSoulText(event.target.value)} />
-					) : (
-						<p className="frn-soul-prose">{soulText}</p>
-					)}
-					<em>
-						This is their soul. You hold the pen — press Edit to rewrite any line before you bind
-						it.
-					</em>
-					<div className="frn-soul-tags">
-						<span>{draft.name.trim()}</span>
-						<span>{draft.archetype}</span>
-						{draft.gender === 'none' ? null : (
-							<span>{FORMS.find((item) => item.value === draft.gender)?.label.toLowerCase()}</span>
+			<div className="frn-binding">
+				<div className="frn-binding-body">
+					<section className="frn-soul-doc frn-sunken">
+						<header className="frn-soul-doc-head">
+							<span>{PATHS.soul}</span>
+							<button type="button" onClick={() => setEditing(!editing)}>
+								<PencilSimpleIcon /> {editing ? 'Done' : 'Edit'}
+							</button>
+						</header>
+						{editing ? (
+							<textarea value={soulText} onChange={(event) => setSoulText(event.target.value)} />
+						) : (
+							<pre className="frn-soul-text">
+								<span className="frn-soul-fm">{frontmatter}</span>
+								{`\n\n${soulText}`}
+							</pre>
 						)}
-					</div>
-				</section>
+					</section>
 
-				<section className="frn-face-picker">
-					<small>The Face</small>
-					<div>
-						<button
-							type="button"
-							data-selected={face === 'spirit'}
-							onClick={() => setFace('spirit')}
-						>
-							<img src={agentAvatarUrl} alt="The pixel spirit" />
-						</button>
-						<button
-							type="button"
-							data-selected={face === 'archetype'}
-							onClick={() => setFace('archetype')}
-						>
-							<img src={selectedArchetype.image} alt={`${selectedArchetype.title} portrait`} />
-						</button>
-						<button
-							type="button"
-							data-selected={face === 'upload'}
-							onClick={() => uploadRef.current?.click()}
-						>
-							{uploadedFace ? <img src={uploadedFace} alt="Uploaded portrait" /> : <PlusIcon />}
-						</button>
-						<input
-							ref={uploadRef}
-							type="file"
-							accept="image/*"
-							hidden
-							onChange={(event) => void upload(event)}
-						/>
-					</div>
-					<em>
-						the face they wear in your chat — the spirit, their portrait, or any image of yours
-					</em>
-				</section>
+					<aside className="frn-binding-side">
+						<section className="frn-face-panel frn-raised">
+							<span className="frn-sheet-label">The Face</span>
+							<div className="frn-faces">
+								<button
+									type="button"
+									className="frn-portrait frn-sunken"
+									data-selected={face === 'spirit'}
+									onClick={() => setFace('spirit')}
+								>
+									<img src={agentAvatarUrl} alt="The pixel spirit" data-pixel="true" />
+								</button>
+								<button
+									type="button"
+									className="frn-portrait frn-sunken"
+									data-selected={face === 'archetype'}
+									onClick={() => setFace('archetype')}
+								>
+									<img src={selectedArchetype.image} alt={`${selectedArchetype.title} portrait`} />
+								</button>
+								<button
+									type="button"
+									className="frn-portrait frn-sunken"
+									data-selected={face === 'upload'}
+									onClick={() => uploadRef.current?.click()}
+								>
+									{uploadedFace ? <img src={uploadedFace} alt="Uploaded portrait" /> : <PlusIcon />}
+								</button>
+								<input
+									ref={uploadRef}
+									type="file"
+									accept="image/*"
+									hidden
+									onChange={(event) => void upload(event)}
+								/>
+							</div>
+							<p className="frn-face-hint">
+								The face they wear in your chat — the spirit, their portrait, or any image of yours.
+							</p>
+						</section>
 
-				<section className="frn-first-words">
-					<img src={faceUrl} alt="" />
-					<div>
-						<small>{draft.name.trim()} · First words</small>
-						<p>{firstWords}</p>
-					</div>
-				</section>
-
-				{error ? <p className="frn-ritual-error">{error}</p> : null}
-				<div className="frn-binding-actions">
+						<section className="frn-dialogue frn-raised">
+							<span className="frn-portrait frn-sunken">
+								<img src={faceUrl} alt="" data-pixel={face === 'spirit'} />
+							</span>
+							<div>
+								<small>{draft.name.trim()} · First words</small>
+								<p>
+									{firstWords}
+									<i className="frn-caret">▼</i>
+								</p>
+							</div>
+						</section>
+					</aside>
+				</div>
+				<div className="frn-sheet-actions">
+					<button type="button" onClick={() => setStage('summoning')} disabled={saving}>
+						Change form
+					</button>
+					<button type="button" onClick={() => void generate()} disabled={generating || saving}>
+						{generating ? 'Rewriting…' : 'Rewrite'}
+					</button>
 					<button
 						type="button"
-						className="frn-ritual-primary"
+						className="frn-btn-primary"
 						onClick={() => void bind()}
 						disabled={saving}
 					>
 						{saving ? 'Binding…' : 'Bind the soul'}
 					</button>
-					<button type="button" onClick={() => void generate()} disabled={generating || saving}>
-						{generating ? 'Rewriting…' : 'Rewrite'}
-					</button>
-					<button type="button" onClick={() => setStage('summoning')} disabled={saving}>
-						Change form
-					</button>
-					<em>binding writes soul.md — the whisper falls silent</em>
 				</div>
-			</main>
+				<footer className="frn-sheet-status" data-error={error !== null}>
+					<span>{error ?? 'Binding writes soul.md — the whisper falls silent.'}</span>
+				</footer>
+			</div>
 		)
 	}
 
 	return (
-		<main className="frn-summoning-page" data-generating={generating}>
-			<section className="frn-summoning-portrait">
-				<div className="frn-portrait-arch">
-					<img src={selectedArchetype.image} alt="" />
-					<div>
+		<form
+			className="frn-summon"
+			onSubmit={(event: FormEvent) => {
+				event.preventDefault()
+				void generate()
+			}}
+		>
+			<div className="frn-summon-body">
+				<section className="frn-plaque frn-raised">
+					<div className="frn-portrait frn-plaque-portrait frn-sunken">
+						<img src={selectedArchetype.image} alt="" />
+						{generating ? <RitualCircle fast /> : null}
+					</div>
+					<div className="frn-plaque-name">
 						<strong>{draft.name.trim() || 'Nameless'}</strong>
 						<span>{selectedArchetype.title}</span>
 					</div>
+					<Disposition values={selectedArchetype.disposition} />
+				</section>
+				<div className="frn-summon-fields">
+					<label className="frn-field">
+						<span className="frn-sheet-label">Name</span>
+						<input
+							type="text"
+							placeholder="What will you call them?"
+							value={draft.name}
+							onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+							required
+						/>
+					</label>
+					<fieldset className="frn-nature">
+						<legend className="frn-sheet-label">Nature</legend>
+						<div className="frn-nature-tiles">
+							{ARCHETYPES.map((archetype) => (
+								<button
+									key={archetype.id}
+									type="button"
+									className="frn-tile frn-sunken"
+									data-selected={draft.archetype === archetype.id}
+									onClick={() => setDraft({ ...draft, archetype: archetype.id })}
+								>
+									<span className="frn-portrait">
+										<img src={archetype.image} alt="" />
+									</span>
+									<strong>{archetype.title}</strong>
+									<span className="frn-tile-tagline">{archetype.tagline}</span>
+								</button>
+							))}
+						</div>
+					</fieldset>
+					<fieldset className="frn-form-picker">
+						<legend className="frn-sheet-label">Form</legend>
+						<div className="frn-seg">
+							{FORMS.map((form) => (
+								<button
+									key={form.value}
+									type="button"
+									data-selected={draft.gender === form.value}
+									onClick={() => setDraft({ ...draft, gender: form.value })}
+								>
+									{form.label}
+								</button>
+							))}
+						</div>
+					</fieldset>
 				</div>
-				<Disposition values={selectedArchetype.disposition} />
-				{generating ? <RitualCircle fast /> : null}
-			</section>
-			<form
-				className="frn-summoning-choices"
-				onSubmit={(event: FormEvent) => {
-					event.preventDefault()
-					void generate()
-				}}
-			>
-				<label className="frn-summoning-name">
-					<small>Name</small>
-					<em>What will you call them?</em>
-					<input
-						type="text"
-						value={draft.name}
-						onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-						required
-					/>
-				</label>
-				<fieldset className="frn-nature">
-					<legend>Nature</legend>
-					<div>
-						{ARCHETYPES.map((archetype) => (
-							<button
-								key={archetype.id}
-								type="button"
-								data-selected={draft.archetype === archetype.id}
-								onClick={() => setDraft({ ...draft, archetype: archetype.id })}
-							>
-								<img src={archetype.image} alt="" />
-								<strong>{archetype.title}</strong>
-								<span>{archetype.tagline}</span>
-							</button>
-						))}
-					</div>
-				</fieldset>
-				<fieldset className="frn-form-picker">
-					<legend>Form</legend>
-					<div>
-						{FORMS.map((form) => (
-							<button
-								key={form.value}
-								type="button"
-								data-selected={draft.gender === form.value}
-								onClick={() => setDraft({ ...draft, gender: form.value })}
-							>
-								{form.label}
-							</button>
-						))}
-					</div>
-				</fieldset>
-				{error ? <p className="frn-ritual-error">{error}</p> : null}
-				<div className="frn-summoning-actions">
-					<button type="submit" className="frn-ritual-primary" disabled={generating}>
-						{generating ? 'Summoning…' : 'Begin the summoning'}
-					</button>
-					<button type="button" onClick={onBack} disabled={generating}>
-						Back
-					</button>
-					<em>the soul is written before your eyes — nothing is saved yet</em>
-				</div>
-			</form>
-		</main>
+			</div>
+			<div className="frn-sheet-actions">
+				<button type="button" onClick={onBack} disabled={generating}>
+					Back
+				</button>
+				<button type="submit" className="frn-btn-primary" disabled={generating}>
+					{generating ? 'Summoning…' : 'Begin the summoning'}
+				</button>
+			</div>
+			<footer className="frn-sheet-status" data-error={error !== null}>
+				<span>{error ?? 'The soul is written before your eyes — nothing is saved yet.'}</span>
+			</footer>
+		</form>
 	)
 }
