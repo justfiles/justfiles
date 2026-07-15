@@ -68,7 +68,7 @@ test('Code runs a project as a hidden, servable preview that stop tears down', a
 	expect((await kernel.list()).some((app) => app.id === previewId)).toBe(false)
 	expect(await (await kernel.app(previewId)).read('gui.js')).toBeInstanceOf(Uint8Array)
 
-	// stop uninstalls it, so the bundle is gone entirely — no longer addressable.
+	// stop uninstalls it (moving the bundle to /trash), so it's no longer addressable by id.
 	await dispatch('stop', {})
 	await expect(kernel.app(previewId)).rejects.toThrow()
 

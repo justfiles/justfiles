@@ -70,3 +70,26 @@ test('uninstall removes the bundle', async () => {
 	expect(await s.get(id)).toBeNull()
 	expect(await s.list()).toEqual([])
 })
+
+test('uninstall moves the bundle to /trash atomically instead of deleting it', async () => {
+	// The bundle leaves /applications in ONE atomic rename (no torn intermediate
+	// state a racing reconcile could "repair"), and its bytes survive under /trash.
+	const vol = volume(memStorage())
+	const s = apps(vol)
+	const id = await s.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: 'CODE_V1' })
+	)
+	await s.uninstall(id)
+
+	expect(await s.has(id)).toBe(false)
+	expect(await vol.exists(`/applications/${id}`)).toBe(false)
+
+	const trashed = await vol.readdir('/trash')
+	expect(trashed).toHaveLength(1)
+	const name = trashed[0]?.name ?? ''
+	expect(name.startsWith(`${id}-`)).toBe(true)
+	const manifest = JSON.parse(decode(await vol.readFile(`/trash/${name}/manifest.json`))) as {
+		id: string
+	}
+	expect(manifest.id).toBe(id)
+})
