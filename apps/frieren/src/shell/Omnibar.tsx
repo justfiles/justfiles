@@ -142,7 +142,8 @@ export function Omnibar({
 	// the agent, so the sheet slides straight into the transcript instead of a lone
 	// "Ask" row. The conversation window preempts it (coexistence rule) — there the
 	// row stays and just implies the send lands over in the window.
-	const noAppMatch = text !== '' && matches.length === 0
+	const noAppMatch =
+		text !== '' && matches.length === 0 && storeMatches.length === 0 && heldUpdates.length === 0
 	const expanded = focused || (chatOpen && session.isStreaming && !agentWindowOpen)
 	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
 	const showList = text !== '' && !showTranscript

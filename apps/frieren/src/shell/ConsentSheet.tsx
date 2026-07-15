@@ -1,4 +1,3 @@
-import { XIcon } from '@phosphor-icons/react'
 import { useState } from 'react'
 import type { CommunityCatalogApp } from '../../shared/appstore'
 
@@ -60,37 +59,27 @@ export function ConsentSheet({
 
 	return (
 		<div
-			className="frn-onb-page"
 			role="dialog"
 			aria-modal="true"
 			aria-label={`${mode === 'update' ? 'Update' : 'Install'} ${app.name}`}
+			tabIndex={-1}
+			onClick={(e) => {
+				if (e.target === e.currentTarget) onClose()
+			}}
+			onKeyDown={(e) => {
+				if (e.key === 'Escape') onClose()
+			}}
 			style={{
 				position: 'fixed',
 				inset: 0,
 				zIndex: 10000,
 				display: 'flex',
 				alignItems: 'center',
-				justifyContent: 'center'
+				justifyContent: 'center',
+				background: 'rgba(0, 0, 0, 0.45)',
+				backdropFilter: 'blur(2px)'
 			}}
 		>
-			<button
-				type="button"
-				onClick={onClose}
-				aria-label="Close"
-				style={{
-					position: 'fixed',
-					right: 16,
-					top: 16,
-					padding: 6,
-					border: 'none',
-					background: 'transparent',
-					color: 'var(--text)',
-					opacity: 0.6
-				}}
-			>
-				<XIcon />
-			</button>
-
 			<div className="frn-onb-form">
 				<div className="frn-card">
 					<span className="frn-badge">{firstParty ? 'by spud' : `Community · npm/${app.npm}`}</span>
