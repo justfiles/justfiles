@@ -100,7 +100,16 @@ export function apps(fs: Volume): Apps {
 	}
 
 	async function uninstall(appId: AppId): Promise<void> {
-		await fs.rm(appRoot(appId), { recursive: true, force: true })
+		const root = appRoot(appId)
+		if (!(await fs.exists(root))) return
+		// Move the bundle to /trash in a single atomic rename rather than a recursive
+		// rm. `rename` commits as one transaction (journaling the whole subtree as
+		// delete-old + put-new), so a concurrent observer — e.g. the launcher's
+		// reconcile, fired by the volume's structural watch — never sees a half-deleted
+		// bundle it would try to "repair"/resurrect mid-delete. Bonus: the bytes survive
+		// under /trash until it's emptied, so an uninstall is recoverable.
+		await fs.mkdir('/trash', { recursive: true })
+		await fs.rename(root, `/trash/${appId}-${crypto.randomUUID()}`)
 	}
 
 	async function has(appId: AppId): Promise<boolean> {
