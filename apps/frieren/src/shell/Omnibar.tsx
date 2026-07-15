@@ -2,11 +2,14 @@ import { escalatesCapabilities } from '@justfiles/app/appstore'
 import { Transcript } from '@justfiles/ui/Transcript'
 import {
 	ArrowClockwiseIcon,
+	ArrowSquareOutIcon,
 	ArrowsOutIcon,
+	BellIcon,
 	ChatCircleIcon,
 	DownloadSimpleIcon,
 	MagnifyingGlassIcon,
-	SparkleIcon
+	SparkleIcon,
+	TrashIcon
 } from '@phosphor-icons/react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
@@ -21,7 +24,11 @@ import {
 	useInstallingApps
 } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
+import { useNotifications } from '../notifications/hooks'
+import { useDismissTimer } from '../notifications/lifetime'
+import { type NotificationEntry, notificationStore, type Route } from '../notifications/store'
 import { useAgentClient, useOsDispatch, useOsStore } from '../os/hooks'
+import { selectFocusedAppId } from '../os/selectors'
 import { AGENT_WINDOW_ID } from '../os/state'
 import { ConsentSheet, type ConsentTarget } from './ConsentSheet'
 
@@ -43,6 +50,26 @@ type Row =
 // cap, not by spawning a window. Past the cap, an escalating "Open in window"
 // invitation appears at the top of the tail (see design/01-omnibar.md).
 const SHEET_TAIL = 8
+
+// The first-party Settings app — a `settings` route (e.g. accounts → reconnect)
+// opens it, reusing the ordinary `app.open` dispatch.
+const SETTINGS_APP_ID = 'computer.spud.settings'
+
+// The pill action button's label, derived from where a click routes.
+function routeLabel(route: Route): string {
+	if (route.kind === 'settings') return 'Open Settings'
+	if (route.kind === 'app') return 'Open'
+	return 'Open chat'
+}
+
+// Compact relative time for center rows.
+function formatTime(at: number): string {
+	const diff = Date.now() - at
+	if (diff < 60_000) return 'now'
+	if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
+	if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
+	return `${Math.floor(diff / 86_400_000)}d`
+}
 
 function matchesQuery(query: string, ...fields: (string | undefined)[]): boolean {
 	const needle = query.toLowerCase()
@@ -87,6 +114,10 @@ export function Omnibar({
 	const [focused, setFocused] = useState(false)
 	// null means "follow the default target"; an arrow/hover pins an explicit row.
 	const [pinned, setPinned] = useState<number | null>(null)
+	// The dropup's notification-center mode, and a hover flag that pauses the
+	// active banner's dismiss timer.
+	const [showNotifications, setShowNotifications] = useState(false)
+	const [bannerHovered, setBannerHovered] = useState(false)
 	const inputRef = useRef<HTMLInputElement>(null)
 
 	const text = query.trim()
@@ -147,6 +178,11 @@ export function Omnibar({
 	// launcher mode — no duplicated live transcript. The pill still sends to the
 	// session; replies land in the window.
 	const agentWindowOpen = useOsStore((s) => !!s.windows[AGENT_WINDOW_ID])
+	const agentWindowFocused = useOsStore(
+		(s) => s.focusStack[s.focusStack.length - 1] === AGENT_WINDOW_ID
+	)
+	const focusedAppId = useOsStore(selectFocusedAppId)
+	const { entries, active, queued, unread } = useNotifications()
 	// When the window closes, hand the transcript back to the sheet so the pill
 	// stays the way back into the conversation.
 	const hadWindow = useRef(agentWindowOpen)
@@ -160,7 +196,8 @@ export function Omnibar({
 	// row stays and just implies the send lands over in the window.
 	const noAppMatch =
 		text !== '' && matches.length === 0 && storeMatches.length === 0 && heldUpdates.length === 0
-	const expanded = focused || (chatOpen && session.isStreaming && !agentWindowOpen)
+	const expanded =
+		focused || showNotifications || (chatOpen && session.isStreaming && !agentWindowOpen)
 	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
 	const showList = text !== '' && !showTranscript
 
@@ -168,6 +205,17 @@ export function Omnibar({
 	// history is read.
 	const tail = useMemo(() => session.messages.slice(-SHEET_TAIL), [session.messages])
 	const truncated = session.messages.length > SHEET_TAIL
+
+	// The center lists everything, newest-first, grouped by source (agent / app).
+	const grouped = useMemo(() => {
+		const bySource = new Map<string, NotificationEntry[]>()
+		for (const entry of [...entries].reverse()) {
+			const list = bySource.get(entry.notification.source) ?? []
+			list.push(entry)
+			bySource.set(entry.notification.source, list)
+		}
+		return [...bySource.entries()]
+	}, [entries])
 
 	// Opening the window is the one explicit hand-off from sheet to durable home:
 	// collapse the sheet and hand focus over so replies land in the window.
@@ -188,20 +236,71 @@ export function Omnibar({
 		}
 	}
 
-	// Presence: the pill is the ambient signal that the agent is doing something.
-	// Two derivable states — `working` while a reply streams (glow), and
-	// `needs-you` when the last message is an unanswered multiple-choice question
-	// (pulse + the question shown in the pill). Everything else is idle.
-	const lastMessage = session.messages[session.messages.length - 1]
-	const needsYou =
-		!session.isStreaming && lastMessage?.role === 'assistant' && !!lastMessage.options?.length
-	const agentState = session.isStreaming ? 'working' : needsYou ? 'needs-you' : 'idle'
-	// The question only occupies the pill while unfocused — focusing hands the
-	// slot back to the input (and opens the transcript so the options are there).
+	// A notification click routes through the OS store — the same dispatches the
+	// omnibar already uses, so the click resolves in place: chat focuses/opens the
+	// conversation, app launches/focuses, settings opens the Settings app.
+	const dispatchRoute = (route: Route) => {
+		if (route.kind === 'chat') openConversation()
+		else if (route.kind === 'app') dispatch({ type: 'app.open', appId: route.id })
+		else dispatch({ type: 'app.open', appId: SETTINGS_APP_ID })
+	}
+	const runNotification = (entry: NotificationEntry) => {
+		if (entry.notification.route) dispatchRoute(entry.notification.route)
+		notificationStore.dismiss(entry.notification.id)
+	}
+	// The bell toggles the center; opening it marks history seen (clears the badge)
+	// and focuses the input so a blur/Esc collapses it like any other sheet mode.
+	const openNotifications = () => {
+		setShowNotifications((open) => {
+			const next = !open
+			if (next) {
+				notificationStore.markSeen()
+				inputRef.current?.focus()
+			} else inputRef.current?.blur()
+			return next
+		})
+	}
+
+	// Presence and notifications are one model. The pill surfaces the single active
+	// notification: its glow carries urgency (`error` an urgent ring, `question` the
+	// needs-you pulse), its text slot the title/body, and an action button routes a
+	// click. Focus suppresses the banner when its target is already in front (chat
+	// focused ⇒ an agent info/question just updates the transcript) — `error` ignores
+	// focus. Either way the item still lands in the center.
+	const chatInFront = agentWindowFocused || (chatOpen && focused && !agentWindowOpen)
+	const targetInFront = (route?: Route): boolean => {
+		if (!route) return false
+		if (route.kind === 'chat') return chatInFront
+		if (route.kind === 'app') return focusedAppId === route.id
+		return false
+	}
+	const suppressed =
+		!!active && active.notification.kind !== 'error' && targetInFront(active.notification.route)
+	const banner = suppressed ? null : active
+	const bannerKind = banner?.notification.kind
+	const agentState = session.isStreaming
+		? 'working'
+		: bannerKind === 'error'
+			? 'error'
+			: bannerKind === 'question'
+				? 'needs-you'
+				: 'idle'
+	// Who a notification is from: the agent shows its (personalized) name; other
+	// sources fall back to the producer-set title.
+	const notificationWho = (n: NotificationEntry['notification']): string =>
+		n.source === 'agent' ? session.agentName : n.title
+	// The text slot only holds the banner while the input is empty + unfocused; the
+	// first keystroke/focus hands it back (the shipped placeholder rule).
 	const placeholder =
-		!focused && needsYou
-			? `${session.agentName}: ${lastMessage?.content.trim() || 'needs your input…'}`
+		!focused && banner
+			? `${notificationWho(banner.notification)}: ${banner.notification.body}${
+					queued > 0 ? ` (+${queued})` : ''
+				}`
 			: `Search apps, or talk to ${session.agentName}…`
+
+	// Auto-recede `info` after its lifetime; `error`/`question` are sticky. Paused on
+	// hover and while the tab is hidden.
+	useDismissTimer(active, notificationStore.dismiss, bannerHovered)
 
 	const ask = (prompt: string) => {
 		if (!prompt || !ready || session.isStreaming) return
@@ -257,7 +356,8 @@ export function Omnibar({
 
 	const onKeyDown = (event: React.KeyboardEvent) => {
 		if (event.key === 'Escape') {
-			if (text !== '') setQuery('')
+			if (showNotifications) setShowNotifications(false)
+			else if (text !== '') setQuery('')
 			else if (chatOpen) setChatOpen(false)
 			else inputRef.current?.blur()
 			return
@@ -273,13 +373,65 @@ export function Omnibar({
 	}
 
 	return (
-		<div className="frn-omnibar" data-expanded={expanded} data-agent={agentState}>
+		/* biome-ignore lint/a11y/noStaticElementInteractions: hover pauses the active
+		   banner's dismiss timer (dunst pause_on_mouse_over); the pill is an ambient
+		   container, not itself a control. */
+		<div
+			className="frn-omnibar"
+			data-expanded={expanded}
+			data-agent={agentState}
+			onMouseEnter={() => setBannerHovered(true)}
+			onMouseLeave={() => setBannerHovered(false)}
+		>
 			{expanded ? (
 				/* biome-ignore lint/a11y/noStaticElementInteractions: mousedown-preventDefault keeps
 				   focus in the input so surface clicks don't collapse the sheet mid-click. Inline
 				   text selection is sacrificed; expand-to-window is the copy escape hatch. */
 				<div className="frn-omnibar-surface" onMouseDown={(event) => event.preventDefault()}>
-					{showTranscript ? (
+					{showNotifications ? (
+						<div className="frn-omnibar-center">
+							<div className="frn-omnibar-center-head">
+								<span>Notifications</span>
+								{entries.length > 0 ? (
+									<button
+										type="button"
+										className="frn-omnibar-center-clear"
+										onClick={() => notificationStore.clear()}
+									>
+										<TrashIcon /> Clear
+									</button>
+								) : null}
+							</div>
+							{entries.length === 0 ? (
+								<p className="frn-omnibar-center-empty">Nothing here yet.</p>
+							) : (
+								<ul className="frn-omnibar-center-list">
+									{grouped.map(([source, items]) => (
+										<Fragment key={source}>
+											<li className="frn-omnibar-section">
+												{items[0] ? notificationWho(items[0].notification) : source}
+											</li>
+											{items.map((entry) => (
+												<li key={entry.notification.id}>
+													<button
+														type="button"
+														className="frn-omnibar-center-row"
+														data-kind={entry.notification.kind}
+														onClick={() => runNotification(entry)}
+													>
+														<span className="frn-omnibar-center-body">
+															{entry.notification.body}
+														</span>
+														<span className="frn-omnibar-center-time">{formatTime(entry.at)}</span>
+													</button>
+												</li>
+											))}
+										</Fragment>
+									))}
+								</ul>
+							)}
+						</div>
+					) : showTranscript ? (
 						<div className="frn-omnibar-chat">
 							<div className="frn-omnibar-chat-head">
 								<button
@@ -482,23 +634,57 @@ export function Omnibar({
 					onChange={(event) => {
 						setQuery(event.currentTarget.value)
 						setPinned(null)
+						setShowNotifications(false)
 					}}
 					onFocus={() => {
 						setFocused(true)
 						// Engaging while the agent waits on a question lands on the
 						// question: in the window if it's open, else the sheet transcript.
-						if (needsYou) {
+						if (active?.notification.kind === 'question') {
 							if (agentWindowOpen) dispatch({ type: 'window.focus', id: AGENT_WINDOW_ID })
 							else setChatOpen(true)
 						}
 					}}
-					onBlur={() => setFocused(false)}
+					onBlur={() => {
+						setFocused(false)
+						setShowNotifications(false)
+					}}
 					onKeyDown={onKeyDown}
 					placeholder={placeholder}
 					aria-label="Search apps or talk to Frieren"
 					autoComplete="off"
 					spellCheck={false}
 				/>
+				{banner?.notification.route && !focused ? (
+					/* The banner's action button, on the pill's right edge: a click runs the
+					   same route dispatch and recedes the item. */
+					<button
+						type="button"
+						className="frn-omnibar-action"
+						title={routeLabel(banner.notification.route)}
+						onMouseDown={(event) => event.preventDefault()}
+						onClick={() => runNotification(banner)}
+					>
+						<ArrowSquareOutIcon />
+						<span>{routeLabel(banner.notification.route)}</span>
+					</button>
+				) : null}
+				{unread > 0 || showNotifications ? (
+					/* Contextual bell-badge: appears when there's unread history, opens the
+					   center. mousedown-preventDefault keeps focus so the toggle is stable. */
+					<button
+						type="button"
+						className="frn-omnibar-bell"
+						data-open={showNotifications}
+						title="Notifications"
+						aria-label="Notifications"
+						onMouseDown={(event) => event.preventDefault()}
+						onClick={openNotifications}
+					>
+						<BellIcon />
+						{unread > 0 ? <span className="frn-omnibar-bell-badge">{unread}</span> : null}
+					</button>
+				) : null}
 				{session.messages.length > 0 ? (
 					/* Discoverable way back into the conversation — mousedown-preventDefault
 					   keeps the input focused so the click doesn't collapse the sheet. */

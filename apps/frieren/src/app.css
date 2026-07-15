@@ -1207,6 +1207,20 @@
 		0 16px 48px rgba(0, 0, 0, 0.32),
 		0 0 28px rgba(146, 92, 247, 0.4);
 }
+/* `error` gets a distinct urgent ring: red-dominant, breathing — an actionable
+   failure, not a status. */
+.frn-omnibar[data-agent="error"]::after {
+	opacity: 1;
+	background: conic-gradient(from var(--frn-glow), #ff453a, #ff9f0a, #ff453a);
+	animation:
+		frn-glow-spin 3s linear infinite,
+		frn-glow-pulse 1.6s ease-in-out infinite;
+}
+.frn-omnibar[data-agent="error"] {
+	box-shadow:
+		0 16px 48px rgba(0, 0, 0, 0.32),
+		0 0 28px rgba(255, 69, 58, 0.45);
+}
 @keyframes frn-glow-spin {
 	to {
 		--frn-glow: 360deg;
@@ -1219,7 +1233,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
 	.frn-omnibar[data-agent="working"]::after,
-	.frn-omnibar[data-agent="needs-you"]::after {
+	.frn-omnibar[data-agent="needs-you"]::after,
+	.frn-omnibar[data-agent="error"]::after {
 		animation: none;
 	}
 }
@@ -1498,6 +1513,139 @@
 .frn-omnibar-chat-toggle:hover {
 	opacity: 1;
 	background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+/* The banner's action button: a labelled pill on the omnibar's right edge that
+   runs the notification's route in place. */
+.frn-omnibar-action {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 10px;
+	border: 1px solid color-mix(in srgb, var(--focus) 45%, var(--rule));
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--focus) 16%, transparent);
+	color: inherit;
+	font: inherit;
+	font-size: 13px;
+	white-space: nowrap;
+	cursor: default;
+}
+.frn-omnibar-action:hover {
+	background: color-mix(in srgb, var(--focus) 28%, transparent);
+}
+/* Contextual bell-badge: shown only when there's unread history. */
+.frn-omnibar-bell {
+	flex: none;
+	position: relative;
+	display: inline-flex;
+	padding: 5px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	opacity: 0.55;
+	font-size: 18px;
+	cursor: default;
+}
+.frn-omnibar-bell:hover,
+.frn-omnibar-bell[data-open="true"] {
+	opacity: 1;
+	background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.frn-omnibar-bell-badge {
+	position: absolute;
+	top: -1px;
+	right: -1px;
+	min-width: 15px;
+	height: 15px;
+	padding: 0 3px;
+	border-radius: 999px;
+	background: #ff453a;
+	color: #fff;
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 15px;
+	text-align: center;
+}
+/* The dropup's notification-center mode: a lightweight log, newest-first, grouped
+   by source. Reuses `.frn-omnibar-section` headers. */
+.frn-omnibar-center {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	max-height: 360px;
+	overflow-y: auto;
+}
+.frn-omnibar-center-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 14px;
+	font-size: 12px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, var(--text) 55%, transparent);
+	border-bottom: 1px solid var(--rule);
+}
+.frn-omnibar-center-clear {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 8px;
+	border: 0;
+	border-radius: 7px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 12px;
+	cursor: default;
+}
+.frn-omnibar-center-clear:hover {
+	background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.frn-omnibar-center-empty {
+	padding: 24px 14px;
+	margin: 0;
+	text-align: center;
+	color: color-mix(in srgb, var(--text) 45%, transparent);
+}
+.frn-omnibar-center-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.frn-omnibar-center-row {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	width: 100%;
+	padding: 9px 14px;
+	border: 0;
+	border-left: 2px solid transparent;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: default;
+}
+.frn-omnibar-center-row:hover {
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.frn-omnibar-center-row[data-kind="error"] {
+	border-left-color: #ff453a;
+}
+.frn-omnibar-center-row[data-kind="question"] {
+	border-left-color: var(--focus);
+}
+.frn-omnibar-center-body {
+	flex: 1;
+	min-width: 0;
+}
+.frn-omnibar-center-time {
+	flex: none;
+	font-size: 11px;
+	color: color-mix(in srgb, var(--text) 40%, transparent);
 }
 .frn-omnibar-bar input {
 	flex: 1;

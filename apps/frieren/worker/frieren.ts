@@ -16,6 +16,7 @@ import {
 	ensureAccount,
 	resolveAiAccount
 } from '@justfiles/app/capabilities/accounts/host'
+import type { Notification } from '@justfiles/app/capabilities/notify'
 import {
 	clearReset,
 	createFsApi,
@@ -67,6 +68,10 @@ type ServerMessage =
 	| { type: 'debug'; message: string }
 	| { type: 'app_open'; id: string }
 	| { type: 'app_close'; id: string }
+	// The frieren notification channel: the agent's turn pings / classified errors /
+	// questions, broadcast to every open tab (the browser projects them onto the
+	// omnibar pill + center). Producer code is shared; only this delivery is frieren's.
+	| { type: 'notification'; notification: Notification }
 
 const DEBUG_COMMAND = '/debug'
 
@@ -206,6 +211,7 @@ export class Frieren extends DurableObject<Env> {
 		// Spud AI → the platform env backend; nothing enabled → no backend, so a turn
 		// fails with a clear "turn on AI in Settings" the chat surfaces. Re-resolved per
 		// turn, so toggling AI in Settings takes effect on the next prompt.
+		const agentName = (await readFrontmatter(this.vol, SOUL_PATH)).agent_name || 'Frieren'
 		this.session = createAgentSession({
 			volume: this.vol,
 			backend: async () => {
@@ -216,7 +222,12 @@ export class Frieren extends DurableObject<Env> {
 				return backend
 			},
 			apps: this.requireApps().controller,
-			timezone: this.getTimezone
+			timezone: this.getTimezone,
+			// The frieren delivery channel: broadcast the agent's ping to every tab's
+			// omnibar (mirrors `broadcast`). Producer code is untouched — passing a
+			// channel is all it takes to light up notifications.
+			notify: (notification) => this.broadcast({ type: 'notification', notification }),
+			title: agentName
 		})
 		// Surface classified turn errors to every open tab (the raw stream carries the tokens;
 		// this carries the failure body and resets the client's streaming flag).

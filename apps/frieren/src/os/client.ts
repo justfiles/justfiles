@@ -1,3 +1,4 @@
+import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { AgentMessage, ConnectionState } from '../agent/types'
 import type { InstalledApp } from '../apps/types'
 import type { OsAction } from './state'
@@ -47,6 +48,9 @@ export interface FrierenClient {
 	// Drop an app from the catalog optimistically (uninstall); refresh() is authoritative.
 	removeApp(id: string): void
 	onRemoteWindow(handler: (action: OsAction) => void): () => void
+	// The frieren notification channel: agent/cron notification frames arrive here and
+	// are handed to the notification store (mirrors `onRemoteWindow`).
+	onNotification(handler: (notification: Notification) => void): () => void
 }
 
 export interface FrierenClientOptions {
@@ -85,6 +89,7 @@ interface ServerFrame {
 	message?: string
 	id?: string
 	event?: AgentEventFrame
+	notification?: Notification
 }
 
 function defaultCreateSocket(token: string): SocketLike {
@@ -179,6 +184,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	// --- server-echoed window open/close ---
 	let remoteWindow: ((action: OsAction) => void) | null = null
+
+	// --- server-pushed notifications (agent / cron) ---
+	let notificationSink: ((notification: Notification) => void) | null = null
 
 	function handleAgentEvent(event: AgentEventFrame): void {
 		switch (event.type) {
@@ -336,6 +344,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
+		if (data.type === 'notification' && data.notification) {
+			notificationSink?.(data.notification)
+			return
+		}
+
 		if (data.type === 'event' && data.event) handleAgentEvent(data.event)
 	}
 
@@ -451,6 +464,13 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			remoteWindow = handler
 			return () => {
 				if (remoteWindow === handler) remoteWindow = null
+			}
+		},
+
+		onNotification(handler) {
+			notificationSink = handler
+			return () => {
+				if (notificationSink === handler) notificationSink = null
 			}
 		}
 	}
