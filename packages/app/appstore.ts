@@ -111,14 +111,25 @@ async function decide(fs: Volume, app: CatalogApp): Promise<SyncAction> {
 // the volume, then record the release's whole-app hash so a later reconcile can
 // skip an unchanged app (and reinstall a changed one) with a single comparison.
 // The on-demand install entry point (first-time install of a store app) and the
-// path `materialise`/`reconcile` use internally.
+// path `materialise`/`reconcile` use internally. Files download through a bounded
+// worker pool (not one-at-a-time), so a many-file app installs in a fraction of
+// the wall-clock time — first byte to installed shrinks, cutting the window where a
+// closed tab / dropped connection abandons the install.
+const INSTALL_CONCURRENCY = 12
+
 export async function installApp(kernel: Kernel, store: AppStore, app: CatalogApp): Promise<void> {
 	const files = new Map<string, Uint8Array>()
-	for (const file of app.files) {
-		const bytes = await store.read(app, file.path)
-		await verifyHash(app, file, bytes)
-		files.set(safeBundlePath(file.path), bytes)
+	const queue = [...app.files]
+	const fetchOne = async (): Promise<void> => {
+		for (let file = queue.pop(); file; file = queue.pop()) {
+			const bytes = await store.read(app, file.path)
+			await verifyHash(app, file, bytes)
+			files.set(safeBundlePath(file.path), bytes) // single-threaded: no Map race between awaits
+		}
 	}
+	await Promise.all(
+		Array.from({ length: Math.min(INSTALL_CONCURRENCY, app.files.length) }, fetchOne)
+	)
 	files.set(INSTALL_HASH_PATH, new TextEncoder().encode(await appHash(app)))
 	await kernel.install(bundleFromFiles(files))
 }
