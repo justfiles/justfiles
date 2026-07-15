@@ -10,6 +10,7 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
+import { sweepTrash } from '@justfiles/app'
 import {
 	accountsCapabilities,
 	ensureAccount,
@@ -341,6 +342,10 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
+		// Authoritative trash retention: the DO owns the synced fs, so sweeping here
+		// (daily, no open tab required) is more reliable than the client — the deletes
+		// just sync down. Best-effort; a failure retries on the next alarm.
+		await sweepTrash(this.vol).catch(() => {})
 		await this.session?.runMaintenance()
 	}
 

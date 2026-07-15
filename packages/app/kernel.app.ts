@@ -1,6 +1,7 @@
 import type { Volume } from '@justfiles/fs'
 import type { AppBundle, AppManifest, InstalledApp } from './app.ts'
 import { safeBundlePath } from './app.ts'
+import { trashBundle } from './trash.ts'
 
 type AppId = string
 
@@ -102,14 +103,13 @@ export function apps(fs: Volume): Apps {
 	async function uninstall(appId: AppId): Promise<void> {
 		const root = appRoot(appId)
 		if (!(await fs.exists(root))) return
-		// Move the bundle to /trash in a single atomic rename rather than a recursive
-		// rm. `rename` commits as one transaction (journaling the whole subtree as
-		// delete-old + put-new), so a concurrent observer — e.g. the launcher's
+		// Move the bundle into a dated /trash folder with one atomic rename rather than a
+		// recursive rm. `rename` commits as one transaction (journaling the whole subtree
+		// as delete-old + put-new), so a concurrent observer — e.g. the launcher's
 		// reconcile, fired by the volume's structural watch — never sees a half-deleted
-		// bundle it would try to "repair"/resurrect mid-delete. Bonus: the bytes survive
-		// under /trash until it's emptied, so an uninstall is recoverable.
-		await fs.mkdir('/trash', { recursive: true })
-		await fs.rename(root, `/trash/${appId}-${crypto.randomUUID()}`)
+		// bundle it would try to "repair"/resurrect. The bytes survive under /trash until
+		// the retention sweep drops that day (see trash.ts).
+		await trashBundle(fs, root, appId)
 	}
 
 	async function has(appId: AppId): Promise<boolean> {

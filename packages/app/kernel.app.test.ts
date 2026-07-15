@@ -84,11 +84,17 @@ test('uninstall moves the bundle to /trash atomically instead of deleting it', a
 	expect(await s.has(id)).toBe(false)
 	expect(await vol.exists(`/applications/${id}`)).toBe(false)
 
-	const trashed = await vol.readdir('/trash')
-	expect(trashed).toHaveLength(1)
-	const name = trashed[0]?.name ?? ''
+	const days = await vol.readdir('/trash')
+	expect(days).toHaveLength(1)
+	const day = days[0]?.name ?? ''
+	expect(day).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+	const entries = await vol.readdir(`/trash/${day}`)
+	expect(entries).toHaveLength(1)
+	const name = entries[0]?.name ?? ''
 	expect(name.startsWith(`${id}-`)).toBe(true)
-	const manifest = JSON.parse(decode(await vol.readFile(`/trash/${name}/manifest.json`))) as {
+	const manifest = JSON.parse(
+		decode(await vol.readFile(`/trash/${day}/${name}/manifest.json`))
+	) as {
 		id: string
 	}
 	expect(manifest.id).toBe(id)
