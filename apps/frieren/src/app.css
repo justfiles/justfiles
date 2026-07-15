@@ -590,7 +590,9 @@
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
-	min-height: 300px;
+	/* Fixed height so toggling Edit (pre ↔ textarea) never resizes the window;
+	   a long soul scrolls inside the well instead. */
+	height: 380px;
 }
 .frn-soul-doc-head {
 	display: flex;
