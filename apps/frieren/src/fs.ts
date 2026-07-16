@@ -5,6 +5,8 @@ import {
 } from '@justfiles/core'
 import { type SyncStatus as FsSyncStatus, synced, type Volume, volume } from '@justfiles/fs'
 import { idbStorage } from '@justfiles/fs/storage/idb'
+import { FileType } from '@justfiles/fs/types'
+import { PROFILE_PATH, SOUL_PATH } from '../shared/agent-defaults'
 
 export type { FsClient, Volume }
 export type SyncStatus = FsSyncStatus | 'local-only'
@@ -40,6 +42,9 @@ export type LocalProfile = {
 	id: string
 	remoteUserId?: string
 	lastOpenedAt: number
+	// Whether the one-time "bring your local work into this account" offer was
+	// resolved for this account profile. Absent = never asked.
+	migration?: 'migrated' | 'dismissed'
 }
 
 const REGISTRY_KEY = 'frieren-profiles'
@@ -332,6 +337,142 @@ export async function forgetActiveProfile(): Promise<void> {
 // the local replica at once instead of waiting for the next sync interval.
 export function flushActiveVolume(): void {
 	void active?.sync?.flush().catch(() => {})
+}
+
+// ── Local → account data migration ───────────────────────────────────────
+// A user who plays as the signed-out (anonymous) profile and then signs up is
+// offered a one-time copy of that work into the fresh account. Explicit, never a
+// silent merge and never a boot gate: the offer only fires when the account is
+// genuinely new (its synced volume holds no user content) and the local profile
+// does. The decision is recorded on the account profile so we never ask twice.
+
+// User content lives OUTSIDE these reserved runtime prefixes. Apps can claim any
+// other top-level prefix (per-app /data, the shared /notes knowledge base, …), so
+// a denylist is more robust than an allowlist and needs no per-app knowledge.
+const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'state', 'system'])
+// Copied subtree: user data + personalized identity only — never the sync
+// journal, platform accounts, app bytes, or per-app UI state.
+const MIGRATE_SKIP = ['/.state', '/system/accounts', '/applications', '/state']
+
+// The anonymous (signed-out) profile's DB name, resolved WITHOUT touching
+// lastOpenedAt — this is a read-only migration source, not a profile switch.
+function anonymousProfileId(): string {
+	const profiles = readRegistry()
+	const profile =
+		profiles.find((p) => !p.remoteUserId && p.id === 'local') ??
+		[...profiles].filter((p) => !p.remoteUserId).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
+	return profile?.id ?? 'local'
+}
+
+function openLocalSource(): { volume: Volume; destroy: () => void } {
+	const storage = idbStorage(dbName(anonymousProfileId()))
+	return { volume: volume(storage), destroy: () => storage.destroy() }
+}
+
+// A soul/profile file is "personalized" once the user overwrites the seeded
+// default — the default carries `seeded: true` in frontmatter (agent-defaults).
+async function isPersonalized(vol: Volume, path: string): Promise<boolean> {
+	if (!(await vol.exists(path))) return false
+	const text = new TextDecoder().decode(await vol.readFile(path))
+	return !/^seeded:\s*true\s*$/m.test(text)
+}
+
+// Whether a volume holds anything worth migrating: a top-level entry outside the
+// reserved prefixes (e.g. /data, /notes) or a personalized identity file.
+async function hasUserContent(vol: Volume): Promise<boolean> {
+	const entries = await vol.readdir('/').catch(() => [])
+	if (entries.some((e) => !RESERVED_TOP_LEVEL.has(e.name))) return true
+	return (await isPersonalized(vol, SOUL_PATH)) || (await isPersonalized(vol, PROFILE_PATH))
+}
+
+// Resolve once the entry's FIRST sync settles (its local replica now mirrors the
+// DO). `synced` cycles syncing→synced on success and syncing→error on failure
+// (including offline), so we resolve true on synced and false on error /
+// switch-away — a transient first-cycle error just defers the offer to the next
+// attach.
+function waitForSynced(entry: Active): Promise<boolean> {
+	if (entry.status === 'synced') return Promise.resolve(true)
+	return new Promise((resolve) => {
+		const off = onActiveStatusChange(() => {
+			if (active !== entry || entry.status === 'error') {
+				off()
+				resolve(false)
+			} else if (entry.status === 'synced') {
+				off()
+				resolve(true)
+			}
+		})
+	})
+}
+
+// True iff we should offer migration: the active profile is a freshly-synced
+// account with NO user content, the anonymous profile HAS content, and no
+// decision was recorded yet. Safe by construction — an account that already has
+// data (e.g. created on another device) reads as non-empty, so we never clobber.
+export async function shouldOfferMigration(): Promise<boolean> {
+	const acct = active
+	if (!acct?.remoteUserId) return false
+	if (readRegistry().find((p) => p.id === acct.profileId)?.migration) return false
+	if (!(await waitForSynced(acct))) return false
+	if (active !== acct) return false
+	if (await hasUserContent(acct.volume)) return false
+	const source = openLocalSource()
+	try {
+		return await hasUserContent(source.volume)
+	} finally {
+		source.destroy()
+	}
+}
+
+function recordMigration(outcome: 'migrated' | 'dismissed'): void {
+	const acct = active
+	if (!acct?.remoteUserId) return
+	const profiles = readRegistry()
+	const entry = profiles.find((p) => p.id === acct.profileId)
+	if (!entry) return
+	entry.migration = outcome
+	writeRegistry(profiles)
+}
+
+// Record "start fresh" — never offer this account again.
+export function dismissMigration(): void {
+	recordMigration('dismissed')
+}
+
+let migrating: Promise<void> | null = null
+
+// Copy the anonymous profile's user data + personalized identity into the active
+// (synced) account volume; the writes land as fresh creates that sync up to the
+// DO. Copy, not move — the local profile is left intact. Records 'migrated' on
+// success so the offer never repeats; a failure leaves the decision unrecorded so
+// the user can retry. Re-entrant calls share the in-flight run.
+export function migrateLocalProfileInto(): Promise<void> {
+	if (migrating) return migrating
+	const acct = active
+	if (!acct?.remoteUserId) return Promise.reject(new Error('migration requires an account profile'))
+	migrating = (async () => {
+		const source = openLocalSource()
+		try {
+			await copyUserData(source.volume, acct.volume)
+			recordMigration('migrated')
+			flushActiveVolume()
+		} finally {
+			source.destroy()
+			migrating = null
+		}
+	})()
+	return migrating
+}
+
+// fullScan is BFS, so `scan` visits a directory before its contents — mkdir the
+// dir, then writeFile children into it.
+async function copyUserData(src: Volume, dst: Volume): Promise<void> {
+	const skip = (p: string) => MIGRATE_SKIP.some((s) => p === s || p.startsWith(`${s}/`))
+	await src.scan('/', async (path, stat) => {
+		if (path === '/' || skip(path)) return
+		if (stat.type === FileType.Directory) await dst.mkdir(path, { recursive: true }).catch(() => {})
+		else if (stat.type === FileType.Regular) await dst.writeFile(path, await src.readFile(path))
+	})
 }
 
 function deleteIdb(name: string): Promise<void> {
