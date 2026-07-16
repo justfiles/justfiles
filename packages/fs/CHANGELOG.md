@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.2.1...fs-v0.3.0) (2026-07-16)
+
+
+### Features
+
+* **app-files:** auto-refresh the file tree on volume changes ([256dcdc](https://github.com/xiaoxinghu/justfiles/commit/256dcdcad0347e0e36769b1331dfc20a6963f56c))
+* **core:** sqlite path-sync journal + local-mutation journaling (slice 3) ([8e6b5b1](https://github.com/xiaoxinghu/justfiles/commit/8e6b5b1c6335156d5c8c009714eecd117b7ca462))
+* **design:** introduce new design system ([26e5505](https://github.com/xiaoxinghu/justfiles/commit/26e5505ed0b09f408e782df8d40d8abb28f328ce))
+* **frieren:** add PWA offline boot support ([efa3d4d](https://github.com/xiaoxinghu/justfiles/commit/efa3d4de374a4f66df03855db556d12f34506454))
+* **frieren:** add synced local filesystem ([387368c](https://github.com/xiaoxinghu/justfiles/commit/387368c3bda748550657feba04c18deec20792b4))
+* **frieren:** boot desktop without auth ([90f9872](https://github.com/xiaoxinghu/justfiles/commit/90f987222be52b379414ffc660612916c005c2e7))
+* **frieren:** local profiles own local storage (Phase 4b) ([934c6a4](https://github.com/xiaoxinghu/justfiles/commit/934c6a4a527e488e8a5c0ed97b7b1db06dd1a4f1))
+* **frieren:** local-first Phase 2b — default local execution + volume.watch ([b77b4c0](https://github.com/xiaoxinghu/justfiles/commit/b77b4c01571c10dc6ab664bacb9e1285aeaef920))
+* **fs:** content-hash-addressed storage + replica blob store ([b367d4b](https://github.com/xiaoxinghu/justfiles/commit/b367d4b0407d8de30ffba92541a97b14848623fa))
+* **fs:** deterministic LWW in applyPathChanges ([e24053c](https://github.com/xiaoxinghu/justfiles/commit/e24053cd49ba27f5ae636a6683eca6b54ba804a5))
+* **fs:** enforce /.state exclusion in localSyncReplica change source ([5cffa8e](https://github.com/xiaoxinghu/justfiles/commit/5cffa8ee25e275ee1a8534073e9a18876a216225))
+* **fs:** explicit-version mutations pin path_version ([9b13d91](https://github.com/xiaoxinghu/justfiles/commit/9b13d914a94b72a48524a660c2143d471b736dd2))
+* **fs:** implement changeDigest conflict tie-break ([0940b4d](https://github.com/xiaoxinghu/justfiles/commit/0940b4dac43a3e36584dbcde47a654d3a6633868))
+* **fs:** implement coalesceByPath ([58d8ddf](https://github.com/xiaoxinghu/justfiles/commit/58d8ddf3246576cbffd6b68549d9bb16d5c62080))
+* **fs:** implement idb path-sync via the shared driver (roadmap item 2b) ([95c5b6c](https://github.com/xiaoxinghu/justfiles/commit/95c5b6c21337213ce78ec7bcd6e475225ccaa867))
+* **fs:** implement inodeMetaFromSync wire decode ([f2943eb](https://github.com/xiaoxinghu/justfiles/commit/f2943eb74ae0c71043d498e04d0c9e0ff15fa81c))
+* **fs:** implement journaledChangeSource.pathDeltas ([6bb04ca](https://github.com/xiaoxinghu/justfiles/commit/6bb04ca8351b3f5fc847a3a75e69693f8600776f))
+* **fs:** implement journaledChangeSource.pathScan (bootstrap snapshot paging) ([2a949f8](https://github.com/xiaoxinghu/justfiles/commit/2a949f81f179d47ce5981e5a65d79e1e775e85be))
+* **fs:** implement localSyncReplica.applyPathChanges ([5522984](https://github.com/xiaoxinghu/justfiles/commit/55229842004b3be5b55c5635d8908e02585e164c))
+* **fs:** implement memStorage JournalStore primitive ([aeb6a41](https://github.com/xiaoxinghu/justfiles/commit/aeb6a41074ac6bff719b371ab1369ec03b7c25ac))
+* **fs:** implement memStorage pathApply.applyJournaled ([431af35](https://github.com/xiaoxinghu/justfiles/commit/431af35baf32cf426191d235617d9e54421a4e20))
+* **fs:** implement syncMetaFromInode wire encode ([072d7f4](https://github.com/xiaoxinghu/justfiles/commit/072d7f41439d992a89df30ebf765f191ac9040f0))
+* **fs:** journal local mutations in memStorage (path-stamped, versioned) ([8b323ca](https://github.com/xiaoxinghu/justfiles/commit/8b323caea13d262a4f7b9e9839fae1625ddf8abd))
+* **fs:** local-first synced() — optional remote, localFirst boot, adoption guard ([d487162](https://github.com/xiaoxinghu/justfiles/commit/d48716215a607cd6ae56fff4f09ced31bd17ef00))
+* **fs:** reclaim orphaned content via out-of-band gcUnreferenced (roadmap item 4) ([fcb7d05](https://github.com/xiaoxinghu/justfiles/commit/fcb7d053d0b3f029af9b3c7a4a7134af39572bfc))
+* **fs:** scaffold path-based sync (Phase 0) ([db9c89e](https://github.com/xiaoxinghu/justfiles/commit/db9c89ecaba4a73d66f6b3df2a3926201205bf99))
+* **fs:** synced() negotiate, reconcileLocal, and adoption keep-local ([96219ab](https://github.com/xiaoxinghu/justfiles/commit/96219abb36871247533bdd0e8ee2cd3d4914ea71))
+* **sync:** debug-gated reset shell UI + re-materialisation (step 4) ([337e477](https://github.com/xiaoxinghu/justfiles/commit/337e477d4f0e3be2a10b691cc19a8a1e13fe03da))
+* **sync:** generation handshake + client-reset-on-mismatch (step 1) ([41fd18b](https://github.com/xiaoxinghu/justfiles/commit/41fd18bb52585eb95122e2bdea7b55d94807e608))
+* **sync:** push fencing via x-fs-generation (step 2) ([026da7d](https://github.com/xiaoxinghu/justfiles/commit/026da7d8c7a744a0d616f719597733319de5eb4b))
+* **sync:** server-coordinated volume reset endpoints (step 3) ([4207bcc](https://github.com/xiaoxinghu/justfiles/commit/4207bccae4f73452bf841ce907fd670f692244d3))
+
+
+### Bug Fixes
+
+* **fs:** avoid redundant lazy blob fetches ([2e2c804](https://github.com/xiaoxinghu/justfiles/commit/2e2c804713bbbe83232082059d56c82749d83ef4))
+* **fs:** emit change events from memStorage applyJournaled ([1edbd53](https://github.com/xiaoxinghu/justfiles/commit/1edbd53d6c5496f5bffa4633fc6a93e78aa326ca))
+* **fs:** never delete a directory that still has live children (RED 14) ([0a6e563](https://github.com/xiaoxinghu/justfiles/commit/0a6e5634a43628b0ad2ce3190d2c604c7523b537))
+* **local-first:** bind watch on absent parent + verify appstore hashes ([62c3c50](https://github.com/xiaoxinghu/justfiles/commit/62c3c50b69b4cf44f242f5d3b71ebf7ed86779d1))
+* **local-first:** bind watch on absent parent + verify appstore hashes ([c69f6a1](https://github.com/xiaoxinghu/justfiles/commit/c69f6a1537189b5d92631ed1359528a3008f6724))
+* **sync:** enforce publishing lock, finalize order, take-mine crash recovery ([db09e78](https://github.com/xiaoxinghu/justfiles/commit/db09e786d85362f18cb283d803e3e3646e7a2cb9))
+
 ## [0.2.1](https://github.com/xiaoxinghu/justfiles/compare/fs-v0.2.0...fs-v0.2.1) (2026-04-30)
 
 
