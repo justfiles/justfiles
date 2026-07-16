@@ -55,19 +55,17 @@ function formatSize(bytes: number): string {
 type Preview = { path: string; content: string; truncated: boolean; size: number }
 
 function Files({ state, client }: { state: FilesState; client: Client<FilesApp> }) {
-	// Kick a scan on first mount when the tree is empty OR the persisted state is
-	// stuck at `loading`. A scan runs off-queue in memory only and is never replayed
-	// on boot (see kernel.command.ts), so a session that ended mid-scan rehydrates as
-	// `loading: true` with a stale (possibly non-empty) file list and no scan in
-	// flight — a permanent "Loading…". A fresh mount can't have a scan running, so a
-	// lingering `loading` is always stale; re-kicking clears it. The reducer
-	// single-flights scans, so the extra call is safe.
+	// Kick a scan on first mount when we have no file list yet. The recursive watch
+	// only fires on CHANGES, so a first-ever open (or a genuinely empty cache) needs
+	// one initial scan to populate the tree; after that, auto-refresh keeps it live.
+	// Whether a scan is in flight is the kernel's business (the scan is coalesced),
+	// so there is nothing stale to neutralize here — we just ensure the list exists.
 	const refreshed = useRef(false)
 	useEffect(() => {
 		if (refreshed.current) return
 		refreshed.current = true
-		if (state.loading || state.files.length === 0) void client.refresh({})
-	}, [client, state.loading, state.files.length])
+		if (state.files.length === 0) void client.refresh({})
+	}, [client, state.files.length])
 
 	// Re-read the file whenever `currentViewing` changes — or when `revision`
 	// bumps, which the app does each time the watched file changes on disk (Part
@@ -120,9 +118,7 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 					<span className="files-title">Files</span>
 				</header>
 				{state.error ? <p className="files-error">{state.error}</p> : null}
-				{state.loading ? (
-					<p className="files-hint">Loading…</p>
-				) : files.length === 0 ? (
+				{files.length === 0 ? (
 					<p className="files-hint">No files yet</p>
 				) : (
 					<div className="files-tree-wrap">

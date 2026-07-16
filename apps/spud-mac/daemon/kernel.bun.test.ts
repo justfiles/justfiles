@@ -38,7 +38,7 @@ async function poll<T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<T
 	throw new Error('poll timed out')
 }
 
-type FilesState = { loading: boolean; files: Array<{ path: string }> }
+type FilesState = { files: Array<{ path: string }> }
 
 test('seeds the builtin catalog into the fresh Volume', async () => {
 	const ids = (await kernel.list()).map((app) => app.id)
@@ -51,11 +51,11 @@ test('Files reads the real volume through the system-scoped volume capability', 
 	sandboxes.retain(FILES) // pin its reducer worker the way an open window would
 	await kernel.dispatch(FILES, { type: 'refresh', params: {} } as Message)
 
-	// refresh emits `volume.scan` over the `system` scope; its result folds back as
-	// `filesLoaded`, clearing `loading`. Poll until the scan has settled.
+	// refresh emits a coalesced `volume.scan` over the `system` scope; its result
+	// folds back as `filesLoaded`, populating `files`. Poll until the scan lands.
 	const state = await poll(
 		() => kernel.state(FILES) as Promise<FilesState>,
-		(s) => !s.loading
+		(s) => s.files.length > 0
 	)
 
 	// The scan walked the seeded volume — every built-in bundle lives under

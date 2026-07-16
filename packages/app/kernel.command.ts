@@ -41,6 +41,13 @@ export function commandRuntime({ resolve, invoke, dispatch, onError }: CommandDe
 	// to quiesce. Each app counts its outstanding commands and holds a `done`
 	// promise that resolves when the count returns to zero.
 	const inflight = new Map<AppId, { count: number; done: Promise<void>; wake: () => void }>()
+	// Single-flight state for coalescing commands (Part B). Per app, per structural
+	// key {capability,method,args,to}: the presence of a slot means a run-loop for
+	// that key is active; `trailing` records that an identical command arrived while
+	// it ran, so the owner re-runs exactly once more when the current pass lands. In
+	// memory only — like `inflight`, it describes work happening right now, so a
+	// restart correctly starts from "nothing in flight".
+	const coalescing = new Map<AppId, Map<string, { trailing: boolean }>>()
 
 	return { schedule, pending }
 
@@ -85,6 +92,54 @@ export function commandRuntime({ resolve, invoke, dispatch, onError }: CommandDe
 			await Promise.all(command.commands.map((c) => run(appId, c, actor)))
 			return
 		}
+		if (command.coalesce) return runCoalesced(appId, command, actor)
+		await runLeaf(appId, command, actor)
+	}
+
+	// Single-flight a coalescing command by its structural key. If a run-loop is
+	// already active for the key, fold this call into a trailing re-run (do no work
+	// here) — its result rides back on the owner's trailing pass, same `to` edge.
+	// Otherwise become the owner: run, and while a trailing change latched during
+	// the pass, run once more. The owner's `run` stays unresolved across the whole
+	// chain, so its one in-flight count keeps `settled` pending until the tree
+	// converges; a folded call resolves at once, releasing only its own count.
+	async function runCoalesced(
+		appId: AppId,
+		command: Extract<Command, { kind: 'capability' }>,
+		actor?: string
+	): Promise<void> {
+		const key = coalesceKey(command)
+		let perApp = coalescing.get(appId)
+		if (!perApp) {
+			perApp = new Map()
+			coalescing.set(appId, perApp)
+		}
+		const active = perApp.get(key)
+		if (active) {
+			active.trailing = true
+			return
+		}
+		const slot = { trailing: false }
+		perApp.set(key, slot)
+		try {
+			do {
+				slot.trailing = false
+				await runLeaf(appId, command, actor)
+			} while (slot.trailing)
+		} finally {
+			perApp.delete(key)
+			if (perApp.size === 0) coalescing.delete(appId)
+		}
+	}
+
+	// Resolve trust, invoke the capability, and route the typed Result home. The
+	// one place a leaf capability command touches the host executor — shared by the
+	// direct and coalesced paths.
+	async function runLeaf(
+		appId: AppId,
+		command: Extract<Command, { kind: 'capability' }>,
+		actor?: string
+	): Promise<void> {
 		// The app named a LOCAL capability; resolve the trusted id + scopes from
 		// its declarations — never from the command data.
 		const declared = await resolve(appId, command.capability)
@@ -136,6 +191,14 @@ export function commandRuntime({ resolve, invoke, dispatch, onError }: CommandDe
 
 function errMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
+}
+
+// The structural single-flight key for a coalescing command. Mirrors the
+// subscription reconciler's `subKey` ({capability,method,args,to}) so both
+// runtimes identify "the same work" the same way. Scoped per app by the caller,
+// so it never crosses the trust boundary.
+function coalesceKey(command: Extract<Command, { kind: 'capability' }>): string {
+	return JSON.stringify([command.capability, command.method, command.args, command.to])
 }
 
 // Shape a thrown value (or message) into the `Result` error a `fromResult` edge

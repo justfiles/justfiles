@@ -2,34 +2,25 @@ import { defineApp } from '@justfiles/app'
 import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 
-// State is intentionally minimal — only what's worth persisting across
-// reloads. The reliable durable fact is "what is the user looking at"; the
-// bytes at that path can change underneath us, so they belong to a query
-// that re-reads on demand (think `cat /path/to/file`).
+// State is intentionally minimal — only durable facts worth carrying across a
+// reload: what the user is looking at, a cache-busting revision for the open
+// file, the last-known file list, and the last scan error. The bytes at a path
+// can change underneath us, so they belong to a query that re-reads on demand
+// (think `cat /path/to/file`), never to state.
 //
-// The whole blob is persisted verbatim (kernel.state.ts), but the fields split
-// into two kinds. DURABLE facts (`currentViewing`, `revision`, `files`) are
-// worth carrying across a reload. The rest are TRANSIENT runtime state: they
-// describe a scan that is currently in flight, and a scan runs off-queue in
-// memory only — never replayed on boot (kernel.command.ts). So a persisted
-// `loading:true`/`rescanPending`/`error` is a runtime fact that is definitionally
-// false after a restart. The framework has no transient partition, so the GUI
-// neutralizes them on mount by re-kicking a scan (see gui.tsx). Nothing else may
-// assume these survive a reload.
+// There is deliberately NO "a scan is running" flag here. Whether a scan is in
+// flight is runtime truth owned by the kernel's command runtime, not a durable
+// app fact — a persisted "loading" would be a lie after any restart (the command
+// is in memory only). The scan is emitted `.coalesce()`d, so the runtime
+// single-flights it and folds a trailing re-scan when a change lands mid-scan;
+// the reducer just asks for a scan and folds whatever files come back.
 export type FilesState = {
 	currentViewing: string | null
 	// Bumped each time the watched file changes on disk (Part D). The GUI keys its
 	// preview re-read on it, so an external edit refreshes the open file.
 	revision: number
 	files: Array<{ path: string }>
-	// Transient: "a scan command is in flight". Coordinates single-flight in the
-	// core; reset on boot by the GUI (never trusted from persistence).
-	loading: boolean
-	// Transient single-flight trailing edge: a structural change arrived while a
-	// scan was in flight, so re-scan once the current one lands. Collapses bursts
-	// into one extra pass rather than a scan per event.
-	rescanPending: boolean
-	// Transient: last scan failure, shown until the next scan clears it.
+	// Last scan failure, shown until the next scan clears it.
 	error: string | null
 }
 
@@ -37,8 +28,6 @@ export const initialState: FilesState = {
 	currentViewing: null,
 	revision: 0,
 	files: [],
-	loading: true,
-	rescanPending: false,
 	error: null
 }
 
@@ -69,35 +58,32 @@ export const app = defineApp({
 	],
 	// Every state transition is a pure edge. The one effect — scanning the
 	// volume — is emitted as command data; its result folds back via `filesLoaded`.
+	// The scan is `.coalesce()`d, so the kernel single-flights it and folds a
+	// trailing re-scan when a change lands mid-scan (see kernel.command.ts).
 	update: (t) => {
-		const scan = () => t.cmd('volume', 'scan', { path: '/', recursive: true }).to('filesLoaded')
+		const scan = () =>
+			t.cmd('volume', 'scan', { path: '/', recursive: true }).coalesce().to('filesLoaded')
 		return {
-			refresh: t.on(v.object({}), (state) => [{ ...state, loading: true, error: null }, scan()], {
+			refresh: t.on(v.object({}), (state) => [{ ...state, error: null }, scan()], {
 				description: 'Refresh the visible file list.'
 			}),
-			// The recursive watch fired: re-scan to pick up the new entry set. If a
-			// scan is already running, just mark the result stale (`filesLoaded` will
-			// chase it) so a burst collapses into a single trailing pass.
-			treeChanged: t.fromEvent('volume', 'watch', (state) =>
-				state.loading ? { ...state, rescanPending: true } : [{ ...state, loading: true }, scan()]
-			),
+			// The recursive watch fired: a structural change reshaped the tree, so
+			// re-scan. Coalescing in the runtime collapses a burst (e.g. a git
+			// checkout) into one scan plus at most one trailing pass — no flag here.
+			treeChanged: t.fromEvent('volume', 'watch', (state) => [state, scan()]),
 			filesLoaded: t.fromResult('volume', 'scan', (state, r) => {
-				if (!r.ok) return { ...state, loading: false, rescanPending: false, error: r.error.message }
+				if (!r.ok) return { ...state, error: r.error.message }
 				const files = r.value
 					.filter((entry) => entry.type === 'file')
 					.map((entry) => ({ path: entry.path }))
 					.sort((a, b) => a.path.localeCompare(b.path))
 				const stillThere = files.some((file) => file.path === state.currentViewing)
-				const next = {
+				return {
 					...state,
 					files,
 					currentViewing: stillThere ? state.currentViewing : null,
 					error: null
 				}
-				// A change landed mid-scan — fold the trailing edge into one more pass.
-				return state.rescanPending
-					? [{ ...next, rescanPending: false }, scan()]
-					: { ...next, loading: false }
 			}),
 			setView: t.on(
 				v.object({ path: pathSchema }),
