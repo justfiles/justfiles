@@ -12,6 +12,7 @@
 		"seed:llm-user": "tsx scripts/frieren-auth.ts seed",
 		"auth:bootstrap": "tsx scripts/frieren-auth.ts bootstrap",
 		"verify:ui": "tsx scripts/frieren-auth.ts ui",
+		"verify:sandbox": "tsx scripts/reducer-frame-probe.ts",
 		"preview": "pnpm run build && vite preview",
 		"deploy": "pnpm run build && wrangler deploy",
 		"cf-typegen": "wrangler types",

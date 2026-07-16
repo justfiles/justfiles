@@ -304,7 +304,7 @@ frame: `document.cookie` is empty, `window.parent`'s document is unreachable
 
 ## Step 4 — Move the reducer worker into the iframe (Topology B) (M–L)
 
-> **Risk gate: PASSED → Topology B (validated 2024, `scripts/risk-gate-probe.ts`).**
+> **Risk gate: PASSED → Topology B (validated Chromium/Firefox/WebKit).**
 > A module Worker does **not** spawn from a blob URL inside a
 > `sandbox="allow-scripts"` (no `allow-same-origin`) iframe on **Chromium**
 > (`worker.onerror`, opaque origin); it *does* on Firefox and WebKit. The
@@ -316,7 +316,9 @@ frame: `document.cookie` is empty, `window.parent`'s document is unreachable
 > credentialed `fetch` to the host origin from inside it is blocked in every
 > engine — network is deny-by-default. So we take Topology B (not the SES
 > fallback), with the classic-worker adaptation baked into
-> `sandboxWorkerSource(..., 'web-iframe')`.
+> `sandboxWorkerSource(..., 'web-iframe')` and guarded by
+> `apps/frieren/scripts/reducer-frame-probe.ts` (real-browser check) plus a
+> shape unit test in `packages/app/sandbox.test.ts`.
 >
 > **Design note — one shared reducer frame, not per-stage.** The kernel loads a
 > reducer for *closed* apps (install/seed/reconcile warm `subscriptions(state)`
@@ -587,4 +589,5 @@ carries the live kernel bridge — the capability **port is always handed over
    Topology B, via a **classic** Worker that dynamic-`import()`s the app bundle
    (module Workers are blocked in Chromium's opaque-origin iframes; the classic
    path works on Chromium/Firefox/WebKit, with and without the CSP). See the
-   risk-gate banner on Step 4 and `apps/frieren/scripts/risk-gate-probe.ts`.
+   risk-gate banner on Step 4 and `apps/frieren/scripts/reducer-frame-probe.ts`
+   (the real-browser check for the classic reducer Worker).

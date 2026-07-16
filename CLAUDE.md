@@ -32,6 +32,10 @@ pnpm run verify:ui
 
 `verify:ui` creates/reuses a Clerk dev test user, seeds onboarding, opens an authenticated `playwright-cli` session named `frieren`, and navigates to `http://localhost:5173`. Then take over with arbitrary checks, e.g. `playwright-cli -s=frieren snapshot`, `fill`, `click`, `console`, `requests`. Close with `playwright-cli -s=frieren close`.
 
+## Sandbox reducer frame (Topology B)
+
+When you change the app sandbox worker source (`sandboxWorkerSource` / the reducer frame in `apps/frieren/src/apps/sandbox.worker.ts`), verify the classic reducer Worker still loads + answers the protocol on real browsers -> `pnpm run verify:sandbox` (from `apps/frieren`; needs `npx playwright install`).
+
 
 # Coding Rules
 
