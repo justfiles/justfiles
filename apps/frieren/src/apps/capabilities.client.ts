@@ -8,22 +8,36 @@ import {
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
 import { devkitCapability as makeDevkit } from '@justfiles/app/capabilities/devkit/host'
+import type { Channel } from '@justfiles/app/capabilities/notify'
+import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { type GetUser, userCapability } from '@justfiles/app/capabilities/user/host'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { flushActiveVolume } from '../fs.ts'
+import { notificationStore } from '../notifications/store.ts'
 import { frierenCompile, frierenRunner } from './devkit.client.ts'
 
 type GetToken = () => Promise<string | null>
 
-// The browser kernel's capability seam. `volume`, `devkit` and `user` run locally
-// on this thread; everything else (ai/accounts) proxies to the server through the
-// network fallback over ONE shared WebSocket. `user` is local because identity
-// lives where the session does (Clerk in the browser) — no round-trip, works
-// offline. Only `devkit` needs the kernel — a per-entry factory the kernel resolves
-// with ITSELF, so it reads sysroots + installs into the exact kernel it lives in.
+// App notifications run entirely in the browser: `notifyHost` stamps `source =
+// appId` (kernel-trusted, unspoofable), then this channel writes straight to the
+// one notification store — no DO round-trip, so it works offline. A click defaults
+// to opening the app that emitted it; an explicit route from the app still wins.
+const browserNotifyChannel: Channel = (notification) =>
+	notificationStore.notify({
+		...notification,
+		route: notification.route ?? { kind: 'app', id: notification.source }
+	})
+
+// The browser kernel's capability seam. `volume`, `devkit`, `user` and `notify`
+// run locally on this thread; everything else (ai/accounts) proxies to the server
+// through the network fallback over ONE shared WebSocket. `user` is local because
+// identity lives where the session does (Clerk in the browser) — no round-trip,
+// works offline. Only `devkit` needs the kernel — a per-entry factory the kernel
+// resolves with ITSELF, so it reads sysroots + installs into the exact kernel it
+// lives in.
 export function clientCapabilities(
 	fs: Volume,
 	getToken: GetToken,
@@ -33,6 +47,7 @@ export function clientCapabilities(
 		{
 			volume: volumeCapability(fs, { systemAllowlist: ['computer.spud.files'] }),
 			user: userCapability(getUser),
+			notify: notifyHost(browserNotifyChannel),
 			devkit: (kernel) => devkitCapability(fs, getToken, kernel)
 		},
 		{ fallback: networkFallback(getToken) }

@@ -5,8 +5,11 @@ import {
 	serveCapabilitiesRpc,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
+import type { Kernel } from '@justfiles/app/runtime'
+import type { Volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
-import { capsProxyOverSocket } from './capabilities.client.ts'
+import { notificationStore } from '../notifications/store.ts'
+import { capsProxyOverSocket, clientCapabilities } from './capabilities.client.ts'
 
 const call = (capability: string, method: string, input: unknown): CapabilityCall => ({
 	appId: 'app',
@@ -83,4 +86,28 @@ test('a socket close rejects an in-flight invoke so the caller can self-heal', a
 	clientWs.close()
 
 	await expect(pending).rejects.toMatchObject({ code: 'CAPABILITY_OFFLINE' })
+})
+
+// notify runs locally on the browser kernel (no server round-trip). The host stamps
+// `source = appId` from the trusted call, then the frieren channel writes to the one
+// notification store and defaults a click back to the emitting app. fs/kernel are
+// never touched by a notify invoke, so stubs suffice.
+test('an app notify is stamped with the trusted appId and routes back to that app', async () => {
+	notificationStore.clear()
+	const caps = clientCapabilities(
+		undefined as unknown as Volume,
+		async () => null
+	)(undefined as unknown as Kernel)
+	await caps.invoke({
+		appId: 'app.example',
+		capability: 'notify',
+		method: 'notify',
+		// The payload carries no `source` — the host supplies it from the appId.
+		args: [{ id: 'n1', kind: 'info', title: 'Notes', body: 'Saved.' }],
+		scopes: []
+	})
+	const active = notificationStore.snapshot().active
+	expect(active?.notification.source).toBe('app.example')
+	expect(active?.notification.route).toEqual({ kind: 'app', id: 'app.example' })
+	notificationStore.clear()
 })
