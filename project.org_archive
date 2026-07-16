@@ -184,3 +184,40 @@ can notify when agent finishes work
 :ARCHIVE_CATEGORY: project
 :ARCHIVE_TODO: DONE
 :END:
+
+* DONE should be able to uninstall app
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-07-16 Thu 16:30
+:ARCHIVE_FILE: ~/workspace/justfiles/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE streamline design system
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-07-16 Thu 16:30
+:ARCHIVE_FILE: ~/workspace/justfiles/project.org
+:ARCHIVE_OLPATH: Tasks
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+
+* DONE refine the interface of packages/agent
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-07-16 Thu 16:30
+:ARCHIVE_FILE: ~/workspace/justfiles/project.org
+:ARCHIVE_OLPATH: Bugs to fix
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
+The interface is pretty chaotic, need more elegent interface
+
+* DONE move onboarding
+:PROPERTIES:
+:ARCHIVE_TIME: 2026-07-16 Thu 16:30
+:ARCHIVE_FILE: ~/workspace/justfiles/project.org
+:ARCHIVE_OLPATH: Bugs to fix
+:ARCHIVE_CATEGORY: project
+:ARCHIVE_TODO: DONE
+:END:
