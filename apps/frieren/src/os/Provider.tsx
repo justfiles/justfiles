@@ -11,6 +11,43 @@ import { OsContext } from './hooks'
 import { startOsRuntime } from './runtime'
 import { createOsStore } from './store'
 
+// Clerk serves avatars from img.clerk.com. An app renders the signed-in user's
+// avatar through the `user` capability, but the app frame's CSP is network-deny
+// (`img-src data: blob:`), so a remote `<img src>` is blocked. Convert the avatar
+// to a `data:` URL on the host (which has network) so the frame can render it with
+// no remote fetch — the capability-mediated pattern the sandbox plan calls for.
+// Sized down + cached by source URL to stay small in the app's synced state; any
+// failure (e.g. no CORS) drops the avatar and the app shows its placeholder. Host
+// chrome (banner/omnibar) is unaffected — it isn't inside a CSP'd frame.
+const avatarCache = new Map<string, Promise<string | undefined>>()
+function avatarDataUrl(imageUrl: string): Promise<string | undefined> {
+	let cached = avatarCache.get(imageUrl)
+	if (!cached) {
+		cached = (async () => {
+			try {
+				const url = new URL(imageUrl)
+				url.searchParams.set('width', '80')
+				url.searchParams.set('height', '80')
+				url.searchParams.set('fit', 'crop')
+				const res = await fetch(url, { credentials: 'omit' })
+				if (!res.ok) return undefined
+				const blob = await res.blob()
+				return await new Promise<string | undefined>((resolve) => {
+					const reader = new FileReader()
+					reader.onload = () =>
+						resolve(typeof reader.result === 'string' ? reader.result : undefined)
+					reader.onerror = () => resolve(undefined)
+					reader.readAsDataURL(blob)
+				})
+			} catch {
+				return undefined
+			}
+		})()
+		avatarCache.set(imageUrl, cached)
+	}
+	return cached
+}
+
 const ICON_MIME: Record<string, string> = {
 	png: 'image/png',
 	svg: 'image/svg+xml',
@@ -74,7 +111,11 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	}
 	const readyGetUser = async (): Promise<UserProfile | null> => {
 		await clerkReadyRef.current?.promise
-		return getUserRef.current()
+		const profile = getUserRef.current()
+		// Hand apps a data: URL avatar (CSP-renderable inside the sandboxed frame),
+		// not the remote img.clerk.com URL their frame can't fetch.
+		if (!profile?.avatarUrl) return profile
+		return { ...profile, avatarUrl: await avatarDataUrl(profile.avatarUrl) }
 	}
 
 	// The current profile volume is opened at boot (App); the singleton hands back

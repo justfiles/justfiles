@@ -84,3 +84,22 @@ export const app = {
 		await worker.terminate()
 	}
 })
+
+// The 'web-iframe' transport (Topology B) must be a CLASSIC worker: a module
+// worker fails to load from a blob URL inside a Chromium opaque-origin sandboxed
+// iframe (see frieren's risk-gate-probe.ts). Its browser behaviour is validated
+// there and by reducer-frame-probe.ts; this locks the generator's shape so the
+// Chromium-critical invariants can't silently regress.
+test('web-iframe transport emits a classic worker that dynamic-imports self.name', () => {
+	const src = sandboxWorkerSource('ignored', 'web-iframe')
+	// No static `import ... from` — classic workers reject it, and Chromium rejects
+	// module workers from blob URLs in opaque origins.
+	expect(src).not.toMatch(/^\s*import\s+[^(]/m)
+	// The app bundle is loaded dynamically from the blob URL passed as the Worker name.
+	expect(src).toContain('import(self.name)')
+	// A failed load is captured and reported per-request, not silently dropped.
+	expect(src).toContain('__loadError')
+	// The shared host↔isolate protocol body is still present.
+	expect(src).toContain('runProcedure')
+	expect(src).toContain('hostResult')
+})
