@@ -80,13 +80,22 @@ export type Command =
 			method: string
 			args: readonly unknown[]
 			to: string
+			// Opt-in single-flight (Part B). When set, the command runtime keys the
+			// command by {capability,method,args,to} per app: if an identical one is
+			// already in flight it is NOT started again — instead the runtime folds a
+			// trailing re-run once the current lands (so a burst collapses into at most
+			// one extra pass). Only safe for idempotent, query-like effects (a scan);
+			// never for accumulating writes (an append) where each call must run.
+			coalesce?: true
 	  }
 
 // A capability command awaiting its result edge. `t.cmd(cap, method, ...args)`
 // returns this so the variadic `args` stay last; `.to(edge)` names the
 // `t.fromResult` edge that receives the result, completing the `Command`.
+// `.coalesce()` opts the command into runtime single-flight (see `Command`).
 export interface CommandBuilder {
 	to(edge: string): Command
+	coalesce(): CommandBuilder
 }
 
 // An ongoing stream the CURRENT state declares (Part D) — the dual of a Command

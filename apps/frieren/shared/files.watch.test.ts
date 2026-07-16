@@ -100,3 +100,34 @@ test('files watches the open file: one fileChanged per write, stops on clear', a
 	await tick()
 	expect(await rev()).toBe(1)
 })
+
+// Regression: a kernel with NO GUI (the server, where the agent runs) never
+// kicks a `refresh`, so the file list must converge on the recursive watch
+// alone. The scan is `.coalesce()`d, so `treeChanged` can always emit it and the
+// runtime single-flights — there is no persisted "loading" flag to strand the
+// app in a permanent "Loading…" (the old bug: a `treeChanged` before any scan
+// latched a rescan that never ran).
+test('files converges from the recursive watch alone, with no refresh/GUI', async () => {
+	const fs = volume(memStorage())
+	await fs.writeFile('/a.txt', enc.encode('a'))
+
+	const v = probe(volumeCapability(fs, { systemAllowlist: ['computer.spud.files'] }))
+	const k = kernel({ fs, sandbox, clock: {}, capabilities: capabilityRegistry({ volume: v.cap }) })
+	const id = await k.install(
+		appBundleFromMemory({ id: 'computer.spud.files', name: 'Files', app: code })
+	)
+	await until(() => v.live() === 1, 'recursive tree watch established')
+
+	// No dispatch of `refresh` — mimic the server. The initial state carries an
+	// empty file list; nothing has scanned yet.
+	const files = async () => ((await k.state(id)) as { files: Array<{ path: string }> }).files
+	expect(await files()).toEqual([])
+
+	// A structural change fires the recursive watch -> treeChanged -> a scan that
+	// actually runs (before this fix it deadlocked, emitting no scan).
+	await fs.writeFile('/b.txt', enc.encode('b'))
+	await until(async () => (await files()).length > 0, 'file list populated from the watch')
+	const paths = (await files()).map((f) => f.path)
+	expect(paths).toContain('/a.txt')
+	expect(paths).toContain('/b.txt')
+})

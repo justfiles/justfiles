@@ -222,6 +222,16 @@ save: t.on(
 ),
 ```
 
+**`.coalesce()`** — opt-in single-flight for idempotent, query-like commands:
+`t.cmd('volume','scan',{…}).coalesce().to('listed')`. The kernel keys the command
+by `{capability,method,args,to}` per app: if an identical one is already in
+flight it is **not** run again — instead a single trailing re-run fires once the
+current lands, so a burst (e.g. a watch firing on every file in a `git checkout`)
+collapses into one scan plus at most one extra pass. Never use it on accumulating
+writes (an `appendFile`), where each call must run. This replaces hand-rolled
+"is a scan running" flags in state — whether an effect is in flight is the
+kernel's runtime truth, not a durable app fact.
+
 ### `t.fromResult(capability, method, transition)` — receive command result
 
 Internal edge (not on client, not agent-visible). Payload = `Result<T>`:

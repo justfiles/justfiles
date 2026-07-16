@@ -4,6 +4,7 @@ import type {
 	App,
 	AppHandle,
 	Command,
+	CommandBuilder,
 	DispatchResult,
 	Edge,
 	Edges,
@@ -99,9 +100,22 @@ export function defineApp<
 		commit: (schema, transition) => ({ __edge: 'commit', schema, transition }),
 		fromResult: (_capability, _method, transition) => ({ __edge: 'result', transition }),
 		fromEvent: (_capability, _method, transition) => ({ __edge: 'event', transition }),
-		cmd: (capability, method, ...args) => ({
-			to: (edge) => ({ kind: 'capability', capability, method, args, to: edge })
-		})
+		cmd: (capability, method, ...args) => {
+			// `.coalesce()` flips the opt-in flag; `.to(edge)` bakes it into the final
+			// Command. Usage: `t.cmd(cap, method, ...args).coalesce().to(edge)`.
+			const builder = (coalesce: boolean): CommandBuilder => ({
+				to: (edge) => ({
+					kind: 'capability',
+					capability,
+					method,
+					args,
+					to: edge,
+					...(coalesce ? { coalesce: true } : {})
+				}),
+				coalesce: () => builder(true)
+			})
+			return builder(false)
+		}
 	}
 	const edges = (spec.update?.(edgeBuilder) ?? {}) as Record<string, Edge<State>>
 
