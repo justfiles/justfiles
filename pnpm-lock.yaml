@@ -89,6 +89,9 @@ importers:
       '@justfiles/app-files':
         specifier: workspace:*
         version: link:../../packages/app-files
+      '@justfiles/app-notes':
+        specifier: workspace:*
+        version: link:../../packages/app-notes
       '@justfiles/app-paint':
         specifier: workspace:*
         version: link:../../packages/app-paint
