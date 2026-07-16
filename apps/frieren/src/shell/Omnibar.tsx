@@ -31,6 +31,7 @@ import { useAgentClient, useOsDispatch, useOsStore } from '../os/hooks'
 import { selectFocusedAppId } from '../os/selectors'
 import { AGENT_WINDOW_ID } from '../os/state'
 import { ConsentSheet, type ConsentTarget } from './ConsentSheet'
+import { MigrationSheet } from './MigrationSheet'
 
 // The omnibar: one intent surface at the bottom of the desktop. You type, and it
 // routes — an installed app match launches, anything else asks the agent. The
@@ -54,6 +55,11 @@ const SHEET_TAIL = 8
 // The first-party Settings app — a `settings` route (e.g. accounts → reconnect)
 // opens it, reusing the ordinary `app.open` dispatch.
 const SETTINGS_APP_ID = 'computer.spud.settings'
+
+// The one-time "bring your local work into this account" offer rides a `system`
+// question on this thread; engaging it opens the migration sheet (handled locally
+// below) rather than routing like an ordinary notification.
+const MIGRATION_THREAD = 'local-migration'
 
 // The pill action button's label, derived from where a click routes.
 function routeLabel(route: Route): string {
@@ -157,6 +163,7 @@ export function Omnibar({
 		[catalog, text, installedById]
 	)
 	const [consent, setConsent] = useState<ConsentTarget | null>(null)
+	const [migrateOpen, setMigrateOpen] = useState(false)
 
 	// One flat, keyboard-navigable list, laid out visually top→bottom: weaker app
 	// matches up top, the best match just above the pinned "Ask Frieren" row, which
@@ -245,9 +252,18 @@ export function Omnibar({
 		else dispatch({ type: 'app.open', appId: SETTINGS_APP_ID })
 	}
 	const runNotification = (entry: NotificationEntry) => {
+		if (entry.notification.threadId === MIGRATION_THREAD) {
+			setMigrateOpen(true)
+			notificationStore.dismiss(entry.notification.id)
+			return
+		}
 		if (entry.notification.route) dispatchRoute(entry.notification.route)
 		notificationStore.dismiss(entry.notification.id)
 	}
+	// The pill's action label: the migration offer opens the sheet; everything else
+	// routes. Null hides the button (nothing actionable).
+	const pillActionLabel = (n: NotificationEntry['notification']): string | null =>
+		n.threadId === MIGRATION_THREAD ? 'Bring over' : n.route ? routeLabel(n.route) : null
 	// The bell toggles the center; opening it marks history seen (clears the badge)
 	// and focuses the input so a blur/Esc collapses it like any other sheet mode.
 	const openNotifications = () => {
@@ -637,8 +653,12 @@ export function Omnibar({
 					onFocus={() => {
 						setFocused(true)
 						// Engaging while the agent waits on a question lands on the
-						// question: in the window if it's open, else the sheet transcript.
-						if (active?.notification.kind === 'question') {
+						// question: in the window if it's open, else the sheet transcript. The
+						// migration offer is a `system` question with its own sheet, not chat.
+						if (
+							active?.notification.kind === 'question' &&
+							active.notification.threadId !== MIGRATION_THREAD
+						) {
 							if (agentWindowOpen) dispatch({ type: 'window.focus', id: AGENT_WINDOW_ID })
 							else setChatOpen(true)
 						}
@@ -653,18 +673,18 @@ export function Omnibar({
 					autoComplete="off"
 					spellCheck={false}
 				/>
-				{banner?.notification.route && !focused ? (
+				{!focused && banner && pillActionLabel(banner.notification) ? (
 					/* The banner's action button, on the pill's right edge: a click runs the
-					   same route dispatch and recedes the item. */
+					   route dispatch (or opens the migration sheet) and recedes the item. */
 					<button
 						type="button"
 						className="frn-omnibar-action"
-						title={routeLabel(banner.notification.route)}
+						title={pillActionLabel(banner.notification) ?? undefined}
 						onMouseDown={(event) => event.preventDefault()}
 						onClick={() => runNotification(banner)}
 					>
 						<ArrowSquareOutIcon />
-						<span>{routeLabel(banner.notification.route)}</span>
+						<span>{pillActionLabel(banner.notification)}</span>
 					</button>
 				) : null}
 				{unread > 0 || showNotifications ? (
@@ -707,6 +727,9 @@ export function Omnibar({
 						/>,
 						document.body
 					)
+				: null}
+			{migrateOpen
+				? createPortal(<MigrationSheet onClose={() => setMigrateOpen(false)} />, document.body)
 				: null}
 		</div>
 	)

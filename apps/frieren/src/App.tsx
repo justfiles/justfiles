@@ -8,8 +8,10 @@ import {
 	activeRemoteUserId,
 	attachRemoteUser,
 	openProfile,
+	shouldOfferMigration,
 	switchToLocalProfile
 } from './fs'
+import { notificationStore } from './notifications/store'
 import { OSProvider } from './os/Provider'
 import { DesktopShell } from './shell/DesktopShell'
 
@@ -20,6 +22,23 @@ function LoadingScreen({ label }: { label: string }) {
 			<p className="frn-backdrop-note">{label}</p>
 		</div>
 	)
+}
+
+// After a fresh sign-in, offer to bring the signed-out profile's work into the new
+// account. The gate (account empty + local has content + not yet decided) and the
+// first-sync wait live in fs.ts; here we just project the offer onto the omnibar
+// as a `system` question. Idempotent — the store coalesces by threadId, and the
+// gate returns false once a decision is recorded, so this never nags.
+async function offerLocalMigration(): Promise<void> {
+	if (!(await shouldOfferMigration())) return
+	notificationStore.notify({
+		id: 'local-migration',
+		source: 'system',
+		kind: 'question',
+		threadId: 'local-migration',
+		title: 'Bring your stuff over?',
+		body: 'Move the notes and files you made before signing in into this account.'
+	})
 }
 
 function App() {
@@ -66,6 +85,7 @@ function App() {
 			try {
 				await attachRemoteUser(userId, () => getToken())
 				if (!cancelled) setProfileId(activeProfileId())
+				void offerLocalMigration()
 			} catch {
 				if (!cancelled) setProfileId(activeProfileId())
 			}
