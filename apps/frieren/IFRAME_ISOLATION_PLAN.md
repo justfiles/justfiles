@@ -304,6 +304,31 @@ frame: `document.cookie` is empty, `window.parent`'s document is unreachable
 
 ## Step 4 — Move the reducer worker into the iframe (Topology B) (M–L)
 
+> **Risk gate: PASSED → Topology B (validated 2024, `scripts/risk-gate-probe.ts`).**
+> A module Worker does **not** spawn from a blob URL inside a
+> `sandbox="allow-scripts"` (no `allow-same-origin`) iframe on **Chromium**
+> (`worker.onerror`, opaque origin); it *does* on Firefox and WebKit. The
+> portable path that works on **all three** is a **classic** Worker that
+> `import()`s the app bundle dynamically (the blob URL is handed in via the
+> Worker `name`, read as `self.name`). Under the Step-5a CSP
+> (`default-src 'none'; script-src 'unsafe-inline' blob:; worker-src blob:;
+> connect-src 'none'`) that classic+dynamic-import worker still spawns, and a
+> credentialed `fetch` to the host origin from inside it is blocked in every
+> engine — network is deny-by-default. So we take Topology B (not the SES
+> fallback), with the classic-worker adaptation baked into
+> `sandboxWorkerSource(..., 'web-iframe')`.
+>
+> **Design note — one shared reducer frame, not per-stage.** The kernel loads a
+> reducer for *closed* apps (install/seed/reconcile warm `subscriptions(state)`
+> via `subs.ensure → loadSandbox`), and `packages/app/kernel.ts` stays untouched.
+> So the reducer realm cannot be tied to a GUI stage's lifecycle. A single hidden
+> opaque-origin iframe (created lazily with the kernel, torn down on OS teardown)
+> hosts *every* app's reducer Worker, keyed by content hash — exactly the
+> `iframeSandbox(frame)` / `frame.spawnReducer(appId, code)` shape below. GUI
+> frames stay per-stage (Steps 1–3, unchanged). The `browserSandbox()` /
+> `terminateAppWorker(appId)` surface is preserved so `kernel.client.ts` and
+> `host.ts` don't churn.
+
 ### Context
 
 Total isolation: spawn the reducer Worker **inside** the opaque-origin iframe so it
@@ -558,5 +583,8 @@ carries the live kernel bridge — the capability **port is always handed over
    same-process; escalate only if cross-frame memory reads enter the threat model. When we
    escalate, serve apps by URL from that origin with its own SW for offline — see the
    "URL-served apps" appendix above.
-3. **Reducer-in-iframe vs host Worker + SES (Step 4 risk gate).** Depends on whether a
-   module Worker spawns in a no-`allow-same-origin` iframe across target browsers.
+3. **Reducer-in-iframe vs host Worker + SES (Step 4 risk gate).** **Resolved:**
+   Topology B, via a **classic** Worker that dynamic-`import()`s the app bundle
+   (module Workers are blocked in Chromium's opaque-origin iframes; the classic
+   path works on Chromium/Firefox/WebKit, with and without the CSP). See the
+   risk-gate banner on Step 4 and `apps/frieren/scripts/risk-gate-probe.ts`.

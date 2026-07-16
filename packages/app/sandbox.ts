@@ -130,16 +130,31 @@ function handleOf(pending: Pending | undefined): RawAppHandle {
 // `appUrl`, services host requests, and bridges a running procedure's host-calls
 // back over the transport. `transport` selects the two primitives that differ
 // between a Web Worker (`self`) and a Node worker_thread (`parentPort`).
-export function sandboxWorkerSource(appUrl: string, transport: 'web' | 'node'): string {
+export function sandboxWorkerSource(
+	appUrl: string,
+	transport: 'web' | 'node' | 'web-iframe'
+): string {
 	const head =
 		transport === 'node'
 			? `import { parentPort } from 'node:worker_threads'
 import { app } from ${JSON.stringify(appUrl)}
 const send = (m) => parentPort.postMessage(m)
 const listen = (h) => parentPort.on('message', h)`
-			: `import { app } from ${JSON.stringify(appUrl)}
+			: transport === 'web'
+				? `import { app } from ${JSON.stringify(appUrl)}
 const send = (m) => self.postMessage(m)
 const listen = (h) => { self.onmessage = (e) => h(e.data) }`
+				: // 'web-iframe': a CLASSIC worker. A *module* worker fails to load from a
+					// blob: URL inside an opaque-origin sandboxed iframe on Chromium (see
+					// frieren's risk-gate-probe.ts), so the reducer relocated into the frame
+					// (Topology B) must be classic. It can't use a static import, so it loads
+					// the app bundle by dynamic-import of the blob URL handed in as the Worker
+					// `name` (read as self.name), and gates every message on that load. A load
+					// failure is captured in __loadError and reported per-request below.
+					`const send = (m) => self.postMessage(m)
+let app, __loadError
+const __ready = import(self.name).then((m) => { app = m.app }, (e) => { __loadError = e })
+const listen = (h) => { self.onmessage = (e) => { __ready.then(() => h(e.data)) } }`
 	return `${head}
 let nextCallId = 0
 const pending = new Map()
@@ -171,6 +186,10 @@ async function handle(msg) {
 		else p.resolve(msg.result)
 		return
 	}
+	// A classic-iframe worker whose app bundle failed to dynamic-import (web-iframe
+	// head) rejects every request; other transports never declare __loadError.
+	if (typeof __loadError !== 'undefined' && __loadError)
+		return send({ type: 'error', id: msg.id, error: errorToWire(__loadError) })
 	try {
 		if (msg.type === 'initialState') return send({ type: 'result', id: msg.id, result: app.initialState })
 		if (msg.type === 'actions') return send({ type: 'result', id: msg.id, result: app.actions ?? {} })

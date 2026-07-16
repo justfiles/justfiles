@@ -12,7 +12,7 @@ import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
 import { ensureCapabilitySocket } from './capabilities.client'
 import { FRAME_SRCDOC, guiHost, readHostStyles, readVendor } from './gui-channel'
-import { terminateAppWorker } from './sandbox.worker'
+import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
 
 interface Stage {
 	id: string
@@ -129,8 +129,10 @@ export function close(id: string): void {
 
 // Tear down every open stage. Called on OS teardown (sign-out / user switch /
 // provider unmount) so a previous session's app GUIs don't leak into the next.
+// Also drops the shared reducer frame — the reducers a previous user's apps ran.
 export function closeAll(): void {
 	for (const id of [...stages.keys()]) close(id)
+	teardownReducerFrame()
 }
 
 export function wrapperOf(id: string): HTMLDivElement | undefined {

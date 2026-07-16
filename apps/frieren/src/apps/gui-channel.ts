@@ -2,7 +2,9 @@
 // `sandbox="allow-scripts"` opaque-origin iframe. It gets no cookies, no host
 // DOM, and cannot read the token; its only authority is the port. Every message
 // is structured-clone data (an action in, a result/state out), so no closures
-// cross. The reducer Worker always runs on the host (Topology A).
+// cross. A CSP on the frame document (below) makes its network deny-by-default.
+// The reducer Worker runs in its own hidden opaque-origin frame (Topology B, see
+// sandbox.worker.ts), so neither half of an app can `fetch` with credentials.
 //
 // Every app renders this way — built-ins included — so first-party developers hit
 // the same sandbox limits their users will. The one thing that needed host-DOM
@@ -100,6 +102,7 @@ export function guiHost(
 // gui.js, and mounts it against a port-backed transport (the guest twin of
 // `guiHost`). Boot failures are reported to the host for the error overlay.
 export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'">
 <style>html,body{margin:0;height:100%}#root{height:100%;overflow:hidden}</style>
 <div id="root"></div>
 <script>
