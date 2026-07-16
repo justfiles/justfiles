@@ -1,19 +1,46 @@
-// Validates the REAL `sandboxWorkerSource(..., 'web-iframe')` output: a classic
-// reducer Worker spawned inside an opaque-origin `sandbox="allow-scripts"` iframe
-// (with the Step-5a CSP), loading the app bundle via `self.name` dynamic import,
-// answering the actual host↔isolate protocol (`initialState`, then a `dispatch`).
+// Topology-B reducer-frame check. Validates that the REAL
+// `sandboxWorkerSource(..., 'web-iframe')` output — the classic reducer Worker
+// used in Topology B — actually loads and answers the host↔isolate protocol
+// inside an opaque-origin `sandbox="allow-scripts"` iframe, under the frame CSP,
+// on real browsers. This is the one thing the node vitest suite can't cover (it
+// needs a real Worker + opaque origin + blob dynamic-import + Chromium's
+// module-worker quirk); run it whenever you touch `sandboxWorkerSource` or the
+// reducer frame in `apps/frieren/src/apps/sandbox.worker.ts`.
 //
-// Run: node apps/frieren/scripts/reducer-frame-probe.ts [chromium|firefox|webkit]
+// Usage (from apps/frieren):
+//   pnpm run verify:sandbox            # all engines
+//   pnpm run verify:sandbox chromium   # one engine
+//
+// Requires the Playwright browsers: `npx playwright install chromium firefox webkit`.
+// Exits non-zero if any engine that ran failed a check (missing browsers are
+// reported as SKIP, not failure).
 
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { sandboxWorkerSource } from '@justfiles/app/sandbox'
 import { type ConsoleMessage, chromium, firefox, webkit } from '@playwright/test'
 
-const engines = { chromium, firefox, webkit }
-type Frame = { id?: string; result?: { count?: number; state?: { count?: number } } }
+const ENGINES = { chromium, firefox, webkit }
+type EngineName = keyof typeof ENGINES
 
-const engine = (process.argv[2] ?? 'chromium') as 'chromium' | 'firefox' | 'webkit'
+const USAGE = `Usage: pnpm run verify:sandbox [chromium|firefox|webkit|all]
+
+Validates sandboxWorkerSource(..., 'web-iframe') (the Topology-B classic reducer
+Worker) loads + answers the host↔isolate protocol inside an opaque-origin
+sandboxed iframe under the frame CSP, on real browsers. Defaults to all engines.
+Requires: npx playwright install chromium firefox webkit`
+
+function parseEngines(): EngineName[] {
+	const arg = process.argv[2]
+	if (arg === '--help' || arg === '-h') {
+		console.log(USAGE)
+		process.exit(0)
+	}
+	if (!arg || arg === 'all') return Object.keys(ENGINES) as EngineName[]
+	if (arg in ENGINES) return [arg as EngineName]
+	console.error(`unknown engine "${arg}"\n\n${USAGE}`)
+	process.exit(2)
+}
 
 const WORKER_SRC = sandboxWorkerSource('', 'web-iframe')
 
@@ -66,47 +93,95 @@ const HOST_HTML = `<!doctype html><meta charset="utf-8"><title>host</title>
 	})
 </script>`
 
+type Frame = { id?: string; result?: { count?: number; state?: { count?: number } } }
+type Check = { name: string; ok: boolean; detail: string }
+type Result = {
+	engine: EngineName
+	status: 'pass' | 'fail' | 'skip'
+	checks: Check[]
+	note?: string
+}
+
+async function runEngine(engine: EngineName, baseUrl: string): Promise<Result> {
+	let browser: Awaited<ReturnType<(typeof ENGINES)[EngineName]['launch']>>
+	try {
+		browser = await ENGINES[engine].launch()
+	} catch (e) {
+		// Almost always "browser not installed" — report as skip, not failure.
+		return { engine, status: 'skip', checks: [], note: (e as Error).message.split('\n')[0] }
+	}
+	try {
+		const page = await browser.newPage()
+		const pageErrors: string[] = []
+		page.on('console', (m: ConsoleMessage) => pageErrors.push(m.text()))
+		page.on('pageerror', (e: Error) => pageErrors.push(`pageerror: ${e.message}`))
+		await page.goto(baseUrl)
+		// Wait until the dispatch reply lands, or the worker reports dead, or timeout.
+		await page
+			.waitForFunction(
+				() => {
+					const g = globalThis as unknown as { __frames: Frame[]; __log: string[] }
+					return g.__frames.some((f) => f.id === '1') || g.__log.some((l) => l.startsWith('dead'))
+				},
+				{ timeout: 15_000 }
+			)
+			.catch(() => {})
+		const { frames, log } = await page.evaluate(() => {
+			const g = globalThis as unknown as { __frames: Frame[]; __log: string[] }
+			return { frames: g.__frames ?? [], log: g.__log ?? [] }
+		})
+
+		const dead = log.find((l) => l.startsWith('dead'))
+		const initial = frames.find((f) => f.id === '0')
+		const dispatched = frames.find((f) => f.id === '1')
+		const checks: Check[] = [
+			{
+				name: 'classic reducer worker loads + answers initialState',
+				ok: !dead && initial?.result?.count === 7,
+				detail: dead ?? JSON.stringify(initial ?? null)
+			},
+			{
+				name: 'reducer dispatch round-trip (41→42)',
+				ok: !dead && dispatched?.result?.state?.count === 42,
+				detail: dead ?? JSON.stringify(dispatched ?? null)
+			}
+		]
+		return { engine, status: checks.every((c) => c.ok) ? 'pass' : 'fail', checks }
+	} finally {
+		await browser.close()
+	}
+}
+
 async function main() {
+	const engines = parseEngines()
 	const server = createServer((_req, res) => {
 		res.setHeader('Content-Type', 'text/html')
 		res.end(HOST_HTML)
 	})
 	await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
-	const port = (server.address() as AddressInfo).port
+	const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
-	const browser = await engines[engine].launch()
-	const page = await browser.newPage()
-	const logs: string[] = []
-	page.on('console', (m: ConsoleMessage) => logs.push(m.text()))
-	page.on('pageerror', (e: Error) => logs.push(`pageerror: ${e.message}`))
-	await page.goto(`http://127.0.0.1:${port}`)
-	await page.waitForTimeout(2500)
-	const log = await page.evaluate(() => (globalThis as unknown as { __log: string[] }).__log)
-	const frames = await page.evaluate(
-		() => (globalThis as unknown as { __frames: Frame[] }).__frames
-	)
-
-	await browser.close()
+	const results: Result[] = []
+	for (const engine of engines) results.push(await runEngine(engine, baseUrl))
 	server.close()
 
-	console.log(`\n=== reducer-frame probe: ${engine} ===`)
-	console.log('log:', JSON.stringify(log))
-	console.log('frames:', JSON.stringify(frames))
-	if (logs.length) console.log('page logs:', logs)
+	const icon = { pass: '✓', fail: '✗', skip: '–' } as const
+	for (const r of results) {
+		console.log(
+			`\n${icon[r.status]} ${r.engine}: ${r.status.toUpperCase()}${r.note ? ` (${r.note})` : ''}`
+		)
+		for (const c of r.checks)
+			console.log(`   ${c.ok ? '✓' : '✗'} ${c.name} ${c.ok ? '' : `— ${c.detail}`}`)
+	}
 
-	const initial = frames.find((f) => f.id === '0')
-	const dispatched = frames.find((f) => f.id === '1')
-	console.log('\n--- verdict ---')
+	const failed = results.filter((r) => r.status === 'fail')
+	const ran = results.filter((r) => r.status !== 'skip')
 	console.log(
-		'classic reducer worker loaded + answered initialState:',
-		initial && initial.result?.count === 7 ? 'YES' : 'NO',
-		JSON.stringify(initial)
+		`\n${failed.length === 0 && ran.length > 0 ? 'PASS' : 'FAIL'}: ${ran.length}/${results.length} engine(s) ran, ${failed.length} failed`
 	)
-	console.log(
-		'reducer dispatch round-trip (41→42):',
-		dispatched && dispatched.result?.state?.count === 42 ? 'YES' : 'NO',
-		JSON.stringify(dispatched)
-	)
+	if (ran.length === 0)
+		console.log('No engines ran — install them: npx playwright install chromium firefox webkit')
+	process.exit(failed.length > 0 || ran.length === 0 ? 1 : 0)
 }
 
 main().catch((e) => {
