@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.1.0...spud-v0.2.0) (2026-07-16)
+
+
+### Features
+
+* **accounts:** Spud AI as the always-on default backend ([c53b468](https://github.com/xiaoxinghu/justfiles/commit/c53b4682acffedba239adb58e4eeb72952b26a5e))
+* **frieren:** add agent summoning ritual ([c93d357](https://github.com/xiaoxinghu/justfiles/commit/c93d3573d2c1940ef2ef01c37ea76d1e786ecaf9))
+* **frieren:** apply namespaced system layout ([1de4220](https://github.com/xiaoxinghu/justfiles/commit/1de4220da277008080725e7978da0681066eec48))
+* **frieren:** clickable sync-status menu with volume resets ([285a5fc](https://github.com/xiaoxinghu/justfiles/commit/285a5fcac7fbce7f0d242fd275b5606e3c63a695))
+* **frieren:** ensure built-ins are installed on every boot ([7026c70](https://github.com/xiaoxinghu/justfiles/commit/7026c70e0fda1d564e4c39d6459bde3fb84518d5))
+* **frieren:** notifications Slice 1 — channel, store, pill sink, dropup center ([85ae0e0](https://github.com/xiaoxinghu/justfiles/commit/85ae0e0c68a39e77bd58fbec7c04514eb952834c))
+* **frieren:** notifications Slice 2 — the notify capability for apps ([fee2800](https://github.com/xiaoxinghu/justfiles/commit/fee2800aeb8bcecedcdb339059ab2f49c36f0aaf))
+* **frieren:** ship app-notes as a built-in ([d8b1148](https://github.com/xiaoxinghu/justfiles/commit/d8b11481eb6728fea42aae56bc0050bce5f6351e))
+* **settings:** add Spud AI provider, drop fastmail ([69cb0da](https://github.com/xiaoxinghu/justfiles/commit/69cb0daea995ba04c47d7a09f08970ef3de3e8b7))
+* **user:** add a user capability and show the signed-in user in Settings ([5207631](https://github.com/xiaoxinghu/justfiles/commit/52076313db6480cdd872133600dead86965dfdc7))
+
+
+### Bug Fixes
+
+* **app-files:** end permanent "Loading…" via runtime scan coalescing ([d027555](https://github.com/xiaoxinghu/justfiles/commit/d0275550361f884f1262889ff037dc138b976f56))
+* **frieren:** don't run notification side effects inside a setState updater ([63d2d14](https://github.com/xiaoxinghu/justfiles/commit/63d2d145b329ece305aff727024744d06f26869e))
+* **frieren:** gate kernel getToken/getUser on Clerk readiness ([780835e](https://github.com/xiaoxinghu/justfiles/commit/780835eed06c374e4158356f7b5ec348a808acfa))
+* **frieren:** keep omnibar presence glow to the border ring ([17d344f](https://github.com/xiaoxinghu/justfiles/commit/17d344fd9d5a50b21c474e86ceab86caa30f29b1))
+* **frieren:** ritual fits the viewport, responds, and wears the bound face ([45ff817](https://github.com/xiaoxinghu/justfiles/commit/45ff8179e7f0c16829a87d469503fd8c57d17cf0))
+* **frieren:** surface the no-AI turn failure in the chat ([610da29](https://github.com/xiaoxinghu/justfiles/commit/610da29f0ef7ea7562dd7a721d4836047661b4fa))
+* **pwa:** prompt-based updates + periodic detection ([8ddac3a](https://github.com/xiaoxinghu/justfiles/commit/8ddac3a9fcd2809100c77f5041d8990a5cf3af10))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.3.0
+
 ## [1.1.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v1.0.2...frieren-v1.1.0) (2026-05-01)
 
 
