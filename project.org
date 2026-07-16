@@ -1,12 +1,14 @@
-* Tasks [0/3]
+* Tasks [0/1]
 
-** TODO should be able to uninstall app
-** TODO streamline design system
+** TODO better Files app
+- [ ] render image
+- [X] add file size to status bar
+- [X] movable spliter
+- [ ] auto-refresh?
+- [ ] do not save file list in state
+- [ ] better file tree, not auto expand on selection
 * Bugs to fix
 
-** TODO refine the interface of packages/agent
-The interface is pretty chaotic, need more elegent interface
-** TODO move onboarding
 * NEXT BIG THINGS
 ** TODO modify builtin apps?
 think about emacs
@@ -14,23 +16,14 @@ think about emacs
 ** TODO notification adv
 [[file:apps/quay/NOTIFICATIONS-PLAN.md][Phase 2 of notification]]
 
-
 ** TODO build tool for app-code to check the code
 finished 1,2,3, quay is working
 
 *** DONE render diagnostics inline in codemirror
 *** DONE relative import doesn't work
 src/gui.tsx:2:26 Cannot find module './app' or its corresponding type declarations. (TS2307)
-** TODO better Files app
-- [ ] render image
-- [X] add file size to status bar
-- [X] movable spliter
-- [ ] auto-refresh?
-- [ ] do not save file list in state
 ** TODO /reboot
 ** TODO better agent states
 
 - streaming messages
 - realtime state of agent (fetching, searching, calling tools etc..)
--
-** TODO better Agent setup

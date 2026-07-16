@@ -45,6 +45,9 @@ Minimum code that solves the problem. No speculative features. No abstractions f
 ## Be Very Stingy on interfaces
 Keep the module surface to the absolutely minimal. think: do we absolutely have to expose this? Only add to interface when it will break the design otherwise.
 
+## Create a worktree
+Once we are ready to make changes to the code, create a branch and a worktree and make changes in there. Unless it's a change to an existing branch, then switch to that worktree. Check whether the branch/worktree exists before creating. Do not change directly on main.
+
 # Building an app
 
 The app should follow this path convention: packages/app-<name>. see existing apps as example.
