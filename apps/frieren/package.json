@@ -4,7 +4,8 @@
 	"version": "0.1.0",
 	"type": "module",
 	"scripts": {
-		"dev": "tsx scripts/seed-store.ts; vite",
+		"predev": "WRANGLER_LOG=error tsx scripts/seed-store.ts",
+		"dev": "vite",
 		"build": "tsc -b && vite build",
 		"build-apps": "turbo run build --filter @justfiles/app-files --filter @justfiles/app-paint --filter @justfiles/app-settings",
 		"lint": "eslint .",

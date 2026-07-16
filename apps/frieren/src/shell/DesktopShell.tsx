@@ -1,5 +1,10 @@
 import { SignInButton, UserButton, useAuth } from '@clerk/clerk-react'
-import { type MouseEvent as ReactMouseEvent, useState, useSyncExternalStore } from 'react'
+import {
+	type MouseEvent as ReactMouseEvent,
+	useEffect,
+	useState,
+	useSyncExternalStore
+} from 'react'
 import { ContextMenu, type ContextMenuItem, useContextMenu } from '@/components/ContextMenu'
 import { Menubar } from '@/components/Menubar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
@@ -29,6 +34,30 @@ const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
 	connecting: '#f59e0b',
 	disconnected: '#ef4444'
+}
+
+// macOS-style menubar clock: short weekday + locale time, next to the avatar.
+function formatClock(): string {
+	return new Date().toLocaleString(undefined, {
+		weekday: 'short',
+		hour: 'numeric',
+		minute: '2-digit'
+	})
+}
+
+function MenubarClock() {
+	const [now, setNow] = useState(formatClock)
+	// Tick every second but re-render only when the minute string changes: setState
+	// with an identical string is a no-op, so we don't need to align to the minute.
+	useEffect(() => {
+		const id = setInterval(() => setNow(formatClock()), 1000)
+		return () => clearInterval(id)
+	}, [])
+	return (
+		<span className="frn-menubar-clock" title="Current date and time">
+			{now}
+		</span>
+	)
 }
 
 function syncLabel(status: SyncStatus): string {
@@ -97,7 +126,7 @@ function sameWindowIds(a: OsWindow[], b: OsWindow[]): boolean {
 export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	const { isSignedIn, getToken } = useAuth()
 	const installedApps = useInstalledApps()
-	const { launchApp, installApp, uninstallApp } = useAppCommands()
+	const { launchApp, uninstallApp } = useAppCommands()
 	const connection = useAgentConnection()
 	const { agentName, refreshIdentity } = useAgentSession()
 	const menu = useContextMenu()
@@ -190,14 +219,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 							style={{ background: statusDotColor[connection.state] }}
 							title={connection.state}
 						/>
-						<button
-							type="button"
-							className="frn-menubar-btn"
-							onClick={() => void installApp()}
-							title="Install app from zip"
-						>
-							Install
-						</button>
+						<MenubarClock />
 						{isSignedIn ? (
 							<UserButton appearance={{ elements: { avatarBox: 'w-6 h-6' } }} />
 						) : (

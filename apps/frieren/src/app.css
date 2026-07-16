@@ -1014,6 +1014,12 @@
 .frn-menubar-btn:hover {
 	background: rgba(255, 255, 255, 0.12);
 }
+/* Menubar clock: quiet, macOS-style; tabular figures keep its width steady. */
+.frn-menubar-clock {
+	color: rgba(255, 255, 255, 0.75);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
 .frn-desktop {
 	position: relative;
 	display: flex;
