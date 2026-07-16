@@ -29,6 +29,7 @@ import { selectFocusedAppId, selectOpenWindows, selectVisibleFullscreenId } from
 import type { OsWindow } from '../os/state'
 import { PersonalizePanel } from '../personalize/PersonalizePanel'
 import { Omnibar } from './Omnibar'
+import { useWallpaper } from './wallpaper'
 
 const statusDotColor: Record<ConnectionState, string> = {
 	ready: '#22c55e',
@@ -138,12 +139,34 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 	)
 	const fullscreenId = useOsStore(selectVisibleFullscreenId)
 	const [personalizeOpen, setPersonalizeOpen] = useState(false)
+	const wallpaper = useWallpaper()
+
+	// Native file picker → wallpaper bytes into the volume; the desktop updates
+	// through the volume watch, same as a write from any other source.
+	const pickWallpaper = () => {
+		const input = document.createElement('input')
+		input.type = 'file'
+		input.accept = 'image/*'
+		input.onchange = () => {
+			const file = input.files?.[0]
+			if (file)
+				wallpaper.set(file).catch((e: unknown) => {
+					alert(e instanceof Error ? e.message : String(e))
+				})
+		}
+		input.click()
+	}
 
 	const desktopMenuItems: ContextMenuItem[] = [
 		{ label: 'Personalize…', onSelect: () => setPersonalizeOpen(true) },
 		{ label: 'Switch User…', onSelect: onSwitchUser },
 		{ separator: true },
-		{ label: 'Change Wallpaper…', disabled: true, onSelect: () => {} },
+		{ label: 'Change Wallpaper…', onSelect: pickWallpaper },
+		{
+			label: 'Remove Wallpaper',
+			disabled: !wallpaper.url,
+			onSelect: () => void wallpaper.clear().catch(() => {})
+		},
 		{ separator: true },
 		{ label: 'Clean Up', disabled: true, onSelect: () => {} }
 	]
@@ -234,7 +257,19 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 			)}
 
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: contextmenu is a supplemental pointer gesture on the desktop region */}
-			<div className="frn-desktop" onContextMenu={(event) => menu.open(event, desktopMenuItems)}>
+			<div
+				className="frn-desktop"
+				style={
+					wallpaper.url
+						? {
+								backgroundImage: `url(${wallpaper.url})`,
+								backgroundSize: 'cover',
+								backgroundPosition: 'center'
+							}
+						: undefined
+				}
+				onContextMenu={(event) => menu.open(event, desktopMenuItems)}
+			>
 				{/* Windows live in their own layer so the desktop can dim + recede behind
 				    the omnibar's expanded sheet without transforming the omnibar itself.
 				    The body is picked by window kind: app windows present their stage,
