@@ -5,6 +5,40 @@
 	width: 100%;
 	background: var(--window-bg);
 	color: var(--text);
+	outline: none;
+}
+/* The bar: list toggle · search-or-create field · New. Bare controls — mac.css
+   styles them; only layout lives here. */
+.notes-bar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--rule);
+	background: var(--surface);
+}
+.notes-bar button[aria-pressed="true"] {
+	background: var(--control-bg-active);
+}
+.notes-search {
+	position: relative;
+	flex: 1;
+	min-width: 0;
+}
+.notes-search input {
+	width: 100%;
+	box-sizing: border-box;
+}
+/* The shortcut hint, Spotlight-style: sits in the field, gone once it's used. */
+.notes-kbd {
+	position: absolute;
+	top: 50%;
+	right: 8px;
+	transform: translateY(-50%);
+	font-size: 11px;
+	opacity: 0.45;
+	pointer-events: none;
 }
 .notes-error {
 	flex: none;
@@ -12,23 +46,44 @@
 	font-size: 12px;
 	color: #b91c1c;
 }
-/* Search bar: a top strip in normal flow, so opening it pushes the editor down
-   onto the same surface (no overlay). Only the results list floats (below). */
-.notes-search {
-	flex: none;
-	padding: 6px 10px;
-	border-bottom: 1px solid var(--rule);
-	background: var(--surface);
-}
-.notes-search input {
-	width: 100%;
-	box-sizing: border-box;
-}
 .notes-body {
 	position: relative;
 	flex: 1;
 	min-height: 0;
 	display: flex;
+}
+/* The docked pane: the same rows as the dropdown, pinned open. It owns the
+   toggle + search (header) and New (footer); the editor side stays bare. */
+.notes-side {
+	flex: none;
+	width: 220px;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	border-right: 1px solid var(--rule);
+	background: var(--surface);
+}
+.notes-side-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--rule);
+}
+.notes-side-foot {
+	flex: none;
+	padding: 6px 8px;
+	border-top: 1px solid var(--rule);
+}
+.notes-side-foot button {
+	width: 100%;
+}
+.notes-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 4px 0;
 }
 .notes-editor {
 	flex: 1;
@@ -40,14 +95,14 @@
 	outline: none;
 	box-shadow: none;
 	background: transparent;
-	color: inherint;
+	color: inherit;
 	padding: 16px 18px;
 	font-family: var(--font-ui);
 	font-size: 14px;
 	line-height: 1.5;
 }
-/* The candidate list is the ONLY thing that overlays the editor — a dropdown
-   anchored under the search bar (top of the editor body). */
+/* The dropdown is the ONLY thing that overlays the editor — anchored under the
+   bar (top of the editor body). */
 .notes-results {
 	position: absolute;
 	top: 0;
@@ -58,18 +113,27 @@
 	overflow-y: auto;
 	border-radius: 0 0 var(--menu-radius) var(--menu-radius);
 }
-.notes-palette-item {
+.notes-item {
 	justify-content: space-between;
 	gap: 12px;
 }
-.notes-palette-mtime {
+.notes-item-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.notes-item[data-open] .notes-item-title {
+	font-weight: 600;
+}
+.notes-item-mtime {
 	font-size: 11px;
 	opacity: 0.5;
+	flex: none;
 }
-.notes-palette-item[data-active="true"] .notes-palette-mtime {
+.notes-item[data-active="true"] .notes-item-mtime {
 	opacity: 0.8;
 }
-.notes-palette-empty {
+.notes-empty {
 	padding: 8px 18px;
 	font-size: 12px;
 	opacity: 0.5;

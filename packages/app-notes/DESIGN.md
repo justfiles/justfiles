@@ -5,8 +5,9 @@ description: A built-in Notes app over a shared /notes knowledge base, with a de
 
 # Notes — a freeform knowledge base shared by the user and the agent
 
-`app-notes` is a built-in (macOS-Notes-style) app: a blank editor, a `Cmd+K` palette over a
-recency-sorted list, debounced autosave, and filenames derived from the first line. Its content lives
+`app-notes` is a built-in (nvAlt-style) app: a blank editor under a single always-visible bar — a
+list toggle, a search-or-create field over a recency-sorted list, and a New button — debounced
+autosave, and filenames derived from the first line. Its content lives
 in a **shared, top-level `/notes`** volume path that the agent reads, searches, and (on request) writes
 — so a single store serves both the human's notes and the agent's "remember / find" loop.
 
@@ -88,7 +89,7 @@ demand (the `app-files` pattern).
 | Lives in **reducer state** (app-session facts) | Lives **outside** reducer state |
 |----|----|
 | `openPath` — which note is shown ("what is the user viewing"); a *pointer*, not a copy of disk | the editor's in-progress text buffer (GUI-local) |
-| `revision` — bumped when the open file changes on disk | `dirty` flag; `Cmd+K` palette open + filter query; cursor / scroll (GUI-local) |
+| `revision` — bumped when the open file changes on disk | `dirty` flag; search dropdown open + filter query + docked-list preference; cursor / scroll (GUI-local) |
 | `error` | **the note list** — derived from `/notes` on demand via `list()`, never cached (see below) |
 
 ```ts
@@ -232,14 +233,26 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
 
 - **Launch = blank editor.** On mount, dispatch `newNote` (guarantees `openPath: null` + an accurate agent
   view). Reopen is always blank — on-brand for capture-first; above-threshold notes are safe (autosaved,
-  one `Cmd+K` away).
+  one search away).
 - **Type** → update local buffer. Debounced (~800ms): if `openPath` → `save({ openPath, text })`; if blank
   scratch and `text.length ≥ threshold` → `create({ text })`, then adopt `openPath` from settled state.
-- **`Cmd+K`** → palette: call `list()` for a fresh listing, filter by query (title contains; content search
-  is later), Enter opens. Re-fetched on every open, so it never shows a stale set. `Cmd+P` stays free for
-  printing. (`Cmd+K` won't clash — plain-text editor has no insert-link.)
-- **`Cmd+N`** → flush-if-dirty, then blank.
-- **Delete** from the palette (delete key) → `remove` (GUI-only).
+- **The bar** (always visible — nothing behind a shortcut): a list toggle, a search-or-create field, and a
+  New button. Focusing the field calls `list()` and drops the recency list down — empty query = everything,
+  newest first; typing filters (title contains; content search is later). Enter opens the top match, or —
+  with no match — creates a note whose first line is the query (the nvAlt move: search and create are one
+  gesture). Esc hops editor → field and back. ☰ docks the same list as a left pane for see-the-list users —
+  and the bar folds into it: ☰ + search become the pane's header, New its footer, so the editor side is
+  pure content. The preference is GUI-local (localStorage where the host allows it; frieren's sandboxed
+  iframe has no `allow-same-origin`, so there it degrades to per-session). The list is re-fetched on every
+  focus/open, so it never shows a stale set.
+- **`Cmd+O` / `Ctrl+O`** → focus the search field (a faint `⌘O` hint sits in the field until first use).
+  `Cmd+K` belongs to the shell omnibar: the app runs in a sandboxed iframe, so keys typed in Notes never
+  reach the shell — binding `Cmd+K` would *shadow* the omnibar whenever Notes has focus. Shortcuts attach
+  to the app root, not `window`, so they fire only when focus is inside the app.
+- **New button / `Cmd+N`** → flush-if-dirty, then blank. Browsers reserve `Cmd+N` (it never reaches the
+  page), so the button and Enter-to-create are the real paths; the key still works on hosts that deliver
+  it (desktop webview).
+- **Delete** (forward-delete in the field) → `remove` (GUI-only).
 - **`revision` bump** (open file changed on disk) → GUI re-reads via `readNote`, so an agent/Files edit to
   the open note shows live.
 
@@ -256,15 +269,15 @@ There is no Notes "look".
   §9), scoped under a root class, using `var(--window-bg)`, `var(--text)`, `var(--rule)`, `var(--focus)`,
   `var(--space)`, `--font-ui`, `--text-ui`, … This is also how the app gets **dark mode for free** — the
   tokens re-point under `prefers-color-scheme: dark`; a single hardcoded colour breaks that.
-- **Reuse `ds-*` where it already fits.** The `Cmd+K` palette's result rows are exactly a menu list —
+- **Reuse `ds-*` where it already fits.** The search dropdown's result rows are exactly a menu list —
   render them as `.ds-menu` / `.ds-menu-item`, which already carry the macOS selection highlight
   (`--focus` / `--on-focus`), hover/active, and dark mode. An optional File menu is the `menu` named export
   (app.md §9); the host renders it via `.ds-menubar` / `.ds-menu`, so it matches every other app.
 - **Promote, don't fork.** If Notes needs a primitive the system lacks, add it to `packages/design`, not to
   `app-notes`. The clear candidate is a **command/search palette** (floating panel + filter input +
   keyboard-navigable, selectable list): the `Cmd+K` palette here, the launcher's fuzzy app search, and the
-  slash-command menu are the same affordance. Promote it to a `ds-palette` (composed from the existing
-  `ds-menu` rows) once there's a second consumer. Rule of thumb: **system-level look → `packages/design`;
+  slash-command menu are the same affordance — here it is the bar's search field + dropdown. Promote it
+  to a `ds-palette` (composed from the existing `ds-menu` rows) once there's a second consumer. Rule of thumb: **system-level look → `packages/design`;
   only Notes-specific layout (the editor/list split) stays local.**
 
 <a id="agent"></a>
@@ -280,8 +293,8 @@ The agent has **two channels**, by design — keep them distinct:
    the *app as a surface* flows.
 
 Because the app **watches the open file**, an agent edit to the note the user is *currently viewing*
-re-reads live (a `revision` bump). Writes to *other* notes need no pushing — the palette re-reads `/notes`
-fresh on every open, so they appear the next time the user looks. So the agent rarely drives the app to
+re-reads live (a `revision` bump). Writes to *other* notes need no pushing — the list re-reads `/notes`
+fresh on every focus/open, so they appear the next time the user looks. So the agent rarely drives the app to
 *create* a note; it writes the file and the app reflects it. The action unique to the TUI is **`open`** —
 focusing a specific note in the user's window, which a file write can't do.
 
@@ -302,7 +315,8 @@ surface below. `description` + `examples` are its UI — written above.
 
 ## 7 · v1 scope & non-goals
 
-**In:** blank editor; `Cmd+K` palette + recency list (derived) + title filter; debounced autosave +
+**In:** blank editor; the bar (search-or-create + docked-list toggle + New) + recency list (derived) +
+title filter; debounced autosave +
 flush-on-transition; slug filenames; create/open/save/rename/delete; live re-read of the open note on
 external edits; the agent TUI above.
 
@@ -310,7 +324,7 @@ external edits; the agent TUI above.
 
 - **Folder navigation.** v1 is a flat recency list + filter; the filesystem under `/notes` stays freeform,
   so Files/agent can make folders and folder-nav can land later with no migration.
-- **AI filenames** (slug only); **content search** in the palette (title only); **rich text / tags / links
+- **AI filenames** (slug only); **content search** in the search field (title only); **rich text / tags / links
   UI**; **resume-where-you-left-off** (always-blank reopen is intentional).
 
 Tolerate old persisted shapes (docs/app.md §3): new `Note`/`State` fields must be optional — `init` is not
