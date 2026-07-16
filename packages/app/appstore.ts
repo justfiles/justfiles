@@ -58,10 +58,11 @@ export interface AppStore {
 // it stays off every bundle-listing surface (see `hidden` in kernel.ts).
 const INSTALL_HASH_PATH = '.apphash'
 
-// First-run seeding: install every built-in that isn't already installed. The
-// ONLY path that installs a missing built-in — `reconcile` never does, so a
-// built-in the user deleted stays gone. Callers decide WHEN to seed (e.g. only
-// into an empty volume / genuinely new account).
+// Ensure the built-in set is present: install every built-in that isn't already
+// installed. The ONLY path that installs a missing built-in — `reconcile` never
+// does (it only updates what's installed). Idempotent, so callers run it to keep
+// the built-ins present: each boot (a newly-shipped built-in then lands for
+// existing volumes, not just empty ones) or once on first run.
 export async function materialise(kernel: Kernel, store: AppStore): Promise<void> {
 	const installed = new Set((await kernel.list()).map((m) => m.id))
 	for (const app of await store.builtins()) {

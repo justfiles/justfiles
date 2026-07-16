@@ -3,17 +3,13 @@ import { materialise, reconcile } from '@justfiles/app/appstore'
 import type { Volume } from '@justfiles/fs'
 import { bootAppStore } from '../../shared/appstore'
 
-// Per-replica marker: this replica has already run its one-time built-in seed.
-// Under `/.state/**` so it never crosses the wire — a synced marker would
-// reintroduce the two-authority fork this change removes.
-const MATERIALISED_MARKER = '/.state/materialised'
-
-// The client is the single materialiser of built-in apps: seed once per replica,
-// then reconcile installed apps on every boot. `materialise` runs at most once and
-// only into an empty volume; the marker keeps it from re-running (a returning user
-// with a pre-marker non-empty volume isn't re-seeded). `reconcile` is monotonic +
-// idempotent, applied via this client kernel and synced up — the server never
-// materialises.
+// The client is the single materialiser of built-in apps. On every boot it makes
+// the volume match the release: `materialise` installs any built-in that's
+// missing — so a newly-shipped built-in lands for existing users, not just
+// empty-volume first boots — and `reconcile` updates the ones already installed.
+// Both are idempotent (materialise only installs what's absent; reconcile is
+// monotonic), so re-running each boot is cheap when nothing changed. Applied via
+// this client kernel and synced up — the server never materialises.
 export async function seedBuiltins(
 	kernel: Kernel,
 	fs: Volume,
@@ -21,19 +17,12 @@ export async function seedBuiltins(
 ): Promise<void> {
 	const store = await bootAppStore((path) => fetch(path))
 	if (!store) return
-	if (!(await fs.exists(MATERIALISED_MARKER))) {
-		// On a synced profile, block on the first bootstrap so the emptiness check
-		// below reflects the account's real state.
-		await opts.waitForBootstrap?.()
-		if ((await kernel.list()).length === 0) await materialise(kernel, store)
-		await mark(fs)
-	}
+	// A synced profile blocks on the first bootstrap so a built-in that's about to
+	// sync down isn't redundantly installed (and a fresh replica doesn't seed the
+	// whole set before its apps arrive). Local-only profiles have no bootstrap.
+	await opts.waitForBootstrap?.()
+	await materialise(kernel, store)
 	await reconcile(kernel, fs, store)
-}
-
-async function mark(fs: Volume): Promise<void> {
-	await fs.mkdir('/.state', { recursive: true })
-	await fs.writeFile(MATERIALISED_MARKER, new Uint8Array([49]))
 }
 
 // Re-run the update pass when the `/applications` tree changes — a synced-down

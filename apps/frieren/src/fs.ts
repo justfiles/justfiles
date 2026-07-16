@@ -340,8 +340,7 @@ function deleteIdb(name: string): Promise<void> {
 		// Resolve only once the delete TRULY completes. Resolving on `onblocked` (the
 		// previous behaviour) let the caller's `location.reload()` race ahead and abort
 		// the still-pending delete, so the local replica survived a factory reset — its
-		// `/.state/materialised` marker then suppressed re-materialisation (empty desktop)
-		// and its stale sync state stalled the next bootstrap. `releaseFsVolume`'s
+		// stale sync state then stalled the next bootstrap. `releaseFsVolume`'s
 		// destroy() already closed the connection, so a transient block clears itself.
 		req.onsuccess = req.onerror = () => resolve()
 		req.onblocked = () =>
@@ -375,9 +374,9 @@ export async function resetTakeMine(): Promise<void> {
 }
 
 // "Factory reset" — wipe server + local, then reseed built-ins. A synced profile
-// wipes the server first; both paths delete local IDB (dropping the materialised
-// marker) and reload, so `seedBuiltins` re-materialises the built-ins against the
-// now-empty server and pushes them as the new baseline.
+// wipes the server first; both paths delete local IDB and reload, so `seedBuiltins`
+// re-materialises the built-ins against the now-empty server and pushes them as
+// the new baseline.
 export async function factoryReset(getToken: GetToken): Promise<void> {
 	const prev = active
 	if (!prev) return
