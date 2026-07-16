@@ -251,14 +251,12 @@ export function Omnibar({
 	// The bell toggles the center; opening it marks history seen (clears the badge)
 	// and focuses the input so a blur/Esc collapses it like any other sheet mode.
 	const openNotifications = () => {
-		setShowNotifications((open) => {
-			const next = !open
-			if (next) {
-				notificationStore.markSeen()
-				inputRef.current?.focus()
-			} else inputRef.current?.blur()
-			return next
-		})
+		const next = !showNotifications
+		setShowNotifications(next)
+		if (next) {
+			notificationStore.markSeen()
+			inputRef.current?.focus()
+		} else inputRef.current?.blur()
 	}
 
 	// Presence and notifications are one model. The pill surfaces the single active
