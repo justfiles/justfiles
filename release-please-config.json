@@ -4,9 +4,6 @@
 			"release-type": "node",
 			"package-name": "@justfiles/cli"
 		},
-		"apps/worker": {
-			"release-type": "node"
-		},
 		"apps/frieren": {
 			"release-type": "node",
 			"component": "spud"
@@ -17,7 +14,8 @@
 		},
 		"packages/app-code": {
 			"release-type": "node",
-			"package-name": "@spud-computer/code"
+			"package-name": "@spud-computer/code",
+			"bump-minor-pre-major": true
 		}
 	},
 	"plugins": ["node-workspace"]
