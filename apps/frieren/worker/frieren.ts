@@ -367,7 +367,11 @@ export class Frieren extends DurableObject<Env> {
 		const upgradeHeader = request.headers.get('Upgrade')
 		if (upgradeHeader === 'websocket') {
 			const appRoute = new URL(request.url).pathname.match(/^\/api\/apps\/([^/]+)\/ws$/)
-			if (appRoute) return this.requireApps().acceptWebSocket(appRoute[1])
+			if (appRoute)
+				return this.requireApps().acceptWebSocket(
+					appRoute[1],
+					request.headers.get('Sec-WebSocket-Protocol')
+				)
 
 			// Agent is long-lived — transformContext re-reads soul.md every turn,
 			// so there is no need to recreate the agent on reconnect.
