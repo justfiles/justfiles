@@ -1,5 +1,6 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI } from '@justfiles/app/browser'
+import type { FileTreeBatchOperation } from '@pierre/trees'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -195,6 +196,54 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 // re-add the slash when a selection comes back.
 const stripSlash = (path: string) => path.replace(/^\/+/, '')
 
+type FileTreeModel = ReturnType<typeof useFileTree>['model']
+
+// Canonical ancestor directory paths of a file, shallowest first, each with a
+// trailing slash: `a/b/c.ts` → [`a/`, `a/b/`]. Root-level files have none.
+function ancestorDirs(path: string): string[] {
+	const dirs: string[] = []
+	for (let i = path.indexOf('/'); i !== -1; i = path.indexOf('/', i + 1))
+		dirs.push(path.slice(0, i + 1))
+	return dirs
+}
+
+// Parent of a canonical directory path (`a/b/` → `a/`; `a/` → ``).
+function parentDir(dir: string): string {
+	const cut = dir.lastIndexOf('/', dir.length - 2)
+	return cut === -1 ? '' : dir.slice(0, cut + 1)
+}
+
+// Reconcile the tree from the `prev` file-path set to `next` using the
+// incremental mutation API instead of a whole-tree `resetPaths`. This preserves
+// expansion + selection (a coarse reset re-applies `initialExpansion: 'open'`)
+// and only rebuilds touched nodes, so it is also cheaper on large trees. The
+// tree derives directories from file paths: `add` recreates missing ancestors,
+// but `remove` leaves an emptied ancestor behind as an explicit row — so prune
+// the shallowest now-stale dir per branch (a recursive remove takes the rest).
+function applyPathDiff(model: FileTreeModel, prev: string[], next: string[]): void {
+	const prevSet = new Set(prev)
+	const nextSet = new Set(next)
+	const added = next.filter((path) => !prevSet.has(path))
+	const removed = prev.filter((path) => !nextSet.has(path))
+	if (added.length === 0 && removed.length === 0) return
+
+	// Directories still backed by a file in `next`; any removed-file ancestor
+	// missing from this set is now empty and must go.
+	const neededDirs = new Set<string>()
+	for (const file of next) for (const dir of ancestorDirs(file)) neededDirs.add(dir)
+	const staleDirs = new Set<string>()
+	for (const file of removed)
+		for (const dir of ancestorDirs(file)) if (!neededDirs.has(dir)) staleDirs.add(dir)
+	const removeDirs = [...staleDirs].filter((dir) => !staleDirs.has(parentDir(dir)))
+
+	const ops: FileTreeBatchOperation[] = []
+	for (const dir of removeDirs) ops.push({ type: 'remove', path: dir, recursive: true })
+	for (const file of removed)
+		if (!removeDirs.some((dir) => file.startsWith(dir))) ops.push({ type: 'remove', path: file })
+	for (const file of added) ops.push({ type: 'add', path: file })
+	model.batch(ops)
+}
+
 function FilesTree(props: {
 	files: string[]
 	selectedPath: string | null
@@ -202,7 +251,15 @@ function FilesTree(props: {
 }) {
 	const latest = useRef(props)
 	latest.current = props
-	const paths = useMemo(() => props.files.map(stripSlash), [props.files])
+	// State reaches this GUI across a structured-clone boundary (the host pushes it
+	// via postMessage — see apps/frieren gui-channel.ts), so `props.files` is a
+	// FRESH array on every push, even a plain selection that changes nothing about
+	// the file set. Key `paths` on the SET's value, not the array identity, so the
+	// reconcile effect below fires only when files are truly added/removed — never
+	// on a selection — and expansion state is left untouched in the common case.
+	const pathsKey = props.files.join('\n')
+	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — recompute only when the path set changes by value (pathsKey), not on every structured-clone push (see above).
+	const paths = useMemo(() => props.files.map(stripSlash), [pathsKey])
 	const selectedPath = props.selectedPath ? stripSlash(props.selectedPath) : null
 
 	const { model } = useFileTree({
@@ -219,8 +276,14 @@ function FilesTree(props: {
 		}
 	})
 
+	// The model is created (by useFileTree) with the initial `paths`; seed `prev`
+	// to null so the first run is a no-op, then reconcile each later set change
+	// incrementally instead of rebuilding the whole tree.
+	const prevPaths = useRef<string[] | null>(null)
 	useEffect(() => {
-		model.resetPaths(paths)
+		const prev = prevPaths.current
+		prevPaths.current = paths
+		if (prev) applyPathDiff(model, prev, paths)
 	}, [model, paths])
 
 	useEffect(() => {
