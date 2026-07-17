@@ -1,6 +1,7 @@
 import { verifyToken } from '@clerk/backend'
 import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
+import { bearerFromProtocolHeader } from '../shared/caps-ws.ts'
 import { runIndexer, serveCommunityCatalog } from './appstore/feed.ts'
 
 export { Frieren } from './frieren.ts'
@@ -19,12 +20,18 @@ const forwardToFrieren = (c: Ctx, userId: string) =>
 const app = new Hono<WorkerEnv>()
 
 // Browsers can't set Authorization on a WS handshake, and Clerk cookie auth
-// needs a handshake redirect a WS upgrade can't follow — so WS auth rides a
-// `?token=` query param verified here, before clerkMiddleware. Forwarding
-// `c.req.raw` preserves the path so the DO routes agent (`/ws`) vs. the shared
-// capability-proxy socket (`/api/apps/_caps/ws`).
+// needs a handshake redirect a WS upgrade can't follow — so WS auth rides the
+// handshake. The capability socket (`_caps`) sends the Clerk token as a
+// `bearer.<token>` WebSocket subprotocol, keeping it out of the URL where query
+// strings leak into proxy/access logs and browser history; the agent socket
+// (`/ws`) still uses `?token=`. Read whichever is present, before
+// clerkMiddleware. Forwarding `c.req.raw` preserves the path so the DO routes
+// agent (`/ws`) vs. the shared capability-proxy socket (`/api/apps/_caps/ws`).
+const wsToken = (req: Request): string | null =>
+	bearerFromProtocolHeader(req.headers.get('Sec-WebSocket-Protocol')) ??
+	new URL(req.url).searchParams.get('token')
 const tokenWs = async (c: Ctx) => {
-	const token = new URL(c.req.url).searchParams.get('token')
+	const token = wsToken(c.req.raw)
 	if (!token) return new Response('Unauthorized', { status: 401 })
 	try {
 		const { sub } = await verifyToken(token, { secretKey: requireClerkSecret(c.env) })

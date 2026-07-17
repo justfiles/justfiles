@@ -10,6 +10,7 @@ import {
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { appFileUrl } from '../shared/appstore.ts'
+import { CAPS_WS_SUBPROTOCOL } from '../shared/caps-ws.ts'
 import { aiCapability } from './ai.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 
@@ -217,7 +218,16 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		acceptedThisInstance.add(server)
 		// Subscribe so the agent's server-side writes nudge this tab to pull.
 		ensureSubscribed()
-		return new Response(null, { status: 101, webSocket: client })
+		// Echo the negotiated subprotocol: the browser opens this socket offering
+		// `[CAPS_WS_SUBPROTOCOL, bearer.<token>]` (the token rides the handshake, not
+		// the URL). A client that offers subprotocols expects the server to select
+		// one — the `ws`-based dev bridge rejects the handshake otherwise — so echo
+		// the marker back, never the token.
+		return new Response(null, {
+			status: 101,
+			webSocket: client,
+			headers: { 'Sec-WebSocket-Protocol': CAPS_WS_SUBPROTOCOL }
+		})
 	}
 
 	// `appId` is undefined for the shared caps socket — the target app id rides
