@@ -353,6 +353,9 @@ const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'state', 'system']
 // Copied subtree: user data + personalized identity only — never the sync
 // journal, platform accounts, app bytes, or per-app UI state.
 const MIGRATE_SKIP = ['/.state', '/system/accounts', '/applications', '/state']
+// The two identity files the DO seeds as `seeded: true` defaults — the only paths
+// a migration is allowed to overwrite (with the user's personalized version).
+const IDENTITY_PATHS = new Set([SOUL_PATH, PROFILE_PATH])
 
 // The anonymous (signed-out) profile's DB name, resolved WITHOUT touching
 // lastOpenedAt — this is a read-only migration source, not a profile switch.
@@ -465,14 +468,31 @@ export function migrateLocalProfileInto(): Promise<void> {
 }
 
 // fullScan is BFS, so `scan` visits a directory before its contents — mkdir the
-// dir, then writeFile children into it.
+// dir, then writeFile children into it. Per-path conflict policy: the offer is
+// non-blocking, so between the freshness check and confirmation the account can
+// gain content (the user makes a note; another device syncs one in). So NEVER
+// clobber an existing destination path — the one exception is replacing the
+// account's still-seeded identity default with the user's personalized soul/
+// profile, which is the whole point of migrating identity.
 async function copyUserData(src: Volume, dst: Volume): Promise<void> {
 	const skip = (p: string) => MIGRATE_SKIP.some((s) => p === s || p.startsWith(`${s}/`))
 	await src.scan('/', async (path, stat) => {
 		if (path === '/' || skip(path)) return
-		if (stat.type === FileType.Directory) await dst.mkdir(path, { recursive: true }).catch(() => {})
-		else if (stat.type === FileType.Regular) await dst.writeFile(path, await src.readFile(path))
+		if (stat.type === FileType.Directory) {
+			await dst.mkdir(path, { recursive: true }).catch(() => {})
+			return
+		}
+		if (stat.type !== FileType.Regular) return
+		if ((await dst.exists(path)) && !(await replacesSeededIdentity(src, dst, path))) return
+		await dst.writeFile(path, await src.readFile(path))
 	})
+}
+
+// True only for an identity file whose account copy is still the seeded default
+// and whose local copy the user personalized — the sole allowed overwrite.
+async function replacesSeededIdentity(src: Volume, dst: Volume, path: string): Promise<boolean> {
+	if (!IDENTITY_PATHS.has(path)) return false
+	return (await isPersonalized(src, path)) && !(await isPersonalized(dst, path))
 }
 
 function deleteIdb(name: string): Promise<void> {
