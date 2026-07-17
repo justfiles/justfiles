@@ -427,11 +427,9 @@ export async function shouldOfferMigration(): Promise<boolean> {
 	}
 }
 
-function recordMigration(outcome: 'migrated' | 'dismissed'): void {
-	const acct = active
-	if (!acct?.remoteUserId) return
+function recordMigration(profileId: string, outcome: 'migrated' | 'dismissed'): void {
 	const profiles = readRegistry()
-	const entry = profiles.find((p) => p.id === acct.profileId)
+	const entry = profiles.find((p) => p.id === profileId)
 	if (!entry) return
 	entry.migration = outcome
 	writeRegistry(profiles)
@@ -439,7 +437,7 @@ function recordMigration(outcome: 'migrated' | 'dismissed'): void {
 
 // Record "start fresh" — never offer this account again.
 export function dismissMigration(): void {
-	recordMigration('dismissed')
+	if (active?.remoteUserId) recordMigration(active.profileId, 'dismissed')
 }
 
 let migrating: Promise<void> | null = null
@@ -457,8 +455,11 @@ export function migrateLocalProfileInto(): Promise<void> {
 		const source = openLocalSource()
 		try {
 			await copyUserData(source.volume, acct.volume)
-			recordMigration('migrated')
-			flushActiveVolume()
+			// Record + flush against the CAPTURED account, not the current `active`: the
+			// user can switch profiles during a long copy, and both the decision flag and
+			// the flush must land on the account that actually received the files.
+			recordMigration(acct.profileId, 'migrated')
+			await acct.sync?.flush().catch(() => {})
 		} finally {
 			source.destroy()
 			migrating = null
