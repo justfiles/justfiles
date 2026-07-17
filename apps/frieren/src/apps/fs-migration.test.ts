@@ -246,6 +246,52 @@ describe('local → account migration', () => {
 		expect(dec.decode(await (await accountVolume()).readFile('/notes/a.txt'))).toBe('note body')
 	})
 
+	test('does not clobber account content created/synced after the offer', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		await seedProfile('local', { '/notes/a.txt': 'local-a', '/notes/b.txt': 'local-b' })
+		await attach(fs)
+		// The account gains a file at the same path after the offer was shown.
+		await seedProfile('account-profile', { '/notes/a.txt': 'account-a' })
+
+		await fs.migrateLocalProfileInto()
+
+		const vol = await accountVolume()
+		expect(dec.decode(await vol.readFile('/notes/a.txt'))).toBe('account-a') // preserved
+		expect(dec.decode(await vol.readFile('/notes/b.txt'))).toBe('local-b') // brought over
+	})
+
+	test('replaces a seeded account identity with the personalized local one', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		await seedProfile('local', {
+			'/system/agents/main/soul.md': '---\nagent_name: Custom\n---\npersonalized\n'
+		})
+		await attach(fs)
+		await seedProfile('account-profile', { '/system/agents/main/soul.md': SEEDED_SOUL })
+
+		await fs.migrateLocalProfileInto()
+
+		expect(
+			dec.decode(await (await accountVolume()).readFile('/system/agents/main/soul.md'))
+		).toContain('personalized')
+	})
+
+	test('keeps a personalized account identity over the local one', async () => {
+		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
+		await seedProfile('local', {
+			'/system/agents/main/soul.md': '---\nagent_name: Local\n---\nlocal soul\n'
+		})
+		await attach(fs)
+		await seedProfile('account-profile', {
+			'/system/agents/main/soul.md': '---\nagent_name: Account\n---\naccount soul\n'
+		})
+
+		await fs.migrateLocalProfileInto()
+
+		expect(
+			dec.decode(await (await accountVolume()).readFile('/system/agents/main/soul.md'))
+		).toContain('account soul')
+	})
+
 	test('migrate records the decision so the offer never repeats', async () => {
 		const { fs, data } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
 		await seedProfile('local', { '/notes/a.txt': 'hi' })
