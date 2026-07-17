@@ -9,6 +9,7 @@ import {
 	DownloadSimpleIcon,
 	MagnifyingGlassIcon,
 	SparkleIcon,
+	StorefrontIcon,
 	TrashIcon
 } from '@phosphor-icons/react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
@@ -124,6 +125,11 @@ export function Omnibar({
 	// active banner's dismiss timer.
 	const [showNotifications, setShowNotifications] = useState(false)
 	const [bannerHovered, setBannerHovered] = useState(false)
+	// Store-browse mode: the empty-focused grid's "App Store" tile flips the sheet
+	// into a discovery list of not-installed catalog apps — this is where "browse
+	// all apps" lives (design/01-omnibar.md open question). Transient like the rest
+	// of the sheet: blur, Esc, or typing a query leaves it.
+	const [browseStore, setBrowseStore] = useState(false)
 	const inputRef = useRef<HTMLInputElement>(null)
 
 	const text = query.trim()
@@ -135,17 +141,22 @@ export function Omnibar({
 	// Both only appear while searching, alongside the app matches.
 	const installedById = useMemo(() => new Map(apps.map((a) => [a.id, a])), [apps])
 	const installingById = useMemo(() => new Map(installing.map((a) => [a.id, a])), [installing])
+	// Catalog apps not already installed/installing — the discovery candidates,
+	// shared by the store tile's visibility and browse mode's list.
+	const storeCandidates = useMemo(
+		() => catalog.filter((a) => !installedById.has(a.id) && !installingById.has(a.id)),
+		[catalog, installedById, installingById]
+	)
+	// Browse holds while the input is empty; the list shows the not-installed
+	// catalog apps (or an all-installed empty state). The tile stays discoverable in
+	// the grid regardless, so the store is reachable even after installing them all.
+	const browsing = browseStore && text === ''
 	const storeMatches = useMemo(
 		() =>
-			text === ''
+			text === '' && !browsing
 				? []
-				: catalog.filter(
-						(a) =>
-							!installedById.has(a.id) &&
-							!installingById.has(a.id) &&
-							matchesQuery(text, a.name, a.id, a.description)
-					),
-		[catalog, text, installedById, installingById]
+				: storeCandidates.filter((a) => matchesQuery(text, a.name, a.id, a.description)),
+		[storeCandidates, text, browsing]
 	)
 	const heldUpdates = useMemo(
 		() =>
@@ -169,16 +180,24 @@ export function Omnibar({
 	// matches up top, the best match just above the pinned "Ask Frieren" row, which
 	// sits directly above the input as the universal fall-through.
 	const rows = useMemo<Row[]>(
-		() => [
-			...storeMatches.map((app): Row => ({ kind: 'store', app })),
-			...heldUpdates.map((app): Row => ({ kind: 'update', app })),
-			...matches.map((app): Row => ({ kind: 'app', app })).reverse(),
-			{ kind: 'ask' }
-		],
-		[matches, storeMatches, heldUpdates]
+		() =>
+			browsing
+				? storeMatches.map((app): Row => ({ kind: 'store', app }))
+				: [
+						...storeMatches.map((app): Row => ({ kind: 'store', app })),
+						...heldUpdates.map((app): Row => ({ kind: 'update', app })),
+						...matches.map((app): Row => ({ kind: 'app', app })).reverse(),
+						{ kind: 'ask' }
+					],
+		[matches, storeMatches, heldUpdates, browsing]
 	)
-	// Default target: the best app match when something matched, else "Ask Frieren".
-	const defaultIndex = matches.length ? rows.length - 2 : rows.length - 1
+	// Default target: in browse mode the bottom row (nearest the input); otherwise
+	// the best app match when something matched, else "Ask Frieren".
+	const defaultIndex = browsing
+		? Math.max(0, rows.length - 1)
+		: matches.length
+			? rows.length - 2
+			: rows.length - 1
 	const selected = pinned === null ? defaultIndex : Math.min(pinned, rows.length - 1)
 
 	// Coexistence rule: while the conversation window is open, the sheet stays in
@@ -206,7 +225,7 @@ export function Omnibar({
 	const expanded =
 		focused || showNotifications || (chatOpen && session.isStreaming && !agentWindowOpen)
 	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
-	const showList = text !== '' && !showTranscript
+	const showList = (text !== '' || browsing) && !showTranscript
 
 	// Cap the sheet to the last few exchanges; the window is where the full
 	// history is read.
@@ -342,7 +361,7 @@ export function Omnibar({
 
 	const submit = (event: React.FormEvent) => {
 		event.preventDefault()
-		if (text === '') return
+		if (text === '' && !browsing) return
 		run(selected)
 	}
 
@@ -371,12 +390,13 @@ export function Omnibar({
 	const onKeyDown = (event: React.KeyboardEvent) => {
 		if (event.key === 'Escape') {
 			if (showNotifications) setShowNotifications(false)
+			else if (browseStore) setBrowseStore(false)
 			else if (text !== '') setQuery('')
 			else if (chatOpen) setChatOpen(false)
 			else inputRef.current?.blur()
 			return
 		}
-		if (text === '') return
+		if (text === '' && !browsing) return
 		if (event.key === 'ArrowUp') {
 			event.preventDefault()
 			setPinned(Math.max(0, selected - 1))
@@ -488,6 +508,9 @@ export function Omnibar({
 						</div>
 					) : showList ? (
 						<ul className="frn-omnibar-list">
+							{browsing && rows.length === 0 ? (
+								<li className="frn-omnibar-center-empty">You've installed every App Store app.</li>
+							) : null}
 							{rows.map((row, index) => {
 								const isSelected = index === selected
 								if (row.kind === 'app') {
@@ -592,7 +615,7 @@ export function Omnibar({
 								)
 							})}
 						</ul>
-					) : apps.length > 0 || installing.length > 0 ? (
+					) : apps.length > 0 || installing.length > 0 || catalog.length > 0 ? (
 						<div className="frn-omnibar-grid">
 							{apps.map((app) => (
 								<button
@@ -636,6 +659,20 @@ export function Omnibar({
 										<span className="frn-omnibar-tile-name">{app.name}</span>
 									</div>
 								))}
+							{catalog.length > 0 ? (
+								<button
+									type="button"
+									className="frn-omnibar-tile"
+									data-store="true"
+									title="Browse the App Store"
+									onClick={() => setBrowseStore(true)}
+								>
+									<span className="frn-omnibar-icon">
+										<StorefrontIcon />
+									</span>
+									<span className="frn-omnibar-tile-name">App Store</span>
+								</button>
+							) : null}
 						</div>
 					) : null}
 				</div>
@@ -649,6 +686,7 @@ export function Omnibar({
 						setQuery(event.currentTarget.value)
 						setPinned(null)
 						setShowNotifications(false)
+						setBrowseStore(false)
 					}}
 					onFocus={() => {
 						setFocused(true)
@@ -666,6 +704,7 @@ export function Omnibar({
 					onBlur={() => {
 						setFocused(false)
 						setShowNotifications(false)
+						setBrowseStore(false)
 					}}
 					onKeyDown={onKeyDown}
 					placeholder={placeholder}

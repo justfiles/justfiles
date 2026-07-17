@@ -405,9 +405,15 @@ with the same ranking / pinned-default rules.
   the omnibar *is* the agent surface (Change 3), with an expand-to-window escape
   hatch for long conversations.
 - Voice input: same routing, different door — in scope later or never?
-- Where does "browse all apps" live — the omnibar's **idle grid**, or app icons on
-  the desktop surface itself? (Leaning: omnibar grid, to keep the desktop clean
-  and the omnibar the single home.)
+- ~~Where does "browse all apps" live — the omnibar's **idle grid**, or app icons on
+  the desktop surface itself?~~ **Decided: omnibar grid.** The focused-empty grid
+  gains an **App Store** tile (shown whenever the catalog is non-empty)
+  that flips the sheet into a browse list of not-installed catalog apps, reusing
+  the store-row renderer and the existing consent-install path. The tile stays in
+  the grid whenever the catalog exists — even after every app is installed (browse
+  then shows an all-installed empty state). Keeps the desktop
+  clean and the omnibar the single home; a menubar/desktop entry was rejected as
+  system chrome, not intent.
 - Does the persistent bar host **status** too (sync/connection, currently in the
   menubar), or stay purely an input? (*Partially decided by v1.2: agent
   presence lives on the pill. **Notifications decided** — the pill is the

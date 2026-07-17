@@ -1274,6 +1274,16 @@
 	border-top-color: var(--text);
 	animation: frn-spin 0.8s linear infinite;
 }
+/* Store-browse tile: the discovery entry point in the idle grid. Tinted with the
+   accent so it reads as a destination, not another installed app. */
+.frn-omnibar-tile[data-store] .frn-omnibar-icon {
+	background: linear-gradient(
+		145deg,
+		color-mix(in srgb, var(--focus) 55%, transparent),
+		color-mix(in srgb, var(--focus) 20%, transparent)
+	);
+	color: var(--text);
+}
 .frn-omnibar-icon-sm {
 	width: 26px;
 	height: 26px;
