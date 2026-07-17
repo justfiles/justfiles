@@ -48,9 +48,6 @@ jobs:
             echo "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }} will be published"
           fi
 
-      - uses: oven-sh/setup-bun@v2
-        if: steps.npm.outputs.should_publish == 'true'
-
       - run: pnpm install --frozen-lockfile
         if: steps.npm.outputs.should_publish == 'true'
 
