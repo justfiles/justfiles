@@ -14,6 +14,7 @@ import { type GetUser, userCapability } from '@justfiles/app/capabilities/user/h
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
+import { capsWsProtocols } from '../../shared/caps-ws.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
 import { flushActiveVolume } from '../fs.ts'
 import { notificationStore } from '../notifications/store.ts'
@@ -192,8 +193,13 @@ async function openAuthedWs(getToken: GetToken): Promise<WebSocket> {
 	const token = await getToken()
 	if (!token) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'capabilities', 'connect')
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+	// The token rides a `bearer.<token>` WebSocket subprotocol, not the URL query
+	// string: query-string credentials leak into proxy/access logs and browser
+	// history in a way handshake header values do not. The server reads it back
+	// from `Sec-WebSocket-Protocol` (see worker/index.ts `tokenWs`).
 	const ws = new WebSocket(
-		`${protocol}//${window.location.host}/api/apps/_caps/ws?token=${encodeURIComponent(token)}`
+		`${protocol}//${window.location.host}/api/apps/_caps/ws`,
+		capsWsProtocols(token)
 	)
 	sharedWs = ws
 	await new Promise<void>((resolve, reject) => {
