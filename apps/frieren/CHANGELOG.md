@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.2.0...spud-v0.3.0) (2026-07-17)
+
+
+### Features
+
+* **frieren:** App Store tile in the omnibar grid for store discovery ([04e4795](https://github.com/xiaoxinghu/justfiles/commit/04e4795b9a4b94fa26cb4f6d77d4b85b875e03f2))
+* **frieren:** custom desktop wallpaper from the volume ([a663a6c](https://github.com/xiaoxinghu/justfiles/commit/a663a6cadbbf3bd763381bc59cf1bc03bf7e9f84))
+* **frieren:** local→account migration core (fs.ts) ([64fa430](https://github.com/xiaoxinghu/justfiles/commit/64fa43015f3d006b9a1b5ce59e7eb9c6de0234cc))
+* **frieren:** surface local→account migration offer in the omnibar ([7b7fe20](https://github.com/xiaoxinghu/justfiles/commit/7b7fe209b2428e5d2c0a785b9bba2abab0d5f4b8))
+
+
+### Bug Fixes
+
+* **frieren:** don't clobber account content added after the migration offer ([8201fb5](https://github.com/xiaoxinghu/justfiles/commit/8201fb52e1aafe4459baffc41ca3a4c3cfe51509))
+* **frieren:** target captured account on migrate; refresh identity after copy ([e9780c3](https://github.com/xiaoxinghu/justfiles/commit/e9780c3cb7fd46a0667ad15343139e6d91d42a4f))
+
 ## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.1.0...spud-v0.2.0) (2026-07-16)
 
 
