@@ -959,6 +959,19 @@
 	display: flex;
 	flex-direction: column;
 	height: 100vh;
+	/* The shell is OS chrome, not a text document. Pressing on the empty desktop
+	   and dragging must not start a native text selection — that marquee tinted
+	   window bodies and app iframes blue as it swept across them. Real text opts
+	   back in on .ds-window-body below (form controls select regardless). */
+	user-select: none;
+	-webkit-user-select: none;
+}
+/* Window contents are real documents (e.g. the agent transcript): let the user
+   select and copy text inside a window. A drag can't start here from the
+   desktop, so this never re-triggers the marquee. */
+.ds-window-body {
+	user-select: text;
+	-webkit-user-select: text;
 }
 .frn-menubar {
 	justify-content: space-between;
