@@ -24,3 +24,10 @@ export const bearerFromProtocolHeader = (header: string | null): string | null =
 		.find((p) => p.startsWith(BEARER_PREFIX))
 	return bearer ? bearer.slice(BEARER_PREFIX.length) : null
 }
+
+// Server: did the client offer the marker? A server may only select a
+// subprotocol the client offered, so the 101 echoes CAPS_WS_SUBPROTOCOL only
+// when it did. A pre-deploy client still on the `?token=` query path offers
+// none — echoing anyway would make the browser reject its handshake.
+export const offersCapsSubprotocol = (header: string | null): boolean =>
+	header?.split(',').some((p) => p.trim() === CAPS_WS_SUBPROTOCOL) ?? false

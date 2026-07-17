@@ -10,7 +10,7 @@ import {
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { appFileUrl } from '../shared/appstore.ts'
-import { CAPS_WS_SUBPROTOCOL } from '../shared/caps-ws.ts'
+import { CAPS_WS_SUBPROTOCOL, offersCapsSubprotocol } from '../shared/caps-ws.ts'
 import { aiCapability } from './ai.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 
@@ -43,7 +43,7 @@ export interface FrierenApps {
 	list(): Promise<readonly DisplayApp[]>
 	open(id: string): Promise<void>
 	close(id?: string): Promise<void>
-	acceptWebSocket(appId: string): Promise<Response>
+	acceptWebSocket(appId: string, offeredProtocols?: string | null): Promise<Response>
 	handleMessage(
 		ws: WebSocket,
 		appId: string | undefined,
@@ -209,7 +209,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		return false
 	}
 
-	async function acceptWebSocket(appId: string): Promise<Response> {
+	async function acceptWebSocket(
+		appId: string,
+		offeredProtocols?: string | null
+	): Promise<Response> {
 		// `_caps` is the only WS the browser opens here: no app id, no state push.
 		if (appId !== CAPS_SOCKET) return new Response(null, { status: 404 })
 		const { 0: client, 1: server } = new WebSocketPair()
@@ -218,16 +221,17 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		acceptedThisInstance.add(server)
 		// Subscribe so the agent's server-side writes nudge this tab to pull.
 		ensureSubscribed()
-		// Echo the negotiated subprotocol: the browser opens this socket offering
-		// `[CAPS_WS_SUBPROTOCOL, bearer.<token>]` (the token rides the handshake, not
-		// the URL). A client that offers subprotocols expects the server to select
-		// one — the `ws`-based dev bridge rejects the handshake otherwise — so echo
-		// the marker back, never the token.
-		return new Response(null, {
-			status: 101,
-			webSocket: client,
-			headers: { 'Sec-WebSocket-Protocol': CAPS_WS_SUBPROTOCOL }
-		})
+		// The current client opens this socket offering `[CAPS_WS_SUBPROTOCOL,
+		// bearer.<token>]` (the token rides the handshake, not the URL) and expects
+		// the server to select one — the `ws`-based dev bridge rejects the handshake
+		// otherwise — so echo the marker back, never the token. A pre-deploy client
+		// still on the `?token=` query path offers none; echoing anyway would make the
+		// browser reject its 101 (a server may only select an offered protocol), so
+		// leave it unset for them.
+		const headers = offersCapsSubprotocol(offeredProtocols ?? null)
+			? { 'Sec-WebSocket-Protocol': CAPS_WS_SUBPROTOCOL }
+			: undefined
+		return new Response(null, { status: 101, webSocket: client, headers })
 	}
 
 	// `appId` is undefined for the shared caps socket — the target app id rides
