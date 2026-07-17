@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useAgentSession } from '../agent/hooks'
 import { dismissMigration, migrateLocalProfileInto } from '../fs'
 
 // The confirm sheet behind the "bring your stuff over?" notification. The pill
@@ -6,6 +7,7 @@ import { dismissMigration, migrateLocalProfileInto } from '../fs'
 // signed-out profile's work into this account; "Start fresh" records the decision
 // so the offer never returns. Closing without choosing records nothing.
 export function MigrationSheet({ onClose }: { onClose: () => void }) {
+	const { refreshIdentity } = useAgentSession()
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 
@@ -15,6 +17,10 @@ export function MigrationSheet({ onClose }: { onClose: () => void }) {
 		setError(null)
 		try {
 			await migrateLocalProfileInto()
+			// A migrated soul/avatar overwrote the account's seeded default; the agent
+			// identity is cached in React state, so refresh it or the omnibar/avatar keep
+			// showing the fresh-account defaults until a reload.
+			await refreshIdentity().catch(() => {})
 			onClose()
 		} catch {
 			setError('Could not copy your data. Please try again.')
