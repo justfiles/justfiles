@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.3.0...spud-v0.3.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **frieren:** move capability WS auth off the URL query string ([893b0d3](https://github.com/xiaoxinghu/justfiles/commit/893b0d36bdc9acb18e48d801261f371d1f686c69)), closes [#135](https://github.com/xiaoxinghu/justfiles/issues/135)
+* **frieren:** only echo the caps subprotocol when the client offered it ([e51ba44](https://github.com/xiaoxinghu/justfiles/commit/e51ba448b87c0059664e2f336cc3fb0b02d8869a))
+* **frieren:** stop desktop drag from starting native text selection ([7cea04b](https://github.com/xiaoxinghu/justfiles/commit/7cea04b25331ea2c42149035ac908165b0412ca2))
+
 ## [0.3.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.2.0...spud-v0.3.0) (2026-07-17)
 
 
