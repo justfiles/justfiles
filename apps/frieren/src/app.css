@@ -1029,7 +1029,7 @@
 }
 /* Menubar clock: quiet, macOS-style; tabular figures keep its width steady. */
 .frn-menubar-clock {
-	color: rgba(255, 255, 255, 0.75);
+	color: color-mix(in srgb, var(--text) 75%, transparent);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 }
