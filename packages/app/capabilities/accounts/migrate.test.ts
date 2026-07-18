@@ -1,10 +1,9 @@
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { accountsStoreOverConnections } from './account-view.ts'
 import { volumeActiveAi } from './active-ai.ts'
 import { volumeConnectionStore } from './connection.ts'
 import { migrateAccountsToConnections } from './migrate.ts'
-import { CALENDAR_SCOPE, GMAIL_SCOPE } from './provider-caps.ts'
+import { backs, CALENDAR_SCOPE, GMAIL_SCOPE } from './provider-caps.ts'
 import { type Account, volumeAccountsStore } from './store.ts'
 
 const account = (over: Partial<Account> = {}): Account => ({
@@ -34,17 +33,26 @@ describe('migrateAccountsToConnections', () => {
 
 		await migrateAccountsToConnections(fs)
 
-		// connections carry the creds/scopes; the ai selection carries enablement
-		expect((await volumeConnectionStore(fs).list()).map((c) => c.id).sort()).toEqual([
-			'g',
-			'u@openai.com'
-		])
+		// connections carry the creds/scopes; capabilities are derived from scopes …
+		const conns = await volumeConnectionStore(fs).list()
+		expect(conns.map((c) => c.id).sort()).toEqual(['g', 'u@openai.com'])
+		const g = conns.find((c) => c.id === 'g')
+		expect(g && backs(g, 'email')).toBe(true)
+		expect(g && backs(g, 'calendar')).toBe(true)
+		// … and the ai selection carries enablement + the model.
 		expect(await volumeActiveAi(fs).get()).toEqual({ connectionId: 'u@openai.com', model: 'gpt-x' })
+	})
 
-		// the account-centric view reproduces the original accounts
-		const view = accountsStoreOverConnections(volumeConnectionStore(fs), volumeActiveAi(fs))
-		const byId = (a: Account, b: Account) => a.accountId.localeCompare(b.accountId)
-		expect((await view.list()).sort(byId)).toEqual([google, chatgpt].sort(byId))
+	test('reconstructs missing scopes from the enabled set', async () => {
+		const fs = volume(memStorage())
+		// A pre-scopes google account: enabled email but no `scopes` recorded.
+		await seedLegacy(fs, [
+			account({ accountId: 'g', providerId: 'google', enabled: { email: {} } })
+		])
+		await migrateAccountsToConnections(fs)
+		const g = (await volumeConnectionStore(fs).list()).find((c) => c.id === 'g')
+		expect(g?.scopes).toEqual([GMAIL_SCOPE])
+		expect(g && backs(g, 'email')).toBe(true)
 	})
 
 	test('is idempotent — a second run leaves connections untouched', async () => {

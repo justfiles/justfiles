@@ -1,19 +1,13 @@
-// The canonical AccountsStore — INTERNAL to @justfiles/app, never re-exported.
-// An account is data, not code, so it rides the Volume, the one syncable substrate
-// present on every platform (the same place the agent keeps `/system/agents/main/soul.md`).
-// Each native host used to re-derive this over its own storage (quay over the
-// Volume, frieren over KV); now they all share this one. One JSON file per account
-// under `/system/accounts/`, keyed by a URL-encoded accountId so any identity
-// string (e.g. an email) is filename-safe and each write touches only its own file.
-//
-// `creds` is the single encryptable lane: a `secretCodec` transforms just that
-// field on the way to/from disk. The default is identity — accounts ride in the
-// clear, the Volume being the trust boundary — and encryption returns later as a
-// codec swap, not a store rewrite.
+// The LEGACY accounts store — retained only so the one-shot migration
+// (migrate.ts) can read pre-connection data (`/system/accounts/*.json`) and
+// decompose each `Account` into a Connection + the active-AI selection. The live
+// path no longer reads or writes here. `Account` bundled creds, the enabled
+// capability set, and OAuth scopes in one record; the new model splits that into a
+// Connection (creds + scopes) with capabilities DERIVED (see provider-caps.ts).
 
 import type { Volume } from '@justfiles/fs'
+import type { Creds, SecretCodec } from './connection.ts'
 import type { CapabilityId } from './contract.ts'
-import type { Creds } from './host.ts'
 
 // A connected provider plus the capabilities the user has enabled on it — the
 // persisted unit. `creds` is the single encryptable lane (see `secretCodec`);
@@ -42,12 +36,6 @@ const DIR = '/system/accounts'
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 const pathFor = (accountId: string) => `${DIR}/${encodeURIComponent(accountId)}.json`
-
-// Transforms the `creds` lane on the way to/from disk. Default = identity (clear).
-export interface SecretCodec {
-	encode(creds: Creds): unknown
-	decode(raw: unknown): Creds
-}
 
 const identityCodec: SecretCodec = {
 	encode: (creds) => creds,

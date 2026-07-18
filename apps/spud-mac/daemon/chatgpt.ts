@@ -79,7 +79,7 @@ function accountCredentials(
 
 // OAuth acquisition (host-specific): run pi-ai's Codex login flow — it emits the consent
 // URL (we shell out to `open`) and catches the loopback redirect. Returns the credential
-// for the accounts store to persist; injected into `chatgptProvider` as its `signIn`.
+// for the accounts store to persist; injected as the daemon's `chatgpt.signIn` dep.
 export const chatgptSignIn: OAuthSignIn = async () => {
 	const oauth = codexProvider.auth.oauth
 	if (!oauth) throw new Error('Codex provider exposes no OAuth flow')
