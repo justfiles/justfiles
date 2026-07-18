@@ -7,6 +7,7 @@ import {
 	type SessionEvent
 } from '@justfiles/agent'
 import { type AppControllerPorts, createAppController } from '@justfiles/app'
+import { ensureAgentDefaults } from './agent-defaults'
 import { resolveAgentBackend } from './chatgpt'
 import { buildCommands, type CommandMeta, type CommandResult, SYSTEM_COMMANDS } from './commands'
 import { getVolume } from './fs'
@@ -67,6 +68,9 @@ function getSession(): Promise<AgentSession> {
 
 async function buildSession(): Promise<AgentSession> {
 	const fs = await getVolume()
+	// Seed a default persona + empty profile so the agent works out of the box — no
+	// onboarding gate. Idempotent, so a personalized soul is never clobbered.
+	await ensureAgentDefaults(fs)
 	const session = createAgentSession({
 		volume: fs,
 		// Re-resolve every turn so a model switch / reconnect / OAuth refresh takes effect on
