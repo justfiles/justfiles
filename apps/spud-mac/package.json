@@ -23,7 +23,7 @@
 		"@justfiles/design": "workspace:*",
 		"@justfiles/fs": "workspace:*",
 		"@justfiles/ui": "workspace:*",
-		"@mariozechner/pi-ai": "^0.70.2",
+		"@earendil-works/pi-ai": "^0.80.10",
 		"@spud-computer/code": "workspace:*",
 		"react": "^19",
 		"react-dom": "^19",

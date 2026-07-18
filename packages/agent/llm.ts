@@ -1,5 +1,5 @@
-import type { StreamFn } from '@mariozechner/pi-agent-core'
-import { type Api, completeSimple, type Model, streamSimple } from '@mariozechner/pi-ai'
+import type { StreamFn } from '@earendil-works/pi-agent-core'
+import { type Api, completeSimple, type Model, streamSimple } from '@earendil-works/pi-ai/compat'
 
 export type LLMConfig = {
 	model: Model<Api>

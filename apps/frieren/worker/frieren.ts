@@ -1,4 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
+import type { AgentEvent } from '@earendil-works/pi-agent-core'
+import { getModel } from '@earendil-works/pi-ai/compat'
 import {
 	type AgentSession,
 	apiKeyBackend,
@@ -27,8 +29,6 @@ import {
 	resetVolume
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
-import type { AgentEvent } from '@mariozechner/pi-agent-core'
-import { getModel } from '@mariozechner/pi-ai'
 import { Hono } from 'hono'
 import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '../shared/agent-defaults.ts'
 import { guardCapability } from './accounts/guard.ts'

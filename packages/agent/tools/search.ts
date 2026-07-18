@@ -3,7 +3,7 @@
  * Pair with the fetch tool: search to find pages, fetch to read them.
  */
 
-import type { AgentTool } from '@mariozechner/pi-agent-core'
+import type { AgentTool } from '@earendil-works/pi-agent-core'
 import Type from 'typebox'
 
 const searchParams = Type.Object({
