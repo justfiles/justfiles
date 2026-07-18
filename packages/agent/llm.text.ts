@@ -1,10 +1,10 @@
-import { type AgentBackend, type LLMConfig, toBackend } from './llm'
+import type { AgentBackend } from './llm'
 import { NOTE_TAKING_PROMPT } from './prompts'
 
 export type LLMText = ReturnType<typeof text>
 
-export function text(config: LLMConfig | AgentBackend) {
-	const { model, completeFn } = toBackend(config)
+export function text(backend: AgentBackend) {
+	const { model, completeFn } = backend
 	return { gen, takeNotes, summarise }
 
 	async function gen(systemPrompt: string, userPrompt: string) {

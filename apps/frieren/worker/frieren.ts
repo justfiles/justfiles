@@ -1,11 +1,22 @@
 import { DurableObject } from 'cloudflare:workers'
 import type { AgentEvent } from '@earendil-works/pi-agent-core'
-import { getModel } from '@earendil-works/pi-ai/compat'
+import {
+	type Api,
+	type CredentialStore,
+	createModels,
+	createProvider,
+	envApiKeyAuth,
+	type Model,
+	type Models
+} from '@earendil-works/pi-ai'
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
+import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai'
 import {
 	type AgentSession,
-	apiKeyBackend,
 	createAgentSession,
 	type LLMText,
+	modelsBackend,
 	parseFrontmatter,
 	resolveTimezone,
 	SOUL_GENERATION_PROMPT,
@@ -41,6 +52,19 @@ import { TokenBucket } from './integrations/rate-limit.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
 const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
+
+// A one-entry CredentialStore over a static api key. `Models` prefers a stored key
+// over ambient env, so this pins the platform key without touching process.env (absent
+// in the Worker). No refresh path — the key doesn't rotate.
+function apiKeyStore(providerId: string, key: string): CredentialStore {
+	const credential = { type: 'api_key', key } as const
+	return {
+		read: async (pid) => (pid === providerId ? credential : undefined),
+		list: async () => [{ providerId, type: 'api_key' }],
+		modify: async (_pid, fn) => fn(credential),
+		delete: async () => {}
+	}
+}
 
 interface ClientMessage {
 	type: 'prompt' | 'abort' | 'app_open' | 'app_close'
@@ -157,8 +181,8 @@ export class Frieren extends DurableObject<Env> {
 		input: SoulGenerationInput
 	): Promise<{ text: string; firstWords: string }> {
 		if (!this.text) {
-			const { model, apiKey } = this.getBackendConfig()
-			this.text = text({ model, apiKey })
+			const { models, model } = this.aiRuntime()
+			this.text = text(modelsBackend(models, model))
 		}
 		const lines: string[] = [`agent name: ${input.agentName}`, `archetype: ${input.archetype}`]
 		if (input.agentGender) lines.push(`agent gender: ${input.agentGender}`)
@@ -174,7 +198,7 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async reset() {
-		const { model, apiKey } = this.getBackendConfig()
+		const { models, model } = this.aiRuntime()
 		await migrateCF(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
@@ -184,7 +208,7 @@ export class Frieren extends DurableObject<Env> {
 		// (they may have turned it off or switched to another AI) is left untouched.
 		await ensureAccount(this.vol, { accountId: 'spud', providerId: 'spud', enabled: ['ai'] })
 		this.session?.abort()
-		this.text = text({ model, apiKey })
+		this.text = text(modelsBackend(models, model))
 		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps
 		// its own env-keyed `ai` (agent backend + soul generation), so the factory's `ai` is
 		// ignored. email/calendar are guarded (audit + rate-limit) and wired into the APPS —
@@ -218,7 +242,7 @@ export class Frieren extends DurableObject<Env> {
 			volume: this.vol,
 			backend: async () => {
 				const backend = await resolveAiAccount(this.vol, ({ providerId }) =>
-					providerId === 'spud' ? apiKeyBackend({ model, apiKey }) : null
+					providerId === 'spud' ? modelsBackend(models, model) : null
 				)
 				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
 				return backend
@@ -238,28 +262,38 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
-	private getBackendConfig() {
-		const openaiModel = getModel('openai', 'gpt-5.4-mini')
-
-		// Local LM Studio backend — OpenAI-compatible /v1/chat/completions.
-		// No real auth, but the OpenAI SDK requires a non-empty apiKey string.
-		const localModel = {
-			id: 'google/gemma-4-e4b',
-			name: 'Gemma 4 (local)',
-			api: 'openai-completions',
-			provider: 'lm-studio',
-			baseUrl: 'http://127.0.0.1:1234/v1',
-			reasoning: false,
-			input: ['text'],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 8192
-		} as unknown as typeof openaiModel
-
-		const backend = this.env.FRIEREN_BACKEND === 'local' ? 'local' : 'openai'
-
-		if (backend === 'local') {
-			return { model: localModel, apiKey: 'lm-studio' }
+	// The platform AI runtime: a pi `Models` + selected model. Production uses OpenAI
+	// (env key); local dev uses an LM Studio OpenAI-compatible endpoint. The api key is
+	// supplied through a small CredentialStore (a stored key wins over ambient env), so
+	// the token never rides on the backend — `modelsBackend` seals it inside `Models`.
+	private aiRuntime(): { models: Models; model: Model<Api> } {
+		if (this.env.FRIEREN_BACKEND === 'local') {
+			// Local LM Studio — OpenAI-compatible /v1/chat/completions. No real auth, but the
+			// client needs a non-empty key string (provided via the credential store below).
+			const model: Model<'openai-completions'> = {
+				id: 'google/gemma-4-e4b',
+				name: 'Gemma 4 (local)',
+				api: 'openai-completions',
+				provider: 'lm-studio',
+				baseUrl: 'http://127.0.0.1:1234/v1',
+				reasoning: false,
+				input: ['text'],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128000,
+				maxTokens: 8192
+			}
+			const models = createModels({ credentials: apiKeyStore('lm-studio', 'lm-studio') })
+			models.setProvider(
+				createProvider({
+					id: 'lm-studio',
+					name: 'LM Studio',
+					baseUrl: 'http://127.0.0.1:1234/v1',
+					auth: { apiKey: envApiKeyAuth('LM Studio', ['LM_STUDIO_API_KEY']) },
+					models: [model],
+					api: openAICompletionsApi()
+				})
+			)
+			return { models, model: model as Model<Api> }
 		}
 
 		const apiKey = this.env.OPENAI_API_KEY
@@ -268,7 +302,9 @@ export class Frieren extends DurableObject<Env> {
 				'OPENAI_API_KEY is not set. Add it to apps/frieren/.dev.vars (local) or as a Cloudflare secret (deployed), and declare it in wrangler.jsonc `secrets.required`.'
 			)
 		}
-		return { model: openaiModel, apiKey }
+		const models = createModels({ credentials: apiKeyStore('openai', apiKey) })
+		models.setProvider(openaiProvider())
+		return { models, model: getBuiltinModel('openai', 'gpt-5.4-mini') as Model<Api> }
 	}
 
 	// ── WebSocket handlers ────────────────────────────────────────────────

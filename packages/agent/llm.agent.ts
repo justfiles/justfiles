@@ -1,9 +1,8 @@
 import { Agent, type AgentMessage } from '@earendil-works/pi-agent-core'
 import type { Message } from '@earendil-works/pi-ai'
-import { type AgentBackend, type LLMConfig, toBackend } from './llm'
+import type { AgentBackend } from './llm'
 
-export function createAgent(config: LLMConfig | AgentBackend): Agent {
-	const backend = toBackend(config)
+export function createAgent(backend: AgentBackend): Agent {
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: '', // set dynamically each turn in webSocketMessage

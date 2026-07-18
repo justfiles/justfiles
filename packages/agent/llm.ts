@@ -1,15 +1,9 @@
 import type { StreamFn } from '@earendil-works/pi-agent-core'
-import type { Models } from '@earendil-works/pi-ai'
-import { type Api, completeSimple, type Model, streamSimple } from '@earendil-works/pi-ai/compat'
+import type { Api, Model, Models } from '@earendil-works/pi-ai'
 
-export type LLMConfig = {
-	model: Model<Api>
-	apiKey: string
-}
-
-export type CompleteFn = (
-	...args: Parameters<typeof completeSimple>
-) => ReturnType<typeof completeSimple>
+// The completion signature, sourced from pi's `Models` so the backend and the text
+// helpers agree without touching the deprecated `/compat` surface.
+export type CompleteFn = Models['completeSimple']
 
 // What the runtime needs to drive a model. `streamFn`/`completeFn` are the
 // credential seam: a host mints them with the token captured in the closure, so
@@ -25,23 +19,12 @@ export type AgentBackend = {
 	revision: string
 }
 
-// Wrap a raw apiKey into a backend; the key lives only inside the closures. The
-// plain-key callers (local LM Studio, env-keyed hosts) route through here.
-export function apiKeyBackend({ model, apiKey }: LLMConfig): AgentBackend {
-	return {
-		model,
-		streamFn: (m, context, options) => streamSimple(m, context, { ...options, apiKey }),
-		completeFn: (m, context, options) => completeSimple(m, context, { ...options, apiKey }),
-		revision: fingerprint(apiKey)
-	}
-}
-
 // Wrap a pi `Models` collection into a backend: the agent loop and text helpers stream
-// through `Models`, which resolves auth and refreshes OAuth internally (under its
+// through `Models`, which resolves auth and refreshes credentials internally (under its
 // credential-store lock) — so the token never sits on the backend, and a refresh needs
-// no rebuild. `revision` is therefore stable (model identity), unlike the key
-// fingerprint `apiKeyBackend` rotates. This is the Option-C seam: the host builds a
-// `Models` (over a `CredentialStore`), the agent drives it, and neither holds the token.
+// no rebuild. `revision` is stable (model identity). This is the sole backend seam: the
+// host builds a `Models` (over a `CredentialStore`), the agent drives it, and neither
+// holds the token.
 export function modelsBackend(models: Models, model: Model<Api>): AgentBackend {
 	return {
 		model,
@@ -49,18 +32,4 @@ export function modelsBackend(models: Models, model: Model<Api>): AgentBackend {
 		completeFn: (m, context, options) => models.completeSimple(m, context, options),
 		revision: `${model.provider}:${model.id}`
 	}
-}
-
-// Normalise either form to a backend, so `createAgent`/`text` accept a raw config
-// or a host-minted, token-sealed backend interchangeably.
-export function toBackend(config: LLMConfig | AgentBackend): AgentBackend {
-	return 'streamFn' in config ? config : apiKeyBackend(config)
-}
-
-// Non-cryptographic fingerprint (djb2) — a cache key, not a secret: lets a
-// refreshed token rotate the runtime cache key without surfacing the token.
-function fingerprint(s: string): string {
-	let h = 5381
-	for (let i = 0; i < s.length; i++) h = (Math.imul(h, 33) ^ s.charCodeAt(i)) >>> 0
-	return h.toString(36)
 }
