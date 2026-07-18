@@ -1,6 +1,6 @@
+import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
-import type { AgentEvent } from '@mariozechner/pi-agent-core'
 import {
 	type Assistant,
 	consolidateMemory,

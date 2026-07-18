@@ -1,5 +1,5 @@
+import { getModels } from '@earendil-works/pi-ai/compat'
 import { memStorage, type Volume, volume } from '@justfiles/fs'
-import { getModels } from '@mariozechner/pi-ai'
 import { describe, expect, test } from 'vitest'
 import { resolveAgentBackend } from './chatgpt.ts'
 

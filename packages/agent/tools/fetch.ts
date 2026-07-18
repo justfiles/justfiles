@@ -8,8 +8,8 @@
  * extension into our AgentTool factory convention.
  */
 
-import type { AgentTool } from '@mariozechner/pi-agent-core'
-import { StringEnum } from '@mariozechner/pi-ai'
+import type { AgentTool } from '@earendil-works/pi-agent-core'
+import { StringEnum } from '@earendil-works/pi-ai'
 import Type from 'typebox'
 
 const READABLE_MD_ENDPOINT = 'https://readable.page/md'

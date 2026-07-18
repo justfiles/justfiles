@@ -1,5 +1,5 @@
+import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
-import type { AgentTool } from '@mariozechner/pi-agent-core'
 import { Bash, type Command, type CommandName, type ExecResult, getCommandNames } from 'just-bash'
 import Type from 'typebox'
 import { truncateTail } from './truncate.ts'

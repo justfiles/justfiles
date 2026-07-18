@@ -1,7 +1,7 @@
 // The ChatGPT provider for the accounts model, plus the agent's token resolver.
 // "Sign in with ChatGPT" needs a browser + a loopback listener (PKCE, the
 // 127.0.0.1:1455 catcher, token exchange, refresh), which the sandboxed reducer
-// can't do — so the oauth flow runs here in the daemon via `@mariozechner/pi-ai`,
+// can't do — so the oauth flow runs here in the daemon (see `./codex-oauth`),
 // the same flow Codex uses. Everything else is glue: declare the provider, mint
 // the `ai` use facet over the resolved token, and project the model picker.
 //
@@ -11,13 +11,13 @@
 // a chatgpt-only connection record.
 
 import { execFile } from 'node:child_process'
+import { getModels } from '@earendil-works/pi-ai/compat'
 import { type AgentBackend, apiKeyBackend, text } from '@justfiles/agent'
 import { type Creds, resolveAiAccount } from '@justfiles/app/capabilities/accounts/host'
 import type { OAuthSignIn } from '@justfiles/app/capabilities/accounts/providers'
 import type { AiCapability } from '@justfiles/app/capabilities/ai'
 import type { Volume } from '@justfiles/fs'
-import { getModels } from '@mariozechner/pi-ai'
-import { loginOpenAICodex, refreshOpenAICodexToken } from '@mariozechner/pi-ai/oauth'
+import { loginOpenAICodex, refreshOpenAICodexToken } from './codex-oauth'
 
 // The creds an account from this provider stores. Shaped to OAuthCredentials plus
 // the account id pulled from the id_token.

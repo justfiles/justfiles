@@ -1,8 +1,8 @@
-import type { Agent, AgentMessage } from '@mariozechner/pi-agent-core'
+import type { Agent, AgentMessage } from '@earendil-works/pi-agent-core'
 import type {
 	ToolResultMessage as PiToolResultMessage,
 	UserMessage as PiUserMessage
-} from '@mariozechner/pi-ai'
+} from '@earendil-works/pi-ai'
 import type { LLMText } from './llm.text'
 import type { SessionEntry } from './session.manager'
 

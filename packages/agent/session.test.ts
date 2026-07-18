@@ -1,12 +1,12 @@
-import { volume } from '@justfiles/fs'
-import { memStorage } from '@justfiles/fs/storage/mem'
-import type { StreamFn } from '@mariozechner/pi-agent-core'
+import type { StreamFn } from '@earendil-works/pi-agent-core'
 import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type Model
-} from '@mariozechner/pi-ai'
+} from '@earendil-works/pi-ai'
+import { volume } from '@justfiles/fs'
+import { memStorage } from '@justfiles/fs/storage/mem'
 import { describe, expect, test } from 'vitest'
 import type { AgentBackend } from './llm.ts'
 import { createAgentSession, type SessionEvent } from './session.ts'

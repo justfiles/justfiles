@@ -1,5 +1,5 @@
-import { Agent, type AgentMessage } from '@mariozechner/pi-agent-core'
-import type { Message } from '@mariozechner/pi-ai'
+import { Agent, type AgentMessage } from '@earendil-works/pi-agent-core'
+import type { Message } from '@earendil-works/pi-ai'
 import { type AgentBackend, type LLMConfig, toBackend } from './llm'
 
 export function createAgent(config: LLMConfig | AgentBackend): Agent {
@@ -24,7 +24,10 @@ function buildModelVisibleMessages(messages: AgentMessage[]): Message[] {
 	const out: Message[] = []
 
 	for (const message of messages) {
-		if (!('role' in message)) continue
+		// AgentMessage now spans agent-internal variants (custom/branchSummary/…) that
+		// also carry a `role`; keep only the LLM message roles, which narrows to `Message`.
+		if (message.role !== 'user' && message.role !== 'assistant' && message.role !== 'toolResult')
+			continue
 
 		if (message.role === 'assistant') {
 			const content = Array.isArray(message.content) ? message.content : []

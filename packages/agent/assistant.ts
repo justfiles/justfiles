@@ -1,5 +1,5 @@
+import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
-import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@mariozechner/pi-agent-core'
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
