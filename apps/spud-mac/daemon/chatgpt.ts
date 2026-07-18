@@ -10,6 +10,7 @@
 // provider; the selected model rides as the `ai` capability's per-account config.
 
 import { execFile } from 'node:child_process'
+import { createServer } from 'node:net'
 import {
 	type Credential,
 	type CredentialStore,
@@ -85,24 +86,51 @@ function accountCredentials(
 	}
 }
 
-// OAuth acquisition (host-specific): run pi-ai's Codex login flow — it emits the consent
-// URL (we shell out to `open`) and catches the loopback redirect. Returns the credential
-// for the accounts store to persist; injected as the daemon's `chatgpt.signIn` dep.
+// OAuth acquisition (host-specific): run pi-ai's Codex login flow. The flow drives two
+// prompts we answer here: first a method `select` (browser vs device-code) — we always
+// pick browser and shell the consent URL to `open`; then a `manual_code` prompt raced
+// against the 127.0.0.1:1455 loopback catcher — we have no paste UI, so we leave it
+// pending and let the loopback redirect win (pi aborts the prompt's signal once it has
+// the code, or the login is cancelled). Returns the credential for the accounts store to
+// persist; injected as the daemon's `chatgpt.signIn` dep.
 export const chatgptSignIn: OAuthSignIn = async () => {
 	const oauth = codexProvider.auth.oauth
 	if (!oauth) throw new Error('Codex provider exposes no OAuth flow')
+	// The browser flow can't receive its redirect if the loopback port is taken; fail fast
+	// with a clear message rather than hang waiting for a code that can never arrive.
+	await assertLoopbackFree(1455)
 	const cred = await oauth.login({
 		notify: (event) => {
 			if (event.type === 'auth_url') void execFile('open', [event.url], () => {})
 		},
-		// Manual-paste fallback isn't wired in the GUI yet; surface a clear error if the
-		// loopback bind fails (e.g. port 1455 already in use).
-		prompt: async () => {
-			throw new Error('Could not open the browser sign-in (is port 1455 in use?)')
+		prompt: (p) => {
+			if (p.type === 'select') {
+				const browser = p.options.find((o) => o.id === 'browser') ?? p.options[0]
+				if (!browser) throw new Error('Codex login offered no sign-in method')
+				return Promise.resolve(browser.id)
+			}
+			return new Promise<string>((_resolve, reject) => {
+				if (p.signal?.aborted) return reject(new Error('sign-in cancelled'))
+				p.signal?.addEventListener('abort', () => reject(new Error('sign-in cancelled')), {
+					once: true
+				})
+			})
 		}
 	})
 	const accountId = String(cred.accountId ?? '')
 	return { accountId, creds: { ...cred, accountId } satisfies Creds }
+}
+
+// Probe the loopback port pi's browser flow binds (127.0.0.1:1455). Rejects with the
+// clear "port in use" error if it's occupied; otherwise resolves after releasing it.
+function assertLoopbackFree(port: number): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const probe = createServer()
+		probe.once('error', () =>
+			reject(new Error(`Could not open the browser sign-in (is port ${port} in use?)`))
+		)
+		probe.listen(port, '127.0.0.1', () => probe.close(() => resolve()))
+	})
 }
 
 // Build an `ai` use-facet impl over the account's creds + selected model, streamed
