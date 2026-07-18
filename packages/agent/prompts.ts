@@ -1,4 +1,3 @@
-import DEFAULT_SETUP from './prompts/default-setup.md?raw'
 import FINAL_ANSWER_ONLY from './prompts/final-answer-only.md?raw'
 import MEMORY_CONSOLIDATION from './prompts/memory-consolidation.md?raw'
 import NOTE_TAKING from './prompts/note-taking.md?raw'
@@ -29,8 +28,6 @@ export type SoulGenerationInput = {
 }
 
 export const SOUL_GENERATION_PROMPT = SOUL_GENERATION
-
-export const DEFAULT_SETUP_PROMPT = DEFAULT_SETUP
 
 export const FINAL_ANSWER_ONLY_INSTRUCTION = FINAL_ANSWER_ONLY
 

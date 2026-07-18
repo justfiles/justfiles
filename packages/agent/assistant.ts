@@ -6,7 +6,7 @@ import { type CompactionSettings, compact, prepareCompaction, shouldCompact } fr
 import { createReadDocTool, docsPrompt } from './docs'
 import { file } from './file'
 import type { LLMText } from './llm.text'
-import { DEFAULT_SETUP_PROMPT, MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
+import { MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
 import {
 	type AppendPayload,
 	type ContextMessage,
@@ -197,8 +197,10 @@ export async function createAssistant({
 	}
 
 	async function resolveSystemPrompt(): Promise<string> {
-		const soul = await file(volume, PATHS.soul(agentId)).text()
-		if (!soul) return DEFAULT_SETUP_PROMPT
+		// No onboarding gate: a missing soul falls back to a blank persona so the agent still
+		// works (skills, docs, tools) and never blocks the user. Hosts seed a real default
+		// persona at boot (see the daemon's agent-defaults); personalization overwrites it.
+		const soul = (await file(volume, PATHS.soul(agentId)).text()) || ''
 
 		const prompt = systemPrompt(soul)
 		const profile = await file(volume, PATHS.profile).text()
