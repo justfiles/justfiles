@@ -17,6 +17,7 @@ import {
 	type Models,
 	type OAuthCredential
 } from '@earendil-works/pi-ai'
+import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { type AgentBackend, modelsBackend, text } from '@justfiles/agent'
 import { type Creds, resolveAiAccount } from '@justfiles/app/capabilities/accounts/host'
@@ -28,6 +29,13 @@ import type { Volume } from '@justfiles/fs'
 // token refresh. Registered on a Models collection per credential source; safe to share
 // (it holds no per-collection state — Models supplies auth into each request).
 const codexProvider = openaiCodexProvider()
+
+// The provider loads its OAuth flow (a Node-only loopback + PKCE server) through a
+// variable-specifier dynamic import that bundlers deliberately can't follow — so a
+// `bun build --compile` daemon exe ships without that chunk and sign-in dies with
+// "Cannot find module './openai-codex.js'". This registers the statically-bundled flows
+// for the standalone binary (a no-op-shaped registration when running from source).
+registerBunOAuthFlows()
 
 // Relay the provider's catalogue to the picker. Default to Codex Max, else the first.
 export function codexModels(): { id: string; name: string }[] {
