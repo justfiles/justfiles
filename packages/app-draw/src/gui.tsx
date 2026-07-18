@@ -26,6 +26,19 @@ const EMPTY_SCENE = JSON.stringify({
 
 const titleOf = (path: string) => path.slice(1, -EXT.length)
 
+// A cheap fingerprint of the persisted scene. serializeAsJSON writes elements,
+// the canvas background, and embedded files — so the dirty check must react to
+// all three, not elements alone. Ephemeral appState (scroll/zoom/selection) is
+// deliberately excluded so panning or zooming never marks the canvas dirty.
+function sceneSig(
+	elements: readonly unknown[],
+	appState: Record<string, unknown> | undefined,
+	files: Record<string, unknown> | undefined
+): string {
+	const bg = typeof appState?.viewBackgroundColor === 'string' ? appState.viewBackgroundColor : ''
+	return `${hashElementsVersion(elements as never)}:${bg}:${Object.keys(files ?? {}).length}`
+}
+
 // The minimal slice of Excalidraw's imperative API we touch.
 interface ExcalidrawAPI {
 	getSceneElements: () => readonly unknown[]
@@ -105,7 +118,9 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 	const canvasHostRef = useRef<HTMLDivElement | null>(null)
 	const pathRef = useRef<string>(DRAFT_PATH) // file the canvas autosaves to
 	const dirtyRef = useRef(false)
-	const versionRef = useRef<number | null>(null) // scene version of the last write/load
+	// Signature of the last loaded/saved scene, or null right after a (re)load — the
+	// fresh mount's first onChange re-establishes the baseline instead of dirtying.
+	const sigRef = useRef<string | null>(null)
 	const loadTokenRef = useRef(0)
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -141,9 +156,9 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 			const data = parseScene(json)
 			pathRef.current = target
 			dirtyRef.current = false
-			// Baseline the version to the loaded scene so the mount-time onChange
-			// (same elements) doesn't immediately mark the canvas dirty.
-			versionRef.current = hashElementsVersion((data?.elements ?? []) as never)
+			// Drop the baseline; the fresh mount's first onChange re-establishes it, so
+			// that mount-time change (same scene) doesn't immediately mark it dirty.
+			sigRef.current = null
 			setInitialData(data)
 			setDocKey(`${target}#${token}`)
 		},
@@ -151,27 +166,32 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 	)
 
 	// The single load driver: launch, agent/GUI open/newDraft (openPath changes),
-	// and forced draft reloads (reloadSeq). On first mount it wipes the draft so
-	// every launch opens on a fresh blank canvas.
-	const bootedRef = useRef(false)
-	// biome-ignore lint/correctness/useExhaustiveDependencies: reloadSeq is a manual reload trigger; actions is stable.
+	// and forced draft reloads (reloadSeq). The draft is durable: it autosaves like
+	// app-notes' body and is NOT wiped on boot, so an unsaved sketch survives a
+	// reload or an iframe remount (frieren recreates app frames on reload/detach).
+	// New is the only thing that clears it.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reloadSeq is a manual reload trigger.
 	useEffect(() => {
-		void (async () => {
-			if (!bootedRef.current) {
-				bootedRef.current = true
-				await actions.save({ path: DRAFT_PATH, json: EMPTY_SCENE })
-			}
-			await loadDoc(openPath)
-		})()
+		void loadDoc(openPath)
 	}, [openPath, reloadSeq, loadDoc])
 
-	// Excalidraw fires onChange constantly (selection, scroll, zoom). Only a real
-	// element change bumps the scene version — gate autosave on that, then debounce.
+	// Excalidraw fires onChange constantly (selection, scroll, zoom). Gate autosave
+	// on a real change to the persisted scene (elements, background, or files),
+	// then debounce.
 	const handleChange = useCallback(
-		(elements: readonly unknown[]) => {
-			const version = hashElementsVersion(elements as never)
-			if (version === versionRef.current) return
-			versionRef.current = version
+		(
+			elements: readonly unknown[],
+			appState: Record<string, unknown> | undefined,
+			files: Record<string, unknown> | undefined
+		) => {
+			const sig = sceneSig(elements, appState, files)
+			// First onChange after a (re)load establishes the baseline silently.
+			if (sigRef.current === null) {
+				sigRef.current = sig
+				return
+			}
+			if (sig === sigRef.current) return
+			sigRef.current = sig
 			dirtyRef.current = true
 			if (timerRef.current) clearTimeout(timerRef.current)
 			timerRef.current = setTimeout(() => void flush(), AUTOSAVE_MS)
@@ -369,7 +389,13 @@ export default function Draw({ state, actions }: GUIProps<DrawApp>) {
 									apiRef.current = api as ExcalidrawAPI
 								}}
 								initialData={initialData as never}
-								onChange={(elements: readonly unknown[]) => handleChange(elements)}
+								onChange={(elements: readonly unknown[], appState: unknown, files: unknown) =>
+									handleChange(
+										elements,
+										appState as Record<string, unknown>,
+										files as Record<string, unknown>
+									)
+								}
 							/>
 						) : null}
 					</div>
