@@ -11,7 +11,7 @@ export type { AppController } from './justbash/app.ts'
 // Powers soul generation and the `ai` capability.
 export { type LLMText, text } from './llm.text.ts'
 // ── The credential/model seam + one-shot text generation ────────────
-export { type AgentBackend, apiKeyBackend } from './llm.ts'
+export { type AgentBackend, apiKeyBackend, modelsBackend } from './llm.ts'
 // ── Onboarding / maintenance building blocks (host-owned, for now) ──
 // Soul generation and the daily-alarm timezone math still run in the host until they
 // fold into product methods (generateSoul / nextMaintenanceAt).
