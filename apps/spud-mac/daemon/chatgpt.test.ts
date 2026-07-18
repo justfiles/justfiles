@@ -1,7 +1,6 @@
-import { getModels } from '@earendil-works/pi-ai/compat'
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
-import { resolveAgentBackend } from './chatgpt.ts'
+import { codexModels, resolveAgentBackend } from './chatgpt.ts'
 
 // `resolveAgentBackend` borrows the ai-enabled account from the Volume-backed store
 // (internal to @justfiles/app) and mints a token-sealed backend. We seed the account
@@ -49,7 +48,7 @@ describe('resolveAgentBackend', () => {
 		const backend = await resolveAgentBackend(await seed(account))
 		expect(backend).not.toBeNull()
 		// a real codex model, defaulted since none was selected
-		expect(getModels('openai-codex').some((m) => m.id === backend?.model.id)).toBe(true)
+		expect(codexModels().some((m) => m.id === backend?.model.id)).toBe(true)
 		expect(typeof backend?.streamFn).toBe('function')
 		expect(typeof backend?.completeFn).toBe('function')
 		// the seam's whole point: the token rides inside the closures, never on the
@@ -59,7 +58,7 @@ describe('resolveAgentBackend', () => {
 	})
 
 	test('honours the selected model', async () => {
-		const id = getModels('openai-codex')[0]?.id
+		const id = codexModels()[0]?.id
 		const backend = await resolveAgentBackend(
 			await seed(chatgpt({ enabled: { ai: { model: id } } }))
 		)

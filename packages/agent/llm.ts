@@ -1,4 +1,5 @@
 import type { StreamFn } from '@earendil-works/pi-agent-core'
+import type { Models } from '@earendil-works/pi-ai'
 import { type Api, completeSimple, type Model, streamSimple } from '@earendil-works/pi-ai/compat'
 
 export type LLMConfig = {
@@ -32,6 +33,21 @@ export function apiKeyBackend({ model, apiKey }: LLMConfig): AgentBackend {
 		streamFn: (m, context, options) => streamSimple(m, context, { ...options, apiKey }),
 		completeFn: (m, context, options) => completeSimple(m, context, { ...options, apiKey }),
 		revision: fingerprint(apiKey)
+	}
+}
+
+// Wrap a pi `Models` collection into a backend: the agent loop and text helpers stream
+// through `Models`, which resolves auth and refreshes OAuth internally (under its
+// credential-store lock) — so the token never sits on the backend, and a refresh needs
+// no rebuild. `revision` is therefore stable (model identity), unlike the key
+// fingerprint `apiKeyBackend` rotates. This is the Option-C seam: the host builds a
+// `Models` (over a `CredentialStore`), the agent drives it, and neither holds the token.
+export function modelsBackend(models: Models, model: Model<Api>): AgentBackend {
+	return {
+		model,
+		streamFn: (m, context, options) => models.streamSimple(m, context, options),
+		completeFn: (m, context, options) => models.completeSimple(m, context, options),
+		revision: `${model.provider}:${model.id}`
 	}
 }
 
