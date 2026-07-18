@@ -2,50 +2,53 @@ import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import { codexModels, resolveAgentBackend } from './chatgpt.ts'
 
-// `resolveAgentBackend` borrows the ai-enabled account from the Volume-backed store
-// (internal to @justfiles/app) and mints a token-sealed backend. We seed the account
-// the way the store persists it — one JSON file per account, in the clear — and drive
-// resolution against a real in-memory Volume. The account type is internal to the
-// store, so we restate just the persisted fields this fixture writes.
-interface SeedAccount {
-	accountId: string
-	providerId: string
-	creds: Record<string, unknown>
-	enabled: Record<string, unknown>
-}
+// `resolveAgentBackend` borrows the active-AI connection from the Volume-backed stores
+// (internal to @justfiles/app) and mints a token-sealed backend. We seed the way those
+// stores persist — one JSON file per connection under /system/connections, plus the
+// /system/active-ai.json selection — and drive resolution against a real in-memory
+// Volume. `ai` toggles whether this connection is the active AI.
 
-const chatgpt = (over: Partial<SeedAccount> = {}): SeedAccount => ({
-	accountId: 'u@openai.com',
-	providerId: 'chatgpt',
-	creds: {
-		access: 'tok',
-		refresh: 'ref',
-		expires: Date.now() + 3_600_000,
-		accountId: 'u@openai.com'
-	},
-	enabled: {},
-	...over
-})
+const ID = 'u@openai.com'
 
-async function seed(account: SeedAccount): Promise<Volume> {
+async function seed(opts: { ai?: boolean; access?: string; model?: string } = {}): Promise<Volume> {
 	const fs = volume(memStorage())
-	await fs.mkdir('/system/accounts', { recursive: true })
+	const enc = new TextEncoder()
+	await fs.mkdir('/system/connections', { recursive: true })
 	await fs.writeFile(
-		`/system/accounts/${encodeURIComponent(account.accountId)}.json`,
-		new TextEncoder().encode(JSON.stringify(account))
+		`/system/connections/${encodeURIComponent(ID)}.json`,
+		enc.encode(
+			JSON.stringify({
+				id: ID,
+				kind: 'chatgpt',
+				creds: {
+					access: opts.access ?? 'tok',
+					refresh: 'ref',
+					expires: Date.now() + 3_600_000,
+					accountId: ID
+				}
+			})
+		)
 	)
+	if (opts.ai) {
+		await fs.writeFile(
+			'/system/active-ai.json',
+			enc.encode(
+				JSON.stringify(
+					opts.model !== undefined ? { connectionId: ID, model: opts.model } : { connectionId: ID }
+				)
+			)
+		)
+	}
 	return fs
 }
 
 describe('resolveAgentBackend', () => {
-	test('returns null when no ChatGPT account has ai enabled', async () => {
-		expect(await resolveAgentBackend(await seed(chatgpt()))).toBeNull()
+	test('returns null when no connection is the active AI', async () => {
+		expect(await resolveAgentBackend(await seed())).toBeNull()
 	})
 
 	test('mints a backend (real model + stream/complete fns) and seals the token', async () => {
-		const account = chatgpt({ enabled: { ai: {} } })
-		;(account.creds as { access: string }).access = 'SEALED-TOKEN-XYZ'
-		const backend = await resolveAgentBackend(await seed(account))
+		const backend = await resolveAgentBackend(await seed({ ai: true, access: 'SEALED-TOKEN-XYZ' }))
 		expect(backend).not.toBeNull()
 		// a real codex model, defaulted since none was selected
 		expect(codexModels().some((m) => m.id === backend?.model.id)).toBe(true)
@@ -59,9 +62,7 @@ describe('resolveAgentBackend', () => {
 
 	test('honours the selected model', async () => {
 		const id = codexModels()[0]?.id
-		const backend = await resolveAgentBackend(
-			await seed(chatgpt({ enabled: { ai: { model: id } } }))
-		)
+		const backend = await resolveAgentBackend(await seed({ ai: true, model: id }))
 		expect(backend?.model.id).toBe(id)
 	})
 })

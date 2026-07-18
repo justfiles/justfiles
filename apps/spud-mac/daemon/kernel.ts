@@ -38,7 +38,7 @@ export function getKernel(): Promise<Kernel> {
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
 export async function buildKernel(fs: Volume): Promise<Kernel> {
-	const { ai, email, calendar, accounts } = await accountsCapabilities(accountsDeps, fs, {
+	const { ai, email, calendar, accounts } = accountsCapabilities(accountsDeps, fs, {
 		firstParty: ['computer.spud.settings']
 	})
 

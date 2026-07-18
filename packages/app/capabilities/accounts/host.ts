@@ -29,7 +29,6 @@ import {
 } from './connection.ts'
 import type { AccountInfo, CapabilityId, ProviderInfo } from './contract.ts'
 import { accountsAdmin } from './index.ts'
-import { migrateAccountsToConnections } from './migrate.ts'
 import { backs, capabilitiesOf, PROVIDER_CATALOG, scopeFor } from './provider-caps.ts'
 import {
 	authedFetch,
@@ -347,13 +346,12 @@ function accountsAdminHost(
 // ── Entry points ──────────────────────────────────────────────────────────
 
 // One factory: the credential-bearing stores are built once internally from the Volume
-// and never cross the package boundary. Migrates legacy accounts on first use.
-export async function accountsCapabilities(
+// and never cross the package boundary.
+export function accountsCapabilities(
 	deps: AccountsDeps,
 	volume: Volume,
 	opts: AccountsAdminOptions = {}
-): Promise<{ ai: Capability; email: Capability; calendar: Capability; accounts: Capability }> {
-	await migrateAccountsToConnections(volume)
+): { ai: Capability; email: Capability; calendar: Capability; accounts: Capability } {
 	const connections = volumeConnectionStore(volume)
 	const activeAi = volumeActiveAi(volume)
 	return {
@@ -371,7 +369,6 @@ export async function ensureAccount(
 	volume: Volume,
 	input: { accountId: string; providerId: string; enabled: CapabilityId[] }
 ): Promise<void> {
-	await migrateAccountsToConnections(volume)
 	const connections = volumeConnectionStore(volume)
 	if (await connections.get(input.accountId)) return
 	await connections.put({ id: input.accountId, kind: input.providerId, creds: {} })
@@ -398,7 +395,6 @@ export async function resolveAiAccount<T>(
 	volume: Volume,
 	mint: (lease: AiAccountLease) => T | Promise<T>
 ): Promise<T | null> {
-	await migrateAccountsToConnections(volume)
 	const connections = volumeConnectionStore(volume)
 	const sel = await volumeActiveAi(volume).get()
 	if (!sel) return null

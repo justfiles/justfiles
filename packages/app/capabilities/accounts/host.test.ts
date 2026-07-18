@@ -268,29 +268,3 @@ describe('use-facet dispatch', () => {
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
 	})
 })
-
-describe('accountsCapabilities (Volume entry point)', () => {
-	test('migrates legacy accounts into connections on first build', async () => {
-		const vol = volume(memStorage())
-		// Seed a pre-connection account file directly.
-		await vol.mkdir('/system/accounts', { recursive: true })
-		await vol.writeFile(
-			'/system/accounts/g.json',
-			new TextEncoder().encode(
-				JSON.stringify({
-					accountId: 'g',
-					providerId: 'google',
-					creds: { access: 'g' },
-					enabled: { email: {} },
-					scopes: [GMAIL_SCOPE]
-				})
-			)
-		)
-		const caps = await accountsCapabilities(deps(), vol, { firstParty: [SETTINGS] })
-		const accounts = (await caps.accounts.invoke(admin('listAccounts', {}))) as {
-			accountId: string
-			enabled: string[]
-		}[]
-		expect(accounts.find((a) => a.accountId === 'g')?.enabled).toEqual(['email'])
-	})
-})
