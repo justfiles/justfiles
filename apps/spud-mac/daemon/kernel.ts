@@ -1,10 +1,6 @@
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
-import {
-	accountsCapabilities,
-	type ProviderRegistry
-} from '@justfiles/app/capabilities/accounts/host'
-import { buildProviders } from '@justfiles/app/capabilities/accounts/providers'
+import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { userCapability } from '@justfiles/app/capabilities/user/host'
@@ -23,11 +19,14 @@ let kernelOnce: Promise<Kernel> | undefined
 
 const systemAllowlist = ['computer.spud.files']
 
-const providers: ProviderRegistry = buildProviders({
+// The platform's host-specific account seams (OAuth acquisition, the ChatGPT `ai` mint
+// + model catalogue). The capability hosts import the client code directly; only these
+// injected parts are daemon-specific.
+const accountsDeps = {
 	chatgpt: { signIn: chatgptSignIn, mintAi: chatgptMintAi, models: codexModels, defaultModel },
 	google: { signIn: googleSignIn, refreshClient: googleClient() },
 	icloud: true
-})
+}
 
 export function getKernel(): Promise<Kernel> {
 	kernelOnce ??= getVolume().then(buildKernel)
@@ -39,7 +38,7 @@ export function getKernel(): Promise<Kernel> {
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
 export async function buildKernel(fs: Volume): Promise<Kernel> {
-	const { ai, email, calendar, accounts } = accountsCapabilities(providers, fs, {
+	const { ai, email, calendar, accounts } = await accountsCapabilities(accountsDeps, fs, {
 		firstParty: ['computer.spud.settings']
 	})
 

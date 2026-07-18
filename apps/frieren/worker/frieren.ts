@@ -191,7 +191,9 @@ export class Frieren extends DurableObject<Env> {
 		// the agent no longer reaches them directly (that returns as capability-provided agent
 		// tools; see the plan's Step 3.5).
 		const providers = buildProviders({ text: this.text })
-		const caps = accountsCapabilities(providers, this.vol, { firstParty: ACCOUNTS_FIRST_PARTY })
+		const caps = await accountsCapabilities(providers, this.vol, {
+			firstParty: ACCOUNTS_FIRST_PARTY
+		})
 		const audit = new AuditLog(this.ctx.storage)
 		const rateLimit = new TokenBucket({ capacity: 60, windowMs: 60_000 })
 		const email = guardCapability(caps.email, { capability: 'email', audit, rateLimit })

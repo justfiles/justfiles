@@ -8,10 +8,8 @@
 
 import type { CalendarCapability, CalendarEvent } from '../../calendar/index.ts'
 import type { EmailCapability, EmailDetail, EmailSummary } from '../../email/index.ts'
-import type { Creds, Provider } from '../host.ts'
+import type { Creds } from '../connection.ts'
 
-const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
-const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 
 // The OAuth client credentials the token endpoint requires. Null → skip refresh
@@ -288,34 +286,11 @@ function parts(instantMs: number, timeZone: string) {
 	}
 }
 
-// ── Provider assembly ─────────────────────────────────────────────────────
+// ── Host seam ──────────────────────────────────────────────────────────────
 
+// Host-specific OAuth acquisition: loopback (daemon) or web redirect (Worker). Returns
+// the identity + creds for the accounts store to persist; `scopes` records what was
+// actually granted so incremental consent can tell what's still missing.
 export type OAuthSignIn = (
 	requested: string[]
 ) => Promise<{ accountId: string; creds: Creds; scopes?: string[] }>
-
-export interface GoogleProviderDeps {
-	// Host-specific acquisition: loopback (daemon) or web redirect (Worker).
-	signIn: OAuthSignIn
-	// Client creds for token refresh; null skips refresh (401 → re-auth).
-	refreshClient: GoogleClient | null
-}
-
-// ONE oauth account backs BOTH email and calendar; per-capability `scopes` drive
-// incremental consent (connect grabs identity, enabling a service widens scope).
-export function googleProvider(deps: GoogleProviderDeps): Provider {
-	return {
-		id: 'google',
-		name: 'Google',
-		auth: {
-			kind: 'oauth',
-			scopes: { email: [GMAIL_SCOPE], calendar: [CALENDAR_SCOPE] },
-			signIn: deps.signIn
-		},
-		mint: {
-			email: (creds) => createGmailEmail(authedFetch(creds as GoogleCreds, deps.refreshClient)),
-			calendar: (creds) =>
-				createGoogleCalendar(authedFetch(creds as GoogleCreds, deps.refreshClient))
-		}
-	}
-}

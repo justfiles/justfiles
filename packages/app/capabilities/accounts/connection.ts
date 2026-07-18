@@ -1,20 +1,24 @@
 // A Connection is a pure credential/identity record: one provider sign-in and the
 // creds it yields — nothing about which capabilities use it. It is the thin shared
 // thing the old `Account` was really encoding ("one Google sign-in backs email +
-// calendar"). Which connections back which capability lives separately in
-// `wiring.ts`; the account-centric view is reassembled on top (see account-view.ts).
+// calendar"). Which capability a connection backs is DERIVED (see provider-caps.ts);
+// the single active AI is a separate pointer (see active-ai.ts).
 //
-// Storage mirrors the accounts store exactly: one JSON file per connection under
-// `/system/connections/`, keyed by a URL-encoded id, with `creds` the single
-// encryptable lane via an optional SecretCodec (default identity — clear).
+// Storage: one JSON file per connection under `/system/connections/`, keyed by a
+// URL-encoded id, with `creds` the single encryptable lane via an optional
+// SecretCodec (default identity — clear). This is also the canonical home of the
+// `Creds` and `SecretCodec` types.
 
 import type { Volume } from '@justfiles/fs'
-import type { Creds } from './host.ts'
-import type { SecretCodec } from './store.ts'
 
-// Re-exported here as the credential store's canonical home going forward (it still
-// physically lives in store.ts until the legacy store is removed).
-export type { SecretCodec } from './store.ts'
+// A provider's stored credentials — an opaque bag; the single encryptable lane.
+export type Creds = Record<string, unknown>
+
+// Transforms the `creds` lane on the way to/from disk. Default = identity (clear).
+export interface SecretCodec {
+	encode(creds: Creds): unknown
+	decode(raw: unknown): Creds
+}
 
 export interface Connection {
 	id: string

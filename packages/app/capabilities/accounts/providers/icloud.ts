@@ -4,8 +4,6 @@
 // or raw iCalendar payloads leak into the result.
 
 import type { CalendarCapability, CalendarEvent } from '../../calendar/index.ts'
-import type { CredentialsSchema } from '../contract.ts'
-import type { Provider } from '../host.ts'
 import { type CalDavClient, createCalDavClient } from './icloud/caldav.ts'
 import { type CalEvent, localToUtc } from './icloud/ical.ts'
 
@@ -131,33 +129,11 @@ function normalize(
 	return normalized
 }
 
-// ── Provider assembly ─────────────────────────────────────────────────────
+// ── Host seam ──────────────────────────────────────────────────────────────
 
-const icloudSchema: CredentialsSchema = {
-	type: 'object',
-	properties: {
-		username: {
-			type: 'string',
-			minLength: 1,
-			description: 'Apple ID email address used to sign into iCloud.'
-		},
-		password: {
-			type: 'string',
-			minLength: 1,
-			description:
-				'App-specific password generated at appleid.apple.com → Sign-In and Security → App-Specific Passwords. Not your Apple ID password.'
-		}
-	},
-	required: ['username', 'password']
-}
-
-// A static (form) provider backing `calendar` over CalDAV — portable across hosts.
-export function icloudProvider(): Provider {
-	const impl = createIcloudCalendarProvider()
-	return {
-		id: 'icloud',
-		name: 'iCloud',
-		auth: { kind: 'form', credentialsSchema: icloudSchema },
-		mint: { calendar: (creds) => impl.create(creds) }
-	}
+// The calendar use-facet client for an iCloud connection: form creds (Apple ID +
+// app-specific password) → CalDAV. The connect-form schema lives in the provider
+// catalog (provider-caps.ts).
+export function createIcloudCalendar(credentials: IcloudCalendarCredentials): CalendarCapability {
+	return createIcloudCalendarProvider().create(credentials)
 }
