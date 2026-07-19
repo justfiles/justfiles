@@ -351,8 +351,16 @@ export function flushActiveVolume(): void {
 // a denylist is more robust than an allowlist and needs no per-app knowledge.
 const RESERVED_TOP_LEVEL = new Set(['.state', 'applications', 'state', 'system'])
 // Copied subtree: user data + personalized identity only — never the sync
-// journal, platform accounts, app bytes, or per-app UI state.
-const MIGRATE_SKIP = ['/.state', '/system/accounts', '/applications', '/state']
+// journal, platform accounts/connections (credentials!), the active-AI
+// selection, app bytes, or per-app UI state.
+const MIGRATE_SKIP = [
+	'/.state',
+	'/system/accounts',
+	'/system/connections',
+	'/system/active-ai.json',
+	'/applications',
+	'/state'
+]
 // The two identity files the DO seeds as `seeded: true` defaults — the only paths
 // a migration is allowed to overwrite (with the user's personalized version).
 const IDENTITY_PATHS = new Set([SOUL_PATH, PROFILE_PATH])
