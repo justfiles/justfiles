@@ -21,8 +21,12 @@ import {
 import { registerBunOAuthFlows } from '@earendil-works/pi-ai/bun-oauth'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
 import { type AgentBackend, modelsBackend, text } from '@justfiles/agent'
-import { type Creds, resolveAiAccount } from '@justfiles/app/capabilities/accounts/host'
-import type { OAuthSignIn } from '@justfiles/app/capabilities/accounts/providers'
+import { resolveAiAccount } from '@justfiles/app/capabilities/accounts/host'
+import type {
+	AcquiredAccount,
+	BoundAccount,
+	Provider
+} from '@justfiles/app/capabilities/accounts/providers'
 import type { AiCapability } from '@justfiles/app/capabilities/ai'
 import type { Volume } from '@justfiles/fs'
 
@@ -43,7 +47,7 @@ export function codexModels(): { id: string; name: string }[] {
 	return codexProvider.getModels().map((m) => ({ id: m.id, name: m.name }))
 }
 
-export function defaultModel(): string {
+function defaultModel(): string {
 	const models = codexModels()
 	return models.find((m) => m.id === 'gpt-5.1-codex-max')?.id ?? models[0]?.id ?? ''
 }
@@ -67,10 +71,10 @@ function pickModel(models: Models, id: string | undefined) {
 // Models reads/refreshes through it, and `modify` persists a rotated token so the next
 // host to sync gets it. Legacy creds without a `type` tag are coerced to `oauth`.
 function accountCredentials(
-	creds: Creds,
-	persist: (creds: Creds) => Promise<void>
+	creds: unknown,
+	persist: (creds: unknown) => Promise<void>
 ): CredentialStore {
-	let current: Credential = { ...(creds as unknown as OAuthCredential), type: 'oauth' }
+	let current: Credential = { ...(creds as OAuthCredential), type: 'oauth' }
 	return {
 		read: async () => current,
 		list: async () => [{ providerId: 'openai-codex', type: 'oauth' }],
@@ -78,7 +82,7 @@ function accountCredentials(
 			const next = await fn(current)
 			if (next) {
 				current = next
-				await persist(next as unknown as Creds)
+				await persist(next)
 			}
 			return next
 		},
@@ -86,14 +90,14 @@ function accountCredentials(
 	}
 }
 
-// OAuth acquisition (host-specific): run pi-ai's Codex login flow. The flow drives two
-// prompts we answer here: first a method `select` (browser vs device-code) — we always
-// pick browser and shell the consent URL to `open`; then a `manual_code` prompt raced
-// against the 127.0.0.1:1455 loopback catcher — we have no paste UI, so we leave it
-// pending and let the loopback redirect win (pi aborts the prompt's signal once it has
-// the code, or the login is cancelled). Returns the credential for the accounts store to
-// persist; injected as the daemon's `chatgpt.signIn` dep.
-export const chatgptSignIn: OAuthSignIn = async () => {
+// Acquisition: run pi-ai's Codex login flow. This deliberately does NOT go through the
+// generic AuthFlow seam — pi owns the whole dance (its own loopback on 1455, its own
+// prompt protocol). The flow drives two prompts we answer here: first a method `select`
+// (browser vs device-code) — we always pick browser and shell the consent URL to
+// `open`; then a `manual_code` prompt raced against the 127.0.0.1:1455 loopback
+// catcher — we have no paste UI, so we leave it pending and let the loopback redirect
+// win (pi aborts the prompt's signal once it has the code, or the login is cancelled).
+const chatgptAcquire = async (): Promise<AcquiredAccount> => {
 	const oauth = codexProvider.auth.oauth
 	if (!oauth) throw new Error('Codex provider exposes no OAuth flow')
 	// The browser flow can't receive its redirect if the loopback port is taken; fail fast
@@ -118,7 +122,7 @@ export const chatgptSignIn: OAuthSignIn = async () => {
 		}
 	})
 	const accountId = String(cred.accountId ?? '')
-	return { accountId, creds: { ...cred, accountId } satisfies Creds }
+	return { accountId, creds: { ...cred, accountId } }
 }
 
 // Probe the loopback port pi's browser flow binds (127.0.0.1:1455). Rejects with the
@@ -133,16 +137,12 @@ function assertLoopbackFree(port: number): Promise<void> {
 	})
 }
 
-// Build an `ai` use-facet impl over the account's creds + selected model, streamed
-// through pi Models. `persist` writes rotated credentials back to the connection: Models
-// refreshes the OAuth token under its store lock, and the rotated grant is saved so a
-// later call — here or in the agent, which share the connection — never reuses a stale or
+// Bind the `ai` use facet over the account's creds + selected model, streamed through
+// pi Models. `persist` writes rotated credentials back to the account: Models refreshes
+// the OAuth token under its store lock, and the rotated grant is saved so a later call
+// — here or in the agent, which share the account — never reuses a stale or
 // already-consumed refresh token.
-export const chatgptMintAi = (
-	creds: Creds,
-	config: unknown,
-	persist: (creds: Creds) => Promise<void>
-): AiCapability => {
+function mintAi({ creds, config, persist }: BoundAccount): AiCapability {
 	const models = codexRuntime(accountCredentials(creds, persist))
 	const model = pickModel(models, (config as { model?: string } | undefined)?.model)
 	if (!model) throw new Error('no ChatGPT model available')
@@ -151,6 +151,18 @@ export const chatgptMintAi = (
 		generateText: async ({ system, prompt }) => ({
 			text: await gen.gen(typeof system === 'string' ? system : '', prompt)
 		})
+	}
+}
+
+// The daemon-local ChatGPT provider: everything (login, refresh, model catalogue,
+// streaming) rides pi-ai's `openai-codex` provider, a dependency only the daemon
+// carries — so unlike Google/iCloud this provider is constructed here, not shared.
+export function chatgptProvider(): Provider {
+	return {
+		id: 'chatgpt',
+		name: 'ChatGPT',
+		auth: { ui: { kind: 'interactive' }, acquire: chatgptAcquire },
+		capabilities: { ai: { bind: mintAi, models: codexModels, defaultModel } }
 	}
 }
 
@@ -167,6 +179,7 @@ export function resolveAgentBackend(fs: Volume): Promise<AgentBackend | null> {
 		// refreshed OR replaced by a fresh sign-in, so a re-sign-in rebuilds the session over
 		// the new credentials instead of reusing the runtime bound to the old (possibly
 		// revoked) ones. A plain refresh Models handles in place; the rebuild is lossless.
-		return model ? modelsBackend(models, model, String(creds.expires ?? '')) : null
+		const expires = (creds as { expires?: number }).expires
+		return model ? modelsBackend(models, model, String(expires ?? '')) : null
 	})
 }

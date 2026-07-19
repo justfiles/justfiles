@@ -2,11 +2,11 @@ import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import { codexModels, resolveAgentBackend } from './chatgpt.ts'
 
-// `resolveAgentBackend` borrows the active-AI connection from the Volume-backed stores
+// `resolveAgentBackend` borrows the active-AI account from the Volume-backed stores
 // (internal to @justfiles/app) and mints a token-sealed backend. We seed the way those
-// stores persist — one JSON file per connection under /system/connections, plus the
+// stores persist — one JSON file per account under /system/accounts, plus the
 // /system/active-ai.json selection — and drive resolution against a real in-memory
-// Volume. `ai` toggles whether this connection is the active AI.
+// Volume. `ai` toggles whether this account is the active AI.
 
 const ID = 'u@openai.com'
 
@@ -15,13 +15,13 @@ async function seed(
 ): Promise<Volume> {
 	const fs = volume(memStorage())
 	const enc = new TextEncoder()
-	await fs.mkdir('/system/connections', { recursive: true })
+	await fs.mkdir('/system/accounts', { recursive: true })
 	await fs.writeFile(
-		`/system/connections/${encodeURIComponent(ID)}.json`,
+		`/system/accounts/${encodeURIComponent(ID)}.json`,
 		enc.encode(
 			JSON.stringify({
 				id: ID,
-				kind: 'chatgpt',
+				provider: 'chatgpt',
 				creds: {
 					access: opts.access ?? 'tok',
 					refresh: 'ref',
@@ -36,7 +36,7 @@ async function seed(
 			'/system/active-ai.json',
 			enc.encode(
 				JSON.stringify(
-					opts.model !== undefined ? { connectionId: ID, model: opts.model } : { connectionId: ID }
+					opts.model !== undefined ? { accountId: ID, model: opts.model } : { accountId: ID }
 				)
 			)
 		)

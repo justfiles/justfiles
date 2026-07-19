@@ -1,38 +1,60 @@
-// frieren's account host seams. The client code (Gmail, CalDAV) and the provider
-// catalog are shared with spud-mac (@justfiles/app); frieren only supplies the parts
-// that differ on the Worker:
-//   - Spud AI mints `ai` over the host's own env-keyed LLM (the platform owns the
+// frieren's account providers. Google/iCloud/Spud are the shared modules — the
+// Worker differs from the daemon only in constructor args:
+//   - Spud AI binds `ai` over the host's own env-keyed LLM (the platform owns the
 //     vendor/model), and
-//   - OAuth providers (Google, ChatGPT) are *acquired on the Spud desktop app* and
-//     sync here (DESIGN §9) — the Worker has no browser/loopback to run the flow, so
-//     connecting them from the browser is refused clearly until the web-redirect flow
-//     lands.
+//   - interactive acquisition is refused clearly — those accounts are signed in on
+//     the Spud desktop app and sync here (DESIGN §9) — until a web-redirect
+//     AuthFlow lands. ChatGPT is a local marker so Settings lists it; its runtime
+//     (pi-ai) lives only in the daemon.
 
 import type { LLMText } from '@justfiles/agent'
-import type { AccountsDeps } from '@justfiles/app/capabilities/accounts/host'
-import type { OAuthSignIn } from '@justfiles/app/capabilities/accounts/providers'
+import {
+	type AuthFlow,
+	googleProvider,
+	icloudProvider,
+	type Provider,
+	spudProvider
+} from '@justfiles/app/capabilities/accounts/providers'
 
 export interface ProviderDeps {
 	text: LLMText
 }
 
-const acquireOnDesktop: OAuthSignIn = async () => {
-	throw new Error('Sign in to this account from the Spud desktop app — it will sync here.')
+const DESKTOP_MESSAGE = 'Sign in to this account from the Spud desktop app — it will sync here.'
+
+// The Worker has no browser/loopback to run an interactive flow; refuse before the
+// provider even builds its authorize URL.
+const acquireOnDesktop: AuthFlow = {
+	authorize: async () => {
+		throw new Error(DESKTOP_MESSAGE)
+	}
 }
 
-// The Worker's `AccountsDeps` (passed straight to `accountsCapabilities`).
-export function buildProviders(deps: ProviderDeps): AccountsDeps {
+export function buildProviders(deps: ProviderDeps): Provider[] {
+	return [
+		googleProvider({ flow: acquireOnDesktop, client: null }),
+		icloudProvider(),
+		chatgptOnDesktop(),
+		spudProvider({ generate: (system, prompt) => deps.text.gen(system, prompt) })
+	]
+}
+
+function chatgptOnDesktop(): Provider {
 	return {
-		chatgpt: {
-			signIn: acquireOnDesktop,
-			mintAi: () => {
-				throw new Error('ChatGPT is used from the Spud desktop app')
-			},
-			models: () => [],
-			defaultModel: () => ''
+		id: 'chatgpt',
+		name: 'ChatGPT',
+		auth: {
+			ui: { kind: 'interactive' },
+			acquire: async () => {
+				throw new Error(DESKTOP_MESSAGE)
+			}
 		},
-		google: { signIn: acquireOnDesktop, refreshClient: null },
-		icloud: true,
-		spud: { generate: (system, prompt) => deps.text.gen(system, prompt) }
+		capabilities: {
+			ai: {
+				bind: () => {
+					throw new Error('ChatGPT is used from the Spud desktop app')
+				}
+			}
+		}
 	}
 }
