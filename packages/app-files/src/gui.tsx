@@ -245,18 +245,19 @@ function applyPathDiff(model: FileTreeModel, prev: string[], next: string[]): vo
 	model.batch(ops)
 }
 
-// The right-click menu is a plain light-DOM node projected into the tree's
-// `context-menu` slot; `@pierre/trees` positions it at the cursor and closes it
-// on outside-click/Escape (see `context.close`). Delete is guarded by a second
-// click — the GUI iframe has no `allow-modals`, so `confirm()` is a no-op, and a
-// hard delete (no trash) warrants one deliberate re-click.
+// The right-click menu reuses the shared `ds-menu` component (design.css, cloned
+// into the app frame by the host — same classes the OS desktop menu and menubar
+// use). `@pierre/trees` slots it into a cursor-anchored, fixed-position element,
+// so `position: absolute` floats the box out from that origin. Delete is guarded
+// by a second click — the GUI iframe has no `allow-modals`, so `confirm()` is a
+// no-op, and a hard delete (no trash) warrants one deliberate re-click.
 function DeleteMenu(props: { label: string; onDelete: () => void }) {
 	const [armed, setArmed] = useState(false)
 	return (
-		<div className="files-menu" role="menu">
+		<div className="ds-menu" role="menu" style={{ position: 'absolute', top: 0, left: 0 }}>
 			<button
 				type="button"
-				className="files-menu-item files-menu-danger"
+				className="ds-menu-item"
 				role="menuitem"
 				onClick={() => (armed ? props.onDelete() : setArmed(true))}
 			>
