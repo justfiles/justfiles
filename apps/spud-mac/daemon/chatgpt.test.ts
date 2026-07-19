@@ -10,7 +10,9 @@ import { codexModels, resolveAgentBackend } from './chatgpt.ts'
 
 const ID = 'u@openai.com'
 
-async function seed(opts: { ai?: boolean; access?: string; model?: string } = {}): Promise<Volume> {
+async function seed(
+	opts: { ai?: boolean; access?: string; model?: string; expires?: number } = {}
+): Promise<Volume> {
 	const fs = volume(memStorage())
 	const enc = new TextEncoder()
 	await fs.mkdir('/system/connections', { recursive: true })
@@ -23,7 +25,7 @@ async function seed(opts: { ai?: boolean; access?: string; model?: string } = {}
 				creds: {
 					access: opts.access ?? 'tok',
 					refresh: 'ref',
-					expires: Date.now() + 3_600_000,
+					expires: opts.expires ?? Date.now() + 3_600_000,
 					accountId: ID
 				}
 			})
@@ -64,5 +66,16 @@ describe('resolveAgentBackend', () => {
 		const id = codexModels()[0]?.id
 		const backend = await resolveAgentBackend(await seed({ ai: true, model: id }))
 		expect(backend?.model.id).toBe(id)
+	})
+
+	test('rotates the cache revision when the credential is replaced', async () => {
+		// A re-sign-in persists a fresh grant with a new expiry; the revision must change so
+		// the session rebuilds instead of reusing a runtime bound to the replaced credentials.
+		const first = await resolveAgentBackend(await seed({ ai: true, expires: 1_000 }))
+		const replaced = await resolveAgentBackend(await seed({ ai: true, expires: 2_000 }))
+		expect(first?.revision).not.toBe(replaced?.revision)
+		// The same grant keeps the same revision, so an unchanged credential never rebuilds.
+		const same = await resolveAgentBackend(await seed({ ai: true, expires: 1_000 }))
+		expect(first?.revision).toBe(same?.revision)
 	})
 })
