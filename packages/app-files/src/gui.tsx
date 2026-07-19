@@ -1,6 +1,6 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI } from '@justfiles/app/browser'
-import type { FileTreeBatchOperation } from '@pierre/trees'
+import type { ContextMenuItem, FileTreeBatchOperation } from '@pierre/trees'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -127,6 +127,7 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 							files={files}
 							selectedPath={viewing}
 							onSelect={(path) => void client.setView({ path })}
+							onDelete={(path) => void client.remove({ path })}
 						/>
 					</div>
 				)}
@@ -244,10 +245,32 @@ function applyPathDiff(model: FileTreeModel, prev: string[], next: string[]): vo
 	model.batch(ops)
 }
 
+// The right-click menu is a plain light-DOM node projected into the tree's
+// `context-menu` slot; `@pierre/trees` positions it at the cursor and closes it
+// on outside-click/Escape (see `context.close`). Delete is guarded by a second
+// click — the GUI iframe has no `allow-modals`, so `confirm()` is a no-op, and a
+// hard delete (no trash) warrants one deliberate re-click.
+function DeleteMenu(props: { label: string; onDelete: () => void }) {
+	const [armed, setArmed] = useState(false)
+	return (
+		<div className="files-menu" role="menu">
+			<button
+				type="button"
+				className="files-menu-item files-menu-danger"
+				role="menuitem"
+				onClick={() => (armed ? props.onDelete() : setArmed(true))}
+			>
+				{armed ? 'Click again to confirm' : props.label}
+			</button>
+		</div>
+	)
+}
+
 function FilesTree(props: {
 	files: string[]
 	selectedPath: string | null
 	onSelect: (path: string) => void
+	onDelete: (path: string) => void
 }) {
 	const latest = useRef(props)
 	latest.current = props
@@ -298,5 +321,21 @@ function FilesTree(props: {
 		model.scrollToPath(selectedPath, { focus: false })
 	}, [model, selectedPath])
 
-	return <PierreFileTree model={model} className="files-tree" />
+	return (
+		<PierreFileTree
+			model={model}
+			className="files-tree"
+			renderContextMenu={(item: ContextMenuItem, context) => (
+				<DeleteMenu
+					label={`Delete ${item.kind === 'directory' ? 'folder' : 'file'}`}
+					onDelete={() => {
+						// The tree runs on slash-stripped paths; restore the leading slash
+						// the volume expects (mirrors `onSelectionChange` above).
+						latest.current.onDelete(`/${item.path}`)
+						context.close()
+					}}
+				/>
+			)}
+		/>
+	)
 }

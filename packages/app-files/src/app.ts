@@ -116,6 +116,20 @@ export const app = defineApp({
 				// preview slice — so the status bar reports the real file size.
 				return { path, content: decoder.decode(slice), truncated, size: bytes.byteLength }
 			}
+		}),
+
+		// Destructive — gui-only (the right-click "Delete" in the tree). The agent
+		// never removes user files blindly. `recursive` clears a folder and all its
+		// contents; `force` makes a missing path a no-op. The removal fires the
+		// recursive watch, which folds a re-scan via `treeChanged` — so the tree
+		// refreshes itself and `filesLoaded` clears `currentViewing` if it's gone.
+		remove: p.procedure({
+			description: 'Delete a file or folder.',
+			audience: 'gui',
+			schema: v.object({ path: pathSchema }),
+			async run({ path }, app) {
+				await app.invoke('volume', 'rm', path, { recursive: true, force: true })
+			}
 		})
 	})
 })
