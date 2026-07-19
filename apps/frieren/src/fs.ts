@@ -1,3 +1,4 @@
+import { PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import {
 	createFsClient as createCoreFsClient,
 	type FsClient,
@@ -6,7 +7,6 @@ import {
 import { type SyncStatus as FsSyncStatus, synced, type Volume, volume } from '@justfiles/fs'
 import { idbStorage } from '@justfiles/fs/storage/idb'
 import { FileType } from '@justfiles/fs/types'
-import { PROFILE_PATH, SOUL_PATH } from '../shared/agent-defaults'
 
 export type { FsClient, Volume }
 export type SyncStatus = FsSyncStatus | 'local-only'

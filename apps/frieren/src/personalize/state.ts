@@ -1,8 +1,8 @@
-import { AVATAR_PATH, PROFILE_PATH, SOUL_PATH } from '../../shared/agent-defaults'
+import { AVATAR_PATH, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import type { Volume } from '../fs'
 
 // The identity files the personalize flow edits. Seeded with defaults at boot
-// (see shared/agent-defaults.ts); this UI only overwrites them on demand.
+// (see @justfiles/agent/defaults); this UI only overwrites them on demand.
 export const PATHS = {
 	profile: PROFILE_PATH,
 	soul: SOUL_PATH,

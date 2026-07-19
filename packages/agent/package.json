@@ -3,7 +3,8 @@
 	"type": "module",
 	"sideEffects": false,
 	"exports": {
-		".": "./index.ts"
+		".": "./index.ts",
+		"./defaults": "./agent-defaults.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -12,6 +13,10 @@
 			".": {
 				"types": "./dist/index.d.ts",
 				"default": "./dist/index.js"
+			},
+			"./defaults": {
+				"types": "./dist/agent-defaults.d.ts",
+				"default": "./dist/agent-defaults.js"
 			}
 		}
 	},
