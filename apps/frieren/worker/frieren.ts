@@ -23,6 +23,7 @@ import {
 	type SoulGenerationInput,
 	text
 } from '@justfiles/agent'
+import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { sweepTrash } from '@justfiles/app'
 import {
 	accountsCapabilities,
@@ -41,7 +42,6 @@ import {
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
-import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '../shared/agent-defaults.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'

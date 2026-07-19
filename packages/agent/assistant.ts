@@ -2,6 +2,7 @@ import type { Agent, AgentEvent, AgentMessage, AgentTool } from '@earendil-works
 import type { Volume } from '@justfiles/fs'
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration'
+import { ensureAgentDefaults } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
 import { createReadDocTool, docsPrompt } from './docs'
 import { file } from './file'
@@ -74,6 +75,9 @@ export async function createAssistant({
 	getTimezone,
 	readDoc
 }: AssistantProps): Promise<Assistant> {
+	// Seed the platform's default persona + empty profile if absent, so the agent always has
+	// a working identity and never blocks on "onboarding". Idempotent; personalization wins.
+	await ensureAgentDefaults(volume)
 	// Skills: user-authored on the Volume (+ built-in sources later). Expose `read_skill`
 	// only when there is something to read, so a host with no skills sees no dead tool.
 	const skillRegistry = createVolumeSkillRegistry(volume)
@@ -197,9 +201,9 @@ export async function createAssistant({
 	}
 
 	async function resolveSystemPrompt(): Promise<string> {
-		// No onboarding gate: a missing soul falls back to a blank persona so the agent still
-		// works (skills, docs, tools) and never blocks the user. Hosts seed a real default
-		// persona at boot (see the daemon's agent-defaults); personalization overwrites it.
+		// No onboarding gate: `createAssistant` seeds a default persona (agent-defaults) so a
+		// soul is normally present; if it is still missing we fall back to a blank persona so
+		// the agent keeps working (skills, docs, tools) and never blocks the user.
 		const soul = (await file(volume, PATHS.soul(agentId)).text()) || ''
 
 		const prompt = systemPrompt(soul)
