@@ -13,6 +13,11 @@ const MIN_H = 200
 // Approximate menubar height; the desktop sits below it, so clamp y against
 // (innerHeight - TOP_INSET) to keep the titlebar grabbable.
 const TOP_INSET = 32
+// Omnibar pill work-area strut: bottom:20px + .frn-omnibar-bar height:48px + a
+// small breathing gap. Kept in sync with .frn-omnibar / .frn-omnibar-bar in
+// app.css. Windows are never *placed* under the pill (drag may transiently
+// float over it, snapping back on release — mirroring the macOS Dock).
+const BOTTOM_INSET = 80
 
 type ResizeDir = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
 
@@ -24,7 +29,7 @@ const HANDLES: ResizeDir[] = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se']
 function clampToViewport(rect: WindowRect): WindowRect {
 	const vw = document.documentElement.clientWidth
 	const vh = document.documentElement.clientHeight
-	const availH = Math.max(MIN_H, vh - TOP_INSET)
+	const availH = Math.max(MIN_H, vh - TOP_INSET - BOTTOM_INSET)
 	const w = Math.max(MIN_W, Math.min(rect.w, vw))
 	const h = Math.max(MIN_H, Math.min(rect.h, availH))
 	const x = Math.max(0, Math.min(rect.x, vw - w))
