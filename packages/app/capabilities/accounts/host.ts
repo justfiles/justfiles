@@ -53,7 +53,14 @@ export interface AccountsDeps {
 	icloud?: boolean
 	chatgpt?: {
 		signIn: OAuthSignIn
-		mintAi: (creds: Creds, config: unknown) => AiCapability
+		// `persist` writes rotated credentials back to the connection: `Models` refreshes the
+		// OAuth token through the minted runtime, and the rotated grant MUST be saved or the
+		// next call (here or in the agent) reuses a stale/consumed refresh token.
+		mintAi: (
+			creds: Creds,
+			config: unknown,
+			persist: (creds: Creds) => Promise<void>
+		) => AiCapability
 		models: () => AiModel[]
 		defaultModel: () => string
 	}
@@ -86,9 +93,16 @@ function calendarClient(c: Connection, deps: AccountsDeps): CalendarCapability |
 }
 
 // Mint the `ai` use facet for a connection + selected model. ChatGPT is host-injected
-// (built over the host's LLM runtime); Spud AI wraps the platform generate fn.
-function aiClient(c: Connection, config: unknown, deps: AccountsDeps): AiCapability | undefined {
-	if (c.kind === 'chatgpt' && deps.chatgpt) return deps.chatgpt.mintAi(c.creds, config)
+// (built over the host's LLM runtime); Spud AI wraps the platform generate fn. `persist`
+// writes rotated credentials back to the connection (ChatGPT refreshes its OAuth token
+// through the minted runtime); Spud AI has no rotating secret and ignores it.
+function aiClient(
+	c: Connection,
+	config: unknown,
+	deps: AccountsDeps,
+	persist: (creds: Creds) => Promise<void>
+): AiCapability | undefined {
+	if (c.kind === 'chatgpt' && deps.chatgpt) return deps.chatgpt.mintAi(c.creds, config, persist)
 	if (c.kind === 'spud' && deps.spud) {
 		const generate = deps.spud.generate
 		return {
@@ -182,7 +196,14 @@ function aiHost(
 			const sel = await activeAi.get()
 			const conn = sel ? await connections.get(sel.connectionId) : undefined
 			const impl = conn
-				? aiClient(conn, sel?.model !== undefined ? { model: sel.model } : {}, deps)
+				? aiClient(
+						conn,
+						sel?.model !== undefined ? { model: sel.model } : {},
+						deps,
+						async (creds) => {
+							await connections.put({ ...conn, creds })
+						}
+					)
 				: undefined
 			if (!impl) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			return impl.generateText(i)
