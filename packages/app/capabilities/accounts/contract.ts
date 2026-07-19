@@ -20,12 +20,14 @@ export interface CredentialsSchema {
 	required?: string[]
 }
 
-// A connectable provider, projected for the UI. No host internals (no mint
-// factories, no signIn function) ever reach the app.
+// A connectable provider, projected for the UI. No host internals (no bind
+// factories, no auth flows) ever reach the app. `authKind` is the acquisition
+// interaction Settings must render: a credentials form, an interactive
+// (delegated) sign-in, or nothing (platform-managed).
 export interface ProviderInfo {
 	id: string
 	name: string
-	authKind: 'form' | 'oauth'
+	authKind: 'form' | 'interactive' | 'none'
 	// Platform-managed (e.g. Spud AI): the UI offers no connect/disconnect, only its
 	// capability toggles.
 	builtin?: boolean
@@ -49,8 +51,8 @@ export interface AccountInfo {
 export interface AccountsAdminCapability {
 	listProviders(input: Record<string, never>): Promise<ProviderInfo[]>
 	listAccounts(input: Record<string, never>): Promise<AccountInfo[]>
-	// `form` providers: pass `credentials`. `oauth` providers: omit — the host runs
-	// the flow (opens the browser, catches the redirect) and derives `accountId`
+	// `form` providers: pass `credentials`. `interactive` providers: omit — the host
+	// runs the flow (opens the browser, catches the redirect) and derives `accountId`
 	// from the verified identity.
 	connect(input: { providerId: string; credentials?: Record<string, string> }): Promise<{
 		accountId: string

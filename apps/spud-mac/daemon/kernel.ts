@@ -1,6 +1,7 @@
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
+import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
 import { notifyHost } from '@justfiles/app/capabilities/notify/host'
 import { userCapability } from '@justfiles/app/capabilities/user/host'
@@ -8,9 +9,9 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { builtinStore } from './builtins'
-import { chatgptMintAi, chatgptSignIn, codexModels, defaultModel } from './chatgpt'
+import { chatgptProvider } from './chatgpt'
 import { getVolume } from './fs'
-import { googleClient, googleSignIn } from './google/oauth'
+import { googleClient, loopbackAuthFlow } from './google/oauth'
 import { notificationChannel } from './notify'
 import { sandboxes } from './sandbox'
 import { toolchain } from './toolchain'
@@ -19,14 +20,14 @@ let kernelOnce: Promise<Kernel> | undefined
 
 const systemAllowlist = ['computer.spud.files']
 
-// The platform's host-specific account seams (OAuth acquisition, the ChatGPT `ai` mint
-// + model catalogue). The capability hosts import the client code directly; only these
-// injected parts are daemon-specific.
-const accountsDeps = {
-	chatgpt: { signIn: chatgptSignIn, mintAi: chatgptMintAi, models: codexModels, defaultModel },
-	google: { signIn: googleSignIn, refreshClient: googleClient() },
-	icloud: true
-}
+// The daemon's account providers: the shared Google/iCloud modules wired to the
+// loopback auth flow + env OAuth client, plus the daemon-local ChatGPT provider
+// (which rides pi-ai's Codex runtime).
+const accountsProviders = () => [
+	googleProvider({ flow: loopbackAuthFlow(), client: googleClient() }),
+	icloudProvider(),
+	chatgptProvider()
+]
 
 export function getKernel(): Promise<Kernel> {
 	kernelOnce ??= getVolume().then(buildKernel)
@@ -38,7 +39,7 @@ export function getKernel(): Promise<Kernel> {
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
 export async function buildKernel(fs: Volume): Promise<Kernel> {
-	const { ai, email, calendar, accounts } = accountsCapabilities(accountsDeps, fs, {
+	const { ai, email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
 		firstParty: ['computer.spud.settings']
 	})
 

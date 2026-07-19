@@ -1,6 +1,21 @@
-// Barrel for the shared provider host-seam types. The provider CLIENT factories
-// (Gmail, Google Calendar, iCloud CalDAV) are imported directly by the capability
-// hosts (see host.ts); the native hosts (spud-mac daemon, frieren Worker) only need
-// the seam types to wire their platform-specific `AccountsDeps`.
+// Barrel for the provider registry: the shared provider constructors (each takes
+// only what differs per platform) and the registry types hosts implement against.
 
-export type { GoogleClient, GoogleCreds, OAuthSignIn } from './google.ts'
+export type {
+	AcquiredAccount,
+	AiModel,
+	Auth,
+	AuthFlow,
+	Binding,
+	BoundAccount,
+	Provider
+} from '../provider.ts'
+export {
+	CALENDAR_SCOPE,
+	GMAIL_SCOPE,
+	type GoogleClient,
+	type GoogleCreds,
+	googleProvider
+} from './google.ts'
+export { icloudProvider } from './icloud.ts'
+export { spudProvider } from './spud.ts'

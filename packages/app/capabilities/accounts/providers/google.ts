@@ -1,26 +1,35 @@
-// Google provider for the accounts model — the fetch-based half that is portable
-// across hosts (Cloudflare Worker and the native daemon): token exchange/refresh,
-// a bearer-attaching `authedFetch`, and the Gmail/Calendar use-facet clients. The
-// host-specific half — acquiring the token (loopback in the daemon, a web redirect
-// in the Worker) — is injected as `signIn`; only the CLIENT credentials for refresh
-// are injected as `refreshClient` (a Desktop client's "secret" isn't confidential,
-// but Google still wants it on the token call).
+// The Google provider: one shared module, 100% portable across hosts (Cloudflare
+// Worker and the native daemon) — the whole OAuth protocol (PKCE, authorize URL,
+// code exchange, refresh, identity extraction) plus the Gmail/Calendar use-facet
+// clients, all over web-standard fetch/crypto. What differs per platform comes in
+// through the constructor: the `AuthFlow` user agent (loopback browser on the
+// daemon, a web redirect or "sign in on desktop" on the Worker) and the OAuth
+// CLIENT credentials (a Desktop client's "secret" isn't confidential, but Google
+// still wants it on the token call).
 
 import type { CalendarCapability, CalendarEvent } from '../../calendar/index.ts'
 import type { EmailCapability, EmailDetail, EmailSummary } from '../../email/index.ts'
-import type { Creds } from '../connection.ts'
+import type { AcquiredAccount, AuthFlow, BoundAccount, Provider } from '../provider.ts'
 
+const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
+// Always requested: the identity scopes that yield the account's email (the
+// accountId) from the id_token. Capability scopes widen on top of these.
+const IDENTITY_SCOPES = ['openid', 'email']
 
-// The OAuth client credentials the token endpoint requires. Null → skip refresh
-// (a near-expiry token is used as-is; a resulting 401 surfaces as re-auth).
+export const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.modify'
+export const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly'
+
+// The OAuth client credentials the token endpoint requires. Null → connect fails
+// with a clear message and refresh is skipped (a near-expiry token is used as-is;
+// a resulting 401 surfaces as re-auth) — a synced account still serves.
 export interface GoogleClient {
 	id: string
 	secret: string
 }
 
 // What an account from this provider stores. `expires` is epoch ms.
-export interface GoogleCreds extends Creds {
+export interface GoogleCreds {
 	access: string
 	refresh: string
 	expires: number
@@ -35,9 +44,8 @@ interface TokenResponse {
 	scope?: string
 }
 
-// Exchange authorization/refresh params for tokens (a plain POST, no browser). The
-// daemon's loopback `signIn` and the Worker's redirect callback both call this.
-export async function googleExchange(
+// Exchange authorization/refresh params for tokens (a plain POST, no browser).
+async function googleExchange(
 	client: GoogleClient,
 	params: Record<string, string>
 ): Promise<TokenResponse> {
@@ -55,10 +63,7 @@ export async function googleExchange(
 }
 
 // Google omits `refresh_token` on refresh, so the old one carries.
-export async function googleRefresh(
-	creds: GoogleCreds,
-	client: GoogleClient
-): Promise<GoogleCreds> {
+async function googleRefresh(creds: GoogleCreds, client: GoogleClient): Promise<GoogleCreds> {
 	const token = await googleExchange(client, {
 		grant_type: 'refresh_token',
 		refresh_token: creds.refresh
@@ -71,16 +76,13 @@ export async function googleRefresh(
 	}
 }
 
-export type AuthedFetch = (
-	path: string,
-	init?: { method?: string; body?: string }
-) => Promise<Response>
+type AuthedFetch = (path: string, init?: { method?: string; body?: string }) => Promise<Response>
 
 // A bearer-attaching fetch over an account's creds, refreshing once on near expiry
 // when a `refreshClient` is available. Mint has no store, so the rotated token isn't
 // persisted — the next call refreshes again; a failed/absent refresh falls through
 // to a 401 that surfaces as re-auth.
-export function authedFetch(creds: GoogleCreds, refreshClient: GoogleClient | null): AuthedFetch {
+function authedFetch(creds: GoogleCreds, refreshClient: GoogleClient | null): AuthedFetch {
 	let access = creds.access
 	let refreshed = false
 	return async (path, init = {}) => {
@@ -106,7 +108,7 @@ export function authedFetch(creds: GoogleCreds, refreshClient: GoogleClient | nu
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me'
 
-export function createGmailEmail(fetch: AuthedFetch): EmailCapability {
+function createGmailEmail(fetch: AuthedFetch): EmailCapability {
 	return {
 		async listUnread({ limit }) {
 			const res = await fetch(`${GMAIL_BASE}/messages?q=is:unread&maxResults=${limit ?? 20}`)
@@ -203,7 +205,7 @@ function b64urlDecode(data: string): string {
 
 const GCAL_BASE = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
 
-export function createGoogleCalendar(fetch: AuthedFetch): CalendarCapability {
+function createGoogleCalendar(fetch: AuthedFetch): CalendarCapability {
 	return {
 		async listToday({ timezone, now }) {
 			const { startMs, endMs } = todayWindow(now ?? Date.now(), timezone)
@@ -286,11 +288,101 @@ function parts(instantMs: number, timeZone: string) {
 	}
 }
 
-// ── Host seam ──────────────────────────────────────────────────────────────
+// ── Provider ───────────────────────────────────────────────────────────────
 
-// Host-specific OAuth acquisition: loopback (daemon) or web redirect (Worker). Returns
-// the identity + creds for the accounts store to persist; `scopes` records what was
-// actually granted so incremental consent can tell what's still missing.
-export type OAuthSignIn = (
-	requested: string[]
-) => Promise<{ accountId: string; creds: Creds; scopes?: string[] }>
+export interface GoogleProviderDeps {
+	// The platform's interactive-auth user agent (loopback browser, web redirect, …).
+	flow: AuthFlow
+	// OAuth client creds for the authorize/token endpoints, or null when unset.
+	client: GoogleClient | null
+}
+
+export function googleProvider(deps: GoogleProviderDeps): Provider {
+	const authed = (account: BoundAccount) => authedFetch(account.creds as GoogleCreds, deps.client)
+	return {
+		id: 'google',
+		name: 'Google',
+		auth: { ui: { kind: 'interactive' }, acquire: (input) => acquire(deps, input.scopes) },
+		capabilities: {
+			email: { scope: GMAIL_SCOPE, bind: (account) => createGmailEmail(authed(account)) },
+			calendar: {
+				scope: CALENDAR_SCOPE,
+				bind: (account) => createGoogleCalendar(authed(account))
+			}
+		}
+	}
+}
+
+// Run the consent flow (PKCE) for the union of identity + `requested` scopes through
+// the platform's AuthFlow, exchange the code, and return the tokens, the account's
+// email, and the scopes Google actually granted (recorded for incremental consent).
+async function acquire(deps: GoogleProviderDeps, requested: string[]): Promise<AcquiredAccount> {
+	const { flow, client } = deps
+	const verifier = randomB64url(32)
+	const challenge = b64url(
+		new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)))
+	)
+	const state = randomB64url(16)
+	const scope = [...new Set([...IDENTITY_SCOPES, ...requested])].join(' ')
+	let redirectUri = ''
+	const callback = await flow.authorize((uri) => {
+		if (!client)
+			throw new Error(
+				'Google sign-in needs GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in the environment'
+			)
+		redirectUri = uri
+		const url = new URL(AUTH_URL)
+		url.search = new URLSearchParams({
+			client_id: client.id,
+			redirect_uri: uri,
+			response_type: 'code',
+			scope,
+			code_challenge: challenge,
+			code_challenge_method: 'S256',
+			access_type: 'offline',
+			include_granted_scopes: 'true',
+			prompt: 'consent',
+			state
+		}).toString()
+		return url.toString()
+	})
+	const code = callback.searchParams.get('code')
+	if (!client || !code || callback.searchParams.get('state') !== state)
+		throw new Error('Google sign-in failed or was cancelled')
+	const token = await googleExchange(client, {
+		grant_type: 'authorization_code',
+		code,
+		redirect_uri: redirectUri,
+		code_verifier: verifier
+	})
+	const accountId = emailFromIdToken(token.id_token) ?? ''
+	const creds: GoogleCreds = {
+		access: token.access_token,
+		refresh: token.refresh_token ?? '',
+		expires: Date.now() + token.expires_in * 1000,
+		accountId
+	}
+	return { accountId, creds, scopes: (token.scope ?? scope).split(' ').filter(Boolean) }
+}
+
+// Web-standard base64url over raw bytes (no node Buffer), so the flow runs anywhere.
+function b64url(bytes: Uint8Array): string {
+	return btoa(String.fromCharCode(...bytes))
+		.replace(/\+/g, '-')
+		.replace(/\//g, '_')
+		.replace(/=+$/, '')
+}
+
+function randomB64url(n: number): string {
+	return b64url(crypto.getRandomValues(new Uint8Array(n)))
+}
+
+function emailFromIdToken(idToken: string | undefined): string | undefined {
+	const payload = idToken?.split('.')[1]
+	if (!payload) return undefined
+	try {
+		return (JSON.parse(b64urlDecode(payload)) as { email?: string }).email
+	} catch {
+		return undefined
+	}
+}

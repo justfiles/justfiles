@@ -4,6 +4,8 @@
 // or raw iCalendar payloads leak into the result.
 
 import type { CalendarCapability, CalendarEvent } from '../../calendar/index.ts'
+import type { CredentialsSchema } from '../contract.ts'
+import type { Provider } from '../provider.ts'
 import { type CalDavClient, createCalDavClient } from './icloud/caldav.ts'
 import { type CalEvent, localToUtc } from './icloud/ical.ts'
 
@@ -129,11 +131,44 @@ function normalize(
 	return normalized
 }
 
-// ── Host seam ──────────────────────────────────────────────────────────────
+// ── Provider ───────────────────────────────────────────────────────────────
 
-// The calendar use-facet client for an iCloud connection: form creds (Apple ID +
-// app-specific password) → CalDAV. The connect-form schema lives in the provider
-// catalog (provider-caps.ts).
-export function createIcloudCalendar(credentials: IcloudCalendarCredentials): CalendarCapability {
-	return createIcloudCalendarProvider().create(credentials)
+const ICLOUD_SCHEMA: CredentialsSchema = {
+	type: 'object',
+	properties: {
+		username: {
+			type: 'string',
+			minLength: 1,
+			description: 'Apple ID email address used to sign into iCloud.'
+		},
+		password: {
+			type: 'string',
+			minLength: 1,
+			description:
+				'App-specific password generated at appleid.apple.com → Sign-In and Security → App-Specific Passwords. Not your Apple ID password.'
+		}
+	},
+	required: ['username', 'password']
+}
+
+// A form provider: acquisition is the submitted fields themselves, keyed by the
+// Apple ID (so several iCloud accounts can coexist). No scope on calendar — the
+// capability is granted by the account existing; to stop it, disconnect.
+export function icloudProvider(options: IcloudCalendarProviderOptions = {}): Provider {
+	const inner = createIcloudCalendarProvider(options)
+	return {
+		id: 'icloud',
+		name: 'iCloud',
+		auth: {
+			ui: { kind: 'form', schema: ICLOUD_SCHEMA },
+			acquire: async ({ fields }) => {
+				const username = fields?.username?.trim()
+				const password = fields?.password
+				if (!username || !password)
+					throw new Error('iCloud needs an Apple ID and an app-specific password')
+				return { accountId: username, creds: { username, password, accountId: username } }
+			}
+		},
+		capabilities: { calendar: { bind: (account) => inner.create(account.creds) } }
+	}
 }

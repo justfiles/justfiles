@@ -1,4 +1,4 @@
-// The one irreducible selection: which connection (and model) is the active AI. ai is
+// The one irreducible selection: which account (and model) is the active AI. ai is
 // single-active, so this is a single pointer — not a per-capability table — the analog
 // of pi-ai's "which model" selection or Composio's per-(user, toolkit) connected
 // account. Stored as one small JSON on the Volume.
@@ -6,7 +6,7 @@
 import type { Volume } from '@justfiles/fs'
 
 export interface ActiveAi {
-	connectionId: string
+	accountId: string
 	model?: string
 }
 
