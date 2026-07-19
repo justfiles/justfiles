@@ -106,11 +106,18 @@
 	min-height: 0;
 	min-width: 0;
 	overflow: hidden;
+	/* Containing block for the absolutely-positioned tree below. */
+	position: relative;
 }
 .files-tree {
-	display: block;
-	height: 100%;
-	width: 100%;
+	/* Fill the wrap via absolute insets rather than `height: 100%`. A percentage
+	   height on a child of a `flex: 1` parent is not resolved against the
+	   flex-derived height in WebKit/WKWebView (only Chromium does), so the tree
+	   host overflowed its wrap by the header's height in the mac app — its bottom
+	   rows (and scrollbar) spilled below the window with no way to scroll to them
+	   (#203). Absolute `inset: 0` resolves against the wrap's box in every engine. */
+	position: absolute;
+	inset: 0;
 	--trees-bg-override: var(--surface);
 	--trees-fg-override: var(--text);
 	--trees-fg-muted-override: color-mix(in srgb, var(--text) 55%, transparent);
