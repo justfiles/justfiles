@@ -326,17 +326,26 @@ function FilesTree(props: {
 		<PierreFileTree
 			model={model}
 			className="files-tree"
-			renderContextMenu={(item: ContextMenuItem, context) => (
-				<DeleteMenu
-					label={`Delete ${item.kind === 'directory' ? 'folder' : 'file'}`}
-					onDelete={() => {
-						// The tree runs on slash-stripped paths; restore the leading slash
-						// the volume expects (mirrors `onSelectionChange` above).
-						latest.current.onDelete(`/${item.path}`)
-						context.close()
-					}}
-				/>
-			)}
+			renderContextMenu={(item: ContextMenuItem, context) => {
+				// The tree runs on slash-stripped paths and marks directories with a
+				// trailing slash (`folder/`); restore the leading slash and drop any
+				// trailing one so `volume.rm` resolves the entry itself — a trailing
+				// slash makes it clear the folder's contents but leave the folder behind.
+				const path = `/${item.path}`.replace(/\/+$/, '')
+				return (
+					<DeleteMenu
+						// Key on the target so re-aiming the menu at another row (right-click
+						// without dismissing first) remounts it, resetting the arm-to-confirm
+						// state instead of inheriting a primed click for the new target.
+						key={item.path}
+						label={`Delete ${item.kind === 'directory' ? 'folder' : 'file'}`}
+						onDelete={() => {
+							latest.current.onDelete(path)
+							context.close()
+						}}
+					/>
+				)
+			}}
 		/>
 	)
 }
