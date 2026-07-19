@@ -212,6 +212,31 @@ describe('use-facet dispatch', () => {
 		).resolves.toEqual({ text: 'tok:default' })
 	})
 
+	test('ai persists a rotated credential back to the connection', async () => {
+		// A mintAi that rotates the token (as Models does on refresh) and writes it back via
+		// the injected persist — the rotated grant must land on the shared connection so a
+		// later call (or the agent) never reuses a stale/consumed refresh token.
+		const { caps, connections, activeAi } = await setup(
+			deps({
+				chatgpt: {
+					signIn: async () => ({ accountId: 'u@openai', creds: { access: 'tok' } }),
+					mintAi: (_creds, _config, persist) => ({
+						generateText: async () => {
+							await persist({ access: 'rotated' })
+							return { text: 'ok' }
+						}
+					}),
+					models: () => [{ id: 'default', name: 'Default' }],
+					defaultModel: () => 'default'
+				}
+			})
+		)
+		await connections.put({ id: 'u@openai', kind: 'chatgpt', creds: { access: 'tok' } })
+		await activeAi.set({ connectionId: 'u@openai' })
+		await caps.ai.invoke(use('ai', 'generateText', { system: '', prompt: 'hi' }))
+		expect((await connections.get('u@openai'))?.creds).toEqual({ access: 'rotated' })
+	})
+
 	test('ai.generateText is UNAVAILABLE with no active selection', async () => {
 		const { caps } = await setup()
 		await expect(

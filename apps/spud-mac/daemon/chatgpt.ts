@@ -134,10 +134,16 @@ function assertLoopbackFree(port: number): Promise<void> {
 }
 
 // Build an `ai` use-facet impl over the account's creds + selected model, streamed
-// through pi Models. `mint` has no store writeback (the no-op persist), so a rotated
-// token isn't saved here — a stale token simply 401s into re-sign-in.
-export const chatgptMintAi = (creds: Creds, config: unknown): AiCapability => {
-	const models = codexRuntime(accountCredentials(creds, async () => {}))
+// through pi Models. `persist` writes rotated credentials back to the connection: Models
+// refreshes the OAuth token under its store lock, and the rotated grant is saved so a
+// later call — here or in the agent, which share the connection — never reuses a stale or
+// already-consumed refresh token.
+export const chatgptMintAi = (
+	creds: Creds,
+	config: unknown,
+	persist: (creds: Creds) => Promise<void>
+): AiCapability => {
+	const models = codexRuntime(accountCredentials(creds, persist))
 	const model = pickModel(models, (config as { model?: string } | undefined)?.model)
 	if (!model) throw new Error('no ChatGPT model available')
 	const gen = text(modelsBackend(models, model))
