@@ -157,6 +157,10 @@ export function resolveAgentBackend(fs: Volume): Promise<AgentBackend | null> {
 	return resolveAiAccount(fs, ({ creds, config, persist }) => {
 		const models = codexRuntime(accountCredentials(creds, persist))
 		const model = pickModel(models, (config as { model?: string } | undefined)?.model)
-		return model ? modelsBackend(models, model) : null
+		// Fold the token's expiry into the cache revision: it changes when the grant is
+		// refreshed OR replaced by a fresh sign-in, so a re-sign-in rebuilds the session over
+		// the new credentials instead of reusing the runtime bound to the old (possibly
+		// revoked) ones. A plain refresh Models handles in place; the rebuild is lossless.
+		return model ? modelsBackend(models, model, String(creds.expires ?? '')) : null
 	})
 }

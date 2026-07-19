@@ -14,22 +14,32 @@ export type AgentBackend = {
 	model: Model<Api>
 	streamFn: StreamFn
 	completeFn: CompleteFn
-	// Opaque revision that rotates with the credential, so a host can cache-key its
-	// runtime and rebuild on token refresh without ever reading the token.
+	// Opaque cache key for the built runtime: a host caches by this and rebuilds when it
+	// changes. It must cover model identity AND — for rotating credentials — a credential
+	// generation, so replacing the credential (a fresh sign-in) forces a rebuild instead of
+	// reusing a runtime bound to the replaced credential store. Never the token itself.
 	revision: string
 }
 
 // Wrap a pi `Models` collection into a backend: the agent loop and text helpers stream
 // through `Models`, which resolves auth and refreshes credentials internally (under its
-// credential-store lock) — so the token never sits on the backend, and a refresh needs
-// no rebuild. `revision` is stable (model identity). This is the sole backend seam: the
-// host builds a `Models` (over a `CredentialStore`), the agent drives it, and neither
-// holds the token.
-export function modelsBackend(models: Models, model: Model<Api>): AgentBackend {
+// credential-store lock) — so the token never sits on the backend, and an ordinary refresh
+// needs no rebuild. `credentialRevision` lets a host with ROTATING credentials fold a
+// non-secret generation (e.g. the token's expiry) into the revision, so a credential
+// *replacement* (re-sign-in) rotates the cache key and the session rebuilds — losslessly —
+// over the new credentials; static-key hosts omit it and keep a stable revision. This is
+// the sole backend seam: the host builds a `Models` (over a `CredentialStore`), the agent
+// drives it, and neither holds the token.
+export function modelsBackend(
+	models: Models,
+	model: Model<Api>,
+	credentialRevision = ''
+): AgentBackend {
+	const base = `${model.provider}:${model.id}`
 	return {
 		model,
 		streamFn: (m, context, options) => models.streamSimple(m, context, options),
 		completeFn: (m, context, options) => models.completeSimple(m, context, options),
-		revision: `${model.provider}:${model.id}`
+		revision: credentialRevision ? `${base}:${credentialRevision}` : base
 	}
 }
