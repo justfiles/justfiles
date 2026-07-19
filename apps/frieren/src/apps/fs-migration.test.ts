@@ -225,6 +225,8 @@ describe('local → account migration', () => {
 			'/system/user.md': '---\nname: Xiao\n---\n',
 			'/system/os-state.json': '{"windows":{}}',
 			'/system/accounts/spud.json': 'secret',
+			'/system/connections/u%40openai.com.json': 'oauth-secret',
+			'/system/active-ai.json': '{"connectionId":"u@openai.com"}',
 			'/.state/clientid': 'uuid',
 			'/applications/paint/app.js': 'code',
 			'/state/computer.spud.paint.json': '{}'
@@ -240,6 +242,8 @@ describe('local → account migration', () => {
 		expect(files).toContain('/system/user.md')
 		expect(files).toContain('/system/os-state.json')
 		expect(files).not.toContain('/system/accounts/spud.json')
+		expect(files).not.toContain('/system/connections/u%40openai.com.json')
+		expect(files).not.toContain('/system/active-ai.json')
 		expect(files).not.toContain('/.state/clientid')
 		expect(files).not.toContain('/applications/paint/app.js')
 		expect(files).not.toContain('/state/computer.spud.paint.json')
