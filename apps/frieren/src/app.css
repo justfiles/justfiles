@@ -930,16 +930,50 @@
 	color: var(--focus);
 	font-style: normal;
 }
+/* The chat composer field wraps the input and pins the send button inside it,
+   iMessage-style: centered on a single line, then held to the bottom-right as
+   the field grows (it never moves relative to the last line). */
+.frn-chat-field {
+	position: relative;
+	flex: 1;
+	display: flex;
+}
+.frn-chat-send {
+	position: absolute;
+	right: 5px;
+	bottom: 5px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: 0;
+	border-radius: 50%;
+	background: var(--focus);
+	color: var(--on-focus);
+	font-size: 16px;
+	cursor: default;
+}
+.frn-chat-send:disabled {
+	background: color-mix(in srgb, var(--text) 16%, transparent);
+	color: color-mix(in srgb, var(--text) 45%, transparent);
+}
+.frn-chat-send[data-variant="stop"] {
+	background: #d33;
+	color: #fff;
+}
 /* The chat composer: a rounded input that grows with wrapped lines (via
    useAutoResize) up to a cap, then scrolls. A moderate radius keeps the corners
    elegant when it's tall (a full pill would bow out); the scrollbar is thin and
-   inset from the edge so it never rides over the rounded corner. */
+   inset from the edge so it never rides over the rounded corner. Right padding
+   reserves room for the pinned send button. */
 .frn-chat-input {
 	flex: 1;
 	min-width: 0;
 	resize: none;
 	max-height: 128px;
-	padding: 8px 14px;
+	padding: 8px 40px 8px 14px;
 	line-height: 20px;
 	border-radius: 18px;
 	/* Toggled to auto by useAutoResize once content passes the cap. */
@@ -1482,8 +1516,11 @@
 }
 /* The bar itself: fixed at the bottom of the container, always present. The
    composer and the right-edge controls share one height so a single line reads
-   as centered; `flex-end` keeps the controls beside the last line as it grows. */
+   as centered; `flex-end` keeps the controls beside the last line as it grows.
+   border-box so min-height is the whole pill (content-box would add the padding
+   on top of the 48px content area and open a gap above the line). */
 .frn-omnibar-bar {
+	box-sizing: border-box;
 	display: flex;
 	align-items: flex-end;
 	gap: 6px;

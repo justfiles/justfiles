@@ -1,4 +1,5 @@
 import { Transcript } from '@justfiles/ui/Transcript'
+import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { useRef } from 'react'
 import { useAutoResize } from '../components/useAutoResize'
 import { useAgentConnection, useAgentSession } from './hooks'
@@ -107,8 +108,6 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 				style={{
 					display: 'flex',
 					flex: 'none',
-					alignItems: 'flex-end',
-					gap: 8,
 					padding: '8px 12px',
 					borderTop: '1px solid var(--rule)'
 				}}
@@ -117,43 +116,45 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 					submit()
 				}}
 			>
-				<textarea
-					ref={inputRef}
-					className="frn-chat-input"
-					rows={1}
-					value={input}
-					onChange={(event) => setInput(event.target.value)}
-					onKeyDown={(event) => {
-						if (event.key === 'Enter' && !event.shiftKey) {
-							event.preventDefault()
-							submit()
-						}
-					}}
-					placeholder={ready ? 'iMessage' : 'Connecting…'}
-					disabled={!ready}
-				/>
-				{isStreaming ? (
-					<button
-						type="button"
-						onClick={abort}
-						style={{ borderRadius: 5, padding: '4px 12px', color: '#fff', background: '#d33' }}
-					>
-						Stop
-					</button>
-				) : (
-					<button
-						type="submit"
-						disabled={!input.trim() || !ready}
-						style={{
-							borderRadius: 5,
-							padding: '4px 12px',
-							background: 'var(--focus)',
-							color: 'var(--on-focus)'
+				<div className="frn-chat-field">
+					<textarea
+						ref={inputRef}
+						className="frn-chat-input"
+						rows={1}
+						value={input}
+						onChange={(event) => setInput(event.target.value)}
+						onKeyDown={(event) => {
+							if (event.key === 'Enter' && !event.shiftKey) {
+								event.preventDefault()
+								submit()
+							}
 						}}
-					>
-						Send
-					</button>
-				)}
+						placeholder={ready ? 'iMessage' : 'Connecting…'}
+						disabled={!ready}
+					/>
+					{isStreaming ? (
+						<button
+							type="button"
+							className="frn-chat-send"
+							data-variant="stop"
+							onClick={abort}
+							aria-label="Stop"
+							title="Stop"
+						>
+							<StopIcon weight="fill" />
+						</button>
+					) : (
+						<button
+							type="submit"
+							className="frn-chat-send"
+							disabled={!input.trim() || !ready}
+							aria-label="Send"
+							title="Send"
+						>
+							<ArrowUpIcon weight="bold" />
+						</button>
+					)}
+				</div>
 			</form>
 		</div>
 	)
