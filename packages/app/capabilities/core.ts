@@ -57,3 +57,40 @@ export function defineCapability<Id extends string, Methods, Streams = Record<ne
 export interface CapabilityBridge {
 	invoke(req: { capability: string; method: string; args: readonly unknown[] }): Promise<unknown>
 }
+
+// ── Capability-provided agent tools (interface-refactor plan, Step 3.5) ─────
+// A capability's AGENT-facing surface, described runtime-neutrally so it lives
+// in this pi-free layer: name/description/JSON-schema parameters plus an
+// `execute` over the capability's own invoke. `@justfiles/agent` holds the one
+// adapter that turns descriptors into real agent tools — the dependency edge
+// stays agent → app, never back.
+
+/** The capability's own invoke, pre-bound by the adapter to the agent actor and this one capability. */
+export type ScopedInvoke = (method: string, ...args: unknown[]) => Promise<unknown>
+
+// What `execute` may need beyond the capability itself. `volume` lets a tool
+// offload bulky payloads (image bytes) to files instead of returning them to
+// the model; passthrough tools ignore it.
+export interface CapabilityToolContext {
+	volume: import('@justfiles/fs').Volume
+}
+
+// A structured return: `content` is the text the model sees; `details` never
+// reaches the model (it is the transcript/UI channel). Any other return value
+// is JSON-serialized into the model-facing text instead.
+export interface CapabilityToolResult {
+	content: string
+	details?: unknown
+}
+
+export interface CapabilityTool<Params = unknown> {
+	name: string
+	description: string
+	/** JSON Schema for the params object; the adapter hands it to the agent runtime as-is. */
+	parameters: Record<string, unknown>
+	execute(
+		invoke: ScopedInvoke,
+		params: Params,
+		ctx: CapabilityToolContext
+	): Promise<CapabilityToolResult | unknown>
+}

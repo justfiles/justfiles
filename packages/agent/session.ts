@@ -1,4 +1,5 @@
 import type { AgentEvent } from '@earendil-works/pi-agent-core'
+import type { Capabilities } from '@justfiles/app/capabilities'
 import type { Channel, Route } from '@justfiles/app/capabilities/notify'
 import type { Volume } from '@justfiles/fs'
 import {
@@ -7,6 +8,7 @@ import {
 	createAssistant,
 	type PromptSource
 } from './assistant.ts'
+import { type CapabilityToolSet, capabilityTools } from './capability-tools.ts'
 import type { CompactionSettings } from './compaction.ts'
 import { type AppController, createAppCommand } from './justbash/app.ts'
 import { createJustBashTool } from './justbash/index.ts'
@@ -35,6 +37,9 @@ export interface AgentSessionOptions {
 	// reaches account-backed capabilities (email/calendar/…): through apps, not dedicated
 	// tools. Omit for no apps.
 	apps?: AppController
+	// Capability-provided agent tools (Step 3.5): the host's capability invoke plus the
+	// descriptor sets to expose. Each tool invokes as the privileged agent actor.
+	capabilities?: { invoke: Capabilities['invoke']; tools: readonly CapabilityToolSet[] }
 	// A host channel for turn pings + classified errors (banner/toast/web-push). Omit to
 	// stay silent; the transcript still updates via `subscribe`.
 	notify?: Channel
@@ -162,7 +167,10 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 		const askUser = createAskUserTool((question, opts) => {
 			pending = { question, options: opts }
 		})
-		assistant.addTools([bash, createFetchTool(), createSearchTool(), askUser])
+		const capTools = options.capabilities
+			? capabilityTools(options.capabilities.invoke, options.capabilities.tools, volume)
+			: []
+		assistant.addTools([bash, createFetchTool(), createSearchTool(), askUser, ...capTools])
 
 		return {
 			assistant,

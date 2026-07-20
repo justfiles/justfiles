@@ -27,12 +27,13 @@ import {
 } from '@justfiles/agent'
 import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
 import { sweepTrash } from '@justfiles/app'
+import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
 	ensureAccount,
 	resolveAiAccount
 } from '@justfiles/app/capabilities/accounts/host'
-import type { GeneratedImage } from '@justfiles/app/capabilities/image'
+import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import {
 	clearReset,
@@ -245,8 +246,18 @@ export class Frieren extends DurableObject<Env> {
 		// fails with a clear "turn on AI in Settings" the chat surfaces. Re-resolved per
 		// turn, so toggling AI in Settings takes effect on the next prompt.
 		const agentName = (await readFrontmatter(this.vol, SOUL_PATH)).agent_name || 'Frieren'
+		// Capability-provided agent tools (Step 3.5): expose `image` to the agent when
+		// the platform has an image engine (local LM Studio dev has none). Availability
+		// still resolves per call through the active-AI account.
+		const agentCaps = generateImage
+			? {
+					invoke: capabilityRegistry({ image: caps.image }).invoke,
+					tools: [{ capability: 'image', tools: imageAgentTools }]
+				}
+			: undefined
 		this.session = createAgentSession({
 			volume: this.vol,
+			capabilities: agentCaps,
 			backend: async () => {
 				const backend = await resolveAiAccount(this.vol, ({ providerId }) =>
 					providerId === 'spud' ? modelsBackend(models, model) : null
