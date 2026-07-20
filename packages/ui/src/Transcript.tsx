@@ -311,7 +311,10 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 // row. Resolution is async (the host may read a Volume or hit a byte route), so
 // the card renders a quiet placeholder until the URL lands; an unresolvable ref
 // (e.g. the user deleted the file) degrades to a muted note instead of a broken
-// <img>.
+// <img>. A miss keeps retrying while the card is on screen — the bytes may just
+// not have reached this host yet — so a late arrival upgrades the note in place.
+const IMAGE_RETRY_MS = 30_000
+
 function ImageCard({
 	image,
 	resolveImage
@@ -322,13 +325,26 @@ function ImageCard({
 	const [url, setUrl] = useState<string | null | undefined>(undefined)
 	useEffect(() => {
 		let alive = true
+		let timer: ReturnType<typeof setTimeout> | undefined
+		const attempt = () => {
+			resolveImage(image).then(
+				(resolved) => {
+					if (!alive) return
+					setUrl(resolved)
+					if (resolved === null) timer = setTimeout(attempt, IMAGE_RETRY_MS)
+				},
+				() => {
+					if (!alive) return
+					setUrl(null)
+					timer = setTimeout(attempt, IMAGE_RETRY_MS)
+				}
+			)
+		}
 		setUrl(undefined)
-		resolveImage(image).then(
-			(resolved) => alive && setUrl(resolved),
-			() => alive && setUrl(null)
-		)
+		attempt()
 		return () => {
 			alive = false
+			if (timer) clearTimeout(timer)
 		}
 	}, [image, resolveImage])
 
