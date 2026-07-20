@@ -152,6 +152,10 @@
 				"types": "./dist/capabilities/ai/index.d.ts",
 				"default": "./dist/capabilities/ai/index.js"
 			},
+			"./capabilities/image": {
+				"types": "./dist/capabilities/image/index.d.ts",
+				"default": "./dist/capabilities/image/index.js"
+			},
 			"./capabilities/accounts": {
 				"types": "./dist/capabilities/accounts/index.d.ts",
 				"default": "./dist/capabilities/accounts/index.js"
