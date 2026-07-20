@@ -259,7 +259,18 @@ function UsagePanel({ state, client }: { state: SettingsState; client: Client<Se
 				<p className="settings-pane-copy">Your AI and storage usage against your plan.</p>
 			</header>
 			{!usage ? (
-				<p className="settings-muted">Loading…</p>
+				<section className="settings-card">
+					<p className="settings-muted">{state.error ? 'Couldn’t load usage.' : 'Loading…'}</p>
+					<div className="settings-card-actions">
+						<button
+							type="button"
+							className="settings-small-button"
+							onClick={() => void client.loadUsage({})}
+						>
+							Retry
+						</button>
+					</div>
+				</section>
 			) : (
 				<>
 					<span className="settings-tier-badge">{usage.tier} plan</span>

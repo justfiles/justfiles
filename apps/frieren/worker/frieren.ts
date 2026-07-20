@@ -207,6 +207,11 @@ export class Frieren extends DurableObject<Env> {
 	// inference path: text (agent turns, soul generation, and the app `ai` capability all
 	// resolve their backend through `meteredBackend`) and image generation.
 	private async assertAiWithinBudget(): Promise<void> {
+		// Drain pending accrual first: accrual is async (waitUntil), so without this an
+		// overlapping — or even sequential — request reads the counter BEFORE an earlier
+		// completed call's usage is written, letting many calls pass one below-cap read and
+		// blow past the cap instead of the single-call overshoot a soft gate should allow.
+		await this.accrual
 		const tier = await readTier(this.ctx.storage)
 		if (aiQuota(await readAiUsage(this.ctx.storage), tier).exceeded)
 			throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
@@ -407,11 +412,13 @@ export class Frieren extends DurableObject<Env> {
 						const res = await images.generateImages(imageModel, {
 							input: [{ type: 'text', text: prompt }]
 						})
+						// Image generation runs on the parallel ImagesModels stack, so the backend
+						// meter can't see it — accrue its usage here. Meter BEFORE branching on
+						// stopReason: a failed/aborted image call can still be billable (mirrors the
+						// text path, which counts failed terminal messages).
+						if (res.usage) this.trackUsage(res.usage)
 						if (res.stopReason !== 'stop')
 							throw new Error(res.errorMessage ?? 'image generation failed')
-						// Image generation runs on the parallel ImagesModels stack, so the backend
-						// meter can't see it — accrue its usage here (when the provider reports it).
-						if (res.usage) this.trackUsage(res.usage)
 						return res.output.flatMap((b) =>
 							b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
 						)
