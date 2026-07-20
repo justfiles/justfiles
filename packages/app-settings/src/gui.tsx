@@ -267,12 +267,14 @@ function UsagePanel({ state, client }: { state: SettingsState; client: Client<Se
 						title="AI this month"
 						resource={usage.ai}
 						format={formatUsd}
+						overHint="Limit reached — resets next month, or upgrade your plan."
 						sub={`${formatTokens(usage.aiTokens)} tokens · ${usage.aiRequests} requests · ${usage.window}`}
 					/>
 					<Meter
 						title="Storage"
 						resource={usage.storage}
 						format={formatBytes}
+						overHint="Over your storage limit — delete files or notes, or upgrade your plan."
 						sub="Deduplicated content across your files and notes."
 					/>
 					<div className="settings-card-actions">
@@ -294,11 +296,13 @@ function Meter({
 	title,
 	resource,
 	format,
+	overHint,
 	sub
 }: {
 	title: string
 	resource: UsageResource
 	format: (n: number) => string
+	overHint: string
 	sub: string
 }) {
 	const pct = Math.min(100, Math.round(resource.fraction * 100))
@@ -323,7 +327,7 @@ function Meter({
 				</div>
 			) : null}
 			<p className="settings-meter-sub">
-				{resource.exceeded ? 'Limit reached — resets next cycle, or upgrade your plan. ' : ''}
+				{resource.exceeded ? `${overHint} ` : ''}
 				{sub}
 			</p>
 		</section>

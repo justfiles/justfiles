@@ -202,10 +202,31 @@ export class Frieren extends DurableObject<Env> {
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
-	// Wrap the platform backend with the passive usage meter so every text model call
-	// (agent turns, soul generation, daily maintenance) accrues into the per-user counter.
+	// Reject once the monthly AI budget is spent (resets with the window). Reads only the
+	// AI counter — no storage aggregate on the hot path. The single gate for EVERY platform
+	// inference path: text (agent turns, soul generation, and the app `ai` capability all
+	// resolve their backend through `meteredBackend`) and image generation.
+	private async assertAiWithinBudget(): Promise<void> {
+		const tier = await readTier(this.ctx.storage)
+		if (aiQuota(await readAiUsage(this.ctx.storage), tier).exceeded)
+			throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
+	}
+
+	// Wrap the platform backend with the passive usage meter (accrual) AND the pre-turn
+	// budget gate, so every text model call is both counted and capped at one boundary.
 	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
-		return meterBackend(modelsBackend(models, model), (usage) => this.trackUsage(usage))
+		const base = meterBackend(modelsBackend(models, model), (usage) => this.trackUsage(usage))
+		return {
+			...base,
+			streamFn: async (m, context, options) => {
+				await this.assertAiWithinBudget()
+				return base.streamFn(m, context, options)
+			},
+			completeFn: async (m, context, options) => {
+				await this.assertAiWithinBudget()
+				return base.completeFn(m, context, options)
+			}
+		}
 	}
 
 	// Accrue one completed model call. Serialized through a promise chain to avoid a lost
@@ -309,11 +330,6 @@ export class Frieren extends DurableObject<Env> {
 					providerId === 'spud' ? this.meteredBackend(models, model) : null
 				)
 				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
-				// Pre-turn soft cap: reject once the monthly AI budget is spent (resets with the
-				// window). Reads only the AI counter — no storage aggregate on the hot path.
-				const tier = await readTier(this.ctx.storage)
-				if (aiQuota(await readAiUsage(this.ctx.storage), tier).exceeded)
-					throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
 				return backend
 			},
 			apps: this.requireApps().controller,
@@ -387,6 +403,7 @@ export class Frieren extends DurableObject<Env> {
 			model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api>,
 			generateImage: imageModel
 				? async (prompt) => {
+						await this.assertAiWithinBudget()
 						const res = await images.generateImages(imageModel, {
 							input: [{ type: 'text', text: prompt }]
 						})

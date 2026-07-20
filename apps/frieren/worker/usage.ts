@@ -72,19 +72,9 @@ function emptyAi(window: string): AiUsage {
 // but `get`/`put` await points mean concurrent calls could interleave a read-modify-write —
 // the caller (Frieren) serializes accrual through a promise chain so no increment is lost.
 export async function accrueAi(storage: KvStorage, usage: Usage): Promise<void> {
-	const window = currentWindow()
-	const prev = (await storage.get<AiUsage>(AI_KEY)) ?? emptyAi(window)
-	// Reset the windowed counters when the month rolls; lifetime totals carry over.
-	const base =
-		prev.window === window
-			? prev
-			: {
-					...emptyAi(window),
-					lifetimeCostUsd: prev.lifetimeCostUsd,
-					lifetimeRequests: prev.lifetimeRequests
-				}
+	const base = currentView(await storage.get<AiUsage>(AI_KEY))
 	await storage.put<AiUsage>(AI_KEY, {
-		window,
+		window: base.window,
 		input: base.input + usage.input,
 		output: base.output + usage.output,
 		cacheRead: base.cacheRead + usage.cacheRead,
@@ -97,10 +87,26 @@ export async function accrueAi(storage: KvStorage, usage: Usage): Promise<void> 
 	})
 }
 
-// Read the current AI counter (or a zeroed one for this window). Cheap KV get — used by
-// the per-turn quota gate, which must not pay for the storage aggregate.
+// The counter AS OF the current window: the stored row when it's this month, otherwise a
+// zeroed window carrying lifetime totals forward. This rollover is applied on every READ,
+// not just on accrual — the pre-turn gate reads through `readAiUsage`, and `accrueAi` only
+// persists the roll AFTER a successful call, which a capped account never reaches. Without
+// rolling on read, an account that hit the cap last month would stay blocked forever.
+function currentView(prev: AiUsage | undefined): AiUsage {
+	const window = currentWindow()
+	if (!prev) return emptyAi(window)
+	if (prev.window === window) return prev
+	return {
+		...emptyAi(window),
+		lifetimeCostUsd: prev.lifetimeCostUsd,
+		lifetimeRequests: prev.lifetimeRequests
+	}
+}
+
+// Read the current AI counter (rolled to this window). Cheap KV get — used by the per-turn
+// quota gate, which must not pay for the storage aggregate.
 export async function readAiUsage(storage: KvStorage): Promise<AiUsage> {
-	return (await storage.get<AiUsage>(AI_KEY)) ?? emptyAi(currentWindow())
+	return currentView(await storage.get<AiUsage>(AI_KEY))
 }
 
 // Read the current usage report. `physicalBytes` is supplied by the DO (ctx.storage.sql
