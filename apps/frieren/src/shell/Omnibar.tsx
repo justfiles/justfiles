@@ -100,6 +100,65 @@ function storeIconUrl(app: CommunityCatalogApp): string | undefined {
 		: undefined
 }
 
+// Which *visual* line the caret sits on. Result-navigation arrows only fire at
+// the top/bottom edge so a wrapped draft (soft wrap or an explicit Shift+Enter
+// newline) stays vertically editable; a single visual line counts as both first
+// and last, so short queries still navigate on the first press. A hidden mirror
+// reproduces the textarea's wrapping to locate the caret's row.
+function caretVisualEdge(
+	el: HTMLTextAreaElement,
+	caret: number
+): { first: boolean; last: boolean } {
+	const cs = getComputedStyle(el)
+	const mirror = document.createElement('div')
+	const ms = mirror.style
+	ms.position = 'absolute'
+	ms.left = '-9999px'
+	ms.top = '0'
+	ms.visibility = 'hidden'
+	ms.whiteSpace = 'pre-wrap'
+	ms.overflowWrap = 'break-word'
+	ms.boxSizing = 'border-box'
+	ms.width = `${el.clientWidth}px`
+	for (const p of [
+		'fontFamily',
+		'fontSize',
+		'fontWeight',
+		'fontStyle',
+		'letterSpacing',
+		'lineHeight',
+		'textIndent',
+		'textTransform',
+		'wordSpacing',
+		'paddingLeft',
+		'paddingRight',
+		'paddingTop',
+		'paddingBottom'
+	] as const) {
+		ms[p] = cs[p]
+	}
+	const value = el.value
+	mirror.textContent = value.slice(0, caret)
+	const marker = document.createElement('span')
+	// The rest of the text starts exactly at the caret, so the marker's top is the
+	// caret's row; a fallback glyph gives the last (empty) position a line box.
+	marker.textContent = value.slice(caret) || '.'
+	mirror.appendChild(marker)
+	document.body.appendChild(mirror)
+	const lineHeight = Number.parseFloat(cs.lineHeight) || Number.parseFloat(cs.fontSize) * 1.2
+	const padTop = Number.parseFloat(cs.paddingTop) || 0
+	const padBottom = Number.parseFloat(cs.paddingBottom) || 0
+	const caretTop = marker.offsetTop - padTop
+	const contentHeight = mirror.scrollHeight - padTop - padBottom
+	mirror.remove()
+	// Half-line thresholds absorb sub-pixel rounding without spilling into a
+	// neighbouring row.
+	return {
+		first: caretTop < lineHeight * 0.5,
+		last: caretTop > contentHeight - lineHeight * 1.5
+	}
+}
+
 export function Omnibar({
 	onAppMenu,
 	onPersonalize
@@ -414,13 +473,15 @@ export function Omnibar({
 			return
 		}
 		if (text === '' && !browsing) return
-		// Arrows navigate results, but only from the caret's line boundary so a
-		// multiline (Shift+Enter) query stays editable vertically.
+		// Arrows navigate results, but only at the caret's top/bottom visual line so a
+		// wrapped multiline query stays editable vertically.
 		const el = event.currentTarget
-		if (event.key === 'ArrowUp' && query.lastIndexOf('\n', el.selectionStart - 1) === -1) {
+		if (event.key === 'ArrowUp') {
+			if (!caretVisualEdge(el, el.selectionStart).first) return
 			event.preventDefault()
 			setPinned(Math.max(0, selected - 1))
-		} else if (event.key === 'ArrowDown' && query.indexOf('\n', el.selectionEnd) === -1) {
+		} else if (event.key === 'ArrowDown') {
+			if (!caretVisualEdge(el, el.selectionEnd).last) return
 			event.preventDefault()
 			setPinned(Math.min(rows.length - 1, selected + 1))
 		}
