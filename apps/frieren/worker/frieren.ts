@@ -56,7 +56,8 @@ import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
-import { accrueAi, readUsage } from './usage.ts'
+import { aiQuota, evaluate, readTier } from './quota.ts'
+import { accrueAi, readAiUsage, readUsage } from './usage.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
 const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
@@ -144,9 +145,11 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json(generated)
 			})
-			.get('/api/usage', async (c) =>
-				c.json(await readUsage(ctx.storage, this.db, ctx.storage.sql.databaseSize))
-			)
+			.get('/api/usage', async (c) => {
+				const usage = await readUsage(ctx.storage, this.db, ctx.storage.sql.databaseSize)
+				const tier = await readTier(ctx.storage)
+				return c.json({ ...usage, quota: evaluate(usage, tier) })
+			})
 			.route(
 				'/fs',
 				createFsApi(fs, {
@@ -288,6 +291,11 @@ export class Frieren extends DurableObject<Env> {
 					providerId === 'spud' ? this.meteredBackend(models, model) : null
 				)
 				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
+				// Pre-turn soft cap: reject once the monthly AI budget is spent (resets with the
+				// window). Reads only the AI counter — no storage aggregate on the hot path.
+				const tier = await readTier(this.ctx.storage)
+				if (aiQuota(await readAiUsage(this.ctx.storage), tier).exceeded)
+					throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
 				return backend
 			},
 			apps: this.requireApps().controller,

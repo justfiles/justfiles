@@ -97,6 +97,12 @@ export async function accrueAi(storage: KvStorage, usage: Usage): Promise<void> 
 	})
 }
 
+// Read the current AI counter (or a zeroed one for this window). Cheap KV get — used by
+// the per-turn quota gate, which must not pay for the storage aggregate.
+export async function readAiUsage(storage: KvStorage): Promise<AiUsage> {
+	return (await storage.get<AiUsage>(AI_KEY)) ?? emptyAi(currentWindow())
+}
+
 // Read the current usage report. `physicalBytes` is supplied by the DO (ctx.storage.sql
 // .databaseSize) since this module has no Cloudflare knowledge.
 export async function readUsage(
@@ -104,7 +110,7 @@ export async function readUsage(
 	db: DbAdapter,
 	physicalBytes: number
 ): Promise<UsageReport> {
-	const ai = (await storage.get<AiUsage>(AI_KEY)) ?? emptyAi(currentWindow())
+	const ai = await readAiUsage(storage)
 	const rows = await db.query<{ storage_kind: unknown; bytes: unknown; n: unknown }>(
 		'SELECT storage_kind, COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS n FROM fs_contents GROUP BY storage_kind'
 	)
