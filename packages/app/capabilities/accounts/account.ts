@@ -49,6 +49,13 @@ export function volumeAccountStore(
 	const read = async (path: string): Promise<Account | undefined> => {
 		try {
 			const stored = JSON.parse(dec.decode(await fs.readFile(path))) as Account
+			// Ignore records that aren't this schema. A pre-registry install wrote
+			// `{ accountId, providerId }` to this same dir; read as `Account` those
+			// surface as `{ id: undefined, provider: undefined }`, which breaks callers
+			// (ensureAccount can't reseed past the file; the admin facet emits an
+			// undefined providerId that crashes the Settings card). Treated as absent,
+			// they stay inert — overwritten by a reseed / re-connected by the user.
+			if (typeof stored.id !== 'string' || typeof stored.provider !== 'string') return undefined
 			return { ...stored, creds: codec.decode(stored.creds) }
 		} catch {
 			return undefined
