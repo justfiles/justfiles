@@ -7,7 +7,6 @@ import {
 	BellIcon,
 	ChatCircleIcon,
 	DownloadSimpleIcon,
-	MagnifyingGlassIcon,
 	SparkleIcon,
 	StorefrontIcon,
 	TrashIcon
@@ -43,8 +42,9 @@ import { MigrationSheet } from './MigrationSheet'
 // grid it shows at rest is where launching now lives.
 
 // The composer grows with wrapped input like iMessage, then scrolls once it
-// hits ~5 lines so a pasted wall of text can't shove the sheet open.
-const MAX_INPUT_HEIGHT = 112
+// hits ~5 lines so a pasted wall of text can't shove the sheet open (5 × 20px
+// line-height + 14px vertical padding).
+const MAX_INPUT_HEIGHT = 114
 
 type Row =
 	| { kind: 'app'; app: InstalledApp }
@@ -693,7 +693,6 @@ export function Omnibar({
 				</div>
 			) : null}
 			<form className="frn-omnibar-bar" onSubmit={submit}>
-				<MagnifyingGlassIcon className="frn-omnibar-search" />
 				<textarea
 					ref={inputRef}
 					rows={1}

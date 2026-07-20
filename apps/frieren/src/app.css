@@ -930,6 +930,32 @@
 	color: var(--focus);
 	font-style: normal;
 }
+/* The chat composer: a rounded input that grows with wrapped lines (via
+   useAutoResize) up to a cap, then scrolls. A moderate radius keeps the corners
+   elegant when it's tall (a full pill would bow out); the scrollbar is thin and
+   inset from the edge so it never rides over the rounded corner. */
+.frn-chat-input {
+	flex: 1;
+	min-width: 0;
+	resize: none;
+	max-height: 128px;
+	padding: 8px 14px;
+	line-height: 20px;
+	border-radius: 18px;
+	/* Toggled to auto by useAutoResize once content passes the cap. */
+	overflow-y: hidden;
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+}
+.frn-chat-input::-webkit-scrollbar {
+	width: 12px;
+}
+.frn-chat-input::-webkit-scrollbar-thumb {
+	background: color-mix(in srgb, var(--text) 22%, transparent);
+	border-radius: 999px;
+	border: 4px solid transparent;
+	background-clip: padding-box;
+}
 .frn-agent-whisper {
 	display: flex;
 	flex: none;
@@ -1454,27 +1480,28 @@
 	opacity: 1;
 	border-color: var(--focus);
 }
-/* The bar itself: fixed at the bottom of the container, always present. */
+/* The bar itself: fixed at the bottom of the container, always present. The
+   composer and the right-edge controls share one height so a single line reads
+   as centered; `flex-end` keeps the controls beside the last line as it grows. */
 .frn-omnibar-bar {
 	display: flex;
 	align-items: flex-end;
-	gap: 10px;
+	gap: 6px;
 	flex: none;
-	padding: 8px 14px;
+	padding: 7px 10px 7px 16px;
 	min-height: 48px;
-}
-.frn-omnibar-search {
-	flex: none;
-	opacity: 0.45;
-	font-size: 18px;
 }
 /* Persistent affordance back into the conversation, shown once a session exists. */
 .frn-omnibar-chat-toggle {
 	flex: none;
 	display: inline-flex;
-	padding: 5px;
+	align-items: center;
+	justify-content: center;
+	width: 34px;
+	height: 34px;
+	padding: 0;
 	border: 0;
-	border-radius: 8px;
+	border-radius: 9px;
 	background: transparent;
 	color: inherit;
 	opacity: 0.55;
@@ -1492,9 +1519,10 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	padding: 5px 10px;
+	min-height: 34px;
+	padding: 0 12px;
 	border: 1px solid color-mix(in srgb, var(--focus) 45%, var(--rule));
-	border-radius: 8px;
+	border-radius: 9px;
 	background: color-mix(in srgb, var(--focus) 16%, transparent);
 	color: inherit;
 	font: inherit;
@@ -1510,9 +1538,13 @@
 	flex: none;
 	position: relative;
 	display: inline-flex;
-	padding: 5px;
+	align-items: center;
+	justify-content: center;
+	width: 34px;
+	height: 34px;
+	padding: 0;
 	border: 0;
-	border-radius: 8px;
+	border-radius: 9px;
 	background: transparent;
 	color: inherit;
 	opacity: 0.55;
@@ -1623,8 +1655,9 @@
 	min-width: 0;
 	margin: 0;
 	height: auto;
+	min-height: 34px;
 	border: 0;
-	padding: 6px 0;
+	padding: 7px 0;
 	background: transparent;
 	color: inherit;
 	font: inherit;
@@ -1635,6 +1668,17 @@
 	overflow-y: hidden;
 	outline: none;
 	box-shadow: none;
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+}
+.frn-omnibar-bar textarea::-webkit-scrollbar {
+	width: 10px;
+}
+.frn-omnibar-bar textarea::-webkit-scrollbar-thumb {
+	background: color-mix(in srgb, var(--text) 22%, transparent);
+	border-radius: 999px;
+	border: 3px solid transparent;
+	background-clip: padding-box;
 }
 
 /* ── PWA update toast ───────────────────────────────────────────────────── */
