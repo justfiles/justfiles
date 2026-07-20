@@ -394,7 +394,7 @@ export function Omnibar({
 		return () => window.removeEventListener('keydown', onKey)
 	}, [])
 
-	const onKeyDown = (event: React.KeyboardEvent) => {
+	const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
 		if (event.key === 'Escape') {
 			if (showNotifications) setShowNotifications(false)
 			else if (browseStore) setBrowseStore(false)
@@ -403,6 +403,9 @@ export function Omnibar({
 			else inputRef.current?.blur()
 			return
 		}
+		// While an IME composition is active, Enter confirms the candidate and the
+		// arrows move within it — leave those to the composer, don't submit/navigate.
+		if (event.nativeEvent.isComposing) return
 		// Enter sends/launches; Shift+Enter drops a newline (the textarea grows).
 		if (event.key === 'Enter' && !event.shiftKey) {
 			event.preventDefault()
@@ -411,10 +414,13 @@ export function Omnibar({
 			return
 		}
 		if (text === '' && !browsing) return
-		if (event.key === 'ArrowUp') {
+		// Arrows navigate results, but only from the caret's line boundary so a
+		// multiline (Shift+Enter) query stays editable vertically.
+		const el = event.currentTarget
+		if (event.key === 'ArrowUp' && query.lastIndexOf('\n', el.selectionStart - 1) === -1) {
 			event.preventDefault()
 			setPinned(Math.max(0, selected - 1))
-		} else if (event.key === 'ArrowDown') {
+		} else if (event.key === 'ArrowDown' && query.indexOf('\n', el.selectionEnd) === -1) {
 			event.preventDefault()
 			setPinned(Math.min(rows.length - 1, selected + 1))
 		}
