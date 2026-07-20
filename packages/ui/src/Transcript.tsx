@@ -6,6 +6,8 @@ import {
 	useRef,
 	useState
 } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // A tool-produced image, referenced by a host-meaningful `src` (a Volume path on
 // frieren, a daemon route on quay) — never inline bytes. The host's `resolveImage`
@@ -79,6 +81,54 @@ const css = `
 	outline: none;
 	box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 30%, transparent);
 }
+.js-transcript-md > :first-child { margin-top: 0; }
+.js-transcript-md > :last-child { margin-bottom: 0; }
+.js-transcript-md p { margin: 0 0 0.5em; }
+.js-transcript-md ul, .js-transcript-md ol { margin: 0 0 0.5em; padding-left: 1.4em; }
+.js-transcript-md li { margin: 0.15em 0; }
+.js-transcript-md li > p { margin: 0; }
+.js-transcript-md h1, .js-transcript-md h2, .js-transcript-md h3,
+.js-transcript-md h4, .js-transcript-md h5, .js-transcript-md h6 {
+	margin: 0.6em 0 0.3em; font-weight: 600; line-height: 1.3;
+}
+.js-transcript-md h1 { font-size: 1.3em; }
+.js-transcript-md h2 { font-size: 1.15em; }
+.js-transcript-md h3 { font-size: 1.05em; }
+.js-transcript-md h4, .js-transcript-md h5, .js-transcript-md h6 { font-size: 1em; }
+.js-transcript-md code {
+	font-family: var(--font-mono);
+	font-size: 0.9em;
+	padding: 0.1em 0.35em;
+	border-radius: 4px;
+	background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.js-transcript-md pre {
+	margin: 0 0 0.5em;
+	padding: 8px 10px;
+	max-width: 100%;
+	overflow-x: auto;
+	border-radius: 8px;
+	background: var(--surface);
+	border: 1px solid var(--rule);
+}
+.js-transcript-md pre code {
+	padding: 0;
+	border-radius: 0;
+	background: none;
+	font-size: 0.85em;
+	white-space: pre;
+}
+.js-transcript-md a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.js-transcript-md blockquote {
+	margin: 0 0 0.5em;
+	padding-left: 0.8em;
+	border-left: 2px solid var(--rule);
+	opacity: 0.85;
+}
+.js-transcript-md table { border-collapse: collapse; margin: 0 0 0.5em; font-size: 0.9em; }
+.js-transcript-md th, .js-transcript-md td { padding: 3px 8px; border: 1px solid var(--rule); }
+.js-transcript-md hr { margin: 0.6em 0; border: none; border-top: 1px solid var(--rule); }
+.js-transcript-md img { max-width: 100%; border-radius: 6px; }
 `
 
 // Presentation-only agent transcript: a scrolling message history with bubbles,
@@ -279,7 +329,9 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 				style={{
 					position: 'relative',
 					maxWidth: '78%',
-					whiteSpace: 'pre-wrap',
+					// Assistant text is markdown (its blocks own their spacing); user text is
+					// shown verbatim, so its newlines are preserved.
+					whiteSpace: isUser ? 'pre-wrap' : 'normal',
 					overflowWrap: 'break-word',
 					padding: '6px 12px',
 					borderRadius: '14px',
@@ -287,7 +339,7 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 					color: isUser ? 'var(--on-focus)' : 'var(--text)'
 				}}
 			>
-				{content}
+				{isUser ? content : <MarkdownContent content={content} />}
 				{streaming ? (
 					<span
 						style={{
@@ -303,6 +355,29 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 				) : null}
 				{content ? <CopyButton content={content} /> : null}
 			</div>
+		</div>
+	)
+}
+
+// Assistant bubbles render their text as Markdown — LLM output is Markdown by
+// convention (fenced code, lists, tables), and plain prose is valid Markdown
+// that renders unchanged, so no "is this Markdown?" detection is needed. Raw
+// HTML is not enabled (no rehype-raw), so agent output can't inject markup.
+// Styling lives in the scoped sheet above (`.js-transcript-md`) so element
+// margins and code/pre monospace follow the design tokens.
+const markdownComponents: Components = {
+	a({ node: _node, ...props }) {
+		// Links must escape the transcript's frame, not navigate the host away.
+		return <a {...props} target="_blank" rel="noopener noreferrer" />
+	}
+}
+
+function MarkdownContent({ content }: { content: string }) {
+	return (
+		<div className="js-transcript-md">
+			<ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+				{content}
+			</ReactMarkdown>
 		</div>
 	)
 }
