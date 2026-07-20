@@ -262,10 +262,14 @@ function ConnectedAccount({
 			<div className="settings-connected-row">
 				<div className="settings-provider">
 					<div className="settings-provider-mark">
-						{(provider?.name ?? account.providerId).slice(0, 2).toUpperCase()}
+						{(provider?.name ?? account.providerId ?? account.accountId ?? '?')
+							.slice(0, 2)
+							.toUpperCase()}
 					</div>
 					<div className="settings-provider-text">
-						<h2 className="settings-card-title">{provider?.name ?? account.providerId}</h2>
+						<h2 className="settings-card-title">
+							{provider?.name ?? account.providerId ?? account.accountId}
+						</h2>
 						<p className="settings-account-status is-connected">Connected · {account.accountId}</p>
 					</div>
 				</div>

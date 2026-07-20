@@ -29,6 +29,23 @@ describe('volumeAccountStore', () => {
 		expect(await store.get('nobody')).toBeUndefined()
 	})
 
+	test('ignores pre-registry records ({ accountId, providerId }) at the same path', async () => {
+		// A legacy install wrote this shape into /system/accounts; read as the current
+		// schema it would yield { id: undefined, provider: undefined }. It must be
+		// treated as absent so callers can reseed / re-connect over it.
+		const fs = volume(memStorage())
+		await fs.mkdir('/system/accounts', { recursive: true })
+		await fs.writeFile(
+			'/system/accounts/spud.json',
+			new TextEncoder().encode(
+				JSON.stringify({ accountId: 'spud', providerId: 'spud', creds: {}, enabled: { ai: {} } })
+			)
+		)
+		const store = volumeAccountStore(fs)
+		expect(await store.list()).toEqual([])
+		expect(await store.get('spud')).toBeUndefined()
+	})
+
 	test('secretCodec transforms only the creds lane on disk; reads decode it back', async () => {
 		const fs = volume(memStorage())
 		const codec: SecretCodec = {
