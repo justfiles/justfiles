@@ -13,7 +13,7 @@ import WebKit
 // the native catalog socket and the transcript webview's {port, token}.
 
 final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-	WKScriptMessageHandler
+	WKScriptMessageHandler, WKUIDelegate
 {
 	private static let panelWidth: CGFloat = 640
 	private static let pad: CGFloat = 12 // inset around the panel content
@@ -117,6 +117,7 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		let cfg = WKWebViewConfiguration()
 		cfg.userContentController.add(self, name: "status")
 		webView = WKWebView(frame: .zero, configuration: cfg)
+		webView.uiDelegate = self
 		webView.setValue(false, forKey: "drawsBackground")
 		if #available(macOS 13.3, *) { webView.isInspectable = true } // dev only
 
@@ -440,6 +441,21 @@ final class LauncherDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 		let streaming = body["isStreaming"] as? Bool ?? false
 		stopButton.isHidden = !streaming
 		layoutSubviews()
+	}
+
+	// MARK: WKUIDelegate — external links (web → native).
+
+	// Transcript links render with target="_blank" (correct in a browser host), but this
+	// panel's webview has no secondary view to host a new window, so WebKit would otherwise
+	// drop the click. Open the URL in the user's browser instead.
+	func webView(
+		_: WKWebView,
+		createWebViewWith _: WKWebViewConfiguration,
+		for navigationAction: WKNavigationAction,
+		windowFeatures _: WKWindowFeatures
+	) -> WKWebView? {
+		if let url = navigationAction.request.url { NSWorkspace.shared.open(url) }
+		return nil
 	}
 
 	private func openMiniApp(_ id: String) {
