@@ -5,6 +5,8 @@
 // Resolution follows the active AI account: if its provider has no image binding,
 // the capability is unavailable.
 
+import { defineCapability } from '../core.ts'
+
 // USE facet — exposed to every app via `@justfiles/app/capabilities/image`.
 export interface GeneratedImage {
 	// Base64-encoded bytes (pi-ai's ImageContent shape). Callers that keep images
@@ -16,3 +18,25 @@ export interface GeneratedImage {
 export interface ImageCapability {
 	generateImage(input: { prompt: string }): Promise<{ images: GeneratedImage[] }>
 }
+
+// The factory lives here (not index.ts) so agent.ts can import it without a
+// module cycle. The metadata is the contract's runtime twin: `implementTool`
+// derives the agent tool's schema and description from it.
+export const image = defineCapability<'image', ImageCapability>('image', {
+	generateImage: {
+		description:
+			'Generate an image from a text prompt and save it to the user’s files. ' +
+			'Returns the saved file path(s). Use when the user asks you to draw, create, ' +
+			'or show them an image of something.',
+		input: {
+			type: 'object',
+			properties: {
+				prompt: {
+					type: 'string',
+					description: 'What the image should depict — subject, style, mood.'
+				}
+			},
+			required: ['prompt']
+		}
+	}
+})

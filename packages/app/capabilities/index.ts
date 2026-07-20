@@ -9,9 +9,14 @@ export {
 	type CapabilityTool,
 	type CapabilityToolContext,
 	type CapabilityToolResult,
+	type CapabilityToolSet,
 	defineCapability,
+	implementTool,
+	type MethodMeta,
+	type MethodMetaMap,
 	type ScopedInvoke,
-	type Stream
+	type Stream,
+	type ToolOverride
 } from './core.ts'
 export {
 	type CapabilityCode,

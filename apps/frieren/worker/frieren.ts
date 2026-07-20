@@ -252,7 +252,7 @@ export class Frieren extends DurableObject<Env> {
 		const agentCaps = generateImage
 			? {
 					invoke: capabilityRegistry({ image: caps.image }).invoke,
-					tools: [{ capability: 'image', tools: imageAgentTools }]
+					tools: [imageAgentTools]
 				}
 			: undefined
 		this.session = createAgentSession({
