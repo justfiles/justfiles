@@ -4,7 +4,7 @@ import type { ContextMenuItem, FileTreeBatchOperation } from '@pierre/trees'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { type FilesApp, type FilesState, initialState } from './app.ts'
+import { type FilesApp, type FilesState, initialState, isUserFacing } from './app.ts'
 // Plain side-effect CSS import. `vite dev` injects it; the production build folds
 // it into gui.js as a runtime <style> (see the kernel-host-css plugin in
 // packages/app/vite.ts), so the bundle stays self-contained in every host.
@@ -104,7 +104,14 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 			})
 	}, [client, viewing, revision])
 
-	const files = useMemo(() => state.files.map((file) => file.path), [state.files])
+	const files = useMemo(() => {
+		const paths = state.files.map((file) => file.path)
+		// Finder-style whitelist: by default only the user-facing folders are shown;
+		// ⌘⇧. flips `showHidden` to reveal the whole volume. `showHidden` may be
+		// absent on state persisted before this field existed — default to false.
+		return state.showHidden ? paths : paths.filter(isUserFacing)
+	}, [state.files, state.showHidden])
+	const showHidden = state.showHidden ?? false
 	const displayError = state.error ?? readError
 	const showPreview = preview && preview.path === viewing ? preview : null
 
@@ -115,15 +122,36 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 	const drag = useRef<{ startX: number; startWidth: number } | null>(null)
 	const clampWidth = (w: number) => Math.min(560, Math.max(160, w))
 
+	// ⌘⇧. (Ctrl⇧. off-mac) toggles "show all files", exactly like macOS Finder's
+	// hidden-files shortcut. Scoped to the app root (not `window`) so it never
+	// clobbers another focused window's keys in a shared-document host, and so it
+	// only fires while Files has focus. Shift rewrites '.' to '>' on most layouts,
+	// so match the physical key via `code` and tolerate both `key` values.
+	const onRootKey = (e: React.KeyboardEvent) => {
+		if (e.defaultPrevented) return
+		if (
+			(e.metaKey || e.ctrlKey) &&
+			e.shiftKey &&
+			(e.code === 'Period' || e.key === '.' || e.key === '>')
+		) {
+			e.preventDefault()
+			void client.toggleHidden({})
+		}
+	}
+
 	return (
-		<div className="files">
+		// biome-ignore lint/a11y/noStaticElementInteractions: the root only relays the app's ⌘⇧. shortcut from its focusable children; tabIndex -1 keeps it out of the tab order.
+		<div className="files" onKeyDown={onRootKey} tabIndex={-1}>
 			<aside className="files-sidebar" style={{ width: sidebarWidth }}>
 				<header className="files-head">
 					<span className="files-title">Files</span>
+					{showHidden ? <span className="files-mode">All files</span> : null}
 				</header>
 				{state.error ? <p className="files-error">{state.error}</p> : null}
 				{files.length === 0 ? (
-					<p className="files-hint">No files yet</p>
+					<p className="files-hint">
+						{showHidden ? 'No files yet' : 'No files yet — ⌘⇧. shows all'}
+					</p>
 				) : (
 					<div className="files-tree-wrap">
 						<FilesTree
