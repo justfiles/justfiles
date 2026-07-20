@@ -8,7 +8,7 @@
 import { implementTool } from '../core.ts'
 import { image } from './contract.ts'
 
-export const GENERATED_IMAGES_DIR = '/Pictures'
+export const GENERATED_IMAGES_DIR = '/pictures'
 
 export interface ImageRef {
 	src: string

@@ -29,7 +29,7 @@ test('generate_image offloads bytes to the volume and returns refs in details', 
 	}
 	const [ref] = result.details.images
 	expect(ref).toMatchObject({ mimeType: 'image/png', alt: 'a red panda' })
-	expect(ref.src).toMatch(/^\/Pictures\/[0-9a-f]{8}\.png$/)
+	expect(ref.src).toMatch(/^\/pictures\/[0-9a-f]{8}\.png$/)
 	// The model-facing text names the path but never carries the base64.
 	expect(result.content).toContain(ref.src)
 	expect(result.content).not.toContain('AQID')

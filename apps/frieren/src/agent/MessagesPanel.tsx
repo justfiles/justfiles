@@ -1,6 +1,7 @@
 import { Transcript } from '@justfiles/ui/Transcript'
 import { useRef } from 'react'
 import { useAgentConnection, useAgentSession } from './hooks'
+import { resolveTranscriptImage } from './images'
 import { Whisper } from './Whisper'
 
 // OS-level agent surface — invoked from the menubar, not the app launcher.
@@ -90,7 +91,11 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 					Say something to {agentName}.
 				</div>
 			) : (
-				<Transcript messages={messages} isStreaming={isStreaming} />
+				<Transcript
+					messages={messages}
+					isStreaming={isStreaming}
+					resolveImage={resolveTranscriptImage}
+				/>
 			)}
 
 			{personalized ? null : <Whisper onPersonalize={onPersonalize} />}

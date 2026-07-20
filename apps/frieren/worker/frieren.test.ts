@@ -120,4 +120,32 @@ describe('sessionEntries2DisplayMessages', () => {
 		expect(toolHost?.toolCalls?.length).toBe(4)
 		expect(toolHost?.toolCalls?.every((tc) => tc.result !== undefined)).toBe(true)
 	})
+
+	test('carries image refs from a tool_result entry onto its tool call', () => {
+		const images = [{ src: '/pictures/abcd1234.png', mimeType: 'image/png', alt: 'a red panda' }]
+		const entries: SessionEntry[] = [
+			{
+				type: 'message',
+				role: 'tool_call',
+				tool_name: 'generate_image',
+				input: { prompt: 'a red panda' },
+				id: 'a1',
+				parentId: null,
+				ts
+			},
+			{
+				type: 'message',
+				role: 'tool_result',
+				tool_name: 'generate_image',
+				content: 'Generated an image and saved to /pictures/abcd1234.png.',
+				images,
+				id: 'a2',
+				parentId: 'a1',
+				ts
+			}
+		]
+
+		const [message] = sessionEntries2DisplayMessages(entries)
+		expect(message?.toolCalls?.[0]?.images).toEqual(images)
+	})
 })

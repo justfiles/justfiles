@@ -1,4 +1,20 @@
-import { type CSSProperties, type ReactNode, useLayoutEffect, useRef, useState } from 'react'
+import {
+	type CSSProperties,
+	type ReactNode,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState
+} from 'react'
+
+// A tool-produced image, referenced by a host-meaningful `src` (a Volume path on
+// frieren, a daemon route on quay) — never inline bytes. The host's `resolveImage`
+// turns it into a displayable URL.
+export interface TranscriptImage {
+	src: string
+	mimeType?: string
+	alt?: string
+}
 
 export interface ToolCallInfo {
 	id: string
@@ -7,6 +23,8 @@ export interface ToolCallInfo {
 	result?: unknown
 	isError?: boolean
 	status: 'running' | 'done'
+	// Images this tool produced; promoted out of the collapsed row to inline cards.
+	images?: TranscriptImage[]
 }
 
 export interface AgentMessage {
@@ -33,6 +51,9 @@ export interface TranscriptProps {
 	// (the view sticks to the bottom) and revealed only when scrolling up for
 	// history — the natural spot for a "showing the tail; see the rest" affordance.
 	leading?: ReactNode
+	// Resolve a TranscriptImage to a displayable URL (blob:/https:), or null when
+	// the bytes are unavailable. Omitted hosts render no inline images.
+	resolveImage?: (image: TranscriptImage) => Promise<string | null>
 }
 
 // Scoped CSS for the bits inline styles can't express: the streaming caret
@@ -64,7 +85,13 @@ const css = `
 // collapsible thinking / tool-call rows, and a streaming caret. Transport-
 // agnostic — the host owns the session, header, and composer. Styled on
 // @justfiles/design tokens (no Tailwind) so it renders in any token-aware shell.
-export function Transcript({ messages, isStreaming, onOption, leading }: TranscriptProps) {
+export function Transcript({
+	messages,
+	isStreaming,
+	onOption,
+	leading,
+	resolveImage
+}: TranscriptProps) {
 	const viewportRef = useRef<HTMLDivElement>(null)
 	const contentRef = useRef<HTMLDivElement>(null)
 	// Chat-style "stick to bottom": auto-scroll only while the user is already at
@@ -131,7 +158,13 @@ export function Transcript({ messages, isStreaming, onOption, leading }: Transcr
 			>
 				{leading}
 				{messages.map((m) => (
-					<MessageItem key={m.id} message={m} isStreaming={isStreaming} onOption={onOption} />
+					<MessageItem
+						key={m.id}
+						message={m}
+						isStreaming={isStreaming}
+						onOption={onOption}
+						resolveImage={resolveImage}
+					/>
 				))}
 			</div>
 		</div>
@@ -141,11 +174,13 @@ export function Transcript({ messages, isStreaming, onOption, leading }: Transcr
 function MessageItem({
 	message,
 	isStreaming,
-	onOption
+	onOption,
+	resolveImage
 }: {
 	message: AgentMessage
 	isStreaming: boolean
 	onOption?: (label: string) => void
+	resolveImage?: (image: TranscriptImage) => Promise<string | null>
 }) {
 	if (message.source === 'app') {
 		return <SystemRow label="From app" body={message.content} />
@@ -171,6 +206,18 @@ function MessageItem({
 			{message.toolCalls?.map((tc) => (
 				<ToolCallRow key={tc.id} call={tc} />
 			))}
+			{resolveImage
+				? message.toolCalls?.flatMap(
+						(tc) =>
+							tc.images?.map((image) => (
+								<ImageCard
+									key={`${tc.id}:${image.src}`}
+									image={image}
+									resolveImage={resolveImage}
+								/>
+							)) ?? []
+					)
+				: null}
 			{message.options?.length ? (
 				<OptionRows options={message.options} onOption={onOption} />
 			) : null}
@@ -256,6 +303,66 @@ function Bubble(props: { side: 'left' | 'right'; content: string; streaming: boo
 				) : null}
 				{content ? <CopyButton content={content} /> : null}
 			</div>
+		</div>
+	)
+}
+
+// An inline image in the assistant column, promoted out of the collapsed tool
+// row. Resolution is async (the host may read a Volume or hit a byte route), so
+// the card renders a quiet placeholder until the URL lands; an unresolvable ref
+// (e.g. the user deleted the file) degrades to a muted note instead of a broken
+// <img>.
+function ImageCard({
+	image,
+	resolveImage
+}: {
+	image: TranscriptImage
+	resolveImage: (image: TranscriptImage) => Promise<string | null>
+}) {
+	const [url, setUrl] = useState<string | null | undefined>(undefined)
+	useEffect(() => {
+		let alive = true
+		setUrl(undefined)
+		resolveImage(image).then(
+			(resolved) => alive && setUrl(resolved),
+			() => alive && setUrl(null)
+		)
+		return () => {
+			alive = false
+		}
+	}, [image, resolveImage])
+
+	if (url === null) {
+		return (
+			<div style={{ fontSize: '11px', opacity: 0.5, padding: '2px 8px' }}>
+				Image unavailable ({image.src})
+			</div>
+		)
+	}
+	return (
+		<div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+			{url === undefined ? (
+				<div
+					style={{
+						width: '160px',
+						height: '120px',
+						borderRadius: '10px',
+						background: 'var(--surface-subtle)'
+					}}
+				/>
+			) : (
+				<img
+					src={url}
+					alt={image.alt ?? ''}
+					title={image.alt}
+					style={{
+						maxWidth: '78%',
+						maxHeight: '320px',
+						borderRadius: '10px',
+						border: '1px solid var(--rule)'
+					}}
+				/>
+			)}
 		</div>
 	)
 }

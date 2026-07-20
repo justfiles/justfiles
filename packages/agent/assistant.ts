@@ -11,6 +11,7 @@ import { MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
 import {
 	type AppendPayload,
 	type ContextMessage,
+	type ImageRef,
 	type SessionEntry,
 	type SessionManager,
 	session
@@ -384,7 +385,10 @@ function transform(
 			if (!content.trim() && turnHasToolCall) return null
 			return { type: 'message', role: 'assistant', content }
 		}
-		case 'toolResult':
+		case 'toolResult': {
+			// Image refs ride in `details` (pi's out-of-band channel — never model
+			// context); persist them so the transcript can render inline (#194).
+			const images = (message.details as { images?: ImageRef[] } | undefined)?.images
 			return {
 				type: 'message',
 				role: 'tool_result',
@@ -392,8 +396,10 @@ function transform(
 				content: message.content
 					.filter((b) => b.type === 'text')
 					.map((b) => b.text)
-					.join('\n')
+					.join('\n'),
+				...(images?.length ? { images } : {})
 			}
+		}
 		default: {
 			throw new Error('unsupported role')
 		}

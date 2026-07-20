@@ -62,11 +62,22 @@ const ToolCallMessage = EntryBase.extend({
 	input: z.record(z.string(), z.unknown())
 })
 
+// A Volume-path reference to an image a tool offloaded (never inline base64) —
+// the transcript renderer resolves `src` to displayable bytes per host (#194).
+const ImageRefSchema = z.object({
+	src: z.string(),
+	mimeType: z.string(),
+	alt: z.string().optional()
+})
+
+export type ImageRef = z.infer<typeof ImageRefSchema>
+
 const ToolResultMessage = EntryBase.extend({
 	type: z.literal('message'),
 	role: z.literal('tool_result'),
 	tool_name: z.string(),
-	content: z.string()
+	content: z.string(),
+	images: z.array(ImageRefSchema).optional()
 })
 
 export const MessageEntrySchema = z.discriminatedUnion('role', [

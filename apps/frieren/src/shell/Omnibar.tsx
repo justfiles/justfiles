@@ -17,6 +17,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CommunityCatalogApp } from '../../shared/appstore'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
+import { resolveTranscriptImage } from '../agent/images'
 import { Whisper } from '../agent/Whisper'
 import {
 	useAppCommands,
@@ -496,6 +497,7 @@ export function Omnibar({
 								messages={tail}
 								isStreaming={session.isStreaming}
 								onOption={(label) => ask(label)}
+								resolveImage={resolveTranscriptImage}
 								leading={
 									truncated ? (
 										<button type="button" className="frn-omnibar-tail-more" onClick={openWindow}>
