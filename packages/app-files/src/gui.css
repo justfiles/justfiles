@@ -157,6 +157,14 @@
 	padding-top: 8px;
 	opacity: 0.5;
 }
+.files-image {
+	/* Fit the preview pane without upscaling past the image's own size; the
+	   surrounding <pre> scrolls if the natural size is larger. */
+	display: block;
+	max-width: 100%;
+	height: auto;
+	object-fit: contain;
+}
 .files-muted {
 	opacity: 0.5;
 }
