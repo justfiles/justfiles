@@ -573,10 +573,21 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	<h2>Capability-provided agent tools</h2>
 </div>
 <div class="meta-row">
-	<span class="pill add">re-adds email/calendar</span>
+	<span class="pill add">shipped — seam + image; email/calendar descriptors pending</span>
 	<span class="pill keep">generic seam</span>
 	<span class="small">closes the Step 2 regression; spud-mac gains them for the first time — same code</span>
 </div>
+
+<p>
+	<strong>Status:</strong> landed with the <code>image</code> capability as first customer (#194):
+	<code>CapabilityTool</code>/<code>ScopedInvoke</code> in <code>capabilities/core.ts</code>, the
+	<code>capabilityTools()</code> adapter in <code>@justfiles/agent</code>, and the single
+	<code>capabilities</code> option on <code>createAgentSession</code>. Two amendments to the shape below proved
+	necessary in practice: <code>execute</code> takes a third <code>{ volume }</code> context arg (the image tool
+	offloads bytes to files so base64 never enters model context; passthrough tools ignore it), and a structured
+	<code>{ content, details }</code> return splits model-facing text from the out-of-band details channel (a plain
+	return is still JSON-stringified). Email/calendar descriptor sets and spud-mac wiring remain open.
+</p>
 
 <p>
 	Step 2 dropped frieren's agent-level <code>email</code>/<code>calendar</code> tools. This step brings them
