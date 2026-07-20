@@ -3,6 +3,7 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import {
 	type Api,
 	type CredentialStore,
+	createImagesModels,
 	createModels,
 	createProvider,
 	envApiKeyAuth,
@@ -12,6 +13,7 @@ import {
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter'
+import { openrouterImagesProvider } from '@earendil-works/pi-ai/providers/openrouter-images'
 import {
 	type AgentSession,
 	createAgentSession,
@@ -30,6 +32,7 @@ import {
 	ensureAccount,
 	resolveAiAccount
 } from '@justfiles/app/capabilities/accounts/host'
+import type { GeneratedImage } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import {
 	clearReset,
@@ -98,6 +101,11 @@ type ServerMessage =
 	| { type: 'notification'; notification: Notification }
 
 const DEBUG_COMMAND = '/debug'
+
+// Spud's image engine, picked from pi's OpenRouter images catalog. Fixed for now —
+// a Settings picker (its own selection, separate from the text model) comes with
+// the active-image work (#194).
+const IMAGE_MODEL = 'google/gemini-3.1-flash-image'
 
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
@@ -198,7 +206,7 @@ export class Frieren extends DurableObject<Env> {
 	}
 
 	private async reset() {
-		const { models, model } = this.aiRuntime()
+		const { models, model, generateImage } = this.aiRuntime()
 		await migrateCF(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
@@ -214,7 +222,7 @@ export class Frieren extends DurableObject<Env> {
 		// ignored. email/calendar are guarded (audit + rate-limit) and wired into the APPS —
 		// the agent no longer reaches them directly (that returns as capability-provided agent
 		// tools; see the plan's Step 3.5).
-		const providers = buildProviders({ text: this.text })
+		const providers = buildProviders({ text: this.text, generateImage })
 		const caps = accountsCapabilities(providers, this.vol, { firstParty: ACCOUNTS_FIRST_PARTY })
 		const audit = new AuditLog(this.ctx.storage)
 		const rateLimit = new TokenBucket({ capacity: 60, windowMs: 60_000 })
@@ -227,6 +235,7 @@ export class Frieren extends DurableObject<Env> {
 			acceptWebSocket: (ws) => this.ctx.acceptWebSocket(ws),
 			text: this.text,
 			broadcast: (msg) => this.broadcast(msg),
+			image: caps.image,
 			email,
 			calendar,
 			accounts: caps.accounts
@@ -260,11 +269,17 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
-	// The platform AI runtime: a pi `Models` + selected model. Production uses OpenRouter
-	// (env key); local dev uses an LM Studio OpenAI-compatible endpoint. The api key is
-	// supplied through a small CredentialStore (a stored key wins over ambient env), so
-	// the token never rides on the backend — `modelsBackend` seals it inside `Models`.
-	private aiRuntime(): { models: Models; model: Model<Api> } {
+	// The platform AI runtime: a pi `Models` + selected model, plus (production only)
+	// an image-generation fn over pi's parallel `ImagesModels` stack — same OpenRouter
+	// key, its own model. Local dev (LM Studio) has no image engine, so `generateImage`
+	// is absent and Spud backs no image capability there. The api key is supplied
+	// through a small CredentialStore (a stored key wins over ambient env), so the
+	// token never rides on the backend — `modelsBackend` seals it inside `Models`.
+	private aiRuntime(): {
+		models: Models
+		model: Model<Api>
+		generateImage?: (prompt: string) => Promise<GeneratedImage[]>
+	} {
 		if (this.env.FRIEREN_BACKEND === 'local') {
 			// Local LM Studio — OpenAI-compatible /v1/chat/completions. No real auth, but the
 			// client needs a non-empty key string (provided via the credential store below).
@@ -302,7 +317,25 @@ export class Frieren extends DurableObject<Env> {
 		}
 		const models = createModels({ credentials: apiKeyStore('openrouter', apiKey) })
 		models.setProvider(openrouterProvider())
-		return { models, model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api> }
+		const images = createImagesModels({ credentials: apiKeyStore('openrouter', apiKey) })
+		images.setProvider(openrouterImagesProvider())
+		const imageModel = images.getModel('openrouter', IMAGE_MODEL)
+		return {
+			models,
+			model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api>,
+			generateImage: imageModel
+				? async (prompt) => {
+						const res = await images.generateImages(imageModel, {
+							input: [{ type: 'text', text: prompt }]
+						})
+						if (res.stopReason !== 'stop')
+							throw new Error(res.errorMessage ?? 'image generation failed')
+						return res.output.flatMap((b) =>
+							b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
+						)
+					}
+				: undefined
+		}
 	}
 
 	// ── WebSocket handlers ────────────────────────────────────────────────

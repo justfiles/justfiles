@@ -33,6 +33,7 @@ interface FrierenAppsDeps {
 	// The account-backed capabilities, built from the Volume store by the DO (which
 	// also guards email/calendar with audit + rate-limit) and shared with the agent.
 	// The volume + ai capabilities are local to this kernel; these are the rest.
+	image: Capability
 	email: Capability
 	calendar: Capability
 	accounts: Capability
@@ -70,6 +71,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	const capabilities: Capabilities = capabilityRegistry({
 		volume: volumeCapability(deps.fs, { systemAllowlist: ['computer.spud.files'] }),
 		ai,
+		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
 		accounts: deps.accounts
@@ -80,6 +82,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// back as CAPABILITY_UNAVAILABLE — the old explicit rejection, now structural.
 	const proxied: Capabilities = capabilityRegistry({
 		ai,
+		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
 		accounts: deps.accounts

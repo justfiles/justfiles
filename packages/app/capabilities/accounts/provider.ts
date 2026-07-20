@@ -9,6 +9,7 @@
 import type { AiCapability } from '../ai/index.ts'
 import type { CalendarCapability } from '../calendar/index.ts'
 import type { EmailCapability } from '../email/index.ts'
+import type { ImageCapability } from '../image/index.ts'
 import type { CredentialsSchema } from './contract.ts'
 
 // Platform seam for interactive (delegated) auth: the provider hands over a URL
@@ -72,5 +73,8 @@ export interface Provider {
 		calendar?: Binding<CalendarCapability>
 		// ai optionally carries a model catalogue for the Settings picker.
 		ai?: Binding<AiCapability> & { models?(): AiModel[]; defaultModel?(): string }
+		// image is ai's engine sibling (its own models, its own binding). It resolves
+		// through the active-AI account; a provider without it simply can't make images.
+		image?: Binding<ImageCapability>
 	}
 }

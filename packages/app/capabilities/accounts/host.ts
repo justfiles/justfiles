@@ -11,6 +11,7 @@ import { ai } from '../ai/index.ts'
 import { calendar } from '../calendar/index.ts'
 import { email } from '../email/index.ts'
 import { CapabilityError } from '../error.ts'
+import { image } from '../image/index.ts'
 import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
 import { type Account, type AccountStore, volumeAccountStore } from './account.ts'
@@ -133,6 +134,27 @@ function aiHost(accounts: AccountStore, activeAi: ActiveAiStore, registry: Regis
 				: undefined
 			if (!impl) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
 			return impl.generateText(i)
+		}
+	})
+}
+
+// `image` rides the same active-AI selection — switching the AI account swaps text
+// and image together. The account's provider backs it or it's unavailable; the model
+// choice lives with the binding (no image entry on the pointer yet).
+function imageHost(
+	accounts: AccountStore,
+	activeAi: ActiveAiStore,
+	registry: Registry
+): Capability {
+	return implementCapability(image, {
+		generateImage: async (_c, i) => {
+			const sel = await activeAi.get()
+			const account = sel ? await accounts.get(sel.accountId) : undefined
+			const impl = account
+				? bound(accounts, account, registry.get(account.provider)?.capabilities.image)
+				: undefined
+			if (!impl) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'image')
+			return impl.generateImage(i)
 		}
 	})
 }
@@ -286,12 +308,19 @@ export function accountsCapabilities(
 	providers: Provider[],
 	volume: Volume,
 	opts: AccountsAdminOptions = {}
-): { ai: Capability; email: Capability; calendar: Capability; accounts: Capability } {
+): {
+	ai: Capability
+	image: Capability
+	email: Capability
+	calendar: Capability
+	accounts: Capability
+} {
 	const registry: Registry = new Map(providers.map((p) => [p.id, p]))
 	const accounts = volumeAccountStore(volume)
 	const activeAi = volumeActiveAi(volume)
 	return {
 		ai: aiHost(accounts, activeAi, registry),
+		image: imageHost(accounts, activeAi, registry),
 		email: emailHost(accounts, registry),
 		calendar: calendarHost(accounts, registry),
 		accounts: accountsAdminHost(providers, registry, accounts, activeAi, opts)

@@ -63,12 +63,14 @@ function fakeChatgpt(over: Partial<AiBinding> = {}): Provider {
 	}
 }
 
-function testProviders(over: { google?: Provider; chatgpt?: Provider } = {}): Provider[] {
+function testProviders(
+	over: { google?: Provider; chatgpt?: Provider; spud?: Provider } = {}
+): Provider[] {
 	return [
 		over.google ?? fakeGoogle(),
 		icloudProvider(),
 		over.chatgpt ?? fakeChatgpt(),
-		spudProvider({ generate: async (_s, p) => `spud:${p}` })
+		over.spud ?? spudProvider({ generate: async (_s, p) => `spud:${p}` })
 	]
 }
 
@@ -281,6 +283,33 @@ describe('use-facet dispatch', () => {
 		await expect(
 			caps.ai.invoke(use('ai', 'generateText', { system: '', prompt: 'hi' }))
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
+	})
+
+	test('image.generateImage rides the active-AI selection', async () => {
+		const { caps, accounts, activeAi } = await setup(
+			testProviders({
+				spud: spudProvider({
+					generate: async (_s, p) => `spud:${p}`,
+					generateImage: async (prompt) => [{ data: `b64:${prompt}`, mimeType: 'image/png' }]
+				})
+			})
+		)
+		await accounts.put({ id: 'spud', provider: 'spud', creds: {} })
+		await activeAi.set({ accountId: 'spud' })
+		await expect(
+			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
+		).resolves.toEqual({ images: [{ data: 'b64:a red panda', mimeType: 'image/png' }] })
+	})
+
+	test('image is UNAVAILABLE when the active AI provider has no image binding', async () => {
+		// The default spud provider carries no image engine; chatgpt never does. Either
+		// way the active account decides — image swaps (or vanishes) with the AI switch.
+		const { caps, accounts, activeAi } = await setup()
+		await accounts.put({ id: 'spud', provider: 'spud', creds: {} })
+		await activeAi.set({ accountId: 'spud' })
+		await expect(
+			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
+		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE', capability: 'image' })
 	})
 
 	test('email.listUnread fans out across backing accounts, each stamped', async () => {
