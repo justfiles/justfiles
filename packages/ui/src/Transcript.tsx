@@ -369,6 +369,13 @@ const markdownComponents: Components = {
 	a({ node: _node, ...props }) {
 		// Links must escape the transcript's frame, not navigate the host away.
 		return <a {...props} target="_blank" rel="noopener noreferrer" />
+	},
+	img({ alt }) {
+		// Markdown images carry agent-authored URLs; rendering a live <img> would fire
+		// an arbitrary GET (tracking / SSRF via prompt injection) and bypass the
+		// resolveImage contract, under which only host-vouched tool images render
+		// inline. Show the alt text rather than loading anything.
+		return alt ? <span style={{ opacity: 0.6 }}>{alt}</span> : null
 	}
 }
 
