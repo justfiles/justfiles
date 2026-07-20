@@ -3,11 +3,16 @@
 // offers toggles, never connect/disconnect. Kept as a bare function so this package
 // needs no @justfiles/agent dependency.
 
+import type { GeneratedImage } from '../../image/index.ts'
 import type { Provider } from '../provider.ts'
 
 export function spudProvider(deps: {
 	generate: (system: string, prompt: string) => Promise<string>
+	// Optional: the platform's image engine. Absent (e.g. local dev), Spud backs no
+	// image capability and `generateImage` reports unavailable.
+	generateImage?: (prompt: string) => Promise<GeneratedImage[]>
 }): Provider {
+	const generateImage = deps.generateImage
 	return {
 		id: 'spud',
 		name: 'Spud AI',
@@ -20,7 +25,16 @@ export function spudProvider(deps: {
 						text: await deps.generate(typeof system === 'string' ? system : '', prompt)
 					})
 				})
-			}
+			},
+			...(generateImage && {
+				image: {
+					bind: () => ({
+						generateImage: async ({ prompt }: { prompt: string }) => ({
+							images: await generateImage(prompt)
+						})
+					})
+				}
+			})
 		}
 	}
 }

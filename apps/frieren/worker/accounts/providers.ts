@@ -15,9 +15,11 @@ import {
 	type Provider,
 	spudProvider
 } from '@justfiles/app/capabilities/accounts/providers'
+import type { GeneratedImage } from '@justfiles/app/capabilities/image'
 
 export interface ProviderDeps {
 	text: LLMText
+	generateImage?: (prompt: string) => Promise<GeneratedImage[]>
 }
 
 const DESKTOP_MESSAGE = 'Sign in to this account from the Spud desktop app — it will sync here.'
@@ -35,7 +37,10 @@ export function buildProviders(deps: ProviderDeps): Provider[] {
 		googleProvider({ flow: acquireOnDesktop, client: null }),
 		icloudProvider(),
 		chatgptOnDesktop(),
-		spudProvider({ generate: (system, prompt) => deps.text.gen(system, prompt) })
+		spudProvider({
+			generate: (system, prompt) => deps.text.gen(system, prompt),
+			generateImage: deps.generateImage
+		})
 	]
 }
 
