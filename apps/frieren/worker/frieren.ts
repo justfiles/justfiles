@@ -38,6 +38,8 @@ import {
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
+import type { UsageSnapshot } from '@justfiles/app/capabilities/usage'
+import { usageCapability } from '@justfiles/app/capabilities/usage/host'
 import {
 	clearReset,
 	createFsApi,
@@ -214,6 +216,21 @@ export class Frieren extends DurableObject<Env> {
 		this.ctx.waitUntil(this.accrual)
 	}
 
+	// The `usage` capability's read: the per-user meter + quota, projected into the
+	// host-agnostic snapshot the Settings app renders.
+	private async usageSnapshot(): Promise<UsageSnapshot> {
+		const report = await readUsage(this.ctx.storage, this.db, this.ctx.storage.sql.databaseSize)
+		const q = evaluate(report, await readTier(this.ctx.storage))
+		return {
+			tier: q.tier,
+			ai: q.ai,
+			storage: q.storage,
+			aiTokens: report.ai.totalTokens,
+			aiRequests: report.ai.requests,
+			window: report.ai.window
+		}
+	}
+
 	private async generateSoul(
 		input: SoulGenerationInput
 	): Promise<{ text: string; firstWords: string }> {
@@ -267,7 +284,8 @@ export class Frieren extends DurableObject<Env> {
 			image: caps.image,
 			email,
 			calendar,
-			accounts: caps.accounts
+			accounts: caps.accounts,
+			usage: usageCapability(() => this.usageSnapshot())
 		})
 		// The agent's LLM backend resolves from the enabled `ai` account (single-active):
 		// Spud AI → the platform env backend; nothing enabled → no backend, so a turn
