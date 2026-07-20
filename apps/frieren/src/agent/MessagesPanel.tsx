@@ -1,5 +1,6 @@
 import { Transcript } from '@justfiles/ui/Transcript'
 import { useRef } from 'react'
+import { useAutoResize } from '../components/useAutoResize'
 import { useAgentConnection, useAgentSession } from './hooks'
 import { resolveTranscriptImage } from './images'
 import { Whisper } from './Whisper'
@@ -26,6 +27,8 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 	} = session
 	const ready = connection.state === 'ready'
 	const inputRef = useRef<HTMLTextAreaElement>(null)
+	// Grow the composer with wrapped lines, then scroll past ~6 (128px).
+	useAutoResize(inputRef, input, 128)
 
 	const submit = () => {
 		sendMessage()
