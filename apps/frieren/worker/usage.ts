@@ -117,8 +117,15 @@ export async function readUsage(
 	physicalBytes: number
 ): Promise<UsageReport> {
 	const ai = await readAiUsage(storage)
+	// Count only content still REFERENCED by an inode (deduped: one row per unique blob).
+	// The sync push uploads blobs before applying path changes, and blob GC is out-of-band
+	// (not run in production), so fs_contents can hold orphaned rows; counting them would
+	// report storage the user can't reduce by deleting files.
 	const rows = await db.query<{ storage_kind: unknown; bytes: unknown; n: unknown }>(
-		'SELECT storage_kind, COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS n FROM fs_contents GROUP BY storage_kind'
+		`SELECT c.storage_kind, COALESCE(SUM(c.size), 0) AS bytes, COUNT(*) AS n
+		 FROM fs_contents c
+		 WHERE EXISTS (SELECT 1 FROM fs_inodes i WHERE i.content_hash = c.content_hash)
+		 GROUP BY c.storage_kind`
 	)
 	const storageUsage: StorageUsage = {
 		logicalBytes: 0,

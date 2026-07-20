@@ -130,7 +130,12 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 
 	return (
 		<div className="settings">
-			<Sidebar category={state.category} user={state.user} client={client} />
+			<Sidebar
+				category={state.category}
+				user={state.user}
+				client={client}
+				usageAvailable={state.usageAvailable}
+			/>
 			<section className="settings-detail">
 				{state.error ? (
 					<p className="settings-error">
@@ -154,12 +159,16 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 function Sidebar({
 	category,
 	user,
-	client
+	client,
+	usageAvailable
 }: {
 	category: Category
 	user: UserProfile | null
 	client: Client<SettingsApp>
+	usageAvailable: boolean
 }) {
+	// Hide the Usage tab on hosts that don't provide the capability (e.g. Spud Mac).
+	const categories = CATEGORIES.filter((c) => c.id !== 'usage' || usageAvailable)
 	return (
 		<aside className="settings-sidebar">
 			<div className="settings-account">
@@ -181,7 +190,7 @@ function Sidebar({
 				</div>
 			</div>
 			<nav className="settings-nav">
-				{CATEGORIES.map((c) => (
+				{categories.map((c) => (
 					<button
 						key={c.id}
 						type="button"
@@ -260,7 +269,7 @@ function UsagePanel({ state, client }: { state: SettingsState; client: Client<Se
 			</header>
 			{!usage ? (
 				<section className="settings-card">
-					<p className="settings-muted">{state.error ? 'Couldn’t load usage.' : 'Loading…'}</p>
+					<p className="settings-muted">{state.usageError ? 'Couldn’t load usage.' : 'Loading…'}</p>
 					<div className="settings-card-actions">
 						<button
 							type="button"

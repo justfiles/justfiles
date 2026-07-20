@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite'
 import type { Usage } from '@earendil-works/pi-ai'
 import type { DbAdapter } from '@justfiles/core'
 import { describe, expect, test } from 'vitest'
@@ -40,6 +41,27 @@ function fakeDb(rows: Array<{ storage_kind: number; bytes: number; n: number }>)
 			return rows as unknown as T[]
 		},
 		async run() {},
+		async transaction(fn) {
+			await fn(this as unknown as DbAdapter)
+		}
+	} as DbAdapter
+}
+
+// A real in-memory SQLite DbAdapter over just the two tables readUsage aggregates, to
+// exercise the actual query (the fake above ignores the SQL). node:sqlite is synchronous.
+function realDb(): DbAdapter {
+	const db = new DatabaseSync(':memory:')
+	db.exec(
+		`CREATE TABLE fs_inodes (content_hash TEXT);
+		 CREATE TABLE fs_contents (content_hash TEXT, storage_kind INTEGER, size INTEGER);`
+	)
+	return {
+		async query<T extends Record<string, unknown>>(sql: string) {
+			return db.prepare(sql).all() as unknown as T[]
+		},
+		async run(sql: string) {
+			db.exec(sql)
+		},
 		async transaction(fn) {
 			await fn(this as unknown as DbAdapter)
 		}
@@ -122,5 +144,25 @@ describe('readUsage', () => {
 		// No accrual yet → a zeroed AI counter for the current window.
 		expect(report.ai.requests).toBe(0)
 		expect(report.ai.window).toMatch(/^\d{4}-\d{2}$/)
+	})
+
+	test('counts only inode-referenced blobs, excluding orphaned fs_contents rows', async () => {
+		const kv = memKv()
+		const db = realDb()
+		// Two inodes reference hash 'a' (dedup: counts once); 'orphan' is in fs_contents but
+		// referenced by no inode (an interrupted push / out-of-band-GC leftover).
+		await db.run("INSERT INTO fs_inodes(content_hash) VALUES ('a'), ('a'), ('b')")
+		await db.run(
+			`INSERT INTO fs_contents(content_hash, storage_kind, size) VALUES
+			 ('a', 1, 100), ('b', 2, 200), ('orphan', 2, 999)`
+		)
+
+		const report = await readUsage(kv, db, 0)
+
+		// 'orphan' (999) excluded; 'a' counted once despite two inode refs.
+		expect(report.storage.logicalBytes).toBe(300)
+		expect(report.storage.blobCount).toBe(2)
+		expect(report.storage.inlineBytes).toBe(100)
+		expect(report.storage.r2Bytes).toBe(200)
 	})
 })
