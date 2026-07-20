@@ -57,6 +57,17 @@
 .files-main-name {
 	font-weight: 500;
 }
+/* The "All files" badge shown while ⌘⇧. has revealed the whole volume. */
+.files-mode {
+	margin-left: auto;
+	padding: 1px 6px;
+	border-radius: 4px;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	background: var(--trees-bg-muted-override, color-mix(in srgb, var(--text) 10%, transparent));
+	opacity: 0.7;
+}
 /* Right-hand metadata cluster: pushed to the far edge, it owns the leftover
    width so the long path truncates here instead of crowding the name. The path
    shrinks; the fixed-width size never does. */

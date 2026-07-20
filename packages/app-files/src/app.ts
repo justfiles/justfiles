@@ -20,6 +20,12 @@ export type FilesState = {
 	// preview re-read on it, so an external edit refreshes the open file.
 	revision: number
 	files: Array<{ path: string }>
+	// Finder-style "show all files" toggle. Off by default: the GUI shows only the
+	// user-facing top-level folders (USER_FACING_ROOTS). On: the whole volume,
+	// including the runtime prefixes (⌘⇧. in the GUI, like macOS Finder). This is a
+	// persisted view MODE — the agent still sees the full `files` list either way;
+	// the whitelist is a presentation filter applied in the GUI, not in state.
+	showHidden: boolean
 	// Last scan failure, shown until the next scan clears it.
 	error: string | null
 }
@@ -28,7 +34,20 @@ export const initialState: FilesState = {
 	currentViewing: null,
 	revision: 0,
 	files: [],
+	showHidden: false,
 	error: null
+}
+
+// The Finder-like whitelist: only these top-level folders are shown by default.
+// This is deliberately small and grows by hand as more user-facing locations
+// earn a place in the sidebar. `/notes` is the shared Notes knowledge base;
+// `/Pictures` is where generated images land. Everything else (the per-app
+// /data chroots, /system, /state, …) is "hidden" until ⌘⇧. reveals it.
+const USER_FACING_ROOTS = ['/notes', '/pictures'] as const
+
+// A path is user-facing when it sits under one of the whitelisted roots.
+export function isUserFacing(path: string): boolean {
+	return USER_FACING_ROOTS.some((root) => path === root || path.startsWith(`${root}/`))
 }
 
 // Cap what the readFile query returns. 256 KiB is enough for inspecting
@@ -123,6 +142,14 @@ export const app = defineApp({
 			),
 			clear: t.on(v.object({}), (state) => ({ ...state, currentViewing: null, error: null }), {
 				description: 'Clear the current Files selection.'
+			}),
+			// Flip the Finder-style "show all files" mode. Off (default) shows only the
+			// user-facing folders (USER_FACING_ROOTS); on shows the whole volume. The
+			// GUI binds this to ⌘⇧. (macOS's "show hidden files"). No re-scan: `files`
+			// already holds everything, so the GUI just re-derives what it renders.
+			toggleHidden: t.on(v.object({}), (state) => ({ ...state, showHidden: !state.showHidden }), {
+				description:
+					'Toggle showing every file vs only the user-facing folders (/notes, /pictures).'
 			}),
 			// The watched file changed on disk — bump `revision` so the GUI re-reads it.
 			// The bytes themselves never enter state (the preview is a caller-scoped
