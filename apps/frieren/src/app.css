@@ -1457,11 +1457,11 @@
 /* The bar itself: fixed at the bottom of the container, always present. */
 .frn-omnibar-bar {
 	display: flex;
-	align-items: center;
+	align-items: flex-end;
 	gap: 10px;
 	flex: none;
-	padding: 0 14px;
-	height: 48px;
+	padding: 8px 14px;
+	min-height: 48px;
 }
 .frn-omnibar-search {
 	flex: none;
@@ -1618,16 +1618,21 @@
 	font-size: 11px;
 	color: color-mix(in srgb, var(--text) 40%, transparent);
 }
-.frn-omnibar-bar input {
+.frn-omnibar-bar textarea {
 	flex: 1;
 	min-width: 0;
-	height: 100%;
+	margin: 0;
+	height: auto;
 	border: 0;
-	padding: 0;
+	padding: 6px 0;
 	background: transparent;
 	color: inherit;
 	font: inherit;
 	font-size: 16px;
+	line-height: 20px;
+	resize: none;
+	/* Toggled to auto by useAutoResize once content passes the 5-line cap. */
+	overflow-y: hidden;
 	outline: none;
 	box-shadow: none;
 }

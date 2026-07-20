@@ -26,6 +26,7 @@ import {
 	useInstallingApps
 } from '../apps/hooks'
 import type { InstalledApp } from '../apps/types'
+import { useAutoResize } from '../components/useAutoResize'
 import { useNotifications } from '../notifications/hooks'
 import { useDismissTimer } from '../notifications/lifetime'
 import { type NotificationEntry, notificationStore, type Route } from '../notifications/store'
@@ -40,6 +41,10 @@ import { MigrationSheet } from './MigrationSheet'
 // input is fixed at the bottom; everything grows upward from it, most-relevant
 // nearest the input (see design/01-omnibar.md). This replaces the dock: the app
 // grid it shows at rest is where launching now lives.
+
+// The composer grows with wrapped input like iMessage, then scrolls once it
+// hits ~5 lines so a pasted wall of text can't shove the sheet open.
+const MAX_INPUT_HEIGHT = 112
 
 type Row =
 	| { kind: 'app'; app: InstalledApp }
@@ -131,10 +136,11 @@ export function Omnibar({
 	// all apps" lives (design/01-omnibar.md open question). Transient like the rest
 	// of the sheet: blur, Esc, or typing a query leaves it.
 	const [browseStore, setBrowseStore] = useState(false)
-	const inputRef = useRef<HTMLInputElement>(null)
+	const inputRef = useRef<HTMLTextAreaElement>(null)
 
 	const text = query.trim()
 	const matches = useMemo(() => filterApps(apps, text), [apps, text])
+	useAutoResize(inputRef, query, MAX_INPUT_HEIGHT)
 
 	// Community discovery (flag-gated; `catalog` is empty when off). Store rows are
 	// catalog apps not already installed; held-update rows are installed apps whose
@@ -395,6 +401,13 @@ export function Omnibar({
 			else if (text !== '') setQuery('')
 			else if (chatOpen) setChatOpen(false)
 			else inputRef.current?.blur()
+			return
+		}
+		// Enter sends/launches; Shift+Enter drops a newline (the textarea grows).
+		if (event.key === 'Enter' && !event.shiftKey) {
+			event.preventDefault()
+			if (text === '' && !browsing) return
+			run(selected)
 			return
 		}
 		if (text === '' && !browsing) return
@@ -681,8 +694,9 @@ export function Omnibar({
 			) : null}
 			<form className="frn-omnibar-bar" onSubmit={submit}>
 				<MagnifyingGlassIcon className="frn-omnibar-search" />
-				<input
+				<textarea
 					ref={inputRef}
+					rows={1}
 					value={query}
 					onChange={(event) => {
 						setQuery(event.currentTarget.value)
