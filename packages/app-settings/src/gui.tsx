@@ -1,6 +1,7 @@
 import type { Client } from '@justfiles/app'
 import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import type { AccountInfo, CapabilityId, ProviderInfo } from '@justfiles/app/capabilities/accounts'
+import type { UsageResource } from '@justfiles/app/capabilities/usage'
 import type { UserProfile } from '@justfiles/app/capabilities/user'
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -64,6 +65,15 @@ injectStyle(
 .settings button:disabled { opacity: 0.5; }
 .settings-primary-button { background: var(--focus); color: var(--on-focus); border: 1px solid var(--focus); border-radius: 7px; font-size: 13px; padding: 7px 14px; }
 .settings-small-button { font-size: 11px; padding: 3px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--window-bg); color: inherit; }
+
+.settings-meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.settings-meter-used { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.settings-meter-limit { font-size: 12px; opacity: 0.55; }
+.settings-meter-bar { position: relative; height: 8px; border-radius: 999px; background: var(--rule); overflow: hidden; }
+.settings-meter-fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--focus); transition: width 0.2s ease; }
+.settings-meter-fill[data-exceeded="true"] { background: #b91c1c; }
+.settings-meter-sub { margin: 0; font-size: 11px; opacity: 0.55; }
+.settings-tier-badge { align-self: flex-start; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; border-radius: 999px; background: var(--focus); color: var(--on-focus); }
 `,
 	'app-settings'
 )
@@ -97,7 +107,8 @@ export const gui = defineGUI<SettingsApp>({
 })
 
 const CATEGORIES: { id: Category; label: string; glyph: string }[] = [
-	{ id: 'accounts', label: 'Accounts', glyph: '@' }
+	{ id: 'accounts', label: 'Accounts', glyph: '@' },
+	{ id: 'usage', label: 'Usage', glyph: '%' }
 ]
 
 const CAP_LABEL: Record<CapabilityId, string> = {
@@ -114,6 +125,7 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 		void client.loadUser({})
 		void client.loadProviders({})
 		void client.loadAccounts({})
+		void client.loadUsage({})
 	}, [client])
 
 	return (
@@ -132,7 +144,8 @@ function Settings({ state, client }: { state: SettingsState; client: Client<Sett
 						</button>
 					</p>
 				) : null}
-				<AccountsPanel state={state} client={client} />
+				{state.category === 'accounts' ? <AccountsPanel state={state} client={client} /> : null}
+				{state.category === 'usage' ? <UsagePanel state={state} client={client} /> : null}
 			</section>
 		</div>
 	)
@@ -214,6 +227,106 @@ function AccountsPanel({ state, client }: { state: SettingsState; client: Client
 				<ProviderConnectForm key={provider.id} provider={provider} client={client} />
 			))}
 		</div>
+	)
+}
+
+const formatUsd = (n: number) => `$${n.toFixed(2)}`
+
+function formatBytes(n: number): string {
+	if (n < 1024) return `${n} B`
+	const units = ['KB', 'MB', 'GB', 'TB']
+	let v = n / 1024
+	let i = 0
+	while (v >= 1024 && i < units.length - 1) {
+		v /= 1024
+		i++
+	}
+	return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`
+}
+
+function formatTokens(n: number): string {
+	if (n < 1000) return String(n)
+	if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
+	return `${(n / 1_000_000).toFixed(1)}M`
+}
+
+function UsagePanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
+	const usage = state.usage
+	return (
+		<div className="settings-pane">
+			<header className="settings-pane-header">
+				<h1 className="settings-pane-title">Usage</h1>
+				<p className="settings-pane-copy">Your AI and storage usage against your plan.</p>
+			</header>
+			{!usage ? (
+				<p className="settings-muted">Loading…</p>
+			) : (
+				<>
+					<span className="settings-tier-badge">{usage.tier} plan</span>
+					<Meter
+						title="AI this month"
+						resource={usage.ai}
+						format={formatUsd}
+						sub={`${formatTokens(usage.aiTokens)} tokens · ${usage.aiRequests} requests · ${usage.window}`}
+					/>
+					<Meter
+						title="Storage"
+						resource={usage.storage}
+						format={formatBytes}
+						sub="Deduplicated content across your files and notes."
+					/>
+					<div className="settings-card-actions">
+						<button
+							type="button"
+							className="settings-small-button"
+							onClick={() => void client.loadUsage({})}
+						>
+							Refresh
+						</button>
+					</div>
+				</>
+			)}
+		</div>
+	)
+}
+
+function Meter({
+	title,
+	resource,
+	format,
+	sub
+}: {
+	title: string
+	resource: UsageResource
+	format: (n: number) => string
+	sub: string
+}) {
+	const pct = Math.min(100, Math.round(resource.fraction * 100))
+	return (
+		<section className="settings-card">
+			<div className="settings-meter-head">
+				<h2 className="settings-card-title">{title}</h2>
+				<span className="settings-meter-used">
+					{format(resource.used)}
+					<span className="settings-meter-limit">
+						{resource.limit !== null ? ` / ${format(resource.limit)}` : ' · unlimited'}
+					</span>
+				</span>
+			</div>
+			{resource.limit !== null ? (
+				<div className="settings-meter-bar">
+					<div
+						className="settings-meter-fill"
+						data-exceeded={resource.exceeded || undefined}
+						style={{ width: `${pct}%` }}
+					/>
+				</div>
+			) : null}
+			<p className="settings-meter-sub">
+				{resource.exceeded ? 'Limit reached — resets next cycle, or upgrade your plan. ' : ''}
+				{sub}
+			</p>
+		</section>
 	)
 }
 

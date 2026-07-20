@@ -5,6 +5,7 @@ import {
 	type CapabilityId,
 	type ProviderInfo
 } from '@justfiles/app/capabilities/accounts'
+import { type UsageSnapshot, usage } from '@justfiles/app/capabilities/usage'
 import { type UserProfile, user } from '@justfiles/app/capabilities/user'
 import * as v from 'valibot'
 
@@ -17,13 +18,14 @@ import * as v from 'valibot'
 // Transient form/busy markers stay in GUI-local React state — handlers are
 // atomic, so a `busy` flag in reducer state would only be observable as null
 // between dispatches.
-export type Category = 'accounts'
+export type Category = 'accounts' | 'usage'
 
 export type SettingsState = {
 	category: Category
 	user: UserProfile | null
 	providers: ProviderInfo[]
 	accounts: AccountInfo[]
+	usage: UsageSnapshot | null
 	loading: boolean
 	error: string | null
 }
@@ -33,6 +35,7 @@ export const initialState: SettingsState = {
 	user: null,
 	providers: [],
 	accounts: [],
+	usage: null,
 	loading: true,
 	error: null
 }
@@ -43,7 +46,8 @@ export const app = defineApp({
 	init: initialState,
 	capabilities: {
 		accounts: accountsAdmin({ scopes: ['admin'] }),
-		user: user({ scopes: [] })
+		user: user({ scopes: [] }),
+		usage: usage({ scopes: [] })
 	},
 	// Pure edges drive state; the host reads (`accounts.list*`) are the effects,
 	// each emitted as command data and folded back via `fromResult`.
@@ -74,8 +78,16 @@ export const app = defineApp({
 		userLoaded: t.fromResult('user', 'current', (state, r) =>
 			r.ok ? { ...state, user: r.value } : state
 		),
+		loadUsage: t.on(
+			v.object({}),
+			(state) => [state, t.cmd('usage', 'current', {}).to('usageLoaded')],
+			{ description: 'Load the metered usage + plan caps for the usage panel.' }
+		),
+		usageLoaded: t.fromResult('usage', 'current', (state, r) =>
+			r.ok ? { ...state, usage: r.value } : { ...state, error: r.error.message }
+		),
 		selectCategory: t.on(
-			v.object({ category: v.picklist(['accounts']) }),
+			v.object({ category: v.picklist(['accounts', 'usage']) }),
 			(state, { category }) => ({ ...state, category, error: null }),
 			{ description: 'Switch the selected settings category.' }
 		),

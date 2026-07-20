@@ -37,6 +37,7 @@ interface FrierenAppsDeps {
 	email: Capability
 	calendar: Capability
 	accounts: Capability
+	usage: Capability
 }
 
 export interface FrierenApps {
@@ -74,7 +75,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
-		accounts: deps.accounts
+		accounts: deps.accounts,
+		usage: deps.usage
 	})
 	// What the browser may proxy over `_caps`: everything EXCEPT `volume`, which is
 	// always served locally by the browser kernel against the synced volume and so
@@ -85,7 +87,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		image: deps.image,
 		email: deps.email,
 		calendar: deps.calendar,
-		accounts: deps.accounts
+		accounts: deps.accounts,
+		usage: deps.usage
 	})
 
 	function getKernel(): Kernel {
