@@ -12,6 +12,11 @@ export function useAutoResize(
 	useLayoutEffect(() => {
 		const el = ref.current
 		if (!el) return
+		// Our height math (height = scrollHeight) only holds under border-box, where
+		// height includes padding; content-box would count the padding twice and
+		// leave an empty field looking ~2 lines tall. Enforce it here so the hook is
+		// correct regardless of the consumer's CSS.
+		el.style.boxSizing = 'border-box'
 		// Reset first so scrollHeight reflects content, not the last measured height.
 		el.style.height = 'auto'
 		el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
