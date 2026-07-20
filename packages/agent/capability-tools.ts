@@ -7,16 +7,13 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type {
 	Capabilities,
-	CapabilityTool,
-	CapabilityToolResult
+	CapabilityToolResult,
+	CapabilityToolSet
 } from '@justfiles/app/capabilities'
 import type { Volume } from '@justfiles/fs'
 import type { TSchema } from 'typebox'
 
-export interface CapabilityToolSet {
-	capability: string
-	tools: CapabilityTool[]
-}
+export type { CapabilityToolSet } from '@justfiles/app/capabilities'
 
 // A structured descriptor return carries the model-facing text apart from the
 // out-of-band `details`; anything else is JSON for the model.

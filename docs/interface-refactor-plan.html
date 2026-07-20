@@ -586,7 +586,14 @@ assistant.<span class="c-fn">addTools</span>([bash, <span class="c-fn">createFet
 	necessary in practice: <code>execute</code> takes a third <code>{ volume }</code> context arg (the image tool
 	offloads bytes to files so base64 never enters model context; passthrough tools ignore it), and a structured
 	<code>{ content, details }</code> return splits model-facing text from the out-of-band details channel (a plain
-	return is still JSON-stringified). Email/calendar descriptor sets and spud-mac wiring remain open.
+	return is still JSON-stringified). A third refinement replaced hand-written descriptor lists with
+	<strong>derivation from the contract</strong>: <code>defineCapability</code> optionally takes per-method
+	<code>MethodMeta</code> (description + input JSON Schema), making the contract self-describing, and
+	<code>implementTool(factory, overrides?)</code> — the tool-side counterpart of <code>implementCapability</code> —
+	derives the tool set from it (passthrough by default; overrides carry only judgment: LLM copy, a friendlier
+	name, a transforming execute). <code>ScopedInvoke&lt;Methods&gt;</code> is typed against the contract, so drift
+	is a compile error. Email/calendar metadata + tool sets and spud-mac wiring remain open; the same
+	<code>MethodMeta</code> is the natural home for seam-level input validation later.
 </p>
 
 <p>
