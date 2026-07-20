@@ -17,9 +17,23 @@ export function useAutoResize(
 		// leave an empty field looking ~2 lines tall. Enforce it here so the hook is
 		// correct regardless of the consumer's CSS.
 		el.style.boxSizing = 'border-box'
-		// Reset first so scrollHeight reflects content, not the last measured height.
-		el.style.height = 'auto'
-		el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
-		el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden'
+		const measure = () => {
+			// Reset first so scrollHeight reflects content, not the last measured height.
+			el.style.height = 'auto'
+			el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+			el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden'
+		}
+		measure()
+		// Width changes (viewport/window resize, a sibling control appearing) rewrap
+		// the text without changing `value`, so remeasure on width — guarded so our
+		// own height writes don't feed the observer back into a loop.
+		let lastWidth = el.clientWidth
+		const observer = new ResizeObserver(() => {
+			if (el.clientWidth === lastWidth) return
+			lastWidth = el.clientWidth
+			measure()
+		})
+		observer.observe(el)
+		return () => observer.disconnect()
 	}, [ref, value, maxHeight])
 }
