@@ -80,7 +80,15 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 	const [preview, setPreview] = useState<Preview | null>(null)
 	const [readError, setReadError] = useState<string | null>(null)
 	const tokenRef = useRef(0)
-	const viewing = state.currentViewing
+	// Only preview a file that is actually visible in the current mode. A selection
+	// the whitelist hides — a persisted `currentViewing` under /system, or a file
+	// picked in "All files" mode before ⌘⇧. was toggled back off — must not stay
+	// open in the preview. Deriving `viewing` (rather than clearing state) keeps
+	// the selection intact, so toggling ⌘⇧. back on re-reveals it.
+	const viewing =
+		state.currentViewing && (state.showHidden || isUserFacing(state.currentViewing))
+			? state.currentViewing
+			: null
 	const revision = state.revision
 	// biome-ignore lint/correctness/useExhaustiveDependencies: revision is a cache-busting trigger — a bump means the watched file changed on disk, so re-run the read even though the body doesn't read it.
 	useEffect(() => {

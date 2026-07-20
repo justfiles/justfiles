@@ -41,13 +41,19 @@ export const initialState: FilesState = {
 // The Finder-like whitelist: only these top-level folders are shown by default.
 // This is deliberately small and grows by hand as more user-facing locations
 // earn a place in the sidebar. `/notes` is the shared Notes knowledge base;
-// `/Pictures` is where generated images land. Everything else (the per-app
+// `/pictures` is where generated images land. Everything else (the per-app
 // /data chroots, /system, /state, …) is "hidden" until ⌘⇧. reveals it.
 const USER_FACING_ROOTS = ['/notes', '/pictures'] as const
 
-// A path is user-facing when it sits under one of the whitelisted roots.
+// A path is user-facing when it sits under one of the whitelisted roots. The
+// match is case-INsensitive: the constant is lowercase, but generated images
+// currently land under `/Pictures` (capital P) on `main` — a lowercasing of that
+// dir rides a separate branch — and a case-sensitive check would hide every
+// generated image from the default view until that branch merges. Folding case
+// keeps the default view correct whichever casing wins.
 export function isUserFacing(path: string): boolean {
-	return USER_FACING_ROOTS.some((root) => path === root || path.startsWith(`${root}/`))
+	const lower = path.toLowerCase()
+	return USER_FACING_ROOTS.some((root) => lower === root || lower.startsWith(`${root}/`))
 }
 
 // Cap what the readFile query returns. 256 KiB is enough for inspecting
