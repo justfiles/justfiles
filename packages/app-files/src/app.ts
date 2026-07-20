@@ -32,9 +32,40 @@ export const initialState: FilesState = {
 }
 
 // Cap what the readFile query returns. 256 KiB is enough for inspecting
-// source/text files; binary previews are out of scope here.
+// source/text files. Images get a larger budget since base64 inflates the
+// payload ~33% and a real photo dwarfs a text file.
 const PREVIEW_LIMIT = 256 * 1024
+const IMAGE_LIMIT = 8 * 1024 * 1024
 const decoder = new TextDecoder()
+
+// Extension → MIME for the image types a browser <img> renders. A file whose
+// extension is here is previewed as an image (data URL), not decoded as text.
+const IMAGE_MIME: Record<string, string> = {
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	gif: 'image/gif',
+	webp: 'image/webp',
+	bmp: 'image/bmp',
+	svg: 'image/svg+xml',
+	ico: 'image/x-icon',
+	avif: 'image/avif'
+}
+
+function imageMime(path: string): string | null {
+	const dot = path.lastIndexOf('.')
+	return dot === -1 ? null : (IMAGE_MIME[path.slice(dot + 1).toLowerCase()] ?? null)
+}
+
+// Bytes → base64, chunked so the argument spread never overflows the call stack
+// on a large image. `btoa` is a Worker global (the sandbox runs there).
+function toBase64(bytes: Uint8Array): string {
+	let binary = ''
+	const chunk = 0x8000
+	for (let i = 0; i < bytes.length; i += chunk)
+		binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+	return btoa(binary)
+}
 
 const pathSchema = v.pipe(
 	v.string(),
@@ -106,15 +137,35 @@ export const app = defineApp({
 	// state. The kernel attaches the declared scopes to `app.invoke`.
 	procedures: (p) => ({
 		readFile: p.procedure({
-			description: 'Read a file as text, capped at the preview limit.',
+			description:
+				'Read a file: images return a data URL, everything else text (capped at the preview limit).',
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
 				const bytes = await app.invoke('volume', 'readFile', path)
+				const mime = imageMime(path)
+				if (mime) {
+					// Too large to inline: report the size but skip the data URL so the
+					// GUI shows a "too large" note instead of a multi-MB base64 payload.
+					const truncated = bytes.byteLength > IMAGE_LIMIT
+					return {
+						path,
+						kind: 'image' as const,
+						dataUrl: truncated ? null : `data:${mime};base64,${toBase64(bytes)}`,
+						truncated,
+						size: bytes.byteLength
+					}
+				}
 				const truncated = bytes.byteLength > PREVIEW_LIMIT
 				const slice = truncated ? bytes.subarray(0, PREVIEW_LIMIT) : bytes
 				// `size` is the full byte length on disk, not the (possibly capped)
 				// preview slice — so the status bar reports the real file size.
-				return { path, content: decoder.decode(slice), truncated, size: bytes.byteLength }
+				return {
+					path,
+					kind: 'text' as const,
+					content: decoder.decode(slice),
+					truncated,
+					size: bytes.byteLength
+				}
 			}
 		}),
 

@@ -52,8 +52,11 @@ function formatSize(bytes: number): string {
 
 // Preview shape returned by the `readFile` query. Kept local to the GUI —
 // content lives in React state only, never in app state. `size` is the file's
-// full byte length on disk (not the capped preview slice).
-type Preview = { path: string; content: string; truncated: boolean; size: number }
+// full byte length on disk (not the capped preview slice). Images carry a data
+// URL (`dataUrl` null when the file is too large to inline) instead of text.
+type Preview =
+	| { path: string; kind: 'text'; content: string; truncated: boolean; size: number }
+	| { path: string; kind: 'image'; dataUrl: string | null; truncated: boolean; size: number }
 
 function Files({ state, client }: { state: FilesState; client: Client<FilesApp> }) {
 	// Kick a scan on first mount when we have no file list yet. The recursive watch
@@ -173,12 +176,24 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 							{displayError ? (
 								<span style={{ color: '#b91c1c' }}>{displayError}</span>
 							) : showPreview ? (
-								<>
-									{showPreview.content}
-									{showPreview.truncated ? (
-										<span className="files-truncated">… preview truncated</span>
-									) : null}
-								</>
+								showPreview.kind === 'image' ? (
+									showPreview.dataUrl ? (
+										<img
+											className="files-image"
+											src={showPreview.dataUrl}
+											alt={basename(viewing)}
+										/>
+									) : (
+										<span className="files-muted">Image too large to preview</span>
+									)
+								) : (
+									<>
+										{showPreview.content}
+										{showPreview.truncated ? (
+											<span className="files-truncated">… preview truncated</span>
+										) : null}
+									</>
+								)
 							) : (
 								<span className="files-muted">Loading…</span>
 							)}
