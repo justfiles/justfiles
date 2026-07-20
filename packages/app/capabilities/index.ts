@@ -6,7 +6,11 @@ export {
 	type CapabilityBridge,
 	type CapabilityFactory,
 	type CapabilityScope,
+	type CapabilityTool,
+	type CapabilityToolContext,
+	type CapabilityToolResult,
 	defineCapability,
+	type ScopedInvoke,
 	type Stream
 } from './core.ts'
 export {
