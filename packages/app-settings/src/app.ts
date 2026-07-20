@@ -26,6 +26,11 @@ export type SettingsState = {
 	providers: ProviderInfo[]
 	accounts: AccountInfo[]
 	usage: UsageSnapshot | null
+	// Whether the host provides the `usage` capability (Spud Mac doesn't yet). False hides
+	// the Usage category rather than surfacing an error the user can't act on.
+	usageAvailable: boolean
+	// A transient usage-load failure, shown inside the Usage pane (never the global banner).
+	usageError: string | null
 	loading: boolean
 	error: string | null
 }
@@ -36,6 +41,8 @@ export const initialState: SettingsState = {
 	providers: [],
 	accounts: [],
 	usage: null,
+	usageAvailable: true,
+	usageError: null,
 	loading: true,
 	error: null
 }
@@ -83,9 +90,13 @@ export const app = defineApp({
 			(state) => [state, t.cmd('usage', 'current', {}).to('usageLoaded')],
 			{ description: 'Load the metered usage + plan caps for the usage panel.' }
 		),
-		usageLoaded: t.fromResult('usage', 'current', (state, r) =>
-			r.ok ? { ...state, usage: r.value } : { ...state, error: r.error.message }
-		),
+		usageLoaded: t.fromResult('usage', 'current', (state, r) => {
+			if (r.ok) return { ...state, usage: r.value, usageError: null }
+			// A host without the `usage` capability (e.g. Spud Mac) reports it unavailable —
+			// hide the category instead of stranding the pane or polluting the global banner.
+			if (r.error.message === 'CAPABILITY_UNAVAILABLE') return { ...state, usageAvailable: false }
+			return { ...state, usageError: r.error.message }
+		}),
 		selectCategory: t.on(
 			v.object({ category: v.picklist(['accounts', 'usage']) }),
 			(state, { category }) => ({ ...state, category, error: null }),

@@ -128,6 +128,9 @@ export class Frieren extends DurableObject<Env> {
 	// read-modify-write of the KV counter. Serialize them through this chain so no
 	// increment is lost; `ctx.waitUntil` keeps the DO alive until the write lands.
 	private accrual: Promise<void> = Promise.resolve()
+	// Inference admission lane (see runInference): serializes the budget check so overlapping
+	// calls can't all pass one below-cap read and overshoot the cap.
+	private lane: Promise<unknown> = Promise.resolve()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -203,34 +206,49 @@ export class Frieren extends DurableObject<Env> {
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
 	// Reject once the monthly AI budget is spent (resets with the window). Reads only the
-	// AI counter — no storage aggregate on the hot path. The single gate for EVERY platform
-	// inference path: text (agent turns, soul generation, and the app `ai` capability all
-	// resolve their backend through `meteredBackend`) and image generation.
+	// AI counter — no storage aggregate on the hot path. Called only inside `runInference`,
+	// which serializes it after the prior call's accrual — so it always sees up-to-date usage.
 	private async assertAiWithinBudget(): Promise<void> {
-		// Drain pending accrual first: accrual is async (waitUntil), so without this an
-		// overlapping — or even sequential — request reads the counter BEFORE an earlier
-		// completed call's usage is written, letting many calls pass one below-cap read and
-		// blow past the cap instead of the single-call overshoot a soft gate should allow.
-		await this.accrual
 		const tier = await readTier(this.ctx.storage)
 		if (aiQuota(await readAiUsage(this.ctx.storage), tier).exceeded)
 			throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
 	}
 
-	// Wrap the platform backend with the passive usage meter (accrual) AND the pre-turn
-	// budget gate, so every text model call is both counted and capped at one boundary.
+	// Admit one inference behind a serialization lane: the budget check for a call runs only
+	// after the PREVIOUS admitted call has completed AND its usage has accrued (the lane
+	// advances on `settle` then the accrual chain). So overlapping app / soul / image calls
+	// can't all pass the same below-cap read and blow past the cap — the soft cap overshoots
+	// by at most the single in-flight call. `op` starts the call and returns its value plus a
+	// `settle` promise that resolves when the call is truly done: a unary result is already
+	// done (Promise.resolve()); a streamed turn settles on `stream.result()` so the next
+	// admission waits for the whole turn. The agent loop is already sequential, so this adds
+	// no latency there; it only serializes genuinely concurrent callers.
+	private runInference<T>(op: () => Promise<{ value: T; settle: Promise<unknown> }>): Promise<T> {
+		const gated = this.lane.then(() => this.assertAiWithinBudget()).then(op)
+		this.lane = gated.then(
+			({ settle }) => settle.catch(() => {}).then(() => this.accrual.catch(() => {})),
+			() => this.accrual.catch(() => {})
+		)
+		return gated.then(({ value }) => value)
+	}
+
+	// Wrap the platform backend with the passive usage meter (accrual) AND route every model
+	// call through the inference lane, so each text call — agent turns, soul gen, the app `ai`
+	// capability — is counted and capped at one boundary.
 	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
 		const base = meterBackend(modelsBackend(models, model), (usage) => this.trackUsage(usage))
 		return {
 			...base,
-			streamFn: async (m, context, options) => {
-				await this.assertAiWithinBudget()
-				return base.streamFn(m, context, options)
-			},
-			completeFn: async (m, context, options) => {
-				await this.assertAiWithinBudget()
-				return base.completeFn(m, context, options)
-			}
+			streamFn: (m, context, options) =>
+				this.runInference(async () => {
+					const stream = await base.streamFn(m, context, options)
+					return { value: stream, settle: stream.result() }
+				}),
+			completeFn: (m, context, options) =>
+				this.runInference(async () => {
+					const message = await base.completeFn(m, context, options)
+					return { value: message, settle: Promise.resolve() }
+				})
 		}
 	}
 
@@ -407,22 +425,23 @@ export class Frieren extends DurableObject<Env> {
 			models,
 			model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api>,
 			generateImage: imageModel
-				? async (prompt) => {
-						await this.assertAiWithinBudget()
-						const res = await images.generateImages(imageModel, {
-							input: [{ type: 'text', text: prompt }]
+				? (prompt) =>
+						this.runInference(async () => {
+							const res = await images.generateImages(imageModel, {
+								input: [{ type: 'text', text: prompt }]
+							})
+							// Image generation runs on the parallel ImagesModels stack, so the backend
+							// meter can't see it — accrue its usage here. Meter BEFORE branching on
+							// stopReason: a failed/aborted image call can still be billable (mirrors the
+							// text path, which counts failed terminal messages).
+							if (res.usage) this.trackUsage(res.usage)
+							if (res.stopReason !== 'stop')
+								throw new Error(res.errorMessage ?? 'image generation failed')
+							const value = res.output.flatMap((b) =>
+								b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
+							)
+							return { value, settle: Promise.resolve() }
 						})
-						// Image generation runs on the parallel ImagesModels stack, so the backend
-						// meter can't see it — accrue its usage here. Meter BEFORE branching on
-						// stopReason: a failed/aborted image call can still be billable (mirrors the
-						// text path, which counts failed terminal messages).
-						if (res.usage) this.trackUsage(res.usage)
-						if (res.stopReason !== 'stop')
-							throw new Error(res.errorMessage ?? 'image generation failed')
-						return res.output.flatMap((b) =>
-							b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
-						)
-					}
 				: undefined
 		}
 	}
