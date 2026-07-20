@@ -84,6 +84,46 @@ describe('assistant prompt', () => {
 			{ type: 'message', role: 'assistant', content: 'Recovered' }
 		])
 	})
+
+	test('persists image refs from a tool result details onto the session entry', async () => {
+		const images = [{ src: '/pictures/abcd1234.png', mimeType: 'image/png', alt: 'a red panda' }]
+		const parameters = Type.Object({})
+		const imageTool: AgentTool = {
+			name: 'generate_image',
+			label: 'generate_image',
+			description: 'generate_image',
+			parameters,
+			async execute() {
+				return { content: [{ type: 'text', text: 'saved' }], details: { images } }
+			}
+		} satisfies AgentTool<typeof parameters>
+
+		const agent = scriptedAgent([
+			assistant([{ type: 'toolCall', id: 'tc1', name: 'generate_image', arguments: {} }]),
+			assistant([{ type: 'text', text: 'There you go' }])
+		])
+		agent.state.tools = [imageTool]
+		const rt = await createAssistant({
+			volume: volume(memStorage()),
+			agent,
+			text: testText(),
+			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+		})
+
+		await expect(rt.prompt('draw a red panda')).resolves.toBe('There you go')
+		expect(await rt.history()).toMatchObject([
+			{ type: 'message', role: 'user', content: 'draw a red panda' },
+			{ type: 'message', role: 'tool_call', tool_name: 'generate_image' },
+			{
+				type: 'message',
+				role: 'tool_result',
+				tool_name: 'generate_image',
+				content: 'saved',
+				images
+			},
+			{ type: 'message', role: 'assistant', content: 'There you go' }
+		])
+	})
 })
 
 describe('assistant tool API', () => {

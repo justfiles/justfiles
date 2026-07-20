@@ -1,10 +1,11 @@
-import type { SessionEntry } from '@justfiles/agent'
+import type { ImageRef, SessionEntry } from '@justfiles/agent'
 
 export interface DisplayToolCall {
 	name: string
 	args: unknown
 	result?: unknown
 	isError?: boolean
+	images?: ReadonlyArray<ImageRef>
 }
 
 export interface DisplayMessage {
@@ -25,7 +26,11 @@ export function sessionEntries2DisplayMessages(entries: readonly SessionEntry[])
 				(toolCall) => toolCall.name === entry.tool_name && toolCall.result === undefined
 			)
 			if (last?.role === 'assistant' && index >= 0) {
-				toolCalls[index] = { ...toolCalls[index], result: parseToolResult(entry.content) }
+				toolCalls[index] = {
+					...toolCalls[index],
+					result: parseToolResult(entry.content),
+					images: entry.images
+				}
 				messages[messages.length - 1] = { ...last, toolCalls }
 				continue
 			}
@@ -86,7 +91,8 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null
 							{
 								name: entry.tool_name,
 								args: undefined,
-								result: parseToolResult(entry.content)
+								result: parseToolResult(entry.content),
+								images: entry.images
 							}
 						]
 					}

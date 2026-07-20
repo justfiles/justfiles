@@ -17,7 +17,7 @@ export { type AgentBackend, modelsBackend } from './llm.ts'
 // fold into product methods (generateSoul / nextMaintenanceAt).
 export { parseFrontmatter } from './markdown.ts'
 export { SOUL_GENERATION_PROMPT, type SoulGenerationInput } from './prompts.ts'
-export type { SessionEntry } from './session.manager.ts'
+export type { ImageRef, SessionEntry } from './session.manager.ts'
 // ── The agent product ──────────────────────────────────────────────
 export {
 	type AgentSession,

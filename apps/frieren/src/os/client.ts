@@ -1,4 +1,5 @@
 import type { Notification } from '@justfiles/app/capabilities/notify'
+import type { TranscriptImage } from '@justfiles/ui/Transcript'
 import type { AgentMessage, ConnectionState } from '../agent/types'
 import type { InstalledApp } from '../apps/types'
 import type { OsAction } from './state'
@@ -78,7 +79,21 @@ interface HistoryMessage {
 	content: string
 	source?: 'user' | 'app'
 	thinking?: string
-	toolCalls?: { name: string; args: unknown; result?: unknown; isError?: boolean }[]
+	toolCalls?: {
+		name: string
+		args: unknown
+		result?: unknown
+		isError?: boolean
+		images?: TranscriptImage[]
+	}[]
+}
+
+// Image refs ride out-of-band on a tool result's `details` (see #194); pull them
+// onto the tool call so the transcript can promote them to inline cards.
+function imagesFromResult(result: unknown): TranscriptImage[] | undefined {
+	const images = (result as { details?: { images?: TranscriptImage[] } } | undefined)?.details
+		?.images
+	return Array.isArray(images) && images.length > 0 ? images : undefined
 }
 
 interface ServerFrame {
@@ -264,7 +279,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 												...toolCall,
 												result: event.result,
 												isError: event.isError,
-												status: 'done' as const
+												status: 'done' as const,
+												images: imagesFromResult(event.result)
 											}
 										: toolCall
 								)
@@ -305,7 +321,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 					args: tc.args,
 					result: tc.result,
 					isError: tc.isError,
-					status: 'done' as const
+					status: 'done' as const,
+					images: tc.images
 				}))
 			}))
 			if (restored.length > 0) messages = restored

@@ -94,6 +94,50 @@ describe('FrierenClient agent', () => {
 		expect(snapshot.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'Hi there' })
 	})
 
+	test('promotes tool-result image refs onto the tool call, live and from history', async () => {
+		const images = [{ src: '/pictures/abcd1234.png', mimeType: 'image/png', alt: 'a red panda' }]
+		const { client, connect } = setup()
+		const socket = await connect()
+
+		socket.emit({
+			type: 'history',
+			messages: [
+				{
+					role: 'assistant',
+					content: '',
+					toolCalls: [{ name: 'generate_image', args: undefined, result: 'saved', images }]
+				}
+			]
+		})
+		socket.emit({ type: 'ready', apps: [] })
+		expect(client.agent.snapshot().messages[0]?.toolCalls?.[0]?.images).toEqual(images)
+
+		socket.emit({ type: 'event', event: { type: 'agent_start' } })
+		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
+		socket.emit({
+			type: 'event',
+			event: {
+				type: 'tool_execution_start',
+				toolCallId: 'tc1',
+				toolName: 'generate_image',
+				args: { prompt: 'a red panda' }
+			}
+		})
+		socket.emit({
+			type: 'event',
+			event: {
+				type: 'tool_execution_end',
+				toolCallId: 'tc1',
+				toolName: 'generate_image',
+				result: { content: [{ type: 'text', text: 'saved' }], details: { images } },
+				isError: false
+			}
+		})
+
+		const live = client.agent.snapshot().messages.at(-1)?.toolCalls?.[0]
+		expect(live).toMatchObject({ status: 'done', images })
+	})
+
 	test('snapshot returns a stable reference until state changes', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
