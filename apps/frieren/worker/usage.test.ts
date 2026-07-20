@@ -2,7 +2,7 @@ import type { Usage } from '@earendil-works/pi-ai'
 import type { DbAdapter } from '@justfiles/core'
 import { describe, expect, test } from 'vitest'
 import type { KvStorage } from './integrations/storage.ts'
-import { type AiUsage, accrueAi, readUsage } from './usage.ts'
+import { type AiUsage, accrueAi, readAiUsage, readUsage } from './usage.ts'
 
 function memKv(): KvStorage {
 	const map = new Map<string, unknown>()
@@ -78,6 +78,27 @@ describe('accrueAi', () => {
 		// ...while lifetime totals accumulate across the roll.
 		expect(ai?.lifetimeRequests).toBe(2)
 		expect(ai?.lifetimeCostUsd).toBeCloseTo(3)
+	})
+})
+
+describe('readAiUsage', () => {
+	test('rolls a stale prior-month counter to a zeroed current window on READ', async () => {
+		const kv = memKv()
+		// A prior month that hit the cap, never re-accrued (the account was blocked).
+		await accrueAi(kv, usage(5))
+		const cur = await kv.get<AiUsage>('usage/ai')
+		if (!cur) throw new Error('expected row')
+		await kv.put('usage/ai', { ...cur, window: '1999-01' })
+
+		// Reading (the pre-turn gate's path) must see a fresh, zeroed window — not the
+		// stale over-cap counter — so the account isn't blocked forever.
+		const ai = await readAiUsage(kv)
+		expect(ai.window).not.toBe('1999-01')
+		expect(ai.costUsd).toBe(0)
+		expect(ai.requests).toBe(0)
+		// Lifetime totals still carry forward.
+		expect(ai.lifetimeCostUsd).toBeCloseTo(5)
+		expect(ai.lifetimeRequests).toBe(1)
 	})
 })
 
