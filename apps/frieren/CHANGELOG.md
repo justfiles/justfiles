@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.3.1...spud-v0.4.0) (2026-07-20)
+
+
+### Features
+
+* **agent,app,frieren:** capability-provided agent tools (Step 3.5), image first ([310f918](https://github.com/xiaoxinghu/justfiles/commit/310f918fc738d954717881233cc753dd73a27d62))
+* **agent,ui,frieren:** render generated images inline in the transcript ([#194](https://github.com/xiaoxinghu/justfiles/issues/194)) ([b82f5a7](https://github.com/xiaoxinghu/justfiles/commit/b82f5a705e892cac1d4cad9f5712f92afc8a29be))
+* **app,frieren:** add the image capability, backed by Spud over OpenRouter ([07b7112](https://github.com/xiaoxinghu/justfiles/commit/07b71129d5935430624cdc8878d10fdab85c790a))
+* **app:** derive agent tools from self-describing capability contracts ([95b03fe](https://github.com/xiaoxinghu/justfiles/commit/95b03fe823419f4b5fa3f2aa4cf127731d0a1d40))
+* **frieren:** move the Spud AI backend from OpenAI to OpenRouter ([88f7f62](https://github.com/xiaoxinghu/justfiles/commit/88f7f62ad0e38a09bbdaf026587bfa9653f2004d))
+
+
+### Bug Fixes
+
+* **frieren,ui:** address image-resolver review findings ([114e36c](https://github.com/xiaoxinghu/justfiles/commit/114e36c115f9c6f96c2ad11a6419c860139b33d0))
+* **frieren:** exclude connection credentials from profile migration ([22e2453](https://github.com/xiaoxinghu/justfiles/commit/22e2453cdb45cd6631cdc5571ffca1039ff55602))
+
 ## [0.3.1](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.3.0...spud-v0.3.1) (2026-07-17)
 
 
