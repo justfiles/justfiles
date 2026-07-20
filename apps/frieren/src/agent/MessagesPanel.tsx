@@ -119,6 +119,7 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 			>
 				<textarea
 					ref={inputRef}
+					className="frn-chat-input"
 					rows={1}
 					value={input}
 					onChange={(event) => setInput(event.target.value)}
@@ -130,17 +131,6 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 					}}
 					placeholder={ready ? 'iMessage' : 'Connecting…'}
 					disabled={!ready}
-					// Colors come from the design tokens (mac.css styles bare textareas);
-					// only the pill shape and layout are local. Height comes from
-					// rows=1 line-height + padding, so a single line sits centered.
-					style={{
-						flex: 1,
-						maxHeight: 128,
-						resize: 'none',
-						borderRadius: 999,
-						padding: '4px 12px',
-						lineHeight: '20px'
-					}}
 				/>
 				{isStreaming ? (
 					<button
