@@ -1,5 +1,5 @@
 declare interface Env {
-	OPENAI_API_KEY: string
+	OPENROUTER_API_KEY: string
 	FS_BLOBS?: R2Bucket
-	FRIEREN_BACKEND?: 'openai' | 'local'
+	FRIEREN_BACKEND?: 'openrouter' | 'local'
 }

@@ -11,7 +11,7 @@ import {
 } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
-import { openaiProvider } from '@earendil-works/pi-ai/providers/openai'
+import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter'
 import {
 	type AgentSession,
 	createAgentSession,
@@ -260,7 +260,7 @@ export class Frieren extends DurableObject<Env> {
 		})
 	}
 
-	// The platform AI runtime: a pi `Models` + selected model. Production uses OpenAI
+	// The platform AI runtime: a pi `Models` + selected model. Production uses OpenRouter
 	// (env key); local dev uses an LM Studio OpenAI-compatible endpoint. The api key is
 	// supplied through a small CredentialStore (a stored key wins over ambient env), so
 	// the token never rides on the backend — `modelsBackend` seals it inside `Models`.
@@ -294,15 +294,15 @@ export class Frieren extends DurableObject<Env> {
 			return { models, model: model as Model<Api> }
 		}
 
-		const apiKey = this.env.OPENAI_API_KEY
+		const apiKey = this.env.OPENROUTER_API_KEY
 		if (!apiKey) {
 			throw new Error(
-				'OPENAI_API_KEY is not set. Add it to apps/frieren/.dev.vars (local) or as a Cloudflare secret (deployed), and declare it in wrangler.jsonc `secrets.required`.'
+				'OPENROUTER_API_KEY is not set. Add it to apps/frieren/.dev.vars (local) or as a Cloudflare secret (deployed), and declare it in wrangler.jsonc `secrets.required`.'
 			)
 		}
-		const models = createModels({ credentials: apiKeyStore('openai', apiKey) })
-		models.setProvider(openaiProvider())
-		return { models, model: getBuiltinModel('openai', 'gpt-5.4-mini') as Model<Api> }
+		const models = createModels({ credentials: apiKeyStore('openrouter', apiKey) })
+		models.setProvider(openrouterProvider())
+		return { models, model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api> }
 	}
 
 	// ── WebSocket handlers ────────────────────────────────────────────────
