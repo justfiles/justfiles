@@ -8,16 +8,19 @@ import {
 	createProvider,
 	envApiKeyAuth,
 	type Model,
-	type Models
+	type Models,
+	type Usage
 } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter'
 import { openrouterImagesProvider } from '@earendil-works/pi-ai/providers/openrouter-images'
 import {
+	type AgentBackend,
 	type AgentSession,
 	createAgentSession,
 	type LLMText,
+	meterBackend,
 	modelsBackend,
 	parseFrontmatter,
 	resolveTimezone,
@@ -53,6 +56,7 @@ import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
+import { accrueAi, readUsage } from './usage.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
 const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
@@ -117,6 +121,10 @@ export class Frieren extends DurableObject<Env> {
 	private text?: LLMText
 	private cfTimezone?: string
 	private apps?: FrierenApps
+	// Usage accrual runs off the model-call stream, so concurrent calls could interleave a
+	// read-modify-write of the KV counter. Serialize them through this chain so no
+	// increment is lost; `ctx.waitUntil` keeps the DO alive until the write lands.
+	private accrual: Promise<void> = Promise.resolve()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -136,6 +144,9 @@ export class Frieren extends DurableObject<Env> {
 				const generated = await this.generateSoul(body)
 				return c.json(generated)
 			})
+			.get('/api/usage', async (c) =>
+				c.json(await readUsage(ctx.storage, this.db, ctx.storage.sql.databaseSize))
+			)
 			.route(
 				'/fs',
 				createFsApi(fs, {
@@ -186,12 +197,26 @@ export class Frieren extends DurableObject<Env> {
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
+	// Wrap the platform backend with the passive usage meter so every text model call
+	// (agent turns, soul generation, daily maintenance) accrues into the per-user counter.
+	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
+		return meterBackend(modelsBackend(models, model), (usage) => this.trackUsage(usage))
+	}
+
+	// Accrue one completed model call. Serialized through a promise chain to avoid a lost
+	// read-modify-write, kept alive past the response via waitUntil, and best-effort (a
+	// metering failure never surfaces to the caller).
+	private trackUsage(usage: Usage): void {
+		this.accrual = this.accrual.then(() => accrueAi(this.ctx.storage, usage)).catch(() => {})
+		this.ctx.waitUntil(this.accrual)
+	}
+
 	private async generateSoul(
 		input: SoulGenerationInput
 	): Promise<{ text: string; firstWords: string }> {
 		if (!this.text) {
 			const { models, model } = this.aiRuntime()
-			this.text = text(modelsBackend(models, model))
+			this.text = text(this.meteredBackend(models, model))
 		}
 		const lines: string[] = [`agent name: ${input.agentName}`, `archetype: ${input.archetype}`]
 		if (input.agentGender) lines.push(`agent gender: ${input.agentGender}`)
@@ -217,7 +242,7 @@ export class Frieren extends DurableObject<Env> {
 		// (they may have turned it off or switched to another AI) is left untouched.
 		await ensureAccount(this.vol, { accountId: 'spud', providerId: 'spud', enabled: ['ai'] })
 		this.session?.abort()
-		this.text = text(modelsBackend(models, model))
+		this.text = text(this.meteredBackend(models, model))
 		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps
 		// its own env-keyed `ai` (agent backend + soul generation), so the factory's `ai` is
 		// ignored. email/calendar are guarded (audit + rate-limit) and wired into the APPS —
@@ -260,7 +285,7 @@ export class Frieren extends DurableObject<Env> {
 			capabilities: agentCaps,
 			backend: async () => {
 				const backend = await resolveAiAccount(this.vol, ({ providerId }) =>
-					providerId === 'spud' ? modelsBackend(models, model) : null
+					providerId === 'spud' ? this.meteredBackend(models, model) : null
 				)
 				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
 				return backend
@@ -341,6 +366,9 @@ export class Frieren extends DurableObject<Env> {
 						})
 						if (res.stopReason !== 'stop')
 							throw new Error(res.errorMessage ?? 'image generation failed')
+						// Image generation runs on the parallel ImagesModels stack, so the backend
+						// meter can't see it — accrue its usage here (when the provider reports it).
+						if (res.usage) this.trackUsage(res.usage)
 						return res.output.flatMap((b) =>
 							b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
 						)
