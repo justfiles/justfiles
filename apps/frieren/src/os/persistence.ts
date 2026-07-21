@@ -57,9 +57,17 @@ export async function saveSnapshot(volume: Volume, serialized: string): Promise<
 // same rule applies to their remembered placement.
 export function serializeOsState(state: OsState): string {
 	const persistable = (id: string) => !id.startsWith('.')
-	const windows: OsState['windows'] = {}
+	// Back-compat shim: the snapshot is version 1 and syncs across devices, so a
+	// still-cached pre-placements client can load what this build writes. It reads
+	// geometry from `window.rect` and accepts version 1, so keep mirroring each
+	// open window's placement onto `rect` — new clients read `placements` and
+	// ignore it. Drop this when the schema version bumps.
+	const windows: Record<string, OsWindow & { rect?: WindowRect }> = {}
 	for (const [id, window] of Object.entries(state.windows))
-		if (persistable(id)) windows[id] = window
+		if (persistable(id)) {
+			const rect = state.placements[id]
+			windows[id] = rect ? { ...window, rect } : window
+		}
 	const placements: OsState['placements'] = {}
 	for (const [id, rect] of Object.entries(state.placements))
 		if (persistable(id)) placements[id] = rect
