@@ -57,14 +57,20 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 				kind: 'app',
 				appId: action.appId,
 				title: action.title,
-				rect: defaultRect(state.openOrder.length),
 				mode: 'floating'
 			}
 			return {
 				...state,
 				windows: { ...state.windows, [id]: window },
 				openOrder: [...state.openOrder, id],
-				focusStack: [...state.focusStack, id]
+				focusStack: [...state.focusStack, id],
+				// Reuse a remembered placement (relaunch resumes where it was); a
+				// first-ever open falls back to the cascade default. Every open window
+				// thus has a placement, so the renderer never lacks a rect.
+				placements: {
+					...state.placements,
+					[id]: state.placements[id] ?? defaultRect(state.openOrder.length)
+				}
 			}
 		}
 
@@ -78,14 +84,14 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 			const window: OsWindow = {
 				id,
 				kind: 'agent',
-				rect: agentDefaultRect(),
 				mode: 'floating'
 			}
 			return {
 				...state,
 				windows: { ...state.windows, [id]: window },
 				openOrder: [...state.openOrder, id],
-				focusStack: [...state.focusStack, id]
+				focusStack: [...state.focusStack, id],
+				placements: { ...state.placements, [id]: state.placements[id] ?? agentDefaultRect() }
 			}
 		}
 
@@ -100,11 +106,14 @@ export function osReducer(state: OsState, action: OsAction): OsState {
 		}
 
 		case 'window.rectUpdated': {
-			const window = state.windows[action.id]
-			if (!window || sameRect(window.rect, action.rect)) return state
+			// Close deliberately leaves the placement behind, so guard on the window
+			// being open — a stray rect update never resurrects geometry for a
+			// window that isn't running.
+			const current = state.placements[action.id]
+			if (!state.windows[action.id] || (current && sameRect(current, action.rect))) return state
 			return {
 				...state,
-				windows: { ...state.windows, [action.id]: { ...window, rect: action.rect } }
+				placements: { ...state.placements, [action.id]: action.rect }
 			}
 		}
 

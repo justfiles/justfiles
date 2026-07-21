@@ -18,15 +18,18 @@ export function AppWindow({
 }) {
 	const dispatch = useOsDispatch()
 	const window = useOsStore((s) => s.windows[id])
+	const rect = useOsStore((s) => s.placements[id])
 	const focused = useOsStore((s) => selectFocusedWindowId(s) === id)
 	const zIndex = useOsStore((s) => selectWindowZIndex(s, id))
 
-	if (!window || window.mode === 'minimized') return null
+	// An open window always has a placement (seeded on open), so a missing rect
+	// means the window isn't really open — render nothing rather than guess.
+	if (!window || !rect || window.mode === 'minimized') return null
 
 	return (
 		<Window
 			title={title}
-			rect={window.rect}
+			rect={rect}
 			focused={focused}
 			zIndex={zIndex}
 			fullscreen={window.mode === 'fullscreen'}

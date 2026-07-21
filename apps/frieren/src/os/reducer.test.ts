@@ -16,7 +16,7 @@ describe('osReducer', () => {
 			title: 'Files',
 			mode: 'floating'
 		})
-		expect(window?.rect).toEqual({ x: 80, y: 40, w: 720, h: 520 })
+		expect(state.placements.files).toEqual({ x: 80, y: 40, w: 720, h: 520 })
 		expect(state.openOrder).toEqual(['files'])
 		expect(state.focusStack).toEqual(['files'])
 	})
@@ -28,7 +28,7 @@ describe('osReducer', () => {
 		])
 		expect(state.openOrder).toEqual(['a', 'b'])
 		expect(state.focusStack).toEqual(['a', 'b'])
-		expect(state.windows.b?.rect.x).toBe(80 + 24)
+		expect(state.placements.b?.x).toBe(80 + 24)
 	})
 
 	test('reopening a running app only refocuses, never duplicates', () => {
@@ -101,12 +101,37 @@ describe('osReducer', () => {
 		expect(osReducer(opened, { type: 'window.focus', id: 'b' })).toBe(opened)
 	})
 
-	test('rect update replaces the rect; an identical rect is a no-op reference', () => {
+	test('close keeps the placement so a relaunch resumes its position/size', () => {
+		const rect = { x: 300, y: 120, w: 640, h: 480 }
+		const afterClose = run([
+			{ type: 'app.open', appId: 'a' },
+			{ type: 'window.rectUpdated', id: 'a', rect },
+			{ type: 'window.close', id: 'a' }
+		])
+		expect(afterClose.windows.a).toBeUndefined()
+		expect(afterClose.placements.a).toEqual(rect)
+		// Reopening reuses the remembered placement instead of the cascade default.
+		const reopened = osReducer(afterClose, { type: 'app.open', appId: 'a' })
+		expect(reopened.placements.a).toEqual(rect)
+	})
+
+	test('rect update replaces the placement; an identical rect is a no-op reference', () => {
 		const opened = run([{ type: 'app.open', appId: 'a' }])
 		const rect = { x: 10, y: 20, w: 400, h: 300 }
 		const moved = osReducer(opened, { type: 'window.rectUpdated', id: 'a', rect })
-		expect(moved.windows.a?.rect).toEqual(rect)
+		expect(moved.placements.a).toEqual(rect)
 		expect(osReducer(moved, { type: 'window.rectUpdated', id: 'a', rect: { ...rect } })).toBe(moved)
+	})
+
+	test('rect update for a closed window is a no-op reference', () => {
+		const opened = run([{ type: 'app.open', appId: 'a' }])
+		expect(
+			osReducer(opened, {
+				type: 'window.rectUpdated',
+				id: 'missing',
+				rect: { x: 0, y: 0, w: 1, h: 1 }
+			})
+		).toBe(opened)
 	})
 
 	test('setMode toggles fullscreen and minimized; a repeat is a no-op reference', () => {
@@ -126,10 +151,11 @@ describe('osReducer', () => {
 			version: 1,
 			booted: false,
 			windows: {
-				a: { id: 'a', kind: 'app', appId: 'a', rect: { x: 1, y: 2, w: 3, h: 4 }, mode: 'floating' }
+				a: { id: 'a', kind: 'app', appId: 'a', mode: 'floating' }
 			},
 			openOrder: ['a'],
-			focusStack: ['a']
+			focusStack: ['a'],
+			placements: { a: { x: 1, y: 2, w: 3, h: 4 } }
 		}
 		const state = osReducer(initialState, { type: 'boot/loaded', state: snapshot })
 		expect(state.booted).toBe(true)

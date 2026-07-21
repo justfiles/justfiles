@@ -4,13 +4,14 @@ export type WindowMode = 'floating' | 'minimized' | 'fullscreen'
 
 // A window is a view, not necessarily an app: `kind` picks the body the shell
 // renders. App windows carry the `appId` they present; the agent window views
-// the (kernel-owned) conversation session and has none.
+// the (kernel-owned) conversation session and has none. Geometry is NOT here —
+// it lives in `OsState.placements` (durable memory keyed by window id), so a
+// window entry describes only the running session (kind/appId/title/mode).
 export type OsWindow = {
 	id: string
 	kind: 'app' | 'agent'
 	appId?: string
 	title?: string
-	rect: WindowRect
 	mode: WindowMode
 }
 
@@ -20,9 +21,14 @@ export const AGENT_WINDOW_ID = 'agent'
 export type OsState = {
 	version: 1
 	booted: boolean
+	// The running session: which windows are open, their z-order and focus.
 	windows: Record<string, OsWindow>
 	openOrder: string[]
 	focusStack: string[]
+	// Durable geometry memory, keyed by window id (the appId for app windows,
+	// AGENT_WINDOW_ID for the agent). Survives close so a relaunched app resumes
+	// its last position/size. The single source of truth for a window's rect.
+	placements: Record<string, WindowRect>
 }
 
 export type OsAction =
@@ -42,7 +48,8 @@ export const initialState: OsState = {
 	booted: false,
 	windows: {},
 	openOrder: [],
-	focusStack: []
+	focusStack: [],
+	placements: {}
 }
 
 // Cascade new windows so they don't stack exactly on top of one another.
