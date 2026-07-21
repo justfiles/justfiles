@@ -91,10 +91,18 @@ export const app = defineApp({
 			{ description: 'Load the metered usage + plan caps for the usage panel.' }
 		),
 		usageLoaded: t.fromResult('usage', 'current', (state, r) => {
-			if (r.ok) return { ...state, usage: r.value, usageError: null }
-			// A host without the `usage` capability (e.g. Spud Mac) reports it unavailable —
-			// hide the category instead of stranding the pane or polluting the global banner.
-			if (r.error.message === 'CAPABILITY_UNAVAILABLE') return { ...state, usageAvailable: false }
+			// Success restores availability (a prior host without the capability may have synced
+			// usageAvailable=false into this state).
+			if (r.ok) return { ...state, usage: r.value, usageAvailable: true, usageError: null }
+			// A host without the `usage` capability (e.g. Spud Mac) reports it unavailable — hide
+			// the category, and switch off it if it was selected, so the detail pane isn't
+			// stranded on a panel for a capability that will never load.
+			if (r.error.message === 'CAPABILITY_UNAVAILABLE')
+				return {
+					...state,
+					usageAvailable: false,
+					category: state.category === 'usage' ? 'accounts' : state.category
+				}
 			return { ...state, usageError: r.error.message }
 		}),
 		selectCategory: t.on(

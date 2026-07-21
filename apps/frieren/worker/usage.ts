@@ -7,20 +7,17 @@ import type { DbAdapter } from '@justfiles/core'
 // no locks, no serialization in the DO. Only platform-key spend (our OpenRouter key) is
 // metered here; BYO backends never call these (see Frieren.meteredBackend).
 //
-//   reserve(limit) → admit iff committed + reserved + est ≤ limit, atomically bumping
-//                    `reserved` in the same statement (bounds concurrent overshoot to the
-//                    in-flight calls' reservations, not "everyone reads the same low value").
-//   settle(usage)  → free the reservation and add the ACTUAL cost to `committed`.
-//   release()      → free the reservation when a call failed before producing usage.
+//   reserve(est, limit) → admit iff committed + reserved + est ≤ limit, atomically bumping
+//                         `reserved` by `est` in the same statement. `est` is the call's
+//                         WORST-CASE cost (context×input + maxTokens×output), so actual ≤
+//                         est ⇒ the cap is a HARD bound regardless of concurrency (parallel
+//                         calls each hold their own worst case, not a shared low nominal).
+//   settle(est, usage)  → free the reservation (−est) and add the ACTUAL cost to committed.
+//   release(est)        → free a reservation when a call failed before producing usage.
 //
 // Cost is stored as integer micro-USD (USD × 1e6) to avoid float drift over a month.
 
 export const MICROS_PER_USD = 1_000_000
-
-// Nominal per-call reservation held between reserve and settle. Reconciled to the real cost
-// on settle, so it only affects the narrow window near the cap: with headroom H, at most
-// ~H/RESERVE calls admit concurrently, bounding overshoot. Tunable; not a correctness knob.
-const RESERVE_MICROS = 20_000 // $0.02
 
 // The R2 storage_kind in fs_contents (see storage.sqlite.ts STORAGE_R2). Anything else in
 // that table is inline SQLite content.
@@ -82,7 +79,11 @@ export async function ensureUsageSchema(db: DbAdapter): Promise<void> {
 // Atomically admit a call and hold a reservation, rolling the month in the same statement.
 // One statement ⇒ atomic on the single-threaded DO; concurrent reserves each see the prior
 // one's reservation. Returns false (0 rows updated) when the budget is spent.
-export async function reserve(db: DbAdapter, limitMicros: number): Promise<boolean> {
+export async function reserve(
+	db: DbAdapter,
+	estMicros: number,
+	limitMicros: number
+): Promise<boolean> {
 	const cur = currentWindow()
 	const rows = await db.query(
 		`UPDATE usage_ai SET
@@ -94,14 +95,15 @@ export async function reserve(db: DbAdapter, limitMicros: number): Promise<boole
 		 WHERE id = 1
 		   AND (CASE WHEN window = ? THEN committed_micros + reserved_micros ELSE 0 END) + ? <= ?
 		 RETURNING 1`,
-		[cur, cur, cur, cur, RESERVE_MICROS, cur, cur, RESERVE_MICROS, limitMicros]
+		[cur, cur, cur, cur, estMicros, cur, cur, estMicros, limitMicros]
 	)
 	return rows.length > 0
 }
 
-// Free the reservation and record the ACTUAL cost (rolls the month too, so it stays correct
-// for unlimited-tier calls that skip reserve). One atomic statement.
-export async function settle(db: DbAdapter, usage: Usage): Promise<void> {
+// Free the reservation (−estMicros) and record the ACTUAL cost (rolls the month too, so it
+// stays correct for unlimited-tier calls that skip reserve with estMicros = 0). One atomic
+// statement.
+export async function settle(db: DbAdapter, estMicros: number, usage: Usage): Promise<void> {
 	const cur = currentWindow()
 	const actual = Math.round(usage.cost.total * MICROS_PER_USD)
 	await db.run(
@@ -114,14 +116,14 @@ export async function settle(db: DbAdapter, usage: Usage): Promise<void> {
 			lifetime_requests = lifetime_requests + 1,
 			window = ?
 		 WHERE id = 1`,
-		[cur, actual, cur, RESERVE_MICROS, cur, usage.totalTokens, cur, actual, cur]
+		[cur, actual, cur, estMicros, cur, usage.totalTokens, cur, actual, cur]
 	)
 }
 
 // Free a reservation for a call that failed before producing any usage (nothing to count).
-export async function release(db: DbAdapter): Promise<void> {
+export async function release(db: DbAdapter, estMicros: number): Promise<void> {
 	await db.run('UPDATE usage_ai SET reserved_micros = MAX(0, reserved_micros - ?) WHERE id = 1', [
-		RESERVE_MICROS
+		estMicros
 	])
 }
 

@@ -114,6 +114,21 @@ const DEBUG_COMMAND = '/debug'
 // the active-image work (#194).
 const IMAGE_MODEL = 'google/gemini-3.1-flash-image'
 
+// A conservative upper bound (micro-USD) reserved per image generation. Image cost is
+// per-image, not token-based, so we can't derive it from the model; this bounds concurrent
+// image spend against the cap and is reconciled to the actual cost on settle.
+const IMAGE_RESERVE_MICROS = 200_000 // ~$0.20
+
+// Worst-case cost (micro-USD) of one text call on `model`: full context as input plus the
+// model's max output. Reserved up front so the cap is a HARD bound even under concurrency
+// (actual ≤ this). micros = tokens × per-million price (USD/1e6 × 1e6 = the price number).
+// Zero for the local no-cost model.
+function worstCaseMicros(model: Model<Api>): number {
+	const input = (model.contextWindow ?? 0) * (model.cost?.input ?? 0)
+	const output = (model.maxTokens ?? 0) * (model.cost?.output ?? 0)
+	return Math.ceil(input + output)
+}
+
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly db: DbAdapter
@@ -205,17 +220,22 @@ export class Frieren extends DurableObject<Env> {
 	// Run one platform-key inference behind the atomic reserve/settle store (usage.ts). The
 	// store owns concurrency correctness — reserve is a single atomic statement — so there is
 	// NO serialization here; calls run in parallel and each reconciles when it finishes. On a
-	// capped tier we reserve up front and reject when spent; the call's terminal message
-	// settles the reservation (via meterBackend's onUsage). A throw BEFORE any usage was
-	// produced frees the reservation. Only the platform backend calls this — BYO backends are
-	// built plain, so they're never metered or capped.
-	private async gateInference<T>(limit: number | null, run: () => Promise<T>): Promise<T> {
-		if (limit !== null && !(await reserve(this.db, limit)))
+	// capped tier we reserve the call's WORST-CASE cost up front (so actual ≤ reserved ⇒ the
+	// cap is a hard bound even under heavy concurrency) and reject when spent; the call's
+	// terminal message settles the reservation (via meterBackend's onUsage). A throw BEFORE
+	// any usage was produced frees the reservation. Only the platform backend calls this — BYO
+	// backends are built plain, so they're never metered or capped.
+	private async gateInference<T>(
+		estMicros: number,
+		limit: number | null,
+		run: () => Promise<T>
+	): Promise<T> {
+		if (limit !== null && !(await reserve(this.db, estMicros, limit)))
 			throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
 		try {
 			return await run()
 		} catch (err) {
-			if (limit !== null) this.ctx.waitUntil(release(this.db))
+			if (limit !== null) this.ctx.waitUntil(release(this.db, estMicros))
 			throw err
 		}
 	}
@@ -223,19 +243,21 @@ export class Frieren extends DurableObject<Env> {
 	// Wrap the platform backend with the passive usage meter (settle on completion) AND the
 	// pre-call reserve gate, so every text model call — agent turns, soul gen, the app `ai`
 	// capability — is counted and capped. meterBackend's onUsage fires on the terminal message
-	// (stream done/error or complete), which is exactly when we settle.
+	// (stream done/error or complete), which is exactly when we settle. `est` (the model's
+	// worst-case cost) is constant per backend, so reserve/settle/release all use it.
 	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
+		const est = worstCaseMicros(model)
 		const base = meterBackend(modelsBackend(models, model), (usage) =>
-			this.ctx.waitUntil(settle(this.db, usage))
+			this.ctx.waitUntil(settle(this.db, est, usage))
 		)
 		return {
 			...base,
 			streamFn: async (m, context, options) =>
-				this.gateInference(await this.aiLimit(), () =>
+				this.gateInference(est, await this.aiLimit(), () =>
 					Promise.resolve(base.streamFn(m, context, options))
 				),
 			completeFn: async (m, context, options) =>
-				this.gateInference(await this.aiLimit(), () => base.completeFn(m, context, options))
+				this.gateInference(est, await this.aiLimit(), () => base.completeFn(m, context, options))
 		}
 	}
 
@@ -407,10 +429,12 @@ export class Frieren extends DurableObject<Env> {
 			generateImage: imageModel
 				? async (prompt) => {
 						// Image generation runs on the parallel ImagesModels stack (not meterBackend),
-						// so reserve/settle explicitly. Meter the actual usage even on a non-'stop'
-						// result — a failed/aborted image call can still be billable.
+						// so reserve/settle explicitly. Reserve a conservative per-image upper bound
+						// (image cost isn't token-based, so we can't derive it from the model), and
+						// meter the actual usage even on a non-'stop' result — a failed/aborted image
+						// call can still be billable.
 						const limit = await this.aiLimit()
-						if (limit !== null && !(await reserve(this.db, limit)))
+						if (limit !== null && !(await reserve(this.db, IMAGE_RESERVE_MICROS, limit)))
 							throw new Error(
 								'Monthly AI limit reached — it resets next month, or upgrade your plan.'
 							)
@@ -420,8 +444,8 @@ export class Frieren extends DurableObject<Env> {
 								input: [{ type: 'text', text: prompt }]
 							})
 							// settle frees the reservation and counts actual; a usage-less failure just frees it.
-							if (res.usage) this.ctx.waitUntil(settle(this.db, res.usage))
-							else if (held) this.ctx.waitUntil(release(this.db))
+							if (res.usage) this.ctx.waitUntil(settle(this.db, IMAGE_RESERVE_MICROS, res.usage))
+							else if (held) this.ctx.waitUntil(release(this.db, IMAGE_RESERVE_MICROS))
 							held = false
 							if (res.stopReason !== 'stop')
 								throw new Error(res.errorMessage ?? 'image generation failed')
@@ -429,7 +453,7 @@ export class Frieren extends DurableObject<Env> {
 								b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
 							)
 						} catch (err) {
-							if (held) this.ctx.waitUntil(release(this.db))
+							if (held) this.ctx.waitUntil(release(this.db, IMAGE_RESERVE_MICROS))
 							throw err
 						}
 					}
