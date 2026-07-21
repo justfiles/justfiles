@@ -45,6 +45,13 @@ function usage(costUsd: number, tokens = 0): Usage {
 	}
 }
 
+async function reservedMicros(db: DbAdapter): Promise<number> {
+	const [row] = await db.query<{ reserved_micros: unknown }>(
+		'SELECT reserved_micros FROM usage_ai WHERE id = 1'
+	)
+	return Number(row?.reserved_micros ?? 0)
+}
+
 const DOLLAR = MICROS_PER_USD
 const EST = 100_000 // $0.10 worst-case reservation used in these tests
 
@@ -52,8 +59,9 @@ describe('reserve / settle', () => {
 	test('settle records actual cost + tokens + a request', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		expect(await reserve(db, EST, 5 * DOLLAR)).toBe(true)
-		await settle(db, EST, usage(0.5, 120))
+		const window = await reserve(db, EST, 5 * DOLLAR)
+		expect(window).not.toBeNull()
+		await settle(db, window as string, EST, usage(0.5, 120))
 
 		const ai = await readAiUsage(db)
 		expect(ai.costUsd).toBeCloseTo(0.5)
@@ -66,21 +74,21 @@ describe('reserve / settle', () => {
 	test('rejects once committed + reservation would exceed the limit', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		await reserve(db, EST, 5 * DOLLAR)
-		await settle(db, EST, usage(0.99))
+		const w = await reserve(db, EST, 5 * DOLLAR)
+		await settle(db, w as string, EST, usage(0.99))
 		// $0.99 committed; a fresh reservation needs headroom under the $1 cap → rejected.
-		expect(await reserve(db, EST, 1 * DOLLAR)).toBe(false)
+		expect(await reserve(db, EST, 1 * DOLLAR)).toBeNull()
 		// Under a $2 cap there's room again.
-		expect(await reserve(db, EST, 2 * DOLLAR)).toBe(true)
+		expect(await reserve(db, EST, 2 * DOLLAR)).not.toBeNull()
 	})
 
 	test('concurrent reservations accumulate so they cannot all pass one below-cap read', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		// $0.05 cap, $0.10 worst-case reserve each: admissions are bounded even with nothing
-		// settled yet (the pre-atomic-store race would have let them all through).
+		// $0.05 cap, $0.02 reserve each: admissions are bounded even with nothing settled yet
+		// (the pre-atomic-store race would have let them all through).
 		const admits = await Promise.all(Array.from({ length: 20 }, () => reserve(db, 20_000, 50_000)))
-		const passed = admits.filter(Boolean).length
+		const passed = admits.filter((w) => w !== null).length
 		expect(passed).toBeGreaterThan(0)
 		expect(passed).toBeLessThan(20)
 	})
@@ -88,13 +96,31 @@ describe('reserve / settle', () => {
 	test('release frees a reservation without counting a request', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		await reserve(db, EST, 5 * DOLLAR)
-		await release(db, EST)
+		const w = await reserve(db, EST, 5 * DOLLAR)
+		await release(db, w as string, EST)
 		const ai = await readAiUsage(db)
 		expect(ai.requests).toBe(0)
 		expect(ai.costUsd).toBe(0)
 		// The freed reservation is available again.
-		expect(await reserve(db, EST, 5 * DOLLAR)).toBe(true)
+		expect(await reserve(db, EST, 5 * DOLLAR)).not.toBeNull()
+	})
+
+	test('a settle whose window has rolled cannot free another month’s reservation', async () => {
+		const db = realDb()
+		await ensureUsageSchema(db)
+		// A call reserved last month, then the row is forced into that prior month.
+		await reserve(db, EST, 5 * DOLLAR)
+		await db.run("UPDATE usage_ai SET window = '1999-01' WHERE id = 1")
+		// A new-month request rolls the row and holds its own reservation.
+		const fresh = await reserve(db, EST, 5 * DOLLAR)
+		expect(fresh).not.toBe('1999-01')
+		const reservedAfterFresh = await reservedMicros(db)
+		// The straggler settles late — it must NOT touch the new month's reserved/committed.
+		await settle(db, '1999-01', EST, usage(0.5, 10))
+		expect(await reservedMicros(db)).toBe(reservedAfterFresh)
+		expect((await readAiUsage(db)).costUsd).toBe(0)
+		// The straggler's cost still lands in the lifetime total.
+		expect((await readAiUsage(db)).lifetimeCostUsd).toBeCloseTo(0.5)
 	})
 })
 
@@ -102,8 +128,8 @@ describe('readAiUsage window roll', () => {
 	test('a stale prior-month row reads as a zeroed window, lifetime carried', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		await reserve(db, EST, 5 * DOLLAR)
-		await settle(db, EST, usage(0.5, 10))
+		const w = await reserve(db, EST, 5 * DOLLAR)
+		await settle(db, w as string, EST, usage(0.5, 10))
 		await db.run("UPDATE usage_ai SET window = '1999-01' WHERE id = 1")
 
 		const ai = await readAiUsage(db)
@@ -114,7 +140,7 @@ describe('readAiUsage window roll', () => {
 		expect(ai.lifetimeRequests).toBe(1)
 
 		// A reserve in the new window rolls the row (committed stays 0 for the fresh month).
-		expect(await reserve(db, EST, 5 * DOLLAR)).toBe(true)
+		expect(await reserve(db, EST, 5 * DOLLAR)).not.toBeNull()
 		expect((await readAiUsage(db)).costUsd).toBe(0)
 	})
 })

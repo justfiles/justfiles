@@ -1,5 +1,5 @@
 import type { StreamFn } from '@earendil-works/pi-agent-core'
-import type { Api, Model, Models, Usage } from '@earendil-works/pi-ai'
+import type { Api, Model, Models } from '@earendil-works/pi-ai'
 
 // The completion signature, sourced from pi's `Models` so the backend and the text
 // helpers agree without touching the deprecated `/compat` surface.
@@ -41,32 +41,5 @@ export function modelsBackend(
 		streamFn: (m, context, options) => models.streamSimple(m, context, options),
 		completeFn: (m, context, options) => models.completeSimple(m, context, options),
 		revision: credentialRevision ? `${base}:${credentialRevision}` : base
-	}
-}
-
-// Passive usage meter: decorate a backend so every COMPLETED model call reports its
-// `Usage` to `onUsage`, covering every text call that flows through the backend —
-// agent turns, soul generation, and daily maintenance. Purely observational: it never
-// alters the stream the agent loop consumes (the stream path reads the terminal
-// AssistantMessage via `.result()` rather than draining the async iterator), and a
-// metering failure is swallowed so it can never break a turn. No accrual/quota logic
-// lives here — the host owns the durable counter. (Image generation runs on a separate
-// `ImagesModels` stack and is metered at its own call site, not here.)
-export function meterBackend(backend: AgentBackend, onUsage: (usage: Usage) => void): AgentBackend {
-	return {
-		...backend,
-		streamFn: async (m, context, options) => {
-			const stream = await backend.streamFn(m, context, options)
-			stream
-				.result()
-				.then((msg) => onUsage(msg.usage))
-				.catch(() => {})
-			return stream
-		},
-		completeFn: async (m, context, options) => {
-			const msg = await backend.completeFn(m, context, options)
-			onUsage(msg.usage)
-			return msg
-		}
 	}
 }
