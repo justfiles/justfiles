@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { clear, drawLine, drawRect, fillRect, floodFill, setPixel } from './bitmap.ts'
+import {
+	clear,
+	drawLine,
+	drawRect,
+	fillRect,
+	floodFill,
+	resizeGrid,
+	setPixel,
+	setPixels
+} from './bitmap.ts'
 import { indexToChar } from './doc.ts'
 
 const blank = (n: number): string[] => Array.from({ length: n }, () => '.'.repeat(n))
@@ -77,6 +86,39 @@ describe('floodFill (scanline)', () => {
 	it('is a no-op when the fill matches the target', () => {
 		const grid = blank(3)
 		expect(floodFill(grid, 0, 0, 0)).toEqual(grid)
+	})
+})
+
+describe('setPixels', () => {
+	it('plots a batch and clips out-of-bounds cells', () => {
+		expect(
+			setPixels(blank(3), [
+				{ x: 0, y: 0, i: A },
+				{ x: 2, y: 2, i: B },
+				{ x: 9, y: 9, i: A }
+			])
+		).toEqual([`${a}..`, '...', `..${b}`])
+	})
+	it('writes index 0 as transparent (erase)', () => {
+		expect(setPixels(fillRect(blank(2), 0, 0, 2, 2, A), [{ x: 0, y: 0, i: 0 }])).toEqual([
+			`.${a}`,
+			`${a}${a}`
+		])
+	})
+})
+
+describe('resizeGrid', () => {
+	const grid = [`${a}${a}${a}`, `${a}${b}${a}`, `${a}${a}${a}`]
+	it('crops to a smaller canvas keeping the top-left', () => {
+		expect(resizeGrid(grid, 2, 2)).toEqual([`${a}${a}`, `${a}${b}`])
+	})
+	it('pads a larger canvas with transparent', () => {
+		expect(resizeGrid(grid, 4, 4)).toEqual([
+			`${a}${a}${a}.`,
+			`${a}${b}${a}.`,
+			`${a}${a}${a}.`,
+			'....'
+		])
 	})
 })
 
