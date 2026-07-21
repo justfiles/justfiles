@@ -819,6 +819,40 @@ importers:
         specifier: ^8.0.0-beta.13
         version: 8.0.12(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
 
+  packages/app-pixel:
+    dependencies:
+      '@justfiles/app':
+        specifier: workspace:*
+        version: link:../app
+      valibot:
+        specifier: ^1.1.0
+        version: 1.4.0(typescript@6.0.3)
+    devDependencies:
+      '@justfiles/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/react':
+        specifier: ^19
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.2.3(@types/react@19.2.17)
+      '@vitejs/plugin-react':
+        specifier: ^5
+        version: 5.1.1(vite@8.1.0(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0))
+      react:
+        specifier: ^19
+        version: 19.2.5
+      react-dom:
+        specifier: ^19
+        version: 19.2.5(react@19.2.5)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vite:
+        specifier: ^8.0.12
+        version: 8.1.0(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.47.1)(tsx@4.21.0)(yaml@2.9.0)
+
   packages/app-settings:
     dependencies:
       '@justfiles/app':
