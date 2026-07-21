@@ -83,7 +83,7 @@ export const app = defineApp({
 		// Drawing — batch-first so the agent (and a committed human stroke) places
 		// many pixels per dispatch, keeping the /state write count low.
 		setPixels: t.on(
-			v.object({ pixels: v.array(pixel) }),
+			v.object({ pixels: v.pipe(v.array(pixel), v.maxLength(MAX_SIZE * MAX_SIZE)) }),
 			(s, { pixels }) => withGrid(s, setPixelsGrid(s.doc.grid, pixels)),
 			{
 				description:
