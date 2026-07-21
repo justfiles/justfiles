@@ -46,6 +46,14 @@ export function setPixel(grid: Grid, x: number, y: number, i: number): Grid {
 	return fromCells(cells)
 }
 
+// Batch plot — the agent's workhorse and the target of a committed freehand
+// stroke: many pixels land in one pass (and one dispatch).
+export function setPixels(grid: Grid, pixels: { x: number; y: number; i: number }[]): Grid {
+	const cells = toCells(grid)
+	for (const { x, y, i } of pixels) plot(cells, x, y, indexToChar(i))
+	return fromCells(cells)
+}
+
 export function drawLine(
 	grid: Grid,
 	x0: number,
@@ -125,4 +133,11 @@ export function floodFill(grid: Grid, x: number, y: number, i: number): Grid {
 export function clear(grid: Grid): Grid {
 	const w = grid[0]?.length ?? 0
 	return grid.map(() => TRANSPARENT.repeat(w))
+}
+
+// Re-shape the grid to `w`×`h`, keeping the overlapping top-left region and
+// padding the rest transparent. Destructive: pixels outside the new bounds are
+// cropped away.
+export function resizeGrid(grid: Grid, w: number, h: number): Grid {
+	return Array.from({ length: h }, (_, y) => (grid[y] ?? '').slice(0, w).padEnd(w, TRANSPARENT))
 }
