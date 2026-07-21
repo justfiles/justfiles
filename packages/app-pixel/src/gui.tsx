@@ -114,6 +114,11 @@ function diff(before: string[], after: string[]): Pixel[] {
 	return out
 }
 
+// Content equality — the host structured-clones state on every commit, so grid
+// references are never stable; the undo timeline keys off pixels, not identity.
+const gridEqual = (a: string[], b: string[]): boolean =>
+	a.length === b.length && a.every((row, y) => row === b[y])
+
 // An in-progress drag. A stroke accumulates onto a working grid (previewed live);
 // a shape re-derives its preview from the committed grid each move.
 type Drag =
@@ -152,8 +157,12 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 	}, [doc, zoom, showGrid])
 
 	useEffect(() => {
-		if (doc.grid === lastGrid.current) return
-		if (doc.width !== dims.current.w || doc.height !== dims.current.h) {
+		const resized = doc.width !== dims.current.w || doc.height !== dims.current.h
+		// Palette/tool/colour commits leave the pixels untouched (but still arrive as a
+		// fresh cloned grid), so compare contents and skip them — only real pixel
+		// changes belong on the undo timeline.
+		if (!resized && gridEqual(doc.grid, lastGrid.current)) return
+		if (resized) {
 			dims.current = { w: doc.width, h: doc.height }
 			history.current = { stack: [doc.grid], index: 0 }
 			restoring.current = false
