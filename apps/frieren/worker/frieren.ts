@@ -8,8 +8,7 @@ import {
 	createProvider,
 	envApiKeyAuth,
 	type Model,
-	type Models,
-	type Usage
+	type Models
 } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { getBuiltinModel } from '@earendil-works/pi-ai/providers/all'
@@ -58,8 +57,8 @@ import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
-import { aiQuota, evaluate, readTier } from './quota.ts'
-import { accrueAi, readAiUsage, readUsage } from './usage.ts'
+import { aiLimitMicros, evaluate, readTier } from './quota.ts'
+import { ensureUsageSchema, readUsage, release, reserve, settle } from './usage.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
 const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
@@ -124,13 +123,6 @@ export class Frieren extends DurableObject<Env> {
 	private text?: LLMText
 	private cfTimezone?: string
 	private apps?: FrierenApps
-	// Usage accrual runs off the model-call stream, so concurrent calls could interleave a
-	// read-modify-write of the KV counter. Serialize them through this chain so no
-	// increment is lost; `ctx.waitUntil` keeps the DO alive until the write lands.
-	private accrual: Promise<void> = Promise.resolve()
-	// Inference admission lane (see runInference): serializes the budget check so overlapping
-	// calls can't all pass one below-cap read and overshoot the cap.
-	private lane: Promise<unknown> = Promise.resolve()
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -151,7 +143,7 @@ export class Frieren extends DurableObject<Env> {
 				return c.json(generated)
 			})
 			.get('/api/usage', async (c) => {
-				const usage = await readUsage(ctx.storage, this.db, ctx.storage.sql.databaseSize)
+				const usage = await readUsage(this.db, ctx.storage.sql.databaseSize)
 				const tier = await readTier(ctx.storage)
 				return c.json({ ...usage, quota: evaluate(usage, tier) })
 			})
@@ -205,65 +197,52 @@ export class Frieren extends DurableObject<Env> {
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
-	// Reject once the monthly AI budget is spent (resets with the window). Reads only the
-	// AI counter — no storage aggregate on the hot path. Called only inside `runInference`,
-	// which serializes it after the prior call's accrual — so it always sees up-to-date usage.
-	private async assertAiWithinBudget(): Promise<void> {
-		const tier = await readTier(this.ctx.storage)
-		if (aiQuota(await readAiUsage(this.ctx.storage), tier).exceeded)
+	// The AI cap (micro-USD) for the resolved tier, or null when unlimited (⇒ no gating).
+	private async aiLimit(): Promise<number | null> {
+		return aiLimitMicros(await readTier(this.ctx.storage))
+	}
+
+	// Run one platform-key inference behind the atomic reserve/settle store (usage.ts). The
+	// store owns concurrency correctness — reserve is a single atomic statement — so there is
+	// NO serialization here; calls run in parallel and each reconciles when it finishes. On a
+	// capped tier we reserve up front and reject when spent; the call's terminal message
+	// settles the reservation (via meterBackend's onUsage). A throw BEFORE any usage was
+	// produced frees the reservation. Only the platform backend calls this — BYO backends are
+	// built plain, so they're never metered or capped.
+	private async gateInference<T>(limit: number | null, run: () => Promise<T>): Promise<T> {
+		if (limit !== null && !(await reserve(this.db, limit)))
 			throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
-	}
-
-	// Admit one inference behind a serialization lane: the budget check for a call runs only
-	// after the PREVIOUS admitted call has completed AND its usage has accrued (the lane
-	// advances on `settle` then the accrual chain). So overlapping app / soul / image calls
-	// can't all pass the same below-cap read and blow past the cap — the soft cap overshoots
-	// by at most the single in-flight call. `op` starts the call and returns its value plus a
-	// `settle` promise that resolves when the call is truly done: a unary result is already
-	// done (Promise.resolve()); a streamed turn settles on `stream.result()` so the next
-	// admission waits for the whole turn. The agent loop is already sequential, so this adds
-	// no latency there; it only serializes genuinely concurrent callers.
-	private runInference<T>(op: () => Promise<{ value: T; settle: Promise<unknown> }>): Promise<T> {
-		const gated = this.lane.then(() => this.assertAiWithinBudget()).then(op)
-		this.lane = gated.then(
-			({ settle }) => settle.catch(() => {}).then(() => this.accrual.catch(() => {})),
-			() => this.accrual.catch(() => {})
-		)
-		return gated.then(({ value }) => value)
-	}
-
-	// Wrap the platform backend with the passive usage meter (accrual) AND route every model
-	// call through the inference lane, so each text call — agent turns, soul gen, the app `ai`
-	// capability — is counted and capped at one boundary.
-	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
-		const base = meterBackend(modelsBackend(models, model), (usage) => this.trackUsage(usage))
-		return {
-			...base,
-			streamFn: (m, context, options) =>
-				this.runInference(async () => {
-					const stream = await base.streamFn(m, context, options)
-					return { value: stream, settle: stream.result() }
-				}),
-			completeFn: (m, context, options) =>
-				this.runInference(async () => {
-					const message = await base.completeFn(m, context, options)
-					return { value: message, settle: Promise.resolve() }
-				})
+		try {
+			return await run()
+		} catch (err) {
+			if (limit !== null) this.ctx.waitUntil(release(this.db))
+			throw err
 		}
 	}
 
-	// Accrue one completed model call. Serialized through a promise chain to avoid a lost
-	// read-modify-write, kept alive past the response via waitUntil, and best-effort (a
-	// metering failure never surfaces to the caller).
-	private trackUsage(usage: Usage): void {
-		this.accrual = this.accrual.then(() => accrueAi(this.ctx.storage, usage)).catch(() => {})
-		this.ctx.waitUntil(this.accrual)
+	// Wrap the platform backend with the passive usage meter (settle on completion) AND the
+	// pre-call reserve gate, so every text model call — agent turns, soul gen, the app `ai`
+	// capability — is counted and capped. meterBackend's onUsage fires on the terminal message
+	// (stream done/error or complete), which is exactly when we settle.
+	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
+		const base = meterBackend(modelsBackend(models, model), (usage) =>
+			this.ctx.waitUntil(settle(this.db, usage))
+		)
+		return {
+			...base,
+			streamFn: async (m, context, options) =>
+				this.gateInference(await this.aiLimit(), () =>
+					Promise.resolve(base.streamFn(m, context, options))
+				),
+			completeFn: async (m, context, options) =>
+				this.gateInference(await this.aiLimit(), () => base.completeFn(m, context, options))
+		}
 	}
 
 	// The `usage` capability's read: the per-user meter + quota, projected into the
 	// host-agnostic snapshot the Settings app renders.
 	private async usageSnapshot(): Promise<UsageSnapshot> {
-		const report = await readUsage(this.ctx.storage, this.db, this.ctx.storage.sql.databaseSize)
+		const report = await readUsage(this.db, this.ctx.storage.sql.databaseSize)
 		const q = evaluate(report, await readTier(this.ctx.storage))
 		return {
 			tier: q.tier,
@@ -298,6 +277,7 @@ export class Frieren extends DurableObject<Env> {
 	private async reset() {
 		const { models, model, generateImage } = this.aiRuntime()
 		await migrateCF(this.db)
+		await ensureUsageSchema(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
 		await ensureAgentDefaults(this.vol)
@@ -425,23 +405,34 @@ export class Frieren extends DurableObject<Env> {
 			models,
 			model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api>,
 			generateImage: imageModel
-				? (prompt) =>
-						this.runInference(async () => {
+				? async (prompt) => {
+						// Image generation runs on the parallel ImagesModels stack (not meterBackend),
+						// so reserve/settle explicitly. Meter the actual usage even on a non-'stop'
+						// result — a failed/aborted image call can still be billable.
+						const limit = await this.aiLimit()
+						if (limit !== null && !(await reserve(this.db, limit)))
+							throw new Error(
+								'Monthly AI limit reached — it resets next month, or upgrade your plan.'
+							)
+						let held = limit !== null
+						try {
 							const res = await images.generateImages(imageModel, {
 								input: [{ type: 'text', text: prompt }]
 							})
-							// Image generation runs on the parallel ImagesModels stack, so the backend
-							// meter can't see it — accrue its usage here. Meter BEFORE branching on
-							// stopReason: a failed/aborted image call can still be billable (mirrors the
-							// text path, which counts failed terminal messages).
-							if (res.usage) this.trackUsage(res.usage)
+							// settle frees the reservation and counts actual; a usage-less failure just frees it.
+							if (res.usage) this.ctx.waitUntil(settle(this.db, res.usage))
+							else if (held) this.ctx.waitUntil(release(this.db))
+							held = false
 							if (res.stopReason !== 'stop')
 								throw new Error(res.errorMessage ?? 'image generation failed')
-							const value = res.output.flatMap((b) =>
+							return res.output.flatMap((b) =>
 								b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
 							)
-							return { value, settle: Promise.resolve() }
-						})
+						} catch (err) {
+							if (held) this.ctx.waitUntil(release(this.db))
+							throw err
+						}
+					}
 				: undefined
 		}
 	}

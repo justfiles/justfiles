@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { KvStorage } from './integrations/storage.ts'
-import { aiQuota, DEFAULT_TIER, evaluate, readTier, setTier, TIERS } from './quota.ts'
+import { aiLimitMicros, DEFAULT_TIER, evaluate, readTier, setTier, TIERS } from './quota.ts'
 import type { AiUsage, StorageUsage, UsageReport } from './usage.ts'
 
 function memKv(): KvStorage {
@@ -24,12 +24,8 @@ function memKv(): KvStorage {
 function ai(costUsd: number): AiUsage {
 	return {
 		window: '2025-01',
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
 		costUsd,
+		totalTokens: 0,
 		requests: 0,
 		lifetimeCostUsd: costUsd,
 		lifetimeRequests: 0
@@ -71,10 +67,12 @@ describe('evaluate', () => {
 		expect(evaluate(usage, 'pro').ai.exceeded).toBe(false)
 		expect(evaluate(usage, 'pro').storage.exceeded).toBe(false)
 	})
+})
 
-	test('gates on AI cost alone via aiQuota (the pre-turn check)', () => {
-		expect(aiQuota(ai(TIERS.free.aiCostUsd ?? 0), 'free').exceeded).toBe(true)
-		expect(aiQuota(ai((TIERS.free.aiCostUsd ?? 0) - 0.01), 'free').exceeded).toBe(false)
+describe('aiLimitMicros', () => {
+	test('converts the tier cap to micro-USD for the reserve gate', () => {
+		expect(aiLimitMicros('free')).toBe(Math.round((TIERS.free.aiCostUsd ?? 0) * 1_000_000))
+		expect(aiLimitMicros('pro')).toBe(Math.round((TIERS.pro.aiCostUsd ?? 0) * 1_000_000))
 	})
 })
 

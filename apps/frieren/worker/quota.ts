@@ -1,5 +1,5 @@
 import type { KvStorage } from './integrations/storage.ts'
-import type { AiUsage, UsageReport } from './usage.ts'
+import { MICROS_PER_USD, type UsageReport } from './usage.ts'
 
 // Free-vs-paid caps. A cap is a ceiling on exactly the two billable metrics the meter
 // produces: AI cost per monthly window, and deduped logical storage bytes. A tier is a
@@ -61,9 +61,11 @@ function evalQuota(used: number, limit: number | null): Quota {
 	}
 }
 
-// Just the AI cap — for the pre-turn gate, which must not pay for the storage aggregate.
-export function aiQuota(ai: AiUsage, tier: TierId): Quota {
-	return evalQuota(ai.costUsd, limitsFor(tier).aiCostUsd)
+// The AI cap as micro-USD for the reserve gate (`null` = unlimited ⇒ no gating). The store
+// works in integer micros; USD only surfaces in the display quota below.
+export function aiLimitMicros(tier: TierId): number | null {
+	const usd = limitsFor(tier).aiCostUsd
+	return usd === null ? null : Math.round(usd * MICROS_PER_USD)
 }
 
 export interface QuotaReport {
