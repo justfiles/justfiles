@@ -21,8 +21,11 @@ export type Tool = 'pencil' | 'eraser' | 'fill' | 'eyedropper' | 'line' | 'rect'
 // reserved for phase 4 (PNG export) — kept here so the shape is stable.
 export type PixelState = {
 	doc: PixelDoc
-	tool: Tool
-	colorIndex: number
+	// Added in phase 2. Persisted phase-1 state is `{ doc }` only and the kernel
+	// rehydrates it verbatim (no merge with `init`), so tolerate their absence and
+	// default at the GUI read site.
+	tool?: Tool
+	colorIndex?: number
 	lastSavedPath: string | null
 	lastError: string | null
 }
@@ -57,10 +60,11 @@ export const initialState: PixelState = {
 }
 
 // Tight schemas — the agent fills each from its `schemaHint`, so invalid input is
-// impossible. Bounds checks that would only reject (out-of-canvas coords) are
-// left to the pure primitives, which clip silently.
-const coord = v.pipe(v.number(), v.integer())
-const span = v.pipe(v.number(), v.integer(), v.minValue(0))
+// impossible. Coordinates and spans are bounded to the canvas cap so a rasterizer
+// can never iterate an unbounded (or precision-losing) range and pin the reducer
+// worker; the pure primitives still clip individual writes to the live grid.
+const coord = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_SIZE - 1))
+const rectSpan = v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(MAX_SIZE))
 const idx = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_COLORS))
 const paletteIdx = v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(MAX_COLORS))
 const dim = v.pipe(v.number(), v.integer(), v.minValue(1))
@@ -105,7 +109,7 @@ export const app = defineApp({
 			}
 		),
 		fillRect: t.on(
-			v.object({ x: coord, y: coord, w: span, h: span, i: idx }),
+			v.object({ x: coord, y: coord, w: rectSpan, h: rectSpan, i: idx }),
 			(s, { x, y, w, h, i }) => withGrid(s, fillRectGrid(s.doc.grid, x, y, w, h, i)),
 			{
 				description: 'Fill a solid w×h rectangle with top-left (x,y) in palette index i.',
@@ -113,7 +117,7 @@ export const app = defineApp({
 			}
 		),
 		drawRect: t.on(
-			v.object({ x: coord, y: coord, w: span, h: span, i: idx }),
+			v.object({ x: coord, y: coord, w: rectSpan, h: rectSpan, i: idx }),
 			(s, { x, y, w, h, i }) => withGrid(s, rectGrid(s.doc.grid, x, y, w, h, i)),
 			{
 				description: 'Draw the outline of a w×h rectangle with top-left (x,y) in palette index i.',
@@ -134,11 +138,17 @@ export const app = defineApp({
 			examples: [{ params: {} }]
 		}),
 		// Colour / palette.
-		setColorIndex: t.on(v.object({ i: idx }), (s, { i }) => ({ ...s, colorIndex: i }), {
-			description:
-				'Set the active palette index (0 = transparent/erase). The GUI draws with it; the agent passes i per action instead.',
-			examples: [{ params: { i: 6 } }]
-		}),
+		setColorIndex: t.on(
+			v.object({ i: idx }),
+			// Clamp to a colour that actually exists so the active index can never point
+			// past the palette (which would draw invisibly).
+			(s, { i }) => ({ ...s, colorIndex: Math.min(i, s.doc.palette.length) }),
+			{
+				description:
+					'Set the active palette index (0 = transparent/erase; clamped to the palette). The GUI draws with it; the agent passes i per action instead.',
+				examples: [{ params: { i: 6 } }]
+			}
+		),
 		setPaletteColor: t.on(
 			v.object({ i: paletteIdx, color }),
 			(s, { i, color }) => {
@@ -158,13 +168,38 @@ export const app = defineApp({
 			v.object({ palette: v.pipe(v.array(color), v.minLength(1), v.maxLength(MAX_COLORS)) }),
 			(s, { palette }) => ({
 				...s,
-				colorIndex: Math.min(s.colorIndex, palette.length),
+				colorIndex: Math.min(s.colorIndex ?? 0, palette.length),
 				doc: { ...s.doc, palette }
 			}),
 			{
 				description:
-					'Replace the whole palette (#rrggbb list, index 1..N) — an instant global recolour to a new scheme without touching a pixel.',
-				examples: [{ params: { palette: ['#1a1c2c', '#5d275d', '#b13e53', '#ef7d57'] } }]
+					'Replace the whole palette (#rrggbb list, index 1..N) — an instant global recolour to a new scheme without touching a pixel. Give at least as many entries as the sprite uses, or higher-index pixels render as nothing.',
+				// A full 16-entry swap (DB16 → PICO-8) so it recolours the default heart
+				// (index 7) instead of dropping it.
+				examples: [
+					{
+						params: {
+							palette: [
+								'#000000',
+								'#1d2b53',
+								'#7e2553',
+								'#008751',
+								'#ab5236',
+								'#5f574f',
+								'#c2c3c7',
+								'#fff1e8',
+								'#ff004d',
+								'#ffa300',
+								'#ffec27',
+								'#00e436',
+								'#29adff',
+								'#83769c',
+								'#ff77a8',
+								'#ffccaa'
+							]
+						}
+					}
+				]
 			}
 		),
 		// Canvas.

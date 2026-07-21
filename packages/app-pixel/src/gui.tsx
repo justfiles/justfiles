@@ -117,11 +117,14 @@ function diff(before: string[], after: string[]): Pixel[] {
 // An in-progress drag. A stroke accumulates onto a working grid (previewed live);
 // a shape re-derives its preview from the committed grid each move.
 type Drag =
-	| { kind: 'stroke'; i: number; grid: string[]; x: number; y: number }
+	| { kind: 'stroke'; i: number; base: string[]; grid: string[]; x: number; y: number }
 	| { kind: 'line' | 'rect'; x0: number; y0: number; x1: number; y1: number }
 
 export default function Pixel({ state, actions }: GUIProps<typeof app>) {
-	const { doc, tool, colorIndex } = state
+	const { doc } = state
+	// Phase-1 state persisted `{ doc }` only, so default the phase-2 selection here.
+	const tool = state.tool ?? 'pencil'
+	const colorIndex = state.colorIndex ?? 1
 	const canvasRef = useRef<HTMLCanvasElement>(null)
 	const dragRef = useRef<Drag | null>(null)
 	const [zoom, setZoom] = useState(() => fitZoom(doc))
@@ -170,9 +173,12 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 		const canvas = canvasRef.current
 		if (!canvas) return { x: 0, y: 0 }
 		const rect = canvas.getBoundingClientRect()
+		// Clamp to the canvas: pointer capture lets a drag wander off the element, and
+		// the action schemas only accept in-bounds coordinates.
+		const clamp = (n: number, max: number) => Math.max(0, Math.min(max, n))
 		return {
-			x: Math.floor(((e.clientX - rect.left) / rect.width) * doc.width),
-			y: Math.floor(((e.clientY - rect.top) / rect.height) * doc.height)
+			x: clamp(Math.floor(((e.clientX - rect.left) / rect.width) * doc.width), doc.width - 1),
+			y: clamp(Math.floor(((e.clientY - rect.top) / rect.height) * doc.height), doc.height - 1)
 		}
 	}
 
@@ -194,8 +200,9 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 		canvasRef.current?.setPointerCapture(e.pointerId)
 		if (tool === 'pencil' || tool === 'eraser') {
 			const i = tool === 'eraser' ? 0 : colorIndex
-			const grid = setPixels(doc.grid, [{ x, y, i }])
-			dragRef.current = { kind: 'stroke', i, grid, x, y }
+			const base = doc.grid
+			const grid = setPixels(base, [{ x, y, i }])
+			dragRef.current = { kind: 'stroke', i, base, grid, x, y }
 			render(grid)
 			return
 		}
@@ -230,7 +237,9 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 		dragRef.current = null
 		if (!d) return
 		if (d.kind === 'stroke') {
-			const pixels = diff(doc.grid, d.grid)
+			// Diff against the stroke's own pointer-down snapshot, not the latest grid, so
+			// a concurrent commit (e.g. an agent edit mid-drag) to other cells survives.
+			const pixels = diff(d.base, d.grid)
 			if (pixels.length > 0) void actions.setPixels({ pixels })
 			else render(doc.grid)
 		} else if (d.kind === 'line') {
@@ -248,6 +257,7 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 		void actions.setPixels({ pixels })
 	}
 	const undo = () => {
+		if (restoring.current) return // one restore in flight at a time
 		const { stack, index } = history.current
 		if (index <= 0) return
 		history.current = { stack, index: index - 1 }
@@ -255,6 +265,7 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 		bump()
 	}
 	const redo = () => {
+		if (restoring.current) return
 		const { stack, index } = history.current
 		if (index >= stack.length - 1) return
 		history.current = { stack, index: index + 1 }
@@ -277,6 +288,7 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 	}
 
 	const { index, stack } = history.current
+	const busy = restoring.current // a restore is settling — freeze the timeline controls
 	const activeColor = colorIndex >= 1 ? (doc.palette[colorIndex - 1] ?? '#000000') : '#000000'
 
 	return (
@@ -293,10 +305,10 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 				<button type="button" aria-pressed={showGrid} onClick={() => setShowGrid((g) => !g)}>
 					Grid {showGrid ? 'on' : 'off'}
 				</button>
-				<button type="button" onClick={undo} disabled={index <= 0}>
+				<button type="button" onClick={undo} disabled={index <= 0 || busy}>
 					Undo
 				</button>
-				<button type="button" onClick={redo} disabled={index >= stack.length - 1}>
+				<button type="button" onClick={redo} disabled={index >= stack.length - 1 || busy}>
 					Redo
 				</button>
 				<button type="button" onClick={() => void actions.clear({})}>
