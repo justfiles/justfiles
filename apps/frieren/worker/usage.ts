@@ -8,12 +8,15 @@ import type { DbAdapter } from '@justfiles/core'
 // metered here; BYO backends never call these (see Frieren.meteredBackend).
 //
 //   reserve(est, limit) → admit iff committed + reserved + est ≤ limit, atomically bumping
-//                         `reserved` by `est` in the same statement. `est` is the call's
+//                         `reserved` by `est` in the same statement; returns the WINDOW the
+//                         reservation belongs to (or null when spent). `est` is the call's
 //                         WORST-CASE cost (context×input + maxTokens×output), so actual ≤
 //                         est ⇒ the cap is a HARD bound regardless of concurrency (parallel
 //                         calls each hold their own worst case, not a shared low nominal).
-//   settle(est, usage)  → free the reservation (−est) and add the ACTUAL cost to committed.
-//   release(est)        → free a reservation when a call failed before producing usage.
+//   settle(window, est, usage) → free the reservation (−est) and add ACTUAL cost — but only
+//                         if the row is still in `window` (a call that spanned a month
+//                         rollover can't touch the new month); lifetime totals always accrue.
+//   release(window, est) → free a reservation for a call that failed before producing usage.
 //
 // Cost is stored as integer micro-USD (USD × 1e6) to avoid float drift over a month.
 
@@ -73,17 +76,25 @@ export async function ensureUsageSchema(db: DbAdapter): Promise<void> {
 		)`
 	)
 	await db.run('INSERT OR IGNORE INTO usage_ai (id, window) VALUES (1, ?)', [currentWindow()])
+}
+
+// Clear reservations at DO BOOT only — a fresh instance has no in-flight calls, so any
+// non-zero `reserved` is leaked by a prior instance that died between reserve and settle.
+// NOT part of ensureUsageSchema: `reset()` also runs on volume wipe/complete WHILE calls may
+// be in flight, and those aborts let live calls settle their own reservations (see reset()).
+export async function sweepReservations(db: DbAdapter): Promise<void> {
 	await db.run('UPDATE usage_ai SET reserved_micros = 0 WHERE id = 1')
 }
 
 // Atomically admit a call and hold a reservation, rolling the month in the same statement.
 // One statement ⇒ atomic on the single-threaded DO; concurrent reserves each see the prior
-// one's reservation. Returns false (0 rows updated) when the budget is spent.
+// one's reservation. Returns the WINDOW the reservation belongs to (needed by settle/release
+// to prove ownership across a rollover), or null when the budget is spent.
 export async function reserve(
 	db: DbAdapter,
 	estMicros: number,
 	limitMicros: number
-): Promise<boolean> {
+): Promise<string | null> {
 	const cur = currentWindow()
 	const rows = await db.query(
 		`UPDATE usage_ai SET
@@ -97,34 +108,41 @@ export async function reserve(
 		 RETURNING 1`,
 		[cur, cur, cur, cur, estMicros, cur, cur, estMicros, limitMicros]
 	)
-	return rows.length > 0
+	return rows.length > 0 ? cur : null
 }
 
-// Free the reservation (−estMicros) and record the ACTUAL cost (rolls the month too, so it
-// stays correct for unlimited-tier calls that skip reserve with estMicros = 0). One atomic
-// statement.
-export async function settle(db: DbAdapter, estMicros: number, usage: Usage): Promise<void> {
-	const cur = currentWindow()
+// Free the reservation and record the ACTUAL cost. Windowed fields (committed/reserved/
+// tokens/requests) change ONLY when the row is still in the reservation's `window` — so a
+// call that spanned a month rollover can't subtract another month's reservation or inflate
+// the new month's committed (the rollover already discarded this reservation). Lifetime
+// totals always accrue. One atomic statement.
+export async function settle(
+	db: DbAdapter,
+	window: string,
+	estMicros: number,
+	usage: Usage
+): Promise<void> {
 	const actual = Math.round(usage.cost.total * MICROS_PER_USD)
 	await db.run(
 		`UPDATE usage_ai SET
-			committed_micros = (CASE WHEN window = ? THEN committed_micros ELSE 0 END) + ?,
-			reserved_micros = MAX(0, (CASE WHEN window = ? THEN reserved_micros ELSE 0 END) - ?),
-			tokens = (CASE WHEN window = ? THEN tokens ELSE 0 END) + ?,
-			requests = (CASE WHEN window = ? THEN requests ELSE 0 END) + 1,
+			committed_micros = committed_micros + (CASE WHEN window = ? THEN ? ELSE 0 END),
+			reserved_micros = MAX(0, reserved_micros - (CASE WHEN window = ? THEN ? ELSE 0 END)),
+			tokens = tokens + (CASE WHEN window = ? THEN ? ELSE 0 END),
+			requests = requests + (CASE WHEN window = ? THEN 1 ELSE 0 END),
 			lifetime_micros = lifetime_micros + ?,
-			lifetime_requests = lifetime_requests + 1,
-			window = ?
+			lifetime_requests = lifetime_requests + 1
 		 WHERE id = 1`,
-		[cur, actual, cur, estMicros, cur, usage.totalTokens, cur, actual, cur]
+		[window, actual, window, estMicros, window, usage.totalTokens, window, actual]
 	)
 }
 
-// Free a reservation for a call that failed before producing any usage (nothing to count).
-export async function release(db: DbAdapter, estMicros: number): Promise<void> {
-	await db.run('UPDATE usage_ai SET reserved_micros = MAX(0, reserved_micros - ?) WHERE id = 1', [
-		estMicros
-	])
+// Free a reservation for a call that failed before producing usage — only if the row is
+// still in the reservation's window (a rollover already discarded it). Nothing to count.
+export async function release(db: DbAdapter, window: string, estMicros: number): Promise<void> {
+	await db.run(
+		`UPDATE usage_ai SET reserved_micros = MAX(0, reserved_micros - (CASE WHEN window = ? THEN ? ELSE 0 END)) WHERE id = 1`,
+		[window, estMicros]
+	)
 }
 
 // Read the AI counter as of the current window (a stale month reads as zeroed windowed
