@@ -16,11 +16,11 @@ function ctx(state: OsState): EffectContext<OsState, OsAction> {
 }
 
 function makeWindow(id: string): OsWindow {
-	return { id, kind: 'app', appId: id, rect: { x: 0, y: 0, w: 100, h: 100 }, mode: 'floating' }
+	return { id, kind: 'app', appId: id, mode: 'floating' }
 }
 
 function makeAgentWindow(): OsWindow {
-	return { id: 'agent', kind: 'agent', rect: { x: 0, y: 0, w: 100, h: 100 }, mode: 'floating' }
+	return { id: 'agent', kind: 'agent', mode: 'floating' }
 }
 
 function setup() {

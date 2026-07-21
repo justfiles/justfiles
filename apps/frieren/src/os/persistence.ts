@@ -1,5 +1,5 @@
 import type { Volume } from '../fs'
-import { initialState, type OsState, type OsWindow } from './state'
+import { initialState, type OsState, type OsWindow, type WindowRect } from './state'
 
 const PATH = '/system/os-state.json'
 
@@ -16,16 +16,21 @@ function isOsState(data: unknown): data is OsState {
 	)
 }
 
-// Older snapshots predate `kind`/`appId`: every window was an app window whose
-// id was the app id. Normalise them so the rest of the shell can rely on the
-// discriminant being present.
-function normalizeWindows(state: OsState): OsState {
+// Bring older snapshots up to the current shape:
+//   - pre-`kind` windows were all app windows whose id was the app id.
+//   - geometry used to live on the window as `rect`; it now lives in
+//     `placements`. Lift any legacy per-window rect into placements (without
+//     clobbering a newer entry) so an upgrade keeps the user's layout, then
+//     drop `rect` from the window entries.
+function normalize(state: OsState): OsState {
+	const placements: Record<string, WindowRect> = { ...(state.placements ?? {}) }
 	const windows: Record<string, OsWindow> = {}
-	for (const [id, window] of Object.entries(state.windows))
-		windows[id] = window.kind
-			? window
-			: { ...window, kind: 'app' as const, appId: window.appId ?? id }
-	return { ...state, windows }
+	for (const [id, window] of Object.entries(state.windows)) {
+		const { rect, ...rest } = window as OsWindow & { rect?: WindowRect }
+		if (rect && !placements[id]) placements[id] = rect
+		windows[id] = rest.kind ? rest : { ...rest, kind: 'app' as const, appId: rest.appId ?? id }
+	}
+	return { ...state, windows, placements }
 }
 
 // Read the persisted snapshot. Any failure falls back to a fresh state rather
@@ -34,7 +39,7 @@ export async function loadSnapshot(volume: Volume): Promise<OsState> {
 	try {
 		if (!(await volume.exists(PATH))) return initialState
 		const data = JSON.parse(new TextDecoder().decode(await volume.readFile(PATH)))
-		if (isOsState(data)) return normalizeWindows(data)
+		if (isOsState(data)) return normalize(data)
 	} catch {
 		// corrupt or unreadable snapshot — fall through to a fresh state
 	}
@@ -48,16 +53,21 @@ export async function saveSnapshot(volume: Volume, serialized: string): Promise<
 
 // Serialize OS state for persistence, dropping ephemeral windows — ids with a
 // leading dot (e.g. devkit's `.preview.<slug>`) back a scoped, off-catalog stage
-// that can't be restored on a fresh boot, so they must not persist or sync.
+// that can't be restored on a fresh boot, so they must not persist or sync. The
+// same rule applies to their remembered placement.
 export function serializeOsState(state: OsState): string {
 	const persistable = (id: string) => !id.startsWith('.')
 	const windows: OsState['windows'] = {}
 	for (const [id, window] of Object.entries(state.windows))
 		if (persistable(id)) windows[id] = window
+	const placements: OsState['placements'] = {}
+	for (const [id, rect] of Object.entries(state.placements))
+		if (persistable(id)) placements[id] = rect
 	return JSON.stringify({
 		...state,
 		windows,
 		openOrder: state.openOrder.filter(persistable),
-		focusStack: state.focusStack.filter(persistable)
+		focusStack: state.focusStack.filter(persistable),
+		placements
 	})
 }
