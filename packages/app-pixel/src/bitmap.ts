@@ -2,9 +2,11 @@
 // it converts the immutable `string[]` rows to a mutable char matrix once, plots,
 // and joins back once. `i` is a palette index (0 = transparent); chars are an
 // internal encoding detail owned by doc.ts.
-import { indexToChar, TRANSPARENT } from './doc.ts'
+import { charToIndex, indexToChar, TRANSPARENT } from './doc.ts'
 
 type Grid = string[]
+
+export type Pixel = { x: number; y: number; i: number }
 
 const toCells = (grid: Grid): string[][] => grid.map((row) => [...row])
 const fromCells = (cells: string[][]): Grid => cells.map((row) => row.join(''))
@@ -48,10 +50,28 @@ export function setPixel(grid: Grid, x: number, y: number, i: number): Grid {
 
 // Batch plot — the agent's workhorse and the target of a committed freehand
 // stroke: many pixels land in one pass (and one dispatch).
-export function setPixels(grid: Grid, pixels: { x: number; y: number; i: number }[]): Grid {
+export function setPixels(grid: Grid, pixels: Pixel[]): Grid {
 	const cells = toCells(grid)
 	for (const { x, y, i } of pixels) plot(cells, x, y, indexToChar(i))
 	return fromCells(cells)
+}
+
+// The cells that differ between two same-sized grids, as the {x,y,i} the batch
+// `setPixels` replays. It is the whole undo/redo mechanism: every committed grid
+// revision — a human stroke or an agent dispatch — lands on one GUI timeline, and
+// a restore is `setPixels(gridDiff(current, target))`, so a human undo folds in
+// the agent's edits for free.
+export function gridDiff(before: Grid, after: Grid): Pixel[] {
+	const out: Pixel[] = []
+	for (let y = 0; y < after.length; y++) {
+		const a = after[y] ?? ''
+		const b = before[y] ?? ''
+		for (let x = 0; x < a.length; x++) {
+			const ch = a[x] ?? TRANSPARENT
+			if (ch !== (b[x] ?? TRANSPARENT)) out.push({ x, y, i: charToIndex(ch) })
+		}
+	}
+	return out
 }
 
 export function drawLine(
