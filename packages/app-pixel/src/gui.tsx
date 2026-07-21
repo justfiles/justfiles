@@ -2,7 +2,7 @@ import { injectStyle } from '@justfiles/app/browser'
 import type { GUIProps } from '@justfiles/app/react'
 import { useEffect, useReducer, useRef, useState } from 'react'
 import type { app, Tool } from './app.ts'
-import { drawLine, drawRect, setPixels } from './bitmap.ts'
+import { drawLine, drawRect, gridDiff, setPixels } from './bitmap.ts'
 import { charToIndex, getPixel, MAX_COLORS, type PixelDoc, SIZES, TRANSPARENT } from './doc.ts'
 
 // Layout only — chrome colours read platform tokens (`--surface`, `--rule`,
@@ -96,23 +96,6 @@ function paint(
 }
 
 const fitZoom = (doc: PixelDoc) => Math.max(1, Math.floor(512 / Math.max(doc.width, doc.height)))
-
-type Pixel = { x: number; y: number; i: number }
-
-// The cells that differ between two same-sized grids — the delta a committed
-// stroke or an undo/redo restore replays through `setPixels`.
-function diff(before: string[], after: string[]): Pixel[] {
-	const out: Pixel[] = []
-	for (let y = 0; y < after.length; y++) {
-		const a = after[y] ?? ''
-		const b = before[y] ?? ''
-		for (let x = 0; x < a.length; x++) {
-			const ch = a[x] ?? TRANSPARENT
-			if (ch !== (b[x] ?? TRANSPARENT)) out.push({ x, y, i: charToIndex(ch) })
-		}
-	}
-	return out
-}
 
 // Content equality — the host structured-clones state on every commit, so grid
 // references are never stable; the undo timeline keys off pixels, not identity.
@@ -248,7 +231,7 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 		if (d.kind === 'stroke') {
 			// Diff against the stroke's own pointer-down snapshot, not the latest grid, so
 			// a concurrent commit (e.g. an agent edit mid-drag) to other cells survives.
-			const pixels = diff(d.base, d.grid)
+			const pixels = gridDiff(d.base, d.grid)
 			if (pixels.length > 0) void actions.setPixels({ pixels })
 			else render(doc.grid)
 		} else if (d.kind === 'line') {
@@ -260,7 +243,7 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 	}
 
 	const restore = (target: string[]) => {
-		const pixels = diff(doc.grid, target)
+		const pixels = gridDiff(doc.grid, target)
 		if (pixels.length === 0) return
 		restoring.current = true
 		void actions.setPixels({ pixels })

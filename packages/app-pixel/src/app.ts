@@ -86,14 +86,20 @@ export const app = defineApp({
 			v.object({ pixels: v.pipe(v.array(pixel), v.maxLength(MAX_SIZE * MAX_SIZE)) }),
 			(s, { pixels }) => withGrid(s, setPixelsGrid(s.doc.grid, pixels)),
 			{
+				// The primary agent tool + the read↔write bridge, so this description carries the
+				// coordinate + char-encoding contract the rest of the surface relies on.
 				description:
-					'Place many pixels at once; each is {x,y,i} where i is a palette index (0 = transparent). The batch workhorse — also backs a committed freehand stroke.',
+					'Place many pixels in one dispatch — the batch workhorse, so build a whole shape per call. Each item is {x,y,i}: x is the column and y the row, both 0-based from the top-left (0,0); i is a palette index (0 = transparent/erase, 1..N picks palette[i-1]). To match a colour you see in state.doc.grid, note it is one char per pixel — "." is transparent and "0"-"9","a"-"z","A"-"Z" are palette indices 1..62 in order.',
+				// A 5-pixel plus sign, so the example itself reads as "several cells at once".
 				examples: [
 					{
 						params: {
 							pixels: [
-								{ x: 0, y: 0, i: 1 },
-								{ x: 1, y: 0, i: 1 }
+								{ x: 2, y: 1, i: 1 },
+								{ x: 1, y: 2, i: 1 },
+								{ x: 2, y: 2, i: 1 },
+								{ x: 3, y: 2, i: 1 },
+								{ x: 2, y: 3, i: 1 }
 							]
 						}
 					}
@@ -104,7 +110,8 @@ export const app = defineApp({
 			v.object({ x0: coord, y0: coord, x1: coord, y1: coord, i: idx }),
 			(s, { x0, y0, x1, y1, i }) => withGrid(s, lineGrid(s.doc.grid, x0, y0, x1, y1, i)),
 			{
-				description: 'Draw a 1px Bresenham line from (x0,y0) to (x1,y1) in palette index i.',
+				description:
+					'Draw a 1px line between (x0,y0) and (x1,y1) in palette index i (0 = transparent). Coordinates are 0-based from the top-left; both endpoints are inclusive.',
 				examples: [{ params: { x0: 0, y0: 0, x1: 5, y1: 5, i: 1 } }]
 			}
 		),
@@ -112,7 +119,8 @@ export const app = defineApp({
 			v.object({ x: coord, y: coord, w: rectSpan, h: rectSpan, i: idx }),
 			(s, { x, y, w, h, i }) => withGrid(s, fillRectGrid(s.doc.grid, x, y, w, h, i)),
 			{
-				description: 'Fill a solid w×h rectangle with top-left (x,y) in palette index i.',
+				description:
+					'Fill a solid w×h rectangle whose top-left corner is (x,y) with palette index i (0 = transparent). Good for backgrounds and blocks in one dispatch.',
 				examples: [{ params: { x: 2, y: 2, w: 4, h: 3, i: 1 } }]
 			}
 		),
@@ -120,7 +128,8 @@ export const app = defineApp({
 			v.object({ x: coord, y: coord, w: rectSpan, h: rectSpan, i: idx }),
 			(s, { x, y, w, h, i }) => withGrid(s, rectGrid(s.doc.grid, x, y, w, h, i)),
 			{
-				description: 'Draw the outline of a w×h rectangle with top-left (x,y) in palette index i.',
+				description:
+					'Draw only the 1px outline of a w×h rectangle whose top-left corner is (x,y) in palette index i (interior left untouched).',
 				examples: [{ params: { x: 1, y: 1, w: 6, h: 6, i: 1 } }]
 			}
 		),
@@ -129,12 +138,12 @@ export const app = defineApp({
 			(s, { x, y, i }) => withGrid(s, floodFillGrid(s.doc.grid, x, y, i)),
 			{
 				description:
-					'Flood-fill the contiguous region of like-coloured pixels at (x,y) with palette index i. Deterministic; order-dependent on current pixels.',
+					'Flood-fill the contiguous same-coloured region touching (x,y) with palette index i, like a paint bucket. Deterministic; depends on the current pixels.',
 				examples: [{ params: { x: 8, y: 8, i: 2 } }]
 			}
 		),
 		clear: t.on(v.object({}), (s) => withGrid(s, clearGrid(s.doc.grid)), {
-			description: 'Clear the whole canvas to transparent.',
+			description: 'Erase the whole canvas to transparent (every pixel back to index 0).',
 			examples: [{ params: {} }]
 		}),
 		// Colour / palette.
@@ -145,7 +154,7 @@ export const app = defineApp({
 			(s, { i }) => ({ ...s, colorIndex: Math.min(i, s.doc.palette.length) }),
 			{
 				description:
-					'Set the active palette index (0 = transparent/erase; clamped to the palette). The GUI draws with it; the agent passes i per action instead.',
+					"Set the GUI's active palette index (0 = transparent/erase; clamped to the palette). The agent normally passes i per draw action instead of setting this.",
 				examples: [{ params: { i: 6 } }]
 			}
 		),
@@ -160,7 +169,7 @@ export const app = defineApp({
 			},
 			{
 				description:
-					'Set palette entry i (1-based) to a #rrggbb colour — recolours every pixel drawn with i at once. i = palette length + 1 appends a new colour.',
+					'Recolour one palette entry: set entry i (1-based) to a #rrggbb colour, instantly updating every pixel drawn with i — zero pixel edits. Pass i = current palette length + 1 to append a new colour.',
 				examples: [{ params: { i: 7, color: '#d04648' } }]
 			}
 		),
@@ -173,29 +182,30 @@ export const app = defineApp({
 			}),
 			{
 				description:
-					'Replace the whole palette (#rrggbb list, index 1..N) — an instant global recolour to a new scheme without touching a pixel. Give at least as many entries as the sprite uses, or higher-index pixels render as nothing.',
-				// A full 16-entry swap (DB16 → PICO-8) so it recolours the default heart
-				// (index 7) instead of dropping it.
+					"Swap the whole palette (list of #rrggbb, index 1..N) for an instant global recolour — e.g. to a night scheme — without touching a pixel. Provide at least as many colours as the artwork's highest index, or those pixels render as nothing.",
+				// A ready-to-use 16-entry night palette (cool dark blues → moonlit highlights),
+				// same length as the DB16 default so it recolours the starter heart (index 7)
+				// instead of dropping it — the exact "recolour to a night palette" move.
 				examples: [
 					{
 						params: {
 							palette: [
-								'#000000',
-								'#1d2b53',
-								'#7e2553',
-								'#008751',
-								'#ab5236',
-								'#5f574f',
-								'#c2c3c7',
-								'#fff1e8',
-								'#ff004d',
-								'#ffa300',
-								'#ffec27',
-								'#00e436',
-								'#29adff',
-								'#83769c',
-								'#ff77a8',
-								'#ffccaa'
+								'#0d0b1f',
+								'#161335',
+								'#1f1b4d',
+								'#2a2560',
+								'#352f73',
+								'#413a87',
+								'#4f479c',
+								'#5e57b0',
+								'#1b2b52',
+								'#264072',
+								'#325693',
+								'#3f6fb0',
+								'#5a90c9',
+								'#84b4e0',
+								'#bcd7f2',
+								'#eef5ff'
 							]
 						}
 					}
@@ -212,12 +222,13 @@ export const app = defineApp({
 			},
 			{
 				description:
-					'Resize the canvas (clamped to ≤64). Destructive: pixels outside the new bounds are cropped.',
+					'Resize the canvas to width×height (clamped to ≤64). Destructive: pixels outside the new bounds are cropped, and pixels kept stay at the same (x,y).',
 				examples: [{ params: { width: 32, height: 32 } }]
 			}
 		),
 		setTool: t.on(v.object({ tool }), (s, { tool }) => ({ ...s, tool }), {
-			description: 'Pick the active tool: pencil | eraser | fill | eyedropper | line | rect.',
+			description:
+				"Select the GUI's active tool: pencil | eraser | fill | eyedropper | line | rect. The agent normally draws via the batch actions instead.",
 			examples: [{ params: { tool: 'pencil' } }]
 		})
 	})

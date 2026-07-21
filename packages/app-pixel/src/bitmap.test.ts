@@ -5,6 +5,7 @@ import {
 	drawRect,
 	fillRect,
 	floodFill,
+	gridDiff,
 	resizeGrid,
 	setPixel,
 	setPixels
@@ -125,5 +126,31 @@ describe('resizeGrid', () => {
 describe('clear', () => {
 	it('resets every cell to transparent', () => {
 		expect(clear(fillRect(blank(3), 0, 0, 3, 3, A))).toEqual(blank(3))
+	})
+})
+
+describe('gridDiff', () => {
+	it('reports only changed cells as {x,y,i}', () => {
+		const before = blank(3)
+		const after = setPixels(before, [
+			{ x: 0, y: 0, i: A },
+			{ x: 2, y: 1, i: B }
+		])
+		expect(gridDiff(before, after)).toEqual([
+			{ x: 0, y: 0, i: A },
+			{ x: 2, y: 1, i: B }
+		])
+	})
+	it('reports an erase as index 0', () => {
+		const before = fillRect(blank(2), 0, 0, 2, 2, A)
+		const after = setPixels(before, [{ x: 0, y: 0, i: 0 }])
+		expect(gridDiff(before, after)).toEqual([{ x: 0, y: 0, i: 0 }])
+	})
+	it('is empty for identical grids and is its own inverse (undo)', () => {
+		const before = blank(4)
+		const after = drawLine(before, 0, 0, 3, 3, A)
+		expect(gridDiff(before, before)).toEqual([])
+		// Replaying the reverse diff through setPixels restores the earlier grid.
+		expect(setPixels(after, gridDiff(after, before))).toEqual(before)
 	})
 })

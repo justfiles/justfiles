@@ -12,7 +12,8 @@ export default defineConfig(({ mode }) => ({
 					kernelHost({
 						id: 'computer.spud.pixel',
 						name: 'Pixel',
-						description: 'Indexed pixel-art editor',
+						description:
+							'Indexed pixel-art editor — a palette-indexed canvas you draw in or drive with an agent.',
 						app: 'src/app.ts',
 						gui: 'src/gui.tsx'
 					})
