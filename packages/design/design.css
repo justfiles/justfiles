@@ -275,6 +275,15 @@
 	border: 1px solid var(--rule);
 	border-radius: 6px;
 	box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+	transition:
+		box-shadow 0.2s ease,
+		opacity 0.2s ease;
+}
+
+/* Unfocused windows recede (macOS key-vs-inactive): the raised shadow flattens
+   so the focused window reads as sitting above the stack. */
+.ds-window-framed[data-focused="false"] {
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
 }
 
 .ds-window-fullscreen {
@@ -295,6 +304,12 @@
 	background: var(--surface);
 	border-bottom: 1px solid var(--rule);
 	touch-action: none;
+}
+
+/* Inactive titlebar lightens toward the window body — a subtler chrome, matching
+   how macOS washes out a background window's title bar. */
+.ds-window[data-focused="false"] .ds-window-titlebar {
+	background: color-mix(in srgb, var(--surface) 55%, var(--window-bg));
 }
 
 .ds-window-controls,
@@ -320,6 +335,13 @@
 	background: #28c940;
 }
 
+/* Inactive traffic lights go monochrome (macOS): the colored dots only light up
+   on the key window. They still work, so keep them tappable-looking, just grey. */
+.ds-window[data-focused="false"] .ds-window-control {
+	background: color-mix(in srgb, var(--text) 22%, transparent);
+	border-color: transparent;
+}
+
 .ds-window-title {
 	flex: 1;
 	text-align: center;
@@ -334,6 +356,16 @@
 	flex: 1;
 	min-height: 0;
 	overflow: hidden;
+	position: relative;
+}
+
+/* Transparent hit target laid over an inactive window's body (the app iframe).
+   A press here activates the window. No z-index: tree order already paints it
+   above the iframe (an earlier sibling) yet below the resize handles (later
+   siblings of the body), so edge-resizing an inactive window still works. */
+.ds-window-focus-catcher {
+	position: absolute;
+	inset: 0;
 }
 
 .ds-window-resize {

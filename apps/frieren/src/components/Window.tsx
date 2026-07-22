@@ -172,7 +172,18 @@ export function Window({
 				<span className="ds-window-title">{title}</span>
 				<span className="ds-window-spacer" />
 			</div>
-			<div className="ds-window-body">{children}</div>
+			<div className="ds-window-body">
+				{children}
+				{/* The window body is a sandboxed iframe (app GUI): a click inside it
+				   focuses the frame and never reaches the parent document, so the root's
+				   onPointerDownCapture focus never fires. When unfocused, cover the body
+				   with a transparent catcher that activates the window on press — the
+				   click is spent bringing the window forward (macOS-style click-to-focus),
+				   and the iframe becomes directly interactive once focused (no catcher). */}
+				{onFocus && !focused && !fullscreen ? (
+					<div className="ds-window-focus-catcher" onPointerDown={onFocus} />
+				) : null}
+			</div>
 			{fullscreen
 				? null
 				: HANDLES.map((dir) => (
