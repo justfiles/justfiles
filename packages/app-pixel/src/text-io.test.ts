@@ -78,6 +78,19 @@ describe('setGrid — stamp a char-grid patch', () => {
 		expect(s.doc.palette).toEqual(['#ffffff'])
 		expect(s.doc.grid).toEqual(['0.', '.0'])
 	})
+
+	// A patch whose first row is legal cell data that spells `pixel`/`pixel 1` must
+	// stamp as a patch, not trip full-doc replacement — without a `size`+`grid`
+	// structure, decode would wipe the canvas to a default doc.
+	it('stamps a patch whose first row spells `pixel` without wiping the canvas', async () => {
+		const s = await setGrid(blank(16), { grid: 'pixel 1' })
+		expect(s.doc.width).toBe(16) // canvas untouched — no full-doc replace
+		expect(s.doc.height).toBe(16)
+		expect(getPixel(s.doc.grid, 0, 0)).toBe(charToIndex('p'))
+		expect(getPixel(s.doc.grid, 1, 0)).toBe(charToIndex('i'))
+		expect(getPixel(s.doc.grid, 5, 0)).toBe(0) // the space is a skip, not a draw
+		expect(getPixel(s.doc.grid, 6, 0)).toBe(charToIndex('1'))
+	})
 })
 
 describe('show — the canvas as .pixel text', () => {
