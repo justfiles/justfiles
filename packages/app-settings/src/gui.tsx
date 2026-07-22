@@ -173,6 +173,8 @@ function Sidebar({
 	// The account row doubles as the entry to Usage — the macOS Settings shape, where the
 	// name/avatar header is itself a selectable row. On hosts without the `usage` capability
 	// (e.g. Spud Mac) it's a plain, non-interactive header so it never lands on a dead pane.
+	const name = user?.name ?? (user ? 'User' : 'Local user')
+	const status = user ? 'Signed in' : 'Not signed in'
 	const account = (
 		<>
 			<div className="settings-avatar" aria-hidden>
@@ -186,10 +188,8 @@ function Sidebar({
 				)}
 			</div>
 			<div className="settings-account-text">
-				<span className="settings-account-name">
-					{user?.name ?? (user ? 'User' : 'Local user')}
-				</span>
-				<span className="settings-account-sub">{user ? 'Signed in' : 'Not signed in'}</span>
+				<span className="settings-account-name">{name}</span>
+				<span className="settings-account-sub">{status}</span>
 			</div>
 		</>
 	)
@@ -200,6 +200,9 @@ function Sidebar({
 					type="button"
 					className="settings-account"
 					data-active={category === 'usage' || undefined}
+					// The button's text is just the account name/status; without this the control
+					// gives no hint that it opens Usage (there's no separate Usage nav item).
+					aria-label={`Usage — ${name}, ${status}`}
 					onClick={() => void client.selectCategory({ category: 'usage' })}
 				>
 					{account}
@@ -291,9 +294,10 @@ function renewText(window: string): string {
 }
 
 // AI headline: percent of the cap used (no dollars, per Claude Code / Codex), or
-// 'Unlimited' when uncapped.
+// 'Unlimited' when uncapped. NOT clamped to 100% — a tier downgrade can leave prior spend
+// above the new cap, and the true figure (e.g. 480%) is the point. The bar stays clamped.
 function aiHeadLabel(r: UsageResource): string {
-	return r.limit === null ? 'Unlimited' : `${Math.min(100, Math.round(r.fraction * 100))}%`
+	return r.limit === null ? 'Unlimited' : `${Math.round(r.fraction * 100)}%`
 }
 
 function UsagePanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
