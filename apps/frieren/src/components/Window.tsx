@@ -179,8 +179,10 @@ export function Window({
 				   onPointerDownCapture focus never fires. When unfocused, cover the body
 				   with a transparent catcher that activates the window on press — the
 				   click is spent bringing the window forward (macOS-style click-to-focus),
-				   and the iframe becomes directly interactive once focused (no catcher). */}
-				{onFocus && !focused && !fullscreen ? (
+				   and the iframe becomes directly interactive once focused (no catcher).
+				   Applies in fullscreen too: an unfocused fullscreen window still renders
+				   above the stack, so its body must remain clickable-to-focus. */}
+				{onFocus && !focused ? (
 					<div className="ds-window-focus-catcher" onPointerDown={onFocus} />
 				) : null}
 			</div>
