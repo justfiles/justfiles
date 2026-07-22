@@ -90,16 +90,31 @@ const withGrid = (state: PixelState, grid: string[]): PixelState => ({
 	doc: { ...state.doc, grid }
 })
 
-// True when the piped text is a whole `.pixel` document (first meaningful line is
-// `pixel <version>`), so `setGrid` replaces the canvas via `decode` instead of
-// stamping a patch — e.g. an edited `show` dump pasted back.
+// True when the piped text is a whole `.pixel` document, so `setGrid` replaces
+// the canvas via `decode` instead of stamping a patch — e.g. an edited `show`
+// dump pasted back. Requires the full structure decode needs (the `pixel
+// <version>` magic as the first meaningful line, plus a `size <w> <h>` header and
+// a `grid` section), not just the leading `pixel` word: a hand-drawn patch whose
+// first row spells `pixel`/`pixel 1` is legal cell data, and decoding it would
+// wipe the canvas to a default doc instead of stamping the row.
 const isFullDoc = (text: string): boolean => {
+	let header = false
+	let size = false
+	let grid = false
+	let first = true
 	for (const raw of text.split(/\r?\n/)) {
 		const t = raw.trim()
 		if (t === '' || t.startsWith('#')) continue
-		return /^pixel(\s|$)/.test(t)
+		if (first) {
+			first = false
+			if (!/^pixel\s+\d+(\s|$)/.test(t)) return false
+			header = true
+			continue
+		}
+		if (/^size\s+\d+\s+\d+(\s|$)/.test(t)) size = true
+		else if (t === 'grid') grid = true
 	}
-	return false
+	return header && size && grid
 }
 
 // Parse a stamped patch into the {x,y,i} the batch `setPixels` replays, offset to
