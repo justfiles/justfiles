@@ -163,13 +163,22 @@ function parseParams(tokens: string[], stdin: string): Record<string, unknown> {
 		if (token === undefined) continue
 		if (token === '--params-json') {
 			const raw = tokens[++i] ?? '{}'
+			let parsed: unknown
 			try {
-				return JSON.parse(raw) as Record<string, unknown>
+				parsed = JSON.parse(raw)
 			} catch (error) {
 				throw new Error(
 					`--params-json is not valid JSON (${msg(error)}). Single-quote the whole object so the shell passes it through verbatim, e.g. --params-json '{"pixels":[{"x":0,"y":0,"i":1}]}'.`
 				)
 			}
+			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+				throw new Error(
+					`--params-json must be a JSON object of params, got ${JSON.stringify(parsed)}. Wrap it in { } , e.g. --params-json '{"pixels":[{"x":0,"y":0,"i":1}]}'.`
+				)
+			// Merge (not replace) so structured params compose with earlier/later
+			// key=value and --stdin tokens on the same command line.
+			Object.assign(out, parsed as Record<string, unknown>)
+			continue
 		}
 		if (token === '--stdin') {
 			// The param whose value is the command's stdin — for long/multi-line text

@@ -91,6 +91,13 @@ describe('setGrid — stamp a char-grid patch', () => {
 		expect(getPixel(s.doc.grid, 5, 0)).toBe(0) // the space is a skip, not a draw
 		expect(getPixel(s.doc.grid, 6, 0)).toBe(charToIndex('1'))
 	})
+
+	// A full-doc dump declaring an unsupported version must fail loudly — decode
+	// would otherwise fall back to a blank default and silently erase the artwork.
+	it('rejects a full .pixel document with an unsupported version', async () => {
+		const doc = 'pixel 2\nsize 2 2\npalette\n0 #ffffff\ngrid\n0.\n.0'
+		await expect(setGrid(blank(16), { grid: doc })).rejects.toThrow(/version 2/)
+	})
 })
 
 describe('show — the canvas as .pixel text', () => {

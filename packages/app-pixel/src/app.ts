@@ -90,15 +90,16 @@ const withGrid = (state: PixelState, grid: string[]): PixelState => ({
 	doc: { ...state.doc, grid }
 })
 
-// True when the piped text is a whole `.pixel` document, so `setGrid` replaces
-// the canvas via `decode` instead of stamping a patch — e.g. an edited `show`
-// dump pasted back. Requires the full structure decode needs (the `pixel
+// If the piped text is a whole `.pixel` document, return its declared version so
+// `setGrid` can replace the canvas via `decode` (and reject an unsupported one);
+// otherwise null, so the text is stamped as a patch — e.g. an edited `show` dump
+// pasted back. "Whole document" means the full structure decode needs: the `pixel
 // <version>` magic as the first meaningful line, plus a `size <w> <h>` header and
-// a `grid` section), not just the leading `pixel` word: a hand-drawn patch whose
-// first row spells `pixel`/`pixel 1` is legal cell data, and decoding it would
-// wipe the canvas to a default doc instead of stamping the row.
-const isFullDoc = (text: string): boolean => {
-	let header = false
+// a `grid` section. That structure requirement is why a hand-drawn patch whose
+// first row spells `pixel`/`pixel 1` (legal cell data) returns null here rather
+// than tripping a canvas-wiping replace.
+const fullDocVersion = (text: string): number | null => {
+	let version: number | null = null
 	let size = false
 	let grid = false
 	let first = true
@@ -107,14 +108,15 @@ const isFullDoc = (text: string): boolean => {
 		if (t === '' || t.startsWith('#')) continue
 		if (first) {
 			first = false
-			if (!/^pixel\s+\d+(\s|$)/.test(t)) return false
-			header = true
+			const m = /^pixel\s+(\d+)(\s|$)/.exec(t)
+			if (!m) return null
+			version = Number(m[1])
 			continue
 		}
 		if (/^size\s+\d+\s+\d+(\s|$)/.test(t)) size = true
 		else if (t === 'grid') grid = true
 	}
-	return header && size && grid
+	return size && grid ? version : null
 }
 
 // Parse a stamped patch into the {x,y,i} the batch `setPixels` replays, offset to
@@ -237,7 +239,15 @@ export const app = defineApp({
 		setGrid: t.on(
 			v.object({ grid: gridText, x: v.optional(coord), y: v.optional(coord) }),
 			(s, { grid, x, y }) => {
-				if (isFullDoc(grid)) {
+				const version = fullDocVersion(grid)
+				if (version !== null) {
+					// A full `.pixel` dump replaces the canvas — but only a version this build
+					// understands. Reject an unsupported version instead of letting `decode`
+					// silently fall back to a blank default and wipe the artwork.
+					if (version !== 1)
+						throw new Error(
+							`setGrid: unsupported .pixel version ${version} (this build reads version 1).`
+						)
 					const doc = decode(new TextEncoder().encode(grid))
 					return { ...s, colorIndex: Math.min(s.colorIndex ?? 0, doc.palette.length), doc }
 				}
