@@ -30,6 +30,12 @@ function inspect(id: string): AppInspection {
 				schemaHint: { i: 'number' },
 				examples: [{ params: { i: 6 } }]
 			},
+			setGrid: {
+				kind: 'handler',
+				description: 'Draw from a piped char-grid.',
+				schemaHint: { grid: 'string', x: 'number?', y: 'number?' },
+				examples: [{ params: { grid: '.66.', x: 6, y: 8 } }]
+			},
 			clear: { kind: 'handler', description: 'Clear the canvas.', examples: [{ params: {} }] }
 		}
 	}
@@ -52,7 +58,7 @@ function fakeController(): AppController {
 				throw new Error('Invalid type: expected array but received string')
 			if (action === 'setColorIndex' && typeof p.i !== 'number')
 				throw new Error('Invalid type: expected number')
-			return { ...inspect(PIXEL).state, applied: action }
+			return { ...inspect(PIXEL).state, applied: action, params: p }
 		}
 	}
 }
@@ -117,6 +123,43 @@ describe('app run — structured params through the shell', () => {
 		expect(exitCode).toBe(1)
 		expect(text).toContain('APP_VALIDATION_FAILED')
 		expect(text).toContain('setColorIndex')
+	})
+})
+
+describe('app run --stdin <key> feeds a param from stdin', () => {
+	test('a pipe injects the piped text into the named param', async () => {
+		const { text, exitCode } = await runShell(
+			`printf 'r0c' | app run --id ${PIXEL} setGrid --stdin grid`
+		)
+		expect(exitCode).toBe(0)
+		expect(text).toContain('"applied": "setGrid"')
+		expect(text).toContain('"grid": "r0c"')
+	})
+
+	test('a heredoc injects multi-line text, verbatim (newlines and all)', async () => {
+		const { text, exitCode } = await runShell(
+			[`app run --id ${PIXEL} setGrid --stdin grid <<'EOF'`, '.66.', '.66.', 'EOF'].join('\n')
+		)
+		expect(exitCode).toBe(0)
+		// The JSON dump escapes the newline, proving the rows arrived unmangled.
+		expect(text).toContain('.66.\\n.66.')
+	})
+
+	test('scalars via key=value compose with a stdin param', async () => {
+		const { text, exitCode } = await runShell(
+			`printf '66' | app run --id ${PIXEL} setGrid x=6 y=8 --stdin grid`
+		)
+		expect(exitCode).toBe(0)
+		expect(text).toContain('"grid": "66"')
+		expect(text).toContain('"x": 6')
+		expect(text).toContain('"y": 8')
+	})
+
+	test('--stdin with no param name is a discoverable error', async () => {
+		const { text, exitCode } = await runShell(`app run --id ${PIXEL} setGrid --stdin`)
+		expect(exitCode).toBe(1)
+		expect(text).toContain('BAD_PARAMS')
+		expect(text).toContain('--stdin')
 	})
 })
 

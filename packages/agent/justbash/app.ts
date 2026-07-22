@@ -14,10 +14,23 @@ export function createAppCommand(controller: AppController): ShellCommand {
 	return {
 		name: 'app',
 		summary:
-			"Drive the user's apps — your MAIN way to get things done. `app list` to see them, `app inspect <id>` for an app's actions and state, `app run --id <id> <action> key=value` to act, `app launch <id>` to open it. Prefer this over editing files or writing scripts.",
+			"Drive the user's apps — your MAIN way to get things done. `app list` to see them, `app inspect <id>` for an app's actions and state, `app run --id <id> <action> key=value` to act, `app launch <id>` to open it. Pipe long/multi-line text into a param with `--stdin <key>` (heredoc or `|`). Prefer this over editing files or writing scripts.",
 		// just-bash hands `execute` the argv after the command name (`app list` →
-		// ['list']), exactly the shape the dispatch logic already expects.
-		execute: (argv) => run(controller, argv)
+		// ['list']) plus a ctx carrying stdin, exactly the shape the dispatch logic expects.
+		execute: (argv, ctx) => run(controller, argv, decodeStdin(ctx.stdin))
+	}
+}
+
+// `ctx.stdin` is an opaque ByteString — a latin1 byte buffer (each char code is a
+// byte). just-bash's own `decodeBytesToUtf8` lives only in its Node entry (the
+// browser bundle omits it), so inline the same decode: reinterpret the bytes as
+// UTF-8, falling back to the raw latin1 view when they aren't valid UTF-8.
+function decodeStdin(stdin: unknown): string {
+	const latin1 = String(stdin ?? '')
+	try {
+		return new TextDecoder().decode(Uint8Array.from(latin1, (c) => c.charCodeAt(0)))
+	} catch {
+		return latin1
 	}
 }
 
@@ -34,7 +47,7 @@ export const APPS_PROMPT = [
 	"Don't assume from memory which apps exist — the set can change. Run `app list` to see what's installed right now, `app inspect <id>` to read an app's actions and current state, then `app run --id <id> <action> key=value` to act. `app launch <id>` opens an app for the user."
 ].join('\n')
 
-async function run(controller: AppController, argv: string[]): Promise<ExecResult> {
+async function run(controller: AppController, argv: string[], stdin: string): Promise<ExecResult> {
 	const [cmd = 'help', ...rest] = argv
 	try {
 		if (cmd === 'help' || cmd === '--help' || cmd === '-h') return ok(help())
@@ -68,14 +81,18 @@ async function run(controller: AppController, argv: string[]): Promise<ExecResul
 			const app = await inspectTarget(controller, id)
 			return ok({ ok: true, appId: app.id, actions: formatActions(app.id, app.actions) })
 		}
-		if (cmd === 'run') return await runAction(controller, rest)
+		if (cmd === 'run') return await runAction(controller, rest, stdin)
 		return fail('BAD_USAGE', `unknown app command: ${cmd}`, help())
 	} catch (error) {
 		return fail('APP_ERROR', error instanceof Error ? error.message : String(error), help())
 	}
 }
 
-async function runAction(controller: AppController, argv: string[]): Promise<ExecResult> {
+async function runAction(
+	controller: AppController,
+	argv: string[],
+	stdin: string
+): Promise<ExecResult> {
 	const { id, rest } = parseTarget(argv)
 	const [action, ...tokens] = rest
 	if (!action) return fail('BAD_USAGE', 'missing action', help())
@@ -88,7 +105,7 @@ async function runAction(controller: AppController, argv: string[]): Promise<Exe
 	}
 	let params: Record<string, unknown>
 	try {
-		params = parseParams(tokens)
+		params = parseParams(tokens, stdin)
 	} catch (error) {
 		// A malformed param is the agent's fault-line — surface it as an error (never
 		// a silently-coerced string) carrying THIS action's full usage + examples, so
@@ -139,7 +156,7 @@ function parseTarget(argv: string[]): { id?: string; rest: string[] } {
 	return { id, rest }
 }
 
-function parseParams(tokens: string[]): Record<string, unknown> {
+function parseParams(tokens: string[], stdin: string): Record<string, unknown> {
 	const out: Record<string, unknown> = {}
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]
@@ -154,10 +171,22 @@ function parseParams(tokens: string[]): Record<string, unknown> {
 				)
 			}
 		}
+		if (token === '--stdin') {
+			// The param whose value is the command's stdin — for long/multi-line text
+			// (a grid, a note body) that would be mangled inline: pipe it or use a
+			// heredoc, e.g. `app run --id <id> setGrid --stdin grid <<'EOF' … EOF`.
+			const key = tokens[++i]
+			if (!key || key.startsWith('--'))
+				throw new Error(
+					"--stdin needs a param name, e.g. --stdin grid, and the value piped in via a heredoc or | (app run --id <id> setGrid --stdin grid <<'EOF' … EOF)."
+				)
+			out[key] = stdin
+			continue
+		}
 		const eq = token.indexOf('=')
 		if (eq < 1)
 			throw new Error(
-				`expected key=value, got ${JSON.stringify(token)}. Pass scalars as key=value (amount=2, tool=pencil); pass an array/object as one JSON object via --params-json '<json>'.`
+				`expected key=value, got ${JSON.stringify(token)}. Pass scalars as key=value (amount=2, tool=pencil); pass an array/object as one JSON object via --params-json '<json>'; pass long/multi-line text via --stdin <key> (piped in).`
 			)
 		out[token.slice(0, eq)] = parseValue(token.slice(eq + 1))
 	}
@@ -195,7 +224,7 @@ function formatAction(appId: string, name: string, meta: ActionMeta) {
 	return {
 		name,
 		description: meta.description,
-		usage: `app run --id ${appId} ${name} key=value ...  (arrays/objects: --params-json '<json>')`,
+		usage: `app run --id ${appId} ${name} key=value ...  (arrays/objects: --params-json '<json>'; long/multi-line text: --stdin <key>, piped in)`,
 		schemaHint: meta.schemaHint,
 		examples: (meta.examples ?? []).map((e) => example(appId, name, e.params))
 	}
@@ -249,9 +278,10 @@ function help() {
 			'app run increment amount=2',
 			'app run --id com.example.counter increment amount=2',
 			'app run --id com.example.counter setItems --params-json \'{"items":[{"x":0,"y":0}]}\'',
+			"printf '..66..' | app run --id com.example.pixel setGrid --stdin grid",
 			'app actions --id com.example.counter'
 		],
 		params:
-			"Scalars pass as key=value (amount=2, tool=pencil, color=#d04648). Arrays/objects MUST go as one JSON object via --params-json '<json>' (single-quoted) — inline key=value is unquoted by the shell, which mangles JSON."
+			"Scalars pass as key=value (amount=2, tool=pencil, color=#d04648). Arrays/objects MUST go as one JSON object via --params-json '<json>' (single-quoted) — inline key=value is unquoted by the shell, which mangles JSON. Long or multi-line text (a grid, a note body) goes via --stdin <key>: pipe it or use a heredoc, and its value becomes params[<key>]."
 	}
 }

@@ -102,18 +102,24 @@ const clampSize = (n: number): number => Math.max(1, Math.min(MAX_SIZE, Math.flo
 const padRow = (row: string, w: number): string =>
 	row.length >= w ? row.slice(0, w) : row + TRANSPARENT.repeat(w - row.length)
 
-export function encode(doc: PixelDoc): Uint8Array {
+// The `.pixel` text form (see `decode` for the grammar). Exposed for the app's
+// `show` action, which returns the same artifact the agent pipes into `setGrid`
+// — read-format == write-format == file-format.
+export function encodeText(doc: PixelDoc): string {
 	const palette = doc.palette ?? []
 	const grid = doc.grid ?? []
-	const lines = [
+	return `${[
 		`pixel ${doc.version}`,
 		`size ${doc.width} ${doc.height}`,
 		'palette',
 		...palette.map((color, k) => `${indexToChar(k + 1)} ${color}`),
 		'grid',
 		...grid
-	]
-	return new TextEncoder().encode(`${lines.join('\n')}\n`)
+	].join('\n')}\n`
+}
+
+export function encode(doc: PixelDoc): Uint8Array {
+	return new TextEncoder().encode(encodeText(doc))
 }
 
 export function decode(bytes: Uint8Array): PixelDoc {
