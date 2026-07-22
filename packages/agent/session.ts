@@ -10,7 +10,7 @@ import {
 } from './assistant.ts'
 import { type CapabilityToolSet, capabilityTools } from './capability-tools.ts'
 import type { CompactionSettings } from './compaction.ts'
-import { type AppController, createAppCommand, renderAppsPrompt } from './justbash/app.ts'
+import { APPS_PROMPT, type AppController, createAppCommand } from './justbash/app.ts'
 import { createJustBashTool } from './justbash/index.ts'
 import { createAgent } from './llm.agent.ts'
 import { text as createText, type LLMText } from './llm.text.ts'
@@ -157,7 +157,7 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 			compaction,
 			getTimezone: timezone,
 			readDoc,
-			appsSection: apps ? () => renderAppsPrompt(apps) : undefined
+			appsPrompt: apps ? APPS_PROMPT : undefined
 		})
 
 		let pending: PendingQuestion | null = null
