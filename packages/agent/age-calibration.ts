@@ -41,19 +41,31 @@ const BANDS: Band[] = [
 	}
 ]
 
-// Compute the user's age from the profile frontmatter and always state it, so the agent
-// reliably knows how to pitch its replies (an LLM can't be trusted to do the date math from
-// a raw birth date). Accepts `birth_date` (the canonical key the onboarding writes) or a
-// looser `birthday`. When the age falls in a calibrated band, the age fact is followed by
-// that band's tone/vocabulary instruction; otherwise just the fact is returned.
+// Compute the user's age from the profile frontmatter and always state it (with a natural
+// gender noun when known), so the agent reliably knows how to pitch its replies (an LLM can't
+// be trusted to do the date math from a raw birth date). Accepts `birth_date` (the canonical
+// key the onboarding writes) or a looser `birthday`. When the age falls in a calibrated band,
+// the fact is followed by that band's tone/vocabulary instruction; otherwise just the fact.
 export function ageCalibration(profile: string, today: Date = new Date()): string | null {
 	const fm = parseFrontmatter(profile)
 	const birth = fm.birth_date ?? fm.birthday
 	if (!birth) return null
 	const age = ageOf(birth, today)
 	if (age == null || age < 0) return null
+	const noun = genderNoun(fm.gender, age)
+	const fact = noun ? `The user is ${age} years old, a ${noun}.` : `The user is ${age} years old.`
 	const tone = toneInstruction(fm, age)
-	return tone ? `The user is ${age} years old. ${tone}` : `The user is ${age} years old.`
+	return tone ? `${fact} ${tone}` : fact
+}
+
+// A natural noun for the agent's mental model of the user: boy/girl under 18, man/woman at
+// 18+. Only the two common values map to a noun; anything else (non-binary, self-described,
+// unset) returns null and is left out — the raw `gender` still rides in the profile block.
+function genderNoun(gender: string | undefined, age: number): string | null {
+	const g = gender?.trim().toLowerCase()
+	if (g === 'male') return age < 18 ? 'boy' : 'man'
+	if (g === 'female') return age < 18 ? 'girl' : 'woman'
+	return null
 }
 
 // The tone/vocabulary instruction for an age, or null when no band applies (e.g. under the

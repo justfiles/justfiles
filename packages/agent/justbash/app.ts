@@ -22,29 +22,17 @@ export function createAppCommand(controller: AppController): ShellCommand {
 }
 
 /**
- * The `# apps` system-prompt block: tells the agent that driving apps through the `app`
- * command is its primary way to act, and lists the LIVE installed apps so it knows what it
- * can reach without first guessing. Lives next to the command so the guidance and the
- * implementation stay in sync. The list is best-effort — if it can't be read, the guidance
- * (the part that actually changes behaviour) is still returned.
+ * The `# apps` system-prompt block. Deliberately open-ended: it tells the agent that driving
+ * apps through the `app` command is its primary way to act and points it at `app list` to
+ * DISCOVER what's installed at runtime, rather than embedding a snapshot. A live list would
+ * change the block (and so the whole stable prompt prefix) whenever apps change — this stays
+ * byte-identical across turns, scales to any number of apps, and can never go stale.
  */
-export async function renderAppsPrompt(controller: AppController): Promise<string> {
-	const lines = [
-		"You operate this device by driving its apps through the `app` command in your bash tool. This is your PRIMARY way to get things done for the user: an app owns its own data and actions, so run an app action rather than editing files by hand, and NEVER write scripts to read or change an app's data directly.",
-		'',
-		"Workflow: `app list` to see installed apps, `app inspect <id>` to read one app's actions and current state, then `app run --id <id> <action> key=value` to act. `app launch <id>` opens an app for the user."
-	]
-	const apps = await controller.list().catch(() => [])
-	if (apps.length > 0) {
-		lines.push('', 'Installed apps:')
-		for (const app of apps) {
-			lines.push(
-				`- \`${app.id}\`${app.name ? ` (${app.name})` : ''}${app.description ? ` — ${app.description}` : ''}`
-			)
-		}
-	}
-	return lines.join('\n')
-}
+export const APPS_PROMPT = [
+	"You operate this device by driving its apps through the `app` command in your bash tool. This is your PRIMARY way to get things done for the user: an app owns its own data and actions, so run an app action rather than editing files by hand, and NEVER write scripts to read or change an app's data directly.",
+	'',
+	"Don't assume from memory which apps exist — the set can change. Run `app list` to see what's installed right now, `app inspect <id>` to read an app's actions and current state, then `app run --id <id> <action> key=value` to act. `app launch <id>` opens an app for the user."
+].join('\n')
 
 async function run(controller: AppController, argv: string[]): Promise<ExecResult> {
 	const [cmd = 'help', ...rest] = argv

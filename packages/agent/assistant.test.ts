@@ -195,15 +195,15 @@ describe('assistant tool API', () => {
 		expect(rt.systemPrompt()).toMatch(/The user is \d+ years old\./)
 	})
 
-	test('adds the apps block from appsSection', async () => {
+	test('adds the apps block from appsPrompt', async () => {
 		const rt = await createAssistant({
 			volume: volume(memStorage()),
 			agent: new Agent(),
 			text: testText(),
 			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },
-			appsSection: async () => 'Installed apps:\n- `com.example.notes` (Notes)'
+			appsPrompt: 'Run `app list` to see installed apps.'
 		})
 		expect(rt.systemPrompt()).toContain('# apps')
-		expect(rt.systemPrompt()).toContain('com.example.notes')
+		expect(rt.systemPrompt()).toContain('Run `app list` to see installed apps.')
 	})
 })
