@@ -41,18 +41,31 @@ const BANDS: Band[] = [
 	}
 ]
 
+// Compute the user's age from the profile frontmatter and always state it, so the agent
+// reliably knows how to pitch its replies (an LLM can't be trusted to do the date math from
+// a raw birth date). Accepts `birth_date` (the canonical key the onboarding writes) or a
+// looser `birthday`. When the age falls in a calibrated band, the age fact is followed by
+// that band's tone/vocabulary instruction; otherwise just the fact is returned.
 export function ageCalibration(profile: string, today: Date = new Date()): string | null {
 	const fm = parseFrontmatter(profile)
-	if (!fm.birth_date) return null
-	const age = ageOf(fm.birth_date, today)
+	const birth = fm.birth_date ?? fm.birthday
+	if (!birth) return null
+	const age = ageOf(birth, today)
+	if (age == null || age < 0) return null
+	const tone = toneInstruction(fm, age)
+	return tone ? `The user is ${age} years old. ${tone}` : `The user is ${age} years old.`
+}
+
+// The tone/vocabulary instruction for an age, or null when no band applies (e.g. under the
+// youngest band). `grade_level_override` shifts the selected band up/down.
+function toneInstruction(fm: Record<string, string>, age: number): string | null {
 	const first = BANDS[0]
-	if (age == null || !first || age < first.min) return null
+	if (!first || age < first.min) return null
 	const shift = Number.parseInt(fm.grade_level_override ?? '0', 10) || 0
 	const idx = BANDS.findIndex((b) => age >= b.min && age <= b.max)
 	if (idx < 0) return null
 	const band = BANDS[Math.max(0, Math.min(BANDS.length - 1, idx + shift))]
-	if (!band) return null
-	return `The user is ${age} years old. ${band.instruction}`
+	return band?.instruction ?? null
 }
 
 function ageOf(birthDate: string, today: Date): number | null {

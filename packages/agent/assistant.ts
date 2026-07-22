@@ -30,6 +30,10 @@ type AssistantProps = {
 	// the bytes. When provided, the docs block goes in the system prompt and a `read_doc` tool
 	// is added. Omit to disable docs. (Skills are independent — see below.)
 	readDoc?: (id: string) => Promise<string>
+	// Renders the `# apps` system-prompt block (the app guidance + the live installed list).
+	// Called on every prompt build so a newly installed app shows up. Omit when the host has
+	// no apps. Kept as a thunk (not a static string) so the list stays current.
+	appsSection?: () => Promise<string>
 }
 
 // Who authored a turn: the user typing, or an app acting on their behalf.
@@ -74,7 +78,8 @@ export async function createAssistant({
 	text,
 	compaction,
 	getTimezone,
-	readDoc
+	readDoc,
+	appsSection
 }: AssistantProps): Promise<Assistant> {
 	// Seed the platform's default persona + empty profile if absent, so the agent always has
 	// a working identity and never blocks on "onboarding". Idempotent; personalization wins.
@@ -213,6 +218,11 @@ export async function createAssistant({
 			prompt.add('# about the user', profile)
 			const calibration = ageCalibration(profile)
 			if (calibration) prompt.add(calibration)
+		}
+
+		if (appsSection) {
+			const apps = await appsSection()
+			if (apps) prompt.add('# apps', apps)
 		}
 
 		const skillsBlock = await skillRegistry.index()

@@ -13,11 +13,37 @@ export type { AppController } from '@justfiles/app'
 export function createAppCommand(controller: AppController): ShellCommand {
 	return {
 		name: 'app',
-		summary: 'List, launch, inspect, and control apps',
+		summary:
+			"Drive the user's apps — your MAIN way to get things done. `app list` to see them, `app inspect <id>` for an app's actions and state, `app run --id <id> <action> key=value` to act, `app launch <id>` to open it. Prefer this over editing files or writing scripts.",
 		// just-bash hands `execute` the argv after the command name (`app list` →
 		// ['list']), exactly the shape the dispatch logic already expects.
 		execute: (argv) => run(controller, argv)
 	}
+}
+
+/**
+ * The `# apps` system-prompt block: tells the agent that driving apps through the `app`
+ * command is its primary way to act, and lists the LIVE installed apps so it knows what it
+ * can reach without first guessing. Lives next to the command so the guidance and the
+ * implementation stay in sync. The list is best-effort — if it can't be read, the guidance
+ * (the part that actually changes behaviour) is still returned.
+ */
+export async function renderAppsPrompt(controller: AppController): Promise<string> {
+	const lines = [
+		"You operate this device by driving its apps through the `app` command in your bash tool. This is your PRIMARY way to get things done for the user: an app owns its own data and actions, so run an app action rather than editing files by hand, and NEVER write scripts to read or change an app's data directly.",
+		'',
+		"Workflow: `app list` to see installed apps, `app inspect <id>` to read one app's actions and current state, then `app run --id <id> <action> key=value` to act. `app launch <id>` opens an app for the user."
+	]
+	const apps = await controller.list().catch(() => [])
+	if (apps.length > 0) {
+		lines.push('', 'Installed apps:')
+		for (const app of apps) {
+			lines.push(
+				`- \`${app.id}\`${app.name ? ` (${app.name})` : ''}${app.description ? ` — ${app.description}` : ''}`
+			)
+		}
+	}
+	return lines.join('\n')
 }
 
 async function run(controller: AppController, argv: string[]): Promise<ExecResult> {
