@@ -32,7 +32,7 @@
  */
 
 import { incomingWins } from './storage.shared'
-import { PAGE, type SyncReplica, uploadBlobs } from './sync-replica'
+import { mirrorBlobs, PAGE, type SyncReplica, uploadBlobs } from './sync-replica'
 import { changeDigest, type PathChange } from './sync-wire'
 
 /** What one reconcile pass did — returned for observability + tests. */
@@ -44,6 +44,12 @@ export interface ReconcileResult {
 	pulled: number
 	/** Local winners applied to the remote (push direction). */
 	pushed: number
+	/**
+	 * The server lineage epoch observed while scanning the remote (client<->server
+	 * only; undefined for P2P). `synced()` runs its mid-session reset check on it, so
+	 * a lineage that advanced mid-scan can't be silently reported as converged.
+	 */
+	generation?: number
 }
 
 export interface ReconcileOptions {
@@ -69,15 +75,22 @@ async function agree(a: PathChange | undefined, b: PathChange | undefined): Prom
 }
 
 /** Page a replica's full snapshot into a path -> latest-put map (metadata only). */
-async function manifest(replica: SyncReplica, limit: number): Promise<Map<string, PathChange>> {
-	const out = new Map<string, PathChange>()
+async function manifest(
+	replica: SyncReplica,
+	limit: number
+): Promise<{ paths: Map<string, PathChange>; generation?: number }> {
+	const paths = new Map<string, PathChange>()
+	let generation: number | undefined
 	let page: string | undefined
 	do {
 		const res = await replica.pathScan(page, { limit })
-		for (const c of res.changes) out.set(c.path, c)
+		for (const c of res.changes) paths.set(c.path, c)
+		// Client<->server pages echo the live generation; carry the last seen so a reset
+		// that lands mid-scan is surfaced to `synced()`. P2P leaves it undefined.
+		if (res.generation !== undefined) generation = res.generation
 		page = res.done ? undefined : res.next
 	} while (page)
-	return out
+	return { paths, generation }
 }
 
 /**
@@ -93,10 +106,12 @@ export async function reconcile(
 ): Promise<ReconcileResult> {
 	const limit = options.limit ?? PAGE
 	const source = options.source ?? 'remote'
-	const [localManifest, remoteManifest] = await Promise.all([
+	const [localScan, remoteScan] = await Promise.all([
 		manifest(local, limit),
 		manifest(remote, limit)
 	])
+	const localManifest = localScan.paths
+	const remoteManifest = remoteScan.paths
 
 	const toPull: PathChange[] = [] // remote winners -> apply locally
 	const toPush: PathChange[] = [] // local winners -> apply on the remote
@@ -128,22 +143,20 @@ export async function reconcile(
 		pulled = applicable.length
 	}
 
-	// Push: ensure BOTH sides hold each winner's blob before the remote apply. The
-	// remote needs it for its own apply (uploadBlobs sends up any hash it lacks); the
-	// local SOURCE needs it too, or eager local reads stay broken after the manifests
-	// agree — so repair the local copy from the remote when local lost a hash the
-	// remote still holds (recoverable: content is hash-addressed). Symmetric with the
-	// pull-side repair above. A truly orphaned put (content missing on BOTH sides) is
-	// dropped, never thrown, so one dead reference can't abort the reconcile; the
-	// remote apply re-guards with incomingWins (and rejects resurrecting a delete).
+	// Push: ensure BOTH sides hold each winner's blob before the remote apply —
+	// `mirrorBlobs` sends any hash the remote lacks up AND repairs the local source
+	// from the remote when local lost a hash the remote still holds (recoverable:
+	// content is hash-addressed), so eager local reads keep working after the
+	// manifests agree. Symmetric with the pull-side repair above. A truly orphaned
+	// put (missing on BOTH sides) is dropped, never thrown, so one dead reference
+	// can't abort the reconcile; the remote apply re-guards with incomingWins (and
+	// rejects resurrecting a delete).
 	let pushed = 0
 	if (toPush.length) {
-		const orphaned = await uploadBlobs(toPush, local, remote)
+		const orphaned = await mirrorBlobs(toPush, local, remote)
 		const applicable = orphaned.length ? toPush.filter((c) => !orphaned.includes(c)) : toPush
-		if (applicable.length) {
-			await uploadBlobs(applicable, remote, local) // repair the local source (all have a remote copy)
+		if (applicable.length)
 			await remote.applyPathChanges(applicable, (h) => remote.getBlobByHash(h), { source })
-		}
 		pushed = applicable.length
 	}
 
@@ -151,6 +164,7 @@ export async function reconcile(
 		localPaths: localManifest.size,
 		remotePaths: remoteManifest.size,
 		pulled,
-		pushed
+		pushed,
+		generation: remoteScan.generation
 	}
 }

@@ -314,6 +314,8 @@ interface FakeServer {
 	resetId: string | undefined
 	/** Override the generation echoed on pull pages (default: `generation`). */
 	deltaGeneration: number | undefined
+	/** Override the generation echoed on scan (pathScan) pages (default: `generation`). */
+	scanGeneration: number | undefined
 	/** How many times the client ran a full bootstrap (pathScan) against us. */
 	scanCalls: number
 	/** If set, the next push (applyPathChanges) throws it — simulates a fence 409. */
@@ -334,6 +336,7 @@ function fakeServer(
 		generation: init.generation,
 		resetId: undefined,
 		deltaGeneration: undefined,
+		scanGeneration: undefined,
 		scanCalls: 0,
 		pushError: undefined,
 		resetError: undefined,
@@ -374,7 +377,7 @@ function fakeServer(
 				changes: [...puts.values()],
 				syncCursor: '0',
 				done: true,
-				generation: server.generation
+				generation: server.scanGeneration ?? server.generation
 			}
 		},
 		pathDeltas: async (cursor) => ({
@@ -486,6 +489,27 @@ describe('synced (generation / client-reset)', () => {
 		await seedSyncState(local, { generation: 5, pullCursor: '0', pushCursor: '0' })
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		expect(await vol.exists('/keep.txt')).toBe(false) // discarded by the echo mismatch
+		expect((await readSyncState(local)).pullCursor).toBeUndefined() // cursors cleared
+	})
+
+	// The anti-entropy scan echoes the live generation too: a reset observed while
+	// the periodic reconcile runs (handshake + pull still saw the old lineage) must
+	// get the same discard, or a mixed-lineage tree is reported synced then wiped.
+	it('resets mid-session when the anti-entropy scan echoes a newer generation', async () => {
+		const server = fakeServer({ generation: 5 })
+		server.scanGeneration = 6 // handshake + pull say 5, the reconcile scan says 6
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		await seedSyncState(local, { generation: 5, pullCursor: '0', pushCursor: '0' })
+		const vol = track(
+			await synced({
+				local,
+				remote: () => server.replica,
+				interval: 99_999,
+				antiEntropy: { everyCycles: 1 }
+			})
+		)
+		expect(await vol.exists('/keep.txt')).toBe(false) // discarded by the scan-echo mismatch
 		expect((await readSyncState(local)).pullCursor).toBeUndefined() // cursors cleared
 	})
 
@@ -820,5 +844,34 @@ describe('synced (orphaned-blob resilience)', () => {
 		expect(await local.caps?.content?.hasByHash(H)).toBe(true) // local repaired from remote
 		expect(dec.decode(await vol.readFile('/x'))).toBe('shared-bytes') // eager local read works
 		expect(await volume(remote).exists('/x')).toBe(true) // and the winner pushed up
+	})
+
+	// Same recovery on the ORDINARY delta push (not the anti-entropy pass): a local
+	// winner whose blob was lost locally but is still on the remote. Pushing only the
+	// metadata would converge the manifests while eager local reads stay broken, and
+	// the anti-entropy pass would then skip the agreed path. The push must repair local.
+	it('repairs the local blob from the remote on an ordinary delta push', async () => {
+		const shared = enc.encode('shared-bytes')
+		const H = createHash('sha256').update(shared).digest('hex')
+
+		const local = memStorage()
+		const lv = volume(local)
+		await lv.writeFile('/x', enc.encode('placeholder'))
+		const st = await lv.stat('/x')
+		await local.setMeta(st.ino, { contentHash: H }, { version: 5 })
+		expect(await local.caps?.content?.hasByHash(H)).toBe(false)
+		// pullCursor defined => no bootstrap; push from 0 => the delta push carries /x.
+		// Anti-entropy OFF so the ordinary push is what must do the repair.
+		await seedSyncState(local, { pullCursor: '0', pushCursor: '0' })
+
+		const remote = memStorage()
+		await remote.caps?.content?.putByHash(H, shared)
+
+		const vol = track(await synced({ local, remote, interval: 99_999, antiEntropy: false }))
+		await vol.flush()
+
+		expect(await local.caps?.content?.hasByHash(H)).toBe(true) // local repaired by the push
+		expect(dec.decode(await vol.readFile('/x'))).toBe('shared-bytes') // eager local read works
+		expect(await volume(remote).exists('/x')).toBe(true)
 	})
 })

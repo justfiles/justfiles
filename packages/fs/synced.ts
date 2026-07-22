@@ -6,10 +6,10 @@ import {
 	isLocalOnlyPath,
 	journaledChangeSource,
 	localSyncReplica,
+	mirrorBlobs,
 	PAGE,
 	type SyncReplica,
-	type SyncState,
-	uploadBlobs
+	type SyncState
 } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { parseVersion } from './sync-wire'
@@ -148,7 +148,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * Push local path-changes since pushCursor to the remote.
 	 *
 	 * CLIENT<->SERVER protocol (the server can't be fetched from, so content goes
-	 * up first): `uploadBlobs` does `PUT /fs/blob/:hash` for each new hash, THEN
+	 * up first): `mirrorBlobs` does `PUT /fs/blob/:hash` for each new hash, THEN
 	 * `applyPathChanges` does `POST /fs/path/changes`; the server verifies each
 	 * hash exists before accepting the put. `excludeLocalSource: REMOTE_SOURCE`
 	 * skips changes the sync layer itself applied from a pull. Returns the new
@@ -162,7 +162,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// An orphaned put (content missing on BOTH sides) can't be uploaded or accepted
 		// by the server; drop just those from the batch so one dead reference can't wedge
 		// the whole push. The cursor still advances past them (the bytes are gone).
-		const orphaned = await uploadBlobs(changes, localReplica, remoteReplica)
+		// `mirrorBlobs` also repairs the LOCAL copy from the remote when local lost a hash
+		// the remote still holds — otherwise the metadata converges while eager local
+		// reads stay broken `ENOENT: blob` (the anti-entropy pass then skips the agreed path).
+		const orphaned = await mirrorBlobs(changes, localReplica, remoteReplica)
 		const applicable = orphaned.length ? changes.filter((c) => !orphaned.includes(c)) : changes
 		if (orphaned.length)
 			console.warn(
@@ -420,7 +423,13 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			// off when antiEntropyEvery === 0).
 			if (antiEntropyEvery > 0 && ++antiEntropyCycle % antiEntropyEvery === 0) {
 				try {
-					await reconcile(localReplica, remoteReplica, { source: REMOTE_SOURCE })
+					const { generation: scanGeneration } = await reconcile(localReplica, remoteReplica, {
+						source: REMOTE_SOURCE
+					})
+					// The scan echoes the server's live generation; a reset observed here gets the
+					// SAME discard + re-bootstrap as pull/bootstrap, so a mixed-lineage tree can't
+					// be reported as synced (and later wiped, losing interim edits).
+					await checkMidSessionReset(scanGeneration)
 				} catch (e) {
 					console.error('anti-entropy reconcile failed', e)
 				}

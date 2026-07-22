@@ -443,6 +443,27 @@ export async function uploadBlobs(
 	return orphaned
 }
 
+/**
+ * Push-side blob sync: ensure BOTH replicas hold each regular-file put's blob, so
+ * a converged path is readable on EITHER side afterwards. The `target` needs it
+ * for its own apply; the `source` needs it for eager local reads — a one-way
+ * `uploadBlobs` leaves the source unreadable when it lost a hash the target still
+ * holds (its metadata converges, so no later pass reruns the repair). Copies from
+ * whichever side already has it; returns the puts absent from BOTH (orphaned refs
+ * the caller must drop). Pull keeps using one-way `uploadBlobs`: its apply hydrates
+ * the local side (eager) or defers (lazy), so mirroring there would break laziness.
+ */
+export async function mirrorBlobs(
+	changes: PathChange[],
+	source: BlobStore,
+	target: BlobStore
+): Promise<PathChange[]> {
+	const orphaned = await uploadBlobs(changes, source, target) // ensure target (from source)
+	const present = orphaned.length ? changes.filter((c) => !orphaned.includes(c)) : changes
+	await uploadBlobs(present, target, source) // repair source (each present put has a target copy)
+	return orphaned
+}
+
 // ── Path-keyed sync state + tombstones (engine-internal, under /.state/sync) ──
 
 /**
