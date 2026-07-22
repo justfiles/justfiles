@@ -76,8 +76,11 @@ const pixel = v.object({ x: coord, y: coord, i: idx })
 // this factor, so it only names the file here.
 const scale = v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(32))
 
-// Exports land in the app's per-app volume (/data/<id>), matching paint's /Paint.
-const SAVE_DIR = '/Pixel'
+// Exports land in the shared /pictures folder (a path-prefix volume scope), so
+// they show up in the Files app — a per-app chroot (scopes: []) would be private
+// and invisible there. The app is chrooted AT /pictures, so it writes a bare
+// filename (`/<name>` → /pictures/<name>); PICTURES is the real prefix we surface.
+const PICTURES = '/pictures'
 
 const timestamp = (): string => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
 
@@ -95,7 +98,7 @@ const withGrid = (state: PixelState, grid: string[]): PixelState => ({
 
 export const app = defineApp({
 	init: initialState,
-	capabilities: { volume: volume({ scopes: [] }) },
+	capabilities: { volume: volume({ scopes: [PICTURES] }) },
 	update: (t) => ({
 		// Drawing — batch-first so the agent (and a committed human stroke) places
 		// many pixels per dispatch, keeping the /state write count low.
@@ -262,15 +265,15 @@ export const app = defineApp({
 				const safe = filename?.replace(/[^\w.-]/g, '_')
 				const suffix = scale > 1 ? `@${scale}x` : ''
 				const name = safe || `pixel-${s.doc.width}x${s.doc.height}${suffix}-${timestamp()}.png`
-				const path = `${SAVE_DIR}/${name}`
 				return [
-					{ ...s, lastSavedPath: path, lastError: null },
-					t.cmd('volume', 'writeFile', path, base64ToBytes(pngBase64)).to('exported')
+					{ ...s, lastSavedPath: `${PICTURES}/${name}`, lastError: null },
+					// Chroot-relative: the /pictures scope maps `/<name>` → /pictures/<name>.
+					t.cmd('volume', 'writeFile', `/${name}`, base64ToBytes(pngBase64)).to('exported')
 				]
 			},
 			{
 				description:
-					'Export the artwork as a PNG into /Pixel/. The GUI rasterizes grid+palette at the integer scale (native = 1; index 0 stays transparent) and supplies the PNG bytes as pngBase64; scale only shapes the filename.',
+					'Export the artwork as a PNG into /pictures/ (visible in the Files app). The GUI rasterizes grid+palette at the integer scale (native = 1; index 0 stays transparent) and supplies the PNG bytes as pngBase64; scale only shapes the filename.',
 				examples: [{ params: { scale: 8, pngBase64: 'iVBORw0KGgo=' } }]
 			}
 		),

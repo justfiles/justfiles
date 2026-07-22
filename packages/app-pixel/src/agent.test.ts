@@ -156,7 +156,7 @@ describe('a human undo folds in the agent edits (#216 feature-mapping #1c)', () 
 	})
 })
 
-describe('exportPng writes a PNG to the app volume (#227)', () => {
+describe('exportPng writes a PNG to /pictures (#227)', () => {
 	const PNG =
 		'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+P+/HgAFhAJ/wlseKgAAAABJRU5ErkJggg=='
 
@@ -166,10 +166,11 @@ describe('exportPng writes a PNG to the app volume (#227)', () => {
 			{ state: initialState }
 		)
 		const next = out.state as PixelState
-		// The filename records the native dimensions + the integer scale.
-		expect(next.lastSavedPath).toMatch(/^\/Pixel\/pixel-16x16@8x-.*\.png$/)
+		// Shown to the user as the Files-visible /pictures path (dimensions + scale).
+		expect(next.lastSavedPath).toMatch(/^\/pictures\/pixel-16x16@8x-.*\.png$/)
 		expect(next.lastError).toBeNull()
-		// The bytes ride out as a volume.writeFile command to that same path.
+		// The bytes ride out as a volume.writeFile command. The app is chrooted at
+		// /pictures, so the write path is the bare filename (→ /pictures/<name>).
 		expect(out.command).toMatchObject({
 			kind: 'capability',
 			capability: 'volume',
@@ -177,7 +178,7 @@ describe('exportPng writes a PNG to the app volume (#227)', () => {
 			to: 'exported'
 		})
 		const cmd = out.command as { args: readonly unknown[] }
-		expect(cmd.args[0]).toBe(next.lastSavedPath)
+		expect(cmd.args[0]).toBe(next.lastSavedPath?.replace('/pictures', ''))
 		expect(cmd.args[1]).toBeInstanceOf(Uint8Array)
 	})
 
@@ -186,7 +187,7 @@ describe('exportPng writes a PNG to the app volume (#227)', () => {
 			{ type: 'exportPng', params: { scale: 1, pngBase64: PNG }, actor: 'agent' },
 			{ state: initialState }
 		)
-		expect((out.state as PixelState).lastSavedPath).toMatch(/^\/Pixel\/pixel-16x16-.*\.png$/)
+		expect((out.state as PixelState).lastSavedPath).toMatch(/^\/pictures\/pixel-16x16-.*\.png$/)
 	})
 
 	it('rejects a non-integer scale (tight schema)', async () => {
