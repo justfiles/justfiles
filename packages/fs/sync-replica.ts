@@ -264,6 +264,12 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 		if (!journal) throw new Error('backend exposes no path journal (caps.journal)')
 		return journal
 	}
+	// The coalesced snapshot for the scan currently being paged, keyed by its frozen
+	// head. `snapshotPutsUpTo` is O(journal), so recomputing it for every page turns
+	// a P-path scan into O(journal * ceil(P/PAGE)); memoising it per head makes the
+	// whole paged scan O(journal + P). Held only for the duration of one scan (dropped
+	// when the last page is served, or replaced when a new head is scanned).
+	let scan: { head: number; snapshot: PathChange[] } | null = null
 	return {
 		async pathDeltas(cursor, opts) {
 			const journal = requireJournal()
@@ -302,10 +308,16 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 				head = String(await journal.head())
 				offset = 0
 			}
-			const snapshot = await snapshotPutsUpTo(journal, Number(head))
+			const headNum = Number(head)
+			// Materialise the coalesced snapshot ONCE per scan (see `scan` above) instead of
+			// replaying the whole journal for each page.
+			const snapshot =
+				scan?.head === headNum ? scan.snapshot : await snapshotPutsUpTo(journal, headNum)
 			const changes = snapshot.slice(offset, offset + limit)
 			const nextOffset = offset + changes.length
 			const done = nextOffset >= snapshot.length
+			// Cache for the next page of this scan; release it once the scan completes.
+			scan = done ? null : { head: headNum, snapshot }
 			return { changes, next: done ? undefined : `${head}:${nextOffset}`, syncCursor: head, done }
 		}
 	}

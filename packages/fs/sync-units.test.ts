@@ -330,6 +330,43 @@ describe('journaledChangeSource.pathDeltas', () => {
 	})
 })
 
+describe('journaledChangeSource.pathScan (coalesce once per scan)', () => {
+	it('reads/coalesces the journal ONCE across a multi-page scan, not per page', async () => {
+		const rows: JournalRow[] = [
+			{ seq: 1, change: put('/a', '1', 'x') },
+			{ seq: 2, change: put('/b', '1', 'y') },
+			{ seq: 3, change: put('/c', '1', 'z') }
+		]
+		let readCalls = 0
+		const base = memStorage()
+		const journal: JournalStore = {
+			async append() {},
+			async readFrom(seq, limit) {
+				readCalls++
+				return rows.filter((r) => r.seq > seq).slice(0, limit)
+			},
+			async head() {
+				return rows.at(-1)?.seq ?? 0
+			},
+			async adoptAllAsLocal() {}
+		}
+		const cs = journaledChangeSource({ ...base, caps: { ...base.caps, journal } })
+
+		// Page all three paths one at a time (3 pages). Without the per-scan snapshot the
+		// journal would be replayed once PER PAGE (O(journal * pages)).
+		const seen: string[] = []
+		let page: string | undefined
+		do {
+			const res = await cs.pathScan(page, { limit: 1 })
+			for (const c of res.changes) seen.push(c.path)
+			page = res.done ? undefined : res.next
+		} while (page)
+
+		expect(seen.sort()).toEqual(['/a', '/b', '/c'])
+		expect(readCalls).toBe(1) // coalesced once for the whole scan, not per page
+	})
+})
+
 // ── backend seams: memStorage journal + pathApply ─────────────────────────────
 
 describe('memStorage caps.journal', () => {
