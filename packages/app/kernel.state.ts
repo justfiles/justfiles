@@ -27,6 +27,13 @@ export interface StateStore {
 	commit(appId: AppId, next: unknown): Promise<number>
 	// The committed version, 0 before the first commit (and after a boot).
 	seq(appId: AppId): number
+	// Drop the in-memory copy so the next `current` re-hydrates from fs. The owned
+	// model assumes the kernel is the SOLE writer of `/state`, so it caches forever;
+	// a host whose volume is ALSO written externally (frieren syncs an agent's
+	// server-side edit down to `/state/<id>.json` as a REMOTE_SOURCE write) calls
+	// this on that write so the next read reflects the file. No fs I/O — pure
+	// invalidation; `seq` is left intact.
+	invalidate(appId: AppId): void
 	// Forget an app's persisted + in-memory state (uninstall). The seq counter is
 	// left intact, so a reinstall keeps the version monotonic for push consumers.
 	drop(appId: AppId): Promise<void>
@@ -36,7 +43,7 @@ export function stateStore(fs: Volume): StateStore {
 	// `.has()` distinguishes "not loaded" from "loaded, value undefined".
 	const states = new Map<AppId, unknown>()
 	const seqs = new Map<AppId, number>()
-	return { current, commit, seq, drop }
+	return { current, commit, seq, invalidate, drop }
 
 	async function load(appId: AppId): Promise<unknown> {
 		const statePath = `/state/${appId}.json`
@@ -69,6 +76,10 @@ export function stateStore(fs: Volume): StateStore {
 
 	function seq(appId: AppId): number {
 		return seqs.get(appId) ?? 0
+	}
+
+	function invalidate(appId: AppId): void {
+		states.delete(appId)
 	}
 
 	async function drop(appId: AppId): Promise<void> {

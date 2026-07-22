@@ -83,6 +83,13 @@ export interface Kernel {
 	// (later phases) wait on; the GUI never calls it.
 	settled: (appId: AppId, seq: number, opts?: { timeout?: number }) => Promise<unknown>
 	state: (appId: AppId) => Promise<unknown> // current persisted state, or the app initial state
+	// Re-hydrate an app's state from fs, discarding the cached copy. The state cache
+	// assumes the kernel is the sole writer of `/state`; a host whose volume is ALSO
+	// written outside the kernel (frieren syncs an agent's server-side edit down to
+	// `/state/<id>.json`) calls this on that remote write so the next `state()` — and
+	// any open GUI reading it — reflects the synced value instead of a stale cache.
+	// Queued per app, so it never lands between a dispatch's read and its commit.
+	reload: (appId: AppId) => Promise<void>
 	actions: (appId: AppId) => Promise<Record<string, ActionMeta>>
 	app: (appId: AppId) => Promise<InstalledApp> // manifest (entry paths) + read assets by path
 	list: () => Promise<AppManifest[]> // installed-app catalog for the host launcher (hidden ids omitted)
@@ -165,6 +172,7 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		dispatch,
 		settled,
 		state,
+		reload,
 		actions,
 		subscribe,
 		app,
@@ -435,6 +443,18 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		subs.ensure(appId)
 		const current = await states.current(appId)
 		return current === undefined ? await initialState(appId) : current
+	}
+
+	// Re-read `/state/<id>.json` after it was written OUTSIDE this kernel (a synced
+	// agent edit). Runs on the app's queue so the invalidation never interleaves a
+	// dispatch's read-modify-write (which would resurrect the stale value), then
+	// re-hydrates the cache so the caller's next `state()` reflects the file.
+	async function reload(appId: AppId): Promise<void> {
+		if (!(await store.has(appId))) return
+		await enqueue(appId, async () => {
+			states.invalidate(appId)
+			await states.current(appId)
+		})
 	}
 
 	async function initialState(appId: AppId): Promise<unknown> {
