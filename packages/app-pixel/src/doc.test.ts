@@ -72,6 +72,9 @@ describe('getPixel', () => {
 	})
 })
 
+const bytes = (text: string) => new TextEncoder().encode(text)
+const text = (b: Uint8Array) => new TextDecoder().decode(b)
+
 describe('encode / decode', () => {
 	it('round-trips a doc through bytes', () => {
 		const doc = newDoc(16)
@@ -80,8 +83,81 @@ describe('encode / decode', () => {
 		expect(back).toEqual(doc)
 	})
 
+	it('emits the section-keyword text format with a char→colour legend', () => {
+		const out = text(encode(newDoc(16)))
+		expect(out.startsWith('pixel 1\nsize 16 16\npalette\n')).toBe(true)
+		// legend maps the exact grid char to its colour — no base62 offset on disk
+		expect(out).toContain('\n0 #140c1c\n')
+		expect(out).toContain('\nf #deeed6\n')
+		expect(out).toContain('\ngrid\n')
+		// grid rows are raw ASCII-art (no JSON quoting/commas)
+		expect(out).toContain('\n................\n')
+	})
+
+	it('parses an LLM-style hand-written grid (size + legend + rows)', () => {
+		const doc = decode(
+			bytes(
+				[
+					'pixel 1',
+					'size 4 4',
+					'palette',
+					'6 #d04648',
+					'grid',
+					'....',
+					'.66.',
+					'.66.',
+					'....'
+				].join('\n')
+			)
+		)
+		expect(doc.width).toBe(4)
+		expect(doc.height).toBe(4)
+		expect(doc.grid).toEqual(['....', '.66.', '.66.', '....'])
+		// '6' is the 7th base62 char → palette index 7 → palette[6]
+		expect(getPixel(doc.grid, 1, 1)).toBe(charToIndex('6'))
+		expect(doc.palette[charToIndex('6') - 1]).toBe('#d04648')
+	})
+
+	it('ignores # comments and blank lines, and pads short/tall grids to size', () => {
+		const doc = decode(
+			bytes(
+				[
+					'# a heart, drawn by hand',
+					'pixel 1',
+					'',
+					'size 3 3',
+					'palette',
+					'# just one colour',
+					'0 #ffffff',
+					'',
+					'grid',
+					'0', // short row → padded to width 3
+					'000'
+					// only 2 rows given → padded to height 3
+				].join('\n')
+			)
+		)
+		expect(doc.width).toBe(3)
+		expect(doc.height).toBe(3)
+		expect(doc.grid).toEqual(['0..', '000', '...'])
+	})
+
+	it('defaults the palette to DB16 when no legend is given', () => {
+		const doc = decode(bytes(['pixel 1', 'grid', '..', '..'].join('\n')))
+		expect(doc.width).toBe(2)
+		expect(doc.height).toBe(2)
+		expect(doc.palette).toHaveLength(16)
+	})
+
+	it('clamps size past the hard max', () => {
+		const doc = decode(bytes(['pixel 1', 'size 999 999', 'grid'].join('\n')))
+		expect(doc.width).toBe(MAX_SIZE)
+		expect(doc.height).toBe(MAX_SIZE)
+	})
+
 	it('falls back to a fresh doc on garbage or a bad version', () => {
-		expect(decode(new TextEncoder().encode('not json'))).toEqual(newDoc())
+		expect(decode(bytes('not a pixel file'))).toEqual(newDoc())
+		expect(decode(bytes('pixel 2\nsize 16 16\ngrid'))).toEqual(newDoc())
 		const wrong = { type: 'justfiles/pixel', version: 2 } as unknown as PixelDoc
 		expect(decode(encode(wrong))).toEqual(newDoc())
 	})
