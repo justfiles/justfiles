@@ -110,25 +110,19 @@ export async function reconcile(
 		else if (l) toPush.push(l)
 	}
 
-	// Pull first (lazy-friendly: applyPathChanges installs a stub, no blob fetch).
-	// The apply re-guards with incomingWins vs the live local state, so a race can
-	// never let a loser through. Drop remote winners whose content is missing on
-	// BOTH sides: an EAGER local apply fetches each winner's blob via getBlobByHash,
-	// so one orphaned reference would throw `ENOENT: blob` and abort the pass BEFORE
-	// the push (pull runs first). Symmetric with push's uploadBlobs; here the
-	// transfer stays applyPathChanges' job (eager fetch / lazy stub), so we only
-	// detect — the lazy path still moves zero bytes.
+	// Pull: ensure the remote actually HOLDS each winner's blob before applying it
+	// locally — repairing the remote from our local copy when it lost a hash we still
+	// have (recoverable: content is hash-addressed, so the local bytes ARE the
+	// winner's bytes). A truly orphaned ref (missing on BOTH sides) is dropped, not
+	// thrown, so one dead reference can't make the eager local apply throw `ENOENT:
+	// blob` and abort the pass BEFORE the push (pull runs first). Symmetric with the
+	// push direction below; the common case (remote already has the blob) moves zero
+	// bytes, so the lazy path stays fetch-free. The apply re-guards with incomingWins
+	// vs the live local state, so a race can never let a loser through.
 	let pulled = 0
 	if (toPull.length) {
-		const applicable: PathChange[] = []
-		for (const c of toPull) {
-			const orphaned =
-				c.kind === 'put' &&
-				!!c.contentHash &&
-				!(await local.hasBlobByHash(c.contentHash)) &&
-				!(await remote.hasBlobByHash(c.contentHash))
-			if (!orphaned) applicable.push(c)
-		}
+		const orphaned = await uploadBlobs(toPull, local, remote)
+		const applicable = orphaned.length ? toPull.filter((c) => !orphaned.includes(c)) : toPull
 		if (applicable.length)
 			await local.applyPathChanges(applicable, (h) => remote.getBlobByHash(h), { source })
 		pulled = applicable.length

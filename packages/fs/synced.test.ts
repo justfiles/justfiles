@@ -754,4 +754,38 @@ describe('synced (orphaned-blob resilience)', () => {
 		expect(dec.decode(await vol.readFile('/good.txt'))).toBe('good') // pull did NOT wedge
 		expect(await vol.exists('/orphan.txt')).toBe(false) // orphan dropped, not applied
 	})
+
+	// The recoverable variant: the remote WINS a path but lost its blob, while the
+	// local store still holds that exact hash (shared by another path). The reconcile
+	// must repair the remote from the local copy — otherwise the path "converges" yet
+	// every remote read of it keeps failing `ENOENT: blob`, forever skipped.
+	it('repairs a remote winner from the local blob copy instead of leaving it unreadable on the remote', async () => {
+		const shared = enc.encode('shared-bytes')
+		const H = createHash('sha256').update(shared).digest('hex')
+
+		const remote = memStorage()
+		const rv = volume(remote)
+		// Remote WINS /x@5 referencing H, but its blob store never holds H (lost blob):
+		// create the path, then point its contentHash at H without storing the bytes.
+		await rv.writeFile('/x', enc.encode('placeholder'))
+		const st = await rv.stat('/x')
+		await remote.setMeta(st.ino, { contentHash: H }, { version: 5 })
+		expect(await remote.caps?.content?.hasByHash(H)).toBe(false)
+
+		// Local has the blob H (content is hash-addressed) but no /x path yet.
+		const local = memStorage()
+		await local.caps?.content?.putByHash(H, shared)
+		// Stale pull cursor => only the anti-entropy reconcile reaches /x.
+		await seedSyncState(local, { pullCursor: '999', pushCursor: '0' })
+
+		const vol = track(
+			await synced({ local, remote, interval: 99_999, antiEntropy: { everyCycles: 1 } })
+		)
+		await vol.flush()
+
+		// Local applied the winner from its copy AND the remote's blob was restored, so
+		// the path is genuinely readable on both sides.
+		expect(dec.decode(await vol.readFile('/x'))).toBe('shared-bytes')
+		expect(await remote.caps?.content?.hasByHash(H)).toBe(true) // remote repaired
+	})
 })
