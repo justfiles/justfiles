@@ -278,19 +278,20 @@ function formatTokens(n: number): string {
 	return `${(n / 1_000_000).toFixed(1)}M`
 }
 
-// AI + storage share one monthly window that rolls on the first UTC day of the next
-// month. Derive the human reset date from the 'YYYY-MM' window — no extra snapshot field.
-// `Date.UTC(y, m, 1)` reads the 1-based month as a 0-based index, so it lands on the first
-// of the FOLLOWING month (e.g. '2025-11' → Dec 1).
-function renewText(window: string): string {
-	const [y = NaN, m = NaN] = window.split('-').map(Number)
-	if (!Number.isFinite(y) || !Number.isFinite(m)) return ''
-	const reset = new Date(Date.UTC(y, m, 1)).toLocaleDateString(undefined, {
-		month: 'short',
-		day: 'numeric',
-		timeZone: 'UTC'
-	})
-	return `Renews ${reset} · `
+// Human "resets in …" prefix from a window's reset instant (ms epoch). null = an idle burst
+// window (nothing spent yet), so there's nothing to count down — render no prefix.
+function resetsInText(resetsAt: number | null): string {
+	if (resetsAt === null) return ''
+	const ms = resetsAt - Date.now()
+	if (ms <= 0) return ''
+	const mins = Math.round(ms / 60000)
+	if (mins < 60) return `Resets in ${mins}m · `
+	const hrs = Math.floor(mins / 60)
+	if (hrs < 24) {
+		const rem = mins % 60
+		return `Resets in ${hrs}h${rem ? ` ${rem}m` : ''} · `
+	}
+	return `Resets in ${Math.round(hrs / 24)}d · `
 }
 
 // AI headline: percent of the cap used (no dollars, per Claude Code / Codex), or
@@ -325,11 +326,18 @@ function UsagePanel({ state, client }: { state: SettingsState; client: Client<Se
 				<>
 					<span className="settings-tier-badge">{usage.tier} plan</span>
 					<Meter
-						title="AI usage"
-						resource={usage.ai}
-						value={aiHeadLabel(usage.ai)}
-						overHint="Limit reached — renews next month, or upgrade your plan."
-						sub={`${renewText(usage.window)}${formatTokens(usage.aiTokens)} tokens · ${usage.aiRequests} requests`}
+						title="5h limit"
+						resource={usage.aiBurst}
+						value={aiHeadLabel(usage.aiBurst)}
+						overHint="5h limit reached — it resets soon, or upgrade your plan."
+						sub={`${resetsInText(usage.aiBurst.resetsAt)}Short-term burst limit`}
+					/>
+					<Meter
+						title="Weekly limit"
+						resource={usage.aiWeekly}
+						value={aiHeadLabel(usage.aiWeekly)}
+						overHint="Weekly limit reached — it resets soon, or upgrade your plan."
+						sub={`${resetsInText(usage.aiWeekly.resetsAt)}${formatTokens(usage.aiTokens)} tokens · ${usage.aiRequests} requests`}
 					/>
 					<Meter
 						title="Storage"

@@ -1,13 +1,16 @@
 import type { KvStorage } from './integrations/storage.ts'
 import { MICROS_PER_USD, type UsageReport } from './usage.ts'
 
-// Free-vs-paid caps. A cap is a ceiling on exactly the two billable metrics the meter
-// produces: AI cost per monthly window, and deduped logical storage bytes. A tier is a
-// named cap — add entries to TIERS to introduce new tiers; the Limits SHAPE never changes,
-// so there is no data migration. `null` means unlimited (JSON-safe, unlike Infinity).
+// Free-vs-paid caps. A cap is a ceiling on the billable metrics the meter produces: AI cost
+// per window and deduped logical storage bytes. AI is capped in TWO windows, Claude-Code
+// style — a short rolling "burst" window and a fixed weekly window — so a user can't burn a
+// whole week's budget in one sitting. A tier is a named set of caps — add entries to TIERS to
+// introduce new tiers; the Limits SHAPE never changes, so there is no data migration. `null`
+// means unlimited (JSON-safe, unlike Infinity).
 
 export interface Limits {
-	aiCostUsd: number | null // max AI cost (USD) accrued per monthly window
+	aiBurstUsd: number | null // max AI cost (USD) per rolling burst window
+	aiWeeklyUsd: number | null // max AI cost (USD) per weekly window
 	storageBytes: number | null // max logical (deduped) storage bytes — point-in-time gauge
 }
 
@@ -17,12 +20,14 @@ const MB = 1024 * 1024
 const GB = 1024 * MB
 
 // ── The single source of truth for caps. Adjust numbers here; ships on deploy. ──
-// Free values are starting points to validate in practice, not final.
+// Free values are starting points to validate in practice, not final. The burst cap must
+// stay above one call's reservation (see callReserveMicros in worker/frieren.ts) or every
+// call is rejected.
 export const TIERS: Record<TierId, Limits> = {
-	free: { aiCostUsd: 1, storageBytes: 500 * MB },
-	pro: { aiCostUsd: 25, storageBytes: 25 * GB },
+	free: { aiBurstUsd: 0.35, aiWeeklyUsd: 1, storageBytes: 500 * MB },
+	pro: { aiBurstUsd: 2, aiWeeklyUsd: 6, storageBytes: 25 * GB },
 	// No caps. Not assigned by billing — reserved for a local-dev override (see readTier).
-	unlimited: { aiCostUsd: null, storageBytes: null }
+	unlimited: { aiBurstUsd: null, aiWeeklyUsd: null, storageBytes: null }
 }
 
 export const DEFAULT_TIER: TierId = 'free'
@@ -55,6 +60,11 @@ export interface Quota {
 	fraction: number // used / limit → drives a UI progress bar; 0 when unlimited
 }
 
+// An AI window's quota plus when it resets (ms epoch; null = an idle burst window).
+export interface AiWindowQuota extends Quota {
+	resetsAt: number | null
+}
+
 function evalQuota(used: number, limit: number | null): Quota {
 	if (limit == null) return { used, limit: null, remaining: null, exceeded: false, fraction: 0 }
 	return {
@@ -66,16 +76,20 @@ function evalQuota(used: number, limit: number | null): Quota {
 	}
 }
 
-// The AI cap as micro-USD for the reserve gate (`null` = unlimited ⇒ no gating). The store
-// works in integer micros; USD only surfaces in the display quota below.
-export function aiLimitMicros(tier: TierId): number | null {
-	const usd = limitsFor(tier).aiCostUsd
-	return usd === null ? null : Math.round(usd * MICROS_PER_USD)
+// The AI caps as micro-USD for the reserve gate (`null` = unlimited ⇒ no gating on that
+// window). The store works in integer micros; USD only surfaces in the display quota below.
+export function aiLimitsMicros(tier: TierId): { burst: number | null; weekly: number | null } {
+	const l = limitsFor(tier)
+	return {
+		burst: l.aiBurstUsd === null ? null : Math.round(l.aiBurstUsd * MICROS_PER_USD),
+		weekly: l.aiWeeklyUsd === null ? null : Math.round(l.aiWeeklyUsd * MICROS_PER_USD)
+	}
 }
 
 export interface QuotaReport {
 	tier: TierId
-	ai: Quota
+	aiBurst: AiWindowQuota
+	aiWeekly: AiWindowQuota
 	storage: Quota
 }
 
@@ -83,7 +97,14 @@ export function evaluate(usage: UsageReport, tier: TierId): QuotaReport {
 	const limits = limitsFor(tier)
 	return {
 		tier,
-		ai: evalQuota(usage.ai.costUsd, limits.aiCostUsd),
+		aiBurst: {
+			...evalQuota(usage.ai.burst.costUsd, limits.aiBurstUsd),
+			resetsAt: usage.ai.burst.resetsAt
+		},
+		aiWeekly: {
+			...evalQuota(usage.ai.weekly.costUsd, limits.aiWeeklyUsd),
+			resetsAt: usage.ai.weekly.resetsAt
+		},
 		storage: evalQuota(usage.storage.logicalBytes, limits.storageBytes)
 	}
 }
