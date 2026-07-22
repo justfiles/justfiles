@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import type { KvStorage } from './integrations/storage.ts'
-import { aiLimitMicros, DEFAULT_TIER, evaluate, readTier, setTier, TIERS } from './quota.ts'
+import { aiLimitsMicros, DEFAULT_TIER, evaluate, readTier, setTier, TIERS } from './quota.ts'
 import type { AiUsage, StorageUsage, UsageReport } from './usage.ts'
+
+const MB = 1024 * 1024
+const GB = 1024 * MB
 
 function memKv(): KvStorage {
 	const map = new Map<string, unknown>()
@@ -21,13 +24,13 @@ function memKv(): KvStorage {
 	}
 }
 
-function ai(costUsd: number): AiUsage {
+function ai(burstUsd: number, weeklyUsd: number): AiUsage {
 	return {
-		window: '2025-01',
-		costUsd,
+		burst: { costUsd: burstUsd, resetsAt: 1000 },
+		weekly: { costUsd: weeklyUsd, resetsAt: 2000 },
 		totalTokens: 0,
 		requests: 0,
-		lifetimeCostUsd: costUsd,
+		lifetimeCostUsd: weeklyUsd,
 		lifetimeRequests: 0
 	}
 }
@@ -36,43 +39,72 @@ function storage(logicalBytes: number): StorageUsage {
 	return { logicalBytes, blobCount: 0, inlineBytes: 0, r2Bytes: 0, physicalBytes: 0 }
 }
 
-function report(costUsd: number, logicalBytes: number): UsageReport {
-	return { ai: ai(costUsd), storage: storage(logicalBytes) }
+function report(burstUsd: number, weeklyUsd: number, logicalBytes: number): UsageReport {
+	return { ai: ai(burstUsd, weeklyUsd), storage: storage(logicalBytes) }
 }
 
 describe('evaluate', () => {
-	test('reports headroom under the free cap', () => {
-		const q = evaluate(report(0.4, 100 * 1024 * 1024), 'free')
+	test('reports headroom under the free caps and carries reset instants', () => {
+		const q = evaluate(report(0.1, 0.4, 100 * MB), 'free')
 		expect(q.tier).toBe('free')
-		expect(q.ai.exceeded).toBe(false)
-		expect(q.ai.remaining).toBeCloseTo((TIERS.free.aiCostUsd ?? 0) - 0.4)
-		expect(q.ai.fraction).toBeCloseTo(0.4 / (TIERS.free.aiCostUsd ?? 0))
+		expect(q.aiBurst.exceeded).toBe(false)
+		expect(q.aiWeekly.exceeded).toBe(false)
+		expect(q.aiBurst.remaining).toBeCloseTo((TIERS.free.aiBurstUsd ?? 0) - 0.1)
+		expect(q.aiWeekly.fraction).toBeCloseTo(0.4 / (TIERS.free.aiWeeklyUsd ?? 0))
+		expect(q.aiBurst.resetsAt).toBe(1000)
+		expect(q.aiWeekly.resetsAt).toBe(2000)
 		expect(q.storage.exceeded).toBe(false)
 	})
 
-	test('flags exceeded and clamps remaining to zero at/over the cap', () => {
+	test('flags exceeded and clamps remaining to zero at/over a cap', () => {
 		const q = evaluate(
-			report(TIERS.free.aiCostUsd ?? 0, (TIERS.free.storageBytes ?? 0) + 1),
+			report(
+				TIERS.free.aiBurstUsd ?? 0,
+				TIERS.free.aiWeeklyUsd ?? 0,
+				(TIERS.free.storageBytes ?? 0) + 1
+			),
 			'free'
 		)
-		expect(q.ai.exceeded).toBe(true)
-		expect(q.ai.remaining).toBe(0)
+		expect(q.aiBurst.exceeded).toBe(true)
+		expect(q.aiBurst.remaining).toBe(0)
+		expect(q.aiWeekly.exceeded).toBe(true)
+		expect(q.aiWeekly.remaining).toBe(0)
 		expect(q.storage.exceeded).toBe(true)
 		expect(q.storage.remaining).toBe(0)
 	})
 
 	test('the pro tier grants more headroom than free for the same usage', () => {
-		const usage = report(5, 5 * 1024 * 1024 * 1024)
-		expect(evaluate(usage, 'free').ai.exceeded).toBe(true)
-		expect(evaluate(usage, 'pro').ai.exceeded).toBe(false)
+		// burst 1 and weekly 4 clear the free caps but sit under pro's; 5 GB is over free, under pro.
+		const usage = report(1, 4, 5 * GB)
+		expect(evaluate(usage, 'free').aiBurst.exceeded).toBe(true)
+		expect(evaluate(usage, 'free').aiWeekly.exceeded).toBe(true)
+		expect(evaluate(usage, 'pro').aiBurst.exceeded).toBe(false)
+		expect(evaluate(usage, 'pro').aiWeekly.exceeded).toBe(false)
 		expect(evaluate(usage, 'pro').storage.exceeded).toBe(false)
+	})
+
+	test('unlimited caps never gate', () => {
+		const q = evaluate(report(999, 999, 999 * GB), 'unlimited')
+		expect(q.aiBurst.exceeded).toBe(false)
+		expect(q.aiWeekly.exceeded).toBe(false)
+		expect(q.storage.exceeded).toBe(false)
+		expect(q.aiBurst.remaining).toBeNull()
 	})
 })
 
-describe('aiLimitMicros', () => {
-	test('converts the tier cap to micro-USD for the reserve gate', () => {
-		expect(aiLimitMicros('free')).toBe(Math.round((TIERS.free.aiCostUsd ?? 0) * 1_000_000))
-		expect(aiLimitMicros('pro')).toBe(Math.round((TIERS.pro.aiCostUsd ?? 0) * 1_000_000))
+describe('aiLimitsMicros', () => {
+	test('converts each tier cap to micro-USD for the reserve gate', () => {
+		expect(aiLimitsMicros('free')).toEqual({
+			burst: Math.round((TIERS.free.aiBurstUsd ?? 0) * 1_000_000),
+			weekly: Math.round((TIERS.free.aiWeeklyUsd ?? 0) * 1_000_000)
+		})
+		expect(aiLimitsMicros('unlimited')).toEqual({ burst: null, weekly: null })
+	})
+
+	test('the free burst cap exceeds a single call reservation, so calls can be admitted', () => {
+		// callReserveMicros for gpt-5.4-mini is ~$0.066 (40k input × 0.75 + 8k output × 4.5).
+		// The burst cap must stay above it or every call is rejected.
+		expect(aiLimitsMicros('free').burst).toBeGreaterThan(70_000)
 	})
 })
 

@@ -15,18 +15,24 @@ export interface UsageResource {
 	fraction: number
 }
 
+// An AI usage window with its reset instant. `resetsAt` (ms epoch) is when the window's usage
+// clears; null means an idle burst window (nothing spent, so no active window to reset).
+export interface UsageWindow extends UsageResource {
+	resetsAt: number | null
+}
+
 export interface UsageSnapshot {
 	// The plan the caps come from (e.g. 'free', 'pro').
 	tier: string
-	// AI inference cost (USD) accrued in the current monthly window.
-	ai: UsageResource
+	// AI cost (USD) in the short rolling "burst" window — anti-burst throttle.
+	aiBurst: UsageWindow
+	// AI cost (USD) in the fixed weekly window — the real budget ceiling.
+	aiWeekly: UsageWindow
 	// Logical (deduped) storage bytes — a point-in-time gauge.
 	storage: UsageResource
-	// Extra AI detail for display (not capped): tokens + provider requests this window.
+	// Extra AI detail for display (not capped): tokens + provider requests this weekly window.
 	aiTokens: number
 	aiRequests: number
-	// The current AI window, 'YYYY-MM'.
-	window: string
 }
 
 export interface UsageCapability {

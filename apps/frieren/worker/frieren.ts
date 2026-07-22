@@ -56,9 +56,10 @@ import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
-import { aiLimitMicros, evaluate, readTier } from './quota.ts'
+import { aiLimitsMicros, evaluate, readTier } from './quota.ts'
 import {
 	ensureUsageSchema,
+	type ReserveHandle,
 	readUsage,
 	release,
 	reserve,
@@ -131,13 +132,19 @@ const DEV_TIER_OVERRIDE = import.meta.env.DEV ? 'unlimited' : undefined
 // image spend against the cap and is reconciled to the actual cost on settle.
 const IMAGE_RESERVE_MICROS = 200_000 // ~$0.20
 
-// Worst-case cost (micro-USD) of one text call on `model`: full context as input plus the
-// model's max output. Reserved up front so the cap is a HARD bound even under concurrency
-// (actual ≤ this). micros = tokens × per-million price (USD/1e6 × 1e6 = the price number).
-// Zero for the local no-cost model.
-function worstCaseMicros(model: Model<Api>): number {
-	const input = (model.contextWindow ?? 0) * (model.cost?.input ?? 0)
-	const output = (model.maxTokens ?? 0) * (model.cost?.output ?? 0)
+// A REALISTIC per-call reservation, not the model's absolute worst case. Reserving full
+// context + max output (e.g. ~$0.88 on gpt-5.4-mini) would exceed a small burst cap and reject
+// every call. Instead we bound a plausible single call; settle reconciles to actual. The cap
+// is a hard bound up to this estimate and soft only if a single call exceeds it — acceptable
+// since a user's turns are effectively serialized in their DO.
+const RESERVE_INPUT_TOKENS = 40_000
+const RESERVE_OUTPUT_TOKENS = 8_000
+
+// Reservation (micro-USD) for one text call on `model`. micros = tokens × per-million price
+// (USD/1e6 × 1e6 = the price number). Zero for the local no-cost model.
+function callReserveMicros(model: Model<Api>): number {
+	const input = RESERVE_INPUT_TOKENS * (model.cost?.input ?? 0)
+	const output = RESERVE_OUTPUT_TOKENS * (model.cost?.output ?? 0)
 	return Math.ceil(input + output)
 }
 
@@ -228,18 +235,21 @@ export class Frieren extends DurableObject<Env> {
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
-	// Reserve budget for one platform-key call, returning the reservation's WINDOW (needed to
-	// settle/release it even across a month rollover). Reserves the model's WORST-CASE cost, so
-	// actual ≤ reserved ⇒ the cap is a hard bound under any concurrency. Unlimited tiers use a
-	// sentinel huge limit so the same path always reserves (⇒ rolls the month, yields a window)
-	// but never rejects. Throws when the cap is spent.
-	private async reserveOrThrow(estMicros: number): Promise<string> {
-		const limit =
-			aiLimitMicros(await readTier(this.ctx.storage, DEV_TIER_OVERRIDE)) ?? Number.MAX_SAFE_INTEGER
-		const window = await reserve(this.db, estMicros, limit)
-		if (window === null)
-			throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
-		return window
+	// Reserve budget for one platform-key call, returning the reservation's HANDLE (needed to
+	// settle/release it even across a window roll). Gates on BOTH the burst and weekly caps.
+	// Unlimited tiers use a sentinel huge limit so the same path always reserves (⇒ rolls the
+	// windows, yields a handle) but never rejects. Throws when either cap is spent.
+	private async reserveOrThrow(estMicros: number): Promise<ReserveHandle> {
+		const limits = aiLimitsMicros(await readTier(this.ctx.storage, DEV_TIER_OVERRIDE))
+		const handle = await reserve(
+			this.db,
+			Date.now(),
+			estMicros,
+			limits.burst ?? Number.MAX_SAFE_INTEGER,
+			limits.weekly ?? Number.MAX_SAFE_INTEGER
+		)
+		if (handle === null) throw new Error('AI limit reached — it resets soon, or upgrade your plan.')
+		return handle
 	}
 
 	// The platform backend, reserve-gated + metered. The store owns concurrency correctness
@@ -247,37 +257,37 @@ export class Frieren extends DurableObject<Env> {
 	// it finishes — no serialization. Every text call (agent turns, soul gen, the app `ai`
 	// capability) goes through here; the terminal message (stream done/error, or complete)
 	// settles the per-call reservation, and a throw before any usage frees it. `est` (the
-	// model's worst-case cost) is constant per backend. Only the platform backend is wrapped —
-	// BYO backends are built plain, so they're never metered or capped.
+	// model's per-call reservation) is constant per backend. Only the platform backend is
+	// wrapped — BYO backends are built plain, so they're never metered or capped.
 	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
-		const est = worstCaseMicros(model)
+		const est = callReserveMicros(model)
 		const backend = modelsBackend(models, model)
 		return {
 			...backend,
 			streamFn: async (m, context, options) => {
-				const window = await this.reserveOrThrow(est)
+				const handle = await this.reserveOrThrow(est)
 				try {
 					const stream = await Promise.resolve(backend.streamFn(m, context, options))
 					// The terminal AssistantMessage (done OR error) carries usage — settle on it; a
 					// stream that never yields one frees the reservation instead.
 					stream.result().then(
-						(msg) => this.ctx.waitUntil(settle(this.db, window, est, msg.usage)),
-						() => this.ctx.waitUntil(release(this.db, window, est))
+						(msg) => this.ctx.waitUntil(settle(this.db, handle, est, msg.usage)),
+						() => this.ctx.waitUntil(release(this.db, handle, est))
 					)
 					return stream
 				} catch (err) {
-					this.ctx.waitUntil(release(this.db, window, est))
+					this.ctx.waitUntil(release(this.db, handle, est))
 					throw err
 				}
 			},
 			completeFn: async (m, context, options) => {
-				const window = await this.reserveOrThrow(est)
+				const handle = await this.reserveOrThrow(est)
 				try {
 					const message = await backend.completeFn(m, context, options)
-					this.ctx.waitUntil(settle(this.db, window, est, message.usage))
+					this.ctx.waitUntil(settle(this.db, handle, est, message.usage))
 					return message
 				} catch (err) {
-					this.ctx.waitUntil(release(this.db, window, est))
+					this.ctx.waitUntil(release(this.db, handle, est))
 					throw err
 				}
 			}
@@ -291,11 +301,11 @@ export class Frieren extends DurableObject<Env> {
 		const q = evaluate(report, await readTier(this.ctx.storage, DEV_TIER_OVERRIDE))
 		return {
 			tier: q.tier,
-			ai: q.ai,
+			aiBurst: q.aiBurst,
+			aiWeekly: q.aiWeekly,
 			storage: q.storage,
 			aiTokens: report.ai.totalTokens,
-			aiRequests: report.ai.requests,
-			window: report.ai.window
+			aiRequests: report.ai.requests
 		}
 	}
 
@@ -455,7 +465,7 @@ export class Frieren extends DurableObject<Env> {
 						// so reserve/settle explicitly. Reserve a conservative per-image upper bound
 						// (image cost isn't token-based, so we can't derive it from the model), and meter
 						// the actual usage even on a non-'stop' result — a failed image can still be billable.
-						const window = await this.reserveOrThrow(IMAGE_RESERVE_MICROS)
+						const handle = await this.reserveOrThrow(IMAGE_RESERVE_MICROS)
 						let held = true
 						try {
 							const res = await images.generateImages(imageModel, {
@@ -463,8 +473,8 @@ export class Frieren extends DurableObject<Env> {
 							})
 							// settle frees the reservation and counts actual; a usage-less failure just frees it.
 							if (res.usage)
-								this.ctx.waitUntil(settle(this.db, window, IMAGE_RESERVE_MICROS, res.usage))
-							else this.ctx.waitUntil(release(this.db, window, IMAGE_RESERVE_MICROS))
+								this.ctx.waitUntil(settle(this.db, handle, IMAGE_RESERVE_MICROS, res.usage))
+							else this.ctx.waitUntil(release(this.db, handle, IMAGE_RESERVE_MICROS))
 							held = false
 							if (res.stopReason !== 'stop')
 								throw new Error(res.errorMessage ?? 'image generation failed')
@@ -472,7 +482,7 @@ export class Frieren extends DurableObject<Env> {
 								b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
 							)
 						} catch (err) {
-							if (held) this.ctx.waitUntil(release(this.db, window, IMAGE_RESERVE_MICROS))
+							if (held) this.ctx.waitUntil(release(this.db, handle, IMAGE_RESERVE_MICROS))
 							throw err
 						}
 					}
