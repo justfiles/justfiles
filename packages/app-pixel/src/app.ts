@@ -9,7 +9,17 @@ import {
 	resizeGrid,
 	setPixels as setPixelsGrid
 } from './bitmap.ts'
-import { MAX_COLORS, MAX_SIZE, newDoc, type PixelDoc } from './doc.ts'
+import {
+	CHARS,
+	charToIndex,
+	decode,
+	encodeText,
+	MAX_COLORS,
+	MAX_SIZE,
+	newDoc,
+	type PixelDoc,
+	TRANSPARENT
+} from './doc.ts'
 
 // The six-tool set; `tool` is a persisted pointer so the GUI and the agent share
 // one active tool. Drawing itself flows through the batch actions below, so the
@@ -71,11 +81,71 @@ const dim = v.pipe(v.number(), v.integer(), v.minValue(1))
 const color = v.pipe(v.string(), v.regex(/^#[0-9a-fA-F]{6}$/))
 const tool = v.picklist(['pencil', 'eraser', 'fill', 'eyedropper', 'line', 'rect'] as const)
 const pixel = v.object({ x: coord, y: coord, i: idx })
+// A piped char-grid for `setGrid`: bounded so a hand-written blob can never grow
+// past a full 64×64 canvas plus its palette legend and headers.
+const gridText = v.pipe(v.string(), v.maxLength(16384))
 
 const withGrid = (state: PixelState, grid: string[]): PixelState => ({
 	...state,
 	doc: { ...state.doc, grid }
 })
+
+// True when the piped text is a whole `.pixel` document (first meaningful line is
+// `pixel <version>`), so `setGrid` replaces the canvas via `decode` instead of
+// stamping a patch — e.g. an edited `show` dump pasted back.
+const isFullDoc = (text: string): boolean => {
+	for (const raw of text.split(/\r?\n/)) {
+		const t = raw.trim()
+		if (t === '' || t.startsWith('#')) continue
+		return /^pixel(\s|$)/.test(t)
+	}
+	return false
+}
+
+// Parse a stamped patch into the {x,y,i} the batch `setPixels` replays, offset to
+// (ox,oy). Per cell: a base62 char or '.' draws (charToIndex maps '.'→0/erase); a
+// SPACE leaves the existing pixel untouched (skip); anything else is skipped too.
+// Blank lines and '# comment' lines are ignored (they don't advance the row), so
+// only content rows consume a y — short rows just skip their missing right cells.
+const patchPixels = (
+	text: string,
+	ox: number,
+	oy: number
+): { x: number; y: number; i: number }[] => {
+	const pixels: { x: number; y: number; i: number }[] = []
+	let r = 0
+	for (const line of text.split(/\r?\n/)) {
+		if (line.trim() === '' || line.trimStart().startsWith('#')) continue
+		for (let c = 0; c < line.length; c++) {
+			const ch = line[c]
+			if (ch === undefined || ch === ' ') continue
+			if (ch === TRANSPARENT || CHARS.includes(ch))
+				pixels.push({ x: ox + c, y: oy + r, i: charToIndex(ch) })
+		}
+		r++
+	}
+	return pixels
+}
+
+// Overlay 0-based column/row numbers on a `.pixel` dump (display only, for the
+// agent to target x,y). Row indices go in a left gutter; a tens line appears only
+// past column 9. The annotated grid is NOT parseable — never pipe it back.
+const rulerize = (text: string, w: number, h: number): string => {
+	const lines = text.split('\n')
+	const gi = lines.indexOf('grid')
+	if (gi === -1) return text
+	const g = String(Math.max(0, h - 1)).length
+	const pad = ' '.repeat(g + 1)
+	const col = (pick: (x: number) => string) =>
+		pad + Array.from({ length: w }, (_, x) => pick(x)).join('')
+	const header = [
+		...lines.slice(0, gi + 1),
+		...(w > 10 ? [col((x) => (x < 10 ? ' ' : String(Math.floor(x / 10) % 10)))] : []),
+		col((x) => String(x % 10))
+	]
+	const rows = lines.slice(gi + 1, gi + 1 + h).map((row, y) => `${String(y).padStart(g)} ${row}`)
+	return [...header, ...rows, ...lines.slice(gi + 1 + h)].join('\n')
+}
 
 export const app = defineApp({
 	init: initialState,
@@ -146,6 +216,26 @@ export const app = defineApp({
 			description: 'Erase the whole canvas to transparent (every pixel back to index 0).',
 			examples: [{ params: {} }]
 		}),
+		// Draw from a char grid piped in via stdin — the ASCII-art path, the write
+		// half of the `show` read format. Route the whole doc through `decode` when
+		// it's a full `.pixel` dump; otherwise stamp the rows as a patch.
+		setGrid: t.on(
+			v.object({ grid: gridText, x: v.optional(coord), y: v.optional(coord) }),
+			(s, { grid, x, y }) => {
+				if (isFullDoc(grid)) {
+					const doc = decode(new TextEncoder().encode(grid))
+					return { ...s, colorIndex: Math.min(s.colorIndex ?? 0, doc.palette.length), doc }
+				}
+				return withGrid(s, setPixelsGrid(s.doc.grid, patchPixels(grid, x ?? 0, y ?? 0)))
+			},
+			{
+				description:
+					"Draw by piping a character grid — sketch the picture as ASCII rows and pipe it into the `grid` param via stdin: `app run --id <id> setGrid --stdin grid <<'EOF' … EOF` (or `printf ... | app run … setGrid --stdin grid`). It's the same char-per-pixel format you read in `show`/state.doc.grid. Per cell: '0'-'9','a'-'z','A'-'Z' set that palette index (1..62); '.' sets transparent (erases the cell); a SPACE leaves the existing pixel untouched (skip); blank lines and '# comment' lines are ignored. Pass x,y to stamp the grid with that top-left origin (default 0,0) and edit a small region without redrawing the whole canvas — the patch is clipped to the canvas, and short rows skip their missing right-hand cells. If the piped text is a full .pixel document (its first line is `pixel <version>`), it REPLACES the whole canvas and palette instead (x,y ignored) — e.g. paste back an edited `show` dump. A single row with no spaces can also go inline as grid=<row>.",
+				// One 2-row patch stamped at (6,8): no spaces/newlines, so it also shows the
+				// runnable inline form; the multi-line heredoc form is in the description.
+				examples: [{ params: { grid: '.66.', x: 6, y: 8 } }]
+			}
+		),
 		// Colour / palette.
 		setColorIndex: t.on(
 			v.object({ i: idx }),
@@ -230,6 +320,20 @@ export const app = defineApp({
 			description:
 				"Select the GUI's active tool: pencil | eraser | fill | eyedropper | line | rect. The agent normally draws via the batch actions instead.",
 			examples: [{ params: { tool: 'pencil' } }]
+		})
+	}),
+	procedures: (p) => ({
+		// The agent's canvas view: the same `.pixel` text `setGrid` accepts, so the
+		// read/write formats match. Pure read — only touches `app.state`.
+		show: p.procedure({
+			description:
+				'Show the canvas as .pixel text — the palette legend plus the char grid, exactly the format setGrid accepts, so you can read it, edit it, and pipe it back. Your best way to SEE the current picture (more digestible than raw state). Pass ruler=true to overlay 0-based column/row numbers so you can target x,y for a setGrid patch — the ruler view is for READING only; never pipe it back into setGrid. Default: no ruler.',
+			schema: v.object({ ruler: v.optional(v.boolean()) }),
+			run({ ruler }, app) {
+				const { doc } = app.state
+				const text = encodeText(doc)
+				return ruler ? rulerize(text, doc.width, doc.height) : text
+			}
 		})
 	})
 })
