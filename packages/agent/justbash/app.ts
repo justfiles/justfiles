@@ -1,4 +1,4 @@
-import type { ActionMeta, AppController, AppInspection } from '@justfiles/app'
+import type { ActionMeta, AppController, AppInspection, AppSummary } from '@justfiles/app'
 import type { ExecResult } from 'just-bash'
 import type { ShellCommand } from './index.ts'
 
@@ -14,7 +14,7 @@ export function createAppCommand(controller: AppController): ShellCommand {
 	return {
 		name: 'app',
 		summary:
-			"Drive the user's apps — your MAIN way to get things done. `app list` to see them, `app inspect <id>` for an app's actions and state, `app run --id <id> <action> key=value` to act, `app launch <id>` to open it. Pipe long/multi-line text into a param with `--stdin <key>` (heredoc or `|`); add `--raw` to emit an action's result verbatim (so a text result pipes onward). Prefer this over editing files or writing scripts.",
+			"Drive the user's apps — your MAIN way to get things done. `app list` to see them, `app inspect <id>` for an app's actions and state, `app run --id <id> <action> key=value` to act, `app launch <id>` to open it. Output is plain text you can pipe like any shell tool (a procedure's result prints verbatim); pipe long/multi-line text INTO a param with `--stdin <key>` (heredoc or `|`). Prefer this over editing files or writing scripts.",
 		// just-bash hands `execute` the argv after the command name (`app list` →
 		// ['list']) plus a ctx carrying stdin, exactly the shape the dispatch logic expects.
 		execute: (argv, ctx) => run(controller, argv, decodeStdin(ctx.stdin))
@@ -50,41 +50,42 @@ export const APPS_PROMPT = [
 async function run(controller: AppController, argv: string[], stdin: string): Promise<ExecResult> {
 	const [cmd = 'help', ...rest] = argv
 	try {
-		if (cmd === 'help' || cmd === '--help' || cmd === '-h') return ok(help())
-		if (cmd === 'list') return ok({ ok: true, apps: await controller.list() })
+		if (cmd === 'help' || cmd === '--help' || cmd === '-h') return out(help())
+		if (cmd === 'list') return out((await controller.list()).map(appLine).join('\n'))
 		if (cmd === 'launch') {
 			const id = rest[0]
-			if (!id) return fail('BAD_USAGE', 'missing app id', help())
-			return ok({ ok: true, current: await controller.launch(id) })
+			if (!id) return fail('missing app id', help())
+			await controller.launch(id)
+			return out(`launched ${id}`)
 		}
 		if (cmd === 'close') {
 			const { id } = parseTarget(rest)
 			await controller.close(id)
-			return ok({ ok: true })
+			return out(id ? `closed ${id}` : 'closed')
 		}
 		if (cmd === 'current') {
 			const current = await controller.current()
-			if (!current) return fail('NO_CURRENT_APP', 'no current app', help())
-			return ok({ ok: true, current })
+			if (!current) return fail('no current app; use `app launch <id>` or `app run --id <id> ...`')
+			return out(appLine(current))
 		}
 		if (cmd === 'inspect') {
 			const { id } = parseTarget(rest)
-			return ok({ ok: true, app: await inspectTarget(controller, id) })
+			return out(renderApp(await inspectTarget(controller, id)))
 		}
 		if (cmd === 'state') {
 			const { id } = parseTarget(rest)
 			const app = await target(controller, id)
-			return ok({ ok: true, appId: app.id, state: await controller.state(app.id) })
+			return out(json(await controller.state(app.id)))
 		}
 		if (cmd === 'actions') {
 			const { id } = parseTarget(rest)
 			const app = await inspectTarget(controller, id)
-			return ok({ ok: true, appId: app.id, actions: formatActions(app.id, app.actions) })
+			return out(renderActions(app.id, app.actions))
 		}
 		if (cmd === 'run') return await runAction(controller, rest, stdin)
-		return fail('BAD_USAGE', `unknown app command: ${cmd}`, help())
+		return fail(`unknown app command: ${cmd}`, help())
 	} catch (error) {
-		return fail('APP_ERROR', error instanceof Error ? error.message : String(error), help())
+		return fail(msg(error))
 	}
 }
 
@@ -93,50 +94,33 @@ async function runAction(
 	argv: string[],
 	stdin: string
 ): Promise<ExecResult> {
-	// `--raw` emits the action's result verbatim instead of the JSON envelope, so a
-	// string result (a `show` `.pixel` dump) pipes straight into `setGrid --stdin
-	// grid`. Strip it before parseTarget/parseParams so it's not read as a param.
-	const raw = argv.includes('--raw')
-	const { id, rest } = parseTarget(argv.filter((t) => t !== '--raw'))
+	const { id, rest } = parseTarget(argv)
 	const [action, ...tokens] = rest
-	if (!action) return fail('BAD_USAGE', 'missing action', help())
+	if (!action) return fail('missing action', help())
 	const app = await inspectTarget(controller, id)
-	if (!app.actions[action]) {
-		return fail('UNKNOWN_ACTION', `unknown action: ${action}`, {
-			availableActions: Object.keys(app.actions),
-			examples: examples(app.id, app.actions)
-		})
-	}
+	const meta = app.actions[action]
+	if (!meta)
+		return fail(
+			`unknown action: ${action}`,
+			`available actions: ${Object.keys(app.actions).join(', ')}\n\n${examplesText(app.id, app.actions)}`
+		)
 	let params: Record<string, unknown>
 	try {
 		params = parseParams(tokens, stdin)
 	} catch (error) {
-		// A malformed param is the agent's fault-line — surface it as an error (never
-		// a silently-coerced string) carrying THIS action's full usage + examples, so
-		// the correct call is discoverable exactly when it fails.
-		return fail('BAD_PARAMS', error instanceof Error ? error.message : String(error), {
-			action: formatAction(app.id, action, app.actions[action])
-		})
+		// A malformed param is the agent's fault-line — surface it (never a silently
+		// coerced string) with THIS action's usage + examples, so the correct call is
+		// discoverable exactly when it fails.
+		return fail(msg(error), renderAction(app.id, action, meta))
 	}
 	try {
-		// `result` is the action's return: the new state for handlers, the
-		// query's return value for queries. The action's `kind` is in
-		// `app.actions[action]`, so the agent can interpret accordingly.
 		const result = await controller.run(app.id, action, params)
-		// `--raw`: emit the result alone (a string verbatim, so a `.pixel` dump from
-		// `show` round-trips into `setGrid --stdin grid`); otherwise wrap it with the
-		// action echo so a plain `app run` stays self-describing.
-		if (raw) return ok(result)
-		return ok({
-			ok: true,
-			appId: app.id,
-			action: { type: action, params, actor: 'agent', kind: app.actions[action].kind },
-			result
-		})
+		// A procedure returns a value to read, so print it (a `show` .pixel dump prints
+		// verbatim, so it pipes into `setGrid --stdin grid`). A handler is a mutation —
+		// stay quiet like a normal shell command; success is the exit code.
+		return out(meta.kind === 'procedure' ? text(result) : 'ok')
 	} catch (error) {
-		return fail('APP_VALIDATION_FAILED', error instanceof Error ? error.message : String(error), {
-			action: formatAction(app.id, action, app.actions[action])
-		})
+		return fail(msg(error), renderAction(app.id, action, meta))
 	}
 }
 
@@ -232,26 +216,12 @@ function msg(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
-function formatActions(appId: string, actions: Record<string, ActionMeta>) {
-	return Object.fromEntries(
-		Object.entries(actions).map(([name, meta]) => [name, formatAction(appId, name, meta)])
-	)
-}
-
-function formatAction(appId: string, name: string, meta: ActionMeta) {
-	return {
-		name,
-		description: meta.description,
-		usage: `app run --id ${appId} ${name} key=value ...  (arrays/objects: --params-json '<json>'; long/multi-line text: --stdin <key>, piped in)`,
-		schemaHint: meta.schemaHint,
-		examples: (meta.examples ?? []).map((e) => example(appId, name, e.params))
-	}
-}
-
-function examples(appId: string, actions: Record<string, ActionMeta>): string[] {
-	return Object.entries(actions).flatMap(([name, meta]) =>
-		(meta.examples ?? []).map((e) => example(appId, name, e.params))
-	)
+function examplesText(appId: string, actions: Record<string, ActionMeta>): string {
+	return Object.entries(actions)
+		.flatMap(([name, meta]) =>
+			(meta.examples ?? []).map((e) => `  ${example(appId, name, e.params)}`)
+		)
+		.join('\n')
 }
 
 function example(appId: string, action: string, params: Record<string, unknown>): string {
@@ -266,41 +236,81 @@ function example(appId: string, action: string, params: Record<string, unknown>)
 	return [head, ...args].join(' ')
 }
 
-function ok(value: unknown): ExecResult {
-	return {
-		stdout: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
-		stderr: '',
-		exitCode: 0
-	}
+function out(body: string): ExecResult {
+	return { stdout: body, stderr: '', exitCode: 0 }
 }
 
-function fail(code: string, message: string, extra?: unknown): ExecResult {
-	return {
-		stdout: '',
-		stderr: JSON.stringify({ ok: false, error: { code, message }, ...object(extra) }, null, 2),
-		exitCode: 1
-	}
+// Errors are plain text on stderr with a non-zero exit — the shell-native signal,
+// not a `{ok:false}` envelope. `hint` carries the (already-text) usage/examples so
+// a failed call is self-correcting.
+function fail(message: string, hint?: string): ExecResult {
+	return { stdout: '', stderr: hint ? `${message}\n\n${hint}` : message, exitCode: 1 }
 }
 
-function object(value: unknown): Record<string, unknown> {
-	return value && typeof value === 'object' ? (value as Record<string, unknown>) : { usage: value }
+// A result printed for a human/agent: a string verbatim (so a `show` dump pipes
+// on), anything else as JSON — structured data has no canonical text form, so JSON
+// is its natural serialization (there is no universal envelope).
+function text(value: unknown): string {
+	return typeof value === 'string' ? value : json(value)
 }
 
-function help() {
-	return {
-		usage: 'app <list|launch|close|current|inspect|state|actions|run|help>',
-		examples: [
-			'app list',
-			'app launch com.example.counter',
-			'app current',
-			'app run increment amount=2',
-			'app run --id com.example.counter increment amount=2',
-			'app run --id com.example.counter setItems --params-json \'{"items":[{"x":0,"y":0}]}\'',
-			"printf '..66..' | app run --id com.example.pixel setGrid --stdin grid",
-			'app run --id com.example.pixel show --raw | app run --id com.example.pixel setGrid --stdin grid',
-			'app actions --id com.example.counter'
-		],
-		params:
-			"Scalars pass as key=value (amount=2, tool=pencil, color=#d04648). Arrays/objects MUST go as one JSON object via --params-json '<json>' (single-quoted) — inline key=value is unquoted by the shell, which mangles JSON. Long or multi-line text (a grid, a note body) goes via --stdin <key>: pipe it or use a heredoc, and its value becomes params[<key>]. Add --raw to `app run` to print the action's result verbatim (a string as-is) instead of the JSON envelope, so a text result can pipe into another command's --stdin."
-	}
+function json(value: unknown): string {
+	return JSON.stringify(value, null, 2)
+}
+
+function appLine(app: AppSummary): string {
+	return app.description ? `${app.id}  ${app.name} — ${app.description}` : `${app.id}  ${app.name}`
+}
+
+function renderApp(app: AppInspection): string {
+	return [
+		appLine(app),
+		'',
+		'state:',
+		json(app.state),
+		'',
+		'actions:',
+		renderActions(app.id, app.actions)
+	].join('\n')
+}
+
+function renderActions(appId: string, actions: Record<string, ActionMeta>): string {
+	return Object.entries(actions)
+		.map(([name, meta]) => renderAction(appId, name, meta))
+		.join('\n\n')
+}
+
+function renderAction(appId: string, name: string, meta: ActionMeta): string {
+	const lines = [meta.description ? `${name} — ${meta.description}` : name]
+	const params = paramsHint(meta.schemaHint)
+	if (params) lines.push(`  params: ${params}`)
+	for (const e of meta.examples ?? []) lines.push(`  ${example(appId, name, e.params)}`)
+	return lines.join('\n')
+}
+
+function paramsHint(schemaHint: unknown): string {
+	if (!schemaHint || typeof schemaHint !== 'object') return ''
+	return Object.entries(schemaHint as Record<string, unknown>)
+		.map(([k, v]) => `${k}:${String(v)}`)
+		.join(' ')
+}
+
+function help(): string {
+	return [
+		'app <list|launch|close|current|inspect|state|actions|run|help>',
+		'',
+		'Scalars pass as key=value (amount=2, tool=pencil, color=#d04648).',
+		"Arrays/objects go as one JSON object via --params-json '<json>' (single-quoted) — inline key=value is unquoted by the shell, which mangles JSON.",
+		'Long or multi-line text (a grid, a note body) goes via --stdin <key>: pipe it or use a heredoc, and its value becomes params[<key>].',
+		'',
+		'Examples:',
+		'  app list',
+		'  app launch com.example.counter',
+		'  app current',
+		'  app run --id com.example.counter increment amount=2',
+		'  app run --id com.example.counter setItems --params-json \'{"items":[{"x":0,"y":0}]}\'',
+		"  printf '..66..' | app run --id com.example.pixel setGrid --stdin grid",
+		'  app run --id com.example.pixel show | app run --id com.example.pixel setGrid --stdin grid',
+		'  app actions --id com.example.counter'
+	].join('\n')
 }
