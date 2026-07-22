@@ -128,16 +128,22 @@ export async function reconcile(
 		pulled = applicable.length
 	}
 
-	// Push: content up first (only hashes the remote lacks), then apply on the
-	// remote, which re-guards the same way (and rejects resurrecting a delete). An
-	// orphaned put (content missing on both sides) is dropped, never thrown, so one
-	// dead reference can't abort the reconcile.
+	// Push: ensure BOTH sides hold each winner's blob before the remote apply. The
+	// remote needs it for its own apply (uploadBlobs sends up any hash it lacks); the
+	// local SOURCE needs it too, or eager local reads stay broken after the manifests
+	// agree — so repair the local copy from the remote when local lost a hash the
+	// remote still holds (recoverable: content is hash-addressed). Symmetric with the
+	// pull-side repair above. A truly orphaned put (content missing on BOTH sides) is
+	// dropped, never thrown, so one dead reference can't abort the reconcile; the
+	// remote apply re-guards with incomingWins (and rejects resurrecting a delete).
 	let pushed = 0
 	if (toPush.length) {
 		const orphaned = await uploadBlobs(toPush, local, remote)
 		const applicable = orphaned.length ? toPush.filter((c) => !orphaned.includes(c)) : toPush
-		if (applicable.length)
+		if (applicable.length) {
+			await uploadBlobs(applicable, remote, local) // repair the local source (all have a remote copy)
 			await remote.applyPathChanges(applicable, (h) => remote.getBlobByHash(h), { source })
+		}
 		pushed = applicable.length
 	}
 

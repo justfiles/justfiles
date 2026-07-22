@@ -788,4 +788,37 @@ describe('synced (orphaned-blob resilience)', () => {
 		expect(dec.decode(await vol.readFile('/x'))).toBe('shared-bytes')
 		expect(await remote.caps?.content?.hasByHash(H)).toBe(true) // remote repaired
 	})
+
+	// The push mirror: the LOCAL side wins a path but lost its blob, while the remote
+	// still stores that hash. Pushing only the metadata would let the manifests agree
+	// while eager local reads stay broken `ENOENT: blob`. The reconcile must restore
+	// the local blob from the remote copy — symmetric with the pull-side repair.
+	it('repairs the winning local blob from the remote copy instead of leaving eager local reads broken', async () => {
+		const shared = enc.encode('shared-bytes')
+		const H = createHash('sha256').update(shared).digest('hex')
+
+		// Local WINS /x@5 referencing H, but its blob store never holds H (lost blob).
+		const local = memStorage()
+		const lv = volume(local)
+		await lv.writeFile('/x', enc.encode('placeholder'))
+		const st = await lv.stat('/x')
+		await local.setMeta(st.ino, { contentHash: H }, { version: 5 })
+		expect(await local.caps?.content?.hasByHash(H)).toBe(false)
+		// Stale PUSH cursor => the delta push skips /x; only the anti-entropy reconcile
+		// pushes it (and must repair the local blob while doing so).
+		await seedSyncState(local, { pullCursor: '0', pushCursor: '999' })
+
+		// Remote has the blob H (shared with another path) but no /x yet.
+		const remote = memStorage()
+		await remote.caps?.content?.putByHash(H, shared)
+
+		const vol = track(
+			await synced({ local, remote, interval: 99_999, antiEntropy: { everyCycles: 1 } })
+		)
+		await vol.flush()
+
+		expect(await local.caps?.content?.hasByHash(H)).toBe(true) // local repaired from remote
+		expect(dec.decode(await vol.readFile('/x'))).toBe('shared-bytes') // eager local read works
+		expect(await volume(remote).exists('/x')).toBe(true) // and the winner pushed up
+	})
 })
