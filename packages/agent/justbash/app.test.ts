@@ -155,6 +155,27 @@ describe('app run --stdin <key> feeds a param from stdin', () => {
 		expect(text).toContain('"y": 8')
 	})
 
+	// --params-json merges rather than replacing, so structured params compose with
+	// --stdin regardless of order (guards the general stdin primitive for mixed
+	// text + structured inputs).
+	test('--stdin composes with --params-json in either order', async () => {
+		const before = await runShell(
+			`printf '66' | app run --id ${PIXEL} setGrid --stdin grid --params-json '{"x":6,"y":8}'`
+		)
+		expect(before.exitCode).toBe(0)
+		expect(before.text).toContain('"grid": "66"')
+		expect(before.text).toContain('"x": 6')
+		expect(before.text).toContain('"y": 8')
+
+		const after = await runShell(
+			`printf '66' | app run --id ${PIXEL} setGrid --params-json '{"x":6,"y":8}' --stdin grid`
+		)
+		expect(after.exitCode).toBe(0)
+		expect(after.text).toContain('"grid": "66"')
+		expect(after.text).toContain('"x": 6')
+		expect(after.text).toContain('"y": 8')
+	})
+
 	test('--stdin with no param name is a discoverable error', async () => {
 		const { text, exitCode } = await runShell(`app run --id ${PIXEL} setGrid --stdin`)
 		expect(exitCode).toBe(1)
