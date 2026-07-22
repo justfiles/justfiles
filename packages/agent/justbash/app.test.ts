@@ -11,6 +11,9 @@ import { createJustBashTool } from './index.ts'
 // ever sees it. A fake controller stands in for the kernel — it validates the one
 // action shape the tests care about.
 const PIXEL = 'computer.spud.pixel'
+// A `.pixel` dump `show` returns — multi-line so the JSON envelope would escape
+// its newlines; --raw must emit it verbatim so it pipes back into setGrid.
+const SHOW_TEXT = 'pixel 1\nsize 2 2\npalette\n0 #ffffff\ngrid\n0.\n.0\n'
 
 function inspect(id: string): AppInspection {
 	return {
@@ -36,6 +39,11 @@ function inspect(id: string): AppInspection {
 				schemaHint: { grid: 'string', x: 'number?', y: 'number?' },
 				examples: [{ params: { grid: '.66.', x: 6, y: 8 } }]
 			},
+			show: {
+				kind: 'procedure',
+				description: 'Show the canvas as .pixel text.',
+				examples: [{ params: {} }]
+			},
 			clear: { kind: 'handler', description: 'Clear the canvas.', examples: [{ params: {} }] }
 		}
 	}
@@ -58,6 +66,8 @@ function fakeController(): AppController {
 				throw new Error('Invalid type: expected array but received string')
 			if (action === 'setColorIndex' && typeof p.i !== 'number')
 				throw new Error('Invalid type: expected number')
+			// A procedure returns a plain string (its `.pixel` dump), not a state object.
+			if (action === 'show') return SHOW_TEXT
 			return { ...inspect(PIXEL).state, applied: action, params: p }
 		}
 	}
@@ -181,6 +191,32 @@ describe('app run --stdin <key> feeds a param from stdin', () => {
 		expect(exitCode).toBe(1)
 		expect(text).toContain('BAD_PARAMS')
 		expect(text).toContain('--stdin')
+	})
+})
+
+describe('app run --raw emits the result verbatim (pipeable)', () => {
+	test('a string result is printed as-is, without the JSON envelope', async () => {
+		const { text, exitCode } = await runShell(`app run --id ${PIXEL} show --raw`)
+		expect(exitCode).toBe(0)
+		expect(text).toBe(SHOW_TEXT) // verbatim — real newlines, no escaping
+		expect(text.startsWith('{')).toBe(false) // not wrapped in the envelope
+	})
+
+	test('without --raw the same result rides inside the JSON envelope', async () => {
+		const { text } = await runShell(`app run --id ${PIXEL} show`)
+		expect(text.startsWith('{')).toBe(true)
+		expect(text).toContain('"result":')
+		expect(text).toContain('pixel 1\\nsize 2 2') // the newline is escaped in the envelope
+	})
+
+	test('--raw show pipes straight back into setGrid --stdin grid', async () => {
+		const { text, exitCode } = await runShell(
+			`app run --id ${PIXEL} show --raw | app run --id ${PIXEL} setGrid --stdin grid`
+		)
+		expect(exitCode).toBe(0)
+		// The grid param arrived byte-for-byte as the show dump (envelope escapes it in JSON).
+		expect(text).toContain(JSON.stringify(SHOW_TEXT).slice(1, -1))
+		expect(text).toContain('"applied": "setGrid"')
 	})
 })
 

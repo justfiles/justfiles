@@ -351,7 +351,7 @@ export const app = defineApp({
 		// read/write formats match. Pure read — only touches `app.state`.
 		show: p.procedure({
 			description:
-				'Show the canvas as .pixel text — the palette legend plus the char grid, exactly the format setGrid accepts, so you can read it, edit it, and pipe it back. Your best way to SEE the current picture (more digestible than raw state). Pass ruler=true to overlay 0-based column/row numbers so you can target x,y for a setGrid patch — the ruler view is for READING only; never pipe it back into setGrid. Default: no ruler.',
+				'Show the canvas as .pixel text — the palette legend plus the char grid, exactly the format setGrid accepts, so you can read it, edit it, and pipe it back (run with --raw to emit the raw text for a pipe: `app run --id <id> show --raw | app run --id <id> setGrid --stdin grid`). Your best way to SEE the current picture (more digestible than raw state). Pass ruler=true to overlay 0-based column/row numbers so you can target x,y for a setGrid patch — the ruler view is for READING only; never pipe it back into setGrid. Default: no ruler.',
 			schema: v.object({ ruler: v.optional(v.boolean()) }),
 			run({ ruler }, app) {
 				const { doc } = app.state

@@ -14,7 +14,7 @@ export function createAppCommand(controller: AppController): ShellCommand {
 	return {
 		name: 'app',
 		summary:
-			"Drive the user's apps — your MAIN way to get things done. `app list` to see them, `app inspect <id>` for an app's actions and state, `app run --id <id> <action> key=value` to act, `app launch <id>` to open it. Pipe long/multi-line text into a param with `--stdin <key>` (heredoc or `|`). Prefer this over editing files or writing scripts.",
+			"Drive the user's apps — your MAIN way to get things done. `app list` to see them, `app inspect <id>` for an app's actions and state, `app run --id <id> <action> key=value` to act, `app launch <id>` to open it. Pipe long/multi-line text into a param with `--stdin <key>` (heredoc or `|`); add `--raw` to emit an action's result verbatim (so a text result pipes onward). Prefer this over editing files or writing scripts.",
 		// just-bash hands `execute` the argv after the command name (`app list` →
 		// ['list']) plus a ctx carrying stdin, exactly the shape the dispatch logic expects.
 		execute: (argv, ctx) => run(controller, argv, decodeStdin(ctx.stdin))
@@ -93,7 +93,11 @@ async function runAction(
 	argv: string[],
 	stdin: string
 ): Promise<ExecResult> {
-	const { id, rest } = parseTarget(argv)
+	// `--raw` emits the action's result verbatim instead of the JSON envelope, so a
+	// string result (a `show` `.pixel` dump) pipes straight into `setGrid --stdin
+	// grid`. Strip it before parseTarget/parseParams so it's not read as a param.
+	const raw = argv.includes('--raw')
+	const { id, rest } = parseTarget(argv.filter((t) => t !== '--raw'))
 	const [action, ...tokens] = rest
 	if (!action) return fail('BAD_USAGE', 'missing action', help())
 	const app = await inspectTarget(controller, id)
@@ -118,11 +122,16 @@ async function runAction(
 		// `result` is the action's return: the new state for handlers, the
 		// query's return value for queries. The action's `kind` is in
 		// `app.actions[action]`, so the agent can interpret accordingly.
+		const result = await controller.run(app.id, action, params)
+		// `--raw`: emit the result alone (a string verbatim, so a `.pixel` dump from
+		// `show` round-trips into `setGrid --stdin grid`); otherwise wrap it with the
+		// action echo so a plain `app run` stays self-describing.
+		if (raw) return ok(result)
 		return ok({
 			ok: true,
 			appId: app.id,
 			action: { type: action, params, actor: 'agent', kind: app.actions[action].kind },
-			result: await controller.run(app.id, action, params)
+			result
 		})
 	} catch (error) {
 		return fail('APP_VALIDATION_FAILED', error instanceof Error ? error.message : String(error), {
@@ -288,9 +297,10 @@ function help() {
 			'app run --id com.example.counter increment amount=2',
 			'app run --id com.example.counter setItems --params-json \'{"items":[{"x":0,"y":0}]}\'',
 			"printf '..66..' | app run --id com.example.pixel setGrid --stdin grid",
+			'app run --id com.example.pixel show --raw | app run --id com.example.pixel setGrid --stdin grid',
 			'app actions --id com.example.counter'
 		],
 		params:
-			"Scalars pass as key=value (amount=2, tool=pencil, color=#d04648). Arrays/objects MUST go as one JSON object via --params-json '<json>' (single-quoted) — inline key=value is unquoted by the shell, which mangles JSON. Long or multi-line text (a grid, a note body) goes via --stdin <key>: pipe it or use a heredoc, and its value becomes params[<key>]."
+			"Scalars pass as key=value (amount=2, tool=pencil, color=#d04648). Arrays/objects MUST go as one JSON object via --params-json '<json>' (single-quoted) — inline key=value is unquoted by the shell, which mangles JSON. Long or multi-line text (a grid, a note body) goes via --stdin <key>: pipe it or use a heredoc, and its value becomes params[<key>]. Add --raw to `app run` to print the action's result verbatim (a string as-is) instead of the JSON envelope, so a text result can pipe into another command's --stdin."
 	}
 }
