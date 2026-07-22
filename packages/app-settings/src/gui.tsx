@@ -3,7 +3,7 @@ import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import type { AccountInfo, CapabilityId, ProviderInfo } from '@justfiles/app/capabilities/accounts'
 import type { UsageResource } from '@justfiles/app/capabilities/usage'
 import type { UserProfile } from '@justfiles/app/capabilities/user'
-import { StrictMode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, StrictMode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { type Category, initialState, type SettingsApp, type SettingsState } from './app.ts'
 
@@ -17,7 +17,11 @@ injectStyle(
 .settings * { box-sizing: border-box; }
 
 .settings-sidebar { flex: 0 0 220px; display: flex; flex-direction: column; gap: 10px; padding: 16px 12px; border-right: 1px solid var(--rule); overflow-y: auto; }
-.settings-account { display: flex; align-items: center; gap: 10px; padding: 6px 8px 12px; }
+.settings-account { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px; margin-bottom: 4px; border: 1px solid transparent; border-radius: 8px; background: transparent; font: inherit; text-align: left; color: inherit; }
+button.settings-account { cursor: default; }
+button.settings-account:hover { background: var(--surface); }
+.settings-account[data-active="true"] { background: var(--focus); color: var(--on-focus); }
+.settings-account[data-active="true"] .settings-account-sub { opacity: 0.8; }
 .settings-avatar { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--rule); opacity: 0.85; }
 .settings-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .settings-account-text { display: flex; flex-direction: column; min-width: 0; }
@@ -107,8 +111,7 @@ export const gui = defineGUI<SettingsApp>({
 })
 
 const CATEGORIES: { id: Category; label: string; glyph: string }[] = [
-	{ id: 'accounts', label: 'Accounts', glyph: '@' },
-	{ id: 'usage', label: 'Usage', glyph: '%' }
+	{ id: 'accounts', label: 'Accounts', glyph: '@' }
 ]
 
 const CAP_LABEL: Record<CapabilityId, string> = {
@@ -167,30 +170,45 @@ function Sidebar({
 	client: Client<SettingsApp>
 	usageAvailable: boolean
 }) {
-	// Hide the Usage tab on hosts that don't provide the capability (e.g. Spud Mac).
-	const categories = CATEGORIES.filter((c) => c.id !== 'usage' || usageAvailable)
+	// The account row doubles as the entry to Usage — the macOS Settings shape, where the
+	// name/avatar header is itself a selectable row. On hosts without the `usage` capability
+	// (e.g. Spud Mac) it's a plain, non-interactive header so it never lands on a dead pane.
+	const account = (
+		<>
+			<div className="settings-avatar" aria-hidden>
+				{user?.avatarUrl ? (
+					<img src={user.avatarUrl} alt="" />
+				) : (
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+						<title>User</title>
+						<path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5Z" />
+					</svg>
+				)}
+			</div>
+			<div className="settings-account-text">
+				<span className="settings-account-name">
+					{user?.name ?? (user ? 'User' : 'Local user')}
+				</span>
+				<span className="settings-account-sub">{user ? 'Signed in' : 'Not signed in'}</span>
+			</div>
+		</>
+	)
 	return (
 		<aside className="settings-sidebar">
-			<div className="settings-account">
-				<div className="settings-avatar" aria-hidden>
-					{user?.avatarUrl ? (
-						<img src={user.avatarUrl} alt="" />
-					) : (
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-							<title>User</title>
-							<path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5Z" />
-						</svg>
-					)}
-				</div>
-				<div className="settings-account-text">
-					<span className="settings-account-name">
-						{user?.name ?? (user ? 'User' : 'Local user')}
-					</span>
-					<span className="settings-account-sub">{user ? 'Signed in' : 'Not signed in'}</span>
-				</div>
-			</div>
+			{usageAvailable ? (
+				<button
+					type="button"
+					className="settings-account"
+					data-active={category === 'usage' || undefined}
+					onClick={() => void client.selectCategory({ category: 'usage' })}
+				>
+					{account}
+				</button>
+			) : (
+				<div className="settings-account">{account}</div>
+			)}
 			<nav className="settings-nav">
-				{categories.map((c) => (
+				{CATEGORIES.map((c) => (
 					<button
 						key={c.id}
 						type="button"
@@ -239,8 +257,6 @@ function AccountsPanel({ state, client }: { state: SettingsState; client: Client
 	)
 }
 
-const formatUsd = (n: number) => `$${n.toFixed(2)}`
-
 function formatBytes(n: number): string {
 	if (n < 1024) return `${n} B`
 	const units = ['KB', 'MB', 'GB', 'TB']
@@ -257,6 +273,27 @@ function formatTokens(n: number): string {
 	if (n < 1000) return String(n)
 	if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`
 	return `${(n / 1_000_000).toFixed(1)}M`
+}
+
+// AI + storage share one monthly window that rolls on the first UTC day of the next
+// month. Derive the human reset date from the 'YYYY-MM' window — no extra snapshot field.
+// `Date.UTC(y, m, 1)` reads the 1-based month as a 0-based index, so it lands on the first
+// of the FOLLOWING month (e.g. '2025-11' → Dec 1).
+function renewText(window: string): string {
+	const [y = NaN, m = NaN] = window.split('-').map(Number)
+	if (!Number.isFinite(y) || !Number.isFinite(m)) return ''
+	const reset = new Date(Date.UTC(y, m, 1)).toLocaleDateString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		timeZone: 'UTC'
+	})
+	return `Renews ${reset} · `
+}
+
+// AI headline: percent of the cap used (no dollars, per Claude Code / Codex), or
+// 'Unlimited' when uncapped.
+function aiHeadLabel(r: UsageResource): string {
+	return r.limit === null ? 'Unlimited' : `${Math.min(100, Math.round(r.fraction * 100))}%`
 }
 
 function UsagePanel({ state, client }: { state: SettingsState; client: Client<SettingsApp> }) {
@@ -284,16 +321,25 @@ function UsagePanel({ state, client }: { state: SettingsState; client: Client<Se
 				<>
 					<span className="settings-tier-badge">{usage.tier} plan</span>
 					<Meter
-						title="AI this month"
+						title="AI usage"
 						resource={usage.ai}
-						format={formatUsd}
-						overHint="Limit reached — resets next month, or upgrade your plan."
-						sub={`${formatTokens(usage.aiTokens)} tokens · ${usage.aiRequests} requests · ${usage.window}`}
+						value={aiHeadLabel(usage.ai)}
+						overHint="Limit reached — renews next month, or upgrade your plan."
+						sub={`${renewText(usage.window)}${formatTokens(usage.aiTokens)} tokens · ${usage.aiRequests} requests`}
 					/>
 					<Meter
 						title="Storage"
 						resource={usage.storage}
-						format={formatBytes}
+						value={
+							<>
+								{formatBytes(usage.storage.used)}
+								<span className="settings-meter-limit">
+									{usage.storage.limit !== null
+										? ` / ${formatBytes(usage.storage.limit)}`
+										: ' · unlimited'}
+								</span>
+							</>
+						}
 						overHint="Over your storage limit — delete files or notes, or upgrade your plan."
 						sub="Deduplicated content across your files and notes."
 					/>
@@ -315,13 +361,13 @@ function UsagePanel({ state, client }: { state: SettingsState; client: Client<Se
 function Meter({
 	title,
 	resource,
-	format,
+	value,
 	overHint,
 	sub
 }: {
 	title: string
 	resource: UsageResource
-	format: (n: number) => string
+	value: ReactNode
 	overHint: string
 	sub: string
 }) {
@@ -330,12 +376,7 @@ function Meter({
 		<section className="settings-card">
 			<div className="settings-meter-head">
 				<h2 className="settings-card-title">{title}</h2>
-				<span className="settings-meter-used">
-					{format(resource.used)}
-					<span className="settings-meter-limit">
-						{resource.limit !== null ? ` / ${format(resource.limit)}` : ' · unlimited'}
-					</span>
-				</span>
+				<span className="settings-meter-used">{value}</span>
 			</div>
 			{resource.limit !== null ? (
 				<div className="settings-meter-bar">
