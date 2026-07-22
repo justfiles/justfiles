@@ -11,8 +11,8 @@ import { createJustBashTool } from './index.ts'
 // ever sees it. A fake controller stands in for the kernel — it validates the one
 // action shape the tests care about.
 const PIXEL = 'computer.spud.pixel'
-// A `.pixel` dump `show` returns — multi-line so the JSON envelope would escape
-// its newlines; --raw must emit it verbatim so it pipes back into setGrid.
+// A `.pixel` dump `show` returns — multi-line, so it proves a procedure result is
+// printed verbatim (real newlines) and pipes back into setGrid unmangled.
 const SHOW_TEXT = 'pixel 1\nsize 2 2\npalette\n0 #ffffff\ngrid\n0.\n.0\n'
 
 function inspect(id: string): AppInspection {
@@ -44,14 +44,21 @@ function inspect(id: string): AppInspection {
 				description: 'Show the canvas as .pixel text.',
 				examples: [{ params: {} }]
 			},
+			// A procedure that echoes the parsed params back — lets the param-plumbing
+			// tests observe what actually arrived (handlers now print a quiet `ok`).
+			echo: {
+				kind: 'procedure',
+				description: 'Echo the parsed params (test fixture).',
+				examples: [{ params: {} }]
+			},
 			clear: { kind: 'handler', description: 'Clear the canvas.', examples: [{ params: {} }] }
 		}
 	}
 }
 
 // Rejects anything that isn't the declared shape, like a real valibot schema — so
-// a param the shell mangled into a string surfaces as APP_VALIDATION_FAILED, and a
-// well-formed one round-trips.
+// a param the shell mangled into a string surfaces as an error, and a well-formed
+// one round-trips.
 function fakeController(): AppController {
 	return {
 		list: async () => [{ id: PIXEL, name: 'Pixel' }],
@@ -66,8 +73,10 @@ function fakeController(): AppController {
 				throw new Error('Invalid type: expected array but received string')
 			if (action === 'setColorIndex' && typeof p.i !== 'number')
 				throw new Error('Invalid type: expected number')
-			// A procedure returns a plain string (its `.pixel` dump), not a state object.
+			// Procedures return a value (a string dump, or the params for `echo`); a
+			// handler returns the new state, which the command discards for a quiet `ok`.
 			if (action === 'show') return SHOW_TEXT
+			if (action === 'echo') return p
 			return { ...inspect(PIXEL).state, applied: action, params: p }
 		}
 	}
@@ -90,7 +99,6 @@ describe('app run — structured params through the shell', () => {
 			String.raw`app run --id ${PIXEL} setPixels pixels='[{\"x\":0,\"y\":0,\"i\":1}]'`
 		)
 		expect(exitCode).toBe(1)
-		expect(text).toContain('BAD_PARAMS')
 		expect(text).toContain('--params-json') // the fix is in the error itself
 		// The failing action's usage + examples ride the error so the agent can self-correct.
 		expect(text).toContain('setPixels')
@@ -109,7 +117,7 @@ describe('app run — structured params through the shell', () => {
 			`app run --id ${PIXEL} setPixels --params-json '{"pixels":[{"x":0,"y":0,"i":1}]}'`
 		)
 		expect(exitCode).toBe(0)
-		expect(text).toContain('"applied": "setPixels"')
+		expect(text).toBe('ok') // a handler mutation is quiet — success is the exit code
 	})
 
 	test('malformed --params-json reports the robust single-quoted form', async () => {
@@ -117,47 +125,69 @@ describe('app run — structured params through the shell', () => {
 			`app run --id ${PIXEL} setPixels --params-json '{"pixels":[{"x":}]}'`
 		)
 		expect(exitCode).toBe(1)
-		expect(text).toContain('BAD_PARAMS')
 		expect(text).toContain('--params-json')
 	})
 
 	test('scalar key=value still works', async () => {
 		const { text, exitCode } = await runShell(`app run --id ${PIXEL} setColorIndex i=6`)
 		expect(exitCode).toBe(0)
-		expect(text).toContain('"applied": "setColorIndex"')
+		expect(text).toBe('ok')
 	})
 
-	test('a schema rejection returns the action usage + examples', async () => {
+	test('a schema rejection returns the plain-text message + the action usage', async () => {
 		// Passes validation-time (parses to a string) but the controller rejects it.
 		const { text, exitCode } = await runShell(`app run --id ${PIXEL} setColorIndex i=notanumber`)
 		expect(exitCode).toBe(1)
-		expect(text).toContain('APP_VALIDATION_FAILED')
-		expect(text).toContain('setColorIndex')
+		expect(text).toContain('expected number') // the controller's message, verbatim
+		expect(text).toContain('setColorIndex') // usage/examples for self-correction
+	})
+})
+
+describe('app run prints results shell-style (exit code = status)', () => {
+	test('a procedure result prints verbatim, no envelope', async () => {
+		const { text, exitCode } = await runShell(`app run --id ${PIXEL} show`)
+		expect(exitCode).toBe(0)
+		expect(text).toBe(SHOW_TEXT) // real newlines, no {"result":...} wrapper
+		expect(text.startsWith('{')).toBe(false)
+	})
+
+	test('a handler mutation prints a quiet ok, not the state dump', async () => {
+		const { text } = await runShell(`app run --id ${PIXEL} setGrid grid=.66.`)
+		expect(text).toBe('ok')
+		expect(text).not.toContain('grid') // the new state is not echoed
+	})
+
+	test('show pipes straight into setGrid --stdin grid', async () => {
+		const { text, exitCode } = await runShell(
+			`app run --id ${PIXEL} show | app run --id ${PIXEL} setGrid --stdin grid`
+		)
+		expect(exitCode).toBe(0)
+		expect(text).toBe('ok') // setGrid accepted the piped dump
 	})
 })
 
 describe('app run --stdin <key> feeds a param from stdin', () => {
 	test('a pipe injects the piped text into the named param', async () => {
 		const { text, exitCode } = await runShell(
-			`printf 'r0c' | app run --id ${PIXEL} setGrid --stdin grid`
+			`printf 'r0c' | app run --id ${PIXEL} echo --stdin grid`
 		)
 		expect(exitCode).toBe(0)
-		expect(text).toContain('"applied": "setGrid"')
 		expect(text).toContain('"grid": "r0c"')
 	})
 
 	test('a heredoc injects multi-line text, verbatim (newlines and all)', async () => {
 		const { text, exitCode } = await runShell(
-			[`app run --id ${PIXEL} setGrid --stdin grid <<'EOF'`, '.66.', '.66.', 'EOF'].join('\n')
+			[`app run --id ${PIXEL} echo --stdin grid <<'EOF'`, '.66.', '.66.', 'EOF'].join('\n')
 		)
 		expect(exitCode).toBe(0)
-		// The JSON dump escapes the newline, proving the rows arrived unmangled.
+		// echo prints the params as JSON, which escapes the newline — proving the rows
+		// arrived unmangled.
 		expect(text).toContain('.66.\\n.66.')
 	})
 
 	test('scalars via key=value compose with a stdin param', async () => {
 		const { text, exitCode } = await runShell(
-			`printf '66' | app run --id ${PIXEL} setGrid x=6 y=8 --stdin grid`
+			`printf '66' | app run --id ${PIXEL} echo x=6 y=8 --stdin grid`
 		)
 		expect(exitCode).toBe(0)
 		expect(text).toContain('"grid": "66"')
@@ -170,7 +200,7 @@ describe('app run --stdin <key> feeds a param from stdin', () => {
 	// text + structured inputs).
 	test('--stdin composes with --params-json in either order', async () => {
 		const before = await runShell(
-			`printf '66' | app run --id ${PIXEL} setGrid --stdin grid --params-json '{"x":6,"y":8}'`
+			`printf '66' | app run --id ${PIXEL} echo --stdin grid --params-json '{"x":6,"y":8}'`
 		)
 		expect(before.exitCode).toBe(0)
 		expect(before.text).toContain('"grid": "66"')
@@ -178,7 +208,7 @@ describe('app run --stdin <key> feeds a param from stdin', () => {
 		expect(before.text).toContain('"y": 8')
 
 		const after = await runShell(
-			`printf '66' | app run --id ${PIXEL} setGrid --params-json '{"x":6,"y":8}' --stdin grid`
+			`printf '66' | app run --id ${PIXEL} echo --params-json '{"x":6,"y":8}' --stdin grid`
 		)
 		expect(after.exitCode).toBe(0)
 		expect(after.text).toContain('"grid": "66"')
@@ -189,41 +219,13 @@ describe('app run --stdin <key> feeds a param from stdin', () => {
 	test('--stdin with no param name is a discoverable error', async () => {
 		const { text, exitCode } = await runShell(`app run --id ${PIXEL} setGrid --stdin`)
 		expect(exitCode).toBe(1)
-		expect(text).toContain('BAD_PARAMS')
 		expect(text).toContain('--stdin')
-	})
-})
-
-describe('app run --raw emits the result verbatim (pipeable)', () => {
-	test('a string result is printed as-is, without the JSON envelope', async () => {
-		const { text, exitCode } = await runShell(`app run --id ${PIXEL} show --raw`)
-		expect(exitCode).toBe(0)
-		expect(text).toBe(SHOW_TEXT) // verbatim — real newlines, no escaping
-		expect(text.startsWith('{')).toBe(false) // not wrapped in the envelope
-	})
-
-	test('without --raw the same result rides inside the JSON envelope', async () => {
-		const { text } = await runShell(`app run --id ${PIXEL} show`)
-		expect(text.startsWith('{')).toBe(true)
-		expect(text).toContain('"result":')
-		expect(text).toContain('pixel 1\\nsize 2 2') // the newline is escaped in the envelope
-	})
-
-	test('--raw show pipes straight back into setGrid --stdin grid', async () => {
-		const { text, exitCode } = await runShell(
-			`app run --id ${PIXEL} show --raw | app run --id ${PIXEL} setGrid --stdin grid`
-		)
-		expect(exitCode).toBe(0)
-		// The grid param arrived byte-for-byte as the show dump (envelope escapes it in JSON).
-		expect(text).toContain(JSON.stringify(SHOW_TEXT).slice(1, -1))
-		expect(text).toContain('"applied": "setGrid"')
 	})
 })
 
 describe('app actions/examples advertise the shell-safe form', () => {
 	test('a structured example renders as --params-json, a scalar one as key=value', async () => {
 		const { text } = await runShell(`app actions --id ${PIXEL}`)
-		// `app actions` prints JSON, so the example's inner quotes are escaped in the dump.
 		expect(text).toContain(`app run --id ${PIXEL} setPixels --params-json`)
 		expect(text).toContain(`app run --id ${PIXEL} setColorIndex i=6`)
 	})
@@ -231,7 +233,7 @@ describe('app actions/examples advertise the shell-safe form', () => {
 	test('unknown action lists available actions with runnable examples', async () => {
 		const { text, exitCode } = await runShell(`app run --id ${PIXEL} setPixel i=1`)
 		expect(exitCode).toBe(1)
-		expect(text).toContain('UNKNOWN_ACTION')
+		expect(text).toContain('unknown action: setPixel')
 		expect(text).toContain('setPixels')
 		expect(text).toContain('--params-json')
 	})
