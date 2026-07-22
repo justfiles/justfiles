@@ -728,4 +728,30 @@ describe('synced (orphaned-blob resilience)', () => {
 		expect(dec.decode(await volume(remote).readFile('/good.txt'))).toBe('good')
 		expect(await volume(remote).exists('/orphan.txt')).toBe(false)
 	})
+
+	// The mirror of the push case, but for the anti-entropy PULL: a remote put whose
+	// blob is missing on both sides. The eager local apply fetches each winner's blob,
+	// so one orphaned reference would throw `ENOENT: blob` and abort the whole pass
+	// BEFORE the push — stranding every other cursor-missed change. It must be dropped.
+	it('drops an orphaned remote reference on the anti-entropy pull instead of wedging the reconcile', async () => {
+		const remote = memStorage()
+		const rv = volume(remote)
+		await rv.writeFile('/good.txt', enc.encode('good'))
+		await rv.writeFile('/orphan.txt', enc.encode('temp'))
+		// Point remote's /orphan.txt at a contentHash with no blob anywhere.
+		const st = await rv.stat('/orphan.txt')
+		await remote.setMeta(st.ino, { contentHash: 'd'.repeat(64) }, { version: 99 })
+
+		// Stale pull cursor => the delta pull skips BOTH files; only the anti-entropy
+		// reconcile (a cursor-independent pathScan) reaches them.
+		const local = memStorage()
+		await seedSyncState(local, { pullCursor: '999', pushCursor: '0' })
+		const vol = track(
+			await synced({ local, remote, interval: 99_999, antiEntropy: { everyCycles: 1 } })
+		)
+		await vol.flush()
+
+		expect(dec.decode(await vol.readFile('/good.txt'))).toBe('good') // pull did NOT wedge
+		expect(await vol.exists('/orphan.txt')).toBe(false) // orphan dropped, not applied
+	})
 })

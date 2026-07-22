@@ -10,9 +10,9 @@
  * flag, so the whole feature can be turned off in one place while debugging.
  *
  * Cost model (why it stays lightweight):
- *   - Metadata only: `pathScan` yields `{path, version, contentHash}` per path,
- *     never blob bytes.
- *   - Skip-on-agree: a path whose (kind, version, contentHash) match on both
+ *   - Metadata only: `pathScan` yields the per-path metadata (version, mode,
+ *     mtime, xattrs, symlink target, contentHash), never blob bytes.
+ *   - Skip-on-agree: a path whose (kind, version, durable state) match on both
  *     sides is skipped — no work, no transfer. In steady state (converged) the
  *     whole pass is two metadata scans and zero applies/blobs.
  *   - Content moves ONLY for genuinely divergent puts the target lacks (blobs are
@@ -33,7 +33,7 @@
 
 import { incomingWins } from './storage.shared'
 import { PAGE, type SyncReplica, uploadBlobs } from './sync-replica'
-import type { PathChange } from './sync-wire'
+import { changeDigest, type PathChange } from './sync-wire'
 
 /** What one reconcile pass did — returned for observability + tests. */
 export interface ReconcileResult {
@@ -57,13 +57,15 @@ export interface ReconcileOptions {
 	source?: string
 }
 
-// Two live puts converge already when kind + version + contentHash match. Meta-
-// only drift at an identical (version, contentHash) is cosmetic and intentionally
-// skipped to keep the pass cheap; any real mutation bumps the version.
-function agree(a: PathChange | undefined, b: PathChange | undefined): boolean {
+// Two changes are converged only when kind + version match AND their whole
+// durable state does — the same `changeDigest` incomingWins tie-breaks on.
+// Comparing contentHash alone would call meta-only drift (mode / xattr / symlink
+// target — and ALL dir & symlink divergence, whose contentHash is always
+// undefined) "converged", so the digest tie-break would never run and the
+// metadata would stay split forever. Version differs => cheap reject, no hashing.
+async function agree(a: PathChange | undefined, b: PathChange | undefined): Promise<boolean> {
 	if (!a || !b || a.kind !== b.kind || a.version !== b.version) return false
-	if (a.kind === 'put' && b.kind === 'put') return a.contentHash === b.contentHash
-	return true
+	return (await changeDigest(a)) === (await changeDigest(b))
 }
 
 /** Page a replica's full snapshot into a path -> latest-put map (metadata only). */
@@ -102,7 +104,7 @@ export async function reconcile(
 	for (const path of paths) {
 		const l = localManifest.get(path)
 		const r = remoteManifest.get(path)
-		if (agree(l, r)) continue
+		if (await agree(l, r)) continue
 		// `incomingWins(x, y)` = does x beat y? A missing side always loses.
 		if (r && (!l || (await incomingWins(r, l)))) toPull.push(r)
 		else if (l) toPush.push(l)
@@ -110,9 +112,27 @@ export async function reconcile(
 
 	// Pull first (lazy-friendly: applyPathChanges installs a stub, no blob fetch).
 	// The apply re-guards with incomingWins vs the live local state, so a race can
-	// never let a loser through.
-	if (toPull.length)
-		await local.applyPathChanges(toPull, (h) => remote.getBlobByHash(h), { source })
+	// never let a loser through. Drop remote winners whose content is missing on
+	// BOTH sides: an EAGER local apply fetches each winner's blob via getBlobByHash,
+	// so one orphaned reference would throw `ENOENT: blob` and abort the pass BEFORE
+	// the push (pull runs first). Symmetric with push's uploadBlobs; here the
+	// transfer stays applyPathChanges' job (eager fetch / lazy stub), so we only
+	// detect — the lazy path still moves zero bytes.
+	let pulled = 0
+	if (toPull.length) {
+		const applicable: PathChange[] = []
+		for (const c of toPull) {
+			const orphaned =
+				c.kind === 'put' &&
+				!!c.contentHash &&
+				!(await local.hasBlobByHash(c.contentHash)) &&
+				!(await remote.hasBlobByHash(c.contentHash))
+			if (!orphaned) applicable.push(c)
+		}
+		if (applicable.length)
+			await local.applyPathChanges(applicable, (h) => remote.getBlobByHash(h), { source })
+		pulled = applicable.length
+	}
 
 	// Push: content up first (only hashes the remote lacks), then apply on the
 	// remote, which re-guards the same way (and rejects resurrecting a delete). An
@@ -130,7 +150,7 @@ export async function reconcile(
 	return {
 		localPaths: localManifest.size,
 		remotePaths: remoteManifest.size,
-		pulled: toPull.length,
+		pulled,
 		pushed
 	}
 }

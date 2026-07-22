@@ -80,6 +80,36 @@ describe('reconcile — convergence backstop', () => {
 		expect(['heart', 'jelly']).toContain(c)
 	})
 
+	it('converges meta-only divergence at an equal version (regular file, mode differs, same content)', async () => {
+		// contentHash + version match on both sides, so a contentHash-only "agree" would
+		// call this converged and never run the durable-state tie-break — leaving the
+		// mode permanently split. mtime pinned equal so mode is the ONLY difference.
+		const { client, server } = twoPeers()
+		await client.write('/f', bytes('same'), { version: 4, mode: 0o644, mtimeNs: 1000 })
+		await server.write('/f', bytes('same'), { version: 4, mode: 0o600, mtimeNs: 1000 })
+		await reconcile(client.replica, server.replica)
+		const cm = (await client.stat('/f')).mode & 0o777
+		const sm = (await server.stat('/f')).mode & 0o777
+		expect(cm).toBe(sm) // converged on ONE mode, not left split
+		expect([0o644, 0o600]).toContain(cm)
+		const again = await reconcile(client.replica, server.replica)
+		expect(again).toMatchObject({ pulled: 0, pushed: 0 })
+	})
+
+	it('converges directory mode divergence at an equal version (no contentHash to compare)', async () => {
+		// A directory carries no contentHash, so the old contentHash-only agree treated
+		// ANY two same-version dirs as converged — mode drift never healed. The digest
+		// tie-break must now split it deterministically on both sides.
+		const { client, server } = twoPeers()
+		await client.mkdir('/d', { version: 4, mode: 0o755, mtimeNs: 1000 })
+		await server.mkdir('/d', { version: 4, mode: 0o700, mtimeNs: 1000 })
+		await reconcile(client.replica, server.replica)
+		const cm = (await client.stat('/d')).mode & 0o777
+		const sm = (await server.stat('/d')).mode & 0o777
+		expect(cm).toBe(sm) // converged, not left split
+		expect([0o755, 0o700]).toContain(cm)
+	})
+
 	it('is idempotent — a second pass over the converged pair does nothing', async () => {
 		const { client, server } = twoPeers()
 		await client.write('/x', bytes('C'), { version: 3 })
