@@ -134,16 +134,33 @@ describe('reconcile — convergence backstop', () => {
 		expect(res.pulled).toBe(0)
 	})
 
-	it('does NOT resurrect a delete: a live put loses to a higher-versioned tombstone', async () => {
+	it('propagates a higher-versioned tombstone (a missed delete) to the stale live side', async () => {
 		const { client, server } = twoPeers()
-		// Client still holds a live put; the server deleted the path at a higher version.
+		// The client missed the delete: it still holds a live put; the server deleted the
+		// path at a higher version. The tombstone must propagate so the stale file goes.
 		await client.write('/x', bytes('C'), { version: 2 })
 		await server.write('/x', bytes('S'), { version: 5 })
-		await server.rm('/x') // tombstone at version 6 (> the client's put at 2)
+		await server.rm('/x') // tombstone at version 6 (> the client's live put at 2)
 		const res = await reconcile(client.replica, server.replica)
-		// The push is attempted, but the remote's version guard rejects the stale put.
-		expect(res.pushed).toBe(1)
+		expect(res.pulled).toBe(1) // the tombstone is pulled down to the client
+		expect(await client.exists('/x')).toBe(false) // stale live put removed — converged
 		expect(await server.exists('/x')).toBe(false)
+		// Idempotent: both sides now hold the same tombstone, so a second pass is a no-op.
+		const again = await reconcile(client.replica, server.replica)
+		expect(again).toMatchObject({ pulled: 0, pushed: 0 })
+	})
+
+	it('propagates a local tombstone up to a stale live remote (missed delete, other direction)', async () => {
+		const { client, server } = twoPeers()
+		// The server missed the delete: it still holds a live put; the client deleted the
+		// path at a higher version.
+		await server.write('/x', bytes('S'), { version: 2 })
+		await client.write('/x', bytes('C'), { version: 5 })
+		await client.rm('/x') // local tombstone at version 6 (> the server's live put at 2)
+		const res = await reconcile(client.replica, server.replica)
+		expect(res.pushed).toBe(1) // the tombstone is pushed up to the server
+		expect(await server.exists('/x')).toBe(false) // converged
+		expect(await client.exists('/x')).toBe(false)
 	})
 
 	it('reconciles a mixed batch in one pass (pull + push + skip)', async () => {

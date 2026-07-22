@@ -320,6 +320,8 @@ interface FakeServer {
 	scanCalls: number
 	/** If set, the next push (applyPathChanges) throws it — simulates a fence 409. */
 	pushError: Error | undefined
+	/** If set, the next `pathScan` throws it — simulates a fence during the reconcile scan. */
+	scanError: Error | undefined
 	/** If set, `reset` throws it — simulates a lost CAS / offline server. */
 	resetError: Error | undefined
 	/** Every push received (for take-mine republish tests). */
@@ -339,6 +341,7 @@ function fakeServer(
 		scanGeneration: undefined,
 		scanCalls: 0,
 		pushError: undefined,
+		scanError: undefined,
 		resetError: undefined,
 		pushes: [],
 		seed(path, content) {
@@ -372,6 +375,11 @@ function fakeServer(
 			return { generation: server.generation }
 		},
 		pathScan: async () => {
+			if (server.scanError) {
+				const e = server.scanError
+				server.scanError = undefined
+				throw e
+			}
 			server.scanCalls++
 			return {
 				changes: [...puts.values()],
@@ -511,6 +519,32 @@ describe('synced (generation / client-reset)', () => {
 		)
 		expect(await vol.exists('/keep.txt')).toBe(false) // discarded by the scan-echo mismatch
 		expect((await readSyncState(local)).pullCursor).toBeUndefined() // cursors cleared
+	})
+
+	// If the server resets AFTER the reconcile scan but before its push, the remote
+	// adapter throws GenerationStaleError. The anti-entropy try/catch must rethrow it
+	// (not swallow it as a best-effort failure) so the outer typed handler resets NOW
+	// — otherwise the cycle is reported synced and interim edits are lost next handshake.
+	it('rethrows a generation-stale fence from the anti-entropy reconcile so the client resets now', async () => {
+		const server = fakeServer({ generation: 5 })
+		server.scanError = new GenerationStaleError(6) // server lineage advanced mid-reconcile
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		// Stale push cursor so the ordinary push carries nothing (its applyPathChanges
+		// wouldn't fence); the anti-entropy SCAN is what throws.
+		await seedSyncState(local, { generation: 5, pullCursor: '0', pushCursor: '999' })
+		const vol = track(
+			await synced({
+				local,
+				remote: () => server.replica,
+				interval: 99_999,
+				antiEntropy: { everyCycles: 1 }
+			})
+		)
+		const state = await readSyncState(local)
+		expect(state.generation).toBe(6) // outer handler adopted the fenced generation
+		expect(state.pullCursor).toBeUndefined() // client-reset cleared cursors
+		expect(await vol.exists('/keep.txt')).toBe(false) // discarded on the reset
 	})
 
 	// A fenced push (409 generation_stale surfaced as GenerationStaleError) is

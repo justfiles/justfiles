@@ -60,7 +60,7 @@ export interface ChangeSource {
 	 */
 	pathScan(
 		page?: SyncCursor,
-		opts?: { limit?: number }
+		opts?: { limit?: number; tombstones?: boolean }
 	): Promise<{
 		changes: PathChange[]
 		next?: SyncCursor
@@ -231,12 +231,13 @@ export interface FsWatcher {
 
 /**
  * Reconstruct a consistent snapshot from the journal, FROZEN at `head`: coalesce
- * every row with `seq <= head` into the latest state per path, keeping the live
- * puts (a path whose last op at/below head is a delete is gone). Deterministic
- * across calls — rows after `head` are ignored — so a paged bootstrap can slice it
- * by a stable offset and a mid-scan mutation surfaces only on the delta resume.
+ * every row with `seq <= head` into the last op per path. Deterministic across
+ * calls — rows after `head` are ignored — so a paged bootstrap can slice it by a
+ * stable offset and a mid-scan mutation surfaces only on the delta resume. Keeps
+ * DELETE tombstones as well as live puts; `pathScan` drops the tombstones unless
+ * the caller opts in (the anti-entropy reconcile does, so missed deletes converge).
  */
-async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<PathChange[]> {
+async function snapshotUpTo(journal: JournalStore, head: number): Promise<PathChange[]> {
 	const rows: PathChange[] = []
 	let cursor = 0
 	while (cursor < head) {
@@ -250,7 +251,7 @@ async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<Pa
 		if (!last || last.seq >= head || batch.length < PAGE) break
 		cursor = last.seq
 	}
-	return coalesceByPath(rows).filter((c) => c.kind === 'put')
+	return coalesceByPath(rows)
 }
 
 /**
@@ -265,10 +266,11 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 		return journal
 	}
 	// The coalesced snapshot for the scan currently being paged, keyed by its frozen
-	// head. `snapshotPutsUpTo` is O(journal), so recomputing it for every page turns
-	// a P-path scan into O(journal * ceil(P/PAGE)); memoising it per head makes the
-	// whole paged scan O(journal + P). Held only for the duration of one scan (dropped
-	// when the last page is served, or replaced when a new head is scanned).
+	// head. `snapshotUpTo` is O(journal), so recomputing it for every page turns a
+	// P-path scan into O(journal * ceil(P/PAGE)); memoising it per head makes the
+	// whole paged scan O(journal + P). Holds puts + tombstones (each page derives its
+	// view from `tombstones`). Kept only for one scan (dropped when the last page is
+	// served, or replaced when a new head is scanned).
 	let scan: { head: number; snapshot: PathChange[] } | null = null
 	return {
 		async pathDeltas(cursor, opts) {
@@ -310,14 +312,15 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 			}
 			const headNum = Number(head)
 			// Materialise the coalesced snapshot ONCE per scan (see `scan` above) instead of
-			// replaying the whole journal for each page.
-			const snapshot =
-				scan?.head === headNum ? scan.snapshot : await snapshotPutsUpTo(journal, headNum)
-			const changes = snapshot.slice(offset, offset + limit)
+			// replaying the whole journal for each page. Cache holds puts + tombstones; each
+			// page derives its view from `tombstones` (default: live puts only).
+			const full = scan?.head === headNum ? scan.snapshot : await snapshotUpTo(journal, headNum)
+			const view = opts?.tombstones ? full : full.filter((c) => c.kind === 'put')
+			const changes = view.slice(offset, offset + limit)
 			const nextOffset = offset + changes.length
-			const done = nextOffset >= snapshot.length
+			const done = nextOffset >= view.length
 			// Cache for the next page of this scan; release it once the scan completes.
-			scan = done ? null : { head: headNum, snapshot }
+			scan = done ? null : { head: headNum, snapshot: full }
 			return { changes, next: done ? undefined : `${head}:${nextOffset}`, syncCursor: head, done }
 		}
 	}

@@ -431,6 +431,11 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 					// be reported as synced (and later wiped, losing interim edits).
 					await checkMidSessionReset(scanGeneration)
 				} catch (e) {
+					// A fence (server lineage advanced mid-reconcile) must reach the outer typed
+					// handler so the client resets NOW — swallowing it would report the cycle as
+					// synced and strand edits made against the obsolete lineage until the next
+					// handshake. Only genuinely best-effort failures are logged and ignored.
+					if (e instanceof GenerationStaleError) throw e
 					console.error('anti-entropy reconcile failed', e)
 				}
 			}

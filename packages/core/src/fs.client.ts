@@ -355,7 +355,8 @@ export function remoteSyncReplica(
 			const res = await client.path.snapshot.$get({
 				query: {
 					page,
-					limit: opts?.limit !== undefined ? String(opts.limit) : undefined
+					limit: opts?.limit !== undefined ? String(opts.limit) : undefined,
+					tombstones: opts?.tombstones ? '1' : undefined
 				}
 			})
 			if (!res.ok) throw new Error(`pathScan failed: ${res.status}`)

@@ -132,7 +132,10 @@ const DeltaQuery = z.object({
 })
 const SnapshotQuery = z.object({
 	page: z.string().optional(),
-	limit: z.coerce.number().int().positive().optional()
+	limit: z.coerce.number().int().positive().optional(),
+	// Opt-in tombstone carrying (anti-entropy reconcile): '1' includes deletes in the
+	// snapshot so a cursor-missed delete converges. Bootstrap omits it (live puts only).
+	tombstones: z.literal('1').optional()
 })
 const HashParam = z.object({ hash: z.string().regex(/^[0-9a-f]{64}$/) })
 
@@ -260,8 +263,11 @@ export function createFsApi(
 			})
 
 			.get('/path/snapshot', zValidator('query', SnapshotQuery), async (c) => {
-				const { page, limit } = c.req.valid('query')
-				const { changes, next, syncCursor, done } = await replica.pathScan(page, { limit })
+				const { page, limit, tombstones } = c.req.valid('query')
+				const { changes, next, syncCursor, done } = await replica.pathScan(page, {
+					limit,
+					tombstones: tombstones === '1'
+				})
 				const lineage = await readLineage()
 				return c.json(
 					ScanPage.parse({ changes, next, syncCursor, done, generation: lineage?.generation })

@@ -25,10 +25,12 @@
  * swap. Tombstones are enforced by that same guard, so a live put can never
  * resurrect a higher-versioned delete.
  *
- * Scope (v1): reconciles PUT divergence (differing content + missing puts).
- * `pathScan` carries no tombstones, so DELETE propagation stays the delta path's
- * job — but a delete is never *undone* here (the apply-side version guard rejects
- * a stale resurrection).
+ * Scope: reconciles BOTH put divergence (differing content + missing puts) AND
+ * missed deletes. The manifest scan is requested with `tombstones: true`, so a
+ * cursor-missed delete on one side propagates to the other (its higher-versioned
+ * tombstone beats a stale live put via the same LWW rule); a converged tombstone
+ * matches on both sides and is skipped. `applyPathChanges` re-guards, so a stale
+ * live put can never resurrect a higher-versioned delete.
  */
 
 import { incomingWins } from './storage.shared'
@@ -74,7 +76,7 @@ async function agree(a: PathChange | undefined, b: PathChange | undefined): Prom
 	return (await changeDigest(a)) === (await changeDigest(b))
 }
 
-/** Page a replica's full snapshot into a path -> latest-put map (metadata only). */
+/** Page a replica's full snapshot into a path -> latest-change map (puts + tombstones). */
 async function manifest(
 	replica: SyncReplica,
 	limit: number
@@ -83,7 +85,8 @@ async function manifest(
 	let generation: number | undefined
 	let page: string | undefined
 	do {
-		const res = await replica.pathScan(page, { limit })
+		// `tombstones: true` so a cursor-missed delete converges too (not just puts).
+		const res = await replica.pathScan(page, { limit, tombstones: true })
 		for (const c of res.changes) paths.set(c.path, c)
 		// Client<->server pages echo the live generation; carry the last seen so a reset
 		// that lands mid-scan is surfaced to `synced()`. P2P leaves it undefined.
