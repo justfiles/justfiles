@@ -93,14 +93,14 @@ const withGrid = (state: PixelState, grid: string[]): PixelState => ({
 // If the piped text is a whole `.pixel` document, return its declared version so
 // `setGrid` can replace the canvas via `decode` (and reject an unsupported one);
 // otherwise null, so the text is stamped as a patch — e.g. an edited `show` dump
-// pasted back. "Whole document" means the full structure decode needs: the `pixel
-// <version>` magic as the first meaningful line, plus a `size <w> <h>` header and
-// a `grid` section. That structure requirement is why a hand-drawn patch whose
-// first row spells `pixel`/`pixel 1` (legal cell data) returns null here rather
-// than tripping a canvas-wiping replace.
+// pasted back. "Whole document" means the structure `decode` keys off: the `pixel
+// <version>` magic as the first meaningful line, plus a `grid` section (the `size`
+// header is optional — decode derives w/h from the grid when it is absent). That
+// structure requirement is why a hand-drawn patch whose first row spells
+// `pixel`/`pixel 1` (legal cell data) returns null here rather than tripping a
+// canvas-wiping replace.
 const fullDocVersion = (text: string): number | null => {
 	let version: number | null = null
-	let size = false
 	let grid = false
 	let first = true
 	for (const raw of text.split(/\r?\n/)) {
@@ -113,10 +113,9 @@ const fullDocVersion = (text: string): number | null => {
 			version = Number(m[1])
 			continue
 		}
-		if (/^size\s+\d+\s+\d+(\s|$)/.test(t)) size = true
-		else if (t === 'grid') grid = true
+		if (t === 'grid') grid = true
 	}
-	return size && grid ? version : null
+	return grid ? version : null
 }
 
 // Parse a stamped patch into the {x,y,i} the batch `setPixels` replays, offset to

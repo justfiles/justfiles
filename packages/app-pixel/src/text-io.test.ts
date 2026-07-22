@@ -79,9 +79,18 @@ describe('setGrid — stamp a char-grid patch', () => {
 		expect(s.doc.grid).toEqual(['0.', '.0'])
 	})
 
+	// A size-less document is valid — decode derives w/h from the grid — so it must
+	// replace the canvas, not get stamped as a patch.
+	it('replaces the canvas for a full document that omits the size header', async () => {
+		const s = await setGrid(blank(16), { grid: 'pixel 1\ngrid\n0.\n.0' })
+		expect(s.doc.width).toBe(2)
+		expect(s.doc.height).toBe(2)
+		expect(s.doc.grid).toEqual(['0.', '.0'])
+	})
+
 	// A patch whose first row is legal cell data that spells `pixel`/`pixel 1` must
-	// stamp as a patch, not trip full-doc replacement — without a `size`+`grid`
-	// structure, decode would wipe the canvas to a default doc.
+	// stamp as a patch, not trip full-doc replacement — with no `grid` section it is
+	// not a whole document, so decode never runs (which would wipe to a default doc).
 	it('stamps a patch whose first row spells `pixel` without wiping the canvas', async () => {
 		const s = await setGrid(blank(16), { grid: 'pixel 1' })
 		expect(s.doc.width).toBe(16) // canvas untouched — no full-doc replace
