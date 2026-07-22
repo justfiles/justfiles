@@ -6,7 +6,8 @@ export function createAgent(backend: AgentBackend): Agent {
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: '', // set dynamically each turn in webSocketMessage
-			model: backend.model
+			model: backend.model,
+			thinkingLevel: 'low'
 		},
 		convertToLlm: (messages: AgentMessage[]): Message[] => buildModelVisibleMessages(messages),
 		// No `getApiKey`: `streamFn` is the sole auth seam, so the agent holds no token.
