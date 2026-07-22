@@ -26,6 +26,13 @@ app run --id computer.spud.pixel show
 app run --id computer.spud.pixel show ruler=true   # overlay 0-based col/row numbers (read-only view)
 ```
 
+`show` returns its `.pixel` text inside the `app run` JSON envelope. To pipe it
+straight back (or into a file), add `--raw`, which prints the result verbatim:
+
+```sh
+app run --id computer.spud.pixel show --raw | app run --id computer.spud.pixel setGrid --stdin grid
+```
+
 **Draw** — pipe a char grid into `setGrid` via `--stdin grid` (heredoc or `|`):
 
 ```sh
@@ -49,4 +56,4 @@ printf '.66.\n.66.' | app run --id computer.spud.pixel setGrid x=6 y=8 --stdin g
 
 If the piped text is a full `.pixel` document (first line `pixel <version>`) it
 replaces the whole canvas and palette (`x`/`y` ignored) — e.g. paste back an
-edited `show` dump.
+edited `show --raw` dump.
