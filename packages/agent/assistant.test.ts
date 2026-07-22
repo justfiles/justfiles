@@ -178,4 +178,32 @@ describe('assistant tool API', () => {
 		)
 		expect(rt.systemPrompt()).toBe(expected.build())
 	})
+
+	test('injects the user age computed from the profile birth date', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/system', { recursive: true })
+		await vol.writeFile(
+			'/system/user.md',
+			encoder.encode('---\nname: Ada\nbirth_date: 1990-06-15\n---\n')
+		)
+		const rt = await createAssistant({
+			volume: vol,
+			agent: new Agent(),
+			text: testText(),
+			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 }
+		})
+		expect(rt.systemPrompt()).toMatch(/The user is \d+ years old\./)
+	})
+
+	test('adds the apps block from appsSection', async () => {
+		const rt = await createAssistant({
+			volume: volume(memStorage()),
+			agent: new Agent(),
+			text: testText(),
+			compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },
+			appsSection: async () => 'Installed apps:\n- `com.example.notes` (Notes)'
+		})
+		expect(rt.systemPrompt()).toContain('# apps')
+		expect(rt.systemPrompt()).toContain('com.example.notes')
+	})
 })
