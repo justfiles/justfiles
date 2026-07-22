@@ -332,3 +332,36 @@ test('install/uninstall emit catalog events; hidden ids stay off the catalog sur
 	// Only the visible app produced events; the hidden one never does.
 	expect(events).toEqual(['app.installed:com.example.app', 'app.uninstalled:com.example.app'])
 })
+
+test('reload re-hydrates state written outside the kernel (a synced-down agent edit)', async () => {
+	// frieren's browser kernel and the server kernel share a volume via sync: the
+	// agent edits on the server, and the write lands in THIS kernel's fs as a
+	// REMOTE_SOURCE write it never authored. The state cache assumes the kernel is
+	// the sole writer, so `state()` would serve the stale pre-sync value forever —
+	// `reload` is the seam the host calls on that remote write.
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+
+	await k.dispatch(appId, { type: 'increment', params: { amount: 5 }, actor: 'agent' })
+	expect(await k.state(appId)).toEqual({ count: 5 }) // cached in-memory
+
+	// Simulate the sync layer applying the agent's server-side edit to /state.
+	await fs.writeFile(
+		`/state/${appId}.json`,
+		new TextEncoder().encode(JSON.stringify({ count: 42 }))
+	)
+	// Without a reload the kernel still serves the stale cache — this WAS the bug
+	// (the open GUI, which reads state(), kept showing the pre-edit value).
+	expect(await k.state(appId)).toEqual({ count: 5 })
+
+	await k.reload(appId)
+	expect(await k.state(appId)).toEqual({ count: 42 }) // now reflects the synced file
+
+	// The reloaded value is authoritative for the next dispatch — no stale clobber.
+	expect(
+		await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
+	).toEqual({ count: 43 })
+})

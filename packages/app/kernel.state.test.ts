@@ -53,3 +53,21 @@ test('drop clears the persisted and in-memory state', async () => {
 	// Gone from fs too — a fresh store sees nothing.
 	expect(await stateStore(fs).current('a')).toBeUndefined()
 })
+
+test('invalidate re-hydrates from fs on the next read (external write)', async () => {
+	const fs = fresh()
+	const s = stateStore(fs)
+	await s.commit('a', { n: 1 })
+	expect(await s.current('a')).toEqual({ n: 1 }) // cached
+
+	// Simulate a synced-down write: the file changes UNDER the store (another writer),
+	// so the in-memory cache is now stale.
+	await fs.writeFile('/state/a.json', new TextEncoder().encode(JSON.stringify({ n: 99 })))
+	expect(await s.current('a')).toEqual({ n: 1 }) // still the stale cache — the bug
+
+	s.invalidate('a')
+	expect(await s.current('a')).toEqual({ n: 99 }) // now reflects the file
+	// seq is untouched by invalidate; the next commit still continues monotonically.
+	expect(s.seq('a')).toBe(1)
+	expect(await s.commit('a', { n: 100 })).toBe(2)
+})

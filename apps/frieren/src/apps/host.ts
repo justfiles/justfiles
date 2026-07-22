@@ -228,6 +228,10 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 		stage.pendingBoot = false
 		void (async () => {
 			try {
+				// A remote write can land while this window is closed; the kernel's state
+				// cache didn't author it, so reload from fs before snapshotting or the boot
+				// shows the pre-sync value (an agent edit made while closed wouldn't appear).
+				await kernel.reload(stage.id)
 				const snapshot = await kernel.state(stage.id)
 				if (stage.cancelled) return
 				stage.port?.close()
@@ -264,8 +268,12 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	if (stage.cancelled) return
 	stage.unwatch = await vol.watch(`/state/${stage.id}.json`, (event) => {
 		if (event.source !== REMOTE_SOURCE || stage.cancelled) return
+		// The kernel's state cache didn't author this write, so it's stale — reload it
+		// from fs, THEN read, or the snapshot is the pre-sync value (the agent's edit
+		// wouldn't show). `reload` is queued, so it can't race a local dispatch.
 		void kernel
-			.state(stage.id)
+			.reload(stage.id)
+			.then(() => kernel.state(stage.id))
 			.then((state) => {
 				if (!stage.cancelled) stage.postState?.(state ?? null)
 			})
