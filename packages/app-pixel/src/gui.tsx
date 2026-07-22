@@ -30,6 +30,8 @@ injectStyle(
 .pixel-swatch[data-active="true"] { border: 2px solid var(--focus); }
 .pixel-active { min-width: 4.5em; opacity: 0.7; font-variant-numeric: tabular-nums; }
 .pixel-edit { width: 26px; height: 26px; padding: 0; border: 1px solid var(--rule); background: transparent; }
+.pixel-status { max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.7; font-variant-numeric: tabular-nums; }
+.pixel-status[data-error="true"] { color: var(--danger, #d04648); opacity: 1; }
 `,
 	'app-pixel'
 )
@@ -97,6 +99,47 @@ function paint(
 
 const fitZoom = (doc: PixelDoc) => Math.max(1, Math.floor(512 / Math.max(doc.width, doc.height)))
 
+// Integer export factors — native (1×) plus scales pixel art never blurs at.
+const EXPORT_SCALES = [1, 2, 4, 8, 16]
+
+// Clean rasterization for export: grid+palette onto a transparent canvas at an
+// integer scale, no checkerboard or grid overlay. The canvas starts fully
+// transparent, so index 0 (transparent) is simply left unpainted (alpha 0), and
+// `imageSmoothingEnabled = false` + integer `scale` keep every pixel crisp.
+function rasterize(canvas: HTMLCanvasElement, doc: PixelDoc, scale: number): void {
+	const { width, height, palette } = doc
+	canvas.width = width * scale
+	canvas.height = height * scale
+	const ctx = canvas.getContext('2d')
+	if (!ctx) return
+	ctx.imageSmoothingEnabled = false
+	for (let y = 0; y < height; y++) {
+		const row = doc.grid[y] ?? ''
+		for (let x = 0; x < width; x++) {
+			const ch = row[x] ?? TRANSPARENT
+			if (ch === TRANSPARENT) continue
+			const color = palette[charToIndex(ch) - 1]
+			if (!color) continue
+			ctx.fillStyle = color
+			ctx.fillRect(x * scale, y * scale, scale, scale)
+		}
+	}
+}
+
+// Same helper as app-paint: a lossless PNG blob → base64, chunked so a large
+// scaled canvas doesn't blow the argument limit of String.fromCharCode.
+async function canvasToPngBase64(canvas: HTMLCanvasElement): Promise<string> {
+	const blob: Blob = await new Promise((resolve, reject) => {
+		canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob returned null'))), 'image/png')
+	})
+	const bytes = new Uint8Array(await blob.arrayBuffer())
+	let binary = ''
+	const chunk = 0x8000
+	for (let i = 0; i < bytes.length; i += chunk)
+		binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+	return btoa(binary)
+}
+
 // Content equality — the host structured-clones state on every commit, so grid
 // references are never stable; the undo timeline keys off pixels, not identity.
 const gridEqual = (a: string[], b: string[]): boolean =>
@@ -117,6 +160,8 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 	const dragRef = useRef<Drag | null>(null)
 	const [zoom, setZoom] = useState(() => fitZoom(doc))
 	const [showGrid, setShowGrid] = useState(true)
+	const [exportScale, setExportScale] = useState(1)
+	const [exporting, setExporting] = useState(false)
 	const [, bump] = useReducer((n: number) => n + 1, 0)
 
 	// GUI-local undo/redo: a snapshot per observed committed grid revision. Every
@@ -279,6 +324,23 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 			void actions.resize({ width: size, height: size })
 	}
 
+	// Export rasterizes off-screen at the integer scale (transparent bg, no grid),
+	// then hands the PNG bytes to the reducer, which writes them to /Pixel/.
+	const handleExport = async () => {
+		if (exporting) return
+		setExporting(true)
+		try {
+			const canvas = document.createElement('canvas')
+			rasterize(canvas, doc, exportScale)
+			const pngBase64 = await canvasToPngBase64(canvas)
+			await actions.exportPng({ scale: exportScale, pngBase64 })
+		} finally {
+			setExporting(false)
+		}
+	}
+
+	const status = state.lastError ?? (state.lastSavedPath ? `Saved ${state.lastSavedPath}` : '')
+
 	const { index, stack } = history.current
 	const busy = restoring.current // a restore is settling — freeze the timeline controls
 	const activeColor = colorIndex >= 1 ? (doc.palette[colorIndex - 1] ?? '#000000') : '#000000'
@@ -306,6 +368,23 @@ export default function Pixel({ state, actions }: GUIProps<typeof app>) {
 				<button type="button" onClick={() => void actions.clear({})}>
 					Clear
 				</button>
+				<select
+					value={exportScale}
+					onChange={(e) => setExportScale(Number(e.target.value))}
+					aria-label="Export scale"
+				>
+					{EXPORT_SCALES.map((s) => (
+						<option key={s} value={s}>
+							{s === 1 ? 'Native' : `${s}×`}
+						</option>
+					))}
+				</select>
+				<button type="button" onClick={handleExport} disabled={exporting}>
+					Export
+				</button>
+				<span className="pixel-status" data-error={Boolean(state.lastError)}>
+					{exporting ? 'Exporting…' : status}
+				</span>
 				<span className="pixel-spacer" />
 				<select
 					value={doc.width}

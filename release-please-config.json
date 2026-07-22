@@ -21,6 +21,11 @@
 			"release-type": "node",
 			"package-name": "@spud-computer/draw",
 			"bump-minor-pre-major": true
+		},
+		"packages/app-pixel": {
+			"release-type": "node",
+			"package-name": "@spud-computer/pixel",
+			"bump-minor-pre-major": true
 		}
 	},
 	"plugins": ["node-workspace"]

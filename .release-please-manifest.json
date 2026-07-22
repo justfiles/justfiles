@@ -4,5 +4,6 @@
 	"apps/frieren": "0.4.0",
 	"packages/fs": "0.3.0",
 	"packages/app-code": "0.2.0",
-	"packages/app-draw": "0.1.1"
+	"packages/app-draw": "0.1.1",
+	"packages/app-pixel": "0.1.0"
 }

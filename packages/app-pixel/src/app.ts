@@ -1,4 +1,5 @@
 import { defineApp } from '@justfiles/app'
+import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 import {
 	clear as clearGrid,
@@ -17,8 +18,8 @@ import { MAX_COLORS, MAX_SIZE, newDoc, type PixelDoc } from './doc.ts'
 export type Tool = 'pencil' | 'eraser' | 'fill' | 'eyedropper' | 'line' | 'rect'
 
 // The whole editor state. `doc` is the artwork (in state, so the agent reads it);
-// `tool`/`colorIndex` are the active selection. `lastSavedPath`/`lastError` are
-// reserved for phase 4 (PNG export) — kept here so the shape is stable.
+// `tool`/`colorIndex` are the active selection. `lastSavedPath`/`lastError`
+// carry the outcome of the last PNG export.
 export type PixelState = {
 	doc: PixelDoc
 	// Added in phase 2. Persisted phase-1 state is `{ doc }` only and the kernel
@@ -71,6 +72,21 @@ const dim = v.pipe(v.number(), v.integer(), v.minValue(1))
 const color = v.pipe(v.string(), v.regex(/^#[0-9a-fA-F]{6}$/))
 const tool = v.picklist(['pencil', 'eraser', 'fill', 'eyedropper', 'line', 'rect'] as const)
 const pixel = v.object({ x: coord, y: coord, i: idx })
+// Integer export scale so the PNG never blurs; the GUI has already rasterized at
+// this factor, so it only names the file here.
+const scale = v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(32))
+
+// Exports land in the app's per-app volume (/data/<id>), matching paint's /Paint.
+const SAVE_DIR = '/Pixel'
+
+const timestamp = (): string => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+
+const base64ToBytes = (b64: string): Uint8Array => {
+	const bin = atob(b64)
+	const out = new Uint8Array(bin.length)
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+	return out
+}
 
 const withGrid = (state: PixelState, grid: string[]): PixelState => ({
 	...state,
@@ -79,6 +95,7 @@ const withGrid = (state: PixelState, grid: string[]): PixelState => ({
 
 export const app = defineApp({
 	init: initialState,
+	capabilities: { volume: volume({ scopes: [] }) },
 	update: (t) => ({
 		// Drawing — batch-first so the agent (and a committed human stroke) places
 		// many pixels per dispatch, keeping the /state write count low.
@@ -230,7 +247,36 @@ export const app = defineApp({
 			description:
 				"Select the GUI's active tool: pencil | eraser | fill | eyedropper | line | rect. The agent normally draws via the batch actions instead.",
 			examples: [{ params: { tool: 'pencil' } }]
-		})
+		}),
+		// Export — mirrors paint's `save`: stamp the path optimistically, write the
+		// bytes as a command, and clear the path again if the write fails. The GUI
+		// rasterizes grid+palette at the integer `scale` (index 0 → transparent) and
+		// passes the PNG bytes; `scale` only shapes the filename here.
+		exportPng: t.on(
+			v.object({
+				scale,
+				pngBase64: v.pipe(v.string(), v.minLength(1)),
+				filename: v.optional(v.string())
+			}),
+			(s, { scale, pngBase64, filename }) => {
+				const safe = filename?.replace(/[^\w.-]/g, '_')
+				const suffix = scale > 1 ? `@${scale}x` : ''
+				const name = safe || `pixel-${s.doc.width}x${s.doc.height}${suffix}-${timestamp()}.png`
+				const path = `${SAVE_DIR}/${name}`
+				return [
+					{ ...s, lastSavedPath: path, lastError: null },
+					t.cmd('volume', 'writeFile', path, base64ToBytes(pngBase64)).to('exported')
+				]
+			},
+			{
+				description:
+					'Export the artwork as a PNG into /Pixel/. The GUI rasterizes grid+palette at the integer scale (native = 1; index 0 stays transparent) and supplies the PNG bytes as pngBase64; scale only shapes the filename.',
+				examples: [{ params: { scale: 8, pngBase64: 'iVBORw0KGgo=' } }]
+			}
+		),
+		exported: t.fromResult('volume', 'writeFile', (s, r) =>
+			r.ok ? s : { ...s, lastSavedPath: null, lastError: r.error.message }
+		)
 	})
 })
 
