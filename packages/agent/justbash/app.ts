@@ -72,7 +72,17 @@ async function runAction(controller: AppController, argv: string[]): Promise<Exe
 			examples: examples(app.id, app.actions)
 		})
 	}
-	const params = parseParams(tokens)
+	let params: Record<string, unknown>
+	try {
+		params = parseParams(tokens)
+	} catch (error) {
+		// A malformed param is the agent's fault-line — surface it as an error (never
+		// a silently-coerced string) carrying THIS action's full usage + examples, so
+		// the correct call is discoverable exactly when it fails.
+		return fail('BAD_PARAMS', error instanceof Error ? error.message : String(error), {
+			action: formatAction(app.id, action, app.actions[action])
+		})
+	}
 	try {
 		// `result` is the action's return: the new state for handlers, the
 		// query's return value for queries. The action's `kind` is in
@@ -120,20 +130,45 @@ function parseParams(tokens: string[]): Record<string, unknown> {
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]
 		if (token === undefined) continue
-		if (token === '--params-json') return JSON.parse(tokens[++i] ?? '{}') as Record<string, unknown>
+		if (token === '--params-json') {
+			const raw = tokens[++i] ?? '{}'
+			try {
+				return JSON.parse(raw) as Record<string, unknown>
+			} catch (error) {
+				throw new Error(
+					`--params-json is not valid JSON (${msg(error)}). Single-quote the whole object so the shell passes it through verbatim, e.g. --params-json '{"pixels":[{"x":0,"y":0,"i":1}]}'.`
+				)
+			}
+		}
 		const eq = token.indexOf('=')
-		if (eq < 1) throw new Error(`expected key=value, got: ${token}`)
+		if (eq < 1)
+			throw new Error(
+				`expected key=value, got ${JSON.stringify(token)}. Pass scalars as key=value (amount=2, tool=pencil); pass an array/object as one JSON object via --params-json '<json>'.`
+			)
 		out[token.slice(0, eq)] = parseValue(token.slice(eq + 1))
 	}
 	return out
 }
 
+// A bare word stays a string when it isn't JSON, so `color=#d04648` / `tool=pencil`
+// work. But a value that plainly MEANT to be structured (`[…]` / `{…}`) yet fails
+// to parse is almost always the shell having stripped the quotes off inline JSON
+// (`pixels=[{"x":0}]` → `pixels=]`) — surface that as an error pointing at the
+// robust form, rather than passing a broken string on to schema validation.
 function parseValue(value: string): unknown {
 	try {
 		return JSON.parse(value)
-	} catch {
+	} catch (error) {
+		if (/^\s*[[{]/.test(value))
+			throw new Error(
+				`could not parse JSON value ${JSON.stringify(value)} (${msg(error)}). Inline key=value is unquoted by the shell, so it mangles JSON — pass structured params as one JSON object via --params-json '<json>' (single-quoted), e.g. app run --id <id> <action> --params-json '{"pixels":[{"x":0,"y":0,"i":1}]}'.`
+			)
 		return value
 	}
+}
+
+function msg(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
 }
 
 function formatActions(appId: string, actions: Record<string, ActionMeta>) {
@@ -146,7 +181,7 @@ function formatAction(appId: string, name: string, meta: ActionMeta) {
 	return {
 		name,
 		description: meta.description,
-		usage: `app run --id ${appId} ${name} key=value ...`,
+		usage: `app run --id ${appId} ${name} key=value ...  (arrays/objects: --params-json '<json>')`,
 		schemaHint: meta.schemaHint,
 		examples: (meta.examples ?? []).map((e) => example(appId, name, e.params))
 	}
@@ -159,8 +194,15 @@ function examples(appId: string, actions: Record<string, ActionMeta>): string[] 
 }
 
 function example(appId: string, action: string, params: Record<string, unknown>): string {
+	const head = `app run --id ${appId} ${action}`
+	// Any array/object value must go through --params-json: an inline JSON value is
+	// unquoted by the shell (`pixels=[{"x":0}]` → `pixels=]`), and schema validation
+	// then rejects it. So the moment a param is structured, emit the whole object as
+	// one single-quoted --params-json blob — the only form that round-trips a shell.
+	const structured = Object.values(params).some((v) => v !== null && typeof v === 'object')
+	if (structured) return `${head} --params-json '${JSON.stringify(params)}'`
 	const args = Object.entries(params).map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-	return ['app run --id', appId, action, ...args].join(' ')
+	return [head, ...args].join(' ')
 }
 
 function ok(value: unknown): ExecResult {
@@ -192,7 +234,10 @@ function help() {
 			'app current',
 			'app run increment amount=2',
 			'app run --id com.example.counter increment amount=2',
+			'app run --id com.example.counter setItems --params-json \'{"items":[{"x":0,"y":0}]}\'',
 			'app actions --id com.example.counter'
-		]
+		],
+		params:
+			"Scalars pass as key=value (amount=2, tool=pencil, color=#d04648). Arrays/objects MUST go as one JSON object via --params-json '<json>' (single-quoted) — inline key=value is unquoted by the shell, which mangles JSON."
 	}
 }
