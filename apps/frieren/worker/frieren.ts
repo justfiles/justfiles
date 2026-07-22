@@ -120,6 +120,12 @@ const DEBUG_COMMAND = '/debug'
 // the active-image work (#194).
 const IMAGE_MODEL = 'google/gemini-3.1-flash-image'
 
+// Local dev runs on the developer's own OpenRouter key, so the platform AI cap — a
+// shared-key protection — is lifted by resolving the tier as `unlimited`. `import.meta.env.DEV`
+// is statically `true` under `vite` (dev) and `false` under `vite build` (the deploy path),
+// so production is always metered. `undefined` in prod ⇒ the tier resolves from stored state.
+const DEV_TIER_OVERRIDE = import.meta.env.DEV ? 'unlimited' : undefined
+
 // A conservative upper bound (micro-USD) reserved per image generation. Image cost is
 // per-image, not token-based, so we can't derive it from the model; this bounds concurrent
 // image spend against the cap and is reconciled to the actual cost on settle.
@@ -165,7 +171,7 @@ export class Frieren extends DurableObject<Env> {
 			})
 			.get('/api/usage', async (c) => {
 				const usage = await readUsage(this.db, ctx.storage.sql.databaseSize)
-				const tier = await readTier(ctx.storage)
+				const tier = await readTier(ctx.storage, DEV_TIER_OVERRIDE)
 				return c.json({ ...usage, quota: evaluate(usage, tier) })
 			})
 			.route(
@@ -228,7 +234,8 @@ export class Frieren extends DurableObject<Env> {
 	// sentinel huge limit so the same path always reserves (⇒ rolls the month, yields a window)
 	// but never rejects. Throws when the cap is spent.
 	private async reserveOrThrow(estMicros: number): Promise<string> {
-		const limit = aiLimitMicros(await readTier(this.ctx.storage)) ?? Number.MAX_SAFE_INTEGER
+		const limit =
+			aiLimitMicros(await readTier(this.ctx.storage, DEV_TIER_OVERRIDE)) ?? Number.MAX_SAFE_INTEGER
 		const window = await reserve(this.db, estMicros, limit)
 		if (window === null)
 			throw new Error('Monthly AI limit reached — it resets next month, or upgrade your plan.')
@@ -281,7 +288,7 @@ export class Frieren extends DurableObject<Env> {
 	// host-agnostic snapshot the Settings app renders.
 	private async usageSnapshot(): Promise<UsageSnapshot> {
 		const report = await readUsage(this.db, this.ctx.storage.sql.databaseSize)
-		const q = evaluate(report, await readTier(this.ctx.storage))
+		const q = evaluate(report, await readTier(this.ctx.storage, DEV_TIER_OVERRIDE))
 		return {
 			tier: q.tier,
 			ai: q.ai,

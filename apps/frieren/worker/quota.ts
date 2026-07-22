@@ -11,7 +11,7 @@ export interface Limits {
 	storageBytes: number | null // max logical (deduped) storage bytes — point-in-time gauge
 }
 
-export type TierId = 'free' | 'pro'
+export type TierId = 'free' | 'pro' | 'unlimited'
 
 const MB = 1024 * 1024
 const GB = 1024 * MB
@@ -20,7 +20,9 @@ const GB = 1024 * MB
 // Free values are starting points to validate in practice, not final.
 export const TIERS: Record<TierId, Limits> = {
 	free: { aiCostUsd: 1, storageBytes: 500 * MB },
-	pro: { aiCostUsd: 25, storageBytes: 25 * GB }
+	pro: { aiCostUsd: 25, storageBytes: 25 * GB },
+	// No caps. Not assigned by billing — reserved for a local-dev override (see readTier).
+	unlimited: { aiCostUsd: null, storageBytes: null }
 }
 
 export const DEFAULT_TIER: TierId = 'free'
@@ -33,7 +35,10 @@ function limitsFor(tier: TierId): Limits {
 	return TIERS[tier] ?? TIERS[DEFAULT_TIER]
 }
 
-export async function readTier(storage: KvStorage): Promise<TierId> {
+// `override` (the resolved dev-only tier — see DEV_TIER_OVERRIDE in worker/frieren.ts) wins
+// over the stored tier, so local dev can lift the free cap without touching billing state.
+export async function readTier(storage: KvStorage, override?: string): Promise<TierId> {
+	if (override && override in TIERS) return override as TierId
 	const tier = await storage.get<TierId>(TIER_KEY)
 	return tier && tier in TIERS ? tier : DEFAULT_TIER
 }
