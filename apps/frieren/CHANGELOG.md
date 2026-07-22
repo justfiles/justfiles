@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.4.0...spud-v0.5.0) (2026-07-22)
+
+
+### Features
+
+* **frieren:** dev-only app sideload via FRIEREN_DEV_APPS ([#224](https://github.com/xiaoxinghu/justfiles/issues/224)) ([42c36b8](https://github.com/xiaoxinghu/justfiles/commit/42c36b83ceced3b3ed6e13c16da90a0df881519a))
+* **frieren:** lift the platform AI cap in local dev only ([a405986](https://github.com/xiaoxinghu/justfiles/commit/a405986192c35dc8223314592ef5d8910554d35b))
+* **frieren:** per-user usage metering ([#212](https://github.com/xiaoxinghu/justfiles/issues/212)) ([788b651](https://github.com/xiaoxinghu/justfiles/commit/788b651763f2137de6ed2f5076cd48e036eb41e0))
+* **frieren:** usage caps + tiers (free/pro) with AI pre-turn enforcement ([1c2ee2d](https://github.com/xiaoxinghu/justfiles/commit/1c2ee2db8ac7dde616b978f6d787dac9db073cf4))
+* **settings:** Usage panel — AI + storage against plan ([a76942b](https://github.com/xiaoxinghu/justfiles/commit/a76942b1a2fc955d806b28e275257189c0232e15))
+
+
+### Bug Fixes
+
+* **app:** reflect synced-down agent edits in the open GUI ([#226](https://github.com/xiaoxinghu/justfiles/issues/226)) ([e5b2109](https://github.com/xiaoxinghu/justfiles/commit/e5b210910777e822eeda098ff0f7446fe3146651))
+* **frieren:** address Codex review on composers ([47f3b51](https://github.com/xiaoxinghu/justfiles/commit/47f3b5105048682737521c873b77ef23c2348fd7))
+* **frieren:** auto-grow omnibar + chat composers like iMessage ([2570921](https://github.com/xiaoxinghu/justfiles/commit/25709210851dbf33cb119856926de16a70c5e76a))
+* **frieren:** click anywhere in a window to focus + macOS active/inactive styling ([a128f1c](https://github.com/xiaoxinghu/justfiles/commit/a128f1ccb32c9aba9ced791f6f91377ddf94a77b))
+* **frieren:** close omnibar top gap; pin chat send inside the field (iMessage) ([562172c](https://github.com/xiaoxinghu/justfiles/commit/562172c541d6c9facf954c3bdd5a568b67ed044a))
+* **frieren:** enforce border-box in useAutoResize so empty composers stay one line ([71997cc](https://github.com/xiaoxinghu/justfiles/commit/71997cc0d303120b5ae3c1f39aa49d536e3a7afb))
+* **frieren:** keep os-state v1 readable by pre-placements clients ([d2fee46](https://github.com/xiaoxinghu/justfiles/commit/d2fee46b12c6d77f45ba89c3663b2a347016a96f))
+* **frieren:** navigate omnibar results only at the caret's visual-line edge ([2b901e6](https://github.com/xiaoxinghu/justfiles/commit/2b901e6d6dc7f8bf2211d3ca2e61807afd7783b2))
+* **frieren:** polish composer alignment, drop search icon, tame chat radius ([3fe9624](https://github.com/xiaoxinghu/justfiles/commit/3fe9624fd5e066c2475a247425b03e663b08a697))
+* **frieren:** remember window position/size across close→reopen ([6e9e838](https://github.com/xiaoxinghu/justfiles/commit/6e9e8381d0457506f03a4b4b4d2191335f2f15a9))
+* **frieren:** show focus catcher on unfocused fullscreen windows too ([5977fd4](https://github.com/xiaoxinghu/justfiles/commit/5977fd49b4b5d9f7bb2339355e0b698b2473192b))
+* **usage:** address Codex review — roll window on read, gate all inference paths, per-resource hint ([dd406da](https://github.com/xiaoxinghu/justfiles/commit/dd406da43d7725cd4bf22627c114018e493e113b))
+* **usage:** address Codex round 2 — drain accrual before gate, meter failed images, usage retry state ([a9840ad](https://github.com/xiaoxinghu/justfiles/commit/a9840ad937e099969cce75c280b4f7e9686dd4c2))
+* **usage:** address Codex round 3 — serialize inference, exclude orphan blobs, degrade Usage tab off-host ([221af61](https://github.com/xiaoxinghu/justfiles/commit/221af61661f89b5be63291bd1217f07564fcae6e))
+* **usage:** address Codex round 4 — worst-case reservation, restore/switch Usage tab ([b988f4b](https://github.com/xiaoxinghu/justfiles/commit/b988f4b476fe3f5dbba43139e26180f9b04f7dfb))
+* **usage:** reservations survive month rollover + volume resets (Codex round 5) ([b2a6425](https://github.com/xiaoxinghu/justfiles/commit/b2a64257a46ff57d999e81820a92fc5c9dc5d9e2))
+
 ## [0.4.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.3.1...spud-v0.4.0) (2026-07-20)
 
 
