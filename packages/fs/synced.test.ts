@@ -643,3 +643,55 @@ describe('synced (generation / client-reset)', () => {
 		expect(state.pendingReset).toBeUndefined()
 	})
 })
+
+describe('synced (anti-entropy backstop)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const d of destroyers.splice(0)) d()
+	})
+	function track<T extends { destroy(): void }>(vol: T): T {
+		destroyers.push(() => vol.destroy())
+		return vol
+	}
+
+	// A P2P remote holds a file the client's delta pull can NEVER reach because its
+	// pullCursor was left ahead of that change — the stale-cursor divergence a server
+	// swap / dropped delta produces (two dev DOs both at generation 1 in the wild).
+	// Only the anti-entropy reconcile (a full pathScan, cursor-independent) heals it.
+	async function divergedSetup() {
+		const remote = memStorage()
+		await volume(remote).writeFile('/x.txt', enc.encode('server-only'))
+		const local = memStorage()
+		await seedSyncState(local, { pullCursor: '999', pushCursor: '0' })
+		return { local, remote }
+	}
+
+	it('heals a divergence the delta cursor skipped (enabled)', async () => {
+		const { local, remote } = await divergedSetup()
+		const vol = track(
+			await synced({ local, remote, interval: 99_999, antiEntropy: { everyCycles: 1 } })
+		)
+		// Construction ran one non-bootstrap cycle → the backstop pulled the skipped file.
+		expect(dec.decode(await vol.readFile('/x.txt'))).toBe('server-only')
+	})
+
+	it('stays diverged when disabled (proves the toggle IS the mechanism)', async () => {
+		const { local, remote } = await divergedSetup()
+		const vol = track(await synced({ local, remote, interval: 99_999, antiEntropy: false }))
+		await vol.flush()
+		await vol.flush()
+		expect(await vol.exists('/x.txt')).toBe(false) // delta cursor skips it; no backstop to heal
+	})
+
+	it('default-enabled backstop does not disturb an ordinary P2P sync', async () => {
+		// No preseeded cursor → first cycle bootstraps (the backstop is skipped there),
+		// and the default-on reconcile must leave normal convergence untouched.
+		const remote = memStorage()
+		await volume(remote).writeFile('/hello.txt', enc.encode('hi'))
+		const vol = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
+		await vol.writeFile('/mine.txt', enc.encode('mine'))
+		await vol.flush()
+		expect(dec.decode(await vol.readFile('/hello.txt'))).toBe('hi')
+		expect(dec.decode(await volume(remote).readFile('/mine.txt'))).toBe('mine')
+	})
+})

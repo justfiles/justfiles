@@ -414,6 +414,23 @@ export function localSyncReplica(
 	}
 }
 
+/**
+ * Ensure the `target` blob store holds a blob for every regular-file put's
+ * contentHash — upload from `source` when missing. Content is durable before the
+ * tree points at it. Shared by push (synced) and the anti-entropy reconcile.
+ */
+export async function uploadBlobs(
+	changes: PathChange[],
+	source: BlobStore,
+	target: BlobStore
+): Promise<void> {
+	for (const c of changes) {
+		if (c.kind !== 'put' || !c.contentHash) continue
+		if (await target.hasBlobByHash(c.contentHash)) continue
+		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
+	}
+}
+
 // ── Path-keyed sync state + tombstones (engine-internal, under /.state/sync) ──
 
 /**

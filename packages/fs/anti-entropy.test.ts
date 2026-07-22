@@ -1,0 +1,134 @@
+/**
+ * Unit tests for the anti-entropy reconcile (the sync convergence backstop).
+ *
+ * Driven through the REAL `twoPeers()` replicas (two independent backends), so
+ * these exercise `reconcile()` against the same `pathScan`/`applyPathChanges`/LWW
+ * seams production uses — not a re-implementation. The headline property: two
+ * replicas holding DIFFERENT content at the SAME path always converge to one
+ * deterministic winner on BOTH sides (the exact bug this feature fixes).
+ */
+
+import { describe, expect, it } from 'vitest'
+import { reconcile } from './anti-entropy'
+import { bytes, text, twoPeers } from './sync-test-harness'
+
+describe('reconcile — convergence backstop', () => {
+	it('is a no-op on an already-converged pair (no applies, no blob transfer)', async () => {
+		const { client, server, syncBoth } = twoPeers()
+		await server.writeFile('/a.txt', bytes('hello'))
+		await syncBoth()
+
+		// Count blob fetches to prove converged content moves zero bytes.
+		let fetches = 0
+		const spied = {
+			...server.replica,
+			getBlobByHash: (h: string) => {
+				fetches++
+				return server.replica.getBlobByHash(h)
+			}
+		}
+		const res = await reconcile(client.replica, spied)
+		expect(res.pulled).toBe(0)
+		expect(res.pushed).toBe(0)
+		expect(fetches).toBe(0)
+	})
+
+	it('pulls a remote-only file down to local', async () => {
+		const { client, server } = twoPeers()
+		await server.writeFile('/only-remote.txt', bytes('R'))
+		const res = await reconcile(client.replica, server.replica)
+		expect(res.pulled).toBe(1)
+		expect(text(await client.readFile('/only-remote.txt'))).toBe('R')
+	})
+
+	it('pushes a local-only file up to remote', async () => {
+		const { client, server } = twoPeers()
+		await client.writeFile('/only-local.txt', bytes('L'))
+		const res = await reconcile(client.replica, server.replica)
+		expect(res.pushed).toBe(1)
+		expect(text(await server.readFile('/only-local.txt'))).toBe('L')
+	})
+
+	it('converges same-path divergent content to the higher version (remote wins)', async () => {
+		const { client, server } = twoPeers()
+		await client.write('/x', bytes('C'), { version: 2 })
+		await server.write('/x', bytes('S'), { version: 5 })
+		await reconcile(client.replica, server.replica)
+		expect(text(await client.readFile('/x'))).toBe('S')
+		expect(text(await server.readFile('/x'))).toBe('S')
+	})
+
+	it('converges same-path divergent content to the higher version (local wins)', async () => {
+		const { client, server } = twoPeers()
+		await client.write('/x', bytes('C'), { version: 5 })
+		await server.write('/x', bytes('S'), { version: 2 })
+		await reconcile(client.replica, server.replica)
+		expect(text(await client.readFile('/x'))).toBe('C')
+		expect(text(await server.readFile('/x'))).toBe('C')
+	})
+
+	it('converges an EXACT-version tie to one deterministic winner on both sides (no swap)', async () => {
+		// This is the pixel bug: both sides drew different art at the same path, same
+		// version. The digest tie-break must pick the SAME winner on both replicas.
+		const { client, server } = twoPeers()
+		await client.write('/pixel', bytes('heart'), { version: 3 })
+		await server.write('/pixel', bytes('jelly'), { version: 3 })
+		await reconcile(client.replica, server.replica)
+		const c = text(await client.readFile('/pixel'))
+		const s = text(await server.readFile('/pixel'))
+		expect(c).toBe(s) // converged, not diverged
+		expect(['heart', 'jelly']).toContain(c)
+	})
+
+	it('is idempotent — a second pass over the converged pair does nothing', async () => {
+		const { client, server } = twoPeers()
+		await client.write('/x', bytes('C'), { version: 3 })
+		await server.write('/x', bytes('S'), { version: 3 })
+		await reconcile(client.replica, server.replica)
+		const again = await reconcile(client.replica, server.replica)
+		expect(again.pulled).toBe(0)
+		expect(again.pushed).toBe(0)
+	})
+
+	it('reports zero work when both sides are empty', async () => {
+		const { client, server } = twoPeers()
+		const res = await reconcile(client.replica, server.replica)
+		expect(res).toMatchObject({ localPaths: 0, remotePaths: 0, pulled: 0, pushed: 0 })
+	})
+
+	it('never crosses the local-only /.state subtree', async () => {
+		const { client, server } = twoPeers()
+		await server.writeFile('/.state/secret', bytes('X'))
+		const res = await reconcile(client.replica, server.replica)
+		expect(await client.exists('/.state/secret')).toBe(false)
+		expect(res.pulled).toBe(0)
+	})
+
+	it('does NOT resurrect a delete: a live put loses to a higher-versioned tombstone', async () => {
+		const { client, server } = twoPeers()
+		// Client still holds a live put; the server deleted the path at a higher version.
+		await client.write('/x', bytes('C'), { version: 2 })
+		await server.write('/x', bytes('S'), { version: 5 })
+		await server.rm('/x') // tombstone at version 6 (> the client's put at 2)
+		const res = await reconcile(client.replica, server.replica)
+		// The push is attempted, but the remote's version guard rejects the stale put.
+		expect(res.pushed).toBe(1)
+		expect(await server.exists('/x')).toBe(false)
+	})
+
+	it('reconciles a mixed batch in one pass (pull + push + skip)', async () => {
+		const { client, server, syncBoth } = twoPeers()
+		await server.writeFile('/shared.txt', bytes('same'))
+		await syncBoth() // converged — must be skipped
+		await server.writeFile('/r.txt', bytes('remote')) // pull
+		await client.writeFile('/l.txt', bytes('local')) // push
+		const res = await reconcile(client.replica, server.replica)
+		expect(res.pulled).toBe(1)
+		expect(res.pushed).toBe(1)
+		expect(text(await client.readFile('/r.txt'))).toBe('remote')
+		expect(text(await server.readFile('/l.txt'))).toBe('local')
+		// And a re-run settles to zero (full convergence).
+		const again = await reconcile(client.replica, server.replica)
+		expect(again).toMatchObject({ pulled: 0, pushed: 0 })
+	})
+})

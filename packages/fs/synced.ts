@@ -1,14 +1,15 @@
+import { reconcile } from './anti-entropy'
 import { persistedState } from './persistedState'
 import type { Storage } from './storage'
 import {
-	type BlobStore,
 	GenerationStaleError,
 	isLocalOnlyPath,
 	journaledChangeSource,
 	localSyncReplica,
 	PAGE,
 	type SyncReplica,
-	type SyncState
+	type SyncState,
+	uploadBlobs
 } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { parseVersion } from './sync-wire'
@@ -40,6 +41,11 @@ type Props = {
 	// Local-first boot: return the local volume immediately and run the first
 	// sync in the background, instead of blocking boot until it settles.
 	localFirst?: boolean
+	// Anti-entropy backstop (see anti-entropy.ts): a rate-limited full reconcile
+	// that heals any divergence the delta cursors miss. `{ everyCycles }` runs it
+	// once per N sync cycles (default 10); `false` disables it entirely (one switch
+	// to flip while troubleshooting). The delta push/pull is unaffected either way.
+	antiEntropy?: false | { everyCycles?: number }
 }
 
 // What the sync loop knows about replication. Network/auth states (offline,
@@ -84,6 +90,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const localVol = volume(props.local)
 	const syncInterval = props.interval ?? 30_000
 	const lazyContent = props.lazyContent ?? false
+	// 0 = disabled; otherwise run the anti-entropy reconcile once per N sync cycles.
+	const antiEntropyEvery = props.antiEntropy === false ? 0 : (props.antiEntropy?.everyCycles ?? 10)
+	let antiEntropyCycle = 0
 
 	const clientId = persistedState(localVol, '/.state/clientid', () => crypto.randomUUID())
 	const syncState = persistedState<SyncState>(localVol, '/.state/sync', {
@@ -396,6 +405,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			const { to, generation } = await pull(state.pullCursor)
 			await syncState.patch({ pullCursor: to })
 			await checkMidSessionReset(generation)
+			// Anti-entropy backstop: after the delta fast-path, a rate-limited full
+			// reconcile that converges anything the cursors missed. Best-effort and
+			// isolated — a failure here never stalls normal sync (and the whole thing is
+			// off when antiEntropyEvery === 0).
+			if (antiEntropyEvery > 0 && ++antiEntropyCycle % antiEntropyEvery === 0) {
+				try {
+					await reconcile(localReplica, remoteReplica, { source: REMOTE_SOURCE })
+				} catch (e) {
+					console.error('anti-entropy reconcile failed', e)
+				}
+			}
 		} catch (e) {
 			// A mutating write was fenced (409 generation_stale): the server lineage
 			// advanced under us. Adopt it and client-reset (reconcileGeneration does
@@ -565,21 +585,4 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	return { ...localVol, ...lifecycle }
-}
-
-/**
- * Ensure the target replica holds a blob for every regular-file put's
- * contentHash — upload from the source replica when missing. Content is durable
- * before the tree points at it.
- */
-async function uploadBlobs(
-	changes: PathChange[],
-	source: BlobStore,
-	target: BlobStore
-): Promise<void> {
-	for (const c of changes) {
-		if (c.kind !== 'put' || !c.contentHash) continue
-		if (await target.hasBlobByHash(c.contentHash)) continue
-		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
-	}
 }
