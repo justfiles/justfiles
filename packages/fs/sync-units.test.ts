@@ -14,7 +14,13 @@ import { describe, expect, it } from 'vitest'
 import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
-import { isLocalOnlyPath, journaledChangeSource, localSyncReplica } from './sync-replica'
+import {
+	type BlobStore,
+	isLocalOnlyPath,
+	journaledChangeSource,
+	localSyncReplica,
+	uploadBlobs
+} from './sync-replica'
 import { bytes, sha256, text } from './sync-test-harness'
 import type { PathChange, SyncMeta } from './sync-wire'
 import {
@@ -617,5 +623,87 @@ describe('localSyncReplica xattr snapshot', () => {
 		expect(names).toContain('user.a')
 		expect(names).not.toContain('user.b') // absent from the snapshot => deleted
 		expect(await vol.getXattr('/f', 'trusted.sync.local')).toEqual(bytes('keep')) // local-only
+	})
+})
+
+describe('uploadBlobs (orphaned-reference resilience)', () => {
+	const H = (c: string): string => c.repeat(64) // a valid 64-hex fake hash
+	const put = (path: string, contentHash: string): PathChange => ({
+		kind: 'put',
+		path,
+		version: '1',
+		contentHash,
+		meta: { type: FileType.Regular, mode: 0o644, mtimeNs: '0', size: '1' }
+	})
+
+	function memBlobs(initial: Record<string, string> = {}): BlobStore & { puts: string[] } {
+		const store = new Map<string, Uint8Array>()
+		for (const [h, v] of Object.entries(initial)) store.set(h, bytes(v))
+		const puts: string[] = []
+		return {
+			puts,
+			async getBlobByHash(h) {
+				const b = store.get(h)
+				if (!b) throw new Error(`ENOENT: blob ${h}`)
+				return b
+			},
+			async hasBlobByHash(h) {
+				return store.has(h)
+			},
+			async putBlobByHash(h, d) {
+				store.set(h, d)
+				puts.push(h)
+			}
+		}
+	}
+
+	it('uploads a blob present on source but missing on target', async () => {
+		const source = memBlobs({ [H('a')]: 'A' })
+		const target = memBlobs()
+		const orphaned = await uploadBlobs([put('/x', H('a'))], source, target)
+		expect(orphaned).toEqual([])
+		expect(target.puts).toEqual([H('a')])
+	})
+
+	it('skips a blob the target already has (no upload)', async () => {
+		const source = memBlobs({ [H('a')]: 'A' })
+		const target = memBlobs({ [H('a')]: 'A' })
+		const orphaned = await uploadBlobs([put('/x', H('a'))], source, target)
+		expect(orphaned).toEqual([])
+		expect(target.puts).toEqual([])
+	})
+
+	it('returns an orphaned change (missing on BOTH sides) instead of throwing', async () => {
+		const source = memBlobs()
+		const target = memBlobs()
+		const change = put('/x', H('d'))
+		const orphaned = await uploadBlobs([change], source, target)
+		expect(orphaned).toEqual([change]) // caller drops it; sync is not wedged
+		expect(target.puts).toEqual([])
+	})
+
+	it('uploads the good change and reports only the orphan in a mixed batch', async () => {
+		const source = memBlobs({ [H('a')]: 'A' }) // has /good's blob, not /orphan's
+		const target = memBlobs()
+		const good = put('/good', H('a'))
+		const orphan = put('/orphan', H('d'))
+		const orphaned = await uploadBlobs([good, orphan], source, target)
+		expect(orphaned).toEqual([orphan])
+		expect(target.puts).toEqual([H('a')])
+	})
+
+	it('ignores deletes and puts without a contentHash', async () => {
+		const source = memBlobs()
+		const target = memBlobs()
+		const del: PathChange = { kind: 'delete', path: '/x', version: '2' }
+		const dir: PathChange = {
+			kind: 'put',
+			path: '/d',
+			version: '1',
+			meta: { type: FileType.Directory, mode: 0o755, mtimeNs: '0', size: '0' }
+		}
+		const orphaned = await uploadBlobs([del, dir], source, target)
+		expect(orphaned).toEqual([])
+		expect(target.puts).toEqual([])
 	})
 })

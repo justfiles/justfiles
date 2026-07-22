@@ -159,11 +159,20 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			excludeLocalSource: REMOTE_SOURCE,
 			limit: PAGE
 		})
-		await uploadBlobs(changes, localReplica, remoteReplica)
+		// An orphaned put (content missing on BOTH sides) can't be uploaded or accepted
+		// by the server; drop just those from the batch so one dead reference can't wedge
+		// the whole push. The cursor still advances past them (the bytes are gone).
+		const orphaned = await uploadBlobs(changes, localReplica, remoteReplica)
+		const applicable = orphaned.length ? changes.filter((c) => !orphaned.includes(c)) : changes
+		if (orphaned.length)
+			console.warn(
+				`sync: skipping ${orphaned.length} change(s) with missing content:`,
+				orphaned.map((c) => c.path)
+			)
 		// Origin (PathChange.source) is stamped server-side from our clientId header
 		// (the HTTP replica sends it); `source: REMOTE_SOURCE` is the LOCAL-apply tag
 		// the remote records so it never bounces our write back.
-		await remoteReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
+		await remoteReplica.applyPathChanges(applicable, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
 		return { to, done }

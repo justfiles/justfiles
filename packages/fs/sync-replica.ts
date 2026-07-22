@@ -418,17 +418,29 @@ export function localSyncReplica(
  * Ensure the `target` blob store holds a blob for every regular-file put's
  * contentHash — upload from `source` when missing. Content is durable before the
  * tree points at it. Shared by push (synced) and the anti-entropy reconcile.
+ *
+ * Returns the changes it could NOT satisfy: a put whose content is absent from
+ * BOTH `source` and `target` — an orphaned reference (bytes lost / never
+ * hydrated). The caller must drop these from its apply batch (the target can't
+ * accept a put whose content it lacks). Skipping them keeps ONE dead reference
+ * from throwing and wedging the entire sync loop.
  */
 export async function uploadBlobs(
 	changes: PathChange[],
 	source: BlobStore,
 	target: BlobStore
-): Promise<void> {
+): Promise<PathChange[]> {
+	const orphaned: PathChange[] = []
 	for (const c of changes) {
 		if (c.kind !== 'put' || !c.contentHash) continue
 		if (await target.hasBlobByHash(c.contentHash)) continue
+		if (!(await source.hasBlobByHash(c.contentHash))) {
+			orphaned.push(c)
+			continue
+		}
 		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
 	}
+	return orphaned
 }
 
 // ── Path-keyed sync state + tombstones (engine-internal, under /.state/sync) ──

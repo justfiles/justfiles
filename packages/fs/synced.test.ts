@@ -695,3 +695,37 @@ describe('synced (anti-entropy backstop)', () => {
 		expect(dec.decode(await volume(remote).readFile('/mine.txt'))).toBe('mine')
 	})
 })
+
+describe('synced (orphaned-blob resilience)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const d of destroyers.splice(0)) d()
+	})
+	function track<T extends { destroy(): void }>(vol: T): T {
+		destroyers.push(() => vol.destroy())
+		return vol
+	}
+
+	// A local put that references content missing on BOTH sides (a lost / never-
+	// hydrated blob — the `ENOENT: blob` that was wedging push every cycle) must be
+	// skipped, not thrown, so the rest of the volume keeps syncing.
+	it('skips an orphaned reference on push instead of wedging the whole cycle', async () => {
+		const local = memStorage()
+		const lv = volume(local)
+		await lv.writeFile('/good.txt', enc.encode('good'))
+		await lv.writeFile('/orphan.txt', enc.encode('temp'))
+		// Point /orphan.txt at a contentHash with no blob anywhere — an orphaned ref.
+		const st = await lv.stat('/orphan.txt')
+		await local.setMeta(st.ino, { contentHash: 'd'.repeat(64) }, { version: 99 })
+
+		const remote = memStorage()
+		const vol = track(await synced({ local, remote, interval: 99_999 }))
+		await vol.flush() // bootstrap (remote empty)
+		await vol.flush() // push
+
+		// The healthy file pushed (proving push did NOT throw before reaching it); the
+		// orphan was dropped from the batch.
+		expect(dec.decode(await volume(remote).readFile('/good.txt'))).toBe('good')
+		expect(await volume(remote).exists('/orphan.txt')).toBe(false)
+	})
+})

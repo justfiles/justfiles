@@ -115,16 +115,22 @@ export async function reconcile(
 		await local.applyPathChanges(toPull, (h) => remote.getBlobByHash(h), { source })
 
 	// Push: content up first (only hashes the remote lacks), then apply on the
-	// remote, which re-guards the same way (and rejects resurrecting a delete).
+	// remote, which re-guards the same way (and rejects resurrecting a delete). An
+	// orphaned put (content missing on both sides) is dropped, never thrown, so one
+	// dead reference can't abort the reconcile.
+	let pushed = 0
 	if (toPush.length) {
-		await uploadBlobs(toPush, local, remote)
-		await remote.applyPathChanges(toPush, (h) => remote.getBlobByHash(h), { source })
+		const orphaned = await uploadBlobs(toPush, local, remote)
+		const applicable = orphaned.length ? toPush.filter((c) => !orphaned.includes(c)) : toPush
+		if (applicable.length)
+			await remote.applyPathChanges(applicable, (h) => remote.getBlobByHash(h), { source })
+		pushed = applicable.length
 	}
 
 	return {
 		localPaths: localManifest.size,
 		remotePaths: remoteManifest.size,
 		pulled: toPull.length,
-		pushed: toPush.length
+		pushed
 	}
 }
