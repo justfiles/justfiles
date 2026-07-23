@@ -3,14 +3,13 @@ import type { Usage } from '@earendil-works/pi-ai'
 import type { DbAdapter, SqlValue } from '@justfiles/core'
 import { describe, expect, test } from 'vitest'
 import {
+	admit,
 	BURST_WINDOW_MS,
 	ensureUsageSchema,
 	MICROS_PER_USD,
 	readAiUsage,
 	readUsage,
-	release,
-	reserve,
-	settle
+	record
 } from './usage.ts'
 
 // A real in-memory SQLite DbAdapter (node:sqlite is synchronous) — the usage store is pure
@@ -46,26 +45,18 @@ function usage(costUsd: number, tokens = 0): Usage {
 	}
 }
 
-async function reserved(db: DbAdapter): Promise<{ burst: number; weekly: number }> {
-	const [row] = await db.query<{ burst_reserved: unknown; weekly_reserved: unknown }>(
-		'SELECT burst_reserved, weekly_reserved FROM usage_ai WHERE id = 1'
-	)
-	return { burst: Number(row?.burst_reserved ?? 0), weekly: Number(row?.weekly_reserved ?? 0) }
-}
-
 const DOLLAR = MICROS_PER_USD
-const EST = 100_000 // $0.10 reservation used in these tests
 const WEEK = 7 * 24 * 60 * 60 * 1000
 const T0 = Date.UTC(2025, 0, 6, 12) // Monday noon UTC — safely mid weekly-bucket
 const HUGE = 1000 * DOLLAR
 
-describe('reserve / settle', () => {
-	test('settle records actual cost + tokens + a request in both windows', async () => {
+describe('admit / record', () => {
+	test('record adds actual cost + tokens + a request in both windows', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		const h = await reserve(db, T0, EST, 5 * DOLLAR, 10 * DOLLAR)
+		const h = await admit(db, T0, 5 * DOLLAR, 10 * DOLLAR)
 		expect(h).not.toBeNull()
-		await settle(db, h!, EST, usage(0.5, 120))
+		await record(db, h!, usage(0.5, 120))
 
 		const ai = await readAiUsage(db, T0)
 		expect(ai.burst.costUsd).toBeCloseTo(0.5)
@@ -74,49 +65,48 @@ describe('reserve / settle', () => {
 		expect(ai.requests).toBe(1)
 		expect(ai.lifetimeCostUsd).toBeCloseTo(0.5)
 		expect(ai.lifetimeRequests).toBe(1)
-		expect(await reserved(db)).toEqual({ burst: 0, weekly: 0 })
 	})
 
-	test('the burst cap rejects even when the weekly cap has room', async () => {
+	test('the burst cap blocks even when the weekly cap has room', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		const h = await reserve(db, T0, EST, 5 * DOLLAR, HUGE)
-		await settle(db, h!, EST, usage(4.99)) // burst committed near its $5 cap
-		expect(await reserve(db, T0, EST, 5 * DOLLAR, HUGE)).toBeNull()
-		expect(await reserve(db, T0, EST, 6 * DOLLAR, HUGE)).not.toBeNull()
+		const h = await admit(db, T0, 5 * DOLLAR, HUGE)
+		await record(db, h!, usage(5)) // burst committed at its $5 cap
+		expect(await admit(db, T0, 5 * DOLLAR, HUGE)).toBeNull()
+		expect(await admit(db, T0, 6 * DOLLAR, HUGE)).not.toBeNull()
 	})
 
-	test('the weekly cap rejects even when the burst cap has room', async () => {
+	test('the weekly cap blocks even when the burst cap has room', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		const h = await reserve(db, T0, EST, HUGE, 5 * DOLLAR)
-		await settle(db, h!, EST, usage(4.99)) // weekly committed near its $5 cap
-		expect(await reserve(db, T0, EST, HUGE, 5 * DOLLAR)).toBeNull()
-		expect(await reserve(db, T0, EST, HUGE, 6 * DOLLAR)).not.toBeNull()
+		const h = await admit(db, T0, HUGE, 5 * DOLLAR)
+		await record(db, h!, usage(5)) // weekly committed at its $5 cap
+		expect(await admit(db, T0, HUGE, 5 * DOLLAR)).toBeNull()
+		expect(await admit(db, T0, HUGE, 6 * DOLLAR)).not.toBeNull()
 	})
 
-	test('concurrent reservations accumulate so they cannot all pass one below-cap read', async () => {
+	test('an admitted call may overshoot the cap; the next call is then blocked', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		// $0.05 burst cap, $0.02 reserve each: admissions are bounded even with nothing settled.
-		const admits = await Promise.all(
-			Array.from({ length: 20 }, () => reserve(db, T0, 20_000, 50_000, HUGE))
-		)
-		const passed = admits.filter((h) => h !== null).length
-		expect(passed).toBeGreaterThan(0)
-		expect(passed).toBeLessThan(20)
+		// Just under the $1 burst cap → admitted, then a pricey call pushes committed over.
+		const h = await admit(db, T0, 1 * DOLLAR, HUGE)
+		expect(h).not.toBeNull()
+		await record(db, h!, usage(1.5))
+		expect((await readAiUsage(db, T0)).burst.costUsd).toBeCloseTo(1.5)
+		// committed ($1.5) is now ≥ the cap, so the next call is blocked.
+		expect(await admit(db, T0, 1 * DOLLAR, HUGE)).toBeNull()
 	})
 
-	test('release frees reservations in both windows without counting a request', async () => {
+	test('a failed call records nothing (no handle → no cost)', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		const h = await reserve(db, T0, EST, 5 * DOLLAR, 5 * DOLLAR)
-		await release(db, h!, EST)
+		const h = await admit(db, T0, 5 * DOLLAR, 5 * DOLLAR)
+		expect(h).not.toBeNull()
+		// No record() call (the call failed before producing usage).
 		const ai = await readAiUsage(db, T0)
-		expect(ai.requests).toBe(0)
 		expect(ai.burst.costUsd).toBe(0)
-		expect(await reserved(db)).toEqual({ burst: 0, weekly: 0 })
-		expect(await reserve(db, T0, EST, 5 * DOLLAR, 5 * DOLLAR)).not.toBeNull()
+		expect(ai.requests).toBe(0)
+		expect(await admit(db, T0, 5 * DOLLAR, 5 * DOLLAR)).not.toBeNull()
 	})
 })
 
@@ -124,8 +114,8 @@ describe('window rolls', () => {
 	test('the burst window rolls after BURST_WINDOW_MS; weekly spend persists', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		const h = await reserve(db, T0, EST, 5 * DOLLAR, HUGE)
-		await settle(db, h!, EST, usage(0.5))
+		const h = await admit(db, T0, 5 * DOLLAR, HUGE)
+		await record(db, h!, usage(0.5))
 
 		// Inside the burst window: still counted.
 		let ai = await readAiUsage(db, T0 + 60_000)
@@ -138,9 +128,9 @@ describe('window rolls', () => {
 		expect(ai.burst.resetsAt).toBeNull()
 		expect(ai.weekly.costUsd).toBeCloseTo(0.5)
 
-		// A reserve in the new burst window rolls the row and anchors a fresh 5h expiry.
+		// An admit in the new burst window rolls the row and anchors a fresh 5h expiry.
 		const later = T0 + BURST_WINDOW_MS + 1
-		const h2 = await reserve(db, later, EST, 5 * DOLLAR, HUGE)
+		const h2 = await admit(db, later, 5 * DOLLAR, HUGE)
 		expect(h2).not.toBeNull()
 		expect(h2!.burstExpires).toBe(later + BURST_WINDOW_MS)
 	})
@@ -148,8 +138,8 @@ describe('window rolls', () => {
 	test('the weekly window rolls at the week boundary; lifetime carried', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		const h = await reserve(db, T0, EST, HUGE, 5 * DOLLAR)
-		await settle(db, h!, EST, usage(0.5, 10))
+		const h = await admit(db, T0, HUGE, 5 * DOLLAR)
+		await record(db, h!, usage(0.5, 10))
 
 		const ai = await readAiUsage(db, T0 + WEEK)
 		expect(ai.weekly.costUsd).toBe(0)
@@ -158,28 +148,25 @@ describe('window rolls', () => {
 		expect(ai.lifetimeCostUsd).toBeCloseTo(0.5)
 		expect(ai.lifetimeRequests).toBe(1)
 		// A full weekly budget is available again next week.
-		expect(await reserve(db, T0 + WEEK, EST, HUGE, 5 * DOLLAR)).not.toBeNull()
+		expect(await admit(db, T0 + WEEK, HUGE, 5 * DOLLAR)).not.toBeNull()
 	})
 
-	test('a late settle whose burst window rolled cannot touch the new burst window', async () => {
+	test('a late record whose burst window rolled cannot credit the new burst window', async () => {
 		const db = realDb()
 		await ensureUsageSchema(db)
-		const h1 = await reserve(db, T0, EST, HUGE, HUGE)
-		// A later call (same week, new burst window) holds its own reservation.
+		const h1 = await admit(db, T0, HUGE, HUGE)
+		// A later call (same week, new burst window) is admitted.
 		const later = T0 + BURST_WINDOW_MS + 1
-		const h2 = await reserve(db, later, EST, HUGE, HUGE)
+		const h2 = await admit(db, later, HUGE, HUGE)
 		expect(h2!.burstExpires).not.toBe(h1!.burstExpires)
-		const before = await reserved(db)
 
-		// The straggler settles late against the OLD burst window.
-		await settle(db, h1!, EST, usage(0.5, 10))
+		// The straggler records late against the OLD burst window.
+		await record(db, h1!, usage(0.5, 10))
 
 		const after = await readAiUsage(db, later)
 		// Burst committed unaffected (old window discarded); weekly is the SAME bucket → credited.
 		expect(after.burst.costUsd).toBe(0)
 		expect(after.weekly.costUsd).toBeCloseTo(0.5)
-		// The old burst reservation was NOT subtracted from the new burst window.
-		expect((await reserved(db)).burst).toBe(before.burst)
 		// Lifetime still accrues.
 		expect(after.lifetimeCostUsd).toBeCloseTo(0.5)
 	})
@@ -188,7 +175,7 @@ describe('window rolls', () => {
 describe('ensureUsageSchema migration', () => {
 	test('adds burst/weekly columns to a legacy monthly table, carrying lifetime totals', async () => {
 		const db = realDb()
-		// The pre-dual-window schema: a single monthly window row.
+		// The pre-dual-window schema: a single monthly window row with a reservation column.
 		await db.run(
 			`CREATE TABLE usage_ai (
 				id INTEGER PRIMARY KEY,
@@ -213,7 +200,7 @@ describe('ensureUsageSchema migration', () => {
 		expect(ai.burst.costUsd).toBe(0)
 		expect(ai.weekly.costUsd).toBe(0)
 		// The gate works against the migrated row under a tiny burst cap.
-		expect(await reserve(db, T0, EST, 5 * DOLLAR, 5 * DOLLAR)).not.toBeNull()
+		expect(await admit(db, T0, 5 * DOLLAR, 5 * DOLLAR)).not.toBeNull()
 	})
 })
 
