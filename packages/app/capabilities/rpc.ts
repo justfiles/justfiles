@@ -30,12 +30,6 @@ interface CapsServer {
 	subscribe(call: WireCall, emit: Emit): Promise<SubResult>
 }
 
-// The client's main interface, exposed by reference so the server can push `dirty`
-// nudges back over the SAME socket — replacing the old out-of-band JSON frame.
-export interface CapsClient {
-	dirty(appId: string): void
-}
-
 const toCall = (w: WireCall): CapabilityCall => ({
 	appId: w.appId,
 	capability: w.capability,
@@ -120,23 +114,12 @@ function capsServer(local: Capabilities): CapsServer {
 	}
 }
 
-export interface ServedCaps {
-	// Push a `dirty` nudge to the connected client; disposes the fire-and-forget
-	// call's result so its import entry doesn't leak.
-	dirty(appId: string): void
-	// Release the session's remote main stub (on socket teardown).
-	dispose(): void
-}
-
-// Provider side: expose `local` over the transport. Returns a handle to push
-// `dirty` back to the client and to release the session.
-export function serveCapabilitiesRpc(transport: RpcTransport, local: Capabilities): ServedCaps {
-	const session = new RpcSession<CapsClient>(transport, capsServer(local))
-	const remote = session.getRemoteMain()
-	return {
-		dirty: (appId) => dispose(remote.dirty(appId)),
-		dispose: () => dispose(remote)
-	}
+// Provider side: serve `local` over the transport. There is no server->client
+// call path (the volume poke rides the session `/ws` socket, not this capability
+// session), so nothing is returned; the session self-retains via its transport
+// receive loop.
+export function serveCapabilitiesRpc(transport: RpcTransport, local: Capabilities): void {
+	void new RpcSession(transport, capsServer(local))
 }
 
 export interface CapsProxy {
@@ -148,10 +131,9 @@ export interface CapsProxy {
 	dispose(): void
 }
 
-// Caller side: adapt the remote main into a `Capabilities`. `client` is the local
-// main the server may call back into (`dirty`); omit it for a pure proxy.
-export function proxyCapabilitiesRpc(transport: RpcTransport, client?: CapsClient): CapsProxy {
-	const session = new RpcSession<CapsServer>(transport, client)
+// Caller side: adapt the remote main into a `Capabilities`.
+export function proxyCapabilitiesRpc(transport: RpcTransport): CapsProxy {
+	const session = new RpcSession<CapsServer>(transport)
 	const remote = session.getRemoteMain()
 	const caps: Capabilities = {
 		invoke: async (call) => {

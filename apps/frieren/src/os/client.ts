@@ -52,6 +52,10 @@ export interface FrierenClient {
 	// The frieren notification channel: agent/cron notification frames arrive here and
 	// are handed to the notification store (mirrors `onRemoteWindow`).
 	onNotification(handler: (notification: Notification) => void): () => void
+	// The server->client volume poke: a `sync` frame says "the server volume changed,
+	// pull now" (agent turn, cron, or another device's push). The app wires this to
+	// flush the active sync volume. Rides the always-on session socket.
+	onSync(handler: () => void): () => void
 }
 
 export interface FrierenClientOptions {
@@ -202,6 +206,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	// --- server-pushed notifications (agent / cron) ---
 	let notificationSink: ((notification: Notification) => void) | null = null
+
+	// --- server-pushed volume poke (pull now) ---
+	let syncSink: (() => void) | null = null
 
 	function handleAgentEvent(event: AgentEventFrame): void {
 		switch (event.type) {
@@ -366,6 +373,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
+		if (data.type === 'sync') {
+			syncSink?.()
+			return
+		}
+
 		if (data.type === 'event' && data.event) handleAgentEvent(data.event)
 	}
 
@@ -488,6 +500,13 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			notificationSink = handler
 			return () => {
 				if (notificationSink === handler) notificationSink = null
+			}
+		},
+
+		onSync(handler) {
+			syncSink = handler
+			return () => {
+				if (syncSink === handler) syncSink = null
 			}
 		}
 	}

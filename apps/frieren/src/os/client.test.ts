@@ -303,3 +303,17 @@ describe('FrierenClient apps + windows', () => {
 		])
 	})
 })
+
+describe('FrierenClient sync poke', () => {
+	test('a sync frame runs the onSync handler (server->client volume poke)', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		let synced = 0
+		client.onSync(() => {
+			synced++
+		})
+		socket.emit({ type: 'ready', apps: [] })
+		socket.emit({ type: 'sync' })
+		expect(synced).toBe(1)
+	})
+})

@@ -12,6 +12,7 @@ import {
 } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { parseVersion } from './sync-wire'
+import type { Ino } from './types'
 import { FileType } from './types'
 import { type Volume, volume } from './volume'
 
@@ -53,6 +54,11 @@ export const REMOTE_SOURCE = 'remote'
 
 // This design is v1; future breaking changes bump SyncState.schemaVersion.
 const SCHEMA_VERSION = 1
+
+// Coalescing window for the fs-level change signal: a committed local write arms
+// a single push this many ms later, so a burst (an app save, an agent turn) folds
+// into one sync instead of one per write.
+const COALESCE_MS = 250
 
 interface SyncLifecycle {
 	flush(): Promise<void>
@@ -101,6 +107,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// reset CAS so a crash mid-publish resumes/adopts (via the boot handshake)
 	// instead of discarding the snapshot it meant to publish; cleared on finalize.
 	let knownPending = (await syncState.get()).pendingReset
+
+	// The sync engine's own local-only state files (`/.state/**`) are rewritten on
+	// every cursor advance. Their inos are captured so the change-driven push
+	// trigger can skip them — otherwise each cycle's bookkeeping write would feed
+	// straight back into another push, a self-sustaining loop.
+	const syncStateInos = new Set<Ino>()
+	for (const p of ['/.state/clientid', '/.state/sync']) {
+		try {
+			syncStateInos.add((await localVol.stat(p)).ino)
+		} catch {}
+	}
 
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
@@ -412,6 +429,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	let running: Promise<void> | null = null
 	let timer: ReturnType<typeof setTimeout> | null = null
+	let coalesceTimer: ReturnType<typeof setTimeout> | null = null
+	let unsubscribeLocal: (() => void) | undefined
 	let paused = false
 	let destroyed = false
 	let retryCount = 0
@@ -487,10 +506,28 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 	function destroy() {
 		destroyed = true
+		unsubscribeLocal?.()
+		unsubscribeLocal = undefined
+		if (coalesceTimer) {
+			clearTimeout(coalesceTimer)
+			coalesceTimer = null
+		}
 		if (timer) {
 			clearTimeout(timer)
 			timer = null
 		}
+	}
+
+	// The fs-level change signal: a committed local write (any writer — user, app,
+	// agent) arms a single coalesced push. Skips the sync layer's own pull-applied
+	// writes (REMOTE_SOURCE) and its state-file bookkeeping (syncStateInos) so a
+	// pull or a cursor advance never triggers another push.
+	function scheduleProactivePush() {
+		if (paused || destroyed || coalesceTimer) return
+		coalesceTimer = setTimeout(() => {
+			coalesceTimer = null
+			void flush().catch(() => {})
+		}, COALESCE_MS)
 	}
 
 	// "Take theirs": drop the local replica + cursors, then re-bootstrap from the
@@ -546,6 +583,12 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// Kick the first sync. localFirst boots without waiting on it (the local
 	// volume is the working copy); otherwise block until it settles so the first
 	// read already sees synced data.
+	unsubscribeLocal = props.local.caps?.subscribe?.((change) => {
+		if (change.source === REMOTE_SOURCE) return
+		if (syncStateInos.has(change.ino)) return
+		scheduleProactivePush()
+	})
+
 	if (props.localFirst) run()
 	else await flush()
 

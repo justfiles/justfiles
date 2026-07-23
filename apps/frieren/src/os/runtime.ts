@@ -6,7 +6,7 @@ import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
 import { resumePendingInstalls } from '../apps/manage'
 import { reconcileInstalled, seedBuiltins } from '../apps/seed'
-import { activeProfileHasRemoteUser, type ProfileVolume } from '../fs'
+import { activeProfileHasRemoteUser, flushActiveVolume, type ProfileVolume } from '../fs'
 import { notificationStore } from '../notifications/store'
 import type { FrierenClient } from './client'
 import type { OsAction, OsState } from './state'
@@ -207,10 +207,14 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 		const unsubscribeNotify = client.onNotification((notification) =>
 			notificationStore.notify(notification)
 		)
+		// Server->client volume poke: any server-side write (agent, cron, another
+		// device's push) flushes the active volume so the change lands at once.
+		const unsubscribeSync = client.onSync(() => flushActiveVolume())
 		const unsubscribeStore = store.subscribe(flushPending)
 		disposers.push(() => {
 			unsubscribeRemote()
 			unsubscribeNotify()
+			unsubscribeSync()
 			unsubscribeStore()
 			client.close()
 			// A fresh session (sign-out / user switch) starts with an empty center.

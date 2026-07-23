@@ -9,7 +9,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memStorage } from './storage.mem'
 import { GenerationStaleError, type SyncReplica } from './sync-replica'
 import type { PathChange } from './sync-wire'
@@ -641,5 +641,127 @@ describe('synced (generation / client-reset)', () => {
 		const state = await readSyncState(local)
 		expect(state.generation).toBe(7)
 		expect(state.pendingReset).toBeUndefined()
+	})
+})
+
+// The fs-level change signal: a committed local write drives an immediate,
+// coalesced push — no explicit flush() and without waiting for the poll interval.
+// Sync becomes a Volume concern (any writer: user, app, agent) rather than the
+// caller remembering to flush.
+describe('synced (proactive push on local change)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const d of destroyers.splice(0)) d()
+		vi.useRealTimers()
+	})
+	function track<T extends { destroy(): void }>(vol: T): T {
+		destroyers.push(() => vol.destroy())
+		return vol
+	}
+
+	it('pushes a local write without an explicit flush()', async () => {
+		vi.useFakeTimers()
+		const remote = memStorage()
+		const vol = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
+		await vol.writeFile('/proactive.txt', enc.encode('auto'))
+		// No flush(): the fs-level change signal should schedule the push.
+		await vi.advanceTimersByTimeAsync(1_000)
+		expect(dec.decode(await volume(remote).readFile('/proactive.txt'))).toBe('auto')
+	})
+})
+
+// The trigger must ignore the engine's own bookkeeping writes (cursor advances
+// under /.state), or every push would schedule another push forever. After a
+// change settles with no further user writes, the engine must go quiet.
+describe('synced (proactive push does not self-loop)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const d of destroyers.splice(0)) d()
+		vi.useRealTimers()
+	})
+	function track<T extends { destroy(): void }>(vol: T): T {
+		destroyers.push(() => vol.destroy())
+		return vol
+	}
+
+	it('goes quiet after a local write settles (no cursor-write feedback loop)', async () => {
+		vi.useFakeTimers()
+		const remote = memStorage()
+		const vol = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
+		let syncing = 0
+		vol.onStatusChange((s) => {
+			if (s === 'syncing') syncing++
+		})
+		await vol.writeFile('/x.txt', enc.encode('1'))
+		await vi.advanceTimersByTimeAsync(1_000) // the one proactive push
+		const afterSettle = syncing
+		expect(afterSettle).toBeGreaterThan(0)
+		await vi.advanceTimersByTimeAsync(10_000) // no further writes → must stay quiet
+		expect(syncing).toBe(afterSettle)
+	})
+})
+
+// A device that only RECEIVES remote changes must not treat the pull-applied
+// writes as local edits and bounce a push back — the trigger skips REMOTE_SOURCE.
+describe('synced (proactive push ignores remote-applied pulls)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const d of destroyers.splice(0)) d()
+		vi.useRealTimers()
+	})
+	function track<T extends { destroy(): void }>(vol: T): T {
+		destroyers.push(() => vol.destroy())
+		return vol
+	}
+
+	it('does not schedule a push when a pull applies remote changes', async () => {
+		vi.useFakeTimers()
+		const remote = memStorage()
+		const a = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
+		const b = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
+		let bSyncing = 0
+		b.onStatusChange((s) => {
+			if (s === 'syncing') bSyncing++
+		})
+		await a.writeFile('/shared.txt', enc.encode('hi'))
+		await vi.advanceTimersByTimeAsync(1_000) // a pushes proactively
+		await b.flush() // b pulls /shared.txt (applied as REMOTE_SOURCE)
+		expect(dec.decode(await b.readFile('/shared.txt'))).toBe('hi')
+		const afterPull = bSyncing
+		await vi.advanceTimersByTimeAsync(1_000) // the pull must NOT arm a push
+		expect(bSyncing).toBe(afterPull)
+	})
+})
+
+// Coalescing: a burst of local writes folds into a single push, not one per write
+// (the whole point of doing this at the fs level with a debounce).
+describe('synced (proactive push coalesces a burst)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const d of destroyers.splice(0)) d()
+		vi.useRealTimers()
+	})
+	function track<T extends { destroy(): void }>(vol: T): T {
+		destroyers.push(() => vol.destroy())
+		return vol
+	}
+
+	it('pushes several rapid writes in one sync', async () => {
+		vi.useFakeTimers()
+		const remote = memStorage()
+		const vol = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
+		let syncing = 0
+		vol.onStatusChange((s) => {
+			if (s === 'syncing') syncing++
+		})
+		await vol.writeFile('/a.txt', enc.encode('a'))
+		await vol.writeFile('/b.txt', enc.encode('b'))
+		await vol.writeFile('/c.txt', enc.encode('c'))
+		await vi.advanceTimersByTimeAsync(1_000)
+		expect(syncing).toBe(1)
+		const rv = volume(remote)
+		expect(dec.decode(await rv.readFile('/a.txt'))).toBe('a')
+		expect(dec.decode(await rv.readFile('/b.txt'))).toBe('b')
+		expect(dec.decode(await rv.readFile('/c.txt'))).toBe('c')
 	})
 })
