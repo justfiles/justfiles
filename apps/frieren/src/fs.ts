@@ -173,7 +173,8 @@ async function startSync(entry: Active, getToken: GetToken): Promise<void> {
 	const client = createFsClient(getToken)
 	const syncVolume = await synced({
 		local: entry.local,
-		remote: ({ clientId, generation }) => remoteSyncReplica(client, { clientId, generation }),
+		remote: ({ clientId, generation, lineageId }) =>
+			remoteSyncReplica(client, { clientId, generation, lineageId }),
 		lazyContent: true,
 		localFirst: true
 	})

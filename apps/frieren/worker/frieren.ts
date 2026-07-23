@@ -200,7 +200,10 @@ export class Frieren extends DurableObject<Env> {
 		const decision = await resetVolume(this.db, {
 			mode: req.mode,
 			fromGeneration: req.fromGeneration,
-			resetId: req.resetId
+			resetId: req.resetId,
+			// adopt-mine carries the client's expected lineage so the CAS also fences identity
+			// (a stale endpoint swap can't truncate a different volume at the same generation).
+			lineageId: req.mode === 'adopt-mine' ? req.lineageId : undefined
 		})
 		if (!decision.ok) return decision
 		// The reset wrote the DB directly, so the cached volume is stale — rebuild it.
@@ -315,7 +318,7 @@ export class Frieren extends DurableObject<Env> {
 
 	private async reset() {
 		const { models, model, generateImage } = this.aiRuntime()
-		await migrateCF(this.db)
+		await migrateCF(this.ctx.storage)
 		await ensureUsageSchema(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.

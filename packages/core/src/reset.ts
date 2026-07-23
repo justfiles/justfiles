@@ -44,17 +44,28 @@ export interface GenerationState {
 	// (cleared by `clearReset` on completion). Advisory: crash-resume identity +
 	// UI legibility, NOT a write lock.
 	resetId?: string
+	// Stable, unique per-volume identity (see 0005_lineage_id.sql). Distinct from
+	// `generation` (an epoch counter seeded to 1 everywhere): `lineageId` answers "is
+	// this the SAME volume?", so a client that observes a different one re-bootstraps
+	// instead of reusing cursors minted against another volume. A reset keeps it (same
+	// volume, new epoch); only a genuinely new volume mints a new one.
+	lineageId?: string
 }
 
 export type ResetRequest = {
 	mode: ResetMode
 	fromGeneration: number
 	resetId?: string
+	// The volume identity the initiator believes it is resetting. When present, it must
+	// match the volume's own `lineageId` or the reset is rejected — the /reset route is
+	// fence-exempt (a stale client must be able to reset), so this is the ONLY guard that
+	// stops an adopt-mine from truncating a DIFFERENT volume at the same generation.
+	lineageId?: string
 }
 
 export type ResetDecision =
 	| { ok: true; next: GenerationState }
-	| { ok: false; error: 'generation_stale'; generation: number }
+	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
 
 // ── Pure decision ───────────────────────────────────────────────────────────
 
@@ -67,20 +78,37 @@ export type ResetDecision =
 export function decideReset(current: GenerationState, req: ResetRequest): ResetDecision {
 	if (req.fromGeneration !== current.generation)
 		return { ok: false, error: 'generation_stale', generation: current.generation }
-	return { ok: true, next: { generation: current.generation + 1, resetId: req.resetId } }
+	// Identity CAS, atomic with the generation CAS: when THIS volume has an identity, an
+	// `adopt-mine` MUST name the matching one — a MISSING or mismatched lineageId is
+	// rejected, so a redirected (or pre-lineage) client can't truncate a different volume
+	// at the same generation (the /reset route bypasses the push fence). Other modes are
+	// checked only when they DO carry a lineageId.
+	if (
+		current.lineageId !== undefined &&
+		(req.mode === 'adopt-mine' || req.lineageId !== undefined) &&
+		req.lineageId !== current.lineageId
+	)
+		return { ok: false, error: 'lineage_stale', generation: current.generation }
+	// A reset is the SAME volume at a new epoch, so `lineageId` is carried through
+	// unchanged — only the `generation` bumps.
+	return {
+		ok: true,
+		next: { generation: current.generation + 1, resetId: req.resetId, lineageId: current.lineageId }
+	}
 }
 
 // ── Row IO ────────────────────────────────────────────────────────────────────
 
 /** Read the decoded generation row (pre-migration default: generation 1). */
 export async function readGenerationState(db: DbAdapter): Promise<GenerationState> {
-	const [row] = await db.query<{ generation: unknown; reset_id: unknown }>(
-		'SELECT generation, reset_id FROM fs_generation WHERE id = 1 LIMIT 1'
+	const [row] = await db.query<{ generation: unknown; reset_id: unknown; lineage_id: unknown }>(
+		'SELECT generation, reset_id, lineage_id FROM fs_generation WHERE id = 1 LIMIT 1'
 	)
 	if (!row) return { generation: 1 }
 	return {
 		generation: Number(row.generation),
-		resetId: row.reset_id == null ? undefined : String(row.reset_id)
+		resetId: row.reset_id == null ? undefined : String(row.reset_id),
+		lineageId: row.lineage_id == null ? undefined : String(row.lineage_id)
 	}
 }
 
@@ -90,6 +118,9 @@ export async function readGeneration(db: DbAdapter): Promise<number> {
 }
 
 async function writeGenerationState(db: DbAdapter, next: GenerationState): Promise<void> {
+	// `lineage_id` is intentionally NOT in the UPDATE set: it is minted once by the
+	// migration and preserved across every reset (same volume, new epoch), so the
+	// on-conflict path leaves it untouched.
 	await db.run(
 		`INSERT INTO fs_generation(id, generation, reset_id) VALUES (1, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET

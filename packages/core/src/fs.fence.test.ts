@@ -5,7 +5,7 @@
 // surface the 409 as a typed error.
 
 import { memStorage, volume } from '@justfiles/fs'
-import { GenerationStaleError } from '@justfiles/fs/sync-replica'
+import { GenerationStaleError, LineageStaleError } from '@justfiles/fs/sync-replica'
 import type { PathChange } from '@justfiles/fs/sync-wire'
 import { FileType } from '@justfiles/fs/types'
 import { describe, expect, it } from 'vitest'
@@ -106,6 +106,68 @@ describe('/fs push fencing — server', () => {
 		const app = createFsApi(memStorage(), { lineage: () => ({ generation: 5 }) })
 		const res = await app.request('/', { method: 'GET', headers: { 'x-fs-generation': '1' } })
 		expect(res.status).toBe(200)
+	})
+})
+
+// Identity fencing (issue #245): `generation` alone can't tell two fresh volumes
+// apart (both seed to 1), so a mutating write also carries `x-fs-lineage`. A push
+// aimed at a DIFFERENT volume at the same generation is rejected on a lineage
+// mismatch — preventing cross-volume contamination.
+describe('/fs identity fencing — server', () => {
+	it('surfaces the lineageId on the handshake', async () => {
+		const app = createFsApi(memStorage(), {
+			lineage: () => ({ generation: 5, lineageId: 'vol-A' })
+		})
+		expect((await (await app.request('/', { method: 'GET' })).json()).lineageId).toBe('vol-A')
+	})
+
+	it('rejects a write whose lineage differs at the same generation, and does not apply it', async () => {
+		const backend = memStorage()
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5, lineageId: 'vol-A' }) })
+		const data = new Uint8Array([1, 2, 3])
+		const hash = await sha256Hex(data)
+		const res = await app.request(`/blob/${hash}`, {
+			method: 'PUT',
+			body: data,
+			headers: {
+				'Content-Type': 'application/octet-stream',
+				'x-fs-generation': '5', // generation matches — only the lineage differs
+				'x-fs-lineage': 'vol-B'
+			}
+		})
+		expect(res.status).toBe(409)
+		expect(await res.json()).toEqual({ error: 'lineage_stale', generation: 5, lineageId: 'vol-A' })
+		expect((await app.request(`/blob/${hash}`, { method: 'HEAD' })).status).toBe(404)
+	})
+
+	it('accepts a write whose lineage matches', async () => {
+		const backend = memStorage()
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5, lineageId: 'vol-A' }) })
+		const data = new Uint8Array([9])
+		const hash = await sha256Hex(data)
+		const res = await app.request(`/blob/${hash}`, {
+			method: 'PUT',
+			body: data,
+			headers: {
+				'Content-Type': 'application/octet-stream',
+				'x-fs-generation': '5',
+				'x-fs-lineage': 'vol-A'
+			}
+		})
+		expect(res.status).toBe(204)
+	})
+
+	it('allows a write with no lineage header (only the generation is fenced)', async () => {
+		const backend = memStorage()
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5, lineageId: 'vol-A' }) })
+		const data = new Uint8Array([7])
+		const hash = await sha256Hex(data)
+		const res = await app.request(`/blob/${hash}`, {
+			method: 'PUT',
+			body: data,
+			headers: { 'Content-Type': 'application/octet-stream', 'x-fs-generation': '5' }
+		})
+		expect(res.status).toBe(204)
 	})
 })
 
@@ -246,5 +308,32 @@ describe('/fs push fencing — client paths', () => {
 		await expect(stale.setMeta('1', { mode: 0o700 }, {})).rejects.toBeInstanceOf(
 			GenerationStaleError
 		)
+	})
+
+	it('remoteSyncReplica stamps the lineageId; a mismatched-lineage push throws LineageStaleError', async () => {
+		const backend = memStorage()
+		const app = createFsApi(backend, { lineage: () => ({ generation: 5, lineageId: 'vol-A' }) })
+		const client = wireClient(app)
+		const noBlob = async () => new Uint8Array()
+
+		// Generation matches, lineage matches → accepted.
+		const same = remoteSyncReplica(client, {
+			clientId: 'c1',
+			generation: () => 5,
+			lineageId: () => 'vol-A'
+		})
+		await same.applyPathChanges([dirPut('/dir')], noBlob)
+		expect(await volume(backend).exists('/dir')).toBe(true)
+
+		// Generation matches but we think we're on a different volume → fenced by identity.
+		const wrongVolume = remoteSyncReplica(client, {
+			clientId: 'c1',
+			generation: () => 5,
+			lineageId: () => 'vol-B'
+		})
+		await expect(wrongVolume.applyPathChanges([dirPut('/dir2')], noBlob)).rejects.toBeInstanceOf(
+			LineageStaleError
+		)
+		expect(await volume(backend).exists('/dir2')).toBe(false)
 	})
 })

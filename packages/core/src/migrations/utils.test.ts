@@ -1,5 +1,29 @@
+import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { parseSqlStatements } from './utils'
+import { migrateSync, parseSqlStatements, type SyncMigrator } from './utils'
+
+// A SyncMigrator over node:sqlite with a real BEGIN/COMMIT transaction — the same
+// atomicity the DO gets from `storage.transactionSync`.
+function makeSyncMigrator(): SyncMigrator & { raw: DatabaseSync } {
+	const raw = new DatabaseSync(':memory:')
+	return {
+		raw,
+		exec: (sql, args = []) => {
+			raw.prepare(sql).run(...(args as Array<null | string | number | bigint | Uint8Array>))
+		},
+		query: (sql) => raw.prepare(sql).all() as Array<Record<string, unknown>>,
+		transactionSync: (fn) => {
+			raw.exec('BEGIN')
+			try {
+				fn()
+				raw.exec('COMMIT')
+			} catch (e) {
+				raw.exec('ROLLBACK')
+				throw e
+			}
+		}
+	}
+}
 
 describe('parseSqlStatements', () => {
 	it('splits top-level statements on semicolons', () => {
@@ -36,5 +60,36 @@ CREATE TABLE b(y);`
 		expect(stmts[0]).toContain('CREATE TRIGGER')
 		expect(stmts[0]).toContain('END')
 		expect(stmts[1]).toBe('CREATE TABLE b(y)')
+	})
+})
+
+describe('migrateSync', () => {
+	it('applies a migration once and records its version (re-run is a no-op)', () => {
+		const db = makeSyncMigrator()
+		migrateSync(db, [{ version: 1, sql: 'CREATE TABLE t (id INTEGER)' }])
+		// Re-running the SAME entry must not re-execute (a second CREATE TABLE would throw).
+		migrateSync(db, [{ version: 1, sql: 'CREATE TABLE t (id INTEGER)' }])
+		const versions = db.query('SELECT version FROM schema_migrations').map((r) => Number(r.version))
+		expect(versions).toEqual([1])
+	})
+
+	// Restart-safety: a migration interrupted after some statements commit must roll back
+	// wholesale, so the next startup re-runs it cleanly instead of failing on a duplicate
+	// (e.g. ALTER TABLE ADD COLUMN) and blocking every later migration.
+	it('rolls back a failed migration wholesale so it is safely resumable', () => {
+		const db = makeSyncMigrator()
+		// The 2nd statement fails (no such table); the 1st (CREATE TABLE t) must NOT persist.
+		expect(() =>
+			migrateSync(db, [
+				{ version: 1, sql: 'CREATE TABLE t (id INTEGER); INSERT INTO missing VALUES (1)' }
+			])
+		).toThrow()
+		expect(db.query('SELECT version FROM schema_migrations').length).toBe(0) // version NOT recorded
+
+		// Re-run with a corrected migration: succeeds because nothing from the failed attempt
+		// lingers (no "table t already exists").
+		migrateSync(db, [{ version: 1, sql: 'CREATE TABLE t (id INTEGER)' }])
+		const versions = db.query('SELECT version FROM schema_migrations').map((r) => Number(r.version))
+		expect(versions).toEqual([1])
 	})
 })

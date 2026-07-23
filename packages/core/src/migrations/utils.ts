@@ -1,4 +1,4 @@
-import type { DbAdapter } from '../db'
+import type { SqlValue } from '../db'
 
 export function parseSqlStatements(sql: string): string[] {
 	const statements: string[] = []
@@ -47,27 +47,43 @@ export function parseSqlStatements(sql: string): string[] {
 	return statements.filter(Boolean)
 }
 
-export async function migrateFromEntries(
-	adapter: DbAdapter,
+/**
+ * A synchronous SQLite seam for the migration runner. Synchronous ON PURPOSE: the
+ * only way to get a genuinely atomic transaction on a SQLite-backed Durable Object
+ * is `storage.transactionSync`, which requires a synchronous body (an async body
+ * would let the transaction commit before the awaited statements run). `bun`/`node`
+ * satisfy it with a synchronous `BEGIN`/`COMMIT`.
+ */
+export interface SyncMigrator {
+	exec(sql: string, args?: SqlValue[]): void
+	query(sql: string): Array<Record<string, unknown>>
+	/** Run `fn` as ONE atomic transaction; roll back wholesale if it throws. */
+	transactionSync(fn: () => void): void
+}
+
+/**
+ * Apply pending migrations, each inside `transactionSync` so its statements AND its
+ * `schema_migrations` record commit together. Otherwise an interrupt after a
+ * committed-but-unrecorded step (e.g. an `ALTER TABLE ADD COLUMN`) re-runs the step
+ * on the next startup, fails as a duplicate, and blocks every later migration.
+ */
+export function migrateSync(
+	db: SyncMigrator,
 	entries: Array<{ version: number; sql: string }>
-): Promise<void> {
-	await adapter.run(
+): void {
+	db.exec(
 		`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`
 	)
-
-	const [row] = await adapter.query<{ max_version: number }>(
-		'SELECT MAX(version) AS max_version FROM schema_migrations'
-	)
-	const currentVersion = Number(row?.max_version ?? 0)
+	const [row] = db.query('SELECT MAX(version) AS max_version FROM schema_migrations')
+	const currentVersion = Number((row?.max_version as number | null | undefined) ?? 0)
 
 	for (const entry of entries) {
 		if (entry.version <= currentVersion) continue
-		for (const stmt of parseSqlStatements(entry.sql)) {
-			await adapter.run(stmt)
-		}
-		await adapter.run(
-			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))`,
-			[entry.version]
-		)
+		db.transactionSync(() => {
+			for (const stmt of parseSqlStatements(entry.sql)) db.exec(stmt)
+			db.exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))`, [
+				entry.version
+			])
+		})
 	}
 }

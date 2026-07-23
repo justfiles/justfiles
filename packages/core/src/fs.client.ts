@@ -1,5 +1,9 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
-import { GenerationStaleError, type SyncReplica } from '@justfiles/fs/sync-replica'
+import {
+	GenerationStaleError,
+	LineageStaleError,
+	type SyncReplica
+} from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { hc, type InferResponseType } from 'hono/client'
@@ -7,12 +11,18 @@ import type { createFsApi } from './fs'
 
 const FS_SOURCE_HEADER = 'x-fs-source'
 const FS_GENERATION_HEADER = 'x-fs-generation'
+// Identity fence: a mutating push carries the client's known volume lineage here so
+// the server rejects a write aimed at a DIFFERENT volume that happens to share the
+// same generation epoch (which `x-fs-generation` alone can't distinguish).
+const FS_LINEAGE_HEADER = 'x-fs-lineage'
 
 // Detect the server's push-fence rejection. A mutating write stamped with a stale
-// `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`;
-// surface it as a typed error so `synced()` can client-reset (and other callers
-// re-sync). 409 is also used for EEXIST/ENOTEMPTY, so match the body, not the
-// status — cloned so the original response body stays readable by callers.
+// `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`, and a
+// write aimed at a different volume at the same generation comes back `409 { error:
+// 'lineage_stale', lineageId }`; surface each as a typed error so `synced()` can
+// reconcile (generation reset vs. identity re-handshake). 409 is also used for
+// EEXIST/ENOTEMPTY, so match the body, not the status — cloned so the original
+// response body stays readable by callers.
 async function throwIfStale(res: {
 	status: number
 	clone(): { json(): Promise<unknown> }
@@ -21,7 +31,8 @@ async function throwIfStale(res: {
 	const body = (await res
 		.clone()
 		.json()
-		.catch(() => null)) as { error?: string; generation?: number } | null
+		.catch(() => null)) as { error?: string; generation?: number; lineageId?: string } | null
+	if (body?.error === 'lineage_stale') throw new LineageStaleError(body.lineageId)
 	if (body?.error === 'generation_stale') throw new GenerationStaleError(body.generation)
 }
 
@@ -298,23 +309,27 @@ export interface RemoteSyncReplicaOptions {
 	// on push so the server fences a stale write (a `409 generation_stale` surfaces
 	// as `GenerationStaleError`, which `synced()` turns into a client reset).
 	generation?: () => number | undefined
+	// The volume IDENTITY `synced()` last agreed with, stamped as `x-fs-lineage` on
+	// push so the server rejects a write aimed at a different volume at the same
+	// generation (see FS_LINEAGE_HEADER). Also surfaces as `GenerationStaleError`.
+	lineageId?: () => string | undefined
 }
 
 export function remoteSyncReplica(
 	client: FsClient,
 	options: RemoteSyncReplicaOptions
 ): SyncReplica {
-	const { clientId, generation } = options
+	const { clientId, generation, lineageId } = options
 	return {
 		async handshake() {
 			// GET /fs — the volume-lineage probe. Returns the server's `generation`
-			// (undefined on a server that has not opted in) plus the advisory `resetId`
-			// ("a reset/republish is in progress"). `synced()` calls this once per cycle
-			// to detect a server-side volume reset and to drive crash-resume.
+			// (undefined on a server that has not opted in), the stable `lineageId` (volume
+			// identity), plus the advisory `resetId` ("a reset/republish is in progress").
+			// `synced()` calls this once per cycle to detect a different volume / reset.
 			const res = await client.index.$get()
 			if (!res.ok) throw new Error(`handshake failed: ${res.status}`)
 			const data = await res.json()
-			return { generation: data.generation, resetId: data.resetId }
+			return { generation: data.generation, resetId: data.resetId, lineageId: data.lineageId }
 		},
 
 		async reset(body) {
@@ -375,11 +390,13 @@ export function remoteSyncReplica(
 			// from its own store after the blob upload. A "take mine" republish is just
 			// an ordinary push at the new generation (no special header).
 			const gen = generation?.()
+			const lineage = lineageId?.()
 			const res = await client.path.changes.$post({
 				json: { changes },
 				header: {
 					[FS_SOURCE_HEADER]: clientId,
-					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
+					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {}),
+					...(lineage !== undefined ? { [FS_LINEAGE_HEADER]: lineage } : {})
 				}
 			} as Parameters<typeof client.path.changes.$post>[0])
 			await throwIfStale(res)
@@ -399,13 +416,15 @@ export function remoteSyncReplica(
 
 		async putBlobByHash(hash, data) {
 			const gen = generation?.()
+			const lineage = lineageId?.()
 			const res = await client.blob[':hash'].$put(
 				{
 					param: { hash },
 					header: {
 						'Content-Type': 'application/octet-stream',
 						[FS_SOURCE_HEADER]: clientId,
-						...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
+						...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {}),
+						...(lineage !== undefined ? { [FS_LINEAGE_HEADER]: lineage } : {})
 					}
 				} as Parameters<(typeof client.blob)[':hash']['$put']>[0],
 				{ init: { body: toArrayBuffer(data) } }

@@ -67,7 +67,7 @@ describe('reset — transaction body', () => {
 		expect((await readGenerationState(db)).generation).toBe(1)
 
 		const ok = await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
-		expect(ok).toEqual({ ok: true, next: { generation: 2, resetId: undefined } })
+		expect(ok).toMatchObject({ ok: true, next: { generation: 2, resetId: undefined } })
 		expect((await readGenerationState(db)).generation).toBe(2)
 
 		const stale = await resetVolume(db, { mode: 'wipe', fromGeneration: 1 })
@@ -120,10 +120,16 @@ describe('reset — transaction body', () => {
 		const vol = volume(storage)
 		await vol.writeFile('/keep.txt', enc.encode('bytes'))
 		const hash = (await vol.stat('/keep.txt')).contentHash as string
+		const { lineageId } = await readGenerationState(db)
 
-		const res = await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
+		const res = await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: 1,
+			resetId: 'r1',
+			lineageId
+		})
 		expect(res.ok).toBe(true)
-		expect(await readGenerationState(db)).toEqual({ generation: 2, resetId: 'r1' })
+		expect(await readGenerationState(db)).toMatchObject({ generation: 2, resetId: 'r1' })
 		// Tree gone (fresh volume — the pre-reset cache is stale), but the content
 		// blob is retained for the republish.
 		expect(await volume(storage).exists('/keep.txt')).toBe(false)
@@ -154,15 +160,129 @@ describe('reset — transaction body', () => {
 	})
 })
 
+describe('reset — lineage identity (issue #245)', () => {
+	// A stable, unique per-volume id disambiguates two volumes that both read
+	// `generation: 1` — the root-cause fix for cursors reused across volumes.
+	it('mints a stable, unique lineageId per fresh volume', async () => {
+		const { db: a } = makeDb()
+		const { db: b } = makeDb()
+		const aId = (await readGenerationState(a)).lineageId
+		const bId = (await readGenerationState(b)).lineageId
+		expect(aId).toMatch(/^[0-9a-f]{32}$/) // defined — 16 random bytes as hex
+		expect(bId).toMatch(/^[0-9a-f]{32}$/)
+		expect(aId).not.toBe(bId) // unique across independent volumes
+		expect((await readGenerationState(a)).lineageId).toBe(aId) // stable across reads
+	})
+
+	// A reset is the SAME volume at a new epoch: bump `generation`, keep `lineageId`.
+	it('a reset bumps the generation but keeps the lineageId', async () => {
+		const { db } = makeDb()
+		const before = await readGenerationState(db)
+		expect(before.lineageId).toBeDefined()
+
+		// Pure decision carries the lineageId through unchanged.
+		expect(decideReset(before, { mode: 'wipe', fromGeneration: before.generation })).toEqual({
+			ok: true,
+			next: {
+				generation: before.generation + 1,
+				resetId: undefined,
+				lineageId: before.lineageId
+			}
+		})
+
+		// Transaction body: generation bumps, lineageId is untouched.
+		await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: before.generation,
+			resetId: 'r1',
+			lineageId: before.lineageId
+		})
+		const after = await readGenerationState(db)
+		expect(after.generation).toBe(before.generation + 1)
+		expect(after.lineageId).toBe(before.lineageId)
+	})
+
+	// Identity CAS: an adopt-mine that names a DIFFERENT volume's lineage must be rejected
+	// (the /reset route is fence-exempt, so this is the only guard) and must not truncate.
+	it('decideReset rejects an adopt-mine whose lineageId does not match', () => {
+		const current: GenerationState = { generation: 5, lineageId: 'vol-A' }
+		expect(
+			decideReset(current, {
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				resetId: 'r1',
+				lineageId: 'vol-B'
+			})
+		).toEqual({ ok: false, error: 'lineage_stale', generation: 5 })
+		expect(
+			decideReset(current, {
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				resetId: 'r1',
+				lineageId: 'vol-A'
+			})
+		).toEqual({ ok: true, next: { generation: 6, resetId: 'r1', lineageId: 'vol-A' } })
+	})
+
+	// A MISSING lineageId is rejected too (not just a mismatched one): a pre-lineage or
+	// redirected client that can't prove identity must not truncate a volume that has one.
+	// `wipe` (factory reset) is NOT forced to carry a lineageId.
+	it('decideReset requires a lineageId for adopt-mine, but not for wipe', () => {
+		const current: GenerationState = { generation: 5, lineageId: 'vol-A' }
+		expect(decideReset(current, { mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })).toEqual({
+			ok: false,
+			error: 'lineage_stale',
+			generation: 5
+		})
+		expect(decideReset(current, { mode: 'wipe', fromGeneration: 5 })).toEqual({
+			ok: true,
+			next: { generation: 6, resetId: undefined, lineageId: 'vol-A' }
+		})
+	})
+
+	it('resetVolume rejects an adopt-mine that omits the lineageId and leaves the volume intact', async () => {
+		const { db, storage } = makeDb()
+		await volume(storage).writeFile('/a.txt', enc.encode('keep'))
+		const before = await readGenerationState(db)
+
+		const res = await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: before.generation,
+			resetId: 'r1'
+		})
+		expect(res).toEqual({ ok: false, error: 'lineage_stale', generation: before.generation })
+		expect(await readGenerationState(db)).toEqual(before)
+		expect(await volume(storage).exists('/a.txt')).toBe(true)
+	})
+
+	it('resetVolume rejects a mismatched-lineage adopt-mine and leaves the volume intact', async () => {
+		const { db, storage } = makeDb()
+		await volume(storage).writeFile('/a.txt', enc.encode('keep'))
+		const before = await readGenerationState(db)
+
+		const res = await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: before.generation,
+			resetId: 'r1',
+			lineageId: 'some-other-volume'
+		})
+		expect(res).toEqual({ ok: false, error: 'lineage_stale', generation: before.generation })
+		// Untouched: same generation + lineageId, and the tree survives.
+		expect(await readGenerationState(db)).toEqual(before)
+		expect(await volume(storage).exists('/a.txt')).toBe(true)
+	})
+})
+
 describe('reset — clearReset (advisory in-progress flag)', () => {
 	it('clears the flag only for the matching reset; a stale/duplicate clear is a no-op', async () => {
 		const { db } = makeDb()
-		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
+		const { lineageId } = await readGenerationState(db)
+		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1', lineageId })
 		expect((await readGenerationState(db)).resetId).toBe('r1')
 
 		// A non-matching resetId leaves the flag untouched.
 		const other = await clearReset(db, 'someone-else')
-		expect(other).toEqual({ generation: 2, resetId: 'r1' })
+		expect(other).toMatchObject({ generation: 2, resetId: 'r1' })
 		expect((await readGenerationState(db)).resetId).toBe('r1')
 
 		// The owner clears it; the generation is unchanged.
@@ -171,6 +291,6 @@ describe('reset — clearReset (advisory in-progress flag)', () => {
 		expect((await readGenerationState(db)).resetId).toBeUndefined()
 
 		// Idempotent — a retried clear after it's already cleared is a harmless no-op.
-		expect(await clearReset(db, 'r1')).toEqual({ generation: 2 })
+		expect(await clearReset(db, 'r1')).toMatchObject({ generation: 2 })
 	})
 })

@@ -87,6 +87,11 @@ const SOURCE_HEADER = 'x-fs-source'
 // Push fencing: a mutating request carries the client's known volume lineage
 // here; a present-but-stale value is rejected.
 const GENERATION_HEADER = 'x-fs-generation'
+// Identity fence: a mutating request also carries the client's known volume
+// IDENTITY here. `generation` alone can't tell two fresh volumes apart (both seed
+// to 1), so a push aimed at a different volume at the same generation is rejected
+// on a `lineageId` mismatch — preventing cross-volume contamination.
+const LINEAGE_HEADER = 'x-fs-lineage'
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // ── Path-sync (/fs) transport contract ──────────────────────────────────────
@@ -107,7 +112,12 @@ const Handshake = z.object({
 	protocolVersion: z.number().int(),
 	schemaVersion: z.number().int(),
 	generation: z.number().int().optional(),
-	resetId: z.string().optional()
+	resetId: z.string().optional(),
+	// The volume's stable, unique lineage identity (see reset.ts). Orthogonal to
+	// `generation` (the CAS/fence epoch): a client whose stored `lineageId` differs
+	// from the observed one is talking to a genuinely different volume and
+	// re-bootstraps. Optional — a host that injects no lineage source omits it.
+	lineageId: z.string().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
@@ -145,7 +155,11 @@ export const ResetBody = z.discriminatedUnion('mode', [
 	z.object({
 		mode: z.literal('adopt-mine'),
 		fromGeneration: z.number().int(),
-		resetId: z.string()
+		resetId: z.string(),
+		// The volume identity the client believes it is republishing onto. The reset
+		// capability validates it atomically with the generation CAS (see reset.ts), so a
+		// stale endpoint swap can't truncate a different volume at the same generation.
+		lineageId: z.string().optional()
 	}),
 	z.object({
 		mode: z.literal('wipe'),
@@ -158,7 +172,7 @@ export type ResetBody = z.infer<typeof ResetBody>
 
 export type ResetResult =
 	| { ok: true; generation: number }
-	| { ok: false; error: 'generation_stale'; generation: number }
+	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', data as unknown as ArrayBuffer)
@@ -229,9 +243,28 @@ export function createFsApi(
 			.use('*', async (c, next) => {
 				if (opts?.lineage && MUTATING_METHODS.has(c.req.method)) {
 					const header = c.req.header(GENERATION_HEADER)
+					const lineageHeader = c.req.header(LINEAGE_HEADER)
 					const lineage = await readLineage()
 					if (header !== undefined && lineage && Number(header) !== lineage.generation)
 						return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
+					// Identity fence: reject a write whose lineage no longer matches this volume
+					// (a different volume recreated at the SAME generation, which `x-fs-generation`
+					// can't catch). A DISTINCT `lineage_stale` error, because a generation reconcile
+					// would be a no-op here — the client must reconcile identity (re-handshake +
+					// re-bootstrap) to recover. Only enforced when both sides carry a lineageId.
+					if (
+						lineageHeader !== undefined &&
+						lineage?.lineageId !== undefined &&
+						lineageHeader !== lineage.lineageId
+					)
+						return c.json(
+							{
+								error: 'lineage_stale',
+								generation: lineage.generation,
+								lineageId: lineage.lineageId
+							},
+							409
+						)
 				}
 				return next()
 			})
@@ -245,7 +278,8 @@ export function createFsApi(
 						protocolVersion: PROTOCOL_VERSION,
 						schemaVersion: SCHEMA_VERSION,
 						generation: lineage?.generation,
-						resetId: lineage?.resetId
+						resetId: lineage?.resetId,
+						lineageId: lineage?.lineageId
 					})
 				)
 			})
