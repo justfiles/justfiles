@@ -1106,6 +1106,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				const orphanedR2Keys: string[] = []
 				let count = 0
 				await db.transaction(async (tx) => {
+					await tx.run(
+						`DELETE FROM fs_path_journal
+						 WHERE seq NOT IN (
+							SELECT MAX(seq)
+							FROM fs_path_journal
+							GROUP BY json_extract(change_json, '$.path')
+						 )`
+					)
 					const rows = await tx.query<{ content_hash: unknown }>(
 						`SELECT content_hash FROM fs_contents
 						 WHERE content_hash NOT IN (SELECT content_hash FROM fs_inodes WHERE content_hash IS NOT NULL)`
@@ -1149,9 +1157,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				)
 				return toNumber(row?.head ?? 0)
 			},
-			// Replace history with one locally-authored put per live path so a
-			// republish sends current state, not obsolete content and tombstones.
-			async adoptAllAsLocal() {
+			// One-time reset/migration path: the full journal is intentionally read
+			// in memory so only its latest state is republished.
+			async adoptAllAsLocal(opts?: { dropDeletes?: boolean }) {
 				await ensureBootstrapped()
 				await db.transaction(async (tx) => {
 					const rows = await tx.query<{ change_json: unknown }>(
@@ -1159,7 +1167,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					)
 					const current = coalesceByPath(
 						rows.map((row) => JSON.parse(String(row.change_json)) as PathChange)
-					).filter((change) => change.kind === 'put')
+					).filter((change) => !opts?.dropDeletes || change.kind === 'put')
 					await tx.run('DELETE FROM fs_path_journal')
 					for (const change of current) await appendJournalRow(tx, change)
 				})

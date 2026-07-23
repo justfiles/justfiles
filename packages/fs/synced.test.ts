@@ -579,6 +579,8 @@ describe('synced (generation / client-reset)', () => {
 		const local = memStorage()
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		expect(await vol.exists('/server.txt')).toBe(true) // bootstrapped (tagged REMOTE_SOURCE)
+		await vol.writeFile('/deleted.txt', enc.encode('temporary'))
+		await vol.rm('/deleted.txt')
 		await vol.writeFile('/mine.txt', enc.encode('local'))
 		await vol.flush()
 		server.pushes.length = 0 // ignore the pre-reset pushes
@@ -590,6 +592,7 @@ describe('synced (generation / client-reset)', () => {
 		const paths = server.pushes.flatMap((p) => p.changes.map((c) => c.path))
 		expect(paths).toContain('/server.txt') // pulled file preserved via the re-tag
 		expect(paths).toContain('/mine.txt')
+		expect(paths).not.toContain('/deleted.txt') // empty target needs no tombstones
 		expect(await vol.exists('/mine.txt')).toBe(true) // local kept intact
 		expect((await readSyncState(local)).generation).toBe(2)
 		expect(server.resetId).toBeUndefined() // drained → the server's flag was cleared
@@ -856,6 +859,22 @@ describe('synced (generation / client-reset)', () => {
 		expect(pushedPaths).toContain('/pulled.txt')
 		expect(await vol.exists('/pulled.txt')).toBe(true)
 		expect((await readSyncState(local)).lineageId).toBe('B')
+	})
+
+	it('publishes a retained local deletion after legacy re-bootstrap', async () => {
+		const server = fakeServer({ files: { '/deleted.txt': 'remote copy' } })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.rm('/deleted.txt')
+
+		server.generation = 1
+		server.lineageId = 'B'
+		server.pushes.length = 0
+		await vol.flush()
+		await vol.flush()
+
+		const pushed = server.pushes.flatMap((push) => push.changes)
+		expect(pushed).toContainEqual(expect.objectContaining({ kind: 'delete', path: '/deleted.txt' }))
 	})
 
 	// Codex round-3 P1: a pending take-mine with NO stored lineageId (pre-feature) can't

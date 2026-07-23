@@ -4,6 +4,7 @@
 // instead of reporting 404 — which broke push's `hasBlobByHash` presence check.
 
 import { memStorage } from '@justfiles/fs'
+import { PAGE } from '@justfiles/fs/sync-replica'
 import { describe, expect, it } from 'vitest'
 import { createFsApi } from './fs'
 import { createFsClient, remoteSyncReplica } from './fs.client'
@@ -31,6 +32,17 @@ describe('/fs/blob/:hash presence', () => {
 
 		expect(res.status).toBe(200)
 		expect(await res.json()).toEqual({ missing: [ABSENT] })
+	})
+
+	it('accepts one full sync page of hashes', async () => {
+		const app = createFsApi(memStorage())
+		const res = await app.request('/blobs/missing', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ hashes: Array<string>(PAGE).fill(ABSENT) })
+		})
+
+		expect(res.status).toBe(200)
 	})
 
 	it('checks remote blob presence without HEAD requests', async () => {

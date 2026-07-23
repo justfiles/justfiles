@@ -169,7 +169,9 @@ export interface ContentStore {
 	 * Reclaim every stored blob that no inode's `contentHash` references. Out-of-band
 	 * ONLY — NEVER call from the apply path: `applyJournaled` applies a rename's
 	 * deletes before its puts, so a mid-apply sweep would drop bytes the same batch
-	 * re-references. Returns the number of blobs reclaimed.
+	 * re-references. Owned backends atomically discard superseded journal rows first,
+	 * so every remaining delta references current content. Returns the number of
+	 * blobs reclaimed.
 	 */
 	gcUnreferenced(): Promise<number>
 }

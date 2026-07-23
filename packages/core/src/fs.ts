@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
-import { journaledChangeSource, localSyncReplica } from '@justfiles/fs/sync-replica'
+import { journaledChangeSource, localSyncReplica, PAGE } from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { Hono } from 'hono'
@@ -146,7 +146,7 @@ const SnapshotQuery = z.object({
 })
 const ContentHash = z.string().regex(/^[0-9a-f]{64}$/)
 const HashParam = z.object({ hash: ContentHash })
-const MissingBlobsBody = z.object({ hashes: z.array(ContentHash).max(500) })
+const MissingBlobsBody = z.object({ hashes: z.array(ContentHash).max(PAGE) })
 
 // The lineage-mutation request (POST /fs/reset). `adopt-mine` / `wipe` CAS on
 // `fromGeneration` (truncate + bump); `complete` is advisory — the initiator's

@@ -96,11 +96,11 @@ import { FileType } from './types'
 //      put re-references, since orderForApply applies deletes before puts), so
 //      owned backends leak orphaned content on delete-heavy sync. Fixed via
 //      ContentStore.gcUnreferenced() — an out-of-band sweep reclaiming every stored
-//      blob no inode's contentHash references (sqlite: one `NOT IN` delete reusing
-//      maybeDeleteOrphanedContent for FTS + R2-key cleanup; mem/idb: build the live
-//      set from inodes, drop the rest), NEVER in the apply path. Triggering is the
-//      app/host's call (reachable via storage.caps.content) — NOT auto-wired into
-//      the sync loop (a full content scan every sync would be wasteful). And
+//      blob no inode's contentHash references. The same atomic operation first
+//      compacts the journal to each path's latest row, preserving its seq so lagging
+//      cursors still converge without retaining obsolete blob references. Triggering
+//      is the app/host's call (reachable via storage.caps.content) — NOT auto-wired
+//      into the sync loop (a full content scan every sync would be wasteful). And
 //      caps.content.putByHash's hash-trust is now documented at the interface (the
 //      sync engine supplies a pre-computed hash; re-hashing every pulled blob is
 //      wasteful) — documentation over a dev-only verify, to stay minimal.

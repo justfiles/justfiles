@@ -384,7 +384,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	async function applyTakeMinePrep(toGeneration: number): Promise<void> {
 		if (!knownPending) return
 		await recordGeneration(toGeneration)
-		await props.local.caps?.journal?.adoptAllAsLocal?.()
+		await props.local.caps?.journal?.adoptAllAsLocal?.({ dropDeletes: true })
 		knownPending = { ...knownPending, toGeneration }
 		await syncState.patch({ pendingReset: knownPending, pushCursor: '0', pullCursor: '0' })
 	}
@@ -778,8 +778,9 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 }
 
 /**
- * Upload each regular-file put's content before its tree change. Return puts
- * whose blob is missing on both replicas so the caller can quarantine them.
+ * Upload each regular-file put's content before its tree change. Target presence
+ * is checked once per page when supported; only missing candidates need
+ * source-side checks. Return puts missing on both replicas for quarantine.
  */
 async function uploadBlobs(
 	changes: PathChange[],

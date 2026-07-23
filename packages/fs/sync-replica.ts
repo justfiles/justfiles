@@ -173,13 +173,11 @@ export interface JournalStore {
 	/** Latest seq (snapshot resume). */
 	head(): Promise<number>
 	/**
-	 * Replace journal history with one locally-authored put per current live path.
-	 * After a "take mine" reset the server is empty, so every local file IS now mine
-	 * — this makes the ordinary push (`excludeLocalSource: REMOTE_SOURCE`) republish
-	 * current state, pulled files included, without obsolete versions or tombstones.
-	 * Owned backends only.
+	 * Replace journal history with one locally-authored latest row per path so a
+	 * re-bootstrap republishes current state, including unpushed tombstones.
+	 * `dropDeletes` is safe only after "take mine" has emptied the target.
 	 */
-	adoptAllAsLocal(): Promise<void>
+	adoptAllAsLocal(opts?: { dropDeletes?: boolean }): Promise<void>
 }
 
 /**

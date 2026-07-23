@@ -747,14 +747,13 @@ export function idbStorage(
 					.openCursor(null, 'prev')
 				return cursor ? cursor.key : 0
 			},
-			// Replace history with one locally-authored put per live path so a
-			// republish sends current state, not obsolete content and tombstones.
-			async adoptAllAsLocal() {
+			// Replace history with one locally-authored latest row per path.
+			async adoptAllAsLocal(opts) {
 				const db = await getDb()
 				const tx = db.transaction(['journal'], 'readwrite')
 				const journal = tx.objectStore('journal')
 				const current = coalesceByPath((await journal.getAll()).map((row) => row.change)).filter(
-					(change) => change.kind === 'put'
+					(change) => !opts?.dropDeletes || change.kind === 'put'
 				)
 				await journal.clear()
 				for (const change of current) await journal.add({ change })
@@ -781,7 +780,20 @@ export function idbStorage(
 			},
 			async gcUnreferenced() {
 				const db = await getDb()
-				const tx = db.transaction(['content', 'inodes', 'meta'], 'readwrite') as FullTx
+				const tx = db.transaction(['content', 'inodes', 'journal', 'meta'], 'readwrite') as FullTx
+				const journal = tx.objectStore('journal')
+				const latest = new Map<string, number>()
+				let journalCursor = await journal.openCursor()
+				while (journalCursor) {
+					latest.set(journalCursor.value.change.path, journalCursor.key)
+					journalCursor = await journalCursor.continue()
+				}
+				journalCursor = await journal.openCursor()
+				while (journalCursor) {
+					if (latest.get(journalCursor.value.change.path) !== journalCursor.key)
+						await journalCursor.delete()
+					journalCursor = await journalCursor.continue()
+				}
 				const live = new Set<string>()
 				for (const inode of await tx.objectStore('inodes').getAll())
 					if (inode.contentHash) live.add(inode.contentHash)
