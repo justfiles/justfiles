@@ -310,6 +310,8 @@ type LocalBackend = ReturnType<typeof memStorage>
 interface FakeServer {
 	replica: SyncReplica
 	generation: number | undefined
+	/** The volume's stable, unique lineage identity surfaced on the handshake. */
+	lineageId: string | undefined
 	/** The advisory "reset in progress" flag surfaced on the handshake. */
 	resetId: string | undefined
 	/** Override the generation echoed on pull pages (default: `generation`). */
@@ -326,12 +328,13 @@ interface FakeServer {
 }
 
 function fakeServer(
-	init: { generation?: number; files?: Record<string, string> } = {}
+	init: { generation?: number; lineageId?: string; files?: Record<string, string> } = {}
 ): FakeServer {
 	const blobs = new Map<string, Uint8Array>()
 	const puts = new Map<string, PathChange>()
 	const server: FakeServer = {
 		generation: init.generation,
+		lineageId: init.lineageId,
 		resetId: undefined,
 		deltaGeneration: undefined,
 		scanCalls: 0,
@@ -354,7 +357,11 @@ function fakeServer(
 	}
 	for (const [p, content] of Object.entries(init.files ?? {})) server.seed(p, content)
 	server.replica = {
-		handshake: async () => ({ generation: server.generation, resetId: server.resetId }),
+		handshake: async () => ({
+			generation: server.generation,
+			resetId: server.resetId,
+			lineageId: server.lineageId
+		}),
 		// The real CAS, in miniature: `adopt-mine` bumps the epoch and raises the
 		// advisory flag; `complete` lowers it. (`fromGeneration` matching is the real
 		// server's job — `resetError` stands in for a lost race.)
@@ -412,6 +419,7 @@ async function seedSyncState(local: LocalBackend, state: Record<string, unknown>
 
 async function readSyncState(local: LocalBackend): Promise<{
 	generation?: number
+	lineageId?: string
 	pullCursor?: string
 	pushCursor?: string
 	pendingReset?: { resetId: string; fromGeneration: number; toGeneration?: number }
@@ -641,6 +649,83 @@ describe('synced (generation / client-reset)', () => {
 		const state = await readSyncState(local)
 		expect(state.generation).toBe(7)
 		expect(state.pendingReset).toBeUndefined()
+	})
+
+	// ── Lineage identity gate (issue #245) ─────────────────────────────────────
+	// `generation` is only an epoch counter, seeded to 1 in EVERY volume, so two
+	// genuinely different server volumes are indistinguishable by generation alone.
+	// The stable, unique `lineageId` disambiguates them: a different one means the
+	// stored cursors were minted against another volume → client-reset + re-bootstrap.
+
+	// RED 1 — different lineage, same generation ⇒ reset. On main this diverges:
+	// 1 === 1 ⇒ "same lineage" ⇒ cursors reused ⇒ /keep.txt survives, /theirs never lands.
+	it('client-resets when the lineageId differs at the same generation', async () => {
+		const server = fakeServer({ generation: 1, lineageId: 'B', files: { '/theirs.txt': 'x' } })
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		await seedSyncState(local, {
+			generation: 1,
+			lineageId: 'A',
+			pullCursor: '0',
+			pushCursor: '0'
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/keep.txt')).toBe(false) // discarded — different volume
+		expect(dec.decode(await vol.readFile('/theirs.txt'))).toBe('x') // re-bootstrapped from B
+		expect((await readSyncState(local)).lineageId).toBe('B') // adopted the new lineage
+		expect(server.scanCalls).toBeGreaterThanOrEqual(1)
+	})
+
+	// RED 2 — same lineage, same generation ⇒ no reset (regression guard).
+	it('runs a normal sync when the lineageId and generation both match', async () => {
+		const server = fakeServer({ generation: 5, lineageId: 'A' })
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		await seedSyncState(local, {
+			generation: 5,
+			lineageId: 'A',
+			pullCursor: '0',
+			pushCursor: '0'
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/keep.txt')).toBe(true) // cursors preserved, no reset
+		expect(server.scanCalls).toBe(0)
+	})
+
+	// RED 3 — same lineage, bumped generation ⇒ reset (existing behaviour preserved).
+	it('still resets on a bumped generation within the same lineage', async () => {
+		const server = fakeServer({ generation: 2, lineageId: 'A', files: { '/theirs.txt': 'x' } })
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		await seedSyncState(local, {
+			generation: 1,
+			lineageId: 'A',
+			pullCursor: '0',
+			pushCursor: '0'
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/keep.txt')).toBe(false) // discarded — new epoch
+		expect(dec.decode(await vol.readFile('/theirs.txt'))).toBe('x')
+		const state = await readSyncState(local)
+		expect(state.generation).toBe(2)
+		expect(state.lineageId).toBe('A') // same volume, kept
+	})
+
+	// RED 4 — legacy/undefined lineage ⇒ unchanged (opted-out host behaves as today).
+	it('ignores the identity gate when the server omits lineageId', async () => {
+		const server = fakeServer({ generation: 5 }) // lineageId undefined
+		const local = memStorage()
+		await volume(local).writeFile('/keep.txt', enc.encode('mine'))
+		await seedSyncState(local, {
+			generation: 5,
+			lineageId: 'A',
+			pullCursor: '0',
+			pushCursor: '0'
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/keep.txt')).toBe(true) // no reset — no lineage signal
+		expect(server.scanCalls).toBe(0)
+		expect((await readSyncState(local)).lineageId).toBe('A') // stored lineage untouched
 	})
 })
 

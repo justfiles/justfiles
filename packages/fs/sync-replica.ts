@@ -129,13 +129,15 @@ export type ResetRequest =
  * lineage to report or reset).
  *
  * `handshake().generation` is the server volume's epoch, which `synced()` compares
- * against the stored one to detect a reset; `resetId` is the advisory "reset in
- * progress" flag (not a lock — drives crash-resume identity and UI legibility).
- * `reset` mutates it: `adopt-mine` CASes on `fromGeneration` and returns the new
- * epoch; `complete` clears the advisory flag and returns nothing.
+ * against the stored one to detect a reset; `handshake().lineageId` is the volume's
+ * stable identity, which `synced()` compares to detect a genuinely DIFFERENT volume
+ * (a reused cursor bug the epoch alone can't catch); `resetId` is the advisory
+ * "reset in progress" flag (not a lock — drives crash-resume identity and UI
+ * legibility). `reset` mutates it: `adopt-mine` CASes on `fromGeneration` and returns
+ * the new epoch; `complete` clears the advisory flag and returns nothing.
  */
 export interface LineagePeer {
-	handshake?(): Promise<{ generation?: number; resetId?: string }>
+	handshake?(): Promise<{ generation?: number; resetId?: string; lineageId?: string }>
 	reset?(body: ResetRequest): Promise<{ generation?: number }>
 }
 
@@ -435,6 +437,11 @@ export type PathSyncState = {
 export type SyncState = {
 	schemaVersion: number // 1 for this design; future migrations branch on it
 	generation?: number // server volume lineage this replica is synced against
+	// The server volume's stable, unique identity this replica synced against. Distinct
+	// from `generation` (an epoch counter seeded to 1 in every volume): when the observed
+	// `lineageId` differs, the stored cursors were minted against a DIFFERENT volume, so
+	// `synced()` client-resets and re-bootstraps instead of reusing them.
+	lineageId?: string
 	// In-flight "take mine" (adopt-mine), persisted BEFORE the reset CAS so a crash
 	// mid-republish resumes/adopts instead of discarding the volume it meant to
 	// publish. `fromGeneration` is the lineage the reset started from; `toGeneration`

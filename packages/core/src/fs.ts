@@ -107,7 +107,12 @@ const Handshake = z.object({
 	protocolVersion: z.number().int(),
 	schemaVersion: z.number().int(),
 	generation: z.number().int().optional(),
-	resetId: z.string().optional()
+	resetId: z.string().optional(),
+	// The volume's stable, unique lineage identity (see reset.ts). Orthogonal to
+	// `generation` (the CAS/fence epoch): a client whose stored `lineageId` differs
+	// from the observed one is talking to a genuinely different volume and
+	// re-bootstraps. Optional — a host that injects no lineage source omits it.
+	lineageId: z.string().optional()
 })
 // Deltas are one monotonic stream, so the page token IS the resume cursor.
 const DeltaPage = z.object({
@@ -245,7 +250,8 @@ export function createFsApi(
 						protocolVersion: PROTOCOL_VERSION,
 						schemaVersion: SCHEMA_VERSION,
 						generation: lineage?.generation,
-						resetId: lineage?.resetId
+						resetId: lineage?.resetId,
+						lineageId: lineage?.lineageId
 					})
 				)
 			})

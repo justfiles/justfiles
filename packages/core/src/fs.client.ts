@@ -308,13 +308,13 @@ export function remoteSyncReplica(
 	return {
 		async handshake() {
 			// GET /fs — the volume-lineage probe. Returns the server's `generation`
-			// (undefined on a server that has not opted in) plus the advisory `resetId`
-			// ("a reset/republish is in progress"). `synced()` calls this once per cycle
-			// to detect a server-side volume reset and to drive crash-resume.
+			// (undefined on a server that has not opted in), the stable `lineageId` (volume
+			// identity), plus the advisory `resetId` ("a reset/republish is in progress").
+			// `synced()` calls this once per cycle to detect a different volume / reset.
 			const res = await client.index.$get()
 			if (!res.ok) throw new Error(`handshake failed: ${res.status}`)
 			const data = await res.json()
-			return { generation: data.generation, resetId: data.resetId }
+			return { generation: data.generation, resetId: data.resetId, lineageId: data.lineageId }
 		},
 
 		async reset(body) {

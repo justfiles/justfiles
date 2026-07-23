@@ -307,6 +307,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		await syncState.patch({ generation })
 	}
 
+	/**
+	 * Persist the agreed lineage identity alongside its generation (and mirror the
+	 * generation for write-time stamping). Used when adopting a NEW volume after the
+	 * identity gate client-resets — `lineageId` is not fenced on writes, so only the
+	 * generation needs the in-memory mirror.
+	 */
+	async function recordLineage(lineageId: string, generation: number): Promise<void> {
+		knownGeneration = generation
+		await syncState.patch({ lineageId, generation })
+	}
+
 	async function clearPendingReset(): Promise<void> {
 		knownPending = undefined
 		await syncState.patch({ pendingReset: undefined })
@@ -347,15 +358,36 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * The volume-lineage handshake check (client<->server only), run each cycle
-	 * BEFORE touching data. Eventual-consistency: never blocks — with an in-flight
-	 * `pendingReset` it resumes/adopts/resets-to-winner (see `resumeAction`);
-	 * otherwise it runs the plain generation reconcile.
+	 * BEFORE touching data. First the identity gate (a different `lineageId` = a
+	 * different volume ⇒ reset + adopt), then — within the same volume — the
+	 * generation reconcile. Eventual-consistency: never blocks; with an in-flight
+	 * `pendingReset` it resumes/adopts/resets-to-winner (see `resumeAction`).
 	 */
 	async function reconcileLineage(server: {
 		generation?: number
 		resetId?: string
+		lineageId?: string
 	}): Promise<void> {
 		if (server.generation === undefined) return // legacy server — no lineage signal
+		const state = await syncState.get()
+		// Identity gate, BEFORE the generation reconcile: a different `lineageId` is a
+		// genuinely DIFFERENT server volume, whose `generation` epoch is not comparable to
+		// ours (both may read 1). The stored cursors were minted against another volume, so
+		// discard and re-bootstrap the observed lineage — the root-cause fix for reused
+		// cursors that `generation` alone can't catch.
+		if (
+			server.lineageId !== undefined &&
+			state.lineageId !== undefined &&
+			server.lineageId !== state.lineageId
+		) {
+			await clientReset()
+			await recordLineage(server.lineageId, server.generation)
+			return
+		}
+		// A fresh (or pre-feature) replica adopts the observed `lineageId` with no spurious
+		// reset: its cursors, if any, are a legitimate migration, not a wrong-volume reuse.
+		if (server.lineageId !== undefined && state.lineageId === undefined)
+			await syncState.patch({ lineageId: server.lineageId })
 		if (knownPending) {
 			const action = resumeAction(knownPending, server)
 			if (action === 'resume') {
