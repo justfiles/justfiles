@@ -87,6 +87,11 @@ const SOURCE_HEADER = 'x-fs-source'
 // Push fencing: a mutating request carries the client's known volume lineage
 // here; a present-but-stale value is rejected.
 const GENERATION_HEADER = 'x-fs-generation'
+// Identity fence: a mutating request also carries the client's known volume
+// IDENTITY here. `generation` alone can't tell two fresh volumes apart (both seed
+// to 1), so a push aimed at a different volume at the same generation is rejected
+// on a `lineageId` mismatch — preventing cross-volume contamination.
+const LINEAGE_HEADER = 'x-fs-lineage'
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 // ── Path-sync (/fs) transport contract ──────────────────────────────────────
@@ -234,8 +239,19 @@ export function createFsApi(
 			.use('*', async (c, next) => {
 				if (opts?.lineage && MUTATING_METHODS.has(c.req.method)) {
 					const header = c.req.header(GENERATION_HEADER)
+					const lineageHeader = c.req.header(LINEAGE_HEADER)
 					const lineage = await readLineage()
 					if (header !== undefined && lineage && Number(header) !== lineage.generation)
+						return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
+					// Identity fence: reject a write whose lineage no longer matches this volume
+					// (a different volume at the same generation). Reuses the `generation_stale`
+					// envelope so the client re-syncs; its next handshake sees the lineage change
+					// and re-bootstraps. Only enforced when both sides carry a lineageId.
+					if (
+						lineageHeader !== undefined &&
+						lineage?.lineageId !== undefined &&
+						lineageHeader !== lineage.lineageId
+					)
 						return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
 				}
 				return next()

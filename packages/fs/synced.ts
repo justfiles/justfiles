@@ -31,7 +31,11 @@ import { type Volume, volume } from './volume'
  */
 type RemotePeer =
 	| Storage
-	| ((ctx: { clientId: string; generation: () => number | undefined }) => SyncReplica)
+	| ((ctx: {
+			clientId: string
+			generation: () => number | undefined
+			lineageId: () => string | undefined
+	  }) => SyncReplica)
 
 type Props = {
 	local: Storage
@@ -103,6 +107,13 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// fencing). Kept in sync with `SyncState.generation` by `recordGeneration`.
 	let knownGeneration = (await syncState.get()).generation
 
+	// The server volume IDENTITY this replica last agreed with, mirrored in memory so
+	// the remote replica can stamp `x-fs-lineage` on every mutating write — the write
+	// fence rejects a push whose lineage no longer matches, so a mid-cycle volume swap
+	// at the same generation can't be contaminated. Kept in sync with
+	// `SyncState.lineageId` by `recordLineage`.
+	let knownLineage = (await syncState.get()).lineageId
+
 	// The in-flight "take mine" intent, mirrored in memory. Persisted BEFORE the
 	// reset CAS so a crash mid-publish resumes/adopts (via the boot handshake)
 	// instead of discarding the snapshot it meant to publish; cleared on finalize.
@@ -135,7 +146,11 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	const clientServer = typeof props.remote === 'function'
 	const remoteReplica: SyncReplica =
 		typeof props.remote === 'function'
-			? props.remote({ clientId: id, generation: () => knownGeneration })
+			? props.remote({
+					clientId: id,
+					generation: () => knownGeneration,
+					lineageId: () => knownLineage
+				})
 			: localSyncReplica(props.remote, journaledChangeSource(props.remote), {
 					lazyContent,
 					localActorId: id
@@ -283,6 +298,22 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	/**
+	 * Re-establish sync against a volume we can't verify our cursors against, WITHOUT
+	 * discarding local data. Only the cursors are cleared, so the next cycle runs a full
+	 * `bootstrap()` (re-deriving correct cursors from a fresh scan — no stale/foreign
+	 * cursor is reused). Clearing `pushCursor` also makes `everPushed` false, so bootstrap
+	 * takes the adoption path: existing local paths WIN and are re-stamped for the next
+	 * push, and `reconcileLocal` is skipped — so un-pushed local edits survive and merge
+	 * into the volume. Used for a pre-feature (lineage-less) replica and for a pending
+	 * take-mine that reconnected to a different volume: keep the user's data, drop the
+	 * unverifiable cursors. (Contrast `clientReset`, which discards local for a confirmed
+	 * take-theirs.)
+	 */
+	async function rebootstrapKeepingLocal(): Promise<void> {
+		await syncState.patch({ pullCursor: undefined, pushCursor: undefined })
+	}
+
+	/**
 	 * The volume-lineage handshake check (client<->server only). Compares the
 	 * server's `generation` to the one this replica last agreed with:
 	 * - `serverGen` undefined → legacy server, no lineage signal → normal sync.
@@ -315,6 +346,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 */
 	async function recordLineage(lineageId: string, generation: number): Promise<void> {
 		knownGeneration = generation
+		knownLineage = lineageId
 		await syncState.patch({ lineageId, generation })
 	}
 
@@ -379,15 +411,32 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		lineageId?: string
 	}): Promise<void> {
 		if (server.generation === undefined) return // legacy server — no lineage signal
+		const state = await syncState.get()
 		// (1) Resolve an in-flight "take mine" ahead of the identity gate so a differing
-		// lineage can't clientReset the volume the user chose to publish. Adopt the
-		// observed lineageId too, so the (re)published volume is recorded and the adopt
-		// branch below won't spuriously reset next cycle.
+		// lineage can't discard the volume the user chose to publish.
 		if (knownPending) {
+			// `resumeAction` classifies by GENERATION, which is only meaningful WITHIN one
+			// volume. If we can already see the lineage differs, our take-mine was for another
+			// volume: abandon the now-void intent, but keep local — re-bootstrap keeping local
+			// merges it into the volume we actually reached (no foreign-cursor reuse, no data loss).
+			if (
+				server.lineageId !== undefined &&
+				state.lineageId !== undefined &&
+				server.lineageId !== state.lineageId
+			) {
+				await rebootstrapKeepingLocal()
+				await recordLineage(server.lineageId, server.generation)
+				await clearPendingReset()
+				return
+			}
 			const action = resumeAction(knownPending, server)
 			if (action === 'resume') {
 				if (knownPending.toGeneration === undefined) await applyTakeMinePrep(server.generation)
-				if (server.lineageId !== undefined) await syncState.patch({ lineageId: server.lineageId })
+				// Record the volume we (re)published to so the adopt branch below won't reset it.
+				if (server.lineageId !== undefined) {
+					knownLineage = server.lineageId
+					await syncState.patch({ lineageId: server.lineageId })
+				}
 				return // our republish continues via the ordinary push
 			}
 			if (action === 'reset-to-winner') await clientReset()
@@ -396,7 +445,6 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			await clearPendingReset()
 			return
 		}
-		const state = await syncState.get()
 		// (2) Identity gate: a different `lineageId` is a genuinely DIFFERENT server
 		// volume, whose `generation` epoch is not comparable to ours (both may read 1).
 		// The stored cursors were minted against another volume, so discard and
@@ -414,9 +462,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// identity silently and bootstraps normally. A cursor-bearing LEGACY replica must
 		// NOT trust its cursors — they were minted against a volume we cannot identify, so
 		// if this is a different volume at the same generation, reusing them would skip
-		// remote files and diverge. Re-bootstrap to validate, then record the identity.
+		// remote files and diverge. Re-bootstrap WITHOUT discarding local (it may still be
+		// the same volume with un-pushed offline edits), then record the identity.
 		if (server.lineageId !== undefined && state.lineageId === undefined) {
-			if (state.pullCursor !== undefined) await clientReset()
+			if (state.pullCursor !== undefined) await rebootstrapKeepingLocal()
 			await recordLineage(server.lineageId, server.generation)
 			return
 		}

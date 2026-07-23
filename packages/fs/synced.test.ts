@@ -728,21 +728,21 @@ describe('synced (generation / client-reset)', () => {
 		expect((await readSyncState(local)).lineageId).toBe('A') // stored lineage untouched
 	})
 
-	// Codex P1 (feedback 1/2): a replica that synced BEFORE lineageId existed keeps
+	// Codex P1 (feedback A): a replica that synced BEFORE lineageId existed keeps
 	// cursors but no lineageId. Those cursors were minted against a volume we can't
-	// identify; if this server is a DIFFERENT volume at the same generation, silently
-	// adopting its id and reusing the cursors would skip its files and diverge — the
-	// exact bug. A cursor-bearing legacy replica must re-bootstrap, not adopt silently.
-	it('re-bootstraps a cursor-bearing legacy replica before adopting a lineageId', async () => {
+	// identify, so they must not be reused (a different volume at the same generation
+	// would skip its files). It re-bootstraps — but WITHOUT discarding local, since it
+	// may still be the same volume with un-pushed offline edits.
+	it('re-bootstraps a cursor-bearing legacy replica without discarding local edits', async () => {
 		const server = fakeServer({ generation: 1, lineageId: 'B', files: { '/theirs.txt': 'x' } })
 		const local = memStorage()
-		await volume(local).writeFile('/stale.txt', enc.encode('from volume A'))
+		await volume(local).writeFile('/offline.txt', enc.encode('un-pushed edit')) // past pushCursor
 		await seedSyncState(local, { generation: 1, pullCursor: '5', pushCursor: '5' }) // no lineageId
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
-		expect(await vol.exists('/stale.txt')).toBe(false) // discarded — cursors couldn't be trusted
-		expect(dec.decode(await vol.readFile('/theirs.txt'))).toBe('x') // re-bootstrapped from B
+		expect(dec.decode(await vol.readFile('/theirs.txt'))).toBe('x') // full re-bootstrap saw B
+		expect(await vol.exists('/offline.txt')).toBe(true) // local edit preserved (merged, not wiped)
 		expect((await readSyncState(local)).lineageId).toBe('B') // identity now recorded
-		expect(server.scanCalls).toBeGreaterThanOrEqual(1)
+		expect(server.scanCalls).toBeGreaterThanOrEqual(1) // cursors not reused
 	})
 
 	// A genuinely fresh replica (no cursors) with a lineage-providing server adopts the
@@ -757,13 +757,14 @@ describe('synced (generation / client-reset)', () => {
 		expect(state.generation).toBe(3)
 	})
 
-	// Codex P1 (feedback 3): crash mid "take mine", then reconnect to a server
-	// reporting a DIFFERENT lineageId. The identity gate must NOT run first and
-	// clientReset the volume the user explicitly chose to publish — the crash-resume
-	// path is resolved ahead of the gate, keeping local intact.
-	it('resolves a pending take-mine ahead of the identity gate (local not discarded)', async () => {
-		const server = fakeServer({ generation: 5, lineageId: 'B' })
-		server.resetId = 'mine-1' // our reset still owns the server → resume
+	// Codex P1 (feedback B): crash mid "take mine" on volume A, then reconnect to a
+	// DIFFERENT volume B. resumeAction classifies by generation, which is meaningless
+	// across volumes; reusing A's cursors would skip B's files. The gate must abandon
+	// the void intent and re-bootstrap KEEPING local (the user chose to publish it).
+	it('re-bootstraps keeping local when a pending take-mine reconnects to a different volume', async () => {
+		// server.resetId stays undefined — our reset 'mine-1' never touched volume B, and
+		// B's generation coincidentally equals fromGeneration (fresh volumes share epoch 1).
+		const server = fakeServer({ generation: 5, lineageId: 'B', files: { '/theirs.txt': 'x' } })
 		const local = memStorage()
 		await volume(local).writeFile('/mine.txt', enc.encode('to publish'))
 		await seedSyncState(local, {
@@ -775,9 +776,11 @@ describe('synced (generation / client-reset)', () => {
 		})
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		await vol.flush()
-		expect(await vol.exists('/mine.txt')).toBe(true) // NOT discarded — resumed, local kept
-		expect(server.scanCalls).toBe(0) // resumed, not a client-reset bootstrap
-		expect((await readSyncState(local)).lineageId).toBe('B') // published-to volume recorded
+		expect(await vol.exists('/mine.txt')).toBe(true) // NOT discarded — local preserved
+		expect(dec.decode(await vol.readFile('/theirs.txt'))).toBe('x') // merged with volume B
+		const state = await readSyncState(local)
+		expect(state.lineageId).toBe('B') // now tracking the volume we actually reached
+		expect(state.pendingReset).toBeUndefined() // the void take-mine intent was cleared
 	})
 })
 

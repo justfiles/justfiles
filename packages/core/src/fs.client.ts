@@ -7,6 +7,10 @@ import type { createFsApi } from './fs'
 
 const FS_SOURCE_HEADER = 'x-fs-source'
 const FS_GENERATION_HEADER = 'x-fs-generation'
+// Identity fence: a mutating push carries the client's known volume lineage here so
+// the server rejects a write aimed at a DIFFERENT volume that happens to share the
+// same generation epoch (which `x-fs-generation` alone can't distinguish).
+const FS_LINEAGE_HEADER = 'x-fs-lineage'
 
 // Detect the server's push-fence rejection. A mutating write stamped with a stale
 // `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`;
@@ -298,13 +302,17 @@ export interface RemoteSyncReplicaOptions {
 	// on push so the server fences a stale write (a `409 generation_stale` surfaces
 	// as `GenerationStaleError`, which `synced()` turns into a client reset).
 	generation?: () => number | undefined
+	// The volume IDENTITY `synced()` last agreed with, stamped as `x-fs-lineage` on
+	// push so the server rejects a write aimed at a different volume at the same
+	// generation (see FS_LINEAGE_HEADER). Also surfaces as `GenerationStaleError`.
+	lineageId?: () => string | undefined
 }
 
 export function remoteSyncReplica(
 	client: FsClient,
 	options: RemoteSyncReplicaOptions
 ): SyncReplica {
-	const { clientId, generation } = options
+	const { clientId, generation, lineageId } = options
 	return {
 		async handshake() {
 			// GET /fs — the volume-lineage probe. Returns the server's `generation`
@@ -375,11 +383,13 @@ export function remoteSyncReplica(
 			// from its own store after the blob upload. A "take mine" republish is just
 			// an ordinary push at the new generation (no special header).
 			const gen = generation?.()
+			const lineage = lineageId?.()
 			const res = await client.path.changes.$post({
 				json: { changes },
 				header: {
 					[FS_SOURCE_HEADER]: clientId,
-					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
+					...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {}),
+					...(lineage !== undefined ? { [FS_LINEAGE_HEADER]: lineage } : {})
 				}
 			} as Parameters<typeof client.path.changes.$post>[0])
 			await throwIfStale(res)
@@ -399,13 +409,15 @@ export function remoteSyncReplica(
 
 		async putBlobByHash(hash, data) {
 			const gen = generation?.()
+			const lineage = lineageId?.()
 			const res = await client.blob[':hash'].$put(
 				{
 					param: { hash },
 					header: {
 						'Content-Type': 'application/octet-stream',
 						[FS_SOURCE_HEADER]: clientId,
-						...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {})
+						...(gen !== undefined ? { [FS_GENERATION_HEADER]: String(gen) } : {}),
+						...(lineage !== undefined ? { [FS_LINEAGE_HEADER]: lineage } : {})
 					}
 				} as Parameters<(typeof client.blob)[':hash']['$put']>[0],
 				{ init: { body: toArrayBuffer(data) } }
