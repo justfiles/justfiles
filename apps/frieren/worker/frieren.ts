@@ -27,7 +27,6 @@ import {
 	text
 } from '@justfiles/agent'
 import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
-import { sweepTrash } from '@justfiles/app'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
@@ -51,7 +50,7 @@ import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
-import { scheduleDailyAlarm } from './daily-alarm.ts'
+import { runDailyMaintenance, scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { createServerPoke } from './frieren.poke.ts'
@@ -538,10 +537,9 @@ export class Frieren extends DurableObject<Env> {
 	// Do not reschedule here — only WebSocket interactions set the next alarm,
 	// so a silent day naturally stops the daily routine.
 	async alarm(): Promise<void> {
-		// Authoritative trash retention: the DO owns the synced fs, so sweeping here
-		// (daily, no open tab required) is more reliable than the client — the deletes
-		// just sync down. Best-effort; a failure retries on the next alarm.
-		await sweepTrash(this.vol).catch(() => {})
+		// The DO owns the synced fs, so daily trash retention and content collection
+		// run without an open tab. Both are best-effort and retry on the next alarm.
+		await runDailyMaintenance(this.fs, this.vol)
 		await this.session?.runMaintenance()
 	}
 

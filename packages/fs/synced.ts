@@ -786,15 +786,39 @@ async function uploadBlobs(
 	source: BlobStore,
 	target: BlobStore
 ): Promise<PathChange[]> {
-	const orphaned: PathChange[] = []
-	for (const c of changes) {
-		if (c.kind !== 'put' || !c.contentHash) continue
-		if (await target.hasBlobByHash(c.contentHash)) continue
-		if (!(await source.hasBlobByHash(c.contentHash))) {
-			orphaned.push(c)
+	const hashes = [
+		...new Set(
+			changes.flatMap((change) =>
+				change.kind === 'put' && change.contentHash ? [change.contentHash] : []
+			)
+		)
+	]
+	if (!hashes.length) return []
+
+	const missing = target.missingBlobHashes
+		? await target.missingBlobHashes(hashes)
+		: new Set(
+				(
+					await Promise.all(
+						hashes.map(async (hash) => [hash, await target.hasBlobByHash(hash)] as const)
+					)
+				)
+					.filter(([, present]) => !present)
+					.map(([hash]) => hash)
+			)
+	const orphanedHashes = new Set<string>()
+	for (const hash of hashes) {
+		if (!missing.has(hash)) continue
+		if (!(await source.hasBlobByHash(hash))) {
+			orphanedHashes.add(hash)
 			continue
 		}
-		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
+		await target.putBlobByHash(hash, await source.getBlobByHash(hash))
 	}
-	return orphaned
+	return changes.filter(
+		(change) =>
+			change.kind === 'put' &&
+			change.contentHash !== undefined &&
+			orphanedHashes.has(change.contentHash)
+	)
 }

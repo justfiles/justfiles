@@ -12,7 +12,7 @@ import {
 	sortParentFirst
 } from './storage.shared'
 import type { JournalRow } from './sync-replica'
-import { inodeMetaFromSync, type PathChange } from './sync-wire'
+import { coalesceByPath, inodeMetaFromSync, type PathChange } from './sync-wire'
 import type { Ino } from './types'
 import { FileType } from './types'
 
@@ -747,18 +747,17 @@ export function idbStorage(
 					.openCursor(null, 'prev')
 				return cursor ? cursor.key : 0
 			},
-			// Re-tag every row as locally-authored (drop localSource) so a "take mine"
-			// republish rides the ordinary push — see JournalStore.adoptAllAsLocal.
+			// Replace history with one locally-authored put per live path so a
+			// republish sends current state, not obsolete content and tombstones.
 			async adoptAllAsLocal() {
 				const db = await getDb()
 				const tx = db.transaction(['journal'], 'readwrite')
-				let cursor = await tx.objectStore('journal').openCursor()
-				while (cursor) {
-					if (cursor.value.localSource !== undefined) {
-						await cursor.update({ ...cursor.value, localSource: undefined })
-					}
-					cursor = await cursor.continue()
-				}
+				const journal = tx.objectStore('journal')
+				const current = coalesceByPath((await journal.getAll()).map((row) => row.change)).filter(
+					(change) => change.kind === 'put'
+				)
+				await journal.clear()
+				for (const change of current) await journal.add({ change })
 				await tx.done
 			}
 		},

@@ -9,7 +9,7 @@ import {
 	sortChildFirst,
 	sortParentFirst
 } from '@justfiles/fs/storage.shared'
-import { inodeMetaFromSync, type PathChange } from '@justfiles/fs/sync-wire'
+import { coalesceByPath, inodeMetaFromSync, type PathChange } from '@justfiles/fs/sync-wire'
 import type { Ino } from '@justfiles/fs/types'
 import { FileType } from '@justfiles/fs/types'
 import type { DbAdapter } from './db'
@@ -1149,13 +1149,20 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				)
 				return toNumber(row?.head ?? 0)
 			},
-			// Re-tag every row as locally-authored (NULL local_source) so a "take mine"
-			// republish rides the ordinary push — see JournalStore.adoptAllAsLocal.
+			// Replace history with one locally-authored put per live path so a
+			// republish sends current state, not obsolete content and tombstones.
 			async adoptAllAsLocal() {
 				await ensureBootstrapped()
-				await db.run(
-					'UPDATE fs_path_journal SET local_source = NULL WHERE local_source IS NOT NULL'
-				)
+				await db.transaction(async (tx) => {
+					const rows = await tx.query<{ change_json: unknown }>(
+						'SELECT change_json FROM fs_path_journal ORDER BY seq'
+					)
+					const current = coalesceByPath(
+						rows.map((row) => JSON.parse(String(row.change_json)) as PathChange)
+					).filter((change) => change.kind === 'put')
+					await tx.run('DELETE FROM fs_path_journal')
+					for (const change of current) await appendJournalRow(tx, change)
+				})
 			}
 		},
 		pathApply: {

@@ -72,6 +72,38 @@ describe('synced (lifecycle)', () => {
 		expect(dec.decode(await volume(remote).readFile('/hello.md'))).toBe('hello')
 	})
 
+	it('checks a push page for missing blobs in one batch', async () => {
+		const blobs = new Map<string, Uint8Array>()
+		const batches: string[][] = []
+		const uploads: string[] = []
+		const remote: SyncReplica = {
+			pathScan: async () => ({ changes: [], syncCursor: '0', done: true }),
+			pathDeltas: async (cursor) => ({ changes: [], to: cursor || '0', done: true }),
+			applyPathChanges: async () => {},
+			getBlobByHash: async (hash) => blobs.get(hash) ?? new Uint8Array(),
+			hasBlobByHash: async () => {
+				throw new Error('push should not make per-blob presence checks')
+			},
+			missingBlobHashes: async (hashes) => {
+				batches.push(hashes)
+				return new Set(hashes.filter((hash) => !blobs.has(hash)))
+			},
+			putBlobByHash: async (hash, data) => {
+				uploads.push(hash)
+				blobs.set(hash, data)
+			}
+		}
+		const vol = track(await synced({ local: memStorage(), remote: () => remote, interval: 99_999 }))
+
+		await vol.writeFile('/a.txt', enc.encode('a'))
+		await vol.writeFile('/b.txt', enc.encode('b'))
+		await vol.flush()
+
+		expect(batches).toHaveLength(1)
+		expect(new Set(batches[0])).toEqual(new Set(uploads))
+		expect(uploads).toHaveLength(2)
+	})
+
 	// ── Pull ─────────────────────────────────────────────────────────────────
 	it('pulls remote writes to local on flush (two clients)', async () => {
 		const remote = memStorage()

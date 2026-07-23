@@ -11,7 +11,7 @@ import {
 } from './storage.shared'
 import type { JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
-import { inodeMetaFromSync } from './sync-wire'
+import { coalesceByPath, inodeMetaFromSync } from './sync-wire'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -347,7 +347,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				return journalRows[journalRows.length - 1]?.seq ?? 0
 			},
 			async adoptAllAsLocal() {
-				for (const r of journalRows) r.localSource = undefined
+				const current = coalesceByPath(journalRows.map((row) => row.change)).filter(
+					(change) => change.kind === 'put'
+				)
+				journalRows.length = 0
+				appendJournal(current)
 			}
 		},
 		content: {

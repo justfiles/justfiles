@@ -647,5 +647,28 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 				'kept blob corrupted'
 			)
 		}
+	},
+	{
+		name: 'adoptAllAsLocal compacts history to the current live paths',
+		run: async (makeBackend) => {
+			const storage = makeBackend()
+			const journal = storage.caps?.journal
+			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const vol = volume(storage)
+			await vol.writeFile('/deleted.txt', bytes('gone'))
+			await vol.rm('/deleted.txt')
+			await vol.writeFile('/live.txt', bytes('old'))
+			await vol.writeFile('/live.txt', bytes('current'))
+
+			await journal.adoptAllAsLocal()
+
+			const rows = await journal.readFrom(0, 100)
+			assertEq(rows.length, 1, 'adoption retained obsolete history')
+			assertEq(rows[0]?.change.kind, 'put', 'adoption retained a tombstone')
+			assertEq(rows[0]?.change.path, '/live.txt', 'adoption lost the live path')
+			assertEq(rows[0]?.localSource, undefined, 'adopted path is not locally authored')
+			if (rows[0]?.change.kind === 'put')
+				assertEq(rows[0].change.contentHash, sha256('current'), 'adoption retained stale content')
+		}
 	}
 ]

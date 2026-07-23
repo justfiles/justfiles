@@ -105,6 +105,8 @@ export interface BlobStore {
 	getBlobByHash(hash: string): Promise<Uint8Array>
 	/** Local presence check (see Lazy content). */
 	hasBlobByHash(hash: string): Promise<boolean>
+	/** Batch presence check when the transport supports one. */
+	missingBlobHashes?(hashes: string[]): Promise<Set<string>>
 	/**
 	 * Store a blob in THIS replica's hash-addressed blob store. Local adapter:
 	 * writes the backend content store (eager pull + lazy hydration). Remote
@@ -171,11 +173,11 @@ export interface JournalStore {
 	/** Latest seq (snapshot resume). */
 	head(): Promise<number>
 	/**
-	 * Re-tag every journal row as locally-authored (clear `localSource`). After a
-	 * "take mine" reset the server is empty, so every local file IS now mine — this
-	 * makes the ordinary push (`excludeLocalSource: REMOTE_SOURCE`) republish the
-	 * whole volume, pulled files included, over the normal resilient loop instead of
-	 * a bespoke snapshot push. Owned backends only.
+	 * Replace journal history with one locally-authored put per current live path.
+	 * After a "take mine" reset the server is empty, so every local file IS now mine
+	 * — this makes the ordinary push (`excludeLocalSource: REMOTE_SOURCE`) republish
+	 * current state, pulled files included, without obsolete versions or tombstones.
+	 * Owned backends only.
 	 */
 	adoptAllAsLocal(): Promise<void>
 }
