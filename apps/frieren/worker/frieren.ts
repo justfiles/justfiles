@@ -154,6 +154,7 @@ export class Frieren extends DurableObject<Env> {
 				const payload = JSON.stringify({ type: 'sync' } satisfies ServerMessage)
 				for (const ws of this.ctx.getWebSockets()) {
 					const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
+					// `_caps` speaks Cap'n Web and may not be open; sync pokes use session sockets.
 					if (!attachment?.caps) ws.send(payload)
 				}
 			})

@@ -1045,6 +1045,40 @@ describe('synced (proactive push coalesces a burst)', () => {
 		await vi.advanceTimersByTimeAsync(3_000)
 		expect(syncing).toBe(1)
 	})
+
+	it('does not sync again when the regular interval satisfies a pending push', async () => {
+		vi.useFakeTimers()
+		const vol = track(await synced({ local: memStorage(), remote: memStorage(), interval: 2_000 }))
+		let syncing = 0
+		vol.onStatusChange((status) => {
+			if (status === 'syncing') syncing++
+		})
+
+		await vol.writeFile('/state.json', enc.encode('changed'))
+		await vi.advanceTimersByTimeAsync(2_000)
+		expect(syncing).toBe(1)
+
+		await vi.advanceTimersByTimeAsync(1_000)
+		expect(syncing).toBe(1)
+	})
+
+	it('does not sync again when resume satisfies a pending push', async () => {
+		vi.useFakeTimers()
+		const vol = track(await synced({ local: memStorage(), remote: memStorage(), interval: 99_999 }))
+		let syncing = 0
+		vol.onStatusChange((status) => {
+			if (status === 'syncing') syncing++
+		})
+
+		await vol.writeFile('/state.json', enc.encode('changed'))
+		vol.pause()
+		vol.resume()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(syncing).toBe(1)
+
+		await vi.advanceTimersByTimeAsync(3_000)
+		expect(syncing).toBe(1)
+	})
 })
 
 // A single sync must fully converge, not one page per cycle: a coalesced poke

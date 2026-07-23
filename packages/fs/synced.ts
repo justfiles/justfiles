@@ -60,7 +60,8 @@ export const REMOTE_SOURCE = 'remote'
 // This design is v1; future breaking changes bump SyncState.schemaVersion.
 const SCHEMA_VERSION = 1
 
-// A committed local write pushes after activity settles.
+// Fold bursts into one push after 3s of quiet, but make progress after 15s of
+// continuous activity. This intentionally mirrors Frieren's server poke locally.
 const DEBOUNCE_MS = 3_000
 const MAX_WAIT_MS = 15_000
 
@@ -606,8 +607,15 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		timer = setTimeout(run, delay)
 	}
 
+	function cancelProactivePush() {
+		if (pushTimer) clearTimeout(pushTimer)
+		pushTimer = null
+		pushStartedAt = null
+	}
+
 	function run() {
 		if (running || paused || destroyed) return
+		cancelProactivePush()
 		setStatus('syncing')
 		running = sync()
 			.then(() => {
@@ -629,11 +637,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// call have synced. If a sync is already in flight (it may predate those
 	// writes), chain one more after it; concurrent callers share that follow-up.
 	function flush(): Promise<void> {
-		if (pushTimer) {
-			clearTimeout(pushTimer)
-			pushTimer = null
-		}
-		pushStartedAt = null
+		cancelProactivePush()
 		if (running) {
 			flushQueued ??= running.then(() => {
 				flushQueued = null
@@ -664,10 +668,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		destroyed = true
 		unsubscribeLocal?.()
 		unsubscribeLocal = undefined
-		if (pushTimer) {
-			clearTimeout(pushTimer)
-			pushTimer = null
-		}
+		cancelProactivePush()
 		if (timer) {
 			clearTimeout(timer)
 			timer = null

@@ -1,3 +1,4 @@
+// Intentionally mirrors @justfiles/fs's scheduler without exporting a generic timing API.
 const DEBOUNCE_MS = 1_000
 const MAX_WAIT_MS = 5_000
 
