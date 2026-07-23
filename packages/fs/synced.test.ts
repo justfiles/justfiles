@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memStorage } from './storage.mem'
-import { GenerationStaleError, type SyncReplica } from './sync-replica'
+import { GenerationStaleError, PAGE, type SyncReplica } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { REMOTE_SOURCE, synced } from './synced'
 import { FileType } from './types'
@@ -763,5 +763,29 @@ describe('synced (proactive push coalesces a burst)', () => {
 		expect(dec.decode(await rv.readFile('/a.txt'))).toBe('a')
 		expect(dec.decode(await rv.readFile('/b.txt'))).toBe('b')
 		expect(dec.decode(await rv.readFile('/c.txt'))).toBe('c')
+	})
+})
+
+// A single sync must fully converge, not one page per cycle: a coalesced poke
+// fires once, so if a burst exceeds one page the receiver's pull has to drain
+// every page in that cycle — otherwise the tail waits for the slow poll.
+describe('synced (drains all delta pages in one cycle)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const d of destroyers.splice(0)) d()
+	})
+	function track<T extends { destroy(): void }>(vol: T): T {
+		destroyers.push(() => vol.destroy())
+		return vol
+	}
+
+	it('pulls more than one page of remote deltas in a single flush', async () => {
+		const remote = memStorage()
+		const vol = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
+		const rv = volume(remote)
+		const n = PAGE + 5
+		for (let i = 0; i < n; i++) await rv.writeFile(`/f${i}.txt`, enc.encode(String(i)))
+		await vol.flush()
+		expect(await vol.exists(`/f${n - 1}.txt`)).toBe(true)
 	})
 })

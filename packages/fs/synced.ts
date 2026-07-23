@@ -182,15 +182,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * `excludeOrigin: id` skips changes this client authored (the server stamped
 	 * our client-id as origin on push). Returns the new pullCursor to persist.
 	 */
-	async function pull(pullCursor: string): Promise<{ to: string; generation?: number }> {
-		const { changes, to, generation } = await remoteReplica.pathDeltas(pullCursor, {
+	async function pull(
+		pullCursor: string
+	): Promise<{ to: string; done: boolean; generation?: number }> {
+		const { changes, to, done, generation } = await remoteReplica.pathDeltas(pullCursor, {
 			excludeOrigin: id,
 			limit: PAGE
 		})
 		await localReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
-		return { to, generation }
+		return { to, done, generation }
 	}
 
 	/**
@@ -399,19 +401,36 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 				await checkMidSessionReset(generation)
 				return
 			}
-			const { to: pushCursor, done: pushDone } = await push(state.pushCursor ?? '')
-			await syncState.patch({ pushCursor })
-			// A "take mine" republish drains over the ordinary push; when it reaches the
+			// Drain the whole push queue this cycle: a coalesced trigger fires once, so a
+			// burst larger than one page must not strand its tail until the next poll.
+			let pushCursor = state.pushCursor ?? ''
+			let pushDone = false
+			while (!pushDone) {
+				const r = await push(pushCursor)
+				pushCursor = r.to
+				pushDone = r.done
+				await syncState.patch({ pushCursor })
+			}
+			// A "take mine" republish drains over the ordinary push; once it reaches the
 			// journal head (nothing left to push), signal the server to clear its advisory
 			// reset flag, then drop our marker. Advisory — a failure just retries next cycle.
-			if (knownPending?.toGeneration !== undefined && pushDone) {
+			if (knownPending?.toGeneration !== undefined) {
 				try {
 					await remoteReplica.reset?.({ mode: 'complete', resetId: knownPending.resetId })
 					await clearPendingReset()
 				} catch {}
 			}
-			const { to, generation } = await pull(state.pullCursor)
-			await syncState.patch({ pullCursor: to })
+			// Drain every remote delta page this cycle, for the same reason.
+			let pullCursor = state.pullCursor
+			let pullDone = false
+			let generation: number | undefined
+			while (!pullDone) {
+				const r = await pull(pullCursor)
+				pullCursor = r.to
+				pullDone = r.done
+				generation = r.generation
+				await syncState.patch({ pullCursor })
+			}
 			await checkMidSessionReset(generation)
 		} catch (e) {
 			// A mutating write was fenced (409 generation_stale): the server lineage
