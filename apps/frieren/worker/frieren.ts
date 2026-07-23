@@ -318,7 +318,7 @@ export class Frieren extends DurableObject<Env> {
 
 	private async reset() {
 		const { models, model, generateImage } = this.aiRuntime()
-		await migrateCF(this.db)
+		await migrateCF(this.ctx.storage)
 		await ensureUsageSchema(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.

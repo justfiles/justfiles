@@ -120,8 +120,14 @@ describe('reset — transaction body', () => {
 		const vol = volume(storage)
 		await vol.writeFile('/keep.txt', enc.encode('bytes'))
 		const hash = (await vol.stat('/keep.txt')).contentHash as string
+		const { lineageId } = await readGenerationState(db)
 
-		const res = await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
+		const res = await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: 1,
+			resetId: 'r1',
+			lineageId
+		})
 		expect(res.ok).toBe(true)
 		expect(await readGenerationState(db)).toMatchObject({ generation: 2, resetId: 'r1' })
 		// Tree gone (fresh volume — the pre-reset cache is stale), but the content
@@ -185,7 +191,12 @@ describe('reset — lineage identity (issue #245)', () => {
 		})
 
 		// Transaction body: generation bumps, lineageId is untouched.
-		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: before.generation, resetId: 'r1' })
+		await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: before.generation,
+			resetId: 'r1',
+			lineageId: before.lineageId
+		})
 		const after = await readGenerationState(db)
 		expect(after.generation).toBe(before.generation + 1)
 		expect(after.lineageId).toBe(before.lineageId)
@@ -213,6 +224,37 @@ describe('reset — lineage identity (issue #245)', () => {
 		).toEqual({ ok: true, next: { generation: 6, resetId: 'r1', lineageId: 'vol-A' } })
 	})
 
+	// A MISSING lineageId is rejected too (not just a mismatched one): a pre-lineage or
+	// redirected client that can't prove identity must not truncate a volume that has one.
+	// `wipe` (factory reset) is NOT forced to carry a lineageId.
+	it('decideReset requires a lineageId for adopt-mine, but not for wipe', () => {
+		const current: GenerationState = { generation: 5, lineageId: 'vol-A' }
+		expect(decideReset(current, { mode: 'adopt-mine', fromGeneration: 5, resetId: 'r1' })).toEqual({
+			ok: false,
+			error: 'lineage_stale',
+			generation: 5
+		})
+		expect(decideReset(current, { mode: 'wipe', fromGeneration: 5 })).toEqual({
+			ok: true,
+			next: { generation: 6, resetId: undefined, lineageId: 'vol-A' }
+		})
+	})
+
+	it('resetVolume rejects an adopt-mine that omits the lineageId and leaves the volume intact', async () => {
+		const { db, storage } = makeDb()
+		await volume(storage).writeFile('/a.txt', enc.encode('keep'))
+		const before = await readGenerationState(db)
+
+		const res = await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: before.generation,
+			resetId: 'r1'
+		})
+		expect(res).toEqual({ ok: false, error: 'lineage_stale', generation: before.generation })
+		expect(await readGenerationState(db)).toEqual(before)
+		expect(await volume(storage).exists('/a.txt')).toBe(true)
+	})
+
 	it('resetVolume rejects a mismatched-lineage adopt-mine and leaves the volume intact', async () => {
 		const { db, storage } = makeDb()
 		await volume(storage).writeFile('/a.txt', enc.encode('keep'))
@@ -234,7 +276,8 @@ describe('reset — lineage identity (issue #245)', () => {
 describe('reset — clearReset (advisory in-progress flag)', () => {
 	it('clears the flag only for the matching reset; a stale/duplicate clear is a no-op', async () => {
 		const { db } = makeDb()
-		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1' })
+		const { lineageId } = await readGenerationState(db)
+		await resetVolume(db, { mode: 'adopt-mine', fromGeneration: 1, resetId: 'r1', lineageId })
 		expect((await readGenerationState(db)).resetId).toBe('r1')
 
 		// A non-matching resetId leaves the flag untouched.

@@ -78,12 +78,14 @@ export type ResetDecision =
 export function decideReset(current: GenerationState, req: ResetRequest): ResetDecision {
 	if (req.fromGeneration !== current.generation)
 		return { ok: false, error: 'generation_stale', generation: current.generation }
-	// Identity CAS, atomic with the generation CAS: an adopt-mine that names a lineageId
-	// must match THIS volume's, so a reset can't truncate a different volume that shares
-	// the generation epoch (the /reset route bypasses the push fence).
+	// Identity CAS, atomic with the generation CAS: when THIS volume has an identity, an
+	// `adopt-mine` MUST name the matching one — a MISSING or mismatched lineageId is
+	// rejected, so a redirected (or pre-lineage) client can't truncate a different volume
+	// at the same generation (the /reset route bypasses the push fence). Other modes are
+	// checked only when they DO carry a lineageId.
 	if (
-		req.lineageId !== undefined &&
 		current.lineageId !== undefined &&
+		(req.mode === 'adopt-mine' || req.lineageId !== undefined) &&
 		req.lineageId !== current.lineageId
 	)
 		return { ok: false, error: 'lineage_stale', generation: current.generation }
