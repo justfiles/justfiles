@@ -183,11 +183,21 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			excludeLocalSource: REMOTE_SOURCE,
 			limit: PAGE
 		})
-		await uploadBlobs(changes, localReplica, remoteReplica)
+		// Missing on both sides means the bytes are already lost. Skip only those puts
+		// so their journal entries cannot wedge every later change.
+		const orphaned = await uploadBlobs(changes, localReplica, remoteReplica)
+		const applicable = orphaned.length
+			? changes.filter((change) => !orphaned.includes(change))
+			: changes
+		if (orphaned.length)
+			console.warn(
+				`sync: skipping ${orphaned.length} change(s) with missing content:`,
+				orphaned.map((change) => change.path)
+			)
 		// Origin (PathChange.source) is stamped server-side from our clientId header
 		// (the HTTP replica sends it); `source: REMOTE_SOURCE` is the LOCAL-apply tag
 		// the remote records so it never bounces our write back.
-		await remoteReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
+		await remoteReplica.applyPathChanges(applicable, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
 		return { to, done }
@@ -754,18 +764,23 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 }
 
 /**
- * Ensure the target replica holds a blob for every regular-file put's
- * contentHash — upload from the source replica when missing. Content is durable
- * before the tree points at it.
+ * Upload each regular-file put's content before its tree change. Return puts
+ * whose blob is missing on both replicas so the caller can quarantine them.
  */
 async function uploadBlobs(
 	changes: PathChange[],
 	source: BlobStore,
 	target: BlobStore
-): Promise<void> {
+): Promise<PathChange[]> {
+	const orphaned: PathChange[] = []
 	for (const c of changes) {
 		if (c.kind !== 'put' || !c.contentHash) continue
 		if (await target.hasBlobByHash(c.contentHash)) continue
+		if (!(await source.hasBlobByHash(c.contentHash))) {
+			orphaned.push(c)
+			continue
+		}
 		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
 	}
+	return orphaned
 }

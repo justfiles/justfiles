@@ -1007,3 +1007,49 @@ describe('synced (drains all delta pages in one cycle)', () => {
 		expect(await vol.exists(`/f${n - 1}.txt`)).toBe(true)
 	})
 })
+
+describe('synced (orphaned blob)', () => {
+	const destroyers: Array<() => void> = []
+	afterEach(() => {
+		for (const destroy of destroyers.splice(0)) destroy()
+	})
+
+	it('pushes healthy changes past a local reference whose blob is missing', async () => {
+		const local = memStorage()
+		const localVolume = volume(local)
+		await localVolume.writeFile('/healthy.txt', enc.encode('healthy'))
+		await localVolume.writeFile('/orphan.txt', enc.encode('temporary'))
+		const orphan = await localVolume.stat('/orphan.txt')
+		await local.setMeta(orphan.ino, { contentHash: 'd'.repeat(64) }, { version: 99 })
+
+		const remote = memStorage()
+		const vol = await synced({ local, remote, interval: 99_999 })
+		destroyers.push(() => vol.destroy())
+		await vol.flush()
+
+		const remoteVolume = volume(remote)
+		expect(dec.decode(await remoteVolume.readFile('/healthy.txt'))).toBe('healthy')
+		expect(await remoteVolume.exists('/orphan.txt')).toBe(false)
+		expect(vol.status()).toBe('synced')
+	})
+
+	it('repairs a missing local blob when the remote already has it', async () => {
+		const content = enc.encode('shared')
+		const remote = memStorage()
+		await volume(remote).writeFile('/seed.txt', content)
+
+		const local = memStorage()
+		const localVolume = volume(local)
+		await localVolume.writeFile('/recovered.txt', enc.encode('temporary'))
+		const recovered = await localVolume.stat('/recovered.txt')
+		await local.setMeta(recovered.ino, { contentHash: sha256Hex(content) }, { version: 99 })
+
+		const vol = await synced({ local, remote, interval: 99_999 })
+		destroyers.push(() => vol.destroy())
+		await vol.flush()
+
+		expect(dec.decode(await vol.readFile('/recovered.txt'))).toBe('shared')
+		expect(dec.decode(await volume(remote).readFile('/recovered.txt'))).toBe('shared')
+		expect(vol.status()).toBe('synced')
+	})
+})
