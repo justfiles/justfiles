@@ -155,7 +155,11 @@ export const ResetBody = z.discriminatedUnion('mode', [
 	z.object({
 		mode: z.literal('adopt-mine'),
 		fromGeneration: z.number().int(),
-		resetId: z.string()
+		resetId: z.string(),
+		// The volume identity the client believes it is republishing onto. The reset
+		// capability validates it atomically with the generation CAS (see reset.ts), so a
+		// stale endpoint swap can't truncate a different volume at the same generation.
+		lineageId: z.string().optional()
 	}),
 	z.object({
 		mode: z.literal('wipe'),
@@ -168,7 +172,7 @@ export type ResetBody = z.infer<typeof ResetBody>
 
 export type ResetResult =
 	| { ok: true; generation: number }
-	| { ok: false; error: 'generation_stale'; generation: number }
+	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', data as unknown as ArrayBuffer)

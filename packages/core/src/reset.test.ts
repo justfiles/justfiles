@@ -190,6 +190,45 @@ describe('reset — lineage identity (issue #245)', () => {
 		expect(after.generation).toBe(before.generation + 1)
 		expect(after.lineageId).toBe(before.lineageId)
 	})
+
+	// Identity CAS: an adopt-mine that names a DIFFERENT volume's lineage must be rejected
+	// (the /reset route is fence-exempt, so this is the only guard) and must not truncate.
+	it('decideReset rejects an adopt-mine whose lineageId does not match', () => {
+		const current: GenerationState = { generation: 5, lineageId: 'vol-A' }
+		expect(
+			decideReset(current, {
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				resetId: 'r1',
+				lineageId: 'vol-B'
+			})
+		).toEqual({ ok: false, error: 'lineage_stale', generation: 5 })
+		expect(
+			decideReset(current, {
+				mode: 'adopt-mine',
+				fromGeneration: 5,
+				resetId: 'r1',
+				lineageId: 'vol-A'
+			})
+		).toEqual({ ok: true, next: { generation: 6, resetId: 'r1', lineageId: 'vol-A' } })
+	})
+
+	it('resetVolume rejects a mismatched-lineage adopt-mine and leaves the volume intact', async () => {
+		const { db, storage } = makeDb()
+		await volume(storage).writeFile('/a.txt', enc.encode('keep'))
+		const before = await readGenerationState(db)
+
+		const res = await resetVolume(db, {
+			mode: 'adopt-mine',
+			fromGeneration: before.generation,
+			resetId: 'r1',
+			lineageId: 'some-other-volume'
+		})
+		expect(res).toEqual({ ok: false, error: 'lineage_stale', generation: before.generation })
+		// Untouched: same generation + lineageId, and the tree survives.
+		expect(await readGenerationState(db)).toEqual(before)
+		expect(await volume(storage).exists('/a.txt')).toBe(true)
+	})
 })
 
 describe('reset — clearReset (advisory in-progress flag)', () => {

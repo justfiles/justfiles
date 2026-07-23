@@ -62,12 +62,19 @@ export async function migrateFromEntries(
 
 	for (const entry of entries) {
 		if (entry.version <= currentVersion) continue
-		for (const stmt of parseSqlStatements(entry.sql)) {
-			await adapter.run(stmt)
-		}
-		await adapter.run(
-			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))`,
-			[entry.version]
-		)
+		// Apply the statements AND record the version in ONE transaction, so an interrupted
+		// migration rolls back wholesale. Otherwise a committed-but-unrecorded step (e.g. an
+		// `ALTER TABLE ADD COLUMN`) re-runs on the next startup, fails as a duplicate, and
+		// blocks every later migration. (On the DO, `transaction` is the implicit per-event
+		// commit; on bun/node it is a real BEGIN/COMMIT.)
+		await adapter.transaction(async (tx) => {
+			for (const stmt of parseSqlStatements(entry.sql)) {
+				await tx.run(stmt)
+			}
+			await tx.run(
+				`INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))`,
+				[entry.version]
+			)
+		})
 	}
 }

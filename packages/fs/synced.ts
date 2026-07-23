@@ -697,7 +697,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			;({ generation: toGeneration } = await remoteReplica.reset({
 				mode: 'adopt-mine',
 				fromGeneration,
-				resetId
+				resetId,
+				// Fence the reset by identity too: the server rejects it unless this is still
+				// the volume we synced against, so an endpoint swap can't truncate another one.
+				lineageId: knownLineage
 			}))
 		} catch (e) {
 			await clearPendingReset() // the CAS failed/lost the race — nothing to resume

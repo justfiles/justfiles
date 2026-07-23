@@ -120,7 +120,7 @@ export interface BlobStore {
  * zod copy on the route). `wipe` is app-level (factory reset), so it is not here.
  */
 export type ResetRequest =
-	| { mode: 'adopt-mine'; fromGeneration: number; resetId: string }
+	| { mode: 'adopt-mine'; fromGeneration: number; resetId: string; lineageId?: string }
 	| { mode: 'complete'; resetId: string }
 
 /**

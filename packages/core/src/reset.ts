@@ -56,11 +56,16 @@ export type ResetRequest = {
 	mode: ResetMode
 	fromGeneration: number
 	resetId?: string
+	// The volume identity the initiator believes it is resetting. When present, it must
+	// match the volume's own `lineageId` or the reset is rejected — the /reset route is
+	// fence-exempt (a stale client must be able to reset), so this is the ONLY guard that
+	// stops an adopt-mine from truncating a DIFFERENT volume at the same generation.
+	lineageId?: string
 }
 
 export type ResetDecision =
 	| { ok: true; next: GenerationState }
-	| { ok: false; error: 'generation_stale'; generation: number }
+	| { ok: false; error: 'generation_stale' | 'lineage_stale'; generation: number }
 
 // ── Pure decision ───────────────────────────────────────────────────────────
 
@@ -73,6 +78,15 @@ export type ResetDecision =
 export function decideReset(current: GenerationState, req: ResetRequest): ResetDecision {
 	if (req.fromGeneration !== current.generation)
 		return { ok: false, error: 'generation_stale', generation: current.generation }
+	// Identity CAS, atomic with the generation CAS: an adopt-mine that names a lineageId
+	// must match THIS volume's, so a reset can't truncate a different volume that shares
+	// the generation epoch (the /reset route bypasses the push fence).
+	if (
+		req.lineageId !== undefined &&
+		current.lineageId !== undefined &&
+		req.lineageId !== current.lineageId
+	)
+		return { ok: false, error: 'lineage_stale', generation: current.generation }
 	// A reset is the SAME volume at a new epoch, so `lineageId` is carried through
 	// unchanged — only the `generation` bumps.
 	return {
