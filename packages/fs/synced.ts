@@ -358,10 +358,20 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	/**
 	 * The volume-lineage handshake check (client<->server only), run each cycle
-	 * BEFORE touching data. First the identity gate (a different `lineageId` = a
-	 * different volume ⇒ reset + adopt), then — within the same volume — the
-	 * generation reconcile. Eventual-consistency: never blocks; with an in-flight
-	 * `pendingReset` it resumes/adopts/resets-to-winner (see `resumeAction`).
+	 * BEFORE touching data. Order matters:
+	 *   1. An in-flight `pendingReset` ("take mine") is resolved FIRST — the user
+	 *      explicitly chose to publish this local volume, so a differing lineage must
+	 *      never let the identity gate's `clientReset` discard that snapshot before
+	 *      crash-resume decides (see `resumeAction`).
+	 *   2. The identity gate: a DIFFERENT `lineageId` is a genuinely different volume
+	 *      (its `generation` epoch is not comparable to ours), so discard + re-bootstrap.
+	 *   3. No stored `lineageId` yet (fresh or pre-feature replica): a fresh replica
+	 *      (no cursors) adopts the observed id silently; a cursor-bearing LEGACY replica
+	 *      must re-bootstrap first — its cursors were minted against a volume we can't
+	 *      identify, so a same-generation different volume would silently reuse them and
+	 *      diverge (the exact bug this fixes).
+	 *   4. Same volume: the ordinary generation reconcile.
+	 * Eventual-consistency: never blocks.
 	 */
 	async function reconcileLineage(server: {
 		generation?: number
@@ -369,12 +379,28 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		lineageId?: string
 	}): Promise<void> {
 		if (server.generation === undefined) return // legacy server — no lineage signal
+		// (1) Resolve an in-flight "take mine" ahead of the identity gate so a differing
+		// lineage can't clientReset the volume the user chose to publish. Adopt the
+		// observed lineageId too, so the (re)published volume is recorded and the adopt
+		// branch below won't spuriously reset next cycle.
+		if (knownPending) {
+			const action = resumeAction(knownPending, server)
+			if (action === 'resume') {
+				if (knownPending.toGeneration === undefined) await applyTakeMinePrep(server.generation)
+				if (server.lineageId !== undefined) await syncState.patch({ lineageId: server.lineageId })
+				return // our republish continues via the ordinary push
+			}
+			if (action === 'reset-to-winner') await clientReset()
+			if (server.lineageId !== undefined) await recordLineage(server.lineageId, server.generation)
+			else await recordGeneration(server.generation)
+			await clearPendingReset()
+			return
+		}
 		const state = await syncState.get()
-		// Identity gate, BEFORE the generation reconcile: a different `lineageId` is a
-		// genuinely DIFFERENT server volume, whose `generation` epoch is not comparable to
-		// ours (both may read 1). The stored cursors were minted against another volume, so
-		// discard and re-bootstrap the observed lineage — the root-cause fix for reused
-		// cursors that `generation` alone can't catch.
+		// (2) Identity gate: a different `lineageId` is a genuinely DIFFERENT server
+		// volume, whose `generation` epoch is not comparable to ours (both may read 1).
+		// The stored cursors were minted against another volume, so discard and
+		// re-bootstrap — the root-cause fix for reused cursors `generation` can't catch.
 		if (
 			server.lineageId !== undefined &&
 			state.lineageId !== undefined &&
@@ -384,21 +410,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			await recordLineage(server.lineageId, server.generation)
 			return
 		}
-		// A fresh (or pre-feature) replica adopts the observed `lineageId` with no spurious
-		// reset: its cursors, if any, are a legitimate migration, not a wrong-volume reuse.
-		if (server.lineageId !== undefined && state.lineageId === undefined)
-			await syncState.patch({ lineageId: server.lineageId })
-		if (knownPending) {
-			const action = resumeAction(knownPending, server)
-			if (action === 'resume') {
-				if (knownPending.toGeneration === undefined) await applyTakeMinePrep(server.generation)
-				return // our republish continues via the ordinary push
-			}
-			if (action === 'reset-to-winner') await clientReset()
-			await recordGeneration(server.generation)
-			await clearPendingReset()
+		// (3) No lineageId stored yet. A FRESH replica (no cursors) adopts the observed
+		// identity silently and bootstraps normally. A cursor-bearing LEGACY replica must
+		// NOT trust its cursors — they were minted against a volume we cannot identify, so
+		// if this is a different volume at the same generation, reusing them would skip
+		// remote files and diverge. Re-bootstrap to validate, then record the identity.
+		if (server.lineageId !== undefined && state.lineageId === undefined) {
+			if (state.pullCursor !== undefined) await clientReset()
+			await recordLineage(server.lineageId, server.generation)
 			return
 		}
+		// (4) Same volume — the ordinary generation reconcile.
 		await reconcileGeneration(server.generation)
 	}
 

@@ -727,6 +727,58 @@ describe('synced (generation / client-reset)', () => {
 		expect(server.scanCalls).toBe(0)
 		expect((await readSyncState(local)).lineageId).toBe('A') // stored lineage untouched
 	})
+
+	// Codex P1 (feedback 1/2): a replica that synced BEFORE lineageId existed keeps
+	// cursors but no lineageId. Those cursors were minted against a volume we can't
+	// identify; if this server is a DIFFERENT volume at the same generation, silently
+	// adopting its id and reusing the cursors would skip its files and diverge — the
+	// exact bug. A cursor-bearing legacy replica must re-bootstrap, not adopt silently.
+	it('re-bootstraps a cursor-bearing legacy replica before adopting a lineageId', async () => {
+		const server = fakeServer({ generation: 1, lineageId: 'B', files: { '/theirs.txt': 'x' } })
+		const local = memStorage()
+		await volume(local).writeFile('/stale.txt', enc.encode('from volume A'))
+		await seedSyncState(local, { generation: 1, pullCursor: '5', pushCursor: '5' }) // no lineageId
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/stale.txt')).toBe(false) // discarded — cursors couldn't be trusted
+		expect(dec.decode(await vol.readFile('/theirs.txt'))).toBe('x') // re-bootstrapped from B
+		expect((await readSyncState(local)).lineageId).toBe('B') // identity now recorded
+		expect(server.scanCalls).toBeGreaterThanOrEqual(1)
+	})
+
+	// A genuinely fresh replica (no cursors) with a lineage-providing server adopts the
+	// observed id and bootstraps once — no spurious extra reset before the bootstrap.
+	it('adopts the lineageId on a fresh replica without a spurious reset', async () => {
+		const server = fakeServer({ generation: 3, lineageId: 'C', files: { '/hi.txt': 'x' } })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(dec.decode(await vol.readFile('/hi.txt'))).toBe('x')
+		const state = await readSyncState(local)
+		expect(state.lineageId).toBe('C')
+		expect(state.generation).toBe(3)
+	})
+
+	// Codex P1 (feedback 3): crash mid "take mine", then reconnect to a server
+	// reporting a DIFFERENT lineageId. The identity gate must NOT run first and
+	// clientReset the volume the user explicitly chose to publish — the crash-resume
+	// path is resolved ahead of the gate, keeping local intact.
+	it('resolves a pending take-mine ahead of the identity gate (local not discarded)', async () => {
+		const server = fakeServer({ generation: 5, lineageId: 'B' })
+		server.resetId = 'mine-1' // our reset still owns the server → resume
+		const local = memStorage()
+		await volume(local).writeFile('/mine.txt', enc.encode('to publish'))
+		await seedSyncState(local, {
+			generation: 5,
+			lineageId: 'A', // we synced against a different volume before the crash
+			pullCursor: '0',
+			pushCursor: '0',
+			pendingReset: { resetId: 'mine-1', fromGeneration: 5 }
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.flush()
+		expect(await vol.exists('/mine.txt')).toBe(true) // NOT discarded — resumed, local kept
+		expect(server.scanCalls).toBe(0) // resumed, not a client-reset bootstrap
+		expect((await readSyncState(local)).lineageId).toBe('B') // published-to volume recorded
+	})
 })
 
 // The fs-level change signal: a committed local write drives an immediate,
