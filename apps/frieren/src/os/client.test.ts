@@ -303,3 +303,50 @@ describe('FrierenClient apps + windows', () => {
 		])
 	})
 })
+
+describe('FrierenClient sync poke', () => {
+	test('a sync frame runs the onSync handler (server->client volume poke)', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		let synced = 0
+		client.onSync(() => {
+			synced++
+		})
+		socket.emit({ type: 'ready', apps: [] })
+		socket.emit({ type: 'sync' })
+		expect(synced).toBe(1)
+	})
+})
+
+describe('FrierenClient reconnection', () => {
+	test('reconnects the session socket after an unexpected close', async () => {
+		vi.useFakeTimers()
+		try {
+			const sockets: FakeSocket[] = []
+			const client = createFrierenClient({
+				getToken: async () => 'tok',
+				createSocket: () => {
+					const s = new FakeSocket()
+					sockets.push(s)
+					return s
+				}
+			})
+			client.connect()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(sockets).toHaveLength(1)
+
+			// A transient drop (not an explicit client.close()) must self-heal.
+			sockets[0].close()
+			await vi.advanceTimersByTimeAsync(5_000)
+			expect(sockets.length).toBeGreaterThan(1)
+
+			// An explicit close stops reconnecting.
+			const count = sockets.length
+			client.close()
+			await vi.advanceTimersByTimeAsync(60_000)
+			expect(sockets.length).toBe(count)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+})

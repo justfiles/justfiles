@@ -11,7 +11,6 @@ const GEOMETRY_DEBOUNCE_MS = 300
 
 export interface KernelHostEnv {
 	appHost: Pick<typeof appHostModule, 'open' | 'close'>
-	getToken: () => Promise<string | null>
 	send: (frame: object) => void
 	localKernel: () => Promise<Kernel>
 	volume: Promise<Volume>
@@ -21,7 +20,6 @@ export interface KernelHostEnv {
 // tell the server; server-echoed actions (`remote`) only sync the host.
 export function makeKernelHostEffect(env: KernelHostEnv): Effect<OsState, OsAction> {
 	const openOptions = {
-		getToken: env.getToken,
 		localKernel: env.localKernel,
 		volume: env.volume
 	}

@@ -8,6 +8,11 @@ import type { OsAction } from './state'
 // browser global being present (tests run under node).
 const SOCKET_OPEN = 1
 
+// Backoff for transient `/ws` drops. `/ws` is the always-on session socket and the
+// sole proactive sync-poke channel, so it must self-heal (the removed `_caps` path
+// reconnected on next use). Caps at 30s; reset on a healthy `ready`.
+const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 15_000, 30_000] as const
+
 // Minimal socket surface the client drives; the real `WebSocket` satisfies it.
 // Tests inject a fake via `createSocket`.
 export interface SocketLike {
@@ -52,6 +57,10 @@ export interface FrierenClient {
 	// The frieren notification channel: agent/cron notification frames arrive here and
 	// are handed to the notification store (mirrors `onRemoteWindow`).
 	onNotification(handler: (notification: Notification) => void): () => void
+	// The server->client volume poke: a `sync` frame says "the server volume changed,
+	// pull now" (agent turn, cron, or another device's push). The app wires this to
+	// flush the active sync volume. Rides the always-on session socket.
+	onSync(handler: () => void): () => void
 }
 
 export interface FrierenClientOptions {
@@ -121,6 +130,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// Bumped on every (re)connect/close so a stale async token resolution from a
 	// superseded connect attempt is ignored.
 	let generation = 0
+	// Whether the client should hold a connection open — set between connect() and
+	// close(). A transient drop reconnects while true; an explicit close clears it.
+	let wantConnection = false
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+	let reconnectAttempts = 0
 
 	// --- agent session (BehaviorSubject) ---
 	let connectionState: ConnectionState = 'disconnected'
@@ -202,6 +216,9 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	// --- server-pushed notifications (agent / cron) ---
 	let notificationSink: ((notification: Notification) => void) | null = null
+
+	// --- server-pushed volume poke (pull now) ---
+	let syncSink: (() => void) | null = null
 
 	function handleAgentEvent(event: AgentEventFrame): void {
 		switch (event.type) {
@@ -294,6 +311,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 
 	function handleFrame(data: ServerFrame): void {
 		if (data.type === 'ready') {
+			reconnectAttempts = 0
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
 				agentName = data.participants.agentName || 'Frieren'
@@ -366,6 +384,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			return
 		}
 
+		if (data.type === 'sync') {
+			syncSink?.()
+			return
+		}
+
 		if (data.type === 'event' && data.event) handleAgentEvent(data.event)
 	}
 
@@ -386,6 +409,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			isStreaming = false
 			emitAgent()
 			loadLocalApps()
+			scheduleReconnect()
 		}
 		ws.onerror = () => {
 			if (socket !== ws) return
@@ -402,7 +426,19 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		ws?.close()
 	}
 
-	function connect(): void {
+	// Re-open after a transient drop, backing off. A no-op once an explicit close
+	// cleared `wantConnection` or while an attempt is already scheduled.
+	function scheduleReconnect(): void {
+		if (!wantConnection || reconnectTimer) return
+		const delay = RECONNECT_DELAYS_MS[Math.min(reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)]
+		reconnectAttempts++
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = null
+			if (wantConnection) openSocket()
+		}, delay)
+	}
+
+	function openSocket(): void {
 		const gen = ++generation
 		closeSocket()
 		connectionState = 'connecting'
@@ -415,12 +451,19 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				connectionState = 'disconnected'
 				emitAgent()
 				loadLocalApps()
+				scheduleReconnect()
 				return
 			}
 			const ws = createSocket(token)
 			socket = ws
 			attach(ws)
 		})()
+	}
+
+	function connect(): void {
+		wantConnection = true
+		reconnectAttempts = 0
+		openSocket()
 	}
 
 	const agent: AgentClient = {
@@ -450,6 +493,11 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		refresh: () => loadLocalApps(),
 
 		close() {
+			wantConnection = false
+			if (reconnectTimer) {
+				clearTimeout(reconnectTimer)
+				reconnectTimer = null
+			}
 			generation++
 			closeSocket()
 			connectionState = 'disconnected'
@@ -488,6 +536,13 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			notificationSink = handler
 			return () => {
 				if (notificationSink === handler) notificationSink = null
+			}
+		},
+
+		onSync(handler) {
+			syncSink = handler
+			return () => {
+				if (syncSink === handler) syncSink = null
 			}
 		}
 	}

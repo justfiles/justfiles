@@ -27,7 +27,7 @@ export {
 } from './error.ts'
 export { implementCapability } from './implement.ts'
 export { capabilityRegistry } from './registry.ts'
-export { type CapsClient, proxyCapabilitiesRpc, serveCapabilitiesRpc } from './rpc.ts'
+export { proxyCapabilitiesRpc, serveCapabilitiesRpc } from './rpc.ts'
 export type {
 	Capabilities,
 	Capability,

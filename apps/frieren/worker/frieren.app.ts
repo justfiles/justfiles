@@ -26,7 +26,6 @@ type AppBroadcast = { type: 'app_open'; id: string } | { type: 'app_close'; id: 
 interface FrierenAppsDeps {
 	fs: Volume
 	loader: Parameters<typeof workerSandbox>[0] | undefined
-	sockets: () => Iterable<WebSocket>
 	acceptWebSocket: (ws: WebSocket) => void
 	text: LLMText
 	broadcast: (msg: AppBroadcast) => void
@@ -63,7 +62,6 @@ const CAPS_SOCKET = '_caps'
 
 export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	let kernelInstance: Kernel | undefined
-	let subscribed = false
 
 	// The server kernel's capability seam: `volume` and `ai` are local units; the
 	// account-backed `email`/`calendar`/`accounts` are handed in ready (built over
@@ -107,24 +105,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// volume once and syncs the bundle up. This DO never materialises
 	// `/applications/*` — it holds whatever the client synced up and serves it to
 	// the agent, so the kernel is used as-is with no server-side seed/reconcile.
-
-	// kernel.subscribe's handler is in-memory, so it dies with the DO on
-	// hibernation. Re-registered lazily per instance. On the server kernel
-	// `app.update` fires only for the agent's own dispatches, so it nudges every
-	// caps socket to pull: the agent changed this app server-side; pull now
-	// instead of waiting for the next sync interval. The browser kernel renders
-	// the pulled state via `volume.watch`.
-	function ensureSubscribed(): void {
-		if (subscribed) return
-		subscribed = true
-		getKernel().subscribe((event) => {
-			if (event.type !== 'app.update') return
-			for (const socket of deps.sockets()) {
-				const attachment = socket.deserializeAttachment() as { caps?: boolean } | null
-				if (attachment?.caps && freshSocket(socket)) linkFor(socket).dirty(event.appId)
-			}
-		})
-	}
 
 	async function list(): Promise<readonly DisplayApp[]> {
 		try {
@@ -183,11 +163,9 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// matching `serveCapabilitiesRpc` against the `proxied` registry on a Cap'n Web
 	// session. The DO delivers frames via `webSocketMessage` (hibernation model),
 	// so `wsFeedTransport` exposes a `feed` the message handler pushes raw frames
-	// into; replies and server→client `dirty` pushes go back over `ws.send`.
-	const capsLinks = new WeakMap<
-		WebSocket,
-		{ feed: (frame: string) => void; dirty: (appId: string) => void }
-	>()
+	// into; replies go back over `ws.send`. (The server->client volume poke rides the
+	// session `/ws` socket as a `sync` frame, not this capability session.)
+	const capsLinks = new WeakMap<WebSocket, { feed: (frame: string) => void }>()
 	// Sockets whose Cap'n Web session was established in THIS instance. A session's
 	// import/export tables live only in memory, so they die on hibernation; the
 	// WeakSet (also in-memory) is empty after a wake. `freshSocket` uses that to
@@ -198,8 +176,8 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		let link = capsLinks.get(ws)
 		if (!link) {
 			const { transport, feed } = wsFeedTransport(ws)
-			const served = serveCapabilitiesRpc(transport, proxied)
-			link = { feed, dirty: served.dirty }
+			serveCapabilitiesRpc(transport, proxied)
+			link = { feed }
 			capsLinks.set(ws, link)
 		}
 		return link
@@ -225,8 +203,6 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		deps.acceptWebSocket(server)
 		server.serializeAttachment({ caps: true })
 		acceptedThisInstance.add(server)
-		// Subscribe so the agent's server-side writes nudge this tab to pull.
-		ensureSubscribed()
 		// The current client opens this socket offering `[CAPS_WS_SUBPROTOCOL,
 		// bearer.<token>]` (the token rides the handshake, not the URL) and expects
 		// the server to select one — the `ws`-based dev bridge rejects the handshake
@@ -254,21 +230,16 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	// The agent↔kernel bridge (@justfiles/app). frieren's ports: apps surface as
 	// broadcasts to the tabs (not native windows), "current" comes from the persisted
-	// OS state, and the kernel accessor also arms the caps-socket nudge (ensureSubscribed)
-	// so the agent's server-side dispatches push a pull to open browsers.
-	const controller: AppController = createAppController(
-		async () => {
-			ensureSubscribed()
-			return getKernel()
+	// OS state. The server→client pull nudge is no longer armed here: the DO's fs
+	// change feed broadcasts a `sync` frame to the session sockets for every
+	// server-side write, agent dispatch included.
+	const controller: AppController = createAppController(async () => getKernel(), {
+		windows: {
+			open: (id) => deps.broadcast({ type: 'app_open', id }),
+			close: (id) => deps.broadcast({ type: 'app_close', id })
 		},
-		{
-			windows: {
-				open: (id) => deps.broadcast({ type: 'app_open', id }),
-				close: (id) => deps.broadcast({ type: 'app_close', id })
-			},
-			focus: currentAppId
-		}
-	)
+		focus: currentAppId
+	})
 
 	return {
 		controller,

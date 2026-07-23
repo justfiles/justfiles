@@ -26,13 +26,12 @@ function makeAgentWindow(): OsWindow {
 function setup() {
 	const appHost = { open: vi.fn(), close: vi.fn() }
 	const send = vi.fn()
-	const getToken = async () => 'token'
 	const localKernel = async () => ({}) as Kernel
 	const volume = Promise.resolve({} as Volume)
-	const effect = makeKernelHostEffect({ appHost, getToken, send, localKernel, volume })
+	const effect = makeKernelHostEffect({ appHost, send, localKernel, volume })
 	// Every window opens with the same options now (no per-app branching).
-	const opts = { getToken, localKernel, volume }
-	return { appHost, send, getToken, opts, effect }
+	const opts = { localKernel, volume }
+	return { appHost, send, opts, effect }
 }
 
 describe('makeKernelHostEffect', () => {

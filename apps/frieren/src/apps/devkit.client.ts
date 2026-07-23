@@ -64,7 +64,6 @@ export function frierenRunner(fs: Volume, getToken: GetToken): Runner {
 			// Done after close (old isolate gone, can't re-persist) and before open.
 			if (reset) await scoped.rm(`/state/${previewId}.json`, { force: true })
 			host.open(previewId, {
-				getToken,
 				localKernel: async () => kernel,
 				volume: Promise.resolve(scoped)
 			})

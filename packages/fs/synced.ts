@@ -12,6 +12,7 @@ import {
 } from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { parseVersion } from './sync-wire'
+import type { Ino } from './types'
 import { FileType } from './types'
 import { type Volume, volume } from './volume'
 
@@ -53,6 +54,11 @@ export const REMOTE_SOURCE = 'remote'
 
 // This design is v1; future breaking changes bump SyncState.schemaVersion.
 const SCHEMA_VERSION = 1
+
+// Coalescing window for the fs-level change signal: a committed local write arms
+// a single push this many ms later, so a burst (an app save, an agent turn) folds
+// into one sync instead of one per write.
+const COALESCE_MS = 250
 
 interface SyncLifecycle {
 	flush(): Promise<void>
@@ -101,6 +107,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// reset CAS so a crash mid-publish resumes/adopts (via the boot handshake)
 	// instead of discarding the snapshot it meant to publish; cleared on finalize.
 	let knownPending = (await syncState.get()).pendingReset
+
+	// The sync engine's own local-only state files (`/.state/**`) are rewritten on
+	// every cursor advance. Their inos are captured so the change-driven push
+	// trigger can skip them — otherwise each cycle's bookkeeping write would feed
+	// straight back into another push, a self-sustaining loop.
+	const syncStateInos = new Set<Ino>()
+	for (const p of ['/.state/clientid', '/.state/sync']) {
+		try {
+			syncStateInos.add((await localVol.stat(p)).ino)
+		} catch {}
+	}
 
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
@@ -165,15 +182,17 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * `excludeOrigin: id` skips changes this client authored (the server stamped
 	 * our client-id as origin on push). Returns the new pullCursor to persist.
 	 */
-	async function pull(pullCursor: string): Promise<{ to: string; generation?: number }> {
-		const { changes, to, generation } = await remoteReplica.pathDeltas(pullCursor, {
+	async function pull(
+		pullCursor: string
+	): Promise<{ to: string; done: boolean; generation?: number }> {
+		const { changes, to, done, generation } = await remoteReplica.pathDeltas(pullCursor, {
 			excludeOrigin: id,
 			limit: PAGE
 		})
 		await localReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
-		return { to, generation }
+		return { to, done, generation }
 	}
 
 	/**
@@ -382,19 +401,36 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 				await checkMidSessionReset(generation)
 				return
 			}
-			const { to: pushCursor, done: pushDone } = await push(state.pushCursor ?? '')
-			await syncState.patch({ pushCursor })
-			// A "take mine" republish drains over the ordinary push; when it reaches the
+			// Drain the whole push queue this cycle: a coalesced trigger fires once, so a
+			// burst larger than one page must not strand its tail until the next poll.
+			let pushCursor = state.pushCursor ?? ''
+			let pushDone = false
+			while (!pushDone) {
+				const r = await push(pushCursor)
+				pushCursor = r.to
+				pushDone = r.done
+				await syncState.patch({ pushCursor })
+			}
+			// A "take mine" republish drains over the ordinary push; once it reaches the
 			// journal head (nothing left to push), signal the server to clear its advisory
 			// reset flag, then drop our marker. Advisory — a failure just retries next cycle.
-			if (knownPending?.toGeneration !== undefined && pushDone) {
+			if (knownPending?.toGeneration !== undefined) {
 				try {
 					await remoteReplica.reset?.({ mode: 'complete', resetId: knownPending.resetId })
 					await clearPendingReset()
 				} catch {}
 			}
-			const { to, generation } = await pull(state.pullCursor)
-			await syncState.patch({ pullCursor: to })
+			// Drain every remote delta page this cycle, for the same reason.
+			let pullCursor = state.pullCursor
+			let pullDone = false
+			let generation: number | undefined
+			while (!pullDone) {
+				const r = await pull(pullCursor)
+				pullCursor = r.to
+				pullDone = r.done
+				generation = r.generation
+				await syncState.patch({ pullCursor })
+			}
 			await checkMidSessionReset(generation)
 		} catch (e) {
 			// A mutating write was fenced (409 generation_stale): the server lineage
@@ -412,6 +448,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	let running: Promise<void> | null = null
 	let timer: ReturnType<typeof setTimeout> | null = null
+	let coalesceTimer: ReturnType<typeof setTimeout> | null = null
+	let unsubscribeLocal: (() => void) | undefined
 	let paused = false
 	let destroyed = false
 	let retryCount = 0
@@ -487,10 +525,28 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 	function destroy() {
 		destroyed = true
+		unsubscribeLocal?.()
+		unsubscribeLocal = undefined
+		if (coalesceTimer) {
+			clearTimeout(coalesceTimer)
+			coalesceTimer = null
+		}
 		if (timer) {
 			clearTimeout(timer)
 			timer = null
 		}
+	}
+
+	// The fs-level change signal: a committed local write (any writer — user, app,
+	// agent) arms a single coalesced push. Skips the sync layer's own pull-applied
+	// writes (REMOTE_SOURCE) and its state-file bookkeeping (syncStateInos) so a
+	// pull or a cursor advance never triggers another push.
+	function scheduleProactivePush() {
+		if (paused || destroyed || coalesceTimer) return
+		coalesceTimer = setTimeout(() => {
+			coalesceTimer = null
+			void flush().catch(() => {})
+		}, COALESCE_MS)
 	}
 
 	// "Take theirs": drop the local replica + cursors, then re-bootstrap from the
@@ -546,6 +602,12 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// Kick the first sync. localFirst boots without waiting on it (the local
 	// volume is the working copy); otherwise block until it settles so the first
 	// read already sees synced data.
+	unsubscribeLocal = props.local.caps?.subscribe?.((change) => {
+		if (change.source === REMOTE_SOURCE) return
+		if (syncStateInos.has(change.ino)) return
+		scheduleProactivePush()
+	})
+
 	if (props.localFirst) run()
 	else await flush()
 

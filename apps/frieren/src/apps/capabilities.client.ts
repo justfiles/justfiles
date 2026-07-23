@@ -16,7 +16,6 @@ import type { Kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { capsWsProtocols } from '../../shared/caps-ws.ts'
 import { DEVKIT_ALLOWLIST } from '../../shared/devkit.allowlist.ts'
-import { flushActiveVolume } from '../fs.ts'
 import { notificationStore } from '../notifications/store.ts'
 import { frierenCompile, frierenRunner } from './devkit.client.ts'
 
@@ -120,14 +119,6 @@ export function resetCapabilitySocket(): void {
 	ws?.close()
 }
 
-// Eagerly open the shared caps socket — normally it is lazy (opened on the first
-// network capability), but the server's `dirty` push must also reach volume-only
-// apps (e.g. paint) whose open windows never invoke a network capability. The host
-// calls this on app open. Idempotent; failures self-heal on the next call.
-export function ensureCapabilitySocket(getToken: GetToken): void {
-	void sharedSocket(getToken).catch(() => {})
-}
-
 // One authed `_caps` Cap'n Web session per session, shared by every proxied
 // capability call and the server's `dirty` pushes. Lazy + self-healing: a broken
 // session or a socket close clears the singleton so the next open makes a fresh one.
@@ -160,7 +151,7 @@ function sharedSocket(getToken: GetToken): Promise<CapsConn> {
 
 async function openConn(getToken: GetToken): Promise<CapsConn> {
 	const ws = await openAuthedWs(getToken)
-	const proxy = capsProxyOverSocket(ws, flushActiveVolume)
+	const proxy = capsProxyOverSocket(ws)
 	// A broken session or a socket close drops the singleton so the next call
 	// reopens against a fresh connection.
 	const clear = () => {
@@ -175,18 +166,19 @@ async function openConn(getToken: GetToken): Promise<CapsConn> {
 }
 
 // Wire a browser WebSocket into the caps proxy: push-based `message` events feed
-// the pull-based transport; the server's `dirty` push runs `onDirty`. A close or
-// error aborts the transport so in-flight calls reject and the session breaks —
-// `wsFeedTransport.receive()` never rejects on its own. The whole browser-side
-// wire in one place — driven directly by the wire test.
-export function capsProxyOverSocket(ws: WebSocket, onDirty: () => void) {
+// the pull-based transport. A close or error aborts the transport so in-flight
+// calls reject and the session breaks — `wsFeedTransport.receive()` never rejects
+// on its own. The whole browser-side wire in one place — driven directly by the
+// wire test. (Server->client volume pokes ride the session `/ws` socket, not this
+// capability session.)
+export function capsProxyOverSocket(ws: WebSocket) {
 	const { transport, feed } = wsFeedTransport(ws)
 	ws.addEventListener('message', (e) => feed(e.data as string))
 	const abort = () =>
 		transport.abort?.(new CapabilityError('CAPABILITY_OFFLINE', 'capabilities', 'connect'))
 	ws.addEventListener('close', abort)
 	ws.addEventListener('error', abort)
-	return proxyCapabilitiesRpc(transport, { dirty: () => onDirty() })
+	return proxyCapabilitiesRpc(transport)
 }
 
 async function openAuthedWs(getToken: GetToken): Promise<WebSocket> {

@@ -157,7 +157,6 @@ export function OSProvider({ children }: { children: ReactNode }) {
 	const [{ store, flushPersist }] = useState(() =>
 		createOsStore({
 			appHost,
-			getToken: readyGetToken,
 			send: client.send,
 			volume: volumePromise,
 			localKernel
