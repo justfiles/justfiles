@@ -325,6 +325,8 @@ interface FakeServer {
 	/** Every push received (for take-mine republish tests). */
 	pushes: Array<{ changes: PathChange[] }>
 	seed(path: string, content: string): void
+	/** Empty the tree + blobs — simulate the endpoint becoming a different, empty volume. */
+	clear(): void
 }
 
 function fakeServer(
@@ -352,6 +354,10 @@ function fakeServer(
 				contentHash: hash,
 				meta: { type: FileType.Regular, mode: 0o644, mtimeNs: '0', size: String(data.length) }
 			})
+		},
+		clear() {
+			puts.clear()
+			blobs.clear()
 		},
 		replica: {} as SyncReplica
 	}
@@ -781,6 +787,78 @@ describe('synced (generation / client-reset)', () => {
 		const state = await readSyncState(local)
 		expect(state.lineageId).toBe('B') // now tracking the volume we actually reached
 		expect(state.pendingReset).toBeUndefined() // the void take-mine intent was cleared
+	})
+
+	// Codex round-3 P1: a previously-PULLED file (journal tagged REMOTE_SOURCE) that is
+	// absent from the new volume's snapshot must not be stranded local-only. The legacy
+	// re-bootstrap re-tags the retained tree as local (adoptAllAsLocal) so it is pushed.
+	it('re-publishes previously-pulled files when a legacy replica re-bootstraps onto a new volume', async () => {
+		// Legacy server (no generation/lineageId): client pulls /pulled.txt (REMOTE_SOURCE)
+		// and records no lineageId.
+		const server = fakeServer({ files: { '/pulled.txt': 'data' } })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/pulled.txt')).toBe(true)
+		expect((await readSyncState(local)).lineageId).toBeUndefined() // legacy: no identity stored
+
+		// The endpoint is now a DIFFERENT, empty volume that reports an identity.
+		server.clear()
+		server.generation = 1
+		server.lineageId = 'B'
+		server.pushes.length = 0
+
+		await vol.flush() // legacy adoption → rebootstrapKeepingLocal (+ adoptAllAsLocal) → bootstrap
+		await vol.flush() // drain the push of the re-tagged tree
+
+		// /pulled.txt is NOT stranded: it is re-published to volume B (not filtered as REMOTE_SOURCE).
+		const pushedPaths = server.pushes.flatMap((p) => p.changes.map((c) => c.path))
+		expect(pushedPaths).toContain('/pulled.txt')
+		expect(await vol.exists('/pulled.txt')).toBe(true)
+		expect((await readSyncState(local)).lineageId).toBe('B')
+	})
+
+	// Codex round-3 P1: a pending take-mine with NO stored lineageId (pre-feature) can't
+	// be verified against the server's identity, so the generation-based resumeAction is
+	// unsafe. Treat it as unverifiable → re-bootstrap keeping local.
+	it('re-bootstraps a pending replica that has no stored lineageId (unverifiable)', async () => {
+		// Server generation equals fromGeneration, so the old resumeAction would 'adopt' and
+		// keep the (foreign) cursors, skipping the new volume's files.
+		const server = fakeServer({ generation: 5, lineageId: 'B', files: { '/theirs.txt': 'x' } })
+		const local = memStorage()
+		await volume(local).writeFile('/mine.txt', enc.encode('to publish'))
+		await seedSyncState(local, {
+			generation: 5, // no lineageId ever recorded
+			pullCursor: '0',
+			pushCursor: '0',
+			pendingReset: { resetId: 'mine-1', fromGeneration: 5 }
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.flush()
+		expect(await vol.exists('/mine.txt')).toBe(true) // local preserved
+		expect(dec.decode(await vol.readFile('/theirs.txt'))).toBe('x') // re-bootstrapped from B
+		const state = await readSyncState(local)
+		expect(state.lineageId).toBe('B')
+		expect(state.pendingReset).toBeUndefined()
+	})
+
+	// Codex round-3 P1: a GENERATION-fenced push while a take-mine is in flight must not
+	// destructively reconcile (clientReset) — that would delete the snapshot the user chose
+	// to publish. It defers to the handshake, which resolves the pending reset safely.
+	it('does not discard local when a generation-fenced push races a pending take-mine', async () => {
+		const server = fakeServer({ generation: 5 }) // lineageId undefined
+		server.resetId = 'mine-1' // our reset owns the server → resume keeps the pending intent
+		server.pushError = new GenerationStaleError(6) // the republish push is fenced
+		const local = memStorage()
+		await volume(local).writeFile('/mine.txt', enc.encode('to publish'))
+		await seedSyncState(local, {
+			generation: 5,
+			pullCursor: '0',
+			pushCursor: '0',
+			pendingReset: { resetId: 'mine-1', fromGeneration: 5 }
+		})
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		expect(await vol.exists('/mine.txt')).toBe(true) // NOT discarded on the fence — deferred
+		expect((await readSyncState(local)).pendingReset).toBeDefined() // intent kept for the handshake
 	})
 })
 

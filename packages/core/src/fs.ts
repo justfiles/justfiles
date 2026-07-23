@@ -244,15 +244,23 @@ export function createFsApi(
 					if (header !== undefined && lineage && Number(header) !== lineage.generation)
 						return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
 					// Identity fence: reject a write whose lineage no longer matches this volume
-					// (a different volume at the same generation). Reuses the `generation_stale`
-					// envelope so the client re-syncs; its next handshake sees the lineage change
-					// and re-bootstraps. Only enforced when both sides carry a lineageId.
+					// (a different volume recreated at the SAME generation, which `x-fs-generation`
+					// can't catch). A DISTINCT `lineage_stale` error, because a generation reconcile
+					// would be a no-op here — the client must reconcile identity (re-handshake +
+					// re-bootstrap) to recover. Only enforced when both sides carry a lineageId.
 					if (
 						lineageHeader !== undefined &&
 						lineage?.lineageId !== undefined &&
 						lineageHeader !== lineage.lineageId
 					)
-						return c.json({ error: 'generation_stale', generation: lineage.generation }, 409)
+						return c.json(
+							{
+								error: 'lineage_stale',
+								generation: lineage.generation,
+								lineageId: lineage.lineageId
+							},
+							409
+						)
 				}
 				return next()
 			})

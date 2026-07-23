@@ -472,3 +472,20 @@ export class GenerationStaleError extends Error {
 		this.generation = generation
 	}
 }
+
+/**
+ * A mutating `/fs` write was fenced by IDENTITY: the `x-fs-lineage` the client
+ * stamped no longer matches the server volume's `lineageId`, even though the
+ * `generation` epoch still matches (a different volume was recreated at the same
+ * epoch). Distinct from `GenerationStaleError` because the generation-based
+ * reconcile is a no-op here — `synced()` must reconcile IDENTITY (re-handshake +
+ * `reconcileLineage`) to recover immediately rather than at the next poll.
+ */
+export class LineageStaleError extends Error {
+	readonly lineageId?: string
+	constructor(lineageId?: string) {
+		super('lineage_stale')
+		this.name = 'LineageStaleError'
+		this.lineageId = lineageId
+	}
+}

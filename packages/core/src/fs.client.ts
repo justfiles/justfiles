@@ -1,5 +1,9 @@
 import type { InodeMeta, MutationOptions, Storage } from '@justfiles/fs/storage'
-import { GenerationStaleError, type SyncReplica } from '@justfiles/fs/sync-replica'
+import {
+	GenerationStaleError,
+	LineageStaleError,
+	type SyncReplica
+} from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { hc, type InferResponseType } from 'hono/client'
@@ -13,10 +17,12 @@ const FS_GENERATION_HEADER = 'x-fs-generation'
 const FS_LINEAGE_HEADER = 'x-fs-lineage'
 
 // Detect the server's push-fence rejection. A mutating write stamped with a stale
-// `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`;
-// surface it as a typed error so `synced()` can client-reset (and other callers
-// re-sync). 409 is also used for EEXIST/ENOTEMPTY, so match the body, not the
-// status — cloned so the original response body stays readable by callers.
+// `x-fs-generation` comes back `409 { error: 'generation_stale', generation }`, and a
+// write aimed at a different volume at the same generation comes back `409 { error:
+// 'lineage_stale', lineageId }`; surface each as a typed error so `synced()` can
+// reconcile (generation reset vs. identity re-handshake). 409 is also used for
+// EEXIST/ENOTEMPTY, so match the body, not the status — cloned so the original
+// response body stays readable by callers.
 async function throwIfStale(res: {
 	status: number
 	clone(): { json(): Promise<unknown> }
@@ -25,7 +31,8 @@ async function throwIfStale(res: {
 	const body = (await res
 		.clone()
 		.json()
-		.catch(() => null)) as { error?: string; generation?: number } | null
+		.catch(() => null)) as { error?: string; generation?: number; lineageId?: string } | null
+	if (body?.error === 'lineage_stale') throw new LineageStaleError(body.lineageId)
 	if (body?.error === 'generation_stale') throw new GenerationStaleError(body.generation)
 }
 

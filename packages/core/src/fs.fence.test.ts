@@ -5,7 +5,7 @@
 // surface the 409 as a typed error.
 
 import { memStorage, volume } from '@justfiles/fs'
-import { GenerationStaleError } from '@justfiles/fs/sync-replica'
+import { GenerationStaleError, LineageStaleError } from '@justfiles/fs/sync-replica'
 import type { PathChange } from '@justfiles/fs/sync-wire'
 import { FileType } from '@justfiles/fs/types'
 import { describe, expect, it } from 'vitest'
@@ -136,7 +136,7 @@ describe('/fs identity fencing — server', () => {
 			}
 		})
 		expect(res.status).toBe(409)
-		expect(await res.json()).toEqual({ error: 'generation_stale', generation: 5 })
+		expect(await res.json()).toEqual({ error: 'lineage_stale', generation: 5, lineageId: 'vol-A' })
 		expect((await app.request(`/blob/${hash}`, { method: 'HEAD' })).status).toBe(404)
 	})
 
@@ -310,7 +310,7 @@ describe('/fs push fencing — client paths', () => {
 		)
 	})
 
-	it('remoteSyncReplica stamps the lineageId; a mismatched-lineage push throws GenerationStaleError', async () => {
+	it('remoteSyncReplica stamps the lineageId; a mismatched-lineage push throws LineageStaleError', async () => {
 		const backend = memStorage()
 		const app = createFsApi(backend, { lineage: () => ({ generation: 5, lineageId: 'vol-A' }) })
 		const client = wireClient(app)
@@ -325,14 +325,14 @@ describe('/fs push fencing — client paths', () => {
 		await same.applyPathChanges([dirPut('/dir')], noBlob)
 		expect(await volume(backend).exists('/dir')).toBe(true)
 
-		// Generation matches but we think we're on a different volume → fenced.
+		// Generation matches but we think we're on a different volume → fenced by identity.
 		const wrongVolume = remoteSyncReplica(client, {
 			clientId: 'c1',
 			generation: () => 5,
 			lineageId: () => 'vol-B'
 		})
 		await expect(wrongVolume.applyPathChanges([dirPut('/dir2')], noBlob)).rejects.toBeInstanceOf(
-			GenerationStaleError
+			LineageStaleError
 		)
 		expect(await volume(backend).exists('/dir2')).toBe(false)
 	})
