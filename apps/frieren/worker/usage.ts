@@ -3,24 +3,26 @@ import type { DbAdapter } from '@justfiles/core'
 
 // Per-user AI usage + quota, in the DO's own SQLite (one DO == one account). Two windows
 // gate spend, Claude-Code style: a short ROLLING "burst" window (anchored to first use) plus
-// a fixed WEEKLY window. A call is admitted only if it fits under BOTH. The store is correct
-// on its own: `reserve` and `settle` are each a SINGLE atomic SQL statement, and a DO is
-// single-threaded, so overlapping inference requests can't race a read-modify-write — no
-// locks. Only platform-key spend (our OpenRouter key) is metered here; BYO backends never
-// call these (see Frieren.meteredBackend).
+// a fixed WEEKLY window. A call is admitted only if BOTH windows are still under their cap.
 //
-//   reserve(now, est, burstLimit, weeklyLimit) → admit iff, for BOTH windows,
-//                         committed + reserved + est ≤ limit; atomically bumps each window's
-//                         `reserved` by `est` in the same statement and rolls any window that
-//                         has elapsed. Returns the HANDLE (each window's key) the reservation
-//                         belongs to, or null when either budget is spent.
-//   settle(handle, est, usage) → free the reservation (−est) and add ACTUAL cost — per window,
-//                         but only if that window still matches the handle (a call that spanned
-//                         a window roll can't touch the new window). Lifetime totals always accrue.
-//   release(handle, est) → free a reservation for a call that failed before producing usage.
+// This is a CHECK-THEN-ADD meter (the model Codex uses — no reservation): `admit` checks
+// current committed spend against the cap, and `record` adds the ACTUAL cost afterwards. It
+// does NOT hold a pre-flight estimate, so an admitted call may push a window slightly over its
+// cap (bounded by whatever was in flight); the next call is then blocked. Both `admit` and
+// `record` are each a SINGLE atomic SQL statement and the DO is single-threaded, so the
+// accrual can't lose an update. Only platform-key spend (our OpenRouter key) is metered here;
+// BYO backends never call these (see Frieren.meteredBackend).
+//
+//   admit(now, burstLimit, weeklyLimit) → admit iff committed < limit for BOTH windows,
+//                         rolling any elapsed window in the same statement. Returns the HANDLE
+//                         (each window's key) the call belongs to, or null when either is spent.
+//   record(handle, usage) → add ACTUAL cost + tokens + a request — per window, but only if that
+//                         window still matches the handle (a call that spanned a roll can't
+//                         credit the new window). Lifetime totals always accrue. A failed call
+//                         records nothing.
 //
 // A window's "roll" is detected differently per window, so its key doubles as the ownership
-// token settle/release match on:
+// token `record` matches on:
 //   • burst  — ROLLING, anchored: `burst_expires` (ms epoch). Rolls when now ≥ burst_expires;
 //              the fresh window is `now + BURST_WINDOW_MS`. Only the expiry is stored, never the
 //              length, so BURST_WINDOW_MS can change later with zero migration (live windows keep
@@ -90,9 +92,9 @@ export interface UsageReport {
 	storage: StorageUsage
 }
 
-// The reservation's ownership token: which burst/weekly window it belongs to. settle/release
-// match these against the row's current keys to prove a window hasn't rolled underneath them.
-export interface ReserveHandle {
+// The call's ownership token: which burst/weekly window it was admitted into. `record` matches
+// these against the row's current keys to prove a window hasn't rolled underneath the call.
+export interface AdmitHandle {
 	burstExpires: number
 	weeklyKey: number
 }
@@ -107,10 +109,8 @@ export async function ensureUsageSchema(db: DbAdapter): Promise<void> {
 			id INTEGER PRIMARY KEY,
 			burst_expires INTEGER NOT NULL DEFAULT 0,
 			burst_micros INTEGER NOT NULL DEFAULT 0,
-			burst_reserved INTEGER NOT NULL DEFAULT 0,
 			weekly_key INTEGER NOT NULL DEFAULT 0,
 			weekly_micros INTEGER NOT NULL DEFAULT 0,
-			weekly_reserved INTEGER NOT NULL DEFAULT 0,
 			tokens INTEGER NOT NULL DEFAULT 0,
 			requests INTEGER NOT NULL DEFAULT 0,
 			lifetime_micros INTEGER NOT NULL DEFAULT 0,
@@ -119,101 +119,58 @@ export async function ensureUsageSchema(db: DbAdapter): Promise<void> {
 	)
 	// A DO created before dual-window caps has the old columns and lacks these; add any that
 	// are missing. On such a row all defaults are 0 → burst_expires=0 and weekly_key=0 both
-	// roll on the first reserve, so the first window starts clean.
+	// roll on the first admit, so the first window starts clean.
 	const cols = new Set(
 		(await db.query<{ name: unknown }>('PRAGMA table_info(usage_ai)')).map((r) => String(r.name))
 	)
-	for (const name of [
-		'burst_expires',
-		'burst_micros',
-		'burst_reserved',
-		'weekly_key',
-		'weekly_micros',
-		'weekly_reserved'
-	]) {
+	for (const name of ['burst_expires', 'burst_micros', 'weekly_key', 'weekly_micros']) {
 		if (!cols.has(name))
 			await db.run(`ALTER TABLE usage_ai ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
 	}
 	await db.run('INSERT OR IGNORE INTO usage_ai (id) VALUES (1)')
 }
 
-// Clear reservations at DO BOOT only — a fresh instance has no in-flight calls, so any
-// non-zero `reserved` is leaked by a prior instance that died between reserve and settle.
-// NOT part of ensureUsageSchema: `reset()` also runs on volume wipe/complete WHILE calls may
-// be in flight, and those aborts let live calls settle their own reservations (see reset()).
-export async function sweepReservations(db: DbAdapter): Promise<void> {
-	await db.run('UPDATE usage_ai SET burst_reserved = 0, weekly_reserved = 0 WHERE id = 1')
-}
-
-// Atomically admit a call and hold a reservation in BOTH windows, rolling any elapsed window
-// in the same statement. One statement ⇒ atomic on the single-threaded DO; concurrent reserves
-// each see the prior one's reservation. Returns the reservation's HANDLE (needed by settle/
-// release to prove ownership across a roll), or null when either window's budget is spent.
-export async function reserve(
+// Atomically admit a call iff BOTH windows are still under their cap, rolling any elapsed
+// window in the same statement. One statement ⇒ atomic on the single-threaded DO. Returns the
+// call's HANDLE (needed by `record` to prove ownership across a roll), or null when either
+// window's budget is spent. `committed < limit` gates on the current window (an elapsed window
+// reads as 0 via the CASE, so it admits and rolls); unlimited tiers pass a huge sentinel limit.
+export async function admit(
 	db: DbAdapter,
 	now: number,
-	estMicros: number,
 	burstLimit: number,
 	weeklyLimit: number
-): Promise<ReserveHandle | null> {
+): Promise<AdmitHandle | null> {
 	const wk = weekBucket(now)
 	const burstNext = now + BURST_WINDOW_MS
 	const rows = await db.query<{ burst_expires: unknown; weekly_key: unknown }>(
 		`UPDATE usage_ai SET
-			burst_micros    = CASE WHEN ? < burst_expires THEN burst_micros ELSE 0 END,
-			burst_reserved  = (CASE WHEN ? < burst_expires THEN burst_reserved ELSE 0 END) + ?,
-			burst_expires   = CASE WHEN ? < burst_expires THEN burst_expires ELSE ? END,
+			burst_micros  = CASE WHEN ? < burst_expires THEN burst_micros ELSE 0 END,
+			burst_expires = CASE WHEN ? < burst_expires THEN burst_expires ELSE ? END,
 			tokens   = CASE WHEN weekly_key = ? THEN tokens ELSE 0 END,
 			requests = CASE WHEN weekly_key = ? THEN requests ELSE 0 END,
-			weekly_micros   = CASE WHEN weekly_key = ? THEN weekly_micros ELSE 0 END,
-			weekly_reserved = (CASE WHEN weekly_key = ? THEN weekly_reserved ELSE 0 END) + ?,
-			weekly_key      = ?
+			weekly_micros = CASE WHEN weekly_key = ? THEN weekly_micros ELSE 0 END,
+			weekly_key    = ?
 		 WHERE id = 1
-		   AND (CASE WHEN ? < burst_expires THEN burst_micros + burst_reserved ELSE 0 END) + ? <= ?
-		   AND (CASE WHEN weekly_key = ? THEN weekly_micros + weekly_reserved ELSE 0 END) + ? <= ?
+		   AND (CASE WHEN ? < burst_expires THEN burst_micros ELSE 0 END) < ?
+		   AND (CASE WHEN weekly_key = ? THEN weekly_micros ELSE 0 END) < ?
 		 RETURNING burst_expires, weekly_key`,
-		[
-			now,
-			now,
-			estMicros,
-			now,
-			burstNext,
-			wk,
-			wk,
-			wk,
-			wk,
-			estMicros,
-			wk,
-			now,
-			estMicros,
-			burstLimit,
-			wk,
-			estMicros,
-			weeklyLimit
-		]
+		[now, now, burstNext, wk, wk, wk, wk, now, burstLimit, wk, weeklyLimit]
 	)
 	const row = rows[0]
 	if (!row) return null
 	return { burstExpires: Number(row.burst_expires), weeklyKey: Number(row.weekly_key) }
 }
 
-// Free the reservation and record the ACTUAL cost, per window. A window's committed/reserved
-// change ONLY when it still matches the handle — so a call that spanned a roll can't subtract
-// the new window's reservation or inflate its committed (the roll already discarded this
-// reservation). Lifetime totals always accrue. One atomic statement.
-export async function settle(
-	db: DbAdapter,
-	handle: ReserveHandle,
-	estMicros: number,
-	usage: Usage
-): Promise<void> {
+// Record the ACTUAL cost of an admitted call, per window. A window's committed changes ONLY
+// when it still matches the handle — so a call that spanned a roll can't credit the new window
+// (the roll already zeroed it). Lifetime totals always accrue. One atomic statement.
+export async function record(db: DbAdapter, handle: AdmitHandle, usage: Usage): Promise<void> {
 	const actual = Math.round(usage.cost.total * MICROS_PER_USD)
 	await db.run(
 		`UPDATE usage_ai SET
-			burst_micros    = burst_micros + (CASE WHEN burst_expires = ? THEN ? ELSE 0 END),
-			burst_reserved  = MAX(0, burst_reserved - (CASE WHEN burst_expires = ? THEN ? ELSE 0 END)),
-			weekly_micros   = weekly_micros + (CASE WHEN weekly_key = ? THEN ? ELSE 0 END),
-			weekly_reserved = MAX(0, weekly_reserved - (CASE WHEN weekly_key = ? THEN ? ELSE 0 END)),
+			burst_micros  = burst_micros  + (CASE WHEN burst_expires = ? THEN ? ELSE 0 END),
+			weekly_micros = weekly_micros + (CASE WHEN weekly_key = ? THEN ? ELSE 0 END),
 			tokens   = tokens + (CASE WHEN weekly_key = ? THEN ? ELSE 0 END),
 			requests = requests + (CASE WHEN weekly_key = ? THEN 1 ELSE 0 END),
 			lifetime_micros = lifetime_micros + ?,
@@ -222,12 +179,8 @@ export async function settle(
 		[
 			handle.burstExpires,
 			actual,
-			handle.burstExpires,
-			estMicros,
 			handle.weeklyKey,
 			actual,
-			handle.weeklyKey,
-			estMicros,
 			handle.weeklyKey,
 			usage.totalTokens,
 			handle.weeklyKey,
@@ -236,24 +189,8 @@ export async function settle(
 	)
 }
 
-// Free a reservation for a call that failed before producing usage — per window, only if it
-// still matches the handle (a roll already discarded it). Nothing to count.
-export async function release(
-	db: DbAdapter,
-	handle: ReserveHandle,
-	estMicros: number
-): Promise<void> {
-	await db.run(
-		`UPDATE usage_ai SET
-			burst_reserved  = MAX(0, burst_reserved - (CASE WHEN burst_expires = ? THEN ? ELSE 0 END)),
-			weekly_reserved = MAX(0, weekly_reserved - (CASE WHEN weekly_key = ? THEN ? ELSE 0 END))
-		 WHERE id = 1`,
-		[handle.burstExpires, estMicros, handle.weeklyKey, estMicros]
-	)
-}
-
 // Read the AI counter as of `now` (an elapsed window reads as zeroed, lifetime carried). Pure
-// read — the roll is persisted lazily by reserve/settle.
+// read — the roll is persisted lazily by admit/record.
 export async function readAiUsage(db: DbAdapter, now = Date.now()): Promise<AiUsage> {
 	const wk = weekBucket(now)
 	const [row] = await db.query<{

@@ -93,18 +93,12 @@ describe('evaluate', () => {
 })
 
 describe('aiLimitsMicros', () => {
-	test('converts each tier cap to micro-USD for the reserve gate', () => {
+	test('converts each tier cap to micro-USD for the gate', () => {
 		expect(aiLimitsMicros('free')).toEqual({
 			burst: Math.round((TIERS.free.aiBurstUsd ?? 0) * 1_000_000),
 			weekly: Math.round((TIERS.free.aiWeeklyUsd ?? 0) * 1_000_000)
 		})
 		expect(aiLimitsMicros('unlimited')).toEqual({ burst: null, weekly: null })
-	})
-
-	test('the free burst cap exceeds a single call reservation, so calls can be admitted', () => {
-		// callReserveMicros for gpt-5.4-mini is ~$0.066 (40k input × 0.75 + 8k output × 4.5).
-		// The burst cap must stay above it or every call is rejected.
-		expect(aiLimitsMicros('free').burst).toBeGreaterThan(70_000)
 	})
 })
 

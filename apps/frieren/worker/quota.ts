@@ -20,9 +20,7 @@ const MB = 1024 * 1024
 const GB = 1024 * MB
 
 // ── The single source of truth for caps. Adjust numbers here; ships on deploy. ──
-// Free values are starting points to validate in practice, not final. The burst cap must
-// stay above one call's reservation (see callReserveMicros in worker/frieren.ts) or every
-// call is rejected.
+// Free values are starting points to validate in practice, not final.
 export const TIERS: Record<TierId, Limits> = {
 	free: { aiBurstUsd: 0.35, aiWeeklyUsd: 1, storageBytes: 500 * MB },
 	pro: { aiBurstUsd: 2, aiWeeklyUsd: 6, storageBytes: 25 * GB },
@@ -76,7 +74,7 @@ function evalQuota(used: number, limit: number | null): Quota {
 	}
 }
 
-// The AI caps as micro-USD for the reserve gate (`null` = unlimited ⇒ no gating on that
+// The AI caps as micro-USD for the admit gate (`null` = unlimited ⇒ no gating on that
 // window). The store works in integer micros; USD only surfaces in the display quota below.
 export function aiLimitsMicros(tier: TierId): { burst: number | null; weekly: number | null } {
 	const l = limitsFor(tier)

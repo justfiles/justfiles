@@ -57,15 +57,7 @@ import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { aiLimitsMicros, evaluate, readTier } from './quota.ts'
-import {
-	ensureUsageSchema,
-	type ReserveHandle,
-	readUsage,
-	release,
-	reserve,
-	settle,
-	sweepReservations
-} from './usage.ts'
+import { type AdmitHandle, admit, ensureUsageSchema, readUsage, record } from './usage.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
 const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
@@ -127,26 +119,8 @@ const IMAGE_MODEL = 'google/gemini-3.1-flash-image'
 // so production is always metered. `undefined` in prod ⇒ the tier resolves from stored state.
 const DEV_TIER_OVERRIDE = import.meta.env.DEV ? 'unlimited' : undefined
 
-// A conservative upper bound (micro-USD) reserved per image generation. Image cost is
-// per-image, not token-based, so we can't derive it from the model; this bounds concurrent
-// image spend against the cap and is reconciled to the actual cost on settle.
-const IMAGE_RESERVE_MICROS = 200_000 // ~$0.20
-
-// A REALISTIC per-call reservation, not the model's absolute worst case. Reserving full
-// context + max output (e.g. ~$0.88 on gpt-5.4-mini) would exceed a small burst cap and reject
-// every call. Instead we bound a plausible single call; settle reconciles to actual. The cap
-// is a hard bound up to this estimate and soft only if a single call exceeds it — acceptable
-// since a user's turns are effectively serialized in their DO.
-const RESERVE_INPUT_TOKENS = 40_000
-const RESERVE_OUTPUT_TOKENS = 8_000
-
-// Reservation (micro-USD) for one text call on `model`. micros = tokens × per-million price
-// (USD/1e6 × 1e6 = the price number). Zero for the local no-cost model.
-function callReserveMicros(model: Model<Api>): number {
-	const input = RESERVE_INPUT_TOKENS * (model.cost?.input ?? 0)
-	const output = RESERVE_OUTPUT_TOKENS * (model.cost?.output ?? 0)
-	return Math.ceil(input + output)
-}
+// Image cost is per-image, not token-based, so a usage-less image result records nothing
+// (there's no reliable amount to charge); a result that reports usage is recorded normally.
 
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
@@ -194,10 +168,6 @@ export class Frieren extends DurableObject<Env> {
 
 		ctx.blockConcurrencyWhile(async () => {
 			await this.reset()
-			// Boot-only: reclaim reservations leaked by a crashed prior instance (reset() ran
-			// ensureUsageSchema, so the table exists). NOT in reset() itself — volume wipe/complete
-			// call reset() while calls may be in flight, and their aborts settle those normally.
-			await sweepReservations(this.db)
 		})
 	}
 
@@ -235,16 +205,14 @@ export class Frieren extends DurableObject<Env> {
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
-	// Reserve budget for one platform-key call, returning the reservation's HANDLE (needed to
-	// settle/release it even across a window roll). Gates on BOTH the burst and weekly caps.
-	// Unlimited tiers use a sentinel huge limit so the same path always reserves (⇒ rolls the
-	// windows, yields a handle) but never rejects. Throws when either cap is spent.
-	private async reserveOrThrow(estMicros: number): Promise<ReserveHandle> {
+	// Admit one platform-key call, returning its HANDLE (needed to record cost even across a
+	// window roll). Gates on BOTH the burst and weekly caps. Unlimited tiers pass a sentinel huge
+	// limit so the same path always admits. Throws when either cap is already spent.
+	private async admitOrThrow(): Promise<AdmitHandle> {
 		const limits = aiLimitsMicros(await readTier(this.ctx.storage, DEV_TIER_OVERRIDE))
-		const handle = await reserve(
+		const handle = await admit(
 			this.db,
 			Date.now(),
-			estMicros,
 			limits.burst ?? Number.MAX_SAFE_INTEGER,
 			limits.weekly ?? Number.MAX_SAFE_INTEGER
 		)
@@ -252,44 +220,30 @@ export class Frieren extends DurableObject<Env> {
 		return handle
 	}
 
-	// The platform backend, reserve-gated + metered. The store owns concurrency correctness
-	// (reserve is a single atomic statement), so calls run in PARALLEL and each reconciles when
-	// it finishes — no serialization. Every text call (agent turns, soul gen, the app `ai`
-	// capability) goes through here; the terminal message (stream done/error, or complete)
-	// settles the per-call reservation, and a throw before any usage frees it. `est` (the
-	// model's per-call reservation) is constant per backend. Only the platform backend is
-	// wrapped — BYO backends are built plain, so they're never metered or capped.
+	// The platform backend, cap-gated + metered. `admit` checks the caps up front; `record` adds
+	// the ACTUAL cost when the call finishes (a failed call records nothing). Every text call
+	// (agent turns, soul gen, the app `ai` capability) goes through here. Only the platform
+	// backend is wrapped — BYO backends are built plain, so they're never metered or capped.
 	private meteredBackend(models: Models, model: Model<Api>): AgentBackend {
-		const est = callReserveMicros(model)
 		const backend = modelsBackend(models, model)
 		return {
 			...backend,
 			streamFn: async (m, context, options) => {
-				const handle = await this.reserveOrThrow(est)
-				try {
-					const stream = await Promise.resolve(backend.streamFn(m, context, options))
-					// The terminal AssistantMessage (done OR error) carries usage — settle on it; a
-					// stream that never yields one frees the reservation instead.
-					stream.result().then(
-						(msg) => this.ctx.waitUntil(settle(this.db, handle, est, msg.usage)),
-						() => this.ctx.waitUntil(release(this.db, handle, est))
-					)
-					return stream
-				} catch (err) {
-					this.ctx.waitUntil(release(this.db, handle, est))
-					throw err
-				}
+				const handle = await this.admitOrThrow()
+				const stream = await Promise.resolve(backend.streamFn(m, context, options))
+				// The terminal AssistantMessage (done OR error) carries usage — record on it. A stream
+				// that errors without one carries no usage, so there's nothing to record.
+				stream
+					.result()
+					.then((msg) => this.ctx.waitUntil(record(this.db, handle, msg.usage)))
+					.catch(() => undefined)
+				return stream
 			},
 			completeFn: async (m, context, options) => {
-				const handle = await this.reserveOrThrow(est)
-				try {
-					const message = await backend.completeFn(m, context, options)
-					this.ctx.waitUntil(settle(this.db, handle, est, message.usage))
-					return message
-				} catch (err) {
-					this.ctx.waitUntil(release(this.db, handle, est))
-					throw err
-				}
+				const handle = await this.admitOrThrow()
+				const message = await backend.completeFn(m, context, options)
+				this.ctx.waitUntil(record(this.db, handle, message.usage))
+				return message
 			}
 		}
 	}
@@ -462,29 +416,18 @@ export class Frieren extends DurableObject<Env> {
 			generateImage: imageModel
 				? async (prompt) => {
 						// Image generation runs on the parallel ImagesModels stack (not the text backend),
-						// so reserve/settle explicitly. Reserve a conservative per-image upper bound
-						// (image cost isn't token-based, so we can't derive it from the model), and meter
-						// the actual usage even on a non-'stop' result — a failed image can still be billable.
-						const handle = await this.reserveOrThrow(IMAGE_RESERVE_MICROS)
-						let held = true
-						try {
-							const res = await images.generateImages(imageModel, {
-								input: [{ type: 'text', text: prompt }]
-							})
-							// settle frees the reservation and counts actual; a usage-less failure just frees it.
-							if (res.usage)
-								this.ctx.waitUntil(settle(this.db, handle, IMAGE_RESERVE_MICROS, res.usage))
-							else this.ctx.waitUntil(release(this.db, handle, IMAGE_RESERVE_MICROS))
-							held = false
-							if (res.stopReason !== 'stop')
-								throw new Error(res.errorMessage ?? 'image generation failed')
-							return res.output.flatMap((b) =>
-								b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
-							)
-						} catch (err) {
-							if (held) this.ctx.waitUntil(release(this.db, handle, IMAGE_RESERVE_MICROS))
-							throw err
-						}
+						// so admit/record explicitly. Record the reported usage even on a non-'stop' result
+						// (a failed image can still be billable); a usage-less result records nothing.
+						const handle = await this.admitOrThrow()
+						const res = await images.generateImages(imageModel, {
+							input: [{ type: 'text', text: prompt }]
+						})
+						if (res.usage) this.ctx.waitUntil(record(this.db, handle, res.usage))
+						if (res.stopReason !== 'stop')
+							throw new Error(res.errorMessage ?? 'image generation failed')
+						return res.output.flatMap((b) =>
+							b.type === 'image' ? [{ data: b.data, mimeType: b.mimeType }] : []
+						)
 					}
 				: undefined
 		}
