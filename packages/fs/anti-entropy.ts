@@ -29,11 +29,14 @@
  * missed deletes. The manifest scan is requested with `tombstones: true`, so a
  * cursor-missed delete on one side propagates to the other (its higher-versioned
  * tombstone beats a stale live put via the same LWW rule); a converged tombstone
- * matches on both sides and is skipped. `applyPathChanges` re-guards, so a stale
+ * matches on both sides and is skipped. A subtree delete-vs-add-child conflict
+ * (an ancestor tombstone vs a surviving descendant put) resolves in favour of the
+ * child: the ancestor tombstone is shadowed — never queued — so it can't churn
+ * forever against the tree-integrity guard. `applyPathChanges` re-guards, so a stale
  * live put can never resurrect a higher-versioned delete.
  */
 
-import { incomingWins } from './storage.shared'
+import { incomingWins, splitPath } from './storage.shared'
 import { mirrorBlobs, PAGE, type SyncReplica, uploadBlobs } from './sync-replica'
 import { changeDigest, type PathChange } from './sync-wire'
 
@@ -118,14 +121,33 @@ export async function reconcile(
 
 	const toPull: PathChange[] = [] // remote winners -> apply locally
 	const toPush: PathChange[] = [] // local winners -> apply on the remote
+
+	// Directories that must stay alive because a descendant survives as a live put on
+	// EITHER side. A concurrent "delete /d" vs "add /d/x" is a subtree conflict: the
+	// surviving child wins — the apply layer resurrects the ancestor (ensureDirPath)
+	// and refuses to delete a non-empty directory. So an ancestor tombstone can never
+	// win; queueing it just produces a push/pull the tree-integrity guard rejects
+	// forever (infinite churn, never settling). Skip those shadowed tombstones.
+	const liveAncestors = new Set<string>()
+	for (const m of [localManifest, remoteManifest])
+		for (const c of m.values())
+			if (c.kind === 'put')
+				for (let d = splitPath(c.path).parentPath; d !== '/'; d = splitPath(d).parentPath)
+					liveAncestors.add(d)
+
 	const paths = new Set<string>([...localManifest.keys(), ...remoteManifest.keys()])
 	for (const path of paths) {
 		const l = localManifest.get(path)
 		const r = remoteManifest.get(path)
 		if (await agree(l, r)) continue
 		// `incomingWins(x, y)` = does x beat y? A missing side always loses.
-		if (r && (!l || (await incomingWins(r, l)))) toPull.push(r)
-		else if (l) toPush.push(l)
+		const winner = r && (!l || (await incomingWins(r, l))) ? r : l
+		if (!winner) continue
+		// A subtree delete-vs-add-child conflict: never propagate an ancestor tombstone
+		// whose directory still holds a surviving descendant (see liveAncestors).
+		if (winner.kind === 'delete' && liveAncestors.has(path)) continue
+		if (winner === r) toPull.push(r)
+		else toPush.push(winner)
 	}
 
 	// Pull: ensure the remote actually HOLDS each winner's blob before applying it

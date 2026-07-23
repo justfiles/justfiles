@@ -163,6 +163,25 @@ describe('reconcile — convergence backstop', () => {
 		expect(await client.exists('/x')).toBe(false)
 	})
 
+	it('settles a subtree delete-vs-add-child conflict without churning on the ancestor tombstone', async () => {
+		const { client, server, syncBoth } = twoPeers()
+		await server.mkdir('/d')
+		await syncBoth() // both hold /d
+		// Concurrent + cursor-missed: the client deletes /d; the server adds a NEW child.
+		await client.rm('/d', { recursive: true }) // client tombstones /d
+		await server.writeFile('/d/x', bytes('child')) // /d stays live on the server, gains /d/x
+		const first = await reconcile(client.replica, server.replica)
+		// The surviving child is pulled down (resurrecting /d on the client); the ancestor
+		// tombstone is NOT propagated (it can never beat the live subtree).
+		expect(text(await client.readFile('/d/x'))).toBe('child')
+		expect(await client.exists('/d')).toBe(true)
+		expect(await server.exists('/d/x')).toBe(true)
+		expect(first.pushed).toBe(0) // the shadowed tombstone was skipped, not pushed
+		// And it SETTLES: a second pass does no work (no infinite ancestor-tombstone churn).
+		const again = await reconcile(client.replica, server.replica)
+		expect(again).toMatchObject({ pulled: 0, pushed: 0 })
+	})
+
 	it('reconciles a mixed batch in one pass (pull + push + skip)', async () => {
 		const { client, server, syncBoth } = twoPeers()
 		await server.writeFile('/shared.txt', bytes('same'))
