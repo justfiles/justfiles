@@ -464,6 +464,15 @@ describe('synced (generation / client-reset)', () => {
 		expect(server.scanCalls).toBe(0)
 	})
 
+	it('does not send an empty push', async () => {
+		const server = fakeServer({ generation: 5 })
+		const local = memStorage()
+		await seedSyncState(local, { generation: 5, pullCursor: '0', pushCursor: '0' })
+		track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+
+		expect(server.pushes).toEqual([])
+	})
+
 	// stored undefined, HAS cursors → migration: adopt, NOT reset. This must not
 	// client-reset every device that synced before `generation` existed.
 	it('a pre-generation replica migrates by adopting, not resetting', async () => {
@@ -883,7 +892,7 @@ describe('synced (proactive push on local change)', () => {
 		const vol = track(await synced({ local: memStorage(), remote, interval: 99_999 }))
 		await vol.writeFile('/proactive.txt', enc.encode('auto'))
 		// No flush(): the fs-level change signal should schedule the push.
-		await vi.advanceTimersByTimeAsync(1_000)
+		await vi.advanceTimersByTimeAsync(3_000)
 		expect(dec.decode(await volume(remote).readFile('/proactive.txt'))).toBe('auto')
 	})
 })
@@ -911,7 +920,7 @@ describe('synced (proactive push does not self-loop)', () => {
 			if (s === 'syncing') syncing++
 		})
 		await vol.writeFile('/x.txt', enc.encode('1'))
-		await vi.advanceTimersByTimeAsync(1_000) // the one proactive push
+		await vi.advanceTimersByTimeAsync(3_000) // the one proactive push
 		const afterSettle = syncing
 		expect(afterSettle).toBeGreaterThan(0)
 		await vi.advanceTimersByTimeAsync(10_000) // no further writes → must stay quiet
@@ -942,11 +951,11 @@ describe('synced (proactive push ignores remote-applied pulls)', () => {
 			if (s === 'syncing') bSyncing++
 		})
 		await a.writeFile('/shared.txt', enc.encode('hi'))
-		await vi.advanceTimersByTimeAsync(1_000) // a pushes proactively
+		await vi.advanceTimersByTimeAsync(3_000) // a pushes proactively
 		await b.flush() // b pulls /shared.txt (applied as REMOTE_SOURCE)
 		expect(dec.decode(await b.readFile('/shared.txt'))).toBe('hi')
 		const afterPull = bSyncing
-		await vi.advanceTimersByTimeAsync(1_000) // the pull must NOT arm a push
+		await vi.advanceTimersByTimeAsync(3_000) // the pull must NOT arm a push
 		expect(bSyncing).toBe(afterPull)
 	})
 })
@@ -975,12 +984,100 @@ describe('synced (proactive push coalesces a burst)', () => {
 		await vol.writeFile('/a.txt', enc.encode('a'))
 		await vol.writeFile('/b.txt', enc.encode('b'))
 		await vol.writeFile('/c.txt', enc.encode('c'))
-		await vi.advanceTimersByTimeAsync(1_000)
+		await vi.advanceTimersByTimeAsync(3_000)
 		expect(syncing).toBe(1)
 		const rv = volume(remote)
 		expect(dec.decode(await rv.readFile('/a.txt'))).toBe('a')
 		expect(dec.decode(await rv.readFile('/b.txt'))).toBe('b')
 		expect(dec.decode(await rv.readFile('/c.txt'))).toBe('c')
+	})
+
+	it('pushes three seconds after the latest write', async () => {
+		vi.useFakeTimers()
+		const vol = track(await synced({ local: memStorage(), remote: memStorage() }))
+		let syncing = 0
+		vol.onStatusChange((status) => {
+			if (status === 'syncing') syncing++
+		})
+
+		await vol.writeFile('/a.txt', enc.encode('a'))
+		await vi.advanceTimersByTimeAsync(2_000)
+		await vol.writeFile('/b.txt', enc.encode('b'))
+		await vi.advanceTimersByTimeAsync(2_999)
+		expect(syncing).toBe(0)
+
+		await vi.advanceTimersByTimeAsync(1)
+		expect(syncing).toBe(1)
+	})
+
+	it('pushes after fifteen seconds of continuous writes', async () => {
+		vi.useFakeTimers()
+		const vol = track(await synced({ local: memStorage(), remote: memStorage(), interval: 99_999 }))
+		let syncing = 0
+		vol.onStatusChange((status) => {
+			if (status === 'syncing') syncing++
+		})
+
+		await vol.writeFile('/state.json', enc.encode('0'))
+		for (let n = 1; n <= 7; n++) {
+			await vi.advanceTimersByTimeAsync(2_000)
+			await vol.writeFile('/state.json', enc.encode(String(n)))
+		}
+		await vi.advanceTimersByTimeAsync(999)
+		expect(syncing).toBe(0)
+
+		await vi.advanceTimersByTimeAsync(1)
+		expect(syncing).toBe(1)
+	})
+
+	it('does not sync again after an explicit flush', async () => {
+		vi.useFakeTimers()
+		const vol = track(await synced({ local: memStorage(), remote: memStorage(), interval: 99_999 }))
+		let syncing = 0
+		vol.onStatusChange((status) => {
+			if (status === 'syncing') syncing++
+		})
+
+		await vol.writeFile('/state.json', enc.encode('changed'))
+		await vol.flush()
+		expect(syncing).toBe(1)
+
+		await vi.advanceTimersByTimeAsync(3_000)
+		expect(syncing).toBe(1)
+	})
+
+	it('does not sync again when the regular interval satisfies a pending push', async () => {
+		vi.useFakeTimers()
+		const vol = track(await synced({ local: memStorage(), remote: memStorage(), interval: 2_000 }))
+		let syncing = 0
+		vol.onStatusChange((status) => {
+			if (status === 'syncing') syncing++
+		})
+
+		await vol.writeFile('/state.json', enc.encode('changed'))
+		await vi.advanceTimersByTimeAsync(2_000)
+		expect(syncing).toBe(1)
+
+		await vi.advanceTimersByTimeAsync(1_000)
+		expect(syncing).toBe(1)
+	})
+
+	it('does not sync again when resume satisfies a pending push', async () => {
+		vi.useFakeTimers()
+		const vol = track(await synced({ local: memStorage(), remote: memStorage(), interval: 99_999 }))
+		let syncing = 0
+		vol.onStatusChange((status) => {
+			if (status === 'syncing') syncing++
+		})
+
+		await vol.writeFile('/state.json', enc.encode('changed'))
+		vol.pause()
+		vol.resume()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(syncing).toBe(1)
+
+		await vi.advanceTimersByTimeAsync(3_000)
+		expect(syncing).toBe(1)
 	})
 })
 

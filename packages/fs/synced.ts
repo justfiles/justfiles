@@ -60,10 +60,10 @@ export const REMOTE_SOURCE = 'remote'
 // This design is v1; future breaking changes bump SyncState.schemaVersion.
 const SCHEMA_VERSION = 1
 
-// Coalescing window for the fs-level change signal: a committed local write arms
-// a single push this many ms later, so a burst (an app save, an agent turn) folds
-// into one sync instead of one per write.
-const COALESCE_MS = 250
+// Fold bursts into one push after 3s of quiet, but make progress after 15s of
+// continuous activity. This intentionally mirrors Frieren's server poke locally.
+const DEBOUNCE_MS = 3_000
+const MAX_WAIT_MS = 15_000
 
 interface SyncLifecycle {
 	flush(): Promise<void>
@@ -197,9 +197,10 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		// Origin (PathChange.source) is stamped server-side from our clientId header
 		// (the HTTP replica sends it); `source: REMOTE_SOURCE` is the LOCAL-apply tag
 		// the remote records so it never bounces our write back.
-		await remoteReplica.applyPathChanges(applicable, (h) => remoteReplica.getBlobByHash(h), {
-			source: REMOTE_SOURCE
-		})
+		if (applicable.length)
+			await remoteReplica.applyPathChanges(applicable, (h) => remoteReplica.getBlobByHash(h), {
+				source: REMOTE_SOURCE
+			})
 		return { to, done }
 	}
 
@@ -579,7 +580,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 
 	let running: Promise<void> | null = null
 	let timer: ReturnType<typeof setTimeout> | null = null
-	let coalesceTimer: ReturnType<typeof setTimeout> | null = null
+	let pushTimer: ReturnType<typeof setTimeout> | null = null
+	let pushStartedAt: number | null = null
 	let unsubscribeLocal: (() => void) | undefined
 	let paused = false
 	let destroyed = false
@@ -605,8 +607,15 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		timer = setTimeout(run, delay)
 	}
 
+	function cancelProactivePush() {
+		if (pushTimer) clearTimeout(pushTimer)
+		pushTimer = null
+		pushStartedAt = null
+	}
+
 	function run() {
 		if (running || paused || destroyed) return
+		cancelProactivePush()
 		setStatus('syncing')
 		running = sync()
 			.then(() => {
@@ -628,6 +637,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// call have synced. If a sync is already in flight (it may predate those
 	// writes), chain one more after it; concurrent callers share that follow-up.
 	function flush(): Promise<void> {
+		cancelProactivePush()
 		if (running) {
 			flushQueued ??= running.then(() => {
 				flushQueued = null
@@ -658,10 +668,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		destroyed = true
 		unsubscribeLocal?.()
 		unsubscribeLocal = undefined
-		if (coalesceTimer) {
-			clearTimeout(coalesceTimer)
-			coalesceTimer = null
-		}
+		cancelProactivePush()
 		if (timer) {
 			clearTimeout(timer)
 			timer = null
@@ -673,11 +680,18 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	// writes (REMOTE_SOURCE) and its state-file bookkeeping (syncStateInos) so a
 	// pull or a cursor advance never triggers another push.
 	function scheduleProactivePush() {
-		if (paused || destroyed || coalesceTimer) return
-		coalesceTimer = setTimeout(() => {
-			coalesceTimer = null
-			void flush().catch(() => {})
-		}, COALESCE_MS)
+		if (paused || destroyed) return
+		const now = Date.now()
+		pushStartedAt ??= now
+		if (pushTimer) clearTimeout(pushTimer)
+		pushTimer = setTimeout(
+			() => {
+				pushTimer = null
+				pushStartedAt = null
+				void flush().catch(() => {})
+			},
+			Math.min(DEBOUNCE_MS, MAX_WAIT_MS - (now - pushStartedAt))
+		)
 	}
 
 	// "Take theirs": drop the local replica + cursors, then re-bootstrap from the

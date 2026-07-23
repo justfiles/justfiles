@@ -54,6 +54,7 @@ import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
+import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
 import { TokenBucket } from './integrations/rate-limit.ts'
 import { aiLimitsMicros, evaluate, readTier } from './quota.ts'
@@ -125,10 +126,6 @@ const DEV_TIER_OVERRIDE = import.meta.env.DEV ? 'unlimited' : undefined
 // Image cost is per-image, not token-based, so a usage-less image result records nothing
 // (there's no reliable amount to charge); a result that reports usage is recorded normally.
 
-// Coalescing window for the server->client pull nudge: a burst of server-side
-// volume writes (an agent turn) folds into one poke to the connected tabs.
-const POKE_COALESCE_MS = 250
-
 export class Frieren extends DurableObject<Env> {
 	private readonly app: Hono
 	private readonly db: DbAdapter
@@ -138,7 +135,6 @@ export class Frieren extends DurableObject<Env> {
 	private text?: LLMText
 	private cfTimezone?: string
 	private apps?: FrierenApps
-	private pokeTimer?: ReturnType<typeof setTimeout>
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
@@ -153,7 +149,16 @@ export class Frieren extends DurableObject<Env> {
 		// (agent turn, cron alarm, or an applied client push) nudges every connected
 		// tab to pull now. Coalesced so a burst folds into one poke. Registered per
 		// instance — the in-memory listener dies on hibernation and re-arms on wake.
-		this.fs.caps?.subscribe?.(() => this.scheduleServerPoke())
+		this.fs.caps?.subscribe?.(
+			createServerPoke(() => {
+				const payload = JSON.stringify({ type: 'sync' } satisfies ServerMessage)
+				for (const ws of this.ctx.getWebSockets()) {
+					const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
+					// `_caps` speaks Cap'n Web and may not be open; sync pokes use session sockets.
+					if (!attachment?.caps) ws.send(payload)
+				}
+			})
+		)
 
 		this.app = new Hono()
 			.post('/api/agent/soul', async (c) => {
@@ -218,22 +223,6 @@ export class Frieren extends DurableObject<Env> {
 	private requireApps(): FrierenApps {
 		if (!this.apps) throw new Error('apps not initialised')
 		return this.apps
-	}
-
-	// Coalesce the fs change feed into at most one pull-nudge per window, delivered
-	// as a `sync` frame to the always-on session (`/ws`) sockets — the `_caps`
-	// capability socket is skipped (it speaks Cap'n Web, and may not be open). The
-	// browser flushes its volume on receipt.
-	private scheduleServerPoke(): void {
-		if (this.pokeTimer) return
-		this.pokeTimer = setTimeout(() => {
-			this.pokeTimer = undefined
-			const payload = JSON.stringify({ type: 'sync' } satisfies ServerMessage)
-			for (const ws of this.ctx.getWebSockets()) {
-				const attachment = ws.deserializeAttachment() as { caps?: boolean } | null
-				if (!attachment?.caps) ws.send(payload)
-			}
-		}, POKE_COALESCE_MS)
 	}
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
