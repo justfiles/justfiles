@@ -9,7 +9,6 @@ import { initialState, type OsAction, type OsState } from './state'
 
 export interface CreateOsStoreOptions {
 	appHost: Pick<typeof appHostModule, 'open' | 'close'>
-	getToken: () => Promise<string | null>
 	send: (frame: object) => void
 	volume: Promise<Volume>
 	localKernel: () => Promise<Kernel>

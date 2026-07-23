@@ -10,7 +10,6 @@
 import type { Kernel } from '@justfiles/app'
 import { REMOTE_SOURCE } from '@justfiles/fs'
 import type { Volume } from '../fs'
-import { ensureCapabilitySocket } from './capabilities.client'
 import { FRAME_SRCDOC, guiHost, readHostStyles, readVendor } from './gui-channel'
 import { teardownReducerFrame, terminateAppWorker } from './sandbox.worker'
 
@@ -32,7 +31,6 @@ interface Stage {
 }
 
 export interface OpenOptions {
-	getToken: () => Promise<string | null>
 	// The browser kernel: the app dispatches locally against the synced volume.
 	localKernel: () => Promise<Kernel>
 	// The synced volume, for watching this app's state file so the open GUI
@@ -297,11 +295,6 @@ async function bootLocal(stage: Stage, opts: OpenOptions): Promise<void> {
 	}
 	window.addEventListener('message', onMessage)
 	stage.unlisten = () => window.removeEventListener('message', onMessage)
-
-	// Open the caps socket eagerly so the server's `dirty` push reaches this app
-	// even if it never invokes a network capability (e.g. paint); pull-on-dirty
-	// then lands the agent's writes at once via the watch above.
-	ensureCapabilitySocket(opts.getToken)
 
 	// The frame may have loaded during the awaits above; `boot()` is a no-op until
 	// a load has latched `pendingBoot`, and self-guards so a load caught here and

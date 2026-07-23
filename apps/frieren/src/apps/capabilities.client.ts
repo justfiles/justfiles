@@ -119,14 +119,6 @@ export function resetCapabilitySocket(): void {
 	ws?.close()
 }
 
-// Eagerly open the shared caps socket — normally it is lazy (opened on the first
-// network capability), but the server's `dirty` push must also reach volume-only
-// apps (e.g. paint) whose open windows never invoke a network capability. The host
-// calls this on app open. Idempotent; failures self-heal on the next call.
-export function ensureCapabilitySocket(getToken: GetToken): void {
-	void sharedSocket(getToken).catch(() => {})
-}
-
 // One authed `_caps` Cap'n Web session per session, shared by every proxied
 // capability call and the server's `dirty` pushes. Lazy + self-healing: a broken
 // session or a socket close clears the singleton so the next open makes a fresh one.
