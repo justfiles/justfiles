@@ -135,12 +135,20 @@ Relevant Cloudflare docs:
    has loaded it. A stale service worker can otherwise serve the old app before an edge
    redirect is reached.
 6. Build, but do not retain, a one-off migration:
-   - temporary `migrateAppIdsV1({ dryRun })` RPC on `Frieren`;
-   - temporary Worker bound to the existing `frieren` Durable Object class with
-     `script_name: "frieren"`;
-   - explicit old-to-new ID map;
-   - authenticated operator-only entry point;
-   - per-user JSON result and non-zero exit on any conflict.
+   - explicit old-to-new ID map and a pure `Volume` migrator that backs up each
+     touched path under `/system/migration-backups/app-ids-v1/`, moves
+     `/applications`, `/state`, `/data`, rewrites the manifest id and every id in
+     `os-state.json`, and aborts the whole run on any old/new clash (never overwrites);
+   - a `migrateAppIdsV1({ dryRun })` RPC on `Frieren`, kept for operator dry-runs and
+     verification.
+
+   **Implemented (PR #254):** rather than an operator Worker + freeze, the migrator
+   runs automatically in the client boot flow — after the initial sync settles and
+   **before** built-ins seed — so only legacy ids exist at that moment, the move is a
+   clean rename, and no duplicate tiles ever surface. It is idempotent (a no-op once no
+   legacy ids remain) and best-effort (a failure never bricks boot). This is temporary
+   boot logic; see §7 for removal. The `Frieren.migrateAppIdsV1` RPC still exists for
+   operator dry-run inspection and post-migration verification.
 7. Publish new versions of every store-distributed first-party package whose manifest
    ID changes. Currently this includes `@spud-computer/code`,
    `@spud-computer/draw`, and `@spud-computer/pixel`. Verify the pinned npm version,
@@ -268,13 +276,34 @@ Only after all users pass:
 
 ### 7. Clean up
 
-After every user confirms success:
+The id migration ships as temporary client **boot logic** (it runs once per user on
+login, before built-ins seed; see PR #254), not an operator script. So removal is a
+normal code release, made **after every production user has logged in post-rebrand at
+least once** and been verified — at which point the migrator is already a no-op for
+everyone.
 
-- remove the migration RPC, temporary migrator Worker, operator secret, maintenance
-  gate, and macOS migration code;
+Delete, in one reviewed release:
+
+- `apps/frieren/shared/migrate-app-ids.ts` and `migrate-app-ids.test.ts` (the pure
+  migrator, `migrateAppIdsOnce`, `runAppIdMigrationV1`, and `APP_ID_MIGRATION_V1`);
+- the `migrateAppIdsOnce(fs)` call and the migration-only `fs.flush()` / import in
+  `apps/frieren/src/os/runtime.ts` (leave `seedBuiltins` and its bootstrap wait);
+- the `migrateAppIdsV1` RPC and its import in `apps/frieren/worker/frieren.ts`;
+- the `migrate-app-ids.ts` entry from the `EXEMPT_FILES` list in
+  `apps/frieren/shared/no-legacy-app-ids.test.ts` (its target no longer exists).
+
+Keep permanently:
+
+- the `app.justfiles.frieren.*` ids;
+- the retired `computer.spud.` / `app.spud.` / `app.frieren.` entries in the indexer's
+  `RESERVED_PREFIXES` (anti-squat) and the `no-legacy-app-ids` guard itself;
+- old npm versions and the `spud.computer` redirect.
+
+Then, separately:
+
 - keep the explicit migration results and PITR bookmarks in a private operations record;
-- keep in-volume backups through the 30-day PITR window, then delete them deliberately;
-- keep old npm versions and the `spud.computer` redirect;
+- keep the in-volume backups under `/system/migration-backups/app-ids-v1/` through the
+  30-day PITR window, then delete them deliberately;
 - update support, legal, email, analytics, social previews, and Clerk Account Portal
   branding. Account Portal branding is Dashboard-only according to the Clerk CLI docs.
 
