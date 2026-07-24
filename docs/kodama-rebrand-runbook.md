@@ -17,7 +17,10 @@ Brief downtime and a fresh sign-in are acceptable.
   `@spud-computer/*` package names unless removing that historical name is worth a
   second, simultaneous package migration.
 - Use a one-off, explicit migration. Do not carry legacy-ID resolution in the runtime.
-- Keep `spud.computer` as a redirect for at least 12 months.
+- No redirect. With few users we simply point them at `mykodama.app`; both domains
+  keep serving the same Worker, and the old one is dropped from the Worker's `routes`
+  later once everyone has moved. (Avoids a redirect Worker, a service-worker transition
+  release, and the `307`→`308` dance.)
 
 ## Hard safety gates
 
@@ -130,10 +133,11 @@ Relevant Cloudflare docs:
    scan stays blanket. Exempt only: the migration's old-to-new map fixture; the indexer
    and its test that deliberately exercise retired-prefix reservation (anti-squatting);
    and historical docs.
-5. Ship a transition release to `spud.computer` that unregisters `/sw.js`, deletes its
-   caches, and tells local-profile users to export. Keep it live until every known user
-   has loaded it. A stale service worker can otherwise serve the old app before an edge
-   redirect is reached.
+5. Tell local-profile (signed-out) users to export first — browser storage is
+   per-origin and can't move to the new domain. Signed-in users need nothing: their
+   data lives in the per-user Durable Object and reappears on the new domain after
+   sign-in. (No service-worker transition release is needed because there is no
+   redirect to race.)
 6. Build, but do not retain, a one-off migration:
    - explicit old-to-new ID map and a pure `Volume` migrator that backs up each
      touched path under `/system/migration-backups/app-ids-v1/`, moves
@@ -251,7 +255,7 @@ Clerk's [production guide](https://clerk.com/docs/guides/development/deployment/
 requires Cloudflare Clerk CNAMEs to be DNS-only and notes that restrictive CAA records
 can block certificate issuance.
 
-### 6. Verify, then redirect
+### 6. Verify, then point users at the new domain
 
 Because there are few users, verify every migrated user, using `clerk impersonate` when
 appropriate:
@@ -261,18 +265,17 @@ appropriate:
 - critical app files/data and OS layout match pre-migration hashes/counts;
 - each first-party and community app opens;
 - write, reload, sync, sign-out, and sign-in work;
-- no migration conflicts or legacy production paths remain;
-- macOS app launches, projected apps open, and notification permission can be granted.
+- no migration conflicts or legacy production paths remain.
 
 Only after all users pass:
 
-1. Remove `spud.computer` from the application Worker.
-2. Attach it to a tiny `frieren-legacy-redirect` Worker that preserves path and query and
-   returns a temporary `307` to `https://mykodama.app`.
-3. Test ordinary navigation, deep links, query strings, and a browser that previously
-   installed the PWA.
-4. Change the redirect to `308` after the observation window.
-5. Re-enable the app-store indexer.
+1. Attach `mykodama.app` to the application Worker as an additional Custom Domain
+   (both domains now serve the same Worker).
+2. Tell users to use `https://mykodama.app`. There is no redirect: the old domain keeps
+   working, so nobody is stranded.
+3. Re-enable the app-store indexer.
+4. Later, once traffic to the old domain has stopped, drop it from the Worker's `routes`
+   (a one-line config change).
 
 ### 7. Clean up
 
@@ -298,7 +301,8 @@ Keep permanently:
 - the `app.justfiles.frieren.*` ids;
 - the retired `computer.spud.` / `app.spud.` / `app.frieren.` entries in the indexer's
   `RESERVED_PREFIXES` (anti-squat) and the `no-legacy-app-ids` guard itself;
-- old npm versions and the `spud.computer` redirect.
+- old npm versions; both domains keep serving until traffic to the old one stops, then
+  drop the old `routes` entry.
 
 Then, separately:
 
@@ -312,7 +316,7 @@ Then, separately:
 
 ## Rollback
 
-Any failed user blocks the redirect.
+Any failed user blocks the cutover.
 
 1. Keep maintenance mode enabled and the indexer paused.
 2. Restore the old catalog and old client build.
