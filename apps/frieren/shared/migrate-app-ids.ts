@@ -153,3 +153,18 @@ export async function runAppIdMigrationV1(
 
 	return { dryRun: false, conflict: false, osStateRewrites, entries }
 }
+
+// Client entry: run the migration exactly once per volume within this tab. The
+// boot flow calls this after the initial sync settles and before built-ins seed,
+// so only legacy ids exist and the move is clean. Idempotent across boots/tabs
+// (a no-op once no legacy ids remain); the per-volume memo just collapses a dev
+// remount or a structural-watch re-fire in the SAME tab onto one run.
+const clientRuns = new WeakMap<Volume, Promise<AppIdMigrationResult>>()
+export function migrateAppIdsOnce(vol: Volume): Promise<AppIdMigrationResult> {
+	let run = clientRuns.get(vol)
+	if (!run) {
+		run = runAppIdMigrationV1(vol, { dryRun: false })
+		clientRuns.set(vol, run)
+	}
+	return run
+}

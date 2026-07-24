@@ -1,6 +1,6 @@
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { beforeEach, describe, expect, test } from 'vitest'
-import { APP_ID_MIGRATION_V1, runAppIdMigrationV1 } from './migrate-app-ids.ts'
+import { APP_ID_MIGRATION_V1, migrateAppIdsOnce, runAppIdMigrationV1 } from './migrate-app-ids.ts'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -153,5 +153,17 @@ describe('runAppIdMigrationV1', () => {
 				newId.slice('app.justfiles.frieren.'.length)
 			)
 		}
+	})
+
+	test('migrateAppIdsOnce collapses concurrent + repeat calls onto one run per volume', async () => {
+		await seedApp(vol, 'computer.spud.code')
+		const a = migrateAppIdsOnce(vol)
+		const b = migrateAppIdsOnce(vol) // same in-flight promise
+		expect(b).toBe(a)
+		await a
+		// A call after completion returns the memoised (finished) run — no second move.
+		expect(migrateAppIdsOnce(vol)).toBe(a)
+		expect(await vol.exists('/applications/app.justfiles.frieren.code')).toBe(true)
+		expect(await vol.exists('/applications/computer.spud.code')).toBe(false)
 	})
 })

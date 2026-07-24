@@ -13,7 +13,7 @@ const SCAN_DIRS = ['apps/frieren', 'packages']
 const LEGACY_ID = /(computer\.spud\.|app\.spud\.|app\.frieren\.)/
 
 const EXEMPT_FILES = new Set([
-	'apps/frieren/worker/migrate-app-ids.ts', // the explicit old->new migration map
+	'apps/frieren/shared/migrate-app-ids.ts', // the explicit old->new migration map
 	'apps/frieren/worker/appstore/indexer.ts' // keeps retired prefixes reserved (anti-squat)
 ])
 const SKIP_DIRS = new Set(['node_modules', 'dist'])
