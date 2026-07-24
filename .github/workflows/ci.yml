@@ -1,7 +1,9 @@
 name: CI
 
 on:
-  pull_request:
+  # Runs only on main (post-merge) and manual dispatch — not on feature-branch PRs,
+  # to save runner minutes. Contributors run `pnpm format/typecheck/lint/test` locally
+  # before opening a PR; this is the authoritative gate for what actually lands.
   push:
     branches:
       - main
