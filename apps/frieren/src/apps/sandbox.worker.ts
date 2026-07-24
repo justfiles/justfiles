@@ -124,18 +124,29 @@ const REDUCER_FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 	var workers = new Map()
 	function spawn(key, code) {
 		if (workers.has(key)) return
+		// The app + worker source live in blob URLs handed to the Worker. This frame is
+		// a long-lived singleton, so revoke both once the Worker is gone (crash or
+		// terminate) or its object URLs leak for the whole session — the Worker reads
+		// its app blob (self.name) at startup, well before either release path.
+		var appUrl, workerUrl
+		function release() {
+			if (appUrl) { URL.revokeObjectURL(appUrl); appUrl = undefined }
+			if (workerUrl) { URL.revokeObjectURL(workerUrl); workerUrl = undefined }
+		}
 		try {
-			var appUrl = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))
-			var workerUrl = URL.createObjectURL(new Blob([workerSrc], { type: 'text/javascript' }))
+			appUrl = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }))
+			workerUrl = URL.createObjectURL(new Blob([workerSrc], { type: 'text/javascript' }))
 			var w = new Worker(workerUrl, { name: appUrl })
 			w.onmessage = function (ev) { port.postMessage({ t: 'msg', key: key, m: ev.data }) }
 			w.onerror = function (ev) {
 				port.postMessage({ t: 'dead', key: key, error: String((ev && ev.message) || 'reducer worker error') })
 				try { w.terminate() } catch (e) {}
 				workers.delete(key)
+				release()
 			}
-			workers.set(key, w)
+			workers.set(key, { w: w, release: release })
 		} catch (err) {
+			release()
 			port.postMessage({ t: 'dead', key: key, error: String((err && err.message) || err) })
 		}
 	}
@@ -146,10 +157,10 @@ const REDUCER_FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 		port.onmessage = function (ev) {
 			var m = ev.data
 			if (m.t === 'spawn') spawn(m.key, m.code)
-			else if (m.t === 'msg') { var w = workers.get(m.key); if (w) w.postMessage(m.m) }
+			else if (m.t === 'msg') { var cell = workers.get(m.key); if (cell) cell.w.postMessage(m.m) }
 			else if (m.t === 'terminate') {
 				var t = workers.get(m.key)
-				if (t) { try { t.terminate() } catch (e) {} workers.delete(m.key) }
+				if (t) { try { t.w.terminate() } catch (e) {} workers.delete(m.key); t.release() }
 			}
 		}
 	})

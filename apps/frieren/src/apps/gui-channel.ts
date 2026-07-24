@@ -147,8 +147,12 @@ export const FRAME_SRCDOC = `<!doctype html><meta charset="utf-8">
 				document.head.appendChild(st)
 			}
 			installImportmap(e.data.vendor)
+			// The gui bundle is imported once; free its blob URL as soon as the module
+			// graph resolves (the importmap-mapped vendor blobs stay live for lazy specifier
+			// resolution and are released with this frame's browsing context).
 			var url = URL.createObjectURL(new Blob([e.data.guiCode], { type: 'text/javascript' }))
-			var mod = await import(url)
+			var mod
+			try { mod = await import(url) } finally { URL.revokeObjectURL(url) }
 			mod.gui.mount(document.getElementById('root'), e.data.state, { transport: guiClient(port) })
 		} catch (err) {
 			parent.postMessage({ type: 'error', message: String((err && err.message) || err) }, '*')
