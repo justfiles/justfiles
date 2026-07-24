@@ -51,9 +51,14 @@ export function createAppController(
 	const resolve = typeof kernel === 'function' ? kernel : () => Promise.resolve(kernel)
 	let lastLaunched: string | undefined
 	const focus = ports.focus ?? (() => Promise.resolve(lastLaunched))
+	const fresh = async (id: string): Promise<Kernel> => {
+		const k = await resolve()
+		await k.reload(id)
+		return k
+	}
 
 	const inspect = async (id: string): Promise<AppInspection> => {
-		const k = await resolve()
+		const k = await fresh(id)
 		const [installed, state, actions] = await Promise.all([
 			k.app(id),
 			k.state(id).catch(() => undefined),
@@ -94,8 +99,8 @@ export function createAppController(
 			return id ? await inspect(id).catch(() => undefined) : undefined
 		},
 		inspect,
-		state: async (id) => (await resolve()).state(id),
+		state: async (id) => (await fresh(id)).state(id),
 		run: async (id, action, params) =>
-			(await resolve()).dispatch(id, { type: action, params, actor: 'agent' })
+			(await fresh(id)).dispatch(id, { type: action, params, actor: 'agent' })
 	}
 }

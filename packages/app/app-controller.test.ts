@@ -21,6 +21,7 @@ function fakeKernel() {
 		app: async (id: string) => ({ manifest: manifests.find((m) => m.id === id) }),
 		state: async () => ({ count: 0 }),
 		actions: async () => ({ increment: { kind: 'handler' } }),
+		reload: async () => {},
 		dispatch: async (appId: string, message: unknown) => {
 			dispatched.push({ appId, message })
 			return { count: 1 }
