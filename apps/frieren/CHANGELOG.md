@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.6.0...spud-v0.7.0) (2026-07-24)
+
+
+### Features
+
+* **kodama:** one-off migrateAppIdsV1 migrator + Frieren RPC ([e0fe630](https://github.com/xiaoxinghu/justfiles/commit/e0fe630e008355f80bb3c10c34280e718404735f))
+* **kodama:** rebrand user-facing copy (AI provider name, page title) ([1df282c](https://github.com/xiaoxinghu/justfiles/commit/1df282cd668b31a0662c39e2ed32fe8562f35d79))
+* **kodama:** run the id migration automatically on login, before seed ([0f9d79e](https://github.com/xiaoxinghu/justfiles/commit/0f9d79e2652a5d3c2f592bbe61511e629f08b2b9))
+
+
+### Bug Fixes
+
+* **frieren:** revoke sandbox blob URLs to stop reducer-frame leak ([392c922](https://github.com/xiaoxinghu/justfiles/commit/392c922dfdf3e5b81aa578522c6f9c8aea280b9d))
+* **kodama:** auto-expire the id-migration backup after 30 days ([c12465d](https://github.com/xiaoxinghu/justfiles/commit/c12465d19544ddbf84a326af2547d736b89c57ea))
+* **kodama:** keep the DO daily alarm alive until the migration backup expires ([4950d7f](https://github.com/xiaoxinghu/justfiles/commit/4950d7f474745996b36b7299df26d8a7a9825ae3))
+* **kodama:** only back up os-state when it actually holds a legacy id ([9405b4b](https://github.com/xiaoxinghu/justfiles/commit/9405b4bb5412cdaf3c76a15cf9f1340a92a3a8b8))
+* **kodama:** sweep migration backups on the DO daily alarm, not only client boot ([2a931de](https://github.com/xiaoxinghu/justfiles/commit/2a931de868d526a5c754b359292a2579c763e118))
+
 ## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.5.0...spud-v0.6.0) (2026-07-24)
 
 
