@@ -26,4 +26,19 @@ describe('daily maintenance', () => {
 		if (change?.kind !== 'put') throw new Error('compacted delta is not a put')
 		expect(change.contentHash).toBe(currentHash)
 	})
+
+	it('expires the id-migration backup once past its retention window', async () => {
+		const storage = memStorage()
+		const vol = volume(storage)
+		const enc = new TextEncoder()
+		const backup = '/system/migration-backups/app-ids-v1'
+		await vol.mkdir(`${backup}/applications`, { recursive: true })
+		await vol.writeFile(`${backup}/applications/x`, enc.encode('bytes'))
+		// Stamped long ago -> well past the 30-day window.
+		await vol.writeFile(`${backup}/.created-at`, enc.encode('0'))
+
+		await runDailyMaintenance(storage, vol)
+
+		expect(await vol.exists(backup)).toBe(false)
+	})
 })

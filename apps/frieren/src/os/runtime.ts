@@ -54,12 +54,14 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 		// overwrites (it aborts on any old/new clash).
 		if (synced) await fs.flush()
 		await migrateAppIdsOnce(fs).catch(() => {})
-		// Drop the migration's in-volume backup once it's past its retention window, so
-		// it never lingers in the synced volume. Fire-and-forget — cleanup must not gate
-		// seeding, and a no-op when there's nothing (or nothing old enough) to remove.
-		void sweepMigrationBackups(fs, { now: Date.now(), retentionMs: BACKUP_RETENTION_MS }).catch(
-			() => {}
-		)
+		// Expire the migration's in-volume backup past its retention window. Synced
+		// profiles are swept server-side on the DO's daily alarm (runDailyMaintenance),
+		// reliable regardless of an open tab; a local-only profile has no server, so it
+		// sweeps here on boot. Fire-and-forget — cleanup must not gate seeding.
+		if (!synced)
+			void sweepMigrationBackups(fs, { now: Date.now(), retentionMs: BACKUP_RETENTION_MS }).catch(
+				() => {}
+			)
 		await seedBuiltins(await localKernel(), fs, {
 			waitForBootstrap: synced ? () => fs.flush() : undefined
 		})
