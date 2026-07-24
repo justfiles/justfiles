@@ -29,14 +29,14 @@ Do not migrate or redirect until all of these pass:
 1. Every production Clerk user has a migration dry-run result.
 2. Every affected Durable Object has a recorded SQLite
    [PITR bookmark](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)
-   and a verified in-volume backup of the paths being changed.
+   as its recovery point (the automatic 30-day window is the net; no in-volume backup).
 3. Writes from old web and macOS clients are stopped.
 4. Users with browser-local profiles have exported them or explicitly accepted losing
    that local-only profile. Browser storage cannot be moved between origins.
 5. New app-store package versions and their exact jsDelivr bytes are available.
 6. Any migration conflict stops that user; nothing is overwritten.
 
-Do not run blob garbage collection or delete old npm versions/backups during the
+Do not run blob garbage collection or delete old npm versions during the
 cutover.
 
 ## Open preflight gaps
@@ -139,10 +139,11 @@ Relevant Cloudflare docs:
    sign-in. (No service-worker transition release is needed because there is no
    redirect to race.)
 6. Build, but do not retain, a one-off migration:
-   - explicit old-to-new ID map and a pure `Volume` migrator that backs up each
-     touched path under `/system/migration-backups/app-ids-v1/`, moves
-     `/applications`, `/state`, `/data`, rewrites the manifest id and every id in
-     `os-state.json`, and aborts the whole run on any old/new clash (never overwrites);
+   - explicit old-to-new ID map and a pure `Volume` migrator that moves
+     `/applications`, `/state`, `/data` (atomic renames), rewrites the manifest id and
+     every id in `os-state.json`, and aborts the whole run on any old/new clash (never
+     overwrites). No in-volume backup — the DO's automatic 30-day SQLite PITR is the
+     recovery net;
    - a `migrateAppIdsV1({ dryRun })` RPC on `Frieren`, kept for operator dry-runs and
      verification.
 
@@ -187,21 +188,19 @@ one can squat the retired IDs.
 6. Contact the few users: ask them to close all Spud browser tabs and the macOS app,
    export local-only profiles, and expect a new sign-in and notification prompt.
 
-### 3. Freeze and back up
+### 3. Freeze and checkpoint
 
 1. Put both old and new origins in maintenance mode and stop/pause the app-store
    indexer. Reject old-client API and WebSocket writes.
 2. Stop the macOS app and daemon on each migrated Mac.
 3. Run the production dry run again. Abort the whole cutover on an unexpected ID or
    conflict.
-4. For each Clerk user:
-   - record the Durable Object PITR bookmark;
-   - copy `/system/os-state.json` and every affected `/applications`, `/state`, and
-     `/data` path beneath `/system/migration-backups/app-ids-v1/`;
-   - verify the copied path list, sizes, and content hashes before mutation.
+4. For each Clerk user, record the Durable Object PITR bookmark before mutation (the
+   recovery point).
 
-PITR protects Durable Object SQLite metadata for 30 days. The path backup protects the
-application layout. R2 blobs are separate, so blob GC remains disabled until acceptance.
+PITR protects Durable Object SQLite for 30 days — the recovery net. R2 blobs are
+separate, so blob GC remains disabled until acceptance (a PITR restore then recovers
+the pre-migration state with its blobs intact).
 
 ### 4. Migrate IDs and local macOS data
 
@@ -288,15 +287,10 @@ everyone.
 Delete, in one reviewed release:
 
 - `apps/frieren/shared/migrate-app-ids.ts` and `migrate-app-ids.test.ts` (the pure
-  migrator, `migrateAppIdsOnce`, `runAppIdMigrationV1`, `sweepMigrationBackups`,
-  `migrationBackupPending`, and `APP_ID_MIGRATION_V1`);
-- the `migrateAppIdsOnce(fs)` call, the local-only `sweepMigrationBackups(fs, …)` call,
-  and the migration-only `fs.flush()` / imports in `apps/frieren/src/os/runtime.ts`
-  (leave `seedBuiltins` and its bootstrap wait);
-- the `sweepMigrationBackups(volume, …)` call + import in
-  `apps/frieren/worker/daily-maintenance.ts`;
-- the `migrateAppIdsV1` RPC, the `alarm()` re-arm block guarded by
-  `migrationBackupPending`, and both imports in `apps/frieren/worker/frieren.ts`;
+  migrator, `migrateAppIdsOnce`, `runAppIdMigrationV1`, and `APP_ID_MIGRATION_V1`);
+- the `migrateAppIdsOnce(fs)` call and the migration-only `fs.flush()` / import in
+  `apps/frieren/src/os/runtime.ts` (leave `seedBuiltins` and its bootstrap wait);
+- the `migrateAppIdsV1` RPC and its import in `apps/frieren/worker/frieren.ts`;
 - the `migrate-app-ids.ts` entry from the `EXEMPT_FILES` list in
   `apps/frieren/shared/no-legacy-app-ids.test.ts` (its target no longer exists).
 
@@ -311,10 +305,6 @@ Keep permanently:
 Then, separately:
 
 - keep the explicit migration results and PITR bookmarks in a private operations record;
-- the in-volume backups under `/system/migration-backups/app-ids-v1/` are swept
-  automatically once past a 30-day retention window (the client boot runs
-  `sweepMigrationBackups`; PR #256), so they never linger in a user's synced volume;
-  the DO SQLite PITR window remains the deeper net underneath;
 - update support, legal, email, analytics, social previews, and Clerk Account Portal
   branding. Account Portal branding is Dashboard-only according to the Clerk CLI docs.
 
@@ -324,8 +314,8 @@ Any failed user blocks the cutover.
 
 1. Keep maintenance mode enabled and the indexer paused.
 2. Restore the old catalog and old client build.
-3. Restore affected paths from `/system/migration-backups/app-ids-v1/`. Use the recorded
-   Durable Object PITR bookmark only if the in-volume restore is insufficient.
+3. Restore the affected Durable Object from its recorded PITR bookmark (blob GC stays
+   disabled during the window, so the blobs are intact).
 4. Restore the old macOS support directory and wrappers.
 5. If Clerk/domain setup failed, change the same instance back to `spud.computer`,
    deploy the resulting publishable key, and reattach the old Custom Domain.
