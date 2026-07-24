@@ -66,10 +66,22 @@ cutover.
 | `computer.spud.draw` | `app.justfiles.frieren.draw` |
 | `computer.spud.pixel` | `app.justfiles.frieren.pixel` |
 
-Use the logical app ID as `CFBundleIdentifier` for first-party projected macOS apps.
-For third-party wrappers, use
-`app.justfiles.frieren.wrapper.<stable-hash-of-logical-app-id>`; do not claim the
-publisher's native bundle ID.
+macOS projected wrappers currently share one reserved CFBundle namespace,
+`computer.spud.app.<logical-app-id>` — generated at runtime by
+`apps/spud-mac/daemon/materialize.ts` and at build time by
+`apps/spud-mac/native/build.sh` — chosen so a mini-app whose id looks like a real
+native bundle ID (e.g. `com.company.todo`) can't collide in LaunchServices. This
+migration retires that single namespace and splits it into two stable schemes:
+
+- First-party projected apps take the logical app ID as their `CFBundleIdentifier`
+  (e.g. `app.justfiles.frieren.code`).
+- Third-party wrappers take
+  `app.justfiles.frieren.wrapper.<stable-hash-of-logical-app-id>`; never claim the
+  publisher's native bundle ID.
+
+Both the host (`computer.spud.host`) and every `computer.spud.app.*` wrapper must be
+unregistered from LaunchServices during the macOS step. Changing the host bundle ID
+resets notification permission.
 
 If production data contains older `app.spud.*` or `app.frieren.*` IDs, add each exact
 alias to the reviewed migration map. Never migrate by prefix substitution.
@@ -78,7 +90,7 @@ alias to the reviewed migration map. Never migrate by prefix substitution.
 
 | Work | Preferred automation | Notes |
 | --- | --- | --- |
-| Code, scans, tests | `rg`, Node, `pnpm`, Vitest | Keep public brand/domain/ID constants centralized. |
+| Code, scans, tests | `rg`, Node, `pnpm`, Vitest | Each app owns its manifest ID at its package boundary; centralize only the cross-reference constants (allowlists, reserved prefixes) and the public brand/origins. |
 | Workers, domains, DNS, logs | Installed Cloudflare MCP/API tools; `wrangler`; Cloudflare observability tools | Cloudflare MCP can inspect and mutate Workers and domains. DNS changes require `Zone / DNS / Edit` for both zones. |
 | Cloudflare guidance | Installed Cloudflare docs MCP | Use current docs rather than remembered API shapes. |
 | Clerk configuration | [Clerk CLI](https://clerk.com/docs/cli) and [Backend API](https://clerk.com/docs/reference/backend-api) | `clerk auth login`, `clerk link`, `clerk deploy --mode agent`, `clerk users list`, `clerk impersonate`, and `clerk api` cover most work. |
@@ -102,13 +114,22 @@ Relevant Cloudflare docs:
 2. Change public names, copy, icons, PWA manifest, metadata, account-provider copy, npm
    indexer user-agent, and the macOS visible app/folder names to Kodama. Keep internal
    `frieren` names unchanged.
-3. Centralize:
+3. Change each app's declared manifest ID once at its own boundary (each
+   `packages/app-*/vite.config.ts`, plus the macOS mirrors in
+   `apps/spud-mac/native/build.sh`, `daemon/materialize.ts`, `daemon/builtins.ts`, and
+   the Swift launcher/grid). Do not hoist per-app IDs into a shared module — an app's
+   ID is its identity. Centralize only:
    - `PUBLIC_BRAND = "Kodama"`
    - production/staging origins
-   - the first-party ID map above
-4. Add a regression test or repository scan that rejects `computer.spud.*`,
-   `app.spud.*`, and public `spud.computer` references outside migration fixtures and
-   historical docs.
+   - the small cross-reference set that names *other* apps' IDs: `systemAllowlist` in
+     `apps/frieren/worker/frieren.app.ts`, `apps/frieren/shared/devkit.allowlist.ts`,
+     and the indexer's `RESERVED_PREFIXES`.
+4. Add an allowlist-based regression scan over production source (non-test, non-`.md`)
+   that rejects `computer.spud.*`, `app.spud.*`, and public `spud.computer` references.
+   Migrate incidental test fixtures and sample IDs to `app.justfiles.frieren.*` so the
+   scan stays blanket. Exempt only: the migration's old-to-new map fixture; the indexer
+   and its test that deliberately exercise retired-prefix reservation (anti-squatting);
+   and historical docs.
 5. Ship a transition release to `spud.computer` that unregisters `/sw.js`, deletes its
    caches, and tells local-profile users to export. Keep it live until every known user
    has loaded it. A stale service worker can otherwise serve the old app before an edge
@@ -129,6 +150,11 @@ Relevant Cloudflare docs:
 The current indexer intentionally rejects an npm package that changes its ID. Pause its
 hourly schedule during the cutover and make one reviewed catalog replacement keyed by
 npm package name. Do not publish old and new IDs as duplicate apps.
+
+Add `app.justfiles.frieren.` to the indexer's reserved-prefix list (`RESERVED_PREFIXES`
+in `apps/frieren/worker/appstore/indexer.ts`) so the new namespace is honoured only from
+our npm scope, and keep `computer.spud.`, `app.spud.`, and `app.frieren.` reserved so no
+one can squat the retired IDs.
 
 ### 2. Preflight production
 
