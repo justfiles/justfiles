@@ -27,6 +27,13 @@ export const APP_ID_MIGRATION_V1: ReadonlyArray<readonly [string, string]> = [
 ]
 
 const BACKUP_ROOT = '/system/migration-backups/app-ids-v1'
+// Timestamp (ms) written when the run first creates a backup; `sweepMigrationBackups`
+// deletes the backup once it is older than the retention window.
+const BACKUP_MARKER = `${BACKUP_ROOT}/.created-at`
+// Keep the in-volume backup this long as a per-app rollback net, then drop it so it
+// stops counting against the user's storage. Matches the DO's 30-day SQLite PITR
+// window, which remains the deeper recovery path underneath.
+export const BACKUP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 const OS_STATE_PATH = '/system/os-state.json'
 
 export interface AppIdMigrationEntry {
@@ -151,6 +158,12 @@ export async function runAppIdMigrationV1(
 		osStateRewrites = rewritten.count
 	}
 
+	// Stamp the backup with a creation time so it can be swept after the retention
+	// window (see sweepMigrationBackups). Written once, only when a backup exists.
+	if ((await vol.exists(BACKUP_ROOT)) && !(await vol.exists(BACKUP_MARKER))) {
+		await writeText(vol, BACKUP_MARKER, String(Date.now()))
+	}
+
 	return { dryRun: false, conflict: false, osStateRewrites, entries }
 }
 
@@ -167,4 +180,29 @@ export function migrateAppIdsOnce(vol: Volume): Promise<AppIdMigrationResult> {
 		clientRuns.set(vol, run)
 	}
 	return run
+}
+
+// Delete the in-volume migration backup once it is past the retention window, so it
+// never lingers in a user's synced volume. Idempotent and safe to call every boot:
+// no backup -> no-op; a backup missing its marker (a rare partial write) gets the
+// clock started now rather than living forever. Returns true only when it deleted.
+export async function sweepMigrationBackups(
+	vol: Volume,
+	opts: { now: number; retentionMs: number }
+): Promise<boolean> {
+	if (!(await vol.exists(BACKUP_ROOT))) return false
+	if (!(await vol.exists(BACKUP_MARKER))) {
+		await writeText(vol, BACKUP_MARKER, String(opts.now))
+		return false
+	}
+	const created = Number(await readText(vol, BACKUP_MARKER))
+	if (!Number.isFinite(created) || opts.now - created < opts.retentionMs) return false
+	await vol.rm(BACKUP_ROOT, { recursive: true, force: true })
+	// Drop the now-empty `/system/migration-backups` shell too, so no trace remains.
+	try {
+		if ((await vol.readdir('/system/migration-backups')).length === 0) {
+			await vol.rm('/system/migration-backups', { recursive: true, force: true })
+		}
+	} catch {}
+	return true
 }

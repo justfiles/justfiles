@@ -1,7 +1,11 @@
 import { ensureAgentDefaults } from '@justfiles/agent/defaults'
 import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
-import { migrateAppIdsOnce } from '../../shared/migrate-app-ids'
+import {
+	BACKUP_RETENTION_MS,
+	migrateAppIdsOnce,
+	sweepMigrationBackups
+} from '../../shared/migrate-app-ids'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
@@ -50,6 +54,12 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 		// overwrites (it aborts on any old/new clash).
 		if (synced) await fs.flush()
 		await migrateAppIdsOnce(fs).catch(() => {})
+		// Drop the migration's in-volume backup once it's past its retention window, so
+		// it never lingers in the synced volume. Fire-and-forget — cleanup must not gate
+		// seeding, and a no-op when there's nothing (or nothing old enough) to remove.
+		void sweepMigrationBackups(fs, { now: Date.now(), retentionMs: BACKUP_RETENTION_MS }).catch(
+			() => {}
+		)
 		await seedBuiltins(await localKernel(), fs, {
 			waitForBootstrap: synced ? () => fs.flush() : undefined
 		})

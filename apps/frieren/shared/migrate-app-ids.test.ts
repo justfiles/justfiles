@@ -1,6 +1,15 @@
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { beforeEach, describe, expect, test } from 'vitest'
-import { APP_ID_MIGRATION_V1, migrateAppIdsOnce, runAppIdMigrationV1 } from './migrate-app-ids.ts'
+import {
+	APP_ID_MIGRATION_V1,
+	BACKUP_RETENTION_MS,
+	migrateAppIdsOnce,
+	runAppIdMigrationV1,
+	sweepMigrationBackups
+} from './migrate-app-ids.ts'
+
+const MARKER = '/system/migration-backups/app-ids-v1/.created-at'
+const BACKUP = '/system/migration-backups/app-ids-v1'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -165,5 +174,57 @@ describe('runAppIdMigrationV1', () => {
 		expect(migrateAppIdsOnce(vol)).toBe(a)
 		expect(await vol.exists('/applications/app.justfiles.frieren.code')).toBe(true)
 		expect(await vol.exists('/applications/computer.spud.code')).toBe(false)
+	})
+
+	test('a real run stamps the backup with a creation time', async () => {
+		await seedApp(vol, 'computer.spud.code')
+		const before = Date.now()
+		await runAppIdMigrationV1(vol, { dryRun: false })
+		expect(await vol.exists(MARKER)).toBe(true)
+		const created = Number(await read(vol, MARKER))
+		expect(created).toBeGreaterThanOrEqual(before)
+	})
+
+	test('sweep keeps a fresh backup and deletes it past the retention window', async () => {
+		await seedApp(vol, 'computer.spud.code')
+		await runAppIdMigrationV1(vol, { dryRun: false })
+		const created = Number(await read(vol, MARKER))
+
+		// Still within the window -> kept.
+		expect(
+			await sweepMigrationBackups(vol, { now: created + 1, retentionMs: BACKUP_RETENTION_MS })
+		).toBe(false)
+		expect(await vol.exists(BACKUP)).toBe(true)
+
+		// Past the window -> deleted.
+		const expired = created + BACKUP_RETENTION_MS + 1
+		expect(
+			await sweepMigrationBackups(vol, { now: expired, retentionMs: BACKUP_RETENTION_MS })
+		).toBe(true)
+		expect(await vol.exists(BACKUP)).toBe(false)
+	})
+
+	test('sweep is a no-op when there is no backup', async () => {
+		expect(
+			await sweepMigrationBackups(vol, { now: Date.now(), retentionMs: BACKUP_RETENTION_MS })
+		).toBe(false)
+	})
+
+	test('sweep starts the clock for a backup that is missing its marker', async () => {
+		await write(vol, `${BACKUP}/applications/computer.spud.code/x`, 'orphan')
+		expect(await vol.exists(MARKER)).toBe(false)
+		// First pass: no marker -> writes one, keeps the backup.
+		expect(await sweepMigrationBackups(vol, { now: 1000, retentionMs: BACKUP_RETENTION_MS })).toBe(
+			false
+		)
+		expect(Number(await read(vol, MARKER))).toBe(1000)
+		// Later, past the window from that stamped time -> deleted.
+		expect(
+			await sweepMigrationBackups(vol, {
+				now: 1000 + BACKUP_RETENTION_MS + 1,
+				retentionMs: BACKUP_RETENTION_MS
+			})
+		).toBe(true)
+		expect(await vol.exists(BACKUP)).toBe(false)
 	})
 })
