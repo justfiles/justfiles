@@ -227,4 +227,36 @@ describe('runAppIdMigrationV1', () => {
 		).toBe(true)
 		expect(await vol.exists(BACKUP)).toBe(false)
 	})
+
+	test('creates no backup when there is nothing to migrate (os-state has only new ids)', async () => {
+		await write(vol, '/system/os-state.json', osState('app.justfiles.frieren.code'))
+		const result = await runAppIdMigrationV1(vol, { dryRun: false })
+		expect(result.osStateRewrites).toBe(0)
+		expect(await vol.exists(BACKUP)).toBe(false)
+		expect(await vol.exists(MARKER)).toBe(false)
+	})
+
+	test('does not resurrect the backup after the sweep on an already-migrated volume', async () => {
+		// First boot: migrate + create a stamped backup.
+		await seedApp(vol, 'computer.spud.code')
+		await write(vol, '/system/os-state.json', osState('computer.spud.code'))
+		await runAppIdMigrationV1(vol, { dryRun: false })
+		expect(await vol.exists(BACKUP)).toBe(true)
+
+		// 30 days later: the sweep removes it.
+		const created = Number(await read(vol, MARKER))
+		await sweepMigrationBackups(vol, {
+			now: created + BACKUP_RETENTION_MS + 1,
+			retentionMs: BACKUP_RETENTION_MS
+		})
+		expect(await vol.exists(BACKUP)).toBe(false)
+
+		// A later boot re-runs the (memo-less) migration on the now-clean volume:
+		// os-state is still present but holds only new ids -> nothing to back up, so the
+		// backup must stay gone (no resurrection, no re-stamp).
+		const again = await runAppIdMigrationV1(vol, { dryRun: false })
+		expect(again.osStateRewrites).toBe(0)
+		expect(await vol.exists(BACKUP)).toBe(false)
+		expect(await vol.exists(MARKER)).toBe(false)
+	})
 })

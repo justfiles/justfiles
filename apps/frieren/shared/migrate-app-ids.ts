@@ -149,13 +149,18 @@ export async function runAppIdMigrationV1(
 	}
 
 	// Pass 3 — rewrite every id reference in os-state.json (windows, focus,
-	// ordering, placements, maps) in one pass.
+	// ordering, placements, maps) in one pass. Only touch (and back up) the file
+	// when it actually holds a legacy id: otherwise a post-migration boot would
+	// recreate the backup for a no-op rewrite and re-stamp its retention clock,
+	// resurrecting the backup forever after the sweep deletes it.
 	let osStateRewrites = 0
 	if (await vol.exists(OS_STATE_PATH)) {
-		await backup(vol, OS_STATE_PATH)
 		const rewritten = rewriteIdTokens(await readText(vol, OS_STATE_PATH), APP_ID_MIGRATION_V1)
-		if (rewritten.count > 0) await writeText(vol, OS_STATE_PATH, rewritten.text)
-		osStateRewrites = rewritten.count
+		if (rewritten.count > 0) {
+			await backup(vol, OS_STATE_PATH)
+			await writeText(vol, OS_STATE_PATH, rewritten.text)
+			osStateRewrites = rewritten.count
+		}
 	}
 
 	// Stamp the backup with a creation time so it can be swept after the retention
