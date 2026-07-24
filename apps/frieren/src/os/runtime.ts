@@ -1,11 +1,7 @@
 import { ensureAgentDefaults } from '@justfiles/agent/defaults'
 import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
-import {
-	BACKUP_RETENTION_MS,
-	migrateAppIdsOnce,
-	sweepMigrationBackups
-} from '../../shared/migrate-app-ids'
+import { migrateAppIdsOnce } from '../../shared/migrate-app-ids'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
@@ -54,14 +50,6 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 		// overwrites (it aborts on any old/new clash).
 		if (synced) await fs.flush()
 		await migrateAppIdsOnce(fs).catch(() => {})
-		// Expire the migration's in-volume backup past its retention window. Synced
-		// profiles are swept server-side on the DO's daily alarm (runDailyMaintenance),
-		// reliable regardless of an open tab; a local-only profile has no server, so it
-		// sweeps here on boot. Fire-and-forget — cleanup must not gate seeding.
-		if (!synced)
-			void sweepMigrationBackups(fs, { now: Date.now(), retentionMs: BACKUP_RETENTION_MS }).catch(
-				() => {}
-			)
 		await seedBuiltins(await localKernel(), fs, {
 			waitForBootstrap: synced ? () => fs.flush() : undefined
 		})

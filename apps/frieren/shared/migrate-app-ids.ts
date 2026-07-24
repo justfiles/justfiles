@@ -1,7 +1,8 @@
 // One-off, removable id migration (Kodama rebrand). Moves a user's first-party
 // app layout from the retired `computer.spud.*` ids to `app.justfiles.frieren.*`
 // inside their synced Volume. Pure over a `Volume` so the whole decision surface
-// is unit-testable; the DO wraps it as the `migrateAppIdsV1` RPC (frieren.ts).
+// is unit-testable; the DO wraps it as the `migrateAppIdsV1` RPC (frieren.ts) and
+// the client boot runs it before seeding built-ins (runtime.ts).
 //
 // Safety contract:
 // - Explicit old->new map. NEVER prefix-substitute. If production data carries
@@ -9,9 +10,11 @@
 // - A dry run mutates nothing and reports sources, conflicts, counts.
 // - A conflict (old AND new both present for any path) aborts the WHOLE run
 //   before any mutation — nothing is overwritten; a human resolves it.
-// - Every touched path is copied under `/system/migration-backups/app-ids-v1/`
-//   before it is moved.
-// This file, its RPC, and the backups are deleted once the migration is done.
+// - Moves are atomic `rename`s (reversible), and the only content edits are the
+//   quoted-id rewrites of `manifest.json` / `os-state.json`. Recovery is the
+//   Durable Object's automatic 30-day SQLite PITR (the RPC records the bookmark);
+//   no in-volume backup is kept.
+// This file and its call sites are deleted once the migration is done.
 import type { Volume } from '@justfiles/fs'
 
 export const APP_ID_MIGRATION_V1: ReadonlyArray<readonly [string, string]> = [
@@ -26,14 +29,6 @@ export const APP_ID_MIGRATION_V1: ReadonlyArray<readonly [string, string]> = [
 	['computer.spud.pixel', 'app.justfiles.frieren.pixel']
 ]
 
-const BACKUP_ROOT = '/system/migration-backups/app-ids-v1'
-// Timestamp (ms) written when the run first creates a backup; `sweepMigrationBackups`
-// deletes the backup once it is older than the retention window.
-const BACKUP_MARKER = `${BACKUP_ROOT}/.created-at`
-// Keep the in-volume backup this long as a per-app rollback net, then drop it so it
-// stops counting against the user's storage. Matches the DO's 30-day SQLite PITR
-// window, which remains the deeper recovery path underneath.
-export const BACKUP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 const OS_STATE_PATH = '/system/os-state.json'
 
 export interface AppIdMigrationEntry {
@@ -59,11 +54,6 @@ export interface AppIdMigrationResult {
 // The three per-app storage roots the layout keys by app id.
 function appPaths(id: string): [applications: string, state: string, data: string] {
 	return [`/applications/${id}`, `/state/${id}.json`, `/data/${id}`]
-}
-
-function dirname(path: string): string {
-	const i = path.lastIndexOf('/')
-	return i <= 0 ? '/' : path.slice(0, i)
 }
 
 // Replace whole quoted id tokens (`"<oldId>"`). The surrounding quotes bound the
@@ -94,12 +84,6 @@ async function writeText(vol: Volume, path: string, text: string): Promise<void>
 	await vol.writeFile(path, new TextEncoder().encode(text))
 }
 
-async function backup(vol: Volume, src: string): Promise<void> {
-	const dest = `${BACKUP_ROOT}${src}`
-	await vol.mkdir(dirname(dest), { recursive: true })
-	await vol.cp(src, dest, { recursive: true })
-}
-
 export async function runAppIdMigrationV1(
 	vol: Volume,
 	opts: { dryRun: boolean }
@@ -128,12 +112,12 @@ export async function runAppIdMigrationV1(
 		return { dryRun: opts.dryRun, conflict, osStateRewrites: 0, entries }
 	}
 
-	// Pass 2 — back up, then move, then rewrite the moved manifest's id.
+	// Pass 2 — move each app's paths (atomic rename), then rewrite the moved
+	// manifest's id.
 	for (const entry of entries) {
 		if (entry.sources.length === 0) continue
 		const olds = appPaths(entry.oldId)
 		const news = appPaths(entry.newId)
-		for (const src of entry.sources) await backup(vol, src)
 		for (let i = 0; i < olds.length; i++) {
 			if (!(await vol.exists(olds[i]))) continue
 			await vol.rename(olds[i], news[i])
@@ -149,24 +133,15 @@ export async function runAppIdMigrationV1(
 	}
 
 	// Pass 3 — rewrite every id reference in os-state.json (windows, focus,
-	// ordering, placements, maps) in one pass. Only touch (and back up) the file
-	// when it actually holds a legacy id: otherwise a post-migration boot would
-	// recreate the backup for a no-op rewrite and re-stamp its retention clock,
-	// resurrecting the backup forever after the sweep deletes it.
+	// ordering, placements, maps) in one pass. Only write when it actually holds a
+	// legacy id, so an already-migrated volume is a true no-op.
 	let osStateRewrites = 0
 	if (await vol.exists(OS_STATE_PATH)) {
 		const rewritten = rewriteIdTokens(await readText(vol, OS_STATE_PATH), APP_ID_MIGRATION_V1)
 		if (rewritten.count > 0) {
-			await backup(vol, OS_STATE_PATH)
 			await writeText(vol, OS_STATE_PATH, rewritten.text)
 			osStateRewrites = rewritten.count
 		}
-	}
-
-	// Stamp the backup with a creation time so it can be swept after the retention
-	// window (see sweepMigrationBackups). Written once, only when a backup exists.
-	if ((await vol.exists(BACKUP_ROOT)) && !(await vol.exists(BACKUP_MARKER))) {
-		await writeText(vol, BACKUP_MARKER, String(Date.now()))
 	}
 
 	return { dryRun: false, conflict: false, osStateRewrites, entries }
@@ -185,37 +160,4 @@ export function migrateAppIdsOnce(vol: Volume): Promise<AppIdMigrationResult> {
 		clientRuns.set(vol, run)
 	}
 	return run
-}
-
-// True while the one-off migration backup is still present (awaiting its retention
-// sweep). The DO uses this to keep its daily alarm alive until the backup expires,
-// so a dormant profile is still swept on schedule (the alarm otherwise only re-arms
-// on WebSocket activity).
-export async function migrationBackupPending(vol: Volume): Promise<boolean> {
-	return vol.exists(BACKUP_ROOT)
-}
-
-// Delete the in-volume migration backup once it is past the retention window, so it
-// never lingers in a user's synced volume. Idempotent and safe to call every boot:
-// no backup -> no-op; a backup missing its marker (a rare partial write) gets the
-// clock started now rather than living forever. Returns true only when it deleted.
-export async function sweepMigrationBackups(
-	vol: Volume,
-	opts: { now: number; retentionMs: number }
-): Promise<boolean> {
-	if (!(await vol.exists(BACKUP_ROOT))) return false
-	if (!(await vol.exists(BACKUP_MARKER))) {
-		await writeText(vol, BACKUP_MARKER, String(opts.now))
-		return false
-	}
-	const created = Number(await readText(vol, BACKUP_MARKER))
-	if (!Number.isFinite(created) || opts.now - created < opts.retentionMs) return false
-	await vol.rm(BACKUP_ROOT, { recursive: true, force: true })
-	// Drop the now-empty `/system/migration-backups` shell too, so no trace remains.
-	try {
-		if ((await vol.readdir('/system/migration-backups')).length === 0) {
-			await vol.rm('/system/migration-backups', { recursive: true, force: true })
-		}
-	} catch {}
-	return true
 }
