@@ -1,6 +1,7 @@
 import { ensureAgentDefaults } from '@justfiles/agent/defaults'
 import { type Kernel, sweepTrash } from '@justfiles/app'
 import type { Store } from '@justfiles/state'
+import { migrateAppIdsOnce } from '../../shared/migrate-app-ids'
 import { resetCapabilitySocket } from '../apps/capabilities.client'
 import * as appHost from '../apps/host'
 import { hydrateInstalledAppBundles } from '../apps/hydrate'
@@ -41,6 +42,14 @@ export function startOsRuntime(env: OsRuntimeEnv): () => void {
 		// for the first bootstrap before deciding, so an account that already has apps
 		// isn't re-seeded; a local-only profile seeds immediately.
 		const synced = activeProfileHasRemoteUser()
+		// One-off Kodama id migration (removed post-rebrand). Runs AFTER the initial
+		// sync settles — so the user's legacy Spud-era apps are present — and BEFORE
+		// built-ins seed the new ids, so the move is a clean rename and no duplicate
+		// tiles ever surface. Idempotent: a no-op once no legacy ids remain. Best-effort
+		// — a failure must not brick boot (next boot retries), and the migrator never
+		// overwrites (it aborts on any old/new clash).
+		if (synced) await fs.flush()
+		await migrateAppIdsOnce(fs).catch(() => {})
 		await seedBuiltins(await localKernel(), fs, {
 			waitForBootstrap: synced ? () => fs.flush() : undefined
 		})

@@ -61,7 +61,7 @@ const SHEET_TAIL = 8
 
 // The first-party Settings app — a `settings` route (e.g. accounts → reconnect)
 // opens it, reusing the ordinary `app.open` dispatch.
-const SETTINGS_APP_ID = 'computer.spud.settings'
+const SETTINGS_APP_ID = 'app.justfiles.frieren.settings'
 
 // The one-time "bring your local work into this account" offer rides a `system`
 // question on this thread; engaging it opens the migration sheet (handled locally

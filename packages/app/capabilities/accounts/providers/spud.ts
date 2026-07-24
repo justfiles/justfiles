@@ -15,7 +15,7 @@ export function spudProvider(deps: {
 	const generateImage = deps.generateImage
 	return {
 		id: 'spud',
-		name: 'Spud AI',
+		name: 'Kodama AI',
 		builtin: true,
 		auth: { ui: { kind: 'none' }, acquire: async () => ({ accountId: 'spud', creds: {} }) },
 		capabilities: {

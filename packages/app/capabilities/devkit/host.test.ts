@@ -60,16 +60,16 @@ function harness() {
 
 test('compile resolves the toolchain for the calling app', async () => {
 	const { fs, seen, call } = harness()
-	await seed(fs, 'computer.spud.code', 'draft')
-	await call('computer.spud.code', 'compile', [{ slug: 'draft' }])
-	expect(seen).toEqual(['computer.spud.code'])
+	await seed(fs, 'app.justfiles.frieren.code', 'draft')
+	await call('app.justfiles.frieren.code', 'compile', [{ slug: 'draft' }])
+	expect(seen).toEqual(['app.justfiles.frieren.code'])
 })
 
 test('each caller resolves its own toolchain — no hardcoded app id', async () => {
 	const { fs, seen, call } = harness()
-	await seed(fs, 'computer.spud.code', 'a')
+	await seed(fs, 'app.justfiles.frieren.code', 'a')
 	await seed(fs, 'app.other', 'b')
-	await call('computer.spud.code', 'compile', [{ slug: 'a' }])
+	await call('app.justfiles.frieren.code', 'compile', [{ slug: 'a' }])
 	await call('app.other', 'typecheck', [{ slug: 'b' }])
-	expect(seen).toEqual(['computer.spud.code', 'app.other'])
+	expect(seen).toEqual(['app.justfiles.frieren.code', 'app.other'])
 })

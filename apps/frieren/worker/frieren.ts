@@ -48,6 +48,7 @@ import {
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
+import { type AppIdMigrationResult, runAppIdMigrationV1 } from '../shared/migrate-app-ids.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
@@ -61,7 +62,7 @@ import { aiLimitsMicros, evaluate, readTier } from './quota.ts'
 import { type AdmitHandle, admit, ensureUsageSchema, readUsage, record } from './usage.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
-const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
+const ACCOUNTS_FIRST_PARTY = ['app.justfiles.frieren.settings']
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent
@@ -223,6 +224,28 @@ export class Frieren extends DurableObject<Env> {
 	private requireApps(): FrierenApps {
 		if (!this.apps) throw new Error('apps not initialised')
 		return this.apps
+	}
+
+	// One-off Kodama id migration RPC (temporary; removed once the rebrand ships).
+	// Defaults to a dry run — pass `{ dryRun: false }` to mutate. Records the SQLite
+	// PITR bookmark BEFORE any write, and on a real, conflict-free run that moved
+	// anything rebuilds the volume + agent session so the new layout is served at once.
+	async migrateAppIdsV1(opts?: {
+		dryRun?: boolean
+	}): Promise<AppIdMigrationResult & { bookmark?: string }> {
+		const dryRun = opts?.dryRun !== false
+		let bookmark: string | undefined
+		try {
+			bookmark = await this.ctx.storage.getCurrentBookmark()
+		} catch {
+			bookmark = undefined
+		}
+		const result = await runAppIdMigrationV1(this.vol, { dryRun })
+		if (!dryRun && !result.conflict && result.entries.some((e) => e.moved.length > 0)) {
+			this.vol = volume(this.fs)
+			await this.reset()
+		}
+		return { ...result, bookmark }
 	}
 
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)

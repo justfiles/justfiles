@@ -25,7 +25,7 @@ const builtin = {
 	schema: CATALOG_SCHEMA,
 	apps: [
 		{
-			id: 'computer.spud.files',
+			id: 'app.justfiles.frieren.files',
 			name: 'Files',
 			version: '0.1.0',
 			files: [{ path: 'app.js', hash: 'sha256-b', size: 1 }]
@@ -71,8 +71,8 @@ describe('communityAppStore', () => {
 describe('bootAppStore', () => {
 	test('merges built-ins with the community catalog; built-ins win latest', async () => {
 		const store = await bootAppStore(fetcher)
-		expect((await store?.builtins())?.map((a) => a.id)).toEqual(['computer.spud.files'])
-		expect((await store?.latest('computer.spud.files'))?.version).toBe('0.1.0')
+		expect((await store?.builtins())?.map((a) => a.id)).toEqual(['app.justfiles.frieren.files'])
+		expect((await store?.latest('app.justfiles.frieren.files'))?.version).toBe('0.1.0')
 		expect((await store?.latest('com.example.notes'))?.version).toBe('1.2.0')
 	})
 })

@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'computer.spud.settings',
+						id: 'app.justfiles.frieren.settings',
 						name: 'Settings',
 						description: 'Connect accounts and choose what they power',
 						icon: 'icon.png',

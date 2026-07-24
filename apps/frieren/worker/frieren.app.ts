@@ -68,7 +68,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// the Volume store, guarded with audit + rate-limit).
 	const ai = aiCapability(deps.text)
 	const capabilities: Capabilities = capabilityRegistry({
-		volume: volumeCapability(deps.fs, { systemAllowlist: ['computer.spud.files'] }),
+		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
 		ai,
 		image: deps.image,
 		email: deps.email,

@@ -5,7 +5,7 @@ import { devkitSysroot } from './devkit-sysroot.ts'
 export default defineConfig({
 	plugins: [
 		kernelHost({
-			id: 'computer.spud.code',
+			id: 'app.justfiles.frieren.code',
 			name: 'Code',
 			icon: 'icon.png',
 			description: 'Build Frieren apps inside Frieren.',

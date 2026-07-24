@@ -39,7 +39,7 @@ export default defineConfig(({ mode }) => ({
 			: [
 					bundleReact(),
 					kernelHost({
-						id: 'computer.spud.draw',
+						id: 'app.justfiles.frieren.draw',
 						name: 'Draw',
 						description: 'A freeform sketchpad backed by Excalidraw',
 						icon: 'icon.png',
