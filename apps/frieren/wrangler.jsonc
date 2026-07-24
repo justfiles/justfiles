@@ -55,6 +55,10 @@
 		{
 			"pattern": "spud.computer",
 			"custom_domain": true
+		},
+		{
+			"pattern": "mykodama.app",
+			"custom_domain": true
 		}
 	],
 	"env": {
