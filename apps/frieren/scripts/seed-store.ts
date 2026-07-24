@@ -11,7 +11,7 @@
 // still starts and the store falls back to built-ins.
 import { getPlatformProxy } from 'wrangler'
 
-const STAGING_CATALOG = 'https://staging.spud.computer/store/catalog.json'
+const STAGING_CATALOG = 'https://staging.mykodama.app/store/catalog.json'
 const CATALOG_KEY = 'catalog.json'
 
 type AppStoreEnv = { APPSTORE: { put(key: string, value: ArrayBuffer): Promise<unknown> } }

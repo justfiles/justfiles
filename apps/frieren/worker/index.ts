@@ -3,6 +3,7 @@ import { clerkMiddleware, getAuth } from '@clerk/hono'
 import { type Context, Hono } from 'hono'
 import { bearerFromProtocolHeader } from '../shared/caps-ws.ts'
 import { runIndexer, serveCommunityCatalog } from './appstore/feed.ts'
+import { legacyHostRedirect } from './legacy-redirect.ts'
 
 export { Frieren } from './frieren.ts'
 
@@ -67,7 +68,10 @@ app.all('/api/*', (c) => {
 // runs on the cron trigger (wrangler.jsonc), rebuilding the community catalog in
 // R2 from the `spud-app` npm keyword. `waitUntil` keeps it alive past the tick.
 export default {
-	fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx),
+	fetch: (request: Request, env: Env, ctx: ExecutionContext) =>
+		// A retired host (e.g. staging.spud.computer) 307s to its replacement before
+		// any routing/auth runs; everything else is served normally.
+		legacyHostRedirect(request) ?? app.fetch(request, env, ctx),
 	scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
 		ctx.waitUntil(runIndexer(env))
 	}
