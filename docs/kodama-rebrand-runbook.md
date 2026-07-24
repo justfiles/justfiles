@@ -288,11 +288,15 @@ everyone.
 Delete, in one reviewed release:
 
 - `apps/frieren/shared/migrate-app-ids.ts` and `migrate-app-ids.test.ts` (the pure
-  migrator, `migrateAppIdsOnce`, `runAppIdMigrationV1`, and `APP_ID_MIGRATION_V1`);
-- the `migrateAppIdsOnce(fs)` call, the `sweepMigrationBackups(fs, …)` call, and the
-  migration-only `fs.flush()` / imports in `apps/frieren/src/os/runtime.ts` (leave
-  `seedBuiltins` and its bootstrap wait);
-- the `migrateAppIdsV1` RPC and its import in `apps/frieren/worker/frieren.ts`;
+  migrator, `migrateAppIdsOnce`, `runAppIdMigrationV1`, `sweepMigrationBackups`,
+  `migrationBackupPending`, and `APP_ID_MIGRATION_V1`);
+- the `migrateAppIdsOnce(fs)` call, the local-only `sweepMigrationBackups(fs, …)` call,
+  and the migration-only `fs.flush()` / imports in `apps/frieren/src/os/runtime.ts`
+  (leave `seedBuiltins` and its bootstrap wait);
+- the `sweepMigrationBackups(volume, …)` call + import in
+  `apps/frieren/worker/daily-maintenance.ts`;
+- the `migrateAppIdsV1` RPC, the `alarm()` re-arm block guarded by
+  `migrationBackupPending`, and both imports in `apps/frieren/worker/frieren.ts`;
 - the `migrate-app-ids.ts` entry from the `EXEMPT_FILES` list in
   `apps/frieren/shared/no-legacy-app-ids.test.ts` (its target no longer exists).
 
