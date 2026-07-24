@@ -268,6 +268,22 @@ describe('path-sync semantics', () => {
 		expect(text(await client.readFile('/c'))).toBe('c')
 	})
 
+	test('snapshot pagination accepts a legacy offset token across deployment', async () => {
+		const { server } = twoPeers()
+		await server.writeFile('/b', bytes('b'))
+		await server.writeFile('/a', bytes('a'))
+		await server.writeFile('/c', bytes('c'))
+		const { syncCursor } = await server.replica.pathScan(undefined, { limit: 1 })
+		const paths = new Set(['/b']) // first legacy page followed journal order
+		let page: string | undefined = `${syncCursor}:1`
+		while (page) {
+			const result = await server.replica.pathScan(page, { limit: 1 })
+			for (const change of result.changes) paths.add(change.path)
+			page = result.next
+		}
+		expect([...paths].sort()).toEqual(['/a', '/b', '/c'])
+	})
+
 	// Property test — random ops converge byte-identical with zero orphans
 	test('random ops on two peers converge byte-identical with zero orphaned inodes', async () => {
 		const { client, server, syncBoth } = twoPeers()

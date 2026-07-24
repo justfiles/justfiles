@@ -301,7 +301,10 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 			if (page) {
 				const i = page.indexOf(':')
 				head = page.slice(0, i)
-				afterPath = decodeURIComponent(page.slice(i + 1))
+				const position = page.slice(i + 1)
+				// Pre-keyset tokens used a numeric offset. Restart their frozen
+				// snapshot because its old journal order cannot map to the new path order.
+				if (!/^\d+$/.test(position)) afterPath = decodeURIComponent(position)
 			} else {
 				head = String(await journal.head())
 			}
