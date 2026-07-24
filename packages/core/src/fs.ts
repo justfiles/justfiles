@@ -1,7 +1,7 @@
 import { zValidator } from '@hono/zod-validator'
 import { volume } from '@justfiles/fs'
 import type { Storage } from '@justfiles/fs/storage'
-import { journaledChangeSource, localSyncReplica } from '@justfiles/fs/sync-replica'
+import { journaledChangeSource, localSyncReplica, PAGE } from '@justfiles/fs/sync-replica'
 import { PathChange } from '@justfiles/fs/sync-wire'
 import type { FileType } from '@justfiles/fs/types'
 import { Hono } from 'hono'
@@ -144,7 +144,9 @@ const SnapshotQuery = z.object({
 	page: z.string().optional(),
 	limit: z.coerce.number().int().positive().optional()
 })
-const HashParam = z.object({ hash: z.string().regex(/^[0-9a-f]{64}$/) })
+const ContentHash = z.string().regex(/^[0-9a-f]{64}$/)
+const HashParam = z.object({ hash: ContentHash })
+const MissingBlobsBody = z.object({ hashes: z.array(ContentHash).max(PAGE) })
 
 // The lineage-mutation request (POST /fs/reset). `adopt-mine` / `wipe` CAS on
 // `fromGeneration` (truncate + bump); `complete` is advisory — the initiator's
@@ -310,6 +312,15 @@ export function createFsApi(
 				if ((await sha256Hex(data)) !== hash) return c.json({ error: 'hash mismatch' }, 400)
 				await replica.putBlobByHash(hash, data)
 				return c.body(null, 204)
+			})
+
+			.post('/blobs/missing', zValidator('json', MissingBlobsBody), async (c) => {
+				const { hashes } = c.req.valid('json')
+				const missing: string[] = []
+				for (const hash of hashes) {
+					if (!(await replica.hasBlobByHash(hash))) missing.push(hash)
+				}
+				return c.json({ missing })
 			})
 
 			.post('/path/changes', zValidator('json', PathChangesBody), async (c) => {

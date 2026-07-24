@@ -647,5 +647,78 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 				'kept blob corrupted'
 			)
 		}
+	},
+	{
+		name: 'content GC compacts journal rows without changing the latest sequence',
+		run: async (makeBackend) => {
+			const storage = makeBackend()
+			const journal = storage.caps?.journal
+			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const vol = volume(storage)
+			await vol.writeFile('/state.json', bytes('old'))
+			await vol.writeFile('/other.json', bytes('other'))
+			await vol.writeFile('/state.json', bytes('current'))
+			const before = await journal.readFrom(0, 100)
+			const latest = before.findLast((row) => row.change.path === '/state.json')
+			if (!latest) throw new Error('conformance: state path was not journaled')
+
+			await storage.caps?.content?.gcUnreferenced()
+
+			const rows = await journal.readFrom(0, 100)
+			const stateRows = rows.filter((row) => row.change.path === '/state.json')
+			assertEq(stateRows.length, 1, 'compaction retained a superseded row')
+			assertEq(stateRows[0]?.seq, latest.seq, 'compaction changed the latest sequence')
+			if (stateRows[0]?.change.kind === 'put')
+				assertEq(
+					stateRows[0].change.contentHash,
+					sha256('current'),
+					'compaction retained stale content'
+				)
+		}
+	},
+	{
+		name: 'adoptAllAsLocal compacts history to the latest state per path',
+		run: async (makeBackend) => {
+			const storage = makeBackend()
+			const journal = storage.caps?.journal
+			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const vol = volume(storage)
+			await vol.writeFile('/deleted.txt', bytes('gone'))
+			await vol.rm('/deleted.txt')
+			await vol.writeFile('/live.txt', bytes('old'))
+			await vol.writeFile('/live.txt', bytes('current'))
+
+			await journal.adoptAllAsLocal()
+
+			const rows = await journal.readFrom(0, 100)
+			assertEq(rows.length, 2, 'adoption did not retain one latest row per path')
+			const deleted = rows.find((row) => row.change.path === '/deleted.txt')
+			const live = rows.find((row) => row.change.path === '/live.txt')
+			assertEq(deleted?.change.kind, 'delete', 'adoption lost the latest tombstone')
+			assertEq(live?.change.kind, 'put', 'adoption lost the live path')
+			assertEq(deleted?.localSource, undefined, 'adopted tombstone is not locally authored')
+			assertEq(live?.localSource, undefined, 'adopted path is not locally authored')
+			if (live?.change.kind === 'put')
+				assertEq(live.change.contentHash, sha256('current'), 'adoption retained stale content')
+		}
+	},
+	{
+		name: 'adoptAllAsLocal can omit tombstones for an empty target',
+		run: async (makeBackend) => {
+			const storage = makeBackend()
+			const journal = storage.caps?.journal
+			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const vol = volume(storage)
+			await vol.writeFile('/deleted.txt', bytes('gone'))
+			await vol.rm('/deleted.txt')
+			await vol.writeFile('/live.txt', bytes('current'))
+
+			await journal.adoptAllAsLocal({ dropDeletes: true })
+
+			const rows = await journal.readFrom(0, 100)
+			assertEq(rows.length, 1, 'empty-target adoption retained a tombstone')
+			assertEq(rows[0]?.change.path, '/live.txt', 'empty-target adoption lost the live path')
+			assertEq(rows[0]?.change.kind, 'put', 'empty-target adoption retained a delete')
+		}
 	}
 ]

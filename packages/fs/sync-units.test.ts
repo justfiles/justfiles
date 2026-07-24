@@ -106,8 +106,20 @@ function fakeJournalStore(rows: JournalRow[]): Storage {
 		async head() {
 			return rows.at(-1)?.seq ?? 0
 		},
-		async adoptAllAsLocal() {
-			for (const r of rows) r.localSource = undefined
+		async adoptAllAsLocal(opts) {
+			const latest = new Map(rows.map((row) => [row.change.path, row]))
+			const current = [...latest.values()]
+				.sort((a, b) => a.seq - b.seq)
+				.filter((row) => !opts?.dropDeletes || row.change.kind === 'put')
+			rows.splice(
+				0,
+				rows.length,
+				...current.map((row, i) => ({
+					...row,
+					seq: (rows.at(-1)?.seq ?? 0) + i + 1,
+					localSource: undefined
+				}))
+			)
 		}
 	}
 	return { ...base, caps: { ...base.caps, journal } }

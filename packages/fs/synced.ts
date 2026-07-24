@@ -207,26 +207,28 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	/**
 	 * Pull remote path-changes since pullCursor and apply them locally.
 	 * `excludeOrigin: id` skips changes this client authored (the server stamped
-	 * our client-id as origin on push). Returns the new pullCursor to persist.
+	 * our client-id as origin on push). Established bootstrap includes those
+	 * changes while building its authoritative remote path set.
 	 */
 	async function pull(
-		pullCursor: string
-	): Promise<{ to: string; done: boolean; generation?: number }> {
+		pullCursor: string,
+		includeOwn = false
+	): Promise<{ changes: PathChange[]; to: string; done: boolean; generation?: number }> {
 		const { changes, to, done, generation } = await remoteReplica.pathDeltas(pullCursor, {
-			excludeOrigin: id,
+			excludeOrigin: includeOwn ? undefined : id,
 			limit: PAGE
 		})
 		await localReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
-		return { to, done, generation }
+		return { changes, to, done, generation }
 	}
 
 	/**
 	 * Full download from the remote via pathScan. Pages through the snapshot,
-	 * applying each page locally, then resumes deltas from the frozen syncCursor.
-	 * The adoption guard only reconciles (deletes local paths absent from the
-	 * remote snapshot) once this profile has pushed at least once.
+	 * applying each page locally. An established replica drains post-snapshot
+	 * deltas before reconciling local paths absent from that combined remote view.
+	 * A first bootstrap keeps its adoption ordering (local changes win, then push).
 	 */
 	async function bootstrap(): Promise<number | undefined> {
 		const everPushed = (await syncState.get()).pushCursor !== undefined
@@ -258,8 +260,19 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			})
 			page = result.done ? undefined : result.next
 		} while (page)
-		if (everPushed) await reconcileLocal(remotePaths)
-		// Resume deltas at the frozen high-water — idempotent overlap covers gaps.
+		if (everPushed) {
+			let done = false
+			while (!done) {
+				const result = await pull(syncCursor, true)
+				for (const change of result.changes)
+					if (change.kind === 'put') remotePaths.add(change.path)
+					else remotePaths.delete(change.path)
+				syncCursor = result.to
+				done = result.done
+				generation = result.generation ?? generation
+			}
+			await reconcileLocal(remotePaths)
+		}
 		await syncState.patch({ pullCursor: syncCursor })
 		return generation
 	}
@@ -384,7 +397,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	async function applyTakeMinePrep(toGeneration: number): Promise<void> {
 		if (!knownPending) return
 		await recordGeneration(toGeneration)
-		await props.local.caps?.journal?.adoptAllAsLocal?.()
+		await props.local.caps?.journal?.adoptAllAsLocal?.({ dropDeletes: true })
 		knownPending = { ...knownPending, toGeneration }
 		await syncState.patch({ pendingReset: knownPending, pushCursor: '0', pullCursor: '0' })
 	}
@@ -778,23 +791,48 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 }
 
 /**
- * Upload each regular-file put's content before its tree change. Return puts
- * whose blob is missing on both replicas so the caller can quarantine them.
+ * Upload each regular-file put's content before its tree change. Target presence
+ * is checked once per page when supported; only missing candidates need
+ * source-side checks. Return puts missing on both replicas for quarantine.
  */
 async function uploadBlobs(
 	changes: PathChange[],
 	source: BlobStore,
 	target: BlobStore
 ): Promise<PathChange[]> {
-	const orphaned: PathChange[] = []
-	for (const c of changes) {
-		if (c.kind !== 'put' || !c.contentHash) continue
-		if (await target.hasBlobByHash(c.contentHash)) continue
-		if (!(await source.hasBlobByHash(c.contentHash))) {
-			orphaned.push(c)
+	const hashes = [
+		...new Set(
+			changes.flatMap((change) =>
+				change.kind === 'put' && change.contentHash ? [change.contentHash] : []
+			)
+		)
+	]
+	if (!hashes.length) return []
+
+	const missing = target.missingBlobHashes
+		? await target.missingBlobHashes(hashes)
+		: new Set(
+				(
+					await Promise.all(
+						hashes.map(async (hash) => [hash, await target.hasBlobByHash(hash)] as const)
+					)
+				)
+					.filter(([, present]) => !present)
+					.map(([hash]) => hash)
+			)
+	const orphanedHashes = new Set<string>()
+	for (const hash of hashes) {
+		if (!missing.has(hash)) continue
+		if (!(await source.hasBlobByHash(hash))) {
+			orphanedHashes.add(hash)
 			continue
 		}
-		await target.putBlobByHash(c.contentHash, await source.getBlobByHash(c.contentHash))
+		await target.putBlobByHash(hash, await source.getBlobByHash(hash))
 	}
-	return orphaned
+	return changes.filter(
+		(change) =>
+			change.kind === 'put' &&
+			change.contentHash !== undefined &&
+			orphanedHashes.has(change.contentHash)
+	)
 }

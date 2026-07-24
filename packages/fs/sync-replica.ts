@@ -105,6 +105,8 @@ export interface BlobStore {
 	getBlobByHash(hash: string): Promise<Uint8Array>
 	/** Local presence check (see Lazy content). */
 	hasBlobByHash(hash: string): Promise<boolean>
+	/** Batch presence check when the transport supports one. */
+	missingBlobHashes?(hashes: string[]): Promise<Set<string>>
 	/**
 	 * Store a blob in THIS replica's hash-addressed blob store. Local adapter:
 	 * writes the backend content store (eager pull + lazy hydration). Remote
@@ -171,13 +173,11 @@ export interface JournalStore {
 	/** Latest seq (snapshot resume). */
 	head(): Promise<number>
 	/**
-	 * Re-tag every journal row as locally-authored (clear `localSource`). After a
-	 * "take mine" reset the server is empty, so every local file IS now mine — this
-	 * makes the ordinary push (`excludeLocalSource: REMOTE_SOURCE`) republish the
-	 * whole volume, pulled files included, over the normal resilient loop instead of
-	 * a bespoke snapshot push. Owned backends only.
+	 * Replace journal history with one locally-authored latest row per path so a
+	 * re-bootstrap republishes current state, including unpushed tombstones.
+	 * `dropDeletes` is safe only after "take mine" has emptied the target.
 	 */
-	adoptAllAsLocal(): Promise<void>
+	adoptAllAsLocal(opts?: { dropDeletes?: boolean }): Promise<void>
 }
 
 /**
@@ -235,8 +235,8 @@ export interface FsWatcher {
  * Reconstruct a consistent snapshot from the journal, FROZEN at `head`: coalesce
  * every row with `seq <= head` into the latest state per path, keeping the live
  * puts (a path whose last op at/below head is a delete is gone). Deterministic
- * across calls — rows after `head` are ignored — so a paged bootstrap can slice it
- * by a stable offset and a mid-scan mutation surfaces only on the delta resume.
+ * across calls — rows after `head` are ignored — so a paged bootstrap can keyset
+ * paginate it and a mid-scan mutation surfaces only on the delta resume.
  */
 async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<PathChange[]> {
 	const rows: PathChange[] = []
@@ -252,7 +252,9 @@ async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<Pa
 		if (!last || last.seq >= head || batch.length < PAGE) break
 		cursor = last.seq
 	}
-	return coalesceByPath(rows).filter((c) => c.kind === 'put')
+	return coalesceByPath(rows)
+		.filter((c) => c.kind === 'put')
+		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
 /**
@@ -291,24 +293,28 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 			const journal = requireJournal()
 			const limit = opts?.limit ?? PAGE
 			// Freeze the delta high-water at snapshot START and carry it (+ the page
-			// offset) in the opaque page token, so every page is cut at the SAME frozen
+			// key) in the opaque page token, so every page is cut at the SAME frozen
 			// cursor. The returned `syncCursor` is just that frozen head (echoed on every
 			// page); after the last page the caller resumes pathDeltas(syncCursor).
 			let head: string
-			let offset: number
+			let afterPath = ''
 			if (page) {
-				const i = page.lastIndexOf(':')
+				const i = page.indexOf(':')
 				head = page.slice(0, i)
-				offset = Number(page.slice(i + 1))
+				const position = page.slice(i + 1)
+				// Pre-keyset tokens used a numeric offset. Restart their frozen
+				// snapshot because its old journal order cannot map to the new path order.
+				if (!/^\d+$/.test(position)) afterPath = decodeURIComponent(position)
 			} else {
 				head = String(await journal.head())
-				offset = 0
 			}
 			const snapshot = await snapshotPutsUpTo(journal, Number(head))
-			const changes = snapshot.slice(offset, offset + limit)
-			const nextOffset = offset + changes.length
-			const done = nextOffset >= snapshot.length
-			return { changes, next: done ? undefined : `${head}:${nextOffset}`, syncCursor: head, done }
+			const remaining = afterPath ? snapshot.filter((change) => change.path > afterPath) : snapshot
+			const changes = remaining.slice(0, limit)
+			const lastPath = changes.at(-1)?.path
+			const done = !lastPath || changes.length >= remaining.length
+			const next = done ? undefined : `${head}:${encodeURIComponent(lastPath)}`
+			return { changes, next, syncCursor: head, done }
 		}
 	}
 }

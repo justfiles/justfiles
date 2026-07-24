@@ -12,7 +12,7 @@ import {
 	sortParentFirst
 } from './storage.shared'
 import type { JournalRow } from './sync-replica'
-import { inodeMetaFromSync, type PathChange } from './sync-wire'
+import { coalesceByPath, inodeMetaFromSync, type PathChange } from './sync-wire'
 import type { Ino } from './types'
 import { FileType } from './types'
 
@@ -747,18 +747,16 @@ export function idbStorage(
 					.openCursor(null, 'prev')
 				return cursor ? cursor.key : 0
 			},
-			// Re-tag every row as locally-authored (drop localSource) so a "take mine"
-			// republish rides the ordinary push — see JournalStore.adoptAllAsLocal.
-			async adoptAllAsLocal() {
+			// Replace history with one locally-authored latest row per path.
+			async adoptAllAsLocal(opts) {
 				const db = await getDb()
 				const tx = db.transaction(['journal'], 'readwrite')
-				let cursor = await tx.objectStore('journal').openCursor()
-				while (cursor) {
-					if (cursor.value.localSource !== undefined) {
-						await cursor.update({ ...cursor.value, localSource: undefined })
-					}
-					cursor = await cursor.continue()
-				}
+				const journal = tx.objectStore('journal')
+				const current = coalesceByPath((await journal.getAll()).map((row) => row.change)).filter(
+					(change) => !opts?.dropDeletes || change.kind === 'put'
+				)
+				await journal.clear()
+				for (const change of current) await journal.add({ change })
 				await tx.done
 			}
 		},
@@ -782,7 +780,20 @@ export function idbStorage(
 			},
 			async gcUnreferenced() {
 				const db = await getDb()
-				const tx = db.transaction(['content', 'inodes', 'meta'], 'readwrite') as FullTx
+				const tx = db.transaction(['content', 'inodes', 'journal', 'meta'], 'readwrite') as FullTx
+				const journal = tx.objectStore('journal')
+				const latest = new Map<string, number>()
+				let journalCursor = await journal.openCursor()
+				while (journalCursor) {
+					latest.set(journalCursor.value.change.path, journalCursor.key)
+					journalCursor = await journalCursor.continue()
+				}
+				journalCursor = await journal.openCursor()
+				while (journalCursor) {
+					if (latest.get(journalCursor.value.change.path) !== journalCursor.key)
+						await journalCursor.delete()
+					journalCursor = await journalCursor.continue()
+				}
 				const live = new Set<string>()
 				for (const inode of await tx.objectStore('inodes').getAll())
 					if (inode.contentHash) live.add(inode.contentHash)

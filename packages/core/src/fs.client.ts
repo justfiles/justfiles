@@ -414,6 +414,12 @@ export function remoteSyncReplica(
 			return res.ok
 		},
 
+		async missingBlobHashes(hashes) {
+			const res = await client.blobs.missing.$post({ json: { hashes } })
+			if (!res.ok) throw new Error(`missingBlobHashes failed: ${res.status}`)
+			return new Set((await res.json()).missing)
+		},
+
 		async putBlobByHash(hash, data) {
 			const gen = generation?.()
 			const lineage = lineageId?.()

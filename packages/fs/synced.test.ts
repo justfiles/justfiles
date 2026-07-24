@@ -11,7 +11,13 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memStorage } from './storage.mem'
-import { GenerationStaleError, PAGE, type SyncReplica } from './sync-replica'
+import {
+	GenerationStaleError,
+	journaledChangeSource,
+	localSyncReplica,
+	PAGE,
+	type SyncReplica
+} from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { REMOTE_SOURCE, synced } from './synced'
 import { FileType } from './types'
@@ -70,6 +76,38 @@ describe('synced (lifecycle)', () => {
 		await vol.flush()
 		expect(await volume(remote).exists('/untitled.md')).toBe(false)
 		expect(dec.decode(await volume(remote).readFile('/hello.md'))).toBe('hello')
+	})
+
+	it('checks a push page for missing blobs in one batch', async () => {
+		const blobs = new Map<string, Uint8Array>()
+		const batches: string[][] = []
+		const uploads: string[] = []
+		const remote: SyncReplica = {
+			pathScan: async () => ({ changes: [], syncCursor: '0', done: true }),
+			pathDeltas: async (cursor) => ({ changes: [], to: cursor || '0', done: true }),
+			applyPathChanges: async () => {},
+			getBlobByHash: async (hash) => blobs.get(hash) ?? new Uint8Array(),
+			hasBlobByHash: async () => {
+				throw new Error('push should not make per-blob presence checks')
+			},
+			missingBlobHashes: async (hashes) => {
+				batches.push(hashes)
+				return new Set(hashes.filter((hash) => !blobs.has(hash)))
+			},
+			putBlobByHash: async (hash, data) => {
+				uploads.push(hash)
+				blobs.set(hash, data)
+			}
+		}
+		const vol = track(await synced({ local: memStorage(), remote: () => remote, interval: 99_999 }))
+
+		await vol.writeFile('/a.txt', enc.encode('a'))
+		await vol.writeFile('/b.txt', enc.encode('b'))
+		await vol.flush()
+
+		expect(batches).toHaveLength(1)
+		expect(new Set(batches[0])).toEqual(new Set(uploads))
+		expect(uploads).toHaveLength(2)
 	})
 
 	// ── Pull ─────────────────────────────────────────────────────────────────
@@ -255,6 +293,49 @@ describe('synced (lifecycle)', () => {
 		expect(await vol2.exists('/stray/f')).toBe(false)
 		expect(await vol2.exists('/keep.txt')).toBe(true) // still on remote => kept
 		expect(await volume(local).exists('/.state')).toBe(true) // local-only preserved
+	})
+
+	it('re-bootstrap pulls post-snapshot updates before reconciling missing paths', async () => {
+		const remote = memStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/z.txt', enc.encode('old'))
+		const baseReplica = localSyncReplica(remote, journaledChangeSource(remote), {
+			lazyContent: false,
+			localActorId: 'server'
+		})
+		let updateDuringScan = false
+		const remoteReplica: SyncReplica = {
+			...baseReplica,
+			async pathScan(page, opts) {
+				const result = await baseReplica.pathScan(page, opts)
+				if (page === undefined && updateDuringScan) {
+					updateDuringScan = false
+					await remoteVol.writeFile('/z.txt', enc.encode('new'))
+					await remote.caps!.content!.gcUnreferenced()
+				}
+				return result
+			}
+		}
+		const local = memStorage()
+		const vol1 = await synced({ local, remote: () => remoteReplica, interval: 99_999 })
+		await vol1.writeFile('/marker', enc.encode('pushed'))
+		await vol1.flush() // establish pushCursor so re-bootstrap reconciles absences
+		vol1.destroy()
+
+		for (let i = 0; i < PAGE; i++)
+			await remoteVol.writeFile(`/a${String(i).padStart(3, '0')}`, enc.encode(String(i)))
+		const localVol = volume(local)
+		const state = JSON.parse(dec.decode(await localVol.readFile('/.state/sync'))) as {
+			pullCursor?: string
+		}
+		delete state.pullCursor
+		await localVol.writeFile('/.state/sync', enc.encode(JSON.stringify(state)))
+
+		updateDuringScan = true
+		const vol2 = track(await synced({ local, remote: () => remoteReplica, interval: 99_999 }))
+		expect(dec.decode(await vol2.readFile('/z.txt'))).toBe('new')
+		await vol2.flush()
+		expect(dec.decode(await remoteVol.readFile('/z.txt'))).toBe('new')
 	})
 
 	// ── Dual-source wiring, client<->server factory (#144 item 7) ─────────────
@@ -547,6 +628,8 @@ describe('synced (generation / client-reset)', () => {
 		const local = memStorage()
 		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
 		expect(await vol.exists('/server.txt')).toBe(true) // bootstrapped (tagged REMOTE_SOURCE)
+		await vol.writeFile('/deleted.txt', enc.encode('temporary'))
+		await vol.rm('/deleted.txt')
 		await vol.writeFile('/mine.txt', enc.encode('local'))
 		await vol.flush()
 		server.pushes.length = 0 // ignore the pre-reset pushes
@@ -558,6 +641,7 @@ describe('synced (generation / client-reset)', () => {
 		const paths = server.pushes.flatMap((p) => p.changes.map((c) => c.path))
 		expect(paths).toContain('/server.txt') // pulled file preserved via the re-tag
 		expect(paths).toContain('/mine.txt')
+		expect(paths).not.toContain('/deleted.txt') // empty target needs no tombstones
 		expect(await vol.exists('/mine.txt')).toBe(true) // local kept intact
 		expect((await readSyncState(local)).generation).toBe(2)
 		expect(server.resetId).toBeUndefined() // drained → the server's flag was cleared
@@ -824,6 +908,22 @@ describe('synced (generation / client-reset)', () => {
 		expect(pushedPaths).toContain('/pulled.txt')
 		expect(await vol.exists('/pulled.txt')).toBe(true)
 		expect((await readSyncState(local)).lineageId).toBe('B')
+	})
+
+	it('publishes a retained local deletion after legacy re-bootstrap', async () => {
+		const server = fakeServer({ files: { '/deleted.txt': 'remote copy' } })
+		const local = memStorage()
+		const vol = track(await synced({ local, remote: () => server.replica, interval: 99_999 }))
+		await vol.rm('/deleted.txt')
+
+		server.generation = 1
+		server.lineageId = 'B'
+		server.pushes.length = 0
+		await vol.flush()
+		await vol.flush()
+
+		const pushed = server.pushes.flatMap((push) => push.changes)
+		expect(pushed).toContainEqual(expect.objectContaining({ kind: 'delete', path: '/deleted.txt' }))
 	})
 
 	// Codex round-3 P1: a pending take-mine with NO stored lineageId (pre-feature) can't

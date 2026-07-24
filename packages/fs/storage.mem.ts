@@ -11,7 +11,7 @@ import {
 } from './storage.shared'
 import type { JournalRow } from './sync-replica'
 import type { PathChange } from './sync-wire'
-import { inodeMetaFromSync } from './sync-wire'
+import { coalesceByPath, inodeMetaFromSync } from './sync-wire'
 import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
@@ -346,8 +346,12 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			async head() {
 				return journalRows[journalRows.length - 1]?.seq ?? 0
 			},
-			async adoptAllAsLocal() {
-				for (const r of journalRows) r.localSource = undefined
+			async adoptAllAsLocal(opts) {
+				const current = coalesceByPath(journalRows.map((row) => row.change)).filter(
+					(change) => !opts?.dropDeletes || change.kind === 'put'
+				)
+				journalRows.length = 0
+				appendJournal(current)
 			}
 		},
 		content: {
@@ -361,6 +365,12 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				hashBlobs.set(hash, data.slice())
 			},
 			async gcUnreferenced() {
+				const latest = new Map(journalRows.map((row) => [row.change.path, row]))
+				journalRows.splice(
+					0,
+					journalRows.length,
+					...[...latest.values()].sort((a, b) => a.seq - b.seq)
+				)
 				const live = new Set<string>()
 				for (const m of metas.values()) if (m.contentHash) live.add(m.contentHash)
 				let count = 0
