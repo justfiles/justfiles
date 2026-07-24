@@ -5,13 +5,9 @@ import { APP_ID_MIGRATION_V1, migrateAppIdsOnce, runAppIdMigrationV1 } from './m
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
-async function mkdirp(vol: Volume, path: string): Promise<void> {
-	await vol.mkdir(path, { recursive: true })
-}
-
 async function write(vol: Volume, path: string, text: string): Promise<void> {
 	const i = path.lastIndexOf('/')
-	if (i > 0) await mkdirp(vol, path.slice(0, i))
+	if (i > 0) await vol.mkdir(path.slice(0, i), { recursive: true })
 	await vol.writeFile(path, enc.encode(text))
 }
 
@@ -66,12 +62,11 @@ describe('runAppIdMigrationV1', () => {
 			'/data/computer.spud.code'
 		])
 		expect(code?.moved).toEqual([])
-		// Untouched.
 		expect(await vol.exists('/applications/computer.spud.code')).toBe(true)
 		expect(await vol.exists('/applications/app.justfiles.frieren.code')).toBe(false)
 	})
 
-	test('real run moves layout, rewrites manifest id, and backs up sources', async () => {
+	test('real run moves the layout (atomic rename) and rewrites the manifest id', async () => {
 		await seedApp(vol, 'computer.spud.code')
 
 		const result = await runAppIdMigrationV1(vol, { dryRun: false })
@@ -86,20 +81,12 @@ describe('runAppIdMigrationV1', () => {
 		expect(await read(vol, '/data/app.justfiles.frieren.code/note.txt')).toContain(
 			'computer.spud.code'
 		)
-		// Manifest id rewritten.
 		const manifest = JSON.parse(
 			await read(vol, '/applications/app.justfiles.frieren.code/manifest.json')
 		)
 		expect(manifest.id).toBe('app.justfiles.frieren.code')
-		// Backups of every moved source under the backup root.
-		expect(
-			await vol.exists(
-				'/system/migration-backups/app-ids-v1/applications/computer.spud.code/manifest.json'
-			)
-		).toBe(true)
-		expect(
-			await vol.exists('/system/migration-backups/app-ids-v1/state/computer.spud.code.json')
-		).toBe(true)
+		// No backup artifact is left behind (PITR is the recovery net).
+		expect(await vol.exists('/system/migration-backups')).toBe(false)
 	})
 
 	test('rewrites every os-state id reference (values and keys)', async () => {
@@ -116,8 +103,6 @@ describe('runAppIdMigrationV1', () => {
 		expect(parsed.placements['app.justfiles.frieren.paint']).toEqual({ x: 0 })
 		// 2 ids x 2 occurrences each (window appId + placement key) = 4.
 		expect(result.osStateRewrites).toBe(4)
-		// os-state was backed up before rewrite.
-		expect(await vol.exists('/system/migration-backups/app-ids-v1/system/os-state.json')).toBe(true)
 	})
 
 	test('aborts the whole run on any conflict, mutating nothing', async () => {
@@ -135,12 +120,14 @@ describe('runAppIdMigrationV1', () => {
 		expect(await vol.exists('/applications/app.justfiles.frieren.paint')).toBe(false)
 	})
 
-	test('is a no-op when the user has no legacy apps', async () => {
+	test('is an idempotent no-op once nothing legacy remains', async () => {
 		await seedApp(vol, 'app.justfiles.frieren.code')
+		await write(vol, '/system/os-state.json', osState('app.justfiles.frieren.code'))
 
 		const result = await runAppIdMigrationV1(vol, { dryRun: false })
 
 		expect(result.conflict).toBe(false)
+		expect(result.osStateRewrites).toBe(0)
 		expect(result.entries.every((e) => e.sources.length === 0)).toBe(true)
 		expect(await vol.exists('/applications/app.justfiles.frieren.code')).toBe(true)
 	})
@@ -158,11 +145,9 @@ describe('runAppIdMigrationV1', () => {
 	test('migrateAppIdsOnce collapses concurrent + repeat calls onto one run per volume', async () => {
 		await seedApp(vol, 'computer.spud.code')
 		const a = migrateAppIdsOnce(vol)
-		const b = migrateAppIdsOnce(vol) // same in-flight promise
-		expect(b).toBe(a)
+		expect(migrateAppIdsOnce(vol)).toBe(a) // same in-flight promise
 		await a
-		// A call after completion returns the memoised (finished) run — no second move.
-		expect(migrateAppIdsOnce(vol)).toBe(a)
+		expect(migrateAppIdsOnce(vol)).toBe(a) // memoised after completion — no second move
 		expect(await vol.exists('/applications/app.justfiles.frieren.code')).toBe(true)
 		expect(await vol.exists('/applications/computer.spud.code')).toBe(false)
 	})
