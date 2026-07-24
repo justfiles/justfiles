@@ -48,7 +48,11 @@ import {
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
-import { type AppIdMigrationResult, runAppIdMigrationV1 } from '../shared/migrate-app-ids.ts'
+import {
+	type AppIdMigrationResult,
+	migrationBackupPending,
+	runAppIdMigrationV1
+} from '../shared/migrate-app-ids.ts'
 import { guardCapability } from './accounts/guard.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
@@ -565,6 +569,13 @@ export class Frieren extends DurableObject<Env> {
 		// run without an open tab. Both are best-effort and retry on the next alarm.
 		await runDailyMaintenance(this.fs, this.vol)
 		await this.session?.runMaintenance()
+		// Exception to the "don't reschedule" rule: while the one-off migration backup
+		// is still awaiting its 30-day sweep, keep the daily alarm alive so a dormant
+		// profile's backup is still expired on schedule. Self-terminates once the sweep
+		// above has removed it. Temporary — removed with the migration.
+		if (await migrationBackupPending(this.vol)) {
+			await scheduleDailyAlarm(this.ctx, this.vol, this.cfTimezone)
+		}
 	}
 
 	async fetch(request: Request): Promise<Response> {

@@ -187,6 +187,14 @@ export function migrateAppIdsOnce(vol: Volume): Promise<AppIdMigrationResult> {
 	return run
 }
 
+// True while the one-off migration backup is still present (awaiting its retention
+// sweep). The DO uses this to keep its daily alarm alive until the backup expires,
+// so a dormant profile is still swept on schedule (the alarm otherwise only re-arms
+// on WebSocket activity).
+export async function migrationBackupPending(vol: Volume): Promise<boolean> {
+	return vol.exists(BACKUP_ROOT)
+}
+
 // Delete the in-volume migration backup once it is past the retention window, so it
 // never lingers in a user's synced volume. Idempotent and safe to call every boot:
 // no backup -> no-op; a backup missing its marker (a rare partial write) gets the

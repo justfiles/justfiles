@@ -4,6 +4,7 @@ import {
 	APP_ID_MIGRATION_V1,
 	BACKUP_RETENTION_MS,
 	migrateAppIdsOnce,
+	migrationBackupPending,
 	runAppIdMigrationV1,
 	sweepMigrationBackups
 } from './migrate-app-ids.ts'
@@ -258,5 +259,18 @@ describe('runAppIdMigrationV1', () => {
 		expect(again.osStateRewrites).toBe(0)
 		expect(await vol.exists(BACKUP)).toBe(false)
 		expect(await vol.exists(MARKER)).toBe(false)
+	})
+
+	test('migrationBackupPending tracks the backup dir (drives the DO alarm re-arm)', async () => {
+		expect(await migrationBackupPending(vol)).toBe(false)
+		await seedApp(vol, 'computer.spud.code')
+		await runAppIdMigrationV1(vol, { dryRun: false })
+		expect(await migrationBackupPending(vol)).toBe(true)
+		const created = Number(await read(vol, MARKER))
+		await sweepMigrationBackups(vol, {
+			now: created + BACKUP_RETENTION_MS + 1,
+			retentionMs: BACKUP_RETENTION_MS
+		})
+		expect(await migrationBackupPending(vol)).toBe(false)
 	})
 })
