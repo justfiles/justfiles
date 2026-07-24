@@ -17,7 +17,7 @@
 		"required": ["CLERK_SECRET_KEY", "OPENROUTER_API_KEY"]
 	},
 	"vars": {
-		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuc3B1ZC5jb21wdXRlciQ"
+		"CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsubXlrb2RhbWEuYXBwJA"
 	},
 	"durable_objects": {
 		"bindings": [
@@ -52,10 +52,6 @@
 		}
 	],
 	"routes": [
-		{
-			"pattern": "spud.computer",
-			"custom_domain": true
-		},
 		{
 			"pattern": "mykodama.app",
 			"custom_domain": true
