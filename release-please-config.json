@@ -6,7 +6,7 @@
 		},
 		"apps/frieren": {
 			"release-type": "node",
-			"component": "spud"
+			"component": "frieren"
 		},
 		"packages/fs": {
 			"release-type": "node",
