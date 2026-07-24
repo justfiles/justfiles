@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.5.0...spud-v0.6.0) (2026-07-24)
+
+
+### Features
+
+* **frieren:** dual-window AI caps (rolling 5h burst + fixed weekly) ([13756a6](https://github.com/xiaoxinghu/justfiles/commit/13756a6be456b600f0058db9f57b72ad3334a4d5))
+* **fs:** proactive, fs-level sync driven by the volume change feed ([29f4cb0](https://github.com/xiaoxinghu/justfiles/commit/29f4cb08dfc8afe0686c8de7214effb22a9c651e))
+
+
+### Bug Fixes
+
+* **fs,frieren:** address PR review — full drain per cycle + /ws self-heal ([53d0853](https://github.com/xiaoxinghu/justfiles/commit/53d0853c0f0364bbb7079a611afac7fe5e192e14))
+* **fs:** address 2nd PR review — non-destructive legacy re-bootstrap + lineage write-fence ([95f7a91](https://github.com/xiaoxinghu/justfiles/commit/95f7a918713b448a52b3bcdd1e4f310d0c157d55))
+* **fs:** address 4th PR review — fence adopt-mine by lineage + restart-safe migrations ([05360fa](https://github.com/xiaoxinghu/justfiles/commit/05360fab2fd49d88cf80fb69a502e62d6680c2b6))
+* **fs:** address 5th PR review — require lineage for adopt-mine + transactionSync migrations ([4e9c66f](https://github.com/xiaoxinghu/justfiles/commit/4e9c66fca68389361eb0d5531c37983dcc81acca))
+* **fs:** converge path-sync via unique lineage identity ([9b3c021](https://github.com/xiaoxinghu/justfiles/commit/9b3c021132e3d710ea5ef801fd9929191b6b6df2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @justfiles/fs bumped to 0.4.0
+
 ## [0.5.0](https://github.com/xiaoxinghu/justfiles/compare/spud-v0.4.0...spud-v0.5.0) (2026-07-22)
 
 
