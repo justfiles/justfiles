@@ -10,7 +10,10 @@ import { COMMUNITY_CATALOG_SCHEMA } from '../../shared/appstore.ts'
 
 // Ids under these prefixes are first-party and only honoured from our npm scope
 // (the prefix guard); everyone else must use their own reverse-DNS namespace.
-const RESERVED_PREFIXES = ['computer.spud.', 'app.frieren.', 'app.spud.']
+// `app.justfiles.frieren.` is the current namespace; the `computer.spud.` /
+// `app.spud.` / `app.frieren.` prefixes are retired but stay reserved so no one
+// can squat a former first-party id.
+const RESERVED_PREFIXES = ['app.justfiles.frieren.', 'computer.spud.', 'app.frieren.', 'app.spud.']
 const SPUD_SCOPE = '@spud-computer/'
 
 export interface Denylist {

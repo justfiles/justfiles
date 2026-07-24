@@ -14,7 +14,7 @@ import { spudProvider } from './providers/spud.ts'
 // express (pre-granted scopes, a specific active selection) is written straight to the
 // account store / active-AI pointer — the same Volume the capabilities read.
 
-const SETTINGS = 'computer.spud.settings'
+const SETTINGS = 'app.justfiles.frieren.settings'
 
 // Real providers with fake acquisition: a provider is data, so a test swaps its
 // `auth` by spread. Google's `acquire` echoes the requested scopes as granted

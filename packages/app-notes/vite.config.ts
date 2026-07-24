@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'computer.spud.notes',
+						id: 'app.justfiles.frieren.notes',
 						name: 'Notes',
 						description: 'A freeform knowledge base shared with the agent',
 						icon: 'icon.png',

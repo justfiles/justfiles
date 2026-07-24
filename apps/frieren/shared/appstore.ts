@@ -11,7 +11,7 @@ export const CATALOG_PATH = '/appstore/catalog.json'
 
 // The community feed: a second catalog, R2-backed and worker-served, carrying
 // everything the deploy doesn't pre-ship — third-party apps and the first-party
-// `computer.spud.*` apps distributed via npm. Each entry adds the source pointer
+// `app.justfiles.frieren.*` apps distributed via npm. Each entry adds the source pointer
 // (`npm` name + `publisher`) the client needs to resolve bytes from jsDelivr and
 // show provenance on the consent sheet. `files[].path` is relative to the
 // package's `dist/`, matching the built-in catalog. The `/store/*` path space is

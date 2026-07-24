@@ -4,7 +4,7 @@ import type { CommunityCatalogApp } from '../../shared/appstore'
 // First-party apps live under the reserved prefix; the indexer's scope guard makes
 // the prefix a safe trust signal, so the client can badge them without a lookup.
 function isFirstParty(id: string): boolean {
-	return id.startsWith('computer.spud.')
+	return id.startsWith('app.justfiles.frieren.')
 }
 
 function iconUrl(app: CommunityCatalogApp): string | undefined {

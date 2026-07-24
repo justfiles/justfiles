@@ -220,7 +220,7 @@ describe('local → account migration', () => {
 		const { fs } = await loadFs([{ id: 'local', lastOpenedAt: 1 }])
 		await seedProfile('local', {
 			'/notes/a.txt': 'note body',
-			'/data/computer.spud.paint/drawing.bin': 'pixels',
+			'/data/app.justfiles.frieren.paint/drawing.bin': 'pixels',
 			'/system/agents/main/soul.md': '---\nagent_name: Custom\n---\nsoul\n',
 			'/system/user.md': '---\nname: Xiao\n---\n',
 			'/system/os-state.json': '{"windows":{}}',
@@ -229,7 +229,7 @@ describe('local → account migration', () => {
 			'/system/active-ai.json': '{"connectionId":"u@openai.com"}',
 			'/.state/clientid': 'uuid',
 			'/applications/paint/app.js': 'code',
-			'/state/computer.spud.paint.json': '{}'
+			'/state/app.justfiles.frieren.paint.json': '{}'
 		})
 		await attach(fs)
 
@@ -237,7 +237,7 @@ describe('local → account migration', () => {
 
 		const files = await listAccountFiles()
 		expect(files).toContain('/notes/a.txt')
-		expect(files).toContain('/data/computer.spud.paint/drawing.bin')
+		expect(files).toContain('/data/app.justfiles.frieren.paint/drawing.bin')
 		expect(files).toContain('/system/agents/main/soul.md')
 		expect(files).toContain('/system/user.md')
 		expect(files).toContain('/system/os-state.json')
@@ -246,7 +246,7 @@ describe('local → account migration', () => {
 		expect(files).not.toContain('/system/active-ai.json')
 		expect(files).not.toContain('/.state/clientid')
 		expect(files).not.toContain('/applications/paint/app.js')
-		expect(files).not.toContain('/state/computer.spud.paint.json')
+		expect(files).not.toContain('/state/app.justfiles.frieren.paint.json')
 		expect(dec.decode(await (await accountVolume()).readFile('/notes/a.txt'))).toBe('note body')
 	})
 

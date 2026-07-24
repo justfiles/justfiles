@@ -61,7 +61,7 @@ import { aiLimitsMicros, evaluate, readTier } from './quota.ts'
 import { type AdmitHandle, admit, ensureUsageSchema, readUsage, record } from './usage.ts'
 
 // Only the first-party Settings app may reach the `accounts` admin facet.
-const ACCOUNTS_FIRST_PARTY = ['computer.spud.settings']
+const ACCOUNTS_FIRST_PARTY = ['app.justfiles.frieren.settings']
 
 // A one-entry CredentialStore over a static api key. `Models` prefers a stored key
 // over ambient env, so this pins the platform key without touching process.env (absent

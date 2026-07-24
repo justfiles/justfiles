@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => ({
 			? []
 			: [
 					kernelHost({
-						id: 'computer.spud.files',
+						id: 'app.justfiles.frieren.files',
 						name: 'Files',
 						description: 'Browse and preview files',
 						icon: 'icon.png',
