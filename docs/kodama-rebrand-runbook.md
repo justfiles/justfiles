@@ -286,8 +286,9 @@ Delete, in one reviewed release:
 
 - `apps/frieren/shared/migrate-app-ids.ts` and `migrate-app-ids.test.ts` (the pure
   migrator, `migrateAppIdsOnce`, `runAppIdMigrationV1`, and `APP_ID_MIGRATION_V1`);
-- the `migrateAppIdsOnce(fs)` call and the migration-only `fs.flush()` / import in
-  `apps/frieren/src/os/runtime.ts` (leave `seedBuiltins` and its bootstrap wait);
+- the `migrateAppIdsOnce(fs)` call, the `sweepMigrationBackups(fs, …)` call, and the
+  migration-only `fs.flush()` / imports in `apps/frieren/src/os/runtime.ts` (leave
+  `seedBuiltins` and its bootstrap wait);
 - the `migrateAppIdsV1` RPC and its import in `apps/frieren/worker/frieren.ts`;
 - the `migrate-app-ids.ts` entry from the `EXEMPT_FILES` list in
   `apps/frieren/shared/no-legacy-app-ids.test.ts` (its target no longer exists).
@@ -302,8 +303,10 @@ Keep permanently:
 Then, separately:
 
 - keep the explicit migration results and PITR bookmarks in a private operations record;
-- keep the in-volume backups under `/system/migration-backups/app-ids-v1/` through the
-  30-day PITR window, then delete them deliberately;
+- the in-volume backups under `/system/migration-backups/app-ids-v1/` are swept
+  automatically once past a 30-day retention window (the client boot runs
+  `sweepMigrationBackups`; PR #256), so they never linger in a user's synced volume;
+  the DO SQLite PITR window remains the deeper net underneath;
 - update support, legal, email, analytics, social previews, and Clerk Account Portal
   branding. Account Portal branding is Dashboard-only according to the Clerk CLI docs.
 
