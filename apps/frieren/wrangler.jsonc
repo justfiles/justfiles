@@ -73,6 +73,10 @@
 				{
 					"pattern": "staging.spud.computer",
 					"custom_domain": true
+				},
+				{
+					"pattern": "staging.mykodama.app",
+					"custom_domain": true
 				}
 			],
 			"assets": {
