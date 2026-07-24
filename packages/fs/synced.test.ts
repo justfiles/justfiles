@@ -11,7 +11,13 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memStorage } from './storage.mem'
-import { GenerationStaleError, PAGE, type SyncReplica } from './sync-replica'
+import {
+	GenerationStaleError,
+	journaledChangeSource,
+	localSyncReplica,
+	PAGE,
+	type SyncReplica
+} from './sync-replica'
 import type { PathChange } from './sync-wire'
 import { REMOTE_SOURCE, synced } from './synced'
 import { FileType } from './types'
@@ -287,6 +293,49 @@ describe('synced (lifecycle)', () => {
 		expect(await vol2.exists('/stray/f')).toBe(false)
 		expect(await vol2.exists('/keep.txt')).toBe(true) // still on remote => kept
 		expect(await volume(local).exists('/.state')).toBe(true) // local-only preserved
+	})
+
+	it('re-bootstrap pulls post-snapshot updates before reconciling missing paths', async () => {
+		const remote = memStorage()
+		const remoteVol = volume(remote)
+		await remoteVol.writeFile('/z.txt', enc.encode('old'))
+		const baseReplica = localSyncReplica(remote, journaledChangeSource(remote), {
+			lazyContent: false,
+			localActorId: 'server'
+		})
+		let updateDuringScan = false
+		const remoteReplica: SyncReplica = {
+			...baseReplica,
+			async pathScan(page, opts) {
+				const result = await baseReplica.pathScan(page, opts)
+				if (page === undefined && updateDuringScan) {
+					updateDuringScan = false
+					await remoteVol.writeFile('/z.txt', enc.encode('new'))
+					await remote.caps!.content!.gcUnreferenced()
+				}
+				return result
+			}
+		}
+		const local = memStorage()
+		const vol1 = await synced({ local, remote: () => remoteReplica, interval: 99_999 })
+		await vol1.writeFile('/marker', enc.encode('pushed'))
+		await vol1.flush() // establish pushCursor so re-bootstrap reconciles absences
+		vol1.destroy()
+
+		for (let i = 0; i < PAGE; i++)
+			await remoteVol.writeFile(`/a${String(i).padStart(3, '0')}`, enc.encode(String(i)))
+		const localVol = volume(local)
+		const state = JSON.parse(dec.decode(await localVol.readFile('/.state/sync'))) as {
+			pullCursor?: string
+		}
+		delete state.pullCursor
+		await localVol.writeFile('/.state/sync', enc.encode(JSON.stringify(state)))
+
+		updateDuringScan = true
+		const vol2 = track(await synced({ local, remote: () => remoteReplica, interval: 99_999 }))
+		expect(dec.decode(await vol2.readFile('/z.txt'))).toBe('new')
+		await vol2.flush()
+		expect(dec.decode(await remoteVol.readFile('/z.txt'))).toBe('new')
 	})
 
 	// ── Dual-source wiring, client<->server factory (#144 item 7) ─────────────

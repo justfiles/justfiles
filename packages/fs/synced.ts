@@ -207,26 +207,28 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	/**
 	 * Pull remote path-changes since pullCursor and apply them locally.
 	 * `excludeOrigin: id` skips changes this client authored (the server stamped
-	 * our client-id as origin on push). Returns the new pullCursor to persist.
+	 * our client-id as origin on push). Established bootstrap includes those
+	 * changes while building its authoritative remote path set.
 	 */
 	async function pull(
-		pullCursor: string
-	): Promise<{ to: string; done: boolean; generation?: number }> {
+		pullCursor: string,
+		includeOwn = false
+	): Promise<{ changes: PathChange[]; to: string; done: boolean; generation?: number }> {
 		const { changes, to, done, generation } = await remoteReplica.pathDeltas(pullCursor, {
-			excludeOrigin: id,
+			excludeOrigin: includeOwn ? undefined : id,
 			limit: PAGE
 		})
 		await localReplica.applyPathChanges(changes, (h) => remoteReplica.getBlobByHash(h), {
 			source: REMOTE_SOURCE
 		})
-		return { to, done, generation }
+		return { changes, to, done, generation }
 	}
 
 	/**
 	 * Full download from the remote via pathScan. Pages through the snapshot,
-	 * applying each page locally, then resumes deltas from the frozen syncCursor.
-	 * The adoption guard only reconciles (deletes local paths absent from the
-	 * remote snapshot) once this profile has pushed at least once.
+	 * applying each page locally. An established replica drains post-snapshot
+	 * deltas before reconciling local paths absent from that combined remote view.
+	 * A first bootstrap keeps its adoption ordering (local changes win, then push).
 	 */
 	async function bootstrap(): Promise<number | undefined> {
 		const everPushed = (await syncState.get()).pushCursor !== undefined
@@ -258,8 +260,19 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 			})
 			page = result.done ? undefined : result.next
 		} while (page)
-		if (everPushed) await reconcileLocal(remotePaths)
-		// Resume deltas at the frozen high-water — idempotent overlap covers gaps.
+		if (everPushed) {
+			let done = false
+			while (!done) {
+				const result = await pull(syncCursor, true)
+				for (const change of result.changes)
+					if (change.kind === 'put') remotePaths.add(change.path)
+					else remotePaths.delete(change.path)
+				syncCursor = result.to
+				done = result.done
+				generation = result.generation ?? generation
+			}
+			await reconcileLocal(remotePaths)
+		}
 		await syncState.patch({ pullCursor: syncCursor })
 		return generation
 	}
