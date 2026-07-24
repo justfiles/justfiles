@@ -235,8 +235,8 @@ export interface FsWatcher {
  * Reconstruct a consistent snapshot from the journal, FROZEN at `head`: coalesce
  * every row with `seq <= head` into the latest state per path, keeping the live
  * puts (a path whose last op at/below head is a delete is gone). Deterministic
- * across calls — rows after `head` are ignored — so a paged bootstrap can slice it
- * by a stable offset and a mid-scan mutation surfaces only on the delta resume.
+ * across calls — rows after `head` are ignored — so a paged bootstrap can keyset
+ * paginate it and a mid-scan mutation surfaces only on the delta resume.
  */
 async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<PathChange[]> {
 	const rows: PathChange[] = []
@@ -252,7 +252,9 @@ async function snapshotPutsUpTo(journal: JournalStore, head: number): Promise<Pa
 		if (!last || last.seq >= head || batch.length < PAGE) break
 		cursor = last.seq
 	}
-	return coalesceByPath(rows).filter((c) => c.kind === 'put')
+	return coalesceByPath(rows)
+		.filter((c) => c.kind === 'put')
+		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
 /**
@@ -291,24 +293,25 @@ export function journaledChangeSource(store: Storage): ChangeSource {
 			const journal = requireJournal()
 			const limit = opts?.limit ?? PAGE
 			// Freeze the delta high-water at snapshot START and carry it (+ the page
-			// offset) in the opaque page token, so every page is cut at the SAME frozen
+			// key) in the opaque page token, so every page is cut at the SAME frozen
 			// cursor. The returned `syncCursor` is just that frozen head (echoed on every
 			// page); after the last page the caller resumes pathDeltas(syncCursor).
 			let head: string
-			let offset: number
+			let afterPath = ''
 			if (page) {
-				const i = page.lastIndexOf(':')
+				const i = page.indexOf(':')
 				head = page.slice(0, i)
-				offset = Number(page.slice(i + 1))
+				afterPath = decodeURIComponent(page.slice(i + 1))
 			} else {
 				head = String(await journal.head())
-				offset = 0
 			}
 			const snapshot = await snapshotPutsUpTo(journal, Number(head))
-			const changes = snapshot.slice(offset, offset + limit)
-			const nextOffset = offset + changes.length
-			const done = nextOffset >= snapshot.length
-			return { changes, next: done ? undefined : `${head}:${nextOffset}`, syncCursor: head, done }
+			const remaining = afterPath ? snapshot.filter((change) => change.path > afterPath) : snapshot
+			const changes = remaining.slice(0, limit)
+			const lastPath = changes.at(-1)?.path
+			const done = !lastPath || changes.length >= remaining.length
+			const next = done ? undefined : `${head}:${encodeURIComponent(lastPath)}`
+			return { changes, next, syncCursor: head, done }
 		}
 	}
 }

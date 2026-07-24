@@ -227,6 +227,47 @@ describe('path-sync semantics', () => {
 		expect(text(await client.readFile('/d/f0'))).toBe('CHANGED') // delta overlaps snapshot idempotently
 	})
 
+	test('snapshot pagination stays complete when GC compacts the journal between pages', async () => {
+		const serverStorage = memStorage()
+		const { client, server, bootstrap } = wire(memStorage(), serverStorage)
+		await server.writeFile('/a', bytes('old'))
+		await server.writeFile('/b', bytes('b'))
+		await server.writeFile('/a', bytes('current'))
+		let compacted = false
+		await bootstrap({
+			limit: 1,
+			onPage: async ({ done }) => {
+				if (done || compacted) return
+				compacted = true
+				await serverStorage.caps!.content!.gcUnreferenced()
+			}
+		})
+		expect(text(await client.readFile('/a'))).toBe('current')
+		expect(text(await client.readFile('/b'))).toBe('b')
+	})
+
+	test('snapshot pagination survives GC removing an already-emitted frozen row', async () => {
+		const serverStorage = memStorage()
+		const { client, server, bootstrap } = wire(memStorage(), serverStorage)
+		await server.writeFile('/a', bytes('old'))
+		await server.writeFile('/b', bytes('b'))
+		await server.writeFile('/c', bytes('c'))
+		let compacted = false
+		const { syncCursor } = await bootstrap({
+			limit: 1,
+			onPage: async ({ done }) => {
+				if (done || compacted) return
+				compacted = true
+				await server.writeFile('/a', bytes('new'))
+				await serverStorage.caps!.content!.gcUnreferenced()
+			}
+		})
+		await client.pullFrom!(syncCursor)
+		expect(text(await client.readFile('/a'))).toBe('new')
+		expect(text(await client.readFile('/b'))).toBe('b')
+		expect(text(await client.readFile('/c'))).toBe('c')
+	})
+
 	// Property test — random ops converge byte-identical with zero orphans
 	test('random ops on two peers converge byte-identical with zero orphaned inodes', async () => {
 		const { client, server, syncBoth } = twoPeers()
