@@ -128,7 +128,8 @@ domain (spud.computer):
 A scheduled job (cron trigger on the existing frieren worker, or a scheduled
 GitHub Action) every few hours:
 
-1. `GET registry.npmjs.org/-/v1/search?text=keywords:kodama-app` (paginate).
+1. Search npm for `kodama-app` and the legacy `spud-app` keyword (paginate each,
+   deduplicate by package name).
 2. For each package@version not yet indexed:
    `GET data.jsdelivr.com/v1/packages/npm/<name>@<version>` — returns the file
    tree **with per-file sha256** (verified live: hashes + CORS `*` + immutable
@@ -306,10 +307,10 @@ canary; `data.jsdelivr.com/v1/packages/npm/<name>@<version>` lists
 **Context.** The one new piece of infrastructure. Produces the community
 catalog; never touches third-party bytes.
 
-**Expectation.** A scheduled job builds the catalog in R2 from the
-`kodama-app` npm keyword, applying validation, the two-way id↔package binding,
-the reserved-prefix guard, and the denylist; the frieren worker serves it at
-`/store/catalog.json`; the canary app appears in it.
+**Expectation.** A scheduled job builds the catalog in R2 from the canonical
+`kodama-app` and legacy `spud-app` npm keywords, applying validation, the
+two-way id↔package binding, the reserved-prefix guard, and the denylist; the
+frieren worker serves it at `/store/catalog.json`; the canary app appears in it.
 
 **How.**
 - Cron trigger on the existing frieren worker (`wrangler.jsonc`; add the route
