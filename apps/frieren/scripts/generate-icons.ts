@@ -20,6 +20,12 @@ const PUBLIC = path.join(root, 'public')
 const CENTRE = '#4d8c69'
 const EDGE = '#2e6349'
 
+// A smooth radial gradient balloons a truecolor PNG (the 512 was ~100 KB). These
+// icons are just a few flat colours plus that gradient, so a palette quantises them
+// to a third of the size; quality 96 keeps the mean per-channel error ~0.3/255 —
+// visually identical, no banding. compressionLevel/effort are maxed (lossless deflate).
+const PNG = { palette: true, quality: 96, dither: 0.5, compressionLevel: 9, effort: 10 } as const
+
 function background(size: number): Buffer {
 	return Buffer.from(
 		`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">` +
@@ -78,7 +84,7 @@ async function icon(smiley: Buffer, size: number, frac: number, out: string): Pr
 		.toBuffer()
 	await sharp(background(size))
 		.composite([{ input: fg, gravity: 'center' }])
-		.png()
+		.png(PNG)
 		.toFile(out)
 }
 
