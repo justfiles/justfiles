@@ -8,7 +8,7 @@ export default defineConfig({
 			id: 'app.justfiles.frieren.code',
 			name: 'Code',
 			icon: 'icon.png',
-			description: 'Build Frieren apps inside Frieren.',
+			description: 'Build and run apps directly in Kodama.',
 			app: 'src/app.ts',
 			gui: 'src/gui.tsx',
 			// Carry the devkit sysroot (`devkit-sysroot.ts` emits dist/devkit/**) into
