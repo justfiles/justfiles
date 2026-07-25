@@ -4,6 +4,7 @@
 	"type": "module",
 	"main": "./dist/manifest.json",
 	"keywords": [
+		"kodama-app",
 		"spud-app"
 	],
 	"files": [

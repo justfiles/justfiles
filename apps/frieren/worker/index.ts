@@ -65,7 +65,7 @@ app.all('/api/*', (c) => {
 
 // The worker is both a request handler and the app-store indexer: `scheduled`
 // runs on the cron trigger (wrangler.jsonc), rebuilding the community catalog in
-// R2 from the `spud-app` npm keyword. `waitUntil` keeps it alive past the tick.
+// R2 from the `kodama-app` npm keyword. `waitUntil` keeps it alive past the tick.
 export default {
 	fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx),
 	scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {

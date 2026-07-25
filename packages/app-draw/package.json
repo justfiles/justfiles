@@ -9,6 +9,7 @@
 		"directory": "packages/app-draw"
 	},
 	"keywords": [
+		"kodama-app",
 		"spud-app"
 	],
 	"files": [

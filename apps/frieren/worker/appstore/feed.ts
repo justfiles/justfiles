@@ -12,10 +12,10 @@ const CATALOG_KEY = 'catalog.json'
 const NPM_SEARCH = 'https://registry.npmjs.org/-/v1/search'
 const JSDELIVR_DATA = 'https://data.jsdelivr.com/v1/packages/npm'
 const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm'
-const KEYWORD = 'spud-app'
+const KEYWORD = 'kodama-app'
 const PAGE = 250 // npm search max page size
 const MAX_PAGES = 20 // safety cap (<=5000 apps for v1)
-const UA = 'spud-appstore-indexer (+https://spud.computer)'
+const UA = 'kodama-appstore-indexer (+https://mykodama.app)'
 
 interface NpmHit {
 	name: string
@@ -44,7 +44,7 @@ async function fetchJson<T>(url: string): Promise<T | null> {
 	return (await res.json()) as T
 }
 
-// Every `spud-app`-keyworded package (latest version), paginated.
+// Every `kodama-app`-keyworded package (latest version), paginated.
 async function npmCandidates(): Promise<NpmHit[]> {
 	const hits: NpmHit[] = []
 	for (let page = 0; page < MAX_PAGES; page++) {

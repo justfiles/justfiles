@@ -1,13 +1,13 @@
-# Spud app store (community, npm-indexed)
+# Kodama App Store (community, npm-indexed)
 
 > Status: **designed, not started.** Install/uninstall/update machinery already
 > exists (`packages/app/appstore.ts`); this doc specifies the *community
 > discovery layer* on top of it. Public third-party installs stay gated behind
 > the sandbox work listed under **Trust** below.
 >
-> Naming: **spud** (spud.computer) is the public product name; *frieren* is the
+> Naming: **Kodama** (mykodama.app) is the public product name; *frieren* is the
 > internal codename for the web client. Everything public-facing here — the npm
-> keyword, docs, catalog URLs — says spud.
+> keyword, docs, catalog URLs — says Kodama.
 
 ## Model: an index, not a marketplace
 
@@ -71,12 +71,12 @@ more `AppStore` implementation* plus a catalog feed — no kernel changes.
 
 ## Author flow
 
-1. `pnpm create @justfiles/app my-app` (template gains: keyword `spud-app`,
+1. `pnpm create @justfiles/app my-app` (template gains: keyword `kodama-app`,
    `files: ["dist"]`, `prepublishOnly: "pnpm build"`).
 2. Build, test locally (zip install already works).
 3. `npm publish`. That's the submission. Updates = publish a new version.
 
-One docs page on spud.computer explains this. No submission form, no PR, no
+One docs page on mykodama.app explains this. No submission form, no PR, no
 account with us — npm identity is the publisher identity (and npm's OIDC
 "trusted publisher" provenance shows up in their search API for free).
 
@@ -128,7 +128,7 @@ domain (spud.computer):
 A scheduled job (cron trigger on the existing frieren worker, or a scheduled
 GitHub Action) every few hours:
 
-1. `GET registry.npmjs.org/-/v1/search?text=keywords:spud-app` (paginate).
+1. `GET registry.npmjs.org/-/v1/search?text=keywords:kodama-app` (paginate).
 2. For each package@version not yet indexed:
    `GET data.jsdelivr.com/v1/packages/npm/<name>@<version>` — returns the file
    tree **with per-file sha256** (verified live: hashes + CORS `*` + immutable
@@ -286,18 +286,18 @@ the new ids; grep confirms the old prefixes are gone.
 yet. The npm scope `@spud-computer` is registered. This step creates the author
 flow and one real published app for the indexer to find.
 
-**Expectation.** `pnpm create @justfiles/app` output is publishable as a spud
+**Expectation.** `pnpm create @justfiles/app` output is publishable as a Kodama
 app with zero edits beyond the id; one first-party canary app (e.g. counter or
-crossword) is live on npm under `@spud-computer` with keyword `spud-app`.
+crossword) is live on npm under `@spud-computer` with keyword `kodama-app`.
 
 **How.**
-- Template `package.json`: keyword `spud-app`, `files: ["dist"]`,
+- Template `package.json`: keyword `kodama-app`, `files: ["dist"]`,
   `prepublishOnly: "pnpm build"`; template README gains a short "publish to the
-  spud store" section (seed for the spud.computer docs page).
+  Kodama App Store" section (seed for the mykodama.app docs page).
 - Publish the canary from its in-repo package (add the same three fields).
 - No frieren code changes.
 
-**Verify.** `registry.npmjs.org/-/v1/search?text=keywords:spud-app` returns the
+**Verify.** `registry.npmjs.org/-/v1/search?text=keywords:kodama-app` returns the
 canary; `data.jsdelivr.com/v1/packages/npm/<name>@<version>` lists
 `dist/manifest.json` + `app.js` with hashes.
 
@@ -307,7 +307,7 @@ canary; `data.jsdelivr.com/v1/packages/npm/<name>@<version>` lists
 catalog; never touches third-party bytes.
 
 **Expectation.** A scheduled job builds the catalog in R2 from the
-`spud-app` npm keyword, applying validation, the two-way id↔package binding,
+`kodama-app` npm keyword, applying validation, the two-way id↔package binding,
 the reserved-prefix guard, and the denylist; the frieren worker serves it at
 `/store/catalog.json`; the canary app appears in it.
 
@@ -384,8 +384,8 @@ update prompts before applying; first-party entry shows the badge, no
 disclaimer.
 
 **After both tracks:** flip the public flag (Track B gate + Steps 4–5 consent
-items), publish the developer-policy page on spud.computer, and announce the
-`spud-app` keyword. spud-mac adoption is a follow-up that reuses Step 4's
+items), publish the developer-policy page on mykodama.app, and announce the
+`kodama-app` keyword. spud-mac adoption is a follow-up that reuses Step 4's
 `AppStore` unchanged in the daemon.
 
 ## Non-goals (v1)
