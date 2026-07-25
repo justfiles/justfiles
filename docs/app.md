@@ -1,87 +1,75 @@
 ---
 title: 'Building Apps'
-description: Author guide for the @justfiles/app framework — state machine + GUI + agent (TUI) interfaces.
+description: 'Agent guide for building apps with @justfiles/app.'
 ---
 
 # Building Apps
 
-Framework guide for `@justfiles/app`. For agent editing app code. Read once -> map user requirement
-to concrete change (edge, procedure, capability, GUI tweak) without reading runtime internals.
+Use this guide when creating or changing an app. The framework is in `packages/app`; apps run in
+Frieren and Spud Mac. The best examples are:
 
-**Author-facing API only** (UIKit-style). No kernel/sandbox/RPC. You never call those.
+- `packages/create-app/template` — minimum React app
+- `packages/app-pixel` — rich public action surface
+- `packages/app-notes` — scoped files, commands, subscriptions, and procedures
+- `packages/app-crossword` — AI procedure committing one atomic result
+- `packages/app-paint` — high-frequency GUI-local state
+- `packages/app-files` — recursive file watching and command coalescing
+- `packages/app-draw` — a normal package using a third-party npm library
+- `packages/app-code` — the in-app authoring environment
 
-Framework src: `packages/app`. Examples: `packages/create-app/template` (minimal), `packages/app-files`,
-`packages/app-paint`, `packages/app-crossword`, `packages/app-code` (most complex).
+This is the app-author API. Do not use kernel, sandbox, transport, app-store, or host internals from an
+app.
 
----
+## The model
 
-## 1. Core idea: one state machine, two interfaces
+An app has one durable state machine and two consumers:
 
-App = **pure state machine** with **two faces over same state**:
+- The GUI renders state and calls typed actions.
+- The agent reads the same JSON state and receives the public actions as tools.
+- The kernel validates actions, serializes transitions, persists state, runs capabilities, and pushes
+  new state to the GUI.
 
-- **GUI** — browser/React view. Human looks, clicks. Renders `state`, dispatches actions.
-- **Agent (TUI)** — no pixels. Sees `state` as JSON + list of **actions** (named, described, schema'd).
-  Dispatch action = agent's only way to drive app.
+Put shared semantics in `app.ts`. Put rendering and transient interaction in the GUI.
 
-Both faces -> **same** state machine via **same** action surface. No second code path. Add action ->
-GUI client + agent both get it (subject to `audience`, below). Whole philosophy:
+| Requirement | Implement it with |
+| --- | --- |
+| Synchronous state change callable by GUI and agent | `t.on` |
+| Async or multi-step operation | procedure |
+| Capability result that must update state | `t.cmd(...).to(...)` + `t.fromResult` |
+| Ongoing external events | `subscriptions` + `t.fromEvent` |
+| Internal atomic commit from a procedure | `t.commit` |
+| Visual or transient interaction | GUI-local state |
+| Host service such as files, AI, or notifications | declared capability |
 
-> Write logic once as pure state machine. GUI = one renderer of state; agent = another consumer.
-> Neither owns logic — state machine does.
+Reducer state is the contract between user, GUI, and agent. Keep it small, semantic, JSON-safe, and
+backward-compatible.
 
+## Choose an authoring environment
+
+### Normal `app-*` package
+
+Create new apps from the repository template:
+
+```sh
+node packages/create-app/index.js packages/app-<name>
 ```
-        ┌─────────── GUI (React) ───────────┐
-        │  renders state, calls actions      │
-        ▼                                    │
-   ┌─────────────────────────────────────┐  │
-   │   STATE MACHINE  (app.ts, pure)      │◀─┘
-   │   init + edges + procedures          │
-   └─────────────────────────────────────┘  ▲
-        ▲                                    │
-        │  inspects state, calls actions     │
-        └─────────── Agent (TUI) ────────────┘
-```
 
-### Requirement -> change
+Read the generated files, then use existing `packages/app-*` apps for the nearest advanced pattern.
+A normal package has no dependency allowlist: add npm or workspace dependencies with `pnpm`. Reducer
+dependencies must work in a headless worker and GUI dependencies in a browser. Vite bundles them into
+the app artifact; React is shared with the host by default.
 
-| User wants…                                          | You change…                                                            |
-| ---------------------------------------------------- | ---------------------------------------------------------------------- |
-| New thing user/agent can *do* that mutates state       | **public edge** `t.on(...)` in `update`                             |
-| Multi-step / async / capability-driven op              | **procedure** `p.procedure(...)`                                     |
-| React to capability result inside state                | **command** `t.cmd(...).to(edge)` + `t.fromResult` edge             |
-| React to external change over time (file/stream)       | **subscription** + `t.fromEvent` edge                              |
-| New visual layout / control                            | **GUI** (`gui.tsx`), no logic change                               |
-| Use host service (AI, files, email, …)                 | **declare capability** + invoke (`t.cmd` or `app.invoke`)          |
-| Thing agent must NOT do                                | procedure `audience: 'gui'`                                          |
-| Persist value across reloads                           | **reducer state**                                                    |
-| Transient UI state (drag, scroll, typing)              | **GUI-local React state** — NOT reducer                            |
-
----
-
-## 2. File & bundle layout
-
-App = small package. Only required file: `app.ts`. GUI optional but usual.
-
-```
+```text
 packages/app-foo/
-  src/
-    app.ts        # the state machine (REQUIRED). headless, runs sandboxed.
-    gui.tsx       # the React GUI (optional). runs in the browser.
-    ...helpers.ts # pure helpers, freely split out
-  vite.config.ts  # kernelHost({ id, name, app, gui, ... }) — builds the bundle
-  package.json
+	src/app.ts
+	src/gui.tsx
+	vite.config.ts
+	package.json
+	tsconfig.json
+	public/icon.png
 ```
 
-- `app.ts` **headless**: no DOM, no React, no `window`. Runs sandboxed. Pure except via declared
-  capabilities.
-- `gui.tsx` = **browser** side: React + DOM. No business logic — renders state, dispatches actions.
-- **`.tsx`/`.jsx` extension = only signal** GUI is React component (default-export component). Plain
-  `.ts` GUI must export `gui` via `defineGUI` (imperative DOM).
-
-Build (`kernelHost`) emits `manifest.json`, `app.js`, `gui.js`, copied public
-assets.
-
-### vite.config.ts
+The standard build is configured with `kernelHost`:
 
 ```ts
 import { kernelHost } from '@justfiles/app/vite'
@@ -91,689 +79,612 @@ import { defineConfig } from 'vite'
 export default defineConfig(({ mode }) => ({
 	define: { 'process.env.NODE_ENV': JSON.stringify('production') },
 	plugins: [
-		react(), // only if you have a .tsx GUI
+		react(),
 		...(mode === 'test'
 			? []
 			: [
 					kernelHost({
-						id: 'app.frieren.foo', // stable, unique bundle id
+						id: 'app.example.foo',
 						name: 'Foo',
-						description: 'Does foo.',
-						icon: 'icon.svg', // optional, from public/
+						description: 'Does one useful thing.',
+						icon: 'icon.png',
 						app: 'src/app.ts',
-						gui: 'src/gui.tsx' // omit for a headless app
+						gui: 'src/gui.tsx'
 					})
 				])
 	]
 }))
 ```
 
----
+`kernelHost({ id, name, app, gui, description?, version?, icon?, include? })` runs a local development
+host and builds `dist/manifest.json`, `app.js`, and `gui.js`. `version` defaults to
+`package.json#version`. `include` is only for extra bundle files needed by a host; prefer a
+self-contained `gui.js`.
 
-## 3. State machine (`app.ts`)
+The host imports `gui.js` as one blob module. Avoid emitted chunks and URL-loaded assets in portable
+apps: inline dynamic imports and import small assets so the GUI bundle is self-contained. The icon is
+the supported separate launcher asset.
 
-Start with `defineApp`. Validators = [Standard Schema](https://standardschema.dev) compatible.
-Examples use [`valibot`](https://valibot.dev) (`import * as v from 'valibot'`).
+### App Code draft
+
+An App Code project lives in Code's private volume:
+
+```text
+/projects/<slug>/
+	project.json
+	src/app.ts
+	src/gui.tsx
+	icon
+```
+
+`project.json` supports:
+
+```json
+{
+	"id": "com.example.foo",
+	"name": "Foo",
+	"description": "Optional",
+	"version": "0.1.0",
+	"app": "src/app.ts",
+	"gui": "src/gui.tsx",
+	"icon": "icon"
+}
+```
+
+App Code is deliberately not an npm environment. Do not add third-party packages, Node built-ins, or
+other bare imports. The only supplied bare imports are:
+
+```text
+@justfiles/app
+@justfiles/app/browser
+@justfiles/app/react
+@justfiles/app/capabilities/volume
+@justfiles/app/capabilities/notify
+@justfiles/app/capabilities/email
+@justfiles/app/capabilities/calendar
+@justfiles/app/capabilities/ai
+@justfiles/app/capabilities/devkit
+@justfiles/app/capabilities/accounts
+valibot
+react
+react-dom
+react-dom/client
+react/jsx-runtime
+react/jsx-dev-runtime
+```
+
+Relative imports within the project work, including explicit CSS imports. The compiler folds CSS into
+`gui.js`. `image`, `user`, and `usage` are platform capabilities but are not currently in the App Code
+draft sysroot.
+
+When driving Code as an agent:
+
+1. Open or create the project.
+2. Read and write its source files. Make the complete change before compiling.
+3. Run `typecheck`; fix every error. Frieren's browser host may report
+   `CAPABILITY_UNAVAILABLE` because it has no type checker.
+4. Run `compile` or `run`; fix every build diagnostic. Use `run({ reset: true })` only when a clean
+   reducer state is required.
+5. Install or pack only after the final checks pass.
+
+`compile` strips TypeScript types and therefore does not replace `typecheck`.
+
+## State machine API
+
+Schemas use the [Standard Schema](https://standardschema.dev/) interface. Apps normally use Valibot.
+`app.ts` is a headless worker module: do not import React, access the DOM or `window`, perform top-level
+I/O, or depend on Node APIs.
 
 ```ts
 import { defineApp } from '@justfiles/app'
 import * as v from 'valibot'
 
 export const app = defineApp({
-	init: { count: 0 },          // the bootstrap state
-	capabilities: { /* ... */ }, // host services (Section 5), optional
-	update: (t) => ({ /* ... */ }),        // the edge table (Section 4)
-	subscriptions: (state, sub) => [ ... ], // live streams (Section 6), optional
-	procedures: (p) => ({ /* ... */ })      // imperative facade (Section 7), optional
+	init: { count: 0 },
+	capabilities: {},
+	update: (t) => ({
+		increment: t.on(
+			v.object({ amount: v.number() }),
+			(state, { amount }) => ({ ...state, count: state.count + amount }),
+			{
+				description: 'Increase the counter.',
+				examples: [{ params: { amount: 1 } }]
+			}
+		)
+	}),
+	subscriptions: (_state, _sub) => [],
+	procedures: (_p) => ({})
 })
 
-// ALWAYS export the type — the GUI and clients infer everything from it.
-export type FooApp = typeof app
+export type CounterApp = typeof app
 ```
 
-### State discipline (where apps go wrong)
+`update`, `subscriptions`, `capabilities`, and `procedures` are optional. Always export the app type for
+the GUI and other typed clients.
 
-Reducer state = **semantic, persistable, agent-inspectable**. Decide where value lives:
+### Edge builders
 
-- **reducer state** if agent needs to read it, or user expects it to survive reload (document,
-  selection, mode, saved status).
-- **GUI-local React state** if transient interaction: drag positions, scroll offset, in-progress text,
-  hover, undo history, preview re-read from disk.
-
-**Granularity: one dispatch per *semantic* event** (pointer-up, form submit, save) — never per keystroke
-or pointer-move. Every dispatch round-trips to kernel.
-
-Keep state minimal. Durable fact usually = "what is user looking at", not the bytes (re-read those on
-demand via procedure). See `app-files`.
-
-### State persistence & migrations
-
-The **whole** reducer state is JSON-persisted to `/state/<id>.json` on every commit and **rehydrated
-verbatim** on boot. `init` is used **only on first run** (when nothing is persisted yet) — it is *not*
-merged into already-persisted state. So a field you add to `init` later will be **missing** from states
-saved before the change:
+Every transition is synchronous and pure:
 
 ```ts
-// You shipped v1 with this, the user used the app (state is now persisted):
-init: { notes: [{ title: 'hi' }] }
-// v2 adds `path`. OLD persisted state still loads WITHOUT it — init is not re-applied:
-type Note = { title: string; path?: string } // ← make new fields optional
+(state, params) => nextState
+(state, params) => [nextState, command]
 ```
 
-Tolerate old shapes — don't assume new fields exist:
+It may throw to reject an invalid state-dependent operation. It must not call capabilities, access the
+DOM, or be `async`.
+
+| API | Input | Visibility | Purpose |
+| --- | --- | --- | --- |
+| `t.on(schema, transition, meta?)` | schema output | GUI client and agent | Public state transition |
+| `t.commit(schema, transition)` | schema output | Internal | Procedure commits computed data |
+| `t.fromResult(cap, method, transition)` | `Result<T>` | Internal | Fold a command result into state |
+| `t.fromEvent(cap, method, transition)` | stream event | Internal | Fold a subscription event into state |
+| `t.cmd(cap, method, ...args).to(edge)` | capability args | Returned by a transition | Request one capability call |
+
+`meta` is `{ description?, examples? }`. Public actions are the agent's UI, so give every agent-useful
+`t.on` a precise imperative description, a tight schema, and realistic examples.
+
+Capability results are:
 
 ```ts
-// Default at the read site:
-const path = note.path ?? `/notes/${slugify(note.title)}.txt`
-
-// Or version-tag the state and normalise once, inside the first edge that touches it:
-type State = { v: 1 | 2; notes: Note[] }
+type Result<T> =
+	| { ok: true; value: T }
+	| { ok: false; error: { message: string } }
 ```
 
-To hard-reset during dev: clear `/state/<id>.json` (uninstalling drops it; **re-installing keeps old
-state**). In an app-code draft, the ⟳ Run/Restart button wipes draft state (`devkit.run({ reset: true })`).
-
----
-
-## 4. Edges — `update: (t) => ({ ... })`
-
-`update` table **IS the whole state machine**. Each entry = edge keyed by action name. Transition =
-**pure + synchronous**:
+Use `.coalesce()` before `.to(...)` for an idempotent query that may be requested in bursts:
 
 ```ts
-(state, payload) => nextState
-// or, to also fire a side effect:
-(state, payload) => [nextState, command]
+t.cmd('volume', 'scan', { path: '/', recursive: true })
+	.coalesce()
+	.to('filesLoaded')
 ```
 
-No `async`, no `await`, no `ctx`, no capability calls in transition. Effects returned as **data**
-(`Command`); kernel runs them. Invalid action -> `throw` (surfaces as app error).
+While an identical command is running, the kernel collapses further requests into at most one trailing
+rerun. Never coalesce writes or other accumulating operations.
 
-Four edge constructors on `t`:
+### Procedures
 
-### `t.on(schema, transition, meta?)` — the PUBLIC action
-
-External API. **Validated**, **on typed GUI client**, **visible to agent**. Default reach-for.
-
-```ts
-increment: t.on(
-	v.object({ amount: v.number() }),
-	(state, { amount }) => ({ ...state, count: state.count + amount }),
-	{ description: 'Increase the counter.', examples: [{ params: { amount: 1 } }] }
-)
-```
-
-- `schema` validates `params` before transition (+ types it for callers).
-- `meta.description`/`meta.examples` = **agent's docs** for this action. Write well — Section 8. GUI
-  ignores.
-
-### `t.cmd(capability, method, ...args).to('edgeName')` — fire side effect
-
-Returned as 2nd element of transition. Describes capability call as data; kernel runs it, routes result
-to named `t.fromResult` edge. Use when edge needs host (write file) but transition stays pure.
-
-```ts
-save: t.on(
-	v.object({ pngBase64: v.string() }),
-	(state, { pngBase64 }) => [
-		{ ...state, lastSavedPath: path, lastError: null }, // optimistic state
-		t.cmd('volume', 'writeFile', path, bytes).to('saved') // effect → 'saved' edge
-	]
-),
-```
-
-**`.coalesce()`** — opt-in single-flight for idempotent, query-like commands:
-`t.cmd('volume','scan',{…}).coalesce().to('listed')`. The kernel keys the command
-by `{capability,method,args,to}` per app: if an identical one is already in
-flight it is **not** run again — instead a single trailing re-run fires once the
-current lands, so a burst (e.g. a watch firing on every file in a `git checkout`)
-collapses into one scan plus at most one extra pass. Never use it on accumulating
-writes (an `appendFile`), where each call must run. This replaces hand-rolled
-"is a scan running" flags in state — whether an effect is in flight is the
-kernel's runtime truth, not a durable app fact.
-
-### `t.fromResult(capability, method, transition)` — receive command result
-
-Internal edge (not on client, not agent-visible). Payload = `Result<T>`:
-
-```ts
-type Result<T> = { ok: true; value: T } | { ok: false; error: { message: string } }
-```
-
-```ts
-saved: t.fromResult('volume', 'writeFile', (state, r) =>
-	r.ok ? state : { ...state, lastError: r.error.message }
-)
-```
-
-### `t.fromEvent(capability, method, transition)` — receive stream event
-
-Internal edge fed by **subscription** (Section 6). Payload = stream's event type.
-
-```ts
-fileChanged: t.fromEvent('volume', 'watch', (state) => ({ ...state, revision: state.revision + 1 }))
-```
-
-### `t.commit(schema, transition)` — internal commit edge
-
-Validated like `t.on`, but **off** agent surface + typed client. Only app's own procedures dispatch by
-name (`app.dispatch`). Use when procedure computes result off to side -> commit atomically in one pure
-transition (built puzzle, recorded build outcome). Keeps multi-step async out of pure core, lands result
-through pure edge.
-
-```ts
-opened: t.commit(openedSchema, (state, snapshot) => ({ ...state, ...snapshot }))
-```
-
-### Edge visibility cheat-sheet
-
-| Constructor      | Validated | On typed GUI client | Agent-visible | Dispatched by                       |
-| ---------------- | --------- | ------------------- | ------------- | ----------------------------------- |
-| `t.on`           | ✅        | ✅                  | ✅            | GUI, agent                          |
-| `t.commit`       | ✅        | ❌                  | ❌            | the app's own procedures, by name   |
-| `t.fromResult`   | —         | ❌                  | ❌            | the kernel (a `t.cmd` result)       |
-| `t.fromEvent`    | —         | ❌                  | ❌            | the kernel (a subscription event)   |
-
----
-
-## 5. Capabilities — host services
-
-App cannot invent powers. It **declares** the host services it needs; the kernel resolves trusted scopes
-— a sandboxed app cannot grant itself more. A declaration is just `{ id, scopes }` (all the kernel reads).
-**Declare every capability you touch**, even under a broad host — it keeps the agent's action surface
-honest.
-
-```ts
-import { volume } from '@justfiles/app/capabilities/volume'
-import { ai } from '@justfiles/app/capabilities/ai'
-
-export const app = defineApp({
-	capabilities: {
-		volume: volume({ scopes: [] }), // local name 'volume' → the volume capability
-		ai: ai({ scopes: [] })
-	}
-	// ...
-})
-```
-
-> **In an app-code draft** this subpath does not resolve — declare the factory inline instead (Section 12).
-
-**Key** (`volume`, `ai`) = the app-local name you pass to `t.cmd`, `t.fromResult`, `sub.capability`,
-`app.invoke`. **`scopes`** = access level (capability-specific; see volume below).
-
-### Invoke two ways
-
-```ts
-// into state (from an edge): kernel runs it, result folds back via t.fromResult (Section 4)
-t.cmd('volume', 'writeFile', path, bytes).to('saved')
-// to the caller (from a procedure): app.invoke returns the value (Section 7)
-const bytes = await app.invoke('volume', 'readFile', path)
-```
-
-### volume scopes — the one capability with non-trivial scoping
-
-```ts
-volume({ scopes: [] })          // per-app chroot at /data/<id> — ALWAYS available
-volume({ scopes: ['app'] })     // identical to [] (any non-special scope → per-app chroot)
-volume({ scopes: ['system'] })  // user's ROOT volume — host-ALLOWLISTED apps only
-volume({ scopes: ['/photos'] }) // chroot at an absolute prefix (/system[/...] needs 'system')
-```
-
-- A **user/third-party app gets `CAPABILITY_UNAVAILABLE` for `['system']`** — only host built-ins (e.g.
-  the Files app) are on the allowlist. **Use `scopes: []`** unless you are a built-in.
-- Inside a per-app chroot the app sees `/` as its own root: `writeFile('/notes/a.txt', …)` lands at
-  `/data/<id>/notes/a.txt`. Just use plain absolute paths.
-
-### Exact volume method signatures
-
-The surface IS the `@justfiles/fs` `Volume` interface (minus the two callback-shaped methods). Every
-method is **positional** and **async**; paths are absolute. I/O is **bytes** — encode/decode text
-yourself (`TextEncoder`/`TextDecoder`).
-
-```ts
-readFile(path): Promise<Uint8Array>                        // throws ENOENT / EISDIR
-writeFile(path, data: Uint8Array): Promise<void>           // create+overwrite; AUTO-creates parent dirs
-appendFile(path, data: Uint8Array): Promise<void>
-exists(path): Promise<boolean>                             // never throws
-mkdir(path, opts?: { recursive?: boolean }): Promise<void> // default NON-recursive → EEXIST if exists
-readdir(path): Promise<Dirent[]>
-rm(path, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
-rename(oldPath, newPath): Promise<void>                    // replaces dest atomically
-cp(src, dest, opts?: { recursive?: boolean }): Promise<void>
-stat(path): Promise<Stat>
-
-// scan is the ONE object-shaped method — it RETURNS a listing (no visitor):
-scan(input: { path: string; recursive?: boolean }): Promise<VolumeEntry[]>
-//   VolumeEntry = { path: string; type: 'file' | 'dir' }
-
-// watch is a STREAM — declared via subscriptions(), folded with t.fromEvent (Section 6):
-watch(input: { path: string }): Stream<{ source?: string }>
-```
-
-Because `writeFile` auto-creates parent dirs, you usually **don't need `mkdir`** before a write. The
-file-backed Notes recipe (Section 10) shows these calls in context.
-
-### Other capabilities
-
-Unlike `volume`, these take a **single object** argument. The two common ones:
-
-```ts
-ai.generateText(input: { system?; prompt; temperature?; maxTokens? }): Promise<{ text: string }>
-notify.notify(input: { id; kind: 'info' | 'error' | 'question'; title; body; threadId?; route? }): void
-```
-
-`email` (`listUnread`/`readDetail`/`markRead`), `calendar` (`listToday({ timezone })`), `accounts`, and
-`devkit` — exact signatures in each `capabilities/<id>/contract.ts`. `ai`/`email`/`calendar`/`accounts`
-run server-side (credentialed); `volume`/`notify`/`devkit` run locally; `notify` needs no scope.
-
----
-
-## 6. Subscriptions — react to world over time
-
-`subscriptions(state, sub)` = **pure function of state** returning live streams current state wants
-open. Kernel diffs set on every commit: starts new, stops gone, routes each event to named
-`t.fromEvent` edge. **Recoverable by construction** — rebuilt from persisted state on boot.
-
-Use for: watching file user views, any long-lived host stream.
-
-```ts
-subscriptions: (state, sub) =>
-	state.currentViewing
-		? [sub.capability('volume', 'watch', { path: state.currentViewing }).to('fileChanged')]
-		: [],
-update: (t) => ({
-	fileChanged: t.fromEvent('volume', 'watch', (state) => ({ ...state, revision: state.revision + 1 }))
-})
-```
-
-`sub.capability(cap, method, ...args).to(edge)` mirrors `t.cmd`. Stream stays open while state keeps
-declaring it; clear condition -> kernel tears down. Keep streamed *bytes* out of state — fold in small
-signal (`revision` bump), re-read on demand in GUI.
-
----
-
-## 7. Procedures — imperative facade
-
-Edge = pure + synchronous. Need **async, multi-step, or capability-returning** logic (generate text then
-build puzzle, read file + return contents, save draft) -> **procedure**. One definition serves **both**
-GUI client + agent.
+A procedure is the async imperative facade shared by GUI and agent:
 
 ```ts
 procedures: (p) => ({
-	start: p.procedure({
-		description: 'Generate and start a new crossword for a theme.',
-		audience: 'both',            // 'gui' | 'agent' | 'both' (default 'both')
-		schema: v.object({ theme: v.string() }),
-		async run({ theme }, app) {
-			const { text } = await app.invoke('ai', 'generateText', { prompt: `...${theme}` })
-			const built = buildPuzzle(/* ... */)
-			const { seq } = await app.dispatch({ type: 'play', params: built }) // a t.commit edge
-			return app.settled(seq)  // wait for quiescence, return the settled state
+	generate: p.procedure({
+		description: 'Generate and commit a document.',
+		audience: 'both',
+		schema: v.object({ prompt: v.string() }),
+		async run({ prompt }, app) {
+			const { text } = await app.invoke('ai', 'generateText', { prompt })
+			const { seq } = await app.dispatch({
+				type: 'generated',
+				params: { text }
+			})
+			return app.settled(seq)
 		}
 	})
 })
 ```
 
-`run(params, app)` gets validated `params` + **`AppHandle`**:
+`p.procedure({ schema, run, description?, audience? })` validates params before `run`.
+`audience` is `'both'` by default, `'gui'`, or `'agent'`. A `'gui'` procedure is omitted from the
+agent's discovered action list. Audience is interface metadata, not an authorization boundary; enforce
+real privileges in capabilities and schemas.
 
-| `app` member                         | Use                                                                     |
-| ------------------------------------ | ----------------------------------------------------------------------- |
-| `app.state`                          | current state (read).                                                    |
-| `app.invoke(cap, method, ...args)`   | call a capability and get the **value back** (scope-checked).           |
-| `app.dispatch(message) → { seq }`    | dispatch an edge by name (usually a `t.commit` edge). Returns a seq.    |
-| `app.settled(seq, opts?) → State`    | await until the app is quiescent; resolve with the settled state.       |
+The `app` handle provides every procedure-side API:
 
-**Pattern:** messy async in procedure, compute final result, then `dispatch` single `t.commit` edge to
-land atomically -> failure never leaves half-built state. Return `app.settled(seq)` -> caller gets
-resulting state.
+| API | Meaning |
+| --- | --- |
+| `app.state` | State snapshot supplied when the procedure starts |
+| `app.invoke(capability, method, ...args)` | Call a declared capability and return its value |
+| `app.dispatch({ type, params })` | Dispatch an edge; returns `{ seq }` |
+| `app.settled(seq, { timeout? })` | Wait for that commit, queued work, and commands to become idle |
 
-**`audience`** = line between two interfaces:
+Prefer: perform async work, compute a complete result, dispatch one `t.commit`, then return
+`app.settled(seq)`. This avoids partially committed workflows.
 
-- `'both'` (default) — GUI + agent both get it.
-- `'gui'` — hidden from agent. For destructive/context-dependent actions agent must not call blindly
-  (e.g. `remove({ slug })` in `app-code` — slug param would let agent delete *any* project).
-- `'agent'` — offered to agent, not GUI client.
+### Subscriptions
 
-Caller-scoped read (return bytes to GUI, never into state) = classic procedure — see `app-files`
-`readFile`, `app-paint` `loadDraft`/`saveDraft`.
-
----
-
-## 8. Agent (TUI) interface — design deliberately
-
-Agent never sees GUI. Entire view of app:
-
-1. **`state`** — reducer state as JSON. (Keep state semantic, legible.)
-2. **Action surface** — every public `t.on` edge (`kind: 'handler'`) + every procedure with `audience`
-   not `'gui'` (`kind: 'procedure'`). Each entry is derived from your edge:
+Subscriptions are a pure function of state. The kernel diffs the returned descriptors after every
+commit, starts new streams, stops removed streams, and recreates them after restart.
 
 ```ts
-// your edge:  rename: t.on(v.object({ from: v.string(), title: v.string() }), …,
-//               { description: 'Rename the open note.', examples: [{ params: { from: '/notes/a.txt', title: 'b' } }] })
-// the agent sees:
-{ name: 'rename', kind: 'handler',
-  description: 'Rename the open note.',
-  examples: [{ params: { from: '/notes/a.txt', title: 'b' } }],
-  schemaHint: { from: 'string', title: 'string' } } // ← derived from the schema
+subscriptions: (state, sub) =>
+	state.openPath
+		? [sub.capability('volume', 'watch', { path: state.openPath }).to('fileChanged')]
+		: [],
+update: (t) => ({
+	fileChanged: t.fromEvent('volume', 'watch', (state) => ({
+		...state,
+		revision: state.revision + 1
+	}))
+})
 ```
 
-Agent dispatches with `actor: 'agent'`. State-changing agent dispatch resolves with settled state ->
-agent sees result.
+Store a small semantic signal such as `revision`; re-read large external data through a procedure.
 
-**So: `description` + `examples` ARE agent's UI.** Treat like button labels + tooltips. Adding/editing
-action -> write one-line imperative `description` (what it does + precondition) + realistic `examples`.
-Crossword edges model this — e.g. `'Submit themed seed words. Triggers grid generation and returns slots needing answers.'`
+### Persistence and compatibility
 
-Checklist for new public action agent should use:
+The entire reducer state is JSON-written to `/state/<app-id>.json` after every commit. On later boots,
+persisted state is loaded verbatim. `init` is only the first-run state; it is not merged into old state.
 
-- [ ] Clear `description` (what + when valid).
-- [ ] At least one `examples: [{ params: { ... } }]`.
-- [ ] Tight schema (agent fills from hint — make invalid input impossible).
-- [ ] Human-only? -> `t.commit` edge or `audience: 'gui'` procedure instead.
+Therefore:
 
----
+- Use JSON values only. Keep bytes, blobs, DOM objects, class instances, and `bigint` out of state.
+- Treat newly added fields as optional or normalize old shapes at every entry point.
+- Put documents and large payloads in `volume`; keep paths, selection, status, and revision in state.
+- Keep pointer movement, drag state, scroll, hover, draft keystrokes, and render caches in the GUI.
+- Dispatch one semantic event, not every pointer move or keystroke.
 
-## 9. GUI (`gui.tsx`)
+Uninstalling an app removes its reducer state and private `/data/<app-id>` volume. Reinstalling over an
+existing app preserves state.
 
-GUI **renders state + dispatches actions** — nothing else. No business logic.
+## GUI API
 
-### React component (usual case)
+### React GUI
 
-Default-export component. `kernelHost` wraps it, injects typed props.
+A `.tsx` or `.jsx` GUI normally default-exports a component:
 
 ```tsx
 import type { GUIProps } from '@justfiles/app/react'
 import type { app } from './app'
+import './gui.css'
 
 export default function Foo({ state, actions }: GUIProps<typeof app>) {
 	return (
 		<button type="button" onClick={() => void actions.increment({ amount: 1 })}>
-			count: {state.count}
+			{state.count}
 		</button>
 	)
 }
 ```
 
-- `state` = current app state (non-null in React component — host resolves `init` first).
-- `actions` = **typed client** (`Client<typeof app>`): one async method per public `t.on` edge (resolves
-  with new state) + one per procedure (resolves with return value). `t.commit`/`t.fromResult`/`t.fromEvent`
-  edges **not** on it — internal.
-- Fire-and-forget with `void actions.foo({...})`. State flows back via re-render; rarely read action's
-  return value.
+`GUIProps<A>` contains:
 
-### App-scoped CSS
+- `state` — the current non-null reducer state
+- `actions` — `Client<A>`, with one async method per public `t.on` and procedure
 
-Layout CSS, scoped under a root class. Platform look/colors from host design tokens
-(`var(--surface)`, `var(--text)`, `var(--rule)`, `var(--focus)`, …) — use those, don't hardcode.
-Two ways, both ending up as one `<style>` inside `gui.js` (the only file the host loads):
+State returns through host pushes and causes a rerender. Usually fire an action with `void` and render
+the pushed state rather than depending on its immediate return.
 
-```ts
-// 1. A real stylesheet — import it for its side effect. The build folds it into gui.js
-//    (in-repo via vite, drafts via the devkit compiler), so it works in dev and prod alike.
-import './gui.css'
+React, React DOM, and JSX runtimes are externalized so a GUI shares the host's React instance. A normal
+package may use third-party React libraries, but keep the final GUI graph compatible with the shared
+React. If a CommonJS dependency forces bundled React or emits chunks, follow `packages/app-draw` and
+keep the resulting `gui.js` single-file.
 
-// 2. An inline string — handy for a few rules. Dedups on the key.
-import { injectStyle } from '@justfiles/app/browser'
-injectStyle(`.foo { display: flex; height: 100%; }`, 'app-foo')
-```
+### Imperative GUI
 
-### Imperative / non-React GUI
-
-Plain `gui.ts` exporting `gui` via `defineGUI`. Here `state` **nullable** (host may mount before first
-state push — own bootstrap default). See `app-doom`.
+Use `defineGUI` for Canvas, WebAssembly, a custom React root, or another imperative renderer:
 
 ```ts
 import { defineGUI } from '@justfiles/app/browser'
 import type { FooApp } from './app'
 
 export const gui = defineGUI<FooApp>({
-	mount(el, state, ctx) {
-		const render = (s: FooState | null) => { /* paint el from s ?? default */ }
+	mount(element, state, { client }) {
+		const render = (next: typeof state) => {
+			element.textContent = String(next?.count ?? 0)
+		}
 		render(state)
-		return { update: render, unmount: () => el.replaceChildren() }
+		return {
+			update: render,
+			unmount: () => element.replaceChildren()
+		}
 	}
 })
 ```
 
-### React runtime rule
+Here the initial `state` is nullable. `mount` returns `{ update(state), unmount() }`; both methods may
+be async. The context supplies the typed `client`.
 
-`react`, `react-dom`, JSX runtimes = **shared** by host. Emit bare `from "react"` imports; never bundle
-own React or add another React-based stdlib without host coordination — duplicate React breaks
-hooks/context.
+`injectStyle(css, key?)` from `@justfiles/app/browser` injects CSS once. A normal CSS side-effect import
+is preferred; both package and draft builds fold it into `gui.js`.
 
----
+`Client<A>`, `createClient<A>(transport)`, and `Transport` are exported from `@justfiles/app` for
+low-level adapters. Regular GUIs should use `GUIProps` or the client supplied by `defineGUI`.
 
-## 10. End-to-end recipes
+Both hosts sandbox reducers. Frieren also runs every GUI in an opaque-origin, network-denied iframe.
+For portable apps, do not use `fetch`, cookies, host DOM access, or ambient credentials. Use declared
+capabilities; use `data:` or `blob:` URLs for generated media.
 
-**Add simple state mutation** ("let users rename the document"):
-Add `t.on` edge: schema, pure transition, description + example. Done — GUI + agent both have it. Add
-GUI control calling `actions.rename({...})`.
+## Capabilities
 
-**Add async / AI / multi-step action** ("generate a summary"):
-Add `p.procedure`. In `run`: `app.invoke('ai', 'generateText', ...)`, compute result, then `app.dispatch`
-a `t.commit` edge to land. Return `app.settled(seq)`. Declare `ai` capability.
-
-**Persist to / read from files** (a file-backed Notes app — scan, read, autosave, rename):
-The full file pattern. Declare `volume`; write *into* state via `t.cmd('volume','writeFile',…).to(edge)`
-+ a `t.fromResult` edge; read bytes *back to the GUI* via a procedure (`app.invoke('volume','readFile',…)`).
-State stays semantic (the list + which note is open); body bytes are re-read on demand. `writeFile`
-auto-creates `/notes`, so there's no separate `mkdir`.
+Declare every capability before using it:
 
 ```ts
-import { defineApp } from '@justfiles/app'
-import { volume } from '@justfiles/app/capabilities/volume' // declare inline in an app-code draft
-import * as v from 'valibot'
-
-const enc = new TextEncoder()
-const dec = new TextDecoder()
-const NOTES = '/notes'
-const titleToPath = (title: string) => `${NOTES}/${title.replace(/[^a-z0-9-]+/gi, '-')}.txt`
-
-type Note = { path: string; title: string }
-type State = { notes: Note[]; openPath: string | null; error: string | null }
-
-export const app = defineApp({
-	init: { notes: [], openPath: null, error: null } as State,
-	capabilities: { volume: volume({ scopes: [] }) }, // per-app private storage at /data/<id>
-	update: (t) => ({
-		// scan the folder → fold the .txt listing into state
-		refresh: t.on(v.object({}), (s) => [s, t.cmd('volume', 'scan', { path: NOTES }).to('listed')], {
-			description: 'Rescan the notes folder.'
-		}),
-		listed: t.fromResult('volume', 'scan', (s, r) => {
-			if (!r.ok) return { ...s, error: r.error.message }
-			const notes = r.value
-				.filter((e) => e.type === 'file' && e.path.endsWith('.txt'))
-				.map((e) => ({ path: e.path, title: e.path.slice(NOTES.length + 1, -4) }))
-				.sort((a, b) => a.title.localeCompare(b.title))
-			return { ...s, notes, error: null }
-		}),
-		open: t.on(v.object({ path: v.string() }), (s, { path }) => ({ ...s, openPath: path }), {
-			description: 'Open a note for editing.'
-		}),
-		// autosave — GUI dispatches on a debounced pause, not per keystroke; writeFile auto-creates /notes
-		save: t.on(
-			v.object({ path: v.string(), text: v.string() }),
-			(s, { path, text }) => [s, t.cmd('volume', 'writeFile', path, enc.encode(text)).to('saved')],
-			{ description: 'Write a note body.', examples: [{ params: { path: '/notes/a.txt', text: 'hi' } }] }
-		),
-		saved: t.fromResult('volume', 'writeFile', (s, r) =>
-			r.ok ? { ...s, error: null } : { ...s, error: r.error.message }
-		),
-		// rename the file when the title changes (move old → new path)
-		rename: t.on(
-			v.object({ from: v.string(), title: v.string() }),
-			(s, { from, title }) => {
-				const to = titleToPath(title)
-				const openPath = s.openPath === from ? to : s.openPath
-				return [{ ...s, openPath }, t.cmd('volume', 'rename', from, to).to('renamed')]
-			},
-			{ description: 'Rename a note (the title is its filename).' }
-		),
-		renamed: t.fromResult('volume', 'rename', (s, r) => (r.ok ? s : { ...s, error: r.error.message }))
-	}),
-	// read the open note's body back to the GUI on demand — bytes never enter state
-	procedures: (p) => ({
-		readNote: p.procedure({
-			description: 'Read a note body as text.',
-			schema: v.object({ path: v.string() }),
-			async run({ path }, app) {
-				if (!(await app.invoke('volume', 'exists', path))) return { path, text: '' }
-				return { path, text: dec.decode(await app.invoke('volume', 'readFile', path)) }
-			}
-		})
-	})
-})
-
-export type NotesApp = typeof app
-```
-
-**React to external file changes** ("reload when file changes on disk"):
-Declare `volume`. Add `subscriptions(state)` returning `sub.capability('volume','watch',{path}).to('changed')`
-while path open + `t.fromEvent` edge bumping `revision`. Re-read in GUI on `revision`.
-
-**Hide action from agent** ("delete project"):
-Procedure with `audience: 'gui'` (or `t.commit` edge dispatched only by GUI's own procedure). Pass
-identifying params from GUI, don't expose on agent surface.
-
-**Pure GUI/layout change**: edit `gui.tsx` only. No `app.ts` change. Don't move transient interaction
-state into reducer.
-
----
-
-## 11. Quick reference
-
-```ts
-defineApp({
-	init,                                  // bootstrap state
-	capabilities: { name: cap({ scopes }) },
-	update: (t) => ({
-		name: t.on(schema, (s, p) => s | [s, cmd], { description, examples }), // public action
-		name: t.commit(schema, (s, p) => s | [s, cmd]),                        // internal, app-dispatched
-		name: t.fromResult(cap, method, (s, result) => s),                     // command result
-		name: t.fromEvent(cap, method, (s, event) => s)                        // subscription event
-		// inside a transition: t.cmd(cap, method, ...args).to('resultEdge')
-	}),
-	subscriptions: (state, sub) => [ sub.capability(cap, method, ...args).to('eventEdge') ],
-	procedures: (p) => ({
-		name: p.procedure({ audience, description, schema, run: async (params, app) => result })
-		// app.state | app.invoke(cap, m, ...args) | app.dispatch(msg) → {seq} | app.settled(seq)
-	})
-})
-export type FooApp = typeof app
-```
-
-GUI (`gui.tsx`): `export default ({ state, actions }: GUIProps<typeof app>) => ReactNode`,
-CSS via `import './x.css'` or
-`injectStyle(css, key)`.
-
-### Hard rules
-
-- `app.ts` pure & headless. No DOM/React/`window`. No `async`/capability calls **in edges** — only in
-  procedures.
-- Edges return `state` or `[state, command]`. Side effects = data (`t.cmd`), run by kernel.
-- Declare every capability you use.
-- Reducer state = semantic & persistable. Transient UI state stays in GUI.
-- One dispatch per semantic event, not per keystroke.
-- `description` + `examples` on every public action — they are agent's interface.
-- Always `export type XxxApp = typeof app`; GUI + clients infer from it.
-- Verify before done: when a change is complete, `typecheck` + `compile` (or `run`) the draft and clear
-  every error. A final gate — not after every intermediate edit (Section 12).
-
----
-
-## 12. Building inside app-code (drafts)
-
-There are two ways to author an app, and the import rules differ:
-
-- **In-repo package** (`packages/app-foo/`): a full vite build via `kernelHost` (Section 2). Any package
-  in the workspace resolves normally — including every `@justfiles/app/capabilities/<id>` subpath.
-- **In an app-code draft** (built through the `app.code` authoring app): the draft compiler bundles
-  your sources plus the fixed platform SDK runtime shipped in app-code's `devkit/**` sysroot. There is no
-  `node_modules`, and arbitrary npm packages are **not supported**. SDK imports (`@justfiles/app` + its
-  capability subpaths, `valibot`) are inlined into the installed `app.js`/`gui.js`; React stays external
-  so the GUI shares the host's React singleton. This is the environment most agents are editing in, and
-  it is **stricter about imports**. Need an arbitrary package? Author an in-repo package with
-  `packages/create-app/` instead.
-
-### Project layout (app-code draft)
-
-A draft is a directory in the caller's data volume:
-
-```
-/projects/<slug>/
-  project.json        # { id, name, app: 'src/app.ts', gui: 'src/gui.tsx', icon?, version?, description? }
-  src/
-    app.ts            # state machine
-    gui.tsx           # React GUI
-  icon                # optional image data URL
-```
-
-`id` is a reverse-DNS bundle id (e.g. `com.example.notes`). You never declare or import `devkit`
-yourself — `app.code` owns it and surfaces it as the **dev tools** below, which you drive while a
-project is open.
-
-### Dev tools (the `devkit` surface)
-
-While a draft is open you have these tools. They all act on the **currently open project** and read the
-freshest source **off disk**, so `write` your edits first, then call them.
-
-| Tool        | Params                | Returns                      | Use it to…                                                               |
-| ----------- | --------------------- | ---------------------------- | ------------------------------------------------------------------------ |
-| `typecheck` | —                     | `{ diagnostics }`            | **Full TypeScript type-check** — the ONLY tool that catches type errors. |
-| `compile`   | —                     | `{ outputs, diagnostics }`   | esbuild bundle — catches syntax errors + unresolved/bad imports.         |
-| `run`       | `{ reset?: boolean }` | `{ previewId, diagnostics }` | Compile + mount the live App preview. `reset: true` wipes draft state.   |
-| `install`   | —                     | `{ id }`                     | Promote the draft to a real app under `/applications` (rejects a clash). |
-| `pack`      | —                     | `{ zip }`                    | Compile fresh + return a downloadable `.zip` of the bundle.              |
-| `stop`      | —                     | —                            | Tear down the running preview.                                           |
-
-`typecheck` and `compile` return **structured diagnostics** — each one is LSP-shaped: `{ file, range: {
-start, end }, severity: 'error' | 'warning' | 'info', source: 'ts' | 'esbuild' | …, code?, message }`
-(`range` line/character are 0-based). "Clean" = no diagnostic with `severity: 'error'`. (`run`'s
-`diagnostics` are plain message strings for the build banner.)
-
-> `typecheck` may return `CAPABILITY_UNAVAILABLE` on a host with no type checker (offline browser).
-> When it does, skip it and rely on `compile` + `run` — those always run.
-
-### Verify before you call a change done
-
-**After you finish editing — and only once you believe the change is complete and correct — `typecheck`
-then `compile` (or `run`) the draft, fix every error, and re-run until clean.** That clean pass IS the
-bar for "done"; never report a change finished without it.
-
-- **Why both:** the draft compiler (esbuild) **strips types without checking them**, so a type error
-  builds and runs fine until it explodes at runtime — `typecheck` is the only tool that catches it.
-  `compile`/`run` then catch syntax errors and bad imports that types alone won't surface.
-- **Not every edit:** these are a **final gate, not a per-keystroke check**. Make the whole change across
-  as many `write`s as it takes, *then* verify once. Running them after every intermediate edit is wasted
-  work — a half-written change is expected to fail.
-
-### What you can import in a draft
-
-Only these bare specifiers resolve (everything else fails the build):
-
-```ts
-import { defineApp } from '@justfiles/app'
-import { injectStyle, defineGUI } from '@justfiles/app/browser'
-import type { GUIProps } from '@justfiles/app/react'
+import { ai } from '@justfiles/app/capabilities/ai'
 import { volume } from '@justfiles/app/capabilities/volume'
-import * as v from 'valibot'
-import './helpers.ts' // ✅ relative imports within src/ work
-import './gui.css' // ✅ folded into gui.js by the devkit compiler (Section 9)
+
+capabilities: {
+	volume: volume({ scopes: [] }),
+	ai: ai({ scopes: [] })
+}
 ```
 
-The SDK (`@justfiles/app` + subpaths, `valibot`) is bundled into the draft outputs from app-code's
-sysroot. `react` / `react-dom` stay bare and are resolved by the host importmap. Any **other** bare
-import is an unsupported npm package and fails the build with a clear message — author an in-repo package
-with `packages/create-app/` if you need one.
+The object key is the app-local name passed to `t.cmd`, `t.fromResult`,
+`sub.capability`, and `app.invoke`. The factory records the platform capability id and requested
+scopes; the host decides whether the app is allowed to use it.
 
-### Declaring capabilities in a draft
+Use `t.cmd` when the result belongs in state. Use `app.invoke` in a procedure when the result belongs
+to that caller or is one step in a workflow.
 
-Use the real capability factories from `@justfiles/app/capabilities/*`; they resolve in app-code drafts
-and preserve method typing for `app.invoke` / `t.cmd`.
+Capability failures use:
 
-### Capability limits for user apps
+```text
+CAPABILITY_UNAVAILABLE
+CAPABILITY_INVALID_INPUT
+CAPABILITY_DENIED
+CAPABILITY_FAILED
+CAPABILITY_OFFLINE
+```
 
-A draft installs under the author's own id, **not** the built-in allowlist — so `volume({ scopes:
-['system'] })` returns `CAPABILITY_UNAVAILABLE`. Use `scopes: []` (per-app chroot at `/data/<id>`) for
-private storage. See Section 5 for the full scope rules.
+Availability differs by host and user configuration:
+
+| Capability | Import/factory | Frieren | Spud Mac | App Code import |
+| --- | --- | --- | --- | --- |
+| Files | `capabilities/volume`: `volume` | Yes | Yes | Yes |
+| Text AI | `capabilities/ai`: `ai` | Yes | Account-dependent | Yes |
+| Image generation | `capabilities/image`: `image` | Provider-dependent | No | No |
+| Email | `capabilities/email`: `email` | Account-dependent | Account-dependent | Yes |
+| Calendar | `capabilities/calendar`: `calendar` | Account-dependent | Account-dependent | Yes |
+| Notifications | `capabilities/notify`: `notify` | Yes | Yes | Yes |
+| Current user | `capabilities/user`: `user` | Yes | Returns `null` | No |
+| Plan usage | `capabilities/usage`: `usage` | Yes | No | No |
+| Account administration | `capabilities/accounts`: `accountsAdmin` | First-party Settings only | First-party Settings only | Importable, but not granted to drafts |
+| App compiler/installer | `capabilities/devkit`: `devkit` | First-party Code only | Yes | Yes; Frieren denies authored apps at runtime |
+
+The standalone Vite development host implements only `volume`. Test other capabilities inside Frieren
+or Spud Mac, or unit-test the pure logic behind them.
+
+### `volume`
+
+All paths are absolute inside the granted view. Scopes:
+
+- `[]`, `['app']`, or other non-path scopes: private `/data/<app-id>`, exposed to the app as `/`
+- `['/prefix']`: shared user volume chrooted at that absolute prefix; `/system` is forbidden
+- `['system']`: entire user volume; host-allowlisted first-party Files app only
+
+Data methods:
+
+```ts
+stat(path): Promise<Stat>
+lstat(path): Promise<Stat>
+exists(path): Promise<boolean>
+
+getXattr(path, name): Promise<Uint8Array | null>
+setXattr(path, name, value: Uint8Array): Promise<void>
+listXattr(path): Promise<string[]>
+removeXattr(path, name): Promise<void>
+
+readFile(path): Promise<Uint8Array>
+writeFile(path, data: Uint8Array): Promise<void>
+appendFile(path, data: Uint8Array): Promise<void>
+
+mkdir(path, opts?: { recursive?: boolean; mode?: number }): Promise<void>
+readdir(path): Promise<Dirent[]>
+rm(path, opts?: { recursive?: boolean; force?: boolean }): Promise<void>
+rename(oldPath, newPath): Promise<void>
+cp(src, dest, opts?: { recursive?: boolean }): Promise<void>
+
+symlink(target, path): Promise<void>
+readlink(path): Promise<string>
+chmod(path, mode): Promise<void>
+utimes(path, mtimeNs: bigint): Promise<void>
+
+scan(input: { path: string; recursive?: boolean }): Promise<VolumeEntry[]>
+```
+
+`writeFile` creates missing parent directories. Other operations retain normal POSIX-like behavior.
+Encode text with `TextEncoder` and decode with `TextDecoder`.
+
+```ts
+type Stat = {
+	ino: string
+	type: 0 | 1 | 2
+	size: bigint
+	mode: number
+	mtimeNs: bigint
+	ctimeNs: bigint
+	contentHash?: string
+}
+
+type Dirent = { ino: string; name: string; type: 0 | 1 | 2 }
+// 0 = regular file, 1 = directory, 2 = symlink
+
+type VolumeEntry = { path: string; type: 'file' | 'dir' }
+```
+
+`scan({ recursive: false })` lists direct children; `recursive: true` walks the subtree. It skips
+symlinks and returns `[]` when the root does not exist.
+
+The one stream is:
+
+```ts
+watch(input: { path: string; recursive?: boolean }): Stream<{ source?: string }>
+```
+
+Without `recursive`, it watches one concrete path for content, metadata, create, remove, or replace
+changes. With `recursive: true`, it is a coalesced structural-change signal; pair it with a recursive
+scan. The underlying signal is storage-wide and may cause harmless wakeups for changes outside a
+chroot. Recursive watch does not report content edits to existing children.
+
+### Other capability method signatures
+
+```ts
+// ai
+generateText(input: {
+	system?: string
+	prompt: string
+	temperature?: number
+	maxTokens?: number
+}): Promise<{ text: string }>
+
+// image
+generateImage(input: { prompt: string }): Promise<{
+	images: { data: string; mimeType: string }[]
+}>
+
+// email
+listUnread(input: {
+	since?: number
+	limit?: number
+	accountId?: string
+}): Promise<EmailSummary[]>
+readDetail(input: {
+	id: string
+	accountId?: string
+	purpose: 'briefing-detail' | 'summarization'
+}): Promise<EmailDetail>
+markRead(input: {
+	id: string
+	accountId?: string
+}): Promise<{ success: true }>
+
+type EmailSummary = {
+	id: string
+	from: string
+	subject: string
+	receivedAt: number
+	unread: boolean
+	accountId?: string
+}
+type EmailDetail = EmailSummary & { bodyText: string }
+
+// calendar
+listToday(input: {
+	timezone: string
+	accountId?: string
+	now?: number
+}): Promise<CalendarEvent[]>
+type CalendarEvent = {
+	id: string
+	title: string
+	startsAt: number
+	endsAt: number
+	location?: string
+	accountId?: string
+}
+
+// notify
+notify(input: {
+	id: string
+	kind: 'info' | 'error' | 'question'
+	title: string
+	body: string
+	threadId?: string
+	route?:
+		| { kind: 'chat' }
+		| { kind: 'app'; id: string }
+		| { kind: 'settings'; pane?: string }
+}): void
+
+// user
+current(input: {}): Promise<{
+	id: string
+	name?: string
+	avatarUrl?: string
+} | null>
+
+// usage
+current(input: {}): Promise<{
+	tier: string
+	aiBurst: UsageWindow
+	aiWeekly: UsageWindow
+	storage: UsageResource
+	aiTokens: number
+	aiRequests: number
+}>
+type UsageResource = {
+	used: number
+	limit: number | null
+	remaining: number | null
+	exceeded: boolean
+	fraction: number
+}
+type UsageWindow = UsageResource & { resetsAt: number | null }
+```
+
+Privileged capability signatures:
+
+```ts
+// accountsAdmin
+listProviders(input: {}): Promise<ProviderInfo[]>
+listAccounts(input: {}): Promise<AccountInfo[]>
+connect(input: {
+	providerId: string
+	credentials?: Record<string, string>
+}): Promise<{ accountId: string }>
+setEnabled(input: {
+	accountId: string
+	capability: 'email' | 'calendar' | 'ai'
+	enabled: boolean
+	config?: unknown
+}): Promise<void>
+disconnect(input: { accountId: string }): Promise<void>
+
+type ProviderInfo = {
+	id: string
+	name: string
+	authKind: 'form' | 'interactive' | 'none'
+	builtin?: boolean
+	capabilities: ('email' | 'calendar' | 'ai')[]
+	credentialsSchema?: {
+		type: 'object'
+		properties: Record<string, {
+			type: 'string'
+			minLength?: number
+			description?: string
+		}>
+		required?: string[]
+	}
+}
+type AccountInfo = {
+	accountId: string
+	providerId: string
+	enabled: ('email' | 'calendar' | 'ai')[]
+	config: Partial<Record<'email' | 'calendar' | 'ai', unknown>>
+	lastError?: string
+}
+
+// devkit — used by the Code app, not by an app being authored
+compile(input: { slug: string }): Promise<{
+	outputs: { path: string; text: string }[]
+	diagnostics: Diagnostic[]
+}>
+typecheck(input: { slug: string }): Promise<{ diagnostics: Diagnostic[] }>
+run(input: { slug: string; reset?: boolean }): Promise<{
+	previewId: string
+	diagnostics: string[]
+	preview?: { kind: 'url'; src: string } | { kind: 'window' }
+}>
+stop(input: { previewId: string }): Promise<void>
+install(input: { slug: string }): Promise<{ id: string }>
+pack(input: { slug: string }): Promise<{ zip: Uint8Array }>
+previewIdFor(slug: string): string
+
+type Diagnostic = {
+	file: string
+	range: {
+		start: { line: number; character: number }
+		end: { line: number; character: number }
+	}
+	severity: 'error' | 'warning' | 'info'
+	source: string
+	code?: string
+	message: string
+	related?: { file: string; range: Diagnostic['range']; message: string }[]
+}
+```
+
+## Final checklist
+
+- Reducer transitions are pure, synchronous, and immutable.
+- Reducer state is minimal, JSON-safe, and tolerant of old persisted shapes.
+- Public actions have tight schemas, descriptions, and examples.
+- Async work lives in procedures; capability effects from edges use commands.
+- Every used capability is declared and its host availability is handled.
+- High-frequency interaction and large payloads stay out of reducer state.
+- GUI code is self-contained and does not depend on direct network or host access.
+- App Code drafts use only the fixed imports; normal packages may use pnpm dependencies.
+- Package changes pass `pnpm format`, `pnpm typecheck`, `pnpm lint:fix`, and `pnpm test`.
+- App Code changes pass `typecheck` (when available) and `compile` or `run`.
