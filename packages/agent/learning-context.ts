@@ -15,7 +15,6 @@
 import type { Volume } from '@justfiles/fs'
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration.ts'
-import type { LLMText } from './llm.text.ts'
 import LEARNING_EXTRACTION from './prompts/learning-extraction.md?raw'
 
 export const LEARNING_SCHEMA = 'frieren/context/learning/v1'
@@ -47,10 +46,10 @@ type LearningContextFile = z.infer<typeof Envelope>
 
 export interface LearningContextDeps {
 	volume: Volume
-	// The credentialed text model, resolved lazily so a host that binds it per
-	// active account (spud) rebuilds nothing here, and so a missing model simply
-	// disables regeneration (age-only fallback) instead of throwing.
-	resolveText: () => Promise<LLMText | undefined>
+	// The credentialed text generator (system, prompt) → text — the same backend the
+	// `ai` capability uses. Regeneration calls it; a throw (e.g. no active model)
+	// simply degrades to age-only context.
+	gen: (system: string, prompt: string) => Promise<string>
 	now?: () => number
 }
 
@@ -61,7 +60,7 @@ export interface LearningContext {
 }
 
 export function learningContext(deps: LearningContextDeps): LearningContext {
-	const { volume, resolveText } = deps
+	const { volume, gen } = deps
 	const now = deps.now ?? Date.now
 	// Per-instance (per-user) single-flight, keyed by source hash so concurrent
 	// cold misses for the SAME sources regenerate once — and a call whose sources
@@ -107,9 +106,7 @@ export function learningContext(deps: LearningContextDeps): LearningContext {
 		if (!core.trim()) {
 			data = { interests: [], avoidTopics: [], learningPreferences: [] }
 		} else {
-			const text = await resolveText()
-			if (!text) throw new Error('no text model')
-			data = sanitize(parseJson(await text.gen(LEARNING_EXTRACTION, core)))
+			data = sanitize(parseJson(await gen(LEARNING_EXTRACTION, core)))
 		}
 		const projection: LearningContextFile = {
 			schema: LEARNING_SCHEMA,

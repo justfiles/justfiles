@@ -6,10 +6,11 @@
 // (`/system/agents/main/soul.md`, …). The tool/assistant/shell primitives are internal — hosts
 // declare what they have and let the product assemble the rest.
 
+// The host-side `ai` capability: scope-gated, purpose-scoped context composition
+// over a low-level `generate` fn (the learning-context projection is internal).
+export { aiCapability, type GenerateText } from './ai.capability.ts'
 // ── The seam a host implements: how apps are driven ─────────────────
 export type { AppController } from './justbash/app.ts'
-// Purpose-scoped context projection consumed by the host `ai` capability.
-export { type LearningContext, learningContext } from './learning-context.ts'
 // Powers soul generation and the `ai` capability.
 export { type LLMText, text } from './llm.text.ts'
 // ── The credential/model seam + one-shot text generation ────────────

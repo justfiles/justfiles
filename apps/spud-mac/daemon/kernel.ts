@@ -1,6 +1,6 @@
-import { learningContext, text } from '@justfiles/agent'
+import { aiCapability, text } from '@justfiles/agent'
 import { materialise, reconcile } from '@justfiles/app/appstore'
-import { capabilityRegistry } from '@justfiles/app/capabilities'
+import { CapabilityError, capabilityRegistry } from '@justfiles/app/capabilities'
 import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
 import { googleProvider, icloudProvider } from '@justfiles/app/capabilities/accounts/providers'
 import { devkitCapability, type Runner } from '@justfiles/app/capabilities/devkit/host'
@@ -40,23 +40,21 @@ export function getKernel(): Promise<Kernel> {
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
 export async function buildKernel(fs: Volume): Promise<Kernel> {
-	// The learning context projection runs on the active AI account's model,
-	// resolved lazily so a signed-out user simply gets age-only/neutral context
-	// (no model → no regeneration) instead of a failure. Reads only trusted user
-	// knowledge on the Volume; the composed fragment never reaches the app.
-	const learning = learningContext({
+	// The text `ai` capability is host-owned (not an accounts concern): it generates
+	// over the active AI account's model — resolved lazily per call, so a signed-out
+	// user gets CAPABILITY_UNAVAILABLE and a re-sign-in takes effect next call — and
+	// composes purpose-scoped context (learning) from the Volume internally.
+	const ai = aiCapability({
 		volume: fs,
-		resolveText: async () => {
+		generate: async ({ system, prompt }) => {
 			const backend = await resolveAgentBackend(fs)
-			return backend ? text(backend) : undefined
+			if (!backend) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
+			return text(backend).gen(system, prompt)
 		}
-	}).compose
-	const { ai, email, calendar, accounts } = accountsCapabilities(
-		accountsProviders(),
-		fs,
-		{ firstParty: ['computer.spud.settings'] },
-		{ learning }
-	)
+	})
+	const { email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
+		firstParty: ['computer.spud.settings']
+	})
 
 	const k = kernel({
 		fs,
