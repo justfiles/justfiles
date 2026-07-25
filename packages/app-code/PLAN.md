@@ -46,7 +46,7 @@ the same pipeline as `app-paint`/`app-files`. No behavior change yet.
 ```ts
 // vite.config.ts — the real identity the rest of the plan uses.
 kernelHost({ id: 'app.code', name: 'Code', icon: 'icon.svg',
-	description: 'Build Frieren apps inside Frieren.', app: 'src/app.ts', gui: 'src/gui.ts' })
+	description: 'Build and run apps directly in Kodama.', app: 'src/app.ts', gui: 'src/gui.ts' })
 ```
 ```ts
 // apps/frieren/vite-appstore.ts
