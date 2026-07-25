@@ -2,6 +2,7 @@ import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
 import { buildSync } from 'esbuild'
 import { expect, test } from 'vitest'
 import { type AppBundle, appBundleFromMemory } from './app.ts'
+import { createAppController } from './app-controller.ts'
 import { type Capabilities, type GetSandbox, kernel } from './kernel.ts'
 import source from './test-bundle/app.ts?raw'
 
@@ -364,4 +365,24 @@ test('reload re-hydrates state written outside the kernel (a synced-down agent e
 	expect(
 		await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
 	).toEqual({ count: 43 })
+})
+
+test('app controller reloads state written outside the server kernel', async () => {
+	const fs = volume(memStorage())
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+	const controller = createAppController(k, {
+		windows: { open: () => {}, close: () => {} }
+	})
+
+	await k.dispatch(appId, { type: 'increment', params: { amount: 5 }, actor: 'agent' })
+	await fs.writeFile(
+		`/state/${appId}.json`,
+		new TextEncoder().encode(JSON.stringify({ count: 42 }))
+	)
+
+	expect(await controller.state(appId)).toEqual({ count: 42 })
+	expect(await controller.run(appId, 'increment', { amount: 1 })).toEqual({ count: 43 })
 })

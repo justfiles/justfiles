@@ -12,6 +12,7 @@ const COUNTER = 'com.example.counter'
 
 function fakeKernel() {
 	const dispatched: { appId: string; message: unknown }[] = []
+	const calls: string[] = []
 	const manifests = [
 		{ id: COUNTER, name: 'Counter', description: 'count things' },
 		{ id: 'preview.tmp', name: 'Preview', description: 'transient' }
@@ -21,12 +22,16 @@ function fakeKernel() {
 		app: async (id: string) => ({ manifest: manifests.find((m) => m.id === id) }),
 		state: async () => ({ count: 0 }),
 		actions: async () => ({ increment: { kind: 'handler' } }),
+		reload: async (id: string) => {
+			calls.push(`reload:${id}`)
+		},
 		dispatch: async (appId: string, message: unknown) => {
+			calls.push(`dispatch:${appId}`)
 			dispatched.push({ appId, message })
 			return { count: 1 }
 		}
 	} as unknown as Kernel
-	return { kernel, dispatched }
+	return { kernel, dispatched, calls }
 }
 
 function spyWindows() {
@@ -76,11 +81,12 @@ test('close with no current app is a no-op', async () => {
 	expect(closed).toEqual([])
 })
 
-test('run dispatches into the kernel stamped as the agent', async () => {
-	const { kernel, dispatched } = fakeKernel()
+test('run reloads before dispatching into the kernel as the agent', async () => {
+	const { kernel, dispatched, calls } = fakeKernel()
 	await createAppController(kernel, { windows: spyWindows().windows }).run(COUNTER, 'increment', {
 		amount: 2
 	})
+	expect(calls).toEqual([`reload:${COUNTER}`, `dispatch:${COUNTER}`])
 	expect(dispatched).toEqual([
 		{ appId: COUNTER, message: { type: 'increment', params: { amount: 2 }, actor: 'agent' } }
 	])
