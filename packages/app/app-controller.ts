@@ -51,14 +51,17 @@ export function createAppController(
 	const resolve = typeof kernel === 'function' ? kernel : () => Promise.resolve(kernel)
 	let lastLaunched: string | undefined
 	const focus = ports.focus ?? (() => Promise.resolve(lastLaunched))
-	const fresh = async (id: string): Promise<Kernel> => {
+	// A synced host may receive state writes outside its kernel. Reload on the
+	// per-app queue so agent reads and dispatches start from the persisted value.
+	// This is a redundant read on sole-writer hosts, but keeps the controller lean.
+	const reloaded = async (id: string): Promise<Kernel> => {
 		const k = await resolve()
 		await k.reload(id)
 		return k
 	}
 
 	const inspect = async (id: string): Promise<AppInspection> => {
-		const k = await fresh(id)
+		const k = await reloaded(id)
 		const [installed, state, actions] = await Promise.all([
 			k.app(id),
 			k.state(id).catch(() => undefined),
@@ -99,8 +102,8 @@ export function createAppController(
 			return id ? await inspect(id).catch(() => undefined) : undefined
 		},
 		inspect,
-		state: async (id) => (await fresh(id)).state(id),
+		state: async (id) => (await reloaded(id)).state(id),
 		run: async (id, action, params) =>
-			(await fresh(id)).dispatch(id, { type: action, params, actor: 'agent' })
+			(await reloaded(id)).dispatch(id, { type: action, params, actor: 'agent' })
 	}
 }
