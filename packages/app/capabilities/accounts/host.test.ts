@@ -361,3 +361,60 @@ describe('use-facet dispatch', () => {
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
 	})
 })
+
+// The host `ai` capability honours purpose-scoped context projections: it enforces
+// the `context:learning` scope and prepends the HOST-composed fragment, so the bound
+// provider only ever sees the final composed system prompt (never the selector or raw
+// knowledge). This is the same boundary Frieren and Spud Mac both run through.
+describe('ai context projection', () => {
+	// A chatgpt provider whose ai binding echoes the system prompt it received, so a
+	// test can prove what actually reached the provider.
+	const echoSystem = fakeChatgpt({
+		bind: () => ({ generateText: async (i) => ({ text: `system:${i.system ?? ''}` }) })
+	})
+
+	async function setupWithComposer(fragment: string) {
+		const vol = volume(memStorage())
+		const caps = accountsCapabilities(
+			testProviders({ chatgpt: echoSystem }),
+			vol,
+			{ firstParty: [SETTINGS] },
+			{ learning: async () => fragment }
+		)
+		const accounts = volumeAccountStore(vol)
+		const activeAi = volumeActiveAi(vol)
+		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		await activeAi.set({ accountId: 'u@openai', model: 'default' })
+		return caps
+	}
+
+	const learn = (input: unknown, scopes: readonly string[]): CapabilityCall => ({
+		appId: 'app.any',
+		capability: 'ai',
+		method: 'generateText',
+		args: [input],
+		scopes
+	})
+
+	test('context: learning without the scope is DENIED', async () => {
+		const caps = await setupWithComposer('# Learning adaptation\n\nfragment')
+		await expect(
+			caps.ai.invoke(learn({ system: 'APP', prompt: 'hi', context: 'learning' }, []))
+		).rejects.toMatchObject({ code: 'CAPABILITY_DENIED' })
+	})
+
+	test('scoped learning context prepends the composed fragment before the provider runs', async () => {
+		const caps = await setupWithComposer('# Learning adaptation\n\nfragment')
+		const res = await caps.ai.invoke(
+			learn({ system: 'APP', prompt: 'hi', context: 'learning' }, ['context:learning'])
+		)
+		expect(res).toEqual({ text: 'system:# Learning adaptation\n\nfragment\n\nAPP' })
+	})
+
+	test('a context-free call reaches the provider with the app system prompt unchanged', async () => {
+		const caps = await setupWithComposer('# Learning adaptation\n\nfragment')
+		expect(await caps.ai.invoke(learn({ system: 'APP', prompt: 'hi' }, []))).toEqual({
+			text: 'system:APP'
+		})
+	})
+})

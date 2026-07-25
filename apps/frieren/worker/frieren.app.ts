@@ -66,7 +66,7 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 	// The server kernel's capability seam: `volume` and `ai` are local units; the
 	// account-backed `email`/`calendar`/`accounts` are handed in ready (built over
 	// the Volume store, guarded with audit + rate-limit).
-	const ai = aiCapability(deps.text)
+	const ai = aiCapability(deps.text, deps.fs)
 	const capabilities: Capabilities = capabilityRegistry({
 		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
 		ai,

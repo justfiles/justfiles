@@ -35,6 +35,7 @@
 		"./capabilities/devkit": "./capabilities/devkit/index.ts",
 		"./capabilities/devkit/host": "./capabilities/devkit/host.ts",
 		"./capabilities/ai": "./capabilities/ai/index.ts",
+		"./capabilities/ai/host": "./capabilities/ai/host.ts",
 		"./capabilities/image": "./capabilities/image/index.ts",
 		"./capabilities/accounts": "./capabilities/accounts/index.ts",
 		"./capabilities/accounts/host": "./capabilities/accounts/host.ts",
@@ -153,6 +154,10 @@
 			"./capabilities/ai": {
 				"types": "./dist/capabilities/ai/index.d.ts",
 				"default": "./dist/capabilities/ai/index.js"
+			},
+			"./capabilities/ai/host": {
+				"types": "./dist/capabilities/ai/host.d.ts",
+				"default": "./dist/capabilities/ai/host.js"
 			},
 			"./capabilities/image": {
 				"types": "./dist/capabilities/image/index.d.ts",
