@@ -1,7 +1,6 @@
 import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { beforeEach, describe, expect, test } from 'vitest'
 import { learningContext } from './learning-context.ts'
-import type { LLMText } from './llm.text.ts'
 
 const USER = '/system/user.md'
 const CORE = '/system/memory/core.md'
@@ -13,18 +12,22 @@ const dec = new TextDecoder()
 const at = (iso: string) => Date.parse(iso)
 const DAY = 24 * 60 * 60 * 1000
 
-// A fake text model whose `gen` counts calls; `reply` produces the extraction JSON.
-function fakeText(reply: (prompt: string) => string): LLMText & { calls: number } {
-	const self = {
-		calls: 0,
-		gen: async (_system: string, prompt: string) => {
-			self.calls++
+// A fake text generator whose call count is observable; `reply` produces the
+// extraction JSON from the (core.md) prompt.
+function fakeGen(reply: (prompt: string) => string) {
+	const gen = Object.assign(
+		async (_system: string, prompt: string) => {
+			gen.calls++
 			return reply(prompt)
 		},
-		takeNotes: async () => undefined,
-		summarise: async () => ''
-	}
-	return self
+		{ calls: 0 }
+	)
+	return gen
+}
+
+// A generator that always fails (no active model / model down).
+const boom = async () => {
+	throw new Error('model down')
 }
 
 async function writeFile(vol: Volume, path: string, text: string) {
@@ -57,9 +60,11 @@ describe('learningContext.compose', () => {
 
 	test('composes the host fragment from age + projected memory', async () => {
 		await seed(vol)
-		const text = fakeText(() => GOOD_JSON)
-		const lc = learningContext({ volume: vol, resolveText: async () => text, now: NOW })
-		const fragment = await lc.compose()
+		const fragment = await learningContext({
+			volume: vol,
+			gen: fakeGen(() => GOOD_JSON),
+			now: NOW
+		}).compose()
 		expect(fragment).toContain('# Learning adaptation')
 		expect(fragment).toContain('10 years old')
 		// Gender is never injected for educational adaptation (issue #272).
@@ -72,56 +77,42 @@ describe('learningContext.compose', () => {
 
 	test('persists a valid projection under the schema and reuses it (cache hit, no re-gen)', async () => {
 		await seed(vol)
-		const text = fakeText(() => GOOD_JSON)
-		const lc = learningContext({ volume: vol, resolveText: async () => text, now: NOW })
-		await lc.compose()
-		expect(text.calls).toBe(1)
+		const gen = fakeGen(() => GOOD_JSON)
+		await learningContext({ volume: vol, gen, now: NOW }).compose()
+		expect(gen.calls).toBe(1)
 		const cached = JSON.parse(dec.decode(await vol.readFile(LEARNING)))
 		expect(cached.schema).toBe('frieren/context/learning/v1')
 		expect(cached.data.interests).toEqual(['Minecraft', 'dinosaurs'])
 		// A second call one hour later reuses the cache — the model is not consulted.
-		const lc2 = learningContext({
-			volume: vol,
-			resolveText: async () => text,
-			now: () => NOW() + 3600_000
-		})
-		await lc2.compose()
-		expect(text.calls).toBe(1)
+		await learningContext({ volume: vol, gen, now: () => NOW() + 3600_000 }).compose()
+		expect(gen.calls).toBe(1)
 	})
 
 	test('regenerates when the source changes (sourceHash mismatch)', async () => {
 		await seed(vol)
-		const text = fakeText(() => GOOD_JSON)
-		await learningContext({ volume: vol, resolveText: async () => text, now: NOW }).compose()
-		expect(text.calls).toBe(1)
+		const gen = fakeGen(() => GOOD_JSON)
+		await learningContext({ volume: vol, gen, now: NOW }).compose()
+		expect(gen.calls).toBe(1)
 		await writeFile(vol, CORE, 'Now loves space and rockets.')
-		await learningContext({ volume: vol, resolveText: async () => text, now: NOW }).compose()
-		expect(text.calls).toBe(2)
+		await learningContext({ volume: vol, gen, now: NOW }).compose()
+		expect(gen.calls).toBe(2)
 	})
 
 	test('regenerates when the cache is older than the 7-day max age', async () => {
 		await seed(vol)
-		const text = fakeText(() => GOOD_JSON)
-		await learningContext({ volume: vol, resolveText: async () => text, now: NOW }).compose()
-		expect(text.calls).toBe(1)
-		await learningContext({
-			volume: vol,
-			resolveText: async () => text,
-			now: () => NOW() + 8 * DAY
-		}).compose()
-		expect(text.calls).toBe(2)
+		const gen = fakeGen(() => GOOD_JSON)
+		await learningContext({ volume: vol, gen, now: NOW }).compose()
+		expect(gen.calls).toBe(1)
+		await learningContext({ volume: vol, gen, now: () => NOW() + 8 * DAY }).compose()
+		expect(gen.calls).toBe(2)
 	})
 
 	test('a malformed cache file is ignored and regenerated', async () => {
 		await seed(vol)
 		await writeFile(vol, LEARNING, 'not json at all {')
-		const text = fakeText(() => GOOD_JSON)
-		const fragment = await learningContext({
-			volume: vol,
-			resolveText: async () => text,
-			now: NOW
-		}).compose()
-		expect(text.calls).toBe(1)
+		const gen = fakeGen(() => GOOD_JSON)
+		const fragment = await learningContext({ volume: vol, gen, now: NOW }).compose()
+		expect(gen.calls).toBe(1)
 		expect(fragment).toContain('Known interests: Minecraft, dinosaurs.')
 	})
 
@@ -134,8 +125,7 @@ describe('learningContext.compose', () => {
 			secretName: 'Alice',
 			birthDate: '2015-06-15'
 		})
-		const text = fakeText(() => dirty)
-		await learningContext({ volume: vol, resolveText: async () => text, now: NOW }).compose()
+		await learningContext({ volume: vol, gen: fakeGen(() => dirty), now: NOW }).compose()
 		const cached = JSON.parse(dec.decode(await vol.readFile(LEARNING)))
 		expect(cached.data.interests).toHaveLength(8)
 		expect(cached.data.interests.every((s: string) => s.length <= 40)).toBe(true)
@@ -148,19 +138,11 @@ describe('learningContext.compose', () => {
 
 	test('stale-while-error: expired cache + regen failure reuses the last projection', async () => {
 		await seed(vol)
-		const ok = fakeText(() => GOOD_JSON)
-		await learningContext({ volume: vol, resolveText: async () => ok, now: NOW }).compose()
+		await learningContext({ volume: vol, gen: fakeGen(() => GOOD_JSON), now: NOW }).compose()
 		// Cache expired but sources UNCHANGED; the model now fails — reuse stale data.
-		const boom: LLMText = {
-			gen: async () => {
-				throw new Error('model down')
-			},
-			takeNotes: async () => undefined,
-			summarise: async () => ''
-		}
 		const fragment = await learningContext({
 			volume: vol,
-			resolveText: async () => boom,
+			gen: boom,
 			now: () => NOW() + 8 * DAY
 		}).compose()
 		expect(fragment).toContain('Known interests: Minecraft, dinosaurs.')
@@ -168,32 +150,16 @@ describe('learningContext.compose', () => {
 
 	test('source-changed + regen failure drops stale data, degrading to age-only', async () => {
 		await seed(vol)
-		const ok = fakeText(() => GOOD_JSON)
-		await learningContext({ volume: vol, resolveText: async () => ok, now: NOW }).compose()
+		await learningContext({ volume: vol, gen: fakeGen(() => GOOD_JSON), now: NOW }).compose()
 		await writeFile(vol, CORE, 'Completely different interests now.')
-		const boom: LLMText = {
-			gen: async () => {
-				throw new Error('model down')
-			},
-			takeNotes: async () => undefined,
-			summarise: async () => ''
-		}
-		const fragment = await learningContext({
-			volume: vol,
-			resolveText: async () => boom,
-			now: NOW
-		}).compose()
+		const fragment = await learningContext({ volume: vol, gen: boom, now: NOW }).compose()
 		expect(fragment).toContain('10 years old')
 		expect(fragment).not.toContain('Known interests')
 	})
 
-	test('no text model degrades to age-only without writing a cache', async () => {
+	test('a failing model degrades to age-only without writing a cache', async () => {
 		await seed(vol)
-		const fragment = await learningContext({
-			volume: vol,
-			resolveText: async () => undefined,
-			now: NOW
-		}).compose()
+		const fragment = await learningContext({ volume: vol, gen: boom, now: NOW }).compose()
 		expect(fragment).toContain('10 years old')
 		expect(fragment).not.toContain('Known interests')
 		expect(await vol.exists(LEARNING)).toBe(false)
@@ -202,16 +168,12 @@ describe('learningContext.compose', () => {
 	test('concurrent cold misses regenerate once (single-flight)', async () => {
 		await seed(vol)
 		let calls = 0
-		const text: LLMText = {
-			gen: async () => {
-				calls++
-				await new Promise((r) => setTimeout(r, 10))
-				return GOOD_JSON
-			},
-			takeNotes: async () => undefined,
-			summarise: async () => ''
+		const gen = async () => {
+			calls++
+			await new Promise((r) => setTimeout(r, 10))
+			return GOOD_JSON
 		}
-		const lc = learningContext({ volume: vol, resolveText: async () => text, now: NOW })
+		const lc = learningContext({ volume: vol, gen, now: NOW })
 		const [a, b] = await Promise.all([lc.compose(), lc.compose()])
 		expect(calls).toBe(1)
 		expect(a).toBe(b)
@@ -221,20 +183,16 @@ describe('learningContext.compose', () => {
 		await seed(vol)
 		const lc = learningContext({
 			volume: vol,
-			resolveText: async () => ({
-				// Answer the extraction from whatever core.md currently says, so each
-				// distinct source produces distinct interests.
-				gen: async (_s: string, prompt: string) => {
-					await new Promise((r) => setTimeout(r, 30))
-					return JSON.stringify({
-						interests: [prompt.includes('space') ? 'space' : 'Minecraft'],
-						avoidTopics: [],
-						learningPreferences: []
-					})
-				},
-				takeNotes: async () => undefined,
-				summarise: async () => ''
-			}),
+			// Answer the extraction from whatever core.md currently says, so each
+			// distinct source produces distinct interests.
+			gen: async (_s: string, prompt: string) => {
+				await new Promise((r) => setTimeout(r, 30))
+				return JSON.stringify({
+					interests: [prompt.includes('space') ? 'space' : 'Minecraft'],
+					avoidTopics: [],
+					learningPreferences: []
+				})
+			},
 			now: NOW
 		})
 		const first = lc.compose()
@@ -250,13 +208,9 @@ describe('learningContext.compose', () => {
 	})
 
 	test('empty knowledge yields neutral (empty) context', async () => {
-		const text = fakeText(() => GOOD_JSON)
-		const fragment = await learningContext({
-			volume: vol,
-			resolveText: async () => text,
-			now: NOW
-		}).compose()
+		const gen = fakeGen(() => GOOD_JSON)
+		const fragment = await learningContext({ volume: vol, gen, now: NOW }).compose()
 		expect(fragment).toBe('')
-		expect(text.calls).toBe(0)
+		expect(gen.calls).toBe(0)
 	})
 })

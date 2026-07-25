@@ -1,4 +1,4 @@
-import type { AppController, LLMText } from '@justfiles/agent'
+import { type AppController, aiCapability, type LLMText } from '@justfiles/agent'
 import { createAppController, type Kernel, kernel } from '@justfiles/app'
 import {
 	type Capabilities,
@@ -12,7 +12,6 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import type { Volume } from '@justfiles/fs'
 import { appFileUrl } from '../shared/appstore.ts'
 import { CAPS_WS_SUBPROTOCOL, offersCapsSubprotocol } from '../shared/caps-ws.ts'
-import { aiCapability } from './ai.capability.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
 
 interface DisplayApp {
@@ -66,8 +65,13 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 
 	// The server kernel's capability seam: `volume` and `ai` are local units; the
 	// account-backed `email`/`calendar`/`accounts` are handed in ready (built over
-	// the Volume store, guarded with audit + rate-limit).
-	const ai = aiCapability(deps.text, deps.fs)
+	// the Volume store, guarded with audit + rate-limit). `ai` composes purpose-scoped
+	// context (learning) from the Volume internally, and generates over the resolved
+	// text service.
+	const ai = aiCapability({
+		volume: deps.fs,
+		generate: ({ system, prompt }) => deps.text.gen(system, prompt)
+	})
 	const capabilities: Capabilities = capabilityRegistry({
 		volume: volumeCapability(deps.fs, { systemAllowlist: ['app.justfiles.frieren.files'] }),
 		ai,

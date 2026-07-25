@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import { volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
-import { accountsCapabilities } from './host.ts'
+import { accountsCapabilities, resolveAiAccount } from './host.ts'
 import type { Auth, Provider } from './provider.ts'
 import { GMAIL_SCOPE, googleProvider } from './providers/google.ts'
 import { icloudProvider } from './providers/icloud.ts'
@@ -247,44 +247,6 @@ describe('accounts admin host', () => {
 })
 
 describe('use-facet dispatch', () => {
-	test('ai.generateText binds the active selection with its model', async () => {
-		const { caps, accounts, activeAi } = await setup()
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
-		await activeAi.set({ accountId: 'u@openai', model: 'default' })
-		await expect(
-			caps.ai.invoke(use('ai', 'generateText', { system: '', prompt: 'hi' }))
-		).resolves.toEqual({ text: 'tok:default' })
-	})
-
-	test('ai persists a rotated credential back to the account', async () => {
-		// A bind that rotates the token (as Models does on refresh) and writes it back via
-		// the injected persist — the rotated grant must land on the shared account so a
-		// later call (or the agent) never reuses a stale/consumed refresh token.
-		const { caps, accounts, activeAi } = await setup(
-			testProviders({
-				chatgpt: fakeChatgpt({
-					bind: (account) => ({
-						generateText: async () => {
-							await account.persist({ access: 'rotated' })
-							return { text: 'ok' }
-						}
-					})
-				})
-			})
-		)
-		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
-		await activeAi.set({ accountId: 'u@openai' })
-		await caps.ai.invoke(use('ai', 'generateText', { system: '', prompt: 'hi' }))
-		expect((await accounts.get('u@openai'))?.creds).toEqual({ access: 'rotated' })
-	})
-
-	test('ai.generateText is UNAVAILABLE with no active selection', async () => {
-		const { caps } = await setup()
-		await expect(
-			caps.ai.invoke(use('ai', 'generateText', { system: '', prompt: 'hi' }))
-		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' })
-	})
-
 	test('image.generateImage rides the active-AI selection', async () => {
 		const { caps, accounts, activeAi } = await setup(
 			testProviders({
@@ -362,59 +324,41 @@ describe('use-facet dispatch', () => {
 	})
 })
 
-// The host `ai` capability honours purpose-scoped context projections: it enforces
-// the `context:learning` scope and prepends the HOST-composed fragment, so the bound
-// provider only ever sees the final composed system prompt (never the selector or raw
-// knowledge). This is the same boundary Frieren and Spud Mac both run through.
-describe('ai context projection', () => {
-	// A chatgpt provider whose ai binding echoes the system prompt it received, so a
-	// test can prove what actually reached the provider.
-	const echoSystem = fakeChatgpt({
-		bind: () => ({ generateText: async (i) => ({ text: `system:${i.system ?? ''}` }) })
-	})
-
-	async function setupWithComposer(fragment: string) {
+// `resolveAiAccount` is the account lease the text `ai` capability is built on
+// (host-owned, not an accounts capability). It resolves the single active-AI
+// selection into a caller-minted backend, forwarding the selected model and a
+// `persist` that writes rotated credentials back to the shared account.
+describe('resolveAiAccount', () => {
+	test('leases the active selection with its model + provider to the caller', async () => {
 		const vol = volume(memStorage())
-		const caps = accountsCapabilities(
-			testProviders({ chatgpt: echoSystem }),
-			vol,
-			{ firstParty: [SETTINGS] },
-			{ learning: async () => fragment }
-		)
 		const accounts = volumeAccountStore(vol)
 		const activeAi = volumeActiveAi(vol)
 		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
 		await activeAi.set({ accountId: 'u@openai', model: 'default' })
-		return caps
-	}
-
-	const learn = (input: unknown, scopes: readonly string[]): CapabilityCall => ({
-		appId: 'app.any',
-		capability: 'ai',
-		method: 'generateText',
-		args: [input],
-		scopes
-	})
-
-	test('context: learning without the scope is DENIED', async () => {
-		const caps = await setupWithComposer('# Learning adaptation\n\nfragment')
-		await expect(
-			caps.ai.invoke(learn({ system: 'APP', prompt: 'hi', context: 'learning' }, []))
-		).rejects.toMatchObject({ code: 'CAPABILITY_DENIED' })
-	})
-
-	test('scoped learning context prepends the composed fragment before the provider runs', async () => {
-		const caps = await setupWithComposer('# Learning adaptation\n\nfragment')
-		const res = await caps.ai.invoke(
-			learn({ system: 'APP', prompt: 'hi', context: 'learning' }, ['context:learning'])
-		)
-		expect(res).toEqual({ text: 'system:# Learning adaptation\n\nfragment\n\nAPP' })
-	})
-
-	test('a context-free call reaches the provider with the app system prompt unchanged', async () => {
-		const caps = await setupWithComposer('# Learning adaptation\n\nfragment')
-		expect(await caps.ai.invoke(learn({ system: 'APP', prompt: 'hi' }, []))).toEqual({
-			text: 'system:APP'
+		const lease = await resolveAiAccount(vol, (l) => ({
+			creds: l.creds,
+			config: l.config,
+			providerId: l.providerId
+		}))
+		expect(lease).toEqual({
+			creds: { access: 'tok' },
+			config: { model: 'default' },
+			providerId: 'chatgpt'
 		})
+	})
+
+	test('persist writes a rotated credential back to the shared account', async () => {
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		const activeAi = volumeActiveAi(vol)
+		await accounts.put({ id: 'u@openai', provider: 'chatgpt', creds: { access: 'tok' } })
+		await activeAi.set({ accountId: 'u@openai' })
+		await resolveAiAccount(vol, (l) => l.persist({ access: 'rotated' }))
+		expect((await accounts.get('u@openai'))?.creds).toEqual({ access: 'rotated' })
+	})
+
+	test('is null with no active selection', async () => {
+		const vol = volume(memStorage())
+		expect(await resolveAiAccount(vol, () => 'x')).toBeNull()
 	})
 })
