@@ -283,9 +283,18 @@ export default defineConfig({
 				display: 'standalone',
 				background_color: '#020617',
 				theme_color: '#020617',
-				// SVG has no maskable safe-zone padding, so claim `any` only to avoid
-				// cropping on circular masks.
-				icons: [{ src: '/pwa-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]
+				// PNGs generated from icon.png (see scripts/generate-icons.ts): square
+				// `any` icons plus a maskable one carrying its own safe-zone padding.
+				icons: [
+					{ src: '/pwa-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+					{ src: '/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+					{
+						src: '/pwa-maskable-512.png',
+						sizes: '512x512',
+						type: 'image/png',
+						purpose: 'maskable'
+					}
+				]
 			},
 			workbox: {
 				cleanupOutdatedCaches: true,
