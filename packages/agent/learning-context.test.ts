@@ -217,6 +217,38 @@ describe('learningContext.compose', () => {
 		expect(a).toBe(b)
 	})
 
+	test('single-flight is keyed by source: a mid-flight source change is not served stale', async () => {
+		await seed(vol)
+		const lc = learningContext({
+			volume: vol,
+			resolveText: async () => ({
+				// Answer the extraction from whatever core.md currently says, so each
+				// distinct source produces distinct interests.
+				gen: async (_s: string, prompt: string) => {
+					await new Promise((r) => setTimeout(r, 30))
+					return JSON.stringify({
+						interests: [prompt.includes('space') ? 'space' : 'Minecraft'],
+						avoidTopics: [],
+						learningPreferences: []
+					})
+				},
+				takeNotes: async () => undefined,
+				summarise: async () => ''
+			}),
+			now: NOW
+		})
+		const first = lc.compose()
+		// Let `first` finish reading the old sources and enter its (slow) regen before
+		// the source changes, so the two composes carry genuinely different hashes.
+		await new Promise((r) => setTimeout(r, 1))
+		await writeFile(vol, CORE, 'Now loves space and rockets.')
+		const second = lc.compose()
+		const [a, b] = await Promise.all([first, second])
+		expect(a).toContain('Minecraft')
+		expect(b).toContain('space')
+		expect(b).not.toContain('Minecraft')
+	})
+
 	test('empty knowledge yields neutral (empty) context', async () => {
 		const text = fakeText(() => GOOD_JSON)
 		const fragment = await learningContext({
