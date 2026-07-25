@@ -8,13 +8,13 @@ import type { CatalogFile } from '@justfiles/app/appstore'
 import type { CommunityCatalog, CommunityCatalogApp } from '../../shared/appstore.ts'
 import { COMMUNITY_CATALOG_SCHEMA } from '../../shared/appstore.ts'
 
-// Ids under these prefixes are first-party and only honoured from our npm scopes
+// Ids under these prefixes are first-party and only honoured from our npm scope
 // (the prefix guard); everyone else must use their own reverse-DNS namespace.
 // `app.justfiles.frieren.` is the current namespace; the `computer.spud.` /
 // `app.spud.` / `app.frieren.` prefixes are retired but stay reserved so no one
 // can squat a former first-party id.
 const RESERVED_PREFIXES = ['app.justfiles.frieren.', 'computer.spud.', 'app.frieren.', 'app.spud.']
-const FIRST_PARTY_SCOPES = ['@justfiles/', '@spud-computer/']
+const FIRST_PARTY_SCOPE = '@justfiles/'
 
 export interface Denylist {
 	names: string[] // banned npm package names
@@ -58,7 +58,7 @@ function isReserved(id: string): boolean {
 }
 
 function fromFirstPartyScope(npm: string): boolean {
-	return FIRST_PARTY_SCOPES.some((scope) => npm.startsWith(scope))
+	return npm.startsWith(FIRST_PARTY_SCOPE)
 }
 
 export function parseManifest(json: string | null): Manifest | null {
