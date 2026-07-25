@@ -63,8 +63,11 @@ export interface LearningContext {
 export function learningContext(deps: LearningContextDeps): LearningContext {
 	const { volume, resolveText } = deps
 	const now = deps.now ?? Date.now
-	// Per-instance (per-user) single-flight so concurrent cold misses regenerate once.
-	let inflight: Promise<LearningContextFile | null> | undefined
+	// Per-instance (per-user) single-flight, keyed by source hash so concurrent
+	// cold misses for the SAME sources regenerate once — and a call whose sources
+	// changed mid-flight never joins (and returns) a projection built for the old
+	// sources.
+	let inflight: { hash: string; promise: Promise<LearningContextFile | null> } | undefined
 
 	async function readText(path: string): Promise<string> {
 		try {
@@ -88,7 +91,10 @@ export function learningContext(deps: LearningContextDeps): LearningContext {
 
 	async function writeCache(projection: LearningContextFile): Promise<void> {
 		await volume.mkdir(CONTEXT_DIR, { recursive: true })
-		const tmp = `${LEARNING_PATH}.tmp`
+		// A unique temp name so two concurrent regenerations (different sources racing)
+		// never clobber each other's temp file; the rename is the atomic swap and the
+		// last writer wins.
+		const tmp = `${LEARNING_PATH}.${crypto.randomUUID()}.tmp`
 		await volume.writeFile(tmp, new TextEncoder().encode(JSON.stringify(projection, null, 2)))
 		await volume.rename(tmp, LEARNING_PATH)
 	}
@@ -116,14 +122,15 @@ export function learningContext(deps: LearningContextDeps): LearningContext {
 	}
 
 	function regenerateOnce(hash: string, core: string): Promise<LearningContextFile | null> {
-		if (!inflight) {
-			inflight = regenerate(hash, core)
+		if (!inflight || inflight.hash !== hash) {
+			const promise = regenerate(hash, core)
 				.catch(() => null)
 				.finally(() => {
-					inflight = undefined
+					if (inflight?.promise === promise) inflight = undefined
 				})
+			inflight = { hash, promise }
 		}
-		return inflight
+		return inflight.promise
 	}
 
 	async function projectionData(hash: string, core: string): Promise<LearningPayload | null> {
