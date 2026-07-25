@@ -26,9 +26,10 @@ the public brand leaking back into IDs/infra — keep it.
 
 ## What a rebrand actually changes
 
-1. **Public copy**: `apps/frieren/index.html` `<title>`, PWA manifest, the AI provider
-   display name (`packages/app/capabilities/accounts/providers/spud.ts` → `name`), onboarding
-   / marketing / legal / email / social copy. (The internal id `spud` and `spudProvider` stay.)
+1. **Public copy and discovery**: `apps/frieren/index.html` `<title>`, PWA manifest, the App
+   Store npm keyword and indexer user-agent, the AI provider display name
+   (`packages/app/capabilities/accounts/providers/spud.ts` → `name`), onboarding / marketing /
+   legal / email / social copy. (The internal id `spud` and `spudProvider` stay.)
 2. **The public domain** (`mykodama.app` → `newname.tld`): a Cloudflare Custom Domain on the
    worker **and** the Clerk production instance's domain.
 3. **Optionally** a new Google Cloud OAuth project (cosmetic; the existing one can be reused).
@@ -83,7 +84,7 @@ The client's Clerk key is `VITE_CLERK_PUBLISHABLE_KEY`, injected at build from t
 
 ### 1. Rebrand + add the domain (one PR)
 
-- Change the public copy (see "What a rebrand changes" #1).
+- Change the public copy and App Store discovery metadata (see "What a rebrand changes" #1).
 - Add the new domain as an **additional** Custom Domain: `newname.tld` to the top-level
   (prod) `routes` and `staging.newname.tld` to `env.staging.routes` in
   `apps/frieren/wrangler.jsonc` — keep the old domains for now (add → verify, no flip).

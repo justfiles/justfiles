@@ -12,10 +12,10 @@ const CATALOG_KEY = 'catalog.json'
 const NPM_SEARCH = 'https://registry.npmjs.org/-/v1/search'
 const JSDELIVR_DATA = 'https://data.jsdelivr.com/v1/packages/npm'
 const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm'
-const KEYWORD = 'spud-app'
+const KEYWORDS = ['kodama-app', 'spud-app']
 const PAGE = 250 // npm search max page size
-const MAX_PAGES = 20 // safety cap (<=5000 apps for v1)
-const UA = 'spud-appstore-indexer (+https://spud.computer)'
+const MAX_PAGES = 20 // safety cap per keyword (<=5000 apps each for v1)
+const UA = 'kodama-appstore-indexer (+https://mykodama.app)'
 
 interface NpmHit {
 	name: string
@@ -44,25 +44,27 @@ async function fetchJson<T>(url: string): Promise<T | null> {
 	return (await res.json()) as T
 }
 
-// Every `spud-app`-keyworded package (latest version), paginated.
+// Every canonical or legacy-keyworded package (latest version), deduplicated by npm name.
 async function npmCandidates(): Promise<NpmHit[]> {
-	const hits: NpmHit[] = []
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const url = `${NPM_SEARCH}?text=keywords:${KEYWORD}&size=${PAGE}&from=${page * PAGE}`
-		const body = await fetchJson<NpmSearchResponse>(url)
-		if (!body?.objects?.length) break
-		for (const { package: p } of body.objects) {
-			hits.push({
-				name: p.name,
-				version: p.version,
-				publisher: `npm:${p.publisher?.username ?? 'unknown'}`,
-				repository: normalizeRepo(p.links?.repository),
-				description: p.description
-			})
+	const hits = new Map<string, NpmHit>()
+	for (const keyword of KEYWORDS) {
+		for (let page = 0; page < MAX_PAGES; page++) {
+			const url = `${NPM_SEARCH}?text=keywords:${keyword}&size=${PAGE}&from=${page * PAGE}`
+			const body = await fetchJson<NpmSearchResponse>(url)
+			if (!body?.objects?.length) break
+			for (const { package: p } of body.objects) {
+				hits.set(p.name, {
+					name: p.name,
+					version: p.version,
+					publisher: `npm:${p.publisher?.username ?? 'unknown'}`,
+					repository: normalizeRepo(p.links?.repository),
+					description: p.description
+				})
+			}
+			if ((page + 1) * PAGE >= body.total) break
 		}
-		if ((page + 1) * PAGE >= body.total) break
 	}
-	return hits
+	return [...hits.values()]
 }
 
 function normalizeRepo(repo?: string): string | undefined {
