@@ -17,6 +17,7 @@
 		"preview": "pnpm run build && vite preview",
 		"deploy": "pnpm run build && wrangler deploy",
 		"cf-typegen": "wrangler types",
+		"icons": "tsx scripts/generate-icons.ts",
 		"typecheck": "tsc -b --noEmit"
 	},
 	"dependencies": {
@@ -68,6 +69,7 @@
 		"eslint-plugin-react-refresh": "^0.4.24",
 		"globals": "^16.5.0",
 		"rollup": "^4.60.4",
+		"sharp": "^0.34.5",
 		"tsx": "^4.21.0",
 		"typescript": "catalog:",
 		"typescript-eslint": "^8.48.0",
