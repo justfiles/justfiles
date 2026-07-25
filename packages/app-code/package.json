@@ -3,6 +3,11 @@
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/manifest.json",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/xiaoxinghu/justfiles.git",
+		"directory": "packages/app-code"
+	},
 	"keywords": [
 		"spud-app"
 	],
