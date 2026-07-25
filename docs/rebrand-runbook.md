@@ -16,7 +16,8 @@ Clerk)**. No data migration, no id rename, no migrator, no backups.
 - **App bundle IDs**: `app.justfiles.frieren.*` (permanent, brand-free). Same for the macOS
   bundle scheme.
 - **Release tag component**: `frieren` → tags `frieren-v*`, which is the prod deploy trigger.
-- **npm package names** (`@spud-computer/*`): distribution identities, immutable.
+- **npm package names** (for example `@justfiles/app-code`): distribution identities, immutable
+  after publication.
 - **The Clerk instance itself**: same instance ⇒ same user IDs ⇒ same per-user Durable
   Objects. Only its *domain* changes.
 

@@ -240,6 +240,9 @@ importers:
       '@justfiles/app':
         specifier: workspace:*
         version: link:../../packages/app
+      '@justfiles/app-code':
+        specifier: workspace:*
+        version: link:../../packages/app-code
       '@justfiles/app-files':
         specifier: workspace:*
         version: link:../../packages/app-files
@@ -261,9 +264,6 @@ importers:
       '@justfiles/ui':
         specifier: workspace:*
         version: link:../../packages/ui
-      '@spud-computer/code':
-        specifier: workspace:*
-        version: link:../../packages/app-code
       react:
         specifier: ^19
         version: 19.2.7

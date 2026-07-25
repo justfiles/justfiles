@@ -16,6 +16,7 @@
 	"dependencies": {
 		"@justfiles/agent": "workspace:*",
 		"@justfiles/app": "workspace:*",
+		"@justfiles/app-code": "workspace:*",
 		"@justfiles/app-files": "workspace:*",
 		"@justfiles/app-notes": "workspace:*",
 		"@justfiles/app-paint": "workspace:*",
@@ -24,7 +25,6 @@
 		"@justfiles/fs": "workspace:*",
 		"@justfiles/ui": "workspace:*",
 		"@earendil-works/pi-ai": "^0.80.10",
-		"@spud-computer/code": "workspace:*",
 		"react": "^19",
 		"react-dom": "^19",
 		"typescript": "catalog:"

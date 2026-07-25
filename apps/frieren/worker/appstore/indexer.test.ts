@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { COMMUNITY_CATALOG_SCHEMA, type CommunityCatalog } from '../../shared/appstore.ts'
+import { DENYLIST } from './denylist.ts'
 import {
 	buildCatalog,
 	type Denylist,
@@ -35,8 +36,8 @@ describe('buildCatalog', () => {
 	test('indexes a first-party canary and a third-party app', () => {
 		const { catalog, flags } = buildCatalog(
 			[
-				input('@spud-computer/code', 'computer.spud.code', {
-					manifest: manifest('computer.spud.code', { name: 'Code', icon: 'icon.png' }),
+				input('@justfiles/app-code', 'app.justfiles.frieren.code', {
+					manifest: manifest('app.justfiles.frieren.code', { name: 'Code', icon: 'icon.png' }),
 					repository: 'https://github.com/x/code',
 					description: 'Build apps'
 				}),
@@ -47,9 +48,9 @@ describe('buildCatalog', () => {
 		)
 		expect(flags).toEqual([])
 		expect(catalog.schema).toBe(COMMUNITY_CATALOG_SCHEMA)
-		const code = catalog.apps.find((a) => a.id === 'computer.spud.code')
+		const code = catalog.apps.find((a) => a.id === 'app.justfiles.frieren.code')
 		expect(code).toMatchObject({
-			npm: '@spud-computer/code',
+			npm: '@justfiles/app-code',
 			name: 'Code',
 			icon: 'icon.png',
 			version: '1.0.0',
@@ -62,16 +63,22 @@ describe('buildCatalog', () => {
 
 	test('skips a reserved-prefix id from a foreign scope, and flags it', () => {
 		const { catalog, flags } = buildCatalog(
-			[input('evil-pkg', 'computer.spud.evil')],
+			[input('evil-pkg', 'computer.spud.evil'), input('@spud-computer/code', 'computer.spud.code')],
 			EMPTY,
 			NO_DENY
 		)
 		expect(catalog.apps).toEqual([])
-		expect(flags).toHaveLength(1)
-		expect(flags[0]).toMatchObject({
-			npm: 'evil-pkg',
-			reason: expect.stringContaining('reserved-prefix')
-		})
+		expect(flags).toHaveLength(2)
+		expect(flags).toEqual([
+			expect.objectContaining({
+				npm: 'evil-pkg',
+				reason: expect.stringContaining('reserved-prefix')
+			}),
+			expect.objectContaining({
+				npm: '@spud-computer/code',
+				reason: expect.stringContaining('reserved-prefix')
+			})
+		])
 	})
 
 	test('skips a malformed or missing manifest', () => {
@@ -142,21 +149,25 @@ describe('buildCatalog', () => {
 			schema: COMMUNITY_CATALOG_SCHEMA,
 			apps: [
 				{
-					id: 'com.old.gone',
-					name: 'Old',
+					id: 'app.justfiles.frieren.code',
+					name: 'Code',
 					version: '1.0.0',
-					npm: 'gone-pkg',
+					npm: '@spud-computer/code',
 					publisher: 'npm:u',
 					files: FILES
 				}
 			]
 		}
 		const { catalog, flags } = buildCatalog(
-			[input('bad-pkg', 'com.x.y'), input('c', 'com.banned.id')],
+			[
+				input('@justfiles/app-code', 'app.justfiles.frieren.code'),
+				input('@spud-computer/draw', 'computer.spud.draw'),
+				input('c', 'com.banned.id')
+			],
 			previous,
-			{ names: ['bad-pkg', 'gone-pkg'], ids: ['com.banned.id'] }
+			{ names: DENYLIST.names, ids: ['com.banned.id'] }
 		)
-		expect(catalog.apps).toEqual([])
+		expect(catalog.apps.map((a) => a.npm)).toEqual(['@justfiles/app-code'])
 		expect(flags).toEqual([])
 	})
 
