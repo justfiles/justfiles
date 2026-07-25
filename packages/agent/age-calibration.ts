@@ -46,13 +46,19 @@ const BANDS: Band[] = [
 // be trusted to do the date math from a raw birth date). Accepts `birth_date` (the canonical
 // key the onboarding writes) or a looser `birthday`. When the age falls in a calibrated band,
 // the fact is followed by that band's tone/vocabulary instruction; otherwise just the fact.
-export function ageCalibration(profile: string, today: Date = new Date()): string | null {
+// `gender: false` omits the gender noun — the purpose-scoped learning projection (issue #272)
+// must not inject gender, which adds no pedagogical value and invites stereotyped examples.
+export function ageCalibration(
+	profile: string,
+	today: Date = new Date(),
+	opts: { gender?: boolean } = {}
+): string | null {
 	const fm = parseFrontmatter(profile)
 	const birth = fm.birth_date ?? fm.birthday
 	if (!birth) return null
 	const age = ageOf(birth, today)
 	if (age == null || age < 0) return null
-	const noun = genderNoun(fm.gender, age)
+	const noun = opts.gender === false ? null : genderNoun(fm.gender, age)
 	const fact = noun ? `The user is ${age} years old, a ${noun}.` : `The user is ${age} years old.`
 	const tone = toneInstruction(fm, age)
 	return tone ? `${fact} ${tone}` : fact

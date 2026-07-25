@@ -51,6 +51,8 @@ Three smells:
   memory/                  shared knowledge base — the team wiki of the user
     core.md                curated durable memory (consolidated nightly)
     daily/YYYY-MM-DD.md    append-only journal of session jottings
+  context/                 derived, rebuildable, purpose-limited projections
+    learning.json          learner-aware view for educational apps (issue #272)
   skills/                  user-authored skills, available to every agent
   agents/
     main/                  the overarching agent — reserved id, seeded at boot
@@ -96,6 +98,40 @@ Everything else (`memory/daily/`, `agents/main/sessions/`, `skills/`,
 - **The root reads as a sentence in the Files app**: the human (`user.md`),
   what we know about them (`memory/`), what they taught us (`skills/`), who
   serves them (`agents/`), what they're signed into (`accounts/`).
+
+## `context/` — purpose-scoped projections (issue #272)
+
+Apps increasingly need model output adapted to a situation *without* receiving
+the user's raw profile or memory. `context/` holds **derived, rebuildable,
+purpose-limited caches** for exactly this — never authoritative data. Deleting
+the directory is always safe; each projection regenerates lazily from its
+sources (`user.md` + `memory/core.md`) the next time a scoped AI call needs it.
+
+Each file is one *purpose*, named for the purpose (`learning.json`, not
+`learner.json`), with its own privacy boundary, consent scope, and payload
+schema. There is deliberately **no** universal `context.json` and **no**
+registry/plugin framework — a single all-purpose document would become a shadow
+profile and widen accidental disclosure. A second projection is added only when
+a real consumer exists.
+
+All files share a small envelope; each purpose owns its `data` payload:
+
+```ts
+type ContextProjection<T> = {
+  schema: string       // e.g. 'frieren/context/learning/v1'
+  generatedAt: string  // ISO timestamp
+  sourceHash: string   // deterministic hash of the current sources
+  data: T
+}
+```
+
+A projection is reused only while its `schema` is current, its `sourceHash`
+matches the live sources, and it is younger than a max age (learning: 7 days) —
+otherwise it is regenerated (single-flight per user + purpose) and written
+atomically. The host composes a prompt-safe fragment from the projection and
+prepends it to the app's system prompt inside the `ai` capability; the app sees
+only the final model output. See `packages/agent/learning-context.ts` and
+`packages/app/capabilities/ai/host.ts`.
 
 ## Code changes
 

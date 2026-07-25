@@ -30,6 +30,15 @@ describe('ageCalibration', () => {
 		expect(ageCalibration('---\nbirthday: 1990-01-01\n---\n', today)).toContain('The user is 34')
 	})
 
+	test('omits the gender noun when asked (purpose-scoped learning projection)', () => {
+		const out = ageCalibration('---\nbirth_date: 2016-01-01\ngender: female\n---\n', today, {
+			gender: false
+		})
+		expect(out).toContain('The user is 8 years old.')
+		expect(out).not.toMatch(/\b(girl|boy|man|woman)\b/)
+		expect(out).toMatch(/second-grader/)
+	})
+
 	test('returns null without a birth date', () => {
 		expect(ageCalibration('---\nname: Ada\n---\n', today)).toBeNull()
 	})

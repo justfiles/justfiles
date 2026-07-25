@@ -1,3 +1,4 @@
+import { learningContext, text } from '@justfiles/agent'
 import { materialise, reconcile } from '@justfiles/app/appstore'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import { accountsCapabilities } from '@justfiles/app/capabilities/accounts/host'
@@ -9,7 +10,7 @@ import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
 import { appBundleFromMemory, type Kernel, kernel } from '@justfiles/app/runtime'
 import type { Volume } from '@justfiles/fs'
 import { builtinStore } from './builtins'
-import { chatgptProvider } from './chatgpt'
+import { chatgptProvider, resolveAgentBackend } from './chatgpt'
 import { getVolume } from './fs'
 import { googleClient, loopbackAuthFlow } from './google/oauth'
 import { notificationChannel } from './notify'
@@ -39,9 +40,23 @@ export function getKernel(): Promise<Kernel> {
 // `getKernel` memoises this over the process Volume; tests build a throwaway kernel over a
 // temp Volume (so they never touch the real support tree or share the daemon's singleton).
 export async function buildKernel(fs: Volume): Promise<Kernel> {
-	const { ai, email, calendar, accounts } = accountsCapabilities(accountsProviders(), fs, {
-		firstParty: ['computer.spud.settings']
-	})
+	// The learning context projection runs on the active AI account's model,
+	// resolved lazily so a signed-out user simply gets age-only/neutral context
+	// (no model → no regeneration) instead of a failure. Reads only trusted user
+	// knowledge on the Volume; the composed fragment never reaches the app.
+	const learning = learningContext({
+		volume: fs,
+		resolveText: async () => {
+			const backend = await resolveAgentBackend(fs)
+			return backend ? text(backend) : undefined
+		}
+	}).compose
+	const { ai, email, calendar, accounts } = accountsCapabilities(
+		accountsProviders(),
+		fs,
+		{ firstParty: ['computer.spud.settings'] },
+		{ learning }
+	)
 
 	const k = kernel({
 		fs,

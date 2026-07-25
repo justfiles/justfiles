@@ -1,7 +1,6 @@
 import FINAL_ANSWER_ONLY from './prompts/final-answer-only.md?raw'
 import MEMORY_CONSOLIDATION from './prompts/memory-consolidation.md?raw'
 import NOTE_TAKING from './prompts/note-taking.md?raw'
-import REFLECTION_SYSTEM from './prompts/reflection-system.md?raw'
 import SOUL_GENERATION from './prompts/soul-generation.md?raw'
 
 export function systemPrompt(...parts: string[]) {
@@ -30,8 +29,6 @@ export type SoulGenerationInput = {
 export const SOUL_GENERATION_PROMPT = SOUL_GENERATION
 
 export const FINAL_ANSWER_ONLY_INSTRUCTION = FINAL_ANSWER_ONLY
-
-export const REFLECTION_SYSTEM_PROMPT = REFLECTION_SYSTEM
 
 export const NOTE_TAKING_PROMPT = NOTE_TAKING
 

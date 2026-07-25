@@ -7,6 +7,7 @@
 // cross the package boundary.
 
 import type { Volume } from '@justfiles/fs'
+import { type ContextComposers, composeSystem } from '../ai/host.ts'
 import { ai } from '../ai/index.ts'
 import { calendar } from '../calendar/index.ts'
 import { email } from '../email/index.ts'
@@ -119,9 +120,18 @@ function calendarHost(accounts: AccountStore, registry: Registry): Capability {
 
 // `ai.generateText` carries no accountId, so it resolves the single active-AI selection
 // and binds with its selected model. A model pick in Settings takes effect next call.
-function aiHost(accounts: AccountStore, activeAi: ActiveAiStore, registry: Registry): Capability {
+// A scoped `context` request has its host-composed fragment prepended first (and the
+// scope enforced) by `composeSystem`; the bound provider only ever sees the final
+// composed system prompt, never raw profile/memory or the `context` selector.
+function aiHost(
+	accounts: AccountStore,
+	activeAi: ActiveAiStore,
+	registry: Registry,
+	composers?: ContextComposers
+): Capability {
 	return implementCapability(ai, {
-		generateText: async (_c, i) => {
+		generateText: async (ctx, i) => {
+			const system = await composeSystem(ctx, i, composers)
 			const sel = await activeAi.get()
 			const account = sel ? await accounts.get(sel.accountId) : undefined
 			const impl = account
@@ -133,7 +143,7 @@ function aiHost(accounts: AccountStore, activeAi: ActiveAiStore, registry: Regis
 					)
 				: undefined
 			if (!impl) throw new CapabilityError('CAPABILITY_UNAVAILABLE', 'ai')
-			return impl.generateText(i)
+			return impl.generateText({ ...i, system, context: undefined })
 		}
 	})
 }
@@ -304,10 +314,13 @@ function accountsAdminHost(
 
 // One factory over the platform's provider registry. The credential-bearing stores
 // are built once internally from the Volume and never cross the package boundary.
+// `contextComposers` (optional) supplies host-owned, purpose-scoped context
+// projections for `ai.generateText` (see `composeSystem`).
 export function accountsCapabilities(
 	providers: Provider[],
 	volume: Volume,
-	opts: AccountsAdminOptions = {}
+	opts: AccountsAdminOptions = {},
+	contextComposers?: ContextComposers
 ): {
 	ai: Capability
 	image: Capability
@@ -319,7 +332,7 @@ export function accountsCapabilities(
 	const accounts = volumeAccountStore(volume)
 	const activeAi = volumeActiveAi(volume)
 	return {
-		ai: aiHost(accounts, activeAi, registry),
+		ai: aiHost(accounts, activeAi, registry, contextComposers),
 		image: imageHost(accounts, activeAi, registry),
 		email: emailHost(accounts, registry),
 		calendar: calendarHost(accounts, registry),

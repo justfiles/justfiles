@@ -8,6 +8,8 @@
 
 // ── The seam a host implements: how apps are driven ─────────────────
 export type { AppController } from './justbash/app.ts'
+// Purpose-scoped context projection consumed by the host `ai` capability.
+export { type LearningContext, learningContext } from './learning-context.ts'
 // Powers soul generation and the `ai` capability.
 export { type LLMText, text } from './llm.text.ts'
 // ── The credential/model seam + one-shot text generation ────────────
