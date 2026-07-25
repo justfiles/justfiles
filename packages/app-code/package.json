@@ -1,6 +1,6 @@
 {
 	"name": "@justfiles/app-code",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "Build and run apps directly in Kodama.",
 	"type": "module",
 	"main": "./dist/manifest.json",

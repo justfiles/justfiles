@@ -1,6 +1,6 @@
 {
 	"name": "@justfiles/app-draw",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "A freeform sketchpad backed by Excalidraw.",
 	"type": "module",
 	"main": "./dist/manifest.json",
