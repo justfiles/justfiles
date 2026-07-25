@@ -149,7 +149,7 @@ describe('buildCatalog', () => {
 			schema: COMMUNITY_CATALOG_SCHEMA,
 			apps: [
 				{
-					id: 'computer.spud.code',
+					id: 'app.justfiles.frieren.code',
 					name: 'Code',
 					version: '1.0.0',
 					npm: '@spud-computer/code',
@@ -159,11 +159,15 @@ describe('buildCatalog', () => {
 			]
 		}
 		const { catalog, flags } = buildCatalog(
-			[input('@spud-computer/draw', 'computer.spud.draw'), input('c', 'com.banned.id')],
+			[
+				input('@justfiles/app-code', 'app.justfiles.frieren.code'),
+				input('@spud-computer/draw', 'computer.spud.draw'),
+				input('c', 'com.banned.id')
+			],
 			previous,
 			{ names: DENYLIST.names, ids: ['com.banned.id'] }
 		)
-		expect(catalog.apps).toEqual([])
+		expect(catalog.apps.map((a) => a.npm)).toEqual(['@justfiles/app-code'])
 		expect(flags).toEqual([])
 	})
 

@@ -95,8 +95,9 @@ export function buildCatalog(
 
 	// Merge onto the previous set: retained apps keep their bindings even if a run
 	// doesn't re-surface them (transient npm search gaps don't drop apps).
-	const byNpm = new Map<string, CommunityCatalogApp>(previous.apps.map((a) => [a.npm, a]))
-	const idToNpm = new Map<string, string>(previous.apps.map((a) => [a.id, a.npm]))
+	const retained = previous.apps.filter((a) => !bannedNames.has(a.npm) && !bannedIds.has(a.id))
+	const byNpm = new Map<string, CommunityCatalogApp>(retained.map((a) => [a.npm, a]))
+	const idToNpm = new Map<string, string>(retained.map((a) => [a.id, a.npm]))
 
 	for (const input of inputs) {
 		const flag = (reason: string) => flags.push({ npm: input.npm, version: input.version, reason })
@@ -150,9 +151,7 @@ export function buildCatalog(
 		idToNpm.set(id, input.npm)
 	}
 
-	// Final denylist pass so a package/id banned after it was already indexed drops.
-	const apps = [...byNpm.values()].filter((a) => !bannedNames.has(a.npm) && !bannedIds.has(a.id))
-	return { catalog: { schema: COMMUNITY_CATALOG_SCHEMA, apps }, flags }
+	return { catalog: { schema: COMMUNITY_CATALOG_SCHEMA, apps: [...byNpm.values()] }, flags }
 }
 
 // A jsDelivr data-API tree node (`data.jsdelivr.com/v1/packages/npm/<pkg>`):
