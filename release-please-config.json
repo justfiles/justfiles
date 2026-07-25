@@ -14,12 +14,12 @@
 		},
 		"packages/app-code": {
 			"release-type": "node",
-			"package-name": "@spud-computer/code",
+			"package-name": "@justfiles/app-code",
 			"bump-minor-pre-major": true
 		},
 		"packages/app-draw": {
 			"release-type": "node",
-			"package-name": "@spud-computer/draw",
+			"package-name": "@justfiles/app-draw",
 			"bump-minor-pre-major": true
 		}
 	},

@@ -1,5 +1,5 @@
 {
-	"name": "@spud-computer/code",
+	"name": "@justfiles/app-code",
 	"version": "0.2.0",
 	"type": "module",
 	"main": "./dist/manifest.json",

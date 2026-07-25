@@ -8,13 +8,13 @@ import type { CatalogFile } from '@justfiles/app/appstore'
 import type { CommunityCatalog, CommunityCatalogApp } from '../../shared/appstore.ts'
 import { COMMUNITY_CATALOG_SCHEMA } from '../../shared/appstore.ts'
 
-// Ids under these prefixes are first-party and only honoured from our npm scope
+// Ids under these prefixes are first-party and only honoured from our npm scopes
 // (the prefix guard); everyone else must use their own reverse-DNS namespace.
 // `app.justfiles.frieren.` is the current namespace; the `computer.spud.` /
 // `app.spud.` / `app.frieren.` prefixes are retired but stay reserved so no one
 // can squat a former first-party id.
 const RESERVED_PREFIXES = ['app.justfiles.frieren.', 'computer.spud.', 'app.frieren.', 'app.spud.']
-const SPUD_SCOPE = '@spud-computer/'
+const FIRST_PARTY_SCOPES = ['@justfiles/', '@spud-computer/']
 
 export interface Denylist {
 	names: string[] // banned npm package names
@@ -57,8 +57,8 @@ function isReserved(id: string): boolean {
 	return RESERVED_PREFIXES.some((p) => id.startsWith(p))
 }
 
-function fromSpudScope(npm: string): boolean {
-	return npm.startsWith(SPUD_SCOPE)
+function fromFirstPartyScope(npm: string): boolean {
+	return FIRST_PARTY_SCOPES.some((scope) => npm.startsWith(scope))
 }
 
 export function parseManifest(json: string | null): Manifest | null {
@@ -114,7 +114,7 @@ export function buildCatalog(
 			flag(`app id not reverse-DNS: ${id}`)
 			continue
 		}
-		if (isReserved(id) && !fromSpudScope(input.npm)) {
+		if (isReserved(id) && !fromFirstPartyScope(input.npm)) {
 			flag(`reserved-prefix id ${id} from foreign scope ${input.npm}`)
 			continue
 		}

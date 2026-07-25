@@ -1,5 +1,5 @@
 {
-	"name": "@spud-computer/draw",
+	"name": "@justfiles/app-draw",
 	"version": "0.1.1",
 	"type": "module",
 	"main": "./dist/manifest.json",

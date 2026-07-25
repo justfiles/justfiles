@@ -35,8 +35,8 @@ describe('buildCatalog', () => {
 	test('indexes a first-party canary and a third-party app', () => {
 		const { catalog, flags } = buildCatalog(
 			[
-				input('@spud-computer/code', 'computer.spud.code', {
-					manifest: manifest('computer.spud.code', { name: 'Code', icon: 'icon.png' }),
+				input('@justfiles/app-code', 'app.justfiles.frieren.code', {
+					manifest: manifest('app.justfiles.frieren.code', { name: 'Code', icon: 'icon.png' }),
 					repository: 'https://github.com/x/code',
 					description: 'Build apps'
 				}),
@@ -47,9 +47,9 @@ describe('buildCatalog', () => {
 		)
 		expect(flags).toEqual([])
 		expect(catalog.schema).toBe(COMMUNITY_CATALOG_SCHEMA)
-		const code = catalog.apps.find((a) => a.id === 'computer.spud.code')
+		const code = catalog.apps.find((a) => a.id === 'app.justfiles.frieren.code')
 		expect(code).toMatchObject({
-			npm: '@spud-computer/code',
+			npm: '@justfiles/app-code',
 			name: 'Code',
 			icon: 'icon.png',
 			version: '1.0.0',
