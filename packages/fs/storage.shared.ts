@@ -105,7 +105,7 @@ import { FileType } from './types'
 //      sync engine supplies a pre-computed hash; re-hashing every pulled blob is
 //      wasteful) — documentation over a dev-only verify, to stay minimal.
 //
-//   5. [TODO(path-sync)] NATIVE-FS SYNC (Path B: OBSERVE, don't intercept). spud-mac's
+//   5. [TODO(path-sync)] NATIVE-FS SYNC (Path B: OBSERVE, don't intercept). the Mac app's
 //      quay host runs the Volume over nativeStorage (a real Node fs). A real fs is an
 //      OPEN system (Finder/git/editors mutate behind us) and cannot atomically
 //      intercept-journal (fs write + sidecar journal are separate) — and any

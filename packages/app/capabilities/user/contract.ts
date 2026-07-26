@@ -12,7 +12,7 @@ export interface UserProfile {
 }
 
 export interface UserCapability {
-	// The current user, or null when no one is signed in (spud-mac before native
+	// The current user, or null when no one is signed in (the Mac app before native
 	// auth; a signed-out web session).
 	current(input: Record<string, never>): Promise<UserProfile | null>
 }

@@ -13,10 +13,10 @@
 		},
 		"build": {
 			"dependsOn": ["transit"],
-			"outputs": ["dist/**", "out/**", "native/build/**", "native/Spud.app/**"],
+			"outputs": ["dist/**", "out/**", "native/build/**", "native/Kodama.app/**"],
 			"outputLogs": "new-only"
 		},
-		"@justfiles/spud-macos#build": {
+		"@justfiles/frieren-mac#build": {
 			"dependsOn": ["^build"],
 			"inputs": [
 				"package.json",
@@ -26,7 +26,7 @@
 				"native/Sources/**",
 				"native/build.sh"
 			],
-			"outputs": ["native/build/**", "native/Spud.app/**"],
+			"outputs": ["native/build/**", "native/Kodama.app/**"],
 			"outputLogs": "new-only"
 		},
 		"dev": {

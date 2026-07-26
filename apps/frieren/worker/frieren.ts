@@ -48,8 +48,8 @@ import {
 } from '@justfiles/core'
 import { type Volume, volume } from '@justfiles/fs'
 import { Hono } from 'hono'
-import { type AppIdMigrationResult, runAppIdMigrationV1 } from '../shared/migrate-app-ids.ts'
 import { guardCapability } from './accounts/guard.ts'
+import { migratePlatformAccountId } from './accounts/migrate-platform-id.ts'
 import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
@@ -113,7 +113,7 @@ type ServerMessage =
 
 const DEBUG_COMMAND = '/debug'
 
-// Spud's image engine, picked from pi's OpenRouter images catalog. Fixed for now —
+// The platform's image engine, picked from pi's OpenRouter images catalog. Fixed for now —
 // a Settings picker (its own selection, separate from the text model) comes with
 // the active-image work (#194).
 const IMAGE_MODEL = 'google/gemini-3.1-flash-image'
@@ -226,28 +226,6 @@ export class Frieren extends DurableObject<Env> {
 		return this.apps
 	}
 
-	// One-off Kodama id migration RPC (temporary; removed once the rebrand ships).
-	// Defaults to a dry run — pass `{ dryRun: false }` to mutate. Records the SQLite
-	// PITR bookmark BEFORE any write, and on a real, conflict-free run that moved
-	// anything rebuilds the volume + agent session so the new layout is served at once.
-	async migrateAppIdsV1(opts?: {
-		dryRun?: boolean
-	}): Promise<AppIdMigrationResult & { bookmark?: string }> {
-		const dryRun = opts?.dryRun !== false
-		let bookmark: string | undefined
-		try {
-			bookmark = await this.ctx.storage.getCurrentBookmark()
-		} catch {
-			bookmark = undefined
-		}
-		const result = await runAppIdMigrationV1(this.vol, { dryRun })
-		if (!dryRun && !result.conflict && result.entries.some((e) => e.moved.length > 0)) {
-			this.vol = volume(this.fs)
-			await this.reset()
-		}
-		return { ...result, bookmark }
-	}
-
 	private getTimezone = () => resolveTimezone(this.vol, this.cfTimezone)
 
 	// Admit one platform-key call, returning its HANDLE (needed to record cost even across a
@@ -335,10 +313,15 @@ export class Frieren extends DurableObject<Env> {
 		// Seed a default soul + empty profile so the agent works with no onboarding.
 		// Idempotent — a personalized soul (synced from the client) is left untouched.
 		await ensureAgentDefaults(this.vol)
-		// Spud AI: the platform-provided, always-on default backend. Seed it once with
-		// `ai` enabled so a fresh user has a working agent; a returning user's toggle
+		// The built-in AI account: the platform-provided, always-on default backend. Seed it
+		// once with `ai` enabled so a fresh user has a working agent; a returning user's toggle
 		// (they may have turned it off or switched to another AI) is left untouched.
-		await ensureAccount(this.vol, { accountId: 'spud', providerId: 'spud', enabled: ['ai'] })
+		await migratePlatformAccountId(this.vol)
+		await ensureAccount(this.vol, {
+			accountId: 'frieren',
+			providerId: 'frieren',
+			enabled: ['ai']
+		})
 		this.session?.abort()
 		this.text = text(this.meteredBackend(models, model))
 		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps
@@ -365,10 +348,10 @@ export class Frieren extends DurableObject<Env> {
 			usage: usageCapability(() => this.usageSnapshot())
 		})
 		// The agent's LLM backend resolves from the enabled `ai` account (single-active):
-		// Spud AI → the platform env backend; nothing enabled → no backend, so a turn
+		// the built-in AI → the platform env backend; nothing enabled → no backend, so a turn
 		// fails with a clear "turn on AI in Settings" the chat surfaces. Re-resolved per
 		// turn, so toggling AI in Settings takes effect on the next prompt.
-		const agentName = (await readFrontmatter(this.vol, SOUL_PATH)).agent_name || 'Frieren'
+		const agentName = (await readFrontmatter(this.vol, SOUL_PATH)).agent_name || 'Kodama'
 		// Capability-provided agent tools (Step 3.5): expose `image` to the agent when
 		// the platform has an image engine (local LM Studio dev has none). Availability
 		// still resolves per call through the active-AI account.
@@ -383,7 +366,7 @@ export class Frieren extends DurableObject<Env> {
 			capabilities: agentCaps,
 			backend: async () => {
 				const backend = await resolveAiAccount(this.vol, ({ providerId }) =>
-					providerId === 'spud' ? this.meteredBackend(models, model) : null
+					providerId === 'frieren' ? this.meteredBackend(models, model) : null
 				)
 				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
 				return backend
@@ -406,7 +389,7 @@ export class Frieren extends DurableObject<Env> {
 	// The platform AI runtime: a pi `Models` + selected model, plus (production only)
 	// an image-generation fn over pi's parallel `ImagesModels` stack — same OpenRouter
 	// key, its own model. Local dev (LM Studio) has no image engine, so `generateImage`
-	// is absent and Spud backs no image capability there. The api key is supplied
+	// is absent and the platform backs no image capability there. The api key is supplied
 	// through a small CredentialStore (a stored key wins over ambient env), so the
 	// token never rides on the backend — `modelsBackend` seals it inside `Models`.
 	private aiRuntime(): {
@@ -626,7 +609,7 @@ export class Frieren extends DurableObject<Env> {
 
 		return {
 			userName: profile.name || 'You',
-			agentName: soul.agent_name || 'Frieren'
+			agentName: soul.agent_name || 'Kodama'
 		}
 	}
 }

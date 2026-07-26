@@ -3,7 +3,7 @@
 // (composed from the user's Volume via `learningContext`). Callers supply only
 // LOW-LEVEL infra — a Volume plus a raw `generate` fn over their credentialed
 // model — so `accounts` and providers stay unaware of context, and both hosts
-// (frieren, spud) build the same capability the same way.
+// (frieren, the Mac app) build the same capability the same way.
 //
 // A system prompt is not a security boundary against the model (see #272): a
 // scope-bearing app can coax the model to echo the prepended fragment. That is

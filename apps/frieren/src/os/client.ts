@@ -139,7 +139,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// --- agent session (BehaviorSubject) ---
 	let connectionState: ConnectionState = 'disconnected'
 	let userName = 'You'
-	let agentName = 'Frieren'
+	let agentName = 'Kodama'
 	let messages: AgentMessage[] = []
 	let isStreaming = false
 	let currentAssistantId: string | null = null
@@ -314,7 +314,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 			reconnectAttempts = 0
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
-				agentName = data.participants.agentName || 'Frieren'
+				agentName = data.participants.agentName || 'Kodama'
 			}
 			connectionState = 'ready'
 			emitAgent()
@@ -325,7 +325,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 		if (data.type === 'history') {
 			if (data.participants) {
 				userName = data.participants.userName || 'You'
-				agentName = data.participants.agentName || 'Frieren'
+				agentName = data.participants.agentName || 'Kodama'
 			}
 			const restored: AgentMessage[] = (data.messages ?? []).map((m) => ({
 				id: crypto.randomUUID(),

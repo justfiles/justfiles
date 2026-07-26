@@ -179,7 +179,7 @@ function Sidebar({
 }) {
 	// The account row doubles as the entry to Usage — the macOS Settings shape, where the
 	// name/avatar header is itself a selectable row. On hosts without the `usage` capability
-	// (e.g. Spud Mac) it's a plain, non-interactive header so it never lands on a dead pane.
+	// (e.g. the Mac app) it's a plain, non-interactive header so it never lands on a dead pane.
 	const name = user?.name ?? (user ? 'User' : 'Local user')
 	const status = user ? 'Signed in' : 'Not signed in'
 	const account = (
@@ -467,7 +467,12 @@ function ConnectedAccount({
 						<h2 className="settings-card-title">
 							{provider?.name ?? account.providerId ?? account.accountId}
 						</h2>
-						<p className="settings-account-status is-connected">Connected · {account.accountId}</p>
+						<p className="settings-account-status is-connected">
+							{/* A builtin provider has exactly one account and its id is an internal
+							    token — never show it; a connected account's id IS the identity
+							    (an email), which is what distinguishes two accounts. */}
+							{provider?.builtin ? 'Connected' : `Connected · ${account.accountId}`}
+						</p>
 					</div>
 				</div>
 				{provider?.builtin ? null : (

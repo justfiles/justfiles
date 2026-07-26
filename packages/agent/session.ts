@@ -62,7 +62,7 @@ export type SessionEvent =
 	| { type: 'error'; message: string; route?: Route }
 
 // A per-turn observer of the RAW agent event stream (token/tool deltas), for a host that
-// renders live streaming (frieren) rather than transcript snapshots (spud-mac). Subscribed
+// renders live streaming (frieren) rather than transcript snapshots (the Mac app). Subscribed
 // only for the turn's duration (see `prompt`); matches the Assistant's listener shape.
 export type TurnListener = (event: AgentEvent, signal: AbortSignal) => void
 

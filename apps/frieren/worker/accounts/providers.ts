@@ -1,9 +1,9 @@
-// frieren's account providers. Google/iCloud/Spud are the shared modules — the
+// frieren's account providers. Google/iCloud/platform are the shared modules — the
 // Worker differs from the daemon only in constructor args:
-//   - Spud AI binds `ai` over the host's own env-keyed LLM (the platform owns the
-//     vendor/model), and
+//   - the platform provider binds `ai` over the host's own env-keyed LLM (the platform owns
+//     the vendor/model), and
 //   - interactive acquisition is refused clearly — those accounts are signed in on
-//     the Spud desktop app and sync here (DESIGN §9) — until a web-redirect
+//     the Mac app and sync here (DESIGN §9) — until a web-redirect
 //     AuthFlow lands. ChatGPT is a local marker so Settings lists it; its runtime
 //     (pi-ai) lives only in the daemon.
 
@@ -13,7 +13,7 @@ import {
 	googleProvider,
 	icloudProvider,
 	type Provider,
-	spudProvider
+	platformProvider
 } from '@justfiles/app/capabilities/accounts/providers'
 import type { GeneratedImage } from '@justfiles/app/capabilities/image'
 
@@ -22,7 +22,7 @@ export interface ProviderDeps {
 	generateImage?: (prompt: string) => Promise<GeneratedImage[]>
 }
 
-const DESKTOP_MESSAGE = 'Sign in to this account from the Spud desktop app — it will sync here.'
+const DESKTOP_MESSAGE = 'Sign in to this account from Kodama for Mac — it will sync here.'
 
 // The Worker has no browser/loopback to run an interactive flow; refuse before the
 // provider even builds its authorize URL.
@@ -37,7 +37,7 @@ export function buildProviders(deps: ProviderDeps): Provider[] {
 		googleProvider({ flow: acquireOnDesktop, client: null }),
 		icloudProvider(),
 		chatgptOnDesktop(),
-		spudProvider({
+		platformProvider({
 			generate: (system, prompt) => deps.text.gen(system, prompt),
 			generateImage: deps.generateImage
 		})
@@ -57,7 +57,7 @@ function chatgptOnDesktop(): Provider {
 		capabilities: {
 			ai: {
 				bind: () => {
-					throw new Error('ChatGPT is used from the Spud desktop app')
+					throw new Error('ChatGPT is used from Kodama for Mac')
 				}
 			}
 		}

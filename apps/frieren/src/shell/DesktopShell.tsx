@@ -229,7 +229,7 @@ export function DesktopShell({ onSwitchUser }: { onSwitchUser: () => void }) {
 				<Menubar>
 					<div className="frn-menubar-group">
 						<span className="frn-menubar-title">
-							{focusedApp?.name ?? 'Frieren'}
+							{focusedApp?.name ?? 'Kodama'}
 							{focusedApp?.version ? (
 								<span className="frn-menubar-version">{focusedApp.version}</span>
 							) : null}

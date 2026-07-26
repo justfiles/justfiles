@@ -26,7 +26,7 @@ export type SettingsState = {
 	providers: ProviderInfo[]
 	accounts: AccountInfo[]
 	usage: UsageSnapshot | null
-	// Whether the host provides the `usage` capability (Spud Mac doesn't yet). False hides
+	// Whether the host provides the `usage` capability (the Mac app doesn't yet). False hides
 	// the Usage category rather than surfacing an error the user can't act on.
 	usageAvailable: boolean
 	// A transient usage-load failure, shown inside the Usage pane (never the global banner).
@@ -94,7 +94,7 @@ export const app = defineApp({
 			// Success restores availability (a prior host without the capability may have synced
 			// usageAvailable=false into this state).
 			if (r.ok) return { ...state, usage: r.value, usageAvailable: true, usageError: null }
-			// A host without the `usage` capability (e.g. Spud Mac) reports it unavailable — hide
+			// A host without the `usage` capability (e.g. the Mac app) reports it unavailable — hide
 			// the category, and switch off it if it was selected, so the detail pane isn't
 			// stranded on a panel for a capability that will never load.
 			if (r.error.message === 'CAPABILITY_UNAVAILABLE')
