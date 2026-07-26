@@ -10,7 +10,7 @@ import { CATALOG_SCHEMA } from './shared/appstore.ts'
 // app files out as static assets and emit a catalog. Adding a built-in: build
 // it, then add its dir here. This is the ONLY place the built-in set is listed
 // (the worker/client learn it at runtime from the catalog).
-const BUILTIN_DIRS = ['app-notes', 'app-paint', 'app-files', 'app-settings']
+const BUILTIN_DIRS = ['app-notes', 'app-paint', 'app-files', 'app-settings', 'app-dictionary']
 
 // Dev-only sideload: extra `packages/<dir>` apps to fold into the LOCAL catalog
 // so you can launch an in-repo app that isn't a shipped built-in. Driven by the
