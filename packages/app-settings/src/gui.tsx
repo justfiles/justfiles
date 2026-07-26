@@ -67,7 +67,6 @@ button.settings-account:hover { background: var(--surface); }
 
 .settings button { font: inherit; cursor: default; }
 .settings button:disabled { opacity: 0.5; }
-.settings-primary-button { background: var(--focus); color: var(--on-focus); border: 1px solid var(--focus); border-radius: 7px; font-size: 13px; padding: 7px 14px; }
 .settings-small-button { font-size: 11px; padding: 3px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--window-bg); color: inherit; }
 
 .settings-meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -600,12 +599,7 @@ function ProviderConnectForm({
 			))}
 			{error ? <p className="settings-card-error">{error}</p> : null}
 			<div className="settings-card-actions">
-				<button
-					type="button"
-					className="settings-primary-button"
-					disabled={busy}
-					onClick={() => void connect()}
-				>
+				<button type="button" data-primary disabled={busy} onClick={() => void connect()}>
 					{busy ? 'Connecting…' : `Connect ${provider.name}`}
 				</button>
 			</div>
