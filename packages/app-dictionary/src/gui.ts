@@ -10,41 +10,41 @@ import { defineGUI, injectStyle } from '@justfiles/app/browser'
 import { type DictionaryApp, type DictionaryState, initialState } from './app.ts'
 import { type Entry, normalizeTerm, READER_LANGUAGE } from './lookup.ts'
 
+// Layout and the dictionary's own typographic hierarchy — nothing else. Controls
+// are bare `<input>`/`<button>`: the host's platform sheet (mac.css, serialized
+// into this frame) already styles them, and every colour here is a design token,
+// so dark mode follows for free. Type sizes are em-relative so they track
+// `--text-ui` rather than pinning their own scale.
 injectStyle(
 	`
-.dict { display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; background: var(--window-bg); color: var(--text); font-family: var(--font-ui); }
-.dict * { box-sizing: border-box; }
+.dict { display: flex; flex-direction: column; height: 100%; width: 100%; }
 
-.dict-search { position: sticky; top: 0; z-index: 1; display: flex; gap: 8px; padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--rule); }
-.dict-input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 15px; padding: 7px 11px; color: inherit; background: var(--control-bg); border: 1px solid var(--rule); border-radius: 8px; }
-.dict-input:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
-.dict-submit { flex: 0 0 auto; font: inherit; font-size: 13px; padding: 7px 15px; cursor: default; color: var(--on-focus); background: var(--focus); border: 1px solid var(--focus); border-radius: 8px; }
-.dict-search :disabled { opacity: 0.5; }
+.dict-search { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--surface); border-bottom: 1px solid var(--rule); }
+.dict-search input { flex: 1; min-width: 0; }
 
-.dict-result { flex: 1 1 auto; overflow-y: auto; padding: 24px 20px 40px; }
-.dict-placeholder { max-width: 34em; margin: 0; font-size: 13px; opacity: 0.55; }
-.dict-placeholder + .dict-placeholder { margin-top: 8px; font-size: 12px; opacity: 0.45; }
-.dict-error { max-width: 34em; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
-.dict-error p { margin: 0; font-size: 13px; color: color-mix(in oklab, #e5484d 78%, var(--text)); }
-.dict-retry { font: inherit; font-size: 12px; padding: 4px 12px; cursor: default; color: inherit; background: var(--control-bg); border: 1px solid var(--rule); border-radius: 7px; }
+.dict-result { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; }
+.dict-note { max-width: 34em; margin: 0 0 6px; opacity: 0.55; }
+.dict-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 34em; }
+.dict-error p { margin: 0; }
 
-.dict-entry { max-width: 40em; }
-.dict-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
-.dict-headword { margin: 0; font-size: 34px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
-.dict-phonetic { margin: 0; font-family: var(--font-mono); font-size: 14px; opacity: 0.55; }
-.dict-meaning { margin-top: 22px; }
-.dict-pos { margin: 0 0 10px; font-size: 13px; font-style: italic; font-weight: 600; opacity: 0.6; }
-.dict-senses { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 14px; }
-.dict-senses li::marker { font-size: 12px; opacity: 0.45; }
-.dict-definition { margin: 0; font-size: 15px; line-height: 1.5; }
-.dict-example { margin: 5px 0 0; padding-left: 10px; font-size: 14px; line-height: 1.5; opacity: 0.7; border-left: 2px solid var(--rule); }
-.dict-gloss { margin: 3px 0 0; padding-left: 10px; font-size: 13px; line-height: 1.45; opacity: 0.5; border-left: 2px solid var(--rule); }
-.dict-synonyms { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
-.dict-synonyms li { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--text) 8%, transparent); }
+/* A headword, its part of speech, and numbered senses: a shape the design system
+   has no component for, so it lives here. */
+.dict-entry { max-width: 34em; }
+.dict-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--rule); }
+.dict-entry h1 { margin: 0; font-size: 2.2em; font-weight: 600; letter-spacing: -0.02em; }
+.dict-entry h2 { margin: 16px 0 8px; font-size: 1em; font-style: italic; font-weight: 600; opacity: 0.6; }
+.dict-entry ol { margin: 0; padding-left: 1.6em; display: flex; flex-direction: column; gap: 10px; }
+.dict-entry li::marker { opacity: 0.45; }
+.dict-phonetic { margin: 0; font-family: var(--font-mono); opacity: 0.55; }
+.dict-definition { margin: 0; }
+.dict-example, .dict-gloss { margin: 4px 0 0; padding-left: 8px; border-left: 1px solid var(--rule); opacity: 0.7; }
+.dict-gloss { opacity: 0.5; }
+.dict-synonyms { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0 0; padding: 0; list-style: none; }
+.dict-synonyms li { font-size: 0.85em; padding: 1px 8px; background: var(--control-bg); border: 1px solid var(--rule); border-radius: 999px; }
 
-.dict-skeleton { max-width: 40em; display: flex; flex-direction: column; gap: 12px; }
-.dict-bar { height: 13px; border-radius: 999px; background: color-mix(in oklab, var(--text) 11%, transparent); animation: dict-pulse 1.1s ease-in-out infinite; }
-.dict-bar.is-head { height: 30px; width: 44%; }
+.dict-skeleton { display: flex; flex-direction: column; gap: 10px; max-width: 34em; }
+.dict-bar { height: 12px; border-radius: 999px; background: var(--rule); animation: dict-pulse 1.1s ease-in-out infinite; }
+.dict-bar.is-head { height: 26px; width: 44%; }
 .dict-bar.is-short { width: 62%; }
 @keyframes dict-pulse { 50% { opacity: 0.4; } }
 `,
@@ -75,14 +75,14 @@ export const gui = defineGUI<DictionaryApp>({
 		let pending = false
 		let notice: string | null = null
 
-		const input = el('input', 'dict-input')
+		const input = el('input')
 		input.type = 'text'
 		input.placeholder = 'Look up a word'
 		input.spellcheck = false
 		input.autocapitalize = 'none'
 		input.setAttribute('aria-label', 'Word or short term')
 
-		const submitButton = el('button', 'dict-submit', 'Look up')
+		const submitButton = el('button', undefined, 'Look up')
 		submitButton.type = 'submit'
 
 		const form = el('form', 'dict-search', input, submitButton)
@@ -128,21 +128,21 @@ export const gui = defineGUI<DictionaryApp>({
 
 		function body(): Node {
 			if (pending) return skeleton()
-			if (notice) return el('p', 'dict-placeholder', notice)
+			if (notice) return el('p', 'dict-note', notice)
 			if (current.status === 'ready' && current.entry) return entryCard(current.entry)
 			if (current.status === 'not-found')
 				return el(
 					'div',
 					undefined,
-					el('p', 'dict-placeholder', `No entry found for “${current.query}”.`),
+					el('p', 'dict-note', `No entry found for “${current.query}”.`),
 					el(
 						'p',
-						'dict-placeholder',
+						'dict-note',
 						'This looks up words and short terms. For a question, ask the assistant.'
 					)
 				)
 			if (current.status === 'error') {
-				const retry = el('button', 'dict-retry', 'Try again')
+				const retry = el('button', undefined, 'Try again')
 				retry.type = 'button'
 				retry.addEventListener('click', () => void lookup(current.query))
 				return el(
@@ -152,7 +152,7 @@ export const gui = defineGUI<DictionaryApp>({
 					retry
 				)
 			}
-			return el('p', 'dict-placeholder', 'Type a word to look it up.')
+			return el('p', 'dict-note', 'Type a word to look it up.')
 		}
 
 		function skeleton(): Node {
@@ -189,22 +189,22 @@ export const gui = defineGUI<DictionaryApp>({
 function entryCard(entry: Entry): Node {
 	const head = el(
 		'header',
-		'dict-head',
-		el('h1', 'dict-headword', entry.word),
+		undefined,
+		el('h1', undefined, entry.word),
 		entry.phonetic ? el('p', 'dict-phonetic', `/${entry.phonetic}/`) : null
 	)
 	const meanings = entry.meanings.map((meaning) =>
 		el(
 			'section',
-			'dict-meaning',
-			el('h2', 'dict-pos', meaning.partOfSpeech),
+			undefined,
+			el('h2', undefined, meaning.partOfSpeech),
 			el(
 				'ol',
-				'dict-senses',
+				undefined,
 				...meaning.senses.map((sense) =>
 					el(
 						'li',
-						'dict-sense',
+						undefined,
 						el('p', 'dict-definition', sense.definition),
 						sense.example ? el('p', 'dict-example', `“${sense.example}”`) : null,
 						// The example is in the headword's language; this is its
