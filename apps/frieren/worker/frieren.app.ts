@@ -5,7 +5,6 @@ import {
 	type Capability,
 	capabilityRegistry,
 	serveCapabilitiesRpc,
-	withDeclaredScopes,
 	wsFeedTransport
 } from '@justfiles/app/capabilities'
 import { volumeCapability } from '@justfiles/app/capabilities/volume/host'
@@ -181,10 +180,10 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		let link = capsLinks.get(ws)
 		if (!link) {
 			const { transport, feed } = wsFeedTransport(ws)
-			// The wire strips client scopes (rpc.ts); re-resolve each app's trusted
-			// scopes from its manifest before serving, so scope-gated capabilities
-			// (ai `context:*`) work for proxied browser apps instead of always denying.
-			serveCapabilitiesRpc(transport, withDeclaredScopes(deps.fs, proxied))
+			// Scopes ride the wire, resolved by the browser kernel from the executing
+			// bundle's manifest (rpc.ts), so the served registry authorizes against the
+			// same bundle version that is running the call.
+			serveCapabilitiesRpc(transport, proxied)
 			link = { feed }
 			capsLinks.set(ws, link)
 		}

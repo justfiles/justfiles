@@ -12,13 +12,17 @@ import { RpcSession, type RpcTransport } from 'capnweb'
 import { fromWire, toWire, type WireError } from './error.ts'
 import type { Capabilities, CapabilityCall, Emit, Unsubscribe } from './types.ts'
 
-// Scopes never ride the wire — the client cannot be trusted to claim them, so the
-// serving kernel resolves them; at the package level proxied caps are scope-free.
+// Scopes DO ride the wire, resolved by the EXECUTING kernel from the app's
+// manifest (the isolate never supplies them). Authorization is a property of the
+// bundle actually running the call, so the serving side honors the executing
+// kernel's scopes rather than re-deriving them from its own (possibly different)
+// copy of the bundle. An old peer that omits `scopes` is treated as scope-free.
 interface WireCall {
 	appId: string
 	capability: string
 	method: string
 	args: readonly unknown[]
+	scopes?: readonly string[]
 }
 
 type InvokeResult = { ok: true; value: unknown } | { ok: false; error: WireError }
@@ -35,14 +39,15 @@ const toCall = (w: WireCall): CapabilityCall => ({
 	capability: w.capability,
 	method: w.method,
 	args: w.args,
-	scopes: []
+	scopes: w.scopes ?? []
 })
 
 const toWireCall = (c: CapabilityCall): WireCall => ({
 	appId: c.appId,
 	capability: c.capability,
 	method: c.method,
-	args: c.args
+	args: c.args,
+	scopes: c.scopes
 })
 
 // Cap'n Web disposes stubs via `Symbol.dispose`, falling back to `Symbol.for` the
