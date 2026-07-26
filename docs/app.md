@@ -12,6 +12,7 @@ Frieren and Spud Mac. The best examples are:
 - `packages/app-pixel` — rich public action surface
 - `packages/app-notes` — scoped files, commands, subscriptions, and procedures
 - `packages/app-crossword` — AI procedure committing one atomic result
+- `packages/app-dictionary` — a framework-free GUI (plain DOM, no React) over an AI procedure
 - `packages/app-paint` — high-frequency GUI-local state
 - `packages/app-files` — recursive file watching and command coalescing
 - `packages/app-draw` — a normal package using a third-party npm library
