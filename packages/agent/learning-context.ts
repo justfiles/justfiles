@@ -28,6 +28,7 @@ const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 // Strict caps on the prompt-safe payload — short labels only.
 const MAX_ENTRIES = 8
 const MAX_LEN = 40
+const MAX_WORDS = 6
 
 const Payload = z.object({
 	interests: z.array(z.string()),
@@ -172,13 +173,35 @@ function parseJson(text: string): unknown {
 	return JSON.parse(match[0])
 }
 
+// Deterministic disclosure-safety gate for one projected label. The extraction
+// prompt ASKS the model to exclude sensitive data, but a model can be wrong or be
+// steered by injected text in `core.md` — a prompt is not validation of output.
+// So we ENFORCE shape here, before anything is cached or composed: short topic
+// labels only, rejecting free-form sentences, instructions/prompt-injection, and
+// structured identifiers (dates, phone/id numbers, emails, URLs). A bare proper
+// noun can't be classified deterministically and may pass; it is a low-sensitivity
+// interest label, and this gate — not the model instruction — is what the
+// disclosure-safe boundary (issue #272) actually rests on.
+const INJECTION =
+	/\b(ignore|disregard|instruction|instructions|system|assistant|prompt|reveal|repeat|you are|http|www)\b/i
+function safeLabel(raw: unknown): string | null {
+	if (typeof raw !== 'string' || /[\n\r\t]/.test(raw)) return null
+	const s = raw.trim().replace(/ {2,}/g, ' ')
+	if (!s || s.length > MAX_LEN || s.split(' ').length > MAX_WORDS) return null
+	// Label alphabet only: letters/digits/space + a few joiners. Blocks @, :, //, etc.
+	if (!/^[\p{L}\p{N} &'/+.-]+$/u.test(s)) return null
+	// Structured identifiers: 4-digit runs (years/ids/phones) or date-like d-d / d/d.
+	if (/\d{4}/.test(s) || /\d[-/]\d/.test(s)) return null
+	if (INJECTION.test(s)) return null
+	return s
+}
+
 function sanitizeList(value: unknown): string[] {
 	if (!Array.isArray(value)) return []
 	const out: string[] = []
 	for (const item of value) {
-		if (typeof item !== 'string') continue
-		const s = item.trim().slice(0, MAX_LEN)
-		if (s) out.push(s)
+		const label = safeLabel(item)
+		if (label) out.push(label)
 		if (out.length >= MAX_ENTRIES) break
 	}
 	return out

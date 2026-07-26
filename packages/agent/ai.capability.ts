@@ -8,8 +8,10 @@
 // A system prompt is not a security boundary against the model (see #272): a
 // scope-bearing app can coax the model to echo the prepended fragment. That is
 // an accepted, bounded risk because the fragment carries only disclosure-safe
-// adaptation hints (a coarse age + the sanitized, PII-free learning projection).
-// The guarantee is that the projection never crosses into the app AS DATA
+// adaptation hints — a coarse age plus short topic labels that `learningContext`
+// filters DETERMINISTICALLY (rejecting instructions, structured identifiers, and
+// free-form text before caching/composing), not merely via the model prompt. The
+// guarantee is that the projection never crosses into the app AS DATA
 // (params/state/the `{ text }` result), not echo-resistance.
 
 import { CapabilityError, implementCapability } from '@justfiles/app/capabilities'
