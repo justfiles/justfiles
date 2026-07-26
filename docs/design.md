@@ -17,10 +17,11 @@ Source: `packages/design`
 
 ## Model
 
-- Tokens live on `:root` and include surfaces, text, rules, controls, fonts, menubar, desktop, dock, focus, and danger colors.
+- Tokens live on `:root` and include surfaces, text, rules, controls, fonts, menubar, desktop, dock, focus, accent, and danger colors.
 - Dark mode is token-driven via `prefers-color-scheme`.
 - Shell components use `ds-*` classes for menus, menubar, desktop, dock, windows, and related host UI.
 - Platform defaults in `mac.css` are wrapped in `:where()` so they have zero specificity and stay easy for apps to override.
+- A `<button data-primary>` is the default button (the one Return fires) and gets the `--accent` treatment; plain `<button>` stays bare.
 
 ## Key files
 

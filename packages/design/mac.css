@@ -43,6 +43,50 @@
 	color: var(--menu-item-disabled-fg);
 }
 
+/* The default button: `<button data-primary>` — Aqua's blue push button, the one
+   Return fires. Written after the plain-button states so it wins on source order
+   (every rule here is :where(), so nothing has specificity to fight over), and
+   derived from --accent alone: a lighter top for the gloss, a darker edge, a
+   hairline inset highlight. Presence-matched, so `data-primary` and
+   `data-primary="true"` both work. */
+:where(button[data-primary]) {
+	color: var(--on-accent);
+	background: linear-gradient(
+		to bottom,
+		color-mix(in srgb, var(--accent) 74%, white),
+		var(--accent)
+	);
+	border-color: color-mix(in srgb, var(--accent) 72%, black);
+	box-shadow: inset 0 1px 0 color-mix(in srgb, white 45%, transparent);
+	text-shadow: 0 1px 0 color-mix(in srgb, black 22%, transparent);
+}
+
+:where(button[data-primary]:hover) {
+	background: linear-gradient(
+		to bottom,
+		color-mix(in srgb, var(--accent) 66%, white),
+		color-mix(in srgb, var(--accent) 94%, white)
+	);
+}
+
+/* Pressed: the gloss inverts, the way an Aqua button pushes in. */
+:where(button[data-primary]:active) {
+	background: linear-gradient(
+		to bottom,
+		color-mix(in srgb, var(--accent) 88%, black),
+		color-mix(in srgb, var(--accent) 96%, black)
+	);
+	box-shadow: inset 0 1px 2px color-mix(in srgb, black 28%, transparent);
+}
+
+:where(button[data-primary]:disabled) {
+	background: color-mix(in srgb, var(--accent) 38%, var(--control-bg));
+	border-color: color-mix(in srgb, var(--accent) 38%, var(--rule));
+	color: color-mix(in srgb, var(--on-accent) 65%, transparent);
+	box-shadow: none;
+	text-shadow: none;
+}
+
 :where(input, textarea, select) {
 	font: inherit;
 	color: var(--text);

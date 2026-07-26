@@ -20,6 +20,12 @@
 	--desktop-bg: #3a6b8c;
 	--focus: #0a84ff;
 	--on-focus: #ffffff;
+	/* The default button's blue, in the Snow Leopard sense: the one action Return
+	   fires. Deliberately its own token, not --focus — Aqua's default-button blue and
+	   its selection blue were never the same shade. mac.css derives the gloss and the
+	   edge from this with color-mix, so re-pointing it restyles every primary button. */
+	--accent: #3e7fd6;
+	--on-accent: #ffffff;
 	/* Something failed or will destroy data: error text, a destructive control, an
 	   over-limit meter. Tint it with color-mix for a fill or a hairline. */
 	--danger: #d70015;
@@ -43,8 +49,9 @@
 }
 
 /* Dark mode: re-point the tokens only. Every component below reads these, so the
-   whole system flips with no per-component dark rules. Traffic-light controls and
-   the accent (--focus) are intentionally unchanged — they read the same in both. */
+   whole system flips with no per-component dark rules. Traffic-light controls, the
+   accent (--focus) and the default button (--accent) are intentionally unchanged —
+   they read the same in both. */
 @media (prefers-color-scheme: dark) {
 	:root {
 		--surface: #2c2c2e;

@@ -84,6 +84,8 @@ export const gui = defineGUI<DictionaryApp>({
 
 		const submitButton = el('button', undefined, 'Look up')
 		submitButton.type = 'submit'
+		// The default button: Return in the field fires exactly this.
+		submitButton.dataset.primary = 'true'
 
 		const form = el('form', 'dict-search', input, submitButton)
 		const result = el('section', 'dict-result')
