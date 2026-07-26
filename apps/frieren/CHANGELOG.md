@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.8.0...frieren-v0.9.0) (2026-07-26)
+
+
+### Features
+
+* **design:** add the --danger token and collapse seven copies of it ([c1675cb](https://github.com/xiaoxinghu/justfiles/commit/c1675cbb40106f71ab7e138f4032a8841d236188))
+* **dictionary:** learning-aware dictionary app as a Frieren built-in ([180768b](https://github.com/xiaoxinghu/justfiles/commit/180768b136a096ead7456bccbb088b6c8c6cad2b))
+* purpose-scoped learning context projection for ai capability ([a5b26a9](https://github.com/xiaoxinghu/justfiles/commit/a5b26a948b055e47df6ed5cc014d74e32c941d4c))
+
+
+### Bug Fixes
+
+* authorize scoped capabilities against the executing bundle ([e58cca4](https://github.com/xiaoxinghu/justfiles/commit/e58cca4178634355547c507efe07d59999cad5ea))
+* build every built-in before frieren dev, and keep the field on the live word ([9b1482e](https://github.com/xiaoxinghu/justfiles/commit/9b1482e60f5e8139975b5c29b733d0743d5dec67))
+* re-resolve trusted scopes on the worker; key learning single-flight by source ([fefe3bf](https://github.com/xiaoxinghu/justfiles/commit/fefe3bf14d83cdc8d9585a3e561d93c9853653bb))
+
 ## [0.8.0](https://github.com/xiaoxinghu/justfiles/compare/frieren-v0.7.0...frieren-v0.8.0) (2026-07-25)
 
 

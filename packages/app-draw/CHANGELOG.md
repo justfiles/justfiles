@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.1.2...draw-v0.2.0) (2026-07-26)
+
+
+### Features
+
+* **design:** add the --danger token and collapse seven copies of it ([c1675cb](https://github.com/xiaoxinghu/justfiles/commit/c1675cbb40106f71ab7e138f4032a8841d236188))
+
 ## [0.1.2](https://github.com/xiaoxinghu/justfiles/compare/draw-v0.1.1...draw-v0.1.2) (2026-07-25)
 
 
