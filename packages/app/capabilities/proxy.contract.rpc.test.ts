@@ -46,3 +46,23 @@ test('Uint8Array and bigint cross the wire by value (impossible on the JSON wire
 	a.abort?.(new Error('done'))
 	b.abort?.(new Error('done'))
 })
+
+test('the executing kernel scopes ride the wire to the served side', async () => {
+	// Authorization is a property of the executing bundle; the serving side must see
+	// the scopes the calling kernel resolved, not an empty list.
+	const seen: (readonly string[])[] = []
+	const spy: Capabilities = {
+		invoke: async (c) => {
+			seen.push(c.scopes)
+			return null
+		},
+		subscribe: async () => () => {}
+	}
+	const [a, b] = transportPair()
+	serveCapabilitiesRpc(b, spy)
+	const { caps } = proxyCapabilitiesRpc(a)
+	await caps.invoke({ ...call(null), scopes: ['context:learning'] })
+	expect(seen[0]).toEqual(['context:learning'])
+	a.abort?.(new Error('done'))
+	b.abort?.(new Error('done'))
+})

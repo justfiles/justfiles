@@ -18,7 +18,6 @@ export {
 	type Stream,
 	type ToolOverride
 } from './core.ts'
-export { withDeclaredScopes } from './declared-scopes.ts'
 export {
 	type CapabilityCode,
 	CapabilityError,
