@@ -210,7 +210,7 @@ function Files({ state, client }: { state: FilesState; client: Client<FilesApp> 
 						</header>
 						<pre className="files-preview">
 							{displayError ? (
-								<span style={{ color: '#b91c1c' }}>{displayError}</span>
+								<span style={{ color: 'var(--danger)' }}>{displayError}</span>
 							) : showPreview ? (
 								showPreview.kind === 'image' ? (
 									showPreview.dataUrl ? (

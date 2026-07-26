@@ -105,7 +105,7 @@
 .files-error {
 	padding: 0 12px 8px;
 	font-size: 12px;
-	color: #b91c1c;
+	color: var(--danger);
 }
 .files-hint {
 	padding: 4px 12px;

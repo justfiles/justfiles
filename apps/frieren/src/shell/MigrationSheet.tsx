@@ -66,7 +66,7 @@ export function MigrationSheet({ onClose }: { onClose: () => void }) {
 						sync across your devices — your local workspace stays untouched either way.
 					</p>
 					{error ? (
-						<p className="frn-card-desc" style={{ color: '#ef4444' }}>
+						<p className="frn-card-desc" style={{ color: 'var(--danger)' }}>
 							{error}
 						</p>
 					) : null}

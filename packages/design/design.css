@@ -20,6 +20,9 @@
 	--desktop-bg: #3a6b8c;
 	--focus: #0a84ff;
 	--on-focus: #ffffff;
+	/* Something failed or will destroy data: error text, a destructive control, an
+	   over-limit meter. Tint it with color-mix for a fill or a hairline. */
+	--danger: #d70015;
 
 	/* Dock — modern frosted-glass */
 	--dock-radius: 22px;
@@ -52,6 +55,8 @@
 		--control-bg: #48484a;
 		--control-bg-hover: #545458;
 		--control-bg-active: #3a3a3c;
+		/* A deep red goes muddy on a dark ground; lift it the way macOS does. */
+		--danger: #ff453a;
 
 		--menu-bg: #2c2c2e;
 		--menu-border: rgba(255, 255, 255, 0.14);

@@ -28,7 +28,7 @@ injectStyle(
 .paint-bar { display: flex; flex: none; align-items: center; gap: 6px; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--rule); }
 .paint-btn { flex: none; padding: 1px 10px; font-size: 12px; }
 .paint-status { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; opacity: 0.6; }
-.paint-status[data-error="true"] { color: #b91c1c; opacity: 1; }
+.paint-status[data-error="true"] { color: var(--danger); opacity: 1; }
 
 .paint-body { display: flex; flex: 1; min-height: 0; }
 
