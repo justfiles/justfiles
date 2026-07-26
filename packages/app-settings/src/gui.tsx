@@ -44,7 +44,7 @@ button.settings-account:hover { background: var(--surface); }
 .settings-card-empty { align-items: center; padding: 32px; }
 .settings-card-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
 .settings-card-copy { margin: 0; font-size: 12px; opacity: 0.6; }
-.settings-card-error { margin: 0; font-size: 11px; color: #b91c1c; }
+.settings-card-error { margin: 0; font-size: 11px; color: var(--danger); }
 .settings-card-actions { display: flex; justify-content: flex-start; }
 
 .settings-provider { display: flex; align-items: center; gap: 12px; }
@@ -63,7 +63,7 @@ button.settings-account:hover { background: var(--surface); }
 .settings-field-title { opacity: 0.6; }
 .settings-select { width: 100%; font: inherit; font-size: 13px; padding: 6px 8px; background: var(--window-bg); border: 1px solid var(--rule); border-radius: 7px; color: inherit; }
 
-.settings-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 16px; padding: 8px 12px; color: #b91c1c; font-size: 12px; background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px; }
+.settings-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 16px; padding: 8px 12px; color: var(--danger); font-size: 12px; background: color-mix(in srgb, var(--danger) 10%, var(--window-bg)); border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--window-bg)); border-radius: 8px; }
 
 .settings button { font: inherit; cursor: default; }
 .settings button:disabled { opacity: 0.5; }
@@ -75,7 +75,7 @@ button.settings-account:hover { background: var(--surface); }
 .settings-meter-limit { font-size: 12px; opacity: 0.55; }
 .settings-meter-bar { position: relative; height: 8px; border-radius: 999px; background: var(--rule); overflow: hidden; }
 .settings-meter-fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: var(--focus); transition: width 0.2s ease; }
-.settings-meter-fill[data-exceeded="true"] { background: #b91c1c; }
+.settings-meter-fill[data-exceeded="true"] { background: var(--danger); }
 .settings-meter-sub { margin: 0; font-size: 11px; opacity: 0.55; }
 .settings-tier-badge { align-self: flex-start; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; border-radius: 999px; background: var(--focus); color: var(--on-focus); }
 `,

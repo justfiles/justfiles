@@ -25,7 +25,7 @@ injectStyle(
 .dict-result { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; }
 .dict-note { max-width: 34em; margin: 0 0 6px; opacity: 0.55; }
 .dict-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; max-width: 34em; }
-.dict-error p { margin: 0; }
+.dict-error p { margin: 0; color: var(--danger); }
 
 /* A headword, its part of speech, and numbered senses: a shape the design system
    has no component for, so it lives here. */

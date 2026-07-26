@@ -17,7 +17,7 @@ Source: `packages/design`
 
 ## Model
 
-- Tokens live on `:root` and include surfaces, text, rules, controls, fonts, menubar, desktop, dock, and focus colors.
+- Tokens live on `:root` and include surfaces, text, rules, controls, fonts, menubar, desktop, dock, focus, and danger colors.
 - Dark mode is token-driven via `prefers-color-scheme`.
 - Shell components use `ds-*` classes for menus, menubar, desktop, dock, windows, and related host UI.
 - Platform defaults in `mac.css` are wrapped in `:where()` so they have zero specificity and stay easy for apps to override.
