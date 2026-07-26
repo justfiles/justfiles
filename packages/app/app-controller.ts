@@ -15,7 +15,7 @@ export interface AppInspection extends AppSummary {
 
 // The agent↔kernel bridge: list/launch/inspect/close/state/run against a kernel.
 // The `app` command (@justfiles/agent) and the launcher both drive it; a host used
-// to hand-write this near-verbatim (native macOS bundles on spud-mac, DO-backed
+// to hand-write this near-verbatim (native macOS bundles on the Mac app, DO-backed
 // apps on frieren) — `createAppController` is the single implementation.
 export interface AppController {
 	list(): Promise<AppSummary[]>
@@ -29,20 +29,20 @@ export interface AppController {
 
 // The platform-specific seam the controller closes over.
 export interface AppControllerPorts {
-	// Bring an app to the foreground / dismiss it. spud-mac `open`/`pkill`s a native
+	// Bring an app to the foreground / dismiss it. the Mac app `open`/`pkill`s a native
 	// bundle (needs the name); frieren broadcasts open/close to its tabs (needs the id).
 	windows: {
 		open(id: string, name: string): void
 		close(id: string, name: string): void
 	}
 	// Resolve the "current" app id. Omit to track the last-launched id in memory
-	// (spud-mac's approximation of focus); frieren reads it from its persisted OS state.
+	// (the Mac app's approximation of focus); frieren reads it from its persisted OS state.
 	focus?: () => Promise<string | undefined>
 }
 
 // Build the AppController over a kernel. `kernel` may be a ready instance or an
 // accessor — frieren builds it lazily and reconciles built-ins on first use, so it
-// passes a thunk; spud-mac's is pre-built. Preview apps are hidden from `list`, `run`
+// passes a thunk; the Mac app's is pre-built. Preview apps are hidden from `list`, `run`
 // stamps the agent as the actor, and `current`/`close` resolve the focused app.
 export function createAppController(
 	kernel: Kernel | (() => Promise<Kernel>),

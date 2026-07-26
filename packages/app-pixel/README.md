@@ -1,4 +1,4 @@
-# @spud-computer/pixel
+# @justfiles/app-pixel
 
 An indexed pixel-art editor for the [Kodama](https://mykodama.app) App Store,
 built on [`@justfiles/app`](https://www.npmjs.com/package/@justfiles/app). The
@@ -11,7 +11,7 @@ pnpm dev      # develop
 pnpm build    # emit dist/manifest.json, dist/app.js, dist/gui.js
 ```
 
-Bundle id: `computer.spud.pixel`.
+Bundle id: `app.justfiles.frieren.pixel`.
 
 ## Agent text I/O
 
@@ -22,21 +22,21 @@ plain text — no JSON coordinate lists.
 the same format `setGrid` accepts:
 
 ```sh
-app run --id computer.spud.pixel show
-app run --id computer.spud.pixel show ruler=true   # overlay 0-based col/row numbers (read-only view)
+app run --id app.justfiles.frieren.pixel show
+app run --id app.justfiles.frieren.pixel show ruler=true   # overlay 0-based col/row numbers (read-only view)
 ```
 
 `show` prints the `.pixel` text as-is (the `app` command's output is plain text),
 so it pipes straight back into `setGrid` (or into a file):
 
 ```sh
-app run --id computer.spud.pixel show | app run --id computer.spud.pixel setGrid --stdin grid
+app run --id app.justfiles.frieren.pixel show | app run --id app.justfiles.frieren.pixel setGrid --stdin grid
 ```
 
 **Draw** — pipe a char grid into `setGrid` via `--stdin grid` (heredoc or `|`):
 
 ```sh
-app run --id computer.spud.pixel setGrid --stdin grid <<'EOF'
+app run --id app.justfiles.frieren.pixel setGrid --stdin grid <<'EOF'
 ................
 ..666......666..
 .66666....66666.
@@ -51,7 +51,7 @@ redrawing the whole canvas (clipped to the edges; short rows skip their missing
 right-hand cells):
 
 ```sh
-printf '.66.\n.66.' | app run --id computer.spud.pixel setGrid x=6 y=8 --stdin grid
+printf '.66.\n.66.' | app run --id app.justfiles.frieren.pixel setGrid x=6 y=8 --stdin grid
 ```
 
 If the piped text is a full `.pixel` document (first line `pixel <version>`) it

@@ -28,7 +28,7 @@ export interface ProviderInfo {
 	id: string
 	name: string
 	authKind: 'form' | 'interactive' | 'none'
-	// Platform-managed (e.g. Spud AI): the UI offers no connect/disconnect, only its
+	// Platform-managed (e.g. the built-in AI): the UI offers no connect/disconnect, only its
 	// capability toggles.
 	builtin?: boolean
 	// Capabilities an account from this provider can back.

@@ -16,7 +16,7 @@ export const CATALOG_PATH = '/appstore/catalog.json'
 // show provenance on the consent sheet. `files[].path` is relative to the
 // package's `dist/`, matching the built-in catalog. The `/store/*` path space is
 // reserved for the app store (catalog now; per-app pages/search later).
-export const COMMUNITY_CATALOG_SCHEMA = 'spud/community-catalog/v1'
+export const COMMUNITY_CATALOG_SCHEMA = 'frieren/community-catalog/v1'
 export const COMMUNITY_CATALOG_PATH = '/store/catalog.json'
 
 export interface CommunityCatalogApp extends CatalogApp {

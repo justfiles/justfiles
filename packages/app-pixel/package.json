@@ -1,11 +1,10 @@
 {
-	"name": "@spud-computer/pixel",
+	"name": "@justfiles/app-pixel",
 	"version": "0.1.0",
 	"type": "module",
 	"main": "./dist/manifest.json",
 	"keywords": [
-		"kodama-app",
-		"spud-app"
+		"kodama-app"
 	],
 	"files": [
 		"dist"

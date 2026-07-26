@@ -29,7 +29,7 @@ export interface ConsentTarget {
 
 // The install-consent sheet: the one gate before third-party bytes touch the
 // volume. It shows the declared capabilities, the npm publisher, and either the
-// community disclaimer or the "by spud" badge — everything from static catalog
+// community disclaimer or the "by Kodama" badge — everything from static catalog
 // metadata, so nothing runs to render it.
 export function ConsentSheet({
 	target,
@@ -82,7 +82,9 @@ export function ConsentSheet({
 		>
 			<div className="frn-onb-form">
 				<div className="frn-card">
-					<span className="frn-badge">{firstParty ? 'by spud' : `Community · npm/${app.npm}`}</span>
+					<span className="frn-badge">
+						{firstParty ? 'by Kodama' : `Community · npm/${app.npm}`}
+					</span>
 					<h2 className="frn-card-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
 						{icon ? (
 							<img src={icon} alt="" style={{ width: 28, height: 28, borderRadius: 6 }} />
@@ -92,8 +94,8 @@ export function ConsentSheet({
 
 					<p className="frn-card-desc">
 						{firstParty
-							? 'A first-party app from spud.'
-							: 'Community app — not reviewed by spud. It runs with the access it declares below; review before installing.'}
+							? 'A first-party app from Kodama.'
+							: 'Community app — not reviewed by Kodama. It runs with the access it declares below; review before installing.'}
 					</p>
 
 					<p className="frn-card-desc" style={{ opacity: 0.85 }}>

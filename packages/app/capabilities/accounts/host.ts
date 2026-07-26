@@ -307,8 +307,8 @@ export function accountsCapabilities(
 }
 
 // Seed a credential-less account once, if it doesn't already exist — for a platform-
-// managed provider (Spud AI) that should be present and, on a fresh install, the active
-// AI by default. Idempotent: a returning user's active-AI choice is left untouched.
+// managed provider (the built-in AI) that should be present and, on a fresh install, the
+// active AI by default. Idempotent: a returning user's active-AI choice is left untouched.
 export async function ensureAccount(
 	volume: Volume,
 	input: { accountId: string; providerId: string; enabled: CapabilityId[] }
@@ -320,6 +320,26 @@ export async function ensureAccount(
 		const activeAi = volumeActiveAi(volume)
 		if ((await activeAi.get()) === null) await activeAi.set({ accountId: input.accountId })
 	}
+}
+
+// Move an existing account to a new id/provider id, carrying the active-AI pointer with it
+// — for a builtin provider whose ids were renamed. No-op when `from` is absent; never
+// clobbers an existing `to`.
+export async function renameAccount(
+	volume: Volume,
+	from: string,
+	to: { accountId: string; providerId: string }
+): Promise<void> {
+	const accounts = volumeAccountStore(volume)
+	const existing = await accounts.get(from)
+	if (!existing) return
+	if (!(await accounts.get(to.accountId))) {
+		await accounts.put({ ...existing, id: to.accountId, provider: to.providerId })
+	}
+	await accounts.delete(from)
+	const activeAi = volumeActiveAi(volume)
+	const active = await activeAi.get()
+	if (active?.accountId === from) await activeAi.set({ ...active, accountId: to.accountId })
 }
 
 // A short-lived borrow of the active-AI account, for building the agent's own LLM

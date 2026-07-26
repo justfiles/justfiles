@@ -9,7 +9,7 @@ export default defineConfig({
 			'apps/frieren/src/apps/**/*.test.ts',
 			'apps/frieren/src/notifications/**/*.test.ts',
 			'apps/worker/**/*.test.ts',
-			'apps/spud-mac/**/*.test.ts',
+			'apps/mac/**/*.test.ts',
 			'packages/*/**/*.test.ts',
 			'packages/*/**/*.test.tsx'
 		],

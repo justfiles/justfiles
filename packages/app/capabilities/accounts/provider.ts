@@ -65,7 +65,7 @@ export interface AiModel {
 export interface Provider {
 	id: string
 	name: string
-	// Platform-managed (Spud AI): Settings offers no connect/disconnect, only toggles.
+	// Platform-managed (the built-in AI): Settings offers no connect/disconnect, only toggles.
 	builtin?: boolean
 	auth: Auth
 	capabilities: {

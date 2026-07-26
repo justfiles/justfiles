@@ -6,7 +6,7 @@ export type { AppController } from '@justfiles/app'
 
 /**
  * The `app` command as a ShellCommand: list, launch, inspect, and drive apps over
- * the kernel (see apps/spud-mac/daemon/agent.ts). The canonical example of a custom
+ * the kernel (see apps/mac/daemon/agent.ts). The canonical example of a custom
  * command — it ignores the fs entirely and closes over an injected controller,
  * showing that a ShellCommand is just a named `execute` with a summary.
  */

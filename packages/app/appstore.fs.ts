@@ -11,7 +11,7 @@ export type { AppStore } from './appstore.ts'
 const SKIP = new Set(['bundle.js', 'bundle.d.ts'])
 
 // A packaged built-in AppStore: reads app files straight off disk (Node/Bun
-// hosts — spud-mac's bundled resources, or the dev `dist` dirs). It carries only
+// hosts — the Mac app's bundled resources, or the dev `dist` dirs). It carries only
 // built-ins, so `latest(id)` resolves to a built-in or null.
 export async function builtinStoreFromFs(roots: readonly string[]): Promise<AppStore> {
 	const rootById = new Map<string, string>()

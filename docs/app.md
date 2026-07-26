@@ -6,7 +6,7 @@ description: 'Agent guide for building apps with @justfiles/app.'
 # Building Apps
 
 Use this guide when creating or changing an app. The framework is in `packages/app`; apps run in
-Frieren and Spud Mac. The best examples are:
+Frieren and Kodama for Mac. The best examples are:
 
 - `packages/create-app/template` — minimum React app
 - `packages/app-pixel` — rich public action surface
@@ -421,7 +421,7 @@ CAPABILITY_OFFLINE
 
 Availability differs by host and user configuration:
 
-| Capability | Import/factory | Frieren | Spud Mac | App Code import |
+| Capability | Import/factory | Frieren | Kodama for Mac | App Code import |
 | --- | --- | --- | --- | --- |
 | Files | `capabilities/volume`: `volume` | Yes | Yes | Yes |
 | Text AI | `capabilities/ai`: `ai` | Yes | Account-dependent | Yes |
@@ -435,7 +435,7 @@ Availability differs by host and user configuration:
 | App compiler/installer | `capabilities/devkit`: `devkit` | First-party Code only | Yes | Yes; Frieren denies authored apps at runtime |
 
 The standalone Vite development host implements only `volume`. Test other capabilities inside Frieren
-or Spud Mac, or unit-test the pure logic behind them.
+or Kodama for Mac, or unit-test the pure logic behind them.
 
 ### `volume`
 

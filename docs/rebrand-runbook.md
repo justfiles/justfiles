@@ -12,7 +12,8 @@ Clerk)**. No data migration, no id rename, no migrator, no backups.
 ## Invariants — never change these
 
 - **Internal names**: `frieren`, the `Frieren` Durable Object class, `frieren-staging`,
-  worker names, R2 buckets, DO namespaces, source dirs, schema names.
+  worker names, R2 buckets, DO namespaces, source dirs, schema names, the platform AI
+  provider/account id (`frieren`), and the `FRIEREN_*` env vars of the macOS daemon.
 - **App bundle IDs**: `app.justfiles.frieren.*` (permanent, brand-free). Same for the macOS
   bundle scheme.
 - **Release tag component**: `frieren` → tags `frieren-v*`, which is the prod deploy trigger.
@@ -21,15 +22,19 @@ Clerk)**. No data migration, no id rename, no migrator, no backups.
 - **The Clerk instance itself**: same instance ⇒ same user IDs ⇒ same per-user Durable
   Objects. Only its *domain* changes.
 
-Keeping these stable is the whole reason a rebrand stays cheap. A static test already rejects
-the public brand leaking back into IDs/infra — keep it.
+Keeping these stable is the whole reason a rebrand stays cheap. A static test
+(`apps/frieren/shared/no-legacy-names.test.ts`) already rejects a retired brand or id prefix
+leaking back into code/config — keep it, and add the newly retired name to it.
 
 ## What a rebrand actually changes
 
 1. **Public copy and discovery**: `apps/frieren/index.html` `<title>`, PWA manifest, the App
    Store npm keyword and indexer user-agent, the AI provider display name
-   (`packages/app/capabilities/accounts/providers/spud.ts` → `name`), onboarding / marketing /
-   legal / email / social copy. (The internal id `spud` and `spudProvider` stay.)
+   (`packages/app/capabilities/accounts/providers/platform.ts` → `name`), the default agent
+   persona (`packages/agent/agent-defaults.ts`), the macOS product name (`Kodama.app`,
+   `~/Applications/Kodama Apps/`, `~/Library/Application Support/Kodama` — see
+   `apps/mac/native/build.sh`), onboarding / marketing / legal / email / social copy.
+   Every *id* behind that copy is already brand-free (`frieren`), so none of it moves.
 2. **The public domain** (`mykodama.app` → `newname.tld`): a Cloudflare Custom Domain on the
    worker **and** the Clerk production instance's domain.
 3. **Optionally** a new Google Cloud OAuth project (cosmetic; the existing one can be reused).

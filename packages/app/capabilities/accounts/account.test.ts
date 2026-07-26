@@ -36,14 +36,19 @@ describe('volumeAccountStore', () => {
 		const fs = volume(memStorage())
 		await fs.mkdir('/system/accounts', { recursive: true })
 		await fs.writeFile(
-			'/system/accounts/spud.json',
+			'/system/accounts/legacy.json',
 			new TextEncoder().encode(
-				JSON.stringify({ accountId: 'spud', providerId: 'spud', creds: {}, enabled: { ai: {} } })
+				JSON.stringify({
+					accountId: 'legacy',
+					providerId: 'legacy',
+					creds: {},
+					enabled: { ai: {} }
+				})
 			)
 		)
 		const store = volumeAccountStore(fs)
 		expect(await store.list()).toEqual([])
-		expect(await store.get('spud')).toBeUndefined()
+		expect(await store.get('legacy')).toBeUndefined()
 	})
 
 	test('secretCodec transforms only the creds lane on disk; reads decode it back', async () => {

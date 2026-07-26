@@ -3,11 +3,11 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import type { CapabilityCall } from '../types.ts'
 import { volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
-import { accountsCapabilities, resolveAiAccount } from './host.ts'
+import { accountsCapabilities, renameAccount, resolveAiAccount } from './host.ts'
 import type { Auth, Provider } from './provider.ts'
 import { GMAIL_SCOPE, googleProvider } from './providers/google.ts'
 import { icloudProvider } from './providers/icloud.ts'
-import { spudProvider } from './providers/spud.ts'
+import { platformProvider } from './providers/platform.ts'
 
 // The credential-bearing stores are internal, so tests drive the four facets through
 // `accountsCapabilities` over a real in-memory Volume. State the admin facet can't
@@ -64,13 +64,13 @@ function fakeChatgpt(over: Partial<AiBinding> = {}): Provider {
 }
 
 function testProviders(
-	over: { google?: Provider; chatgpt?: Provider; spud?: Provider } = {}
+	over: { google?: Provider; chatgpt?: Provider; platform?: Provider } = {}
 ): Provider[] {
 	return [
 		over.google ?? fakeGoogle(),
 		icloudProvider(),
 		over.chatgpt ?? fakeChatgpt(),
-		over.spud ?? spudProvider({ generate: async (_s, p) => `spud:${p}` })
+		over.platform ?? platformProvider({ generate: async (_s, p) => `platform:${p}` })
 	]
 }
 
@@ -106,11 +106,11 @@ describe('accounts admin host', () => {
 			['google', 'interactive', 'calendar+email'],
 			['icloud', 'form', 'calendar'],
 			['chatgpt', 'interactive', 'ai'],
-			['spud', 'none', 'ai']
+			['frieren', 'none', 'ai']
 		])
-		expect(list.find((p) => p.id === 'spud')?.builtin).toBe(true)
+		expect(list.find((p) => p.id === 'frieren')?.builtin).toBe(true)
 		expect(list.find((p) => p.id === 'icloud')?.credentialsSchema).toBeTruthy()
-		expect(list.find((p) => p.id === 'spud')?.credentialsSchema).toBeUndefined()
+		expect(list.find((p) => p.id === 'frieren')?.credentialsSchema).toBeUndefined()
 	})
 
 	test('connect (interactive) derives accountId; connect requests no scopes yet', async () => {
@@ -250,25 +250,25 @@ describe('use-facet dispatch', () => {
 	test('image.generateImage rides the active-AI selection', async () => {
 		const { caps, accounts, activeAi } = await setup(
 			testProviders({
-				spud: spudProvider({
-					generate: async (_s, p) => `spud:${p}`,
+				platform: platformProvider({
+					generate: async (_s, p) => `platform:${p}`,
 					generateImage: async (prompt) => [{ data: `b64:${prompt}`, mimeType: 'image/png' }]
 				})
 			})
 		)
-		await accounts.put({ id: 'spud', provider: 'spud', creds: {} })
-		await activeAi.set({ accountId: 'spud' })
+		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
+		await activeAi.set({ accountId: 'frieren' })
 		await expect(
 			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
 		).resolves.toEqual({ images: [{ data: 'b64:a red panda', mimeType: 'image/png' }] })
 	})
 
 	test('image is UNAVAILABLE when the active AI provider has no image binding', async () => {
-		// The default spud provider carries no image engine; chatgpt never does. Either
+		// The default platform provider carries no image engine; chatgpt never does. Either
 		// way the active account decides — image swaps (or vanishes) with the AI switch.
 		const { caps, accounts, activeAi } = await setup()
-		await accounts.put({ id: 'spud', provider: 'spud', creds: {} })
-		await activeAi.set({ accountId: 'spud' })
+		await accounts.put({ id: 'frieren', provider: 'frieren', creds: {} })
+		await activeAi.set({ accountId: 'frieren' })
 		await expect(
 			caps.image.invoke(use('image', 'generateImage', { prompt: 'a red panda' }))
 		).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE', capability: 'image' })
@@ -360,5 +360,29 @@ describe('resolveAiAccount', () => {
 	test('is null with no active selection', async () => {
 		const vol = volume(memStorage())
 		expect(await resolveAiAccount(vol, () => 'x')).toBeNull()
+	})
+})
+
+describe('renameAccount', () => {
+	test('moves the account and the active-AI pointer to the new ids', async () => {
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		const activeAi = volumeActiveAi(vol)
+		await accounts.put({ id: 'old', provider: 'old', creds: {} })
+		await activeAi.set({ accountId: 'old', model: 'default' })
+		await renameAccount(vol, 'old', { accountId: 'new', providerId: 'new' })
+		expect(await accounts.get('old')).toBeUndefined()
+		expect(await accounts.get('new')).toMatchObject({ id: 'new', provider: 'new' })
+		expect(await activeAi.get()).toEqual({ accountId: 'new', model: 'default' })
+	})
+
+	test('is a no-op with no old account, and leaves another active selection alone', async () => {
+		const vol = volume(memStorage())
+		const accounts = volumeAccountStore(vol)
+		const activeAi = volumeActiveAi(vol)
+		await activeAi.set({ accountId: 'u@openai' })
+		await renameAccount(vol, 'old', { accountId: 'new', providerId: 'new' })
+		expect(await accounts.list()).toEqual([])
+		expect(await activeAi.get()).toEqual({ accountId: 'u@openai' })
 	})
 })

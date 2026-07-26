@@ -282,7 +282,7 @@ export function Omnibar({
 		if (hadWindow.current && !agentWindowOpen && session.messages.length > 0) setChatOpen(true)
 		hadWindow.current = agentWindowOpen
 	}, [agentWindowOpen, session.messages.length])
-	// spud-mac's fall-through: a query that matches no app means you're talking to
+	// the Mac app's fall-through: a query that matches no app means you're talking to
 	// the agent, so the sheet slides straight into the transcript instead of a lone
 	// "Ask" row. The conversation window preempts it (coexistence rule) — there the
 	// row stays and just implies the send lands over in the window.

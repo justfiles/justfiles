@@ -18,4 +18,4 @@ export {
 	googleProvider
 } from './google.ts'
 export { icloudProvider } from './icloud.ts'
-export { spudProvider } from './spud.ts'
+export { platformProvider } from './platform.ts'
