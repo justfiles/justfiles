@@ -8,8 +8,10 @@ import { CATALOG_SCHEMA } from './shared/appstore.ts'
 // Built-in app packages, by workspace dir. Their `dist` (built by the monorepo
 // before frieren — they're workspace deps) is the source of truth; we copy the
 // app files out as static assets and emit a catalog. Adding a built-in: build
-// it, then add its dir here. This is the ONLY place the built-in set is listed
-// (the worker/client learn it at runtime from the catalog).
+// it, then add its dir here. This list drives the shipped catalog; two build
+// entries must stay in step with it or a fresh checkout has no `dist` to read —
+// `frieren#dev`'s `dependsOn` in `turbo.json` (dev) and the `build-apps` script
+// in `package.json` (CI/prod).
 const BUILTIN_DIRS = ['app-notes', 'app-paint', 'app-files', 'app-settings', 'app-dictionary']
 
 // Dev-only sideload: extra `packages/<dir>` apps to fold into the LOCAL catalog

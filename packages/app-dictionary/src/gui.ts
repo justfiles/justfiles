@@ -92,6 +92,17 @@ export const gui = defineGUI<DictionaryApp>({
 		root.classList.add('dict')
 		root.replaceChildren(form, result)
 
+		// The field follows the committed query — including a lookup the AGENT ran —
+		// unless the reader has an unsent edit in it, which is theirs to keep.
+		let edited = false
+		const setField = (value: string) => {
+			input.value = value
+			edited = false
+		}
+		input.addEventListener('input', () => {
+			edited = true
+		})
+
 		form.addEventListener('submit', (event) => {
 			event.preventDefault()
 			void lookup(input.value)
@@ -107,7 +118,7 @@ export const gui = defineGUI<DictionaryApp>({
 				render()
 				return
 			}
-			input.value = word
+			setField(word)
 			notice = null
 			pending = true
 			render()
@@ -168,13 +179,15 @@ export const gui = defineGUI<DictionaryApp>({
 		}
 
 		requestAnimationFrame(() => input.focus())
+		setField(current.query)
 		render()
 
 		return {
 			update(next) {
 				current = next ?? initialState
-				// An agent-driven lookup lands here too: the entry simply appears.
-				if (!pending) input.value ||= current.query
+				// An agent-driven lookup lands here too: the entry appears and the field
+				// catches up, so submitting again repeats THIS word, not a stale one.
+				if (!pending && !edited) setField(current.query)
 				render()
 			},
 			unmount() {
