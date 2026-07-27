@@ -1,10 +1,8 @@
 import type { Expression } from '@justfiles/agent/expression'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
-// How long a face stays put before the next tag can replace it — tags arrive per sentence,
-// which is faster than an eye can follow.
-const MIN_HOLD_MS = 1_500
-// After the reply lands, the face drifts back to its resting expression.
+// After the reply lands, the face drifts back to its resting expression. (When mood
+// arrives, this is where the resting face becomes a function of mood, not a constant.)
 const REST_DELAY_MS = 4_000
 
 export interface AgentAvatarProps {
@@ -12,7 +10,8 @@ export interface AgentAvatarProps {
 	url: string
 	// Optional per-expression faces from the volume; absent ones fall back to `url`.
 	faces: Partial<Record<Expression, string>>
-	// Latest tag off the token stream, or null before the agent has tagged anything.
+	// The expression the client is currently publishing. It already paces the agent's
+	// per-sentence tags (one per hold), so this component just renders what it's given.
 	expression: Expression | null
 	streaming: boolean
 	personalized: boolean
@@ -23,10 +22,10 @@ export interface AgentAvatarProps {
 }
 
 /**
- * The agent's face: the tag stream picks the image, a minimum hold keeps per-sentence tags
- * from strobing, and the face drifts back to `neutral` once the reply is over. With no
- * per-expression art on the volume every expression resolves to the same image and this is
- * a plain avatar — the channel still runs, and shows up as `data-expression`.
+ * The agent's face: the expression picks the image, and the face settles back to `neutral`
+ * once the reply is over. With no per-expression art on the volume every expression
+ * resolves to the same image and this is a plain avatar — the channel still runs, and shows
+ * up as `data-expression`.
  */
 export function AgentAvatar({
 	url,
@@ -37,7 +36,7 @@ export function AgentAvatar({
 	size,
 	className
 }: AgentAvatarProps) {
-	const shown = useHeldExpression(expression, streaming)
+	const shown = useRestingExpression(expression, streaming)
 	return (
 		<img
 			src={(shown && faces[shown]) || url}
@@ -52,30 +51,16 @@ export function AgentAvatar({
 	)
 }
 
-function useHeldExpression(expression: Expression | null, streaming: boolean): Expression | null {
-	const [shown, setShown] = useState<Expression | null>(null)
-	const changedAt = useRef(0)
-
-	// Rate-limit: never swap faces more often than MIN_HOLD_MS.
+function useRestingExpression(
+	expression: Expression | null,
+	streaming: boolean
+): Expression | null {
+	const [resting, setResting] = useState(false)
 	useEffect(() => {
-		if (expression === shown) return
-		const timer = setTimeout(
-			() => {
-				changedAt.current = Date.now()
-				setShown(expression)
-			},
-			Math.max(0, MIN_HOLD_MS - (Date.now() - changedAt.current))
-		)
+		setResting(false)
+		if (streaming || expression === null || expression === 'neutral') return
+		const timer = setTimeout(() => setResting(true), REST_DELAY_MS)
 		return () => clearTimeout(timer)
-	}, [expression, shown])
-
-	// Settle back to resting once the turn is done. (When mood lands, this is where the
-	// resting face becomes a function of mood instead of a constant.)
-	useEffect(() => {
-		if (streaming || shown === null || shown === 'neutral') return
-		const timer = setTimeout(() => setShown('neutral'), REST_DELAY_MS)
-		return () => clearTimeout(timer)
-	}, [streaming, shown])
-
-	return shown
+	}, [streaming, expression])
+	return resting ? 'neutral' : expression
 }

@@ -5,11 +5,11 @@ import { createExpressionParser, EXPRESSION_PROMPT, stripExpressions } from './e
 function stream(chunks: string[]) {
 	const parser = createExpressionParser()
 	let text = ''
-	const seen: (string | null)[] = []
+	const seen: string[] = []
 	for (const chunk of chunks) {
 		const out = parser.push(chunk)
 		text += out.text
-		if (out.expression) seen.push(out.expression)
+		seen.push(...out.expressions)
 	}
 	return { text: text + parser.flush(), seen }
 }
@@ -18,7 +18,7 @@ describe('stripExpressions', () => {
 	test('pulls the tag out and keeps the sentence', () => {
 		expect(stripExpressions('[pleased]Found it.')).toEqual({
 			text: 'Found it.',
-			expression: 'pleased'
+			expressions: ['pleased']
 		})
 	})
 
@@ -26,22 +26,25 @@ describe('stripExpressions', () => {
 		expect(stripExpressions('[pleased] Found it.  Twice.').text).toBe('Found it.  Twice.')
 	})
 
-	test('reports the last tag of a multi-sentence reply', () => {
+	test('reports every tag of a multi-sentence reply, in order', () => {
 		const out = stripExpressions('[pleased]Found it. [concerned]But the table is gone.')
-		expect(out).toEqual({ text: 'Found it. But the table is gone.', expression: 'concerned' })
+		expect(out).toEqual({
+			text: 'Found it. But the table is gone.',
+			expressions: ['pleased', 'concerned']
+		})
 	})
 
 	test('leaves markdown links and unknown brackets alone', () => {
 		const text = 'See [the docs](https://x.dev) and [whatever] else.'
-		expect(stripExpressions(text)).toEqual({ text, expression: null })
+		expect(stripExpressions(text)).toEqual({ text, expressions: [] })
 	})
 
 	test('is case-insensitive (small models drift on casing)', () => {
-		expect(stripExpressions('[Pleased]hi').expression).toBe('pleased')
+		expect(stripExpressions('[Pleased]hi').expressions).toEqual(['pleased'])
 	})
 
 	test('a reply with no tags is untouched', () => {
-		expect(stripExpressions('plain text')).toEqual({ text: 'plain text', expression: null })
+		expect(stripExpressions('plain text')).toEqual({ text: 'plain text', expressions: [] })
 	})
 })
 

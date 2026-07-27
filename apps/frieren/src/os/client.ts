@@ -14,6 +14,15 @@ const SOCKET_OPEN = 1
 // reconnected on next use). Caps at 30s; reset on a healthy `ready`.
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 15_000, 30_000] as const
 
+// Expression pacing. The agent tags each SENTENCE, and a reply's sentences arrive far
+// faster than a face can be read — publishing the newest tag would show only the last one
+// (`[curious]… [pleased]…` would never look curious). So tags queue and one is published
+// per hold, and the avatar walks the reply's arc.
+const EXPRESSION_HOLD_MS = 1_400
+// A twelve-sentence reply must not still be animating long after the words landed: keep
+// only the newest few, and `settleExpression` jumps to the last one when the turn ends.
+const EXPRESSION_QUEUE_MAX = 4
+
 // Minimal socket surface the client drives; the real `WebSocket` satisfies it.
 // Tests inject a fake via `createSocket`.
 export interface SocketLike {
@@ -35,8 +44,7 @@ export interface AgentSnapshot {
 	agentName: string
 	messages: AgentMessage[]
 	isStreaming: boolean
-	// The last expression tag the agent emitted this turn (null until it tags one). The
-	// avatar reads it; the tags themselves never reach `messages`.
+	// The expression the avatar is CURRENTLY showing, plus the tags waiting their turn.
 	expression: Expression | null
 }
 
@@ -151,6 +159,52 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	// held inside the parser until the next delta (or `flush` at end of message).
 	let expressionParser = createExpressionParser()
 	let expression: Expression | null = null
+	let expressionQueue: Expression[] = []
+	let expressionTimer: ReturnType<typeof setTimeout> | null = null
+	let expressionHeldUntil = 0
+
+	function queueExpression(next: Expression): void {
+		// The model repeats a tag across sentences; a repeat is a hold, not a change.
+		if (next === (expressionQueue[expressionQueue.length - 1] ?? expression)) return
+		expressionQueue.push(next)
+		if (expressionQueue.length > EXPRESSION_QUEUE_MAX) {
+			expressionQueue.splice(0, expressionQueue.length - EXPRESSION_QUEUE_MAX)
+		}
+		pumpExpression()
+	}
+
+	function pumpExpression(): void {
+		if (expressionTimer || expressionQueue.length === 0) return
+		const wait = expressionHeldUntil - Date.now()
+		if (wait > 0) {
+			expressionTimer = setTimeout(() => {
+				expressionTimer = null
+				pumpExpression()
+			}, wait)
+			return
+		}
+		// The face is free: show the next tag now, which arms the next hold.
+		const next = expressionQueue.shift()
+		if (!next) return
+		expression = next
+		expressionHeldUntil = Date.now() + EXPRESSION_HOLD_MS
+		emitAgent()
+		pumpExpression()
+	}
+
+	// The words have stopped, so the face must not keep animating behind them: jump to the
+	// last tag the reply asked for and drop the rest.
+	function settleExpression(): void {
+		if (expressionTimer) {
+			clearTimeout(expressionTimer)
+			expressionTimer = null
+		}
+		const last = expressionQueue.pop()
+		expressionQueue = []
+		if (!last || last === expression) return
+		expression = last
+		expressionHeldUntil = Date.now() + EXPRESSION_HOLD_MS
+	}
 
 	const agentListeners = new Set<() => void>()
 	let agentSnapshot: AgentSnapshot = buildAgentSnapshot()
@@ -231,11 +285,15 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	function handleAgentEvent(event: AgentEventFrame): void {
 		switch (event.type) {
 			case 'agent_start':
+				// A new turn supersedes whatever the last one still had queued; the face keeps
+				// its current expression until this turn tags one ("omit the tag to continue").
+				expressionQueue = []
 				isStreaming = true
 				emitAgent()
 				break
 
 			case 'agent_end':
+				settleExpression()
 				isStreaming = false
 				currentAssistantId = null
 				emitAgent()
@@ -259,8 +317,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				if (!id) break
 				const delta = event.assistantMessageEvent
 				if (delta?.type === 'text_delta' && delta.delta) {
-					const { text, expression: tagged } = expressionParser.push(delta.delta)
-					if (tagged) expression = tagged
+					const { text, expressions } = expressionParser.push(delta.delta)
+					for (const tagged of expressions) queueExpression(tagged)
 					mapMessages((message) =>
 						message.id === id ? { ...message, content: message.content + text } : message
 					)
@@ -520,6 +578,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				clearTimeout(reconnectTimer)
 				reconnectTimer = null
 			}
+			settleExpression()
 			generation++
 			closeSocket()
 			connectionState = 'disconnected'
