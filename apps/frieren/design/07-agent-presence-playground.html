@@ -3,30 +3,34 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>07 · Agent presence — placement playground</title>
+		<title>07 · Agent presence — the shoulder avatar</title>
 
 		<!--
-			Dependency-free prototype of WHERE the agent's face lives in the shell, and how
-			big it is. Five placements, side by side, driven by one shared expression state
-			so you can watch the same emotion land in each.
+			The omnibar's agent face: ONE element, two homes.
 
-			Nothing here is a decision — it is the artifact to argue in front of. Ignore
-			06-jrpg-dialog's decisions; this explores the one question that doc got wrong:
-			a face has to be a FIXED anchor, or the eye never learns to read it.
+			  idle   the omnibar is a plain pill; the face is a small round chip INSIDE it,
+			         at the left. No chat, no chrome, but the agent is present.
+			  chat   the same element travels to the panel's shoulder: bigger, sitting on the
+			         top border with half its height above it — and staying INSIDE the left
+			         border, with a gap. Nothing protrudes sideways.
 
-			Real assets: ../src/agent/agent-avatar.png (the default kodama), the pixel
-			portraits from ../src/assets/, and an "uploaded photo" stand-in.
+			It never appears or disappears; it moves and grows. That continuity is what makes
+			the face readable as a face instead of chrome (the mistake in 06-jrpg-dialog was
+			letting the portrait's position encode whose turn it was).
 
-			The kodama face is redrawn as inline SVG so expressions actually change here —
-			the shipped app has no per-expression art yet, so `Portrait` and `Photo` modes
-			show what the CSS-treatment fallback really looks like.
+			Run it: `cd apps/frieren && python3 -m http.server 8899`
+			→ http://localhost:8899/design/07-agent-presence-playground.html
+			(needs a server, not file://, for the images)
+
+			Real assets. The kodama is redrawn as inline SVG so expressions actually change
+			here; `portrait` / `photo` are the shipped assets with NO per-expression art, i.e.
+			the honest baseline of what the CSS-only fallback buys today.
 		-->
 		<style>
 			/* ── tokens (mirrored from @justfiles/design) ───────────────────────── */
 			:root {
 				color-scheme: light dark;
 				--surface: #f5f5f4;
-				--surface-subtle: #ffffff9e;
 				--window-bg: #ffffff;
 				--text: #1c1c1c;
 				--rule: #d0d0cd;
@@ -34,16 +38,17 @@
 				--font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
 				--font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 				--text-ui: 13px;
-				--desktop-bg: #3a6b8c;
 				--focus: #0a84ff;
-				--danger: #d70015;
-				/* expression → hue for the presence ring (variant E, and everywhere) */
-				--expr-hue: 210;
+				/* geometry, in one place — these are the numbers to argue about */
+				--face-idle: 32px;
+				--face-chat: 96px;
+				--face-chat-long: 72px;
+				--face-gap-left: 16px; /* inside the panel's left border */
+				--panel-radius: 16px;
 			}
 			@media (prefers-color-scheme: dark) {
 				:root {
 					--surface: #2c2c2e;
-					--surface-subtle: #ffffff1a;
 					--window-bg: #1e1e1e;
 					--text: #ebebf0;
 					--rule: #3a3a3c;
@@ -64,19 +69,13 @@
 
 			/* ── page chrome ────────────────────────────────────────────────────── */
 			header.page {
-				padding: 28px 32px 12px;
-				max-width: 1100px;
+				padding: 28px 32px 4px;
+				max-width: 1120px;
 			}
 			header.page h1 {
 				margin: 0 0 6px;
 				font-size: 22px;
 			}
-			header.page p {
-				margin: 0;
-				max-width: 70ch;
-				opacity: 0.72;
-			}
-
 			.controls {
 				position: sticky;
 				top: 0;
@@ -85,13 +84,12 @@
 				flex-wrap: wrap;
 				gap: 18px;
 				align-items: center;
-				margin: 16px 0 8px;
+				margin: 14px 0 8px;
 				padding: 12px 32px;
 				border-bottom: 1px solid var(--rule);
 				background: var(--window-bg);
-				backdrop-filter: blur(12px);
 			}
-			.controls fieldset {
+			fieldset {
 				display: flex;
 				gap: 6px;
 				align-items: center;
@@ -99,16 +97,15 @@
 				padding: 0;
 				border: 0;
 			}
-			.controls legend {
+			legend {
 				float: left;
 				margin-right: 8px;
-				padding: 0;
 				font-size: 11px;
 				text-transform: uppercase;
 				letter-spacing: 0.06em;
 				opacity: 0.5;
 			}
-			.controls button {
+			button {
 				padding: 4px 10px;
 				border: 1px solid var(--rule);
 				border-radius: 999px;
@@ -118,32 +115,39 @@
 				font-size: 12px;
 				cursor: pointer;
 			}
-			.controls button[aria-pressed="true"] {
+			button[aria-pressed="true"] {
 				border-color: transparent;
 				background: var(--focus);
 				color: #fff;
 			}
-			.controls button.play {
-				font-weight: 600;
+			#now {
+				margin-left: auto;
+				font-family: var(--font-mono);
+				opacity: 0.6;
 			}
 
-			section.variant {
+			section {
 				padding: 26px 32px 4px;
-				max-width: 1100px;
+				max-width: 1120px;
 			}
-			section.variant h2 {
+			section h2 {
 				margin: 0 0 2px;
 				font-size: 16px;
 			}
-			section.variant h2 small {
+			section h2 small {
 				margin-left: 8px;
 				font-weight: 400;
 				opacity: 0.55;
 			}
-			section.variant > p {
+			section p {
 				margin: 0 0 14px;
 				max-width: 78ch;
 				opacity: 0.75;
+			}
+			header.page p {
+				margin: 0 0 8px;
+				max-width: 76ch;
+				opacity: 0.72;
 			}
 			.notes {
 				display: flex;
@@ -160,95 +164,136 @@
 			.notes li b {
 				opacity: 0.95;
 			}
+			.stage-row {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 20px;
+			}
+			.stage-row > figure {
+				flex: 1 1 460px;
+				margin: 0;
+			}
+			.stage-row figcaption {
+				margin-top: 8px;
+				font-size: 12px;
+				opacity: 0.7;
+			}
+			.stage-row figcaption b {
+				opacity: 1;
+			}
 
 			/* ── the stage: a slice of the frieren desktop ──────────────────────── */
 			.stage {
 				position: relative;
-				height: 430px;
+				height: 340px;
 				overflow: hidden;
 				border-radius: 12px;
 				border: 1px solid var(--rule);
 				background:
-					radial-gradient(ellipse at 50% 18%, rgba(255, 255, 255, 0.14), transparent 60%),
+					radial-gradient(ellipse at 50% 14%, rgba(255, 255, 255, 0.14), transparent 60%),
 					linear-gradient(160deg, #3a6b8c, #24455c 70%);
-				box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+			}
+			.stage.tall {
+				height: 430px;
 			}
 			.stage .menubar {
 				display: flex;
 				align-items: center;
-				gap: 10px;
 				height: 28px;
 				padding: 0 12px;
 				color: #fff;
 				font-size: 12px;
 				background: rgba(0, 0, 0, 0.22);
-				backdrop-filter: blur(8px);
 			}
 			.stage .menubar .spacer {
 				margin-left: auto;
 				opacity: 0.7;
 			}
 
-			/* the omnibar panel, as shipped (app.css .frn-omnibar) */
+			/* ── the omnibar ────────────────────────────────────────────────────── */
 			.dock {
 				position: absolute;
 				left: 50%;
 				bottom: 20px;
 				transform: translateX(-50%);
-				display: flex;
-				align-items: flex-end;
-				gap: 14px;
 			}
 			.panel {
 				position: relative;
 				display: flex;
 				flex-direction: column;
-				width: 520px;
-				max-height: 330px;
-				/* NB: the shipped `.frn-omnibar` is overflow:hidden, which clips a face hanging
-				   outside (B and D). Visible here to show the intent — in the app this means
-				   either a dock wrapper or moving the clip down onto the scroller. */
-				overflow: visible;
-				border-radius: 16px;
+				width: 460px;
+				border-radius: var(--panel-radius);
 				border: 1px solid var(--rule);
 				background: color-mix(in srgb, var(--surface) 92%, transparent);
 				backdrop-filter: blur(30px) saturate(180%);
 				box-shadow: 0 16px 48px rgba(0, 0, 0, 0.32);
+				/* NB: the shipped `.frn-omnibar` is overflow:hidden. It must become visible
+				   (with the clip moved down onto the scroller) for the shoulder to show. */
+				overflow: visible;
 				transition:
-					width 260ms ease,
-					max-height 260ms ease;
+					border-radius 240ms ease,
+					width 240ms ease;
 			}
-			body[data-conversation="empty"] .panel {
-				max-height: 52px;
+
+			/* the reserved shoulder band: the face's lower half lives here, so no message
+			   is ever underneath it. Deliberately no divider line — it is space, not a header. */
+			.shoulder {
+				display: flex;
+				align-items: center;
+				flex: none;
+				height: 52px;
+				padding-left: calc(var(--face-gap-left) + var(--face-chat) + 12px);
+				font-weight: 500;
+				opacity: 1;
+				transition:
+					height 240ms ease,
+					opacity 160ms ease,
+					padding-left 240ms ease;
+			}
+			.shoulder .expand {
+				margin-left: auto;
+				margin-right: 10px;
+				padding: 2px 6px;
+				border: 0;
+				background: transparent;
+				opacity: 0.45;
+			}
+			[data-state="idle"] .shoulder {
+				height: 0;
+				opacity: 0;
+				overflow: hidden;
+			}
+			[data-state="long"] .shoulder {
+				padding-left: calc(var(--face-gap-left) + var(--face-chat-long) + 12px);
 			}
 
 			.past {
 				display: flex;
 				flex-direction: column;
 				gap: 10px;
-				padding: 14px 16px 6px;
+				padding: 2px 16px 8px;
+				max-height: 220px;
 				overflow: hidden;
-				border-radius: 16px 16px 0 0;
 			}
-			body[data-conversation="empty"] .past {
+			[data-state="idle"] .past,
+			[data-state="typing"] .past {
 				display: none;
 			}
-			.past .msg {
+			[data-state="chat"] .past .old {
+				display: none;
+			}
+			.msg {
 				font-size: 13px;
 			}
-			.past .msg.you {
+			.msg.you {
 				align-self: flex-end;
 				max-width: 78%;
 				padding: 6px 10px;
 				border-radius: 12px;
 				background: color-mix(in srgb, var(--focus) 16%, transparent);
 			}
-			.past .msg.them {
+			.msg.them {
 				max-width: 92%;
-			}
-			/* short conversation = only the newest exchange */
-			body[data-conversation="short"] .past .old {
-				display: none;
 			}
 
 			.composer {
@@ -256,21 +301,44 @@
 				flex: none;
 				align-items: center;
 				gap: 8px;
-				margin-top: auto;
-				padding: 9px 12px;
+				padding: 10px 12px;
 				border-top: 1px solid var(--rule);
+				transition:
+					border-color 200ms ease,
+					padding-left 240ms ease;
 			}
-			body[data-conversation="empty"] .composer {
-				border-top: 0;
+			[data-state="idle"] .composer {
+				/* the pill: the face is a chip inside this row, so the text clears it */
+				border-top-color: transparent;
+				padding-left: calc(10px + var(--face-idle) + 10px);
 			}
 			.composer .input {
 				flex: 1;
-				padding: 4px 2px;
-				opacity: 0.55;
+				padding: 3px 2px;
+				opacity: 0.5;
+			}
+			.composer .input[data-draft] {
+				opacity: 1;
+			}
+			.composer .input[data-draft]::after {
+				content: "";
+				display: inline-block;
+				width: 1px;
+				height: 1.05em;
+				margin-left: 1px;
+				vertical-align: -2px;
+				background: var(--text);
+				animation: caret 1.05s steps(1) infinite;
+			}
+			@keyframes caret {
+				50% {
+					opacity: 0;
+				}
 			}
 			.composer .send {
 				display: grid;
 				place-items: center;
+				flex: none;
 				width: 24px;
 				height: 24px;
 				border-radius: 50%;
@@ -279,17 +347,21 @@
 				font-size: 13px;
 			}
 
-			/* ── the face component (shared by every variant) ───────────────────── */
+			/* ── the face: one element, two homes ───────────────────────────────── */
 			.face {
-				position: relative;
-				flex: none;
+				position: absolute;
+				z-index: 3;
 				display: grid;
 				place-items: center;
 				border-radius: 50%;
 				overflow: hidden;
+				box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
 				transition:
-					width 240ms cubic-bezier(0.2, 0.9, 0.3, 1),
-					height 240ms cubic-bezier(0.2, 0.9, 0.3, 1),
+					width 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+					height 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+					left 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+					top 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+					box-shadow 260ms ease,
 					filter 220ms ease,
 					opacity 220ms ease,
 					transform 220ms ease;
@@ -301,18 +373,33 @@
 			}
 			.face img {
 				object-fit: cover;
-				object-position: 50% 12%; /* portraits: keep the head, not the sword */
+				object-position: 50% 10%; /* portraits: keep the head, not the sword */
 			}
-			.face[data-ring="true"]::after {
-				content: "";
-				position: absolute;
-				inset: 0;
-				border-radius: 50%;
-				box-shadow:
-					0 0 0 2px hsl(var(--expr-hue) 90% 62% / 0.75),
-					0 0 22px 4px hsl(var(--expr-hue) 90% 62% / 0.32);
-				transition: box-shadow 260ms ease;
+
+			/* idle — a chip inside the pill, vertically centred on the composer row */
+			[data-state="idle"] .face {
+				width: var(--face-idle);
+				height: var(--face-idle);
+				left: 10px;
+				top: 11px;
+				box-shadow: none;
 			}
+			/* engaged — the shoulder: half above the top border, inset from the left */
+			[data-state="typing"] .face,
+			[data-state="chat"] .face,
+			[data-state="long"] .face {
+				width: var(--face-chat);
+				height: var(--face-chat);
+				left: var(--face-gap-left);
+				top: calc(var(--face-chat) / -2);
+			}
+			/* a long transcript wants the text back: the same face, one size down */
+			[data-state="long"] .face {
+				width: var(--face-chat-long);
+				height: var(--face-chat-long);
+				top: calc(var(--face-chat-long) / -2);
+			}
+
 			/* idle breathing — the cheapest thing that makes a still image feel alive */
 			body[data-motion="on"] .face .breathe {
 				animation: breathe 4.2s ease-in-out infinite alternate;
@@ -325,7 +412,7 @@
 					transform: scale(1.012) translateY(-1px);
 				}
 			}
-			/* the +4% overshoot when a new expression lands */
+			/* the small overshoot when a new expression lands */
 			.face.pop {
 				animation: pop 260ms ease;
 			}
@@ -358,16 +445,14 @@
 			body[data-art="photo"] .face img.portrait {
 				display: none;
 			}
-
-			/* With no per-expression art this treatment is ALL you get — the shipped
-			   fallback, reproduced here so its weakness is visible. */
+			/* With no per-expression art, this treatment is ALL the channel buys — the
+			   shipped fallback, reproduced so its weakness is visible. */
 			body:not([data-art="kodama"]) .face[data-expression="thinking"] {
 				filter: saturate(0.8);
 				opacity: 0.86;
 			}
 			body:not([data-art="kodama"]) .face[data-expression="pleased"] {
 				filter: saturate(1.15) brightness(1.06);
-				transform: scale(1.04);
 			}
 			body:not([data-art="kodama"]) .face[data-expression="curious"] {
 				transform: rotate(-4deg);
@@ -377,10 +462,9 @@
 			}
 			body:not([data-art="kodama"]) .face[data-expression="apologetic"] {
 				filter: saturate(0.75) brightness(0.92);
-				transform: scale(0.96);
 			}
 
-			/* ── the drawn kodama: one SVG, every expression inside it ──────────── */
+			/* ── the drawn kodama: every expression inside one SVG ──────────────── */
 			.face svg .part {
 				opacity: 0;
 				transition: opacity 180ms ease;
@@ -394,8 +478,8 @@
 				opacity: 1;
 			}
 			.face svg .head {
-				transition: transform 240ms ease;
 				transform-origin: 50% 60%;
+				transition: transform 240ms ease;
 			}
 			.face[data-expression="curious"] svg .head {
 				transform: rotate(-5deg);
@@ -403,216 +487,26 @@
 			.face[data-expression="apologetic"] svg .head {
 				transform: rotate(3deg) translateY(3px);
 			}
-
-			/* ══ VARIANT A · composer-side presence ═════════════════════════════ */
-			#a .face {
-				width: 104px;
-				height: 104px;
-				margin-bottom: -6px; /* sit on the panel's baseline */
-			}
-			body[data-conversation="long"] #a .face {
-				width: 64px;
-				height: 64px;
-			}
-			body[data-conversation="empty"] #a .face {
-				width: 40px;
-				height: 40px;
-			}
-
-			/* ══ VARIANT B · shoulder overlap ══════════════════════════════════ */
-			#b .dock {
-				display: block;
-			}
-			#b .panel {
-				margin-top: 0;
-			}
-			#b .face {
-				position: absolute;
-				left: -40px;
-				top: -68px;
-				width: 116px;
-				height: 116px;
-				z-index: 2;
-			}
-			#b .past {
-				padding-top: 26px;
-			}
-			body[data-conversation="long"] #b .face {
-				width: 78px;
-				height: 78px;
-				top: -46px;
-				left: -28px;
-			}
-			body[data-conversation="empty"] #b .face {
-				width: 56px;
-				height: 56px;
-				top: -34px;
-				left: -20px;
-			}
-			#b .panel {
-				padding-top: 0;
-			}
-
-			/* ══ VARIANT C · presence in the room (backdrop) ════════════════════ */
-			#c .panel {
-				position: relative;
-			}
-			#c .face {
-				position: absolute;
-				right: -26px;
-				bottom: 30px;
-				width: 240px;
-				height: 240px;
-				border-radius: 0;
-				opacity: 0.5;
-				z-index: 0;
-				pointer-events: none;
-				mask-image: radial-gradient(circle at 52% 46%, #000 48%, transparent 72%);
-			}
-			#c .past,
-			#c .composer {
-				position: relative;
-				z-index: 1;
-			}
-			/* the head floats free here — the kodama's green ground would halo */
-			#c .face svg rect {
-				display: none;
-			}
-			#c .past .msg.them {
-				max-width: 66%;
-			}
-			#c .past,
-			#c .composer {
-				background: linear-gradient(
-					90deg,
-					color-mix(in srgb, var(--surface) 96%, transparent) 62%,
-					transparent
-				);
-			}
-
-			/* ══ VARIANT D · the pill's left cap (shared-element shrink) ════════ */
-			#d .dock {
-				gap: 0;
-			}
-			#d .panel {
-				border-top-left-radius: 26px;
-				border-bottom-left-radius: 26px;
-				padding-left: 62px;
-			}
-			#d .face {
-				position: absolute;
-				left: 8px;
-				bottom: 8px;
-				width: 44px;
-				height: 44px;
-				z-index: 3;
-			}
-			body[data-conversation="short"] #d .face,
-			body[data-conversation="long"] #d .face {
-				/* engaged, it steps fully outside — which is exactly variant A's anchor.
-				   The difference between D and A is only the resting state. */
-				width: 92px;
-				height: 92px;
-				left: -108px;
-				bottom: 2px;
-			}
-			body[data-conversation="long"] #d .face {
-				width: 66px;
-				height: 66px;
-				left: -82px;
-			}
-			body[data-conversation="short"] #d .panel,
-			body[data-conversation="long"] #d .panel {
-				padding-left: 0;
-			}
-
-			/* ══ VARIANT E · desktop-resident companion ════════════════════════ */
-			#e .face {
-				position: absolute;
-				right: 42px;
-				bottom: 26px;
-				width: 168px;
-				height: 168px;
-				border-radius: 50%;
-				box-shadow: 0 18px 42px rgba(0, 0, 0, 0.4);
-			}
-			#e .dock {
-				left: 46%;
-			}
-			#e .panel {
-				width: 470px;
-			}
-			#e .speech {
-				position: absolute;
-				right: 42px;
-				bottom: 204px;
-				max-width: 260px;
-				padding: 8px 12px;
-				border-radius: 14px 14px 4px 14px;
-				background: color-mix(in srgb, var(--surface) 94%, transparent);
-				border: 1px solid var(--rule);
-				box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
-				font-size: 12px;
-				opacity: 0;
-				transform: translateY(6px);
-				transition:
-					opacity 220ms ease,
-					transform 220ms ease;
-			}
-			body[data-streaming="true"] #e .speech,
-			body[data-conversation="empty"] #e .speech {
-				opacity: 1;
-				transform: none;
-			}
-
-			/* ══ VARIANT F · ring only, no bigger face (the control) ═══════════ */
-			#f .face {
-				width: 30px;
-				height: 30px;
-			}
-			#f .panel {
-				box-shadow:
-					0 16px 48px rgba(0, 0, 0, 0.32),
-					0 0 0 1.5px hsl(var(--expr-hue) 90% 62% / 0.55),
-					0 0 28px 2px hsl(var(--expr-hue) 90% 62% / 0.28);
-				transition: box-shadow 300ms ease;
-			}
-			#f .head-row {
-				display: flex;
-				align-items: center;
-				gap: 8px;
-				padding: 8px 12px;
-				border-bottom: 1px solid var(--rule);
-				font-weight: 500;
-			}
-			body[data-conversation="empty"] #f .head-row {
-				display: none;
-			}
 		</style>
 	</head>
 
-	<body data-expression="neutral" data-art="kodama" data-conversation="short" data-motion="on">
-		<!-- The face, cloned into every stage. The kodama is drawn (so expressions really
-		     change); `portrait`/`photo` are the real assets, showing the art-less fallback. -->
+	<body data-expression="neutral" data-art="kodama" data-motion="on">
 		<template id="face-tpl">
 			<div class="face" data-expression="neutral">
 				<svg viewBox="0 0 100 100" aria-hidden="true">
 					<g class="breathe">
 						<rect width="100" height="100" fill="#3f7d63" />
 						<g class="head">
-							<!-- head blob -->
 							<path
 								d="M50 14c19 0 30 13 30 31 0 21-13 33-30 33S20 66 20 45c0-18 11-31 30-31z"
 								fill="#f4f1e8"
 								stroke="#54524b"
 								stroke-width="3.5"
 							/>
-							<!-- eyes: open -->
 							<g class="part for-neutral for-pleased for-curious for-concerned">
 								<circle cx="39" cy="44" r="4.4" fill="#3d3b36" />
 								<circle cx="61" cy="44" r="4.4" fill="#3d3b36" />
 							</g>
-							<!-- eyes: half-closed (thinking) -->
 							<g
 								class="part for-thinking"
 								stroke="#3d3b36"
@@ -622,7 +516,6 @@
 								<path d="M34 45h9" />
 								<path d="M57 45h9" />
 							</g>
-							<!-- eyes: lowered (apologetic) -->
 							<g
 								class="part for-apologetic"
 								stroke="#3d3b36"
@@ -633,7 +526,6 @@
 								<path d="M34 47q4.5 -4 9 0" />
 								<path d="M57 47q4.5 -4 9 0" />
 							</g>
-							<!-- brows -->
 							<g stroke="#3d3b36" stroke-width="2.8" stroke-linecap="round" fill="none">
 								<g class="part for-concerned">
 									<path d="M33 36l10 2.5" />
@@ -648,7 +540,6 @@
 									<path d="M57 33q5 -3 9 0" />
 								</g>
 							</g>
-							<!-- mouths -->
 							<g stroke="#3d3b36" stroke-width="3.2" stroke-linecap="round" fill="none">
 								<path class="part for-neutral" d="M42 59q8 6 16 0" />
 								<path class="part for-pleased" d="M39 57q11 11 22 0" />
@@ -657,7 +548,6 @@
 								<path class="part for-apologetic" d="M44 63q6 -3 11 0" />
 							</g>
 							<circle class="part for-curious" cx="50" cy="60" r="4" fill="#3d3b36" />
-							<!-- blush, pleased only -->
 							<g class="part for-pleased" fill="#e8836f" opacity="0.55">
 								<ellipse cx="31" cy="53" rx="5" ry="3" />
 								<ellipse cx="69" cy="53" rx="5" ry="3" />
@@ -670,33 +560,47 @@
 			</div>
 		</template>
 
-		<template id="convo-tpl">
-			<div class="past">
-				<div class="msg you old">can you check whether the ferry runs on Sunday?</div>
-				<div class="msg them old">
-					It runs at 07:40 and 16:15 only. I put both in the trip note so you can compare
-					with the train.
+		<!-- one omnibar, stamped into every stage; `data-state` on the stage drives it -->
+		<template id="omnibar-tpl">
+			<div class="dock">
+				<div class="panel">
+					<span data-face></span>
+					<div class="shoulder">
+						<span>Kodama</span>
+						<button type="button" class="expand" title="Expand conversation">⤢</button>
+					</div>
+					<div class="past">
+						<div class="msg you old">can you check whether the ferry runs on Sunday?</div>
+						<div class="msg them old">
+							It runs at 07:40 and 16:15 only — I put both in the trip note so you can
+							compare with the train.
+						</div>
+						<div class="msg you">I dropped the prod table 🙃</div>
+						<div class="msg them" data-live>
+							Stop writes first. Then check whether point-in-time recovery is still inside
+							its window — if it is, this is a bad hour, not a bad week.
+						</div>
+					</div>
+					<div class="composer">
+						<span class="input" data-placeholder>Search apps, or talk to Kodama…</span>
+						<span class="send">↑</span>
+					</div>
 				</div>
-				<div class="msg you">I dropped the prod table 🙃</div>
-				<div class="msg them" data-live>
-					Stop writes first. Then check whether point-in-time recovery is still inside its
-					window — if it is, this is a bad hour, not a bad week.
-				</div>
-			</div>
-			<div class="composer">
-				<span class="input">Search apps, or talk to Kodama…</span>
-				<span class="send">↑</span>
 			</div>
 		</template>
 
 		<header class="page">
-			<h1>Agent presence — where the face lives</h1>
+			<h1>The shoulder avatar</h1>
 			<p>
-				Six placements of one agent face, sharing one expression state. Switch expression
-				and watch which layouts actually carry it. <b>Kodama</b> is drawn, so its
-				expressions really change; <b>Portrait</b> and <b>Photo</b> are the shipped assets
-				with no per-expression art — that mode shows exactly how weak the CSS-only
-				fallback is, which is the honest baseline.
+				One face, two homes: a small chip <b>inside the pill</b> at rest, and the
+				<b>shoulder</b> when engaged — bigger, half of it above the top border, inset from
+				the left border so nothing protrudes sideways. It travels between the two; it never
+				appears.
+			</p>
+			<p>
+				<b>Kodama</b> is drawn, so its expressions really change. <b>Portrait</b> and
+				<b>Photo</b> are the real assets with no per-expression art — that mode is what
+				ships today.
 			</p>
 		</header>
 
@@ -710,209 +614,141 @@
 				<button type="button" data-expr="concerned">concerned</button>
 				<button type="button" data-expr="apologetic">apologetic</button>
 			</fieldset>
-			<fieldset>
-				<legend>Turn</legend>
-				<button type="button" class="play" id="play">▶ play a reply</button>
-			</fieldset>
 			<fieldset id="art">
 				<legend>Art</legend>
 				<button type="button" data-art="kodama" aria-pressed="true">kodama (drawn)</button>
 				<button type="button" data-art="portrait">portrait</button>
 				<button type="button" data-art="photo">photo</button>
 			</fieldset>
-			<fieldset id="convo">
-				<legend>Conversation</legend>
-				<button type="button" data-convo="empty">empty</button>
-				<button type="button" data-convo="short" aria-pressed="true">short</button>
-				<button type="button" data-convo="long">long</button>
-			</fieldset>
 			<fieldset id="motion">
 				<legend>Motion</legend>
 				<button type="button" data-motion="on" aria-pressed="true">breathing on</button>
 			</fieldset>
-			<span id="now" style="margin-left: auto; font-family: var(--font-mono); opacity: 0.6"
-				>neutral</span
-			>
+			<span id="now">neutral</span>
 		</div>
 
-		<section class="variant" id="a">
-			<h2>A · Composer-side presence <small>face beside the input, outside the panel</small></h2>
+		<section>
+			<h2>Live <small>watch the face travel</small></h2>
 			<p>
-				Anchored to the composer row — where your eye already is while typing. Never moves,
-				no frame, no header row (the name lives in the tooltip). Shrinks as the transcript
-				grows: 104 → 64 → 40px.
+				Step through the states, or play a reply to see the tag change per sentence and
+				settle back to neutral afterwards — the real timings (1.5s minimum hold, 200ms
+				crossfade, resting after the turn).
 			</p>
-			<div class="stage" data-stage>
+			<fieldset id="live" style="margin-bottom: 12px">
+				<legend>State</legend>
+				<button type="button" data-live-state="idle" aria-pressed="true">1 · idle</button>
+				<button type="button" data-live-state="typing">2 · typing</button>
+				<button type="button" data-live-state="chat">3 · chat</button>
+				<button type="button" data-live-state="long">4 · long</button>
+				<button type="button" id="play" style="font-weight: 600">▶ play a reply</button>
+			</fieldset>
+			<div class="stage tall" id="live-stage" data-state="idle" data-omnibar>
 				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
-				<div class="dock"><span data-face></span><div class="panel" data-thread></div></div>
+			</div>
+		</section>
+
+		<section>
+			<h2>1 · Idle <small>the omnibar is a plain pill</small></h2>
+			<p>
+				No transcript, no shoulder band — a single row. The face is a
+				<b>32px chip inside the pill</b>, 10px from the left edge, vertically centred on the
+				composer row; the placeholder starts after it. The agent is present before you type
+				a word, which is where a persisted mood would show itself.
+			</p>
+			<div class="stage" data-state="idle" data-omnibar>
+				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
 			</div>
 			<ul class="notes">
-				<li><b>Cost</b> low — one element, replaces the 28px chip</li>
-				<li><b>Risk</b> panel is <code>overflow:hidden</code>; needs a dock wrapper</li>
-				<li><b>Narrow screens</b> collapse into the panel at 56px</li>
+				<li><b>Face</b> 32px · left 10px · inside the row</li>
+				<li><b>Pill</b> one row, no divider, radius 16</li>
 			</ul>
 		</section>
 
-		<section class="variant" id="b">
-			<h2>B · Shoulder overlap <small>top-left corner, half over the edge</small></h2>
+		<section>
+			<h2>2 · Typing <small>the face has moved to the shoulder</small></h2>
 			<p>
-				Messages' thread photo, enlarged and breaking the boundary so it reads as a being
-				behind the panel rather than a card inside it. Furthest from the composer, so the
-				face and the words you type are two separate glances.
+				The moment you engage, the same element travels up and grows to <b>96px</b>: its
+				left edge sits <b>16px inside</b> the panel's left border, and <b>half its height</b>
+				is above the top border. A 52px band under it holds the name (and the expand
+				affordance) so its lower half never covers a message. No frame, no nameplate, no
+				divider.
 			</p>
-			<div class="stage" data-stage>
+			<div class="stage" data-state="typing" data-omnibar>
 				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
-				<div class="dock"><div class="panel" data-thread><span data-face></span></div></div>
 			</div>
 			<ul class="notes">
-				<li><b>Cost</b> low</li>
-				<li><b>Risk</b> eats the top-left of the transcript; clipping again</li>
-				<li><b>Feels</b> like a header, i.e. chrome</li>
+				<li><b>Face</b> 96px · left 16px · top −48px</li>
+				<li><b>Band</b> 52px, text starts clear of the face</li>
+				<li><b>Nothing</b> crosses the left border</li>
 			</ul>
 		</section>
 
-		<section class="variant" id="c">
-			<h2>C · Presence in the room <small>large, low-opacity, behind the text</small></h2>
-			<p>
-				The face is inside the panel at 190px but pushed into the background with a mask and
-				a scrim. Most atmospheric; the emotion is peripheral rather than looked-at.
-			</p>
-			<div class="stage" data-stage>
+		<section>
+			<h2>3 · Chat <small>a reply on screen</small></h2>
+			<p>Same geometry as typing — the face does not move once you are engaged.</p>
+			<div class="stage tall" data-state="chat" data-omnibar>
 				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
-				<div class="dock"><div class="panel" data-thread><span data-face></span></div></div>
 			</div>
-			<ul class="notes">
-				<li><b>Cost</b> medium — needs scrim tuning per theme</li>
-				<li><b>Risk</b> fights the glass/blur; text legibility</li>
-				<li><b>Wins</b> big face with zero added regions</li>
-			</ul>
 		</section>
 
-		<section class="variant" id="d">
-			<h2>D · The pill's left cap <small>same element, three sizes</small></h2>
+		<section>
+			<h2>4 · Long conversation <small>the face yields to the text</small></h2>
 			<p>
-				At rest the face is a 44px cap <em>inside</em> the collapsed pill — so the agent has
-				a face before you say anything (this is where a persisted mood would show). Engage
-				and the same node grows to 92px and steps outside the panel. Try
-				<b>empty → short → long</b>.
+				Optional third size: once the transcript is long the face steps down to
+				<b>72px</b> at the same anchor, so a wall of text is not competing with a portrait.
+				Drop this step if it reads as fussy — the anchor is what matters, not the size ramp.
 			</p>
-			<div class="stage" data-stage>
+			<div class="stage tall" data-state="long" data-omnibar>
 				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
-				<div class="dock"><div class="panel" data-thread><span data-face></span></div></div>
 			</div>
-			<ul class="notes">
-				<li><b>Cost</b> medium — one shared-layout transition</li>
-				<li><b>Wins</b> continuity: it grows, it never appears</li>
-				<li><b>Wins</b> a face at rest, with no conversation open</li>
-			</ul>
-		</section>
-
-		<section class="variant" id="e">
-			<h2>E · Desktop-resident companion <small>off the panel entirely</small></h2>
-			<p>
-				168px, living on the desktop, independent of the chat. The panel stays pure text. A
-				small bubble carries the newest line when she speaks (visible while
-				<b>play a reply</b> runs, or in <b>empty</b>).
-			</p>
-			<div class="stage" data-stage>
-				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
-				<span data-face></span>
-				<div class="speech">Stop writes first — recovery may still be in its window.</div>
-				<div class="dock"><div class="panel" data-thread></div></div>
-			</div>
-			<ul class="notes">
-				<li><b>Cost</b> high — occlusion, drag, click-through, z-order</li>
-				<li><b>Wins</b> most emotional bandwidth; visible with chat closed</li>
-				<li><b>Risk</b> tips into gimmick / desktop pet</li>
-			</ul>
-		</section>
-
-		<section class="variant" id="f">
-			<h2>F · Ring only <small>the control: no bigger face at all</small></h2>
-			<p>
-				Keep today's 30px chip and let <em>the panel</em> express: expression drives the hue
-				and intensity of the presence glow you already ship. Included as the baseline to
-				beat — it is nearly free, and works in every surface at any size.
-			</p>
-			<div class="stage" data-stage>
-				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
-				<div class="dock">
-					<div class="panel">
-						<div class="head-row"><span data-face></span><span>Kodama</span></div>
-						<span data-thread></span>
-					</div>
-				</div>
-			</div>
-			<ul class="notes">
-				<li><b>Cost</b> ~none — reuses <code>.frn-omnibar::after</code></li>
-				<li><b>Wins</b> legible at 28px, every surface</li>
-				<li><b>Loses</b> it is a mood ring, not a face</li>
-			</ul>
 		</section>
 
 		<script>
-			// ── one shared expression state, applied to every stage ────────────────
-			const HUE = {
-				neutral: 210,
-				thinking: 265,
-				pleased: 140,
-				curious: 190,
-				concerned: 35,
-				apologetic: 20
-			}
-
 			const faceTpl = document.getElementById('face-tpl')
-			const convoTpl = document.getElementById('convo-tpl')
+			const omnibarTpl = document.getElementById('omnibar-tpl')
 
-			// Stamp the face + conversation into each stage.
+			// stamp an omnibar (with its face) into every stage
+			for (const stage of document.querySelectorAll('[data-omnibar]')) {
+				stage.append(omnibarTpl.content.cloneNode(true))
+			}
 			for (const slot of document.querySelectorAll('[data-face]')) {
-				const face = faceTpl.content.cloneNode(true).firstElementChild
-				if (slot.closest('#e')) face.dataset.ring = 'true'
-				slot.replaceWith(face)
+				slot.replaceWith(faceTpl.content.cloneNode(true).firstElementChild)
 			}
-			for (const slot of document.querySelectorAll('[data-thread]')) {
-				slot.append(convoTpl.content.cloneNode(true))
+			// the typing states show a draft instead of the placeholder
+			for (const stage of document.querySelectorAll('[data-state="typing"]')) {
+				const input = stage.querySelector('.composer .input')
+				input.textContent = 'restore it from the 04:00 snapshot'
+				input.dataset.draft = 'true'
 			}
-
-			const faces = () => document.querySelectorAll('.face')
 
 			function setExpression(expr) {
 				document.body.dataset.expression = expr
-				document.documentElement.style.setProperty('--expr-hue', HUE[expr] ?? 210)
 				document.getElementById('now').textContent = expr
-				for (const face of faces()) {
-					if (face.dataset.expression !== expr) {
-						face.dataset.expression = expr
-						face.classList.remove('pop')
-						void face.offsetWidth // restart the overshoot
-						face.classList.add('pop')
-					}
+				for (const face of document.querySelectorAll('.face')) {
+					if (face.dataset.expression === expr) continue
+					face.dataset.expression = expr
+					face.classList.remove('pop')
+					void face.offsetWidth // restart the overshoot
+					face.classList.add('pop')
 				}
-				for (const b of document.querySelectorAll('#expr button')) {
-					b.setAttribute('aria-pressed', String(b.dataset.expr === expr))
+				press('#expr', (b) => b.dataset.expr === expr)
+			}
+
+			function press(scope, match) {
+				for (const b of document.querySelectorAll(`${scope} button`)) {
+					b.setAttribute('aria-pressed', String(match(b)))
 				}
 			}
 
-			// toggle groups
-			function group(id, key, apply) {
-				document.getElementById(id).addEventListener('click', (event) => {
-					const button = event.target.closest('button')
-					if (!button) return
-					apply(button.dataset[key], button)
-					for (const b of document.querySelectorAll(`#${id} button`)) {
-						b.setAttribute('aria-pressed', String(b === button))
-					}
-				})
-			}
 			document.getElementById('expr').addEventListener('click', (event) => {
 				const button = event.target.closest('button')
 				if (button) setExpression(button.dataset.expr)
 			})
-			group('art', 'art', (value) => {
-				document.body.dataset.art = value
-			})
-			group('convo', 'convo', (value) => {
-				document.body.dataset.conversation = value
+			document.getElementById('art').addEventListener('click', (event) => {
+				const button = event.target.closest('button')
+				if (!button) return
+				document.body.dataset.art = button.dataset.art
+				press('#art', (b) => b === button)
 			})
 			document.getElementById('motion').addEventListener('click', (event) => {
 				const button = event.target.closest('button')
@@ -923,11 +759,29 @@
 				button.textContent = on ? 'breathing on' : 'breathing off'
 			})
 
-			// ── a scripted reply: tags arrive per sentence, as they do on the wire ──
+			const liveStage = document.getElementById('live-stage')
+			function setLiveState(state) {
+				liveStage.dataset.state = state
+				const input = liveStage.querySelector('.composer .input')
+				if (state === 'typing') {
+					input.textContent = 'restore it from the 04:00 snapshot'
+					input.dataset.draft = 'true'
+				} else {
+					input.textContent = 'Search apps, or talk to Kodama…'
+					delete input.dataset.draft
+				}
+				press('#live', (b) => b.dataset.liveState === state)
+			}
+			document.getElementById('live').addEventListener('click', (event) => {
+				const button = event.target.closest('button[data-live-state]')
+				if (button) setLiveState(button.dataset.liveState)
+			})
+
+			// ── a scripted reply: one tag per sentence, as it arrives on the wire ──
 			const SCRIPT = [
-				{ expr: 'thinking', text: 'Let me look at what the drop actually touched.' },
+				{ expr: 'thinking', text: 'Let me see what the drop actually touched.' },
 				{ expr: 'concerned', text: 'Stop writes first — every second narrows the window.' },
-				{ expr: 'pleased', text: 'Point-in-time recovery is still on: this is recoverable.' },
+				{ expr: 'pleased', text: 'Point-in-time recovery is still on, so this is recoverable.' },
 				{ expr: 'apologetic', text: 'Sorry — I should have flagged that migration earlier.' },
 				{ expr: 'curious', text: 'Want me to draft the restore steps?' }
 			]
@@ -936,25 +790,18 @@
 			document.getElementById('play').addEventListener('click', async () => {
 				if (playing) return
 				playing = true
-				document.body.dataset.streaming = 'true'
-				if (document.body.dataset.conversation === 'empty') {
-					document.body.dataset.conversation = 'short'
-				}
-				const live = [...document.querySelectorAll('.msg[data-live]')]
-				const original = live.map((node) => node.textContent)
-				for (const node of live) node.textContent = ''
+				setLiveState('chat')
+				const live = liveStage.querySelector('.msg[data-live]')
+				const original = live.textContent
+				live.textContent = ''
 				for (const beat of SCRIPT) {
 					setExpression(beat.expr)
-					for (const node of live) node.textContent += `${beat.text} `
+					live.textContent += `${beat.text} `
 					await new Promise((r) => setTimeout(r, 1600))
 				}
-				document.body.dataset.streaming = 'false'
-				// settle back to the resting face, as AgentAvatar does after 4s
-				await new Promise((r) => setTimeout(r, 2200))
+				await new Promise((r) => setTimeout(r, 2200)) // AgentAvatar's rest delay
 				setExpression('neutral')
-				live.forEach((node, i) => {
-					node.textContent = original[i]
-				})
+				live.textContent = original
 				playing = false
 			})
 		</script>
