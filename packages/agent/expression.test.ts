@@ -68,6 +68,19 @@ describe('stripExpressions', () => {
 		})
 	})
 
+	// Markdown markers still open a line, and a leaked `[pleased]` in a bulleted reply is
+	// exactly the visible junk this is all here to prevent.
+	test('a tag opens a sentence after a bullet, a quote or a heading', () => {
+		expect(stripExpressions('- [pleased]Done.\n- [concerned]Not that one.')).toEqual({
+			text: '- Done.\n- Not that one.',
+			expression: 'concerned'
+		})
+		expect(stripExpressions('> [apologetic]My mistake.').text).toBe('> My mistake.')
+		expect(stripExpressions('## [thinking]The plan').text).toBe('## The plan')
+		expect(stripExpressions('1. [pleased]First').text).toBe('1. First')
+		expect(stripExpressions('  * [curious]Nested?').text).toBe('  * Nested?')
+	})
+
 	test('a markdown link whose label is a mood word survives', () => {
 		const text = '[thinking](https://x.dev) is worth a read.'
 		expect(stripExpressions(text)).toEqual({ text, expression: null })

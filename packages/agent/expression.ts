@@ -73,12 +73,12 @@ export function createExpressionParser(): ExpressionParser {
 	let carry = ''
 	// A stripped tag swallows the single space that separated it from its sentence.
 	let skipSpace = false
-	// The last character handed to the reader, and the last non-space one. A tag OPENS a
-	// sentence, so a bracket anywhere else is prose and must survive verbatim: `` `[neutral]`
-	// is the literal value `` keeps its bracket, and so does an agent explaining "I use
-	// [pleased] when things go well" — shredding the reply is worse than a missed face.
-	let prev = ''
-	let prevWord = ''
+	// The tail of what the reader has already been handed, which is all that decides whether
+	// a bracket is markup: a tag OPENS a sentence, so a bracket anywhere else is prose and
+	// must survive verbatim (`` `[neutral]` is the literal value ``, or an agent explaining
+	// "I use [pleased] when things go well"). Shredding a reply is worse than a missed face.
+	// Seeded with a newline: the message starts on a fresh line.
+	let tail = '\n'
 
 	return { push, flush }
 
@@ -95,7 +95,7 @@ export function createExpressionParser(): ExpressionParser {
 				break
 			}
 			text += emit(carry.slice(0, open))
-			// Read the position BEFORE the bracket is consumed — `emit` has just moved `prev`.
+			// Read the position BEFORE the bracket is consumed — `emit` has just moved `tail`.
 			const opens = opensSentence()
 			carry = carry.slice(open)
 
@@ -119,9 +119,8 @@ export function createExpressionParser(): ExpressionParser {
 					carry = rest
 					expression = raw.slice(1, -1).toLowerCase() as Expression
 					skipSpace = true
-					// A stripped tag leaves the sentence unopened, so a second tag still counts.
-					prev = ' '
-					prevWord = '.'
+					// A stripped tag leaves the position as open as a fresh line, so `[a][b]` works.
+					tail = '\n'
 					continue
 				}
 			}
@@ -143,28 +142,26 @@ export function createExpressionParser(): ExpressionParser {
 	}
 
 	function opensSentence(): boolean {
-		if (prev === '') return true // the message starts here
-		if (!/\s/.test(prev)) return false // glued to a word, a backtick, a quote
-		if (/[\n\r]/.test(prev)) return true // a new line, a list item
-		return SENTENCE_END.test(prevWord) // the sentence before it finished
+		return LINE_START.test(tail) || AFTER_SENTENCE.test(tail)
 	}
 
 	function emit(chunk: string): string {
 		const out = skipSpace && chunk.startsWith(' ') ? chunk.slice(1) : chunk
 		if (chunk !== '') skipSpace = false
-		if (out !== '') {
-			prev = out[out.length - 1] as string
-			const word = out.trimEnd()
-			if (word !== '') prevWord = word[word.length - 1] as string
-		}
+		if (out !== '') tail = (tail + out).slice(-TAIL)
 		return out
 	}
 }
 
-// Generous on purpose: leaking a real tag as visible `[pleased]` text is worse than keeping
-// a bracket the model never meant as markup, so anything that plausibly ends a sentence
-// (punctuation, a closing quote, markdown emphasis) counts.
-const SENTENCE_END = /[.!?…:;)\]"'”’*_]/
+// Where a tag may open a sentence. Nothing but whitespace and markdown line markers since
+// the last newline — a bullet, a quote, a heading all still open a line — or a finished
+// sentence and its space. Generous on purpose: leaking a real tag as visible `[pleased]`
+// text is worse than keeping a bracket the model never meant as markup, so a closing quote
+// and markdown emphasis count as sentence enders too.
+const LINE_START = /[\n\r][\t >*+#-]*$/
+const AFTER_SENTENCE = /[.!?…:;)\]"'”’*_][ \t]+$/
+// Enough tail to see the longest line prefix; the rules never look further back.
+const TAIL = 16
 
 // One-shot strip for a complete message (history replay, a notification body).
 export function stripExpressions(text: string): {
