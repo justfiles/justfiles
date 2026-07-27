@@ -5,6 +5,7 @@ import { ageCalibration } from './age-calibration'
 import { ensureAgentDefaults } from './agent-defaults'
 import { type CompactionSettings, compact, prepareCompaction, shouldCompact } from './compaction'
 import { createReadDocTool, docsPrompt } from './docs'
+import { EXPRESSION_PROMPT } from './expression'
 import { file } from './file'
 import type { LLMText } from './llm.text'
 import { MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
@@ -34,6 +35,9 @@ type AssistantProps = {
 	// command and to discover them with `app list` at runtime. A plain string (not a thunk with
 	// a live list) so the prompt prefix stays byte-identical across turns. Omit for no apps.
 	appsPrompt?: string
+	// Ask for the per-sentence expression tag (see expression.ts). Only a host that strips the
+	// tags before display should turn this on — otherwise they show up in the transcript.
+	expressions?: boolean
 }
 
 // Who authored a turn: the user typing, or an app acting on their behalf.
@@ -79,7 +83,8 @@ export async function createAssistant({
 	compaction,
 	getTimezone,
 	readDoc,
-	appsPrompt
+	appsPrompt,
+	expressions
 }: AssistantProps): Promise<Assistant> {
 	// Seed the platform's default persona + empty profile if absent, so the agent always has
 	// a working identity and never blocks on "onboarding". Idempotent; personalization wins.
@@ -246,6 +251,7 @@ export async function createAssistant({
 			const daily = await file(volume, PATHS.daily(date)).text()
 			if (daily) dailies.push(`## ${date.toISOString().slice(0, 10)}\n${daily}`)
 		}
+
 		if (dailies.length > 0) {
 			prompt.add(
 				'# memories of the past 2 days',
@@ -253,6 +259,10 @@ export async function createAssistant({
 				...dailies
 			)
 		}
+
+		// Last, for recency: the response-format contract is the instruction a small model is
+		// most likely to drop, and the one whose failure is most visible.
+		if (expressions) prompt.add('# expression', EXPRESSION_PROMPT)
 
 		return prompt.build()
 	}

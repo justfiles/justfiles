@@ -1,4 +1,5 @@
 import type { ImageRef, SessionEntry } from '@justfiles/agent'
+import { stripExpressions } from '@justfiles/agent/expression'
 
 export interface DisplayToolCall {
 	name: string
@@ -74,7 +75,9 @@ function sessionEntry2DisplayMessage(entry: SessionEntry): DisplayMessage | null
 				case 'user':
 					return { role: 'user', content: entry.content, source: entry.source ?? 'user' }
 				case 'assistant':
-					return { role: 'assistant', content: entry.content }
+					// Replayed history goes straight to the transcript, so the expression tags the
+					// live stream strips (client.ts) have to come off here too.
+					return { role: 'assistant', content: stripExpressions(entry.content).text }
 				case 'assistant_thinking':
 					return { role: 'assistant', content: '', thinking: entry.content }
 				case 'tool_call':

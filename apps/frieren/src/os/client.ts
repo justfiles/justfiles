@@ -1,3 +1,4 @@
+import { createExpressionParser, type Expression } from '@justfiles/agent/expression'
 import type { Notification } from '@justfiles/app/capabilities/notify'
 import type { TranscriptImage } from '@justfiles/ui/Transcript'
 import type { AgentMessage, ConnectionState } from '../agent/types'
@@ -34,6 +35,9 @@ export interface AgentSnapshot {
 	agentName: string
 	messages: AgentMessage[]
 	isStreaming: boolean
+	// The last expression tag the agent emitted this turn (null until it tags one). The
+	// avatar reads it; the tags themselves never reach `messages`.
+	expression: Expression | null
 }
 
 export interface AgentClient {
@@ -143,12 +147,16 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	let messages: AgentMessage[] = []
 	let isStreaming = false
 	let currentAssistantId: string | null = null
+	// Per-message tag stripper: a tag can straddle two token deltas, so the leftover is
+	// held inside the parser until the next delta (or `flush` at end of message).
+	let expressionParser = createExpressionParser()
+	let expression: Expression | null = null
 
 	const agentListeners = new Set<() => void>()
 	let agentSnapshot: AgentSnapshot = buildAgentSnapshot()
 
 	function buildAgentSnapshot(): AgentSnapshot {
-		return { connectionState, userName, agentName, messages, isStreaming }
+		return { connectionState, userName, agentName, messages, isStreaming, expression }
 	}
 
 	function emitAgent(): void {
@@ -237,6 +245,7 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				if (event.message?.role === 'assistant') {
 					const id = crypto.randomUUID()
 					currentAssistantId = id
+					expressionParser = createExpressionParser()
 					setMessages([
 						...messages,
 						{ id, role: 'assistant', content: '', thinking: '', toolCalls: [] }
@@ -250,7 +259,8 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 				if (!id) break
 				const delta = event.assistantMessageEvent
 				if (delta?.type === 'text_delta' && delta.delta) {
-					const text = delta.delta
+					const { text, expression: tagged } = expressionParser.push(delta.delta)
+					if (tagged) expression = tagged
 					mapMessages((message) =>
 						message.id === id ? { ...message, content: message.content + text } : message
 					)
@@ -261,6 +271,18 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 						message.id === id ? { ...message, thinking: (message.thinking ?? '') + text } : message
 					)
 				}
+				break
+			}
+
+			case 'message_end': {
+				const id = currentAssistantId
+				if (!id) break
+				// Whatever the parser is still holding was never a tag — render it.
+				const rest = expressionParser.flush()
+				if (rest)
+					mapMessages((message) =>
+						message.id === id ? { ...message, content: message.content + rest } : message
+					)
 				break
 			}
 

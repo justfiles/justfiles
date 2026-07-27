@@ -4,7 +4,8 @@
 	"sideEffects": false,
 	"exports": {
 		".": "./index.ts",
-		"./defaults": "./agent-defaults.ts"
+		"./defaults": "./agent-defaults.ts",
+		"./expression": "./expression.ts"
 	},
 	"publishConfig": {
 		"main": "./dist/index.js",
@@ -17,6 +18,10 @@
 			"./defaults": {
 				"types": "./dist/agent-defaults.d.ts",
 				"default": "./dist/agent-defaults.js"
+			},
+			"./expression": {
+				"types": "./dist/expression.d.ts",
+				"default": "./dist/expression.js"
 			}
 		}
 	},

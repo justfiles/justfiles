@@ -2,6 +2,7 @@ import { Transcript } from '@justfiles/ui/Transcript'
 import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { useRef } from 'react'
 import { useAutoResize } from '../components/useAutoResize'
+import { AgentAvatar } from './AgentAvatar'
 import { useAgentConnection, useAgentSession } from './hooks'
 import { resolveTranscriptImage } from './images'
 import { Whisper } from './Whisper'
@@ -21,6 +22,8 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 		setInput,
 		agentName,
 		avatarUrl,
+		avatarFaces,
+		expression,
 		personalized,
 		isStreaming,
 		sendMessage,
@@ -66,13 +69,13 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 					onClick={onPersonalize}
 					title="Personalize"
 				>
-					<img
-						src={avatarUrl}
-						alt=""
-						width={48}
-						height={48}
-						className="frn-agent-avatar"
-						data-personalized={personalized}
+					<AgentAvatar
+						url={avatarUrl}
+						faces={avatarFaces}
+						expression={expression}
+						streaming={isStreaming}
+						personalized={personalized}
+						size={48}
 					/>
 					<span style={{ fontWeight: 500 }}>{agentName}</span>
 				</button>

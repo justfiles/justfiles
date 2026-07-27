@@ -11,6 +11,13 @@ export const SOUL_PATH = '/system/agents/main/soul.md'
 export const AVATAR_PATH = '/system/agents/main/avatar.png'
 export const PROFILE_PATH = '/system/user.md'
 
+// Optional per-expression faces beside the base avatar (`avatar-pleased.png`, …). Nothing
+// seeds them; a terminal that finds none falls back to `AVATAR_PATH`, so the expression
+// channel degrades to a single static face.
+export function avatarFacePath(expression: string): string {
+	return `/system/agents/main/avatar-${expression}.png`
+}
+
 // A neutral, terminal-agnostic persona so a brand-new user gets a capable agent with no
 // setup. `seeded: true` marks it as an untouched default (a terminal detects "personalized"
 // by the absence of that flag). Personalization overwrites this file.

@@ -377,6 +377,9 @@ export class Frieren extends DurableObject<Env> {
 			// omnibar (mirrors `broadcast`). Producer code is untouched — passing a
 			// channel is all it takes to light up notifications.
 			notify: (notification) => this.broadcast({ type: 'notification', notification }),
+			// The avatar's expression channel: the agent tags each sentence, the client strips the
+			// tags off the token stream and swaps the face (see @justfiles/agent/expression).
+			expressions: true,
 			title: agentName
 		})
 		// Surface classified turn errors to every open tab (the raw stream carries the tokens;

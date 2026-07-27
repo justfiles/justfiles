@@ -15,6 +15,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CommunityCatalogApp } from '../../shared/appstore'
+import { AgentAvatar } from '../agent/AgentAvatar'
 import { useAgentConnection, useAgentSession } from '../agent/hooks'
 import { resolveTranscriptImage } from '../agent/images'
 import { Whisper } from '../agent/Whisper'
@@ -555,11 +556,13 @@ export function Omnibar({
 									title="Personalize"
 									onClick={onPersonalize}
 								>
-									<img
-										src={session.avatarUrl}
-										alt=""
-										className="frn-agent-avatar"
-										data-personalized={session.personalized}
+									<AgentAvatar
+										url={session.avatarUrl}
+										faces={session.avatarFaces}
+										expression={session.expression}
+										streaming={session.isStreaming}
+										personalized={session.personalized}
+										size={28}
 									/>
 									<span>{session.agentName}</span>
 								</button>

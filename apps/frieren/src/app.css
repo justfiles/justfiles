@@ -915,6 +915,30 @@
 	border: 2px solid var(--focus);
 	border-radius: 50%;
 	object-fit: cover;
+	transition:
+		filter 220ms ease,
+		transform 220ms ease,
+		border-color 220ms ease;
+}
+/* Until there is per-expression art on the volume every face resolves to the same image,
+   so the expression channel reads as a whisper of a treatment. Real faces override it. */
+.frn-agent-avatar[data-expression="thinking"] {
+	filter: saturate(0.8);
+	opacity: 0.85;
+}
+.frn-agent-avatar[data-expression="pleased"] {
+	filter: saturate(1.15) brightness(1.06);
+	transform: scale(1.04);
+}
+.frn-agent-avatar[data-expression="curious"] {
+	transform: rotate(-4deg);
+}
+.frn-agent-avatar[data-expression="concerned"] {
+	filter: saturate(0.9) brightness(0.94);
+}
+.frn-agent-avatar[data-expression="apologetic"] {
+	filter: saturate(0.75) brightness(0.92);
+	transform: scale(0.96);
 }
 .frn-agent-avatar[data-personalized="false"] {
 	border-style: dashed;
