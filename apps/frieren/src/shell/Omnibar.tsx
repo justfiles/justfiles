@@ -496,9 +496,23 @@ export function Omnibar({
 			className="frn-omnibar"
 			data-expanded={expanded}
 			data-agent={agentState}
+			/* Where the agent's face sits: a chip inside the pill at rest, the panel's
+			   shoulder once the transcript is actually on screen (`expanded` gates it — a
+			   collapsed pill has no shoulder to sit on). One element travels between the
+			   two (design/07); it never appears or disappears. */
+			data-face={expanded && showTranscript ? 'shoulder' : 'idle'}
 			onMouseEnter={() => setBannerHovered(true)}
 			onMouseLeave={() => setBannerHovered(false)}
 		>
+			<AgentAvatar
+				url={session.avatarUrl}
+				faces={session.avatarFaces}
+				expression={session.expression}
+				streaming={session.isStreaming}
+				personalized={session.personalized}
+				size={96}
+				className="frn-omnibar-face"
+			/>
 			{expanded ? (
 				/* biome-ignore lint/a11y/noStaticElementInteractions: mousedown-preventDefault keeps
 				   focus in the input so surface clicks don't collapse the sheet mid-click. Inline
@@ -549,22 +563,16 @@ export function Omnibar({
 						</div>
 					) : showTranscript ? (
 						<div className="frn-omnibar-chat">
-							<div className="frn-omnibar-chat-head">
+							{/* The shoulder band: reserved space under the face's lower half, so no
+							    message ever sits beneath it. Space, not a header — no divider. */}
+							<div className="frn-omnibar-shoulder">
 								<button
 									type="button"
 									className="frn-omnibar-chat-identity"
 									title="Personalize"
 									onClick={onPersonalize}
 								>
-									<AgentAvatar
-										url={session.avatarUrl}
-										faces={session.avatarFaces}
-										expression={session.expression}
-										streaming={session.isStreaming}
-										personalized={session.personalized}
-										size={28}
-									/>
-									<span>{session.agentName}</span>
+									{session.agentName}
 								</button>
 								{/* Dev-only readout of the expression channel (see MessagesPanel). */}
 								{import.meta.env.DEV && session.expression ? (
