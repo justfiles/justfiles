@@ -43,6 +43,42 @@ describe('stripExpressions', () => {
 	test('a reply with no tags is untouched', () => {
 		expect(stripExpressions('plain text')).toEqual({ text: 'plain text', expression: null })
 	})
+
+	// A tag OPENS a sentence. Everything below is a mood word in a position the contract
+	// never uses, so it is prose the reader must see verbatim — mangled text is far worse
+	// than a missed face.
+	test('a mood word inside code or mid-sentence is prose, not a tag', () => {
+		const code = 'The tag `[neutral]` is the literal value.'
+		expect(stripExpressions(code)).toEqual({ text: code, expression: null })
+		const mid = 'I wrote [pleased] on the form.'
+		expect(stripExpressions(mid)).toEqual({ text: mid, expression: null })
+		// The agent explaining its own vocabulary is the case most likely to hit this.
+		const about = 'I use [pleased] when things go well.'
+		expect(stripExpressions(about)).toEqual({ text: about, expression: null })
+	})
+
+	test('a tag still opens a sentence after punctuation or a line break', () => {
+		expect(stripExpressions('Done! [curious]Why?')).toEqual({
+			text: 'Done! Why?',
+			expression: 'curious'
+		})
+		expect(stripExpressions('- one\n[pleased]Two.')).toEqual({
+			text: '- one\nTwo.',
+			expression: 'pleased'
+		})
+	})
+
+	test('a markdown link whose label is a mood word survives', () => {
+		const text = '[thinking](https://x.dev) is worth a read.'
+		expect(stripExpressions(text)).toEqual({ text, expression: null })
+	})
+
+	test('a trailing bare tag is dropped, not printed', () => {
+		expect(stripExpressions('Found it. [pleased]')).toEqual({
+			text: 'Found it. ',
+			expression: null
+		})
+	})
 })
 
 describe('streaming', () => {
@@ -71,6 +107,14 @@ describe('streaming', () => {
 			'pleased',
 			'neutral'
 		])
+	})
+
+	// The tag/link lookahead must not depend on where the stream happens to break.
+	test('a delta ending exactly on `]` resolves on the next one', () => {
+		expect(stream(['[pleased]', 'Found it.'])).toEqual({ text: 'Found it.', seen: ['pleased'] })
+		expect(stream(['[pleased]', '(https://x.dev) is good.']).text).toBe(
+			'[pleased](https://x.dev) is good.'
+		)
 	})
 })
 

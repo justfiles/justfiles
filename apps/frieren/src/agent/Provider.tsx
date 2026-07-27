@@ -15,6 +15,12 @@ import agentAvatarUrl from './agent-avatar.png'
 import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
 
+// How long a tab waits before asking for the same face again. A skip is often transient —
+// right after personalization the worker's copy of `avatar.png` can still be behind the
+// local one, so its hash does not match and it refuses — and a face that is asked for
+// exactly once per tab would then stay missing until a reload.
+const FACE_RETRY_MS = 5 * 60_000
+
 // The agent/messages feature. It consumes the AgentClient supplied by OS
 // infrastructure and never touches the raw websocket itself; the client owns
 // frame parsing and the session snapshot (BehaviorSubject pattern). This
@@ -51,16 +57,18 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	}, [refreshIdentity])
 
 	// Lazily fill in the face for an expression the agent just used. Fire-and-forget: the
-	// base avatar stays on screen and the generated face lands on a later turn. Asked once
-	// per (avatar, expression) per tab — the worker owns the real dedupe and backoff.
-	const asked = useRef(new Set<string>())
+	// base avatar stays on screen and the generated face lands on a later turn. Throttled per
+	// (avatar, expression) rather than asked once — the worker owns the real dedupe and the
+	// 24h backoff, this only keeps a tab from asking on every turn.
+	const askedAt = useRef(new Map<string, number>())
 	const { hash, faces } = identity
 	const expression = snapshot.expression
 	useEffect(() => {
 		if (!expression || !hash || faces[expression]) return
 		const key = `${hash}:${expression}`
-		if (asked.current.has(key)) return
-		asked.current.add(key)
+		const now = Date.now()
+		if (now - (askedAt.current.get(key) ?? -FACE_RETRY_MS) < FACE_RETRY_MS) return
+		askedAt.current.set(key, now)
 		void (async () => {
 			const volume = await openProfile()
 			if (await requestFace(volume, getToken, expression, hash)) await refreshIdentity()
