@@ -10,8 +10,8 @@ export interface AgentAvatarProps {
 	url: string
 	// Optional per-expression faces from the volume; absent ones fall back to `url`.
 	faces: Partial<Record<Expression, string>>
-	// The expression the client is currently publishing. It already paces the agent's
-	// per-sentence tags (one per hold), so this component just renders what it's given.
+	// The agent's latest expression tag — last tag wins, so a reply that tags several
+	// sentences ends on its final one.
 	expression: Expression | null
 	streaming: boolean
 	personalized: boolean

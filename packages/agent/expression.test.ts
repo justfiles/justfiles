@@ -9,7 +9,7 @@ function stream(chunks: string[]) {
 	for (const chunk of chunks) {
 		const out = parser.push(chunk)
 		text += out.text
-		seen.push(...out.expressions)
+		if (out.expression) seen.push(out.expression)
 	}
 	return { text: text + parser.flush(), seen }
 }
@@ -18,7 +18,7 @@ describe('stripExpressions', () => {
 	test('pulls the tag out and keeps the sentence', () => {
 		expect(stripExpressions('[pleased]Found it.')).toEqual({
 			text: 'Found it.',
-			expressions: ['pleased']
+			expression: 'pleased'
 		})
 	})
 
@@ -26,25 +26,22 @@ describe('stripExpressions', () => {
 		expect(stripExpressions('[pleased] Found it.  Twice.').text).toBe('Found it.  Twice.')
 	})
 
-	test('reports every tag of a multi-sentence reply, in order', () => {
+	test('reports the last tag of a multi-sentence reply — last tag wins', () => {
 		const out = stripExpressions('[pleased]Found it. [concerned]But the table is gone.')
-		expect(out).toEqual({
-			text: 'Found it. But the table is gone.',
-			expressions: ['pleased', 'concerned']
-		})
+		expect(out).toEqual({ text: 'Found it. But the table is gone.', expression: 'concerned' })
 	})
 
 	test('leaves markdown links and unknown brackets alone', () => {
 		const text = 'See [the docs](https://x.dev) and [whatever] else.'
-		expect(stripExpressions(text)).toEqual({ text, expressions: [] })
+		expect(stripExpressions(text)).toEqual({ text, expression: null })
 	})
 
 	test('is case-insensitive (small models drift on casing)', () => {
-		expect(stripExpressions('[Pleased]hi').expressions).toEqual(['pleased'])
+		expect(stripExpressions('[Pleased]hi').expression).toBe('pleased')
 	})
 
 	test('a reply with no tags is untouched', () => {
-		expect(stripExpressions('plain text')).toEqual({ text: 'plain text', expressions: [] })
+		expect(stripExpressions('plain text')).toEqual({ text: 'plain text', expression: null })
 	})
 })
 
@@ -68,7 +65,7 @@ describe('streaming', () => {
 		expect(stream(['done [conc']).text).toBe('done [conc')
 	})
 
-	test('every tag in the stream is observed in order', () => {
+	test('one tag per delta is observed, in order', () => {
 		expect(stream(['[thinking]a. ', '[pleased]b. ', '[neutral]c.']).seen).toEqual([
 			'thinking',
 			'pleased',
