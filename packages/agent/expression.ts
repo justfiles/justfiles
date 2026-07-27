@@ -58,9 +58,10 @@ export function facePrompt(expression: Expression): string {
 }
 
 export interface ExpressionParser {
-	// Feed a token delta; returns the text to render plus the last tag seen in it. An
+	// Feed a token delta; returns the text to render plus every tag seen in it, in order —
+	// a fast stream can carry several sentences (so several tags) in one chunk. An
 	// unterminated tag at the tail is held back until the next delta completes it.
-	push(delta: string): { text: string; expression: Expression | null }
+	push(delta: string): { text: string; expressions: Expression[] }
 	// Release whatever is still held (end of message) — an incomplete tag was just text.
 	flush(): string
 }
@@ -73,10 +74,10 @@ export function createExpressionParser(): ExpressionParser {
 
 	return { push, flush }
 
-	function push(delta: string): { text: string; expression: Expression | null } {
+	function push(delta: string): { text: string; expressions: Expression[] } {
 		carry += delta
 		let text = ''
-		let expression: Expression | null = null
+		const expressions: Expression[] = []
 
 		for (;;) {
 			const open = carry.indexOf('[')
@@ -102,7 +103,7 @@ export function createExpressionParser(): ExpressionParser {
 			carry = carry.slice(close + 1)
 			const tag = raw.slice(1, -1).toLowerCase()
 			if (KNOWN.has(tag)) {
-				expression = tag as Expression
+				expressions.push(tag as Expression)
 				skipSpace = true
 			} else {
 				// Not ours (a markdown link label, a literal bracket) — pass it through verbatim.
@@ -110,7 +111,7 @@ export function createExpressionParser(): ExpressionParser {
 			}
 		}
 
-		return { text, expression }
+		return { text, expressions }
 	}
 
 	function flush(): string {
@@ -126,14 +127,14 @@ export function createExpressionParser(): ExpressionParser {
 	}
 }
 
-// One-shot strip for a complete message (history replay, note-taking input).
+// One-shot strip for a complete message (history replay, a notification body).
 export function stripExpressions(text: string): {
 	text: string
-	expression: Expression | null
+	expressions: Expression[]
 } {
 	const parser = createExpressionParser()
-	const { text: head, expression } = parser.push(text)
-	return { text: head + parser.flush(), expression }
+	const { text: head, expressions } = parser.push(text)
+	return { text: head + parser.flush(), expressions }
 }
 
 function isTagPrefix(carry: string): boolean {
