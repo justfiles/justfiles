@@ -27,6 +27,7 @@ import {
 	text
 } from '@justfiles/agent'
 import { ensureAgentDefaults, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
+import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
@@ -54,6 +55,7 @@ import { buildProviders } from './accounts/providers.ts'
 import { scheduleDailyAlarm } from './daily-alarm.ts'
 import { runDailyMaintenance } from './daily-maintenance.ts'
 import { cfFsStorage, createDOSqliteAdapter, migrateCF } from './db.do.ts'
+import { generateFace } from './faces.ts'
 import { type FrierenApps, frierenApps } from './frieren.app.ts'
 import { createServerPoke } from './frieren.poke.ts'
 import { AuditLog } from './integrations/audit.ts'
@@ -134,6 +136,11 @@ export class Frieren extends DurableObject<Env> {
 	private vol: Volume
 	private session?: AgentSession
 	private text?: LLMText
+	// The image engine, kept from the last `reset()` so the face endpoint can reach it.
+	private generateImage?: (prompt: string, source?: GeneratedImage) => Promise<GeneratedImage[]>
+	// In-flight face generations, keyed `${hash}:${expression}` — a second tab (or a repeat
+	// of the same expression) joins the running call instead of paying for a second image.
+	private readonly facesInFlight = new Map<string, Promise<GeneratedImage | null>>()
 	private cfTimezone?: string
 	private apps?: FrierenApps
 
@@ -169,6 +176,26 @@ export class Frieren extends DurableObject<Env> {
 				}
 				const generated = await this.generateSoul(body)
 				return c.json(generated)
+			})
+			.post('/api/agent/face', async (c) => {
+				const body = await c.req.json<{ expression?: string; hash?: string }>()
+				const expression = EXPRESSIONS.find((name) => name === body?.expression)
+				if (!expression || !body?.hash) {
+					return c.json({ error: 'expression and hash are required' }, 400)
+				}
+				const face = await generateFace(
+					{
+						volume: this.vol,
+						storage: ctx.storage,
+						generate: this.generateImage,
+						inFlight: this.facesInFlight
+					},
+					expression,
+					body.hash
+				)
+				// A miss is never an error: the caller keeps showing the base avatar. A face is
+				// cosmetic, so "you are out of AI budget" is not worth saying for it.
+				return face ? c.json(face) : c.json({ skipped: true })
 			})
 			.get('/api/usage', async (c) => {
 				const usage = await readUsage(this.db, ctx.storage.sql.databaseSize)
@@ -308,6 +335,7 @@ export class Frieren extends DurableObject<Env> {
 
 	private async reset() {
 		const { models, model, generateImage } = this.aiRuntime()
+		this.generateImage = generateImage
 		await migrateCF(this.ctx.storage)
 		await ensureUsageSchema(this.db)
 		// Seed a default soul + empty profile so the agent works with no onboarding.
@@ -398,7 +426,7 @@ export class Frieren extends DurableObject<Env> {
 	private aiRuntime(): {
 		models: Models
 		model: Model<Api>
-		generateImage?: (prompt: string) => Promise<GeneratedImage[]>
+		generateImage?: (prompt: string, source?: GeneratedImage) => Promise<GeneratedImage[]>
 	} {
 		if (this.env.FRIEREN_BACKEND === 'local') {
 			// Local LM Studio — OpenAI-compatible /v1/chat/completions. No real auth, but the
@@ -444,13 +472,20 @@ export class Frieren extends DurableObject<Env> {
 			models,
 			model: getBuiltinModel('openrouter', 'openai/gpt-5.4-mini') as Model<Api>,
 			generateImage: imageModel
-				? async (prompt) => {
+				? async (prompt, source) => {
 						// Image generation runs on the parallel ImagesModels stack (not the text backend),
 						// so admit/record explicitly. Record the reported usage even on a non-'stop' result
 						// (a failed image can still be billable); a usage-less result records nothing.
 						const handle = await this.admitOrThrow()
 						const res = await images.generateImages(imageModel, {
-							input: [{ type: 'text', text: prompt }]
+							// A `source` makes this an EDIT (the model is image-in/image-out): the avatar
+							// plus "change only the expression" is how a face set is derived.
+							input: source
+								? [
+										{ type: 'text', text: prompt },
+										{ type: 'image', data: source.data, mimeType: source.mimeType }
+									]
+								: [{ type: 'text', text: prompt }]
 						})
 						if (res.usage) this.ctx.waitUntil(record(this.db, handle, res.usage))
 						if (res.stopReason !== 'stop')

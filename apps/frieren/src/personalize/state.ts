@@ -1,4 +1,10 @@
-import { AVATAR_PATH, avatarFacePath, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
+import {
+	AVATAR_PATH,
+	avatarFaceHash,
+	avatarFacePath,
+	PROFILE_PATH,
+	SOUL_PATH
+} from '@justfiles/agent/defaults'
 import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
 import type { Volume } from '../fs'
 
@@ -44,29 +50,34 @@ export async function readAgentSoul(volume: Volume): Promise<IdentityFile | null
 	return readIdentityFile(volume, PATHS.soul)
 }
 
-/** The chosen face as a data URL, or null while still on the bundled default. */
-export async function readAvatarUrl(volume: Volume): Promise<string | null> {
-	return readPngDataUrl(volume, PATHS.avatar)
+/**
+ * The chosen face: its data URL plus the content hash that names its per-expression
+ * variants. Null while still on the bundled default.
+ */
+export async function readAvatar(volume: Volume): Promise<{ url: string; hash: string } | null> {
+	if (!(await volume.exists(PATHS.avatar))) return null
+	const bytes = await volume.readFile(PATHS.avatar)
+	return { url: await pngDataUrl(bytes), hash: await avatarFaceHash(bytes) }
 }
 
 /**
- * Per-expression faces that actually exist on the volume. Optional by design: a user's
- * uploaded photo has none, so the avatar just stays on the base image.
+ * Per-expression faces derived from THIS avatar (the hash is in each file name, so a
+ * replaced avatar simply has none until they are regenerated — see src/agent/faces.ts).
  */
 export async function readAvatarFaces(
-	volume: Volume
+	volume: Volume,
+	hash: string
 ): Promise<Partial<Record<Expression, string>>> {
 	const faces: Partial<Record<Expression, string>> = {}
 	for (const expression of EXPRESSIONS) {
-		const url = await readPngDataUrl(volume, avatarFacePath(expression)).catch(() => null)
-		if (url) faces[expression] = url
+		const path = avatarFacePath(expression, hash)
+		if (!(await volume.exists(path))) continue
+		faces[expression] = await pngDataUrl(await volume.readFile(path)).catch(() => undefined)
 	}
 	return faces
 }
 
-async function readPngDataUrl(volume: Volume, path: string): Promise<string | null> {
-	if (!(await volume.exists(path))) return null
-	const bytes = await volume.readFile(path)
+function pngDataUrl(bytes: Uint8Array): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader()
 		reader.onload = () => resolve(String(reader.result))

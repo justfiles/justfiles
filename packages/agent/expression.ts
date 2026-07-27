@@ -35,6 +35,28 @@ export const EXPRESSION_PROMPT = [
 	'the previous one. Tags open a sentence only — never inside code, paths or links.'
 ].join('\n')
 
+// One face's art direction. The image model is an editor: it gets `avatar.png` plus this
+// instruction, and must return the SAME character with a different expression. Framing and
+// palette have to be pinned or the six faces drift into six characters (probed against
+// google/gemini-3.1-flash-image — see scripts/probe-faces.mjs).
+const FACE_DIRECTION: Record<Expression, string> = {
+	neutral: 'a calm, neutral expression: relaxed brows, mouth closed and level',
+	thinking: 'a thinking expression: eyes looking up and away, mouth a small flat line',
+	pleased: 'a pleased expression: a warm closed-mouth smile, eyes softly narrowed',
+	curious: 'a curious expression: one brow raised, eyes wide, mouth slightly open',
+	concerned: 'a concerned expression: brows drawn slightly together, mouth neutral-tense',
+	apologetic: 'an apologetic expression: eyes lowered, brows raised inward, a small closed mouth'
+}
+
+export function facePrompt(expression: Expression): string {
+	return [
+		`Change only the facial expression to ${FACE_DIRECTION[expression]}.`,
+		'Keep the same character, art style, colours, lighting, framing, crop and background.',
+		'Do not change identity, hair, clothing or composition.',
+		'Output one square image.'
+	].join(' ')
+}
+
 export interface ExpressionParser {
 	// Feed a token delta; returns the text to render plus the last tag seen in it. An
 	// unterminated tag at the tail is held back until the next delta completes it.

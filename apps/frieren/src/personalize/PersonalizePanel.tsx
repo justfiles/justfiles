@@ -4,13 +4,7 @@ import agentAvatarUrl from '../agent/agent-avatar.png'
 import { openProfile, type ProfileVolume } from '../fs'
 import { AgentStep } from './AgentStep'
 import { ProfileStep } from './ProfileStep'
-import {
-	deriveAge,
-	type IdentityFile,
-	readAgentSoul,
-	readAvatarUrl,
-	readUserProfile
-} from './state'
+import { deriveAge, type IdentityFile, readAgentSoul, readAvatar, readUserProfile } from './state'
 
 type View = 'landing' | 'profile' | 'agent'
 type UserCtx = { userAge?: number; userGender?: string }
@@ -39,11 +33,11 @@ export function PersonalizePanel({
 		const [nextSoul, nextProfile, nextAvatar] = await Promise.all([
 			readAgentSoul(vol),
 			readUserProfile(vol),
-			readAvatarUrl(vol)
+			readAvatar(vol)
 		])
 		setSoul(nextSoul)
 		setProfile(nextProfile)
-		setAvatar(nextAvatar)
+		setAvatar(nextAvatar?.url ?? null)
 		setUserCtx({
 			userAge: deriveAge(nextProfile?.birth_date),
 			userGender: nextProfile?.gender
