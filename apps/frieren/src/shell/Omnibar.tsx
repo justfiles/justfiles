@@ -566,6 +566,10 @@ export function Omnibar({
 									/>
 									<span>{session.agentName}</span>
 								</button>
+								{/* Dev-only readout of the expression channel (see MessagesPanel). */}
+								{import.meta.env.DEV && session.expression ? (
+									<span className="frn-agent-status">{session.expression}</span>
+								) : null}
 								<button
 									type="button"
 									className="frn-omnibar-expand"

@@ -83,6 +83,9 @@ export function MessagesPanel({ onPersonalize }: { onPersonalize: () => void }) 
 					{ready ? (
 						<>
 							Online
+							{/* Dev-only readout of the expression channel: with no per-expression art the
+							    face barely moves, and a shipped app should never narrate its feelings. */}
+							{import.meta.env.DEV && expression ? <em> · {expression}</em> : null}
 							{personalized ? null : <em> · default persona</em>}
 						</>
 					) : connection.state === 'connecting' ? (
