@@ -94,7 +94,7 @@ describe('FrierenClient agent', () => {
 		expect(snapshot.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'Hi there' })
 	})
 
-	test('strips expression tags off the token stream and shows the first one', async () => {
+	test('strips expression tags off the token stream and reports the last one', async () => {
 		const { client, connect } = setup()
 		const socket = await connect()
 		socket.emit({ type: 'ready', apps: [] })
@@ -114,109 +114,7 @@ describe('FrierenClient agent', () => {
 			role: 'assistant',
 			content: 'Found it. Table is gone.'
 		})
-		// The tags are PACED (see the pacing tests below), so the first one is on screen
-		// while `concerned` waits its turn.
-		expect(snapshot.expression).toBe('pleased')
-	})
-
-	test('paces a reply with several tags instead of jumping to the last', async () => {
-		const { client, connect } = setup()
-		const socket = await connect()
-		socket.emit({ type: 'ready', apps: [] })
-		vi.useFakeTimers()
-		try {
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			// Both sentences of the reply land in one delta, as they do on a fast stream.
-			socket.emit({
-				type: 'event',
-				event: {
-					type: 'message_update',
-					assistantMessageEvent: {
-						type: 'text_delta',
-						delta: '[curious]Because you’re here? [pleased]Tell me the reason.'
-					}
-				}
-			})
-
-			// The first tag shows immediately; the second waits its turn.
-			expect(client.agent.snapshot().expression).toBe('curious')
-			vi.advanceTimersByTime(1_399)
-			expect(client.agent.snapshot().expression).toBe('curious')
-			vi.advanceTimersByTime(1)
-			expect(client.agent.snapshot().expression).toBe('pleased')
-			// The text itself is tag-free either way.
-			expect(client.agent.snapshot().messages.at(-1)?.content).toBe(
-				'Because you’re here? Tell me the reason.'
-			)
-		} finally {
-			vi.useRealTimers()
-		}
-	})
-
-	test('a finished turn settles on the reply’s last tag without waiting', async () => {
-		const { client, connect } = setup()
-		const socket = await connect()
-		socket.emit({ type: 'ready', apps: [] })
-		vi.useFakeTimers()
-		try {
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			socket.emit({
-				type: 'event',
-				event: {
-					type: 'message_update',
-					assistantMessageEvent: {
-						type: 'text_delta',
-						// Repeats coalesce; the queue keeps only the newest few.
-						delta: '[thinking]a. [thinking]b. [curious]c. [concerned]d. [apologetic]e.'
-					}
-				}
-			})
-			expect(client.agent.snapshot().expression).toBe('thinking')
-
-			socket.emit({ type: 'event', event: { type: 'agent_end' } })
-			// No timers advanced: the face is already where the words ended up.
-			expect(client.agent.snapshot().expression).toBe('apologetic')
-			vi.advanceTimersByTime(10_000)
-			expect(client.agent.snapshot().expression).toBe('apologetic')
-		} finally {
-			vi.useRealTimers()
-		}
-	})
-
-	test('a new turn drops the previous one’s pending tags', async () => {
-		const { client, connect } = setup()
-		const socket = await connect()
-		socket.emit({ type: 'ready', apps: [] })
-		vi.useFakeTimers()
-		try {
-			socket.emit({
-				type: 'event',
-				event: { type: 'message_start', message: { role: 'assistant' } }
-			})
-			socket.emit({
-				type: 'event',
-				event: {
-					type: 'message_update',
-					assistantMessageEvent: { type: 'text_delta', delta: '[curious]a. [pleased]b.' }
-				}
-			})
-			expect(client.agent.snapshot().expression).toBe('curious')
-
-			socket.emit({ type: 'event', event: { type: 'agent_start' } })
-			vi.advanceTimersByTime(10_000)
-			// `pleased` belonged to the superseded turn; the face holds what it had.
-			expect(client.agent.snapshot().expression).toBe('curious')
-		} finally {
-			vi.useRealTimers()
-		}
+		expect(snapshot.expression).toBe('concerned')
 	})
 
 	test('promotes tool-result image refs onto the tool call, live and from history', async () => {
