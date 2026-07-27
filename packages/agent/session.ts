@@ -10,6 +10,7 @@ import {
 } from './assistant.ts'
 import { type CapabilityToolSet, capabilityTools } from './capability-tools.ts'
 import type { CompactionSettings } from './compaction.ts'
+import { stripExpressions } from './expression.ts'
 import { APPS_PROMPT, type AppController, createAppCommand } from './justbash/app.ts'
 import { createJustBashTool } from './justbash/index.ts'
 import { createAgent } from './llm.agent.ts'
@@ -292,7 +293,9 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 			source: 'agent',
 			kind,
 			title,
-			body: summarize(body),
+			// A notification is read by a human, so the expression tags come off here (a
+			// no-op for a host that never asked for them — see expression.ts).
+			body: summarize(stripExpressions(body).text),
 			threadId: 'agent',
 			route
 		})
