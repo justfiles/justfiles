@@ -1,9 +1,18 @@
+import { useAuth } from '@clerk/clerk-react'
 import type { Expression } from '@justfiles/agent/expression'
-import { type ReactNode, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	useSyncExternalStore
+} from 'react'
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
-import { readAgentSoul, readAvatarFaces, readAvatarUrl } from '../personalize/state'
+import { readAgentSoul, readAvatar, readAvatarFaces } from '../personalize/state'
 import agentAvatarUrl from './agent-avatar.png'
+import { requestFace } from './faces'
 import { AgentContext, type AgentContextValue } from './hooks'
 
 // The agent/messages feature. It consumes the AgentClient supplied by OS
@@ -13,10 +22,13 @@ import { AgentContext, type AgentContextValue } from './hooks'
 export function AgentProvider({ children }: { children: ReactNode }) {
 	const agent = useAgentClient()
 	const snapshot = useSyncExternalStore(agent.subscribe, agent.snapshot)
+	const { getToken } = useAuth()
 	const [input, setInput] = useState('')
 	const [identity, setIdentity] = useState({
 		agentName: undefined as string | undefined,
 		avatarUrl: agentAvatarUrl,
+		// Null while on the bundled default avatar: nothing to derive faces from.
+		hash: null as string | null,
 		faces: {} as Partial<Record<Expression, string>>,
 		personalized: false
 	})
@@ -24,11 +36,12 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	const refreshIdentity = useCallback(async () => {
 		const volume = await openProfile()
 		const soul = await readAgentSoul(volume)
-		const avatarUrl = (await readAvatarUrl(volume)) ?? agentAvatarUrl
+		const avatar = await readAvatar(volume)
 		setIdentity({
 			agentName: soul?.frontmatter.agent_name,
-			avatarUrl,
-			faces: await readAvatarFaces(volume),
+			avatarUrl: avatar?.url ?? agentAvatarUrl,
+			hash: avatar?.hash ?? null,
+			faces: avatar ? await readAvatarFaces(volume, avatar.hash) : {},
 			personalized: soul?.frontmatter.seeded !== 'true' && soul !== null
 		})
 	}, [])
@@ -36,6 +49,23 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		void refreshIdentity().catch(() => {})
 	}, [refreshIdentity])
+
+	// Lazily fill in the face for an expression the agent just used. Fire-and-forget: the
+	// base avatar stays on screen and the generated face lands on a later turn. Asked once
+	// per (avatar, expression) per tab — the worker owns the real dedupe and backoff.
+	const asked = useRef(new Set<string>())
+	const { hash, faces } = identity
+	const expression = snapshot.expression
+	useEffect(() => {
+		if (!expression || !hash || faces[expression]) return
+		const key = `${hash}:${expression}`
+		if (asked.current.has(key)) return
+		asked.current.add(key)
+		void (async () => {
+			const volume = await openProfile()
+			if (await requestFace(volume, getToken, expression, hash)) await refreshIdentity()
+		})().catch(() => {})
+	}, [expression, hash, faces, getToken, refreshIdentity])
 
 	const sendMessage = () => {
 		const text = input.trim()

@@ -10,12 +10,29 @@ import type { Volume } from '@justfiles/fs'
 export const SOUL_PATH = '/system/agents/main/soul.md'
 export const AVATAR_PATH = '/system/agents/main/avatar.png'
 export const PROFILE_PATH = '/system/user.md'
+export const AGENT_DIR = '/system/agents/main'
 
-// Optional per-expression faces beside the base avatar (`avatar-pleased.png`, …). Nothing
-// seeds them; a terminal that finds none falls back to `AVATAR_PATH`, so the expression
-// channel degrades to a single static face.
-export function avatarFacePath(expression: string): string {
-	return `/system/agents/main/avatar-${expression}.png`
+// Per-expression faces derived from `avatar.png` (see expression.ts). The source's content
+// hash is IN the name, so a new avatar can never resolve to an old face — the lookup simply
+// misses and the set regenerates. Stale files are swept by the host's daily maintenance.
+// Nothing seeds these: an absent face falls back to `AVATAR_PATH`, so the expression channel
+// degrades to one static face.
+export function avatarFacePath(expression: string, hash: string): string {
+	return `${AGENT_DIR}/avatar-${expression}@${hash}.png`
+}
+
+export function parseAvatarFaceName(name: string): { expression: string; hash: string } | null {
+	const match = /^avatar-([a-z]+)@([0-9a-f]+)\.png$/.exec(name)
+	if (!match?.[1] || !match[2]) return null
+	return { expression: match[1], hash: match[2] }
+}
+
+/** A face name's hash of the source avatar: the first 8 hex chars of its SHA-256. */
+export async function avatarFaceHash(bytes: Uint8Array): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer)
+	return [...new Uint8Array(digest).slice(0, 4)]
+		.map((byte) => byte.toString(16).padStart(2, '0'))
+		.join('')
 }
 
 // A neutral, terminal-agnostic persona so a brand-new user gets a capable agent with no
