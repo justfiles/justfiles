@@ -32,7 +32,9 @@ export const EXPRESSION_PROMPT = [
 	'',
 	'The tag is markup, not speech: never mention it, never announce or describe your',
 	'feelings in prose, and never invent a tag outside the list. Omit the tag to continue',
-	'the previous one. Tags open a sentence only — never inside code, paths or links.'
+	'the previous one. Tags open a sentence only — never inside code, paths or links.',
+	'If you have to write a tag as an EXAMPLE rather than use it, put it in backticks',
+	'(`[pleased]`) so it survives as text.'
 ].join('\n')
 
 // One face's art direction. The image model is an editor: it gets `avatar.png` plus this
@@ -71,6 +73,12 @@ export function createExpressionParser(): ExpressionParser {
 	let carry = ''
 	// A stripped tag swallows the single space that separated it from its sentence.
 	let skipSpace = false
+	// The last character handed to the reader, and the last non-space one. A tag OPENS a
+	// sentence, so a bracket anywhere else is prose and must survive verbatim: `` `[neutral]`
+	// is the literal value `` keeps its bracket, and so does an agent explaining "I use
+	// [pleased] when things go well" — shredding the reply is worse than a missed face.
+	let prev = ''
+	let prevWord = ''
 
 	return { push, flush }
 
@@ -87,45 +95,76 @@ export function createExpressionParser(): ExpressionParser {
 				break
 			}
 			text += emit(carry.slice(0, open))
+			// Read the position BEFORE the bracket is consumed — `emit` has just moved `prev`.
+			const opens = opensSentence()
 			carry = carry.slice(open)
 
 			const close = carry.indexOf(']')
 			if (close === -1) {
 				// Still open: hold it only while it could become a tag, so a markdown link
 				// or a stray bracket is not stuck behind an unterminated guess.
-				if (isTagPrefix(carry)) break
+				if (opens && isTagPrefix(carry)) break
 				text += emit(carry)
 				carry = ''
 				break
 			}
 
 			const raw = carry.slice(0, close + 1)
-			carry = carry.slice(close + 1)
-			const tag = raw.slice(1, -1).toLowerCase()
-			if (KNOWN.has(tag)) {
-				expression = tag as Expression
-				skipSpace = true
-			} else {
-				// Not ours (a markdown link label, a literal bracket) — pass it through verbatim.
-				text += raw
+			const rest = carry.slice(close + 1)
+			if (opens && KNOWN.has(raw.slice(1, -1).toLowerCase())) {
+				// `[thinking]` and `[thinking](url)` differ only in the character after `]`, so a
+				// tag needs one character of lookahead: hold until the next delta brings it.
+				if (rest === '') break
+				if (rest[0] !== '(') {
+					carry = rest
+					expression = raw.slice(1, -1).toLowerCase() as Expression
+					skipSpace = true
+					// A stripped tag leaves the sentence unopened, so a second tag still counts.
+					prev = ' '
+					prevWord = '.'
+					continue
+				}
 			}
+			// Not ours (a markdown link, a literal bracket, prose) — pass it through verbatim.
+			carry = rest
+			text += emit(raw)
 		}
 
 		return { text, expression }
 	}
 
 	function flush(): string {
-		const rest = emit(carry)
+		// A message ending on a bare tag has no sentence for it: drop the markup rather than
+		// print it. Anything else that is still held was never a tag, so it was always text.
+		const held = carry
+		const wasTag = opensSentence() && KNOWN.has(held.slice(1, -1).toLowerCase())
 		carry = ''
-		return rest
+		return wasTag && held.endsWith(']') ? '' : emit(held)
+	}
+
+	function opensSentence(): boolean {
+		if (prev === '') return true // the message starts here
+		if (!/\s/.test(prev)) return false // glued to a word, a backtick, a quote
+		if (/[\n\r]/.test(prev)) return true // a new line, a list item
+		return SENTENCE_END.test(prevWord) // the sentence before it finished
 	}
 
 	function emit(chunk: string): string {
-		if (!skipSpace || chunk === '') return chunk
-		skipSpace = false
-		return chunk.startsWith(' ') ? chunk.slice(1) : chunk
+		const out = skipSpace && chunk.startsWith(' ') ? chunk.slice(1) : chunk
+		if (chunk !== '') skipSpace = false
+		if (out !== '') {
+			prev = out[out.length - 1] as string
+			const word = out.trimEnd()
+			if (word !== '') prevWord = word[word.length - 1] as string
+		}
+		return out
 	}
 }
+
+// Generous on purpose: leaking a real tag as visible `[pleased]` text is worse than keeping
+// a bracket the model never meant as markup, so anything that plausibly ends a sentence
+// (punctuation, a closing quote, markdown emphasis) counts.
+const SENTENCE_END = /[.!?…:;)\]"'”’*_]/
 
 // One-shot strip for a complete message (history replay, a notification body).
 export function stripExpressions(text: string): {
