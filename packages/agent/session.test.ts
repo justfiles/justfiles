@@ -110,6 +110,25 @@ describe('createAgentSession', () => {
 		expect(notifications[0]).toMatchObject({ kind: 'question', body: 'Tea or coffee?' })
 	})
 
+	test('a turn ping carries the reply without its expression tags', async () => {
+		const notifications: { kind: string; body: string }[] = []
+		const session = createAgentSession({
+			volume: volume(memStorage()),
+			backend: scriptedBackend([
+				assistant([{ type: 'text', text: '[concerned]Stop writes. [curious]Restore from 04:00?' }])
+			]),
+			compaction: NO_COMPACTION,
+			notify: (n) => notifications.push({ kind: n.kind, body: n.body })
+		})
+
+		await session.prompt('I dropped the table')
+
+		expect(notifications[0]).toMatchObject({
+			kind: 'info',
+			body: 'Stop writes. Restore from 04:00?'
+		})
+	})
+
 	test('a classified failure emits an error event routed to Accounts', async () => {
 		const events: SessionEvent[] = []
 		const notifications: { kind: string }[] = []

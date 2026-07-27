@@ -53,12 +53,20 @@ type Row =
 	| { kind: 'update'; app: CommunityCatalogApp }
 	| { kind: 'ask' }
 
-// The sheet is the quick-access view: it renders only the recent tail of the
-// transcript, never the whole thing. Older history lives in the conversation
-// window — the "no 200-message overlay" rule is enforced here, in the render
-// cap, not by spawning a window. Past the cap, an escalating "Open in window"
-// invitation appears at the top of the tail (see design/01-omnibar.md).
-const SHEET_TAIL = 8
+// The sheet renders the whole conversation: the dedicated window is being faded
+// out, so there is nowhere else for older history to live. The sheet's height is
+// capped instead (`.frn-omnibar-chat`), and the transcript scrolls inside it.
+
+// The pill is ONE line at rest, so the banner it carries (typically the agent's last
+// reply) is flattened and cut rather than wrapped. 72 characters is what fits the
+// widest pill (640px at 16px, measured); `white-space: nowrap` in app.css is the hard
+// guarantee for narrower viewports and wide glyphs, where the cut still clips.
+const ONE_LINE_CHARS = 72
+
+function oneLine(text: string): string {
+	const flat = text.replace(/\s+/g, ' ').trim()
+	return flat.length > ONE_LINE_CHARS ? `${flat.slice(0, ONE_LINE_CHARS - 1)}…` : flat
+}
 
 // The first-party Settings app — a `settings` route (e.g. accounts → reconnect)
 // opens it, reusing the ordinary `app.open` dispatch.
@@ -294,10 +302,8 @@ export function Omnibar({
 	const showTranscript = !agentWindowOpen && ((text === '' && chatOpen) || noAppMatch)
 	const showList = (text !== '' || browsing) && !showTranscript
 
-	// Cap the sheet to the last few exchanges; the window is where the full
-	// history is read.
-	const tail = useMemo(() => session.messages.slice(-SHEET_TAIL), [session.messages])
-	const truncated = session.messages.length > SHEET_TAIL
+	// Every message: see the note on the sheet cap above.
+	const tail = session.messages
 
 	// The center lists everything, newest-first, grouped by source (agent / app).
 	const grouped = useMemo(() => {
@@ -310,14 +316,8 @@ export function Omnibar({
 		return [...bySource.entries()]
 	}, [entries])
 
-	// Opening the window is the one explicit hand-off from sheet to durable home:
-	// collapse the sheet and hand focus over so replies land in the window.
-	const openWindow = () => {
-		dispatch({ type: 'agent.openWindow' })
-		setChatOpen(false)
-		inputRef.current?.blur()
-	}
-
+	// The conversation window is being faded out, so nothing here opens one; a window
+	// restored from a previous session still works and still preempts the sheet.
 	// The conversation is reachable on demand, not only as a fall-through: the
 	// pill's chat button opens the transcript (or focuses the window when it owns
 	// the conversation), so a dismissed session is never stranded with no way back.
@@ -390,12 +390,15 @@ export function Omnibar({
 	const notificationWho = (n: NotificationEntry['notification']): string =>
 		n.source === 'agent' ? session.agentName : n.title
 	// The text slot only holds the banner while the input is empty + unfocused; the
-	// first keystroke/focus hands it back (the shipped placeholder rule).
+	// first keystroke/focus hands it back (the shipped placeholder rule). The pill is
+	// ONE line at rest, so a reply is flattened and cut rather than wrapped.
 	const placeholder =
 		!focused && banner
-			? `${notificationWho(banner.notification)}: ${banner.notification.body}${
-					queued > 0 ? ` (+${queued})` : ''
-				}`
+			? oneLine(
+					`${notificationWho(banner.notification)}: ${banner.notification.body}${
+						queued > 0 ? ` (+${queued})` : ''
+					}`
+				)
 			: `Search apps, or talk to ${session.agentName}…`
 
 	// Auto-recede `info` after its lifetime; `error`/`question` are sticky. Paused on
@@ -578,28 +581,12 @@ export function Omnibar({
 								{import.meta.env.DEV && session.expression ? (
 									<span className="frn-agent-status">{session.expression}</span>
 								) : null}
-								<button
-									type="button"
-									className="frn-omnibar-expand"
-									title="Expand conversation"
-									aria-label="Expand conversation"
-									onClick={openWindow}
-								>
-									<ArrowsOutIcon />
-								</button>
 							</div>
 							<Transcript
 								messages={tail}
 								isStreaming={session.isStreaming}
 								onOption={(label) => ask(label)}
 								resolveImage={resolveTranscriptImage}
-								leading={
-									truncated ? (
-										<button type="button" className="frn-omnibar-tail-more" onClick={openWindow}>
-											Earlier messages · Open in window <ArrowsOutIcon />
-										</button>
-									) : undefined
-								}
 							/>
 							{session.personalized ? null : <Whisper onPersonalize={onPersonalize} />}
 						</div>
@@ -805,6 +792,8 @@ export function Omnibar({
 					}}
 					onKeyDown={onKeyDown}
 					placeholder={placeholder}
+					/* The banner rides in this slot and must not wrap (see `oneLine`). */
+					data-banner={!focused && banner ? 'true' : undefined}
 					aria-label="Search apps or talk to Frieren"
 					autoComplete="off"
 					spellCheck={false}
@@ -852,7 +841,7 @@ export function Omnibar({
 					>
 						<ChatCircleIcon />
 					</button>
-				) : null}
+				) : null}{' '}
 			</form>
 			{consent
 				? createPortal(

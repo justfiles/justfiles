@@ -1565,29 +1565,6 @@
 .frn-omnibar-shoulder .frn-omnibar-expand {
 	margin-left: auto;
 }
-/* The escalating "Open in window" invitation, pinned to the top of the capped
-   tail. It scrolls with the content, so it's off-screen at rest and met only
-   when the user scrolls up for history — exactly when a window is wanted. */
-.frn-omnibar-tail-more {
-	align-self: center;
-	display: inline-flex;
-	align-items: center;
-	gap: 6px;
-	margin-bottom: 4px;
-	padding: 4px 12px;
-	font: inherit;
-	font-size: 12px;
-	color: var(--text);
-	opacity: 0.6;
-	border: 1px solid var(--rule);
-	border-radius: 999px;
-	background: var(--control-bg);
-	cursor: default;
-}
-.frn-omnibar-tail-more:hover {
-	opacity: 1;
-	border-color: var(--focus);
-}
 /* The bar itself: fixed at the bottom of the container, always present. The
    composer and the right-edge controls share one height so a single line reads
    as centered; `flex-end` keeps the controls beside the last line as it grows.
@@ -1785,6 +1762,13 @@
 	box-shadow: none;
 	scrollbar-width: thin;
 	scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+}
+/* The banner in the pill's text slot is one line, always: no wrap, clipped at the
+   edge. The `…` itself comes from `oneLine()` in Omnibar.tsx — a textarea placeholder
+   can't carry text-overflow. */
+.frn-omnibar-bar textarea[data-banner="true"] {
+	white-space: nowrap;
+	overflow-x: hidden;
 }
 .frn-omnibar-bar textarea::-webkit-scrollbar {
 	width: 10px;
