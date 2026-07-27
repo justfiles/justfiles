@@ -1,7 +1,8 @@
+import type { Expression } from '@justfiles/agent/expression'
 import { type ReactNode, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { openProfile } from '../fs'
 import { useAgentClient } from '../os/hooks'
-import { readAgentSoul, readAvatarUrl } from '../personalize/state'
+import { readAgentSoul, readAvatarFaces, readAvatarUrl } from '../personalize/state'
 import agentAvatarUrl from './agent-avatar.png'
 import { AgentContext, type AgentContextValue } from './hooks'
 
@@ -16,6 +17,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 	const [identity, setIdentity] = useState({
 		agentName: undefined as string | undefined,
 		avatarUrl: agentAvatarUrl,
+		faces: {} as Partial<Record<Expression, string>>,
 		personalized: false
 	})
 
@@ -26,6 +28,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		setIdentity({
 			agentName: soul?.frontmatter.agent_name,
 			avatarUrl,
+			faces: await readAvatarFaces(volume),
 			personalized: soul?.frontmatter.seeded !== 'true' && soul !== null
 		})
 	}, [])
@@ -49,6 +52,8 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 			userName: snapshot.userName,
 			agentName: identity.agentName ?? snapshot.agentName,
 			avatarUrl: identity.avatarUrl,
+			avatarFaces: identity.faces,
+			expression: snapshot.expression,
 			personalized: identity.personalized,
 			refreshIdentity,
 			isStreaming: snapshot.isStreaming,

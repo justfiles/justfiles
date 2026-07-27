@@ -1,4 +1,5 @@
-import { AVATAR_PATH, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
+import { AVATAR_PATH, avatarFacePath, PROFILE_PATH, SOUL_PATH } from '@justfiles/agent/defaults'
+import { EXPRESSIONS, type Expression } from '@justfiles/agent/expression'
 import type { Volume } from '../fs'
 
 // The identity files the personalize flow edits. Seeded with defaults at boot
@@ -45,8 +46,27 @@ export async function readAgentSoul(volume: Volume): Promise<IdentityFile | null
 
 /** The chosen face as a data URL, or null while still on the bundled default. */
 export async function readAvatarUrl(volume: Volume): Promise<string | null> {
-	if (!(await volume.exists(PATHS.avatar))) return null
-	const bytes = await volume.readFile(PATHS.avatar)
+	return readPngDataUrl(volume, PATHS.avatar)
+}
+
+/**
+ * Per-expression faces that actually exist on the volume. Optional by design: a user's
+ * uploaded photo has none, so the avatar just stays on the base image.
+ */
+export async function readAvatarFaces(
+	volume: Volume
+): Promise<Partial<Record<Expression, string>>> {
+	const faces: Partial<Record<Expression, string>> = {}
+	for (const expression of EXPRESSIONS) {
+		const url = await readPngDataUrl(volume, avatarFacePath(expression)).catch(() => null)
+		if (url) faces[expression] = url
+	}
+	return faces
+}
+
+async function readPngDataUrl(volume: Volume, path: string): Promise<string | null> {
+	if (!(await volume.exists(path))) return null
+	const bytes = await volume.readFile(path)
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader()
 		reader.onload = () => resolve(String(reader.result))

@@ -94,6 +94,29 @@ describe('FrierenClient agent', () => {
 		expect(snapshot.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'Hi there' })
 	})
 
+	test('strips expression tags off the token stream and reports the last one', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+		socket.emit({ type: 'event', event: { type: 'agent_start' } })
+		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
+		// The tag straddles two deltas, as it does on a real stream.
+		for (const delta of ['[ple', 'ased]Found it. ', '[concerned]Table is gone.']) {
+			socket.emit({
+				type: 'event',
+				event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } }
+			})
+		}
+		socket.emit({ type: 'event', event: { type: 'message_end' } })
+
+		const snapshot = client.agent.snapshot()
+		expect(snapshot.messages.at(-1)).toMatchObject({
+			role: 'assistant',
+			content: 'Found it. Table is gone.'
+		})
+		expect(snapshot.expression).toBe('concerned')
+	})
+
 	test('promotes tool-result image refs onto the tool call, live and from history', async () => {
 		const images = [{ src: '/pictures/abcd1234.png', mimeType: 'image/png', alt: 'a red panda' }]
 		const { client, connect } = setup()

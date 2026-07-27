@@ -51,6 +51,9 @@ export interface AgentSessionOptions {
 	// The user's timezone → the "current time" prompt block + `nextMaintenanceAt`.
 	timezone?: () => Promise<string> | string
 	compaction?: CompactionSettings
+	// Ask the agent for a per-sentence expression tag (`[pleased]…`) — see expression.ts.
+	// Only for a host that strips them before display; frieren maps them to avatar faces.
+	expressions?: boolean
 }
 
 // One broad event stream the UI subscribes to — busy/transcript/error — so every open
@@ -157,7 +160,8 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 			compaction,
 			getTimezone: timezone,
 			readDoc,
-			appsPrompt: apps ? APPS_PROMPT : undefined
+			appsPrompt: apps ? APPS_PROMPT : undefined,
+			expressions: options.expressions
 		})
 
 		let pending: PendingQuestion | null = null
