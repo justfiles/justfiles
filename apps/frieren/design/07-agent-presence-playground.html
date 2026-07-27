@@ -44,6 +44,7 @@
 				--face-chat: 96px;
 				--face-chat-long: 72px;
 				--face-gap-left: 16px; /* inside the panel's left border */
+				--bar-height: 48px; /* the composer row, as shipped (.frn-omnibar-bar) */
 				--panel-radius: 16px;
 			}
 			@media (prefers-color-scheme: dark) {
@@ -301,6 +302,7 @@
 				flex: none;
 				align-items: center;
 				gap: 8px;
+				min-height: var(--bar-height);
 				padding: 10px 12px;
 				border-top: 1px solid var(--rule);
 				transition:
@@ -360,7 +362,7 @@
 					width 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
 					height 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
 					left 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
-					top 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+					bottom 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
 					box-shadow 260ms ease,
 					filter 220ms ease,
 					opacity 220ms ease,
@@ -376,28 +378,31 @@
 				object-position: 50% 10%; /* portraits: keep the head, not the sword */
 			}
 
-			/* idle — a chip inside the pill, vertically centred on the composer row */
+			/* idle — a chip inside the pill, centred on the composer row.
+			   Both states are anchored from the BOTTOM so the travel interpolates. */
 			[data-state="idle"] .face {
 				width: var(--face-idle);
 				height: var(--face-idle);
 				left: 10px;
-				top: 11px;
+				bottom: calc((var(--bar-height) - var(--face-idle)) / 2);
 				box-shadow: none;
 			}
-			/* engaged — the shoulder: half above the top border, inset from the left */
+			/* engaged — the shoulder: half above the top border, inset from the left.
+			   bottom: 100% - bar puts the face's bottom edge one bar-height below the
+			   panel's top edge, i.e. exactly half of a 96px face above it. */
 			[data-state="typing"] .face,
 			[data-state="chat"] .face,
 			[data-state="long"] .face {
 				width: var(--face-chat);
 				height: var(--face-chat);
 				left: var(--face-gap-left);
-				top: calc(var(--face-chat) / -2);
+				bottom: calc(100% - var(--face-chat) / 2);
 			}
 			/* a long transcript wants the text back: the same face, one size down */
 			[data-state="long"] .face {
 				width: var(--face-chat-long);
 				height: var(--face-chat-long);
-				top: calc(var(--face-chat-long) / -2);
+				bottom: calc(100% - var(--face-chat-long) / 2);
 			}
 
 			/* idle breathing — the cheapest thing that makes a still image feel alive */
@@ -659,7 +664,7 @@
 				<div class="menubar"><span>Kodama</span><span class="spacer">Mon 19:20</span></div>
 			</div>
 			<ul class="notes">
-				<li><b>Face</b> 32px · left 10px · inside the row</li>
+				<li><b>Face</b> 32px · left 10px · centred on the 48px row</li>
 				<li><b>Pill</b> one row, no divider, radius 16</li>
 			</ul>
 		</section>

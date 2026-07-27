@@ -17,6 +17,9 @@ export interface AgentAvatarProps {
 	streaming: boolean
 	personalized: boolean
 	size: number
+	// Extra class for a host that positions/sizes the face itself (the omnibar's
+	// travelling chip → shoulder); `size` stays as the intrinsic attribute.
+	className?: string
 }
 
 /**
@@ -31,7 +34,8 @@ export function AgentAvatar({
 	expression,
 	streaming,
 	personalized,
-	size
+	size,
+	className
 }: AgentAvatarProps) {
 	const shown = useHeldExpression(expression, streaming)
 	return (
@@ -40,7 +44,7 @@ export function AgentAvatar({
 			alt=""
 			width={size}
 			height={size}
-			className="frn-agent-avatar"
+			className={className ? `frn-agent-avatar ${className}` : 'frn-agent-avatar'}
 			data-personalized={personalized}
 			data-expression={shown ?? 'neutral'}
 			title={shown ?? undefined}

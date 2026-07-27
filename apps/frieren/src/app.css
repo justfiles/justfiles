@@ -1191,6 +1191,52 @@
 	backdrop-filter: blur(30px) saturate(180%);
 	-webkit-backdrop-filter: blur(30px) saturate(180%);
 	box-shadow: 0 16px 48px rgba(0, 0, 0, 0.32);
+	/* The agent's face geometry, in one place (design/07). */
+	--frn-face-idle: 32px;
+	--frn-face-chat: 96px;
+	--frn-face-gap: 16px;
+	--frn-bar-height: 48px;
+}
+/* The shoulder reaches above the pill's top border, so that state cannot clip its
+   children; the surface takes over the rounding instead. */
+.frn-omnibar[data-face="shoulder"] {
+	overflow: visible;
+}
+/* The agent's face: ONE element with two homes — a chip inside the pill at rest,
+   the panel's shoulder once the conversation is on screen. Both are anchored from
+   the bottom so `bottom` interpolates and the face visibly travels. */
+.frn-omnibar-face {
+	position: absolute;
+	z-index: 3;
+	left: 10px;
+	bottom: calc((var(--frn-bar-height) - var(--frn-face-idle)) / 2);
+	width: var(--frn-face-idle);
+	height: var(--frn-face-idle);
+	border-width: 1.5px;
+	transition:
+		width 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+		height 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+		left 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+		bottom 260ms cubic-bezier(0.2, 0.9, 0.3, 1),
+		box-shadow 260ms ease,
+		filter 220ms ease,
+		opacity 220ms ease,
+		transform 220ms ease;
+}
+/* `bottom: 100% - half the face` puts its centre on the panel's top border: half
+   above it, and the left edge stays inside the border with a gap. */
+.frn-omnibar[data-face="shoulder"] .frn-omnibar-face {
+	left: var(--frn-face-gap);
+	bottom: calc(100% - var(--frn-face-chat) / 2);
+	width: var(--frn-face-chat);
+	height: var(--frn-face-chat);
+	border-width: 2px;
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+}
+@media (prefers-reduced-motion: reduce) {
+	.frn-omnibar-face {
+		transition: none;
+	}
 }
 .frn-omnibar:focus-within {
 	border-color: color-mix(in srgb, var(--focus) 45%, var(--rule));
@@ -1294,6 +1340,9 @@
 }
 .frn-omnibar-surface:empty {
 	display: none;
+}
+.frn-omnibar[data-face="shoulder"] .frn-omnibar-surface {
+	border-radius: 15px 15px 0 0;
 }
 /* Idle: a glanceable grid of installed apps — the home screen. */
 .frn-omnibar-grid {
@@ -1484,22 +1533,20 @@
 	min-height: 260px;
 	height: min(52vh, 460px);
 }
-.frn-omnibar-chat-head {
+/* The shoulder band (design/07): reserved space under the travelling face's lower
+   half, so no message is ever beneath it. Space, not a header — no divider line. */
+.frn-omnibar-shoulder {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
+	gap: 8px;
 	flex: none;
-	padding: 8px 12px;
+	height: 52px;
+	padding: 0 8px 0 calc(var(--frn-face-gap) + var(--frn-face-chat) + 12px);
 	font-weight: 500;
-	border-bottom: 1px solid var(--rule);
 }
 .frn-omnibar-chat-identity {
 	gap: 8px;
 	padding: 0;
-}
-.frn-omnibar-chat-identity .frn-agent-avatar {
-	width: 28px;
-	height: 28px;
 }
 .frn-omnibar-expand {
 	display: inline-flex;
@@ -1514,6 +1561,9 @@
 .frn-omnibar-expand:hover {
 	opacity: 1;
 	background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.frn-omnibar-shoulder .frn-omnibar-expand {
+	margin-left: auto;
 }
 /* The escalating "Open in window" invitation, pinned to the top of the capped
    tail. It scrolls with the content, so it's off-screen at rest and met only
@@ -1551,6 +1601,10 @@
 	flex: none;
 	padding: 7px 10px 7px 16px;
 	min-height: 48px;
+}
+/* The pill's text starts after the resting chip. */
+.frn-omnibar[data-face="idle"] .frn-omnibar-bar {
+	padding-left: calc(10px + var(--frn-face-idle) + 10px);
 }
 /* Persistent affordance back into the conversation, shown once a session exists. */
 .frn-omnibar-chat-toggle {
