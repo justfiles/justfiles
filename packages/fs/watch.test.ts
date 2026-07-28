@@ -224,6 +224,35 @@ describe('volume.watch', () => {
 })
 
 describe('volume.watch recursive', () => {
+	it('wakes when an ancestor moves, taking the subtree with it', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/notes/trips', { recursive: true })
+		await vol.writeFile('/notes/trips/kyoto.md', enc.encode('go'))
+
+		let fired = 0
+		await vol.watch('/notes/trips', () => fired++, { recursive: true })
+
+		// Renaming an ancestor empties the watched subtree without touching a single
+		// path inside it — descendants keep their parent-ino-keyed dirents, so the only
+		// event is on the moved entry itself.
+		await vol.rename('/notes', '/archive')
+		await flush()
+		expect(await vol.exists('/notes/trips')).toBe(false)
+		expect(fired).toBe(1)
+
+		// A path that merely shares a prefix is not an ancestor.
+		await vol.mkdir('/notes-archive/trips', { recursive: true })
+		await vol.writeFile('/notes-archive/trips/x.md', enc.encode('x'))
+		await flush()
+		expect(fired).toBe(1)
+
+		// Moving it back is the same story in reverse: the subtree reappears.
+		await vol.rename('/archive', '/notes')
+		await flush()
+		expect(await vol.exists('/notes/trips')).toBe(true)
+		expect(fired).toBe(2)
+	})
+
 	it('resolves a non-canonical watch root the way every other operation does', async () => {
 		const vol = volume(memStorage())
 		await vol.mkdir('/notes/trips', { recursive: true })

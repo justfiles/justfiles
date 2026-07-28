@@ -184,11 +184,12 @@ export interface Volume {
 	 * the watch picks it up.
 	 *
 	 * With `{ recursive: true }` the watch instead reports STRUCTURAL changes
-	 * — entries created/removed/renamed — at or under `path`, coalesced per
-	 * microtask; pair it with a `scan` of the same path to rebuild the listing.
-	 * Content/meta edits to existing files do NOT fire — watch the concrete file
-	 * for those. That holds for a pulled edit too: sync applying a put over a path
-	 * this replica already holds is an edit, not structure (see
+	 * — entries created/removed/renamed — at or under `path`, plus a rebind of
+	 * `path` itself or of any ancestor (which takes the whole subtree with it),
+	 * coalesced per microtask; pair it with a `scan` of the same path to rebuild the
+	 * listing. Content/meta edits to existing files do NOT fire — watch the concrete
+	 * file for those. That holds for a pulled edit too: sync applying a put over a
+	 * path this replica already holds is an edit, not structure (see
 	 * `applyJournaledOver`). This is the substrate for a directory browser's
 	 * auto-refresh.
 	 *
@@ -768,10 +769,10 @@ export function volume(storage: Storage): Volume {
 				let pendingSource: string | undefined
 				return subscribe((change) => {
 					if (change.kind !== 'dirent') return
-					// Scope: only entries at or under the watched subtree. A change with no
+					// Scope: only what can reshape this subtree's listing. A change with no
 					// path is unlocatable (its parent is already unlinked), so it fires —
 					// a spurious re-scan is recoverable, a missed change is not.
-					if (!within(root, change.path)) return
+					if (!touchesSubtree(root, change.path)) return
 					pendingSource = change.source
 					if (scheduled) return
 					scheduled = true
@@ -850,13 +851,21 @@ export function volume(storage: Storage): Volume {
 }
 
 /**
- * Is `path` the watched subtree root or something inside it? `root` is already
- * trailing-slash-normalised, so '' means the volume root, which contains
- * everything. An unknown (undefined) path counts as inside — see the caller.
+ * Can a dirent change at `path` reshape the listing of the subtree at `root`?
+ * Three ways, and no others:
+ *   - it IS the root (the watched directory itself came or went),
+ *   - it is INSIDE the root (an entry of the listing changed),
+ *   - it is an ANCESTOR of the root (the way in was rebound — rename `/notes` to
+ *     `/archive` and everything under `/notes/trips` has vanished without a
+ *     single event under that path, because descendants keep their
+ *     parent-ino-keyed dirents and only the moved entry is reported).
+ * `root` is normalised, so '' is the volume root and contains everything. An
+ * unknown (undefined) path counts as relevant — see the caller.
  */
-function within(root: string, path: string | undefined): boolean {
+function touchesSubtree(root: string, path: string | undefined): boolean {
 	if (path === undefined || root === '') return true
-	return path === root || path.startsWith(`${root}/`)
+	if (path === root) return true
+	return path.startsWith(`${root}/`) || root.startsWith(`${path}/`)
 }
 
 /**
