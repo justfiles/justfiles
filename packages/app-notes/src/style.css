@@ -122,9 +122,14 @@
 	outline: 2px solid transparent;
 	outline-offset: -2px;
 }
-.notes-tree-wrap[data-root-drop] {
+.notes-tree-wrap[data-root-drop],
+.notes-tree-wrap[data-file-drop] {
 	outline-color: var(--focus);
 	background: color-mix(in srgb, var(--focus) 8%, transparent);
+}
+/* An OS file drag (the import probe) is a copy, not a move — dashed outline. */
+.notes-tree-wrap[data-file-drop] {
+	outline-style: dashed;
 }
 
 /* The tree renders in a shadow root, so it is themed through its own CSS

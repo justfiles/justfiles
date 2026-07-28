@@ -105,6 +105,7 @@ export function NotesTree(props: NotesTreeProps) {
 	// this wrapper can serve as the root zone. `composedPath` tells the two apart:
 	// if the drop landed on a row, the tree owns it.
 	const [rootDrop, setRootDrop] = useState(false)
+	const [fileDrop, setFileDrop] = useState(false)
 	const overRow = (event: React.DragEvent) =>
 		event.nativeEvent
 			.composedPath()
@@ -115,7 +116,16 @@ export function NotesTree(props: NotesTreeProps) {
 		<div
 			className="notes-tree-wrap"
 			data-root-drop={rootDrop || undefined}
+			data-file-drop={fileDrop || undefined}
 			onDragOver={(event) => {
+				// An OS file drag (the import probe) is accepted anywhere in the pane,
+				// rows included — it has nothing to do with moving notes around.
+				if (isFileDrag(event)) {
+					event.preventDefault()
+					event.dataTransfer.dropEffect = 'copy'
+					setFileDrop(true)
+					return
+				}
 				if (overRow(event)) {
 					setRootDrop(false)
 					return
@@ -125,10 +135,18 @@ export function NotesTree(props: NotesTreeProps) {
 				setRootDrop(true)
 			}}
 			onDragLeave={(event) => {
-				if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRootDrop(false)
+				if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+				setRootDrop(false)
+				setFileDrop(false)
 			}}
 			onDrop={(event) => {
 				setRootDrop(false)
+				setFileDrop(false)
+				if (isFileDrag(event)) {
+					event.preventDefault()
+					void logDroppedFiles(event.dataTransfer)
+					return
+				}
 				if (overRow(event)) return
 				const dragged = event.dataTransfer.getData('text/plain')
 				if (!dragged) return
@@ -176,6 +194,44 @@ function MenuLayer(
 
 const MENU_W = 180
 const MENU_H = 160
+
+// ————— import probe (POC, remove with the importer) —————
+// Question this answers: do OS file drops reach the app at all? The GUI runs in
+// an opaque-origin `sandbox="allow-scripts allow-forms"` iframe in frieren, so
+// `DataTransfer.files` arriving (and being readable) is not a given. Drop a file
+// on the tree and watch the app's console.
+
+const isFileDrag = (event: React.DragEvent) =>
+	Array.from(event.dataTransfer.types).includes('Files')
+
+async function logDroppedFiles(transfer: DataTransfer): Promise<void> {
+	const files = Array.from(transfer.files)
+	console.log(`[notes:drop] ${files.length} file(s)`, {
+		types: Array.from(transfer.types),
+		items: Array.from(transfer.items).map((item) => `${item.kind}:${item.type}`)
+	})
+	for (const file of files) {
+		try {
+			const bytes = new Uint8Array(await file.arrayBuffer())
+			const head = Array.from(bytes.slice(0, 4), (b) => b.toString(16).padStart(2, '0')).join(' ')
+			// 50 4b = "PK" — a zip (an Obsidian vault export); anything else, show text.
+			const zip = bytes[0] === 0x50 && bytes[1] === 0x4b
+			console.log('[notes:drop] file', {
+				name: file.name,
+				type: file.type,
+				size: file.size,
+				bytesRead: bytes.length,
+				magic: head,
+				zip,
+				preview: zip ? '(binary)' : new TextDecoder().decode(bytes.slice(0, 500))
+			})
+		} catch (error) {
+			console.error('[notes:drop] could not read', file.name, error)
+		}
+	}
+}
+
+// ————— end import probe —————
 
 // A new child of a folder, or a new sibling of a file.
 function dirOf(item: ContextMenuItem): string {
