@@ -2,6 +2,7 @@ import type { GUIProps } from '@justfiles/app/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
 import { displayPath, matchNotes, parentDir } from './notes.ts'
+import { NotesTree } from './tree.tsx'
 import './style.css'
 
 const AUTOSAVE_MS = 800
@@ -53,7 +54,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const [searchFocused, setSearchFocused] = useState(false)
 	const [dropOpen, setDropOpen] = useState(false)
 	const [listOpen, setListOpen] = useState(readListPref)
-	const [notes, setNotes] = useState<Entry[]>([])
+	const [entries, setEntries] = useState<Entry[]>([])
 	const [active, setActive] = useState(0)
 	// Which folder new notes land in — the folder of the note last opened (Obsidian's
 	// "same folder as the current file"). Transient, so it survives `newNote`.
@@ -154,9 +155,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// whenever a surface that shows it appears (search focus, docked pane), and
 	// whenever something was created/removed/renamed on disk (`treeRevision`).
 	const refresh = useCallback(async () => {
-		const entries = await actions.list({})
-		setNotes(entries.filter((entry) => entry.type === 'file'))
+		setEntries(await actions.list({}))
 	}, [actions])
+
+	// The dropdown and the search ranking only care about notes; the tree also
+	// needs the folders, so the raw listing is what's held.
+	const notes = useMemo(() => entries.filter((entry) => entry.type === 'file'), [entries])
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: treeRevision is a cache-busting trigger — a bump means /notes changed on disk, so re-scan.
 	useEffect(() => {
@@ -192,18 +196,19 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		if (listOpen) void refresh()
 	}, [flush, actions, listOpen, refresh])
 
-	// Enter on an empty result set: the query becomes the first line of a new
-	// note (the nvAlt move — search and create are one gesture). It lands in the
-	// open note's folder, like Obsidian's "same folder as the current file".
-	const createFromQuery = useCallback(
-		async (title: string) => {
+	// Create a note whose first line — and therefore filename — is `title`. Two
+	// callers: Enter on an empty result set (the nvAlt move: search and create are
+	// one gesture) and the tree's "New note", which names it inline. Both land it
+	// in a folder, like Obsidian's "same folder as the current file".
+	const createNote = useCallback(
+		async (title: string, dir: string) => {
 			await flush()
 			setDropOpen(false)
 			setQuery('')
 			const body = `${title}\n`
 			creatingRef.current = true
 			try {
-				const settled = await actions.create({ text: body, dir: activeDir })
+				const settled = await actions.create({ text: body, dir })
 				if (settled.openPath) {
 					pendingPathRef.current = settled.openPath
 					loadedRef.current = settled.openPath
@@ -221,7 +226,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			})
 			if (listOpen) void refresh()
 		},
-		[flush, actions, activeDir, listOpen, refresh]
+		[flush, actions, listOpen, refresh]
 	)
 
 	const removeNote = useCallback(
@@ -293,7 +298,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			e.preventDefault()
 			const note = filtered[active]
 			if (note) void openNote(note.path)
-			else if (query.trim()) void createFromQuery(query.trim())
+			else if (query.trim()) void createNote(query.trim(), activeDir)
 		} else if (e.key === 'Delete') {
 			e.preventDefault()
 			const note = filtered[active]
@@ -393,7 +398,17 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							{toggleButton}
 							{searchField}
 						</div>
-						<div className="notes-list">{rows}</div>
+						<NotesTree
+							entries={entries}
+							openPath={openPath}
+							query={query}
+							onOpen={(path) => void openNote(path)}
+							onSelectDir={setActiveDir}
+							onCreate={(dir, title) => void createNote(title, dir)}
+							onMkdir={(path) => void actions.mkdir({ path })}
+							onRename={(from, to) => void actions.rename({ from, to })}
+							onRemove={(path) => void removeNote(path)}
+						/>
 						<div className="notes-side-foot">
 							<button type="button" onClick={() => void startNewNote()}>
 								＋ New Note

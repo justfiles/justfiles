@@ -219,6 +219,30 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
 - **`revision` bump** (open file changed on disk) → GUI re-reads via `readNote`, so an agent/Files edit to
   the open note shows live.
 
+### The tree (the docked pane)
+
+The pane is a `@pierre/trees` `FileTree` (`src/tree.tsx`) — the same tree `app-code` uses, so the OS has
+one tree idiom. It owns virtualized rows, expansion, drag-and-drop and the context-menu trigger; the app
+owns only the seam:
+
+- **The model is a projection, never the truth.** Paths in, gestures out: each gesture dispatches an
+  action, and the `treeRevision` watch re-lists `/notes` and `resetPaths`. A write that fails therefore
+  self-heals on the next scan — same rule as §3, one step further out.
+- **Filtering is ours, not the library's.** The bar's field feeds `matchNotes` and the tree is handed the
+  matching paths, so the dropdown and the tree rank identically and there is no second search session to
+  keep in sync. Folders are implied by their children, so a filtered view feeds notes only.
+- **CRUD is the row menu, and naming happens *in* the menu.** New note / New folder / Rename… / Delete…
+  render as a `ds-menu` (slotted into the tree's light DOM, so app CSS applies) that swaps to a small text
+  field or a confirm step. Two reasons it is not the library's inline rename: the inline input does not
+  survive the context menu's own close/focus path, and — more importantly — a new note's name must be its
+  **first line**, which the same field gives us for free (`onCreate(dir, title)` → `create({ text: title })`).
+  Sandboxed iframes have no `allow-modals`, so `prompt()`/`confirm()` were never options.
+- **Dragging a row into a folder is `rename`** (`{ from, to }`), one per dragged path.
+- **Selecting a folder** sets the folder new notes land in; selecting a note opens it.
+- **Rows show real filenames**, extension included — the tree is the file-first surface (the search
+  dropdown is the title-first one). A rename that drops the extension keeps it (`renameTarget`), so a note
+  cannot silently stop being a note.
+
 ### Styling — native by default, promote what's shared
 
 The whole app must read as macOS-native by **leaning on `@justfiles/design`**, not by styling itself.
@@ -240,8 +264,10 @@ There is no Notes "look".
   `app-notes`. The clear candidate is a **command/search palette** (floating panel + filter input +
   keyboard-navigable, selectable list): the `Cmd+K` palette here, the launcher's fuzzy app search, and the
   slash-command menu are the same affordance — here it is the bar's search field + dropdown. Promote it
-  to a `ds-palette` (composed from the existing `ds-menu` rows) once there's a second consumer. Rule of thumb: **system-level look → `packages/design`;
-  only Notes-specific layout (the editor/list split) stays local.**
+  to a `ds-palette` (composed from the existing `ds-menu` rows) once there's a second consumer. The file
+  tree is the same rule already applied: it is `@pierre/trees` (shared with `app-code`), themed through
+  `--trees-*` variables pointed at the design tokens — not a local tree. Rule of thumb: **system-level look
+  → `packages/design`; only Notes-specific layout (the editor/tree split) stays local.**
 
 <a id="agent"></a>
 
@@ -280,9 +306,9 @@ surface below. `description` + `examples` are its UI — written above.
 
 **In:** blank editor; the bar (search-or-create + docked-tree toggle + New) + derived listing +
 path-aware filter; **nested folders** (recursive listing, `.md` default with `.txt` still read); human
-filenames; debounced autosave + flush-on-transition; create/open/save/rename/move/mkdir/delete; live
-re-read of the open note on external edits; a structural watch so the tree tracks the disk; the agent TUI
-above.
+filenames; debounced autosave + flush-on-transition; a docked file tree with full CRUD (create note /
+create folder / rename / move by drag / delete) and open-on-select; live re-read of the open note on
+external edits; a structural watch so the tree tracks the disk; the agent TUI above.
 
 **Out (deferred, not one-way doors):**
 

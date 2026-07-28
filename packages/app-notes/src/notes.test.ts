@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { displayPath, isUnder, matchNotes, noteTitle, sanitizeName } from './notes.ts'
+import { displayPath, isUnder, matchNotes, noteTitle, renameTarget, sanitizeName } from './notes.ts'
 
 test('titles and display paths drop the extension, keep the folder', () => {
 	expect(noteTitle('/Remember the milk.md')).toBe('Remember the milk')
@@ -46,4 +46,12 @@ test('search matches folders and titles, ranking titles first then recency', () 
 	// An empty query is everything, untouched (the caller already sorted by mtime).
 	expect(matchNotes(notes, '')).toHaveLength(4)
 	expect(matchNotes(notes, 'nope')).toEqual([])
+})
+
+test('a renamed note keeps its extension when the typed name has none', () => {
+	expect(renameTarget('/Trips/Kyoto.md', '/Trips/Kyoto 2023')).toBe('/Trips/Kyoto 2023.md')
+	expect(renameTarget('/Old.txt', '/New')).toBe('/New.txt')
+	// An explicit extension is respected, and folders are left alone.
+	expect(renameTarget('/Kyoto.md', '/Kyoto.txt')).toBe('/Kyoto.txt')
+	expect(renameTarget('/Trips', '/Travel')).toBe('/Travel')
 })

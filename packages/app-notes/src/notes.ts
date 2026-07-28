@@ -78,6 +78,18 @@ export function firstLine(text: string): string {
 }
 
 /**
+ * Where a rename should actually land. A user retyping a note's name drops the
+ * extension (`Kyoto`, not `Kyoto.md`), and a note that stops being `.md`/`.txt`
+ * stops being a note — so the source's extension is carried over when the new
+ * name has none. Folders keep whatever was typed.
+ */
+export function renameTarget(from: string, to: string): string {
+	if (!isNotePath(from) || isNotePath(to)) return to
+	const ext = NOTE_EXTS.find((candidate) => from.toLowerCase().endsWith(candidate)) ?? NOTE_EXT
+	return `${to}${ext}`
+}
+
+/**
  * Rank notes for the search field. Every whitespace/slash-separated token must
  * appear somewhere in `Trips/Kyoto`, so `kyo trip` and `trips/kyo` both hit;
  * a title match outranks a folder-only match, then recency decides.

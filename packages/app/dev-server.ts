@@ -1,12 +1,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { extname, join, relative, resolve } from 'node:path'
-import { chroot, memStorage, type Volume, volume } from '@justfiles/fs'
-import { FileType } from '@justfiles/fs/types'
+import { memStorage, volume } from '@justfiles/fs'
 import type { Connect, RunnableDevEnvironment, ViteDevServer } from 'vite'
 import { isRunnableDevEnvironment } from 'vite'
 import { appBundleFromMemory, type Message } from './app.ts'
-import { type Capability, capabilityRegistry, implementCapability } from './capabilities/index.ts'
-import { type VolumeEntry, volume as volumeCap } from './capabilities/volume/index.ts'
+import { capabilityRegistry } from './capabilities/index.ts'
+import { volumeCapability } from './capabilities/volume/host.ts'
 import { type GetSandbox, kernel } from './kernel.ts'
 
 export interface DevServerOptions {
@@ -117,73 +116,6 @@ function publicAssets(dir: string): Record<string, Uint8Array> {
 // hand-written router used (`'system'` → root, `/prefix` → prefix chroot, else
 // the per-app `/data/<id>` chroot), now expressed as one `implementCapability`
 // unit and routed through `capabilityRegistry`.
-function devVolume(fs: Volume): Capability {
-	const bind = async (ctx: { appId: string; scopes: readonly string[] }): Promise<Volume> => {
-		const prefix = ctx.scopes.find((s) => s.startsWith('/'))
-		const root = ctx.scopes.includes('system') ? null : (prefix ?? `/data/${ctx.appId}`)
-		const vol = root ? chroot(fs, root) : fs
-		if (root && !(await fs.exists(root))) await fs.mkdir(root, { recursive: true })
-		return vol
-	}
-	return implementCapability(volumeCap, {
-		stat: async (ctx, path) => (await bind(ctx)).stat(path),
-		lstat: async (ctx, path) => (await bind(ctx)).lstat(path),
-		exists: async (ctx, path) => (await bind(ctx)).exists(path),
-		getXattr: async (ctx, path, name) => (await bind(ctx)).getXattr(path, name),
-		setXattr: async (ctx, path, name, value) => (await bind(ctx)).setXattr(path, name, value),
-		listXattr: async (ctx, path) => (await bind(ctx)).listXattr(path),
-		removeXattr: async (ctx, path, name) => (await bind(ctx)).removeXattr(path, name),
-		readFile: async (ctx, path) => (await bind(ctx)).readFile(path),
-		writeFile: async (ctx, path, data) => {
-			const vol = await bind(ctx)
-			await mkdirParent(vol, path)
-			await vol.writeFile(path, data)
-		},
-		appendFile: async (ctx, path, data) => (await bind(ctx)).appendFile(path, data),
-		mkdir: async (ctx, path, opts) => (await bind(ctx)).mkdir(path, opts),
-		readdir: async (ctx, path) => (await bind(ctx)).readdir(path),
-		rm: async (ctx, path, opts) => (await bind(ctx)).rm(path, opts),
-		rename: async (ctx, oldPath, newPath) => (await bind(ctx)).rename(oldPath, newPath),
-		cp: async (ctx, src, dest, opts) => (await bind(ctx)).cp(src, dest, opts),
-		symlink: async (ctx, target, path) => (await bind(ctx)).symlink(target, path),
-		readlink: async (ctx, path) => (await bind(ctx)).readlink(path),
-		chmod: async (ctx, path, mode) => (await bind(ctx)).chmod(path, mode),
-		utimes: async (ctx, path, mtimeNs) => (await bind(ctx)).utimes(path, mtimeNs),
-		scan: async (ctx, { path, recursive }) => {
-			const vol = await bind(ctx)
-			return recursive === true ? scanTree(vol, path) : scanDir(vol, path)
-		},
-		watch: async (ctx, emit, { path, recursive }) =>
-			(await bind(ctx)).watch(path, emit, { recursive })
-	})
-}
-
-async function mkdirParent(vol: Volume, path: string): Promise<void> {
-	const parent = path.split('/').slice(0, -1).join('/')
-	if (parent) await vol.mkdir(parent, { recursive: true })
-}
-
-async function scanDir(vol: Volume, path: string): Promise<VolumeEntry[]> {
-	if (!(await vol.exists(path))) return []
-	const base = path.endsWith('/') ? path.slice(0, -1) : path
-	return (await vol.readdir(path))
-		.filter((entry) => entry.type !== FileType.Symlink)
-		.map((entry) => ({
-			path: `${base}/${entry.name}`,
-			type: entry.type === FileType.Directory ? 'dir' : 'file'
-		}))
-}
-
-async function scanTree(vol: Volume, path: string): Promise<VolumeEntry[]> {
-	if (!(await vol.exists(path))) return []
-	const out: VolumeEntry[] = []
-	await vol.scan(path, async (entryPath, stat) => {
-		if (entryPath === path || stat.type === FileType.Symlink) return
-		out.push({ path: entryPath, type: stat.type === FileType.Directory ? 'dir' : 'file' })
-	})
-	return out
-}
-
 export async function createDevServer(
 	server: ViteDevServer,
 	opts: DevServerOptions
@@ -199,7 +131,13 @@ export async function createDevServer(
 		fs,
 		sandbox: viteSandbox(env, appUrl),
 		clock: {},
-		capabilities: capabilityRegistry({ volume: devVolume(fs) })
+		// The real host implementation, not a dev copy — so what an app sees here
+		// (scopes, mtimes on a recursive scan, writeFile's parent creation) is what
+		// it will see in frieren. The app under development is its own allowlist,
+		// since a dev host has no other tenant.
+		capabilities: capabilityRegistry({
+			volume: volumeCapability(fs, { systemAllowlist: [opts.id] })
+		})
 	})
 	const bundle = appBundleFromMemory({
 		id: opts.id,
@@ -257,7 +195,10 @@ export async function createDevServer(
 				try {
 					const result = await k.dispatch(appId, (await readJson(req)) as Message)
 					res.setHeader('content-type', 'application/json')
-					res.end(JSON.stringify(result))
+					// A procedure may legitimately resolve with nothing (`mkdir`, `remove`).
+					// `JSON.stringify(undefined)` is undefined — an empty body, which the
+					// client's `r.json()` rejects — so send explicit `null`.
+					res.end(JSON.stringify(result ?? null))
 				} catch (err) {
 					res.statusCode = 400
 					res.end(err instanceof Error ? err.message : String(err))

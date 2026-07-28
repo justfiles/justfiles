@@ -1,0 +1,224 @@
+import type { ContextMenuItem, ContextMenuOpenContext } from '@pierre/trees'
+import { FileTree, useFileTree } from '@pierre/trees/react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Entry } from './app.ts'
+import { joinPath, matchNotes, parentDir, renameTarget } from './notes.ts'
+
+// The docked pane's tree. `@pierre/trees` owns the hard parts — virtualized
+// rows, expansion, drag-and-drop, the context-menu trigger — so this file is
+// only the seam between its path-first model and our volume paths: it feeds
+// paths in and turns each gesture into one of the app's actions.
+//
+// The model is a PROJECTION, never the truth: every gesture persists through an
+// action, and the `treeRevision` watch re-lists `/notes` and `resetPaths`. A
+// failed write therefore self-heals on the next scan.
+//
+// Naming (new note, new folder, rename) is done by OUR menu, not the library's
+// inline rename: the inline input is torn down by the context menu's own close /
+// focus path, so it never survives long enough to type into. One text field in
+// the menu covers all three, and it keeps the app's rule that a new note's title
+// is its first line.
+
+// The model speaks relative paths and marks folders with a trailing slash;
+// the volume speaks absolute paths.
+const toTree = (path: string, isDir: boolean) => `${path.slice(1)}${isDir ? '/' : ''}`
+const fromTree = (path: string) => `/${path.replace(/\/+$/, '')}`
+
+export type NotesTreeProps = {
+	entries: Entry[]
+	openPath: string | null
+	// The bar's field is the only search box; it filters the tree in place.
+	query: string
+	onOpen: (path: string) => void
+	onSelectDir: (dir: string) => void
+	onCreate: (dir: string, title: string) => void
+	onMkdir: (path: string) => void
+	onRename: (from: string, to: string) => void
+	onRemove: (path: string) => void
+}
+
+export function NotesTree(props: NotesTreeProps) {
+	// The hook builds the model once, so the handlers it captured must read the
+	// latest props through a ref (the `app-code` pattern).
+	const latest = useRef(props)
+	latest.current = props
+
+	// Filtering is OUR matcher (the same one the dropdown ranks with), applied to
+	// the paths we feed — not the tree's own search session. One search rule for
+	// both surfaces, and no session state to keep in sync. Folders are implied by
+	// their children, so a filtered view feeds matching notes only.
+	const paths = useMemo(() => {
+		const query = props.query.trim()
+		const files = props.entries.filter((entry) => entry.type === 'file')
+		if (query) return matchNotes(files, query).map((entry) => toTree(entry.path, false))
+		return props.entries.map((entry) => toTree(entry.path, entry.type === 'dir'))
+	}, [props.entries, props.query])
+
+	const { model } = useFileTree({
+		paths,
+		initialExpansion: 'open',
+		itemHeight: 24,
+		density: 0.9,
+		composition: { contextMenu: { enabled: true, triggerMode: 'both' } },
+		dragAndDrop: {
+			// One move per dragged row; the model already reflects them optimistically.
+			onDropComplete: ({ draggedPaths, target }) => {
+				const dir = target.kind === 'root' ? '/' : fromTree(target.directoryPath ?? '')
+				for (const dragged of draggedPaths) {
+					const from = fromTree(dragged)
+					const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
+					if (to !== from) latest.current.onRename(from, to)
+				}
+			}
+		},
+		onSelectionChange: (selected) => {
+			const path = selected[0]
+			if (path === undefined) return
+			const { onOpen, onSelectDir } = latest.current
+			if (model.getItem(path)?.isDirectory()) onSelectDir(fromTree(path))
+			else onOpen(fromTree(path))
+		}
+	})
+
+	useEffect(() => {
+		model.resetPaths(paths)
+	}, [model, paths])
+
+	// Follow the open note when it changed elsewhere (search field, agent).
+	useEffect(() => {
+		if (!props.openPath) return
+		const path = toTree(props.openPath, false)
+		if (!model.getItem(path)) return
+		const selected = model.getSelectedPaths()
+		if (selected.length === 1 && selected[0] === path) return
+		for (const other of selected) model.getItem(other)?.deselect()
+		model.getItem(path)?.select()
+		model.scrollToPath(path, { focus: false })
+	}, [model, props.openPath])
+
+	return (
+		<FileTree
+			model={model}
+			className="notes-tree"
+			renderContextMenu={(item, context) => <RowMenu item={item} context={context} {...props} />}
+		/>
+	)
+}
+
+// A new child of a folder, or a new sibling of a file.
+function dirOf(item: ContextMenuItem): string {
+	const path = fromTree(item.path)
+	return item.kind === 'directory' ? path : parentDir(path)
+}
+
+type MenuMode = 'menu' | 'note' | 'folder' | 'rename' | 'delete'
+
+// The row menu is a plain `ds-menu` (it is slotted into the tree's light DOM, so
+// the app's stylesheet applies). Everything that needs input or confirmation
+// happens IN the menu: the app runs in a sandboxed iframe with no
+// `allow-modals`, so `prompt()`/`confirm()` are not available either.
+function RowMenu(
+	props: NotesTreeProps & { item: ContextMenuItem; context: ContextMenuOpenContext }
+) {
+	const [mode, setMode] = useState<MenuMode>('menu')
+	const { item } = props
+	const folder = item.kind === 'directory'
+	const path = fromTree(item.path)
+	const close = () => props.context.close({ restoreFocus: false })
+
+	if (mode === 'delete') {
+		return (
+			<div className="ds-menu notes-menu">
+				<div className="notes-menu-note">
+					Delete {folder ? 'folder and contents' : 'note'} “{item.name}”?
+				</div>
+				<button
+					type="button"
+					className="ds-menu-item notes-menu-danger"
+					onClick={() => {
+						close()
+						props.onRemove(path)
+					}}
+				>
+					Delete
+				</button>
+				<button type="button" className="ds-menu-item" onClick={() => setMode('menu')}>
+					Cancel
+				</button>
+			</div>
+		)
+	}
+
+	if (mode !== 'menu') {
+		const label = mode === 'note' ? 'New note' : mode === 'folder' ? 'New folder' : 'Rename to'
+		return (
+			<NameForm
+				label={label}
+				initial={mode === 'rename' ? item.name : ''}
+				onCancel={() => setMode('menu')}
+				onSubmit={(name) => {
+					close()
+					if (mode === 'note') props.onCreate(dirOf(item), name)
+					else if (mode === 'folder') props.onMkdir(joinPath(dirOf(item), name))
+					else props.onRename(path, renameTarget(path, joinPath(parentDir(path), name)))
+				}}
+			/>
+		)
+	}
+
+	return (
+		<div className="ds-menu notes-menu">
+			<button type="button" className="ds-menu-item" onClick={() => setMode('note')}>
+				New note{folder ? ' here' : ''}
+			</button>
+			<button type="button" className="ds-menu-item" onClick={() => setMode('folder')}>
+				New folder{folder ? ' here' : ''}
+			</button>
+			<button type="button" className="ds-menu-item" onClick={() => setMode('rename')}>
+				Rename…
+			</button>
+			<button
+				type="button"
+				className="ds-menu-item notes-menu-danger"
+				onClick={() => setMode('delete')}
+			>
+				Delete…
+			</button>
+		</div>
+	)
+}
+
+function NameForm(props: {
+	label: string
+	initial: string
+	onCancel: () => void
+	onSubmit: (name: string) => void
+}) {
+	const [name, setName] = useState(props.initial)
+	const submit = () => {
+		const trimmed = name.trim()
+		if (trimmed) props.onSubmit(trimmed)
+		else props.onCancel()
+	}
+	return (
+		<div className="ds-menu notes-menu">
+			<div className="notes-menu-note">{props.label}</div>
+			<input
+				// biome-ignore lint/a11y/noAutofocus: the menu opened for this field — typing must land in it without a second click.
+				autoFocus
+				className="notes-menu-input"
+				value={name}
+				placeholder="Name"
+				onChange={(e) => setName(e.target.value)}
+				onKeyDown={(e) => {
+					e.stopPropagation()
+					if (e.key === 'Enter') submit()
+					else if (e.key === 'Escape') props.onCancel()
+				}}
+			/>
+			<button type="button" className="ds-menu-item" onClick={submit}>
+				OK
+			</button>
+		</div>
+	)
+}

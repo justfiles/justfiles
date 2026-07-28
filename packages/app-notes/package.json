@@ -12,6 +12,7 @@
 	},
 	"dependencies": {
 		"@justfiles/app": "workspace:*",
+		"@pierre/trees": "1.0.0-beta.4",
 		"valibot": "^1.1.0"
 	},
 	"peerDependencies": {
