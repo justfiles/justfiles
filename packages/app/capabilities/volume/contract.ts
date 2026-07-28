@@ -39,12 +39,12 @@ export interface WatchEvent {
 // `subscriptions(state)` and folds events with `t.fromEvent('volume', 'watch')`.
 //
 // `recursive: true` flips it to a STRUCTURAL change signal for the subtree at
-// `path`: it fires whenever an entry is created/removed/renamed there,
-// coalesced — the substrate for a directory browser's auto-refresh (pair it with
-// a recursive `scan` of the same path to rebuild the listing). Content edits to
-// existing files don't fire; watch the open file for those. The signal is scoped
-// to the volume the app's scopes bound, so a chrooted app never wakes on writes
-// outside its prefix.
+// `path`: it fires whenever an entry is created/removed/renamed there — or when
+// the subtree itself is moved out from under you — coalesced. The substrate for a
+// directory browser's auto-refresh (pair it with a recursive `scan` of the same
+// path to rebuild the listing). Content edits to existing files don't fire; watch
+// the open file for those. The signal is scoped to the volume the app's scopes
+// bound, so a chrooted app never wakes on writes outside its prefix.
 export interface VolumeStreams {
 	watch(input: { path: string; recursive?: boolean }): Stream<WatchEvent>
 }
