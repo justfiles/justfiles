@@ -182,6 +182,10 @@ async function planDrop(files: File[]): Promise<ImportPlan> {
 	// the second one.
 	const entries: ImportEntry[] = []
 	for (const file of files) {
+		// The ledger is spent: stop READING, exactly as the archive stream is abandoned.
+		// Judging each remaining file individually would still pull gigabytes into the tab
+		// after the importer has already decided to keep none of it.
+		if (screen.stopped) break
 		// Screened from `File.size` FIRST: reading a 2 GB body into the tab only to
 		// classify it as an attachment is the same mistake as inflating a zip entry.
 		const reason = screenEntry(file.name, file.size)

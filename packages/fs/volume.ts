@@ -121,13 +121,15 @@ export interface Volume {
 	 *
 	 * With `exclusive: true` it is a NO-REPLACE move: EEXIST if the destination
 	 * name is taken, whatever type holds it — the counterpart of
-	 * `writeFile(..., { exclusive: true })`, and for the same reason. A caller
-	 * cannot get this by claiming the destination first: a placeholder is not a
-	 * reservation in a shared store (another writer's ordinary write lands *in* the
-	 * placeholder, and the move then destroys it), and it is the wrong type for a
-	 * directory move. Decided by the storage, where the check and the move are one
-	 * operation; a backend without `atomicMove` falls back to a best-effort
-	 * pre-check.
+	 * `writeFile(..., { exclusive: true })`, and for the same reason. A caller cannot
+	 * get this by claiming the destination first: a placeholder is not a reservation
+	 * in a shared store (another writer's ordinary write lands *in* the placeholder,
+	 * and the move then destroys it), and it is the wrong type for a directory move.
+	 *
+	 * It is the backend's `noReplaceMove` — read its contract for what it does and
+	 * does not promise, which differs by backend because no POSIX rename is both
+	 * atomic and no-replace. A backend without the capability falls back to a
+	 * pre-check, which is a hint and not a guarantee.
 	 */
 	rename(oldPath: string, newPath: string, opts?: { exclusive?: boolean }): Promise<void>
 
@@ -642,10 +644,15 @@ export function volume(storage: Storage): Volume {
 			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
 			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
 
+			if (opts?.exclusive && storage.caps?.noReplaceMove) {
+				await storage.caps.noReplaceMove(oldDirIno, oldName, newDirIno, newName)
+				invalidateDirCache(oldDirIno)
+				invalidateDirCache(newDirIno)
+				return
+			}
+
 			if (storage.caps?.atomicMove) {
-				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName, {
-					exclusive: opts?.exclusive
-				})
+				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName)
 				invalidateDirCache(oldDirIno)
 				invalidateDirCache(newDirIno)
 				if (displaced !== null) invalidateIno(displaced)
@@ -656,8 +663,8 @@ export function volume(storage: Storage): Volume {
 			if (source === null) throw new Error(`ENOENT: ${oldName}`)
 
 			const displaced = await storage.getDirent(newDirIno, newName)
-			// Best effort only: without `atomicMove` there is no way to make the check and
-			// the move one operation, so this is a pre-check, not a guarantee.
+			// A hint, not a guarantee: a backend with no `noReplaceMove` gives us no way
+			// to make the check and the move one operation (see its contract).
 			if (opts?.exclusive && displaced && displaced.ino !== source.ino)
 				throw new Error(`EEXIST: ${newName}`)
 			await storage.putDirent(newDirIno, newName, { ino: source.ino, type: source.type })

@@ -11,7 +11,7 @@
  * "atomic" here means whatever the storage can actually promise.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'vitest'
@@ -137,6 +137,18 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 		expect(await vol.exists('/Other')).toBe(true)
 	})
 
+	test('a completed move leaves exactly one name for the moved file', async () => {
+		// The property `noReplaceMove` promises in place of atomicity: the claim it takes
+		// on the destination must not survive as a second name for the same inode.
+		const vol = await make()
+		await vol.mkdir('/Trips')
+		await vol.writeFile('/Trips/Kyoto.md', enc.encode('note'))
+		await vol.rename('/Trips/Kyoto.md', '/Kyoto.md', { exclusive: true })
+		expect((await vol.readdir('/Trips')).map((e) => e.name)).toEqual([])
+		expect(await vol.exists('/Trips/Kyoto.md')).toBe(false)
+		expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('note')
+	})
+
 	test('movers racing for one destination settle on distinct numbered paths', async () => {
 		// The pattern app-notes uses for a move, now that the move itself is the claim.
 		const vol = await make()
@@ -159,4 +171,23 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 			expect(dec.decode(await vol.readFile(path))).toBe(`note ${i}`)
 		}
 	})
+})
+
+test('a move that cannot finish is rolled back, not left half done', async () => {
+	// The node backend claims the destination with `link` and then unlinks the source,
+	// so the failure that matters is an unlink it is not allowed to make: a read-only
+	// SOURCE directory. The claim must not survive as a second name for the file.
+	const dir = mkdtempSync(join(tmpdir(), 'excl-'))
+	dirs.push(dir)
+	const vol = volume(await nativeStorage(dir))
+	await vol.mkdir('/Locked')
+	await vol.writeFile('/Locked/Kyoto.md', enc.encode('note'))
+	chmodSync(join(dir, 'Locked'), 0o500)
+	try {
+		await expect(vol.rename('/Locked/Kyoto.md', '/Kyoto.md', { exclusive: true })).rejects.toThrow()
+		expect(await vol.exists('/Kyoto.md')).toBe(false)
+		expect(dec.decode(await vol.readFile('/Locked/Kyoto.md'))).toBe('note')
+	} finally {
+		chmodSync(join(dir, 'Locked'), 0o700)
+	}
 })

@@ -1,4 +1,10 @@
-import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type {
+	InodeMeta,
+	MutationOptions,
+	Storage,
+	StorageCapabilities,
+	StorageChange
+} from './storage'
 import type { PathStorePort } from './storage.shared'
 import {
 	applyJournaledOver,
@@ -236,6 +242,73 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		return out
 	}
 
+	// Moves a name (and its whole subtree) in one step. Journals the move as an
+	// ordered subtree delete+put: deletes child-before-parent (never orphan a live
+	// child under a deleted dir), then puts parent-before-child. `exclusive` is the
+	// only difference between the two move caps, and everything here runs in ONE
+	// synchronous pass — so for this backend the check IS the move.
+	const moveEntry = async (
+		oldDir: Ino,
+		oldName: string,
+		newDir: Ino,
+		newName: string,
+		options: MutationOptions | undefined,
+		exclusive: boolean
+	): Promise<Ino | null> => {
+		const oldKey = dirKey(oldDir, oldName)
+		const src = dirs.get(oldKey)
+		if (!src) throw new Error(`ENOENT: ${oldName}`)
+		const oldDirPath = pathOf(oldDir)
+		const newDirPath = pathOf(newDir)
+		if (oldDirPath === null || newDirPath === null) throw new Error('ENOENT: parent')
+		const oldBase = joinPath(oldDirPath, oldName)
+		const newBase = joinPath(newDirPath, newName)
+		// Enumerate BEFORE mutating (paths are prefix-rewritten, children keep their
+		// parent-ino-keyed dirents — only the top entry rebinds).
+		const subtree = enumerateSubtree(src.ino)
+		const newKey = dirKey(newDir, newName)
+		const displaced = dirs.get(newKey) ?? null
+		if (exclusive && displaced && displaced.ino !== src.ino) throw new Error(`EEXIST: ${newName}`)
+		dirs.delete(oldKey)
+		parentOf.delete(src.ino)
+		dirs.set(newKey, src)
+		parentOf.set(src.ino, { parent: newDir, name: newName })
+		// Free the displaced inode (the new put at `newBase` supersedes it).
+		if (displaced && displaced.ino !== src.ino && !hasDirentReference(displaced.ino)) {
+			metas.delete(displaced.ino)
+			xattrs.delete(displaced.ino)
+			parentOf.delete(displaced.ino)
+		}
+		// Journal the move as ordered subtree changes: deletes child-before-parent
+		// (never orphan a live child under a deleted dir), then puts parent-before-
+		// child (the dir exists before its entries) — ordering shared with apply.
+		const deletePaths = sortChildFirst(
+			subtree.map((n) => oldBase + n.rel),
+			(p) => p
+		)
+		for (const p of deletePaths) await journalDeleteOver(pathPort, p, localActorId, options)
+		const putNodes = sortParentFirst(subtree, (n) => newBase + n.rel)
+		for (const n of putNodes)
+			await journalPutOver(pathPort, newBase + n.rel, n.ino, localActorId, options)
+		emit({
+			ino: src.ino,
+			kind: 'dirent',
+			dirIno: newDir,
+			name: newName,
+			path: newBase,
+			source: options?.source
+		})
+		emit({
+			ino: src.ino,
+			kind: 'dirent',
+			dirIno: oldDir,
+			name: oldName,
+			path: oldBase,
+			source: options?.source
+		})
+		return displaced && displaced.ino !== src.ino ? displaced.ino : null
+	}
+
 	const caps: StorageCapabilities = {
 		async getXattr(ino, name) {
 			return xattrs.get(ino)?.get(name)?.slice() ?? null
@@ -288,65 +361,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 				}
 			: {}),
 
-		// Atomic rename — moves a name (and its whole subtree) in one step. Journals
-		// the move as an ordered subtree delete+put: deletes child-before-parent (never
-		// orphan a live child under a deleted dir), then puts parent-before-child.
-		async atomicMove(oldDir, oldName, newDir, newName, options) {
-			const oldKey = dirKey(oldDir, oldName)
-			const src = dirs.get(oldKey)
-			if (!src) throw new Error(`ENOENT: ${oldName}`)
-			const oldDirPath = pathOf(oldDir)
-			const newDirPath = pathOf(newDir)
-			if (oldDirPath === null || newDirPath === null) throw new Error('ENOENT: parent')
-			const oldBase = joinPath(oldDirPath, oldName)
-			const newBase = joinPath(newDirPath, newName)
-			// Enumerate BEFORE mutating (paths are prefix-rewritten, children keep their
-			// parent-ino-keyed dirents — only the top entry rebinds).
-			const subtree = enumerateSubtree(src.ino)
-			const newKey = dirKey(newDir, newName)
-			const displaced = dirs.get(newKey) ?? null
-			// No-replace: refused before anything mutates, in the same synchronous block
-			// that performs the move — so no interleaving can land between the two.
-			if (options?.exclusive && displaced && displaced.ino !== src.ino)
-				throw new Error(`EEXIST: ${newName}`)
-			dirs.delete(oldKey)
-			parentOf.delete(src.ino)
-			dirs.set(newKey, src)
-			parentOf.set(src.ino, { parent: newDir, name: newName })
-			// Free the displaced inode (the new put at `newBase` supersedes it).
-			if (displaced && displaced.ino !== src.ino && !hasDirentReference(displaced.ino)) {
-				metas.delete(displaced.ino)
-				xattrs.delete(displaced.ino)
-				parentOf.delete(displaced.ino)
-			}
-			// Journal the move as ordered subtree changes: deletes child-before-parent
-			// (never orphan a live child under a deleted dir), then puts parent-before-
-			// child (the dir exists before its entries) — ordering shared with apply.
-			const deletePaths = sortChildFirst(
-				subtree.map((n) => oldBase + n.rel),
-				(p) => p
-			)
-			for (const p of deletePaths) await journalDeleteOver(pathPort, p, localActorId, options)
-			const putNodes = sortParentFirst(subtree, (n) => newBase + n.rel)
-			for (const n of putNodes)
-				await journalPutOver(pathPort, newBase + n.rel, n.ino, localActorId, options)
-			emit({
-				ino: src.ino,
-				kind: 'dirent',
-				dirIno: newDir,
-				name: newName,
-				path: newBase,
-				source: options?.source
-			})
-			emit({
-				ino: src.ino,
-				kind: 'dirent',
-				dirIno: oldDir,
-				name: oldName,
-				path: oldBase,
-				source: options?.source
-			})
-			return displaced && displaced.ino !== src.ino ? displaced.ino : null
+		atomicMove: (oldDir, oldName, newDir, newName, options) =>
+			moveEntry(oldDir, oldName, newDir, newName, options, false),
+
+		noReplaceMove: async (oldDir, oldName, newDir, newName, options) => {
+			await moveEntry(oldDir, oldName, newDir, newName, options, true)
 		},
 
 		// ── Path-sync seams ──────────────────────────────────────────────────────

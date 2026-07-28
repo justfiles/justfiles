@@ -1,6 +1,12 @@
 import type { DBSchema, IDBPDatabase, IDBPTransaction } from 'idb'
 import { openDB } from 'idb'
-import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
+import type {
+	InodeMeta,
+	MutationOptions,
+	Storage,
+	StorageCapabilities,
+	StorageChange
+} from './storage'
 import type { PathStorePort } from './storage.shared'
 import {
 	applyJournaledOver,
@@ -523,6 +529,93 @@ export function idbStorage(
 	// Capabilities
 	// ---------------------------------------------------------------------------
 
+	// Moves a name (and its subtree) in one transaction. `exclusive` is the only
+	// difference between the two move caps, and it is decided inside that same
+	// transaction — so for this backend the check IS the move.
+	const moveEntry = async (
+		oldDir: Ino,
+		oldName: string,
+		newDir: Ino,
+		newName: string,
+		options: MutationOptions | undefined,
+		exclusive: boolean
+	): Promise<Ino | null> => {
+		const db = await getDb()
+		const tx = db.transaction(
+			['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'meta', 'pathver', 'journal'],
+			'readwrite'
+		) as FullTx
+
+		const source = await tx.objectStore('dirs').get([oldDir, oldName])
+		if (!source) {
+			await tx.done
+			throw new Error(`ENOENT: ${oldName}`)
+		}
+		const oldDirPath = await pathOfTx(tx, oldDir)
+		const newDirPath = await pathOfTx(tx, newDir)
+		if (oldDirPath === null || newDirPath === null) {
+			await tx.done
+			throw new Error('ENOENT: parent')
+		}
+		const oldBase = joinPath(oldDirPath, oldName)
+		const newBase = joinPath(newDirPath, newName)
+		// Enumerate BEFORE mutating (children keep their parent-ino-keyed dirents;
+		// only the top entry rebinds).
+		const subtree = await enumerateSubtreeTx(tx, source.ino)
+
+		const destination = await tx.objectStore('dirs').get([newDir, newName])
+		let displaced: Ino | null = null
+
+		if (destination && destination.ino !== source.ino && exclusive) {
+			// No-replace, decided INSIDE the transaction that performs the move (only
+			// reads have happened, so letting it commit changes nothing).
+			await tx.done
+			throw new Error(`EEXIST: ${newName}`)
+		}
+
+		if (destination && destination.ino !== source.ino) {
+			displaced = destination.ino
+			await freeIno(tx, destination.ino)
+			await tx.objectStore('dirs').delete([newDir, newName])
+		}
+
+		await tx.objectStore('dirs').delete([oldDir, oldName])
+		await tx
+			.objectStore('dirs')
+			.put({ dirIno: newDir, name: newName, ino: source.ino, type: source.type })
+
+		// Journal the move as ordered subtree changes: deletes child-before-parent,
+		// then puts parent-before-child (ordering shared with apply).
+		const port = makePathPort(tx).port
+		for (const p of sortChildFirst(
+			subtree.map((n) => oldBase + n.rel),
+			(x) => x
+		))
+			await journalDeleteOver(port, p, localActorId, options)
+		for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
+			await journalPutOver(port, newBase + n.rel, n.ino, localActorId, options)
+
+		await tx.done
+		if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+		emit({
+			ino: source.ino,
+			kind: 'dirent',
+			dirIno: newDir,
+			name: newName,
+			path: newBase,
+			source: options?.source
+		})
+		emit({
+			ino: source.ino,
+			kind: 'dirent',
+			dirIno: oldDir,
+			name: oldName,
+			path: oldBase,
+			source: options?.source
+		})
+		return displaced
+	}
+
 	const caps: StorageCapabilities = {
 		async getXattr(ino, name) {
 			const db = await getDb()
@@ -588,81 +681,11 @@ export function idbStorage(
 			return ino
 		},
 
-		async atomicMove(oldDir, oldName, newDir, newName, options) {
-			const db = await getDb()
-			const tx = db.transaction(
-				['inodes', 'content', 'dirs', 'xattrs', 'dirty', 'meta', 'pathver', 'journal'],
-				'readwrite'
-			) as FullTx
+		atomicMove: (oldDir, oldName, newDir, newName, options) =>
+			moveEntry(oldDir, oldName, newDir, newName, options, false),
 
-			const source = await tx.objectStore('dirs').get([oldDir, oldName])
-			if (!source) {
-				await tx.done
-				throw new Error(`ENOENT: ${oldName}`)
-			}
-			const oldDirPath = await pathOfTx(tx, oldDir)
-			const newDirPath = await pathOfTx(tx, newDir)
-			if (oldDirPath === null || newDirPath === null) {
-				await tx.done
-				throw new Error('ENOENT: parent')
-			}
-			const oldBase = joinPath(oldDirPath, oldName)
-			const newBase = joinPath(newDirPath, newName)
-			// Enumerate BEFORE mutating (children keep their parent-ino-keyed dirents;
-			// only the top entry rebinds).
-			const subtree = await enumerateSubtreeTx(tx, source.ino)
-
-			const destination = await tx.objectStore('dirs').get([newDir, newName])
-			let displaced: Ino | null = null
-
-			if (destination && destination.ino !== source.ino && options?.exclusive) {
-				// No-replace, decided inside the transaction that performs the move (only
-				// reads have happened, so letting it commit changes nothing).
-				await tx.done
-				throw new Error(`EEXIST: ${newName}`)
-			}
-
-			if (destination && destination.ino !== source.ino) {
-				displaced = destination.ino
-				await freeIno(tx, destination.ino)
-				await tx.objectStore('dirs').delete([newDir, newName])
-			}
-
-			await tx.objectStore('dirs').delete([oldDir, oldName])
-			await tx
-				.objectStore('dirs')
-				.put({ dirIno: newDir, name: newName, ino: source.ino, type: source.type })
-
-			// Journal the move as ordered subtree changes: deletes child-before-parent,
-			// then puts parent-before-child (ordering shared with apply).
-			const port = makePathPort(tx).port
-			for (const p of sortChildFirst(
-				subtree.map((n) => oldBase + n.rel),
-				(x) => x
-			))
-				await journalDeleteOver(port, p, localActorId, options)
-			for (const n of sortParentFirst(subtree, (x) => newBase + x.rel))
-				await journalPutOver(port, newBase + n.rel, n.ino, localActorId, options)
-
-			await tx.done
-			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
-			emit({
-				ino: source.ino,
-				kind: 'dirent',
-				dirIno: newDir,
-				name: newName,
-				path: newBase,
-				source: options?.source
-			})
-			emit({
-				ino: source.ino,
-				kind: 'dirent',
-				dirIno: oldDir,
-				name: oldName,
-				path: oldBase,
-				source: options?.source
-			})
-			return displaced
+		noReplaceMove: async (oldDir, oldName, newDir, newName, options) => {
+			await moveEntry(oldDir, oldName, newDir, newName, options, true)
 		},
 
 		async fullScan(cursor) {

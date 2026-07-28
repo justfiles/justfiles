@@ -173,7 +173,7 @@ each time was moving the question to a single surface — never patching the sit
 | --- | --- | --- |
 | How is a path spelled, and what may a name contain? | `src/notes.ts` | pure, total (`isCanonicalPath`, `sanitizeName`, `illegalMove`) |
 | What may a dropped archive contain, and how much of it? | `src/import.ts` | pure + one ledger per drop (`screenEntry`, `Screen`, `admit`) |
-| **Who owns a name, and is the check the operation?** | **`packages/fs` — the layer that owns the namespace** | `{ exclusive: true }` on `writeFile` and `rename` |
+| **Who owns a name, and is the check the operation?** | **`packages/fs` — the layer that owns the namespace** | `{ exclusive: true }` on `writeFile` and `rename`, over `atomicCreate`/`noReplaceMove` |
 | Is this location still real, and is the buffer settled? | `src/gui.tsx` | `liveDir()` gate, `flush`/`discard` before a path change |
 
 The third row is the one that cost the most, and it is the lesson worth carrying to the next app. **An app
@@ -187,8 +187,10 @@ replace. So the app emulated the missing one, twice, and each emulation was a fr
   move then destroys the data it was meant to protect. And a file placeholder is the wrong *type* to rename
   a folder over, so on the Node backend every folder move failed with ENOTDIR.
 
-Both disappeared into two flags in `packages/fs`, where the check and the mutation are one backend operation
-(`O_EXCL` / `link(2)` / `mkdir(2)` / one IndexedDB transaction / one synchronous map mutation). What is left
+Both disappeared into two flags in `packages/fs`, backed by primitives that cannot be raced (`O_EXCL`,
+`link(2)`, `mkdir(2)`, one IndexedDB transaction, one synchronous map mutation) — and where the platform has
+no primitive at all, by a capability that says so in its name and its contract rather than in a flag on a
+method promising atomicity (§1c). What is left
 in this app is its own *policy* — "on EEXIST, number up" (`claimPath`, six lines) and "never inside itself"
 (`illegalMove`, pure) — which is all an app should ever hold. Rule of thumb for the next one: if a guarantee
 needs two calls to express, it belongs one layer down; if it needs a cleanup path, it is already wrong.
