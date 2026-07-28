@@ -117,6 +117,46 @@ describe('FrierenClient agent', () => {
 		expect(snapshot.expression).toBe('concerned')
 	})
 
+	test('a new reply starts from a clean face, so a tag cannot outlive its turn', async () => {
+		const { client, connect } = setup()
+		const socket = await connect()
+		socket.emit({ type: 'ready', apps: [] })
+		const reply = (deltas: string[]) => {
+			socket.emit({ type: 'event', event: { type: 'agent_start' } })
+			socket.emit({
+				type: 'event',
+				event: { type: 'message_start', message: { role: 'assistant' } }
+			})
+			for (const delta of deltas) {
+				socket.emit({
+					type: 'event',
+					event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } }
+				})
+			}
+			socket.emit({ type: 'event', event: { type: 'message_end' } })
+			socket.emit({ type: 'event', event: { type: 'agent_end' } })
+		}
+
+		reply(['[apologetic]That failed.'])
+		expect(client.agent.snapshot().expression).toBe('apologetic')
+
+		// The face must be clean from `agent_start` on, not from the first token: streaming
+		// (which un-rests the avatar) begins a second or more before the model answers.
+		socket.emit({ type: 'event', event: { type: 'agent_start' } })
+		expect(client.agent.snapshot().expression).toBe(null)
+
+		// And a model that ignores the contract on this turn must not wear the old face.
+		socket.emit({ type: 'event', event: { type: 'message_start', message: { role: 'assistant' } } })
+		socket.emit({
+			type: 'event',
+			event: {
+				type: 'message_update',
+				assistantMessageEvent: { type: 'text_delta', delta: 'Retried and it worked.' }
+			}
+		})
+		expect(client.agent.snapshot().expression).toBe(null)
+	})
+
 	test('promotes tool-result image refs onto the tool call, live and from history', async () => {
 		const images = [{ src: '/pictures/abcd1234.png', mimeType: 'image/png', alt: 'a red panda' }]
 		const { client, connect } = setup()

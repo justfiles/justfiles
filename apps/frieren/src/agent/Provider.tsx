@@ -71,6 +71,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 		askedAt.current.set(key, now)
 		void (async () => {
 			const volume = await openProfile()
+			// `identity.faces` is a snapshot, and sync can land a face another device generated
+			// without anything refreshing it. Re-read before paying for an image: a face already
+			// on the volume just needs to be picked up.
+			if ((await readAvatarFaces(volume, hash))[expression]) {
+				await refreshIdentity()
+				return
+			}
 			if (await requestFace(volume, getToken, expression, hash)) await refreshIdentity()
 		})().catch(() => {})
 	}, [expression, hash, faces, getToken, refreshIdentity])
