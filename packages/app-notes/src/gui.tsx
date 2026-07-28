@@ -3,12 +3,14 @@ import { Unzip, UnzipInflate } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
 import {
+	admit,
 	createScreen,
 	type ImportEntry,
 	type ImportPlan,
 	MAX_BYTES,
 	planImport,
-	type Screen
+	type Screen,
+	screenEntry
 } from './import.ts'
 import { displayPath, isUnder, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
@@ -63,9 +65,14 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 	let failure: Error | null = null
 	const unzipper = new Unzip((entry) => {
 		if (entry.name.endsWith('/')) return
-		// A streamed archive need not declare sizes in its local headers, in which case
-		// this is 0 and only the name decides — the cap below is the backstop.
-		if (!screen.accept(entry.name, entry.originalSize ?? 0)) return
+		// A cheap pre-check, from the local header: skip what we can already tell we
+		// don't want, so it is never inflated. The header's size is a CLAIM though —
+		// a streamed archive may declare 0 — so nothing is charged to the budget here.
+		const declared = screenEntry(entry.name, entry.originalSize ?? 0)
+		if (declared) {
+			screen.skip(entry.name, declared)
+			return
+		}
 		let parts: Uint8Array[] = []
 		let size = 0
 		entry.ondata = (error, chunk, final) => {
@@ -76,13 +83,19 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 			if (size > MAX_BYTES) return // already given up on this entry
 			size += chunk.length
 			if (size > MAX_BYTES) {
-				// It declared nothing, or lied: drop what we have and report it.
+				// It declared nothing, or lied. One entry's worth of bytes is the most a
+				// header can cost us, and that is why the cap is here and not only above.
 				parts = []
-				screen.reject(entry.name, 'attachment')
+				screen.skip(entry.name, 'attachment')
 				return
 			}
 			parts.push(chunk)
-			if (final) kept.push({ path: entry.name, bytes: concat(parts, size) })
+			// Charged with the bytes that actually exist, at the moment they exist.
+			if (final) {
+				const entered = admit({ path: entry.name, bytes: concat(parts, size) }, screen)
+				parts = []
+				if (entered) kept.push(entered)
+			}
 		}
 		entry.start()
 	})
@@ -134,7 +147,7 @@ async function planDrop(files: File[]): Promise<ImportPlan> {
 		)
 	}
 	const zip = zips[0]
-	if (zip) return planImport(await readZip(zip, screen), zip.name, { screen })
+	if (zip) return planImport(await readZip(zip, screen), zip.name, screen)
 	// A LIST, not a map keyed by name: two files dropped from different folders share
 	// a basename, and a map would keep only the last — reported as a clean success
 	// while losing a note. Duplicates ride through and the write-side claim numbers
@@ -143,10 +156,18 @@ async function planDrop(files: File[]): Promise<ImportPlan> {
 	for (const file of files) {
 		// Screened from `File.size` FIRST: reading a 2 GB body into the tab only to
 		// classify it as an attachment is the same mistake as inflating a zip entry.
-		if (!screen.accept(file.name, file.size)) continue
-		entries.push({ path: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })
+		const reason = screenEntry(file.name, file.size)
+		if (reason) {
+			screen.skip(file.name, reason)
+			continue
+		}
+		const entered = admit(
+			{ path: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },
+			screen
+		)
+		if (entered) entries.push(entered)
 	}
-	return planImport(entries, 'Imported', { screen })
+	return planImport(entries, 'Imported', screen)
 }
 
 function relativeTime(mtimeNs: number): string {

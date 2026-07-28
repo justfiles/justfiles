@@ -41,53 +41,52 @@ const CONFLICT = /\(conflicted copy[^)]*\)|\bconflicted copy\b/i
 export const normalizePath = (path: string) => normalize(path)
 
 /**
- * The screen for ONE drop: per-entry rules plus the running totals, and the tally
- * of what it refused. It is the *only* thing that decides whether bytes get read,
- * so both seams ask it — a zip's central directory (`filter`, before inflating) and
- * a loose `File` (its `size`, before `arrayBuffer()`). Answers are remembered per
- * path, so asking twice is free and cannot double-charge the budget.
+ * Should this entry be read at all, judged from its NAME and a DECLARED size? Pure,
+ * so it can be asked before any bytes exist — against a zip entry's header, or a
+ * loose `File.size`. It does not charge the drop's budget: a declared size is a
+ * claim, and a streamed archive may not declare one at all (see `admit`).
+ */
+export function screenEntry(path: string, size: number, maxBytes = MAX_BYTES): SkipReason | null {
+	return classify(normalize(path)) ?? (size > maxBytes ? 'attachment' : null)
+}
+
+/**
+ * The ledger for ONE drop: what it refused, and how much it has let through. It
+ * counts only bytes that REALLY exist — `charge` is called with a buffer's length,
+ * never with a header's claim — because a claim of zero is exactly what a streamed
+ * archive gives you, and a budget charged zero bounds nothing. Nothing is memoized
+ * either: two entries can share a path (a drop of same-named files), and each costs.
  */
 export type Screen = {
-	accept(path: string, size: number): boolean
-	// A refusal discovered after `accept` said yes — a streamed archive need not
-	// declare its entry sizes, so the only place an oversized one shows up is
-	// mid-inflate. Reported like any other skip.
-	reject(path: string, reason: SkipReason): void
+	/** Charge real bytes. `false` = a ceiling is spent, so these bytes must be dropped. */
+	charge(path: string, size: number): boolean
+	/** Record a refusal: a name/size rule, or an entry that outgrew its own header. */
+	skip(path: string, reason: SkipReason): void
 	readonly skipped: readonly Skip[]
 	readonly stopped: boolean
 }
 
-export function createScreen(maxBytes = MAX_BYTES): Screen {
-	const answers = new Map<string, boolean>()
+export function createScreen(limits: { maxFiles?: number; maxTotalBytes?: number } = {}): Screen {
+	const maxFiles = limits.maxFiles ?? MAX_FILES
+	const maxTotalBytes = limits.maxTotalBytes ?? MAX_TOTAL_BYTES
 	const skipped: Skip[] = []
 	let files = 0
 	let bytes = 0
 	let stopped = false
 	return {
-		accept(raw, size) {
+		charge(raw, size) {
 			const path = normalize(raw)
-			const prior = answers.get(path)
-			if (prior !== undefined) return prior
-			const reason =
-				classify(path) ??
-				(size > maxBytes
-					? 'attachment'
-					: files + 1 > MAX_FILES || bytes + size > MAX_TOTAL_BYTES
-						? 'too much'
-						: null)
-			if (reason === 'too much') stopped = true
-			if (reason) skipped.push({ path, reason })
-			else {
-				files++
-				bytes += size
+			if (files + 1 > maxFiles || bytes + size > maxTotalBytes) {
+				stopped = true
+				skipped.push({ path, reason: 'too much' })
+				return false
 			}
-			answers.set(path, reason === null)
-			return reason === null
+			files++
+			bytes += size
+			return true
 		},
-		reject(raw, reason) {
-			const path = normalize(raw)
-			answers.set(path, false)
-			skipped.push({ path, reason })
+		skip(raw, reason) {
+			skipped.push({ path: normalize(raw), reason })
 		},
 		get skipped() {
 			return skipped
@@ -96,6 +95,31 @@ export function createScreen(maxBytes = MAX_BYTES): Screen {
 			return stopped
 		}
 	}
+}
+
+/**
+ * Judge an entry whose bytes are IN HAND and charge them — the one place the
+ * budget moves. Returns the entry to keep, or `null` when it was refused (already
+ * recorded as a skip). Both readers funnel through here, so "how much have we let
+ * in" has a single answer regardless of which seam the bytes came from.
+ */
+export function admit(
+	entry: ImportEntry,
+	screen: Screen,
+	maxBytes = MAX_BYTES
+): ImportEntry | null {
+	const path = normalize(entry.path)
+	// A zip's directory entries carry no content and are not a refusal worth
+	// reporting — folders come from their children. The rule belongs here, with the
+	// other reasons an entry does not become a note.
+	if (path.endsWith('/')) return null
+	const reason = screenEntry(path, entry.bytes.length, maxBytes)
+	if (reason) {
+		screen.skip(path, reason)
+		return null
+	}
+	if (!screen.charge(path, entry.bytes.length)) return null
+	return { path, bytes: entry.bytes }
 }
 
 function classify(path: string): SkipReason | null {
@@ -141,34 +165,26 @@ const normalize = (path: string) =>
 const decoder = new TextDecoder()
 
 /**
- * Turn unzipped entries into a plan. `zipName` names the destination folder when
- * the archive has no single root folder of its own. `screen` is the drop's screen
- * (see `createScreen`) — pass the one already used to filter the archive, so its
- * refusals and its remaining budget carry into the plan.
+ * Turn ADMITTED entries into a plan — structure only: strip the vault's own root
+ * folder, decode the text, count the folders, and carry the screen's report. The
+ * entries must already have been through `admit` (which is what charged them), so
+ * that "how much have we let in" is decided in exactly one place instead of being
+ * re-derived here from sizes that may have been claims.
  */
 export function planImport(
 	entries: readonly ImportEntry[],
 	zipName: string,
-	options: { screen?: Screen } = {}
+	screen: Screen = createScreen()
 ): ImportPlan {
-	const screen = options.screen ?? createScreen()
-	const keep: ImportEntry[] = []
-	for (const entry of entries) {
-		const path = normalize(entry.path)
-		// Directory entries carry no content; folders come from their children.
-		if (path.endsWith('/')) continue
-		if (screen.accept(path, entry.bytes.length)) keep.push({ path, bytes: entry.bytes })
-	}
-
 	// The root is computed over KEPT paths only — a macOS zip carries `__MACOSX/`
 	// beside the vault folder, which would otherwise look like a second root and
 	// leave the whole vault nested one level deeper than it should be.
-	const root = commonRoot(keep.map((entry) => entry.path))
+	const root = commonRoot(entries.map((entry) => entry.path))
 	const strip = root ? root.length + 1 : 0
 
 	const files: ImportFile[] = []
 	const folders = new Set<string>()
-	for (const entry of keep) {
+	for (const entry of entries) {
 		const relative = entry.path.slice(strip)
 		if (relative === '') continue
 		files.push({ path: relative, text: decoder.decode(entry.bytes) })

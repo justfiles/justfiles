@@ -197,18 +197,25 @@ listing (which comes from disk), else the open note's folder, else the root. Del
 need no bookkeeping at all — the class is gone, not fixed. This is §3's "the disk is the only source of
 truth" applied to a *selection* rather than to the listing.
 
-**3 · Bound untrusted input at the seam, and bound the WHOLE of it.** A dropped zip is attacker-shaped input.
-The archive is **streamed**, never read whole: `arrayBuffer()` on a 2 GB vault of photos would kill the tab
-before a single limit was consulted, so entries are judged from their headers as they arrive and only the
-notes we keep are held (a 400 MB archive imports its two notes with `Blob.prototype.arrayBuffer` poisoned to
-throw). Loose files are screened from `File.size` before they are read. Per-entry limits are not a bound
-though — a thousand legal 4 MB notes is 4 GB — so one `Screen` object per drop carries running totals
-(`MAX_FILES`, `MAX_TOTAL_BYTES`) across both seams and reports `stopped`, which the status line says out loud
-("Partly imported … the rest was left out"), and once the budget is spent the stream is abandoned rather
-than read to the end. It answers per path idempotently, so both seams may ask about the same entry without
-double-charging, and it takes a late `reject` for the one thing a header cannot be trusted about — a streamed
-archive may declare no sizes at all, so an oversized entry is only caught mid-inflate. A drop that mixes an archive with other files is refused whole: an
-archive is one vault and its root is stripped on the way in, a rule that means nothing for two of them.
+**3 · Bound untrusted input at the seam, and charge the bound with what is REAL.** A dropped zip is
+attacker-shaped input. The archive is **streamed**, never read whole: `arrayBuffer()` on a 2 GB vault of
+photos would kill the tab before a single limit was consulted, so entries are judged from their headers as
+they arrive and only the notes we keep are held (a 400 MB archive imports its two notes with
+`Blob.prototype.arrayBuffer` poisoned to throw). Per-entry limits are not a bound either — a thousand legal
+4 MB notes is 4 GB — so a `Screen` ledger carries `MAX_FILES`/`MAX_TOTAL_BYTES` across the whole drop,
+reports `stopped` ("Partly imported … the rest was left out"), and abandons the stream once spent.
+
+The split that matters is between the two questions, because collapsing them produced a P1: **a header is a
+claim, a buffer is a fact.** `screenEntry(path, declaredSize)` is the pure, free pre-check that decides
+whether bytes may be read at all; `Screen.charge(path, actualBytes)` is the ledger, and it is only ever
+called with a length that exists. A zip written by a streaming writer declares its sizes in a trailing data
+descriptor, so `originalSize` is `undefined` — charging the claim would charge zero for every entry and the
+ceiling would never arrive, with every buffer still in memory. `admit` is the one place the two meet and the
+only place the budget moves, so both readers, and duplicate paths, are counted the same way. Nothing is
+memoized: two entries can share a path, and each costs.
+
+A drop that mixes an archive with other files is refused whole: an archive is one vault and its root is
+stripped on the way in, a rule that means nothing for two of them.
 
 The remaining defects were genuinely separate ground — defaulting counters absent from persisted state,
 bounding an untrusted zip before decompressing it, coalescing watch-event fan-out — and none of them were in
