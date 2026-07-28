@@ -20,7 +20,6 @@ import {
 // root-relative: `/Remember the milk.md` lands at `/notes/Remember the milk.md`.
 const enc = new TextEncoder()
 const dec = new TextDecoder()
-const EMPTY = new Uint8Array()
 
 // Claim a free path by CREATING it — `Kyoto.md`, `Kyoto 2.md`, … keeping the
 // extension. The claim is the write itself, never an `exists()` probe followed by a
@@ -216,13 +215,14 @@ export const app = defineApp({
 		}),
 
 		// Rename IS move — retitle, drag into a folder, move a whole folder. It never
-		// overwrites: `volume.rename` has POSIX replace semantics (the IndexedDB
-		// backend frees the displaced inode), so dragging `Kyoto.md` into a folder that
-		// already has one would destroy the user's note. So the destination is CLAIMED
-		// first — an empty placeholder, atomically, the same `claimPath` create and the
-		// importer use — and then renamed over. Holding the name is what makes this
-		// safe: `rename` cannot be made exclusive, so without the placeholder a
-		// concurrent writer could take the destination after we checked it.
+		// overwrites, and that is a property of the MOVE, not something this app can
+		// arrange around one: `volume.rename(..., { exclusive: true })` refuses an
+		// occupied destination in the storage, where the check and the move are one
+		// operation. (The version that claimed the destination first was wrong twice: a
+		// placeholder is not a reservation in a shared store, and a file placeholder is
+		// the wrong type to rename a folder over.) So all that is left here is the app's
+		// own policy — number up and try again — which is `claimPath`, the same loop
+		// `create` and `importNotes` use.
 		rename: p.procedure({
 			description:
 				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned. Moving a folder inside itself is refused.',
@@ -235,15 +235,8 @@ export const app = defineApp({
 				const illegal = illegalMove(from, to)
 				if (illegal) throw new Error(illegal)
 				const path = await claimPath(to, (probe) =>
-					app.invoke('volume', 'writeFile', probe, EMPTY, { exclusive: true })
+					app.invoke('volume', 'rename', from, probe, { exclusive: true })
 				)
-				try {
-					// Replaces our own placeholder, which is the point.
-					await app.invoke('volume', 'rename', from, path)
-				} catch (e) {
-					await app.invoke('volume', 'rm', path, { force: true })
-					throw e
-				}
 				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })
 				await app.settled(seq)
 				return { path }

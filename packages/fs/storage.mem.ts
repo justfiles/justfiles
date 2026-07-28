@@ -305,6 +305,10 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			const subtree = enumerateSubtree(src.ino)
 			const newKey = dirKey(newDir, newName)
 			const displaced = dirs.get(newKey) ?? null
+			// No-replace: refused before anything mutates, in the same synchronous block
+			// that performs the move — so no interleaving can land between the two.
+			if (options?.exclusive && displaced && displaced.ino !== src.ino)
+				throw new Error(`EEXIST: ${newName}`)
 			dirs.delete(oldKey)
 			parentOf.delete(src.ino)
 			dirs.set(newKey, src)

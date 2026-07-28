@@ -34,7 +34,11 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = []) {
 				return undefined
 			case 'rename': {
 				const to = args[1] as string
-				store.delete(to) // POSIX replace — including the placeholder `rename` claims
+				// Models the contract: `exclusive` is a NO-REPLACE move, refused for a taken
+				// name of ANY type; without it, POSIX replace (packages/fs/volume.ts).
+				const exclusive = (args[2] as { exclusive?: boolean } | undefined)?.exclusive
+				if (exclusive && (store.has(to) || folders.has(to))) throw new Error(`EEXIST: ${to}`)
+				store.delete(to)
 				for (const [key, value] of [...store]) {
 					if (key === path) {
 						store.delete(key)
@@ -133,6 +137,26 @@ test('rename never overwrites: an occupied destination is numbered instead', asy
 	expect(vol.store.get('/Lists/Groceries.md')).toBe('theirs')
 	expect(vol.store.get('/Lists/Groceries 2.md')).toBe('mine')
 	expect(h.dispatched).toEqual(['moved'])
+})
+
+test('a folder moved onto an occupied name is numbered, not merged or replaced', async () => {
+	// The destination policy is one loop over one primitive, so it holds for folders
+	// too — and the primitive is the move itself, so there is no placeholder to be of
+	// the wrong type (a file placeholder made every folder move fail with ENOTDIR).
+	const vol = fakeVolume({ '/Trips/Kyoto.md': 'mine', '/Archive/Trips/Old.md': 'theirs' }, [
+		'/Trips',
+		'/Archive',
+		'/Archive/Trips'
+	])
+	const h = handle(initialState, vol.invoke)
+	const result = (await app.runProcedure(
+		'rename',
+		{ from: '/Trips', to: '/Archive/Trips' },
+		h.app
+	)) as { path: string }
+	expect(result.path).toBe('/Archive/Trips 2')
+	expect(vol.store.get('/Archive/Trips/Old.md')).toBe('theirs')
+	expect(vol.store.get('/Archive/Trips 2/Kyoto.md')).toBe('mine')
 })
 
 test('renaming to where it already is does nothing at all', async () => {

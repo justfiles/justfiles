@@ -59,6 +59,9 @@ export type ScanEntry = {
 	xattrs?: Record<string, Uint8Array>
 }
 
+/** A move's options: how to journal it, plus the no-replace precondition. */
+export type MoveOptions = MutationOptions & { exclusive?: boolean }
+
 /**
  * Optional performance and feature capabilities that backends may declare.
  * Accessed via `backend.caps`.
@@ -76,13 +79,19 @@ export interface StorageCapabilities {
 	 * window where both names exist. The backend handles freeing any displaced
 	 * inode atomically. Returns the ino of the displaced entry (for cache
 	 * invalidation), or null if nothing was displaced.
+	 *
+	 * `exclusive` makes it a NO-REPLACE move: EEXIST if the destination name is
+	 * taken, whatever its type. It belongs here, not above the backend, because a
+	 * caller cannot reserve a name it does not own — claiming the destination first
+	 * only moves the race (another writer's ordinary write lands in the claim, and
+	 * the move then destroys it). Here the check and the move are one operation.
 	 */
 	atomicMove?(
 		oldDir: Ino,
 		oldName: string,
 		newDir: Ino,
 		newName: string,
-		options?: MutationOptions
+		options?: MoveOptions
 	): Promise<Ino | null>
 
 	/** Partial read — if absent the VFS does a full getBlob. */

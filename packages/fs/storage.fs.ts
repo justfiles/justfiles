@@ -4,6 +4,7 @@ import {
 	rename as _rename,
 	symlink as _symlink,
 	chmod,
+	link,
 	lutimes,
 	mkdir,
 	open,
@@ -100,14 +101,41 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const oldPath = join(getPath(oldDir), oldName)
 			const newPath = join(getPath(newDir), newName)
 
-			const srcIno = String((await lstat(oldPath)).ino)
+			const src = await lstat(oldPath)
+			const srcIno = String(src.ino)
 			let displaced: Ino | null = null
 			try {
 				const d = String((await lstat(newPath)).ino)
 				if (d !== srcIno) displaced = d
 			} catch {}
 
-			await _rename(oldPath, newPath)
+			// No-replace. `rename(2)` always replaces and Node exposes no `renameat2`, so
+			// the destination is claimed with something the OS refuses to create twice —
+			// and it has to be the RIGHT KIND of thing, because rename is type-strict
+			// (a file over a directory is EISDIR, a directory over a file is ENOTDIR):
+			//   - `link(2)` for a file: EEXIST-or-nothing, so the name becomes ours with no
+			//     window at all, and unlinking the source completes the move.
+			//   - `mkdir(2)` for a directory: also EEXIST-or-nothing, and rename over an
+			//     empty directory of our own making is atomic. If a racing writer fills it
+			//     first, rename fails ENOTEMPTY — we lose the move, never their data.
+			// Either way nothing can be displaced, so the shared tail below sees `null`.
+			if (options?.exclusive) {
+				if (src.isDirectory()) {
+					await mkdir(newPath)
+					try {
+						await _rename(oldPath, newPath)
+					} catch (e) {
+						await rmdir(newPath).catch(() => {})
+						throw e
+					}
+				} else {
+					await link(oldPath, newPath)
+					await unlink(oldPath)
+				}
+				displaced = null
+			} else {
+				await _rename(oldPath, newPath)
+			}
 
 			// Update pathMap for the moved entry and all cached descendants
 			const oldPrefix = `${oldPath}/`

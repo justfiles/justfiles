@@ -118,8 +118,18 @@ export interface Volume {
 	 * Move or rename a file, symlink, or directory.
 	 * If newPath already exists it is replaced atomically (POSIX rename
 	 * semantics). Throws ENOENT if oldPath does not exist.
+	 *
+	 * With `exclusive: true` it is a NO-REPLACE move: EEXIST if the destination
+	 * name is taken, whatever type holds it — the counterpart of
+	 * `writeFile(..., { exclusive: true })`, and for the same reason. A caller
+	 * cannot get this by claiming the destination first: a placeholder is not a
+	 * reservation in a shared store (another writer's ordinary write lands *in* the
+	 * placeholder, and the move then destroys it), and it is the wrong type for a
+	 * directory move. Decided by the storage, where the check and the move are one
+	 * operation; a backend without `atomicMove` falls back to a best-effort
+	 * pre-check.
 	 */
-	rename(oldPath: string, newPath: string): Promise<void>
+	rename(oldPath: string, newPath: string, opts?: { exclusive?: boolean }): Promise<void>
 
 	/**
 	 * Copy a file or directory.
@@ -628,12 +638,14 @@ export function volume(storage: Storage): Volume {
 			await unlinkIno(dirIno, name)
 		},
 
-		async rename(oldPath, newPath) {
+		async rename(oldPath, newPath, opts) {
 			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
 			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
 
 			if (storage.caps?.atomicMove) {
-				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName)
+				const displaced = await storage.caps.atomicMove(oldDirIno, oldName, newDirIno, newName, {
+					exclusive: opts?.exclusive
+				})
 				invalidateDirCache(oldDirIno)
 				invalidateDirCache(newDirIno)
 				if (displaced !== null) invalidateIno(displaced)
@@ -644,6 +656,10 @@ export function volume(storage: Storage): Volume {
 			if (source === null) throw new Error(`ENOENT: ${oldName}`)
 
 			const displaced = await storage.getDirent(newDirIno, newName)
+			// Best effort only: without `atomicMove` there is no way to make the check and
+			// the move one operation, so this is a pre-check, not a guarantee.
+			if (opts?.exclusive && displaced && displaced.ino !== source.ino)
+				throw new Error(`EEXIST: ${newName}`)
 			await storage.putDirent(newDirIno, newName, { ino: source.ino, type: source.type })
 			await storage.deleteDirent(oldDirIno, oldName)
 
@@ -954,7 +970,7 @@ export function chroot(fs: Volume, root: string): Volume {
 		mkdir: (path, opts) => fs.mkdir(at(path), opts),
 		readdir: (path) => fs.readdir(at(path)),
 		rm: (path, opts) => fs.rm(at(path), opts),
-		rename: (oldPath, newPath) => fs.rename(at(oldPath), at(newPath)),
+		rename: (oldPath, newPath, opts) => fs.rename(at(oldPath), at(newPath), opts),
 		cp: (src, dest, opts) => fs.cp(at(src), at(dest), opts),
 		symlink: async () => {
 			throw new Error('symlink not supported in chroot')

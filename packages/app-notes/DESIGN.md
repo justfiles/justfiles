@@ -159,22 +159,51 @@ Notes on choices:
   agent, Files or a second window can take the name in between, and `writeFile` then overwrites a note the
   user just made. So the create *is* the check — `volume.writeFile(…, { exclusive: true })`, which throws
   EEXIST from the backend's atomic create (`O_EXCL`, one IndexedDB transaction) — and on EEXIST we number up
-  and claim again. `rename` cannot be made exclusive, so a move claims an empty placeholder at the
-  destination first and then renames over its own placeholder; holding the name is what makes it safe.
+  and claim again. A move is the same shape: `volume.rename(…, { exclusive: true })` refuses an occupied
+  destination in the backend, and on EEXIST we number up and try again.
 
-### Two invariants, learned the hard way
+### What kept going wrong, and where each rule now lives
 
-Review of this work turned up eight defects. Six of them were two mistakes made twice, so both are written
-down as rules rather than patched case by case.
+Review of this work turned up twenty-three defects. That number is the interesting part: they are not
+twenty-three independent mistakes, they are **four questions**, each asked at every site that touches it,
+and every repeat was a *different site of a question already answered elsewhere*. So the fix that mattered
+each time was moving the question to a single surface — never patching the site.
 
-**1 · The app owns destination policy; the capability owns none of it.** `volume` is `Volume` reused
-verbatim, which means POSIX semantics reach the app unfiltered: `rename` *replaces* an existing
-destination, and it will happily rebind a folder's inode beneath its own descendant and strand the subtree.
-Both were reachable from an ordinary drag. So every rule about *where something may land* lives in one pure
-place — `illegalMove` (refuse) and `freePath` (dedup) in `src/notes.ts` — applied at **one** site, the
-`rename` procedure. The GUI, the tree's drag-and-drop and the agent inherit it; none of them can forget it.
-The same `freePath` is what `create` and `importNotes` use, so "nothing in `/notes` is ever silently
-overwritten" is one function, not three policies.
+| The question | Where it lives now | Shape |
+| --- | --- | --- |
+| How is a path spelled, and what may a name contain? | `src/notes.ts` | pure, total (`isCanonicalPath`, `sanitizeName`, `illegalMove`) |
+| What may a dropped archive contain, and how much of it? | `src/import.ts` | pure + one ledger per drop (`screenEntry`, `Screen`, `admit`) |
+| **Who owns a name, and is the check the operation?** | **`packages/fs` — the layer that owns the namespace** | `{ exclusive: true }` on `writeFile` and `rename` |
+| Is this location still real, and is the buffer settled? | `src/gui.tsx` | `liveDir()` gate, `flush`/`discard` before a path change |
+
+The third row is the one that cost the most, and it is the lesson worth carrying to the next app. **An app
+cannot enforce a rule about a shared namespace from outside that namespace.** Notes wants one guarantee —
+*putting something somewhere never destroys what is there* — and the volume offered two primitives that both
+replace. So the app emulated the missing one, twice, and each emulation was a fresh source of defects:
+
+- `exists()` + `writeFile` — a TOCTOU; the loser of the race has its note overwritten.
+- claim a placeholder, then `rename` over it — worse, because it *looks* atomic. A placeholder is not a
+  reservation in a store other writers share: an ordinary `writeFile` lands **inside** the claim, and the
+  move then destroys the data it was meant to protect. And a file placeholder is the wrong *type* to rename
+  a folder over, so on the Node backend every folder move failed with ENOTDIR.
+
+Both disappeared into two flags in `packages/fs`, where the check and the mutation are one backend operation
+(`O_EXCL` / `link(2)` / `mkdir(2)` / one IndexedDB transaction / one synchronous map mutation). What is left
+in this app is its own *policy* — "on EEXIST, number up" (`claimPath`, six lines) and "never inside itself"
+(`illegalMove`, pure) — which is all an app should ever hold. Rule of thumb for the next one: if a guarantee
+needs two calls to express, it belongs one layer down; if it needs a cleanup path, it is already wrong.
+
+### The invariants, learned the hard way
+
+**1 · The app owns destination POLICY; the namespace owns the guarantee.** `volume` is `Volume` reused
+verbatim, so POSIX semantics reach the app unfiltered: `rename` *replaces* an existing destination, and it
+will happily rebind a folder's inode beneath its own descendant and strand the subtree. Both were reachable
+from an ordinary drag. Policy — *may this land here, and where does it go if the name is taken* — lives in
+one pure place (`illegalMove`, `numberedPath`) applied at one site per procedure, so the GUI, the tree's
+drag-and-drop and the agent all inherit it. The **guarantee** that a write or a move cannot destroy what is
+already there is not policy and does not live here at all: it is `{ exclusive: true }` in `packages/fs`. The
+app's whole share of it is `claimPath` — try, and on EEXIST number up — which `create`, `rename` and
+`importNotes` share, so "nothing in `/notes` is ever silently overwritten" is one loop over one primitive.
 
 **1a · A lexical path rule is only true of a path the volume agrees with — so accept ONE spelling.**
 `illegalMove` compares strings, but `/Other/../Trips/Sub` is not under `/Trips` to a string comparison and
@@ -192,11 +221,23 @@ become (`isCanonicalPath('/' + path)`) — same rule, no second policy. And beca
 input, an entry the volume would respell is **screened out and reported** rather than sent on to be refused:
 one odd name must not cost the user the other thousand notes.
 
-**1b · A check is not a guarantee unless it is the operation.** The first version of "never overwrite" was
-`exists()` + `writeFile`, which reads as safe and isn't: it is only a *hint* about a moment that has already
-passed. `Volume` turned out to have the real primitive all along — every backend's `atomicCreate` is an
-exclusive create — it was just being discarded by `writeFile` resolving the path first. Exposing it as
-`writeFile(…, { exclusive: true })` is 3 lines in `packages/fs` and deletes the probe from three call sites.
+**1b · A check is not a guarantee unless it is the operation — and a claim is not a reservation.** The first
+version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is only a *hint*
+about a moment that has already passed. `Volume` had the real primitive all along — every backend's
+`atomicCreate` is an exclusive create — it was just being discarded by `writeFile` resolving the path first.
+Exposing it as `writeFile(…, { exclusive: true })` is 3 lines in `packages/fs` and deleted the probe from
+three call sites.
+
+The second version of the same mistake took longer to see, because it looked like the fix: a move *claimed*
+the destination with an empty placeholder and then renamed over its own placeholder. In a store this app
+shares with Files, the agent and other windows, that is not a reservation — an ordinary `writeFile` lands
+**inside** the placeholder and the move then destroys it — and a file placeholder cannot be renamed over by a
+folder (ENOTDIR on the Node backend, so every folder move failed there). `rename` "could not be exclusive"
+only because nobody had asked the backends: `link(2)` and `mkdir(2)` are EEXIST-or-nothing, an IndexedDB
+transaction and a synchronous map mutation decide it outright. So `rename(…, { exclusive: true })` joined
+`writeFile`, and the placeholder, its `rm --force` cleanup and the type question all went away together. **If
+a guarantee takes two calls to express, it belongs one layer down; if it needs a cleanup path, it is already
+wrong.**
 
 **2 · Never keep a second pointer to a location — derive it and validate on use.** "Which folder do new
 notes go in" started as GUI state (`activeDir`), and every mutation then had to maintain it: deleting that

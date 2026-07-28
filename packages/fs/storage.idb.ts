@@ -615,6 +615,13 @@ export function idbStorage(
 			const destination = await tx.objectStore('dirs').get([newDir, newName])
 			let displaced: Ino | null = null
 
+			if (destination && destination.ino !== source.ino && options?.exclusive) {
+				// No-replace, decided inside the transaction that performs the move (only
+				// reads have happened, so letting it commit changes nothing).
+				await tx.done
+				throw new Error(`EEXIST: ${newName}`)
+			}
+
 			if (destination && destination.ino !== source.ino) {
 				displaced = destination.ino
 				await freeIno(tx, destination.ino)
