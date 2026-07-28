@@ -1,5 +1,12 @@
 import { expect, test } from 'vitest'
-import { commonRoot, planImport, screenEntry, vaultName } from './import.ts'
+import {
+	commonRoot,
+	createScreen,
+	MAX_FILES,
+	MAX_TOTAL_BYTES,
+	planImport,
+	vaultName
+} from './import.ts'
 
 const enc = new TextEncoder()
 const bytes = (text: string) => enc.encode(text)
@@ -69,9 +76,12 @@ test('macOS decomposed filenames are normalized, so they stop looking duplicated
 })
 
 test('an oversized file is reported rather than pulled into memory-sized batches', () => {
-	const plan = planImport({ 'Vault/Huge.md': bytes('x'.repeat(50)) }, 'Vault.zip', { maxBytes: 10 })
+	const plan = planImport({ 'Vault/Huge.md': bytes('x'.repeat(50)) }, 'Vault.zip', {
+		screen: createScreen(10)
+	})
 	expect(plan.files).toEqual([])
 	expect(plan.skipped).toEqual([{ path: 'Vault/Huge.md', reason: 'attachment' }])
+	expect(plan.stopped).toBe(false) // one absurd file is not a ceiling
 })
 
 test('loose notes with no wrapping folder keep their names', () => {
@@ -81,23 +91,57 @@ test('loose notes with no wrapping folder keep their names', () => {
 	expect(plan.folders).toBe(0)
 })
 
-test('an entry can be screened from its header, before it is decompressed', () => {
+test('an entry is judged from its header, before it is decompressed', () => {
 	// This is what the zip `filter` calls: name + declared original size only, so
 	// attachments and absurd files are never inflated into the tab.
-	expect(screenEntry('Vault/Kyoto.md', 200)).toBe(null)
-	expect(screenEntry('Vault/Attachments/pic.png', 200)).toBe('attachment')
-	expect(screenEntry('Vault/.obsidian/app.json', 20)).toBe('config')
-	expect(screenEntry('__MACOSX/._Kyoto.md', 20)).toBe('junk')
+	const screen = createScreen()
+	expect(screen.accept('Vault/Kyoto.md', 200)).toBe(true)
+	expect(screen.accept('Vault/Attachments/pic.png', 200)).toBe(false)
+	expect(screen.accept('Vault/.obsidian/app.json', 20)).toBe(false)
+	expect(screen.accept('__MACOSX/._Kyoto.md', 20)).toBe(false)
 	// A zip bomb declares its size in the central directory — believe it.
-	expect(screenEntry('Vault/Bomb.md', 10_000_000_000)).toBe('attachment')
+	expect(screen.accept('Vault/Bomb.md', 10_000_000_000)).toBe(false)
+	expect(screen.skipped.map((skip) => skip.reason)).toEqual([
+		'attachment',
+		'config',
+		'junk',
+		'attachment'
+	])
 })
 
-test('entries the caller already rejected are folded into the report', () => {
-	const plan = planImport({ 'Vault/Kyoto.md': bytes('x') }, 'Vault.zip', {
-		preSkipped: [{ path: 'Vault/Attachments/pic.png', reason: 'attachment' }]
-	})
+test('the whole archive is bounded, not just each entry', () => {
+	// Every one of these is a legal note on its own; together they are the 4 GB
+	// that kills the tab. The ceiling has to be on the SUM.
+	const screen = createScreen()
+	const each = 4_000_000
+	let accepted = 0
+	for (let i = 0; i < 100; i++) if (screen.accept(`Vault/Note ${i}.md`, each)) accepted++
+	expect(accepted).toBe(Math.floor(MAX_TOTAL_BYTES / each))
+	expect(screen.stopped).toBe(true)
+	expect(screen.skipped.at(-1)?.reason).toBe('too much')
+})
+
+test('the file count is bounded too, for an archive of tiny notes', () => {
+	const screen = createScreen()
+	let accepted = 0
+	for (let i = 0; i < MAX_FILES + 10; i++) if (screen.accept(`n${i}.md`, 1)) accepted++
+	expect(accepted).toBe(MAX_FILES)
+	expect(screen.stopped).toBe(true)
+})
+
+test('one screen spans the whole drop, and answering twice is free', () => {
+	// The zip filter and `planImport` both ask about the same entry: the second ask
+	// must not charge the budget again, or a plan would appear to be twice its size.
+	const screen = createScreen()
+	expect(screen.accept('Vault/Kyoto.md', 10)).toBe(true)
+	expect(screen.accept('Vault/Kyoto.md', 10)).toBe(true)
+	expect(screen.accept('Vault/Attachments/pic.png', 10)).toBe(false)
+	expect(screen.accept('Vault/Attachments/pic.png', 10)).toBe(false)
+	expect(screen.skipped).toHaveLength(1) // reported once, not once per ask
+	const plan = planImport({ 'Vault/Kyoto.md': bytes('x') }, 'Vault.zip', { screen })
 	expect(plan.files.map((file) => file.path)).toEqual(['Kyoto.md'])
+	// The screen's own refusals ride along in the report…
 	expect(plan.skipped).toEqual([{ path: 'Vault/Attachments/pic.png', reason: 'attachment' }])
-	// A pre-skipped attachment must not count as a second root and re-nest the vault.
+	// …and must not count as a second root, which would re-nest the vault.
 	expect(plan.name).toBe('Vault')
 })

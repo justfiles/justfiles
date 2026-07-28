@@ -65,8 +65,16 @@ export interface Volume {
 	 * last changed" and an app can sort by recency. A sync-applied write instead
 	 * carries the ORIGIN's mtime (it is the same edit, not a new one). Directory
 	 * mtime is NOT maintained — no caller reads it.
+	 *
+	 * With `exclusive: true` this is a CREATE, not a write: it throws EEXIST if the
+	 * path is already taken. That makes it a *claim* on a name rather than a probe —
+	 * `exists()` followed by `writeFile` is a TOCTOU, and the loser of the race has
+	 * its file overwritten. The check and the create are one operation in the
+	 * backend (`atomicCreate`: `O_EXCL`, a single IndexedDB transaction, a
+	 * synchronous map check), so concurrent writers are decided by the storage. A
+	 * backend without that capability falls back to a best-effort pre-check.
 	 */
-	writeFile(path: string, data: Uint8Array): Promise<void>
+	writeFile(path: string, data: Uint8Array, opts?: { exclusive?: boolean }): Promise<void>
 
 	/**
 	 * Append data to a file, creating it if it does not exist.
@@ -471,7 +479,7 @@ export function volume(storage: Storage): Volume {
 			return storage.getBlob(resolved.ino)
 		},
 
-		async writeFile(path, data) {
+		async writeFile(path, data, opts) {
 			let ino: Ino
 			let resolved: Ino | null = null
 			try {
@@ -481,12 +489,16 @@ export function volume(storage: Storage): Volume {
 			}
 
 			if (resolved !== null) {
+				if (opts?.exclusive) throw new Error(`EEXIST: ${path}`)
 				const meta = await getMetaOrThrow(resolved)
 				if (meta.type === FileType.Directory) throw new Error(`EISDIR: ${path}`)
 				ino = resolved
 			} else {
 				const { dirIno, name } = await resolveParent(path)
 				const now = nowNs()
+				// `createNode` throws EEXIST when a concurrent writer took the name
+				// between the resolve above and here — which is what makes `exclusive` a
+				// claim and not just a probe.
 				ino = await createNode(dirIno, name, {
 					type: FileType.Regular,
 					size: 0n,
@@ -937,7 +949,7 @@ export function chroot(fs: Volume, root: string): Volume {
 		listXattr: (path) => fs.listXattr(at(path)),
 		removeXattr: (path, name) => fs.removeXattr(at(path), name),
 		readFile: (path) => fs.readFile(at(path)),
-		writeFile: (path, data) => fs.writeFile(at(path), data),
+		writeFile: (path, data, opts) => fs.writeFile(at(path), data, opts),
 		appendFile: (path, data) => fs.appendFile(at(path), data),
 		mkdir: (path, opts) => fs.mkdir(at(path), opts),
 		readdir: (path) => fs.readdir(at(path)),

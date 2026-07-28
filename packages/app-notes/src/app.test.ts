@@ -18,9 +18,15 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = []) {
 				]
 			case 'exists':
 				return store.has(path) || folders.has(path)
-			case 'writeFile':
+			case 'writeFile': {
+				// Models the contract: `exclusive` is a claim, so a taken name throws
+				// rather than overwriting (packages/fs/volume.ts).
+				const exclusive = (args[2] as { exclusive?: boolean } | undefined)?.exclusive
+				if (exclusive && store.has(path)) throw new Error(`EEXIST: ${path}`)
+				if (exclusive && folders.has(path)) throw new Error(`EISDIR: ${path}`)
 				store.set(path, dec.decode(args[1] as Uint8Array))
 				return undefined
+			}
 			case 'readFile':
 				return new TextEncoder().encode(store.get(path) ?? '')
 			case 'mkdir':
@@ -28,6 +34,7 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = []) {
 				return undefined
 			case 'rename': {
 				const to = args[1] as string
+				store.delete(to) // POSIX replace — including the placeholder `rename` claims
 				for (const [key, value] of [...store]) {
 					if (key === path) {
 						store.delete(key)

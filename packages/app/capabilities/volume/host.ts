@@ -70,10 +70,10 @@ export const volumeCapability = (fs: Volume, opts: VolumeCapabilityOptions = {})
 		listXattr: async (ctx, path) => (await bind(ctx)).listXattr(path),
 		removeXattr: async (ctx, path, name) => (await bind(ctx)).removeXattr(path, name),
 		readFile: async (ctx, path) => (await bind(ctx)).readFile(path),
-		writeFile: async (ctx, path, data) => {
+		writeFile: async (ctx, path, data, opts) => {
 			const vol = await bind(ctx)
 			await mkdirParent(vol, path)
-			await vol.writeFile(path, data)
+			await vol.writeFile(path, data, opts)
 		},
 		appendFile: async (ctx, path, data) => (await bind(ctx)).appendFile(path, data),
 		mkdir: async (ctx, path, opts) => (await bind(ctx)).mkdir(path, opts),

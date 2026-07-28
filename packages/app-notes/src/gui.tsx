@@ -2,7 +2,7 @@ import type { GUIProps } from '@justfiles/app/react'
 import { unzip } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
-import { type ImportPlan, normalizePath, planImport, type Skip, screenEntry } from './import.ts'
+import { createScreen, type ImportPlan, planImport, type Screen } from './import.ts'
 import { displayPath, isUnder, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
@@ -47,40 +47,49 @@ function clampWidth(px: number): number {
 }
 
 // Unzip only what we intend to keep. `filter` runs against the archive's central
-// directory, so an attachment or an oversized entry is rejected from its HEADER
-// and never inflated — a picture-heavy vault (or a zip bomb) would otherwise be
-// decompressed into the tab in full just to be thrown away.
-function readZip(
-	bytes: Uint8Array
-): Promise<{ entries: Record<string, Uint8Array>; skipped: Skip[] }> {
-	const skipped: Skip[] = []
+// directory, so an entry is judged from its HEADER and never inflated — a
+// picture-heavy vault, a zip bomb, or simply more notes than we will accept would
+// otherwise be decompressed into the tab in full just to be thrown away. The screen
+// carries the drop's running budget, which is why it is passed in rather than made
+// here (see `createScreen`).
+function readZip(bytes: Uint8Array, screen: Screen): Promise<Record<string, Uint8Array>> {
 	return new Promise((resolve, reject) => {
 		unzip(
 			bytes,
-			{
-				filter: (info) => {
-					if (info.name.endsWith('/')) return false
-					const reason = screenEntry(info.name, info.originalSize)
-					if (reason) skipped.push({ path: normalizePath(info.name), reason })
-					return reason === null
-				}
-			},
-			(error, entries) => (error ? reject(error) : resolve({ entries, skipped }))
+			{ filter: (info) => !info.name.endsWith('/') && screen.accept(info.name, info.originalSize) },
+			(error, entries) => (error ? reject(error) : resolve(entries))
 		)
 	})
 }
 
+const isZip = (file: File) => file.name.toLowerCase().endsWith('.zip')
+
 // Dropped files → one plan. A zip is a vault export (its own folder name wins);
 // loose files are imported under their own name. Both merge into the KB root.
 async function planDrop(files: File[]): Promise<ImportPlan> {
-	const zip = files.find((file) => file.name.toLowerCase().endsWith('.zip'))
-	if (zip) {
-		const { entries, skipped } = await readZip(new Uint8Array(await zip.arrayBuffer()))
-		return planImport(entries, zip.name, { preSkipped: skipped })
+	const screen = createScreen()
+	const zips = files.filter(isZip)
+	// An archive is a whole vault, and its root folder is stripped on the way in — a
+	// rule that only makes sense for ONE archive. Rather than import the first and
+	// quietly drop the rest of the drop, refuse the lot and say so.
+	if (zips.length > 0 && files.length > 1) {
+		throw new Error(
+			`drop one archive on its own — that drop had ${zips.length} archive${zips.length === 1 ? '' : 's'} and ${files.length - zips.length} other file${files.length - zips.length === 1 ? '' : 's'}`
+		)
 	}
+	const zip = zips[0]
+	if (zip)
+		return planImport(await readZip(new Uint8Array(await zip.arrayBuffer()), screen), zip.name, {
+			screen
+		})
 	const entries: Record<string, Uint8Array> = {}
-	for (const file of files) entries[file.name] = new Uint8Array(await file.arrayBuffer())
-	return planImport(entries, 'Imported')
+	for (const file of files) {
+		// Screened from `File.size` FIRST: reading a 2 GB body into the tab only to
+		// classify it as an attachment is the same mistake as inflating a zip entry.
+		if (!screen.accept(file.name, file.size)) continue
+		entries[file.name] = new Uint8Array(await file.arrayBuffer())
+	}
+	return planImport(entries, 'Imported', { screen })
 }
 
 function relativeTime(mtimeNs: number): string {
@@ -390,7 +399,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					...(renamed > 0 ? [`${renamed} renamed to avoid a clash`] : [])
 				]
 				setStatus(
-					`Imported ${written} note${written === 1 ? '' : 's'} from ${plan.name} (${extra.join(', ')})`
+					`${plan.stopped ? 'Partly imported' : 'Imported'} ${written} note${written === 1 ? '' : 's'} from ${plan.name} (${extra.join(', ')}${plan.stopped ? ' — too large, the rest was left out' : ''})`
 				)
 				if (!listOpen) setListOpen(true)
 				void refresh()

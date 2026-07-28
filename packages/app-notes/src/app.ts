@@ -9,6 +9,7 @@ import {
 	joinPath,
 	NOTE_EXT,
 	noteTitle,
+	numberedPath,
 	sanitizeName
 } from './notes.ts'
 
@@ -18,23 +19,26 @@ import {
 // root-relative: `/Remember the milk.md` lands at `/notes/Remember the milk.md`.
 const enc = new TextEncoder()
 const dec = new TextDecoder()
+const EMPTY = new Uint8Array()
 
-// Dedup a path with an `exists()` probe — `Kyoto.md`, `Kyoto 2.md`, … keeping the
-// extension. There is no cached list to consult; the disk is the only source of
-// truth (DESIGN.md §3). Used by both `create` and the importer, so a new note and
-// an imported one can never silently overwrite anything.
-async function freePath(
-	path: string,
-	exists: (probe: string) => Promise<boolean>
-): Promise<string> {
-	if (!(await exists(path))) return path
-	const dot = path.lastIndexOf('.')
-	const cut = dot > path.lastIndexOf('/') ? dot : path.length
-	const stem = path.slice(0, cut)
-	const ext = path.slice(cut)
-	for (let n = 2; ; n++) {
-		const candidate = `${stem} ${n}${ext}`
-		if (!(await exists(candidate))) return candidate
+// Claim a free path by CREATING it — `Kyoto.md`, `Kyoto 2.md`, … keeping the
+// extension. The claim is the write itself, never an `exists()` probe followed by a
+// write: that is a TOCTOU, and another writer (the agent, Files, a second window)
+// taking the name in between would have its note overwritten. `create` is atomic in
+// the backend, so the filesystem decides the winner and the loser just numbers up.
+// Used by create, move and import — the single reason nothing in `/notes` is ever
+// silently overwritten (DESIGN.md §3).
+async function claimPath(wanted: string, create: (path: string) => Promise<void>): Promise<string> {
+	for (let n = 1; ; n++) {
+		const candidate = n === 1 ? wanted : numberedPath(wanted, n)
+		try {
+			await create(candidate)
+			return candidate
+		} catch (e) {
+			// EEXIST: someone holds the name. EISDIR: a folder holds it. Anything else
+			// (ENOSPC, a bad path) is a real failure and must not spin.
+			if (!/^E(EXIST|ISDIR)/.test((e as Error).message)) throw e
+		}
 	}
 }
 
@@ -169,11 +173,10 @@ export const app = defineApp({
 				'Create a note from text; its filename is the first line, e.g. "Remember the milk" → /Remember the milk.md. Pass `dir` to create it inside a folder.',
 			schema: v.object({ text: v.string(), dir: v.optional(pathSchema) }),
 			async run({ text, dir }, app) {
-				const path = await freePath(
-					joinPath(dir ?? '/', `${sanitizeName(firstLine(text))}${NOTE_EXT}`),
-					(probe) => app.invoke('volume', 'exists', probe)
+				const wanted = joinPath(dir ?? '/', `${sanitizeName(firstLine(text))}${NOTE_EXT}`)
+				const path = await claimPath(wanted, (probe) =>
+					app.invoke('volume', 'writeFile', probe, enc.encode(text), { exclusive: true })
 				)
-				await app.invoke('volume', 'writeFile', path, enc.encode(text))
 				const { seq } = await app.dispatch({ type: 'open', params: { path } })
 				return app.settled(seq)
 			}
@@ -182,9 +185,11 @@ export const app = defineApp({
 		// Rename IS move — retitle, drag into a folder, move a whole folder. It never
 		// overwrites: `volume.rename` has POSIX replace semantics (the IndexedDB
 		// backend frees the displaced inode), so dragging `Kyoto.md` into a folder that
-		// already has one would destroy the user's note. The destination is deduped
-		// first — the same `freePath` probe `create` and the importer use — and the path
-		// it actually landed at comes back.
+		// already has one would destroy the user's note. So the destination is CLAIMED
+		// first — an empty placeholder, atomically, the same `claimPath` create and the
+		// importer use — and then renamed over. Holding the name is what makes this
+		// safe: `rename` cannot be made exclusive, so without the placeholder a
+		// concurrent writer could take the destination after we checked it.
 		rename: p.procedure({
 			description:
 				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned. Moving a folder inside itself is refused.',
@@ -196,8 +201,16 @@ export const app = defineApp({
 				// strand a folder inside itself.
 				const illegal = illegalMove(from, to)
 				if (illegal) throw new Error(illegal)
-				const path = await freePath(to, (probe) => app.invoke('volume', 'exists', probe))
-				await app.invoke('volume', 'rename', from, path)
+				const path = await claimPath(to, (probe) =>
+					app.invoke('volume', 'writeFile', probe, EMPTY, { exclusive: true })
+				)
+				try {
+					// Replaces our own placeholder, which is the point.
+					await app.invoke('volume', 'rename', from, path)
+				} catch (e) {
+					await app.invoke('volume', 'rm', path, { force: true })
+					throw e
+				}
 				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })
 				await app.settled(seq)
 				return { path }
@@ -235,9 +248,10 @@ export const app = defineApp({
 					// wikilinks address notes by their exact filename. `writeFile` creates
 					// the parent folders.
 					const wanted = joinPath(dir ?? '/', file.path)
-					const path = await freePath(wanted, (probe) => app.invoke('volume', 'exists', probe))
+					const path = await claimPath(wanted, (probe) =>
+						app.invoke('volume', 'writeFile', probe, enc.encode(file.text), { exclusive: true })
+					)
 					if (path !== wanted) renamed++
-					await app.invoke('volume', 'writeFile', path, enc.encode(file.text))
 					written++
 				}
 				return { written, renamed }

@@ -152,7 +152,12 @@ Notes on choices:
 - **Both revision counters are optional.** They were added after the first release and persisted state is
   loaded verbatim (`init` is not re-merged, docs/app.md §3), so every reader defaults them: `undefined + 1`
   would pin a counter at `NaN` and the tree would refresh exactly once, then never again.
-- **Naming dedup is an `exists()` probe** (`freePath`), not a lookup in a cached list.
+- **Naming dedup is a CLAIM, not a probe** (`claimPath`). `exists()` then `writeFile` is a TOCTOU: the
+  agent, Files or a second window can take the name in between, and `writeFile` then overwrites a note the
+  user just made. So the create *is* the check — `volume.writeFile(…, { exclusive: true })`, which throws
+  EEXIST from the backend's atomic create (`O_EXCL`, one IndexedDB transaction) — and on EEXIST we number up
+  and claim again. `rename` cannot be made exclusive, so a move claims an empty placeholder at the
+  destination first and then renames over its own placeholder; holding the name is what makes it safe.
 
 ### Two invariants, learned the hard way
 
@@ -168,6 +173,12 @@ place — `illegalMove` (refuse) and `freePath` (dedup) in `src/notes.ts` — ap
 The same `freePath` is what `create` and `importNotes` use, so "nothing in `/notes` is ever silently
 overwritten" is one function, not three policies.
 
+**1b · A check is not a guarantee unless it is the operation.** The first version of "never overwrite" was
+`exists()` + `writeFile`, which reads as safe and isn't: it is only a *hint* about a moment that has already
+passed. `Volume` turned out to have the real primitive all along — every backend's `atomicCreate` is an
+exclusive create — it was just being discarded by `writeFile` resolving the path first. Exposing it as
+`writeFile(…, { exclusive: true })` is 3 lines in `packages/fs` and deletes the probe from three call sites.
+
 **2 · Never keep a second pointer to a location — derive it and validate on use.** "Which folder do new
 notes go in" started as GUI state (`activeDir`), and every mutation then had to maintain it: deleting that
 folder left it dangling, and `writeFile`'s parent-creation silently *resurrected* the folder the user had
@@ -176,6 +187,15 @@ of use: the folder last clicked in the tree is a **hint**, honoured only while i
 listing (which comes from disk), else the open note's folder, else the root. Deleting, renaming and moving
 need no bookkeeping at all — the class is gone, not fixed. This is §3's "the disk is the only source of
 truth" applied to a *selection* rather than to the listing.
+
+**3 · Bound untrusted input at the seam, and bound the WHOLE of it.** A dropped zip is attacker-shaped input:
+entries are screened from the central directory (name + declared size) so an attachment or a bomb is never
+inflated, and loose files from `File.size` so a 2 GB body is never read. Per-entry limits are not a bound
+though — a thousand legal 4 MB notes is 4 GB — so one `Screen` object per drop carries running totals
+(`MAX_FILES`, `MAX_TOTAL_BYTES`) across both seams and reports `stopped`, which the status line says out loud
+("Partly imported … the rest was left out"). It answers per path idempotently, so both seams may ask about
+the same entry without double-charging. A drop that mixes an archive with other files is refused whole: an
+archive is one vault and its root is stripped on the way in, a rule that means nothing for two of them.
 
 The remaining defects were genuinely separate ground — defaulting counters absent from persisted state,
 bounding an untrusted zip before decompressing it, coalescing watch-event fan-out — and none of them were in

@@ -51,6 +51,13 @@ export function isUnder(path: string, dir: string): boolean {
 	return path === dir || path.startsWith(dir === '/' ? '/' : `${dir}/`)
 }
 
+/** `Kyoto.md` + 2 → `Kyoto 2.md`; the extension is kept, not shifted. */
+export function numberedPath(path: string, n: number): string {
+	const dot = path.lastIndexOf('.')
+	const cut = dot > path.lastIndexOf('/') ? dot : path.length
+	return `${path.slice(0, cut)} ${n}${path.slice(cut)}`
+}
+
 /**
  * Why this move must be refused, or `null` if it may proceed. The volume's
  * `rename` is a POSIX primitive: it happily rebinds a directory's inode beneath

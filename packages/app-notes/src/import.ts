@@ -5,7 +5,7 @@
 import { isNotePath } from './notes.ts'
 
 export type ImportFile = { path: string; text: string }
-export type SkipReason = 'config' | 'junk' | 'attachment'
+export type SkipReason = 'config' | 'junk' | 'attachment' | 'too much'
 export type Skip = { path: string; reason: SkipReason }
 export type ImportPlan = {
 	// Vault folder name, derived from the zip's own name or its single root folder.
@@ -13,29 +13,77 @@ export type ImportPlan = {
 	files: ImportFile[]
 	skipped: Skip[]
 	folders: number
+	// True when the drop hit a ceiling and the rest was refused, so the GUI can say
+	// the import is PARTIAL rather than reporting a clean success.
+	stopped: boolean
 }
 
 // A note big enough to be a mistake. Bigger than any prose file, small enough
 // that a batch of them still fits in a message.
 export const MAX_BYTES = 5_000_000
 
+// …and the ceilings for the archive as a WHOLE. Per-entry limits do not bound an
+// import: a thousand individually-legal 4 MB notes is 4 GB inflated into the tab,
+// which kills it. Generous next to a real vault (kepano's is ~1k notes, a few MB).
+export const MAX_FILES = 20_000
+export const MAX_TOTAL_BYTES = 100_000_000
+
 // Everything Obsidian (or the OS, or a sync conflict) leaves in a vault that is
 // not the user's writing.
 const JUNK = /(^|\/)(__MACOSX|\.DS_Store|Icon\r|Thumbs\.db)(\/|$)/i
 const CONFLICT = /\(conflicted copy[^)]*\)|\bconflicted copy\b/i
 
-/**
- * Should this entry be imported, judged from its NAME and SIZE alone? Callable
- * against a zip's central directory, so an attachment or an absurd file is
- * rejected **before** it is decompressed — a picture-heavy vault (or a zip bomb)
- * must not be inflated into the tab just to be thrown away.
- */
-export function screenEntry(path: string, size: number, maxBytes = MAX_BYTES): SkipReason | null {
-	return classify(normalize(path)) ?? (size > maxBytes ? 'attachment' : null)
-}
-
 /** NFC-normalize a path for display/comparison (see `normalize` below). */
 export const normalizePath = (path: string) => normalize(path)
+
+/**
+ * The screen for ONE drop: per-entry rules plus the running totals, and the tally
+ * of what it refused. It is the *only* thing that decides whether bytes get read,
+ * so both seams ask it — a zip's central directory (`filter`, before inflating) and
+ * a loose `File` (its `size`, before `arrayBuffer()`). Answers are remembered per
+ * path, so asking twice is free and cannot double-charge the budget.
+ */
+export type Screen = {
+	accept(path: string, size: number): boolean
+	readonly skipped: readonly Skip[]
+	readonly stopped: boolean
+}
+
+export function createScreen(maxBytes = MAX_BYTES): Screen {
+	const answers = new Map<string, boolean>()
+	const skipped: Skip[] = []
+	let files = 0
+	let bytes = 0
+	let stopped = false
+	return {
+		accept(raw, size) {
+			const path = normalize(raw)
+			const prior = answers.get(path)
+			if (prior !== undefined) return prior
+			const reason =
+				classify(path) ??
+				(size > maxBytes
+					? 'attachment'
+					: files + 1 > MAX_FILES || bytes + size > MAX_TOTAL_BYTES
+						? 'too much'
+						: null)
+			if (reason === 'too much') stopped = true
+			if (reason) skipped.push({ path, reason })
+			else {
+				files++
+				bytes += size
+			}
+			answers.set(path, reason === null)
+			return reason === null
+		},
+		get skipped() {
+			return skipped
+		},
+		get stopped() {
+			return stopped
+		}
+	}
+}
 
 function classify(path: string): SkipReason | null {
 	// OS and sync debris first: `.DS_Store` and `__MACOSX/._x` are dotted too, and
@@ -81,26 +129,22 @@ const decoder = new TextDecoder()
 
 /**
  * Turn unzipped entries into a plan. `zipName` names the destination folder when
- * the archive has no single root folder of its own. `preSkipped` carries entries
- * the caller already rejected without decompressing them (see `screenEntry`).
+ * the archive has no single root folder of its own. `screen` is the drop's screen
+ * (see `createScreen`) — pass the one already used to filter the archive, so its
+ * refusals and its remaining budget carry into the plan.
  */
 export function planImport(
 	entries: Record<string, Uint8Array>,
 	zipName: string,
-	options: { maxBytes?: number; preSkipped?: readonly Skip[] } = {}
+	options: { screen?: Screen } = {}
 ): ImportPlan {
-	const maxBytes = options.maxBytes ?? MAX_BYTES
-	const skipped: Skip[] = options.preSkipped ? [...options.preSkipped] : []
+	const screen = options.screen ?? createScreen()
 	const keep: Array<{ path: string; bytes: Uint8Array }> = []
 	for (const [raw, bytes] of Object.entries(entries)) {
 		const path = normalize(raw)
 		// Directory entries carry no content; folders come from their children.
 		if (path.endsWith('/')) continue
-		// Re-screened here, not only at the seam: loose dropped files never went
-		// through a zip's central directory.
-		const reason = screenEntry(path, bytes.length, maxBytes)
-		if (reason) skipped.push({ path, reason })
-		else keep.push({ path, bytes })
+		if (screen.accept(path, bytes.length)) keep.push({ path, bytes })
 	}
 
 	// The root is computed over KEPT paths only — a macOS zip carries `__MACOSX/`
@@ -124,7 +168,13 @@ export function planImport(
 		}
 	}
 
-	return { name: vaultName(zipName, root), files, skipped, folders: folders.size }
+	return {
+		name: vaultName(zipName, root),
+		files,
+		skipped: [...screen.skipped],
+		folders: folders.size,
+		stopped: screen.stopped
+	}
 }
 
 // The vault's own folder name wins; otherwise the archive's filename.
