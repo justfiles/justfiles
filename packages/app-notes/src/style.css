@@ -113,6 +113,20 @@
 	cursor: col-resize;
 }
 
+/* The tree plus the blank space under it: that space is the "move to top level"
+   drop zone (see tree.tsx), outlined while a drag hovers it. */
+.notes-tree-wrap {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+	outline: 2px solid transparent;
+	outline-offset: -2px;
+}
+.notes-tree-wrap[data-root-drop] {
+	outline-color: var(--focus);
+	background: color-mix(in srgb, var(--focus) 8%, transparent);
+}
+
 /* The tree renders in a shadow root, so it is themed through its own CSS
    variables — pointed at the same design tokens as everything else, which is
    also how it inherits dark mode. */

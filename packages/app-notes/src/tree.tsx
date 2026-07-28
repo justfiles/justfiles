@@ -97,12 +97,55 @@ export function NotesTree(props: NotesTreeProps) {
 		model.scrollToPath(path, { focus: false })
 	}, [model, props.openPath])
 
+	// Dropping on the blank area below the rows moves an item to the top level —
+	// the standard file-tree affordance (Finder sidebar, VS Code), which the library
+	// doesn't cover: it resolves a drop target from ROW elements only, so a drop
+	// past the last row resolves to nothing. Drags are native HTML5 and carry the
+	// dragged path as `text/plain`, and drag events cross the shadow boundary, so
+	// this wrapper can serve as the root zone. `composedPath` tells the two apart:
+	// if the drop landed on a row, the tree owns it.
+	const [rootDrop, setRootDrop] = useState(false)
+	const overRow = (event: React.DragEvent) =>
+		event.nativeEvent
+			.composedPath()
+			.some((node) => node instanceof HTMLElement && node.dataset.type === 'item')
+
 	return (
-		<FileTree
-			model={model}
-			className="notes-tree"
-			renderContextMenu={(item, context) => <MenuLayer item={item} context={context} {...props} />}
-		/>
+		// biome-ignore lint/a11y/noStaticElementInteractions: a drop zone, not a control — the tree's rows own the keyboard/ARIA surface.
+		<div
+			className="notes-tree-wrap"
+			data-root-drop={rootDrop || undefined}
+			onDragOver={(event) => {
+				if (overRow(event)) {
+					setRootDrop(false)
+					return
+				}
+				event.preventDefault()
+				event.dataTransfer.dropEffect = 'move'
+				setRootDrop(true)
+			}}
+			onDragLeave={(event) => {
+				if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRootDrop(false)
+			}}
+			onDrop={(event) => {
+				setRootDrop(false)
+				if (overRow(event)) return
+				const dragged = event.dataTransfer.getData('text/plain')
+				if (!dragged) return
+				event.preventDefault()
+				const from = fromTree(dragged)
+				const to = joinPath('/', from.slice(from.lastIndexOf('/') + 1))
+				if (to !== from) props.onRename(from, to)
+			}}
+		>
+			<FileTree
+				model={model}
+				className="notes-tree"
+				renderContextMenu={(item, context) => (
+					<MenuLayer item={item} context={context} {...props} />
+				)}
+			/>
+		</div>
 	)
 }
 

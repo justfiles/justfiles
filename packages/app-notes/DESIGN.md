@@ -245,7 +245,12 @@ owns only the seam:
 - **The pane is resizable**: a `role="separator"` splitter, pointer-captured so the drag survives passing
   over the editor and the tree's shadow root, arrow-key adjustable, double-click to reset. Width is
   clamped (150–480) and persisted next to the pane toggle — GUI-local, never reducer state.
-- **Dragging a row into a folder is `rename`** (`{ from, to }`), one per dragged path.
+- **Dragging a row into a folder is `rename`** (`{ from, to }`), one per dragged path. Dragging onto the
+  **blank space below the rows moves the item to the top level** — the tree only resolves a drop target
+  from row elements, so past the last row it resolves to nothing. The pane's tree wrapper is that zone: the
+  drags are native HTML5 and carry the path as `text/plain`, drag events cross the shadow boundary, and
+  `composedPath()` says whether the drop landed on a row (the tree owns it) or on blank space (we do).
+  Dropping onto a root-level *row* already means root, so the two paths together cover a full tree.
 - **Selecting a folder** sets the folder new notes land in; selecting a note opens it.
 - **Rows show real filenames**, extension included — the tree is the file-first surface (the search
   dropdown is the title-first one). A rename that drops the extension keeps it (`renameTarget`), so a note
