@@ -176,11 +176,21 @@ place — `illegalMove` (refuse) and `freePath` (dedup) in `src/notes.ts` — ap
 The same `freePath` is what `create` and `importNotes` use, so "nothing in `/notes` is ever silently
 overwritten" is one function, not three policies.
 
-**1a · A lexical path rule is only true of a path the volume agrees with.** `illegalMove` compares strings,
-but `/Other/../Trips/Sub` is not under `/Trips` to a string comparison and *is* to the volume that resolves
-it — enough to strand a folder inside itself. Dot segments are therefore refused by `pathSchema` rather than
-normalized, which fixes it for every procedure and edge at once instead of at each comparison. Notes are
-named literally (§4); nothing legitimate needs `.` or `..`.
+**1a · A lexical path rule is only true of a path the volume agrees with — so accept ONE spelling.**
+`illegalMove` compares strings, but `/Other/../Trips/Sub` is not under `/Trips` to a string comparison and
+*is* to the volume that resolves it — enough to strand a folder inside itself. Refusing dot segments at
+`pathSchema` fixed that, and was still the wrong shape: `/Trips/`, `//Trips` and `/Trips/.` all name the
+directory `/Trips`, so the same guard was fooled again by a spelling the blacklist hadn't met yet. The rule is
+not "reject the tricks", it is **the path we validate must be the path the volume writes**, and the only way
+to say that once is to demand the single spelling the volume itself produces (`isCanonicalPath`). Refused,
+never repaired: normalizing would put two spellings of one location into circulation and make every
+comparison, cache key and stored `openPath` a question of which spelling arrived. Notes are named literally
+(§4), so nothing legitimate needs another spelling.
+
+An import is the exception that proves it: `files[].path` is *relative*, so it is judged as the path it will
+become (`isCanonicalPath('/' + path)`) — same rule, no second policy. And because an archive is untrusted
+input, an entry the volume would respell is **screened out and reported** rather than sent on to be refused:
+one odd name must not cost the user the other thousand notes.
 
 **1b · A check is not a guarantee unless it is the operation.** The first version of "never overwrite" was
 `exists()` + `writeFile`, which reads as safe and isn't: it is only a *hint* about a moment that has already
@@ -194,7 +204,13 @@ folder left it dangling, and `writeFile`'s parent-creation silently *resurrected
 just deleted; renaming it did the same. That is a bug per mutation, forever. It is now derived at the moment
 of use: the folder last clicked in the tree is a **hint**, honoured only while it is still present in the
 listing (which comes from disk), else the open note's folder, else the root. Deleting, renaming and moving
-need no bookkeeping at all — the class is gone, not fixed. This is §3's "the disk is the only source of
+need no bookkeeping at all — the class is gone, not fixed.
+
+"Validate on use" means *every* candidate, and the fallback is a candidate too: `openPath` is also a pointer
+that outlives its folder, so `parentDir(openPath)` goes through the same liveness check, and the last resort
+is the root — which cannot go missing. Both live behind one `liveDir()` gate that every "create in here" path
+calls, including the one the tree hands a folder to, because the *last* moment before `writeFile` recreates a
+parent is the only honest place to ask. This is §3's "the disk is the only source of
 truth" applied to a *selection* rather than to the listing.
 
 **3 · Bound untrusted input at the seam, and charge the bound with what is REAL.** A dropped zip is

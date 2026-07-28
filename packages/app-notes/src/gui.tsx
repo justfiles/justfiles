@@ -349,16 +349,30 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// needs the folders, so the raw listing is what's held.
 	const notes = useMemo(() => entries.filter((entry) => entry.type === 'file'), [entries])
 
-	// Where a new note goes: the folder selected in the tree if it is STILL THERE,
-	// else beside the open note (Obsidian's "same folder as the current file"), else
-	// the root. Derived at the moment of use and checked against the listing, which
-	// is itself derived from disk — so a folder that was deleted or renamed simply
-	// stops being a target instead of being silently recreated by `writeFile`.
-	const createDir = useCallback(() => {
-		const selected = selectedDirRef.current
-		if (selected && entries.some((e) => e.type === 'dir' && e.path === selected)) return selected
-		return parentDir(openPath ?? '/')
-	}, [entries, openPath])
+	// A folder is a target only while the LISTING still has it — and the listing is
+	// derived from disk, so a folder the agent deleted or renamed simply stops being
+	// one. `null` means "gone", so callers can fall through to the next candidate; `/`
+	// is the volume root and always exists. This is the only check of its kind: every
+	// "create in here" goes through it, because `writeFile` auto-creates parents and
+	// would otherwise resurrect a deleted folder from a stale pointer.
+	const liveDir = useCallback(
+		(dir: string | null): string | null =>
+			dir === '/'
+				? '/'
+				: dir && entries.some((e) => e.type === 'dir' && e.path === dir)
+					? dir
+					: null,
+		[entries]
+	)
+
+	// Where a new note goes: the folder selected in the tree, else beside the open note
+	// (Obsidian's "same folder as the current file"), else the root — each candidate
+	// only while it is still live. Derived at the moment of use, never stored: a
+	// remembered folder is a second pointer to a location, and the location can go.
+	const createDir = useCallback(
+		() => liveDir(selectedDirRef.current) ?? liveDir(parentDir(openPath ?? '/')) ?? '/',
+		[liveDir, openPath]
+	)
 	liveRef.current.dir = createDir()
 
 	// Either surface can be showing the listing: the docked pane, or the dropdown
@@ -426,7 +440,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			const body = `${title}\n`
 			creatingRef.current = true
 			try {
-				const settled = await actions.create({ text: body, dir })
+				// Re-checked here, not only where the dir was picked: a tree row's folder can
+				// be gone by the time the name is typed, and this is the last moment before
+				// `writeFile` would recreate it.
+				const settled = await actions.create({ text: body, dir: liveDir(dir) ?? '/' })
 				if (settled.openPath) {
 					pendingPathRef.current = settled.openPath
 					loadedRef.current = settled.openPath
@@ -442,9 +459,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				el?.focus()
 				el?.setSelectionRange(el.value.length, el.value.length)
 			})
-			if (listOpen) void refresh()
+			if (listing) void refresh()
 		},
-		[flush, actions, listOpen, refresh]
+		[flush, actions, liveDir, listing, refresh]
 	)
 
 	// A move can land somewhere other than asked (the name was taken) or be refused

@@ -4,6 +4,7 @@ import * as v from 'valibot'
 import {
 	firstLine,
 	illegalMove,
+	isCanonicalPath,
 	isNotePath,
 	isUnder,
 	joinPath,
@@ -66,18 +67,29 @@ export const initialState: NotesState = {
 	error: null
 }
 
-// A path this app will act on. Dot segments are REFUSED, not normalized: `..`
-// makes any lexical check a lie — `/Other/../Trips/Sub` is not under `/Trips` to
-// `illegalMove` but is to the volume, which is enough to strand a folder inside
-// itself — and the chroot resolves them silently, so the path we validated would
-// not be the path we wrote. Notes are named literally (DESIGN.md §4); nothing
-// legitimate needs `.` or `..`. One schema, so every procedure and edge inherits it.
+// A path this app will act on: the CANONICAL spelling, or nothing. Not a blacklist of
+// spellings we have been bitten by (`..` once, `//` and a trailing `/` the next time)
+// — the rule is that the path we validate has to be the path the volume writes, and
+// the only way to say that once is to demand the one spelling it would produce
+// (`isCanonicalPath`). Anything else is refused rather than repaired, so a checked
+// path and a written path can never diverge and two spellings of one location can
+// never circulate. One schema, so every procedure and edge inherits it.
 const pathSchema = v.pipe(
 	v.string(),
-	v.minLength(1),
 	v.check(
-		(path) => !path.split('/').some((segment) => segment === '.' || segment === '..'),
-		'path must not contain "." or ".." segments'
+		isCanonicalPath,
+		'path must be canonical: absolute, no empty "//" segments, no trailing "/", no "." or ".."'
+	)
+)
+
+// `files[].path` inside an import is RELATIVE to `dir`, so it is judged as the thing
+// it becomes — a path under the knowledge base — by the same rule, not by a second,
+// laxer policy that would let `a//b.md` through the seam a canonical path is promised.
+const memberSchema = v.pipe(
+	v.string(),
+	v.check(
+		(path) => isCanonicalPath(`/${path}`),
+		'path must be a relative path with no empty, "." or ".." segments'
 	)
 )
 
@@ -259,7 +271,7 @@ export const app = defineApp({
 				'Write a batch of notes, merging into the knowledge base — the import path for an Obsidian vault. `files[].path` is relative to `dir` (default "/"); folders are created as needed and an existing note is never overwritten (the incoming one is numbered instead).',
 			schema: v.object({
 				dir: v.optional(pathSchema),
-				files: v.array(v.object({ path: pathSchema, text: v.string() }))
+				files: v.array(v.object({ path: memberSchema, text: v.string() }))
 			}),
 			async run({ dir, files }, app) {
 				let written = 0

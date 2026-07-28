@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import {
 	displayPath,
 	illegalMove,
+	isCanonicalPath,
 	isUnder,
 	matchNotes,
 	noteTitle,
@@ -62,6 +63,21 @@ test('a renamed note keeps its extension when the typed name has none', () => {
 	// An explicit extension is respected, and folders are left alone.
 	expect(renameTarget('/Kyoto.md', '/Kyoto.txt')).toBe('/Kyoto.txt')
 	expect(renameTarget('/Trips', '/Travel')).toBe('/Travel')
+})
+
+test('a path has exactly one accepted spelling', () => {
+	expect(isCanonicalPath('/')).toBe(true)
+	expect(isCanonicalPath('/Trips/Kyoto.md')).toBe(true)
+	expect(isCanonicalPath('/2023-09-12 Meeting.md')).toBe(true)
+	// The spellings that make a lexical rule lie: all of these reach /Trips, and
+	// `isUnder('/Trips/Sub', …)` is false for every one of them.
+	for (const spelling of ['/Trips/', '//Trips', '/Trips//Sub', '/Trips/.', '/Other/../Trips']) {
+		expect(isCanonicalPath(spelling)).toBe(false)
+		expect(isUnder('/Trips/Sub', spelling)).toBe(false)
+	}
+	// Relative and empty are not paths this app acts on.
+	expect(isCanonicalPath('Trips')).toBe(false)
+	expect(isCanonicalPath('')).toBe(false)
 })
 
 test('a move into its own subtree is refused, everything else allowed', () => {

@@ -46,6 +46,30 @@ export function joinPath(dir: string, name: string): string {
 	return dir === '/' ? `/${name}` : `${dir}/${name}`
 }
 
+/**
+ * True only of the ONE spelling the volume gives a path: absolute, no empty
+ * segments (`//x`, `/x/`), no `.`/`..`.
+ *
+ * Every rule in this module is lexical — `isUnder`, `illegalMove`, `parentDir`,
+ * `joinPath` all reason about strings — and a lexical rule is a claim about a path
+ * only if the volume agrees with the spelling. It does not: `/Trips/`, `//Trips` and
+ * `/Trips` all reach the same directory, so `isUnder('/Trips/Sub', '/Trips/')` is
+ * `false` while the move it guards is very much a move into itself.
+ *
+ * So the seam DEMANDS the canonical spelling instead of repairing spellings. Two
+ * ways to write one path would otherwise circulate through state, comparisons and
+ * caches; refusing is a one-line rule, normalizing is a permanent invariant to keep.
+ * Notes are named literally, so nothing legitimate needs another spelling.
+ */
+export function isCanonicalPath(path: string): boolean {
+	if (path === '/') return true
+	if (!path.startsWith('/') || path.endsWith('/')) return false
+	return path
+		.slice(1)
+		.split('/')
+		.every((segment) => segment !== '' && segment !== '.' && segment !== '..')
+}
+
 /** True when `path` is `dir` itself or lives under it (for folder renames). */
 export function isUnder(path: string, dir: string): boolean {
 	return path === dir || path.startsWith(dir === '/' ? '/' : `${dir}/`)

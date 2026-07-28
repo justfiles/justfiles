@@ -287,16 +287,23 @@ test('rename refuses to strand a folder inside itself', async () => {
 	expect(h.dispatched).toEqual([])
 })
 
-test('dot segments are refused everywhere, so no lexical path check can be fooled', async () => {
+test('only the canonical spelling of a path is accepted, so no lexical check can be fooled', async () => {
 	const vol = fakeVolume({ '/Trips/Kyoto.md': 'x' }, ['/Trips'])
 	const h = handle(initialState, vol.invoke)
-	// `/Other/../Trips/Sub` is not under `/Trips` lexically, but it is the moment the
-	// volume resolves it — which would strand /Trips inside itself.
+	// Each of these is the SAME move — /Trips into its own subtree — written so that a
+	// lexical `isUnder` says no while the volume, which normalizes first, says yes.
+	for (const from of ['/Trips/', '//Trips', '/Trips/.']) {
+		await expect(app.runProcedure('rename', { from, to: '/Trips/Sub' }, h.app)).rejects.toThrow()
+	}
 	await expect(
 		app.runProcedure('rename', { from: '/Trips', to: '/Other/../Trips/Sub' }, h.app)
 	).rejects.toThrow()
+	// Every path parameter inherits the rule, whatever the procedure does with it.
 	await expect(app.runProcedure('create', { text: 'x', dir: '/..' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('create', { text: 'x', dir: '/Trips/' }, h.app)).rejects.toThrow()
 	await expect(app.runProcedure('readNote', { path: '/a/./b.md' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('mkdir', { path: '//New' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('remove', { path: '/Trips//Kyoto.md' }, h.app)).rejects.toThrow()
 	// Nothing moved, nothing written.
 	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
 })

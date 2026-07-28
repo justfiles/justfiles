@@ -188,3 +188,18 @@ test('two loose notes with the same name both survive planning', () => {
 	])
 	expect(plan.skipped).toEqual([]) // neither was lost, so neither is a skip
 })
+
+test('an entry the volume would respell is dropped, not sent on to be refused', () => {
+	// One odd name in an archive must not cost the user the other thousand notes: it is
+	// screened here (and reported) instead of failing the procedure's canonical check.
+	const plan = planDrop(
+		{
+			'vault/Kyoto.md': bytes('Kyoto'),
+			'vault//Odd.md': bytes('empty segment'),
+			'/vault/Absolute.md': bytes('leading slash')
+		},
+		'vault.zip'
+	)
+	expect(plan.files.map((f) => f.path)).toEqual(['Kyoto.md'])
+	expect(plan.skipped.map((s) => s.reason)).toEqual(['junk', 'junk'])
+})

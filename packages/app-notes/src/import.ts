@@ -2,7 +2,7 @@
 // notes to write and a list of skips out. No IO, no state — so the rules are
 // testable and the GUI stays a thin unzip-and-chunk loop (DESIGN.md §9).
 
-import { isNotePath } from './notes.ts'
+import { isCanonicalPath, isNotePath } from './notes.ts'
 
 export type ImportFile = { path: string; text: string }
 // An entry to plan: the bytes, and the path they came in under. A LIST, never a
@@ -123,6 +123,11 @@ export function admit(
 }
 
 function classify(path: string): SkipReason | null {
+	// A name we could not write as one path: `a//b.md`, `/abs.md`. An archive is
+	// untrusted input, so a spelling the volume would rewrite is DROPPED here (with a
+	// report) rather than sent on to be refused at the procedure — one odd entry must
+	// not cost the user the other thousand. Same rule as the procedure's, one call.
+	if (!isCanonicalPath(`/${path}`)) return 'junk'
 	// OS and sync debris first: `.DS_Store` and `__MACOSX/._x` are dotted too, and
 	// "junk" is the more useful thing to tell the user.
 	if (JUNK.test(path) || CONFLICT.test(path)) return 'junk'
