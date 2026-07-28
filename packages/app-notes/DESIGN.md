@@ -264,6 +264,16 @@ owns only the seam:
   `composedPath()` says whether the drop landed on a row (the tree owns it) or on blank space (we do).
   Dropping onto a root-level *row* already means root, so the two paths together cover a full tree.
 - **Selecting a folder** sets the folder new notes land in; selecting a note opens it.
+- **Refreshes are coalesced and ordered.** A bulk writer — an import, or the agent — bumps `treeRevision`
+  once per file, and a full recursive scan per note would swamp the app (301 notes went from ~301 growing
+  scans to **2**). Each bump resets a 250ms timer, so the scan runs when the writes stop; opening the pane
+  is not a bump, so it still lists immediately. `refresh` also carries a token, because scans overlap and an
+  older, smaller listing must never overwrite a newer one.
+- **A move flushes first.** If the open note (or a folder above it) is the thing being moved, the dirty
+  buffer is written to the OLD path before the rename — otherwise the pending autosave lands after the move
+  and recreates the file we just moved, or the read effect replaces the buffer with the last saved body.
+- **Deleting the folder new notes land in resets that target.** `writeFile` creates parents, so a stale
+  `activeDir` would silently resurrect the folder the user just deleted.
 - **Rows show real filenames**, extension included — the tree is the file-first surface (the search
   dropdown is the title-first one). A rename that drops the extension keeps it (`renameTarget`), so a note
   cannot silently stop being a note.

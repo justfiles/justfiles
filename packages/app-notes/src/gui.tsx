@@ -3,11 +3,14 @@ import { unzip } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
 import { type ImportPlan, normalizePath, planImport, type Skip, screenEntry } from './import.ts'
-import { displayPath, matchNotes, parentDir } from './notes.ts'
+import { displayPath, isUnder, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
 
 const AUTOSAVE_MS = 800
+// A bulk writer bumps `treeRevision` per file; wait for the burst to end before
+// re-scanning. Short enough that a single agent write still feels immediate.
+const REFRESH_MS = 250
 // One import call per batch of notes: big enough to keep the round trips down,
 // small enough that the status line moves and one message stays modest.
 const IMPORT_CHUNK = 50
@@ -93,7 +96,9 @@ function relativeTime(mtimeNs: number): string {
 }
 
 export default function Notes({ state, actions }: GUIProps<NotesApp>) {
-	const { openPath, revision, treeRevision, error } = state
+	// Both counters are optional in persisted state (added after the first release,
+	// and `init` is never re-merged) — default them at the door.
+	const { openPath, revision = 0, treeRevision = 0, error } = state
 
 	// The editor buffer is transient GUI-local state; the body bytes never enter
 	// the reducer. `dirty` tracks unsaved edits (DESIGN.md §3).
@@ -212,17 +217,33 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// The list is never cached in reducer state (DESIGN.md §3) — re-scan /notes
 	// whenever a surface that shows it appears (search focus, docked pane), and
 	// whenever something was created/removed/renamed on disk (`treeRevision`).
+	const refreshTokenRef = useRef(0)
+	const treeSeenRef = useRef(0)
 	const refresh = useCallback(async () => {
-		setEntries(await actions.list({}))
+		// Scans overlap (a bump can land mid-scan), so only the newest result may win
+		// — an older, smaller listing must not overwrite it.
+		const token = ++refreshTokenRef.current
+		const listed = await actions.list({})
+		if (refreshTokenRef.current === token) setEntries(listed)
 	}, [actions])
 
 	// The dropdown and the search ranking only care about notes; the tree also
 	// needs the folders, so the raw listing is what's held.
 	const notes = useMemo(() => entries.filter((entry) => entry.type === 'file'), [entries])
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: treeRevision is a cache-busting trigger — a bump means /notes changed on disk, so re-scan.
 	useEffect(() => {
-		if (listOpen) void refresh()
+		if (!listOpen) return
+		// `treeRevision` bumps once per write, and a bulk writer (an import, or the
+		// agent) emits thousands — one growing full-tree scan per note would swamp the
+		// app. Coalesce: each bump resets the timer, so the scan runs once the writes
+		// stop. Opening the pane is not a bump, so it still lists immediately.
+		if (treeSeenRef.current === treeRevision) {
+			void refresh()
+			return
+		}
+		treeSeenRef.current = treeRevision
+		const id = setTimeout(() => void refresh(), REFRESH_MS)
+		return () => clearTimeout(id)
 	}, [listOpen, treeRevision, refresh])
 
 	const openNote = useCallback(
@@ -291,17 +312,25 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// failure — but the user has to be told, or a note quietly appears as "… 2".
 	const moveNote = useCallback(
 		async (from: string, to: string) => {
+			// Land a dirty buffer at the OLD path FIRST. Otherwise the pending save
+			// (debounce or blur) writes after the move — recreating the file we just
+			// moved — or the read effect replaces the buffer with the last saved body
+			// when `openPath` follows the move.
+			if (liveRef.current.openPath && isUnder(liveRef.current.openPath, from)) await flush()
 			const { path } = await actions.rename({ from, to })
 			if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
 			void refresh()
 		},
-		[actions, refresh]
+		[actions, flush, refresh]
 	)
 
 	const removeNote = useCallback(
 		async (path: string) => {
 			await actions.remove({ path })
 			setActive(0)
+			// New notes land in `activeDir`; if that folder just went away, `writeFile`'s
+			// parent-creation would silently resurrect it. Fall back to its parent.
+			setActiveDir((dir) => (isUnder(dir, path) ? parentDir(path) : dir))
 			void refresh()
 		},
 		[actions, refresh]
