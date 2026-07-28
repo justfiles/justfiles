@@ -275,8 +275,8 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	)
 
 	// Import a drop: unzip + plan in the GUI, write in chunks through the reducer
-	// (DESIGN.md §9). The first chunk names the destination folder and the reducer
-	// answers with the one it resolved; the rest go there.
+	// (DESIGN.md §9). The vault's contents MERGE into the knowledge base root — no
+	// wrapper folder — and a name that is already taken lands beside it as `… 2`.
 	const importDrop = useCallback(
 		async (files: File[]) => {
 			if (files.length === 0) return
@@ -288,20 +288,23 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					setStatus(`Nothing to import — no .md or .txt files (${plan.skipped.length} skipped)`)
 					return
 				}
-				let dir: string | undefined
 				let written = 0
+				let renamed = 0
 				for (let at = 0; at < plan.files.length; at += IMPORT_CHUNK) {
-					const batch = plan.files.slice(at, at + IMPORT_CHUNK)
-					const result = await actions.importNotes(
-						dir === undefined ? { name: plan.name, files: batch } : { dir, files: batch }
-					)
-					dir = result.dir
+					const result = await actions.importNotes({
+						files: plan.files.slice(at, at + IMPORT_CHUNK)
+					})
 					written += result.written
+					renamed += result.renamed
 					setStatus(`Importing… ${written}/${plan.files.length}`)
 				}
-				const skipped = plan.skipped.length > 0 ? `, skipped ${plan.skipped.length}` : ''
+				const extra = [
+					`${plan.folders} folder${plan.folders === 1 ? '' : 's'}`,
+					...(plan.skipped.length > 0 ? [`${plan.skipped.length} skipped`] : []),
+					...(renamed > 0 ? [`${renamed} renamed to avoid a clash`] : [])
+				]
 				setStatus(
-					`Imported ${written} note${written === 1 ? '' : 's'} into ${dir} (${plan.folders} folder${plan.folders === 1 ? '' : 's'}${skipped})`
+					`Imported ${written} note${written === 1 ? '' : 's'} from ${plan.name} (${extra.join(', ')})`
 				)
 				if (!listOpen) setListOpen(true)
 				void refresh()

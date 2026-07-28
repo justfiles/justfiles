@@ -18,27 +18,22 @@ import {
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
-// Dedup a name with an `exists()` probe — `Kyoto.md`, `Kyoto 2.md`, … There is
-// no cached list to consult; the disk is the only source of truth (DESIGN.md §3).
+// Dedup a path with an `exists()` probe — `Kyoto.md`, `Kyoto 2.md`, … keeping the
+// extension. There is no cached list to consult; the disk is the only source of
+// truth (DESIGN.md §3). Used by both `create` and the importer, so a new note and
+// an imported one can never silently overwrite anything.
 async function freePath(
-	dir: string,
-	base: string,
-	exists: (path: string) => Promise<boolean>
+	path: string,
+	exists: (probe: string) => Promise<boolean>
 ): Promise<string> {
-	const first = joinPath(dir, `${base}${NOTE_EXT}`)
-	if (!(await exists(first))) return first
+	if (!(await exists(path))) return path
+	const dot = path.lastIndexOf('.')
+	const cut = dot > path.lastIndexOf('/') ? dot : path.length
+	const stem = path.slice(0, cut)
+	const ext = path.slice(cut)
 	for (let n = 2; ; n++) {
-		const candidate = joinPath(dir, `${base} ${n}${NOTE_EXT}`)
+		const candidate = `${stem} ${n}${ext}`
 		if (!(await exists(candidate))) return candidate
-	}
-}
-
-// Dedup a folder name the same way — an import lands in a FRESH folder, so a
-// re-import never merges into (or overwrites) the previous one.
-async function freeDir(base: string, exists: (path: string) => Promise<boolean>): Promise<string> {
-	if (!(await exists(`/${base}`))) return `/${base}`
-	for (let n = 2; ; n++) {
-		if (!(await exists(`/${base} ${n}`))) return `/${base} ${n}`
 	}
 }
 
@@ -177,8 +172,9 @@ export const app = defineApp({
 				'Create a note from text; its filename is the first line, e.g. "Remember the milk" → /Remember the milk.md. Pass `dir` to create it inside a folder.',
 			schema: v.object({ text: v.string(), dir: v.optional(pathSchema) }),
 			async run({ text, dir }, app) {
-				const path = await freePath(dir ?? '/', sanitizeName(firstLine(text)), (probe) =>
-					app.invoke('volume', 'exists', probe)
+				const path = await freePath(
+					joinPath(dir ?? '/', `${sanitizeName(firstLine(text))}${NOTE_EXT}`),
+					(probe) => app.invoke('volume', 'exists', probe)
 				)
 				await app.invoke('volume', 'writeFile', path, enc.encode(text))
 				const { seq } = await app.dispatch({ type: 'open', params: { path } })
@@ -197,35 +193,32 @@ export const app = defineApp({
 		}),
 
 		// Write a batch of imported notes (DESIGN.md §9). The GUI unzips, plans and
-		// chunks; this is the write half. The FIRST call passes `name` and gets back
-		// the folder it resolved (`/MyVault`, `/MyVault 2`, …); later chunks pass that
-		// `dir` back so one import stays in one folder.
+		// chunks; this is the write half. Paths are relative to `dir` (the knowledge
+		// base root by default), so an imported vault MERGES into the existing tree
+		// rather than hiding inside a wrapper folder. Nothing is ever overwritten: a
+		// note whose path is taken lands beside it as `… 2`, and that count comes back
+		// so the GUI can report it.
 		importNotes: p.procedure({
 			description:
-				'Write a batch of notes under a fresh top-level folder — the import path for an Obsidian vault. Paths are relative to that folder. Pass `name` on the first batch and the returned `dir` on the rest.',
+				'Write a batch of notes, merging into the knowledge base — the import path for an Obsidian vault. `files[].path` is relative to `dir` (default "/"); folders are created as needed and an existing note is never overwritten (the incoming one is numbered instead).',
 			schema: v.object({
-				name: v.optional(v.string()),
 				dir: v.optional(pathSchema),
 				files: v.array(v.object({ path: pathSchema, text: v.string() }))
 			}),
-			async run({ name, dir, files }, app) {
-				const target =
-					dir ??
-					(await freeDir(sanitizeName(name ?? 'Imported'), (probe) =>
-						app.invoke('volume', 'exists', probe)
-					))
+			async run({ dir, files }, app) {
+				let written = 0
+				let renamed = 0
 				for (const file of files) {
 					// Imported names are written VERBATIM — never sanitized (DESIGN.md §4):
 					// wikilinks address notes by their exact filename. `writeFile` creates
 					// the parent folders.
-					await app.invoke(
-						'volume',
-						'writeFile',
-						joinPath(target, file.path),
-						enc.encode(file.text)
-					)
+					const wanted = joinPath(dir ?? '/', file.path)
+					const path = await freePath(wanted, (probe) => app.invoke('volume', 'exists', probe))
+					if (path !== wanted) renamed++
+					await app.invoke('volume', 'writeFile', path, enc.encode(file.text))
+					written++
 				}
-				return { dir: target, written: files.length }
+				return { written, renamed }
 			}
 		}),
 

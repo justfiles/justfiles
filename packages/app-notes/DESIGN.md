@@ -120,7 +120,7 @@ pure/sync; all IO is in procedures or via `t.cmd`.
 | `create({ text, dir? })` | procedure | both | New note; filename from the first line, `dir` defaults to `/` |
 | `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
 | `readNote({ path })` | procedure | both | Body as text |
-| `importNotes({ name \| dir, files })` | procedure | both | Bulk write under a FRESH top-level folder — the vault-import half (§9) |
+| `importNotes({ dir?, files })` | procedure | both | Bulk write, relative to `dir` (default `/`); merges folders, numbers a clashing note rather than overwriting — the vault-import half (§9) |
 | `remove({ path })` | procedure | **gui** | Destructive: a note, or a folder and everything in it. Clears the editor if the open note went with it |
 | `fileChanged` / `treeChanged` | `t.fromEvent` | internal | The two watch signals below |
 
@@ -309,7 +309,7 @@ surface below. `description` + `examples` are its UI — written above.
 |----|----|----|
 | `open` | both | **The** coordinating action — put a note in front of the user. |
 | `create`, `save`, `rename`, `mkdir` | both | Available, but the agent usually writes files directly. |
-| `importNotes` | both | Bulk write under a fresh folder (§9). The agent can use it to land a batch it fetched; the GUI uses it for dropped vaults. |
+| `importNotes` | both | Bulk write, merging into the KB and never overwriting (§9). The agent can use it to land a batch it fetched; the GUI uses it for dropped vaults. |
 | `list` | both | Fresh listing on demand — the agent's view of the KB is the filesystem, never cached state. |
 | `newNote` | both | Harmless; mostly GUI-driven. |
 | `readNote` | both | Convenience; the agent can also read the file directly. |
@@ -393,18 +393,25 @@ The split is: **the GUI unzips and plans, the reducer writes.**
 - `planImport(entries, zipName)` (`src/import.ts`) is pure — entry names + bytes in, notes-to-write and
   skips out — so every rule below is a unit test rather than a thing you discover during someone's
   migration.
-- `importNotes({ name | dir, files })` writes one batch. The first call passes `name` and gets back the
-  folder it resolved (`/MyVault`, then `/MyVault 2`, …); later chunks pass that `dir` back, so one import
-  is one folder and a re-import **never merges into or overwrites the previous one**. Batches of 50 keep
-  the round trips down and the status line moving.
+- `importNotes({ dir?, files })` writes one batch, `dir` defaulting to the KB root. Batches of 50 keep the
+  round trips down and the status line moving.
 
 What it does:
 
 - **In:** `.md` / `.txt`, folder structure preserved, filenames **verbatim** (only NFC-normalized — macOS
-  zips carry decomposed unicode, and skipping that step yields visually-duplicate notes), landed under a
-  single `/<VaultName>/` folder so it is contained and reversible. The vault's own root folder names the
-  destination; a zip without one falls back to the archive's filename. Loose `.md`/`.txt` files dropped
-  without a zip take the same path.
+  zips carry decomposed unicode, and skipping that step yields visually-duplicate notes).
+- **The vault MERGES into the KB root — no wrapper folder.** `Compress` on `~/Documents/notes` produces a
+  zip whose every entry starts `notes/`; that single shared root folder is *the archive's packaging*, not
+  part of the user's structure, so it is stripped and `notes/Trips/Kyoto.md` lands at `/Trips/Kyoto.md`.
+  Anything else would put the whole vault one level deeper than it was in Obsidian, which breaks the
+  "these are just my notes" feeling and every relative markdown link with it. Only ONE level is stripped:
+  past that, a single top folder is indistinguishable from a vault that genuinely keeps everything in one
+  folder, and guessing would silently flatten real structure.
+- **A name clash never overwrites.** Folders merge (importing `Trips/` into an existing `Trips/` is what
+  the user means), and a note whose exact path is taken lands beside it as `Kyoto 2.md` — the same
+  `freePath` probe `create` uses. The count comes back from the procedure so the status line can say
+  "3 renamed to avoid a clash": the user keeps both copies and decides.
+- Loose `.md`/`.txt` files dropped without a zip take the same path.
 - **Skipped, and reported** (never silently dropped — the count is in the status line, the detail in the
   console): any dotted segment (`.obsidian/`, `.trash/`, `.git/`), `__MACOSX/`, `.DS_Store`, `* (conflicted
   copy)*`, and everything that isn't a note — attachments, `.canvas`, `.base`, plugin data. Attachments are
