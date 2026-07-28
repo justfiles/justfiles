@@ -5,6 +5,10 @@
 import { isNotePath } from './notes.ts'
 
 export type ImportFile = { path: string; text: string }
+// An entry to plan: the bytes, and the path they came in under. A LIST, never a
+// map keyed by path — two loose files dropped from different folders share a
+// basename, and a map would silently keep only the last one.
+export type ImportEntry = { path: string; bytes: Uint8Array }
 export type SkipReason = 'config' | 'junk' | 'attachment' | 'too much'
 export type Skip = { path: string; reason: SkipReason }
 export type ImportPlan = {
@@ -45,6 +49,10 @@ export const normalizePath = (path: string) => normalize(path)
  */
 export type Screen = {
 	accept(path: string, size: number): boolean
+	// A refusal discovered after `accept` said yes — a streamed archive need not
+	// declare its entry sizes, so the only place an oversized one shows up is
+	// mid-inflate. Reported like any other skip.
+	reject(path: string, reason: SkipReason): void
 	readonly skipped: readonly Skip[]
 	readonly stopped: boolean
 }
@@ -75,6 +83,11 @@ export function createScreen(maxBytes = MAX_BYTES): Screen {
 			}
 			answers.set(path, reason === null)
 			return reason === null
+		},
+		reject(raw, reason) {
+			const path = normalize(raw)
+			answers.set(path, false)
+			skipped.push({ path, reason })
 		},
 		get skipped() {
 			return skipped
@@ -134,17 +147,17 @@ const decoder = new TextDecoder()
  * refusals and its remaining budget carry into the plan.
  */
 export function planImport(
-	entries: Record<string, Uint8Array>,
+	entries: readonly ImportEntry[],
 	zipName: string,
 	options: { screen?: Screen } = {}
 ): ImportPlan {
 	const screen = options.screen ?? createScreen()
-	const keep: Array<{ path: string; bytes: Uint8Array }> = []
-	for (const [raw, bytes] of Object.entries(entries)) {
-		const path = normalize(raw)
+	const keep: ImportEntry[] = []
+	for (const entry of entries) {
+		const path = normalize(entry.path)
 		// Directory entries carry no content; folders come from their children.
 		if (path.endsWith('/')) continue
-		if (screen.accept(path, bytes.length)) keep.push({ path, bytes })
+		if (screen.accept(path, entry.bytes.length)) keep.push({ path, bytes: entry.bytes })
 	}
 
 	// The root is computed over KEPT paths only — a macOS zip carries `__MACOSX/`

@@ -1,8 +1,15 @@
 import type { GUIProps } from '@justfiles/app/react'
-import { unzip } from 'fflate'
+import { Unzip, UnzipInflate } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
-import { createScreen, type ImportPlan, planImport, type Screen } from './import.ts'
+import {
+	createScreen,
+	type ImportEntry,
+	type ImportPlan,
+	MAX_BYTES,
+	planImport,
+	type Screen
+} from './import.ts'
 import { displayPath, isUnder, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
@@ -46,20 +53,69 @@ function clampWidth(px: number): number {
 	return Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, Math.round(px)))
 }
 
-// Unzip only what we intend to keep. `filter` runs against the archive's central
-// directory, so an entry is judged from its HEADER and never inflated — a
-// picture-heavy vault, a zip bomb, or simply more notes than we will accept would
-// otherwise be decompressed into the tab in full just to be thrown away. The screen
-// carries the drop's running budget, which is why it is passed in rather than made
-// here (see `createScreen`).
-function readZip(bytes: Uint8Array, screen: Screen): Promise<Record<string, Uint8Array>> {
-	return new Promise((resolve, reject) => {
-		unzip(
-			bytes,
-			{ filter: (info) => !info.name.endsWith('/') && screen.accept(info.name, info.originalSize) },
-			(error, entries) => (error ? reject(error) : resolve(entries))
-		)
+// Read the archive as a STREAM. Two reasons, both about memory the tab does not
+// have: an entry we don't want is judged from its header and never inflated, and
+// the archive itself is never held — `arrayBuffer()` on a 2 GB vault of photos
+// would kill the tab before a single limit was consulted. That vault now costs us
+// the few MB of notes inside it.
+async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
+	const kept: ImportEntry[] = []
+	let failure: Error | null = null
+	const unzipper = new Unzip((entry) => {
+		if (entry.name.endsWith('/')) return
+		// A streamed archive need not declare sizes in its local headers, in which case
+		// this is 0 and only the name decides — the cap below is the backstop.
+		if (!screen.accept(entry.name, entry.originalSize ?? 0)) return
+		let parts: Uint8Array[] = []
+		let size = 0
+		entry.ondata = (error, chunk, final) => {
+			if (error) {
+				failure ??= error
+				return
+			}
+			if (size > MAX_BYTES) return // already given up on this entry
+			size += chunk.length
+			if (size > MAX_BYTES) {
+				// It declared nothing, or lied: drop what we have and report it.
+				parts = []
+				screen.reject(entry.name, 'attachment')
+				return
+			}
+			parts.push(chunk)
+			if (final) kept.push({ path: entry.name, bytes: concat(parts, size) })
+		}
+		entry.start()
 	})
+	unzipper.register(UnzipInflate)
+	const reader = file.stream().getReader()
+	for (;;) {
+		const { done, value } = await reader.read()
+		if (done) {
+			unzipper.push(new Uint8Array(0), true)
+			break
+		}
+		unzipper.push(value)
+		if (failure) break
+		// The budget is spent, so every later entry would be refused anyway — stop
+		// reading rather than streaming the remaining gigabytes in order to reject them.
+		if (screen.stopped) {
+			await reader.cancel()
+			break
+		}
+	}
+	if (failure) throw failure
+	return kept
+}
+
+function concat(parts: readonly Uint8Array[], size: number): Uint8Array {
+	if (parts.length === 1) return parts[0] as Uint8Array
+	const out = new Uint8Array(size)
+	let at = 0
+	for (const part of parts) {
+		out.set(part, at)
+		at += part.length
+	}
+	return out
 }
 
 const isZip = (file: File) => file.name.toLowerCase().endsWith('.zip')
@@ -78,16 +134,17 @@ async function planDrop(files: File[]): Promise<ImportPlan> {
 		)
 	}
 	const zip = zips[0]
-	if (zip)
-		return planImport(await readZip(new Uint8Array(await zip.arrayBuffer()), screen), zip.name, {
-			screen
-		})
-	const entries: Record<string, Uint8Array> = {}
+	if (zip) return planImport(await readZip(zip, screen), zip.name, { screen })
+	// A LIST, not a map keyed by name: two files dropped from different folders share
+	// a basename, and a map would keep only the last — reported as a clean success
+	// while losing a note. Duplicates ride through and the write-side claim numbers
+	// the second one.
+	const entries: ImportEntry[] = []
 	for (const file of files) {
 		// Screened from `File.size` FIRST: reading a 2 GB body into the tab only to
 		// classify it as an attachment is the same mistake as inflating a zip entry.
 		if (!screen.accept(file.name, file.size)) continue
-		entries[file.name] = new Uint8Array(await file.arrayBuffer())
+		entries.push({ path: file.name, bytes: new Uint8Array(await file.arrayBuffer()) })
 	}
 	return planImport(entries, 'Imported', { screen })
 }

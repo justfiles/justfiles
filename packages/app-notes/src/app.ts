@@ -66,7 +66,20 @@ export const initialState: NotesState = {
 	error: null
 }
 
-const pathSchema = v.pipe(v.string(), v.minLength(1))
+// A path this app will act on. Dot segments are REFUSED, not normalized: `..`
+// makes any lexical check a lie — `/Other/../Trips/Sub` is not under `/Trips` to
+// `illegalMove` but is to the volume, which is enough to strand a folder inside
+// itself — and the chroot resolves them silently, so the path we validated would
+// not be the path we wrote. Notes are named literally (DESIGN.md §4); nothing
+// legitimate needs `.` or `..`. One schema, so every procedure and edge inherits it.
+const pathSchema = v.pipe(
+	v.string(),
+	v.minLength(1),
+	v.check(
+		(path) => !path.split('/').some((segment) => segment === '.' || segment === '..'),
+		'path must not contain "." or ".." segments'
+	)
+)
 
 export const app = defineApp({
 	init: initialState,

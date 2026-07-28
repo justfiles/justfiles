@@ -286,3 +286,35 @@ test('rename refuses to strand a folder inside itself', async () => {
 	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
 	expect(h.dispatched).toEqual([])
 })
+
+test('dot segments are refused everywhere, so no lexical path check can be fooled', async () => {
+	const vol = fakeVolume({ '/Trips/Kyoto.md': 'x' }, ['/Trips'])
+	const h = handle(initialState, vol.invoke)
+	// `/Other/../Trips/Sub` is not under `/Trips` lexically, but it is the moment the
+	// volume resolves it — which would strand /Trips inside itself.
+	await expect(
+		app.runProcedure('rename', { from: '/Trips', to: '/Other/../Trips/Sub' }, h.app)
+	).rejects.toThrow()
+	await expect(app.runProcedure('create', { text: 'x', dir: '/..' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('readNote', { path: '/a/./b.md' }, h.app)).rejects.toThrow()
+	// Nothing moved, nothing written.
+	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
+})
+
+test('an import of same-named notes keeps both, numbering the second', async () => {
+	const vol = fakeVolume()
+	const h = handle(initialState, vol.invoke)
+	const result = (await app.runProcedure(
+		'importNotes',
+		{
+			files: [
+				{ path: 'Kyoto.md', text: 'first' },
+				{ path: 'Kyoto.md', text: 'second' }
+			]
+		},
+		h.app
+	)) as { written: number; renamed: number }
+	expect(result).toEqual({ written: 2, renamed: 1 })
+	expect(vol.store.get('/Kyoto.md')).toBe('first')
+	expect(vol.store.get('/Kyoto 2.md')).toBe('second')
+})

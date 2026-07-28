@@ -10,6 +10,10 @@ import {
 
 const enc = new TextEncoder()
 const bytes = (text: string) => enc.encode(text)
+// The planner takes a LIST (two loose files can share a basename); these tests are
+// written as maps for readability where the paths happen to be unique.
+const entries = (map: Record<string, Uint8Array>) =>
+	Object.entries(map).map(([path, data]) => ({ path, bytes: data }))
 
 test('a single shared top folder is the vault root; anything else is not', () => {
 	expect(commonRoot(['MyVault/a.md', 'MyVault/Notes/b.md'])).toBe('MyVault')
@@ -28,7 +32,7 @@ test('the vault folder name comes from its own root folder, else the archive', (
 
 test('planning an export keeps the notes, the structure, and nothing else', () => {
 	const plan = planImport(
-		{
+		entries({
 			'MyVault/Kyoto.md': bytes('# Kyoto'),
 			'MyVault/Trips/Japan/Osaka.md': bytes('Osaka'),
 			'MyVault/Groceries.txt': bytes('eggs'),
@@ -44,7 +48,7 @@ test('planning an export keeps the notes, the structure, and nothing else', () =
 			'MyVault/Board.canvas': bytes('{}'),
 			// Directory entries carry nothing; folders come from their children.
 			'MyVault/Trips/': bytes('')
-		},
+		}),
 		'Obsidian export.zip'
 	)
 
@@ -70,13 +74,13 @@ test('planning an export keeps the notes, the structure, and nothing else', () =
 
 test('macOS decomposed filenames are normalized, so they stop looking duplicated', () => {
 	// "Kyōto" as NFD (o + combining macron) must land as NFC.
-	const plan = planImport({ 'Vault/Kyo\u0304to.md': bytes('x') }, 'Vault.zip')
+	const plan = planImport(entries({ 'Vault/Kyo\u0304to.md': bytes('x') }), 'Vault.zip')
 	expect(plan.files[0]?.path).toBe('Kyōto.md'.normalize('NFC'))
 	expect(plan.files[0]?.path.normalize('NFD')).not.toBe(plan.files[0]?.path)
 })
 
 test('an oversized file is reported rather than pulled into memory-sized batches', () => {
-	const plan = planImport({ 'Vault/Huge.md': bytes('x'.repeat(50)) }, 'Vault.zip', {
+	const plan = planImport(entries({ 'Vault/Huge.md': bytes('x'.repeat(50)) }), 'Vault.zip', {
 		screen: createScreen(10)
 	})
 	expect(plan.files).toEqual([])
@@ -85,7 +89,10 @@ test('an oversized file is reported rather than pulled into memory-sized batches
 })
 
 test('loose notes with no wrapping folder keep their names', () => {
-	const plan = planImport({ 'hello.md': bytes('42\n'), 'notes.txt': bytes('hi') }, 'Imported')
+	const plan = planImport(
+		entries({ 'hello.md': bytes('42\n'), 'notes.txt': bytes('hi') }),
+		'Imported'
+	)
 	expect(plan.name).toBe('Imported')
 	expect(plan.files.map((file) => file.path).sort()).toEqual(['hello.md', 'notes.txt'])
 	expect(plan.folders).toBe(0)
@@ -138,10 +145,38 @@ test('one screen spans the whole drop, and answering twice is free', () => {
 	expect(screen.accept('Vault/Attachments/pic.png', 10)).toBe(false)
 	expect(screen.accept('Vault/Attachments/pic.png', 10)).toBe(false)
 	expect(screen.skipped).toHaveLength(1) // reported once, not once per ask
-	const plan = planImport({ 'Vault/Kyoto.md': bytes('x') }, 'Vault.zip', { screen })
+	const plan = planImport(entries({ 'Vault/Kyoto.md': bytes('x') }), 'Vault.zip', { screen })
 	expect(plan.files.map((file) => file.path)).toEqual(['Kyoto.md'])
 	// The screen's own refusals ride along in the report…
 	expect(plan.skipped).toEqual([{ path: 'Vault/Attachments/pic.png', reason: 'attachment' }])
 	// …and must not count as a second root, which would re-nest the vault.
 	expect(plan.name).toBe('Vault')
+})
+
+test('two loose notes with the same name both survive planning', () => {
+	// Dropped from different folders, so both are called "Kyoto.md". A map keyed by
+	// path would keep the last and report a clean success — the write side is what
+	// numbers the second one, and it can only do that if planning hands it both.
+	const plan = planImport(
+		[
+			{ path: 'Kyoto.md', bytes: bytes('first') },
+			{ path: 'Kyoto.md', bytes: bytes('second') }
+		],
+		'Imported'
+	)
+	expect(plan.files).toEqual([
+		{ path: 'Kyoto.md', text: 'first' },
+		{ path: 'Kyoto.md', text: 'second' }
+	])
+	expect(plan.skipped).toEqual([]) // neither was lost, so neither is a skip
+})
+
+test('a late refusal is reported like any other skip', () => {
+	// A streamed archive need not declare entry sizes, so an oversized entry is only
+	// discovered while inflating it.
+	const screen = createScreen()
+	expect(screen.accept('Vault/Huge.md', 0)).toBe(true)
+	screen.reject('Vault/Huge.md', 'attachment')
+	expect(screen.skipped).toEqual([{ path: 'Vault/Huge.md', reason: 'attachment' }])
+	expect(screen.accept('Vault/Huge.md', 0)).toBe(false) // and it stays refused
 })
