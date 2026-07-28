@@ -7,24 +7,34 @@ import './style.css'
 
 const AUTOSAVE_MS = 800
 const LIST_PREF_KEY = 'app-notes:list-open'
+const WIDTH_PREF_KEY = 'app-notes:list-width'
+const WIDTH_DEFAULT = 220
+const WIDTH_MIN = 150
+const WIDTH_MAX = 480
 
 const isMac = /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
 // The host may sandbox the app iframe without `allow-same-origin`, where even
 // touching localStorage throws — degrade to a per-session preference.
-const readListPref = () => {
+const readPref = (key: string) => {
 	try {
-		return localStorage.getItem(LIST_PREF_KEY) === '1'
+		return localStorage.getItem(key)
 	} catch {
-		return false
+		return null
 	}
 }
-const writeListPref = (open: boolean) => {
+const writePref = (key: string, value: string) => {
 	try {
-		localStorage.setItem(LIST_PREF_KEY, open ? '1' : '0')
+		localStorage.setItem(key, value)
 	} catch {
-		// sandboxed — the toggle still works, it just resets next launch
+		// sandboxed — the control still works, it just resets next launch
 	}
+}
+const readListPref = () => readPref(LIST_PREF_KEY) === '1'
+const readWidthPref = () => clampWidth(Number(readPref(WIDTH_PREF_KEY)) || WIDTH_DEFAULT)
+
+function clampWidth(px: number): number {
+	return Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, Math.round(px)))
 }
 
 function relativeTime(mtimeNs: number): string {
@@ -54,8 +64,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const [searchFocused, setSearchFocused] = useState(false)
 	const [dropOpen, setDropOpen] = useState(false)
 	const [listOpen, setListOpen] = useState(readListPref)
+	const [listWidth, setListWidth] = useState(readWidthPref)
 	const [entries, setEntries] = useState<Entry[]>([])
 	const [active, setActive] = useState(0)
+	const [dragging, setDragging] = useState(false)
 	// Which folder new notes land in — the folder of the note last opened (Obsidian's
 	// "same folder as the current file"). Transient, so it survives `newNote`.
 	const [activeDir, setActiveDir] = useState('/')
@@ -242,11 +254,39 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		const next = !listOpen
 		setListOpen(next)
 		setDropOpen(false)
-		writeListPref(next)
+		writePref(LIST_PREF_KEY, next ? '1' : '0')
 		// The search field remounts across the bar/pane move, dropping focus —
 		// land it on the editor so root-scoped shortcuts keep working.
 		editorRef.current?.focus()
 	}, [listOpen])
+
+	// The splitter: drag (or arrow-key) the pane's width. Pointer capture keeps the
+	// drag alive over the editor and the tree's shadow root; the width is a
+	// GUI-local preference, like the pane toggle itself.
+	const bodyRef = useRef<HTMLDivElement>(null)
+	const onSplitterDown = (e: React.PointerEvent<HTMLDivElement>) => {
+		e.preventDefault()
+		e.currentTarget.setPointerCapture(e.pointerId)
+		setDragging(true)
+	}
+	const onSplitterMove = (e: React.PointerEvent<HTMLDivElement>) => {
+		if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+		const left = bodyRef.current?.getBoundingClientRect().left ?? 0
+		setListWidth(clampWidth(e.clientX - left))
+	}
+	const onSplitterUp = (e: React.PointerEvent<HTMLDivElement>) => {
+		e.currentTarget.releasePointerCapture(e.pointerId)
+		setDragging(false)
+		writePref(WIDTH_PREF_KEY, String(listWidth))
+	}
+	const onSplitterKey = (e: React.KeyboardEvent) => {
+		const step = e.key === 'ArrowLeft' ? -16 : e.key === 'ArrowRight' ? 16 : 0
+		if (step === 0) return
+		e.preventDefault()
+		const next = clampWidth(listWidth + step)
+		setListWidth(next)
+		writePref(WIDTH_PREF_KEY, String(next))
+	}
 
 	// Webview flush gotcha (DESIGN.md §4): the window can tear down before a save
 	// lands. Best-effort flush as the page hides; the host's windowShouldClose path
@@ -391,9 +431,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				</div>
 			) : null}
 			{error ? <p className="notes-error">{error}</p> : null}
-			<div className="notes-body">
+			<div className="notes-body" ref={bodyRef} data-dragging={dragging || undefined}>
 				{listOpen ? (
-					<div className="notes-side">
+					<div className="notes-side" style={{ width: listWidth }}>
 						<div className="notes-side-head">
 							{toggleButton}
 							{searchField}
@@ -415,6 +455,26 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							</button>
 						</div>
 					</div>
+				) : null}
+				{listOpen ? (
+					// An <hr> IS the separator element; focusable + arrow keys make it a splitter widget.
+					<hr
+						className="notes-splitter"
+						aria-orientation="vertical"
+						aria-label="Resize the note list"
+						aria-valuenow={listWidth}
+						aria-valuemin={WIDTH_MIN}
+						aria-valuemax={WIDTH_MAX}
+						tabIndex={0}
+						onPointerDown={onSplitterDown}
+						onPointerMove={onSplitterMove}
+						onPointerUp={onSplitterUp}
+						onKeyDown={onSplitterKey}
+						onDoubleClick={() => {
+							setListWidth(WIDTH_DEFAULT)
+							writePref(WIDTH_PREF_KEY, String(WIDTH_DEFAULT))
+						}}
+					/>
 				) : null}
 				<textarea
 					ref={editorRef}

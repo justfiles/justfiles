@@ -1,6 +1,7 @@
 import type { ContextMenuItem, ContextMenuOpenContext } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { Entry } from './app.ts'
 import { joinPath, matchNotes, parentDir, renameTarget } from './notes.ts'
 
@@ -100,10 +101,38 @@ export function NotesTree(props: NotesTreeProps) {
 		<FileTree
 			model={model}
 			className="notes-tree"
-			renderContextMenu={(item, context) => <RowMenu item={item} context={context} {...props} />}
+			renderContextMenu={(item, context) => <MenuLayer item={item} context={context} {...props} />}
 		/>
 	)
 }
+
+// The menu is PORTALED out of the tree and pinned to the viewport at the
+// trigger's rect. Rendered in place it would be both clipped by the tree host's
+// `overflow: hidden` and painted under the editor (it is a static, z-index-less
+// child of the pane). `data-file-tree-context-menu-root` tells the tree that
+// clicks inside this portaled surface are not outside clicks.
+function MenuLayer(
+	props: NotesTreeProps & { item: ContextMenuItem; context: ContextMenuOpenContext }
+) {
+	const { anchorRect } = props.context
+	// Flip up / pull left near an edge, sized off the menu's own max box — enough
+	// for a 4-row menu, and cheaper than a measure-then-reposition pass.
+	const place = {
+		left: Math.max(4, Math.min(anchorRect.left, window.innerWidth - MENU_W - 4)),
+		...(anchorRect.bottom + MENU_H > window.innerHeight
+			? { bottom: Math.max(4, window.innerHeight - anchorRect.top + 2) }
+			: { top: anchorRect.bottom + 2 })
+	}
+	return createPortal(
+		<div className="notes-menu-layer" data-file-tree-context-menu-root="true" style={place}>
+			<RowMenu {...props} />
+		</div>,
+		document.body
+	)
+}
+
+const MENU_W = 180
+const MENU_H = 160
 
 // A new child of a folder, or a new sibling of a file.
 function dirOf(item: ContextMenuItem): string {

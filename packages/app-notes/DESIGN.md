@@ -232,11 +232,19 @@ owns only the seam:
   matching paths, so the dropdown and the tree rank identically and there is no second search session to
   keep in sync. Folders are implied by their children, so a filtered view feeds notes only.
 - **CRUD is the row menu, and naming happens *in* the menu.** New note / New folder / Rename… / Delete…
-  render as a `ds-menu` (slotted into the tree's light DOM, so app CSS applies) that swaps to a small text
-  field or a confirm step. Two reasons it is not the library's inline rename: the inline input does not
-  survive the context menu's own close/focus path, and — more importantly — a new note's name must be its
-  **first line**, which the same field gives us for free (`onCreate(dir, title)` → `create({ text: title })`).
-  Sandboxed iframes have no `allow-modals`, so `prompt()`/`confirm()` were never options.
+  render as a `ds-menu` that swaps to a small text field or a confirm step. Two reasons it is not the
+  library's inline rename: the inline input does not survive the context menu's own close/focus path, and
+  — more importantly — a new note's name must be its **first line**, which the same field gives us for free
+  (`onCreate(dir, title)` → `create({ text: title })`). Sandboxed iframes have no `allow-modals`, so
+  `prompt()`/`confirm()` were never options.
+- **The menu is portaled to the body**, pinned to the trigger's `anchorRect` and flipped up near the
+  bottom edge. Rendered in place (the library slots it into the tree's light DOM) it is both clipped by the
+  tree host's `overflow: hidden` and painted *under* the editor — it is a static, z-index-less child of the
+  pane. The portaled root carries `data-file-tree-context-menu-root`, which is how the tree knows clicks
+  inside it are not outside clicks.
+- **The pane is resizable**: a `role="separator"` splitter, pointer-captured so the drag survives passing
+  over the editor and the tree's shadow root, arrow-key adjustable, double-click to reset. Width is
+  clamped (150–480) and persisted next to the pane toggle — GUI-local, never reducer state.
 - **Dragging a row into a folder is `rename`** (`{ from, to }`), one per dragged path.
 - **Selecting a folder** sets the folder new notes land in; selecting a note opens it.
 - **Rows show real filenames**, extension included — the tree is the file-first surface (the search

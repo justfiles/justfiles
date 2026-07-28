@@ -56,7 +56,8 @@
    toggle + search (header) and New (footer); the editor side stays bare. */
 .notes-side {
 	flex: none;
-	width: 220px;
+	/* width is GUI state (the splitter); min-width keeps a squeezed pane usable */
+	min-width: 0;
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
@@ -79,6 +80,39 @@
 .notes-side-foot button {
 	width: 100%;
 }
+/* The splitter: a hairline hit-target that widens its grab area with padding,
+   not with pixels, so the layout doesn't shift. */
+.notes-splitter {
+	flex: none;
+	align-self: stretch;
+	width: 5px;
+	height: auto;
+	border: 0;
+	margin: 0 -2px;
+	cursor: col-resize;
+	background: transparent;
+	outline: none;
+	touch-action: none;
+	z-index: 1;
+}
+.notes-splitter:hover,
+.notes-splitter:focus-visible,
+.notes-body[data-dragging] .notes-splitter {
+	/* a 1px accent line inside the 5px hit-target, not a 5px slab */
+	background: linear-gradient(
+		to right,
+		transparent 2px,
+		var(--focus) 2px,
+		var(--focus) 3px,
+		transparent 3px
+	);
+}
+/* A drag must not select text in the editor it passes over. */
+.notes-body[data-dragging] {
+	user-select: none;
+	cursor: col-resize;
+}
+
 /* The tree renders in a shadow root, so it is themed through its own CSS
    variables — pointed at the same design tokens as everything else, which is
    also how it inherits dark mode. */
@@ -97,7 +131,13 @@
 	--trees-font-size-override: 12px;
 	--trees-padding-inline-override: 6px;
 }
-/* The row menu is slotted into the tree's light DOM, so `ds-menu` applies. */
+/* The row menu is portaled to the body and pinned to the trigger's rect (see
+   tree.tsx): in place it would be clipped by the tree host's `overflow: hidden`
+   and painted under the editor. */
+.notes-menu-layer {
+	position: fixed;
+	z-index: 50;
+}
 .notes-menu {
 	min-width: 180px;
 }
