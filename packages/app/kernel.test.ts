@@ -220,6 +220,49 @@ test('settled resolves with the converged state at a version', async () => {
 	expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 })
 
+test('an action that leaves state unchanged does not touch the state file', async () => {
+	// Apps fold ambient signals (a volume watch, a re-scan) through the reducer, and
+	// many of those land on the state they already had. That must be a no-op all the
+	// way down: no write, no new version. Otherwise every idle signal becomes a
+	// versioned write that sync hands to the other replica, whose apps wake on it in
+	// turn — and the pair never settles.
+	const storage = memStorage()
+	const fs = volume(storage)
+	const journal = storage.caps?.journal
+	if (!journal) throw new Error('memStorage exposes no journal')
+	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })
+	const appId = await k.install(
+		appBundleFromMemory({ id: 'com.example.app', name: 'App', app: code })
+	)
+
+	await k.dispatch(appId, { type: 'increment', params: { amount: 5 }, actor: 'agent' })
+	const quiet = await journal.head()
+
+	const updates: unknown[] = []
+	k.subscribe((e) => {
+		if (e.type === 'app.update' && e.appId === appId) updates.push(e.state)
+	})
+
+	// A reducer edge that returns the state it was given (+0 is still a fresh object).
+	expect(
+		await k.dispatch(appId, { type: 'increment', params: { amount: 0 }, actor: 'agent' })
+	).toEqual({ count: 5 })
+
+	// Nothing was written, so there is nothing for sync to carry.
+	expect(await journal.head()).toBe(quiet)
+	expect(JSON.parse(new TextDecoder().decode(await fs.readFile(`/state/${appId}.json`)))).toEqual({
+		count: 5
+	})
+
+	// A real change still lands, from the same starting point.
+	expect(
+		await k.dispatch(appId, { type: 'increment', params: { amount: 1 }, actor: 'agent' })
+	).toEqual({ count: 6 })
+	expect(await journal.head()).toBeGreaterThan(quiet)
+	expect(await k.state(appId)).toEqual({ count: 6 })
+	expect(updates).toEqual([{ count: 6 }])
+})
+
 test('settled rejects when the version can never be reached', async () => {
 	const fs = volume(memStorage())
 	const k = kernel({ fs, sandbox: sandboxFor(), clock, capabilities: caps(hostInvoke(fs)) })

@@ -403,13 +403,19 @@ export function kernel({ fs, sandbox, capabilities }: System): Kernel {
 		// caller-scoped reads (e.g. Files' readFile) from ballooning state.
 		let seq = states.seq(appId)
 		if (out.state !== undefined) {
-			// Write-through commit returns the new monotonic version.
+			// Write-through commit returns the new monotonic version — unchanged when the
+			// transition landed on the state already committed, which is how an ambient
+			// signal (a watch wake, a re-scan) that decides nothing stays silent: no
+			// write, no version, and no push for consumers to re-render on.
+			const before = seq
 			seq = await states.commit(appId, out.state)
-			emit({ type: 'app.update', appId, state: out.state as AppState, seq })
-			// State changed → the declared stream set may have too (Part D). The
-			// bundle folded it into `out.subscriptions` (same isolate, no extra RPC);
-			// diff it in-queue — host starts are fire-and-forget.
-			subs.reconcile(appId, out.subscriptions ?? [])
+			if (seq !== before) {
+				emit({ type: 'app.update', appId, state: out.state as AppState, seq })
+				// State changed → the declared stream set may have too (Part D). The
+				// bundle folded it into `out.subscriptions` (same isolate, no extra RPC);
+				// diff it in-queue — host starts are fire-and-forget.
+				subs.reconcile(appId, out.subscriptions ?? [])
+			}
 		}
 		// A pure-core edge may emit a command. Run it after the state is
 		// committed and OUTSIDE this critical section, so a slow capability
