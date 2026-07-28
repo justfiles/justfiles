@@ -120,6 +120,7 @@ pure/sync; all IO is in procedures or via `t.cmd`.
 | `create({ text, dir? })` | procedure | both | New note; filename from the first line, `dir` defaults to `/` |
 | `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
 | `readNote({ path })` | procedure | both | Body as text |
+| `importNotes({ name \| dir, files })` | procedure | both | Bulk write under a FRESH top-level folder — the vault-import half (§9) |
 | `remove({ path })` | procedure | **gui** | Destructive: a note, or a folder and everything in it. Clears the editor if the open note went with it |
 | `fileChanged` / `treeChanged` | `t.fromEvent` | internal | The two watch signals below |
 
@@ -308,6 +309,7 @@ surface below. `description` + `examples` are its UI — written above.
 |----|----|----|
 | `open` | both | **The** coordinating action — put a note in front of the user. |
 | `create`, `save`, `rename`, `mkdir` | both | Available, but the agent usually writes files directly. |
+| `importNotes` | both | Bulk write under a fresh folder (§9). The agent can use it to land a batch it fetched; the GUI uses it for dropped vaults. |
 | `list` | both | Fresh listing on demand — the agent's view of the KB is the filesystem, never cached state. |
 | `newNote` | both | Harmless; mostly GUI-driven. |
 | `readNote` | both | Convenience; the agent can also read the file directly. |
@@ -320,8 +322,9 @@ surface below. `description` + `examples` are its UI — written above.
 **In:** blank editor; the bar (search-or-create + docked-tree toggle + New) + derived listing +
 path-aware filter; **nested folders** (recursive listing, `.md` default with `.txt` still read); human
 filenames; debounced autosave + flush-on-transition; a docked file tree with full CRUD (create note /
-create folder / rename / move by drag / delete) and open-on-select; live re-read of the open note on
-external edits; a structural watch so the tree tracks the disk; the agent TUI above.
+create folder / rename / move by drag / delete) and open-on-select; **drop-a-zip vault import** (§9); live
+re-read of the open note on external edits; a structural watch so the tree tracks the disk; the agent TUI
+above.
 
 **Out (deferred, not one-way doors):**
 
@@ -379,14 +382,35 @@ capture-first app. The cheap 80% we do commit to: **imported text is preserved v
 itch shows up, the next step is `[[...]]` *click-to-open* (navigation) via one pure resolver — exact path
 → relative to the source → unique basename — and still no stored index.
 
-**What the import will and won't do** (implementation is the last step, see §7):
+**The import: drop a file on the window.** OS file drops DO reach the app through frieren's
+opaque-origin `sandbox="allow-scripts allow-forms"` iframe — `DataTransfer.files` arrives and the bytes
+read — so the gesture needs no host plumbing. The app root is the drop zone (dashed outline, copy cursor),
+so it works wherever the file lands; the tree's own row/blank-space drops carry `text/plain`, not `Files`,
+so the two never collide.
 
-- **In:** `.md` / `.txt`, folder structure preserved, filenames verbatim (NFC-normalized — macOS zips carry
-  decomposed unicode, and skipping that step yields visually-duplicate notes), landed under a single
-  `/<VaultName>/` folder so it is contained and reversible.
-- **Skipped:** `.obsidian/`, `.trash/`, `.git/`, `__MACOSX/`, `.DS_Store`, `* (conflicted copy)*`, and
-  binary attachments — reported, not silently dropped. Attachments are out because the GUI→reducer seam
-  carries JSON-safe values, so the importer ships **strings**; the day we want binaries they need base64 or
-  a host-level file-drop capability, which is a separate decision.
-- **Not ported at all:** canvas, bases, Dataview/Templater code, plugins, `.obsidian` config. Their text
-  is kept as-is where it lives inside a note; nothing is rewritten.
+The split is: **the GUI unzips and plans, the reducer writes.**
+
+- `planImport(entries, zipName)` (`src/import.ts`) is pure — entry names + bytes in, notes-to-write and
+  skips out — so every rule below is a unit test rather than a thing you discover during someone's
+  migration.
+- `importNotes({ name | dir, files })` writes one batch. The first call passes `name` and gets back the
+  folder it resolved (`/MyVault`, then `/MyVault 2`, …); later chunks pass that `dir` back, so one import
+  is one folder and a re-import **never merges into or overwrites the previous one**. Batches of 50 keep
+  the round trips down and the status line moving.
+
+What it does:
+
+- **In:** `.md` / `.txt`, folder structure preserved, filenames **verbatim** (only NFC-normalized — macOS
+  zips carry decomposed unicode, and skipping that step yields visually-duplicate notes), landed under a
+  single `/<VaultName>/` folder so it is contained and reversible. The vault's own root folder names the
+  destination; a zip without one falls back to the archive's filename. Loose `.md`/`.txt` files dropped
+  without a zip take the same path.
+- **Skipped, and reported** (never silently dropped — the count is in the status line, the detail in the
+  console): any dotted segment (`.obsidian/`, `.trash/`, `.git/`), `__MACOSX/`, `.DS_Store`, `* (conflicted
+  copy)*`, and everything that isn't a note — attachments, `.canvas`, `.base`, plugin data. Attachments are
+  out because the GUI→reducer seam carries JSON-safe values, so the importer ships **strings**; the day we
+  want binaries they need base64 or a host-level file-drop capability, which is a separate decision.
+- **The root is computed over kept paths only.** A macOS zip carries `__MACOSX/` beside the vault folder;
+  counting it would look like a second root and leave the whole vault nested one level too deep.
+- **Not ported at all:** canvas, bases, Dataview/Templater code, plugins, `.obsidian` config. Their text is
+  kept as-is where it lives inside a note; nothing is rewritten.

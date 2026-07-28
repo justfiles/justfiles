@@ -33,6 +33,15 @@ async function freePath(
 	}
 }
 
+// Dedup a folder name the same way — an import lands in a FRESH folder, so a
+// re-import never merges into (or overwrites) the previous one.
+async function freeDir(base: string, exists: (path: string) => Promise<boolean>): Promise<string> {
+	if (!(await exists(`/${base}`))) return `/${base}`
+	for (let n = 2; ; n++) {
+		if (!(await exists(`/${base} ${n}`))) return `/${base} ${n}`
+	}
+}
+
 // Reducer state holds only the app-session facts that survive reload and that
 // the agent should read: which note is open, change counters for the open file
 // and for the tree, and the last error. Body bytes and the note list are NOT
@@ -184,6 +193,39 @@ export const app = defineApp({
 			schema: v.object({ path: pathSchema }),
 			async run({ path }, app) {
 				await app.invoke('volume', 'mkdir', path, { recursive: true })
+			}
+		}),
+
+		// Write a batch of imported notes (DESIGN.md §9). The GUI unzips, plans and
+		// chunks; this is the write half. The FIRST call passes `name` and gets back
+		// the folder it resolved (`/MyVault`, `/MyVault 2`, …); later chunks pass that
+		// `dir` back so one import stays in one folder.
+		importNotes: p.procedure({
+			description:
+				'Write a batch of notes under a fresh top-level folder — the import path for an Obsidian vault. Paths are relative to that folder. Pass `name` on the first batch and the returned `dir` on the rest.',
+			schema: v.object({
+				name: v.optional(v.string()),
+				dir: v.optional(pathSchema),
+				files: v.array(v.object({ path: pathSchema, text: v.string() }))
+			}),
+			async run({ name, dir, files }, app) {
+				const target =
+					dir ??
+					(await freeDir(sanitizeName(name ?? 'Imported'), (probe) =>
+						app.invoke('volume', 'exists', probe)
+					))
+				for (const file of files) {
+					// Imported names are written VERBATIM — never sanitized (DESIGN.md §4):
+					// wikilinks address notes by their exact filename. `writeFile` creates
+					// the parent folders.
+					await app.invoke(
+						'volume',
+						'writeFile',
+						joinPath(target, file.path),
+						enc.encode(file.text)
+					)
+				}
+				return { dir: target, written: files.length }
 			}
 		}),
 

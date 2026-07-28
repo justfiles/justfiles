@@ -1,11 +1,17 @@
 import type { GUIProps } from '@justfiles/app/react'
+import { unzip } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
+import { type ImportPlan, planImport } from './import.ts'
 import { displayPath, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
 
 const AUTOSAVE_MS = 800
+// One import call per batch of notes: big enough to keep the round trips down,
+// small enough that the status line moves and one message stays modest.
+const IMPORT_CHUNK = 50
+const STATUS_MS = 8000
 const LIST_PREF_KEY = 'app-notes:list-open'
 const WIDTH_PREF_KEY = 'app-notes:list-width'
 const WIDTH_DEFAULT = 220
@@ -35,6 +41,21 @@ const readWidthPref = () => clampWidth(Number(readPref(WIDTH_PREF_KEY)) || WIDTH
 
 function clampWidth(px: number): number {
 	return Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, Math.round(px)))
+}
+
+const unzipAsync = (bytes: Uint8Array) =>
+	new Promise<Record<string, Uint8Array>>((resolve, reject) => {
+		unzip(bytes, (error, data) => (error ? reject(error) : resolve(data)))
+	})
+
+// Dropped files → one plan. A zip is a vault export (its own folder name wins);
+// loose files are imported under their own name. Both land in a fresh folder.
+async function planDrop(files: File[]): Promise<ImportPlan> {
+	const zip = files.find((file) => file.name.toLowerCase().endsWith('.zip'))
+	if (zip) return planImport(await unzipAsync(new Uint8Array(await zip.arrayBuffer())), zip.name)
+	const entries: Record<string, Uint8Array> = {}
+	for (const file of files) entries[file.name] = new Uint8Array(await file.arrayBuffer())
+	return planImport(entries, 'Imported')
 }
 
 function relativeTime(mtimeNs: number): string {
@@ -68,6 +89,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const [entries, setEntries] = useState<Entry[]>([])
 	const [active, setActive] = useState(0)
 	const [dragging, setDragging] = useState(false)
+	// Import feedback (transient, GUI-local): "Importing… 120/400", then the report.
+	const [status, setStatus] = useState<string | null>(null)
+	const [fileDrop, setFileDrop] = useState(false)
 	// Which folder new notes land in — the folder of the note last opened (Obsidian's
 	// "same folder as the current file"). Transient, so it survives `newNote`.
 	const [activeDir, setActiveDir] = useState('/')
@@ -250,6 +274,51 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		[actions, refresh]
 	)
 
+	// Import a drop: unzip + plan in the GUI, write in chunks through the reducer
+	// (DESIGN.md §9). The first chunk names the destination folder and the reducer
+	// answers with the one it resolved; the rest go there.
+	const importDrop = useCallback(
+		async (files: File[]) => {
+			if (files.length === 0) return
+			try {
+				setStatus('Reading…')
+				const plan = await planDrop(files)
+				if (plan.skipped.length > 0) console.info('[notes] import skipped', plan.skipped)
+				if (plan.files.length === 0) {
+					setStatus(`Nothing to import — no .md or .txt files (${plan.skipped.length} skipped)`)
+					return
+				}
+				let dir: string | undefined
+				let written = 0
+				for (let at = 0; at < plan.files.length; at += IMPORT_CHUNK) {
+					const batch = plan.files.slice(at, at + IMPORT_CHUNK)
+					const result = await actions.importNotes(
+						dir === undefined ? { name: plan.name, files: batch } : { dir, files: batch }
+					)
+					dir = result.dir
+					written += result.written
+					setStatus(`Importing… ${written}/${plan.files.length}`)
+				}
+				const skipped = plan.skipped.length > 0 ? `, skipped ${plan.skipped.length}` : ''
+				setStatus(
+					`Imported ${written} note${written === 1 ? '' : 's'} into ${dir} (${plan.folders} folder${plan.folders === 1 ? '' : 's'}${skipped})`
+				)
+				if (!listOpen) setListOpen(true)
+				void refresh()
+			} catch (error) {
+				setStatus(`Import failed: ${error instanceof Error ? error.message : String(error)}`)
+			}
+		},
+		[actions, listOpen, refresh]
+	)
+
+	// The report is a notice, not state — it clears itself.
+	useEffect(() => {
+		if (status === null || status.startsWith('Importing') || status === 'Reading…') return
+		const id = setTimeout(() => setStatus(null), STATUS_MS)
+		return () => clearTimeout(id)
+	}, [status])
+
 	const toggleList = useCallback(() => {
 		const next = !listOpen
 		setListOpen(next)
@@ -419,8 +488,31 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	)
 
 	return (
-		// biome-ignore lint/a11y/noStaticElementInteractions: the root only relays app shortcuts (⌘O/⌘N/Esc) from its focusable children; tabIndex -1 keeps it out of the tab order.
-		<div className="notes" onKeyDown={onRootKey} tabIndex={-1}>
+		// biome-ignore lint/a11y/noStaticElementInteractions: the root relays app shortcuts (⌘O/⌘N/Esc) from its focusable children and accepts dropped files; tabIndex -1 keeps it out of the tab order.
+		<div
+			className="notes"
+			onKeyDown={onRootKey}
+			tabIndex={-1}
+			data-file-drop={fileDrop || undefined}
+			// A dropped file is an import, accepted wherever it lands — pane, editor or
+			// bar. Internal row drags carry `text/plain`, not `Files`, so the tree's own
+			// move-drop never reaches here (DESIGN.md §9).
+			onDragOver={(e) => {
+				if (!Array.from(e.dataTransfer.types).includes('Files')) return
+				e.preventDefault()
+				e.dataTransfer.dropEffect = 'copy'
+				setFileDrop(true)
+			}}
+			onDragLeave={(e) => {
+				if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFileDrop(false)
+			}}
+			onDrop={(e) => {
+				if (!Array.from(e.dataTransfer.types).includes('Files')) return
+				e.preventDefault()
+				setFileDrop(false)
+				void importDrop(Array.from(e.dataTransfer.files))
+			}}
+		>
 			{!listOpen ? (
 				<div className="notes-bar">
 					{toggleButton}
@@ -431,6 +523,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				</div>
 			) : null}
 			{error ? <p className="notes-error">{error}</p> : null}
+			{status ? <p className="notes-status">{status}</p> : null}
 			<div className="notes-body" ref={bodyRef} data-dragging={dragging || undefined}>
 				{listOpen ? (
 					<div className="notes-side" style={{ width: listWidth }}>

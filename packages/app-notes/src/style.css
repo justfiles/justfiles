@@ -5,7 +5,13 @@
 	width: 100%;
 	background: var(--window-bg);
 	color: var(--text);
-	outline: none;
+	outline: 2px solid transparent;
+	outline-offset: -2px;
+}
+/* A dropped file is an import — dashed, because it is a copy, not a move. */
+.notes[data-file-drop] {
+	outline: 2px dashed var(--focus);
+	background: color-mix(in srgb, var(--focus) 6%, var(--window-bg));
 }
 /* The bar: list toggle · search-or-create field · New. Bare controls — mac.css
    styles them; only layout lives here. */
@@ -45,6 +51,13 @@
 	padding: 4px 12px;
 	font-size: 12px;
 	color: var(--danger);
+}
+/* Import progress + report: a notice, not an error. */
+.notes-status {
+	flex: none;
+	padding: 4px 12px;
+	font-size: 12px;
+	opacity: 0.7;
 }
 .notes-body {
 	position: relative;
@@ -122,14 +135,9 @@
 	outline: 2px solid transparent;
 	outline-offset: -2px;
 }
-.notes-tree-wrap[data-root-drop],
-.notes-tree-wrap[data-file-drop] {
+.notes-tree-wrap[data-root-drop] {
 	outline-color: var(--focus);
 	background: color-mix(in srgb, var(--focus) 8%, transparent);
-}
-/* An OS file drag (the import probe) is a copy, not a move — dashed outline. */
-.notes-tree-wrap[data-file-drop] {
-	outline-style: dashed;
 }
 
 /* The tree renders in a shadow root, so it is themed through its own CSS

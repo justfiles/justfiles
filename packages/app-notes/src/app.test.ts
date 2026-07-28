@@ -160,3 +160,38 @@ test('removing the folder the open note lives in clears the editor', async () =>
 	expect(vol.store.size).toBe(0)
 	expect(h.dispatched).toEqual(['newNote'])
 })
+
+test('importNotes lands a batch in a fresh folder, with names untouched', async () => {
+	const vol = fakeVolume()
+	const h = handle(initialState, vol.invoke)
+	const first = (await app.runProcedure(
+		'importNotes',
+		{ name: 'MyVault', files: [{ path: 'Trips/Kyōto trip.md', text: 'x' }] },
+		h.app
+	)) as { dir: string; written: number }
+	expect(first).toEqual({ dir: '/MyVault', written: 1 })
+	// Imported names are verbatim — spaces, case and non-ASCII all survive, because
+	// wikilinks address notes by their exact filename.
+	expect([...vol.store.keys()]).toEqual(['/MyVault/Trips/Kyōto trip.md'])
+
+	// Later chunks pass the resolved dir back, so one import stays one folder.
+	await app.runProcedure(
+		'importNotes',
+		{ dir: first.dir, files: [{ path: 'Osaka.md', text: 'y' }] },
+		h.app
+	)
+	expect(vol.store.has('/MyVault/Osaka.md')).toBe(true)
+})
+
+test('a second import of the same vault gets its own folder, never a merge', async () => {
+	const vol = fakeVolume({ '/MyVault/Kyoto.md': 'old' }, ['/MyVault'])
+	const h = handle(initialState, vol.invoke)
+	const result = (await app.runProcedure(
+		'importNotes',
+		{ name: 'MyVault', files: [{ path: 'Kyoto.md', text: 'new' }] },
+		h.app
+	)) as { dir: string }
+	expect(result.dir).toBe('/MyVault 2')
+	expect(vol.store.get('/MyVault/Kyoto.md')).toBe('old')
+	expect(vol.store.get('/MyVault 2/Kyoto.md')).toBe('new')
+})
