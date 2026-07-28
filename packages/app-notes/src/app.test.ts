@@ -268,3 +268,14 @@ test('importNotes can be aimed at a folder', async () => {
 	)
 	expect([...vol.store.keys()]).toEqual(['/Archive/Old/Note.md'])
 })
+
+test('rename refuses to strand a folder inside itself', async () => {
+	const vol = fakeVolume({ '/Trips/Kyoto.md': 'x' }, ['/Trips'])
+	const h = handle(initialState, vol.invoke)
+	await expect(
+		app.runProcedure('rename', { from: '/Trips', to: '/Trips/Archive/Trips' }, h.app)
+	).rejects.toThrow(/inside itself/)
+	// Nothing moved, and nothing was dispatched — the guard is before the write.
+	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
+	expect(h.dispatched).toEqual([])
+})

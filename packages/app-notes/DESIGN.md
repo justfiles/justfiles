@@ -154,6 +154,33 @@ Notes on choices:
   would pin a counter at `NaN` and the tree would refresh exactly once, then never again.
 - **Naming dedup is an `exists()` probe** (`freePath`), not a lookup in a cached list.
 
+### Two invariants, learned the hard way
+
+Review of this work turned up eight defects. Six of them were two mistakes made twice, so both are written
+down as rules rather than patched case by case.
+
+**1 · The app owns destination policy; the capability owns none of it.** `volume` is `Volume` reused
+verbatim, which means POSIX semantics reach the app unfiltered: `rename` *replaces* an existing
+destination, and it will happily rebind a folder's inode beneath its own descendant and strand the subtree.
+Both were reachable from an ordinary drag. So every rule about *where something may land* lives in one pure
+place — `illegalMove` (refuse) and `freePath` (dedup) in `src/notes.ts` — applied at **one** site, the
+`rename` procedure. The GUI, the tree's drag-and-drop and the agent inherit it; none of them can forget it.
+The same `freePath` is what `create` and `importNotes` use, so "nothing in `/notes` is ever silently
+overwritten" is one function, not three policies.
+
+**2 · Never keep a second pointer to a location — derive it and validate on use.** "Which folder do new
+notes go in" started as GUI state (`activeDir`), and every mutation then had to maintain it: deleting that
+folder left it dangling, and `writeFile`'s parent-creation silently *resurrected* the folder the user had
+just deleted; renaming it did the same. That is a bug per mutation, forever. It is now derived at the moment
+of use: the folder last clicked in the tree is a **hint**, honoured only while it is still present in the
+listing (which comes from disk), else the open note's folder, else the root. Deleting, renaming and moving
+need no bookkeeping at all — the class is gone, not fixed. This is §3's "the disk is the only source of
+truth" applied to a *selection* rather than to the listing.
+
+The remaining defects were genuinely separate ground — defaulting counters absent from persisted state,
+bounding an untrusted zip before decompressing it, coalescing watch-event fan-out — and none of them were in
+the pure modules. Rules belong in pure functions; the stateful layer should only sequence them.
+
 <a id="files"></a>
 
 ## 4 · Filenames & autosave
@@ -269,11 +296,12 @@ owns only the seam:
   scans to **2**). Each bump resets a 250ms timer, so the scan runs when the writes stop; opening the pane
   is not a bump, so it still lists immediately. `refresh` also carries a token, because scans overlap and an
   older, smaller listing must never overwrite a newer one.
-- **A move flushes first.** If the open note (or a folder above it) is the thing being moved, the dirty
-  buffer is written to the OLD path before the rename — otherwise the pending autosave lands after the move
-  and recreates the file we just moved, or the read effect replaces the buffer with the last saved body.
-- **Deleting the folder new notes land in resets that target.** `writeFile` creates parents, so a stale
-  `activeDir` would silently resurrect the folder the user just deleted.
+- **Settle the buffer before changing the open note's path.** The editor buffer is GUI-local while the path
+  is reducer state, so every path change races the pending autosave: a move **flushes** it to the OLD path
+  first (else the late save recreates the file we just moved, or the read effect replaces the buffer with the
+  last saved body), and a delete **discards** it (else the save writes the note straight back). One rule,
+  three call sites — the alternative, putting body bytes in reducer state, is rejected by §3.
+- **Where a new note goes is derived, never stored** — see §3's second invariant.
 - **Rows show real filenames**, extension included — the tree is the file-first surface (the search
   dropdown is the title-first one). A rename that drops the extension keeps it (`renameTarget`), so a note
   cannot silently stop being a note.

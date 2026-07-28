@@ -3,6 +3,7 @@ import { volume } from '@justfiles/app/capabilities/volume'
 import * as v from 'valibot'
 import {
 	firstLine,
+	illegalMove,
 	isNotePath,
 	isUnder,
 	joinPath,
@@ -186,10 +187,15 @@ export const app = defineApp({
 		// it actually landed at comes back.
 		rename: p.procedure({
 			description:
-				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned.',
+				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned. Moving a folder inside itself is refused.',
 			schema: v.object({ from: pathSchema, to: pathSchema }),
 			async run({ from, to }, app) {
 				if (to === from) return { path: from }
+				// One guard for every caller — GUI, tree drag/drop and agent alike. See
+				// `illegalMove`: `volume.rename` is a POSIX primitive and will cheerfully
+				// strand a folder inside itself.
+				const illegal = illegalMove(from, to)
+				if (illegal) throw new Error(illegal)
 				const path = await freePath(to, (probe) => app.invoke('volume', 'exists', probe))
 				await app.invoke('volume', 'rename', from, path)
 				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })

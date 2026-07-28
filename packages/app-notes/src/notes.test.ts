@@ -1,5 +1,13 @@
 import { expect, test } from 'vitest'
-import { displayPath, isUnder, matchNotes, noteTitle, renameTarget, sanitizeName } from './notes.ts'
+import {
+	displayPath,
+	illegalMove,
+	isUnder,
+	matchNotes,
+	noteTitle,
+	renameTarget,
+	sanitizeName
+} from './notes.ts'
 
 test('titles and display paths drop the extension, keep the folder', () => {
 	expect(noteTitle('/Remember the milk.md')).toBe('Remember the milk')
@@ -54,4 +62,16 @@ test('a renamed note keeps its extension when the typed name has none', () => {
 	// An explicit extension is respected, and folders are left alone.
 	expect(renameTarget('/Kyoto.md', '/Kyoto.txt')).toBe('/Kyoto.txt')
 	expect(renameTarget('/Trips', '/Travel')).toBe('/Travel')
+})
+
+test('a move into its own subtree is refused, everything else allowed', () => {
+	// `volume.rename` is a POSIX primitive: it will rebind a folder's inode under
+	// one of its own descendants and strand the subtree, so this is the guard.
+	expect(illegalMove('/Trips', '/Trips/Archive/Trips')).toMatch(/inside itself/)
+	expect(illegalMove('/Trips', '/Trips')).toBe(null) // a no-op, not an error
+	expect(illegalMove('/', '/Anywhere')).toMatch(/root/)
+	// Sibling prefixes are not descendants.
+	expect(illegalMove('/Trips', '/Trips 2/Trips')).toBe(null)
+	expect(illegalMove('/Trips/Kyoto.md', '/Kyoto.md')).toBe(null)
+	expect(illegalMove('/Kyoto.md', '/Trips/Kyoto.md')).toBe(null)
 })

@@ -119,13 +119,15 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// Import feedback (transient, GUI-local): "Importing… 120/400", then the report.
 	const [status, setStatus] = useState<string | null>(null)
 	const [fileDrop, setFileDrop] = useState(false)
-	// Which folder new notes land in — the folder of the note last opened (Obsidian's
-	// "same folder as the current file"). Transient, so it survives `newNote`.
-	const [activeDir, setActiveDir] = useState('/')
+	// The folder last clicked in the tree — a *hint*, not a maintained pointer. Where
+	// a new note goes is decided at creation time (`createDir` below) and the hint is
+	// dropped if that folder is no longer on disk, so deleting or moving a folder
+	// needs no bookkeeping here.
+	const selectedDirRef = useRef<string | null>(null)
 
 	// Refs so async flushes/effects read the latest values without re-binding.
-	const liveRef = useRef({ text, openPath, dirty, activeDir })
-	liveRef.current = { text, openPath, dirty, activeDir }
+	const liveRef = useRef({ text, openPath, dirty, dir: '/' })
+	liveRef.current = { text, openPath, dirty, dir: '/' } // `dir` filled in below
 	const loadedRef = useRef<string | null>(null) // path whose body is in the buffer
 	const pendingPathRef = useRef<string | null>(null) // created path before the state push catches up
 	const creatingRef = useRef(false)
@@ -150,7 +152,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			creatingRef.current = true
 			setDirty(false)
 			try {
-				const settled = await actions.create({ text, dir: liveRef.current.activeDir })
+				const settled = await actions.create({ text, dir: liveRef.current.dir })
 				if (settled.openPath) {
 					pendingPathRef.current = settled.openPath
 					loadedRef.current = settled.openPath
@@ -231,6 +233,18 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// needs the folders, so the raw listing is what's held.
 	const notes = useMemo(() => entries.filter((entry) => entry.type === 'file'), [entries])
 
+	// Where a new note goes: the folder selected in the tree if it is STILL THERE,
+	// else beside the open note (Obsidian's "same folder as the current file"), else
+	// the root. Derived at the moment of use and checked against the listing, which
+	// is itself derived from disk — so a folder that was deleted or renamed simply
+	// stops being a target instead of being silently recreated by `writeFile`.
+	const createDir = useCallback(() => {
+		const selected = selectedDirRef.current
+		if (selected && entries.some((e) => e.type === 'dir' && e.path === selected)) return selected
+		return parentDir(openPath ?? '/')
+	}, [entries, openPath])
+	liveRef.current.dir = createDir()
+
 	useEffect(() => {
 		if (!listOpen) return
 		// `treeRevision` bumps once per write, and a bulk writer (an import, or the
@@ -251,7 +265,8 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			await flush()
 			setDropOpen(false)
 			setQuery('')
-			setActiveDir(parentDir(path))
+			// Opening a note supersedes a folder click as the "where am I" hint.
+			selectedDirRef.current = null
 			await actions.open({ path })
 			editorRef.current?.focus()
 			if (listOpen) void refresh() // the flushed note's mtime may reorder the list
@@ -308,8 +323,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		[flush, actions, listOpen, refresh]
 	)
 
-	// A move that lands somewhere other than asked (the name was taken) is not a
-	// failure — but the user has to be told, or a note quietly appears as "… 2".
+	// A move can land somewhere other than asked (the name was taken) or be refused
+	// outright (a folder into itself) — either way the user has to be told, and the
+	// tree, which moved the row optimistically, has to be put back.
 	const moveNote = useCallback(
 		async (from: string, to: string) => {
 			// Land a dirty buffer at the OLD path FIRST. Otherwise the pending save
@@ -317,8 +333,12 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			// moved — or the read effect replaces the buffer with the last saved body
 			// when `openPath` follows the move.
 			if (liveRef.current.openPath && isUnder(liveRef.current.openPath, from)) await flush()
-			const { path } = await actions.rename({ from, to })
-			if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
+			try {
+				const { path } = await actions.rename({ from, to })
+				if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
+			} catch (error) {
+				setStatus(error instanceof Error ? error.message : String(error))
+			}
 			void refresh()
 		},
 		[actions, flush, refresh]
@@ -326,11 +346,15 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 
 	const removeNote = useCallback(
 		async (path: string) => {
+			// Deleting the open note means DISCARDING its buffer — a pending autosave
+			// would write it straight back. Set the ref too: the timer reads that, and a
+			// re-render is a tick away.
+			if (liveRef.current.openPath && isUnder(liveRef.current.openPath, path)) {
+				liveRef.current.dirty = false
+				setDirty(false)
+			}
 			await actions.remove({ path })
 			setActive(0)
-			// New notes land in `activeDir`; if that folder just went away, `writeFile`'s
-			// parent-creation would silently resurrect it. Fall back to its parent.
-			setActiveDir((dir) => (isUnder(dir, path) ? parentDir(path) : dir))
 			void refresh()
 		},
 		[actions, refresh]
@@ -472,7 +496,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			e.preventDefault()
 			const note = filtered[active]
 			if (note) void openNote(note.path)
-			else if (query.trim()) void createNote(query.trim(), activeDir)
+			else if (query.trim()) void createNote(query.trim(), createDir())
 		} else if (e.key === 'Delete') {
 			e.preventDefault()
 			const note = filtered[active]
@@ -601,7 +625,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							openPath={openPath}
 							query={query}
 							onOpen={(path) => void openNote(path)}
-							onSelectDir={setActiveDir}
+							onSelectDir={(dir) => {
+								selectedDirRef.current = dir
+							}}
 							onCreate={(dir, title) => void createNote(title, dir)}
 							onMkdir={(path) => void actions.mkdir({ path })}
 							onRename={(from, to) => void moveNote(from, to)}

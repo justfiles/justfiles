@@ -52,6 +52,20 @@ export function isUnder(path: string, dir: string): boolean {
 }
 
 /**
+ * Why this move must be refused, or `null` if it may proceed. The volume's
+ * `rename` is a POSIX primitive: it happily rebinds a directory's inode beneath
+ * one of its own descendants, leaving a cyclic subtree unreachable from the root.
+ * Every destination rule lives here, so the reducer has one guard and the GUI, the
+ * tree's drag/drop and the agent all inherit it.
+ */
+export function illegalMove(from: string, to: string): string | null {
+	if (from === '/') return 'the knowledge base root cannot be moved'
+	if (to === from) return null // a no-op, not an error
+	if (isUnder(to, from)) return `“${noteTitle(from)}” cannot be moved inside itself`
+	return null
+}
+
+/**
  * A filename from a human title, kept as close to the title as the filesystem
  * allows: case and spaces survive (`Remember the milk` → `Remember the milk`),
  * only genuinely unsafe characters are dropped. Imported names are NOT run
