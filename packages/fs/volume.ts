@@ -286,10 +286,15 @@ export function volume(storage: Storage): Volume {
 	type ResolvedPath = {
 		ino: Ino
 		type: FileType
+		// Where the walk LANDED: `.`/`..` folded away and every traversed symlink
+		// replaced by its target, so this is the path the change feed reports entries
+		// under. `/alias/trips` (alias -> /notes) lands on `/notes/trips`.
+		path: string
 	}
 
 	/**
-	 * Resolve an absolute path to an inode and final type.
+	 * Resolve an absolute path to an inode, its final type, and the canonical path
+	 * it landed on.
 	 * followLast controls whether a final symlink component is followed.
 	 */
 	async function resolvePathInfo(
@@ -300,11 +305,14 @@ export function volume(storage: Storage): Volume {
 		const normalized = path.replace(/\/+$/, '') || '/'
 		if (normalized === '/') {
 			const meta = await getMetaOrThrow(storage.rootIno)
-			return { ino: storage.rootIno, type: meta.type }
+			return { ino: storage.rootIno, type: meta.type, path: '/' }
 		}
 
 		const queue: string[] = normalized.split('/').filter((p) => p !== '')
 		const inoStack: Ino[] = [storage.rootIno]
+		// The names behind `inoStack`, kept in lockstep so the walk can report where
+		// it ended up rather than what the caller spelled.
+		const names: string[] = []
 		let symlinkDepth = initialDepth
 		let resolved: ResolvedPath | null = null
 
@@ -315,7 +323,13 @@ export function volume(storage: Storage): Volume {
 			if (name === '.') continue
 
 			if (name === '..') {
-				if (inoStack.length > 1) inoStack.pop()
+				if (inoStack.length > 1) {
+					inoStack.pop()
+					names.pop()
+				}
+				// We are no longer at the entry we last descended into, so the destination
+				// has to be re-read from the stack below: `/a/b/..` is `/a`, not `/a/b`.
+				resolved = null
 				continue
 			}
 
@@ -337,12 +351,14 @@ export function volume(storage: Storage): Volume {
 
 				if (target.startsWith('/')) {
 					inoStack.splice(0, inoStack.length, storage.rootIno)
+					names.length = 0
 				}
 				queue.splice(i, 1, ...targetParts)
 				i--
 			} else {
 				inoStack.push(entry.ino)
-				resolved = { ino: entry.ino, type: entry.type }
+				names.push(name)
+				resolved = { ino: entry.ino, type: entry.type, path: `/${names.join('/')}` }
 			}
 		}
 
@@ -350,7 +366,7 @@ export function volume(storage: Storage): Volume {
 			const ino = inoStack[inoStack.length - 1]
 			if (!ino) throw new Error(`ENOENT: ${path}`)
 			const meta = await getMetaOrThrow(ino)
-			return { ino, type: meta.type }
+			return { ino, type: meta.type, path: names.length ? `/${names.join('/')}` : '/' }
 		}
 		return resolved
 	}
@@ -764,7 +780,20 @@ export function volume(storage: Storage): Volume {
 			// edits to existing files keep the listing identical, so they don't fire.
 			// Coalesce the several ops of one logical write into a single event.
 			if (opts?.recursive) {
-				const root = normalizePath(path)
+				// Compare against where the root RESOLVES, not how it was spelled: every
+				// other operation on this volume follows symlinks, so a watch on an alias
+				// has to see the events its own reads produce (they arrive under the
+				// target's path). Pinned once here, as `inotify_add_watch` pins at add
+				// time; re-point the symlink and you re-watch. A root that does not exist
+				// yet has nothing to resolve through, so it stays as spelled.
+				const spelled = normalizePath(path)
+				let root = spelled
+				try {
+					const landed = await resolvePathInfo(spelled || '/', true)
+					root = landed.path === '/' ? '' : landed.path
+				} catch {
+					// Not created yet: nothing to resolve through, so compare as spelled.
+				}
 				let scheduled = false
 				let pendingSource: string | undefined
 				return subscribe((change) => {

@@ -224,6 +224,24 @@ describe('volume.watch', () => {
 })
 
 describe('volume.watch recursive', () => {
+	it('follows a symlinked root to where the events actually land', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/notes/trips', { recursive: true })
+		await vol.symlink('/notes', '/alias')
+
+		let fired = 0
+		// The app's own reads through /alias land on /notes, so its watch must too.
+		await vol.watch('/alias', () => fired++, { recursive: true })
+
+		await vol.writeFile('/notes/trips/kyoto.md', enc.encode('go'))
+		await flush()
+		expect(fired).toBe(1)
+
+		await vol.writeFile('/elsewhere.md', enc.encode('x'))
+		await flush()
+		expect(fired).toBe(1)
+	})
+
 	it('wakes when an ancestor moves, taking the subtree with it', async () => {
 		const vol = volume(memStorage())
 		await vol.mkdir('/notes/trips', { recursive: true })
