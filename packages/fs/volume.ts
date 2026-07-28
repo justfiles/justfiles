@@ -763,7 +763,7 @@ export function volume(storage: Storage): Volume {
 			// edits to existing files keep the listing identical, so they don't fire.
 			// Coalesce the several ops of one logical write into a single event.
 			if (opts?.recursive) {
-				const root = path.replace(/\/+$/, '')
+				const root = normalizePath(path)
 				let scheduled = false
 				let pendingSource: string | undefined
 				return subscribe((change) => {
@@ -859,7 +859,17 @@ function within(root: string, path: string | undefined): boolean {
 	return path === root || path.startsWith(`${root}/`)
 }
 
-function chrootPath(root: string, path: string): string {
+/**
+ * Canonical form of an absolute path: no trailing slash, no empty or `.`
+ * segments, `..` resolved. Returns '' for the root so the result COMPOSES by
+ * concatenation — it is the chroot mapping's tail, and as a watch root it
+ * prefixes every path in the volume.
+ *
+ * Every path-taking operation resolves a path this way (`resolvePathInfo` walks
+ * the same segments), so a listener that compares paths textually has to do it
+ * too, or `/notes/../notes` watches nothing.
+ */
+function normalizePath(path: string): string {
 	if (!path.startsWith('/')) throw new Error(`path must be absolute: ${path}`)
 	const parts: string[] = []
 	for (const part of path.split('/')) {
@@ -871,7 +881,11 @@ function chrootPath(root: string, path: string): string {
 		}
 		parts.push(part)
 	}
-	return parts.length ? `${root}/${parts.join('/')}` : root
+	return parts.length ? `/${parts.join('/')}` : ''
+}
+
+function chrootPath(root: string, path: string): string {
+	return `${root}${normalizePath(path)}` || root
 }
 
 export function chroot(fs: Volume, root: string): Volume {
