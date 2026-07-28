@@ -47,29 +47,38 @@ export function stateStore(fs: Volume): StateStore {
 	// same value writes nothing: `/state/<id>.json`'s mtime then means "when the
 	// state last CHANGED", and a reducer edge that folds to an identical state (a
 	// subscription wake, a re-scan) stops manufacturing writes for sync to carry.
+	// Invariant: a belief here is only ever recorded together with the in-memory
+	// state it came from, and dropped with it — a belief that outlived its value
+	// would let a later commit BACK to that value skip its write, stranding disk
+	// ahead of memory until a reboot resurrected it.
 	const onDisk = new Map<AppId, string>()
 	return { current, commit, seq, invalidate, drop }
 
-	async function load(appId: AppId): Promise<unknown> {
+	// The file's value plus its serialization, or `{}` when there is no file yet.
+	async function load(appId: AppId): Promise<{ value?: unknown; encoded?: string }> {
 		const statePath = `/state/${appId}.json`
 		try {
 			if (await fs.exists(statePath)) {
-				const loaded = JSON.parse(text(await fs.readFile(statePath)))
-				onDisk.set(appId, JSON.stringify(loaded))
-				return loaded
+				const value = JSON.parse(text(await fs.readFile(statePath)))
+				return { value, encoded: JSON.stringify(value) }
 			}
 		} catch {
-			return undefined
+			return {}
 		}
-		return undefined
+		return {}
 	}
 
 	async function current(appId: AppId): Promise<unknown> {
 		if (states.has(appId)) return states.get(appId)
 		const loaded = await load(appId)
-		// A concurrent commit may have populated the cache while we read fs; keep
-		// the newer authoritative value rather than clobbering it with the load.
-		if (!states.has(appId)) states.set(appId, loaded)
+		// A concurrent commit may have populated the cache while we read fs — `state()`
+		// and the subscription warm-up both read OFF the per-app queue. Keep the newer
+		// authoritative value rather than clobbering it with the load, and take the
+		// load's belief about the file only when we took its value too.
+		if (!states.has(appId)) {
+			states.set(appId, loaded.value)
+			if (loaded.encoded !== undefined) onDisk.set(appId, loaded.encoded)
+		}
 		return states.get(appId)
 	}
 
