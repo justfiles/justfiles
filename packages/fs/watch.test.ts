@@ -224,6 +224,24 @@ describe('volume.watch', () => {
 })
 
 describe('volume.watch recursive', () => {
+	it('resolves a non-canonical watch root the way every other operation does', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/notes/trips', { recursive: true })
+
+		let fired = 0
+		// The same subtree, spelled the long way round — `stat`/`scan` resolve this to
+		// /notes, so a watch must not silently watch nothing instead.
+		await vol.watch('/notes/trips/../', () => fired++, { recursive: true })
+
+		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
+		await flush()
+		expect(fired).toBe(1)
+
+		await vol.writeFile('/elsewhere.md', enc.encode('x'))
+		await flush()
+		expect(fired).toBe(1)
+	})
+
 	it('is scoped to the watched subtree', async () => {
 		const vol = volume(memStorage())
 		await vol.mkdir('/notes/trips', { recursive: true })
@@ -326,7 +344,8 @@ describe('volume.watch over the atomic-cap backend (nativeStorage)', () => {
 
 	it('scopes a recursive watch to the subtree', async () => {
 		dir = mkdtempSync(join(tmpdir(), 'fs-watch-'))
-		const vol = volume(await nativeStorage(dir))
+		// Spelled with a trailing separator, as a configured root easily is.
+		const vol = volume(await nativeStorage(`${dir}/`))
 		await vol.mkdir('/notes', { recursive: true })
 		await vol.mkdir('/state', { recursive: true })
 

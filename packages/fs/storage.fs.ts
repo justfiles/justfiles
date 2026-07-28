@@ -13,7 +13,7 @@ import {
 	unlink,
 	writeFile
 } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { Ino } from './types'
 import { FileType } from './types'
@@ -52,8 +52,12 @@ export async function nativeStorage(root: string): Promise<Storage> {
 	}
 
 	// OS path -> the volume-relative path a `StorageChange` reports (`/a/b`).
+	// Derived with `relative`, not by slicing `root.length`: the root is whatever the
+	// caller spelled (a CLI-configured '~/notes/', or '/'), and a volume path must
+	// come back absolute either way.
 	function volPath(osPath: string): string {
-		return osPath.slice(root.length) || '/'
+		const rel = relative(root, osPath)
+		return rel === '' ? '/' : `/${rel}`
 	}
 
 	function toFileType(s: Stats): FileType {
