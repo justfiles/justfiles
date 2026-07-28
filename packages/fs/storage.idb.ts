@@ -942,9 +942,16 @@ export function idbStorage(
 			await storeContentByHashTx(tx, hash, bytes)
 			const inode = await tx.objectStore('inodes').get(ino)
 			if (inode) {
-				await tx
-					.objectStore('inodes')
-					.put({ ...inode, size: BigInt(bytes.length), contentHash: hash })
+				// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
+				// stamped before the journal row is built so the new time ships with it.
+				const stamp = BigInt(Date.now()) * 1_000_000n
+				await tx.objectStore('inodes').put({
+					...inode,
+					size: BigInt(bytes.length),
+					contentHash: hash,
+					mtimeNs: stamp,
+					ctimeNs: stamp
+				})
 				await tx.objectStore('dirty').put({ ino, markedAt: Date.now() })
 				const path = await pathOfTx(tx, ino)
 				if (path !== null)

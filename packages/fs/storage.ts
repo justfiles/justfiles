@@ -233,7 +233,11 @@ export interface Storage {
 
 	/**
 	 * Replace the entire content of an inode atomically.
-	 * The backend MUST update size and contentHash in metadata as a side effect.
+	 * The backend MUST update size and contentHash in metadata as a side effect,
+	 * and MUST stamp `mtimeNs`/`ctimeNs` with the time of the write — in the same
+	 * commit, so the journal row a peer receives carries the new time. Callers that
+	 * need an exact timestamp (sync materialising a remote inode, `utimes`) set it
+	 * afterwards through `setMeta`.
 	 */
 	putBlob(ino: Ino, data: Uint8Array, options?: MutationOptions): Promise<void>
 

@@ -60,6 +60,11 @@ export interface Volume {
 	 * Parent directory must exist.
 	 * Throws ENOENT if a parent directory is missing.
 	 * Throws EISDIR if the path refers to a directory.
+	 *
+	 * Moves the file's `mtimeNs`/`ctimeNs` to now, so mtime means "when these bytes
+	 * last changed" and an app can sort by recency. A sync-applied write instead
+	 * carries the ORIGIN's mtime (it is the same edit, not a new one). Directory
+	 * mtime is NOT maintained — no caller reads it.
 	 */
 	writeFile(path: string, data: Uint8Array): Promise<void>
 
