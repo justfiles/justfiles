@@ -1,4 +1,4 @@
-import { memStorage, volume } from '@justfiles/fs'
+import { memStorage, type Volume, volume } from '@justfiles/fs'
 import { expect, test } from 'vitest'
 import { stateStore } from './kernel.state.ts'
 
@@ -77,6 +77,39 @@ test('a hydrated store skips a re-commit of what it read', async () => {
 	expect(await rebooted.current('a')).toEqual({ n: 7 })
 	expect(await rebooted.commit('a', { n: 7 })).toBe(0)
 	expect(await journal.head()).toBe(head)
+})
+
+test('a slow first read cannot leave the store believing a stale file', async () => {
+	// `state()` and the subscription warm-up read state OFF the per-app queue, so a
+	// first-touch load can still be in flight when a queued dispatch commits. The
+	// load loses — it must lose its belief about the file too, or a later transition
+	// back to the value it read would skip its write and leave disk ahead of memory.
+	const fs = fresh()
+	await stateStore(fs).commit('a', { n: 1 })
+
+	let release = () => {}
+	const gate = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	// Park AFTER the bytes are read, so the load genuinely carries the old snapshot.
+	const slowFs: Volume = {
+		...fs,
+		readFile: async (path) => {
+			const bytes = await fs.readFile(path)
+			await gate
+			return bytes
+		}
+	}
+	const s = stateStore(slowFs)
+
+	const reading = s.current('a') // boot snapshot, reading {"n":1}
+	await s.commit('a', { n: 2 }) // a dispatch lands first, and writes
+	release()
+	expect(await reading).toEqual({ n: 2 }) // the committed value stays authoritative
+
+	// Disk holds {"n":2}, so going back to {"n":1} is a real change and must persist.
+	await s.commit('a', { n: 1 })
+	expect(await stateStore(fs).current('a')).toEqual({ n: 1 })
 })
 
 test('drop clears the persisted and in-memory state', async () => {
