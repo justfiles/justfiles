@@ -2,6 +2,7 @@ import type { AgentTool } from '@earendil-works/pi-agent-core'
 import type { Volume } from '@justfiles/fs'
 import { Bash, type Command, type CommandName, type ExecResult, getCommandNames } from 'just-bash'
 import Type from 'typebox'
+import { SECRET_PREFIXES } from '../paths.ts'
 import { truncateTail } from './truncate.ts'
 import { volumeFs } from './volume-fs.ts'
 
@@ -62,8 +63,12 @@ export function createJustBashTool(options: JustBashToolOptions): AgentTool<type
 	// One Bash per tool, reused across calls: the volume (and thus cwd, env, and
 	// any files written) persists between turns. Custom commands override built-ins
 	// of the same name; a ShellCommand is structurally a just-bash Command.
+	//
+	// The credential trees are denied at the fs seam, not asked for in the prompt: the
+	// agent reads untrusted text (fetch/search), so a prompt instruction is not a boundary.
+	// There is exactly ONE policy, so it is imported rather than made an option.
 	const bash = new Bash({
-		fs: volumeFs(volume),
+		fs: volumeFs(volume, SECRET_PREFIXES),
 		cwd,
 		env,
 		commands: allow,

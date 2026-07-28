@@ -18,6 +18,7 @@ import type { Volume } from '@justfiles/fs'
 import Type from 'typebox'
 import { file } from './file.ts'
 import { parseFrontmatter } from './markdown.ts'
+import { SKILLS_DIR } from './paths.ts'
 
 export interface SkillMeta {
 	id: string
@@ -29,8 +30,6 @@ export interface SkillSource {
 	list(): Promise<SkillMeta[]>
 	load(id: string): Promise<string>
 }
-
-const SKILLS_DIR = '/system/skills'
 
 // User/project skills on the Volume — cross-platform (both hosts implement the same
 // Volume interface). A skill is a directory `<id>/SKILL.md` or a single file `<id>.md`.

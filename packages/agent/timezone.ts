@@ -1,8 +1,8 @@
 import type { Volume } from '@justfiles/fs'
 import { parseFrontmatter } from './markdown'
+import { PROFILE as PROFILE_PATH } from './paths.ts'
 
 export const DEFAULT_TIMEZONE = 'UTC'
-const PROFILE_PATH = '/system/user.md'
 
 export async function resolveTimezone(
 	volume: Volume,

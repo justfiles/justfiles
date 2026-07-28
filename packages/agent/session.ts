@@ -13,6 +13,7 @@ import type { CompactionSettings } from './compaction.ts'
 import { stripExpressions } from './expression.ts'
 import { APPS_PROMPT, type AppController, createAppCommand } from './justbash/app.ts'
 import { createJustBashTool } from './justbash/index.ts'
+import { createOsCommand, type OsState } from './justbash/os.ts'
 import { createAgent } from './llm.agent.ts'
 import { text as createText, type LLMText } from './llm.text.ts'
 import type { AgentBackend } from './llm.ts'
@@ -38,6 +39,10 @@ export interface AgentSessionOptions {
 	// reaches account-backed capabilities (email/calendar/…): through apps, not dedicated
 	// tools. Omit for no apps.
 	apps?: AppController
+	// A read-only projection of the host's shell (which windows are open, which is focused)
+	// → adds the `os` command. The agent never parses `/system/os-state.json`: that file is a
+	// persistence artifact, this is the one fact it can act on. Omit for a host with no shell.
+	osState?: OsState
 	// Capability-provided agent tools (Step 3.5): the host's capability invoke plus the
 	// descriptor sets to expose. Each tool invokes as the privileged agent actor.
 	capabilities?: { invoke: Capabilities['invoke']; tools: readonly CapabilityToolSet[] }
@@ -162,13 +167,17 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 			getTimezone: timezone,
 			readDoc,
 			appsPrompt: apps ? APPS_PROMPT : undefined,
-			expressions: options.expressions
+			expressions: options.expressions,
+			os: Boolean(options.osState)
 		})
 
 		let pending: PendingQuestion | null = null
 		const bash = createJustBashTool({
 			volume,
-			commands: apps ? [createAppCommand(apps)] : []
+			commands: [
+				...(apps ? [createAppCommand(apps)] : []),
+				...(options.osState ? [createOsCommand(options.osState)] : [])
+			]
 		})
 		const askUser = createAskUserTool((question, opts) => {
 			pending = { question, options: opts }

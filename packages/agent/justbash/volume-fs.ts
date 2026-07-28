@@ -22,8 +22,16 @@ import type { BufferEncoding, FileContent, FsStat, IFileSystem } from 'just-bash
  *     and refreshed off a recursive Volume.watch. A glob is at worst one
  *     watch-tick stale, which is fine.
  *   - link() (hard links) — Volume has no hard links; reject with ENOSYS.
+ *
+ * `deny` is a hard, uniform read boundary (see paths.SECRET_PREFIXES): because every
+ * command (cat, find, tar, sqlite3, jq…) reaches the Volume through this one object,
+ * denying here cannot be routed around by a cleverer command line.
  */
-export function volumeFs(vol: Volume): IFileSystem {
+export function volumeFs(vol: Volume, deny: readonly string[] = []): IFileSystem {
+	const denied = (p: string) => deny.some((d) => p === d || p.startsWith(`${d}/`))
+	const eacces = (p: string) =>
+		Promise.reject(Object.assign(new Error(`EACCES: permission denied, ${p}`), { code: 'EACCES' }))
+	const guard = <T>(p: string, run: () => Promise<T>) => (denied(p) ? eacces(p) : wrap(run()))
 	// --- live path snapshot for synchronous getAllPaths (glob expansion) ---
 	let paths = new Set<string>(['/'])
 	let refreshing = false
@@ -83,35 +91,57 @@ export function volumeFs(vol: Volume): IFileSystem {
 
 	const fs: IFileSystem = {
 		readFile: (path, options) =>
-			wrap(vol.readFile(path).then((b) => Buffer.from(b).toString(readEncoding(options)))),
-		readFileBuffer: (path) => wrap(vol.readFile(path)),
+			guard(path, () =>
+				vol.readFile(path).then((b) => Buffer.from(b).toString(readEncoding(options)))
+			),
+		readFileBuffer: (path) => guard(path, () => vol.readFile(path)),
 		writeFile: (path, content, options) =>
-			wrap(vol.writeFile(path, toBytes(content, writeEncoding(options)))),
+			guard(path, () => vol.writeFile(path, toBytes(content, writeEncoding(options)))),
 		appendFile: (path, content, options) =>
-			wrap(vol.appendFile(path, toBytes(content, writeEncoding(options)))),
-		exists: (path) => vol.exists(path),
-		stat: (path) => wrap(vol.stat(path).then(toFsStat)),
-		lstat: (path) => wrap(vol.lstat(path).then(toFsStat)),
-		mkdir: (path, options) => wrap(vol.mkdir(path, { recursive: options?.recursive })),
-		readdir: (path) => wrap(vol.readdir(path).then((es) => es.map((e) => e.name))),
-		readdirWithFileTypes: (path) => wrap(vol.readdir(path).then((es) => es.map(toDirentEntry))),
+			guard(path, () => vol.appendFile(path, toBytes(content, writeEncoding(options)))),
+		// `false`, not EACCES: `[ -e … ]` should read as absent, not error out.
+		exists: (path) => (denied(path) ? Promise.resolve(false) : vol.exists(path)),
+		stat: (path) => guard(path, () => vol.stat(path).then(toFsStat)),
+		lstat: (path) => guard(path, () => vol.lstat(path).then(toFsStat)),
+		mkdir: (path, options) => guard(path, () => vol.mkdir(path, { recursive: options?.recursive })),
+		readdir: (path) =>
+			guard(path, () =>
+				vol.readdir(path).then((es) => es.map((e) => e.name).filter((n) => !denied(join(path, n))))
+			),
+		readdirWithFileTypes: (path) =>
+			guard(path, () =>
+				vol
+					.readdir(path)
+					.then((es) => es.filter((e) => !denied(join(path, e.name))).map(toDirentEntry))
+			),
 		rm: (path, options) =>
-			wrap(vol.rm(path, { recursive: options?.recursive, force: options?.force })),
-		cp: (src, dest, options) => wrap(vol.cp(src, dest, { recursive: options?.recursive })),
-		mv: (src, dest) => wrap(vol.rename(src, dest)),
+			guard(path, () => vol.rm(path, { recursive: options?.recursive, force: options?.force })),
+		cp: (src, dest, options) =>
+			denied(dest)
+				? eacces(dest)
+				: guard(src, () => vol.cp(src, dest, { recursive: options?.recursive })),
+		mv: (src, dest) => (denied(dest) ? eacces(dest) : guard(src, () => vol.rename(src, dest))),
 		resolvePath: (base, path) => resolvePath(base, path),
-		getAllPaths: () => Array.from(paths),
-		chmod: (path, mode) => wrap(vol.chmod(path, mode)),
-		symlink: (target, linkPath) => wrap(vol.symlink(target, linkPath)),
+		// Drives glob expansion — filter, or `ls /system/**` enumerates the secrets.
+		getAllPaths: () => Array.from(paths).filter((p) => !denied(p)),
+		chmod: (path, mode) => guard(path, () => vol.chmod(path, mode)),
+		symlink: (target, linkPath) =>
+			denied(target) ? eacces(target) : guard(linkPath, () => vol.symlink(target, linkPath)),
 		link: () =>
 			Promise.reject(
 				Object.assign(new Error('ENOSYS: hard links are not supported'), { code: 'ENOSYS' })
 			),
-		readlink: (path) => wrap(vol.readlink(path)),
-		realpath: (path) => wrap(realpath(path)),
-		utimes: (path, _atime, mtime) => wrap(vol.utimes(path, BigInt(mtime.getTime()) * 1_000_000n))
+		readlink: (path) => guard(path, () => vol.readlink(path)),
+		realpath: (path) => guard(path, () => realpath(path)),
+		utimes: (path, _atime, mtime) =>
+			guard(path, () => vol.utimes(path, BigInt(mtime.getTime()) * 1_000_000n))
 	}
 	return fs
+}
+
+/** Join a directory path and an entry name (no normalisation needed — `name` is a leaf). */
+function join(dir: string, name: string): string {
+	return dir === '/' ? `/${name}` : `${dir}/${name}`
 }
 
 /** Tag a Volume error ("ENOENT: …") with a Node-style `error.code`, then rethrow. */

@@ -15,13 +15,11 @@
 import type { Volume } from '@justfiles/fs'
 import { z } from 'zod'
 import { ageCalibration } from './age-calibration.ts'
+import { CONTEXT_DIR, MEMORY as CORE_PATH, PROFILE as PROFILE_PATH } from './paths.ts'
 import LEARNING_EXTRACTION from './prompts/learning-extraction.md?raw'
 
 export const LEARNING_SCHEMA = 'frieren/context/learning/v1'
-const CONTEXT_DIR = '/system/context'
 const LEARNING_PATH = `${CONTEXT_DIR}/learning.json`
-const PROFILE_PATH = '/system/user.md'
-const CORE_PATH = '/system/memory/core.md'
 
 // Reuse a cached projection for at most 7 days even when sources are unchanged.
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000

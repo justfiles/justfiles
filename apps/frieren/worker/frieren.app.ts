@@ -1,4 +1,4 @@
-import { type AppController, aiCapability, type LLMText } from '@justfiles/agent'
+import { type AppController, aiCapability, type LLMText, type OsWindowInfo } from '@justfiles/agent'
 import { createAppController, type Kernel, kernel } from '@justfiles/app'
 import {
 	type Capabilities,
@@ -12,6 +12,7 @@ import type { Volume } from '@justfiles/fs'
 import { appFileUrl } from '../shared/appstore.ts'
 import { CAPS_WS_SUBPROTOCOL, offersCapsSubprotocol } from '../shared/caps-ws.ts'
 import { workerSandbox } from './kernel.sandbox.ts'
+import { currentAppId, readWindows } from './os-windows.ts'
 
 interface DisplayApp {
 	readonly id: string
@@ -40,6 +41,8 @@ interface FrierenAppsDeps {
 
 export interface FrierenApps {
 	readonly controller: AppController
+	// The agent's `os windows` port: the persisted shell snapshot, projected.
+	windows(): Promise<readonly OsWindowInfo[]>
 	list(): Promise<readonly DisplayApp[]>
 	open(id: string): Promise<void>
 	close(id?: string): Promise<void>
@@ -50,8 +53,6 @@ export interface FrierenApps {
 		message: string | ArrayBuffer
 	): Promise<void>
 }
-
-const OS_STATE_PATH = '/system/os-state.json'
 
 // Reserved pseudo-app id for the single shared capability-proxy socket. Not a
 // valid app id (underscore is disallowed by the kernel), so it can't collide
@@ -125,37 +126,12 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 		}
 	}
 
-	async function currentAppId(): Promise<string | undefined> {
-		try {
-			if (!(await deps.fs.exists(OS_STATE_PATH))) return undefined
-			const snapshot = JSON.parse(
-				new TextDecoder().decode(await deps.fs.readFile(OS_STATE_PATH))
-			) as {
-				windows?: Record<string, { appId?: unknown } | undefined>
-				focusStack?: unknown
-				openOrder?: unknown
-			}
-			for (const ids of [snapshot.focusStack, snapshot.openOrder]) {
-				if (!Array.isArray(ids)) continue
-				for (let i = ids.length - 1; i >= 0; i--) {
-					const id = ids[i]
-					if (typeof id !== 'string') continue
-					const appId = snapshot.windows?.[id]?.appId
-					if (typeof appId === 'string') return appId
-				}
-			}
-		} catch {
-			return undefined
-		}
-		return undefined
-	}
-
 	async function open(id: string): Promise<void> {
 		deps.broadcast({ type: 'app_open', id })
 	}
 
 	async function close(id?: string): Promise<void> {
-		const target = id ?? (await currentAppId())
+		const target = id ?? (await currentAppId(deps.fs))
 		if (!target) return
 		deps.broadcast({ type: 'app_close', id: target })
 	}
@@ -245,11 +221,12 @@ export function frierenApps(deps: FrierenAppsDeps): FrierenApps {
 			open: (id) => deps.broadcast({ type: 'app_open', id }),
 			close: (id) => deps.broadcast({ type: 'app_close', id })
 		},
-		focus: currentAppId
+		focus: () => currentAppId(deps.fs)
 	})
 
 	return {
 		controller,
+		windows: () => readWindows(deps.fs),
 		list,
 		open,
 		close,

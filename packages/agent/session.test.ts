@@ -231,4 +231,64 @@ describe('createAgentSession', () => {
 		// 4am UTC has passed at 10:00, so it schedules the next day's 4am.
 		expect(at).toBe(new Date('2026-07-06T04:00:00Z').getTime())
 	})
+
+	// The transcript file names itself for when the conversation started, so `ls` IS the
+	// chronological index the agent searches (#284 §8).
+	test('a fresh transcript is named for its start time', async () => {
+		const vol = volume(memStorage())
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
+			compaction: NO_COMPACTION
+		})
+		await session.prompt('hello')
+
+		const names = (await vol.readdir('/system/agents/main/sessions'))
+			.map((entry) => entry.name)
+			.filter((name) => name.endsWith('.jsonl'))
+		expect(names).toHaveLength(1)
+		expect(names[0]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-[0-9a-f]{8}\.jsonl$/)
+	})
+
+	// No migration: `route()` resolves the path RECORDED in the sessions map, so a transcript
+	// written under the old `<id>.jsonl` scheme keeps loading (and simply sorts first).
+	test('an old-style transcript path still loads', async () => {
+		const vol = volume(memStorage())
+		const old = '/system/agents/main/sessions/abcd1234.jsonl'
+		await vol.mkdir('/system/agents/main/sessions', { recursive: true })
+		await vol.writeFile(
+			old,
+			encoder.encode(
+				`${JSON.stringify({
+					type: 'message',
+					role: 'user',
+					content: 'earlier question',
+					id: 'aaaaaaaa',
+					parentId: null,
+					ts: new Date().toISOString()
+				})}\n`
+			)
+		)
+		await vol.writeFile(
+			'/system/agents/main/sessions/sessions.json',
+			encoder.encode(
+				JSON.stringify({
+					'agent:main': {
+						sessionId: 'abcd1234',
+						lastActive: new Date().toISOString(),
+						sessionFile: old
+					}
+				})
+			)
+		)
+
+		const session = createAgentSession({
+			volume: vol,
+			backend: scriptedBackend([assistant([{ type: 'text', text: 'hi' }])]),
+			compaction: NO_COMPACTION
+		})
+		expect((await session.history()).map((entry) => 'content' in entry && entry.content)).toContain(
+			'earlier question'
+		)
+	})
 })
