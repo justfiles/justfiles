@@ -1,4 +1,5 @@
 import type { Volume } from '@justfiles/fs'
+import { agentDir, avatar, PROFILE, soul } from './paths.ts'
 
 // The platform's agent is ONE companion across terminals (web + desktop): these are the
 // identity files it reads from the Volume, plus the sensible defaults it seeds so it works
@@ -7,10 +8,12 @@ import type { Volume } from '@justfiles/fs'
 // Deliberately pi-free (only `@justfiles/fs`): `createAssistant` seeds through it, and a
 // terminal's *client* can import the paths + seeder for its own pre-seed / personalization
 // UI without pulling in the agent runtime. Import from `@justfiles/agent/defaults`.
-export const SOUL_PATH = '/system/agents/main/soul.md'
-export const AVATAR_PATH = '/system/agents/main/avatar.png'
-export const PROFILE_PATH = '/system/user.md'
-export const AGENT_DIR = '/system/agents/main'
+//
+// The path constants are the PUBLIC spelling of package-internal paths.ts.
+export const SOUL_PATH = soul()
+export const AVATAR_PATH = avatar()
+export const PROFILE_PATH = PROFILE
+export const AGENT_DIR = agentDir()
 
 // Per-expression faces derived from `avatar.png` (see expression.ts). The source's content
 // hash is IN the name, so a new avatar can never resolve to an old face — the lookup simply

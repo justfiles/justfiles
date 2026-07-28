@@ -6,7 +6,7 @@ import Type from 'typebox'
 import { describe, expect, test } from 'vitest'
 import { createAssistant } from './assistant.ts'
 import type { LLMText } from './llm.text.ts'
-import { systemPrompt } from './prompts.ts'
+import { filesystemPrompt, systemPrompt } from './prompts.ts'
 
 const encoder = new TextEncoder()
 
@@ -162,13 +162,14 @@ describe('assistant tool API', () => {
 		})
 
 		const expected = systemPrompt('soul')
+		expected.add('# your filesystem', filesystemPrompt({ os: false }))
 		expected.add('# about the user', 'profile')
 		expected.add(
 			'# current time',
 			rt.systemPrompt().match(/Now: .* \(UTC\)\./)?.[0] ?? '',
 			'When the user references relative dates ("today", "tomorrow", "next week"), interpret them in this timezone.',
 			"When passing date: arguments to calendar tools, use ISO 8601 with the user's offset (or 'Z' for UTC). The agent is responsible for the conversion.",
-			'If this session has been running long enough that the time above may be stale, run `now` to get the current time.'
+			'If this session has been running long enough that the time above may be stale, run `date` to get the current time.'
 		)
 		expected.add('# permanent memory', 'memory')
 		expected.add(
@@ -205,5 +206,23 @@ describe('assistant tool API', () => {
 		})
 		expect(rt.systemPrompt()).toContain('# apps')
 		expect(rt.systemPrompt()).toContain('Run `app list` to see installed apps.')
+	})
+
+	test('orients the agent on the filesystem, and mentions `os windows` only with an os port', async () => {
+		const make = (os: boolean) =>
+			createAssistant({
+				volume: volume(memStorage()),
+				agent: new Agent(),
+				text: testText(),
+				compaction: { enabled: false, reserveTokens: 0, keepRecentTokens: 0 },
+				os
+			})
+
+		const without = (await make(false)).systemPrompt()
+		expect(without).toContain('# your filesystem')
+		expect(without).toContain('/notes/')
+		expect(without).not.toContain('os windows')
+
+		expect((await make(true)).systemPrompt()).toContain('os windows')
 	})
 })

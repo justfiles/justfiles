@@ -42,7 +42,9 @@ function decodeStdin(stdin: unknown): string {
  * byte-identical across turns, scales to any number of apps, and can never go stale.
  */
 export const APPS_PROMPT = [
-	"You operate this device by driving its apps through the `app` command in your bash tool. This is your PRIMARY way to get things done for the user: an app owns its own data and actions, so run an app action rather than editing files by hand, and NEVER write scripts to read or change an app's data directly.",
+	"You operate this device by driving its apps through the `app` command in your bash tool. This is your PRIMARY way to get things done for the user: an app owns its state and actions, so run an app action rather than reconstructing its behaviour by hand. NEVER read or write an app's private storage (`/data/<app-id>`) or its bundle directly.",
+	'',
+	"The shared user trees are the exception: `/notes` and `/pictures` are the USER's files, not any app's private data. Read, search and (when asked) write them directly with `bash` — that is the designed path, and it works whether or not the relevant app is open. Use the app only to change what the user SEES: e.g. open a note in front of them.",
 	'',
 	"Don't assume from memory which apps exist — the set can change. Run `app list` to see what's installed right now, `app inspect <id>` to read an app's actions and current state, then `app run --id <id> <action> key=value` to act. `app launch <id>` opens an app for the user."
 ].join('\n')

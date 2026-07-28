@@ -11,6 +11,8 @@
 export { aiCapability, type GenerateText } from './ai.capability.ts'
 // ── The seam a host implements: how apps are driven ─────────────────
 export type { AppController } from './justbash/app.ts'
+// ── The seam a host implements: what the user is looking at ─────────
+export type { OsState, OsWindowInfo } from './justbash/os.ts'
 // Powers soul generation and the `ai` capability.
 export { type LLMText, text } from './llm.text.ts'
 // ── The credential/model seam + one-shot text generation ────────────

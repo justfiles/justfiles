@@ -400,6 +400,7 @@ export class Frieren extends DurableObject<Env> {
 				return backend
 			},
 			apps: this.requireApps().controller,
+			osState: async () => ({ windows: await this.requireApps().windows() }),
 			timezone: this.getTimezone,
 			// The frieren delivery channel: broadcast the agent's ping to every tab's
 			// omnibar (mirrors `broadcast`). Producer code is untouched — passing a

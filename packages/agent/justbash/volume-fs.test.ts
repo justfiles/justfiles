@@ -199,3 +199,74 @@ describe('drives a real Bash over the volume', () => {
 		expect(glob).toContain('c.txt')
 	})
 })
+
+// The secret boundary (#284 §7): `/system/accounts` holds live OAuth tokens in clear text
+// and the agent's shell is rooted at `/`. It is enforced HERE, at the one seam all ~83
+// commands share, so no clever command line can route around it — and the NAMES stay
+// invisible too, not just the bytes.
+describe('denied prefixes', () => {
+	const DENY = ['/system/accounts']
+
+	async function denied(): Promise<{ vol: Volume; bash: Bash }> {
+		const vol = volume(memStorage())
+		await vol.mkdir('/system/accounts', { recursive: true })
+		await vol.writeFile('/system/accounts/google.json', enc('{"token":"SECRET"}'))
+		await vol.writeFile('/system/user.md', enc('name: Ada\n'))
+		const bash = new Bash({ fs: volumeFs(vol, DENY), cwd: '/' })
+		await flush()
+		return { vol, bash }
+	}
+
+	test('no command reads a denied file, however it is reached', async () => {
+		const { bash } = await denied()
+		for (const command of [
+			'cat /system/accounts/google.json',
+			'head -1 /system/accounts/google.json',
+			'grep token /system/accounts/google.json',
+			'cp /system/accounts/google.json /leak.json',
+			'tar -cf /leak.tar /system/accounts',
+			'find /system/accounts -type f'
+		]) {
+			const result = await bash.exec(command)
+			expect(result.exitCode, command).not.toBe(0)
+			expect(`${result.stdout}${result.stderr}`, command).not.toContain('SECRET')
+		}
+		expect((await bash.exec('cat /leak.json')).exitCode).not.toBe(0)
+	})
+
+	test('listing hides the denied entry, including through a glob', async () => {
+		const { bash } = await denied()
+		const ls = await bash.exec('ls /system')
+		expect(ls.stdout).toContain('user.md')
+		expect(ls.stdout).not.toContain('accounts')
+		expect((await bash.exec('find /system')).stdout).not.toContain('accounts')
+		expect((await bash.exec('echo /system/*')).stdout).not.toContain('accounts')
+		expect((await bash.exec('echo /system/accounts/*')).stdout).not.toContain('google.json')
+		const grep = await bash.exec('grep -r SECRET /system')
+		expect(`${grep.stdout}${grep.stderr}`).not.toContain('SECRET')
+	})
+
+	test('sibling paths under the same parent are untouched', async () => {
+		const { bash } = await denied()
+		expect((await bash.exec('cat /system/user.md')).stdout).toBe('name: Ada\n')
+		await bash.exec('echo ok > /system/other.txt')
+		expect((await bash.exec('cat /system/other.txt')).stdout).toBe('ok\n')
+	})
+
+	test('exists reads as absent (not an error), and writes are refused', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/system/accounts', { recursive: true })
+		await vol.writeFile('/system/accounts/google.json', enc('{}'))
+		const fs = volumeFs(vol, DENY)
+		expect(await fs.exists('/system/accounts/google.json')).toBe(false)
+		await expect(fs.readFile('/system/accounts/google.json')).rejects.toMatchObject({
+			code: 'EACCES'
+		})
+		await expect(fs.writeFile('/system/accounts/evil.json', 'x')).rejects.toMatchObject({
+			code: 'EACCES'
+		})
+		await expect(fs.rm('/system/accounts', { recursive: true })).rejects.toMatchObject({
+			code: 'EACCES'
+		})
+	})
+})

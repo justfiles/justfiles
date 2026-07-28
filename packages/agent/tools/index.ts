@@ -4,5 +4,4 @@
 
 export { createAskUserTool } from './ask-user.ts'
 export { createFetchTool } from './fetch.ts'
-export { createTakeNoteTool } from './note.ts'
 export { createSearchTool } from './search.ts'

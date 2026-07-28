@@ -8,7 +8,8 @@ import { createReadDocTool, docsPrompt } from './docs'
 import { EXPRESSION_PROMPT } from './expression'
 import { file } from './file'
 import type { LLMText } from './llm.text'
-import { MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
+import * as paths from './paths.ts'
+import { filesystemPrompt, MEMORY_CONSOLIDATION_PROMPT, systemPrompt } from './prompts'
 import {
 	type AppendPayload,
 	type ContextMessage,
@@ -38,6 +39,9 @@ type AssistantProps = {
 	// Ask for the per-sentence expression tag (see expression.ts). Only a host that strips the
 	// tags before display should turn this on — otherwise they show up in the transcript.
 	expressions?: boolean
+	// Whether the host wired the `os` command (an `osState` port): the filesystem block then
+	// points at `os windows` for "what is the user looking at" instead of leaving it unanswerable.
+	os?: boolean
 }
 
 // Who authored a turn: the user typing, or an app acting on their behalf.
@@ -84,7 +88,8 @@ export async function createAssistant({
 	getTimezone,
 	readDoc,
 	appsPrompt,
-	expressions
+	expressions,
+	os = false
 }: AssistantProps): Promise<Assistant> {
 	// Seed the platform's default persona + empty profile if absent, so the agent always has
 	// a working identity and never blocks on "onboarding". Idempotent; personalization wins.
@@ -176,7 +181,7 @@ export async function createAssistant({
 			const prepared = prepareCompaction(branch, compaction)
 			const notes = await text.takeNotes(prepared.content)
 			if (notes) {
-				await file(volume, PATHS.daily()).append(`\n\n${notes}`)
+				await file(volume, paths.daily()).append(`\n\n${notes}`)
 			}
 			const result = await compact(text, prepared)
 			session.append([
@@ -215,10 +220,13 @@ export async function createAssistant({
 		// No onboarding gate: `createAssistant` seeds a default persona (agent-defaults) so a
 		// soul is normally present; if it is still missing we fall back to a blank persona so
 		// the agent keeps working (skills, docs, tools) and never blocks the user.
-		const soul = (await file(volume, PATHS.soul(agentId)).text()) || ''
+		const soul = (await file(volume, paths.soul(agentId)).text()) || ''
 
 		const prompt = systemPrompt(soul)
-		const profile = await file(volume, PATHS.profile).text()
+		// Orientation first, before any injected body: the agent knows where it is, which paths
+		// are the user's, and which are the host's, before it reads a word of their content.
+		prompt.add('# your filesystem', filesystemPrompt({ os }))
+		const profile = await file(volume, paths.PROFILE).text()
 		if (profile) {
 			prompt.add('# about the user', profile)
 			const calibration = ageCalibration(profile)
@@ -239,16 +247,16 @@ export async function createAssistant({
 			`Now: ${formatInTimezone(now, tz)} (${tz}).`,
 			'When the user references relative dates ("today", "tomorrow", "next week"), interpret them in this timezone.',
 			"When passing date: arguments to calendar tools, use ISO 8601 with the user's offset (or 'Z' for UTC). The agent is responsible for the conversion.",
-			'If this session has been running long enough that the time above may be stale, run `now` to get the current time.'
+			'If this session has been running long enough that the time above may be stale, run `date` to get the current time.'
 		)
-		const memory = await file(volume, PATHS.memory).text()
+		const memory = await file(volume, paths.MEMORY).text()
 		if (memory) prompt.add('# permanent memory', memory)
 
 		const today = new Date()
 		const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
 		const dailies: string[] = []
 		for (const date of [yesterday, today]) {
-			const daily = await file(volume, PATHS.daily(date)).text()
+			const daily = await file(volume, paths.daily(date)).text()
 			if (daily) dailies.push(`## ${date.toISOString().slice(0, 10)}\n${daily}`)
 		}
 
@@ -278,9 +286,9 @@ export async function consolidateMemory(
 ): Promise<void> {
 	const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
 	const dateStr = yesterday.toISOString().slice(0, 10)
-	const daily = await file(volume, PATHS.daily(yesterday)).text()
+	const daily = await file(volume, paths.daily(yesterday)).text()
 	if (!daily?.trim()) return
-	const existing = (await file(volume, PATHS.memory).text()) ?? ''
+	const existing = (await file(volume, paths.MEMORY).text()) ?? ''
 	const userPrompt = [
 		'# Current durable memory (read-only)',
 		'',
@@ -292,7 +300,7 @@ export async function consolidateMemory(
 	].join('\n')
 	const additions = (await text.gen(MEMORY_CONSOLIDATION_PROMPT, userPrompt)).trim()
 	if (!additions) return
-	await file(volume, PATHS.memory).append(`\n\n## ${dateStr}\n${additions}\n`)
+	await file(volume, paths.MEMORY).append(`\n\n## ${dateStr}\n${additions}\n`)
 }
 
 function errorMessage(error: unknown): string {
@@ -448,16 +456,6 @@ function contextMessageToAgentMessage(message: ContextMessage): AgentMessage {
 	}
 }
 
-const PATHS = {
-	soul: (agentId: string) => `/system/agents/${agentId}/soul.md`,
-	profile: '/system/user.md',
-	memory: '/system/memory/core.md',
-	daily: (date: Date = new Date()) => `/system/memory/daily/${date.toISOString().slice(0, 10)}.md`,
-	sessions: (agentId: string) => `/system/agents/${agentId}/sessions/sessions.json`,
-	sessionFile: (agentId: string, sessionId: string) =>
-		`/system/agents/${agentId}/sessions/${sessionId}.jsonl`
-} as const
-
 const SessionMetaSchema = z.object({
 	sessionId: z.string(),
 	lastActive: z.iso.datetime().transform((s) => new Date(s)),
@@ -472,7 +470,7 @@ type MessageContext = {
 
 async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promise<SessionManager> {
 	const sessionKey = resolveSessionKey(ctx)
-	const sessionsMap = file(volume, PATHS.sessions(ctx.agentId))
+	const sessionsMap = file(volume, paths.sessionsMap(ctx.agentId))
 	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
 	const existing = sessions[sessionKey]
 
@@ -492,7 +490,7 @@ async function route(ctx: MessageContext, volume: Volume, text: LLMText): Promis
 			const tail = context.map((m) => `${m.role}: ${m.content}`).join('\n')
 			const notes = await text.takeNotes(tail)
 			if (notes) {
-				await file(volume, PATHS.daily(now)).append(`\n\n${notes}`)
+				await file(volume, paths.daily(now)).append(`\n\n${notes}`)
 			}
 		}
 	}
@@ -507,10 +505,11 @@ async function createSession(
 	volume: Volume,
 	now: Date = new Date()
 ): Promise<SessionManager> {
-	const sessionsMap = file(volume, PATHS.sessions(ctx.agentId))
+	const sessionsMap = file(volume, paths.sessionsMap(ctx.agentId))
 	const sessions = (await sessionsMap.json(SessionsMap)) ?? {}
 	const sessionId = crypto.randomUUID().slice(0, 8)
-	const sessionFile = PATHS.sessionFile(ctx.agentId, sessionId)
+	// `route()` resolves the STORED path, so old `<id>.jsonl` transcripts keep loading.
+	const sessionFile = paths.sessionFile(ctx.agentId, sessionId, now)
 	sessions[resolveSessionKey(ctx)] = { sessionId, lastActive: now, sessionFile }
 	await sessionsMap.write(JSON.stringify(sessions))
 	return session(sessionFile, volume)
