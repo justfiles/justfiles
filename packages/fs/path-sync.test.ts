@@ -21,7 +21,7 @@ import {
 	wire
 } from './sync-test-harness'
 import { FileType } from './types'
-import { volume } from './volume'
+import { chroot, volume } from './volume'
 
 // Drain the microtask queue (watch coalesces deliveries onto a microtask).
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -328,6 +328,28 @@ describe('path-sync semantics', () => {
 
 		// A genuinely new entry still wakes it — that is the signal's whole job.
 		await server.writeFile('/notes/second.md', bytes('x'))
+		await syncBoth()
+		await tick()
+		expect(fired).toBe(1)
+	})
+
+	// The other half of scoping: a pulled change is located too, so a chrooted app
+	// never wakes on the agent's (or another app's) writes elsewhere in the volume.
+	test('a pulled create outside the watched subtree does not wake it', async () => {
+		const clientStorage = memStorage()
+		const { server, syncBoth } = wire(clientStorage, memStorage())
+		const clientVol = volume(clientStorage)
+		await clientVol.mkdir('/notes', { recursive: true })
+
+		let fired = 0
+		await chroot(clientVol, '/notes').watch('/', () => fired++, { recursive: true })
+
+		await server.writeFile('/state/app.json', bytes('{}'))
+		await syncBoth()
+		await tick()
+		expect(fired).toBe(0)
+
+		await server.writeFile('/notes/from-the-agent.md', bytes('hi'))
 		await syncBoth()
 		await tick()
 		expect(fired).toBe(1)

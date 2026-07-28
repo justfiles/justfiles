@@ -762,6 +762,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			const ino = randomId()
 			const stamp = nowNs()
 			const size = meta.type === FileType.Regular ? 0 : Number(meta.size)
+			// The new entry's path, resolved inside the txn and reported on the emit.
+			let path: string | undefined
 
 			await db.transaction(async (tx) => {
 				await ensureDirectory(tx, dirIno)
@@ -790,11 +792,14 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					meta.type
 				])
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) await journalPut(tx, joinPath(dirPath, name), ino, options)
+				if (dirPath !== null) {
+					path = joinPath(dirPath, name)
+					await journalPut(tx, path, ino, options)
+				}
 			})
 
 			emit({ ino, kind: 'meta', source: options?.source })
-			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
 			return ino
 		},
 
@@ -808,6 +813,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			await ensureBootstrapped()
 			let displaced: Ino | null = null
 			let movedIno: Ino | null = null
+			let oldPath: string | undefined
+			let newPath: string | undefined
 			const orphanedR2Keys: string[] = []
 
 			await db.transaction(async (tx) => {
@@ -829,6 +836,8 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 				if (oldDirPath === null || newDirPath === null) throw new Error('ENOENT: parent')
 				const oldBase = joinPath(oldDirPath, oldName)
 				const newBase = joinPath(newDirPath, newName)
+				oldPath = oldBase
+				newPath = newBase
 				const subtree = await enumerateSubtree(tx, String(source.ino))
 
 				if (destination) {
@@ -874,6 +883,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					kind: 'dirent',
 					dirIno: newDirIno,
 					name: newName,
+					path: newPath,
 					source: options?.source
 				})
 				emit({
@@ -881,6 +891,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					kind: 'dirent',
 					dirIno: oldDirIno,
 					name: oldName,
+					path: oldPath,
 					source: options?.source
 				})
 			}
@@ -1307,6 +1318,7 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			options?: MutationOptions
 		) {
 			await ensureBootstrapped()
+			let path: string | undefined
 			await db.transaction(async (tx) => {
 				await ensureDirentTarget(tx, dirIno, entry)
 				const existing = await getDirent(tx, dirIno, name)
@@ -1326,24 +1338,31 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 					])
 				}
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) await journalPut(tx, joinPath(dirPath, name), entry.ino, options)
+				if (dirPath !== null) {
+					path = joinPath(dirPath, name)
+					await journalPut(tx, path, entry.ino, options)
+				}
 			})
-			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, path, source: options?.source })
 		},
 
 		async deleteDirent(dirIno: Ino, name: string, options?: MutationOptions) {
 			await ensureBootstrapped()
 			let removedIno: Ino | null = null
+			let path: string | undefined
 			await db.transaction(async (tx) => {
 				const existing = await getDirent(tx, dirIno, name)
 				if (!existing) return
 				removedIno = String(existing.ino)
 				await tx.run('DELETE FROM fs_dirents WHERE dir_ino = ? AND name = ?', [dirIno, name])
 				const dirPath = await pathOf(tx, dirIno)
-				if (dirPath !== null) await journalDelete(tx, joinPath(dirPath, name), options)
+				if (dirPath !== null) {
+					path = joinPath(dirPath, name)
+					await journalDelete(tx, path, options)
+				}
 			})
 			if (removedIno !== null)
-				emit({ ino: removedIno, kind: 'dirent', dirIno, name, source: options?.source })
+				emit({ ino: removedIno, kind: 'dirent', dirIno, name, path, source: options?.source })
 		},
 
 		async listDirents(dirIno: Ino, cursor: string) {

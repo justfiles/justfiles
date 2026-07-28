@@ -179,14 +179,13 @@ export interface Volume {
 	 * the watch picks it up.
 	 *
 	 * With `{ recursive: true }` the watch instead reports STRUCTURAL changes
-	 * — entries created/removed/renamed — anywhere in the volume's storage,
-	 * coalesced per microtask. `path` is ignored (the signal is storage-wide);
-	 * pair it with a scoped `scan` to rebuild a subtree listing. Content/meta
-	 * edits to existing files do NOT fire — watch the concrete file for those.
-	 * That holds for a pulled edit too: sync applying a put over a path this
-	 * replica already holds is an edit, not structure (see `applyJournaledOver`).
-	 * This is the substrate for a directory browser's auto-refresh; see the
-	 * `Volume` capability contract for the chroot scoping caveat.
+	 * — entries created/removed/renamed — at or under `path`, coalesced per
+	 * microtask; pair it with a `scan` of the same path to rebuild the listing.
+	 * Content/meta edits to existing files do NOT fire — watch the concrete file
+	 * for those. That holds for a pulled edit too: sync applying a put over a path
+	 * this replica already holds is an edit, not structure (see
+	 * `applyJournaledOver`). This is the substrate for a directory browser's
+	 * auto-refresh.
 	 *
 	 * Requires `Storage.caps.subscribe`; without it the watch is inert and the
 	 * returned unsubscribe is a no-op. Returns a promise of the unsubscribe.
@@ -754,15 +753,20 @@ export function volume(storage: Storage): Volume {
 			const subscribe = storage.caps?.subscribe
 			if (!subscribe) return () => {}
 
-			// Recursive: a storage-wide STRUCTURAL change signal. Only dirent
-			// mutations (create/remove/rename) reshape a tree's entry set; content
+			// Recursive: a STRUCTURAL change signal for the subtree at `path`. Only
+			// dirent mutations (create/remove/rename) reshape a tree's entry set; content
 			// edits to existing files keep the listing identical, so they don't fire.
 			// Coalesce the several ops of one logical write into a single event.
 			if (opts?.recursive) {
+				const root = path.replace(/\/+$/, '')
 				let scheduled = false
 				let pendingSource: string | undefined
 				return subscribe((change) => {
 					if (change.kind !== 'dirent') return
+					// Scope: only entries at or under the watched subtree. A change with no
+					// path is unlocatable (its parent is already unlinked), so it fires —
+					// a spurious re-scan is recoverable, a missed change is not.
+					if (!within(root, change.path)) return
 					pendingSource = change.source
 					if (scheduled) return
 					scheduled = true
@@ -838,6 +842,16 @@ export function volume(storage: Storage): Volume {
 	})
 
 	return vol
+}
+
+/**
+ * Is `path` the watched subtree root or something inside it? `root` is already
+ * trailing-slash-normalised, so '' means the volume root, which contains
+ * everything. An unknown (undefined) path counts as inside — see the caller.
+ */
+function within(root: string, path: string | undefined): boolean {
+	if (path === undefined || root === '') return true
+	return path === root || path.startsWith(`${root}/`)
 }
 
 function chrootPath(root: string, path: string): string {

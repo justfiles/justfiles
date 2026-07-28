@@ -32,7 +32,13 @@ export type StorageChangeKind = 'meta' | 'content' | 'dirent'
  * A single committed mutation, reported to `subscribe` listeners.
  * - `meta`/`content`: the affected inode is `ino`.
  * - `dirent`: the entry `(dirIno, name)` was set or removed; `ino` is the
- *   entry's inode (the one bound, or the one that was bound before removal).
+ *   entry's inode (the one bound, or the one that was bound before removal),
+ *   and `path` is where it happened — the canonical path of the entry, so a
+ *   listener can tell whether the change is inside a subtree it cares about
+ *   (`volume.watch`'s recursive scoping) without a reverse ino→path walk. Every
+ *   backend supplies it, except where the parent is already unlinked (nothing to
+ *   name); an absent `path` means "unknown", so scoped listeners must assume the
+ *   worst and fire.
  * `source` carries the `MutationOptions.source` the write was tagged with —
  * sync-applied writes are tagged so listeners can filter out remote echoes.
  */
@@ -42,6 +48,7 @@ export interface StorageChange {
 	source?: string
 	dirIno?: Ino
 	name?: string
+	path?: string
 }
 
 export type ScanEntry = {

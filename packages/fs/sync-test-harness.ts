@@ -28,7 +28,7 @@ import { REMOTE_SOURCE, synced } from './synced'
 import type { Ino, Stat } from './types'
 import { FileType } from './types'
 import type { Volume } from './volume'
-import { volume } from './volume'
+import { chroot, volume } from './volume'
 
 /**
  * Constructs a backend for the harness. `memStorage` is the default; the
@@ -534,6 +534,11 @@ export async function treeSnapshot(peer: Peer): Promise<Record<string, string>> 
 // fails these for the right reason (`not implemented`), and passes them once it
 // lands the seams.
 
+/** Let the watch's per-microtask coalescing deliver. */
+function drainMicrotasks(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 function assertEq<T>(actual: T, expected: T, msg: string): void {
 	if (actual !== expected)
 		throw new Error(`conformance: ${msg} — expected ${String(expected)}, got ${String(actual)}`)
@@ -719,6 +724,31 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 			assertEq(rows.length, 1, 'empty-target adoption retained a tombstone')
 			assertEq(rows[0]?.change.path, '/live.txt', 'empty-target adoption lost the live path')
 			assertEq(rows[0]?.change.kind, 'put', 'empty-target adoption retained a delete')
+		}
+	},
+	{
+		// A recursive watch is scoped by PATH, which it can only do if the backend says
+		// WHERE each dirent change happened. Every mutator that binds or unbinds a name
+		// must stamp it — create, write, rename — so this walks all three.
+		name: 'reports where a dirent change happened, so a recursive watch stays scoped',
+		run: async (makeBackend) => {
+			const vol = volume(makeBackend())
+			await vol.mkdir('/notes/trips', { recursive: true })
+			await vol.mkdir('/state', { recursive: true })
+			let hits = 0
+			await chroot(vol, '/notes').watch('/', () => hits++, { recursive: true })
+
+			await vol.writeFile('/state/app.json', bytes('{}'))
+			await drainMicrotasks()
+			assertEq(hits, 0, 'woke on a local write outside the watched subtree')
+
+			await vol.writeFile('/notes/trips/kyoto.md', bytes('go'))
+			await drainMicrotasks()
+			assertEq(hits, 1, 'missed a local create inside the watched subtree')
+
+			await vol.rename('/notes/trips/kyoto.md', '/state/kyoto.md')
+			await drainMicrotasks()
+			assertEq(hits, 2, 'missed an entry leaving the watched subtree')
 		}
 	}
 ]

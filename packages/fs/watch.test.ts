@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { Storage, StorageChange } from './storage'
 import { nativeStorage } from './storage.fs'
 import { memStorage } from './storage.mem'
-import { volume } from './volume'
+import { chroot, volume } from './volume'
 
 const enc = new TextEncoder()
 // Drain the microtask queue (watch coalesces deliveries onto a microtask).
@@ -224,6 +224,38 @@ describe('volume.watch', () => {
 })
 
 describe('volume.watch recursive', () => {
+	it('is scoped to the watched subtree', async () => {
+		const vol = volume(memStorage())
+		await vol.mkdir('/notes/trips', { recursive: true })
+		await vol.mkdir('/state', { recursive: true })
+		const notes = chroot(vol, '/notes')
+
+		let fired = 0
+		// What an app gets: a recursive watch on its own chroot's root.
+		await notes.watch('/', () => fired++, { recursive: true })
+
+		// The kernel writing an app's state file is not this app's business.
+		await vol.writeFile('/state/app.json', enc.encode('{}'))
+		await flush()
+		expect(fired).toBe(0)
+
+		// A create inside the subtree — however deep — is.
+		await notes.writeFile('/trips/kyoto.md', enc.encode('go'))
+		await flush()
+		expect(fired).toBe(1)
+
+		// Renaming out of scope still fires (the entry left the listing).
+		await vol.rename('/notes/trips/kyoto.md', '/state/kyoto.md')
+		await flush()
+		expect(fired).toBe(2)
+
+		// A sibling prefix must not be mistaken for the subtree.
+		await vol.mkdir('/notesy', { recursive: true })
+		await vol.writeFile('/notesy/x.md', enc.encode('x'))
+		await flush()
+		expect(fired).toBe(2)
+	})
+
 	it('fires on a structural change anywhere in the tree, not on content edits', async () => {
 		const vol = volume(memStorage())
 		await vol.mkdir('/deep/nested', { recursive: true })
@@ -290,5 +322,22 @@ describe('volume.watch over the atomic-cap backend (nativeStorage)', () => {
 		await vol.writeFile('/other.txt', enc.encode('x'))
 		await vol.rename('/other.txt', '/note.txt')
 		await waitFor(() => expect(fired).toBeGreaterThan(settled))
+	})
+
+	it('scopes a recursive watch to the subtree', async () => {
+		dir = mkdtempSync(join(tmpdir(), 'fs-watch-'))
+		const vol = volume(await nativeStorage(dir))
+		await vol.mkdir('/notes', { recursive: true })
+		await vol.mkdir('/state', { recursive: true })
+
+		let fired = 0
+		await chroot(vol, '/notes').watch('/', () => fired++, { recursive: true })
+
+		await vol.writeFile('/state/app.json', enc.encode('{}'))
+		await flush()
+		expect(fired).toBe(0)
+
+		await vol.writeFile('/notes/kyoto.md', enc.encode('go'))
+		await waitFor(() => expect(fired).toBe(1))
 	})
 })

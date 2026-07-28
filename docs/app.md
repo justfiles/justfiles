@@ -505,9 +505,10 @@ watch(input: { path: string; recursive?: boolean }): Stream<{ source?: string }>
 ```
 
 Without `recursive`, it watches one concrete path for content, metadata, create, remove, or replace
-changes. With `recursive: true`, it is a coalesced structural-change signal; pair it with a recursive
-scan. The underlying signal is storage-wide and may cause harmless wakeups for changes outside a
-chroot. Recursive watch does not report content edits to existing children.
+changes. With `recursive: true`, it is a coalesced structural-change signal for the subtree at
+`path`; pair it with a recursive scan of the same path. It is scoped to the volume your `scopes`
+bound, so writes outside your prefix never wake you. Recursive watch does not report content edits
+to existing children.
 
 ### Other capability method signatures
 

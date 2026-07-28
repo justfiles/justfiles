@@ -51,6 +51,11 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		return p
 	}
 
+	// OS path -> the volume-relative path a `StorageChange` reports (`/a/b`).
+	function volPath(osPath: string): string {
+		return osPath.slice(root.length) || '/'
+	}
+
 	function toFileType(s: Stats): FileType {
 		if (s.isDirectory()) return FileType.Directory
 		if (s.isSymbolicLink()) return FileType.Symlink
@@ -82,7 +87,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const ino = String(s.ino)
 			pathMap.set(ino, childPath)
 			emit({ ino, kind: 'meta', source: options?.source })
-			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(childPath), source: options?.source })
 			return ino
 		},
 
@@ -109,8 +114,22 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			if (displaced !== null) pathMap.delete(displaced)
 
 			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
-			emit({ ino: srcIno, kind: 'dirent', dirIno: newDir, name: newName, source: options?.source })
-			emit({ ino: srcIno, kind: 'dirent', dirIno: oldDir, name: oldName, source: options?.source })
+			emit({
+				ino: srcIno,
+				kind: 'dirent',
+				dirIno: newDir,
+				name: newName,
+				path: volPath(newPath),
+				source: options?.source
+			})
+			emit({
+				ino: srcIno,
+				kind: 'dirent',
+				dirIno: oldDir,
+				name: oldName,
+				path: volPath(oldPath),
+				source: options?.source
+			})
 			return displaced
 		},
 
@@ -184,7 +203,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const dstPath = join(getPath(dirIno), name)
 			await _rename(srcPath, dstPath)
 			pathMap.set(ino, dstPath)
-			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(dstPath), source: options?.source })
 		},
 
 		async deleteDirent(dirIno, name, options) {
@@ -193,7 +212,7 @@ export async function nativeStorage(root: string): Promise<Storage> {
 			const ino = String(s.ino)
 			if (s.isDirectory()) await rmdir(childPath)
 			else await unlink(childPath)
-			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(childPath), source: options?.source })
 		},
 
 		async listDirents(dirIno, cursor) {
