@@ -6,7 +6,6 @@ import { stateStore } from './kernel.state.ts'
 // in-memory/write-through cache, monotonic seq, fs hydration on boot, and drop.
 
 const fresh = () => volume(memStorage())
-
 test('current is undefined and seq is 0 before any commit', async () => {
 	const s = stateStore(fresh())
 	expect(await s.current('a')).toBeUndefined()
@@ -42,6 +41,42 @@ test('state and seq are tracked per app', async () => {
 	expect(s.seq('b')).toBe(1)
 	expect(await s.current('a')).toEqual({ v: 'a2' })
 	expect(await s.current('b')).toEqual({ v: 'b1' })
+})
+
+test('a commit that lands the same value writes nothing', async () => {
+	const storage = memStorage()
+	const s = stateStore(volume(storage))
+	const journal = storage.caps?.journal
+	if (!journal) throw new Error('memStorage exposes no journal')
+	await s.commit('a', { n: 1 })
+	const head = await journal.head()
+
+	// The reducer folded a subscription wake into an identical state: no write, so
+	// no new version and — the point — nothing for sync to pick up and hand to the
+	// other replica, whose own apps would wake on it in turn.
+	expect(await s.commit('a', { n: 1 })).toBe(1)
+	expect(s.seq('a')).toBe(1)
+	expect(await journal.head()).toBe(head)
+
+	// A real change still writes and versions.
+	expect(await s.commit('a', { n: 2 })).toBe(2)
+	expect(await journal.head()).toBeGreaterThan(head)
+})
+
+test('a hydrated store skips a re-commit of what it read', async () => {
+	const storage = memStorage()
+	const fs = volume(storage)
+	const journal = storage.caps?.journal
+	if (!journal) throw new Error('memStorage exposes no journal')
+	await stateStore(fs).commit('a', { n: 7 })
+	const head = await journal.head()
+
+	// Boot: the state came off disk, so re-committing it (a first dispatch that
+	// changes nothing) must not rewrite the file either.
+	const rebooted = stateStore(fs)
+	expect(await rebooted.current('a')).toEqual({ n: 7 })
+	expect(await rebooted.commit('a', { n: 7 })).toBe(0)
+	expect(await journal.head()).toBe(head)
 })
 
 test('drop clears the persisted and in-memory state', async () => {

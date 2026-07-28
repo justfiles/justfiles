@@ -11,19 +11,19 @@ function text(data: Uint8Array): string {
 }
 
 // The app state store: each app's authoritative state lives in memory and is
-// written through to `/state/<id>.json` on every commit (durability + DO
-// hibernation). The in-memory copy is the source of truth between a read and the
-// next commit; the kernel's per-app queue serializes those, so the
-// read-modify-write stays atomic despite the async write. `seq` is the monotonic
-// committed version, bumped on each commit — push consumers order/dedupe by it
-// and `settled` waits on it. Both caches are in-memory only: state is rehydrated
-// from fs on boot, and `seq` is recomputed from zero.
+// written through to `/state/<id>.json` on every commit that CHANGES it
+// (durability + DO hibernation). The in-memory copy is the source of truth
+// between a read and the next commit; the kernel's per-app queue serializes
+// those, so the read-modify-write stays atomic despite the async write. `seq` is
+// the monotonic committed version, bumped on each commit — push consumers
+// order/dedupe by it and `settled` waits on it. Both caches are in-memory only:
+// state is rehydrated from fs on boot, and `seq` is recomputed from zero.
 export interface StateStore {
 	// Authoritative state: the in-memory copy if present, else hydrated from fs
 	// once and cached. Every reader shares one committed value with no per-call read.
 	current(appId: AppId): Promise<unknown>
-	// Commit a new state: update memory, write through to fs, then bump and return
-	// the new committed seq.
+	// Commit a new state: update memory, write through to fs when the value
+	// actually changed, then return the committed seq (bumped only on a write).
 	commit(appId: AppId, next: unknown): Promise<number>
 	// The committed version, 0 before the first commit (and after a boot).
 	seq(appId: AppId): number
@@ -43,12 +43,21 @@ export function stateStore(fs: Volume): StateStore {
 	// `.has()` distinguishes "not loaded" from "loaded, value undefined".
 	const states = new Map<AppId, unknown>()
 	const seqs = new Map<AppId, number>()
+	// The serialization this store believes is ON DISK, so a commit that lands the
+	// same value writes nothing: `/state/<id>.json`'s mtime then means "when the
+	// state last CHANGED", and a reducer edge that folds to an identical state (a
+	// subscription wake, a re-scan) stops manufacturing writes for sync to carry.
+	const onDisk = new Map<AppId, string>()
 	return { current, commit, seq, invalidate, drop }
 
 	async function load(appId: AppId): Promise<unknown> {
 		const statePath = `/state/${appId}.json`
 		try {
-			if (await fs.exists(statePath)) return JSON.parse(text(await fs.readFile(statePath)))
+			if (await fs.exists(statePath)) {
+				const loaded = JSON.parse(text(await fs.readFile(statePath)))
+				onDisk.set(appId, JSON.stringify(loaded))
+				return loaded
+			}
 		} catch {
 			return undefined
 		}
@@ -67,8 +76,13 @@ export function stateStore(fs: Volume): StateStore {
 	async function commit(appId: AppId, next: unknown): Promise<number> {
 		// Authoritative in memory, written through to fs for durability.
 		states.set(appId, next)
+		const encoded = JSON.stringify(next)
+		// Same bytes as the file already holds => nothing to persist and nothing new
+		// to version, so the committed seq stands.
+		if (onDisk.get(appId) === encoded) return seqs.get(appId) ?? 0
 		await fs.mkdir('/state', { recursive: true })
-		await fs.writeFile(`/state/${appId}.json`, bytes(JSON.stringify(next)))
+		await fs.writeFile(`/state/${appId}.json`, bytes(encoded))
+		onDisk.set(appId, encoded)
 		const nextSeq = (seqs.get(appId) ?? 0) + 1
 		seqs.set(appId, nextSeq)
 		return nextSeq
@@ -80,10 +94,12 @@ export function stateStore(fs: Volume): StateStore {
 
 	function invalidate(appId: AppId): void {
 		states.delete(appId)
+		onDisk.delete(appId)
 	}
 
 	async function drop(appId: AppId): Promise<void> {
 		await fs.rm(`/state/${appId}.json`, { force: true })
 		states.delete(appId)
+		onDisk.delete(appId)
 	}
 }
