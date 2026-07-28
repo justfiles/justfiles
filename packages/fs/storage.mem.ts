@@ -157,8 +157,9 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		async ensureDirPath(path) {
 			return ensureDir(path)
 		},
-		async getDirentIno(dirIno, name) {
-			return dirs.get(dirKey(dirIno, name))?.ino ?? null
+		async getDirent(dirIno, name) {
+			const entry = dirs.get(dirKey(dirIno, name))
+			return entry ? { ino: entry.ino, type: entry.type } : null
 		},
 		async readMetaXattrs(ino) {
 			const meta = metas.get(ino)

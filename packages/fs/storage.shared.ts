@@ -19,7 +19,7 @@
 import type { InodeMeta, MutationOptions, StorageChange } from './storage'
 import type { PathChange } from './sync-wire'
 import { changeDigest, compareVersion, encodeVersion, syncMetaFromInode } from './sync-wire'
-import type { Ino } from './types'
+import type { DirentMin, Ino } from './types'
 import { FileType } from './types'
 
 // ── PATH-SYNC ROADMAP (ordered; post-SQLite epic) ─────────────────────────────
@@ -292,8 +292,8 @@ export interface PathStorePort {
 	resolveIno(path: string): Promise<Ino | null>
 	/** Ensure every segment of a directory path exists (tree repair); return the deepest ino. */
 	ensureDirPath(path: string): Promise<Ino>
-	/** The ino currently linked at `(dirIno, name)`, or null. */
-	getDirentIno(dirIno: Ino, name: string): Promise<Ino | null>
+	/** The entry currently linked at `(dirIno, name)`, or null. */
+	getDirent(dirIno: Ino, name: string): Promise<DirentMin | null>
 	/** Current metadata + user-xattr snapshot for an inode; null if it has no metadata. */
 	readMetaXattrs(ino: Ino): Promise<{ meta: InodeMeta; xattrs: Record<string, Uint8Array> } | null>
 	/** Install a remote put's tree metadata + contentHash REFERENCE (never writes blob bytes). */
@@ -397,12 +397,22 @@ export async function applyJournaledOver(
 		if (change.kind === 'put') {
 			const { parentPath, name } = splitPath(p)
 			const parentIno = await port.ensureDirPath(parentPath)
-			const ino = (await port.getDirentIno(parentIno, name)) ?? port.mintIno()
+			const bound = await port.getDirent(parentIno, name)
+			const ino = bound?.ino ?? port.mintIno()
 			const type = change.meta.type
 			await port.upsertInodeFromSync(ino, change)
 			await port.setDirent(parentIno, name, ino, type)
 			port.emit({ ino, kind: 'meta', source: opts.localSource })
-			port.emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
+			// `dirent` means the parent's entry SET changed, so it is emitted only when
+			// this put (re)binds the name — nothing was linked here, or what was linked
+			// is now a different KIND of thing. A put over a path we already hold is a
+			// content/meta edit and must emit exactly what the local `writeFile` emits;
+			// otherwise every pulled edit reads as a STRUCTURAL change: a recursive
+			// watcher wakes, an app folds that wake into persisted state, the kernel
+			// writes the state back, the write pushes, and the peer applies it as another
+			// "structural" change — a two-replica loop with no user in it.
+			if (bound === null || bound.type !== type)
+				port.emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
 			if (type === FileType.Regular) port.emit({ ino, kind: 'content', source: opts.localSource })
 		} else {
 			const ino = await port.resolveIno(p)

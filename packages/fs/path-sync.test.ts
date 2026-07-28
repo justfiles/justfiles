@@ -21,6 +21,10 @@ import {
 	wire
 } from './sync-test-harness'
 import { FileType } from './types'
+import { volume } from './volume'
+
+// Drain the microtask queue (watch coalesces deliveries onto a microtask).
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 describe('path-sync semantics', () => {
 	const cleanups: Array<() => void> = []
@@ -300,5 +304,73 @@ describe('path-sync semantics', () => {
 		expect(await treeSnapshot(client)).toEqual(await treeSnapshot(server))
 		expect(await orphanCount(client)).toBe(0)
 		expect(await orphanCount(server)).toBe(0)
+	})
+
+	// A pull must be indistinguishable from a local write in what it SIGNALS: an
+	// edit to a path we already hold is content/meta, not structure. The apply path
+	// used to emit `dirent` for every put, so every pulled edit read as a structural
+	// change to a `recursive: true` watcher.
+	test('a pulled edit to an existing path is not a structural change', async () => {
+		const clientStorage = memStorage()
+		const { server, syncBoth } = wire(clientStorage, memStorage())
+		const clientVol = volume(clientStorage)
+		await server.writeFile('/notes/hello.md', bytes('hi'))
+		await syncBoth()
+
+		let fired = 0
+		await clientVol.watch('/', () => fired++, { recursive: true })
+
+		await server.writeFile('/notes/hello.md', bytes('hi again'))
+		await syncBoth()
+		await tick()
+		expect(fired).toBe(0)
+		expect(text(await clientVol.readFile('/notes/hello.md'))).toBe('hi again')
+
+		// A genuinely new entry still wakes it — that is the signal's whole job.
+		await server.writeFile('/notes/second.md', bytes('x'))
+		await syncBoth()
+		await tick()
+		expect(fired).toBe(1)
+	})
+
+	// The loop this prevents: both replicas run an app whose recursive watch folds
+	// into persisted state, and the kernel writes that state back into the volume.
+	// With a pulled edit reading as structural, each side's write re-armed the other
+	// forever — a permanent sync spin with no user in it.
+	test('watch-driven state write-through quiesces instead of ping-ponging', async () => {
+		const clientStorage = memStorage()
+		const serverStorage = memStorage()
+		const { client, syncBoth } = wire(clientStorage, serverStorage)
+
+		// One "kernel" per replica: wake → bump a revision → write it back.
+		const kernels = await Promise.all(
+			[clientStorage, serverStorage].map(async (storage) => {
+				const vol = volume(storage)
+				const state = { revision: 0 }
+				await vol.mkdir('/state', { recursive: true })
+				await vol.watch(
+					'/',
+					() => {
+						state.revision++
+						void vol.writeFile('/state/app.json', bytes(JSON.stringify(state)))
+					},
+					{ recursive: true }
+				)
+				return state
+			})
+		)
+
+		// One genuine user action, then let sync run to a standstill.
+		await client.writeFile('/notes/hello.md', bytes('hi'))
+		await syncBoth()
+		await tick()
+		// The initial cascade (the note, then each side's first state-file create) is
+		// finite; what must NOT happen is another wake on every later round.
+		const settled = kernels.map((k) => k.revision)
+		for (let round = 0; round < 5; round++) {
+			await syncBoth()
+			await tick()
+		}
+		expect(kernels.map((k) => k.revision)).toEqual(settled)
 	})
 })
