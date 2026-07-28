@@ -215,14 +215,18 @@ export const app = defineApp({
 		}),
 
 		// Rename IS move — retitle, drag into a folder, move a whole folder. It never
-		// overwrites, and that is a property of the MOVE, not something this app can
-		// arrange around one: `volume.rename(..., { exclusive: true })` refuses an
-		// occupied destination in the storage, where the check and the move are one
-		// operation. (The version that claimed the destination first was wrong twice: a
-		// placeholder is not a reservation in a shared store, and a file placeholder is
-		// the wrong type to rename a folder over.) So all that is left here is the app's
-		// own policy — number up and try again — which is `claimPath`, the same loop
-		// `create` and `importNotes` use.
+		// overwrites: `volume.rename(..., { exclusive: true })` refuses a destination
+		// that is taken, and `claimPath` numbers up — the same loop `create` and
+		// `importNotes` use, so the policy is one function, not three.
+		//
+		// That refusal is a check and then a move, not one operation, because no POSIX
+		// rename is both atomic and no-replace. It holds for sequential writers, which
+		// is every writer in this system: the import loop, an agent tool call, and a
+		// multi-item drop that the tree applies one at a time (`persistDrop`). We do NOT
+		// emulate the missing primitive — the placeholder version of this code was
+		// wrong twice over (a claim is not a reservation in a shared store, and a file
+		// placeholder is the wrong type to rename a folder over), and a `link`+`unlink`
+		// version in the backend stopped being a move at all.
 		rename: p.procedure({
 			description:
 				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned. Moving a folder inside itself is refused.',

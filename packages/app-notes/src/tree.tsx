@@ -34,7 +34,8 @@ export type NotesTreeProps = {
 	onSelectDir: (dir: string) => void
 	onCreate: (dir: string, title: string) => void
 	onMkdir: (path: string) => void
-	onRename: (from: string, to: string) => void
+	// Awaited: a multi-item drop is applied ONE AT A TIME (see `persistDrop`).
+	onRename: (from: string, to: string) => Promise<void>
 	onRemove: (path: string) => void
 }
 
@@ -44,7 +45,14 @@ export function NotesTree(props: NotesTreeProps) {
 	const latest = useRef(props)
 	latest.current = props
 
-	const persistDrop = (
+	// One drop can carry several items, and two of them can want the SAME
+	// destination name (`/A/Kyoto.md` and `/B/Kyoto.md` dropped on the root). Applied
+	// in sequence, so the second one finds the name taken and gets numbered; fired in
+	// parallel they would race for it, and no filesystem primitive can decide that
+	// race for us (packages/fs/volume.ts `rename`). Ordering our own writes is the
+	// cheap half of that problem — this is the only place this app makes more than
+	// one at a time.
+	const persistDrop = async (
 		draggedPaths: readonly string[],
 		target: { kind: 'directory' | 'root'; directoryPath: string | null }
 	) => {
@@ -52,7 +60,7 @@ export function NotesTree(props: NotesTreeProps) {
 		for (const dragged of draggedPaths) {
 			const from = fromTree(dragged)
 			const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
-			if (to !== from) latest.current.onRename(from, to)
+			if (to !== from) await latest.current.onRename(from, to)
 		}
 	}
 
@@ -80,8 +88,8 @@ export function NotesTree(props: NotesTreeProps) {
 			// `onDropComplete` never fires and the drag would look like a no-op. The
 			// reducer dedups instead (`Kyoto 2.md`), and the `treeRevision` watch redraws
 			// whatever actually landed — the disk stays the truth either way.
-			onDropComplete: ({ draggedPaths, target }) => persistDrop(draggedPaths, target),
-			onDropError: (_error, { draggedPaths, target }) => persistDrop(draggedPaths, target)
+			onDropComplete: ({ draggedPaths, target }) => void persistDrop(draggedPaths, target),
+			onDropError: (_error, { draggedPaths, target }) => void persistDrop(draggedPaths, target)
 		},
 		onSelectionChange: (selected) => {
 			const path = selected[0]
@@ -147,7 +155,7 @@ export function NotesTree(props: NotesTreeProps) {
 				event.preventDefault()
 				const from = fromTree(dragged)
 				const to = joinPath('/', from.slice(from.lastIndexOf('/') + 1))
-				if (to !== from) props.onRename(from, to)
+				if (to !== from) void props.onRename(from, to)
 			}}
 		>
 			<FileTree
@@ -252,7 +260,7 @@ function RowMenu(
 					close()
 					if (mode === 'note') props.onCreate(dirOf(item), name)
 					else if (mode === 'folder') props.onMkdir(joinPath(dirOf(item), name))
-					else props.onRename(path, renameTarget(path, joinPath(parentDir(path), name)))
+					else void props.onRename(path, renameTarget(path, joinPath(parentDir(path), name)))
 				}}
 			/>
 		)

@@ -1,17 +1,22 @@
 /**
- * `{ exclusive: true }` on the two primitives that can take a name: `writeFile`
- * (a CLAIM, not a write) and `rename` (a NO-REPLACE move).
+ * `{ exclusive: true }` on the two primitives that can take a name — and the two
+ * guarantees are NOT the same size, which is the point of testing them together.
  *
- * The point is not the happy path but the race. `exists()` + `writeFile` lets a
- * concurrent writer slip in between and have its file overwritten; claiming a
- * destination and then renaming over it is the same bug wearing a disguise — the
- * claim is not a reservation, so another writer's ordinary write lands *in* it and
- * the move destroys the data. So the check and the mutation must be ONE backend
- * operation, and that is what these tests pin — on every shipped backend, because
- * "atomic" here means whatever the storage can actually promise.
+ * `writeFile` is a CLAIM: the check and the create are one backend operation
+ * (`atomicCreate` — `O_EXCL`, one IndexedDB transaction, one synchronous map
+ * mutation), so concurrent claimants are decided by the storage. `exists()` +
+ * `writeFile` would be a TOCTOU, and the loser has its note overwritten — these
+ * tests pin the race.
+ *
+ * `rename` cannot be that: no POSIX rename is both atomic and no-replace, and
+ * nothing in Node reaches `renameat2`. So it is a check and THEN a move, and what it
+ * promises is what these tests pin — sequential writers never overwrite each other,
+ * whatever type holds the name. Racing writers are the caller's problem to order
+ * (see `persistDrop` in app-notes' tree), because the alternative is emulating an
+ * atomicity the platform does not have, which costs more than it buys.
  */
 
-import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'vitest'
@@ -149,11 +154,13 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 		expect(dec.decode(await vol.readFile('/Kyoto.md'))).toBe('note')
 	})
 
-	test('movers racing for one destination settle on distinct numbered paths', async () => {
-		// The pattern app-notes uses for a move, now that the move itself is the claim.
+	test('a claim numbers up over a sequence of moves into one folder', async () => {
+		// What the app does with an occupied destination: try, and on EEXIST try the next
+		// name. Sequential, because that is the shape of every writer in this system —
+		// one drag, one agent tool call, one import loop.
 		const vol = await make()
 		await vol.mkdir('/Inbox')
-		for (let i = 0; i < 8; i++) await vol.writeFile(`/Inbox/n${i}.md`, enc.encode(`note ${i}`))
+		for (let i = 0; i < 5; i++) await vol.writeFile(`/Inbox/n${i}.md`, enc.encode(`note ${i}`))
 		const claim = async (from: string) => {
 			for (let n = 1; ; n++) {
 				const path = n === 1 ? '/Kyoto.md' : `/Kyoto ${n}.md`
@@ -161,33 +168,16 @@ describe.each(backends)('exclusive rename on %s', (_name, make) => {
 					await vol.rename(from, path, { exclusive: true })
 					return path
 				} catch (e) {
-					if (!/^E(EXIST|ISDIR|NOTDIR|NOTEMPTY)/.test((e as Error).message)) throw e
+					if (!/^EEXIST/.test((e as Error).message)) throw e
 				}
 			}
 		}
-		const paths = await Promise.all(Array.from({ length: 8 }, (_, i) => claim(`/Inbox/n${i}.md`)))
-		expect(new Set(paths).size).toBe(8)
+		const paths: string[] = []
+		for (let i = 0; i < 5; i++) paths.push(await claim(`/Inbox/n${i}.md`))
+		expect(paths).toEqual(['/Kyoto.md', '/Kyoto 2.md', '/Kyoto 3.md', '/Kyoto 4.md', '/Kyoto 5.md'])
 		for (const [i, path] of paths.entries()) {
 			expect(dec.decode(await vol.readFile(path))).toBe(`note ${i}`)
 		}
+		expect((await vol.readdir('/Inbox')).map((e) => e.name)).toEqual([])
 	})
-})
-
-test('a move that cannot finish is rolled back, not left half done', async () => {
-	// The node backend claims the destination with `link` and then unlinks the source,
-	// so the failure that matters is an unlink it is not allowed to make: a read-only
-	// SOURCE directory. The claim must not survive as a second name for the file.
-	const dir = mkdtempSync(join(tmpdir(), 'excl-'))
-	dirs.push(dir)
-	const vol = volume(await nativeStorage(dir))
-	await vol.mkdir('/Locked')
-	await vol.writeFile('/Locked/Kyoto.md', enc.encode('note'))
-	chmodSync(join(dir, 'Locked'), 0o500)
-	try {
-		await expect(vol.rename('/Locked/Kyoto.md', '/Kyoto.md', { exclusive: true })).rejects.toThrow()
-		expect(await vol.exists('/Kyoto.md')).toBe(false)
-		expect(dec.decode(await vol.readFile('/Locked/Kyoto.md'))).toBe('note')
-	} finally {
-		chmodSync(join(dir, 'Locked'), 0o700)
-	}
 })

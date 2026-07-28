@@ -173,7 +173,7 @@ each time was moving the question to a single surface — never patching the sit
 | --- | --- | --- |
 | How is a path spelled, and what may a name contain? | `src/notes.ts` | pure, total (`isCanonicalPath`, `sanitizeName`, `illegalMove`) |
 | What may a dropped archive contain, and how much of it? | `src/import.ts` | pure + one ledger per drop (`screenEntry`, `Screen`, `admit`) |
-| **Who owns a name, and is the check the operation?** | **`packages/fs` — the layer that owns the namespace** | `{ exclusive: true }` on `writeFile` and `rename`, over `atomicCreate`/`noReplaceMove` |
+| **Who owns a name; is the check the operation?** | **`packages/fs` — the layer that owns the namespace** | `{ exclusive: true }`: atomic for `writeFile`, check-then-move for `rename` (§1b) |
 | Is this location still real, and is the buffer settled? | `src/gui.tsx` | `liveDir()` gate, `flush`/`discard` before a path change |
 
 The third row is the one that cost the most, and it is the lesson worth carrying to the next app. **An app
@@ -187,10 +187,10 @@ replace. So the app emulated the missing one, twice, and each emulation was a fr
   move then destroys the data it was meant to protect. And a file placeholder is the wrong *type* to rename
   a folder over, so on the Node backend every folder move failed with ENOTDIR.
 
-Both disappeared into two flags in `packages/fs`, backed by primitives that cannot be raced (`O_EXCL`,
-`link(2)`, `mkdir(2)`, one IndexedDB transaction, one synchronous map mutation) — and where the platform has
-no primitive at all, by a capability that says so in its name and its contract rather than in a flag on a
-method promising atomicity (§1c). What is left
+Both disappeared into two flags in `packages/fs` — one backed by a primitive that cannot be raced
+(`atomicCreate`: `O_EXCL`, one IndexedDB transaction, one synchronous map mutation), the other openly a check
+followed by a move, because the platform has no such primitive and the writers in this system are sequential
+(§1b). What is left
 in this app is its own *policy* — "on EEXIST, number up" (`claimPath`, six lines) and "never inside itself"
 (`illegalMove`, pure) — which is all an app should ever hold. Rule of thumb for the next one: if a guarantee
 needs two calls to express, it belongs one layer down; if it needs a cleanup path, it is already wrong.
@@ -223,23 +223,33 @@ become (`isCanonicalPath('/' + path)`) — same rule, no second policy. And beca
 input, an entry the volume would respell is **screened out and reported** rather than sent on to be refused:
 one odd name must not cost the user the other thousand notes.
 
-**1b · A check is not a guarantee unless it is the operation — and a claim is not a reservation.** The first
-version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is only a *hint*
-about a moment that has already passed. `Volume` had the real primitive all along — every backend's
-`atomicCreate` is an exclusive create — it was just being discarded by `writeFile` resolving the path first.
-Exposing it as `writeFile(…, { exclusive: true })` is 3 lines in `packages/fs` and deleted the probe from
-three call sites.
+**1b · A check is not a guarantee unless it is the operation — WHERE THE OPERATION EXISTS.** The first
+version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is a *hint*
+about a moment that has already passed. For a create, `Volume` had the real primitive all along — every
+backend's `atomicCreate` is an exclusive create — it was just being discarded by `writeFile` resolving the
+path first. Exposing it as `writeFile(…, { exclusive: true })` is 3 lines in `packages/fs`, deletes the probe
+from three call sites, and makes the create *be* the check. Free, so take it.
 
-The second version of the same mistake took longer to see, because it looked like the fix: a move *claimed*
-the destination with an empty placeholder and then renamed over its own placeholder. In a store this app
-shares with Files, the agent and other windows, that is not a reservation — an ordinary `writeFile` lands
-**inside** the placeholder and the move then destroys it — and a file placeholder cannot be renamed over by a
-folder (ENOTDIR on the Node backend, so every folder move failed there). `rename` "could not be exclusive"
-only because nobody had asked the backends: `link(2)` and `mkdir(2)` are EEXIST-or-nothing, an IndexedDB
-transaction and a synchronous map mutation decide it outright. So `rename(…, { exclusive: true })` joined
-`writeFile`, and the placeholder, its `rm --force` cleanup and the type question all went away together. **If
-a guarantee takes two calls to express, it belongs one layer down; if it needs a cleanup path, it is already
-wrong.**
+A move is not free, and this is where I overreached twice. `rename` has no exclusive form: POSIX rename
+always replaces, and `renameat2`/`renamex_np` are not reachable from Node. Attempt one emulated it in the app
+— claim an empty placeholder at the destination, then rename over it — which is not a reservation in a store
+shared with Files and the agent (an ordinary write lands *inside* the placeholder and the move then destroys
+it) and is the wrong *type* for a folder move (ENOTDIR on the native backend). Attempt two pushed the same
+emulation into the backend as `link` + `unlink`, which stops being a move at all: a crash between the two
+leaves the file under both names.
+
+**The right move was to size the problem before solving it.** Who actually races for a destination here? The
+import loop is sequential (`for … await` over one chunk at a time), an agent tool call is one call, and the
+GUI has exactly one gesture that produces several moves — a multi-item drop — which the tree now applies one
+at a time (`persistDrop`). Nothing in this system races itself. So `rename(…, { exclusive: true })` is a
+check and *then* a move, documented as exactly that, and the guarantee it gives — sequential writers never
+overwrite each other, whatever type holds the name — is the guarantee the app needs. Two writers in different
+processes reaching for the same new name in the same instant can still lose one; that is a knowingly accepted
+window, not an oversight, and it costs a fraction of what emulating atomicity cost.
+
+**Push a guarantee down when the primitive is already there. When it is not, remove the concurrency instead
+of emulating the primitive** — ordering your own writes is cheap, and an emulated atomic is a defect surface
+with a comment on top.
 
 **2 · Never keep a second pointer to a location — derive it and validate on use.** "Which folder do new
 notes go in" started as GUI state (`activeDir`), and every mutation then had to maintain it: deleting that

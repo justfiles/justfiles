@@ -119,17 +119,19 @@ export interface Volume {
 	 * If newPath already exists it is replaced atomically (POSIX rename
 	 * semantics). Throws ENOENT if oldPath does not exist.
 	 *
-	 * With `exclusive: true` it is a NO-REPLACE move: EEXIST if the destination
-	 * name is taken, whatever type holds it — the counterpart of
-	 * `writeFile(..., { exclusive: true })`, and for the same reason. A caller cannot
-	 * get this by claiming the destination first: a placeholder is not a reservation
-	 * in a shared store (another writer's ordinary write lands *in* the placeholder,
-	 * and the move then destroys it), and it is the wrong type for a directory move.
+	 * With `exclusive: true` the destination must be FREE: EEXIST if a file or a
+	 * directory already holds that name, so a caller can retry under another name
+	 * instead of destroying a stranger's data.
 	 *
-	 * It is the backend's `noReplaceMove` — read its contract for what it does and
-	 * does not promise, which differs by backend because no POSIX rename is both
-	 * atomic and no-replace. A backend without the capability falls back to a
-	 * pre-check, which is a hint and not a guarantee.
+	 * Unlike `writeFile`'s `exclusive`, this is a CHECK AND THEN a move, not one
+	 * operation — no POSIX rename is both atomic and no-replace (`renameat2` and
+	 * `renamex_np` are not reachable from Node), and emulating one costs more than it
+	 * buys: claiming the destination first is not a reservation in a shared store,
+	 * and `link`+`unlink` is no longer a move. So the guarantee here is scoped
+	 * honestly: sequential writers never overwrite each other, and two writers
+	 * racing for the SAME new name in the same instant can still have one replaced.
+	 * Order your own writes if that matters; this refuses the destination that is
+	 * taken when it looks.
 	 */
 	rename(oldPath: string, newPath: string, opts?: { exclusive?: boolean }): Promise<void>
 
@@ -644,11 +646,10 @@ export function volume(storage: Storage): Volume {
 			const { dirIno: oldDirIno, name: oldName } = await resolveParent(oldPath)
 			const { dirIno: newDirIno, name: newName } = await resolveParent(newPath)
 
-			if (opts?.exclusive && storage.caps?.noReplaceMove) {
-				await storage.caps.noReplaceMove(oldDirIno, oldName, newDirIno, newName)
-				invalidateDirCache(oldDirIno)
-				invalidateDirCache(newDirIno)
-				return
+			if (opts?.exclusive) {
+				const taken = await storage.getDirent(newDirIno, newName)
+				const source = await storage.getDirent(oldDirIno, oldName)
+				if (taken && taken.ino !== source?.ino) throw new Error(`EEXIST: ${newPath}`)
 			}
 
 			if (storage.caps?.atomicMove) {
@@ -663,10 +664,6 @@ export function volume(storage: Storage): Volume {
 			if (source === null) throw new Error(`ENOENT: ${oldName}`)
 
 			const displaced = await storage.getDirent(newDirIno, newName)
-			// A hint, not a guarantee: a backend with no `noReplaceMove` gives us no way
-			// to make the check and the move one operation (see its contract).
-			if (opts?.exclusive && displaced && displaced.ino !== source.ino)
-				throw new Error(`EEXIST: ${newName}`)
 			await storage.putDirent(newDirIno, newName, { ino: source.ino, type: source.type })
 			await storage.deleteDirent(oldDirIno, oldName)
 

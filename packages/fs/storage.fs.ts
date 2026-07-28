@@ -4,7 +4,6 @@ import {
 	rename as _rename,
 	symlink as _symlink,
 	chmod,
-	link,
 	lutimes,
 	mkdir,
 	open,
@@ -15,13 +14,7 @@ import {
 	writeFile
 } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
-import type {
-	InodeMeta,
-	MutationOptions,
-	Storage,
-	StorageCapabilities,
-	StorageChange
-} from './storage'
+import type { InodeMeta, Storage, StorageCapabilities, StorageChange } from './storage'
 import type { Ino } from './types'
 import { FileType } from './types'
 
@@ -84,34 +77,6 @@ export async function nativeStorage(root: string): Promise<Storage> {
 		}
 	}
 
-	// Both moves end the same way: the cached ino→path mapping follows the entry (and
-	// every cached descendant), then the two dirent events that say "gone from there,
-	// here now". One copy, because the difference between the moves is how the
-	// destination is taken, not what a completed move means.
-	function moved(
-		ino: Ino,
-		oldDir: Ino,
-		oldName: string,
-		oldPath: string,
-		newDir: Ino,
-		newName: string,
-		newPath: string,
-		options?: MutationOptions
-	): void {
-		const oldPrefix = `${oldPath}/`
-		for (const [cached, p] of pathMap) {
-			if (p === oldPath) pathMap.set(cached, newPath)
-			else if (p.startsWith(oldPrefix))
-				pathMap.set(cached, `${newPath}/${p.slice(oldPrefix.length)}`)
-		}
-		for (const [dirIno, name, path] of [
-			[newDir, newName, newPath],
-			[oldDir, oldName, oldPath]
-		] as const) {
-			emit({ ino, kind: 'dirent', dirIno, name, path: volPath(path), source: options?.source })
-		}
-	}
-
 	const caps: StorageCapabilities = {
 		async atomicCreate(dirIno, name, meta, options) {
 			const childPath = join(getPath(dirIno), name)
@@ -144,52 +109,33 @@ export async function nativeStorage(root: string): Promise<Storage> {
 
 			await _rename(oldPath, newPath)
 
-			if (displaced !== null) pathMap.delete(displaced)
-			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
-			moved(srcIno, oldDir, oldName, oldPath, newDir, newName, newPath, options)
-			return displaced
-		},
-
-		// No-replace move. `rename(2)` always replaces and Node has neither `renameat2`
-		// nor `renamex_np`, so the name is taken with a CLAIM the OS refuses to grant
-		// twice — and it has to be the right KIND of claim, because rename is type-strict
-		// (a file over a directory is EISDIR, a directory over a file is ENOTDIR):
-		//   - a directory: `mkdir(2)` is EEXIST-or-nothing, and renaming over an empty
-		//     directory of our own making is one atomic step. If a racing writer fills it
-		//     first the rename fails ENOTEMPTY — we lose the move, never their data.
-		//   - a file: `link(2)` is EEXIST-or-nothing, so the destination becomes ours with
-		//     no window at all, and unlinking the source completes the move. Two steps,
-		//     which is the whole reason this is not `atomicMove`: if the unlink fails the
-		//     claim is rolled back and the tree is as it was, but a process killed in
-		//     between leaves the source as a second link to the same inode — a duplicate,
-		//     never a lost byte. Node offers nothing better; the alternative (probe, then
-		//     rename) trades a recoverable duplicate for a destroyed file, and the
-		//     caller's dedup loop would silently collapse concurrent moves onto one name.
-		async noReplaceMove(oldDir, oldName, newDir, newName, options) {
-			const oldPath = join(getPath(oldDir), oldName)
-			const newPath = join(getPath(newDir), newName)
-			const src = await lstat(oldPath)
-			const srcIno = String(src.ino)
-
-			if (src.isDirectory()) {
-				await mkdir(newPath)
-				try {
-					await _rename(oldPath, newPath)
-				} catch (e) {
-					await rmdir(newPath).catch(() => {})
-					throw e
-				}
-			} else {
-				await link(oldPath, newPath)
-				try {
-					await unlink(oldPath)
-				} catch (e) {
-					await unlink(newPath).catch(() => {})
-					throw e
-				}
+			// Update pathMap for the moved entry and all cached descendants
+			const oldPrefix = `${oldPath}/`
+			for (const [ino, p] of pathMap) {
+				if (p === oldPath) pathMap.set(ino, newPath)
+				else if (p.startsWith(oldPrefix))
+					pathMap.set(ino, `${newPath}/${p.slice(oldPrefix.length)}`)
 			}
+			if (displaced !== null) pathMap.delete(displaced)
 
-			moved(srcIno, oldDir, oldName, oldPath, newDir, newName, newPath, options)
+			if (displaced !== null) emit({ ino: displaced, kind: 'meta', source: options?.source })
+			emit({
+				ino: srcIno,
+				kind: 'dirent',
+				dirIno: newDir,
+				name: newName,
+				path: volPath(newPath),
+				source: options?.source
+			})
+			emit({
+				ino: srcIno,
+				kind: 'dirent',
+				dirIno: oldDir,
+				name: oldName,
+				path: volPath(oldPath),
+				source: options?.source
+			})
+			return displaced
 		},
 
 		subscribe(listener) {

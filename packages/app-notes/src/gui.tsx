@@ -775,7 +775,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							}}
 							onCreate={(dir, title) => void createNote(title, dir)}
 							onMkdir={(path) => void actions.mkdir({ path })}
-							onRename={(from, to) => void moveNote(from, to)}
+							onRename={moveNote}
 							onRemove={(path) => void removeNote(path)}
 						/>
 						<div className="notes-side-foot">

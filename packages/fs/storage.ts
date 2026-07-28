@@ -85,34 +85,6 @@ export interface StorageCapabilities {
 		options?: MutationOptions
 	): Promise<Ino | null>
 
-	/**
-	 * Move a name only if the destination is FREE — EEXIST if it is taken, whatever
-	 * type holds it.
-	 *
-	 * A separate capability rather than a flag on `atomicMove`, because no POSIX
-	 * rename is both atomic and no-replace and the difference must not hide behind a
-	 * method named "atomic". A backend that can decide it outright does (one
-	 * synchronous mutation; one IndexedDB transaction). A backend without a
-	 * no-replace rename — Node exposes neither `renameat2` nor `renamex_np` — instead
-	 * takes the name with a CLAIM it cannot lose (`link`/`mkdir`: EEXIST-or-nothing)
-	 * and then removes the source. So this promises less than `atomicMove`, and says
-	 * so: a call that RETURNS has left exactly one name, a call that THROWS has left
-	 * the tree as it was, and the destination is never replaced either way — but a
-	 * process killed mid-call can leave the source behind as a second link to the
-	 * same inode. A duplicate, never a lost byte.
-	 *
-	 * It has to live down here even so: a caller cannot build it. Claiming a name
-	 * from above only moves the race — an ordinary write lands *in* the claim, and
-	 * the move then destroys it.
-	 */
-	noReplaceMove?(
-		oldDir: Ino,
-		oldName: string,
-		newDir: Ino,
-		newName: string,
-		options?: MutationOptions
-	): Promise<void>
-
 	/** Partial read — if absent the VFS does a full getBlob. */
 	readRange?(ino: Ino, offset: number, length: number): Promise<Uint8Array>
 
