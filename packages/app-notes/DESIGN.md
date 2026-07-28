@@ -115,7 +115,7 @@ pure/sync; all IO is in procedures or via `t.cmd`.
 | `open({ path })` | edge | both | **The** coordinating action — put a note in front of the user |
 | `newNote({})` | edge | both | Blank scratch |
 | `save({ path, text })` | edge → `t.cmd` | both | Overwrite a body (the GUI's debounced autosave) |
-| `rename({ from, to })` | edge → `t.cmd` | both | Rename **is** move: retitle, drag into a folder, or move a whole folder. `openPath` follows the file, or the folder it lives under |
+| `rename({ from, to })` | procedure | both | Rename **is** move: retitle, drag into a folder, or move a whole folder. An occupied destination is deduped, never overwritten; returns where it landed |
 | `list({})` | procedure | both | Fresh recursive listing: every note + every folder, newest first |
 | `create({ text, dir? })` | procedure | both | New note; filename from the first line, `dir` defaults to `/` |
 | `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
@@ -144,7 +144,14 @@ Notes on choices:
   also gives true `mtime` recency on every call — no stale cache, no optimistic-mtime hack.
 - **`rename` is one op, deliberately.** Retitle, move-into-folder and folder-rename are the same
   filesystem operation; giving the agent (and the tree's drag/drop) one `{ from, to }` beats three
-  near-identical actions.
+  near-identical actions. It is a **procedure, not an edge**, because it must probe the destination first:
+  `volume.rename` has POSIX replace semantics (the IndexedDB backend frees the displaced inode), so
+  dragging `Kyoto.md` into a folder that already holds one would destroy the user's note. It dedups to
+  `Kyoto 2.md` instead — the same `freePath` probe `create` and the importer use — and commits `openPath`
+  through an internal `moved` edge once the real destination is known.
+- **Both revision counters are optional.** They were added after the first release and persisted state is
+  loaded verbatim (`init` is not re-merged, docs/app.md §3), so every reader defaults them: `undefined + 1`
+  would pin a counter at `NaN` and the tree would refresh exactly once, then never again.
 - **Naming dedup is an `exists()` probe** (`freePath`), not a lookup in a cached list.
 
 <a id="files"></a>
@@ -246,7 +253,11 @@ owns only the seam:
 - **The pane is resizable**: a `role="separator"` splitter, pointer-captured so the drag survives passing
   over the editor and the tree's shadow root, arrow-key adjustable, double-click to reset. Width is
   clamped (150–480) and persisted next to the pane toggle — GUI-local, never reducer state.
-- **Dragging a row into a folder is `rename`** (`{ from, to }`), one per dragged path. Dragging onto the
+- **Dragging a row into a folder is `rename`** (`{ from, to }`), one per dragged path — dispatched from
+  *both* `onDropComplete` and `onDropError`. The model's move is optimistic **and** collision-strict: a drop
+  onto a folder that already holds that name throws inside its store (`collision: 'error'`), so
+  `onDropComplete` never fires and the drag would look like a silent no-op. Persisting from both paths lets
+  the reducer dedup and the watch redraw what actually landed; the GUI says so ("moved as “Trips/Kyoto 2”"). Dragging onto the
   **blank space below the rows moves the item to the top level** — the tree only resolves a drop target
   from row elements, so past the last row it resolves to nothing. The pane's tree wrapper is that zone: the
   drags are native HTML5 and carry the path as `text/plain`, drag events cross the shadow boundary, and
@@ -412,6 +423,11 @@ What it does:
   `freePath` probe `create` uses. The count comes back from the procedure so the status line can say
   "3 renamed to avoid a clash": the user keeps both copies and decides.
 - Loose `.md`/`.txt` files dropped without a zip take the same path.
+- **Screened before decompression.** `screenEntry(name, originalSize)` runs as the unzip `filter`, i.e.
+  against the archive's central directory, so an attachment or an absurd entry is rejected from its
+  **header** and never inflated. Otherwise a picture-heavy vault — or a zip bomb — would be decompressed
+  into the tab in full just to be thrown away. The same rule is re-applied in `planImport`, since loose
+  dropped files never went through a central directory.
 - **Skipped, and reported** (never silently dropped — the count is in the status line, the detail in the
   console): any dotted segment (`.obsidian/`, `.trash/`, `.git/`), `__MACOSX/`, `.DS_Store`, `* (conflicted
   copy)*`, and everything that isn't a note — attachments, `.canvas`, `.base`, plugin data. Attachments are

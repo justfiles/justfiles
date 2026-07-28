@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { commonRoot, planImport, vaultName } from './import.ts'
+import { commonRoot, planImport, screenEntry, vaultName } from './import.ts'
 
 const enc = new TextEncoder()
 const bytes = (text: string) => enc.encode(text)
@@ -79,4 +79,25 @@ test('loose notes with no wrapping folder keep their names', () => {
 	expect(plan.name).toBe('Imported')
 	expect(plan.files.map((file) => file.path).sort()).toEqual(['hello.md', 'notes.txt'])
 	expect(plan.folders).toBe(0)
+})
+
+test('an entry can be screened from its header, before it is decompressed', () => {
+	// This is what the zip `filter` calls: name + declared original size only, so
+	// attachments and absurd files are never inflated into the tab.
+	expect(screenEntry('Vault/Kyoto.md', 200)).toBe(null)
+	expect(screenEntry('Vault/Attachments/pic.png', 200)).toBe('attachment')
+	expect(screenEntry('Vault/.obsidian/app.json', 20)).toBe('config')
+	expect(screenEntry('__MACOSX/._Kyoto.md', 20)).toBe('junk')
+	// A zip bomb declares its size in the central directory — believe it.
+	expect(screenEntry('Vault/Bomb.md', 10_000_000_000)).toBe('attachment')
+})
+
+test('entries the caller already rejected are folded into the report', () => {
+	const plan = planImport({ 'Vault/Kyoto.md': bytes('x') }, 'Vault.zip', {
+		preSkipped: [{ path: 'Vault/Attachments/pic.png', reason: 'attachment' }]
+	})
+	expect(plan.files.map((file) => file.path)).toEqual(['Kyoto.md'])
+	expect(plan.skipped).toEqual([{ path: 'Vault/Attachments/pic.png', reason: 'attachment' }])
+	// A pre-skipped attachment must not count as a second root and re-nest the vault.
+	expect(plan.name).toBe('Vault')
 })

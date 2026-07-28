@@ -44,6 +44,18 @@ export function NotesTree(props: NotesTreeProps) {
 	const latest = useRef(props)
 	latest.current = props
 
+	const persistDrop = (
+		draggedPaths: readonly string[],
+		target: { kind: 'directory' | 'root'; directoryPath: string | null }
+	) => {
+		const dir = target.kind === 'root' ? '/' : fromTree(target.directoryPath ?? '')
+		for (const dragged of draggedPaths) {
+			const from = fromTree(dragged)
+			const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
+			if (to !== from) latest.current.onRename(from, to)
+		}
+	}
+
 	// Filtering is OUR matcher (the same one the dropdown ranks with), applied to
 	// the paths we feed — not the tree's own search session. One search rule for
 	// both surfaces, and no session state to keep in sync. Folders are implied by
@@ -62,15 +74,14 @@ export function NotesTree(props: NotesTreeProps) {
 		density: 0.9,
 		composition: { contextMenu: { enabled: true, triggerMode: 'both' } },
 		dragAndDrop: {
-			// One move per dragged row; the model already reflects them optimistically.
-			onDropComplete: ({ draggedPaths, target }) => {
-				const dir = target.kind === 'root' ? '/' : fromTree(target.directoryPath ?? '')
-				for (const dragged of draggedPaths) {
-					const from = fromTree(dragged)
-					const to = joinPath(dir, from.slice(from.lastIndexOf('/') + 1))
-					if (to !== from) latest.current.onRename(from, to)
-				}
-			}
+			// One move per dragged row. Both callbacks persist, because the model's own
+			// move is optimistic AND collision-strict: dropping onto a folder that
+			// already holds that name throws inside the store (`collision: 'error'`), so
+			// `onDropComplete` never fires and the drag would look like a no-op. The
+			// reducer dedups instead (`Kyoto 2.md`), and the `treeRevision` watch redraws
+			// whatever actually landed — the disk stays the truth either way.
+			onDropComplete: ({ draggedPaths, target }) => persistDrop(draggedPaths, target),
+			onDropError: (_error, { draggedPaths, target }) => persistDrop(draggedPaths, target)
 		},
 		onSelectionChange: (selected) => {
 			const path = selected[0]

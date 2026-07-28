@@ -2,7 +2,7 @@ import type { GUIProps } from '@justfiles/app/react'
 import { unzip } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
-import { type ImportPlan, planImport } from './import.ts'
+import { type ImportPlan, normalizePath, planImport, type Skip, screenEntry } from './import.ts'
 import { displayPath, matchNotes, parentDir } from './notes.ts'
 import { NotesTree } from './tree.tsx'
 import './style.css'
@@ -43,16 +43,38 @@ function clampWidth(px: number): number {
 	return Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, Math.round(px)))
 }
 
-const unzipAsync = (bytes: Uint8Array) =>
-	new Promise<Record<string, Uint8Array>>((resolve, reject) => {
-		unzip(bytes, (error, data) => (error ? reject(error) : resolve(data)))
+// Unzip only what we intend to keep. `filter` runs against the archive's central
+// directory, so an attachment or an oversized entry is rejected from its HEADER
+// and never inflated — a picture-heavy vault (or a zip bomb) would otherwise be
+// decompressed into the tab in full just to be thrown away.
+function readZip(
+	bytes: Uint8Array
+): Promise<{ entries: Record<string, Uint8Array>; skipped: Skip[] }> {
+	const skipped: Skip[] = []
+	return new Promise((resolve, reject) => {
+		unzip(
+			bytes,
+			{
+				filter: (info) => {
+					if (info.name.endsWith('/')) return false
+					const reason = screenEntry(info.name, info.originalSize)
+					if (reason) skipped.push({ path: normalizePath(info.name), reason })
+					return reason === null
+				}
+			},
+			(error, entries) => (error ? reject(error) : resolve({ entries, skipped }))
+		)
 	})
+}
 
 // Dropped files → one plan. A zip is a vault export (its own folder name wins);
-// loose files are imported under their own name. Both land in a fresh folder.
+// loose files are imported under their own name. Both merge into the KB root.
 async function planDrop(files: File[]): Promise<ImportPlan> {
 	const zip = files.find((file) => file.name.toLowerCase().endsWith('.zip'))
-	if (zip) return planImport(await unzipAsync(new Uint8Array(await zip.arrayBuffer())), zip.name)
+	if (zip) {
+		const { entries, skipped } = await readZip(new Uint8Array(await zip.arrayBuffer()))
+		return planImport(entries, zip.name, { preSkipped: skipped })
+	}
 	const entries: Record<string, Uint8Array> = {}
 	for (const file of files) entries[file.name] = new Uint8Array(await file.arrayBuffer())
 	return planImport(entries, 'Imported')
@@ -263,6 +285,17 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			if (listOpen) void refresh()
 		},
 		[flush, actions, listOpen, refresh]
+	)
+
+	// A move that lands somewhere other than asked (the name was taken) is not a
+	// failure — but the user has to be told, or a note quietly appears as "… 2".
+	const moveNote = useCallback(
+		async (from: string, to: string) => {
+			const { path } = await actions.rename({ from, to })
+			if (path !== to) setStatus(`A note was already there — moved as “${displayPath(path)}”`)
+			void refresh()
+		},
+		[actions, refresh]
 	)
 
 	const removeNote = useCallback(
@@ -542,7 +575,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 							onSelectDir={setActiveDir}
 							onCreate={(dir, title) => void createNote(title, dir)}
 							onMkdir={(path) => void actions.mkdir({ path })}
-							onRename={(from, to) => void actions.rename({ from, to })}
+							onRename={(from, to) => void moveNote(from, to)}
 							onRemove={(path) => void removeNote(path)}
 						/>
 						<div className="notes-side-foot">

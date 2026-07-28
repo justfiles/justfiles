@@ -43,8 +43,10 @@ async function freePath(
 // here — both are re-read from disk on demand (DESIGN.md §3).
 export type NotesState = {
 	openPath: string | null
-	revision: number
-	treeRevision: number
+	// Optional: both counters were added after the first release, and persisted
+	// state is loaded verbatim — every reader defaults them.
+	revision?: number
+	treeRevision?: number
 	error: string | null
 }
 
@@ -107,36 +109,30 @@ export const app = defineApp({
 		),
 
 		// — rename IS move: one op covers retitling, dragging into a folder, and
-		// renaming a folder. `openPath` follows the moved file, or the moved folder
-		// it lives under.
-		rename: t.on(
-			v.object({ from: pathSchema, to: pathSchema }),
-			(state, { from, to }) => {
-				const openPath =
-					state.openPath && isUnder(state.openPath, from)
-						? `${to}${state.openPath.slice(from.length)}`
-						: state.openPath
-				return [{ ...state, openPath }, t.cmd('volume', 'rename', from, to).to('renamed')]
-			},
-			{
-				description:
-					'Rename or move a note or folder. `to` is the full destination path, so this also moves a note into another folder.',
-				examples: [{ params: { from: '/Groceries.md', to: '/Lists/Shopping list.md' } }]
-			}
-		),
-		renamed: t.fromResult('volume', 'rename', (state, r) =>
-			r.ok ? state : { ...state, error: r.error.message }
-		),
+		// renaming a folder. Internal (a `commit` edge): only the `rename` procedure
+		// dispatches it, once the move has landed and its real destination is known.
+		// `openPath` follows the moved file, or the moved folder it lives under.
+		moved: t.commit(v.object({ from: pathSchema, to: pathSchema }), (state, { from, to }) => ({
+			...state,
+			openPath:
+				state.openPath && isUnder(state.openPath, from)
+					? `${to}${state.openPath.slice(from.length)}`
+					: state.openPath,
+			error: null
+		})),
 
 		// — external change to the OPEN file (the agent or Files edits it on disk) —
 		fileChanged: t.fromEvent('volume', 'watch', (state) => ({
 			...state,
-			revision: state.revision + 1
+			revision: (state.revision ?? 0) + 1
 		})),
 		// — something was created/removed/renamed somewhere in `/notes` —
+		// `?? 0`: state persisted before these counters existed has neither field, and
+		// `init` is NOT re-merged into stored state (docs/app.md §3), so `undefined + 1`
+		// would freeze the counter at `NaN` and the tree would never refresh again.
 		treeChanged: t.fromEvent('volume', 'watch', (state) => ({
 			...state,
-			treeRevision: state.treeRevision + 1
+			treeRevision: (state.treeRevision ?? 0) + 1
 		}))
 	}),
 
@@ -179,6 +175,26 @@ export const app = defineApp({
 				await app.invoke('volume', 'writeFile', path, enc.encode(text))
 				const { seq } = await app.dispatch({ type: 'open', params: { path } })
 				return app.settled(seq)
+			}
+		}),
+
+		// Rename IS move — retitle, drag into a folder, move a whole folder. It never
+		// overwrites: `volume.rename` has POSIX replace semantics (the IndexedDB
+		// backend frees the displaced inode), so dragging `Kyoto.md` into a folder that
+		// already has one would destroy the user's note. The destination is deduped
+		// first — the same `freePath` probe `create` and the importer use — and the path
+		// it actually landed at comes back.
+		rename: p.procedure({
+			description:
+				'Rename or move a note or folder, e.g. from "/Groceries.md" to "/Lists/Shopping list.md". `to` is the full destination path, so this also moves an item into another folder. An occupied destination is never overwritten — the moved item is numbered instead — and the resulting path is returned.',
+			schema: v.object({ from: pathSchema, to: pathSchema }),
+			async run({ from, to }, app) {
+				if (to === from) return { path: from }
+				const path = await freePath(to, (probe) => app.invoke('volume', 'exists', probe))
+				await app.invoke('volume', 'rename', from, path)
+				const { seq } = await app.dispatch({ type: 'moved', params: { from, to: path } })
+				await app.settled(seq)
+				return { path }
 			}
 		}),
 

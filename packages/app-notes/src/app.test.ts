@@ -26,6 +26,20 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = []) {
 			case 'mkdir':
 				folders.add(path)
 				return undefined
+			case 'rename': {
+				const to = args[1] as string
+				for (const [key, value] of [...store]) {
+					if (key === path) {
+						store.delete(key)
+						store.set(to, value)
+					} else if (key.startsWith(`${path}/`)) {
+						store.delete(key)
+						store.set(`${to}${key.slice(path.length)}`, value)
+					}
+				}
+				if (folders.delete(path)) folders.add(to)
+				return undefined
+			}
 			case 'rm':
 				for (const key of store.keys()) {
 					if (key === path || key.startsWith(`${path}/`)) store.delete(key)
@@ -87,24 +101,63 @@ test('on-disk changes bump their own counter, and nothing else', async () => {
 	expect(tree.state).toMatchObject({ revision: 0, treeRevision: 1 })
 })
 
-test('rename follows the open note, including when its folder is the thing moved', async () => {
+test('state persisted before the revision counters existed still counts up', async () => {
+	// `init` is not re-merged into stored state (docs/app.md §3), so an upgraded
+	// install has neither counter. `undefined + 1` would pin them at NaN — the
+	// tree would refresh once and then never again.
+	const legacy = { openPath: null, error: null } as NotesState
+	const tree = await app.dispatch({ type: '__sub/treeChanged', params: {} }, { state: legacy })
+	expect(tree.state?.treeRevision).toBe(1)
+	const file = await app.dispatch({ type: '__sub/fileChanged', params: {} }, { state: legacy })
+	expect(file.state?.revision).toBe(1)
+})
+
+test('rename never overwrites: an occupied destination is numbered instead', async () => {
+	const vol = fakeVolume({ '/Groceries.md': 'mine', '/Lists/Groceries.md': 'theirs' }, ['/Lists'])
+	const h = handle(initialState, vol.invoke)
+	// `volume.rename` replaces the destination (POSIX), so a drag into a folder
+	// that already holds the same name would destroy a note.
+	const result = (await app.runProcedure(
+		'rename',
+		{ from: '/Groceries.md', to: '/Lists/Groceries.md' },
+		h.app
+	)) as { path: string }
+	expect(result.path).toBe('/Lists/Groceries 2.md')
+	expect(vol.store.get('/Lists/Groceries.md')).toBe('theirs')
+	expect(vol.store.get('/Lists/Groceries 2.md')).toBe('mine')
+	expect(h.dispatched).toEqual(['moved'])
+})
+
+test('renaming to where it already is does nothing at all', async () => {
+	const vol = fakeVolume({ '/Kyoto.md': 'x' })
+	const h = handle(initialState, vol.invoke)
+	const result = (await app.runProcedure(
+		'rename',
+		{ from: '/Kyoto.md', to: '/Kyoto.md' },
+		h.app
+	)) as { path: string }
+	expect(result.path).toBe('/Kyoto.md')
+	expect(h.dispatched).toEqual([])
+})
+
+test('a move follows the open note, including when its folder is the thing moved', async () => {
 	const open = { ...initialState, openPath: '/Groceries.md' }
 	const renamed = await app.dispatch(
-		{ type: 'rename', params: { from: '/Groceries.md', to: '/Lists/Shopping list.md' } },
+		{ type: 'moved', params: { from: '/Groceries.md', to: '/Lists/Shopping list.md' } },
 		{ state: open }
 	)
 	expect(renamed.state?.openPath).toBe('/Lists/Shopping list.md')
 
 	const nested = { ...initialState, openPath: '/Trips/Kyoto.md' }
 	const moved = await app.dispatch(
-		{ type: 'rename', params: { from: '/Trips', to: '/Travel/Japan' } },
+		{ type: 'moved', params: { from: '/Trips', to: '/Travel/Japan' } },
 		{ state: nested }
 	)
 	expect(moved.state?.openPath).toBe('/Travel/Japan/Kyoto.md')
 
 	// An unrelated move leaves the open note alone.
 	const other = await app.dispatch(
-		{ type: 'rename', params: { from: '/Groceries.md', to: '/Lists/Groceries.md' } },
+		{ type: 'moved', params: { from: '/Groceries.md', to: '/Lists/Groceries.md' } },
 		{ state: nested }
 	)
 	expect(other.state?.openPath).toBe('/Trips/Kyoto.md')

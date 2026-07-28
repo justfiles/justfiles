@@ -6,18 +6,36 @@ import { isNotePath } from './notes.ts'
 
 export type ImportFile = { path: string; text: string }
 export type SkipReason = 'config' | 'junk' | 'attachment'
+export type Skip = { path: string; reason: SkipReason }
 export type ImportPlan = {
 	// Vault folder name, derived from the zip's own name or its single root folder.
 	name: string
 	files: ImportFile[]
-	skipped: Array<{ path: string; reason: SkipReason }>
+	skipped: Skip[]
 	folders: number
 }
+
+// A note big enough to be a mistake. Bigger than any prose file, small enough
+// that a batch of them still fits in a message.
+export const MAX_BYTES = 5_000_000
 
 // Everything Obsidian (or the OS, or a sync conflict) leaves in a vault that is
 // not the user's writing.
 const JUNK = /(^|\/)(__MACOSX|\.DS_Store|Icon\r|Thumbs\.db)(\/|$)/i
 const CONFLICT = /\(conflicted copy[^)]*\)|\bconflicted copy\b/i
+
+/**
+ * Should this entry be imported, judged from its NAME and SIZE alone? Callable
+ * against a zip's central directory, so an attachment or an absurd file is
+ * rejected **before** it is decompressed — a picture-heavy vault (or a zip bomb)
+ * must not be inflated into the tab just to be thrown away.
+ */
+export function screenEntry(path: string, size: number, maxBytes = MAX_BYTES): SkipReason | null {
+	return classify(normalize(path)) ?? (size > maxBytes ? 'attachment' : null)
+}
+
+/** NFC-normalize a path for display/comparison (see `normalize` below). */
+export const normalizePath = (path: string) => normalize(path)
 
 function classify(path: string): SkipReason | null {
 	// OS and sync debris first: `.DS_Store` and `__MACOSX/._x` are dotted too, and
@@ -63,21 +81,24 @@ const decoder = new TextDecoder()
 
 /**
  * Turn unzipped entries into a plan. `zipName` names the destination folder when
- * the archive has no single root folder of its own.
+ * the archive has no single root folder of its own. `preSkipped` carries entries
+ * the caller already rejected without decompressing them (see `screenEntry`).
  */
 export function planImport(
 	entries: Record<string, Uint8Array>,
 	zipName: string,
-	options: { maxBytes?: number } = {}
+	options: { maxBytes?: number; preSkipped?: readonly Skip[] } = {}
 ): ImportPlan {
-	const maxBytes = options.maxBytes ?? 5_000_000
-	const skipped: ImportPlan['skipped'] = []
+	const maxBytes = options.maxBytes ?? MAX_BYTES
+	const skipped: Skip[] = options.preSkipped ? [...options.preSkipped] : []
 	const keep: Array<{ path: string; bytes: Uint8Array }> = []
 	for (const [raw, bytes] of Object.entries(entries)) {
 		const path = normalize(raw)
 		// Directory entries carry no content; folders come from their children.
 		if (path.endsWith('/')) continue
-		const reason = classify(path) ?? (bytes.length > maxBytes ? 'attachment' : null)
+		// Re-screened here, not only at the seam: loose dropped files never went
+		// through a zip's central directory.
+		const reason = screenEntry(path, bytes.length, maxBytes)
 		if (reason) skipped.push({ path, reason })
 		else keep.push({ path, bytes })
 	}
