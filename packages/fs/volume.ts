@@ -183,6 +183,8 @@ export interface Volume {
 	 * coalesced per microtask. `path` is ignored (the signal is storage-wide);
 	 * pair it with a scoped `scan` to rebuild a subtree listing. Content/meta
 	 * edits to existing files do NOT fire — watch the concrete file for those.
+	 * That holds for a pulled edit too: sync applying a put over a path this
+	 * replica already holds is an edit, not structure (see `applyJournaledOver`).
 	 * This is the substrate for a directory browser's auto-refresh; see the
 	 * `Volume` capability contract for the chroot scoping caveat.
 	 *

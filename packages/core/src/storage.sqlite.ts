@@ -634,9 +634,9 @@ export function storage(db: DbAdapter, options: StorageOptions = {}): Storage {
 			mintIno: randomId,
 			resolveIno: (path) => resolveIno(tx, path),
 			ensureDirPath: (path) => ensureDirPath(tx, path),
-			async getDirentIno(dirIno, name) {
+			async getDirent(dirIno, name) {
 				const d = await getDirent(tx, dirIno, name)
-				return d ? String(d.ino) : null
+				return d ? { ino: String(d.ino), type: toNumber(d.type) as FileType } : null
 			},
 			async readMetaXattrs(ino) {
 				const row = await getInode(tx, ino)

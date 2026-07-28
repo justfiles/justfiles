@@ -472,9 +472,9 @@ export function idbStorage(
 			mintIno: () => crypto.randomUUID(),
 			resolveIno: (path) => resolveInoTx(tx, path),
 			ensureDirPath: (path) => ensureDirPathTx(tx, path),
-			async getDirentIno(dirIno, name) {
+			async getDirent(dirIno, name) {
 				const d = await tx.objectStore('dirs').get([dirIno, name])
-				return d ? d.ino : null
+				return d ? { ino: d.ino, type: d.type } : null
 			},
 			async readMetaXattrs(ino) {
 				const rec = await tx.objectStore('inodes').get(ino)
