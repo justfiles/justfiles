@@ -331,6 +331,74 @@ describe('path-sync semantics', () => {
 		await syncBoth()
 		await tick()
 		expect(fired).toBe(1)
+
+		// So does an entry disappearing, or moving. (One logical change can arrive as
+		// several applies — a rename is a put plus a delete — and coalescing is
+		// per-microtask, so the count is "more than before", not an exact number.)
+		await server.rm('/notes/second.md')
+		await syncBoth()
+		await tick()
+		expect(fired).toBeGreaterThan(1)
+
+		const beforeRename = fired
+		await server.rename('/notes/hello.md', '/notes/renamed.md')
+		await syncBoth()
+		await tick()
+		expect(fired).toBeGreaterThan(beforeRename)
+		expect((await clientVol.readdir('/notes')).map((e) => e.name)).toEqual(['renamed.md'])
+	})
+
+	// The frieren host watches concrete files for exactly this: the agent edits an
+	// app's state on the server, or an install swaps a bundle, and the open window
+	// has to notice. Suppressing the structural signal for a pulled edit must not
+	// take that with it.
+	test('a watch on a concrete file fires when its bytes arrive by sync', async () => {
+		const clientStorage = memStorage()
+		const { server, syncBoth } = wire(clientStorage, memStorage())
+		const clientVol = volume(clientStorage)
+		await server.writeFile('/state/app.json', bytes('{"n":1}'))
+		await syncBoth()
+
+		const seen: Array<string | undefined> = []
+		await clientVol.watch('/state/app.json', (e) => seen.push(e.source))
+
+		// An edit in place: the agent dispatching an action on the server kernel.
+		await server.writeFile('/state/app.json', bytes('{"n":2}'))
+		await syncBoth()
+		await tick()
+		expect(seen.length).toBe(1)
+		expect(seen[0]).toBe('remote') // tagged, so the host can ignore its own writes
+		expect(text(await clientVol.readFile('/state/app.json'))).toBe('{"n":2}')
+
+		// A replace that rebinds the path to a different inode: the tmp→rename install.
+		await server.writeFile('/tmp.json', bytes('{"n":3}'))
+		await server.rm('/state/app.json')
+		await server.rename('/tmp.json', '/state/app.json')
+		await syncBoth()
+		await tick()
+		expect(seen.length).toBeGreaterThan(1)
+		expect(text(await clientVol.readFile('/state/app.json'))).toBe('{"n":3}')
+	})
+
+	// mtime answers "when did this change", not "when did this replica hear about
+	// it" — otherwise a note's position in a recency-sorted list depends on which
+	// device you look at, and shuffles on every pull.
+	test('a pulled edit keeps the mtime of the replica that made it', async () => {
+		const clientStorage = memStorage()
+		const { server, syncBoth } = wire(clientStorage, memStorage())
+		const clientVol = volume(clientStorage)
+
+		await server.writeFile('/notes/hello.md', bytes('draft'))
+		await syncBoth()
+		expect((await clientVol.stat('/notes/hello.md')).mtimeNs).toBe(
+			(await server.stat('/notes/hello.md')).mtimeNs
+		)
+
+		await new Promise((resolve) => setTimeout(resolve, 3))
+		await server.writeFile('/notes/hello.md', bytes('edited'))
+		const edited = (await server.stat('/notes/hello.md')).mtimeNs
+		await syncBoth()
+		expect((await clientVol.stat('/notes/hello.md')).mtimeNs).toBe(edited)
 	})
 
 	// The other half of scoping: a pulled change is located too, so a chrooted app
