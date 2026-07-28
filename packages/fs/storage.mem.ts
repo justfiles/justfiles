@@ -467,7 +467,16 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			hashBlobs.set(hash, data.slice())
 			const meta = metas.get(ino)
 			if (meta) {
-				metas.set(ino, { ...meta, contentHash: hash, size: BigInt(data.length) })
+				// A write moves mtime and ctime (POSIX, and what the SQLite backend does),
+				// stamped before the journal row is built so the new time ships with it.
+				const stamp = BigInt(Date.now()) * 1_000_000n
+				metas.set(ino, {
+					...meta,
+					contentHash: hash,
+					size: BigInt(data.length),
+					mtimeNs: stamp,
+					ctimeNs: stamp
+				})
 				const path = pathOf(ino)
 				if (path) await journalPutOver(pathPort, path, ino, localActorId, options)
 			}

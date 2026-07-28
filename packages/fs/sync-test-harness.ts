@@ -534,6 +534,11 @@ export async function treeSnapshot(peer: Peer): Promise<Record<string, string>> 
 // fails these for the right reason (`not implemented`), and passes them once it
 // lands the seams.
 
+/** Real elapsed time, so a second write lands on a later millisecond. */
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /** Let the watch's per-microtask coalescing deliver. */
 function drainMicrotasks(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 0))
@@ -749,6 +754,34 @@ export const pathSyncConformanceCases: ConformanceCase[] = [
 			await vol.rename('/notes/trips/kyoto.md', '/state/kyoto.md')
 			await drainMicrotasks()
 			assertEq(hits, 2, 'missed an entry leaving the watched subtree')
+		}
+	},
+	{
+		// "Sort by recency" is the whole reason an app reads mtime, so a write has to
+		// move it. Every backend must agree: a file's mtime is when its bytes last
+		// changed, not when it was created.
+		name: 'a content write moves mtime forward, and the new time ships in the journal',
+		run: async (makeBackend) => {
+			const storage = makeBackend()
+			const journal = storage.caps?.journal
+			if (!journal) throw new Error('conformance: backend exposes no path journal')
+			const vol = volume(storage)
+			await vol.writeFile('/note.md', bytes('draft'))
+			const created = (await vol.stat('/note.md')).mtimeNs
+			await sleep(3)
+
+			await vol.writeFile('/note.md', bytes('edited'))
+			const edited = (await vol.stat('/note.md')).mtimeNs
+			assertEq(edited > created, true, `a rewrite left mtime at ${created}`)
+
+			// The journal row a peer receives carries the new time, not the old one.
+			const rows = await journal.readFrom(0, 100)
+			const latest = rows.filter((r) => r.change.path === '/note.md').pop()?.change
+			assertEq(
+				latest?.kind === 'put' ? BigInt(latest.meta.mtimeNs) : 0n,
+				edited,
+				'the journal row kept the stale mtime'
+			)
 		}
 	}
 ]
