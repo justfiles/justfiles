@@ -265,7 +265,7 @@ export const app = defineApp({
 		// so the GUI can report it.
 		importNotes: p.procedure({
 			description:
-				'Write a batch of notes, merging into the knowledge base — the import path for an Obsidian vault. `files[].path` is relative to `dir` (default "/"); folders are created as needed and an existing note is never overwritten (the incoming one is numbered instead).',
+				'Write a batch of notes, merging into the knowledge base — the import path for an Obsidian vault. `files[].path` is relative to `dir` (default "/"); folders are created as needed and an existing note is never overwritten (the incoming one is numbered instead). Returns how many were written, numbered, and could not be written — one bad name does not abandon the batch.',
 			schema: v.object({
 				dir: v.optional(pathSchema),
 				files: v.array(v.object({ path: memberSchema, text: v.string() }))
@@ -273,18 +273,26 @@ export const app = defineApp({
 			async run({ dir, files }, app) {
 				let written = 0
 				let renamed = 0
+				let failed = 0
 				for (const file of files) {
 					// Imported names are written VERBATIM — never sanitized (DESIGN.md §4):
 					// wikilinks address notes by their exact filename. `writeFile` creates
 					// the parent folders.
 					const wanted = joinPath(dir ?? '/', file.path)
-					const path = await claimPath(wanted, (probe) =>
-						app.invoke('volume', 'writeFile', probe, enc.encode(file.text), { exclusive: true })
-					)
-					if (path !== wanted) renamed++
-					written++
+					try {
+						const path = await claimPath(wanted, (probe) =>
+							app.invoke('volume', 'writeFile', probe, enc.encode(file.text), { exclusive: true })
+						)
+						if (path !== wanted) renamed++
+						written++
+					} catch {
+						// A write already landed for every file before this one, so throwing
+						// would report a batch of 50 as a total failure and lose the count.
+						// Counted instead: the caller reports progress and what was missed.
+						failed++
+					}
 				}
-				return { written, renamed }
+				return { written, renamed, failed }
 			}
 		}),
 

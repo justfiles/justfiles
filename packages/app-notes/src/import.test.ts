@@ -71,7 +71,7 @@ test('planning an export keeps the notes, the structure, and nothing else', () =
 	])
 	expect(plan.files.find((file) => file.path === 'Kyoto.md')?.text).toBe('# Kyoto')
 	expect(plan.folders).toBe(2) // Trips, Trips/Japan
-	expect(plan.skipped.map((skip) => skip.reason).sort()).toEqual([
+	expect(plan.examples.map((skip) => skip.reason).sort()).toEqual([
 		'attachment',
 		'attachment',
 		'config',
@@ -96,7 +96,7 @@ test('an oversized file is reported rather than pulled into memory-sized batches
 	expect(admit(entry, screen, 10)).toBe(null)
 	const plan = planImport([], 'Vault.zip', screen)
 	expect(plan.files).toEqual([])
-	expect(plan.skipped).toEqual([{ path: 'Vault/Huge.md', reason: 'attachment' }])
+	expect(plan.examples).toEqual([{ path: 'Vault/Huge.md', reason: 'attachment' }])
 	expect(plan.stopped).toBe(false) // one absurd file is not a ceiling
 })
 
@@ -127,7 +127,7 @@ test('the whole drop is bounded, not just each entry', () => {
 	for (let i = 0; i < 100; i++) if (screen.charge(`Vault/Note ${i}.md`, each)) charged++
 	expect(charged).toBe(Math.floor(MAX_TOTAL_BYTES / each))
 	expect(screen.stopped).toBe(true)
-	expect(screen.skipped.at(-1)?.reason).toBe('too much')
+	expect(screen.examples.at(-1)?.reason).toBe('too much')
 })
 
 test('the file count is bounded too, for a drop of tiny notes', () => {
@@ -168,7 +168,7 @@ test('a refusal found mid-inflate is reported like any other skip', () => {
 	// discovered while streaming it; the reader reports it and drops the buffer.
 	const screen = createScreen()
 	screen.skip('Vault/Huge.md', 'attachment')
-	expect(screen.skipped).toEqual([{ path: 'Vault/Huge.md', reason: 'attachment' }])
+	expect(screen.examples).toEqual([{ path: 'Vault/Huge.md', reason: 'attachment' }])
 })
 
 test('two loose notes with the same name both survive planning', () => {
@@ -186,7 +186,7 @@ test('two loose notes with the same name both survive planning', () => {
 		{ path: 'Kyoto.md', text: 'first' },
 		{ path: 'Kyoto.md', text: 'second' }
 	])
-	expect(plan.skipped).toEqual([]) // neither was lost, so neither is a skip
+	expect(plan.skipped).toBe(0) // neither was lost, so neither is a skip
 })
 
 test('an entry the volume would respell is dropped, not sent on to be refused', () => {
@@ -201,5 +201,28 @@ test('an entry the volume would respell is dropped, not sent on to be refused', 
 		'vault.zip'
 	)
 	expect(plan.files.map((f) => f.path)).toEqual(['Kyoto.md'])
-	expect(plan.skipped.map((s) => s.reason)).toEqual(['junk', 'junk'])
+	expect(plan.examples.map((s) => s.reason)).toEqual(['junk', 'junk'])
+})
+
+test('an archive of nothing but refusals is bounded too', () => {
+	// Neither ceiling above sees these: no bytes are charged and no note is kept, so a
+	// zip of a million attachments would be walked to the end and every refusal
+	// remembered. The member budget is what makes `stopped` reachable, and the report
+	// stays a COUNT plus a sample however many there are.
+	const screen = createScreen({ maxMembers: 10 })
+	for (let i = 0; i < 400; i++) screen.skip(`Vault/photo-${i}.png`, 'attachment')
+	expect(screen.stopped).toBe(true)
+	expect(screen.skipped).toBe(400)
+	expect(screen.examples.length).toBeLessThanOrEqual(50)
+})
+
+test('members are counted whether they are kept or refused', () => {
+	const screen = createScreen({ maxMembers: 3 })
+	expect(screen.charge('a.md', 10)).toBe(true)
+	screen.skip('b.png', 'attachment')
+	expect(screen.charge('c.md', 10)).toBe(true)
+	expect(screen.stopped).toBe(false)
+	// The fourth member is one too many, whichever way it would have gone.
+	expect(screen.charge('d.md', 10)).toBe(false)
+	expect(screen.stopped).toBe(true)
 })

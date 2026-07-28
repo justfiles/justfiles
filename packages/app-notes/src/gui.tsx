@@ -24,6 +24,8 @@ const REFRESH_MS = 250
 // One import call per batch of notes: big enough to keep the round trips down,
 // small enough that the status line moves and one message stays modest.
 const IMPORT_CHUNK = 50
+// How much of an archive is handed to the unzipper at once (see `readZip`).
+const PUSH_SLICE = 65_536
 const STATUS_MS = 8000
 const LIST_PREF_KEY = 'app-notes:list-open'
 const WIDTH_PREF_KEY = 'app-notes:list-width'
@@ -135,7 +137,15 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 			unzipper.push(new Uint8Array(0), true)
 			break
 		}
-		unzipper.push(value)
+		// Handed over in SLICES, not whole. fflate's `Unzip.push` recurses once per
+		// entry header it finds in the buffer it is given, so one chunk carrying tens of
+		// thousands of tiny entries overflows the stack — before a single one of our
+		// budgets is consulted. Slicing bounds the recursion by the slice, not by the
+		// archive; the parser keeps its own leftovers across calls.
+		for (let at = 0; at < value.length; at += PUSH_SLICE) {
+			unzipper.push(value.subarray(at, at + PUSH_SLICE))
+			if (failure || screen.stopped) break
+		}
 		if (failure) break
 		// The budget is spent, so every later entry would be refused anyway — stop
 		// reading rather than streaming the remaining gigabytes in order to reject them.
@@ -511,28 +521,43 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const importDrop = useCallback(
 		async (files: File[]) => {
 			if (files.length === 0) return
+			// Progress lives OUTSIDE the try: an import writes as it goes, so a failure
+			// half way through is a partial import, not a failed one, and saying "failed"
+			// hides notes that are already on disk (and that a retry would number as
+			// duplicates, since an import never overwrites).
+			let written = 0
+			let renamed = 0
+			let failed = 0
+			let total = 0
 			try {
 				setStatus('Reading…')
 				const plan = await planDrop(files)
-				if (plan.skipped.length > 0) console.info('[notes] import skipped', plan.skipped)
+				if (plan.skipped > 0) console.info('[notes] import skipped', plan.skipped, plan.examples)
 				if (plan.files.length === 0) {
-					setStatus(`Nothing to import — no .md or .txt files (${plan.skipped.length} skipped)`)
+					// `stopped` with nothing kept means we gave up walking, not that the drop
+					// held no notes — say which, or the user retries the same archive forever.
+					setStatus(
+						plan.stopped
+							? `Nothing imported — gave up after ${plan.skipped} entries, none of them notes`
+							: `Nothing to import — no .md or .txt files (${plan.skipped} skipped)`
+					)
 					return
 				}
-				let written = 0
-				let renamed = 0
-				for (let at = 0; at < plan.files.length; at += IMPORT_CHUNK) {
+				total = plan.files.length
+				for (let at = 0; at < total; at += IMPORT_CHUNK) {
 					const result = await actions.importNotes({
 						files: plan.files.slice(at, at + IMPORT_CHUNK)
 					})
 					written += result.written
 					renamed += result.renamed
-					setStatus(`Importing… ${written}/${plan.files.length}`)
+					failed += result.failed
+					setStatus(`Importing… ${written}/${total}`)
 				}
 				const extra = [
 					`${plan.folders} folder${plan.folders === 1 ? '' : 's'}`,
-					...(plan.skipped.length > 0 ? [`${plan.skipped.length} skipped`] : []),
-					...(renamed > 0 ? [`${renamed} renamed to avoid a clash`] : [])
+					...(plan.skipped > 0 ? [`${plan.skipped} skipped`] : []),
+					...(renamed > 0 ? [`${renamed} renamed to avoid a clash`] : []),
+					...(failed > 0 ? [`${failed} could not be written`] : [])
 				]
 				setStatus(
 					`${plan.stopped ? 'Partly imported' : 'Imported'} ${written} note${written === 1 ? '' : 's'} from ${plan.name} (${extra.join(', ')}${plan.stopped ? ' — too large, the rest was left out' : ''})`
@@ -540,7 +565,13 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 				if (!listOpen) setListOpen(true)
 				void refresh()
 			} catch (error) {
-				setStatus(`Import failed: ${error instanceof Error ? error.message : String(error)}`)
+				const why = error instanceof Error ? error.message : String(error)
+				setStatus(
+					written > 0
+						? `Imported ${written} of ${total} notes, then stopped: ${why}`
+						: `Import failed: ${why}`
+				)
+				if (written > 0) void refresh()
 			}
 		},
 		[actions, listOpen, refresh]

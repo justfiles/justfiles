@@ -5,7 +5,9 @@ const dec = new TextDecoder()
 
 // A stand-in for the volume capability: paths → text, dirs as a set. Only the
 // methods the procedures reach for.
-function fakeVolume(files: Record<string, string> = {}, dirs: string[] = []) {
+// `failOn`: a path the volume refuses to write, so a test can put one bad name in the
+// middle of a batch (a real one would be ENOSPC, or a name the OS rejects).
+function fakeVolume(files: Record<string, string> = {}, dirs: string[] = [], failOn?: RegExp) {
 	const store = new Map(Object.entries(files))
 	const folders = new Set(dirs)
 	const invoke = async (_cap: string, method: string, ...args: unknown[]): Promise<unknown> => {
@@ -22,6 +24,7 @@ function fakeVolume(files: Record<string, string> = {}, dirs: string[] = []) {
 				// Models the contract: `exclusive` is a claim, so a taken name throws
 				// rather than overwriting (packages/fs/volume.ts).
 				const exclusive = (args[2] as { exclusive?: boolean } | undefined)?.exclusive
+				if (failOn?.test(path)) throw new Error(`EACCES: ${path}`)
 				if (exclusive && store.has(path)) throw new Error(`EEXIST: ${path}`)
 				if (exclusive && folders.has(path)) throw new Error(`EISDIR: ${path}`)
 				store.set(path, dec.decode(args[1] as Uint8Array))
@@ -257,9 +260,9 @@ test('importNotes merges into the knowledge base root, with names untouched', as
 			]
 		},
 		h.app
-	)) as { written: number; renamed: number }
+	)) as { written: number; renamed: number; failed: number }
 
-	expect(result).toEqual({ written: 2, renamed: 0 })
+	expect(result).toEqual({ written: 2, renamed: 0, failed: 0 })
 	// No wrapper folder: the vault's own structure IS the structure. Names are
 	// verbatim — spaces, case and non-ASCII survive, because wikilinks address
 	// notes by their exact filename.
@@ -279,9 +282,9 @@ test('an imported note never overwrites an existing one — it lands beside it',
 			]
 		},
 		h.app
-	)) as { written: number; renamed: number }
+	)) as { written: number; renamed: number; failed: number }
 
-	expect(result).toEqual({ written: 3, renamed: 2 })
+	expect(result).toEqual({ written: 3, renamed: 2, failed: 0 })
 	// The clash is numbered before the extension, and the folder simply merges.
 	expect(vol.store.get('/Trips/Kyoto.md')).toBe('mine')
 	expect(vol.store.get('/Trips/Kyoto 2.md')).toBe('theirs')
@@ -332,6 +335,26 @@ test('only the canonical spelling of a path is accepted, so no lexical check can
 	expect([...vol.store.keys()]).toEqual(['/Trips/Kyoto.md'])
 })
 
+test('one unwritable note does not abandon the batch', async () => {
+	// An import writes as it goes, so throwing on the first bad name would report a
+	// chunk of 50 as a total failure and lose the count of what already landed.
+	const vol = fakeVolume({}, [], /Broken/)
+	const h = handle(initialState, vol.invoke)
+	const result = (await app.runProcedure(
+		'importNotes',
+		{
+			files: [
+				{ path: 'Kyoto.md', text: 'first' },
+				{ path: 'Broken.md', text: 'nope' },
+				{ path: 'Osaka.md', text: 'third' }
+			]
+		},
+		h.app
+	)) as { written: number; renamed: number; failed: number }
+	expect(result).toEqual({ written: 2, renamed: 0, failed: 1 })
+	expect([...vol.store.keys()].sort()).toEqual(['/Kyoto.md', '/Osaka.md'])
+})
+
 test('an import of same-named notes keeps both, numbering the second', async () => {
 	const vol = fakeVolume()
 	const h = handle(initialState, vol.invoke)
@@ -344,8 +367,8 @@ test('an import of same-named notes keeps both, numbering the second', async () 
 			]
 		},
 		h.app
-	)) as { written: number; renamed: number }
-	expect(result).toEqual({ written: 2, renamed: 1 })
+	)) as { written: number; renamed: number; failed: number }
+	expect(result).toEqual({ written: 2, renamed: 1, failed: 0 })
 	expect(vol.store.get('/Kyoto.md')).toBe('first')
 	expect(vol.store.get('/Kyoto 2.md')).toBe('second')
 })

@@ -15,7 +15,10 @@ export type ImportPlan = {
 	// Vault folder name, derived from the zip's own name or its single root folder.
 	name: string
 	files: ImportFile[]
-	skipped: Skip[]
+	// A COUNT, plus a bounded sample for the log: an archive can hold millions of
+	// entries we refuse, and remembering each one is itself the unbounded thing.
+	skipped: number
+	examples: Skip[]
 	folders: number
 	// True when the drop hit a ceiling and the rest was refused, so the GUI can say
 	// the import is PARTIAL rather than reporting a clean success.
@@ -31,6 +34,17 @@ export const MAX_BYTES = 5_000_000
 // which kills it. Generous next to a real vault (kepano's is ~1k notes, a few MB).
 export const MAX_FILES = 20_000
 export const MAX_TOTAL_BYTES = 100_000_000
+
+// …and a ceiling on how many members we will even LOOK at. Neither bound above stops
+// an archive whose entries are all refused — attachments, `.obsidian/`, junk — and
+// "examine each and remember it" is unbounded work on unbounded memory. Far above any
+// real vault (kepano's is ~1k notes; a photo-heavy vault runs to tens of thousands of
+// files), so hitting this means the archive is not a vault.
+export const MAX_MEMBERS = 200_000
+
+// How many refusals are kept as examples for the log. The count is exact; the list is
+// a sample, because the list is the part that grows.
+const MAX_EXAMPLES = 50
 
 // Everything Obsidian (or the OS, or a sync conflict) leaves in a vault that is
 // not the user's writing.
@@ -62,23 +76,44 @@ export type Screen = {
 	charge(path: string, size: number): boolean
 	/** Record a refusal: a name/size rule, or an entry that outgrew its own header. */
 	skip(path: string, reason: SkipReason): void
-	readonly skipped: readonly Skip[]
+	/** How many members were refused — a count, never a list (see `MAX_EXAMPLES`). */
+	readonly skipped: number
+	readonly examples: readonly Skip[]
 	readonly stopped: boolean
 }
 
-export function createScreen(limits: { maxFiles?: number; maxTotalBytes?: number } = {}): Screen {
+export function createScreen(
+	limits: { maxFiles?: number; maxTotalBytes?: number; maxMembers?: number } = {}
+): Screen {
 	const maxFiles = limits.maxFiles ?? MAX_FILES
 	const maxTotalBytes = limits.maxTotalBytes ?? MAX_TOTAL_BYTES
-	const skipped: Skip[] = []
+	const maxMembers = limits.maxMembers ?? MAX_MEMBERS
+	const examples: Skip[] = []
+	let skipped = 0
+	let members = 0
 	let files = 0
 	let bytes = 0
 	let stopped = false
+	// EVERY member costs, whether it becomes a note or not. A refusal is cheap but not
+	// free, and an archive of nothing but attachments would otherwise be walked to the
+	// end for no possible result — the ceilings above only count what we keep.
+	const member = () => {
+		if (++members > maxMembers) {
+			stopped = true
+			return false
+		}
+		return true
+	}
+	const refuse = (path: string, reason: SkipReason) => {
+		skipped++
+		if (examples.length < MAX_EXAMPLES) examples.push({ path, reason })
+	}
 	return {
 		charge(raw, size) {
 			const path = normalize(raw)
-			if (files + 1 > maxFiles || bytes + size > maxTotalBytes) {
+			if (!member() || files + 1 > maxFiles || bytes + size > maxTotalBytes) {
 				stopped = true
-				skipped.push({ path, reason: 'too much' })
+				refuse(path, 'too much')
 				return false
 			}
 			files++
@@ -86,10 +121,14 @@ export function createScreen(limits: { maxFiles?: number; maxTotalBytes?: number
 			return true
 		},
 		skip(raw, reason) {
-			skipped.push({ path: normalize(raw), reason })
+			member()
+			refuse(normalize(raw), reason)
 		},
 		get skipped() {
 			return skipped
+		},
+		get examples() {
+			return examples
 		},
 		get stopped() {
 			return stopped
@@ -205,7 +244,8 @@ export function planImport(
 	return {
 		name: vaultName(zipName, root),
 		files,
-		skipped: [...screen.skipped],
+		skipped: screen.skipped,
+		examples: [...screen.examples],
 		folders: folders.size,
 		stopped: screen.stopped
 	}

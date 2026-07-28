@@ -274,6 +274,23 @@ they arrive and only the notes we keep are held (a 400 MB archive imports its tw
 4 MB notes is 4 GB — so a `Screen` ledger carries `MAX_FILES`/`MAX_TOTAL_BYTES` across the whole drop,
 reports `stopped` ("Partly imported … the rest was left out"), and abandons the stream once spent.
 
+Three corollaries, each of which was a defect first:
+
+- **A bound on what you KEEP is not a bound on what you RECORD.** Ceilings on accepted notes say nothing
+  about an archive of 40,000 attachments: no bytes are charged, no note is kept, and the refusals themselves
+  were the unbounded thing. So every *member* is counted (`MAX_MEMBERS`), refused or not, and the report is a
+  **count plus a capped sample** — never one entry per refusal.
+- **The parser has its own limits, and they arrive before yours.** fflate's `Unzip.push` recurses once per
+  entry header in the buffer it is handed, so a single chunk carrying tens of thousands of tiny entries
+  overflowed the stack *before* any ledger was consulted — the drop died with "Maximum call stack size
+  exceeded". The archive is now handed over in 64 KB slices, which bounds the recursion by the slice instead
+  of by the archive. A budget you never reach is not a budget.
+- **A write-as-you-go operation fails PARTIALLY, so say so.** An import that dies in its fourth chunk has
+  already put three chunks on disk; reporting "Import failed" hides them, and a retry numbers them all as
+  duplicates because an import never overwrites. Progress is therefore tracked outside the `try`
+  ("Imported 120 of 300 notes, then stopped: …"), and one unwritable name is counted rather than thrown, so a
+  single bad member cannot abandon the other forty-nine in its chunk.
+
 The per-entry cap sits in a **decoder of our own**, because an entry cannot be aborted from outside:
 `UnzipInflate` has no `terminate`, and the stream keeps feeding whichever decoder is active — so clearing the
 buffer stops the memory but not the work, and a bomb that declares nothing would still be inflated in full.
