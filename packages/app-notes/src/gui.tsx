@@ -100,7 +100,12 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 		}
 
 	const unzipper = new Unzip((entry) => {
-		if (entry.name.endsWith('/')) return
+		// Not content, but still a member: it counts as work, or an archive of nothing
+		// but directories never reaches the ceiling meant to stop it.
+		if (entry.name.endsWith('/')) {
+			screen.ignore()
+			return
+		}
 		// A cheap pre-check, from the local header: skip what we can already tell we
 		// don't want, so it is never inflated. The header's size is a CLAIM though —
 		// a streamed archive may declare 0 — so nothing is charged to the budget here.
@@ -538,7 +543,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					// held no notes — say which, or the user retries the same archive forever.
 					setStatus(
 						plan.stopped
-							? `Nothing imported — gave up after ${plan.skipped} entries, none of them notes`
+							? `Nothing imported — gave up after ${plan.members} entries, none of them notes`
 							: `Nothing to import — no .md or .txt files (${plan.skipped} skipped)`
 					)
 					return

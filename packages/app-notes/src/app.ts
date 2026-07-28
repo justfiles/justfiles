@@ -9,6 +9,7 @@ import {
 	isUnder,
 	joinPath,
 	NOTE_EXT,
+	namesEntry,
 	noteTitle,
 	numberedPath,
 	sanitizeName
@@ -72,23 +73,31 @@ export const initialState: NotesState = {
 // the only way to say that once is to demand the one spelling it would produce
 // (`isCanonicalPath`). Anything else is refused rather than repaired, so a checked
 // path and a written path can never diverge and two spellings of one location can
-// never circulate. One schema, so every procedure and edge inherits it.
+// never circulate.
+//
+// Two schemas, because two different things are being named. `pathSchema` names an
+// ENTRY — a note or a folder — and so refuses the root (`namesEntry`); `dirSchema`
+// names a PLACE to put something, where the root is the default and perfectly valid.
+// One predicate each, so every procedure and edge inherits the right one.
+const CANONICAL =
+	'path must be canonical: absolute, no empty "//" segments, no trailing "/", no "." or ".."'
 const pathSchema = v.pipe(
 	v.string(),
 	v.check(
-		isCanonicalPath,
-		'path must be canonical: absolute, no empty "//" segments, no trailing "/", no "." or ".."'
+		namesEntry,
+		`${CANONICAL} — and it must name a note or folder, not the knowledge base root`
 	)
 )
+const dirSchema = v.pipe(v.string(), v.check(isCanonicalPath, CANONICAL))
 
 // `files[].path` inside an import is RELATIVE to `dir`, so it is judged as the thing
-// it becomes — a path under the knowledge base — by the same rule, not by a second,
-// laxer policy that would let `a//b.md` through the seam a canonical path is promised.
+// it becomes — an entry under the knowledge base — by the same predicate. That is what
+// refuses `''`: it joins to the root, which is not a note.
 const memberSchema = v.pipe(
 	v.string(),
 	v.check(
-		(path) => isCanonicalPath(`/${path}`),
-		'path must be a relative path with no empty, "." or ".." segments'
+		(path) => namesEntry(`/${path}`),
+		'path must be a relative path naming a note, with no empty, "." or ".." segments'
 	)
 )
 
@@ -203,7 +212,7 @@ export const app = defineApp({
 		create: p.procedure({
 			description:
 				'Create a note from text; its filename is the first line, e.g. "Remember the milk" → /Remember the milk.md. Pass `dir` to create it inside a folder.',
-			schema: v.object({ text: v.string(), dir: v.optional(pathSchema) }),
+			schema: v.object({ text: v.string(), dir: v.optional(dirSchema) }),
 			async run({ text, dir }, app) {
 				const wanted = joinPath(dir ?? '/', `${sanitizeName(firstLine(text))}${NOTE_EXT}`)
 				const path = await claimPath(wanted, (probe) =>
@@ -267,7 +276,7 @@ export const app = defineApp({
 			description:
 				'Write a batch of notes, merging into the knowledge base — the import path for an Obsidian vault. `files[].path` is relative to `dir` (default "/"); folders are created as needed and an existing note is never overwritten (the incoming one is numbered instead). Returns how many were written, numbered, and could not be written — one bad name does not abandon the batch.',
 			schema: v.object({
-				dir: v.optional(pathSchema),
+				dir: v.optional(dirSchema),
 				files: v.array(v.object({ path: memberSchema, text: v.string() }))
 			}),
 			async run({ dir, files }, app) {

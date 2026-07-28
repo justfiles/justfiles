@@ -19,6 +19,8 @@ export type ImportPlan = {
 	// entries we refuse, and remembering each one is itself the unbounded thing.
 	skipped: number
 	examples: Skip[]
+	// Everything the drop was asked about, so a refusal can say what it walked.
+	members: number
 	folders: number
 	// True when the drop hit a ceiling and the rest was refused, so the GUI can say
 	// the import is PARTIAL rather than reporting a clean success.
@@ -76,8 +78,18 @@ export type Screen = {
 	charge(path: string, size: number): boolean
 	/** Record a refusal: a name/size rule, or an entry that outgrew its own header. */
 	skip(path: string, reason: SkipReason): void
+	/**
+	 * A member that is neither content nor a refusal — a zip's folder entries, which
+	 * are not notes and are not worth reporting (folders come from their children).
+	 * Counted as WORK even so: an archive of a million empty directories has to reach
+	 * the member ceiling like any other, and a ceiling only what-we-keep can reach is
+	 * no ceiling at all.
+	 */
+	ignore(): void
 	/** How many members were refused — a count, never a list (see `MAX_EXAMPLES`). */
 	readonly skipped: number
+	/** How many members were examined at all: kept + refused + ignored. */
+	readonly members: number
 	readonly examples: readonly Skip[]
 	readonly stopped: boolean
 }
@@ -124,8 +136,14 @@ export function createScreen(
 			member()
 			refuse(normalize(raw), reason)
 		},
+		ignore() {
+			member()
+		},
 		get skipped() {
 			return skipped
+		},
+		get members() {
+			return members
 		},
 		get examples() {
 			return examples
@@ -150,8 +168,12 @@ export function admit(
 	const path = normalize(entry.path)
 	// A zip's directory entries carry no content and are not a refusal worth
 	// reporting — folders come from their children. The rule belongs here, with the
-	// other reasons an entry does not become a note.
-	if (path.endsWith('/')) return null
+	// other reasons an entry does not become a note; the ledger still hears about it,
+	// so every member touches it exactly once whichever seam saw it.
+	if (path.endsWith('/')) {
+		screen.ignore()
+		return null
+	}
 	const reason = screenEntry(path, entry.bytes.length, maxBytes)
 	if (reason) {
 		screen.skip(path, reason)
@@ -246,6 +268,7 @@ export function planImport(
 		files,
 		skipped: screen.skipped,
 		examples: [...screen.examples],
+		members: screen.members,
 		folders: folders.size,
 		stopped: screen.stopped
 	}

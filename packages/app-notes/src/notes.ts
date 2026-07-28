@@ -70,6 +70,19 @@ export function isCanonicalPath(path: string): boolean {
 		.every((segment) => segment !== '' && segment !== '.' && segment !== '..')
 }
 
+/**
+ * True when `path` NAMES something inside the knowledge base — a note or a folder.
+ *
+ * Canonical is not enough: `/` is a perfectly canonical path and it is the knowledge
+ * base itself, not an entry in it. Every operation that acts on a *thing* has to
+ * refuse it, and refusing it in one predicate is the only way that holds — `remove('/')`
+ * deletes every note the user has, and an import member of `''` joins to `/`, which
+ * `claimPath` then numbers into an invisible file called ` 2`.
+ */
+export function namesEntry(path: string): boolean {
+	return path !== '/' && isCanonicalPath(path)
+}
+
 /** True when `path` is `dir` itself or lives under it (for folder renames). */
 export function isUnder(path: string, dir: string): boolean {
 	return path === dir || path.startsWith(dir === '/' ? '/' : `${dir}/`)

@@ -223,6 +223,15 @@ become (`isCanonicalPath('/' + path)`) — same rule, no second policy. And beca
 input, an entry the volume would respell is **screened out and reported** rather than sent on to be refused:
 one odd name must not cost the user the other thousand notes.
 
+**1a′ · A valid path is not the same question as a path that NAMES something.** `isCanonicalPath` answers
+"could the volume spell it this way"; `/` passes and is the knowledge base itself. Every operation that acts
+on a *thing* has to refuse it, and the two cases that proved it are the two that would have hurt most:
+`remove('/')` deleted every note in one call, and an import member of `''` joined to `/`, which `claimPath`
+numbered into ` 2` — an invisible file the listing does not even show, because it is not a note. So there are
+two schemas over one extra predicate: `pathSchema` (`namesEntry`) for anything that acts on a note or folder,
+`dirSchema` for a *place to put* one, where the root is the default and perfectly valid. A relative import
+member is judged as what it becomes, `namesEntry('/' + path)`, which is what refuses the empty string.
+
 **1b · A check is not a guarantee unless it is the operation — WHERE THE OPERATION EXISTS.** The first
 version of "never overwrite" was `exists()` + `writeFile`, which reads as safe and isn't: it is a *hint*
 about a moment that has already passed. For a create, `Volume` had the real primitive all along — every
@@ -279,7 +288,10 @@ Three corollaries, each of which was a defect first:
 - **A bound on what you KEEP is not a bound on what you RECORD.** Ceilings on accepted notes say nothing
   about an archive of 40,000 attachments: no bytes are charged, no note is kept, and the refusals themselves
   were the unbounded thing. So every *member* is counted (`MAX_MEMBERS`), refused or not, and the report is a
-  **count plus a capped sample** — never one entry per refusal.
+  **count plus a capped sample** — never one entry per refusal. "Every member" includes the ones that produce
+  nothing at all and are not worth reporting: a zip's folder entries go through `screen.ignore()`, because a
+  ceiling only what-we-keep can reach is no ceiling — an archive of a million empty directories walked to the
+  end while the ledger stayed at zero.
 - **The parser has its own limits, and they arrive before yours.** fflate's `Unzip.push` recurses once per
   entry header in the buffer it is handed, so a single chunk carrying tens of thousands of tiny entries
   overflowed the stack *before* any ledger was consulted — the drop died with "Maximum call stack size

@@ -355,6 +355,23 @@ test('one unwritable note does not abandon the batch', async () => {
 	expect([...vol.store.keys()].sort()).toEqual(['/Kyoto.md', '/Osaka.md'])
 })
 
+test('the root is refused wherever an entry is named', async () => {
+	const vol = fakeVolume({ '/Kyoto.md': 'mine' }, ['/Trips'])
+	const h = handle(initialState, vol.invoke)
+	// Deleting "everything" is not a note operation: it would take the whole KB.
+	await expect(app.runProcedure('remove', { path: '/' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('open', { path: '/' }, h.app)).rejects.toThrow()
+	await expect(app.runProcedure('rename', { from: '/', to: '/Trips' }, h.app)).rejects.toThrow()
+	// An empty import member joins to the root, so it names no note either — it used to
+	// be claimed as `/ 2`, an invisible file the listing does not even show.
+	await expect(
+		app.runProcedure('importNotes', { files: [{ path: '', text: 'nowhere' }] }, h.app)
+	).rejects.toThrow()
+	// But the root is still a fine PLACE to put something.
+	await app.runProcedure('create', { text: 'Osaka', dir: '/' }, h.app)
+	expect([...vol.store.keys()].sort()).toEqual(['/Kyoto.md', '/Osaka.md'])
+})
+
 test('an import of same-named notes keeps both, numbering the second', async () => {
 	const vol = fakeVolume()
 	const h = handle(initialState, vol.invoke)

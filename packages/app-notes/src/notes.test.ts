@@ -5,6 +5,7 @@ import {
 	isCanonicalPath,
 	isUnder,
 	matchNotes,
+	namesEntry,
 	noteTitle,
 	renameTarget,
 	sanitizeName
@@ -78,6 +79,19 @@ test('a path has exactly one accepted spelling', () => {
 	// Relative and empty are not paths this app acts on.
 	expect(isCanonicalPath('Trips')).toBe(false)
 	expect(isCanonicalPath('')).toBe(false)
+})
+
+test('the knowledge base root is a path but not an entry', () => {
+	// Canonical is not the same question as "names something". `/` passes the first and
+	// must fail the second: it is the knowledge base, and `remove('/')` would delete
+	// every note in it.
+	expect(isCanonicalPath('/')).toBe(true)
+	expect(namesEntry('/')).toBe(false)
+	expect(namesEntry('/Kyoto.md')).toBe(true)
+	expect(namesEntry('/Trips')).toBe(true)
+	// An import member of `''` joins to the root, so it is not a note either.
+	expect(namesEntry('/')).toBe(false)
+	expect(namesEntry('//Kyoto.md')).toBe(false)
 })
 
 test('a move into its own subtree is refused, everything else allowed', () => {

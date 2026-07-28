@@ -216,13 +216,19 @@ test('an archive of nothing but refusals is bounded too', () => {
 	expect(screen.examples.length).toBeLessThanOrEqual(50)
 })
 
-test('members are counted whether they are kept or refused', () => {
+test('members are counted whether they are kept, refused or ignored', () => {
 	const screen = createScreen({ maxMembers: 3 })
 	expect(screen.charge('a.md', 10)).toBe(true)
 	screen.skip('b.png', 'attachment')
-	expect(screen.charge('c.md', 10)).toBe(true)
+	// A folder entry produces nothing and reports nothing, but it is still work: an
+	// archive of a million empty directories has to reach the ceiling too.
+	screen.ignore()
 	expect(screen.stopped).toBe(false)
-	// The fourth member is one too many, whichever way it would have gone.
-	expect(screen.charge('d.md', 10)).toBe(false)
+	expect(screen.skipped).toBe(1)
+	const folders = createScreen({ maxMembers: 5 })
+	for (let i = 0; i < 40; i++) folders.ignore()
+	expect(folders.stopped).toBe(true)
+	expect(folders.skipped).toBe(0)
+	expect(screen.charge('c.md', 10)).toBe(false)
 	expect(screen.stopped).toBe(true)
 })
