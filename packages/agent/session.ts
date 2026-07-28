@@ -293,9 +293,11 @@ export function createAgentSession(options: AgentSessionOptions): AgentSession {
 			source: 'agent',
 			kind,
 			title,
-			// A notification is read by a human, so the expression tags come off here (a
-			// no-op for a host that never asked for them — see expression.ts).
-			body: summarize(stripExpressions(body).text),
+			// A notification is read by a human, so a host that asked for expression tags has
+			// them taken off here. A host that never asked keeps its text verbatim: the tag
+			// vocabulary is ordinary English, so stripping unconditionally would delete a
+			// legitimate `[thinking]` from a reply nobody asked to be tagged.
+			body: summarize(options.expressions ? stripExpressions(body).text : body),
 			threadId: 'agent',
 			route
 		})

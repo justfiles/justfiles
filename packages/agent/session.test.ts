@@ -114,6 +114,7 @@ describe('createAgentSession', () => {
 		const notifications: { kind: string; body: string }[] = []
 		const session = createAgentSession({
 			volume: volume(memStorage()),
+			expressions: true,
 			backend: scriptedBackend([
 				assistant([{ type: 'text', text: '[concerned]Stop writes. [curious]Restore from 04:00?' }])
 			]),
@@ -127,6 +128,24 @@ describe('createAgentSession', () => {
 			kind: 'info',
 			body: 'Stop writes. Restore from 04:00?'
 		})
+	})
+
+	// The tag words are ordinary English, so a host that never asked for the channel must
+	// keep its text verbatim rather than have a bracket silently deleted.
+	test('a host without expressions keeps a literal bracket in the ping', async () => {
+		const notifications: { body: string }[] = []
+		const session = createAgentSession({
+			volume: volume(memStorage()),
+			backend: scriptedBackend([
+				assistant([{ type: 'text', text: '[thinking] is the tag you asked about.' }])
+			]),
+			compaction: NO_COMPACTION,
+			notify: (n) => notifications.push({ body: n.body })
+		})
+
+		await session.prompt('which tag means reflection?')
+
+		expect(notifications[0]?.body).toBe('[thinking] is the tag you asked about.')
 	})
 
 	test('a classified failure emits an error event routed to Accounts', async () => {

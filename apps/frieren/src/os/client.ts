@@ -231,6 +231,12 @@ export function createFrierenClient(options: FrierenClientOptions): FrierenClien
 	function handleAgentEvent(event: AgentEventFrame): void {
 		switch (event.type) {
 			case 'agent_start':
+				// A new turn starts from a clean face. This has to happen HERE, not at the first
+				// assistant message: `isStreaming` flips on now, which un-rests the avatar, and the
+				// model's first token is a second or more away — long enough to flash the previous
+				// reply's emotion. "Omit the tag to continue" holds WITHIN a turn (across tool
+				// calls), never across turns.
+				expression = null
 				isStreaming = true
 				emitAgent()
 				break
