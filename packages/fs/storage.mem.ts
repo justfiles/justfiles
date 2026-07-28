@@ -276,10 +276,11 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 						metas.set(ino, { ...meta })
 						dirs.set(key, { ino, type: meta.type })
 						parentOf.set(ino, { parent: dirIno, name })
-						emit({ ino, kind: 'meta', source: options?.source })
-						emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
-						// Regular files are journaled by the following putBlob (once hashed).
 						const dirPath = pathOf(dirIno)
+						const path = dirPath === null ? undefined : joinPath(dirPath, name)
+						emit({ ino, kind: 'meta', source: options?.source })
+						emit({ ino, kind: 'dirent', dirIno, name, path, source: options?.source })
+						// Regular files are journaled by the following putBlob (once hashed).
 						if (dirPath)
 							await journalPutOver(pathPort, joinPath(dirPath, name), ino, localActorId, options)
 						return ino
@@ -325,8 +326,22 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			const putNodes = sortParentFirst(subtree, (n) => newBase + n.rel)
 			for (const n of putNodes)
 				await journalPutOver(pathPort, newBase + n.rel, n.ino, localActorId, options)
-			emit({ ino: src.ino, kind: 'dirent', dirIno: newDir, name: newName, source: options?.source })
-			emit({ ino: src.ino, kind: 'dirent', dirIno: oldDir, name: oldName, source: options?.source })
+			emit({
+				ino: src.ino,
+				kind: 'dirent',
+				dirIno: newDir,
+				name: newName,
+				path: newBase,
+				source: options?.source
+			})
+			emit({
+				ino: src.ino,
+				kind: 'dirent',
+				dirIno: oldDir,
+				name: oldName,
+				path: oldBase,
+				source: options?.source
+			})
 			return displaced && displaced.ino !== src.ino ? displaced.ino : null
 		},
 
@@ -465,9 +480,16 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 		async putDirent(dirIno, name, entry, options) {
 			dirs.set(dirKey(dirIno, name), entry)
 			parentOf.set(entry.ino, { parent: dirIno, name })
-			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
-			// Non-regular puts journal here; regular files wait for putBlob (once hashed).
 			const dirPath = pathOf(dirIno)
+			emit({
+				ino: entry.ino,
+				kind: 'dirent',
+				dirIno,
+				name,
+				path: dirPath === null ? undefined : joinPath(dirPath, name),
+				source: options?.source
+			})
+			// Non-regular puts journal here; regular files wait for putBlob (once hashed).
 			if (dirPath)
 				await journalPutOver(pathPort, joinPath(dirPath, name), entry.ino, localActorId, options)
 		},
@@ -479,7 +501,14 @@ export function memStorage(opts?: { mintIno?: () => Ino; localActorId?: string }
 			dirs.delete(dirKey(dirIno, name))
 			if (existing) {
 				if (parentOf.get(existing.ino)?.parent === dirIno) parentOf.delete(existing.ino)
-				emit({ ino: existing.ino, kind: 'dirent', dirIno, name, source: options?.source })
+				emit({
+					ino: existing.ino,
+					kind: 'dirent',
+					dirIno,
+					name,
+					path: dirPath === null ? undefined : joinPath(dirPath, name),
+					source: options?.source
+				})
 				if (dirPath)
 					await journalDeleteOver(pathPort, joinPath(dirPath, name), localActorId, options)
 			}

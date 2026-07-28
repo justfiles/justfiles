@@ -412,7 +412,14 @@ export async function applyJournaledOver(
 			// writes the state back, the write pushes, and the peer applies it as another
 			// "structural" change — a two-replica loop with no user in it.
 			if (bound === null || bound.type !== type)
-				port.emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
+				port.emit({
+					ino,
+					kind: 'dirent',
+					dirIno: parentIno,
+					name,
+					path: p,
+					source: opts.localSource
+				})
 			if (type === FileType.Regular) port.emit({ ino, kind: 'content', source: opts.localSource })
 		} else {
 			const ino = await port.resolveIno(p)
@@ -431,7 +438,14 @@ export async function applyJournaledOver(
 			if (parentIno !== null) await port.deleteDirent(parentIno, name)
 			if (ino !== null) await port.deleteInodeIfUnreferenced(ino)
 			if (ino !== null && parentIno !== null)
-				port.emit({ ino, kind: 'dirent', dirIno: parentIno, name, source: opts.localSource })
+				port.emit({
+					ino,
+					kind: 'dirent',
+					dirIno: parentIno,
+					name,
+					path: p,
+					source: opts.localSource
+				})
 			if (ino !== null) port.emit({ ino, kind: 'meta', source: opts.localSource })
 		}
 		const cur = await port.readPathVersion(p)

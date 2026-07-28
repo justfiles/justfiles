@@ -577,7 +577,14 @@ export function idbStorage(
 				)
 			await tx.done
 			emit({ ino, kind: 'meta', source: options?.source })
-			emit({ ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({
+				ino,
+				kind: 'dirent',
+				dirIno,
+				name,
+				path: dirPath === null ? undefined : joinPath(dirPath, name),
+				source: options?.source
+			})
 			return ino
 		},
 
@@ -637,6 +644,7 @@ export function idbStorage(
 				kind: 'dirent',
 				dirIno: newDir,
 				name: newName,
+				path: newBase,
 				source: options?.source
 			})
 			emit({
@@ -644,6 +652,7 @@ export function idbStorage(
 				kind: 'dirent',
 				dirIno: oldDir,
 				name: oldName,
+				path: oldBase,
 				source: options?.source
 			})
 			return displaced
@@ -969,7 +978,14 @@ export function idbStorage(
 					options
 				)
 			await tx.done
-			emit({ ino: entry.ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({
+				ino: entry.ino,
+				kind: 'dirent',
+				dirIno,
+				name,
+				path: dirPath === null ? undefined : joinPath(dirPath, name),
+				source: options?.source
+			})
 		},
 
 		async deleteDirent(dirIno, name, options) {
@@ -994,7 +1010,14 @@ export function idbStorage(
 					options
 				)
 			await tx.done
-			emit({ ino: existing.ino, kind: 'dirent', dirIno, name, source: options?.source })
+			emit({
+				ino: existing.ino,
+				kind: 'dirent',
+				dirIno,
+				name,
+				path: dirPath === null ? undefined : joinPath(dirPath, name),
+				source: options?.source
+			})
 		},
 
 		async listDirents(dirIno, cursor) {
