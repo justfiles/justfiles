@@ -70,7 +70,7 @@ export async function ensureAgentDefaults(volume: Volume): Promise<void> {
 		await volume.writeFile(PROFILE_PATH, encoder.encode(DEFAULT_PROFILE))
 	}
 	if (!(await volume.exists(SOUL_PATH))) {
-		await volume.mkdir('/system/agents/main', { recursive: true })
+		await volume.mkdir(AGENT_DIR, { recursive: true })
 		await volume.writeFile(SOUL_PATH, encoder.encode(DEFAULT_SOUL))
 	}
 }
