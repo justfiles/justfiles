@@ -205,6 +205,13 @@ they arrive and only the notes we keep are held (a 400 MB archive imports its tw
 4 MB notes is 4 GB — so a `Screen` ledger carries `MAX_FILES`/`MAX_TOTAL_BYTES` across the whole drop,
 reports `stopped` ("Partly imported … the rest was left out"), and abandons the stream once spent.
 
+The per-entry cap sits in a **decoder of our own**, because an entry cannot be aborted from outside:
+`UnzipInflate` has no `terminate`, and the stream keeps feeding whichever decoder is active — so clearing the
+buffer stops the memory but not the work, and a bomb that declares nothing would still be inflated in full.
+Past the cap the decoder stops pushing, so the compressed remainder is walked rather than expanded, and the
+entry never reaches `final` and so is never admitted. An 800 MB entry declaring nothing costs 1.6s and the
+notes either side of it still import.
+
 The split that matters is between the two questions, because collapsing them produced a P1: **a header is a
 claim, a buffer is a fact.** `screenEntry(path, declaredSize)` is the pure, free pre-check that decides
 whether bytes may be read at all; `Screen.charge(path, actualBytes)` is the ledger, and it is only ever
@@ -331,6 +338,15 @@ owns only the seam:
   `composedPath()` says whether the drop landed on a row (the tree owns it) or on blank space (we do).
   Dropping onto a root-level *row* already means root, so the two paths together cover a full tree.
 - **Selecting a folder** sets the folder new notes land in; selecting a note opens it.
+- **Both surfaces that show the listing keep it live**, and for both reasons it can go stale: a structural
+  change anywhere (`treeRevision`) and a write to the open note (`revision`, which moves it in a
+  newest-first list). The docked pane and the dropdown palette are the same list, so a palette left open
+  while the agent writes must not sit on a dead listing.
+- **One thing a listing cannot promise is freshness against a content write to a note that is not open.**
+  The storage's change feed carries a `path` only for dirent mutations (`packages/fs/storage.ts`), so a
+  recursive CONTENT watch could not be scoped to `/notes` — it would wake this app on every write anywhere in
+  the storage, including every other app's state file. That is why `list()` promises newest-first *as of the
+  call* and every surface re-lists on appearing, rather than trusting a listing to stay ordered.
 - **Refreshes are coalesced and ordered.** A bulk writer — an import, or the agent — bumps `treeRevision`
   once per file, and a full recursive scan per note would swamp the app (301 notes went from ~301 growing
   scans to **2**). Each bump resets a 250ms timer, so the scan runs when the writes stop; opening the pane

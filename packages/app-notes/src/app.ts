@@ -158,9 +158,17 @@ export const app = defineApp({
 		// The index — scanned fresh, RETURNED to the caller, never cached. One
 		// recursive `scan` (the host walks the volume in a single round trip and
 		// hands back mtimes), so nesting costs nothing extra.
+		//
+		// "Newest first" is true OF THE SCAN, and the GUI re-lists on every signal it can
+		// get: a structural change anywhere, a write to the open note, and whenever a
+		// surface that shows the list appears. What it cannot get is a content write to a
+		// note that is NOT open — the storage's change feed carries a path only for
+		// dirent mutations (packages/fs/storage.ts), so a recursive CONTENT watch could
+		// not be scoped to `/notes` and would wake this app on every write anywhere in
+		// the storage. Re-list rather than assume an old listing is still ordered.
 		list: p.procedure({
 			description:
-				'List the knowledge base: every note (newest first) plus every folder, with path, title and mtime.',
+				'List the knowledge base: every note (newest first as of this call) plus every folder, with path, title and mtime.',
 			schema: v.object({}),
 			async run(_params, app) {
 				const entries = await app.invoke('volume', 'scan', { path: '/', recursive: true })

@@ -1,5 +1,6 @@
 import type { GUIProps } from '@justfiles/app/react'
-import { Unzip, UnzipInflate } from 'fflate'
+import type { AsyncFlateStreamHandler, UnzipDecoder, UnzipDecoderConstructor } from 'fflate'
+import { Unzip, UnzipInflate, UnzipPassThrough } from 'fflate'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Entry, NotesApp } from './app.ts'
 import {
@@ -63,6 +64,39 @@ function clampWidth(px: number): number {
 async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 	const kept: ImportEntry[] = []
 	let failure: Error | null = null
+
+	// The per-entry cap has to live in the DECODER, because an entry cannot be
+	// aborted from outside: `UnzipInflate` has no `terminate`, and the stream keeps
+	// feeding whichever decoder is active. Enforced downstream of the header, so a
+	// bomb that declares nothing (or lies) is inflated only up to the cap — past it
+	// this stops pushing, and the compressed remainder is walked, not expanded.
+	const bounded = (Inner: UnzipDecoderConstructor): UnzipDecoderConstructor =>
+		class Bounded implements UnzipDecoder {
+			static compression = Inner.compression
+			ondata!: AsyncFlateStreamHandler
+			private readonly inner: UnzipDecoder
+			private out = 0
+			private dead = false
+			constructor(name: string, size?: number, originalSize?: number) {
+				this.inner = new Inner(name, size, originalSize)
+				this.inner.ondata = (error, chunk, final) => {
+					if (this.dead) return
+					this.out += chunk.length
+					if (this.out > MAX_BYTES) {
+						// Never completed, so the entry is never admitted; reported here
+						// because this is the only place that knows it outgrew its header.
+						this.dead = true
+						screen.skip(name, 'attachment')
+						return
+					}
+					this.ondata(error, chunk, final)
+				}
+			}
+			push(chunk: Uint8Array, final: boolean) {
+				if (!this.dead) this.inner.push(chunk, final)
+			}
+		}
+
 	const unzipper = new Unzip((entry) => {
 		if (entry.name.endsWith('/')) return
 		// A cheap pre-check, from the local header: skip what we can already tell we
@@ -80,17 +114,10 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 				failure ??= error
 				return
 			}
-			if (size > MAX_BYTES) return // already given up on this entry
 			size += chunk.length
-			if (size > MAX_BYTES) {
-				// It declared nothing, or lied. One entry's worth of bytes is the most a
-				// header can cost us, and that is why the cap is here and not only above.
-				parts = []
-				screen.skip(entry.name, 'attachment')
-				return
-			}
 			parts.push(chunk)
-			// Charged with the bytes that actually exist, at the moment they exist.
+			// Charged with the bytes that actually exist, at the moment they exist. An
+			// entry the decoder gave up on never reaches `final`, so it never lands here.
 			if (final) {
 				const entered = admit({ path: entry.name, bytes: concat(parts, size) }, screen)
 				parts = []
@@ -99,7 +126,8 @@ async function readZip(file: File, screen: Screen): Promise<ImportEntry[]> {
 		}
 		entry.start()
 	})
-	unzipper.register(UnzipInflate)
+	unzipper.register(bounded(UnzipInflate))
+	unzipper.register(bounded(UnzipPassThrough))
 	const reader = file.stream().getReader()
 	for (;;) {
 		const { done, value } = await reader.read()
@@ -305,9 +333,10 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 
 	// The list is never cached in reducer state (DESIGN.md §3) — re-scan /notes
 	// whenever a surface that shows it appears (search focus, docked pane), and
-	// whenever something was created/removed/renamed on disk (`treeRevision`).
+	// whenever anything on disk moved it: a create/remove/rename (`treeRevision`) or a
+	// write to the open note (`revision`, which reorders a newest-first list).
 	const refreshTokenRef = useRef(0)
-	const treeSeenRef = useRef(0)
+	const changeSeenRef = useRef('')
 	const refresh = useCallback(async () => {
 		// Scans overlap (a bump can land mid-scan), so only the newest result may win
 		// — an older, smaller listing must not overwrite it.
@@ -332,20 +361,28 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	}, [entries, openPath])
 	liveRef.current.dir = createDir()
 
+	// Either surface can be showing the listing: the docked pane, or the dropdown
+	// palette over the editor. Both go stale the same way, so both keep it live.
+	const listing = listOpen || dropOpen
+
 	useEffect(() => {
-		if (!listOpen) return
-		// `treeRevision` bumps once per write, and a bulk writer (an import, or the
-		// agent) emits thousands — one growing full-tree scan per note would swamp the
-		// app. Coalesce: each bump resets the timer, so the scan runs once the writes
-		// stop. Opening the pane is not a bump, so it still lists immediately.
-		if (treeSeenRef.current === treeRevision) {
+		if (!listing) return
+		// TWO signals, one refresh. `treeRevision` is a create/remove/rename anywhere
+		// in `/notes`; `revision` is a write to the OPEN note, which changes its mtime
+		// and therefore its place in a newest-first list and its "3m" label. A bulk
+		// writer (an import, or the agent) emits thousands, and one growing full-tree
+		// scan per note would swamp the app — so each bump resets the timer and the
+		// scan runs once the writes stop. Opening a surface is not a bump, so it still
+		// lists immediately.
+		const seen = `${treeRevision}:${revision}`
+		if (changeSeenRef.current === seen) {
 			void refresh()
 			return
 		}
-		treeSeenRef.current = treeRevision
+		changeSeenRef.current = seen
 		const id = setTimeout(() => void refresh(), REFRESH_MS)
 		return () => clearTimeout(id)
-	}, [listOpen, treeRevision, refresh])
+	}, [listing, treeRevision, revision, refresh])
 
 	const openNote = useCallback(
 		async (path: string) => {
@@ -356,9 +393,9 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			selectedDirRef.current = null
 			await actions.open({ path })
 			editorRef.current?.focus()
-			if (listOpen) void refresh() // the flushed note's mtime may reorder the list
+			if (listing) void refresh() // the flushed note's mtime may reorder the list
 		},
-		[flush, actions, listOpen, refresh]
+		[flush, actions, listing, refresh]
 	)
 
 	const startNewNote = useCallback(async () => {
