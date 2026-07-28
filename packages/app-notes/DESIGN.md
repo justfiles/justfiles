@@ -89,102 +89,39 @@ demand (the `app-files` pattern).
 | Lives in **reducer state** (app-session facts) | Lives **outside** reducer state |
 |----|----|
 | `openPath` — which note is shown ("what is the user viewing"); a *pointer*, not a copy of disk | the editor's in-progress text buffer (GUI-local) |
-| `revision` — bumped when the open file changes on disk | `dirty` flag; search dropdown open + filter query + docked-list preference; cursor / scroll (GUI-local) |
-| `error` | **the note list** — derived from `/notes` on demand via `list()`, never cached (see below) |
+| `revision` — bumped when the open file changes on disk | `dirty` flag; search query; docked-pane preference; which folders are expanded; the folder new notes land in; cursor / scroll (all GUI-local) |
+| `treeRevision` — bumped when anything in `/notes` is created / removed / renamed | **the note list** — derived from `/notes` on demand via `list()`, never cached (see below) |
+| `error` | |
 
 ```ts
-type State = {
+type NotesState = {
 	openPath: string | null  // null = blank scratch — the agent's "what is the user viewing"
-	revision: number         // bumped when the open file changes on disk (external/agent edit)
+	revision: number         // the OPEN file changed on disk (external/agent edit)
+	treeRevision: number     // the SHAPE of /notes changed (create/remove/rename anywhere)
 	error: string | null
 }
-// The note list is NOT state — it is derived from /notes on demand (the `list` procedure).
-type Note = { path: string; title: string; mtime: number }   // the shape `list` returns
+// The listing is NOT state — it is derived from /notes on demand (the `list` procedure).
+// Folders are included, so an empty folder exists and CRUD has something to act on.
+type Entry = { path: string; type: 'file' | 'dir'; title: string; mtime: number }
 ```
 
 ### Action surface
 
-Illustrative shape (not a compilable file). Edges are pure/sync; all IO is in procedures or via `t.cmd`.
+The real thing is `src/app.ts` — this table is the contract, not a copy of the code. Edges are
+pure/sync; all IO is in procedures or via `t.cmd`.
 
-```ts
-export const app = defineApp({
-	init: { notes: [], openPath: null, revision: 0, error: null } as State,
-	capabilities: { volume: volume({ scopes: ['/notes'] }) },
-
-	update: (t) => ({
-		// — pure mutations (agent-visible) —
-		open: t.on(v.object({ path: v.string() }),
-			(s, { path }) => ({ ...s, openPath: path }),
-			{ description: 'Open a note in the editor — surfaces it in the user’s window.',
-			  examples: [{ params: { path: '/remember_the_milk.txt' } }] }),
-		newNote: t.on(v.object({}), (s) => ({ ...s, openPath: null }),
-			{ description: 'Start a fresh blank note (clears the editor).' }),
-
-		// — autosave for an existing note (GUI dispatches on a debounced pause) —
-		save: t.on(v.object({ path: v.string(), text: v.string() }),
-			(s, { path, text }) => [s, t.cmd('volume', 'writeFile', path, enc.encode(text)).to('saved')],
-			{ description: 'Overwrite a note’s body.',
-			  examples: [{ params: { path: '/groceries.txt', text: 'eggs, milk' } }] }),
-		saved: t.fromResult('volume', 'writeFile',
-			(s, r) => (r.ok ? { ...s, error: null } : { ...s, error: r.error.message })),
-
-		// — rename = re-slug + move the file (only fixes openPath; there is no cached list) —
-		rename: t.on(v.object({ from: v.string(), title: v.string() }),
-			(s, { from, title }) => {
-				const to = `/${slug(title)}.txt`
-				return [{ ...s, openPath: s.openPath === from ? to : s.openPath },
-					t.cmd('volume', 'rename', from, to).to('renamed')]
-			}, { description: 'Rename a note (its filename is derived from the new title).' }),
-		renamed: t.fromResult('volume', 'rename', (s, r) => (r.ok ? s : { ...s, error: r.error.message })),
-
-		// — external change to the OPEN file (the agent or Files edits it on disk) —
-		fileChanged: t.fromEvent('volume', 'watch', (s) => ({ ...s, revision: s.revision + 1 }))
-	}),
-
-	// watch ONLY the open file, so its body stays live. The folder is not watched and the listing
-	// is not cached — `list` re-reads /notes fresh whenever the palette opens.
-	subscriptions: (s, sub) =>
-		s.openPath ? [sub.capability('volume', 'watch', { path: s.openPath }).to('fileChanged')] : [],
-
-	procedures: (p) => ({
-		// the recency index — scanned fresh, RETURNED to the caller, never folded into state
-		list: p.procedure({ description: 'List notes newest-first (path, title, mtime).',
-			schema: v.object({}),
-			async run(_a, app) {
-				const entries = await app.invoke('volume', 'scan', { path: '/' })
-				const out: Note[] = []
-				for (const e of entries) {
-					if (e.type !== 'file' || !e.path.endsWith('.txt')) continue
-					const st = await app.invoke('volume', 'stat', e.path)
-					out.push({ path: e.path, title: e.path.slice(1, -4), mtime: Number(st.mtimeNs) })
-				}
-				return out.sort((a, b) => b.mtime - a.mtime)
-			} }),
-
-		create: p.procedure({ description: 'Create a note from text; filename = slug of the first line.',
-			schema: v.object({ text: v.string() }),
-			examples: [{ params: { text: 'Remember the milk' } }],
-			async run({ text }, app) {
-				const path = await freePath(app, slug(firstLine(text) || 'untitled'))  // dedup via exists()
-				await app.invoke('volume', 'writeFile', path, enc.encode(text))
-				return app.settled((await app.dispatch({ type: 'open', params: { path } })).seq)
-			} }),
-
-		readNote: p.procedure({ description: 'Read a note’s body as text.',
-			schema: v.object({ path: v.string() }),
-			async run({ path }, app) {
-				if (!(await app.invoke('volume', 'exists', path))) return { path, text: '' }
-				return { path, text: dec.decode(await app.invoke('volume', 'readFile', path)) }
-			} }),
-
-		remove: p.procedure({ description: 'Delete a note.',
-			audience: 'gui',          // destructive — the human deletes; the agent must not delete blindly
-			schema: v.object({ path: v.string() }),
-			async run({ path }, app) { await app.invoke('volume', 'rm', path, { force: true }) } })
-	})
-})
-export type NotesApp = typeof app
-```
+| Action | Kind | Audience | Meaning |
+|----|----|----|----|
+| `open({ path })` | edge | both | **The** coordinating action — put a note in front of the user |
+| `newNote({})` | edge | both | Blank scratch |
+| `save({ path, text })` | edge → `t.cmd` | both | Overwrite a body (the GUI's debounced autosave) |
+| `rename({ from, to })` | edge → `t.cmd` | both | Rename **is** move: retitle, drag into a folder, or move a whole folder. `openPath` follows the file, or the folder it lives under |
+| `list({})` | procedure | both | Fresh recursive listing: every note + every folder, newest first |
+| `create({ text, dir? })` | procedure | both | New note; filename from the first line, `dir` defaults to `/` |
+| `mkdir({ path })` | procedure | both | Only reason to exist: an **empty** folder (`writeFile` auto-creates parents) |
+| `readNote({ path })` | procedure | both | Body as text |
+| `remove({ path })` | procedure | **gui** | Destructive: a note, or a folder and everything in it. Clears the editor if the open note went with it |
+| `fileChanged` / `treeChanged` | `t.fromEvent` | internal | The two watch signals below |
 
 Notes on choices:
 
@@ -193,30 +130,53 @@ Notes on choices:
   would drift the instant anyone else writes. `list` scans on demand instead; **the disk is the only
   source of truth.** This is a deliberate deviation from `app-files` (which caches `files` in state): there
   the store is effectively single-writer, here multi-writer makes drift a core case, not an edge one.
+- **One recursive `scan`, not an N+1 stat storm.** `list` is a single
+  `scan({ path: '/', recursive: true })`: the host's tree walk already holds every entry's stat, so it
+  hands back `mtimeNs` with each one (`VolumeEntry.mtimeNs`). A vault of thousands of notes therefore
+  costs one capability round trip, and nesting costs nothing extra.
+- **Two watches, two signals.** The open file is watched so its body stays live under an agent/Files
+  edit (`revision`); `/notes` is watched recursively as a *structural* signal (`treeRevision`) so the
+  tree and the list refresh when anything appears, disappears or moves — including an import. Neither
+  event carries data; the GUI re-reads via `list`/`readNote`.
 - **Only app-session facts live in state:** `openPath` (a *pointer/selection*, not a copy of disk contents
-  — app.md §3 endorses "what is the user looking at"), `revision`, `error`. Re-deriving the list also gives
-  true `mtime` recency on every call — no stale cache, no optimistic-mtime hack, no `loaded`/`created`
-  landing edges.
-- **`create` / `list` / `remove` are procedures** (async IO; `list`/`create` return to the caller rather
-  than into state). `save` stays a cheap debounced edge; `rename` only moves the file and fixes `openPath`.
-  Filename dedup is a `freePath` `exists()` probe, not a lookup in a cached list.
+  — app.md §3 endorses "what is the user looking at"), the two revisions, `error`. Re-deriving the list
+  also gives true `mtime` recency on every call — no stale cache, no optimistic-mtime hack.
+- **`rename` is one op, deliberately.** Retitle, move-into-folder and folder-rename are the same
+  filesystem operation; giving the agent (and the tree's drag/drop) one `{ from, to }` beats three
+  near-identical actions.
+- **Naming dedup is an `exists()` probe** (`freePath`), not a lookup in a cached list.
 
 <a id="files"></a>
 
 ## 4 · Filenames & autosave
 
-**Filename = `slug(first non-empty line)` — no AI.** `"Remember the milk"` → `remember_the_milk.txt`. Slug
-= lowercase, runs of non-alphanumerics → `_`, trimmed, length-capped; collisions get `_2`, `_3`. Empty
-first line → `untitled.txt` (deduped). Assigned **once** at first persist; later edits don't re-slug (the
-user/agent renames deliberately). The agent searches *content*, not filenames, so filenames are a
-human-browsing nicety — not worth AI latency/cost/nondeterminism. (AI naming as a fallback for unsuitable
-first lines is a possible future, explicitly out of v1.)
+**Filename = the first non-empty line, kept human — no AI, no slug.** `"Remember the milk"` →
+`Remember the milk.md`. Case and spaces survive; only genuinely unsafe characters are dropped (path
+separators, control characters, and `# | ^ [ ]` — the ones Obsidian itself warns break links, so a title
+stays addressable if we ever resolve `[[wikilinks]]`); length is capped at 100; collisions get ` 2`,
+` 3`; an empty first line falls back to `Untitled`. Assigned **once** at first persist; later edits don't
+re-name (the user/agent renames deliberately).
+
+This is a deliberate reversal of the original `remember_the_milk.txt` slug. The store is now expected to
+hold an **imported Obsidian vault**, where the filename *is* the title (`References/Kyoto.md`) and
+wikilinks address notes by that exact name. Slugging would have made our own notes second-class citizens
+in their own vault — and any rename of an imported file destroys links. So: **imported names are never
+sanitized** (verbatim, byte-for-byte); sanitizing applies only to names *we* mint.
+
+**`.md` is the default extension; `.txt` still reads.** They are the same thing — plain text — so both are
+listed and opened, and notes written before the switch keep working with no migration. New notes are `.md`
+because that is what every other tool (and the agent) expects, and because it leaves room for YAML
+frontmatter later.
+
+**New notes land in the folder of the note last opened** — Obsidian's "same folder as the current file".
+That folder is GUI-local (it must survive `newNote`, which clears `openPath`), and `create({ dir })`
+carries it to the reducer.
 
 **The threshold is the boundary where scratch becomes a file.** Two regimes:
 
 - **Below threshold** (~40 chars): ephemeral scratch — never written, **discarded** on switch/close.
-- **Above threshold**: a real file (slug name + first persist via `create`); from then on a **dirty buffer
-  always flushes** on switch/close (even if later shrunk — that's undo's job).
+- **Above threshold**: a real file (name from the first line + first persist via `create`); from then on a
+  **dirty buffer always flushes** on switch/close (even if later shrunk — that's undo's job).
 
 So debounced autosave is purely a performance optimization: correctness comes from **flush-if-dirty on
 every transition** (switch note, `Cmd+N`, window close). No data loss either way.
@@ -238,13 +198,16 @@ Renders state, dispatches actions, owns transient state (docs/app.md §9). Delib
   scratch and `text.length ≥ threshold` → `create({ text })`, then adopt `openPath` from settled state.
 - **The bar** (always visible — nothing behind a shortcut): a list toggle, a search-or-create field, and a
   New button. Focusing the field calls `list()` and drops the recency list down — empty query = everything,
-  newest first; typing filters (title contains; content search is later). Enter opens the top match, or —
-  with no match — creates a note whose first line is the query (the nvAlt move: search and create are one
-  gesture). Esc hops editor → field and back. ☰ docks the same list as a left pane for see-the-list users —
+  newest first; typing filters. **Search is path-aware**: every whitespace/slash-separated token must
+  appear somewhere in `Trips/Kyoto`, so `kyo trip` and `trips/kyo` both hit, a title match outranks a
+  folder-only match, and recency breaks ties (`matchNotes` in `src/notes.ts`). Rows show the folder path,
+  so two notes with the same title are told apart. Content search is still later. Enter opens the top
+  match, or — with no match — creates a note whose first line is the query (the nvAlt move: search and
+  create are one gesture). Esc hops editor → field and back. ☰ docks the tree as a left pane —
   and the bar folds into it: ☰ + search become the pane's header, New its footer, so the editor side is
   pure content. The preference is GUI-local (localStorage where the host allows it; frieren's sandboxed
-  iframe has no `allow-same-origin`, so there it degrades to per-session). The list is re-fetched on every
-  focus/open, so it never shows a stale set.
+  iframe has no `allow-same-origin`, so there it degrades to per-session). The listing is re-fetched on
+  every focus/open **and on every `treeRevision` bump**, so it never shows a stale set.
 - **`Cmd+O` / `Ctrl+O`** → focus the search field (a faint `⌘O` hint sits in the field until first use).
   `Cmd+K` belongs to the shell omnibar: the app runs in a sandboxed iframe, so keys typed in Notes never
   reach the shell — binding `Cmd+K` would *shadow* the omnibar whenever Notes has focus. Shortcuts attach
@@ -305,7 +268,7 @@ surface below. `description` + `examples` are its UI — written above.
 | Action | Audience | Why |
 |----|----|----|
 | `open` | both | **The** coordinating action — put a note in front of the user. |
-| `create`, `save`, `rename` | both | Available, but the agent usually writes files directly. |
+| `create`, `save`, `rename`, `mkdir` | both | Available, but the agent usually writes files directly. |
 | `list` | both | Fresh listing on demand — the agent's view of the KB is the filesystem, never cached state. |
 | `newNote` | both | Harmless; mostly GUI-driven. |
 | `readNote` | both | Convenience; the agent can also read the file directly. |
@@ -313,22 +276,23 @@ surface below. `description` + `examples` are its UI — written above.
 
 <a id="scope-v1"></a>
 
-## 7 · v1 scope & non-goals
+## 7 · Scope & non-goals
 
-**In:** blank editor; the bar (search-or-create + docked-list toggle + New) + recency list (derived) +
-title filter; debounced autosave +
-flush-on-transition; slug filenames; create/open/save/rename/delete; live re-read of the open note on
-external edits; the agent TUI above.
+**In:** blank editor; the bar (search-or-create + docked-tree toggle + New) + derived listing +
+path-aware filter; **nested folders** (recursive listing, `.md` default with `.txt` still read); human
+filenames; debounced autosave + flush-on-transition; create/open/save/rename/move/mkdir/delete; live
+re-read of the open note on external edits; a structural watch so the tree tracks the disk; the agent TUI
+above.
 
 **Out (deferred, not one-way doors):**
 
-- **Folder navigation.** v1 is a flat recency list + filter; the filesystem under `/notes` stays freeform,
-  so Files/agent can make folders and folder-nav can land later with no migration.
-- **AI filenames** (slug only); **content search** in the search field (title only); **rich text / tags / links
-  UI**; **resume-where-you-left-off** (always-blank reopen is intentional).
+- **AI filenames**; **content search** in the search field (path/title only); **rich text**; **tags UI**;
+  **`[[wikilink]]` navigation and backlinks** (imported links are preserved verbatim, so this can land
+  later with no migration — see the reasoning in §9); **resume-where-you-left-off** (always-blank reopen is
+  intentional).
 
-Tolerate old persisted shapes (docs/app.md §3): new `Note`/`State` fields must be optional — `init` is not
-re-merged into already-persisted state.
+Tolerate old persisted shapes (docs/app.md §3): new `NotesState`/`Entry` fields must be optional — `init`
+is not re-merged into already-persisted state. `treeRevision` was added this way.
 
 <a id="runtime"></a>
 
@@ -348,3 +312,42 @@ These live in `packages/agent`, not `app-notes`, but the design depends on them:
   it graduates to invoking the tool-using skill once `MEMORY.md` outgrows a single context window. Needs a
   `manual: true` skill flag so `skillRegistry.index()` doesn't advertise these for autonomous mid-chat
   pickup.
+
+<a id="obsidian"></a>
+
+## 9 · Obsidian interop — what we take, and what we deliberately don't
+
+`/notes` is meant to be able to *hold* someone's Obsidian vault, so the shape of that data is a design
+input, not an afterthought.
+
+**What a vault actually is.** A plain folder of UTF-8 `.md` files with optional YAML frontmatter, plus
+attachments in-tree, plus `.obsidian/` (config only), plus `.canvas` (JSON) / `.base` (YAML) files. There
+is **no export format — the vault *is* the export.** Everything we need is already the substrate we have:
+files on the Volume.
+
+**Backlinks do not exist on disk.** Obsidian parses every file into a metadata cache (in IndexedDB,
+app-side, *not* in the vault) and folds it into a forward index `resolvedLinks: source → { dest: count }`;
+backlinks are the *reverse of that index, computed at query time*, and the whole cache is disposable
+("Rebuild metadata cache"). So an import loses nothing by ignoring it — but anything graph-shaped we want,
+we re-derive ourselves.
+
+**Why we're not building the graph.** Backlinks solved retrieval in a world with no search that
+understands you. Here the agent has in-process bash over the Volume, so
+`grep -rl '\[\[Kyoto\]\]' /notes` *is* the backlinks query — zero code, zero index, no drift. What
+backlinks would add is *ambient human discovery while reading*, which is a reading-app feature; this is a
+capture-first app. The cheap 80% we do commit to: **imported text is preserved verbatim**, so every
+`[[wikilink]]`, `#tag`, block ref and frontmatter link survives byte-for-byte and stays greppable. If the
+itch shows up, the next step is `[[...]]` *click-to-open* (navigation) via one pure resolver — exact path
+→ relative to the source → unique basename — and still no stored index.
+
+**What the import will and won't do** (implementation is the last step, see §7):
+
+- **In:** `.md` / `.txt`, folder structure preserved, filenames verbatim (NFC-normalized — macOS zips carry
+  decomposed unicode, and skipping that step yields visually-duplicate notes), landed under a single
+  `/<VaultName>/` folder so it is contained and reversible.
+- **Skipped:** `.obsidian/`, `.trash/`, `.git/`, `__MACOSX/`, `.DS_Store`, `* (conflicted copy)*`, and
+  binary attachments — reported, not silently dropped. Attachments are out because the GUI→reducer seam
+  carries JSON-safe values, so the importer ships **strings**; the day we want binaries they need base64 or
+  a host-level file-drop capability, which is a separate decision.
+- **Not ported at all:** canvas, bases, Dataview/Templater code, plugins, `.obsidian` config. Their text
+  is kept as-is where it lives inside a note; nothing is rewritten.

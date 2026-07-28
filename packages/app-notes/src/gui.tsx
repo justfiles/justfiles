@@ -1,12 +1,12 @@
 import type { GUIProps } from '@justfiles/app/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Note, NotesApp } from './app.ts'
+import type { Entry, NotesApp } from './app.ts'
+import { displayPath, matchNotes, parentDir } from './notes.ts'
 import './style.css'
 
 const AUTOSAVE_MS = 800
 const LIST_PREF_KEY = 'app-notes:list-open'
 
-const titleOf = (path: string) => path.slice(1, -4)
 const isMac = /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
 // The host may sandbox the app iframe without `allow-same-origin`, where even
@@ -39,7 +39,7 @@ function relativeTime(mtimeNs: number): string {
 }
 
 export default function Notes({ state, actions }: GUIProps<NotesApp>) {
-	const { openPath, revision, error } = state
+	const { openPath, revision, treeRevision, error } = state
 
 	// The editor buffer is transient GUI-local state; the body bytes never enter
 	// the reducer. `dirty` tracks unsaved edits (DESIGN.md §3).
@@ -53,12 +53,15 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	const [searchFocused, setSearchFocused] = useState(false)
 	const [dropOpen, setDropOpen] = useState(false)
 	const [listOpen, setListOpen] = useState(readListPref)
-	const [notes, setNotes] = useState<Note[]>([])
+	const [notes, setNotes] = useState<Entry[]>([])
 	const [active, setActive] = useState(0)
+	// Which folder new notes land in — the folder of the note last opened (Obsidian's
+	// "same folder as the current file"). Transient, so it survives `newNote`.
+	const [activeDir, setActiveDir] = useState('/')
 
 	// Refs so async flushes/effects read the latest values without re-binding.
-	const liveRef = useRef({ text, openPath, dirty })
-	liveRef.current = { text, openPath, dirty }
+	const liveRef = useRef({ text, openPath, dirty, activeDir })
+	liveRef.current = { text, openPath, dirty, activeDir }
 	const loadedRef = useRef<string | null>(null) // path whose body is in the buffer
 	const pendingPathRef = useRef<string | null>(null) // created path before the state push catches up
 	const creatingRef = useRef(false)
@@ -83,7 +86,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			creatingRef.current = true
 			setDirty(false)
 			try {
-				const settled = await actions.create({ text })
+				const settled = await actions.create({ text, dir: liveRef.current.activeDir })
 				if (settled.openPath) {
 					pendingPathRef.current = settled.openPath
 					loadedRef.current = settled.openPath
@@ -144,22 +147,28 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	// title bar (e.g. desktop) show it there; in quay the centered header below is
 	// the visible title (the native title is hidden behind a transparent titlebar).
 	useEffect(() => {
-		document.title = openPath ? titleOf(openPath) : 'Notes'
+		document.title = openPath ? displayPath(openPath) : 'Notes'
 	}, [openPath])
 
 	// The list is never cached in reducer state (DESIGN.md §3) — re-scan /notes
-	// whenever a surface that shows it appears (search focus, docked pane).
-	const refresh = useCallback(async () => setNotes(await actions.list({})), [actions])
+	// whenever a surface that shows it appears (search focus, docked pane), and
+	// whenever something was created/removed/renamed on disk (`treeRevision`).
+	const refresh = useCallback(async () => {
+		const entries = await actions.list({})
+		setNotes(entries.filter((entry) => entry.type === 'file'))
+	}, [actions])
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: treeRevision is a cache-busting trigger — a bump means /notes changed on disk, so re-scan.
 	useEffect(() => {
 		if (listOpen) void refresh()
-	}, [listOpen, refresh])
+	}, [listOpen, treeRevision, refresh])
 
 	const openNote = useCallback(
 		async (path: string) => {
 			await flush()
 			setDropOpen(false)
 			setQuery('')
+			setActiveDir(parentDir(path))
 			await actions.open({ path })
 			editorRef.current?.focus()
 			if (listOpen) void refresh() // the flushed note's mtime may reorder the list
@@ -184,7 +193,8 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 	}, [flush, actions, listOpen, refresh])
 
 	// Enter on an empty result set: the query becomes the first line of a new
-	// note (the nvAlt move — search and create are one gesture).
+	// note (the nvAlt move — search and create are one gesture). It lands in the
+	// open note's folder, like Obsidian's "same folder as the current file".
 	const createFromQuery = useCallback(
 		async (title: string) => {
 			await flush()
@@ -193,7 +203,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			const body = `${title}\n`
 			creatingRef.current = true
 			try {
-				const settled = await actions.create({ text: body })
+				const settled = await actions.create({ text: body, dir: activeDir })
 				if (settled.openPath) {
 					pendingPathRef.current = settled.openPath
 					loadedRef.current = settled.openPath
@@ -211,7 +221,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 			})
 			if (listOpen) void refresh()
 		},
-		[flush, actions, listOpen, refresh]
+		[flush, actions, activeDir, listOpen, refresh]
 	)
 
 	const removeNote = useCallback(
@@ -245,10 +255,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 		return () => document.removeEventListener('visibilitychange', onHide)
 	}, [flush])
 
-	const filtered = useMemo(() => {
-		const q = query.trim().toLowerCase()
-		return q ? notes.filter((n) => n.title.toLowerCase().includes(q)) : notes
-	}, [notes, query])
+	const filtered = useMemo(() => matchNotes(notes, query.trim()), [notes, query])
 
 	const focusSearch = useCallback(() => {
 		searchRef.current?.focus()
@@ -313,7 +320,7 @@ export default function Notes({ state, actions }: GUIProps<NotesApp>) {
 					onMouseEnter={() => setActive(i)}
 					onClick={() => void openNote(note.path)}
 				>
-					<span className="notes-item-title">{note.title}</span>
+					<span className="notes-item-title">{displayPath(note.path)}</span>
 					<span className="notes-item-mtime">{relativeTime(note.mtime)}</span>
 				</button>
 			))}

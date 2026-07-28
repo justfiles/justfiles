@@ -122,15 +122,22 @@ describe('volume capability', () => {
 		])
 	})
 
-	test('scan with recursive=true returns the full descendant tree', async () => {
+	test('scan with recursive=true returns the full descendant tree, with mtimes', async () => {
 		const { fs, cap } = setup()
 		await seed(fs, '/data/x/a.txt', 'a')
 		await seed(fs, '/data/x/sub/b.txt', 'b')
 		await seed(fs, '/data/x/sub/deep/c.txt', 'c')
 		const entries = (await cap.invoke(
 			call('scan', [{ path: '/', recursive: true }], { appId: 'x' })
-		)) as Array<{ path: string; type: 'file' | 'dir' }>
-		expect(entries.sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+		)) as Array<{ path: string; type: 'file' | 'dir'; mtimeNs: number }>
+		// The tree walk already holds each stat, so mtime rides along — callers sort
+		// by recency without an N+1 `stat` storm.
+		expect(entries.every((entry) => typeof entry.mtimeNs === 'number' && entry.mtimeNs > 0)).toBe(
+			true
+		)
+		expect(
+			entries.map(({ path, type }) => ({ path, type })).sort((a, b) => a.path.localeCompare(b.path))
+		).toEqual([
 			{ path: '/a.txt', type: 'file' },
 			{ path: '/sub', type: 'dir' },
 			{ path: '/sub/b.txt', type: 'file' },

@@ -9,6 +9,11 @@ import type { Stream } from '../core.ts'
 export interface VolumeEntry {
 	path: string
 	type: 'file' | 'dir'
+	// Modification time in ns since the epoch, as a `number` (a `bigint` cannot
+	// cross the seam). Present on a RECURSIVE scan only — the tree walk already
+	// holds each entry's stat, so carrying it saves the caller an N+1 `stat` storm
+	// just to sort by recency. `readdir` (the non-recursive scan) has no mtime.
+	mtimeNs?: number
 }
 
 // The capability surface IS the host filesystem interface — reused verbatim, not

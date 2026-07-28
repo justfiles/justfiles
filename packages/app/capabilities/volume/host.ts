@@ -118,19 +118,21 @@ async function scanDir(
 
 // Recursive walk that hits the storage layer's full-volume cursor (one
 // network round trip when the backing storage supports it), so callers
-// avoid N+1 capability invocations from the sandboxed worker.
+// avoid N+1 capability invocations from the sandboxed worker. The walk already
+// holds each entry's stat, so mtime rides along (see `VolumeEntry.mtimeNs`).
 async function scanTree(
 	vol: Volume,
 	path: string
-): Promise<Array<{ path: string; type: 'file' | 'dir' }>> {
+): Promise<Array<{ path: string; type: 'file' | 'dir'; mtimeNs: number }>> {
 	if (!(await vol.exists(path))) return []
-	const out: Array<{ path: string; type: 'file' | 'dir' }> = []
+	const out: Array<{ path: string; type: 'file' | 'dir'; mtimeNs: number }> = []
 	await vol.scan(path, async (entryPath, stat) => {
 		if (entryPath === path) return
 		if (stat.type === FileType.Symlink) return
 		out.push({
 			path: entryPath,
-			type: stat.type === FileType.Directory ? 'dir' : 'file'
+			type: stat.type === FileType.Directory ? 'dir' : 'file',
+			mtimeNs: Number(stat.mtimeNs)
 		})
 	})
 	return out
