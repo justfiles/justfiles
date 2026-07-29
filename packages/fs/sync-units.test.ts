@@ -492,6 +492,40 @@ describe('localSyncReplica', () => {
 		expect(await vol.exists('/notes/a')).toBe(true) // ordinary path still applies
 	})
 
+	// An ignored path only survives if its ANCESTORS do. A peer that replaces the
+	// containing directory with a file (or deletes it) would otherwise leave the ignored
+	// child attached to a regular-file inode: unreachable, and a corrupt tree shape.
+	it('refuses an ancestor change that would replace a dir holding an ignored path', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		const replica = makeReplica(store, false, (p) => p.startsWith('/state/cache/'))
+		await vol.mkdir('/state/cache', { recursive: true })
+		await vol.writeFile('/state/cache/blob', bytes('MINE'))
+
+		// dir -> regular file at the ancestor
+		await replica.applyPathChanges([put('/state', '99', 'FILE')], async () => bytes('FILE'))
+		expect((await vol.stat('/state')).type).toBe(FileType.Directory)
+		expect(text(await vol.readFile('/state/cache/blob'))).toBe('MINE')
+
+		// and an ancestor delete
+		await replica.applyPathChanges([del('/state', '100')], async () => bytes(''))
+		expect(await vol.exists('/state/cache/blob')).toBe(true)
+	})
+
+	it('still replaces a directory that holds nothing ignored', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		const replica = makeReplica(store, false, (p) => p.startsWith('/state/cache/'))
+		await vol.mkdir('/plain/inner', { recursive: true })
+		await vol.writeFile('/plain/inner/f', bytes('x'))
+		await replica.applyPathChanges(
+			[del('/plain/inner/f', '98'), del('/plain/inner', '98'), put('/plain', '99', 'FILE')],
+			async () => bytes('FILE')
+		)
+		expect((await vol.stat('/plain')).type).toBe(FileType.Regular)
+		expect(text(await vol.readFile('/plain'))).toBe('FILE')
+	})
+
 	it('eager applyPathChanges materialises the blob before the tree references it', async () => {
 		const store = memStorage()
 		const vol = volume(store)

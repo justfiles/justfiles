@@ -38,4 +38,12 @@ export const sessionFile = (agentId: string, sessionId: string, at: Date) =>
 // `/.state` is excluded: it is the sync engine's own bookkeeping, already listed in the
 // prompt as host bookkeeping and harmless to `ls`. What remains is `/private` — private
 // in the access-modifier sense: not reachable from outside the host, the agent included.
+//
+// The pre-`/private` locations (`/system/accounts`, `/system/connections`) are DELIBERATELY
+// not listed. They must be ordinary synced paths so the relocation's delete propagates and
+// clears the stale copies earlier sync left in client replicas; re-denying them would also
+// re-fork this list from the fs one. Nothing is at risk: a live volume reaches them only if
+// `migrateHostPrivateLane` failed on this boot, and the only record any live volume holds
+// is the credential-less platform AI account. See AGENTS.md, "Pre-release: no migration or
+// back-compat debt".
 export const SECRET_PREFIXES = PRIVATE_PREFIXES.filter((p) => p !== '/.state')

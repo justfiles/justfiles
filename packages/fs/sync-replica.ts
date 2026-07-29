@@ -13,6 +13,8 @@ import type { ContentStore, Storage } from './storage'
 import { incomingWins, orderForApply } from './storage.shared'
 import type { PathChange } from './sync-wire'
 import { coalesceByPath } from './sync-wire'
+import { FileType } from './types'
+import { volume } from './volume'
 
 /**
  * A cursor is an opaque, monotonically increasing position in one replica's
@@ -355,6 +357,41 @@ export function localSyncReplica(
 	opts: { lazyContent: boolean; localActorId: string; ignore?: (path: string) => boolean }
 ): SyncReplica {
 	const isIgnored = syncIgnore(opts.ignore)
+	// Only a CUSTOM ignore can be nested: the built-in class is top-level roots, and the
+	// one path above those (`/`) is never replaced. So this whole check costs nothing
+	// until a host declares its own.
+	const nestedIgnorePossible = opts.ignore !== undefined
+	const vol = volume(storage)
+
+	/**
+	 * Would applying `c` destroy a directory that currently holds an ignored path?
+	 *
+	 * A peer replacing `/state` with a regular file (or deleting it) is a legal change
+	 * for the peer, but locally `/state/cache/**` is ignored and must survive — and a
+	 * regular-file inode cannot hold dirents, so applying it would leave the preserved
+	 * child attached to a file: unreachable, and a corrupt tree shape.
+	 *
+	 * The only coherent answer is to skip: the local tree keeps its directory and
+	 * diverges from the peer at that path, which is what ignoring already means. It does
+	 * not flap — skipping mutates nothing, so there is no new local change to push back.
+	 */
+	async function shieldsIgnored(c: PathChange): Promise<boolean> {
+		if (!nestedIgnorePossible) return false
+		if (c.kind === 'put' && c.meta.type === FileType.Directory) return false
+		const st = await vol.lstat(c.path).catch(() => undefined)
+		if (st?.type !== FileType.Directory) return false
+		return hasIgnoredDescendant(c.path)
+	}
+
+	async function hasIgnoredDescendant(dir: string): Promise<boolean> {
+		for (const e of await vol.readdir(dir).catch(() => [])) {
+			const child = `${dir}/${e.name}`
+			if (isIgnored(child)) return true
+			if (e.type === FileType.Directory && (await hasIgnoredDescendant(child))) return true
+		}
+		return false
+	}
+
 	const requireContent = (): ContentStore => {
 		const content = storage.caps?.content
 		if (!content) throw new Error('backend exposes no content store (caps.content)')
@@ -380,7 +417,11 @@ export function localSyncReplica(
 		async applyPathChanges(incoming, getBlobByHash, opts2) {
 			// Hard exclusion (see syncIgnore): a peer can never inject local-only state or a
 			// credential, enforced here so a second volume(storage) can't bypass it.
-			const admissible = incoming.filter((c) => !isIgnored(c.path))
+			// An ignored path only survives if its ANCESTORS do, so a change that would
+			// replace or remove a directory holding one is dropped too (see shieldsIgnored).
+			const admissible: PathChange[] = []
+			for (const c of incoming)
+				if (!isIgnored(c.path) && !(await shieldsIgnored(c))) admissible.push(c)
 			const pathApply = requirePathApply()
 			// Deterministic LWW against the CURRENT local state, read before applying:
 			// keep only changes that beat their local path (numeric version, then a

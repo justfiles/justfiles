@@ -315,6 +315,9 @@ export function accountsCapabilities(
 // have to re-connect. The host's own record always wins; a legacy one only fills a gap.
 // Best-effort by design: a host must boot even if this fails, and the only record on a
 // real volume is the credential-less platform AI account, which `ensureAccount` reseeds.
+// The failure path therefore needs no compensating guard anywhere else (no legacy entry in
+// the agent's deny-list, no dual-read in the store): worst case a user re-connects an
+// account. See AGENTS.md, "Pre-release: no migration or back-compat debt".
 // Delete this function and its call sites once no live volume carries the old paths.
 export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
 	for (const [from, to] of [
