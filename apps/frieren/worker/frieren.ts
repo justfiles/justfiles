@@ -31,9 +31,12 @@ import { EXPRESSIONS } from '@justfiles/agent/expression'
 import { capabilityRegistry } from '@justfiles/app/capabilities'
 import {
 	accountsCapabilities,
+	aesGcmSecretCodec,
 	ensureAccount,
 	migrateHostPrivateLane,
-	resolveAiAccount
+	resolveAiAccount,
+	type SecretCodec,
+	sealAccounts
 } from '@justfiles/app/capabilities/accounts/host'
 import { type GeneratedImage, imageAgentTools } from '@justfiles/app/capabilities/image'
 import type { Notification } from '@justfiles/app/capabilities/notify'
@@ -144,9 +147,15 @@ export class Frieren extends DurableObject<Env> {
 	private readonly facesInFlight = new Map<string, Promise<GeneratedImage | null>>()
 	private cfTimezone?: string
 	private apps?: FrierenApps
+	// Seals account creds at rest, keyed by this host's root secret — so the key never lives in
+	// the Volume it protects (a DO SQLite dump / R2 object / backup carries only envelopes).
+	// Absent locally ⇒ clear, so dev without the secret still runs.
+	private readonly secretCodec?: SecretCodec
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env)
+		if (env.ENCRYPTION_KEY) this.secretCodec = aesGcmSecretCodec(env.ENCRYPTION_KEY)
+		else console.warn('ENCRYPTION_KEY is not set — account credentials are stored in the clear')
 		const namespace = ctx.id.toString()
 		const adapter = createDOSqliteAdapter(ctx.storage)
 		const fs = cfFsStorage(adapter, namespace, env.FS_BLOBS)
@@ -346,12 +355,19 @@ export class Frieren extends DurableObject<Env> {
 		// once with `ai` enabled so a fresh user has a working agent; a returning user's toggle
 		// (they may have turned it off or switched to another AI) is left untouched.
 		await migrateHostPrivateLane(this.vol)
-		await migratePlatformAccountId(this.vol)
-		await ensureAccount(this.vol, {
-			accountId: 'frieren',
-			providerId: 'frieren',
-			enabled: ['ai']
-		})
+		await migratePlatformAccountId(this.vol, this.secretCodec)
+		await ensureAccount(
+			this.vol,
+			{
+				accountId: 'frieren',
+				providerId: 'frieren',
+				enabled: ['ai']
+			},
+			{ secretCodec: this.secretCodec }
+		)
+		// Anything still in the clear (written before the key existed, or while it was missing)
+		// gets sealed now — nothing else would ever rewrite a credential that doesn't rotate.
+		await sealAccounts(this.vol, { secretCodec: this.secretCodec })
 		this.session?.abort()
 		this.text = text(this.meteredBackend(models, model))
 		// Accounts live on the Volume; the factory hands back the capabilities. frieren keeps
@@ -360,7 +376,10 @@ export class Frieren extends DurableObject<Env> {
 		// the agent no longer reaches them directly (that returns as capability-provided agent
 		// tools; see the plan's Step 3.5).
 		const providers = buildProviders({ text: this.text, generateImage })
-		const caps = accountsCapabilities(providers, this.vol, { firstParty: ACCOUNTS_FIRST_PARTY })
+		const caps = accountsCapabilities(providers, this.vol, {
+			firstParty: ACCOUNTS_FIRST_PARTY,
+			secretCodec: this.secretCodec
+		})
 		const audit = new AuditLog(this.ctx.storage)
 		const rateLimit = new TokenBucket({ capacity: 60, windowMs: 60_000 })
 		const email = guardCapability(caps.email, { capability: 'email', audit, rateLimit })
@@ -395,8 +414,11 @@ export class Frieren extends DurableObject<Env> {
 			volume: this.vol,
 			capabilities: agentCaps,
 			backend: async () => {
-				const backend = await resolveAiAccount(this.vol, ({ providerId }) =>
-					providerId === 'frieren' ? this.meteredBackend(models, model) : null
+				const backend = await resolveAiAccount(
+					this.vol,
+					({ providerId }) =>
+						providerId === 'frieren' ? this.meteredBackend(models, model) : null,
+					{ secretCodec: this.secretCodec }
 				)
 				if (!backend) throw new Error('AI is turned off — enable an AI provider in Settings.')
 				return backend

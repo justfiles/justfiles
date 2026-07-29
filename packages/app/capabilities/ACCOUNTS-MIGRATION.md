@@ -244,9 +244,11 @@ export function resolveAgentBackend(fs: Volume): Promise<AgentBackend | null> {
 
 ## Risks / follow-ups
 
-- **Plaintext creds on the Volume (decision #2).** frieren's at-rest encryption is gone
-  until a `secretCodec` is supplied. Re-introduce by passing an encrypting codec to
-  `volumeAccountsStore` — no store-logic change. Track as a security follow-up.
+- **Plaintext creds on the Volume (decision #2).** ~~frieren's at-rest encryption is gone
+  until a `secretCodec` is supplied.~~ **Closed (#292):** `aesGcmSecretCodec` (AES-256-GCM,
+  HKDF-derived, account id as AAD) seals the `creds` lane; frieren keys it from the
+  `ENCRYPTION_KEY` Worker secret. The seam held — no store-logic change. mac's own key
+  (Keychain) is #294.
   **Update (#290/#291):** the lane moved from `/system/accounts` to the private
   `/private/accounts`, which never replicates in either direction, so the bytes no longer
   reach a client at all. Encryption at rest is #292 (this same codec seam).

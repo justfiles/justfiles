@@ -75,6 +75,7 @@ pnpm dev
 
 - `CLERK_SECRET_KEY`: Clerk secret key — required for JWT session auth and API key verification.
 - `CLERK_PUBLISHABLE_KEY`: Clerk publishable key — required by the Clerk middleware in the worker. This is non-sensitive and should live in `wrangler.jsonc` `vars`, not Cloudflare secrets.
+- `ENCRYPTION_KEY` (frieren): this host's root secret for encryption at rest — the key that never lives in the Volume it protects. Any high-entropy string (`openssl rand -base64 32`). It is never a key directly: each use derives its own subkey (HKDF), so one secret covers every at-rest need; a new one must pick its own derivation label. Today it seals connected-account credentials. Absent locally ⇒ stored in the clear (a startup warning says so); **changing it makes existing accounts unreadable**, so they list as broken and must be re-connected. Use a different value per environment.
 
 #### Local development
 

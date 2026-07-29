@@ -13,15 +13,25 @@ import { CapabilityError } from '../error.ts'
 import { image } from '../image/index.ts'
 import { implementCapability } from '../implement.ts'
 import type { Capability } from '../types.ts'
-import { type Account, type AccountStore, volumeAccountStore } from './account.ts'
+import { type Account, type AccountStore, type SecretCodec, volumeAccountStore } from './account.ts'
 import { type ActiveAiStore, volumeActiveAi } from './active-ai.ts'
 import type { AccountInfo, CapabilityId, ProviderInfo } from './contract.ts'
 import { accountsAdmin } from './index.ts'
 import type { Binding, Provider } from './provider.ts'
 
-export interface AccountsAdminOptions {
+export type { SecretCodec } from './account.ts'
+// The at-rest seal for the creds lane, re-exported for hosts: each supplies its own root
+// secret (frieren `ENCRYPTION_KEY`, mac the Keychain) and passes the codec to the entry
+// points below.
+export { aesGcmSecretCodec } from './secret-codec.ts'
+
+export interface AccountsOptions {
 	// App ids permitted to reach the admin facet (the first-party Settings app).
 	firstParty?: Iterable<string>
+	// Seals the `creds` lane at rest with this host's own key (see secret-codec.ts).
+	// Absent = clear. EVERY entry point below takes it: they all build the same store,
+	// and a codec on some but not all of them means half the reads can't decrypt.
+	secretCodec?: SecretCodec
 }
 
 type Registry = Map<string, Provider>
@@ -38,6 +48,9 @@ function bound<T>(
 	config?: unknown
 ): T | undefined {
 	if (!binding) return undefined
+	// Unreadable creds (key rotated/foreign) — the account is listed but unusable, so
+	// the capability reports UNAVAILABLE instead of handing a provider an envelope.
+	if (account.creds === undefined) return undefined
 	if (binding.scope !== undefined && !(account.scopes?.includes(binding.scope) ?? false))
 		return undefined
 	return binding.bind({
@@ -178,7 +191,7 @@ function accountsAdminHost(
 	registry: Registry,
 	accounts: AccountStore,
 	activeAi: ActiveAiStore,
-	opts: AccountsAdminOptions = {}
+	opts: AccountsOptions = {}
 ): Capability {
 	const allow = new Set(opts.firstParty ?? [])
 	const guard = (ctx: { appId: string }) => {
@@ -288,7 +301,7 @@ function accountsAdminHost(
 export function accountsCapabilities(
 	providers: Provider[],
 	volume: Volume,
-	opts: AccountsAdminOptions = {}
+	opts: AccountsOptions = {}
 ): {
 	image: Capability
 	email: Capability
@@ -296,7 +309,7 @@ export function accountsCapabilities(
 	accounts: Capability
 } {
 	const registry: Registry = new Map(providers.map((p) => [p.id, p]))
-	const accounts = volumeAccountStore(volume)
+	const accounts = volumeAccountStore(volume, opts)
 	const activeAi = volumeActiveAi(volume)
 	return {
 		image: imageHost(accounts, activeAi, registry),
@@ -340,15 +353,46 @@ export async function migrateHostPrivateLane(volume: Volume): Promise<void> {
 	}
 }
 
+// Seal every account record still sitting in the clear, with this host's key. Best-effort:
+// a host must boot even if it fails.
+//
+// Needed because `decode` deliberately passes a non-envelope through (that is what makes
+// turning encryption on a no-flag-day change) — so nothing else would ever rewrite a
+// credential that does not rotate. No provider persists rotated creds today, and an iCloud
+// app-specific password is written exactly once, at connect: "it gets sealed on the next
+// write" means "never" for those, leaving plaintext in every dump and backup taken after we
+// believed the lane was encrypted. Same story for records a host wrote while its key was
+// missing. This closes both, on the next boot after the key lands.
+//
+// A no-op without a key (nothing to seal with) and cheap with one: already-sealed records
+// are skipped, so a steady-state boot writes nothing.
+export async function sealAccounts(
+	volume: Volume,
+	opts: { secretCodec?: SecretCodec } = {}
+): Promise<void> {
+	if (!opts.secretCodec) return
+	try {
+		await volumeAccountStore(volume, opts).reseal()
+	} catch (e) {
+		console.warn('accounts: could not seal credentials at rest', e)
+	}
+}
+
 // Seed a credential-less account once, if it doesn't already exist — for a platform-
 // managed provider (the built-in AI) that should be present and, on a fresh install, the
 // active AI by default. Idempotent: a returning user's active-AI choice is left untouched.
 export async function ensureAccount(
 	volume: Volume,
-	input: { accountId: string; providerId: string; enabled: CapabilityId[] }
+	input: { accountId: string; providerId: string; enabled: CapabilityId[] },
+	opts: { secretCodec?: SecretCodec } = {}
 ): Promise<void> {
-	const accounts = volumeAccountStore(volume)
-	if (await accounts.get(input.accountId)) return
+	const accounts = volumeAccountStore(volume, opts)
+	const existing = await accounts.get(input.accountId)
+	// A record whose creds this host cannot read counts as absent: the only account this
+	// seeds is the platform one, which is credential-less, so re-seeding it heals a rotated
+	// key instead of leaving the agent with no backend. (A user's own account is never
+	// seeded here — it lists as broken and is re-connected.)
+	if (existing && existing.creds !== undefined) return
 	await accounts.put({ id: input.accountId, provider: input.providerId, creds: {} })
 	if (input.enabled.includes('ai')) {
 		const activeAi = volumeActiveAi(volume)
@@ -358,15 +402,20 @@ export async function ensureAccount(
 
 // Move an existing account to a new id/provider id, carrying the active-AI pointer with it
 // — for a builtin provider whose ids were renamed. No-op when `from` is absent; never
-// clobbers an existing `to`.
+// clobbers an existing `to`. Re-`put`s through the store rather than moving the file,
+// because the codec binds a record's ciphertext to its account id: a new id needs a
+// re-seal — which is also why a record this host cannot read is left where it is. Moving
+// it would delete the source and re-seal nothing; leaving it lets a boot with the right
+// key finish the job.
 export async function renameAccount(
 	volume: Volume,
 	from: string,
-	to: { accountId: string; providerId: string }
+	to: { accountId: string; providerId: string },
+	opts: { secretCodec?: SecretCodec } = {}
 ): Promise<void> {
-	const accounts = volumeAccountStore(volume)
+	const accounts = volumeAccountStore(volume, opts)
 	const existing = await accounts.get(from)
-	if (!existing) return
+	if (!existing || existing.creds === undefined) return
 	if (!(await accounts.get(to.accountId))) {
 		await accounts.put({ ...existing, id: to.accountId, provider: to.providerId })
 	}
@@ -391,13 +440,16 @@ export interface AiAccountLease {
 
 export async function resolveAiAccount<T>(
 	volume: Volume,
-	mint: (lease: AiAccountLease) => T | Promise<T>
+	mint: (lease: AiAccountLease) => T | Promise<T>,
+	opts: { secretCodec?: SecretCodec } = {}
 ): Promise<T | null> {
-	const accounts = volumeAccountStore(volume)
+	const accounts = volumeAccountStore(volume, opts)
 	const sel = await volumeActiveAi(volume).get()
 	if (!sel) return null
 	const account = await accounts.get(sel.accountId)
-	if (!account) return null
+	// No account, or creds this host can't read — either way there is no backend to mint;
+	// the caller surfaces "turn on AI in Settings" and the record's own lastError says why.
+	if (!account || account.creds === undefined) return null
 	return mint({
 		creds: account.creds,
 		config: sel.model !== undefined ? { model: sel.model } : {},
