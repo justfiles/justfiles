@@ -14,7 +14,12 @@ import { describe, expect, it } from 'vitest'
 import type { Storage } from './storage'
 import { memStorage } from './storage.mem'
 import type { JournalRow, JournalStore } from './sync-replica'
-import { isHostPrivatePath, journaledChangeSource, localSyncReplica } from './sync-replica'
+import {
+	hostPrivate,
+	isHostPrivatePath,
+	journaledChangeSource,
+	localSyncReplica
+} from './sync-replica'
 import { bytes, sha256, text } from './sync-test-harness'
 import type { PathChange, SyncMeta } from './sync-wire'
 import {
@@ -89,10 +94,11 @@ function symlink(
 	}
 }
 
-function makeReplica(store: Storage, lazyContent = false) {
+function makeReplica(store: Storage, lazyContent = false, alsoPrivate?: (path: string) => boolean) {
 	return localSyncReplica(store, journaledChangeSource(store), {
 		lazyContent,
-		localActorId: 'me'
+		localActorId: 'me',
+		alsoPrivate
 	})
 }
 
@@ -220,6 +226,54 @@ describe('isHostPrivatePath', () => {
 		expect(isHostPrivatePath('/system/user.md')).toBe(false)
 		expect(isHostPrivatePath('/notes/host.md')).toBe(false)
 		expect(isHostPrivatePath('/notes/a')).toBe(false)
+	})
+})
+
+// A host composes its OWN never-replicate paths on top of the built-in class. The
+// composition is by OR, which is the whole safety property: an addition can widen the
+// boundary, never narrow it — so no host (or future caller) can make credentials sync.
+describe('hostPrivate', () => {
+	it('with no addition is exactly the built-in predicate', () => {
+		const p = hostPrivate()
+		for (const path of ['/host', '/host/accounts/a.json', '/.state/sync', '/notes/a', '/hostage'])
+			expect(p(path)).toBe(isHostPrivatePath(path))
+	})
+
+	it('adds the host’s own paths, keeping the built-in class', () => {
+		const p = hostPrivate((path) => path.startsWith('/state/cache/') || path.endsWith('.DS_Store'))
+		expect(p('/state/cache/blobs')).toBe(true)
+		expect(p('/notes/.DS_Store')).toBe(true)
+		expect(p('/host/accounts/a.json')).toBe(true) // built-in, still private
+		expect(p('/notes/a.md')).toBe(false) // untouched
+		expect(p('/state/other')).toBe(false)
+	})
+
+	it('CANNOT be weakened: an addition that says "nothing is private" changes nothing', () => {
+		const p = hostPrivate(() => false)
+		expect(p('/host')).toBe(true)
+		expect(p('/host/accounts/a.json')).toBe(true)
+		expect(p('/.state/sync')).toBe(true)
+		expect(p('/notes/a')).toBe(false)
+	})
+
+	it('is not consulted for a path the built-in class already covers', () => {
+		const seen: string[] = []
+		const p = hostPrivate((path) => {
+			seen.push(path)
+			return false
+		})
+		expect(p('/host/accounts/a.json')).toBe(true)
+		expect(seen).toEqual([]) // short-circuited by the built-in class
+		expect(p('/notes/a')).toBe(false)
+		expect(seen).toEqual(['/notes/a'])
+	})
+
+	it('a throwing addition is the caller’s bug, surfaced not swallowed', () => {
+		const p = hostPrivate(() => {
+			throw new Error('bad predicate')
+		})
+		expect(p('/host')).toBe(true) // built-in short-circuit, never reaches it
+		expect(() => p('/notes/a')).toThrow('bad predicate')
 	})
 })
 
@@ -399,6 +453,36 @@ describe('localSyncReplica', () => {
 		await replica.applyPathChanges([put('/.state/x', '1', 's')], async () => bytes('s'))
 		expect(await vol.exists('/notes/a')).toBe(true)
 		expect(await vol.exists('/.state/x')).toBe(false)
+	})
+
+	it('never emits a host addition from pathDeltas or pathScan', async () => {
+		const rows = [
+			{ seq: 1, change: put('/notes/a', '1', 'x') },
+			{ seq: 2, change: put('/state/cache/blob', '1', 'c') },
+			{ seq: 3, change: put('/notes/.DS_Store', '1', 'junk') }
+		]
+		const alsoPrivate = (p: string) => p.startsWith('/state/cache/') || p.endsWith('.DS_Store')
+		const deltas = await makeReplica(fakeJournalStore(rows), false, alsoPrivate).pathDeltas('', {})
+		expect(deltas.changes.map((c) => c.path)).toEqual(['/notes/a'])
+		const scan = await makeReplica(fakeJournalStore(rows), false, alsoPrivate).pathScan(
+			undefined,
+			{}
+		)
+		expect(scan.changes.map((c) => c.path)).toEqual(['/notes/a'])
+	})
+
+	it('refuses to apply a host addition a peer sent, and keeps the local copy', async () => {
+		const store = memStorage()
+		const vol = volume(store)
+		const replica = makeReplica(store, false, (p) => p.startsWith('/state/cache/'))
+		await vol.mkdir('/state/cache', { recursive: true })
+		await vol.writeFile('/state/cache/blob', bytes('MINE'))
+		await replica.applyPathChanges([put('/state/cache/blob', '99', 'THEIRS')], async () =>
+			bytes('THEIRS')
+		)
+		await replica.applyPathChanges([put('/notes/a', '1', 'hi')], async () => bytes('hi'))
+		expect(text(await vol.readFile('/state/cache/blob'))).toBe('MINE') // not overwritten
+		expect(await vol.exists('/notes/a')).toBe(true) // ordinary path still applies
 	})
 
 	it('eager applyPathChanges materialises the blob before the tree references it', async () => {

@@ -295,6 +295,36 @@ describe('synced (lifecycle)', () => {
 		expect(await volume(local).exists('/.state')).toBe(true) // local-only preserved
 	})
 
+	// Same for reconcile: a path the peer was never allowed to have must not be deleted
+	// for being "absent from the remote".
+	it('reconcile keeps a host addition the remote never had', async () => {
+		const remote = memStorage()
+		await volume(remote).writeFile('/keep.txt', enc.encode('keep'))
+		const local = memStorage()
+		const alsoPrivate = (p: string) => p.startsWith('/state/cache/')
+
+		const vol1 = await synced({ local, remote, interval: 99_999, alsoPrivate })
+		await vol1.flush()
+		await vol1.writeFile('/pushed.txt', enc.encode('mine'))
+		await vol1.flush() // everPushed => reconcile runs on re-bootstrap
+		vol1.destroy()
+
+		const lv = volume(local)
+		await lv.mkdir('/state/cache', { recursive: true })
+		await lv.writeFile('/state/cache/blob', enc.encode('MINE'))
+		await lv.writeFile('/stray.md', enc.encode('x'))
+		const state = JSON.parse(dec.decode(await lv.readFile('/.state/sync'))) as {
+			pullCursor?: string
+		}
+		delete state.pullCursor
+		await lv.writeFile('/.state/sync', enc.encode(JSON.stringify(state)))
+
+		const vol2 = track(await synced({ local, remote, interval: 99_999, alsoPrivate }))
+		await vol2.flush()
+		expect(await vol2.exists('/stray.md')).toBe(false) // reconciled away
+		expect(dec.decode(await vol2.readFile('/state/cache/blob'))).toBe('MINE')
+	})
+
 	// Host-private roots survive a destructive reconcile: the remote never had them, so
 	// "absent from the remote" must not mean "delete locally".
 	it('reconcile keeps the host-private root the remote never had', async () => {
@@ -648,6 +678,48 @@ describe('synced (generation / client-reset)', () => {
 		await vol.takeTheirs()
 		expect(await vol.exists('/mine.txt')).toBe(false) // discarded before any push
 		expect(await vol.exists('/server.txt')).toBe(true) // re-pulled from the server
+	})
+
+	// A symlink in the swept tree must be unlinked, never descended into (a link to a
+	// preserved dir would otherwise have its TARGET's contents deleted).
+	it('takeTheirs() unlinks a symlink without descending into its target', async () => {
+		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
+		const local = memStorage()
+		const vol = track(
+			await synced({
+				local,
+				remote: () => server.replica,
+				interval: 99_999,
+				alsoPrivate: (p) => p.startsWith('/state/cache/')
+			})
+		)
+		await vol.mkdir('/state/cache', { recursive: true })
+		await vol.writeFile('/state/cache/blob', enc.encode('MINE'))
+		await vol.symlink('/state/cache', '/link-to-cache')
+		await vol.takeTheirs()
+		expect(await vol.exists('/link-to-cache')).toBe(false) // the link is gone
+		expect(dec.decode(await vol.readFile('/state/cache/blob'))).toBe('MINE') // target intact
+	})
+
+	// The host's OWN additions are host-private in the FULL sense: a reset must not
+	// discard them either, or `alsoPrivate` would be a wire filter with a data-loss hole.
+	it('takeTheirs() keeps a host addition, not just the built-in root', async () => {
+		const server = fakeServer({ generation: 3, files: { '/server.txt': 'theirs' } })
+		const local = memStorage()
+		const vol = track(
+			await synced({
+				local,
+				remote: () => server.replica,
+				interval: 99_999,
+				alsoPrivate: (p) => p.startsWith('/state/cache/')
+			})
+		)
+		await vol.mkdir('/state/cache', { recursive: true })
+		await vol.writeFile('/state/cache/blob', enc.encode('MINE'))
+		await vol.writeFile('/mine.md', enc.encode('mine'))
+		await vol.takeTheirs()
+		expect(dec.decode(await vol.readFile('/state/cache/blob'))).toBe('MINE')
+		expect(await vol.exists('/mine.md')).toBe(false) // synced data still discarded
 	})
 
 	// A reset discards the SYNCED replica, not the credentials this host acquired.

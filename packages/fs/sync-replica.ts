@@ -345,14 +345,16 @@ export function nativeChangeSource(
  * `ChangeSource` (journaled for owned backends, native for scan+diff). It
  * delegates detection to `changes` and adds `ChangeApplier` + `BlobStore` over
  * the `Storage` (`caps.pathApply` + the content store). `lazyContent` fixes
- * eager vs lazy hydration; the host-private prefixes are excluded here (hard
- * path rule) on top of the delegated `changes`.
+ * eager vs lazy hydration; the host-private paths are excluded here (hard path
+ * rule) on top of the delegated `changes` — `alsoPrivate` adds this host's own
+ * never-replicate paths to the built-in class (see `hostPrivate`).
  */
 export function localSyncReplica(
 	storage: Storage,
 	changes: ChangeSource,
-	opts: { lazyContent: boolean; localActorId: string }
+	opts: { lazyContent: boolean; localActorId: string; alsoPrivate?: (path: string) => boolean }
 ): SyncReplica {
+	const isPrivate = hostPrivate(opts.alsoPrivate)
 	const requireContent = (): ContentStore => {
 		const content = storage.caps?.content
 		if (!content) throw new Error('backend exposes no content store (caps.content)')
@@ -365,21 +367,21 @@ export function localSyncReplica(
 	}
 	return {
 		async pathDeltas(cursor, opts) {
-			// Hard host-private exclusion (see isHostPrivatePath): local-only state and
-			// credentials never cross the wire, enforced here so a second volume(storage)
-			// can't bypass it.
+			// Hard host-private exclusion (see hostPrivate): local-only state, credentials
+			// and this host's own additions never cross the wire, enforced here so a second
+			// volume(storage) can't bypass it.
 			const res = await changes.pathDeltas(cursor, opts)
-			return { ...res, changes: res.changes.filter((c) => !isHostPrivatePath(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isPrivate(c.path)) }
 		},
 		async pathScan(page, opts) {
 			const res = await changes.pathScan(page, opts)
-			return { ...res, changes: res.changes.filter((c) => !isHostPrivatePath(c.path)) }
+			return { ...res, changes: res.changes.filter((c) => !isPrivate(c.path)) }
 		},
 		async applyPathChanges(incoming, getBlobByHash, opts2) {
-			// Hard host-private exclusion (see isHostPrivatePath): a peer can never inject
+			// Hard host-private exclusion (see hostPrivate): a peer can never inject
 			// local-only state or a credential, enforced here so a second volume(storage)
 			// can't bypass it.
-			const admissible = incoming.filter((c) => !isHostPrivatePath(c.path))
+			const admissible = incoming.filter((c) => !isPrivate(c.path))
 			const pathApply = requirePathApply()
 			// Deterministic LWW against the CURRENT local state, read before applying:
 			// keep only changes that beat their local path (numeric version, then a
@@ -476,6 +478,21 @@ export const HOST_PRIVATE_PREFIXES = ['/.state', '/host'] as const
 
 export function isHostPrivatePath(p: string): boolean {
 	return HOST_PRIVATE_PREFIXES.some((d) => p === d || p.startsWith(`${d}/`))
+}
+
+/**
+ * The effective host-private predicate: the built-in class ABOVE, plus whatever else
+ * THIS host never replicates (a native daemon's `.DS_Store`, a build cache, …).
+ *
+ * Composed by OR, so a host addition can only ever widen the boundary — it cannot
+ * weaken the credential class, whoever passes it. Kept a predicate rather than a file
+ * format on purpose: the rule stays code-owned, so it cannot be edited by an app, the
+ * agent's shell, or a peer's push (see #290 D2), and every whole-tree deleter
+ * (`clientReset`, `reconcileLocal`, the server reset) can still be reviewed against a
+ * set its host states in source.
+ */
+export function hostPrivate(also?: (path: string) => boolean): (path: string) => boolean {
+	return also === undefined ? isHostPrivatePath : (p) => isHostPrivatePath(p) || also(p)
 }
 
 /**

@@ -186,6 +186,43 @@ describe('path-sync semantics', () => {
 		expect(await server.exists('/host/connections/chatgpt/default.json')).toBe(false)
 	})
 
+	// A host's OWN never-replicate paths (hostPrivate's `alsoPrivate`) behave exactly
+	// like the built-in class: filtered on the way out, refused on the way in.
+	test('a host addition never crosses the wire, in either direction', async () => {
+		const cache = (p: string) => p.startsWith('/state/cache/') || p.endsWith('.DS_Store')
+		const { client, server, syncBoth, pushedChanges } = twoPeers({
+			clientAlsoPrivate: cache,
+			serverAlsoPrivate: cache
+		})
+		await client.writeFile('/state/cache/blob', bytes('C'))
+		await client.writeFile('/notes/.DS_Store', bytes('junk'))
+		await client.writeFile('/notes/keep.md', bytes('note'))
+		await server.writeFile('/state/cache/other', bytes('S'))
+		await syncBoth()
+		expect(await server.exists('/state/cache/blob')).toBe(false)
+		expect(await server.exists('/notes/.DS_Store')).toBe(false)
+		expect(await client.exists('/state/cache/other')).toBe(false)
+		expect(pushedChanges().map((c) => c.path)).not.toContain('/state/cache/blob')
+		// The sibling under the SAME parent still syncs — the rule is per path, not per dir
+		expect(text(await server.readFile('/notes/keep.md'))).toBe('note')
+		// And each side keeps its own copy: the lane is inert, not one-way
+		expect(text(await client.readFile('/state/cache/blob'))).toBe('C')
+		expect(text(await server.readFile('/state/cache/other'))).toBe('S')
+	})
+
+	// Asymmetry is legal (each host states its own policy) and must stay inert rather
+	// than fight: the strict peer neither sends nor accepts, the lax peer keeps its own.
+	test('an addition on ONE peer only still cannot leak in either direction', async () => {
+		const { client, server, syncBoth } = twoPeers({
+			clientAlsoPrivate: (p) => p.startsWith('/state/cache/')
+		})
+		await client.writeFile('/state/cache/blob', bytes('C'))
+		await server.writeFile('/state/cache/blob', bytes('S'))
+		await syncBoth()
+		expect(text(await client.readFile('/state/cache/blob'))).toBe('C') // refused the pull
+		expect(text(await server.readFile('/state/cache/blob'))).toBe('S') // never got the push
+	})
+
 	// Directory rename with children across a page boundary
 	test('renaming a directory moves every descendant, even across delta pages', async () => {
 		const { client, server, syncBoth } = twoPeers()

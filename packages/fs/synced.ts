@@ -3,7 +3,7 @@ import type { Storage } from './storage'
 import {
 	type BlobStore,
 	GenerationStaleError,
-	isHostPrivatePath,
+	hostPrivate,
 	journaledChangeSource,
 	LineageStaleError,
 	localSyncReplica,
@@ -46,6 +46,17 @@ type Props = {
 	// Local-first boot: return the local volume immediately and run the first
 	// sync in the background, instead of blocking boot until it settles.
 	localFirst?: boolean
+	// Paths THIS host never replicates, on top of the built-in host-private class
+	// (`/host`, `/.state`) which it cannot weaken — see `hostPrivate`. Threaded to
+	// EVERY seam that cares: the wire filters, and the two destructive ones
+	// (`reconcileLocal`, `clientReset`), so an excluded path is also never deleted
+	// for being absent from a peer that was never allowed to have it.
+	//
+	// CLIENT/DAEMON side only. The server's replica (`createFsApi`) deliberately does
+	// not take this: its reset (`resetVolume`) preserves the built-in class by walking
+	// dirents in SQL, and it cannot evaluate a predicate — so a server-side addition
+	// would silently not survive a take-mine.
+	alsoPrivate?: (path: string) => boolean
 }
 
 // What the sync loop knows about replication. Network/auth states (offline,
@@ -131,10 +142,16 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		} catch {}
 	}
 
+	// ONE predicate for every host-private decision in this engine: the wire filters
+	// (inside the replicas) and the two destructive paths below. Built-in class + this
+	// host's own additions; a host can only widen it.
+	const isPrivate = hostPrivate(props.alsoPrivate)
+
 	// The local replica always wraps props.local (a journaled backend).
 	const localReplica = localSyncReplica(props.local, journaledChangeSource(props.local), {
 		lazyContent,
-		localActorId: id
+		localActorId: id,
+		alsoPrivate: props.alsoPrivate
 	})
 
 	// Topology selection — the ONE place client<->server differs from P2P. Both
@@ -154,7 +171,8 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 				})
 			: localSyncReplica(props.remote, journaledChangeSource(props.remote), {
 					lazyContent,
-					localActorId: id
+					localActorId: id,
+					alsoPrivate: props.alsoPrivate
 				})
 
 	// The client<->server handshake, run ONCE before the first sync. A local peer
@@ -278,9 +296,35 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	}
 
 	/**
+	 * Delete a synced path, PRESERVING host-private paths at any depth: recurse, skip
+	 * what `isPrivate` claims, and drop a directory only once it is empty.
+	 *
+	 * A plain `rm -r` of an ancestor would take a nested private path with it — the
+	 * built-in class is top-level roots, but `alsoPrivate` is a predicate, so a host's
+	 * own additions can sit anywhere (`/state/cache/**`, `**\/.DS_Store`). Walking costs
+	 * one readdir per directory, on operations (a lineage reset, a re-bootstrap) that are
+	 * exceptional by nature.
+	 */
+	async function rmSynced(path: string): Promise<void> {
+		if (isPrivate(path)) return
+		// lstat, not readdir: a symlink to a directory must be unlinked, never descended.
+		const st = await localVol.lstat(path).catch(() => undefined)
+		if (st === undefined) return
+		if (st.type !== FileType.Directory) {
+			await localVol.rm(path, { force: true })
+			return
+		}
+		for (const e of await localVol.readdir(path))
+			await rmSynced(`${path === '/' ? '' : path}/${e.name}`)
+		// Only when nothing private survived under it (and never the root itself).
+		if (path !== '/' && (await localVol.readdir(path)).length === 0)
+			await localVol.rm(path, { recursive: true, force: true })
+	}
+
+	/**
 	 * Delete local paths absent from the remote snapshot (child-before-parent),
-	 * skipping host-private subtrees (`/.state`, `/host`). Path-keyed (today's
-	 * ino-based reconcile is replaced).
+	 * skipping host-private subtrees (`/.state`, `/host`, this host's additions).
+	 * Path-keyed (today's ino-based reconcile is replaced).
 	 */
 	async function reconcileLocal(remotePaths: Set<string>): Promise<void> {
 		// Delete local paths absent from the remote snapshot, child-before-parent,
@@ -289,7 +333,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		async function walk(dir: string): Promise<void> {
 			for (const e of await localVol.readdir(dir)) {
 				const p = dir === '/' ? `/${e.name}` : `${dir}/${e.name}`
-				if (isHostPrivatePath(p)) continue
+				if (isPrivate(p)) continue
 				localPaths.push(p)
 				if (e.type === FileType.Directory) await walk(p)
 			}
@@ -298,7 +342,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 		const absent = localPaths
 			.filter((p) => !remotePaths.has(p))
 			.sort((a, b) => b.split('/').length - a.split('/').length)
-		for (const p of absent) await localVol.rm(p, { recursive: true, force: true })
+		for (const p of absent) await rmSynced(p)
 	}
 
 	/**
@@ -310,13 +354,7 @@ export async function synced(props: Props): Promise<Volume & SyncLifecycle> {
 	 * server verbatim (nothing local left to keep).
 	 */
 	async function clientReset(): Promise<void> {
-		// Host-private roots are top-level, so skipping them here is sufficient: no synced
-		// path is their ancestor, hence no recursive delete can reach them.
-		for (const entry of await localVol.readdir('/')) {
-			const p = `/${entry.name}`
-			if (isHostPrivatePath(p)) continue
-			await localVol.rm(p, { recursive: true, force: true })
-		}
+		for (const entry of await localVol.readdir('/')) await rmSynced(`/${entry.name}`)
 		// Drop the local journal + version tombstones the deletes just wrote: after a
 		// lineage reset the server's versions aren't comparable to ours, so a leftover
 		// tombstone would outrank a re-pulled put and strand that path. Owned backends
