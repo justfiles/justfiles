@@ -706,6 +706,38 @@ above.
   later with no migration — see the reasoning in §9); **resume-where-you-left-off** (always-blank reopen is
   intentional).
 
+### The concurrency model, stated as a boundary
+
+Almost every rule in §3 exists because two writers disagreed, so it is worth writing down **which two
+writers this app actually has** — the answer decides which findings are defects and which are hypotheses.
+
+**In the model, and defended:**
+
+- **The user and the agent, interleaved.** The agent renames, writes and creates while the user types. This is
+  the real case and it is the origin of `movedFrom`, the buffer machine's generations, `claimPath`, and the
+  `deleted`/`moved` commit edges. Every one of those was a reproduced defect.
+- **The disk changing underneath, from outside the app.** An editor elsewhere, a sync daemon, `rm` in a
+  terminal. Hence: watches, `update: true` / `parents: false`, per-backend `putBlob` ENOENT, the inode checks
+  in `storage.fs`, `exclusive` writes. A write to something that is gone is a failure, not a no-op.
+- **The app racing itself.** Autosave against open, flush against rename, import against the tree's drag. These
+  are ordered by construction: one flush chain, one claim chain, a sequential import loop.
+
+**Out of the model, deliberately:**
+
+- **Two clients mutating the same note inside one round trip.** There is one GUI per app window and one
+  sequential agent; a second GUI editing the *same* note in the same millisecond is not a shape this product
+  has. Where a rule can be honoured for free we honour it (the reducer answers containment questions from
+  current state, not from a procedure's snapshot — that is cheaper *and* more correct). Where it would cost a
+  new mechanism — reservations, cross-client locks, undoing a local discard that a concurrent move made
+  unnecessary — we do not pay: the exposure is bounded by the autosave debounce, and the mechanism would be
+  permanent.
+- **Emulating primitives the platform lacks.** No atomic no-replace rename exists in Node, so `rename`
+  documents itself as check-then-move and the caller orders its writers. Pushing a guarantee down is only
+  worth it when the primitive is already there (`atomicCreate` was; `renameat2` is not).
+
+If Notes ever gains real multi-client editing, the boundary moves and the deferred interleavings come back —
+tracked as an issue rather than as unreachable code.
+
 Tolerate old persisted shapes (docs/app.md §3): new `NotesState`/`Entry` fields must be optional — `init`
 is not re-merged into already-persisted state. `treeRevision` was added this way.
 
