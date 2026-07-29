@@ -1,6 +1,7 @@
 import { memStorage, volume } from '@justfiles/fs'
 import { describe, expect, test } from 'vitest'
 import { type Account, type SecretCodec, volumeAccountStore } from './account.ts'
+import { aesGcmSecretCodec } from './secret-codec.ts'
 
 const account = (over: Partial<Account> = {}): Account => ({
 	id: 'u@openai.com',
@@ -69,5 +70,51 @@ describe('volumeAccountStore', () => {
 		expect(onDisk.provider).toBe('chatgpt')
 
 		expect(await store.get('u@openai.com')).toEqual(a)
+	})
+
+	test('an encrypting codec leaves no credential in the bytes on disk', async () => {
+		const fs = volume(memStorage())
+		const store = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('host-key') })
+		const a = account()
+		await store.put(a)
+
+		const bytes = new TextDecoder().decode(
+			await fs.readFile('/private/accounts/u%40openai.com.json')
+		)
+		expect(bytes).not.toContain('ref')
+		expect(bytes).not.toContain('tok')
+		expect(JSON.parse(bytes)).toMatchObject({
+			provider: 'chatgpt',
+			creds: { v: 1, alg: 'A256GCM' }
+		})
+		expect(await store.get('u@openai.com')).toEqual(a)
+	})
+
+	test('with no key at all, a sealed record is unreadable — never handed out sealed', async () => {
+		const fs = volume(memStorage())
+		await volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('gone') }).put(account())
+		const [only] = await volumeAccountStore(fs).list()
+		expect(only).toMatchObject({ id: 'u@openai.com', provider: 'chatgpt' })
+		expect(only.creds).toBeUndefined()
+		expect(only.lastError).toBeTruthy()
+	})
+
+	test('a record this key cannot open still lists, without creds and flagged', async () => {
+		// The rotated-the-key path: the account must stay visible (Settings shows it, the
+		// user re-connects) and must not take the rest of the list down with it.
+		const fs = volume(memStorage())
+		await volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('old-key') }).put(account())
+		const store = volumeAccountStore(fs, { secretCodec: aesGcmSecretCodec('new-key') })
+		await store.put(account({ id: 'me@gmail.com', provider: 'google', creds: { access: 'g' } }))
+
+		const list = await store.list()
+		expect(list.map((a) => `${a.id}:${a.provider}`).sort()).toEqual([
+			'me@gmail.com:google',
+			'u@openai.com:chatgpt'
+		])
+		const broken = list.find((a) => a.id === 'u@openai.com')
+		expect(broken?.creds).toBeUndefined()
+		expect(broken?.lastError).toBeTruthy()
+		expect(list.find((a) => a.id === 'me@gmail.com')?.creds).toEqual({ access: 'g' })
 	})
 })

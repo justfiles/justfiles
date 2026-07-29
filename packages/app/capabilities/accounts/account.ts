@@ -5,23 +5,30 @@
 //
 // Storage: one JSON file per account under `/private/accounts/`, keyed by a
 // URL-encoded id, with `creds` the single encryptable lane via an optional
-// SecretCodec (default identity — clear). `creds` are opaque here: only the owning
-// provider ever interprets them. `/private` never replicates, in either direction:
+// SecretCodec (default clear — see secret-codec.ts). `creds` are opaque here: only the
+// owning provider ever interprets them. `/private` never replicates, in either direction:
 // a capability routes to the host that owns the credential, so no peer needs the bytes
 // (see @justfiles/fs PRIVATE_PREFIXES).
 
 import type { Volume } from '@justfiles/fs'
+import { clearSecretCodec } from './secret-codec.ts'
 
-// Transforms the `creds` lane on the way to/from disk. Default = identity (clear).
+// Transforms the `creds` lane on the way to/from disk. Default = clear (but never hands
+// out a sealed value, see `clearSecretCodec`); the encrypting one is `aesGcmSecretCodec`.
+// `accountId` is passed so a codec can bind a record's ciphertext to it (AES-GCM AAD) —
+// one codec per host, not per record.
 export interface SecretCodec {
-	encode(creds: unknown): unknown
-	decode(raw: unknown): unknown
+	encode(creds: unknown, accountId: string): unknown | Promise<unknown>
+	decode(raw: unknown, accountId: string): unknown | Promise<unknown>
 }
 
 export interface Account {
 	id: string
 	// Provider id — 'google' | 'icloud' | 'chatgpt' today; open for new providers.
 	provider: string
+	// `undefined` for a record whose creds could not be decoded (this host's key is gone
+	// or rotated): the account still lists, so Settings can show it and the user can
+	// re-connect, but every credential path treats it as unconfigured (see host.ts).
 	creds: unknown
 	// OAuth grants on this account's creds (oauth providers only); drives
 	// incremental consent when a capability that needs a wider scope is enabled.
@@ -41,26 +48,34 @@ const enc = new TextEncoder()
 const dec = new TextDecoder()
 const pathFor = (id: string) => `${DIR}/${encodeURIComponent(id)}.json`
 
-const identityCodec: SecretCodec = { encode: (creds) => creds, decode: (raw) => raw }
+const DECODE_FAILED = 'credentials could not be read on this device — re-connect the account'
 
 export function volumeAccountStore(
 	fs: Volume,
 	opts: { secretCodec?: SecretCodec } = {}
 ): AccountStore {
-	const codec = opts.secretCodec ?? identityCodec
+	const codec = opts.secretCodec ?? clearSecretCodec
 	const read = async (path: string): Promise<Account | undefined> => {
+		let stored: Account
 		try {
-			const stored = JSON.parse(dec.decode(await fs.readFile(path))) as Account
-			// Ignore records that aren't this schema. A pre-registry install wrote
-			// `{ accountId, providerId }` to this same dir; read as `Account` those
-			// surface as `{ id: undefined, provider: undefined }`, which breaks callers
-			// (ensureAccount can't reseed past the file; the admin facet emits an
-			// undefined providerId that crashes the Settings card). Treated as absent,
-			// they stay inert — overwritten by a reseed / re-connected by the user.
-			if (typeof stored.id !== 'string' || typeof stored.provider !== 'string') return undefined
-			return { ...stored, creds: codec.decode(stored.creds) }
+			stored = JSON.parse(dec.decode(await fs.readFile(path))) as Account
 		} catch {
 			return undefined
+		}
+		// Ignore records that aren't this schema. A pre-registry install wrote
+		// `{ accountId, providerId }` to this same dir; read as `Account` those
+		// surface as `{ id: undefined, provider: undefined }`, which breaks callers
+		// (ensureAccount can't reseed past the file; the admin facet emits an
+		// undefined providerId that crashes the Settings card). Treated as absent,
+		// they stay inert — overwritten by a reseed / re-connected by the user.
+		if (typeof stored.id !== 'string' || typeof stored.provider !== 'string') return undefined
+		try {
+			return { ...stored, creds: await codec.decode(stored.creds, stored.id) }
+		} catch {
+			// One unreadable record must not blank the whole list — that is the
+			// rotated-the-key survival path: every OTHER account keeps working, and this
+			// one lists as broken (no creds + lastError) instead of vanishing silently.
+			return { ...stored, creds: undefined, lastError: DECODE_FAILED }
 		}
 	}
 	return {
@@ -80,7 +95,7 @@ export function volumeAccountStore(
 		},
 		put: async (account) => {
 			await fs.mkdir(DIR, { recursive: true })
-			const stored = { ...account, creds: codec.encode(account.creds) }
+			const stored = { ...account, creds: await codec.encode(account.creds, account.id) }
 			await fs.writeFile(pathFor(account.id), enc.encode(JSON.stringify(stored, null, 2)))
 		},
 		delete: async (id) => {

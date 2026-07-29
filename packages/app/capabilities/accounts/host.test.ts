@@ -5,6 +5,8 @@ import { volumeAccountStore } from './account.ts'
 import { volumeActiveAi } from './active-ai.ts'
 import {
 	accountsCapabilities,
+	aesGcmSecretCodec,
+	ensureAccount,
 	migrateHostPrivateLane,
 	renameAccount,
 	resolveAiAccount
@@ -464,5 +466,102 @@ describe('migrateHostPrivateLane', () => {
 		// The legacy record is left where it is — a failed move must not delete it.
 		expect(await vol.exists('/system/accounts/a.json')).toBe(true)
 		warn.mockRestore()
+	})
+})
+
+// Encryption at rest is one codec shared by EVERY entry point that builds the store: a
+// codec on some but not all of them means half the reads can't decrypt, so these tests
+// pin the wiring, not the crypto (see secret-codec.test.ts for that).
+describe('secretCodec wiring', () => {
+	const codec = aesGcmSecretCodec('host-key')
+
+	test('one codec across accountsCapabilities, ensureAccount, resolveAiAccount, renameAccount', async () => {
+		const vol = volume(memStorage())
+		const caps = accountsCapabilities(testProviders(), vol, {
+			firstParty: [SETTINGS],
+			secretCodec: codec
+		})
+		await caps.accounts.invoke(admin('connect', { providerId: 'chatgpt' }))
+		await caps.accounts.invoke(
+			admin('setEnabled', { accountId: 'u@openai', capability: 'ai', enabled: true })
+		)
+		// On disk the creds are sealed; the facet that needs them still reads them.
+		const raw = new TextDecoder().decode(await vol.readFile('/private/accounts/u%40openai.json'))
+		expect(raw).not.toContain('tok')
+		await expect(resolveAiAccount(vol, (l) => l.creds, { secretCodec: codec })).resolves.toEqual({
+			access: 'tok'
+		})
+		// A rename re-seals under the new id (the id is the AAD), so the record still opens.
+		await renameAccount(
+			vol,
+			'u@openai',
+			{ accountId: 'moved', providerId: 'chatgpt' },
+			{
+				secretCodec: codec
+			}
+		)
+		await expect(resolveAiAccount(vol, (l) => l.creds, { secretCodec: codec })).resolves.toEqual({
+			access: 'tok'
+		})
+		// ensureAccount seals its seed too, and still sees an existing account as present.
+		await ensureAccount(
+			vol,
+			{ accountId: 'frieren', providerId: 'frieren', enabled: [] },
+			{
+				secretCodec: codec
+			}
+		)
+		const seeded = JSON.parse(
+			new TextDecoder().decode(await vol.readFile('/private/accounts/frieren.json'))
+		)
+		expect(seeded.creds).toMatchObject({ v: 1, alg: 'A256GCM' })
+	})
+
+	test('a credential-less seed heals a record the key can no longer open', async () => {
+		// Rotating the key would otherwise leave the platform AI account listed-but-dead,
+		// i.e. no agent backend. It carries no secret, so re-seeding it costs nothing.
+		const vol = volume(memStorage())
+		await volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }).put({
+			id: 'frieren',
+			provider: 'frieren',
+			creds: {}
+		})
+		await ensureAccount(
+			vol,
+			{ accountId: 'frieren', providerId: 'frieren', enabled: ['ai'] },
+			{
+				secretCodec: codec
+			}
+		)
+		expect((await volumeAccountStore(vol, { secretCodec: codec }).get('frieren'))?.creds).toEqual(
+			{}
+		)
+	})
+
+	test('a record this host cannot decrypt lists with an error and is unusable', async () => {
+		// The rotated/missing-key path, end to end: Settings still renders the account (so
+		// the user can re-connect it) and a credential-using call reports UNAVAILABLE rather
+		// than leaking a decrypt exception.
+		const vol = volume(memStorage())
+		await volumeAccountStore(vol, { secretCodec: aesGcmSecretCodec('old-key') }).put({
+			id: 'me@gmail.com',
+			provider: 'google',
+			creds: { refresh: 'r' },
+			scopes: [GMAIL_SCOPE]
+		})
+		const caps = accountsCapabilities(testProviders(), vol, {
+			firstParty: [SETTINGS],
+			secretCodec: codec
+		})
+		const list = (await caps.accounts.invoke(admin('listAccounts', {}))) as {
+			accountId: string
+			providerId: string
+			lastError?: string
+		}[]
+		expect(list).toMatchObject([{ accountId: 'me@gmail.com', providerId: 'google' }])
+		expect(list[0].lastError).toBeTruthy()
+		await expect(caps.email.invoke(use('email', 'listUnread', { limit: 1 }))).rejects.toMatchObject(
+			{ code: 'CAPABILITY_UNAVAILABLE' }
+		)
 	})
 })
